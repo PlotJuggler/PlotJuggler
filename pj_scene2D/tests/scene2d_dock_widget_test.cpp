@@ -544,7 +544,7 @@ TEST(DepthImageLayer, XmlColormapFallbacks) {
   ASSERT_TRUE(layer.xmlLoadState(doc.createElement(u"scene2d_layer"_s)));
   EXPECT_EQ(layer.xmlSaveState(doc).attribute(u"colormap"_s), u"plasma"_s);
 
-  // An unknown token (e.g. a legacy "jet" layout) loads as turbo instead of failing.
+  // An unknown token (e.g. "jet") loads as turbo instead of failing.
   QDomElement jet = doc.createElement(u"scene2d_layer"_s);
   jet.setAttribute(u"colormap"_s, u"jet"_s);
   ASSERT_TRUE(layer.xmlLoadState(jet));
@@ -621,8 +621,7 @@ TEST(ImageLayer, RectifyControlRequiresUsableCalibrationInTheImagesDatasetAndFra
 }
 
 TEST(ImageLayer, XmlLoadDefaultsRectifyOnWhenAttributeAbsent) {
-  // A layout saved before this toggle existed has no rectify_enabled attribute; it
-  // must default to ON, preserving the historical always-on rectification behaviour.
+  // A layout without the rectify_enabled attribute loads with rectification on.
   PJ::ImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"image"_s);
 
   QDomDocument doc;

@@ -43,20 +43,14 @@ namespace PJ {
 
 namespace {
 
-// Inline-row geometry. Every inner widget sits flush with the row's
-// outer border — no internal padding. The swatch is a square anchored
-// to the left, eye + trash are squares anchored to the right, all
-// scaling to the row's height so they maintain 1:1 aspect. The name
-// takes whatever horizontal space is left.
-//
-// The row height tracks the global icon-size scrubber so larger icons
-// don't clip; the default 20 matches MainWindow's first-launch icon
-// size and the original compact-list design.
+// Inline-row geometry: every inner widget sits flush with the row's border, with no internal padding. The swatch is a
+// square anchored left, the eye and trash are squares anchored right, all scaling to the row height (1:1); the name
+// takes the remaining space. The row height tracks the global icon-size scrubber so larger icons do not clip; the
+// default 20 matches MainWindow's first-launch icon size.
 constexpr int kDefaultRowHeight = 20;
 constexpr int kRowSpacing = 2;
-// Horizontal breathing room between a row's content and the panel edges —
-// without it the name text (and a swatch-less strip row especially) sits flush
-// against the panel border.
+// Horizontal room between a row's content and the panel edges; without it the name (and a swatch-less strip row
+// especially) sits flush against the panel border.
 constexpr int kRowEdgeInset = 6;
 
 constexpr auto kCurveNameRole = Qt::UserRole;
@@ -67,9 +61,8 @@ constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
 constexpr auto kMarkersOnPath = ":/resources/svg/markers.svg";
 constexpr auto kMarkersOffPath = ":/resources/svg/markers_off.svg";
 constexpr auto kTrashIconPath = ":/resources/svg/trash.svg";
-// Marker-scope row glyphs: Dataset = a single database (one dataset's own
-// markers); Global = a grid of tiles (every loaded dataset), so the two rows
-// read as different scopes at a glance, not just different labels.
+// Marker-scope row glyphs: Dataset = a single database (one dataset's own markers); Global = a grid of tiles (every
+// loaded dataset), so the two read as different scopes at a glance.
 constexpr auto kDatasetScopeIconPath = ":/resources/svg/database.svg";
 constexpr auto kGlobalScopeIconPath = ":/resources/svg/grid_view.svg";
 // objectName of each footer row, so tests can find them.
@@ -77,15 +70,13 @@ constexpr auto kMarkerScopeRowName = "markerScopeRow";
 // A footer row's (dataset, scope) key, so a visibility signal finds its row.
 constexpr auto kMarkerScopeDatasetProperty = "markerScopeDataset";
 constexpr auto kMarkerScopeScopeProperty = "markerScopeScope";
-// objectName of a footer row's scope glyph: the QSS rule keyed on it keeps the
-// glyph flat like the row toggles.
+// objectName of a footer row's scope glyph: the QSS rule keyed on it keeps the glyph flat like the row toggles.
 constexpr auto kMarkerScopeGlyphName = "markerScopeGlyph";
-// The glyph is drawn this much smaller than the row so it reads as a marker,
-// not a button.
+// The glyph is drawn this much smaller than the row so it reads as a marker, not a button.
 constexpr int kMarkerScopeGlyphInset = 6;
 
-// Property keys tagged onto per-row QToolButtons so onStylesheetChanged
-// can find them via findChildren and re-tint without rebuilding rows.
+// Property keys tagged onto per-row QToolButtons so onStylesheetChanged finds them with findChildren and re-tints
+// without rebuilding rows.
 constexpr auto kVisibilityButtonProperty = "pj.curveEditor.visibilityButton";
 constexpr auto kMarkersButtonProperty = "pj.curveEditor.markersButton";
 constexpr auto kTrashButtonProperty = "pj.curveEditor.trashButton";
@@ -125,9 +116,8 @@ class CurveColorButton : public QPushButton {
   QColor color_;
 };
 
-// Non-interactive glyph in the swatch slot of a marker-scope footer row: says
-// "this row is a scope's, not one curve's" where a curve row shows its color.
-// An SvgButton (self-retinting) made mouse-transparent, sized to the row.
+// Non-interactive glyph in the swatch slot of a marker-scope footer row: "this row is a scope's, not one curve's"
+// where a curve row shows its colour. A mouse-transparent, self-retinting SvgButton sized to the row.
 SvgButton* makeMarkerScopeGlyph(const char* icon_path, int row_height) {
   auto* glyph = new SvgButton(QString::fromLatin1(icon_path));
   glyph->setObjectName(QString::fromLatin1(kMarkerScopeGlyphName));
@@ -136,19 +126,13 @@ SvgButton* makeMarkerScopeGlyph(const char* icon_path, int row_height) {
   return glyph;
 }
 
-// Custom row widget. Uses explicit geometry instead of a QHBoxLayout so
-// the markers + eye + trash icons pin to the right edge regardless of
-// available width — they never get pushed out, no jitter while resizing,
-// and the name takes the leftover middle (or hides). The swatch is
-// left-anchored, the buttons are right-anchored, the name fills (or
-// vanishes from) the gap between them.
+// Custom row widget with explicit geometry instead of a QHBoxLayout, so the markers, eye and trash icons pin to the
+// right edge whatever the width (never pushed out, no jitter while resizing) and the name fills, or vanishes from, the
+// gap between the left-anchored swatch and the right-anchored buttons.
 //
-// swatch/markers/eye/trash are each optional (null = absent from this row):
-// a curve row carries all four, a State Transitions strip row omits swatch
-// and markers, and a marker-scope footer row puts its scope glyph in the
-// swatch slot and omits eye and trash (glyph + name + markers). resizeEvent
-// anchors whichever of {trash, eye, markers} are present right-to-left,
-// skipping the absent ones.
+// swatch, markers, eye and trash are each optional (null = absent): a curve row carries all four, a State Transitions
+// strip row omits swatch and markers, and a marker-scope footer row puts its scope glyph in the swatch slot and omits
+// eye and trash. resizeEvent anchors whichever of {trash, eye, markers} are present, right to left.
 class CurveRowWidget : public QWidget {
  public:
   CurveRowWidget(
@@ -186,8 +170,7 @@ class CurveRowWidget : public QWidget {
   }
 
   [[nodiscard]] QSize sizeHint() const override {
-    // Width is whatever the listWidget viewport gives us; the row's
-    // height tracks the icon-size scrubber so icons grow with it.
+    // The width is what the listWidget viewport gives; the height tracks the icon-size scrubber.
     return {0, row_height_};
   }
 
@@ -197,18 +180,14 @@ class CurveRowWidget : public QWidget {
     const int h = height();
     const int total_w = width();
 
-    // Every inner widget is a square of side `h` (the row height), so
-    // each one is 1:1 and flush with the top + bottom borders. The
-    // swatch anchors left (when the row has one); both ends keep
-    // kRowEdgeInset off the panel border.
+    // Every inner widget is a square of side `h` (the row height), flush with the top and bottom borders. The swatch
+    // anchors left (when the row has one); both ends keep kRowEdgeInset off the panel border.
     if (swatch_ != nullptr) {
       swatch_->setGeometry(kRowEdgeInset, 0, h, h);
     }
 
-    // Right-anchor whichever of {trash, eye, markers} this row carries,
-    // left-to-right, skipping the absent ones (see the class comment for
-    // which rows omit which). name_right tracks the left edge of the
-    // leftmost placed button, or the panel edge if none are present.
+    // Right-anchor whichever of {trash, eye, markers} this row carries, skipping absent ones. name_right tracks the
+    // left edge of the leftmost placed button, or the panel edge if none.
     int name_right = total_w - kRowEdgeInset;
     for (QToolButton* button : {trash_, eye_, markers_}) {
       if (button == nullptr) {
@@ -219,9 +198,8 @@ class CurveRowWidget : public QWidget {
       name_right = x - kRowSpacing;
     }
 
-    // Name lives between the swatch (when present) and the leftmost right-
-    // anchored button. If the gap is too small to be readable, hide it; the
-    // buttons stay put.
+    // The name lives between the swatch (when present) and the leftmost right-anchored button; if the gap is too small
+    // to read it is hidden and the buttons stay put.
     const int name_x = kRowEdgeInset + (swatch_ != nullptr ? h + kRowSpacing : 0);
     const int name_width = name_right - name_x;
     if (name_width < 1) {
@@ -250,9 +228,8 @@ class CurveRowWidget : public QWidget {
 CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEditor) {
   ui_->setupUi(this);
 
-  // Curves header: filter line edit + kebab menu, mirroring the Datasets
-  // header. The kebab currently hosts a single "Clear all curves" action;
-  // future panel-level options (sort, hide-invisible, etc.) hang here.
+  // Curves header: filter line edit + kebab menu, as the Datasets header. The kebab hosts one "Clear all curves"
+  // action.
   auto* curves_menu = new QMenu(this);
   curves_menu->setObjectName(u"PJMenu"_s);
   auto* clear_all_button = new QPushButton(tr("Clear all curves"), curves_menu);
@@ -268,8 +245,7 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
     if (plot_ == nullptr) {
       return;
     }
-    // Snapshot curve names first — removeCurve fires curveListChanged which
-    // mutates the underlying list, so we can't iterate it live.
+    // Snapshot the names first: removeCurve fires curveListChanged, which mutates the list being iterated.
     QStringList names;
     for (const auto& info : plot_->curveList()) {
       if (info.curve != nullptr) {
@@ -287,11 +263,9 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
   curves_menu->addAction(clear_all_action);
 
   connect(ui_->buttonCurvesMenu, &QToolButton::clicked, this, [this, curves_menu]() {
-    // Right-align the popup with the kebab: open at the button's bottom-
-    // left, then shift left by (menu_width - button_width) so the menu's
-    // right edge sits flush with the button's right edge. menu->width()
-    // is only meaningful after popup() lays out, so we reposition after
-    // the initial show — popup() is non-blocking.
+    // Right-align the popup with the kebab: open at the button's bottom-left, then shift left by (menu width - button
+    // width) so the right edges meet. menu->width() is meaningful only after popup() lays out, so reposition after the
+    // initial show (popup() is non-blocking).
     auto* btn = ui_->buttonCurvesMenu;
     const QPoint bottom_left = btn->mapToGlobal(QPoint(0, btn->height()));
     curves_menu->popup(bottom_left);
@@ -301,39 +275,31 @@ CurveEditor::CurveEditor(QWidget* parent) : QWidget(parent), ui_(new Ui::CurveEd
     }
   });
   connect(ui_->filterCurves, &Search::textChanged, this, &CurveEditor::onFilterChanged);
-  // Enter while typing drops focus — restores any sibling header chrome
-  // via the focus-out branch of eventFilter without a stray click.
+  // Enter while typing drops focus, restoring the sibling header chrome through eventFilter's focus-out branch.
   connect(ui_->filterCurves, &Search::returnPressed, ui_->filterCurves->lineEdit(), &QLineEdit::clearFocus);
   ui_->filterCurves->lineEdit()->installEventFilter(this);
-  // Lock the header row to its natural height so hiding label/kebab on
-  // filter focus doesn't shift the line edit vertically.
+  // Lock the header row to its natural height so hiding the label and kebab on filter focus does not shift the line
+  // edit vertically.
   ui_->widgetLabelCurves->layout()->activate();
   ui_->widgetLabelCurves->setFixedHeight(ui_->widgetLabelCurves->layout()->sizeHint().height());
 
-  // Progressive collapse runs off CurveEditor::resizeEvent (our own
-  // width), not off the header band's QWidget — the band can't shrink
-  // below the sum of its content's natural sizes, so it would never
-  // trigger a hide threshold on its own.
+  // Progressive collapse runs off CurveEditor::resizeEvent (our own width), not the header band's QWidget, which cannot
+  // shrink below the sum of its content's natural sizes and would never reach a hide threshold on its own.
   ui_->listWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  // Adjust mode tells the view to re-issue per-item geometry on resize
-  // (otherwise items keep their first-laid-out width and the rows never
-  // shrink with the viewport).
+  // Adjust mode makes the view re-issue per-item geometry on resize; otherwise items keep their first width and the
+  // rows never shrink with the viewport.
   ui_->listWidget->setResizeMode(QListView::Adjust);
-  // Rows sit flush against each other — no inter-item gap.
+  // Rows sit flush against each other.
   ui_->listWidget->setSpacing(PJ::theme::space(theme::Space::None));
-  // Strip-mode drag-reorder (see eventFilter): InternalMove supplies the drop
-  // indicator, but the drop itself is intercepted and re-routed through the
-  // controller — the exact LayerListView pattern, which keeps the item widgets
-  // alive (a real InternalMove would strip them).
+  // Strip-mode drag reorder (eventFilter): InternalMove supplies the drop indicator, but the drop is intercepted and
+  // re-routed through the controller (the LayerListView pattern), which keeps the item widgets alive; a real
+  // InternalMove would strip them.
   ui_->listWidget->setDefaultDropAction(Qt::MoveAction);
   ui_->listWidget->viewport()->installEventFilter(this);
 
-  // QHBoxLayout's minimumSize is the sum of every child's natural
-  // minimum. The QLabel ("Curves") and the QLineEdit have non-zero
-  // implicit minimums, which would keep the header band — and the
-  // CurveEditor as a whole — from ever shrinking past ~96 px. Zero
-  // them out so the layout can actually collapse and our resizeEvent
-  // threshold has something to act on.
+  // QHBoxLayout's minimumSize is the sum of every child's natural minimum, and the "Curves" QLabel and the QLineEdit
+  // have non-zero implicit minimums that would keep the header band, and the CurveEditor, from shrinking past ~96 px.
+  // Zero them so the layout can collapse and the resizeEvent threshold has something to act on.
   setMinimumWidth(0);
   ui_->widgetLabelCurves->setMinimumWidth(0);
   ui_->labelCurves->setMinimumWidth(0);
@@ -398,7 +364,7 @@ void CurveEditor::setStateTransitions(StateTransitionsController* controller) {
   QObject::disconnect(state_destroyed_connection_);
   state_controller_ = controller;
   if (state_controller_ != nullptr) {
-    // Strip bind wins: release any plot binding (same exclusivity as setPlot).
+    // A strip bind wins: release any plot binding (as setPlot).
     if (plot_ != nullptr) {
       QObject::disconnect(curve_list_connection_);
       QObject::disconnect(curve_color_connection_);
@@ -415,8 +381,8 @@ void CurveEditor::setStateTransitions(StateTransitionsController* controller) {
       ui_->listWidget->setDragDropMode(QAbstractItemView::NoDragDrop);
       ui_->listWidget->clear();
     });
-    // Rows reorder by drag, mirroring the 3D panel's layer list; the actual
-    // move happens in the controller (see eventFilter's Drop branch).
+    // Rows reorder by drag, as the 3D panel's layer list; the move happens in the controller (eventFilter's Drop
+    // branch).
     ui_->listWidget->setDragDropMode(QAbstractItemView::InternalMove);
     refresh();
   } else {
@@ -429,16 +395,16 @@ void CurveEditor::setStateTransitions(StateTransitionsController* controller) {
 }
 
 void CurveEditor::refresh() {
-  // Clear without firing selection-change handlers; we re-evaluate at the end.
+  // Clear without firing selection-change handlers; re-evaluated at the end.
   QSignalBlocker block_list(ui_->listWidget);
   ui_->listWidget->clear();
   clearMarkerScopeRows();
-  // Row swatches are about to be destroyed — invalidate any cached pointer.
+  // Row swatches are about to be destroyed: invalidate any cached pointer.
   clearActivePicker();
 
   if (state_controller_ != nullptr) {
-    // Strip rows: keyed by the numeric row id; an invalid color = no swatch
-    // (state colors are hash-derived, deliberately not editable).
+    // Strip rows: keyed by the numeric row id; an invalid colour means no swatch (state colours are hash-derived, not
+    // editable).
     for (const auto& entry : state_controller_->seriesEntries()) {
       appendRow(QString::number(entry.row_id), entry.name, QColor(), entry.visible, /*markers_visible=*/false);
     }
@@ -458,10 +424,9 @@ void CurveEditor::refresh() {
         info.show_markers);
   }
 
-  // Up to two marker-scope rows per dataset (Dataset then Global), each only
-  // when its object topic exists on this plot, in the pinned footer under the
-  // list so they stay in reach however long the curve list scrolls. The label
-  // names the dataset only when this plot draws more than one.
+  // Up to two marker-scope rows per dataset (Dataset, then Global), each only when its object topic exists on this
+  // plot, in the pinned footer so they stay reachable however long the curve list scrolls. The label names the dataset
+  // only when this plot draws more than one.
   const std::vector<MarkerScopeKey>& scope_rows = plot_->markerScopeRows();
   const bool single_dataset = plot_->curveDatasets().size() == 1;
   for (const auto& [dataset_id, scope] : scope_rows) {
@@ -482,11 +447,9 @@ void CurveEditor::appendRow(
   item->setData(kCurveNameRole, curve_key);
   item->setData(kCurveDisplayNameRole, display_name);
 
-  // Children are constructed without a parent — CurveRowWidget's ctor
-  // reparents them in one place so resizeEvent can pin geometry directly
-  // (sizes scale to the row height, so no setFixedSize here).
-  // An invalid color means "this row has no editable color" (strip series):
-  // no swatch is created and the name starts at the row's left edge.
+  // Children are constructed without a parent: CurveRowWidget's ctor reparents them in one place so resizeEvent can pin
+  // geometry directly (sizes scale to the row height, so no setFixedSize). An invalid colour means the row has no
+  // editable colour (strip series): no swatch is created and the name starts at the row's left edge.
   CurveColorButton* swatch = nullptr;
   if (color.isValid()) {
     swatch = new CurveColorButton(color);
@@ -494,14 +457,13 @@ void CurveEditor::appendRow(
     connect(swatch, &QPushButton::clicked, this, [this, curve_key, swatch]() { onSwatchClicked(curve_key, swatch); });
   }
 
-  // Curve-visibility eye gates the curve itself; the markers toggle gates this
-  // curve's contribution to the plot-markers overlay (CurveInfo::show_markers).
+  // The curve-visibility eye gates the curve; the markers toggle gates its contribution to the plot-markers overlay
+  // (CurveInfo::show_markers).
   auto* visibility = makeToggleButton(
       u"curveVisibilityToggle"_s, kVisibilityButtonProperty, kVisibilityOnPath, kVisibilityOffPath, visible,
       tr("Toggle curve visibility"), [this, curve_key](bool checked) { onVisibilityToggled(curve_key, checked); });
-  // The markers toggle is meaningful only for real curves (plot_ bound); State
-  // Transitions strip rows have no plot-markers overlay, so they omit it. The
-  // eye still applies to strip rows via onVisibilityToggled.
+  // The markers toggle applies only to real curves (plot_ bound): State Transitions strip rows have no plot-markers
+  // overlay and omit it. The eye still applies to them, through onVisibilityToggled.
   QToolButton* markers = nullptr;
   if (plot_ != nullptr) {
     markers = makeToggleButton(
@@ -511,8 +473,8 @@ void CurveEditor::appendRow(
 
   auto* name_label = new ElidingLabel();
   name_label->setObjectName(u"curveNameLabel"_s);
-  // Curve names are typically topic paths (`/foo/bar/leaf`); elide from
-  // the left so the meaningful leaf stays visible as the row narrows.
+  // Curve names are typically topic paths (`/foo/bar/leaf`): elide from the left so the leaf stays visible as the row
+  // narrows.
   name_label->setElideMode(Qt::ElideLeft);
   name_label->setFullText(display_name);
   name_label->setToolTip(curve_key);
@@ -722,17 +684,13 @@ void CurveEditor::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   }
   // QListWidget::setSpacing is the gap between adjacent rows.
   ui_->listWidget->setSpacing(metrics.layout_spacing);
-  // Row height tracks icon_size so the per-row eye / trash glyphs and
-  // the colour swatch grow with the rest of the chrome. Push the new
-  // value into each existing row (item sizeHint + the row widget's own
-  // stored row height + the per-row button iconSize so the eye and
-  // trash glyphs re-rasterise at the new extent).
+  // Row height tracks icon_size so the eye, trash and swatch grow with the chrome: push the value into each existing
+  // row (item sizeHint, the row widget's stored height and the per-row button iconSize, so the glyphs re-rasterise).
   row_height_ = metrics.icon_size;
   for (int i = 0; i < ui_->listWidget->count(); ++i) {
     ui_->listWidget->item(i)->setSizeHint(QSize(0, row_height_));
   }
-  // The +1 keeps the footer layout clear of its 1-px top border (QSS paints
-  // it, the layout doesn't inset for it).
+  // The +1 keeps the footer layout clear of its 1-px top border (QSS paints it; the layout does not inset for it).
   ui_->markerScopesLayout->setSpacing(metrics.layout_spacing);
   ui_->markerScopesLayout->setContentsMargins(0, 1 + metrics.layout_spacing, 0, 0);
   for (QWidget* row : markerScopeRows()) {
@@ -756,8 +714,7 @@ void CurveEditor::onStylesheetChanged(QString theme) {
   current_theme_ = std::move(theme);
   // Header kebab icon (the Search glyph self-retints).
   ui_->buttonCurvesMenu->setIcon(loadSvg(":/resources/svg/more_vert.svg", current_theme_));
-  // Re-tint every row's toggles to the new theme ink (a footer row's scope
-  // glyph is an SvgButton and retints itself).
+  // Re-tint every row's toggles to the new theme ink (a footer row's scope glyph is an SvgButton and retints itself).
   forEachRow([this](QWidget* row) {
     for (auto* button : row->findChildren<QToolButton*>()) {
       if (button->property(kVisibilityButtonProperty).isValid()) {
@@ -790,16 +747,14 @@ void CurveEditor::applyFilter() {
 bool CurveEditor::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
   if ((type == QEvent::FocusIn || type == QEvent::FocusOut) && watched == ui_->filterCurves->lineEdit()) {
-    // Focus expands the filter into the label's space. Kebab stays
-    // visible — it never gets pushed out.
+    // Focus expands the filter into the label's space; the kebab stays visible.
     const bool focused = (type == QEvent::FocusIn);
     ui_->labelCurves->setVisible(!focused);
   }
   if (watched == ui_->listWidget->viewport() && type == QEvent::Drop && state_controller_ != nullptr) {
-    // Strip-row drag-reorder: swallow the InternalMove drop (which would strip
-    // the item widgets) and route the move through the controller instead —
-    // seriesListChanged then rebuilds the list in the new order. Same drop
-    // arithmetic as the 3D layer list: below a row's midline inserts after it.
+    // Strip-row drag reorder: swallow the InternalMove drop (it would strip the item widgets) and route the move
+    // through the controller; seriesListChanged then rebuilds the list in the new order. Drop arithmetic as the 3D
+    // layer list: below a row's midline inserts after it.
     auto* drop = static_cast<QDropEvent*>(event);
     if (drop->source() != ui_->listWidget) {
       return QWidget::eventFilter(watched, event);  // foreign drag, not a reorder
@@ -829,11 +784,9 @@ void CurveEditor::resizeEvent(QResizeEvent* event) {
 }
 
 void CurveEditor::updateHeaderForWidth() {
-  // When the panel narrows past the point where a usable filter would
-  // fit, hide the filter + search icon. The "Curves" label stays as
-  // the section title; the kebab is always visible — it never gets
-  // pushed out. Filter-focus still hides the label to widen the input
-  // (handled in eventFilter).
+  // When the panel narrows past what a usable filter needs, hide the filter and search icon. The "Curves" label stays
+  // as the section title and the kebab always shows; filter focus still hides the label to widen the input
+  // (eventFilter).
   constexpr int kFilterHideBelow = 140;
   const bool wide_enough = width() >= kFilterHideBelow;
   ui_->filterCurves->setVisible(wide_enough);

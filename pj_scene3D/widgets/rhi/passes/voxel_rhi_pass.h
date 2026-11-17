@@ -15,14 +15,11 @@ namespace pj::scene3d {
 
 class VoxelGridLayer;
 
-/// The dense voxel-grid family of the QRhi view: one R32F or RGBA8 3D texture
-/// per layer, drawn as ONE instanced draw of the shared unit cube with
-/// column*row*slice instances (the vertex shader fetches each voxel, evaluates
-/// the draw predicate and degenerate-clips culled voxels). Voxels write depth
-/// and are translucent below full layer opacity. Needs QRhi::ThreeDimensionalTextures:
-/// without it initialize() is not called and admit() rejects every layer with a
-/// visible warning. Per frame the view calls admit() (once), prepare() (once),
-/// then submit() per ScenePass for each draw.
+/// The dense voxel-grid family of the QRhi view: one R32F or RGBA8 3D texture per layer, drawn as ONE instanced draw
+/// of the shared unit cube with column*row*slice instances (the vertex shader fetches each voxel, evaluates the draw
+/// predicate and degenerate-clips culled voxels). Voxels write depth and are translucent below full layer opacity.
+/// Needs QRhi::ThreeDimensionalTextures: without it initialize() is not called and admit() rejects every layer with
+/// a visible warning.
 class VoxelRhiPass {
  public:
   struct Draw {
@@ -32,33 +29,26 @@ class VoxelRhiPass {
     DrawClass draw_class = DrawClass::kOpaque;  ///< translucent below full layer opacity
   };
 
-  /// Registers the pipeline and creates the colormap LUT (binding 2); draws the setup's
-  /// unit cube. `max_3d_texture_size` is the backend's per-dimension 3D texture
-  /// limit.
+  /// Registers the pipeline and creates the colormap LUT (binding 2). `max_3d_texture_size` is the backend's
+  /// per-dimension 3D texture limit.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup, int max_3d_texture_size);
   [[nodiscard]] bool ready() const {
     return pipeline_ != nullptr;
   }
-  /// Adopts the view's voxel layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<VoxelGridLayer*>& layers);
-  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
   [[nodiscard]] bool hasLayers() const {
     return !layers_.empty();
   }
 
-  /// Runs each visible layer's prepareForRender() against the per-view voxel
-  /// budget, rejects volumes `rhi` cannot hold, places the rest, and records the
+  /// Admits visible layers against the per-view voxel budget, rejects volumes `rhi` cannot hold, and records the
   /// family's fixed-frame bounds (lastBounds()).
   void admit(QRhi* rhi, const PlaceFn& place);
-  /// Uploads the colormap (once), admitted layers' volumes (when their revision
-  /// moved) and uniforms, and builds this frame's draws: none for a grid wholly
-  /// outside the view frustum, which still counts as admitted.
+  /// Uploads the colormap (once), admitted layers' volumes (when their revision moved) and uniforms, and builds this
+  /// frame's draws: none for a grid wholly outside the view frustum, which still counts as admitted.
   void prepare(const RhiFrameContext& frame);
-  /// The prepared draw of `layer` (none or one).
   [[nodiscard]] std::span<const Draw> drawsFor(const VoxelGridLayer* layer) const {
     return findDraws(draws_, layer);
   }
-  /// Records one draw; false when its pipeline is unavailable for `pass`.
   bool submit(
       QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
       const QRhiViewport& viewport) const;

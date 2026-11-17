@@ -4,8 +4,8 @@
 // Link-time patch of two Qt 6.12.0 functions, WebAssembly build only (PJ_WASM_QT_FLUSH_OVERRIDE).
 //
 // Problem: in a window that contains QRhiWidgets, any raster repaint (the playback time bar, every
-// tick) made Qt add the full rect of every dirty QRhiWidget to the raster damage and upload the
-// bounding box of it all: close to the whole window, ~35 MB per frame at devicePixelRatio 2.
+// tick) makes Qt add the full rect of every dirty QRhiWidget to the raster damage and upload the
+// bounding box of it all: close to the whole window per frame at HiDPI.
 //
 //  A) QWidgetRepaintManager::paintAndFlush, from qtbase v6.12.0
 //     src/widgets/kernel/qwidgetrepaintmanager.cpp: a dirty QRhiWidget that does not touch the

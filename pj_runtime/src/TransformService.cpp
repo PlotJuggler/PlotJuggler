@@ -47,18 +47,16 @@ struct IngestStats {
   std::size_t dropped_reparent = 0;   // child claimed by two parents
   std::size_t dropped_self_loop = 0;  // child == parent
   std::size_t dropped_invalid = 0;    // empty name / non-unit rotation / non-finite translation
-  // Entries whose lazy re-read FAILED (source file truncated, replaced, or
-  // corrupt). Their edges are permanently lost: the drain cursor advances past
-  // them (a corrupt region cannot be re-read into existence), so the loss must
-  // be reported, not silently skipped.
+  // Entries whose lazy re-read FAILED (source file truncated, replaced or corrupt). Their edges are permanently lost:
+  // the drain cursor advances past them (a corrupt region cannot be re-read into existence), so the loss must be
+  // reported, not silently skipped.
   std::size_t failed_fetch = 0;
 };
 
-// Decode one object entry already known to belong to a FrameTransforms topic and
-// push each of its edges into the buffer, with the entry's store timestamp as
-// their entry time (TF R6: lookups at the cursor read that clock). A malformed
-// edge (reparent conflict / self-loop / invalid frame data) is a recoverable data
-// error in a real bag: count it and keep going rather than aborting.
+// Decodes one object entry known to belong to a FrameTransforms topic and pushes each of its edges into the buffer,
+// with the entry's store timestamp as their entry time (lookups at the cursor read that clock). A malformed edge
+// (reparent conflict, self-loop, invalid frame data) is a recoverable data error in a real bag: count it and keep going
+// rather than abort.
 void ingestEntry(
     PJ::Timestamp store_ts, const PJ::sdk::PayloadView& payload, PJ::Timestamp payload_stamp_shift,
     const PJ::SessionManager::ParserBinding& parser_binding, TransformBuffer& tf_buffer, IngestStats& stats) {
@@ -73,10 +71,9 @@ void ingestEntry(
   }
   for (const auto& t : ft->transforms) {
     StampedTransform st;
-    // Each transform carries its OWN inner stamp from the payload, which the store
-    // never rewrites. A time-shifted dataset merge records the slide in
-    // payload_stamp_shift; add it so a merged source's frames land on the anchor's
-    // clock (it is 0 for unmerged data, so the common path is unchanged).
+    // Each transform carries its OWN inner stamp from the payload, which the store never rewrites. A time-shifted
+    // dataset merge records the slide in payload_stamp_shift; adding it puts a merged source's frames on the anchor's
+    // clock (0 for unmerged data).
     st.stamp = PJ::fromRaw(t.timestamp_ns + payload_stamp_shift);
     st.parent_frame = t.parent_frame_id;
     st.child_frame = t.child_frame_id;
@@ -146,12 +143,10 @@ std::shared_ptr<TransformBuffer> TransformService::transformBuffer(PJ::DatasetId
   Q_ASSERT(QThread::currentThread() == thread());
   std::lock_guard lock(tap_mutex_);
   BufferSlot& slot = transform_buffers_[dataset_id];
-  // Default to keeping the full history: ingestFrameTransformsForDataset()
-  // bulk-loads the entire dataset's TF up front, so a rolling cache window would
-  // trim every dynamic edge to its last samples and make objects in dynamic
-  // frames (e.g. a local costmap in `odom`) resolve only near the end of the
-  // timeline. Live-streaming datasets override this with setLiveCacheWindow() to
-  // bound memory in step with the ObjectStore retention budget.
+  // Default to keeping the full history: ingestFrameTransformsForDataset() bulk-loads the entire dataset's TF up front,
+  // so a rolling cache window would trim every dynamic edge to its last samples and make objects in dynamic frames
+  // (e.g. a local costmap in `odom`) resolve only near the end of the timeline. Live-streaming datasets override this
+  // with setLiveCacheWindow() to bound memory in step with the ObjectStore retention budget.
   return ensureActiveLocked(slot);
 }
 
@@ -299,8 +294,7 @@ void TransformService::abortReplacingLoad(PJ::DatasetId dataset_id) {
 void TransformService::ingestFrameTransformsForDataset(PJ::DatasetId dataset_id) {
   Q_ASSERT(QThread::currentThread() == thread());
   if (tap_active_) {
-    // Explicit rebuilds (currently dataset merge) discard tap state and
-    // cold-drain the durable store closures.
+    // Explicit rebuilds (the dataset merge) discard tap state and cold-drain the durable store closures.
     resetDrainState(dataset_id);
     transformBuffer(dataset_id)->clear();
   }
@@ -374,14 +368,11 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
 
     auto cursor_it = tf_cursors_.find(key);
     if (cursor_it == tf_cursors_.end()) {
-      // Classify the topic's object type exactly once, then cache the verdict (a
-      // TF cursor, or non_tf_topics_) so a big non-TF topic isn't re-classified
-      // on every tick.
+      // Classify the topic's object type exactly once and cache the verdict (a TF cursor, or non_tf_topics_), so a big
+      // non-TF topic is not re-classified every tick.
       if (!parser_binding) {
-        // Parser-less topic: its bytes are a serialized canonical object, so the
-        // topic's builtin_object_type metadata is authoritative — classify by
-        // metadata, no decode needed (a data-source/toolbox canonical producer,
-        // e.g. the Mosaico cloud toolbox).
+        // Parser-less topic: its bytes are a serialized canonical object, so the topic's builtin_object_type metadata
+        // is authoritative: classify by metadata, no decode (a data-source/toolbox canonical producer).
         const PJ::sdk::BuiltinObjectType type = objectTypeFromMetadata(object_store.descriptor(topic_id).metadata_json);
         if (type == PJ::sdk::BuiltinObjectType::kNone) {
           continue;  // not classifiable yet (e.g. a parser topic mid-bind) — retry next tick
@@ -391,13 +382,10 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
           continue;
         }
       } else {
-        // Parser-backed topic: the parser (not the metadata) determines the type,
-        // so probe its newest entry's decoded type exactly once. Probing the
-        // newest (not index 0) stays valid after streaming evicts the front.
-        // A fetch_failed newest entry is PERMANENTLY unresolvable — retrying it
-        // every tick would re-run a failing re-read forever and block the topic
-        // from ever classifying (starving healthy older edges) — so walk back a
-        // few entries to find one that resolves instead.
+        // Parser-backed topic: the parser, not the metadata, determines the type, so probe its newest entry's decoded
+        // type once (the newest, not index 0, stays valid after streaming evicts the front). A fetch_failed newest
+        // entry is PERMANENTLY unresolvable: retrying it every tick would re-run a failing re-read forever and starve
+        // the topic's healthy older edges of classification, so walk back a few entries to find one that resolves.
         std::optional<PJ::ResolvedObjectEntry> probe;
         constexpr std::size_t kMaxProbeWalkback = 8;
         for (std::size_t back = 0; back < std::min(count, kMaxProbeWalkback); ++back) {
@@ -413,9 +401,8 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
         }
         auto probe_obj = parseLocked(parser_binding, probe->timestamp, probe->payload);
         if (!probe_obj.has_value()) {
-          // Parse FAILED (transient corruption / a parser that failed this tick) —
-          // do NOT blacklist the topic. A single bad newest message must not
-          // permanently suppress TF ingest; retry classification next tick.
+          // Parse FAILED (transient corruption, a parser that failed this tick): do NOT blacklist the topic; one bad
+          // newest message must not permanently suppress TF ingest. Retry next tick.
           continue;
         }
         if (PJ::sdk::typeOf(probe_obj->object) != PJ::sdk::BuiltinObjectType::kFrameTransforms) {
@@ -427,12 +414,10 @@ bool TransformService::ingestNewerThanCursor(PJ::DatasetId dataset_id) {
       cursor_it = tf_cursors_.try_emplace(key).first;
     }
 
-    // Drain every edge that arrived since the cursor, in arrival order, and file
-    // each into the time-indexed TF buffer. Arrival order (not a time window) is
-    // required: a late out-of-order edge (older stamp, newest UID) must still be
-    // ingested, and the buffer places it at its own time. drainNewSince is
-    // eviction-safe and advances the cursor past every entry (even one evicted
-    // before it resolves), so nothing is ingested twice or skipped.
+    // Drains every edge that arrived since the cursor, in arrival order, into the time-indexed TF buffer. Arrival order
+    // (not a time window) is required: a late out-of-order edge (older stamp, newest UID) must still be ingested, and
+    // the buffer places it at its own time. drainNewSince is eviction-safe and advances the cursor past every entry
+    // (even one evicted before it resolves), so nothing is ingested twice or skipped.
     TfCursor& cursor = cursor_it->second;
     for (const auto& entry : object_store.drainNewSince(topic_id, cursor.last_ingested)) {
       if (entry.fetch_failed) {

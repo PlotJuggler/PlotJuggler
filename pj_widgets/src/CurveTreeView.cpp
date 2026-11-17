@@ -74,22 +74,19 @@ constexpr int kValueOnlyRole = Qt::UserRole + 7;
 // Marks an advertised-but-unsubscribed placeholder row, dimmed by the delegate.
 // See CurvePath::is_placeholder.
 constexpr int kPlaceholderRole = Qt::UserRole + 8;
-// Marks a has-data-but-not-currently-referenced row, dimmed the same way as
-// kPlaceholderRole. Set at construction from CurvePath::is_unsubscribed and
-// kept live by setUnsubscribedKeys() without a rebuild.
+// Marks a has-data-but-not-currently-referenced row, dimmed like kPlaceholderRole. Set at construction from
+// CurvePath::is_unsubscribed and kept live by setUnsubscribedKeys() without a rebuild.
 constexpr int kUnsubscribedRole = Qt::UserRole + 9;
-// Marks a topic row whose streaming is user-forced (context menu) — the
-// delegate paints its name in the accent blue so a successful "Force topic
-// streaming" is visible even when nothing else about the row changes. Set by
-// setForcedTopicPaths() on the TOPIC node (group or leaf), never on fields.
+// Marks a topic row whose streaming is user-forced (context menu): the delegate paints its name in the accent blue, so
+// a successful "Force topic streaming" is visible even when nothing else about the row changes. Set by
+// setForcedTopicPaths() on the topic node (group or leaf), never on fields.
 constexpr int kForcedRole = Qt::UserRole + 10;
-// Marks the managed empty-filter placeholder child row (see
-// CurveTreeView::updateEmptyMessageChild) so the filter skips it and it is never
-// mistaken for a real data row.
+// Marks the managed empty-filter placeholder child row (CurveTreeView::updateEmptyMessageChild), so the filter skips it
+// and it is never mistaken for a data row.
 constexpr int kEmptyMessageRole = Qt::UserRole + 11;
-// Marks an object-topic row the caller marked not-draggable
-// (CurvePath::draggable=false) — see applyObjectTopicSelectability. Read by the
-// drag-payload collector and the not-draggable-notice arming in mousePressEvent.
+// Marks an object-topic row the caller marked not-draggable (CurvePath::draggable=false;
+// applyObjectTopicSelectability). Read by the drag-payload collector and the not-draggable-notice arming in
+// mousePressEvent.
 constexpr int kNotDraggableRole = Qt::UserRole + 12;
 // Stores CurveTreeView::DatasetProgress on dataset rows and managed ghosts.
 constexpr int kDatasetProgressRole = Qt::UserRole + 13;
@@ -98,9 +95,8 @@ constexpr int kDatasetGhostRole = Qt::UserRole + 14;
 // Stores the opaque key needed to route a row-local cancel request. Keeping it
 // beside the progress payload also makes loading ghosts unambiguous.
 constexpr int kDatasetRowKeyRole = Qt::UserRole + 15;
-// Stores CurveTreeView::DerivedGlyphState (as int) on a derived-topic row — see
-// setDerivedTopicGlyphs(). Invalid (unset) means "no entry"; the row's native
-// tooltip (Qt::ToolTipRole, set alongside it) carries the detail text.
+// Stores CurveTreeView::DerivedGlyphState (as int) on a derived-topic row (setDerivedTopicGlyphs()); invalid (unset)
+// means no entry. The row's native tooltip (Qt::ToolTipRole, set with it) carries the detail text.
 constexpr int kDerivedGlyphStateRole = Qt::UserRole + 16;
 // Short grey tag painted after the Name text (CurvePath::badge); presentation only.
 constexpr int kBadgeRole = Qt::UserRole + 17;
@@ -126,12 +122,10 @@ void setItemName(QTreeWidgetItem* item, const QString& name) {
   item->setData(kNameColumn, kSortKeyRole, name.toCaseFolded());
 }
 
-// The Value column renders monospace + right-aligned so the space-padded,
-// fixed-precision numbers (see formatScalarForColumn) keep their decimal points
-// in the same place from row to row. Applied to every curve leaf at creation.
-// Keeps `base_font`'s size/weight (the tree's font) and only swaps to a
-// monospace family — a raw FixedFont renders noticeably larger than the Name
-// column.
+// The Value column renders monospace and right-aligned, so the space-padded, fixed-precision numbers
+// (formatScalarForColumn) keep their decimal points in one place from row to row. Applied to every curve leaf at
+// creation. Keeps `base_font`'s size and weight (the tree's font) and only swaps to a monospace family: a raw FixedFont
+// renders noticeably larger than the Name column.
 void styleValueCell(QTreeWidgetItem* item, const QFont& base_font) {
   QFont mono = base_font;
   mono.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
@@ -224,21 +218,17 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     QStyleOptionViewItem opt(option);
     initStyleOption(&opt, index);
-    // Never draw the per-CELL focus decoration (the grey pill around the
-    // current item's text). It renders on top of — and independently of — the
-    // row selection, so a right-clicked row keeps a floating grey outline after
-    // its selection is gone. Selection is the only per-row highlight here;
-    // keyboard focus stays on the widget, it just is not drawn per cell.
+    // The per-cell focus decoration (the grey pill around the current item's text) is never drawn: it renders over, and
+    // independently of, the row selection, so a right-clicked row would keep a floating grey outline after its
+    // selection is gone. Selection is the only per-row highlight; keyboard focus stays on the widget.
     opt.state &= ~QStyle::State_HasFocus;
     if (index.column() == kValueColumn) {
       // The view's left elide keeps a name's tail; a number elided on the left loses its sign and leading digits.
       opt.textElideMode = Qt::ElideRight;
     }
 
-    // Placeholder/unsubscribed flags live on the Name column's item data (see
-    // addCatalogItem); fetch via the row's Name-column sibling so every column
-    // of a dimmed row (Name AND Value) dims, not just whichever column is
-    // being painted.
+    // The placeholder and unsubscribed flags live on the Name column's item data (addCatalogItem): fetched through the
+    // row's Name-column sibling, so every column of a dimmed row (Name and Value) dims.
     const QModelIndex name_index = index.sibling(index.row(), kNameColumn);
     const bool dimmed = name_index.data(kPlaceholderRole).toBool() || name_index.data(kUnsubscribedRole).toBool();
     if (dimmed) {
@@ -252,19 +242,16 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       opt.fontMetrics = QFontMetrics(opt.font);  // paintBadge places the badge after the styled name
     }
     if (index.column() == kNameColumn && name_index.data(kForcedRole).toBool()) {
-      // Forced streaming: accent the topic's name so the state is visible —
-      // brightness alone can't distinguish "subscribed because displayed" from
-      // "subscribed because forced". Name column only: the mark lives on topic
-      // rows, which have no Value text, so the extra lookup is skipped on the
-      // (paint-hot) Value cells.
+      // Forced streaming: the topic's name is accented, since brightness alone cannot tell "subscribed because
+      // displayed" from "subscribed because forced". Name column only: the mark lives on topic rows, which have no
+      // Value text, so the extra lookup is skipped on the paint-hot Value cells.
       const QColor accent = theme::gradient(theme::Gradient::Brand, theme::Theme::Dark).first;
       opt.palette.setColor(QPalette::Text, accent);
       opt.palette.setColor(QPalette::HighlightedText, accent);
     }
 
-    // A topic row's builtin-family badge (image.svg / cube.svg, set as the
-    // item's DecorationRole icon) is painted by the default control as a normal
-    // left-side decoration, before the text; its size is the view's iconSize().
+    // A topic row's builtin-family badge (image.svg or cube.svg, set as the item's DecorationRole icon) is painted by
+    // the default control as a left-side decoration before the text; its size is the view's iconSize().
     const QWidget* widget = opt.widget;
     const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
@@ -273,9 +260,8 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       if (const QString badge = name_index.data(kBadgeRole).toString(); !badge.isEmpty()) {
         paintBadge(painter, opt, widget, style, badge);
       }
-      // Derived-topic glyph: a small dot at the Name cell's trailing edge. The
-      // row's native tooltip (set with the role by applyDerivedTopicGlyphs)
-      // carries the detail text.
+      // Derived-topic glyph: a small dot at the Name cell's trailing edge; the row's native tooltip (set with the role
+      // by applyDerivedTopicGlyphs) carries the detail text.
       if (const QVariant glyph_state = name_index.data(kDerivedGlyphStateRole);
           glyph_state.isValid() && derivedGlyphPaints(glyph_state.toInt())) {
         constexpr int kDotExtent = 6;
@@ -325,9 +311,8 @@ bool isNotDraggableItem(const QTreeWidgetItem* item) {
   return item != nullptr && item->data(kNameColumn, kNotDraggableRole).toBool();
 }
 
-// Flags for a curve leaf. A draggable leaf is a normal drag source; a value-only
-// leaf (string field) stays selectable/highlightable but is never dragged and is
-// tagged so the selection collectors leave it out of the drag payload.
+// Flags for a curve leaf. A draggable leaf is a normal drag source; a value-only leaf (string field) stays selectable
+// and highlightable but is never dragged and is tagged so the selection collectors leave it out of the drag payload.
 void applyLeafSelectability(QTreeWidgetItem* item, bool draggable) {
   if (draggable) {
     item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
@@ -337,11 +322,10 @@ void applyLeafSelectability(QTreeWidgetItem* item, bool draggable) {
   item->setFlags((item->flags() | Qt::ItemIsSelectable) & ~Qt::ItemIsDragEnabled);
 }
 
-// Flags for an object-topic terminal. A non-draggable one (a type no view can
-// display) stays selectable — context menu, force-streaming — but never starts
-// a drag and is tagged kNotDraggableRole so the drag-payload collectors and the
-// not-draggable-notice arming recognize it. Unlike leaves, it is NOT tagged
-// kValueOnlyRole (that role means "string field with a Value cell").
+// Flags for an object-topic terminal. A non-draggable one (a type no view can display) stays selectable (context menu,
+// force-streaming) but never starts a drag and is tagged kNotDraggableRole, so the drag-payload collectors and the
+// notice arming recognize it. Unlike leaves it is not tagged kValueOnlyRole (that means "string field with a Value
+// cell").
 void applyObjectTopicSelectability(QTreeWidgetItem* item, bool draggable) {
   const Qt::ItemFlags base = item->flags() | Qt::ItemIsSelectable;
   item->setFlags(draggable ? (base | Qt::ItemIsDragEnabled) : (base & ~Qt::ItemIsDragEnabled));
@@ -400,28 +384,24 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
   animation_timer_->setTimerType(Qt::PreciseTimer);
   connect(animation_timer_, &QTimer::timeout, this, &CurveTreeView::updateAnimatingRows);
 
-  // Buttonless moves must reach mouseMoveEvent, or the row stop affordances
-  // could only track hover while a button was held.
+  // Buttonless moves must reach mouseMoveEvent, or the row stop affordances could track hover only while a button was
+  // held.
   viewport()->setMouseTracking(true);
 
   setColumnCount(2);
   setHeaderLabels({tr("Name"), tr("Value")});
   setItemDelegate(new CurveTreeItemDelegate(this));
-  // Topic-badge icons (image / 3D-object) render as the default left-side
-  // decoration before the name. Size them above the 16-px small-icon default
-  // so the type badge reads clearly at the left margin.
+  // Topic-badge icons (image, 3D-object) render as the left-side decoration before the name, sized above the 16-px
+  // small-icon default so the type badge reads at the left margin.
   constexpr int kTopicIconExtent = 22;
   setIconSize(QSize(kTopicIconExtent, kTopicIconExtent));
-  // Curve names share long common prefixes (e.g. /robot/state_estimator/...),
-  // so eliding the tail would hide exactly the part that tells two rows apart.
-  // Elide the prefix instead: "…state_estimator/contact_lf". Propagates into the
-  // delegate, which elides icon rows via opt.textElideMode.
+  // Curve names share long common prefixes (/robot/state_estimator/...), so eliding the tail would hide the part that
+  // tells two rows apart: the prefix is elided instead ("...state_estimator/contact_lf"). Propagates into the delegate,
+  // which elides icon rows through opt.textElideMode.
   setTextElideMode(Qt::ElideLeft);
-  // Splitter-style divider: dragging it resizes Name and gives/takes the same
-  // amount from Value, so the two sections always fill the viewport. Name is
-  // the fill section, so it absorbs the slack when the panel is resized or
-  // Value is hidden. Default Value width is narrow — the numeric column
-  // shouldn't dominate the panel.
+  // Splitter-style divider: dragging it resizes Name and gives or takes the same amount from Value, so the two sections
+  // always fill the viewport. Name is the fill section, absorbing the slack when the panel is resized or Value is
+  // hidden. The default Value width is narrow: the numeric column should not dominate the panel.
   header_policy_ = HeaderResizePolicy::install(header(), kNameColumn, 20);
   header_policy_->setSectionWidth(kValueColumn, kValueColumnWidth);
   header()->setSectionsClickable(false);
@@ -446,11 +426,9 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
       return;
     }
     if (item->childCount() == 0) {
-      // Double-clicking a childless leaf is otherwise inert. A peek-eligible
-      // scalar placeholder (advertised, and neither an image nor a 3D-object
-      // terminal) instead requests a bounded preview so the host can land one
-      // real sample and promote the row to per-field children. The expand
-      // toggle below is for group nodes only, so return either way.
+      // Double-clicking a childless leaf is otherwise inert. A peek-eligible scalar placeholder (advertised, neither an
+      // image nor a 3D-object terminal) requests a bounded preview, so the host lands one real sample and promotes the
+      // row to per-field children. The expand toggle below is for group nodes only, so return either way.
       const bool peek_eligible = item->data(kNameColumn, kPlaceholderRole).toBool() &&
                                  !item->data(kNameColumn, kImageTopicRole).toBool() &&
                                  !item->data(kNameColumn, k3dObjectTopicRole).toBool();
@@ -468,9 +446,8 @@ CurveTreeView::CurveTreeView(QWidget* parent) : QTreeWidget(parent) {
     setDescendantsExpanded(item, expanded);
   });
 
-  // The value column is filled per-tracker-tick over the *visible* rows only;
-  // expanding, collapsing, or scrolling changes which rows are visible, so
-  // re-apply the retained provider (deferred) to fill the newly-exposed cells.
+  // The value column is filled per tracker tick over the visible rows only; expanding, collapsing or scrolling changes
+  // which rows are visible, so the retained provider is re-applied (deferred) to fill the newly exposed cells.
   connect(this, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem*) { scheduleValueRefresh(); });
   connect(this, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem*) { scheduleValueRefresh(); });
   connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int) { scheduleValueRefresh(); });
@@ -531,9 +508,8 @@ QTreeWidgetItem* CurveTreeView::ensureGroupSegments(const QStringList& segments)
     if (!found) {
       found = new CurveTreeItem(parent);
       setItemName(found, part);
-      // Top-level groups are the datasets: keep them selectable so they can be
-      // multi-selected for the dataset context menu (merge / remove). Intermediate
-      // topic-path folders stay non-selectable. Neither is a drag source.
+      // Top-level groups are the datasets: kept selectable so they can be multi-selected for the dataset context menu
+      // (merge, remove). Intermediate topic-path folders stay non-selectable. Neither is a drag source.
       const bool is_dataset = (parent == invisibleRootItem());
       Qt::ItemFlags flags = found->flags() & ~Qt::ItemIsDragEnabled;
       if (!is_dataset) {
@@ -558,17 +534,15 @@ QTreeWidgetItem* CurveTreeView::ensureGroup(const QString& path) {
 }
 
 void CurveTreeView::mutateStructure(const std::function<void()>& mutate) {
-  // Ghosts are rebuilt from the retained progress set at the end; dropping them
-  // first stops the mutation from matching a stale ghost as a real row. The row
-  // cache goes with them: a structural change is exactly what can move a row out
-  // from under its key.
+  // Ghosts are rebuilt from the retained progress set at the end; dropping them first stops the mutation from matching
+  // a stale ghost as a real row. The row cache goes with them: a structural change can move a row out from under its
+  // key.
   removeDatasetGhostItems();
   progress_row_cache_.clear();
   mutate();
-  // Every retained decoration, re-applied once and in ONE place. Which of them
-  // survive a structural change must not depend on which overload the caller
-  // reached for — forced marks used to come back only via addCatalogItems. The
-  // filter is re-applied by rebuildProgressDecorations' tail (see its contract).
+  // Every retained decoration is re-applied once, in one place, so which of them survive a structural change does not
+  // depend on which overload the caller used. The filter is re-applied by rebuildProgressDecorations' tail (see its
+  // contract).
   expandPendingGroups();
   applyForcedTopicMarks();
   if (!displayed_keys_.isEmpty()) {  // new rows start unmarked; an empty set has nothing to stamp
@@ -674,9 +648,8 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
   const QString tree_path = treePathFromCurvePath(path);
   QTreeWidgetItem* item = nullptr;
   if (view_mode_ == ViewMode::kShowTopics) {
-    // Dataset and topic are atomic (topic shown verbatim). The field still
-    // splits on '/' after '.' → '/' so nested struct fields fan out as
-    // sub-folders under the topic node.
+    // Dataset and topic are atomic (the topic verbatim). The field still splits on '/' after '.' becomes '/', so nested
+    // struct fields fan out as sub-folders under the topic node.
     QStringList segments;
     if (!path.dataset.isEmpty()) {
       segments << path.dataset;
@@ -751,9 +724,8 @@ void CurveTreeView::setViewMode(ViewMode mode) {
     return;
   }
   view_mode_ = mode;
-  // Force the next applyFilter() call to actually re-run, otherwise the
-  // text-equality short-circuit at the top of applyFilter() would skip the
-  // re-filter that the post-rebuild caller expects.
+  // Forces the next applyFilter() to re-run: the text-equality short-circuit at its top would otherwise skip the
+  // re-filter the post-rebuild caller expects.
   last_filter_.clear();
 }
 
@@ -795,10 +767,8 @@ void applyExpandedPaths(QTreeWidgetItem* item, const QString& prefix, const QSet
   }
 }
 
-// Every row carrying a catalog key (leaf or object-topic terminal — see
-// addCatalogItem, both set kCatalogItemRole) gets its unsubscribed flag set
-// from membership in `unsubscribed_keys`; group/folder rows have no key and
-// are left untouched.
+// Every row carrying a catalog key (a leaf or object-topic terminal; both set kCatalogItemRole in addCatalogItem) gets
+// its unsubscribed flag from membership in `unsubscribed_keys`; group and folder rows have no key and are untouched.
 void applyUnsubscribedFlag(QTreeWidgetItem* item, const QSet<QString>& unsubscribed_keys) {
   for (int i = 0; i < item->childCount(); ++i) {
     QTreeWidgetItem* child = item->child(i);
@@ -886,20 +856,15 @@ QTreeWidgetItem* topicNodeAbove(QTreeWidgetItem* leaf, int field_depth) {
 }
 
 QTreeWidgetItem* CurveTreeView::findTopicNode(const QString& topic_path) {
-  // A topic's node is either a row that IS the topic (a placeholder leaf or an
-  // object-topic terminal — its search role equals the path exactly), or — for
-  // a promoted scalar topic — the keyless GROUP above its field leaves: locate
-  // any field leaf whose search role lives under the path, then step up the
-  // field sub-path's segment count. Keying on the always-normalized search
-  // role — not node text — works in both view modes.
-  // INVARIANT the step-up relies on: a field leaf nests exactly one tree level
-  // per '/'-segment of its field sub-path (addCatalogItem splits fields on '/'
-  // in both view modes). If the tree ever groups fields differently, store an
-  // explicit topic-node link on the leaves instead of counting segments.
-  // KNOWN AMBIGUITY: the normalized search path cannot distinguish topic "/a"
-  // with field "b/c" from topic "/a/b" with field "c" — colliding names across
-  // topics can badge/expand the wrong node. Distinguishing them needs separate
-  // topic/field roles on the rows; not worth it until a real source hits it.
+  // A topic's node is a row that is the topic (a placeholder leaf or object-topic terminal: its search role equals the
+  // path exactly), or, for a promoted scalar topic, the keyless group above its field leaves: locate any field leaf
+  // whose search role lives under the path, then step up by the field sub-path's segment count. Keyed on the
+  // always-normalized search role, not node text, so it works in both view modes. Invariant the step-up relies on: a
+  // field leaf nests one tree level per '/'-segment of its field sub-path (addCatalogItem splits fields on '/' in both
+  // view modes). If fields are ever grouped differently, store an explicit topic-node link on the leaves instead of
+  // counting segments. Known ambiguity: the normalized search path cannot tell topic "/a" with field "b/c" from topic
+  // "/a/b" with field "c", so colliding names across topics can badge or expand the wrong node. Telling them apart
+  // needs separate topic and field roles on the rows.
   const QString prefix = topic_path + QLatin1Char('/');
   QTreeWidgetItem* topic_node = nullptr;
   std::function<bool(QTreeWidgetItem*)> find = [&](QTreeWidgetItem* item) {
@@ -932,9 +897,8 @@ void CurveTreeView::expandPendingGroups() {
   if (pending_expand_paths_.isEmpty()) {
     return;
   }
-  // A pending intent is honored once the placeholder promotes to a topic
-  // bearing field children — a childless node (the placeholder itself) reveals
-  // nothing and keeps the intent armed.
+  // A pending intent is honored once the placeholder promotes to a topic bearing field children: a childless node (the
+  // placeholder itself) reveals nothing and keeps the intent armed.
   for (const QString& topic_path : pending_expand_paths_.values()) {
     QTreeWidgetItem* topic_node = findTopicNode(topic_path);
     if (topic_node == nullptr || topic_node->childCount() == 0) {
@@ -953,10 +917,9 @@ void CurveTreeView::setForcedTopicPaths(const QSet<QString>& topic_paths) {
 }
 
 namespace {
-// Same rows AND same row identities: which rows carry progress decides whether a
-// ghost has to be built or retired, and the display NAME decides what a ghost is
-// called and therefore where it sorts. Anything else in the payload (fraction,
-// state, flash) is a value the fast path can stamp in place.
+// Same rows and same row identities: which rows carry progress decides whether a ghost is built or retired, and the
+// display name decides what a ghost is called and where it sorts. Anything else in the payload (fraction, state, flash)
+// is a value the fast path stamps in place.
 bool sameRowIdentities(
     const QHash<quint64, CurveTreeView::DatasetProgress>& lhs,
     const QHash<quint64, CurveTreeView::DatasetProgress>& rhs) {
@@ -983,21 +946,16 @@ void CurveTreeView::setDatasetProgress(const QHash<quint64, DatasetProgress>& by
     qCInfo(lcCurveTreeCancel) << "[view] SET (empty)";
   }
 
-  // A fraction-only tick (the common case: ~20 Hz during a load) must not tear
-  // the tree down and rebuild it. Only a change in the row IDENTITIES — which
-  // rows carry progress, and what each is called — can add, retire, rename or
-  // re-sort a ghost; that goes through the full pass, which already does all
-  // four. A name resolution happens once per ingest, so paying a full pass for
-  // it costs nothing per tick.
+  // A fraction-only tick (the common case, ~20 Hz during a load) must not tear the tree down and rebuild it. Only a
+  // change in the row identities (which rows carry progress, and what each is called) can add, retire, rename or
+  // re-sort a ghost, and that goes through the full pass. A name resolves once per ingest, so a full pass for it costs
+  // nothing per tick.
   const bool membership_changed = !sameRowIdentities(dataset_progress_, by_row_key);
   if (membership_changed) {
-    // Retire the mappings whose key just left. A mapping exists to file a LIVE
-    // row under its tree path, so it outlives its purpose the moment its key
-    // does — and a surviving one both grows the map for the session's lifetime
-    // and lets a recycled path resolve to a dead key. Only a key that WAS
-    // published and is now gone prunes: a mapping legitimately arrives before
-    // its key is ever published (the controller resolves the dataset's path
-    // first, then emits the progress set).
+    // Retires the mappings whose key just left. A mapping files a live row under its tree path, so it outlives its
+    // purpose when its key does, and a surviving one grows the map for the session's lifetime and lets a recycled path
+    // resolve to a dead key. Only a key that was published and is now gone prunes: a mapping legitimately arrives
+    // before its key is published (the controller resolves the dataset's path first, then emits the progress set).
     row_key_to_tree_path_.removeIf([this, &by_row_key](const auto& mapping) {
       return dataset_progress_.contains(mapping.key()) && !by_row_key.contains(mapping.key());
     });
@@ -1012,10 +970,9 @@ void CurveTreeView::setDatasetProgress(const QHash<quint64, DatasetProgress>& by
 
 void CurveTreeView::setDatasetRowKey(const QString& dataset_tree_path, quint64 row_key) {
   qCInfo(lcCurveTreeCancel).nospace() << "[view] MAP path=\"" << dataset_tree_path << "\" -> row_key=" << row_key;
-  // The last registration owns the path: a key that was filed under it loses the
-  // real row and falls back to a ghost. This is the reload window — a new
-  // ingest's key resolves to the dataset a finishing one still decorates — and a
-  // row cannot carry two decorations, nor route its stop click to two ingests.
+  // The last registration owns the path: a key filed under it loses the real row and falls back to a ghost. This is the
+  // reload window (a new ingest's key resolves to the dataset a finishing one still decorates); a row cannot carry two
+  // decorations, nor route its stop click to two ingests.
   row_key_to_tree_path_.removeIf(
       [&dataset_tree_path](const auto& mapping) { return mapping.value() == dataset_tree_path; });
   row_key_to_tree_path_.insert(row_key, dataset_tree_path);
@@ -1047,9 +1004,8 @@ QTreeWidgetItem* CurveTreeView::findDatasetNode(const QString& dataset_tree_path
     if (dataset_node->data(kNameColumn, kDatasetGhostRole).toBool()) {
       continue;
     }
-    // Group-only dataset rows do not carry kSearchRole, so a dataset-only path
-    // also matches their displayed name. Full catalog paths resolve through a
-    // descendant and still return this top-level ancestor.
+    // Group-only dataset rows carry no kSearchRole, so a dataset-only path also matches their displayed name. Full
+    // catalog paths resolve through a descendant and still return this top-level ancestor.
     if (dataset_node->text(kNameColumn) == dataset_tree_path || subtree_contains_path(dataset_node)) {
       return dataset_node;
     }
@@ -1069,13 +1025,11 @@ void CurveTreeView::removeDatasetGhostItems() {
 }
 
 void CurveTreeView::deselectProgressRow(QTreeWidgetItem* row, DatasetProgress::State state) {
-  // A LOADING row must not stay selected: the selection highlight spans the
-  // name column and drowns the translucent bar wash, so the highlight's own
-  // right edge (~2/3 of the row) reads as a stuck progress bar — during the
-  // load AND after it, since the selection outlives the decoration. The
-  // reload gesture itself is what selected the row; drop it. A curve row (one with a
-  // catalog key: a flat row whose computation is replaying) keeps its selection, since
-  // the user edits, deletes or drags it while it computes.
+  // A loading row must not stay selected: the selection highlight spans the name column and drowns the translucent bar
+  // wash, so its right edge (~2/3 of the row) reads as a stuck progress bar, during the load and after it, since the
+  // selection outlives the decoration. The reload gesture itself selected the row; it is dropped. A curve row (one with
+  // a catalog key: a flat row whose computation is replaying) keeps its selection, as the user edits, deletes or drags
+  // it while it computes.
   if ((state != DatasetProgress::State::kLoading && state != DatasetProgress::State::kStopping) ||
       selectionModel() == nullptr || !catalogKeyOf(row).isEmpty()) {
     return;
@@ -1108,11 +1062,9 @@ void CurveTreeView::refreshAnimationTimer() {
 }
 
 void CurveTreeView::refreshDatasetProgressValues() {
-  // Fast path for a fraction-only tick: the rows and their names are unchanged
-  // and so is the tree, so every key still resolves through the cache filled by
-  // the last full apply, and no row can have moved. A miss — including an index
-  // invalidated by a removal this class never saw — means the row moved or died;
-  // fall back rather than guess.
+  // Fast path for a fraction-only tick: rows, names and tree are unchanged, so every key still resolves through the
+  // cache the last full apply filled and no row can have moved. A miss (including an index invalidated by a removal
+  // this class never saw) means the row moved or died: fall back rather than guess.
   for (auto it = dataset_progress_.cbegin(); it != dataset_progress_.cend(); ++it) {
     const QPersistentModelIndex cached_index = progress_row_cache_.value(it.key());
     QTreeWidgetItem* row = cached_index.isValid() ? itemFromIndex(cached_index) : nullptr;
@@ -1131,16 +1083,14 @@ void CurveTreeView::rebuildProgressDecorations() {
   removeDatasetGhostItems();
   progress_row_cache_.clear();
 
-  // Every row whose decoration changed this pass, repainted full-width at the
-  // end — see updateProgressRowRegion for why the implicit invalidation is not
-  // enough.
+  // Every row whose decoration changed this pass is repainted full-width at the end (see updateProgressRowRegion for
+  // why the implicit invalidation is not enough).
   std::vector<QTreeWidgetItem*> touched_rows;
 
-  // Full-set replace: clear stale data from every surviving real row before
-  // applying the current hash. This also makes an empty hash a complete clear.
-  // TOP-LEVEL ONLY: progress lives on dataset rows, and findDatasetNode never
-  // returns anything deeper (pinned by DatasetProgressNeverMarksScalarLeaves),
-  // so recursing the whole tree only paid to visit every curve leaf.
+  // Full-set replace: stale data is cleared from every surviving real row before the current hash applies, which also
+  // makes an empty hash a complete clear. Top-level only: progress lives on dataset rows, and findDatasetNode never
+  // returns anything deeper (pinned by DatasetProgressNeverMarksScalarLeaves), so recursing the whole tree would only
+  // visit every curve leaf.
   for (int i = 0; i < topLevelItemCount(); ++i) {
     QTreeWidgetItem* row = topLevelItem(i);
     const bool had_progress = row->data(kNameColumn, kDatasetProgressRole).isValid();
@@ -1191,10 +1141,9 @@ void CurveTreeView::rebuildProgressDecorations() {
     sortTree();
   }
 
-  // Last, because the filter exempts rows that carry progress and the ghosts
-  // above only exist now: a row that just gained (or lost) its decoration has to
-  // be re-tested before the rects below are read. This is also the ONE filter
-  // re-application after a structural change — mutateStructure ends here.
+  // Last, because the filter exempts rows that carry progress and the ghosts above exist only now: a row that gained or
+  // lost its decoration is re-tested before the rects below are read. This is the one filter re-application after a
+  // structural change; mutateStructure ends here.
   reapplyFilter();
 
   // After any sort or hide, so the row rects resolved here are the final ones.
@@ -1283,10 +1232,9 @@ const CurveTreeView::ProgressPalette& CurveTreeView::progressPalette() const {
   if (progress_palette_.valid && progress_palette_.light == is_light) {
     return progress_palette_;
   }
-  // Every token the row decoration paints with, resolved in one pass. Each
-  // theme lookup builds a QString key, hashes it and may reparse CSS, and
-  // drawRow wants eight of them PER ROW PER FRAME once a marquee or flash runs
-  // the animation timer; the theme itself changes about never.
+  // Every token the row decoration paints with, resolved in one pass: each theme lookup builds a QString key, hashes it
+  // and may reparse CSS, and drawRow wants eight of them per row per frame while a marquee or flash runs the animation
+  // timer. The theme itself changes rarely.
   const auto fw_theme = theme::themeFor(is_light);
   progress_palette_.light = is_light;
   progress_palette_.indicator = theme::interaction(theme::Variant::Accent, theme::State::CheckedPressed, fw_theme);
@@ -1314,11 +1262,9 @@ void CurveTreeView::changeEvent(QEvent* event) {
 }
 
 QRect CurveTreeView::fullWidthRowRect(const QRect& row_rect) const {
-  // A row rect from visualItemRect / option.rect covers only the name column,
-  // but the progress decoration spans the whole row. Paint, hit-test and
-  // invalidation all widen it HERE so they cannot disagree: the right edge is
-  // rect().right() (the last painted pixel), never width(), which would place
-  // the right-aligned cluster one pixel off from the hit-test.
+  // A row rect from visualItemRect or option.rect covers only the name column, but the progress decoration spans the
+  // whole row. Paint, hit-test and invalidation widen it here so they cannot disagree: the right edge is rect().right()
+  // (the last painted pixel), never width(), which would put the right-aligned cluster one pixel off the hit-test.
   const QRect viewport_rect = viewport()->rect();
   QRect full = row_rect;
   full.setLeft(viewport_rect.left());
@@ -1336,8 +1282,7 @@ CurveTreeView::StopButtonHit CurveTreeView::stopButtonAt(const QPoint& viewport_
     return {};
   }
   const DatasetProgress progress = progress_data.value<DatasetProgress>();
-  // A row that was never stoppable paints no cluster at all, so there is
-  // nothing to hit — not even an inert glyph.
+  // A row that was never stoppable paints no cluster at all: nothing to hit, not even an inert glyph.
   if (!progress.cancellable) {
     return {};
   }
@@ -1386,18 +1331,15 @@ QString CurveTreeView::stopButtonTooltip(const QPoint& viewport_pos) const {
   if (hit.button == StopButton::kNone) {
     return {};
   }
-  // The glyphs stay painted through the terminal linger, but that load is over:
-  // nothing left to stop, and nothing worth explaining about a row that is
-  // about to retire.
+  // The glyphs stay painted through the terminal linger, but that load is over: nothing left to stop, and nothing worth
+  // explaining about a row about to retire.
   if (hit.progress.state != DatasetProgress::State::kLoading) {
     return {};
   }
   if (hit.button == StopButton::kKeep) {
     return tr("Stop loading and keep the data received so far");
   }
-  // A greyed bin is the affordance that most needs a tooltip: it looks like a
-  // choice and answers to nothing, so say why rather than leaving the user
-  // clicking it.
+  // A greyed bin most needs a tooltip: it looks like a choice and answers to nothing, so it says why.
   return hit.actionable ? tr("Stop loading and discard the partial data")
                         : tr("This source can stop but cannot discard partial data");
 }
@@ -1406,9 +1348,8 @@ bool CurveTreeView::viewportEvent(QEvent* event) {
   if (event->type() == QEvent::ToolTip) {
     auto* help_event = static_cast<QHelpEvent*>(event);
     if (stopButtonAt(help_event->pos()).button != StopButton::kNone) {
-      // Over a painted glyph the affordance answers for itself — or, when it is
-      // inert, for nothing. Either way the row's own tooltip must not stand in
-      // for it, so this branch always consumes the event.
+      // Over a painted glyph the affordance answers for itself, or, when inert, for nothing: the row's own tooltip must
+      // not stand in for it, so this branch always consumes the event.
       const QString tooltip = stopButtonTooltip(help_event->pos());
       if (tooltip.isEmpty()) {
         QToolTip::hideText();
@@ -1461,17 +1402,15 @@ void CurveTreeView::leaveEvent(QEvent* event) {
 }
 
 const QPixmap& CurveTreeView::discardIcon(int size, const QColor& ink) const {
-  // Keyed by size AND ink: a frame that paints one live bin beside one greyed
-  // bin needs both tints at once, and a single slot re-rasterized the SVG twice
-  // per frame as the two rows took turns evicting each other.
+  // Keyed by size and ink: a frame painting one live bin beside one greyed bin needs both tints at once, and a single
+  // slot re-rasterized the SVG twice per frame as the two rows evicted each other.
   const quint64 key = (static_cast<quint64>(static_cast<quint32>(size)) << 32U) | ink.rgba();
   if (const auto cached = discard_icons_.constFind(key); cached != discard_icons_.cend()) {
     return *cached;
   }
-  // The stylesheet-driven recolor only knows light/dark ink, so tint the
-  // rasterized glyph directly: SourceIn keeps the glyph's alpha and replaces
-  // its color, which is what lets the bin track the ✕ through the enabled and
-  // disabled inks.
+  // The stylesheet-driven recolor only knows light and dark ink, so the rasterized glyph is tinted directly: SourceIn
+  // keeps the glyph's alpha and replaces its color, which lets the bin track the cross through the enabled and disabled
+  // inks.
   QPixmap icon = renderSvgPixmap(u":/resources/svg/trash.svg"_s, u"light"_s, QSize(size, size), devicePixelRatioF());
   if (!icon.isNull()) {
     QPainter tint(&icon);
@@ -1529,12 +1468,10 @@ QRect CurveTreeView::marqueeBandRect(const QRect& fill_rect, qint64 elapsed_ms, 
 
 CurveTreeView::ProgressGeometry CurveTreeView::progressGeometry(const QRect& row_rect) const {
   // Layout: [progress bar, FULL row width ..................................]
-  //         [ .......................... | text | bin | ✕ ]  <- drawn over it
-  //
-  // The bar spans the whole row and the right-edge cluster is composited on top
-  // of it, so the bar reads as one continuous track rather than stopping short
-  // to make room. The cluster's three cells are contiguous — no gaps — and run
-  // flush to the row's right edge.
+  //         [ .......................... | text | bin | x ]  <- drawn over it
+  // The bar spans the whole row and the right-edge cluster is composited over it, so the bar reads as one continuous
+  // track instead of stopping short to make room. The cluster's three cells are contiguous and run flush to the row's
+  // right edge.
   constexpr int kCancelButtonSize = 24;
   constexpr int kCancelButtonMinSize = 10;
   constexpr int kTextAreaWidth = 50;
@@ -1542,10 +1479,9 @@ CurveTreeView::ProgressGeometry CurveTreeView::progressGeometry(const QRect& row
   ProgressGeometry geom;
   geom.fill_rect = row_rect;
 
-  // Stop affordances: two squares flush against the row's right edge and its
-  // full height, so they read as part of the row rather than as controls
-  // floating inside it. Rightmost is the ✕ (stop and keep) — the safe one, and
-  // the outer edge is the easiest target; the destructive bin sits inboard.
+  // Stop affordances: two squares flush against the row's right edge and full height, so they read as part of the row,
+  // not controls floating inside it. The rightmost is the cross (stop and keep), the safe one, on the outer edge, which
+  // is the easiest target; the destructive bin sits inboard.
   const int button_size = std::clamp(row_rect.height(), kCancelButtonMinSize, kCancelButtonSize);
   const int button_top = row_rect.top() + ((row_rect.height() - button_size) / 2);
   // +1: right() is inclusive, so a rect of width `button_size` ending flush on
@@ -1583,47 +1519,37 @@ void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& optio
   const ProgressPalette& tokens = progressPalette();
 
   const ProgressGeometry geom = progressGeometry(row_rect);
-  // The bar is the Accent family's checked tone, one step up the same ramp as the
-  // loading row's backdrop below, so bar and backdrop are two rungs of one ramp
-  // rather than two unrelated blues.
-  // A DARK rung of the accent ramp. The lighter Checked tone (#99CCFF) sits one
-  // step from selection_fill (#C2DCFF), so on a selected row the bar and the
-  // row's own background were the same colour and the fill was invisible.
+  // The bar is the Accent family's checked tone, one step up the ramp from the loading row's backdrop below: two rungs
+  // of one ramp, not two unrelated blues. A dark rung: the lighter Checked tone (#99CCFF) is one step from
+  // selection_fill (#C2DCFF), so on a selected row the bar and the row background were the same colour and the fill was
+  // invisible.
   const QColor indicator_color = tokens.indicator;
   // Backdrop behind the bar, in precedence order:
-  //  - selected: the selection fill, which outranks any load state;
-  //  - still loading: the Accent family's nominal tone — its lowest rung — so an
-  //    in-flight row is legible as one at a glance even where the bar has not
-  //    reached yet, and the unfilled track reads as the same hue as the bar;
-  //  - otherwise (a terminal row seeing out its linger): the tree's own surface,
-  //    so it sits flush with its neighbours.
-  // NOT the progress track tone, which is darker than the tree surface in the
-  // dark theme and banded the whole row a different shade.
-  // Ask the selection model, not option.state: QTreeView::drawRow derives the
-  // row's selected state internally and the option handed to this override does
-  // NOT carry State_Selected. Reading the flag here reports "not selected" while
-  // the base pass still paints the selection fill over the whole row.
+  // - selected: the selection fill, which outranks any load state;
+  // - still loading: the Accent family's nominal tone, its lowest rung, so an in-flight row is legible at a glance even
+  //   where the bar has not reached, and the unfilled track reads as the bar's hue;
+  // - otherwise (a terminal row in its linger): the tree's own surface, flush with its neighbours. Not the progress
+  // track tone, which is darker than the tree surface in the dark theme and banded the row a different shade. The
+  // selection model is asked, not option.state: QTreeView::drawRow derives the selected state internally and the option
+  // handed to this override does not carry State_Selected, so the flag reads "not selected" while the base pass still
+  // paints the selection fill over the whole row.
   const bool row_selected = (option.state & QStyle::State_Selected) != 0 ||
                             (selectionModel() != nullptr && selectionModel()->isSelected(index));
   const bool row_loading =
       progress.state == DatasetProgress::State::kLoading || progress.state == DatasetProgress::State::kStopping;
-  // While loading, the progress readout owns the row: a selection fill spans the
-  // FULL width in the same blue family as the bar, so a selected row at 0% reads
-  // as a finished one. Selection is transient information here and returns the
-  // moment the load ends; the bar is the reason the row is decorated at all.
+  // While loading, the progress readout owns the row: a selection fill spans the full width in the bar's blue family,
+  // so a selected row at 0% would read as finished. Selection is transient here and returns when the load ends.
   QColor row_background = tokens.backdrop;
   if (row_selected && !row_loading) {
     row_background = tokens.selection_fill;
   } else if (row_loading) {
-    // The unfilled TRACK: the Accent family's nominal rung, the lowest of the
-    // same ramp the bar sits high on. The bar reads against it because it is a
-    // far darker rung (checked-pressed), not because the track is a foreign hue.
+    // The unfilled track: the Accent family's nominal rung, the lowest of the ramp the bar sits high on. The bar reads
+    // against it because it is a far darker rung (checked-pressed), not a foreign hue.
     row_background = tokens.loading_backdrop;
   }
 
-  // The bar as one (rect, color) pair, resolved once. Both paint passes below
-  // consume it, so the band under the right-edge cluster cannot disagree with
-  // the bar under the name.
+  // The bar as one (rect, color) pair, resolved once: both paint passes consume it, so the band under the right-edge
+  // cluster cannot disagree with the bar under the name.
   QRect bar_rect;
   QColor bar_color = indicator_color;
   switch (progress.state) {
@@ -1636,9 +1562,8 @@ void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& optio
       break;
     case DatasetProgress::State::kFailed:
       bar_rect = geom.fill_rect;
-      // A failure reads through the Highlight family, never the red status ink:
-      // red is not this framework's failure signal. The flash carries the
-      // alarm; the hue only has to stand apart from the normal indicator.
+      // A failure reads through the Highlight family, never the red status ink (red is not this framework's failure
+      // signal). The flash carries the alarm; the hue only has to stand apart from the normal indicator.
       bar_color = tokens.failed_bar;
       if (!progress.flash_on) {
         bar_color.setAlpha(100);
@@ -1657,9 +1582,8 @@ void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& optio
       break;
   }
 
-  // Over a selection highlight the bar goes translucent so the highlight still
-  // reads through it; one color for every pass, so the band under the cluster
-  // cannot end up more saturated than the bar under the name.
+  // Over a selection highlight the bar goes translucent so the highlight reads through it; one color for every pass, so
+  // the band under the cluster cannot be more saturated than the bar under the name.
   QColor bar_paint_color = bar_color;
   if (row_selected) {
     bar_paint_color.setAlpha(static_cast<int>(255 * 0.45));
@@ -1679,20 +1603,16 @@ void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& optio
   // Call base class to paint expander, icon, text
   QTreeWidget::drawRow(painter, option, index);
 
-  // The base pass repaints the selection highlight over our fill, so re-apply
-  // the bar on top of it (background untouched — that would erase the name).
-  // Re-assert the bar over the base pass's selection fill. It MUST stay
-  // translucent: this pass runs after the row's text was drawn, so an opaque
-  // fill would paint over the dataset name.
+  // The base pass repaints the selection highlight over the fill, so the bar is re-applied on top (background
+  // untouched: that would erase the name). It must stay translucent: this pass runs after the row's text was drawn, so
+  // an opaque fill would paint over the dataset name.
   if (row_selected) {
     painter->fillRect(bar_rect, bar_paint_color);
   }
 
-  // Re-assert the bar under the right-edge cluster, AFTER the base pass. The
-  // base pass paints the value column and the column separator over our first
-  // fill, so without this the cluster's glyphs would sit on top of foreign
-  // content. Repainting the band makes the cluster opaque: whatever the view
-  // drew there is hidden, separator included.
+  // The bar under the right-edge cluster is re-asserted after the base pass: the base pass paints the value column and
+  // the column separator over the first fill, so without this the cluster's glyphs would sit on foreign content.
+  // Repainting the band makes the cluster opaque: whatever the view drew there, separator included, is hidden.
   const QRect cluster_rect = geom.text_rect.united(geom.discard_button_rect).united(geom.keep_button_rect);
   paint_bar(cluster_rect);
 
@@ -1703,12 +1623,9 @@ void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& optio
   painter->setFont(font);
   painter->setPen(text_color);
 
-  // The caption is ONLY ever a percentage — never a word. Prose in a data row
-  // reads as tree content rather than chrome; the bar's color and the flash
-  // carry the outcome. A terminal state therefore shows the percentage it
-  // reached, not what happened to it.
-  //
-  // An indeterminate row shows nothing at all: it has no fraction to report.
+  // The caption is only ever a percentage, never a word: prose in a data row reads as tree content rather than chrome;
+  // the bar's color and the flash carry the outcome. A terminal state shows the percentage it reached, not what
+  // happened to it. An indeterminate row shows nothing: it has no fraction to report.
   QString text;
   if (progress.state == DatasetProgress::State::kCompleted) {
     text = u"100%"_s;  // pinned, so a 0.999 fraction cannot render "99%" on success
@@ -1717,30 +1634,24 @@ void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& optio
   }
 
   if (!text.isEmpty()) {
-    // Right-aligned so the caption sits against the bin rather than centred in
-    // its cell with a gap on the icon side.
+    // Right-aligned, so the caption sits against the bin instead of centred in its cell with a gap on the icon side.
     painter->drawText(geom.text_rect, Qt::AlignRight | Qt::AlignVCenter, text);
   }
 
-  // Stop affordances: ✕ stops and keeps what arrived, the bin stops and
-  // discards it. Both are offered on the row so the choice is made by WHICH one
-  // is clicked — the host never has to ask afterwards.
-  //
-  // They stay PAINTED through the terminal linger, greyed to the disabled ink
-  // and inert, rather than disappearing: the row is about to retire, and having
-  // the cluster lose two of its three cells for that last second reads as a
-  // glitch. Only a live load accepts a click (see mousePressEvent).
+  // Stop affordances: the cross stops and keeps what arrived, the bin stops and discards it. Both are offered on the
+  // row, so the choice is which one is clicked and the host never asks afterwards. They stay painted through the
+  // terminal linger, greyed to the disabled ink and inert, instead of disappearing: the row is about to retire, and the
+  // cluster losing two of its three cells for that last second reads as a glitch. Only a live load accepts a click
+  // (mousePressEvent).
   if (progress.cancellable) {
     const bool actionable = progress.state == DatasetProgress::State::kLoading;
     // Read the TRACKED hover, not QCursor: sampling the global cursor here made
     // the highlight depend on when the row happened to repaint.
     const bool row_hovered = hovered_stop_row_.isValid() && itemFromIndex(hovered_stop_row_) == item;
 
-    // Both glyphs carry the framework's nominal icon ink — the same ink every
-    // other icon in the app uses — dropping to the disabled ink once the load
-    // has ended. Hover is the framework's translucent state layer behind the
-    // glyph, NOT a recolor: a colored glyph here would read as a status, and
-    // the row's state is already told by the bar.
+    // Both glyphs carry the framework's nominal icon ink, the same as every other icon in the app, dropping to the
+    // disabled ink once the load has ended. Hover is the framework's translucent state layer behind the glyph, not a
+    // recolor: a colored glyph would read as a status, and the bar already tells the row's state.
     const QColor hover_layer = tokens.hover_layer;
     const QColor glyph_ink = actionable ? tokens.icon_ink : tokens.icon_ink_disabled;
 
@@ -1754,9 +1665,8 @@ void CurveTreeView::drawRow(QPainter* painter, const QStyleOptionViewItem& optio
     painter->drawLine(inner.topLeft(), inner.bottomRight());
     painter->drawLine(inner.topRight(), inner.bottomLeft());
 
-    // A producer that cannot discard still gets the bin drawn, greyed: dropping
-    // the cell mid-load reads as a glitch, and a live-looking bin that silently
-    // kept the data would be worse than either.
+    // A producer that cannot discard still gets the bin drawn, greyed: dropping the cell mid-load reads as a glitch,
+    // and a live-looking bin that silently kept the data would be worse.
     const bool discard_actionable = actionable && progress.discardable;
     const QColor bin_ink = discard_actionable ? glyph_ink : tokens.icon_ink_disabled;
     const QPixmap& bin = discardIcon(geom.discard_button_rect.height(), bin_ink);
@@ -1842,12 +1752,10 @@ CurveTreeView::DerivedGlyphState CurveTreeView::derivedGlyphStateAt(const QStrin
 }
 
 void CurveTreeView::applyDerivedTopicGlyphs() {
-  // Full-set replace in one walk: a row whose search path has an entry is stamped
-  // (state and tooltip, whatever the state), any other loses a stale entry. Never
-  // clear-then-stamp: an unchanged row must keep its data untouched (an equal setData
-  // emits nothing), or re-sending a set would invalidate the native hover tooltip the
-  // user is reading. A path no row carries exactly (a promoted scalar topic's group)
-  // falls back to findTopicNode.
+  // Full-set replace in one walk: a row whose search path has an entry is stamped (state and tooltip, whatever the
+  // state), any other loses a stale entry. Never clear-then-stamp: an unchanged row must keep its data untouched (an
+  // equal setData emits nothing), or re-sending a set would invalidate the native hover tooltip the user is reading. A
+  // path no row carries exactly (a promoted scalar topic's group) falls back to findTopicNode.
   const auto stamp = [](QTreeWidgetItem* node, const DerivedGlyph& glyph) {
     node->setData(kNameColumn, kDerivedGlyphStateRole, static_cast<int>(glyph.state));
     node->setToolTip(kNameColumn, glyph.tooltip);
@@ -1919,13 +1827,11 @@ void CurveTreeView::setEmptyFilterMessage(const QString& message) {
 void CurveTreeView::refilterTree() {
   const QStringList tokens = last_filter_.split(' ', Qt::SkipEmptyParts);
 
-  // A topic's scene classification governs its ENTIRE subtree. `inherited_scene`
-  // is the nearest scene-topic kind at or above `item` (kSceneNone / kScene2D /
-  // kScene3D). Once the walk enters a 2D/3D topic every descendant inherits that
-  // kind, so hiding the kind collapses the whole topic — its scalar fields
-  // included — and those fields never fall into the Plot bucket. A row with no
-  // scene ancestor is Plot ("by exclusion") when it bears a catalog key, or a
-  // kind-less folder (revealed only by a visible descendant) when it doesn't.
+  // A topic's scene classification governs its entire subtree. `inherited_scene` is the nearest scene-topic kind at or
+  // above `item` (kSceneNone, kScene2D, kScene3D). Inside a 2D or 3D topic every descendant inherits that kind, so
+  // hiding the kind collapses the whole topic, scalar fields included, and those fields never fall into the Plot
+  // bucket. A row with no scene ancestor is Plot ("by exclusion") when it bears a catalog key, or a kind-less folder
+  // (revealed only by a visible descendant) when it does not.
   enum : int { kSceneNone = 0, kScene2D = 2, kScene3D = 3 };
   std::function<bool(QTreeWidgetItem*, int)> apply = [&](QTreeWidgetItem* item, int inherited_scene) {
     int scene = inherited_scene;
@@ -1963,11 +1869,9 @@ void CurveTreeView::refilterTree() {
     const bool text_match = std::all_of(tokens.begin(), tokens.end(), [&](const QString& token) {
       return haystack.contains(token, Qt::CaseInsensitive);
     });
-    // A row showing load progress is never filtered away. It is the feedback for
-    // work happening right now — and it carries the stop affordances, so hiding
-    // it would take away the only way to stop that load. Ghost rows (a dataset
-    // with no catalog row yet) match no filter at all and would always vanish.
-    // The exemption is inherently transient: it lasts as long as the decoration.
+    // A row showing load progress is never filtered away: it is the feedback for work happening now and carries the
+    // stop affordances, so hiding it would remove the only way to stop that load. Ghost rows (a dataset with no catalog
+    // row yet) match no filter and would always vanish. The exemption lasts as long as the decoration.
     const bool shows_progress = item->data(kNameColumn, kDatasetProgressRole).isValid();
     const bool visible = shows_progress || any_child_visible || (text_match && type_ok);
     item->setHidden(!visible);
@@ -2073,12 +1977,10 @@ std::vector<QString> CurveTreeView::selectedCatalogKeysForDrag(QStringList* skip
   return collectSelectedCatalogKeys(/*exclude_not_draggable=*/true, skipped_keys);
 }
 
-// The complete walk keeps not-draggable object rows — deletion and selection-size
-// logic must see the whole selection (an empty result reads as "nothing
-// selected", which some callers widen to "everything"). Only the drag-payload
-// variant excludes them (a not-draggable row riding into a drop would hit the very
-// dead end its exclusion exists to prevent), reporting each via `skipped_keys` so
-// the host can say why fewer topics arrived.
+// The complete walk keeps not-draggable object rows: deletion and selection-size logic must see the whole selection (an
+// empty result reads as "nothing selected", which some callers widen to "everything"). Only the drag-payload variant
+// excludes them (a not-draggable row riding into a drop would hit the dead end its exclusion prevents), reporting each
+// through `skipped_keys` so the host can say why fewer topics arrived.
 std::vector<QString> CurveTreeView::collectSelectedCatalogKeys(
     bool exclude_not_draggable, QStringList* skipped_keys) const {
   std::vector<QString> keys;
@@ -2126,12 +2028,10 @@ void CurveTreeView::applyVisibleValues() {
   if (isColumnHidden(kValueColumn) || !value_provider_) {
     return;
   }
-  // Visit every item but cull each row independently by its rect — only the
-  // on-screen leaves are written, so the expensive part (the per-leaf lookup
-  // inside value_provider_) stays O(visible). The walk itself is O(N) cheap
-  // geometry checks. Matches PlotJuggler 3's curve-list refresh: culling each
-  // row (rather than breaking at the first off-screen row) is what keeps
-  // scrolled-in rows correct in a deeply-nested tree.
+  // Visits every item but culls each row independently by its rect: only on-screen leaves are written, so the expensive
+  // part (the per-leaf lookup inside value_provider_) stays O(visible), while the walk is O(N) cheap geometry checks.
+  // Culling each row, rather than stopping at the first off-screen row, keeps scrolled-in rows correct in a deeply
+  // nested tree.
   const int viewport_height = viewport()->height();
   for (int i = 0; i < topLevelItemCount(); ++i) {
     applyVisibleValuesToSubtree(topLevelItem(i), viewport_height);
@@ -2165,12 +2065,10 @@ void CurveTreeView::applyVisibleValuesToSubtree(QTreeWidgetItem* item, int viewp
 }
 
 void CurveTreeView::scheduleValueRefresh() {
-  // This coalesces VISIBILITY-driven re-applies (expand/collapse/scroll/resize)
-  // onto the next event-loop turn; the TRACKER-driven refresh rate is capped
-  // separately by the owner (CurveListPanel's 10 Hz throttle). Deferring matters
-  // because when this fires from an itemExpanded / scroll handler the freshly-
-  // revealed rows have not been laid out yet, so reading visualItemRect now would
-  // wrongly cull them.
+  // Coalesces visibility-driven re-applies (expand, collapse, scroll, resize) onto the next event-loop turn; the
+  // tracker-driven refresh rate is capped separately by the owner (CurveListPanel's 10 Hz throttle). Deferring matters
+  // because when this fires from an itemExpanded or scroll handler the freshly revealed rows are not laid out yet, so
+  // reading visualItemRect now would wrongly cull them.
   if (value_refresh_scheduled_ || !value_provider_ || isColumnHidden(kValueColumn)) {
     return;
   }
@@ -2193,9 +2091,8 @@ void CurveTreeView::setTooltipProvider(TooltipProvider provider) {
 QString CurveTreeView::treePathOfItem(const QTreeWidgetItem* item) {
   QStringList segments;
   for (; item != nullptr; item = item->parent()) {
-    // The dataset (top-level) label is used verbatim, as treePathFromCurvePath
-    // does; a Show-Topics topic node keeps its raw name ("/camera/image", "a.b"),
-    // so every lower segment is normalized the same way that function does.
+    // The dataset (top-level) label is used verbatim, as treePathFromCurvePath does; a Show-Topics topic node keeps its
+    // raw name ("/camera/image", "a.b"), so every lower segment is normalized as that function does.
     const QString text = item->text(kNameColumn);
     segments = (item->parent() == nullptr ? QStringList{text} : splitPath(normalizedPathSegment(text))) + segments;
   }
@@ -2238,9 +2135,8 @@ bool CurveTreeView::event(QEvent* event) {
   if (wasm_drag_mime_ != nullptr) {
     const bool escape = event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape;
     if (escape || event->type() == QEvent::WindowDeactivate || event->type() == QEvent::UngrabMouse) {
-      // The synchronous drop handler still owns wasm_drag_mime_. Do not let a
-      // nested cancellation free it or balance the source press before the
-      // outer drop returns and completes its normal cleanup.
+      // The synchronous drop handler still owns wasm_drag_mime_: a nested cancellation must not free it or balance the
+      // source press before the outer drop returns and completes its normal cleanup.
       if (in_wasm_drop_) {
         event->accept();
         return true;
@@ -2264,9 +2160,8 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
     event->accept();
     return;
   }
-  // A second press should not normally arrive before release, but cancelling
-  // here keeps the synthetic drag state balanced if the browser interrupted a
-  // gesture (lost focus, modal UI, or an injected automation event).
+  // A second press should not arrive before release, but cancelling here keeps the synthetic drag state balanced if the
+  // browser interrupted a gesture (lost focus, modal UI, an injected automation event).
   cancelWasmDrag();
 #endif
   drag_curve_names_.clear();
@@ -2278,9 +2173,8 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
   if (event->button() == Qt::LeftButton) {
     if (item != nullptr) {
       const QVariant row_key_data = item->data(kNameColumn, kDatasetRowKeyRole);
-      // Only an actionable glyph reaches the host: a greyed bin is inert (the
-      // producer cannot discard), so a click there must do nothing rather than
-      // fall back to keeping.
+      // Only an actionable glyph reaches the host: a greyed bin is inert (the producer cannot discard), so a click
+      // there does nothing instead of falling back to keeping.
       if (const StopButtonHit hit = stopButtonAt(event->pos()); hit.actionable && row_key_data.isValid()) {
         const bool keep = hit.button == StopButton::kKeep;
         const quint64 row_key = row_key_data.toULongLong();
@@ -2292,10 +2186,9 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
     }
   }
   if (event->button() == Qt::LeftButton || event->button() == Qt::RightButton) {
-    // Only draggable rows (curve leaves / object topics) initiate a drag or the
-    // drag-the-whole-selection gesture. Non-draggable rows — notably the selectable
-    // dataset groups — fall straight through to the base handler, so plain/Ctrl/Shift
-    // selection and expand/collapse behave normally and a dataset never starts a drag.
+    // Only draggable rows (curve leaves, object topics) initiate a drag or the drag-the-whole-selection gesture.
+    // Non-draggable rows, notably the selectable dataset groups, fall through to the base handler, so plain, Ctrl and
+    // Shift selection and expand and collapse behave normally and a dataset never starts a drag.
     const bool draggable = item != nullptr && (item->flags() & Qt::ItemIsDragEnabled);
     if (draggable) {
       drag_start_pos_ = event->pos();
@@ -2308,12 +2201,10 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
       }
       if (item->isSelected() && !(event->modifiers() & selection_modifiers)) {
         drag_curve_names_ = selectedCurveNamesForDrag();
-        // A plain press on an already-selected row drags the WHOLE selection.
-        // Preserve it (suppress the release that would otherwise collapse it to
-        // the clicked row) whenever more than one row is selected — counting
-        // object/image topics too, which contribute catalog keys but no scalar
-        // curve names. The payload itself is read back from the live selection in
-        // createDragMimeData(), so it stays correct as long as we keep it intact.
+        // A plain press on an already selected row drags the whole selection: it is preserved (the release that would
+        // collapse it to the clicked row is suppressed) whenever more than one row is selected, counting object and
+        // image topics, which contribute catalog keys but no scalar curve names. The payload is read from the live
+        // selection in createDragMimeData(), so it stays correct as long as the selection is kept intact.
         if (drag_curve_names_.size() > 1 || selectedCatalogKeysRecursive().size() > 1) {
           suppress_next_release_ = true;
           event->accept();
@@ -2321,10 +2212,8 @@ void CurveTreeView::mousePressEvent(QMouseEvent* event) {
         }
       }
     } else if (event->button() == Qt::LeftButton && isNotDraggableItem(item)) {
-      // Pulling on a not-draggable row must not fail silently: arm a one-shot
-      // notice that fires if this press turns into a drag gesture
-      // (mouseMoveEvent). drag_start_pos_ is free here — such a row never
-      // arms a real drag.
+      // Pulling on a not-draggable row must not fail silently: a one-shot notice is armed, firing if this press becomes
+      // a drag gesture (mouseMoveEvent). drag_start_pos_ is free here: such a row never arms a real drag.
       drag_start_pos_ = event->pos();
       not_draggable_reason_ = item->toolTip(kNameColumn);
     }
@@ -2347,9 +2236,8 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
       event->accept();
       return;
     }
-    // Once the threshold starts our in-app drag, keep every grabbed move in
-    // the DnD dispatcher. Passing these moves back to QAbstractItemView would
-    // rubber-select each source row crossed on the way to the plot.
+    // Once the threshold starts our in-app drag, every grabbed move stays in the DnD dispatcher: passing them back to
+    // QAbstractItemView would rubber-select each source row crossed on the way to the plot.
     updateWasmDrag(event->globalPosition().toPoint(), event->buttons(), event->modifiers());
     event->accept();
     return;
@@ -2359,9 +2247,8 @@ void CurveTreeView::mouseMoveEvent(QMouseEvent* event) {
     if (!event->buttons().testFlag(Qt::LeftButton)) {
       not_draggable_reason_.reset();
     } else if (pastDragThreshold(event->pos())) {
-      // Same threshold as a real drag start, so the notice fires exactly when
-      // the pull stops reading as a click. Selection handling continues below —
-      // the notice explains the missing drag, it does not swallow the gesture.
+      // The same threshold as a real drag start, so the notice fires when the pull stops reading as a click. Selection
+      // handling continues below: the notice explains the missing drag, it does not swallow the gesture.
       const QString reason = *not_draggable_reason_;
       not_draggable_reason_.reset();
       emit dragAttemptedOnNotDraggableRow(reason);
@@ -2433,9 +2320,8 @@ void CurveTreeView::updateWasmDrag(
 
   QWidget* leaf = QApplication::widgetAt(global_pos);
 
-  // If the pointer is still inside the accepted target (possibly over one of
-  // its children), give it a move first. A target may reject only part of its
-  // area; rejection falls through to the next accepting ancestor below.
+  // If the pointer is still inside the accepted target (possibly over one of its children), it gets a move first. A
+  // target may reject only part of its area; rejection falls through to the next accepting ancestor below.
   bool target_is_ancestor = false;
   for (QWidget* candidate = leaf; candidate != nullptr; candidate = candidate->parentWidget()) {
     if (candidate == wasm_drag_target_) {
@@ -2459,9 +2345,8 @@ void CurveTreeView::updateWasmDrag(
     wasm_drag_target_.clear();
   }
 
-  // Match Qt's normal deepest-widget-first routing. Event filters installed on
-  // placeholder buttons and the live plot canvas still run through sendEvent;
-  // an ignored child lets the nearest accepting parent try the same payload.
+  // Matches Qt's deepest-widget-first routing: event filters installed on placeholder buttons and the live plot canvas
+  // still run through sendEvent, and an ignored child lets the nearest accepting parent try the same payload.
   QPointer<QWidget> candidate = leaf;
   while (candidate != nullptr) {
     QPointer<QWidget> current = candidate;
@@ -2491,11 +2376,10 @@ void CurveTreeView::finishWasmDrag(QMouseEvent* event) {
   }
 
   const QPoint global_pos = event->globalPosition().toPoint();
-  // Drop straight to the target the last move already entered and accepted — do
-  // NOT re-run updateWasmDrag here. Re-routing on release could leave the old
-  // target and enter a new one (arbitrary app code) before the drop, turning a
-  // single release into enter->leave->enter->drop. DnD drops on the last-entered
-  // target, so any pointer drift since the last move is intentionally ignored.
+  // The drop goes to the target the last move already entered and accepted; updateWasmDrag is not re-run. Re-routing on
+  // release could leave the old target and enter a new one (arbitrary app code) before the drop, turning one release
+  // into enter, leave, enter, drop. DnD drops on the last-entered target, so pointer drift since the last move is
+  // ignored.
   QPointer<QWidget> target = wasm_drag_target_;
   if (target != nullptr) {
     QDropEvent drop_event(
@@ -2514,8 +2398,7 @@ void CurveTreeView::finishWasmDrag(QMouseEvent* event) {
   wasm_drag_button_ = Qt::NoButton;
   event->accept();
 
-  // The drop is delivered; the skipped-keys toast can no longer sit between
-  // the pointer and the drop target's hit test.
+  // The drop is delivered: the skipped-keys toast can no longer sit between the pointer and the drop target's hit test.
   if (!wasm_drag_skipped_keys_.isEmpty()) {
     const QStringList skipped_keys = wasm_drag_skipped_keys_;
     wasm_drag_skipped_keys_.clear();
@@ -2558,11 +2441,9 @@ void CurveTreeView::abortWasmDrag(Qt::KeyboardModifiers modifiers) {
 QMimeData* CurveTreeView::createDragMimeData(Qt::MouseButton button, QStringList* skipped_keys) const {
   const std::vector<QString> names = selectedCurveNamesForDrag();
 
-  // The catalog payload must carry EVERY selected item, not just the row under
-  // the cursor when the drag began. Object/image topics come from the recursive
-  // catalog walk; scalar curves (whose catalog key is their own name) are added
-  // from `names`, which also folds in a cross-view selection supplied by a drag
-  // selection provider.
+  // The catalog payload carries every selected item, not just the row under the cursor when the drag began. Object and
+  // image topics come from the recursive catalog walk; scalar curves (whose catalog key is their own name) are added
+  // from `names`, which also folds in a cross-view selection supplied by a drag selection provider.
   QStringList catalog_keys;
   for (const QString& key : selectedCatalogKeysForDrag(skipped_keys)) {
     catalog_keys.push_back(key);
@@ -2608,9 +2489,8 @@ void CurveTreeView::mouseReleaseEvent(QMouseEvent* event) {
   if (wasm_drag_mime_ != nullptr && event->button() == wasm_drag_button_) {
     const Qt::MouseButton button = wasm_drag_button_;
     finishWasmDrag(event);
-    // The native QDrag loop leaves QAbstractItemView's pressed/selection state
-    // balanced when it consumes the release. Our in-app loop must forward that
-    // release explicitly; otherwise the next plain drag is interpreted as a
+    // The native QDrag loop leaves QAbstractItemView's pressed and selection state balanced when it consumes the
+    // release. Our in-app loop forwards that release explicitly; otherwise the next plain drag is read as a
     // continuation and selects every row crossed between the two gestures.
     balanceWasmSourcePress(button, event->modifiers());
     return;
@@ -2636,10 +2516,9 @@ QString formatScalarForColumn(double value, int precision) {
   if (!std::isfinite(value)) {
     return u"-"_s;
   }
-  // Fixed precision keeps a constant fractional width; then overwrite trailing
-  // zeros — and a bare trailing '.' once all decimals are blanked — with spaces.
-  // The single appended space + a right-aligned monospace cell line up every
-  // decimal point across rows (e.g. 1.2 -> "1.2   ", 5 -> "5     ").
+  // Fixed precision keeps a constant fractional width; trailing zeros (and a bare trailing '.' once all decimals are
+  // blanked) are then overwritten with spaces. The one appended space and a right-aligned monospace cell line up every
+  // decimal point across rows (1.2 gives "1.2   ", 5 gives "5     ").
   QString text = QString::number(value, 'f', precision);
   const int dot = text.indexOf(QLatin1Char('.'));
   if (dot >= 0) {

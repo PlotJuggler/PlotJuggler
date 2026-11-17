@@ -1,17 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Stroke-width invariant for the overlay tessellator.
-//
-// The bug these tests pin: annotation stroke width is baked in image-pixel space
-// and then scaled by the view transform, so at display scales below 1:1 (zoomed
-// out / large image in a small dock) strokes went sub-pixel and edges dropped out
-// of rasterization depending on sub-pixel alignment — "some lines of a
-// rectangle/cube disappear depending on zoom".
-//
-// Behaviour (Option B): stroke width SCALES with zoom (image-space thickness, so
-// outlines grow as you zoom in), but is FLOORED so it is never thinner than 1px
-// on screen — that floor is what stops edges from vanishing when zoomed out.
+// Stroke width scales with zoom but is floored at 1 px on screen: below 1:1 a thinner stroke goes sub-pixel and
+// edges drop out of rasterization depending on alignment.
 
 #include "pj_scene2d_core/overlay_geometry.h"
 

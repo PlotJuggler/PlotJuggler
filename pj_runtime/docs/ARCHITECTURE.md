@@ -4,8 +4,9 @@ How the runtime services are wired to each other and to the shell, and the contr
 that are not obvious from one header. Each public header's doc-comment owns its API
 contract; the module entry point is [../CLAUDE.md](../CLAUDE.md). The derived-data
 engines (on-demand, batch and series, scheduling, TF clocks) are designed in
-[docs/derived_objects/ARCHITECTURE.md](../../docs/derived_objects/ARCHITECTURE.md),
-cited below as "derived_objects §N".
+[docs/derived_objects/ARCHITECTURE.md](../../docs/derived_objects/ARCHITECTURE.md), cited below as
+"derived_objects" plus a heading name. Evidence behind the choices is in
+[TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md).
 
 ## Link surface
 
@@ -61,7 +62,7 @@ does not link it.
   `*_merged`. `objectMergeConflicts(selected)` is the builtin-object-type preflight (it also
   reports same-named marker topics whose scope, target or owner differ); a successful merge
   emits `datasetsMerged(anchor, consumed)`.
-- **On-demand wiring** (derived_objects §8, §16): requests every demanded recipe at the
+- **On-demand wiring** (derived_objects "The on-demand pipeline", "Streaming"): requests every demanded recipe at the
   playhead in its dataset's raw time; forwards the demand tracker's active sets
   (`OnDemandService::setDemand`); requests a recipe installed or newly demanded at the
   parked cursor (a finding at its pin, once per install); re-requests a dataset's demanded
@@ -121,13 +122,8 @@ does not link it.
   a cancel after the terminal is refused. `kUnknown` exists because the plugin C-ABI's
   `on_ingest_finished` carries no outcome code. Observers: `ingestActive(DatasetId)`,
   `activeIngests()`, and the `ingestBegan` / `ingestProgressed` / `ingestEnded` signals.
-  View side: `pj_widgets`' `CurveTreeView` draws per-dataset progress with two stop
-  affordances on a cancellable row (stop and keep, stop and discard), reported as
-  `cancelRequested(row_key, keep_partial)`; honouring `keep_partial` is the producer's job.
-  `pj_app`'s `IngestProgressController` keys each row by `IngestToken::id` and owns the UI
-  lifetime policy (completion linger, error flash, ghost rows, frozen `kStopping` bar). The
-  title-bar strip `IngestProgressWidget` is kept but not shown
-  (`kShowTitleBarIngestStrip`).
+  Honouring `keep_partial` is the producer's job; the rows and their UI policy are
+  `pj_app`'s `IngestProgressController` (see `pj_app/docs/ARCHITECTURE.md`).
 - **Loader metadata.** `setDatasetMetadata` / `datasetMetadata` / `clearDatasetMetadata`
   hold one loader-supplied JSON document per dataset, attributed to the emitting plugin,
   bounded by `validateDatasetMetadata`; a rejection keeps the previous document and never
@@ -146,7 +142,8 @@ does not link it.
   instance that made it. `DataProcessorService::setOutputsChangedSink` is wired to
   `BatchEngine::recomputeForChangedInputs(names, dataset)`, so a changed processor output
   marks the marker rules reading it stale.
-- **On-demand engine wiring** (derived_objects §8, §13). `onDemandService()` is declared
+- **On-demand engine wiring** (derived_objects "The on-demand pipeline", "Life cycle of recipes and results").
+  `onDemandService()` is declared
   after the pool and the budget. The session wires its resolver, parser lookup, dataset
   epochs, TF providers, image decoder and video source (`setTransformService`,
   `setImageDecoder`, `setVideoFrameSource`; `pj_app` passes its `SceneImageDecoder` and
@@ -198,11 +195,9 @@ does not link it.
   subscription, no data, binding never completes). `pj_app`'s `StreamingSourceManager`
   forwards the set to `DataSourceHandle::setActiveTopics` (only with
   `kCapabilityPerTopicPause`); `pj_app`'s `TopicDemandController` produces references from
-  plots and scene docks and owns the bounded field-discovery previews (census of
-  unclassified placeholders, at most 8 concurrent, once per topic per session; manual peek
-  on double-click; a preview holds a reference until promotion or a ~4 s timeout). A
-  preview-promoted topic's samples are disowned (`DataEngine::evictTopicHistory`) when a
-  real reference arrives, so they never draw a bogus flat segment.
+  plots and scene docks and owns the field-discovery previews. A preview-promoted topic's
+  samples are disowned (`DataEngine::evictTopicHistory`) when a real reference arrives, so
+  they never draw a bogus flat segment.
 
 ### Playback and view hosts
 
@@ -375,12 +370,60 @@ does not link it.
 
 ### Widget plugins
 
-- **Catalog.** `widgets()` exposes `RuntimeWidgetPlugin` (library, id, name, version, per-type `type/name/icon/settings_json`, `qt_compatible`, `qt_mismatch_reason`). Two rules differ from the other families. (1) A Widget plugin **never leaves the catalog except by a user disable**: one policy point, `unloadableFamily(PluginFamily)` in `PluginRuntimeCatalog.cpp`, is consulted by every drop/evict/erase path. So `reload()` does not drop it when the file disappears and does not evict or reload it when its mtime changes (it reports once `<id>: updated on disk; restart required`), `scanDirectory()` keeps what is loaded, and a static registration cannot supersede a loaded DSO. A plugin whose id is now in the disabled list is withdrawn from `widgets()` by `reload()` (panels already running it keep working; enabling it again brings it back at the next reload). The library itself is never `dlclose`d: the SDK loader (`WidgetLibrary`) keeps it mapped for the life of the process, because a Qt widget created by the plugin can be called or destroyed after the catalog entry is gone. A library that appears for the first time is still loaded hot. (2) Before `create_qwidget` is ever called, `build_info()` is compared with the host: Qt major.minor (`QLibraryInfo::version()`, patch ignored), compiler family (`PJ::widgetCompilerFamily()`, the same SDK function the plugin side uses), and on MSVC the debug/release flag. A mismatch does not discard the library: it is registered with `qt_compatible=false`, a user-facing `qt_mismatch_reason` ("this widget needs Qt X.Y (PlotJuggler uses A.B)") and a `kError` diagnostic, so the dock can explain the missing widget; its types must not be instantiated. Only for a compatible build, `qt_modules` is cross-checked against `src/ShippedQtModules.h` (derived from the SDK's `PJ_WIDGET_QT_MODULES` X-macro) and anything outside it is a `kWarning`.
-- **`ActiveWidgetsMarker`.** The on-disk record of which Custom Widget plugins have live code in this process (one file per process, `<AppLocalDataLocation>/active_widgets.<pid>.json`, `{"version":1,"widgets":[{"plugin","type"}]}`), so a crash inside a widget can be named at the next start. `add(owner, plugin_id, type)` / `remove(owner)` are keyed by the panel and rewrite this process's file atomically (`QSaveFile`) on every change, deleting it when nothing is live; `clear()` is the clean exit and removes only this process's file. `read(path)` turns a missing file into no entries and an unreadable or malformed one into no entries plus `error`. `take(directory)` is the startup review: it reads and deletes every record whose pid is not alive (`isProcessAlive`: `kill(pid, 0)` succeeds or fails with `EPERM` on Linux/macOS, `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess == STILL_ACTIVE` on Windows; the probe is injectable for tests) and merges their entries and errors, so a second instance running side by side is never reported as a crash and a dead run's record is consumed once. A pid reused by an unrelated live process hides its file until that process ends. Qt Core only, GUI thread. `pj_custom_widgets` writes it, `pj_app`'s `CustomWidgetController` owns it and reviews it at startup.
-- **`WidgetRuntimeHost`.** Per-panel host side of `pj.widget_host.v1` over the SDK's `WidgetHostBridge` (which supplies the C-ABI skeleton, so `RuntimeHostSlot.h` is not used). `history` resolves the wire (input, slot) through a dock-supplied `WireResolver` to a `ResolvedWire` (the `WireTarget` plus the series label every value refers to) and reads it: numbers through `DataReader::series`, text through one `rangeQuery` cursor (a first pass keeps the sample rows, the second reads only the strings it delivers), objects through `ObjectStore::rangeByTime`, each entry's bytes through the injected `ObjectPayloadEncoder` (an entry it refuses is skipped like an evicted one); samples go to the plugin's sink in ascending time on the display axis (the target's `DisplayOffset`; the requested range saturates instead of overflowing), capped at `max_samples` (0 = 10 000; an explicit value is honoured as asked, so a widget can count a range through `out_total` and then fetch all of it) by even decimation that keeps the first and last sample; it returns the number of samples the range held before the cap (the ABI's `out_total`, saturated at `UINT32_MAX`), and stops delivering as soon as the sink returns false. The sink runs under the engine lock for scalar reads. `inputs_changed`, `config_changed` and `report_message` go to the `Callbacks` given at construction. Qt-free; one instance per panel, must outlive the `WidgetHandle` bound to it.
-- **`CanonicalObjectPayload`.** `canonicalObjectPayload(session, topic, type, entry)`: the bytes a Widget plugin receives for a stored object entry. With no parser bound to the topic the stored bytes are already canonical and pass through untouched (anchor included); with a parser bound (the store holds the wire message, e.g. ROS CDR) the entry is decoded through it under its per-topic lock (`decodeObjectEntry`) and re-serialized with the SDK's `serializeBuiltinObject`. `canonicalObjectEncoder(session)` wraps it as the `ObjectPayloadEncoder` both delivery paths of a panel use: `WidgetRuntimeHost` (history) and `pj_custom_widgets`' `fetchObjectPayload` (the current value, encoded once per entry the wire shows). A decode or serialization failure is an error, which history skips and the current value turns into no value.
-- **`WireTarget`.** Where one Custom Widget wire reads from (kind, scalar topic + column or object topic + object type and its name, display offset). Owns no string (the object type name is `sdk::name`'s static storage), so the dock copies one per wire per tick without allocating.
-- **`WidgetValue`.** `baseWidgetValue(input, slot, kind, time, label)`: the common fields of every `PJ_widget_value_t` the host builds, shared by `WidgetRuntimeHost` (history) and `pj_custom_widgets` (the per-tick values).
+- **Catalog.** `widgets()` exposes `RuntimeWidgetPlugin` (its library, identity, types, and `qt_compatible` /
+  `qt_mismatch_reason`). Two rules differ from the other families. (1) A Widget plugin **never leaves the catalog
+  except by a user disable**: one policy point, `unloadableFamily(PluginFamily)` in `PluginRuntimeCatalog.cpp`, is
+  consulted by every drop/evict/erase path. So `reload()` does not drop it when the file disappears and does not evict
+  or reload it when its mtime changes (it reports once `<id>: updated on disk; restart required`), `scanDirectory()`
+  keeps what is loaded, and a static registration cannot supersede a loaded DSO. A plugin whose id is now in the
+  disabled list is withdrawn from `widgets()` by `reload()` (panels already running it keep working; enabling it again
+  brings it back at the next reload). The library itself is never `dlclose`d: the SDK loader (`WidgetLibrary`) keeps
+  it mapped for the life of the process, because a Qt widget created by the plugin can be called or destroyed after
+  the catalog entry is gone. A library that appears for the first time is still loaded hot. (2) Before
+  `create_qwidget` is ever called, `build_info()` is compared with the host: Qt major.minor
+  (`QLibraryInfo::version()`, patch ignored), compiler family (`PJ::widgetCompilerFamily()`, the same SDK function the
+  plugin side uses), and on MSVC the debug/release flag. A mismatch does not discard the library: it is registered
+  with `qt_compatible=false`, a user-facing `qt_mismatch_reason` ("this widget needs Qt X.Y (PlotJuggler uses A.B)")
+  and a `kError` diagnostic, so the dock can explain the missing widget; its types must not be instantiated. Only for
+  a compatible build, `qt_modules` is cross-checked against `src/ShippedQtModules.h` (derived from the SDK's
+  `PJ_WIDGET_QT_MODULES` X-macro) and anything outside it is a `kWarning`.
+- **`ActiveWidgetsMarker`.** The on-disk record of which Custom Widget plugins have live code in this process (one
+  file per process, `<AppLocalDataLocation>/active_widgets.<pid>.json`,
+  `{"version":1,"widgets":[{"plugin","type"}]}`), so a crash inside a widget can be named at the next start.
+  `add(owner, plugin_id, type)` / `remove(owner)` are keyed by the panel and rewrite this process's file atomically
+  (`QSaveFile`) on every change, deleting it when nothing is live; `clear()` is the clean exit and removes only this
+  process's file. `read(path)` turns a missing file into no entries and an unreadable or malformed one into no entries
+  plus `error`. `take(directory)` is the startup review: it reads and deletes every record whose pid is not alive
+  (`isProcessAlive`, injectable for tests) and merges their entries and errors, so a second instance running side by
+  side is never reported as a crash and a dead run's record is consumed once. A pid reused by an unrelated live
+  process hides its file until that process ends. Qt Core only, GUI thread. `pj_custom_widgets` writes it, `pj_app`'s
+  `CustomWidgetController` owns it and reviews it at startup.
+- **`WidgetRuntimeHost`.** Per-panel host side of `pj.widget_host.v1` over the SDK's `WidgetHostBridge` (which
+  supplies the C-ABI skeleton, so `RuntimeHostSlot.h` is not used). `history` resolves the wire (input, slot) through
+  a dock-supplied `WireResolver` to a `ResolvedWire` (the `WireTarget` plus the series label every value refers to)
+  and reads it: numbers through `DataReader::series`, text through one `rangeQuery` cursor (a first pass keeps the
+  sample rows, the second reads only the strings it delivers), objects through `ObjectStore::rangeByTime`, each
+  entry's bytes through the injected `ObjectPayloadEncoder` (an entry it refuses is skipped like an evicted one);
+  samples go to the plugin's sink in ascending time on the display axis (the target's `DisplayOffset`; the requested
+  range saturates instead of overflowing), capped at `max_samples` (0 = the host default; an explicit value is
+  honoured as asked, so a widget can count a range through `out_total` and then fetch all of it) by even decimation
+  that keeps the first and last sample; it returns the number of samples the range held before the cap (the ABI's
+  `out_total`, saturated at `UINT32_MAX`), and stops delivering as soon as the sink returns false. The sink runs under
+  the engine lock for scalar reads. `inputs_changed`, `config_changed` and `report_message` go to the `Callbacks`
+  given at construction. Qt-free; one instance per panel, must outlive the `WidgetHandle` bound to it.
+- **`CanonicalObjectPayload`.** `canonicalObjectPayload(session, topic, type, entry)`: the bytes a Widget plugin
+  receives for a stored object entry. With no parser bound to the topic the stored bytes are already canonical and
+  pass through untouched (anchor included); with a parser bound (the store holds the wire message, e.g. ROS CDR) the
+  entry is decoded through it under its per-topic lock (`decodeObjectEntry`) and re-serialized with the SDK's
+  `serializeBuiltinObject`. `canonicalObjectEncoder(session)` wraps it as the `ObjectPayloadEncoder` both delivery
+  paths of a panel use: `WidgetRuntimeHost` (history) and `pj_custom_widgets`' `fetchObjectPayload` (the current
+  value, encoded once per entry the wire shows). A decode or serialization failure is an error, which history skips
+  and the current value turns into no value.
+- **`WireTarget`.** Where one Custom Widget wire reads from (kind, scalar topic + column or object topic + object type
+  and its name, display offset). Owns no string (the object type name is `sdk::name`'s static storage), so the dock
+  copies one per wire per tick without allocating.
+- **`WidgetValue`.** `baseWidgetValue(input, slot, kind, time, label)`: the common fields of every `PJ_widget_value_t`
+  the host builds, shared by `WidgetRuntimeHost` (history) and `pj_custom_widgets` (the per-tick values).
 
 ## Data processors
 
@@ -426,9 +469,8 @@ does not link it.
   `PROXY_TO_PTHREAD`), which is why a long replay must yield. Whole-series GUI readers call
   `DataEngine::awaitCompleteSeries(topic)` (the toolbox `read_series_arrow` bridge,
   `pj_app`'s marker-generator series resolver); the barrier does nothing on another thread,
-  where a toolbox worker gets the current, possibly partial, rows. Known limit: only a new
-  single-input node's first replay is sliced; restores, edits, reload recomputes and
-  multi-input replays run to completion inside the call.
+  where a toolbox worker gets the current, possibly partial, rows. Only a new single-input
+  node's first replay is sliced ([Known gaps](#known-gaps)).
 - **Failures.** After every scheduling pass, a transform whose node newly failed
   (`IncrementalEngine::nodeError`) is reported once through `setDiagnosticSink` (source
   "Data Processors", id = transform key) and again only after it recovered; `AppSession`
@@ -446,13 +488,13 @@ does not link it.
   `create_data_processor_v2` takes WINDOW (inputs clipped; `config` reports `coverage_ns`)
   and refuses INSTANT, typed outputs and `dataset_id`. Its generators outlive it, except its
   previews.
-- **`OnDemandRuntimeHost`** (derived_objects §18): typed create only (v1 refused naming v2;
+- **`OnDemandRuntimeHost`** (derived_objects "Plugin surfaces"): typed create only (v1 refused naming v2;
   INSTANT pins a finding; WINDOW refused; `dataset_id` binds `Recipe::dataset`), list
   without previews, config with the contract's state fields, validate and the three-way
   check (`scripting::checkOnDemand`: Luau compiles; Python compiles on the helper, waited
   for at most `kPythonValidateWaitMillis`, else UNCHECKED), and submit/poll/release over
-  `GridRunner` (at most 64 handles and 64 MiB of reserved reports per bridge, one
-  evaluation in the runner at a time). A preview key is `<plugin>/~preview/<n>/<id>`.
+  `GridRunner` (handles and reserved report bytes capped per bridge, one evaluation in the
+  runner at a time). A preview key is `<plugin>/~preview/<n>/<id>`.
   Destruction cancels its jobs; it must outlive the router holding it.
 - **`DataProcessorsKindRouter`**: routes each slot by `kind`; kind-less slots go to the
   bridge whose `owns` probe holds the id; cross-kind id collisions are refused. Typed
@@ -481,7 +523,7 @@ naming two datasets. Config read-back echoes each input bare unless the bare nam
 ambiguous across datasets and `dataset_source:bare` resolves back to the bound dataset.
 On-demand recipes keep the qualified name as the script's alias; the session's resolver strips
 it for a topic, its qualifier splitter for another node's output (`RecipeGraph::QualifierSplitter`,
-[derived_objects §8](../../docs/derived_objects/ARCHITECTURE.md#8-the-on-demand-pipeline)). A dataset merged
+derived_objects "The on-demand pipeline"). A dataset merged
 away stays registered, so its source keeps qualifying inputs, which bind on the anchor. A
 qualified input saved in a layout also records what it read (`topic`, or `upstream` for another
 node's output), so a generic layout binds on another recording while the name stays the alias.
@@ -495,25 +537,26 @@ remove, or a history-exempt recipe or generator reading an output the delete rem
 
 ## Marker rules (BatchEngine)
 
-- **Execution** (derived_objects §11): a run is staged on the GUI thread (`stageRun` copies
+- **Execution** (derived_objects "Scheduling and execution"): a run is staged on the GUI thread (`stageRun` copies
   the input series, clipped to the optional raw-ns `GeneratorRecipe::window`), computed on
   the session pool by the static `computeRun` over that copy only, and published on the GUI
   thread, one `markersPublished()` per burst (forwarded as `SessionManager::markersChanged`).
   Without a pool runs go inline. With the `InFlightBudget`, a pooled run waits in the shared
   line for `kMarkerRunBytes`, stages, and is charged its staged copy. A cancelled run stops
   inside the script (the `CancelToken` is polled from the Luau interrupt); output beyond
-  `runMarkerScript`'s 16 MiB ceiling fails like a script error.
+  `runMarkerScript`'s ceiling fails like a script error.
 - **Reload brake.** `recomputeForChangedInputs` and `reachNewDatasets` only mark bindings
   stale. `Mode::kAutomatic` runs stale, demanded bindings with no run in flight through a
-  single-shot brake at `reloadHz()` (default 2 Hz, clamped to [0.2, 20]); `Mode::kManual`
+  single-shot brake at `reloadHz()` (default and clamp in `BatchEngine.h`); `Mode::kManual`
   waits for `refresh(id)` / `refreshAll(dataset)`, which ignore brake, mode and demand.
   Settings keys: `Preferences::derived_batch_mode`, `Preferences::derived_batch_reload_hz`;
   `pj_app` applies them at startup and on OK; the dataset menu's "Refresh derived" calls
   `refreshAll`. `AppSession` injects the resolver, the dataset lister and the demand
   predicate (not a demand-capable stream, or `TopicDemandTracker::hasAnyReference`); an
   `all_datasets` rule is demanded when one contributor is. A failed binding is not
-  resubmitted by the brake until its inputs change. The result policy (D30) is in the
-  `BatchEngine.h` class comment.
+  resubmitted by the brake until its inputs change. The result policy (a slow rule keeps
+  showing results at the rate it can sustain, the previous result stays visible while the
+  next computes) is in the `BatchEngine.h` class comment.
 - **Create waits.** `kToCompletion` (`MarkersRuntimeHost`, because released plugins read the
   markers right after create; undo/redo, `DerivedObjects::restore` under `kHistory`)
   computes on the calling thread. `kBounded` (layout load under `kReplace`) computes on the
@@ -565,8 +608,8 @@ remove, or a history-exempt recipe or generator reading an output the delete rem
 
 ## On-demand engine
 
-Designed in derived_objects §8-§11 and §15; each class's header owns its contract.
-Cross-module notes:
+Designed in derived_objects "The on-demand pipeline" through "Scheduling and execution", and
+"Series"; each class's header owns its contract. Cross-module notes:
 
 - `RecipeGraph`: a persistent id may not start with `~`, so a plugin preview's
   `kPreviewIdPrefix` key never collides with a layout's. Scripts compile once per revision
@@ -586,7 +629,7 @@ Cross-module notes:
   state changes are reported as `SessionManager::seriesStateChanged`;
   `SessionManager::setSeriesVisibleStart` splits a replay into visible range first, then
   backfill.
-- `EnginePool` publishes in drains of at most 32; a throwing compute fails only its run. A
+- `EnginePool` publishes in bounded drains on the GUI thread; a throwing compute fails only its run. A
   Python node runs on `Lane::kPython`, whose watchdog polls `CancelToken::flags`.
 - `InFlightBudget` defaults to room for max(1, `EnginePool::sharedLaneThreads()`) on-demand
   runs; a run larger than the budget runs alone; a release posts a drain instead of serving
@@ -605,8 +648,8 @@ generators resolve new outputs, binds `bind_by_inputs` generators, creates chang
 generators (bounded for a layout load, to completion for undo/redo) and announces
 `markersChanged` once. On-demand recipes are the most downstream engine: cleared first
 (`OnDemandService::clearExcept`), installed after the generators, swept
-(`sweepUnclaimed`), announced with one `objectTopicsChanged` (derived_objects §13, which
-maps the protocol verbs onto engine methods). Diagnostics come back as data;
+(`sweepUnclaimed`), announced with one `objectTopicsChanged` (derived_objects "Life cycle of recipes and
+results" maps the protocol verbs onto engine methods). Diagnostics come back as data;
 `pj_app`'s `MainWindow` reports them under source "Layout" (`applyWorkspace` parses once
 for preflight and restore) and re-derives its Custom Topics panel. `HistoryScope.h` is also
 consumed by `pj_plotting`'s `TabbedPlotWidget::xmlLoadState`.
@@ -618,8 +661,8 @@ life cycle, which is the runtime's. It claims the `kFrameTransforms` ingest tap,
 the `ObjectStore` by UID cursor when no tap is active, and decodes through the topic's
 parser or the canonical codec (not `pj_scene3D`'s `resolveObject`: `pj_runtime` never
 depends on `pj_scene3D`). Each transform keeps its own stamp (plus
-`payload_stamp_shift`) and the store timestamp as entry time (derived_objects §12, the two
-clocks). `pj_app` constructs it and calls the life-cycle hooks (`invalidateDataset`,
+`payload_stamp_shift`) and the store timestamp as entry time (derived_objects "TF", "The two
+clocks"). `pj_app` constructs it and calls the life-cycle hooks (`invalidateDataset`,
 `invalidateAll`, `beginReplacingLoad` / `commitReplacingLoad` / `abortReplacingLoad`,
 `publishTransforms`, `setLiveCacheWindow`); `datasetTransformsReady` tells docks to refresh.
 A dataset's buffer object never changes, only its state (cleared on invalidation, removal
@@ -631,12 +674,12 @@ faster than the brake rate. The 3D fixed-frame preference is not here
 
 ## Recording
 
-Design: [docs/RECORDING_AND_CACHING.md §3.3](../../docs/RECORDING_AND_CACHING.md).
+Design: [docs/RECORDING_AND_CACHING.md](../../docs/RECORDING_AND_CACHING.md) "Recording (Record/Stop)".
 
 - **`Recorder`** (one per source): `tapFor()` hands the source's host a stateless tap that
-  co-owns the recorder; the binding→channel table is guarded by one mutex `mu_`; one writer
+  co-owns the recorder; the binding→channel table is guarded by one mutex; one writer
   thread drains a byte-budgeted queue into the sink, so push threads never touch the file
-  format. Live policy D4: a producer never waits; when a message does not fit
+  format. Live policy: a producer never waits; when a message does not fit
   `queue_budget_bytes` the largest of {queued, incoming} is discarded until it fits, so a
   message larger than the budget is never recorded. Drops are counted and leave holes,
   never reorderings. Downloads may opt into `OverflowPolicy::kBlock`. `requestStop()` ends
@@ -653,9 +696,9 @@ Design: [docs/RECORDING_AND_CACHING.md §3.3](../../docs/RECORDING_AND_CACHING.m
   `plotjuggler_sdk::base` only, which keeps it in the TSan job.
 - **`RecordingSink`** calls are strictly sequenced across threads (open/close on the start
   and stop threads, the rest on the writer), so a sink needs no locking.
-- **`McapRecordingWriter`**: one channel per binding, schemas deduplicated, 1 MiB zstd
-  chunks with messages of 200 KiB or more in their own chunk (a lazy reader never
-  decompresses a video frame to reach a scalar), exclusive-create file sink that surfaces
+- **`McapRecordingWriter`**: one channel per binding, schemas deduplicated, zstd chunks with
+  large messages in their own chunk (a lazy reader never decompresses a video frame to reach
+  a scalar), exclusive-create file sink that surfaces
   disk errors, fsync before close, refusal past 65535 channels or schemas (MCAP ids are
   `uint16_t`).
 - **`RecordingService`**: one press = one batch folder `pj_<UTC yyyyMMdd_HHmmss>/`
@@ -664,13 +707,13 @@ Design: [docs/RECORDING_AND_CACHING.md §3.3](../../docs/RECORDING_AND_CACHING.m
   case-folded collision), each with its own `Recorder` and queue budget, sharing one
   `capture_id`. Folder and budget come from `Preferences::recording_directory` (empty =
   `<AppLocalDataLocation>/recordings`) and `Preferences::recording_queue_budget_mib`
-  (clamped to 8..4096 MiB, per source). `start()` is transactional: it opens every file
+  (clamped, per source). `start()` is transactional: it opens every file
   before attaching any tap and undoes everything on failure without emitting `started`.
   A `RecordingTarget` is an opaque `target_key` (`pj_app` passes the `DatasetId`) plus
   callbacks, so the service never learns about `DataSourceRuntimeHost`; `pj_app`'s
   streaming manager filters on `kCapabilityDelegatedIngest` (a direct writer has no raw
   bytes). Finalization is synchronous on the GUI thread, once per recorder (`stop()`,
-  `onSourceEnded`, a polled truncation, the destructor). A 500 ms poll publishes monotonic
+  `onSourceEnded`, a polled truncation, the destructor). A periodic poll publishes monotonic
   `progress()`. `stopped(CaptureResult)` gives each source one exclusive bucket
   (`incomplete` > `truncated` > `lossy` > `clean`): test `clean_count`, never a boolean.
   Without a compiled or injected sink `start()` fails with "recording is not available in
@@ -680,12 +723,12 @@ Design: [docs/RECORDING_AND_CACHING.md §3.3](../../docs/RECORDING_AND_CACHING.m
 
 ## Source cache
 
-Specification: [docs/RECORDING_AND_CACHING.md §3.4](../../docs/RECORDING_AND_CACHING.md).
+Specification: [docs/RECORDING_AND_CACHING.md](../../docs/RECORDING_AND_CACHING.md) "Source cache".
 
 - **`SourceCacheStore`** wraps the SDK's `RequestArtifactCache` (desktop only) with host
   policy: hashed provider-generic identities, pin-then-validate lookups (a contended case
   is a miss with a retry hint), `publish()` with lost-lease recovery, quarantine
-  (`*.corrupt.*`), and LRU cleanup under a 10 GB default budget that never evicts a pinned
+  (`*.corrupt.*`), and LRU cleanup under a byte budget that never evicts a pinned
   artifact. The filesystem is the index. Pins are dataset-scoped and never cross a plugin
   ABI (`SessionManager::pinDatasetResource`). `cleanup()` scans: call it from a worker.
   `lookup()` reports `MissKind::kContended` only on filesystem evidence of an active
@@ -703,7 +746,8 @@ Specification: [docs/RECORDING_AND_CACHING.md §3.4](../../docs/RECORDING_AND_CA
 ## Agent tools
 
 `pj_agent_tools` (`include/pj_runtime/agent_tools/`, `src/agent_tools/`) is the tool layer
-`pj_app`'s MCP server offers AI agents ([`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md)): `ToolRegistry` holds the fixed catalog (name,
+`pj_app`'s MCP server offers AI agents ([`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md)): `ToolRegistry` holds the
+fixed catalog (name,
 description, JSON Schema, executor per tool) and dispatches a call by name. Desktop only,
 like the server. It links only `plotjuggler_sdk::base` and `nlohmann_json` (no Qt), so
 `pj_app`'s unit tests link it without this module's closure. MIT-licensed, unlike the rest
@@ -749,7 +793,8 @@ of the module: its files keep their own SPDX and copyright lines.
 - `fetchBytesWithLimit`: the size-capped GET of an untrusted body, on desktop over
   `httpGetWithLimit` and in the browser over `BrowserFetch.h`; returns a `CancelFetch`.
   Used by `pj_app`'s `PresetController` and Scene3D's `UrlFetcher`.
-- `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend ([why](./TECHNICAL_NOTES.md)).
+- `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend
+  ([TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md) "Qt's browser network backend keeps every response body").
 - `UpdateChecker` asks the install's channel (`PJ_INSTALLATION`): `deb` runs
   `apt-cache policy plotjuggler4`, `windows` runs `maintenancetool check-updates`, anything
   else (and a fallback) asks GitHub's latest release; probes need `QT_CONFIG(process)`.
@@ -761,32 +806,19 @@ of the module: its files keep their own SPDX and copyright lines.
   self-built default, or empty) never sends. The shell owns the opt-out
   (`Preferences::send_anonymous_stats`).
 
-## Tests
+## Known gaps
 
-- **Freeze bench.** `tests/engine_freeze_bench_test.cpp` (`EngineFreezeBench.*`, skipped
-  unless `PJ_BENCH` is set) measures how long the GUI thread stalls when a transform or a
-  marker rule is applied over a 500k-row series, or a rule re-runs after an input change:
-  GUI-thread CPU time (longest stretch and total) and worst wall-clock stall (a 1 ms
-  heartbeat's lateness), medians of five. Baselines: derived_objects §19 (Reference numbers).
-- **On-demand fixtures.** `tests/on_demand_test_utils.h` (point clouds, recipes whose
-  scripts never run, the gated or delayed `FakeRun`, a raw-points parser, store readers)
-  serves `result_history_test`, `input_stager_test`, `node_scheduler_test` (with one
-  end-to-end case and the `NodeSchedulerBench` benches on the real Luau run, `PJ_BENCH=1`),
-  `on_demand_cursor_follow_test`, `on_demand_live_edge_test`, `series_runner_test` (through
-  a real `AppSession` over `tests/on_demand_session_test_utils.h`) and the on-demand cases
-  of `session_manager_test` (via `OnDemandService::setRunForTest`).
-- **Recording fixtures.** `tests/recording_test_utils.h` (the `pj.recording` lookup and the
-  `IsolatedQtSettings` sandbox) and `tests/runtime_host_test_fixture.h` (a real
-  `DataSourceRuntimeHost` over the hermetic catalog and the mock object parser) serve the
-  recording tests; the other `data_source_runtime_host_*` tests use their own fixtures.
-- **Recording pipeline.** `tests/recording_pipeline_test.cpp` (desktop) assembles real
-  hosts → `RecordTap` → `Recorder` → `McapRecordingWriter` under `RecordingService` and
-  reads the files back with `mcap::McapReader`: a mid-stream start captures topics bound
-  before it, pre-recording pushes never leak in, two sources land in two files of one
-  capture (same `capture_id`, ordinals 1 and 2), a second recording starts from an empty
-  channel table, and ingest is unaffected.
-- **Agent tools.** `pj_agent_tools_tests` (plain main, no Qt) runs the executors against
-  fake host views (`tests/fake_*.hpp`, `tests/recording_dp_host.hpp`, MIT like the code)
-  and the SDK's `ToolboxTestStore`.
-- `transform_service_test`'s custom `QCoreApplication` main exists because its debug
-  thread-affinity death test forks and aborts in the child.
+- Only a new single-input transform's first replay is time-sliced; restores, edits, reload recomputes and multi-input
+  replays run to completion inside the call.
+- Transform inputs bind whole scalar topics: no binding to one column of a multi-column input.
+- Streaming pause: an in-flight push can strand a frame in the secondary store across the resume flush, and the
+  resume's catch-up `notifyIngest` lists scalar topics only, so an object-only flush gets no nudge.
+- A lazy object fetch returning zero bytes counts as a failure (the SDK's push glue has no failure signal), so a
+  legitimately empty payload (an empty `FrameTransforms` set) is reported lost.
+- A same-provider parser retype of a streaming topic to another builtin object type keeps the topic's original
+  object metadata until the stream restarts.
+- The bundled-plugin trust tier rests on id, version and DSO signature; there are no authenticated install receipts.
+- `ActiveWidgetsMarker`: a crashed run's record whose pid was reused by a live process is hidden until that process
+  ends.
+- `wait_for` sees only samples newer than its cursor: a late sample with an older stamp, or one retention drops between
+  two looks, is missed.

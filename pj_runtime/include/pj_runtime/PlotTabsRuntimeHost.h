@@ -14,26 +14,20 @@ namespace PJ {
 
 class ServiceRegistryBuilder;
 
-/// Host-side bridge exposing the `pj.plot_tabs.v1` SDK service: create/close a
-/// plugin-owned plot or scene ("3d"/"2d") tab, place and remove curves or object
-/// topics in it, focus it, and read back what it holds. Composing the tab itself
-/// is shell (MainWindow) business, so this is a pure callback bridge — the
-/// `ToolboxRuntimeHost::Callbacks` idiom — keeping pj_runtime free of Qt6::Widgets.
-/// All vtable slots are `[main-thread]` (the ABI contract); the callbacks run on the
+/// Host-side bridge exposing the `pj.plot_tabs.v1` SDK service: create/close a plugin-owned plot or scene ("3d"/"2d")
+/// tab, place and remove curves or object topics in it, focus it, and read back what it holds. Composing the tab is
+/// shell (MainWindow) business, so this is a pure callback bridge (the `ToolboxRuntimeHost::Callbacks` idiom) keeping
+/// pj_runtime free of Qt6::Widgets. All vtable slots are `[main-thread]` (the ABI contract); the callbacks run on the
 /// calling thread, unmarshalled.
 ///
-/// Scoping a tab id to the plugin that created it is NOT this class's job — the
-/// shell's lambdas capture the plugin identity and enforce it, exactly as
-/// `ViewportRuntimeHost`'s lambdas do. This bridge only validates that an
-/// argument is well-formed (non-empty id, non-empty topic/field) before handing
-/// it to a callback (plus, on `create_tab_v2`, an id without '/' and a known kind);
-/// ownership rejection is a callback-level `Status` failure.
+/// Scoping a tab id to the plugin that created it is NOT this class's job: the shell's lambdas capture the plugin
+/// identity and enforce it, as `ViewportRuntimeHost`'s do. This bridge only validates that an argument is well-formed
+/// (non-empty id, non-empty topic/field; on `create_tab_v2`, an id without '/' and a known kind) before handing it to a
+/// callback; ownership rejection is a callback-level `Status` failure.
 ///
-/// `list_tab_ids` and `tab_config` hand the caller borrowed `PJ_string_view_t`s
-/// per the ABI contract: valid only until the next call on this vtable. The
-/// bridge owns the backing storage for those borrows (see the private members)
-/// and refills it on every call. Not movable: the vtable fat pointer stores
-/// `this`.
+/// `list_tab_ids` and `tab_config` hand the caller borrowed `PJ_string_view_t`s per the ABI contract: valid only until
+/// the next call on this vtable. The bridge owns the backing storage for those borrows and refills it on every call.
+/// Not movable: the vtable fat pointer stores `this`.
 class PlotTabsRuntimeHost {
  public:
   struct Callbacks {
@@ -55,8 +49,8 @@ class PlotTabsRuntimeHost {
     /// [main-thread] Remove every curve from the tab under `id`, keeping the tab.
     std::function<Status(std::string_view id)> clear_tab;
 
-    /// The tail slots of 0.38. Each one is in the vtable only when its callback is
-    /// set, so a plugin's `PJ_HAS_TAIL_SLOT` probe sees exactly what this host serves.
+    /// The tail slots: each is in the vtable only when its callback is set, so a plugin's `PJ_HAS_TAIL_SLOT` probe sees
+    /// exactly what this host serves.
     /// [main-thread] Create or update a tab of `kind`, one of "plot", "3d" or "2d" (the
     /// bridge refuses any other, naming it). A kind the shell cannot show in this build
     /// is the shell's refusal, which must name the kind and leave a tab under `id` as it was.

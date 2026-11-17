@@ -1,19 +1,15 @@
 #pragma once
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
+// Editable multi-marker timeline: a horizontal time strip holding any number of marks of two kinds: Region (a resizable
+// [start,end] span with two draggable purple edges and a blue fill) and Event (a single movable purple handle). Plugin
+// .ui files (loaded by the host's QUiLoader) declare it by the class name "MarkerTimeline"; the mark set and the
+// marksChanged event flow through the WidgetData protocol (widget_binding.cpp). The widget is a dumb editor: the owner
+// supplies marks with setMarks() and reacts to marksChanged(); placement policy (where a freshly added mark lands)
+// lives with the owner.
 //
-// Editable multi-marker timeline: a horizontal time strip that holds any number
-// of marks of two kinds — Region (a resizable [start,end] span with two draggable
-// purple edges + a blue fill) and Event (a single movable purple handle). Plugin
-// .ui files (loaded by the host's custom QUiLoader) declare it by the class name
-// "MarkerTimeline"; the mark set and the marksChanged event flow through the
-// WidgetData protocol (see widget_binding.cpp). The widget is a dumb editor: the
-// owner supplies marks via setMarks() and reacts to marksChanged(); placement
-// policy (where a freshly-added mark lands) lives with the owner, not here.
-//
-// Visuals mirror RangeSlider so the two controls read as the same family:
-// PJLightBlue range fill, PJLightPurple handles at rest, PJPurple when hovered or
-// dragged. Time labels (ns) are formatted through an injectable formatter.
+// Visuals mirror RangeSlider, so the two read as one family: PJLightBlue range fill, PJLightPurple handles at rest,
+// PJPurple when hovered or dragged. Time labels (ns) go through an injectable formatter.
 
 #include <QVector>
 #include <QWidget>
@@ -30,8 +26,7 @@ class MarkerTimeline : public QWidget {
  public:
   enum class Kind { kRegion, kEvent };
 
-  // One mark in the integer step domain [minimum, maximum]. For an Event, `end`
-  // is ignored (kept equal to `start`).
+  // One mark in the integer step domain [minimum, maximum]. For an Event `end` is ignored (kept equal to `start`).
   struct Mark {
     int id = 0;
     Kind kind = Kind::kRegion;
@@ -44,8 +39,8 @@ class MarkerTimeline : public QWidget {
 
   QSize minimumSizeHint() const override;
 
-  // Step domain the marks live in (e.g. [0, 1000]); matches the slider quantization
-  // the producer plugin uses. Clamps existing marks into the new range.
+  // The step domain the marks live in ([0, 1000]); matches the slider quantization the producer plugin uses. Existing
+  // marks are clamped into the new range.
   void setRange(int minimum, int maximum);
   int minimum() const {
     return minimum_;
@@ -54,20 +49,20 @@ class MarkerTimeline : public QWidget {
     return maximum_;
   }
 
-  // Absolute ns span the step domain maps onto — used only to format the hover
-  // tooltip / labels. Optional; when unset, raw step values are shown.
+  // The absolute ns span the step domain maps onto, used only to format the hover tooltip and labels; unset shows raw
+  // step values.
   void setTimeSpan(qint64 min_ns, qint64 max_ns);
   void setLabelFormatter(std::function<QString(qint64)> formatter);
 
-  // Replace the whole set (last-writer-wins, like the producer's republish model).
-  // Does NOT emit marksChanged — it reflects an owner-driven update, not a user edit.
+  // Replaces the whole set (last writer wins, as the producer's republish model). Does not emit marksChanged: it
+  // reflects an owner-driven update, not a user edit.
   void setMarks(const QVector<Mark>& marks);
   const QVector<Mark>& marks() const {
     return marks_;
   }
 
-  // Mutators used by both the mouse handlers and direct callers (tests). Each emits
-  // marksChanged(). `start`/`end` are clamped into range; regions keep start<=end.
+  // Mutators used by the mouse handlers and direct callers (tests); each emits marksChanged(). `start` and `end` are
+  // clamped into range; regions keep start <= end.
   int addMark(Kind kind, int start, int end);  // returns the assigned id
   void deleteMark(int id);
   void moveMark(int id, int new_start);                   // preserves width (region) / position (event)
@@ -75,8 +70,8 @@ class MarkerTimeline : public QWidget {
   void clearMarks();
 
  signals:
-  // Emitted on any user edit (drag-move, edge-resize, right-click delete) and on
-  // the direct mutators above. The owner reads marks() to get the new set.
+  // Emitted on any user edit (drag-move, edge-resize, right-click delete) and by the direct mutators above; the owner
+  // reads marks() for the new set.
   void marksChanged();
 
  protected:
@@ -86,28 +81,27 @@ class MarkerTimeline : public QWidget {
   void mouseReleaseEvent(QMouseEvent* event) override;
   void contextMenuEvent(QContextMenuEvent* event) override;
   void leaveEvent(QEvent* event) override;
-  // Finalize an in-flight drag if the widget is hidden/closed before mouse-release
-  // (no release event fires then), so dragging_id_ never wedges setMarks() shut.
+  // Finalizes an in-flight drag if the widget is hidden or closed before mouse-release (no release event fires then),
+  // so dragging_id_ never wedges setMarks() shut.
   void hideEvent(QHideEvent* event) override;
 
  private:
   enum class Grab { kNone, kMoveRegion, kResizeStart, kResizeEnd, kMoveEvent };
 
-  // Geometry: center-x pixel for a step value and its inverse, both inside the
-  // track's usable span (handles stay fully visible at the extremes).
+  // Geometry: the center-x pixel of a step value and its inverse, inside the track's usable span (handles stay fully
+  // visible at the extremes).
   double pxForValue(int value) const;
   int valueForPx(double px) const;
   double usableLength() const;
 
-  // Commit an in-flight drag: clear the drag state and emit marksChanged once.
-  // Shared by mouseReleaseEvent and hideEvent.
+  // Commits an in-flight drag: clears the drag state and emits marksChanged once. Shared by mouseReleaseEvent and
+  // hideEvent.
   void finalizeDrag();
   Mark* markById(int id);
-  // Topmost mark under `pos` (last-drawn wins) + which part was grabbed.
+  // The topmost mark under `pos` (last drawn wins) and which part was grabbed.
   std::pair<int, Grab> hitTest(const QPoint& pos) const;
   int clampValue(int v) const;
-  // Clamp a mark's endpoints into range; an event collapses end onto start, and a
-  // region with end < start is swapped so start <= end.
+  // Clamps a mark's endpoints into range; an event collapses end onto start, a region with end < start is swapped.
   void normalize(Mark& m) const;
   QString tooltipFor(const Mark& mark) const;
 

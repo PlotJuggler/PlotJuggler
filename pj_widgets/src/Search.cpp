@@ -14,9 +14,8 @@
 namespace PJ {
 namespace {
 
-// The magnifying glass and the clear "x", recoloured to the active theme by
-// SvgButton. `search_light`/`close_windows_light` are the light-authored
-// masters; loadSvg flips them for the dark theme.
+// The magnifying glass and the clear "x", recolored to the active theme by SvgButton; `search_light` and
+// `close_windows_light` are the light-authored masters, which loadSvg flips for the dark theme.
 constexpr const char* kSearchIcon = ":/resources/svg/search_light.svg";
 constexpr const char* kClearIcon = ":/resources/svg/close_windows_light.svg";
 
@@ -36,8 +35,7 @@ Search::Search(QWidget* parent) : QWidget(parent) {
   layout_->setContentsMargins(
       theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
       theme::space(theme::Space::None));
-  // No gap between the glyph, the field, and the clear button, so the shared
-  // background reads as one seamless control.
+  // No gap between the glyph, the field and the clear button, so the shared background reads as one control.
   layout_->setSpacing(theme::space(theme::Space::None));
 
   // Non-interactive glyph: mouse-transparent so a click lands in the field, not
@@ -73,9 +71,8 @@ Search::Search(QWidget* parent) : QWidget(parent) {
   // Seed the border-state properties so the QSS selectors have a value to match.
   setProperty("pjHovered", false);
   setProperty("pjFocused", false);
-  // Watch the frame + children for hover, and the field for focus, so the border
-  // treatment covers the whole control (the glyph is mouse-transparent, so its
-  // hover surfaces on the frame; hence `this` is watched too).
+  // The frame and children are watched for hover, and the field for focus, so the border treatment covers the whole
+  // control (the glyph is mouse-transparent, so its hover surfaces on the frame, hence `this` is watched too).
   installEventFilter(this);
   line_edit_->installEventFilter(this);
   clear_button_->installEventFilter(this);
@@ -154,8 +151,7 @@ void Search::setVariant(Variant variant) {
   }
   variant_ = variant;
   setProperty("variant", variantToken(variant_));
-  // Re-run the stylesheet so the new `[variant=...]` fill (frame) and ink
-  // (inner field) take effect.
+  // The stylesheet is re-run, so the new `[variant=...]` fill (frame) and ink (inner field) take effect.
   style()->unpolish(this);
   style()->polish(this);
   style()->unpolish(line_edit_);

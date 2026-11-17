@@ -23,12 +23,10 @@ namespace PJ {
 
 namespace {
 
-// Opt-in diagnostics for the intermittent "legend/canvas text disappears"
-// bug: set PJ_PLOT_TEXT_DEBUG=1 to have every legend entry report, on any
-// state change, which of the four failure modes (if any) is active. When the
-// text vanishes while this logs "EMPTY=0 CLIPPED=0 LOWCONTRAST=0" with a valid
-// title/colour, the cause is a canvas text-rendering failure, not legend
-// logic. Change-detected (not per-frame) so it does not spam the 60 Hz replot.
+// Opt-in diagnostics for "legend/canvas text disappears": set PJ_PLOT_TEXT_DEBUG=1 to have every legend entry report,
+// on any state change, which of the four failure modes (if any) is active. When the text vanishes while this logs
+// "EMPTY=0 CLIPPED=0 LOWCONTRAST=0" with a valid title and colour, the cause is a canvas text-rendering failure, not
+// legend logic. Change-detected, not per frame, so it does not spam the 60 Hz replot.
 bool plotTextDebugEnabled() {
   static const bool enabled = qEnvironmentVariableIsSet("PJ_PLOT_TEXT_DEBUG");
   return enabled;

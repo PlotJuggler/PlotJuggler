@@ -12,10 +12,7 @@ namespace PJ {
 
 class MediaSource;
 
-// A Scene2DLayer backed by a single canonical-schema decoder (ImageAnnotations,
-// SceneEntities, …). The schema name and the list label are injected, so one
-// class covers every vector-overlay layer instead of a near-identical subclass
-// per schema. mediaSource() is the base default (the layer's borrowed source).
+// Every vector-overlay layer (ImageAnnotations, SceneEntities, ...): the schema and the list label are injected.
 class SceneDecoderLayer final : public Scene2DLayer {
   Q_OBJECT
  public:

@@ -15,10 +15,7 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 namespace {
-// Every dataset that currently names `topic_name` in the catalog — real data or
-// an advertised placeholder both count (see PendingDisplayBinder's class doc: a
-// pending bind is a demand reference, and referencing every candidate dataset is
-// the safe superset when the name is ambiguous across datasets).
+// Real data and advertised placeholders both count.
 std::vector<DatasetId> datasetsNaming(const CatalogModel& catalog, const QString& topic_name) {
   std::vector<DatasetId> ids;
   if (topic_name.isEmpty()) {
@@ -40,12 +37,7 @@ void PendingDisplayBinder::refreshDemandRefs(PendingDisplayEntry& entry) {
   if (tracker_ == nullptr) {
     return;
   }
-  // Idempotent: only datasets not yet referenced by this entry gain a reference.
-  // Called at stage time AND on every flush() pass, because the topic may become
-  // nameable only later — a layout restored before its stream connects stages
-  // entries while NO dataset names the topic yet; the reference must attach the
-  // moment the advertise burst lands, or the topic never subscribes and the
-  // entry waits forever.
+  // Only datasets this entry does not reference yet gain one.
   const auto ensure_refs_for = [this, &entry](const QString& topic_name) {
     for (const DatasetId id : datasetsNaming(catalog_, topic_name)) {
       const auto ref = std::make_pair(id, topic_name);
@@ -104,10 +96,8 @@ void PendingDisplayBinder::collect(const QDomDocument& doc, const QHash<QString,
       entry.persistent_intent = plot_xml::isPendingIntent(curve);
       entry.preserve_viewport_on_completion = plot->hasSavedViewport() || !plot->curveList().empty();
 
-      // Read curve attributes through layout_xml's single reader so the
-      // range-checked dataset-id parse stays consistent with the layout writer.
-      // XY curves carry x_/y_ pairs (Y is the entry's primary path); a
-      // time-series curve carries the plain topic/field pair.
+      // layout_xml's reader, so the range-checked dataset-id parse matches the writer. XY curves carry x_/y_ pairs
+      // (Y is the entry's primary path).
       if (const auto x_path = layout_xml::readXyXPath(curve)) {
         entry.x_path = *x_path;
         if (const auto y_path = layout_xml::readXyYPath(curve)) {
@@ -157,10 +147,9 @@ void PendingDisplayBinder::addPendingCurve(
   if (plot == nullptr || path.topic.isEmpty()) {
     return;
   }
-  // Double-dropping the same placeholder must not stage a second intent: on
-  // promotion the first entry binds every field, the duplicate's addCurve()
-  // calls all return null, and it would wait forever holding its demand
-  // reference (and re-add ghost curves after a manual delete on a later flush).
+  // A second drop of the same placeholder must not stage a second intent: once the first binds every field, the
+  // duplicate's addCurve() calls all return null, so it would wait forever holding its reference (and re-add ghost
+  // curves after a manual delete on a later flush).
   layout_xml::SeriesPath qualified_path = path;
   if (preferred_dataset.has_value()) {
     if (qualified_path.dataset_id == 0) {
@@ -252,7 +241,7 @@ bool PendingDisplayBinder::stageDockIntent(
   if (hasEntryFor(
           PendingDisplayEntry::Kind::kDockIntent, owner, layout_xml::SeriesPath{topic_name, QString()},
           preferred_dataset)) {
-    return false;  // same dock, same topic — one pending intent is enough
+    return false;  // same dock, same topic: one pending intent is enough
   }
   PendingDisplayEntry entry;
   entry.kind = PendingDisplayEntry::Kind::kDockIntent;
@@ -286,10 +275,9 @@ void PendingDisplayBinder::watchTargetDestruction(QObject* target) {
   watched_targets_.insert(target);
   connect(target, &QObject::destroyed, this, [this](QObject* dead) {
     watched_targets_.remove(dead);
-    // Match the dying widget by the raw pointer recorded at staging: for
-    // QWidget-derived targets the QPointer is still non-null inside destroyed()
-    // (it nulls only for the QObject dtor layer), so a targetIsNull() sweep would
-    // find nothing here. Entries already nulled by an earlier death are swept too.
+    // By the raw pointer recorded at staging: a QWidget target's QPointer is still non-null inside destroyed() (it
+    // nulls only in ~QObject), so a targetIsNull() sweep would find nothing. Entries nulled by an earlier death are
+    // swept too.
     auto it = entries_.begin();
     while (it != entries_.end()) {
       const bool owned_by_dead = it->target == dead;
@@ -309,12 +297,9 @@ bool PendingDisplayBinder::dockIntentCompleted(const PendingDisplayEntry& entry)
 
 std::optional<QString> PendingDisplayBinder::resolveEntryPath(
     const layout_xml::SeriesPath& path, std::optional<DatasetId> preferred) const {
-  // A preferred dataset (an interactive drop's own placeholder) binds ONLY its
-  // exact dataset while that dataset lives: if it does not yet name the series,
-  // wait for it — never steal a same-named field from a sibling. Only when the
-  // id is gone entirely (stream reconnects mint fresh DatasetIds) does the entry
-  // fall through to the strict resolution below, which binds a unique successor
-  // and stays pending under ambiguity.
+  // A preferred dataset binds ONLY itself while it lives: if it does not name the series yet, wait, never steal a
+  // same-named field from a sibling. Once the id is gone (a stream reconnect mints a fresh one), the strict
+  // resolution below binds a unique successor and stays pending under ambiguity.
   if (preferred.has_value()) {
     layout_xml::SeriesPath preferred_path = path;
     preferred_path.dataset_id = *preferred;
@@ -397,9 +382,7 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
       continue;
     }
 
-    // The catalog may have gained datasets naming this entry's topic(s) since it
-    // was staged (advertise burst after a layout restore) — attach the demand
-    // references those datasets now warrant, or the topic never subscribes.
+    // Datasets naming the topic may have appeared since staging (an advertise burst after a layout restore).
     refreshDemandRefs(entry);
 
     if (!drain_pass && !topics.contains(entry.path.topic) && (!entry.isXY() || !topics.contains(entry.x_path.topic))) {
@@ -424,9 +407,7 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
       x_key = resolveEntryPath(entry.x_path, entry.preferred_dataset);
     }
 
-    // Empty-field placeholder drop whose topic just materialized: bind one curve
-    // per scalar field (mirrors dropping the real topic node). Handled here
-    // because no single descriptorForPath answer exists for "all of them".
+    // An empty-field placeholder drop: one curve per scalar field, which no single descriptorForPath answer covers.
     if (!key.has_value() && !entry.isXY() && entry.path.field.isEmpty()) {
       const std::optional<std::vector<QString>> field_keys = scalarKeysForTopic(entry.path, entry.preferred_dataset);
       if (field_keys.has_value()) {
@@ -487,15 +468,12 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
   }
 
   for (PlotWidget* plot : touched) {
-    // A hidden marker scope saved against a dataset that was not loaded at
-    // restore time follows the (possibly reminted) dataset its curves just bound to.
+    // A marker scope saved against a dataset absent at restore follows the (possibly reminted) dataset its curves
+    // just bound to.
     plot->resolvePendingMarkerScopes();
-    // Frame to the layout-saved window now that the dataset (hence its display offset)
-    // exists: at restore xmlLoadState ran against an empty catalog (offset 0), so its
-    // absolute->display conversion was wrong. applySavedViewportOrZoom re-applies the
-    // saved range with the live offset — pinning the final window up front so data
-    // fills into it like streaming — and falls back to zoomOut when there is no saved
-    // range. clear_after=false: keep the stash; the drain pass clears it.
+    // At restore xmlLoadState converted the saved window with display offset 0 (no dataset yet); re-apply it with
+    // the live offset, so data fills the final window as it streams in. clear_after=false: the drain pass clears
+    // the stash.
     if (plot->hasSavedViewport()) {
       plot->applySavedViewportOrZoom(/*clear_after=*/false);
     } else if (!preserve_viewport_on_completion.contains(plot) && zoom_on_completion.contains(plot)) {
@@ -514,9 +492,8 @@ QList<layout_xml::SeriesPath> PendingDisplayBinder::unresolved() const {
     if (entry.persistent_intent) {
       continue;
     }
-    // Report only the half/halves that still don't resolve: an XY entry can be
-    // pending because just one source is missing, and listing a present series as
-    // "missing" would mislead the prompt (matches rebindCurveKeys' reporting).
+    // Only the half that still does not resolve: an XY entry may wait on one source, and listing a present series
+    // as missing would mislead the prompt (as rebindCurveKeys reports).
     if (entry.isXY() && !catalog_.resolveCurveKey(entry.x_path).has_value()) {
       paths.push_back(entry.x_path);
     }

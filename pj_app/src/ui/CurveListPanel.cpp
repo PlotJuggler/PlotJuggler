@@ -56,11 +56,8 @@ constexpr auto kPreserveTopicNameKey = "CurveListPanel/show_topics";
 constexpr int kSeriesRowKeyColumnBits = 16;
 constexpr auto kShowValuesKey = "CurveListPanel/show_values";
 
-// Composite an "omitted" variant of a chrome glyph: the base dimmed to ~40% with
-// a top-left → bottom-right diagonal slash drawn over it — same direction, ink,
-// and weight as the app's visibility_off eye-slash — haloed for a clean cut on
-// any glyph. Used for the UNCHECKED (hidden) state of the type-filter toggles so
-// a disabled kind reads as struck-through, consistent with the visibility eye.
+// The "omitted" variant of a type-filter glyph: dimmed, with a haloed slash in the direction, ink and weight of the
+// visibility_off eye, so a hidden kind reads as struck through like a hidden curve.
 QPixmap makeOmittedGlyph(const QPixmap& base, const QColor& ink, const QColor& halo) {
   if (base.isNull()) {
     return base;
@@ -77,7 +74,6 @@ QPixmap makeOmittedGlyph(const QPixmap& base, const QColor& ink, const QColor& h
   const qreal height = base.height();
   const qreal inset = qMax<qreal>(2.0, width * 0.12);
   const QLineF slash(inset, inset, width - inset, height - inset);  // top-left → bottom-right
-  // Thin stroke to match the visibility_off eye-slash weight (~1px at 20px icon).
   const qreal ink_width = qMax<qreal>(1.0, width * 0.05);
   const qreal halo_width = ink_width + qMax<qreal>(1.0, width * 0.045);  // background gap around the slash
   painter.setPen(QPen(halo, halo_width, Qt::SolidLine, Qt::RoundCap));
@@ -87,16 +83,11 @@ QPixmap makeOmittedGlyph(const QPixmap& base, const QColor& ink, const QColor& h
   return out;
 }
 
-// Value-column refresh cap. Playback drives tracker updates up to ~60 Hz; 10 Hz
-// (100 ms) is plenty for reading numbers and keeps the per-tick scalar reads off
-// the hot path.
+// The value column only needs to track the eye: this keeps the per-tick scalar reads off the playback path.
 constexpr int kValueRefreshIntervalMs = 100;
 
-// Per-dataset active-topic sets for every per-topic-pause-capable dataset,
-// computed ONCE per pass — the per-item alternative (tracker->activeTopics per
-// catalog item) copies and re-sorts the active vector hundreds of times per
-// rebuild. A dataset absent from the map is not pause-capable, so its topics
-// are never "unsubscribed". Empty whenever `tracker` is null.
+// Once per pass, not tracker->activeTopics per item, which copies and sorts the vector for every catalog item. A
+// dataset absent from the map is not pause-capable, so its topics are never unsubscribed. Empty without a tracker.
 QHash<DatasetId, QSet<QString>> buildActiveSets(const CatalogModel& catalog, const TopicDemandTracker* tracker) {
   QHash<DatasetId, QSet<QString>> sets;
   if (tracker == nullptr) {
@@ -112,16 +103,14 @@ QHash<DatasetId, QSet<QString>> buildActiveSets(const CatalogModel& catalog, con
   return sets;
 }
 
-// See buildActiveSets: a topic on a pause-capable dataset that nothing
-// currently references.
+// A topic of a pause-capable dataset that nothing references.
 bool isTopicUnsubscribed(
     const QHash<DatasetId, QSet<QString>>& active_sets, DatasetId dataset_id, const QString& topic_name) {
   const auto it = active_sets.constFind(dataset_id);
   return it != active_sets.constEnd() && !it->contains(topic_name);
 }
 
-// Why no view takes an object topic of `type` — shown as the row's tooltip so a
-// drag that never starts, or a drop that is refused, doesn't read as a bug.
+// Shown as the row's tooltip, so a drag that never starts or a refused drop does not read as a bug.
 QString undisplayableObjectTooltip(sdk::BuiltinObjectType type) {
   switch (type) {
     case sdk::BuiltinObjectType::kCameraInfo:
@@ -187,10 +176,8 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
   const auto* scalar = asScalarField(item);
   const auto* object_topic = asObjectTopic(item);
   const auto* advertised = asAdvertisedTopic(item);
-  // An advertised placeholder classified kNone is scalar-shaped (no data yet, so
-  // it's shown as a flat, draggable leaf at the topic itself — placeholders carry
-  // no field breakdown); any other classification is object-shaped, shown as a
-  // non-selectable terminal node exactly like a real ObjectTopicPayload.
+  // A kNone placeholder is scalar-shaped: a flat, draggable leaf at the topic (no fields yet). Any other
+  // classification is object-shaped, a terminal node like a real ObjectTopicPayload.
   const bool placeholder_is_object =
       advertised != nullptr && advertised->classification != sdk::BuiltinObjectType::kNone;
   const auto object_type = object_topic != nullptr ? object_topic->object_type
@@ -205,8 +192,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
       .topic = item.topic_name,
       .field = scalar != nullptr ? scalar->field_name : QString{},
       .selectable = scalar != nullptr || (advertised != nullptr && !placeholder_is_object),
-      // String fields drag onto the State Transitions strip (plots keep
-      // refusing them via the curveDescriptor gate, so a plot drop is a no-op).
+      // String fields drag onto the State Transitions strip; a plot refuses them (curveDescriptor).
       .draggable = !object_undisplayable || isPanelOnlyObjectType(object_type) || isCustomWidgetObjectType(object_type),
       .tooltip = object_undisplayable ? undisplayableObjectTooltip(object_type) : QString{},
       .is_image_topic = isImageFamilyObjectType(object_type),
@@ -234,15 +220,13 @@ void addCatalogItems(
 void rebuildTree(
     CurveTreeView* tree_view, CatalogModel* catalog, const TopicDemandTracker* tracker,
     const QHash<QString, CurveListPanel::CustomTopicRow>& custom_rows) {
-  // A rebuild fires on every catalog removal — including the routine
-  // placeholder-supersede when a demand-subscribed topic's first sample
-  // arrives — so it must not cost the user their expand/scroll state.
+  // A rebuild runs on every catalog removal, including a placeholder superseded by its first sample, so it keeps the
+  // expansion and scroll state.
   const QStringList expanded = tree_view->expandedGroupPaths();
   QScrollBar* scroll_bar = tree_view->verticalScrollBar();
   const int scroll = scroll_bar != nullptr ? scroll_bar->value() : 0;
   tree_view->clearCurves();
-  // Note: custom_view is NOT cleared here — the derived-topic rows are owned by
-  // setCustomTopics/refillCustomView.
+  // The custom view is not touched: its rows belong to setCustomTopics/refillCustomView.
   if (catalog == nullptr) {
     return;
   }
@@ -257,19 +241,14 @@ void rebuildTree(
   }
   addCatalogItems(tree_view, catalog, tracker, tree_items);
   tree_view->restoreExpandedGroupPaths(expanded);
-  // Restore scroll AFTER the tree has relaid out. Re-adding rows and expanding
-  // groups only schedules a geometry update, so the scrollbar's range is still
-  // stale right now — setValue() here would clamp against it (jumping to the
-  // bottom when a rebuild shrinks the tree, e.g. a dataset removal). Defer to
-  // the next event-loop turn, once the range reflects the rebuilt tree.
+  // On the next event-loop turn: the scrollbar's range is still the old tree's until relayout, and setValue() now
+  // would clamp against it (jumping to the bottom when a removal shrinks the tree).
   if (scroll_bar != nullptr) {
     QTimer::singleShot(0, scroll_bar, [scroll_bar, scroll]() { scroll_bar->setValue(scroll); });
   }
 }
 
-// One themed flat-button row in a PJMenu context menu — the shared
-// QPushButton-inside-QWidgetAction pattern both tree context menus use (a
-// plain QAction cannot carry the themed leading icon + destructive styling).
+// A QPushButton inside a QWidgetAction: a plain QAction cannot carry the themed leading icon and destructive styling.
 QPushButton* addMenuButton(QMenu* menu, const QString& icon, const QString& theme, const QString& text) {
   auto* button = new QPushButton(loadSvg(icon, theme), text, menu);
   button->setFlat(true);
@@ -287,12 +266,9 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   tree_view_ = ui_->treeView;
   custom_view_ = ui_->customView;
 
-  // Top tree takes more room than the custom topics panel.
   ui_->verticalSplitter->setStretchFactor(0, 5);
   ui_->verticalSplitter->setStretchFactor(1, 1);
 
-  // Datasets header overflow menu — view toggles + Clear All
-  // (destructive, so styled red).
   auto* datasets_menu = new QMenu(this);
   datasets_menu->setObjectName(u"PJMenu"_s);
 
@@ -300,8 +276,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   auto* show_values_action = new QWidgetAction(datasets_menu);
   show_values_action->setDefaultWidget(show_values_check_);
   datasets_menu->addAction(show_values_action);
-  // Seed from QSettings before wiring the signal so the initial state doesn't
-  // write the key back (parity with Preserve Topic Name below).
+  // Seeded before the signal is wired, so the initial state does not write the key back.
   {
     QSettings show_values_settings;
     show_values_check_->setChecked(show_values_settings.value(QLatin1String(kShowValuesKey), false).toBool());
@@ -309,9 +284,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   connect(show_values_check_, &QCheckBox::toggled, this, &CurveListPanel::onShowValuesToggled);
 
   preserve_topic_name_check_ = new QCheckBox(tr("Preserve Topic Name"), datasets_menu);
-  // Seed the checkbox AND the tree view mode from QSettings before wiring
-  // the signal — that way the first rebuildTree() driven by setCatalog()
-  // already lays out under the saved mode (no rebuild thrash on startup).
+  // The view mode too, so setCatalog's first rebuild already uses the saved mode.
   QSettings settings;
   const bool preserve_topic_name = settings.value(QLatin1String(kPreserveTopicNameKey), true).toBool();
   preserve_topic_name_check_->setChecked(preserve_topic_name);
@@ -324,16 +297,11 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   datasets_menu->addSeparator();
 
-  // QWidgetAction wraps a flat QPushButton so we can colour the text
-  // red — QMenu's default item painter doesn't expose a per-action
-  // colour the way QSS would for a regular QPushButton.
+  // A QPushButton, because QMenu's item painter has no per-action colour. The QSS rule
+  // `QMenu#PJMenu QPushButton[destructive="true"]` styles it.
   clear_all_button_ = new QPushButton(tr("Remove all Datasets"), datasets_menu);
   clear_all_button_->setFlat(true);
   clear_all_button_->setProperty("destructive", true);
-  // Padding, text-align, AND the destructive ${purple} colour
-  // are handled centrally in stylesheet_*.qss under
-  // `QMenu#PJMenu QPushButton[destructive="true"]` — no per-button
-  // stylesheet needed here.
   auto* clear_all_action = new QWidgetAction(datasets_menu);
   clear_all_action->setDefaultWidget(clear_all_button_);
   datasets_menu->addAction(clear_all_action);
@@ -349,34 +317,24 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   applyIcons(currentTheme());
 
-  // Both filters are canonical Search controls inline in their header bands.
   connect(ui_->filterTimeseries, &Search::textChanged, this, &CurveListPanel::onFilterChanged);
   connect(ui_->filterCustom, &Search::textChanged, this, &CurveListPanel::onCustomFilterChanged);
 
-  // Datasets type-filter toggles (plot / 2D / 3D). All start checked (see the
-  // .ui), so no initial push is needed — the tree defaults to all kinds shown.
+  // All start checked in the .ui, matching the tree's default, so no initial push.
   connect(ui_->buttonFilterPlot, &QToolButton::toggled, this, &CurveListPanel::onTypeFilterToggled);
   connect(ui_->buttonFilterScene2D, &QToolButton::toggled, this, &CurveListPanel::onTypeFilterToggled);
   connect(ui_->buttonFilterScene3D, &QToolButton::toggled, this, &CurveListPanel::onTypeFilterToggled);
   tree_view_->setEmptyFilterMessage(tr("No series match the current search or type filters."));
 
-  // Enter while typing drops focus back to the panel — restores the
-  // sibling label + action buttons (via the focus-out branch of
-  // eventFilter) without forcing the user to click elsewhere.
+  // Enter drops the focus, which restores the hidden header buttons (eventFilter).
   connect(ui_->filterTimeseries, &Search::returnPressed, ui_->filterTimeseries->lineEdit(), &QLineEdit::clearFocus);
   connect(ui_->filterCustom, &Search::returnPressed, ui_->filterCustom->lineEdit(), &QLineEdit::clearFocus);
 
-  // While the Custom Topics filter has focus, hide its sibling label + buttons
-  // so the input takes the full header width. Restored on focus loss. The
-  // Datasets filter lives on its own dedicated row (widgetSearchTimeseries),
-  // so it never competes with the label for width and needs no such expansion.
+  // Only the Custom Topics filter shares its band; the Datasets filter has its own row.
   ui_->filterCustom->lineEdit()->installEventFilter(this);
 
-  // Lock each header band to its natural height so hiding the Custom Topics
-  // siblings can't shrink the row and shift the line edit's vertical centre.
-  // QHBoxLayout vertically centres items, so even a 1-2px drop in the
-  // row's preferred height (when the tallest sibling hides) was enough
-  // to nudge the line edit upwards on focus.
+  // Fixed heights: hiding the tallest sibling would shrink the band, and QHBoxLayout's vertical centring would move
+  // the line edit on focus.
   const auto fix_band_height = [](QWidget* band) {
     band->layout()->activate();
     band->setFixedHeight(band->layout()->sizeHint().height());
@@ -388,8 +346,6 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   connect(ui_->buttonAddCustom, &QToolButton::clicked, this, &CurveListPanel::createCustomTopicRequested);
   ui_->buttonAddCustom->setVisible(false);  // until setEditorPluginId names an editor to open
 
-  // Custom-topics header overflow menu — mirrors the Datasets menu.
-  // Delete is destructive so it gets the same red treatment.
   auto* custom_menu = new QMenu(this);
   custom_menu->setObjectName(u"PJMenu"_s);
   delete_custom_button_ = new QPushButton(tr("Delete"), custom_menu);
@@ -400,12 +356,8 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   custom_menu->addAction(delete_custom_action);
   connect(delete_custom_button_, &QPushButton::clicked, this, [this, custom_menu]() {
     custom_menu->hide();
-    // Recursive so selecting a GROUP row (a slashed name like "test/sin/valueasda"
-    // nests under "test") deletes every custom curve beneath it. A group row itself
-    // carries no catalog key, so the non-recursive selection would emit only the
-    // group label, which the delete handler can't resolve — the delete silently
-    // no-ops. The catalog-key walk (not the curve-name one) is what also reaches an
-    // object-topic row, which carries no curve name.
+    // Recursive: a group row carries no catalog key, so only the walk deletes what is beneath it. By catalog key,
+    // not curve name, so object-topic rows (no curve name) are reached too.
     const std::vector<QString> keys = custom_view_->selectedCatalogKeysRecursive();
     emit deleteCustomTopicsRequested(QStringList(keys.begin(), keys.end()));
   });
@@ -414,8 +366,6 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
     custom_menu->popup(anchor);
   });
 
-  // Edit (pencil): enabled only for one row the Custom Topics editor owns; opens
-  // the Transform Editor pre-populated for an in-place Modify (PJ3 parity).
   connect(ui_->buttonEditCustom, &QToolButton::clicked, this, [this]() {
     // Enabled only for one selected row the editor owns (updateCustomEditButton).
     if (const QStringList keys = selectedCustomRowKeys(); keys.size() == 1) {
@@ -423,8 +373,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
     }
   });
   connect(custom_view_, &QTreeWidget::itemSelectionChanged, this, &CurveListPanel::updateCustomEditButton);
-  // The custom view holds object rows too: a pull on one no view can display, or a
-  // multi-selection drag that left some out, says why, as the Datasets tree does.
+  // The custom view holds object rows too: an undisplayable pull or a partial drag says why, as in the Datasets tree.
   connect(custom_view_, &CurveTreeView::dragAttemptedOnNotDraggableRow, this, [this](const QString& reason) {
     emit toastRequested(reason.isEmpty() ? undisplayableObjectTooltip(sdk::BuiltinObjectType::kNone) : reason);
   });
@@ -436,7 +385,7 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
 
   auto drag_selection_provider = [this]() { return selectedCurveNamesForDrag(); };
   tree_view_->setDragSelectionProvider(drag_selection_provider);
-  // custom_view_ uses its own selection only — avoids including tree_view_ selection in drag
+  // Its own selection only, never tree_view_'s.
   auto custom_drag_provider = [this]() { return custom_view_->selectedCurveNamesRecursive(); };
   custom_view_->setDragSelectionProvider(custom_drag_provider);
 
@@ -446,40 +395,34 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   tree_view_->setTooltipProvider(
       [this](const QString& catalog_key, const QString& tree_path) { return rowTooltip(catalog_key, tree_path); });
 
-  // Double-click on a scalar placeholder leaf → bounded field preview + one-shot
-  // auto-expand. The handler no-ops until setTopicDemandController wires it.
   connect(tree_view_, &CurveTreeView::placeholderPeekRequested, this, &CurveListPanel::onPlaceholderPeekRequested);
 
-  // Not-draggable drag feedback → shell toasts. A pull on an undisplayable topic reuses
-  // the row's tooltip as the toast text (one wording for both channels); a row
-  // without one falls back to the generic undisplayable wording.
+  // The row's tooltip is the toast text: one wording for both channels.
   connect(tree_view_, &CurveTreeView::dragAttemptedOnNotDraggableRow, this, [this](const QString& reason) {
     emit toastRequested(reason.isEmpty() ? undisplayableObjectTooltip(sdk::BuiltinObjectType::kNone) : reason);
   });
   connect(tree_view_, &CurveTreeView::dragPayloadKeysSkipped, this, &CurveListPanel::onDragPayloadKeysSkipped);
 
-  // Forward the tree's cancel request to the controller (MainWindow).
   connect(tree_view_, &CurveTreeView::cancelRequested, this, &CurveListPanel::cancelRequested);
   // A series row's key packs its topic above the column: the stop names the series.
   connect(custom_view_, &CurveTreeView::cancelRequested, this, [this](quint64 row_key, bool) {
     emit seriesStopRequested(row_key >> kSeriesRowKeyColumnBits);
   });
 
-  // 10 Hz throttle for the value column (see refreshValues). The timeout is the
-  // trailing edge: if a tracker update arrived during the window, fill once more
-  // and re-arm so a continuous playback stream settles into a steady 10 Hz.
+  // The trailing edge: an update during the window fills once more and re-arms, so playback settles into a steady
+  // cadence.
   value_throttle_timer_ = new QTimer(this);
   value_throttle_timer_->setSingleShot(true);
   value_throttle_timer_->setInterval(kValueRefreshIntervalMs);
   connect(value_throttle_timer_, &QTimer::timeout, this, [this]() {
     if (!value_refresh_pending_) {
-      return;  // no update during the window — let the timer rest
+      return;
     }
     value_refresh_pending_ = false;
     if (valuesColumnActive()) {
       fillValuesNow();
     }
-    value_throttle_timer_->start();  // keep the cadence while updates keep arriving
+    value_throttle_timer_->start();
   });
 }
 
@@ -552,8 +495,7 @@ QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tr
   }
   if (!dataset_topics.isEmpty()) {
     lines << tr("<span style=\"font-weight:600\">Topics:</span> %1").arg(dataset_topics.size());
-    // Bounded provenance summary: attribution only — the full document lives in
-    // the Info dialog. Metadata text is untrusted; everything shown is escaped.
+    // Attribution only, the full document is in the Info dialog. Metadata is untrusted: everything is escaped.
     if (const auto metadata = catalog_->datasetMetadata(tooltip_dataset_id); metadata.has_value()) {
       lines
           << tr("<span style=\"font-weight:600\">Loader metadata:</span> %1").arg(metadata->plugin_id.toHtmlEscaped());
@@ -651,10 +593,8 @@ void CurveListPanel::onPlaceholderPeekRequested(const QString& catalog_key) {
     return;
   }
   controller_->requestFieldPreview(item->dataset_id, item->topic_name);
-  // Arm the one-shot auto-expand at the topic's tree location, derived the same
-  // way addCatalogItem files the row (so the promoted fields' group node
-  // matches).
-  // The unsubscribed flag is irrelevant for path derivation — pass empty sets.
+  // The path is derived as addCatalogItem files the row, so it matches the promoted fields' group node; the
+  // unsubscribed flag does not affect it.
   const CurveTreeView::CurvePath path = treePathFromCatalogItem(*item, {});
   tree_view_->requestExpansionWhenPromoted(CurveTreeView::treePathFromCurvePath(path));
 }
@@ -667,11 +607,8 @@ void CurveListPanel::onDragPayloadKeysSkipped(const QStringList& catalog_keys) {
     emit toastRequested(tr("%1 topics were left out of the drag: no view can display them.").arg(catalog_keys.size()));
     return;
   }
-  // Single skipped topic: name it. The catalog resolves the key to its topic
-  // name; a key that vanished mid-drag (dataset removal) falls back to the raw
-  // key rather than dropping the notice. ToastNotification renders rich text,
-  // so the name must be escaped or an HTML-looking channel name would render
-  // as markup.
+  // A key that vanished mid-drag shows raw rather than dropping the notice. Escaped: ToastNotification renders rich
+  // text.
   QString topic_name = catalog_keys.front();
   if (catalog_ != nullptr) {
     if (const auto item = catalog_->itemDescriptor(topic_name); item.has_value()) {
@@ -689,8 +626,7 @@ void CurveListPanel::refreshUnsubscribedFlags() {
   if (catalog_ == nullptr) {
     return;
   }
-  // buildActiveSets is empty when tracker_ is null, so a detached tracker
-  // correctly clears every row's flag here instead of leaving stale dimming.
+  // Without a tracker the sets are empty, so every flag clears instead of leaving stale dimming.
   const QHash<DatasetId, QSet<QString>> active_sets = buildActiveSets(*catalog_, tracker_);
   QSet<QString> unsubscribed;
   if (!active_sets.isEmpty()) {
@@ -720,16 +656,16 @@ void CurveListPanel::refreshForcedMarks() {
 }
 
 void CurveListPanel::refreshValues(double tracker_time) {
-  last_tracker_time_ = tracker_time;  // remembered for non-tracker refreshes (Show Values toggle)
+  last_tracker_time_ = tracker_time;
   if (!valuesColumnActive()) {
-    return;  // nothing shown — skip even the throttle bookkeeping
-  }
-  if (value_throttle_timer_->isActive()) {
-    value_refresh_pending_ = true;  // coalesce; the trailing fill will use last_tracker_time_
     return;
   }
-  fillValuesNow();                 // leading edge: first update lands immediately
-  value_throttle_timer_->start();  // then at most one fill per window
+  if (value_throttle_timer_->isActive()) {
+    value_refresh_pending_ = true;
+    return;
+  }
+  fillValuesNow();  // leading edge
+  value_throttle_timer_->start();
 }
 
 bool CurveListPanel::valuesColumnActive() const {
@@ -740,10 +676,7 @@ void CurveListPanel::fillValuesNow() {
   const int precision = valuePrecision();
   const double tracker_time = last_tracker_time_;
   auto provider = [this, tracker_time, precision](const QString& key) -> QString {
-    // String fields show their text value at the cursor (zero-order hold), "-"
-    // when no sample exists yet — read on their own seam since they aren't numeric.
-    // MUST be checked before the numeric path: isScalarKey is true for strings
-    // too, so reversing this order would render every string field as "-".
+    // Before the numeric path: isScalarKey is true for strings too, which would then all show "-".
     if (catalog_->isStringKey(key)) {
       return catalog_->stringValueAt(key, tracker_time).value_or(u"-"_s);
     }
@@ -751,8 +684,7 @@ void CurveListPanel::fillValuesNow() {
     if (value.has_value()) {
       return formatScalarForColumn(*value, precision);
     }
-    // No sample at or before the cursor: show "-" for a numeric scalar (PJ3
-    // parity) and leave non-scalar rows (object topics) blank.
+    // No sample at or before the cursor: "-" for a numeric scalar, blank for an object topic.
     return catalog_->isScalarKey(key) ? u"-"_s : QString();
   };
   tree_view_->refreshVisibleValues(provider);
@@ -778,33 +710,27 @@ void CurveListPanel::restoreListState(const QDomElement& element) {
     return;
   }
 
-  // Bracket the toggles with applying_state_ so onPreserveTopicNameToggled
-  // doesn't write its QSettings key. setViewMode + rebuildTree still run.
-  // QScopedValueRollback gives exception-safety: a throw inside any slot
-  // restores the flag instead of leaving it stuck-true (which would
-  // silently disable QSettings writes from later user-initiated toggles).
-  // Matches MainWindow.cpp's pattern at the xmlLoadState path.
+  // The toggle slots still run but skip their QSettings writes. A rollback, so a throw cannot leave the flag stuck
+  // and silently disable later user writes.
   {
     QScopedValueRollback guard(applying_state_, true);
 
     if (element.hasAttribute(u"show_topics"_s) && preserve_topic_name_check_ != nullptr) {
       const bool wanted = element.attribute(u"show_topics"_s) == "true"_L1;
       if (preserve_topic_name_check_->isChecked() != wanted) {
-        preserve_topic_name_check_->setChecked(wanted);  // emits toggled -> slot runs (rebuilds tree)
+        preserve_topic_name_check_->setChecked(wanted);
       }
     }
 
     if (element.hasAttribute(u"show_values"_s) && show_values_check_ != nullptr) {
       const bool wanted = element.attribute(u"show_values"_s) == "true"_L1;
       if (show_values_check_->isChecked() != wanted) {
-        show_values_check_->setChecked(wanted);  // emits toggled -> slot runs (no QSettings write)
+        show_values_check_->setChecked(wanted);
       }
     }
   }
 
-  // Filter texts: setText emits textChanged, which the connected slots
-  // forward to tree_view_->applyFilter — that's exactly what we want.
-  // Do NOT block signals here.
+  // Not blocked: textChanged applies the filter.
   if (element.hasAttribute(QStringLiteral("datasets_filter"))) {
     ui_->filterTimeseries->setText(element.attribute(QStringLiteral("datasets_filter")));
   }
@@ -836,8 +762,6 @@ void CurveListPanel::onShowValuesToggled(bool show) {
   tree_view_->setValuesColumnHidden(!show);
   custom_view_->setValuesColumnHidden(!show);
   if (show) {
-    // Fill the freshly-shown column at the current cursor instead of waiting for
-    // the next playback tick.
     refreshValues(last_tracker_time_);
   }
 }
@@ -863,8 +787,6 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   if (catalog_ == nullptr) {
     return;
   }
-  // Dataset nodes (top-level groups) get the Merge/Remove menu; any other row
-  // that resolves to a catalog item gets the force-streaming toggle.
   const auto is_dataset_node = [](QTreeWidgetItem* node) {
     return node != nullptr && node->parent() == nullptr && node->childCount() > 0;
   };
@@ -888,10 +810,7 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
       dataset_ids.push_back(found.value());
     }
   };
-  // Always include the right-clicked dataset; if it is part of a multi-selection,
-  // include every other selected dataset too. Right-clicking a dataset outside the
-  // selection targets just that one (standard list behavior). Does not rely on the
-  // clicked row being selected, so the menu works even on a fresh right-click.
+  // The clicked dataset, plus the rest of the selection when it is part of it; it need not be selected itself.
   add_dataset(clicked);
   if (clicked->isSelected()) {
     for (QTreeWidgetItem* item : tree_view_->selectedItems()) {
@@ -899,13 +818,9 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
     }
   }
   if (dataset_ids.isEmpty()) {
-    return;  // clicked name no longer resolves to a catalog dataset
+    return;
   }
 
-  // Build the menu from flat QPushButtons wrapped in QWidgetActions — the same
-  // pattern as the "Remove all Datasets" item in the datasets popup — so each item
-  // carries a themed leading icon and the destructive ones paint in the shared
-  // ${purple} via the central `QMenu#PJMenu QPushButton[destructive="true"]` rule.
   auto* menu = new QMenu(this);
   menu->setObjectName(u"PJMenu"_s);
   const QString theme = currentTheme();
@@ -918,10 +833,7 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
     return button;
   };
 
-  // Merge first (needs ≥2 datasets), then Reload/Replace (exactly one dataset,
-  // and only one loaded from a file — a streaming/test dataset has no source to
-  // re-read), then Remove (destructive → purple). The menu targets a dataset
-  // selection, so the labels drop the noun.
+  // Reload/Replace need exactly one file-backed dataset: a stream has no source to re-read.
   const bool single_file_backed = dataset_ids.size() == 1 && source_path_resolver_ != nullptr &&
                                   !source_path_resolver_(dataset_ids.front()).isEmpty();
   QPushButton* info_button = add_item(u":/resources/svg/diag_info.svg"_s, tr("Info"), false, dataset_ids.size() == 1);
@@ -936,9 +848,8 @@ void CurveListPanel::onTreeContextMenu(const QPoint& pos) {
   QPushButton* remove_button =
       add_item(u":/resources/svg/trash.svg"_s, tr("Remove"), /*destructive=*/true, /*enabled=*/true);
 
-  // QWidgetAction buttons don't dismiss the menu on click — close it ourselves,
-  // then act from a queued call so the request lands after the menu is gone
-  // (on desktop, after its modal loop has returned).
+  // A QWidgetAction button does not dismiss the menu: close it, then act from a queued call, after the menu's modal
+  // loop has returned.
   const auto on_click = [this, menu](QPushButton* button, auto action) {
     connect(button, &QPushButton::clicked, menu, [this, menu, action]() {
       menu->close();
@@ -960,15 +871,13 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
   if (tracker_ == nullptr || catalog_ == nullptr) {
     return;
   }
-  // On Linux the menu arrives on press, before a right-drag can start. Leave
-  // multi-selection gestures available, including a pair spanning both trees.
+  // On Linux the menu arrives on press, before a right-drag can start: a multi-selection (even across both trees)
+  // gets no menu, so that gesture stays available.
   if (tree_view_->selectedItems().size() + custom_view_->selectedItems().size() > 1) {
     return;
   }
-  // A promoted scalar topic renders as a GROUP row whose keys live on its field
-  // leaves — resolve through the whole subtree and act only when every keyed
-  // row below the click belongs to ONE topic (a folder spanning several topics
-  // would make "force" ambiguous).
+  // A promoted scalar topic is a group row whose keys live on its leaves: act only when every keyed row below the
+  // click belongs to one topic.
   std::optional<CatalogItem> item;
   for (const QString& key : CurveTreeView::catalogKeysUnder(clicked)) {
     const auto resolved = catalog_->itemDescriptor(key);
@@ -976,17 +885,16 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
       continue;
     }
     if (item.has_value() && (item->dataset_id != resolved->dataset_id || item->topic_name != resolved->topic_name)) {
-      return;  // subtree spans multiple topics
+      return;
     }
     item = resolved;
   }
   if (!item.has_value() || !catalog_->isPerTopicPauseCapable(item->dataset_id)) {
-    return;  // no topic here, or a file dataset / non-demand source
+    return;  // no topic, or a dataset without per-topic pause
   }
 
-  // Forcing is a tier on top of display references (see TopicDemandTracker
-  // ::setTopicForced): "Stop forced streaming" only drops the forced hold — it
-  // can never pause a topic something still displays.
+  // Forcing is a hold on top of display references (TopicDemandTracker::setTopicForced): stopping it never pauses a
+  // topic something still displays.
   const bool forced = tracker_->isTopicForced(item->dataset_id, item->topic_name);
   auto* menu = new QMenu(this);
   menu->setObjectName(u"PJMenu"_s);
@@ -1007,8 +915,6 @@ void CurveListPanel::showTopicContextMenu(QTreeWidgetItem* clicked, const QPoint
 }
 
 void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
-  // Custom-topic keys are filed in their own view and preview topics nowhere; keep
-  // both out of the main tree.
   const QSet<QString> preview_keys = catalog_ != nullptr ? catalog_->ephemeralPreviewKeys() : QSet<QString>{};
   std::vector<CatalogItem> tree_items;
   for (const auto& item : items) {
@@ -1017,7 +923,6 @@ void CurveListPanel::onCatalogItemsAdded(const std::vector<CatalogItem>& items) 
     }
   }
   addCatalogItems(tree_view_, catalog_, tracker_, tree_items);
-  // Fill the Value cells of the just-added rows at the current cursor.
   refreshValues(last_tracker_time_);
 }
 
@@ -1045,9 +950,7 @@ void CurveListPanel::setCustomTopics(const std::vector<CustomTopicRow>& rows) {
   }
   refillCustomView();
   if (keys_changed) {
-    // The rows' keys are also the main tree's exclusion set, so the tree has to be
-    // rebuilt against the new set or a topic would show in both lists — or in
-    // neither.
+    // The keys are the main tree's exclusion set: rebuild, or a topic shows in both lists or in neither.
     rebuildTree(tree_view_, catalog_, tracker_, custom_rows_);
   }
 }
@@ -1091,9 +994,8 @@ void CurveListPanel::refillCustomView() {
         continue;
       }
       const CustomTopicRow& row = *found;
-      // Built like its Datasets-tree twin (drag into a plot or a 2D / 3D view, icons, the
-      // not-draggable wording) but flat: one row, named by its recipe. The search path
-      // stays the dataset/topic one, so the glyph and the filter match.
+      // Like its Datasets-tree twin but flat, named by its recipe; the search path stays the dataset/topic one, so
+      // the glyph and the filter match.
       const auto flat_row = [&](const QString& label) {
         CurveTreeView::CurvePath flat = treePathFromCatalogItem(item, active_sets);
         flat.display_name = label;
@@ -1132,7 +1034,7 @@ void CurveListPanel::refillCustomView() {
   custom_view_->addCatalogItems(paths);
   custom_view_->restoreExpandedGroupPaths(expanded);
   for (auto it = series_row_paths_.cbegin(); it != series_row_paths_.cend(); ++it) {
-    custom_view_->setDatasetRowKey(it.value(), it.key());  // before any progress that names the key
+    custom_view_->setDatasetRowKey(it.value(), it.key());  // before any progress names the key
   }
   applySeriesProgress();
   applyCustomRowStates();
@@ -1161,8 +1063,7 @@ void CurveListPanel::applySeriesProgress() {
 
 namespace {
 
-// What a row says about its node's state (REQUIREMENTS D30: computing while an older result is shown keeps the
-// computing glyph, with the lag).
+// Computing while an older result is shown keeps the computing glyph, with the lag.
 QString stateText(const NodeScheduler::NodeState& state) {
   using NodeStatus = NodeScheduler::NodeState::Status;
   const QString detail = QString::fromStdString(state.detail);
@@ -1218,7 +1119,7 @@ void CurveListPanel::applyCustomRowStates() {
         glyph.tooltip += u"\n"_s + text;
       }
     }
-    // A finding names its computation instant on the axis the timeline shows (D26).
+    // A finding names its computation instant on the axis the timeline shows.
     if (row.pinned_t.has_value() && display_time_resolver_) {
       if (const std::optional<double> seconds = display_time_resolver_(it->dataset_id, *row.pinned_t)) {
         glyph.tooltip += u"\n"_s + tr("Pinned at %1 s").arg(*seconds, 0, 'f', 3);
@@ -1297,10 +1198,8 @@ void CurveListPanel::removeCustomCurve(const QString& catalog_key) {
 }
 
 void CurveListPanel::onCatalogItemsRemoved(const QStringList& keys) {
-  // A custom row whose catalog item is gone has nothing behind it, and the delete
-  // action cannot clear it: that path removes the row only after successfully
-  // removing the underlying transform, which no longer exists. Drop it here, where
-  // the vanished keys are known.
+  // The delete action cannot clear a row whose item is gone (it removes the row only after removing the transform,
+  // which no longer exists): drop it here.
   bool custom_changed = false;
   for (const QString& key : keys) {
     custom_changed = custom_rows_.remove(key) || custom_changed;
@@ -1308,9 +1207,7 @@ void CurveListPanel::onCatalogItemsRemoved(const QStringList& keys) {
   if (custom_changed) {
     refillCustomView();
   }
-  // One rebuild per batch (a dataset / multi-key trash is a single itemsRemoved).
-  // TODO: incremental CurveTreeView::removeCurve(name); linear rebuild wipes
-  // scroll/expansion/selection.
+  // One rebuild per batch: a dataset or multi-key trash is a single itemsRemoved.
   rebuildTree(tree_view_, catalog_, tracker_, custom_rows_);
 }
 
@@ -1360,13 +1257,8 @@ void CurveListPanel::applyIcons(QString theme) {
   if (delete_custom_button_ != nullptr) {
     delete_custom_button_->setIcon(loadSvg(":/resources/svg/delete_forever.svg", theme));
   }
-  // Type-filter toggles reuse the exact placeholder-widget glyphs (plot / 2D /
-  // 3D). The On (checked = shown) state is the plain themed glyph; the Off
-  // (unchecked = hidden) state is a dimmed, slashed variant so an omitted kind
-  // reads as struck-through. The checked-background fill is suppressed for these
-  // buttons in QSS, so the default all-shown state stays visually calm.
-  // Match the app's visibility_off eye-slash ink exactly (loadSvg keys "light"
-  // -> #3D3D3D, else #E0E0E0), so the two "hidden" affordances read the same.
+  // The placeholder-widget glyphs; unchecked (hidden) is the slashed variant. The slash ink copies loadSvg's ink per
+  // theme, so it matches the visibility_off eye: change both together.
   const QColor slash_ink = isLightTheme(theme) ? QColor(0x3D, 0x3D, 0x3D) : QColor(0xE0, 0xE0, 0xE0);
   const QColor slash_halo = palette().color(QPalette::Window);
   const auto make_toggle_icon = [&](const QString& path) {
@@ -1379,14 +1271,10 @@ void CurveListPanel::applyIcons(QString theme) {
   ui_->buttonFilterPlot->setIcon(make_toggle_icon(":/resources/svg/line_axis.svg"));
   ui_->buttonFilterScene2D->setIcon(make_toggle_icon(":/resources/svg/image.svg"));
   ui_->buttonFilterScene3D->setIcon(make_toggle_icon(":/resources/svg/cube.svg"));
-  // The Search filters own their glyph + sizing; keep them in lock-step with
-  // the global icon metrics (height + glyph track the chrome).
   ui_->filterTimeseries->setChromeMetrics(chrome_metrics_);
   ui_->filterCustom->setChromeMetrics(chrome_metrics_);
 
-  // Resize chrome buttons in lock-step with the global icon metrics.
-  // clear_all_button_ and delete_custom_button_ are inline-action menu
-  // items (full-width inside a popup), not square chrome — skip them.
+  // clear_all_button_ and delete_custom_button_ are full-width menu items, not square chrome.
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
   const int band_extent = chrome_metrics_.bandHeight();
@@ -1398,19 +1286,15 @@ void CurveListPanel::applyIcons(QString theme) {
     btn->setMaximumSize(button_extent, button_extent);
     btn->setIconSize(icon_sz);
   }
-  // Bands grow to band_extent so the contentsMargins applied to their
-  // inner layouts (below) are absorbed by the band instead of squeezing
-  // the chrome inside.
+  // band_extent includes the inner margins, so they grow the band instead of squeezing the chrome.
   ui_->widgetLabelTimeseries->setFixedHeight(band_extent);
   ui_->widgetSearchTimeseries->setFixedHeight(band_extent);
   ui_->widgetLabelCustom->setFixedHeight(band_extent);
   const QMargins margins(
       chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
       chrome_metrics_.layout_padding);
-  // Title bands lead via their label's own canonical padding-left (Tight), so
-  // their layout adds no left inset — otherwise the two stack into a doubled
-  // leading that no longer matches the SectionHeaderBand/Timeline reference.
-  // Search bands keep the left inset: their field carries no internal padding.
+  // Title bands get no left inset: their label's own padding leads, and both would double the leading of the other
+  // bands. Search bands keep it: their field has no internal padding.
   const QMargins title_band_margins(
       0, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding);
   if (auto* layout = ui_->timeseriesHeaderLayout) {
@@ -1425,11 +1309,8 @@ void CurveListPanel::applyIcons(QString theme) {
     layout->setContentsMargins(title_band_margins);
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }
-  // Per-row padding on the Datasets / Custom Topics trees. QTreeView
-  // has no setSpacing() the way QListWidget does — instead, push a
-  // per-instance stylesheet that pads ::item by layout_spacing on top
-  // and bottom. Setting an empty stylesheet at zero spacing clears the
-  // rule (otherwise the previous value would linger).
+  // QTreeView has no setSpacing(): a per-instance stylesheet pads ::item. At zero spacing the empty stylesheet
+  // clears the previous rule.
   const QString row_padding =
       chrome_metrics_.layout_spacing > 0
           ? u"QTreeView::item { padding-top: %1px; padding-bottom: %1px; }"_s.arg(chrome_metrics_.layout_spacing)

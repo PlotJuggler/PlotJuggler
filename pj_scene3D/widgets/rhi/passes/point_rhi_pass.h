@@ -17,23 +17,17 @@ namespace pj::scene3d {
 
 class PointRenderable;
 
-/// The point family of the QRhi view: every PointRenderable (point clouds and
-/// depth clouds) as points, sphere imposters or cubes. Points, spheres and the
-/// cube LOD sprites are instanced camera-facing quads, which every backend can
-/// draw (D3D has no gl_PointSize) and which keep their visible part at the
-/// frustum edge; where the backend has QRhi::VertexShaderPointSize, clouds whose
-/// sprites stay small draw as a point list instead, about twice as fast (the
-/// measurements are in docs/TECHNICAL_NOTES.md). Cubes are the hexagon fan (cube_mesh.h). A cloud with faded
-/// out-of-range points draws twice: its in-range points opaque, then the faded
-/// ones translucent with depth writes off, so they tint without occluding.
-/// Bounds come from the layer's conversion (PointRenderable::sourceBounds()),
-/// which every non-empty cloud has.
-/// Per frame the view calls admit() (once), prepare() (once), then submit() per
-/// ScenePass for each draw.
+/// The point family of the QRhi view: every PointRenderable (point clouds and depth clouds) as points, sphere
+/// imposters or cubes. Points, spheres and the cube LOD sprites are instanced camera-facing quads, which every backend
+/// can draw (D3D has no gl_PointSize) and which keep their visible part at the frustum edge; where the backend has
+/// QRhi::VertexShaderPointSize, clouds whose sprites stay small draw as a point list instead, about twice as fast
+/// (docs/TECHNICAL_NOTES.md "Measured design choices"). Cubes are the hexagon fan (cube_mesh.h). A cloud with faded
+/// out-of-range points draws twice: in-range points opaque, then the faded ones translucent with depth writes off, so
+/// they tint without occluding. Bounds come from the layer's conversion (PointRenderable::sourceBounds()), which every
+/// non-empty cloud has.
 class PointRhiPass {
  public:
-  /// How a cloud's instances are drawn: camera-facing quads, the cube hexagon
-  /// fan, or (small sprites) a point list.
+  /// How a cloud's instances are drawn: camera-facing quads, the cube hexagon fan, or (small sprites) a point list.
   enum class Geometry : std::uint8_t { kQuad, kFan, kPointList };
 
   /// The instance buffer layout: 16-byte records (xyz + one 32-bit attribute:
@@ -62,11 +56,10 @@ class PointRhiPass {
     float pixel_scale = 1.0F;
   };
 
-  /// Binds the view's resources; registers no pipeline: each layout and
-  /// geometry pair is registered with the setup's registry on first use
-  /// (prepare()), so a new QRhi pays only for the ones its clouds draw with. A
-  /// point list that cannot be created falls back to quads; a quad or fan pair
-  /// that cannot be registered drops its clouds with a warning.
+  /// Binds the view's resources; registers no pipeline: each layout and geometry pair registers with the setup's
+  /// registry on first use (prepare()), so a new QRhi pays only for the ones its clouds draw with. A point list that
+  /// cannot be created falls back to quads; a quad or fan pair that cannot be registered drops its clouds with a
+  /// warning.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
     return layout_shader_resources_ != nullptr;
@@ -80,24 +73,19 @@ class PointRhiPass {
   [[nodiscard]] bool pointListActive() const {
     return point_list_enabled_ && point_size_supported_;
   }
-  /// Adopts the view's point layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<PointRenderable*>& layers);
-  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
   [[nodiscard]] bool hasLayers() const {
     return !layers_.empty();
   }
 
-  /// Runs each visible layer's prepareForRender() against the per-view vertex
-  /// budget, places it, and records the families' fixed-frame bounds
+  /// Admits visible layers against the per-view vertex budget and records the families' fixed-frame bounds
   /// (lastPointBounds(), lastDepthBounds()).
   void admit(const PlaceFn& place);
-  /// Uploads admitted clouds and uniforms and builds this frame's draws.
   void prepare(const RhiFrameContext& frame, const ViewInputs& view);
   /// The prepared draws of `layer` (none, one, or opaque then faded).
   [[nodiscard]] std::span<const Draw> drawsFor(const PointRenderable* layer) const {
     return findDraws(draws_, layer);
   }
-  /// Records one draw; false when its pipeline is unavailable for `pass`.
   bool submit(
       QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
       const QRhiViewport& viewport) const;

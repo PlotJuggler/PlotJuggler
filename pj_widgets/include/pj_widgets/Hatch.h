@@ -1,14 +1,11 @@
 #pragma once
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
-//
-// App-wide "no data" diagonal hatch. A SINGLE shared pattern so every widget that
-// paints it (the Timeline empty span, the RangeSlider unselected track, ...) reads
-// as a window into ONE continuous hatch layer: the diagonal lines are phase-aligned
-// across widgets, not merely the same spacing. The trick is to phase the pattern to
-// a shared grid — `X + Y ≡ 0 (mod kHatchSpacing)` — measured in a common coordinate
-// frame (pass each widget's GLOBAL origin), so two widgets at different screen
-// positions still draw collinear lines.
+// App-wide "no data" diagonal hatch: one shared pattern, so every widget that paints it (the Timeline empty span, the
+// RangeSlider unselected track) reads as a window into one continuous hatch layer, with the diagonal lines
+// phase-aligned across widgets and not merely equally spaced. The pattern is phased to a shared grid, `X + Y = 0 (mod
+// kHatchSpacing)`, in a common coordinate frame (each widget passes its global origin), so two widgets at different
+// screen positions draw collinear lines.
 
 #include <QColor>
 #include <QGuiApplication>
@@ -22,12 +19,11 @@
 
 namespace PJ {
 
-// Single source of truth for the hatch line spacing (logical px). Shared by every
-// widget so the pattern density can never drift between them.
+// The one hatch line spacing (logical px), shared by every widget so the density cannot drift.
 inline constexpr double kHatchSpacing = 14.0;
 
-// Theme ink for the hatch. The app syncs QPalette::Window per theme; use its
-// lightness only to choose the framework data-backdrop/text tokens.
+// Theme ink of the hatch. The app syncs QPalette::Window per theme; its lightness only chooses the framework
+// data-backdrop and text tokens.
 inline QColor appHatchColor(bool enabled = true) {
   const QPalette pal = QGuiApplication::palette();
   const auto fw_theme = theme::themeFor(pal.color(QPalette::Window).lightness() >= 128);
@@ -35,21 +31,18 @@ inline QColor appHatchColor(bool enabled = true) {
       theme::Surface::DataBackdrop, enabled ? theme::Emphasis::Muted : theme::Emphasis::Disabled, fw_theme);
 }
 
-// The shared data backdrop the hatch is composited over — the second half of
-// "one continuous layer". The ink (appHatchColor) is only half the story:
-// every caller must paint this behind the hatch so contrast matches too.
+// The shared data backdrop the hatch is composited over, the other half of "one continuous layer": every caller must
+// paint it behind the hatch so contrast matches too, not just the ink (appHatchColor).
 inline QColor appHatchBackground() {
   const QPalette pal = QGuiApplication::palette();
   const auto fw_theme = theme::themeFor(pal.color(QPalette::Window).lightness() >= 128);
   return theme::surface(theme::Surface::DataBackdrop, fw_theme);
 }
 
-// Paint the shared hatch into `painter`, filling `rect` and intersecting any clip the
-// caller already set (so a widget can restrict it to an arbitrary region, e.g. the
-// RangeSlider's unselected stripes, by setting a clip region first). `global_origin`
-// is the origin of `rect`'s coordinate frame in the shared (global/screen) space —
-// pass `widget->mapToGlobal({0,0})` for a QWidget, or the item origin mapped to global
-// for a QGraphicsItem. Lines are 45-degree "/", length = rect.height(), 1px cosmetic.
+// Paints the shared hatch into `painter`, filling `rect` and intersecting any clip the caller set (so a widget can
+// restrict it to a region, such as the RangeSlider's unselected stripes, by setting a clip first). `global_origin` is
+// the origin of `rect`'s coordinate frame in the shared screen space: `widget->mapToGlobal({0,0})` for a QWidget, the
+// item origin mapped to global for a QGraphicsItem. Lines are 45-degree "/", length rect.height(), 1px cosmetic.
 inline void drawHatch(QPainter& painter, const QRectF& rect, const QPointF& global_origin, const QColor& color) {
   if (rect.width() <= 0.0 || rect.height() <= 0.0) {
     return;
@@ -63,9 +56,9 @@ inline void drawHatch(QPainter& painter, const QRectF& rect, const QPointF& glob
   painter.setRenderHint(QPainter::Antialiasing, true);
   painter.setPen(QPen(color, 1.0));
   const double h = rect.height();
-  // A "/" line through local (xs, rect.bottom()) lies on global X+Y =
-  // xs + global_origin.x() + rect.bottom() + global_origin.y(); choose xs so that's a
-  // multiple of kHatchSpacing, then tile by kHatchSpacing across rect (clipping spill).
+  // A "/" line through local (xs, rect.bottom()) lies on global X+Y = xs + global_origin.x() + rect.bottom() +
+  // global_origin.y(); xs is chosen so that is a multiple of kHatchSpacing, then the pattern tiles by kHatchSpacing
+  // across rect (clipping the spill).
   const double base_phase = posmod(global_origin.x() + global_origin.y() + rect.bottom(), kHatchSpacing);
   double start_x = rect.left() - h;
   start_x -= posmod(start_x + base_phase, kHatchSpacing);
@@ -77,13 +70,10 @@ inline void drawHatch(QPainter& painter, const QRectF& rect, const QPointF& glob
   painter.restore();
 }
 
-// Paint the COMPLETE shared "no data" fill into `rect`: the theme backdrop
-// (appHatchBackground) PLUS the phase-aligned hatch (appHatchColor) on top — so every
-// widget composites the identical ink over the identical backdrop and gets the same
-// contrast, not merely the same spacing/phase. Prefer this over a bare drawHatch()
-// anywhere the region isn't already filled with QPalette::Window (e.g. the RangeSlider's
-// otherwise-transparent groove, where a bare hatch would sit on white and read busier).
-// Respects any clip the caller set, so a widget can restrict it to a sub-region.
+// Paints the complete shared "no data" fill into `rect`: the theme backdrop (appHatchBackground) plus the phase-aligned
+// hatch (appHatchColor), so every widget composites the same ink over the same backdrop. Prefer it to a bare
+// drawHatch() wherever the region is not already filled with QPalette::Window (the RangeSlider's transparent groove,
+// where a bare hatch would sit on white and read busier). Respects any clip the caller set.
 inline void drawNoDataHatch(QPainter& painter, const QRectF& rect, const QPointF& global_origin, bool enabled = true) {
   painter.fillRect(rect, appHatchBackground());
   drawHatch(painter, rect, global_origin, appHatchColor(enabled));

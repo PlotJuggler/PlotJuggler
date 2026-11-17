@@ -57,7 +57,6 @@ std::atomic<int> g_zero_stamp_parser_calls{0};
 std::atomic<int> g_mixed_parser_calls{0};
 std::atomic<int> g_metadata_gate_parser_calls{0};
 
-// A raw cloud in frame "lidar" holding one float32 xyz point, stamped `ts`, over static storage.
 PJ::sdk::PointCloud singlePointCloud(PJ::Timestamp ts) {
   static const float k_point[3] = {1.0f, 2.0f, 3.0f};
   PJ::sdk::PointCloud cloud;
@@ -75,10 +74,8 @@ PJ::sdk::PointCloud singlePointCloud(PJ::Timestamp ts) {
   return cloud;
 }
 
-// Minimal dual-mode emit. The raw cloud is a single float32 xyz point over a
-// static buffer (no anchor needed); at/after the threshold a CompressedPointCloud
-// with a bogus codec id (decode always fails). Per-parse counting is handled by
-// test::CountingObjectParser at the registration call site.
+// Minimal dual-mode emit: a single float32 xyz point over a static buffer (no anchor needed) before the threshold, a
+// CompressedPointCloud with a bogus codec id (decode always fails) at/after it.
 PJ::Expected<PJ::sdk::ObjectRecord> emitMixedCloud(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   if (ts >= kCompressedStampThreshold) {
     static const uint8_t k_blob[4] = {0xDE, 0xAD, 0xBE, 0xEF};
@@ -101,7 +98,7 @@ PJ::ObjectTopicId registerCloudTopic(PJ::ObjectStore& store, PJ::DatasetId datas
   return *topic_id;
 }
 
-// L.18: a reload that lands a same-timestamp, same-size sample under the stable
+// A reload that lands a same-timestamp, same-size sample under the stable
 // topic id must not be served from the pre-reload caches.
 TEST(PointCloudLayerReload, DatasetReplaceClearsSampleIdentityCaches) {
   g_primary_parser_calls.store(0);
@@ -123,13 +120,11 @@ TEST(PointCloudLayerReload, DatasetReplaceClearsSampleIdentityCaches) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100}) << "attach did not render the first sample";
 
-  // Baseline: the same sample id is skipped at tracker rate.
   const int calls_after_attach = g_primary_parser_calls.load();
   layer.renderAtForTest(100);
   EXPECT_EQ(g_primary_parser_calls.load(), calls_after_attach);
 
-  // In-place reload: same topic name, same stamp, same byte SIZE — the maximal
-  // lookalike of the already-pushed sample (only its SequentialUID differs).
+  // In-place reload: same topic name, same stamp, same byte SIZE (only the SequentialUID differs).
   PJ::DataEngine staged_engine;
   PJ::ObjectStore staged_store;
   const PJ::ObjectTopicId staged_topic = registerCloudTopic(staged_store, /*dataset_id=*/2);
@@ -142,17 +137,13 @@ TEST(PointCloudLayerReload, DatasetReplaceClearsSampleIdentityCaches) {
                               }));
   session.replaceDataset(staged_engine, staged_store, /*staged_id=*/2, /*primary_id=*/1, std::move(staged_parsers));
 
-  // Without the datasetAboutToBeReplaced reset the colliding id hits the
-  // "already pushed" skip and the new bytes are never decoded.
   layer.renderAtForTest(100);
   EXPECT_GE(g_staged_parser_calls.load(), 1) << "layer served stale cached content after the dataset replace";
 }
 
-// The dock's per-tick repaint gate keys on PointCloudLayer::renderKey(): it must be
-// STABLE while the same sample is active (so a 60 Hz playhead over a <10 Hz cloud
-// coalesces) and CHANGE when a new sample becomes active (so the repaint resumes).
-// With no TF buffer the key reduces to the active sample stamp, which is what this
-// pins; the transform term is covered by the live scene path.
+// The dock's per-tick repaint gate keys on PointCloudLayer::renderKey(): STABLE while the same sample is active (so a
+// 60 Hz playhead over a <10 Hz cloud coalesces) and CHANGING when a new sample becomes active. With no TF buffer the
+// key reduces to the active sample stamp, which is what this pins.
 TEST(PointCloudLayerRenderKey, TracksActiveSampleStamp) {
   g_primary_parser_calls.store(0);
   PJ::SessionManager session;
@@ -178,10 +169,9 @@ TEST(PointCloudLayerRenderKey, TracksActiveSampleStamp) {
   EXPECT_NE(k_150, k_250) << "a new active sample must change the key";
 }
 
-// A same-stamp, same-size replacement entry (the store permits duplicate
-// timestamps; indexAtOrBefore picks the last pushed) is a DIFFERENT sample and
-// must CHANGE the key — a stamp-keyed renderKey left the dock's repaint gate
-// closed, so the replacement never even reached renderAt's UID memo.
+// A same-stamp, same-size replacement entry (the store permits duplicate timestamps; indexAtOrBefore picks the last
+// pushed) is a DIFFERENT sample and must CHANGE the key: a stamp-keyed key left the repaint gate closed, so the
+// replacement never reached renderAt's UID memo.
 TEST(PointCloudLayerRenderKey, SameStampReplacementChangesKey) {
   g_primary_parser_calls.store(0);
   PJ::SessionManager session;
@@ -205,17 +195,15 @@ TEST(PointCloudLayerRenderKey, SameStampReplacementChangesKey) {
   EXPECT_NE(k_before, k_after) << "same-stamp replacement entry did not change the render key";
 }
 
-// The renderKey transform-fold branch — untested by TracksActiveSampleStamp, which
-// uses no tf_buffer. With the SAME active cloud sample, the key must CHANGE when the
-// fixed←source transform changes (sensor moved) and stay STABLE when it does not, so
-// a moving cloud reopens the repaint gate while a static pose coalesces.
+// The renderKey transform-fold branch (TracksActiveSampleStamp uses no tf_buffer): with the SAME active cloud sample
+// the key must CHANGE when the fixed<-source transform changes (sensor moved) and stay STABLE when it does not, so a
+// moving cloud reopens the repaint gate while a static pose coalesces.
 TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
   g_primary_parser_calls.store(0);
   PJ::SessionManager session;
   PJ::ObjectStore& store = session.objectStore();
   const PJ::ObjectTopicId topic_id = registerCloudTopic(store, /*dataset_id=*/1);
-  // One sample at stamp 0 → it is the active sample for every t ≥ 0, so the key's
-  // ONLY moving part across the times below is the transform term.
+  // One sample at stamp 0 is the active sample for every t >= 0, so the key's only moving part is the transform term.
   ASSERT_TRUE(store.pushOwned(topic_id, 0, std::vector<uint8_t>{0x01}).has_value());
   session.registerObjectTopicParser(topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
                                       return new CountingObjectParser(
@@ -223,7 +211,6 @@ TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
                                           &emitMixedCloud);
                                     }));
 
-  // world←lidar at two stamps with DIFFERENT translations (same orientation).
   auto tf = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
   ASSERT_TRUE(tf->setTransform(
                     pj::tf::StampedTransform{
@@ -254,7 +241,7 @@ TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
   EXPECT_NE(k_t150, k_t250) << "a transform change at the same sample must reopen the gate";
 }
 
-// TF R6: the layer reports its cloud's own header stamp on the dataset clock, which
+// The layer reports its cloud's own header stamp on the dataset clock, which
 // the view places it at. A time-shifted merge moves the store timestamp and records
 // payload_stamp_shift, while the serialized cloud keeps its original stamp.
 TEST(PointCloudLayerPlacement, RenderStampIsTheCloudsOwnStampOnTheDatasetClock) {
@@ -277,7 +264,7 @@ TEST(PointCloudLayerPlacement, RenderStampIsTheCloudsOwnStampOnTheDatasetClock) 
   EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(960 + kShift));
 }
 
-// TF R6: in live streaming the lidar stopped after its cloud at 1 s, so the object
+// In live streaming the lidar stopped after its cloud at 1 s, so the object
 // store keeps that cloud while TF (a 10 s window) runs on to 12 s and evicts the
 // sample at 1 s. The layer keeps the cloud where it was captured, so the render key
 // (the placement it draws with) does not move.
@@ -316,7 +303,7 @@ TEST(PointCloudLayerPlacement, EvictedTfSampleKeepsTheCloudWhereItWasCaptured) {
   EXPECT_EQ(layer.renderKey(PJ::fromRaw(12000 * kMillisecond)), captured);
 }
 
-// L.20: stamp 0 is data, not a sentinel — attach renders it and refreshNow()
+// Stamp 0 is data, not a sentinel — attach renders it and refreshNow()
 // (here driven through a color-field change) re-decodes at it.
 TEST(PointCloudLayerTimestampZero, AttachAndRefreshRenderFirstSampleAtStampZero) {
   g_zero_stamp_parser_calls.store(0);
@@ -342,7 +329,7 @@ TEST(PointCloudLayerTimestampZero, AttachAndRefreshRenderFirstSampleAtStampZero)
   EXPECT_GT(g_zero_stamp_parser_calls.load(), calls_before) << "refreshNow() treated stamp 0 as 'no data'";
 }
 
-// L.19: the raw push path (and the already-pushed skip) must update wanted_, so a
+// The raw push path (and the already-pushed skip) must update wanted_, so a
 // stale in-flight compressed decode finishing late is discarded instead of
 // clearing/overwriting the newer sample the tracker moved to.
 TEST(PointCloudLayerMixedMode, StaleCompressedDecodeDoesNotClobberNewerSample) {
@@ -365,30 +352,24 @@ TEST(PointCloudLayerMixedMode, StaleCompressedDecodeDoesNotClobberNewerSample) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
 
-  // Tracker reaches the compressed sample: an async decode of (2000) starts.
   layer.renderAtForTest(2000);
   ASSERT_TRUE(layer.decodeInFlightForTest());
 
-  // Before the decode lands the tracker scrubs back to the raw sample.
   layer.renderAtForTest(100);
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
 
-  // The decode fails (bogus codec). It is stale — the tracker wants (100) — so it
-  // must NOT clear the view / pushed identity the failure path applies to a
-  // current sample.
+  // The decode fails (bogus codec) but is stale (the tracker wants 100), so it must NOT clear the view / pushed
+  // identity the failure path applies to a current sample.
   ASSERT_TRUE(pumpUntil([&] { return !layer.decodeInFlightForTest(); }, std::chrono::seconds(10)))
       << "compressed decode never completed";
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100})
       << "stale compressed decode result clobbered the newer sample";
 }
 
-// Resolve-before-memo regression: when the active sample is unchanged, renderAt
-// must skip on metadata alone WITHOUT resolving payload bytes — a resolve is a
-// cold refetch (file read + whole-chunk decompress on the GUI thread) once the
-// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
-// cache would mask a redundant resolve, so it is deliberately reset between
-// renders via an out-of-order push — exactly the streaming condition that made
-// the redundant resolve go cold in production.
+// While the active sample is unchanged, renderAt must skip on metadata alone WITHOUT resolving payload bytes: a
+// resolve is a cold refetch (file read + whole-chunk decompress on the GUI thread) once the ResidentPayloadPool has
+// evicted the entry's seed. The store's warm latestAt cache would mask a redundant resolve, so it is reset between
+// renders via an out-of-order push (the streaming condition).
 TEST(PointCloudLayerMetadataGate, UnchangedSampleDoesNotResolvePayload) {
   g_metadata_gate_parser_calls.store(0);
 
@@ -412,8 +393,8 @@ TEST(PointCloudLayerMetadataGate, UnchangedSampleDoesNotResolvePayload) {
   const int parses_after_attach = g_metadata_gate_parser_calls.load();
   ASSERT_GT(fetches_after_attach, 0);
 
-  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
-  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve by the next render must re-invoke the
+  // lazy fetcher.
   auto old_fetch_count = std::make_shared<int>(0);
   pushLazyCounting(store, topic_id, 50, std::vector<uint8_t>{0x02}, old_fetch_count);
 

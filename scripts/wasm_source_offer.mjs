@@ -11,7 +11,7 @@
 // its output directory), into <deployment>/sources, where the THIRD_PARTY_NOTICES.txt of the build points. Writes
 // ~300 MB. A pinned hash is verified (a mismatch, a missing hash, or a Qt version without hashes fails); a git pin is
 // resolved to its commit and archived from GitHub's tarball of that commit, whose hash is recorded. With --links, only
-// PlotJuggler 4 (a private repository) is archived: the offer gives every library's public address instead, which
+// PlotJuggler 4 (the built revision) is archived: the offer gives every library's public address instead, which
 // the GPL accepts beside the object code as long as those addresses keep serving it; each is checked to answer.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';

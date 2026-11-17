@@ -4,7 +4,7 @@ A derived object is the result of a script (Luau or Python) over any mix of scal
 object topics (point clouds, transforms, scene entities, images, annotations) of one dataset.
 Its object outputs are ordinary topics, which plots and scene layers show without knowing they
 are derived; its number outputs can be plotted as series. Nothing is computed without demand,
-scripts are stateless, and a slow script keeps updating at the rate it can sustain (D1, D2, D30).
+scripts are stateless, and a slow script keeps updating at the rate it can sustain.
 
 | Engine | Kind | Runs | Where | Header |
 |---|---|---|---|---|
@@ -37,6 +37,6 @@ scripts are stateless, and a slow script keeps updating at the rate it can susta
 **Markers:** `BatchEngine` publishes a `PlotMarkers` set into a `__markers__/` object topic that
 `PlotMarkersItem` draws on the plots its scope names.
 
-**Reading order:** this page, then [ARCHITECTURE.md](ARCHITECTURE.md) §1-§4, then the section for
-the area you change (§21 has recipes for the common changes, §20 the known limits), then its
-header. The decisions D1-D30 are in [REQUIREMENTS.md](REQUIREMENTS.md).
+**Reading order:** this page, then [ARCHITECTURE.md](ARCHITECTURE.md) from "Goal" through "Behaviour
+contracts", then the section for the area you change ("Changing it" has recipes for the common changes, "Known gaps"
+the current limits), then its header.

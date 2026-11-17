@@ -29,13 +29,12 @@ module.exports = defineConfig({
   // Every case boots its own page and context, so cases spread across workers and CI shards, file by
   // file or within one. Chromium: cases tagged @serial (time bounds, hover probes) fail on a loaded
   // runner, so they run alone afterwards (`npm run test`, then `npm run test:serial`). Firefox runs
-  // this build several times slower, and its fixed-delay UI steps miss under load (4 of 46 cases
-  // failed with three workers): one worker, with wasm-ci.yml sharding it across two jobs instead.
+  // this build several times slower and its fixed-delay UI steps miss under load (observed: 4 of 46
+  // cases failed with three workers), so it gets one worker; wasm-ci.yml shards it across two jobs.
   fullyParallel: true,
   // Three on CI's 4-core runners; one core stays for the static server and the browsers' own threads.
   workers: process.env.CI ? 3 : undefined,
-  // No project name in snapshot paths: both browsers compare against one
-  // committed baseline set.
+  // No project name in snapshot paths: both browsers compare against one baseline set.
   snapshotPathTemplate: '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}{-snapshotSuffix}{ext}',
   use: {
     viewport: { width: 1280, height: 720 },

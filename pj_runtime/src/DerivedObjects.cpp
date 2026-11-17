@@ -25,11 +25,9 @@ namespace PJ {
 
 namespace {
 
-/// Producers before dependents, document order otherwise: restore resolves
-/// transform inputs by name, so a dependent replayed before its producer fails.
-/// Used for both persisting and replaying, so a saved file is already ordered
-/// and an older unordered one still loads. A cycle (never installable) keeps its
-/// members in document order at the end.
+/// Producers before dependents, document order otherwise: restore resolves transform inputs by name, so a dependent
+/// replayed before its producer fails. Used for persisting and replaying, so an unordered file still loads. A cycle
+/// (never installable) keeps its members in document order at the end.
 void orderTransformsByDependency(std::vector<PJ::DataProcessorService::TransformRecipe>& recipes) {
   const auto produces = [](const PJ::DataProcessorService::TransformRecipe& recipe, const std::string& input) {
     const std::vector<std::string> topics = PJ::DataProcessorService::materializedTopicNames(recipe);
@@ -71,19 +69,17 @@ void orderTransformsByDependency(std::vector<PJ::DataProcessorService::Transform
   recipes = std::move(ordered);
 }
 
-// The catalog's descriptor for `path`: the exact source dataset when the
-// qualifiers still agree, a unique fallback otherwise, never a same-topic sibling
-// by load order. Empty when no loaded dataset matches (a filter input, say, that
+// The catalog's descriptor for `path`: the exact source dataset when the qualifiers still agree, a unique fallback
+// otherwise, never a same-topic sibling by load order. Empty when no loaded dataset matches (a filter input, say, that
 // only a later restore step creates).
 std::optional<CurveDescriptor> resolveSavedSeries(const CatalogModel& catalog, const SavedSeriesPath& path) {
   const std::optional<QString> key = catalog.resolveCurveKey(path);
   return key.has_value() ? catalog.curveDescriptor(*key) : std::nullopt;
 }
 
-// The datasets in the catalog that carry every key of `inputs` as a series (every one of them,
-// for no inputs; a dataset with no catalog item yet is not counted). Keys are read literally: a
-// persisted generator input is a bare key, so a colon in it is part of the name, never a
-// `dataset_source:` qualifier.
+// The datasets in the catalog that carry every key of `inputs` as a series (all of them for no inputs; a dataset with
+// no catalog item yet is not counted). Keys are read literally: a persisted generator input is a bare key, so a colon
+// in it is part of the name, never a `dataset_source:` qualifier.
 std::vector<DatasetId> datasetsCarryingInputs(const CatalogModel& catalog, const std::vector<std::string>& inputs) {
   std::vector<DatasetId> carriers;
   for (const DatasetId dataset : catalog.datasetIds()) {
@@ -191,8 +187,7 @@ DerivedObjects::DerivedObjects(SessionManager& session, CatalogModel& catalog) :
 QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
   QDomElement element = doc.createElement(u"data_processors"_s);
   for (const auto& recipe : session_.dataProcessorService().recipes()) {
-    // Resolve the input column to a stable (topic, field) path so it rebinds on
-    // reload exactly like a plotted curve.
+    // Resolve the input column to a stable (topic, field) path so it rebinds on reload like a plotted curve.
     const QString input_key = u"dataset:%1/topic:%2/column:%3"_s.arg(recipe.dataset_id)
                                   .arg(recipe.input_topic_id)
                                   .arg(recipe.input_column_index);
@@ -203,8 +198,7 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
     QDomElement processor = doc.createElement(u"processor"_s);
     processor.setAttribute(u"input_topic"_s, input_desc->topic_name);
     processor.setAttribute(u"input_field"_s, input_desc->field_path);
-    // Dataset qualifiers so the input rebinds to its own source dataset on restore,
-    // never a same-topic sibling (first-match was part of the reported undo bug).
+    // Dataset qualifiers so the input rebinds to its own source dataset on restore, never a same-topic sibling.
     // input_dataset_path is stamped by stampDatasetSourcePaths at layout-file save.
     processor.setAttribute(u"input_dataset_id"_s, QString::number(recipe.dataset_id));
     if (const auto source = catalog_.datasetSourceName(recipe.dataset_id); source.has_value()) {
@@ -215,9 +209,8 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
     if (recipe.processor) {
       appendJsonAsCdata(doc, processor, QString::fromStdString(recipe.processor->saveParams()));
     }
-    // Embed the filter's Luau source so the layout reopens on a machine without
-    // this filter installed (resolved by restore's source_fallback leg). A named
-    // child element, NOT a second direct CDATA child — restore reads params via
+    // Embed the filter's Luau source so the layout reopens on a machine without this filter installed (restore's
+    // source_fallback leg). A named child element, NOT a second direct CDATA child: restore reads params via
     // directCdataText, which ignores child elements. Empty for native C++ builtins.
     if (!recipe.filter_source.empty()) {
       QDomElement source_el = doc.createElement(u"source_fallback"_s);
@@ -226,12 +219,10 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
     }
     element.appendChild(processor);
   }
-  // Plugin-created transforms (pj.data_processors.v1): named, owner-tagged nodes
-  // that carry their script + bindings BY VALUE, so they replay on load WITHOUT the
-  // originating plugin (needed only for re-editing). Persisted in the same snapshot
-  // block as the per-curve filters above; restore re-installs them via
-  // DataProcessorService::restoreTransform. Inputs/outputs are topic NAMES (the
-  // engine resolves them on restore), so no (topic, field) rebinding is needed here.
+  // Plugin-created transforms (pj.data_processors.v1): named, owner-tagged nodes carrying their script + bindings BY
+  // VALUE, so they replay on load without the originating plugin (needed only for re-editing). Persisted in the same
+  // block as the per-curve filters; restore re-installs them via DataProcessorService::restoreTransform. Inputs and
+  // outputs are topic NAMES (resolved by the engine on restore), so no (topic, field) rebinding is needed.
   std::vector<DataProcessorService::TransformRecipe> transforms = session_.dataProcessorService().transformRecipes();
   orderTransformsByDependency(transforms);
   for (const auto& recipe : transforms) {
@@ -269,8 +260,8 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
       out.setAttribute(u"name"_s, QString::fromStdString(output_name));
       transform.appendChild(out);
     }
-    // params (create(params), JSON) and script (the full backend payload, Luau today)
-    // each get their own CDATA child so restore reads them back independently.
+    // params (create(params), JSON) and script (the full backend payload) each get their own CDATA child so restore
+    // reads them back independently.
     if (!recipe.params_json.empty()) {
       QDomElement params = doc.createElement(u"params"_s);
       appendJsonAsCdata(doc, params, QString::fromStdString(recipe.params_json));
@@ -282,11 +273,9 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
     element.appendChild(transform);
   }
 
-  // Marker generators (kind=markers of pj.data_processors.v1): whole-series object
-  // generators run by BatchEngine. Persisted like transforms — script + inputs
-  // BY VALUE so they replay on load without the originating plugin. Dataset identity
-  // is stamped for cross-session rebind (mirrors the <processor> qualifiers); an
-  // all_datasets generator has no single dataset, so it stamps none.
+  // Marker generators (kind=markers of pj.data_processors.v1): whole-series object generators run by BatchEngine.
+  // Persisted like transforms (script + inputs BY VALUE). Dataset identity is stamped for cross-session rebind
+  // (mirrors the <processor> qualifiers); an all_datasets generator has no single dataset, so it stamps none.
   for (const auto& recipe : session_.batchEngine().recipes()) {
     // Marker generators use the same history scope as transforms.
     if (scope == SnapshotScope::kHistory && recipe.history_exempt) {
@@ -334,9 +323,9 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
     element.appendChild(gen);
   }
 
-  // On-demand recipes (kind=on_demand): script, inputs and typed outputs by value, producers first, so they
-  // replay without the plugin. Every input of a node resolved in its one dataset (D7), which each <input>
-  // carries like a transform input (dataset_path is stamped at layout-file save).
+  // On-demand recipes (kind=on_demand): script, inputs and typed outputs by value, producers first, so they replay
+  // without the plugin. Every input of a node resolves in its one dataset, which each <input> carries like a transform
+  // input (dataset_path is stamped at layout-file save).
   const RecipeGraph& graph = session_.onDemandService().graph();
   std::vector<WantedOnDemand> on_demand;
   for (const std::string& key : graph.keys()) {
@@ -414,9 +403,8 @@ std::vector<DataProcessorService::TransformRecipe> DerivedObjects::parseWantedTr
     recipe.user_id = transform.attribute(u"id"_s).toStdString();
     recipe.key = DataProcessorService::makeTransformKey(recipe.owner_plugin, recipe.user_id);
     recipe.history_exempt = transform.attribute(u"history_exempt"_s) == u"1"_s;
-    // Defensive: a kHistory document never carries an exempt entry by
-    // construction (save omits them), but history still has no
-    // authority to replay one if it somehow did (e.g. a hand-edited snapshot).
+    // Defensive: a kHistory document never carries an exempt entry (save omits them), but history has no authority to
+    // replay one if it did (a hand-edited snapshot).
     if (skip_exempt && recipe.history_exempt) {
       continue;
     }
@@ -512,8 +500,8 @@ std::vector<WantedFilter> DerivedObjects::parseWantedFilters(const QDomElement& 
       entry.persisted.input_column_index = input_desc->column_index;
     }
     entry.persisted.processor_id = processor.attribute(u"processor_id"_s).toStdString();
-    // Params are the <processor>'s OWN direct CDATA — directCdataText ignores the
-    // <source_fallback> child (QDomElement::text() would recurse and merge them).
+    // Params are the <processor>'s OWN direct CDATA: directCdataText ignores the <source_fallback> child
+    // (QDomElement::text() would recurse and merge them).
     const QString params = directCdataText(processor);
     entry.persisted.params_json = params.isEmpty() ? std::string("{}") : params.toStdString();
     entry.persisted.filter_source = processor.firstChildElement(u"source_fallback"_s).text().toStdString();
@@ -563,7 +551,7 @@ bool DerivedObjects::repairDataProcessors(
         filter_failures.erase(index);  // resolved onto a filter already live (kept, or a duplicate)
         continue;
       }
-      // Resolve order: live catalogue → embedded source → transitional C++ builtin.
+      // Resolve order: live catalogue, then the layout's embedded source.
       std::unique_ptr<proc::DataProcessor> built =
           service.makeRestoredProcessor(persisted.processor_id, persisted.params_json, persisted.filter_source);
       if (!built) {
@@ -681,7 +669,7 @@ std::vector<WantedOnDemand> DerivedObjects::parseWantedOnDemand(const QDomElemen
     if (skip_exempt && recipe.history_exempt) {
       continue;
     }
-    // `label` and `infer_outputs`, which the prototype wrote, are not part of a recipe: read past.
+    // Legacy `label` and `infer_outputs` attributes are not part of a recipe: ignored.
     recipe.language = node.attribute(u"language"_s, u"luau"_s).toStdString();
     const QString clock = node.attribute(u"query_time"_s, u"1"_s);
     if (clock == u"1"_s || clock == u"0"_s) {
@@ -699,7 +687,7 @@ std::vector<WantedOnDemand> DerivedObjects::parseWantedOnDemand(const QDomElemen
       }
     }
     // A saved input dataset (source, path) must name a loaded dataset, the same one for every input, which binds
-    // the recipe there; with neither, the graph binds the one dataset carrying every input (D7).
+    // the recipe there; with neither, the graph binds the one dataset carrying every input.
     std::optional<DatasetId> dataset;
     for (QDomElement in = node.firstChildElement(u"input"_s); !in.isNull(); in = in.nextSiblingElement(u"input"_s)) {
       const std::string input = in.attribute(u"name"_s).toStdString();
@@ -763,7 +751,7 @@ std::vector<WantedOnDemand> DerivedObjects::parseWantedOnDemand(const QDomElemen
     recipe.script = directCdataText(node.firstChildElement(u"script"_s)).toStdString();
     wanted.push_back(std::move(entry));
   }
-  orderOnDemandByDependency(wanted);  // the prototype wrote them unordered
+  orderOnDemandByDependency(wanted);  // a layout may list them unordered
   return wanted;
 }
 
@@ -806,11 +794,10 @@ std::optional<QString> DerivedObjects::refusal(const DerivedSnapshot& snapshot) 
   }
   auto& service = session_.dataProcessorService();
   BatchEngine& batch_engine = session_.batchEngine();
-  // Reject before the first clear if what this restore removes — each filter and
-  // each non-exempt transform the snapshot drops or changes, plus everything the
-  // removal cascades into — would strand an exempt transform or marker generator.
-  // Removal cascades between filters and transforms, so checking after the first
-  // clear would be too late. Nothing below mutates the session.
+  // Reject before the first clear if what this restore removes (each filter and non-exempt transform the snapshot
+  // drops or changes, plus everything the removal cascades into) would strand an exempt transform or marker generator.
+  // Removal cascades between filters and transforms, so checking after the first clear would be too late. Nothing
+  // below mutates the session.
   if (!service.hasHistoryExemptTransforms() && !batch_engine.hasHistoryExemptGenerators() &&
       !graph.hasHistoryExemptRecipes()) {
     return std::nullopt;
@@ -872,15 +859,13 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   const bool parsed_all = snapshot.diagnostics.empty();
   report.diagnostics = std::move(snapshot.diagnostics);
 
-  // 1. What stays live, upstream to downstream. A kept filter or transform keeps its
-  //    output TopicId, so curves bound to it (e.g. in a preserved history-exempt tab,
-  //    which no history snapshot describes) survive an unrelated undo. A kept generator
-  //    (its bindings equal the snapshot's and nothing it reads is replaced) keeps its
-  //    topic, published set, run state and coverage, so a restore costs it no re-run.
-  //    Replaced means a removed output (a kept processor reading a removed output falls
-  //    with it) or one this restore creates, which every transform it installs does, a
-  //    reinstalled key's new names included. An all-datasets rule also needs a published
-  //    set in the current display frame and no run in flight.
+  // 1. What stays live, upstream to downstream. A kept filter or transform keeps its output TopicId, so curves bound to
+  //    it (e.g. in a preserved history-exempt tab, which no history snapshot describes) survive an unrelated undo. A
+  //    kept generator (bindings equal the snapshot's, nothing it reads replaced) keeps its topic, published set, run
+  //    state and coverage, so a restore costs it no re-run. Replaced means a removed output (a kept processor reading
+  //    one falls with it) or one this restore creates, which every transform it installs does, a reinstalled key's new
+  //    names included. An all-datasets rule also needs a published set in the current display frame and no run in
+  //    flight.
   const KeepSets keep = keepSets(snapshot);
   std::unordered_set<std::string> live_exempt_keys;
   for (const auto& live : service.transformRecipes()) {
@@ -923,7 +908,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   }
 
   // An on-demand node reads object topics, other nodes' outputs and series, a processor output among them: it is
-  // kept when its recipe, its upstreams and the series it reads all stay (LAY-21).
+  // kept when its recipe, its upstreams and the series it reads all stay.
   std::unordered_set<std::string> keep_on_demand;
   if (any_on_demand) {
     std::vector<RecipeGraph::Recipe> wanted_on_demand;
@@ -936,13 +921,11 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     keep_on_demand = on_demand.graph().unchangedRecipeKeys(wanted_on_demand, intent, replaced_outputs);
   }
 
-  // 2. Clear downstream to upstream what the snapshot drops or changes; a kept filter
-  //    or transform reading a removed output falls with it and is re-created below. A
-  //    snapshot with NO <data_processors> clears everything; the catalog rebuild below
-  //    MUST run on every path so the retired outputs leave the catalog. Replacement may
-  //    drop every recipe; history never touches the exempt ones, after the caller's
-  //    refusal check.
-  //    The on-demand clear cancels the cleared nodes' runs and keeps their topics for the reinstall.
+  // 2. Clear downstream to upstream what the snapshot drops or changes; a kept filter or transform reading a removed
+  //    output falls with it and is re-created below. A snapshot with NO <data_processors> clears everything; the
+  //    catalog rebuild below MUST run on every path so the retired outputs leave the catalog. History never touches
+  //    the exempt ones, after the caller's refusal check. The on-demand clear cancels the cleared nodes' runs and keeps
+  //    their topics for the reinstall.
   const bool on_demand_cleared = on_demand.clearExcept(intent, keep_on_demand);
   // An exception below must not leave the service restoring: the sweep is a no-op once the normal path has run it.
   const struct SweepOnExit {
@@ -956,13 +939,11 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   service.clearAllFilters(keep.filter_outputs);
   service.clearTransforms(intent, keep.transform_keys);
 
-  // 3. Install upstream to downstream: filters and transforms in rounds, then the
-  //    generators, which resolve their inputs by name through the catalog (and, naming
-  //    no dataset, pick their dataset through it), so it lists the outputs just created
-  //    first (marker topics are not catalog items, so the generators leave it as it
-  //    is). upsertGenerator re-creates AND runs each in one call. A kept rule is not
-  //    touched at all. A layout load waits a bounded time for a changed or new one,
-  //    whose markers arrive later (markersPublished); an undo restores what the user
+  // 3. Install upstream to downstream: filters and transforms in rounds, then the generators, which resolve their
+  //    inputs by name through the catalog (and, naming no dataset, pick their dataset through it), so it lists the
+  //    outputs just created first (marker topics are not catalog items, so the generators leave it as it is).
+  //    upsertGenerator re-creates AND runs each in one call. A kept rule is not touched. A layout load waits a bounded
+  //    time for a changed or new one, whose markers arrive later (markersPublished); an undo restores what the user
   //    saw, so it runs a changed rule to completion.
   const bool processors_restored =
       repairDataProcessors(snapshot.filters, snapshot.transforms, live_exempt_keys, report.diagnostics);
@@ -995,13 +976,11 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
                "re-apply the rule");
       }
     }
-    // A generator that cannot be restored is reported and skipped, but does NOT fail
-    // the restore: unlike a filter or transform, it publishes only overlay decoration
-    // — no topic that a curve, a plot or a scene binds to. Failing the restore here
-    // costs the user the whole workspace (applyWorkspace rolls back) to save a set of
-    // annotations, and a rule whose input series is legitimately absent in the data
-    // this layout was reopened against is an ordinary outcome, not a corrupt layout.
-    // Reported before the keep check: the id's other binding may be the one kept.
+    // A generator that cannot be restored is reported and skipped but does NOT fail the restore: unlike a filter or
+    // transform it publishes only overlay decoration (no topic a curve, plot or scene binds to), failing would cost the
+    // user the whole workspace (applyWorkspace rolls back), and a rule whose input series is legitimately absent in the
+    // data the layout was reopened against is an ordinary outcome. Reported before the keep check: the id's other
+    // binding may be the one kept.
     if (!wanted.parse_error.isEmpty()) {
       report.diagnostics.push_back(
           {"generator-restore-failed", tr("Could not restore marker generator '%1': %2")
@@ -1033,11 +1012,10 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     }
   }
 
-  // 4. On-demand recipes, producers first, once the catalog lists the processor outputs a series input may read.
-  //    A kept node is not touched (its topics, results and state stay); a changed or new one is installed, and
-  //    the install requests it where the session wants it (a finding at its pin, a demanded node at the cursor)
-  //    on the pool. History has no authority over a node it left live (an exempt one). Then the sweep retires
-  //    what no install reclaimed.
+  // 4. On-demand recipes, producers first, once the catalog lists the processor outputs a series input may read. A kept
+  //    node is not touched (topics, results, state stay); a changed or new one is installed, and the install requests
+  //    it where the session wants it (a finding at its pin, a demanded node at the cursor) on the pool. History has no
+  //    authority over a node it left live (an exempt one). Then the sweep retires what no install reclaimed.
   bool on_demand_restored = true;
   std::unordered_set<std::string> installed_keys;
   for (const WantedOnDemand& wanted : snapshot.on_demand) {
@@ -1069,9 +1047,8 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     on_demand.rerun(stale);
   }
 
-  // 5. Finish. upsertGenerator publishes to the store without announcing it; the
-  //    toolbox's onDataChanged sends the same notification, so this restore does too,
-  //    once. Likewise the on-demand topics registered, reclaimed or retired.
+  // 5. Finish. upsertGenerator publishes to the store without announcing it; the toolbox's onDataChanged sends the same
+  //    notification, so this restore does too, once. Likewise the on-demand topics registered, reclaimed or retired.
   if (any_generator_restored || batch_engine.persistentBindingCount() != generators_before) {
     session_.notifyMarkersChanged();
   }

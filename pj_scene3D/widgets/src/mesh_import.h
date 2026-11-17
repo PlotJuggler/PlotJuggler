@@ -32,7 +32,6 @@ namespace pj::scene3d {
 #endif
 }
 
-// Encoded texture bytes a mesh holds, each shared material counted once.
 [[nodiscard]] inline std::uint64_t encodedTextureBytes(const MeshData& mesh) {
   std::uint64_t texture_bytes = 0;
   std::unordered_set<const Material*> counted;

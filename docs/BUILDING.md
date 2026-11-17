@@ -67,7 +67,7 @@ resolves dependencies using `conan.lock`, and builds into `build/`.
 The first build may also compile missing dependencies.
 
 Rerun `./build.sh` for incremental builds. To omit the test suite, use
-`./build.sh --skip-test`; other options are listed by `./build.sh --help`.
+`./build.sh --no-tests`; other options are listed by `./build.sh --help`.
 
 Scene3D, the plots and the media viewer render through QRhi: OpenGL on Linux,
 D3D11 on Windows, Metal on macOS; `PJ_GRAPHICS_API=opengl|vulkan|d3d11|d3d12|metal`
@@ -137,7 +137,7 @@ and local source overrides such as `FETCHCONTENT_SOURCE_DIR_QWT_UPSTREAM`,
   [official-plugin porting guide](https://github.com/PlotJuggler/pj-official-plugins/blob/main/porting_guide.md).
   Install compatible extensions through **File → Marketplace**.
 - PJ4 filters use a different contract from PJ3 custom Lua functions; see
-  [Filter Class Contract](../pj_scripting/docs/FILTER_CLASS.md#5-differences-from-pj3-lua_custom_function-intentional).
+  [Filter Class Contract](../pj_scripting/docs/FILTER_CLASS.md#differences-from-pj3-lua_custom_function).
   Keep original PJ3 layouts and scripts when validating a migrated analysis.
 - `cmake --install` installs `plotjuggler4` and its `pj-plugin-check` helper side
   by side in `bin/` and, on Linux, the desktop entry and icons. The app seeds
@@ -230,8 +230,8 @@ Conan remote (anonymous read). Build paths without Conan (WebAssembly, pixi) fet
 pinned release tag from GitHub and build the SDK in-tree (see the root
 `CMakeLists.txt`). `pj_datastore` is added right after the SDK is resolved, so the
 `plotjuggler_sdk::base` and `pj_internal_fmt` targets it links already exist; its Conan
-dependencies (`tsl-robin-map`, `benchmark`) are in the root `conanfile.txt`. nanoarrow
-0.9.0 (with IPC) is not on ConanCenter yet: `pj_datastore/cmake/PjNanoarrow.cmake` takes
+dependencies (`tsl-robin-map`, `benchmark`) are in the root `conanfile.txt`. ConanCenter
+has no nanoarrow 0.9.0 with IPC: `pj_datastore/cmake/PjNanoarrow.cmake` takes
 an installed one (conda-forge's `libnanoarrow`) and otherwise builds the pinned Apache
 source release in-tree; pass `-DFETCHCONTENT_SOURCE_DIR_NANOARROW=<unpacked tarball>`
 to build offline.
@@ -312,9 +312,9 @@ dirs sit behind the `/var -> /private/var` symlink, so tests must compare canoni
 
 Windows packaging: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows
 artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own
-LGPL-trimmed FFmpeg on all platforms). Windows runtime packaging (windeployqt plus the
-FFmpeg/Qt DLLs `pj_app` needs) is in scope: `windows-ci.yml` resolves DLLs through `PATH`
-at test time, which is not a shippable layout.
+LGPL-trimmed FFmpeg on all platforms). `windows-ci.yml` resolves the Qt and FFmpeg DLLs
+through `PATH` at test time, which is not a shippable layout; the installer and portable
+ZIP bundle them ([installer guide](../packaging/installer/README.md)).
 
 ## Third-party dependencies
 

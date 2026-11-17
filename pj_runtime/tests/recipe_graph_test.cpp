@@ -153,7 +153,7 @@ TEST(RecipeGraphTest, PythonScriptIsCompiledOncePerRevision) {
 #endif
 }
 
-// REC-02 (and the recipe-level half of REC-04): a bad recipe is refused, and nothing is installed.
+// A bad recipe is refused and nothing is installed.
 TEST(RecipeGraphTest, RejectsBadRecipes) {
   Fixture fx;
   const auto rejected = [&fx](RecipeGraph::Recipe recipe) { return !fx.graph.upsert(std::move(recipe)).has_value(); };
@@ -169,7 +169,7 @@ TEST(RecipeGraphTest, RejectsBadRecipes) {
   EXPECT_TRUE(rejected(no_owner));
   auto no_outputs = cropRecipe();
   no_outputs.outputs.clear();
-  EXPECT_TRUE(rejected(no_outputs)) << "an installed recipe declares its outputs (REC-04)";
+  EXPECT_TRUE(rejected(no_outputs)) << "an installed recipe declares its outputs";
   auto duplicate_outputs = cropRecipe();
   duplicate_outputs.outputs.push_back(duplicate_outputs.outputs.front());
   EXPECT_TRUE(rejected(duplicate_outputs));
@@ -189,7 +189,7 @@ TEST(RecipeGraphTest, RejectsBadRecipes) {
   ASSERT_FALSE(unknown.has_value());
   EXPECT_TRUE(contains(unknown.error(), "unknown input 'does_not_exist'")) << unknown.error();
 
-  // A second dataset carrying the same names leaves two datasets that bind every input (D7).
+  // A second dataset carrying the same names leaves two datasets that bind every input.
   fx.catalog["cloud"].push_back({kOther, sdk::BuiltinObjectType::kPointCloud, "cloud"});
   fx.catalog["threshold"].push_back({kOther, sdk::BuiltinObjectType::kNone, "threshold"});
   const Status ambiguous = fx.graph.upsert(cropRecipe());
@@ -199,7 +199,6 @@ TEST(RecipeGraphTest, RejectsBadRecipes) {
   EXPECT_EQ(fx.graph.find("owner/crop"), nullptr) << "a rejected upsert installs nothing";
 }
 
-// REC-03
 TEST(RecipeGraphTest, RejectsAnObjectInputScriptsCannotReadYet) {
   Fixture fx;
   fx.catalog["grid"] = {{kDataset, sdk::BuiltinObjectType::kOccupancyGrid, "grid"}};  // no field table
@@ -212,7 +211,6 @@ TEST(RecipeGraphTest, RejectsAnObjectInputScriptsCannotReadYet) {
   EXPECT_EQ(fx.graph.find(recipe.key()), nullptr);
 }
 
-// REC-05
 TEST(RecipeGraphTest, QualifiedInputsBindTheSelectedDatasetAndPreserveAliases) {
   Fixture fx;
   auto recipe = cropRecipe();
@@ -228,13 +226,13 @@ TEST(RecipeGraphTest, QualifiedInputsBindTheSelectedDatasetAndPreserveAliases) {
 
   recipe.inputs.push_back("other:cloud");
   const Status spanning = fx.graph.upsert(recipe);
-  ASSERT_FALSE(spanning.has_value()) << "one node reads one dataset (D7)";
+  ASSERT_FALSE(spanning.has_value()) << "one node reads one dataset";
   EXPECT_TRUE(contains(spanning.error(), "one dataset")) << spanning.error();
   EXPECT_EQ(fx.graph.find(recipe.key())->recipe.inputs.size(), 1u) << "the installed node is untouched";
 }
 
-// GAP-31: a recipe naming its dataset binds every input there: a name two datasets carry is no longer ambiguous, and
-// an input its dataset does not carry is refused, naming both.
+// A recipe naming its dataset binds every input there: a name two datasets carry is no longer ambiguous, and an input
+// its dataset does not carry is refused, naming both.
 TEST(RecipeGraphTest, ARecipeDatasetBindsItsInputsThereOnly) {
   Fixture fx;
   fx.catalog["cloud"].push_back({kOther, sdk::BuiltinObjectType::kPointCloud, "cloud"});
@@ -253,8 +251,8 @@ TEST(RecipeGraphTest, ARecipeDatasetBindsItsInputsThereOnly) {
   EXPECT_EQ(fx.graph.find("owner/elsewhere"), nullptr);
 }
 
-// LAY-14: the exemption of an installed key never changes, so no history snapshot holds it under the other authority;
-// a recipe changes it by being removed and created again.
+// The exemption of an installed key never changes, so no history snapshot holds it under the other authority; a
+// recipe changes it by being removed and created again.
 TEST(RecipeGraphTest, HistoryExemptionCannotChangeOnAnInstalledRecipe) {
   Fixture fx;
   ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
@@ -271,7 +269,6 @@ TEST(RecipeGraphTest, HistoryExemptionCannotChangeOnAnInstalledRecipe) {
   EXPECT_TRUE(fx.graph.find("owner/crop")->recipe.history_exempt);
 }
 
-// DAG-03
 TEST(RecipeGraphTest, CycleAndOwnOutputRejectionLeaveTheGraphUntouched) {
   Fixture fx;
   ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
@@ -325,7 +322,7 @@ TEST(RecipeGraphTest, AQualifiedUpstreamOutputBindsToItsProducer) {
 }
 
 // A qualifier must name the dataset its producer runs on: one naming another loaded source is refused, not bound
-// across datasets (D7).
+// across datasets.
 TEST(RecipeGraphTest, AQualifiedUpstreamOutputOnAnotherDatasetIsRefused) {
   Fixture fx;
   ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
@@ -376,7 +373,7 @@ TEST(RecipeGraphTest, RevisionChangesOnlyWithItsMeaningAndIsNeverReused) {
       << "a reinstalled key never reuses a revision: a result of the removed node is never current";
 }
 
-// DAG-05: the graph half (the node states and results are the scheduler's).
+// The graph half: node states and results belong to the scheduler.
 TEST(RecipeGraphTest, RemovedUpstreamLeavesItsReadersMissingAndRelinksByName) {
   Fixture fx;
   auto source = cropRecipe();
@@ -448,7 +445,6 @@ TEST(RecipeGraphTest, MissingInputOverADiamondLadderWalksEachSharedUpstreamOnce)
   EXPECT_EQ(fx.graph.dependentsOf({"owner/crop"}).size(), std::size_t{2 * kLayers});
 }
 
-// DAG-10
 TEST(RecipeGraphTest, DependentsOfWalksReadersTransitively) {
   Fixture fx;
   ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
@@ -465,7 +461,6 @@ TEST(RecipeGraphTest, DependentsOfWalksReadersTransitively) {
   EXPECT_TRUE(fx.graph.dependentsOf({"owner/unknown"}).empty());
 }
 
-// LAY-02
 TEST(RecipeGraphTest, ClearRecipesHonoursHistoryIntent) {
   Fixture fx;
   auto exempt = cropRecipe("exempt");
@@ -498,7 +493,6 @@ TEST(RecipeGraphTest, ClearRecipesLeavesTheKeptNodesAsTheyAre) {
   }
 }
 
-// LAY-03
 TEST(RecipeGraphTest, UnchangedRecipeKeysMatchFieldByField) {
   Fixture fx;
   const auto recipe = cropRecipe();
@@ -566,7 +560,6 @@ TEST(RecipeGraphTest, AnUnchangedRecipeWhoseUpstreamIsRecreatedIsNotUnchanged) {
       (std::unordered_set<std::string>{child.key(), grandchild.key()}));
 }
 
-// LAY-04
 TEST(RecipeGraphTest, HistoryExemptionProtectsTransitiveRawAndDerivedAncestors) {
   Fixture fx;
   auto finding = chainedRecipe("finding", "owner/child/cropped");
@@ -592,7 +585,7 @@ TEST(RecipeGraphTest, ExemptDependentsMatchTheBareTopicOfAQualifiedInput) {
   EXPECT_EQ(fx.graph.exemptDependentsOf({"cloud"}), std::vector<std::string>{"owner/exempt/cropped"});
 }
 
-// OWN-01: a preview survives a restore of either intent and ends with the plugin instance that made it.
+// A preview survives a restore of either intent and ends with the plugin instance that made it.
 TEST(RecipeGraphTest, PreviewsSurviveClearRecipesAndEndWithTheirInstance) {
   for (const RestoreIntent intent : {RestoreIntent::kHistory, RestoreIntent::kReplace}) {
     Fixture fx;
@@ -618,7 +611,6 @@ TEST(RecipeGraphTest, PreviewsSurviveClearRecipesAndEndWithTheirInstance) {
   }
 }
 
-// OWN-16
 TEST(RecipeGraphTest, PersistentRecipesCannotReadAPreviewOutput) {
   Fixture fx;
   auto preview = cropRecipe("preview");
@@ -638,7 +630,7 @@ TEST(RecipeGraphTest, PersistentRecipesCannotReadAPreviewOutput) {
   EXPECT_EQ(fx.graph.find("owner/kept"), nullptr);
 }
 
-// OWN-16, the other direction: a recipe a persistent one reads may not turn into a preview, by an
+// The other direction: a recipe a persistent one reads may not turn into a preview, by an
 // edit or by a reinstall after its removal (the reader keeps naming it).
 TEST(RecipeGraphTest, APreviewCannotBecomeTheUpstreamOfAPersistentReader) {
   Fixture fx;
@@ -667,7 +659,6 @@ TEST(RecipeGraphTest, APreviewCannotBecomeTheUpstreamOfAPersistentReader) {
   EXPECT_TRUE(fx.graph.upsert(as_preview).has_value()) << "only previews read it now";
 }
 
-// BUD-01
 TEST(RecipeGraphTest, PinnedPerOwnerCapIsEnforced) {
   Fixture fx;
   const auto pinned = [](std::size_t index) {
@@ -690,8 +681,8 @@ TEST(RecipeGraphTest, PinnedPerOwnerCapIsEnforced) {
   EXPECT_TRUE(fx.graph.upsert(other_owner).has_value()) << "the cap is per owner";
 }
 
-// Slice 8a-1: `bind` makes a transient evaluation's node as `upsert` would, installing nothing. It may declare no
-// output (an explicit evaluation infers them); `upsert` still needs one.
+// `bind` makes a transient evaluation's node as `upsert` would, installing nothing. It may declare no output (an
+// explicit evaluation infers them); `upsert` still needs one.
 TEST(RecipeGraphTest, BindValidatesWithoutInstalling) {
   Fixture fx;
   ASSERT_TRUE(fx.graph.upsert(cropRecipe()).has_value());
@@ -720,7 +711,7 @@ TEST(RecipeGraphTest, BindValidatesWithoutInstalling) {
   EXPECT_FALSE(fx.graph.upsert(reader).has_value()) << "an installed recipe declares its outputs";
 }
 
-// PIN-01: the graph half (retiring the finding's topic is the ring's).
+// The graph half: retiring the finding's topic is the ring's.
 TEST(RecipeGraphTest, DismissAndDismissAllRemoveFindings) {
   Fixture fx;
   auto first = cropRecipe("first");

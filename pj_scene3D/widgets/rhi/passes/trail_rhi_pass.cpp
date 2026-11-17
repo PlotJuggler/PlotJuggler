@@ -112,7 +112,7 @@ void TrailRhiPass::prepare(
     const RhiFrameContext& frame, const std::string& fixed_frame, PJ::Timepoint time, const QSize& render_size,
     float render_scale) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   draws_.clear();
   last_trail_count_ = 0;

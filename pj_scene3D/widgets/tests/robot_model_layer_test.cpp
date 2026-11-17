@@ -46,9 +46,8 @@ constexpr const char* kDecodedUrdf = R"(
 </robot>
 )";
 
-// A two-link robot whose child link is attached ONLY by a FIXED joint. Mirrors
-// the DROID gripper case: the data publishes the parent frame but never the child,
-// so the child renders only if the URDF's fixed joint is bridged into TF.
+// A two-link robot whose child link is attached ONLY by a FIXED joint: the data publishes the parent frame but never
+// the child, so the child renders only if the URDF's fixed joint is bridged into TF.
 constexpr const char* kBridgeUrdf = R"(
 <robot name="bridge">
   <link name="base_link"/>
@@ -61,8 +60,8 @@ constexpr const char* kBridgeUrdf = R"(
 </robot>
 )";
 
-// A mixed model: a link with a <visual> plus a collision-ONLY sublink attached by
-// a fixed joint (mirrors panda_link*_sc self-collision capsules on the DROID arm).
+// A mixed model: a link with a <visual> plus a collision-ONLY sublink attached by a fixed joint (like self-collision
+// capsules).
 constexpr const char* kMixedCollisionUrdf = R"(
 <robot name="mixed">
   <link name="body">
@@ -77,8 +76,7 @@ constexpr const char* kMixedCollisionUrdf = R"(
 </robot>
 )";
 
-// An entirely-collision model (no <visual> anywhere): kAuto must promote it to the
-// visuals group so it renders solid.
+// An entirely-collision model (no <visual> anywhere): kAuto must promote it to the visuals group so it renders solid.
 constexpr const char* kAllCollisionUrdf = R"(
 <robot name="allcol">
   <link name="solid">
@@ -97,8 +95,8 @@ constexpr const char* kUnresolvedMeshUrdf = R"(
 </robot>
 )";
 
-// URDF whose single visual mesh resolves immediately (file:// fixture path), so
-// attach() actually kicks an async MeshLoader load.
+// A URDF whose single visual mesh resolves immediately (file:// fixture path), so attach() kicks an async MeshLoader
+// load.
 const std::string& resolvedMeshUrdf() {
   static const std::string text = std::string(R"(
 <robot name="resolved_mesh_robot">
@@ -113,9 +111,8 @@ const std::string& resolvedMeshUrdf() {
   return text;
 }
 
-// URDF whose single visual mesh is a resolved .dae (file:// fixture path). The
-// COLLADA up-axis override only affects .dae/.collada, so this exercises the
-// setIgnoreColladaUpAxis reload path.
+// A URDF whose single visual mesh is a resolved .dae (file:// fixture path): the COLLADA up-axis override only affects
+// .dae/.collada, so this exercises the setIgnoreColladaUpAxis reload path.
 const std::string& resolvedColladaMeshUrdf() {
   static const std::string text = std::string(R"(
 <robot name="collada_mesh_robot">
@@ -304,17 +301,13 @@ class PackageUrlRobotDescriptionParser final : public PJ::MessageParserPluginBas
   }
 };
 
-// Rebind-test parse counters. vtableWithCreate() requires a non-capturing create
-// function, so the counting parsers reach these via file scope rather than a
-// lambda capture.
+// Rebind-test parse counters: vtableWithCreate() needs a non-capturing create function, so the counting parsers reach
+// them via file scope.
 std::atomic<int> g_first_urdf_parser_calls{0};
 std::atomic<int> g_second_urdf_parser_calls{0};
-// Counts decodes of the resolved-collada URDF so the up-axis toggle test can
-// prove setIgnoreColladaUpAxis re-decoded the source.
+// Counts decodes of the resolved-collada URDF, to prove setIgnoreColladaUpAxis re-decoded the source.
 std::atomic<int> g_collada_urdf_parser_calls{0};
 
-// Emits the resolved-collada URDF and counts each decode, for the up-axis toggle
-// reload test.
 class CountingColladaUrdfParser final : public PJ::MessageParserPluginBase {
  public:
   CountingColladaUrdfParser() {
@@ -337,9 +330,8 @@ class CountingColladaUrdfParser final : public PJ::MessageParserPluginBase {
   }
 };
 
-// Counts parseObject invocations so a rebind test can prove which parser a
-// re-decode reached. Emits a fixed minimal URDF so the layer still parses a
-// valid model.
+// Counts parseObject calls so a rebind test can prove which parser a re-decode reached. Emits a fixed minimal URDF so
+// the layer still parses a valid model.
 class CountingUrdfParser final : public PJ::MessageParserPluginBase {
  public:
   explicit CountingUrdfParser(std::atomic<int>* counter) {
@@ -362,9 +354,8 @@ class CountingUrdfParser final : public PJ::MessageParserPluginBase {
   }
 };
 
-// vtableWithCreate() holds one static vtable per CreateFn instantiation, so each
-// counting parser needs its own distinct lambda type — a shared function-pointer
-// type would latch the first counter for both handles.
+// vtableWithCreate() holds one static vtable per CreateFn instantiation, so each counting parser needs its own lambda
+// type: a shared function-pointer type would latch the first counter for both handles.
 template <typename CreateFn>
 const PJ_message_parser_vtable_t* countingUrdfVtable(CreateFn create_fn) {
   static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
@@ -550,12 +541,9 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   EXPECT_TRUE(layer.statusText().contains("packages unresolved"_L1));
 }
 
-// Regression: a finished async URDF mesh load must itself request the repaint
-// that consumes it (QFutureWatcher -> pollMeshLoads). The app paints strictly on
-// demand, so before the fix the result was only drained inside render() and the
-// magenta placeholder lingered until the user scrubbed. After attach() kicks the
-// load, only the event loop is pumped here — no render() or setTrackerTime() —
-// and repaintRequested must still fire.
+// A finished async URDF mesh load must itself request the repaint that consumes it (QFutureWatcher -> pollMeshLoads):
+// the app paints strictly on demand, so a result drained only inside render() would leave the magenta placeholder until
+// the user scrubbed. Only the event loop is pumped after attach() kicks the load.
 TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -581,10 +569,8 @@ TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
   EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
 }
 
-// M.28 regression: the "Ignore COLLADA up_axis" toggle must actually reload the
-// model (the flip is baked into the loaded MeshData, so a bare repaint would do
-// nothing). Toggling setIgnoreColladaUpAxis on a .dae-mesh URDF re-decodes the
-// source and re-kicks the mesh load; an unchanged value is a no-op.
+// The "Ignore COLLADA up_axis" toggle must reload the model (the flip is baked into the loaded MeshData, so a bare
+// repaint would do nothing): it re-decodes the source and re-kicks the mesh load; an unchanged value is a no-op.
 TEST(RobotModelLayerTest, ColladaUpAxisToggleReloadsModel) {
   g_collada_urdf_parser_calls.store(0);
 
@@ -602,23 +588,19 @@ TEST(RobotModelLayerTest, ColladaUpAxisToggleReloadsModel) {
   const int decodes_after_attach = g_collada_urdf_parser_calls.load();
   ASSERT_GE(decodes_after_attach, 1);
 
-  // Toggling the flag must re-decode the source (loadFromCurrentSource), so the
-  // .dae re-imports under the new effective flip.
   layer.setIgnoreColladaUpAxis(true);
   EXPECT_GT(g_collada_urdf_parser_calls.load(), decodes_after_attach)
       << "setIgnoreColladaUpAxis did not reload the model";
   EXPECT_NE(layer.robotModel(), nullptr) << "model dropped after the up-axis toggle";
   EXPECT_EQ(layer.totalMeshCount(), 1);
 
-  // Setting the same value again is a no-op (no extra decode).
   const int decodes_after_toggle = g_collada_urdf_parser_calls.load();
   layer.setIgnoreColladaUpAxis(true);
   EXPECT_EQ(g_collada_urdf_parser_calls.load(), decodes_after_toggle)
       << "an unchanged setIgnoreColladaUpAxis must not reload";
 
-  // Drain the kicked mesh load so its watcher fires (and is severed) before
-  // teardown, then assert the reloaded mesh actually loaded: the watcher-driven
-  // pollMeshLoads recomputes loaded_mesh_count_ to total via updateMeshCounters.
+  // Drain the kicked mesh load so its watcher fires (and is severed) before teardown, then assert the reloaded mesh
+  // loaded: pollMeshLoads recomputes loaded_mesh_count_ to total via updateMeshCounters.
   int repaints = 0;
   QObject::connect(
       &layer, &pj::scene3d::RobotModelLayer::meshLoadStatusChanged,
@@ -631,18 +613,12 @@ TEST(RobotModelLayerTest, ColladaUpAxisToggleReloadsModel) {
   EXPECT_GT(repaints, 0) << "reloaded .dae mesh load never completed (no meshLoadStatusChanged)";
 }
 
-// Regression for the file-reload UAF (PR #175 pattern): SessionManager::
-// replaceDataset() re-registers each surviving topic's parser slot, destroying
-// the previous MessageParserHandle. A layer that cached the raw parser pointer
-// at attach() then decodes through freed memory on the next re-decode.
-//
-// The robot layer's risk is the latch-retry path: attach() on an empty topic
-// arms latch_pending_, and every setTrackerTime() while pending re-invokes
-// tryLoadTopicDescription(). With a cached parser_ that decode reaches the freed
-// handle after a reload; resolving the binding per use rebinds it to the new
-// parser. This test drives exactly that path (attach empty -> reload -> push ->
-// tick past the 500ms retry interval) so it FAILS on the cached-pointer code and
-// passes once the binding is resolved per use.
+// SessionManager::replaceDataset() re-registers each surviving topic's parser slot, destroying the previous
+// MessageParserHandle; a layer that cached the raw parser pointer at attach() decodes through freed memory on the next
+// re-decode. The robot layer's risk is the latch-retry path: attach() on an empty topic arms latch_pending_, and every
+// setTrackerTime() while pending re-invokes tryLoadTopicDescription(). The test drives it (attach empty -> reload ->
+// push -> tick past the 500ms retry interval): it fails on a cached pointer, passes when the binding is resolved per
+// use.
 TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
   g_first_urdf_parser_calls.store(0);
   g_second_urdf_parser_calls.store(0);
@@ -652,7 +628,6 @@ TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
   registerParser(session, topic_id, countingUrdfVtable([]() noexcept -> void* {
                    return new CountingUrdfParser(&g_first_urdf_parser_calls);
                  }));
-  // NOTE: no payload yet — attach must latch and wait for the first sample.
 
   pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
   const auto ctx = makeContext(session);
@@ -660,22 +635,19 @@ TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
   ASSERT_EQ(layer.robotModel(), nullptr);  // nothing to decode yet -> latched
   EXPECT_EQ(g_first_urdf_parser_calls.load(), 0);
 
-  // Keep the first parser's memory readable from the test so the buggy
-  // stale-pointer call below is a deterministic wrong-parser hit rather than UB.
-  // Production holds no such guard — there the same call is a use-after-free.
+  // Keep the first parser's memory readable so the stale-pointer call is a deterministic wrong-parser hit, not UB (in
+  // production the same call is a use-after-free).
   const auto stale_guard = session.parserKeepaliveForObjectTopic(topic_id);
   ASSERT_NE(stale_guard, nullptr);
 
-  // Simulate the same-file reload: re-register the surviving topic's parser under
-  // its stable id, overwriting the slot and dropping the old handle. Then the new
-  // generation's first sample arrives.
+  // Simulate the same-file reload: re-register the surviving topic's parser under its stable id (dropping the old
+  // handle), then the new generation's first sample arrives.
   registerParser(session, topic_id, countingUrdfVtable([]() noexcept -> void* {
                    return new CountingUrdfParser(&g_second_urdf_parser_calls);
                  }));
   pushWireBytes(session, topic_id);
 
-  // The latch retry is rate-limited to 500ms; wait it out so the next tick fires
-  // tryLoadTopicDescription() (and pump the event loop in case anything posted).
+  // The latch retry is rate-limited to 500ms; wait it out so the next tick fires tryLoadTopicDescription().
   QElapsedTimer timer;
   timer.start();
   while (timer.elapsed() < 600) {
@@ -689,9 +661,8 @@ TEST(RobotModelLayerTest, ReloadSwapsParserWithoutTouchingStaleOne) {
   EXPECT_NE(layer.robotModel(), nullptr) << "latch retry did not decode the new sample";
 }
 
-// A dataset replacement swaps the robot_description bytes under the stable topic
-// id: the previous dataset's model must go at once and the description be decoded
-// again from the replacement (after the swap, which runs no event loop).
+// A dataset replacement swaps the robot_description bytes under the stable topic id: the previous dataset's model must
+// go at once and the description be decoded again from the replacement (after the swap, which runs no event loop).
 TEST(RobotModelLayerTest, DatasetReplacementReloadsTopicDescription) {
   g_first_urdf_parser_calls.store(0);
   PJ::SessionManager session;
@@ -719,11 +690,9 @@ TEST(RobotModelLayerTest, DatasetReplacementReloadsTopicDescription) {
   EXPECT_NE(layer.robotModel(), nullptr) << "no model loaded from the replacement";
 }
 
-// M.49/H.14 regression: the kUrl source must not block the caller. setSourceUrl
-// (and therefore attach()/xmlLoadState restores and undo/redo) only kicks the
-// fetch off — nothing is applied synchronously — and the model lands later
-// through the event loop. The old code spun a nested QEventLoop here, which
-// both froze the UI for up to 15s and allowed re-entrant layer destruction.
+// The kUrl source must not block the caller: setSourceUrl (hence attach(), xmlLoadState restores and undo/redo) only
+// kicks the fetch off and the model lands later through the event loop (a nested QEventLoop would freeze the UI for the
+// whole fetch and allow re-entrant layer destruction).
 TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -737,7 +706,6 @@ TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
   pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, u"robot"_s);
   layer.setSourceUrl(QUrl::fromLocalFile(urdf_path).toString());
 
-  // Asynchronous kickoff: nothing may have been applied before returning.
   EXPECT_EQ(layer.robotModel(), nullptr) << "kUrl load applied synchronously (blocking-fetch regression)";
   EXPECT_TRUE(layer.statusText().contains("Fetching"_L1)) << layer.statusText().toStdString();
 
@@ -752,9 +720,8 @@ TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
   EXPECT_FALSE(layer.statusText().contains("Fetching"_L1));
 }
 
-// M.27: a kTopic robot layer must persist enough identity (dataset + topic name)
-// that xmlLoadState re-resolves the same topic and re-decodes its model. The
-// round trip must survive a fresh layer wired to a different default topic id.
+// A kTopic robot layer must persist enough identity (dataset + topic name) that xmlLoadState re-resolves the same
+// topic and re-decodes its model, also on a fresh layer wired to a different default topic id.
 TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   PJ::SessionManager session;
   const PJ::DatasetId dataset_id = createDataset(session, "same-session.dat");
@@ -771,10 +738,8 @@ TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   QDomElement saved = source_layer.xmlSaveState(doc);
   EXPECT_EQ(saved.attribute(u"source_dataset_source"_s), u"same-session.dat"_s);
 
-  // A second topic with a different id stands in for "the constructor default no
-  // longer points at /robot_description" — the restore must re-resolve by name.
-  // It has its own (SDF) parser, so a layer left on this default would decode the
-  // WRONG, unsupported model; only re-resolution by name yields the URDF.
+  // A second topic with a different id stands in for a changed constructor default: restore must re-resolve by name. It
+  // has its own (SDF) parser, so a layer left on the default would decode the WRONG, unsupported model.
   const PJ::ObjectTopicId other_id = registerTopicForDataset(session, dataset_id, "/other_description");
   ASSERT_NE(other_id.id, topic_id.id);
   registerParser(session, other_id, sdfParserVtable());
@@ -794,7 +759,7 @@ TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   ASSERT_TRUE(restored_layer.xmlLoadState(saved));
   EXPECT_EQ(configuration_changes, 0) << "re-applying identical robot parameters is not a workspace mutation";
 
-  // Pre-source-attribute layouts retain their safe same-session raw-id lookup.
+  // A layout without the source attribute keeps the same-session raw-id lookup.
   saved.removeAttribute(u"source_dataset_source"_s);
   pj::scene3d::RobotModelLayer legacy_layer(other_id, u"/other_description"_s);
   ASSERT_TRUE(legacy_layer.attach(ctx));
@@ -802,8 +767,7 @@ TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {
   ASSERT_NE(legacy_layer.robotModel(), nullptr);
   EXPECT_EQ(legacy_layer.robotModel()->root_link, "base_link");
 
-  // Generic layouts remove both qualifiers. A globally unique topic+type may
-  // still bind to the loaded recording.
+  // Generic layouts remove both qualifiers: a globally unique topic+type may still bind to the loaded recording.
   saved.removeAttribute(u"source_dataset_id"_s);
   pj::scene3d::RobotModelLayer generic_layer(other_id, u"/other_description"_s);
   ASSERT_TRUE(generic_layer.attach(ctx));
@@ -1045,7 +1009,6 @@ TEST(RobotModelLayerTest, DuplicateRawSourceDoesNotSelectFirstDatasetAfterIdRemi
   EXPECT_EQ(generic_restored.statusText(), generic_status_before);
 }
 
-// Seed "scene -> child" (identity) into a buffer.
 void seedSceneChild(pj::tf::TransformBuffer& buf, const std::string& child) {
   pj::tf::StampedTransform tf;
   tf.stamp = PJ::fromRaw(1000);
@@ -1055,11 +1018,9 @@ void seedSceneChild(pj::tf::TransformBuffer& buf, const std::string& child) {
   ASSERT_TRUE(buf.setTransform(tf).has_value());
 }
 
-// The DROID gripper bug: the layer must bridge the URDF's fixed joints into the
-// buffer it actually RENDERS against (the dock's live buffer), not the ctx_
-// snapshot captured at attach (which can be null/stale). Bridge a live buffer
-// distinct from the attach-time context to prove the render buffer is the one
-// bridged.
+// The layer must bridge the URDF's fixed joints into the buffer it RENDERS against (the dock's live buffer), not the
+// ctx_ snapshot captured at attach (which can be null or stale): a live buffer distinct from the attach-time context
+// proves the render buffer is the one bridged.
 TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -1072,8 +1033,8 @@ TEST(RobotModelLayerTest, FixedJointBridgeReconnectsChildFrameInRenderBuffer) {
   ASSERT_NE(layer.robotModel(), nullptr);
   ASSERT_EQ(layer.robotModel()->joints.size(), 1u);
 
-  // The live render buffer the dock renders against — a distinct object that
-  // publishes base_link under scene but never the fixed-joint child gripper_base.
+  // The live render buffer the dock renders against: a distinct object that publishes base_link under scene but never
+  // the fixed-joint child gripper_base.
   pj::tf::TransformBuffer live;
   seedSceneChild(live, "base_link");
   EXPECT_FALSE(live.tryLookupTransform("scene", "gripper_base", PJ::fromRaw(2000), pj::tf::Clock::kHeader).has_value());
@@ -1109,9 +1070,9 @@ TEST(RobotModelLayerTest, FixedJointBridgeAppliesFramePrefix) {
   EXPECT_NEAR(tf->t.z, 0.1, 1e-9);
 }
 
-// kAuto in a MIXED model: a collision-only sublink (the self-collision capsules)
-// must land in the COLLISION draw group so the Collision toggle/opacity hides it —
-// NOT be promoted into the visuals group where only the Meshes toggle reaches it.
+// kAuto in a MIXED model: a collision-only sublink (the self-collision capsules) must land in the COLLISION draw group
+// so the Collision toggle/opacity hides it, NOT be promoted into the visuals group where only the Meshes toggle
+// reaches it.
 TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenModelHasVisuals) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -1138,8 +1099,8 @@ TEST(RobotModelLayerTest, AutoModeCollisionOnlyLinkRendersInCollisionGroupWhenMo
   EXPECT_NEAR(color.b, 0.1f, 1e-3);
 }
 
-// kAuto in an ENTIRELY-collision model: promote to the visuals group so it renders
-// solid instead of ghosting at the collision opacity.
+// kAuto in an ENTIRELY-collision model: promote to the visuals group so it renders solid, not ghosted at the collision
+// opacity.
 TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -1160,9 +1121,8 @@ TEST(RobotModelLayerTest, AutoModeAllCollisionModelPromotesToVisuals) {
   EXPECT_EQ(layer.collisionDrawCountForTest(), 0);
 }
 
-// Coordinate contract: the layer's model is link-local (prefixed link frame +
-// <origin> × scale) and TF is applied exactly once: the view receives the
-// untransformed ModelDrawCall and applies TF itself.
+// Coordinate contract: the layer's model is link-local (prefixed link frame + <origin> x scale) and TF is applied
+// exactly once, by the view, which receives the untransformed ModelDrawCall.
 TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
   pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{}, u"robot"_s);
   layer.setFramePrefix(u"robot1/"_s);

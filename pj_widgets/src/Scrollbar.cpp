@@ -29,9 +29,8 @@ using namespace Qt::StringLiterals;
 namespace PJ::scrollbar_detail {
 
 Handle computeHandle(long min, long max, long value, long page_step, double track_len_px) {
-  // page_step <= 0 is a degenerate scroll state (e.g. a momentarily collapsed /
-  // zero-extent viewport): there is no real draggable handle, so paint nothing
-  // rather than flooring a phantom pill to kMinPillLenPx.
+  // page_step <= 0 is a degenerate scroll state (a momentarily collapsed viewport): there is no draggable handle, so
+  // nothing is painted instead of flooring a phantom pill to kMinPillLenPx.
   if (max <= min || page_step <= 0 || track_len_px <= 0.0) {
     return {0.0, 0.0};
   }
@@ -65,10 +64,8 @@ namespace PJ {
 
 namespace {
 
-/// The header whose band the gutter for `orientation` runs beside: the
-/// horizontal (top) header for a vertical gutter, the vertical (left) row
-/// header for a horizontal gutter. Null for non-item-view areas or when the
-/// view has no such header.
+/// The header whose band the gutter for `orientation` runs beside: the horizontal (top) header for a vertical gutter,
+/// the vertical (left) row header for a horizontal gutter. Null for non-item-view areas or a view without that header.
 QHeaderView* gutterAdjacentHeader(QAbstractScrollArea* area, Qt::Orientation orientation) {
   if (auto* tree = qobject_cast<QTreeView*>(area)) {
     return orientation == Qt::Vertical ? tree->header() : nullptr;
@@ -88,10 +85,9 @@ Scrollbar::Scrollbar(Qt::Orientation orientation, QWidget* parent) : QWidget(par
   setAttribute(Qt::WA_NoSystemBackground, true);
   setAttribute(Qt::WA_TranslucentBackground, true);
 
-  // Theme-aware default accent (info-blue on light, pale grey on dark), keyed
-  // off QPalette::Window — NOT QPalette::Highlight, which the app never sets and
-  // would otherwise leak the OS accent (e.g. Yaru orange). Re-read on theme
-  // changes in changeEvent() unless the caller pins a color via setAccentColor().
+  // Theme-aware default accent (info-blue on light, pale grey on dark), keyed off QPalette::Window, not
+  // QPalette::Highlight, which the app never sets and would leak the OS accent (Yaru orange). Re-read on theme changes
+  // in changeEvent() unless the caller pins a color with setAccentColor().
   accent_ = scrollbar_detail::defaultAccent(QGuiApplication::palette().window().color());
 }
 
@@ -100,9 +96,8 @@ void Scrollbar::attach(QAbstractScrollArea* area, Placement placement) {
   area_object_ = area;
   placement_ = placement;
   viewport_ = area->viewport();
-  // Stamp the marker EVERY attach path sets, so a host that attaches its own
-  // pills directly (e.g. the Timeline) is skipped by the bulk adaptScrollAreas
-  // helper instead of receiving a second, unmanaged pair.
+  // The marker every attach path stamps, so a host that attaches its own pills directly (the Timeline) is skipped by
+  // the bulk adaptScrollAreas helper instead of receiving a second, unmanaged pair.
   area->setProperty("pjScrollbarAttached", true);
 
   // Reparent so this widget lives inside the scroll area's coordinate space.
@@ -117,13 +112,11 @@ void Scrollbar::attach(QAbstractScrollArea* area, Placement placement) {
       area->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     }
   } else {
-    // Reserved gutter: the native bar keeps its policy and layout slot (content
-    // never reflows under the pill) and all interaction, but paints nothing —
-    // gutterEventFilter() eats its Paint events and this pill is its visual.
-    // The property lets the app QSS blank the bar's own visuals too and give the
-    // gutter its thin extent; repolish applies the attribute selector to an
-    // already-polished widget. Dropping the opaque-paint hint makes Qt fill the
-    // blanked region with the area's background instead of leaving stale pixels.
+    // Reserved gutter: the native bar keeps its policy, layout slot (content never reflows under the pill) and all
+    // interaction, but paints nothing: gutterEventFilter() eats its Paint events and this pill is its visual. The
+    // property lets the app QSS blank the bar's own visuals too and give the gutter its thin extent; repolish applies
+    // the attribute selector to an already polished widget. Dropping the opaque-paint hint makes Qt fill the blanked
+    // region with the area's background instead of leaving stale pixels.
     QScrollBar* native = bar();
     native->setProperty("pjPillBar", true);
     native->setAttribute(Qt::WA_OpaquePaintEvent, false);
@@ -131,10 +124,9 @@ void Scrollbar::attach(QAbstractScrollArea* area, Placement placement) {
     native->style()->polish(native);
     native->installEventFilter(this);
 
-    // Item views: Qt lays the gutter along the area's full edge, including the
-    // band beside the view's header. recomputeGeometry() insets the native
-    // groove past that band; the intercepted Paint above then paints the band
-    // as the header's continuation (see gutter_header_ in the header).
+    // Item views: Qt lays the gutter along the area's full edge, including the band beside the view's header.
+    // recomputeGeometry() insets the native groove past that band; the intercepted Paint above paints the band as the
+    // header's continuation (gutter_header_ in the header).
     gutter_header_ = gutterAdjacentHeader(area, orientation_);
   }
 
@@ -152,10 +144,9 @@ void Scrollbar::attach(QAbstractScrollArea* area, Placement placement) {
   fade_anim_ = new QPropertyAnimation(opacity_effect_, "opacity", this);
   fade_anim_->setDuration(fade_ms_);
 
-  // Single-shot timer that fades the pill back out after a scroll-driven reveal.
-  // On timeout, hand control to the hover path: keep the pill only if the cursor
-  // is now over the strip, otherwise hide it. An active drag owns visibility, so
-  // the timer never hides mid-drag.
+  // Single-shot timer that fades the pill out after a scroll-driven reveal. On timeout control goes to the hover path:
+  // the pill stays only if the cursor is over the strip, else it hides. An active drag owns visibility, so the timer
+  // never hides mid-drag.
   hide_timer_ = new QTimer(this);
   hide_timer_->setSingleShot(true);
   connect(hide_timer_, &QTimer::timeout, this, [this]() {
@@ -166,22 +157,19 @@ void Scrollbar::attach(QAbstractScrollArea* area, Placement placement) {
     setShown(pointInStrip(vp_pos));
   });
 
-  // Observe the viewport for hover + resize events (we're transparent to mouse
-  // so the viewport receives all pointer events underneath us).
+  // The viewport is observed for hover and resize events (this widget is mouse-transparent, so the viewport receives
+  // all pointer events beneath it).
   //
-  // Enable mouse tracking so the viewport delivers MouseMove events even when no
-  // button is held — otherwise Qt only sends moves during a drag, the hover
-  // show/hide path never runs, and the pill only ever appears on click (and then
-  // fails to re-hide on intra-viewport motion). The Timeline already enables this
-  // for its own item-hover cursors, but a generic adapted scroll area does not,
-  // so attach() must do it to be self-sufficient.
+  // Mouse tracking is enabled so the viewport delivers MouseMove events with no button held: otherwise Qt sends moves
+  // only during a drag, the hover show and hide path never runs, and the pill appears only on click and fails to
+  // re-hide on motion inside the viewport. The Timeline enables it for its own item-hover cursors, but a generic
+  // adapted scroll area does not, so attach() must.
   area->viewport()->setMouseTracking(true);
   area->viewport()->installEventFilter(this);
 
-  // When child widgets fully cover the viewport (e.g. a QScrollArea of cards),
-  // hover MouseMoves are delivered to those children, not the viewport, so the
-  // viewport filter above never sees them and the pill would only reveal on
-  // scroll/click. Observe the covering subtree too (future cards via ChildAdded).
+  // When child widgets fully cover the viewport (a QScrollArea of cards), hover MouseMoves go to those children, not
+  // the viewport, so the viewport filter never sees them and the pill would reveal only on scroll or click. The
+  // covering subtree is observed too (future cards through ChildAdded).
   for (QObject* child : area->viewport()->children()) {
     if (child->isWidgetType()) {
       installHoverObserver(static_cast<QWidget*>(child));
@@ -195,10 +183,8 @@ void Scrollbar::attach(QAbstractScrollArea* area, Placement placement) {
 
   recomputeGeometry();
 
-  // FIX 4: honor setAutoHide(false) called before attach(). attach() just
-  // created opacity_effect_ at opacity 0; if the caller already opted out of
-  // auto-hide we must immediately force visible, mirroring what setAutoHide()
-  // does when called post-attach.
+  // setAutoHide(false) called before attach() is honored: attach() just created opacity_effect_ at opacity 0, so if the
+  // caller opted out of auto-hide it is forced visible at once, as setAutoHide() does after attach.
   if (!auto_hide_) {
     if (fade_anim_ != nullptr) {
       fade_anim_->stop();
@@ -240,10 +226,9 @@ void Scrollbar::setClickToScroll(bool enabled) {
 void Scrollbar::setInteractive(bool interactive) {
   interactive_ = interactive;
   if (!interactive) {
-    // Lock engaged: cancel any active drag and pending reveal hold, and retreat
-    // the pill. Otherwise a pill grabbed (or scroll-revealed) at the instant the
-    // lock engages would stay stuck fully visible over the frozen view, with no
-    // event scheduled to hide it. Hover still re-reveals it on the next move.
+    // Lock engaged: any active drag and pending reveal hold is cancelled and the pill retreats. Otherwise a pill
+    // grabbed (or scroll-revealed) when the lock engages would stay fully visible over the frozen view with no event
+    // scheduled to hide it. Hover re-reveals it on the next move.
     const bool changed = dragging_ && area_ != nullptr && bar()->value() != drag_origin_value_;
     dragging_ = false;
     if (hide_timer_ != nullptr) {
@@ -285,10 +270,9 @@ void Scrollbar::setShown(bool shown) {
   }
   fade_anim_->stop();
   if (fade_ms_ == 0) {
-    // Instant snap: bypass the animation entirely so opacity is set synchronously
-    // in this call frame (QPropertyAnimation::start() with duration=0 is deferred
-    // to the next event-loop tick via the unified animation timer, which would make
-    // "instant" invisible to callers that check opacity directly after the call).
+    // Instant snap: the animation is bypassed so opacity is set synchronously in this call (QPropertyAnimation::start()
+    // with duration 0 is deferred to the next event-loop tick, which would hide "instant" from callers that check
+    // opacity right after the call).
     opacity_effect_->setOpacity(want ? 1.0 : 0.0);
   } else {
     fade_anim_->setStartValue(opacity_effect_->opacity());
@@ -299,10 +283,8 @@ void Scrollbar::setShown(bool shown) {
 
 void Scrollbar::revealTemporarily() {
   if (!auto_hide_ || !interactive_) {
-    // Pinned visible (nothing to time out), or locked — in the locked case a
-    // scroll won't move the frozen view, so revealing the pill would be a
-    // misleading affordance. Hover-reveal still works while locked (it goes
-    // through setShown directly, not here).
+    // Pinned visible (nothing to time out), or locked: a scroll will not move the frozen view, so revealing the pill
+    // would be a misleading affordance. Hover-reveal still works while locked (it goes through setShown, not here).
     return;
   }
   setShown(true);  // internally suppressed when there's nothing to scroll
@@ -324,10 +306,9 @@ bool Scrollbar::pointInStrip(const QPoint& viewport_pos) const {
   if (orientation_ == Qt::Horizontal) {
     return viewport_pos.y() >= vp->height() - strip && viewport_pos.x() >= 0 && viewport_pos.x() < vp->width();
   } else {
-    // Vertical strip down the right edge. Yield the bottom-right corner to the
-    // horizontal pill (whose strip also claims it) so its right end stays
-    // grabbable — but only when the horizontal axis actually has a handle there;
-    // for a vertical-only area the full-height strip stays usable.
+    // Vertical strip down the right edge. It yields the bottom-right corner to the horizontal pill (whose strip also
+    // claims it) so that pill's right end stays grabbable, but only when the horizontal axis has a handle there; for a
+    // vertical-only area the full-height strip stays usable.
     int bottom = vp->height();
     const QScrollBar* hbar = area_->horizontalScrollBar();
     if (hbar->maximum() > hbar->minimum()) {
@@ -338,10 +319,9 @@ bool Scrollbar::pointInStrip(const QPoint& viewport_pos) const {
 }
 
 void Scrollbar::applyHoverAt(const QPoint& viewport_pos) {
-  // Entering the strip shows the pill; leaving it hides — UNLESS a
-  // scroll/interaction reveal is still holding it (a hover-out, or the synthetic
-  // MouseMove Qt delivers as scrolled content slides under a stationary cursor,
-  // must not cancel that reveal; the hold timer owns the eventual hide).
+  // Entering the strip shows the pill; leaving hides it, unless a scroll or interaction reveal still holds it (a
+  // hover-out, or the synthetic MouseMove Qt delivers as scrolled content slides under a stationary cursor, must not
+  // cancel that reveal; the hold timer owns the eventual hide).
   if (pointInStrip(viewport_pos)) {
     setShown(true);
   } else if (!scrollRevealActive()) {
@@ -367,9 +347,8 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
     return false;
   }
 
-  // A newly-added descendant anywhere in the observed subtree (a fresh card, or a
-  // content widget set on the scroll area) must be observed for hover too, so the
-  // pill keeps revealing as the content grows.
+  // A newly added descendant anywhere in the observed subtree (a fresh card, or a content widget set on the scroll
+  // area) is observed for hover too, so the pill keeps revealing as the content grows.
   if (event->type() == QEvent::ChildAdded) {
     auto* ce = static_cast<QChildEvent*>(event);
     if (ce->child() != nullptr && ce->child()->isWidgetType()) {
@@ -383,14 +362,11 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
   }
   QWidget* viewport = area_->viewport();
 
-  // Events from a covering child (see installHoverObserver). Hover MouseMoves
-  // are mapped into viewport space to drive show/hide without consuming. The
-  // one interaction we DO own from a child is a drag that starts on the
-  // VISIBLE pill handle: without it, a child widget that overlaps the strip
-  // (e.g. a list row's trailing action button) receives the press instead of
-  // the pill the user is looking at — grabbing the handle could activate the
-  // child. Presses anywhere else on the child (including the empty strip —
-  // never click-to-scroll from a child) are left untouched.
+  // Events from a covering child (installHoverObserver). Hover MouseMoves are mapped into viewport space to drive show
+  // and hide without consuming. The one interaction owned from a child is a drag that starts on the visible pill
+  // handle: otherwise a child overlapping the strip (a list row's trailing action button) receives the press instead of
+  // the pill the user sees, and grabbing the handle could activate the child. Presses elsewhere on the child (the empty
+  // strip too: never click-to-scroll from a child) are left untouched.
   if (watched != viewport) {
     auto* w = qobject_cast<QWidget*>(watched);
     if (w == nullptr) {
@@ -469,8 +445,7 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
       if (me->button() != Qt::LeftButton) {
         break;
       }
-      // FIX 1: when not interactive, ignore the press — do not start a drag and
-      // do not consume the event so the Timeline's own filter handles it.
+      // Not interactive: the press is ignored (no drag, not consumed), so the Timeline's own filter handles it.
       if (!interactive_) {
         break;
       }
@@ -483,14 +458,11 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
       const bool on_handle = (axis_px >= handle_pos_) && (axis_px <= handle_pos_ + handle_len_);
       drag_origin_value_ = bar()->value();
 
-      // By default only the visible handle is a drag target: a press on the empty
-      // track (in the strip but off the handle) is NOT consumed, so it falls
-      // through to the underlying view — otherwise the overlay would silently
-      // swallow content clicks (item selection, etc.) along the whole edge strip,
-      // where the native bar used to reserve a non-content gutter but now does not
-      // (it is forced AlwaysOff and content reflows under the strip). A host that
-      // owns its whole viewport (the Timeline) opts into click_to_scroll_, where an
-      // off-handle press first centers the handle under the cursor, then drags.
+      // By default only the visible handle is a drag target: a press on the empty track (in the strip but off the
+      // handle) is not consumed and falls through to the underlying view. Otherwise the overlay would swallow content
+      // clicks (item selection) along the whole edge strip: the native bar is forced AlwaysOff here, so no non-content
+      // gutter is reserved and content reflows under the strip. A host that owns its whole viewport (the Timeline) opts
+      // into click_to_scroll_: an off-handle press first centers the handle under the cursor, then drags.
       if (!on_handle) {
         if (!click_to_scroll_) {
           break;
@@ -518,8 +490,8 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
       const QPoint pos = me->position().toPoint();
 
       if (dragging_) {
-        // FIX 1: if a drag was in progress when the lock engaged, abandon it
-        // without consuming — fall through to normal hover show/hide below.
+        // A drag in progress when the lock engaged is abandoned without consuming: normal hover show and hide follow
+        // below.
         if (!interactive_) {
           dragging_ = false;
         } else {
@@ -544,17 +516,16 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
       if (dragging_) {
         auto* me = static_cast<QMouseEvent*>(event);
         if (me->button() == Qt::LeftButton) {
-          // FIX 1: if lock engaged mid-drag, clear drag state but do not consume.
+          // If the lock engaged mid-drag, the drag state is cleared but the event is not consumed.
           if (!interactive_) {
             dragging_ = false;
             break;
           }
           const bool changed = bar()->value() != drag_origin_value_;
           dragging_ = false;
-          // Re-evaluate pill visibility from the release position. If the release
-          // landed off the strip (easy to do — the cursor drifts off the 14px band
-          // while dragging), don't vanish instantly; give it a grace hold so it
-          // lingers, then hands back to the hover path.
+          // Pill visibility is re-evaluated from the release position. A release off the strip (easy: the cursor drifts
+          // off the 14px band while dragging) must not make it vanish at once: a grace hold lets it linger, then hands
+          // back to the hover path.
           if (pointInStrip(me->position().toPoint())) {
             setShown(true);
           } else {
@@ -574,10 +545,9 @@ bool Scrollbar::eventFilter(QObject* watched, QEvent* event) {
       break;
 
     case QEvent::Leave:
-      // Don't hide while a drag is active — the cursor has left the viewport strip
-      // but the drag is still in progress (e.g. a fast flick took the pointer
-      // outside the viewport). Likewise don't hide while a scroll/interaction
-      // reveal is still holding the pill; the hold timer owns that hide.
+      // Not hidden while a drag is active (the cursor left the viewport strip but the drag continues, e.g. a fast flick
+      // took the pointer outside the viewport), nor while a scroll or interaction reveal still holds the pill; the hold
+      // timer owns that hide.
       if (!dragging_ && !scrollRevealActive()) {
         setShown(false);
       }
@@ -599,13 +569,11 @@ bool Scrollbar::gutterEventFilter(QObject* watched, QEvent* event) {
   if (watched == bar()) {
     switch (event->type()) {
       case QEvent::Paint: {
-        // Stand in for the bar's own painting: blank everywhere (the pill is
-        // its visual) EXCEPT the band beside an item view's header, painted as
-        // the header's continuation — Backdrop fill + Separation bottom edge,
-        // from FrameworkTokens because QStyleSheetStyle does not extend the
-        // QHeaderView QSS background into foreign rects (CE_HeaderEmptyArea
-        // falls back to the base-style color there). Painting on the bar keeps
-        // Qt's own stacking/geometry — no sibling-widget z-order to fight.
+        // Stands in for the bar's own painting: blank everywhere (the pill is its visual) except the band beside an
+        // item view's header, painted as the header's continuation (Backdrop fill and Separation bottom edge) from
+        // FrameworkTokens, because QStyleSheetStyle does not extend the QHeaderView QSS background into foreign rects
+        // (CE_HeaderEmptyArea falls back to the base-style color there). Painting on the bar keeps Qt's own stacking
+        // and geometry: no sibling z-order to fight.
         if (applied_header_inset_ > 0) {
           QScrollBar* native = bar();
           const theme::Theme band_theme =
@@ -615,9 +583,8 @@ bool Scrollbar::gutterEventFilter(QObject* watched, QEvent* event) {
             painter.fillRect(
                 QRect(0, 0, native->width(), applied_header_inset_),
                 theme::surface(theme::Surface::Backdrop, band_theme));
-            // Both horizontal hairlines continue across the band: the sections'
-            // border-top and the header's border-bottom — without the top one
-            // the header's upper edge line visibly stops at the gutter.
+            // Both horizontal hairlines continue across the band (the sections' border-top and the header's
+            // border-bottom); without the top one the header's upper edge line visibly stops at the gutter.
             painter.fillRect(QRect(0, 0, native->width(), 1), theme::surface(theme::Surface::Separation, band_theme));
             painter.fillRect(
                 QRect(0, applied_header_inset_ - 1, native->width(), 1),
@@ -639,11 +606,9 @@ bool Scrollbar::gutterEventFilter(QObject* watched, QEvent* event) {
       case QEvent::HoverEnter:
       case QEvent::HoverMove:
       case QEvent::MouseMove:
-        // Hovering anywhere on the gutter reveals; the bar is pure chrome, so
-        // no in-strip hit test is needed. The Hover trio matters: the bar has
-        // WA_Hover, and QApplication discards buttonless MouseMoves for a
-        // widget without mouseTracking BEFORE object filters see them — the
-        // synthesized HoverMove is what actually arrives on a plain hover.
+        // Hovering anywhere on the gutter reveals; the bar is pure chrome, so no in-strip hit test is needed. The Hover
+        // trio matters: the bar has WA_Hover, and QApplication discards buttonless MouseMoves for a widget without
+        // mouseTracking before object filters see them; the synthesized HoverMove is what arrives on a plain hover.
         setShown(true);
         return false;
 
@@ -717,9 +682,8 @@ bool Scrollbar::gutterEventFilter(QObject* watched, QEvent* event) {
       if (watched != viewport) {
         return false;
       }
-      // Moving from the viewport onto the gutter itself fires a viewport Leave
-      // before the bar's Enter; skip the intermediate hide so the fade does not
-      // flicker across that boundary.
+      // Moving from the viewport onto the gutter fires a viewport Leave before the bar's Enter: the intermediate hide
+      // is skipped so the fade does not flicker across that boundary.
       QScrollBar* native = bar();
       const bool over_bar = native->isVisible() && native->rect().contains(native->mapFromGlobal(QCursor::pos()));
       if (!over_bar && !scrollRevealActive()) {
@@ -740,13 +704,10 @@ bool Scrollbar::gutterEventFilter(QObject* watched, QEvent* event) {
 }
 
 void Scrollbar::revealOnWheel(QWheelEvent* event) {
-  // Reveal the pill on a scroll, even when the cursor is nowhere near the
-  // strip. Only the axis that actually scrolled reveals: angleDelta carries
-  // the standard wheel/gesture delta, pixelDelta the high-resolution trackpad
-  // variant; y drives the vertical bar, x the horizontal. Shift+vertical
-  // wheel is the common "scroll horizontally" convention, so the horizontal
-  // bar also honors a y-delta when Shift is held. Never consume — the scroll
-  // area must still scroll.
+  // Reveals the pill on a scroll, even with the cursor nowhere near the strip. Only the axis that scrolled reveals:
+  // angleDelta carries the standard wheel and gesture delta, pixelDelta the high-resolution trackpad variant; y drives
+  // the vertical bar, x the horizontal. Shift+vertical wheel is the common "scroll horizontally" convention, so the
+  // horizontal bar also honors a y-delta with Shift held. Never consumes: the scroll area must still scroll.
   const QPoint angle = event->angleDelta();
   const QPoint pixels = event->pixelDelta();
   int axis_delta = 0;
@@ -786,11 +747,9 @@ void Scrollbar::recomputeGeometry() {
       return;
     }
 
-    // Item views: inset the native groove past the header band, so neither the
-    // native hit target nor the mirrored pill ever climbs beside the header
-    // (a QSS margin excludes the groove — the standard scroll-bar margin
-    // mechanism). Guard on the applied value — setStyleSheet repolishes, which
-    // must not loop.
+    // Item views: the native groove is inset past the header band, so neither the native hit target nor the mirrored
+    // pill climbs beside the header (a QSS margin excludes the groove, the standard scroll-bar margin mechanism).
+    // Guarded on the applied value: setStyleSheet repolishes, which must not loop.
     int header_inset = 0;
     if (!gutter_header_.isNull() && gutter_header_->isVisibleTo(area_)) {
       header_inset = (orientation_ == Qt::Vertical) ? gutter_header_->height() : gutter_header_->width();
@@ -810,9 +769,8 @@ void Scrollbar::recomputeGeometry() {
     const QPoint bar_tl = native->mapTo(area_, QPoint(0, 0));
     setGeometry(QRect(bar_tl, native->size()));
 
-    // Mirror the style-resolved slider rect so the painted pill and the native
-    // hit target are the same region. QScrollBar::initStyleOption is protected,
-    // so fill the option by hand.
+    // Mirrors the style-resolved slider rect, so the painted pill and the native hit target are the same region.
+    // QScrollBar::initStyleOption is protected, so the option is filled by hand.
     QStyleOptionSlider opt;
     opt.initFrom(native);
     opt.orientation = native->orientation();
@@ -920,11 +878,9 @@ void attachPillScrollbars(QWidget* root, const std::function<bool(QAbstractScrol
     if (qobject_cast<QAbstractItemView*>(area) != nullptr && (area->window()->windowFlags() & Qt::Popup) == Qt::Popup) {
       continue;
     }
-    // Only an AsNeeded axis is adapted. AlwaysOn is a deliberate persistent,
-    // draggable native bar (e.g. a log view) that a hover-only pill would
-    // silently replace; AlwaysOff is a deliberately suppressed axis (the
-    // reflow-based "never scroll this way" pattern) where the reserved gutter
-    // would never appear — leave both be.
+    // Only an AsNeeded axis is adapted. AlwaysOn is a deliberate persistent, draggable native bar (a log view) that a
+    // hover-only pill would silently replace; AlwaysOff is a deliberately suppressed axis (the reflow-based "never
+    // scroll this way" pattern) where the reserved gutter would never appear: both are left alone.
     const bool adapt_h = area->horizontalScrollBarPolicy() == Qt::ScrollBarAsNeeded;
     const bool adapt_v = area->verticalScrollBarPolicy() == Qt::ScrollBarAsNeeded;
     if (!adapt_h && !adapt_v) {

@@ -18,7 +18,6 @@ class LuaSyntaxHighlighter : public QSyntaxHighlighter {
   explicit LuaSyntaxHighlighter(QTextDocument* parent) : QSyntaxHighlighter(parent) {
     const auto fw_theme = theme::themeFor(QGuiApplication::palette().window().color().lightness() >= 128);
 
-    // Keywords
     QTextCharFormat keyword_fmt;
     keyword_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Keyword, fw_theme));
     keyword_fmt.setFontWeight(QFont::Bold);
@@ -29,23 +28,19 @@ class LuaSyntaxHighlighter : public QSyntaxHighlighter {
       rules_.append({QRegularExpression("\\b" + QString(kw) + "\\b"), keyword_fmt});
     }
 
-    // Numbers
     QTextCharFormat number_fmt;
     number_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Number, fw_theme));
     rules_.append({QRegularExpression("\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b"), number_fmt});
 
-    // Strings (double and single quoted)
     QTextCharFormat string_fmt;
     string_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::String, fw_theme));
     rules_.append({QRegularExpression("\"[^\"]*\""), string_fmt});
     rules_.append({QRegularExpression("'[^']*'"), string_fmt});
 
-    // Single-line comments
     comment_fmt_.setForeground(theme::syntaxInk(theme::SyntaxRole::Comment, fw_theme));
     comment_fmt_.setFontItalic(true);
     rules_.append({QRegularExpression("--[^\n]*"), comment_fmt_});
 
-    // Built-in functions
     QTextCharFormat builtin_fmt;
     builtin_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Builtin, fw_theme));
     const char* builtins[] = {"print", "type",  "tostring", "tonumber", "pairs", "ipairs",
@@ -65,7 +60,7 @@ class LuaSyntaxHighlighter : public QSyntaxHighlighter {
       }
     }
 
-    // Multi-line comments: --[[ ... ]]
+    // Multi-line comments --[[ ... ]] carry state across blocks.
     setCurrentBlockState(0);
     qsizetype start_index = 0;
     if (previousBlockState() != 1) {

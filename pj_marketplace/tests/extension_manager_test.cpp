@@ -1,18 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Tests for PJ::ExtensionManager
-//
-// Coverage:
-//   [1] Install (Linux direct path): download + extract + register + state persisted
-//   [2] Install guard conditions: already installed, concurrent, unsupported platform
-//   [3] Uninstall: directory removed and state updated; errors on unknown id
-//   [4] Update: removes old files and re-installs cleanly
-//   [5] hasUpdate: multi-segment semver comparison using registry fixture data
-//   [6] applyPendingInstalls: simulates the Windows post-restart staging path
-//   [7] State persistence: installed state derived from disk across manager restarts
-//   [8] Platform detection: currentPlatform() format and registry key resolution
-//   [9] applyPendingUninstalls: deferred directory cleanup via marker file
+// Tests for PJ::ExtensionManager: install, update, uninstall, staged promotion, the removal journal, the single-writer
+// lease, sideloading and the content-addressed store. Each test runs against its own temp directories and a local
+// HTTP server.
 
 #include "pj_marketplace/extension_manager.hpp"
 
@@ -59,10 +50,6 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 namespace {
 
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
 // Spins the Qt event loop until spy receives at least one signal or the deadline expires.
 bool waitForSignal(QSignalSpy& spy, int timeout_ms = 5000) {
   QDeadlineTimer deadline(timeout_ms);
@@ -80,10 +67,8 @@ bool waitForInstallOutcome(QSignalSpy& finished, QSignalSpy& pending_restart, in
   return !finished.isEmpty() || !pending_restart.isEmpty();
 }
 
-// Spins the event loop until `predicate` holds, or the deadline expires. Returns
-// what the predicate said last, so a caller can assert either outcome: waiting
-// for something to APPEAR and waiting to confirm it never does are both real
-// assertions here, and neither is a sleep on a guessed duration.
+// Spins the event loop until `predicate` holds or the deadline expires, returning its last answer: both "appears" and
+// "never appears" can be asserted without a sleep on a guessed duration.
 template <typename Predicate>
 bool waitUntil(Predicate predicate, int timeout_ms) {
   QDeadlineTimer deadline(timeout_ms);
@@ -97,8 +82,8 @@ bool waitUntil(Predicate predicate, int timeout_ms) {
   return predicate();
 }
 
-// Every regular file under `path`, recursively. Used as evidence that an extract
-// worker is (or is no longer) writing into the store.
+// Every regular file under `path`, recursively: evidence that an extract worker is (or is no longer) writing into the
+// store.
 QStringList filesUnder(const QString& path) {
   QStringList found;
   QDirIterator it(path, QDir::Files | QDir::Hidden | QDir::System, QDirIterator::Subdirectories);
@@ -146,9 +131,8 @@ class LocalHttpServer {
   QByteArray body_;
 };
 
-// Builds an in-memory ZIP archive from a map of { relative_path -> file_content }.
-// `capacity` bounds the in-memory archive; raise it for a deliberately large
-// multi-entry fixture (see manyEntryPluginZip).
+// Builds an in-memory ZIP from { relative_path -> content }; raise `capacity` for a deliberately large fixture (see
+// manyEntryPluginZip).
 QByteArray buildZip(const QMap<QString, QByteArray>& files, size_t capacity = 4 * 1024 * 1024) {
   std::vector<char> buf(capacity);
   size_t used = 0;
@@ -187,9 +171,7 @@ QString pluginPathForId(const QString& ext_id, const QString& version = "1.0.0")
   if (ext_id == "mock-data-source" && version == "2.0.0") {
     return QStringLiteral(PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH);
   }
-  // The 3.0.0 build of this id is the fixture whose embedded manifest declares
-  // min_sdk_required "99.0.0" — the SDK floor the compatibility tests need.
-  // No other fixture declares an above-host one.
+  // The 3.0.0 build of this id declares min_sdk_required "99.0.0": the only fixture with an above-host SDK floor.
   if (ext_id == "mock-data-source" && version == "3.0.0") {
     return QStringLiteral(PJ_MOCK_INCOMPATIBLE_PLUGIN_PATH);
   }
@@ -224,8 +206,7 @@ QString pluginFileName() {
   return "plugin" + QString::fromStdString(PlatformUtils::pluginExtension());
 }
 
-// Backups are named "<id>-<uuid>" (the old version is no longer dlopened to read
-// its version for the name), so look them up by prefix rather than exact name.
+// Backups are named "<id>-<uuid>" (the old directory is not opened to read its version), so look them up by prefix.
 QStringList backupDirsFor(const QString& id) {
   return QDir(PlatformUtils::backupDir()).entryList(QStringList{id + "-*"}, QDir::Dirs);
 }
@@ -268,18 +249,15 @@ QByteArray pluginZipWithDso(const QString& ext_id, const QString& fixture_id, co
   });
 }
 
-// Returns a ZIP with an <id>/ root directory and a real plugin DSO whose
-// embedded manifest is the installed-state source of truth. There is no local
-// metadata sidecar.
+// A ZIP with an <id>/ root directory and a real plugin DSO whose embedded manifest is the installed-state source of
+// truth (there is no metadata sidecar).
 QByteArray dummyPluginZip(const QString& ext_id, const QString& version = "1.0.0") {
   return pluginZipWithDso(ext_id, ext_id, version);
 }
 
-// A valid plugin archive padded with `filler_count` extra small entries, so its
-// extraction takes long enough to still be running when a test tears the manager
-// down. MANY SMALL entries rather than one big file on purpose: the extract worker
-// only observes cancellation at entry and block boundaries, so entry count is what
-// makes the in-flight window reliably observable.
+// A valid plugin archive padded with `filler_count` small entries, so extraction is still running when a test tears
+// the manager down. Many small entries, not one big file: the worker observes cancellation only at entry and block
+// boundaries.
 QByteArray manyEntryPluginZip(const QString& ext_id, int filler_count) {
   QMap<QString, QByteArray> files;
   files.insert(ext_id + "/" + pluginFileName(), readAll(pluginPathForId(ext_id)));
@@ -298,10 +276,7 @@ QByteArray pluginZipWithTwoDsos(const QString& ext_id, const QString& first_id, 
   });
 }
 
-// Scopes QCoreApplication::applicationVersion() for a single test — the value
-// is process-wide, so pinning it at the top of the test and restoring it in
-// the destructor keeps sibling tests independent. Used by the
-// hostCompatibility() coverage below.
+// Scopes QCoreApplication::applicationVersion(), which is process-wide, to one test.
 class ScopedApplicationVersion {
  public:
   explicit ScopedApplicationVersion(const QString& v) : previous_(QCoreApplication::applicationVersion()) {
@@ -322,20 +297,15 @@ QStringList transactionDirsIn(const QString& path) {
   return QDir(path).entryList(QStringList{u".pj_install_*"_s}, QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
 }
 
-// The staging area every install extracts into. Deliberately spells out the
-// layout ExtensionManager produces rather than asking it: the placement IS what
-// the tests below pin down, and it must stay a sibling of the extensions dir -
-// same filesystem (so the promoting rename is atomic), outside the recursive
-// plugin scan (so scratch is never loadable content).
+// The staging area every install extracts into. Spelled out rather than asked of the manager, because the placement
+// is what the tests pin: a sibling of the extensions dir (same filesystem, so the rename is atomic; outside the
+// recursive plugin scan, so scratch is never loadable content).
 QString transactionStageDirFor(const QString& extensions_dir) {
   return extensions_dir + u".install_stage"_s;
 }
 
-// The journal ExtensionManager records pending removals in. Spelled out for the
-// same reason as transactionStageDirFor: the PLACEMENT is the thing under test. It
-// has to stay a sibling of the extensions dir so that a record can never live
-// inside the payload whose deletion it describes - a recursive delete that removed
-// its own retry record was the defect this journal replaces.
+// The removal journal directory. Spelled out because its placement is under test: a sibling of the extensions dir, so
+// a record never lives inside the payload whose deletion it describes.
 QString removalJournalDirFor(const QString& extensions_dir) {
   return extensions_dir + u".state"_s;
 }
@@ -353,9 +323,8 @@ QJsonObject removalIntentFor(const QString& extensions_dir, const QString& id) {
   return QJsonDocument::fromJson(record.readAll()).object();
 }
 
-// Plants a journal record by hand, standing in for corruption or for a hostile
-// writer trying to borrow the drain's delete privilege. `stem` names the file, so
-// a test can file a record under a name that disagrees with the id inside.
+// Plants a journal record by hand (corruption, or a hostile writer borrowing the drain's delete privilege); `stem`
+// names the file, so a record can be filed under a name that disagrees with its id.
 bool writeRawRemovalRecord(const QString& extensions_dir, const QString& stem, const QByteArray& contents) {
   if (!QDir().mkpath(removalJournalDirFor(extensions_dir))) {
     return false;
@@ -387,10 +356,8 @@ QStringList quarantinedRecordsIn(const QString& extensions_dir) {
       .entryList(QStringList{u"*.rejected-*"_s}, QDir::Files | QDir::Hidden);
 }
 
-// Clamps a directory's permissions for the duration of a test and restores them
-// on scope exit. Used to make a removal fail on purpose; the restore must happen
-// even when an ASSERT bails out early, or QTemporaryDir would be unable to clean
-// up and the tree would be left behind in the system temp area.
+// Clamps a directory's permissions for one test to make a removal fail on purpose, and restores them on scope exit,
+// even when an ASSERT bails out early.
 class ScopedDirectoryPermissions {
  public:
   ScopedDirectoryPermissions(QString path, QFileDevice::Permissions locked)
@@ -423,18 +390,11 @@ Extension makeExtension(const QString& id, const QString& version, const QUrl& u
   return ext;
 }
 
-// ---------------------------------------------------------------------------
-// Test fixture — isolated temp directories and a fresh manager per test
-// ---------------------------------------------------------------------------
-
 class ExtensionManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Several tests place their own QTemporaryDir under PlatformUtils::configDir()
-    // (next to backupDir()) so QDir::rename() into the backup is an atomic same-fs
-    // move. QTemporaryDir refuses to create itself when the parent does not exist,
-    // which is exactly the state of a fresh CI runner. Pre-create configDir() here
-    // so those constructions succeed regardless of host history.
+    // Several tests create a QTemporaryDir under PlatformUtils::configDir() (next to backupDir()) so renames into the
+    // backup are atomic; QTemporaryDir needs its parent to exist, which a fresh CI runner lacks.
     ASSERT_TRUE(QDir().mkpath(PlatformUtils::configDir()));
     ASSERT_TRUE(ext_dir_.isValid());
     ASSERT_TRUE(pending_dir_.isValid());
@@ -445,9 +405,8 @@ class ExtensionManagerTest : public ::testing::Test {
   void TearDown() override {
     delete mgr_;
     delete downloader_;
-    // The staging area sits NEXT TO ext_dir_, so QTemporaryDir does not remove it:
-    // a test that abandons an in-flight install (the concurrency guards do, on
-    // purpose) orphans a transaction there, exactly as a crashed session would.
+    // The staging area sits NEXT TO ext_dir_, so QTemporaryDir does not remove it: a test that abandons an in-flight
+    // install orphans a transaction there, as a crashed session would.
     QDir(transactionStageDirFor(ext_dir_.path())).removeRecursively();
   }
 
@@ -460,12 +419,7 @@ class ExtensionManagerTest : public ::testing::Test {
   ExtensionManager* mgr_ = nullptr;
 };
 
-// ---------------------------------------------------------------------------
-// [1] Direct install (Linux path)
-// ---------------------------------------------------------------------------
-
-// A fresh install downloads the ZIP, extracts it, registers the extension, and
-// emits the correct signal sequence: installStarted → installFinished(id, true).
+// A fresh install downloads, extracts and registers: installStarted, then installFinished(id, true).
 TEST_F(ExtensionManagerTest, InstallDirectRegistersExtension) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -503,10 +457,9 @@ TEST_F(ExtensionManagerTest, InstallCreatesExtensionDirectory) {
   EXPECT_TRUE(QDir(ext_dir_.path() + "/mock-file-source").exists());
 }
 
-// The load-side of the content-addressed store: a successful install records its
-// content digest in the persisted profile and hands the runtime the immutable
-// store object as its managed load path. When the install later goes away, the
-// startup reconcile prunes the profile and collects the now-orphan object.
+// A successful install records its content digest in the persisted profile and hands the runtime the store object as
+// its managed load path; once the install goes away, the startup reconcile prunes the profile and collects the orphan
+// object.
 TEST_F(ExtensionManagerTest, InstallRecordsStoreObjectForRuntimeLoad) {
   server_.setBody(dummyPluginZip("mock-file-source"));
   const Extension ext = makeExtension("mock-file-source", "1.0.0", server_.url());
@@ -529,9 +482,7 @@ TEST_F(ExtensionManagerTest, InstallRecordsStoreObjectForRuntimeLoad) {
   EXPECT_TRUE(QDir(object_dir).exists());
   EXPECT_TRUE(object_dir.contains(QLatin1StringView(".artifacts")));
 
-  // Remove extensions/<id>/ (what an uninstall's startup drain does) and run the
-  // reconcile a restart would run: the profile entry is pruned, the orphan store
-  // object is collected, and the runtime is handed nothing for it.
+  // Remove extensions/<id>/ (what the startup drain of an uninstall does) and reconcile as a restart would.
   ASSERT_TRUE(QDir(mgr_->extensionsDir() + "/mock-file-source").removeRecursively());
   mgr_->testReconcileFromDisk();
   EXPECT_FALSE(QDir(object_dir).exists());
@@ -539,8 +490,7 @@ TEST_F(ExtensionManagerTest, InstallRecordsStoreObjectForRuntimeLoad) {
   EXPECT_TRUE(mgr_->managedPluginDirs().empty());
 }
 
-// installProgress signals are forwarded during the download phase.
-// Each signal must carry the correct extension id and a percent in [0, 100].
+// installProgress is forwarded during the download, with the extension id and a percent in [0, 100].
 TEST_F(ExtensionManagerTest, InstallEmitsProgressSignals) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -560,23 +510,16 @@ TEST_F(ExtensionManagerTest, InstallEmitsProgressSignals) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// [2] Install guard conditions
-// ---------------------------------------------------------------------------
-
-// Calling install() for an extension that is already installed must emit installError
-// immediately — it must not start a new download.
+// install() of an already-installed id emits installError at once and starts no download.
 TEST_F(ExtensionManagerTest, InstallRejectsAlreadyInstalledExtension) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
 
-  // First install — must succeed.
   QSignalSpy spy_first(mgr_, &ExtensionManager::installFinished);
   mgr_->install(ext);
   ASSERT_TRUE(waitForSignal(spy_first));
   ASSERT_TRUE(spy_first.first().at(1).toBool());
 
-  // Second install — must be rejected with an error.
   QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
   mgr_->install(ext);
   ASSERT_EQ(spy_error.count(), 1);
@@ -584,11 +527,9 @@ TEST_F(ExtensionManagerTest, InstallRejectsAlreadyInstalledExtension) {
   EXPECT_FALSE(spy_error.first().at(1).toString().isEmpty());
 }
 
-// Calling install() for a second extension while one is already in progress must
-// reject the second request immediately via installError.
+// A second install() while one is in progress is rejected at once via installError.
 TEST_F(ExtensionManagerTest, InstallBlocksConcurrentRequests) {
-  // A server that accepts TCP connections but never sends any data keeps the first
-  // download pending indefinitely without burning CPU or requiring a timeout.
+  // A server that accepts connections but never answers keeps the first download pending without burning CPU.
   QTcpServer hanging_server;
   hanging_server.listen(QHostAddress::LocalHost, 0);
   const QUrl hanging_url = QUrl(u"http://127.0.0.1:%1/"_s.arg(hanging_server.serverPort()));
@@ -607,11 +548,8 @@ TEST_F(ExtensionManagerTest, InstallBlocksConcurrentRequests) {
   EXPECT_FALSE(spy_error.first().at(1).toString().isEmpty());
 }
 
-// Symmetric to InstallBlocksConcurrentRequests: installFromLocalZip() must
-// also reject if a registry install is in flight (both paths share the
-// pending_id_ guard). The UI queues sideloads behind card actions so users
-// never see this error, but the manager still enforces single-install-at-a-
-// time at the boundary — this locks that invariant in either direction.
+// installFromLocalZip() also rejects while a registry install is in flight (both share the pending_id_ guard): the UI
+// queues sideloads, but the manager enforces one install at a time at its boundary.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipBlockedByConcurrentInstall) {
   QTcpServer hanging_server;
   hanging_server.listen(QHostAddress::LocalHost, 0);
@@ -619,8 +557,7 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipBlockedByConcurrentInstall) {
 
   const Extension ext_a = makeExtension("mock-data-source", "1.0.0", hanging_url);
 
-  // A real on-disk zip: installFromLocalZip() reads the file at the boundary
-  // before touching the pending_id_ guard, so we cannot fake the path.
+  // A real on-disk zip: installFromLocalZip() reads the file before the pending_id_ guard.
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
   const QString zip_path = QDir(src.path()).absoluteFilePath("pkg.zip");
@@ -637,14 +574,12 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipBlockedByConcurrentInstall) {
   mgr_->installFromLocalZip(zip_path);  // must be rejected immediately
 
   ASSERT_EQ(spy_error.count(), 1);
-  // The failure is reported against the sideload's file label, not the
-  // running download's id.
+  // Reported against the sideload's file label, not the running download's id.
   EXPECT_EQ(spy_error.first().at(0).toString(), "pkg.zip");
   EXPECT_TRUE(spy_error.first().at(1).toString().contains("already in progress"));
 }
 
-// If the Extension's platforms map does not contain the current platform, install()
-// must emit installError without initiating any download.
+// install() with no artifact for the current platform emits installError and starts no download.
 TEST_F(ExtensionManagerTest, InstallRejectsUnsupportedPlatform) {
   Extension ext;
   ext.id = "fft-toolbox";
@@ -663,12 +598,6 @@ TEST_F(ExtensionManagerTest, InstallRejectsUnsupportedPlatform) {
   EXPECT_FALSE(spy_error.first().at(1).toString().isEmpty());
   EXPECT_EQ(spy_started.count(), 0) << "installStarted must not fire when the platform is unsupported";
 }
-
-// ---------------------------------------------------------------------------
-// hostCompatibility() — the primitive: platform match + host >= min version.
-// applicationVersion() is process-wide so each test scopes its own value via
-// the ScopedApplicationVersion RAII helper declared earlier in this file.
-// ---------------------------------------------------------------------------
 
 TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsCurrentPlatformWithNoMinVersion) {
   Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
@@ -691,18 +620,14 @@ TEST_F(ExtensionManagerTest, HostCompatibilityRejectsPlatformNotListed) {
   EXPECT_FALSE(compat.reason.isEmpty()) << "reason must be non-empty when compatibility fails";
 }
 
-// A locally-sideloaded install (installFromLocalZip → row synthesized by
-// MarketplaceWindow::rebuildExtensionList) carries no registry-sourced fields,
-// so `platforms` is empty by design. Treating that as incompatible would
-// mislabel a working local install; empty-platforms must be read as "no
-// registry declaration" and pass the gate.
+// A sideloaded row carries no registry fields, so `platforms` is empty by design: empty platforms read as "no registry
+// declaration" and pass the gate.
 TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsEmptyPlatformsAsLocallyDeclared) {
   Extension ext;
   ext.id = "local-plugin";
   ext.name = "local-plugin";
   ext.version = "1.0.0";
-  // ext.platforms is deliberately left empty — this is what the synthesized
-  // local-only marketplace row carries.
+  // ext.platforms is left empty, as on a synthesized local-only row.
 
   const auto compat = mgr_->hostCompatibility(ext);
   EXPECT_TRUE(compat.ok) << "an ext with an empty platforms map is a local install without registry metadata — "
@@ -727,7 +652,7 @@ TEST_F(ExtensionManagerTest, HostCompatibilityAcceptsHostAtOrAboveDeclaredSdkMin
 }
 
 TEST_F(ExtensionManagerTest, DeprecatedApplicationFloorNeverGates) {
-  // min_plotjuggler_version is decoded for back-compat but no longer gates.
+  // min_plotjuggler_version is decoded but never gates.
   Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
   ext.min_plotjuggler_version = "999.0.0";
   EXPECT_TRUE(mgr_->hostCompatibility(ext).ok);
@@ -735,9 +660,8 @@ TEST_F(ExtensionManagerTest, DeprecatedApplicationFloorNeverGates) {
   EXPECT_TRUE(mgr_->hostCompatibility(ext).ok);
 }
 
-// The reduced-features note is display-only and must never affect the gate:
-// a compatible plugin with a full-feature floor above this build's SDK stays
-// ok=true and carries the note; an absent or unparseable claim yields nothing.
+// The reduced-features note is display-only: a compatible plugin with a full-feature floor above this build's SDK
+// stays ok=true and carries the note; an absent or unparseable claim yields nothing.
 TEST_F(ExtensionManagerTest, FeatureCompletenessNoteIsInformationalOnly) {
   EXPECT_TRUE(evaluateFeatureCompleteness("").empty());
   EXPECT_TRUE(evaluateFeatureCompleteness("not-a-version").empty());
@@ -761,11 +685,8 @@ TEST_F(ExtensionManagerTest, FeatureCompletenessNoteIsInformationalOnly) {
   EXPECT_TRUE(installed_compat.completeness_note.contains("99.0.0"));
 }
 
-// R1: install() must refuse an extension whose declared minimum host is newer
-// than the running build. Both installError AND installFinished(id, false)
-// must fire — callers that await installFinished would otherwise hang, and
-// callers subscribed to installError would miss the failure entirely if only
-// one of the two were emitted.
+// install() refuses an extension whose min_sdk_required is above this build's SDK and fires both installError and
+// installFinished(id, false): a caller awaiting only one would otherwise hang or miss the failure.
 TEST_F(ExtensionManagerTest, InstallRefusesWhenHostBelowMinSdkRequired) {
   Extension ext = makeExtension("plugin-x", "1.0.0", server_.url());
   ext.min_sdk_required = "99.0.0";
@@ -894,16 +815,9 @@ TEST_F(ExtensionManagerTest, InstallRejectsExtraTopLevelDirectoryWithoutLeavingS
   EXPECT_FALSE(mgr_->isInstalled("unrelated-extension"));
 }
 
-// ---------------------------------------------------------------------------
-// [3] Uninstall
-// ---------------------------------------------------------------------------
-
-// Uninstall stages the removal on every platform: the directory stays on disk
-// carrying the marker until the next launch drains it, while the extension
-// leaves the installed set right away. Removing in place would free the
-// directory NAME for reuse with the session's DSO still mapped, and dlopen
-// resolves by path name — a reinstall into that name would then be answered
-// from the resident image instead of the payload on disk.
+// Uninstall stages the removal on every platform: the extension leaves the installed set at once while the directory
+// stays on disk until the next launch drains it. Removing in place would free the directory name for reuse while the
+// DSO stays mapped, and dlopen resolves by path name.
 TEST_F(ExtensionManagerTest, UninstallStagesRemovalUntilRestart) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -933,9 +847,8 @@ TEST_F(ExtensionManagerTest, UninstallStagesRemovalUntilRestart) {
   EXPECT_FALSE(QDir(ext_path).exists());
 }
 
-// Installing over a staged uninstall would be erased by the next startup drain,
-// which deletes whatever occupies that directory name. isInstalled() no longer
-// speaks for the id at this point, so the pending marker is the guard.
+// Installing over a staged uninstall would be erased by the next startup drain: the pending removal is the guard,
+// since isInstalled() no longer speaks for the id.
 TEST_F(ExtensionManagerTest, InstallRejectsAnIdWithAStagedUninstall) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -958,9 +871,8 @@ TEST_F(ExtensionManagerTest, InstallRejectsAnIdWithAStagedUninstall) {
       << spy_error.first().at(1).toString().toStdString();
 }
 
-// The sideload path does not route through doInstall(), so it needs the guard of
-// its own: its fresh-install branch clears the destination directory — marker
-// included — which would make the pending removal disappear unannounced.
+// The sideload path does not route through doInstall(): its fresh-install branch would clear the destination,
+// pending removal included, so it needs its own guard.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipRejectsAnIdWithAStagedUninstall) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   QSignalSpy spy_install(mgr_, &ExtensionManager::installFinished);
@@ -987,11 +899,8 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipRejectsAnIdWithAStagedUninstall)
   EXPECT_TRUE(mgr_->hasPendingUninstall("mock-data-source")) << "the pending removal must survive the refused install";
 }
 
-// The scan takes the id from the embedded manifest, so an extension directory
-// placed by hand can be named anything. The journal records the path uninstall()
-// actually found, keyed by id; reporting the pending state by looking only under
-// "<id>" would miss it, leaving the card without its "Needs Restart" state and the
-// install guards inert for a removal that is genuinely staged.
+// A directory placed by hand can be named anything (the scan takes the id from the manifest): the pending state is
+// keyed by id in the journal, so the row keeps "Needs Restart" and the install guards stay armed.
 TEST_F(ExtensionManagerTest, PendingUninstallIsVisibleForADirectoryNotNamedForItsId) {
   const QString odd_dir = ext_dir_.path() + "/oddly-named-dir";
   ASSERT_TRUE(copyFixturePlugin(odd_dir, "mock-data-source"));
@@ -1012,7 +921,7 @@ TEST_F(ExtensionManagerTest, PendingUninstallIsVisibleForADirectoryNotNamedForIt
   EXPECT_TRUE(mgr_->hasPendingUninstall("mock-data-source"))
       << "the staged removal must be visible to the badge and the install guards";
 
-  // The drain finds it by scanning, so the removal itself was never at risk.
+  // The drain deletes the directory the record names.
   mgr_->applyPendingUninstalls();
   EXPECT_FALSE(QDir(odd_dir).exists());
   mgr_->refreshInstalledFromDisk();
@@ -1061,17 +970,9 @@ TEST_F(ExtensionManagerTest, UninstallUnknownExtensionEmitsError) {
   EXPECT_FALSE(spy_finished.first().at(1).toBool());
 }
 
-// ---------------------------------------------------------------------------
-// [4] Update
-// ---------------------------------------------------------------------------
-
-// update() stages the new version instead of hot-swapping the live install:
-// it emits installPendingRestart, leaves the running version in place, and only
-// a restart (applyPendingInstalls) promotes the staged copy. ext/pending/backup
-// share one filesystem so the promotion renames (staged -> extensions, old ->
-// backup) are atomic moves, not cross-device copies.
+// update() stages the new version: installPendingRestart is emitted, the live version stays, and only a restart
+// (applyPendingInstalls) promotes it. ext/pending/backup share one filesystem so the promotion renames are atomic.
 TEST_F(ExtensionManagerTest, UpdateStagesNewVersionUntilRestart) {
-  // Ensure clean backup state before test (in case previous run failed mid-test).
   cleanBackups("mock-data-source");
 
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
@@ -1117,11 +1018,9 @@ TEST_F(ExtensionManagerTest, UpdateStagesNewVersionUntilRestart) {
   cleanBackups("mock-data-source");
 }
 
-// Promoting a staged update backs up the previous version into backupDir().
-// The backup now happens at promotion time (applyPendingInstalls), not in
+// Promoting a staged update backs up the previous version into backupDir(), at promotion time rather than in
 // update(). ext/pending/backup share one filesystem so the renames are atomic.
 TEST_F(ExtensionManagerTest, UpdatePromotionBacksUpOldVersion) {
-  // Ensure clean backup state before test (in case previous run failed mid-test).
   cleanBackups("mock-data-source");
 
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
@@ -1163,9 +1062,7 @@ TEST_F(ExtensionManagerTest, UpdatePromotionBacksUpOldVersion) {
   cleanBackups("mock-data-source");
 }
 
-// Counterpart to InstallResetsDisabledState: a staged UPDATE promotion must
-// PRESERVE the user's disabled choice. A plugin the user disabled must not come
-// back enabled just because its update was promoted at the next restart.
+// A staged update promotion preserves the user's disabled choice (counterpart of InstallResetsDisabledState).
 TEST_F(ExtensionManagerTest, UpdatePromotionPreservesDisabledState) {
   cleanBackups("mock-data-source");
 
@@ -1206,9 +1103,8 @@ TEST_F(ExtensionManagerTest, UpdatePromotionPreservesDisabledState) {
   cleanBackups("mock-data-source");
 }
 
-// A failed update fails during staging, before the live install is touched: the
-// installed version stays fully intact, nothing is staged, and no backup is made
-// (there is nothing to recover — the running copy was never moved).
+// A failed update fails during staging, before the live install is touched: version intact, nothing staged, no
+// backup.
 TEST_F(ExtensionManagerTest, FailedUpdateStagingLeavesLiveInstallUntouched) {
   cleanBackups("mock-data-source");
 
@@ -1229,8 +1125,7 @@ TEST_F(ExtensionManagerTest, FailedUpdateStagingLeavesLiveInstallUntouched) {
   ASSERT_TRUE(spy_install.first().at(1).toBool());
 
   spy_install.clear();
-  // Serve garbage data — libarchive will fail to extract it and DownloadManager
-  // will emit failed(), which propagates to installFinished(id, false).
+  // Serve garbage: libarchive fails to extract it and DownloadManager's failed() reaches installFinished(id, false).
   server_.setBody(QByteArray("not_a_valid_zip"));
   const Extension ext_v2 = makeExtension("mock-data-source", "2.0.0", server_.url());
 
@@ -1251,12 +1146,9 @@ TEST_F(ExtensionManagerTest, FailedUpdateStagingLeavesLiveInstallUntouched) {
   EXPECT_TRUE(backupDirsFor("mock-data-source").isEmpty()) << "a failed staging must not create a backup";
 }
 
-// A second update() against an id that already has a staged install must be
-// refused up front rather than redownloading and re-staging the same payload on
-// top of the pending dir — the installed version stays live until restart, so
-// hasUpdate() keeps returning true and a caller relying on it can innocently
-// ask again. The manager guard is the safety net for callers that are not the
-// marketplace UI (the UI additionally gates the "Update All" button off).
+// A second update() for an id with a staged install is refused up front instead of re-downloading on top of the
+// pending dir (hasUpdate() stays true until restart, so a caller can innocently ask again). The manager guard backs
+// callers other than the marketplace UI.
 TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingInstall) {
   cleanBackups("mock-data-source");
 
@@ -1302,11 +1194,7 @@ TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingInstall) {
   cleanBackups("mock-data-source");
 }
 
-// A pending-uninstall marker on an id must also block a subsequent update():
-// on Windows the uninstall path stages the removal, and update() during that
-// window would resurrect an id the user just asked to remove. The manager guard
-// covers this along with hasPendingInstall; the marker file is portable enough
-// to exercise on any platform.
+// A staged removal also blocks update(): it would resurrect an id the user just asked to remove.
 TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingUninstall) {
   cleanBackups("mock-data-source");
 
@@ -1326,11 +1214,8 @@ TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingUninstall) {
   ASSERT_TRUE(waitForSignal(spy_finished));
   ASSERT_TRUE(spy_finished.first().at(1).toBool());
 
-  // Stand in for an older build's staged uninstall by dropping its in-payload
-  // marker. Current code journals removals outside the payload instead, but the
-  // marker's EXISTENCE still has to register as a pending removal so an upgrade
-  // does not let update() run over one — content is never read (see
-  // sweepLegacyUninstallMarkers).
+  // Stand in for a payload-resident `.pj_pending_uninstall` marker: its existence must still register as a pending
+  // removal so update() does not run over it; its content is never read (see externalizeLegacyUninstallMarkers).
   const QString marker = local_ext_dir.path() + "/mock-data-source/.pj_pending_uninstall";
   QFile marker_file(marker);
   ASSERT_TRUE(marker_file.open(QIODevice::WriteOnly));
@@ -1352,14 +1237,6 @@ TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingUninstall) {
 
   cleanBackups("mock-data-source");
 }
-
-// ---------------------------------------------------------------------------
-// [5] hasUpdate — version comparison
-//
-// Extension data below mirrors the registry.json fixture:
-//   mock-data-source   v1.0.0
-//   mock-file-source v1.0.0
-// ---------------------------------------------------------------------------
 
 // Returns false when the extension is not installed.
 TEST_F(ExtensionManagerTest, HasUpdateReturnsFalseWhenNotInstalled) {
@@ -1395,14 +1272,9 @@ TEST_F(ExtensionManagerTest, HasUpdateReturnsTrueForNewerVersion) {
   EXPECT_TRUE(mgr_->hasUpdate(ext_v2));
 }
 
-// installedVersion() answers from what the startup seed reported writing, not
-// from the scan snapshot, because the snapshot predates that write and the
-// process cannot re-read it (glibc serves a second dlopen of the same path from
-// the first-loaded image).
-//
-// The discriminating case is the seed's restore of an incompatible copy: it
-// leaves the managed dir BELOW the scanned version, so a rule that only ever
-// moved the answer upwards would keep reporting the version it just replaced.
+// installedVersion() answers from what the startup seed reported writing, not from the scan snapshot, which predates
+// that write and cannot be refreshed (docs/TECHNICAL_NOTES.md "dlopen pins the first image"). The discriminating case
+// is the seed's restore of an incompatible copy, which leaves the managed dir below the scanned version.
 TEST_F(ExtensionManagerTest, SeededVersionOverridesTheScanSnapshotDownwards) {
   server_.setBody(dummyPluginZip("mock-data-source", "2.0.0"));
   const Extension ext_v2 = makeExtension("mock-data-source", "2.0.0", server_.url());
@@ -1422,8 +1294,7 @@ TEST_F(ExtensionManagerTest, SeededVersionOverridesTheScanSnapshotDownwards) {
   EXPECT_FALSE(mgr_->hasNewerInstalledVersion(registry_v2)) << "the restored copy is not newer than the registry";
 }
 
-// QVersionNumber must compare versions numerically, not lexically:
-// "10.0.0" > "2.0.0" — a raw string compare would invert this result.
+// Versions compare by SemVer precedence, not lexically: "10.0.0" > "2.0.0".
 TEST_F(ExtensionManagerTest, HasUpdateHandlesMultiSegmentVersionsCorrectly) {
   server_.setBody(dummyPluginZip("mock-data-source", "2.0.0"));
   const Extension ext_installed = makeExtension("mock-data-source", "2.0.0", server_.url());
@@ -1452,10 +1323,8 @@ TEST_F(ExtensionManagerTest, HasNewerInstalledVersionReturnsTrueWhenLocalVersion
   EXPECT_FALSE(mgr_->hasUpdate(ext_v1));
 }
 
-// installedVersion() is the single source of truth for what's on disk. Three
-// branches — id absent, no bundled set (falls back to scanned), and bundled
-// higher than scanned (the seed-refreshed core-plugin case that motivates
-// the helper — see the header comment for the STB_GNU_UNIQUE / NODELETE trap).
+// installedVersion() is the single source of truth for what is on disk. Three branches: id absent, no seeded version
+// (the scanned one), and the seed-refreshed core plugin (docs/TECHNICAL_NOTES.md "dlopen pins the first image").
 
 TEST_F(ExtensionManagerTest, InstalledVersionIsEmptyForUnknownId) {
   EXPECT_TRUE(mgr_->installedVersion("never-installed").isEmpty());
@@ -1472,10 +1341,8 @@ TEST_F(ExtensionManagerTest, InstalledVersionFallsBackToScannedWithNoBundledSet)
   EXPECT_EQ(mgr_->installedVersion("mock-data-source"), "1.0.0");
 }
 
-// The seed-refresh case: the scanner still sees the pre-seed version because its
-// dlopen was poisoned by NODELETE, and the seed reports the version it promoted.
-// installedVersion() has to report the promoted one — it is what is really on
-// disk.
+// The seed-refresh case: the scanner still sees the pre-seed version and the seed reports the version it promoted;
+// installedVersion() must report the promoted one.
 TEST_F(ExtensionManagerTest, InstalledVersionReportsSeededWhenNewerThanScanned) {
   server_.setBody(dummyPluginZip("mock-data-source", "1.0.0"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -1492,9 +1359,7 @@ TEST_F(ExtensionManagerTest, InstalledVersionReportsSeededWhenNewerThanScanned) 
   EXPECT_EQ(mgr_->installedVersion("mock-data-source"), "2.0.0");
 }
 
-// When the marketplace-installed copy is newer than the bundled one (the user
-// upgraded), scanned wins — the seed is not going to overwrite a user's newer
-// install, so scanned is what is on disk.
+// A marketplace-installed copy newer than the bundled one: scanned wins, since the seed does not overwrite it.
 TEST_F(ExtensionManagerTest, InstalledVersionKeepsScannedWhenBundledIsOlder) {
   server_.setBody(dummyPluginZip("mock-data-source", "2.0.0"));
   const Extension ext = makeExtension("mock-data-source", "2.0.0", server_.url());
@@ -1510,9 +1375,8 @@ TEST_F(ExtensionManagerTest, InstalledVersionKeepsScannedWhenBundledIsOlder) {
   EXPECT_EQ(mgr_->installedVersion("mock-data-source"), "2.0.0");
 }
 
-// The consequence that motivates the whole change: hasUpdate stops offering an
-// update when bundled >= registry, even if the scanner still sees the pre-seed
-// version.
+// hasUpdate stops offering an update when the seeded version matches the registry, even if the scanner still sees the
+// pre-seed version.
 TEST_F(ExtensionManagerTest, HasUpdateIsFalseWhenTheSeededVersionMatchesTheRegistry) {
   server_.setBody(dummyPluginZip("mock-data-source", "1.0.0"));
   const Extension registry_v2 = makeExtension("mock-data-source", "2.0.0", server_.url());
@@ -1566,16 +1430,6 @@ TEST_F(ExtensionManagerTest, UpdateRejectsDowngradeWhenInstalledVersionIsNewer) 
   EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "2.0.0");
 }
 
-// ---------------------------------------------------------------------------
-// [6] applyPendingInstalls — post-restart staging promotion
-//
-// update() stages the new version into the configured pending directory. On the
-// next startup, applyPendingInstalls() moves the directory into extensions/ and
-// registers it from the DSO's embedded manifest. These tests create that
-// directory structure manually and verify the promotion logic (the function is
-// always safe to call).
-// ---------------------------------------------------------------------------
-
 // applyPendingInstalls() promotes a staged extension to extensions/ and registers it.
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsPromotesStagedExtension) {
   const QString staged_dir = pending_dir_.path() + "/mock-data-source";
@@ -1589,7 +1443,6 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsPromotesStagedExtension) {
   EXPECT_EQ(spy_finished.first().at(0).toString(), "mock-data-source");
   EXPECT_TRUE(spy_finished.first().at(1).toBool());
 
-  // Extension must be queryable as installed.
   EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
   EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "1.0.0");
 
@@ -1598,10 +1451,8 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsPromotesStagedExtension) {
   EXPECT_FALSE(QDir(staged_dir).exists());
 }
 
-// A staged payload is untrusted until the restart that promotes it: the host or
-// SDK may have changed, and the stage may have been tampered with. Promotion
-// must therefore repeat the complete embedded compatibility gate before moving
-// the current install aside.
+// A staged payload is untrusted until the restart that promotes it (the host or SDK may have changed, or the stage
+// been tampered with): promotion repeats the embedded compatibility gate before moving the current install aside.
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsIncompatibleEmbeddedRequirements) {
   const ScopedApplicationVersion host{"4.0.0"};
   const QString staged_dir = pending_dir_.path() + "/newer-sdk";
@@ -1622,16 +1473,12 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsIncompatibleEmbeddedRequ
   EXPECT_FALSE(mgr_->isInstalled("newer-sdk"));
 }
 
-// Constructing the manager (the "one restart") must reflect a staged update over
-// an existing install as installed in a SINGLE pass: initComponents() promotes
-// staged work first and only then snapshots disk, so the first in-process open
-// of the extension path reads the promoted payload instead of pinning a stale
-// pre-update image that would make the update look un-applied until a second
-// restart.
+// Constructing the manager (the "one restart") reflects a staged update over an existing install in a SINGLE pass:
+// initComponents() promotes staged work before snapshotting disk, so the first open of the extension path reads the
+// promoted payload instead of pinning the stale pre-update image.
 TEST_F(ExtensionManagerTest, ConstructionReflectsStagedUpdateInOnePass) {
   cleanBackups("mock-data-source");
-  // Same filesystem as backupDir(): promoting over the existing v1 backs it up
-  // via QDir::rename(), which cannot cross filesystems (e.g. a tmpfs /tmp).
+  // Same filesystem as backupDir(): promoting backs up v1 via QDir::rename(), which cannot cross filesystems.
   QTemporaryDir ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(ext_dir.isValid());
   QTemporaryDir pend_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
@@ -1650,12 +1497,9 @@ TEST_F(ExtensionManagerTest, ConstructionReflectsStagedUpdateInOnePass) {
   EXPECT_EQ(mgr.installedExtensions()["mock-data-source"].version, "2.0.0");
   EXPECT_FALSE(QDir(staged).exists()) << "staged dir must be consumed by promotion";
 
-  // The marketplace window re-scans disk on showEvent. That second pass, in the
-  // same process that just promoted the update, must NOT read the stale
-  // pre-promotion image: dlopen caches a plugin DSO by path name and never
-  // unloads it (STB_GNU_UNIQUE), so opening the old version before promotion
-  // would poison every later read of that path. Promotion avoids opening the old
-  // directory, so the re-scan still reports the promoted version.
+  // The marketplace window re-scans disk on showEvent. In the process that just promoted the update this must not read
+  // the stale pre-promotion image (dlopen caches a plugin DSO by path name and never unloads it): promotion avoids
+  // opening the old directory, so the re-scan reports the promoted version.
   mgr.refreshInstalledFromDisk();
   EXPECT_EQ(mgr.installedExtensions()["mock-data-source"].version, "2.0.0")
       << "a re-scan after promotion must not revert to the stale old version";
@@ -1663,15 +1507,11 @@ TEST_F(ExtensionManagerTest, ConstructionReflectsStagedUpdateInOnePass) {
   cleanBackups("mock-data-source");
 }
 
-// A staged batch must report every promoted extension at its NEW version even
-// when a SIBLING's pre-update DSO stays resident after dlclose (NODELETE via a
-// bound STB_GNU_UNIQUE symbol — the pinning fixture models real plugin builds).
-// A conflict scan that dlopens a sibling's not-yet-promoted old build pins its
-// image, and the pinned image keeps answering for that path after promotion:
-// the rescan reports the pre-update version and the marketplace re-offers an
-// update that is already on disk. Contract: no sibling dir is opened before
-// its own promotion. The single-id test above cannot catch this — the
-// conflict scan skips its own target.
+// A staged batch reports every promoted extension at its NEW version even when a SIBLING's pre-update DSO stays
+// resident after dlclose (NODELETE via a bound STB_GNU_UNIQUE symbol; the pinning fixture models real plugin builds).
+// Opening a sibling's not-yet-promoted build in the conflict scan would pin its image and the marketplace would
+// re-offer an update already on disk. Contract: no sibling dir is opened before its own promotion. The single-id test
+// above cannot catch this: the conflict scan skips its own target.
 TEST_F(ExtensionManagerTest, ConstructionPromotesStagedBatchDespitePinnedSibling) {
   cleanBackups("mock-data-source");
   cleanBackups("pinning-data-source");
@@ -1682,11 +1522,9 @@ TEST_F(ExtensionManagerTest, ConstructionPromotesStagedBatchDespitePinnedSibling
   QTemporaryDir pend_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(pend_dir.isValid());
 
-  // Installed v1 pair + staged v2 pair, laid out exactly as update() leaves
-  // them. Nothing may dlopen the installed paths before the manager
-  // constructs: the drain must be this process's first touch of them.
-  // "mock-data-source" sorts before "pinning-data-source", so the old pinning
-  // build is the sibling a pre-promotion conflict scan would open.
+  // Installed v1 pair + staged v2 pair, laid out as update() leaves them. Nothing may dlopen the installed paths before
+  // the manager constructs: the drain must be this process's first touch. "mock-data-source" sorts before
+  // "pinning-data-source", so the old pinning build is the sibling a pre-promotion conflict scan would open.
   ASSERT_TRUE(copyFixturePlugin(ext_dir.path() + "/mock-data-source", "mock-data-source", "1.0.0"));
   ASSERT_TRUE(copyFixturePlugin(ext_dir.path() + "/pinning-data-source", "pinning-data-source", "1.0.0"));
   const QString staged_mock = pend_dir.path() + "/mock-data-source";
@@ -1704,18 +1542,14 @@ TEST_F(ExtensionManagerTest, ConstructionPromotesStagedBatchDespitePinnedSibling
       << "the drain read a pinned pre-update sibling image instead of the promoted file";
 
 #ifdef Q_OS_LINUX
-  // Canary that the scenario was real: the promoted pinning DSO must be
-  // resident (the post-promotion scans pin the NEW image), and no displaced
-  // pre-update image may linger under the backup dir (a mapping there means a
-  // pre-promotion open pinned it). If the fixture ever stops pinning after a
-  // toolchain change, the first expectation fails loudly — rework the
-  // fixture's anchor rather than deleting the check.
+  // Canary that the scenario was real: the promoted pinning DSO must be resident, and no displaced pre-update image may
+  // linger under the backup dir (a mapping there means a pre-promotion open pinned it). If the fixture stops pinning
+  // after a toolchain change, the first expectation fails: rework the fixture's anchor instead of deleting the check.
   QFile maps("/proc/self/maps");
   ASSERT_TRUE(maps.open(QIODevice::ReadOnly));
   const QString mapped = QString::fromUtf8(maps.readAll());
   EXPECT_TRUE(mapped.contains(QDir(ext_dir.path()).canonicalPath() + "/pinning-data-source/"));
-  // Canonicalized like the kernel reports mapping paths; the dir exists here —
-  // both promotions displaced an existing install into it.
+  // Canonicalized like the kernel reports mapping paths; both promotions displaced an install into it, so it exists.
   const QString backup_prefix = QDir(PlatformUtils::backupDir()).canonicalPath();
   ASSERT_FALSE(backup_prefix.isEmpty());
   EXPECT_FALSE(mapped.contains(backup_prefix + "/pinning-data-source-"));
@@ -1817,25 +1651,20 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsEmptyStagingDirectory) {
   EXPECT_TRUE(mgr_->diagnostics().back().message.contains("registry intent"));
 }
 
-// Windows update path: when applyPendingInstalls() promotes a staged update over an
-// existing install, it must move the previous version into PlatformUtils::backupDir()
-// before the rename, mirroring the synchronous backup that update() performs on
-// Linux/macOS. Without this, a Windows update would silently overwrite the previous
-// version with no recovery path.
+// Promoting a staged update over an existing install moves the previous version into PlatformUtils::backupDir()
+// first: otherwise the update would overwrite it with no recovery path.
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsBacksUpExistingExtensionBeforePromotion) {
-  // Place ext_dir + pending_dir on the same filesystem as backupDir() so all the
-  // QDir::rename moves are atomic (no cross-device copy fallback).
+  // ext_dir + pending_dir on the same filesystem as backupDir(), so all the QDir::rename moves are atomic.
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   ASSERT_TRUE(local_pending_dir.isValid());
-  // Clean any stale backup from a previous failed run.
   cleanBackups("mock-data-source");
 
   DownloadManager local_dl;
   ExtensionManager local_mgr(&local_dl, local_ext_dir.path(), local_pending_dir.path());
 
-  // 1. Install v1 directly to populate extensions/<id>/.
+  // Install v1 directly to populate extensions/<id>/.
   server_.setBody(dummyPluginZip("mock-data-source"));
   QSignalSpy spy_install(&local_mgr, &ExtensionManager::installFinished);
   local_mgr.install(makeExtension("mock-data-source", "1.0.0", server_.url()));
@@ -1843,20 +1672,18 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsBacksUpExistingExtensionBeforeP
   ASSERT_TRUE(spy_install.first().at(1).toBool());
   spy_install.clear();
 
-  // 2. Manually stage a v2 update with intent file (mirrors what doInstall(staging=true)
-  //    leaves on disk on Windows before the user restarts).
+  // Stage a v2 update with its intent file, as doInstall(staging=true) leaves it before the user restarts.
   const QString staged_dir = local_pending_dir.path() + "/mock-data-source";
   ASSERT_TRUE(copyFixturePlugin(staged_dir, "mock-data-source", "2.0.0"));
   ASSERT_TRUE(writePendingIntentForTest(staged_dir, "mock-data-source", "2.0.0"));
 
-  // 3. Restart-time apply.
   local_mgr.applyPendingInstalls();
 
   ASSERT_EQ(spy_install.count(), 1);
   EXPECT_TRUE(spy_install.first().at(1).toBool()) << "staged update must promote";
   EXPECT_EQ(local_mgr.installedExtensions()["mock-data-source"].version, "2.0.0");
 
-  // 4. The previous version must be preserved in backup, recoverable manually.
+  // The previous version is preserved in backup, recoverable manually.
   const QStringList backups = backupDirsFor("mock-data-source");
   ASSERT_EQ(backups.size(), 1) << "applyPendingInstalls must back up the previous version before overwriting it";
   const QString backup_dir = PlatformUtils::backupDir() + "/" + backups.first();
@@ -1908,8 +1735,7 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsEmbeddedIdMismatch) {
 }
 
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsKeepsExistingInstallWhenStagedUpdateFailsValidation) {
-  // Promotion backs the live install up into backupDir() with a directory rename,
-  // so ext/pending must share its filesystem (the fixture's /tmp dirs need not).
+  // Promotion backs the live install up into backupDir() by directory rename, so ext/pending must share its filesystem.
   cleanBackups("mock-data-source");
   QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
@@ -1938,8 +1764,7 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsKeepsExistingInstallWhenStagedU
   ASSERT_EQ(spy_install.count(), 1);
   EXPECT_FALSE(spy_install.first().at(1).toBool());
   ASSERT_EQ(spy_error.count(), 1);
-  // Production always pairs applyPendingInstalls() with a disk refresh (they run
-  // back to back in ExtensionCatalogService's initComponents); the refresh is what
+  // Production pairs applyPendingInstalls() with a disk refresh (back to back in initComponents()); the refresh
   // re-registers the previous install that the rejected update restored on disk.
   local_mgr.refreshInstalledFromDisk();
   EXPECT_TRUE(local_mgr.isInstalled("mock-data-source"));
@@ -1989,10 +1814,6 @@ TEST_F(ExtensionManagerTest, HasPendingInstallRequiresDsoAndRegistryIntent) {
   EXPECT_EQ(spy_pending.count(), 0);
 }
 
-// ---------------------------------------------------------------------------
-// [7] State persistence
-// ---------------------------------------------------------------------------
-
 // A new ExtensionManager pointing to the same directory discovers the same extensions
 // by scanning disk — this simulates an application restart.
 TEST_F(ExtensionManagerTest, StatePersistsAcrossManagerRestarts) {
@@ -2024,10 +1845,8 @@ TEST_F(ExtensionManagerTest, UninstallRemovesEntryFromPersistentState) {
 
   mgr_->uninstall("mock-data-source");
 
-  // The next process drains the staged removal in initComponents() before it
-  // snapshots installed state, so the id is gone AND so is its directory. That
-  // drain belongs to the instance that owns the store, so this one must release
-  // it first — as the restart being simulated would.
+  // The next process drains the staged removal in initComponents() before it snapshots installed state, so the id and
+  // its directory are gone. The drain belongs to the store owner: this instance releases it first, as a restart would.
   delete mgr_;
   mgr_ = nullptr;
 
@@ -2073,17 +1892,7 @@ TEST_F(ExtensionManagerTest, FreshManagerHasNoInstalledExtensions) {
   EXPECT_TRUE(mgr_->installedExtensions().isEmpty());
 }
 
-// ---------------------------------------------------------------------------
-// [9] applyPendingUninstalls — deferred directory cleanup simulation
-//
-// On Windows, uninstall() writes a .pj_pending_uninstall marker inside the
-// extension directory when removeRecursively() fails. On the next startup,
-// applyPendingUninstalls() removes every extension directory that carries that
-// marker. These tests create that state manually so the cleanup logic can be
-// verified on any platform.
-// ---------------------------------------------------------------------------
-
-// A directory containing the marker is removed by applyPendingUninstalls().
+// A directory carrying a legacy `.pj_pending_uninstall` marker is removed by applyPendingUninstalls().
 TEST_F(ExtensionManagerTest, ApplyPendingUninstallsRemovesMarkedDirectory) {
   const QString ext_path = ext_dir_.path() + "/mock-data-source";
   ASSERT_TRUE(QDir().mkpath(ext_path));
@@ -2096,7 +1905,7 @@ TEST_F(ExtensionManagerTest, ApplyPendingUninstallsRemovesMarkedDirectory) {
   EXPECT_FALSE(QDir(ext_path).exists());
 }
 
-// A directory without the marker is left untouched.
+// A directory without a marker or a journal record is left untouched.
 TEST_F(ExtensionManagerTest, ApplyPendingUninstallsIgnoresUnmarkedDirectory) {
   const QString ext_path = ext_dir_.path() + "/mock-data-source";
   ASSERT_TRUE(QDir().mkpath(ext_path));
@@ -2110,10 +1919,6 @@ TEST_F(ExtensionManagerTest, ApplyPendingUninstallsIgnoresUnmarkedDirectory) {
 TEST_F(ExtensionManagerTest, ApplyPendingUninstallsIsNoOpForEmptyDirectory) {
   mgr_->applyPendingUninstalls();  // must not crash
 }
-
-// ---------------------------------------------------------------------------
-// [8] Platform detection
-// ---------------------------------------------------------------------------
 
 // currentPlatform() must return a non-empty string in "<os>-<arch>" format.
 TEST(PlatformDetectionTest, CurrentPlatformHasExpectedFormat) {
@@ -2153,8 +1958,7 @@ TEST(PlatformDetectionTest, CurrentPlatformResolvesRegistryArtifact) {
       << "' is not listed in the mock-data-source registry entry";
 }
 
-// On Linux, install() must write directly to extensions_dir (no staging).
-// isWindows() must return false to confirm the code path is exercised.
+// isWindows() is false on non-Windows builds.
 TEST(PlatformDetectionTest, IsWindowsReturnsFalseOnLinux) {
   if (PlatformUtils::isWindows()) {
     GTEST_SKIP() << "test asserts the Linux code path is exercised";
@@ -2162,16 +1966,8 @@ TEST(PlatformDetectionTest, IsWindowsReturnsFalseOnLinux) {
   EXPECT_FALSE(PlatformUtils::isWindows());
 }
 
-// ---------------------------------------------------------------------------
-// Refresh during an in-progress install
-// ---------------------------------------------------------------------------
-
-// Regression test for the case where refreshInstalledFromDisk() is invoked
-// while the async checksum/extract worker is still writing into the
-// transaction directory. Before the guard on pending_extract_dir_, the sweep
-// would wipe the in-flight `.pj_install_*` directory and the install would
-// fail its downstream validation. With the guard the install completes
-// normally.
+// refreshInstalledFromDisk() invoked while the extract worker is still writing into the transaction directory must
+// not wipe it (the sweep spares pending_extract_dir_); the install then completes normally.
 TEST_F(ExtensionManagerTest, RefreshDuringInstallDoesNotWipeInProgressTransaction) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -2179,9 +1975,8 @@ TEST_F(ExtensionManagerTest, RefreshDuringInstallDoesNotWipeInProgressTransactio
   QSignalSpy spy_finished(mgr_, &ExtensionManager::installFinished);
   QSignalSpy spy_error(mgr_, &ExtensionManager::installError);
 
-  // Trigger a refresh the moment the worker announces its extract phase. The
-  // receiver is mgr_ so the lambda runs on the manager's thread, matching how
-  // a real UI Refresh button click would arrive.
+  // Trigger a refresh the moment the worker announces its extract phase; the receiver is mgr_, so the lambda runs on
+  // the manager's thread, as a UI Refresh click would.
   QObject::connect(
       mgr_, &ExtensionManager::installPhase, mgr_, [this](const QString&, DownloadManager::WorkPhase phase) {
         if (phase == DownloadManager::WorkPhase::Extracting) {
@@ -2198,9 +1993,8 @@ TEST_F(ExtensionManagerTest, RefreshDuringInstallDoesNotWipeInProgressTransactio
   EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
 }
 
-// Once the install is finished, refreshInstalledFromDisk() must resume its
-// normal duty of sweeping stale transaction directories (this asserts that
-// the guard is not overly broad — it only protects the CURRENT install).
+// Once the install is finished, refreshInstalledFromDisk() sweeps stale transaction directories again: the guard
+// protects only the CURRENT install.
 TEST_F(ExtensionManagerTest, RefreshWipesStaleTransactionDirsAfterInstall) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -2209,8 +2003,7 @@ TEST_F(ExtensionManagerTest, RefreshWipesStaleTransactionDirsAfterInstall) {
   mgr_->install(ext);
   ASSERT_TRUE(waitForSignal(spy_finished));
 
-  // Drop a fake stale transaction directory in extensions_dir_. This
-  // simulates a leftover from a crashed install on a previous run.
+  // A fake leftover of a crashed install in extensions_dir_.
   const QString stale_dir = QDir(ext_dir_.path()).absoluteFilePath(u".pj_install_stale_abc"_s);
   ASSERT_TRUE(QDir().mkpath(stale_dir));
   ASSERT_TRUE(QFile::exists(stale_dir));
@@ -2220,10 +2013,6 @@ TEST_F(ExtensionManagerTest, RefreshWipesStaleTransactionDirsAfterInstall) {
   EXPECT_FALSE(QFile::exists(stale_dir)) << "stale .pj_install_* should have been swept";
   EXPECT_TRUE(mgr_->isInstalled("mock-data-source")) << "live install must remain registered";
 }
-
-// ---------------------------------------------------------------------------
-// [10] installFromLocalZip: sideload of a plugin the registry does not list
-// ---------------------------------------------------------------------------
 
 // Writes `zip` to a file inside `dir` and returns its path.
 QString writeZipFile(const QTemporaryDir& dir, const QByteArray& zip, const QString& name = "pkg.zip") {
@@ -2237,9 +2026,8 @@ QString writeZipFile(const QTemporaryDir& dir, const QByteArray& zip, const QStr
   return path;
 }
 
-// The happy path, and with it the load-bearing assumption of the whole feature:
-// fetch() serves a file:// URL, so a local archive reuses the same
-// download/verify/extract pipeline as a registry artifact.
+// The happy path. fetch() serves a file:// URL, so a local archive reuses the download/verify/extract pipeline of a
+// registry artifact.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipRegistersDiscoveredExtension) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
@@ -2294,9 +2082,8 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipKeysDirectoryByEmbeddedId) {
   EXPECT_FALSE(QDir(QDir(ext_dir_.path()).absoluteFilePath("some-folder")).exists());
 }
 
-// Provisional policy: replacing an installed extension needs the staged
-// apply-at-restart path, so a re-sideload is refused rather than swapping a DSO
-// the running session may hold open.
+// Without a registered confirmation, re-sideloading an installed id is refused rather than swapping a DSO the
+// running session may hold open.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipRejectsAlreadyInstalled) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
@@ -2309,9 +2096,7 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipRejectsAlreadyInstalled) {
   ASSERT_TRUE(waitForInstallOutcome(first_finished, first_pending));
   ASSERT_TRUE(mgr_->isInstalled("mock-data-source"));
 
-  // A genuinely different payload, because only that is a replacement: re-offering
-  // the very bytes already installed is answered as a no-op long before this policy
-  // is consulted.
+  // A genuinely different payload: re-offering the installed bytes is answered as a no-op before this policy applies.
   const QString newer = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"), "v2.zip");
   ASSERT_FALSE(newer.isEmpty());
 
@@ -2380,9 +2165,8 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipRejectsMultipleTopLevelEntries) 
 TEST_F(ExtensionManagerTest, InstallFromLocalZipStagesConfirmedReplacement) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  // Seeded straight onto disk: installFromLocalZip refreshes installed state
-  // itself, so a directory is a sufficient precondition and this avoids paying for
-  // an extract/dlopen round-trip just to reach the case under test.
+  // Seeded straight onto disk: installFromLocalZip refreshes installed state itself, so a directory is a sufficient
+  // precondition and avoids an extract/dlopen round-trip.
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
 
   // A different version, so the promoted result is distinguishable.
@@ -2424,18 +2208,16 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipStagesConfirmedReplacement) {
   EXPECT_TRUE(mgr_->hasPendingInstall("mock-data-source"));
 }
 
-// A rebuild that changed nothing is not an install: the bytes being asked for are
-// the bytes already on disk. Nothing is staged, no restart is demanded, and the
-// replacement question is never put, because there is no replacement to make.
+// A rebuild that changed nothing is not an install: nothing is staged, no restart is demanded and the replacement
+// question is never put.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipSkipsAnArchiveIdenticalToTheInstalledTree) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
   const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source"));
   ASSERT_FALSE(zip.isEmpty());
 
-  // Installed from that same archive, so the tree on disk holds exactly the bytes
-  // the second install carries. Seeding the fixture straight onto disk would leave
-  // that equality resting on the zip builder and the fixture happening to agree.
+  // Installed from that same archive, so the tree on disk holds exactly the bytes the second install carries; seeding
+  // the fixture directly would leave that equality resting on the zip builder and the fixture happening to agree.
   QSignalSpy spy_first(mgr_, &ExtensionManager::installFinished);
   mgr_->installFromLocalZip(zip);
   ASSERT_TRUE(waitForSignal(spy_first));
@@ -2455,26 +2237,22 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipSkipsAnArchiveIdenticalToTheInst
 
   mgr_->installFromLocalZip(zip);
 
-  // Its own terminal outcome, not an install: reporting this as installFinished
-  // would have the UI announce an installation that never happened.
+  // Its own terminal outcome, not an install: installFinished would have the UI announce an installation that never
+  // happened.
   ASSERT_TRUE(waitForSignal(spy_unchanged));
   EXPECT_EQ(spy_unchanged.first().at(0).toString(), "mock-data-source");
   EXPECT_EQ(spy_error.count(), 0);
   EXPECT_EQ(spy_finished.count(), 0);
-  // The whole point of the case: no stage, so the extension stays usable and the
-  // user is not sent through a restart for a payload that did not move.
+  // No stage: the extension stays usable and the user is not sent through a restart for a payload that did not move.
   EXPECT_EQ(spy_pending.count(), 0);
   EXPECT_FALSE(mgr_->hasPendingInstall("mock-data-source"));
   EXPECT_FALSE(asked) << "an identical payload has no replacement to confirm";
   EXPECT_TRUE(mgr_->isInstalled("mock-data-source"));
 }
 
-// Two directories can embed the same id, and the scan deliberately resolves that
-// to the HIGHEST version — which need not live in the directory named for the id.
-// The archive must then be compared against the copy that actually won, not
-// against whatever sits at extensions/<id>: matching the loser would drop an
-// archive that really does change which plugin runs, and would leave the
-// duplicate in place, since promoting is what sweeps it.
+// Two directories can embed one id and the scan resolves that to the HIGHEST version, which need not live in the
+// directory named for the id. The archive is compared against the copy that won, not against extensions/<id>:
+// matching the loser would drop an archive that changes which plugin runs and leave the duplicate in place.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipDoesNotSkipWhenAnotherDirectoryHoldsTheWinningCopy) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
@@ -2501,9 +2279,8 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipDoesNotSkipWhenAnotherDirectoryH
   EXPECT_EQ(spy_pending.count(), 1);
 }
 
-// Guards the other direction: the skip keys on the content, not on the version
-// string. An archive declaring the same version but carrying one extra file is a
-// different payload and has to travel the ordinary staged-replacement path.
+// The skip keys on content, not on the version string: an archive with the same version and one extra file is a
+// different payload and takes the staged-replacement path.
 TEST_F(ExtensionManagerTest, InstallFromLocalZipStagesAnArchiveThatOnlyDiffersByAnExtraFile) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
@@ -2540,9 +2317,8 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipStagesAnArchiveThatOnlyDiffersBy
 TEST_F(ExtensionManagerTest, InstallFromLocalZipHonoursDeclinedReplacement) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  // A version the seeded tree does not hold, so the archive really would replace
-  // something: an archive carrying the installed bytes is settled as a no-op before
-  // the confirmation this case is about is ever reached.
+  // A version the seeded tree does not hold: an archive carrying the installed bytes is a no-op and never reaches the
+  // confirmation this case is about.
   const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
@@ -2569,23 +2345,20 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipHonoursDeclinedReplacement) {
   EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "1.0.0");
 }
 
-// The question is put long after installFromLocalZip() returns, so the object the
-// callback captured can be gone by then (a marketplace window closed while the
-// archive was still extracting). That must resolve as a decline, and must leave the
-// registration cleared rather than armed for the next archive.
+// The question is put long after installFromLocalZip() returns, so the object the callback captured can be gone (a
+// marketplace window closed while the archive was extracting). That resolves as a decline and leaves the registration
+// cleared rather than armed for the next archive.
 TEST_F(ExtensionManagerTest, ReplaceConfirmationSurvivesOwnerDestruction) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  // A version the seeded tree does not hold, so the archive really would replace
-  // something: an archive carrying the installed bytes is settled as a no-op before
-  // the confirmation this case is about is ever reached.
+  // A version the seeded tree does not hold: an archive carrying the installed bytes is a no-op and never reaches the
+  // confirmation this case is about.
   const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
 
-  // Heap-allocated so it can die before the answer is needed. The sentinel lives on
-  // the test stack rather than inside the owner, so an unguarded call still reports
-  // itself here: the actual dangling capture is only visible under a sanitizer.
+  // Heap-allocated so it can die before the answer is needed. The sentinel lives on the test stack, so an unguarded
+  // call still reports itself; the dangling capture itself is visible only under a sanitizer.
   auto* confirmation_owner = new QObject;
   bool confirmation_invoked = false;
   mgr_->setReplaceConfirmation(
@@ -2609,8 +2382,8 @@ TEST_F(ExtensionManagerTest, ReplaceConfirmationSurvivesOwnerDestruction) {
   EXPECT_FALSE(mgr_->hasPendingInstall("mock-data-source"));
   EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "1.0.0");
 
-  // The dead registration is dropped, not retried: a second archive now takes the
-  // no-confirmation branch, which is how the cleared state is observable from here.
+  // The dead registration is dropped, not retried: a second archive takes the no-confirmation branch, which is how the
+  // cleared state is observable.
   QSignalSpy spy_finished_again(mgr_, &ExtensionManager::installFinished);
   QSignalSpy spy_pending_again(mgr_, &ExtensionManager::installPendingRestart);
   QSignalSpy spy_error_again(mgr_, &ExtensionManager::installError);
@@ -2624,15 +2397,13 @@ TEST_F(ExtensionManagerTest, ReplaceConfirmationSurvivesOwnerDestruction) {
   EXPECT_FALSE(confirmation_invoked);
 }
 
-// Two windows can share one manager and the last registration wins, so clearing has
-// to be scoped to the registrant: a displaced window closing must not disarm the
-// live registration.
+// Two windows can share one manager and the last registration wins, so clearing is scoped to the registrant: a
+// displaced window closing must not disarm the live registration.
 TEST_F(ExtensionManagerTest, ClearReplaceConfirmationOnlyRemovesOwnCallback) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  // A version the seeded tree does not hold, so the archive really would replace
-  // something: an archive carrying the installed bytes is settled as a no-op before
-  // the confirmation this case is about is ever reached.
+  // A version the seeded tree does not hold: an archive carrying the installed bytes is a no-op and never reaches the
+  // confirmation this case is about.
   const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
@@ -2667,17 +2438,14 @@ TEST_F(ExtensionManagerTest, ClearReplaceConfirmationOnlyRemovesOwnCallback) {
   EXPECT_FALSE(spy_error.first().at(1).toString().contains("already installed"));
 }
 
-// The answer comes out of a modal dialog, which spins the event loop, so another
-// window can take the registration over WHILE the question is open. A live
-// registrant is then not enough to accept the answer: this one was given by a
-// registration that no longer holds the slot, and honouring it would stage a
-// replacement the window now in charge never approved.
+// The answer comes out of a modal dialog, which spins the event loop, so another window can take the registration
+// over WHILE the question is open. A live registrant is not enough to accept the answer: it came from a registration
+// that no longer holds the slot, and honouring it would stage a replacement the window in charge never approved.
 TEST_F(ExtensionManagerTest, ReentrantReregistrationDiscardsDisplacedOwnersAnswer) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
-  // A version the seeded tree does not hold, so the archive really would replace
-  // something: an archive carrying the installed bytes is settled as a no-op before
-  // the confirmation this case is about is ever reached.
+  // A version the seeded tree does not hold: an archive carrying the installed bytes is a no-op and never reaches the
+  // confirmation this case is about.
   const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "2.0.0"));
   ASSERT_FALSE(zip.isEmpty());
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source"));
@@ -2685,9 +2453,8 @@ TEST_F(ExtensionManagerTest, ReentrantReregistrationDiscardsDisplacedOwnersAnswe
   QObject first_owner;
   QObject second_owner;
   bool second_invoked = false;
-  // Re-registering from inside the callback is what a modal event loop makes
-  // reachable, and it is also the reentrancy that must not touch the std::function
-  // being executed. The displaced owner still answers "yes".
+  // Re-registering from inside the callback is what a modal event loop makes reachable, and the reentrancy must not
+  // touch the std::function being executed. The displaced owner still answers "yes".
   mgr_->setReplaceConfirmation(&first_owner, [&](const QString&, const QString&, const QString&) {
     mgr_->setReplaceConfirmation(&second_owner, [&second_invoked](const QString&, const QString&, const QString&) {
       second_invoked = true;
@@ -2712,8 +2479,7 @@ TEST_F(ExtensionManagerTest, ReentrantReregistrationDiscardsDisplacedOwnersAnswe
   EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "1.0.0")
       << "the live install must be left exactly as it was";
 
-  // Discarding the displaced answer must not disarm the successor: the window now
-  // in charge still owns the decision for the next archive.
+  // Discarding the displaced answer must not disarm the successor, which still owns the next archive's decision.
   QSignalSpy spy_finished_again(mgr_, &ExtensionManager::installFinished);
   QSignalSpy spy_pending_again(mgr_, &ExtensionManager::installPendingRestart);
 
@@ -2768,17 +2534,15 @@ TEST_F(ExtensionManagerTest, StagedLocalReplacementIsPromotedOnNextLaunch) {
   cleanBackups("mock-data-source");
 }
 
-// A sideload gets the same gate as a registry install: the embedded manifest
-// declares min_sdk_required, so a ZIP demanding a newer SDK must be refused
-// instead of silently landing an extension that cannot run.
+// A sideload gets the same gate as a registry install: a ZIP whose manifest demands a newer SDK is refused instead of
+// landing an extension that cannot run.
 TEST_F(ExtensionManagerTest, LocalZipInstallRejectsAnIncompatibleMinSdkRequired) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
   const QString zip = writeZipFile(src, dummyPluginZip("mock-data-source", "3.0.0"));
   ASSERT_FALSE(zip.isEmpty());
 
-  // The refusal must read exactly like the registry one for the same floor, so
-  // the expected text is taken from the registry gate rather than duplicated.
+  // The refusal reads exactly like the registry one for the same floor, so the expected text is taken from that gate.
   Extension registry_equivalent = makeExtension("mock-data-source", "3.0.0", server_.url());
   registry_equivalent.min_sdk_required = "99.0.0";
   const QString expected_reason = mgr_->hostCompatibility(registry_equivalent).reason;
@@ -2807,9 +2571,8 @@ TEST_F(ExtensionManagerTest, LocalZipInstallRejectsAnIncompatibleMinSdkRequired)
       << "the transaction directory and its payload must be cleaned up on refusal";
 }
 
-// The complement: a fixture whose declared SDK floor this host satisfies
-// installs normally, so the gate rejects on the version rule alone and not on
-// the mere presence of a declared minimum.
+// The complement: a fixture whose declared SDK floor this host satisfies installs normally, so the gate rejects on
+// the version rule alone, not on the presence of a declared minimum.
 TEST_F(ExtensionManagerTest, LocalZipInstallAcceptsACompatibleMinSdkRequired) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
@@ -2835,9 +2598,8 @@ TEST_F(ExtensionManagerTest, LocalZipInstallAcceptsACompatibleMinSdkRequired) {
   EXPECT_EQ(mgr_->installedExtensions()["mock-data-source"].version, "3.0.0");
 }
 
-// SDK 0.21 makes min_sdk_required a hard contract. A local archive has no
-// registry record to pre-screen, so its embedded descriptor must carry this
-// gate all the way into the same admission decision as the application floor.
+// min_sdk_required is a hard contract: a local archive has no registry record to pre-screen, so its embedded
+// descriptor carries the gate into the same admission decision as the application floor.
 TEST_F(ExtensionManagerTest, LocalZipInstallRejectsANewerSdkRequirement) {
   const ScopedApplicationVersion host{"4.0.0"};
 
@@ -2888,9 +2650,8 @@ TEST_F(ExtensionManagerTest, LocalZipInstallRejectsMalformedPluginVersion) {
   EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
 }
 
-// Registry metadata is an early filter, not permission to trust the payload.
-// The extracted DSO may declare a stricter floor, and that embedded requirement
-// must be enforced before the transaction is promoted into the managed store.
+// Registry metadata is an early filter, not permission to trust the payload: an embedded floor stricter than the
+// registry's is enforced before the transaction is promoted into the managed store.
 TEST_F(ExtensionManagerTest, RegistryInstallRejectsAnIncompatibleEmbeddedFloor) {
   server_.setBody(dummyPluginZip("mock-data-source", "3.0.0"));
 
@@ -2908,10 +2669,8 @@ TEST_F(ExtensionManagerTest, RegistryInstallRejectsAnIncompatibleEmbeddedFloor) 
   EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
 }
 
-// The registry cannot sanitize a malformed embedded claim by omitting (or
-// disagreeing with) its own floor. A malformed min_sdk_required is rejected at
-// the SDK scan itself (the decoder validates the format), so the payload never
-// becomes an installed extension.
+// A malformed embedded min_sdk_required is rejected at the SDK scan itself (the decoder validates the format), so the
+// payload never becomes an installed extension; the registry cannot sanitize it by omitting or contradicting it.
 TEST_F(ExtensionManagerTest, RegistryInstallRejectsAMalformedEmbeddedFloor) {
   server_.setBody(dummyPluginZip("malformed-floor"));
 
@@ -2928,9 +2687,8 @@ TEST_F(ExtensionManagerTest, RegistryInstallRejectsAMalformedEmbeddedFloor) {
   EXPECT_TRUE(directoryHasNoChildren(ext_dir_.path()));
 }
 
-// The gate can only exist because the scan carries the declared floor out of the
-// embedded manifest; an extension that declares none must report an empty one, so
-// "no declaration" stays distinguishable from "declares 0".
+// The scan carries the declared floor out of the embedded manifest; an extension that declares none reports an empty
+// one, so "no declaration" stays distinguishable from "declares 0".
 TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryCarriesMinSdkRequired) {
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/needs-newer-host", "mock-data-source", "3.0.0"));
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/no-floor", "mock-file-source"));
@@ -2945,10 +2703,8 @@ TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryCarriesMinSdkRequired) {
       << "a manifest without a floor must leave the field empty, not synthesise one";
 }
 
-// min_sdk_required is a compatibility requirement, so an extension with
-// several DSOs must satisfy the strictest valid component floor. Requiring exact
-// strings would reject a sound package whose modules legitimately use different
-// parts of the SDK.
+// min_sdk_required is a compatibility requirement, so an extension with several DSOs must satisfy the strictest valid
+// component floor; requiring exact strings would reject a sound package whose modules use different parts of the SDK.
 TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryUsesHighestMinSdkRequiredAcrossDsos) {
   const QString extension_dir = ext_dir_.path() + "/multi-dso";
   ASSERT_TRUE(QDir().mkpath(extension_dir));
@@ -2971,9 +2727,8 @@ TEST_F(ExtensionManagerTest, DiscoverExtensionDirectoryUsesHighestMinSdkRequired
       << "the extension must retain the strictest component requirement";
 }
 
-// Compatibility metadata is untrusted input. The tolerant numeric comparator treats
-// a non-numeric string like zero, so the gate itself must reject malformed floors
-// rather than silently accepting them on every real host version.
+// Compatibility metadata is untrusted input: a non-numeric string must not read as zero and pass on every host, so
+// the gate rejects malformed floors itself.
 TEST_F(ExtensionManagerTest, HostCompatibilityRejectsMalformedMinSdkRequired) {
   for (const QString malformed : {"future", "1.0", "01.0.0", "1.0.0-01", "1.0.0+"}) {
     InstalledExtension installed;
@@ -3007,10 +2762,8 @@ TEST_F(ExtensionManagerTest, MalformedInstalledVersionRemainsVisibleAndManageabl
   EXPECT_TRUE(mgr_->hasPendingUninstall("malformed-version"));
 }
 
-// A minimum is a real SemVer value, not only a dotted numeric prefix. In
-// particular, a release outranks its pre-release and numeric pre-release
-// identifiers compare numerically rather than lexicographically. Driven
-// through the pure primitive so the host SDK version is injectable.
+// A minimum is a real SemVer value: a release outranks its pre-release and numeric pre-release identifiers compare
+// numerically. Driven through the pure primitive so the host SDK version is injectable.
 TEST_F(ExtensionManagerTest, CompatibilityUsesSemverPrereleasePrecedence) {
   const auto floor_ok = [](std::string_view floor, std::string_view host_sdk) {
     return evaluatePluginCompatibility(
@@ -3026,9 +2779,8 @@ TEST_F(ExtensionManagerTest, CompatibilityUsesSemverPrereleasePrecedence) {
   EXPECT_FALSE(floor_ok("v5.0.0", "5.0.0"));
 }
 
-// The compatibility gate must precede replacement policy. A host that cannot run
-// the incoming bytes should neither ask the user for consent nor leave staged state
-// that would displace the known-compatible installation on restart.
+// The compatibility gate precedes replacement policy: a host that cannot run the incoming bytes neither asks the
+// user for consent nor leaves staged state that would displace the compatible installation on restart.
 TEST_F(ExtensionManagerTest, IncompatibleLocalZipReplacementIsRejectedBeforeConfirmation) {
   ASSERT_TRUE(copyFixturePlugin(ext_dir_.path() + "/mock-data-source", "mock-data-source", "1.0.0"));
 
@@ -3075,18 +2827,11 @@ TEST_F(ExtensionManagerTest, InstallFromLocalZipRejectsUnreadablePath) {
   EXPECT_TRUE(mgr_->installedExtensions().isEmpty());
 }
 
-// ---------------------------------------------------------------------------
-// [10] Enable / disable (installed but not loaded)
-// ---------------------------------------------------------------------------
-// A disabled extension stays on disk but the host must skip loading it. The
-// three surfaces that need to agree — the in-memory record on installed_[id],
-// the static disabledExtensionIds() the runtime catalog reads, and isEnabled()
-// — are exercised here so any one of them drifting alone would surface.
+// Enable/disable: a disabled extension stays on disk but the host skips loading it. The in-memory record on
+// installed_[id], the static disabledExtensionIds() the runtime catalog reads, and isEnabled() must agree.
 
-// A fixture that starts every test from a clean QSettings key. The manager reads
-// the "Marketplace/disabledExtensions" list via QSettings() default scope, so a
-// residual list from a previous test (or the developer's machine) would leak in
-// and produce non-deterministic assertions.
+// Starts every test from a clean QSettings key: the manager reads "Marketplace/disabledExtensions" through the default
+// scope, so a residual list from a previous test or the developer's machine would leak in.
 class ExtensionManagerEnableDisableTest : public ExtensionManagerTest {
  protected:
   void SetUp() override {
@@ -3098,8 +2843,8 @@ class ExtensionManagerEnableDisableTest : public ExtensionManagerTest {
     ExtensionManagerTest::TearDown();
   }
 
-  // Installs the standard fixture extension and returns its directory, or an empty
-  // string if the install never completed. Empty is the caller's cue to ASSERT.
+  // Installs the standard fixture extension and returns its directory, or an empty string if the install never
+  // completed (the caller's cue to ASSERT).
   QString installVictim() {
     server_.setBody(dummyPluginZip("mock-data-source"));
     QSignalSpy install_spy(mgr_, &ExtensionManager::installFinished);
@@ -3110,9 +2855,7 @@ class ExtensionManagerEnableDisableTest : public ExtensionManagerTest {
     return ext_dir_.path() + "/mock-data-source";
   }
 
-  // The manager owns this string as a private constant. Duplicated here so a
-  // rename on that side breaks the test at compile time (via the sync check
-  // further down) instead of silently starting to leak state.
+  // The persisted key (file-static in ExtensionManager.cpp), duplicated here to reset it between tests.
   static constexpr const char* kDisabledExtensionsKey = "Marketplace/disabledExtensions";
 };
 
@@ -3123,10 +2866,8 @@ TEST_F(ExtensionManagerEnableDisableTest, IsEnabledDefaultsToTrueForUnknownIds) 
   EXPECT_TRUE(ExtensionManager::disabledExtensionIds().isEmpty());
 }
 
-// Disabling an id appends it to the persisted list AND updates the in-memory
-// installed_[id].enabled record so the UI reads the new state without a
-// refreshInstalledFromDisk() round trip. The runtime catalog, which reads via
-// the static disabledExtensionIds(), sees the same list.
+// Disabling an id appends it to the persisted list AND updates installed_[id].enabled, so the UI reads the new state
+// without a rescan; the runtime catalog sees the same list through the static disabledExtensionIds().
 TEST_F(ExtensionManagerEnableDisableTest, SetEnabledFalsePersistsAndUpdatesInMemoryRecord) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -3144,10 +2885,8 @@ TEST_F(ExtensionManagerEnableDisableTest, SetEnabledFalsePersistsAndUpdatesInMem
       << "the static reader (used by PluginRuntimeCatalog::setDisabledIds) must see the same list";
 }
 
-// Enabling an already-enabled id (and disabling an already-disabled one) is a
-// no-op: the persisted list is unchanged. Guards against a bug where setEnabled
-// silently duplicated the id in the list, which would then double-count on
-// unset (an already-disabled id would need TWO enables to actually enable).
+// Enabling an already-enabled id (or disabling a disabled one) leaves the persisted list unchanged: a duplicated id
+// would need TWO enables to take effect.
 TEST_F(ExtensionManagerEnableDisableTest, SetEnabledIsIdempotent) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -3183,12 +2922,8 @@ TEST_F(ExtensionManagerEnableDisableTest, SetEnabledTrueRemovesIdFromDisabledLis
   EXPECT_TRUE(ExtensionManager::disabledExtensionIds().isEmpty());
 }
 
-// refreshInstalledFromDisk() must reflect the persisted disable state onto
-// every installed_[id].enabled record it rebuilds. Without this, a rescan
-// (bulk install, uninstall of an unrelated plugin, promotion of a staged
-// install) would silently reset the enabled flag to true for every plugin,
-// hiding the runtime effect of the toggle even though QSettings still holds
-// the disabled list.
+// refreshInstalledFromDisk() reflects the persisted disable state onto every installed_[id].enabled it rebuilds:
+// otherwise any rescan would reset the flag to true while QSettings still holds the disabled list.
 TEST_F(ExtensionManagerEnableDisableTest, RefreshFromDiskReflectsPersistedDisableState) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   const Extension ext = makeExtension("mock-data-source", "1.0.0", server_.url());
@@ -3204,11 +2939,8 @@ TEST_F(ExtensionManagerEnableDisableTest, RefreshFromDiskReflectsPersistedDisabl
   EXPECT_FALSE(mgr_->isEnabled("mock-data-source"));
 }
 
-// A fresh install of an id resets any stale disabled entry — a previous
-// uninstall should normally have cleaned it up, but if a residual entry
-// lingers, the install wins and the plugin starts enabled. This also
-// guarantees the sideload path (disable-then-install) doesn't leave the
-// user with a silently unloaded plugin they just chose to install.
+// A fresh install of an id resets any stale disabled entry, so a sideload after a disable cannot leave the user with
+// a silently unloaded plugin they just chose to install.
 TEST_F(ExtensionManagerEnableDisableTest, InstallResetsDisabledState) {
   mgr_->setEnabled("mock-data-source", false);
   ASSERT_FALSE(mgr_->isEnabled("mock-data-source"));
@@ -3248,11 +2980,9 @@ TEST_F(ExtensionManagerEnableDisableTest, UninstallLeavesADisabledTombstoneOnceT
       << "the tombstone must survive the removal: re-enabling is a power the drain must not have";
 }
 
-// Staging a removal must make the id unloadable straight away. The plugin the
-// user asked to remove is still on disk until the next launch drains it, and the
-// loader decides what to load from the disabled list alone — it knows nothing
-// about pending removals. Leaving the id enabled is what lets a failed deletion
-// resurrect it (see PartiallyFailedUninstallKeepsItsRetryRecordAndDisabledState).
+// Staging a removal makes the id unloadable at once: the plugin is on disk until the next launch drains it, and the
+// loader decides from the disabled list alone, so an enabled id would load again if the deletion failed (see
+// PartiallyFailedUninstallKeepsItsRetryRecordAndDisabledState).
 TEST_F(ExtensionManagerEnableDisableTest, StagedUninstallDisablesUntilRemovalVerified) {
   ASSERT_FALSE(installVictim().isEmpty());
   ASSERT_TRUE(mgr_->isEnabled("mock-data-source"));
@@ -3272,22 +3002,12 @@ TEST_F(ExtensionManagerEnableDisableTest, StagedUninstallDisablesUntilRemovalVer
       << "the drain must never enable an id, so the entry stays as a tombstone";
 }
 
-// The regression test for the defect that sank the in-payload marker, and the
-// portable form of the Windows CI failure that exposed it.
-//
-// removeRecursively() deletes children before it can fail on the one it cannot
-// unlink, so a removal that loses part-way through has ALREADY destroyed some of
-// the directory's content. When the record of the removal lived in that same
-// directory, it was simply among the casualties: the payload survived (its locked
-// DSO still there) while the intent that would have retried the deletion was gone,
-// and with the old code the disabled entry had been cleared at staging time too, so
-// the next launch loaded the plugin the user removed.
-//
-// Poisoning a SUBDIRECTORY reproduces that shape, and deliberately on EVERY
-// platform rather than skipping where the Windows original was seen: an open file
-// handle blocks the unlink on Windows (which IS the production failure — a mapped
-// DSO), and dropping write permission on the holding directory blocks it on POSIX.
-// Both are applied, so the drain fails part-way here and on CI alike.
+// A removal that fails part-way keeps its retry record and the disabled entry. removeRecursively() deletes children
+// before it can fail on the one it cannot unlink, so a record stored inside the payload would be among the
+// casualties; the record lives outside it, so the next launch retries and never loads the plugin the user removed.
+// A subdirectory is poisoned on every platform: an open handle blocks the unlink on Windows (a mapped DSO in
+// production), dropped write permission on the holding directory blocks it on POSIX. Both are applied, so the drain
+// fails part-way here and on CI alike.
 TEST_F(ExtensionManagerEnableDisableTest, PartiallyFailedUninstallKeepsItsRetryRecordAndDisabledState) {
 #ifndef Q_OS_WIN
   if (geteuid() == 0) {
@@ -3303,9 +3023,8 @@ TEST_F(ExtensionManagerEnableDisableTest, PartiallyFailedUninstallKeepsItsRetryR
   ASSERT_TRUE(undeletable.open(QIODevice::WriteOnly));
   undeletable.write("content the drain must fail to remove");
   ASSERT_TRUE(undeletable.flush());
-  // A top-level payload file the drain WILL delete. It sits exactly where the old
-  // in-payload marker sat, so its disappearance below is the standing proof that a
-  // record kept in there cannot survive a partial deletion.
+  // A top-level payload file the drain WILL delete: its disappearance below shows that a record kept inside the payload
+  // cannot survive a partial deletion.
   QFile doomed(ext_path + "/doomed.txt");
   ASSERT_TRUE(doomed.open(QIODevice::WriteOnly));
   doomed.write("removed before the failure");
@@ -3344,13 +3063,10 @@ TEST_F(ExtensionManagerEnableDisableTest, PartiallyFailedUninstallKeepsItsRetryR
       << "the tombstone outlives the payload; only a reinstall clears it";
 }
 
-// The staging window has two persisted writes, and a crash can land between them.
-// Order decides which way the gap fails. The disabled entry is written and synced
-// FIRST, so the reachable intermediate state is "unloadable but still installed" —
-// recoverable, and never a plugin the user removed coming back.
-//
-// The crash is simulated by reproducing that first step alone (no journal record
-// follows) and then draining, which is exactly what the next launch would do.
+// The staging window has two persisted writes and a crash can land between them. The disabled entry is written and
+// synced FIRST, so the reachable intermediate state is "unloadable but still installed": recoverable, and never a
+// removed plugin coming back. The crash is simulated by reproducing that first step alone and then draining, as the
+// next launch would.
 TEST_F(ExtensionManagerEnableDisableTest, CrashBetweenDisableAndJournalLeavesThePluginUnloadable) {
   server_.setBody(dummyPluginZip("mock-data-source"));
   QSignalSpy install_spy(mgr_, &ExtensionManager::installFinished);
@@ -3371,12 +3087,10 @@ TEST_F(ExtensionManagerEnableDisableTest, CrashBetweenDisableAndJournalLeavesThe
   EXPECT_FALSE(mgr_->isEnabled("mock-data-source"));
 }
 
-// A pending-uninstall marker is package-controlled filesystem content: an archive
-// can ship one, and it names whatever the packager put in it. Nothing may be
-// inferred from that content — least of all an id whose enable/disable state to
-// change, which would let one package silently re-enable an unrelated plugin the
-// user had disabled. Existence alone schedules a deletion of the directory holding
-// it, so a package can only ever harm itself.
+// A `.pj_pending_uninstall` marker is package-controlled content: an archive can ship one naming any id. Nothing is
+// inferred from it, least of all an id whose enable state to change (one package re-enabling an unrelated plugin the
+// user disabled); its existence alone schedules a deletion of the directory holding it, so a package can only harm
+// itself.
 TEST_F(ExtensionManagerEnableDisableTest, InjectedUninstallMarkerCannotSteerAnotherExtensionsState) {
   // A victim the user has deliberately disabled.
   server_.setBody(dummyPluginZip("mock-file-source"));
@@ -3416,15 +3130,10 @@ TEST_F(ExtensionManagerEnableDisableTest, InjectedUninstallMarkerCannotSteerAnot
       << "no journal record may be conjured from package content";
 }
 
-// ---------------------------------------------------------------------------
-// [11] Removal-journal record validation (the drain's delete privilege)
-// ---------------------------------------------------------------------------
-// A journal record authorises `QDir::removeRecursively()`. That makes the journal
-// a capability, and the store lease does not protect it: these records live inside
-// the rightful writer's own state directory, so corruption or anything that can
-// drop a file there would otherwise inherit the drain's privilege. Every record is
-// therefore validated before ANY deletion, and every refusal is fail-closed:
-// nothing deleted, record quarantined, diagnostic raised.
+// A journal record authorises `QDir::removeRecursively()`, so the journal is a capability the store lease does not
+// protect: corruption, or anything able to drop a file in the state directory, would inherit the drain's privilege.
+// Every record is validated before ANY deletion and every refusal is fail-closed: nothing deleted, record
+// quarantined, diagnostic raised.
 
 // Installs one extension and returns its directory, so each case below has a real
 // payload that must still be standing afterwards.
@@ -3541,12 +3250,9 @@ TEST_F(RemovalJournalValidationTest, MalformedRecordIsRefused) {
   expectRefused(u"mock-data-source"_s, QByteArray("{ this is not json"), victim);
 }
 
-// The whole point of the validation: a legitimate record still drains.
-// An extension id may begin with a dot — invalidExtensionIdReason only rejects
-// exactly "." / ".." and path separators — and the record is named for the id, so
-// ".local-plugin" is journalled as ".local-plugin.json": a HIDDEN file on POSIX.
-// A journal listing that does not ask for hidden entries never sees it, so the
-// removal stays pending forever while the payload sits on disk, still loadable.
+// A legitimate record still drains. An id may begin with a dot (invalidExtensionIdReason rejects only "." / ".." and
+// separators), so ".local-plugin" is journalled as the HIDDEN file ".local-plugin.json": a listing that ignores
+// hidden entries never sees it and the removal stays pending forever.
 TEST_F(RemovalJournalValidationTest, RecordForADottedIdIsDrained) {
   const QString payload = ext_dir_.path() + "/.local-plugin";
   ASSERT_TRUE(QDir().mkpath(payload));
@@ -3601,17 +3307,11 @@ TEST_F(RemovalJournalValidationTest, ReinstallAfterUninstallClearsTheTombstone) 
   EXPECT_TRUE(mgr_->isEnabled("mock-data-source"));
 }
 
-// TOCTOU at the delete site: removeRecursively() FOLLOWS a symlink at the target,
-// which the parse-time check does not catch when the link resolves to a legitimate
-// in-store directory. A record filed for `bait` (a symlink to a real sibling
-// payload) passes validation — its canonical form is a direct managed child — yet
-// draining it naively would recurse through the link and delete the sibling's
-// contents. The exploitable variant of the same window is a link planted to resolve
-// OUTSIDE the store between validation and the delete. The delete-time re-confinement
-// refuses a symlink target outright: nothing deleted, quarantined, diagnosed.
-//
-// A managed payload is always a real directory, so this scenario cannot arise from
-// the manager's own records; it models corruption or a concurrent writer.
+// Delete-time TOCTOU: removeRecursively() FOLLOWS a symlink at the target, which the parse-time check does not catch
+// when the link resolves to a legitimate in-store directory. A record for `bait` (a symlink to a real sibling payload)
+// passes validation, yet draining it naively would delete the sibling's contents. The delete-time re-confinement
+// refuses a symlink target outright: nothing deleted, record quarantined, diagnostic raised. A managed payload is
+// always a real directory, so this models corruption or a concurrent writer.
 TEST_F(RemovalJournalValidationTest, RecordWhoseTargetIsASymlinkIsRefusedAtDeletion) {
 #ifdef Q_OS_WIN
   GTEST_SKIP() << "symlink creation needs elevation on Windows; the canonical-path rule is platform-neutral";
@@ -3620,10 +3320,8 @@ TEST_F(RemovalJournalValidationTest, RecordWhoseTargetIsASymlinkIsRefusedAtDelet
   const QString sibling = ext_dir_.path() + "/mock-data-source";  // a real, legitimate payload
   ASSERT_TRUE(QDir(sibling).exists());
 
-  // `bait` is a symlink to that sibling. It is a direct child of the store BY NAME,
-  // and its canonical form resolves to a direct managed child, so parse-time
-  // validation admits it. Only the delete-time symlink refusal stops the drain from
-  // recursing through it and wiping the sibling.
+  // `bait` is a symlink to that sibling: a direct child of the store by name, resolving to a direct managed child, so
+  // parse-time validation admits it. Only the delete-time symlink refusal stops the drain from wiping the sibling.
   const QString bait = ext_dir_.path() + "/bait";
   ASSERT_TRUE(QFile::link(sibling, bait));
   ASSERT_TRUE(writeRawRemovalRecord(ext_dir_.path(), u"bait"_s, removalRecordJson(u"uninstall"_s, u"bait"_s, bait)));
@@ -3640,12 +3338,9 @@ TEST_F(RemovalJournalValidationTest, RecordWhoseTargetIsASymlinkIsRefusedAtDelet
 #endif
 }
 
-// The lexical-vs-canonical asymmetry: unmanagedPayloadRejection compares a record's
-// lexical parent against the CANONICAL store root, so if the configured store path
-// itself contains a symlink component, even a legitimate uninstall record is
-// rejected and the removal is stranded. Canonicalizing the store dir once at
-// construction is what puts the two comparisons on one footing. RED before that
-// fix: the record is quarantined and the payload never drains.
+// unmanagedPayloadRejection compares a record's lexical parent against the CANONICAL store root, so a configured store
+// path with a symlink component would reject even a legitimate uninstall record and strand the removal.
+// Canonicalizing the store dir once at construction puts both comparisons on one footing.
 TEST_F(ExtensionManagerTest, UninstallDrainsUnderASymlinkedExtensionsDir) {
 #ifdef Q_OS_WIN
   GTEST_SKIP() << "symlink creation needs elevation on Windows; the canonical-path rule is platform-neutral";
@@ -3685,16 +3380,10 @@ TEST_F(ExtensionManagerTest, UninstallDrainsUnderASymlinkedExtensionsDir) {
 #endif
 }
 
-// A legacy in-payload marker whose directory will not delete survives every launch.
-// externalizeLegacyUninstallMarkers must NOT file a fresh cleanup record on each
-// pass, or the journal grows without bound. RED before the dedup: the second pass
-// adds a second cleanup-<uuid>.json.
-//
-// The payload directory ITSELF is made read-only, not a subdirectory: that stops
-// removeRecursively from unlinking any child — the marker included — so the marker
-// (and thus the reason to re-externalize) genuinely persists across passes. A
-// locked subdirectory would not do: the recursive delete would remove the top-level
-// marker before failing deeper, and the second pass would find nothing to re-file.
+// An in-payload marker whose directory will not delete survives every launch: externalizeLegacyUninstallMarkers
+// must not file a fresh cleanup record on each pass, or the journal grows without bound. The payload directory ITSELF
+// is made read-only, not a subdirectory: that stops removeRecursively from unlinking the marker, so it persists
+// across passes (a locked subdirectory would let the recursive delete remove the top-level marker first).
 TEST_F(ExtensionManagerEnableDisableTest, StuckLegacyMarkerIsNotReExternalizedEveryLaunch) {
 #ifndef Q_OS_WIN
   if (geteuid() == 0) {
@@ -3704,13 +3393,10 @@ TEST_F(ExtensionManagerEnableDisableTest, StuckLegacyMarkerIsNotReExternalizedEv
   const QString ext_path = ext_dir_.path() + "/legacy-plugin";
   ASSERT_TRUE(QDir().mkpath(ext_path));
 
-  // The marker must SURVIVE both drain attempts, or the second pass has no marker
-  // to re-externalize and the test would pass without exercising the dedup at all.
-  // Blocking the delete takes a different mechanism on each platform, so use both:
-  // an open handle is what stops a delete on Windows (a read-only DIRECTORY does
-  // not — that is why this test failed there), and dropping write permission on the
-  // holding directory is what stops the unlink on POSIX (where an open handle does
-  // not). Held open across BOTH passes.
+  // The marker must SURVIVE both drain attempts, or the second pass has nothing to re-externalize and the test passes
+  // without exercising the dedup. Blocking the delete takes a different mechanism per platform, so both are used: an
+  // open handle stops a delete on Windows (a read-only DIRECTORY does not), dropped write permission on the holding
+  // directory stops the unlink on POSIX. Held open across BOTH passes.
   QFile marker(ext_path + "/.pj_pending_uninstall");
   ASSERT_TRUE(marker.open(QIODevice::WriteOnly));
   marker.write("legacy in-payload marker");
@@ -3735,17 +3421,10 @@ TEST_F(ExtensionManagerEnableDisableTest, StuckLegacyMarkerIsNotReExternalizedEv
   marker.close();
 }
 
-// A downgrade-to-bundled is a version change, not a removal: the plugin stays
-// installed (only its version reverts to the shipped baseline). It therefore
-// PRESERVES the user's enable/disable choice, exactly like an update does (see
-// UpdatePromotionPreservesDisabledState). So a disabled plugin stays disabled
-// across a downgrade, drain included.
-//
-// The contrast with uninstall is about which entry gets WRITTEN, not about anything
-// being cleared: an uninstall adds a disabled tombstone that PERSISTS after the
-// files are gone (only a reinstall clears it), while a downgrade adds none and
-// leaves whatever the user chose exactly as it was. Neither ever re-enables an id —
-// draining has no authority to do so at all.
+// A downgrade-to-bundled is a version change, not a removal: the plugin stays installed and keeps the user's
+// enable/disable choice, like an update (see UpdatePromotionPreservesDisabledState). An uninstall adds a disabled
+// tombstone that persists after the files are gone, while a downgrade adds none; neither ever re-enables an id, since
+// draining has no authority to.
 TEST_F(ExtensionManagerEnableDisableTest, DowngradeToBundledPreservesDisabledState) {
   // Install 2.0.0, then declare 1.0.0 as the bundled version so the installed
   // copy sits ABOVE bundled and downgradeToBundled is applicable.
@@ -3801,14 +3480,9 @@ TEST_F(ExtensionManagerTest, DowngradeToBundledKeepsInstalledUntilRestart) {
       << "the pending-uninstall marker drives the 'Needs Restart' badge";
 }
 
-// ---------------------------------------------------------------------------
-// [13] Transaction-root placement
-// ---------------------------------------------------------------------------
-
-// The plugin scanner walks the extensions dir recursively and has no exclusion
-// rule, so a transaction directory holding an extracted DSO is discoverable,
-// loadable content for as long as it exists there - and it survives a crash.
-// A sideload must therefore extract outside that tree.
+// The plugin scanner walks the extensions dir recursively and has no exclusion rule, so a transaction directory
+// holding an extracted DSO would be loadable content for as long as it exists there (and it survives a crash): a
+// sideload extracts outside that tree.
 TEST_F(ExtensionManagerTest, LocalInstallTransactionRootNeverAppearsInsideTheScannedTree) {
   QTemporaryDir src;
   ASSERT_TRUE(src.isValid());
@@ -3867,17 +3541,14 @@ TEST_F(ExtensionManagerTest, FreshRegistryInstallExtractsOutsideTheScannedTree) 
   EXPECT_TRUE(transactionDirsIn(stage_dir).isEmpty()) << "transaction residue left in the staging sibling";
 }
 
-// Residue written by an older build sits inside the extensions dir, where the
-// scan can still reach it. The name-prefix sweep stays the migration path for
-// those, so a first launch after the upgrade clears them.
+// A `.pj_install_*` directory inside the extensions dir, where the scan can reach it, is still swept at startup.
 TEST_F(ExtensionManagerTest, LegacyInTreeTransactionResidueIsStillSweptAtStartup) {
   const QString legacy = QDir(ext_dir_.path()).absoluteFilePath(u".pj_install_legacy_abc"_s);
   ASSERT_TRUE(copyFixturePlugin(legacy, u"mock-data-source"_s));
   ASSERT_TRUE(QFile::exists(legacy));
 
-  // Sweeping is the store writer's job, so the "first launch after the upgrade"
-  // being modelled here has to be the instance that owns the store: the fixture's
-  // manager hands the lease over first, exactly as the previous process would.
+  // Sweeping is the store writer's job, so the modelled first launch must be the instance that owns the store: the
+  // fixture's manager hands the lease over first, as the previous process would.
   delete mgr_;
   mgr_ = nullptr;
 
@@ -3888,14 +3559,9 @@ TEST_F(ExtensionManagerTest, LegacyInTreeTransactionResidueIsStillSweptAtStartup
   EXPECT_FALSE(mgr.isInstalled("mock-data-source")) << "residue must never register as an installed extension";
 }
 
-// ---------------------------------------------------------------------------
-// [14] Interprocess single-writer lock over the managed store
-//
-// Two ExtensionManagers over the same directories look exactly like two running
-// PlotJuggler processes to the filesystem — the lock is arbitrated by file, not
-// by process — so one test process covers most of the contract; the
-// SecondProcessCannotMutateStore case below crosses a real process boundary.
-// ---------------------------------------------------------------------------
+// Interprocess single-writer lock: two ExtensionManagers over the same directories look like two PlotJuggler
+// processes to the filesystem (the lock is arbitrated by file), so most cases run in one process;
+// SecondProcessCannotMutateStore crosses a real process boundary.
 
 // Re-exec flag that turns this test binary into a bare lock holder.
 QString holdStoreLockFlag() {
@@ -3905,10 +3571,8 @@ constexpr int kHolderBadArguments = 64;
 constexpr int kHolderLeaseRefused = 65;
 constexpr int kHolderMarkerFailed = 66;
 
-// Child-process entry point: take the store's writer lease, announce it by
-// creating `ready_file`, then hold it until the parent creates "<ready_file>.stop".
-// The parent therefore controls the window explicitly, with no sleep on either side
-// guessing how long the other needs.
+// Child-process entry point: take the store's writer lease, announce it by creating `ready_file`, then hold it until
+// the parent creates "<ready_file>.stop", so the parent controls the window with no sleep on either side.
 int runStoreLockHolder(const QString& extensions_dir, const QString& ready_file) {
   DownloadManager downloader;
   ExtensionManager manager(&downloader, extensions_dir, extensions_dir + u"_pending"_s);
@@ -3971,11 +3635,9 @@ TEST_F(ExtensionManagerTest, SecondManagerCannotMutateLockedStore) {
   EXPECT_FALSE(QDir(ext_dir_.path() + "/mock-data-source").exists()) << "a refused install must write nothing";
 }
 
-// The transaction directory of a live writer survives a second process starting
-// up, in BOTH places cleanup looks: the staging sibling every install actually
-// extracts into, and the extensions dir itself, where an older build could have
-// left one. Neither name says who owns it, so neither sweep may run without the
-// lease.
+// The transaction directory of a live writer survives a second process starting up, in BOTH places cleanup looks:
+// the staging sibling every install extracts into and the extensions dir itself. Neither name says who owns it, so
+// neither sweep may run without the lease.
 TEST_F(ExtensionManagerTest, SecondProcessNeverDeletesFirstProcessTransaction) {
   const QString live_in_staging =
       QDir(transactionStageDirFor(ext_dir_.path())).absoluteFilePath(u".pj_install_alive"_s);
@@ -4024,11 +3686,9 @@ TEST_F(ExtensionManagerTest, LockReleasedOnDestructionRestoresWriteMode) {
   EXPECT_TRUE(mgr2.isInstalled("mock-data-source"));
 }
 
-// The lease is a real interprocess lock, so the case it exists for has to be shown
-// across a process boundary: two ExtensionManagers in one process share nothing but
-// the file, yet an in-process test cannot rule out that some accident of shared
-// state is doing the work. The holder runs as a child of this very binary (see
-// holdStoreLockFlag() in main), which keeps the fixture self-contained.
+// The lease is a real interprocess lock, so it is shown across a process boundary: two ExtensionManagers in one
+// process share nothing but the file, yet an in-process test cannot rule out an accident of shared state. The holder
+// runs as a child of this binary (see holdStoreLockFlag() in main).
 TEST_F(ExtensionManagerTest, SecondProcessCannotMutateStore) {
   // A store of its own, so the child's lease covers nothing else in the suite.
   QTemporaryDir store;
@@ -4047,9 +3707,8 @@ TEST_F(ExtensionManagerTest, SecondProcessCannotMutateStore) {
   ASSERT_TRUE(waitUntil([&] { return QFile::exists(ready_file); }, 15000))
       << "holder process never reported taking the store lease";
 
-  // Created only now, with the lease already held elsewhere: it stands for an
-  // extraction the OTHER process has in flight. (Created any earlier it would be
-  // pre-lease residue, which that process is entitled to sweep at its own startup.)
+  // Created only now, with the lease held elsewhere: it stands for an extraction the OTHER process has in flight. Any
+  // earlier it would be pre-lease residue, which that process may sweep at its own startup.
   ASSERT_TRUE(QDir().mkpath(live_transaction));
 
   DownloadManager downloader;
@@ -4104,9 +3763,8 @@ TEST_F(ExtensionManagerTest, DestroyMidExtractionReleasesLockOnlyAfterDrain) {
 
   mgr_->installFromLocalZip(zip);
 
-  // Wait for the worker to have actually written something: a state marker, not a
-  // guessed duration. Past this point extraction is provably in flight, with the
-  // overwhelming majority of the filler entries still to go.
+  // Wait for the worker to have written something (a state marker, not a guessed duration): past this point extraction
+  // is provably in flight, with most of the filler entries still to go.
   ASSERT_TRUE(waitUntil([&] { return !filesUnder(stage_dir).isEmpty(); }, 15000))
       << "extraction never started, so the drain cannot be observed";
   ASSERT_TRUE(spy_finished.isEmpty() && spy_pending.isEmpty())
@@ -4115,10 +3773,9 @@ TEST_F(ExtensionManagerTest, DestroyMidExtractionReleasesLockOnlyAfterDrain) {
   delete mgr_;
   mgr_ = nullptr;
 
-  // Everything the worker could have been writing is gone with the transaction root
-  // the destructor retired. A worker still running would put it straight back:
-  // extractFromMemory mkpaths each entry's parent before opening the file, so any
-  // reappearance below is a write that happened AFTER the lock was released.
+  // Everything the worker could have written is gone with the transaction root the destructor retired. A worker still
+  // running would put it back (extractFromMemory mkpaths each entry's parent), so any reappearance is a write after the
+  // lock was released.
   QDir(stage_dir).removeRecursively();
   ASSERT_FALSE(QDir(stage_dir).exists())
       << "the staging tree came back while it was being removed, so a worker is still extracting into the store "
@@ -4132,12 +3789,9 @@ TEST_F(ExtensionManagerTest, DestroyMidExtractionReleasesLockOnlyAfterDrain) {
       << "an extraction worker wrote into the store after the manager released the lease";
 }
 
-// Both the staging area and the lease file are SIBLINGS of the extensions dir, and
-// a configured path can be a symlink (a packaged install pointing at a data volume,
-// a developer linking the store elsewhere). Derived textually, the sibling is
-// created next to the LINK: the promoting rename then crosses filesystems, and two
-// aliases of one store take two different locks and both believe they are the
-// writer. Both must be derived from the resolved target instead.
+// The staging area and the lease file are SIBLINGS of the extensions dir, and a configured path can be a symlink.
+// Derived textually, the sibling lands next to the LINK: the promoting rename crosses filesystems, and two aliases of
+// one store take two locks and both believe they are the writer. Both must derive from the resolved target.
 TEST_F(ExtensionManagerTest, StoreSiblingsFollowTheCanonicalExtensionsDir) {
 #ifdef Q_OS_WIN
   GTEST_SKIP() << "symlink creation needs elevation on Windows; the canonical-path rule is platform-neutral";
@@ -4173,9 +3827,8 @@ TEST_F(ExtensionManagerTest, StoreSiblingsFollowTheCanonicalExtensionsDir) {
                               : spy_error.first().at(1).toString().toStdString());
   EXPECT_TRUE(QDir(real_store + "/mock-data-source").exists()) << "the install lands in the resolved store";
 
-  // Same rule for the removal journal: two aliases of one store must share it, or
-  // each would hold its own record of the same pending removal and drain blind to
-  // the other's.
+  // Same rule for the removal journal: two aliases of one store must share it, or each holds its own record of the same
+  // pending removal and drains blind to the other's.
   QSignalSpy spy_pending(&mgr, &ExtensionManager::uninstallPendingRestart);
   mgr.uninstall(u"mock-data-source"_s);
   ASSERT_TRUE(waitForSignal(spy_pending));
@@ -4267,22 +3920,15 @@ TEST_F(ExtensionManagerTest, ContentionDiagnosticTellsTheUserToRestart) {
 }  // namespace
 }  // namespace PJ
 
-// ---------------------------------------------------------------------------
-// main — QCoreApplication is required for the Qt network event loop
-// ---------------------------------------------------------------------------
-
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
-  // ExtensionManager::disabledExtensionIds() reads via QSettings() with the
-  // process-wide default scope. Pin unique org/app names so a residual
-  // Marketplace/disabledExtensions entry from another PJ4 binary on the same
-  // developer machine cannot leak into these tests.
+  // ExtensionManager::disabledExtensionIds() reads QSettings() in the process-wide default scope: unique org/app
+  // names keep a residual Marketplace/disabledExtensions entry from another PJ4 binary on the machine out of the tests.
   QCoreApplication::setOrganizationName("pj4-test-extension-manager");
   QCoreApplication::setApplicationName("extension_manager_test");
 
-  // Lock-holder mode (see SecondProcessCannotMutateStore): this binary re-executes
-  // itself to own a store from a SECOND process, which is the only way to test an
-  // interprocess lock honestly. Handled before gtest so the child never runs tests.
+  // Lock-holder mode (see SecondProcessCannotMutateStore): this binary re-executes itself to own a store from a SECOND
+  // process, the only honest way to test an interprocess lock. Handled before gtest so the child never runs tests.
   const QStringList args = QCoreApplication::arguments();
   if (const int flag = static_cast<int>(args.indexOf(PJ::holdStoreLockFlag())); flag >= 0) {
     if (args.size() < flag + 3) {

@@ -39,9 +39,8 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-// Collect the qWarning output `body` produces. The Qt handler is process-global,
-// so the previous one is restored before returning and the sink is only live for
-// the duration of the call.
+// Collects the qWarning output `body` produces. The Qt handler is process-global: the previous one is restored before
+// returning.
 std::vector<std::string> captureWarnings(const std::function<void()>& body) {
   static std::vector<std::string>* sink = nullptr;
   std::vector<std::string> captured;
@@ -65,8 +64,8 @@ class ToolboxRuntimeHostTest : public ::testing::Test {
     return PJ::sdk::ServiceRegistry(builder_.view());
   }
 
-  // Rows become visible only after a flush; createDataSource's handle id is the
-  // backing DatasetId (see DatastoreToolboxHost), so we read back through it.
+  // Rows become visible only after a flush; createDataSource's handle id is the backing DatasetId (see
+  // DatastoreToolboxHost), so the read goes through it.
   [[nodiscard]] uint64_t totalRowCount(uint32_t source_id) const {
     PJ::DataReader reader(engine_);
     const auto topics = reader.listTopics(static_cast<PJ::DatasetId>(source_id));
@@ -77,10 +76,8 @@ class ToolboxRuntimeHostTest : public ::testing::Test {
     return metadata.has_value() ? metadata->total_row_count : 0;
   }
 
-  // Bring-up state the helpers below fill in; every helper takes it as an
-  // out-param and returns void so gtest ASSERTs abort the helper itself —
-  // callers wrap each call in ASSERT_NO_FATAL_FAILURE. It owns the catalog the
-  // host's ingest contexts point at, so it must outlive host_.
+  // Bring-up state the helpers fill in. Helpers return void so gtest ASSERTs abort the helper itself; callers wrap each
+  // call in ASSERT_NO_FATAL_FAILURE. Owns the catalog the host's ingest contexts point at, so it must outlive host_.
   struct StartedIngest {
     std::unique_ptr<PJ::test::HermeticCatalog> catalog;
     std::optional<PJ::sdk::ToolboxHostView> toolbox;
@@ -88,8 +85,7 @@ class ToolboxRuntimeHostTest : public ::testing::Test {
     std::optional<PJ::DataSourceRuntimeHostView> view;
     uint32_t source_id = 0;
   };
-  // Host bring-up only: hermetic catalog deps + a host wired with `callbacks`,
-  // with NO ingest context yet, so a caller can observe the pre-ingest state.
+  // Host bring-up only: hermetic catalog deps and a host wired with `callbacks`, with no ingest context yet.
   void buildHermeticHost(PJ::ToolboxRuntimeHost::Callbacks callbacks, StartedIngest& out) {
     QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
     out.catalog = std::make_unique<PJ::test::HermeticCatalog>(plugin_file.absolutePath());
@@ -118,12 +114,9 @@ class ToolboxRuntimeHostTest : public ::testing::Test {
     out.view.emplace(ingest_raw);
   }
 
-  // Bring-up shared by the teardown-terminal tests: hermetic catalog deps, a
-  // host wired with `callbacks`, and one parser-ingest context — with its
-  // progress sequence STARTED unless start_progress is false (a test that
-  // needs the started callback QUEUED starts it from a worker thread via
-  // `view`). Out-param + void return so gtest ASSERTs abort the helper;
-  // callers wrap the call in ASSERT_NO_FATAL_FAILURE.
+  // Bring-up for the teardown-terminal tests: hermetic catalog deps, a host wired with `callbacks`, and one
+  // parser-ingest context, its progress sequence STARTED unless start_progress is false (a test that needs the started
+  // callback queued starts it from a worker thread via `view`).
   void startHermeticIngest(
       PJ::ToolboxRuntimeHost::Callbacks callbacks, StartedIngest& out, bool start_progress = true) {
     ASSERT_NO_FATAL_FAILURE(buildHermeticHost(std::move(callbacks), out));
@@ -150,10 +143,9 @@ TEST_F(ToolboxRuntimeHostTest, RegistersWriteRuntimeAndSettingsServices) {
   EXPECT_TRUE(services.get<PJ::sdk::SettingsStoreService>().has_value());
 }
 
-// A REQUIRED service the host could not register must fail registration at the
-// boundary where the cause is still known. A duplicate name is a host wiring
-// defect: continuing would bind the plugin against whichever instance got there
-// first — the wrong service surface, indistinguishable from the right one.
+// A required service the host could not register must fail registration at the boundary where the cause is still
+// known: a duplicate name is a host wiring defect, and continuing would bind the plugin against whichever instance got
+// there first.
 TEST_F(ToolboxRuntimeHostTest, DuplicateRequiredServiceFailsRegistration) {
   host_ =
       std::make_unique<PJ::ToolboxRuntimeHost>(engine_, object_store_, settings_, PJ::ToolboxRuntimeHost::Callbacks{});
@@ -169,13 +161,12 @@ TEST_F(ToolboxRuntimeHostTest, DuplicateRequiredServiceFailsRegistration) {
   EXPECT_EQ(builder_.size(), 4U);
 }
 
-// An OPTIONAL service is one the SDK plugin bases reach through get<>(), so its
-// absence is a supported degraded mode — it must warn and let the host succeed
-// rather than failing the whole bind.
+// An optional service (reached through get<> by the SDK plugin bases) may be absent: the host warns and succeeds
+// rather than failing the bind.
 TEST_F(ToolboxRuntimeHostTest, DuplicateOptionalServiceWarnsButStillSucceeds) {
   host_ =
       std::make_unique<PJ::ToolboxRuntimeHost>(engine_, object_store_, settings_, PJ::ToolboxRuntimeHost::Callbacks{});
-  // Pre-claim ONLY the optional settings service; every required name stays free.
+  // Pre-claim only the optional settings service; every required name stays free.
   int decoy = 0;
   ASSERT_TRUE(
       builder_.tryRegisterService(PJ::sdk::SettingsStoreService::kName, 1, PJ_service_t{&decoy, &decoy}).has_value());
@@ -187,7 +178,6 @@ TEST_F(ToolboxRuntimeHostTest, DuplicateOptionalServiceWarnsButStillSucceeds) {
   ASSERT_EQ(warnings.size(), 1U);
   EXPECT_NE(warnings[0].find(PJ::sdk::SettingsStoreService::kName), std::string::npos) << warnings[0];
   EXPECT_NE(warnings[0].find("duplicate name"), std::string::npos) << warnings[0];
-  // The three required services still landed alongside the pre-claimed decoy.
   EXPECT_EQ(builder_.size(), 4U);
 }
 
@@ -223,12 +213,9 @@ TEST_F(ToolboxRuntimeHostTest, ReportMessageRoutesLevelAndTextToOnMessage) {
   EXPECT_EQ(received[0].second, "fetch failed");
 }
 
-// The runtime-host vtable advertises notify_data_changed as [thread-safe]: a
-// plugin worker thread may call it. The host must not run the (Qt-touching)
-// callback on that worker thread — it marshals it to the constructing/GUI
-// thread. Lock the contract: fire from a std::thread, prove the callback did
-// NOT run synchronously on the worker, then runs on the host thread once its
-// event loop is pumped.
+// notify_data_changed is advertised [thread-safe]: a plugin worker may call it, and the host must marshal the
+// (Qt-touching) callback to the constructing/GUI thread. Fires from a std::thread, checks the callback did not run on
+// the worker, then runs on the host thread once its event loop is pumped.
 TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedMarshalsCallbackToConstructingThread) {
   std::atomic<bool> fired{false};
   std::thread::id callback_thread;
@@ -246,7 +233,6 @@ TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedMarshalsCallbackToConstructingTh
   std::thread worker([&]() { runtime->notifyDataChanged(); });
   worker.join();
 
-  // Cross-thread => queued: the callback must not have run on the worker.
   EXPECT_FALSE(fired.load());
 
   QCoreApplication::processEvents();
@@ -283,10 +269,8 @@ TEST_F(ToolboxRuntimeHostTest, ReportMessageMarshalsCallbackToConstructingThread
   EXPECT_EQ(received_text, "from worker");
 }
 
-// End-to-end write -> notify -> read: a plugin writes through ToolboxHostService
-// (buffered), and notifyDataChanged must seal those writes (flushPending) before
-// firing on_data_changed, so the freshly written rows are visible to a reader by
-// the time the host rebuilds its catalog.
+// write -> notify -> read: a plugin writes through ToolboxHostService (buffered), and notifyDataChanged must seal those
+// writes (flushPending) before firing on_data_changed, so the rows are visible when the host rebuilds its catalog.
 TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedFlushesBufferedWritesBeforeCatalogRebuild) {
   std::atomic<int> data_changed_calls{0};
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
@@ -357,12 +341,10 @@ TEST_F(ToolboxRuntimeHostTest, ParserIngestDelegatesToCatalogParserAndRegistersO
   auto push = ingest.pushMessage(*binding, PJ::Timestamp{100}, []() -> std::vector<uint8_t> { return {1, 2, 3, 4}; });
   ASSERT_TRUE(push.has_value()) << push.error();
 
-  // Release flushes: the stub parser's scalar row (byte_count) becomes readable.
   ASSERT_TRUE((*runtime_or).releaseParserIngest(ds->id).has_value());
   EXPECT_EQ(totalRowCount(ds->id), 1u);
 
-  // mock/image classifies kImage: one object topic, one stored entry, and the
-  // registrar received exactly one render-time parser instance.
+  // mock/image classifies kImage: one object topic, one stored entry, one render-time parser instance in the registrar.
   const auto object_topics = object_store_.listTopics(static_cast<PJ::DatasetId>(ds->id));
   ASSERT_EQ(object_topics.size(), 1u);
   EXPECT_EQ(object_store_.entryCount(object_topics.front()), 1u);
@@ -378,10 +360,8 @@ TEST_F(ToolboxRuntimeHostTest, ParserIngestDelegatesToCatalogParserAndRegistersO
   host_.reset();
 }
 
-// notify_data_changed reports WHICH datasets received a parser-ingest context
-// since the previous notify, and drains the set: the host uses this to focus
-// playback on a bulk import (a 10s cloud snippet must present a 10s timeline),
-// while plain write-API notifies keep reporting an empty list.
+// notify_data_changed reports which datasets received a parser-ingest context since the previous notify and drains
+// the set; the host uses it to focus playback on a bulk import, while plain write-API notifies report an empty list.
 TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedReportsAndDrainsIngestedDatasets) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
   PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
@@ -402,14 +382,12 @@ TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedReportsAndDrainsIngestedDatasets
   auto runtime_or = services.require<PJ::sdk::ToolboxRuntimeHostService>();
   ASSERT_TRUE(runtime_or.has_value());
 
-  // Write-API only: the notify reports no ingested datasets.
   auto plain = (*toolbox_or).createDataSource("write-api toolbox");
   ASSERT_TRUE(plain.has_value());
   (*runtime_or).notifyDataChanged();
   ASSERT_EQ(reported.size(), 1u);
   EXPECT_TRUE(reported[0].empty());
 
-  // A parser-ingest context marks its dataset as a bulk import.
   auto ds = (*toolbox_or).createDataSource("cloud download");
   ASSERT_TRUE(ds.has_value());
   ASSERT_TRUE((*runtime_or).createParserIngest(ds->id).has_value());
@@ -419,16 +397,14 @@ TEST_F(ToolboxRuntimeHostTest, NotifyDataChangedReportsAndDrainsIngestedDatasets
   ASSERT_EQ(reported[1].size(), 1u);
   EXPECT_EQ(reported[1][0], static_cast<PJ::DatasetId>(ds->id));
 
-  // Drained: the next notify is back to empty.
   (*runtime_or).notifyDataChanged();
   ASSERT_EQ(reported.size(), 3u);
   EXPECT_TRUE(reported[2].empty());
 }
 
-// The progress slots on the parser-ingest fat pointer drive the shell's
-// progressive-import surface: progress_start/finish bracket the import, and
-// each unthrottled progress_update seals pending toolbox writes BEFORE
-// on_ingest_progress fires, so the handler observes reader-visible rows.
+// The progress slots on the parser-ingest fat pointer drive the shell's progressive-import surface: progress_start/
+// finish bracket the import, and each unthrottled progress_update seals pending toolbox writes before
+// on_ingest_progress fires, so the handler sees reader-visible rows.
 TEST_F(ToolboxRuntimeHostTest, ProgressHooksFlushWritesAndDriveIngestCallbacks) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
   PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
@@ -506,9 +482,8 @@ TEST_F(ToolboxRuntimeHostTest, ProgressHooksFlushWritesAndDriveIngestCallbacks) 
   host_.reset();  // context references test-body locals (catalog)
 }
 
-// A mid-import dataset (between progress_start and progress_finish) re-reports
-// on EVERY notify — the shell's playback focus must follow the growing import —
-// and a released context re-reports once so the terminal notify runs the
+// A mid-import dataset (between progress_start and progress_finish) re-reports on every notify, so the shell's
+// playback focus follows the growing import; a released context re-reports once so the terminal notify runs the
 // shell's focus/reconcile pass over the finished dataset.
 TEST_F(ToolboxRuntimeHostTest, NotifyReportsMidImportDatasetOnEveryNotify) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
@@ -557,9 +532,8 @@ TEST_F(ToolboxRuntimeHostTest, NotifyReportsMidImportDatasetOnEveryNotify) {
   EXPECT_TRUE(reported[4].empty());
 }
 
-// The shell's "stop this import" routes through requestStopActiveIngests: a
-// flag-only cooperative stop every live context observes via is_stop_requested
-// and progress_update returning false.
+// requestStopActiveIngests is a flag-only cooperative stop: every live context observes it via is_stop_requested and
+// progress_update returning false.
 TEST_F(ToolboxRuntimeHostTest, RequestStopActiveIngestsSignalsCooperativeStop) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
   PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
@@ -589,11 +563,9 @@ TEST_F(ToolboxRuntimeHostTest, RequestStopActiveIngestsSignalsCooperativeStop) {
   host_.reset();
 }
 
-// The source-promotion service's ownership authority: hasIngestForDataset
-// answers "did THIS host's plugin create a parser-ingest context for the
-// dataset" — and must keep answering true after terminal delivery AND after
-// release, because promotion happens once the download has finished (the
-// progress bookkeeping is retained until host teardown by design).
+// hasIngestForDataset answers whether this host's plugin ever created a parser-ingest context for the dataset (the
+// source-promotion ownership check). It must stay true after terminal delivery and after release, because promotion
+// happens once the download has finished; the progress bookkeeping is retained until host teardown.
 TEST_F(ToolboxRuntimeHostTest, HasIngestForDatasetCoversLiveAndCompletedIngests) {
   StartedIngest ingest;
   ASSERT_NO_FATAL_FAILURE(startHermeticIngest(PJ::ToolboxRuntimeHost::Callbacks{}, ingest));
@@ -611,10 +583,8 @@ TEST_F(ToolboxRuntimeHostTest, HasIngestForDatasetCoversLiveAndCompletedIngests)
   host_.reset();  // context references test-body locals (catalog)
 }
 
-// The fold predicate must be true only while an ingest is LIVE: unlike
-// hasIngestForDataset (which stays true after release so source promotion can
-// ask later), a released ingest must read idle or a panel would be busy forever
-// after its first import.
+// hasActiveIngests is true only while an ingest is live: unlike hasIngestForDataset, a released ingest must read
+// idle, or a panel stays busy forever after its first import.
 TEST_F(ToolboxRuntimeHostTest, HasActiveIngestsTracksLiveContextsOnly) {
   StartedIngest ingest;
   ASSERT_NO_FATAL_FAILURE(buildHermeticHost(PJ::ToolboxRuntimeHost::Callbacks{}, ingest));
@@ -631,11 +601,10 @@ TEST_F(ToolboxRuntimeHostTest, HasActiveIngestsTracksLiveContextsOnly) {
   host_.reset();  // context references test-body locals (catalog)
 }
 
-// progressFinish without a started sequence is the SDK finite-import pattern's
-// safe no-op — it must not emit an unpaired on_ingest_finished (which would
-// disturb the shell's started/finished bookkeeping for other imports). And the
-// [stream-thread] progress hooks must marshal their callbacks to the
-// constructing thread, exactly like report_message/notify_data_changed.
+// progressFinish without a started sequence is a safe no-op (the SDK finite-import pattern) and must not emit an
+// unpaired on_ingest_finished, which would disturb the shell's started/finished bookkeeping for other imports. The
+// [stream-thread] progress hooks must marshal their callbacks to the constructing thread, like report_message/
+// notify_data_changed.
 TEST_F(ToolboxRuntimeHostTest, ProgressCallbacksArePairedAndMarshalled) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
   PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
@@ -666,15 +635,13 @@ TEST_F(ToolboxRuntimeHostTest, ProgressCallbacksArePairedAndMarshalled) {
       (*runtime_or).raw().vtable->create_parser_ingest((*runtime_or).raw().ctx, source.id, &ingest_raw, &error));
   const PJ::DataSourceRuntimeHostView progress(ingest_raw);
 
-  // Finish with no active sequence: swallowed, no unpaired callback.
   progress.progressFinish();
   QCoreApplication::processEvents();
   EXPECT_EQ(finished_calls.load(), 0);
 
   // Cross-thread start: queued, delivered on the constructing thread only.
   const auto host_thread = std::this_thread::get_id();
-  // (Plain call: gtest ASSERTs are not usable off the test thread; the
-  // started-count checks below prove the call succeeded.)
+  // Plain call: gtest ASSERTs are not usable off the test thread; the started-count checks below prove it succeeded.
   std::thread worker([&]() { (void)progress.progressStart("import", 0, true); });
   worker.join();
   EXPECT_EQ(started_calls.load(), 0);
@@ -692,12 +659,10 @@ TEST_F(ToolboxRuntimeHostTest, ProgressCallbacksArePairedAndMarshalled) {
   host_.reset();
 }
 
-// An OFF-THREAD release queues on_ingest_finished to the constructing thread;
-// destroying the host before that metacall is pumped PURGES it (queued calls
-// die with marshaller_). The teardown sweep must still deliver the terminal —
-// exactly once — or the shell's hoisted lifecycle bookkeeping
-// (SessionManager::hasActiveIngests) wedges true forever and the residual
-// stop-routing entry holds an expired owner.
+// An off-thread release queues on_ingest_finished to the constructing thread; destroying the host before that
+// metacall is pumped purges it (queued calls die with marshaller_). The teardown sweep must still deliver the
+// terminal exactly once, or the shell's ingest bookkeeping (SessionManager::hasActiveIngests) stays true forever and
+// the residual stop-routing entry holds an expired owner.
 TEST_F(ToolboxRuntimeHostTest, OffThreadReleaseThenImmediateTeardownStillFiresFinishedOnce) {
   std::atomic<int> finished_calls{0};
   PJ::ToolboxRuntimeHost::Callbacks callbacks;
@@ -705,7 +670,7 @@ TEST_F(ToolboxRuntimeHostTest, OffThreadReleaseThenImmediateTeardownStillFiresFi
   StartedIngest ingest;
   ASSERT_NO_FATAL_FAILURE(startHermeticIngest(std::move(callbacks), ingest));
 
-  // [thread-safe] release from a worker: finished is QUEUED, not delivered.
+  // Release from a worker: finished is queued, not delivered.
   std::thread worker([&]() { (void)ingest.runtime->releaseParserIngest(ingest.source_id); });
   worker.join();
   EXPECT_EQ(finished_calls.load(), 0);
@@ -734,9 +699,8 @@ TEST_F(ToolboxRuntimeHostTest, DeliveredFinishedIsNotRefiredByTeardown) {
   EXPECT_EQ(finished_calls.load(), 1) << "the sweep must skip a DELIVERED terminal";
 }
 
-// The guarantee MainWindow's hoisted bookkeeping now leans on: destroying a
-// host with an ACTIVE progress sequence (progress_start, no finish and no
-// release) still pairs the started callback with a finished.
+// Destroying a host with an active progress sequence (progress_start, no finish and no release) still pairs the
+// started callback with a finished; the shell's bookkeeping relies on it.
 TEST_F(ToolboxRuntimeHostTest, TeardownWithActiveProgressFiresFinished) {
   std::atomic<int> started_calls{0};
   std::atomic<int> finished_calls{0};
@@ -752,14 +716,10 @@ TEST_F(ToolboxRuntimeHostTest, TeardownWithActiveProgressFiresFinished) {
   EXPECT_EQ(finished_calls.load(), 1);
 }
 
-// Collapse semantics pin: a released import whose finished is still queued,
-// SUPERSEDED by a re-created-and-started context for the same dataset, must
-// NOT fire that stale finish after the re-arm. SessionManager's bookkeeping
-// is dataset-keyed (beginIngest RESTARTS the entry, endIngest erases it, a
-// double end is a silent no-op): a superseded finish landing mid-import
-// would erase the re-armed entry — progress UI hidden early, the real finish
-// downgraded to a no-op double-end. Exactly one finish per dataset, at the
-// LAST sequence's real terminal.
+// A released import whose finished is still queued and is superseded by a re-created-and-started context for the
+// same dataset must not fire that stale finish after the re-arm: a dataset-keyed consumer (begin restarts the entry,
+// finish erases it, a second finish is a no-op) would lose the re-armed entry mid-import. Exactly one finish per
+// dataset, at the last sequence's real terminal.
 TEST_F(ToolboxRuntimeHostTest, RearmedImportSwallowsSupersededQueuedFinish) {
   std::atomic<int> started_calls{0};
   std::atomic<int> finished_calls{0};
@@ -774,7 +734,7 @@ TEST_F(ToolboxRuntimeHostTest, RearmedImportSwallowsSupersededQueuedFinish) {
   worker.join();
   EXPECT_EQ(finished_calls.load(), 0);
 
-  // Re-create AND start the same dataset's import BEFORE the queued call pumps.
+  // Re-create and start the same dataset's import before the queued call pumps.
   PJ_data_source_runtime_host_t second_raw{};
   PJ_error_t error{};
   ASSERT_TRUE(ingest.runtime->raw().vtable->create_parser_ingest(
@@ -790,10 +750,8 @@ TEST_F(ToolboxRuntimeHostTest, RearmedImportSwallowsSupersededQueuedFinish) {
   EXPECT_EQ(finished_calls.load(), 1) << "exactly one finish for the dataset";
 }
 
-// The erase-after-delivery regression (Codex S2): re-create the context but
-// do NOT start it, then let the PRIOR sequence's queued finish deliver. The
-// live re-created context must stay tracked — its later start/release must
-// pair started/finished exactly — and teardown must add nothing.
+// Re-creating the context without starting it, then letting the prior sequence's queued finish deliver, must leave
+// the re-created context tracked: its later start/release pair started/finished exactly, and teardown adds nothing.
 TEST_F(ToolboxRuntimeHostTest, RecreatedContextStaysTrackedAfterPriorTerminalDelivers) {
   std::atomic<int> started_calls{0};
   std::atomic<int> finished_calls{0};
@@ -806,8 +764,6 @@ TEST_F(ToolboxRuntimeHostTest, RecreatedContextStaysTrackedAfterPriorTerminalDel
   std::thread worker([&]() { (void)ingest.runtime->releaseParserIngest(ingest.source_id); });
   worker.join();
 
-  // Re-create the context for the same dataset WITHOUT starting it, then let
-  // the prior sequence's queued finish deliver normally.
   PJ_data_source_runtime_host_t second_raw{};
   PJ_error_t error{};
   ASSERT_TRUE(ingest.runtime->raw().vtable->create_parser_ingest(
@@ -816,7 +772,6 @@ TEST_F(ToolboxRuntimeHostTest, RecreatedContextStaysTrackedAfterPriorTerminalDel
   QCoreApplication::processEvents();
   EXPECT_EQ(finished_calls.load(), 1) << "the prior sequence's finish delivers normally";
 
-  // The re-created context must still be tracked: its own sequence pairs.
   ASSERT_TRUE(second.progressStart("import-b", 5, true).has_value());
   ASSERT_EQ(started_calls.load(), 2);
   std::thread worker2([&]() { (void)ingest.runtime->releaseParserIngest(ingest.source_id); });
@@ -828,14 +783,10 @@ TEST_F(ToolboxRuntimeHostTest, RecreatedContextStaysTrackedAfterPriorTerminalDel
   EXPECT_EQ(finished_calls.load(), 2) << "teardown adds nothing for delivered terminals";
 }
 
-// Final Codex round: a queued finish must carry its own sequence's identity.
-// Two complete off-thread sequences (start + release each, nothing pumped in
-// between) share the retained progress entry; the pump must deliver
-// begin A, begin B, then exactly ONE finish — B's, AFTER begin B — so a
-// dataset-keyed consumer (begin restarts the entry, finish erases it, double
-// end is a no-op) ends DRAINED. Pre-fix, A's stale delivery consumed B's
-// kFinishQueued between the two begins and B's real finish was discarded:
-// order begin, finish, begin — the key wedged active forever.
+// A queued finish carries its own sequence's identity. Two complete off-thread sequences (start + release each,
+// nothing pumped in between) share the retained progress entry; the pump must deliver begin A, begin B, then exactly
+// one finish (B's, after begin B), so a dataset-keyed consumer ends drained. Delivering A's stale finish between the
+// two begins would discard B's real finish (order begin, finish, begin) and leave the key active forever.
 TEST_F(ToolboxRuntimeHostTest, StaleQueuedFinishCannotStealNewerSequencesTerminal) {
   std::vector<std::string> order;  // host-thread callback order
   int keyed_active = 0;            // dataset-keyed mock: begin -> restart entry, finish -> erase
@@ -881,12 +832,9 @@ TEST_F(ToolboxRuntimeHostTest, StaleQueuedFinishCannotStealNewerSequencesTermina
   EXPECT_EQ(order.size(), 3u) << "teardown adds nothing — B's terminal was already delivered";
 }
 
-// Closing Codex round: release is a [thread-safe] slot, so it may legally run
-// ON the marshaller thread while the sequence's begin — queued by an
-// off-thread progress_start — is still in flight. The finish must ENQUEUE
-// behind that begin, never deliver directly: finish-before-begin lands the
-// end on an absent key (silent no-op) and the late begin then re-inserts an
-// entry nothing will ever erase.
+// release is a [thread-safe] slot, so it may run on the marshaller thread while the sequence's begin (queued by an
+// off-thread progress_start) is still in flight. The finish must enqueue behind that begin, never deliver directly: a
+// finish before the begin ends an absent key (a silent no-op) and the late begin then inserts an entry nothing erases.
 TEST_F(ToolboxRuntimeHostTest, GuiThreadReleaseFinishCannotOvertakeQueuedBegin) {
   std::vector<std::string> order;
   int keyed_active = 0;  // dataset-keyed mock: begin -> restart entry, finish -> erase
@@ -915,10 +863,9 @@ TEST_F(ToolboxRuntimeHostTest, GuiThreadReleaseFinishCannotOvertakeQueuedBegin) 
   EXPECT_EQ(keyed_active, 0) << "the dataset-keyed tracking must drain";
 }
 
-// Two-arm variant of the same hazard: sequence A fully off-thread (begin A
-// queued, its finish queued then superseded), sequence B started off-thread
-// (begin B queued) and released ON the GUI thread. Delivery must read
-// begin A, begin B, finish B — pre-fix the direct finish landed first.
+// Two-arm variant: sequence A fully off-thread (begin A queued, its finish queued then superseded), sequence B
+// started off-thread (begin B queued) and released on the GUI thread. Delivery must read begin A, begin B, finish B;
+// a direct finish would land first.
 TEST_F(ToolboxRuntimeHostTest, GuiThreadReleaseTwoArmVariantKeepsBeginBeforeFinish) {
   std::vector<std::string> order;
   int keyed_active = 0;
@@ -934,7 +881,6 @@ TEST_F(ToolboxRuntimeHostTest, GuiThreadReleaseTwoArmVariantKeepsBeginBeforeFini
   StartedIngest ingest;
   ASSERT_NO_FATAL_FAILURE(startHermeticIngest(std::move(callbacks), ingest, /*start_progress=*/false));
 
-  // Sequence A entirely off-thread: begin A and finish A both queue.
   std::thread first_seq([&]() {
     (void)ingest.view->progressStart("import-a", 10, true);
     (void)ingest.runtime->releaseParserIngest(ingest.source_id);
@@ -962,8 +908,8 @@ TEST_F(ToolboxRuntimeHostTest, GuiThreadReleaseTwoArmVariantKeepsBeginBeforeFini
   EXPECT_EQ(order.size(), 3u) << "teardown adds nothing — B's terminal was already delivered";
 }
 
-// Rapid progress_update calls inside the throttle window must not stack
-// flush+callback ticks — only the first (epoch-aged) tick fires.
+// Rapid progress_update calls inside the throttle window must not stack flush+callback ticks; only the first
+// (epoch-aged) tick fires.
 TEST_F(ToolboxRuntimeHostTest, ProgressUpdateThrottleSuppressesRapidTicks) {
   QFileInfo plugin_file{QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH)};
   PJ::test::HermeticCatalog catalog_box(plugin_file.absolutePath());
@@ -1085,7 +1031,6 @@ TEST_F(ToolboxRuntimeHostTest, ParserIngestContextsArePerDataset) {
   ASSERT_TRUE(bind_a.has_value());
   ASSERT_TRUE(
       (*ingest_a).pushMessage(*bind_a, PJ::Timestamp{1}, []() -> std::vector<uint8_t> { return {1}; }).has_value());
-  // Releasing A leaves B's context usable.
   ASSERT_TRUE((*runtime_or).releaseParserIngest(ds_a->id).has_value());
   auto bind_b = (*ingest_b).ensureParserBinding(
       PJ::ParserBindingRequest{

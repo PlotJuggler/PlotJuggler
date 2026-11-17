@@ -129,8 +129,7 @@ class StreamingPresetTest : public ::testing::Test {
     ASSERT_TRUE(extensions_dir_.isValid());
     ASSERT_TRUE(probe_dir_.isValid());
     ASSERT_TRUE(settings_dir_.isValid());
-    // Settings of this process only: every pj_app_gui_tests process on the machine
-    // (parallel ctest, other checkouts) clears the shared test file when it starts.
+    // Settings in a directory of this case's own.
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir_.path());
     for (const char* plugin : {PJ_MOCK_FILE_SOURCE_PLUGIN_PATH, PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH}) {
@@ -399,10 +398,9 @@ TEST_F(StreamingPresetTest, FailedSetupKeepsPreviousPreset) {
   const PJ::DatasetId mine =
       PresetTestPeer::streams(*window_).startFromLayout(unowned, unowned.plugin_config_json, error);
   ASSERT_NE(mine, 0U) << error.toStdString();
-  // The user paused on the stream they follow, at its first sample: a failed preset
-  // must leave that as it is. The first sample, because the range only grows past it
-  // (live ingest sets the stream's range, file ingest a union holding it), so no later
-  // range update can clamp the cursor and move the baseline.
+  // The user paused on the stream they follow, at its first sample: a failed preset must leave that as it is. The
+  // first sample, because the range only grows past it, so no later range update can clamp the cursor and move
+  // the baseline.
   PJ::PlaybackEngine& playback = PresetTestPeer::session(*window_).playbackEngine();
   ASSERT_EQ(PresetTestPeer::followedStream(*window_), mine);
   ASSERT_TRUE(pumpUntil([&] { return sessionManager().datasetDisplayRange(mine).has_value(); }));

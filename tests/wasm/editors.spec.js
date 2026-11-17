@@ -262,7 +262,6 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
     { timeout: 15000 },
   ).toContain('scalar_series=filter-values/temp,filter-values/time,filter-values/value');
 
-  // Create the origin curve through CurveTreeView's real QDrag MIME path.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await page.mouse.click(screen.x + 30, screen.y + 212);
   const placeholder = { x: screen.x + 820, y: screen.y + 390 };
@@ -278,8 +277,7 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
   plotStateMessages += 1;
   expect(plotState.titles).toEqual(['filter-values/temp']);
 
-  // Open the production plot context menu, observe only the QAction geometry,
-  // and activate it with a physical mouse click.
+  // The plot context menu is clicked for real; the probe only reports the QAction geometry.
   const canvasCenter = {
     x: screen.x + plotState.canvas.x + (plotState.canvas.width / 2),
     y: screen.y + plotState.canvas.y + (plotState.canvas.height / 2),
@@ -307,7 +305,7 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
   expect(editor.absolute.x).toBeGreaterThanOrEqual(0);
   expect(editor.absolute.y).toBeGreaterThanOrEqual(0);
 
-  // Pick the parameterless bundled Luau Absolute class with real list input.
+  // The parameterless bundled Luau Absolute class.
   await page.mouse.click(screen.x + editor.absolute.x, screen.y + editor.absolute.y);
   await page.waitForTimeout(500);
   editor = await requestFilterEditorState(page, consoleMessages);
@@ -320,8 +318,7 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
   expect(filteredPreview.y).toEqual([2, 4, 6]);
   expect(filteredPreview.truncated).toBe(false);
 
-  // Apply through the production button and verify the live materialized curve,
-  // recipe identity, and exact transformed samples.
+  // Verify the materialized curve, the recipe identity and the exact transformed samples.
   await page.mouse.click(screen.x + editor.apply.x, screen.y + editor.apply.y);
   const applied = await requestFilterResult(page, consoleMessages);
   expect(applied.recipeCount).toBe(1);
@@ -349,9 +346,8 @@ test('Luau Filter Editor applies and restores an exact source-bound processor th
   expect(xml).not.toContain('pj-upload://');
   expect(xml).not.toContain('/pj_uploads');
 
-  // Recreate the runtime in a fresh Page target, retaining the same browser
-  // context but no session, Luau VM, staged file, upload token, or chooser
-  // interception state. The fallback-picker condition is installed again
+  // Recreate the runtime in a fresh Page target on the same browser context: no session, Luau VM, staged
+  // file, upload token or chooser interception survives. The fallback-picker condition is installed again
   // before navigation.
   ({ page, consoleMessages, screen } = await replaceRuntimeTarget(
     page,
@@ -429,8 +425,8 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   const screen = await page.locator('#screen').boundingBox();
   expect(screen).not.toBeNull();
 
-  // Large enough to make both the preview and persistent eager Luau nodes do
-  // material work, while retaining a deterministic output for every row.
+  // Large enough that both the preview and the persistent eager Luau node do material work, with a
+  // deterministic output for every row.
   const sampleCount = 30000;
   const rows = ['time,temp'];
   for (let index = 0; index < sampleCount; ++index) {
@@ -450,8 +446,7 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     { timeout: 60000 },
   ).toContain('scalar_series=toolbox-values/temp,toolbox-values/time');
 
-  // Expand the production CurveTreeView, then use the observation probe only
-  // to locate the real source row and Custom Series add button.
+  // The probe only locates the source row and the Custom Series add button.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await page.mouse.click(screen.x + 30, screen.y + 212);
   let editor = await requestTransformEditorState(page, consoleMessages);
@@ -469,7 +464,6 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   expect(editor.drop.x).toBeGreaterThanOrEqual(0);
   expect(editor.drop.y).toBeGreaterThanOrEqual(0);
 
-  // Drop the real catalog item through CurveTreeView's QDrag MIME path.
   await dragQtCanvas(
     page,
     { x: screen.x + editor.source.x, y: screen.y + editor.source.y },
@@ -480,16 +474,15 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     return editor.sourceRows;
   }, { timeout: 60000 }).toBe(1);
 
-  // Program the transform through the actual Qt text editor; its name is asked by Create.
+  // The transform is typed into the Qt text editor; its name is asked by Create.
   await page.mouse.click(screen.x + editor.function.x, screen.y + editor.function.y);
   await page.keyboard.press('Control+A');
   await page.keyboard.type('return value * value + 3');
 
-  // Qt runs on the page's main thread (the build has no PROXY_TO_PTHREAD), so
-  // each report call runs synchronously inside Qt's event loop. Give the
-  // production 20 Hz panel timer an observation-free window to rebuild the
-  // 30k-row preview; repeatedly queueing reports while that loop is busy can
-  // itself starve the timer this observation is waiting for.
+  // Qt runs on the page's main thread (the build has no PROXY_TO_PTHREAD), so each report call runs
+  // synchronously inside Qt's event loop. Give the panel's 20 Hz timer (tick_interval_ms) an
+  // observation-free window to rebuild the 30k-row preview: reports queued while that loop is busy can
+  // starve the timer this observation is waiting for.
   await page.waitForTimeout(10000);
   const observedEditorStates = [];
   for (let attempt = 0; attempt < 6; ++attempt) {
@@ -519,7 +512,7 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     `Transform Editor never became ready: ${JSON.stringify(observedEditorStates)}`,
   ).toBe(true);
   const ghost = editor.previews.find(preview => preview.title === 'toolbox-values/temp');
-  // The transformed preview is named after the output the trial inferred, not yet the recipe.
+  // The transformed preview is named after the output the trial inferred, not after the recipe.
   const transformed = editor.previews.find(preview => preview.title !== 'toolbox-values/temp');
   // The input "ghost" and the transformed preview are told apart by colour,
   // not dash style, so only their data is asserted here.
@@ -539,11 +532,9 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   await page.keyboard.press('Control+A');
   await page.keyboard.type('toolbox-square');
 
-  // The Qt app and its Luau replay share the page's main thread. A page
-  // heartbeat must keep ticking from the physical OK click until the replay
-  // has materialized every row: no single slice of that work may hold the
-  // thread for 100 ms. Production announces the transform after the first
-  // slice; the series then grows until complete.
+  // The Qt app and its Luau replay share the page's main thread. A page heartbeat must keep ticking from the
+  // OK click until the replay has materialized every row: no single slice of that work may hold the thread
+  // for 100 ms. The transform is announced after the first slice and the series then grows until complete.
   await page.evaluate(() => {
     const heartbeat = { started: performance.now(), ticks: [], timer: 0 };
     heartbeat.timer = setInterval(() => heartbeat.ticks.push(performance.now()), 4);
@@ -589,8 +580,8 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   expect(toolboxResult.recipes[0].custom.x).toBeGreaterThanOrEqual(0);
   expect(toolboxResult.recipes[0].custom.y).toBeGreaterThanOrEqual(0);
 
-  // Drag the plugin-created Custom Series row into the real plot and verify all
-  // 30k materialized samples, including an exact deterministic prefix.
+  // Drag the plugin-created Custom Series row into the plot; all 30k samples must be materialized, with an
+  // exact deterministic prefix.
   const placeholder = { x: screen.x + 820, y: screen.y + 390 };
   const rhiReadyMessages = consoleMessages.filter(
     message => message.includes('PJ_WASM_PLOT_RHI_READY'),

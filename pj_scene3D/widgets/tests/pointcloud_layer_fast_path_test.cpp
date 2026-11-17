@@ -2,14 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // PointCloudLayer conversion and retained-array integration tests:
-//  - world_bounds_ must refresh on EVERY new sample even when no colormap consumes the scan
-//    (solid / RGB / auto-off). It feeds the camera scene-fit (Scene3DDockWidget::
-//    updateSceneBounds) every frame; gating the bounds scan on colour mode silently froze it
-//    (a regression caught in review). This test pushes two differently-placed clouds in solid
-//    mode and asserts worldBounds() tracks the second, not the first.
-//  - an RGB-direct (kRgb) cloud carrying a packed rgba uint32 field keeps its wire colour
-//    verbatim in kXyzRgba records.
-//  - the retained array's reuse, eviction and re-derivation.
+// - world_bounds_ must refresh on every new sample even when no colormap consumes the scan (solid / RGB / auto-off):
+//   it feeds the camera scene-fit (Scene3DDockWidget::updateSceneBounds) every frame, and gating the bounds scan on
+//   colour mode would freeze it. Two differently-placed clouds are pushed in solid mode and worldBounds() must track
+//   the second, not the first.
+// - an RGB-direct (kRgb) cloud carrying a packed rgba uint32 field keeps its wire colour verbatim in kXyzRgba records;
+// - the retained array's reuse, eviction and re-derivation.
 
 #include <gtest/gtest.h>
 
@@ -85,7 +83,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitRgbaCloud(PJ::Timestamp ts, PJ::sdk::Pay
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
 }
 
-// The size of a layer's retained array: its records, padded for upload.
 qsizetype paddedBytes(const pj::scene3d::PointCloudLayer& layer) {
   return PJ::paddedUploadSize(
       static_cast<qsizetype>(layer.pointCount() * pj::scene3d::pointVertexStride(layer.vertexFormat())));
@@ -120,7 +117,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitAnchoredCloud(PJ::Timestamp ts, PJ::sdk:
 }
 
 std::atomic<int> g_intensity_calls{0};
-// Two points with a float32 intensity of 3 and 7.
 PJ::Expected<PJ::sdk::ObjectRecord> emitIntensityCloud(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   static const float k_points[8] = {1.0f, 2.0f, 3.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f};
   PJ::sdk::PointCloud cloud;
@@ -146,9 +142,8 @@ PJ::ObjectTopicId registerCloudTopic(PJ::ObjectStore& store) {
   return *topic_id;
 }
 
-// REGRESSION: the bounds scan must refresh world_bounds_ on every sample even in solid mode
-// (where no colormap consumes it). Pre-fix the scan was skipped for solid/RGB/auto-off, freezing
-// world_bounds_ at the first sample and silently feeding the camera scene-fit a stale extent.
+// The bounds scan must refresh world_bounds_ on every sample even in solid mode (where no colormap consumes it): it
+// feeds the camera scene-fit, so skipping it would freeze the extent at the first sample.
 TEST(PointCloudLayerFastPath, WorldBoundsTracksLatestCloudInSolidMode) {
   g_two_extent_calls.store(0);
   PJ::SessionManager session;
@@ -167,7 +162,6 @@ TEST(PointCloudLayerFastPath, WorldBoundsTracksLatestCloudInSolidMode) {
   pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));  // renders the near cloud (stamp 100)
 
-  // Switch to solid colour (no colormap) and advance to the far cloud (stamp 200).
   layer.setColorType(pj::scene3d::PointColorType::kSolid);
   layer.renderAtForTest(200);
 

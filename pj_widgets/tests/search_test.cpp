@@ -16,9 +16,8 @@ namespace {
 using PJ::ChromeMetrics;
 using PJ::Search;
 
-// QSS type selectors match on metaObject()->className(), so the whole styling
-// contract (PJ--Search and its [variant=...] override) hinges on the class
-// name. Pin it so a dropped Q_OBJECT is a red test, not a silent restyle.
+// QSS type selectors match on metaObject()->className(), so the styling contract (PJ--Search and its [variant=...]
+// override) hinges on the class name: pinned, so a dropped Q_OBJECT is a red test, not a silent restyle.
 TEST(SearchTest, ClassNameDrivesQssSelector) {
   Search search;
   EXPECT_STREQ(search.metaObject()->className(), "PJ::Search");

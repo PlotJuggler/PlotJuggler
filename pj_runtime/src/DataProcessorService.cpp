@@ -97,8 +97,7 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
         "its panel. Create that transform as a persistent one first.");
   }
 
-  // Shared so the host could later keep its own handle (preview/reconfigure);
-  // the engine owns the adapter, the adapter shares the processor.
+  // The engine owns the adapter; the adapter shares the processor.
   std::shared_ptr<proc::DataProcessor> shared = std::move(processor);
   auto node = derived_->addSisoTransform(
       input_topic_id, output_name, dataset_id, std::make_unique<proc::ProcessorSisoAdapter>(shared),
@@ -147,7 +146,7 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
   recipe.output_name = output_name;
   recipe.processor = shared;
   // Capture the filter's defining module source from the LIVE processor so a saved
-  // layout embeds it as <source_fallback> (M7) and reopens on a machine without this
+  // layout embeds it as <source_fallback> and reopens on a machine without this
   // filter installed. Reading it off the processor (not re-deriving from the
   // catalogue) keeps it authoritative even for a filter restored from an embedded
   // source whose id is absent from this machine's catalogue — so re-saving keeps it.
@@ -596,12 +595,9 @@ std::unique_ptr<proc::DataProcessor> DataProcessorService::makeRestoredProcessor
   return nullptr;
 }
 
-// --- Plugin-created transforms (pj.data_processors.v1 host side) ---
-
 namespace {
-// Infer the backend from the payload's leading bytes / first-line directive
-// (data-only ABI: nothing executable crosses, so the host picks the backend from
-// the bytes). WASM/Python are recognized but diagnosed as unavailable in this build.
+// Infers the backend from the payload's leading bytes or first-line directive (data-only ABI: nothing executable
+// crosses, so the host picks the backend from the bytes): `-- pj-script: luau|lua|python`. A WASM magic is refused.
 Expected<std::string> inferTransformBackend(const std::string& script) {
   if (script.size() >= 4 && script.compare(0, 4, "\0asm", 4) == 0) {
     return PJ::unexpected("pj.data_processors: WASM backend is reserved for a future host build");
@@ -883,14 +879,11 @@ Status DataProcessorService::validateScript(
 
 namespace {
 
-// A grouped MIMO output is requested EXPLICITLY as a single structured `outputs`
-// entry "<topic>:<field1>,<field2>,...,<fieldN>": the host then materializes ONE
-// topic named <topic> with those N named columns (column k = the script's k-th
-// result), instead of N separate scalar topics. Returns {topic, [fields]} when the
-// single output entry has that shape (non-empty topic + >= 1 non-empty field);
-// otherwise {"", {}} and each output stays its own scalar topic. This keeps the
-// intent unambiguous (unlike inferring a shared prefix) and entirely host-side —
-// the plugin opts in by naming, e.g. outputs = {"rpy:roll,pitch,yaw"}.
+// A grouped MIMO output is requested EXPLICITLY as a single structured `outputs` entry "<topic>:<f1>,<f2>,...,<fN>":
+// the host then materializes ONE topic named <topic> with those N named columns (column k = the script's k-th result)
+// instead of N scalar topics. Returns {topic, [fields]} when the single output entry has that shape (non-empty topic
+// and >= 1 non-empty field), else {"", {}} and each output stays its own scalar topic. Explicit naming keeps the
+// intent unambiguous (unlike inferring a shared prefix); the plugin opts in, e.g. outputs = {"rpy:roll,pitch,yaw"}.
 std::pair<std::string, std::vector<std::string>> parseGroupedOutput(const std::vector<std::string>& outputs) {
   if (outputs.size() != 1) {
     return {"", {}};
@@ -934,9 +927,8 @@ std::vector<std::string> DataProcessorService::materializedTopicNames(const Tran
 
 Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTransform(
     TransformRecipe recipe, bool time_sliced) {
-  // 1. Shape: N inputs -> M outputs (SISO is the 1->1 case). Field-level binding
-  //    (a column within a multi-column input) is still a follow-up: inputs resolve
-  //    to whole scalar topics here.
+  // 1. Shape: N inputs -> M outputs (SISO is the 1->1 case). Inputs resolve to whole
+  //    scalar topics: no binding to a column within a multi-column input.
   if (recipe.inputs.empty() || recipe.outputs.empty()) {
     return PJ::unexpected("pj.data_processors: transform requires at least one input and one output");
   }

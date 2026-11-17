@@ -16,7 +16,7 @@
 #                          drops non-MUST .so from the plugins dir, and repacks
 #                          so the released AppImage carries exactly the curated
 #                          set (matching --host-build).
-#                          With --host-build: ./build.sh + pj_ported_plugins/
+#                          With --host-build: ./build.sh + the plugin repo's
 #                          build.sh on the host, curated-plugin filter, then
 #                          packaging/appimage/build_appimage.sh --plugins-dir.
 #
@@ -219,7 +219,7 @@ else
     { echo "ERROR: app binary missing (build/pj_app/plotjuggler4) — drop --skip-app" >&2; exit 1; }
 
   # toolbox_mosaico, toolbox_transform_editor and parser_arrow are all part of
-  # the aggregate's `else()` add_subdirectory list (pj_ported_plugins/CMakeLists.txt
+  # the aggregate's `else()` add_subdirectory list (the plugin repo's CMakeLists.txt
   # in standalone mode) — a plain `./build.sh` already produces every .so below,
   # no per-plugin standalone build needed.
   if [[ "${SKIP_PLUGINS}" == 0 ]]; then

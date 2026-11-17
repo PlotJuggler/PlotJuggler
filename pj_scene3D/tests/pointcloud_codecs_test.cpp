@@ -1,9 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Round-trip + dispatch + adversarial tests for the CompressedPointCloud decoders.
-// Each test encodes a known cloud with the REAL Cloudini / Draco encoder, wraps it
-// in a canonical CompressedPointCloud, and checks the decoder reconstructs it.
+// Round-trip, dispatch and adversarial tests for the CompressedPointCloud decoders: each test encodes a known cloud
+// with the REAL Cloudini / Draco encoder, wraps it in a canonical CompressedPointCloud and checks the decoder
+// reconstructs it.
 
 #include "pj_scene3d_core/pointcloud_codecs.h"
 
@@ -27,7 +27,6 @@ using PJ::Span;
 using PJ::sdk::CompressedPointCloud;
 using PJ::sdk::PointField;
 
-// A 4-float point: x, y, z, intensity (point_step = 16).
 struct Pt {
   float x, y, z, intensity;
 };
@@ -43,9 +42,8 @@ std::vector<Pt> makePoints(int n) {
   return pts;
 }
 
-// Cloudini-encode with the lossless (NONE first-stage + ZSTD) path so the round-trip
-// is exact — this test validates our reconstruction, not Cloudini's compression quality.
-// width == 0 means "unorganized": pts.size() x 1.
+// Cloudini-encode with the lossless (NONE first-stage + ZSTD) path so the round-trip is exact: this validates our
+// reconstruction, not Cloudini's compression quality. width == 0 means "unorganized": pts.size() x 1.
 std::vector<uint8_t> encodeCloudini(const std::vector<Pt>& pts, uint32_t width = 0, uint32_t height = 1) {
   Cloudini::EncodingInfo info;
   info.width = width != 0 ? width : static_cast<uint32_t>(pts.size());
@@ -161,7 +159,6 @@ TEST(PointcloudCodecs, DecodeDracoRoundTrip) {
   EXPECT_EQ(pc.width, 16u);
   EXPECT_EQ(pc.frame_id, "camera_depth");
   EXPECT_EQ(pc.timestamp_ns, 42);
-  // POSITION -> x,y,z plus the generic intensity attribute.
   EXPECT_GE(pc.fields.size(), 3u);
 
   const PointField* fx = findField(pc, "x");
@@ -294,7 +291,6 @@ TEST(PointcloudCodecs, CloudiniOrganizedCloudHeightGreaterThanOne) {
   EXPECT_EQ(pc.width, kW);
   EXPECT_EQ(pc.height, kH);
   ASSERT_GE(pc.data.size(), static_cast<size_t>(kW) * kH * pc.point_step) << "full organized buffer";
-  // A point in row 1 (index w) must decode correctly, proving height>1 isn't truncated.
   const PointField* fx = findField(pc, "x");
   ASSERT_NE(fx, nullptr);
   EXPECT_FLOAT_EQ(readFloat(pc, static_cast<int>(kW), *fx), pts[kW].x);

@@ -570,9 +570,8 @@ TEST_F(ArtifactStoreTest, CrashAfterRenameLeavesCompleteArtifact) {
 }
 
 TEST_F(ArtifactStoreTest, AdoptedAndDownloadedIdenticalBytesShareOneDigest) {
-  // The published identity is the content manifest, so the same bytes have the
-  // same identity no matter how they arrived — adopt-then-install (or the
-  // reverse) dedupes instead of colliding as a release mutation.
+  // The published identity is the content manifest, so the same bytes have the same identity however they arrived:
+  // adopt-then-install (or the reverse) dedupes.
   const QByteArray bytes = buildZip({{"plugin/payload", "bytes"}});
   ArtifactStore store(*session_, smallQuotas());
   const auto committed = store.commitArchive(makeArtifact(bytes));

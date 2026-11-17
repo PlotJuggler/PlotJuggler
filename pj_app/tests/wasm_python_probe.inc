@@ -132,8 +132,8 @@ constexpr const char* kWasmPyBuiltinLoop =
     "def evaluate(inputs, params):\n    s = 0\n    for i in range(200000):\n        s += abs(-i)\n    return "
     "float(s)\n";
 
-/// Mean per-call micros over 2001 back-to-back runs. Not the desktop bench's median: browsers coarsen the clock
-/// (about 20 us steps), which a per-call median reads as one step.
+/// Mean per-call micros over 2001 back-to-back runs. Not the desktop bench's median: browsers coarsen the clock, which
+/// a per-call median reads as one step.
 double wasmPyMeanMicros(
     const PJ::scripting::CompiledPythonScript& script, const std::vector<PJ::scripting::NamedValue>& inputs) {
   const auto begin = std::chrono::steady_clock::now();
@@ -228,8 +228,9 @@ void wasmPyWorkerChecks() {
     }
   }
 
-  // Allocation-heavy (ARCHITECTURE §19's sum(range(n))): each element past 256 is an int allocated and freed under the
-  // cap, inside one C call. Best of three; a lax watchdog, since Firefox runs it several times slower.
+  // Allocation-heavy (the sum(range(n)) case of docs/derived_objects/ARCHITECTURE.md): each element past 256 is an int
+  // allocated and freed under the cap, inside one C call. Best of three; a lax watchdog, since Firefox runs it several
+  // times slower.
   if (auto alloc =
           compileOnDemandScriptPython("def evaluate(inputs, params):\n    return float(sum(range(1_000_000)))\n")) {
     RunOptions options;
@@ -308,8 +309,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_python_smoke() {
 
 /// Worst case for the GUI thread: a worker script holds the GIL inside one C call (`sum` over a long range, sized to
 /// outlast the spec's 500 ms settle and the validate's 100 ms bound many times over even in the fastest browser; it is
-/// a wall-clock hold, which neither the GIL switch interval nor the watchdog interrupts) while the GUI compiles. A pure-Python loop would not
-/// do: it hands the GIL over every switch interval (5 ms).
+/// a wall-clock hold, which neither the GIL switch interval nor the watchdog interrupts) while the GUI compiles. A
+/// pure-Python loop would not do: it hands the GIL over every switch interval (5 ms).
 /// `pj_wasm_test_python_hold_gil` first validates a broken script while the interpreter is free (the error comes back),
 /// then starts the holder; `pj_wasm_test_python_compile_now`, called while it runs, logs how long the GUI waited for a
 /// compile (no wait: the script compiles at its first run) and for a validate (its bound, then unchecked), then runs

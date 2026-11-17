@@ -55,8 +55,6 @@ namespace {
 using PJ::DatasetId;
 using PJ::ObjectTopicId;
 
-// --- helpers mirroring pending_curve_binder_test.cpp -----------------------
-
 DatasetId createDataset(PJ::AppSession& app_session) {
   auto dataset = app_session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "test"});
   if (!dataset.has_value()) {
@@ -89,12 +87,8 @@ QString addScalarTopic(PJ::AppSession& app_session, DatasetId dataset_id, std::s
   return key.value_or(QString());
 }
 
-// A topic whose sole scalar column has an EMPTY field_path — the shape a
-// PendingDisplayBinder placeholder-drop pend (field="") can actually resolve
-// against (see PendingDisplayBinder::addPendingCurve's doc: a placeholder row
-// carries no field breakdown, so the pend only completes for a single-field
-// topic named "" — this constructs exactly that, bypassing
-// registerScalarSeries's hardcoded "value" column name).
+// A topic whose sole scalar column has an EMPTY field_path: the shape an empty-field pend (a placeholder drop's
+// field="") resolves against by exact match. registerScalarSeries cannot build it: it names its column "value".
 QString addRawScalarTopic(PJ::AppSession& app_session, DatasetId dataset_id, const QString& topic_name) {
   PJ::DataWriter writer = app_session.sessionManager().dataEngine().createWriter();
   auto topic_id = writer.registerTopic(dataset_id, PJ::TopicDescriptor{.name = topic_name.toStdString()});
@@ -140,8 +134,7 @@ bool referencesTopic(PJ::TopicDemandTracker& tracker, DatasetId dataset_id, cons
   return std::find(active.begin(), active.end(), topic_name) != active.end();
 }
 
-// Spins the event loop for `ms` so a preview's single-shot timeout QTimer can
-// fire (the test binary does not link Qt6::Test / QTest::qWait).
+// Spins the event loop for `ms` so a preview's single-shot timeout QTimer can fire.
 void spinFor(int ms) {
   QEventLoop loop;
   QTimer::singleShot(ms, &loop, &QEventLoop::quit);
@@ -158,7 +151,7 @@ return { { id="absolute", name="Absolute", output="same",
   create = function(p) return { calculate = function(t, v) return math.abs(v) end } end } }
 )LUAU";
 
-// --- minimal SceneDockWidget stub -------------------------------------------
+// ---- minimal SceneDockWidget stub ----
 
 class StubSceneLayer : public PJ::ISceneLayer {
  public:
@@ -274,8 +267,6 @@ QString addStringTopic(PJ::AppSession& app_session, DatasetId dataset_id, std::s
   return {};
 }
 
-// --- fixture -----------------------------------------------------------------
-
 class TopicDemandControllerTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -300,8 +291,8 @@ class TopicDemandControllerTest : public ::testing::Test {
   std::vector<std::pair<PJ::DatasetId, double>> visible_starts_;
 };
 
-// GAP-40: a plot reports where its time view starts for each dataset it shows, on a curve change and on a range
-// change; a linked peer showing another dataset (a series) reports its new start when the plot it follows pans.
+// A plot reports where its time view starts for each dataset it shows, on a curve change and on a range change; a
+// linked peer showing another dataset (a series) reports its new start when the plot it follows pans.
 TEST_F(TopicDemandControllerTest, PlotViewStartReachesTheSessionAlsoThroughALinkedPan) {
   const DatasetId series_dataset = createDataset(*app_session_);
   const QString key = addScalarTopic(*app_session_, dataset_id_, "/speed");
@@ -334,9 +325,9 @@ TEST_F(TopicDemandControllerTest, PlotViewStartReachesTheSessionAlsoThroughALink
   EXPECT_EQ(last_start(series_dataset), 10.0) << "the linked peer's dataset";
 }
 
-// Codex 11b-1: every change of a plot's time view reports its start, a programmatic one (a plugin's zoom, a state
-// strip's linked pan) included, and only for the plot that moved: panning a plot of another dataset leaves the last
-// moved plot of this dataset the winner.
+// Every change of a plot's time view reports its start, a programmatic one (a plugin's zoom, a state strip's linked
+// pan) included, and only for the plot that moved: panning a plot of another dataset leaves the last moved plot of
+// this dataset the winner.
 TEST_F(TopicDemandControllerTest, EveryViewChangeReportsOnlyThePlotThatMoved) {
   const DatasetId other = createDataset(*app_session_);
   const QString a_key = addScalarTopic(*app_session_, dataset_id_, "/a");
@@ -457,10 +448,10 @@ TEST_F(TopicDemandControllerTest, PlaceholderPlotDropStagesPendingBindThatComple
   EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
   EXPECT_TRUE(plot.curveList().empty());  // no fabricated curve — still pending
 
-  // Real data arrives, superseding the placeholder. The pend was staged with
-  // field="" (handlePlaceholderPlotDrop's convention), so the real topic must
-  // resolve against an EMPTY field path to complete — addRawScalarTopic (unlike
-  // addScalarTopic's "value"-named column) matches that shape.
+  // Real data arrives, superseding the placeholder. The pend was staged with field="" (handlePlaceholderPlotDrop's
+  // convention); addRawScalarTopic builds the empty-field shape it resolves against by exact match, where
+  // addScalarTopic's "value"-named column takes the all-scalar-fields fallback (PlaceholderPlotDropBindsConventional
+  // ValueFieldTopic).
   const QString key = addRawScalarTopic(*app_session_, dataset_id_, u"/speed"_s);
   ASSERT_FALSE(key.isEmpty());
   EXPECT_EQ(binder_->flush(QSet<QString>{u"/speed"_s}), 1);
@@ -910,10 +901,8 @@ TEST_F(TopicDemandControllerTest, PlaceholderPlotDropBindsConventionalValueField
   controller_->registerPlot(&plot);
   controller_->handlePlaceholderPlotDrop(&plot, dataset_id_, u"/speed"_s);
 
-  // Real data arrives with the CONVENTIONAL "value"-named sole column
-  // (registerScalarSeries's shape — the overwhelmingly common case). The
-  // empty-field pend must fall back to binding the topic's scalar field(s),
-  // not wait forever for an exact empty-field descriptor match.
+  // Real data arrives with the conventional "value"-named sole column (registerScalarSeries's shape). The empty-field
+  // pend must fall back to binding the topic's scalar field(s), not wait forever for an exact empty-field match.
   const QString key = addScalarTopic(*app_session_, dataset_id_, "/speed");
   ASSERT_FALSE(key.isEmpty());
   EXPECT_EQ(binder_->flush(QSet<QString>{u"/speed"_s}), 1);
@@ -1039,7 +1028,7 @@ TEST_F(TopicDemandControllerTest, AllPendingSceneDropsForOneTopicComplete) {
       << "no stuck pending reference may survive both docks";
 }
 
-// --- bounded field-preview subscriptions (census + double-click peek) --------
+// ---- bounded field-preview subscriptions (census + double-click peek) ----
 
 TEST_F(TopicDemandControllerTest, CensusPreviewsScalarPlaceholderAndReleasesOnPromotion) {
   auto& catalog = app_session_->catalogModel();
@@ -1047,16 +1036,13 @@ TEST_F(TopicDemandControllerTest, CensusPreviewsScalarPlaceholderAndReleasesOnPr
   catalog.setPerTopicPauseCapable(dataset_id_, true);
 
   catalog.setAdvertisedTopics(dataset_id_, {PJ::AdvertisedTopic{u"/imu"_s, PJ::sdk::BuiltinObjectType::kNone}});
-  // The census auto-previews the scalar placeholder: a demand reference is held.
   EXPECT_TRUE(referencesTopic(tracker, dataset_id_, u"/imu"_s));
 
-  // Real data lands (a real itemsAdded batch) → the preview releases on promotion.
   const QString key = addScalarTopic(*app_session_, dataset_id_, "/imu");
   ASSERT_FALSE(key.isEmpty());
   EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/imu"_s));
 
-  // The topic is now in the previewed-this-session memory: re-advertising it adds
-  // no fresh reference.
+  // The topic is in the previewed-this-session memory: re-advertising it adds no fresh reference.
   catalog.setAdvertisedTopics(dataset_id_, {PJ::AdvertisedTopic{u"/imu"_s, PJ::sdk::BuiltinObjectType::kNone}});
   EXPECT_FALSE(referencesTopic(tracker, dataset_id_, u"/imu"_s));
 }
@@ -1066,7 +1052,6 @@ TEST_F(TopicDemandControllerTest, PreviewSampleIsDisownedWhenTopicGainsRealRefer
   auto& tracker = app_session_->topicDemandTracker();
   catalog.setPerTopicPauseCapable(dataset_id_, true);
 
-  // Census previews the placeholder; one real sample promotes it and releases.
   catalog.setAdvertisedTopics(dataset_id_, {PJ::AdvertisedTopic{u"/speed"_s, PJ::sdk::BuiltinObjectType::kNone}});
   ASSERT_TRUE(referencesTopic(tracker, dataset_id_, u"/speed"_s));
   const QString key = addScalarTopic(*app_session_, dataset_id_, "/speed");

@@ -24,55 +24,50 @@ class QToolButton;
 
 namespace PJ {
 
-// Neutral dock content shown before the user chooses a visualization family.
-// The Plot / State Transitions / 2D / 3D / Custom Widget icons are clickable: a
-// click emits visualizationRequested so the host can convert the dock into an
-// *empty* widget of that family (for Custom Widget the host first asks which
-// widget). A catalog drop still creates-and-populates the matching widget directly.
+// Neutral dock content shown before the user chooses a visualization family. The Plot, State Transitions, 2D, 3D and
+// Custom Widget icons are clickable: a click emits visualizationRequested so the host converts the dock into an empty
+// widget of that family (for Custom Widget the host first asks which widget). A catalog drop still creates and
+// populates the matching widget directly.
 class VisualizationPlaceholderWidget : public QWidget {
   Q_OBJECT
  public:
   explicit VisualizationPlaceholderWidget(QWidget* parent = nullptr);
-  // The icon row at full size, and at its narrowest: the dock's scroll area reads the minimum, so a
-  // narrow dock shrinks the icons instead of scrolling them.
+  // The icon row at full size, and at its narrowest: the dock's scroll area reads the minimum, so a narrow dock shrinks
+  // the icons instead of scrolling them.
   [[nodiscard]] QSize sizeHint() const override;
   [[nodiscard]] QSize minimumSizeHint() const override;
   // Enables Paste when the host sees compatible widget XML in the clipboard.
   void setPasteActionEnabled(bool enabled);
-  // Enables the Custom Widget icon when at least one Widget type is installed. When disabled its tooltip
-  // says so (and points at the Marketplace unless this build has none). Available by default.
+  // Enables the Custom Widget icon when at least one Widget type is installed. When disabled its tooltip says so (and
+  // points at the Marketplace unless this build has none). Enabled by default.
   void setCustomWidgetsAvailable(bool available);
   // The Custom Widget icon (null only if construction failed).
   [[nodiscard]] QToolButton* customWidgetButton() const;
 
  public slots:
-  // Re-tints the family icons through renderSvgPixmap so they pick up
-  // the active theme's ink (light => #3D3D3D, dark => #E0E0E0) the same
-  // way every other chrome icon in the app does. DockWidget routes
-  // MainWindow's stylesheetChanged signal here.
+  // Re-tints the family icons through renderSvgPixmap to the active theme's ink (light #3D3D3D, dark #E0E0E0), as every
+  // other chrome icon. DockWidget routes MainWindow's stylesheetChanged signal here.
   void onStylesheetChanged(const QString& theme);
 
  signals:
   void catalogItemsDropped(QStringList keys);
-  // Emitted instead of catalogItemsDropped when the drop is the "create XY plot"
-  // gesture (a right-drag of exactly two curves — the new_XY_axis mime). The host
-  // turns this into an XY plot rather than two time-series curves.
+  // Emitted instead of catalogItemsDropped when the drop is the "create XY plot" gesture (a right-drag of exactly two
+  // curves, the new_XY_axis mime): the host makes an XY plot, not two time-series curves.
   void catalogItemsXyRequested(QStringList keys);
   void splitHorizontalRequested();
   void splitVerticalRequested();
   // Emitted when the placeholder Paste menu action is triggered.
   void pasteRequested();
-  // Emitted just before the context menu is built so Paste state can refresh.
+  // Emitted just before the context menu is built, so Paste state can refresh.
   void contextMenuAboutToShow();
-  // Emitted when the user clicks one of the family icons. The host converts the
-  // placeholder into an empty widget of that family (no data bound yet).
+  // Emitted when the user clicks a family icon; the host converts the placeholder into an empty widget of that family
+  // (no data bound yet).
   void visualizationRequested(VisualizationKind kind);
 
  protected:
-  // Fills the widget with the Data Backdrop surface for the active theme. Self-
-  // painted (not autoFillBackground/QSS) because the app stylesheet's
-  // QStyleSheetStyle can clobber a widget palette; painting reads the framework
-  // colour cached by onStylesheetChanged directly.
+  // Fills the widget with the Data Backdrop surface for the active theme. Self-painted, not autoFillBackground or QSS:
+  // the app stylesheet's QStyleSheetStyle can clobber a widget palette, so painting reads the framework colour cached
+  // by onStylesheetChanged.
   void paintEvent(QPaintEvent* event) override;
   void contextMenuEvent(QContextMenuEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -84,7 +79,7 @@ class VisualizationPlaceholderWidget : public QWidget {
  private:
   // Renders every family icon for theme_ at its button's current icon size.
   void renderIcons();
-  // Sizes every button so the row stays on one line within width(). No-op when unchanged.
+  // Sizes every button so the row stays on one line within width(); no-op when unchanged.
   void fitButtonsToWidth();
   // The row's size for buttons of `side` px.
   [[nodiscard]] QSize rowSize(int side) const;
@@ -101,7 +96,7 @@ class VisualizationPlaceholderWidget : public QWidget {
   std::vector<IconButton> icon_buttons_;
   // Data Backdrop fill, refreshed per theme by onStylesheetChanged.
   QColor backdrop_color_;
-  // Theme of the last onStylesheetChanged, to re-render the icons when the buttons resize.
+  // The theme of the last onStylesheetChanged, to re-render the icons when the buttons resize.
   QString theme_;
 };
 

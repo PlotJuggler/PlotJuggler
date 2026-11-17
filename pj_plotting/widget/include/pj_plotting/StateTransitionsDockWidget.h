@@ -18,18 +18,14 @@ class CatalogModel;
 class PlaybackEngine;
 class SessionManager;
 
-/// The plot-area State Transitions dock: a StateTransitionsView bound by a
-/// StateTransitionsController, packaged as the `IDataWidget` the dock system
-/// hosts. Kind string / XML payload tag: `state_transitions`.
+/// The plot-area State Transitions dock: a StateTransitionsView bound by a StateTransitionsController, as the
+/// `IDataWidget` the dock system hosts. Kind string and XML payload tag: `state_transitions`.
 ///
-/// Persistence: each row serializes its stable dataset/topic/field identity (the
-/// scene-dock pattern — NOT LayoutXml's plot-curve passes) and is rebound on
-/// load via `CatalogModel::resolveCurveKey`. A `<series>` that cannot resolve
-/// (its dataset is not loaded) is KEPT and re-serialized on the next save, so a
-/// layout round-trip without the data loses nothing; it is not rendered, but it
-/// re-resolves automatically as soon as the catalog surfaces its dataset
-/// (`itemsAdded`) — the strip's analog of PendingDisplayBinder's flush, so a
-/// layout restored mid-load self-heals like plot curves do.
+/// Persistence: each row serializes its stable dataset/topic/field identity (the scene-dock pattern, not LayoutXml's
+/// plot-curve passes) and is rebound on load through `CatalogModel::resolveCurveKey`. A `<series>` that cannot resolve
+/// (its dataset is not loaded) is kept and re-serialized on the next save, so a layout round trip without the data
+/// loses nothing; it is not rendered, and re-resolves as soon as the catalog surfaces its dataset (`itemsAdded`), the
+/// strip's analog of PendingDisplayBinder's flush.
 class StateTransitionsDockWidget : public QWidget, public IDataWidget {
   Q_OBJECT
  public:
@@ -41,9 +37,8 @@ class StateTransitionsDockWidget : public QWidget, public IDataWidget {
     return this;
   }
   void onTrackerTime(double time) override;
-  /// Accepts every dropped key that is a discrete series; true if any row was
-  /// added. The DockWidget routes curve-list drops on a mounted strip (and the
-  /// auto-create seed) through this.
+  /// Accepts every dropped key that is a discrete series; true if any row was added. The DockWidget routes curve-list
+  /// drops on a mounted strip (and the auto-create seed) through this.
   bool tryAcceptSeriesKeys(const QStringList& catalog_keys) override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
@@ -56,14 +51,13 @@ class StateTransitionsDockWidget : public QWidget, public IDataWidget {
   }
 
  signals:
-  /// The widget's persisted state changed through a user gesture (series
-  /// added/removed, view chrome committed). The shell debounces this into a
-  /// workspace-undo snapshot — the same route the scene docks use.
+  /// The widget's persisted state changed through a user gesture (series added or removed, view chrome committed). The
+  /// shell debounces it into a workspace-undo snapshot, as for the scene docks.
   void workspaceChanged();
 
  private:
-  /// One saved-but-unresolved series (dataset not currently loaded): the raw
-  /// identity attributes, preserved verbatim across save/load cycles.
+  /// One saved-but-unresolved series (dataset not loaded): the raw identity attributes, preserved verbatim across
+  /// save/load.
   struct PendingSeries {
     QString dataset_source;
     QString dataset_path;
@@ -73,14 +67,13 @@ class StateTransitionsDockWidget : public QWidget, public IDataWidget {
     bool visible = true;
   };
 
-  /// Resolve one saved identity and materialize its row (restoring the eye
-  /// state). False when the catalog cannot resolve it (yet).
+  /// Resolves one saved identity and materializes its row (restoring the eye state); false when the catalog cannot
+  /// resolve it (yet).
   bool tryResolveSeries(const PendingSeries& saved);
-  /// Drains pending_series_ entries that now resolve; connected to the
-  /// catalog's itemsAdded so late-loading datasets bind their rows.
+  /// Drains pending_series_ entries that now resolve; connected to the catalog's itemsAdded so late-loading datasets
+  /// bind their rows.
   void retryPendingSeries();
-  /// Restore the saved zoom / pan / vertical offset (zoom first so the pan
-  /// maps under it).
+  /// Restores the saved zoom, pan and vertical offset (zoom first, so the pan maps under it).
   void applyViewChrome(const QDomElement& element);
 
   StateTransitionsView* view_ = nullptr;

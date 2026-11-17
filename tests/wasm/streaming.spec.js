@@ -25,12 +25,10 @@ const STREAM_REPORT_MARKERS = [
   'PJ_WASM_STREAM_CURVE sequence=',
 ];
 
-// One probe call prints four console lines tagged with the same sequence.
-// Firefox occasionally never delivers one of them (seen on the P8 build too:
-// a main-thread line lost while the streamer worker logs at the same moment);
-// the app stays responsive and the next call reports normally. A report whose
-// four lines do not all arrive is requested again, so one lost console line
-// cannot fail the test; the state checks themselves are unchanged.
+// One probe call prints four console lines tagged with the same sequence. Firefox occasionally never
+// delivers one of them (a main-thread line lost while the streamer worker logs at the same moment); the app
+// stays responsive and the next call reports normally. A report whose four lines do not all arrive is
+// requested again, so one lost console line cannot fail the test.
 async function awaitStreamingReport(page, consoleMessages) {
   let report;
   await expect(async () => {

@@ -27,10 +27,8 @@ namespace {
   return {1.0, 1.0, -2.0, -2.0};
 }
 
-// Thin Qwt-boundary adapters over the canonical conversions in Time.h, so the
-// (raw - offset)/1e9 arithmetic lives in exactly one place. Caller is responsible
-// for finite-checking display_sec — Qwt rects from real viewports are always
-// bounded; the upstream call sites guard against NaN/inf.
+// Qwt-boundary adapters over the canonical conversions in Time.h, so the (raw - offset) / 1e9 arithmetic lives in one
+// place. The caller finite-checks `display_sec` (Qwt rects from real viewports are bounded).
 [[nodiscard]] Timestamp displaySecondsToRawNs(double display_sec, DisplayOffset offset) noexcept {
   return displaySecondsToRaw(fromAxisDouble(display_sec), offset);
 }
@@ -43,8 +41,8 @@ namespace {
   return t_min == std::numeric_limits<Timestamp>::min() && t_max == std::numeric_limits<Timestamp>::max();
 }
 
-// Saturating widen helpers in unsigned space: a finite viewport wider than
-// half the Timestamp domain (~±292 years in ns) must not overflow int64.
+// Saturating widen in unsigned space: a finite viewport wider than half the Timestamp domain (~±292 years in ns)
+// must not overflow int64.
 [[nodiscard]] Timestamp saturatingSubtract(Timestamp value, std::uint64_t amount) noexcept {
   constexpr Timestamp kMin = std::numeric_limits<Timestamp>::min();
   const auto headroom = static_cast<std::uint64_t>(value) - static_cast<std::uint64_t>(kMin);
@@ -111,9 +109,8 @@ void DatastoreCurveAdapter::setRectOfInterest(const QRectF& rect) {
   Timestamp next_min = 0;
   Timestamp next_max = 0;
   if (!std::isfinite(rect.left()) || !std::isfinite(rect.right())) {
-    // Non-finite rect bounds (NaN / inf) — fall back to the all-rows window so
-    // size()/sample() stay valid. Qwt occasionally hands us sentinel rects on
-    // first paint or while axes are being reconfigured.
+    // Non-finite rect bounds (Qwt hands out sentinel rects on first paint and while axes are reconfigured): fall back
+    // to the all-rows window so size()/sample() stay valid.
     next_min = std::numeric_limits<Timestamp>::min();
     next_max = std::numeric_limits<Timestamp>::max();
   } else {
@@ -182,11 +179,9 @@ void DatastoreCurveAdapter::onDataCleared() {
 
 void DatastoreCurveAdapter::onDisplayOffsetChanged() {
   bumpContentRevision();
-  // Samples didn't move — only their display->raw mapping. Clear the offset
-  // cache and the bounding rect (its X extent shifts); leave the window flags
-  // untouched so we don't pay a re-index. The visible raw window is re-derived
-  // by Qwt on the replot that follows (updateScaleDiv -> setRectOfInterest
-  // reconverts the display-seconds rect through the new offset).
+  // Only the display->raw mapping moved: clear the offset cache and the bounding rect (its X extent shifts) and leave
+  // the window flags alone, so nothing is re-indexed. Qwt re-derives the visible raw window on the replot that follows
+  // (updateScaleDiv -> setRectOfInterest converts the display rect through the new offset).
   cached_display_offset_valid_ = false;
   full_bounding_rect_valid_ = false;
 }
@@ -211,11 +206,8 @@ void DatastoreCurveAdapter::ensureSampleWindow() const {
     return;
   }
 
-  // Content changed, but if the series generation still matches the build,
-  // the only changes were strictly in-order appends and/or a retention-floor
-  // rise — absorb them into the cached window instead of rebuilding. This is
-  // the live-streaming hot path: one commit tick costs O(new samples), not
-  // O(visible window).
+  // If the series generation still matches the build, the only changes were strictly in-order appends and a
+  // retention-floor rise: absorb them instead of rebuilding. The live-streaming hot path, O(new samples) per commit.
   if (data_dirty_ && !window_samples_.empty() && session_ != nullptr) {
     if (auto series_or = session_->createReader().series(source_.topic_id, source_.column_index);
         series_or.has_value() && series_or->seriesGeneration() == built_series_generation_ &&
@@ -228,11 +220,9 @@ void DatastoreCurveAdapter::ensureSampleWindow() const {
     }
   }
 
-  // The built vector still covers the new visible window: re-narrow without
-  // touching the engine. This is the hot path while zooming/panning. An
-  // all-rows build (sentinel range) is deliberately NOT reused for a finite
-  // viewport: it would serve correctly but pin the whole series in memory, so
-  // the first finite viewport pays one rebuild to shed it.
+  // The built vector still covers the new visible window: re-narrow without touching the engine (the zoom and pan
+  // path). An all-rows build (sentinel range) is deliberately not reused for a finite viewport: it would serve
+  // correctly but pin the whole series in memory, so the first finite viewport rebuilds to shed it.
   const bool visible_all_rows = isAllRowsWindow(visible_t_min_raw_ns_, visible_t_max_raw_ns_);
   const bool built_all_rows = isAllRowsWindow(built_t_min_raw_ns_, built_t_max_raw_ns_);
   if (!data_dirty_ && built_all_rows == visible_all_rows && built_t_min_raw_ns_ <= visible_t_min_raw_ns_ &&
@@ -259,8 +249,7 @@ void DatastoreCurveAdapter::ensureSampleWindow() const {
     return;
   }
 
-  // Widen the build window by one visible span per side (saturating), so the
-  // following zoom/pan steps land inside it and take the re-narrow path above.
+  // Widen the build window by one visible span per side (saturating), so the next zoom and pan steps re-narrow.
   if (!visible_all_rows) {
     const auto span =
         static_cast<std::uint64_t>(visible_t_max_raw_ns_) - static_cast<std::uint64_t>(visible_t_min_raw_ns_);
@@ -270,17 +259,15 @@ void DatastoreCurveAdapter::ensureSampleWindow() const {
 
   const SeriesReader& series = *series_or;
   built_series_generation_ = series.seriesGeneration();
-  // Sizing only: the virtual-index lookups assume chronological chunks and are
-  // merely approximate when out-of-order chunks overlap.
+  // Sizing only: the virtual-index lookups assume chronological chunks and are approximate when chunks overlap.
   const auto first_inside = series.indexAtOrAfterTime(built_t_min_raw_ns_);
   const auto last_inside = series.indexAtOrBeforeTime(built_t_max_raw_ns_);
   if (first_inside.has_value() && last_inside.has_value() && *last_inside >= *first_inside) {
     window_samples_.reserve(*last_inside - *first_inside + 3);
   }
 
-  // One sample STRICTLY outside each end of the built range (merge-aware over
-  // overlapping chunks), so every window narrowed from this build can serve an
-  // off-screen guard — including a window that starts exactly at the built edge.
+  // One sample strictly outside each end of the built range (merge-aware over overlapping chunks), so every window
+  // narrowed from this build can serve an off-screen guard, one starting exactly at the built edge included.
   if (const auto left_guard = series.sampleBeforeTime(built_t_min_raw_ns_); left_guard.has_value()) {
     window_samples_.push_back({.timestamp = left_guard->timestamp, .value = left_guard->value});
   }
@@ -298,7 +285,7 @@ void DatastoreCurveAdapter::ensureSampleWindow() const {
 }
 
 bool DatastoreCurveAdapter::absorbInOrderAppends(const SeriesReader& series) const {
-  // Retention-floor rise: drop the logically evicted prefix of the cache.
+  // Retention-floor rise: drop the evicted prefix.
   const Timestamp floor = series.retentionFloor();
   if (!window_samples_.empty() && window_samples_.front().timestamp < floor) {
     const auto keep_from = std::lower_bound(
@@ -312,15 +299,13 @@ bool DatastoreCurveAdapter::absorbInOrderAppends(const SeriesReader& series) con
 
   const Timestamp last_cached = window_samples_.back().timestamp;
   if (last_cached > built_t_max_raw_ns_) {
-    // The cache already ends in a right guard beyond the built range. An equal
-    // generation means every append landed after the then-newest sample, i.e.
-    // beyond that guard — nothing inside the window changed.
+    // The cache already ends in a right guard beyond the built range; an equal generation means every append landed
+    // after the then-newest sample, beyond that guard, so nothing inside the window changed.
     return true;
   }
 
-  // Strictly last_cached < built_t_max_: an equal boundary would produce the
-  // inverted range (last+1, last), which SeriesCursor normalizes by SWAPPING —
-  // re-reading and duplicating the boundary sample on every notification.
+  // Strictly last_cached < built_t_max_: an equal boundary would give the inverted range (last + 1, last), which
+  // SeriesCursor normalizes by swapping, re-reading and duplicating the boundary sample on every notification.
   if (last_cached < built_t_max_raw_ns_) {
     auto cursor = series.samples(Range<Timestamp>{.min = last_cached + 1, .max = built_t_max_raw_ns_});
     cursor.forEach([this](const SeriesSample& sample) {
@@ -328,9 +313,8 @@ bool DatastoreCurveAdapter::absorbInOrderAppends(const SeriesReader& series) con
     });
   }
 
-  // Data beyond the built range supplies the right guard the build could not.
-  // Guarded on the CURRENT back: once a guard is appended, the early-out above
-  // keeps later notifications from appending it again.
+  // Data beyond the built range supplies the right guard the build could not. Guarded on the current back: once a
+  // guard is appended, the early-out above stops later notifications from appending it again.
   if (window_samples_.back().timestamp <= built_t_max_raw_ns_) {
     if (const auto right_guard = series.sampleAfterTime(built_t_max_raw_ns_); right_guard.has_value()) {
       window_samples_.push_back({.timestamp = right_guard->timestamp, .value = right_guard->value});
@@ -351,8 +335,7 @@ void DatastoreCurveAdapter::narrowToVisibleWindow() const {
       begin, end, visible_t_min_raw_ns_, [](const CachedSample& sample, Timestamp t) { return sample.timestamp < t; });
   auto hi = std::upper_bound(
       begin, end, visible_t_max_raw_ns_, [](Timestamp t, const CachedSample& sample) { return t < sample.timestamp; });
-  // One off-screen guard sample per side keeps the line segments that enter the
-  // viewport from outside it.
+  // One off-screen guard sample per side keeps the segments that enter the viewport from outside it.
   if (lo != begin) {
     --lo;
   }
@@ -380,12 +363,9 @@ DisplayOffset DatastoreCurveAdapter::displayOffsetNow() const {
     return cached_display_offset_;
   }
 
-  // Live lookup via SessionManager::displayOffset — the single offset seam
-  // (TimeDomain shift + the per-dataset "Use time offset" shift), never a
-  // catalog-build-time snapshot. The cache below is invalidated by
-  // onTopicCommitted / onDataCleared / onDisplayOffsetChanged so it tracks
-  // offset reconfiguration through the same signals that drive sample
-  // re-indexing (or, for a pure offset change, without re-indexing).
+  // Live lookup through SessionManager::displayOffset, the single offset seam (TimeDomain shift plus the per-dataset
+  // "Use time offset" shift), never a snapshot taken when the catalog was built. The cache is invalidated by
+  // onTopicCommitted, onDataCleared and onDisplayOffsetChanged.
   DisplayOffset offset;
   if (session_ != nullptr) {
     offset = session_->displayOffset(source_.dataset_id);

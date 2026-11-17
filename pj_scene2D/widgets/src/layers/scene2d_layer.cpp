@@ -12,7 +12,7 @@
 #include <optional>
 #include <utility>
 
-#include "pj_base/time.hpp"  // PJ::fromRaw, PJ::toRaw
+#include "pj_base/time.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene2d_core/media_source.h"
 using namespace Qt::StringLiterals;
@@ -59,9 +59,8 @@ bool Scene2DLayer::attach(const SceneLayerContext& ctx) {
         if (store_ == nullptr || source_ == nullptr || store_->descriptor(topicId()).dataset_id != dataset_id) {
           return;
         }
-        // The signal is the transaction's pre-swap boundary. Arm the source now;
-        // MainWindow's post-load tracker broadcast will see the bumped render key
-        // and re-decode even when both cursor and active sample stamp are unchanged.
+        // Emitted before the swap: the bumped render key makes the post-load tracker broadcast re-decode even at an
+        // unchanged cursor and stamp.
         ++data_generation_;
         source_->invalidate();
       });
@@ -106,14 +105,8 @@ bool Scene2DLayer::refreshAt(PJ::Timepoint time) {
 }
 
 uint64_t Scene2DLayer::renderKey(PJ::Timepoint time) const {
-  // Key the displayed frame by the SequentialUID of the store's active sample
-  // at/before `time`, via latestEntryIdAt() — a pure binary search that never
-  // resolves the bytes (no decode/decompression in the per-tick gate). Consecutive
-  // 60 Hz ticks that land on the same image/video/depth frame coalesce into one
-  // repaint; a new sample changes the key (and its async decode also repaints via
-  // the frame-ready callback). The UID, not the stamp: the store permits duplicate
-  // timestamps, so a same-stamp replacement entry must still reopen the gate;
-  // unlike an index it also survives eviction renumbering.
+  // latestEntryIdAt() never resolves bytes. The UID, not the stamp: the store allows duplicate timestamps, and
+  // unlike an index the UID survives eviction renumbering.
   uint64_t sample_key = static_cast<uint64_t>(PJ::toRaw(time));
   if (store_ != nullptr) {
     if (const auto entry_id = store_->latestEntryIdAt(topicId(), PJ::toRaw(time)); entry_id.has_value()) {

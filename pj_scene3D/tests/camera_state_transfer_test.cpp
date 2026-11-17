@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// U4 gate: per-model reset defaults + state round-trips across model switches.
+// Per-model reset defaults and state round-trips across model switches.
 
 #include <gtest/gtest.h>
 
@@ -57,7 +57,6 @@ TEST(CameraReset, FlyDefaultsLookAtOrigin) {
   EXPECT_FLOAT_EQ(cam.position().x, 5.0f);
   EXPECT_FLOAT_EQ(cam.position().y, 5.0f);
   EXPECT_FLOAT_EQ(cam.position().z, 10.0f);
-  // The synthesized pivot is in front of the eye, toward the origin it looks at.
   const glm::vec3 to_focal = glm::normalize(cam.state().focal - cam.position());
   const glm::vec3 to_origin = glm::normalize(glm::vec3{0.0f} - cam.position());
   EXPECT_NEAR(glm::dot(to_focal, to_origin), 1.0f, 1e-4f);
@@ -65,9 +64,8 @@ TEST(CameraReset, FlyDefaultsLookAtOrigin) {
 
 TEST(CameraStateTransfer, OrbitToTopDownToOrbitRoundTrip) {
   CameraState s;
-  // focal.z = 0: TopDownOrtho's invariant is a ground-level pivot, so it flattens
-  // focal.z on adopt (M.9). A round-trip through it is only lossless for a
-  // ground-level focal — which is the realistic bird's-eye case anyway.
+  // focal.z = 0: TopDownOrtho flattens focal.z on adopt (its pivot is ground-level), so a round-trip through it is
+  // lossless only for a ground-level focal.
   s.focal = glm::vec3{3.0f, -2.0f, 0.0f};
   s.radius = 42.0f;
   s.azimuth = 0.7f;
@@ -94,14 +92,9 @@ TEST(CameraStateTransfer, OrbitToTopDownToOrbitRoundTrip) {
   EXPECT_NEAR(r.radius, s.radius, 1e-4f);  // radius → ortho_scale → radius
 }
 
-// ---------------------------------------------------------------------------
-// Fly round-trip + cross-model transfer (H.2 / L.146 / L.147 regression gate).
-//
-// CameraState's azimuth/elevation parameterize the FOCAL-TO-EYE direction
-// (OrbitCamera::position() = focal + radius*sphericalDir(az, el)). FlyCamera::state()
-// must therefore export the focal-to-eye direction, not its own forward (eye-to-focal)
-// look direction, or any model adopting a Fly state teleports forward and flips 180°.
-// ---------------------------------------------------------------------------
+// FlyCamera::state() must export the focal-to-eye direction, which CameraState's azimuth/elevation parameterize
+// (OrbitCamera::position() = focal + radius*sphericalDir(az, el)), not its own eye-to-focal forward: otherwise any
+// model adopting a Fly state teleports forward and flips 180°.
 
 TEST(CameraStateTransfer, FlyRoundTripPreservesPose) {
   FlyCamera fly;
@@ -142,8 +135,8 @@ TEST(CameraStateTransfer, FlyToOrbitContinuity) {
 }
 
 TEST(CameraStateTransfer, FlyPreservesFovY) {
-  // A custom fov_y set on an orbit view must survive a switch into Fly and back
-  // (Fly stores/emits fov_y; projMatrix uses it instead of the old 45° literal).
+  // A custom fov_y set on an orbit view must survive a switch into Fly and back (Fly stores and emits fov_y, and
+  // projMatrix uses it).
   OrbitCamera orbit;
   CameraState s;
   s.fov_y = glm::radians(60.0f);
@@ -153,7 +146,6 @@ TEST(CameraStateTransfer, FlyPreservesFovY) {
   fly.adoptState(orbit.state());
   EXPECT_NEAR(fly.state().fov_y, glm::radians(60.0f), 1e-4f);
 
-  // proj[1][1] == 1/tan(fov_y/2) for a glm::perspective with aspect 1.
   const glm::mat4 proj = fly.projMatrix(1.0f);
   EXPECT_NEAR(proj[1][1], 1.0f / std::tan(glm::radians(30.0f)), 1e-3f);
 }
@@ -181,9 +173,8 @@ TEST(CameraStateTransfer, XYOrbitAdoptFlattensFocal) {
 }
 
 TEST(CameraStateTransfer, TopDownAdoptFlattensFocalZ) {
-  // TopDownOrtho's invariant is a ground-level pivot; adopting a perspective
-  // state with an elevated focal must reset focal.z to 0 (else its far plane,
-  // derived around the focal, clips the whole ground scene to blank).
+  // Adopting a perspective state with an elevated focal must reset TopDownOrtho's focal.z to 0, else its far plane
+  // (derived around the focal) clips the whole ground scene to blank.
   CameraState s;
   s.focal = glm::vec3{1.0f, 2.0f, 50.0f};
   s.radius = 5.0f;

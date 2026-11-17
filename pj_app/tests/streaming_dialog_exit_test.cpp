@@ -1,11 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// An interactive stream start creates its dataset before the plugin's dialog
-// opens. Whatever ends the start without launching the session (the user
-// cancelling, a plugin contract violation, a refused configuration, a failed
-// start) must take that dataset back out of both engines and the catalog, so a
-// later start of the same source is named as the first one would be.
+// An interactive stream start creates its dataset before the plugin's dialog opens. Whatever ends the start without
+// launching the session (cancel, plugin contract violation, refused configuration, failed start) must take that
+// dataset back out of both engines and the catalog, so a later start of the same source is named as the first
+// would be.
 
 #include <gtest/gtest.h>
 
@@ -49,8 +48,7 @@ class StreamingDialogExitTest : public ::testing::Test {
   void SetUp() override {
     ASSERT_TRUE(extensions_dir_.isValid());
     ASSERT_TRUE(settings_dir_.isValid());
-    // Settings of this process only: every pj_app_gui_tests process on the machine
-    // (parallel ctest, other checkouts) clears the shared test file when it starts.
+    // Settings in a directory of this case's own.
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir_.path());
     const QString plugin = QString::fromUtf8(PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH);
@@ -103,7 +101,6 @@ class StreamingDialogExitTest : public ::testing::Test {
     ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !manager_->hasPendingStart(); }));
   }
 
-  // Both engines, the catalog and the manager hold nothing of the abandoned start.
   void expectNothingLeftBehind() {
     EXPECT_TRUE(app_session_->sessionManager().dataEngine().listDatasets().empty()) << "primary engine";
     EXPECT_TRUE(manager_->secondaryEngineForTests().listDatasets().empty()) << "secondary engine";
@@ -112,9 +109,8 @@ class StreamingDialogExitTest : public ::testing::Test {
     EXPECT_EQ(started_, 0);
   }
 
-  // Starts the source again, accepts its dialog and waits for its first sample:
-  // the dataset must carry the plain stream name, with no ordinal for an
-  // abandoned predecessor.
+  // Starts the source again, accepts its dialog and waits for its first sample: the dataset carries the plain stream
+  // name, with no ordinal for an abandoned predecessor.
   void expectRestartKeepsTheBaseName() {
     qunsetenv(kDialogConfigEnv);
     qunsetenv(kNullDialogEnv);

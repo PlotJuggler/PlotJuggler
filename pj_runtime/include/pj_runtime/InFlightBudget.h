@@ -17,8 +17,8 @@
 
 namespace PJ {
 
-/// The memory the script runs of the pool's consumers (`NodeScheduler`, `BatchEngine`) may hold at once
-/// (docs/derived_objects/ARCHITECTURE.md §11). A run holds a `Reservation` of the most it can hold from its
+/// The memory the script runs of the pool's consumers (`NodeScheduler`, `BatchEngine`) may hold at once.
+/// A run holds a `Reservation` of the most it can hold from its
 /// submission to its publication: an on-demand run its VM cap plus its native budget (`kRunBytes`; its inputs are
 /// views on the store's bytes, so they are not charged), a marker run its VM cap plus its output ceiling
 /// (`BatchEngine::kMarkerRunBytes`) and its staged series copy. Runs that do not fit wait in ONE line for every

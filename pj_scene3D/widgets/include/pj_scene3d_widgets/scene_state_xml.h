@@ -9,13 +9,9 @@
 
 namespace pj::scene3d {
 
-// Range-checked readers for persisted scene-dock XML state (Scene3DDockWidget's
-// layout grammar).
-//
-// All three readers follow the same contract: a MISSING attribute is valid
-// (returns true, output untouched — absence means "keep the default"), a
-// present-but-malformed or out-of-range value is a validation failure
-// (returns false, output untouched).
+// Range-checked readers for persisted scene-dock XML state (Scene3DDockWidget's layout grammar). All three follow one
+// contract: a MISSING attribute is valid (returns true, output untouched: absence means "keep the default"), a
+// present-but-malformed or out-of-range value is a validation failure (returns false, output untouched).
 bool readXmlBool(const QDomElement& element, const QString& key, std::optional<bool>& output);
 bool readXmlInt(const QDomElement& element, const QString& key, int minimum, int maximum, std::optional<int>& output);
 bool readXmlFloat(

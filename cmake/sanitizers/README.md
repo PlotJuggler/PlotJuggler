@@ -42,8 +42,8 @@ coverage of the embedded interpreter.
   `ensureInterpreter()` leaks its `py::scoped_interpreter` and
   `py::gil_scoped_release` guards and never finalizes Python. Finalization during
   static destruction is fragile, and the released GIL lets each caller acquire it
-  on its own thread. The entry was added after an observed, symbolized report
-  named `ensureInterpreter` as the allocating frame.
+  on its own thread. Observed: a symbolized report named `ensureInterpreter` as the
+  allocating frame.
 - Qt's `QOpenGLWidget` context-failure path. On a platform without OpenGL (the
   offscreen platform the tests use), the widget drops the `QOpenGLContext` it
   allocated during its first resize; the context and its private reference each

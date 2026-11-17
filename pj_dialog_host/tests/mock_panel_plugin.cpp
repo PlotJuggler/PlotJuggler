@@ -1,12 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
-//
-// MockPanelPlugin — minimal dialog plugin used to drive PanelEngine in tests.
-// Distinct from mock_dialog.cpp (which is consumed by dialog_engine_test).
-//
-// State is held in a single global instance because the plugin ABI provides
-// no per-test parameterization. Tests reset the global via the helper
-// `resetMockPanelState()` declared in mock_panel_plugin.hpp.
+// MockPanelPlugin: a minimal dialog plugin that drives PanelEngine in tests (mock_dialog.cpp serves
+// dialog_engine_test). State is one global instance, because the plugin ABI has no per-test parameterization; tests
+// reset it with resetMockPanelState() (mock_panel_plugin.hpp).
 
 #include "mock_panel_plugin.hpp"
 

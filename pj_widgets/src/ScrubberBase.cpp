@@ -48,10 +48,9 @@ void ScrubberBase::setPixelsPerStep(int px) {
 }
 
 int ScrubberBase::styledHeight() const {
-  // Ask the active style what a QLineEdit of this font is tall (CT_LineEdit).
-  // PJ::Style clamps every input to one height, so this is exactly what the line
-  // edits / combos / spin boxes beside the scrubber resolve to — tracking style,
-  // font and DPI with no hardcoded constant, and no throwaway widget per call.
+  // Asks the active style what a QLineEdit of this font is tall (CT_LineEdit). PJ::Style clamps every input to one
+  // height, so this is what the line edits, combos and spin boxes beside the scrubber resolve to: it tracks style, font
+  // and DPI with no hardcoded constant and no throwaway widget per call.
   QStyleOptionFrame opt;
   opt.initFrom(this);
   return style()->sizeFromContents(QStyle::CT_LineEdit, &opt, {80, fontMetrics().height()}, this).height();
@@ -128,9 +127,8 @@ void ScrubberBase::paintEvent(QPaintEvent*) {
   const QBrush fill_brush(theme::surface(theme::Surface::Input, fw_theme));
   p.fillPath(fill_path, fill_brush);
 
-  // Border stroke: inset by 0.5 px so the 1 px line lands cleanly on
-  // pixel boundaries (otherwise antialiasing smears the edge across two
-  // rows/columns and the rectangle looks uneven).
+  // Border stroke inset by 0.5 px, so the 1 px line lands on pixel boundaries (antialiasing would smear the edge across
+  // two rows or columns and the rectangle would look uneven).
   const bool focused = state_ == State::kDragging || state_ == State::kEditing || hasFocus();
   const auto outline_state =
       focused ? theme::OutlineState::Focused : (is_hovered_ ? theme::OutlineState::Hovered : theme::OutlineState::Rest);
@@ -203,10 +201,9 @@ void ScrubberBase::mouseMoveEvent(QMouseEvent* event) {
     }
   }
   if (state_ == State::kDragging) {
-    // A platform may lose the release while the pointer is outside the
-    // application (tab switch, native menu, window deactivation). The next
-    // move carries the authoritative button state; settle instead of keeping
-    // an app-wide wasm drag filter alive indefinitely.
+    // A platform may lose the release while the pointer is outside the application (tab switch, native menu, window
+    // deactivation). The next move carries the authoritative button state: settle, instead of keeping an app-wide wasm
+    // drag filter alive indefinitely.
     if (!(event->buttons() & Qt::LeftButton)) {
       endDrag();
       event->accept();
@@ -293,10 +290,9 @@ void ScrubberBase::startDrag() {
     QApplication::setOverrideCursor(Qt::BlankCursor);
   }
 #ifdef PJ_TARGET_WASM
-  // Qt-wasm can't warp the pointer, so a long drag walks the cursor off the
-  // widget and the implicit grab stops delivering move/release to us. Watch the
-  // app-wide stream instead (mirrors PJ::Dialog's wasm drag) so the release
-  // always reaches endDrag() and commits the value.
+  // Qt-wasm cannot warp the pointer, so a long drag walks the cursor off the widget and the implicit grab stops
+  // delivering move and release to us. The app-wide stream is watched instead (as PJ::Dialog's wasm drag), so the
+  // release always reaches endDrag() and commits the value.
   qApp->installEventFilter(this);
 #endif
   update();
@@ -331,9 +327,8 @@ void ScrubberBase::handleDragMove(const QPointF& global_pos) {
   }
 
 #ifndef PJ_TARGET_WASM
-  // Wrap at screen edges so the scrub can continue forever. Qt-wasm can't warp
-  // the pointer, so on that target the drag simply tracks real pointer travel
-  // (below) — the app-wide filter installed in startDrag keeps events flowing.
+  // Wrap at screen edges, so the scrub can continue forever. Qt-wasm cannot warp the pointer: there the drag tracks
+  // real pointer travel (below), and the app-wide filter installed in startDrag keeps events flowing.
   const QRect screen = screenGeometryAt(global_pos);
   if (!screen.isNull()) {
     if (global_pos.x() <= screen.left() + 1) {
@@ -374,9 +369,8 @@ QLineEdit* ScrubberBase::ensureLineEdit() {
 
 bool ScrubberBase::eventFilter(QObject* obj, QEvent* event) {
 #ifdef PJ_TARGET_WASM
-  // Wasm has no pointer-warp and the implicit grab drops move/release once the
-  // pointer leaves the widget, so drive the drag from the app-wide stream: the
-  // release here is what fires endDrag()→editingFinished and commits the value.
+  // Wasm has no pointer warp and the implicit grab drops move and release once the pointer leaves the widget, so the
+  // drag is driven from the app-wide stream: the release here fires endDrag(), editingFinished and commits the value.
   if (state_ == State::kDragging) {
     if (event->type() == QEvent::MouseMove) {
       auto* mouse_event = static_cast<QMouseEvent*>(event);
@@ -405,9 +399,8 @@ bool ScrubberBase::eventFilter(QObject* obj, QEvent* event) {
           return true;
         }
         if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
-          // QLineEdit commits via returnPressed, then ignores the key. Left to
-          // bubble, it reaches keyPressEvent and reopens the editor just closed;
-          // QApplication::notify propagates an ignored event even when filtered.
+          // QLineEdit commits through returnPressed, then ignores the key. Left to bubble, it reaches keyPressEvent and
+          // reopens the editor just closed; QApplication::notify propagates an ignored event even when filtered.
           line_edit_->event(event);
           event->accept();
           return true;
@@ -452,9 +445,8 @@ void ScrubberBase::exitEditMode(bool commit, bool refocus) {
   if (line_edit_) {
     if (commit) {
       const QString t = line_edit_->text();
-      // commitText returns false on parse error / out-of-range — the
-      // widget silently reverts to the prior value, so editingFinished
-      // fires only when the edit actually committed a valid value.
+      // commitText returns false on a parse error or out-of-range value: the widget silently reverts to the prior
+      // value, so editingFinished fires only when the edit committed a valid value.
       if (commitText(t)) {
         emit editingFinished();
       }

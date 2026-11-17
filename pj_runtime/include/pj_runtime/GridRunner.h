@@ -25,30 +25,31 @@
 
 namespace PJ {
 
-/// The per-instant loop behind explicit evaluations (REQUIREMENTS D19; docs/derived_objects/ARCHITECTURE.md §8,
-/// §15): one node, installed or transient, over a window or at an instant, under a budget, ending in one report of
-/// the shape `poll_evaluation` returns (pj_base/plugin_data_api.h; `sdk::parseEvaluationReport` reads it).
+/// The per-instant loop behind explicit evaluations (an agent's evaluation at a time of its choosing, no rendering):
+/// one node, installed or transient, over a window or at an instant, under a budget, ending in one report of the shape
+/// `poll_evaluation` returns (pj_base/plugin_data_api.h; `sdk::parseEvaluationReport` reads it).
 ///
 /// The grid is the window's start plus every instant inside the inclusive window at which a raw input of the node,
 /// or of an upstream it reads, changes: sorted and unique. A window that starts before the newest of those raw inputs'
 /// oldest retained samples reports the part before it as a leading gap (`gaps`) and starts its grid there; a window
 /// inside the gap evaluates nothing. An instant is a window whose end is its start. A pinned upstream (a finding) is
-/// read, never evaluated: it adds its real result stamp, and it is an input only from that stamp (decided
-/// 2026-10-18). At each instant every upstream is evaluated once, before its readers, then the node: an installed
+/// read, never evaluated: it adds its real result stamp, and it is an input only from that stamp. At each instant
+/// every upstream is evaluated once, before its readers, then the node: an installed
 /// upstream from its history when a result there serves it (read only), any node from the job's own last result of it
 /// when that serves, otherwise by a run. Readers read the job's upstream results, so no installed node's cursor,
-/// state, ring or cache moves, and nothing is published (GAP-33).
+/// state, ring or cache moves, and nothing is published.
 ///
 /// A job holds one in-flight reservation, its memory budget, for its whole life: it waits for it in the budget's line
 /// before anything runs, and its chain runs under it one run at a time, so it never waits for room while holding room.
 /// Where the budget holds one default run (`capacity() == kRunBytes`: a shared lane of one thread), an evaluation on
-/// the default memory budget so holds the playhead's and the marker runs back for its whole duration, suspending D30.
-/// `OnDemandRuntimeHost` lets at most one job per plugin instance in, so each instance holds them back by at most one
-/// evaluation; reserving per run would lift the rest. The job stops at the first instant with a missing input (a
-/// finding before its stamp included) or a failed run (`stopped: "error"`, the instant not counted), when an installed
-/// node it reads or evaluates gets a new revision or is removed, or its dataset a new epoch ("evaluation inputs were
-/// replaced"), and on its budgets: the time and the evaluations between instants (the first instant always runs), the
-/// report's size before each bundle joins it. It never reports `cancelled`: `cancel` drops the callback instead.
+/// the default memory budget so holds the playhead's and the marker runs back for its whole duration, suspending the
+/// result policy. `OnDemandRuntimeHost` lets at most one job per plugin instance in, so each instance holds them back
+/// by at most one evaluation; reserving per run would lift the rest. The job stops at the first instant with a missing
+/// input (a finding before its stamp included) or a failed run (`stopped: "error"`, the instant not counted), when an
+/// installed node it reads or evaluates gets a new revision or is removed, or its dataset a new epoch ("evaluation
+/// inputs were replaced"), and on its budgets: the time and the evaluations between instants (the first instant always
+/// runs), the report's size before each bundle joins it. It never reports `cancelled`: `cancel` drops the callback
+/// instead.
 ///
 /// THREADING: GUI thread, except the runs, which touch only their job's staged inputs and bytecode and the thread-safe
 /// store, and summarize their outputs there. `store` must outlive the pool's running computes; the graph, the
@@ -112,7 +113,7 @@ class GridRunner {
     std::function<std::chrono::steady_clock::time_point()> now;  ///< the time budget's clock; empty: steady_clock
   };
 
-  /// A series chunk's outcome (`submitRows`, the column sink; ARCHITECTURE §15): a row per instant at which the node
+  /// A series chunk's outcome (`submitRows`, the column sink): a row per instant at which the node
   /// gave each of its number outputs a finite number, a gap per other instant (a missing input, a failed run, an
   /// unavailable or non-finite number).
   struct Rows {
@@ -160,7 +161,7 @@ class GridRunner {
   /// A series chunk: evaluates the installed `node` at the first `limit` instants after `after` (nullopt: from the
   /// first) and at or before `until` (nullopt: no end) of its object clock, the entry stamps of the raw object inputs
   /// of the node and of every upstream it reads and the real stamps of the findings it reads, sorted and unique: a
-  /// scalar side input adds none (D10). As `submit` does (one reservation, the job's own upstream results, nothing
+  /// scalar side input adds none. As `submit` does (one reservation, the job's own upstream results, nothing
   /// published), except that an instant ends in a row or a gap and never stops the chunk, and that its time budget is
   /// `kRowsMaxMillis`, which ends a chunk early. `seen` is the previous chunk's `Rows::seen` (invalid: no check): an
   /// object input entry that arrived since then before `after` was in no clock, so the chunk starts from the first

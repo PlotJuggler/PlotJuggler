@@ -16,16 +16,8 @@ struct PixelLayer {
   float opacity = 1.0f;
 };
 
-/// Multi-layer frame produced by MediaSource at a given timestamp.
-///
-/// `base` is the pixel-buffer layer (image, video, depth colormap, segmentation).
-/// `pixel_layers` are ordered pixel buffers, bottom to top. An empty
-/// `pixel_layers` vector means consumers should use the legacy single `base`
-/// as the pixel layer, so existing producers do not need to populate it.
-/// `overlays` are vector primitives drawn on top (annotations, markers).
-///
-/// An empty MediaFrame (no base, no pixel layers, and no overlays) is a valid
-/// return — it signals "nothing new since the last takeFrame()".
+/// What a MediaSource delivers. `pixel_layers` are drawn bottom to top; when empty, `base` is the only pixel layer.
+/// `overlays` are drawn above all pixels. An empty MediaFrame is a valid result meaning "nothing to show".
 struct MediaFrame {
   std::optional<DecodedFrame> base;
   std::vector<PixelLayer> pixel_layers;

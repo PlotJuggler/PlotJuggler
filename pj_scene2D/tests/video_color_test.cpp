@@ -29,8 +29,7 @@ std::array<float, 3> applyMatrix(const std::array<float, 16>& m, float y, float 
 constexpr float kTol = 2e-3f;
 
 TEST(VideoColorMatrix, Bt709FullMatchesHistoricalConstant) {
-  // The historical hardcoded matrix (full-range BT.709). buildYuvMatrix must
-  // reproduce it so existing full-range content renders identically.
+  // Pins the full-range BT.709 matrix, which untagged content gets.
   // clang-format off
   const std::array<float, 16> kHistorical = {
       1.0f,    1.0f,      1.0f,    0.0f,

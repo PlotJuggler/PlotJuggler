@@ -1,14 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// A data-processors host that records what it was asked to install instead of
-// installing it, so the agent tool tests can assert on the exact script and
-// inputs a tool synthesized.
-//
-// Note the limit this implies. It records INTENT — nothing here runs the script,
-// so a transform recorded as correct can still yield an empty curve in the real
-// application (e.g. inputs that do not share exact timestamps). Verifying the
-// drawn result requires the GUI pass.
+// A data-processors host that records what it was asked to install instead of installing it, so the agent tool tests
+// can assert on the exact script and inputs a tool synthesized. It records intent only: nothing here runs the script,
+// so a transform recorded as correct can still yield an empty curve in the real application (e.g. inputs that do not
+// share exact timestamps); the drawn result needs the GUI pass.
 #pragma once
 
 #include <algorithm>
@@ -27,10 +23,8 @@ namespace PJ::testing {
 // Luau script + routed inputs/outputs. Returns success unless a fail flag is set.
 struct RecordingDpHost {
   int create_calls = 0;
-  // Persistent creates ever ATTEMPTED. Note what this is not: it never goes down,
-  // so it answers "did it call create" and not "what is the user left with". Once
-  // removal existed, those stopped being the same question — judge an outcome
-  // with liveCount() instead, and keep this for asserting a call happened at all.
+  // Persistent creates ever attempted. It never goes down, so it answers "did it call create", not "what is the user
+  // left with"; judge an outcome with liveCount().
   int persistent_creates = 0;
   int validate_calls = 0;
   bool fail_validate = false;
@@ -96,8 +90,7 @@ struct RecordingDpHost {
   // PJ_HAS_TAIL_SLOT fails) when supportsV2 is false.
   bool supports_v2 = true;
   bool fail_submit = false;
-  // How many times poll_evaluation answers PENDING before COMPLETED, captured
-  // per handle at submit time (see EvaluateWaitsThroughPendingPolls).
+  // How many times poll_evaluation answers PENDING before COMPLETED, captured per handle at submit time.
   int pending_polls = 0;
   std::uint32_t terminal_state = PJ_EVALUATION_STATE_COMPLETED;
   // Default report: one bundle with a "cropped" object summary and a
@@ -148,23 +141,17 @@ struct RecordingDpHost {
   std::uint64_t next_handle = 1;
   std::string last_poll_json;  // owned storage for the borrowed out_json view
 
-  // create_data_processor_v2's OWN snapshot of flags/time_flags/instant,
-  // taken separately from the shared last_* fields: create_derived_object
-  // installs via createV2 and then immediately submitEvaluation()s the
-  // installed node to read a finding back, and that second call's recordRequest
-  // would otherwise overwrite what the create call actually carried before a
-  // test gets to look at it.
+  // create_data_processor_v2's own snapshot of flags/time_flags/instant, separate from the shared last_* fields:
+  // create_derived_object installs via createV2 and then immediately submitEvaluation()s the installed node, and that
+  // second call's recordRequest would overwrite what the create call carried.
   std::string last_create_v2_params_json;
   std::uint32_t last_create_v2_flags = 0;
   std::uint32_t last_create_v2_time_flags = 0;
   std::int64_t last_create_v2_instant_ns = 0;
 
-  // One record per ACCEPTED persistent create, so a verdict can ask what a
-  // surviving id actually is (kind, script, declared inputs) instead of judging
-  // from last_* — which only remembers the final call and lumps three different
-  // leftovers under one shape. Removal deliberately keeps the record: history
-  // stays, and pairing `created` with `live_ids` answers "what is the user
-  // left with, and what is each thing".
+  // One record per accepted persistent create, so a verdict can ask what a surviving id actually is (kind, script,
+  // declared inputs) instead of judging from last_*, which only remembers the final call. Removal keeps the record:
+  // pairing `created` with `live_ids` answers "what is the user left with, and what is each thing".
   struct CreatedNode {
     std::string id;
     std::string kind;
@@ -183,12 +170,9 @@ struct RecordingDpHost {
     return nullptr;
   }
 
-  // The real host compiles a transform script in an environment where the
-  // marker-rule vocabulary does not exist, so a `series(...)` reference fails to
-  // resolve and the install is refused (verified in the application,
-  // 2026-08-14). Mirror that refusal here: without it the harness records as a
-  // success a runtime cross-read the product would reject, and the benchmark
-  // measures an outcome that cannot happen.
+  // The real host compiles a transform script in an environment without the marker-rule vocabulary, so a `series(...)`
+  // reference fails to resolve and the install is refused (observed in the application, 2026-08). Mirrored here:
+  // without it the harness records as a success a runtime cross-read the product would reject.
   static bool rejectsCrossRead(const std::string& kind, const std::string& script, PJ_error_t* err) {
     if (kind == "transform" && script.find("series(") != std::string::npos) {
       PJ::sdk::fillError(
@@ -353,9 +337,8 @@ struct RecordingDpHost {
     return true;
   }
 
-  // What the user is actually left with. This is the number a benchmark verdict
-  // wants: a model that probes, measures and cleans up leaves the panel as tidy
-  // as one that got it right first time, and should score the same.
+  // What the user is actually left with, the number a benchmark verdict wants: a model that probes, measures and
+  // cleans up leaves the panel as tidy as one that got it right first time.
   int liveCount() const {
     return static_cast<int>(live_ids.size());
   }
@@ -522,10 +505,8 @@ struct RecordingDpHost {
       v.check_data_processor_script = &RecordingDpHost::tCheck;
       return v;
     }();
-    // struct_size stops right before create_data_processor_v2, so
-    // PJ_HAS_TAIL_SLOT fails for every v2 slot even though the pointers below
-    // it are never installed either -- either alone already fails the check,
-    // both together is what a host actually built before v2 existed reports.
+    // struct_size stops right before create_data_processor_v2, so PJ_HAS_TAIL_SLOT fails for every v2 slot; the
+    // pointers below it are never installed either, which is what a host built before v2 reports.
     static const PJ_data_processors_host_vtable_t vtable_v1_only = [] {
       PJ_data_processors_host_vtable_t v{};
       v.protocol_version = 1;

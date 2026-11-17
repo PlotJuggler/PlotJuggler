@@ -1,14 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Luau backend for the ScriptEngine seam. Hand-written binding (NOT sol2 — Luau
-// has its own VM with C++-linkage symbols, see bench_luau.cpp). One lua_State per
-// FilterInstance; the engine itself holds no per-instance state.
-//
-// Luau API gotchas baked in here:
-//   - headers are C++ linkage, so NO `extern "C"` wrapper.
-//   - lua_ref(L, idx) does NOT pop (unlike PUC luaL_ref) — we pop explicitly.
-//   - lua_getref(L, ref) pushes the referenced value.
+// Luau backend of the ScriptEngine seam, bound by hand: Luau's headers have C++ linkage (no `extern "C"`), so sol2
+// does not apply. One lua_State per FilterInstance; the engine holds no per-instance state. `lua_ref` does not pop
+// (unlike PUC `luaL_ref`), so the code pops explicitly.
 
 #include <algorithm>  // std::clamp
 #include <cmath>      // std::isfinite
@@ -31,10 +26,7 @@ namespace {
 
 using namespace detail;
 
-// ---- small stack helpers -------------------------------------------------
-
-// Length of the array part of the table at `idx` (counts 1..n until the first
-// nil). Avoids depending on lua_objlen's exact spelling across Luau versions.
+// Length of the array part of the table at `idx`: counts 1..n until the first nil.
 int arrayLen(lua_State* L, int idx) {
   int n = 0;
   while (true) {
@@ -68,7 +60,7 @@ std::optional<double> numberField(lua_State* L, int table_idx, const char* key) 
   return out;
 }
 
-// Top-of-stack Lua scalar -> JSON (numbers/bools/strings; else null).
+// Top-of-stack Lua scalar -> JSON (numbers, bools, strings; else null).
 nlohmann::json luaScalarToJson(lua_State* L, int idx) {
   switch (lua_type(L, idx)) {
     case LUA_TBOOLEAN:
@@ -82,8 +74,7 @@ nlohmann::json luaScalarToJson(lua_State* L, int idx) {
   }
 }
 
-// Render a JSON scalar to a short label (the fallback when an enum option omits
-// `label`): integers without a trailing ".0", others via dump().
+// A JSON scalar as an enum option's fallback label: integers without a trailing ".0".
 std::string jsonScalarToString(const nlohmann::json& j) {
   if (j.is_string()) {
     return j.get<std::string>();
@@ -142,8 +133,7 @@ bool parseParamType(const std::string& s, ParamType& out) {
   return false;
 }
 
-// Reads the `values` array of an enum param (entries are {value=, label=} or a
-// bare string). Leaves the stack as found. `param_idx` is the param descriptor.
+// Reads the `values` array of an enum param (entries are {value=, label=} or a bare scalar); leaves the stack as found.
 void readEnumValues(lua_State* L, int param_idx, ParamSpec& spec) {
   lua_rawgetfield(L, param_idx, "values");
   if (lua_istable(L, -1)) {
@@ -158,26 +148,25 @@ void readEnumValues(lua_State* L, int param_idx, ParamSpec& spec) {
         ev.value = luaScalarToJson(L, lua_gettop(L));
         lua_pop(L, 1);
         ev.label = stringField(L, entry, "label", jsonScalarToString(ev.value));
-      } else {  // a bare scalar entry: value == label
+      } else {  // a bare scalar is both value and label
         ev.value = luaScalarToJson(L, entry);
         ev.label = jsonScalarToString(ev.value);
       }
-      lua_pop(L, 1);  // entry
+      lua_pop(L, 1);
       if (!ev.value.is_null()) {
         spec.values.push_back(std::move(ev));
       }
     }
   }
-  lua_pop(L, 1);  // values
+  lua_pop(L, 1);
 }
 
-// Parse the `parameters` array of the class table at `class_idx` into specs.
-// Returns an error string on a malformed entry, empty on success.
+// Parses the `parameters` array of the class table at `class_idx`; returns the error of a malformed entry, else empty.
 std::string readParameters(lua_State* L, int class_idx, std::vector<ParamSpec>& out) {
   lua_rawgetfield(L, class_idx, "parameters");
   if (lua_isnil(L, -1)) {
     lua_pop(L, 1);
-    return {};  // absent => no params
+    return {};  // no parameters
   }
   if (!lua_istable(L, -1)) {
     lua_pop(L, 1);
@@ -188,14 +177,14 @@ std::string readParameters(lua_State* L, int class_idx, std::vector<ParamSpec>& 
   for (int i = 1; i <= count; ++i) {
     lua_rawgeti(L, params_idx, i);
     const int p = lua_gettop(L);
-    if (!lua_istable(L, p)) {  // raw field reads below require a real table
+    if (!lua_istable(L, p)) {  // the raw field reads below need a real table
       lua_pop(L, 2);           // entry + the `parameters` table
       return "a `parameters` entry is not a table";
     }
     ParamSpec spec;
     spec.name = stringField(L, p, "name");
     if (spec.name.empty()) {
-      lua_pop(L, 2);  // param entry + the `parameters` table (leave stack as found)
+      lua_pop(L, 2);  // entry + the `parameters` table
       return "a parameter is missing its `name`";
     }
     const std::string type_str = stringField(L, p, "type", "number");
@@ -218,7 +207,6 @@ std::string readParameters(lua_State* L, int class_idx, std::vector<ParamSpec>& 
     if (spec.type == ParamType::kEnum) {
       readEnumValues(L, p, spec);
     }
-    // visible_when = { param = "...", equals = <scalar> }
     lua_rawgetfield(L, p, "visible_when");
     if (lua_istable(L, -1)) {
       const int vw = lua_gettop(L);
@@ -230,16 +218,15 @@ std::string readParameters(lua_State* L, int class_idx, std::vector<ParamSpec>& 
         lua_pop(L, 1);
       }
     }
-    lua_pop(L, 1);  // visible_when
+    lua_pop(L, 1);
     out.push_back(std::move(spec));
-    lua_pop(L, 1);  // param entry
+    lua_pop(L, 1);
   }
-  lua_pop(L, 1);  // parameters
+  lua_pop(L, 1);
   return {};
 }
 
-// Compile + load `source` and run its main chunk, leaving the returned module
-// value on top of `L`. Returns an error string (empty on success).
+// Compiles `source` and runs its main chunk, leaving the module value on top of `L`; returns the error, else empty.
 std::string loadModule(lua_State* L, BudgetState* budget, const std::string& source) {
   if (source.size() > kMaxSourceBytes) {  // luau_compile runs on the host heap, outside the VM cap
     return "filter source exceeds the size limit";
@@ -271,8 +258,7 @@ std::string loadModule(lua_State* L, BudgetState* budget, const std::string& sou
   return {};
 }
 
-// Read metadata (NOT create) from the class table on top of `L` into a
-// FilterClass. Leaves the stack as found. Returns an error string.
+// Reads the metadata (not `create`) of the class table on top of `L`; leaves the stack as found, returns the error.
 std::string readClassMetadata(lua_State* L, FilterClass& fc) {
   const int idx = lua_gettop(L);
   fc.id = stringField(L, idx, "id");
@@ -286,41 +272,34 @@ std::string readClassMetadata(lua_State* L, FilterClass& fc) {
   return readParameters(L, idx, fc.parameters);
 }
 
-// Bind an instance method (`calculate`/`reset`) by name WITHOUT triggering any
-// metamethod: first a raw field on the instance, else a raw lookup through a
-// TABLE-valued `__index` — the `setmetatable(state, Class)` class idiom. A `__index`
-// *function* is deliberately never invoked (it would run unbounded Lua outside any
-// pcall/fuel guard during binding), so an adversarial metatable cannot execute code
-// here. Leaves the resolved value (function or nil) on the stack top. Returns true
-// iff it came from the class metatable — i.e. a `:method` that must be called with
-// the instance as `self`; false for a plain closure field (called without self) or
-// when nothing was found.
+// Finds an instance method (`calculate` / `reset`) without triggering a metamethod: a raw field on the instance, else a
+// raw lookup through a table-valued `__index` (the `setmetatable(state, Class)` idiom). A `__index` function is never
+// invoked: it would run unbounded script code during binding, outside any pcall or fuel guard. Leaves the method (or
+// nil) on the stack top. Returns true iff it came from the class metatable, i.e. a `:method` called with the instance
+// as `self`; false for a plain field (called without self) or nothing found.
 [[nodiscard]] bool pushInstanceMethod(lua_State* L, int inst_idx, const char* name) {
   lua_rawgetfield(L, inst_idx, name);
   if (!lua_isnil(L, -1)) {
-    return false;  // a plain field on the instance (closure-style) — no self
+    return false;  // a plain field: called without self
   }
   lua_pop(L, 1);
   if (lua_getmetatable(L, inst_idx) == 0) {
     lua_pushnil(L);
-    return false;  // no metatable
+    return false;
   }
-  // stack: [..., metatable]
   bool via_metatable = false;
-  lua_rawgetfield(L, -1, "__index");  // [..., metatable, __index]
+  lua_rawgetfield(L, -1, "__index");
   if (lua_istable(L, -1)) {
-    lua_rawgetfield(L, -1, name);  // [..., metatable, __index, method]
+    lua_rawgetfield(L, -1, name);
     via_metatable = lua_isfunction(L, -1);
-    lua_replace(L, -2);  // [..., metatable, method]  (drop __index)
+    lua_replace(L, -2);
   } else {
-    lua_pop(L, 1);   // a non-table __index is not a class — ignore it
-    lua_pushnil(L);  // [..., metatable, nil]
+    lua_pop(L, 1);  // a non-table __index is not a class
+    lua_pushnil(L);
   }
-  lua_replace(L, -2);  // [..., method-or-nil]  (drop metatable)
+  lua_replace(L, -2);
   return via_metatable;
 }
-
-// ---- the live instance ---------------------------------------------------
 
 class LuauInstance final : public FilterInstance {
  public:
@@ -351,7 +330,7 @@ class LuauInstance final : public FilterInstance {
       return r;
     }
     const int base = lua_gettop(L_);
-    lua_getref(L_, calc_ref_);  // push the calculate function
+    lua_getref(L_, calc_ref_);
     if (!lua_isfunction(L_, -1)) {
       lua_settop(L_, base);
       fail("filter `calculate` is not a function");
@@ -360,19 +339,19 @@ class LuauInstance final : public FilterInstance {
     }
     int nargs = 2;
     if (calc_self_) {
-      lua_getref(L_, self_ref_);  // self — a class `:calculate(self, t, v)`; pushed before the args
+      lua_getref(L_, self_ref_);  // `self` goes before the arguments
       ++nargs;
     }
     lua_pushnumber(L_, t);
     lua_pushnumber(L_, v);
-    armFuel(budget_.get(), call_fuel_);  // bound this calculate() against a runaway loop
+    armFuel(budget_.get(), call_fuel_);
     if (lua_pcall(L_, nargs, LUA_MULTRET, 0) != 0) {
       fail(lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "calculate error");
       lua_settop(L_, base);
       r.suppress = true;
       return r;
     }
-    if (budget_->trip != nullptr) {  // the script may have pcall-swallowed the watchdog — fail anyway
+    if (budget_->trip != nullptr) {  // the script may have pcall-swallowed the error
       lua_settop(L_, base);
       fail("calculate exceeded its instruction budget");
       r.suppress = true;
@@ -385,9 +364,9 @@ class LuauInstance final : public FilterInstance {
       return r;
     }
     if (nres >= 2) {
-      // Two-result form MUST be (number time, number value); reject (n, nil)/(n, "x").
+      // The two-result form is (number time, number value): (n, nil) and (n, "x") are errors.
       if (lua_isnumber(L_, base + 1) && lua_isnumber(L_, base + 2)) {
-        r.out_time = lua_tonumber(L_, base + 1);  // (t_out, value)
+        r.out_time = lua_tonumber(L_, base + 1);
         r.value = lua_tonumber(L_, base + 2);
       } else {
         lua_settop(L_, base);
@@ -396,7 +375,7 @@ class LuauInstance final : public FilterInstance {
         return r;
       }
     } else if (lua_isnumber(L_, base + 1)) {
-      r.value = lua_tonumber(L_, base + 1);  // single value at the input time
+      r.value = lua_tonumber(L_, base + 1);
     } else {
       lua_settop(L_, base);
       fail("calculate must return a number, (time, value), or nil");
@@ -414,7 +393,7 @@ class LuauInstance final : public FilterInstance {
       return r;
     }
     const int base = lua_gettop(L_);
-    lua_getref(L_, calc_ref_);  // push the calculate function
+    lua_getref(L_, calc_ref_);
     if (!lua_isfunction(L_, -1)) {
       lua_settop(L_, base);
       fail("filter `calculate` is not a function");
@@ -423,7 +402,7 @@ class LuauInstance final : public FilterInstance {
     }
     int nargs = 1 + static_cast<int>(inputs.size());  // t + N inputs
     if (calc_self_) {
-      lua_getref(L_, self_ref_);  // self — `:calculate(self, t, v, v1..)`; pushed before the args
+      lua_getref(L_, self_ref_);  // `self` goes before the arguments
       ++nargs;
     }
     lua_pushnumber(L_, t);
@@ -437,20 +416,20 @@ class LuauInstance final : public FilterInstance {
       r.suppress = true;
       return r;
     }
-    if (budget_->trip != nullptr) {  // pcall may have swallowed the watchdog — fail anyway
+    if (budget_->trip != nullptr) {  // the script may have pcall-swallowed the error
       lua_settop(L_, base);
       fail("calculate exceeded its instruction budget");
       r.suppress = true;
       return r;
     }
     const int nres = lua_gettop(L_) - base;
-    if (nres <= 0 || lua_isnil(L_, base + 1)) {  // nil/no first result suppresses the row
+    if (nres <= 0 || lua_isnil(L_, base + 1)) {  // a nil or missing first result suppresses the row
       lua_settop(L_, base);
       r.suppress = true;
       return r;
     }
     r.values.reserve(static_cast<std::size_t>(nres));
-    for (int i = 0; i < nres; ++i) {  // every returned result must be a number (one per output)
+    for (int i = 0; i < nres; ++i) {
       if (!lua_isnumber(L_, base + 1 + i)) {
         lua_settop(L_, base);
         fail("calculate must return a number per output");
@@ -473,7 +452,7 @@ class LuauInstance final : public FilterInstance {
     if (lua_isfunction(L_, -1)) {
       int nargs = 0;
       if (reset_self_) {
-        lua_getref(L_, self_ref_);  // self — a class `:reset(self)`
+        lua_getref(L_, self_ref_);
         ++nargs;
       }
       armFuel(budget_.get(), call_fuel_);
@@ -505,22 +484,20 @@ class LuauInstance final : public FilterInstance {
   int calc_ref_ = LUA_NOREF;
   int reset_ref_ = LUA_NOREF;
   int self_ref_ = LUA_NOREF;  // the instance table, passed as self iff a method came from the class metatable
-  bool calc_self_ = false;    // calculate is a class `:method` → call with self
-  bool reset_self_ = false;   // reset is a class `:method` → call with self
-  std::unique_ptr<BudgetState> budget_;  // outlives L_ (destroyed after lua_close in the dtor body)
+  bool calc_self_ = false;
+  bool reset_self_ = false;
+  std::unique_ptr<BudgetState> budget_;  // outlives L_: the destructor body closes the state first
   std::uint64_t call_fuel_ = 0;
   bool failed_ = false;
   std::string error_;
 };
-
-// ---- the engine ----------------------------------------------------------
 
 class LuauEngine final : public ScriptEngine {
  public:
   explicit LuauEngine(BudgetLimits limits) : limits_(limits) {}
 
   Expected<std::vector<FilterClass>> inspectModule(const std::string& source, const std::string& origin) override {
-    BudgetState budget;  // declared before the Closer → outlives lua_close
+    BudgetState budget;  // declared before the Closer, so it outlives lua_close
     lua_State* L = newSandboxedState(&budget, limits_);
     if (L == nullptr) {
       return PJ::unexpected("failed to create Luau state");
@@ -535,7 +512,7 @@ class LuauEngine final : public ScriptEngine {
     if (std::string err = loadModule(L, &budget, source); !err.empty()) {
       return PJ::unexpected(err);
     }
-    // Module value on top: either a single class table (has `create`) or a list.
+    // A single class table (has `create`) or a list of them.
     const int module_idx = lua_gettop(L);
     if (!lua_istable(L, module_idx)) {
       return PJ::unexpected("a filter module must return a table");
@@ -546,7 +523,7 @@ class LuauEngine final : public ScriptEngine {
       FilterClass fc;
       fc.source = source;
       fc.origin = origin;
-      lua_pushvalue(L, class_idx);  // metadata reader works on top-of-stack
+      lua_pushvalue(L, class_idx);
       std::string err = readClassMetadata(L, fc);
       lua_pop(L, 1);
       if (!err.empty()) {
@@ -612,7 +589,6 @@ class LuauEngine final : public ScriptEngine {
       return PJ::unexpected("a filter module must return a table");
     }
 
-    // Locate the class table whose `id` == klass.id (single or within a list).
     int class_idx = 0;
     lua_rawgetfield(L, module_idx, "create");
     const bool is_single = lua_isfunction(L, -1);
@@ -624,9 +600,9 @@ class LuauEngine final : public ScriptEngine {
     } else {
       const int count = arrayLen(L, module_idx);
       for (int i = 1; i <= count && class_idx == 0; ++i) {
-        lua_rawgeti(L, module_idx, i);  // leave candidate on stack
+        lua_rawgeti(L, module_idx, i);
         if (lua_istable(L, -1) && stringField(L, lua_gettop(L), "id") == klass.id) {
-          class_idx = lua_gettop(L);  // keep this one on the stack
+          class_idx = lua_gettop(L);
         } else {
           lua_pop(L, 1);
         }
@@ -636,16 +612,14 @@ class LuauEngine final : public ScriptEngine {
       return PJ::unexpected("class id '" + klass.id + "' not found in module");
     }
 
-    // Build the params table and call create(params).
     lua_rawgetfield(L, class_idx, "create");
     if (!lua_isfunction(L, -1)) {
       return PJ::unexpected("filter class '" + klass.id + "' has no create() function");
     }
     lua_newtable(L);
     const int params_idx = lua_gettop(L);
-    // Seed every declared parameter with its default first, then override with
-    // the caller's values — so create() always sees a COMPLETE params table even
-    // when params_json only carries the non-default fields (or is "{}").
+    // Every declared default first, then the caller's values: create() sees a complete params table even when
+    // params_json carries only some fields or is "{}".
     for (const ParamSpec& spec : klass.parameters) {
       pushJsonScalar(L, spec.default_value);
       lua_setfield(L, params_idx, spec.name.c_str());
@@ -657,7 +631,7 @@ class LuauEngine final : public ScriptEngine {
         lua_setfield(L, params_idx, it.key().c_str());
       }
     }
-    armFuel(budget.get(), limits_.setup_fuel);  // module-eval already spent some fuel; re-arm for create()
+    armFuel(budget.get(), limits_.setup_fuel);  // module evaluation spent fuel; re-arm for create()
     if (lua_pcall(L, 1, 1, 0) != 0) {
       std::string err = lua_isstring(L, -1) ? lua_tostring(L, -1) : "create() failed";
       return PJ::unexpected(err);
@@ -670,24 +644,19 @@ class LuauEngine final : public ScriptEngine {
     }
     const int inst_idx = lua_gettop(L);
 
-    // Resolve calculate/reset through the instance: a plain field (closure) or a
-    // class method reached via the metatable's __index. `*_self` records which, so
-    // a class `:method` is later called with the instance bound as self.
     const bool calc_self = pushInstanceMethod(L, inst_idx, "calculate");
     if (!lua_isfunction(L, -1)) {
       return PJ::unexpected("filter '" + klass.id + "' instance has no calculate()");
     }
-    const int calc_ref = lua_ref(L, -1);  // Luau lua_ref does NOT pop
+    const int calc_ref = lua_ref(L, -1);
     lua_pop(L, 1);
 
     const bool reset_self = pushInstanceMethod(L, inst_idx, "reset");
     const int reset_ref = lua_isfunction(L, -1) ? lua_ref(L, -1) : LUA_NOREF;
     lua_pop(L, 1);
 
-    // A class method holds the per-instance state in `self` (the instance table),
-    // not in closure upvalues, so the engine must keep that table alive for its
-    // lifetime — otherwise the GC frees the state mid-stream. A plain-field closure
-    // needs neither self nor this ref.
+    // A class method keeps its state in `self`, the instance table: hold a ref to it or the GC frees the state
+    // mid-stream. A plain-field closure needs no self.
     int self_ref = LUA_NOREF;
     if (calc_self || reset_self) {
       lua_pushvalue(L, inst_idx);
@@ -695,8 +664,8 @@ class LuauEngine final : public ScriptEngine {
       lua_pop(L, 1);
     }
 
-    // Construct the owning instance FIRST; only then disarm the Closer. If the
-    // allocation throws, `keep` is still false and the Closer closes L (no leak).
+    // Construct the owning instance first and disarm the Closer after: if the allocation throws the Closer still
+    // closes L.
     auto instance = std::unique_ptr<FilterInstance>(new LuauInstance(
         L, calc_ref, reset_ref, self_ref, calc_self, reset_self, std::move(budget), limits_.call_fuel));
     keep = true;

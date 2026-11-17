@@ -14,21 +14,17 @@
 #include <utility>
 #include <vector>
 
-#include "pj_base/builtin/depth_image.hpp"  // sdk::DepthImage — the colormap decoder's input view
+#include "pj_base/builtin/depth_image.hpp"
 #include "pj_base/builtin/image.hpp"
-#include "pj_scene2d_core/codecs.h"  // PngCodec (compressedDepth -> Mono16)
+#include "pj_scene2d_core/codecs.h"
 #include "pj_scene2d_core/decoded_frame.h"
-#include "pj_scene2d_core/depth_range.h"    // depthPercentileRange (Auto-fit)
-#include "pj_scene2d_core/image_resolve.h"  // resolveImage (parser or canonical blob)
+#include "pj_scene2d_core/depth_range.h"
+#include "pj_scene2d_core/image_resolve.h"
 
 namespace PJ {
 
 namespace {
 
-// isValidDepth (finite && > 0) is shared from pj_scene2d_core/depth_range.h.
-
-// Per-sample depth readers. Selected once per frame (see resolveDepthFormat),
-// never per pixel.
 [[nodiscard]] std::optional<float> read16UC1(const uint8_t* src) noexcept {
   const auto mm = static_cast<uint16_t>(src[0]) | (static_cast<uint16_t>(src[1]) << 8);
   if (mm == 0) {
@@ -46,8 +42,6 @@ namespace {
   return meters;
 }
 
-// Resolved depth encoding: stride and sample reader paired so they cannot drift
-// apart. Resolved once from the encoding string before the decode loop.
 struct DepthFormat {
   size_t bytes_per_pixel = 0;
   std::optional<float> (*read)(const uint8_t*) noexcept = nullptr;
@@ -63,11 +57,8 @@ struct DepthFormat {
   return std::nullopt;
 }
 
-// Adapt a depth-encoded sdk::Image into the sdk::DepthImage the colormap decoder
-// reads. Raw 16UC1/32FC1 alias the image bytes (zero-copy — read synchronously by
-// the caller). compressedDepth is PNG-decoded by reusing the scene2D PngCodec
-// (plus the same bare-PNG repair the image path applies) into `scratch` as 16UC1
-// millimetres. Returns nullopt for a non-depth encoding or an undecodable payload.
+// Raw 16UC1/32FC1 alias the image bytes (the caller reads them synchronously); compressedDepth is inflated into
+// `scratch` as 16UC1 millimetres. nullopt for a non-depth encoding or an undecodable payload.
 [[nodiscard]] std::optional<sdk::DepthImage> toDepthImage(
     const sdk::Image& img, std::shared_ptr<std::vector<uint8_t>>& scratch) {
   sdk::DepthImage depth;
@@ -76,11 +67,7 @@ struct DepthFormat {
     depth.width = img.width;
     depth.height = img.height;
     depth.encoding = img.encoding;
-    // Some transports (Mosaico, serialization_format=image) losslessly PNG/JPEG-wrap
-    // the raw depth buffer — e.g. an 8-bit grayscale PNG of width=stride. Recover the
-    // flat bytes before aliasing; otherwise the compressed container is read as raw
-    // depth and the frame is all-black. A non-container payload returns nullopt and we
-    // alias the original bytes (the prior raw behaviour).
+    // A container-wrapped raw buffer (recoverContainerRawSamples) read as raw would show black.
     if (auto flat = recoverContainerRawSamples(img.data.data(), img.data.size())) {
       scratch = std::move(*flat);
       depth.data = Span<const uint8_t>(scratch->data(), scratch->size());
@@ -91,9 +78,8 @@ struct DepthFormat {
   }
   if (img.encoding == "compressedDepth") {
     auto png = std::make_shared<std::vector<uint8_t>>();
-    // Some streams advertise compressedDepth but carry a bare PNG that begins at
-    // the IHDR chunk type; restore the 8-byte signature + IHDR length so libpng
-    // accepts it (mirrors imageDataBytes in the image path).
+    // Some streams advertising compressedDepth carry a PNG starting at the IHDR chunk type; restore the signature and
+    // IHDR length so libpng accepts it.
     static constexpr uint8_t kPngPrefix[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D};
     if (img.data.size() >= 4 && img.data.data()[0] == 'I' && img.data.data()[1] == 'H' && img.data.data()[2] == 'D' &&
         img.data.data()[3] == 'R') {
@@ -107,10 +93,10 @@ struct DepthFormat {
     if (!mono16.has_value() || mono16->isNull() || mono16->format != PixelFormat::kMono16) {
       return std::nullopt;
     }
-    scratch = mono16->pixels;  // keep the 16-bit depth alive through decodeDepthImage
+    scratch = mono16->pixels;
     depth.width = static_cast<uint32_t>(mono16->width);
     depth.height = static_cast<uint32_t>(mono16->height);
-    depth.encoding = "16UC1";  // libpng gave us 16-bit grayscale = depth in millimetres
+    depth.encoding = "16UC1";  // millimetres
     depth.data = Span<const uint8_t>(scratch->data(), scratch->size());
     return depth;
   }
@@ -136,17 +122,13 @@ DepthPipelineSource::DepthPipelineSource(
 }
 
 DepthPipelineSource::~DepthPipelineSource() {
-  // Stop + join the worker before any member its decode closure reads (store_,
-  // parser_, the params) is destroyed. AsyncFrameWorker::stop handles the
-  // lost-wakeup hazard.
+  // Before any member the decode closure reads is destroyed.
   worker_.stop();
 }
 
 void DepthPipelineSource::startWorker() {
   worker_.start(
       [this](const AsyncFrameWorker::Request& req, AsyncFrameWorker& worker) {
-        // invalidate() asked for a fresh decode even at an unchanged entry: clear
-        // the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
           last_entry_uid_ = {};
         }
@@ -158,8 +140,7 @@ void DepthPipelineSource::startWorker() {
           }
           worker.deposit(std::move(*result));  // a clear
         } else if (result.has_value()) {
-          // Snapshot the raw float depth for the main-thread Auto-fit before the
-          // frame is moved into the mailbox (shared_ptr aliasing — no copy).
+          // For autoRange(); shares the pixels.
           {
             std::lock_guard<std::mutex> lock(last_frame_mutex_);
             last_depth_pixels_ = result->pixels;
@@ -177,15 +158,10 @@ void DepthPipelineSource::startWorker() {
 }
 
 void DepthPipelineSource::setTimestamp(int64_t ts_ns) {
-  // Post and return immediately — the PNG inflate runs on the worker thread.
   worker_.requestDecode(ts_ns);
 }
 
 void DepthPipelineSource::invalidate() {
-  // Force a re-decode even at an unchanged timestamp (e.g. a colormap/range
-  // change); the worker re-delivers via the frame-ready callback so the view
-  // repaints. Without the force, decodeAt() resolves the same entry and
-  // early-returns, and the config change wouldn't show until the next sample.
   worker_.invalidate();
 }
 
@@ -211,12 +187,8 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
   if (store_ == nullptr) {
     return std::nullopt;
   }
-  // Dedup metadata-first (latestEntryIdAt is a pure binary search): an unchanged
-  // entry must not resolve payload bytes, which can be a cold refetch (file read
-  // + chunk decompress) once the ResidentPayloadPool has evicted its seed. Keyed
-  // on the entry UID, not its timestamp — the store permits duplicate stamps, so
-  // a same-stamp replacement entry must still decode. Shared by the gate and the
-  // post-resolve re-check (a racing insert can change the pick in between).
+  // Dedup by entry UID before resolving bytes: resolving can be a cold refetch (file read + decompress) once the
+  // ResidentPayloadPool evicted the payload. Checked again after the resolve, since an insert can change the pick.
   const auto already_delivered = [this](SequentialUID uid) { return uid == last_entry_uid_; };
   const auto entry_id = store_->latestEntryIdAt(topic_, ts_ns);
   if (!entry_id.has_value()) {
@@ -230,7 +202,7 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
     return std::nullopt;
   }
   if (already_delivered(entry_id->uid)) {
-    return std::nullopt;  // same entry already delivered (force_redecode resets the dedup)
+    return std::nullopt;  // already delivered
   }
   auto entry = store_->latestAt(topic_, ts_ns);
   if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
@@ -242,9 +214,6 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
   last_entry_uid_ = entry->sequential_uid;
   last_entry_stamp_ = entry->timestamp;
 
-  // Depth arrives as a canonical sdk::Image with a depth encoding (there is no
-  // kDepthImage producer); resolve it (via the parser or a pj_image_v1 blob), then
-  // convert to raw metric depth (the colormap is applied later on the GPU).
   auto resolved =
       resolveImage(parser_, parser_mutex_, canonical_, entry->timestamp, entry->payload, entry->payload_stamp_shift);
   if (!resolved.has_value()) {
@@ -259,7 +228,6 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeAt(int64_t ts_ns) {
     clear.pts = resolved->pts;
     return clear;
   }
-  // Holds decoded compressedDepth bytes alive while decodeDepthImage reads them.
   std::shared_ptr<std::vector<uint8_t>> scratch;
   auto depth = toDepthImage(resolved->image, scratch);
   if (!depth.has_value()) {
@@ -345,9 +313,7 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeDepthImage(const sdk::Dep
     return std::nullopt;
   }
 
-  // Emit RAW metric depth as float32 — the media shader normalizes by near/far
-  // and applies the colormap LUT on the GPU (no per-pixel CPU colormap). Invalid
-  // samples become 0, which the shader treats as no-data (transparent).
+  // Invalid samples become 0, which the shader draws transparent.
   auto pixels = std::make_shared<std::vector<uint8_t>>(pixel_count * sizeof(float), 0);
   auto* out = reinterpret_cast<float*>(pixels->data());
   for (size_t i = 0; i < pixel_count; ++i) {
@@ -360,8 +326,6 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeDepthImage(const sdk::Dep
   frame.height = static_cast<int>(depth.height);
   frame.format = PixelFormat::kDepthR32F;
   frame.pts = depth.timestamp_ns != 0 ? depth.timestamp_ns : pts;
-  // Snapshot the GPU colormap params (written by the main-thread setters) under
-  // the lock — this runs on the worker thread.
   {
     std::lock_guard<std::mutex> lock(params_mutex_);
     frame.depth = DepthColorParams{

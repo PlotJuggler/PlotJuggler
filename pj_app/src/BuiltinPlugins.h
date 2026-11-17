@@ -7,8 +7,7 @@
 
 namespace pj_app {
 
-// Describes the plugin entry points linked into this application binary.
-// Registration itself remains owned by pj_runtime during AppSession startup.
+// The plugin entry points linked into this binary; pj_runtime registers them at AppSession startup.
 PJ::StaticPluginSet builtInPlugins();
 
 }  // namespace pj_app

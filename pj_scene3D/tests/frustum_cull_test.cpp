@@ -1,13 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// aabbOutsideFrustum() decides whether a whole point cloud's draw can be skipped, so
-// a false positive silently HIDES data. These cover both directions: everything the
-// camera can see must survive, and the obvious off-screen placements must be culled.
+// aabbOutsideFrustum() decides whether a whole cloud's draw is skipped, so a false positive silently HIDES data:
+// everything the camera can see must survive, and the obvious off-screen placements must be culled.
 //
-// aabbClipWRange() answers the neighbouring question the cube LOD asks — how near and
-// how far can this cloud's points be — so its lower bound must never come out too high,
-// or a cloud with near cubes in it would be drawn as sprites.
+// aabbClipWRange() feeds the cube LOD: its lower bound must never come out too high, or a cloud with near cubes would
+// be drawn as sprites.
 
 #include <gtest/gtest.h>
 
@@ -32,7 +30,6 @@ AABB boxAt(const glm::vec3& center, float half_extent = 0.5f) {
   return box;
 }
 
-// Camera at +Z looking down -Z at the origin, 60 deg vertical FOV, 4:3.
 glm::mat4 perspectiveClipFromWorld(const glm::vec3& eye = glm::vec3(0.0f, 0.0f, 10.0f)) {
   const glm::mat4 proj = glm::perspective(glm::radians(60.0f), 4.0f / 3.0f, 0.1f, 100.0f);
   const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -40,7 +37,6 @@ glm::mat4 perspectiveClipFromWorld(const glm::vec3& eye = glm::vec3(0.0f, 0.0f, 
 }
 
 TEST(FrustumCullTest, InvalidBoxIsNeverCulled) {
-  // An unknown extent must mean "draw it" — the caller has no bounds yet.
   EXPECT_FALSE(aabbOutsideFrustum(AABB{}, perspectiveClipFromWorld()));
 }
 
@@ -91,18 +87,16 @@ TEST(FrustumCullTest, ModelTransformIsHonoured) {
   EXPECT_TRUE(aabbOutsideFrustum(source_box, clip_from_world * model));
 }
 
-// Under perspective, clip w IS the view-axis depth, so the range must bracket the box's
-// near and far faces. The camera sits at z = +10 looking down -Z at a unit box on the
-// origin, so depths run 9.5 to 10.5.
+// Under perspective, clip w is the view-axis depth, so the range brackets the box's near and far faces: camera at
+// z = +10 looking down -Z at a unit box on the origin, depths 9.5 to 10.5.
 TEST(ClipWRangeTest, PerspectiveRangeIsTheDepthSpan) {
   const auto [near_w, far_w] = aabbClipWRange(boxAt(glm::vec3(0.0f)), perspectiveClipFromWorld());
   EXPECT_NEAR(near_w, 9.5f, 1e-4f);
   EXPECT_NEAR(far_w, 10.5f, 1e-4f);
 }
 
-// A parallel projection has no perspective divide: w is 1 everywhere, and the collapsed
-// range is the correct answer — every point is at the same scale, so the LOD decision
-// the range feeds is global.
+// A parallel projection has no perspective divide: w is 1 everywhere and the collapsed range is the correct answer
+// (the LOD decision it feeds is global).
 TEST(ClipWRangeTest, OrthographicRangeCollapsesToOne) {
   const glm::mat4 proj = glm::ortho(-5.0f, 5.0f, -5.0f, 5.0f, 0.1f, 100.0f);
   const glm::mat4 view = glm::lookAt(glm::vec3(0.0f, 0.0f, 10.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -111,9 +105,8 @@ TEST(ClipWRangeTest, OrthographicRangeCollapsesToOne) {
   EXPECT_NEAR(far_w, 1.0f, 1e-5f);
 }
 
-// The lower bound is what gates the LOD, and it must be a true minimum over the box —
-// computing it from the centre, or from the wrong corner, would let a cloud with near
-// cubes be drawn as sprites. Checked against a brute-force sweep of all eight corners.
+// The lower bound gates the LOD, so it must be a true minimum over the box (the centre, or the wrong corner, would let
+// near cubes draw as sprites): checked against a brute-force sweep of all eight corners.
 TEST(ClipWRangeTest, BracketsEveryCornerUnderAnObliqueView) {
   const glm::mat4 proj = glm::perspective(glm::radians(55.0f), 16.0f / 9.0f, 0.1f, 500.0f);
   const glm::mat4 view = glm::lookAt(glm::vec3(12.0f, -18.0f, 7.0f), glm::vec3(1.0f, 2.0f, 0.0f), glm::vec3(0, 0, 1));

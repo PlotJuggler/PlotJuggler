@@ -4,32 +4,26 @@
 
 namespace PJ {
 
-// Global icon / layout dimensions broadcast from MainWindow to every
-// chrome-aware widget. Pixel units. Defaults match the first-launch
-// baseline used by MainWindow before QSettings is read.
+// Global icon and layout dimensions broadcast from MainWindow to every chrome-aware widget, in pixels. Defaults match
+// the first-launch baseline MainWindow uses before QSettings is read.
 struct ChromeMetrics {
   int icon_size = 24;
   int icon_padding = 4;
   int layout_padding = 2;
   int layout_spacing = 2;
 
-  // The one canonical titlebar-tone band height. EVERY header band in the app
-  // is this tall — the left-panel "Sources" header, "Datasets"/"Custom Series",
-  // the timeline "Datasets" header, the Curve Width/Style headers, the toolbox
-  // panel banner, and every plugin SectionHeaderBand — so they all read as one
-  // strip. It is the button extent (icon_size + icon_padding) grown by the
-  // layout padding on each side, matching the contentsMargins the panel headers
-  // apply. This is the single source for that formula — never re-derive it at a
-  // call site (that divergence is exactly how bands drifted out of alignment).
+  // The one titlebar-tone band height: every header band in the app (the left-panel and timeline headers, the curve
+  // Width and Style headers, the toolbox panel banner, every plugin SectionHeaderBand) is this tall, so they read as
+  // one strip. The button extent (icon_size + icon_padding) grown by the layout padding on each side, as the panel
+  // headers' contentsMargins apply it. The only place for that formula: re-deriving it at a call site is how bands
+  // drifted out of alignment.
   [[nodiscard]] int bandHeight() const {
     return icon_size + icon_padding + (2 * layout_padding);
   }
 
-  // The app's window-chrome (title-bar) height. The main-window TitleBar and
-  // every framed Dialog chrome are exactly this tall, so a plugin/app dialog's
-  // title bar matches the main window. It is bandHeight() grown by 1px for the
-  // QSS bottom border that draws inside the bar's geometry. This is the single
-  // source for that formula — never hardcode a title-bar height at a call site.
+  // The window-chrome (title-bar) height: the main-window TitleBar and every framed Dialog chrome are exactly this
+  // tall. bandHeight() plus 1px for the QSS bottom border, which draws inside the bar's geometry. The only place for
+  // that formula: never hardcode a title-bar height.
   [[nodiscard]] int titleBarHeight() const {
     return bandHeight() + 1;
   }

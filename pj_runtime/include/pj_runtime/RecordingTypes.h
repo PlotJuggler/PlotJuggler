@@ -14,7 +14,7 @@ namespace PJ {
 /// identity — a recording holds exactly one source, so that identity is a
 /// file-level fact, not a per-channel one. Parser POLICY — timestamp field,
 /// array limits — is deliberately absent: it is interpretation and lives in the
-/// layout (D9).
+/// layout.
 struct RecordedBinding {
   std::string topic;
   std::string encoding;  ///< parser encoding, e.g. "cdr", "protobuf", "json"

@@ -2239,7 +2239,7 @@ QPushButton[mpFooterButton="true"] {
     border-radius: ${radius_input}px;
 }
 
-/* Semantic → framework family mapping (ui_framework.md §Interactions):
+/* Semantic → framework family mapping (ui_framework.md "Interactions"):
    Install = Accent (action), Update/NeedsRestart = Emphasis (soft attention),
    Installed = Accent (positive confirmation), LocalNewer/Installing = Neutral
    (quiet). Badges are :disabled to be non-clickable, but keep the nominal fill
@@ -2326,7 +2326,7 @@ QPushButton#pjMessageBoxButton {
     font-weight: 600;
 }
 
-/* Special variant (ui_framework.md § Interactions): a per-state gradient from
+/* Special variant (ui_framework.md "Interactions"): a per-state gradient from
    the Accent endpoint to the Highlight endpoint. */
 QPushButton[msgbox_role="primary"] {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

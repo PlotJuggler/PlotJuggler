@@ -54,7 +54,7 @@ class McpBrowserLink : public QObject {
   void poll();
   /// Hangs up every call the current relay session relayed, and starts the next session.
   void endSession();
-  /// Answers message `seq` with `response` (empty: a notification, no answer).
+  /// Posts the answer to message `seq`; an empty `response` (a notification) is sent as null.
   void reply(qint64 seq, const QByteArray& response);
   /// Runs `next` after the current backoff, then doubles it (up to 10 s).
   void retryLater(void (McpBrowserLink::*next)());
@@ -67,7 +67,7 @@ class McpBrowserLink : public QObject {
   /// The relay's secret (its URL's `key`), sent on every request.
   QByteArray key_;
   QString title_;
-  // ponytail: in the browser a QNetworkReply never frees its fetch buffer (docs/TECHNICAL_NOTES.md);
+  // ponytail: in the browser a QNetworkReply never frees its fetch buffer (pj_runtime/docs/TECHNICAL_NOTES.md);
   // relay messages are tool calls of a few hundred bytes, so a session leaks kilobytes. Move to
   // BrowserFetch-style page fetches if a session ever relays megabytes.
   QNetworkAccessManager network_;

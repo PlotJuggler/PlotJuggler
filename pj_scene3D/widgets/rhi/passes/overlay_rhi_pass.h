@@ -17,14 +17,12 @@
 
 namespace pj::scene3d {
 
-/// Screen-space overlays drawn on the output render target after presentation
-/// (or at the end of the direct pass), at output resolution: the corner axis
-/// gizmo and CPU-rasterised images (perf HUD, TF hover label). Everything is
+/// Screen-space overlays drawn on the output render target after presentation (or at the end of the direct pass), at
+/// output resolution: the corner axis gizmo and CPU-rasterised images (perf HUD, TF hover label). Everything is
 /// display-referred: nothing here is tonemapped or scaled by render_scale.
 ///
-/// The gizmo is drawn into its own target (4x where the GPU multisamples render
-/// buffers, else 1x) by submitGizmoTarget() and composited as a premultiplied
-/// quad. That target is optional: without it the gizmo is not drawn.
+/// The gizmo is drawn into its own target (4x where the GPU multisamples render buffers, else 1x) by
+/// submitGizmoTarget() and composited as a premultiplied quad. Without that optional target the gizmo is not drawn.
 class OverlayRhiPass {
  public:
   /// The image slots; each keeps its texture while the image's cacheKey() holds.
@@ -54,11 +52,9 @@ class OverlayRhiPass {
   void prepare(
       QRhiResourceUpdateBatch* updates, const glm::mat4& view, const QSize& output_px, qreal dpr,
       const std::array<Image, kSlotCount>& images);
-  /// Records the gizmo's own pass, handing it `updates` (which carry its
-  /// uniforms), when prepare() found its rotation or size changed since the last
-  /// recorded one: otherwise its texture still holds it. Call after prepare()
-  /// and before the first pass of the frame. Returns the batch still to submit,
-  /// nullptr once consumed.
+  /// Records the gizmo's own pass, handing it `updates` (which carry its uniforms), when prepare() found its rotation
+  /// or size changed since the last recorded one; otherwise its texture still holds it. Call after prepare() and
+  /// before the first pass of the frame. Returns the batch still to submit, nullptr once consumed.
   [[nodiscard]] QRhiResourceUpdateBatch* submitGizmoTarget(
       QRhiCommandBuffer* command_buffer, QRhiResourceUpdateBatch* updates);
   /// Records the overlays inside the open pass on the output target.

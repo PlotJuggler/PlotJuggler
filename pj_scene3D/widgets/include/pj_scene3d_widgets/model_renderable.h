@@ -50,7 +50,6 @@ class ModelRenderable {
   [[nodiscard]] virtual bool colorOverrideEnabled() const = 0;
   [[nodiscard]] virtual QColor overrideColor() const = 0;
   [[nodiscard]] virtual bool wireframe() const = 0;
-  // Root frame of the model draws; see PointRenderable::renderFrameId().
   [[nodiscard]] virtual const std::string& renderFrameId() const = 0;
   [[nodiscard]] virtual bool contributesToSceneBounds() const = 0;
   // The layer this is (every implementer is a Scene3DLayer), which carries the

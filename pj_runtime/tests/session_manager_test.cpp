@@ -74,9 +74,8 @@ TEST(SessionManagerSourceTest, LastLoadedSourceStartsEmpty) {
   EXPECT_FALSE(session.lastLoadedSource().has_value());
 }
 
-// recordLoadedSource stores normalizedSourcePath(path) — compare through the
-// same contract, not against the raw literal: on Windows even an absolute
-// Unix-style input gains a drive prefix from the absolute-path fallback.
+// recordLoadedSource stores normalizedSourcePath(path): compare through the same contract, not against the raw
+// literal (on Windows an absolute Unix-style input gains a drive prefix).
 TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPathAndPrefix) {
   PJ::SessionManager session;
   session.recordLoadedSource(u"/tmp/run42.csv"_s, u"robot"_s);
@@ -113,11 +112,10 @@ TEST(SessionManagerSourceIdentityTest, FullPathRejectsRemintedSameBasenameCollis
   EXPECT_FALSE(resolved.ambiguous);
 }
 
-// FIX D: a dataset loaded from a file that is then deleted from disk must still
-// resolve by its full path. normalizedSourcePath returns the same cleaned-absolute
-// form at store and resolve time for a plain (non-symlinked) path, so the string
-// comparison in path_matches holds even after the file is gone — whereas a
-// canonicalFilePath-only comparison (empty for a missing file) would drop it.
+// A dataset loaded from a file that is then deleted from disk must still resolve by its full path:
+// normalizedSourcePath returns the same cleaned-absolute form at store and resolve time for a plain (non-symlinked)
+// path, so the string comparison holds after the file is gone, where a canonicalFilePath-only comparison (empty for a
+// missing file) would drop it.
 TEST(SessionManagerSourceIdentityTest, DeletedSourceFileStillResolvesByPath) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -127,7 +125,6 @@ TEST(SessionManagerSourceIdentityTest, DeletedSourceFileStillResolvesByPath) {
   PJ::SessionManager session;
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.mcap"});
   ASSERT_TRUE(dataset.has_value());
-  // Register the path WHILE the file exists, then delete it from disk.
   session.setDatasetSourcePath(*dataset, saved_path);
   ASSERT_TRUE(QFile::remove(saved_path));
   ASSERT_FALSE(QFileInfo::exists(saved_path));
@@ -224,12 +221,10 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceAppendsDistinctPaths) {
   PJ::SessionManager session;
   session.recordLoadedSource(u"/tmp/a.csv"_s, QString());
   session.recordLoadedSource(u"/tmp/b.csv"_s, u"p"_s);
-  // Both distinct files are tracked, in load order.
   const auto& sources = session.loadedSources();
   ASSERT_EQ(sources.size(), 2u);
   EXPECT_EQ(sources[0].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/a.csv"_s));
   EXPECT_EQ(sources[1].path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
-  // lastLoadedSource() is the most recent.
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
   EXPECT_EQ(src->path, PJ::SessionManager::normalizedSourcePath(u"/tmp/b.csv"_s));
@@ -274,7 +269,7 @@ TEST(SessionManagerSourceTest, RecordLoadedSourceStoresPluginIdAndConfig) {
 
 TEST(SessionManagerSourceTest, RecordLoadedSourceDefaultsPluginFieldsToEmpty) {
   PJ::SessionManager session;
-  // Old 2-arg shape — plugin fields default-empty.
+  // 2-arg form: plugin fields default-empty.
   session.recordLoadedSource(u"/tmp/a.csv"_s, u"p"_s);
   const auto src = session.lastLoadedSource();
   ASSERT_TRUE(src.has_value());
@@ -421,9 +416,7 @@ TEST(SessionManagerTimeTest, SetDisplayOffsetIgnoresUnknownDatasetAndDefaultDoma
   EXPECT_EQ(spy.count(), 0);
 }
 
-// Proves the mechanism the per-source TimeDomain loader change enables: each
-// source gets its own domain, so an offset on one source cannot leak into
-// another's displayOffset.
+// Each source gets its own TimeDomain, so an offset on one source cannot leak into another's displayOffset.
 TEST(SessionManagerTimeTest, PerSourceDomainsIsolateOffsets) {
   PJ::SessionManager session;
   auto& engine = session.dataEngine();
@@ -456,17 +449,14 @@ std::unique_ptr<PJ::MessageParserHandle> makeNoopHandle() {
   return handle;
 }
 
-// Crash / TSan canary for the parser-slot race (H.12): the streaming worker
-// re-registers fresh handles for the same ObjectTopicId in a tight loop while
-// the GUI thread resolves the per-use binding and touches the parser through the
-// keepalive. Deterministic (fixed iteration count, no sleeps) so it reproduces
-// the unsynchronized-map UB and the replace-frees-live-parser hazard reliably
-// under a sanitizer; a plain run just exercises the lock discipline.
+// Crash / TSan canary for the parser-slot race: the streaming worker re-registers fresh handles for the same
+// ObjectTopicId in a tight loop while the GUI thread resolves the per-use binding and touches the parser through the
+// keepalive. Deterministic (fixed iteration count, no sleeps) so a sanitizer reproduces the unsynchronized-map UB and
+// the replace-frees-live-parser hazard reliably; a plain run exercises the lock discipline.
 TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic{42};
 
-  // Seed one parser so the reader sees a binding immediately.
   session.registerObjectTopicParser(topic, makeNoopHandle());
 
   constexpr int kIterations = 5000;
@@ -489,9 +479,8 @@ TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
         }
       }
 
-      // Each registration overwrites the slot, dropping the previous handle —
-      // exactly the cross-thread replacement that used to free a parser out from
-      // under a reader holding only a raw pointer.
+      // Each registration overwrites the slot, dropping the previous handle: the cross-thread replacement that would
+      // free a parser under a reader holding only a raw pointer.
       session.registerObjectTopicParser(topic, makeNoopHandle());
       if (handoff) {
         handoff_replacement_done.store(true, std::memory_order_release);
@@ -504,8 +493,8 @@ TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
     std::this_thread::yield();
   }
 
-  // Keep this snapshot alive while the writer replaces its slot, then
-  // dereference the old handle. This is the lifetime edge the test protects.
+  // Keep this snapshot alive while the writer replaces its slot, then dereference the old handle: the lifetime edge
+  // under test.
   PJ::SessionManager::ParserBinding handoff_binding = session.parserBindingForObjectTopic(topic);
   const bool handoff_binding_valid = static_cast<bool>(handoff_binding);
   reader_has_snapshot.store(true, std::memory_order_release);
@@ -540,7 +529,6 @@ TEST(SessionManagerParserRaceTest, ConcurrentRegisterAndBindIsSafe) {
   writer.join();
   EXPECT_GT(manifest_bytes, 0U);  // keeps the keepalive-deref in the binary
 
-  // Drain any in-flight replacement, then assert a final binding is valid.
   PJ::SessionManager::ParserBinding final_binding = session.parserBindingForObjectTopic(topic);
   EXPECT_TRUE(static_cast<bool>(final_binding)) << "topic must still have a valid parser after the race";
   EXPECT_GT(valid_bindings, 0U) << "reader never observed a valid binding";
@@ -612,8 +600,7 @@ TEST(SessionManagerRangeTest, DatasetDisplayRangeAppliesDatasetDisplayOffset) {
   writeScalarSamples(session, *dataset, "/imu/x", {5'000'000'000LL, 9'000'000'000LL});
 
   // Display seconds = (raw - 2e9)/1e9 -> [3, 7], matching the file-load seed
-  // (AppSessionTest.SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset) and
-  // NOT the offset-blind absolute [5, 9] the old streaming path produced.
+  // (AppSessionTest.SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset), not the offset-blind absolute [5, 9].
   const auto range = session.datasetDisplayRange(*dataset);
   ASSERT_TRUE(range.has_value());
   EXPECT_DOUBLE_EQ(range->min.value, 3.0);
@@ -678,17 +665,14 @@ TEST(SessionManagerTimeOffsetTest, DefaultsOffWithZeroOffset) {
   PJ::SessionManager session;
   const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
   EXPECT_FALSE(session.useTimeOffset());
-  // Default: no auto-align. A data-bearing dataset shows at its natural absolute
-  // time (offset 0) — NOT rebased to its own start. Regression guard for the bug
-  // where "Use time offset" defaulted on and collapsed every dataset to zero.
+  // Default: no auto-align. A data-bearing dataset shows at its natural absolute time (offset 0), not rebased to its
+  // own start.
   EXPECT_EQ(session.displayOffset(a).value.count(), 0);
 }
 
-// The Source Timeline edits the PER-SOURCE alignment offset (sourceDisplayOffset),
-// which round-trips EXACTLY. The global "Use time offset" reference is layered on
-// ONLY in displayOffset(): the two compose (alignment + global) instead of the old
-// conflated model where a drag overwrote the global frame. So a drag while the
-// frame is on no longer collapses onto the global term.
+// The Source Timeline edits the per-source alignment offset (sourceDisplayOffset), which round-trips exactly. The
+// global "Use time offset" reference is layered on only in displayOffset(): the two compose (alignment + global), so a
+// drag while the frame is on does not collapse onto the global term.
 TEST(SessionManagerTimeOffsetTest, AlignmentOffsetIsSeparateFromGlobalFrame) {
   PJ::SessionManager session;
   const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
@@ -707,20 +691,17 @@ TEST(SessionManagerTimeOffsetTest, AlignmentOffsetIsSeparateFromGlobalFrame) {
   EXPECT_EQ(session.displayOffset(a).value.count(), 12'000'000'000LL);
 }
 
-// "Use time offset" subtracts ONE uniform global origin (the earliest sample across
-// all datasets), so cross-dataset time gaps are PRESERVED — not a per-source rebase
-// that collapses every dataset to zero. The per-source alignment offsets stay zero,
-// so the Source Timeline's bars never move when the global frame is toggled.
+// "Use time offset" subtracts one uniform global origin (the earliest sample across all datasets), so cross-dataset
+// time gaps are preserved, not rebased per source. The per-source alignment offsets stay zero, so the Source
+// Timeline's bars never move when the global frame is toggled.
 TEST(SessionManagerTimeOffsetTest, UsesUniformGlobalOriginPreservingGaps) {
   PJ::SessionManager session;
-  // Two datasets recorded 2 s apart.
   const PJ::DatasetId a = addDataset(session, "a.mcap", "/a", {5'000'000'000LL, 9'000'000'000LL});
   const PJ::DatasetId b = addDataset(session, "b.mcap", "/b", {3'000'000'000LL, 4'000'000'000LL});
 
   session.setUseTimeOffset(true);
   EXPECT_TRUE(session.useTimeOffset());
-  // Both datasets share the SAME global origin (b's 3 s, the global earliest); the
-  // per-source alignment offsets are untouched (bars invariant to the toggle).
+  // Both datasets share the same global origin (b's 3 s, the global earliest).
   EXPECT_EQ(session.globalTimeReference(), 3'000'000'000LL);
   EXPECT_EQ(session.displayOffset(a).value.count(), 3'000'000'000LL);
   EXPECT_EQ(session.displayOffset(b).value.count(), 3'000'000'000LL);
@@ -730,8 +711,7 @@ TEST(SessionManagerTimeOffsetTest, UsesUniformGlobalOriginPreservingGaps) {
   const auto range_b = session.datasetDisplayRange(b);
   ASSERT_TRUE(range_a.has_value());
   ASSERT_TRUE(range_b.has_value());
-  // b starts the axis at 0; a starts 2 s later — the real gap is PRESERVED (the old
-  // per-source rebase would have put both at 0).
+  // b starts the axis at 0; a starts 2 s later: the real gap is preserved.
   EXPECT_DOUBLE_EQ(range_b->min.value, 0.0);
   EXPECT_DOUBLE_EQ(range_a->min.value, 2.0);  // (5e9 - 3e9)/1e9
   EXPECT_DOUBLE_EQ(range_a->max.value, 6.0);  // (9e9 - 3e9)/1e9
@@ -759,10 +739,9 @@ TEST(SessionManagerTimeOffsetTest, EarlierDatasetIngestNotifiesGlobalReframe) {
   EXPECT_EQ(global_changes.count(), 1) << "existing adapters must be told that the shared absolute/display frame moved";
 }
 
-// FileLoader's completion seam (FIX 3): plugin ingest commits straight to DataEngine
-// via the C-ABI write host, BYPASSING SessionManager::commitChunks — so committing an
-// earlier dataset that way leaves the memoized origin stale (no notify fires). The
-// public refreshDatasetTimeReference seam re-scans the dataset and emits the reframe.
+// FileLoader's completion seam: plugin ingest commits straight to DataEngine via the C-ABI write host, bypassing
+// SessionManager::commitChunks, so committing an earlier dataset that way leaves the memoized origin stale (no notify
+// fires). The public refreshDatasetTimeReference seam re-scans the dataset and emits the reframe.
 TEST(SessionManagerTimeOffsetTest, RefreshDatasetTimeReferenceReframesAfterDirectEngineCommit) {
   PJ::SessionManager session;
   static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
@@ -784,10 +763,8 @@ TEST(SessionManagerTimeOffsetTest, RefreshDatasetTimeReferenceReframesAfterDirec
   writer.appendScalar(*handle, 3'000'000'000LL, 1.0);
   ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());  // NOT session.commitChunks
 
-  // The origin is still stale (the direct commit bypassed the notify path).
   QSignalSpy global_changes(&session, qOverload<>(&PJ::SessionManager::displayOffsetChanged));
 
-  // The completion seam re-scans and reframes exactly once.
   session.refreshDatasetTimeReference(*dataset);
   EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
   EXPECT_EQ(global_changes.count(), 1) << "a plugin-direct-committed earlier file must reframe on the completion seam";
@@ -797,9 +774,8 @@ TEST(SessionManagerTimeOffsetTest, RefreshDatasetTimeReferenceReframesAfterDirec
   EXPECT_EQ(global_changes.count(), 1) << "no spurious reframe when the origin did not move";
 }
 
-// FIX 3 removal face: a dataset with committed data removed via SessionManager::
-// removeDataset must reframe when it was the origin owner (FileLoader routes its
-// discard/error cleanups through this instead of dataEngine().removeDataset directly).
+// Removal: a dataset with committed data removed via SessionManager::removeDataset must reframe when it was the
+// origin owner (FileLoader routes its discard/error cleanups through it, not dataEngine().removeDataset).
 TEST(SessionManagerTimeOffsetTest, RemoveDatasetReframesWhenItOwnedTheOrigin) {
   PJ::SessionManager session;
   static_cast<void>(addDataset(session, "later.mcap", "/later", {5'000'000'000LL, 6'000'000'000LL}));
@@ -982,13 +958,10 @@ TEST(SessionManagerSignalTest, LiveNotifyEmitsEvenWithoutScalarTopicIds) {
   EXPECT_TRUE(saw_live);
 }
 
-// --- Scaffolding for the refill parser-slot cases ---------------------------
-// A replacing reload deliberately re-binds same-named topics into the SAME
-// ObjectTopicId, so the replacement's parser lands in the prior parser's slot.
-// These helpers make "which parser is bound" observable: each parser stamps its
-// own tag onto every object it decodes, so a test can assert that restored BYTES
-// are read back by the parser that wrote them — not merely that some parser is
-// registered.
+// Scaffolding for the refill parser-slot cases. A replacing reload re-binds same-named topics into the same
+// ObjectTopicId, so the replacement's parser lands in the prior parser's slot. Each parser stamps its own tag onto
+// every object it decodes, making "which parser is bound" observable: restored bytes must be read back by the parser
+// that wrote them.
 
 constexpr std::string_view kTaggedSchema = "tagged";
 
@@ -1092,9 +1065,6 @@ TaggedObjectFixture makeTaggedObjectDataset(PJ::SessionManager& session, std::ve
 }
 
 // --- beginRefill / RefillGuard: in-place transactional reload prep ---
-// (Migrated from the former SessionManagerClearRefillTest, which covered the deleted
-// clearDatasetForRefill. The "writes back into the same topic id" case it also had is
-// now covered by CommitKeepsRefilledDataAndFreesSnapshot below.)
 
 TEST(SessionManagerRefillGuardTest, DetachEmitsAboutToBeReplacedBeforeEmptyIngest) {
   PJ::SessionManager session;
@@ -1106,7 +1076,6 @@ TEST(SessionManagerRefillGuardTest, DetachEmitsAboutToBeReplacedBeforeEmptyInges
   ASSERT_EQ(topics_before.size(), 2u);
   ASSERT_TRUE(session.datasetDisplayRange(*ds).has_value());
 
-  // Record the emission order of the two signals (direct, same-thread connections).
   std::vector<QString> order;
   QObject::connect(&session, &PJ::SessionManager::datasetAboutToBeReplaced, &session, [&order](PJ::DatasetId) {
     order.emplace_back(u"about"_s);
@@ -1123,7 +1092,6 @@ TEST(SessionManagerRefillGuardTest, DetachEmitsAboutToBeReplacedBeforeEmptyInges
     EXPECT_EQ(order[0], u"about"_s);
     EXPECT_EQ(order[1], u"ingest"_s);
 
-    // Dataset is now empty, but its topic ids stay registered (a refill reuses them).
     EXPECT_FALSE(session.datasetDisplayRange(*ds).has_value());
     EXPECT_EQ(session.dataEngine().listTopics(*ds), topics_before);
     guard.commit();  // keep the empty state (no refill here); avoid a rollback that would restore data
@@ -1147,11 +1115,9 @@ TEST(SessionManagerRefillGuardTest, RollbackRestoresPriorScalarAndObjectData) {
 
   {
     PJ::RefillGuard guard = session.beginRefill(*ds);
-    // In scope the dataset is detached (empty) but every id stays registered.
     EXPECT_FALSE(session.datasetDisplayRange(*ds).has_value());
     EXPECT_EQ(session.objectStore().entryCount(*object_topic), 0u);
     EXPECT_EQ(session.dataEngine().listTopics(*ds), scalar_topics_before);
-    // guard dtor (no commit) rolls back here.
   }
 
   EXPECT_TRUE(session.datasetDisplayRange(*ds).has_value()) << "scalar data restored";
@@ -1175,12 +1141,10 @@ TEST(SessionManagerRefillGuardTest, RollbackRestoresPriorObjectParserBinding) {
 
   {
     PJ::RefillGuard guard = session.beginRefill(fixture.dataset);
-    // The replacement brings a different schema's parser for the same topic name,
-    // which the refill re-binds into the SAME id.
+    // The replacement brings a different schema's parser for the same topic name.
     session.registerObjectTopicParser(fixture.topic, makeTaggedHandleB());
     ASSERT_TRUE(session.objectStore().pushOwned(fixture.topic, 900, std::vector<uint8_t>{'x', 'y'}).has_value());
     ASSERT_EQ(decodeThroughBoundParser(session, fixture.topic, 0).tag, "B");
-    // Guard destroyed uncommitted: the refill failed, so it rolls back here.
   }
 
   EXPECT_EQ(boundParserHandle(session, fixture.topic), static_cast<const void*>(fixture.parser_a))
@@ -1265,13 +1229,11 @@ TEST(SessionManagerRefillGuardTest, RollbackSkipsParserRestoreForTopicsRemovedDu
   {
     PJ::RefillGuard guard = session.beginRefill(fixture.dataset);
     session.clearAllObjects();  // destructive removal while the reload is in flight
-    // Guard destroyed uncommitted: the refill failed, so it rolls back here.
   }
 
   EXPECT_EQ(boundParserHandle(session, fixture.topic), nullptr)
       << "no parser may be restored for a topic whose series is gone";
 
-  // The store's id allocation restarted, so a fresh registration reuses the raw id.
   auto reused = session.objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{.dataset_id = fixture.dataset, .topic_name = "/other", .metadata_json = "{}"});
   ASSERT_TRUE(reused.has_value()) << reused.error();
@@ -1291,7 +1253,6 @@ TEST(SessionManagerRefillGuardTest, CommitKeepsRefilledDataAndFreesSnapshot) {
   {
     PJ::RefillGuard guard = session.beginRefill(*ds);
     EXPECT_GT(guard.snapshotBytes(), 0u) << "prior data held aside";
-    // Refill writes NEW samples into the SAME topic id.
     PJ::DataWriter writer = session.dataEngine().createWriter();
     const PJ::ScalarSeriesHandle handle{topic, 0};
     writer.appendScalar(handle, 1000, 1.0);
@@ -1303,8 +1264,7 @@ TEST(SessionManagerRefillGuardTest, CommitKeepsRefilledDataAndFreesSnapshot) {
 
   EXPECT_EQ(session.dataEngine().listTopics(*ds), topics_before) << "id stable across commit";
   {
-    // Only the refilled data remains (1000..2000) — commit froze the prior snapshot
-    // rather than restoring it, and the refill did not double-count.
+    // Only the refilled data remains (1000..2000): commit froze the prior snapshot rather than restoring it.
     auto lock = session.dataEngine().lockEngine();
     const PJ::TopicStorage* storage = session.dataEngine().getTopicStorage(topic);
     ASSERT_NE(storage, nullptr);
@@ -1329,10 +1289,7 @@ TEST(SessionManagerRefillGuardTest, CommitDetachesSourceRecordRollbackKeepsIt) {
                .descriptor_json = uR"({"d":1})"_s,
            });
 
-  {
-    PJ::RefillGuard guard = session.beginRefill(*ds);
-    // Rollback (guard destroyed uncommitted).
-  }
+  { PJ::RefillGuard guard = session.beginRefill(*ds); }
   ASSERT_NE(session.sourceRecord(*ds), nullptr) << "rollback restores the old content — its record stays";
   EXPECT_EQ(session.sourceRecord(*ds)->provider_id, u"cloud-provider"_s);
 
@@ -1396,7 +1353,6 @@ TEST(SessionManagerRefillGuardTest, RollbackRetiresTopicsAddedByRefill) {
         PJ::ObjectTopicDescriptor{.dataset_id = *ds, .topic_name = "/cam2", .metadata_json = "{}"});
     ASSERT_TRUE(added.has_value()) << added.error();
     ASSERT_TRUE(session.objectStore().pushOwned(*added, 600, std::vector<uint8_t>{9}).has_value());
-    // no commit -> rollback
   }
 
   EXPECT_EQ(session.dataEngine().listTopics(*ds), scalar_before) << "added scalar topic retired";
@@ -1416,7 +1372,6 @@ TEST(SessionManagerRefillGuardTest, AboutToBeReplacedFiresOnConstructionAndRollb
   });
   {
     PJ::RefillGuard guard = session.beginRefill(*ds);  // fires once (detach)
-    // no commit -> rollback fires once more (drop partial chunk pointers)
   }
   EXPECT_EQ(about_count, 2) << "fires on construction (detach) and on rollback";
 }
@@ -1496,10 +1451,9 @@ TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsRemovesEmptyPriorObjectTo
   EXPECT_EQ(after.front(), *cam_a) << "/cam/a kept (refilled)";
 }
 
-// beginRefill empties every object topic of the dataset, and prune then retires the
-// ones the reloaded file did not rewrite. Marker topics are host-published, never
-// file-backed, so a refill NEVER rewrites them — without the exemption a per-dataset
-// Reload silently deletes every committed marker (the regression #464 introduced).
+// beginRefill empties every object topic of the dataset, and prune then retires the ones the reloaded file did not
+// rewrite. Marker topics are host-published, never file-backed, so a refill never rewrites them; without the exemption
+// a per-dataset Reload silently deletes every committed marker.
 TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsKeepsMarkerTopics) {
   PJ::SessionManager session;
   auto ds = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "reload.mcap"});
@@ -1516,7 +1470,6 @@ TEST(SessionManagerRefillGuardTest, PruneVanishedTopicsKeepsMarkerTopics) {
 
   {
     PJ::RefillGuard guard = session.beginRefill(*ds);
-    // The reloaded file rewrites its own object topic; nothing rewrites the markers.
     ASSERT_TRUE(session.objectStore().pushOwned(*cam, 1000, std::vector<uint8_t>{3}).has_value());
     guard.pruneVanishedTopics();
     guard.commit();
@@ -1713,9 +1666,8 @@ TEST(SessionManagerSourceRecordTest, MultipleConfirmedRecordMatchesAreAmbiguous)
   EXPECT_TRUE(resolved.ambiguous) << "multiple confirmed record matches must never be guessed between";
 }
 
-// Regression pin: existing (record-less) callers must resolve identically —
-// both through the 3-argument form and through the overload with an empty
-// record — and an ATTACHED record must not perturb a record-less query.
+// Record-less callers must resolve identically, through the 3-argument form and through the overload with an empty
+// record; an attached record must not perturb a record-less query.
 TEST(SessionManagerSourceRecordTest, EmptyRecordQueryKeepsExistingResolution) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -1772,7 +1724,7 @@ TEST(SessionManagerMergeTest, RejectedMergeKeepsSourceRecords) {
   EXPECT_NE(session.sourceRecord(anchor), nullptr);
 }
 
-// --- Toolbox bulk-import lifecycle (hoisted from MainWindow, #470) ---
+// --- Toolbox bulk-import lifecycle ---
 
 TEST(SessionManagerIngestTest, BeginUpdateEndTracksActiveSetAndEmits) {
   PJ::SessionManager session;
@@ -1886,7 +1838,6 @@ TEST(SessionManagerMetadataTest, SetReplaceAndClear) {
   EXPECT_EQ(stored->plugin_id, u"loader_a"_s);
   EXPECT_TRUE(stored->json.contains(u"messages"_s));
 
-  // Replace-whole-document, then clear via the two spellings of "nothing".
   ASSERT_TRUE(session.setDatasetMetadata(dataset, uR"({"messages": 13})"_s, u"loader_b"_s).has_value());
   EXPECT_EQ(session.datasetMetadata(dataset)->plugin_id, u"loader_b"_s);
   ASSERT_TRUE(session.setDatasetMetadata(dataset, u"{}"_s, u"loader_b"_s).has_value());
@@ -1920,7 +1871,6 @@ TEST(SessionManagerMetadataTest, RejectsOutOfBoundsDocumentsAndKeepsPrevious) {
   const QString huge = uR"({"blob": "%1"})"_s.arg(QString(1024 * 1024, u'x'));
   EXPECT_FALSE(session.setDatasetMetadata(dataset, huge, u"loader"_s).has_value());
 
-  // Every rejection kept the previous document.
   ASSERT_NE(session.datasetMetadata(dataset), nullptr);
   EXPECT_TRUE(session.datasetMetadata(dataset)->json.contains(u"keep"_s));
 }
@@ -1940,11 +1890,7 @@ TEST(SessionManagerMetadataTest, RefillCommitClearsMetadataRollbackKeepsIt) {
   ASSERT_TRUE(dataset.has_value());
   ASSERT_TRUE(session.setDatasetMetadata(*dataset, uR"({"old": true})"_s, u"loader"_s).has_value());
 
-  {
-    PJ::RefillGuard rollback_guard = session.beginRefill(*dataset);
-    // Guard destroyed uncommitted: the reload failed/discarded — the prior
-    // content came back, and its metadata must still describe it.
-  }
+  { PJ::RefillGuard rollback_guard = session.beginRefill(*dataset); }
   EXPECT_NE(session.datasetMetadata(*dataset), nullptr);
 
   PJ::RefillGuard commit_guard = session.beginRefill(*dataset);
@@ -1973,7 +1919,7 @@ TEST(SessionManagerTimeTest, DisplayTimeForSourceHonoursCurrentOffsetAndRejectsU
   EXPECT_DOUBLE_EQ(display->value, 3.0);
 }
 
-// A preview belongs to the plugin instance that made it (OWN-08): ending the previews
+// A preview belongs to the plugin instance that made it: ending the previews
 // an instance lists removes those ephemeral transforms and marker rules in both
 // engines and repaints once. A persistent or unknown id in the list is skipped, and an
 // unlisted preview stays.
@@ -2024,7 +1970,8 @@ TEST(SessionManagerTest, RemoveEphemeralsEndsOnlyTheListedPreviews) {
   EXPECT_EQ(markers_changed.count(), 1) << "the removed preview's markers are repainted away once";
 }
 
-// ---- The on-demand engine through the session's dataset life cycle (ARCHITECTURE §8, §13) -------------------
+// ---- The on-demand engine through the session's dataset life cycle ----
+// See docs/derived_objects/ARCHITECTURE.md "The on-demand pipeline" and "Life cycle of recipes and results".
 
 namespace PJ {
 namespace {
@@ -2114,7 +2061,7 @@ struct OnDemandSession {
   std::vector<std::pair<std::string, std::vector<ObjectTopicId>>> state_changes;
 };
 
-// ASY-04, CACHE-01: a reload drops the results at its start, serves nothing while the dataset refills, and
+// A reload drops the results at its start, serves nothing while the dataset refills, and
 // recomputes at the parked cursor from the refilled data once it committed.
 TEST(SessionManagerTest, ReloadBumpsTheEpochAndRecomputesAtTheParkedCursor) {
   OnDemandSession fx;
@@ -2183,7 +2130,7 @@ TEST(SessionManagerTest, RollbackDoesNotRestoreAnOldEpochResult) {
   EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 4u) << "computed from the restored bytes";
 }
 
-// GAP-32: removing the dataset while its node computes leaves no node, no state, no topic and no publication.
+// Removing the dataset while its node computes leaves no node, no state, no topic and no publication.
 TEST(SessionManagerTest, DatasetRemovalMidFlightLeavesNoState) {
   OnDemandSession fx;
   fx.fake.gated = true;
@@ -2210,7 +2157,7 @@ TEST(SessionManagerTest, DatasetRemovalMidFlightLeavesNoState) {
   EXPECT_EQ(fx.fake.started(), 1);
 }
 
-// GAP-32: a merge re-binds a consumed dataset's recipes onto the anchor, and they run there at their cursor, which
+// A merge re-binds a consumed dataset's recipes onto the anchor, and they run there at their cursor, which
 // moves by the dataset's raw shift like its data.
 TEST(SessionManagerTest, MergeReinstallsOnDemandRecipesOnTheAnchor) {
   OnDemandSession fx;
@@ -2418,7 +2365,7 @@ TEST(SessionManagerTest, RemovingARawInputLeavesItsReadersMissingAndAllowsRelink
   EXPECT_EQ(fx.shownWidth("owner/crop/cropped", 20 * kOnDemandSec), 6u);
 }
 
-// PUB-02: a dataset removal retires every output topic of its recipes and announces it once; an edit keeps its
+// A dataset removal retires every output topic of its recipes and announces it once; an edit keeps its
 // topics and announces nothing; an edit that renames an output retires the old one.
 TEST(SessionManagerTest, RemovalRetiresTopicsAndAnnouncesOnce) {
   OnDemandSession fx;
@@ -2468,7 +2415,7 @@ TEST(SessionManagerTest, TheResolverBindsQualifiedTopicsAndNeverAnOnDemandOutput
   EXPECT_EQ(fx.service().graph().find("owner/reader")->bindings[0].upstream, "owner/crop");
 }
 
-// CON-11/14: destroying the session cancels the on-demand run before the pool joins it; nothing is published.
+// Destroying the session cancels the on-demand run before the pool joins it; nothing is published.
 TEST(SessionManagerTest, SessionDestructionCancelsOnDemandRunsBeforeThePool) {
   OnDemandSession fx;
   fx.fake.delay = std::chrono::milliseconds(5000);  // polls its cancellation
@@ -2518,9 +2465,9 @@ TEST(SessionManagerTest, AReloadResumesAfterItsCallerCommitsTheReloadedTf) {
   fx.session->setTransformService(nullptr);
 }
 
-// ARCHITECTURE §19: while a dataset ingests, its runs share one TF snapshot for the brake period, and a result that
-// read it serves its request (the revision a request compares is that snapshot's), so nothing runs again until the
-// ingest ends.
+// While a dataset ingests (docs/derived_objects/ARCHITECTURE.md "TF"), its runs share one TF snapshot for the brake
+// period, and a result that read it serves its request (the revision a request compares is that snapshot's), so nothing
+// runs again until the ingest ends.
 TEST(SessionManagerTest, OnDemandRunsShareOneTfSnapshotDuringALiveIngest) {
   OnDemandSession fx;
   TransformService transforms(*fx.session);
@@ -2567,8 +2514,8 @@ TEST(SessionManagerTest, OnDemandRunsShareOneTfSnapshotDuringALiveIngest) {
   fx.session->setTransformService(nullptr);
 }
 
-// ARCHITECTURE §19 for a stream, which never begins an ingest: a dataset with a live announcement within the brake
-// period shares one TF snapshot between its runs, as during a file ingest.
+// A stream never begins an ingest: a dataset with a live announcement within the brake period shares one TF snapshot
+// between its runs, as during a file ingest.
 TEST(SessionManagerTest, TfSnapshotsAreThrottledWhileAStreamingDatasetIngests) {
   auto now = std::chrono::steady_clock::now();  // outlives the fixture, whose session reads it through the clock
   OnDemandSession fx;

@@ -139,9 +139,7 @@ class GatedSource final : public MediaSource {
   int width_ = 0;
 };
 
-// Multi-rate compositing (REQUIREMENTS §4.8): a layer that reports nothing new
-// on a tick must NOT be dropped from the composite — its last contribution is
-// retained while another layer updates.
+// A layer with nothing new on a tick keeps its last contribution while another layer updates.
 TEST(CompositePixelLayersTest, NonUpdatingLayerIsRetainedAcrossTicks) {
   CompositeMediaSource composite;
   auto a = std::make_unique<GatedSource>(10);

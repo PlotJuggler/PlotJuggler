@@ -77,7 +77,6 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Find first image topic
   uint16_t target_chan = 0;
   std::string topic_name;
   std::string encoding;
@@ -105,7 +104,6 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Load into ObjectStore
   PJ::ObjectStore store;
   auto id_or = store.registerTopic({.dataset_id = 1, .topic_name = topic_name, .metadata_json = "{}"});
   if (!id_or.has_value()) {
@@ -136,14 +134,13 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Resolve the entry
   auto entry = store.at(topic_id, frame_index);
   if (!entry.has_value() || entry->payload.bytes.empty()) {
     std::cerr << "Failed to resolve entry\n";
     return 1;
   }
 
-  const auto raw = entry->payload.bytes;  // Span<const uint8_t>
+  const auto raw = entry->payload.bytes;
   std::cout << "Raw message size: " << raw.size() << " bytes\n";
 
   // Try CDR extraction (ROS2 CompressedImage)
@@ -174,7 +171,6 @@ int main(int argc, char* argv[]) {
 
   std::cout << "JPEG size: " << jpeg_size << " bytes\n";
 
-  // Decode
   PJ::DecodedFrame encoded;
   encoded.pixels = std::make_shared<std::vector<uint8_t>>(jpeg_data, jpeg_data + jpeg_size);
   PJ::JpegCodec decoder;
@@ -187,7 +183,6 @@ int main(int argc, char* argv[]) {
   auto& frame = *frame_or;
   std::cout << "Decoded: " << frame.width << "x" << frame.height << " RGB\n";
 
-  // Write PPM
   std::ofstream out(output_path, std::ios::binary);
   out << "P6\n" << frame.width << " " << frame.height << "\n255\n";
   out.write(reinterpret_cast<const char*>(frame.pixels->data()), static_cast<std::streamsize>(frame.pixels->size()));

@@ -38,7 +38,6 @@ void setEdge(
   ASSERT_TRUE(buf.setTransform(st).has_value()) << "failed to seed edge " << parent << " -> " << child;
 }
 
-// Only FIXED joints become static bridges; movable joints are dropped.
 TEST(RobotModelBridges, EmitsOneStaticTransformPerFixedJoint) {
   RobotModel model;
   model.joints.push_back(fixedJoint("a", "b", {1, 2, 3}));
@@ -72,10 +71,9 @@ TEST(RobotModelBridges, RpyToQuatMatchesOriginToMat4) {
   }
 }
 
-// The DROID bug, reproduced at the buffer level: the gripper subtree is rooted at
-// an unpublished base, so it is disconnected from `scene`. Injecting the URDF's
-// fixed-joint bridges reconnects the whole subtree (the published knuckle edge
-// cascades into resolvability once its base has a parent).
+// A gripper subtree rooted at an unpublished base is disconnected from `scene`. Injecting the URDF's fixed-joint
+// bridges reconnects the whole subtree (the published knuckle edge cascades into resolvability once its base has a
+// parent).
 TEST(RobotModelBridges, InjectReconnectsDisconnectedGripperSubtree) {
   TransformBuffer buf;
   const PJ::Timepoint t = PJ::fromRaw(1'000'000);

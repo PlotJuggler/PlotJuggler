@@ -28,23 +28,19 @@
 namespace pj::scene3d {
 namespace {
 
-// The capability error of a stage held down by SceneViewTestAccess::forceStageFallback():
-// a test override, never shown to a user, so untranslated. The browser
-// acceptance specs match its wording.
+// The capability error of a stage held down by SceneViewTestAccess::forceStageFallback(): a test override, never shown
+// to a user, so untranslated. The browser acceptance specs match its wording.
 QString forcedOffReason(const char* stage) {
   return QStringLiteral("%1 rendering disabled by the browser acceptance override").arg(QLatin1StringView(stage));
 }
 
-// Where QRhi resolves multisample depth (ResolveDepthStencil with multisample
-// textures: OpenGL 4.3+, Vulkan, Metal), the HDR pass resolves its D32F into the
-// single-sample depth texture and present derives coverage from it. Elsewhere
-// (D3D11, WebGL2: no depth resolve, and WebGL's GLES QRhi does not resolve a
-// second multisample color attachment reliably either) the bounded scene is
-// replayed once into single-sample RGBA8 coverage + D32F depth.
+// The HDR pass resolves its D32F into a single-sample depth texture where QRhi resolves multisample depth
+// (ResolveDepthStencil with multisample textures: OpenGL 4.3+, Vulkan, Metal), and present derives coverage from it.
+// Elsewhere (D3D11, WebGL2: no depth resolve, and WebGL's GLES QRhi does not reliably resolve a second multisample
+// colour attachment either) the bounded scene is replayed once into single-sample RGBA8 coverage + D32F depth.
 //
-// Bytes per pixel of a chain whose depth takes `depth_bytes` per sample:
-// 4x (RGBA16F 8 + depth) + RGBA16F 8 + RGBA8 4 + depth. D32F (4 B): 64 B/px;
-// OpenGL's resolve uses D32FS8 (8 B): 84 B/px.
+// Bytes per pixel of a chain whose depth takes `depth_bytes` per sample: 4x (RGBA16F 8 + depth) + RGBA16F 8 + RGBA8 4
+// + depth. D32F (4 B): 64 B/px; OpenGL's resolve uses D32FS8 (8 B): 84 B/px.
 constexpr std::uint64_t hdrBytesPerPixel(std::uint64_t depth_bytes) {
   return kHdrSampleCount * (8U + depth_bytes) + 8U + 4U + depth_bytes;
 }
@@ -52,9 +48,8 @@ static_assert(hdrBytesPerPixel(4U) == 64U && hdrBytesPerPixel(8U) == 84U);
 constexpr std::uint64_t kMaxHdrBytesPerView = kSceneLimits.max_hdr_bytes_per_view;
 constexpr std::uint64_t kMaxHdrBytesPerRhi = kSceneLimits.max_hdr_bytes_per_rhi;
 
-// Live Scene3D docks share one QRhi (every dock in the browser, every dock of a
-// top-level window on desktop). Keep the retained offscreen chains below both a
-// per-view and an aggregate per-QRhi ceiling.
+// Live Scene3D docks share one QRhi (every dock in the browser, every dock of a top-level window on desktop): keep the
+// retained offscreen chains below both a per-view and an aggregate per-QRhi ceiling.
 std::unordered_map<QRhi*, std::uint64_t> hdr_bytes_by_rhi;
 
 // Qt 6.11's OpenGL backend reports QRhi::MultisampleTexture from GL 3.0 (GLES
@@ -88,10 +83,8 @@ std::uint64_t HdrResources::chargedBytes(QRhi* rhi) {
 void HdrResources::charge(QRhi* rhi, std::uint64_t bytes) {
   Q_ASSERT(allocated_bytes == 0U);  // releaseTargets() gave the previous charge back
   if (hdr_bytes_by_rhi.find(rhi) == hdr_bytes_by_rhi.end()) {
-    // The aggregate is keyed by a raw QRhi pointer that the allocator can
-    // reuse: purge the entry when the QRhi itself dies so a widget whose
-    // releaseResources() was skipped cannot poison a successor at the same
-    // address with phantom bytes.
+    // The aggregate is keyed by a raw QRhi pointer the allocator can reuse: purge the entry when the QRhi dies, so a
+    // widget whose releaseResources() was skipped cannot poison a successor at the same address with phantom bytes.
     rhi->addCleanupCallback(&hdr_bytes_by_rhi, [](QRhi* dying) { hdr_bytes_by_rhi.erase(dying); });
   }
   hdr_bytes_by_rhi[rhi] += bytes;

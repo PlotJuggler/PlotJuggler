@@ -45,11 +45,10 @@ async function retryChooser(page, trigger) {
 async function openFileChooser(page, screen, useProbe = false) {
   return retryChooser(page, async (attempt) => {
     if (attempt === 0 && !useProbe) {
-      // Exercise the real user-facing canvas button first.
       await page.mouse.click(screen.x + 15, screen.y + 80);
     } else {
-      // Probe builds expose the same MainWindow slot. This avoids turning
-      // a dropped synthetic canvas gesture into a parser/ingest false failure.
+      // The probe calls the same MainWindow slot, so a dropped synthetic canvas gesture is not reported as an
+      // ingest failure.
       await page.evaluate(() => window.pjWasmOpenLoadProbe());
     }
   });
@@ -76,10 +75,8 @@ async function openSourceReplayChooser(page, screen, geometry, consoleMessages) 
     const previousRequests = consoleMessages.filter(
       message => message.includes('Opening browser file picker with filter:'),
     ).length;
-    // Every attempt remains a physical click on the production Reselect
-    // button. A missing browser event is terminal for that request, so an
-    // eight-second delivery window is more useful than waiting 30 seconds five
-    // times for callbacks that can no longer arrive.
+    // Every attempt is a physical click on the production Reselect button. A lost browser event never
+    // arrives late, so a short delivery window with retries beats one long wait.
     await page.mouse.click(screen.x + geometry.reselect.x, screen.y + geometry.reselect.y);
     await expect.poll(
       () => consoleMessages.filter(

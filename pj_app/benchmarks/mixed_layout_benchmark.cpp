@@ -1,10 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Frame cost of plots beside a Scene3D view in one dock manager (Gate A
-// "mixed", pj_scene3D/docs/TECHNICAL_NOTES.md §9): the layout of mixed_layout_fixture.h during
-// playback, where every frame moves the tracker of every plot (a replot each)
-// and orbits the Scene3D camera, then waits until all of them finished a frame.
+// Frame cost of plots beside a Scene3D view in one dock manager (the "mixed" gate in
+// pj_scene3D/docs/TECHNICAL_NOTES.md): the layout of mixed_layout_fixture.h during playback, where every frame
+// moves the tracker of every plot (a replot each) and orbits the Scene3D camera, then waits until all of them
+// finished a frame.
 //
 //   mixed_layout_benchmark [--plots 6] [--curves 4] [--samples 100000]
 //                          [--cloud-side 100] [--frames 60] [--dump scene.png]
@@ -15,23 +15,18 @@
 // frame after idle as cold_ms, GUI-thread CPU per frame, RSS and its peak, GPU
 // memory, idle frames of the settled layout: the Scene3D view's full renders
 // where the build counts them, else its finished frames, plus the plot canvases'
-// finished frames). The QRhi backend follows PJ_GRAPHICS_API. Needs a real
-// display. Every run draws the same scene through the same camera; --dump saves
-// the Scene3D view's last frame to check that.
+// finished frames). The QRhi backend follows PJ_GRAPHICS_API. Needs a real display. Every run draws the same
+// scene through the same camera; --dump saves the Scene3D view's last frame to check that.
 //
-// --tab-switch N instead tabs the Scene3D dock with every plot in one ADS dock
-// area, shows each plot tab once, then switches between the Scene3D tab and the
-// first plot's N times (setAsCurrentTab(): a real dock-area tab switch, not a
-// hide/show). --plots K > 1 measures what the visited hidden tabs keep: the GPU
-// and resident memory at the end (gpu_drm_mib, rss_mib) are with K + 1 tabs
-// visited. It prints one MIXED_TAB line: the medians of show-Scene3D to its
-// first finished frame (tab_ms, with [min, max]) and to the plot's (plot_tab_ms),
-// and per switch back to Scene3D its QRhi adoptions, base builds (init_ms),
-// upload work, paint events, render() calls, skipped paints and full renders, and
-// the time of those renders (render_ms; builds with PJ_RHI_TEST_HOOKS; n/a
-// otherwise), and the
-// switches' span in CLOCK_MONOTONIC ns (window_ns; MIXED_TAB_SPANS lists each
-// switch's, plot and Scene3D alternating) to cut a perf profile.
+// --tab-switch N instead tabs the Scene3D dock with every plot in one ADS dock area, shows each plot tab once,
+// then switches between the Scene3D tab and the first plot's N times (setAsCurrentTab(): a real dock-area tab
+// switch, not a hide/show). --plots K > 1 measures what the visited hidden tabs keep: the GPU and resident
+// memory at the end (gpu_drm_mib, rss_mib) are with K + 1 tabs visited. It prints one MIXED_TAB line: the
+// medians of show-Scene3D to its first finished frame (tab_ms, with [min, max]) and to the plot's
+// (plot_tab_ms), and per switch back to Scene3D its QRhi adoptions, base builds (init_ms), upload work, paint
+// events, render() calls, skipped paints and full renders, the time of those renders (render_ms; builds with
+// PJ_RHI_TEST_HOOKS, n/a otherwise), and the switches' span in CLOCK_MONOTONIC ns (window_ns; MIXED_TAB_SPANS
+// lists each switch's, plot and Scene3D alternating) to cut a perf profile.
 
 #include <QApplication>
 #include <QCommandLineParser>

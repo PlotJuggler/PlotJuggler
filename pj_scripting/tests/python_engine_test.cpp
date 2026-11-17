@@ -168,9 +168,7 @@ class T:
   EXPECT_DOUBLE_EQ((*inst)->calculate(0.0, 7.0).value, 7.0);
 }
 
-// ---------------------------------------------------------------------------
-// The sandbox the on-demand lane shares (python_sandbox.h, PY-07)
-// ---------------------------------------------------------------------------
+// The sandbox the on-demand lane shares (python_sandbox.h).
 
 namespace {
 

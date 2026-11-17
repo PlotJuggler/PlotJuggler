@@ -74,7 +74,7 @@ Expected<InputStager::Staged> InputStager::stage(
       if (!result) {
         return missingInput(input.alias);
       }
-      if (result->unavailable) {  // D25: its tombstone is no input
+      if (result->unavailable) {  // its tombstone is no input
         return missingInput(input.alias, *result->unavailable);
       }
       staged.key.inputs.insert(staged.key.inputs.end(), {kRingIdentity, result->uid.value});
@@ -118,7 +118,7 @@ std::optional<Timestamp> InputStager::stageRaw(
   SessionManager::ParserBinding parser = parsers_(*topic);
   // Another parser (a reload re-registers the topic's) may decode the same bytes differently.
   // ponytail: identity by address; a parser replaced in place while the entry UIDs stay (a stream topic
-  // retyped) may reuse a freed one's address. A reload gets fresh UIDs and a new epoch (6a-5). Upgrade:
+  // retyped) may reuse a freed one's address. A reload gets fresh UIDs and a new epoch. Upgrade:
   // a generation number in the parser slot.
   const auto parser_identity = static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(parser.parser));
   key.insert(key.end(), {topic->id, entry->uid.value, parser_identity});

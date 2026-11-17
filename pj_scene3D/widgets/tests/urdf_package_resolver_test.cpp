@@ -27,7 +27,6 @@ std::string fixtures() {
   return std::string(PJ_SCENE3D_FIXTURES_DIR);
 }
 
-// A throwaway in-memory QSettings (Ini format, unique temp file per test).
 class ScopedSettings {
  public:
   ScopedSettings() {
@@ -45,10 +44,6 @@ class ScopedSettings {
   std::unique_ptr<QSettings> settings_;
 };
 
-// ---------------------------------------------------------------------------
-// URI-scheme dispatch + the package:// guard
-// ---------------------------------------------------------------------------
-
 TEST(UrdfResolver, FileSchemeStrippedToAbsolutePath) {
   UrdfPackageResolver r;
   const ResolvedMesh m = r.resolveUri("file:///abs/path/mesh.stl", "/some/dir", false);
@@ -60,12 +55,11 @@ TEST(UrdfResolver, FileSchemeStrippedToAbsolutePath) {
 TEST(UrdfResolver, BarePathJoinsUrdfDirAndSkipsPackageSearch) {
   UrdfPackageResolver r;
   r.addSearchRoot(QString::fromStdString(fixtures() + "/search_root"));
-  // This bare path's first segment matches a package dir in the search root,
-  // but the guard must keep it OUT of the package search.
+  // This bare path's first segment matches a package dir in the search root, but the guard must keep it OUT of the
+  // package search.
   const ResolvedMesh m = r.resolveUri("demo_description/meshes/x.stl", "/urdf/dir", false);
   EXPECT_TRUE(m.resolved);
   EXPECT_EQ(m.path, "/urdf/dir/demo_description/meshes/x.stl");
-  // The chain never ran: no package recorded on the result.
   EXPECT_TRUE(m.package.empty());
   EXPECT_EQ(m.issue, MeshResolveIssue::kNone);
 }
@@ -102,10 +96,6 @@ TEST(UrdfResolver, AbsolutePathPassthroughAndMissing) {
   EXPECT_EQ(miss.issue, MeshResolveIssue::kMissingFile);
 }
 
-// ---------------------------------------------------------------------------
-// Chain step 0 — embedded-asset exact-name lookup
-// ---------------------------------------------------------------------------
-
 TEST(UrdfResolver, Step0_AttachmentExactNameHit) {
   UrdfPackageResolver r;
   QMap<QString, QByteArray> att;
@@ -114,25 +104,18 @@ TEST(UrdfResolver, Step0_AttachmentExactNameHit) {
 
   const ResolvedMesh m = r.resolveUri("package://demo_description/meshes/base.dae", "", false);
   ASSERT_TRUE(m.resolved);
-  // Extracted to a temp file; the bytes must round-trip.
   QFile f(QString::fromStdString(m.path));
   ASSERT_TRUE(f.open(QIODevice::ReadOnly));
   EXPECT_EQ(f.readAll(), QByteArray("DAE-BYTES"));
 }
-
-// ---------------------------------------------------------------------------
-// Chain step 1 — remembered per-source map (QSettings)
-// ---------------------------------------------------------------------------
 
 TEST(UrdfResolver, Step1_RememberedPerSourceMapHit) {
   ScopedSettings s;
   UrdfPackageResolver r;
   r.setSettings(s.get());
   r.setSourcePath("/data/run42.dat");
-  // rememberPackageRoot writes both the per-source map and the global roots.
   r.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
 
-  // A fresh resolver reading the same settings + source path resolves via step 1.
   UrdfPackageResolver r2;
   r2.setSettings(s.get());
   r2.setSourcePath("/data/run42.dat");
@@ -140,14 +123,8 @@ TEST(UrdfResolver, Step1_RememberedPerSourceMapHit) {
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
 
-// ---------------------------------------------------------------------------
-// Chain step 2 — ancestor heuristic (walk up urdf_dir for basename == pkg)
-// ---------------------------------------------------------------------------
-
 TEST(UrdfResolver, Step2_AncestorHeuristicHit) {
   UrdfPackageResolver r;
-  // urdf_dir is inside ws/demo_description/ ; walking up finds the pkg-named
-  // ancestor and verifies ancestor/rel exists.
   const std::string urdf_dir = fixtures() + "/ws/demo_description";
   const std::string p = r.resolve("demo_description", "meshes/anc.stl", urdf_dir, false);
   EXPECT_EQ(p, fixtures() + "/ws/demo_description/meshes/anc.stl");
@@ -156,8 +133,7 @@ TEST(UrdfResolver, Step2_AncestorHeuristicHit) {
 TEST(UrdfResolver, Step2_AncestorRejectsWhenRelMissing) {
   UrdfPackageResolver r;
   const std::string urdf_dir = fixtures() + "/ws/demo_description";
-  // The ancestor basename matches, but the rel file does not exist there → no
-  // false-positive accept; falls through (and, with no roots, is unresolved).
+  // The ancestor basename matches but the rel file does not exist there: no false-positive accept, it falls through.
   const std::string p = r.resolve("demo_description", "meshes/DOES_NOT_EXIST.stl", urdf_dir, false);
   EXPECT_TRUE(p.empty());
 }
@@ -168,10 +144,6 @@ TEST(UrdfResolver, Step2_UrlAncestorHeuristic) {
   const std::string p = r.resolve("demo_description", "meshes/base.dae", base, /*source_is_url=*/true);
   EXPECT_EQ(p, "https://example.com/repo/demo_description/meshes/base.dae");
 }
-
-// ---------------------------------------------------------------------------
-// Chain step 3 — search roots (basename match, no package.xml)
-// ---------------------------------------------------------------------------
 
 TEST(UrdfResolver, Step3_SearchRootHit) {
   UrdfPackageResolver r;
@@ -193,14 +165,8 @@ TEST(UrdfResolver, Step3_AutoSeedFromEnv) {
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
 
-// ---------------------------------------------------------------------------
-// Chain miss — unresolved package is reported on the result (not a global tally)
-// ---------------------------------------------------------------------------
-
 TEST(UrdfResolver, PackageMissReportedOnResult) {
   UrdfPackageResolver r;  // no assets, no settings, no roots
-  // resolve() (the package chain) returns "" on a miss; resolveUri() surfaces
-  // the offending package + reason in the return value (no resolver-global tally).
   const std::string p = r.resolve("ghost_pkg", "meshes/x.stl", "", false);
   EXPECT_TRUE(p.empty());
   const ResolvedMesh m = r.resolveUri("package://ghost_pkg/meshes/x.stl", "", false);
@@ -209,7 +175,6 @@ TEST(UrdfResolver, PackageMissReportedOnResult) {
   EXPECT_EQ(m.issue, MeshResolveIssue::kUnresolvedPackage);
 }
 
-// A malformed package:// URI (no "/rel" part) is reported as kMalformedRef.
 TEST(UrdfResolver, MalformedPackageUriReported) {
   UrdfPackageResolver r;
   const ResolvedMesh m = r.resolveUri("package://justpkg", "", false);
@@ -218,9 +183,7 @@ TEST(UrdfResolver, MalformedPackageUriReported) {
   EXPECT_TRUE(m.package.empty());
 }
 
-// ---------------------------------------------------------------------------
-// Stop-at-first-hit ordering: attachment beats search root.
-// ---------------------------------------------------------------------------
+// Stop at the first hit: an attachment beats a search root.
 
 TEST(UrdfResolver, AttachmentTakesPriorityOverSearchRoot) {
   UrdfPackageResolver r;
@@ -235,7 +198,6 @@ TEST(UrdfResolver, AttachmentTakesPriorityOverSearchRoot) {
   EXPECT_EQ(f.readAll(), QByteArray("ATTACHED"));  // not the on-disk search-root file
 }
 
-// rememberPackageRoot persists globally and makes the package resolvable.
 TEST(UrdfResolver, RememberPersistsAndResolves) {
   ScopedSettings s;
   UrdfPackageResolver r;
@@ -244,15 +206,13 @@ TEST(UrdfResolver, RememberPersistsAndResolves) {
   EXPECT_TRUE(r.resolve("demo_description", "meshes/base.stl", "", false).empty());
 
   r.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
-  // Now resolvable via the freshly-added global root.
   const std::string p = r.resolve("demo_description", "meshes/base.stl", "", false);
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
 
-// rememberPackageRoot must enable cross-dataset (step-3) resolution: a FRESH
-// resolver on a DIFFERENT source (so the per-source map, step 1, misses) resolves
-// via the persisted GLOBAL search root. Regression guard for the
-// parent-vs-package-dir double-nesting bug (which made step 3 silently miss).
+// rememberPackageRoot must enable cross-dataset (step 3) resolution: a FRESH resolver on a DIFFERENT source (so the
+// per-source map, step 1, misses) resolves via the persisted GLOBAL search root. The stored root must be the package
+// directory's parent, not the package directory itself (double nesting would make step 3 silently miss).
 TEST(UrdfResolver, RememberEnablesCrossDatasetSearchRoot) {
   ScopedSettings s;
   UrdfPackageResolver r1;
@@ -268,14 +228,8 @@ TEST(UrdfResolver, RememberEnablesCrossDatasetSearchRoot) {
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
 
-// ---------------------------------------------------------------------------
-// Attachment extraction: collision-proof on-disk names + immutable rewrite-skip
-// ---------------------------------------------------------------------------
-
-// Two well-formed refs that flatten to the SAME name ("package://pkg/a/b.stl" vs
-// "package://pkg/a_b.stl" both -> "package___pkg_a_b.stl") must extract to
-// DISTINCT files with their respective bytes — the hash prefix disambiguates
-// them.
+// Two well-formed refs that flatten to the SAME name ("package://pkg/a/b.stl" vs "package://pkg/a_b.stl", both
+// "package___pkg_a_b.stl") must extract to DISTINCT files with their own bytes: the hash prefix disambiguates them.
 TEST(UrdfResolver, CollidingAttachmentRefsExtractToDistinctFiles) {
   UrdfPackageResolver r;
   QMap<QString, QByteArray> att;
@@ -297,11 +251,9 @@ TEST(UrdfResolver, CollidingAttachmentRefsExtractToDistinctFiles) {
   EXPECT_EQ(f2.readAll(), QByteArray("SECOND"));
 }
 
-// A second resolve of the same attachment returns the same path WITHOUT
-// rewriting the file (immutable content) — guards the truncation-under-assimp
-// race. We overwrite the extracted bytes out-of-band, resolve
-// again, and assert the resolver left our bytes intact (it did not reopen
-// WriteOnly).
+// A second resolve of the same attachment returns the same path WITHOUT rewriting the file (immutable content; guards
+// the truncation-under-assimp race): the extracted bytes are overwritten out-of-band, resolved again, and must stay
+// intact (the resolver did not reopen WriteOnly).
 TEST(UrdfResolver, AttachmentReResolveDoesNotRewrite) {
   UrdfPackageResolver r;
   QMap<QString, QByteArray> att;
@@ -310,7 +262,6 @@ TEST(UrdfResolver, AttachmentReResolveDoesNotRewrite) {
 
   const ResolvedMesh first = r.resolveUri("package://demo/mesh.stl", "", false);
   ASSERT_TRUE(first.resolved);
-  // Tamper with the extracted file out-of-band.
   {
     QFile tamper(QString::fromStdString(first.path));
     ASSERT_TRUE(tamper.open(QIODevice::WriteOnly | QIODevice::Truncate));
@@ -320,8 +271,6 @@ TEST(UrdfResolver, AttachmentReResolveDoesNotRewrite) {
   const ResolvedMesh second = r.resolveUri("package://demo/mesh.stl", "", false);
   ASSERT_TRUE(second.resolved);
   EXPECT_EQ(second.path, first.path);
-  // The resolver must NOT have rewritten the (immutable) file with attachment
-  // bytes — our tampered content is still there.
   QFile check(QString::fromStdString(second.path));
   ASSERT_TRUE(check.open(QIODevice::ReadOnly));
   EXPECT_EQ(check.readAll(), QByteArray("TAMPERED"));
@@ -347,15 +296,9 @@ TEST(UrdfResolver, SetAttachmentsResetsExtractionDir) {
   EXPECT_EQ(f.readAll(), QByteArray("NEW"));
 }
 
-// ---------------------------------------------------------------------------
-// Explicit per-model package URL roots
-// ---------------------------------------------------------------------------
-
-// The dock shares one resolver across its robots, so each model's mapping
-// travels with the call: two models naming the same package resolve to their
-// own roots, and a model without a mapping keeps the legacy chain. An HTTP root
-// works for a topic source of a web-hosted layout, yet the topic's own http refs
-// stay blocked.
+// The dock shares one resolver across its robots, so each model's mapping travels with the call: two models naming
+// the same package resolve to their own roots, and a model without a mapping keeps the default chain. An HTTP root
+// works for a topic source of a web-hosted layout, yet the topic's own http refs stay blocked.
 TEST(UrdfResolver, TwoModelsKeepIndependentMappings) {
   UrdfPackageResolver shared;
   shared.addSearchRoot(QString::fromStdString(fixtures() + "/search_root"));
@@ -444,7 +387,6 @@ TEST(UrdfResolver, EncodedTraversalStaysInsideTheMappedRoot) {
       EXPECT_EQ(mesh.issue, MeshResolveIssue::kUnresolvedPackage) << rel;
     }
   }
-  // An ordinary encoded character is still fine.
   const ResolvedMesh spaced = resolver.resolveUri("package://pkg/meshes/my%20part.stl", "", false, file_roots);
   ASSERT_TRUE(spaced.resolved);
   EXPECT_EQ(spaced.path, "/allowed/pkg/meshes/my part.stl");

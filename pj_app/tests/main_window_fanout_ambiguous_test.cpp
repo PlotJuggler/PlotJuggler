@@ -1,16 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// FIX 4: applyTimelineStateFromLayout's fan-out matcher must not GUESS when the
-// saved fan-out shape no longer matches the loaded one. If MORE THAN ONE saved
-// <dataset> child of a <fileInfo> shares a source_name, those children are
-// indistinguishable by name and bind by source_index ONLY — and only when the
-// same-named fan-out shape is preserved. When it is not (two saved "camera" tracks
-// but only one "camera" candidate loaded), NO offset is applied to the survivor: a
-// name match must never let it inherit an offset we cannot prove is its own.
-//
-// One MainWindow per binary (its dtor leaks process state), so this scenario lives
-// in its own test target rather than a second TEST in main_window_source_layout_test.
+// applyTimelineStateFromLayout's fan-out matcher must not guess when the saved fan-out shape no longer matches the
+// loaded one: saved <dataset> children of a <fileInfo> that share a source_name bind by source_index only, and only
+// while the same-named shape is preserved. With two saved "camera" tracks but one "camera" candidate, no offset is
+// applied to the survivor. One MainWindow per binary (its dtor leaks process state), so this has its own target.
 
 #include <gtest/gtest.h>
 
@@ -57,17 +51,16 @@ PJ::DatasetId addDataset(PJ::AppSession& app, std::string_view source_name, std:
   return dataset;
 }
 
-// Two saved children named "camera" (+1s, +2s) load into a session where only ONE
-// same-named candidate exists. The fan-out shape changed, so neither offset binds.
+// Two saved children named "camera" (+1s, +2s) load into a session with one same-named candidate: neither offset
+// binds.
 TEST(MainWindowFanoutAmbiguousTest, DuplicateSavedNameWithFewerCandidatesAppliesNoOffset) {
   QTemporaryDir extensions_dir;
   QTemporaryDir project_dir;
   ASSERT_TRUE(extensions_dir.isValid());
   ASSERT_TRUE(project_dir.isValid());
   const QString source_path = project_dir.filePath(QStringLiteral("data/run.mcap"));
-  // isSamePath compares canonical paths (empty for a non-existent file), so the
-  // source file must exist on disk for the loaded "camera" dataset to be a candidate.
-  // Without this the test would pass for the WRONG reason (no candidate at all).
+  // isSamePath compares canonical paths (empty for a missing file), so the source file must exist for the loaded
+  // "camera" dataset to be a candidate; otherwise the test passes for the wrong reason.
   ASSERT_TRUE(QDir().mkpath(QFileInfo(source_path).absolutePath()));
   {
     QFile source_file(source_path);
@@ -78,15 +71,13 @@ TEST(MainWindowFanoutAmbiguousTest, DuplicateSavedNameWithFewerCandidatesApplies
   PJ::AppSession& app = PJ::MainWindowFanoutAmbiguousTestPeer::session(window);
   PJ::SessionManager& session = app.sessionManager();
 
-  // Only ONE "camera" dataset loaded from run.mcap (the fan-out collapsed to one).
   const PJ::DatasetId camera = addDataset(app, "camera", "/image");
   ASSERT_NE(camera, 0U);
   app.catalogModel().rebuildFromDatastore();
   session.setDatasetSourcePath(camera, source_path);
   ASSERT_EQ(session.sourceDisplayOffset(camera).value.count(), 0);
 
-  // Build a v4 ref whose <fileInfo> saved TWO "camera" children (a genuine fan-out
-  // at save time) with distinct offsets and source_index 0/1.
+  // A ref whose <fileInfo> saved two "camera" children (a real fan-out) with distinct offsets, source_index 0/1.
   PJ::layout_xml::DataSourceRef ref;
   ref.resolved_path = source_path;
   PJ::layout_xml::DataSourceDatasetRef saved0;
@@ -103,8 +94,7 @@ TEST(MainWindowFanoutAmbiguousTest, DuplicateSavedNameWithFewerCandidatesApplies
 
   const bool changed = PJ::MainWindowFanoutAmbiguousTestPeer::applyTimeline(window, {ref});
 
-  // Neither saved offset may bind: a name match must not shift the lone survivor, and
-  // source_index 1 is out of range. The dataset keeps its natural zero offset.
+  // Neither offset binds: a name match must not shift the lone survivor, and source_index 1 is out of range.
   EXPECT_FALSE(changed) << "an ambiguous same-named fan-out collapse must apply no offset";
   EXPECT_EQ(session.sourceDisplayOffset(camera).value.count(), 0)
       << "the surviving 'camera' must not inherit either saved offset";

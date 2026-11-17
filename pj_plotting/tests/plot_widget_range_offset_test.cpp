@@ -1,21 +1,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The plot's saved X-axis (time) range must be persisted in ABSOLUTE time, not
-// in the display-relative seconds the Qwt axis speaks. PJ4's display offset is
-// per-dataset and live (it tracks the "Use time offset" toggle and each
-// dataset's earliest sample), so a range saved in display coordinates only
-// frames the right window for the exact offset present at save time. Storing
-// absolute time makes a restored range correct regardless of the offset state
-// at load (different toggle position, reloaded data, a shared layout).
+// The plot's saved X-axis (time) range is persisted in absolute time, not in the display-relative seconds the Qwt axis
+// speaks: the display offset is per dataset and live (it tracks the "Use time offset" toggle and each dataset's
+// earliest sample), so a range saved in display coordinates frames the right window only for the offset present at save
+// time. Absolute time restores correctly whatever the offset state at load (another toggle position, reloaded data, a
+// shared layout).
 //
-// The X edges are persisted TWICE: authoritative integer nanoseconds
-// (left_ns/right_ns) plus human-readable decimal seconds (left/right, also the
-// v3-layout fallback). An explicit x_basis marker ("absolute" for time-series,
-// "value" for XY) records the coordinate meaning so load never re-infers it
-// from plot mode. This suite pins the single-ns design: exact integer
-// round-trip at epoch scale, the v3 decimal fallback, the x_basis marker, and
-// the degenerate-range tolerance that keeps a sub-ns snapshot restorable.
+// The X edges are persisted twice: authoritative integer nanoseconds (left_ns/right_ns) and human-readable decimal
+// seconds (left/right, also the v3-layout fallback). An explicit x_basis marker ("absolute" for time series, "value"
+// for XY) records the coordinate meaning so load never re-infers it from the plot mode. This suite pins the exact
+// integer round trip at epoch scale, the v3 decimal fallback, the x_basis marker and the degenerate-range tolerance
+// that keeps a sub-ns snapshot restorable.
 
 #include <gtest/gtest.h>
 
@@ -37,8 +33,8 @@ namespace {
 // Samples sit at a realistic absolute epoch (~2020), so the per-dataset "Use
 // time offset" shift is ~1.6e9 s -- large enough that a display-relative range
 // ([0, 1]) and the absolute range ([1.6e9, 1.6e9 + 1]) are wildly different
-// numbers. That gap is exactly what the bug under test produces, and it is also
-// where a double's ULP (~238 ns at 1.6e9 s) would round away a deep-zoom window.
+// numbers (the gap a display-relative save would show), and a double's ULP (~238 ns at 1.6e9 s) would round away a
+// deep-zoom window.
 constexpr PJ::Timestamp kT0Ns = 1'600'000'000'000'000'000;  // 1.6e9 s, in ns
 constexpr PJ::Timestamp kOneSecondNs = 1'000'000'000;
 constexpr double kT0Sec = 1'600'000'000.0;
@@ -140,9 +136,8 @@ TEST(PlotWidgetRangeOffset, IntegerNsEdgesPreserveSubUlpWindow) {
   EXPECT_EQ(range.attribute(u"right_ns"_s).toLongLong(), kT0Ns + 200);
 }
 
-// The core bug: save with the offset ON, load with it OFF. The restored axis
-// must still frame the same ABSOLUTE instant. With the offset now 0, display ==
-// absolute, so the axis reads [1.6e9, 1.6e9 + 1].
+// Save with the offset on, load with it off: the restored axis frames the same absolute instant. With the offset 0,
+// display == absolute, so the axis reads [1.6e9, 1.6e9 + 1].
 TEST(PlotWidgetRangeOffset, RestoresAbsoluteWindowAcrossOffsetChange) {
   PlotFixture fixture;
   fixture.session.setUseTimeOffset(true);
@@ -179,12 +174,9 @@ TEST(PlotWidgetRangeOffset, RestoresDisplayWindowWhenOffsetUnchanged) {
   EXPECT_NEAR(rect.right(), 1.0, 1e-3);
 }
 
-// A deeply-zoomed 3 ns window must survive save/load EXACTLY through the integer
-// edges, even at epoch scale where the decimal seconds are useless. Display
-// window [100 ns, 103 ns] round-trips back to itself (offset unchanged), so the
-// restored ns-domain edges reproduce the exact 3 ns span. This is the
-// single-ns + clamp retarget of the donor's sub-ns "keep magnified snapshot
-// restorable" case.
+// A deeply zoomed 3 ns window survives save/load exactly through the integer edges, even at epoch scale where the
+// decimal seconds are useless: display window [100 ns, 103 ns] round-trips to itself (offset unchanged), so the
+// restored ns-domain edges reproduce the 3 ns span.
 TEST(PlotWidgetRangeOffset, DeepMagnificationWindowRoundTripsExactly) {
   PlotFixture fixture;
   fixture.session.setUseTimeOffset(true);

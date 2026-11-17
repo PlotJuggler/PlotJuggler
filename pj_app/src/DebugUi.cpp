@@ -29,8 +29,7 @@ namespace {
 
 constexpr auto kQssSettingsKey = "DebugUi/qssLayerEnabled";
 
-// Pesticide-style debug stylesheet appended over the active theme when
-// the QSS layer is toggled on. Borders shift layout by 1px — accepted.
+// Pesticide-style debug stylesheet; its borders shift layout by 1px.
 QString debugQss() {
   return QStringLiteral(R"qss(
 * { border: 1px dotted %1; }
@@ -130,9 +129,7 @@ QColor colourForDepth(int depth) {
   return QColor::fromHsl((depth * 47) % 360, 220, 130, 220);
 }
 
-// Pesticide overlay: paints over the host's subtree, mouse-transparent,
-// no layout impact. Repaints on geometry / show / hide events from any
-// widget so nested moves keep the dashed outlines in sync.
+// Repaints on geometry / show / hide events from any widget, so nested moves keep the outlines in sync.
 class PesticideOverlay : public QWidget {
  public:
   explicit PesticideOverlay(QWidget* host) : QWidget(host), host_(host) {
@@ -227,7 +224,6 @@ class PesticideOverlay : public QWidget {
 }  // namespace
 
 void DebugUi::installInto(QMainWindow* host, Theme* theme) {
-  // Parented to the host so destruction is automatic.
   new DebugUi(host, theme);
 }
 
@@ -243,30 +239,22 @@ DebugUi::DebugUi(QMainWindow* host, Theme* theme) : QObject(host), host_(host), 
   qss_shortcut->setContext(Qt::ApplicationShortcut);
   connect(qss_shortcut, &QShortcut::activated, this, &DebugUi::toggleQssLayer);
 
-  // Re-apply our debug layer whenever the base theme rewrites the global
-  // stylesheet, so the overlay survives theme switches.
   if (theme_ != nullptr) {
     connect(theme_, &Theme::qssChanged, this, &DebugUi::applyQss);
   }
 
-  // Restore persisted state.
   if (qss_enabled_) {
     applyQss();
   }
 }
 
 void DebugUi::toggleOverlay() {
-  // overlay_ is a PesticideOverlay we constructed in the ctor; the type
-  // is private to this translation unit so we stash it as QWidget* and
-  // recover with static_cast. PesticideOverlay has no Q_OBJECT (it
-  // doesn't need signals/slots) so qobject_cast wouldn't work anyway.
+  // PesticideOverlay is private to this file and has no Q_OBJECT, hence the static_cast.
   auto* pesticide = static_cast<PesticideOverlay*>(overlay_);
   const bool enabled = !pesticide->isEnabled();
   pesticide->setEnabled(enabled);
 
-  // Tree ROWS are model items, not child widgets, so the pesticide walk cannot
-  // see them at all. The views draw their own row/cell/decoration outlines on
-  // the same toggle, so one shortcut covers both.
+  // Tree rows are model items, invisible to the widget walk: the views draw their own outlines.
   CurveTreeView::setGeometryDebugEnabled(enabled);
   for (CurveTreeView* tree : host_->findChildren<CurveTreeView*>()) {
     tree->viewport()->update();
@@ -280,11 +268,8 @@ void DebugUi::toggleQssLayer() {
 }
 
 void DebugUi::applyQss() {
-  // Theme owns the canonical stylesheet; we layer our debug rules on top
-  // (or strip them off) by writing the global stylesheet directly. Order
-  // of slot dispatch on qssChanged: Theme's own listener (which sets
-  // qApp->styleSheet to expandedQss()) runs first because it was
-  // connected during MainWindow construction; ours runs after.
+  // Overwrites the global stylesheet, so it must run after MainWindow's qssChanged listener, which is connected
+  // first (in MainWindow's constructor, before installInto).
   if (theme_ == nullptr) {
     return;
   }

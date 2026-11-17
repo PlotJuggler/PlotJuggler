@@ -47,9 +47,8 @@ class TelemetryPing : public QObject {
   QUrl endpointUrl() const;
 
  signals:
-  // Terminal outcome of a send; `ok` == the POST got a 2xx reply. The shell
-  // deliberately ignores this (failures are silent by design) — it exists for
-  // test observability and future diagnostics.
+  // Terminal outcome of a send; `ok` == the POST got a 2xx reply. The shell ignores it (failures are silent by
+  // design); it exists for test observability.
   void finished(bool ok);
 
  private:

@@ -25,25 +25,26 @@
 
 namespace PJ {
 
-/// Runs the on-demand nodes on the pool under the result policy D30 (docs/derived_objects/ARCHITECTURE.md §4
-/// invariant 1, §8, §11). Per node: one run in flight and one pending request, which holds only the latest
-/// time. A time-only request never cancels the running run: it completes, is published, and then the pending
-/// request starts. A run is cancelled, and its result dropped, only when its meaning changes: a new revision
-/// (its own or an upstream's, `supersede`), a removal (`forget`), or a new epoch of its dataset (seen at the
-/// next request, and again at publication).
+/// Runs the on-demand nodes on the pool under the result policy (see `BatchEngine`'s class comment: a slow node keeps
+/// showing results at the rate it can sustain). Per node: one run in flight and one pending request, which holds only
+/// the latest time. A time-only request never cancels the running run: it completes, is published, and then the pending
+/// request starts. A run is cancelled, and its result dropped, only when its meaning changes: a new revision (its own
+/// or an upstream's, `supersede`), a removal (`forget`), or a new epoch of its dataset (seen at the next request, and
+/// again at publication).
 ///
-/// A request stages the node's inputs on the GUI thread (cheap, so at every request), then serves it from the
-/// history when it can: a cache hit or a result the ring holds computes nothing, republishes only a result the
-/// ring no longer shows, and drops the tombstones it supersedes. A missing input runs nothing and clears what the
-/// ring shows at the requested time (D6); a failed run that serves the current request clears what it shows at the
-/// run's stamp, and every failed run is remembered by its key, so the same inputs fail again without a run, clearing
-/// again (an input that failed to fetch or decode, only until the next request). After every run, a result that serves
-/// the current request settles it; otherwise the current request is served again (the run was for another time,
-/// or its inputs are gone), and a late result that does not serve it never takes the ring entry that does.
+/// A request stages the node's inputs on the GUI thread (cheap, so at every request), then serves it from the history
+/// when it can: a cache hit or a result the ring holds computes nothing, republishes only a result the ring no longer
+/// shows, and drops the tombstones it supersedes. A missing input runs nothing and clears what the ring shows at the
+/// requested time (a missing input never shows the previous geometry); a failed run that serves the current request
+/// clears what it shows at the run's stamp, and every failed run is remembered by its key, so the same inputs fail
+/// again without a run, clearing again (an input that failed to fetch or decode, only until the next request). After
+/// every run, a result that serves the current request settles it; otherwise the current request is served again (the
+/// run was for another time, or its inputs are gone), and a late result that does not serve it never takes the ring
+/// entry that does.
 ///
 /// A node reading an upstream's output first requests the upstream at the same time and waits for it (one task
 /// per node). Each publication of an upstream serves its readers again, which take the result it shows, so a
-/// reader keeps updating while its upstream lags (D30) and converges with it; every settlement of an upstream
+/// reader keeps updating while its upstream lags and converges with it; every settlement of an upstream
 /// (published, served from the history, missing, failed) serves the readers waiting on it. Runs that do not fit
 /// the in-flight budget wait in its line, first in, first out with the marker runs (`InFlightBudget`); a finishing
 /// run serves that line first, then its readers, then its own next run.
@@ -55,7 +56,7 @@ namespace PJ {
 /// the pool (a run still on the pool holds its reservation). A callback must not call back into the scheduler.
 class NodeScheduler {
  public:
-  /// What a layer shows about a node (REQUIREMENTS D6, D30).
+  /// What a layer shows about a node.
   struct NodeState {
     enum class Status {
       kIdle,          ///< no request waits or has settled: the default
@@ -68,15 +69,15 @@ class NodeScheduler {
     std::string detail;         ///< why, for kMissingInput and kError
     Timestamp requested_t = 0;  ///< the newest request's time (a finding's pinned time)
     /// How far the result shown at `requested_t` is behind the one the newest request produces: the difference
-    /// of their stamps (REQUIREMENTS D30), 0 once it is shown. nullopt when no available result is shown, or
+    /// of their stamps, 0 once it is shown. nullopt when no available result is shown, or
     /// the target is not known yet (an upstream computes first), and in kIdle, kMissingInput and kError.
     std::optional<Timestamp> lag;
 
     bool operator==(const NodeState&) const = default;
   };
 
-  /// The dataset's TF state, taken when a run is submitted (GUI thread); null when the dataset has no TF. While
-  /// the dataset's TF ingest is active, return a snapshot no newer than the brake rate allows (ARCHITECTURE §19).
+  /// The dataset's TF state, taken when a run is submitted (GUI thread); null when the dataset has no TF. While its TF
+  /// ingest is active, return a snapshot no newer than the brake rate allows.
   using TfProvider = std::function<std::shared_ptr<const pj::tf::TransformSnapshot>(DatasetId)>;
   /// The revision the dataset's TF state has now, read at every request to match results that read the TF tree,
   /// with no snapshot taken (GUI thread).
@@ -125,7 +126,7 @@ class NodeScheduler {
   void supersede(std::string_view key);
   /// The node is gone: cancels its run, whose result is then dropped, and forgets its state.
   void forget(std::string_view key);
-  /// Nothing demands the node any more (DEM-03): drops its waiting request and settles it idle. A running run still
+  /// Nothing demands the node any more: drops its waiting request and settles it idle. A running run still
   /// publishes into the history (and settles the node ready when it was for its last request); nothing starts for the
   /// node until its next request. Kept, returning false, while a reader that still has a request reads it.
   bool withdraw(std::string_view key);
@@ -192,14 +193,14 @@ class NodeScheduler {
   bool apply(Entry& entry, const RecipeGraph::Node& node, Job& job);
   /// The result at `stamp` serves the newest request: drops the tombstones it supersedes and settles ready.
   void settleServed(Entry& entry, Timestamp stamp);
-  /// Runs nothing, clears what the ring shows at the cursor (D6) and settles the newest request as missing input.
+  /// Runs nothing, clears what the ring shows at the cursor and settles the newest request as missing input.
   /// With `keep_finding`, a finding that shows a result keeps it and settles ready instead: its inputs left the window
   /// (an upstream's results followed its own cursor, retention), they did not change. A removed upstream passes false;
   /// a new revision or epoch has already dropped the finding.
   void settleMissing(
       Entry& entry, const RecipeGraph::Node& node, uint64_t epoch, std::string reason, bool keep_finding = true);
   /// Publishes every output unavailable at `stamp` when an available result is shown there, or when nothing is and
-  /// the node's results were dropped, since a layer may still draw one (`ResultHistory::resultsDropped`) (D6).
+  /// the node's results were dropped, since a layer may still draw one (`ResultHistory::resultsDropped`).
   void clearShown(
       const std::string& key, const RecipeGraph::Node& node, Timestamp requested_t, Timestamp stamp, uint64_t epoch,
       const std::string& reason);

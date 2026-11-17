@@ -1,55 +1,42 @@
 # PJ4 top-level `docs/`
 
-This folder is for **cross-cutting documentation only** — material that doesn't fit inside any single module's `docs/` folder.
+Cross-cutting documentation: designs that span modules, build and deployment guides, and research notes. A module's
+own docs live in `<module>/`: its `CLAUDE.md` (purpose, invariants, key headers, tests) and, when warranted,
+`docs/ARCHITECTURE.md` (how it works today, ending with its known gaps) and `docs/TECHNICAL_NOTES.md` (what was
+observed or tried, under which conditions). The root [`CLAUDE.md`](../CLAUDE.md) lists the modules and sets the
+documentation rules.
 
-> **Qt toolchain:** PJ4 builds against the Qt version pinned by `PJ_QT_VERSION` in
-> [`../versions.env`](../versions.env). Install it with
-> [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh). See
-> [`QT_NOTES.md`](./QT_NOTES.md) for what changed since 6.8.
+## Designs
 
-Examples of what belongs here:
+| Path | Contents |
+|---|---|
+| [`derived_objects/`](./derived_objects/README.md) | Derived series and objects: functions over scalar and object topics, evaluated on demand. Start at `README.md`; the design is `ARCHITECTURE.md`. |
+| [`RECORDING_AND_CACHING.md`](./RECORDING_AND_CACHING.md) | The session recorder and the source cache: intent, architecture, trade-offs and rejected alternatives. |
+| [`MCP_SERVER.md`](./MCP_SERVER.md) | AI agents over MCP: the in-app server, its stdio bridge and the `pj.mcp_endpoint.v1` plugin endpoint, jobs, tokens, security and tests. |
+| [`visibility_gated_updates_plan.md`](./visibility_gated_updates_plan.md) | Open proposal: stop updating docks the user cannot see (maximize-hidden siblings, the scene streaming seam), with the catch-up on show it needs. |
 
-- Glossary or terminology references used across the repo.
-- Architecture decision records (ADRs) for choices that affect multiple modules.
-- **Research notes** that informed multiple modules' designs — under `research/`.
-- Work-in-progress design specs for modules that don't yet have their own `docs/`.
-- Retired plans retained for historical context — under `archive/`.
+## Guides
 
-## What does NOT belong here
+| Path | Contents |
+|---|---|
+| [`BUILDING.md`](./BUILDING.md) | Prerequisites, Linux and Windows builds, tests, build internals, versions, portability, third-party dependencies. Packaging formats: [`packaging/README.md`](../packaging/README.md). |
+| [`SANITIZERS.md`](./SANITIZERS.md) | The `none` / `asan` / `tsan` / `msan` lanes: selectors, build trees, coverage, runtime defaults and the suppression policy. |
+| [`QT_NOTES.md`](./QT_NOTES.md) | The pinned Qt (`PJ_QT_VERSION` in [`versions.env`](../versions.env)) and what changed since 6.8: new APIs, deprecations, build floors. Read before using an unfamiliar Qt API. |
+| [`TELEMETRY.md`](./TELEMETRY.md) | The anonymous launch ping: the exact field list (enforced by `telemetry_ping_test`), opt-out and guards. Update together with any payload change. |
+| [`WASM_DEPLOYMENT.md`](./WASM_DEPLOYMENT.md) | The browser build: build and packaging, built-in plugins, notices and source offer, browser Python, the HTTP contract, browser-local state, presets, local serving and test fixtures. |
+| [`WASM_PRESETS.md`](./WASM_PRESETS.md) | Browser presets: the layout contract, streaming sources, authoring, `package_wasm.mjs --presets` and what it refuses, tests, hosting. |
+| [`WASM_HOSTING.md`](./WASM_HOSTING.md) | Serving the browser app from a robot over HTTPS with Caddy ([`wasm/Caddyfile`](./wasm/Caddyfile)), which also proxies the PlotJuggler Bridge at `/bridge`. |
 
-- **Module-local intent docs** (REQUIREMENTS, ARCHITECTURE, USER_MANUAL, …) — those live in `<module>/docs/`.
-  Examples in this repo: `pj_scene2D/docs/`, `pj_marketplace/docs/`.
-- **Agent-management state** (`.remember/`, `.claude/`, `.agents/`) — those are not human-readable docs.
+## Research
 
-## Current contents
+Findings and measurements with the conditions they were taken under; versions and pins quoted in them are those of
+the time, and the code and manifests are authoritative.
 
-| Path | Status | Notes |
-|---|---|---|
-| [`BUILDING.md`](./BUILDING.md) | Guide | Build prerequisites, Linux/Windows setup, tests, and links to packaging and browser build instructions. |
-| [Packaging guides](../packaging/README.md) | Guide | AppImage and Docker builds, Debian packages, and Windows installers. |
-| [`SANITIZERS.md`](./SANITIZERS.md) | Guide | The `none` / `asan` / `tsan` / `msan` build lanes: selectors, build trees, test coverage, runtime defaults and the suppression policy. |
-| `archive/PJ4_PLAN.md` | Retired | Original master plan; current architecture lives in root and module `CLAUDE.md` / `docs/`. Ongoing recording and cache work lives in the documents below. |
-| `archive/QRHI_MIGRATION.md` | Retired | The completed QRhi migration of Scene3D, the plots and the media viewer (phases P0–P5, per-stream measurements, the Gate A sign-off and the final Gate A run against the GL renderer). The as-built design is in `pj_scene3D/docs/ARCHITECTURE.md` and `TECHNICAL_NOTES.md`; the remaining work in `pj_scene3D/docs/QRHI_NEXT.md`. |
-| [`archive/derived_objects/SCENARIOS.md`](./archive/derived_objects/SCENARIOS.md) | Retired | The scenario catalog that mapped the derived-objects prototype's tests to behaviours. Not maintained; its row IDs (GAP-02, STR-05, ...) are still cited by tests. |
-| `research/mosaico_canonical_objects.md` | Reference | Mosaico canonical-object ingestion, decoding, and rendering across the datastore and scene modules. |
-| `QT_NOTES.md` | Reference | **Baseline for the pinned Qt.** Features new since 6.8 (likely past most models' training cutoff), deprecations, and build/platform floors. Read before using an unfamiliar Qt API or reaching for a 6.8-era workaround. |
-| `TELEMETRY.md` | Reference | The anonymous launch ping: exact field list (the privacy contract, enforced by `telemetry_ping_test`), opt-out, and where it's implemented. Update together with any payload change. |
-| `WASM_DEPLOYMENT.md` | Reference | Build, deterministic packaging, cross-origin isolation, compression negotiation, MIME, and cache requirements for the threaded browser application. |
-| `WASM_PRESETS.md` | Guide | Browser presets: the layout contract, authoring a preset, `package_wasm.mjs --presets` and what it refuses, the sample tests, and the hosting limits and procedure. |
-| `WASM_HOSTING.md` | Guide | Serving the browser app from a robot over HTTPS with Caddy ([`wasm/Caddyfile`](./wasm/Caddyfile)), which also proxies the PlotJuggler Bridge at `/bridge`: setup, certificates, robot presets with `${deployment.ws_origin}/bridge`, troubleshooting and the spec that runs the file. |
-| `update_channels_design.md` | Design (delivered) | **How a release reaches an already-installed machine.** Why the apt repository and the Windows update repository are hosted on Cloudflare R2 rather than a metered package service, the publish orderings that keep index and payload consistent, accepted trade-offs (signing key in CI, no delta updates), and what is verified versus merely reviewed. |
-| `archive/undo_redo_integrity_plan.md` | Retired | The delivered undo/redo state-integrity delivery plan: dataset identity, transactional undo, timeline-state snapshots, processor/scene persistence — five incremental PRs (#373 #377 #379 #380 #382, all merged) distilled from two prior solution branches. |
-| `archive/was_pending_followup_plan.md` | Retired (never implemented) | Draft follow-up to the state-integrity epic: serialize each scene restore-queue entry's binding state (`was_pending`) instead of its origin, so exact restore is structural. Not scheduled; the code still uses `pending_intent`. |
-| `research/dataset_format_comparison.md` | Reference | Cross-cutting comparison of MCAP, RLDS, LeRobot, Zarr. Informs pj_scene2D and any future dataset-format work. |
-| `research/rerun_notes.md` | Reference | Analysis of Rerun's 2D architecture; comparison input for pj_scene2D and (potentially) pj_scene3D. |
-| `research/pixi_build_exploration.md` | Reference | Findings from building PJ4 with pixi / conda-forge instead of Conan: what maps one to one, the local recipes under `recipes/`, the CMake portability fixes and the semantic deltas. The pins quoted in it are those of the exploration; `pixi.toml` and `versions.env` are authoritative. |
-| `visibility_gated_updates_plan.md` | Plan (partly delivered) | Not updating widgets the user cannot see. The active-tab gate on the playhead fan-out is in; the fuller `isVisible()` gate, the show-time catch-up and the floating-dock enumeration fix are the open part of the plan. |
-| [`derived_objects/`](./derived_objects/) | Reference | **Derived objects:** functions over scalar and object topics, evaluated on demand. Start at [`README.md`](./derived_objects/README.md) (the engines and the path from a script to a layer); [`ARCHITECTURE.md`](./derived_objects/ARCHITECTURE.md) is the design as built, with its known limits (§20) and recipes for common changes (§21); [`REQUIREMENTS.md`](./derived_objects/REQUIREMENTS.md) holds the decisions D1-D30. |
-| [`MCP_SERVER.md`](./MCP_SERVER.md) | Reference | **AI agents over MCP.** The in-app server, its stdio bridge and the `pj.mcp_endpoint.v1` plugin endpoint: tool sets, jobs (long calls that go to the background and can be waited on and killed, also as MCP Tasks), public vs plugin tokens, lifetimes and revocation, opt-in and discovery, the Assistant as consumer, security and tests. |
-| `archive/mcp_jobs_plan.md` | Retired | The plan agent tool calls as jobs were built from: what was left to other repositories when it closed, the decisions taken while building (D8–D15) and the time log. The design is `MCP_SERVER.md` "Jobs". |
-| `RECORDING_AND_CACHING.md` | Reference | **Recording and caching, the durable spec.** Intent, goals, architecture, accepted trade-offs and rejected alternatives (plugin-side caching, provider-driven cache ABI, parser config in the file, promote-at-stop) for the session recorder and the source cache. |
-| `archive/session_recorder_design.md` | Retired | The delivered working design of the session recorder and the source cache: the 2026-08-31 decisions D1–D9 (raw only, subscribed topics, drop-largest, one file per source, parser policy in the layout) and the milestone history. The current design is `RECORDING_AND_CACHING.md`. |
+| Path | Contents |
+|---|---|
+| [`research/rerun_notes.md`](./research/rerun_notes.md) | Rerun's 2D architecture compared with pj_scene2D, and which of its ideas PJ took. |
+| [`research/dataset_format_comparison.md`](./research/dataset_format_comparison.md) | MCAP, RLDS, LeRobot and Zarr compared. |
+| [`research/mosaico_canonical_objects.md`](./research/mosaico_canonical_objects.md) | How Mosaico data reaches the ObjectStore as canonical objects without a parser, and how the scene modules decode and render it. |
+| [`research/pixi_build_exploration.md`](./research/pixi_build_exploration.md) | Building PJ4 from pixi / conda-forge: the mapping, the local recipes, the CMake shims, the gotchas and the CI legs. |
 
-## Where to find module docs
-
-See the "Module documentation index" in the top-level [`CLAUDE.md`](../CLAUDE.md). Each PJ4 module owns a `CLAUDE.md` at its root and, when warranted, a `docs/` folder with `REQUIREMENTS.md` / `ARCHITECTURE.md`.
+`images/` and `plotjuggler_banner.svg` are the README's pictures.

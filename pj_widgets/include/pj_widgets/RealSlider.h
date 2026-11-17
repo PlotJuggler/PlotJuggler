@@ -11,8 +11,7 @@
 
 namespace PJ {
 
-// Double-precision slider: wraps QSlider's integer API with a floating-point
-// range.
+// Double-precision slider: wraps QSlider's integer API with a floating-point range.
 class RealSlider : public QSlider {
   Q_OBJECT
  public:

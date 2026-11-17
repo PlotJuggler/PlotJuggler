@@ -9,15 +9,11 @@ class QWidget;
 
 namespace PJ {
 
-// Docks `drawer` beside `body` as a user-resizable column: the handle is the
-// 1-px hairline a fixed-width separator used to be, the drawer never
-// collapses (its own minimumWidth is the drag floor, via
-// setChildrenCollapsible(false)) and the body takes the growth. With a
-// non-empty `settings_key` the column's width is remembered under it —
-// restored via QSplitter::restoreState (a stale or mismatched blob is
-// silently rejected, leaving the natural split) and saved via saveState on
-// every drag, debounced so the write lands once the handle comes to rest
-// rather than per mouse-move.
+// Docks `drawer` beside `body` as a user-resizable column: the handle is a 1-px hairline, the drawer never collapses
+// (its minimumWidth is the drag floor, through setChildrenCollapsible(false)) and the body takes the growth. With a
+// non-empty `settings_key` the column's width is remembered under it: restored with QSplitter::restoreState (a stale or
+// mismatched blob is rejected, leaving the natural split) and saved with saveState on every drag, debounced so the
+// write lands once the handle comes to rest.
 QSplitter* makeSideDrawerSplitter(QWidget* drawer, QWidget* body, const QString& settings_key = {});
 
 }  // namespace PJ

@@ -14,41 +14,20 @@
 
 namespace PJ {
 
-/// MediaSource for vector-overlay topics (annotations, markers, etc.).
-///
-/// Symmetric to ImagePipelineSource but produces SceneFrames in MediaFrame.overlays
-/// rather than DecodedFrames in MediaFrame.base. On setTimestamp() it queries the
-/// store via latestAt() and decodes the bytes synchronously — overlay messages
-/// are small (KBs) so on-the-fly decode is cheap.
-///
-/// Ownership: `store` is NOT owned (must outlive this object). `decoder`
-/// is owned (moved in). An entry decoder, when supplied, is owned but typically
-/// closes over host state it does not own — whatever it captures must outlive
-/// this object too.
+/// MediaSource for overlay topics (MediaFrame.overlays). setTimestamp() decodes the entry at or before the time
+/// synchronously on the GUI thread: overlay messages are small. `store`, and whatever an entry decoder captures, must
+/// outlive the source.
 class ScenePipelineSource : public MediaSource {
  public:
-  /// Canonical-producer topics: the store holds bytes the decoder reads directly.
-  /// @param store    ObjectStore to query (not owned)
-  /// @param topic    Topic ID with serialized scene/annotation messages
-  /// @param decoder  Format-specific decoder for this topic's schema (owned)
+  /// The store holds canonical bytes.
   ScenePipelineSource(ObjectStore* store, ObjectTopicId topic, std::unique_ptr<ISceneDecoder> decoder);
 
-  /// Host-supplied decoding of one raw ObjectStore entry. The callback receives
-  /// the format-specific scene decoder owned by this source, so the host can
-  /// resolve its current parser lease and keep it alive across both parseObject
-  /// and decode without leaking the host's binding type into this core.
+  /// Decodes one raw entry with the host's parser, then `decoder`; the host's binding type stays out of this core.
   using ObjectEntryDecoder =
       std::function<Expected<SceneFrame>(ISceneDecoder& decoder, Timestamp timestamp, const sdk::PayloadView& payload)>;
 
-  /// Parser-backed topics: the store holds the RAW source message (e.g.
-  /// yolo_msgs/DetectionArray under pure-lazy ingest). The parser converts it to
-  /// the canonical builtin object, which the decoder consumes directly —
-  /// mirroring the 3D consumer pattern (see parse_locked.h).
-  ///
-  /// Parser lookup and lifetime are deliberately a host concern: the core knows
-  /// only how to fetch an entry and invoke this decoder. The host callback must
-  /// resolve any replaceable parser lease per call and hold it until the parsed
-  /// ObjectRecord has been decoded and destroyed.
+  /// The store holds raw source messages. `entry_decoder` must resolve the parser lease per call and hold it until the
+  /// parsed ObjectRecord is decoded and destroyed: the record's storage belongs to the parser's plugin.
   ScenePipelineSource(
       ObjectStore* store, ObjectTopicId topic, ObjectEntryDecoder entry_decoder,
       std::unique_ptr<ISceneDecoder> decoder);
@@ -62,16 +41,12 @@ class ScenePipelineSource : public MediaSource {
   ObjectTopicId topic_;
   std::unique_ptr<ISceneDecoder> decoder_;
   std::optional<SceneFrame> pending_scene_;
-  // When the cursor moves to a time with no annotation (no entry, empty payload,
-  // or a decode failure) AFTER something was on screen, takeFrame() emits one
-  // empty-overlay frame so the compositor clears the stale overlays — returning
-  // nullopt would instead leave them up (the composite retains the last
-  // contribution). Coalesced so an already-clear layer publishes nothing new.
+  // Moving to a time with no annotation after one was shown emits one empty-overlay frame: nullopt would leave the
+  // old overlays up, since the composite retains each layer's last contribution.
   bool pending_clear_ = false;
   bool last_emitted_empty_ = true;
   int64_t last_ts_ = INT64_MIN;
-  // Set for host-decoded topics (normally parser-backed raw messages). Empty for
-  // canonical-producer topics, whose store bytes the decoder reads directly.
+  // Empty for canonical-byte topics.
   ObjectEntryDecoder entry_decoder_;
 };
 

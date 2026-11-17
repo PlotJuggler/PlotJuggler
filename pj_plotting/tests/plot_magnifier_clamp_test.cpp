@@ -313,9 +313,8 @@ TEST(PlotMagnifierClamp, BoundsCannotUndercutFloor) {
 
   fixture.zoomX(1.0e10);
 
-  // The clamp re-expands to ~2 ns; allow a hair of float noise from computing the
-  // edges at the 0.5 s offset scale. The pre-fix clamp-then-bound ordering trimmed
-  // this to ~1 ns (half the floor), which this bound comfortably rejects.
+  // The clamp re-expands to ~2 ns; allow a hair of float noise from computing the edges at the 0.5 s offset scale. A
+  // clamp-then-bound ordering would trim this to ~1 ns (half the floor), which this bound rejects.
   EXPECT_GT(last_rect.right() - last_rect.left(), 1.9e-9)
       << "a tight bound must not shave the clamped window below the 2 ns floor";
 }

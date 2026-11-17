@@ -36,9 +36,8 @@ QString autoLocateHelper() {
   if (alongside_app.isExecutable()) {
     return alongside_app.absoluteFilePath();
   }
-  // Development fallback: helper may live in PATH (found via QProcess) when the
-  // app is being run from a build directory. Kept narrow — production packaging
-  // always ships the helper next to the app.
+  // Development fallback: the helper may be on PATH (found via QProcess) when running from a build directory.
+  // Packaging ships it next to the app.
   return exec_name;
 }
 

@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// GUI scenario 3 (T6): cancelling a batch mid-import must roll the whole
-// restore back — the batch removes any datasets it produced and
-// exact-restores the pre-layout workspace (captured at start(), before the
-// first mutation), and the shell unwinds the progressive scaffolding
-// WITHOUT committing the half-applied layout.
+// Cancelling a batch mid-import rolls the whole restore back: the batch removes any datasets it produced and
+// restores the pre-layout workspace exactly (captured at start(), before the first mutation), and the shell unwinds
+// the progressive scaffolding without committing the half-applied layout.
 
 #include <gtest/gtest.h>
 
@@ -57,8 +55,6 @@ TEST(MainWindowLayoutImportCancelTest, CancelMidImportRollsBackToPriorWorkspace)
   MainWindowLayoutImportTestPeer::batch(window)->cancel();
   ASSERT_TRUE(pumpUntil([&window]() { return MainWindowLayoutImportTestPeer::batch(window) == nullptr; }));
 
-  // The restore unwound: nothing committed, the workspace is back to its
-  // pre-layout shape, and the cancellation was reported.
   EXPECT_FALSE(MainWindowLayoutImportTestPeer::progressiveInFlight(window));
   EXPECT_EQ(MainWindowLayoutImportTestPeer::plotCount(window), prior_plot_count)
       << "the pre-layout workspace must be restored exactly";

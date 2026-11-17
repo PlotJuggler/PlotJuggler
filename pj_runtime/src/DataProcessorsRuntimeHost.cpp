@@ -26,9 +26,8 @@ using host_slot::guarded;
 using host_slot::reject;
 constexpr std::string_view kDomain{"data_processors"};
 
-/// Accept the `kind` discriminator; returns false on an unknown kind. Only
-/// "transform" is implemented here ("markers" is routed by a different host); the
-/// host rejects anything else (e.g. a stale plugin still sending a removed kind).
+/// Accepts the `kind` discriminator; false on an unknown kind. Only "transform" is implemented here ("markers" is
+/// routed by a different host); anything else is rejected.
 bool parseKind(std::string_view kind) {
   return kind == "transform";
 }

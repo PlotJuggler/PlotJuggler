@@ -36,8 +36,8 @@ async function loadScene3DFixture(page, screen, messages, name) {
   });
   await page.waitForTimeout(800);
   await clickActiveDialogButton(page, screen, messages, 'ok');
-  // The dataset row the caller drags exists only once the import finishes, and a picked file is read on demand, so
-  // how long that takes varies by browser and machine.
+  // The dataset row the caller drags exists only once the import finishes; a picked file is read on demand,
+  // so that takes a browser- and machine-dependent time.
   await expect.poll(loads, { timeout: 60000 }).toBeGreaterThan(before);
   await page.waitForTimeout(500);
 }

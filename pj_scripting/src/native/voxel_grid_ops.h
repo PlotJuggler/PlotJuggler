@@ -12,7 +12,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_scripting/memory_budget.h"
 
-// Native VoxelGrid builder behind a script's `pj.voxels` (D16). Luau-free, so the Luau and Python binders share it.
+// Native VoxelGrid builder behind a script's `pj.voxels`. Luau-free, so the Luau and Python binders share it.
 namespace PJ::scripting::native {
 
 /// The most cells one grid may have (64 MiB of float32), checked before anything is charged or allocated, whatever the

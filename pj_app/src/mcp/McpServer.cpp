@@ -55,7 +55,7 @@ namespace {
 /// The indicator goes away this long after a client's last request (HTTP here is one request per
 /// connection, so there is no "disconnected").
 constexpr int kClientIdleMs = 120'000;
-/// How often a deferred result (an object evaluation) is polled, as the Assistant's GUI tick does.
+/// How often a deferred result (an object evaluation) is polled.
 constexpr int kResumeIntervalMs = 50;
 #ifndef PJ_TARGET_WASM
 /// The socket property naming the token its request was accepted with, so a revoke can close it.
@@ -951,7 +951,7 @@ json McpServer::jobStatus(const Job& job) {
     status["progress"] = job.progress();
   }
   if (job.killing && !ended(job)) {
-    status["stopping"] = true;  // asked to stop, still winding down
+    status["stopping"] = true;
   }
   return status;
 }

@@ -31,7 +31,6 @@ struct alignas(16) GridMapUniforms {
 constexpr quint32 kUniformBytes = sizeof(GridMapUniforms);
 static_assert(kUniformBytes == 304U);
 
-// The staged grid has quads and a complete payload.
 bool drawable(const GridMapUpload& grid) {
   const std::uint64_t cells = static_cast<std::uint64_t>(grid.column_count) * grid.row_count;
   const bool have_elevation = grid.elevation.size() == cells;
@@ -115,7 +114,7 @@ void GridMapRhiPass::admit(const PlaceFn& place) {
 
 void GridMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams& shading) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   draws_.clear();
   last_layer_count_ = 0;

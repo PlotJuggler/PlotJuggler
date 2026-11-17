@@ -61,7 +61,8 @@ std::vector<uint8_t> cubeCloud(int side) {
 
 MixedLayout::MixedLayout() : window_(std::make_unique<QMainWindow>()) {
   manager_ = new ads::CDockManager(window_.get());
-  // ADS's stays-on-top emulation can hide a floated dock (pj_scene3D/docs/TECHNICAL_NOTES.md §5).
+  // ADS's stays-on-top emulation can hide a floated dock (pj_scene3D/docs/TECHNICAL_NOTES.md "ADS and window-system
+  // quirks").
   window_->removeEventFilter(manager_);
 }
 

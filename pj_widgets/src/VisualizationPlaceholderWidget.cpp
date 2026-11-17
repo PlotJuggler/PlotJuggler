@@ -74,9 +74,8 @@ bool dropCatalogItems(QDropEvent* event, VisualizationPlaceholderWidget* target)
   if (keys.empty()) {
     return false;
   }
-  // A right-drag of exactly two curves carries the new_XY_axis mime — the
-  // "create XY plot" gesture. Route it so the host builds an XY plot instead of
-  // two ordinary curves; everything else is a normal catalog drop.
+  // A right-drag of exactly two curves carries the new_XY_axis mime, the "create XY plot" gesture: routed so the host
+  // builds an XY plot instead of two ordinary curves; everything else is a normal catalog drop.
   if (keys.size() == 2 && mime_data != nullptr && mime_data->hasFormat(CurveTreeView::newXyAxisMimeType())) {
     emit target->catalogItemsXyRequested(keys);
   } else {
@@ -107,8 +106,8 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
       theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
       theme::space(theme::Space::None));
   layout->setSpacing(theme::space(theme::Space::Comfortable));
-  // The buttons' current fixed size must not become the widget's minimum: minimumSizeHint
-  // reports the narrowest row, and fitButtonsToWidth shrinks the buttons down to it.
+  // The buttons' current fixed size must not become the widget's minimum: minimumSizeHint reports the narrowest row,
+  // and fitButtonsToWidth shrinks the buttons to it.
   layout->setSizeConstraint(QLayout::SetNoConstraint);
   layout->addStretch(1);
   const struct {
@@ -187,10 +186,9 @@ void VisualizationPlaceholderWidget::onStylesheetChanged(const QString& theme) {
 }
 
 void VisualizationPlaceholderWidget::renderIcons() {
-  // RenderSvgPixmap (not LoadSvg) so the central icons rasterize at
-  // exactly their display size (with DPR baked in) and stay crisp. The
-  // shared LoadSvg cache always renders to 64x64, which is downsampled
-  // to 48x48 here -- visible blur on the larger placeholder buttons.
+  // renderSvgPixmap, not loadSvg: the central icons rasterize at exactly their display size (DPR baked in) and stay
+  // crisp. The shared loadSvg cache always renders at 64x64, downsampled to 48x48 here, which blurs the larger
+  // placeholder buttons.
   for (const auto& entry : icon_buttons_) {
     const QSize icon_size = entry.button->iconSize();
     const QPixmap pixmap = renderSvgPixmap(entry.icon_path, theme_, icon_size, devicePixelRatioF());

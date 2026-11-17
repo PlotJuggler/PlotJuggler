@@ -24,9 +24,7 @@ using PJ::scrollbar_detail::defaultAccent;
 using PJ::scrollbar_detail::Handle;
 using PJ::scrollbar_detail::valueForDrag;
 
-// ---------------------------------------------------------------------------
-// Headless math tests — no QApplication needed.
-// ---------------------------------------------------------------------------
+// --- Headless math tests (no QApplication) ---
 
 TEST(ScrollbarHandle, FullRangeStartsAtZero) {
   // 0..100, page 100, value 0 over a 200px track -> full-length handle at 0.
@@ -58,11 +56,8 @@ TEST(ScrollbarHandle, ZeroPageStepIsEmpty) {
   EXPECT_NEAR(h.len, 0.0, 1e-6);
 }
 
-// ---------------------------------------------------------------------------
-// defaultAccent — theme-aware pill color keyed off QPalette::Window lightness
-// (NOT the system QPalette::Highlight, which the app never sets). No QApplication
-// needed.
-// ---------------------------------------------------------------------------
+// --- defaultAccent: theme-aware pill color keyed off QPalette::Window lightness, not the system QPalette::Highlight,
+// which the app never sets (no QApplication) ---
 
 TEST(ScrollbarAccent, DarkWindowYieldsFrameworkScrollHandle) {
   // A dark chrome (low lightness) resolves to the framework Scroll Handle color
@@ -78,9 +73,7 @@ TEST(ScrollbarAccent, LightWindowYieldsFrameworkScrollHandle) {
       PJ::theme::surface(PJ::theme::Surface::ScrollHandle, PJ::theme::Theme::Light));
 }
 
-// ---------------------------------------------------------------------------
-// valueForDrag math tests — no QApplication needed.
-// ---------------------------------------------------------------------------
+// --- valueForDrag math (no QApplication) ---
 
 TEST(ScrollbarDrag, HalfTrackDeltaMapsToHalfTotal) {
   // delta of half the track (100px) over total=200, start=0 → value moves by 100.
@@ -100,15 +93,11 @@ TEST(ScrollbarDrag, NonZeroStartValueOffsets) {
   EXPECT_EQ(valueForDrag(10, 50.0, 200.0, 100), 35);
 }
 
-// ---------------------------------------------------------------------------
-// Widget tests — require QApplication.
-// ---------------------------------------------------------------------------
+// --- Widget tests (need a QApplication) ---
 
 // One QApplication for the whole binary; QWidget construction requires it.
 
-// ---------------------------------------------------------------------------
-// Config tests — auto-hide + fade duration.
-// ---------------------------------------------------------------------------
+// --- Config tests: auto-hide and fade duration ---
 
 TEST(ScrollbarConfig, AutoHideOffStaysVisible) {
   QScrollArea area;
@@ -138,21 +127,18 @@ TEST(ScrollbarConfig, InstantFadeWhenDurationZero) {
   // (1) The configured duration must propagate to the underlying animation.
   EXPECT_EQ(bar.fadeDurationMs(), 0);
 
-  // (2) With duration=0 a show must complete synchronously — opacity reaches
-  // 1.0 within the setAutoHide(false) call frame, with NO qWait() in between.
-  // This exercises the instant-snap code path in setShown(): with fade_ms_==0
-  // the opacity_effect_ is set directly rather than scheduling an animation
-  // timer tick (QPropertyAnimation defers even duration=0 to the event loop).
+  // (2) With duration=0 a show completes synchronously: opacity reaches 1.0 within the setAutoHide(false) call, with no
+  // qWait() between. This exercises the instant-snap path in setShown(): with fade_ms_ == 0 the opacity_effect_ is set
+  // directly instead of scheduling an animation timer tick (QPropertyAnimation defers even duration 0 to the event
+  // loop).
   bar.setAutoHide(false);
   EXPECT_DOUBLE_EQ(bar.currentOpacity(), 1.0);
 }
 
 TEST(ScrollbarWidget, AttachEnablesViewportMouseTracking) {
-  // Without mouse tracking the viewport only delivers MouseMove while a button
-  // is held, so the pill never fades in on a plain hover (it only appears on
-  // click and never re-hides on intra-viewport motion). attach() must enable
-  // tracking itself rather than relying on the host having done so (the Timeline
-  // happens to; a generic plugin scroll area does not).
+  // Without mouse tracking the viewport delivers MouseMove only while a button is held, so the pill never fades in on a
+  // plain hover (it appears only on click and never re-hides on motion inside the viewport). attach() must enable
+  // tracking itself and not rely on the host having done so (the Timeline does; a generic plugin scroll area does not).
   QScrollArea area;
   area.setWidget(new QWidget);
   area.widget()->setFixedSize(2000, 2000);
@@ -169,10 +155,9 @@ TEST(ScrollbarWidget, AttachEnablesViewportMouseTracking) {
 }
 
 TEST(ScrollbarWidget, HoverOverCoveringChildRevealsPill) {
-  // When a child widget fully covers the viewport (e.g. a QScrollArea packed with
-  // marketplace cards), hover MouseMoves are delivered to that child, not the
-  // viewport — so attach() must observe the covering subtree, otherwise the pill
-  // only ever reveals on scroll/click. Here the content widget is the cover.
+  // When a child widget fully covers the viewport (a QScrollArea packed with cards), hover MouseMoves go to that child,
+  // not the viewport, so attach() must observe the covering subtree, or the pill reveals only on scroll or click. Here
+  // the content widget is the cover.
   QScrollArea area;
   auto* content = new QWidget;
   content->setFixedSize(2000, 2000);  // both axes overflow; content covers the viewport
@@ -196,9 +181,8 @@ TEST(ScrollbarWidget, HoverOverCoveringChildRevealsPill) {
 }
 
 TEST(ScrollbarWidget, CoveringChildAddedAfterAttachIsObserved) {
-  // Cards arrive asynchronously (the marketplace fetches its registry after the
-  // window is built), so a child added AFTER attach() must be picked up via
-  // ChildAdded and observed for hover too.
+  // Cards arrive asynchronously (the marketplace fetches its registry after the window is built): a child added after
+  // attach() is picked up through ChildAdded and observed for hover too.
   QScrollArea area;
   auto* content = new QWidget;
   content->setFixedSize(2000, 2000);
@@ -253,10 +237,9 @@ TEST(ScrollbarWidget, WheelScrollRevealsMatchingAxisOnly) {
 }
 
 TEST(ScrollbarWidget, ScrollRevealSurvivesHoverOut) {
-  // Regression: a scroll reveals the pill, then a hover-out (e.g. the synthetic
-  // MouseMove Qt delivers as scrolled content slides under a stationary cursor,
-  // now that attach() enables mouse tracking) must NOT cancel the reveal — the
-  // hold timer owns the hide. Previously this hid the pill instantly on scroll.
+  // A scroll reveals the pill, then a hover-out (the synthetic MouseMove Qt delivers as scrolled content slides under a
+  // stationary cursor, now that attach() enables mouse tracking) must not cancel the reveal: the hold timer owns the
+  // hide.
   QScrollArea area;
   area.setWidget(new QWidget);
   area.widget()->setFixedSize(2000, 2000);
@@ -281,10 +264,8 @@ TEST(ScrollbarWidget, ScrollRevealSurvivesHoverOut) {
 }
 
 TEST(ScrollbarWidget, PressOffHandleDoesNotScrollOrGrab) {
-  // Regression: only the visible handle is a drag target. A press in the edge
-  // strip but off the handle must fall through to the view — it must NOT be
-  // consumed as a click-to-center jump (which would both steal the content click
-  // and move the scroll position).
+  // Only the visible handle is a drag target. A press in the edge strip but off the handle falls through to the view:
+  // it is not consumed as a click-to-center jump (which would steal the content click and move the scroll position).
   QScrollArea area;
   area.setWidget(new QWidget);
   area.widget()->setFixedSize(2000, 2000);
@@ -400,22 +381,16 @@ TEST(ScrollbarWidget, VerticalStripYieldsBottomRightCornerToHorizontal) {
   EXPECT_FALSE(v.isShown()) << "the vertical pill yields the bottom-right corner";
 }
 
-// ---------------------------------------------------------------------------
-// Reserved-gutter placement — attachPillScrollbars' mode: the native bar keeps
-// its policy and layout slot (content never sits under the pill) and owns all
-// interaction; the pill is a paint-only mirror.
-// ---------------------------------------------------------------------------
+// --- Reserved-gutter placement (attachPillScrollbars' mode): the native bar keeps its policy and layout slot (content
+// never sits under the pill) and owns all interaction; the pill is a paint-only mirror ---
 
 namespace {
 
-// A 200x200 scroll area over 2000x2000 content with a trailing-edge button —
-// the "trash button at the right edge of a row" shape. The button hugs the
-// viewport's right edge (placed AFTER attach, since gutter mode narrows the
-// viewport) with its center inside the hover strip and, with the scroll at
-// minimum, within the pill handle's span.
-// `pill` is declared after `area` on purpose: attach() reparents the pill into
-// the area, so the pill member must be destroyed first (reverse declaration
-// order) or the area's child cleanup would delete it a second time.
+// A 200x200 scroll area over 2000x2000 content with a trailing-edge button (the "trash button at the right edge of a
+// row" shape). The button hugs the viewport's right edge (placed after attach, since gutter mode narrows the viewport)
+// with its center inside the hover strip and, with the scroll at minimum, within the pill handle's span. `pill` is
+// declared after `area` on purpose: attach() reparents the pill into the area, so the pill member must be destroyed
+// first (reverse declaration order), or the area's child cleanup would delete it a second time.
 struct EdgeButtonArea {
   QScrollArea area;
   PJ::Scrollbar pill;
@@ -476,10 +451,9 @@ TEST(ScrollbarGutter, EdgeContentClickReachesChild) {
 }
 
 TEST(ScrollbarGutter, OverlayPlacementStealsSameClickOnHandle) {
-  // The contrast pin: in overlay placement the same edge button sits under the
-  // revealed pill handle, whose press-grab wins. This is the documented
-  // trade-off that reserves overlay placement for viewport-owning hosts (the
-  // Timeline) — content views get the gutter.
+  // The contrast pin: in overlay placement the same edge button sits under the revealed pill handle, whose press-grab
+  // wins. This is the trade-off that reserves overlay placement for viewport-owning hosts (the Timeline): content views
+  // get the gutter.
   EdgeButtonArea fixture(PJ::Scrollbar::Placement::kOverlayViewport);
   ASSERT_TRUE(fixture.pill.isShown()) << "precondition: the hover revealed the pill";
 
@@ -567,10 +541,9 @@ TEST(ScrollbarGutter, HoverOnGutterRevealsAndLeaveHides) {
   QTest::qWait(50);  // let the AsNeeded bar appear and the layout settle
   ASSERT_FALSE(pill.isShown());
 
-  // A plain hover: Qt discards buttonless MouseMoves for a non-tracking widget
-  // before object filters run, so what the pill's filter actually receives is
-  // the HoverMove synthesized via the bar's WA_Hover — send the move through
-  // sendEvent and rely on that synthesis, exactly like a real cursor.
+  // A plain hover: Qt discards buttonless MouseMoves for a non-tracking widget before object filters run, so the pill's
+  // filter receives the HoverMove synthesized through the bar's WA_Hover: the move goes through sendEvent and relies on
+  // that synthesis, as a real cursor.
   QScrollBar* native = area.verticalScrollBar();
   const QPoint on_bar(native->width() / 2, native->height() / 2);
   QMouseEvent move(
@@ -584,10 +557,9 @@ TEST(ScrollbarGutter, HoverOnGutterRevealsAndLeaveHides) {
 }
 
 TEST(ScrollbarGutter, HeaderBandPaintedAndTrackInsetBelowHeader) {
-  // Item views: the gutter spans the full edge, so its top segment runs beside
-  // the horizontal header. The groove must be inset below the header (so the
-  // handle never climbs into the band) and the blanked bar must paint that band
-  // as the header's continuation — otherwise it reads as a hole in the header.
+  // Item views: the gutter spans the full edge, so its top segment runs beside the horizontal header. The groove is
+  // inset below the header (the handle never climbs into the band) and the blanked bar paints that band as the header's
+  // continuation, or it reads as a hole in the header.
   QTableWidget table(60, 2);
   table.setHorizontalHeaderLabels({u"Name"_s, u"Value"_s});
   table.resize(250, 200);
@@ -607,9 +579,8 @@ TEST(ScrollbarGutter, HeaderBandPaintedAndTrackInsetBelowHeader) {
   EXPECT_GE(pill.handlePosPx(), static_cast<double>(header_h))
       << "at scroll-top the mirrored handle must start below the header band";
 
-  // Render the bar without the window-background pre-fill: only what the Paint
-  // interception paints lands on the sentinel canvas — the header band must be
-  // the framework Backdrop, everything below it must stay blank (sentinel).
+  // The bar renders without the window-background pre-fill: only what the Paint interception paints lands on the
+  // sentinel canvas. The header band is the framework Backdrop, everything below it stays blank (sentinel).
   QImage canvas(native->size(), QImage::Format_ARGB32);
   const QColor sentinel(255, 0, 0);
   canvas.fill(sentinel);

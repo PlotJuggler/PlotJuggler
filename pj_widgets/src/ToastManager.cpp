@@ -29,9 +29,8 @@ void ToastManager::showToast(const QString& message, const QPixmap& icon, int ti
   connect(toast, &ToastNotification::closed, this, &ToastManager::onToastClosed);
 
   updatePosition();
-  // Lay out (and mask) before showing: the container must never be visible
-  // with a stale input region, or it would swallow clicks it should let
-  // through to the host.
+  // Laid out and masked before showing: the container must never be visible with a stale input region, or it would
+  // swallow clicks meant for the host.
   repositionToasts();
 
   container_->show();
@@ -98,9 +97,8 @@ void ToastManager::repositionToasts() {
   for (int i = toasts_.size() - 1; i >= 0; --i) {
     ToastNotification* toast = toasts_[i];
 
-    // Size from the hint, not setFixedWidth(): the stylesheet's min/max-width
-    // re-applies on polish and wins over C++ constraints, so a short message
-    // yields a narrower toast that must still hug the right margin.
+    // Sized from the hint, not setFixedWidth(): the stylesheet's min and max-width re-applies on polish and wins over
+    // C++ constraints, so a short message yields a narrower toast that must still hug the right margin.
     toast->layout()->activate();
     const int toast_width = qMin(toast->sizeHint().width(), max_width_);
     int toast_height = toast->heightForWidth(toast_width);
@@ -121,14 +119,11 @@ void ToastManager::repositionToasts() {
 }
 
 void ToastManager::updateInputRegion() {
-  // Constrain hit-testing (and painting) to the toasts themselves so the
-  // full-height overlay never blocks interaction with the host widgets beneath
-  // it. An empty QRegion CLEARS the mask (full-rect input again) rather than
-  // masking everything out — and the empty case does run on every last-toast
-  // close, via the QEvent::Hide the container's hide() delivers to the closing
-  // toast. That is safe only because the container is hidden at that point and
-  // showToast() re-masks (through repositionToasts()) before every show();
-  // keep that ordering if you add another path that shows the container.
+  // Hit-testing (and painting) is constrained to the toasts, so the full-height overlay never blocks the host widgets
+  // beneath it. An empty QRegion clears the mask (full-rect input again) instead of masking everything out, and the
+  // empty case runs on every last-toast close, through the QEvent::Hide the container's hide() delivers to the closing
+  // toast. That is safe only because the container is hidden then and showToast() re-masks (through repositionToasts())
+  // before every show(): keep that ordering in any other path that shows the container.
   QRegion region;
   for (const ToastNotification* toast : toasts_) {
     region += toast->geometry();

@@ -166,7 +166,7 @@ TEST(DerivedRuntimeHostsTest, EndingOneInstanceKeepsAnotherInstancesPreviews) {
   EXPECT_NE(fx.onDemandNode("tool/kept_probe"), nullptr);
 }
 
-// OWN-05: a plugin removes its own preview of any kind through the kind-less remove of the real router.
+// A plugin removes its own preview of any kind through the kind-less remove of the real router.
 TEST(DataProcessorsKindRouterRealBackendsTest, RemovesAnEphemeralOfEveryKind) {
   Session fx;
   DerivedRuntimeHosts hosts(fx.session, fx.app.catalogModel(), "tool");
@@ -188,7 +188,7 @@ TEST(DataProcessorsKindRouterRealBackendsTest, RemovesAnEphemeralOfEveryKind) {
   EXPECT_FALSE(fx.session.objectStore().findTopic(fx.dataset, (*on_demand_topics)[0]).has_value());
 }
 
-// OWN-06: list hides an on-demand preview; config by its id answers its owner; an absent id is refused.
+// List hides an on-demand preview; config by its id answers its owner; an absent id is refused.
 TEST(DataProcessorsKindRouterRealBackendsTest, ListHidesEphemeralRecipesButConfigAnswersTheOwner) {
   Session fx;
   DerivedRuntimeHosts hosts(fx.session, fx.app.catalogModel(), "tool");

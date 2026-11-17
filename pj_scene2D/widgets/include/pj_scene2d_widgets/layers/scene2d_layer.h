@@ -24,10 +24,7 @@ namespace PJ {
 class MediaSource;
 class SessionManager;
 
-// Base for every 2D scene layer (image, depth image, decoded annotations): one
-// user-added topic that contributes a MediaSource to the dock's composite and
-// tracks the playhead. Concrete kinds override createMediaSource() plus the
-// config/XML hooks; generic identity/lifecycle/visibility come from ISceneLayer.
+// One topic that contributes a MediaSource to the dock's composite and follows the playhead.
 class Scene2DLayer : public ISceneLayer {
   Q_OBJECT
  public:
@@ -43,18 +40,14 @@ class Scene2DLayer : public ISceneLayer {
   void detach() override;
   void setTrackerTime(PJ::Timepoint time) override;
   bool refreshAt(PJ::Timepoint time) override;
-  // Fingerprints the active media sample at `time` so the dock skips the per-tick
-  // repaint when the displayed frame is unchanged (no re-composite of a static
-  // image). A NEW sample's async decode repaints via the frame-ready callback,
-  // independent of this gate.
+  // Fingerprints the active sample at `time`, so the dock skips the per-tick repaint of an unchanged frame. A new
+  // sample's async decode repaints through the frame-ready callback regardless.
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
   QWidget* createConfigWidget(QWidget* parent) override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
 
-  // The media source this layer contributes to the composite. Defaults to the
-  // layer's own borrowed source; override only if a layer composes something else.
   [[nodiscard]] virtual MediaSource* mediaSource() {
     return borrowedSource();
   }
@@ -79,8 +72,7 @@ class Scene2DLayer : public ISceneLayer {
   [[nodiscard]] SequentialUID shownUidAt(PJ::Timepoint time) const;
   void setSource(std::unique_ptr<MediaSource> source);
   [[nodiscard]] MediaSource* borrowedSource() const noexcept;
-  /// Builds the worker-thread -> GUI-thread repaint trampoline used by async
-  /// media sources. The returned callback is safe to invoke after layer teardown.
+  /// A callback any thread may call, also after the layer is destroyed; it repaints on the GUI thread.
   [[nodiscard]] std::function<void()> makeQueuedRepaintCallback();
   /// Called during attach() after objectStore()/sessionManager() become valid.
   /// Returning nullptr fails attach() and clears those pointers again.
@@ -98,9 +90,8 @@ class Scene2DLayer : public ISceneLayer {
   std::optional<int64_t> last_tracker_time_ns_;
   SequentialUID shown_uid_;  ///< the entry shown at last_tracker_time_ns_ (invalid: none)
   QMetaObject::Connection dataset_replace_connection_;
-  // replaceDataset keeps ObjectTopicId and often sample timestamps stable. Fold
-  // this generation into renderKey so the post-load tracker seed cannot coalesce
-  // away the forced re-decode of the replacement bytes/parser.
+  // replaceDataset keeps the ObjectTopicId and often the timestamps: renderKey folds this in, or the post-load seed
+  // coalesces away the re-decode of the replacement.
   uint64_t data_generation_ = 0;
 };
 

@@ -101,8 +101,8 @@ void LuaMimoTransform::rebuildInstance() {
 }
 
 void LuaMimoTransform::reset() {
-  // Construct-new-and-swap: a fresh VM/instance is the only guaranteed-clean reset
-  // for arbitrary script state (the engine's pre-batch-recompute hook).
+  // A fresh VM is the only guaranteed-clean reset of arbitrary script state; the engine calls this before a batch
+  // recompute.
   rebuildInstance();
 }
 
@@ -111,8 +111,7 @@ std::vector<PJ::StorageKind> LuaMimoTransform::outputKinds(PJ::Span<const PJ::St
     case OutputMode::kInt64:
       return std::vector<PJ::StorageKind>(num_outputs_, PJ::StorageKind::kInt64);
     case OutputMode::kMirror: {
-      // One `output` mode for the whole class, so every output mirrors the FIRST
-      // input's kind (input 0). mirrorInputKind maps one input kind to its output kind.
+      // One `output` mode for the whole class: every output mirrors input 0's kind.
       PJ::StorageKind mirrored = PJ::StorageKind::kFloat64;
       if (!input_kinds.empty()) {
         const std::vector<PJ::StorageKind> mapped = proc::detail::mirrorInputKind(input_kinds.subspan(0, 1));
@@ -131,7 +130,7 @@ std::vector<PJ::StorageKind> LuaMimoTransform::outputKinds(PJ::Span<const PJ::St
 bool LuaMimoTransform::calculate(
     PJ::Timestamp time, PJ::Span<const PJ::VarValue> inputs, PJ::Timestamp& out_time,
     std::vector<PJ::VarValue>& output) {
-  out_time = time;  // MIMO v1: outputs share the joined input timestamp (no explicit out_time).
+  out_time = time;  // the outputs share the joined input timestamp
   if (!instance_ || inputs.empty()) {
     if (instance_) {
       error_ = instance_->error();
@@ -143,8 +142,7 @@ bool LuaMimoTransform::calculate(
     return false;
   }
 
-  // Capture the session epoch from the first sample, then rebase on the int64 spine
-  // BEFORE the double cast (epoch-in-double quantizes to ~256 ns — see header).
+  // The time origin is the first sample; subtract it on the int64 spine before the double cast (see the header).
   if (!has_session_start_) {
     session_start_ns_ = time;
     has_session_start_ = true;
@@ -159,7 +157,7 @@ bool LuaMimoTransform::calculate(
 
   const FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, input_doubles);
   if (instance_->failed()) {
-    error_ = instance_->error();  // sticky: fail the node, do not corrupt downstream
+    error_ = instance_->error();
     return false;
   }
   if (r.suppress) {
@@ -171,8 +169,7 @@ bool LuaMimoTransform::calculate(
     return false;
   }
 
-  // `output` is pre-sized to num_outputs_ by the engine. Every output mirrors the
-  // first input (input 0) when out_mode_ == kMirror.
+  // `output` is pre-sized to num_outputs_ by the engine; in mirror mode every output follows input 0.
   const PJ::VarValue& mirror_input = inputs[0];
   for (std::size_t k = 0; k < num_outputs_; ++k) {
     output[k] = makeOutputValue(r.values[k], mirror_input);

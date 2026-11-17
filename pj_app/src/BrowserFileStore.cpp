@@ -32,9 +32,7 @@ struct StagedFile {
   }
 };
 
-// Fixed staging chunk. Large enough that the per-chunk event-loop yield adds
-// negligible overhead to a normal file, small enough that a single write of one
-// chunk never stalls the browser main thread perceptibly.
+// Trades the per-chunk event-loop yield against how long one write blocks the browser main thread.
 constexpr qint64 kStageChunkBytes = 16 * 1024 * 1024;
 
 }  // namespace
@@ -43,8 +41,7 @@ BrowserFileStore::BrowserFileStore(QString root)
     : root_(QDir::cleanPath(std::move(root))), session_token_(QUuid::createUuid().toString(QUuid::WithoutBraces)) {}
 
 QString BrowserFileStore::sanitizedBasename(const QString& browser_name) {
-  // Browsers normally return a basename, but defensively strip both POSIX and
-  // Windows separators before creating anything in MEMFS.
+  // Browsers normally return a basename; strip both separators anyway before touching MEMFS.
   QString name = browser_name;
   const qsizetype slash = std::max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
   if (slash >= 0) {
@@ -159,7 +156,7 @@ BrowserFileStore::StageResult BrowserFileStore::stage(const QString& browser_nam
   const qint64 written = output.write(bytes);
   const bool flushed = output.flush();
   output.close();
-  bytes.clear();  // Release the source copy the moment its bytes are on disk.
+  bytes.clear();
   if (written != expected || !flushed) {
     QFile::remove(placement->path);
     QDir().rmdir(placement->leaf_directory);
@@ -186,32 +183,25 @@ BrowserFileStore::StageResult BrowserFileStore::stage(const QString& browser_nam
 }
 
 void BrowserFileStore::stageAsync(const QString& browser_name, QByteArray bytes, StageCompletion completion) {
-  // Heap state of one stageAsync run, decoupled from the store after kickoff
-  // (the store may be destroyed mid-staging). Lifetime: every scheduled lambda
-  // owns only a shared_ptr to the job — the job never stores a callable that
-  // captures itself — so the last pending event releases it. The completion
-  // stays a member until then, making it a faithful destruction witness for
-  // tests. Local struct: keeps the enclosing method's access to the private
-  // StagePlacement/makeSuccess.
+  // Never touches the store after kickoff. Only scheduled lambdas own the job (it stores no callable capturing
+  // itself), so the last pending event frees it; `completion` lives until then, which tests use as a
+  // destruction witness.
   struct AsyncStageJob {
     StagePlacement placement;
     QByteArray source;  // Cleared on every terminal path, before completion.
     QCryptographicHash hash{QCryptographicHash::Sha256};
-    qint64 offset = 0;  // Bytes already written.
-    qint64 total = 0;   // == source.size() captured before the writes start.
+    qint64 offset = 0;
+    qint64 total = 0;
     std::unique_ptr<QFile> file;
     StageCompletion completion;
 
-    // Always hops the event loop once before invoking completion so it is
-    // never re-entrant with stageAsync().
+    // Hops the event loop once, so completion is never re-entrant with stageAsync().
     static void finish(std::shared_ptr<AsyncStageJob> job, StageResult result) {
-      job->source.clear();  // Release the upload copy on failure paths too.
+      job->source.clear();
       QTimer::singleShot(
           0, [job = std::move(job), result = std::move(result)]() mutable { job->completion(std::move(result)); });
     }
 
-    // One step: write up to one chunk, then re-arm on the event loop until the
-    // whole buffer is staged.
     static void step(const std::shared_ptr<AsyncStageJob>& job) {
       const qint64 remaining = job->total - job->offset;
       const qint64 span = std::min<qint64>(remaining, kStageChunkBytes);
@@ -239,8 +229,6 @@ void BrowserFileStore::stageAsync(const QString& browser_name, QByteArray bytes,
         return;
       }
 
-      // Last chunk written: flush, close, and release the source buffer BEFORE
-      // completion so the load prologue never overlaps the staging copy.
       const bool flushed = job->file->flush();
       job->file->close();
       job->file.reset();
@@ -273,8 +261,7 @@ void BrowserFileStore::stageAsync(const QString& browser_name, QByteArray bytes,
   QString error;
   std::optional<StagePlacement> placement = preparePlacement(browser_name, error);
   if (!placement.has_value()) {
-    // Report the failure through the same event-loop hop as the success path so
-    // the caller never sees a re-entrant completion.
+    // Through the same event-loop hop as success: never a re-entrant completion.
     StageResult result{.input = std::nullopt, .error = std::move(error)};
     QTimer::singleShot(0, [completion = std::move(completion), result = std::move(result)]() mutable {
       completion(std::move(result));
@@ -300,7 +287,6 @@ void BrowserFileStore::stageAsync(const QString& browser_name, QByteArray bytes,
     return;
   }
 
-  // Kick off on the event loop, never re-entrantly from this call.
   QTimer::singleShot(0, [job]() { AsyncStageJob::step(job); });
 }
 

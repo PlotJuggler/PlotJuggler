@@ -1,11 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// M4.2 Task 5/7 — the pj.data_processors.v1 host bridge (DataProcessorsRuntimeHost)
-// over DataProcessorService, plus the exit-demo contract: a plugin creates a
-// transform through the C ABI; it runs; the plugin (bridge) is destroyed; the
-// transform KEEPS RUNNING (the host owns the script). Per-plugin isolation: a
-// second plugin can neither see nor remove the first's transforms.
+// The pj.data_processors.v1 host bridge (DataProcessorsRuntimeHost) over DataProcessorService, plus the exit-demo
+// contract: a plugin creates a transform through the C ABI; it runs; the plugin (bridge) is destroyed; the transform
+// KEEPS RUNNING (the host owns the script). Per-plugin isolation: a second plugin can neither see nor remove the
+// first's transforms.
 
 #include <gtest/gtest.h>
 
@@ -353,7 +352,7 @@ sdk::DataProcessorRequest negateRequest(std::string_view id) {
   return request;
 }
 
-// ABI-34: an untyped typed create is the legacy create.
+// An untyped typed create is the legacy create.
 TEST(DataProcessorsRuntimeHostTest, CreateV2FallsBackToLegacyCreate) {
   Fixture fx;
   fx.seed("speed", {-1.0, 2.0, -3.0});
@@ -373,7 +372,7 @@ TEST(DataProcessorsRuntimeHostTest, CreateV2FallsBackToLegacyCreate) {
   EXPECT_FALSE(bridge.owns("absent"));
 }
 
-// ABI-34: the transform kind has no on-demand evaluation; the router refuses a submit
+// The transform kind has no on-demand evaluation; the router refuses a submit
 // naming the kind (the bridge has no evaluation slots to reach).
 TEST(DataProcessorsRuntimeHostTest, SubmitOnTransformIsRejected) {
   Fixture fx;

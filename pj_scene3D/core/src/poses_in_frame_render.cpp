@@ -31,10 +31,6 @@ void appendTriadArms(const glm::mat4& base, const PoseTriadStyle& style, std::ve
   const float alpha = std::clamp(style.opacity, 0.0f, 1.0f);
   const glm::mat4 scale = glm::scale(glm::mat4(1.0f), glm::vec3(std::max(style.axis_length, 0.0f)));
 
-  // Geometry: one X-axis arm (kArm[0] is identity) or the full triad. Coloring
-  // is orthogonal: override_color recolors every produced arm with the shared
-  // color; otherwise each arm keeps its natural per-axis color (so an
-  // un-overridden X-only arm is still red).
   const std::size_t arm_count = style.x_arrow_only ? 1 : 3;
   for (std::size_t arm = 0; arm < arm_count; ++arm) {
     const glm::vec3 rgb = style.override_color ? style.color : k_rgb[arm];

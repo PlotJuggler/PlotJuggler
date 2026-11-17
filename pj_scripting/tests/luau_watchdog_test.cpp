@@ -1,8 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The watchdog must turn a runaway script (CPU or memory) into a recoverable
-// error — the host (commit thread) must survive.
+// The watchdog turns a runaway script (CPU or memory) into a recoverable error; the host survives.
 
 #include <gtest/gtest.h>
 

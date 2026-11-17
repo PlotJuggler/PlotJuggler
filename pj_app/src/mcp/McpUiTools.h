@@ -29,7 +29,7 @@ namespace PJ::mcp {
 /// window system would drop its input. GUI thread only.
 class UiDriver {
  public:
-  /// Runs `tool` with `args`; returns its CallToolResult. Throws on a wrongly typed argument.
+  /// Returns the CallToolResult. Throws on a wrongly typed argument.
   [[nodiscard]] nlohmann::json call(const std::string& tool, const nlohmann::json& args);
 
  private:

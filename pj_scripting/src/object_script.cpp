@@ -152,14 +152,14 @@ void installPj(lua_State* L, Run& run) {
   lua_pop(L, 1);
 }
 
-// ---- one state per thread (F8) ----------------------------------------------------
+// ---- one state per thread ---------------------------------------------------------
 
 /// A thread's sandboxed state: the frozen stdlib and the binder, made on its first run. Every run gets a thread of
 /// its own on it, with its own globals, and leaves nothing behind (`EndRun`).
 struct ThreadState {
   detail::BudgetState budget;  ///< the state's allocator and watchdog; re-armed by every run
   lua_State* L = nullptr;
-  bool busy = false;  ///< a run is on it: a nested run (none today) takes a state of its own
+  bool busy = false;  ///< a run is on it: a nested run would take a state of its own
 
   ThreadState() = default;
   ThreadState(const ThreadState&) = delete;

@@ -1,19 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 #pragma once
-//
-// The Luau operations a script (create_derived_object/evaluate) may call on a
-// derived-object BuiltinObject of a given type, advertised by describe_topic
-// alongside the type's field table. This table mirrors PJ4's
-// pj_scripting/src/object_binder.cpp -- the generic Luau <-> sdk::BuiltinObject
-// binder that actually exposes these calls to a running script -- so the
-// agent never advertises a method a script cannot really call. A type with
-// no entry here (FrameTransforms, CameraInfo, and every type with no
-// field table at all) exposes its field table only; there is nothing to add.
-//
-// Mirrors PJ4's Luau/Python object binder by hand; no cross-repo test pins it -- keep in sync when the
-// host's operations change.
-//
+// The Luau operations a script (create_derived_object/evaluate) may call on a derived-object BuiltinObject of a given
+// type, advertised by describe_topic beside the type's field table. Mirrors by hand pj_scripting/src/object_binder.cpp
+// (the generic Luau <-> sdk::BuiltinObject binder that exposes these calls to a running script; the Python binder is
+// python_object_binder.cpp) so the agent never advertises a method a script cannot call. No test pins it: keep in sync
+// when the binders' operations change. A type with no entry (FrameTransforms, CameraInfo, any type without a field
+// table) exposes its field table only.
 
 #include <pj_base/builtin/builtin_object.hpp>
 #include <string_view>

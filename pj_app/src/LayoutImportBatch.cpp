@@ -39,10 +39,8 @@ LayoutImportBatch::LayoutImportBatch(
       hooks_(std::move(hooks)) {}
 
 LayoutImportBatch::~LayoutImportBatch() {
-  // HARD shutdown for a still-running batch (app teardown / owner
-  // replacement): stop listening, discard outstanding tickets, and let each
-  // session's destructor cancel+join+destroy its jobs (T5b's quiescence
-  // guarantee). No rollback and no finished() — the graceful path is cancel().
+  // Disconnect first, so the cancelled tickets reach no slot of this dying object; each session's destructor then
+  // cancels, joins and destroys its jobs.
   QObject::disconnect(load_finished_conn_);
   QObject::disconnect(load_committing_conn_);
   for (auto it = pending_tickets_.cbegin(); it != pending_tickets_.cend(); ++it) {
@@ -81,8 +79,6 @@ HeadlessDescriptorProviderSession* LayoutImportBatch::sessionFor(const QString& 
 }
 
 QString LayoutImportBatch::pathIdentityKey(const QString& path, const QFileInfo& info) {
-  // Mirrors layout_xml::isSamePath: literal identity for opaque browser
-  // uploads, canonical identity (must resolve) for filesystem paths.
   if (path.isEmpty()) {
     return {};
   }
@@ -96,21 +92,15 @@ const LayoutImportBatch::LoadedCandidate* LayoutImportBatch::findAlreadyLoaded(
     const PlannedSource& planned, const QString& effective_key) const {
   for (const LoadedCandidate& candidate : loaded_candidates_) {
     if (candidate.has_record) {
-      // Exact provenance is the verdict for record-carrying datasets:
-      // provider + the FULL descriptor bytes. Identity is only a fast-path
-      // key and is deliberately NOT required to agree — records minted under
-      // the provider-identity scheme and the host digest scheme name the same
-      // source when their descriptor bytes match byte-for-byte. Never fall
-      // back to path identity for these — the cache slot may have been
-      // reused for different content.
+      // Identity is not compared: provider-identity and host-digest records name the same source when the
+      // descriptor bytes match. No path fallback: the cache slot may hold other content now.
       if (candidate.record.provider_id == planned.ref.materialize_provider &&
           candidate.record.descriptor_json == planned.ref.materialize_descriptor_json) {
         return &candidate;
       }
       continue;
     }
-    // Record-less candidate (e.g. the user opened the cache file directly):
-    // path identity is all it has.
+    // E.g. the user opened the cache file directly.
     if (!effective_key.isEmpty() && candidate.path_key == effective_key) {
       return &candidate;
     }
@@ -126,9 +116,6 @@ bool LayoutImportBatch::pathAlreadyLoaded(const QString& effective_key) const {
 }
 
 void LayoutImportBatch::classifyFallback(std::size_t index, const QString& reason) {
-  // §6.4 stock degrade: no provider answer, so the SAVED path is the only
-  // hint. If it exists the stock load proceeds (the strongest degraded
-  // mode); a missing file is today's data-source-missing outcome.
   PlannedSource& planned = planned_[index];
   planned.provider_fallback = true;
   planned.effective_path = planned.ref.resolved_path;
@@ -170,8 +157,7 @@ void LayoutImportBatch::registerRewrite(
       continue;
     }
     if (key == target) {
-      // Identity mapping (or a stale entry from an earlier registration for
-      // this source, e.g. the record-matched live-path override): drop it.
+      // An identity mapping, or a stale entry from an earlier registration (the live-path override).
       qualifier_remap.remove(key);
     } else {
       qualifier_remap.insert(key, target);
@@ -184,9 +170,8 @@ void LayoutImportBatch::planSource(
     QHash<QString, QString>& qualifier_remap) {
   PlannedSource& planned = planned_[index];
   planned.ref = ref;
-  planned.descriptor_utf8 = ref.materialize_descriptor_json.toUtf8();  // the ONE encode
+  planned.descriptor_utf8 = ref.materialize_descriptor_json.toUtf8();
 
-  // Step 1: validate the descriptor (parseable, non-empty, identity present).
   const bool descriptor_valid = !ref.materialize_provider.isEmpty() && !ref.materialize_identity.isEmpty() &&
                                 !planned.descriptor_utf8.trimmed().isEmpty() &&
                                 !QJsonDocument::fromJson(planned.descriptor_utf8).isNull();
@@ -199,11 +184,8 @@ void LayoutImportBatch::planSource(
     return;
   }
 
-  // Step 2a (M3): the HOST source cache, BEFORE any provider contact. A hit
-  // is a stock load of the pinned artifact — no network, no trust prompt, and
-  // the provider plugin need not be installed. resolve() already verified the
-  // artifact strictly against its embedded pj.capture manifest (and
-  // quarantined it otherwise), so a hit here is load-ready.
+  // The host source cache before any provider contact. resolve() verified the artifact against its embedded
+  // pj.capture manifest (quarantining it otherwise), so a hit is load-ready.
 #ifndef __EMSCRIPTEN__
   if (capture_service_ != nullptr) {
     const std::string provider_utf8 = ref.materialize_provider.toStdString();
@@ -212,8 +194,7 @@ void LayoutImportBatch::planSource(
     std::string miss;
     SourceCacheStore::MissKind miss_kind = SourceCacheStore::MissKind::kAbsent;
     if (auto resolved = capture_service_->resolve(provider_utf8, descriptor_view, &miss, &miss_kind)) {
-      // The digest is the record identity every host path shares (attach on
-      // capture, this hit's loadCommitting attach, already-loaded matching).
+      // The record identity every host path uses (capture attach, this hit's attach).
       planned.query_identity = QString::fromStdString(sourceCacheIdentityDigest(provider_utf8, descriptor_view));
       planned.effective_path = QString::fromStdU16String(resolved->artifact.path.u16string());
       planned.host_cache_hit = true;
@@ -223,8 +204,7 @@ void LayoutImportBatch::planSource(
       if (const LoadedCandidate* match =
               findAlreadyLoaded(planned, pathIdentityKey(planned.effective_path, effective_info))) {
         if (match->has_record && !match->source_path.isEmpty() && match->source_path != planned.effective_path) {
-          // Same live-path override as the provider flow: the document must
-          // describe the session that is already loaded.
+          // The document must describe the session already loaded (see planViaProvider).
           planned.effective_path = match->source_path;
           registerRewrite(ref, planned.effective_path, fileinfo_remap, qualifier_remap);
         }
@@ -237,10 +217,8 @@ void LayoutImportBatch::planSource(
       return;
     }
     if (miss_kind == SourceCacheStore::MissKind::kContended) {
-      // Another instance is mid-publish for this exact request. Falling
-      // through to the provider would start a duplicate download of bytes
-      // that are about to exist locally, so fail this ONE source instead
-      // (deliberate design decision: no retry loop, no duplicate download).
+      // Another instance is publishing this request: the provider would download the same bytes again, so this
+      // source fails instead (no retry).
       setResult(
           index, SourceOutcome::kFailed,
           tr("another PlotJuggler instance is currently downloading this request; wait for it to finish and load "
@@ -268,7 +246,6 @@ void LayoutImportBatch::planViaProvider(
     }
   };
 
-  // Step 2: the provider query (strictly bounded, main-thread).
   HeadlessDescriptorProviderSession* session = sessionFor(ref.materialize_provider);
   if (session == nullptr) {
     const QString reason = tr("provider '%1' is unavailable: %2")
@@ -281,10 +258,7 @@ void LayoutImportBatch::planViaProvider(
   }
   const auto query = session->queryDescriptor(
       std::string_view(planned.descriptor_utf8.constData(), static_cast<std::size_t>(planned.descriptor_utf8.size())));
-  // A successful answer without a source identity is malformed (§6.3:
-  // identity is ALWAYS returned) — provenance keys the
-  // rewrite and the record matching, so the source cannot be classified
-  // safely. Fail closed, never degrade.
+  // The provider contract always returns an identity, and the record attach needs it: fail, never degrade.
   if (query.has_value() && query->source_identity.empty()) {
     setResult(index, SourceOutcome::kFailed, tr("provider returned no source identity"));
     emitDiagnostic(
@@ -296,8 +270,7 @@ void LayoutImportBatch::planViaProvider(
   QString effective_path = query.has_value() ? QString::fromStdString(query->local_path_utf8) : QString{};
 #ifndef __EMSCRIPTEN__
   if (effective_path.isEmpty() && query.has_value() && capture_service_ != nullptr) {
-    // A thin (M3) provider names no path: the HOST owns materialization, so
-    // the import lands in the host cache slot for this identity.
+    // A provider that names no path leaves materialization to the host: the import lands in the cache slot.
     effective_path = QString::fromStdU16String(
         capture_service_->store()
             .pathFor(sourceCacheIdentity(
@@ -319,19 +292,13 @@ void LayoutImportBatch::planViaProvider(
     return;
   }
 
-  // Step 3: the effective local path (hit: cached; miss: the path
-  // materialize will produce).
   planned.effective_path = effective_path;
   planned.estimated_bytes = query->estimated_bytes;
 
-  // Steps 4+5: record the document rewrites — the document must describe the
-  // session the restore will actually produce. Applied by the two remap
-  // passes at the end of prepare(); fallback sources are absent, so their
-  // elements stay untouched.
+  // The document must describe the session the restore will produce.
   record_rewrite(planned.effective_path);
 
-  // Trust gate input. kRefused fails the source outright — even a local
-  // cache hit: the provider actively rejected this descriptor (fail-closed).
+  // Refused fails even a local cache hit.
   if (query->trust == DescriptorTrust::kRefused) {
     setResult(index, SourceOutcome::kFailed, tr("descriptor refused by provider"));
     emitDiagnostic(
@@ -343,23 +310,15 @@ void LayoutImportBatch::planViaProvider(
     return;
   }
 
-  // Step 7: classify. Provenance first (record-aware already-loaded, §10),
-  // then the provider's is_materialized verdict as the AUTHORITATIVE
-  // hit/miss call — raw existence classification lives only in the §6.4
-  // fallback, so a stale/partial file at the cache path can never be
-  // promoted to a hit against the provider's word.
+  // Provenance first, then the provider's is_materialized verdict decides hit or miss: file existence alone would
+  // promote a stale or partial file at the cache path to a hit.
   planned.query_identity = QString::fromStdString(query->source_identity);
   const QFileInfo effective_info(planned.effective_path);
   if (const LoadedCandidate* match =
           findAlreadyLoaded(planned, pathIdentityKey(planned.effective_path, effective_info))) {
     if (match->has_record && !match->source_path.isEmpty() && match->source_path != planned.effective_path) {
-      // Codex r2-1: the provider's cache path MOVED since this dataset was
-      // loaded. The document must describe the LIVE session — path-tier
-      // curve/timeline binding compares against the matched dataset's
-      // tracked path, and the freshly queried path names a file nothing in
-      // the session was loaded from. Override the steps-4/5 rewrite with
-      // the live path (record-matched candidates only; a record-less match
-      // was found BY the effective path, so the two are already equal).
+      // The cache path moved since this dataset loaded. Path-tier curve and timeline binding compare against the
+      // dataset's tracked path, so the document gets the live path.
       planned.effective_path = match->source_path;
       record_rewrite(planned.effective_path);
     }
@@ -368,13 +327,11 @@ void LayoutImportBatch::planViaProvider(
   }
   if (query->is_materialized) {
     if (effective_info.exists()) {
-      // A cache hit downloads nothing, so the trust gate (which guards the
-      // NETWORK touch) does not apply — §10: cache file present -> no network.
+      // No network touch, so no trust gate.
       planned.plan = Plan::kHit;
       return;
     }
-    // Materialized-but-missing is a provider bug: importing silently would
-    // paper over an inconsistent cache verdict — fail loudly instead.
+    // A provider bug: importing would hide the inconsistent verdict.
     setResult(index, SourceOutcome::kFailed, tr("provider cache verdict is inconsistent"));
     emitDiagnostic(
         DiagnosticLevel::kWarning, "layout-import-materialized-missing",
@@ -390,9 +347,7 @@ void LayoutImportBatch::planViaProvider(
            "Connect to this server once in the provider toolbox to trust it.")
             .arg(planned.effective_path));
   }
-  // §7 guard 3: the estimate against the per-machine ceiling. 0 = unknown
-  // estimate — enforcement then rides max_transfer_bytes on the job itself
-  // (actual transferred bytes).
+  // An estimate of 0 is unknown: the job itself enforces max_transfer_bytes.
   if (planned.plan == Plan::kMiss && max_transfer_bytes_ > 0 && planned.estimated_bytes > max_transfer_bytes_) {
     failOrConfirm(
         index, "layout-import-size-limit", tr("estimated size exceeds the transfer limit"),
@@ -407,17 +362,9 @@ void LayoutImportBatch::planViaProvider(
 void LayoutImportBatch::prepare(QDomDocument& doc, const QList<layout_xml::DataSourceRef>& sources) {
   Q_ASSERT(state_ == State::kIdle);
   state_ = State::kPrepared;
-  // QDom handles are explicitly shared: this copy addresses the caller's
-  // document, letting the post-quarantine fallback re-run the same remap
-  // passes prepare() applies below (handleHostCacheLoadFailure).
+  // QDom handles are shared: doc_ is the caller's document.
   doc_ = doc;
 
-  // One candidate per LIVE dataset, up front: its path identity key (one
-  // canonicalization per dataset, not two per comparison) plus a copy of its
-  // SourceRecord — record-aware already-loaded classification needs
-  // dataset-level provenance, which the path-keyed loadedSources() registry
-  // cannot supply. Empty catalog -> no candidates: a remembered-but-cleared
-  // source must reload.
   if (!catalog_.isEmpty()) {
     for (const auto& [dataset_id, name] : catalog_.datasets()) {
       static_cast<void>(name);
@@ -436,7 +383,7 @@ void LayoutImportBatch::prepare(QDomDocument& doc, const QList<layout_xml::DataS
   QHash<QString, QString> qualifier_remap;  // every saved-path form -> effective (see registerRewrite)
   for (const layout_xml::DataSourceRef& ref : sources) {
     if (!layout_xml::hasMaterializeRecord(ref)) {
-      continue;  // never touch a plain source — it stays the caller's
+      continue;
     }
     result_.sources.push_back({});
     planned_.push_back({});
@@ -471,8 +418,7 @@ bool LayoutImportBatch::hasPendingWork() const {
 LayoutImportBatch::StartResult LayoutImportBatch::start() {
   Q_ASSERT(state_ == State::kPrepared);
 
-  // Trust/size gate — strictly BEFORE any child is enqueued, so a
-  // "Cancel layout load" answer leaves the session untouched.
+  // Before any child is enqueued, so "Cancel layout load" leaves the session untouched.
   QStringList confirm_lines;
   for (const PlannedSource& planned : planned_) {
     if (planned.plan == Plan::kMiss && planned.needs_confirmation) {
@@ -486,8 +432,6 @@ LayoutImportBatch::StartResult LayoutImportBatch::start() {
     }
   }
   if (!confirm_lines.isEmpty()) {
-    // needs_confirmation is only ever set on an interactive batch; the
-    // non-interactive path already failed those sources during prepare().
     const TrustChoice choice =
         hooks_.confirm_import ? hooks_.confirm_import(confirm_lines) : TrustChoice::kCancelLayout;
     switch (choice) {
@@ -538,10 +482,6 @@ LayoutImportBatch::StartResult LayoutImportBatch::start() {
     }
   }
 
-  // Release the provider sessions no queued job names: they were bound for
-  // prepare()'s queries, and keeping them would pin their DSO + plugin
-  // instance (and their FileLoader observers) for the whole restore with
-  // nothing left to run.
   QSet<QString> needed_providers;
   for (const std::size_t index : job_queue_) {
     needed_providers.insert(planned_[index].ref.materialize_provider);
@@ -549,36 +489,27 @@ LayoutImportBatch::StartResult LayoutImportBatch::start() {
   std::erase_if(sessions_, [&needed_providers](const auto& entry) { return !needed_providers.contains(entry.first); });
 
   startNextJob();
-  // Everything may already have failed synchronously (every ticket rejected,
-  // every job refused to start). maybeFinish() then finalizes via the queued
-  // emission — the batch still reports kRunning, and finished() follows.
+  // Everything may have failed synchronously; finished() still follows, queued.
   maybeFinish();
   return StartResult::kRunning;
 }
 
 void LayoutImportBatch::startHitLoad(std::size_t index) {
   PlannedSource& planned = planned_[index];
-  // Fallback and provider-resolved hits both point the preset's filepath at
-  // the effective path.
-  // Host-cache hits get their OWN hints: a capture artifact is always a
-  // standard MCAP, so the layout's original plugin identity/preset (which
-  // may name a non-MCAP provider format) must not be required — a hint
-  // mismatch would reject and then quarantine a perfectly valid artifact.
-  // The loader picks the MCAP source by extension, dialog-free.
+  // A host-cache artifact is always a standard MCAP: requiring the layout's plugin and preset (possibly another
+  // format) would reject, then quarantine, a valid artifact. The loader picks the MCAP source by extension.
   LoadHints hints;
   if (planned.host_cache_hit) {
     hints.dialog_policy = DialogPolicy::kNever;
     hints.prefer_reuse = true;
   } else {
     hints = layoutReplayHints(planned.ref, /*prefer_reuse=*/true);
-    // Only a fallback loads the layout's own saved path. A provider-resolved hit
-    // replaced it with a materialized cache path: nothing sits beside the old one.
+    // Only a fallback loads the saved path; a provider-resolved cache path has no side files beside it.
     hints.record_saved_filepath = planned.provider_fallback;
   }
   const quint64 ticket = loader_.loadFileTicketed(LoadInput::fromNativePath(planned.effective_path), nullptr, hints);
   if (ticket == 0) {
     if (planned.host_cache_hit) {
-      // The cached artifact is unloadable in this session: heal + provider.
       handleHostCacheLoadFailure(index);
       return;
     }
@@ -596,12 +527,9 @@ void LayoutImportBatch::handleHostCacheLoadFailure(std::size_t index) {
   PlannedSource& planned = planned_[index];
   planned.plan = Plan::kDone;
   planned.host_cache_hit = false;
-  planned.host_cache_pin.reset();  // release our pin so the quarantine can act
-  // A batch that is no longer running must not re-plan: a job queued here
-  // would never start (startNextJob refuses outside kRunning) and the batch
-  // would hang short of maybeFinish's drained condition. It must not touch
-  // the cache either — the load "failure" is a casualty of the cancel, not
-  // evidence against the artifact.
+  planned.host_cache_pin.reset();  // so the quarantine can act
+  // Outside kRunning a queued job would never start (startNextJob refuses) and the batch would never finish; and
+  // the failure is the cancel's, not evidence against the artifact.
   if (state_ != State::kRunning) {
     setResult(index, SourceOutcome::kCancelled);
     return;
@@ -619,14 +547,9 @@ void LayoutImportBatch::handleHostCacheLoadFailure(std::size_t index) {
       tr("Cached copy of layout source '%1' failed to load%2; falling back to the provider.")
           .arg(planned.effective_path, healed ? tr(" and was removed") : QString{}));
 #endif
-  // Fall back to the live provider for this ONE source.
   planViaProvider(index, nullptr, nullptr);
-  // Corrective document rewrite: prepare() pointed the fileInfo filename and
-  // every *_dataset_path qualifier at the (now quarantined) cache path, and
-  // the path binding tier would otherwise never resolve against the fallback
-  // load. QDom documents are explicitly shared, so doc_ IS the caller's
-  // document; the remap uses the same two passes prepare() applied — a
-  // qualifier holds exactly the stale cache path, nothing else.
+  // prepare() pointed the document at the quarantined cache path, which path-tier binding would never resolve.
+  // A qualifier holds exactly that path, nothing else.
   if (!doc_.isNull() && planned.effective_path != stale_path) {
     const auto remap = [&stale_path, &planned](const QString& value) {
       return value == stale_path ? planned.effective_path : value;
@@ -638,8 +561,7 @@ void LayoutImportBatch::handleHostCacheLoadFailure(std::size_t index) {
     startHitLoad(index);
   } else if (planned.plan == Plan::kMiss) {
     if (planned.needs_confirmation) {
-      // The consolidated trust prompt has already run for this batch; a new
-      // network touch cannot be confirmed now (D5) — fail, never prompt late.
+      // The batch's one trust prompt has run: fail, never prompt late.
       planned.plan = Plan::kDone;
       planned.needs_confirmation = false;
       setResult(index, SourceOutcome::kFailed, tr("untrusted import origin"));
@@ -664,8 +586,7 @@ void LayoutImportBatch::startNextJob() {
     PlannedSource& planned = planned_[index];
     HeadlessDescriptorProviderSession* session = sessionFor(planned.ref.materialize_provider);
     if (session == nullptr) {
-      // The session existed at query time; losing it between prepare and
-      // start is not expected, but fail the source rather than crash.
+      // Not expected (the session existed at query time); fail rather than crash.
       setResult(index, SourceOutcome::kFailed, tr("provider session unavailable"));
       continue;
     }
@@ -677,9 +598,7 @@ void LayoutImportBatch::startNextJob() {
     const auto started = session->startImport(
         request,
         [this](DatasetId dataset_id) {
-          // The T7 correlation surface, alongside the rollback-ledger append:
-          // sequential v1 runs at most one job, so the announcement is
-          // unambiguously the active job's.
+          // At most one job runs, so this is the active job's dataset.
           active_import_dataset_ = dataset_id;
           produced_datasets_.push_back(dataset_id);
         },
@@ -704,9 +623,7 @@ void LayoutImportBatch::startNextJob() {
 void LayoutImportBatch::onJobTerminal(
     std::size_t planned_index, DescriptorImportOutcome outcome, const QString& message) {
   job_active_ = false;
-  // Clear the T7 correlation BEFORE the startNextJob() chain below: the next
-  // job must never inherit its predecessor's announced dataset or cancel
-  // address.
+  // Before startNextJob(): the next job must not inherit this one's dataset or cancel address.
   active_job_session_ = nullptr;
   active_job_id_ = 0;
   active_import_dataset_.reset();
@@ -717,8 +634,7 @@ void LayoutImportBatch::onJobTerminal(
       break;
     case DescriptorImportOutcome::kSucceededEagerOnly:
       setResult(planned_index, SourceOutcome::kResolvedImported, message);
-      // §10: the eager dataset is usable, but no import record is attached —
-      // a re-saved layout will not carry a <materialize> for it.
+      // No SourceRecord: a re-saved layout carries no <materialize> for it.
       emitDiagnostic(
           DiagnosticLevel::kInfo, "layout-import-eager-only",
           tr("Layout source '%1' imported as data only (no re-importable source record was attached).")
@@ -739,9 +655,7 @@ void LayoutImportBatch::onJobTerminal(
           tr("Import of layout source '%1' failed: %2").arg(effective_path, message));
       break;
   }
-  // Sequential v1 chaining: the job was concluded before this continuation
-  // ran (the session contract), so starting the next import from here is the
-  // intended re-entrant loop.
+  // Legal re-entry: the session concluded the job before this continuation ran.
   startNextJob();
   maybeFinish();
 }
@@ -749,18 +663,11 @@ void LayoutImportBatch::onJobTerminal(
 void LayoutImportBatch::onLoadCommitting(quint64 ticket, const QVector<DatasetId>& produced) {
   const auto it = pending_tickets_.constFind(ticket);
   if (it == pending_tickets_.constEnd()) {
-    return;  // not one of ours
+    return;
   }
   const PlannedSource& planned = planned_[it.value()];
-  // Codex r2-2: a provider-resolved cache hit must carry the same provenance
-  // a promoted miss gets — layout save emits <materialize> only for
-  // record-bearing datasets, so without this the restored hit degrades to an
-  // ordinary path source on the next save. Attached on the SYNCHRONOUS
-  // pre-catalog seam, atomic with catalog publication (the promotion
-  // pattern). §6.4 fallback hits have no provider answer — nothing to
-  // attach. Seam limits (same as promotion): the prefer_reuse and fan-out
-  // epilogues never run loadCommitting, so a reused/fan-out hit keeps
-  // path-only identity.
+  // Layout save writes <materialize> only for record-bearing datasets. The prefer_reuse and fan-out paths never
+  // emit loadCommitting, so a reused or fanned-out hit keeps a path-only identity.
   if (planned.provider_fallback) {
     return;
   }
@@ -772,9 +679,8 @@ void LayoutImportBatch::onLoadCommitting(quint64 ticket, const QVector<DatasetId
                         .descriptor_json = planned.ref.materialize_descriptor_json,
                     });
     if (planned.host_cache_pin != nullptr) {
-      // The dataset now reads the cache artifact: it owns a read pin for its
-      // lifetime (released by removeDataset/merge), so eviction and
-      // quarantine cannot pull the file out from under it.
+      // The dataset reads the artifact: its own pin (released by removeDataset or merge) keeps eviction and
+      // quarantine away.
       session_manager_.pinDatasetResource(dataset_id, planned.host_cache_pin);
     }
   }
@@ -783,7 +689,7 @@ void LayoutImportBatch::onLoadCommitting(quint64 ticket, const QVector<DatasetId
 void LayoutImportBatch::onLoadFinished(quint64 ticket, LoadOutcome outcome, const QVector<DatasetId>& produced) {
   const auto it = pending_tickets_.constFind(ticket);
   if (it == pending_tickets_.constEnd()) {
-    return;  // not one of ours
+    return;
   }
   const std::size_t index = it.value();
   pending_tickets_.erase(it);
@@ -792,16 +698,13 @@ void LayoutImportBatch::onLoadFinished(quint64 ticket, LoadOutcome outcome, cons
   }
   switch (outcome) {
     case LoadOutcome::kLoaded:
-      // Host-cache hits: the produced datasets took their pin copies at
-      // loadCommitting; the batch's own copy may now go.
+      // The datasets took their pin copies at loadCommitting.
       planned_[index].host_cache_pin.reset();
       setResult(index, SourceOutcome::kResolvedCacheHit);
       break;
     case LoadOutcome::kCancelled:
-      // A keep-partial stop skipped loadCommitting, so any KEPT datasets never
-      // took their pin there — hand it over here, or a surviving dataset with
-      // lazy payloads would lose its backing artifact to cleanup/quarantine.
-      // (A rolled-back batch removes these datasets, which releases the pins.)
+      // A keep-partial stop skips loadCommitting: kept datasets take their pin here, or one with lazy payloads
+      // would lose its artifact to cleanup. A rollback removes them, releasing the pins.
       if (planned_[index].host_cache_pin != nullptr) {
         for (const DatasetId produced_id : produced) {
           session_manager_.pinDatasetResource(produced_id, planned_[index].host_cache_pin);
@@ -812,8 +715,6 @@ void LayoutImportBatch::onLoadFinished(quint64 ticket, LoadOutcome outcome, cons
       break;
     case LoadOutcome::kFailed:
       if (planned_[index].host_cache_hit) {
-        // Strict rejection: a cached artifact whose stock load fails is never
-        // a hit — quarantine it and fall back to the live provider.
         handleHostCacheLoadFailure(index);
         break;
       }
@@ -827,10 +728,6 @@ void LayoutImportBatch::onLoadFinished(quint64 ticket, LoadOutcome outcome, cons
 }
 
 void LayoutImportBatch::cancelActiveImportJob() {
-  // D3 keep-partial: forward to the session's per-job cancel and nothing
-  // else. The job's kCancelled terminal arrives through the normal queued
-  // path (onJobTerminal records the outcome and chains the next job) —
-  // deliberately none of cancel()'s rollback machinery runs.
   if (!job_active_ || active_job_session_ == nullptr) {
     return;
   }
@@ -843,7 +740,6 @@ void LayoutImportBatch::cancel() {
   }
   result_.cancelled = true;
   if (state_ != State::kRunning) {
-    // Never started: nothing to unwind. Conclude every source and finish.
     for (std::size_t index = 0; index < planned_.size(); ++index) {
       if (planned_[index].plan != Plan::kDone) {
         planned_[index].plan = Plan::kDone;
@@ -855,21 +751,18 @@ void LayoutImportBatch::cancel() {
     return;
   }
   state_ = State::kCancelling;
-  // Cancel + join the provider side (terminals are now queued); the queued
-  // continuations still deliver, so the produced-dataset ledger is complete
-  // before maybeFinish() sees the last child conclude.
+  // After the join the terminals are queued; they still deliver, so produced_datasets_ is complete before
+  // maybeFinish() sees the last child conclude.
   for (const auto& [provider_id, session] : sessions_) {
     static_cast<void>(provider_id);
     session->cancelAll();
     session->joinAll();
   }
-  // Discard outstanding stock loads; their kCancelled terminals conclude
-  // the tickets through the normal queued path.
+  // Their kCancelled terminals conclude the tickets through onLoadFinished.
   const QList<quint64> tickets = pending_tickets_.keys();
   for (const quint64 ticket : tickets) {
     static_cast<void>(loader_.cancelLoad(ticket, /*keep_partial=*/false));
   }
-  // Unstarted queue entries conclude immediately.
   for (std::size_t cursor = job_cursor_; cursor < job_queue_.size(); ++cursor) {
     setResult(job_queue_[cursor], SourceOutcome::kCancelled);
   }
@@ -885,9 +778,7 @@ void LayoutImportBatch::maybeFinish() {
     return;
   }
   if (state_ == State::kCancelling && rollback_workspace_) {
-    // ROLLBACK (the rollbackBrowserReplayImports template): remove every
-    // dataset the batch produced, then exact-restore the pre-batch
-    // workspace.
+    // Datasets first, then the workspace.
     for (const DatasetId dataset_id : produced_datasets_) {
       if (hooks_.remove_dataset) {
         hooks_.remove_dataset(dataset_id);
@@ -900,15 +791,13 @@ void LayoutImportBatch::maybeFinish() {
           tr("The cancelled layout import was removed, but the previous workspace could not be restored exactly."));
     }
   }
-  // The state check above makes this block run exactly once: kFinished is
-  // set before anything re-entrant can observe it.
+  // Set before anything re-entrant can run, so this block runs once.
   state_ = State::kFinished;
   QObject::disconnect(load_finished_conn_);
   load_finished_conn_ = {};
   QObject::disconnect(load_committing_conn_);
   load_committing_conn_ = {};
-  // Queued, never inline: the owner may be inside start()/cancel() when the
-  // last child concludes synchronously.
+  // Queued: the owner may be inside start() or cancel().
   QMetaObject::invokeMethod(this, [this]() { emit finished(); }, Qt::QueuedConnection);
 }
 

@@ -38,9 +38,8 @@ void SvgButton::setExtent(int button_px, int icon_px) {
 
 void SvgButton::changeEvent(QEvent* event) {
   QToolButton::changeEvent(event);
-  // Qt 6 has no QApplication::paletteChanged signal; a theme switch arrives as
-  // these events (the host repaints qApp's palette/stylesheet), so this is the
-  // transparent re-tint hook — no per-button connection required.
+  // Qt 6 has no QApplication::paletteChanged signal; a theme switch arrives as these events (the host repaints qApp's
+  // palette and stylesheet), so this is the re-tint hook, with no per-button connection.
   switch (event->type()) {
     case QEvent::ApplicationPaletteChange:
     case QEvent::PaletteChange:

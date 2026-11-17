@@ -1,17 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Guards the two geometric invariants of the shared cube that nothing else can catch
-// cheaply, and that were both wrong or absent before:
+// Guards two geometric invariants of the shared cube that nothing else catches cheaply:
 //
-//  * WINDING. kCubeVertices used to be CW-viewed-from-outside while its comment
-//    claimed CCW, which silently inverted every pipeline that culls back faces (the
-//    QRhi cube/voxel pipelines did, and drew the cube's far side). Eyeballing the
-//    table does not catch this; the cross product does.
-//  * FAN COVERAGE. The hexagon fan must tile exactly the three faces whose outward
-//    normal points at the camera, for every one of the eight sign combinations —
-//    the C++ mirror of cubeFanCorner() below is checked against the same table the
-//    shader compiles, so a table edit that breaks one octant fails here.
+//  * WINDING. kCubeVertices must be CCW viewed from outside: the QRhi cube/voxel pipelines cull back faces, and a CW
+//    table draws the cube's far side. Eyeballing the table does not catch this; the cross product does.
+//  * FAN COVERAGE. The hexagon fan must tile exactly the three faces whose outward normal points at the camera, for
+//    every one of the eight sign combinations: the C++ mirror of cubeFanCorner() below is checked against the same
+//    table the shader compiles, so a table edit that breaks one octant fails here.
 
 #include "pj_scene3d_widgets/cube_mesh.h"
 
@@ -45,7 +41,6 @@ TEST(CubeMeshTest, EveryTriangleIsWoundCounterClockwiseFromOutside) {
     const CubeVertex& b = kCubeVertices[kCubeIndices[i + 1U]];
     const CubeVertex& c = kCubeVertices[kCubeIndices[i + 2U]];
     const glm::vec3 geometric = glm::cross(position(b) - position(a), position(c) - position(a));
-    // CCW from outside <=> the winding normal agrees with the stored outward normal.
     EXPECT_GT(glm::dot(geometric, normal(a)), 0.0f) << "triangle " << (i / 3U) << " is wound inside-out";
   }
 }
@@ -57,15 +52,13 @@ TEST(CubeMeshTest, StoredNormalsAreUnitAxisAlignedAndConsistentPerFace) {
     for (std::size_t corner = 0; corner < 4U; ++corner) {
       const CubeVertex& v = kCubeVertices[face * 4U + corner];
       EXPECT_EQ(normal(v), face_normal) << "face " << face << " has mixed normals";
-      // The corner lies ON that face: its normal-axis coordinate is the +/-0.5 extreme.
       EXPECT_FLOAT_EQ(glm::dot(position(v), face_normal), 0.5f);
     }
   }
 }
 
-// C++ mirror of cubeFanCorner() in shaders/cube/cube_fan.glslinc. Kept deliberately
-// literal so a change to the GLSL table without a change here shows up as a failure
-// rather than drift.
+// C++ mirror of cubeFanCorner() in shaders/cube/cube_fan.glslinc, deliberately literal so a change to the GLSL table
+// without a change here fails instead of drifting.
 glm::vec3 fanCorner(int vertex_id, const glm::vec3& face_signs) {
   static const std::array<glm::vec3, 7> kFanFlip = {{
       {1, 1, 1},
@@ -106,7 +99,6 @@ TEST(CubeMeshTest, FanCornersAreCubeCornersAndIncludeTheNearOne) {
       seen.insert({corner.x, corner.y, corner.z});
     }
     EXPECT_EQ(seen.size(), 7U) << "fan repeats a corner, so a triangle is degenerate";
-    // Vertex 0 is the corner nearest the camera: every axis on the camera's side.
     EXPECT_EQ(fanCorner(0, signs), 0.5f * signs);
   }
 }
@@ -114,8 +106,6 @@ TEST(CubeMeshTest, FanCornersAreCubeCornersAndIncludeTheNearOne) {
 TEST(CubeMeshTest, FanTilesExactlyTheThreeCameraFacingFaces) {
   ASSERT_EQ(kCubeFanIndices.size(), 18U);
   for (const glm::vec3& signs : allSignCombinations()) {
-    // Which face each triangle lies in, named by the axis that is constant at +/-0.5
-    // across all three of its corners, and the winding-derived outward normal.
     std::vector<glm::vec3> face_normals;
     for (std::size_t i = 0; i < kCubeFanIndices.size(); i += 3U) {
       const glm::vec3 a = fanCorner(static_cast<int>(kCubeFanIndices[i]), signs);
@@ -132,13 +122,11 @@ TEST(CubeMeshTest, FanTilesExactlyTheThreeCameraFacingFaces) {
 
       glm::vec3 face_normal(0.0f);
       face_normal[constant_axis] = a[constant_axis] > 0.0f ? 1.0f : -1.0f;
-      // Only faces the camera is on the side of may be drawn.
       EXPECT_FLOAT_EQ(face_normal[constant_axis], signs[constant_axis])
           << "fan drew a face pointing away from the camera";
 
       const glm::vec3 geometric = glm::cross(b - a, c - a);
       EXPECT_GT(glm::dot(geometric, face_normal), 0.0f) << "fan triangle is wound inside-out";
-      // Every triangle is a half-quad of its face: area 0.5 of the unit face.
       EXPECT_FLOAT_EQ(glm::length(geometric) * 0.5f, 0.5f) << "fan triangle does not half-tile its face";
 
       face_normals.push_back(face_normal);
@@ -158,11 +146,10 @@ TEST(CubeMeshTest, FanTilesExactlyTheThreeCameraFacingFaces) {
   }
 }
 
-// kCubeEdgeMeanScale is what keeps a LOD sprite as bright as the cube it replaces, and it
-// is DERIVED from the edge band's width, its darkening strength and the sRGB decode. Edit
-// any of those and the constant is silently wrong. scene3d_rhi_point_test measures the
-// consequence end to end, but only where a GPU is available — so this pure-math check is
-// the one that runs everywhere.
+// kCubeEdgeMeanScale keeps a LOD sprite as bright as the cube it replaces and is DERIVED from the edge band's width,
+// its darkening strength and the sRGB decode: edit any of those and the constant is silently wrong.
+// scene3d_rhi_point_test measures the consequence end to end but only where a GPU is available; this pure-math check
+// runs everywhere.
 TEST(CubeEdgeMeanScaleTest, MatchesTheIntegralOfItsOwnConstants) {
   EXPECT_NEAR(pj::scene3d::cubeEdgeMeanScale(), pj::scene3d::kCubeEdgeMeanScale, 5e-4)
       << "kCubeEdgeMeanScale no longer matches an integration of kCubeEdgeWidth / "

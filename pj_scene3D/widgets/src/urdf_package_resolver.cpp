@@ -23,7 +23,6 @@ constexpr char kPerSourceKey[] = "pj_scene3d/urdf_per_source_packages";
 constexpr char kSearchRootsKey[] = "pj_scene3d/urdf_search_roots";
 constexpr int kAncestorDepthCap = 10;
 
-// Join a root directory and a relative path with a single separator.
 QString joinPath(const QString& root, const std::string& rel) {
   QString r = root;
   while (r.endsWith('/')) {
@@ -114,7 +113,6 @@ void UrdfPackageResolver::addSearchRoot(const QString& root) {
 }
 
 void UrdfPackageResolver::autoSeedSearchRoots(const QString& urdf_dir) {
-  // Global roots come first (most authoritative user choice), seeded once.
   if (!seeded_global_roots_ && settings_ != nullptr) {
     const QStringList global = settings_->value(QString::fromLatin1(kSearchRootsKey)).toStringList();
     for (const QString& g : global) {
@@ -161,9 +159,8 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
       out.issue = MeshResolveIssue::kMissingFile;
       return out;
     }
-    // Absolute local path; skip the package chain entirely. QUrl::toLocalFile
-    // percent-decodes (e.g. %20 -> space) and strips an optional localhost
-    // authority — a raw mid(7) slice would mangle encoded paths.
+    // Absolute local path: skip the package chain. QUrl::toLocalFile percent-decodes (%20 -> space) and strips an
+    // optional localhost authority, which a raw mid(7) slice would mangle.
     out.resolved = true;
     out.path = QUrl(quri).toLocalFile().toStdString();
     return out;
@@ -203,11 +200,9 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
     return out;
   }
 
-  // Absolute filesystem path (POSIX "/..." or a Windows drive "C:/..."): return
-  // it verbatim — joining it onto urdf_dir would mangle it. Machine-generated
-  // URDFs (xacro $(find) expansion, MoveIt) emit absolute mesh paths. Apply the
-  // same existence-check-else-unresolved policy as the package steps so a
-  // missing file surfaces in the status instead of resolving to a dead path.
+  // Absolute filesystem path (POSIX "/..." or a Windows drive "C:/..."): returned verbatim, since joining it onto
+  // urdf_dir would mangle it (xacro $(find) expansion and MoveIt emit absolute mesh paths). Same existence-check policy
+  // as the package steps, so a missing file surfaces in the status instead of resolving to a dead path.
   if (QDir::isAbsolutePath(quri)) {
     if (local_files && QFileInfo::exists(quri)) {
       out.resolved = true;
@@ -218,8 +213,7 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
     return out;
   }
 
-  // Bare relative path — the GUARD. Never enters the package chain. Resolve
-  // relative to urdf_dir (filesystem join, or URL base concatenation).
+  // Bare relative path (the GUARD): never enters the package chain; resolved against urdf_dir.
   if (urdf_dir.empty()) {
     out.issue = MeshResolveIssue::kNoAnchor;
     return out;  // Topic source with no dir: a bare path has nothing to anchor.
@@ -246,7 +240,6 @@ std::string UrdfPackageResolver::resolve(
       root != package_url_roots.cend() && (!PJ::isHttpUrl(*root) || allowsNetworkRoot(source_is_url, remote_only))) {
     return resolveUnderRoot(*root, rel, allowsLocalFiles(remote_only));
   }
-  // Step 0 — embedded-asset exact-name lookup.
   const std::string uri = "package://" + pkg + "/" + rel;
   if (std::string p = stepEmbeddedAsset(uri); !p.empty()) {
     return p;
@@ -255,19 +248,15 @@ std::string UrdfPackageResolver::resolve(
   if (remote_only) {
     return source_is_url ? stepAncestor(pkg, rel, urdf_dir, source_is_url) : std::string{};
   }
-  // Step 1 — remembered per-source map.
   if (std::string p = stepRememberedMap(pkg, rel); !p.empty()) {
     return p;
   }
-  // Step 2 — ancestor heuristic (filesystem or URL).
   if (std::string p = stepAncestor(pkg, rel, urdf_dir, source_is_url); !p.empty()) {
     return p;
   }
-  // Step 3 — search roots.
   if (std::string p = stepSearchRoots(pkg, rel); !p.empty()) {
     return p;
   }
-  // Miss: the caller records `pkg` (the resolver keeps no global tally).
   return {};
 }
 
@@ -283,20 +272,17 @@ std::string UrdfPackageResolver::stepEmbeddedAsset(const std::string& uri) {
   if (!extracted_assets_dir_->isValid()) {
     return {};
   }
-  // On-disk filename = "<8-hex-sha1-of-key>_<flattened-ref>". The flatten alone
-  // is lossy/non-injective (e.g. "package://a/b.stl" and "package://a_b.stl" both
-  // flatten identically), so two distinct refs would collide and overwrite each
-  // other. Prefixing a hash of the verbatim key makes the name collision-proof
-  // while the flattened tail keeps the original extension last for format
-  // sniffing. (Path traversal is already neutralized: '/' becomes '_'.)
+  // On-disk filename = "<8-hex-sha1-of-key>_<flattened-ref>". The flatten alone is non-injective ("package://a/b.stl"
+  // and "package://a_b.stl" flatten identically), so distinct refs would overwrite each other; the hash of the verbatim
+  // key makes the name collision-proof while the flattened tail keeps the extension last for format sniffing. Path
+  // traversal is already neutralized: '/' becomes '_'.
   QString flat = key;
   flat.replace(QRegularExpression("[^A-Za-z0-9._-]"), "_");
   const QString digest =
       QString::fromLatin1(QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1).toHex()).left(8);
   const QString out_path = extracted_assets_dir_->filePath(digest + '_' + flat);
-  // Asset content is immutable for the dir's lifetime (setEmbeddedAssets
-  // resets the dir), so an already-extracted file is never rewritten — this
-  // avoids truncating bytes under an in-flight assimp read on Retry/Locate.
+  // Asset content is immutable for the dir's lifetime (setEmbeddedAssets resets the dir), so an already-extracted file
+  // is never rewritten: that would truncate bytes under an in-flight assimp read on Retry/Locate.
   if (QFileInfo::exists(out_path)) {
     return out_path.toStdString();
   }
@@ -338,8 +324,7 @@ std::string UrdfPackageResolver::stepAncestor(
   const QString qpkg = QString::fromStdString(pkg);
 
   if (source_is_url) {
-    // URL variant: scan path segments for the rightmost == pkg, rebuild the URL
-    // up to (and including) that segment, then append rel. No double-nesting.
+    // URL variant: take the rightmost path segment == pkg, rebuild the URL up to and including it, then append rel.
     QUrl url(QString::fromStdString(urdf_dir));
     const QString path = url.path();
     const QStringList segs = path.split('/', Qt::SkipEmptyParts);
@@ -363,8 +348,6 @@ std::string UrdfPackageResolver::stepAncestor(
     return joinPath(rebuilt, rel).toStdString();
   }
 
-  // Filesystem variant: walk up from urdf_dir; at each ancestor whose basename
-  // == pkg, accept only after verifying ancestor/rel exists on disk.
   QDir dir(QString::fromStdString(urdf_dir));
   for (int depth = 0; depth <= kAncestorDepthCap; ++depth) {
     if (dir.dirName() == qpkg) {
@@ -383,10 +366,9 @@ std::string UrdfPackageResolver::stepAncestor(
 std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const std::string& rel) {
   for (const QString& root : search_roots_) {
     const QString pkg_dir = joinPath(root, pkg);
-    // Package identity = directory basename only. No package.xml check. Accept
-    // only when the mesh file itself exists (mirrors stepAncestor) — a bare
-    // package-dir stub missing the mesh must miss (return ""), not yield a
-    // false-positive path the loader would silently fail to open.
+    // Package identity = directory basename only (no package.xml check). Accept only when the mesh file itself exists
+    // (mirrors stepAncestor): a package-dir stub missing the mesh must miss (""), not yield a path the loader silently
+    // fails to open.
     if (QFileInfo(pkg_dir).isDir()) {
       const QString candidate = joinPath(pkg_dir, rel);
       if (QFileInfo::exists(candidate)) {
@@ -403,22 +385,18 @@ void UrdfPackageResolver::rememberPackageRoot(const std::string& pkg, const QStr
   // contains `rel`). The two consumers need DIFFERENT levels:
   //   - per-source map  -> stepRememberedMap does joinPath(root, rel)        -> store the package dir
   //   - search roots  -> stepSearchRoots does joinPath(root, pkg) + rel    -> store the PARENT
-  // Storing the package dir in both (the old bug) double-nested <pkg>/<pkg> in
-  // step 3, silently breaking cross-dataset reuse.
+  // Storing the package dir in both would double-nest <pkg>/<pkg> in step 3 and silently break cross-dataset reuse.
   const QString pkg_dir = QDir::cleanPath(root_dir);
   const QString parent = QFileInfo(pkg_dir).absolutePath();
 
-  // Append the PARENT to the global search roots (cross-dataset reuse).
   addSearchRoot(parent);
 
   if (settings_ != nullptr) {
-    // Persist the PARENT to the global roots list.
     QStringList global = settings_->value(QString::fromLatin1(kSearchRootsKey)).toStringList();
     if (!global.contains(parent)) {
       global.append(parent);
       settings_->setValue(QString::fromLatin1(kSearchRootsKey), global);
     }
-    // Persist the PACKAGE dir to the per-source remembered map (reopen repeatability).
     if (!source_path_.isEmpty()) {
       QVariantMap top = settings_->value(QString::fromLatin1(kPerSourceKey)).toMap();
       QVariantMap pkg_map = top.value(source_path_).toMap();

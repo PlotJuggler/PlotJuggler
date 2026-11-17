@@ -61,20 +61,17 @@ struct DrawBatch {
 struct RetainedLayers {
   // The text quads of the last text build.
   std::vector<TextVertex> text_vertices;
-  // Per-item spans of the last build of each layer (index ranges in a geometry
-  // layer, vertex ranges in the text layer); the frame's span is kept apart
-  // because it draws over everything.
+  // Per-item spans of the last build of each layer (index ranges in a geometry layer, vertex ranges in the text layer);
+  // the frame's span is kept apart because it draws over everything.
   std::vector<ItemSpan> curve_spans;
   std::vector<ItemSpan> overlay_spans;
   std::vector<ItemSpan> text_spans;
   ItemSpan frame_span;
-  // Retained native item order across the three buffers. A marker draws its
-  // line/symbol geometry and then its label before the next same-Z marker,
-  // matching Qwt rather than flattening every label above all markers.
+  // Retained native item order across the three buffers: a marker draws its line and symbol geometry and then its
+  // label before the next same-Z marker, as Qwt does, not every label above all markers.
   std::vector<DrawBatch> draw_batches;
-  // Text layers of the last text build, keyed by their recorded drawing (a
-  // QPicture of the item's paint, its bounds and the dpr). Dropped with the GPU
-  // resources.
+  // Text layers of the last text build, keyed by their recorded drawing (a QPicture of the item's paint, its bounds and
+  // the dpr); dropped with the GPU resources.
   QHash<QByteArray, TextCacheEntry> text_cache;
   // What the uploaded atlas and text quads were built from.
   TextSignature text_signature;
@@ -116,11 +113,10 @@ using plot_rhi::Vertex;
       static_cast<qreal>(target_size.height()) / logical_size.height());
 }
 
-// Logical widget pixels (y down) to the backend's clip space: GL-style NDC
-// (y up) followed by QRhi::clipSpaceCorrMatrix(), which flips y on Vulkan. The
-// shaders pass positions through unchanged, so this is the only place that
-// knows the backend's conventions. z stays 0 and w 1, inside every backend's
-// depth range; only the 2D part of the correction matters.
+// Logical widget pixels (y down) to the backend's clip space: GL-style NDC (y up) followed by
+// QRhi::clipSpaceCorrMatrix(), which flips y on Vulkan. The shaders pass positions through, so this is the only place
+// that knows the backend's conventions. z stays 0 and w 1, inside every backend's depth range; only the 2D part of the
+// correction matters.
 [[nodiscard]] QTransform logicalToClip(QSize logical_size, const QMatrix4x4& clip_correction) {
   if (logical_size.isEmpty()) {
     return QTransform(0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -132,8 +128,8 @@ using plot_rhi::Vertex;
   return to_ndc * correction;
 }
 
-// QRhi's own name ("OpenGL", "Vulkan", "D3D11", "Metal"), except in the
-// browser, whose breadcrumbs report WebGL as "OpenGLES2/WebGL".
+// QRhi's own name ("OpenGL", "Vulkan", "D3D11", "Metal"), except in the browser, whose breadcrumbs report WebGL as
+// "OpenGLES2/WebGL".
 [[nodiscard]] QString backendName(const QRhi& rhi) {
 #ifdef PJ_TARGET_WASM
   if (rhi.backend() == QRhi::OpenGLES2) {
@@ -143,9 +139,8 @@ using plot_rhi::Vertex;
   return QString::fromLatin1(rhi.backendName());
 }
 
-// Grows `buffer` (a Static buffer of `usage`, vertex by default) to hold `bytes`,
-// doubling, never past `ceiling`. False when the replacement cannot be created;
-// the old buffer stays.
+// Grows `buffer` (a Static buffer of `usage`, vertex by default) to hold `bytes`, doubling, never past `ceiling`. False
+// when the replacement cannot be created; the old buffer stays.
 [[nodiscard]] bool growStaticBuffer(
     QRhi& rhi, QRhiBuffer*& buffer, qsizetype& capacity, qsizetype bytes,
     qsizetype ceiling = std::numeric_limits<qsizetype>::max(),
@@ -170,8 +165,8 @@ PlotRhiCanvas::PlotRhiCanvas(QwtPlot* plot, QWidget* parent)
     : QRhiWidget(parent), plot_(plot), layers_(std::make_unique<plot_rhi::RetainedLayers>()) {
   pjPlotRhiInitResources();
   setApi(preferredGraphicsApi());
-  // One sample per pixel into a colour-only target of our own: the shader
-  // antialiases the geometry, and nothing uses depth or stencil.
+  // One sample per pixel into a colour-only target of our own: the shader antialiases the geometry and nothing uses
+  // depth or stencil.
   setAutoRenderTarget(false);
   setContentsMargins(1, 1, 1, 1);
   setAutoFillBackground(false);
@@ -179,12 +174,10 @@ PlotRhiCanvas::PlotRhiCanvas(QwtPlot* plot, QWidget* parent)
   connect(this, &QRhiWidget::renderFailed, this, [this]() { reportFailure(/*emit_signal=*/false); });
   connect(this, &QRhiWidget::frameSubmitted, this, [this]() {
     QWidget* top_level = window();
-    // Qt/WASM switches a raster top-level to its RHI compositor when the first
-    // real plot is shown. Repaint the whole window only after that first frame
-    // has actually been submitted, so the raster backing texture is fully
-    // initialized before later partial QWidget updates. The refresh is
-    // per-top-level: a reparent/float to a new window re-arms it. Latch BEFORE
-    // scheduling the update so the update it triggers cannot re-enter this arm.
+    // Qt/WASM switches a raster top-level to its RHI compositor when the first real plot is shown. Repaint the whole
+    // window only after that first frame was submitted, so the raster backing texture is initialized before later
+    // partial QWidget updates. Per top-level: a reparent or float to a new window re-arms it. Latch before scheduling
+    // the update so the update it triggers cannot re-enter this arm.
     if (composition_refresh_queued_ && last_refreshed_window_ == top_level) {
       return;
     }
@@ -261,9 +254,8 @@ void PlotRhiCanvas::grabPresentedFrame(std::function<void(const QImage&)> done) 
 }
 
 void PlotRhiCanvas::replot() {
-  // Authoritative geometry-invalidation source: QwtPlot::replot() reaches here
-  // reflectively on every semantic change (data, pens, items, axes). Mark dirty
-  // so the next render() rebuilds instead of reusing the retained buffers.
+  // Authoritative geometry-invalidation source: QwtPlot::replot() reaches here reflectively on every semantic change
+  // (data, pens, items, axes). Mark dirty so the next render() rebuilds instead of reusing the retained buffers.
   replot_requested_ = replot_requested_ || !overlay_only_replot_;
   overlay_dirty_ = true;
   update();
@@ -317,8 +309,8 @@ void PlotRhiCanvas::releaseDrawResources() {
   layers_->curve_spans.clear();
   layers_->overlay_spans.clear();
   layers_->frame_span = {};
-  // A fresh context has no uploaded geometry: start dirty and drop the env key
-  // so the first frame after re-initialize() rebuilds and re-uploads.
+  // A fresh context has no uploaded geometry: start dirty and drop the env key so the first frame after initialize()
+  // rebuilds and re-uploads.
   curves_dirty_ = true;
   overlay_dirty_ = true;
   env_key_.reset();
@@ -363,9 +355,8 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
     return false;
   }
 
-  // Static (device-local): the geometry is retained across frames and only
-  // re-uploaded on a rebuild, and a Dynamic buffer would be host-visible and
-  // duplicated per frame in flight on Vulkan/D3D/Metal.
+  // Static (device-local): the geometry is retained across frames and re-uploaded only on a rebuild, and a Dynamic
+  // buffer would be host-visible and duplicated per frame in flight on Vulkan, D3D and Metal.
   constexpr qsizetype kInitialVertexBufferCapacity = 64 * 1024;
   auto vertex_buffer = std::unique_ptr<QRhiBuffer>(
       rhi_->newBuffer(QRhiBuffer::Static, QRhiBuffer::VertexBuffer, kInitialVertexBufferCapacity));
@@ -400,8 +391,8 @@ bool PlotRhiCanvas::createPipeline(QRhiCommandBuffer* /*command_buffer*/) {
   vertex_buffer_capacity_ = kInitialVertexBufferCapacity;
   pipeline_ = pipeline.release();
 
-  // The text pipeline is optional: without it legends and labels drop, the
-  // curves still draw. There is no raster fallback in the browser.
+  // The text pipeline is optional: without it legends and labels drop and the curves still draw. The browser has no
+  // raster fallback.
   const auto drop_text = [] {
     qCWarning(lcPlotRhi) << "PlotRhiCanvas: failed to create the text pipeline; rendering geometry without text";
     return true;
@@ -471,15 +462,14 @@ void PlotRhiCanvas::initialize(QRhiCommandBuffer* command_buffer) {
     reportFailure(/*emit_signal=*/true);
     return;
   }
-  // A new QRhi (reparent to another top-level, device loss) invalidates every
-  // resource; a new output format or sample count invalidates the pipelines.
+  // A new QRhi (reparent to another top-level, device loss) invalidates every resource; a new output format or sample
+  // count invalidates the pipelines.
   if (rhi_ != current_rhi) {
     noteRhiAdoption(*this, rhi_, current_rhi);
     releaseResources();
     rhi_ = current_rhi;
   }
-  // The widget rebuilds its colour buffer in place on a resize: refresh the
-  // target on it every time.
+  // The widget rebuilds its colour buffer in place on a resize: refresh the target on it every time.
   if (!color_target_.ensure(*rhi_, colorTexture(), msaaColorBuffer(), resolveTexture(), /*refresh=*/true)) {
     reportFailure(/*emit_signal=*/true);
     return;
@@ -490,8 +480,8 @@ void PlotRhiCanvas::initialize(QRhiCommandBuffer* command_buffer) {
     built_target_ = target;
   }
   renderer_backend_ = backendName(*rhi_);
-  // After a failure this is the only retry: render() does not call it again
-  // until the QRhi or the render target changes.
+  // After a failure this is the only retry: render() does not call it again until the QRhi or the render target
+  // changes.
   if (pipeline_ == nullptr && !createPipeline(command_buffer)) {
     reportFailure(/*emit_signal=*/true);
     return;
@@ -526,16 +516,15 @@ bool PlotRhiCanvas::rebuildTextLayers(
     qInfo("PJ_WASM_TEXT_FAILURE_ATTEMPT count=%d", attempts);
   }
 #endif
-  // The same layers at the same places over the same canvas: the uploaded
-  // atlas and quads are still right.
+  // The same layers at the same places over the same canvas: the uploaded atlas and quads are still right.
   TextSignature signature{.canvas = size(), .truncated = text_raster.truncated};
   signature.layer_keys.reserve(static_cast<qsizetype>(text_raster.layers.size()));
   for (const TextRasterLayer& layer : text_raster.layers) {
     signature.layer_keys.append(layer.cache_key);
   }
   if (!force_text_failure && !text_raster.allocation_failed && signature == layers_->text_signature) {
-    // Equal keys may come from other items (a marker replaced by an identical
-    // one): the spans follow this build's items.
+    // Equal keys may come from other items (a marker replaced by an identical one): the spans follow this build's
+    // items.
     for (std::size_t index = 0; index < std::min(layers_->text_spans.size(), text_raster.layers.size()); ++index) {
       layers_->text_spans[index].item = text_raster.layers[index].source_item;
     }
@@ -552,9 +541,8 @@ bool PlotRhiCanvas::rebuildTextLayers(
   QString text_failure_reason;
   const auto drop_text_for_frame = [&](const QString& reason) {
     if (!text_failed && !text_failure_reported_) {
-      // Retry one later frame for a transient allocation failure. A repeated
-      // failure remains geometry-only until another dirty source (semantic,
-      // view, rebind, or lifecycle) instead of entering an unbounded loop.
+      // Retry one later frame for a transient allocation failure; a repeated failure stays geometry-only until another
+      // dirty source (semantic, view, rebind, lifecycle) instead of looping.
       retry = true;
     }
     text_failed = true;
@@ -666,9 +654,8 @@ bool PlotRhiCanvas::rebuildTextLayers(
 void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
   QElapsedTimer cpu_timer;
   cpu_timer.start();
-  // QRhiWidget does not re-run initialize() for every new QRhi (a grab of a
-  // hidden widget creates one), so never draw with resources of another QRhi.
-  // A new colour buffer always gets its initialize().
+  // QRhiWidget does not re-run initialize() for every new QRhi (a grab of a hidden widget creates one), so never draw
+  // with resources of another QRhi. A new colour buffer always gets its initialize().
   if (rhi_ != rhi()) {
     initialize(command_buffer);
   }
@@ -678,9 +665,8 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   force_pipeline_failure = property("pjWasmForcePipelineFailure").toBool();
 #endif
-  // Failed state (no device, pipeline, or render target): a clear-only pass.
-  // Without a render target no pass can be recorded, so the widget's untouched
-  // colour buffer is composited under the opaque failure banner (on desktop the
+  // Failed state (no device, pipeline or render target): a clear-only pass. Without a render target no pass can be
+  // recorded, so the widget's untouched colour buffer is composited under the opaque failure banner (on desktop the
   // raster canvas then replaces this one).
   QRhiTextureRenderTarget* render_target = color_target_.target();
   if (force_pipeline_failure || rhi_ == nullptr || pipeline_ == nullptr || render_target == nullptr) {
@@ -692,42 +678,36 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     return;
   }
   if (plot == nullptr) {
-    // A null plot is a transient wiring state (setPlot() runs right after
-    // construction), not a GPU failure. Record a clear-only pass so the frame is
-    // well-defined, without the failure banner/telemetry. Stay dirty so the
-    // first frame after wiring rebuilds geometry.
+    // A null plot is a transient wiring state (setPlot() runs right after construction), not a GPU failure: record a
+    // clear-only pass so the frame is defined, without the failure banner or telemetry, and stay dirty so the first
+    // frame after wiring rebuilds geometry.
     command_buffer->beginPass(render_target, clear_color, {1.0F, 0}, nullptr);
     command_buffer->endPass();
     return;
   }
   const QSize target_size = render_target->pixelSize();
   const qreal device_pixel_ratio = renderTargetScale(size(), target_size);
-  // Qwt owns the canvas brush. QRhiWidget does not participate in Qwt's
-  // QPainter background path, so read the brush back from the plot instead of
-  // assuming the platform's accelerated-surface palette.
+  // Qwt owns the canvas brush and QRhiWidget does not take part in Qwt's QPainter background path: read the brush back
+  // from the plot instead of assuming the platform's accelerated-surface palette.
   const auto fail_rebuild = [this, command_buffer, render_target, &clear_color]() {
-    // A failed allocation/upload must not leave an old text-bearing frame on
-    // screen or hand QRhi an unrecorded render callback. Submit a defined clear
-    // and keep the state dirty. The renderFailed() onset makes a desktop
-    // PlotWidgetBase swap in the raster canvas for good; in the browser, which
-    // keeps this canvas, a later frame retries from live Qwt state.
+    // A failed allocation or upload must not leave an old text-bearing frame on screen or hand QRhi an unrecorded
+    // render callback: submit a defined clear and stay dirty. The renderFailed() onset makes a desktop PlotWidgetBase
+    // swap in the raster canvas for good; in the browser, which keeps this canvas, a later frame retries from live Qwt
+    // state.
     command_buffer->beginPass(render_target, clear_color, {1.0F, 0}, nullptr);
     command_buffer->endPass();
     env_key_.reset();
     reportFailure(/*emit_signal=*/true);
   };
 
-  // Rebuild the curve layer when a full replot flagged it, the view (env key)
-  // or the curve structure changed; the overlay and text on any rebuild or an
-  // overlay-only replot. Otherwise re-draw the retained buffers without
-  // rebuilding or re-uploading: compositor refreshes and expose repaints hit
-  // neither branch.
+  // Rebuild the curve layer when a full replot flagged it, the view (env key) or the curve structure changed; the
+  // overlay and text on any rebuild or an overlay-only replot. Otherwise re-draw the retained buffers without
+  // rebuilding or re-uploading (compositor refreshes and expose repaints take neither branch).
   const QColor frame_color = palette().color(QPalette::WindowText);
   const std::optional<std::uint64_t> env_key = computeEnvKey(plot, size(), target_size, clear_color, frame_color);
   const CurveKeys curve_keys = computeCurveKeys(plot);
-  // A full replot reuses the curve layer when every curve's content revision,
-  // the view and the structure are unchanged; a curve without a revision
-  // rebuilds it.
+  // A full replot reuses the curve layer when every curve's content revision, the view and the structure are unchanged;
+  // a curve without a revision rebuilds it.
   const bool rebuild_curves = curves_dirty_ || !env_key.has_value() || env_key != env_key_ ||
                               curve_keys.structure != curve_key_ ||
                               (curve_keys.content.has_value() ? curve_keys.content != content_key_ : replot_requested_);
@@ -756,9 +736,8 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     layers_->curve_spans = geometry.item_spans;
     layers_->frame_span = geometry.frame;
 
-    // Warn once per limit onset (not per frame) when the frame-wide ceiling or
-    // an exact per-curve share drops geometry; clear the latch on a
-    // within-budget frame so a later onset re-warns.
+    // Warn once per limit onset (not per frame) when the frame-wide ceiling or an exact per-curve share drops geometry;
+    // clear the latch on a within-budget frame so a later onset warns again.
     if (geometry.truncated || geometry.budget_limited_curves > 0 || geometry.budget_reduced_curves > 0) {
       if (!truncation_reported_) {
         truncation_reported_ = true;
@@ -781,9 +760,8 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     }
 
 #ifdef PJ_TARGET_WASM
-    // Content breadcrumb: emit on the first curve-bearing frame and again
-    // whenever the plotted content changes. Format is fixed (Playwright greps).
-    // Browser-only: a streaming desktop plot would log it on every frame.
+    // Content breadcrumb: emit on the first curve-bearing frame and whenever the plotted content changes. The format is
+    // fixed (Playwright greps it). Browser only: a streaming desktop plot would log it every frame.
     const QwtPlotItemList curves = plot->itemList(QwtPlotItem::Rtti_PlotCurve);
     const auto* first_curve = curves.empty() ? nullptr : dynamic_cast<const QwtPlotCurve*>(curves.front());
     if (first_curve != nullptr && first_curve->dataSize() > 0) {
@@ -835,8 +813,8 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     }
 #endif
 
-    // Never grow past the frame-wide ceilings: the builder already caps the
-    // vertex count there, and a primitive has at most three indices per vertex.
+    // Never grow past the frame-wide ceilings: the builder already caps the vertex count there, and a primitive has at
+    // most three indices per vertex.
     if (!growStaticBuffer(
             *rhi_, vertex_buffer_, vertex_buffer_capacity_, vertices_.size(),
             static_cast<qsizetype>(kMaxGeometryVertices * sizeof(Vertex))) ||
@@ -865,10 +843,9 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     }
     retry_text_rebuild = rebuildTextLayers(*plot, device_pixel_ratio, to_clip, text_upload, text_bytes);
 
-    // Qwt paints items in increasing Z and stable attachment order. The layers
-    // live in separate GPU buffers, so retain an explicit batch list instead of
-    // flattening every label above every marker. This matters when the
-    // playback label, hover marker, and XY ride-along markers overlap.
+    // Qwt paints items in increasing Z and stable attachment order. The layers live in separate GPU buffers, so retain
+    // an explicit batch list instead of flattening every label above every marker (the playback label, hover marker and
+    // XY ride-along markers can overlap).
     layers_->draw_batches.clear();
     const auto append_batch = [this](Layer layer, const ItemSpan& span) {
       if (span.count == 0) {
@@ -944,8 +921,8 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
       command_buffer->setShaderResources(text_bindings_);
       const QRhiCommandBuffer::VertexInput binding(text_vertex_buffer_, 0);
       command_buffer->setVertexInput(0, 1, &binding);
-      // After the pipeline: QRhi records the viewport as dynamic state of the
-      // bound pipeline, and Vulkan draws nothing without it.
+      // After the pipeline: QRhi records the viewport as dynamic state of the bound pipeline, and Vulkan draws nothing
+      // without it.
       command_buffer->setViewport(viewport);
       command_buffer->draw(batch.count, 1, batch.first);
       continue;
@@ -964,18 +941,16 @@ void PlotRhiCanvas::render(QRhiCommandBuffer* command_buffer) {
     command_buffer->drawIndexed(batch.count, 1, batch.first);
   }
   command_buffer->endPass();
-  // Allocation failures are retryable. If the retry succeeds without a QRhi
-  // re-initialize() cycle, remove the overlay here rather than leaving a healthy
-  // renderer hidden underneath a stale diagnostic.
+  // Allocation failures are retryable: if the retry succeeds without a QRhi initialize() cycle, remove the overlay
+  // here rather than leave a healthy renderer hidden under a stale diagnostic.
   if (failure_label_ != nullptr) {
     failure_label_->hide();
   }
   (void)failure_.set({});
   last_render_cpu_ms_ = static_cast<double>(cpu_timer.nsecsElapsed()) / 1e6;
   last_gpu_frame_ms_ = command_buffer->lastCompletedGpuTime() * 1000.0;
-  // Geometry is now uploaded and drawn. A text-only allocation failure gets one
-  // delayed retry while the usable geometry remains visible; repeated failures
-  // wait for another semantic/view/rebind/lifecycle dirty source instead of
+  // Geometry is uploaded and drawn. A text-only allocation failure gets one delayed retry while the usable geometry
+  // stays visible; repeated failures wait for another semantic, view, rebind or lifecycle dirty source instead of
   // rebuilding every frame.
   curves_dirty_ = false;
   replot_requested_ = false;

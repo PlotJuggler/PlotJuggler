@@ -20,11 +20,11 @@
 #include "pj_scripting/sandbox.h"
 #include "pj_tf/tf_buffer.h"
 
-// The Luau object-script engine the on-demand service calls on a worker thread
-// (docs/derived_objects/ARCHITECTURE.md §5-7, §12, §14): a stateless evaluation over named
-// scalar and object inputs that returns one value per output. Compile once per recipe revision; each thread keeps
-// one sandboxed state, and every run gets a fresh thread on it with its own globals, its own random seed and a full
-// collection when it ends, so two runs never see each other's state (D2, GAP-38).
+// The Luau object-script engine the on-demand service calls on a worker thread (docs/derived_objects/ARCHITECTURE.md
+// "Types and bindings", "Time and alignment", "TF", "Scripting languages"): a stateless evaluation over named scalar
+// and object inputs that returns one value per output. Compile once per recipe revision; each thread keeps one
+// sandboxed state, and every run gets a fresh thread on it with its own globals, its own random seed and a full
+// collection when it ends, so two runs never see each other's state.
 
 namespace PJ::scripting {
 
@@ -34,8 +34,8 @@ class MemoryBudget;
 class IImageDecoder;
 class IVideoFrameSource;
 
-/// An output a script marked unavailable for this run (`pj.unavailable(reason)`, D25). Distinct
-/// from zero, from an empty object and from a script error.
+/// An output a script marked unavailable for this run (`pj.unavailable(reason)`). Distinct from zero, from an empty
+/// object and from a script error.
 struct Unavailable {
   std::string reason;
 };
@@ -49,7 +49,7 @@ enum class OutputType : uint8_t {
   kObject,
 };
 
-/// One declared output: its name and fixed type (D8).
+/// One declared output: its name and fixed type.
 struct OutputSpec {
   std::string name;
   OutputType type = OutputType::kNumber;
@@ -62,8 +62,8 @@ struct OutputSpec {
 /// the type are trimmed. `type` is `number`, `string` or an object type a script can produce: point
 /// cloud, scene entities, image annotations, image, depth image or camera info. Rejects an empty name, a
 /// name holding whitespace or `:`, a missing or doubled `:`, an empty or unknown type, and an object type
-/// no script can produce (an occupancy grid; a video frame or frame transforms until a slice decides
-/// how they publish). Duplicate names across a list are the caller's check.
+/// no script can produce (an occupancy grid, a video frame, frame transforms). Duplicate names across a list are the
+/// caller's check.
 [[nodiscard]] Expected<OutputSpec> parseOutputSpec(std::string_view spec);
 /// The type half of `spec`'s declaration, as `parseOutputSpec` reads it: `number`, `string` or the object
 /// type's name (`kPointCloud`).
@@ -94,8 +94,7 @@ struct NamedValue {
 };
 
 /// Approximate heap bytes of `value`, read from its decoded fields (a buffer's size, strings, list
-/// elements) and never by serializing it (docs/derived_objects/ARCHITECTURE.md §9, requirement 1):
-/// sizing a 3 MB scan costs a walk of its field table, not a copy of its points.
+/// elements) and never by serializing it: sizing a 3 MB scan costs a walk of its field table, not a copy of its points.
 [[nodiscard]] std::size_t estimateBytes(const ScriptValue& value);
 
 /// One run's result.
@@ -104,7 +103,7 @@ struct ScriptBundle {
   /// returned, named by the inference rule (see `runOnDemandScript`); an output's type is its value's.
   std::vector<NamedValue> outputs;
   /// The run read the query clock (`pj.tf.now`, or a `pj.tf.lookup` with no time): the requested
-  /// instant is part of the result's identity (ARCHITECTURE §10).
+  /// instant is part of the result's identity (docs/derived_objects/ARCHITECTURE.md "Cache identity").
   bool observed_query_clock = false;
   /// The run read the TF tree (`pj.tf.lookup`, `pj.tf.frames`, with or without a snapshot): the
   /// snapshot's revision is part of the result's identity.
@@ -145,7 +144,7 @@ struct RunOptions {
   /// between frames the recording publishes.
   std::shared_ptr<const pj::tf::TransformSnapshot> tf;
   /// The query instant, on the dataset clock: what `pj.tf.now` reads and where a `pj.tf.lookup` with no
-  /// time looks, in the entry clock (ARCHITECTURE §12).
+  /// time looks, in the entry clock (docs/derived_objects/ARCHITECTURE.md "TF").
   Timestamp query_time = 0;
   /// Polled inside the interpreter and by the native operations (empty: never cancelled); a cancelled
   /// run fails with "script cancelled" even when the script `pcall`s the error.
@@ -173,7 +172,7 @@ struct RunOptions {
 
 /// Runs `script` once on the calling thread's sandboxed state, in a fresh thread, as `chunk(inputs, params)`: `inputs`
 /// is a table of `inputs` by name, `params` the JSON object `params_json` (empty means `{}`; at most `kMaxParamsDepth`
-/// levels deep). An unavailable input is an error: the caller does not run a node whose input is unavailable (D25).
+/// levels deep). An unavailable input is an error: the caller does not run a node whose input is unavailable.
 ///
 /// Script surface: objects are read-only views over their SDK field tables (lists are read element by
 /// element; an int64 field is a `pj.int64`, exact past 2^53; a raw buffer is never exposed); a point
@@ -208,12 +207,11 @@ struct RunOptions {
 /// object and spends the builder; every error names the field. A colour is `{r, g, b}` or `{r, g, b, a}`
 /// (0-255, alpha 255 when absent); a diameter, size, thickness or font size is finite and greater than 0. A
 /// script that retains a builder's object, or a view read from it, keeps its native bytes charged until it drops
-/// them. A method reads its options table without invoking
-/// metamethods.
+/// them. A method reads its options table without invoking metamethods.
 ///   - `pj.scene.new{frame_id, id}` -> `:sphere{center, diameter, color}`, `:cube{center, size, color}`,
 ///     `:text{position, text, font_size, color, billboard}`, `:line_strip{points, thickness, color}`: a
 ///     SceneEntities snapshot, a deletion of everything and then the entity if it has a primitive, so an
-///     empty builder clears the topic (D27). A colour defaults to opaque white; a 3-vector is `{x, y, z}`.
+///     empty builder clears the topic. A colour defaults to opaque white; a 3-vector is `{x, y, z}`.
 ///   - `pj.annotations.new{image_topic}` -> `:points{points, type, thickness, outline_color, fill_color}`
 ///     (`type`: points, line_list, line_strip, line_loop), `:circle{center, diameter, thickness,
 ///     outline_color, fill_color}`, `:text{position, text, font_size, text_color}`: pixel-space
@@ -223,12 +221,12 @@ struct RunOptions {
 ///     font size and colours the script leaves out take the SDK's defaults. The SDK has no text background, so
 ///     an opaque `background_color` is an error.
 ///   - `pj.cloud.new{preset, frame_id}` -> `:add(x, y, z[, intensity | r, g, b])`, `:add_points{{...}, ...}`: a
-///     PointCloud of PCL's familiar point types (`preset` "xyz", "xyzi" or "xyzrgb"; D14), every value finite and
+///     PointCloud of PCL's familiar point types (`preset` "xyz", "xyzi" or "xyzrgb"), every value finite and
 ///     within float32's range, r/g/b 0-255, packed into 16-byte records (native/point_cloud_builder.h).
 ///   - `pj.voxels.new{frame_id, origin, cell_size, dims}` -> `:set(i, j, k, value)` (1-based indices): a dense
 ///     VoxelGrid of one float32 `value` channel, every cell 0 until set (a finite value within float32's range), at
-///     most 2^24 cells (D16). Its fields read as any object's; its cells are a raw buffer.
-/// `math.random` is seeded the same way on every run, and there is no `os` and no clock (D2).
+///     most 2^24 cells. Its fields read as any object's; its cells are a raw buffer.
+/// `math.random` is seeded the same way on every run, and there is no `os` and no clock.
 ///
 /// Binding the returned value: with no declared `outputs`, a non-table is one output `value`, a keyed
 /// table is one output per key (sorted by name), and an array is named by type (`value`, `value_2`,

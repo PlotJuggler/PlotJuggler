@@ -21,14 +21,12 @@ using pj::scene3d::FixedFrameMemory;
 
 constexpr char kFixedFrameGroup[] = "pj_scene3d/fixed_frame_by_source";
 
-// Wipe the persisted store so a prior run can't mask a RED or leak across tests.
 void clearPersistedFixedFrames() {
   QSettings settings;
   settings.beginGroup(QLatin1String(kFixedFrameGroup));
   settings.remove(QString());
 }
 
-// (k) In-session: a remembered frame round-trips; a different dataset has none.
 TEST(FixedFrameMemory, RemembersFixedFramePerDatasetInSession) {
   PJ::SessionManager session;
   FixedFrameMemory memory(session);
@@ -37,8 +35,8 @@ TEST(FixedFrameMemory, RemembersFixedFramePerDatasetInSession) {
   EXPECT_EQ(memory.remembered(8), QString()) << "a different dataset has no remembered frame";
 }
 
-// (l) Cross-session: the choice persists keyed by the dataset's source path + name,
-//     so a fresh memory (a restart) with a NEW DatasetId for the SAME file resolves it.
+// Cross-session: the choice persists keyed by the dataset's source path + name, so a fresh memory (a restart) with a
+// NEW DatasetId for the SAME file resolves it.
 TEST(FixedFrameMemory, RememberedFixedFramePersistsAcrossSessionsBySource) {
   clearPersistedFixedFrames();
   PJ::SessionManager session_a;
@@ -63,8 +61,7 @@ TEST(FixedFrameMemory, RememberedFixedFramePersistsAcrossSessionsBySource) {
       << "the manual choice must persist across sessions, keyed by source identity (not the DatasetId)";
 }
 
-// (l2) Two files sharing a basename in different folders must NOT share a
-//      remembered frame — name-only keying was the epic's identity bug class.
+// Two files sharing a basename in different folders must NOT share a remembered frame (name-only keying would).
 TEST(FixedFrameMemory, SameNameDifferentPathDoesNotShareRememberedFrame) {
   clearPersistedFixedFrames();
   PJ::SessionManager session;
@@ -86,8 +83,7 @@ TEST(FixedFrameMemory, SameNameDifferentPathDoesNotShareRememberedFrame) {
       << "a same-named file in a different folder must not inherit the other's frame";
 }
 
-// (l3) Fan-out members share the file path but carry distinct source names; the
-//      composite key must keep their remembered frames separate.
+// Fan-out members share the file path but carry distinct source names: the composite key keeps their frames separate.
 TEST(FixedFrameMemory, FanOutSiblingsSamePathStayDistinct) {
   clearPersistedFixedFrames();
   PJ::SessionManager session;
@@ -109,8 +105,7 @@ TEST(FixedFrameMemory, FanOutSiblingsSamePathStayDistinct) {
       << "fan-out siblings share a path but must not share a remembered frame";
 }
 
-// (l4) A pathless source with a stable name (e.g. a live stream) still persists
-//      by name alone.
+// A pathless source with a stable name (e.g. a live stream) still persists by name alone.
 TEST(FixedFrameMemory, PathlessNamedSourcePersistsByNameAlone) {
   clearPersistedFixedFrames();
   PJ::SessionManager session_a;
@@ -129,7 +124,7 @@ TEST(FixedFrameMemory, PathlessNamedSourcePersistsByNameAlone) {
   EXPECT_EQ(memory_b.remembered(*id_b), u"map"_s) << "a named but pathless source must keep its cross-restart memory";
 }
 
-// (m) A dataset with no stable source name is remembered for this session only.
+// A dataset with no stable source name is remembered for this session only.
 TEST(FixedFrameMemory, SourcelessDatasetIsSessionOnly) {
   PJ::SessionManager session;
   {

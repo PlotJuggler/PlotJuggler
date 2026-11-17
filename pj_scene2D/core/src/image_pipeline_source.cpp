@@ -30,9 +30,7 @@ namespace PJ {
 
 namespace {
 
-// Once-per-source/error warning sink. Core stays Qt-free per CMakeLists;
-// decoder/parser failure surfaces must reach the operator without requiring
-// env-var gating, but playback can revisit the same failing frame many times.
+// Logs each distinct error once per source: playback revisits a failing frame many times.
 template <typename... Args>
 void warnOnce(const std::string& key, fmt::format_string<Args...> fmt_str, Args&&... args) {
   static std::mutex mutex;
@@ -325,8 +323,6 @@ ImagePipelineSource::ImagePipelineSource(
       parser_keepalive_(std::move(parser_keepalive)) {
   worker_.start(
       [this](const AsyncFrameWorker::Request& req, AsyncFrameWorker& worker) {
-        // invalidate() asked for a fresh decode even at an unchanged entry:
-        // clear the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
           last_entry_uid_ = {};
         }
@@ -348,8 +344,6 @@ ImagePipelineSource::ImagePipelineSource(
     : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), pipeline_(std::move(pipeline)) {
   worker_.start(
       [this](const AsyncFrameWorker::Request& req, AsyncFrameWorker& worker) {
-        // invalidate() asked for a fresh decode even at an unchanged entry:
-        // clear the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
           last_entry_uid_ = {};
         }
@@ -370,8 +364,6 @@ ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic
     : store_(store), topic_(topic), source_key_(sourceLabel(store, topic)), canonical_image_codec_(true) {
   worker_.start(
       [this](const AsyncFrameWorker::Request& req, AsyncFrameWorker& worker) {
-        // invalidate() asked for a fresh decode even at an unchanged entry:
-        // clear the dedup so decodeAt() doesn't early-return on the same frame.
         if (req.force_redecode) {
           last_entry_uid_ = {};
         }
@@ -389,24 +381,16 @@ ImagePipelineSource::ImagePipelineSource(ObjectStore* store, ObjectTopicId topic
 }
 
 ImagePipelineSource::~ImagePipelineSource() {
-  // Stop and join the decode worker before any member its closure touches is
-  // destroyed (AsyncFrameWorker::stop handles the lost-wakeup hazard — the
-  // historical scene2d_dock_widget_test intermittent deadlock).
+  // Before any member the decode closure touches is destroyed.
   worker_.stop();
 }
 
 void ImagePipelineSource::setTimestamp(int64_t ts_ns) {
-  // Mark that a decode has been requested: from here the worker may read
-  // camera_info_by_frame_, so setCameraInfoMap() must refuse late injection.
   timestamp_requested_ = true;
   worker_.requestDecode(ts_ns);
 }
 
 void ImagePipelineSource::invalidate() {
-  // Force a re-decode even at an unchanged timestamp: the composite was rebuilt
-  // and our last frame was consumed. The worker re-delivers via the frame-ready
-  // callback, which schedules a repaint. (Without the force, decodeAt() resolves
-  // the same entry and early-returns — the "black until play" bug.)
   worker_.invalidate();
 }
 
@@ -420,7 +404,7 @@ std::optional<MediaFrame> ImagePipelineSource::takeFrame() {
     return mf;  // a clear: no pixels, which the compositor and the viewer drop
   }
   mf.base = std::move(*frame);
-  // Images always magnify with nearest sampling (crisp pixels); linear is not offered.
+  // Images always magnify nearest.
   mf.base->mag_filter = MagFilter::kNearest;
   return mf;
 }
@@ -430,8 +414,6 @@ void ImagePipelineSource::setFrameReadyCallback(std::function<void()> cb) {
 }
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
-  // store_ non-null is a constructor precondition; downstream code unconditionally
-  // dereferences it (entryTimestamps, at, indexAt).
   // Dedup metadata-first by the entry's UID (latestEntryIdAt never resolves the bytes): no timestamp can mean
   // "none", since a derived finding sits at INT64_MIN, and a same-stamp replacement still decodes.
   const auto entry_id = store_->latestEntryIdAt(topic_, ts_ns);
@@ -463,9 +445,6 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
   last_entry_stamp_ = entry->timestamp;
 
   if (parser_ != nullptr || canonical_image_codec_) {
-    // Resolve the entry's bytes into a canonical sdk::Image (via the parser, or by
-    // deserializing a pj_image_v1 blob), then run the shared decode + rectify path.
-    // resolveImage is the single source of truth, shared with DepthPipelineSource.
     auto resolved = resolveImage(
         parser_, parser_mutex_, canonical_image_codec_, entry->timestamp, entry->payload, entry->payload_stamp_shift);
     if (!resolved.has_value()) {
@@ -494,7 +473,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
     }
     auto df = decodeCanonicalImage(resolved->image, resolved->pts);
     if (df.has_value()) {
-      df->frame_id = resolved->image.frame_id;  // carry the source frame so the viewer can find its CameraInfo.
+      df->frame_id = resolved->image.frame_id;
       df->stamp = resolved->stamp;
       df->entry_ts = entry->timestamp;
       rectifyIfCalibrated(*df);
@@ -523,10 +502,7 @@ std::optional<DecodedFrame> ImagePipelineSource::decodeAt(int64_t ts_ns) {
 }
 
 void ImagePipelineSource::setCameraInfoMap(std::unordered_map<std::string, sdk::CameraInfo> by_frame_id) {
-  // Must run on the main thread before the first setTimestamp(): the worker then
-  // reads camera_info_by_frame_ unlocked, relying on that request's request_mutex_
-  // barrier for visibility. A call after the first request would race the worker's
-  // read (UB on the map), so enforce the contract instead of only documenting it.
+  // The worker reads the map unlocked, published by the first request's request_mutex_; a later write would race it.
   assert(!timestamp_requested_ && "setCameraInfoMap must be called before the first setTimestamp()");
   if (timestamp_requested_) {
     warnOnce(
@@ -553,7 +529,7 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
   const sdk::CameraInfo* ci = cameraInfoFor(df.frame_id);
   if (ci == nullptr) {
     rectification_status_.store(RectificationStatus::kMissingCalibration, std::memory_order_relaxed);
-    return;  // no calibration for this frame -> leave the raw image as decoded.
+    return;
   }
   if (!isRectifiable(*ci)) {
     rectification_status_.store(RectificationStatus::kInvalidCalibration, std::memory_order_relaxed);
@@ -563,17 +539,14 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
   if (!rectify_enabled_.load(std::memory_order_relaxed)) {
     return;
   }
-  // Build (cached per camera) a reverse map that outputs at the native calibration
-  // resolution, so the rectified image, the annotation pixel coords, and the
-  // overlay's frameSize all share one coordinate space (matches Foxglove). The map
-  // bakes in the source resolution (sx/sy scale), so a stream that changes decoded
-  // size mid-session must rebuild it — otherwise it would sample with stale scale.
+  // Output at the calibrated resolution, the space annotations are authored in. The map bakes in the source size, so
+  // a size change rebuilds it.
   auto it = undistort_by_frame_.find(df.frame_id);
   if (it == undistort_by_frame_.end() || it->second->src_width != df.width || it->second->src_height != df.height) {
     auto built = std::make_shared<const UndistortMap>(
         computeUndistortMap(*ci, df.width, df.height, static_cast<int>(ci->width), static_cast<int>(ci->height)));
     it = undistort_by_frame_.insert_or_assign(df.frame_id, std::move(built)).first;
-    fast_by_frame_.erase(df.frame_id);  // the fast table is derived from the map; rebuild on next CPU use.
+    fast_by_frame_.erase(df.frame_id);
   }
   const std::shared_ptr<const UndistortMap>& map = it->second;
   if (!map->valid()) {
@@ -581,16 +554,12 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
   }
 
   if (gpu_rectify_available_.load(std::memory_order_relaxed)) {
-    // GPU path: leave the frame raw (smaller upload) and hand the map to the
-    // widget, which rectifies at draw time. The map's out_width/out_height is the
-    // logical display size the overlay/aspect/inspector coordinate spaces use.
+    // GPU path: the frame stays raw (a smaller upload); the widget rectifies at draw time.
     df.rectify_map = map;
     return;
   }
 
-  // CPU fallback: rectify now into a fresh buffer using the precomputed fixed-point
-  // table (hoists the per-frame floor()/bounds math out of the inner loop). The
-  // delivered frame is already at native resolution with no rectify_map.
+  // CPU path, into a fresh buffer (the viewer keys uploads on the buffer).
   auto fit = fast_by_frame_.find(df.frame_id);
   if (fit == fast_by_frame_.end()) {
     fit = fast_by_frame_.emplace(df.frame_id, buildFastRectifyMap(*map)).first;
@@ -599,8 +568,7 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
   if (rectifyFrameFast(df, fit->second, rectified)) {
     df = std::move(rectified);
   } else {
-    // CameraInfo exists but the decoded pixel format isn't one the rectifier
-    // resamples (planar/16-bit); the raw frame passes through unrectified.
+    // Planar and 16-bit formats pass through unrectified on the CPU path.
     warnOnce(
         warningKey(source_key_, "rectify-unsupported-format"),
         "{} frame_id='{}' has calibration but pixel format {} is not rectifiable; showing raw frame", source_key_,
@@ -611,8 +579,6 @@ void ImagePipelineSource::rectifyIfCalibrated(DecodedFrame& df) {
 void ImagePipelineSource::setGpuRectificationAvailable(bool available) {
   const bool prev = gpu_rectify_available_.exchange(available, std::memory_order_relaxed);
   if (prev != available) {
-    // Re-decode the current frame so it is re-delivered in the new mode (the
-    // worker would otherwise dedup the unchanged timestamp and keep the old frame).
     invalidate();
   }
 }
@@ -621,17 +587,11 @@ void ImagePipelineSource::setRectifyEnabled(bool enabled) {
   if (rectify_enabled_.exchange(enabled, std::memory_order_relaxed) == enabled) {
     return;  // unchanged
   }
-  // Arm a re-decode so the current frame is re-delivered with/without rectification
-  // even when the playhead is paused (the worker would otherwise dedup the unchanged
-  // timestamp and keep the stale frame). invalidate() only arms it; the owning layer
-  // (ImageLayer::applyOptions) re-applies the timestamp to actually post the decode.
+  // invalidate() only arms the re-decode; the owning layer (ImageLayer::applyOptions) re-applies the timestamp.
   invalidate();
 }
 
 std::optional<DecodedFrame> ImagePipelineSource::decodeCanonicalImage(const sdk::Image& img, int64_t pts) {
-  // Raw pixel layouts and Bayer mosaics (incl. grayscale-PNG-wrapped buffers)
-  // reinterpret at the logical geometry; everything else is a self-describing
-  // compressed container handled by the jpeg/png/auto cascade.
   if (rawEncodingInfo(img.encoding).has_value() || bayerPatternFor(img.encoding).has_value()) {
     return decodeRawOrBayerImage(img, pts, source_key_, auto_image_codec_, normalize_mono16_);
   }

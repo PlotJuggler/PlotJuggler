@@ -9,13 +9,10 @@
 
 namespace pj::scene3d {
 
-// Project a frame origin (expressed in the fixed/world frame) to logical screen
-// pixels (top-left origin, +y DOWN — Qt widget convention, so it compares
-// directly against a QMouseEvent position). `view_proj` is proj * view;
-// `viewport_px` is {width, height} in LOGICAL widget pixels (not device pixels).
-// Returns nullopt when the origin is at or behind the camera plane (clip.w <= 0)
-// — i.e. it does not project onto the screen and must never be a hover candidate.
-// Pure math (glm only) so it is unit-testable without a GL context or Qt.
+// Projects a frame origin (in the fixed/world frame) to logical screen pixels (top-left origin, +y DOWN, comparable
+// with a QMouseEvent position). `view_proj` is proj * view; `viewport_px` is {width, height} in LOGICAL widget pixels.
+// nullopt when the origin is at or behind the camera plane (clip.w <= 0): it must never be a hover candidate. Pure
+// glm: unit-testable without GL or Qt.
 [[nodiscard]] inline std::optional<glm::vec2> projectFrameOrigin(
     const glm::mat4& view_proj, glm::vec2 viewport_px, const glm::vec3& world_origin) {
   const glm::vec4 clip = view_proj * glm::vec4(world_origin, 1.0f);

@@ -47,7 +47,7 @@ class SessionManager;
 /// element. A widget that cannot be created, or that was disabled after an error, shows a
 /// placeholder with the reason (isMissing(), missingReason()) and keeps its layout element as it
 /// was. Every widget is offered `pj.playback.v1` over the session's PlaybackEngine. GUI thread only.
-/// Lifetime and error policy: pj_custom_widgets/CLAUDE.md.
+/// Lifetime and error policy: pj_custom_widgets/docs/ARCHITECTURE.md.
 class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   Q_OBJECT
  public:
@@ -171,9 +171,9 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   void workspaceChanged();
 
  private:
-  /// Marks a call into the plugin; inputs_changed arriving meanwhile is deferred.
-  /// Runs `call` (one call into the plugin) inside a PluginCallScope and a catch. Returns the
-  /// message of an exception that escaped it, nullopt when it returned normally.
+  /// Runs `call` (one call into the plugin) with the call depth raised, so inputs_changed arriving meanwhile is
+  /// deferred, inside a catch. Returns the message of an exception that escaped it, nullopt when it returned
+  /// normally. A push asked for during the call is delivered when the outermost call returns.
   template <typename Call>
   std::optional<QString> callPlugin(Call&& call) const;
   /// callPlugin that disables the panel when the call threw. False then: the handle is gone.

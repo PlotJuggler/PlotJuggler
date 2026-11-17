@@ -38,10 +38,8 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   ui_->displayTime->setText("0.000");
   ui_->displayTime->installEventFilter(this);
 
-  // 30 Hz throttle window for slider-driven seeks. Synchronous image decode on
-  // the GUI thread takes ~30-120 ms per topic; without this window each slider
-  // tick during a drag would chain a fresh decode and the visible image lags
-  // arbitrarily far behind the slider.
+  // ~30 Hz window for slider seeks: a seek decodes images synchronously on the GUI thread, and without the window
+  // each drag tick chains a fresh decode and the image lags arbitrarily far behind the slider.
   seek_throttle_timer_.setSingleShot(true);
   seek_throttle_timer_.setInterval(33);
   connect(&seek_throttle_timer_, &QTimer::timeout, this, &TimelineWidget::flushPendingSeek);
@@ -49,10 +47,7 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::T
   connect(ui_->timeSlider, &RealSlider::realValueChanged, this, &TimelineWidget::onSliderValueChanged);
   connect(ui_->timeSlider, &QSlider::sliderReleased, this, &TimelineWidget::onSliderReleased);
   connect(ui_->buttonPlay, &QPushButton::toggled, this, &TimelineWidget::onPlayToggled);
-  // Icon-only sync: swap play_arrow ↔ pause whenever the toggle flips,
-  // regardless of whether the change came from the user or from
-  // onEnginePlayingChanged below. Kept separate from onPlayToggled so
-  // the visual swap runs even while updating_from_engine_ is set.
+  // Separate from onPlayToggled, so the icon also swaps while updating_from_engine_ is set.
   connect(ui_->buttonPlay, &QPushButton::toggled, this, [this]() { applyPlayPauseIcon(currentTheme()); });
   connect(ui_->playbackLoop, &QPushButton::toggled, this, &TimelineWidget::onLoopToggled);
   // clicked, not toggled: the host's silent setters must not echo back to it.
@@ -129,8 +124,7 @@ void TimelineWidget::updateReadoutWidth() {
   const double sample = isWallClock(time_label_format_) ? 2.0e9 : -359999.999;
   const QString widest = formatTimeLabel(sample, time_label_format_, 3, /*with_date=*/true);
   const QFontMetrics fm = readout->fontMetrics();
-  // Same recipe as QLineEdit::sizeHint (text + its 2-px side margins, then the
-  // style's frame and QSS padding), plus one character of slack.
+  // QLineEdit::sizeHint's recipe (text, its side margins, the style's frame and QSS padding) plus one character.
   const QMargins text_margins = readout->textMargins();
   const QMargins contents_margins = readout->contentsMargins();
   const int text_width = fm.horizontalAdvance(widest) + fm.averageCharWidth() + 4 + text_margins.left() +
@@ -146,8 +140,7 @@ void TimelineWidget::updateReadoutWidth() {
 }
 
 bool TimelineWidget::eventFilter(QObject* watched, QEvent* event) {
-  // The app stylesheet lands after construction and can change the readout's font
-  // or padding at any time: re-measure whenever either changes.
+  // The app stylesheet lands after construction and may change the font or padding at any time.
   if (watched == ui_->displayTime && (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange)) {
     updateReadoutWidth();
   }
@@ -155,12 +148,9 @@ bool TimelineWidget::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void TimelineWidget::onEngineTimeChanged(double t) {
-  // Apply every engine tick immediately — NO display throttle. The Source Timeline
-  // needle is also driven directly off currentTimeChanged, so throttling only this
-  // widget made the handle lag the needle (and vice versa) by up to one window. The
-  // slider/label repaint is cheap; the expensive per-cursor work (plot replot, scene
-  // decode) is coalesced separately on MainWindow's tracker-broadcast path, so the
-  // handle and needle now move in lockstep off the same source.
+  // No throttle: the Source Timeline needle follows currentTimeChanged directly, so throttling here makes the handle
+  // lag it by up to one window. The repaint is cheap; the expensive per-cursor work is coalesced on MainWindow's
+  // tracker-broadcast path.
   applyEngineTime(t);
 }
 
@@ -175,13 +165,8 @@ void TimelineWidget::applyEngineTime(double t) {
 }
 
 void TimelineWidget::onEngineRangeChanged(double min, double max) {
-  // Step count = ~millisecond resolution over the range, computed in 64-bit and
-  // clamped. Streaming seeds the engine range in absolute epoch seconds, so a
-  // large (or t≈0-polluted) span makes `(max-min)*1000` overflow a 32-bit int,
-  // wrapping to ≤0 and collapsing the RealSlider to two positions (start/end).
-  // kMaxSliderSteps caps the count at ms resolution over any realistic span —
-  // past sub-pixel granularity on any display — so a polluted span cannot
-  // produce an absurd count.
+  // Millisecond steps, computed in 64 bits and clamped: a stream's range is in absolute epoch seconds, and a span
+  // polluted by a t≈0 sample overflows a 32-bit `(max-min)*1000`, collapsing the slider to its two ends.
   static constexpr int64_t kMaxSliderSteps = 10'000'000;
   const auto raw_steps = static_cast<int64_t>((max - min) * 1000.0);
   const int steps = static_cast<int>(std::clamp<int64_t>(raw_steps, 1, kMaxSliderSteps));
@@ -189,15 +174,10 @@ void TimelineWidget::onEngineRangeChanged(double min, double max) {
   ui_->timeSlider->setLimits(min, max, steps);
   applySliderStep();
   updating_from_engine_ = false;
-  // A collapsed range (max <= min) means no scrubbable data: disable the whole
-  // transport so a dead slider can't be dragged over nothing.
   range_empty_ = !(max > min);
   updateTransportEnabled();
-  // setLimits keeps the slider's integer position, which now maps to a DIFFERENT
-  // value under the new range — so a range-only change (no currentTimeChanged, e.g.
-  // the union growing as files load, or an offset edit) would otherwise leave the
-  // handle on a stale value. Re-apply the current time so it reflects currentTime in
-  // the new range (and stays in lockstep with the needle).
+  // setLimits keeps the integer position, which maps to a different value in the new range: a range-only change (a
+  // file load, an offset edit) emits no currentTimeChanged, so re-apply the current time.
   if (engine_ != nullptr) {
     applyEngineTime(toAxisDouble(engine_->currentTime()));
   }
@@ -205,13 +185,11 @@ void TimelineWidget::onEngineRangeChanged(double min, double max) {
 
 void TimelineWidget::updateTransportEnabled() {
   const bool has_data = !range_empty_;
-  // Play stays usable while the engine is already playing, so a live stream —
-  // whose first sample can be a single point (min==max) — can always be paused
-  // from the transport; loop + slider require a real (non-empty) range.
+  // A live stream's first sample can be a single point (min == max): play stays enabled while playing, so it can
+  // always be paused.
   const bool playing = engine_ != nullptr && engine_->isPlaying();
   ui_->buttonPlay->setEnabled(has_data || playing);
   ui_->playbackLoop->setEnabled(has_data);
-  // The slider needs data AND an unlocked seek (streaming pause locks it).
   ui_->timeSlider->setEnabled(has_data && !seek_locked_);
 }
 
@@ -219,8 +197,7 @@ void TimelineWidget::onEnginePlayingChanged(bool playing) {
   updating_from_engine_ = true;
   ui_->buttonPlay->setChecked(playing);
   updating_from_engine_ = false;
-  // Play's enabled state depends on isPlaying() (a stream over a degenerate range
-  // stays pausable), so re-evaluate whenever the play state flips.
+  // Play's enabled state depends on isPlaying().
   updateTransportEnabled();
 }
 
@@ -239,15 +216,13 @@ void TimelineWidget::onSliderValueChanged(double value) {
     return;
   }
   if (seek_throttle_timer_.isActive()) {
-    // Inside the throttle window — buffer the latest value. The trailing-edge
-    // flush below will deliver whatever sits here once the window closes.
+    // flushPendingSeek delivers it when the window closes.
     pending_seek_value_ = value;
     has_pending_seek_ = true;
     return;
   }
-  // Leading edge: open the window first so a long synchronous decode inside
-  // setCurrentTime keeps the timer alive (it cannot tick on a blocked event
-  // loop, but it will fire as soon as control returns).
+  // Open the window before seeking: a long synchronous decode in setCurrentTime blocks the event loop, and the timer
+  // fires as soon as control returns.
   has_pending_seek_ = false;
   seek_throttle_timer_.start();
   engine_->setCurrentTime(displaySeconds(value));
@@ -263,9 +238,6 @@ void TimelineWidget::onSliderReleased() {
     applyEngineTime(toAxisDouble(engine_->currentTime()));
     return;
   }
-  // Deliver the final drag position immediately rather than waiting out the
-  // throttle window — the frame the user released on should appear at once, and
-  // forward playback resumes from there with no extra latency.
   if (has_pending_seek_) {
     has_pending_seek_ = false;
     seek_throttle_timer_.stop();
@@ -355,26 +327,19 @@ void TimelineWidget::applyIcons(QString theme) {
     button->setMinimumSize(button_extent, button_extent);
     button->setMaximumSize(button_extent, button_extent);
   }
-  // Override .ui-baked 24-px height caps on the strip's non-button
-  // controls so the row grows together when icons scale.
+  // Replaces the .ui's fixed heights, so the row grows with the icons.
   ui_->displayTime->setMinimumHeight(button_extent);
   ui_->displayTime->setMaximumHeight(button_extent);
   ui_->timeSlider->setMinimumHeight(button_extent);
   ui_->timeSlider->setMaximumHeight(button_extent);
   ui_->frame->setMaximumHeight(button_extent);
-  // Outer strip layout: padding goes here, so the playback widget
-  // itself grows by 2 * layout_padding via sizeHint (the inner content
-  // remains button_extent tall plus the margins).
   if (auto* layout = ui_->layoutTimescale) {
     layout->setContentsMargins(
         chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
         chrome_metrics_.layout_padding);
     layout->setSpacing(chrome_metrics_.layout_spacing);
   }
-  // Grow the TimelineWidget itself to band_extent so the .ui-baked
-  // 24-px clamp on the host slot in MainWindow.ui doesn't clip the
-  // taller buttons / scrubbers when Chrome metrics scale up. Without
-  // this the outer slot stays at 24 and the inner row overflows.
+  // MainWindow.ui clamps this widget's slot to a fixed height; without this the taller row overflows it.
   setMinimumHeight(band_extent);
   setMaximumHeight(band_extent);
   const qreal dpr = devicePixelRatioF();

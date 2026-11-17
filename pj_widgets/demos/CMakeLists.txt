@@ -1,11 +1,7 @@
-# Standalone visual demos for pj_widgets. These are dev tools, not part
-# of the shipped app. Built unconditionally with the rest of the tree —
-# they're tiny and depend only on pj_widgets + Qt.
+# Standalone visual demos for pj_widgets: dev tools, not part of the shipped app, depending only on pj_widgets and Qt.
 
-# Shared demo-internal QSS preprocessor — both demos parse the
-# stylesheet_*.qss palette + body the same way; this OBJECT library
-# keeps the implementation in one place. PJ_QSS_DIR is set on the
-# object lib so the absolute resources path bakes in once.
+# The demo-internal QSS preprocessor shared by the demos that parse the stylesheet_*.qss palette and body; PJ_QSS_DIR
+# is set on this OBJECT library, so the absolute resources path bakes in once.
 add_library(pj_widgets_demos_qss OBJECT qss_preprocessor.cpp)
 target_compile_features(pj_widgets_demos_qss PRIVATE cxx_std_20)
 target_compile_options(pj_widgets_demos_qss PRIVATE ${PJ_WARNING_FLAGS})
@@ -47,9 +43,7 @@ target_link_libraries(pj_widgets_combobox_demo PRIVATE
     Qt6::Svg
 )
 
-# Source Timeline (reusable per-source display-offset editor). Fabricated
-# tracks, no runtime — links only pj_widgets + Qt6::Widgets.
-# Links resources.qrc so the name-column header icons (e.g. the reset button) render.
+# Source Timeline with fabricated tracks and no runtime. Links resources.qrc so the name-column header icons render.
 add_executable(pj_widgets_timeline_demo
     timeline_demo.cpp
 )
@@ -61,8 +55,7 @@ target_link_libraries(pj_widgets_timeline_demo PRIVATE
     Qt6::Widgets
 )
 
-# Dialog building blocks (SDK 0.4.0): RangeSlider + DateRangePicker. No QSS or
-# resources — links only pj_widgets + Qt6::Widgets.
+# Dialog building blocks: RangeSlider and DateRangePicker. No QSS or resources.
 add_executable(pj_widgets_dialog_blocks_demo dialog_blocks_demo.cpp)
 target_compile_features(pj_widgets_dialog_blocks_demo PRIVATE cxx_std_20)
 target_compile_options(pj_widgets_dialog_blocks_demo PRIVATE ${PJ_WARNING_FLAGS})
@@ -86,8 +79,8 @@ target_link_libraries(pj_widgets_check_button_demo PRIVATE
     Qt6::Svg
 )
 
-# Toast notifications (the "new release available" surface). Links resources.qrc
-# for the success_kid.png icon. Supports --screenshot <path> for headless capture.
+# Toast notifications (the "new release available" surface). Links resources.qrc for the success_kid.png icon.
+# --screenshot <path> captures headless.
 add_executable(pj_widgets_toast_demo
     toast_demo.cpp
 )
@@ -103,8 +96,7 @@ target_link_libraries(pj_widgets_toast_demo PRIVATE
     Qt6::Svg
 )
 
-# PJ::Scrollbar reserved-gutter placement: a table with trailing per-row action
-# buttons next to an auto-hide scroll page, under the real app theme.
+# PJ::Scrollbar reserved-gutter placement: a table with trailing per-row action buttons beside an auto-hide scroll page.
 add_executable(pj_widgets_scrollbar_demo
     scrollbar_demo.cpp
 )

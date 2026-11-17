@@ -19,9 +19,8 @@ namespace {
 
 Q_LOGGING_CATEGORY(lcTokens, "pj.widgets.framework_tokens")
 
-// Parse a stylesheet's `PALETTE START`..`PALETTE END` block into key->value.
-// Same rules as PJ::Theme's loader: skip `//` and blank lines, split on the
-// first `:`, drop a trailing `;`. First occurrence of a key wins.
+// Parses a stylesheet's `PALETTE START`..`PALETTE END` block into key to value, by PJ::Theme's loader rules: skip `//`
+// and blank lines, split on the first `:`, drop a trailing `;`. The first occurrence of a key wins.
 std::map<QString, QString> parsePalette(const QString& qss) {
   std::map<QString, QString> palette;
   const QStringList lines = qss.split(QLatin1Char('\n'));
@@ -65,9 +64,8 @@ std::map<QString, QString> loadPalette(Theme t) {
   return parsePalette(QString::fromUtf8(file.readAll()));
 }
 
-// Per-theme palette cache. The .qss files are compiled-in qrc resources, so
-// their palette is fixed for the process lifetime: parse each theme once (magic
-// statics are thread-safe) and let a theme switch just select the other map.
+// Per-theme palette cache. The .qss files are compiled-in qrc resources, so their palette is fixed for the process
+// lifetime: each theme is parsed once (magic statics are thread-safe) and a theme switch selects the other map.
 const std::map<QString, QString>& paletteFor(Theme t) {
   if (t == Theme::Dark) {
     static const std::map<QString, QString> dark = loadPalette(Theme::Dark);
@@ -77,10 +75,9 @@ const std::map<QString, QString>& paletteFor(Theme t) {
   return light;
 }
 
-// Parse a palette color value. Accepts `#rgb`/`#rrggbb`/`#aarrggbb`/named colors
-// (via QColor) AND CSS `rgb(...)`/`rgba(...)` — the alpha overlay tokens are
-// stored in QSS-friendly rgba() form, which QColor's string constructor cannot
-// parse on its own.
+// Parses a palette color value: `#rgb`, `#rrggbb`, `#aarrggbb`, named colors (through QColor) and CSS `rgb(...)` /
+// `rgba(...)`: the alpha overlay tokens are stored in QSS-friendly rgba() form, which QColor's string constructor
+// cannot parse.
 QColor parseCssColor(const QString& value) {
   const QString v = value.trimmed();
   if (v.startsWith(QLatin1String("rgb"), Qt::CaseInsensitive)) {
@@ -111,9 +108,8 @@ QColor parseCssColor(const QString& value) {
   return QColor(v);
 }
 
-// Resolve a palette key to a color, warning (not crashing) on a missing/invalid
-// token — a missing token is a build-time bug we want visible, mirroring how
-// PJ::Theme leaves an unknown `${...}` as a literal placeholder.
+// Resolves a palette key to a color, warning (not crashing) on a missing or invalid token: a missing token is a
+// build-time bug that should be visible, as PJ::Theme leaves an unknown `${...}` as a literal placeholder.
 QColor resolve(const QString& token_key, Theme t) {
   const auto& palette = paletteFor(t);
   const auto it = palette.find(token_key);

@@ -1,1166 +1,397 @@
-# pj_scene2D Architecture
+# pj_scene2D architecture
 
-The HOW document for the pj_scene2D module. `REQUIREMENTS.md` defines WHAT
-pj_scene2D does; this document defines HOW it is built. Read `REQUIREMENTS.md`
-first — this document assumes familiarity with every section.
+How the 2D media family works today: images, video, depth images and pixel-space annotations, read from
+`pj_datastore::ObjectStore`, decoded off the GUI thread and drawn through QRhi in a dock synchronized with the
+global timeline. Measured evidence behind these choices is in [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md); the
+canonical object schemas are in the SDK's
+[`builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md).
 
-Cross-references to REQUIREMENTS.md use `§R` notation (e.g., `§R4.3`).
-
----
-
-## 1. Module Structure
-
-pj_scene2D ships as two CMake targets with a strict dependency direction
-(matches `pj_scene2D/core/CMakeLists.txt` and `pj_scene2D/widgets/CMakeLists.txt`):
+## Targets and dependencies
 
 ```
-pj_scene2d_widgets  ──►  pj_scene2d_core  ──►  pj_base
-     │                  │
-     │                  ├──►  pj_datastore
-     │                  ├──►  pj_plugin_sdk         (INTERFACE; canonical schemas + codecs)
-     │                  ├──►  FFmpeg                (optional, gated on PJ_SCENE2D_HAS_FFMPEG)
-     │                  ├──►  turbojpeg
-     │                  └──►  libpng
-     │
-     ├──►  Qt (Widgets, Gui, GuiPrivate — QRhi via Gui's private headers)
-     ├──►  pj_runtime           (IDataWidget contract, PlaybackEngine driver)
-     ├──►  pj_scene_common      (SceneDockWidget/ISceneLayer base; backend-agnostic layered scene dock framework)
-     ├──►  pj_widgets           (shared Colormap.h LUT/enum for the GPU depth colormap)
-     └──►  pj_scene2d_core
+pj_scene2d_widgets ──► pj_scene2d_core ──► plotjuggler_sdk::base, pj_datastore,
+   │                                       FFmpeg (avcodec/avutil/swscale), turbojpeg, libpng
+   ├──► Qt Widgets/Gui/GuiPrivate (QRhi)
+   ├──► pj_runtime        (SessionManager, IDataWidget)
+   ├──► pj_scene_common   (SceneDockWidget / ISceneLayer)
+   └──► pj_widgets        (Colormap.h, ToggleSwitch, RHI helpers)
 ```
 
-Canonical object schemas live in `plotjuggler_sdk/pj_base/builtin/` and
-are made available to pj_scene2D via `pj_plugin_sdk` (an INTERFACE library
-that re-exports the canonical SDK headers). `ImageAnnotations` owns the
-canonical wire-format codec (writer + reader). Both pj_scene2D (consumer
-of canonical bytes) and any loader/plugin (producer of canonical bytes)
-depend on those SDK types; loaders never link pj_scene2d_core. pj_scene2D
-keeps renderer-local aliases and the `SceneFrame` batch wrapper in
-`pj_scene2d_core/scene_frame.h`.
+- `pj_scene2d_core` is Qt-free: decoders, `MediaSource` implementations, keyframe indexing, compositing, overlay
+  tessellation, rectification maps. Plugins never link it; they write canonical bytes (or raw messages a
+  `MessageParser` turns into canonical objects) into the store.
+- `pj_scene2d_widgets` is thin: `MediaViewerWidget` owns the GPU surface and polls one `MediaSource`;
+  `Scene2DDockWidget` and the layer classes (`ImageLayer`, `VideoLayer`, `DepthImageLayer`, `SceneDecoderLayer`, on
+  the `Scene2DLayer` base) wire topics to sources. All decode logic and threading live in the core.
+- `pj_scene2D/tests` holds the widget-level tests plus the reference CDR-to-`ImageAnnotations` adapters
+  (`cdr_*_to_image_annotation`, `marker_palette`) used by `cdr_to_image_annotation_test`; the app never links them.
+- `tools/` (`PJ_BUILD_TOOLS`): `extract_frame` (MCAP image to PPM) and `mp4_to_mcap.py` (MP4 to per-frame
+  `CompressedVideo` MCAP).
 
-### pj_scene2d_core (no Qt)
-
-Pure C++ library. Contains everything that does not touch Qt:
-
-| Component | Header(s) | Role |
-|-----------|-----------|------|
-| `BorrowedMediaSource` | `borrowed_media_source.h` | Non-owning `MediaSource` adapter over an externally-owned source pointer. |
-| `AsyncFrameWorker` | `async_frame_worker.h` | Shared latest-wins decode-worker engine (request coalescing, optional cancellation, result mailbox, frame-ready callback, exception barrier, lost-wakeup-safe teardown) composed by the worker-backed sources. |
-| `CancelToken` | `cancel_token.h` | Shared atomic cancellation flag polled by streaming-video decode work. |
-| `CodecPipeline` | `codec_pipeline.h` | Ordered chain of `CodecStage` transforms from raw bytes to `DecodedFrame`. |
-| `Image codecs` | `codecs.h` | Built-in codec stages and image pipeline builders: JPEG, PNG, Mono16 normalization, Bayer, segmentation palette. |
-| `CompositeMediaSource` | `composite_media_source.h` | Multi-layer fan-out: owns N `MediaSource`s and fuses their `MediaFrame`s (§5.4 / §8). |
-| `DecodedFrame` | `decoded_frame.h` | RAII wrapper for decoded pixel data (YUV planes or packed RGB/RGBA buffers). |
-| `DepthPipelineSource` | `depth_pipeline_source.h` | `MediaSource` for depth-encoded `Image` topics (16UC1 / 32FC1 / compressedDepth via `resolveImage`): decodes on an `AsyncFrameWorker` (off the UI thread, like the image/video sources — the compressedDepth PNG inflate is too heavy for the main thread) and emits a raw float32 (`kDepthR32F`) frame + `DepthColorParams`; the colormap/range/invert are applied on the GPU. |
-| `EntryThumbnailCache` | `entry_thumbnail_cache.h` | Background HD-capped JPEG thumbnail cache for streaming `VideoFrame` scrub previews (§4.1). |
-| `FfmpegDecoder` | `ffmpeg_decoder.h` | FFmpeg AVCodecContext wrapper: HW-accel probing, guaranteed software fallback, YUV420P output (§R4.7). |
-| `H264 NAL utils` | `h264_utils.h` | H.264 Annex-B keyframe oracle (`isH264Keyframe`), used by codec-generic video helpers. |
-| `ImageAnnotation codec wrappers` | `image_annotation_codec.h` | Singular-named wrappers around the canonical SDK `ImageAnnotations` codec. |
-| `Image rectifier` | `image_rectifier.h` | Bilinear lens-undistortion of a `DecodedFrame` (interleaved 8-bit formats; planar/16-bit pass through). `rectifyFrame` (float reference) and the fast CPU-fallback `rectifyFrameFast` (precomputed `UndistortMapFast`, reused buffer — bit-for-bit equal, ~2x faster) used when GPU rectification is unavailable. |
-| `Undistort remap` | `undistort_remap.h` | Per-camera reverse sampling map built from `CameraInfo` (K/D/R/P). `buildFastRectifyMap` derives the fixed-point CPU table; `undistortMapToNormalizedRG` packs the GPU LUT payload (source UV per output pixel, +0.5 half-texel, negative sentinel = out of bounds). See TECHNICAL_NOTES "rectify the image, not warp the annotations" and "GPU vs CPU rectification". |
-| `MediaSource` | `media_source.h` | Abstract frame-delivery interface: `setTimestamp` + `takeFrame` (§5), plus `setGpuRectificationAvailable` (capability the widget pushes down so a rectifying source defers undistortion to the GPU). |
-| `Parser object helper` | `parser_object.h` | Shared locked-`parseObject` helper over a `SessionManager::ParserBinding` snapshot (parser + mutex + keepalive); used by the image source and the VideoFrame NAL extractor. |
-| `ImagePipelineSource` | `image_pipeline_source.h` | `MediaSource` for images: wraps CodecPipeline + ObjectStore, decodes on a worker thread (§5.1) |
-| `MediaFrame` | `media_frame.h` | Multi-layer payload returned by `MediaSource`: legacy base frame, ordered pixel layers, and overlays. |
-| `SceneDecoder` | `scene_decoder.h` | Schema dispatch and `ISceneDecoder` implementations for image annotations and 2D-projected scene entities (§4.3). |
-| `SceneFrame` | `scene_frame.h` | Time-stamped batch of image-overlay annotations carried through the media pipeline. |
-| `ScenePipelineSource` | `scene_pipeline_source.h` | Synchronous `MediaSource` for vector-overlay topics decoded from `ObjectStore` (§5). |
-| `StreamingVideoDecoder` | `streaming_video_decoder.h` | ObjectStore-aware GOP decoder for `VideoFrame` entries (H.264/HEVC/AV1 keyed on `VideoFrame.format`) via `FfmpegDecoder` (§4.4). |
-| `StreamingVideoSource` | `streaming_video_source.h` | Worker-backed `MediaSource` for streaming video; wraps `StreamingVideoDecoder` (§5.3). |
-| `Thumbnail codec` | `thumbnail_codec.h` | Stateless HD-capped JPEG encode/decode helpers for YUV420P scrub thumbnails. |
-| `Video codec utils` | `video_codec_utils.h` | Codec-generic dispatch, keyframe detection, codec-parameter creation, and parameter-set priming (§4.4). |
-| `VideoFrame NAL extractor` | `video_frame_nal_extractor.h` | Parser-backed zero-copy extractor from canonical `VideoFrame` messages to raw NAL/OBU spans. |
-
-DataSource plugins do NOT link `pj_scene2d_core` — plugins depend only
-on `pj_base` (see `pj_plugins/docs/ARCHITECTURE.md`). Format-specific
-helpers (NAL scanning, PTS lookup) belong inside the DataSource plugin
-itself or in lightweight headers within `pj_base`.
-
-### pj_scene2d_widgets (Qt widgets)
-
-Qt widget library built on top of `pj_scene2d_core` and `pj_scene_common`.
-`Scene2DDockWidget` extends `pj_scene_common`'s `SceneDockWidget` base (which
-owns the ordered layer stack and the `IDataWidget`/`IObjectViewer` contracts);
-the layer subclasses (image / video / depth_image / scene2d / scene_decoder)
-supply the 2D-specific rendering. `ImageLayer` handles `kImage`; the `VideoLayer`
-handles per-frame `kVideoFrame` streaming topics (parser-mode
-`StreamingVideoSource`).
-
-| Component | Header(s) | Role |
-|-----------|-----------|------|
-| `MediaViewerWidget` | `media_viewer_widget.h` | `QRhiWidget` subclass: GPU rendering via colorspace-aware YUV->RGB fragment shader (3 R8 textures for YUV420P, R8+RG8 for NV12; matrix from `buildYuvMatrix`), per-layer magnification filter, zoom/pan, RGB DecodedFrame path, GPU lens-rectification (§7.2), and `MediaSource` polling via `setMediaSource()` + `setTimestamp()` (§7) |
-| YUV shaders | `shaders/yuv_to_rgb.{vert,frag}` | colorspace-aware YUV420P/NV12->RGB conversion (BT.601/709 + limited/full range via the per-frame `colorMatrix`); RGBA passthrough; native Mono8 (R8 expand) / BGRA (RGBA8 swizzle) paths; depth colormap (`pixelFormat == 5`: R32F depth in `y_tex`, normalized by near/far and looked up in the colormap LUT in `u_tex`); optional remap-LUT rectification (binding 4) — see §7.2 |
-| Overlay shaders | `shaders/scene_lines.{vert,frag}`, `shaders/scene_text.{vert,frag}` | Annotation overlay pipelines (§7.1): `scene_lines` draws both the triangle strokes (scale-with-1px-floor) and the solid fills, each in its own pipeline; `scene_text` draws the textured text quads |
-
-The Qt layer is thin — it owns the GPU surface and polls the
-`MediaSource`'s `takeFrame()` at render rate. All decode logic,
-threading, and cancellation live in `pj_scene2d_core`.
-
----
-
-## 2. Data Flow
-
-Two paths: write (ingest) and read (display). pj_scene2D participates
-only in the read path.
-
-### Write path (ingest — pj_scene2D is NOT involved)
+## Read path
 
 ```
-DataSource plugin
-  ├─► [direct]    ObjectStore::pushOwned / pushLazy             ◄── primary path today
-  └─► [delegated] host.pushRawMessage ─► MessageParser::parse()
-                                            ├─► scalar write host  (DataEngine)
-                                            └─► object write host  (ObjectStore)
-                                                                   ◄── now supported via
-                                                                       MessageParser protocol v4
-                                                                       service-registry bindings
+GUI thread                                     per-layer MediaSource
+  SceneDockWidget::onTrackerTime(t)
+    └─ layer->setTrackerTime(t) ─► source->setTimestamp(ns)
+                                     ├─ ImagePipelineSource   post to worker ─► resolve, decode, rectify
+                                     ├─ DepthPipelineSource   post to worker ─► resolve, R32F decode
+                                     ├─ StreamingVideoSource  post to worker ─► StreamingVideoDecoder::decodeAt
+                                     └─ ScenePipelineSource   synchronous decode on the caller
+  MediaViewerWidget::render()
+    └─ composite->takeFrame() ─► MediaFrame { base, pixel_layers, overlays } ─► textures + overlay VBOs ─► draw
 ```
 
-**Direct ingest is the primary, fully-wired path.** DataSource plugins
-call `pushOwned` / `pushLazy` directly. The originally-proposed parser
-ABI v2 has been delivered as `pj_plugins` MessageParser protocol v4:
-rather than adding hosts as `parse()` parameters, parsers acquire both
-a scalar write host (`pj.parser_write.v1`) and an object write host
-through the service registry at `bind(registry)` time and write to
-both inside a single `parse()` call. Delegated media ingest is therefore
-structurally enabled and is being wired up incrementally (see
-`REQUIREMENTS.md` §4.4).
+`pj_runtime` drives the dock through `IDataWidget::onTrackerTime`; the dock clamps the time, forwards it to each
+visible layer, and repaints. A worker-backed source's frame-ready callback (called on the worker thread) is
+turned by `Scene2DLayer::makeQueuedRepaintCallback()` into a queued repaint on the GUI thread, so a decode that
+finishes after the tick's single render is still shown.
+
+## Frame delivery
+
+`MediaSource` (`media_source.h`) is the one contract between producers and the viewer: `setTimestamp(ns)` when the
+time changes, `takeFrame()` at render rate, both on the GUI thread. `takeFrame()` returns the newest frame since the
+last call or nothing. There is no public `cancel()`: each source cancels or coalesces internally.
+
+`AsyncFrameWorker` (`async_frame_worker.h`) is the worker shared by the image, depth and video sources:
+
+- **Latest-wins requests.** A new target overwrites the pending one; the worker decodes only the newest.
+- **Single-slot result mailbox.** `deposit()` overwrites the previous frame, so a stale frame cannot reach the
+  display. At most two decoded frames per source are alive (the mailbox and the one shown).
+- **Frame-ready callback**, copied under its own lock and invoked after release.
+- **Exception barrier.** A decode body that throws is caught on the worker and produces no frame (see "Errors and
+  missing data").
+- **Teardown.** `stop()` cancels, wakes and joins the thread; a lost wakeup cannot hang the join. A thread that has
+  not entered its loop yet is detached instead of joined (TECHNICAL_NOTES "Decode threads in the WASM pthread
+  pool").
+
+Frames never travel through Qt signals: a queued signal per frame cannot be withdrawn, so during a fast scrub
+stale frames queue up and reach the display after newer ones (TECHNICAL_NOTES "Frame delivery through Qt
+signals"). Frames are addressed by `int64_t` nanosecond timestamps, never by index.
+
+## Cancellation and scrub preemption
+
+`CancelToken` (`cancel_token.h`) is an atomic flag, optionally backed by a poll function so a caller's own check
+(an on-demand script's cancel) reaches the decode. Only the streaming video decode polls it, between packets.
+
+`StreamingVideoSource` starts its worker with a preempt predicate: a new request cancels the in-flight decode only
+on a **scrub**, a backward jump or a forward jump larger than `kScrubPreviewThresholdNs`. A contiguous playback
+step lets the decode finish, because a cancel discards the decoder's forward-continuation state and forces a GOP
+re-seek; cancelling on every 60 Hz tick would deliver no frame at all (TECHNICAL_NOTES "Scrub preemption").
+Teardown always cancels. A cancelled decode deposits nothing: no source publishes partial frames.
+
+The image and depth sources run without cancellation; stale targets are coalesced before the next decode starts.
+
+## Image codecs
+
+`CodecPipeline` is an ordered chain of `CodecStage`s from bytes to a `DecodedFrame`; a stage either produces a
+terminal pixel format or passes intermediate bytes on. Built-in stages (`codecs.h`): `JpegCodec` (turbojpeg),
+`PngCodec` (libpng, RGB/RGBA/Mono16), `ImageDecodeCascade` (JPEG or PNG by magic), `AutoImageCodec` (cascade plus
+Mono16 normalization), `Mono16ToGrayscale`, `SegmentationPalette`. Codecs are built in, not plugins: adding one is
+a code change.
+
+`ImagePipelineSource` gets its `sdk::Image` from one seam, `resolveImage` (`image_resolve.h`): the topic's
+`MessageParser` when one is bound (called under the parser's shared mutex: parsers are not thread-safe), else the
+canonical `pj_image_v1` codec. Raw and Bayer encodings, including a raw buffer losslessly wrapped in a grayscale
+PNG, are reinterpreted at the logical geometry; compressed ones go through the cascade. There is no decoded-frame
+cache for stills (TECHNICAL_NOTES "Image decode cost").
+
+## Scene decoders
+
+`makeSceneDecoder(schema)` (`scene_decoder.h`) returns `ImageAnnotationsSceneDecoder` for `PJ.ImageAnnotations` or
+`SceneEntities2DDecoder` for `PJ.SceneEntities`, else null. Each has two entry points: canonical bytes, or an
+`sdk::BuiltinObject` a parser already produced (no serialize round trip). `ScenePipelineSource` owns one decoder
+per layer and decodes synchronously in `setTimestamp()`.
+
+`SceneEntities2DDecoder` is a stateless per-message projection to annotations: arrows, cubes, spheres, lines,
+triangles, texts and axes, from the XY of `pose.position`. Orientation, deletions, `lifetime_ns` and
+`frame_locked` are not applied.
+
+Source-format conversion (CDR `vision_msgs`, `yolo_msgs`, ...) belongs to the loader or parser; this module sees
+only canonical objects.
+
+## Streaming video decode
+
+The host's only video path: one encoded frame per ObjectStore entry (`sdk::VideoFrame` / `CompressedVideo`),
+unwrapped by the topic's parser (`makeVideoFrameNalExtractor`, a zero-copy view of the payload; one
+extractor per concurrent decoder) and decoded GOP-aware by
+`StreamingVideoDecoder` over `FfmpegDecoder`. A producer with an MP4 transcodes it to per-frame entries at ingest.
+
+- **Codecs.** `videoCodecIdFromFormat()` accepts H.264, HEVC and AV1: the codecs with a keyframe oracle in
+  `isVideoKeyframe()` (H.264 IDR NAL 5, HEVC IRAP NAL 16-21, AV1 sequence-header OBU). Anything else, VP9
+  included, fails with "unsupported video codec": without an oracle no seek can work.
+- **Opening.** Deferred to the first keyframe (joining mid-stream works). The decoder opens from
+  `makeVideoCodecParams()` and primes `extradata` from that keyframe's in-band parameter sets
+  (`primeKeyframeParamSets`), with the reorder delay a demuxer would report (`computeReorderDelay`); an unprimed
+  open drops the first B-frames (TECHNICAL_NOTES "B-frames").
+- **Store keys and presentation.** The store is keyed by DTS; the PTS travels in the payload. The decoder feeds in
+  DTS order and serves by PTS: `decodeAt(T)` shows the greatest PTS at or before T, through a presentation index
+  built by the keyframe scan. Each packet is indexed at its PTS plus its entry's `payload_stamp_shift`, so the
+  decoder answers on the dataset clock and a merge's same-name topics do not collide.
+- **Forward continuation and seek.** A target at or after the last served PTS continues forward without a flush;
+  anything else seeks to the keyframe before the target, flushes, and decodes forward. A repeated target returns
+  the cached frame. The pump receives every queued frame before each send, so a send cannot hit EAGAIN and lose
+  a frame.
+- **Index maintenance.** Packets are addressed by UID (`ObjectStore::indexOf`), so packets at an equal DTS never
+  alias. The index follows `ObjectStore::contentIdentity`: an unchanged poll scans nothing, an append scans only the
+  arrivals (a UID cursor over `drainNewSince`), a rewrite (earlier DTS, removal, clear) rebuilds. A new packet at an
+  already indexed PTS replaces that frame. Evicted packets are pruned when the store front moves; a GOP walk follows
+  its packets through a front eviction by UID (`packetAt`). A rewrite during a decode fails it ("video content
+  changed during decode"); an append or front eviction does not.
+- **Eviction while live.** Forward continuation needs neither the keyframe nor its entry; only a seek needs a
+  keyframe still in the store.
+- **Thumbnails.** `decodeSampled()` decodes every packet but downloads and converts only the sampled ones;
+  `EntryThumbnailCache` uses it (see "Media sources").
+
+`FfmpegDecoder` (`ffmpeg_decoder.h`) picks the hardware backend at run time: D3D11VA first on Windows, then the
+types `av_hwdevice_iterate_types` lists, keeping the first with a decode config for the codec; VAAPI walks the DRM
+render nodes (TECHNICAL_NOTES "VAAPI device selection"). Software decode is the fallback everywhere and the only
+path in the browser. Software output is YUV420P; hardware output is downloaded as native NV12. Each frame carries
+its colour space and range, read from the decoded frame (TECHNICAL_NOTES "Colorimetry"). `convertToRgb24` is the
+CPU path to packed RGB for on-demand scripts (TECHNICAL_NOTES "CPU RGB conversion for scripts").
 
-### Read path (display — pj_scene2D's domain)
+## Media sources
 
-```
-Main thread                            MediaSource (internal)
-     │                                      │
-     ├─ widget->setTimestamp(ts_ns)          │
-     │       │                              │
-     │       └─► source->setTimestamp(ts)    │
-     │               │                      │
-     │               ├─ [ImagePipeline]  post to worker ──► store->indexAt/at → decode()
-     │               ├─ [StreamingVideo] post to worker ──► decoder_.decodeAt(ts)
-     │               ├─ [DepthPipeline]  post to worker ──► resolveImage → R32F decode
-     │               └─ [Scene]          latestAt(ts) → synchronous decode
-     │                                      │
-     ├─ widget->render()                    │
-     │       │                              │
-     │       └─► source->takeFrame()        │
-     │               │                      │
-     │               └─► MediaFrame (base DecodedFrame + pixel_layers + overlays)
-     │                        │
-     │                  upload to GPU textures
-     │                        │
-     │                   draw quad (colorspace-aware shader)
-     │                        │
-     └──────────────────► GPU display
-```
-
-On each application tick:
-
-1. The main thread calls `widget->setTimestamp(ts_ns)`, which forwards
-   to the attached `MediaSource`. Image, streaming-video, and depth sources
-   post a request to their internal workers; the scene source decodes
-   synchronously on the caller thread.
-2. The main thread triggers a repaint (calls `widget->update()`).
-3. In `render()`, the widget calls `source->takeFrame()` to get the
-   latest decoded frame. If a new frame is available, it uploads pixel
-   data to GPU textures and draws.
-
-The Qt main thread drives both steps. The entry point into the widget is
-`PJ::IDataWidget::onTrackerTime(double)` (from `pj_runtime`), invoked
-by `pj_runtime::PlaybackEngine`; the widget forwards that time to its
-internal `MediaSource` via `setTimestamp()`. This matches how
-PlotJuggler's existing plot widgets are driven. See §9.1 for details.
-
----
-
-## 3. Scrub Architecture
-
-The WHY behind these patterns — and why the alternatives fail — is inlined
-below; treat it as settled rationale, not
-open design space.
-
-### 3.1 Latest-wins frame delivery
-
-The realized frame handoff is a pull-based latest-wins mailbox implemented once
-in `AsyncFrameWorker` (`async_frame_worker.h`) — the shared decode-worker
-engine that `ImagePipelineSource`, `StreamingVideoSource`, and
-`DepthPipelineSource` compose. The
-worker owns the request channel (latest-target-wins coalescing, optional
-per-request `CancelToken`), the single-slot result mailbox
-(`deposit()`/`take()` under its `result_mutex_`), the frame-ready callback,
-the exception barrier, and the lost-wakeup-safe teardown; each source supplies
-only its decode body. `takeFrame()` moves the taken frame into a `MediaFrame`.
-The remaining synchronous source (scene entities) uses the same latest-result
-contract without a worker.
-
-Properties:
-
-- **Latest-wins**: depositing a result physically overwrites the previous frame.
-  A stale frame cannot reach the display because it is replaced before
-  the UI polls.
-- **At most two decoded frames alive per source** (one retained in the source,
-  one being displayed). Memory usage is bounded.
-- **No Qt event queue for frame payloads**. Worker-ready callbacks may
-  wake the GUI to poll, but decoded frames cross threads only through the
-  source's latest-result mailbox and `takeFrame()`.
-- **Pull timing**: the UI polls via `render()` at repaint rate. On
-  each pass: `auto r = source->takeFrame(); if (r) uploadToGpu(*r);`.
-
-Frames are identified by `int64_t` nanosecond timestamps, not frame
-indices: a timestamp is the one coordinate that works for both file and
-streaming sources.
-
-**Qt signals are NOT used for frame delivery.** Adding a signal escape
-hatch is explicitly forbidden. The structural problem (proven in the
-prototype, where 5+ patch attempts failed before the mailbox design):
-a `QueuedConnection` posts one event per decoded frame, and posted
-events cannot be invalidated — during rapid scrub, stale frames pile up
-in the event queue and reach the display after newer frames have already
-been decoded. Patching around the queue (event compression,
-sequence-number guards on delivery, blocking connections) does not fix
-it, because the queue itself is the staleness buffer. The latest-wins
-mailbox removes the buffer instead.
-
-### 3.2 Direction-aware cancel-store
-
-The prototype design question for cancellable decoders was: when the user
-scrubs rapidly and an in-flight decode is cancelled, should a
-partially-decoded frame be published to the result mailbox?
-
-The rule, established empirically:
-
-- **Forward scrub** (`current_request_ts > previous_request_ts`):
-  publish partials. The decoder is decoding toward the target from a
-  keyframe behind it — partial progress shows frames between the
-  previous position and the target, which matches the user's drag
-  direction.
-- **Backward scrub** (`current_request_ts < previous_request_ts`):
-  suppress partials. The decoder replays FORWARD from a keyframe
-  while the user is dragging BACKWARD — publishing partials would
-  show frames moving in the wrong direction.
-- **Same position or first request**: suppress.
-
-The host's only video path today (`StreamingVideoSource`) uses a simpler
-latest-wins model (no partials), so this direction-aware partial-publish
-rule is preserved here as design rationale for any future file-backed
-ObjectStore decoder, not as live code.
-
-### 3.3 CancelToken
-
-A streaming-video decode request carries a `CancelToken` — a class wrapping
-an `atomic<bool>`, shared between requester and decoder via
-`shared_ptr<CancelToken>`:
-
-```cpp
-class CancelToken {
- public:
-  bool isCancelled() const { return flag_.load(std::memory_order_relaxed); }
-  void cancel() { flag_.store(true, std::memory_order_relaxed); }
-
- private:
-  std::atomic<bool> flag_{false};
-};
-```
-
-Live cancellation today:
-
-- `StreamingVideoDecoder`: between NAL units (after each `avcodec_receive_frame`).
-- `ImagePipelineSource` / `DepthPipelineSource`: no mid-decode cancellation
-  today; stale targets are coalesced before the worker starts the next decode.
-- `ScenePipelineSource`: synchronous on the caller thread; no token is used.
-
-A new streaming-video request flips the previous token **only when it is a
-scrub** (backward, or a forward jump past the 0.5 s threshold — the worker's
-`Options::preempt_predicate`, supplied by `StreamingVideoSource`). A
-contiguous-playback step lets the in-flight decode finish: a cancel wipes the
-decoder's forward-continuation state and forces a full GOP re-seek, so
-unconditional preemption under a 60 Hz tracker would cancel every decode
-before it delivers and playback collapses to zero frames (measured: the 4 K
-playback benchmark went 0 → ~26 fps displayed when the predicate landed).
-On a genuine scrub the decoder returns early and `StreamingVideoSource`
-deposits no partial result; §3.2's direction-aware partial-publish rule is
-design rationale only.
-
----
-
-## 4. Codec Pipeline
-
-> For the wire-format type catalog that the codec pipeline decodes, see
-> [`plotjuggler_sdk/docs/builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — the canonical SDK builtin-type catalog.
-
-Each ObjectStore topic produces raw bytes in a wire format. To reach
-display-ready pixels, those bytes pass through a **codec pipeline** —
-an ordered chain of stateless transforms configured per-layer at
-widget setup time.
-
-Every link in the chain is a codec. Some decode bytes→pixels (image
-decompression), some transform pixels→pixels (visualization mapping).
-The production application receives canonical object payloads from parser
-plugins before this point, so source envelopes such as ROS CDR are not
-part of the core pipeline.
-
-### Examples
-
-```
-Canonical Image (jpeg):       JpegCodec → [identity]
-Canonical Image (png/mono16): PngCodec → Mono16ToGrayscale
-Raw segmentation mask:        [identity] → SegmentationPalette
-```
-
-### Design
-
-```cpp
-class CodecStage {
- public:
-  virtual ~CodecStage() = default;
-  virtual Expected<DecodedFrame> decode(const DecodedFrame& input) const = 0;
-};
-```
-
-A `CodecPipeline` is a `vector<unique_ptr<CodecStage>>`. Each stage
-consumes raw bytes and either:
-- Returns a `DecodedFrame` with `PixelFormat` set → terminal stage,
-  pipeline stops.
-- Returns a `DecodedFrame` where `pixels` contains intermediate
-  bytes → next stage consumes `pixels->data()` and `pixels->size()`.
-
-The last stage must produce display-ready pixels (RGB/RGBA). The
-`ImagePipelineSource` receives one of three decode routes: a parser
-instance that returns canonical `sdk::Image`; the `CanonicalImageCodec`
-tag for topics whose `metadata_json` declares `image_codec=pj_image_v1`
-(each ObjectStore entry is a serialized `sdk::Image` blob the source
-deserializes itself — the toolbox image-producer contract); or a
-demo/test pipeline. Canonical images (parser- or blob-sourced) share one
-decode path: raw/Bayer encodings (incl. grayscale-PNG-wrapped buffers)
-reinterpret at the logical geometry, everything else runs the
-jpeg/png/auto compressed cascade.
-
-### Codec inventory
-
-Source envelopes such as ROS CDR are decoded by parser plugins before the
-application consumes media. The reference CDR helpers live under
-`pj_scene2D/tests` (exercised by `cdr_to_image_annotation_test`).
-
-**Image codecs** (bytes → pixels):
-
-| Codec | Input | Output |
-|-------|-------|--------|
-| `JpegCodec` | JPEG bytes | RGB888 pixels |
-| `PngCodec` | PNG bytes | RGB888 or RGBA8888 or Mono16 pixels |
-
-**Visualization codecs** (pixels → display pixels):
-
-| Codec | Input | Output |
-|-------|-------|--------|
-| `Mono16ToGrayscale` | Mono16 image values | RGB888 (grayscale, non-zero range normalized; zero stays black) |
-| `SegmentationPalette` | Mono8 class IDs | RGB888 (color per class) |
-| (passthrough, conceptual) | Any RGB/RGBA | No-op |
-
-These are all built-in classes in `pj_scene2d_core`, not plugins.
-Adding a new codec requires a code change — same rule as before.
-
-### 4.1 Video: streaming decode path
-
-The host has a single video decode path: per-frame `VideoFrame` topics
-decoded out of `ObjectStore`. There is no file-backed video decoder in
-the host.
-
-**`StreamingVideoDecoder`** (streaming / ObjectStore-based): decodes
-VideoFrame entries from ObjectStore, codec-generically (H.264/HEVC/AV1).
-Described in §4.4. Wrapped by `StreamingVideoSource` (§5.3) for
-`MediaSource` integration. Uses `FfmpegDecoder` for decode, `CancelToken`
-for cooperative cancellation, and a latest-wins request model (no
-partial publication).
-
-- **EntryThumbnailCache** (`entry_thumbnail_cache.h`): the
-  streaming/`VideoFrame` thumbnail cache. A background builder runs a
-  single forward decode pass and surfaces ~1 frame per adaptive interval
-  through its own per-build NAL extractor (a single-thread keepalive slot
-  separate from the playback decoder), encoding each via the stateless
-  `thumbnail_codec.h` (downscale to ≤1280px, YUV420P, JPEG quality 80,
-  adaptive tile/byte budget). The pass decodes every frame but pays the
-  HW-download + downscale only on the surfaced ones
-  (`StreamingVideoDecoder::decodeSampled` → `FfmpegDecoder::decodeFiltered`),
-  which is what keeps 4K thumbnailing tractable. `StreamingVideoSource`
-  serves the nearest-at-or-before thumbnail on scrub for instant feedback
-  while the GOP decode settles.
-  Wired only for bounded topics today; streaming-on-pause thumbnailing
-  is not yet wired.
-- **YUV420P / NV12 output** (§R4.7 compliant): FfmpegDecoder outputs
-  planar YUV420P (software) or native NV12 (hardware) directly. No CPU-side
-  RGB conversion. MediaViewerWidget renders via a colorspace-aware fragment
-  shader (matrix per frame) with R8 planes. 75% GPU memory reduction vs RGBA8.
-
-### 4.2 Image codecs
-
-`JpegCodec` and `PngCodec` are `CodecStage`
-implementations. They are stateless — multiple instances per widget
-are fine. `ImageDecodeCascade` auto-dispatches JPEG vs PNG, and
-`AutoImageCodec` adds Mono16 normalization for display. Raw canonical image
-buffers are wrapped directly by `ImagePipelineSource` before entering the
-pipeline; there is no separate raw `CodecStage`.
-
-No decoded-frame cache. On-the-fly decode is fast enough for stills
-that caching wastes more memory than it saves time (§R4.2).
-
-### 4.3 SceneDecoder
-
-pj_scene2D consumes its local `ISceneDecoder` abstraction from
-`pj_scene2d_core/scene_decoder.h`. The factory `makeSceneDecoder(schema_name)`
-dispatches on the schema string across two concrete `ISceneDecoder` kinds:
-`kSchemaImageAnnotations` (`"PJ.ImageAnnotations"`, the PJ-canonical
-`ImageAnnotations` re-encoding) maps to `ImageAnnotationsSceneDecoder`, and
-`kSchemaSceneEntities` (`"PJ.SceneEntities"`) maps to `SceneEntities2DDecoder`
-(implemented in `pj_scene2D/core/src/scene_entities_2d_decoder.cpp`, which
-projects `sdk::SceneEntities` into 2D annotations). An unrecognized schema
-returns `nullptr`.
-
-`SceneEntities2DDecoder` is intentionally a stateless per-message projection,
-not a retained scene graph. It supports the seven primitive lists that can be
-projected with the current 2D annotation types — arrows, cubes, spheres, lines,
-triangles, texts, and axes. Cylinders and models are not projected today. Each
-message produces a fresh snapshot: deletions, `lifetime_ns`, and `frame_locked`
-are not applied, and `pose.orientation` is ignored; projection uses only XY
-translation from `pose.position`.
-
-Wire format spec, type catalog, and encoding rules live in
-`plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations.hpp` and
-`plotjuggler_sdk/pj_base/include/pj_base/builtin/image_annotations_codec.hpp`.
-
-`ISceneDecoder` exposes **two** entry points; `ScenePipelineSource` (see §5)
-picks by ingest route:
-- `decode(bytes)` — canonical-producer topics: the store holds canonical bytes,
-  decoded as-is.
-- `decode(const sdk::BuiltinObject&)` — parser-backed topics: a `MessageParser`
-  already produced the canonical object, decoded directly (no serialize/
-  deserialize round-trip, mirroring the 3D consumer).
-
-**pj_scene2D's usage policy:** stateless decoder, one instance per
-scene/annotation layer for the layer's lifetime. `ScenePipelineSource` owns the
-decoder; its output is a `SceneFrame` ready for the compositor (§5.4) to merge
-with the base image and hand to the renderer (§7).
-
-**Source-format conversion is loader-side, not pj_scene2D's concern.**
-Per-source-format adapters (CDR `vision_msgs/msg/Detection2DArray`, CDR
-`yolo_msgs/msg/DetectionArray`, future CSV/RLDS, …) live next to each
-loader; PJ4's reference adapters are in
-`pj_scene2D/tests/cdr_*_to_image_annotation.{h,cpp}` (with
-`pj_scene2D/tests/marker_palette.{h,cpp}` for the FNV-1a class-id →
-palette helper). They call `PJ::serializeImageAnnotation` and push the
-resulting canonical bytes to ObjectStore tagged with
-`metadata_json = {"encoding":"foxglove.ImageAnnotations"}`. The viewer
-side never sees the original schema.
-
-### 4.4 StreamingVideoDecoder
-
-Decodes VideoFrame entries stored in ObjectStore, codec-generically:
-the codec (H.264/HEVC/AV1 — those with both a decoder and a keyframe
-oracle) is read from each topic's `VideoFrame.format` and mapped to an
-FFmpeg decoder (`video_codec_utils.h`). Any other codec (e.g. VP9, which
-has a decoder but no keyframe oracle, so it could not be sought) surfaces
-a clear "unsupported video codec" error instead of mis-decoding.
-`StreamingVideoDecoder` reads encoded NAL/OBU units from ObjectStore
-entries — the path for streaming sources (ROS 2, RTSP, etc.) that
-push VideoFrame messages into ObjectStore at ingest time.
-
-The streaming case reads from ObjectStore, has dynamic duration
-(retention window), and no file path. `StreamingVideoDecoder` lives in
-`pj_scene2d_core` with no Qt dependency.
-
-**API:**
-
-```cpp
-class StreamingVideoDecoder {
- public:
-  void attach(ObjectStore* store, ObjectTopicId topic);
-  Expected<DecodedFrame> decodeAt(Timestamp ts);
-  void reset();
-  bool isInitialized() const;
-};
-```
-
-**Two-path decode strategy:**
-
-1. **Forward path** (live mode and forward scrub): when the target
-   timestamp is at or ahead of the last decoded position, the decoder
-   continues forward without flushing. Uses `FfmpegDecoder::decodeSkip()`
-   for intermediate frames and `decode()` only for the target.
-   This is O(1) per frame in live mode (one decode per call).
-
-2. **Seek path** (backward scrub, cross-GOP jump, first decode): finds
-   the nearest keyframe before the target in the keyframe index, flushes
-   the decoder, and decodes forward from the keyframe to the target.
-
-**Same-timestamp cache:** When the display polls faster than the push
-rate (e.g., 60 Hz display vs 30 Hz push), `decodeAt()` is called with
-the same timestamp twice. The cached `last_frame_` is returned
-immediately — no re-decode, no seek.
-
-**Keyframe index:** Built incrementally by inspecting each new entry via the
-codec-dispatched `isVideoKeyframe(codec_id, data, size)` (`video_codec_utils.h`):
-H.264 IDR (NAL type 5), HEVC IRAP (NAL types 16–21), AV1 (carries a
-Sequence-Header OBU). `resolveCodec()` latches the topic's codec from the first
-extracted frame's `VideoFrame.format` before the oracle runs. Each packet is
-addressed by its UID (`ObjectStore::indexOf`), so packets at an equal DTS never
-alias. The index follows the store's revisions (`ObjectStore::contentIdentity`):
-an unchanged poll scans nothing, an append scans only the arrivals since the
-last scan (a UID cursor over `drainNewSince`), and a rewrite (an earlier DTS, a
-removal anywhere, a clear) rebuilds it. A new packet at a PTS already indexed
-replaces that frame and drops the codec state; the older packets of that PTS stay
-listed, so evicting the newest presents the retained one again, and a walk feeds
-them with a PTS below every target so their frames never overwrite the newest's. Each
-packet is indexed at its PTS plus its entry's `payload_stamp_shift`, so the
-decoder presents and is queried on the dataset clock and a merge's same-name
-topics never collide. Evicted packets are pruned against the store front
-(`timeRange().first`, `firstSequentialUID`) when it moves. A GOP walk follows
-its packets through a front eviction (`packetAt`, anchored on the target's UID)
-instead of their old indices. A decode polls its `CancelToken` between packets;
-a token can also read a caller's own check (`CancelToken(poll)`), which is how an
-on-demand script's cancel reaches it. A decode during which the topic was rewritten fails ("video content
-changed during decode") and rebuilds; an append or a front eviction meanwhile
-moves no fed packet, so a live decode is not failed by them.
-
-**Decoder initialization:** Deferred until the first keyframe arrives
-(join-mid-stream support). The decoder opens via `makeVideoCodecParams(codec_id)`
-— `codec_id` resolved from `VideoFrame.format` by `videoCodecIdFromFormat()` —
-with **no `extradata`**: the streaming wire contract requires every keyframe to
-carry its parameter sets in-band (H.264 SPS/PPS, HEVC VPS/SPS/PPS, AV1 sequence
-header), which FFmpeg ingests on the first keyframe. HW acceleration (VAAPI) is
-chosen by `FfmpegDecoder`'s `get_format` callback, with automatic software
-fallback when the codec/GPU offers no HW config.
-
-**Eviction resilience:** In live mode, the original keyframe may be
-evicted by retention while the decoder continues forward. The forward
-path does not require the keyframe — the decoder already has the
-correct codec state from previous sequential decodes. Only backward
-seeks require a keyframe still present in the store.
-
-### 4.5 Video Pipeline Summary
-
-Which component to use depends on the data source:
-
-| Scenario | Component | ObjectStore role | Notes |
-|----------|-----------|-------------|-------|
-| Streaming VideoFrame (ROS 2, RTSP) | StreamingVideoDecoder | Encoded packets with retention budget | One ObjectStore entry per `sdk::VideoFrame`. |
-| File-based MCAP with CompressedVideo | StreamingVideoDecoder | Lazy-fetched encoded packets | DataSource pushes encoded packets at open time. |
-| ML datasets (LeRobot, RLDS) | StreamingVideoDecoder | One `sdk::VideoFrame` per camera frame | A loader transcodes each camera's MP4 into per-frame `VideoFrame` entries; Parquet scalars go to DataEngine. Episodes map to DatasetId. |
-
-The host's canonical video model is **per-frame `VideoFrame`**: each
-ObjectStore entry holds one encoded frame, decoded GOP-aware by
-`StreamingVideoDecoder`. There is no file-backed video decode path in the
-host. A producer that wants to surface an MP4 transcodes it to per-frame
-`VideoFrame` entries at ingest time.
-
-**Multi-modal datasets** (video + scalars from the same recording): the
-DataSource plugin populates both stores — `DataEngine` for plottable
-time-series and `ObjectStore` for media. Both share the same timestamp
-domain and are driven by the same global timeline cursor. Episodes in ML
-datasets (e.g., LeRobot episodes) map to PlotJuggler's `DatasetId` —
-each episode is a separate dataset with its own time range.
-
----
-
-## 5. MediaSource
-
-The uniform frame-delivery interface between decoder backends and
-`MediaViewerWidget`.
-
-```cpp
-class MediaSource {
- public:
-  virtual ~MediaSource() = default;
-  virtual void setTimestamp(int64_t ts_ns) = 0;
-  virtual std::optional<MediaFrame> takeFrame() = 0;
-};
-```
-
-**Design rationale**: a single orchestrator owning decoders, worker
-threads, frame mailboxes, compositor and CancelToken management was
-rejected. It conflicts with the streaming decode
-path (`StreamingVideoSource`), which is a self-contained
-subsystem (owns its worker thread, latest-wins request model,
-cancellation, thumbnail cache). `MediaSource` is a thin adapter that
-lets each decoder path manage its own complexity at the right granularity.
-
-**Contract**:
-
-- `setTimestamp(ts_ns)` is called by the main thread when the global
-  time changes. May decode synchronously or post to an internal worker.
-- `takeFrame()` is called by the main thread at render rate. Returns
-  the latest `MediaFrame` (composited base + ordered `pixel_layers` +
-  vector overlays), or nullopt/empty if nothing new since last call.
-- No `cancel()` in the public interface — each implementation manages
-  cancellation internally when a new `setTimestamp` arrives.
-- The widget calls `update()` after `setTimestamp()` to trigger repaint.
-
-### 5.1 ImagePipelineSource
-
-Wraps `CodecPipeline` + `ObjectStore`. Decodes on a dedicated worker
-thread (mirrors `StreamingVideoSource`): `setTimestamp()` posts a request and
-returns immediately; `takeFrame()` polls the latest decoded result.
-
-```cpp
-class ImagePipelineSource : public MediaSource {
- public:
-  ImagePipelineSource(ObjectStore* store, ObjectTopicId topic,
-                      std::unique_ptr<CodecPipeline> pipeline);
-  void setTimestamp(int64_t ts_ns) override;
-  std::optional<MediaFrame> takeFrame() override;
-};
-```
-
-Internals: `setTimestamp` forwards to the composed `AsyncFrameWorker` (§3.1),
-which coalesces targets latest-wins. The decode body runs on the worker
-thread: `store->latestAt(topic, ts)` → decodes → optionally rectifies
-(`rectifyIfCalibrated`: when `setCameraInfoMap()` provided a `CameraInfo` for
-the frame's `frame_id` *and* the per-layer rectify toggle is on —
-`setRectifyEnabled`, default on, the operator's override for the always-on
-auto-decision; see TECHNICAL_NOTES "rectify the image, not warp the
-annotations" and "ASSUMPTION and its known blind spot") → `deposit()`s into the
-worker's mailbox. `takeFrame` drains the
-mailbox into a `MediaFrame` (nullopt on second call); after each deposit the
-worker fires the optional `setFrameReadyCallback` (from the worker thread) so
-consumers re-poll.
-
-The worker publishes `rectificationStatus()` independently of whether rectification
-is enabled. Explicit clear frames publish `kWaitingForImage`; no-update results
-preserve eligibility for the retained image. `ImageLayer` uses that status on frame-ready repaint notifications to
-enable its Rectify toggle only for a matching, usable calibration and to explain
-unavailability in the tooltip. The attach-time calibration map contains only the
-image's dataset: CameraInfo-classified topics (any name) and legacy `/camera_info`
-topics are decoded through their parser, or through the canonical codec when no
-parser is bound. Calibration is injected before the first decode request.
-
-`rectifyIfCalibrated` chooses between two paths based on the
-`setGpuRectificationAvailable` flag the widget pushed down (atomic; a change
-calls `invalidate()` to re-decode in the new mode):
-
-- **GPU available (default once the widget confirms):** the worker leaves the
-  frame RAW and attaches the cached `shared_ptr<const UndistortMap>` to
-  `DecodedFrame::rectify_map`. The widget undistorts at draw time (§7.2). No CPU
-  resample, smaller upload.
-- **GPU unavailable (safe default until confirmed):** the worker rectifies on
-  the spot with `rectifyFrameFast` (a fixed-point `UndistortMapFast` into a
-  reused buffer) and delivers a display-ready native-resolution frame with
-  `rectify_map == nullptr`.
-
-Either way the *displayed* coordinate space is the camera's native (calibrated)
-resolution, so annotations / aspect / pixel-inspector stay aligned (§7.2).
-
-Cancellation is left off for this source (stale targets are coalesced rather
-than cancelled mid-decode — image decodes are short). `setCameraInfoMap()`
-must be called before the first `setTimestamp()` — the worker reads the
-calibration map without further locking.
-
-### 5.3 StreamingVideoSource
-
-Wraps `StreamingVideoDecoder` + owns a worker thread.
-`StreamingVideoDecoder::decodeAt()` is synchronous and can be expensive
-(seek + decode forward from keyframe), so it runs on a dedicated worker.
-
-```cpp
-class StreamingVideoSource : public MediaSource {
- public:
-  StreamingVideoSource(ObjectStore* store, ObjectTopicId topic);
-  ~StreamingVideoSource();
-
-  void setTimestamp(int64_t ts_ns) override;
-  std::optional<MediaFrame> takeFrame() override;
-  bool isInitialized() const;
-};
-```
-
-Internals:
-- `setTimestamp` forwards to the composed `AsyncFrameWorker` (§3.1), started
-  with cancellation enabled and a scrub-only preempt predicate: a newer
-  request cancels the in-flight `CancelToken` only on a backward / large-
-  forward jump (teardown always cancels), so a slow 4K GOP decode is abandoned
-  for scrubs while contiguous-playback ticks let it finish and ride the
-  forward continuation; `decodeAt`/`decodeRange` poll the token to preempt.
-- The decode body (`decodeRequest`) publishes an instant thumbnail preview on
-  scrubs, then calls `decoder_->decodeAt(ts, token)` and `deposit()`s the
-  full-res result into the worker's mailbox.
-- `takeFrame` drains the mailbox into a `MediaFrame`.
-- After depositing a frame the worker fires the optional
-  `setFrameReadyCallback` (from the worker thread) so consumers re-poll
-  `takeFrame()` once the async decode completes. Without it a stopped scrub
-  freezes on the previous frame: the GUI's single `update()` per tracker tick
-  races the worker and the finished frame is never re-polled. The layer
-  (`VideoLayer`/`ImageLayer`) hops to the main thread via a queued invocation.
-  Mirrors `ImagePipelineSource` (§5.1).
-
-### 5.4 Multi-layer
-
-`CompositeMediaSource` (`pj_scene2d_core/composite_media_source.h`) owns
-multiple `MediaSource` instances and fuses their `MediaFrame`s on each
-`takeFrame()`. Same `MediaSource` interface — the widget remains agnostic
-of the layer count.
-
-The output of `takeFrame()` is a single `MediaFrame`:
-
-```cpp
-struct MediaFrame {
-  std::optional<DecodedFrame> base;        // pixel-buffer layer (image/video)
-  std::vector<PixelLayer> pixel_layers;    // ordered pixel buffers, bottom to top
-  std::vector<SceneFrame> overlays;        // vector primitive layers
-};
-
-struct PixelLayer {
-  DecodedFrame frame;
-  float opacity = 1.0f;
-};
-```
-
-Fusion rules (see implementation):
-- The first layer that produces a `.base` wins; later bases dropped.
-- Every layer's `.overlays` are concatenated in addition order (later
-  layers render on top).
-- Returns `nullopt` if no layer produced data on this poll.
-
-Layers are owned by the compositor (`std::unique_ptr<MediaSource>`).
-Polling is deterministic (addition order), making z-order configuration
-explicit at construction time.
-
----
-
-## 6. Keyframe indexing
-
-Keyframe tracking lives in pj_scene2D, not in ObjectStore (§R4.2, §R4.4).
-`StreamingVideoDecoder` (§4.4) keeps its own keyframe timestamp vector and
-builds it incrementally: on each new entry the codec-dispatched
-`isVideoKeyframe(codec_id, …)` (H.264 IDR / HEVC IRAP / AV1 seq-header OBU)
-inspects at most the first ~20 bytes, whatever the frame size. This is the
-host's only video decode path.
-
-**Considered and not built:** a shared per-topic keyframe registry, filled by a
-DataSource plugin through a new C ABI slot at file-open time. It only pays off
-for a file-backed ObjectStore path with several decoders on one topic, which
-does not exist; for the single-consumer case the in-decoder vector is simpler
-and needs no lock.
-
----
-
-## 7. Rendering Pipeline
-
-### 7.1 QRhiWidget — five pipelines
-
-`MediaViewerWidget` subclasses `QRhiWidget`, which abstracts
-over Vulkan, Metal, D3D11, and OpenGL at runtime. The widget owns five
-QRhi graphics pipelines that share the same `viewTransform` UBO so
-zoom/pan/rotation apply uniformly:
-
-| # | Pipeline | Topology | Responsibility |
-|---|---|---|---|
-| 1 | Image | implicit (procedural fullscreen quad) | YUV420P/NV12 → RGB (colorspace-aware matrix per frame; 3 R8 or R8+RG8 textures), RGBA passthrough, native Mono8 (R8) / BGRA (RGBA8 swizzle), depth colormap (R32F depth + colormap LUT, `pixelFormat == 5`), and optional GPU lens-rectification via a remap LUT (§7.2) |
-| 1b | Composite (pixel layers) | implicit (procedural fullscreen quad) | Alpha-blends N additional `MediaFrame::pixel_layers` over the base, each with its own SRB and per-layer `opacity`; used when `pixel_layers_active_` (member `composite_pipeline_`) |
-| 2 | Fills (`points_overlay_`) | `Triangles` | Solid fills: `kPoints` quads, `LineLoop` fill, `CircleAnnotation` fill |
-| 3 | Outlines (`thick_overlay_`) | `Triangles` | **All** line/circle strokes, expanded CPU-side to perpendicular rectangles whose width scales with zoom but is floored at 1px on screen |
-| 4 | Text | `Triangles` (textured) | One quad per `TextAnnotation`, glyph mask sampled and tinted by per-vertex colour |
-
-Pipelines 2–4 share `marker_uniform_buf_` (the same `mat4 viewTransform + vec4 frameSize` UBO) but each has its own SRB and VBO so submissions don't trample each other's bindings.
-
-**Stroke width (scale-with-floor).** Stroke geometry lives in the backend-agnostic
-`pj_scene2d_core/overlay_geometry.h` (unit-tested in `overlay_geometry_test.cpp`).
-Outline/point widths are in **image pixels**, so they scale with zoom (the view
-transform enlarges them as you zoom in), but the CPU expander **floors** the
-half-width so the stroke is never thinner than 1 px on screen. The floor is a
-screen-pixel value, converted to image units via `image_px_per_screen_px`
-(= 1 / effective view scale), so geometry is re-expanded when the view scale
-changes. This fixes the old bug where pure image-space strokes went sub-pixel when
-zoomed out — with no MSAA, edges then dropped out of rasterization depending on
-sub-pixel alignment → "some rectangle/cube lines disappear depending on zoom".
-The earlier native `GL_LINES` "Marker" pipeline (1 px, `thickness ≤ 1.5`) was
-**retired**: GL line clipping is guard-band-limited (whole segments can be culled
-when zoomed far in), whereas triangles clip robustly and honour thickness.
-
-Per-frame flow:
-
-1. Build `MediaFrame` via the attached `MediaSource`. Pixel data goes to texture upload; vector overlays go to CPU vertex builders.
-2. Compute `effective_scale` (on-screen px per image px = zoom × aspect-preserving fit). Stroke/point geometry is re-expanded when the annotation set changes **or** `effective_scale` changes (since the 1px screen floor depends on it); fills and text are image-space and rebuild only on annotation change. Walk `last_overlays_` and dispatch each `PointsAnnotation`/`CircleAnnotation` to `overlay_geometry::{appendLineStrokes, appendPointQuads, appendLoopFill, appendCircleStroke, appendCircleFill}`.
-3. For each `TextAnnotation`, look up `(text, font_size_q)` in `text_cache_`. On miss, render a glyph mask with `QPainter` to a `QImage::Format_Alpha8`, upload as a `QRhiTexture::R8`, and create a per-entry SRB pointing at it (so per-draw rebinding cannot mix textures across instances).
-4. Issue draw calls in order `image → fills → outlines → text` so strokes always land on top of fills and labels on top of everything.
-
-### 7.2 Image shader: color conversion, native formats, GPU rectification
-
-The image fragment shader (`yuv_to_rgb.frag`) branches on a `pixelFormat`
-uniform. YUV420P uses 3 R8 samplers (NV12 uses 2: an R8 Y plane + an RG8
-interleaved UV plane):
-
-```glsl
-vec3 yuv = vec3(
-    texture(y_plane, uv).r,
-    texture(u_plane, uv).r - 0.5,
-    texture(v_plane, uv).r - 0.5
-);
-fragColor = vec4((colorMatrix * vec4(yuv, 1.0)).rgb, 1.0);
-```
-
-The `colorMatrix` is **selected per frame** from the codec's signalled colorimetry
-(BT.601 vs BT.709, limited vs full range) and built by
-`pj_scene2d_core/video_color.h::buildYuvMatrix` — a single affine 4×4 that folds the
-range scale/offset into the constant column, so the shader is identical across all
-combinations. BT.709 + full range reproduces the legacy hardcoded matrix exactly.
-Live-decoded frames and cached thumbnails pass through the same shader. (Earlier the
-matrix was a hardcoded full-range BT.709, which mis-rendered SD and limited-range
-content — see TECHNICAL_NOTES §5 "Colorimetry was dropped".)
-
-**Native packed formats (no CPU repack).** Besides RGBA passthrough, the shader
-handles **Mono8** (uploaded as a single R8 texture, expanded to gray) and
-**BGRA8888** (uploaded verbatim to an RGBA8 texture, swizzled `.bgra`). Only
-RGB888/BGR888 (3-byte, no clean 4-byte-row GPU layout) still expand to RGBA on
-the CPU. This removes the per-frame `rgba_repack_buffer_` copy for the mono/BGRA
-cases.
-
-**GPU rectification (lens undistortion).** When the source delivers a RAW frame
-with a `DecodedFrame::rectify_map` (the GPU path; see §5.1), the shader remaps
-the output UV through a per-camera lookup texture before sampling:
-
-```glsl
-if (rectify == 1) {
-    vec2 s = uintBitsToFloat(texelFetch(remap_tex, texel, 0).rg);  // RG32UI LUT, texel-exact
-    if (s.x < 0.0) { fragColor = vec4(0,0,0,1); return; }  // OOB sentinel
-    uv = s;                                  // sample the image at the source coord
-}
-```
-
-- The LUT (`remap_tex`, SRB binding 4, a `usampler2D`) is `out_w × out_h` RG32UI
-  holding the bits of two floats (QRhi has no RG32F), built once per camera by
-  `undistortMapToNormalizedRG` and cached on the layer (keyed by map identity).
-  `.rg` is the normalized source coordinate with a +0.5 half-texel offset so the
-  LINEAR image fetch reproduces the CPU bilinear; the LUT itself is fetched
-  texel-exact (`texel` = the output UV times the LUT size, clamped) so each output
-  pixel gets its exact precomputed source coord.
-- **Logical-size decouple:** on the GPU path the *uploaded* texture is the small
-  RAW frame, but the widget reports the *logical* size as the map's
-  `out_width/out_height`. `tex_width_`/`tex_height_`/`frame_aspect_` and the
-  overlay `frameSize` UBO all use the logical size, so annotations, aspect
-  letterboxing, and the pixel inspector stay in the camera's native-resolution
-  space regardless of CPU-vs-GPU path. The point inspector maps the cursor in
-  logical space and reads the source pixel through the map.
-- **Capability handshake:** `MediaViewerWidget::initialize()` reports GPU
-  rectification available once the base pipeline exists (its RG32UI placeholder
-  is the LUT's format; `isTextureFormatSupported(RG32UI)` would wrongly exclude
-  WebGL2, since Qt's GLES backend lists 32-bit integer formats from ES 3.1 on
-  though RG32UI is core ES 3.0) and calls
-  `MediaSource::setGpuRectificationAvailable(...)`, fanned out through
-  `Composite`/`BorrowedMediaSource` to the `ImagePipelineSource` layers. The
-  default is the CPU-correct path until the widget confirms GPU support; a flip
-  re-decodes the current frame. Non-rectifying layers bind a 1×1 placeholder LUT
-  at slot 4 so all texture-layer SRBs share one layout.
-
-This moved lens undistortion off the decode worker threads (it was ~63–68% of
-process CPU) onto a single GPU texture lookup; see TECHNICAL_NOTES
-"GPU vs CPU rectification".
-
-### 7.3 Zoom and pan
-
-A 3x3 view transform matrix in the vertex shader handles zoom
-(mouse-wheel, cursor-anchored) and pan (mouse drag):
-
-```glsl
-gl_Position = vec4(view_matrix * vec3(in_position, 1.0), 1.0);
-```
-
-The transform is updated on mouse events and stored as widget state.
-No pixel reprocessing — transformation is free on the GPU.
-
-### 7.4 No GPU, no hardware decode
-
-Decoding and rendering degrade separately:
-
-1. **Decode.** Without a usable hardware decoder, `FfmpegDecoder` falls back to
-   software decode (guaranteed by its fallback logic).
-2. **Render.** There is no CPU renderer. A GPU-less machine still gets a QRhi
-   (WARP on Windows, Mesa's software rasterizer on Linux). When the viewer's QRhi
-   or its base pipelines cannot be created, it enters its failure state: it clears
-   to the background and `Scene2DDockWidget` shows the reason in a label below it
-   (TECHNICAL_NOTES.md → "GPU failure state").
-
----
-
-## 8. Multi-Layer Compositor
-
-A viewer widget may composite multiple ObjectStore topics at the same
-display time (§R4.8). The `CompositeMediaSource` class orchestrates this (§5.4).
-
-### 8.1 Layer model
-
-Each layer is a `MediaSource` registered with the composite. Layer types
-that pj_scene2D renders today (image-pixel space only — see REQUIREMENTS §4.1):
-
-| Layer type | Source | Output in `MediaFrame` |
+| Source | Thread | Output |
 |---|---|---|
-| Base image/video | `ImagePipelineSource`, `StreamingVideoSource` | `.pixel_layers` (RGB/YUV pixel buffer; `.base` kept as the legacy single-layer fallback) |
-| Vector annotations (`ImageAnnotation`) | `ScenePipelineSource` | `.overlays` (typed primitives — points, line loops/strips/lists, circles, texts) |
-| Depth colormap | `DepthPipelineSource` / `DepthImageLayer` (routed from a depth-encoded `kImage` topic by peeking the first sample's `encoding`; a dormant `kDepthImage` registration also exists, but no producer emits that type) | `.pixel_layers` (a raw `PixelFormat::kDepthR32F` float frame + `DepthColorParams`; the per-layer turbo/viridis/plasma/grayscale colormap, near/far range, and invert are applied on the GPU in the media shader — no CPU colormap) |
-| Segmentation mask (planned) | `ImagePipelineSource` with `SegmentationPalette` codec | `.pixel_layers` (not yet registered as a layer type) |
+| `ImagePipelineSource` | `AsyncFrameWorker` | RGB/mono/YUV `DecodedFrame`, optionally rectified |
+| `DepthPipelineSource` | `AsyncFrameWorker` | `kDepthR32F` pixel layer + `DepthColorParams` |
+| `StreamingVideoSource` | `AsyncFrameWorker`, scrub preemption | YUV420P or NV12 frame; thumbnail preview on a scrub |
+| `ScenePipelineSource` | caller (GUI) | `SceneFrame` overlays |
+| `CompositeMediaSource` | caller | fused `MediaFrame` of N child sources |
+| `BorrowedMediaSource` | caller | non-owning wrapper over a layer's own source |
 
-### 8.2 Compositing pipeline
+- **Dedup.** Image and depth sources dedup on the store entry's UID (`latestEntryIdAt`, which never resolves
+  bytes), so a same-stamp replacement still decodes and a cold payload is not refetched for an unchanged entry.
+  `invalidate()` forces the next request through.
+- **Clears.** A seek before the shown entry with nothing at or before the cursor (a derived image computed only
+  later), or an empty image (a derived tombstone), deposits a null frame that clears the layer. A cursor before any
+  data is silent; an entry evicted under the cursor stays shown.
+- **Stamp.** `DecodedFrame::stamp` is the image payload's own timestamp plus the entry's merge shift
+  (`resolveImage`), and `entry_ts` the store key; both drive annotation pairing.
+- **Thumbnails.** `StreamingVideoSource` builds an `EntryThumbnailCache` only for a topic without time-window
+  retention and only for video wider than the thumbnail cap: a background pass decodes the topic once and keeps an
+  HD-capped JPEG every adaptive interval. On a scrub the source deposits the nearest thumbnail at or before the
+  target while the full decode runs.
+- **Parser lifetime.** A parser-backed source holds the parser binding's keepalive until its worker is joined:
+  the extension catalog unloads the plugin on app close.
 
-`CompositeMediaSource` (§5.4) owns one `MediaSource` per layer. On each tick:
+## Depth images
 
-1. Calls `setTimestamp()` on every layer.
-2. Calls `takeFrame()` on every layer.
-3. Returns one `MediaFrame` where the first non-null `.base` wins and every layer's `.overlays` are concatenated in addition order.
+Depth arrives as an `sdk::Image` with a depth `encoding` (16UC1, 32FC1, compressedDepth); no producer emits
+`kDepthImage`, whose registration is dormant. `DepthPipelineSource` resolves the image like the image source,
+decodes it to float metres on its worker (the compressedDepth PNG inflate included), and emits a `kDepthR32F`
+frame where 0 means no data. `isValidDepth()` (`depth_range.h`) is the rule, and it must stay equal to the
+shader's `!(d > 0)` and the inspector's readout, or the readout disagrees with the transparent pixels. Colormap,
+near/far range and invert travel as `DepthColorParams` on the frame and are applied in the shader through a
+colormap LUT built from `pj_widgets/Colormap.h`, the source the 3D point-cloud colouring also uses; changing them is
+a uniform write plus a re-emit, no re-decode. The core takes the colormap as an opaque id (the `Colormap` value and
+LUT row). `autoRange()` (Auto-fit) fits near/far to percentiles of the frame currently shown, once per click.
 
-The widget consumes the fused `MediaFrame` and dispatches:
+## Camera rectification
 
-- `.base` → texture upload + image pipeline.
-- `.overlays` → CPU expansion to vertex streams (see §7.1) and the four overlay pipelines (Lines, Points/Triangles fills, Thick triangles, Text textured).
+`ImagePipelineSource` undistorts an image when the layer's Rectify toggle is on (the default) and the attach-time
+calibration map holds a usable `CameraInfo` for the image's `frame_id` in its dataset. Calibration topics are found
+by object classification or a `/camera_info` suffix and decoded through their parser or the canonical codec. The
+map is installed before the first `setTimestamp()` (`setCameraInfoMap` is refused later: the worker reads it
+unlocked), so a `CameraInfo` published after attach is not applied.
 
-Pixel-layer fusion (multiple pixel buffers blended in pixel space — e.g. RGB base + depth colormap) **is implemented**. `CompositeMediaSource` collects each layer's ordered `pixel_layers` (per-layer opacity, scaled by the layer's composite opacity) into a single `MediaFrame.pixel_layers` stack, and `MediaViewerWidget` renders them via a dedicated alpha-blended `composite_pipeline_` (SrcAlpha/OneMinusSrcAlpha), one draw call per uploaded `pixel_layer_textures_` entry, when `pixel_layers_active_`. The legacy single-`base` path is retained for producers that don't populate `pixel_layers`.
+- **GPU path** (once the viewer reports support): the worker leaves the frame raw and attaches the cached
+  `UndistortMap` as `DecodedFrame::rectify_map`; the image shader remaps through an RG32UI LUT
+  (`undistortMapToNormalizedRG`).
+- **CPU path** (until then, or when the viewer cannot): `rectifyFrameFast` with a fixed-point `UndistortMapFast`
+  into a reused buffer, bit-for-bit equal to the float `rectifyFrame`. It skips planar and 16-bit formats.
+- **Handshake.** `MediaViewerWidget::initialize()` calls `setGpuRectificationAvailable()` once the base pipeline
+  exists; the composite fans it out to its children, and a change re-decodes the current frame.
+- Both paths show the image at the calibration's native resolution, the space annotations are authored in.
+  `rectificationStatus()` tells `ImageLayer` whether to enable the toggle and what its tooltip explains.
 
-### 8.3 At-or-before semantics
+Why the image and not the annotations, and the assumption's blind spot: TECHNICAL_NOTES "Rectification
+assumption".
 
-Every layer query uses `latestAt` — strict at-or-before, never a
-future entry (§R4.8). A 10 Hz detection overlay composited on a
-60 Hz video is correct: the same bounding box persists across
-multiple video frames until replaced by a newer annotation.
+## Compositing
 
-No automatic skew rejection for an overlay that is not paired (§8.3a). Multi-rate is the norm — the
-compositor trusts that an entry exists in the store until explicitly evicted.
+`CompositeMediaSource` holds one child source per visible layer, in draw order, and presents one `MediaFrame`:
 
-### 8.3a Annotation pairing
+- Each layer's latest contribution is **retained**: a layer with nothing new on a tick keeps contributing.
+- Every layer's pixel output becomes an entry of `pixel_layers` (opacity scaled by the layer's); the first layer
+  with pixels is the base for pairing. Overlays are concatenated in layer order.
+- `setGpuRectificationAvailable`, `invalidate` and `setTimestamp` fan out to every child.
+- On a rebuild (add, remove, hide, reorder) `adoptContributions()` carries the persisting layers' frames over from
+  the old composite, and the dock repoints the viewer before freeing the old one.
+- Every query is at-or-before, never a future entry. There is no skew rejection for unpaired overlays: a 10 Hz
+  detection overlay on 30 Hz video keeps its last box until a newer one arrives.
 
-`CompositeMediaSource::setLayerPairing` gives a layer its store topic, its image cadence and
-a warning sink; `Scene2DDockWidget::syncViewLayers` sets it for every layer. At each
-composite, an annotation naming its image (`image_topic` not empty) of a layer set to pair its
-annotations (`Scene2DDockWidget` sets it for an on-demand derived topic, from its `pj_derived`
-metadata) is kept only when the base layer (the first with pixels) has that topic and the
-annotation's timestamp lies within one cadence of the delivered frame's own stamp
-(`DecodedFrame::stamp`: the image payload's `timestamp_ns` plus the entry's
-`payload_stamp_shift`, which `resolveImage` computes; the pts when a frame has none); the
-cadence is looked up around the frame's store entry (`DecodedFrame::entry_ts`, which survives
-rectification; `pts` can be a parser's record stamp or the image's own). An image still
-decoding never pairs with the tracker's instant. Rejected annotations stay in the layer's retained contribution and are
-checked again when pixels arrive; they never reach the renderer. The warning sink is called
-at every composite (empty once nothing is hidden); the dock delivers a change to the layer
-row (`SceneWarningParts::Part::kAnnotation`) from the event loop, because the composite is
-polled inside the viewer's render; a layer left out of the composite (hidden) has its reason
-cleared the same way, so the clear queues behind a reason posted earlier. A parser's
-annotations are never checked and keep the multi-rate behaviour above: their `image_topic` is
-informational (the yolo handler sets the header's frame id). Derived annotations carry their image's topic and stamp
-(docs/derived_objects/ARCHITECTURE.md §6, §17), so the check applies to them unchanged.
+## Annotation pairing
 
-### 8.4 frame_id correlation (optional)
+`setLayerPairing` gives a layer its store topic, its image cadence and a warning sink; the dock sets it for every
+layer, and asks for pairing only for an on-demand derived topic (from its `pj_derived` metadata). For such a layer,
+an annotation naming its image (`image_topic` set) is kept only when the base layer has that topic and the
+annotation's stamp lies within one cadence of the delivered frame's `stamp`. The cadence is the median positive gap
+of the image topic's last 16 entries at or before the frame's `entry_ts`, 100 ms with fewer than two gaps. An image
+still decoding never pairs with the tracker's instant. Rejected annotations stay in the retained contribution and
+are re-checked when pixels arrive. The warning sink is called at every composite; the dock posts a change to the
+layer row's annotation warning through the event loop (the composite is polled inside render), and a hidden layer's
+warning is cleared the same way, so the clear queues behind an earlier set. A parser's annotations are never
+checked: their `image_topic` is informational (a header frame id). Derived annotations carry their image's topic
+and stamp (docs/derived_objects/ARCHITECTURE.md, "Scene integration").
 
-When an overlay's metadata carries a `frame_id` matching a specific
-source image, the compositor may prefer exact pairing over
-timestamp-based pairing. Layers without `frame_id` fall back to
-timestamp matching.
+## Rendering
 
----
+`MediaViewerWidget` is a `QRhiWidget` (OpenGL, Vulkan, D3D11, Metal, WebGL2; `PJ::preferredGraphicsApi()`), built
+parentless and then inserted (TECHNICAL_NOTES "QRhiWidget in a raster window"). It draws, in order:
 
-## 9. Clock Integration
+1. **Image** (`yuv_to_rgb`): the base layer. The `pixelFormat` uniform selects YUV420P (three R8), NV12 (R8 + RG8;
+   a backend without RG8 gets a CPU deinterleave), RGBA, Mono8 (R8), BGRA (swizzled) or depth (R32F plus the LUT
+   in `u_tex`). RGB888, BGR888 and Mono16 are converted to RGBA on the CPU. The YUV matrix comes per frame from
+   `buildYuvMatrix(space, range)` (`video_color.h`), one affine 4x4, so the shader is the same for every
+   combination. Chroma sampling follows 4:2:0 siting at odd sizes (TECHNICAL_NOTES "Chroma siting at odd sizes").
+2. **Composite**: further `pixel_layers`, alpha-blended (SrcAlpha / OneMinusSrcAlpha), one draw each.
+3. **Fills** (`scene_lines`, triangles): point squares and line-loop and circle fills.
+4. **Outlines** (`scene_lines`, triangles): every stroke, expanded on the CPU by `overlay_geometry.h`. Width is in
+   image pixels, so it scales with zoom, floored at 1 px on screen; strokes are re-expanded when the effective
+   scale changes. Line primitives are not used: they are 1 px wide and GL can cull whole segments when zoomed in.
+5. **Text** (`scene_text`): one quad per label over an R8 glyph mask, tinted by the vertex colour. Each cached
+   glyph texture has its own SRB, because QRhi reads an SRB at submit time. The cache is LRU-bounded.
 
-### 9.1 Main-thread-driven timestamps
+Layer textures are reused when a frame brings the same pixel buffer. GPU rectification samples the RG32UI LUT
+(binding 4) texel-exact with a +0.5 half-texel offset baked in, and a negative sentinel paints out-of-bounds
+pixels black; non-rectifying layers bind a 1x1 placeholder so every texture layer has one SRB layout. On the GPU
+path the uploaded texture is the raw frame but the **logical size** (aspect, overlays, inspector) is the map's
+output size.
 
-Widgets implement `PJ::IDataWidget` (from
-`pj_runtime/IDataWidget.h`) and are driven by `pj_runtime::PlaybackEngine`
-on the Qt main thread. The runtime calls `widget->onTrackerTime(time)`
-on each tick; the widget forwards that time into its internal
-`MediaSource` and triggers a repaint:
+**View transform.** Zoom (wheel, cursor-anchored, [1, 20]), pan (drag, zero at 1x) and a dock-wide clockwise
+rotation (0, 90, -90, 180) form one matrix: `scale(fit x zoom) * translate(pan) * rotate(-deg)` in GL clip space
+(y up), corrected per backend by `clipSpaceCorrMatrix()`. Pan follows the rotation, so drags stay in screen
+directions. `fitScale`, `panAfterZoom`, `panAfterDrag` and `widgetPointToImagePixel` (`pixel_inspector.h`) share
+this math with the viewer; a change to the transform must change the inverse too, or the inspector reads the wrong
+pixel. Text quads are counter-rotated in image space so labels stay upright. The state is saved as
+`<view zoom pan_x pan_y rotation>` in the dock XML; double-click resets zoom and pan, not rotation.
 
-```cpp
-// Inside the widget, on the Qt main thread:
-void SceneDockWidget::onTrackerTime(double time) {
-  const auto clamped = clampToLayerRange(/* seconds → ns via chrono, dropping NaN/inf */);
-  // Per-tick repaint coalescing: if the combined renderKey() of all visible layers
-  // is unchanged from the last painted frame (same active sample at this time),
-  // nothing visible moved — skip the layer advance AND the repaint. A 60 Hz tracker
-  // over a <10 Hz image stream therefore does NOT re-composite the dock every tick.
-  const uint64_t key = trackerRenderKey(clamped);
-  if (have_render_key_ && key == last_render_key_) {
-    return;
-  }
-  have_render_key_ = true;
-  last_render_key_ = key;
-  for (auto& [k, layer] : layers_) {
-    if (layer != nullptr && layer->info().visible) {
-      layer->setTrackerTime(clamped);  // each layer forwards into its MediaSource
-    }
-  }
-  refreshView();  // triggers repaint; render() pulls latest frame via takeFrame()
-}
-```
+Shader packs (`.qsb`) are committed; edit a `.vert`/`.frag` and re-bake with `widgets/shaders/bake.sh` and the
+pinned `qsb` (TECHNICAL_NOTES "Shader packs").
 
-`Scene2DLayer::renderKey(time)` fingerprints the active media sample's stamp (a
-stamp-only `indexAt`/`entryTimestamps` lookup, no decode), so a static image
-coalesces while a new frame reopens the gate. A new sample's async decode also
-repaints via the frame-ready callback (`repaintRequested → refreshView`),
-independent of this gate — so the gate can never strand a freshly-decoded frame.
+## GPU failure state
 
-Widgets never own or drive the clock: they only **receive** time on
-`onTrackerTime`, never advance it.
+No draw may reference a resource whose `create()` failed (D3D11 crashes in `beginPass`). When the image pipeline,
+its samplers or the base texture layer cannot be created, `initialize()` releases everything: `render()` only
+clears, `renderFailed()` and `renderingWarningChanged()` fire once, and the dock shows the warning in a label below
+the viewer. Every later `initialize()` (new QRhi, resized target) retries. A window that gets no QRhi at all routes
+Qt's own `renderFailed()` into the same warning. Optional parts degrade: a failed overlay drops that overlay, a
+failed frame texture drops the frame (its uploads go to a batch of their own, discarded with it), and without the
+blending pipeline pixel layers draw opaque; the next `initialize()` rebuilds what is missing. Builds with
+`PJ_RHI_TEST_HOOKS` inject failures through the `pjTestFailPipeline` property (`base`, `composite`, `points`,
+`thick`, `text`, `layer srb`).
 
-This matches how PlotJuggler's existing plot widgets are driven — the
-main thread iterates over widgets and tells each one to update. Media
-widgets are passive; they never drive the clock.
+A machine without a GPU still gets a QRhi (WARP on Windows, Mesa's software rasterizer on Linux); there is no CPU
+renderer.
 
-### 9.3 Live vs scrub mode
+## Point inspector
 
-The application manages the live/scrub mode transition (§R4.3).
-From pj_scene2D's perspective:
+The "Show point" toggle enables a hover magnifier (`PixelInspector`). Ordinary images show a zoom grid and the RGB
+value, converted with the same matrix the display uses. A `kDepthR32F` frame shows the position, the depth in
+metres (or "no data", `depthMetersAt`) and a swatch from `depthColormapColor`, which reproduces the shader through
+the same `colorFor()` the LUT is built from; no zoom grid. On the GPU-rectify path the cursor maps to the logical
+space and the value is read from the source pixel the map points at.
 
-- **Live mode**: the main thread calls
-  `widget->setTimestamp(timeRange().second)` on each tick.
-  Each `ObjectStore::latestAt` returns the most recent entry.
+## Clock and repaint
 
-- **Scrub mode**: the main thread calls
-  `widget->setTimestamp(slider_value_ns)` driven by user interaction.
-  The buffer is frozen — no pushes, no eviction.
+`SceneDockWidget::onTrackerTime` (pj_scene_common) skips the layer advance and the repaint when the combined
+`renderKey(time)` of the visible layers is unchanged. `Scene2DLayer::renderKey` is the UID of the active entry
+(never resolving bytes), folded with a generation that a dataset replacement bumps, so a static image does not
+re-composite at 60 Hz and a same-stamp replacement still repaints (TECHNICAL_NOTES "Repaint cadence"). A new
+frame from a worker repaints through the frame-ready callback regardless of the gate. Streaming topics follow the
+newest sample: the dock subscribes to the session's live samples and moves visible layers to the data edge.
 
-The `MediaSource` does not know or care which mode is active. It
-reacts identically: receive timestamp → decode → deliver frame. The
-mode distinction is entirely in whether the timestamp advances
-automatically or manually, and whether the DataSource is actively
-pushing.
+## Dock behaviour
 
----
+- **Layers.** `Scene2DDockWidget::handlesObjectType()` is the list of types the family accepts (images, depth
+  images, video, image annotations, scene entities); host drop routing reads it.
+- **One background per dock.** An interactive drop of an image, depth image or video replaces the current
+  background (the old one is removed only after the new one attached) and draws beneath the overlays; overlays
+  stack. A deferred drop (advertised topic, no data yet) gets the same policy when it materializes. `addTopic()` and
+  workspace restore always append, so a saved multi-image layout loads as saved.
+- **Depth routing.** `kImage` covers colour and depth: the dock peeks the topic's first sample's encoding and
+  creates a `DepthImageLayer` or an `ImageLayer`. A saved `layer_kind` attribute overrides the peek on restore;
+  XML without it falls back to the peek (depth settings in the XML select depth).
+- **Restore.** XML is validated before the destructive restore, normalized on a private clone, and a snapshot puts
+  the dock back if a late step fails.
+- **Placeholder.** An empty dock shows a greyed icon on a stacked page instead of the viewer: a raster widget over
+  the QRhiWidget's surface does not composite reliably.
+- **Image layer**: nearest magnification, Rectify toggle (`rectify_enabled` in XML; absent means on).
+  **Depth layer**: colormap (`turbo` default; unknown names restore it), near/far, invert, Auto-fit; opacity is
+  restored from XML but has no UI. **Video layer** requires the topic's parser.
 
-## 10. Threading Model
+## Threading and locks
 
-### 10.1 Thread roles
+| Thread | Work |
+|---|---|
+| GUI | `onTrackerTime`, `setTimestamp`, scene decode, `render()` / `takeFrame()`, uploads |
+| one `AsyncFrameWorker` per image, depth or video source | store lookup, parse, decode, rectify, deposit |
+| `EntryThumbnailCache` builder, one per cache | one decode pass with its own decoder and extractor |
+| ingest (pj_app streaming manager, loaders) | `ObjectStore` pushes and eviction |
 
-| Thread | Responsibilities | Lock discipline |
-|--------|-----------------|-----------------|
-| **Qt main thread** | UI events, `widget->setTimestamp()`, `widget->render()` → `source->takeFrame()`, GPU upload | Posts async requests for image/video/depth sources. Only the scene source decodes synchronously in `setTimestamp()`, so only that path may spend decode time on the GUI thread |
-| **ImagePipelineSource / DepthPipelineSource worker** (an `AsyncFrameWorker`, 1 per source) | ObjectStore lookup, parser/canonical-image handling, `CodecPipeline` decode (or the depth R32F decode incl. compressedDepth PNG inflate), result deposit | The shared `AsyncFrameWorker` engine: `request_mutex_`/`request_cv_` for latest-target requests, `result_mutex_` for the mailbox. ObjectStore locks are released before codec work |
-| **StreamingVideoSource worker** (an `AsyncFrameWorker`, 1 per source) | `StreamingVideoDecoder::decodeAt()`, thumbnail preview + full-res `deposit()` into the worker mailbox | Acquires ObjectStore shared locks (released immediately after handle copy). Holds decoder-internal state exclusively |
-| **DataSource poll thread** (1 per app, existing) | `DataSource::poll()` → `ObjectStore::pushOwned/pushLazy` | Acquires ObjectStore exclusive locks per push. Never touches decoders |
-| **EntryThumbnailCache builder** (1 per cache, bounded topics only) | Single forward decode pass producing HD-capped JPEG scrub thumbnails | Owns its own decoder/extractor; publishes tiles under `EntryThumbnailCache::mutex_`; never shares the playback decoder |
+| Lock | Guards | Rule |
+|---|---|---|
+| `AsyncFrameWorker` request mutex | pending target, force flag, active cancel token | never held during lookup or decode |
+| `AsyncFrameWorker` result mutex | the mailbox | never held with a store or decoder lock |
+| `AsyncFrameWorker` callback mutex | the frame-ready callback | callback copied under it, invoked after release |
+| parser mutex (shared with the layer) | `MessageParser::parseObject` | held across each parse |
+| `EntryThumbnailCache` mutex | tiles and byte budget | builder publishes, video worker looks up |
+| `MediaViewerWidget::frame_mutex_` | source pointer, pending frames, inspector frame | GUI thread only; keeps a source swap and frame staging atomic |
 
-### 10.2 Lock inventory
+No two of these are held at once. ObjectStore locks are taken inside its calls and released before decode;
+`EntryTimestampsView` holds a shared lock for its lifetime, so it must not be kept across a decode (it would block
+ingest). The keyframe and presentation indexes have no lock: only the owning worker touches them.
 
-| Lock | Type | Protects | Held by |
-|------|------|----------|---------|
-| `ObjectSeries::mutex` | `shared_mutex` | Per-topic entry storage | Shared: image/video/depth workers via `latestAt`/`at`/`indexAt`, and the Qt main thread for the synchronous scene `latestAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
-| `AsyncFrameWorker::request_mutex_` (one per worker-backed source) | `mutex` | Latest target timestamp, request-present + force-redecode flags, condition-variable predicate; with cancellation enabled (video) also the active cancel token | Main: `setTimestamp()` posts/coalesces requests. Worker: waits, takes one request, clears the flag. Not held during ObjectStore lookup or decode |
-| `AsyncFrameWorker::result_mutex_` (one per worker-backed source) | `mutex` | Latest decoded-frame mailbox | Worker: deposit latest frame. Main: `takeFrame()`. Never held while ObjectStore or decoder locks are held |
-| `AsyncFrameWorker::callback_mutex_` (one per worker-backed source) | `mutex` | The optional frame-ready callback slot | Main/layer: `setFrameReadyCallback()`. Worker: copies the callback under the lock, invokes it after release |
-| `ImagePipelineSource::parser_mutex_` (`shared_ptr<std::mutex>`) | `mutex` | Serializes `MessageParser::parseObject` calls on a parser instance shared with the owning layer's keepalive | Worker: held across each `parseObject`. Shared with the layer that provided the parser binding |
-| `EntryThumbnailCache::mutex_` | `mutex` | Thumbnail tile map + byte budget | Builder thread: tile publish. Reader (video worker via `StreamingVideoSource`): `lookup()` |
-| `MediaViewerWidget::frame_mutex_` (widgets layer) | `mutex` | `media_source_` pointer, pending frame / pixel-layer staging, `inspector_frame_` | GUI thread at all four sites today (`setMediaSource`, `releaseResources`, `render`'s poll, inspector read); the lock keeps source swap and frame staging atomic |
-| `StreamingVideoDecoder` keyframe vector (no lock) | none | In-decoder keyframe timestamps | Accessed only by the streaming decoder's owning worker thread during incremental NAL inspection. A plain `std::vector<Timestamp>` — single-consumer, so no lock exists. Not exposed in the public API. |
+## Errors and missing data
 
-### 10.3 Lock ordering
+No exception crosses a library or thread boundary: fallible calls return `PJ::Expected`, and the worker's barrier
+catches whatever a decode body throws. A failed decode is logged and deposits nothing, so the last good frame
+stays; the next good decode replaces it. There is no per-layer error indicator in the UI (see "Known gaps").
+Missing data (cursor before the first entry) is not an error and logs nothing.
 
-No nested locking across the live lock families. Each lock is
-acquired and released independently — never held simultaneously:
+## Behaviour contracts
 
-1. Async sources: main thread acquires `request_mutex_`, updates the
-   latest target (and cancels the old streaming token when applicable),
-   releases, then notifies the worker.
-2. Worker wakes, acquires `request_mutex_`, copies the target, clears
-   `has_request_`, releases. It does not hold `request_mutex_` during
-   ObjectStore access, parser work, or decode.
-3. Worker acquires `ObjectSeries::mutex` (shared) through `latestAt`/`at`/
-   `indexAt` → copies an owning byte handle or entry metadata → releases.
-4. Worker decodes (no ObjectStore or source mutex held). For streaming
-   video, keyframe discoveries append to the decoder's **internal**
-   keyframe vector (plain `std::vector`, no lock — only the owning worker
-   thread touches it).
-5. Worker acquires its `AsyncFrameWorker`'s `result_mutex_` → stores the complete
-   frame → releases.
+- Read-only consumer of `ObjectStore`: decoded data is never written back.
+- At-or-before is the only time query; timestamps are `int64_t` nanoseconds on the dataset clock everywhere.
+- One `MediaSource` per viewer; a viewer never polls layer sources directly.
+- Frames reach the viewer only through `takeFrame()`; no partial frame is ever published.
+- **Pause freezes the store the viewer reads.** While a stream is paused, ingest goes to pj_app's staging store and
+  the viewer's store receives no pushes or eviction until resume (`flushTo`), so a seek cannot lose its keyframe
+  mid-walk. Live and scrub are two separate modes by product choice: the timeline never shifts under a scrub.
+- Keyframe tracking lives in the decoder, not in `ObjectStore`, which stays codec-agnostic. Parsers peel envelopes
+  and never inspect NAL types or GOP structure.
+- Decoders of different layers share no state; one decoder per layer for the layer's lifetime.
+- Widgets receive time and never drive the clock.
+- Multiple cameras are separate docks with no cross-dock barrier: each shows what its own decode last produced.
+- The host creates and destroys docks; a dock must be destroyed before the `SessionManager` and `ObjectStore` it
+  reads.
 
-The main thread acquires the worker `result_mutex_` only through
-`takeFrame()`, and never while holding ObjectStore locks. The synchronous
-`ScenePipelineSource` acquires the ObjectStore shared lock inside
-`setTimestamp()`, copies the entry bytes/handle, releases the store lock, then
-decodes and retains a pending frame without `request_mutex_` or `result_mutex_`.
-(`DepthPipelineSource` is worker-backed — its compressedDepth PNG inflate is too
-heavy for the UI thread — and uses the same `AsyncFrameWorker` locking as
-`ImagePipelineSource`; see §10.1.)
+## Recipes
 
-### 10.4 Contention analysis
+- **New pixel format:** add the `PixelFormat`, `expectedBufferSize`, the viewer's `texturePathFor` and
+  `isUploadablePixelFormat`, the shader branch (and re-bake), and `pixelRgbAt` for the inspector.
+- **New image codec:** a `CodecStage` in `codecs.h`, wired into `ImageDecodeCascade` or the pipeline builder.
+- **New video codec:** an oracle in `isVideoKeyframe`, the format in `videoCodecIdFromFormat`, parameter-set
+  priming in `primeKeyframeParamSets` if the codec carries them in-band, and the decoder in the FFmpeg allowlists
+  (Conan options, `cmake/PjWasmFfmpeg.cmake`).
+- **New overlay primitive:** decode it in `scene_decoder.h`'s decoders, tessellate it in `overlay_geometry.h` (with
+  a test), and draw it from the fills or outlines pipeline.
+- **New layer kind:** a `Scene2DLayer` subclass overriding `createMediaSource()` and the options/XML hooks, plus
+  the type in `handlesObjectType()`, the dock's layer registrations and `scene2d_pipelines.cpp`.
 
-- **ObjectStore shared_mutex**: at typical media frame rates (30-60
-  fps), the push thread holds an exclusive lock for ~1 us per entry
-  (deque append + timestamp vector append + optional eviction).
-  Worker threads and the synchronous scene calls hold shared locks
-  for ~1 us per query (binary search + shared_ptr copy). Contention is
-  effectively zero.
-- **Source request mutex**: held for one timestamp/cancel-token update
-  on the main side and one request copy on the worker side. It is never
-  held while decoding.
-- **Source result mutex**: held for < 1 us on both sides (store is a
-  move; take is a move). Zero contention in practice.
-- **StreamingVideoDecoder keyframe vector (no lock)**: reads
-  (binary search) are O(log k) where k is the number of keyframes.
-  Writes are O(1) amortised. The vector is touched only by the decoder's
-  own worker thread, so no lock is needed and contention is zero.
+## Known gaps
 
-### 10.5 Error propagation across threads
-
-Errors from decoder workers must not propagate as C++ exceptions
-across the worker→UI thread boundary (§R5). The error flow:
-
-1. **Worker thread**: decoder methods return `PJ::Expected<DecodedFrame>`
-   or similar. If a decoder fails (corrupt data, unsupported codec,
-   HW-accel error), the worker catches the failure at the thread
-   boundary.
-2. **Last-error state**: the `MediaSource` implementation stores the
-   error internally. `takeFrame()` returns `nullopt` on error — the
-   widget continues displaying the last good frame.
-3. **UI thread**: on its next poll, the widget checks the last-error
-   state. If set, it renders a visible error indicator (e.g., "decode
-   failed" overlay or a no-signal background) on the affected layer.
-4. **Recovery**: the error state is cleared when the next successful
-   decode completes.
-
-**Missing data is not an error**: when `ObjectStore::latestAt` returns
-`nullopt` on a valid topic (e.g., the cursor is before the first
-entry), the widget renders a "no data" indicator without raising,
-logging, or surfacing an error condition.
-
-### 10.6 EntryTimestampsView and extended locks
-
-`ObjectStore::entryTimestamps()` returns an `EntryTimestampsView` that
-holds a `shared_lock` for its lifetime (`pj_datastore/docs/ARCHITECTURE.md` "ObjectStore"). pj_scene2D's
-`StreamingVideoDecoder` may use it during seek planning (batch timestamp
-access). The lock is shared (readers-only), so it does not block other
-decoders, but it blocks the push thread for the view's lifetime.
-
-Rule: any code path that acquires an `EntryTimestampsView` must drop
-it promptly — copy timestamps into a local vector if further
-processing is needed beyond the search. Never hold a view across a
-decode call.
-
----
-
-## Appendix: Key Invariants
-
-These invariants are load-bearing. Violating any of them reintroduces
-bugs that were already proven unfixable by patching.
-
-1. **No Qt signals for frame delivery.** The `MediaSource::takeFrame()`
-   pull model is the only path from decoder to display. Adding a signal
-   escape hatch reintroduces stale-frame interleaving. (Rationale
-   in §3.1.)
-
-2. **One MediaSource per widget.** The widget polls exactly one source
-   for frames. When multi-layer compositing is added, a
-   `CompositeMediaSource` composites internally and presents a single
-   frame via the same interface.
-
-3. **Shipped sources publish only complete frames.** `StreamingVideoSource`
-   cancels stale decode work and `ImagePipelineSource` coalesces pending
-   image requests, but neither path deposits partial decoded frames. The
-   direction-aware partial-publish rule in §3.2 is retained as design
-   rationale for a future file-backed decoder.
-
-4. **ObjectStore handles are owning.** A decoder can hold a byte handle
-   while the store pushes and evicts. No use-after-free is possible.
-   (Guarantee: `pj_datastore/docs/ARCHITECTURE.md` "ObjectStore")
-
-5. **Live and scrub are mutually exclusive.** During scrub, the buffer
-   is frozen — no pushes, no eviction. Seek sequences (keyframe →
-   decode forward) cannot race with eviction. (Requirement: §R4.3)
-
-6. **Keyframe tracking is pj_scene2D's concern, not ObjectStore's.**
-   ObjectStore is codec-agnostic. The index lives inside the
-   decoder (`StreamingVideoDecoder`'s inline keyframe vector, §6).
-   (Decision: §R4.2, §R4.4)
-
-7. **Parsers are codec-agnostic envelope peelers.** They never inspect
-   NAL types, keyframe flags, or GOP structure. All codec knowledge
-   lives in pj_scene2D's decoder classes. (Decision: §R4.4)
+- Decode errors only reach the log; the layer shows its last good frame with no indicator.
+- HDR (BT.2020, PQ, HLG) gets the SD/HD heuristic matrix; only BT.601 and BT.709 SDR are correct.
+- VP9 and other codecs without a keyframe oracle are rejected.
+- Scene entities: cylinders and models are not projected; orientation, deletions and lifetimes are ignored.
+- `SegmentationPalette` exists but no layer type uses it.
+- Thumbnails are not built for topics with time-window retention (live streams); the cache's prune is unused.
+- No `frame_id` correlation between overlays and images; pairing is by topic and time only.
+- A `CameraInfo` published after the image layer attached is not applied.
+- CPU rectification skips planar and 16-bit formats.
+- Hardware frames are downloaded to system memory; no zero-copy import (TECHNICAL_NOTES "Hardware frame download").
+- No audio, reverse playback, frame export or encoding.
+- The `kDepthImage` registration is dormant: no producer emits the type.

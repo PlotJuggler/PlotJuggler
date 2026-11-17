@@ -1,8 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The in-flight budget on its own (docs/derived_objects/ARCHITECTURE.md §11): one line of waiters, served first in,
-// first out from a drain that never runs inside the releasing call. Order is proven by the grant log, never by time.
+// The in-flight budget on its own (docs/derived_objects/ARCHITECTURE.md "Scheduling and execution"): one line of
+// waiters, served first in, first out from a drain that never runs inside the releasing call. Order is proven by the
+// grant log, never by time.
 
 #include <gtest/gtest.h>
 
@@ -97,8 +98,8 @@ TEST(InFlightBudgetTest, ASmallNewcomerQueuesBehindALargeWaiter) {
   EXPECT_TRUE(budget.tryReserve(70).has_value()) << "nobody waits: room at once";
 }
 
-// BUD-06 (changed): a run larger than the whole budget runs alone once nothing else is reserved, rather than never;
-// a reservation grows past the capacity only when it is the only one.
+// A run larger than the whole budget runs alone once nothing else is reserved, rather than never; a reservation grows
+// past the capacity only when it is the only one.
 TEST(InFlightBudgetTest, ARunLargerThanTheBudgetRunsAlone) {
   InFlightBudget budget(100);
   Grants grants;

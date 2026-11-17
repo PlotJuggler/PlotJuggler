@@ -20,8 +20,7 @@ class PlotDocker;
 class SceneDockWidget;
 class SessionManager;
 
-/// The object-widget kind ("scene3d" / "scene2d") MainWindow builds for a scene
-/// kind ("3d" / "2d"), empty for any other.
+/// "3d" -> "scene3d", "2d" -> "scene2d", empty for any other.
 [[nodiscard]] QString sceneWidgetKind(const QString& tab_kind);
 /// The scene widget of `docker`'s tab, or null for a plot tab, an empty one or a null `docker`.
 [[nodiscard]] SceneDockWidget* sceneDockOf(PlotDocker* docker);
@@ -30,30 +29,24 @@ class SessionManager;
 /// existed still answers. `PluginPlotTabsController` routes each call by it.
 [[nodiscard]] QString sceneKindOf(PlotDocker* docker);
 
-/// The scene-tab half of `pj.plot_tabs.v1` (its tail slots): the 3D/2D scene widgets
-/// of the tabs a plugin composes. An internal delegate of `PluginPlotTabsController`,
-/// which resolves the plugin's tab, decides its kind and hands the docker in; this
-/// class never looks a tab up by id, so it never decides ownership. Plain object;
-/// every call is [main-thread].
+/// The scene-tab half of `pj.plot_tabs.v1`, a delegate of `PluginPlotTabsController`, which resolves the plugin's
+/// tab and hands the docker in: this class never looks a tab up by id, so it never decides ownership. Main
+/// thread only.
 class PluginSceneViewsController {
  public:
-  /// Builds the seeded-empty object widget for a widget kind ("scene3d" / "scene2d"),
-  /// or null when this build has none (`MainWindow::makeSeededEmptyObjectDock`).
+  /// Null when this build has no widget of that kind ("scene3d" / "scene2d").
   using MakeDock = std::function<IDataWidget*(const QString& kind, QWidget* parent)>;
 
   PluginSceneViewsController(CatalogModel& catalog, SessionManager& session, MakeDock make_dock);
 
-  /// A new, unparented scene widget for the tab kind `kind` ("3d" or "2d"), or null
-  /// when this build cannot show that kind.
+  /// Unparented; null when this build cannot show `kind` ("3d" or "2d").
   [[nodiscard]] std::unique_ptr<IDataWidget> makeSceneWidget(const QString& kind) const;
-  /// Install `widget` (from makeSceneWidget) as the object widget of the fresh tab
-  /// `docker`, which takes ownership. A `docker` without a dock deletes it.
+  /// `docker` takes ownership; a `docker` without a dock deletes it.
   static void adoptSceneWidget(PlotDocker* docker, std::unique_ptr<IDataWidget> widget);
-  /// What the scene tab holds, as the JSON the ABI specifies, read back from the
-  /// live scene, never echoed from what the caller asked for.
+  /// The ABI's JSON, read back from the live scene, never echoed from the request.
   [[nodiscard]] Expected<std::string> viewConfig(PlotDocker* docker) const;
-  /// Attaching an attached topic is success. A topic the dock refuses (another
-  /// dataset's, SCN-17) fails with the dock's own reason.
+  /// Attaching an attached topic is success. A topic the dock refuses (another dataset's) fails with the dock's
+  /// own reason.
   Status attachTopic(PlotDocker* docker, const QString& topic, const QString& dataset_source);
   /// Detaching a topic that is not attached is an error: a mistake worth seeing. A
   /// tab emptied this way (or by clearView) stays a scene tab when a load revalidates it.

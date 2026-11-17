@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Behavioural coverage for GridMapLayer: the parser and canonical-codec resolve
-// routes, field auto-pick vs a requested field that is missing (fallback + status
-// warning), the staged upload happening only on a sample / selector change, NaN
-// excluded from the auto colormap range, renderKey without a payload resolve,
-// source-frame bounds with a rotated origin, XML round-trip, and the dataset
-// replace / detach reset.
+// Behavioural coverage for GridMapLayer: the parser and canonical-codec resolve routes, field auto-pick vs a requested
+// field that is missing (fallback + status warning), the staged upload happening only on a sample / selector change,
+// NaN excluded from the auto colormap range, renderKey without a payload resolve, source-frame bounds with a rotated
+// origin, XML round-trip, and the dataset replace / detach reset.
 
 #include "pj_scene3d_widgets/layers/grid_map_layer.h"
 
@@ -92,8 +90,7 @@ PJ::sdk::GridMap makeGrid(PJ::Timestamp ts) {
 
 PJ::Expected<PJ::sdk::ObjectRecord> emitGrid(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   if (g_emit_wrong_type.load()) {
-    // A wrong-kind builtin: the tagged holder only admits builtin types, so
-    // "wrong type" now means another builtin rather than an arbitrary any.
+    // A wrong-kind builtin: the tagged holder admits only builtin types, so a wrong type is another builtin.
     return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::Image{}};
   }
   PJ::sdk::GridMap grid = makeGrid(ts);
@@ -124,7 +121,6 @@ struct Rig {
     ASSERT_TRUE(session.objectStore().pushOwned(topic_id, ts, std::vector<uint8_t>{0x01}).has_value());
     registerGridParser(session, topic_id);
   }
-  // Canonical route: a serialized PJ.GridMap blob and no parser.
   void pushCanonical(const PJ::sdk::GridMap& grid) {
     ASSERT_TRUE(session.objectStore().pushOwned(topic_id, grid.timestamp_ns, PJ::serializeGridMap(grid)).has_value());
   }
@@ -443,7 +439,7 @@ TEST(GridMapLayer, CanonicalCodecRouteStagesTheSameUpload) {
   EXPECT_FLOAT_EQ(bounds->max.z, 11.0f);
 }
 
-// TF R6: the layer reports the grid's own header stamp, which the view places it
+// The layer reports the grid's own header stamp, which the view places it
 // at, not the store (log) time it was found at.
 TEST(GridMapLayer, RenderStampIsTheGridsOwnHeaderStamp) {
   Rig rig;
@@ -485,11 +481,9 @@ TEST(GridMapLayer, CanonicalDecodeFailureSurfacesWarningAndClears) {
   EXPECT_FALSE(layer.worldBounds().has_value());
   EXPECT_FALSE(layer.statusWarning().isEmpty());
 }
-
-// A sample shown with a warning, then a scrub into the gap before it: the
-// warning describes nothing on screen any more, so it clears. The resolve memo
-// survives the gap: scrubbing back onto the same schema is a memo hit that
-// re-applies its warning.
+// A sample shown with a warning, then a scrub into the gap before it: the warning describes nothing on screen, so it
+// clears. The resolve memo survives the gap: scrubbing back onto the same schema is a memo hit that re-applies its
+// warning.
 TEST(GridMapLayer, EmptyTickClearsTheActiveWarningAndKeepsTheResolveMemo) {
   Rig rig;
   rig.pushAndBind();

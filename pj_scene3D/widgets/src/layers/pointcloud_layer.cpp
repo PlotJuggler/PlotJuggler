@@ -70,9 +70,8 @@ using PJ::sdk::CompressedPointCloud;
 using PJ::sdk::PayloadView;
 using PJ::sdk::PointCloud;
 
-// A sample arriving this soon after the previous one marks a stream: its layer
-// keeps the uploaded array to rewrite in place. A slower stream re-allocates per
-// sample, which costs little against its period.
+// A sample this soon after the previous one marks a stream: the layer keeps the uploaded array and rewrites it in
+// place. A slower stream re-allocates per sample, which costs little against its period.
 constexpr std::chrono::milliseconds kStreamingWindow{1000};
 
 std::pair<float, float> clampScalarRange(float lo, float hi) {
@@ -85,8 +84,7 @@ std::pair<float, float> clampScalarRange(float lo, float hi) {
   return {lo, hi};
 }
 
-// Fixed-frame spatial colour axis for a colour-field name: x->0, y->1, z->2, else
-// -1 (a non-spatial scalar field like intensity, coloured by its raw value).
+// x->0, y->1, z->2, else -1 (a non-spatial scalar such as intensity, coloured by its raw value).
 int spatialAxisIndex(const std::string& field) {
   if (field == "x") {
     return 0;
@@ -100,7 +98,7 @@ int spatialAxisIndex(const std::string& field) {
   return -1;
 }
 
-// Per-cloud admission against kSceneLimits; empty when `cloud` fits.
+// Empty when `cloud` fits kSceneLimits.
 QString cloudAdmissionError(const PointCloud& cloud) {
   const uint64_t point_count = static_cast<uint64_t>(cloud.width) * cloud.height;
   if (point_count > kSceneLimits.max_points_per_cloud) {
@@ -122,9 +120,8 @@ QString defaultColorField(const QStringList& available) {
   return available.contains("intensity"_L1) ? u"intensity"_s : available.first();
 }
 
-// Reserved sentinel stored as the "RGB" combo item's data, distinguishing it from a
-// "Field: X" item (whose data is the field name) and "Solid" (empty data). Safe because
-// the colour channel names are excluded from the field list, so this never collides.
+// Item data of the "RGB" colour combo entry. "Field: X" items carry the field name and "Solid" is empty; colour
+// channel names are excluded from the field list, so nothing collides.
 const QString kRgbComboToken = u"__rgb__"_s;
 
 QString qssColor(const QColor& color) {
@@ -144,7 +141,6 @@ PJ::theme::Theme widgetTheme(const QWidget* widget) {
 }
 
 QString toggleButtonQss(PJ::theme::Theme active_theme) {
-  // A button is the Secondary interaction fill per state — no border.
   return QStringLiteral(
              "QPushButton { border: none; border-radius: %1px; padding: %2px %3px; background-color: %4; }"
              "QPushButton:hover { background-color: %5; }"
@@ -157,10 +153,9 @@ QString toggleButtonQss(PJ::theme::Theme active_theme) {
       .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Checked, active_theme)));
 }
 
-// Moves a freshly decoded cloud's own stamp onto the dataset clock, as TF ingest
-// moves transform stamps: a time-shifted merge leaves payload stamps unshifted.
-// Done once at decode (the record is still its single owner), so the async
-// decode, the decode cache and every re-push carry it. An unstamped cloud stays 0.
+// Moves a freshly decoded cloud's own stamp onto the dataset clock (a time-shifted merge leaves payload stamps
+// unshifted). Done once at decode, while the record has a single owner, so the async decode, the decode cache and every
+// re-push carry it. An unstamped cloud stays 0.
 void shiftStampToDatasetClock(PJ::sdk::BuiltinObject& object, PJ::Timestamp payload_stamp_shift) {
   PJ::Timestamp* stamp = nullptr;
   if (auto* cloud = object.get<PointCloud>(); cloud != nullptr) {
@@ -369,10 +364,8 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
     return false;
   }
   ctx_ = scene3d_ctx;
-  // Accept the topic if it has EITHER a MessageParser (file/streaming sources)
-  // OR a canonical codec for its object type (a data-source/toolbox that pushed
-  // serialized canonical clouds, e.g. the Mosaico toolbox — resolveObject()
-  // decodes those host-side). Reject only when neither path can decode it.
+  // Accept a parser-decodable topic, or one whose object type has a canonical codec (resolveObject() decodes pushed
+  // serialized canonical clouds host-side).
   if (!ctx_.session->parserBindingForObjectTopic(topic_id_) && !hasCanonical3DCodec(object_type_)) {
     qCWarning(lcPointCloudLayer) << "attach: no parser and no canonical codec for topic_id=" << topic_id_.id;
     return false;
@@ -382,9 +375,8 @@ bool PointCloudLayer::attach(const PJ::SceneLayerContext& ctx) {
   if (store.entryCount(topic_id_) > 0) {
     ts_first_ = store.timeRange(topic_id_).first;
   }
-  // A reload swaps this topic's bytes under a stable ObjectTopicId, so every
-  // cached sample identity must reset with them (see onDatasetAboutToBeReplaced).
-  // disconnect first: the reload path re-attaches without an intervening detach.
+  // A reload swaps this topic's bytes under a stable ObjectTopicId, so every cached sample identity must reset with
+  // them (onDatasetAboutToBeReplaced). Disconnect first: the reload path re-attaches without a detach.
   disconnect(reload_connection_);
   reload_connection_ = connect(
       ctx_.session, &PJ::SessionManager::datasetAboutToBeReplaced, this, &PointCloudLayer::onDatasetAboutToBeReplaced);
@@ -415,18 +407,15 @@ void PointCloudLayer::setFixedFrame(const QString& frame) {
     return;
   }
   fixed_frame_ = frame;
-  // Both the geometry transform and (for x/y/z colouring) the per-point colour + auto
-  // colormap range are derived in the render pass from the live source->fixed model, so
-  // a fixed-frame change is fully absorbed by re-running the shader — no re-decode or
-  // CPU refit. A bare repaint suffices. (Non-spatial scalars are frame-independent.)
+  // The geometry transform, the x/y/z colour axis and the auto range are all derived in the render pass from the live
+  // source->fixed model, so a fixed-frame change needs only a repaint (non-spatial scalars are frame-independent).
   emit repaintRequested();
 }
 
 void PointCloudLayer::setTrackerTime(PJ::Timepoint time) {
   decoded_at_ns_ = time;
-  // Defer the heavy decode (parse + packing + GPU upload) to prepareForRender():
-  // a fast scrub fires many ticks but Qt coalesces the repaints into one paint,
-  // so only the final cloud is decoded instead of every skipped frame x N topics.
+  // Defer the heavy decode (parse, packing, GPU upload) to prepareForRender(): a fast scrub fires many ticks but Qt
+  // coalesces the repaints, so only the final cloud is decoded.
   tracker_dirty_ = true;
   if (visible_) {
     emit repaintRequested();
@@ -434,19 +423,15 @@ void PointCloudLayer::setTrackerTime(PJ::Timepoint time) {
 }
 
 uint64_t PointCloudLayer::renderKey(PJ::Timepoint time) const {
-  // Active cloud sample at `time` keyed by its SequentialUID via latestEntryIdAt(),
-  // a pure binary search that never resolves a PayloadView — the per-tick gate must
-  // not touch the cold-chunk decompression path (the decode happens once, later, in
-  // renderAt() when we actually repaint). The UID, not the stamp: the store permits
-  // duplicate timestamps, so a same-stamp replacement entry must still reopen the
-  // dock's repaint gate (or renderAt's own UID memo would never get the chance to
-  // see it); unlike a deque index it also survives retention eviction.
+  // Keyed by SequentialUID via latestEntryIdAt(): a pure binary search that never resolves a PayloadView, so the
+  // per-tick gate cannot touch cold-chunk decompression (the decode happens later, in renderAt()). The UID, not the
+  // stamp: the store permits duplicate timestamps and a same-stamp replacement must reopen the dock's repaint gate;
+  // unlike a deque index it survives retention eviction.
   uint64_t key =
       0x9e3779b97f4a7c15ULL ^
       PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
-  // Fixed←source transform (zero-order hold, so it is constant between TF samples —
-  // that is what lets a 60 Hz playhead coalesce down to the TF update rate). Folding
-  // the matrix also captures colour-by-axis recolouring, a pure function of it.
+  // Zero-order hold: constant between TF samples, so a 60 Hz playhead coalesces down to the TF rate. Folding the matrix
+  // also captures colour-by-axis recolouring, a pure function of it.
   return foldFrameTransformIntoKey(
       key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, geometry_stamp_, time, placementHold());
 }
@@ -457,9 +442,8 @@ void PointCloudLayer::setVisible(bool visible) {
   }
   visible_ = visible;
   if (!visible_) {
-    // A hidden layer releases its retained cloud (the view drops its GPU buffer
-    // too), keeping the per-view memory ceiling real; re-showing decodes once.
-    // Its bounds stay: a hidden layer still counts in the camera's scene bounds.
+    // A hidden layer releases its retained cloud (the view drops its GPU buffer too) to keep the per-view memory
+    // ceiling real; re-showing decodes once. Its bounds stay: a hidden layer still counts in the camera's scene bounds.
     const std::optional<AABB> bounds = world_bounds_;
     invalidateSampleState();
     budget_.reset();
@@ -467,9 +451,8 @@ void PointCloudLayer::setVisible(bool visible) {
     world_bounds_ = bounds;
   }
   emit visibilityChanged(visible);
-  // Catch-up on un-hide is the dock's job: SceneDockWidget::setLayerVisible
-  // re-delivers the last tracker time (hidden layers receive no ticks), which
-  // marks tracker_dirty_ so the next paint decodes at the playhead.
+  // Catch-up on un-hide is the dock's job: SceneDockWidget::setLayerVisible re-delivers the last tracker time (hidden
+  // layers receive no ticks), which marks tracker_dirty_.
   emit repaintRequested();
 }
 
@@ -485,13 +468,10 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   form->setContentsMargins(
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
-  // Match the Grid / Transforms section grids in Scene3DConfigPanel: comfortable
-  // label↔field gap, snug row pitch — so the panel keeps one consistent rhythm.
   form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
-  // --- Shape ----------------------------------------------------------------
   auto* shape_combo = new PJ::ComboBox(container);
   shape_combo->addItem(tr("sphere"), static_cast<int>(PointShape::kSphere));
   shape_combo->addItem(tr("point"), static_cast<int>(PointShape::kPoint));
@@ -499,7 +479,6 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   shape_combo->setCurrentIndex(static_cast<int>(shape_));
   form->addRow(tr("Shape:"), shape_combo);
 
-  // --- Point size (units depend on shape) ----------------------------------
   auto* size_spin = new PJ::DoubleScrubber(container);
   const auto apply_size_units = [size_spin, this]() {
     QSignalBlocker block(size_spin);
@@ -520,15 +499,13 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   apply_size_units();
   form->addRow(tr("Point size:"), size_spin);
 
-  // --- Color type (Solid + per-field) ---------------------------------------
   auto* color_type_combo = new PJ::ComboBox(container);
   const auto rebuild_color_type_combo = [color_type_combo, this]() {
     QSignalBlocker block(color_type_combo);
     color_type_combo->clear();
     color_type_combo->addItem(tr("Solid"), QString{});
-    // One "RGB" entry stands in for the cloud's colour channels (which are excluded from
-    // available_color_fields_), so the user picks the literal per-point colour, not a
-    // colormap over a single channel. Reserved sentinel in the item data (kRgbComboToken).
+    // One "RGB" entry stands in for the colour channels (excluded from available_color_fields_): the literal per-point
+    // colour, not a colormap over one channel. Its item data is kRgbComboToken.
     if (has_color_) {
       color_type_combo->addItem(tr("RGB"), kRgbComboToken);
     }
@@ -548,12 +525,9 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   rebuild_color_type_combo();
   form->addRow(tr("Color type:"), color_type_combo);
 
-  // --- Color config swap section --------------------------------------------
   auto* color_stack = new QStackedWidget(container);
   form->addRow(tr("Color config:"), color_stack);
 
-  // Page 0: Solid — the shared ColorPickerWidget swatch (opens a ColorPickerPopup
-  // on click), consistent with every other layer's colour control.
   auto* solid_page = new QWidget(color_stack);
   auto* solid_layout = new QHBoxLayout(solid_page);
   solid_layout->setContentsMargins(
@@ -566,7 +540,6 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   solid_layout->addStretch();
   color_stack->addWidget(solid_page);
 
-  // Page 1: Gradient.
   auto* gradient_page = new QWidget(color_stack);
   auto* gradient_layout = new QFormLayout(gradient_page);
   gradient_layout->setContentsMargins(
@@ -574,7 +547,6 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   gradient_layout->setSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
 
-  // --- Colormap row: combo + invert toggle right-aligned ---
   auto* colormap_row = new QWidget(gradient_page);
   auto* colormap_row_layout = new QHBoxLayout(colormap_row);
   colormap_row_layout->setContentsMargins(
@@ -594,18 +566,14 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   invert_btn->setStyleSheet(toggleButtonQss(widgetTheme(container)));
   invert_btn->setIcon(QIcon(QStringLiteral(":/resources/svg/invert.svg")));
   invert_btn->setIconSize(QSize(20, 20));
-  // Match the standard icon-button extent used across the app
-  // (icon_size + icon_padding = 24 — see CurveListPanel / TimelineWidget).
   invert_btn->setFixedSize(24, 24);
   invert_btn->setToolTip(tr("Invert colormap"));
   colormap_row_layout->addWidget(invert_btn, 0);
-  // Label-less — the combo carries the colormap name itself.
   gradient_layout->addRow(colormap_row);
 
   color_stack->addWidget(gradient_page);
 
-  // Page 2: RGB-direct — the per-point colour is used as-is, so there is nothing to
-  // configure; a disabled hint stands in for the empty page.
+  // RGB-direct uses the per-point colour as-is: a disabled hint stands in for the empty page.
   auto* rgb_page = new QWidget(color_stack);
   auto* rgb_layout = new QHBoxLayout(rgb_page);
   rgb_layout->setContentsMargins(
@@ -617,10 +585,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   rgb_layout->addStretch();
   color_stack->addWidget(rgb_page);
 
-  // Initial stack page: Solid=0, gradient=1, RGB=2.
   color_stack->setCurrentIndex(color_type_ == PointColorType::kSolid ? 0 : color_type_ == PointColorType::kRgb ? 2 : 1);
 
-  // --- Range: row on the OUTER form (auto button as the field) ---
   auto* auto_btn = new PJ::CheckButton(tr("auto"), container);
   auto_btn->setChecked(auto_range_);
   auto_btn->setFocusPolicy(Qt::NoFocus);
@@ -633,9 +599,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   auto_row_layout->addStretch();
   form->addRow(tr("Range:"), auto_row);
 
-  // Range Min/Max also live on the OUTER form so their labels align with
-  // Shape / Point size / Color type. Only visible in gradient mode with
-  // auto-range OFF.
+  // Range Min/Max live on the OUTER form so their labels align with Shape / Point size / Color type; visible only in
+  // gradient mode with auto-range off.
   auto* range_min_spin = new PJ::DoubleScrubber(container);
   range_min_spin->setObjectName(u"pointcloud_range_min"_s);
   range_min_spin->setDecimals(4);
@@ -650,11 +615,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   range_max_spin->setValue(static_cast<double>(manual_range_max_));
   form->addRow(tr("Range Max:"), range_max_spin);
 
-  // "Outside range" — points whose colour value leaves [Range Min, Range Max]
-  // are de-emphasised via an opacity scrubber rather than clamped opaque, with an
-  // eye toggle to hide them entirely (same visibility-eye glyph as elsewhere).
-  // Field = [opacity scrubber | eye], mirroring the colormap row's [combo | icon]
-  // layout. Shares the Range Min/Max visibility group (gradient + manual range).
+  // "Outside range": points whose colour value leaves [Range Min, Range Max] are de-emphasised by an opacity scrubber
+  // (not clamped opaque), with an eye toggle to hide them. Shares the Range Min/Max visibility group.
   auto* outside_row = new QWidget(container);
   auto* outside_layout = new QHBoxLayout(outside_row);
   outside_layout->setContentsMargins(
@@ -680,9 +642,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   outside_layout->addWidget(outside_eye, 0);
   form->addRow(tr("Outside range:"), outside_row);
 
-  // Range step is 0.1 for spatial fields (x/y/z, always in metres) and 1.0
-  // otherwise (intensity, reflectance, ring index, …). Recomputed whenever
-  // the color field changes.
+  // Range step is 0.1 for spatial fields (x/y/z, metres) and 1.0 otherwise; recomputed when the colour field changes.
   const auto apply_range_step = [this, range_min_spin, range_max_spin]() {
     const bool is_spatial = spatialAxisIndex(color_field_) >= 0;
     const double step = is_spatial ? 0.1 : 1.0;
@@ -691,9 +651,7 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   };
   apply_range_step();
 
-  // Visibility:
-  //   Range:/auto row → shown in gradient mode; hidden in solid mode.
-  //   Range Min/Max   → shown only in gradient AND auto-range OFF.
+  // Range/auto row: gradient mode only. Range Min/Max: gradient mode with auto-range off.
   const auto apply_range_visibility = [form, auto_row, range_min_spin, range_max_spin, outside_row,
                                        this](bool auto_on) {
     const bool gradient = color_type_ == PointColorType::kField;
@@ -716,8 +674,6 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
     }
   };
   apply_range_visibility(auto_range_);
-
-  // ---- User → layer wires -------------------------------------------------
 
   QObject::connect(
       shape_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -778,10 +734,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
   const auto push_manual_range = [this, range_min_spin, range_max_spin]() {
     setManualRange(static_cast<float>(range_min_spin->value()), static_cast<float>(range_max_spin->value()));
   };
-  // Keep min <= max: nudging one scrubber past the other drags the other along
-  // (raise min above max -> max follows up; drop max below min -> min follows
-  // down). Block the sibling's signal so its programmatic update doesn't re-enter
-  // the other handler, then push the now-consistent pair once.
+  // Keep min <= max: pushing one scrubber past the other drags the other along. The sibling's signal is blocked so its
+  // programmatic update does not re-enter the other handler; the consistent pair is then pushed once.
   QObject::connect(
       range_min_spin, &PJ::DoubleScrubber::valueChanged, this, [range_max_spin, push_manual_range](double v) {
         if (v > range_max_spin->value()) {
@@ -798,8 +752,6 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
         }
         push_manual_range();
       });
-
-  // ---- Layer → widget wires (out-of-band changes / auto-range refresh) ----
 
   QPointer<QComboBox> safe_type(color_type_combo);
   QObject::connect(this, &PointCloudLayer::colorFieldsChanged, container, [safe_type, rebuild_color_type_combo]() {
@@ -822,10 +774,8 @@ QWidget* PointCloudLayer::createConfigWidget(QWidget* parent) {
     }
   });
 
-  // Combos and scrubbers get their uniform compact height from the QSS
-  // (input_outer_height). The two custom toggle buttons (auto, invert) carry an
-  // inline stylesheet that the input QSS rules can't reach, so pin them to the
-  // same input height here so the whole panel lines up.
+  // The custom toggle buttons (auto, invert) carry an inline stylesheet the input QSS rules cannot reach: pin them to
+  // the input height (Metric::InputOuterHeight) so the panel lines up.
   int input_h = PJ::theme::metric(PJ::theme::Metric::InputOuterHeight, widgetTheme(container));
   if (input_h <= 0) {
     input_h = PJ::Style::kInputHeight;
@@ -884,9 +834,8 @@ void PointCloudLayer::setColorType(PointColorType type) {
     }
     return;
   }
-  // A change of what the vertices carry (per-point colour, the colormap scalar or
-  // neither) rebuilds them; otherwise only a shader uniform flips and a repaint
-  // suffices.
+  // A change of what the vertices carry (per-point colour, the colormap scalar or neither) rebuilds them; otherwise
+  // only a shader uniform flips and a repaint suffices.
   const bool rgb_changed = (color_type_ == PointColorType::kRgb) != (type == PointColorType::kRgb);
   const bool stored_scalar = storesScalar();
   color_type_ = type;
@@ -947,8 +896,7 @@ void PointCloudLayer::setOutsideRangeVisible(bool visible) {
 }
 
 void PointCloudLayer::setAutoRange(bool enable) {
-  // Interactive entry point (config widget toggle): seed the manual range from
-  // the world-axis range on screen when turning auto off.
+  // Interactive entry point: turning auto off seeds the manual range from the world-axis range on screen.
   applyAutoRange(enable, /*seed_manual_from_world=*/true);
 }
 
@@ -958,21 +906,16 @@ void PointCloudLayer::applyAutoRange(bool enable, bool seed_manual_from_world) {
   }
   auto_range_ = enable;
   if (auto_range_) {
-    // Force the next cloud swap to recompute, which will also re-emit
-    // autoRangeComputed so the panel's hidden spinboxes refresh.
+    // Force the next cloud swap to recompute and re-emit autoRangeComputed so the panel's hidden spinboxes refresh.
     range_dirty_ = true;
     emit configurationChanged();
     refreshNow();
     return;
   }
-  // Auto off: pin the colormap to the manual range. An interactive toggle seeds
-  // that manual range from the world-axis range currently on screen (so the
-  // colours don't snap to a stale or sensor-local value); state restore passes
-  // seed_manual_from_world=false because the saved range_min/range_max are
-  // authoritative — world_bounds_ is already populated by attach(), so seeding
-  // would overwrite them with the recomputed data range.
-  // The view reports the range it actually coloured with (world-axis or scalar),
-  // so seeding from it freezes exactly the colours on screen.
+  // Auto off: pin the colormap to the manual range. An interactive toggle seeds it from the range the view reports it
+  // actually coloured with (world-axis or scalar), so the colours on screen freeze exactly; restore passes
+  // seed_manual_from_world=false because the saved range_min/range_max are authoritative (attach() already populated
+  // world_bounds_, so seeding would overwrite them).
   if (seed_manual_from_world) {
     manual_range_min_ = last_rendered_scalar_range_.first;
     manual_range_max_ = last_rendered_scalar_range_.second;
@@ -1007,9 +950,8 @@ bool PointCloudLayer::bootstrap() {
     return false;
   }
   shiftStampToDatasetClock(obj->object, first->payload_stamp_shift);
-  // Compressed topic (Draco / Cloudini): the wrapper gives frame_id without a
-  // decode, but the field list needs one. Decode the first sample asynchronously so
-  // attach never blocks the UI — fields populate when the result lands.
+  // Compressed topic (Draco / Cloudini): the wrapper gives frame_id without a decode but the field list needs one.
+  // Decode the first sample asynchronously so attach never blocks the UI; fields populate when the result lands.
   if (const auto* cpc = obj->object.get<CompressedPointCloud>()) {
     requestDecode(*cpc, SampleId{first->sequential_uid, first->timestamp});
     return true;
@@ -1027,9 +969,8 @@ bool PointCloudLayer::bootstrap() {
 void PointCloudLayer::populateColorFields(const PointCloud& cloud) {
   has_color_ = detectColorLayout(cloud).valid;
 
-  // A cloud's colour channels describe one per-point colour, so they are offered as a
-  // single "RGB" mode — never as individually colourable scalar fields. Exclude the
-  // channel names (and the never-useful "timestamp") from the scalar field list.
+  // A cloud's colour channels describe one per-point colour: offered as a single "RGB" mode, never as individually
+  // colourable scalar fields. They (and the never-useful "timestamp") are excluded from the scalar field list.
   const auto is_color_channel = [](const std::string& name) {
     return name == "red" || name == "green" || name == "blue" || name == "alpha" || name == "rgb" || name == "rgba";
   };
@@ -1041,11 +982,9 @@ void PointCloudLayer::populateColorFields(const PointCloud& cloud) {
     available_color_fields_.append(QString::fromStdString(f.name));
   }
 
-  // Default colour mode on a FRESH attach (no explicit restore/user pick): a cloud
-  // carrying colour defaults to RGB-direct (matches Foxglove Studio / rviz). Set the
-  // field directly rather than via setColorType() — populate runs inside the decode
-  // path and the pushCloud that follows reads color_type_, so no re-decode is needed
-  // (and we avoid the refreshNow() reentrancy setColorType would trigger).
+  // FRESH attach with no explicit restore or user pick: a cloud carrying colour defaults to RGB-direct. Set the field
+  // directly, not via setColorType(): populate runs inside the decode path, the pushCloud that follows reads
+  // color_type_, and setColorType()'s refreshNow() would re-enter.
   if (!color_choice_explicit_ && has_color_) {
     color_type_ = PointColorType::kRgb;
   } else if (color_type_ == PointColorType::kRgb && !has_color_) {
@@ -1053,9 +992,8 @@ void PointCloudLayer::populateColorFields(const PointCloud& cloud) {
     color_type_ = PointColorType::kField;
   }
 
-  // Preserve an already-chosen field (e.g. one restored by xmlLoadState before the
-  // async first decode landed) when it's still present; only fall back to the default
-  // when the current selection is empty or no longer valid.
+  // Preserve an already-chosen field (e.g. restored by xmlLoadState before the async first decode landed) while it is
+  // still present.
   if (color_field_.empty() || !available_color_fields_.contains(QString::fromStdString(color_field_))) {
     color_field_ = defaultColorField(available_color_fields_).toStdString();
   }
@@ -1096,9 +1034,8 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id, [[maybe_un
     // the first cloud that reaches the GPU also reveals the field set.
     populateColorFields(cloud);
   }
-  // RGB-direct mode reads per-point colour from the cloud's colour field instead of a colormap
-  // scalar. Fixed-frame (x/y/z) colouring derives colour from the GPU-transformed position
-  // (scalarAxis()), so there is no raw scalar to decode for it.
+  // RGB-direct mode reads per-point colour from the cloud's colour field, not a colormap scalar. Fixed-frame (x/y/z)
+  // colouring derives from the GPU-transformed position (scalarAxis()), so there is no raw scalar to decode for it.
   const bool rgb_mode = color_type_ == PointColorType::kRgb && has_color_;
   const int axis = rgb_mode ? -1 : spatialAxisIndex(color_field_);
   const std::string_view scalar_sv = (rgb_mode || axis >= 0) ? std::string_view{} : std::string_view{color_field_};
@@ -1109,7 +1046,7 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id, [[maybe_un
   }
   const std::optional<PointVertexPlan> plan =
       planPointVertices(cloud, scalar_sv, /*extract_rgba=*/rgb_mode, storesScalar());
-  // A cloud with no point is a valid empty sample (D25: an empty result, or a derived topic's tombstone): it
+  // A cloud with no point is a valid empty sample (an empty result, or a derived topic's tombstone): it
   // draws nothing and warns about nothing.
   if (!plan.has_value()) {
     failSample(id, point_count != 0 ? tr("Malformed point cloud was rejected") : QString());
@@ -1160,27 +1097,24 @@ void PointCloudLayer::pushCloud(const PointCloud& cloud, SampleId id, [[maybe_un
 }
 
 bool PointCloudLayer::servedFromMemos(SampleId id) {
-  // This sample is now the one the tracker wants — record it on EVERY outcome
-  // (skip, cache push, failure memo, and the resolve path that follows), so a
-  // stale in-flight compressed decode of another sample is classified stale in
-  // onDecodeFinished instead of overwriting a newer cloud on a mixed-mode topic.
+  // Record the wanted sample on EVERY outcome (skip, cache push, failure memo, the resolve path below), so a stale
+  // in-flight compressed decode of another sample is classified stale in onDecodeFinished and cannot overwrite a newer
+  // cloud on a mixed-mode topic.
   wanted_ = id;
-  // The tracker ticks at ~60 Hz but a topic publishes far slower, so the common case
-  // is "same sample, same color field" — skip the whole parse/convert/upload then.
-  // range_dirty_ only matters when auto-range will actually recompute in pushCloud.
+  // The tracker ticks at ~60 Hz but a topic publishes far slower: the common case is the same sample and colour field,
+  // which skips the whole parse/convert/upload. range_dirty_ matters only when auto-range will recompute in pushCloud.
   if (id == last_pushed_id_ && color_field_ == last_pushed_color_field_ &&
       (color_type_ == PointColorType::kRgb) == last_pushed_rgb_ && storesScalar() == last_pushed_scalar_ &&
       !(auto_range_ && range_dirty_)) {
     updateSourceFrame(geometry_frame_);  // back from a pending sample in another frame
     return true;
   }
-  // Compressed sample already decoded? Re-convert from cache so repaints /
-  // color-field changes don't re-run the codec (or even the wrapper parse).
+  // A compressed sample already decoded is re-converted from cache: repaints and colour-field changes do not re-run the
+  // codec (or even the wrapper parse).
   if (decoded_cache_ && decoded_cache_id_ == id) {
     pushCloud(*decoded_cache_, id);
     return true;
   }
-  // Known-undecodable sample; the memo holds until a reload swaps the bytes.
   if (id != failed_id_) {
     return false;
   }
@@ -1195,10 +1129,9 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  // Metadata-first gate: identify the entry latestAt() would resolve (a pure
-  // binary search) and consult the sample memos BEFORE touching payload bytes.
-  // Resolving first would re-fetch an evicted pool seed (file read + whole-chunk
-  // decompress on the GUI thread) only to discard the bytes on an identity match.
+  // Metadata-first gate: identify the entry latestAt() would resolve (a pure binary search) and consult the sample
+  // memos BEFORE touching payload bytes. Resolving first would re-fetch an evicted pool seed (file read plus
+  // whole-chunk decompress on the GUI thread) only to discard the bytes on an identity match.
   const auto entry_id = store.latestEntryIdAt(topic_id_, time_ns);
   if (!entry_id.has_value()) {
     // A seek before the shown cloud's stamp: nothing is there (a derived topic computed only later). At or after
@@ -1262,27 +1195,24 @@ void PointCloudLayer::requestDecode(const CompressedPointCloud& cloud, SampleId 
     decode_worker_.cancelWaiting();  // the running decode is wanted again
     return;
   }
-  // The copied wrapper's shared anchor keeps the compressed bytes alive on the
-  // worker. This requires the anchored bytes to be IMMUTABLE, not merely alive:
-  // every in-tree producer either deep-copies (canonical codec) or anchors a const
-  // ObjectStore buffer, but a zero-copy parser reusing a scratch buffer would race.
+  // The copied wrapper's shared anchor keeps the compressed bytes alive on the worker, which requires them IMMUTABLE,
+  // not merely alive: every in-tree producer deep-copies (canonical codec) or anchors a const ObjectStore buffer, but a
+  // zero-copy parser reusing a scratch buffer would race.
   decode_worker_.request(PendingDecode{cloud, id});
 }
 
 PointCloudLayer::DecodeResult PointCloudLayer::decodeCompressed(const PendingDecode& request) {
   DecodeResult result;
   result.id = request.id;
-  // Exception barrier: decodeCompressedPointCloud is barriered internally, but the
-  // residue here (shared_ptr control block, error-string copy) can still throw
-  // under memory pressure; module policy forbids worker exceptions reaching the
-  // GUI thread.
+  // Exception barrier: decodeCompressedPointCloud is barriered internally, but the residue here (shared_ptr control
+  // block, error-string copy) can still throw under memory pressure, and worker exceptions must not reach the GUI
+  // thread.
   try {
 #if defined(PJ_TARGET_WASM) && !defined(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
     // This browser build carries no codecs (the dock never offers the type).
     const PJ::Expected<PointCloud> decoded = PJ::unexpected("compressed point clouds unsupported");
 #else
-    // The limits reach the codec, which rejects an over-limit cloud before
-    // allocating its decoded buffer.
+    // The limits reach the codec, which rejects an over-limit cloud before allocating its decoded buffer.
     auto decoded = decodeCompressedPointCloud(
         request.cloud, PointCloudDecodeLimits{
                            .max_points = kSceneLimits.max_points_per_cloud,
@@ -1308,10 +1238,9 @@ PointCloudLayer::DecodeResult PointCloudLayer::decodeCompressed(const PendingDec
 }
 
 void PointCloudLayer::onDecodeFinished(DecodeResult result) {
-  // Paint this result only if it's still the sample the tracker wants. If the user
-  // scrubbed away while it decoded — even back onto a cached frame — it's stale: cache
-  // it (cheap, useful on scrub-back) but don't paint it over the live frame. (A
-  // result invalidated by a reload or detach never reaches here.)
+  // Paint this result only if it is still the sample the tracker wants: after a scrub away (even back onto a cached
+  // frame) it is stale, so cache it (cheap on scrub-back) but do not paint it over the live frame. A result invalidated
+  // by a reload or detach never reaches here.
   const bool is_current = result.id == wanted_;
   // Never cache an over-limit decompression: it would stay pinned in memory.
   const QString rejection = result.cloud ? cloudAdmissionError(*result.cloud) : QString{};
@@ -1329,7 +1258,6 @@ void PointCloudLayer::onDecodeFinished(DecodeResult result) {
     }
     return;
   }
-  // Memoized: renderAt won't re-request a sample that can never decode.
   failed_id_ = result.id;
   failed_warning_ =
       rejection.isEmpty() ? tr("Compressed point cloud could not be decoded: %1").arg(result.error) : rejection;
@@ -1340,9 +1268,8 @@ void PointCloudLayer::onDecodeFinished(DecodeResult result) {
 }
 
 void PointCloudLayer::refreshNow() {
-  // Decode at the latest delivered tracker time, else at the first sample's
-  // stamp (captured in attach). Presence is explicit — 0 ns is a valid stamp,
-  // so a sim-time dataset starting at t=0 still refreshes.
+  // Decode at the latest delivered tracker time, else at the first sample's stamp captured in attach. Presence is
+  // explicit: 0 ns is a valid stamp (a sim-time dataset starting at t=0).
   if (decoded_at_ns_.has_value()) {
     renderAt(PJ::toRaw(*decoded_at_ns_));
   } else if (ts_first_.has_value()) {
@@ -1354,11 +1281,9 @@ void PointCloudLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
   if (ctx_.session == nullptr || ctx_.session->objectStore().descriptor(topic_id_).dataset_id != dataset_id) {
     return;
   }
-  // replaceDataset keeps the ObjectTopicId stable while swapping the bytes. The
-  // new entries carry fresh SequentialUIDs, so a stale id can never alias them —
-  // but the pre-reload caches must still drop their content (memory held by the
-  // decode cache, an in-flight decode that must not be painted or memoized) and
-  // wanted_ must reset so only post-reload requests are honored.
+  // replaceDataset keeps the ObjectTopicId stable while swapping the bytes under fresh SequentialUIDs, so a stale id
+  // cannot alias them; the pre-reload caches must still drop their content (decode cache memory, an in-flight decode
+  // that must not be painted or memoized) and wanted_ must reset so only post-reload requests are honored.
   invalidateSampleState();
   budget_.reset();
   clearGeometry();
@@ -1391,8 +1316,7 @@ std::uint64_t PointCloudLayer::budgetCandidate() const {
 }
 
 void PointCloudLayer::drainPendingUpdate() {
-  // renderAt's own SampleId guard makes this cheap when the active sample is
-  // unchanged; refreshNow() decodes at the latest tracker time.
+  // renderAt's SampleId guard makes this cheap when the active sample is unchanged.
   if (visible_ && tracker_dirty_) {
     tracker_dirty_ = false;
     refreshNow();

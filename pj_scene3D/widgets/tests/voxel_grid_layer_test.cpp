@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Behavioural coverage for VoxelGridLayer: lazy decode + sample-UID memo (a
-// re-scrub to a seen grid does NO re-parse — the zero-per-voxel-CPU contract),
-// new-sample re-decode, streaming attach before the first sample, the per-use
-// parser binding, XML round-trip, and worldBounds.
+// Behavioural coverage for VoxelGridLayer: lazy decode + sample-UID memo (a re-scrub to a seen grid does NO re-parse:
+// the zero-per-voxel-CPU contract), new-sample re-decode, streaming attach before the first sample, the per-use parser
+// binding, XML round-trip, and worldBounds.
 
 #include "pj_scene3d_widgets/layers/voxel_grid_layer.h"
 
@@ -73,7 +72,6 @@ void registerVoxelParser(PJ::SessionManager& session, PJ::ObjectTopicId topic_id
                                     }));
 }
 
-// Pushes world<-map as a pure +x translation at `stamp_ns`.
 void pushWorldFromMap(pj::tf::TransformBuffer& buffer, int64_t stamp_ns, double x) {
   pj::tf::StampedTransform st;
   st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(stamp_ns)};
@@ -84,7 +82,7 @@ void pushWorldFromMap(pj::tf::TransformBuffer& buffer, int64_t stamp_ns, double 
   ASSERT_TRUE(buffer.setTransform(st).has_value());
 }
 
-// TF R6: the layer reports the grid's own header stamp, which the view places it
+// The layer reports the grid's own header stamp, which the view places it
 // at, not the store (log) time it was found at (canonical route, no parser).
 TEST(VoxelGridLayer, RenderStampIsTheGridsOwnHeaderStamp) {
   PJ::SessionManager session;
@@ -148,19 +146,16 @@ TEST(VoxelGridLayer, RescrubToSameGridDoesNoReparse) {
   EXPECT_TRUE(layer.hasGridForTest());
   EXPECT_EQ(layer.resolvedFieldForTest(), u"occupancy"_s);
 
-  // Re-scrub to the SAME store entry: no re-parse, no re-pack (req: scrubbing a
-  // previously-seen grid does zero per-voxel CPU work).
+  // Re-scrub to the SAME store entry: no re-parse, no re-pack (a seen grid costs no per-voxel CPU work).
   layer.renderAtForTest(100);
   layer.renderAtForTest(100);
   EXPECT_EQ(g_parser_calls.load(), after_first) << "re-scrub to a cached grid must not re-parse";
 }
 
-// Resolve-before-memo regression: a re-scrub to the SAME grid must skip on
-// metadata alone WITHOUT resolving payload bytes — a resolve is a cold refetch
-// (file read + whole-chunk decompress on the GUI thread) once the
-// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
-// cache would mask a redundant resolve, so it is deliberately reset between
-// renders via an out-of-order push.
+// A re-scrub to the SAME grid must skip on metadata alone WITHOUT resolving payload bytes: a resolve is a cold refetch
+// (file read + whole-chunk decompress on the GUI thread) once the ResidentPayloadPool has evicted the entry's seed.
+// The store's warm latestAt cache would mask a redundant resolve, so it is reset between renders via an out-of-order
+// push.
 TEST(VoxelGridLayer, RescrubToSameGridDoesNotResolvePayload) {
   g_parser_calls.store(0);
   PJ::SessionManager session;
@@ -180,8 +175,8 @@ TEST(VoxelGridLayer, RescrubToSameGridDoesNotResolvePayload) {
   const int parses_after_first_render = g_parser_calls.load();
   ASSERT_GT(fetches_after_first_render, 0);
 
-  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
-  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve by the next render must re-invoke the
+  // lazy fetcher.
   auto old_fetch_count = std::make_shared<int>(0);
   pushLazyCounting(store, topic_id, 50, std::vector<uint8_t>{0x01}, old_fetch_count);
 
@@ -191,11 +186,9 @@ TEST(VoxelGridLayer, RescrubToSameGridDoesNotResolvePayload) {
   EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older grid must not be resolved at all";
 }
 
-// Regression (triple-review critical): scrubbing to before the first sample
-// clears the pass; scrubbing back onto the SAME store entry must re-stage the grid.
-// The bug was that renderAt's no-sample branch cleared the pass but left
-// uploaded_uid_ intact, so the fast-path skipped the re-upload and the grid
-// silently vanished for the rest of the session.
+// Scrubbing to before the first sample clears the pass; scrubbing back onto the SAME store entry must re-stage the
+// grid (renderAt's no-sample branch must not leave uploaded_uid_ intact, or the fast path skips the re-upload and the
+// grid vanishes for the rest of the session).
 TEST(VoxelGridLayer, BackScrubAfterEmptyTickReStagesGrid) {
   g_parser_calls.store(0);
   PJ::SessionManager session;
@@ -212,11 +205,9 @@ TEST(VoxelGridLayer, BackScrubAfterEmptyTickReStagesGrid) {
   layer.renderAtForTest(100);
   EXPECT_TRUE(layer.passHasStagedGridForTest());
 
-  // Scrub before the only sample: latestAt() returns nothing -> pass cleared.
   layer.renderAtForTest(50);
   EXPECT_FALSE(layer.passHasStagedGridForTest());
 
-  // Scrub back onto the same entry: the grid must come back.
   layer.renderAtForTest(100);
   EXPECT_TRUE(layer.passHasStagedGridForTest()) << "grid must re-stage after a back-scrub through an empty tick";
 }
@@ -236,7 +227,6 @@ TEST(VoxelGridLayer, NewSampleReDecodes) {
   layer.renderAtForTest(100);
   const int after_first = g_parser_calls.load();
 
-  // A second, distinct store entry → a fresh UID → must re-decode.
   ASSERT_TRUE(store.pushOwned(topic_id, 200, std::vector<uint8_t>{0x02}).has_value());
   layer.renderAtForTest(200);
   EXPECT_GT(g_parser_calls.load(), after_first) << "a new sample must trigger a re-decode";
@@ -347,7 +337,6 @@ TEST(VoxelGridLayer, XmlRoundTrip) {
   ASSERT_TRUE(restored.xmlLoadState(saved));
   EXPECT_EQ(configuration_changes, 0) << "re-applying identical parameters is not a workspace mutation";
 
-  // Re-serialize and compare: every persisted attribute must survive the trip.
   QDomDocument doc2;
   const QDomElement re_saved = restored.xmlSaveState(doc2);
   EXPECT_EQ(re_saved.attribute("field"), u"cost"_s);

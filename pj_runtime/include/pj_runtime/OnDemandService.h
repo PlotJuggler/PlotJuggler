@@ -25,7 +25,7 @@
 
 namespace PJ {
 
-/// The on-demand engine (docs/derived_objects/ARCHITECTURE.md §3, §8): owns the recipe graph, the result
+/// The on-demand engine: owns the recipe graph, the result
 /// history, the input stager, the node scheduler and the explicit evaluations' `GridRunner`, and keeps only the
 /// orchestration that spans them: install, remove, and the requests and state queries it forwards to the scheduler. A
 /// layout restore stays in `DerivedObjects`. GUI thread only; what runs on the pool is the scheduler's (see
@@ -48,7 +48,7 @@ class OnDemandService {
     ResultHistory::Limits limits;
     InstalledCallback installed;
     SeriesRunner::TopicsChanged series_changed;       ///< rows written to, or a series topic emptied or retired
-    SeriesRunner::StateChanged series_state_changed;  ///< a series' state changed (its progress, for 11b)
+    SeriesRunner::StateChanged series_state_changed;  ///< a series' state changed (its progress included)
   };
 
   /// Test seam: the run of every service built afterwards whose `Services` names none; empty restores
@@ -78,7 +78,7 @@ class OnDemandService {
   /// live tick runs it again only when an input changed after this request.
   void requestAt(std::string_view key, Timestamp t);
 
-  // The restore protocol (docs/derived_objects/ARCHITECTURE.md §13): clear, install each wanted recipe, sweep.
+  // The restore protocol: clear, install each wanted recipe, sweep.
 
   /// Starts a restore: removes every node in the restore's authority except `keep` (`RecipeGraph::clearRecipes`)
   /// and cancels and forgets their runs; returns whether any was removed. Their topics and results stay and their
@@ -122,7 +122,7 @@ class OnDemandService {
   /// The newest stamp among the raw inputs `key` reads, its upstreams' included (`InputStager::newestInputStamp`): the
   /// time the docks show a live dataset at. nullopt for an unknown key, or when no raw input has a sample.
   [[nodiscard]] std::optional<Timestamp> liveEdgeOf(std::string_view key) const;
-  /// A live tick of `dataset`, after its writes (ARCHITECTURE §16): requests each demanded node at its live edge and
+  /// A live tick of `dataset`, after its writes: requests each demanded node at its live edge and
   /// each finding at its pin, only when what the request would read differs from the node's last one: the time, the
   /// epoch, the revisions and raw input identities of the node and of every upstream it reads and, off a pin, the TF
   /// revision. So an unchanged tick requests nothing, a same-stamp replacement is seen even behind an upstream, a
@@ -151,11 +151,11 @@ class OnDemandService {
   [[nodiscard]] const ResultHistory& history() const {
     return history_;
   }
-  /// The explicit evaluations (D19): a node of `graph()` or one it binds (`RecipeGraph::bind`).
+  /// The explicit evaluations: a node of `graph()` or one it binds (`RecipeGraph::bind`).
   [[nodiscard]] GridRunner& evaluations() {
     return evaluations_;
   }
-  /// The series of the nodes that have one (ARCHITECTURE §15): their demand, requests, stops and state. The service
+  /// The series of the nodes that have one: their demand, requests, stops and state. The service
   /// keeps them in step with installs, removals, restores, the demand set, dataset holds and live ticks.
   [[nodiscard]] SeriesRunner& series() {
     return series_;

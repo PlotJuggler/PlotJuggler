@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// U2 gate: decoupled adaptive near/far + geometric zoom + lifted clamp.
+// Decoupled adaptive near/far, geometric zoom and the lifted radius clamp.
 
 #include <gtest/gtest.h>
 
@@ -36,14 +36,13 @@ ClipRange orthoClipRange(const glm::mat4& ortho) {
 }  // namespace
 
 namespace {
-// A scene a few thousand units across — the original failure case.
+// A scene a few thousand units across.
 constexpr float kSceneHalf = 2500.0f;
 const AABB kScene{
     glm::vec3{-kSceneHalf, -kSceneHalf, -kSceneHalf}, glm::vec3{kSceneHalf, kSceneHalf, kSceneHalf}, true};
 }  // namespace
 
 TEST(AdaptiveNearFar, InvariantsAcrossRadii) {
-  // Focal at the scene centre → reach == diagonal.
   const float reach = sceneReach(kScene, glm::vec3{0.0f});
   ASSERT_GT(reach, 0.0f);
 
@@ -94,10 +93,9 @@ TEST(OrbitZoom, GeometricStep) {
 TEST(OrbitZoom, OldThousandUnitClampIsGone) {
   OrbitCamera cam;
   CameraState s;
-  s.radius = 5000.0f;  // beyond the retired [0.1, 1000] cap
+  s.radius = 5000.0f;  // no radius cap
   cam.adoptState(s);
   cam.zoom(1.0f);
-  // Would have been clamped to 1000 before; now it just shrinks geometrically.
   EXPECT_NEAR(cam.state().radius, 4500.0f, 1.0f);
   EXPECT_GT(cam.state().radius, 1000.0f);
 }
@@ -113,15 +111,11 @@ TEST(OrbitZoom, LargeSceneIsFramable) {
   for (int i = 0; i < 200; ++i) {
     cam.zoom(-1.0f);  // keep zooming out
   }
-  // Can pull back far enough to frame the entire scene (and then some).
   EXPECT_GT(cam.state().radius, scene_diag);
 }
 
-// ---------------------------------------------------------------------------
-// TopDownOrtho clip range must contain above-ground geometry even at deep zoom
-// (M.7 / M.8): the eye lifts with the scene's max.z so the near plane never
-// clips tall geometry, and the far plane reaches the scene floor.
-// ---------------------------------------------------------------------------
+// TopDownOrtho clip range must contain above-ground geometry even at deep zoom: the eye lifts with the scene's max.z so
+// the near plane never clips tall geometry, and the far plane reaches the scene floor.
 
 TEST(TopDownOrthoClip, ContainsAboveGroundGeometryWhenZoomedIn) {
   // A 1.5 m-tall object on a flat map, viewed at a tight 0.5 m half-height zoom.
@@ -145,10 +139,8 @@ TEST(TopDownOrthoClip, ContainsAboveGroundGeometryWhenZoomedIn) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Fly near plane must stay small near the scene periphery (M.10): flying close
-// to a wall at the edge of a large scene must not near-clip it.
-// ---------------------------------------------------------------------------
+// Fly near plane must stay small near the scene periphery: flying close to a wall at the edge of a large scene must
+// not near-clip it.
 
 TEST(FlyNearPlane, StaysSmallAtScenePeriphery) {
   // A 100 m-scale scene centred at the origin; eye 90 m out near one edge.
@@ -165,23 +157,19 @@ TEST(FlyNearPlane, StaysSmallAtScenePeriphery) {
   ASSERT_GT(glm::length(cam.position()), 80.0f);  // genuinely at the periphery
 
   const glm::mat4 proj = cam.projMatrix(1.0f);
-  // near = (proj[3][2]) / (proj[2][2] - 1) for a glm::perspective (column-major).
   const float near_plane = proj[3][2] / (proj[2][2] - 1.0f);
   EXPECT_LE(near_plane, 0.05f + 1e-3f) << "near plane near-clips peripheral geometry";
 }
 
-// ---------------------------------------------------------------------------
-// Fly motion steps must not collapse near the AABB center (M.10): the motion
-// basis is floored at kFlyNominalDistance so zoom/pan never freeze.
-// ---------------------------------------------------------------------------
+// Fly motion steps must not collapse near the AABB center: the motion basis is floored at kFlyNominalDistance so
+// zoom/pan never freeze.
 
 TEST(FlyMotion, ZoomMovesEvenAtSceneCenter) {
   const AABB scene{glm::vec3{-50.0f, -50.0f, -50.0f}, glm::vec3{50.0f, 50.0f, 50.0f}, true};
   FlyCamera cam;
   cam.setSceneBounds(scene);
-  // Park the eye at the AABB centre, where distance-to-center → 0 froze the old step.
-  // adoptState places the eye at focal + radius*sphericalDir(azimuth, elevation);
-  // azimuth=pi puts it at {0,0,0} looking back toward {5,0,0} (i.e. forward = +x).
+  // Park the eye at the AABB centre, where distance-to-center → 0 would freeze the step: azimuth=pi puts the eye at
+  // {0,0,0} looking back toward {5,0,0} (forward = +x).
   CameraState s = cam.state();
   s.focal = glm::vec3{5.0f, 0.0f, 0.0f};
   s.radius = 5.0f;

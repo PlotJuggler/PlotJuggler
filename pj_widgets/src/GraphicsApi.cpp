@@ -30,9 +30,8 @@ namespace {
 
 Q_LOGGING_CATEGORY(lcGraphics, "pj.graphics")
 
-// Whether Qt can create a QRhi for `api` here, as the window's backing store
-// would. Creates and drops a context or device (Metal only checks for one):
-// tens of milliseconds.
+// Whether Qt can create a QRhi for `api` here, as the window's backing store would. Creates and drops a context or
+// device (Metal only checks for one): tens of milliseconds.
 bool canCreateRhi(QRhiWidget::Api api) {
   switch (api) {
     case QRhiWidget::Api::OpenGL: {
@@ -118,8 +117,8 @@ QRhiWidget::Api preferredGraphicsApi() {
       qCWarning(lcGraphics) << "PJ_GRAPHICS_API" << requested << "cannot start here; using" << native;
       chosen = native;
     }
-    // Qt's backing store gives up on Metal without a device (it only logs at debug
-    // level), which would leave every GPU widget blank; OpenGL 4.1 still works there.
+    // Qt's backing store gives up on Metal without a device (it logs only at debug level), which would leave every GPU
+    // widget blank; OpenGL 4.1 still works there.
     if (chosen == QRhiWidget::Api::Metal && !canCreateRhi(chosen)) {
       qCWarning(lcGraphics) << "Metal is unavailable; falling back to OpenGL";
       chosen = QRhiWidget::Api::OpenGL;
@@ -131,8 +130,8 @@ QRhiWidget::Api preferredGraphicsApi() {
 }
 
 void logGraphicsBackend(QWidget& widget, QRhi* rhi) {
-  // ponytail: keyed by address, so a new QRhi allocated where the widget's last
-  // one lived is not logged again; key on something else if that ever matters.
+  // ponytail: keyed by address, so a new QRhi allocated where the widget's last one lived is not logged again; key on
+  // something else if that ever matters.
   static constexpr char kLoggedRhi[] = "pjLoggedGraphicsRhi";
   const auto key = static_cast<qulonglong>(reinterpret_cast<quintptr>(rhi));
   if (rhi == nullptr || widget.property(kLoggedRhi).toULongLong() == key) {
@@ -143,8 +142,8 @@ void logGraphicsBackend(QWidget& widget, QRhi* rhi) {
 }
 
 void noteRhiAdoption(QRhiWidget& widget, const QRhi* held, QRhi* rhi) {
-  // Adoptions minus releases is the number of QRhis the widget holds resources
-  // on; "stale" is a new QRhi met while another one's resources were still held.
+  // Adoptions minus releases is the number of QRhis the widget holds resources on; "stale" is a new QRhi met while
+  // another one's resources were still held.
   if (held != nullptr && held != rhi) {
     rhiTestCount(widget, "pjTestRhiStale");
   }
@@ -185,8 +184,8 @@ RhiFailureLatch::Change RhiFailureLatch::set(QString reason) {
 }
 
 QShader loadRhiShader(const QString& path) {
-  // Every widget and every new QRhi (a float or redock) reuses the packs: the
-  // resources never change, so each is read and deserialized once per process.
+  // Every widget and every new QRhi (a float or redock) reuses the packs: the resources never change, so each is read
+  // and deserialized once per process.
   static QHash<QString, QShader> loaded;
   if (const auto cached = loaded.constFind(path); cached != loaded.cend()) {
     return *cached;

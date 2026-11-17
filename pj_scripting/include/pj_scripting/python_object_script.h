@@ -11,14 +11,14 @@
 #include "pj_base/span.hpp"
 #include "pj_scripting/object_script.h"
 
-// The Python lane of the on-demand script runner (docs/derived_objects/ARCHITECTURE.md §14): the contract of
-// object_script.h over a CPython module whose top level defines `def evaluate(inputs, params)`. Where
+// The Python lane of the on-demand script runner (docs/derived_objects/ARCHITECTURE.md "Scripting languages"): the
+// contract of object_script.h over a CPython module whose top level defines `def evaluate(inputs, params)`. Where
 // `pythonAvailable()` is false (WASM without PJ_WASM_WITH_PYTHON) every entry point fails with "python is not available
 // in this build".
 //
-// Hardened, NOT a sandbox (pj_scripting/CLAUDE.md): an AST check before compiling, gated builtins, read-only
-// copies of the allowed modules, a process-wide audit hook shared with the filter engine, an allocation cap and a
-// wall-clock watchdog. Scripts are trusted input.
+// A guardrail, not a sandbox (pj_scripting/CLAUDE.md): an AST check before compiling, gated builtins, read-only copies
+// of the allowed modules, a process-wide audit hook shared with the filter engine, an allocation cap and a wall-clock
+// watchdog. Scripts are trusted input.
 
 namespace PJ::scripting {
 
@@ -31,11 +31,9 @@ struct CompiledPythonScript {
   std::shared_ptr<const PythonCode> code;
 };
 
-/// How long `checkOnDemandScriptPython` waits for its throwaway compile before answering unchecked: about
-/// 100 times an uncontended compile of a short script (under 1 ms native, a few ms in the browser), and 20 GIL switch
-/// intervals (5 ms) behind a running pure-Python script, yet within one frame budget a check button may freeze the
-/// browser's main thread. The interpreter's boot (0.13-0.24 s in the browser) does not fit: the first validate of a
-/// session boots it on the helper and is most likely unchecked.
+/// How long `checkOnDemandScriptPython` waits for its throwaway compile before answering unchecked. It covers a compile
+/// and a few GIL switches but not the interpreter's boot, so the first validate of a session is most likely unchecked
+/// (pj_scripting/docs/TECHNICAL_NOTES.md "Validate wait").
 inline constexpr std::uint64_t kPythonValidateWaitMillis = 100;
 
 /// Whether this build runs Python scripts: true on desktop and on a WASM build with PJ_WASM_WITH_PYTHON, else false.
@@ -78,11 +76,11 @@ void setPythonStdlibRetryCooldownForTest(std::uint64_t millis);
 /// Without the GIL.
 [[nodiscard]] Expected<CompiledPythonScript> compileOnDemandScriptPython(std::string_view source);
 
-/// Runs `script` once as `evaluate(inputs, params)` in a fresh module namespace (D2: two runs never share
-/// globals): `inputs` is a dict of the inputs by name, `params` the JSON object `params_json` (empty means `{}`,
+/// Runs `script` once as `evaluate(inputs, params)` in a fresh module namespace (two runs never share globals):
+/// `inputs` is a dict of the inputs by name, `params` the JSON object `params_json` (empty means `{}`,
 /// at most `kMaxParamsDepth` levels). The returned value binds to `outputs` by the rules of `runOnDemandScript`
 /// (a dict is keyed, a list or tuple positional; a `None` value in a dict is a missing output; `bool` is not a
-/// number); `pj.unavailable(reason)` marks an output unavailable (D25). An unavailable input is an error (D6).
+/// number); `pj.unavailable(reason)` marks an output unavailable. An unavailable input is an error.
 ///
 /// Script surface: `object_script.h`'s, in Python's idiom (python_object_binder.h binds it over the same native
 /// operations). Objects are read-only: a field is an attribute (an int64 is a Python int,
@@ -101,9 +99,9 @@ void setPythonStdlibRetryCooldownForTest(std::uint64_t millis);
 /// behind holds its input's `keepalive`, and a builder works only in the run that made it. An output keeps its native
 /// charge in its `keepalive`. `import` of `math`, `cmath`, `statistics` and `json` only, each a read-only copy (an
 /// assignment to a module attribute is an error; state a script leaves on a class a copy shares with its module, such
-/// as `statistics.NormalDist`, reaches the next run, the trust model's documented limit) without its private names or
-/// the modules it imports outside that list
-/// (`statistics.sys`); no `open`, `exec`, `eval`, `compile`, `getattr`, `setattr`, `type`, `input` or `help`.
+/// as `statistics.NormalDist`, reaches the next run: a known limit) without its private names or the modules it imports
+/// outside that list (`statistics.sys`); no `open`, `exec`, `eval`, `compile`, `getattr`, `setattr`, `type`, `input` or
+/// `help`.
 ///
 /// Spends from `options`: `limits.mem_bytes` caps the run's Python allocations, the host's construction of its inputs
 /// and params included, `limits.python_watchdog_millis` its wall clock (the timeout lands at the next bytecode, never

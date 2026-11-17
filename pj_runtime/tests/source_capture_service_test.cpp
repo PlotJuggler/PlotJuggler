@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// End-to-end tests of the M3 SourceCaptureService over a REAL
-// DataSourceRuntimeHost and a real cache directory: capture raw pushed bytes
-// through the completion contract's gate, publish into SourceCacheStore, and
-// resolve the same request back — plus every gate condition that must refuse.
+// SourceCaptureService over a real DataSourceRuntimeHost and a real cache directory: capture raw pushed bytes
+// through the completion contract's gate, publish into SourceCacheStore, and resolve the same request back,
+// plus every gate condition that must refuse.
 
 #include <gtest/gtest.h>
 
@@ -40,10 +39,8 @@ constexpr const char* kDescriptor = R"({"kind":"capture-test-request","request":
 using namespace std::chrono_literals;
 constexpr auto kHandshakeTimeout = 10s;  // recorder_test's handshake guard
 
-/// Injectable capture sink (a subset of recorder_test's FakeSink): write()
-/// can park until release(), close() can fail on command. Lets the blocked-
-/// cancellation and close-failure tests drive the capture through arm()/
-/// finalize() with no real file involved.
+/// Injectable capture sink (a subset of recorder_test's FakeSink): write() can park until release(),
+/// close() can fail on command.
 struct FakeCaptureSink final : RecordingSink {
   std::mutex mu;
   std::condition_variable cv;
@@ -93,8 +90,7 @@ struct FakeCaptureSink final : RecordingSink {
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-/// Sink factory over a SHARED FakeCaptureSink: the recorder owns a forwarding
-/// shim, the test keeps its handle to park/fail the sink.
+// / Sink factory over a shared FakeCaptureSink: the recorder owns a forwarding shim, the test keeps its handle.
 [[nodiscard]] SourceCaptureService::SinkFactory shimFactory(std::shared_ptr<FakeCaptureSink> sink) {
   return [sink]() -> std::unique_ptr<RecordingSink> {
     struct Shim final : RecordingSink {
@@ -145,7 +141,7 @@ class SourceCaptureServiceTest : public RuntimeHostFixture {
     return runtime().completeIngest(outcome, {topics.data(), topics.size()}, flags);
   }
 
-  /// arm() then attach: recording arms on the attach, per the service design.
+  // / arm() then attach; recording arms on the attach.
   [[nodiscard]] std::unique_ptr<SourceCaptureService::Capture> armAndAttach(std::string_view descriptor = kDescriptor) {
     auto capture = service_->arm(*host, kProvider);
     EXPECT_TRUE(attach(descriptor).has_value());
@@ -157,7 +153,7 @@ class SourceCaptureServiceTest : public RuntimeHostFixture {
     return service_->finalize(std::move(capture), committed, cancelled);
   }
 
-  /// Rebuild the service around an injected sink factory (P3's test seam).
+  // / Rebuild the service around an injected sink factory.
   void remakeService(SourceCaptureService::SinkFactory factory) {
     service_.emplace(*store_, std::move(factory));
   }
@@ -183,7 +179,6 @@ TEST_F(SourceCaptureServiceTest, HappyPathPublishesAndResolves) {
   ASSERT_TRUE(result.artifact.has_value());
   EXPECT_TRUE(fs::exists(result.artifact->path));
 
-  // The artifact is self-describing.
   auto manifest = SourceCaptureService::readManifest(result.artifact->path);
   ASSERT_TRUE(manifest.has_value()) << manifest.error();
   EXPECT_EQ(manifest->version, kCaptureManifestVersion);
@@ -199,7 +194,6 @@ TEST_F(SourceCaptureServiceTest, HappyPathPublishesAndResolves) {
   ASSERT_TRUE(resolved.has_value()) << miss;
   EXPECT_EQ(resolved->manifest.total_messages, 3u);
 
-  // A different provider or descriptor is a different identity: absent miss.
   EXPECT_FALSE(service_->resolve("other.provider", kDescriptor, &miss).has_value());
   EXPECT_FALSE(service_->resolve(kProvider, R"({"kind":"other","request":{},"v":1})", &miss).has_value());
 }
@@ -426,13 +420,11 @@ TEST_F(SourceCaptureServiceTest, ArtifactWithoutManifestIsQuarantinedOnResolve) 
   std::string miss;
   EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
   EXPECT_NE(miss.find("quarantined"), std::string::npos);
-  // The heal removed it: the next resolve is a plain absent miss.
   EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
   EXPECT_FALSE(fs::exists(artifact_path));
 }
 
-// T1 (acceptance row 4): a published artifact is immutable — store cleanup and
-// repeated resolve round-trips must not change a single byte.
+// A published artifact is immutable: store cleanup and repeated resolves must not change a byte.
 TEST_F(SourceCaptureServiceTest, PublishedArtifactBytesAreImmutableAcrossCleanupAndResolves) {
   auto capture = armAndAttach();
   const auto imu = bindTopic("/imu");
@@ -457,10 +449,9 @@ TEST_F(SourceCaptureServiceTest, PublishedArtifactBytesAreImmutableAcrossCleanup
   EXPECT_EQ(fileBytes(artifact_path), original) << "cleanup/resolve must never rewrite a published artifact";
 }
 
-// T2 (acceptance row 5): a producer blocked on the lossless capture queue is
-// released by BOTH cancellation paths — the host's stop request and the
-// service's cancel() — strictly BEFORE disk finalization, and nothing ever
-// publishes. One TEST_F per path: each needs a fresh host generation.
+// A producer blocked on the lossless capture queue is released by both cancellation paths (the host's stop
+// request and the service's cancel()) before disk finalization, and nothing publishes. One TEST_F per path:
+// each needs a fresh host generation.
 class SourceCaptureServiceBlockedTest : public SourceCaptureServiceTest {
  protected:
   void runBlockedCancellation(bool via_host_stop) {
@@ -520,8 +511,8 @@ TEST_F(SourceCaptureServiceBlockedTest, HostStopReleasesBlockedProducerBeforeDis
   runBlockedCancellation(/*via_host_stop=*/true);
 }
 
-// F3: a non-null sink factory returning nullptr is an arming failure surfaced
-// at finalize, never a crash inside Recorder::start.
+// A non-null sink factory returning nullptr is an arming failure surfaced at finalize, never a crash in
+// Recorder::start.
 TEST_F(SourceCaptureServiceTest, NullSinkFromFactoryIsAnArmingFailureNotACrash) {
   remakeService([]() -> std::unique_ptr<RecordingSink> { return nullptr; });
   auto capture = armAndAttach();
@@ -533,14 +524,13 @@ TEST_F(SourceCaptureServiceTest, NullSinkFromFactoryIsAnArmingFailureNotACrash) 
   EXPECT_NE(result.reason.find("no sink"), std::string::npos) << result.reason;
   std::string miss;
   EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
-  // The aborted transaction left no partial behind.
   for (const auto& entry : fs::directory_iterator(cache_root_)) {
     EXPECT_TRUE(entry.path().string().find(".partial") == std::string::npos) << entry.path();
   }
 }
 
-// T3 (acceptance row 6): a pure-lazy push bypasses the tap, so the capture has
-// a hole — publication must refuse even on a clean COMPLETED terminal.
+// A pure-lazy push bypasses the tap, so the capture has a hole: publication must refuse even on a clean COMPLETED
+// terminal.
 TEST_F(SourceCaptureServiceTest, PureLazySkipRefusesPublication) {
   auto capture = armAndAttach();
   const auto imu = bindTopic("/imu");
@@ -556,8 +546,7 @@ TEST_F(SourceCaptureServiceTest, PureLazySkipRefusesPublication) {
   EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
 }
 
-// T4 (acceptance row 6): a sink whose close() fails leaves the file
-// unfinalized — publication must refuse and no artifact may exist.
+// A sink whose close() fails leaves the file unfinalized: publication refuses and no artifact exists.
 TEST_F(SourceCaptureServiceTest, SinkCloseFailureRefusesPublication) {
   auto sink = std::make_shared<FakeCaptureSink>();
   sink->fail_close_with = "disk full at close";
@@ -568,20 +557,17 @@ TEST_F(SourceCaptureServiceTest, SinkCloseFailureRefusesPublication) {
   ASSERT_TRUE(complete(sdk::IngestOutcome::kCompleted, {"/imu"}));
   auto result = finalize(std::move(capture));
   EXPECT_FALSE(result.published);
-  // A close failure surfaces as a truncation carrying the sink's own message.
   EXPECT_NE(result.reason.find("disk full at close"), std::string::npos) << result.reason;
   EXPECT_TRUE(sink->close_called);
   std::string miss;
   EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
 }
 
-// T5 (acceptance row 6): first topic delivered, second failed mid-download —
-// the FAILED terminal refuses publication, and the reason is the terminal
-// verdict, distinct from the empty-topic attestation case.
+// First topic delivered, second failed mid-download: the FAILED terminal refuses publication, and the reason
+// is the terminal verdict, distinct from the empty-topic attestation case.
 TEST_F(SourceCaptureServiceTest, SuccessThenFetchFailureRefusesOnTheFailedTerminal) {
   auto capture = armAndAttach();
   push(bindTopic("/imu"), 100, {1, 2});
-  // "/camera" never delivered; the source reports its own fetch failure.
   ASSERT_TRUE(complete(sdk::IngestOutcome::kFailed, {"/imu", "/camera"}));
   auto result = finalize(std::move(capture));
   EXPECT_FALSE(result.published);
@@ -592,16 +578,15 @@ TEST_F(SourceCaptureServiceTest, SuccessThenFetchFailureRefusesOnTheFailedTermin
   EXPECT_FALSE(service_->resolve(kProvider, kDescriptor, &miss).has_value());
 }
 
-// T6 (acceptance row 7): an artifact whose per-topic counts disagree with its
-// embedded pj.capture manifest — MCAP magic and footer fully intact — must be
-// quarantined by resolve()'s strict-completeness check, never served as a hit.
+// An artifact whose per-topic counts disagree with its embedded pj.capture manifest (MCAP magic and footer
+// intact) is quarantined by resolve()'s strict-completeness check, never served as a hit.
 TEST_F(SourceCaptureServiceTest, BodyManifestCountMismatchIsQuarantinedOnResolve) {
   const std::string identity = sourceCacheIdentity(kProvider, kDescriptor);
   auto txn = store_->beginPublish(identity);
   ASSERT_TRUE(txn.has_value());
   {
-    // ONE recorded message, but a manifest claiming TWO: a structurally valid
-    // MCAP whose body disagrees with its own completion manifest.
+    // One recorded message but a manifest claiming two: a structurally valid MCAP whose body disagrees with its
+    // manifest.
     McapRecordingWriter writer;
     ASSERT_TRUE(writer.open(txn->partialPath(), RecordingInfo{}).has_value());
     auto channel =

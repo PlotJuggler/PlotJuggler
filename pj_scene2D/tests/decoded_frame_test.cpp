@@ -45,8 +45,7 @@ TEST(ExpectedBufferSize, YUV420PEvenDimensions) {
 }
 
 TEST(ExpectedBufferSize, YUV420POddWidthAndHeight) {
-  // Both dimensions odd: chroma planes use ceil(w/2) x ceil(h/2).
-  // This is the bug case — w/2 truncates and causes buffer overflow.
+  // Chroma planes are ceil(w/2) x ceil(h/2): w/2 truncates and overflows the buffer.
   size_t y = size_t{1921} * 1081;
   size_t uv = size_t{961} * 541;  // (1921+1)/2 * (1081+1)/2
   EXPECT_EQ(expectedBufferSize(1921, 1081, PixelFormat::kYUV420P), y + 2 * uv);

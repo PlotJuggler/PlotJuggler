@@ -129,9 +129,9 @@ jobs:
 
       - name: Cache built local channel
         # The gap packages (luau, mcap, ffmpeg — the
-        # latter compiled from source) are a pure function of recipes/**, yet
-        # they were rebuilt on EVERY run (~20-40 min per leg). Cache the built
-        # .conda channel and skip rattler-build entirely on an exact hit.
+        # latter compiled from source) are a pure function of recipes/**, and a
+        # rebuild costs ~20-40 min per leg. Cache the built .conda channel and
+        # skip rattler-build entirely on an exact hit.
         # bld/ (work dirs, failure forensics) is excluded: large and useless
         # on the hit path.
         id: channel-cache
@@ -164,7 +164,7 @@ jobs:
 
       # The committed manifest lists only linux-64 (a Linux dev box cannot build
       # the win-64 gap packages, so a committed win-64 lock is impossible). On
-      # the Windows runner the channel now HOLDS win-64 packages, so point the
+      # the Windows runner the channel holds win-64 packages, so point the
       # single platform at win-64 (a leftover linux-64 target table only warns).
       - name: Point the manifest at win-64 (Windows)
         if: runner.os == 'Windows'
@@ -222,7 +222,7 @@ jobs:
         run: pixi run sccache --show-stats
         continue-on-error: true
 
-      # Runs the Qt-free CORE test suite only (~155 tests). The widget/GL test
+      # Runs the Qt-free CORE test suite only. The widget/GL test
       # families (pj_scene3D/widgets, pj_scene2D/widgets, pj_widgets, plotting-GL)
       # need a GL context that conda's Qt cannot bring up on this GPU-less runner
       # — it stalls instead of falling back to llvmpipe (unlike the aqt-Qt +

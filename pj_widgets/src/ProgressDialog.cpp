@@ -98,7 +98,7 @@ void ProgressDialog::setMessage(const QString& text) {
 }
 
 void ProgressDialog::setStopButtonsVisible(bool visible) {
-  // A button with no label was never configured — keep it hidden either way.
+  // A button with no label was never configured: it stays hidden either way.
   primary_->setVisible(visible && !primary_->text().isEmpty());
   secondary_->setVisible(visible && !secondary_->text().isEmpty());
 }

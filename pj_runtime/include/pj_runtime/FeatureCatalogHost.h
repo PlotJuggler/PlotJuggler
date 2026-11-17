@@ -91,8 +91,6 @@ class FeatureCatalogHost {
   FeatureCatalogHost(const FeatureCatalogHost&) = delete;
   FeatureCatalogHost& operator=(const FeatureCatalogHost&) = delete;
 
-  // ---- Registry state: the host reports fetches the app made itself. ----
-
   /// The startup scan was skipped; reported as not_fetched/updates_disabled
   /// until some fetch happens.
   void setStartupScanSkipped();

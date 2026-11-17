@@ -110,9 +110,7 @@ scripting::SeriesProvider buildProvider(
   return provider;
 }
 
-/// Shift every marker's [t_start, t_end] window by `shift` — the rebase a marker set
-/// needs when it moves onto another dataset's clock. kValueBand markers ignore
-/// t_start/t_end, so shifting them is a harmless no-op for that kind.
+/// Shifts every marker's [t_start, t_end] onto another dataset's clock; kValueBand markers ignore those fields.
 void shiftMarkers(std::vector<sdk::PlotMarker>& markers, Timestamp shift) {
   for (sdk::PlotMarker& marker : markers) {
     marker.t_start += shift;
@@ -387,8 +385,6 @@ Status BatchEngine::validateScript(GeneratorKind /*kind*/, std::string_view lang
   return okStatus();
 }
 
-// ---- kind=markers: stage (GUI) / compute (worker) / publish (GUI) -----------
-
 BatchEngine::StagedRun BatchEngine::stageRun(const GeneratorRecipe& recipe) const {
   StagedRun staged;
   staged.recipe = recipe;
@@ -504,8 +500,6 @@ void BatchEngine::rerunNow(const GeneratorRecipe& recipe, std::vector<std::strin
   state.error = std::move(previous_error);
   recordFailure(key, state.change_seq, published.error());
 }
-
-// ---- scheduled runs (D30) ---------------------------------------------------
 
 void BatchEngine::markStale(const GeneratorRecipe& recipe) {
   RunState& state = runs_[bindingKey(recipe)];
@@ -636,7 +630,7 @@ void BatchEngine::finishRun(
   }
   RunState& state = it->second;
   state.running.reset();
-  // D30: a completed run is published even when its inputs changed meanwhile.
+  // A completed run is published even when its inputs changed meanwhile.
   const Status published =
       result.has_value() ? publishRun(staged, std::move(*result)) : Status(unexpected(result.error()));
   const bool inputs_changed = state.change_seq != staged_seq;
@@ -772,8 +766,6 @@ void BatchEngine::onBrakeFired() {
   }
 }
 
-// ---- routing + lifecycle ---------------------------------------------------
-
 Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe recipe, CreateWait wait) {
   if (recipe.id.empty()) {
     return unexpected("generator id must not be empty");
@@ -806,11 +798,9 @@ Expected<std::vector<std::string>> BatchEngine::upsertGenerator(GeneratorRecipe 
     return unexpected("'#' is reserved as the marker owner separator (generator id and output topic)");
   }
 
-  // Normalize the scope-encoded output topic host-side (see MarkerTopics.h): a
-  // producer always addresses "__global__"; all_datasets rewrites that to the
-  // ALL-DATASETS key, so the two scopes never share one family. A dataset-bound
-  // recipe targeting the ALL-DATASETS key is rejected outright — silently
-  // reinterpreting its scope would move the rule between UI rows with no signal.
+  // A producer always addresses "__global__"; all_datasets rewrites it to the all-datasets key, so the two scopes never
+  // share a family. A dataset-bound recipe targeting the all-datasets key is rejected: reinterpreting its scope would
+  // move the rule between UI rows with no signal.
   if (recipe.all_datasets && recipe.outputs.front() == sdk::kGlobalMarkerTopic) {
     recipe.outputs.front() = std::string(kAllDatasetsMarkerTopic);
   } else if (!recipe.all_datasets && recipe.outputs.front() == kAllDatasetsMarkerTopic) {
@@ -1038,10 +1028,8 @@ void BatchEngine::remapGeneratorsToAnchor(DatasetId anchor, const std::vector<Da
         cancelRun(bindingKey(recipe));
       }
     }
-    // Collision rule (see the header): the anchor's own binding wins. mergeMarkerTopics
-    // runs before this call (SessionManager::mergeDatasets, (3b)) and already moved
-    // every consumed output onto the anchor's topic of this id, so retiring the
-    // consumed binding loses no published marker.
+    // The anchor's own binding wins. mergeMarkerTopics ran first (SessionManager::mergeDatasets) and moved every
+    // consumed output onto the anchor's topic of this id, so retiring the consumed binding loses no marker.
     const bool anchor_bound = std::any_of(bindings.begin(), bindings.end(), [&](const GeneratorRecipe& recipe) {
       return !recipe.all_datasets && recipe.dataset_id == anchor;
     });
@@ -1152,7 +1140,7 @@ std::unordered_set<std::string> BatchEngine::unchangedGeneratorIds(
            sameTextIgnoringLineEndings(live.params_json, snapshot.params_json) && live.window == snapshot.window &&
            live.history_exempt == snapshot.history_exempt;
   };
-  // Invariant 3: the shared set was published in the display frame of its run. A run in
+  // The shared set was published in the display frame of its run. A run in
   // flight staged under offsets the restore may have moved since, and a set never
   // published has no frame to compare: both count as moved.
   const auto display_frame_moved = [this](const GeneratorRecipe& recipe) {

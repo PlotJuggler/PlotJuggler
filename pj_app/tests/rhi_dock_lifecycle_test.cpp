@@ -140,10 +140,9 @@ class RhiDockFixture : public ::testing::Test {
     PJ_SKIP_ON_HEADLESS_QPA();
     window_ = std::make_unique<QMainWindow>();
     manager_ = new ads::CDockManager(window_.get());
-    // Off xcb and Wayland, ADS's stays-on-top emulation calls setWindowFlag() on
-    // every visible floating container when the main window's activation changes,
-    // which hides it (pj_scene3D/docs/TECHNICAL_NOTES.md, ADS quirks); a floated dock
-    // can then vanish mid-test. Not what these tests are about.
+    // Off xcb and Wayland, ADS's stays-on-top emulation calls setWindowFlag() on every visible floating container
+    // when the main window's activation changes, which hides it (pj_scene3D/docs/TECHNICAL_NOTES.md "ADS and
+    // window-system quirks"); a floated dock can then vanish mid-test.
     window_->removeEventFilter(manager_);
     red_dock_ = addStandIn(u"red"_s, Qt::red, red_, ads::LeftDockWidgetArea);
     green_dock_ = addStandIn(u"green"_s, Qt::green, green_, ads::RightDockWidgetArea);
@@ -234,9 +233,9 @@ TEST_F(RhiDockFixture, SplittingAndMovingWithinTheWindowKeepRendering) {
   EXPECT_EQ(red_.stale, 0);
 }
 
-// A dock-area tab switch hides the previous tab but keeps it parented (our ADS
-// patch, pj_scene3D/docs/TECHNICAL_NOTES.md §5): a hidden tab stays in the
-// window with its resources and renders again without a new initialize().
+// A dock-area tab switch hides the previous tab but keeps it parented (our ADS fork, pj_scene3D/docs/TECHNICAL_NOTES.md
+// "ADS and window-system quirks"): a hidden tab stays in the window with its resources and renders again without a
+// new initialize().
 TEST_F(RhiDockFixture, HiddenTabsKeepTheirResources) {
   auto* blue_dock = new ads::CDockWidget(manager_, u"blue"_s);
   blue_dock->setWidget(new StandInRhiWidget(Qt::blue, blue_), ads::CDockWidget::ForceNoScrollArea);
@@ -260,10 +259,10 @@ TEST_F(RhiDockFixture, HiddenTabsKeepTheirResources) {
   EXPECT_EQ(green_.stale + blue_.stale, 0);
 }
 
-// The ADS operations around kept (hidden, parented) tabs: reordering, closing
-// and reopening a hidden and the current tab, a state save/restore, floating the
-// whole area, moving a hidden tab to another window and destroying a hidden tab. Every tab that is shown renders its
-// colour, none ever meets a new QRhi holding the old one's resources, and none holds more than one.
+// The ADS operations around kept (hidden, parented) tabs: reordering, closing and reopening a hidden and the
+// current tab, a state save/restore, floating the whole area, moving a hidden tab to another window and destroying a
+// hidden tab. Every tab that is shown renders its colour, none ever meets a new QRhi holding the old one's resources,
+// and none holds more than one.
 TEST_F(RhiDockFixture, OperationsOnKeptTabsKeepRendering) {
   Lifecycle cyan;
   auto* blue_dock = new ads::CDockWidget(manager_, u"blue"_s);
@@ -307,8 +306,8 @@ TEST_F(RhiDockFixture, OperationsOnKeptTabsKeepRendering) {
   current_renders("current tab reopened");
   EXPECT_EQ(green_.inits + blue_.inits + cyan.inits, 3) << "a tab operation within the window re-initialized";
 
-  // Before any floating window exists: restoring one hides and re-shows it at
-  // once, which Vulkan on Wayland does not survive (TECHNICAL_NOTES §5).
+  // Before any floating window exists: restoring one hides and re-shows it at once, which Vulkan on Wayland does not
+  // survive (pj_scene3D/docs/TECHNICAL_NOTES.md "ADS and window-system quirks").
   const QByteArray state = manager_->saveState();
   ASSERT_TRUE(manager_->restoreState(state));
   QApplication::processEvents();
@@ -374,9 +373,9 @@ TEST_F(RhiDockFixture, ClosingAFloatingWindowAndReopeningTheDockRendersAgain) {
   ASSERT_TRUE(QTest::qWaitFor([&] {
     return floating.isNull() || floating->windowHandle() == nullptr || !floating->windowHandle()->isExposed();
   }));
-  // Reopen only after the compositor has applied the unmap. Within a frame of a
-  // Vulkan present (Mesa's FIFO queues it) the new mapping is a Wayland protocol
-  // error that drops the connection; see pj_scene3D/docs/TECHNICAL_NOTES.md, ADS quirks.
+  // Reopen only after the compositor has applied the unmap. Within a frame of a Vulkan present (Mesa's FIFO queues
+  // it) the new mapping is a Wayland protocol error that drops the connection; see pj_scene3D/docs/TECHNICAL_NOTES.md
+  // "ADS and window-system quirks".
   QTest::qWait(100);
   EXPECT_TRUE(red_dock_->isClosed());
 
@@ -412,7 +411,8 @@ TEST_F(RhiDockFixture, FloatingDockMovedToAScreenWithAnotherPixelRatio) {
     if (qEnvironmentVariableIntValue("PJ_REQUIRE_MIXED_DPR") == 1) {
       FAIL() << "PJ_REQUIRE_MIXED_DPR=1 but no screen has another device-pixel ratio";
     }
-    GTEST_SKIP() << "needs two screens with different device-pixel ratios (TECHNICAL_NOTES §8, mixed-DPR lane)";
+    GTEST_SKIP()
+        << "needs two screens with different device-pixel ratios (pj_scene3D/docs/TECHNICAL_NOTES.md \"CI lanes\")";
   }
   if (QGuiApplication::platformName() == u"wayland") {
     GTEST_SKIP() << "the Wayland compositor places windows; run on xcb";

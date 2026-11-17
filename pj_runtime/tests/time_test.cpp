@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Compile-fence + behavior tests for the canonical time vocabulary (Time.h).
-// The static_asserts are the real point: they prove the type system rejects the
-// mistakes the vocabulary exists to prevent.
+// Compile-fence and behavior tests for the canonical time vocabulary (Time.h); the static_asserts prove the type
+// system rejects the mistakes the vocabulary exists to prevent.
 
 #include "pj_runtime/Time.h"
 
@@ -24,14 +23,14 @@ concept CanPassBracedDisplaySeconds = requires(T t) { [](PJ::DisplaySeconds) {}(
 template <class T>
 concept CanPassBracedDisplayRange = requires(T t) { [](PJ::DisplayRange) {}({t, t}); };
 
-// An absolute instant plus another absolute instant is meaningless and must not
-// compile — this is the instant-vs-duration guarantee std::chrono gives us.
+// An absolute instant plus an absolute instant is meaningless and must not compile (std::chrono's instant-vs-duration
+// guarantee).
 static_assert(!Addable<PJ::Timepoint, PJ::Timepoint>, "Timepoint + Timepoint must be ill-formed");
-// ...but instant - instant (a span) and instant + duration (a shifted instant) do.
+// instant + duration (a shifted instant) does compile.
 static_assert(Addable<PJ::Timepoint, PJ::Duration>, "Timepoint + Duration must compile");
 
-// DisplaySeconds must never silently interconvert with a bare double: the whole
-// point is that an absolute-seconds double can't masquerade as a display coord.
+// DisplaySeconds must never silently interconvert with a bare double, so an absolute-seconds double cannot
+// masquerade as a display coordinate.
 static_assert(!std::is_convertible_v<double, PJ::DisplaySeconds>);
 static_assert(!std::is_convertible_v<PJ::DisplaySeconds, double>);
 static_assert(!CanPassBracedDisplaySeconds<double>);

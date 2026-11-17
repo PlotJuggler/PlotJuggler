@@ -1,11 +1,9 @@
 #pragma once
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
-//
-// Two-handle range slider with floating value/duration labels, so plugin .ui
-// files (loaded by the host's custom QUiLoader) can declare a real range
-// slider by class name "RangeSlider". Data + the rangeChanged event flow
-// through the WidgetData protocol; see widget_binding.cpp.
+// Two-handle range slider with floating value and duration labels, so a plugin .ui (loaded by the host's QUiLoader) can
+// declare a real range slider by the class name "RangeSlider". Data and the rangeChanged event flow through the
+// WidgetData protocol (widget_binding.cpp).
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -37,11 +35,10 @@ class RangeSlider : public QWidget {
 
   void setOptions(Options t);
 
-  // Boundary segments: one box per marker covering [start, end] (in slider
-  // units) drawn at its TRUE extent — so disjoint selections leave blank slider
-  // space between boxes — with an optional label centered inside and a tint over
-  // the boxes overlapping the current [lower, upper] selection. Lets the slider
-  // double as a segment ("which chunk falls in the range") indicator. Empty clears.
+  // Boundary segments: one box per marker covering [start, end] (in slider units) at its true extent, so disjoint
+  // selections leave blank slider space between boxes, with an optional centered label and a tint over the boxes
+  // overlapping the current [lower, upper] selection. The slider doubles as a "which chunk falls in the range"
+  // indicator. Empty clears.
   struct Marker {
     int start = 0;
     int end = 0;
@@ -51,11 +48,11 @@ class RangeSlider : public QWidget {
   void setShowHandleValueTooltip(bool on);
   bool showHandleValueTooltip() const;
 
-  // Floating labels — painted above handles during drag.
+  // Floating labels, painted above the handles during a drag.
   void setFloatingLabelsVisible(bool on);
   bool floatingLabelsVisible() const;
 
-  // Custom formatters for floating labels (default: decimal number).
+  // Custom formatters for the floating labels (default: decimal number).
   void setLabelFormatter(std::function<QString(double)> formatter);
   void setCenterLabelFormatter(std::function<QString(double, double)> formatter);
 
@@ -95,17 +92,13 @@ class RangeSlider : public QWidget {
   Q_DISABLE_COPY(RangeSlider)
   int validLength() const;
 
-  // Y of the track's top (horizontal orientation). With floating labels the
-  // per-handle labels occupy a row ABOVE the track, so the track sits just below
-  // that row; without them the track is vertically centered.
+  // Y of the track's top (horizontal orientation). With floating labels the per-handle labels occupy a row above the
+  // track, so the track sits just below it; without them the track is vertically centered.
   int trackTop() const;
 
-  // Height of the groove + handles (horizontal orientation). Defaults to
-  // kScTrackHeight but GROWS to fill the widget when it is given more vertical
-  // room than its minimum needs (e.g. stretched to match a taller neighbour), so
-  // the visible slider area — not just its bounding box — gets taller. At the
-  // natural minimum height this equals kScTrackHeight, so short sliders are
-  // unchanged.
+  // Height of the groove and handles (horizontal orientation): kScTrackHeight, growing to fill the widget when it gets
+  // more vertical room than its minimum needs (stretched to match a taller neighbour), so the visible slider area, not
+  // just its bounding box, gets taller. At the natural minimum height it equals kScTrackHeight.
   int trackHeight() const;
 
   int minimum_ = 0;

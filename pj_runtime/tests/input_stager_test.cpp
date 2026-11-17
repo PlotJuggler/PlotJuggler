@@ -219,7 +219,7 @@ struct Fixture {
 
 // ---- Where the work happens -------------------------------------------------------------------------
 
-// §9 requirement 5: staging resolves a lazy entry by identity; only decoding fetches it.
+// Staging resolves a lazy entry by identity; only decoding fetches it.
 TEST(InputStagerTest, StagingFetchesNoPayload) {
   Fixture fx;
   LazySource source(canonicalCloud(4));
@@ -237,7 +237,7 @@ TEST(InputStagerTest, StagingFetchesNoPayload) {
   EXPECT_EQ(cloudIn(decoded.values[0])->width, 4u);
 }
 
-// GAP-26: decode on another thread; the lazy fetch and the parse run there, not on the staging thread.
+// Decode on another thread; the lazy fetch and the parse run there, not on the staging thread.
 TEST(InputStagerTest, DecodeRunsOnAnotherThread) {
   Fixture fx;
   LazySource source(rawPoints(8));
@@ -276,7 +276,7 @@ TEST(InputStagerTest, ParserBackedInputDecodesUnderItsTopicLock) {
   EXPECT_EQ(cloudIn(decoded.values[0])->width, 5u);
 }
 
-// GAP-49, the input half: staging and decoding never serialize nor copy an input. Each decoded object is
+// Staging and decoding never serialize nor copy an input. Each decoded object is
 // the bytes it came from: the parser's view of the fetched bytes, a canonical point cloud's view over the
 // store payload, an upstream output's view over its ring entry. A consumer sizes it from its fields.
 TEST(InputStagerTest, StagingAndDecodingNeverSerialize) {
@@ -355,7 +355,7 @@ TEST(InputStagerTest, AFailedFetchIsAMissingInput) {
 
 // ---- What staging resolves --------------------------------------------------------------------------
 
-// CUR-01, the staging half: the result time is the newest resolved input, an upstream contributing its
+// The result time is the newest resolved input, an upstream contributing its
 // result stamp. A scalar is copied at staging.
 TEST(InputStagerTest, StampIsTheNewestResolvedInput) {
   Fixture fx;
@@ -378,7 +378,7 @@ TEST(InputStagerTest, StampIsTheNewestResolvedInput) {
   EXPECT_EQ(fx.staged(count, 20 * kSec).stamp, 15 * kSec) << "the upstream's result";
 }
 
-// D4, D5: a string series is staged like a number: its sample at or before `t` copied, its identity (the series and
+// A string series is staged like a number: its sample at or before `t` copied, its identity (the series and
 // the sample's row) in the cache key; the decode hands the script the string.
 TEST(InputStagerTest, StringSampleIsStagedByIdentity) {
   Fixture fx;
@@ -409,7 +409,7 @@ TEST(InputStagerTest, StringSampleIsStagedByIdentity) {
   EXPECT_EQ(source.fetches.load(), 1) << "only the decode fetched";
 }
 
-// D6: a string input with nothing at or before `t` is missing by its alias, as a number is.
+// A string input with nothing at or before `t` is missing by its alias, as a number is.
 TEST(InputStagerTest, StringInputBeforeItsFirstSampleIsMissing) {
   Fixture fx;
   LazySource source(canonicalCloud(1));
@@ -422,7 +422,7 @@ TEST(InputStagerTest, StringInputBeforeItsFirstSampleIsMissing) {
   EXPECT_EQ(fx.stager.newestInputStamp(node), 12 * kSec) << "the live edge sees the string sample";
 }
 
-// D6: a null string row is a missing input at and after its time, yet it moves the live edge, so the result the
+// A null string row is a missing input at and after its time, yet it moves the live edge, so the result the
 // previous string made does not stay displayed.
 TEST(InputStagerTest, ANullStringRowIsMissingAndMovesTheLiveEdge) {
   Fixture fx;
@@ -442,7 +442,7 @@ TEST(InputStagerTest, ANullStringRowIsMissingAndMovesTheLiveEdge) {
   EXPECT_FALSE(fx.stager.appendRawIdentities(node, 20 * kSec, identities)) << "nothing to read there";
 }
 
-// §10: equal-time string rows are told apart by their row, not by a hash of their text: these two hash alike on a
+// Equal-time string rows are told apart by their row, not by a hash of their text: these two hash alike on a
 // 64-bit libstdc++ (0x83cc3862a8c12ca1), so a key holding the hash would serve the first one's result for the second.
 TEST(InputStagerTest, EqualTimeStringRowsNeverShareAnIdentity) {
   Fixture fx;
@@ -461,7 +461,7 @@ TEST(InputStagerTest, EqualTimeStringRowsNeverShareAnIdentity) {
   EXPECT_NE(fx.staged(node, 20 * kSec).key, fx.staged(node, 30 * kSec).key);
 }
 
-// D6: an input with nothing at or before `t` is reported by its alias, and nothing runs.
+// An input with nothing at or before `t` is reported by its alias, and nothing runs.
 TEST(InputStagerTest, MissingInputIsReportedByName) {
   Fixture fx;
   LazySource source(canonicalCloud(1));
@@ -513,8 +513,8 @@ TEST(InputStagerTest, DecodedInputCarriesItsEntryStampShift) {
 
 // ---- Upstream results -------------------------------------------------------------------------------
 
-// GAP-13 (changed, decided 2026-10-18): the compute cache keeps no decoded copy of a result the ring holds,
-// so a downstream decodes its upstream's output from the ring entry, a point cloud as a view over its bytes.
+// The compute cache keeps no decoded copy of a result the ring holds, so a downstream decodes its upstream's output
+// from the ring entry, a point cloud as a view over its bytes.
 // An entry gone before the decode is a missing input.
 TEST(InputStagerTest, DownstreamDecodesItsUpstreamOutputFromTheRing) {
   constexpr size_t kPoints = 1000;
@@ -541,7 +541,7 @@ TEST(InputStagerTest, DownstreamDecodesItsUpstreamOutputFromTheRing) {
   EXPECT_EQ(gone.error(), "on-demand: missing input 'owner/crop/cropped'");
 }
 
-// D25 (DAG-06, GAP-30): an unavailable upstream output is a missing input with its reason, never the empty
+// An unavailable upstream output is a missing input with its reason, never the empty
 // object the ring holds for it; a sibling output of the same result still flows.
 TEST(InputStagerTest, AnUnavailableUpstreamOutputIsAMissingInput) {
   Fixture fx;
@@ -561,8 +561,8 @@ TEST(InputStagerTest, AnUnavailableUpstreamOutputIsAMissingInput) {
   EXPECT_EQ(fx.stageError(rest, 12 * kSec), "");
 }
 
-// Decided 2026-10-18: a computation reads a pinned finding only from its real stamp, although the store
-// holds it at `kFindingTimestamp` and the display shows it at any instant.
+// A computation reads a pinned finding only from its real stamp, although the store holds it at `kFindingTimestamp`
+// and the display shows it at any instant.
 TEST(InputStagerTest, APinnedFindingIsAnInputOnlyFromItsRealStamp) {
   Fixture fx;
   LazySource source(canonicalCloud(1));
@@ -583,8 +583,9 @@ TEST(InputStagerTest, APinnedFindingIsAnInputOnlyFromItsRealStamp) {
   EXPECT_EQ(fx.staged(count, 20 * kSec).stamp, 15 * kSec);
 }
 
-// The live edge's lookup (ARCHITECTURE §16): the newest raw input stamp, found by identity (nothing fetched or
-// parsed), an upstream's output left to the caller; no sample is no stamp, a negative one is a stamp.
+// The live edge's lookup (docs/derived_objects/ARCHITECTURE.md "Streaming"): the newest raw input stamp, found by
+// identity (nothing fetched or parsed), an upstream's output left to the caller; no sample is no stamp, a negative one
+// is a stamp.
 TEST(InputStagerTest, NewestInputStampReadsIdentitiesOnly) {
   Fixture fx;
   LazySource cloud(canonicalCloud(4));
@@ -634,8 +635,8 @@ TEST(InputStagerTest, AnInputTopicRegisteredAgainUnderItsNameIsFollowed) {
   EXPECT_EQ(std::get<InputStager::Entry>(staged.inputs[0].value).topic, again);
 }
 
-// Slice 8a-1: an explicit evaluation feeds a reader its own upstream results through overrides: the reader stages
-// them (stamp, identity, value) instead of what the ring shows, and an unavailable one is its missing input (D25).
+// An explicit evaluation feeds a reader its own upstream results through overrides: the reader stages them (stamp,
+// identity, value) instead of what the ring shows, and an unavailable one is its missing input.
 TEST(InputStagerTest, OverridesFeedADownstreamWithoutTheHistory) {
   Fixture fx;
   LazySource source(canonicalCloud(1));
@@ -675,7 +676,7 @@ TEST(InputStagerTest, OverridesFeedADownstreamWithoutTheHistory) {
 
 // ---- The cache key ----------------------------------------------------------------------------------
 
-// §10: each input identity is part of the request's key (an object's uid and parser, a scalar sample's
+// Each input identity is part of the request's key (an object's uid and parser, a scalar sample's
 // series, timestamp and value, an upstream's entry, which a new upstream revision replaces), and so is the
 // epoch; a write to a topic the node does not read is not.
 TEST(InputStagerTest, CacheKeyChangesWithEachInputIdentity) {
@@ -728,7 +729,7 @@ TEST(InputStagerTest, CacheKeyChangesWithEachInputIdentity) {
 
 constexpr int kBenchRuns = 101;
 
-// GAP-26 (PJ_BENCH=1): the GUI cost of staging a lazily stored 260k-point cloud against a 1-point one,
+// The GUI cost of staging a lazily stored 260k-point cloud against a 1-point one,
 // and the worker cost of decoding it (its fetch, a view here, plus the canonical decode, a view too).
 TEST(InputStagerBench, StageAndDecodeALazyPointCloud) {
   if (!sdk::getEnv("PJ_BENCH")) {

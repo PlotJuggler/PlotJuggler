@@ -1,18 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Dock-level "droppable into 3D" gate. Scene3DDockWidget::addTopic accepts a
-// DEPTH-encoded sdk::Image (kImage) and builds a DepthCloud layer, but refuses a
-// COLOR image that shares the kImage type. This is the integration point behind
-// drag-drop reachability: a depth topic absorbed into an existing 3D dock becomes
-// a layer, while a color image dropped on a 3D view is rejected (so the host's
-// "committed object dock refused the topic" path fires instead of a broken layer).
+// Dock-level "droppable into 3D" gate: Scene3DDockWidget::addTopic accepts a DEPTH-encoded sdk::Image (kImage) as a
+// DepthCloud layer but refuses a COLOUR image sharing the kImage type, so a depth topic dropped on a 3D dock becomes a
+// layer while a colour image is rejected (the host's "committed object dock refused the topic" path fires).
 //
-// The dock is exercised through its public IObjectViewer surface against a real
-// SessionManager/ObjectStore. The view is created lazily (a queued singleShot
-// in the base ctor) and never shown here, so no GPU is required — addTopic only
-// touches the view behind a `view_ != nullptr` guard, and building a
-// DepthCloudLayer is pure CPU.
+// Exercised through the public IObjectViewer surface against a real SessionManager/ObjectStore; the view is created
+// lazily (a queued singleShot in the base ctor) and never shown, so no GPU is required (addTopic touches the view only
+// behind `view_ != nullptr`, and a DepthCloudLayer is pure CPU).
 
 #include <gtest/gtest.h>
 
@@ -85,7 +80,6 @@ TEST(Scene3DDockDepthGate, AcceptsDepthEncodedImageAsDepthCloud) {
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
 
-  // kImage is handled at the type level; the dock then peeks the encoding.
   EXPECT_TRUE(PJ::Scene3DDockWidget::handlesObjectType(PJ::sdk::BuiltinObjectType::kImage));
   EXPECT_TRUE(dock.canAcceptObjectTopic(depth, PJ::sdk::BuiltinObjectType::kImage));
   EXPECT_TRUE(dock.layers().empty()) << "hover must not create a layer";
@@ -108,7 +102,6 @@ TEST(Scene3DDockDepthGate, RefusesColorImage) {
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
 
-  // The encoding gate refuses a color image even though kImage is "handled".
   EXPECT_FALSE(dock.canAcceptObjectTopic(color, PJ::sdk::BuiltinObjectType::kImage));
   EXPECT_FALSE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, u"color"_s));
   EXPECT_TRUE(dock.layers().empty()) << "a color image must NOT become a 3D layer";

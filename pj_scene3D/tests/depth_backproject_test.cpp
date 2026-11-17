@@ -34,7 +34,6 @@ PJ::sdk::DepthImage make32FC1(uint32_t w, uint32_t h, const std::vector<float>& 
   return img;
 }
 
-// Build a "16UC1" DepthImage (uint16 millimetres).
 PJ::sdk::DepthImage make16UC1(uint32_t w, uint32_t h, const std::vector<uint16_t>& depths_mm) {
   auto buf = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(w) * h * 2U);
   std::memcpy(buf->data(), depths_mm.data(), buf->size());
@@ -59,7 +58,6 @@ TEST(IntrinsicsFromK, ReadsComponentsAndValidity) {
   EXPECT_EQ(intr.width, 640U);
   EXPECT_EQ(intr.height, 480U);
 
-  // Zero K (unset intrinsics) is invalid.
   EXPECT_FALSE(intrinsicsFromK(std::array<double, 9>{}, 640, 480).valid());
 }
 
@@ -88,14 +86,12 @@ TEST(DepthToPoints, Float32PinholeAndZeroCulling) {
   EXPECT_NEAR(pts[2].y, 0.02f, kEps);
   EXPECT_NEAR(pts[2].z, 4.0f, kEps);
 
-  // scalar_out carries depth in metres, parallel to positions.
   EXPECT_NEAR(scalar[0], 2.0f, kEps);
   EXPECT_NEAR(scalar[1], 3.0f, kEps);
   EXPECT_NEAR(scalar[2], 4.0f, kEps);
 }
 
 TEST(DepthToPoints, Uint16MillimetreDecodeMatchesFloat) {
-  // Same geometry, depths in millimetres -> metres.
   const auto img = make16UC1(2, 2, {2000, 0, 3000, 4000});
   const auto intr = intrinsicsFromK(makeK(100.0, 100.0, 0.5, 0.5), 0, 0);
 
@@ -140,7 +136,6 @@ TEST(DepthToPoints, StrideDecimates) {
   BackprojectOptions opts;
   opts.stride = 2;
   EXPECT_EQ(depthToPoints(img, intr, opts, nullptr).size(), 4U);
-  // stride 0 is clamped to 1 (no decimation, all 16).
   opts.stride = 0;
   EXPECT_EQ(depthToPoints(img, intr, opts, nullptr).size(), 16U);
 }
@@ -171,7 +166,6 @@ TEST(DepthToPoints, BoundsAndScalarRangeAccumulatedInOnePass) {
   const auto pts = depthToPoints(img, intr, BackprojectOptions{}, &scalar, &bounds, &range);
   ASSERT_EQ(pts.size(), 3U);
 
-  // AABB over the kept points (the layer's world bounds) — no separate sweep.
   ASSERT_TRUE(bounds.valid);
   EXPECT_NEAR(bounds.min.x, -0.015f, kEps);
   EXPECT_NEAR(bounds.min.y, -0.01f, kEps);
@@ -180,13 +174,11 @@ TEST(DepthToPoints, BoundsAndScalarRangeAccumulatedInOnePass) {
   EXPECT_NEAR(bounds.max.y, 0.02f, kEps);
   EXPECT_NEAR(bounds.max.z, 4.0f, kEps);
 
-  // Colormap range = {min depth, max depth}, ready to consume.
   EXPECT_NEAR(range.min, 2.0f, kEps);
   EXPECT_NEAR(range.max, 4.0f, kEps);
 }
 
 TEST(DepthToPoints, EmptyResultGivesInvalidBoundsAndUnitRange) {
-  // All "no return" (z<=0) -> zero kept points.
   const auto img = make32FC1(2, 2, {0.0f, 0.0f, 0.0f, 0.0f});
   const auto intr = intrinsicsFromK(makeK(100.0, 100.0, 0.5, 0.5), 0, 0);
 
@@ -223,7 +215,6 @@ TEST(DepthToPoints, RejectsBadEncodingAndShortBuffer) {
   truncated.data = PJ::Span<const uint8_t>(truncated.data.data(), 4U);
   EXPECT_TRUE(depthToPoints(truncated, intr, BackprojectOptions{}, nullptr).empty());
 
-  // Invalid intrinsics.
   EXPECT_TRUE(depthToPoints(make32FC1(2, 2, {1, 1, 1, 1}), DepthIntrinsics{}, BackprojectOptions{}, nullptr).empty());
 }
 

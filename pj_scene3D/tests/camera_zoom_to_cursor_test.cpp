@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// U3 ACCEPTANCE GATE: cursor-anchored zoom must keep the world point under the
-// cursor pixel-locked. Pick a pixel, unproject it to the ground point P under the
-// cursor, zoomToCursor at that pixel, then re-project P and assert its NDC is
-// unchanged (within 1e-3). Also assert no NaN near the nadir singularity.
+// Cursor-anchored zoom must keep the world point under the cursor pixel-locked: pick a pixel, unproject it to the
+// ground point P, zoomToCursor at that pixel, re-project P and assert its NDC is unchanged (within 1e-3); no NaN near
+// the nadir singularity.
 
 #include <gtest/gtest.h>
 
@@ -30,13 +29,11 @@ glm::vec2 pixelToNdc(glm::vec2 px) {
   return glm::vec2{2.0f * px.x / static_cast<float>(kW) - 1.0f, 1.0f - 2.0f * px.y / static_cast<float>(kH)};
 }
 
-// NDC.xy of a world point under the given view/proj (perspective divide).
 glm::vec2 projectToNdc(const glm::vec3& p, const glm::mat4& view, const glm::mat4& proj) {
   const glm::vec4 clip = proj * view * glm::vec4(p, 1.0f);
   return glm::vec2{clip.x / clip.w, clip.y / clip.w};
 }
 
-// World point on the ground (z=0) under `pixel`, for the camera's current pose.
 bool groundPointUnderPixel(const OrbitCamera& cam, glm::vec2 pixel, glm::vec3& out) {
   const glm::mat4 view = cam.viewMatrix();
   const glm::mat4 proj = cam.projMatrix(kAspect);
@@ -143,9 +140,8 @@ TEST(ZoomToCursorOrtho, CursorPointStaysPixelLocked) {
 }
 
 TEST(ZoomToCursor, UpwardSkyPixelStaysFinite) {
-  // A pixel toward the sky may miss the ground plane; the focal-plane fallback
-  // (or, failing that, center zoom) keeps the result finite and shrinking — never
-  // a NaN or runaway.
+  // A pixel toward the sky may miss the ground plane; the focal-plane fallback (or centre zoom) keeps the result finite
+  // and shrinking, never NaN or runaway.
   OrbitCamera cam;
   CameraState s;
   s.focal = glm::vec3{0.0f};
@@ -162,10 +158,8 @@ TEST(ZoomToCursor, UpwardSkyPixelStaysFinite) {
 }
 
 TEST(ZoomToCursor, HorizonGrazeDoesNotTeleport) {
-  // Low elevation + a cursor just below the horizon makes the z=0 ground ray graze
-  // the plane: t blows up to hundreds of metres. Without a hit-distance cap the
-  // homothety flings the camera. The fix rejects the grazing ground hit and falls
-  // through to the focal-plane anchor, keeping the move bounded (M.6).
+  // Low elevation plus a cursor just below the horizon makes the z=0 ground ray graze the plane (t in the hundreds of
+  // metres); the grazing hit must be rejected in favour of the focal-plane anchor, keeping the move bounded.
   OrbitCamera cam;
   CameraState s;
   s.focal = glm::vec3{0.0f};
@@ -185,14 +179,11 @@ TEST(ZoomToCursor, HorizonGrazeDoesNotTeleport) {
 }
 
 TEST(ZoomToCursor, PreservesOrientationAtLargeCoordinates) {
-  // "Follow a frame" parks the orbit pivot on the followed frame's world origin.
-  // When the fixed frame is far away (UTM / GPS-scale coordinates, ~1e5..1e7 m)
-  // the pivot sits at a magnitude where float32 has ~0.1..0.6 m of resolution. A
-  // homothety about the cursor point CANNOT rotate the orbit, yet re-deriving
-  // azimuth/elevation by differencing two ~1e6 eye/focal vectors injects rounding
-  // noise that spuriously spins the view a fraction of a degree on every scroll
-  // tick (measured ~1.9° per tick at focal 5e6). Pin orientation across a zoom at
-  // a far pivot: the angles must hold and it must still be a real zoom-in.
+  // "Follow a frame" parks the pivot at the followed frame's world origin; far away (UTM/GPS scale, ~1e5..1e7 m)
+  // float32 resolves only ~0.1..0.6 m there. A homothety about the cursor cannot rotate the orbit, yet re-deriving
+  // azimuth/elevation by differencing two ~1e6 eye/focal vectors injects rounding noise that spins the view (about 1.9°
+  // per tick at focal 5e6). Pin orientation across a zoom at a far pivot: the angles hold and it is still a real
+  // zoom-in.
   for (const float far_origin : {1.0e5f, 1.0e6f, 5.0e6f}) {
     OrbitCamera cam;
     CameraState s;
@@ -213,11 +204,9 @@ TEST(ZoomToCursor, PreservesOrientationAtLargeCoordinates) {
 }
 
 TEST(ZoomToCursor, CursorStaysPixelLockedWhenRadiusClamps) {
-  // A very deep zoom-in drives s*radius below the near-plane radius floor (lo), so the
-  // radius clamps. The pivot slide must use the EFFECTIVE (post-clamp) homothety factor
-  // — otherwise the focal is slid for the unclamped radius and the point under the
-  // cursor slips off the pointer exactly when the clamp bites. Regression guard for the
-  // dropped setEyeFocal re-anchor (the old code re-anchored the focal after clamping).
+  // A very deep zoom-in drives s*radius below the radius floor (lo), so the radius clamps. The pivot slide must use
+  // the EFFECTIVE (post-clamp) factor, else the point under the cursor slips off the pointer exactly when the clamp
+  // bites.
   const glm::vec2 pixel{520.0f, 300.0f};
   OrbitCamera cam = makeOffAxisCamera();  // focal 0, radius 10, off-axis; no scene bounds
   glm::vec3 p{};
@@ -226,8 +215,7 @@ TEST(ZoomToCursor, CursorStaysPixelLockedWhenRadiusClamps) {
 
   cam.zoomToCursor(60.0f, pixel, kW, kH);  // 60 ticks: s*10 ≈ 0.018 < lo, so radius clamps
 
-  // The clamp must actually engage, else the test proves nothing. lo = 2*max(r*1e-2,1e-3)
-  // = 0.2 for r=10, so a clamped radius lands at the floor, far above the unclamped 0.018.
+  // The clamp must actually engage: lo = 2*max(r*1e-2,1e-3) = 0.2 for r=10, far above the unclamped 0.018.
   ASSERT_NEAR(cam.state().radius, 0.2f, 1e-3f) << "radius clamp did not engage";
   const glm::vec2 ndc_after = projectToNdc(p, cam.viewMatrix(), cam.projMatrix(kAspect));
   EXPECT_NEAR(ndc_after.x, ndc_before.x, 1e-3f) << "cursor point slipped when radius clamped";
@@ -235,12 +223,10 @@ TEST(ZoomToCursor, CursorStaysPixelLockedWhenRadiusClamps) {
 }
 
 TEST(ZoomToCursor, XYOrbitGroundLockPreservesOrientationAtLargeCoordinates) {
-  // The ground-locked XYOrbit re-flattens its pivot to z=0 after the inherited zoom. If
-  // that flatten re-derives the orbit angles from (eye − focal) — two ~1e6 vectors when
-  // following a far frame — it resurrects the very spurious-spin the base fix removes.
-  // Drive a cursor that misses the ground (so the focal-plane fallback lifts focal.z off
-  // the floor and the flatten path actually fires) at UTM-scale coordinates, and assert
-  // the heading/pitch hold and the pivot returns exactly to z=0.
+  // The ground-locked XYOrbit re-flattens its pivot to z=0 after the inherited zoom; re-deriving the angles from
+  // (eye − focal) there (two ~1e6 vectors when following a far frame) would reintroduce the spin. Drive a cursor that
+  // misses the ground (so the focal-plane fallback lifts focal.z and the flatten fires) at UTM-scale coordinates, and
+  // assert heading/pitch hold and the pivot returns exactly to z=0.
   for (const float far_origin : {1.0e5f, 1.0e6f, 5.0e6f}) {
     XYOrbitCamera cam;
     CameraState s;
@@ -252,8 +238,8 @@ TEST(ZoomToCursor, XYOrbitGroundLockPreservesOrientationAtLargeCoordinates) {
     const float az0 = cam.state().azimuth;
     const float el0 = cam.state().elevation;
 
-    // A pixel near the top of the view aims above the horizon → the z=0 ground ray
-    // misses, so zoomToCursor falls back to the focal-plane anchor (target.z != 0).
+    // A pixel near the top aims above the horizon: the z=0 ground ray misses, so zoomToCursor falls back to the
+    // focal-plane anchor (target.z != 0).
     cam.zoomToCursor(1.0f, glm::vec2{400.0f, 15.0f}, kW, kH);
 
     EXPECT_NEAR(cam.state().azimuth, az0, 1e-4f) << "XYOrbit heading spun at focal " << far_origin;
@@ -263,9 +249,8 @@ TEST(ZoomToCursor, XYOrbitGroundLockPreservesOrientationAtLargeCoordinates) {
 }
 
 TEST(CameraRelativeView, EqualsAbsoluteViewAtZeroOrigin) {
-  // viewMatrixRelativeTo({0,0,0}) must be the plain absolute viewMatrix() — the
-  // camera-relative path is a no-op transformation when the origin is the world
-  // origin, so existing (small-coordinate) scenes render bit-for-bit as before.
+  // viewMatrixRelativeTo({0,0,0}) must equal the absolute viewMatrix(), so small-coordinate scenes render bit-for-bit
+  // unchanged.
   OrbitCamera cam;
   CameraState s;
   s.focal = glm::vec3{1.0f, 2.0f, 3.0f};
@@ -283,12 +268,10 @@ TEST(CameraRelativeView, EqualsAbsoluteViewAtZeroOrigin) {
 }
 
 TEST(CameraRelativeView, FocalStaysPixelLockedZoomingAtLargeCoordinates) {
-  // The render bug: a camera following a far frame sits at ~1e6, where the absolute
-  // viewMatrix() loses the eye→geometry delta to float32 cancellation, so the whole
-  // scene SWIMS on screen even during a pure radius change (the look-at point should
-  // hold dead-centre but drifts 8..26 px). Rendering relative to the focal restores
-  // an exact pixel lock at any scale. Project the focal (origin-relative, ~0) before
-  // and after a pure zoom; its screen position must not move.
+  // A camera following a far frame sits at ~1e6, where the absolute viewMatrix() loses the eye→geometry delta to
+  // float32 cancellation and the scene SWIMS even during a pure radius change (the look-at point drifts 8..26 px).
+  // Rendering relative to the focal restores an exact pixel lock at any scale: project the focal (origin-relative,
+  // ~0) before and after a pure zoom; it must not move.
   for (const float far_origin : {1.0e5f, 1.0e6f, 5.0e6f}) {
     OrbitCamera cam;
     CameraState s;

@@ -8,8 +8,8 @@
 
 namespace PJ {
 
-// Floating-point variant of the Blender-style scrubber. Public API mirrors
-// QDoubleSpinBox so .ui files can be migrated by promoting the widget.
+// Floating-point variant of the Blender-style scrubber; the API mirrors QDoubleSpinBox, so a .ui migrates by promoting
+// the widget.
 class DoubleScrubber : public ScrubberBase {
   Q_OBJECT
   Q_PROPERTY(double value READ value WRITE setValue NOTIFY valueChanged USER true)

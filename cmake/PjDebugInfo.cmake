@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 # Debug-information policy for Release trees (every PlotJuggler build is Release:
 # CMake's stock optimisation flags, plus the debug info chosen here). Sizes measured
-# 2026-09-08 (workspace findings): with plain -g every executable is ~94 % DWARF and the
+# 2026-09-08: with plain -g every executable is ~94 % DWARF and the
 # same module DWARF is copied into each of 300+ test binaries. Split DWARF
 # stores it once per object (.dwo); type units dedupe Qt template types within
 # a link; zlib halves what remains. Mach-O keeps DWARF in the object files, so

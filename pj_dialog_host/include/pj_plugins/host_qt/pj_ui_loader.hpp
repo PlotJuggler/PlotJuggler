@@ -2,11 +2,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// QUiLoader subclass that teaches QUiLoader to instantiate the host-provided
-// custom widgets (RangeSlider, DateRangePicker, CredentialsEditor) so plugin .ui files can declare
-// them by class name. Plain Qt widget classes fall through to the base
-// QUiLoader. Used by both PanelEngine and DialogEngine so every dialog/panel
-// sees the same widget vocabulary.
+// QUiLoader that instantiates the host-provided widgets (see createWidget in pj_ui_loader.cpp) that plugin .ui
+// files declare by class name; plain Qt classes fall through to QUiLoader. Both engines use it, so every dialog
+// and panel sees the same widget vocabulary.
 
 #include <QUiLoader>
 

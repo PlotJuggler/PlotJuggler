@@ -69,8 +69,8 @@ TEST(GraphicsApiTest, AnOverrideThatCannotStartFallsBackToTheBuildPolicy) {
       << static_cast<int>(preferred);
 }
 
-// A static upload issued in pieces lands in the buffer exactly as one upload
-// would, on either side of the 64 KiB split, with an offset.
+// A static upload issued in pieces lands in the buffer exactly as one upload would, on either side of the 64 KiB split,
+// with an offset.
 TEST(GraphicsApiTest, UploadStaticBufferInPiecesWritesEveryByte) {
   QRhiNullInitParams params;
   std::unique_ptr<QRhi> rhi(QRhi::create(QRhi::Null, &params));

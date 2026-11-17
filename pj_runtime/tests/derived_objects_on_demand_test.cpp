@@ -1,11 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// On-demand recipes in the layout protocol (docs/derived_objects/ARCHITECTURE.md §13): <on_demand> entries save,
-// parse and restore through DerivedObjects, ordered by dependency; an unchanged recipe keeps its topic, entry and
-// state; a changed dependency, an upstream's or a replaced transform output, runs its readers again; the sweep
-// retires what no install reclaimed, once; findings come back at their pin. Driven through a real AppSession with
-// the fake script run (`test::FakeRun`).
+// On-demand recipes in the layout protocol (docs/derived_objects/ARCHITECTURE.md "Life cycle of recipes and results"):
+// <on_demand> entries save, parse and restore through DerivedObjects, ordered by dependency; an unchanged recipe keeps
+// its topic, entry and state; a changed dependency, an upstream's or a replaced transform output, runs its readers
+// again; the sweep retires what no install reclaimed, once; findings come back at their pin. Driven through a real
+// AppSession with the fake script run (`test::FakeRun`).
 
 #include <gtest/gtest.h>
 
@@ -243,7 +243,7 @@ TEST(DerivedObjectsTest, OnDemandRoundTripKeepsTheLayoutFormat) {
   EXPECT_EQ(target.savedBlock(), first_save);
 }
 
-// LAY-09: a reader written before its producer still restores, bound to it.
+// A reader written before its producer still restores, bound to it.
 TEST(DerivedObjectsTest, OnDemandRestoreOrdersByDependency) {
   Fixture fixture;
   const QDomDocument doc = parseXml(
@@ -505,7 +505,7 @@ TEST(DerivedObjectsTest, AHistorySnapshotAfterAMergeKeepsAQualifiedReader) {
   expectReadsFrom(fixture.onDemand().graph(), "owner/reader", "owner/crop");
 }
 
-// LAY-10: a cycle, and a reader of one, are reported "cyclic"; the independent recipe beside them restores.
+// A cycle, and a reader of one, are reported "cyclic"; the independent recipe beside them restores.
 TEST(DerivedObjectsTest, CyclesAreDiagnosedWithoutDroppingIndependentRecipes) {
   Fixture fixture;
   const QDomDocument doc = parseXml(
@@ -537,7 +537,7 @@ TEST(DerivedObjectsTest, CyclesAreDiagnosedWithoutDroppingIndependentRecipes) {
   EXPECT_EQ(fixture.onDemand().graph().find("owner/blocked"), nullptr);
 }
 
-// LAY-07: an unchanged recipe is not re-created by a restore under either intent: same revision, same topic id.
+// An unchanged recipe is not re-created by a restore under either intent: same revision, same topic id.
 TEST(DerivedObjectsTest, UnchangedOnDemandRecipeKeepsItsTopicId) {
   for (const RestoreIntent intent : {RestoreIntent::kReplace, RestoreIntent::kHistory}) {
     SCOPED_TRACE(intent == RestoreIntent::kReplace ? "kReplace" : "kHistory");
@@ -585,7 +585,7 @@ TEST(DerivedObjectsTest, UnchangedRecipeKeepsItsEntryAndRunsNothing) {
   }
 }
 
-// LAY-08: a layout written by the prototype carries `infer_outputs` and `label`; both are read and ignored, so the
+// A layout written by the prototype carries `infer_outputs` and `label`; both are read and ignored, so the
 // entry describes the live recipe unchanged, and a save does not write them back.
 TEST(DerivedObjectsTest, InferOutputsAttributeIsIgnoredAndIsNotAChange) {
   Fixture fixture;
@@ -605,7 +605,7 @@ TEST(DerivedObjectsTest, InferOutputsAttributeIsIgnoredAndIsNotAChange) {
   EXPECT_FALSE(saved.contains("label"));
 }
 
-// LAY-01: the clear keeps the cleared nodes' topics until the sweep; a reinstall under the same output reclaims its
+// The clear keeps the cleared nodes' topics until the sweep; a reinstall under the same output reclaims its
 // id, a node no install reclaims has its topic retired, and the restore announces the change once. A restore that
 // changes nothing announces nothing.
 TEST(DerivedObjectsTest, SweepAfterRestoreRetiresUnclaimedTopicsOnce) {
@@ -648,7 +648,7 @@ return {}
   EXPECT_EQ(announced.count(), 0) << "an unchanged restore announces nothing";
 }
 
-// LAY-11: history may not take away an output a protected (exempt) on-demand recipe reads. Removing the producer,
+// History may not take away an output a protected (exempt) on-demand recipe reads. Removing the producer,
 // or renaming the output it reads, is refused before anything changes; an unchanged snapshot, or one that edits
 // the producer and keeps the output, is not.
 TEST(DerivedObjectsTest, HistoryCannotRemoveProducerOfProtectedOnDemandConsumer) {
@@ -689,7 +689,7 @@ TEST(DerivedObjectsTest, HistoryCannotRemoveProducerOfProtectedOnDemandConsumer)
   EXPECT_FALSE(derived.refusal(derived.parse(unchanged.documentElement(), RestoreIntent::kHistory)).has_value());
 }
 
-// LAY-21: an unchanged recipe reading a transform output the restore re-creates runs again; one reading an
+// An unchanged recipe reading a transform output the restore re-creates runs again; one reading an
 // output the restore leaves alone is kept.
 TEST(DerivedObjectsTest, AnOnDemandReaderOfAReplacedTransformOutputRunsAgain) {
   Fixture fixture;
@@ -719,9 +719,8 @@ TEST(DerivedObjectsTest, AnOnDemandReaderOfAReplacedTransformOutputRunsAgain) {
   EXPECT_EQ(fixture.revision("owner/plain"), plain_revision) << "a recipe not reading it is kept";
 }
 
-// PIN-07: a finding restored into a session is requested at its pin by the install, against the data there now
-// (here a sample that arrived after the save, still before the pin); a kept finding keeps its entry and runs
-// nothing.
+// A finding restored into a session is requested at its pin by the install, against the data there now (here a sample
+// that arrived after the save, still before the pin); a kept finding keeps its entry and runs nothing.
 TEST(DerivedObjectsTest, PinnedRecipeRematerializesAtItsPinOnRestore) {
   QDomDocument saved;
   {
@@ -755,7 +754,7 @@ TEST(DerivedObjectsTest, PinnedRecipeRematerializesAtItsPinOnRestore) {
       << "computed from the sample at 8 s";
 }
 
-// OWN-01: a preview is outside every restore's authority: an empty snapshot clears its persistent sibling under
+// A preview is outside every restore's authority: an empty snapshot clears its persistent sibling under
 // both intents and leaves the preview, its topic and its result.
 TEST(DerivedObjectsTest, PreviewSurvivesBothRestoreIntents) {
   for (const RestoreIntent intent : {RestoreIntent::kReplace, RestoreIntent::kHistory}) {
@@ -841,7 +840,7 @@ return {}
   return parseXml(u"<root><data_processors>"_s + entries + u"</data_processors></root>"_s);
 }
 
-// GAP-31: the dataset a saved input names binds the restored recipe there, also when another loaded dataset carries
+// The dataset a saved input names binds the restored recipe there, also when another loaded dataset carries
 // the same topics (by name alone, ambiguous); a live recipe bound to the other one is not unchanged: it moves.
 TEST(DerivedObjectsTest, TheSavedInputDatasetBindsTheRestoredRecipe) {
   Fixture fixture;
@@ -863,7 +862,7 @@ TEST(DerivedObjectsTest, TheSavedInputDatasetBindsTheRestoredRecipe) {
 }
 
 // History may not move the producer of a protected (exempt) reader to another dataset: the reader would read an
-// output no longer on its dataset. A snapshot binding it elsewhere takes its outputs away (LAY-11).
+// output no longer on its dataset. A snapshot binding it elsewhere takes its outputs away.
 TEST(DerivedObjectsTest, HistoryCannotMoveTheProducerOfAProtectedReaderToAnotherDataset) {
   Fixture fixture;
   const DatasetId other = fixture.addOther();
@@ -977,8 +976,8 @@ TEST(DerivedObjectsTest, AFailedRestoreDoesNotSilenceLaterInstallAnnouncements) 
   EXPECT_EQ(announced.count(), 1);
 }
 
-// A restore that re-creates a transform output leaves a preview reading it, and the previews reading that one, live
-// (OWN-01), and runs them again at their cursors: their results were computed from the old series.
+// A restore that re-creates a transform output leaves a preview reading it, and the previews reading that one, live,
+// and runs them again at their cursors: their results were computed from the old series.
 TEST(DerivedObjectsTest, APreviewReadingAReplacedTransformOutputRunsAgain) {
   for (const RestoreIntent intent : {RestoreIntent::kReplace, RestoreIntent::kHistory}) {
     SCOPED_TRACE(intent == RestoreIntent::kReplace ? "kReplace" : "kHistory");
@@ -1009,7 +1008,7 @@ TEST(DerivedObjectsTest, APreviewReadingAReplacedTransformOutputRunsAgain) {
     fixture.settle();
 
     EXPECT_EQ(fixture.revision("owner/preview"), revision) << "the preview is not the restore's";
-    // At least: under load the reader may also run once on the old upstream result before the new one lands (D30).
+    // At least: under load the reader may also run once on the old upstream result before the new one lands.
     EXPECT_GE(fixture.fake.started(), runs + 2) << "both previews ran again";
   }
 }

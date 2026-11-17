@@ -13,27 +13,21 @@ namespace PJ {
 
 class SvgButton;
 
-// The `.ui` dynamic property (documented in pj_dialog_host/CLAUDE.md) tagging
-// the one widget a toolbox panel wants hoisted out of its content into a
-// full-height column at the left of the whole chrome. The chrome-action
-// properties are read only through taggedChromeActions/makeChromeActionProxy.
+// The `.ui` dynamic property (a plugin-facing contract, see pj_dialog_host/CLAUDE.md) tagging the one widget a
+// toolbox panel wants hoisted into a full-height column at the left of the chrome.
 inline constexpr const char* kToolboxSideDrawerProperty = "pjToolboxSideDrawer";
 
-// The splitter wrapToolboxPanel put a hoisted side drawer in (outer's only
-// child), or null when the panel has no drawer.
+// The splitter holding a hoisted side drawer; null when the panel has none.
 QSplitter* toolboxDrawerSplitter(QWidget* container);
 
-// QSettings key for a persisted drawer width, keyed per plugin (or manifest)
-// identity so different toolboxes don't fight over one saved width.
+// Per plugin (or manifest) identity, so toolboxes do not share one saved width.
 QString toolboxDrawerWidthSettingsKey(const QString& persist_key);
 
-// A chrome button (banner or floating title bar): SVG icon, tooltip and the
-// pointing-hand cursor every chrome control shares. The caller places it.
+// A banner or floating-title-bar button with the shared chrome cursor; the caller places it.
 SvgButton* makeChromeButton(const QString& icon_path, const QString& tooltip, QWidget* parent);
 
-// Stands a chrome proxy in for a plugin button tagged pjToolboxChromeAction:
-// same icon (help.svg when the plugin names none), tooltip and cursor, clicks
-// forwarded to the original so its routing is untouched. The caller places it.
+// A proxy for a plugin button tagged pjToolboxChromeAction: clicks go to the original, so its routing is
+// untouched. help.svg when the plugin names no icon; the caller places it.
 SvgButton* makeChromeActionProxy(QAbstractButton* src, QWidget* parent);
 
 std::vector<QAbstractButton*> taggedChromeActions(QWidget* content);

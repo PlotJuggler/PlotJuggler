@@ -1,14 +1,10 @@
 # Copyright 2026 Davide Faconti
 # SPDX-License-Identifier: MPL-2.0
 #
-# Guards the anti-interposition protection in pj_app/CMakeLists.txt.
-#
-# pj_app links --exclude-libs,ALL so that symbols pulled in from static archive
-# members (Conan's libpng, zstd, bzip2, CPython, …) stay out of its dynamic symbol
-# table. Without it the loader can interpose them ahead of the system copies that
-# GTK/glib load — the libpng 1.6.43-vs-1.6.58 ABI skew that crashed
-# QGtk3Interface::fileIcon during QFileDialog. That fix shipped with no test, so
-# nothing would notice a future link-option change quietly undoing it.
+# Guards the --exclude-libs,ALL link option in pj_app/CMakeLists.txt, which keeps symbols from static archive
+# members (Conan's libpng, zstd, bzip2, CPython, ...) out of pj_app's dynamic symbol table. Without it the loader
+# can interpose them ahead of the system copies GTK/glib load (libpng 1.6.43 vs 1.6.58 ABI skew crashed
+# QGtk3Interface::fileIcon during QFileDialog).
 #
 # Run standalone as:
 #   cmake -DTARGET=<path/to/plotjuggler4> -DNM=<path/to/nm> -P check_exported_symbols.cmake
@@ -60,17 +56,10 @@ list(LENGTH _exported _exported_count)
 
 # The rule is STRUCTURAL, not a list of banned libraries.
 #
-# A correctly-linked pj_app exports only compiler/ABI artifacts: Itanium-mangled
-# C++ names (_Z…) — RTTI, vtables, weak template instantiations, COMDAT statics —
-# plus a handful of libc data objects that copy-relocate into the executable.
-# Every third-party C library we care about (libpng, zstd, bzip2, lzma, lz4,
-# CPython, …) exports PLAIN C identifiers, which are none of those.
-#
-# Preferred over a blocklist of prefixes because a blocklist only ever catches the
-# libraries someone remembered to enumerate — and forgetting to extend it is the
-# exact failure this test exists to prevent. Preferred over pinning the symbol set
-# because C++ artifacts legitimately come and go with every refactor, and a test
-# that cries wolf gets deleted.
+# A correctly-linked pj_app exports only compiler/ABI artifacts: Itanium-mangled C++ names (_Z...) plus a handful
+# of libc data objects that copy-relocate into the executable. Third-party C libraries (libpng, zstd, bzip2, lzma,
+# lz4, CPython, ...) export PLAIN C identifiers. A blocklist would miss any library nobody enumerated; pinning
+# the symbol set would fail on every refactor, since C++ artifacts come and go.
 set(_libc_data_allowlist
     stdin stdout stderr environ __environ __libc_single_threaded)
 
@@ -87,10 +76,8 @@ foreach(_sym IN LISTS _exported)
   list(APPEND _leaked "${_sym}")
 endforeach()
 
-# Backstop for a mass leak of C++ symbols, which the structural rule alone would
-# wave through (Luau, assimp and friends are C++ too). Deliberately generous: this
-# must never fire on ordinary growth, only on --exclude-libs having stopped
-# working. The measured baseline is 40.
+# Backstop for a mass leak of C++ symbols (Luau, assimp and friends are C++ too), which the structural rule
+# waves through. Generous on purpose: it must fire only when --exclude-libs has stopped working (baseline 40).
 set(_ceiling 200)
 
 if(_leaked)

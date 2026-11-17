@@ -32,7 +32,7 @@ async function startBridgeServer(args = [], script = 'bridge_server.py') {
     url: `ws://127.0.0.1:${port}/bridge`,
     events,
     seen: kind => events.filter(event => event.event === kind),
-    // What the server streams now: subscribes add, unsubscribes remove.
+    // The topics currently subscribed: subscribes add, unsubscribes remove.
     subscribed: () => {
       const topics = new Set();
       for (const { command, topics: names = [] } of events) {

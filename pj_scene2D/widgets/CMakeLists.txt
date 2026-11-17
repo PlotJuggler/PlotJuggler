@@ -1,6 +1,3 @@
-# ---------------------------------------------------------------------------
-# pj_scene2d_widgets — Qt widget layer for media display (requires the configured Qt floor)
-# ---------------------------------------------------------------------------
 
 if(NOT DEFINED PJ_QT_REQUIRED_VERSION)
   if(DEFINED PJ_QT_VERSION)
@@ -10,9 +7,8 @@ if(NOT DEFINED PJ_QT_REQUIRED_VERSION)
   endif()
 endif()
 
-# GuiPrivate (for QRhi private headers used by MediaViewerWidget) must be
-# requested in THIS scope: Qt 6.11 no longer leaks the Qt6::GuiPrivate imported
-# target in from another subdirectory's find_package the way 6.8 did.
+# GuiPrivate (QRhi headers) is requested in this scope: Qt 6.11 does not make the Qt6::GuiPrivate imported target
+# visible from another subdirectory's find_package (6.8 did).
 find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} QUIET COMPONENTS Widgets Gui GuiPrivate)
 if(NOT Qt6_FOUND)
   message(STATUS "pj_scene2d_widgets: Qt ${PJ_QT_REQUIRED_VERSION}+ not found, skipping")
@@ -74,7 +70,6 @@ if(EMSCRIPTEN)
   unset(_pj_scene2d_shader_verify_dir)
 endif()
 
-# --- pj_scene2d_widgets: image viewer (QRhiWidget), no mpv dependency ---
 set(PJ_SCENE2D_WIDGETS_SOURCES
   src/Scene2DDockWidget.cpp
   src/layers/depth_image_layer.cpp
@@ -113,14 +108,9 @@ target_link_libraries(pj_scene2d_widgets
   PUBLIC pj_scene_common pj_scene2d_core pj_runtime pj_widgets Qt6::Widgets Qt6::Gui Qt6::GuiPrivate
 )
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 if(PJ_BUILD_TESTS)
-  # Dispatch-table unit test: verifies makeScene2DPipelineFor() returns the right
-  # built-in pipeline (or nullptr) per object type. Does not construct the
-  # widget, so it does not require an RHI context.
+  # Constructs no widget, so it needs no RHI context.
   add_executable(scene2d_dock_widget_dispatch_test
     ../tests/scene2d_dock_widget_dispatch_test.cpp
   )

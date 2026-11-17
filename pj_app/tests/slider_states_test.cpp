@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Every slider in the app must answer the pointer: a distinct colour under the
-// cursor, and a further distinct colour while its handle is grabbed. These are
-// stylesheet-driven, so the only honest check is to apply the real expanded QSS
-// and read the handle's pixels back out of a render in each state.
+// Every slider answers the pointer: a distinct handle colour under the cursor, and another while it is grabbed.
+// The styling is QSS-driven, so the check applies the real expanded QSS and reads the handle's pixels back from a
+// render in each state.
 
 #include <gtest/gtest.h>
 
@@ -38,9 +37,8 @@ struct QtEnvironment : ::testing::Environment {
   Theme* theme_ = nullptr;
 };
 
-// The environment owns the Theme so tests can re-point the whole application at
-// either palette; a slider must be built *after* the switch so it polishes
-// against the stylesheet under test.
+// Owns the Theme so tests can re-point the application at either palette; build a slider after the switch so it
+// polishes against the stylesheet under test.
 QtEnvironment* environment = nullptr;
 
 void applyTheme(const QString& name) {
@@ -60,8 +58,7 @@ constexpr int kPlaybackThickness = 24;
 // Roomy enough that a plain slider's handle is never clipped by the widget.
 constexpr int kPlainThickness = 20;
 
-// The handle's rectangle as the style will lay it out. QSlider::initStyleOption
-// is protected, so the option is filled the same way QSlider fills it.
+// QSlider::initStyleOption is protected, so the option is filled the way QSlider fills it.
 QStyleOptionSlider sliderOption(QSlider* slider) {
   QStyleOptionSlider opt;
   opt.initFrom(slider);
@@ -75,12 +72,8 @@ QStyleOptionSlider sliderOption(QSlider* slider) {
   return opt;
 }
 
-// The handle's dominant colour in the slider's *current* state, read off a
-// render of the widget.
-//
-// Rendering goes through QWidget::grab rather than QStyle::drawComplexControl:
-// the stylesheet style resolves its rules against the live widget, so painting
-// a hand-built option into a detached image produces nothing at all.
+// The handle's dominant colour in the slider's current state. Renders through QWidget::grab: the stylesheet style
+// resolves its rules against the live widget, so painting a hand-built option into a detached image draws nothing.
 QColor handleColor(QSlider* slider) {
   // RGB32 drops alpha: a QSS-styled widget grabs with transparent pixels that
   // would otherwise all read back as #000000 and hide every difference.
@@ -107,7 +100,6 @@ QColor handleColor(QSlider* slider) {
   return QColor::fromRgb(best);
 }
 
-// Reports the three colours for one slider so a failure names what it saw.
 struct HandleStates {
   QColor nominal;
   QColor hovered;
@@ -145,7 +137,6 @@ HandleStates sampleStates(QSlider* slider, int width, int height) {
   return states;
 }
 
-// Both assertions in one place so every slider is held to the same contract.
 void expectAnswersPointer(const HandleStates& states, const char* what) {
   EXPECT_NE(states.hovered, states.nominal)
       << what << ": no hover response — nominal=" << states.nominal.name().toStdString()

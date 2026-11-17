@@ -28,29 +28,23 @@ class QWidget;
 
 namespace pj::scene3d {
 
-// True for the canonical depth `encoding` strings this layer back-projects. The
-// scene3D dock uses this (peeking a topic's first sample) to offer ONLY depth
-// images as DepthClouds — color images share the kImage type but are excluded.
+// True for the canonical depth `encoding` strings this layer back-projects. The dock uses it (peeking a topic's first
+// sample) to offer ONLY depth images as DepthClouds: colour images share the kImage type but are excluded.
 [[nodiscard]] bool isDepthEncoding(const std::string& encoding);
 
-// Scene3D layer that renders a depth image as a back-projected point cloud (the
-// "DepthCloud" visualization). Each depth pixel is unprojected through the pinhole
-// intrinsics into a 3D point in the camera optical frame; the cloud is drawn
-// by the same point pass as a PointCloudLayer's.
+// Scene3D layer that renders a depth image as a back-projected point cloud ("DepthCloud"): each depth pixel is
+// unprojected through the pinhole intrinsics into a 3D point in the camera optical frame and drawn by the same point
+// pass as a PointCloudLayer.
 //
-// Input type: kImage. In PJ4 depth arrives as sdk::Image with a depth `encoding`
-// (16UC1 / 32FC1 / compressedDepth) — there is no kDepthImage producer (the parser
-// can't distinguish depth from color at schema-classification time). The Image
-// carries `frame_id` (placement); intrinsics come from a CameraInfo topic matched
-// by frame_id. compressedDepth payloads are PNG-decoded via QImage in the layer.
+// Input type kImage: depth arrives as sdk::Image with a depth `encoding` (16UC1 / 32FC1 / compressedDepth); there is
+// no kDepthImage producer because the parser cannot tell depth from color at schema classification. The Image carries
+// `frame_id` (placement); intrinsics come from a CameraInfo topic matched by frame_id. compressedDepth payloads are
+// PNG-decoded via QImage in the layer.
 //
-// POC scope: CPU back-projection via depthToPoints() feeding the point pass,
-// colored by depth. A GPU attributeless pass + aligned RGB-D coloring are planned
-// follow-ups behind this same layer.
+// Back-projection is CPU (depthToPoints()) and colored by depth; there is no GPU pass and no aligned RGB-D coloring.
 //
-// kSceneLimits admission happens before any decode. The PNG inflate and the
-// back-projection run on the Qt thread pool (latest wins, stale results dropped),
-// and the result is retained as PointVertex data the view reads through
+// kSceneLimits admission happens before any decode. The PNG inflate and back-projection run on the Qt thread pool
+// (latest wins, stale results dropped); the result is retained as PointVertex data the view reads through
 // PointRenderable.
 class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   Q_OBJECT
@@ -60,7 +54,6 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
       QObject* parent = nullptr);
   ~DepthCloudLayer() override;
 
-  // Scene3DLayer / ISceneLayer
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
@@ -84,7 +77,6 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
-  // Config accessors/mutators used by the settings widget.
   [[nodiscard]] PJ::Colormap colormap() const override {
     return colormap_;
   }
@@ -102,12 +94,10 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   void setMinDepth(float metres);
   void setMaxDepth(float metres);
 
-  // Full validation of a <depthcloud> payload without mutating any layer.
   [[nodiscard]] static bool validateXml(const QDomElement& element);
 
-  // PointRenderable (read by the view).
-  // prepareForRender() drains a pending tracker move (queuing an off-thread
-  // back-projection) and enforces the view's aggregate vertex budget.
+  // prepareForRender() drains a pending tracker move (queuing an off-thread back-projection) and enforces the view's
+  // aggregate vertex budget.
   bool prepareForRender(std::uint64_t remaining_view_vertices) override;
   [[nodiscard]] const QByteArray& vertexBytes() const override {
     return vertex_bytes_;
@@ -206,18 +196,15 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
 #endif
 
  private:
-  // Sample identity computable WITHOUT resolving the payload: the entry's
-  // SequentialUID (never reused, so no aliasing across duplicate stamps or
-  // reloads) plus its store timestamp for display/tests. Exactly what
-  // latestEntryIdAt() returns; value-initialized {} is the "none" sentinel.
+  // Sample identity computable WITHOUT resolving the payload: the entry's SequentialUID (never reused, so no aliasing
+  // across duplicate stamps or reloads) plus its store timestamp for display/tests. Exactly what latestEntryIdAt()
+  // returns; {} is the "none" sentinel.
   using SampleId = PJ::ObjectStore::TimeRangeEntry;
 
-  // Resolved-intrinsics memo: skips re-parsing every CameraInfo on every depth
-  // frame (calibration is latched/constant). A cache hit requires `frame_id` to
-  // match the current image AND the supplying CameraInfo topic to still yield
-  // `camera_sample` at the playhead — a metadata-only latestEntryIdAt() identity
-  // check, no parse and no payload resolve.
-  // Reset on detach and whenever no camera resolves; see resolveIntrinsics().
+  // Resolved-intrinsics memo: skips re-parsing every CameraInfo on every depth frame (calibration is latched). A hit
+  // requires `frame_id` to match the current image AND the supplying CameraInfo topic to still yield `camera_sample` at
+  // the playhead (a metadata-only latestEntryIdAt() check, no parse, no payload resolve). Reset on detach and whenever
+  // no camera resolves; see resolveIntrinsics().
   struct IntrinsicsCache {
     std::string frame_id;
     PJ::ObjectTopicId camera_topic;
@@ -241,8 +228,7 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
     bool operator==(const ProjectionKey&) const = default;
   };
 
-  // Everything the worker needs, captured by value: the image's anchor keeps its
-  // bytes alive and the task touches no layer state.
+  // Everything the worker needs, captured by value: the image's anchor keeps its bytes alive.
   struct BackprojectRequest {
     PJ::sdk::Image image;
     DepthIntrinsics intrinsics;
@@ -260,63 +246,48 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
     QString error;  // non-empty: the sample renders nothing and warns
     std::optional<PJ::Timepoint> stamp;
   };
-  // The worker job.
   [[nodiscard]] static BackprojectResult backproject(const BackprojectRequest& request);
   void onBackprojectFinished(BackprojectResult result);
   // kSceneLimits admission of a depth image before any decode; empty when it fits.
   [[nodiscard]] static QString admissionError(const PJ::sdk::Image& image);
-  // Drops queued/running back-projections and the pushed-sample memo, so the
-  // next drain re-projects (a depth-range edit, a hide).
+  // Drops queued/running back-projections and the pushed-sample memo, so the next drain re-projects.
   void invalidateSample();
   // SessionManager::datasetAboutToBeReplaced: the bytes under the stable topic id
   // are about to change, so every projection, the drawn cloud and the calibration
   // memo go, and the next paint projects the replacement.
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
-  // The CameraInfo sample of the memoized intrinsics ({} when none).
   [[nodiscard]] SampleId memoCamera() const {
     return intrinsics_cache_.has_value() ? intrinsics_cache_->camera_sample : SampleId{};
   }
-  // Drops the retained vertices and their bounds.
   void clearGeometry();
-  // The source frame, or the fixed frame for a frame-less image.
   void updateRenderFrame();
 
   void renderAt(int64_t time_ns);
   void refreshNow();
-  // Project at the playhead when a tracker move is pending (once per painted
-  // frame, by prepareForRender()).
   void drainPendingUpdate();
-  // budget_ candidates: a depth sample's UID under the current depth range, and
-  // the one the playhead asks for.
+  // budget_ candidates: a depth sample's UID under the current depth range, and the one the playhead asks for.
   [[nodiscard]] std::uint64_t budgetKey(std::uint64_t sample_uid) const;
   [[nodiscard]] std::uint64_t budgetCandidate() const;
   void updateSourceFrame(const std::string& frame_id);
 
-  // Turn a depth-encoded sdk::Image into a raw sdk::DepthImage the core can
-  // back-project. Raw encodings (16UC1/32FC1) become a zero-copy view over the
-  // image bytes; compressedDepth is PNG-decoded (via QImage) into `scratch` and
-  // returned as a 16UC1 view over it. Returns nullopt for a non-depth encoding or
-  // an undecodable payload. `scratch` MUST outlive use of the returned view.
-  // `error`, when given, receives the reason of a nullopt. A PNG/JPEG container
-  // whose header declares more pixels than kSceneLimits allows is refused before
-  // it is inflated. Thread-safe (no layer state).
+  // Turns a depth-encoded sdk::Image into a raw sdk::DepthImage the core can back-project. Raw encodings (16UC1/32FC1)
+  // become a zero-copy view over the image bytes; compressedDepth is PNG-decoded (via QImage) into `scratch` and
+  // returned as a 16UC1 view over it, so `scratch` MUST outlive the view. nullopt for a non-depth encoding or an
+  // undecodable payload (`error`, when given, receives the reason). A PNG/JPEG container whose header declares more
+  // pixels than kSceneLimits allows is refused before inflating. Thread-safe (no layer state).
   static std::optional<PJ::sdk::DepthImage> toDepthView(
       const PJ::sdk::Image& image, std::vector<uint8_t>& scratch, QString* error = nullptr);
 
-  // Intrinsics for `frame_id` from a CameraInfo topic. `frame_id` is the
-  // authoritative join key (never the topic name): a CameraInfo whose own
-  // frame_id matches wins. With no match, falls back to a lone CameraInfo ONLY
-  // when unambiguous (a single camera in the dataset, or a frame-less image);
-  // with multiple cameras and no match it returns an invalid result rather than
-  // risk the wrong camera. Invalid also when no CameraInfo yields usable focals.
+  // Intrinsics for `frame_id` from a CameraInfo topic. `frame_id` is the authoritative join key (never the topic name):
+  // a CameraInfo whose own frame_id matches wins. With no match, a lone CameraInfo is used ONLY when unambiguous (a
+  // single camera in the dataset, or a frame-less image); with several cameras and no match the result is invalid
+  // rather than risking the wrong camera. Also invalid when no CameraInfo yields usable focals.
   DepthIntrinsics resolveIntrinsics(const std::string& frame_id, int64_t time_ns);
 
-  // True when the memoized intrinsics (if any) still describe the CameraInfo
-  // sample at the playhead — metadata-only, no parse and no payload resolve.
-  // False when the camera topic has a new sample: the unchanged depth image must
-  // then re-project under the new calibration, so renderAt's same-depth-sample
-  // skip is gated on this too. No memoized intrinsics counts as current (nothing
-  // can go stale; the resolve path scans and warns as usual).
+  // True when the memoized intrinsics (if any) still describe the CameraInfo sample at the playhead (metadata-only, no
+  // parse, no payload resolve). False when the camera topic has a new sample: the unchanged depth image must then
+  // re-project under the new calibration, so renderAt's same-depth-sample skip is gated on this too. No memoized
+  // intrinsics counts as current (nothing can go stale; the resolve path scans and warns as usual).
   [[nodiscard]] bool intrinsicsCurrentAt(int64_t time_ns) const;
 
   PJ::ObjectTopicId topic_id_;
@@ -344,14 +315,12 @@ class DepthCloudLayer : public Scene3DLayer, public PointRenderable {
   ProjectionKey wanted_;
   std::optional<IntrinsicsCache> intrinsics_cache_;
 
-  // What the view reads (PointRenderable).
   QByteArray vertex_bytes_;      // PointVertex records: finite back-projected points, camera frame
   std::size_t point_count_ = 0;  // records in vertex_bytes_ (the rest is padding)
   std::uint64_t geometry_revision_ = 0;
   std::pair<float, float> scalar_range_{0.0f, 1.0f};
   std::string render_frame_;
   std::optional<PJ::Timepoint> render_stamp_;  // objectStamp() of the drawn depth image
-  // Point count and candidate of a cloud dropped for the view budget.
   BudgetLatch budget_;
 
   LatestWinsWorker<BackprojectRequest, BackprojectResult> backproject_worker_{

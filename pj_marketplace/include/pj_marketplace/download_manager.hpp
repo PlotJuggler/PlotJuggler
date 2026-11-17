@@ -18,9 +18,9 @@
 
 namespace PJ {
 
-/// Handles the full extension installation pipeline: download → checksum verification → extraction.
-///
-/// The async fetch() operation is tracked by an integer ID returned at call time.
+/// Download → checksum verification → extraction of one extension archive. The whole archive is buffered in memory and
+/// the compressed-size limit is applied after the download completes. fetch() returns an integer id that identifies
+/// the operation in every signal.
 class DownloadManager : public QObject {
   Q_OBJECT
 
@@ -34,49 +34,35 @@ class DownloadManager : public QObject {
   Q_ENUM(WorkPhase)
 
   explicit DownloadManager(QObject* parent = nullptr);
-  // Requests cancel on every in-flight worker and drains before returning.
-  // Workers observe the cancel flag at each archive-entry boundary and at
-  // each data block, so the wait is bounded to milliseconds rather than the
-  // full extract time.
+  // Cancels every in-flight worker and drains before returning; workers check the flag at each archive entry and data
+  // block.
   ~DownloadManager() override;
 
   /// Starts the full pipeline: download url, verify expected_checksum, extract to destination_dir.
   /// Returns a unique ID to track this operation.
   int fetch(const QUrl& url, const QString& expected_checksum, const QString& destination_dir);
 
-  /// Replaces the archive budgets applied while unpacking (see archive_limits.hpp).
-  ///
-  /// Production leaves the defaults alone; a test lowers them so a breach can be
-  /// driven with a few kilobytes instead of a 256 MiB fixture. Takes effect on the
-  /// next extraction, so it must be set before fetch().
+  /// Replaces the archive budgets applied while unpacking (archive_limits.hpp). Production keeps the defaults; a test
+  /// lowers them to drive a breach with a few kilobytes. Takes effect on the next extraction: set it before fetch().
   void setArchiveLimits(const ArchiveLimits& limits) {
     archive_limits_ = limits;
   }
 
-  /// Cancels an in-progress operation. During the checksum/extract phase this
-  /// requests early exit from the worker; the consumer rolls back the
-  /// transaction directory when it receives `cancelled`.
+  /// Cancels an in-progress operation. In the checksum/extract phase the worker exits early; the consumer rolls back
+  /// the transaction directory when it receives `cancelled`.
   void cancel(int id);
 
-  /// cancel(id), then BLOCK until that operation's worker has stopped touching its
-  /// destination directory. Bounded to milliseconds by the worker's cancel
-  /// checkpoints, and a no-op for an id with no extract in flight.
-  ///
-  /// For a consumer that must guarantee "nothing is writing there any more" before
-  /// it does something else: releasing an interprocess lock over the destination,
-  /// deleting the transaction directory, or tearing itself down. Unlike the
-  /// destructor's drain, this waits for ONE operation, so an unrelated consumer
-  /// sharing this downloader is not stalled.
-  ///
-  /// Runs the wait on the calling thread WITHOUT spinning an event loop, so the
-  /// queued completion slot for `id` cannot run inside this call: a caller in its
-  /// own destructor is not re-entered.
+  /// cancel(id), then BLOCK until that operation's worker has stopped touching its destination directory (no-op for an
+  /// id with no extract in flight). For a consumer that must guarantee nothing is writing there before it releases an
+  /// interprocess lock, deletes the transaction directory or tears itself down. Unlike the destructor's drain it waits
+  /// for ONE operation, so an unrelated consumer sharing this downloader is not stalled. The wait does not spin an
+  /// event loop, so the queued completion slot for `id` cannot run inside this call and a caller in its own destructor
+  /// is not re-entered.
   void cancelAndWait(int id);
 
  signals:
   void started(int id);
   void progress(int id, qint64 bytes_received, qint64 bytes_total);
-  // Reports post-download work whose duration is not covered by `progress`.
   void phaseChanged(int id, PJ::DownloadManager::WorkPhase phase);
   void finished(int id);
   void cancelled(int id);
@@ -105,9 +91,8 @@ class DownloadManager : public QObject {
   QMap<int, std::shared_ptr<std::atomic<bool>>> cancel_flags_;
   int next_id_ = 1;
   QFutureSynchronizer<QString> pending_extracts_;
-  // Per-operation handle on the same futures pending_extracts_ drains as a batch,
-  // so cancelAndWait() can wait for one operation instead of all of them. Entries
-  // are retired by the completion slot.
+  // Per-operation handle on the futures pending_extracts_ drains as a batch, so cancelAndWait() can wait for one.
+  // Retired by the completion slot.
   QMap<int, QFuture<QString>> extract_futures_;
 };
 

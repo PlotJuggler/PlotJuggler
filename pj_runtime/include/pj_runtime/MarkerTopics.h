@@ -15,14 +15,11 @@
 
 namespace PJ {
 
-/// True if `descriptor` describes a marker set (any marker topic, preview or not):
-/// its metadata says so (`pj_derived: "markers"`), whatever its name. The single
-/// host-side predicate every consumer of ObjectStore topics uses to treat marker
-/// snapshots as reserved internal state — excluded from dataset time-bounds, the
-/// curve tree, playback focus, refill pruning, and the generic dataset-merge fold
-/// (markers are merged set-aware by the batch engine, not folded as opaque object
-/// entries, because they publish at a sentinel timestamp with single-entry
-/// retention). Cheap enough to run over every object topic of a dataset.
+/// True if `descriptor` describes a marker set (any marker topic, preview or not): its metadata says so (`pj_derived:
+/// "markers"`), whatever its name. The single host-side predicate every ObjectStore consumer uses to treat marker
+/// snapshots as reserved internal state: excluded from dataset time-bounds, the curve tree, playback focus, refill
+/// pruning and the generic dataset-merge fold (the batch engine merges markers set-aware, since they publish at a
+/// sentinel timestamp with single-entry retention). Cheap enough to run over every object topic of a dataset.
 [[nodiscard]] bool isMarkerTopic(const ObjectTopicDescriptor& descriptor);
 
 /// Separates a marker key from the generator that owns the set in the object-topic

@@ -7,22 +7,16 @@
 #include <glm/gtc/quaternion.hpp>
 #include <string>
 
-#include "pj_base/time.hpp"  // PJ::Timepoint (absolute spine)
+#include "pj_base/time.hpp"
 
 namespace pj::tf {
 
-// An ABSOLUTE frame stamp: the pj_tf spelling of PJ::Timepoint, aliased
-// directly instead of re-declaring a structurally-identical shadow. Being a
-// time_point (not a bare Duration) keeps it un-mixable: TimePoint - TimePoint is
-// a Duration, TimePoint + TimePoint won't compile.
+// An absolute frame stamp; being a time_point, not a Duration, TimePoint + TimePoint does not compile.
 using TimePoint = PJ::Timepoint;
 
-// A rigid SE(3) pose (translation + rotation). INVARIANT: `q` must be a unit
-// quaternion. inverse() uses the conjugate as the rotational inverse and
-// operator*/matrix() compose assuming |q| == 1; a non-unit q yields silently
-// wrong results. TransformBuffer normalizes on write, so transforms read back
-// from it always satisfy this — but the direct constructor does NOT normalize,
-// so a caller building a Transform by hand must pass an already-normalized q.
+// A rigid SE(3) pose. `q` must be a unit quaternion: inverse() uses the conjugate and operator*/matrix() assume
+// |q| == 1, so a non-unit q silently gives wrong results. TransformBuffer normalizes on write; the constructor
+// does not.
 struct Transform {
   glm::dvec3 t{0.0};
   glm::dquat q{1.0, 0.0, 0.0, 0.0};

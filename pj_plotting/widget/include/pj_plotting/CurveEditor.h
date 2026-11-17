@@ -27,24 +27,16 @@ class ColorPickerPopup;
 class PlotWidget;
 class StateTransitionsController;
 
-// Side panel listing the curves of a single PlotWidget. One row per
-// curve: color swatch (click for picker) | name | markers toggle |
-// visibility eye | trash. Under the list, a pinned footer (1-px separator
-// above it) holds up to two rows per dataset shown on this plot — one per
-// marker scope (Dataset/Global) whose object topic exists — each row a
-// dataset glyph | bold name | markers toggle that hides/shows that scope's
-// plot markers independently of any curve's own markers toggle and of the
-// dataset's other scope; the footer is hidden when there are no rows to show.
-// Header strip has a Datasets-style filter + kebab popup with a "Clear
-// all curves" action.
+// Side panel listing the curves of one PlotWidget. One row per curve: colour swatch (click for the picker) | name |
+// markers toggle | visibility eye | trash. Under the list a pinned footer (1-px separator above it) holds up to two
+// rows per dataset shown on the plot, one per marker scope (Dataset / Global) whose object topic exists: dataset glyph
+// | bold name | markers toggle, which shows or hides that scope's plot markers independently of any curve's toggle and
+// of the dataset's other scope; the footer is hidden when it has no rows. The header strip has a Datasets-style filter
+// and a kebab popup with "Clear all curves".
 //
-// Bind via setPlot(plot) / setPlot(nullptr). The panel rebuilds its rows when
-// the bound plot's curveListChanged() or datasetMarkerScopesChanged() fires and
-// re-checks one footer toggle on markerScopeVisibilityChanged(); a destroyed
-// plot is detected via a QObject::destroyed connection.
-//
-// Width / Line style controls live in the global right-toolbar strip
-// (MainWindow), not here.
+// Bind with setPlot(plot) / setPlot(nullptr). The panel rebuilds its rows on the plot's curveListChanged() and
+// datasetMarkerScopesChanged(), re-checks one footer toggle on markerScopeVisibilityChanged(), and detects a destroyed
+// plot through a QObject::destroyed connection. Width and line style controls live in MainWindow's right-toolbar strip.
 class CurveEditor : public QWidget {
   Q_OBJECT
  public:
@@ -53,10 +45,9 @@ class CurveEditor : public QWidget {
 
   void setPlot(PlotWidget* plot);
 
-  /// Alternative binding: the SAME table lists a State Transitions strip's
-  /// series — name | eye | trash, with NO color swatch (state colors are
-  /// hash-derived, not editable). A non-null bind here releases the plot
-  /// binding and vice versa; a null only releases the strip binding.
+  /// Alternative binding: the same table lists a State Transitions strip's series (name | eye | trash, no colour
+  /// swatch: state colours are hash-derived). A non-null bind releases the plot binding and vice versa; a null releases
+  /// only the strip binding.
   void setStateTransitions(StateTransitionsController* controller);
 
   [[nodiscard]] PlotWidget* plot() const noexcept {
@@ -65,58 +56,49 @@ class CurveEditor : public QWidget {
 
  public slots:
   void refresh();
-  // Updates the per-row visibility / trash + header icons to the new
-  // theme's ink.
+  // Updates the per-row visibility, trash and header icons to the new theme's ink.
   void onStylesheetChanged(QString theme);
-  // Rebinds the header band's chrome dimensions (search + filter +
-  // kebab) so they grow with the global chrome-metrics setting. The
-  // band grows to (icon_size + icon_padding) + 2 * layout_padding tall
-  // with layout_padding applied as contentsMargins, and layout_spacing
-  // is forwarded to QListWidget::setSpacing so the curve rows gain
-  // visible gaps. Per-row visibility / trash icons keep their compact
-  // 20-px row height — they're a deliberate dense-list design.
+  // Rebinds the header band's chrome dimensions (search, filter, kebab) so they follow the global chrome-metrics
+  // setting: the band is (icon_size + icon_padding) + 2 * layout_padding tall with layout_padding as contentsMargins,
+  // and layout_spacing goes to QListWidget::setSpacing so the rows gain gaps. Per-row eye and trash icons keep their
+  // compact 20-px row height (a deliberate dense list).
   void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  private slots:
   void onFilterChanged(const QString& text);
 
  protected:
-  // Watches the curves-filter QLineEdit so its FocusIn / FocusOut events
-  // can swap label visibility, mirroring the Datasets header. Also watches
-  // the listWidget viewport so row names can re-elide on resize.
+  // Watches the curves-filter QLineEdit so its FocusIn / FocusOut events swap label visibility (as the Datasets
+  // header), and the listWidget viewport so row names re-elide on resize.
   bool eventFilter(QObject* watched, QEvent* event) override;
 
-  // Drives the progressive collapse of the Curves header (search +
-  // filter + label hide when too narrow; kebab is always present).
-  // Driven off the panel's own width because the header band's QWidget
-  // can't actually shrink below the sum of its content's natural sizes.
+  // Drives the progressive collapse of the Curves header (search, filter and label hide when too narrow; the kebab
+  // stays). Driven off the panel's own width, because the header band's QWidget cannot shrink below the sum of its
+  // contents' natural sizes.
   void resizeEvent(QResizeEvent* event) override;
 
  private:
-  // Re-applies the active filter text to the list items (case-insensitive
-  // substring match against the row's curve name). Called after refresh().
+  // Re-applies the filter text to the list items (case-insensitive substring of the curve name); called after
+  // refresh().
   void applyFilter();
-  // Hides search + filter + label when the header band is too narrow,
-  // keeping the kebab always reachable.
+  // Hides search, filter and label when the header band is too narrow, keeping the kebab reachable.
   void updateHeaderForWidth();
   void appendRow(
       const QString& curve_key, const QString& display_name, QColor color, bool visible, bool markers_visible);
-  // A marker-scope row for (`dataset_id`, `scope`) in the pinned footer under
-  // the list: scope glyph + bold name + markers toggle (no swatch/eye/trash).
+  // A marker-scope row for (`dataset_id`, `scope`) in the pinned footer: scope glyph, bold name, markers toggle (no
+  // swatch, eye or trash).
   void appendMarkerScopeRow(DatasetId dataset_id, MarkerScope scope, const QString& label, bool visible);
   // Deletes every footer row and hides the footer (its separator goes with it).
   void clearMarkerScopeRows();
-  // The footer's row widgets, in display order; each carries its (dataset, scope)
-  // key as dynamic properties.
+  // The footer's row widgets in display order; each carries its (dataset, scope) key as dynamic properties.
   [[nodiscard]] QList<QWidget*> markerScopeRows() const;
   // Re-checks the footer toggle of (`dataset_id`, `scope`) without a rebuild.
   void onMarkerScopeVisibilityChanged(DatasetId dataset_id, MarkerScope scope, bool visible);
   // Visits every list row, then every footer row (all CurveRowWidgets).
   void forEachRow(const std::function<void(QWidget*)>& visit) const;
-  // Shared builder for a per-row checkable icon toggle (curve visibility eye,
-  // markers): a flat ink glyph whose 2-state SVG swaps on toggle. The
-  // objectName drives the matching QSS rule that strips QToolButton's default
-  // hover/checked background; `property_key` tags the button for the theme pass.
+  // Shared builder of a per-row checkable icon toggle (visibility eye, markers): a flat ink glyph whose 2-state SVG
+  // swaps on toggle. The objectName drives the QSS rule that strips QToolButton's default hover and checked background;
+  // `property_key` tags the button for the theme pass.
   QToolButton* makeToggleButton(
       const QString& object_name, const char* property_key, const char* on_path, const char* off_path, bool checked,
       const QString& tooltip, std::function<void(bool)> on_toggled);
@@ -129,17 +111,15 @@ class CurveEditor : public QWidget {
 
   Ui::CurveEditor* ui_;
   PlotWidget* plot_ = nullptr;
-  // The strip binding (see setStateTransitions); mutually exclusive with plot_.
+  // The strip binding (setStateTransitions); mutually exclusive with plot_.
   StateTransitionsController* state_controller_ = nullptr;
   QMetaObject::Connection state_series_connection_;
   QMetaObject::Connection state_destroyed_connection_;
-  // Tracks the active theme so per-row visibility-toggle icons can be
-  // rendered in the right ink at row-creation time without having to
-  // walk back up to qApp / Theme. Updated via onStylesheetChanged.
+  // The active theme, so per-row icons render in the right ink at row creation without walking up to qApp / Theme.
+  // Updated through onStylesheetChanged.
   QString current_theme_ = QStringLiteral("light");
-  // Row-pixel height for curve rows. Tracks icon_size so larger icons
-  // don't clip; updated via onChromeMetricsChanged. Default matches
-  // MainWindow's first-launch icon size and the original compact list.
+  // Row height in pixels for curve rows; tracks icon_size so larger icons do not clip (onChromeMetricsChanged). The
+  // default matches MainWindow's first-launch icon size.
   int row_height_ = 20;
   QMetaObject::Connection curve_list_connection_;
   QMetaObject::Connection curve_color_connection_;
@@ -147,11 +127,9 @@ class CurveEditor : public QWidget {
   QMetaObject::Connection marker_visibility_connection_;
   QMetaObject::Connection plot_destroyed_connection_;
 
-  // Lazily created on first swatch click; reused for the lifetime of the
-  // editor so the persistent colorChanged connection survives reuse.
+  // Created on the first swatch click and reused, so the persistent colorChanged connection survives.
   ColorPickerPopup* color_picker_ = nullptr;
-  // Identifies which row's swatch the popup is currently editing. Cleared
-  // whenever the row is destroyed (refresh / setPlot / plot teardown).
+  // Which row's swatch the popup is editing; cleared when the row is destroyed (refresh, setPlot, plot teardown).
   QString active_color_curve_;
 };
 

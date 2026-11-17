@@ -19,9 +19,6 @@ void buildTfConnectionSegments(
     if (!parent.has_value()) {
       continue;  // forest root: no edge to draw.
     }
-    // Both endpoints resolved into the fixed frame at `time`. Skip the edge
-    // entirely if either side can't resolve, so a frame still streaming in (or a
-    // disconnected subtree) never produces a half-anchored line.
     const auto child_w = tf.tryLookupTransform(fixed_frame, frame, time, pj::tf::Clock::kEntry);
     if (!child_w.has_value()) {
       continue;
@@ -30,8 +27,6 @@ void buildTfConnectionSegments(
     if (!parent_w.has_value()) {
       continue;
     }
-    // Subtract the render origin in double, THEN downcast — so an edge between two
-    // far frames keeps its low bits instead of losing them to float32 at ~1e6.
     out.push_back({glm::vec3(child_w->t - render_origin), glm::vec3(parent_w->t - render_origin)});
   }
 }

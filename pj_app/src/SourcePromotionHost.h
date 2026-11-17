@@ -21,86 +21,56 @@ namespace PJ {
 class ServiceRegistryBuilder;
 class SessionManager;
 
-// Host side of the SDK service "pj.source_promotion.v1"
-// (PJ_source_promotion_host_vtable_t): lets a descriptor-import provider hand
-// its materialized artifact to the host to be promoted to a stock file-backed
-// source. Registered PER TOOLBOX INSTANCE (MainWindow::launchToolbox), so the
-// provider's identity is HOST-DERIVED from the binding (`provider_id`) — the
-// plugin never supplies its own identity and cannot spoof another provider's.
+// Host side of the SDK service "pj.source_promotion.v1": a descriptor-import provider hands its materialized file
+// to the host, which reloads it in place of the provider's dataset as a stock file source. One instance per bound
+// toolbox instance (MainWindow::launchToolbox, HeadlessDescriptorProviderSession), so the provider identity comes
+// from the binding (`provider_id`) and a plugin cannot claim another's.
 //
-// One accepted promotion drives the stock replace-dataset pipeline:
-//   - validate the target dataset BELONGS TO THE BOUND PROVIDER'S INGEST
-//     (`owns_dataset`, the ToolboxRuntimeHost::hasIngestForDataset authority;
-//     liveness is FileLoader's strict-replacement check — a vanished target
-//     fails the load, it never degrades to a fresh load);
-//   - FileLoader::loadFileTicketed with a preset config, DialogPolicy::kNever
-//     (no dialogs, preset authoritative) and require_replacement;
-//   - on the SYNCHRONOUS pre-catalog loadCommitting seam, attach the
-//     SessionManager SourceRecord {provider_id, source_identity,
-//     descriptor_json} — atomically with catalog publication;
-//   - report the transaction outcome through result_cb EXACTLY ONCE per
-//     ACCEPTED call. promote_to_file_source returning false is a synchronous
-//     reject: result_cb never runs. Accepted-then-invalid (not owned, vanished
-//     target, unknown loader plugin, rolled-back load, teardown) is ok=false —
-//     the ABI's accepted-vs-succeeded distinction. EAGER_ONLY semantics stay
-//     plugin-side; this host only reports transaction ok/failed.
+// An accepted promotion: checks that the bound instance's ingest produced the dataset (`owns_dataset`); loads the
+// file with the given loader plugin and preset, no dialog, require_replacement (a vanished target fails, never
+// becomes a fresh load); attaches the SourceRecord at loadCommitting, atomically with catalog publication; and
+// calls result_cb exactly once. A false return from promote_to_file_source is a synchronous reject and result_cb
+// never runs; an accepted request that then fails reports ok=false.
 //
-// Threading: promote_to_file_source is [thread-safe, asynchronous] — callable
-// from any plugin thread. The thunk copies the full request into owned
-// storage, does only structural validation synchronously, and queues the job
-// onto this QObject's (GUI) thread; all FileLoader/SessionManager work happens
-// there. result_cb fires on the GUI thread — serialized per request, may
-// re-enter promote_to_file_source.
+// promote_to_file_source may be called from any thread: it copies the request, validates its structure and queues
+// the work onto this object's (GUI) thread. result_cb runs on the GUI thread, outside the lock, and may call
+// promote_to_file_source again.
 //
-// Teardown: the destructor fails (ok=false) every accepted-but-unfinished
-// promotion while the plugin instance/DSO is still alive, and stops observing
-// the loader. It deliberately does NOT cancel an in-flight replacement load —
-// the load completes as an ordinary strict replace without a record attach;
-// only the promotion transaction is reported failed.
+// Teardown does not cancel an in-flight replacement load: it completes as a plain replace with no record, and only
+// the promotion reports failure.
 //
 // Not movable: the service fat pointer stores `this`.
 class SourcePromotionHost : public QObject {
   Q_OBJECT
  public:
-  // `provider_id` is the plugin's stable manifest id from the host-side
-  // catalog binding. `owns_dataset` answers "did this plugin instance's ingest
-  // produce the dataset" (null => owns nothing, every promotion is failed).
+  // `provider_id` is the plugin's manifest id from the host's binding. `owns_dataset`: did this instance's ingest
+  // produce the dataset (null: every promotion fails).
   SourcePromotionHost(
       FileLoader& loader, SessionManager& session, QString provider_id, std::function<bool(DatasetId)> owns_dataset,
       QObject* parent = nullptr);
   ~SourcePromotionHost() override;
 
-  // Phase 1 of the two-phase teardown (idempotent; the destructor calls it):
-  // stops observing the loader, closes the intake (every later
-  // promote_to_file_source sync-rejects against a LIVE mutex), and fails
-  // every accepted-but-unfinished promotion exactly once — which reaches
-  // plugin code, so it MUST run while the plugin instance/DSO is alive.
-  // The object must then STAY alive until the plugin's workers are joined
-  // (instance destroy): a straggler worker calling the raw service pointer
-  // in that window hits the safe synchronous rejection instead of a
-  // use-after-free. Only afterwards may the host itself be destroyed.
+  // Idempotent; the destructor calls it too. Stops observing the loader, rejects every later
+  // promote_to_file_source synchronously and fails every accepted, unfinished promotion. It calls plugin code, so
+  // run it while the plugin instance is alive; then keep this object alive until the plugin's workers are joined
+  // (instance destroyed), so a straggler call hits the rejection instead of freed memory.
   void shutdown();
 
   SourcePromotionHost(const SourcePromotionHost&) = delete;
   SourcePromotionHost& operator=(const SourcePromotionHost&) = delete;
 
-  // Register "pj.source_promotion.v1" into the builder used to bind the
-  // toolbox plugin (before the handle's bind()). It is this host's only service
-  // and promotion is its entire purpose, so a rejection fails the Status; do not
-  // bind the plugin on a failure, or promotion requests would reach a host the
-  // caller never published.
+  // Before the handle's bind(). On failure do not bind the plugin: its requests would reach a host that was never
+  // published.
   [[nodiscard]] Status registerServices(ServiceRegistryBuilder& registry);
 
-  // The raw C-ABI fat pointer (for direct wiring / tests).
   [[nodiscard]] PJ_source_promotion_host_t raw() const noexcept {
     return raw_;
   }
 
  private:
-  // One ACCEPTED promotion. The identity/request fields are immutable after
-  // construction; `fired` is guarded by mu_ (the exactly-once gate shared with
-  // the destructor sweep); failure_reason/record_attached are GUI-thread only.
-  // The load ticket lives only in by_ticket_ (the sole ticket authority).
+  // One accepted promotion. Request fields are immutable; `fired` (the exactly-once gate shared with shutdown())
+  // is guarded by mu_; failure_reason and record_attached are GUI-thread only. The load ticket lives only in
+  // by_ticket_.
   struct Promotion {
     quint64 id = 0;
     DatasetId dataset = 0;
@@ -120,9 +90,8 @@ class SourcePromotionHost : public QObject {
       void* ctx, const PJ_source_promotion_request_v1_t* request, PJ_source_promotion_result_fn result_cb,
       void* callback_ctx, PJ_error_t* out_error) noexcept;
 
-  // GUI thread: validate ownership and drive the replacement load.
   void processPromotion(quint64 promotion_id);
-  // GUI thread: deliver the result exactly once (no-op when already fired).
+  // No-op when already fired.
   void finishPromotion(const std::shared_ptr<Promotion>& promotion, bool ok, const QString& message);
 
   QPointer<FileLoader> loader_;
@@ -130,16 +99,15 @@ class SourcePromotionHost : public QObject {
   const QString provider_id_;
   const std::function<bool(DatasetId)> owns_dataset_;
 
-  // Guards pending_/next_promotion_id_/shutting_down_ and every Promotion's
-  // `fired` flag — the only state the any-thread entry point touches.
+  // Guards pending_, next_promotion_id_, shutting_down_ and every Promotion's `fired`: what the any-thread entry
+  // point touches.
   std::mutex mu_;
   bool shutting_down_ = false;
   quint64 next_promotion_id_ = 0;
   std::unordered_map<quint64, std::shared_ptr<Promotion>> pending_;
 
-  // GUI-thread only: promotions whose replacement load is in flight, keyed by
-  // the load ticket; and the promotion currently inside loadFileTicketed (its
-  // synchronous-failure fileLoadFailed fires before the ticket is known).
+  // GUI thread only. issuing_ is the promotion inside loadFileTicketed: a synchronous failure emits fileLoadFailed
+  // before the ticket is known.
   std::unordered_map<quint64, std::shared_ptr<Promotion>> by_ticket_;
   std::shared_ptr<Promotion> issuing_;
 

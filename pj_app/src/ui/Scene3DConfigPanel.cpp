@@ -64,32 +64,22 @@ constexpr auto kVisibilityOnPath = ":/resources/svg/visibility.svg";
 constexpr auto kVisibilityOffPath = ":/resources/svg/visibility_off.svg";
 constexpr auto kTfConnectionsIconPath = ":/resources/svg/graph_4.svg";
 
-// Trailing eye/add/trash button column: the scene-control grids reserve this
-// width in their 3rd column so every field's right edge lines up whether or not
-// the row carries a trailing button. kTrailingIconPx is the glyph size inside it.
-// Every side-panel SVG-icon button is a 20x20 square (matching the Topics table's
-// eye/trash, which are kDefaultRowHeight==20 square), so the icon column reads as
-// one consistent size and the rows stay compact.
+// The grids reserve this width in their third column, so every field's right edge lines up whether or not the row
+// has a trailing button. Same square as the Topics table's eye/trash buttons.
 constexpr int kTrailingSlotWidth = 20;
 constexpr int kTrailingIconPx = 20;
-// Horizontal gap between grid columns; the robot-row HBox reuses it so the robot
-// name's right edge lands on the same x as the field column above.
+// The robot rows reuse it, so the robot name's right edge lands on the field column's.
 constexpr auto kGridHSpacing = theme::Space::Comfortable;
 
-// Uniform sizing for the inline eye/add/trash buttons so the trailing column is
-// pixel-aligned regardless of the platform style's default tool-button metrics.
+// Pixel-aligns the trailing column whatever the platform style's tool-button metrics.
 void sizeTrailingButton(QToolButton* button) {
   button->setIconSize(QSize(kTrailingIconPx, kTrailingIconPx));
-  // Fixed HEIGHT too (== the input height), else the tool button's natural
-  // height (~24-26px) inflates its grid row above the 20px inputs and loosens
-  // the row spacing.
+  // Fixed height too, else the tool button's natural height inflates its row above the inputs.
   button->setFixedSize(kTrailingSlotWidth, PJ::Style::kInputHeight);
 }
 
-// Add one [label | field | trailing] row to a 3-column scene-control grid.
-// Using a real grid column (not an in-cell spacer) keeps every field's right
-// edge and the trailing eye/add button aligned across rows by construction.
-// `trailing` may be null (column 2 stays reserved via setColumnMinimumWidth).
+// One [label | field | trailing] row. A real grid column, not an in-cell spacer, keeps fields and trailing buttons
+// aligned across rows. `trailing` may be null.
 void addGridRow(QGridLayout* grid, int& row, const QString& label, QWidget* field, QWidget* trailing = nullptr) {
   grid->addWidget(new QLabel(label + u":"_s), row, 0);
   grid->addWidget(field, row, 1);
@@ -99,9 +89,7 @@ void addGridRow(QGridLayout* grid, int& row, const QString& label, QWidget* fiel
   ++row;
 }
 
-// App-wide clipboard for layer parameters: Copy stores the source layer's
-// serialized params plus its family; Paste applies them to a same-family layer.
-// Static (process-wide) so a copy in one 3D dock can be pasted into another.
+// Process-wide, so a copy in one 3D dock can be pasted into another.
 struct LayerParamClipboard {
   QString xml;
   QString family;
@@ -111,9 +99,7 @@ LayerParamClipboard& layerParamClipboard() {
   return clipboard;
 }
 
-// Small modal prompt on the shared Dialog chrome: a single field + OK/Cancel.
-// The field is parented into the dialog; values must be read before `dialog`
-// leaves scope, which is why each picker below returns the value, not a bool.
+// The field is parented into the dialog and dies with it, so each picker below returns the value, not a bool.
 #ifndef PJ_TARGET_WASM
 bool execFieldDialog(Dialog& dialog, const QString& title, QWidget* field) {
   dialog.setDialogTitle(title);
@@ -158,17 +144,14 @@ std::optional<QString> promptUrdfUrl(QWidget* parent) {
 
 #ifdef PJ_TARGET_WASM
 void showBrowserDialog(Dialog* dialog) {
-  // QDialog::open() forces WindowModal even after another modality was set.
-  // Browser workflows must remain nonblocking and nonmodal, matching the
-  // dialog host's explicit-modality + show() contract.
+  // Not open(): QDialog::open() forces WindowModal even after another modality was set, and browser prompts must
+  // stay nonmodal.
   dialog->setWindowModality(Qt::NonModal);
   dialog->show();
   dialog->activateWindow();
 }
 
-// Chrome shared by the browser-only prompts: a self-deleting titled Dialog the
-// caller fills, then finishes with a named button box (Cancel pre-wired) that
-// is appended, sized, and shown nonmodal.
+// A self-deleting titled Dialog for the browser prompts; the caller fills it, then finishes it with a button box.
 Dialog* makeBrowserDialog(QWidget* parent, const QString& title) {
   auto* dialog = new Dialog(parent);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -260,14 +243,7 @@ DoubleScrubber* makeScrubber(double min, double max, double step, double value) 
 }  // namespace
 
 Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
-  // Scene-control changes apply live every tick (valueChanged) but persist
-  // only when the edit settles — scrubbers on ScrubberBase::editingFinished,
-  // toggles/style on click — so a drag is one INI write, not one per tick.
-
-  // Zero outer margins so the section header bands (Grid · Transforms and
-  // RobotModel · Topics · Settings) span edge-to-edge like the plotting
-  // panel's Curve Width / Curve Style bands; each content block under a band
-  // re-adds its own 8-px horizontal inset.
+  // Zero outer margins so the section bands span edge to edge; each block under a band re-adds its own inset.
   auto* outer = new QVBoxLayout(this);
   outer->setContentsMargins(
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
@@ -293,9 +269,6 @@ Scene3DConfigPanel::Scene3DConfigPanel(QWidget* parent) : QWidget(parent) {
       PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug),
       PJ::theme::space(theme::Space::Comfortable), PJ::theme::space(theme::Space::Snug));
 
-  // Right-aligned copy / paste / apply-to-family row, just below the Settings
-  // header. Glyphs are set theme-aware in applyIcons(); enabled state tracks the
-  // selection + clipboard via updateParamsToolbarState().
   auto* params_toolbar = new QWidget(settings_host);
   auto* params_toolbar_layout = new QHBoxLayout(params_toolbar);
   params_toolbar_layout->setContentsMargins(
@@ -362,16 +335,14 @@ LayerListView* Scene3DConfigPanel::layerListForTest() const {
 void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   QSettings settings;
   settings.beginGroup(QString::fromLatin1(kScene3dSceneControlsGroup));
-  // Each control: init from QSettings (defaults = the User's look-dev pick),
-  // persist + re-apply to the bound dock on every change.
+  // Each control starts from QSettings, applies to the bound dock on every tick, and persists only when the edit
+  // settles, so a drag is one INI write.
   const auto wire = [this, &settings](auto* widget, const char* key, auto read, auto signal) {
     widget->setProperty("settings_key", QString::fromLatin1(key));
     if (const QVariant saved = settings.value(QString::fromLatin1(key)); saved.isValid()) {
       read(saved);
     }
-    // Apply live every tick so the view tracks the scrubber.
     connect(widget, signal, this, [this]() { applySceneControls(); });
-    // Persist only when the scrub/edit settles — one INI rewrite per drag.
     connect(widget, &ScrubberBase::editingFinished, this, [this, widget]() {
       const QString settings_key = widget->property("settings_key").toString();
       if (auto* dscrub = qobject_cast<DoubleScrubber*>(widget)) {
@@ -382,10 +353,8 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     });
   };
 
-  // Eye toggles: checked = visible. Persisted like the other controls; the
-  // icon mirrors the checked state (visibility / visibility_off). The shared
-  // curveVisibilityToggle objectName picks up the QSS rule that keeps these
-  // flat in every state — no checked/hover wash, the glyph is the indicator.
+  // Checked = visible. The curveVisibilityToggle objectName picks up the QSS rule that keeps them flat in every state:
+  // the glyph is the indicator.
   const auto make_eye = [this, &settings](const char* key, const QString& tip) {
     auto* eye = new QToolButton(this);
     eye->setObjectName(u"curveVisibilityToggle"_s);
@@ -405,14 +374,9 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   };
   const auto add_band = [this, root](const QString& text) { root->addWidget(new SectionHeaderBand(text, this)); };
 
-  // Each band's controls live in a 3-column grid: label | field | trailing
-  // button. Column 1 stretches; column 2 is pinned to the trailing-button width
-  // so plain rows line up with rows that carry an eye/add button — and the Grid
-  // and Transforms sections align with each other. (A QFormLayout can't share a
-  // trailing column across its rows, which is what caused the right-edge drift.)
-  // The label column (0) is pinned to a shared width after both grids are built
-  // (shareLabelColumn below) so the two sections' labels — and therefore fields —
-  // line up vertically even though they are separate layouts.
+  // label | field | trailing button. Column 2 is pinned to the trailing-button width, so plain rows line up with rows
+  // that carry one (a QFormLayout cannot share a trailing column across rows); column 0 gets a shared width once
+  // every grid is built, so the sections line up with each other.
   const auto add_grid = [this, root]() {
     auto* host = new QWidget(this);
     auto* grid = new QGridLayout(host);
@@ -427,11 +391,8 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     return grid;
   };
 
-  // --- Camera --------------------------------------------------------------
-  // "Follow frame": make the camera track a TF frame's position (Position-only
-  // follow). "None" = off. Per-dock (drives the bound dock, persisted in its
-  // layout XML) — NOT a shared-look QSettings control, so it is wired in bindDock
-  // (populateFollowCombo + availableFramesChanged/followFrameChanged), not here.
+  // Follow frame: the camera tracks a TF frame's position. Saved in the dock's layout XML, not in QSettings, so its
+  // state is wired in bindDock.
   add_band(tr("Camera"));
   QGridLayout* camera_grid = add_grid();
   int camera_row = 0;
@@ -445,14 +406,11 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       bound_dock_->setFollowFrame(follow_frame_combo_->currentData().toString());
     }
   });
-  // Trailing recenter button: snap the camera onto the followed frame on demand.
-  // Glyph set theme-aware in applyIcons(); enabled state tracks the follow target
-  // (populateFollowCombo). Sized like every other trailing icon button.
   recenter_button_ = new QToolButton(this);
   recenter_button_->setAutoRaise(true);
   recenter_button_->setFocusPolicy(Qt::NoFocus);
   recenter_button_->setToolTip(tr("Recenter the camera on the followed frame"));
-  recenter_button_->setEnabled(false);  // no follow target yet; populateFollowCombo updates this
+  recenter_button_->setEnabled(false);  // populateFollowCombo updates this
   sizeTrailingButton(recenter_button_);
   connect(recenter_button_, &QToolButton::clicked, this, [this]() {
     if (bound_dock_ != nullptr) {
@@ -461,7 +419,6 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   });
   addGridRow(camera_grid, camera_row, tr("Follow frame"), follow_frame_combo_, recenter_button_);
 
-  // --- Grid ---------------------------------------------------------------
   add_band(tr("Grid"));
   QGridLayout* grid_grid = add_grid();
   int grid_row = 0;
@@ -497,8 +454,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   style_row->addWidget(grid_cells_button_);
   style_row->addWidget(grid_eye_);
   style_row->addStretch(1);
-  // The style toggles are a strip, not a single field: keep the label in col 0
-  // and let the strip span the field + trailing columns.
+  // The style strip spans the field and trailing columns.
   grid_grid->addWidget(new QLabel(tr("Style") + u":"_s), grid_row, 0);
   grid_grid->addLayout(style_row, grid_row, 1, 1, 2);
   ++grid_row;
@@ -518,20 +474,13 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       qOverload<int>(&IntScrubber::valueChanged));
   addGridRow(grid_grid, grid_row, tr("Divisions"), grid_divisions_);
 
-  // --- Transforms and RobotModel --------------------------------------------
   add_band(tr("Transforms and RobotModel"));
   QGridLayout* tm_grid = add_grid();
   int tm_row = 0;
 
-  // "Frames" in the UI = the TF frame axis triads (gizmo_* internally and in
-  // the persisted settings keys, kept for compatibility).
-  // Trailing toggle on this row: show/hide the magenta lines connecting each TF
-  // frame to its parent (rviz2/Foxglove "show parent connections"). Sized like
-  // the eye toggles (sizeTrailingButton → 20x20, column 2) but WITHOUT the
-  // curveVisibilityToggle objectName, so the default :checked QSS wash gives the
-  // on/off feedback its static graph glyph can't. Default on. Persisted under
-  // tf_parent_lines (one of the mirrored scene-control sites — see
-  // applySceneControlsTo).
+  // "Frames" in the UI are the TF axis triads, "gizmo" in the code and the persisted keys. The trailing toggle shows
+  // the lines from each frame to its parent; without the curveVisibilityToggle objectName it keeps the default
+  // :checked QSS wash, the only on/off feedback of its static glyph.
   tf_lines_button_ = new QToolButton(this);
   tf_lines_button_->setCheckable(true);
   tf_lines_button_->setAutoRaise(true);
@@ -576,10 +525,8 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
   addGridRow(tm_grid, tm_row, tr("Model/URDF"), model_source_combo_, add_model_button_);
   connect(add_model_button_, &QToolButton::clicked, this, &Scene3DConfigPanel::onAddModelClicked);
 
-  // One row per panel-added robot model (name + bin), appended below the
-  // Model/URDF row by addRobotRow. Hosted in a widget that spans all three
-  // columns and stays hidden while empty — an empty grid row would otherwise
-  // reserve vertical spacing and leave a phantom gap under Model/URDF.
+  // The robot rows' host spans the three columns and stays hidden while empty: an empty grid row would still
+  // reserve vertical spacing.
   robot_rows_host_ = new QWidget(this);
   robot_rows_layout_ = new QVBoxLayout(robot_rows_host_);
   robot_rows_layout_->setContentsMargins(
@@ -617,8 +564,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
       qOverload<double>(&DoubleScrubber::valueChanged));
   addGridRow(tm_grid, tm_row, tr("Collision opacity"), collision_opacity_, collision_eye_);
 
-  // Last row: unlike the rows above it does not edit existing scene state, it
-  // creates a new trail layer.
+  // Unlike the rows above, this one creates a layer.
   trail_frame_combo_ = new ComboBox;
   trail_frame_combo_->setFocusPolicy(Qt::ClickFocus);
   trail_frame_combo_->setToolTip(tr("TF frame whose motion trail to draw"));
@@ -638,10 +584,7 @@ void Scene3DConfigPanel::buildSceneControls(QVBoxLayout* root) {
     }
   });
 
-  // Pin both grids' label column to the widest label across BOTH sections, read
-  // back from the labels just added (no separate string list to keep in sync).
-  // Equal column 0 + fixed column 2 ⇒ the stretchy field column also lines up,
-  // so the Grid and Transforms sections align even though they are separate grids.
+  // Equal column 0 and fixed column 2 line the field columns of the separate grids up too.
   const auto widest_label = [](QGridLayout* grid) {
     int width = 0;
     for (int r = 0; r < grid->rowCount(); ++r) {
@@ -677,10 +620,8 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   if (view == nullptr) {
     return;
   }
-  // The scene-control field set is mirrored across FOUR sites — keep them in sync
-  // when adding a control (a miss is silent, no compile error): this push,
-  // loadControlsFromDock (reflect-on-bind), and Scene3DDockWidget's
-  // xmlSaveState/xmlLoadState (per-dock layout persistence).
+  // The scene-control field set is mirrored in four places that must change together (a miss compiles and fails
+  // silently): here, loadControlsFromDock, and Scene3DDockWidget's xmlSaveState/xmlLoadState.
   view->setGridVisible(grid_eye_->isChecked());
   view->setGridStyle(
       grid_cells_button_->isChecked() ? pj::scene3d::SceneViewWidget::GridStyle::kFilledCells
@@ -692,8 +633,6 @@ void Scene3DConfigPanel::applySceneControlsTo(Scene3DDockWidget* dock) {
   view->setGizmoOpacity(static_cast<float>(gizmo_opacity_->value()));
   view->setTfConnectionsVisible(tf_lines_button_->isChecked());
 
-  // Per-view look knobs: drives only the bound dock's view. Sibling docks keep
-  // their own MeshShadingParams and converge when the panel rebinds and applies.
   auto& shading = view->meshShadingParams();
   shading.meshes_visible = mesh_eye_->isChecked();
   shading.mesh_opacity = static_cast<float>(mesh_opacity_->value());
@@ -710,11 +649,8 @@ void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
   if (view == nullptr) {
     return;
   }
-  // Inverse of applySceneControlsTo (keep the field set in sync — 4 sites).
-  // Reflect the dock's OWN look in the widgets without echoing it straight back
-  // through the change handlers (which would re-apply + re-persist). Scrubbers
-  // are blocked; the eye toggles are set + their icon refreshed by hand (the
-  // toggled handler that normally swaps the icon is suppressed by the blocker).
+  // The inverse of applySceneControlsTo (same field set). Blocked, or the handlers would re-apply and re-persist; the
+  // blocker also suppresses the eye icon swap, so it is done by hand.
   const auto set_eye = [this](QToolButton* eye, bool on) {
     const QSignalBlocker block(eye);
     eye->setChecked(on);
@@ -741,14 +677,11 @@ void Scene3DConfigPanel::loadControlsFromDock(Scene3DDockWidget* dock) {
     set_eye(collision_eye_, shading.collisions_visible);
   }
 
-  // idClicked (the connected signal) fires only on user clicks, not programmatic
-  // setChecked, so the exclusive style group needs no blocker.
+  // The style group is connected through idClicked, which a programmatic setChecked does not emit.
   (view->gridStyle() == pj::scene3d::SceneViewWidget::GridStyle::kFilledCells ? grid_cells_button_ : grid_lines_button_)
       ->setChecked(true);
   set_eye(grid_eye_, view->gridVisible());
   set_eye(gizmo_eye_, view->axesVisible());
-  // Not an eye toggle (static glyph): just reflect the checked state without
-  // echoing back through the toggled handler (which would re-persist/re-apply).
   {
     const QSignalBlocker block(tf_lines_button_);
     tf_lines_button_->setChecked(view->tfConnectionsVisible());
@@ -872,8 +805,6 @@ void Scene3DConfigPanel::onAddModelClicked() {
       if (bound_dock_ == nullptr) {
         return;  // the modal event loop can outlive the dock
       }
-      // addRobotRow is idempotent, so the row created here is harmless when the
-      // layerAdded signal (or a pre-existing layer) would have added it anyway.
       if (bound_dock_->addTopic(picked->first, sdk::BuiltinObjectType::kRobotDescription, picked->second)) {
         addRobotRow(picked->first.id, picked->second, picked->second);
       }
@@ -916,8 +847,6 @@ void Scene3DConfigPanel::onAddModelClicked() {
 }
 
 void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& label, const QString& tooltip) {
-  // Idempotent: rows are derived from dock state and rebuilt on every bind, and
-  // both onAddModelClicked and the layerAdded signal can target the same id.
   const auto existing = std::find_if(
       robot_rows_.begin(), robot_rows_.end(), [&](const auto& pair) { return pair.first == topic_id_value; });
   if (existing != robot_rows_.end()) {
@@ -929,7 +858,6 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   layout->setContentsMargins(
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
       PJ::theme::space(theme::Space::None));
-  // Match the grid's column gap so the name's right edge lines up.
   layout->setSpacing(PJ::theme::space(kGridHSpacing));
   auto* name = new QLineEdit(label, row);
 #ifdef PJ_TARGET_WASM
@@ -939,9 +867,7 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   name->setFocusPolicy(Qt::NoFocus);
   name->setAlignment(Qt::AlignCenter);
   name->setToolTip(tooltip);
-  // Clicking the name field selects the robot: it binds the Settings host to the
-  // layer's config widget (source combo / status / Retry). The id rides on a
-  // property so the panel's eventFilter can route the press without per-row state.
+  // A property, so eventFilter routes the press without per-row state.
   name->setProperty("robot_topic_id", topic_id_value);
   name->setCursor(Qt::PointingHandCursor);
   name->installEventFilter(this);
@@ -949,17 +875,15 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   auto* trash = new QToolButton(row);
 #ifdef PJ_TARGET_WASM
   trash->setObjectName(u"scene3dRobotRowTrash"_s);
-  // Same flat styling as the topic-row trash buttons; the QSS also names this
-  // robot-specific id so diagnostics and accessibility retain a stable handle.
+  // The QSS styles this id like the topic-row trash buttons.
 #else
-  // Same flat styling as the topic-row trash buttons.
   trash->setObjectName(u"curveTrashToggle"_s);
 #endif
   trash->setAutoRaise(true);
   trash->setFocusPolicy(Qt::NoFocus);
   trash->setToolTip(tr("Remove this robot model"));
   trash->setIcon(loadSvg(QLatin1String(kTrashIconPath), theme_));
-  sizeTrailingButton(trash);  // align with the Model/URDF add button column above
+  sizeTrailingButton(trash);
   layout->addWidget(trash);
   connect(trash, &QToolButton::clicked, this, [this, topic_id_value]() {
     if (bound_dock_ != nullptr) {
@@ -970,11 +894,9 @@ void Scene3DConfigPanel::addRobotRow(uint32_t topic_id_value, const QString& lab
   });
   robot_rows_layout_->addWidget(row);
   robot_rows_.emplace_back(topic_id_value, row);
-  robot_rows_host_->show();  // first row makes the (otherwise collapsed) host visible
+  robot_rows_host_->show();
 
-  // Mirror the layer's status onto the name tooltip — the cheap error surface
-  // for load failures ("Fetch failed …" / "Failed to read URDF …") that would
-  // otherwise be invisible until the row is clicked. Kept fresh via the signal.
+  // The layer's status in the name tooltip: a load failure is visible without clicking the row.
   if (bound_dock_ != nullptr) {
     ObjectTopicId topic_id;
     topic_id.id = topic_id_value;
@@ -1001,8 +923,7 @@ void Scene3DConfigPanel::showRobotLayerConfig(uint32_t topic_id_value) {
   if (layer == nullptr) {
     return;
   }
-  // Robot layers aren't in the Topics list, so the list selection is unrelated;
-  // last click wins on config_host_ (the list selection stays as-is).
+  // Last click wins on config_host_; the Topics list selection stays as it is.
   config_host_->setConfigWidget(layer->createConfigWidget(config_host_));
 }
 
@@ -1028,7 +949,7 @@ void Scene3DConfigPanel::removeRobotRowFor(uint32_t topic_id_value) {
   it->second->deleteLater();
   robot_rows_.erase(it);
   if (robot_rows_.empty() && robot_rows_host_ != nullptr) {
-    robot_rows_host_->hide();  // collapse the form row again so no phantom gap remains
+    robot_rows_host_->hide();
   }
 }
 
@@ -1041,14 +962,13 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
 
   layer_list_->clearRows();
   config_host_->clear();
-  // Robot rows belong to the dock they were added to; a rebind starts from a
-  // clean slate (the previous dock keeps its layers).
+  // Robot rows belong to the bound dock; the previous dock keeps its layers.
   for (const auto& [id, row] : robot_rows_) {
     row->deleteLater();
   }
   robot_rows_.clear();
   if (robot_rows_host_ != nullptr) {
-    robot_rows_host_->hide();  // back to collapsed until this dock's rows are rebuilt
+    robot_rows_host_->hide();
   }
 
   if (dock == nullptr) {
@@ -1059,8 +979,8 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
   }
 
   rebuildLayerList();
-  loadControlsFromDock(dock);  // reflect THIS dock's look; controls are per-dock
-  populateFollowCombo();       // reflect THIS dock's follow target + frame set
+  loadControlsFromDock(dock);
+  populateFollowCombo();
   populateTrailCombo();
 
   connect(dock, &SceneDockWidget::layerAdded, this, &Scene3DConfigPanel::onLayerAdded);
@@ -1070,7 +990,6 @@ void Scene3DConfigPanel::bindDock(Scene3DDockWidget* dock) {
   connect(dock, &SceneDockWidget::layerStatusChanged, this, [this](ObjectTopicId topic_id, const QString& status) {
     layer_list_->setRowStatus(static_cast<qint64>(topic_id.id), status);
   });
-  // Keep the follow combo in step with the dock's frame set and follow target.
   connect(dock, &Scene3DDockWidget::availableFramesChanged, this, [this](const QList<pj::tf::FrameRow>&) {
     populateFollowCombo();
     populateTrailCombo();
@@ -1126,10 +1045,8 @@ void Scene3DConfigPanel::populateFollowCombo() {
   }
   const int idx = follow_frame_combo_->findData(current);
   follow_frame_combo_->setCurrentIndex(idx >= 0 ? idx : 0);
-  // Recenter is enabled only when the SELECTED item is a real frame — track the
-  // combo's resolved selection, not the dock's raw follow string, so a follow
-  // target that isn't (yet) in the tree shows "None" AND a disabled button rather
-  // than an enabled button over a "None" label.
+  // From the combo's resolved selection, not the dock's follow string: a target not yet in the tree shows "None"
+  // with a disabled button.
   if (recenter_button_ != nullptr) {
     recenter_button_->setEnabled(!follow_frame_combo_->currentData().toString().isEmpty());
   }
@@ -1146,9 +1063,6 @@ void Scene3DConfigPanel::rebuildLayerList() {
   const auto layers = bound_dock_->layers();
   rows.reserve(layers.size());
   for (const SceneLayerInfo& info : layers) {
-    // Robot-model layers stay out of the Topics list; they get a dedicated row
-    // under the Model/URDF selector, rebuilt here from dock state (so layout
-    // restore and dock switches recover the rows — bindDock cleared them).
     if (info.object_type == sdk::BuiltinObjectType::kRobotDescription) {
       addRobotRow(info.topic_id.id, info.display_name, info.display_name);
       continue;
@@ -1179,8 +1093,6 @@ void Scene3DConfigPanel::onLayerAdded(ObjectTopicId topic_id) {
   }
   const SceneLayerInfo info = layer->info();
   if (info.object_type == sdk::BuiltinObjectType::kRobotDescription) {
-    // Robot layers get a Model/URDF row, not a Topics-list row. Idempotent, so
-    // a row already created by onAddModelClicked is not duplicated here.
     addRobotRow(info.topic_id.id, info.display_name, info.display_name);
     return;
   }
@@ -1194,8 +1106,7 @@ void Scene3DConfigPanel::onLayerAdded(ObjectTopicId topic_id) {
 
 void Scene3DConfigPanel::onLayerRemoved(ObjectTopicId topic_id) {
   layer_list_->removeRow(static_cast<qint64>(topic_id.id));
-  // Single removal path for robot rows: the bin button only calls removeTopic
-  // and this signal drops the row, so other teardown paths stay consistent.
+  // The only removal path for robot rows: their bin button only calls removeTopic.
   removeRobotRowFor(topic_id.id);
   updateSelectedLayerPane();
 }
@@ -1263,8 +1174,7 @@ void Scene3DConfigPanel::onPasteParams() {
     return;
   }
   if (applyLayerParams(*layer, clip.xml)) {
-    // The visible config widget was built from the pre-paste values; rebuild it
-    // so its controls reflect what was just applied.
+    // The visible config widget still shows the pre-paste values.
     updateSelectedLayerPane();
   }
 }
@@ -1286,15 +1196,13 @@ void Scene3DConfigPanel::onApplyParamsToFamily() {
   if (xml.isEmpty()) {
     return;
   }
-  // Push the source's params onto every other layer of the same family. The
-  // source itself is left untouched, so its open config widget stays valid.
+  // The source is left untouched, so its open config widget stays valid.
   for (const SceneLayerInfo& info : bound_dock_->layers()) {
     if (info.topic_id == *selected || info.family_name != *family) {
       continue;
     }
     if (ISceneLayer* target = bound_dock_->layerFor(info.topic_id); target != nullptr) {
-      // Best-effort across siblings: the blob came from a valid serialize of a
-      // same-family layer, so a single failure shouldn't abort the rest.
+      // Best effort: one failing sibling does not abort the rest.
       [[maybe_unused]] const bool applied = applyLayerParams(*target, xml);
     }
   }

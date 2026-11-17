@@ -93,7 +93,7 @@ inline QImage pjWaitForGrab(
 }
 
 // Presents one real frame of `widget`, then grabs it: the OpenGL QRhi's grab-only
-// frames reuse stale state (pj_scene3D/docs/TECHNICAL_NOTES.md, Qt bugs). Null when
+// frames reuse stale state (pj_scene3D/docs/TECHNICAL_NOTES.md "Qt workarounds"). Null when
 // nothing was presented within 5 s.
 [[nodiscard]] inline QImage pjPresentAndGrab(QRhiWidget* widget) {
   bool presented = false;

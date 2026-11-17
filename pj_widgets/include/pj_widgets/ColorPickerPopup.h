@@ -11,9 +11,8 @@ class QLineEdit;
 
 namespace PJ {
 
-// Horizontal hue strip with a single drag handle. Click/drag emits
-// hueChanged; setHue suppresses the signal so the popup can sync state
-// without triggering a feedback loop.
+// Horizontal hue strip with one drag handle. Click or drag emits hueChanged; setHue is silent, so the popup syncs state
+// without a feedback loop.
 class HueSlider : public QWidget {
   Q_OBJECT
  public:
@@ -40,8 +39,8 @@ class HueSlider : public QWidget {
   int hue_ = 0;  // [0, 359]
 };
 
-// Saturation/value square for the current hue. Background repaints when
-// the hue changes; cursor is a hollow white circle at (s*w, (1-v)*h).
+// Saturation/value square for the current hue; the background repaints when the hue changes, the cursor is a hollow
+// white circle at (s*w, (1-v)*h).
 class SVSquare : public QWidget {
   Q_OBJECT
  public:
@@ -69,11 +68,9 @@ class SVSquare : public QWidget {
   qreal v_ = 1.0;
 };
 
-// HSV color picker popup: HueSlider + SVSquare + hex line edit, stacked.
-// Inherits QDialog so the application-wide dialog stylesheet applies (a
-// plain QWidget would be transparent under the global theme). Constructed
-// with Qt::Popup so a click outside or Escape closes it. Emits colorChanged
-// live during drag.
+// HSV color picker popup: HueSlider, SVSquare and a hex line edit, stacked. A QDialog so the application-wide dialog
+// stylesheet applies (a plain QWidget is transparent under the global theme); Qt::Popup, so a click outside or Escape
+// closes it. Emits colorChanged live during a drag.
 class ColorPickerPopup : public QDialog {
   Q_OBJECT
  public:

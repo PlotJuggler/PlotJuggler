@@ -230,8 +230,7 @@ if ($RepoOutDir) {
 
 # --- locate the built app --------------------------------------------------
 # Prefer Release (CI default), then RelWithDebInfo, then any config. The CMake
-# target 'pj_app' has OUTPUT_NAME plotjuggler4 on main, but older builds still
-# ship as pj_app.exe — accept either.
+# target 'pj_app' has OUTPUT_NAME plotjuggler4; a pj_app.exe is accepted too.
 function Find-AppExe {
   foreach ($cfg in @("Release","RelWithDebInfo","*")) {
     foreach ($name in @("plotjuggler4.exe","pj_app.exe")) {
@@ -545,8 +544,8 @@ Render-Template $packageXmlSrc (Join-Path $stageMeta "package.xml")
 
 # --- remote updates (optional) ---------------------------------------------
 # Injected here rather than templated into config.xml so that a build without
-# -UpdateUrl stays byte-identical to one from before this existed: an empty
-# <Url/> would leave every maintenance tool polling nothing on each launch.
+# -UpdateUrl carries no <RemoteRepositories>: an empty <Url/> would leave every
+# maintenance tool polling nothing on each launch.
 if ($UpdateUrl) {
   $cfgPath = Join-Path $StageDir "config.xml"
   $closing = "</Installer>"

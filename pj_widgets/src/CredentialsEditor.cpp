@@ -107,7 +107,7 @@ CredentialsEditor::CredentialsEditor(QWidget* parent) : QWidget(parent) {
     }
   });
 
-  // Live ticks — also fire on the plugin's pre-fill setText (PJ3 parity).
+  // Live ticks: they also fire on the plugin's pre-fill setText.
   connect(cert_path_, &QLineEdit::textChanged, this, [this](const QString& text) {
     applyTick(cert_tick_, text, isCertReadable(text));
   });

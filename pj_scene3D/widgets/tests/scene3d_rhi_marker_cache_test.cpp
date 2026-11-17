@@ -1,25 +1,19 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The scene prelude and marker caches of the QRhi view, rendered through the real
-// Scene3DDockWidget on every backend:
+// The scene prelude and marker caches of the QRhi view, rendered through the real Scene3DDockWidget on every backend:
 //
-//  - MarkerRhiPass keeps each layer's expansion in Static buffers keyed on its
-//    geometry revision, style, the render origin and the resolved
-//    TF placement of every frame it references: orbit and zoom rebuild nothing,
-//    a pan rebuilds once, a live layer rebuilds once per new sample, a TF-only move
-//    of a static layer's frame rebuilds it and moves its pixels, and the cached
-//    frames match the uncached path (setMarkerCacheEnabledForTest(false)) pixel
-//    for pixel; a partial buffer-allocation failure drops the layer for one frame;
-//  - a layer re-uploaded within a few frames keeps its expansion, and an
-//    origin-only change (pan, follow) then rewrites only its translations and
-//    stream positions, pixel-identical to the uncached path near the origin and
-//    1e6 m away, for small and large pans and across a TF move; any other layer
-//    drops its expansion after the upload;
-//  - GridRhiPass builds the grid once: panning and playback never rebuild it;
-//    the TF connection lines follow the playhead and the render origin;
-//  - VoxelRhiPass rejects a grid wholly outside the frustum and keeps one that
-//    only overhangs it.
+//  - MarkerRhiPass keeps each layer's expansion in Static buffers keyed on its geometry revision, style, the render
+//    origin and the resolved TF placement of every frame it references: orbit and zoom rebuild nothing, a pan rebuilds
+//    once, a live layer rebuilds once per new sample, a TF-only move of a static layer's frame rebuilds it and moves
+//    its pixels, and the cached frames match the uncached path (setMarkerCacheEnabledForTest(false)) pixel for pixel;
+//    a partial buffer-allocation failure drops the layer for one frame;
+//  - a layer re-uploaded within a few frames keeps its expansion, and an origin-only change (pan, follow) then
+//    rewrites only its translations and stream positions, pixel-identical to the uncached path near the origin and
+//    1e6 m away, for small and large pans and across a TF move; any other layer drops its expansion after the upload;
+//  - GridRhiPass builds the grid once: panning and playback never rebuild it; the TF connection lines follow the
+//    playhead and the render origin;
+//  - VoxelRhiPass rejects a grid wholly outside the frustum and keeps one that only overhangs it.
 //
 // Needs a real display like the render harness (see scene3d_render_test_support.h).
 
@@ -137,7 +131,6 @@ class CacheScene {
     }
     return id;
   }
-  // `child` under kFrame at each (time, offset); the first time must be kT0.
   void addEdge(const std::string& child, const std::vector<std::pair<PJ::Timestamp, glm::dvec3>>& poses) {
     const auto id = fixture_.add(
         "/tf_" + child, BT::kFrameTransforms, serializeTfEdges(kFrame, {{child, poses.front().second}}, kT0));
@@ -184,8 +177,8 @@ class CacheScene {
     return SceneViewTestAccess::markerPass(*view());
   }
 
-  // Shows the window at kT0, presents a warm-up frame, then pins a
-  // front-above camera. False when no frame could be presented.
+  // Shows the window at kT0, presents a warm-up frame, then pins a front-above camera. False when no frame was
+  // presented.
   bool show(bool grid = false) {
     for (int i = 0; i < 20 && view() == nullptr; ++i) {
       QCoreApplication::processEvents();
@@ -232,7 +225,6 @@ class CacheScene {
   QImage grab() {
     return pj::scene3d::test::grab(*view());
   }
-  // The pinned camera, changed by `edit` and re-adopted.
   template <typename Edit>
   QImage moveCamera(Edit edit) {
     edit(camera_);
@@ -284,7 +276,6 @@ TEST_F(Scene3dRhiMarkerCacheTest, OrbitAndZoomRebuildNothing) {
   EXPECT_GT(differingPixels(start, orbited), 1000);
   EXPECT_GT(differingPixels(orbited, zoomed), 1000);
 
-  // A pan moves the render origin the vertices are relative to: one rebuild.
   const QImage panned = scene.moveCamera([](auto& camera) { camera.focal += glm::vec3(0.8F, -0.5F, 0.2F); });
   EXPECT_EQ(scene.markers().layerRebuildCountForTest(), rebuilds + 1);
   EXPECT_GT(differingPixels(zoomed, panned), 1000);
@@ -329,7 +320,6 @@ TEST_F(Scene3dRhiMarkerCacheTest, TfOnlyMoveOfAStaticLayerRebuildsAndMovesIt) {
   EXPECT_EQ(layer->geometryRevision(), revision) << "the marker batch itself must not change";
   EXPECT_EQ(scene.markers().layerRebuildCountForTest(), rebuilds + 1) << "the TF move did not rebuild the layer";
   EXPECT_GT(differingPixels(before, after, 60), 500) << "the cube did not move with its frame";
-  // Same placement again: nothing to rebuild.
   scene.tick(kT0 + 2 * kStepNs, layer, false);
   EXPECT_EQ(scene.markers().layerRebuildCountForTest(), rebuilds + 1);
 }
@@ -358,7 +348,6 @@ TEST_F(Scene3dRhiMarkerCacheTest, StyleAndVisibilityInvalidate) {
   EXPECT_EQ(rebuilt_by([&] { layer->setColorOverrideEnabled(true); }), 1U);
   EXPECT_EQ(rebuilt_by([&] { layer->setWireframe(true); }), 1U);
   EXPECT_EQ(rebuilt_by([&] { layer->setWireframe(false); }), 1U);
-  // Markers cast no shadows: the shadow toggle is not theirs.
   EXPECT_EQ(rebuilt_by([&] { set_shadows(false); }), 0U);
   EXPECT_EQ(rebuilt_by([&] { set_shadows(true); }), 0U);
   EXPECT_EQ(SceneViewTestAccess::modelPass(*scene.view()).lastShadowDrawCount(), 0);
@@ -395,7 +384,6 @@ TEST_F(Scene3dRhiMarkerCacheTest, CachedFramesMatchTheUncachedPath) {
   both("at rest", [](auto&) {});
   both("orbited", [](auto& camera) { camera.azimuth += 0.5F; });
   both("panned", [](auto& camera) { camera.focal += glm::vec3(0.37F, -0.21F, 0.13F); });
-  // The orbit case really came from the cache.
   scene.grab();
   const std::uint64_t rebuilds = markers.layerRebuildCountForTest();
   scene.moveCamera([](auto& camera) { camera.azimuth += 0.3F; });
@@ -417,14 +405,12 @@ TEST_F(Scene3dRhiMarkerCacheTest, OriginOnlyUpdatesMatchTheUncachedPath) {
     const auto child = scene.addEntities("/child", mixedEntities("child", {0.0F, -1.5F, 0.3F}));
     scene.expectLayers(2);
     SHOW_OR_SKIP(scene, /*grid=*/true);
-    // Wireframe: its triangles become stream line edges.
     scene.markerLayer(child)->setWireframe(true);
     auto& markers = scene.markers();
     const glm::vec3 focal = base + glm::vec3(0.0F, 0.0F, 0.3F);
     const float ulp = std::nextafter(focal.x, std::numeric_limits<float>::infinity()) - focal.x;
     const float small_pan = std::max(0.01F, 3.0F * ulp);
     const auto pan = [&](glm::vec3 delta) { return [delta](auto& camera) { camera.focal += delta; }; };
-    // Onto the scene, then one more pan: the layers keep re-uploading.
     scene.moveCamera([&](auto& camera) { camera.focal = focal; });
     scene.moveCamera(pan({small_pan, 0.0F, 0.0F}));
     const auto matches = [&](const char* what, auto move, bool origin_only) {
@@ -453,7 +439,6 @@ TEST_F(Scene3dRhiMarkerCacheTest, OriginOnlyUpdatesMatchTheUncachedPath) {
 TEST_F(Scene3dRhiMarkerCacheTest, FarFromTheOriginMatchesTheSameSceneNearIt) {
   const glm::dvec3 far_centre{1.5e6 + 0.0371, -2.25e6 + 0.0613, 0.0};
   const glm::vec3 far_focal = glm::vec3(far_centre + glm::dvec3(0.37, -0.21, 0.3));
-  // A float-valued translation: the near scene's focal stays exactly representable.
   const glm::dvec3 shift{far_focal.x, far_focal.y, 0.0};
   const auto render = [](glm::dvec3 centre, glm::vec3 focal, bool wireframe) {
     CacheScene scene;
@@ -473,9 +458,8 @@ TEST_F(Scene3dRhiMarkerCacheTest, FarFromTheOriginMatchesTheSameSceneNearIt) {
       PJ_SKIP_WITHOUT_GPU("the Scene3D view never presented a frame");
     }
     const QImage near_image = render(far_centre - shift, far_focal - glm::vec3(shift), wireframe);
-    // 0 on Mesa (OpenGL, Vulkan); the near/far planes come from the absolute scene
-    // bounds, in float at this range, so a few depth-tie pixels may differ
-    // elsewhere. Placing the stream vertices in float moves 43+ pixels here.
+    // 0 on Mesa (OpenGL, Vulkan); the near/far planes come from the absolute scene bounds, in float at this range, so a
+    // few depth-tie pixels may differ elsewhere. Placing the stream vertices in float moves 43+ pixels here.
     EXPECT_LE(differingPixels(far_image, near_image, 60), 8) << (wireframe ? "wireframe" : "solid");
   }
 }
@@ -578,7 +562,6 @@ TEST_F(Scene3dRhiMarkerCacheTest, GridBuildsOnceUnderPanAndPlayback) {
 
 TEST_F(Scene3dRhiMarkerCacheTest, VoxelGridOutsideTheFrustumIsRejected) {
   CacheScene scene;
-  // Five 0.4 m cells on +X from the origin; the camera looks at them from -Y.
   scene.addVoxels({-1.0F, 0.0F, 0.0F}, 0.4F, 5);
   scene.expectLayers(0);
   SHOW_OR_SKIP(scene);

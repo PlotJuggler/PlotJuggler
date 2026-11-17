@@ -164,11 +164,9 @@ TEST_F(FilteredCurveAdapterTest, BoundingRectCoversFilteredValues) {
   EXPECT_DOUBLE_EQ(rect.bottom(), 0.0);
 }
 
-// Bug #5: when EVERY filtered value is non-finite (NaN), the bounds must not come
-// out inverted. NaN is ignored by std::min/std::max, so the naive fold left y_min at
-// +max and y_max at lowest() → an inverted range (min > max) that corrupts auto-fit.
-// The adapter must instead report NO valid bounds (invalid rect, empty y-range),
-// matching how an all-empty curve behaves.
+// When every filtered value is non-finite (NaN) the bounds must not come out inverted: NaN is ignored by
+// std::min/std::max, so a naive fold leaves y_min at +max and y_max at lowest(), an inverted range that corrupts
+// auto-fit. The adapter reports no valid bounds (invalid rect, empty y-range), as an all-empty curve does.
 TEST_F(FilteredCurveAdapterTest, AllNanOutputYieldsNoBounds) {
   FilteredCurveAdapter adapter(
       &session_, input_, []() -> std::unique_ptr<proc::DataProcessor> { return std::make_unique<NanProcessor>(); });
@@ -177,8 +175,8 @@ TEST_F(FilteredCurveAdapterTest, AllNanOutputYieldsNoBounds) {
   const QRectF rect = adapter.boundingRect();
   const auto y_range = adapter.visibleYRange(Range<double>{.min = -1e30, .max = 1e30});
 
-  // Before the fix: rect is a giant normalized rect [lowest,max] and y_range is
-  // {min=+max, max=lowest} (inverted). After the fix: no valid bounds.
+  // With no finite value there are no valid bounds (not a giant normalized rect [lowest, max], nor an inverted y range
+  // {min = +max, max = lowest}).
   EXPECT_FALSE(rect.isValid()) << "bounding rect must be invalid when no finite value exists";
   if (y_range.has_value()) {
     EXPECT_LE(y_range->min, y_range->max) << "y-range must never be inverted (min > max)";

@@ -12,21 +12,12 @@
 
 namespace pj::scene3d {
 
-// Backend-neutral reducer for the stateful ModelPrimitive half of a
-// SceneEntities topic. The native layer currently carries the same semantics
-// inline; the browser uses this isolated reducer so its QRhi/Assimp path cannot
-// accidentally leak into procedural marker snapshot behavior.
-// Replays a SceneEntities batch's DELETION contract onto an entity map:
-// deletions act on PRIOR state (Foxglove's reference order — the canonical
-// DELETEALL + re-add republish puts the kAll deletion and the replacement
-// entities in one batch at one timestamp, so upserting first would let the
-// deletion's `timestamp <= deletion.timestamp` gate erase the just-added
-// entities), and each deletion removes only entries whose sensor timestamp is
-// <= the deletion's. `erase` receives a map iterator, performs the owner's
-// side effects, and returns the next iterator. Returns true when anything was
-// erased; the caller performs its own upserts afterwards. Shared by the
-// native SceneEntitiesLayer and the browser model reducer so the subtle
-// ordering contract exists exactly once.
+// Replays a SceneEntities batch's DELETION contract onto an entity map: deletions act on PRIOR state (Foxglove's
+// reference order: the canonical DELETEALL + re-add republish puts the kAll deletion and the replacement entities in
+// one batch at one timestamp, so upserting first would let the deletion's `timestamp <= deletion.timestamp` gate erase
+// the just-added entities), and each deletion removes only entries whose sensor timestamp is <= the deletion's.
+// `erase` receives a map iterator, performs the owner's side effects and returns the next iterator. Returns true when
+// anything was erased; the caller upserts afterwards.
 template <typename EntityMap, typename Erase>
 bool applySceneEntityDeletions(EntityMap& entities, const PJ::sdk::SceneEntities& snapshot, Erase&& erase) {
   bool changed = false;
@@ -51,16 +42,14 @@ bool applySceneEntityDeletions(EntityMap& entities, const PJ::sdk::SceneEntities
   return changed;
 }
 
-// Overflow-safe lifetime expiry shared by the native SceneEntitiesLayer and the
-// browser model reducer (lifetime_ns == 0 means "never expires", per the
-// SceneEntity contract). anchor_ns is the entity's lifetime-expiry origin: the
-// ObjectStore entry timestamp it was folded from (the tracker's clock), NOT
-// entity.timestamp — under streaming the entry is host-stamped while
-// entity.timestamp keeps the original sensor epoch, so comparing the sensor
-// epoch against the tracker would expire every finite-lifetime entity instantly.
+// Overflow-safe lifetime expiry (lifetime_ns == 0 means "never expires", per the SceneEntity contract). anchor_ns is
+// the expiry origin: the ObjectStore entry timestamp the entity was folded from (the tracker's clock), NOT
+// entity.timestamp: under streaming the entry is host-stamped while entity.timestamp keeps the sensor epoch, so
+// comparing the sensor epoch against the tracker would expire every finite-lifetime entity at once.
 [[nodiscard]] bool sceneEntityExpiredAt(
     const PJ::sdk::SceneEntity& entity, std::int64_t anchor_ns, std::int64_t time_ns);
 
+// Backend-neutral reducer for the stateful ModelPrimitive half of a SceneEntities topic (SceneEntitiesLayer's state).
 class SceneEntitiesModelState {
  public:
   void clear();

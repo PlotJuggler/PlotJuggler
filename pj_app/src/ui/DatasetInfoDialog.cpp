@@ -21,9 +21,8 @@ QString scalarText(const QJsonValue& value) {
     case QJsonValue::Bool:
       return value.toBool() ? u"true"_s : u"false"_s;
     case QJsonValue::Double: {
-      // Qt's JSON parser keeps integral values as qint64, so nanosecond
-      // timestamps print exactly; going through toDouble() would round past
-      // 2^53. QVariant preserves the stored representation.
+      // Through QVariant, which keeps Qt's qint64 for integral values: toDouble() would round nanosecond
+      // timestamps past 2^53.
       const QVariant variant = value.toVariant();
       if (variant.typeId() == QMetaType::LongLong || variant.typeId() == QMetaType::ULongLong ||
           variant.typeId() == QMetaType::Int) {
@@ -40,9 +39,7 @@ QString scalarText(const QJsonValue& value) {
   }
 }
 
-// Renders a JSON value under `parent` as generic key/value rows: objects and
-// arrays become expandable nodes, scalars become leaf values. Deliberately
-// interpretation-free — provider-specific keys are shown verbatim.
+// Objects and arrays become expandable nodes, scalars leaves; keys are shown verbatim.
 void addJsonChildren(QTreeWidgetItem* parent, const QJsonValue& value) {
   if (value.isObject()) {
     const QJsonObject object = value.toObject();
@@ -78,8 +75,7 @@ QTreeWidgetItem* addRow(QTreeWidget* tree, const QString& key, const QString& va
   return row;
 }
 
-// Adds a top-level section rendering `json` as a generic key/value tree, with
-// the raw text as fallback when it does not parse (still information — show it).
+// The raw text stands in when `json` does not parse.
 void addJsonSection(QTreeWidget* tree, const QString& title, const QString& json) {
   auto* section = new QTreeWidgetItem(tree);
   section->setText(0, title);
@@ -129,7 +125,7 @@ DatasetInfoDialog::DatasetInfoDialog(
       descriptor->setText(0, tr("Descriptor"));
       addJsonChildren(descriptor, doc.isObject() ? QJsonValue(doc.object()) : QJsonValue(doc.array()));
     } else if (!record->descriptor_json.isEmpty()) {
-      // Unparseable descriptors are still provenance — show the raw bytes.
+      // An unparseable descriptor is still provenance.
       add_child(tr("Descriptor"), record->descriptor_json);
     }
   }

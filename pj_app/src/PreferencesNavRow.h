@@ -9,10 +9,7 @@ class QLabel;
 
 namespace PJ {
 
-// Single category row in the PreferencesDialog left-hand nav column.
-// Looks like a framed label; emits clicked() on press. Selection state
-// is exposed as a dynamic "selected" property so QSS rules can paint
-// the active row distinctly (accent left edge, slightly darker fill).
+// A PreferencesDialog nav row; the QSS keys on its dynamic "selected" property.
 class PreferencesNavRow : public QFrame {
   Q_OBJECT
  public:

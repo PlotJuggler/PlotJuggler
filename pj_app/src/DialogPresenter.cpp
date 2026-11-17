@@ -29,11 +29,7 @@ namespace {
 
 Q_LOGGING_CATEGORY(lcDialogPresenter, "pj.app.dialogpresenter")
 
-// Adapter from ExtensionCatalogService::findParserByEncoding to the
-// QueryParserDialogFn shape DialogEngine expects. Returns the parser's
-// dialog vtable for a given encoding, or nullptr when the parser doesn't
-// exist or doesn't expose a dialog. Captures the catalog by reference —
-// callers must keep the catalog alive for the duration of the dialog.
+// Captures `catalog` by reference: it must outlive the dialog.
 QueryParserDialogFn makeParserDialogProvider(const ExtensionCatalogService& catalog) {
   return [&catalog](const std::string& encoding) -> const PJ_dialog_vtable_t* {
     const auto* parser = catalog.findParserByEncoding(QString::fromStdString(encoding));
@@ -61,15 +57,8 @@ DialogFileSelector makeBrowserFileSelector(
           if (!staged.input.has_value()) {
             if (!staged.error.isEmpty()) {
               qCWarning(lcDialogPresenter).noquote() << staged.error;
-              // Staging failure is distinct from a user cancel (empty error, empty
-              // input) and must be visible — otherwise it silently looks like the
-              // user backed out of the picker. The plugin dialog stays open behind
-              // this so the user can retry the file selection. The requesting
-              // dialog may have been destroyed by the time this late completion
-              // fires (async staging chain outlives it); QPointer detects that so
-              // we don't dereference a dangling parent — the warning above still
-              // surfaces the failure, we just skip the MessageBox that would
-              // otherwise anchor a retry to a widget that's gone.
+              // Shown, or a staging failure looks like a cancel; the plugin dialog stays open for a retry. The
+              // staging chain can outlive the requesting dialog: then only the log line remains.
               if (QWidget* parent = guarded_parent.data(); parent != nullptr) {
                 auto* box = new MessageBox(parent);
                 box->setAttribute(Qt::WA_DeleteOnClose);
@@ -104,10 +93,7 @@ DataSourceResult contractViolation(const std::string& plugin_name, const std::st
   return {.outcome = Outcome::kPluginContractViolation, .error = "plugin '" + plugin_name + "': " + reason};
 }
 
-// Shared prologue of both entry points below. `prepared` engaged => run the
-// dialog with these engine inputs; otherwise `immediate` is the result the
-// caller returns/completes without showing anything (no dialog capability, or
-// a plugin contract violation).
+// Without `prepared`, `immediate` is the result (no dialog, or a contract violation).
 struct DialogPrologue {
   struct Prepared {
     DialogHandle handle;
@@ -139,8 +125,7 @@ DialogPrologue prepareDialog(const DataSourceRequest& req) {
   engine_config.parser_dialog_provider = makeParserDialogProvider(req.catalog);
   engine_config.section_band_metrics = req.section_band_metrics;
   engine_config.title_prefix = req.title_prefix;
-  // string-from-string_view ctor (C++17) handles a default-empty view safely;
-  // raw .assign(data(), size()) would be UB when data() is nullptr.
+  // Not assign(data(), size()): data() of a default view is nullptr.
   engine_config.initial_parser_config = std::string(req.initial_parser_config);
 #ifdef PJ_TARGET_WASM
   engine_config.file_selector = makeBrowserFileSelector(req.browser_file_store, req.on_browser_file_staged);
@@ -163,14 +148,13 @@ DataSourceResult showDataSourceDialog(const DataSourceRequest& req) {
     return std::move(prologue.immediate);
   }
 
-  // Shared only so the closer handed to on_dialog can outlive this call: whoever kept a copy (a
-  // queued call) then finds the engine gone instead of a dead stack frame.
+  // Shared so a closer kept past this call finds the engine gone instead of a dead frame.
   const auto engine =
       std::make_shared<DialogEngine>(std::move(prologue.prepared->handle), std::move(prologue.prepared->config));
   if (req.on_dialog) {
     req.on_dialog([weak = std::weak_ptr<DialogEngine>(engine)] {
       if (const std::shared_ptr<DialogEngine> alive = weak.lock()) {
-        alive->cancelActiveDialog();  // a no-op until showDialog opened it, and once it completed
+        alive->cancelActiveDialog();  // a no-op before showDialog opens it and after it completed
       }
     });
   }
@@ -228,9 +212,7 @@ DialogCancelFn showDataSourceDialogAsync(const DataSourceRequest& req, DataSourc
                 },
         });
       });
-  // The canceler co-owns the engine so a shutdown-time cancel finds it alive
-  // even after the completion (and its engine reference) is gone; cancelling a
-  // completed dialog is a documented no-op.
+  // Co-owns the engine: a shutdown cancel finds it alive after the completion is gone (a no-op by then).
   DialogCancelFn cancel = [engine]() { engine->cancelActiveDialog(); };
   if (req.on_dialog && !*completed) {
     req.on_dialog(cancel);

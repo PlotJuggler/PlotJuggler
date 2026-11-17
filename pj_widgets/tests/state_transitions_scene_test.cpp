@@ -105,7 +105,7 @@ TEST(StateTransitionsScene, HitTestFindsSegmentsHalfOpen) {
   scene.setRows({makeRow(1, {seg(0, 4, "A"), seg(8, 12, "B")})});
   EXPECT_FALSE(scene.hitTest(6.0, band0_y, vp).has_value());
 
-  // Outside the band strip (chip/label area or the gap below) misses.
+  // Outside the band strip (chip and label area, or the gap below) misses.
   EXPECT_FALSE(scene.hitTest(2.0, StateTransitionsScene::rowTop(0) + 1.0, vp).has_value());
   EXPECT_FALSE(scene.hitTest(2.0, StateTransitionsScene::kTopPad - 2.0, vp).has_value());
   // Below the last row misses.

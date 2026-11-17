@@ -154,7 +154,7 @@ TEST(CatalogModelTest, FindScalarForMarkerKeyForgetsAFieldTheCatalogDropped) {
   EXPECT_FALSE(catalog.findScalarForMarkerKey(*dataset, key).has_value());
 }
 
-// An on-demand input may read a string field (D4); a marker rule may not, its resolver reading numeric series only.
+// An on-demand input may read a string field; a marker rule may not, its resolver reading numeric series only.
 // The two answers are remembered apart: the string field found for an input stays refused to a marker rule.
 TEST(CatalogModelTest, FindScalarForMarkerKeyFindsAStringFieldOnlyWhenAsked) {
   PJ::SessionManager session;
@@ -324,15 +324,11 @@ TEST(CatalogModelTest, KeepsDuplicateDatasetTopicsVisibleUnderDatasetRoot) {
   EXPECT_EQ(second_descriptor->topic_id, second_topic);
 }
 
-// Regression guard for the "topics duplicated after create/delete/recreate"
-// bug. Two datasets with the same source_name must get
-// STABLE, distinct display labels — the lower-id one keeps the un-suffixed base
-// label and the higher-id one gets " (2)" — even after a delete/recreate cycle
-// that scrambles the engine's (robin_map) dataset iteration order. Before the
-// fix, that order was used directly, so a pre-existing shown dataset could be
-// relabeled base->" (2)"; the view (which groups tree nodes by the label string)
-// never learned of the relabel and merged both datasets' topics into one node
-// (doubled fields). Sorting dataset ids pins the base label to the oldest.
+// Two datasets with the same source_name get stable, distinct display labels (the lower-id one keeps the un-suffixed
+// base label, the higher-id one gets " (2)"), even after a delete/recreate cycle that scrambles the engine's
+// (robin_map) dataset iteration order: a relabel of a shown dataset is never announced to the view (which groups tree
+// nodes by the label string), so it would merge both datasets' topics into one node (doubled fields). Sorting dataset
+// ids pins the base label to the oldest.
 TEST(CatalogModelTest, DatasetLabelStableForDuplicateSourceAcrossDeleteRecreate) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -344,7 +340,6 @@ TEST(CatalogModelTest, DatasetLabelStableForDuplicateSourceAcrossDeleteRecreate)
     return static_cast<PJ::DatasetId>(*ds);
   };
 
-  // First cycle: two same-named datasets, then delete both (real delete).
   const auto a = make("[stream] X");
   const auto b = make("[stream] X");
   catalog.rebuildFromDatastore();
@@ -354,7 +349,6 @@ TEST(CatalogModelTest, DatasetLabelStableForDuplicateSourceAcrossDeleteRecreate)
   session.dataEngine().removeDataset(b);
   catalog.rebuildFromDatastore();
 
-  // Recreate two more with the SAME name — new (higher) monotonic ids.
   const auto c = make("[stream] X");
   const auto d = make("[stream] X");
   catalog.rebuildFromDatastore();
@@ -644,11 +638,9 @@ TEST(CatalogModelTest, RemovedObjectTopicStaysHiddenAcrossRebuild) {
 }
 
 TEST(CatalogModelTest, RestoreDatasetBringsBackClearedItems) {
-  // Reproduces the layout-reload bug: a dataset hidden by clearAll
-  // (which is what Clear All Curves calls) stays filtered out of every
-  // future rebuildFromDatastore. restoreDataset() lifts the filter for
-  // exactly one id so FileLoader can reuse an existing engine dataset
-  // without un-hiding unrelated cleared datasets.
+  // A dataset hidden by clearAll (Clear All Curves) stays filtered out of every future rebuildFromDatastore;
+  // restoreDataset() lifts the filter for exactly one id so FileLoader can reuse an existing engine dataset without
+  // un-hiding unrelated cleared datasets.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
 
@@ -675,11 +667,10 @@ TEST(CatalogModelTest, RestoreDatasetBringsBackClearedItems) {
       << "restoreDataset must surface only the targeted dataset, not the other cleared one";
 }
 
-// Regression for the remove-then-reload bug (PR #131): removeDataset tombstones a DatasetId in the
-// catalog, and an in-place reload of the same file deliberately REUSES that id (replaceDataset keeps
-// DatasetId/TopicId stable so curve keys survive). The tombstone therefore outlives the swap, so the
-// reloaded data stays invisible unless the caller (FileLoader) lifts it with restoreDataset. This locks
-// that contract: a real replaceDataset reusing a removed id does NOT self-un-hide; restoreDataset does.
+// removeDataset tombstones a DatasetId in the catalog, and an in-place reload of the same file deliberately reuses that
+// id (replaceDataset keeps DatasetId/TopicId stable so curve keys survive). The tombstone outlives the swap, so the
+// reloaded data stays invisible unless the caller (FileLoader) lifts it with restoreDataset: a real replaceDataset
+// reusing a removed id does not self-un-hide; restoreDataset does.
 TEST(CatalogModelTest, ReloadReusingRemovedDatasetIdStaysHiddenUntilRestore) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -709,18 +700,18 @@ TEST(CatalogModelTest, ReloadReusingRemovedDatasetIdStaysHiddenUntilRestore) {
   session.replaceDataset(staged_engine, staged_store, *staged, *dataset, {});
   catalog.rebuildFromDatastore();
 
-  // The bug: the swap reused the tombstoned id, so the rebuild still filters the dataset out.
+  // The swap reused the tombstoned id, so the rebuild still filters the dataset out.
   EXPECT_TRUE(catalog.items().empty())
       << "an in-place reload reusing a removed DatasetId must stay hidden until restoreDataset";
 
-  // The fix recipe FileLoader applies on the replace path: lift the tombstone for the reused id.
+  // What FileLoader applies on the replace path: lift the tombstone for the reused id.
   catalog.restoreDataset(*dataset);
   const auto items = catalog.items();
   ASSERT_EQ(items.size(), 1U) << "restoreDataset must surface the reloaded dataset";
   EXPECT_EQ(items[0].dataset_id, *dataset);
 }
 
-// --- setDatasetDisplayName (issue #98) --------------------------------------
+// --- setDatasetDisplayName ---
 
 TEST(CatalogModelTest, DisplayNameOverrideReplacesLabelButKeepsSourceName) {
   PJ::SessionManager session;
@@ -810,11 +801,9 @@ TEST(CatalogModelTest, DisplayNameOverrideSurvivesClearAndRestore) {
   EXPECT_EQ(catalog.curves().at(0).dataset_name, u"pusht_v21"_s);
 }
 
-// Regression for the single-instance path: rebuildFromDatastore signals only
-// add/remove keyed by curve identity (never a relabel), so the override must be
-// in place BEFORE the topic is committed for its label to ride the itemAdded
-// signal that incremental subscribers (the curve tree) consume. FileLoader
-// relies on this by calling setDatasetDisplayName before start().
+// rebuildFromDatastore signals only add/remove keyed by curve identity (never a relabel), so the override must be in
+// place before the topic is committed for its label to ride the itemAdded signal that incremental subscribers (the
+// curve tree) consume. FileLoader calls setDatasetDisplayName before start() for this reason.
 TEST(CatalogModelTest, DisplayNameOverrideSetBeforeCommitReachesItemAddedSignal) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -994,10 +983,8 @@ TEST(CatalogModelPathResolve, ReturnsNulloptForAbsentTopicOrField) {
   EXPECT_FALSE(catalog.descriptorForPath(*a, u"/vehicle/speed"_s, u"nope"_s).has_value());
 }
 
-// ===========================================================================
-// In-place reload (DataEngine/ObjectStore::replaceDatasetFrom) keeps curve/object
-// keys stable — the runtime guarantee that plots and 2D docks keep bindings.
-// ===========================================================================
+// ---- In-place reload (DataEngine/ObjectStore::replaceDatasetFrom) keeps curve/object keys stable ----
+// Plots and 2D docks keep their bindings.
 
 TEST(CatalogModelReloadTest, ScalarReplaceKeepsCurveKeyAndEmitsNoRemoval) {
   PJ::SessionManager session;
@@ -1084,12 +1071,9 @@ TEST(CatalogModelReloadTest, ObjectReplaceKeepsObjectTopicKey) {
   EXPECT_EQ(removed_emissions, 0);
 }
 
-// samplesIngested is now gated on a content fingerprint (rebuildIfChanged) so
-// row-only ingest batches skip the full rebuild. The gate must NEVER skip a real
-// structural change — a false skip would drop a newly-ingested topic from the
-// catalog. Each new topic arrives via the gated commit path (addScalarTopic
-// commits, which emits samplesIngested), so this pins the anti-false-skip
-// property end-to-end.
+// samplesIngested is gated on a content fingerprint (rebuildIfChanged) so row-only ingest batches skip the full
+// rebuild. The gate must never skip a real structural change: a false skip would drop a newly-ingested topic from the
+// catalog. Each new topic arrives via the gated commit path (addScalarTopic commits, which emits samplesIngested).
 TEST(CatalogModelTest, IngestGateSurfacesEveryNewTopic) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -1137,25 +1121,20 @@ TEST(CatalogModelTest, ScalarValueAtReturnsLatestSampleAtOrBeforeTime) {
   const PJ::DisplayOffset offset = session.displayOffset(*dataset);
   auto displayOf = [&](PJ::Timestamp raw_ns) { return PJ::toAxisDouble(PJ::rawToDisplaySeconds(raw_ns, offset)); };
 
-  // Between the 2nd and 3rd sample → holds the 2nd sample's value.
   auto mid = catalog.scalarValueAt(key, displayOf(2'500'000'000));
   ASSERT_TRUE(mid.has_value());
   EXPECT_DOUBLE_EQ(*mid, 20.0);
 
-  // Exactly on the last sample → that sample.
   auto on_sample = catalog.scalarValueAt(key, displayOf(3'000'000'000));
   ASSERT_TRUE(on_sample.has_value());
   EXPECT_DOUBLE_EQ(*on_sample, 30.0);
 
-  // After the last sample → still the last sample (zero-order hold forward).
   auto after = catalog.scalarValueAt(key, displayOf(9'000'000'000));
   ASSERT_TRUE(after.has_value());
   EXPECT_DOUBLE_EQ(*after, 30.0);
 
-  // Before the first sample → no value.
   EXPECT_FALSE(catalog.scalarValueAt(key, displayOf(500'000'000)).has_value());
 
-  // Unknown / non-scalar key → no value.
   EXPECT_FALSE(catalog.scalarValueAt(u"not-a-key"_s, displayOf(2'500'000'000)).has_value());
 }
 
@@ -1278,7 +1257,6 @@ TEST(CatalogModelTest, StringFieldIsCatalogedAsScalarReadableButNotPlottable) {
   EXPECT_TRUE(catalog.curveDescriptor(numeric_key).has_value());
   EXPECT_FALSE(catalog.curveDescriptor(string_key).has_value());
 
-  // Key classification.
   EXPECT_TRUE(catalog.isScalarKey(numeric_key));
   EXPECT_TRUE(catalog.isScalarKey(string_key));
   EXPECT_FALSE(catalog.isStringKey(numeric_key));
@@ -1291,10 +1269,8 @@ TEST(CatalogModelTest, StringFieldIsCatalogedAsScalarReadableButNotPlottable) {
   auto mid = catalog.stringValueAt(string_key, displayOf(2'500'000'000));
   ASSERT_TRUE(mid.has_value());
   EXPECT_EQ(*mid, u"running"_s);
-  // Before the first sample → no string.
   EXPECT_FALSE(catalog.stringValueAt(string_key, displayOf(500'000'000)).has_value());
 
-  // Numeric and string reads stay on their own seams.
   auto numeric_value = catalog.scalarValueAt(numeric_key, displayOf(2'500'000'000));
   ASSERT_TRUE(numeric_value.has_value());
   EXPECT_DOUBLE_EQ(*numeric_value, 10.0);
@@ -1487,10 +1463,9 @@ TEST(CatalogModelTest, AdvertisedTopicsAppearAsDataLessPlaceholders) {
 }
 
 TEST(CatalogModelTest, ScalarShapedPlaceholderIsScalarKeyButImageShapedIsNot) {
-  // M3-UI: the curve-list Value column reads isScalarKey to choose "-" (scalar,
-  // no sample yet) vs blank (non-scalar row) — a kNone-classified advertised
-  // placeholder must count as scalar so it shows "-" like a real empty scalar
-  // field, but an object-shaped placeholder (e.g. kImage) must not.
+  // The curve-list Value column reads isScalarKey to choose "-" (scalar, no sample yet) vs blank (non-scalar row): a
+  // kNone-classified advertised placeholder must count as scalar, but an object-shaped placeholder (e.g. kImage) must
+  // not.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "live"});
@@ -1512,7 +1487,6 @@ TEST(CatalogModelTest, ScalarShapedPlaceholderIsScalarKeyButImageShapedIsNot) {
 
   EXPECT_TRUE(catalog.isScalarKey(scalar_key));
   EXPECT_FALSE(catalog.isScalarKey(image_key));
-  // No sample exists yet — scalarValueAt stays nullopt (the caller renders "-").
   EXPECT_FALSE(catalog.scalarValueAt(scalar_key, 0.0).has_value());
 }
 

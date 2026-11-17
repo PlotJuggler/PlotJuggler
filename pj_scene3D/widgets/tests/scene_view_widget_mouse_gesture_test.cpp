@@ -1,15 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Regression test for a stuck camera gesture: right-clicking the 3D view shows a
-// context menu (Split Horizontally/Vertically, Clear) via DockWidget's event
-// filter reacting to a QContextMenuEvent — SceneViewWidget itself has no
-// view-side context-menu code (see pj_scene3D/CLAUDE.md). The menu's
-// QMenu::exec() runs a nested event loop that can swallow the right button's
-// mouseReleaseEvent before SceneViewWidget ever sees it, so the widget's own
-// press/release-latched gesture state must not stay latched forever — the next
-// mouse move (with no button held) has to self-heal instead of continuing to
-// zoom/pan/rotate on every hover.
+// Stuck camera gesture: a right-click off a TF frame shows the host DockWidget's context menu (Split
+// Horizontally/Vertically, Clear) through its event filter reacting to a QContextMenuEvent (SceneViewWidget ignores
+// the event there, see pj_scene3D/CLAUDE.md "Invariants"). The menu's QMenu::exec() runs a nested event loop that can
+// swallow the right button's mouseReleaseEvent before SceneViewWidget sees it, so the widget's press/release-latched
+// gesture state must not stay latched: the next mouse move with no button held must self-heal instead of
+// zooming/panning/rotating on every hover.
 
 #include <gtest/gtest.h>
 
@@ -35,7 +32,6 @@ TEST(SceneViewWidgetMouseGesture, LostReleaseSelfHealsOnNextMove) {
       QEvent::MouseButtonPress, press_pos, press_pos, press_pos, Qt::RightButton, Qt::RightButton, Qt::NoModifier);
   QApplication::sendEvent(&view, &press);
 
-  // A real right-drag: what would normally zoom the camera.
   const QPointF drag_pos(200.0, 150.0);
   QMouseEvent drag(QEvent::MouseMove, drag_pos, drag_pos, drag_pos, Qt::NoButton, Qt::RightButton, Qt::NoModifier);
   QApplication::sendEvent(&view, &drag);

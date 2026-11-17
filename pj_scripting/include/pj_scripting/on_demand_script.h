@@ -10,8 +10,8 @@
 #include "pj_scripting/object_script.h"
 #include "pj_scripting/python_object_script.h"
 
-// An on-demand script in either language (docs/derived_objects/ARCHITECTURE.md §14): where a recipe's `language`
-// picks its compiler and runner, so the runtime holds and runs a script without knowing its language.
+// An on-demand script in either language (docs/derived_objects/ARCHITECTURE.md "Scripting languages"): a recipe's
+// `language` picks its compiler and runner, so the runtime holds and runs a script without knowing its language.
 
 namespace PJ::scripting {
 

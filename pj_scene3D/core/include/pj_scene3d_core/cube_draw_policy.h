@@ -9,22 +9,15 @@
 
 namespace pj::scene3d {
 
-// Default cube LOD threshold, in device pixels, for point-cloud cubes.
-// One pixel is the conservative choice on both counts: cosmetically a cube keeps its
-// real geometry until it is genuinely sub-pixel, and a threshold sweep on the benchmark
-// showed the speedup is already at its maximum by 1 px (it comes from dropping the fan
-// draw for the whole cloud, not from how many cubes convert), so raising it buys nothing.
+// Default cube LOD threshold, in device pixels, for point-cloud cubes: a cube keeps its real geometry until it is
+// sub-pixel. A threshold sweep on the benchmark (conditions not recorded) showed the speedup already at its maximum at
+// 1 px, because it comes from dropping the fan draw for the whole cloud, not from how many cubes convert; a higher
+// value buys nothing.
 inline constexpr float kDefaultCubeLodThresholdPx = 1.0f;
 
-// How to draw a cloud of axis-aligned cubes this frame.
-//
-// Two passes render such a cloud — the point cloud (instance data from a VBO) and the
-// voxel grid (derived from gl_InstanceID plus a 3D texture) — and that difference is the
-// ONLY thing separating them. Which geometry to use, and whether to draw at all, is the
-// same question for both, so it is answered here once instead of twice.
-//
-// Qt-free and GL-free on purpose: this is the part worth unit-testing exhaustively, and
-// it should not need a context to do it.
+// How to draw a cloud of axis-aligned cubes this frame. The point cloud (instance data from a VBO) and the voxel grid
+// (gl_InstanceID plus a 3D texture) differ only in where instance data comes from, so which geometry to use, and
+// whether to draw at all, is answered once here. Qt/GL-free so it is unit-testable without a context.
 enum class CubeDrawMode {
   kSkip,    // nothing in the cloud can reach the screen
   kSprite,  // every cube is sub-pixel: one matched point sprite each
@@ -64,20 +57,16 @@ struct CubeCloudView {
   glm::vec2 screen_reach_ndc{0.0f};
 };
 
-// The whole decision, in the order the cases actually nest.
+// The whole decision, in the order the cases nest.
 //
-// The inflation in step 1 is not cosmetic: a bounds scan reports where cube CENTRES are,
-// but a cube reaches half its side past each one, so testing the raw box culls clouds
-// whose geometry still pokes into view — invisible at a 1 cm cube, half a metre of missing
-// data at a 1 m one.
+// The inflation in step 1 is not cosmetic: a bounds scan reports where cube CENTRES are, but a cube reaches half its
+// side past each one, so testing the raw box culls clouds whose geometry still pokes into view (half a metre of
+// missing data at a 1 m cube).
 //
-// Step 3 is what lets a voxel grid use the fan at all. The fan picks its three faces by
-// comparing the camera against the cube's CENTRE, which is only right while the camera is
-// outside the cube; a voxel is easily large enough to swallow the viewpoint, which is why
-// that pass used to be pinned to the solid unconditionally. Asking the question per frame
-// instead means it gets the cheap geometry in the overwhelmingly common case and the
-// correct geometry in the rare one. The point cloud gains the same protection, which it
-// previously lacked entirely.
+// Step 3 is what lets a voxel grid use the fan: the fan picks its three faces by comparing the camera against the
+// cube's CENTRE, which is only right while the camera is outside the cube, and a voxel can be large enough to swallow
+// the viewpoint. Asking per frame gives the cheap geometry in the common case and the correct one in the rare one;
+// the point cloud gets the same protection.
 [[nodiscard]] inline CubeDrawMode chooseCubeDrawMode(const CubeCloudView& view, CubeDrawCapabilities available) {
   // Degrade an ideal choice to the best geometry this caller owns. Solid is the safe
   // fallback (it is correct everywhere), then fan, then sprite.

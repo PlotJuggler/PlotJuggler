@@ -34,22 +34,12 @@ class SceneDockWidget;
 class StateTransitionsDockWidget;
 class TopicDemandTracker;
 
-// Thin glue between displayed widgets and TopicDemandTracker: resolves a
-// widget's currently-displayed series/layers to (DatasetId, topic_name) and
-// forwards add/removeReference calls. Owns no widgets and no business logic
-// beyond that resolution — see TopicDemandTracker for the ref-counting and
-// emission contract this class is a producer of.
+// Resolves what each registered widget displays to (DatasetId, topic_name) and holds one TopicDemandTracker
+// reference per displayed item (the tracker owns the ref-counting and emission contract). Every reference added for
+// a widget is released when that widget is destroyed. Also runs the bounded field previews of advertised topics, and
+// answers the curve list's "which catalog keys are displayed" (displayedKeys / displayedSeriesChanged).
 //
-// MainWindow wires each new PlotWidget / SceneDockWidget through
-// registerPlot()/registerSceneDock() at creation time (see makeSceneDock /
-// onPlotAdded); every reference this controller adds for a widget is released
-// automatically when that widget is destroyed.
-//
-// Because every widget that shows series registers here, the controller is also
-// the registry the curve list asks which catalog keys are displayed
-// (displayedKeys / displayedSeriesChanged).
-//
-// Threading: GUI-thread only (same as TopicDemandTracker and CatalogModel).
+// Threading: GUI thread only, like TopicDemandTracker and CatalogModel.
 class TopicDemandController : public QObject {
   Q_OBJECT
  public:
@@ -65,60 +55,39 @@ class TopicDemandController : public QObject {
   TopicDemandController(const TopicDemandController&) = delete;
   TopicDemandController& operator=(const TopicDemandController&) = delete;
 
-  // Starts tracking `plot`'s displayed curves. Diffs the flattened multiset of
-  // (dataset, topic) pairs its curves resolve to (XY via PointSeriesXY's own
-  // CurveDescriptor sources; a displayed Data Processor output additionally
-  // references its resolved SOURCE topics — see
-  // DataProcessorService::sourceTopicsForOutput) against the last-seen set on
-  // every curveListChanged(), and add/removeReference's exactly the delta.
-  // Call once per plot; safe to call on an already-populated plot (the initial
-  // diff against an empty "last seen" set references everything already shown,
-  // covering the layout-restore case where curves exist before this is wired).
-  // The plot's view start is also each of its datasets' on-demand series visible
-  // start (the VisibleStartSink), set before the demand on every
-  // curve change, so a series it starts computes the visible range first, and on
-  // every move of its time axis (PlotWidget::visibleXRangeChanged: a gesture, a
-  // linked or programmatic zoom), so the last plot to move wins its datasets.
+  // On every curveListChanged(), diffs the multiset of (dataset, topic) its curves resolve to (both sources of an XY
+  // curve; a Data Processor output stands for its source topics) against the last one, and adds/removes exactly the
+  // delta. Idempotent; an already-populated plot (layout restore) is referenced at once. The plot's view start is
+  // also its datasets' on-demand visible start (VisibleStartSink): set before the demand on every curve change, so a
+  // series it starts computes the visible range first, and on every move of its time axis, so the last plot to move
+  // wins its datasets.
   void registerPlot(PlotWidget* plot);
 
-  // Starts tracking `dock`'s scene layers via layerAdded/layerRemoved, resolved
-  // to (dataset, topic) by a linear CatalogModel scan (no id index exists).
-  // Call once per dock, before any layer can be added (i.e. before
-  // xmlLoadState()/addTopic()) so no layerAdded is missed.
+  // Tracks `dock`'s layers through layerAdded/layerRemoved. Call before any layer can be added (before
+  // xmlLoadState()/addTopic()): a missed layerAdded is never referenced.
   void registerSceneDock(SceneDockWidget* dock);
 
-  // Starts tracking a state-transitions strip's displayed discrete series: diffs
-  // its (dataset, topic) set on every seriesListChanged, mirroring registerPlot
-  // (the initial sync covers rows restored before this call). Idempotent.
+  // registerPlot's delta sync for a state-transitions strip, on every seriesListChanged. Idempotent.
   void registerStateTransitionsDock(StateTransitionsDockWidget* dock);
 
   // Same for a Custom Widget panel: holds one reference per distinct (dataset, topic) its resolved
   // wires read, diffed on every bindingsChanged() and released when the panel is destroyed.
   void registerCustomWidgetDock(CustomWidgetDockWidget* dock);
 
-  // M3-UI placeholder drop path: `plot` (a curve-less or already-populated
-  // PlotWidget) had an advertised SCALAR placeholder dropped on it. Stages a
-  // pending bind via PendingDisplayBinder, which holds the demand reference
-  // until the real topic materializes and the curve completes.
+  // An advertised SCALAR placeholder was dropped on `plot`: PendingDisplayBinder holds the demand reference until
+  // the real topic materializes and the curve completes.
   void handlePlaceholderPlotDrop(PlotWidget* plot, DatasetId dataset_id, const QString& topic_name);
 
-  // M3-UI placeholder drop path: an advertised OBJECT placeholder was dropped
-  // onto an already-mounted `dock`. The dock stages the authoritative intent;
+  // An advertised OBJECT placeholder was dropped on a mounted `dock`: the dock stages the intent,
   // PendingDisplayBinder holds only its demand reference.
   void handleSceneDockPlaceholderDrop(
       SceneDockWidget* dock, DatasetId dataset_id, const QString& topic_name, sdk::BuiltinObjectType object_type);
 
-  // Starts a bounded, self-releasing "preview" subscription for `topic_name`: a
-  // demand reference is held just long enough for one real sample to land (which
-  // promotes the placeholder to real per-field rows via CatalogModel's
-  // storage-wins merge), then released — on promotion or a ~4 s timeout,
-  // whichever comes first. Shared by both preview triggers (the automatic census
-  // and the manual double-click peek). No-op when the dataset is not
-  // per-topic-pause-capable, when the topic already has a real (non-placeholder)
-  // entry, when a preview for it is already in flight/queued, or when it is
-  // already in the tracker's active set (a real display/pend reference must not
-  // be disturbed). Deliberately does NOT consult the census "already previewed"
-  // memory, so a manual peek can always retry a topic the census skipped.
+  // A bounded, self-releasing subscription: holds a demand reference until one real sample promotes the placeholder
+  // to per-field rows, or until the preview timeout, whichever comes first. Used by the automatic census and the
+  // manual double-click peek. No-op when the dataset is not per-topic-pause-capable, the topic already has a real
+  // entry, a preview for it is in flight or queued, or it is already active (a real reference must not be
+  // disturbed). Ignores the census memory, so a manual peek can retry a topic the census skipped.
   void requestFieldPreview(DatasetId dataset_id, const QString& topic_name);
 
   /// Catalog keys of everything displayed by the registered widgets inside `root` (none when null): plot curves
@@ -127,8 +96,7 @@ class TopicDemandController : public QObject {
   /// widgets now, so it is only as fresh as the last displayedSeriesChanged().
   [[nodiscard]] QSet<QString> displayedKeys(const QWidget* root) const;
 
-  // Test seam: shortens the preview timeout so a timeout-release test need not
-  // wait the production ~4 s. Applies to previews started after the call.
+  // Applies to previews started after the call.
   void setPreviewTimeoutMsForTest(int timeout_ms);
 
  signals:
@@ -137,112 +105,78 @@ class TopicDemandController : public QObject {
   void displayedSeriesChanged();
 
  private:
-  // Rebuilds `plot`'s current topic multiset and diffs it against
-  // plot_topics_[plot], add/removeReference-ing exactly the delta.
   void syncPlot(PlotWidget* plot);
-  // Tells the session where `plot`'s time view starts, for each dataset among `topics`.
+  // Tells the session where `plot`'s time view starts, for each dataset among `topics`; nothing for an XY plot.
   void reportVisibleStart(PlotWidget* plot, const std::vector<std::pair<DatasetId, QString>>& topics);
-  // Same delta sync for a state-transitions strip, against state_dock_topics_.
   void syncStateTransitionsDock(StateTransitionsDockWidget* dock);
-  // Same delta sync for a Custom Widget panel, against custom_dock_topics_.
   void syncCustomWidgetDock(CustomWidgetDockWidget* dock);
-  // The shared tail of both syncs: multiset-diff `current` against `previous`
-  // (a reference into the per-widget map), add/removeReference the delta, and
-  // store `current` as the new previous.
+  // Multiset diff: two curves on one topic hold two references, so removing one curve releases exactly one.
+  // Stores `current` into `previous`.
   void applyTopicDelta(
       std::vector<std::pair<DatasetId, QString>> current, std::vector<std::pair<DatasetId, QString>>& previous);
-  // Appends (dataset_id, topic_name) plus, when topic_id names a displayed Data
-  // Processor output, its resolved source topics too (v1 derived-input
-  // resolution — see DataProcessorService::sourceTopicsForOutput).
+  // Appends (dataset_id, topic_name), or, when topic_id is a Data Processor output, its source topics instead
+  // (DataProcessorService::sourceTopicsForOutput): no plugin streams an output's name.
   void appendTopicRefs(
       std::vector<std::pair<DatasetId, QString>>& out, DatasetId dataset_id, const QString& topic_name,
       TopicId topic_id) const;
-  // In-place catalog scan: ObjectTopicId -> (dataset, topic_name), or nullopt if
-  // no live object-topic entry matches (evicted between the signal and this
-  // lookup — treated as "nothing to reference").
+  // nullopt when the catalog no longer lists the topic (evicted before the signal arrived): nothing to reference.
   [[nodiscard]] std::optional<std::pair<DatasetId, QString>> resolveObjectTopic(ObjectTopicId topic_id) const;
 
-  // itemsAdded handler for the preview machinery: releases previews whose topic
-  // just promoted (path (a)), then auto-previews any newly-advertised scalar
-  // placeholders (census).
+  // Releases the previews whose topic just promoted, then previews new scalar placeholders (census).
   void onCatalogItemsAdded(const std::vector<CatalogItem>& items);
-  // Census pass: previews every advertised, kNone-classified placeholder in
-  // `items` on a per-topic-pause-capable dataset that has not been previewed
-  // this session — object-classified topics (pointclouds/images) are excluded by
-  // classification, which acts as the size filter.
+  // Previews every advertised kNone-classified placeholder on a per-topic-pause-capable dataset not yet previewed
+  // this session. The classification is the size filter: object topics (point clouds, images) are never previewed.
   void runCensus(const std::vector<CatalogItem>& items);
-  // Preview release path (a): for each in-flight preview whose topic appears in
-  // `items` as a real (non-placeholder) entry, release its reference now.
+  // Releases each in-flight preview whose topic appears in `items` as a real (non-placeholder) entry.
   void releaseCompletedPreviews(const std::vector<CatalogItem>& items);
-  // Records the in-flight preview, adds its demand reference, and arms the
-  // single-shot timeout timer. Caller has already validated eligibility.
+  // The caller has already checked eligibility.
   void startPreview(DatasetId dataset_id, const QString& topic_name);
-  // Releases an in-flight preview (reference + timer), marks it previewed for
-  // the session, and starts the next queued preview. Idempotent for an unknown
-  // (dataset, topic).
+  // Releases the reference and timer, marks the topic previewed for the session, starts the next queued preview.
+  // A no-op for an unknown preview, so promotion and timeout may both call it.
   void finishPreview(DatasetId dataset_id, const QString& topic_name);
-  // Starts queued previews until the concurrency cap is reached, re-validating
-  // each (state may have changed while it waited).
+  // Re-validates each queued preview: its state may have changed while it waited.
   void pumpPreviewQueue();
-  // Releases every held preview reference and forgets all preview/census state.
+  // Releases every held preview reference and forgets all preview and census state.
   void onCatalogCleared();
   [[nodiscard]] bool previewInFlight(DatasetId dataset_id, const QString& topic_name) const;
-  // True once a real (non-advertised) catalog entry for the topic exists, so a
-  // preview would be pointless (its fields are already materialized).
+  // A real (non-advertised) entry means the fields are already materialized: no preview needed.
   [[nodiscard]] bool topicHasRealEntry(DatasetId dataset_id, const QString& topic_name) const;
 
   CatalogModel& catalog_;
   TopicDemandTracker& tracker_;
   DataProcessorService& processors_;
   PendingDisplayBinder& pending_binder_;
-  // Storage engine, used ONLY to disown preview-originated samples
-  // (evictTopicHistory) — all normal demand flow goes through the tracker.
+  // Only to disown preview samples (evictTopicHistory); demand goes through the tracker.
   DataEngine& engine_;
   VisibleStartSink visible_start_;
 
-  // Last-seen flattened (dataset, topic) multiset per tracked plot — see
-  // syncPlot(). Erased when the plot is destroyed.
+  // Last-seen (dataset, topic) multiset per plot, i.e. the references it holds.
   std::unordered_map<PlotWidget*, std::vector<std::pair<DatasetId, QString>>> plot_topics_;
-  // Per-dock live scene-layer references this controller added, keyed by the
-  // layer's ObjectTopicId, so layerRemoved releases exactly what layerAdded
-  // added regardless of catalog churn in between. Erased when the dock is
-  // destroyed (each entry's reference released first).
+  // The reference each layer holds, keyed by ObjectTopicId, so layerRemoved releases exactly what layerAdded added
+  // whatever the catalog did in between.
   std::unordered_map<SceneDockWidget*, std::unordered_map<uint32_t, std::pair<DatasetId, QString>>> scene_layer_topics_;
-  // Last-seen (dataset, topic) set per tracked state-transitions strip — see
-  // syncStateTransitionsDock(). Erased when the strip is destroyed.
   std::unordered_map<StateTransitionsDockWidget*, std::vector<std::pair<DatasetId, QString>>> state_dock_topics_;
-  // Last-seen (dataset, topic) set per tracked Custom Widget panel — see syncCustomWidgetDock().
   std::unordered_map<CustomWidgetDockWidget*, std::vector<std::pair<DatasetId, QString>>> custom_dock_topics_;
 
-  // --- bounded field-preview subscriptions (census + double-click peek) ---
-  // Preview identity is (DatasetId, topic_name), matching TopicDemandTracker.
+  // Same identity as a TopicDemandTracker reference.
   using PreviewId = std::pair<DatasetId, QString>;
 
-  // Applies the preview-history disown (see class doc): when a topic in
-  // preview_promoted_pending_disown_ gains a REAL reference, its stored
-  // fake-interest samples are hidden via DataEngine::evictTopicHistory and the
-  // entry is consumed. [main-thread]
+  // When a topic in preview_promoted_pending_disown_ gains a real reference, hides its preview samples
+  // (disownPreviewHistory) and consumes the entry.
   void onActiveTopicsChanged(DatasetId dataset_id, const std::vector<QString>& active_topics);
-  // Raises the retention floor past every stored sample of the topic's scalar
-  // TopicId(s), resolved through the catalog. The discovered columns stay
-  // registered, so the field rows survive.
+  // Raises the retention floor past every stored sample of the topic (DataEngine::evictTopicHistory). The columns
+  // stay registered, so the field rows survive.
   void disownPreviewHistory(DatasetId dataset_id, const QString& topic_name);
-  // At most this many previews hold a demand reference at once; the census
-  // staggers the rest through preview_queue_.
+  // Previews holding a reference at once; the rest wait in preview_queue_.
   static constexpr int kMaxConcurrentPreviews = 8;
-  // In-flight previews → their owned single-shot timeout timer.
   std::map<PreviewId, QTimer*> active_previews_;
-  // Previews waiting for a concurrency slot (FIFO). Bounded by one advertise
-  // burst, so membership checks scan it linearly.
+  // FIFO, bounded by one advertise burst, so membership checks scan it linearly.
   std::deque<PreviewId> preview_queue_;
-  // Topics the census has previewed this session (marked on preview completion),
-  // so a re-advertise does not re-preview a quiet/timed-out topic. Cleared when
-  // the catalog empties. The manual peek bypasses this set.
+  // Previewed this session, so a re-advertise does not re-preview a quiet or timed-out topic. Cleared with the
+  // catalog; the manual peek ignores it.
   std::set<PreviewId> censused_topics_;
-  // Preview-promoted topics whose fake-interest samples are still stored and
-  // must be disowned the moment a real reference arrives. Entries are consumed
-  // on disown; a topic that is never really subscribed keeps its lone preview
-  // sample (the Value column shows the connect-time reading).
+  // Promoted by a preview, its preview samples still stored: disowned the moment a real reference arrives. A topic
+  // never really subscribed keeps its preview sample (the Value column shows the connect-time reading).
   std::set<PreviewId> preview_promoted_pending_disown_;
   int preview_timeout_ms_ = 4000;
 };

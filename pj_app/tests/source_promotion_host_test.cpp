@@ -1,14 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Tests for SourcePromotionHost — the host side of the SDK service
-// "pj.source_promotion.v1". Driven THROUGH THE C ABI (SourcePromotionHostView
-// wrapping host.raw(), or raw vtable calls where the view's fixed shape would
-// mask what is being tested), against the real FileLoader replace pipeline:
-// the SDK's mock_file_source_plugin ingests through ExtensionCatalogService
-// exactly like file_loader_test.cpp. The ownership predicate is a fixture
-// stub — the production authority (ToolboxRuntimeHost::hasIngestForDataset)
-// has its own pj_runtime unit test.
+// SourcePromotionHost, the host side of the SDK service "pj.source_promotion.v1". Driven through the C ABI
+// (SourcePromotionHostView over host.raw(), or raw vtable calls where the view's fixed shape would mask the case)
+// against the real FileLoader replace pipeline; the SDK's mock_file_source_plugin ingests through
+// ExtensionCatalogService as in file_loader_test.cpp. The ownership predicate is a fixture stub (the production
+// authority, ToolboxRuntimeHost::hasIngestForDataset, has its own pj_runtime test).
 
 #include <gtest/gtest.h>
 
@@ -53,7 +50,7 @@ using pj_app_test::pumpUntil;
 
 constexpr const char* kMockManifestId = "mock-file-source";
 
-// One delivered result (the exactly-once unit under test).
+// One delivered result; `calls` pins exactly-once delivery.
 struct PromotionResult {
   int calls = 0;
   bool ok = false;
@@ -99,7 +96,7 @@ class SourcePromotionHostTest : public ::testing::Test {
     return pj_app_test::makeMockFile(data_dir_, name);
   }
 
-  // Skip-dialog hints for the plain SETUP load (mirrors file_loader_test).
+  // Skip-dialog hints for the plain setup load.
   [[nodiscard]] PJ::LoadHints loadHints() {
     return pj_app_test::mockLoadHints();
   }
@@ -177,10 +174,9 @@ class SourcePromotionHostTest : public ::testing::Test {
   std::vector<PJ::DatasetId> owned_queries_;
 };
 
-// Scenario 1: the full round trip. A promoted dataset is transactionally
-// replaced through the stock loader, and the SourceRecord — provider_id
-// HOST-DERIVED from the binding, identity/descriptor from the request — is
-// attached INSIDE the pre-catalog commit seam, before catalog publication.
+// The full round trip: the promoted dataset is replaced through the stock loader, and the SourceRecord (provider_id
+// host-derived from the binding, identity/descriptor from the request) is attached inside the pre-catalog commit
+// seam, before catalog publication.
 TEST_F(SourcePromotionHostTest, PromoteReplacesDatasetAndAttachesRecordAtCommitSeam) {
   ASSERT_TRUE(load());
   flushQueuedEvents();
@@ -191,9 +187,8 @@ TEST_F(SourcePromotionHostTest, PromoteReplacesDatasetAndAttachesRecordAtCommitS
   PJ::SourcePromotionHostView view(host_->raw());
   ASSERT_TRUE(view.valid());
 
-  // Seam probe, connected AFTER the host (Qt runs same-signal slots in
-  // connection order) so it observes the host's attach at the seam itself —
-  // i.e. BEFORE the catalog rebuild that publishes the load.
+  // Connected after the host (same-signal slots run in connection order), so it sees the host's attach at the seam,
+  // before the catalog rebuild that publishes the load.
   bool record_present_at_seam = false;
   QString provider_at_seam;
   QObject::connect(
@@ -231,9 +226,8 @@ TEST_F(SourcePromotionHostTest, PromoteReplacesDatasetAndAttachesRecordAtCommitS
   EXPECT_EQ(owned_queries_.front(), dataset_id);
 }
 
-// Scenario 2: a loader manifest id that matches no installed plugin. Accepted
-// (the structural request is fine), then the strict kNever/require-expected
-// load fails -> ok=false exactly once, no record, original data untouched.
+// A loader manifest id that matches no installed plugin: accepted (the request is structurally fine), then the
+// strict load fails: ok=false exactly once, no record, data untouched.
 TEST_F(SourcePromotionHostTest, UnknownLoaderPluginFailsPromotionWithoutTouchingDataset) {
   ASSERT_TRUE(load());
   flushQueuedEvents();
@@ -259,9 +253,8 @@ TEST_F(SourcePromotionHostTest, UnknownLoaderPluginFailsPromotionWithoutTouching
   EXPECT_EQ(singleTopicRowCount(dataset_id), 3) << "the target's data must be untouched";
 }
 
-// Scenario 3: promoting a dataset that does not exist. Ownership is stubbed
-// true — liveness is the strict-replacement check's job, and its diagnostic
-// must reach the plugin through the result message.
+// Promoting a dataset that does not exist. Ownership is stubbed true: liveness is the strict-replacement check's
+// job, and its diagnostic must reach the plugin through the result message.
 TEST_F(SourcePromotionHostTest, VanishedDatasetFailsWithStrictReplacementDiagnostic) {
   makeHost(/*owns=*/true);
   PJ::SourcePromotionHostView view(host_->raw());
@@ -279,8 +272,7 @@ TEST_F(SourcePromotionHostTest, VanishedDatasetFailsWithStrictReplacementDiagnos
   EXPECT_NE(result.message.find("no longer exists"), std::string::npos) << "got: " << result.message;
 }
 
-// Scenario 4: the bound provider's ingest did not produce the dataset ->
-// accepted, failed, and the FileLoader is never engaged.
+// The bound provider's ingest did not produce the dataset: accepted, then failed, and FileLoader is never engaged.
 TEST_F(SourcePromotionHostTest, NotOwnedDatasetIsRejectedWithoutEngagingTheLoader) {
   ASSERT_TRUE(load());
   flushQueuedEvents();
@@ -306,9 +298,8 @@ TEST_F(SourcePromotionHostTest, NotOwnedDatasetIsRejectedWithoutEngagingTheLoade
   EXPECT_EQ(singleTopicRowCount(dataset_id), 3);
 }
 
-// Scenario 5: structurally invalid requests are SYNCHRONOUS rejects —
-// promote_to_file_source returns false and result_cb NEVER runs. Driven via
-// the raw vtable (the C++ view cannot produce an undersized struct_size).
+// Structurally invalid requests are synchronous rejects: promote_to_file_source returns false and result_cb never
+// runs. Driven through the raw vtable (the C++ view cannot produce an undersized struct_size).
 TEST_F(SourcePromotionHostTest, StructurallyInvalidRequestsRejectSynchronously) {
   ASSERT_TRUE(load());
   flushQueuedEvents();
@@ -341,8 +332,8 @@ TEST_F(SourcePromotionHostTest, StructurallyInvalidRequestsRejectSynchronously) 
   PJ_error_t error{};
   // Null request.
   EXPECT_FALSE(raw.vtable->promote_to_file_source(raw.ctx, nullptr, count_cb, &calls, &error));
-  // Null result_cb on an otherwise VALID request: an accepted call promises
-  // exactly-once delivery — unfulfillable, so it must reject synchronously.
+  // Null result_cb on a valid request: an accepted call promises exactly-once delivery, unfulfillable, so it must
+  // reject synchronously.
   auto valid = make_raw(dataset_id, path);
   EXPECT_FALSE(raw.vtable->promote_to_file_source(raw.ctx, &valid, nullptr, &calls, &error));
   // Undersized struct_size (v1 fields not covered).
@@ -361,9 +352,8 @@ TEST_F(SourcePromotionHostTest, StructurallyInvalidRequestsRejectSynchronously) 
   EXPECT_EQ(session().sourceRecord(dataset_id), nullptr);
 }
 
-// Scenario 6: result_cb may re-enter promote_to_file_source (the ABI allows
-// re-entrant delivery). A second, valid promotion issued from inside the
-// first result must complete — no deadlock, each result exactly once.
+// result_cb may re-enter promote_to_file_source (the ABI allows it): a second valid promotion issued from inside
+// the first result completes, with no deadlock and each result exactly once.
 TEST_F(SourcePromotionHostTest, ReentrantPromotionFromResultCallbackCompletes) {
   ASSERT_TRUE(load());
   flushQueuedEvents();
@@ -398,10 +388,8 @@ TEST_F(SourcePromotionHostTest, ReentrantPromotionFromResultCallbackCompletes) {
   EXPECT_EQ(record->source_identity, u"cloud:v1:sha256/second"_s) << "the second promotion's record wins";
 }
 
-// Scenario 7: promote_to_file_source is [thread-safe] — called from a plugin
-// worker thread it must copy the ENTIRE request before returning (the caller
-// scrubs and frees its buffers immediately after), then complete on the GUI
-// loop.
+// promote_to_file_source is thread-safe: called from a plugin worker thread it copies the entire request before
+// returning (the caller scrubs and frees its buffers right after), then completes on the GUI loop.
 TEST_F(SourcePromotionHostTest, OffThreadPromotionCopiesTheRequestBeforeReturning) {
   ASSERT_TRUE(load());
   flushQueuedEvents();
@@ -439,8 +427,7 @@ TEST_F(SourcePromotionHostTest, OffThreadPromotionCopiesTheRequestBeforeReturnin
     request.descriptor_json = PJ_string_view_t{descriptor.data(), descriptor.size()};
     PJ_error_t error{};
     accepted.store(raw.vtable->promote_to_file_source(raw.ctx, &request, result_cb, &capture, &error));
-    // The host copied the request before returning: scrub every caller buffer
-    // (they are also freed when this thread function returns).
+    // Scrub every caller buffer: the host must already hold its own copy.
     identity.assign(identity.size(), 'X');
     path.assign(path.size(), 'X');
     loader_id.assign(loader_id.size(), 'X');
@@ -464,10 +451,8 @@ TEST_F(SourcePromotionHostTest, OffThreadPromotionCopiesTheRequestBeforeReturnin
   EXPECT_EQ(record->descriptor_json, uR"({"v":7})"_s);
 }
 
-// Scenario 8: teardown. An accepted promotion whose load is in flight is
-// failed (ok=false) by the destructor — exactly once, while the loader is
-// still alive — and the underlying load simply completes as an ordinary
-// replace without a record attach.
+// An accepted promotion whose load is in flight is failed (ok=false) by the destructor, exactly once and while the
+// loader is still alive; the underlying load completes as an ordinary replace with no record attach.
 TEST_F(SourcePromotionHostTest, TeardownFailsAcceptedPromotionExactlyOnce) {
   ASSERT_TRUE(load());
   flushQueuedEvents();
@@ -476,10 +461,9 @@ TEST_F(SourcePromotionHostTest, TeardownFailsAcceptedPromotionExactlyOnce) {
   makeHost();
   PJ::SourcePromotionHostView view(host_->raw());
 
-  // Exit the loop the moment the promotion engages the loader: exec() returns
-  // after the current (queued processPromotion) dispatch, so the load's
-  // terminal — always delivered through a LATER queued event — cannot have
-  // arrived yet. Deterministic, not a timing guess.
+  // Exit the loop the moment the promotion engages the loader: exec() returns after the current (queued
+  // processPromotion) dispatch, so the load's terminal, always delivered through a later queued event, cannot have
+  // arrived yet.
   int started = 0;
   QEventLoop until_started;
   QObject::connect(loader_.get(), &PJ::FileLoader::requestStarted, &until_started, [&](quint64, std::uint64_t) {
@@ -506,15 +490,12 @@ TEST_F(SourcePromotionHostTest, TeardownFailsAcceptedPromotionExactlyOnce) {
   EXPECT_TRUE(engineHasDataset(dataset_id)) << "the orphaned load still completed as an ordinary replace";
 }
 
-// Codex r1 F5: the two-phase teardown contract. After shutdown() the host
-// must remain SAFELY callable (live mutex, closed intake): every
-// promote_to_file_source either sync-rejects, or — if accepted before the
-// intake closed — fails its callback EXACTLY once; never an ok result,
-// never a lost callback, no use-after-free. The interactive teardown relies
-// on exactly this window: shutdown() runs before the plugin handle is
-// destroyed (which joins the provider's workers), and the host object dies
-// only afterwards, so straggler workers land here instead of on a freed
-// object. A worker thread hammering across the transition models them.
+// The two-phase teardown contract: after shutdown() the host stays safely callable (live mutex, closed intake):
+// every promote_to_file_source either sync-rejects or, if accepted before the intake closed, fails its callback
+// exactly once; never an ok result, a lost callback or a use-after-free. Interactive teardown relies on this
+// window: shutdown() runs before the plugin handle is destroyed (which joins the provider's workers) and the
+// host dies only afterwards, so straggler workers land here and not on a freed object. A worker thread
+// hammering across the transition models them.
 TEST_F(SourcePromotionHostTest, TwoPhaseShutdownSafelyRejectsConcurrentPromotes) {
   makeHost();
   const PJ::SourcePromotionHostView view(host_->raw());
@@ -541,7 +522,7 @@ TEST_F(SourcePromotionHostTest, TwoPhaseShutdownSafelyRejectsConcurrentPromotes)
 
   QThread::msleep(20);  // let a batch of accepts land (nothing pumps, so they stay pending)
   host_->shutdown();    // phase 1: intake closed + pending failed — the object stays alive
-  QThread::msleep(20);  // stragglers keep hammering the live-but-shut host (the F5 window)
+  QThread::msleep(20);  // stragglers keep hammering the live-but-shut host
   stop.store(true);
   hammer.join();
   host_->shutdown();  // idempotent

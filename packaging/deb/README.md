@@ -61,7 +61,7 @@ uninstall keep working against a root-owned, read-only `/opt`.
 linuxdeploy fills `AppDir/usr/share/doc/<distro-pkg>/` with the copyright file
 of every bundled system library; inside an AppImage those paths are private, but
 in a `.deb` they would collide with the real `libglib2.0-0t64`,
-`libkrb5support0` and ~36 other packages. They stay under `/opt`.
+`libkrb5support0` and dozens of other packages. They stay under `/opt`.
 
 ## Bundled plugins (seeding)
 

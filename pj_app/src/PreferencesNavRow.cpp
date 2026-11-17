@@ -22,8 +22,7 @@ PreferencesNavRow::PreferencesNavRow(const QString& text, QWidget* parent)
   setAttribute(Qt::WA_Hover, true);
 
   auto* layout = new QHBoxLayout(this);
-  // Left padding matches the accent edge so the label doesn't shift
-  // between selected / unselected states.
+  // Matches the accent edge, so the label does not shift when selected.
   layout->setContentsMargins(
       PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Comfortable),
       PJ::theme::space(theme::Space::Section), PJ::theme::space(theme::Space::Comfortable));
@@ -39,8 +38,7 @@ void PreferencesNavRow::setSelected(bool selected) {
   }
   selected_ = selected;
   setProperty("selected", selected);
-  // Re-evaluate the QSS rules that key off the dynamic property; without
-  // the unpolish/polish dance the new state doesn't repaint.
+  // A dynamic-property change does not re-apply QSS without unpolish/polish.
   style()->unpolish(this);
   style()->polish(this);
   update();

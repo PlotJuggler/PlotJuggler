@@ -38,18 +38,16 @@ constexpr auto kQueueBudgetKey = "Preferences::recording_queue_budget_mib";
 constexpr int kPollIntervalMs = 500;
 /// How many `_N` variants of one second's batch folder are tried before giving up.
 constexpr int kMaxDirectoryAttempts = 100;
-/// Accepted range of the queue budget, matching the Preferences scrubber: a
-/// hand-edited .ini must not be able to arm a 1 TiB queue.
+/// Accepted range of the queue budget, matching the Preferences scrubber: a hand-edited .ini must not be able to arm a
+/// 1 TiB queue.
 constexpr int kMinQueueBudgetMiB = 8;
 constexpr int kMaxQueueBudgetMiB = 4096;
-/// Where a source name is cut. Long enough for any readable name, short enough
-/// to leave room under the path length limits Windows still enforces on some
-/// volumes.
+/// Where a source name is cut: long enough for any readable name, short enough to leave room under the path-length
+/// limits Windows still enforces on some volumes.
 constexpr int kMaxSourceNameChars = 80;
 
-/// The batch folder of one Record press, created ATOMICALLY: mkdir on an
-/// existing name fails, so creating the folder IS claiming it — there is no
-/// window between a check and the create for a second press to slip into.
+/// The batch folder of one Record press, created ATOMICALLY: mkdir on an existing name fails, so creating the folder
+/// IS claiming it, with no check-then-create window for a second press to slip into.
 Expected<QString> createCaptureDirectory(const QString& base) {
   const QString stamp = QDateTime::currentDateTimeUtc().toString(u"yyyyMMdd_HHmmss"_s);
   QDir dir(base);
@@ -267,11 +265,9 @@ Expected<QString> RecordingService::start(std::vector<RecordingTarget> targets, 
     options.info.source_plugin_id = entry.target.plugin_id;
     options.info.capture_ordinal = static_cast<uint32_t>(index + 1);
 
-    // A sink or a recorder that throws instead of returning an error is still
-    // one failed source, and the rollback below must run for it: an exception
-    // escaping here would leave every file opened so far, and the folder, on
-    // disk. The entry is kept either way — a recorder whose start threw may
-    // already have created its file.
+    // A sink or recorder that throws instead of returning an error is still one failed source, and the rollback below
+    // must run for it: an escaping exception would leave every file opened so far, and the folder, on disk. The entry
+    // is kept either way, since a recorder whose start threw may already have created its file.
     try {
       std::unique_ptr<RecordingSink> sink = sink_factory_ ? sink_factory_() : makeDefaultSink();
       if (sink == nullptr) {
@@ -386,11 +382,10 @@ void RecordingService::finalizeSource(SourceEntry& entry, std::string cause) {
   if (entry.result.has_value() || entry.recorder == nullptr) {
     return;  // its file is already closed: never stop a recorder twice
   }
-  // Read BEFORE the detach: a pure-lazy push racing the detach then lands on
-  // the next capture's baseline, where it is invisible, rather than on this
-  // count. It is ±1 at either boundary regardless — the host decides whether a
-  // push counts from a relaxed tap-installed hint, and a lock on its push path
-  // would cost every message to make a diagnostic counter exact.
+  // Read BEFORE the detach: a pure-lazy push racing the detach then lands on the next capture's baseline, where it is
+  // invisible, rather than on this count. It is +-1 at either boundary regardless: the host decides whether a push
+  // counts from a relaxed tap-installed hint, and a lock on its push path would cost every message to make a
+  // diagnostic counter exact.
   const uint64_t current = readSkippedLazy(entry.target);
   (void)attachTap(entry.target, nullptr);  // a null tap is what detaches
   // A source whose session ended reports a counter BELOW its baseline (its
@@ -529,11 +524,9 @@ void RecordingService::onPoll() {
       truncated_keys.push_back(entry.start.target_key);
     }
   }
-  // Slots run synchronously: one may stop this capture, and its stopped() slot
-  // may start the NEXT one over the same target keys. The truncated set is
-  // therefore collected before the emit and re-resolved after it, against the
-  // capture id that was polled — a poll must never finalize a capture it did
-  // not read.
+  // Slots run synchronously: one may stop this capture, and its stopped() slot may start the NEXT one over the same
+  // target keys. The truncated set is therefore collected before the emit and re-resolved after it, against the
+  // capture id that was polled: a poll must never finalize a capture it did not read.
   const QString polled_capture = capture_id_;
   emit progress(messages, payload_bytes, dropped);
   if (capture_id_ != polled_capture) {

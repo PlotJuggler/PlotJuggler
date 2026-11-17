@@ -59,25 +59,19 @@ struct GridUpdate {
   std::span<const CellRect> dirty;  ///< Changed rects; meaningful only for Incremental.
 };
 
-/// Reconstructs the displayed occupancy grid at an arbitrary time `t` from a base
-/// keyframe stream plus an `OccupancyGridUpdate` delta stream, supporting forward
-/// and backward time scrubbing.
+/// Reconstructs the displayed occupancy grid at any time `t` from a base keyframe stream plus an
+/// `OccupancyGridUpdate` delta stream, scrubbing forward or backward.
 ///
-/// Pure: no Qt / GL / ObjectStore dependency — the timeline is injected via two
-/// std::function providers, so the reconstruction is unit-testable in isolation.
+/// Pure: no Qt / GL / ObjectStore; the timeline is injected through two std::function providers.
 ///
-/// Correctness model:
-///   displayed(t) = (latest base grid with ts <= t) + every update in
-///                  (that base's ts, t], applied in ascending ts order.
-/// `reconstructAt(t)` is order-independent: the result for a given `t` never
-/// depends on the sequence of prior calls — PROVIDED the injected timeline is
-/// immutable between calls. If entries land retroactively (live ingest behind
-/// the consumed cursor, dataset replace), call invalidate() first. Internally,
-/// forward scrubbing applies only the new deltas; a backward / jump / new-epoch
-/// seek restores the nearest snapshot (or the pristine base) and replays a
-/// bounded number of deltas. The snapshot cache is a bounded-memory
-/// optimization ONLY — correctness always falls back to base + full replay, so
-/// a cache bug can never corrupt the result.
+///   displayed(t) = (latest base grid with ts <= t) + every update in (that base's ts, t], applied in ascending ts
+///                  order.
+///
+/// reconstructAt(t) is order-independent PROVIDED the injected timeline is immutable between calls; if entries land
+/// retroactively (live ingest behind the consumed cursor, dataset replace), call invalidate() first. Forward scrubbing
+/// applies only the new deltas; a backward / jump / new-epoch seek restores the nearest snapshot (or the pristine
+/// base) and replays a bounded number of deltas. The snapshot cache only bounds memory and time: a miss falls back
+/// to base + full replay, so the result never depends on the cache.
 class OccupancyGridReconstructor {
  public:
   /// One base keyframe plus the never-reused identity of the timeline entry it
@@ -104,31 +98,23 @@ class OccupancyGridReconstructor {
 
   explicit OccupancyGridReconstructor(std::size_t snapshot_budget_bytes = kDefaultSnapshotBudgetBytes);
 
-  /// Reconstruct the grid as displayed at `t` and describe how it changed. The
-  /// returned grid/dirty references are valid until the next call.
+  /// Reconstructs the grid as displayed at `t` and describes how it changed; the returned grid/dirty references are
+  /// valid until the next call.
   GridUpdate reconstructAt(PJ::Timestamp t, const BaseProvider& base_at, const UpdatesProvider& updates_in);
 
-  /// Discard ALL cached epoch state: the current grid, the pristine base copy,
-  /// and every snapshot — snapshots may embed updates that were applied outside
-  /// the live window and later superseded, so they cannot be trusted either.
-  /// Call when the injected timeline changed retroactively (live ingest behind
-  /// the consumed cursor, dataset replace): the next reconstructAt() takes the
-  /// new-epoch branch and rebuilds from base + full replay. Also invalidates the
-  /// grid/dirty references returned by the previous reconstructAt().
+  /// Discards ALL cached epoch state (current grid, pristine base copy, every snapshot: snapshots may embed updates
+  /// applied outside the live window and later superseded). Call when the injected timeline changed retroactively;
+  /// the next reconstructAt() rebuilds from base + full replay. Invalidates the grid/dirty references returned by the
+  /// previous reconstructAt().
   void invalidate();
 
-  /// Snapshot-preserving partial invalidation for a retroactive entry at
-  /// `late_ts` (ts <= the already-consumed forward cursor). A snapshot taken at
-  /// `S < late_ts` embeds only updates with ts <= S that were known then, none of
-  /// which is the late entry (its ts > S), so snapshots strictly before `late_ts`
-  /// stay valid; only snapshots with `ts >= late_ts` may have skipped it and are
-  /// dropped. The forward cursor (`last_t_`) is rewound to the nearest surviving
-  /// snapshot at-or-before `late_ts` (or the pristine base) so the next forward
-  /// reconstructAt() replays from there — bounding the work to the window since
-  /// `late_ts` instead of a from-base full rebuild. No-op without an epoch; if
-  /// `late_ts` predates or equals the base keyframe it degrades to invalidate()'s
-  /// from-base replay. Leaves `have_epoch_` set, so the next reconstructAt() in
-  /// the same epoch takes the (now-rewound) forward path, not a new-epoch reset.
+  /// Partial invalidation for a retroactive entry at `late_ts` (<= the consumed forward cursor), keeping snapshots:
+  /// one taken at S < late_ts embeds only updates with ts <= S, none of them the late entry, so snapshots strictly
+  /// before `late_ts` stay valid and those with ts >= late_ts are dropped. The forward cursor (`last_t_`) rewinds to
+  /// the nearest surviving snapshot at or before `late_ts` (or the pristine base), bounding the next replay to the
+  /// window since `late_ts`. No-op without an epoch; a `late_ts` at or before the base keyframe degrades to
+  /// invalidate(). Leaves `have_epoch_` set, so the next reconstructAt() takes the rewound forward path, not a
+  /// new-epoch reset.
   void invalidateAfter(PJ::Timestamp late_ts);
 
   /// The current grid (as of the last reconstructAt()); valid until the next call.
@@ -136,7 +122,6 @@ class OccupancyGridReconstructor {
     return grid_;
   }
 
-  // --- Introspection (tests / diagnostics) ---
   [[nodiscard]] std::size_t snapshotCount() const {
     return snapshots_.size();
   }

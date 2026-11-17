@@ -1,7 +1,7 @@
 # AI agents: the MCP server
 
 PlotJuggler lets AI agents read and drive a running instance over the
-[Model Context Protocol](https://modelcontextprotocol.io). Two kinds of client use the same in-app server:
+[Model Context Protocol](https://modelcontextprotocol.io). Three kinds of client use the same in-app server:
 
 - **External agents** (Claude Code, Codex, any MCP client) reach it through a stdio bridge. This is on by default,
   and the user can turn it off.
@@ -11,7 +11,8 @@ PlotJuggler lets AI agents read and drive a running instance over the
   [Browser relay](#browser-relay)): a page can neither listen on a socket nor be spawned. The browser build has
   no stdio bridge and no plugin endpoint.
 
-This document is the design as built. Code-level detail lives in the header doc-comments it names.
+Code-level detail lives in the header doc-comments this document names; the measurements behind it are in
+"Evidence" at the end.
 
 ## Picture
 
@@ -36,7 +37,7 @@ external agent ──stdio──> pj_mcp_relay.py (127.0.0.1:<port>) <──long
 |---|---|---|
 | `McpProtocol` | `pj_app/src/mcp/` (QtCore only) | Vocabulary both ends share: JSON-RPC envelope checks (`parseRpcMessage`), lifecycle replies, the tool lists (`ToolSet`), the HTTP/1.1 subset, the discovery folder, `ownerFor`, `checkAccess` |
 | `McpBridge.cpp` | `pj_app/src/mcp/` | `plotjuggler4 --mcp-bridge`, handled in `main()` before any `QApplication`: stdio ↔ HTTP, instance discovery, `list_instances` / `select_instance`, forwarding a cancellation of the call in flight |
-| `McpServer` | `pj_app/src/mcp/` | The loopback endpoint on the GUI thread, the token table, the job table, revocation. The HTTP is hand-written because QtHttpServer is GPL-3-only. Its transport-free half (`dispatch`) also answers what a relay link brings in (`handleRelayed`); in the browser only that half is built |
+| `McpServer` | `pj_app/src/mcp/` | The loopback endpoint on the GUI thread, the token table, the job table, revocation. The HTTP is hand-written ("Evidence"). Its transport-free half (`dispatch`) also answers what a relay link brings in (`handleRelayed`); in the browser only that half is built |
 | `McpBrowserLink` | `pj_app/src/mcp/` | The page side of the browser relay: long-polls the relay and feeds each message to `handleRelayed`. Plain `QNetworkAccessManager`, so the desktop runs it too (`--mcp-relay`, tests) |
 | `pj_mcp_relay.py` | `plotjuggler-agent/relay/` | The agent side of the browser relay: MCP over stdio, the page protocol over loopback HTTP, standard-library Python |
 | `McpServerTools.cpp` | `pj_app/src/mcp/` | The app tools: calls into existing services and the public "agent control" block of `MainWindow.h`, plus `export_series`' file writer, which runs on a worker |
@@ -49,8 +50,8 @@ external agent ──stdio──> pj_mcp_relay.py (127.0.0.1:<port>) <──long
 
 The tool set depends on which token a request carries (`mcp::ToolSet`):
 
-- **Agent tools** (`pj_agent_tools`, served to every token): `list_topics`, `describe_topic`, `read_series`,
-  `wait_for`, `evaluate`, `create_derived_series`, `create_derived_object`, `create_markers`, `remove_markers`, `list_created`,
+- **Agent tools** (`pj_agent_tools`, served to every token): `list_topics`, `describe_topic`, `read_series`, `wait_for`,
+  `evaluate`, `create_derived_series`, `create_derived_object`, `create_markers`, `remove_markers`, `list_created`,
   `remove_derived_series`, `playback`, `plot_tab`, `scene_view`, `report_status`.
 - **App tools** (`McpServerTools.cpp`, public token only): `get_status`, `about`, `open_file`, `unload_file`,
   `reload_file`, `start_stream`, `stop_stream`, `export_series`, `add_script_series`, `remove_script_series`,
@@ -69,12 +70,11 @@ The instructions (`initialize` and `server/discover` both carry them) end with w
 (`McpServer::loadedSummary`): each dataset by its source name (the tools' `dataset:` qualifier) with its display time
 range, its topics and their numeric fields (`isSignalField`, as `read_series` counts them), read from one catalog
 snapshot and capped at 60 topics, 40 fields each and about 6 kB. Names are kept to one line, since they reach the
-agent's system prompt, and a source name two datasets share is flagged (a `dataset:` prefix cannot pick either).
-Claude Code puts the instructions in its system prompt, so an agent goes straight to the tool that answers instead of
-spending a turn on each discovery call: half the turns and 26-32% less time on lookup tasks. It is a picture
-of when the session connected; `list_topics` and `get_status` show later loads. The bridge asks the current instance
-for its instructions on both calls, and keeps its own when no instance answers: Claude Code 2.1 sends only
-`server/discover`.
+agent's system prompt, and a source name two datasets share is flagged (a `dataset:` prefix cannot pick either). Claude
+Code puts the instructions in its system prompt, so an agent goes straight to the tool that answers instead of spending
+a turn on each discovery call ("Evidence"). It is a picture of when the session connected; `list_topics` and
+`get_status` show later loads. The bridge asks the current instance for its instructions on both calls, and keeps its
+own when no instance answers: Claude Code 2.1 sends only `server/discover`.
 
 The agent tools run against a `ToolContext` built from a service registry. That is the same set of SDK host views a
 toolbox plugin gets (`ToolboxHostView`, `PlotTabsHostView`, `DataProcessorHostView`, `PlaybackHostView`, ...). The
@@ -85,22 +85,22 @@ several datasets share reaches the host dataset-qualified. An agent's removal (`
 series another owner built on it (the user's included), it is refused, naming each one and its owner. The user's own
 deletes ask first and keep cascading. `plot_tab`'s zoom frames only the tab it names: `pj.viewport.v1` frames all of a
 caller's tabs at once, so the server sets the context's `zoom_tab` hook (`PluginPlotTabsController` with the caller's
-owner, which a plugin token records at `addPluginToken`). Windowed reads never build the whole series' Arrow array:
-the server sets the context's `read_window` and `scan_values` hooks over the session's `DataEngine`
+owner, which a plugin token records at `addPluginToken`). Windowed reads never build the whole series' Arrow array: the
+server sets the context's `read_window` and `scan_values` hooks over the session's `DataEngine`
 (`readSeriesArrowWindow`, `scanSeriesValues`, `pj_datastore/plugin_data_host.hpp`). `export_series` then decodes the
 window only; `read_series` also scans the whole series' values once, for its whole-series flat facts, which is still
 linear in the series but several times cheaper than the full read. `export_series` keeps time as integer display
 nanoseconds, so its CSV time column is exact; `format: "npy"` writes a numpy structured array (`time` and one float64
-field per series path, NaN before a series starts) that `numpy.load` reads ~30-100x faster than `numpy.loadtxt` reads
-the CSV, with no package beyond numpy. `add_filter` takes its class from `pj_scripting`'s
+field per series path, NaN before a series starts) that `numpy.load` reads much faster than `numpy.loadtxt` reads the
+CSV ("Evidence"), with no package beyond numpy. `add_filter` takes its class from `pj_scripting`'s
 `FilterCatalogue::standaloneClassScript`. `screenshot` composites each visible QRhi view's next presented frame
 (`grabPresentedFrame`) into the window grab, and replies when the frames arrive.
 
 ## Tokens and identity
 
 `McpServer` holds at most one public token and a table of plugin tokens (`plugin_tokens_`, token → that session's
-service registry). Every request's bearer is compared against each token in constant time (`mcp::checkAccess`). The token that
-matches decides the tool set, the owner and where the `ToolContext` comes from.
+service registry). Every request's bearer is compared against each token in constant time (`mcp::checkAccess`). The
+token that matches decides the tool set, the owner and where the `ToolContext` comes from.
 
 | | Public token | Plugin token |
 |---|---|---|
@@ -216,7 +216,7 @@ states: running · waiting_for_user · completed · failed · killed
 ### MCP Tasks
 
 The server offers the MCP Tasks extension of protocol 2026-07-28 (`mcp::kTasksExtension`,
-`io.modelcontextprotocol/tasks`; not the 2025-11-25 core utility it replaced) as a second way to reach the same job
+`io.modelcontextprotocol/tasks`; not the 2025-11-25 core Tasks utility) as a second way to reach the same job
 table:
 
 - **Negotiation.** `server/discover` advertises it under `capabilities.extensions`; a client declares it per request
@@ -238,7 +238,7 @@ table:
   the job runs, then the time from its creation to its result's expiry; a task that advertised it is not evicted by
   the `kMaxEndedJobs` count (its own bound is `kMaxEndedTasks`).
 - **Not built:** `notifications/tasks` and its subscription (optional for a server), and `input_required`.
-- Only this repository's tests exercise it until a client implements the extension.
+- No client is known to implement the extension; only this repository's tests exercise it.
 
 ### Adding a job-capable tool
 
@@ -275,11 +275,12 @@ wait returns.
 - **Revocation from inside a result.** A reply or continuation can itself revoke a token, for example by tearing down
   another plugin's session. `resumeDeferred` therefore takes one continuation out of its job at a time, so the
   revocation still finds and drops the other jobs before their services die. Each job carries the round that last
-  resumed it, so a round never resumes its own follow-ups. The token is checked before a continuation runs and
-  before its follow-up is kept, and each continuation is destroyed right after it ran. The services of the result that is running stay
-  alive because agent tools never spin a nested event loop (`agent_tools::ToolResult::resume`). Should a reply spin
-  one anyway, the nested `resumeDeferred` returns at once (`draining_`), leaving the queue to the outer loop: a nested
-  call would move the round on under it, and the outer loop would then resume the follow-ups it queued again and again.
+  resumed it, so a round never resumes its own follow-ups. The token is checked before a continuation runs and before
+  its follow-up is kept, and each continuation is destroyed right after it ran. The services of the result that is
+  running stay alive because agent tools never spin a nested event loop (`agent_tools::ToolResult::resume`). Should a
+  reply spin one anyway, the nested `resumeDeferred` returns at once (`draining_`), leaving the queue to the outer loop:
+  a nested call would move the round on under it, and the outer loop would then resume the follow-ups it queued again
+  and again.
 - **App work left for later** asks `McpServer::stillAuthorized(caller)` before it runs and again once the user has
   answered its dialog. Once the token is gone, or the job the call runs as was killed, it applies nothing. This
   covers:
@@ -326,12 +327,12 @@ wait returns.
 ## Browser relay
 
 The browser build's server does not listen; the page links to a relay instead. The plotjuggler-agent plugin starts
-`relay/pj_mcp_relay.py` when no desktop PlotJuggler is installed: the agent speaks MCP to it over stdio, and it
-listens on `127.0.0.1` (first free port of 7381-7390). Its `launch` tool opens the hosted app with
-`?mcp=http://127.0.0.1:<port>/?key=<secret>`; `main.cpp` hands that to `MainWindow::connectMcpRelay`, which opens public access and
-starts an `McpBrowserLink` (only a plain http, loopback relay with a port: `McpBrowserLink::acceptableRelay`). The
-desktop does the same with `--mcp-relay <url>`, the key copied from the relay's cache
-(`~/.cache/plotjuggler-agent/relay-key`).
+`relay/pj_mcp_relay.py` when no desktop PlotJuggler is installed: the agent speaks MCP to it over stdio, and it listens
+on `127.0.0.1` (first free port of 7381-7390). Its `launch` tool opens the hosted app with
+`?mcp=http://127.0.0.1:<port>/?key=<secret>`; `main.cpp` hands that to `MainWindow::connectMcpRelay`, which opens public
+access and starts an `McpBrowserLink` (only a plain http, loopback relay with a port:
+`McpBrowserLink::acceptableRelay`). The desktop does the same with `--mcp-relay <url>`, the key copied from the relay's
+cache (`~/.cache/plotjuggler-agent/relay-key`).
 
 - **Protocol** (relay base `R`, JSON bodies, every request with `X-PJ-Link: <the url's key>`):
   - `POST R/link/hello {"title", "protocol": 1, "browser"}` → `{"id"}`: the page is one relay instance
@@ -343,16 +344,16 @@ desktop does the same with `--mcp-relay <url>`, the key copied from the relay's 
   - `GET R/file/<token>/<name>`: a file `open_file` named. The relay keeps `path` and adds `url` and `name`; the
     browser's `open_file` streams the url into a `BrowserFileStore` file (at most `kMaxPresetDataBytes`) and loads it
     like a picked file, the desktop's uses the path.
-- **Who gets in.** Each relayed message is answered as the public client the relay names (its MCP client's name,
-  so `agent-<client>`). The relay answers `/link/*` only with its secret, random and kept in the user's cache (mode
-  0600, so a tab survives a relay restart: the new run answers 404 and the page says hello again), which `launch` hands
-  out in the URL it opens; pages and processes without it cannot join as PlotJuggler and take the agent's calls. The
-  secret is as private as that URL: browser history, the browser's command line, the app server's request log (it is
-  a query item), and it is only good against the loopback relay. A browser sends the custom `X-PJ-Link` header only after a CORS preflight, which the relay answers only for
-  its allowed origins (the hosted app, plus `PJ_RELAY_ORIGINS`, e.g. a local `serve_wasm.mjs`), with
-  `Access-Control-Allow-Private-Network` for Chrome's local network access. The page in turn trusts whatever relay
-  its `?mcp=` names, so it accepts loopback relays only: a link to `?mcp=` is a request to be driven by that relay,
-  as `--mcp-relay` is on the desktop.
+- **Who gets in.** Each relayed message is answered as the public client the relay names (its MCP client's name, so
+  `agent-<client>`). The relay answers `/link/*` only with its secret, random and kept in the user's cache (mode 0600,
+  so a tab survives a relay restart: the new run answers 404 and the page says hello again), which `launch` hands out in
+  the URL it opens; pages and processes without it cannot join as PlotJuggler and take the agent's calls. The secret is
+  as private as that URL: browser history, the browser's command line, the app server's request log (it is a query
+  item), and it is only good against the loopback relay. A browser sends the custom `X-PJ-Link` header only after a CORS
+  preflight, which the relay answers only for its allowed origins (the hosted app, plus `PJ_RELAY_ORIGINS`, e.g. a local
+  `serve_wasm.mjs`), with `Access-Control-Allow-Private-Network` for Chrome's local network access. The page in turn
+  trusts whatever relay its `?mcp=` names, so it accepts loopback relays only: a link to `?mcp=` is a request to be
+  driven by that relay, as `--mcp-relay` is on the desktop.
 - **Tools.** The browser has no `about` (no feature catalog) and no `export_series` (the file would stay in the
   page); `toolList` and the instructions leave them out there. MCP clients read `tools/list` once at startup, before
   any page connects, and do not reliably refresh on `list_changed`, so the relay serves its bundled
@@ -369,13 +370,12 @@ desktop does the same with `--mcp-relay <url>`, the key copied from the relay's 
 - **Lifetime.** The link is a child of the server, deleted with it (in `~QObject`, after the server's members); its
   in-flight replies are deleted without emitting `finished`, so no callback reaches the server then, and replies the
   server still holds check the link through a `QPointer`. A relay that is down is retried, backing off to 10 s, while
-  the page lives; the relay forgets a page that has not polled for 120 s. One relay serves one agent session, so a
-  relay that forgot the page (404) or failed two polls in a row is a session that ended: the link deletes the object
-  it gave that session's calls as their connection, which the server treats as a desktop client hanging up (a job
-  that dies with its call is killed, the others carry on for their client to find), and no answer of the old
-  session is posted into the next one, whose message numbering starts over. In the browser a
-  `QNetworkReply` never frees its body (`pj_runtime/docs/TECHNICAL_NOTES.md`): relay messages are small, so a session leaks
-  kilobytes.
+  the page lives; the relay forgets a page that has not polled for 120 s. One relay serves one agent session, so a relay
+  that forgot the page (404) or failed two polls in a row is a session that ended: the link deletes the object it gave
+  that session's calls as their connection, which the server treats as a desktop client hanging up (a job that dies with
+  its call is killed, the others carry on for their client to find), and no answer of the old session is posted into the
+  next one, whose message numbering starts over. In the browser a `QNetworkReply` never frees its body
+  (`pj_runtime/docs/TECHNICAL_NOTES.md`): relay messages are small, so a session leaks kilobytes.
 
 ## The plugin endpoint (`pj.mcp_endpoint.v1`)
 
@@ -428,17 +428,16 @@ run turns them on with `--mcp-ui-tools` (which implies `--mcp`), never a setting
 Desktop only: the browser build has no command line to ask for them, so it does not compile them.
 
 - `ui_tree` prints the visible windows as one indented line per widget, `[ref] Class#objectName "text" (flags) WxH`
-  (flags such as `disabled`, `checked`, `read-only`, `focus`, `modal`; button text without mnemonic markers, which
-  some platform themes add, so a script reads the same offscreen and on X11),
-  the open popup and the modal dialog first; a window a modal dialog blocks (as Qt decides it) gets one line, and a
-  target in it is refused, since the window system would drop its input. Unnamed, textless Qt
-  containers are left out and their children listed in their place. Menu actions, tabs and the rows visible in item
-  views are items with refs of their own. Refs are the latest `ui_tree`'s: each call starts a new table and the
-  numbering goes on, so an older ref reads as stale rather than naming another widget. A row ref holds a
-  `QPersistentModelIndex` until the next `ui_tree`; a tab ref holds its index and text, and reads as stale once
-  another tab sits there. The other tools also take a widget's `objectName`, which is stable (root `CLAUDE.md`) and so
-  suits a repro script; a name several visible widgets share (outside the windows a modal dialog blocks) is refused rather than resolved to whichever a search
-  finds first.
+  (flags such as `disabled`, `checked`, `read-only`, `focus`, `modal`; button text without mnemonic markers, which some
+  platform themes add, so a script reads the same offscreen and on X11), the open popup and the modal dialog first; a
+  window a modal dialog blocks (as Qt decides it) gets one line, and a target in it is refused, since the window system
+  would drop its input. Unnamed, textless Qt containers are left out and their children listed in their place. Menu
+  actions, tabs and the rows visible in item views are items with refs of their own. Refs are the latest `ui_tree`'s:
+  each call starts a new table and the numbering goes on, so an older ref reads as stale rather than naming another
+  widget. A row ref holds a `QPersistentModelIndex` until the next `ui_tree`; a tab ref holds its index and text, and
+  reads as stale once another tab sits there. The other tools also take a widget's `objectName`, which is stable (root
+  `CLAUDE.md`) and so suits a repro script; a name several visible widgets share (outside the windows a modal dialog
+  blocks) is refused rather than resolved to whichever a search finds first.
 - Input goes through `QWindowSystemInterface`, the path a real mouse and keyboard take, so popups, implicit grabs,
   focus on click, shortcuts and double-click synthesis behave as for a user. Points are scaled to native pixels, as a
   platform plugin reports them. It is queued (`AsynchronousDelivery`), and what has no queued form (the wheel,
@@ -529,18 +528,17 @@ Desktop only: the browser build has no command line to ask for them, so it does 
 - Assistant: its own suite in `toolbox_assistant_agent/tests` (`tests/support/test_endpoint.hpp`). Live tests against
   a running instance are opt-in.
 
-## Known limits and follow-ups
+## Known gaps
 
-- Plugin tokens get the agent tools only, so the Assistant cannot open files or start streams. The planned follow-up
-  adds `open_file`, `start_stream` and `stop_stream` to the plugin profile, with `ask_user` on by default.
+- Plugin tokens get the agent tools only, so the Assistant cannot open files or start streams.
 - A plugin token is not bound to the process the plugin spawned (see the trust boundary above).
 - The bridge forwards one call at a time, so two calls of one session overlap only as a background job plus a
   foreground call, and a `tasks/get` or `tasks/cancel` waits behind a call still in its `wait_s`.
-- The browser relay (`pj_mcp_relay.py`, in the `plotjuggler-agent` repository) must forward notifications and the
-  `tasks/*` methods and pass on the page's extensions for `notifications/cancelled` and MCP Tasks to reach a page;
-  until it does, only the job tools do.
-- The Assistant's Stop ends its agent CLI; for it to stop the jobs that turn left running too, the plugin
-  (`pj-official-plugins/toolbox_assistant_agent`) must release its endpoint on Stop, which revokes its token.
+- The browser relay (`pj_mcp_relay.py`, in the `plotjuggler-agent` repository) does not forward notifications or the
+  `tasks/*` methods, nor pass on the page's extensions, so `notifications/cancelled` and MCP Tasks do not reach a page;
+  only the job tools do.
+- The Assistant's Stop ends its agent CLI but not the jobs that turn left running: the plugin
+  (`pj-official-plugins/toolbox_assistant_agent`) does not release its endpoint on Stop, which would revoke its token.
 - Protocol 2026-07-28 is spoken only as far as agents have needed: ordinary results carry no
   `resultType: "complete"`, and `server/discover` keeps the `serverInfo` field of the earlier era.
 - The server is stateless, so it cannot tell two sessions of one client apart: a cancellation that arrives after its
@@ -555,8 +553,19 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   once hold several copies. Its write runs on `EnginePool`'s shared lane, which a machine with two or three cores
   sizes at one thread: derived evaluations wait there until the file is written.
 - A named export is written beside its destination and replaces it only once complete, so it needs a folder it can
-  write to: exporting over a writable file in a folder that is not fails ("cannot create"), where a stopped export
-  written in place would have truncated the file.
+  write to: exporting over a writable file in a folder that is not fails ("cannot create"). Writing in place instead
+  would let a stopped export truncate the file.
 - A `create_derived_object` stopped during its first read-back answers `killed` although the object is installed,
   and the read-back's removal of an object whose script fails is skipped: `list_created` shows it and
   `remove_derived_series` removes it.
+
+## Evidence
+
+- **The loaded summary in the instructions:** with it, Claude Code agents used half the turns and 26-32% less time on
+  lookup tasks than with discovery calls alone (Claude Code, which puts the instructions in its system prompt; task
+  set and dates not recorded). Re-test if the summary's caps change or a client stops reading the instructions.
+- **`npy` export:** `numpy.load` reads it about 30-100x faster than `numpy.loadtxt` reads the CSV (sizes not
+  recorded).
+- **Hand-written HTTP:** QtHttpServer is GPL-3-only, which the MPL-2.0 desktop app does not link.
+- **Claude Code 2.1 sends only `server/discover`,** never `initialize`, so the bridge asks the instance for its
+  instructions on both calls.

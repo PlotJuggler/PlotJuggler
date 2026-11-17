@@ -1,8 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// ToolRegistry: the tool catalog the model is offered (names, descriptions,
-// input schemas) and the no-throw dispatch to the executors.
+// ToolRegistry: the tool catalog the model is offered (names, descriptions, input schemas) and the no-throw dispatch
+// to the executors.
 
 #include "pj_runtime/agent_tools/tool_registry.hpp"
 
@@ -29,8 +29,6 @@ using detail::removeMarkers;
 using detail::reportStatus;
 using detail::sceneViewTool;
 using detail::waitForTool;
-
-// --- registry --------------------------------------------------------------
 
 void ToolRegistry::add(ToolSpec spec) {
   tools_.push_back(std::move(spec));

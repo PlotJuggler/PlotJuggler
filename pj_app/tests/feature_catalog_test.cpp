@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
-//
-// resources/feature_catalog.json tells the assistant agent where things are in
-// the UI. These tests hold it to the UI: each entry point must contain the
-// complete live label of every menu, action and button it names, read from the
-// real widgets, so renaming one fails here until the catalog follows. The host's
-// own default entry points are held to the same labels.
+// resources/feature_catalog.json tells the assistant agent where things are in the UI. These tests hold it to the
+// UI: each entry point must contain the complete live label of every menu, action and button it names, read from the
+// real widgets, so renaming one fails here until the catalog follows. The host's own default entry points are held
+// to the same labels.
 
 #include <gtest/gtest.h>
 
@@ -217,8 +215,7 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
   return live;
 }
 
-// The live labels each core entry's entry point names. An entry missing here
-// fails the test: a new catalog entry gets its labels checked from day one.
+// The live labels each core entry's entry point names; an entry missing here fails the test.
 const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
   static const std::map<std::string, std::vector<std::string>> table = {
       {"open_data_file", {"menu.file", "action.open_data", "sources.title", "sources.tab_file", "sources.load_file"}},
@@ -310,9 +307,8 @@ TEST_F(FeatureCatalogResourceTest, ResourceIsValidAndEveryEntryHasEvidence) {
   }
 }
 
-// "path#token; path#token": each cited file exists and its text contains the
-// token, so a citation survives moved lines and fails only when the code it
-// cites is gone.
+// "path#token; path#token": each cited file exists and contains the token, so a citation survives moved lines
+// and fails only when the code it cites is gone.
 TEST_F(FeatureCatalogResourceTest, EvidenceTokensAppearInTheCitedFiles) {
   const Json doc = resource();
   ASSERT_TRUE(doc.is_object());

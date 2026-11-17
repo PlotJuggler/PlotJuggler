@@ -28,12 +28,8 @@ std::unique_ptr<MediaSource> SceneDecoderLayer::createMediaSource(const SceneLay
   if (decoder == nullptr) {
     return nullptr;
   }
-  // Topics produced by a message parser (e.g. yolo_msgs/DetectionArray, markers)
-  // store the RAW source message under pure-lazy ingest. Keep SessionManager's
-  // replaceable parser lease in this host-aware layer: pj_scene2d_core receives
-  // only a complete entry decoder and stays independent of runtime binding types.
-  // Topics whose loader writes canonical bytes directly have no parser and
-  // decode them as-is.
+  // A parser topic stores the raw message: the parser lease stays here, so pj_scene2d_core gets a complete entry
+  // decoder and no runtime types. A topic without a parser holds canonical bytes.
   if (auto* session = sessionManager(); session != nullptr) {
     if (session->parserBindingForObjectTopic(topicId())) {
       const ObjectTopicId topic = topicId();
@@ -43,10 +39,8 @@ std::unique_ptr<MediaSource> SceneDecoderLayer::createMediaSource(const SceneLay
           [session, topic, expected_type](
               ISceneDecoder& scene_decoder, Timestamp timestamp,
               const sdk::PayloadView& payload) -> Expected<SceneFrame> {
-            // Resolve per parse, not at attach: reload replaces this stable
-            // topic's parser slot. `binding` is declared before `record`, so it
-            // also outlives the parsed std::any and keeps the plugin DSO mapped
-            // through decode and ObjectRecord destruction.
+            // Resolved per parse: a reload replaces the topic's parser. `binding` is declared before `record`, so the
+            // plugin DSO stays mapped until the parsed std::any is destroyed.
             const auto binding = session->parserBindingForObjectTopic(topic);
             if (!binding) {
               return unexpected(std::string("no parser registered for scene topic"));

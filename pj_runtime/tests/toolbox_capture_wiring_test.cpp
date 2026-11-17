@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Lifecycle-composition tests of the M3 owner wiring: ToolboxRuntimeHost's
-// parser-ingest create/release/discard driving SourceCaptureService end to
-// end over a real DataSourceRuntimeHost and cache directory. What the
-// service-level tests cannot see: that RELEASE is the commit, DISCARD and a
-// host stop never publish, and a re-created context is a fresh capture
-// generation.
+// Lifecycle composition of the owner wiring: ToolboxRuntimeHost's parser-ingest create/release/discard driving
+// SourceCaptureService over a real DataSourceRuntimeHost and cache directory. Covers what the service-level tests
+// cannot see: RELEASE is the commit, DISCARD and a host stop never publish, and a re-created context is a fresh
+// capture generation.
 
 #include <gtest/gtest.h>
 
@@ -175,7 +173,6 @@ TEST_F(ToolboxCaptureWiringTest, DiscardNeverPublishesAndReportsNothing) {
   ASSERT_TRUE(runtime_->discardParserIngest(dataset_id).has_value());
   EXPECT_FALSE(cacheHasArtifact());
   EXPECT_TRUE(finalized_.empty());
-  // No partial survives the abort.
   for (const auto& entry : fs::directory_iterator(cache_root_)) {
     EXPECT_TRUE(entry.path().string().find(".partial") == std::string::npos) << entry.path();
   }
@@ -222,11 +219,9 @@ TEST_F(ToolboxCaptureWiringTest, RecreatedContextIsAFreshCaptureGeneration) {
   EXPECT_TRUE(finalized_.front().published) << finalized_.front().refusal_reason;
 }
 
-// T10 (P1): the Preferences capture toggle gates ARMING only, evaluated at
-// context CREATION, and applies immediately — a context created while off
-// stays unarmed even when the toggle turns on before its attachment; a
-// context created while on publishes even when the toggle turns off
-// mid-flight; existing hits keep resolving while off.
+// The Preferences capture toggle gates arming only: it is evaluated at context creation and applies immediately.
+// A context created while off stays unarmed even if the toggle turns on before its attachment; one created while on
+// publishes even if the toggle turns off mid-flight; existing hits keep resolving while off.
 TEST_F(ToolboxCaptureWiringTest, CaptureToggleGatesArmingOnlyAndAppliesImmediately) {
   constexpr const char* kDescOff = R"({"kind":"toggle-off","request":{},"v":1})";
   constexpr const char* kDescOn = R"({"kind":"toggle-on","request":{},"v":1})";
@@ -236,8 +231,7 @@ TEST_F(ToolboxCaptureWiringTest, CaptureToggleGatesArmingOnlyAndAppliesImmediate
   };
   const std::string_view requested[] = {std::string_view{"/imu"}};
 
-  // Created while OFF: never arms — re-enabling BEFORE the attachment is
-  // too late for this context, the gate is evaluated at creation.
+  // Created while OFF: never arms; enabling before the attachment is too late (the gate is evaluated at creation).
   service_->setCaptureEnabled(false);
   auto [off_dataset, off_ingest] = openIngest("download-off");
   service_->setCaptureEnabled(true);
@@ -248,8 +242,7 @@ TEST_F(ToolboxCaptureWiringTest, CaptureToggleGatesArmingOnlyAndAppliesImmediate
   EXPECT_FALSE(resolves(kDescOff)) << "a context created while capture is off must not publish";
   EXPECT_TRUE(finalized_.empty()) << "an unarmed context must report no capture event";
 
-  // Created while ON: disabling MID-FLIGHT does not abort it — the armed
-  // capture finishes and publishes normally (arming-only semantics).
+  // Created while ON: disabling mid-flight does not abort it; the armed capture publishes normally.
   auto [on_dataset, on_ingest] = openIngest("download-on");
   ASSERT_TRUE(on_ingest.attachSourceRecord(kDescOn).has_value());
   push(on_ingest, bindTopic(on_ingest, "/imu"), 200, {4, 5});
@@ -260,7 +253,6 @@ TEST_F(ToolboxCaptureWiringTest, CaptureToggleGatesArmingOnlyAndAppliesImmediate
   ASSERT_EQ(finalized_.size(), 1u);
   EXPECT_TRUE(finalized_.front().published) << finalized_.front().refusal_reason;
 
-  // Disabling never breaks restore: the published hit still resolves.
   EXPECT_FALSE(service_->captureEnabled());
   EXPECT_TRUE(resolves(kDescOn));
 }

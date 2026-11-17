@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// PointCloudLayer RGB-direct colour mode (the foxglove red/green/blue/alpha case).
-// A cloud whose fields describe a per-point colour must NOT expose the individual
-// colour channels as separately colourable scalar fields. Instead the layer offers
-// a single RGB mode (kRgb), defaults to it on a fresh attach, and renders the literal
-// per-point colour. A plain XYZI cloud keeps the scalar/colormap behaviour, and an
-// explicitly restored colour_type survives the smart default.
+// PointCloudLayer RGB-direct colour mode (the foxglove red/green/blue/alpha case). A cloud whose fields describe a
+// per-point colour must NOT expose the individual channels as separately colourable scalar fields: the layer offers a
+// single RGB mode (kRgb), defaults to it on a fresh attach, and renders the literal per-point colour. A plain XYZI
+// cloud keeps the scalar/colormap behaviour, and an explicitly restored colour_type survives the smart default.
 
 #include <gtest/gtest.h>
 
@@ -35,9 +33,8 @@ using DT = PJ::sdk::PointField::Datatype;
 
 constexpr std::string_view kSchema = "mock/point_cloud";
 
-// A one-point cloud in the user's foxglove layout: x,y,z,intensity (float32) then
-// red,green,blue,alpha (uint8). The colour is olivedrab (107,142,35) — a semantic
-// class colour, exactly what should be painted literally.
+// A one-point cloud in the foxglove layout: x,y,z,intensity (float32) then red,green,blue,alpha (uint8). The colour is
+// olivedrab (107,142,35), a semantic class colour that should be painted literally.
 PJ::Expected<PJ::sdk::ObjectRecord> emitColoredCloud(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   static const std::vector<uint8_t> buf = [] {
     std::vector<uint8_t> b;
@@ -67,7 +64,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitColoredCloud(PJ::Timestamp ts, PJ::sdk::
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
 }
 
-// A plain XYZI cloud — no colour channels.
 PJ::Expected<PJ::sdk::ObjectRecord> emitPlainCloud(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   static const std::vector<uint8_t> buf(16, 0);
   PJ::sdk::PointCloud cloud;
@@ -86,8 +82,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitPlainCloud(PJ::Timestamp ts, PJ::sdk::Pa
   return PJ::sdk::ObjectRecord{.ts = ts, .object = cloud};
 }
 
-// Build + attach a layer whose topic emits `emit_fn`. Returns the live layer plus
-// the owning session (kept alive by the caller).
 struct AttachedLayer {
   std::unique_ptr<PJ::SessionManager> session;
   std::unique_ptr<pj::scene3d::PointCloudLayer> layer;
@@ -118,17 +112,14 @@ TEST(PointCloudLayerRgb, ColorChannelsCollapseToRgbAndDefaultToIt) {
   ctx.session = fixture.session.get();
   ASSERT_TRUE(fixture.layer->attach(ctx));
 
-  // The individual colour channels must NOT be selectable as scalar fields.
   const QStringList fields = fixture.layer->availableColorFields();
   EXPECT_FALSE(fields.contains("red"_L1));
   EXPECT_FALSE(fields.contains("green"_L1));
   EXPECT_FALSE(fields.contains("blue"_L1));
   EXPECT_FALSE(fields.contains("alpha"_L1));
-  // Genuine scalar fields are still offered.
   EXPECT_TRUE(fields.contains("intensity"_L1));
   EXPECT_TRUE(fields.contains("x"_L1));
 
-  // A cloud carrying colour defaults to RGB-direct mode.
   EXPECT_TRUE(fixture.layer->hasColorField());
   EXPECT_EQ(fixture.layer->colorType(), ColorType::kRgb);
 }
@@ -147,7 +138,6 @@ TEST(PointCloudLayerRgb, PlainCloudKeepsFieldColormapMode) {
 TEST(PointCloudLayerRgb, RestoredColorTypeSurvivesSmartDefault) {
   auto fixture = makeAttachedLayer<&emitColoredCloud>();
 
-  // Restore an explicit "field" choice BEFORE attach (the layout-restore order).
   QDomDocument doc;
   QDomElement el = doc.createElement(u"pointcloud"_s);
   el.setAttribute(u"color_type"_s, u"field"_s);
@@ -158,7 +148,6 @@ TEST(PointCloudLayerRgb, RestoredColorTypeSurvivesSmartDefault) {
   ctx.session = fixture.session.get();
   ASSERT_TRUE(fixture.layer->attach(ctx));
 
-  // The explicit restore must NOT be overridden by the colour-present RGB default.
   EXPECT_EQ(fixture.layer->colorType(), ColorType::kField);
   EXPECT_EQ(fixture.layer->colorField(), u"intensity"_s);
 }
@@ -175,10 +164,9 @@ TEST(PointCloudLayerRgb, RgbModeRoundTripsThroughXml) {
 
   auto restored = makeAttachedLayer<&emitColoredCloud>();
   ASSERT_TRUE(restored.layer->xmlLoadState(saved));
-  // A smart-defaulted (latent) RGB choice persists as latent, not as a baked
-  // "rgb": the restored layer re-derives the colour-present default at its
-  // first decode, so the same layout against a colourless cloud correctly
-  // falls back to field colouring instead of forcing RGB.
+  // A smart-defaulted (latent) RGB choice persists as latent, not as a baked "rgb": the restored layer re-derives the
+  // colour-present default at its first decode, so the same layout against a colourless cloud falls back to field
+  // colouring instead of forcing RGB.
   pj::scene3d::Scene3DLayerContext restored_ctx;
   restored_ctx.session = restored.session.get();
   ASSERT_TRUE(restored.layer->attach(restored_ctx));

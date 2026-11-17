@@ -91,8 +91,8 @@ struct DerivedRestoreReport {
 /// catalog it reads and writes, nothing else, so a caller builds one where needed.
 /// GUI thread only, like the engines it drives.
 ///
-/// The ARCHITECTURE §13 protocol verbs map onto the engines' existing names; see
-/// docs/derived_objects/ARCHITECTURE.md §13.
+/// The life-cycle protocol verbs map onto the engines' names: see docs/derived_objects/ARCHITECTURE.md
+/// "Life cycle of recipes and results".
 class DerivedObjects {
   Q_DECLARE_TR_FUNCTIONS(DerivedObjects)
 
@@ -126,34 +126,28 @@ class DerivedObjects {
   /// declaring it). nullopt otherwise. Query-only.
   [[nodiscard]] std::optional<QString> refusal(const DerivedSnapshot& snapshot) const;
 
-  /// Makes the live recipes what `snapshot` wants, under its intent. First the
-  /// unchanged sets, upstream to downstream: filters and transforms whose recipe the
-  /// snapshot does not change, then generators likewise unless they read an output
-  /// this restore removes or creates (`BatchEngine::unchangedGeneratorIds`). Those stay
-  /// live as they are (output TopicIds, a generator's topic, published set, run state
-  /// and coverage). Then the rest is cleared downstream to upstream (generators,
-  /// filters, transforms) and installed upstream to downstream: filters and transforms
-  /// in rounds, then each generator. A layout load creates it with the bounded create
-  /// (`CreateWait::kBounded`): a slow rule draws nothing until its run publishes, and its
-  /// failure after the budget is reported by the engine (`errorOf`, the diagnostic
-  /// sink), not here. An undo or redo runs it to completion. A generator naming no
-  /// dataset (`WantedGenerator::bind_by_inputs`) is never kept and binds then, through
-  /// the refreshed catalog; a later binding of one id resolved onto the same dataset is
-  /// dropped, and reported when its recipe differs. History never touches a live exempt
-  /// recipe. Rebuilds the catalog once the filters and transforms are installed, before
-  /// any generator resolves through it, and announces one `markersChanged` at the end when
-  /// the generator set changed. A generator that cannot be restored is reported but does
-  /// not fail the restore. On-demand recipes come last: a node is kept when its recipe,
-  /// its upstreams and the series it reads (no processor output the restore removes or
-  /// creates) all stay, with its topics, results and state; the rest are cleared before
-  /// the generators (their topics kept), installed after them, producers first (the
-  /// install requests a finding at its pin), and what no install reclaimed is retired, with
-  /// one `objectTopicsChanged`; a node outside the restore's authority (a preview, an exempt
-  /// one under history) reading a processor output the restore removed or created runs
-  /// again, with its readers. One that fails to parse or install fails the restore, as a
-  /// transform does; a Python script that does not compile installs (nothing compiles Python
-  /// here), its error surfacing at the node's first demanded run, never as a diagnostic. Run
-  /// `refusal` first.
+  /// Makes the live recipes what `snapshot` wants, under its intent; run `refusal` first. Unchanged sets stay live as
+  /// they are (output TopicIds, a generator's topic, published set, run state, coverage): filters and transforms whose
+  /// recipe the snapshot does not change, generators likewise unless they read an output this restore removes or
+  /// creates (`BatchEngine::unchangedGeneratorIds`). The rest is cleared downstream to upstream (generators, filters,
+  /// transforms) and installed upstream to downstream: filters and transforms in rounds, then each generator. A layout
+  /// load creates with the bounded create (`CreateWait::kBounded`): a slow rule draws nothing until its run publishes,
+  /// and its failure after the budget is reported by the engine (`errorOf`, the diagnostic sink), not here; an undo or
+  /// redo runs it to completion. A generator naming no dataset (`WantedGenerator::bind_by_inputs`) is never kept and
+  /// binds through the refreshed catalog; a later binding of one id resolved onto the same dataset is dropped, and
+  /// reported when its recipe differs. History never touches a live exempt recipe. The catalog is rebuilt once the
+  /// filters and transforms are installed, before any generator resolves through it, and one `markersChanged` is
+  /// announced at the end when the generator set changed. A generator that cannot be restored is reported but does not
+  /// fail the restore.
+  ///
+  /// On-demand recipes come last. A node is kept (topics, results, state) when its recipe, its upstreams and the series
+  /// it reads (no processor output the restore removes or creates) all stay; the rest are cleared before the generators
+  /// (their topics kept), installed after them, producers first (install requests a finding at its pin), and what no
+  /// install reclaimed is retired, with one `objectTopicsChanged`. A node outside the restore's authority (a preview,
+  /// an exempt one under history) reading a processor output the restore removed or created runs again, with its
+  /// readers. A recipe that fails to parse or install fails the restore, as a transform does; a Python script that does
+  /// not compile installs (nothing compiles Python here), its error surfacing at the node's first demanded run, never
+  /// as a diagnostic.
   [[nodiscard]] DerivedRestoreReport restore(DerivedSnapshot snapshot);
 
  private:
@@ -179,15 +173,12 @@ class DerivedObjects {
   // ordered by dependency (`DerivedSnapshot::on_demand`).
   [[nodiscard]] std::vector<WantedOnDemand> parseWantedOnDemand(const QDomElement& element, bool skip_exempt) const;
 
-  // Re-creates every wanted filter and transform that is not live, in rounds:
-  // filters first, each input re-resolved through the catalog (rebuilt so an
-  // output the previous round minted resolves), then transforms, which resolve
-  // by name. A round can only create the entries whose inputs exist, so a chain
-  // of N alternating links takes up to N rounds; the loop stops as soon as a
-  // round creates nothing. History has no authority over a live exempt transform
-  // (`live_exempt_keys`), even when the snapshot carries its key. Each entry
-  // that is still not live at the end is reported once; returns whether every
-  // entry was restored.
+  // Re-creates every wanted filter and transform that is not live, in rounds: filters first (each input re-resolved
+  // through the rebuilt catalog, so an output the previous round minted resolves), then transforms, which resolve by
+  // name. A round creates only entries whose inputs exist, so a chain of N alternating links takes up to N rounds; the
+  // loop stops when a round creates nothing. History has no authority over a live exempt transform
+  // (`live_exempt_keys`), even when the snapshot carries its key. Each entry still not live at the end is reported
+  // once; returns whether every entry was restored.
   [[nodiscard]] bool repairDataProcessors(
       std::vector<WantedFilter>& wanted_filters,
       const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,

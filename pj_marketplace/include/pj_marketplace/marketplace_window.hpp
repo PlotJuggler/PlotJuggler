@@ -21,60 +21,53 @@ class DownloadManager;
 class ExtensionManager;
 class RegistryManager;
 
-// Marketplace window on the canonical app chrome (PJ::Dialog): frameless title
-// bar + close, no system (window-manager) decorations.
+// The marketplace UI on the app's own chrome (PJ::Dialog: frameless, no window-manager decorations).
 class MarketplaceWindow : public Dialog {
   Q_OBJECT
 
  public:
   explicit MarketplaceWindow(const QUrl& registry_url, QWidget* parent = nullptr);
 
-  // Uses an externally owned ExtensionManager, mainly for tests and embedding.
+  // Uses an externally owned ExtensionManager (the host's own).
   explicit MarketplaceWindow(ExtensionManager* ext_mgr, const QUrl& registry_url, QWidget* parent = nullptr);
 
-  // Uses an externally owned ExtensionManager and a caller-provided installed snapshot.
+  // As above, with an installed snapshot that seeds the manager before the first render; the first activation then
+  // skips the disk rescan.
   explicit MarketplaceWindow(
       ExtensionManager* ext_mgr, const QUrl& registry_url, const QMap<QString, InstalledExtension>& installed,
       QWidget* parent = nullptr);
 
   ~MarketplaceWindow() override;
 
-  // Returns true when install state changed while the dialog was open.
+  // True when install state changed while the window was open (the host reloads its plugin catalog then).
   bool installationsChanged() const {
     return installations_changed_;
   }
 
-  // The marketplace content widget (the whole UI body). Lets a host embed the
-  // marketplace as a central-area panel/tab instead of a modal window: reparent
-  // this into the host container and keep the MarketplaceWindow alive as the
-  // controller (it owns the UI and receives all the child-widget signals).
+  // The whole UI body, for a host that embeds the marketplace as a panel or tab instead of showing this window:
+  // reparent it and keep this object alive as the controller (it owns the UI and receives the child-widget signals).
   QWidget* contentWidget() const {
     return content_widget_;
   }
 
-  // The manager behind every fetch this window makes, owned by the window. The
-  // window's first fetch starts on the next event-loop turn, so a host that
-  // connects right after construction hears about it.
+  // The manager behind every fetch this window makes. Its first fetch starts on the next event-loop turn, so a host
+  // that connects right after construction hears about it.
   RegistryManager* registryManager() const {
     return registry_mgr_;
   }
 
-  // Refreshes installed state and repaints — the embedded equivalent of what
-  // showEvent() does for the modal path. Call after embedding contentWidget().
+  // Refreshes installed state and repaints: the embedded equivalent of showEvent(). Call after embedding
+  // contentWidget().
   void activateEmbedded();
 
-  // Points the window at a different registry and re-fetches it immediately.
-  // The URL is captured once at construction and read nowhere else, so a panel
-  // the user leaves open keeps serving the registry it opened with until the
-  // host pushes the new one here. Registry-URL policy stays with the host (the
-  // Preferences setting); this window never second-guesses it. A no-op when the
-  // URL is unchanged, so an unrelated Preferences edit costs nothing.
+  // Points the window at a different registry and re-fetches it. The URL is captured once at construction, so a panel
+  // left open keeps its registry until the host pushes a new one: registry-URL policy stays with the host. No-op when
+  // the URL is unchanged.
   void setRegistryUrl(const QUrl& registry_url);
 
  signals:
-  // Emitted when the user clicks the settings (gear) button. The host (MainWindow)
-  // responds by opening Preferences ▸ Plugins; the marketplace itself has no
-  // dependency on the preferences UI.
+  // Emitted by the settings (gear) button; the host opens Preferences ▸ Plugins. The marketplace has no dependency on
+  // the preferences UI.
   void pluginPreferencesRequested();
 
  protected:
@@ -82,62 +75,47 @@ class MarketplaceWindow : public Dialog {
   void showEvent(QShowEvent* event) override;
 
  private slots:
-  // Updates the search filter.
   void onSearchChanged(const QString& text);
 
-  // Re-applies the filter row after any one of its toggles flips. Shared by all
-  // of them: the toggles are read as a set, so which one changed is irrelevant.
+  // Re-applies the filter row after any toggle flips: the toggles are read as a set, so which one is irrelevant.
   void onFilterToggled();
 
   // Picks a local ZIP and sideloads it via ExtensionManager::installFromLocalZip.
   void onInstallLocalClicked();
 
-  // Queues updates for every installed extension with a newer registry version.
+  // Queues updates for every installed extension with a newer, compatible registry version.
   void onUpdateAllClicked();
 
-  // Opens a read-only view of recent marketplace diagnostics.
+  // Opens a read-only view of the diagnostics history.
   void onDiagnosticsClicked();
 
-  // Runs the primary install/update action for one extension card.
+  // Installs or updates one extension.
   void onActionButtonClicked(const QString& ext_id);
 
-  // Confirms and uninstalls one installed extension.
+  // Stages the uninstall of one installed extension.
   void onUninstallButtonClicked(const QString& ext_id);
 
  private:
-  // Shared constructor tail: UI + signals, optional installed-state snapshot,
-  // initial diagnostics, and the first registry fetch. The caller owns
-  // registry-URL policy (the PJ4 host resolves it from its Preferences-managed
-  // setting); the window never second-guesses registry_url_.
+  // Shared constructor tail: UI, signals, optional installed snapshot, initial diagnostics, first registry fetch.
   void finishConstruction(const QMap<QString, InstalledExtension>* installed);
 
-  // Creates widgets from the .ui file and configures fixed UI affordances.
   void setupUi();
-
-  // Connects registry, extension-manager, and widget signals.
   void setupSignals();
 
-  // Rebuilds every table row from filtered_. preserve_scroll keeps the vertical
-  // scroll offset across the rebuild (true for install/update/uninstall repaints,
-  // so the list doesn't jump to the top mid-session); pass false when the row set
-  // changes meaning — filter/search/registry reload — where returning to the top
-  // is the expected behaviour.
+  // Rebuilds every table row from filtered_. preserve_scroll keeps the scroll offset (install/update/uninstall
+  // repaints); pass false when the row set changes meaning (filter, search, registry reload).
   void rebuildTable(bool preserve_scroll = true);
 
-  // Recomposes extensions_ as registry_extensions_ plus one synthesized row per
-  // installed extension the registry does not list, so a sideloaded plugin is
-  // still visible and manageable. Recomputed rather than appended to, so a
-  // repeated install can never duplicate a row. Returns whether the resulting id
-  // set differs from the previous one.
+  // Recomposes extensions_ as registry_extensions_ plus one synthesized row per installed, or staged-for-removal,
+  // extension the registry does not list, so a sideloaded plugin stays visible and manageable. Recomputed, not
+  // appended to, so a repeated install cannot duplicate a row. Returns whether the id set changed.
   bool rebuildExtensionList();
 
-  // Repaints after the installed set may have changed. Re-filters only when a row
-  // actually appeared or disappeared (a local-only extension installed or
-  // removed) — otherwise the cheaper repaint keeps the scroll position, since the
-  // same rows still mean the same thing.
+  // Repaints after the installed set may have changed; re-filters only when a row appeared or disappeared, otherwise
+  // the repaint keeps the scroll position.
   void refreshAfterInstalledChange();
 
-  // Applies search and category filters to the registry list.
+  // Applies the search and the filter row to extensions_ and rebuilds the table.
   void applyFilters();
 
   // Updates the status label; error statuses remain sticky until a user action clears them.
@@ -146,95 +124,71 @@ class MarketplaceWindow : public Dialog {
   // Allows the next non-error status update to replace an error.
   void clearStickyStatus();
 
-  // Shows the newest diagnostic in the status bar, if one exists.
+  // Shows the newest diagnostic in the status bar if it has not been surfaced yet.
   void showLatestDiagnostic();
 
-  // Shows or hides the diagnostics button based on diagnostic history.
+  // Shows the diagnostics button when diagnostics were recorded since this panel opened.
   void updateDiagnosticsButton();
 
-  // Rebuilds the bottom "Details" footer (description + changelog + metadata)
-  // for the currently selected table row. No selection / empty list clears it.
+  // Rebuilds the bottom Details footer (metadata, description, changelog, action buttons) for the selected row; no
+  // selection clears it.
   void updateDetailFooter();
 
-  // Processes one pending bulk-update item at a time.
+  // Dispatches the next queued install: button clicks first, then local ZIPs, then the Update All batch.
   void processInstallQueue();
 
-  // Dispatches a local-ZIP sideload and marks it in flight. Takes the path BY
-  // VALUE: a synchronous failure inside installFromLocalZip() reaches
-  // installFinished, which clears local_install_path_ while the callee is still
-  // reading its argument.
+  // Dispatches a local-ZIP sideload and marks it in flight. Takes the path BY VALUE: a synchronous failure inside
+  // installFromLocalZip() reaches installFinished, which clears local_install_path_ while the callee still reads its
+  // argument.
   void startLocalInstall(QString zip_path);
 
-  // True while ExtensionManager is busy with any install/update — a registry
-  // op (active_install_id_ set) OR a local-ZIP sideload. The dispatch gates use
-  // this so a new action is queued rather than dispatched into the manager's
-  // single-install-at-a-time guard (which would reject it as "already in
-  // progress"). A local install sets no active_install_id_, so checking that
-  // alone missed it.
+  // True while ExtensionManager is busy with any install/update: a registry op (active_install_id_) or a local-ZIP
+  // sideload, which sets no active_install_id_. New actions queue instead of hitting the manager's
+  // one-install-at-a-time guard.
   [[nodiscard]] bool isInstallBusy() const {
     return !active_install_id_.isEmpty() || !local_install_path_.isEmpty();
   }
 
-  // Shows the status of the in-flight install together with the queue depth,
-  // e.g. "Installing mcap…  ·  2 queued". `verb` is the current phase word
-  // ("Installing", "Verifying", "Extracting"). No-op when nothing is active, so
-  // it never clobbers a terminal "Installed"/"Failed" message. Called on every
-  // event that changes the active id or the queue, so the count stays live and
-  // an enqueue no longer hides what is currently installing. A sideload has no
-  // active_install_id_ until its manifest is read, so it is named by its file
-  // name instead — otherwise the whole download/extract window is silent.
+  // Shows the in-flight install with the queue depth ("Installing mcap…  ·  2 queued"); `verb` is the phase word.
+  // No-op when nothing is active, so it never clobbers a terminal "Installed"/"Failed" message. A sideload is named
+  // by its file name until its manifest gives an id.
   void showInstallProgress(const QString& verb = QStringLiteral("Installing"));
 
-  // "  ·  N queued" for the combined depth of every queue (card clicks, local
-  // ZIPs, the Update All batch), followed by "  ·  M failed" once this run has
-  // failures to report. Empty when nothing is waiting and nothing has failed.
+  // "  ·  N queued" for the combined depth of every queue, then "  ·  M failed" once this run has failures. Empty
+  // when nothing is waiting and nothing has failed.
   QString queueSuffix() const;
 
-  // Success message for a finished install. `from_file` selects the sideload
-  // phrasing, which reads the version from the installed snapshot rather than the
-  // registry list. Neither phrasing mentions a restart: this is the immediate
-  // install path. Staged outcomes report through installPendingRestart instead.
+  // Success message for a finished install; `from_file` selects the sideload phrasing (version from the installed
+  // snapshot, the id being absent from the registry list). Neither mentions a restart: staged outcomes report through
+  // installPendingRestart.
   QString installedStatusText(const QString& id, bool from_file) const;
 
-  // Shows an informational (non-error) status, UNLESS an install/update is in
-  // flight — then the status line belongs to that operation, so re-assert its
-  // progress instead of clobbering it with unrelated text (filter count,
-  // "Refreshing", "Ready", "Loading registry"). Errors still go via setStatus().
+  // Shows an informational status, unless an install is in flight: the status line then belongs to that operation, so
+  // its progress is re-asserted. Errors go through setStatus().
   void setInfoStatus(const QString& msg);
 
-  // Pops the canonical restart-required MessageBox once the install queue has
-  // fully settled and at least one operation staged for restart. No-op while a
-  // batch is still in flight, so an Update All run yields ONE dialog at the
-  // end, not one per staged item.
+  // Shows the restart-required dialog once the queue has settled and at least one operation was staged. An Update All
+  // run yields one dialog, not one per staged item.
   void maybeShowRestartRequiredDialog();
 
-  // Pops a MessageBox explaining that the registry could not be loaded, so only
-  // already-installed extensions are shown and no discovery or updates are
-  // available until it loads correctly. The wording states only the consequence
-  // (it fires for both a parse error and a network failure); the concrete cause
-  // goes in the Details line from last_registry_error_. The red status line alone
-  // is easy to miss. Guarded by registry_error_dialog_open_ so a burst of failed
-  // refreshes shows it once, not stacked.
+  // Explains that the registry could not be loaded (only installed extensions are shown). Consequence-only wording,
+  // since it fires for parse and network failures alike; the cause goes in the Details line (last_registry_error_).
+  // The red status line alone is easy to miss. registry_error_dialog_open_ stops a burst of failed refreshes from
+  // stacking dialogs.
   void showInvalidRegistryDialog();
 
-  // Once all install activity has settled (nothing active or queued), if any
-  // items failed during this run, replace the last item's success status with a
-  // summary ("Finished with N failures — see Diagnostics") so a mid-batch failure is
-  // not buried under a later success. No-op while anything is still in flight or
-  // when nothing failed. Resets batch_failed_count_.
+  // Once all install activity has settled, replaces the last item's success status with a failure summary so a
+  // mid-batch failure is not buried under a later success. No-op while anything is in flight or nothing failed.
+  // Resets batch_failed_count_.
   void maybeShowBatchSummary();
 
-  // Total depth of every queue: card clicks, local ZIPs and the Update All
-  // batch. The one place that enumerates them, so adding a fourth queue cannot
-  // silently leave the settled gate or the status suffix counting the old three.
+  // Total depth of every queue (button clicks, local ZIPs, Update All): the one place that enumerates them.
   [[nodiscard]] int queuedCount() const {
     return static_cast<int>(pending_clicks_.size() + pending_local_zips_.size() + update_queue_.size());
   }
 
-  // True when nothing is installing or queued — the shared "batch settled" gate
-  // used by both maybeShowRestartRequiredDialog and maybeShowBatchSummary. Every
-  // queue counts, sideloads included: a summary or a restart dialog fired while
-  // a queued ZIP is still waiting would report on a batch that is not over.
+  // True when nothing is installing or queued, sideloads included: the gate for the restart dialog and the batch
+  // summary.
   [[nodiscard]] bool installBatchSettled() const {
     return !isInstallBusy() && queuedCount() == 0;
   }
@@ -243,75 +197,50 @@ class MarketplaceWindow : public Dialog {
   QWidget* content_widget_ = nullptr;  ///< the UI body; exposed for embedding
   DownloadManager* download_mgr_ = nullptr;
   RegistryManager* registry_mgr_ = nullptr;
-  // Guarded: the manager is owned by a service that MainWindow holds as a member,
-  // and members die before ~QWidget deletes the child widgets — so by the time
-  // this window is destroyed at shutdown, the manager may already be gone.
+  // Guarded: the manager belongs to a service MainWindow holds as a member, and members die before ~QWidget deletes
+  // this child, so at shutdown it may already be gone.
   QPointer<ExtensionManager> ext_mgr_;
   QUrl registry_url_;
 
-  // Registry rows exactly as fetched, kept apart from extensions_ so the local-only
-  // rows can be recomposed on top of them without ever accumulating duplicates.
+  // Registry rows as fetched, apart from extensions_ so the local-only rows can be recomposed without duplicates.
   QList<Extension> registry_extensions_;
   QList<Extension> extensions_;  // registry_extensions_ + synthesized local-only rows
   QList<Extension> filtered_;
   QList<Extension> update_queue_;
-  // Individual Install/Update button clicks that arrive while another install
-  // is already running. Drained by processInstallQueue() in FIFO order once
-  // active_install_id_ clears.
+  // Install/Update clicks that arrive while another install runs; drained FIFO by processInstallQueue().
   QList<QString> pending_clicks_;
-  // Local-ZIP install paths that arrive while another install is already
-  // running. "Install local…" is queued like a card click instead of being
-  // rejected by the manager's single-install-at-a-time guard; drained by
-  // processInstallQueue() after pending_clicks_. Canonical paths, so the same
-  // file reached by a different spelling (relative, symlink) is one entry.
+  // Local-ZIP paths that arrive while another install runs; drained after pending_clicks_. Canonical, so one file
+  // reached by different spellings is one entry.
   QList<QString> pending_local_zips_;
-  // Id of the extension currently being installed or updated by the manager,
-  // set from installStarted and cleared from installFinished. Empty means
-  // idle — the UI-side guard uses this to decide whether to enqueue a click
-  // instead of dispatching it straight to ExtensionManager::install().
+  // Id being installed or updated by the manager (from installStarted until installFinished); empty means idle.
   QString active_install_id_;
-  // Registry id of the row whose details the footer shows; preserved across
-  // table rebuilds so an install/update repaint keeps the same row selected.
+  // Id of the row the footer shows; kept across table rebuilds so a repaint keeps the same row selected.
   QString footer_ext_id_;
-  // Canonical path of the local-ZIP sideload in flight, empty when none. The
-  // outcome handlers phrase their message from the installed snapshot instead of
-  // the registry list, which a sideloaded id is by definition absent from; the
-  // path also dedupes a re-pick of the same file and names the status line for
-  // the window before installStarted supplies an id.
+  // Canonical path of the local-ZIP sideload in flight, empty when none. Outcome handlers phrase their message from
+  // the installed snapshot (the id is absent from the registry list); it also dedupes a re-pick and names the status
+  // line before installStarted supplies an id.
   QString local_install_path_;
-  // Staged operations (updates, sideload replacements, staged uninstalls and
-  // downgrades) whose effect waits for an app restart, accumulated until
-  // maybeShowRestartRequiredDialog() surfaces them and resets the count.
+  // Staged operations (updates, sideload replacements, staged uninstalls and downgrades) waiting for a restart, until
+  // maybeShowRestartRequiredDialog() surfaces and resets them.
   int restart_pending_count_ = 0;
-  // Failures accumulated across the current run of install activity (any mix of
-  // Update All, queued card clicks and queued sideloads), so the summary shown
-  // when everything settles reports them instead of ending on the last item's
-  // "Installed X" — a failure must not be buried under a later success. Reset
-  // once the batch settles (same gate as restart_pending_count_).
+  // Failures accumulated across the current run of install activity, so the summary shown when everything settles
+  // does not end on the last item's "Installed X". Reset with restart_pending_count_.
   int batch_failed_count_ = 0;
-  // True while the restart-required MessageBox is up: its exec() spins a nested
-  // event loop, so a completion arriving inside it must not open a second
-  // dialog on top; the count it accumulates is surfaced right after.
+  // True while the restart-required MessageBox is up: its exec() spins a nested event loop, so a completion arriving
+  // inside it must not open a second dialog; the accumulated count is surfaced right after.
   bool restart_dialog_open_ = false;
-  // True while the invalid-registry MessageBox is up (its exec() spins a nested
-  // event loop), so a burst of failed refreshes shows it once, not stacked.
+  // True while the invalid-registry MessageBox is up (nested event loop), so failed refreshes do not stack dialogs.
   bool registry_error_dialog_open_ = false;
-  // The concrete reason from the last RegistryManager::fetchError (a parse error
-  // such as which entry is malformed, or a network error such as "Connection
-  // refused"), shown as the Details line of the registry-load-error dialog.
+  // The reason from the last RegistryManager::fetchError, shown as the Details line of the registry-load-error dialog.
   QString last_registry_error_;
   bool installations_changed_ = false;
   bool status_error_sticky_ = false;
   bool initial_snapshot_provided_ = false;
-  // When this panel started. Diagnostics outlive it — they belong to the
-  // ExtensionManager — so the Details button counts only the ones recorded since,
-  // and a panel reopened after an install failure does not advertise it again.
-  // The dialog behind the button still lists the full history.
+  // When this panel was opened. Diagnostics outlive it (they belong to the ExtensionManager), so the Details button
+  // counts only those recorded since; the dialog behind it lists the full history.
   QDateTime opened_at_;
-  // Last user-chosen sort state on one of the sortable columns (Name, Category,
-  // Installed, Marketplace) — the header intercepts clicks on Description and
-  // reverts to this. Default: Category ascending, which via CategoryItem's
-  // compound comparator reads as "grouped by category, alphabetical within".
+  // Last user-chosen sort of a sortable column (Name, Category, Installed, Marketplace); a header click on Description
+  // reverts to it. Default: Category ascending (grouped by category, alphabetical within).
   int last_sort_column_ = 1;  // kColCategory
   Qt::SortOrder last_sort_order_ = Qt::AscendingOrder;
 };

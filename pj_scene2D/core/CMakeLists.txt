@@ -1,6 +1,4 @@
-# ---------------------------------------------------------------------------
-# pj_scene2d_core — media decode/playback core, no Qt dependency
-# ---------------------------------------------------------------------------
+# pj_scene2d_core: Qt-free media decode.
 
 if(EMSCRIPTEN)
   # PjWasmScene2DDependencies provides exact cross-compiled equivalents of the
@@ -93,9 +91,6 @@ if(PJ_SCENE2D_HAS_FFMPEG)
   endif()
 endif()
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 if(PJ_BUILD_TESTS)
   find_package(mcap REQUIRED)
@@ -144,10 +139,8 @@ if(PJ_BUILD_TESTS)
     tests/composite_pixel_layers_test.cpp
   )
 
-  # Loader-side CDR adapter test. Builds the test alongside its adapter/palette
-  # helper sources (the test's only consumers — they relocated here from the
-  # former pj_scene2D/demos/ playground). nanocdr supplies the CDR reader and
-  # pj_internal_fmt supplies fmt for marker_palette.cpp.
+  # The adapter/palette helper sources are built with their only consumer, this test. nanocdr reads the CDR,
+  # pj_internal_fmt gives marker_palette.cpp fmt.
   list(APPEND PJ_SCENE2D_CORE_TESTS
     ../tests/cdr_to_image_annotation_test.cpp
     ../tests/cdr_detection2d_to_image_annotation.cpp
@@ -156,7 +149,6 @@ if(PJ_BUILD_TESTS)
   )
 
   # Both MCAP tests define MCAP_IMPLEMENTATION, so each needs its own binary.
-  # MCAP integration test (needs mcap + nlohmann_json + ObjectStore)
   pj_scene2d_add_core_test(mcap_integration_test
     SOURCES ../tests/mcap_integration_test.cpp
     LIBS
@@ -165,7 +157,7 @@ if(PJ_BUILD_TESTS)
     RUN_IN_SOURCE_DIR
   )
 
-  # Streaming test: push + retention + concurrent read (M13)
+  # Push, retention and concurrent read.
   list(APPEND PJ_SCENE2D_CORE_TESTS ../tests/streaming_test.cpp)
 
   # FFmpeg decoder test (needs test video file)
@@ -196,10 +188,7 @@ if(PJ_BUILD_TESTS)
     # StreamingVideoDecoder test (ObjectStore + FfmpegDecoder)
     list(APPEND PJ_SCENE2D_CORE_SOURCE_DIR_TESTS ../tests/streaming_video_decoder_test.cpp)
 
-    # Consumer-side zero-copy unwrap: store canonical PJ.VideoFrame wire messages
-    # and decode them through a view-extractor that unwraps each to its Annex-B
-    # data (the runtime's store-wire-bytes / defer-parse contract). Needs the
-    # canonical codec (pj_base) + FFmpeg; uses test_mp4_demux.h to source frames.
+    # Decodes stored canonical PJ.VideoFrame wire messages through a view extractor (store wire bytes, parse late).
     list(APPEND PJ_SCENE2D_CORE_SOURCE_DIR_TESTS ../tests/streaming_video_consumer_unwrap_test.cpp)
 
     # StreamingVideoSource test (MediaSource adapter for StreamingVideoDecoder)
@@ -245,7 +234,7 @@ if(PJ_BUILD_TESTS)
     target_link_options(pj_scene2d_core_tests PRIVATE "LINKER:--disable-new-dtags")
   endif()
 
-  # Dual-store test: ObjectStore + DataEngine from same MCAP (M11)
+  # ObjectStore and DataEngine filled from the same MCAP.
   pj_scene2d_add_core_test(dual_store_test
     SOURCES ../tests/dual_store_test.cpp
     LIBS pj_scene2d_core pj_datastore mcap::mcap GTest::gtest_main

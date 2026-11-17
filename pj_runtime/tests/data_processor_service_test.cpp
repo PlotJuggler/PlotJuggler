@@ -179,8 +179,7 @@ TEST(DataProcessorServiceTest, RecipeJsonReportsAGapFromNothingFedAsNull) {
 }
 
 TEST(DataProcessorServiceTest, SourceTopicsForOutputResolvesFilterInput) {
-  // Demand-tracking support (M5): a displayed filter OUTPUT must resolve back to
-  // its source topic so TopicDemandTracker keeps the input subscribed.
+  // A displayed filter OUTPUT must resolve back to its source topic so TopicDemandTracker keeps the input subscribed.
   DataEngine engine;
   DataProcessorService service(engine);
   service.setFilterCatalogue(catalogueFromSource(kAbsoluteSrc));
@@ -454,7 +453,7 @@ return { { id="boom", name="Boom",
 }
 
 TEST(DataProcessorServiceTest, AppliesFilterToSelectedColumn) {
-  // The GUI bug: applying a SISO filter to ONE field of a multi-column topic.
+  // Applying a SISO filter to one field of a multi-column topic.
   DataEngine engine;
   DataProcessorService service(engine);
   service.setFilterCatalogue(catalogueFromSource(kAbsoluteSrc));
@@ -617,7 +616,7 @@ TEST(DataProcessorServiceTest, CatalogueRoutesByIdApplyFilterToLuau) {
   EXPECT_DOUBLE_EQ(vals[2], 3.0);
 }
 
-// --- M7: persistence — filter_source capture + makeRestoredProcessor resolve ---
+// --- Persistence: filter_source capture + makeRestoredProcessor resolve ---
 
 // A minimal bundled module defining "scale" (v*factor) with a known body, so a
 // test can assert the recipe captured this exact text for <source_fallback>.

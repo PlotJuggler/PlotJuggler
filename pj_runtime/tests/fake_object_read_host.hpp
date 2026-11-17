@@ -15,10 +15,8 @@ namespace PJ::testing {
 // A minimal stand-in for pj.toolbox_object_read.v1, holding one serialized
 // PlotMarkers blob per topic name.
 //
-// It exists because the SDK's ToolboxTestStore covers the scalar read path only,
-// and the marker count the model is handed after every create comes from the
-// OBJECT path — untested, that number is exactly the kind of plausible-looking
-// figure nobody notices is wrong.
+// It exists because the SDK's ToolboxTestStore covers the scalar read path only, and the marker count the model is
+// handed after every create comes from the OBJECT path.
 //
 // Deliberately serializes through the real codec rather than hand-rolling bytes:
 // a fake that encodes its own format would pass while the production decoder

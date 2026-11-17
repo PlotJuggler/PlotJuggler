@@ -17,7 +17,7 @@ name: Release Windows Packages
 #     with `update_url`, also build + publish an update repository there, to
 #     rehearse the maintenance-tool update path against a staging prefix
 #   - push of a version tag -> build + attach both packages to that tag's Release
-#     (e.g. `3.9.1` — no leading 'v')
+#     (e.g. `4.2.0` — no leading 'v')
 
 on:
   workflow_dispatch:
@@ -142,7 +142,7 @@ jobs:
 
       - name: Set up MSVC environment
         # Conan's package ID includes the detected compiler settings, so activate
-        # MSVC before detecting the profile or resolving Artifactory binaries.
+        # MSVC before detecting the profile or resolving prebuilt Conan binaries.
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -180,7 +180,7 @@ jobs:
         # under .github/conan/source-backup/, addressed by sha256, and copied
         # into Conan's source download cache here so source() fetches are
         # served locally. The source cache is separate from the binary packages
-        # resolved through Artifactory.
+        # (Actions-cached ~/.conan2, the plotjuggler-conan remote, ConanCenter).
         shell: pwsh
         run: |
           $cacheDir = (Join-Path $env:RUNNER_TEMP "conan-source-cache").Replace('\', '/')
@@ -376,7 +376,7 @@ jobs:
         # fails the release; there are no best-effort skips.
         # -CleanReleaseName only on a tag build: -Version is already the unique,
         # meaningful name there (matches the AppImage's plain naming); dispatch
-        # builds keep the date + main-commit stamp to stay distinguishable.
+        # builds keep the short-commit stamp to stay distinguishable.
         shell: pwsh
         run: |
           # Remote updates only when this run also publishes a repository at

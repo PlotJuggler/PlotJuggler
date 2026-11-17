@@ -23,7 +23,6 @@ namespace pj::scene3d::test {
 
 class FakeModelLayer final : public Scene3DLayer, public ModelRenderable {
  public:
-  /// A layer placed in `frame_id`.
   explicit FakeModelLayer(std::string frame_id = "map") : frame(std::move(frame_id)) {}
 
   /// Publishes (or replaces) `key` and bumps the revision; a new key's draw goes

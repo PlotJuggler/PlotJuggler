@@ -1,11 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
-//
-// The dataset "Info" dialog must render provenance domain-neutrally: the
-// dataset name and backing file as plain rows, and — when a SourceRecord is
-// present — provider id, source identity, and the descriptor JSON as a generic
-// key/value tree (nested objects become expandable nodes, integers print
-// without a decimal point). Without a record the provenance section is absent.
+// The dataset Info dialog renders provenance domain-neutrally: dataset name and backing file as plain rows and,
+// when a SourceRecord is present, provider id, source identity and the descriptor JSON as a generic key/value tree
+// (nested objects expandable, integers without a decimal point). Without a record the provenance section is absent.
 
 #include <gtest/gtest.h>
 
@@ -21,8 +18,7 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 namespace {
 
-// The organization name sandboxes QSettings reads away from real preferences;
-// only this suite may select that settings scope.
+// Sandboxes QSettings reads away from real preferences; only this suite selects that settings scope.
 struct QtEnvironment : ::testing::Environment {
   void SetUp() override {
     if (!pj_app_test::isTestSuiteSelected("DatasetInfoDialog")) {
@@ -88,9 +84,8 @@ TEST(DatasetInfoDialog, RendersProvenanceAsGenericTree) {
   // Nanosecond timestamps round-trip as integers, never scientific notation.
   EXPECT_EQ(childNamed(request, u"start_ns"_s)->text(1), u"1461159829761465942"_s);
 
-  // Loader metadata renders as its own attributed branch through the same
-  // generic tree — the dialog copies everything at construction (owned
-  // snapshot), so mutating the caller's struct afterwards changes nothing.
+  // Loader metadata renders as its own branch through the same generic tree. The dialog copies everything at
+  // construction, so mutating the caller's struct afterwards changes nothing.
   const QTreeWidgetItem* loader = topLevelNamed(tree, u"Loader metadata (data_load_mcap)"_s);
   ASSERT_NE(loader, nullptr);
   const QTreeWidgetItem* file_facts = childNamed(loader, u"file"_s);

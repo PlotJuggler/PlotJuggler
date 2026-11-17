@@ -520,10 +520,10 @@ class MainWindowPrototypeLayoutTest : public ::testing::Test {
   PJ::DatasetId dataset_ = 0;
 };
 
-// GAP-39: a source-bound layout the prototype saved (its reader written before its producer, a finding, an exempt
+// A source-bound layout the prototype saved (its reader written before its producer, a finding, an exempt
 // recipe, `infer_outputs` and `label` attributes) restores through File > Load Layout: every recipe on the
 // dataset its path names, the reader bound to its producer, the finding computed at its pin; saving again writes
-// the same <on_demand> entries without the two attributes the format dropped, the reader's input naming its upstream.
+// the same <on_demand> entries without those two attributes, the reader's input naming its upstream.
 TEST_F(MainWindowPrototypeLayoutTest, RestoresLayoutSavedByPrototype) {
   const QString path = QDir(work_dir_.path()).filePath(u"layouts/source_bound.pj4.xml"_s);
   writeFile(path, relocatedFixture(u"source_bound.pj4.xml"_s));

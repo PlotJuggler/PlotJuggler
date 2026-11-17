@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The on-demand series (REQUIREMENTS D10; docs/derived_objects/ARCHITECTURE.md §15) through a real AppSession: a node
+// The on-demand series (docs/derived_objects/ARCHITECTURE.md "Series") through a real AppSession: a node
 // with an object input and a number output writes a DataEngine topic named like its key, one row per entry of its
 // object inputs, while its topic is displayed or a request is open. The runs are `test::FakeRun`'s: a number output is
 // the run's query time.
@@ -193,7 +193,7 @@ struct SeriesFixture : test::OnDemandSessionFixture {
 
 // ---- Replay -------------------------------------------------------------------------------------------------------
 
-// SER-02: a displayed series writes one row per entry of its object input into a DataEngine topic named like its key.
+// A displayed series writes one row per entry of its object input into a DataEngine topic named like its key.
 TEST(SeriesRunnerTest, ReplayWritesOneRowPerClockEntry) {
   SeriesFixture fx;
   fx.install(seriesRecipe("ser"));
@@ -238,7 +238,7 @@ TEST(SeriesRunnerTest, ASeriesDisplayedBeforeItsInstallReplaysAtOnce) {
   EXPECT_EQ(fx.rows("owner/ser").size(), 3u);
 }
 
-// GAP-16: an installed series computes nothing until its topic is displayed; editing or reloading it while nothing
+// An installed series computes nothing until its topic is displayed; editing or reloading it while nothing
 // displays it computes nothing either.
 TEST(SeriesRunnerTest, SeriesReplaysOnlyWhileDemanded) {
   SeriesFixture fx;
@@ -266,7 +266,7 @@ TEST(SeriesRunnerTest, SeriesReplaysOnlyWhileDemanded) {
   EXPECT_EQ(fx.rows("owner/ser").size(), 1u) << "the reloaded data";
 }
 
-// GAP-17: the clock is the union of every object input's entries; a scalar side input's changes add no row.
+// The clock is the union of every object input's entries; a scalar side input's changes add no row.
 TEST(SeriesRunnerTest, SeriesClockIsUnionOfObjectInputs) {
   SeriesFixture fx;
   fx.addCloudTopic(fx.ds, "fast", {5 * kSec, 6 * kSec, 15 * kSec});
@@ -282,7 +282,7 @@ TEST(SeriesRunnerTest, SeriesClockIsUnionOfObjectInputs) {
   EXPECT_EQ(fx.seriesState("owner/ser")->failed, 0u) << fx.seriesState("owner/ser")->first_error;
 }
 
-// D4: a string side input is read at each clock instant like a number's. A window refuses one (GAP-54) because its grid
+// A string side input is read at each clock instant like a number's. A window refuses one because its grid
 // would skip the string's changes; a series' clock never takes a side input's changes, so a series computes.
 TEST(SeriesRunnerTest, AStringSideInputIsReadAtEachClockInstant) {
   SeriesFixture fx;  // clouds at 5, 10, 20 s
@@ -305,7 +305,7 @@ TEST(SeriesRunnerTest, AStringSideInputIsReadAtEachClockInstant) {
   EXPECT_EQ(strings, (std::vector<std::vector<std::string>>{{"idle"}, {"moving"}, {"moving"}}));
 }
 
-// SER-03: a failed run and an unavailable output each leave a gap, counted with the first reason; the replay completes.
+// A failed run and an unavailable output each leave a gap, counted with the first reason; the replay completes.
 TEST(SeriesRunnerTest, FailingAndUnavailableEntriesLeaveGaps) {
   SeriesFixture fx;
   fx.fake.fail_at = {10 * kSec};
@@ -326,7 +326,7 @@ TEST(SeriesRunnerTest, FailingAndUnavailableEntriesLeaveGaps) {
   EXPECT_EQ(fx.seriesState("owner/gaps")->first_error, "on-demand: output 'n' unavailable: no points");
 }
 
-// SER-04: a side input missing before its first sample is a gap, not a stop.
+// A side input missing before its first sample is a gap, not a stop.
 TEST(SeriesRunnerTest, MissingSideInputBeforeItsFirstSampleIsAGap) {
   SeriesFixture fx;
   fx.addGain({8 * kSec});
@@ -340,7 +340,7 @@ TEST(SeriesRunnerTest, MissingSideInputBeforeItsFirstSampleIsAGap) {
 
 // ---- Live, edit, reload, remove -------------------------------------------------------------------------------------
 
-// SER-05: a live tick evaluates only the entries after the watermark, every one of them; an empty tick adds nothing.
+// A live tick evaluates only the entries after the watermark, every one of them; an empty tick adds nothing.
 TEST(SeriesRunnerTest, LiveAppendAddsRowsAfterTheWatermarkOnly) {
   SeriesFixture fx;
   fx.install(seriesRecipe("ser"));
@@ -358,7 +358,7 @@ TEST(SeriesRunnerTest, LiveAppendAddsRowsAfterTheWatermarkOnly) {
   EXPECT_EQ(fx.seriesState("owner/ser")->total, 5u);
 }
 
-// GAP-55: an entry that arrives before the watermark (out of order) was in no chunk's clock: the next tick empties the
+// An entry that arrives before the watermark (out of order) was in no chunk's clock: the next tick empties the
 // topic and replays it, so the rows match the data. One that republishes the watermark's stamp (a latched source)
 // replays nothing.
 TEST(SeriesRunnerTest, ALateEntryReplaysTheSeriesARepublishedStampDoesNot) {
@@ -383,7 +383,7 @@ TEST(SeriesRunnerTest, ALateEntryReplaysTheSeriesARepublishedStampDoesNot) {
   EXPECT_EQ(fx.seriesState("owner/ser")->done, 4u);
 }
 
-// GAP-60: while the dataset is live, the clock ends at the oldest of its inputs' newest entries, so an input that lags
+// While the dataset is live, the clock ends at the oldest of its inputs' newest entries, so an input that lags
 // the others (a lidar behind a camera) appends after the watermark instead of replaying the series: nothing computes
 // before both inputs have data, then every instant runs once, and the stream's end computes the tail.
 TEST(SeriesRunnerTest, ALaggingInputAppendsInsteadOfReplaying) {
@@ -416,7 +416,7 @@ TEST(SeriesRunnerTest, ALaggingInputAppendsInsteadOfReplaying) {
   EXPECT_EQ(fx.seriesState("owner/ser")->failed, 0u) << fx.seriesState("owner/ser")->first_error;
 }
 
-// GAP-60: a scalar side input that lags holds a live clock back the same way, so no instant runs before its value.
+// A scalar side input that lags holds a live clock back the same way, so no instant runs before its value.
 TEST(SeriesRunnerTest, ALaggingScalarSideInputHoldsTheLiveClockBack) {
   SeriesFixture fx;  // clouds at 5, 10, 20 s
   fx.addGain({0, 6 * kSec});
@@ -447,7 +447,7 @@ TEST(SeriesRunnerTest, AnEditKeepsAnOpenRequest) {
   EXPECT_EQ(fx.rows("owner/ser").size(), 203u);
 }
 
-// SER-06: an edit empties the same topic at once and replays it; a new set of number outputs is a new topic, and the
+// An edit empties the same topic at once and replays it; a new set of number outputs is a new topic, and the
 // old one is retired.
 TEST(SeriesRunnerTest, EditTruncatesAndReplaysOnTheSameTopic) {
   SeriesFixture fx;
@@ -473,7 +473,7 @@ TEST(SeriesRunnerTest, EditTruncatesAndReplaysOnTheSameTopic) {
   EXPECT_TRUE(fx.listed(fx.seriesState("owner/ser")->topic));
 }
 
-// SER-07: a reload empties the topic at once and replays it over the new data; the series topic is not a source topic
+// A reload empties the topic at once and replays it over the new data; the series topic is not a source topic
 // the reload replaces or prunes.
 TEST(SeriesRunnerTest, EpochBumpReplays) {
   SeriesFixture fx;
@@ -497,7 +497,7 @@ TEST(SeriesRunnerTest, EpochBumpReplays) {
   EXPECT_EQ(fx.rows("owner/ser").size(), 4u);
 }
 
-// SER-08: a removal retires the topic and drops the state; a chunk that was computing writes nothing later.
+// A removal retires the topic and drops the state; a chunk that was computing writes nothing later.
 TEST(SeriesRunnerTest, RemoveRetiresTheTopic) {
   SeriesFixture fx;
   fx.fake.gated = true;
@@ -514,7 +514,7 @@ TEST(SeriesRunnerTest, RemoveRetiresTheTopic) {
   EXPECT_TRUE(fx.manager.dataEngine().getTopicStorage(topic)->sealedChunks().empty());
 }
 
-// SER-09: a stop ends the replay keeping its rows; a request resumes it from the watermark to the end, then lapses.
+// A stop ends the replay keeping its rows; a request resumes it from the watermark to the end, then lapses.
 TEST(SeriesRunnerTest, StopKeepsRowsAndARequestResumes) {
   SeriesFixture fx;
   fx.pushMany(200);
@@ -572,7 +572,7 @@ TEST(SeriesRunnerTest, UndemandedSeriesResumesFromItsWatermark) {
 
 // ---- Chains, outputs, ownership ------------------------------------------------------------------------------------
 
-// SER-10: a series reading an upstream's output evaluates the upstream inside its chunks; the upstream's ring and
+// A series reading an upstream's output evaluates the upstream inside its chunks; the upstream's ring and
 // state stay untouched.
 TEST(SeriesRunnerTest, ChainedSeriesLeavesTheUpstreamUntouched) {
   SeriesFixture fx;
@@ -607,7 +607,7 @@ TEST(SeriesRunnerTest, DisplayingASeriesSubscribesToItsRawInputs) {
   EXPECT_TRUE(streams());
 }
 
-// SER-12: a topic of the series' name in its dataset that is not its own refuses the install, with nothing installed.
+// A topic of the series' name in its dataset that is not its own refuses the install, with nothing installed.
 TEST(SeriesRunnerTest, ForeignTopicWithTheSameNameRefusesTheInstall) {
   SeriesFixture fx;
   DataWriter writer = fx.manager.dataEngine().createWriter();
@@ -637,7 +637,7 @@ TEST(SeriesRunnerTest, ACommaInAnOutputNameNamesOneColumn) {
   EXPECT_EQ(fx.rows("owner/ser", 1).size(), 3u) << "the second column";
 }
 
-// SER-13: a finding has no series.
+// A finding has no series.
 TEST(SeriesRunnerTest, PinnedRecipeGetsNoSeries) {
   SeriesFixture fx;
   auto pinned = seriesRecipe("ser");
@@ -647,7 +647,7 @@ TEST(SeriesRunnerTest, PinnedRecipeGetsNoSeries) {
   EXPECT_TRUE(fx.series().topics(false).empty());
 }
 
-// SER-14: a recipe with an object and a number output computes the series in chunks, which publish no object; the
+// A recipe with an object and a number output computes the series in chunks, which publish no object; the
 // object output follows the cursor alone.
 TEST(SeriesRunnerTest, MixedRecipePublishesObjectsAtTheCursorOnly) {
   SeriesFixture fx;
@@ -661,7 +661,7 @@ TEST(SeriesRunnerTest, MixedRecipePublishesObjectsAtTheCursorOnly) {
   EXPECT_EQ(fx.ring("owner/mix/cropped"), (std::vector<Timestamp>{10 * kSec}));
 }
 
-// SER-15: a preview's series computes without being displayed (its plugin's trial) and the catalog hides it; a
+// A preview's series computes without being displayed (its plugin's trial) and the catalog hides it; a
 // persistent series is listed.
 TEST(SeriesRunnerTest, EphemeralSeriesIsHiddenFromTheCatalogButReadable) {
   SeriesFixture fx;
@@ -683,7 +683,7 @@ TEST(SeriesRunnerTest, EphemeralSeriesIsHiddenFromTheCatalogButReadable) {
   EXPECT_TRUE(persistent_listed);
 }
 
-// LAY-05: a restore re-installing a key with the same number outputs keeps its series topic id; one with other outputs
+// A restore re-installing a key with the same number outputs keeps its series topic id; one with other outputs
 // retires the parked topic; the sweep retires a series no install claimed.
 TEST(SeriesRunnerTest, ClearThenUpsertSameKeyKeepsTheSeriesTopicId) {
   SeriesFixture fx;
@@ -707,7 +707,7 @@ TEST(SeriesRunnerTest, ClearThenUpsertSameKeyKeepsTheSeriesTopicId) {
   EXPECT_FALSE(fx.seriesState("owner/gone").has_value());
 }
 
-// GAP-18: runs decode and compute on the pool, never on the GUI thread.
+// Runs decode and compute on the pool, never on the GUI thread.
 TEST(SeriesRunnerTest, ADecodeRunsOnTheWorker) {
   SeriesFixture fx;
   fx.install(seriesRecipe("ser"));
@@ -720,7 +720,7 @@ TEST(SeriesRunnerTest, ADecodeRunsOnTheWorker) {
   }
 }
 
-// MED-06 / GAP-26: a series chunk is given the session's image decoder like any run, so a script's `decode` on an image
+// A series chunk is given the session's image decoder like any run, so a script's `decode` on an image
 // input does not report "no image decoder".
 TEST(SeriesRunnerTest, AChunkGetsTheSessionsImageDecoder) {
   struct NoDecoder final : scripting::IImageDecoder {
@@ -755,7 +755,7 @@ TEST(SeriesRunnerTest, AChunkGetsTheSessionsImageDecoder) {
 
 constexpr auto kChunk = static_cast<int>(SeriesRunner::kInstantsPerChunk);
 
-// GAP-40: a series whose plot starts its view after the watermark computes [visible start, end] first, then backfills
+// A series whose plot starts its view after the watermark computes [visible start, end] first, then backfills
 // its clock up to the visible start; every instant runs once, and the progress counts the whole clock from the start.
 TEST(SeriesRunnerTest, PriorityRangeIsComputedFirst) {
   SeriesFixture fx;
@@ -779,7 +779,7 @@ TEST(SeriesRunnerTest, PriorityRangeIsComputedFirst) {
   EXPECT_EQ(fx.seriesState("owner/ser")->done, 203u);
 }
 
-// GAP-40: while a series has its two ranges, a pan into the backfill's part of the clock computes the backfill next; it
+// While a series has its two ranges, a pan into the backfill's part of the clock computes the backfill next; it
 // never starts a third range.
 TEST(SeriesRunnerTest, APanReordersWhatIsLeft) {
   SeriesFixture fx;
@@ -800,7 +800,7 @@ TEST(SeriesRunnerTest, APanReordersWhatIsLeft) {
   EXPECT_EQ(fx.rows("owner/ser").size(), 203u);
 }
 
-// GAP-40: one split per replay: a pan past the forward range's watermark after the backfill finished starts no other
+// One split per replay: a pan past the forward range's watermark after the backfill finished starts no other
 // range, the forward range goes on in order.
 TEST(SeriesRunnerTest, APanAfterTheBackfillSplitsNoMore) {
   SeriesFixture fx;
@@ -820,7 +820,7 @@ TEST(SeriesRunnerTest, APanAfterTheBackfillSplitsNoMore) {
       fx.runs(), concat({seconds(100, 163), {5 * kSec, 10 * kSec, 20 * kSec}, seconds(21, 99), seconds(164, 420)}));
 }
 
-// GAP-40: a live tick while the backfill computes continues the forward range after its watermark, then the backfill
+// A live tick while the backfill computes continues the forward range after its watermark, then the backfill
 // resumes from its own.
 TEST(SeriesRunnerTest, LiveAppendContinuesTheForwardRange) {
   SeriesFixture fx;
@@ -892,7 +892,7 @@ TEST(SeriesRunnerTest, ALiveViewPastTheEdgeSplitsNothing) {
   EXPECT_EQ(fx.runs(), (std::vector<Timestamp>{5 * kSec, 10 * kSec, 20 * kSec, 30 * kSec}));
 }
 
-// GAP-40: a replay, its last chunk included, is not complete while it computes (the legend says "computing N%"); a
+// A replay, its last chunk included, is not complete while it computes (the legend says "computing N%"); a
 // live append to a complete series keeps it complete (the legend says nothing) while `replaying` reports the append.
 TEST(SeriesRunnerTest, ALiveAppendIsNotAReplay) {
   SeriesFixture fx;  // clouds at 5, 10, 20 s: one chunk
@@ -916,9 +916,8 @@ TEST(SeriesRunnerTest, ALiveAppendIsNotAReplay) {
   EXPECT_EQ(fx.rows("owner/ser").size(), 4u);
 }
 
-// GAP-40 (decision 2): a plugin's whole-series read of a series that is not computed is an explicit request: the read
-// returns the rows so far and the series computes to the end, even undisplayed; a read from a plugin's worker thread
-// too.
+// A plugin's whole-series read of a series that is not computed is an explicit request: the read returns the rows so
+// far and the series computes to the end, even undisplayed; a read from a plugin's worker thread too.
 TEST(SeriesRunnerTest, APluginReadOfAnUncomputedSeriesStartsIt) {
   SeriesFixture fx;
   fx.install(seriesRecipe("ser"));
@@ -945,7 +944,7 @@ TEST(SeriesRunnerTest, APluginReadOfAnUncomputedSeriesStartsIt) {
   EXPECT_EQ(fx.rows("owner/other").size(), 3u);
 }
 
-// Codex 11b-1: a backfilled series' rows were committed after the forward range's, yet a plugin reads them in time
+// A backfilled series' rows were committed after the forward range's, yet a plugin reads them in time
 // order (the Arrow export merges the topic's chunks), with each value at its own timestamp.
 TEST(SeriesRunnerTest, APluginReadOfABackfilledSeriesIsInTimeOrder) {
   SeriesFixture fx;
@@ -970,7 +969,7 @@ TEST(SeriesRunnerTest, APluginReadOfABackfilledSeriesIsInTimeOrder) {
   }
 }
 
-// Codex 11b-1: a view past the last sample leaves the forward range empty; the backfill's end merges the two at the
+// A view past the last sample leaves the forward range empty; the backfill's end merges the two at the
 // backfill's own watermark, so a later live sample is computed.
 TEST(SeriesRunnerTest, AnEmptyForwardRangeMergesIntoTheBackfill) {
   SeriesFixture fx;  // clouds at 5, 10, 20 s
@@ -984,7 +983,7 @@ TEST(SeriesRunnerTest, AnEmptyForwardRangeMergesIntoTheBackfill) {
   EXPECT_EQ(fx.runs(), (std::vector<Timestamp>{5 * kSec, 10 * kSec, 20 * kSec, 30 * kSec}));
 }
 
-// Codex 11b-1: a late entry restarts a complete series' clock: it is no live append, so it is not complete from the
+// A late entry restarts a complete series' clock: it is no live append, so it is not complete from the
 // chunk's submission on.
 TEST(SeriesRunnerTest, ARestartIsNotComplete) {
   SeriesFixture fx;  // clouds at 5, 10, 20 s
@@ -1002,7 +1001,7 @@ TEST(SeriesRunnerTest, ARestartIsNotComplete) {
   EXPECT_EQ(fx.rows("owner/ser").size(), 4u);
 }
 
-// Codex 11b-1: the session keeps the plots' view start on the display axis, so a change of the dataset's display offset
+// The session keeps the plots' view start on the display axis, so a change of the dataset's display offset
 // moves the raw instant the series computes first.
 TEST(SeriesRunnerTest, ADisplayOffsetChangeMovesTheVisibleStart) {
   SeriesFixture fx;
@@ -1022,8 +1021,8 @@ double threadCpuMicros() {
   return pj_bench::threadCpuMs() * 1e3;
 }
 
-// PERF-03: a replay over 400 clouds of 24k points (the fake run, instant): the GUI thread's longest event-loop pass and
-// its CPU time per row, the test's pump included; then the same replay with the view starting mid-clock (GAP-40: the
+// A replay over 400 clouds of 24k points (the fake run, instant): the GUI thread's longest event-loop pass and
+// its CPU time per row, the test's pump included; then the same replay with the view starting mid-clock (the
 // forward range, then the backfill).
 void benchReplay(std::optional<Timestamp> visible_start) {
   SeriesFixture fx;
@@ -1094,7 +1093,7 @@ double replay36kMillis(const char* script) {
   return millis;
 }
 
-// F8 (Luau VM reuse): the share of a 36,000-row series replay that the per-row Luau runs take, over a trivial script
+// The share of a 36,000-row series replay that the per-row Luau runs take, over a trivial script
 // (the per-call setup alone) and one that reads its cloud.
 TEST(SeriesRunnerBench, Replay36kRowsLuauRunShare) {
   if (!sdk::getEnv("PJ_BENCH")) {

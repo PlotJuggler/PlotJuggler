@@ -14,13 +14,9 @@ namespace PJ::testing {
 
 // A toolbox host that serves a catalog with SEVERAL data sources.
 //
-// The SDK's ToolboxTestStore cannot express this: it stamps every topic with
-// source handle 1 and hands back a snapshot with `data_sources = nullptr,
-// data_source_count = 0`. That is fine for the scalar read path it exists for,
-// but it makes the multi-dataset case — two runs of the same robot, the reason
-// any of this exists — untestable, and an untested branch that only fires when a
-// user loads a second file is a branch that fires for the first time in front of
-// the user.
+// The SDK's ToolboxTestStore cannot express this: it stamps every topic with source handle 1 and hands back a
+// snapshot with `data_sources = nullptr, data_source_count = 0`. That suffices for the scalar read path it exists for,
+// but leaves the multi-dataset case (two runs of the same robot) untestable.
 //
 // Deliberately catalog-only: `acquire_catalog_snapshot` is the single slot the
 // catalog tools (list_topics, describe_topic) need. A read records which topic it asked for, so a test

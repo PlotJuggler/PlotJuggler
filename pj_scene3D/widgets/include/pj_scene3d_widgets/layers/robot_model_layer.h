@@ -40,63 +40,43 @@ using pj::tf::TransformBuffer;
 class MeshLoadQueue;
 class UrdfPackageResolver;
 
-// Scene3DLayer that renders a robot's URDF (links, primitive geometry, and
-// async-loaded meshes) posed by the live TF tree.
-// It decodes its description at most once per source change and then latches,
-// so it is not a hot path.
-//
-// Three source modes (SourceType):
-//   - kTopic: a robot_description object topic in the ObjectStore, decoded
-//     through the topic's MessageParser. The first sample is latched; while the
-//     topic is still empty the layer waits and retries on each tracker tick.
-//   - kFile:  a URDF file. Desktop reads the path; setSourceFileContent() feeds
-//     the bytes directly instead (the browser's only route: a browser layout
-//     never regains file access, so a restored kFile layer asks the user to
-//     select the file again).
-//   - kUrl:   a URL fetched ASYNCHRONOUSLY (file/http/https on desktop, http(s)
-//     in the browser); the model is applied when the bytes land.
-//
-// Explicit package URL roots (setPackageUrlRoots) map package:// names to
-// directory URLs for THIS model, so a topic URDF, which has no location of its
-// own, can still fetch its meshes: in the browser, or from a web-hosted layout
-// (on the desktop a layout file's http(s) root is skipped, UrdfPackageResolver).
-// They are persisted as the robot_model's `package_url_roots` attribute
+// Scene3DLayer that renders a robot's URDF (links, primitive geometry, async-loaded meshes) posed by the live TF tree.
+// It decodes its description at most once per source change and then latches: not a hot path.
+// Source modes (SourceType):
+// - kTopic: a robot_description object topic in the ObjectStore, decoded through the topic's MessageParser. The first
+//   sample is latched; while the topic is empty the layer retries on each tracker tick.
+// - kFile: a URDF file. Desktop reads the path; setSourceFileContent() feeds the bytes directly (the browser's only
+//   route: a browser layout never regains file access, so a restored kFile layer asks the user to select the file).
+// - kUrl: a URL fetched asynchronously (file/http/https on desktop, http(s) in the browser); the model is applied when
+//   the bytes land.
+// Explicit package URL roots (setPackageUrlRoots) map package:// names to directory URLs for THIS model, so a topic
+// URDF (no location of its own) can fetch its meshes in the browser or from a web-hosted layout; on the desktop a
+// layout file's http(s) root is skipped (UrdfPackageResolver). They persist as the `package_url_roots` attribute
 // (layout_resources.h), skipped or not.
-//
-// A robot restored from a web-hosted layout carries `remote_resources_only="true"`
-// (stamped by resolveLayoutResourceUrls, then saved with the layer): its URDF's
-// mesh references resolve to network resources and embedded assets only, never to
-// files on this host (UrdfPackageResolver::resolveUri). Nothing in the UI clears it; loading
-// a layout from any other location does.
-//
-// Coordinate contract. The layer's CPU model is TF-free: one ModelDrawCall per
-// link geometry, holding the prefixed link frame plus the link-local
-// <origin> × scale; the view applies TF(fixed <- link), exactly once. URDF fixed joints the data
-// never publishes are bridged into the TF buffer (see ensureStaticBridges).
-//
-// Meshes load through a MeshLoadQueue, a few at a time (one in the browser):
-// URL meshes are fetched, then imported off the GUI thread, and each result is
-// admitted against kSceneLimits' retained-byte budgets as it lands. A source
-// switch cancels every queued and running load, so no stale completion lands;
-// a superseded import keeps its concurrency slot until its worker finishes.
-//
-// Parser lifetime (kTopic): parsers are deliberately NOT cached; every decode
-// resolves a fresh ParserBinding through ctx_.session.
-//
-// The layer is deliberately bounds-less: it contributes nothing to the camera's
-// scene fit (a robot moved by joints would otherwise pull the camera around).
+// A robot restored from a web-hosted layout carries `remote_resources_only="true"` (stamped by
+// resolveLayoutResourceUrls, saved with the layer): its URDF's mesh references resolve to network resources and
+// embedded assets only, never to files on this host (UrdfPackageResolver::resolveUri). Nothing in the UI clears it;
+// loading a layout from any other location does.
+// Coordinate contract: the CPU model is TF-free, one ModelDrawCall per link geometry holding the prefixed link frame
+// plus the link-local <origin> x scale; the view applies TF(fixed <- link), exactly once. URDF fixed joints the data
+// never publishes are bridged into the TF buffer (ensureStaticBridges).
+// Meshes load through a MeshLoadQueue, a few at a time (one in the browser): URL meshes are fetched, then imported off
+// the GUI thread, and each result is admitted against kSceneLimits' retained-byte budgets as it lands. A source switch
+// cancels every queued and running load, so no stale completion lands; a superseded import keeps its concurrency slot
+// until its worker finishes.
+// Parser lifetime (kTopic): parsers are NOT cached; every decode resolves a fresh ParserBinding through ctx_.session (a
+// cached pointer dangles after a dataset reload).
+// Bounds-less on purpose: it adds nothing to the camera's scene fit (a robot moved by joints would pull the camera
+// around).
 class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   Q_OBJECT
  public:
   enum class SourceType { kTopic, kFile, kUrl };
-  // kVisual: render only <visual> geometry; kCollision: render only <collision>
-  // geometry (through the collision opacity/visibility group). kAuto: a link's
-  // <visual> geometry when it has any; a collision-only link is promoted to the
-  // visuals group (rendered solid) ONLY when the WHOLE model has no visuals, so an
-  // all-collision URDF renders solid instead of ghosting at the collision group's
-  // default opacity. In a MIXED model, a collision-only link is
-  // auxiliary geometry (e.g. self-collision capsules) and renders in the
-  // COLLISION group so the Collision opacity/visibility toggle controls it.
+  // kVisual: only <visual> geometry; kCollision: only <collision> geometry (the collision opacity/visibility group).
+  // kAuto: a link's <visual> geometry when it has any; a collision-only link is promoted to the visuals group (rendered
+  // solid) ONLY when the WHOLE model has no visuals, so an all-collision URDF does not ghost at the collision opacity.
+  // In a MIXED model a collision-only link is auxiliary geometry (e.g. self-collision capsules) and renders in the
+  // COLLISION group, so the Collision toggle controls it.
   enum class DisplayMode { kAuto, kVisual, kCollision };
   enum class XmlLoadResult { kRestored, kDeferred, kInvalid };
 
@@ -113,8 +93,7 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
   [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element);
-  // Session-free structural check of a "robot_model" payload (xmlLoadState
-  // additionally resolves the saved topic identity against the session).
+  // Session-free structural check of a "robot_model" payload (xmlLoadState also resolves the saved topic identity).
   [[nodiscard]] static bool validateXml(const QDomElement& element);
 
   bool attach(const PJ::SceneLayerContext& ctx) override;
@@ -127,32 +106,25 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   QWidget* createConfigWidget(QWidget* parent) override;
 
   void setPackageResolver(UrdfPackageResolver* resolver);
-  // The buffer that fixed-joint bridges are injected into (the one the view
-  // resolves TF from).
+  // The buffer that fixed-joint bridges are injected into (the one the view resolves TF from).
   void setTransformBuffer(std::shared_ptr<TransformBuffer> buffer);
-  // In-band mesh assets (name == verbatim mesh ref) offered to the resolver on
-  // the next parse.
+  // In-band mesh assets (name == verbatim mesh ref) offered to the resolver on the next parse.
   void setEmbeddedAssets(QMap<QString, QByteArray> assets);
   void setSourceTopic(PJ::ObjectTopicId topic_id, QString display_name = {});
   void setSourceFile(QString path);
-  // kFile from bytes: `filename` is only a label (persisted as source_value);
-  // the bytes are never persisted.
+  // kFile from bytes: `filename` is only a label (persisted as source_value); the bytes are never persisted.
   void setSourceFileContent(QString filename, QByteArray bytes);
   void setSourceUrl(QString url);
-  // Package name -> directory URL, consulted before the resolver's heuristics
-  // and authoritative for the packages it names. A URL source's relative roots
-  // resolve against its fetched URDF's final URL; other sources need absolute
-  // roots (resolveLayoutResourceUrls makes a layout's absolute). A change
-  // reloads from the current source.
+  // Package name -> directory URL, consulted before the resolver's heuristics and authoritative for the packages it
+  // names. A URL source's relative roots resolve against its fetched URDF's final URL; other sources need absolute
+  // roots (resolveLayoutResourceUrls makes a layout's absolute). A change reloads from the current source.
   void setPackageUrlRoots(const QMap<QString, QUrl>& roots);
   void setFramePrefix(QString prefix);
   void setDisplayMode(DisplayMode mode);
   void setFallbackColor(QColor color);
-  // Toggle the COLLADA up-axis override. When true, .dae/.collada meshes load
-  // with the Y->Z flip forced OFF; other formats are unaffected. Changing the
-  // value reloads from the current source (clearing the loader cache).
+  // When true, .dae/.collada meshes load with the Y->Z flip forced OFF; other formats are unaffected. A change reloads
+  // from the current source (clearing the loader cache).
   void setIgnoreColladaUpAxis(bool ignore);
-  // Reload from the current source (Retry).
   void retry();
 
   [[nodiscard]] SourceType sourceType() const {
@@ -193,8 +165,7 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   }
   [[nodiscard]] QString linkFrameName(const std::string& link_name) const;
 
-  // ModelRenderable (read by the view): link-local
-  // draws; the view applies TF(fixed <- frame_id).
+  // Link-local draws: the view applies TF(fixed <- frame_id).
   [[nodiscard]] const std::vector<ModelDrawCall>& modelDrawCalls() const override {
     return model_draw_calls_;
   }
@@ -229,8 +200,7 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
     return *this;
   }
 
-  // Mesh imports started whose worker has not finished yet (superseded ones
-  // included): what actually runs on the pool.
+  // Mesh imports started whose worker has not finished yet (superseded ones included): what actually runs on the pool.
   [[nodiscard]] std::size_t meshImportsOutstandingForTest() const;
 
 #ifdef PJ_SCENE3D_TEST_HOOKS
@@ -239,8 +209,6 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   void ensureStaticBridgesForTest(TransformBuffer& tf) {
     ensureStaticBridges(tf);
   }
-  // Draw-group sizes of the TF-free model — lets a test assert which group
-  // (visuals vs collision) a link's geometry landed in.
   [[nodiscard]] int visualDrawCountForTest() const {
     return static_cast<int>(model_draw_calls_.size()) - collisionDrawCountForTest();
   }
@@ -260,16 +228,15 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
 #endif
 
  signals:
-  // Mesh-load progress. UNIT: all three of loaded/total/unresolved count
-  // per-GEOMETRY mesh references, NOT unique files. (unresolved_packages, by
-  // contrast, is the distinct-package list.)
+  // UNIT: loaded, total and unresolved all count per-GEOMETRY mesh references, NOT unique files (unresolved_packages is
+  // the distinct-package list).
   void meshLoadStatusChanged(int loaded, int total, QStringList unresolved_packages);
   void unresolvedPackages(QStringList packages);
   void statusTextChanged(const QString& status);
 
  private:
-  // The checked attributes of a "robot_model" payload (validateXml()); the free
-  // text ones (source_value, frame_prefix) are read as they are.
+  // The checked attributes of a "robot_model" payload (validateXml()); the free-text ones (source_value, frame_prefix)
+  // are read as they are.
   struct ParsedSettings {
     SourceType source_type = SourceType::kTopic;
     DisplayMode display_mode = DisplayMode::kAuto;
@@ -285,15 +252,12 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   };
   [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
 
-  // Rebuild the ModelDrawCalls from the model, display mode and loaded meshes.
-  // TF-independent: runs only when those change.
+  // TF-independent: runs only when the model, display mode or loaded meshes change.
   void rebuildDrawCalls();
-  // Recompute static_bridges_ from the current model_, with frame_prefix_ applied
-  // to each parent/child frame. Called when the model loads or the prefix changes.
+  // Recomputes static_bridges_ from the current model_ with frame_prefix_ applied to each parent/child frame.
   void rebuildStaticBridges();
-  // Inject any not-yet-present fixed-joint bridge into `buf`. Idempotent and
-  // guarded (never overrides real /tf), so it is re-run on every tracker tick
-  // and self-heals after a buffer clear (same-file reload).
+  // Injects any not-yet-present fixed-joint bridge into `buf`. Idempotent and guarded (never overrides real /tf), so it
+  // is re-run on every tracker tick and self-heals after a buffer clear (same-file reload).
   void ensureStaticBridges(TransformBuffer& buf);
   void ensureStaticBridges();
   void resetModelState();
@@ -307,23 +271,17 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
       const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url,
       const QUrl& roots_base = {});
   void queueMeshLoads();
-  // A mesh load of the current source settled: admit it against the budget.
   void admitMesh(const std::string& key, MeshData mesh);
-  // A mesh load settled (loaded or failed): refresh draws, counters, status.
   void onMeshLoadSettled();
   [[nodiscard]] bool meshReady(const std::string& key) const;
-  // Single source of truth for the three per-reference mesh counters.
   void updateMeshCounters();
-  // Recompute status_text_ and the data warning from the loaded model.
   void updateStatus();
   // The status text carries the renderer warning too.
   void renderWarningChanged() override {
     updateStatus();
   }
-  // A terminal failure: status and warning both carry `message`.
   void fail(const QString& message);
   void setStatus(QString status);
-  // Distinct unresolved package names for THIS model, in first-seen order.
   [[nodiscard]] QStringList unresolvedPackagesList() const;
   // " • N http refs blocked / N absolute paths missing": unresolved kinds Locate
   // cannot fix. Empty when there are none.
@@ -358,8 +316,7 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
 
   std::optional<RobotModel> model_;
   std::string source_frame_;
-  // Cached fixed-joint TF bridges (frame_prefix_ already applied), rebuilt on
-  // model load / prefix change. Empty when the model has no fixed joints.
+  // Cached fixed-joint TF bridges (frame_prefix_ already applied), rebuilt on model load / prefix change.
   std::vector<StampedTransform> static_bridges_;
   // True iff any link has visual geometry; gates kAuto's collision-only promotion.
   bool model_has_visuals_{false};
@@ -381,7 +338,6 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   // from an older generation is dropped.
   std::uint64_t load_generation_{0};
 
-  // What the view reads (ModelRenderable).
   std::unordered_map<std::string, std::shared_ptr<const MeshData>> model_meshes_;
   std::vector<ModelDrawCall> model_draw_calls_;
   std::uint64_t model_revision_{0};

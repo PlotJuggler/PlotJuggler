@@ -1,8 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The on-demand plugin bridge (docs/derived_objects/ARCHITECTURE.md §18): `pj.data_processors.v1` for kind
-// "on_demand" over a real AppSession, through the SDK's own client view. The scheduled and evaluation runs are the fake
+// The on-demand plugin bridge (docs/derived_objects/ARCHITECTURE.md "Plugin surfaces"): `pj.data_processors.v1` for
+// kind "on_demand" over a real AppSession, through the SDK's own client view. The scheduled and evaluation runs are the
+// fake
 // (`test::FakeRun`) unless a case needs the Luau engine; every finished report is read back with
 // `sdk::parseEvaluationReport`.
 
@@ -222,7 +223,7 @@ struct Fixture {
 
 // ---- Create, list, config, remove, validate ------------------------------------------------------------------------
 
-// ABI-01 (changed): the v1 create refuses kind on_demand, naming the typed create.
+// The v1 create refuses kind on_demand, naming the typed create.
 TEST(OnDemandRuntimeHostTest, V1CreateRejectsOnDemandNamingCreateV2) {
   Fixture fx;
   const std::vector<std::string_view> inputs{"cloud"};
@@ -233,7 +234,7 @@ TEST(OnDemandRuntimeHostTest, V1CreateRejectsOnDemandNamingCreateV2) {
   EXPECT_EQ(fx.node("pluginA/crop"), nullptr);
 }
 
-// ABI-01/06: out_topics are 1:1 with the outputs, an object output's derived topic and a scalar's bare name; the key is
+// out_topics are 1:1 with the outputs, an object output's derived topic and a scalar's bare name; the key is
 // namespaced per plugin.
 TEST(OnDemandRuntimeHostTest, CreateV2ReturnsTypedOutTopicsAndRegistersDerivedTopics) {
   Fixture fx;
@@ -250,7 +251,7 @@ TEST(OnDemandRuntimeHostTest, CreateV2ReturnsTypedOutTopicsAndRegistersDerivedTo
   EXPECT_FALSE(node->recipe.ephemeral);
 }
 
-// ABI-02: list strips the namespace; config carries the recipe for re-edit; a second remove is refused.
+// List strips the namespace; config carries the recipe for re-edit; a second remove is refused.
 TEST(OnDemandRuntimeHostTest, ListConfigRemoveRoundTrip) {
   Fixture fx;
   ASSERT_TRUE(fx.view.createV2(request("crop")).has_value());
@@ -276,7 +277,7 @@ TEST(OnDemandRuntimeHostTest, ListConfigRemoveRoundTrip) {
   EXPECT_NE(again.error().find("unknown data processor id"), std::string::npos) << again.error();
 }
 
-// ABI-03: what the typed create refuses, each by name, leaving nothing installed.
+// What the typed create refuses, each by name, leaving nothing installed.
 TEST(OnDemandRuntimeHostTest, RejectsWrongKindLanguageOutputsAndFlags) {
   Fixture fx;
   const auto refused = [&fx](sdk::DataProcessorRequest made, std::string_view says) {
@@ -310,7 +311,7 @@ TEST(OnDemandRuntimeHostTest, RejectsWrongKindLanguageOutputsAndFlags) {
   EXPECT_EQ(fx.topics_changed, 0);
 }
 
-// ABI-04: a Python recipe is accepted end to end: created over the ABI, run by the Python runner at the cursor, and
+// A Python recipe is accepted end to end: created over the ABI, run by the Python runner at the cursor, and
 // evaluated with a report; its config names its language. A build without Python refuses it with the reason.
 TEST(OnDemandRuntimeHostTest, PythonRecipeIsAccepted) {
   Fixture fx(/*real_run=*/true);
@@ -438,7 +439,7 @@ TEST(OnDemandRuntimeHostTest, APythonCompileErrorReachesTheNodesState) {
   EXPECT_NE(validated.error().find(eager.error()), std::string::npos) << validated.error();
 }
 
-// ABI-05: validate compiles for kind on_demand in the language it names: Luau or Python source each passes its own
+// Validate compiles for kind on_demand in the language it names: Luau or Python source each passes its own
 // compiler and fails the other's; a language no runner has, and another kind, are refused. The three-way check agrees.
 TEST(OnDemandRuntimeHostTest, ValidateScriptRoutesByKindAndLanguage) {
   Fixture fx;
@@ -483,7 +484,7 @@ TEST(OnDemandRuntimeHostTest, ValidateScriptRoutesByKindAndLanguage) {
   EXPECT_NE(markers_check.error().find("unknown data processor kind"), std::string::npos) << markers_check.error();
 }
 
-// ABI-06: an INSTANT create is a finding, evaluated at its pin once: its one entry sits at the finding timestamp and
+// An INSTANT create is a finding, evaluated at its pin once: its one entry sits at the finding timestamp and
 // its payload carries the pinned time (the fake names a cloud's frame after its query time).
 TEST(OnDemandRuntimeHostTest, InstantCreatePinsAndEvaluatesAtThePin) {
   Fixture fx;
@@ -540,7 +541,7 @@ TEST(OnDemandRuntimeHostTest, FailedCreatePreservesPreviousRecipeAndOutputs) {
   EXPECT_EQ(fx.config("crop")["inputs"], nlohmann::json::array({"cloud"}));
 }
 
-// GAP-31: a typed dataset id binds every input there; a bare name two datasets carry needs it; a qualified input naming
+// A typed dataset id binds every input there; a bare name two datasets carry needs it; a qualified input naming
 // another dataset, or an unknown id, is refused.
 TEST(OnDemandRuntimeHostTest, DatasetIdBindsThatDatasetAndRejectsAForeignQualifier) {
   Fixture fx;
@@ -574,7 +575,7 @@ TEST(OnDemandRuntimeHostTest, DatasetIdBindsThatDatasetAndRejectsAForeignQualifi
   EXPECT_EQ(fx.node("pluginA/unknown"), nullptr);
 }
 
-// OWN-02: a preview is hidden from list, config answers its owner, and it can be evaluated.
+// A preview is hidden from list, config answers its owner, and it can be evaluated.
 TEST(OnDemandRuntimeHostTest, EphemeralRecipeIsHiddenFromListButConfigAnswersTheOwner) {
   Fixture fx;
   auto made = request("probe");
@@ -592,7 +593,7 @@ TEST(OnDemandRuntimeHostTest, EphemeralRecipeIsHiddenFromListButConfigAnswersThe
   EXPECT_EQ(done.report.bundles.size(), 1u);
 }
 
-// SER-01, SER-11: a preview with an object input and a number output computes its series as its plugin's trial (no
+// A preview with an object input and a number output computes its series as its plugin's trial (no
 // display needed), and its config carries the series' report; the series is the topic `series.topic`, one column per
 // number output, while out_topics keep the bare number name the contract gives.
 TEST(OnDemandRuntimeHostTest, EphemeralConfigCarriesTheSeriesReport) {
@@ -797,7 +798,7 @@ TEST(OnDemandRuntimeHostTest, OversizedOrDeeplyNestedParamsAreRefused) {
 
 // ---- Config: state, time, lag, upstream, findings -----------------------------------------------------------------
 
-// ABI-19: config carries the node's state, its newest requested time and its lag (null when none), and its upstreams.
+// Config carries the node's state, its newest requested time and its lag (null when none), and its upstreams.
 TEST(OnDemandRuntimeHostTest, ConfigExposesStateRequestedTimeAndLag) {
   Fixture fx;
   ASSERT_TRUE(fx.view.createV2(request("crop")).has_value());
@@ -827,7 +828,7 @@ TEST(OnDemandRuntimeHostTest, ConfigExposesStateRequestedTimeAndLag) {
   EXPECT_EQ(fx.config("reader")["upstream"], nlohmann::json::array({"pluginA/crop"}));
 }
 
-// PIN-06, PIN-03's per-owner sum: a finding's config counts its owner's findings and their bytes; another owner's are
+// A finding's config counts its owner's findings and their bytes; another owner's are
 // not counted, and a node that is not pinned has no `findings`.
 TEST(OnDemandRuntimeHostTest, ConfigOfPinnedNodeReportsFindings) {
   Fixture fx;
@@ -854,7 +855,7 @@ TEST(OnDemandRuntimeHostTest, ConfigOfPinnedNodeReportsFindings) {
 
 // ---- Evaluations ---------------------------------------------------------------------------------------------------
 
-// ABI-07: an instant on an installed node: pending first (empty JSON), then one bundle at the instant.
+// An instant on an installed node: pending first (empty JSON), then one bundle at the instant.
 TEST(OnDemandRuntimeHostTest, SubmitInstantOnInstalledNodeReturnsBundleJson) {
   Fixture fx;
   ASSERT_TRUE(fx.view.createV2(request("crop")).has_value());
@@ -876,7 +877,7 @@ TEST(OnDemandRuntimeHostTest, SubmitInstantOnInstalledNodeReturnsBundleJson) {
   EXPECT_TRUE(fx.view.releaseEvaluation(*handle).has_value());
 }
 
-// ABI-08: a scripted window publishes nothing, reports its coverage (the leading gap before the first cloud) and stops
+// A scripted window publishes nothing, reports its coverage (the leading gap before the first cloud) and stops
 // on the evaluation budget.
 TEST(OnDemandRuntimeHostTest, SubmitWindowOnEphemeralRecipeReportsCoverageAndStopsOnBudget) {
   Fixture fx;
@@ -914,7 +915,7 @@ TEST(OnDemandRuntimeHostTest, AWindowOverAScalarInputRunsAtItsSampleTimes) {
   EXPECT_EQ(done.report.gaps[0].to_ns, 2 * kSec);
 }
 
-// ABI-09 (changed): a scripted submit that declares no output lists what its run inferred (the Luau engine runs).
+// A scripted submit that declares no output lists what its run inferred (the Luau engine runs).
 TEST(OnDemandRuntimeHostTest, SubmitWithNoOutputsReportsInferredOutputs) {
   Fixture fx(/*real_run=*/true);
   auto made = scriptedOver("probe", 10 * kSec, 10 * kSec);
@@ -931,7 +932,7 @@ TEST(OnDemandRuntimeHostTest, SubmitWithNoOutputsReportsInferredOutputs) {
   EXPECT_EQ(done.report.bundles.at(0).outputs.at("count").value, 4.0);
 }
 
-// ABI-10 (changed): a scripted submit is a preview by definition: EPHEMERAL is optional, HISTORY_EXEMPT refused.
+// A scripted submit is a preview by definition: EPHEMERAL is optional, HISTORY_EXEMPT refused.
 TEST(OnDemandRuntimeHostTest, AScriptedSubmitIsEphemeralWithoutTheFlagAndRejectsHistoryExempt) {
   Fixture fx;
   EXPECT_EQ(fx.evaluate(scriptedOver("probe", 10 * kSec, 10 * kSec)).state, EvaluationState::kCompleted);
@@ -960,7 +961,7 @@ TEST(OnDemandRuntimeHostTest, ANonCompilingSubmitIsRejectedNotFailed) {
   EXPECT_EQ(fx.bridge.liveHandles(), 0u);
 }
 
-// ABI-11: an unknown handle is refused; a handle is released exactly once.
+// An unknown handle is refused; a handle is released exactly once.
 TEST(OnDemandRuntimeHostTest, PollUnknownHandleIsRejected) {
   Fixture fx;
   const auto polled = fx.view.pollEvaluation(12345);
@@ -986,7 +987,7 @@ struct PaddedRequest {
   uint8_t tail[16] = {};
 };
 
-// ABI-12: a struct_size larger than the host's is read by its prefix; an unknown flag bit is still refused.
+// A struct_size larger than the host's is read by its prefix; an unknown flag bit is still refused.
 TEST(OnDemandRuntimeHostTest, RequestLargerThanHostIsAcceptedWhenFlagsAreKnown) {
   Fixture fx;
   std::vector<PJ_string_view_t> inputs;
@@ -1003,7 +1004,7 @@ TEST(OnDemandRuntimeHostTest, RequestLargerThanHostIsAcceptedWhenFlagsAreKnown) 
   EXPECT_NE(std::string(error.message).find("flags"), std::string::npos) << error.message;
 }
 
-// ABI-13: a budget shorter than the v1 layout is refused; a longer one is read by its prefix.
+// A budget shorter than the v1 layout is refused; a longer one is read by its prefix.
 TEST(OnDemandRuntimeHostTest, BudgetBelowTheV1LayoutIsRejectedAndALargerOneAccepted) {
   Fixture fx;
   std::vector<PJ_string_view_t> inputs;
@@ -1025,7 +1026,7 @@ TEST(OnDemandRuntimeHostTest, BudgetBelowTheV1LayoutIsRejectedAndALargerOneAccep
   EXPECT_EQ(fx.await(handle).state, EvaluationState::kCompleted);
 }
 
-// ABI-16: a nonzero reserved field, in an output or in the budget, is refused.
+// A nonzero reserved field, in an output or in the budget, is refused.
 TEST(OnDemandRuntimeHostTest, ReservedBitsAreRejected) {
   Fixture fx;
   std::vector<PJ_string_view_t> inputs;
@@ -1048,7 +1049,7 @@ TEST(OnDemandRuntimeHostTest, ReservedBitsAreRejected) {
   EXPECT_EQ(fx.node("pluginA/crop"), nullptr);
 }
 
-// ABI-14 (changed): a run that fails before any bundle is FAILED, in the one report shape.
+// A run that fails before any bundle is FAILED, in the one report shape.
 TEST(OnDemandRuntimeHostTest, FailedReportHasTheOneShape) {
   Fixture fx;
   fx.fake.fail = "boom";
@@ -1060,7 +1061,7 @@ TEST(OnDemandRuntimeHostTest, FailedReportHasTheOneShape) {
   EXPECT_EQ(done.report.evaluated, 0u);
 }
 
-// ABI-15: a failure's reason is kept up to 1024 bytes, past PJ_error_t's bound.
+// A failure's reason is kept up to 1024 bytes, past PJ_error_t's bound.
 TEST(OnDemandRuntimeHostTest, FailedEvaluationErrorIsTruncatedAt1024) {
   Fixture fx;
   fx.fake.fail = std::string(3000, 'x');
@@ -1070,7 +1071,7 @@ TEST(OnDemandRuntimeHostTest, FailedEvaluationErrorIsTruncatedAt1024) {
   EXPECT_LE(done.report.error.size(), 1024u);
 }
 
-// ABI-17: work released before it ran never runs, and nothing is published.
+// Work released before it ran never runs, and nothing is published.
 TEST(OnDemandRuntimeHostTest, ReleasedPendingWorkNeverRunsOrPublishes) {
   Fixture fx;
   const std::size_t topics = fx.manager.objectStore().listTopics().size();
@@ -1084,7 +1085,7 @@ TEST(OnDemandRuntimeHostTest, ReleasedPendingWorkNeverRunsOrPublishes) {
   EXPECT_FALSE(fx.view.pollEvaluation(*handle).has_value());
 }
 
-// ABI-18: a new revision of the installed node fails its pending evaluation ("replaced").
+// A new revision of the installed node fails its pending evaluation ("replaced").
 TEST(OnDemandRuntimeHostTest, InstalledReplacementInvalidatesPendingReport) {
   Fixture fx;
   ASSERT_TRUE(fx.view.createV2(request("crop")).has_value());
@@ -1101,7 +1102,7 @@ TEST(OnDemandRuntimeHostTest, InstalledReplacementInvalidatesPendingReport) {
   EXPECT_NE(done.report.error.find("replaced"), std::string::npos) << done.json;
 }
 
-// BUD-07: at most 64 live handles and 64 MiB of reserved report bytes per bridge; a release returns its capacity.
+// At most 64 live handles and 64 MiB of reserved report bytes per bridge; a release returns its capacity.
 TEST(OnDemandRuntimeHostTest, PendingReportsHaveBoundedHandlesAndReleaseRestoresCapacity) {
   Fixture fx;
   fx.fake.gated = true;
@@ -1142,7 +1143,7 @@ TEST(OnDemandRuntimeHostTest, PendingReportsHaveBoundedHandlesAndReleaseRestores
   EXPECT_TRUE(view.submitEvaluation(scriptedOver("probe", 10 * kSec, 10 * kSec), large).has_value());
 }
 
-// BUD-08: a report fits its requested bytes, coverage included; one below the smallest report is refused at submit.
+// A report fits its requested bytes, coverage included; one below the smallest report is refused at submit.
 TEST(OnDemandRuntimeHostTest, CompleteReportIncludingCoverageFitsRequestedBytes) {
   Fixture fx;
   sdk::EvaluationBudget budget;
@@ -1155,7 +1156,7 @@ TEST(OnDemandRuntimeHostTest, CompleteReportIncludingCoverageFitsRequestedBytes)
   EXPECT_FALSE(fx.view.submitEvaluation(scriptedOver("probe", 0, 30 * kSec), budget).has_value());
 }
 
-// CON-01: releasing a running evaluation stops it, and the shared pool runs the next one.
+// Releasing a running evaluation stops it, and the shared pool runs the next one.
 TEST(OnDemandRuntimeHostTest, ReleaseAfterDispatchLeavesSharedPoolUsable) {
   Fixture fx;
   fx.fake.slow_delay = std::chrono::milliseconds(5000);
@@ -1176,7 +1177,7 @@ TEST(OnDemandRuntimeHostTest, ReleaseAfterDispatchLeavesSharedPoolUsable) {
   EXPECT_TRUE(released->cancelled);
 }
 
-// GAP-33: an explicit evaluation moves no cursor, state or displayed result of the installed node.
+// An explicit evaluation moves no cursor, state or displayed result of the installed node.
 TEST(OnDemandRuntimeHostTest, ExplicitEvaluationDoesNotMoveCursorOrChangeDisplayedResult) {
   Fixture fx;
   ASSERT_TRUE(fx.view.createV2(request("crop")).has_value());
@@ -1244,7 +1245,7 @@ TEST(OnDemandRuntimeHostTest, DestroyingTheBridgeCancelsItsEvaluations) {
   EXPECT_EQ(fx.fake.started(), started) << "a job still waiting for room never runs";
 }
 
-// ---- At most one evaluation per bridge in the runner (BUD-07, D30) -------------------------------------------------
+// ---- At most one evaluation per bridge in the runner -------------------------------------------------
 
 /// The query times of the finished fake runs, in the order they finished.
 std::vector<Timestamp> queryTimes(const test::FakeRun& fake) {
@@ -1280,7 +1281,7 @@ TEST(OnDemandRuntimeHostTest, ASecondEvaluationWaitsPendingWhileTheFirstRuns) {
   EXPECT_EQ(queryTimes(fx.fake), (std::vector<Timestamp>{5 * kSec, 10 * kSec, 20 * kSec}));
 }
 
-// D30 under plugin load: a playhead request made while many evaluations are queued is served after at most the one
+// A playhead request made while many evaluations are queued is served after at most the one
 // that runs.
 TEST(OnDemandRuntimeHostTest, APlayheadRequestWaitsForAtMostTheRunningEvaluation) {
   Fixture fx;
@@ -1374,7 +1375,7 @@ TEST(OnDemandRuntimeHostTest, AQueuedEvaluationWhoseUpstreamWasRemovedFailsAndTh
   EXPECT_EQ(queryTimes(fx.fake), (std::vector<Timestamp>{10 * kSec, 5 * kSec}));
 }
 
-// ---- Plugin reads of derived topics (GAP-12) -----------------------------------------------------------------------
+// ---- Plugin reads of derived topics -----------------------------------------------------------------------
 
 // A plugin reading a derived topic through the object-read service gets the result at or before `t`.
 TEST(ToolboxObjectReadHostTest, PluginReadOfDerivedTopicHonoursT) {
@@ -1452,7 +1453,7 @@ TEST(OnDemandRuntimeHostBench, ConfigAndHandleTableCost) {
 
 // `PJ_BENCH=1`: the GUI thread's CPU time per playhead tick of one demanded recipe while 64 explicit evaluations of
 // both kinds (instants on the installed node, scripted windows) are live, against the same ticks with none. Fake runs
-// that take 2 ms each; the tick is the playhead move (its request, staging and submission), as in 6a-5's bench, alone
+// that take 2 ms each; the tick is the playhead move (its request, staging and submission), alone
 // and with the drain after it (publications, evaluation steps and completions with their reports).
 TEST(OnDemandRuntimeHostBench, PlayheadTicksWhile64EvaluationsRun) {
   if (!sdk::getEnv("PJ_BENCH")) {

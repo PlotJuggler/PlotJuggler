@@ -15,14 +15,13 @@
 
 namespace PJ {
 
-/// The worker pool the derived-data engines run their scripts on
-/// (docs/derived_objects/ARCHITECTURE.md §11). It runs READY tasks: whatever is
+/// The worker pool the derived-data engines run their scripts on.
+/// It runs READY tasks: whatever is
 /// submitted starts as soon as a thread of its lane is free, and its result is
 /// published back on the GUI thread.
 ///
 /// Keeps no per-node state: the consumer owns each node's one running run and one
-/// pending request and submits only when nothing runs
-/// (docs/derived_objects/ARCHITECTURE.md §11).
+/// pending request and submits only when nothing runs.
 ///
 /// Known limits:
 ///  - The half-core bound covers this pool only, not other users of

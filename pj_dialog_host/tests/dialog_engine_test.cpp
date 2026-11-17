@@ -40,7 +40,7 @@
 #include "host_info_capture.hpp"
 using namespace Qt::StringLiterals;
 
-// Defined in mock_dialog.cpp, linked statically
+// Defined in mock_dialog.cpp, linked statically.
 extern "C" const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 namespace {
@@ -88,9 +88,8 @@ const PJ_dialog_vtable_t* parserSlotHostVtable() {
       R"({"id":"parser-slot-host","name":"Parser Slot Host","version":"1.0.0"})");
 }
 
-// Parser-slot host whose protocol combo carries TWO entries, so a test can switch
-// the selected protocol at runtime and force a parser-dialog re-injection (which
-// bumps parser_dialog_generation).
+// Parser-slot host whose protocol combo has two entries: a test switches the protocol at run time to force a
+// parser-dialog re-injection (which bumps parser_dialog_generation).
 class TwoProtocolParserHostDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -134,10 +133,8 @@ const PJ_dialog_vtable_t* twoProtocolParserHostVtable() {
       R"({"id":"two-protocol-host","name":"Two Protocol Host","version":"1.0.0"})");
 }
 
-// Counters the CountingDialog writes into. Process-global because the vtable's
-// create fn (below) constructs the plugin behind the C ABI, so the test can't
-// hold a pointer to the instance — it reads the shared counters instead. One
-// dialog at a time (tests run sequentially); reset() before each use.
+// Counters the CountingDialog writes into. Process-global because the vtable's create function builds the plugin behind
+// the C ABI, so the test holds no pointer to it. One dialog at a time; reset() before each use.
 struct DialogCallCounters {
   int rejected = 0;
   int accepted = 0;
@@ -153,9 +150,8 @@ DialogCallCounters& dialogCallCounters() {
   return counters;
 }
 
-// Minimal dialog plugin that tallies its completion + tick callbacks so a test
-// can assert exactly-once reject/accept semantics and that ticks stop after
-// cancel. Reuses MockDialog's tiny UI (a QLineEdit + buttonBox).
+// Dialog plugin that tallies its completion and tick callbacks, to assert exactly-once reject and accept and that ticks
+// stop after cancel. Reuses MockDialog's UI (a QLineEdit and a buttonBox).
 class CountingDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -182,8 +178,7 @@ class CountingDialog : public PJ::DialogPluginTyped {
     data.setOkEnabled(true);
     return data.toJson();
   }
-  // Report a refresh every tick so DialogEngine records a tick_count via its
-  // applyAndDiff path; the test cross-checks that against engine stats.
+  // Reports a refresh every tick, so the test can cross-check the engine's tick_count.
   bool onTick() override {
     ++dialogCallCounters().ticks;
     return true;
@@ -247,11 +242,8 @@ const PJ_dialog_vtable_t* authoredSizeDialogVtable() {
       R"({"id":"authored-size-dialog","name":"Authored Size Dialog","version":"1.0.0"})");
 }
 
-// A plugin that NEVER clears __request_sub_dialog: every widget_data() (which the
-// host reads on each tick after onTick() returns true) re-requests a sub-dialog.
-// Pre-branch exec() opened at most one at a time; the WA_DeleteOnClose+open()
-// rewrite would spawn a fresh sub-dialog every tick without a stacking guard. The
-// test drives ticks and asserts exactly one sub-dialog exists.
+// A plugin that never clears __request_sub_dialog: every widget_data() re-requests a sub-dialog. Without a stacking
+// guard each tick would spawn another; the test drives ticks and asserts exactly one sub-dialog exists.
 class SubDialogSpamDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -274,8 +266,7 @@ class SubDialogSpamDialog : public PJ::DialogPluginTyped {
   std::string widget_data() override {
     PJ::WidgetData data;
     data.setText("name_input", "seed");
-    // Deliberately left set on every refresh — the "sub-dialog opens repeatedly"
-    // anti-pattern the host must now guard against.
+    // Left set on every refresh: the anti-pattern the host guards against.
     data.requestSubDialog(kSubUi);
     return data.toJson();
   }
@@ -361,11 +352,9 @@ const PJ_dialog_vtable_t* filePickerDialogVtable() {
       R"({"id":"file-picker-dialog","name":"File Picker Dialog","version":"1.0.0"})");
 }
 
-// Top-level host with a parser slot AND its own top-level "pick_file" file
-// picker button — the SAME widget name the injected parser dialog
-// (FilePickerDialog, see filePickerDialogVtable()) also uses for its picker.
-// Proves a top-level pick and a parser-scoped pick sharing a bare widget name
-// do not release each other's still-needed staging lease.
+// Top-level host with a parser slot and its own "pick_file" picker button, the same widget name the injected parser
+// dialog (FilePickerDialog, filePickerDialogVtable()) uses. A top-level pick and a parser-scoped pick sharing a bare
+// name must not release each other's still-needed staging lease.
 class TopLevelAndParserFilePickerHostDialog : public PJ::DialogPluginTyped {
  public:
   std::string manifest() const override {
@@ -427,9 +416,7 @@ const PJ_dialog_vtable_t* topLevelAndParserFilePickerHostVtable() {
 
 }  // namespace
 
-// ==========================================================================
-// Widget Binding Tests — programmatic widgets, no QUiLoader needed
-// ==========================================================================
+// ---- Widget binding: programmatic widgets, no QUiLoader ----
 
 class WidgetBindingTest : public ::testing::Test {
  protected:
@@ -465,8 +452,6 @@ class WidgetBindingTest : public ::testing::Test {
   QCheckBox* check_box_ = nullptr;
   QDialogButtonBox* button_box_ = nullptr;
 };
-
-// --- apply_widget_data ---
 
 TEST_F(WidgetBindingTest, ApplyText) {
   nlohmann::json data;
@@ -542,11 +527,9 @@ TEST_F(WidgetBindingTest, MissingWidgetIsIgnored) {
   data["nonexistent"]["text"] = "whatever";
   PJ::WidgetDataView view(data.dump());
 
-  // Should not crash
+  // Must not crash.
   PJ::applyWidgetData(root_, view);
 }
-
-// --- connect_widget_signals ---
 
 TEST_F(WidgetBindingTest, SignalTextChanged) {
   std::string captured_name;
@@ -597,7 +580,7 @@ TEST_F(WidgetBindingTest, SignalBlockerPreventsReentrant) {
   int call_count = 0;
   PJ::connectWidgetSignals(root_, [&](const std::string&, const std::string&) { call_count++; });
 
-  // apply_widget_data should NOT trigger signals (QSignalBlocker)
+  // applyWidgetData blocks the widget signals, so nothing fires.
   nlohmann::json data;
   data["name_input"]["text"] = "blocked-text";
   PJ::applyWidgetData(root_, PJ::WidgetDataView(data.dump()));
@@ -606,9 +589,7 @@ TEST_F(WidgetBindingTest, SignalBlockerPreventsReentrant) {
   EXPECT_EQ(line_edit_->text().toStdString(), "blocked-text");
 }
 
-// ==========================================================================
-// DialogEngine Tests — headless (no QDialog shown)
-// ==========================================================================
+// ---- DialogEngine, headless (no QDialog shown) ----
 
 class DialogEngineTest : public ::testing::Test {
  protected:
@@ -623,9 +604,8 @@ class DialogEngineTest : public ::testing::Test {
     return nullptr;
   }
 
-  // Count visible dialog windows. Canonical PJ::Dialog chrome embeds a plugin
-  // UI whose authored root may itself be a QDialog; that inner widget is
-  // content, not another window and must not look like a stacked sub-dialog.
+  // Counts visible dialog windows. The plugin UI's authored root may itself be a QDialog; embedded in the PJ::Dialog
+  // chrome it is content, not a stacked sub-dialog.
   static int visibleDialogCount() {
     int count = 0;
     for (QWidget* widget : QApplication::allWidgets()) {
@@ -700,11 +680,7 @@ TEST_F(DialogEngineTest, DestroyingParentRejectsPendingDialogOnce) {
   EXPECT_FALSE(engine.isDialogOpen());
 }
 
-// cancelActiveDialog() on an open dialog synchronously tears it down: exactly
-// one on_rejected reaches the plugin, the completion runs once with kRejected,
-// and — critically for the shutdown UAF fix — no tick fires after the cancel.
-// ABI-42: the engine announces itself once after construction; a modal dialog has no
-// embedded view host, so it never claims the scene-view capability.
+// The engine announces itself once after construction; a modal dialog never claims the scene-view capability.
 TEST_F(DialogEngineTest, HostInfoIsDeliveredWithoutTheSceneViewCapability) {
   dialogCallCounters().reset();
   PJ::DialogEngine engine{PJ::DialogHandle(countingDialogVtable())};
@@ -716,6 +692,8 @@ TEST_F(DialogEngineTest, HostInfoIsDeliveredWithoutTheSceneViewCapability) {
   engine.cancelActiveDialog();
 }
 
+// cancelActiveDialog() on an open dialog tears it down synchronously: exactly one on_rejected reaches the plugin, the
+// completion runs once with kRejected, and no tick fires after the cancel.
 TEST_F(DialogEngineTest, CancelActiveDialogRejectsOnceAndStopsTicking) {
   dialogCallCounters().reset();
   PJ::DialogEngineConfig config;
@@ -731,9 +709,8 @@ TEST_F(DialogEngineTest, CancelActiveDialogRejectsOnceAndStopsTicking) {
   ASSERT_TRUE(engine.isDialogOpen());
   ASSERT_NE(visibleDialog(), nullptr);
 
-  // Wait for the tick timer to fire so "zero ticks AFTER cancel" is a real
-  // assertion, not just a never-started timer. Wait for the tick itself, not a
-  // fixed delay: the first show's polish (font population) can outlast one.
+  // Waits for the tick timer to fire, so "zero ticks after cancel" is a real assertion rather than a never-started
+  // timer. It waits for the tick itself, not a fixed delay: the first show's polish (font population) can outlast one.
   EXPECT_TRUE(QTest::qWaitFor([] { return dialogCallCounters().ticks > 0; }, 5000))
       << "tick timer must have run while the dialog was open";
 
@@ -746,15 +723,14 @@ TEST_F(DialogEngineTest, CancelActiveDialogRejectsOnceAndStopsTicking) {
   EXPECT_FALSE(engine.isDialogOpen());
   EXPECT_EQ(visibleDialog(), nullptr) << "cancel must close the dialog";
 
-  // The tick timer stopped at co_return: no further tick after the cancel.
+  // The tick timer stopped: no tick after the cancel.
   const int ticks_at_cancel = dialogCallCounters().ticks;
   QTest::qWait(20);
   EXPECT_EQ(dialogCallCounters().ticks, ticks_at_cancel) << "no tick may fire after cancelActiveDialog";
 }
 
-// A second cancelActiveDialog() (and any cancel after the dialog already
-// completed) is a no-op: it must not deliver a second on_rejected or re-run the
-// completion. Guards the release-once contract the shutdown path leans on.
+// A second cancelActiveDialog(), or one after the dialog completed, is a no-op: no second on_rejected, no repeated
+// completion (the release-once contract the shutdown path leans on).
 TEST_F(DialogEngineTest, DoubleCancelActiveDialogIsNoOp) {
   dialogCallCounters().reset();
   PJ::DialogEngine engine{PJ::DialogHandle(countingDialogVtable())};
@@ -771,10 +747,8 @@ TEST_F(DialogEngineTest, DoubleCancelActiveDialogIsNoOp) {
   EXPECT_FALSE(engine.isDialogOpen());
 }
 
-// cancelActiveDialog() after the user accepted is a no-op — the stale functor a
-// shutdown-time canceler holds must not fire a second plugin callback once the
-// dialog completed normally (the DialogCancelFn "completed dialog = no-op"
-// contract).
+// cancelActiveDialog() after the user accepted is a no-op: the stale functor a shutdown-time canceler holds must not
+// fire a second plugin callback once the dialog completed normally.
 TEST_F(DialogEngineTest, CancelAfterAcceptIsNoOp) {
   dialogCallCounters().reset();
   PJ::DialogEngine engine{PJ::DialogHandle(countingDialogVtable())};
@@ -801,10 +775,8 @@ TEST_F(DialogEngineTest, CancelAfterAcceptIsNoOp) {
   EXPECT_EQ(dialogCallCounters().accepted, 1);
 }
 
-// V6: the main dialog opens APP-modal (not window-modal). Window-modality only
-// blocks the parent's window, leaving floating ADS dock tool-windows (separate
-// top-levels) interactive; app-modality restores the pre-branch exec() semantics
-// without a nested event loop.
+// The main dialog opens application-modal, not window-modal: window-modality only blocks the parent's window and leaves
+// floating dock tool-windows (separate top-levels) interactive.
 TEST_F(DialogEngineTest, OpenDialogIsApplicationModal) {
   PJ::DialogEngine engine{PJ::DialogHandle(vt_)};
   engine.openDialog(nullptr, [](PJ::DialogResult) {});
@@ -834,10 +806,9 @@ TEST_F(DialogEngineTest, CanonicalChromePreservesAuthoredDialogContentSize) {
   EXPECT_FALSE(engine.isDialogOpen());
 }
 
-// V11: a plugin that leaves __request_sub_dialog set in byte-identical refreshes
-// must yield EXACTLY ONE sub-dialog. The raw-payload guard consumes the command
-// once, while the active-dialog guard prevents stacking before the next tick.
-// The sub-dialog is also app-modal.
+// A plugin that leaves __request_sub_dialog set in byte-identical refreshes yields exactly one sub-dialog: the
+// raw-payload guard consumes the command once, and the active-dialog guard prevents stacking before the next tick. The
+// sub-dialog is application-modal too.
 TEST_F(DialogEngineTest, SubDialogDoesNotStackAcrossTicks) {
   PJ::DialogEngineConfig config;
   config.tick_interval_ms = 1;  // tick aggressively so many ticks fire during the wait
@@ -848,8 +819,8 @@ TEST_F(DialogEngineTest, SubDialogDoesNotStackAcrossTicks) {
   QDialog* main_dialog = visibleDialog();
   ASSERT_NE(main_dialog, nullptr);
 
-  // Wait for the first sub-dialog (a loaded runner may not tick within a fixed
-  // delay), then let a burst of ticks fire. Each would open another without the guard.
+  // Waits for the first sub-dialog (a loaded runner may not tick within a fixed delay), then lets a burst of ticks
+  // fire; each would open another without the guard.
   QElapsedTimer wait_clock;
   wait_clock.start();
   while (visibleDialogCount() < 2 && wait_clock.elapsed() < 2000) {
@@ -857,11 +828,11 @@ TEST_F(DialogEngineTest, SubDialogDoesNotStackAcrossTicks) {
   }
   QTest::qWait(50);
 
-  // One main dialog + exactly one sub-dialog = 2 visible dialogs (never growing).
+  // One main dialog and exactly one sub-dialog: two visible dialogs, never growing.
   const int sub_dialogs = visibleDialogCount() - 1;
   EXPECT_EQ(sub_dialogs, 1) << "a plugin leaving __request_sub_dialog set must open exactly one sub-dialog";
 
-  // The sub-dialog is a child of the main dialog and app-modal.
+  // The sub-dialog is a child of the main dialog and application-modal.
   QDialog* sub_dialog = nullptr;
   for (QDialog* candidate : main_dialog->findChildren<QDialog*>()) {
     if (candidate->isVisible() && candidate->isWindow()) {
@@ -872,16 +843,15 @@ TEST_F(DialogEngineTest, SubDialogDoesNotStackAcrossTicks) {
   ASSERT_NE(sub_dialog, nullptr);
   EXPECT_EQ(sub_dialog->windowModality(), Qt::ApplicationModal) << "the sub-dialog must be app-modal";
 
-  // Dismiss the sub-dialog. Re-emitting the same bytes is not a new one-shot
-  // request, so the byte-identical guard must not reopen it. A plugin that wants
-  // another sub-dialog must first publish a changed payload.
+  // Re-emitting the same bytes is not a new one-shot request, so the byte-identical guard must not reopen it; a plugin
+  // wanting another sub-dialog must first publish a changed payload.
   sub_dialog->reject();
   QTest::qWait(50);
   EXPECT_EQ(visibleDialogCount() - 1, 0) << "an identical one-shot request must not replay after dismissal";
 
   main_dialog->reject();
   EXPECT_FALSE(engine.isDialogOpen());
-  // The main dialog's teardown severs any lingering callbacks.
+  // The main dialog's teardown severs lingering callbacks.
   QTest::qWait(10);
 }
 
@@ -945,8 +915,8 @@ TEST_F(DialogEngineTest, AsyncFileSelectorStagesOneRequestAndRetainsLeaseUntilCo
 
   dialog->accept();
   EXPECT_EQ(nlohmann::json::parse(engine.savedConfig())["path"], "/staged/schema.proto");
-  // An accepted dialog hands its picks to the caller: a plugin may read them
-  // after the dialog (a DBC during import), so they live until the caller lets go.
+  // An accepted dialog hands its picks to the caller: a plugin may read them after the dialog (a DBC during import), so
+  // they live until the caller lets go.
   EXPECT_FALSE(weak_lease.expired()) << "an accepted pick must outlive the dialog";
   auto selected_files = engine.takeSelectedFiles();
   EXPECT_EQ(selected_files.size(), 1U);
@@ -981,10 +951,9 @@ TEST_F(DialogEngineTest, ARejectedDialogReleasesItsPicks) {
   EXPECT_TRUE(engine.takeSelectedFiles().empty());
 }
 
-// A std::nullopt completion (user cancelled the browser picker) must re-arm the
-// picker: file_picker_active is reset in the completion, so a second request for
-// the same widget fires the selector again rather than being swallowed as a
-// still-pending duplicate.
+// A std::nullopt completion (the user cancelled the browser picker) re-arms the picker: file_picker_active is reset in
+// the completion, so a second request for the same widget fires the selector again instead of being swallowed as a
+// pending duplicate.
 TEST_F(DialogEngineTest, AsyncFileSelectorCancelReArmsPicker) {
   PJ::DialogFileSelectionCompletion picker_completion;
   int picker_calls = 0;
@@ -1006,7 +975,7 @@ TEST_F(DialogEngineTest, AsyncFileSelectorCancelReArmsPicker) {
   ASSERT_EQ(picker_calls, 1);
   ASSERT_TRUE(picker_completion);
 
-  // User cancels the browser picker: no file, no lease. This must re-arm.
+  // The user cancels the browser picker: no file, no lease; the picker re-arms.
   picker_completion(std::nullopt);
 
   pick->click();
@@ -1016,9 +985,8 @@ TEST_F(DialogEngineTest, AsyncFileSelectorCancelReArmsPicker) {
   EXPECT_FALSE(engine.isDialogOpen());
 }
 
-// A picker completion that arrives AFTER the dialog was torn down must be a
-// no-op: the callbacks_alive gate (cleared at co_return) severs it, so no plugin
-// event fires and no lease is retained into a dead coroutine frame.
+// A picker completion that arrives after the dialog was torn down is a no-op: the callbacks_alive gate (cleared at
+// co_return) severs it, so no plugin event fires and no lease is retained into a dead coroutine frame.
 TEST_F(DialogEngineTest, AsyncFileSelectorCompletionAfterTeardownIsSevered) {
   PJ::DialogFileSelectionCompletion picker_completion;
   PJ::DialogEngineConfig config;
@@ -1037,12 +1005,12 @@ TEST_F(DialogEngineTest, AsyncFileSelectorCompletionAfterTeardownIsSevered) {
   pick->click();
   ASSERT_TRUE(picker_completion);
 
-  // Complete the dialog first, then fire the captured picker completion.
+  // The dialog completes first, then the captured picker completion fires.
   dialog->accept();
   ASSERT_TRUE(completed);
   ASSERT_FALSE(engine.isDialogOpen());
-  // The plugin never saw the file (it was accepted with no path); a completion
-  // after teardown must not change that. No crash, no lease, no plugin event.
+  // The plugin never saw the file (accepted with no path); a completion after teardown must not change that: no crash,
+  // no lease, no plugin event.
   EXPECT_EQ(nlohmann::json::parse(engine.savedConfig())["path"], "");
 
   auto lease = std::make_shared<int>(7);
@@ -1054,17 +1022,15 @@ TEST_F(DialogEngineTest, AsyncFileSelectorCompletionAfterTeardownIsSevered) {
       << "a post-teardown completion must not reach the plugin";
 }
 
-// A picker fired from a parser dialog, then superseded by a protocol change
-// (which re-injects a fresh parser dialog and bumps parser_dialog_generation),
-// must discard its completion: the stale completion's captured parser handle is
-// gone, so applying it would send a fileSelected event to the wrong (or a freed)
-// parser dialog. The generation guard drops it silently.
+// A picker fired from a parser dialog and then superseded by a protocol change (which re-injects a fresh parser dialog
+// and bumps parser_dialog_generation) discards its completion: its captured parser handle is gone, and applying it
+// would send a fileSelected event to the wrong or a freed parser dialog.
 TEST_F(DialogEngineTest, AsyncFileSelectorStaleParserGenerationRejected) {
   PJ::DialogFileSelectionCompletion picker_completion;
   int picker_calls = 0;
   PJ::DialogEngineConfig config;
-  // The parser dialog for every protocol is the file-picker plugin, so the
-  // injected parser widget carries a "pick_file" file picker.
+  // The parser dialog for every protocol is the file-picker plugin, so the injected parser widget carries a "pick_file"
+  // file picker.
   config.parser_dialog_provider = [](const std::string&) { return filePickerDialogVtable(); };
   config.file_selector = [&](QWidget*, const std::string&, const std::string&,
                              PJ::DialogFileSelectionCompletion completion) {
@@ -1084,8 +1050,8 @@ TEST_F(DialogEngineTest, AsyncFileSelectorStaleParserGenerationRejected) {
   ASSERT_EQ(picker_calls, 1);
   ASSERT_TRUE(picker_completion);
 
-  // Change the protocol: re-injects a fresh parser dialog, resets the parser
-  // handle, and bumps parser_dialog_generation. The captured completion is stale.
+  // Changing the protocol re-injects a fresh parser dialog and bumps parser_dialog_generation: the captured completion
+  // is stale.
   auto* combo = dialog->findChild<QComboBox*>(QStringLiteral("comboBoxProtocol"));
   ASSERT_NE(combo, nullptr);
   combo->setCurrentIndex(1);
@@ -1096,7 +1062,7 @@ TEST_F(DialogEngineTest, AsyncFileSelectorStaleParserGenerationRejected) {
   lease.reset();
   EXPECT_TRUE(weak_lease.expired()) << "a stale-generation completion must not retain the lease";
 
-  // The freshly injected parser dialog must not have received the stale path.
+  // The fresh parser dialog did not receive the stale path.
   auto* selected = dialog->findChild<QLabel*>(QStringLiteral("selected_path"));
   ASSERT_NE(selected, nullptr);
   EXPECT_NE(selected->text(), QStringLiteral("/staged/stale.proto"))
@@ -1130,8 +1096,8 @@ std::vector<std::weak_ptr<int>> pickTwice(QDialog* dialog, PJ::DialogFileSelecti
 }
 }  // namespace
 
-// One picker can fill several entries of the config (a CAN loader picks one DBC per interface with the same
-// button), so a re-pick must not release the earlier pick: every accepted pick is handed over on accept.
+// One picker can fill several config entries (a CAN loader picks one DBC per interface with the same button), so a
+// re-pick does not release the earlier pick: every accepted pick is handed over on accept.
 TEST_F(DialogEngineTest, AsyncFileSelectorReSelectionKeepsEveryPick) {
   PJ::DialogFileSelectionCompletion picker_completion;
   PJ::DialogEngineConfig config;
@@ -1178,16 +1144,14 @@ TEST_F(DialogEngineTest, AsyncFileSelectorRejectReleasesEveryPick) {
   EXPECT_TRUE(weak[1].expired());
 }
 
-// A top-level dialog's own file picker and its injected parser sub-dialog's
-// file picker can be authored (by independent plugins) with the SAME widget
-// name — "pick_file" here. A pick in one scope must not release the other
-// scope's lease. Assert both leases survive.
+// A top-level dialog's file picker and its injected parser dialog's picker can be authored by independent plugins with
+// the same widget name ("pick_file"). A pick in one scope must not release the other scope's lease: both survive.
 TEST_F(DialogEngineTest, AsyncFileSelectorKeepsLeasesAcrossTopLevelAndParserDialogs) {
   PJ::DialogFileSelectionCompletion picker_completion;
   int picker_calls = 0;
   PJ::DialogEngineConfig config;
-  // Every protocol's parser dialog is FilePickerDialog, which also has a
-  // "pick_file" widget — same name as the top-level host's own picker.
+  // Every protocol's parser dialog is FilePickerDialog, which also has a "pick_file" widget, the same name as the
+  // top-level host's picker.
   config.parser_dialog_provider = [](const std::string&) { return filePickerDialogVtable(); };
   config.file_selector = [&](QWidget*, const std::string&, const std::string&,
                              PJ::DialogFileSelectionCompletion completion) {
@@ -1201,7 +1165,7 @@ TEST_F(DialogEngineTest, AsyncFileSelectorKeepsLeasesAcrossTopLevelAndParserDial
   ASSERT_NE(dialog, nullptr);
   ASSERT_TRUE(engine.lastStats().parser_dialog_injected);
 
-  // Top-level pick first.
+  // The top-level pick first.
   auto* top_pick = dialog->findChild<QPushButton*>(QStringLiteral("pick_file"));
   ASSERT_NE(top_pick, nullptr);
   top_pick->click();
@@ -1214,10 +1178,8 @@ TEST_F(DialogEngineTest, AsyncFileSelectorKeepsLeasesAcrossTopLevelAndParserDial
   top_lease.reset();
   EXPECT_FALSE(weak_top.expired()) << "the top-level pick's lease must be retained";
 
-  // The parser sub-dialog's picker shares the widget name "pick_file", but it
-  // is a distinct QPushButton nested under pj_parser_slot; findChildren over
-  // the whole dialog returns both, so pick the one that isn't the top-level
-  // button already found above.
+  // The parser dialog's picker shares the widget name "pick_file" but is a distinct QPushButton under pj_parser_slot;
+  // findChildren over the whole dialog returns both, so take the one that is not the top-level button found above.
   QPushButton* parser_pick = nullptr;
   for (QPushButton* candidate : dialog->findChildren<QPushButton*>(QStringLiteral("pick_file"))) {
     if (candidate != top_pick) {
@@ -1235,8 +1197,7 @@ TEST_F(DialogEngineTest, AsyncFileSelectorKeepsLeasesAcrossTopLevelAndParserDial
   picker_completion(PJ::DialogSelectedFile{.backing_path = "/staged/parser.dat", .lease = parser_lease});
   parser_lease.reset();
 
-  // Both leases must be alive: the parser-scoped pick must not have replaced
-  // (and thus freed) the top-level scope's lease, or vice versa.
+  // Both leases are alive: neither scope's pick replaced (and freed) the other's.
   EXPECT_FALSE(weak_top.expired()) << "the top-level lease must survive the parser-scoped pick";
   EXPECT_FALSE(weak_parser.expired()) << "the parser-scoped lease must be retained";
 
@@ -1260,7 +1221,7 @@ TEST_F(DialogEngineTest, RunHeadlessWithTicks) {
   PJ::DialogHandle handle(vt_);
   PJ::DialogEngine engine(std::move(handle));
 
-  // mock_dialog has no tick behavior, but should still return valid widget data
+  // mock_dialog has no tick behavior but still returns valid widget data.
   std::string result = engine.runHeadless(5);
   auto j = nlohmann::json::parse(result);
   EXPECT_TRUE(j.contains("name_input"));
@@ -1276,7 +1237,7 @@ TEST_F(DialogEngineTest, ConfigCanBeSet) {
   PJ::DialogHandle handle(vt_);
   PJ::DialogEngine engine(std::move(handle), config);
 
-  // Should not crash — just validates config is stored
+  // Must not crash; checks the config is stored.
   std::string result = engine.runHeadless(1);
   EXPECT_FALSE(result.empty());
 }
@@ -1291,14 +1252,12 @@ TEST_F(DialogEngineTest, SavedConfigReturnsPluginConfig) {
   EXPECT_EQ(j["name"], "config_test");
 }
 
-// ==========================================================================
-// Full round-trip: widget binding + mock_dialog through DialogHandle
-// ==========================================================================
+// ---- Full round trip: widget binding and mock_dialog through DialogHandle ----
 
 TEST_F(DialogEngineTest, RoundTripWidgetBinding) {
   PJ::DialogHandle handle(vt_);
 
-  // Get initial widget data and apply to programmatic widgets
+  // The mock_dialog's initial widget data, applied to programmatic widgets.
   PJ::WidgetDataView view(handle.widget_data());
 
   auto* root = new QWidget();
@@ -1315,11 +1274,11 @@ TEST_F(DialogEngineTest, RoundTripWidgetBinding) {
 
   PJ::applyWidgetData(root, view);
 
-  // Verify the mock_dialog's initial state was applied
+  // The mock_dialog's initial state was applied.
   EXPECT_EQ(line_edit->text().toStdString(), "default");
   EXPECT_EQ(spin_box->value(), 10);
 
-  // Simulate user editing name via signal
+  // A user edit of the name, by signal.
   std::string captured_name;
   std::string captured_json;
   PJ::connectWidgetSignals(root, [&](const std::string& name, const std::string& json) {
@@ -1330,23 +1289,21 @@ TEST_F(DialogEngineTest, RoundTripWidgetBinding) {
   line_edit->setText("my_source");
   EXPECT_EQ(captured_name, "name_input");
 
-  // Send event to plugin
+  // The event goes to the plugin.
   bool refresh = handle.sendEvent(captured_name, captured_json);
   EXPECT_TRUE(refresh);
 
-  // Re-read and apply updated widget data
+  // The updated widget data is re-read and applied.
   PJ::WidgetDataView updated_view(handle.widget_data());
   PJ::applyWidgetData(root, updated_view);
 
-  // Verify name was updated in the plugin's state
+  // The plugin's state holds the new name.
   EXPECT_EQ(updated_view.text("name_input").value_or(""), "my_source");
 
   delete root;
 }
 
-// ==========================================================================
-// Table binding — selection changes must not rebuild rows
-// ==========================================================================
+// ---- Table binding: selection changes must not rebuild rows ----
 
 namespace {
 nlohmann::json tableData(
@@ -1358,9 +1315,8 @@ nlohmann::json tableData(
   return d;
 }
 
-// Read a two-column table back into a name→value map, asserting no cell is null.
-// EXPECT (not ASSERT) so a null cell still reports its row while the caller's own
-// ASSERT_EQ(rowCount) guards the loop bound.
+// Reads a two-column table into a name to value map, asserting no cell is null. EXPECT, not ASSERT, so a null cell
+// still reports its row while the caller's ASSERT_EQ(rowCount) guards the loop bound.
 std::map<std::string, std::string> gatherRowPairs(QTableWidget* tw, int row_count) {
   std::map<std::string, std::string> pairs;
   for (int r = 0; r < row_count; ++r) {
@@ -1374,9 +1330,8 @@ std::map<std::string, std::string> gatherRowPairs(QTableWidget* tw, int row_coun
 }
 }  // namespace
 
-// Selecting a row re-delivers identical rows under the same widget-data key.
-// The host must reuse the existing QTableWidgetItems (cheap) rather than
-// recreating them — this is what kept row clicks from rebuilding the table.
+// Selecting a row re-delivers identical rows under the same widget-data key: the host reuses the existing
+// QTableWidgetItems instead of recreating them.
 TEST(TableBinding, SelectionChangeReusesItems) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1416,9 +1371,8 @@ TEST(TableBinding, RowContentChangeRebuildsCells) {
   EXPECT_EQ(tw->item(1, 1)->text(), "W");
 }
 
-// Filtering: visible_rows hides the rows not in the set, and re-applying a wider
-// set (same rows ⇒ rebuild skipped) must still un-hide them. Without honoring
-// visible_rows the date/name/query filters do nothing.
+// visible_rows hides the rows not in the set, and re-applying a wider set (same rows, so the rebuild is skipped) still
+// un-hides them.
 TEST(TableBinding, VisibleRowsHideAndShowFilteredRows) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1439,18 +1393,15 @@ TEST(TableBinding, VisibleRowsHideAndShowFilteredRows) {
   EXPECT_FALSE(tw->isRowHidden(1));
   EXPECT_TRUE(tw->isRowHidden(2));
 
-  // Widen the filter — rows unchanged, so the item rebuild is skipped, but the
-  // hidden state must still update.
+  // Widen the filter: rows are unchanged so the item rebuild is skipped, but the hidden state still updates.
   PJ::applyWidgetData(&root, PJ::WidgetDataView(with_visible({0, 1, 2})));
   EXPECT_FALSE(tw->isRowHidden(0));
   EXPECT_FALSE(tw->isRowHidden(1));
   EXPECT_FALSE(tw->isRowHidden(2));
 }
 
-// Streaming parity: when a sequence's detail arrives, only that cell changes and
-// the row count is unchanged, so the item is updated in place (pointer kept)
-// rather than rebuilding the table — this is what makes detail fill in row by
-// row instead of all at once.
+// Streaming: when a sequence's detail arrives only that cell changes and the row count is unchanged, so the item is
+// updated in place (pointer kept) instead of rebuilding the table, and detail fills in row by row.
 TEST(TableBinding, SameShapeCellUpdateIsInPlace) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1469,9 +1420,8 @@ TEST(TableBinding, SameShapeCellUpdateIsInPlace) {
   EXPECT_EQ(tw->item(1, 1)->text(), "--");
 }
 
-// selected_items (text-keyed restore, setSelectedItems) must be honored for
-// QTableWidget the same way it already is for QListWidget — plugins with
-// sortable picker tables emit it instead of index-keyed selected_rows.
+// selected_items (text-keyed restore, setSelectedItems) is honored for QTableWidget as for QListWidget: sortable picker
+// tables emit it instead of index-keyed selected_rows.
 TEST(TableBinding, SelectedItemsRestoreByText) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1489,8 +1439,8 @@ TEST(TableBinding, SelectedItemsRestoreByText) {
   EXPECT_TRUE(tw->item(1, 0)->isSelected());
 }
 
-// The point of text-keyed restore: it must land on the right row even after the
-// view re-orders (sortingEnabled) — index-keyed selected_rows desyncs here.
+// Text-keyed restore lands on the right row even after the view re-orders (sortingEnabled), where index-keyed
+// selected_rows desyncs.
 TEST(TableBinding, SelectedItemsSurviveSortedView) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1502,7 +1452,7 @@ TEST(TableBinding, SelectedItemsSurviveSortedView) {
   PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
   ASSERT_EQ(tw->rowCount(), 2);
 
-  // Re-order the view the way a user header-click would.
+  // Re-orders the view as a user header click would.
   tw->sortItems(0, Qt::DescendingOrder);
   ASSERT_EQ(tw->item(0, 0)->text(), "a1");  // sorted: a1 now on top
 
@@ -1510,13 +1460,12 @@ TEST(TableBinding, SelectedItemsSurviveSortedView) {
   sel["tbl"]["selected_items"] = {"a0"};
   PJ::applyWidgetData(&root, PJ::WidgetDataView(sel.dump()));
 
-  // "a0" lives at visual row 1 after the sort — text-keyed restore must find it.
+  // "a0" lives at visual row 1 after the sort: the text-keyed restore must find it.
   EXPECT_TRUE(tw->item(1, 0)->isSelected());
   EXPECT_FALSE(tw->item(0, 0)->isSelected());
 }
 
-// Same reuse guarantee the index-keyed path has: a selection-only re-delivery
-// must not rebuild the QTableWidgetItems.
+// A selection-only re-delivery does not rebuild the QTableWidgetItems (as on the index-keyed path).
 TEST(TableBinding, SelectedItemsChangeReusesItems) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1539,12 +1488,11 @@ TEST(TableBinding, SelectedItemsChangeReusesItems) {
   EXPECT_TRUE(tw->item(1, 0)->isSelected());
 }
 
-// A picker table with sortingEnabled=true must survive being populated. Rows
-// arrive in the plugin's order; the host writes them by model-row index. If
-// sorting is not suspended during the write, QTableWidget re-sorts the model
-// mid-loop and the remaining writes land on the wrong rows.
+// A picker table with sortingEnabled survives being populated. Rows arrive in the plugin's order and are written by
+// model-row index; without suspending sorting during the write, QTableWidget re-sorts mid-loop and the remaining writes
+// land on the wrong rows.
 
-// Populate while sorting is active but no sort indicator has been chosen yet.
+// Populated while sorting is active but no sort indicator has been chosen yet.
 TEST(TableBinding, SortingActivePopulateKeepsRowIntegrity) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1560,8 +1508,8 @@ TEST(TableBinding, SortingActivePopulateKeepsRowIntegrity) {
   EXPECT_EQ(pairs.at("c"), "3");
 }
 
-// After the user sorts (active sort indicator), a shape change forces a full
-// rebuild. Without suspending sorting the rebuild leaves NULL cells.
+// After the user sorts (active sort indicator), a shape change forces a full rebuild; without suspending sorting it
+// leaves null cells.
 TEST(TableBinding, SortedViewFullRebuildKeepsRowIntegrity) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1581,8 +1529,8 @@ TEST(TableBinding, SortedViewFullRebuildKeepsRowIntegrity) {
   EXPECT_EQ(pairs.at("c"), "3");
 }
 
-// Same-shape in-place update where a sort-column cell changes text. Without
-// suspending sorting the in-place setText re-sorts mid-loop and duplicates a row.
+// A same-shape in-place update where a sort-column cell changes text: without suspending sorting the in-place setText
+// re-sorts mid-loop and duplicates a row.
 TEST(TableBinding, SortedViewInPlaceTextUpdateKeepsRowIntegrity) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1602,9 +1550,8 @@ TEST(TableBinding, SortedViewInPlaceTextUpdateKeepsRowIntegrity) {
   EXPECT_EQ(pairs.at("c"), "3");
 }
 
-// The protocol has no cell-edit event, so an editable cell would silently drop
-// the edit. The host forces every table read-only regardless of what the .ui
-// declared (here the QTableWidget defaults to editable).
+// The protocol has no cell-edit event, so an editable cell would silently drop the edit: the host forces every table
+// read-only whatever the .ui declared (here the QTableWidget defaults to editable).
 TEST(TableBinding, RowsFedTableIsForcedReadOnly) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1616,16 +1563,11 @@ TEST(TableBinding, RowsFedTableIsForcedReadOnly) {
   EXPECT_EQ(tw->editTriggers(), QAbstractItemView::NoEditTriggers);
 }
 
-// ==========================================================================
-// Table binding — index-keyed state must survive a user-sorted view
+// ---- Table binding: index-keyed state survives a user-sorted view ----
 //
-// Plugins compute row indices (selected_rows, visible_rows, disabled_rows,
-// radio_checked_row) against the order they delivered `rows` in, and interpret
-// emitted indices (table_radio_row, item_double_clicked_index) the same way.
-// The host must translate plugin order ↔ view order once sortingEnabled lets
-// the user re-order the view, or every index-keyed exchange lands on the
-// wrong rows.
-// ==========================================================================
+// Plugins compute row indices (selected_rows, visible_rows, disabled_rows, radio_checked_row) against the order they
+// delivered `rows` in, and interpret emitted indices (table_radio_row, item_double_clicked_index) the same way: the
+// host translates plugin order and view order once sortingEnabled lets the user re-order the view.
 
 namespace {
 
@@ -1639,8 +1581,7 @@ int rowOfText(QTableWidget* tw, int col, const char* text) {
   return -1;
 }
 
-// Last int emitted under `key` for widget `name` across the captured events;
-// nullopt when no such event was captured.
+// The last int emitted under `key` for widget `name` across the captured events; nullopt when none.
 std::optional<int> lastEmittedInt(
     const std::vector<std::pair<std::string, std::string>>& events, const std::string& name, const char* key) {
   std::optional<int> out;
@@ -1663,8 +1604,8 @@ int checkedRadioRow(QTableWidget* tw, int col) {
   return -1;
 }
 
-// Deliver rows a/b/c in plugin order, then re-order the view the way a user
-// header-click would (descending ⇒ view shows c,b,a).
+// Delivers rows a, b, c in plugin order, then re-orders the view as a user header click would (descending: the view
+// shows c, b, a).
 void deliverAbcAndSortDescending(QWidget* root, QTableWidget* tw) {
   PJ::applyWidgetData(root, PJ::WidgetDataView(tableData("tbl", {{"a", "1"}, {"b", "2"}, {"c", "3"}}, {}).dump()));
   ASSERT_EQ(tw->rowCount(), 3);
@@ -1675,8 +1616,7 @@ void deliverAbcAndSortDescending(QWidget* root, QTableWidget* tw) {
 
 }  // namespace
 
-// visible_rows carries plugin-order indices: {0,1} means "the rows delivered
-// as a and b", regardless of where the sort put them.
+// visible_rows carries plugin-order indices: {0,1} means the rows delivered as a and b, wherever the sort put them.
 TEST(TableBinding, VisibleRowsRespectSortedView) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1693,7 +1633,7 @@ TEST(TableBinding, VisibleRowsRespectSortedView) {
   EXPECT_TRUE(tw->isRowHidden(rowOfText(tw, 0, "c")));
 }
 
-// disabled_rows={0} means "the row delivered first" (a), not view row 0.
+// disabled_rows={0} means the row delivered first (a), not view row 0.
 TEST(TableBinding, DisabledRowsRespectSortedView) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1710,7 +1650,7 @@ TEST(TableBinding, DisabledRowsRespectSortedView) {
   EXPECT_TRUE(tw->item(rowOfText(tw, 0, "c"), 0)->flags() & Qt::ItemIsEnabled);
 }
 
-// cell_tooltips keyed "0,0" means "the row delivered first" (a), not view row 0.
+// cell_tooltips keyed "0,0" means the row delivered first (a), not view row 0.
 TEST(TableBinding, CellTooltipsRespectSortedView) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1727,8 +1667,8 @@ TEST(TableBinding, CellTooltipsRespectSortedView) {
   EXPECT_TRUE(tw->item(rowOfText(tw, 0, "c"), 0)->toolTip().isEmpty());
 }
 
-// A delivery that carries cell_tooltips states the complete set: a tooltip the
-// plugin dropped must not linger on its old cell.
+// A delivery carrying cell_tooltips states the complete set: a tooltip the plugin dropped does not linger on its old
+// cell.
 TEST(TableBinding, CellTooltipsDeliveryReplacesStaleOnes) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1749,9 +1689,8 @@ TEST(TableBinding, CellTooltipsDeliveryReplacesStaleOnes) {
   EXPECT_EQ(tw->item(rowOfText(tw, 0, "b"), 0)->toolTip(), "other");
 }
 
-// The streaming-picker shape (e.g. the ROS2 topic table): every tick re-delivers
-// rows plus an index-keyed selection computed in plugin order. Selection must
-// land on the delivered-first row (a) even though the view shows c on top.
+// Streaming picker shape: every tick re-delivers rows plus an index-keyed selection computed in plugin order. The
+// selection lands on the row delivered first (a) although the view shows c on top.
 TEST(TableBinding, SelectedRowsRespectSortedView) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1768,8 +1707,8 @@ TEST(TableBinding, SelectedRowsRespectSortedView) {
 
 namespace {
 
-// Radio-column fixture: radio widgets occupy column 0, so the row key text
-// lives in column 1 (a/b/c). radio_checked_row is a plugin-order index.
+// Radio-column fixture: radio widgets occupy column 0, so the row key text is in column 1 (a, b, c). radio_checked_row
+// is a plugin-order index.
 nlohmann::json radioTableData(int checked_row) {
   nlohmann::json d;
   d["tbl"]["headers"] = {"R", "Name"};
@@ -1781,8 +1720,8 @@ nlohmann::json radioTableData(int checked_row) {
 
 }  // namespace
 
-// radio_checked_row=0 refers to the row delivered as "a"; after a user sort on
-// the name column the check must follow that row, not view row 0.
+// radio_checked_row=0 refers to the row delivered as "a": after a user sort on the name column the check follows that
+// row, not view row 0.
 TEST(TableBinding, RadioApplyRespectsSortedView) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1800,10 +1739,9 @@ TEST(TableBinding, RadioApplyRespectsSortedView) {
   EXPECT_EQ(checkedRadioRow(tw, 0), rowOfText(tw, 1, "a"));
 }
 
-// A user sort with NO re-delivery: guards the Qt behavior the radio column
-// leans on — cell widgets are anchored to persistent model indexes, so the
-// checked radio travels with its row when the view re-sorts. If a Qt upgrade
-// ever breaks this, the host would need to re-sync radios after layoutChanged.
+// A user sort with no re-delivery guards the Qt behavior the radio column leans on: cell widgets are anchored to
+// persistent model indexes, so the checked radio travels with its row. If a Qt upgrade breaks it, the host would have
+// to re-sync radios after layoutChanged.
 TEST(TableBinding, RadioReChecksAfterUserSort) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1821,8 +1759,7 @@ TEST(TableBinding, RadioReChecksAfterUserSort) {
   EXPECT_EQ(checkedRadioRow(tw, 0), rowOfText(tw, 1, "a"));
 }
 
-// Clicking a radio must report the row's plugin index (its position in the
-// delivered order), not its current view position.
+// Clicking a radio reports the row's plugin index (its position in the delivered order), not its view position.
 TEST(TableBinding, RadioEmitTranslatesSortedViewRow) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1849,8 +1786,8 @@ TEST(TableBinding, RadioEmitTranslatesSortedViewRow) {
   EXPECT_EQ(*emitted, 2);
 }
 
-// Double-clicking a row must report its plugin index, not its view position —
-// plugins resolve the index against the array they delivered rows from.
+// Double-clicking a row reports its plugin index, not its view position: plugins resolve the index against the array
+// they delivered.
 TEST(TableBinding, TableDoubleClickEmitsPluginIndex) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1870,8 +1807,8 @@ TEST(TableBinding, TableDoubleClickEmitsPluginIndex) {
   EXPECT_EQ(*emitted, 2);
 }
 
-// Same contract for QListWidget: a sorted list re-orders the view, but the
-// double-click index the plugin receives must be the delivered-order position.
+// The same for QListWidget: a sorted list re-orders the view, but the double-click index is the delivered-order
+// position.
 TEST(TableBinding, ListDoubleClickEmitsPluginIndex) {
   QWidget root;
   auto* lw = new QListWidget(&root);
@@ -1895,8 +1832,8 @@ TEST(TableBinding, ListDoubleClickEmitsPluginIndex) {
   EXPECT_EQ(*emitted, 1);
 }
 
-// Two rows sharing a key text: the translation pairs duplicates positionally,
-// which keeps set-level semantics exact — both "x" rows visible, "y" hidden.
+// Two rows sharing a key text: the translation pairs duplicates positionally, which keeps set-level semantics exact
+// (both "x" rows visible, "y" hidden).
 TEST(TableBinding, DuplicateKeysStayConsistentUnderSort) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1920,11 +1857,8 @@ TEST(TableBinding, DuplicateKeysStayConsistentUnderSort) {
 
 namespace {
 
-// Radio-column fixture with a THIRD, differentiating column: two rows share
-// identical key-column ("Name") text but differ in "Type" — e.g. two
-// same-named topics disambiguated by type. Duplicate-key translation must
-// still resolve each row to its own distinct plugin index, not just any row
-// with a matching key.
+// Radio-column fixture with a third, differentiating column: two rows share key-column ("Name") text but differ in
+// "Type" (two same-named topics disambiguated by type). The translation resolves each row to its own plugin index.
 nlohmann::json duplicateKeyRadioTableData(int checked_row) {
   nlohmann::json d;
   d["tbl"]["headers"] = {"R", "Name", "Type"};
@@ -1936,10 +1870,8 @@ nlohmann::json duplicateKeyRadioTableData(int checked_row) {
 
 }  // namespace
 
-// radio_checked_row=0 refers to the row DELIVERED first ("x"/"typeA"), not any
-// row whose key-column text happens to match "x" — "typeB" also reads "x" in
-// the Name column, so a text-only lookup can't tell the two rows apart, and
-// the checked radio must still follow the one the plugin actually meant.
+// radio_checked_row=0 refers to the row delivered first ("x"/"typeA"), not any row whose key text matches "x": "typeB"
+// also reads "x" in the Name column, so a text-only lookup cannot tell them apart.
 TEST(TableBinding, RadioApplyDisambiguatesDuplicateKeysUnderSort) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1948,8 +1880,7 @@ TEST(TableBinding, RadioApplyDisambiguatesDuplicateKeysUnderSort) {
 
   PJ::applyWidgetData(&root, PJ::WidgetDataView(duplicateKeyRadioTableData(0).dump()));
   ASSERT_EQ(tw->rowCount(), 2);
-  // Sort descending on Type so the view now shows typeB above typeA — the
-  // duplicate "x" rows have swapped view positions relative to delivery order.
+  // Sorting descending on Type shows typeB above typeA: the duplicate "x" rows swapped view positions.
   tw->sortItems(2, Qt::DescendingOrder);
   tw->horizontalHeader()->setSortIndicator(2, Qt::DescendingOrder);
   ASSERT_EQ(tw->item(0, 2)->text(), "typeB");
@@ -1959,8 +1890,8 @@ TEST(TableBinding, RadioApplyDisambiguatesDuplicateKeysUnderSort) {
   EXPECT_EQ(checkedRadioRow(tw, 0), rowOfText(tw, 2, "typeA"));
 }
 
-// Clicking a radio on a duplicate-key row must report ITS OWN plugin index,
-// not the index of the other row sharing the same key-column text.
+// Clicking a radio on a duplicate-key row reports its own plugin index, not that of the other row with the same key
+// text.
 TEST(TableBinding, RadioEmitDisambiguatesDuplicateKeysUnderSort) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -1977,8 +1908,7 @@ TEST(TableBinding, RadioEmitDisambiguatesDuplicateKeysUnderSort) {
   tw->horizontalHeader()->setSortIndicator(2, Qt::DescendingOrder);
   ASSERT_EQ(tw->item(0, 2)->text(), "typeB");
 
-  // View row 0 is "typeB" — plugin index 1 — even though its Name column ("x")
-  // matches the other duplicate row too.
+  // View row 0 is "typeB", plugin index 1, though its Name column ("x") matches the other row too.
   auto* radio = qobject_cast<QRadioButton*>(tw->cellWidget(0, 0));
   ASSERT_NE(radio, nullptr);
   radio->click();
@@ -1988,9 +1918,8 @@ TEST(TableBinding, RadioEmitDisambiguatesDuplicateKeysUnderSort) {
   EXPECT_EQ(*emitted, 1);
 }
 
-// Tables whose rows never came from the plugin (predefined in a .ui, filled by
-// hand) have no recorded plugin order — index-keyed state must keep meaning
-// raw view rows there.
+// Tables whose rows never came from the plugin (declared in a .ui, filled by hand) have no recorded plugin order:
+// index-keyed state keeps meaning raw view rows there.
 TEST(TableBinding, NoStoredOrderFallsBackToRawIndex) {
   QWidget root;
   auto* tw = new QTableWidget(&root);
@@ -2010,9 +1939,7 @@ TEST(TableBinding, NoStoredOrderFallsBackToRawIndex) {
   EXPECT_TRUE(tw->item(1, 0)->isSelected());
 }
 
-// ==========================================================================
-// Code editor — caret offset round-trips via code_cursor
-// ==========================================================================
+// ---- Code editor: caret offset round-trips through code_cursor ----
 
 TEST(CodeEditorBinding, AppliesCodeCursor) {
   QWidget root;
@@ -2041,8 +1968,8 @@ TEST(CodeEditorBinding, ClampsOutOfRangeCodeCursor) {
   EXPECT_EQ(pte->textCursor().position(), 3);  // clamped to text length
 }
 
-// Opt-in (setCodeCaretTracking): a cursor move with no text edit emits a
-// code_changed event carrying the new caret offset.
+// Opt-in (setCodeCaretTracking): a cursor move with no text edit emits a code_changed event carrying the new caret
+// offset.
 TEST(CodeEditorBinding, CaretTrackingEmitsOnCursorMove) {
   QWidget root;
   auto* pte = new QPlainTextEdit(&root);
@@ -2076,9 +2003,8 @@ TEST(CodeEditorBinding, CaretTrackingEmitsOnCursorMove) {
   EXPECT_EQ(ev["code_cursor"], 3);
 }
 
-// Opt-out (the default): a cursor move emits nothing; a text edit still emits,
-// but without a caret offset — the pre-caret behavior, so editors that only
-// validate code aren't re-run on every cursor move.
+// Opt-out (the default): a cursor move emits nothing; a text edit still emits, without a caret offset, so editors that
+// only validate code are not re-run on every cursor move.
 TEST(CodeEditorBinding, NoCaretTrackingIgnoresCursorMoves) {
   QWidget root;
   auto* pte = new QPlainTextEdit(&root);
@@ -2114,9 +2040,7 @@ TEST(CodeEditorBinding, NoCaretTrackingIgnoresCursorMoves) {
   EXPECT_FALSE(ev.contains("code_cursor")) << "opt-out editor carries no caret offset";
 }
 
-// ==========================================================================
-// Named icon resolver
-// ==========================================================================
+// ---- Named icon resolver ----
 
 TEST(NamedIconResolver, MapsKnownIdsToThemedResourcePaths) {
   EXPECT_EQ(PJ::resolveNamedIconPath("link"), u":/resources/svg/link.svg"_s);
@@ -2133,17 +2057,13 @@ TEST(NamedIconResolver, ReturnsEmptyForUnknownOrEmptyId) {
   EXPECT_TRUE(PJ::resolveNamedIconPath("Link").isEmpty());
 }
 
-// ==========================================================================
-// Byte-identical payload skip (parity with PanelEngine's applyAndDiff guard)
-// ==========================================================================
+// ---- Byte-identical payload skip (parity with PanelEngine's applyAndDiff guard) ----
 
 namespace identical_mock {
 
-// Chatty-idle plugin: every tick reports "re-read me" while widget_data stays
-// byte-identical — the exact traffic the skip guard exists to absorb. After
-// `accept_after_ticks` ticks (when >= 0) the payload gains __request_accept
-// and stays byte-stable, so the request's first delivery must be honored —
-// there is no identical-bytes retry to fall back on.
+// Chatty idle plugin: every tick reports "re-read me" while widget_data stays byte-identical, the traffic the skip
+// guard absorbs. After `accept_after_ticks` ticks (when >= 0) the payload gains __request_accept and stays byte-stable,
+// so the request's first delivery must be honored: there is no identical-bytes retry to fall back on.
 struct Ctx {
   std::string manifest = R"({"name":"identical"})";
   std::string ui = R"(<ui version="4.0"><class>D</class><widget class="QWidget" name="D">
@@ -2154,8 +2074,8 @@ struct Ctx {
   int ticks = 0;
 };
 
-// Knob consumed by create(): ticks after which the payload raises
-// __request_accept (-1 = never). Set before constructing the DialogHandle.
+// Read by create(): the ticks after which the payload raises __request_accept (-1: never). Set before constructing the
+// DialogHandle.
 int& acceptAfterTicksKnob() {
   static int v = -1;
   return v;
@@ -2230,8 +2150,8 @@ TEST_F(DialogEngineTest, IdenticalPayloadTicksAreSkipped) {
   config.tick_interval_ms = 1;
   PJ::DialogEngine engine(std::move(handle), config);
 
-  // Close the modal from inside its own event loop, but only once enough ticks
-  // ran — gating on the live stats keeps this immune to slow-runner startup.
+  // Closes the modal from inside its own event loop, only once enough ticks ran: gating on the live stats keeps it
+  // immune to slow-runner startup.
   QTimer close_timer;
   close_timer.setInterval(20);
   QObject::connect(&close_timer, &QTimer::timeout, [&engine] {
@@ -2254,9 +2174,8 @@ TEST_F(DialogEngineTest, IdenticalPayloadTicksAreSkipped) {
   EXPECT_GE(stats.skipped_identical_count, stats.tick_count - 1);
 }
 
-// The first delivery of a payload carrying __request_accept must be honored on
-// the tick path itself: once the bytes go stable, the skip guard removes the
-// identical-bytes retry that could previously pick the command up later.
+// The first delivery of a payload carrying __request_accept is honored on the tick path itself: once the bytes go
+// stable, the skip guard removes any identical-bytes retry that could pick the command up later.
 TEST_F(DialogEngineTest, TickHonorsRequestAccept) {
   identical_mock::acceptAfterTicksKnob() = 2;
   PJ::DialogHandle handle(identical_mock::vtable());

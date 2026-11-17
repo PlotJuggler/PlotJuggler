@@ -25,26 +25,22 @@
 
 namespace pj::scene3d {
 
-/// The model family of the QRhi view: every ModelRenderable (RobotModel/URDF
-/// visuals and collisions, SceneEntities model primitives) as indexed meshes
-/// with PBR/Blinn materials and up to five textures, drawn one instance per
-/// submesh. It registers its colour pipelines (the view's registry owns them)
-/// and owns per-layer mesh/material/texture GPU state, the colour and
-/// shadow-caster instance buffers and the shadow-caster and EDL mesh-mask
-/// pipelines. The view owns the shadow map and EDL mask targets
-/// and replays this pass's prepared draws into them (submitShadowCasters,
-/// submitMeshMask).
+/// The model family of the QRhi view: every ModelRenderable (RobotModel/URDF visuals and collisions, SceneEntities
+/// model primitives) as indexed meshes with PBR/Blinn materials and up to five textures, drawn one instance per
+/// submesh. It registers its colour pipelines (the view's registry owns them) and owns per-layer mesh/material/texture
+/// GPU state, the colour and shadow-caster instance buffers and the shadow-caster and EDL mesh-mask pipelines. The
+/// view owns the shadow map and EDL mask targets and replays this pass's prepared draws into them
+/// (submitShadowCasters, submitMeshMask).
 ///
 /// Caches, all valid for one QRhi (release() drops them):
-///  - GPU meshes per layer, keyed by mesh key and MeshData identity: a
-///    modelRevision() bump rebuilds only keys that are new or whose pointer changed;
-///  - decoded textures per pass, keyed by TextureSource::key + colour space and
-///    reference-counted by the meshes that bind them, shared across layers;
-///  - wireframe edge lists, built on a mesh's first wireframe draw; the CPU copy
-///    is dropped once queued for upload;
-///  - the colour and shadow instances: rebuilt and re-uploaded only when the render
-///    origin, the shading inputs or the admitted draws (layer, revision, look and
-///    every draw's resolved TF placement) differ from the last prepared frame.
+///  - GPU meshes per layer, keyed by mesh key and MeshData identity: a modelRevision() bump rebuilds only keys that
+///    are new or whose pointer changed;
+///  - decoded textures per pass, keyed by TextureSource::key + colour space and reference-counted by the meshes that
+///    bind them, shared across layers;
+///  - wireframe edge lists, built on a mesh's first wireframe draw; the CPU copy is dropped once queued for upload;
+///  - the colour and shadow instances: rebuilt and re-uploaded only when the render origin, the shading inputs or the
+///    admitted draws (layer, revision, look and every draw's resolved TF placement) differ from the last prepared
+///    frame.
 class ModelRhiPass {
  public:
   struct MeshGpu;
@@ -63,29 +59,22 @@ class ModelRhiPass {
     DrawClass draw_class = DrawClass::kOpaque;
   };
 
-  /// Binds the setup's view uniforms (binding 0) and render mode (binding 8)
-  /// plus `lighting_uniforms` (binding 6: camera, lights, shadow parameters),
-  /// all view-owned and outliving release().
+  /// Binds the setup's view uniforms (binding 0) and render mode (binding 8) plus `lighting_uniforms` (binding 6:
+  /// camera, lights, shadow parameters), all view-owned and outliving release().
   [[nodiscard]] bool initialize(const RhiPassSetup& setup, QRhiBuffer* lighting_uniforms);
   [[nodiscard]] bool ready() const;
-  /// Adopts the view's model layers; drops GPU state of layers that left or
-  /// are hidden.
   void setLayers(const std::vector<ModelRenderable*>& layers);
-  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
   [[nodiscard]] bool hasLayers() const {
     return !layers_.empty();
   }
 
-  /// Places every draw call, applies the per-layer and per-view draw/triangle
-  /// budgets (colour and, when `shadows_requested`, shadow casting: hidden
-  /// robot visuals still cast, collisions never do), notes row warnings and
-  /// records the bounds of layers that contribute to them (lastBounds()).
+  /// Places every draw call, applies the per-layer and per-view draw/triangle budgets (colour and, when
+  /// `shadows_requested`, shadow casting: hidden robot visuals still cast, collisions never do), notes row warnings
+  /// and records the bounds of layers that contribute to them (lastBounds()).
   void admit(const PlaceFn& place, const MeshShadingParams& shading, bool shadows_requested);
-  /// Creates or refreshes GPU meshes/materials of admitted layers, builds this
-  /// frame's colour draws, shadow-caster draws and caster bounds (relative to
-  /// the render origin) and uploads the colour instances and pending
-  /// mesh/texture data. When the colour instance buffer cannot grow the frame
-  /// has no colour draws.
+  /// Creates or refreshes GPU meshes/materials of admitted layers, builds this frame's colour draws, shadow-caster
+  /// draws and caster bounds (relative to the render origin) and uploads the colour instances and pending mesh/texture
+  /// data. When the colour instance buffer cannot grow the frame has no colour draws.
   void prepare(const RhiFrameContext& frame, const MeshShadingParams& shading);
   /// The prepared colour draws of `layer`.
   [[nodiscard]] std::span<const Draw> drawsFor(const ModelRenderable* layer) const {
@@ -96,7 +85,6 @@ class ModelRhiPass {
       QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
       const QRhiViewport& viewport) const;
 
-  // ---- Shadow casting and EDL mask (targets owned and orchestrated by the view).
   [[nodiscard]] bool hasShadowCasters() const {
     return !shadow_draws_.empty();
   }
@@ -127,11 +115,9 @@ class ModelRhiPass {
   void clearShadowMap(QRhi* rhi, bool restore_bindings);
   /// Notes `error` on every layer with shadow casters this frame.
   void noteShadowFailure(const QString& error);
-  /// Creates the EDL mesh-mask pipelines for the view's mask target
-  /// `render_pass` (single-sample: coverage colour plus the scene depth), from
-  /// the colour pipelines' description; `depth_resolve`: that depth is a
-  /// resolved multisample one. True when they exist (they are kept until
-  /// releaseMeshMaskPipelines(), and the view releases them with its target).
+  /// Creates the EDL mesh-mask pipelines for the view's mask target `render_pass` (single-sample: coverage colour plus
+  /// the scene depth) from the colour pipelines' description; `depth_resolve`: that depth is a resolved multisample
+  /// one. True when they exist (kept until releaseMeshMaskPipelines(); the view releases them with its target).
   bool ensureMeshMaskPipelines(QRhi* rhi, QRhiRenderPassDescriptor* render_pass, bool depth_resolve);
   void releaseMeshMaskPipelines();
   [[nodiscard]] bool meshMaskReady() const {
@@ -234,9 +220,8 @@ class ModelRhiPass {
     bool edge_upload_pending = false;
   };
 
-  // ---- Draw policy: pure, GPU-free, and the one rule admit() and prepare() apply.
-  // Texture slots are in Material order: base colour, metallic-roughness, normal,
-  // occlusion, emissive.
+  // Draw policy: pure, GPU-free, and the one rule admit() and prepare() apply. Texture slots are in Material order:
+  // base colour, metallic-roughness, normal, occlusion, emissive.
 
   /// Whether `slot` holds sRGB-encoded colour (base colour, emissive), which
   /// model.frag decodes; the data maps must read their channels verbatim.

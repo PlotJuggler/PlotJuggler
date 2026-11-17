@@ -199,9 +199,7 @@ const std::array<UnitMesh, 5>& unitMeshes() {
   return meshes;
 }
 
-// The unit-mesh + per-instance input of the marker shaders: mesh position (0),
-// the mesh normal or edge centre (1), the instance model rows (2-5), its colour
-// (6) and optionally its cone taper (7).
+// The unit-mesh + per-instance input of the marker shaders (marker.vert's layout).
 QRhiVertexInputLayout instanceLayout(bool taper) {
   using Instance = MarkerRhiPass::Instance;
   QRhiVertexInputLayout input;
@@ -756,7 +754,7 @@ void MarkerRhiPass::releaseLayerGpu(LayerGpu& gpu) {
 
 void MarkerRhiPass::prepare(const RhiFrameContext& frame) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   draws_.clear();
   last_layer_count_ = 0;

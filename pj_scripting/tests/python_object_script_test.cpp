@@ -104,7 +104,7 @@ std::string errorOf(const Expected<ScriptBundle, ScriptError>& result) {
   return result ? std::string() : result.error().message;
 }
 
-// ---- D2 and compile once ----------------------------------------------------------
+// ---- compile once ----------------------------------------------------------
 
 TEST(PythonObjectScript, GlobalsDoNotLeakBetweenRuns) {
   auto counting = compile(R"PY(
@@ -168,7 +168,7 @@ TEST(PythonObjectScript, ScriptIsCompiledOncePerRevision) {
   EXPECT_EQ(g_compile_events, after_compile) << "a run executes the compiled code without parsing the source again";
 }
 
-// ---- the check before compiling (PY-06) ---------------------------------------------
+// ---- the check before compiling ---------------------------------------------
 
 TEST(PythonObjectScript, ValidateRejectsMissingEvaluate) {
   auto compiled = compile("x = 1\n");
@@ -216,7 +216,7 @@ TEST(PythonObjectScript, DunderAccessRejectedBeforeRun) {
   }
 }
 
-// ---- the sandbox layers (PY-03, GAP-24) ----------------------------------------------
+// ---- the sandbox layers ----------------------------------------------
 
 TEST(PythonObjectScript, OpenIsNotAvailable) {
   for (const char* name :
@@ -306,7 +306,7 @@ def evaluate(inputs, params):
   EXPECT_DOUBLE_EQ(numberOf(result), 2.0 + 5.0);
 }
 
-// ---- limits (GAP-25, the watchdog, the allocation cap) -------------------------------
+// ---- limits (the watchdog, the allocation cap) --------------------------------------
 
 TEST(PythonObjectScript, WatchdogInterruptsAPureLoop) {
   RunOptions options;
@@ -380,7 +380,7 @@ TEST(PythonObjectScript, AllocationCapFailsTheRun) {
       << "the next run has its own cap";
 }
 
-// GAP-25: while the lane is inside a native call that released the GIL, another thread's Python work proceeds, and
+// While the lane is inside a native call that released the GIL, another thread's Python work proceeds, and
 // it is neither audited as script code nor charged to the run's cap (both are per thread). The host registers the fake
 // native call as a module under an allowed root, as a binder would bind a native operation.
 TEST(PythonObjectScript, NativeOpReleasesTheGil) {
@@ -677,7 +677,7 @@ TEST(PythonObjectScript, CancelledRunFailsWithoutRunning) {
       << "a run cancelled while it ran publishes nothing";
 }
 
-// ---- objects, builders, pj.tf and media (slice 10b) -------------------------------------------------
+// ---- objects, builders, pj.tf and media --------------------------------------------------------------
 
 using test::FakeImageDecoder;
 using test::kNaN;
@@ -758,7 +758,7 @@ NamedValue imageInput(std::string name, std::string topic, Timestamp stamp, cons
   return input;
 }
 
-// US1 + US5, the twin of object_script_test.cpp's reference script (LUA-04).
+// The twin of object_script_test.cpp's reference script.
 constexpr const char* kReferenceScript = R"PY(
 def evaluate(inputs, params):
     cloud = inputs["cloud"]
@@ -913,7 +913,7 @@ def evaluate(inputs, params):
       "finished");
 }
 
-// D14, the twin of ObjectScript.CloudBuilderBuildsPresetsAndDownsamples: `pj.cloud` builds a preset cloud, `add` takes
+// The twin of ObjectScript.CloudBuilderBuildsPresetsAndDownsamples: `pj.cloud` builds a preset cloud, `add` takes
 // the point's values, `add_points` a sequence of them, and `downsample` keeps one centroid per cube.
 TEST(PythonObjectScript, CloudBuilderBuildsPresetsAndDownsamples) {
   auto result = runSource(
@@ -964,7 +964,7 @@ def evaluate(inputs, params):
       "finished");
 }
 
-// D16, the twin of ObjectScript.VoxelGridOutputIsProducible; indices are 0-based, as every Python index is.
+// The twin of ObjectScript.VoxelGridOutputIsProducible; indices are 0-based, as every Python index is.
 TEST(PythonObjectScript, VoxelGridOutputIsProducible) {
   auto result = runSource(
       R"PY(
@@ -1071,7 +1071,7 @@ TEST(PythonObjectScript, RetainedBuilderOutputsAndTheirViewsKeepCounting) {
   EXPECT_NE(views.find("native memory limit"), std::string::npos) << views;
 }
 
-// PY-05: an int64 field is a plain, exact Python int.
+// An int64 field is a plain, exact Python int.
 TEST(PythonObjectScript, Int64FieldsArePythonInts) {
   auto cloud = makeCloud({{0, 0, 0, 0}});
   cloud.timestamp_ns = 9'007'199'254'740'993LL;  // 2^53 + 1
@@ -1083,7 +1083,7 @@ TEST(PythonObjectScript, Int64FieldsArePythonInts) {
   EXPECT_DOUBLE_EQ(numberOf(result, "is_int"), 1.0);
 }
 
-// PY-05: the raw buffer is reachable only through the native methods.
+// The raw buffer is reachable only through the native methods.
 TEST(PythonObjectScript, BufferFieldIsNotExposed) {
   const std::string error = errorOf(runSource(
       "def evaluate(inputs, params):\n    return len(inputs['cloud'].data)\n", {objectInput("cloud", makeCloud({}))}));
@@ -1137,7 +1137,7 @@ def evaluate(inputs, params):
   }
 }
 
-// ARCHITECTURE §6: a list is a lazy sequence, never materialized on a field read. 200,000 elements as Python objects
+// A list is a lazy sequence, never materialized on a field read. 200,000 elements as Python objects
 // would take megabytes; under a 1 MiB cap the run reads, indexes and iterates the list, each element made and freed.
 TEST(PythonObjectScript, ListFieldIsReadLazily) {
   sdk::FrameTransforms transforms;
@@ -1196,12 +1196,12 @@ def evaluate(inputs, params):
   EXPECT_DOUBLE_EQ(numberOf(result, "min_y"), -2.0);
   EXPECT_DOUBLE_EQ(numberOf(result, "max_x"), 3.0);
   EXPECT_DOUBLE_EQ(numberOf(result, "finite"), 2.0);
-  EXPECT_DOUBLE_EQ(numberOf(result, "n"), 2.0);  // LUA-11: NaN records are skipped
+  EXPECT_DOUBLE_EQ(numberOf(result, "n"), 2.0);  // NaN records are skipped
   EXPECT_DOUBLE_EQ(numberOf(result, "sumx"), 4.0);
   EXPECT_DOUBLE_EQ(numberOf(result, "last"), 2.0);  // 0-based, NaN records keep their index
   EXPECT_DOUBLE_EQ(numberOf(result, "kept"), 2.0);
   EXPECT_DOUBLE_EQ(numberOf(result, "not_equal"), 3.0);
-  EXPECT_EQ(textOf(result, "frame"), "map");  // LUA-13
+  EXPECT_EQ(textOf(result, "frame"), "map");
   EXPECT_NEAR(numberOf(result, "moved_x"), 10.0, 1e-6);
   EXPECT_NEAR(numberOf(result, "moved_y"), 1.0, 1e-6);
   EXPECT_DOUBLE_EQ(numberOf(result, "count"), 4.0);
@@ -1216,7 +1216,7 @@ def evaluate(inputs, params):
   EXPECT_NE(wrong_type.find("point cloud"), std::string::npos) << wrong_type;
 }
 
-// BUD-15: retained native outputs share one budget.
+// Retained native outputs share one budget.
 TEST(PythonObjectScript, AggregateNativeCloudBudgetRejectsRetainedSecondOutput) {
   const std::vector<NamedValue> inputs{objectInput("cloud", makeLineCloud(100'000))};  // 1.6 MB
   constexpr std::size_t kBudget = 2'500'000;                                           // one crop fits, two do not
@@ -1285,7 +1285,7 @@ def evaluate(inputs, params):
   EXPECT_DOUBLE_EQ(numberOf(none, "frames"), 0.0);
   EXPECT_EQ(textOf(none, "now"), "1234567890123456789");  // exact past 2^53
 
-  // GAP-29: at an object, the header clock at the object's own stamp on the dataset clock (its shift applied).
+  // At an object, the header clock at the object's own stamp on the dataset clock (its shift applied).
   constexpr int64_t kShift = 1000 * kSecond;
   pj::tf::TransformBuffer buffer(pj::tf::TransformBuffer::kKeepAll);
   test::addTf(buffer, "map", "lidar", 1100 * kSecond, 1300 * kSecond, {1, 0, 0});
@@ -1314,7 +1314,7 @@ def evaluate(inputs, params):
   EXPECT_NE(range.find("time out of range"), std::string::npos) << range;
 }
 
-// ---- observation flags (CACHE-09) ------------------------------------------------------------------
+// ---- observation flags ------------------------------------------------------------------
 
 ScriptBundle runObserving(const std::string& body, const RunOptions& host) {
   auto result = runSource("def evaluate(inputs, params):\n    " + body + "\n", {}, {}, "{}", host);
@@ -1387,7 +1387,7 @@ TEST(PythonObjectScript, AFailedRunReportsWhatItObserved) {
   EXPECT_TRUE(result.error().observed_query_clock);
 }
 
-// ---- images (MED-18's binder half, the twins of object_script_test.cpp's) ----------------------------------
+// ---- images (the twins of object_script_test.cpp's) ----------------------------------
 
 TEST(PythonObjectScript, DecodedPixelsMatchLuau) {
   auto result = runSource(
@@ -1488,7 +1488,7 @@ TEST(PythonObjectScript, ParserDepthImageSupportsProjectionAndRejectsOrdinaryIma
   EXPECT_EQ(reasonOf(result, "cloud"), "depth must be rectified before unprojection");
 }
 
-// GAP-25: every operation that walks the data runs without the GIL. The probes are the run's cancel check, which the
+// Every operation that walks the data runs without the GIL. The probes are the run's cancel check, which the
 // cloud and image operations poll, and the decoder.
 class GilProbeDecoder final : public IImageDecoder {
  public:
@@ -1548,7 +1548,7 @@ TEST(PythonObjectScript, NativeOpsReleaseTheGil) {
   EXPECT_EQ(decoder->held.load(), 0) << "the decoder ran holding the GIL";
 }
 
-// BUD-18: the watchdog never interrupts a native call. The crop's cancel check, polled every 65536 records, observes
+// The watchdog never interrupts a native call. The crop's cancel check, polled every 65536 records, observes
 // the native call: its first poll sleeps past the 1 ms deadline, so the watchdog fires while the crop runs; the crop
 // still polls as often as an untimed one (it ran to its end), and the timeout lands after it.
 TEST(PythonObjectScript, WatchdogDoesNotInterruptANativeCall) {
@@ -1575,7 +1575,7 @@ TEST(PythonObjectScript, WatchdogDoesNotInterruptANativeCall) {
   EXPECT_EQ(polls, untimed_polls) << "the crop ran to its end before the timeout was delivered";
 }
 
-// PY-05 and the sandbox of slice 10a: no proxy has a name beyond its documented ones (no conduit or buffer to a raw
+// No proxy has a name beyond its documented ones (no conduit or buffer to a raw
 // pointer), takes an attribute (a shared one would carry state into the next run) or exposes a buffer.
 TEST(PythonObjectScript, ProxiesExposeOnlyTheirDocumentedNames) {
   auto result = runSource(
@@ -1922,7 +1922,7 @@ TEST(PythonObjectScript, AReturnedInputReleasesItsValueBeforeItsKeepalive) {
   EXPECT_TRUE(loaded.expired());
 }
 
-// GAP-25 and the busy guard: `xyz_points()` scans a run of non-finite records without the GIL, so another thread runs
+// The busy guard: `xyz_points()` scans a run of non-finite records without the GIL, so another thread runs
 // Python meanwhile, and the iterator refuses to advance from it while it scans. The scan hook holds the lane's scan
 // open until this thread has tried, through the iterator the script stashed. No step races the clock: the waits are
 // bounded only to fail instead of hang, and the run's watchdog is far above any scheduling delay.
@@ -2497,8 +2497,9 @@ TEST(PythonObjectScriptBench, PerCallSetup) {
   }
 }
 
-// PJ_BENCH=1 prints the cost of iterating a 100,000-element list field (Luau: 112 ns per element, ARCHITECTURE §19)
-// and of the xyz_points() iterator over 100,000 points, per element; median of 5 runs.
+// PJ_BENCH=1 prints the cost of iterating a 100,000-element list field and of the xyz_points() iterator over 100,000
+// points, per element; median of 5 runs. The Luau figures are in docs/derived_objects/ARCHITECTURE.md "Reference
+// numbers".
 TEST(PythonObjectScriptBench, ListIterationAndXyzPoints) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";

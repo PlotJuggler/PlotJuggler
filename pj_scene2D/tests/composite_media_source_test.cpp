@@ -210,8 +210,7 @@ TEST(CompositeMediaSourceTest, GpuRectificationAvailabilityFansOutToAllLayers) {
 TEST(CompositeMediaSourceTest, PreservesRectifyMapWhenPromotingBaseToPixelLayer) {
   // A camera image enters the composite as a layer's `base` and is reassembled
   // into the composite's `pixel_layers`. The deferred-GPU-rectify handle must
-  // survive that promotion, or the widget's pixel-layer path cannot rectify it
-  // (the bug: composited cameras rendered raw + misaligned overlays).
+  // survive that promotion, or a composited camera shows raw under misaligned overlays.
   UndistortMap built;
   built.out_width = 1920;
   built.out_height = 886;
@@ -296,8 +295,8 @@ TEST(CompositeMediaSourceTest, InvalidateFansOutThroughBorrowedToSources) {
   EXPECT_EQ(b.invalidate_calls, 1);
 }
 
-// SCN-11 (changed by D30: no readiness gate): a derived overlay whose node computes publishes nothing new, so at
-// the next cursor the composite keeps its previous overlay beside the fresh image.
+// A derived overlay whose node is still computing publishes nothing new (there is no readiness gate), so at the next
+// cursor the composite keeps its previous overlay beside the fresh image.
 TEST(CompositeMediaSourceTest, PendingDerivedLayerKeepsItsPreviousOverlay) {
   MockSource image;
   image.emit_base = true;
@@ -318,8 +317,8 @@ TEST(CompositeMediaSourceTest, PendingDerivedLayerKeepsItsPreviousOverlay) {
   EXPECT_EQ(frame->overlays.size(), 1u) << "the previous result stays shown while the next computes";
 }
 
-// SCN-12 (changed by D30): a missing input or an error publishes an empty tombstone, which replaces the overlay:
-// the image stays, with no overlay.
+// A missing input or an error publishes an empty tombstone, which replaces the overlay: the image stays, with no
+// overlay.
 TEST(CompositeMediaSourceTest, ATombstoneShowsTheImageWithAnEmptyOverlay) {
   MockSource image;
   image.emit_base = true;

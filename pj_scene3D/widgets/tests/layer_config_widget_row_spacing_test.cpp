@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Every layer's Settings-panel config widget must use the same vertical row
-// pitch (Space::Snug) as the built-in Grid / Transforms-and-RobotModel grids in
-// Scene3DConfigPanel, so switching the selected topic doesn't visibly loosen or
-// tighten the panel. PosesInFrameLayer and SceneEntitiesLayer already followed
-// this convention; the rest had drifted to the looser Space::Comfortable.
+// Every layer's Settings-panel config widget must use the same vertical row pitch (Space::Snug) as the built-in Grid /
+// Transforms-and-RobotModel grids in Scene3DConfigPanel, so switching the selected topic does not visibly loosen or
+// tighten the panel.
 
 #include <gtest/gtest.h>
 

@@ -38,7 +38,6 @@ QString fixturePath(const char* name) {
   return QString(PJ_SCENE3D_FIXTURES_DIR) + "/meshes/" + QLatin1String(name);
 }
 
-// Every emitted normal must be unit length (GenSmoothNormals guarantees them).
 void expectPopulatedNormals(const MeshData& mesh) {
   ASSERT_FALSE(mesh.vertices.empty());
   bool any_nonzero = false;
@@ -52,7 +51,6 @@ void expectPopulatedNormals(const MeshData& mesh) {
   EXPECT_TRUE(any_nonzero);
 }
 
-// Axis-aligned bounds of the loaded geometry, for orientation assertions.
 struct Bounds {
   glm::vec3 min{0.0f};
   glm::vec3 max{0.0f};
@@ -72,7 +70,6 @@ Bounds computeBounds(const MeshData& mesh) {
   return b;
 }
 
-// Indices must all be in range and form whole triangles.
 void expectValidIndices(const MeshData& mesh) {
   ASSERT_FALSE(mesh.indices.empty());
   EXPECT_EQ(mesh.indices.size() % 3, 0u);
@@ -83,8 +80,7 @@ void expectValidIndices(const MeshData& mesh) {
   ASSERT_FALSE(mesh.submeshes.empty());
   std::vector<bool> covered(mesh.indices.size(), false);
   for (const SubMesh& submesh : mesh.submeshes) {
-    // Loader invariant: every emitted submesh carries a material (a neutral
-    // fallback when the source has none) — see SubMesh in mesh_data.h.
+    // Loader invariant: every emitted submesh carries a material (a neutral fallback when the source has none).
     ASSERT_NE(submesh.material, nullptr);
     EXPECT_EQ(submesh.index_count % 3, 0u);
     ASSERT_LE(submesh.index_offset, mesh.indices.size());
@@ -98,8 +94,6 @@ void expectValidIndices(const MeshData& mesh) {
   }
 }
 
-// --- Path load: STL ---------------------------------------------------------
-
 TEST(MeshLoaderTest, LoadsStlFromPath) {
   MeshLoader loader;
   QFuture<MeshData> future = loader.load(fixturePath("cube.stl"));
@@ -108,13 +102,11 @@ TEST(MeshLoaderTest, LoadsStlFromPath) {
   EXPECT_FALSE(mesh.vertices.empty());
   expectValidIndices(mesh);
   expectPopulatedNormals(mesh);
-  // A cube triangulates to 12 triangles.
   EXPECT_EQ(mesh.indices.size(), 36u);
 }
 
-// --- Path load: Collada (DAE) -----------------------------------------------
-// Proves the assimp Conan `with_collada=True` option name is correct: a wrong
-// name silently disables the importer and this would return empty geometry.
+// Proves the assimp Conan `with_collada=True` option name: a wrong name silently disables the importer and returns
+// empty geometry.
 
 // MeshLoader caches a path's future and hands it to every caller: taking the
 // result for one import must leave it intact for the next.
@@ -152,15 +144,10 @@ TEST(MeshLoaderTest, LoadsColladaFromPath) {
   EXPECT_EQ(mesh.indices.size(), 36u);
 }
 
-// --- Coordinate system: Z_UP Collada arrives Z-up after loading -------------
-// Regression guard for the assimp Collada up-axis (Phase-2 review FIX 1).
-// assimp normalizes a <up_axis>Z_UP</up_axis> file to its internal Y-up via the
-// root-node transform; wantsZUpFlip("dae") then re-applies a +90deg X rotation
-// to land Z-up in our world. zup_marker.dae is an ASYMMETRIC spike (a symmetric
-// cube cannot reveal a 90deg X-rotation): apex authored at (0,0,1), base in z=0
-// extended slightly along +Y (0.1) so both the apex and the base feature pin
-// the orientation. Values below are the EMPIRICALLY-VERIFIED Z-up result —
-// if a future change drops or doubles the flip, this fails loudly.
+// assimp normalizes a <up_axis>Z_UP</up_axis> file to its internal Y-up via the root-node transform;
+// wantsZUpFlip("dae") then re-applies a +90deg X rotation to land Z-up in our world. zup_marker.dae is an ASYMMETRIC
+// spike (a symmetric cube cannot reveal it): apex authored at (0,0,1), base in z=0 extended slightly along +Y (0.1).
+// The values below are the empirically verified Z-up result: a dropped or doubled flip fails here.
 
 TEST(MeshLoaderTest, ColladaZUpFixtureLoadsZUp) {
   MeshLoader loader;
@@ -169,14 +156,12 @@ TEST(MeshLoaderTest, ColladaZUpFixtureLoadsZUp) {
   expectValidIndices(mesh);
 
   const Bounds b = computeBounds(mesh);
-  // Apex is the highest-|z| vertex and sits near z=+1; the +Y base feature is
-  // small (~0.1). After the flip, z-extent (~1.0) must dominate y-extent (~0.1).
+  // The apex sits near z=+1 and the +Y base feature is small (~0.1): after the flip z-extent (~1.0) must dominate y.
   EXPECT_GT(b.extent().z, 0.9f) << "Z-up apex collapsed — flip missing/wrong";
   EXPECT_LT(b.extent().y, 0.3f) << "apex leaked into +Y — geometry still Y-up";
   EXPECT_GT(b.extent().z, b.extent().y) << "max-z extent must dominate max-y extent for Z-up";
   EXPECT_NEAR(b.max.z, 1.0f, 1e-3f) << "apex should land at z=+1";
 
-  // Find the apex (largest z) and confirm it is the authored (0,0,1).
   const Vertex* apex = &mesh.vertices.front();
   for (const auto& v : mesh.vertices) {
     if (v.position.z > apex->position.z) {
@@ -245,11 +230,8 @@ TEST(MeshLoaderTest, ColladaFromMemoryNeverResolvesAbsoluteTextureRefToLocalFile
   }
 }
 
-// --- In-memory load (embedded path) -----------------------------------------
-// loadFromMemory feeds the format hint so assimp picks the importer for a
-// headerless buffer. We exercise the Collada bytes here and the binary glTF
-// (.glb) importer below — the .glb path is the real embedded format the Phase 4
-// Waymo SceneEntity will use.
+// loadFromMemory feeds the format hint so assimp picks the importer for a headerless buffer: Collada bytes here,
+// binary glTF (.glb, the embedded-asset format) below.
 
 TEST(MeshLoaderTest, LoadsFromMemory) {
   MeshLoader loader;
@@ -262,12 +244,8 @@ TEST(MeshLoaderTest, LoadsFromMemory) {
   expectPopulatedNormals(mesh);
 }
 
-// --- In-memory load: binary glTF (.glb) -------------------------------------
-// Exercises the glTF importer in-memory (FIX 2): the Y->Z flip path is only
-// reachable via glTF, and that importer had no in-memory test. zup_marker.glb is
-// a hand-crafted single-triangle GLB (12-byte header + JSON chunk + BIN chunk,
-// produced with stdlib struct+json — no external libs). Loading via the "glb"
-// hint must yield non-empty geometry; loadFromMemory flips it to Z-up.
+// The glTF importer in memory: the Y->Z flip path is only reachable via glTF. zup_marker.glb is a hand-crafted
+// single-triangle GLB; loading via the "glb" hint must yield non-empty geometry, which loadFromMemory flips to Z-up.
 
 TEST(MeshLoaderTest, LoadsGlbFromMemory) {
   MeshLoader loader;
@@ -279,21 +257,16 @@ TEST(MeshLoaderTest, LoadsGlbFromMemory) {
   EXPECT_FALSE(mesh.vertices.empty());
   expectValidIndices(mesh);
   expectPopulatedNormals(mesh);
-  // One triangle -> 3 indices.
   EXPECT_EQ(mesh.indices.size(), 3u);
-  // Authored Y-up apex at (0,1,0); loadFromMemory("glb") applies the Y->Z flip,
-  // so it must land Z-up at (0,0,1).
+  // Authored Y-up apex at (0,1,0); loadFromMemory("glb") flips it to Z-up at (0,0,1).
   const Bounds b = computeBounds(mesh);
   EXPECT_GT(b.extent().z, b.extent().y) << "glb apex still Y-up — flip not applied";
   EXPECT_NEAR(b.max.z, 1.0f, 1e-3f) << "glb apex should land at z=+1 after flip";
 }
 
-// --- Embedded glTF material: textures-in-the-GLB + PBR factors ---------------
-// embedded_base.glb is a hand-built textured quad (stdlib struct+json, no libs)
-// whose base-color image is embedded as a bufferView PNG and whose material sets
-// metallic/roughness/emissive factors. This is the Waymo SceneEntity case: the
-// loader must extract the embedded image into inline bytes (not a path) and read
-// the PBR factors, rather than dropping the texture as "*N".
+// embedded_base.glb is a hand-built textured quad whose base-color image is an embedded bufferView PNG and whose
+// material sets metallic/roughness/emissive factors (the embedded-asset SceneEntity case): the loader must extract the
+// image into inline bytes (not a path) and read the PBR factors, rather than dropping the texture as "*N".
 
 TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
   MeshLoader loader;
@@ -304,14 +277,12 @@ TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
   ASSERT_FALSE(mesh.submeshes.empty());
 
   const Material& material = *mesh.submeshes.front().material;
-  // The embedded base-color image arrives as inline bytes (still PNG-encoded),
-  // keyed by content hash — no external path.
+  // The embedded base-color image arrives as inline bytes (still PNG-encoded), keyed by content hash.
   EXPECT_FALSE(material.base_color.empty());
   EXPECT_FALSE(material.base_color.bytes.empty()) << "embedded base-color texture was dropped";
   EXPECT_TRUE(material.base_color.path.isEmpty());
   EXPECT_TRUE(material.base_color.key.rfind("emb:", 0) == 0) << material.base_color.key;
 
-  // PBR factors read from the material (not the renderer fallback).
   EXPECT_TRUE(material.has_pbr);
   EXPECT_NEAR(material.metallic_factor, 0.25f, 1e-3f);
   EXPECT_NEAR(material.roughness_factor, 0.75f, 1e-3f);
@@ -320,16 +291,14 @@ TEST(MeshLoaderTest, EmbeddedGlbExtractsBaseColorTextureAndPbrFactors) {
   EXPECT_NEAR(material.emissive_factor.z, 0.30f, 1e-3f);
   EXPECT_EQ(material.alpha_mode, AlphaMode::kOpaque);
 
-  // Maps the fixture does not carry stay empty (no false positives).
   EXPECT_TRUE(material.metallic_roughness.empty());
   EXPECT_TRUE(material.normal.empty());
   EXPECT_TRUE(material.emissive.empty());
 }
 
-// The W19i fixture carries all five glTF metallic-roughness material maps in
-// one GLB. Each must remain an inline encoded capability with a stable content
-// key so the renderer can apply its slot-specific color space without reopening
-// a path.
+// The embedded-PBR fixture carries all five glTF metallic-roughness material maps in one GLB. Each must remain an
+// inline encoded capability with a stable content key so the renderer can apply its slot-specific color space without
+// reopening a path.
 TEST(MeshLoaderTest, EmbeddedPbrGlbExtractsAllFiveMaterialMaps) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_pbr.glb");
@@ -392,9 +361,8 @@ TEST(MeshLoaderTest, EmbeddedNeutralGlbIsAMapFreeOpaqueControl) {
   EXPECT_EQ(material.emissive_factor, glm::vec3(0.0F));
 }
 
-// The embedded-texture cache key is a content hash, so re-loading the same bytes
-// yields the same key — this is what lets the renderer's per-context texture
-// cache survive a QRhi recreation and dedup identical embedded images.
+// The embedded-texture cache key is a content hash, so re-loading the same bytes yields the same key: the renderer's
+// per-context texture cache survives a QRhi recreation and dedups identical embedded images.
 TEST(MeshLoaderTest, EmbeddedTextureKeyIsStableAcrossLoads) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");
@@ -408,10 +376,9 @@ TEST(MeshLoaderTest, EmbeddedTextureKeyIsStableAcrossLoads) {
   EXPECT_FALSE(a.submeshes.front().material->base_color.key.empty());
 }
 
-// aiProcess_CalcTangentSpace must populate per-vertex tangents for normal mapping.
-// embedded_base.glb's UVs map U->+Y so the computed tangent is unambiguously not
-// the (1,0,0) default; after the glb Y->Z flip it lands at (0,0,1). Each tangent
-// must be unit length, orthogonal to the normal, and carry a +/-1 handedness.
+// aiProcess_CalcTangentSpace must populate per-vertex tangents for normal mapping. embedded_base.glb's UVs map U->+Y,
+// so the computed tangent is unambiguously not the (1,0,0) default; after the glb Y->Z flip it lands at (0,0,1). Each
+// tangent must be unit length, orthogonal to the normal, and carry a +/-1 handedness.
 TEST(MeshLoaderTest, GeneratesTangentBasis) {
   MeshLoader loader;
   const QByteArray bytes = readFixtureBytes("embedded_base.glb");
@@ -430,14 +397,9 @@ TEST(MeshLoaderTest, GeneratesTangentBasis) {
   }
 }
 
-// --- Cache: same path returns the SAME cached future ------------------------
-// A cache HIT means the second load() must not re-run the importer. Comparing
-// vertex/index counts alone would also pass if it re-imported (deterministic
-// output), so that proves nothing. Instead we prove identity: load() returns
-// the cached QFuture by value, and copies of one future share the same
-// QFutureInterface result storage. The iterator's resultPointer therefore
-// aliases the same MeshData object for a hit; a cache miss (re-import) would
-// allocate a distinct future with its own storage at a different address.
+// A cache HIT means the second load() must not re-run the importer. Equal counts would also pass after a deterministic
+// re-import, so identity is checked: load() returns the cached QFuture by value and copies of one future share the
+// same result storage, so a hit's resultPointer aliases the same MeshData while a miss allocates a distinct future.
 
 TEST(MeshLoaderTest, CachesByResolvedPath) {
   MeshLoader loader;
@@ -446,22 +408,18 @@ TEST(MeshLoaderTest, CachesByResolvedPath) {
   ASSERT_TRUE(first.result().ok);
   ASSERT_TRUE(second.result().ok);
 
-  // resultPointer of each future's first (and only) result element.
   const MeshData* first_ptr = &(*first.constBegin());
   const MeshData* second_ptr = &(*second.constBegin());
   EXPECT_EQ(first_ptr, second_ptr) << "second load() re-imported instead of hitting the cache";
 
-  // A different path must NOT alias the cube.stl result.
   QFuture<MeshData> other = loader.load(fixturePath("cube.dae"));
   ASSERT_TRUE(other.result().ok);
   EXPECT_NE(&(*other.constBegin()), first_ptr) << "distinct paths must not share a cache entry";
 }
 
-// --- glTF doubleSided -> Material::double_sided -------------------------------
-// double_sided.gltf is a minimal hand-written text glTF (single triangle,
-// base64 data-URI buffer) whose material sets "doubleSided": true. The loader
-// must surface it (via assimp's AI_MATKEY_TWOSIDED) so the renderer can drop
-// back-face culling for those submeshes.
+// double_sided.gltf is a minimal hand-written text glTF (single triangle, base64 data-URI buffer) whose material sets
+// "doubleSided": true. The loader must surface it (via assimp's AI_MATKEY_TWOSIDED) so the renderer can drop back-face
+// culling for those submeshes.
 
 TEST(MeshLoaderTest, ReadsGltfDoubleSidedFlag) {
   MeshLoader loader;
@@ -482,8 +440,6 @@ TEST(MeshLoaderTest, SingleSidedMaterialStaysCullable) {
   EXPECT_FALSE(mesh.submeshes.front().material->double_sided);
 }
 
-// --- Failure surfaces, never crashes ----------------------------------------
-
 TEST(MeshLoaderTest, MissingFileFailsCleanly) {
   MeshLoader loader;
   const MeshData mesh = loader.load(fixturePath("does_not_exist.stl")).result();
@@ -491,11 +447,9 @@ TEST(MeshLoaderTest, MissingFileFailsCleanly) {
   EXPECT_FALSE(mesh.error.isEmpty());
 }
 
-// --- evict(): drop one cache entry so the next load() re-imports -------------
-// M.30 regression: failed futures used to be cached forever, so Retry silently
-// never retried. Sequence: cache the import, corrupt the file (the cache must
-// still serve the OLD result — proving no silent re-import), evict, re-load —
-// the genuine re-import now sees the corrupted bytes and fails.
+// A failed import must not stay cached or Retry never retries. Sequence: cache the import, corrupt the file (the cache
+// must still serve the OLD result: no silent re-import), evict() the entry, re-load: the re-import sees the corrupted
+// bytes and fails.
 
 TEST(MeshLoaderTest, EvictForcesReimportOfChangedFile) {
   QTemporaryDir dir;
@@ -523,13 +477,10 @@ TEST(MeshLoaderTest, EvictForcesReimportOfChangedFile) {
   EXPECT_FALSE(reimported.ok) << "evict() did not drop the cached entry (old result still served)";
 }
 
-// --- COLLADA up-axis override (M.28) ----------------------------------------
-// load(path, flip_override) lets the layer force the Y->Z flip on/off, honoring
-// the "Ignore COLLADA up_axis" toggle. zup_marker.dae is authored Z_UP: assimp
-// normalizes it to internal Y-up, and the DEFAULT load (flip=true) re-applies the
-// +90deg X flip to land the apex at z=+1. With flip_override=false the flip is
-// skipped, so the apex stays at the assimp-internal Y-up position (y=+1). The two
-// overrides must therefore yield DIFFERENT geometry.
+// load(path, flip_override) lets the layer force the Y->Z flip on/off, honoring the "Ignore COLLADA up_axis" toggle.
+// zup_marker.dae is authored Z_UP: the DEFAULT load (flip=true) lands the apex at z=+1; with flip_override=false the
+// flip is skipped and the apex stays at assimp's internal Y-up position (y=+1). The overrides must yield DIFFERENT
+// geometry.
 
 TEST(MeshLoaderTest, ColladaFlipOverrideChangesGeometry) {
   MeshLoader loader;
@@ -538,19 +489,15 @@ TEST(MeshLoaderTest, ColladaFlipOverrideChangesGeometry) {
   ASSERT_TRUE(flipped.ok) << flipped.error.toStdString();
   ASSERT_TRUE(unflipped.ok) << unflipped.error.toStdString();
 
-  // Default flip lands the apex at z=+1 (matches ColladaZUpFixtureLoadsZUp).
   const Bounds flipped_bounds = computeBounds(flipped);
   EXPECT_NEAR(flipped_bounds.max.z, 1.0f, 1e-3f) << "flipped apex should land at z=+1";
 
-  // Without the flip the geometry stays in assimp's internal Y-up: the apex
-  // height moves into +Y instead, so the z-extent collapses relative to flipped.
   const Bounds unflipped_bounds = computeBounds(unflipped);
   EXPECT_GT(unflipped_bounds.extent().y, 0.9f) << "unflipped apex should extend along +Y (still Y-up)";
   EXPECT_LT(unflipped_bounds.extent().z, 0.3f) << "unflipped geometry must not be Z-up";
 
-  // The override is part of the cache key, so the same path under two overrides
-  // produces distinct cache slots (different result storage), not one shared
-  // entry that would hand back the previously-flipped MeshData.
+  // The override is part of the cache key: the same path under two overrides gets distinct cache slots, not one shared
+  // entry that would hand back the flipped MeshData.
   const MeshData* flipped_ptr = &(*loader.load(fixturePath("zup_marker.dae"), true).constBegin());
   const MeshData* unflipped_ptr = &(*loader.load(fixturePath("zup_marker.dae"), false).constBegin());
   EXPECT_NE(flipped_ptr, unflipped_ptr) << "flip variants must occupy distinct cache slots";
@@ -563,7 +510,6 @@ TEST(MeshLoaderTest, ColladaDefaultMatchesExplicitFlip) {
   const MeshData* default_ptr = &(*loader.load(fixturePath("zup_marker.dae")).constBegin());
   const MeshData* explicit_ptr = &(*loader.load(fixturePath("zup_marker.dae"), /*flip_override=*/true).constBegin());
   ASSERT_TRUE(loader.load(fixturePath("zup_marker.dae")).result().ok);
-  // wantsZUpFlip("dae") == true, so the default and explicit-true share the slot.
   EXPECT_EQ(default_ptr, explicit_ptr) << "default flip for .dae must equal explicit flip_override=true";
 }
 
@@ -587,7 +533,6 @@ TEST(MeshLoaderTest, EvictDropsBothFlipVariants) {
     ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
     file.write("definitely not a mesh");
   }
-  // Both variants are still served from cache (no re-import yet).
   EXPECT_TRUE(loader.load(path, true).result().ok);
   EXPECT_TRUE(loader.load(path, false).result().ok);
 

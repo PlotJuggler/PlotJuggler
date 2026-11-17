@@ -781,8 +781,7 @@ TEST_F(StreamingVideoDecoderTest, LiveStreamWithRetention) {
   }
 
   EXPECT_TRUE(eviction_started) << "retention should have evicted some entries";
-  // The key assertion: decoding must continue working after eviction.
-  // Without the fix, failed_after_eviction would be high (all frames after ~150).
+  // Decoding keeps working after eviction removed the first keyframes.
   EXPECT_LE(failed_after_eviction, 5) << "should not fail after keyframe eviction in live mode";
   EXPECT_GT(decoded_count, static_cast<int>(all_packets_.size()) / 2)
       << "should decode most frames even with retention";
@@ -872,9 +871,8 @@ TEST_F(StreamingVideoDecoderTest, LiveDecodeWithRetentionIsRealTime) {
 }
 
 TEST_F(StreamingVideoDecoderTest, ScrubAfterLiveStream) {
-  // Simulates: user watches live stream, then pauses and scrubs
-  // the retained buffer. Per REQUIREMENTS.md §4.3, live and scrub
-  // are mutually exclusive — push stops during scrub.
+  // Live stream, then pause and scrub the retained buffer; a pause stops the pushes
+  // (docs/ARCHITECTURE.md "Behaviour contracts").
   ObjectStore store;
   auto topic_result = store.registerTopic({0, "video/scrub_after", R"({"media_class":"video","encoding":"h264"})"});
   auto topic = topic_result.value();
@@ -883,14 +881,14 @@ TEST_F(StreamingVideoDecoderTest, ScrubAfterLiveStream) {
   StreamingVideoDecoder decoder;
   decoder.attach(&store, topic);
 
-  // Phase 1: live streaming — push all frames
+  // Live: push all frames.
   for (const auto& pkt : all_packets_) {
     store.pushOwned(topic, pkt.timestamp, pkt.data);
     auto range = store.timeRange(topic);
     decoder.decodeAt(range.second);
   }
 
-  // Phase 2: pause — no more pushes, buffer is frozen
+  // Paused: no more pushes.
   size_t count = store.entryCount(topic);
   ASSERT_GT(count, 10u) << "need entries in buffer to scrub";
 
@@ -1022,15 +1020,14 @@ TEST_F(StreamingVideoDecoderTest, ScrubAfterSteadyStateStreaming) {
   StreamingVideoDecoder decoder;
   decoder.attach(&store, topic);
 
-  // Phase 1: live stream all packets (retention will reach steady state)
+  // Live: push all packets until retention reaches steady state.
   for (const auto& pkt : all_packets_) {
     store.pushOwned(topic, pkt.timestamp, pkt.data);
     auto range = store.timeRange(topic);
     decoder.decodeAt(range.second);
   }
 
-  // Phase 2: pause and scrub. The retained buffer should contain ~30 frames.
-  // Scrubbing to any entry must work — keyframe index must be up to date.
+  // Paused: scrubbing to any retained entry works, so the keyframe index is current.
   size_t count = store.entryCount(topic);
   ASSERT_GT(count, 5u);
 
@@ -1151,9 +1148,7 @@ TEST_F(StreamingVideoDecoderTest, BenchmarkLiveDecodePerFrame) {
       << "too many frames exceed 33ms real-time budget";
 }
 
-// ---------------------------------------------------------------------------
 // B-frame tests: push using DTS (decode order), verify decode works
-// ---------------------------------------------------------------------------
 
 const std::string kBframeVideo = "pj_scene2D/testdata/test_1080p_bframes.mp4";
 
@@ -1346,14 +1341,12 @@ TEST(StreamingVideoDecoderBframeTest, SimulateDemoDualTimer) {
   EXPECT_LT(push_count, 100) << "first frame took too many pushes — possible O(n^2) regression";
 }
 
-// ---------------------------------------------------------------------------
 // HEVC (H.265): end-to-end exercise of the codec-generic decode path on a real
 // stream. Fixture is a tiny libx265 clip (pj_scene2D/testdata/test_hevc.mp4),
 // regenerable with an ffmpeg that has libx265 (PJ4's FFmpeg is decoder-only):
 //   ffmpeg -f lavfi -i testsrc=size=320x240:rate=30:duration=2 -c:v libx265
 //   -x265-params keyint=15:min-keyint=15:no-scenecut=1 -pix_fmt yuv420p
 //   -tag:v hvc1 -an pj_scene2D/testdata/test_hevc.mp4
-// ---------------------------------------------------------------------------
 
 const std::string kHevcVideo = "pj_scene2D/testdata/test_hevc.mp4";
 
@@ -1506,7 +1499,6 @@ TEST(StreamingVideoDecoderHevcTest, UnsupportedCodecSurfacesError) {
   EXPECT_NE(result.error().find("unsupported video codec"), std::string::npos) << "got: " << result.error();
 }
 
-// ---------------------------------------------------------------------------
 // AV1: end-to-end exercise on a real stream (OBU temporal units, not Annex-B).
 // Fixture is a tiny libaom-av1 clip (pj_scene2D/testdata/test_av1.mp4):
 //   ffmpeg -f lavfi -i testsrc=size=320x240:rate=30:duration=2 -c:v libaom-av1
@@ -1514,7 +1506,6 @@ TEST(StreamingVideoDecoderHevcTest, UnsupportedCodecSurfacesError) {
 //   -tag:v av01 -an pj_scene2D/testdata/test_av1.mp4
 // The test demuxer re-prepends the av1C sequence header to keyframes so each is
 // a self-contained temporal unit (the LOBF wire form the decoder expects).
-// ---------------------------------------------------------------------------
 
 const std::string kAv1Video = "pj_scene2D/testdata/test_av1.mp4";
 
@@ -1573,12 +1564,9 @@ TEST(StreamingVideoDecoderAv1Test, ScrubBackwardSeeksToKeyframe) {
   EXPECT_EQ(earlier->width, 320);
 }
 
-// Direct, fixture-free regression for the negative-DTS keyframe-seek fix. FFmpeg
-// gives the first frames negative DTS (encoder-delay convention), so a keyframe
-// can sit at a negative ObjectStore timestamp. findKeyframeBefore must return it
-// (std::optional), not treat the negative value as the old "-1 = not found"
-// sentinel. Synthetic Annex-B: an IDR NAL the H.264 oracle detects, at a negative
-// timestamp; the bytes do not decode, but the keyframe lookup must still succeed.
+// FFmpeg gives the first frames a negative DTS (encoder delay), so a keyframe can sit at a negative ObjectStore
+// timestamp; findKeyframeBefore must not read a negative value as "not found". Synthetic Annex-B: an IDR NAL the
+// H.264 oracle detects, at a negative timestamp; the bytes do not decode, but the keyframe lookup must succeed.
 TEST(StreamingVideoDecoderNegativeDtsTest, KeyframeAtNegativeTimestampIsFound) {
   const std::vector<uint8_t> idr = {0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x80, 0x00};      // NAL type 5 (IDR)
   const std::vector<uint8_t> non_idr = {0x00, 0x00, 0x00, 0x01, 0x41, 0x9a, 0x00, 0x00};  // NAL type 1
@@ -1599,7 +1587,7 @@ TEST(StreamingVideoDecoderNegativeDtsTest, KeyframeAtNegativeTimestampIsFound) {
   EXPECT_LT(kfs.front(), 0) << "keyframe at negative DTS should be indexed";
 
   // Seeking to a later frame must FIND that negative-timestamp keyframe, not
-  // reject it as "no keyframe before target" (the pre-fix -1-sentinel bug). The
+  // reject it as "no keyframe before target". The
   // decode itself fails (synthetic bytes are not a real stream), but the failure
   // must be a decode failure, not the keyframe lookup.
   auto result = decoder.decodeAt(0);
@@ -1609,14 +1597,12 @@ TEST(StreamingVideoDecoderNegativeDtsTest, KeyframeAtNegativeTimestampIsFound) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // decodeSampled(): thumbnail-builder forward pass. Verifies the sampling cadence
 // and that the optimization (materialize pixels only for surfaced frames) holds.
 //
 // Default fixture is kTestVideo (skips in CI when absent). Point PJ_SAMPLED_BENCH
 // at a larger H.264 clip — ideally 4K — to get a representative speedup number:
 //   PJ_SAMPLED_BENCH=clip_3840x2160.mp4 ./streaming_video_decoder_test --gtest_filter='*Sampled*'
-// ---------------------------------------------------------------------------
 std::string sampledBenchVideo() {
   // sdk::getEnv is the portable wrapper; a raw std::getenv trips MSVC C4996
   // (deprecation) which the Windows CI build treats as an error under /WX.
@@ -1750,12 +1736,9 @@ TEST(StreamingVideoSampledTest, KeyframeDenseSourceUsesKeyframeOnly) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // B-frame presentation order. With B-frames decode order (DTS) != presentation
-// order (PTS). The producer keys the store by DTS; the decoder must SERVE by PTS
-// so playback is in presentation order. Regression for the "vibration/cracks +
-// high CPU" bug, where frames played back in decode order.
-// ---------------------------------------------------------------------------
+// order (PTS). The producer keys the store by DTS; the decoder must serve by PTS, or playback judders in decode
+// order.
 
 const std::string kH264BframeVideo = "pj_scene2D/testdata/test_h264_bframes.mp4";
 
@@ -1799,8 +1782,7 @@ TEST(StreamingVideoDecoderBframeOrderTest, SequentialPlaybackIsPresentationOrder
 
   // Play forward through every presentation timestamp (PTS ascending) and assert
   // each request returns the EXACT frame for that presentation time, strictly
-  // ascending — i.e. presentation order, not decode order. Before the fix the
-  // decoder served by DTS, so frame->pts would not match the requested PTS.
+  // ascending: presentation order, not decode order.
   std::vector<Timestamp> pts_sorted;
   pts_sorted.reserve(packets.size());
   for (const auto& p : packets) {
@@ -1867,13 +1849,9 @@ TEST(StreamingVideoDecoderBframeOrderTest, TimelineSweepByStoreKeysLosesNoFrame)
   StreamingVideoDecoder decoder;
   decoder.attach(&store, topic, extractor);
 
-  // Sweep the timeline the way the PLAYBACK CLOCK does: by STORE keys (DTS),
-  // from the very first entry. The encoder-delay lead-in (several DTS keys all
-  // clamping to the first presented frame) lets the codec's output queue back
-  // up; the next send can then hit EAGAIN, whose legacy recovery silently
-  // DISCARDS the queued frame — the very frame the following request needs.
-  // Symptom: exactly one "forward decode produced no frame" hiccup early in
-  // playback, then recovery. Every request must produce a frame.
+  // Sweep by store keys (DTS) from the first entry, as the playback clock does. The encoder-delay lead-in (several
+  // DTS keys clamping to the first presented frame) backs up the codec's output queue; a send that hits EAGAIN must
+  // not discard the queued frame, which the next request needs. Every request must produce a frame.
   for (size_t i = 0; i < packets.size(); ++i) {
     const Timestamp request_ts = packets[i].dts;
     auto frame = decoder.decodeAt(request_ts);

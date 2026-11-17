@@ -42,23 +42,16 @@ namespace PJ {
 namespace {
 #ifndef PJ_TARGET_WASM
 constexpr const char* kRecentFilesKey = "File/recent";
-// Recent-layouts list, written by MainWindow::recordRecentLayout. Mirrored here
-// so the single recent popup can render the Layouts section without coupling to
-// MainWindow — kept in sync with MainWindow's kRecentLayoutsKey.
+// Written by MainWindow::recordRecentLayout: must match MainWindow's kRecentLayoutsKey.
 constexpr const char* kRecentLayoutsKey = "Layout/recent";
 #endif
-// Recent-button chevron: points right when the popup is closed, down while it
-// is open. Both are the _light asset, recolored per theme by loadSvg.
 constexpr const char* kRecentIconCollapsed = ":/resources/svg/keyboard_arrow_right_light.svg";
 constexpr const char* kRecentIconExpanded = ":/resources/svg/keyboard_arrow_down_light.svg";
-// Streaming-buffer setting key — preserved verbatim from when the
-// scrubber lived on the timeline so user-saved values survive the move.
+// Persisted name: StreamingSourceManager reads the same key and BrowserPersistence allowlists it.
 constexpr const char* kStreamingBufferKey = "MainWindow.streamingBufferValue";
-// Last-selected streaming source, persisted by name so it survives plugin
-// re-discovery reordering across sessions (an index would not).
+// By name: an index would not survive plugin rediscovery reordering the combo.
 constexpr const char* kStreamingSourceKey = "MainWindow.streamingSource";
-// Last-selected cloud toolbox, persisted by plugin id (stable across sessions,
-// unlike the display name or a combo index). Mirrors kStreamingSourceKey.
+// By plugin id, stable across sessions unlike the display name or a combo index.
 constexpr const char* kCloudSourceKey = "MainWindow.cloudSource";
 }  // namespace
 
@@ -67,18 +60,11 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
 
   applyIcons(currentTheme());
 
-  // Recent popup: two sections — Layouts first, Files second. Each list is
-  // deduped/capped/ordered (most-recent-first) by MainWindow when it writes
-  // QSettings; here we only render what is stored. Lazy-rebuilt on aboutToShow
-  // so it always reflects the latest Load/Save.
-  //
-  // Section headers are disabled (bold) menu items rather than addSection()
-  // titles: the PJMenu stylesheet styles QMenu::separator, which switches Qt to
-  // the stylesheet separator path and suppresses addSection() text. A disabled
-  // QAction flows through the themed ::item:disabled rule and renders reliably.
+  // Rebuilt on every aboutToShow from what MainWindow stored (it dedupes, caps and orders the lists). Section
+  // headers are disabled bold items, not addSection() titles: the PJMenu stylesheet styles QMenu::separator, which
+  // puts Qt on the stylesheet separator path and drops addSection() text.
   auto* recent_menu = new QMenu(this);
   recent_menu->setObjectName(u"PJMenu"_s);
-  // Entries show only the file name; the hover tooltip carries the full path.
   recent_menu->setToolTipsVisible(true);
   connect(recent_menu, &QMenu::aboutToShow, this, [this, recent_menu]() {
     recent_menu->clear();
@@ -105,8 +91,7 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     QAction* clear = recent_menu->addAction(tr("Clear recent layouts"));
     connect(clear, &QAction::triggered, this, &LeftPanel::clearRecentLayoutsRequested);
 #else
-    // Drop entries whose file no longer exists, and persist the pruned list so
-    // they do not come back next time.
+    // Prunes and persists missing files, so they do not come back.
     auto load_existing = [](const char* key) {
       QSettings settings;
       QStringList paths = settings.value(key).toStringList();
@@ -149,8 +134,6 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     }
 #endif
   });
-  // Flip the chevron to point down while the popup is open, back to right when
-  // it closes (loadSvg recolors the _light asset for the current theme).
   connect(recent_menu, &QMenu::aboutToShow, this, [this]() {
     ui_->buttonRecentFiles->setIcon(loadSvg(kRecentIconExpanded, currentTheme()));
   });
@@ -164,19 +147,13 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
 
   connect(ui_->buttonLoadDatafile, &QPushButton::clicked, this, &LeftPanel::loadDataRequested);
   connect(ui_->buttonReloadData, &QPushButton::clicked, this, &LeftPanel::reloadDataRequested);
-  // Reload moved to the dataset context menu ("Reload"), which covers
-  // per-dataset reload in multi-file sessions; the global button is hidden
-  // rather than removed while that arrangement is trialed.
+  // Reload lives in the dataset context menu, which covers per-dataset reload; the button stays in the .ui, hidden.
   ui_->buttonReloadData->setVisible(false);
 
-  // No data loaded yet -> nothing to reload, no recent entries.
   ui_->buttonReloadData->setEnabled(false);
   ui_->buttonRecentFiles->setEnabled(false);
 
-  // Input section is tabbed: each toggle selects the matching page in
-  // the stacked widget. autoExclusive=true on the .ui keeps only one
-  // checked at a time, but we still drive the stack manually so the
-  // check that fires on initial show also routes correctly.
+  // autoExclusive in the .ui keeps one tab checked; the stack is still driven by hand so the initial check routes.
   connect(ui_->tabFile, &QToolButton::toggled, this, [this](bool on) {
     if (on) {
       ui_->inputStack->setCurrentWidget(ui_->pageFile);
@@ -193,10 +170,8 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     }
   });
 
-  // QStackedWidget's sizeHint is the union of every page's sizeHint, so
-  // shorter pages still reserve room for the tallest one. Mark non-
-  // current pages as Ignored so only the visible page contributes to
-  // the parent's vertical sizing, and refresh on every page switch.
+  // QStackedWidget's sizeHint is the union of its pages', so a short page would reserve the tallest one's room:
+  // only the current page keeps a vertical policy that counts.
   auto adapt_stack_to_current_page = [this]() {
     QStackedWidget* stack = ui_->inputStack;
     const int current = stack->currentIndex();
@@ -213,34 +188,24 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     adapt_stack_to_current_page();
   });
 
-  // The cog is a one-shot Start trigger for the streaming source. There is
-  // no stop affordance — the session lives until app shutdown or error.
   connect(ui_->buttonStreamingOptions, &QPushButton::clicked, this, &LeftPanel::streamingStartRequested);
-  // Pause/resume of follow-live, independent of start/stop. PJ3 parity.
   connect(ui_->buttonStreamingPause, &QPushButton::toggled, this, &LeftPanel::streamingPauseToggled);
   connect(
       ui_->buttonStreamingPause, &QPushButton::toggled, this, [this](bool) { applyPauseButtonState(currentTheme()); });
-  // Record/Stop for the session recording (all active streams).
   connect(ui_->buttonStreamingRecord, &QPushButton::toggled, this, &LeftPanel::streamingRecordToggled);
   connect(ui_->buttonStreamingRecord, &QPushButton::toggled, this, [this](bool) {
     applyRecordButtonState(currentTheme());
   });
-  // The status label is elided against its actual width, which is only known
-  // after layout; watch it so the text is re-elided whenever that width moves.
+  // The label's width is known only after layout: re-elide whenever it moves.
   ui_->labelStreamingRecordStatus->installEventFilter(this);
   applyRecordingStatusMinimumWidth();
-  // Persist the user's choice so it is restored next session. The signal only
-  // fires on genuine user selection — setStreamingSources() blocks it while
-  // repopulating — so this never re-saves a programmatic restore.
+  // Only a user's pick reaches here: setStreamingSources() and restoreSourcesState() block the signal.
   connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, [this](const QString& source) {
     QSettings().setValue(kStreamingSourceKey, source);
     emit streamingSourceChanged(source);
   });
 
-  // Buffer scrubber: restore from QSettings on construct. The buffer length only
-  // matters once the user finishes adjusting it — reconfiguring the live stream
-  // on every drag tick is pointless churn — so both the reconfigure
-  // (streamingBufferChanged) and the QSettings write fire on editingFinished.
+  // On editingFinished, not on every drag tick: the value matters only once the user settles.
   ui_->streamingSpinBox->setValue(QSettings().value(kStreamingBufferKey, 5).toInt());
   connect(ui_->streamingSpinBox, &ScrubberBase::editingFinished, this, [this]() {
     const int seconds = ui_->streamingSpinBox->value();
@@ -248,10 +213,7 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
     emit streamingBufferChanged(seconds);
   });
 
-  // Cloud row (mirrors the streaming row): the combo lists the cloud-tagged
-  // toolboxes (populateCloudToolboxes), the button opens the selected one.
-  // Selection is persisted by plugin id; the signal only fires on genuine user
-  // selection — populateCloudToolboxes blocks it while repopulating.
+  // Only a user's pick reaches here: populateCloudToolboxes blocks the signal.
   connect(ui_->comboCloud, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
     const QString id = ui_->comboCloud->currentData().toString();
     if (!id.isEmpty()) {
@@ -296,17 +258,14 @@ void LeftPanel::setStreamingSources(const QStringList& names) {
     QSignalBlocker block(ui_->comboStreaming);
     ui_->comboStreaming->clear();
     ui_->comboStreaming->addItems(names);
-    // Keep the current selection across a mid-session refresh; on the first
-    // (empty) population fall back to the source persisted last session.
     const QString desired = previous.isEmpty() ? QSettings().value(kStreamingSourceKey).toString() : previous;
     const int idx = ui_->comboStreaming->findText(desired);
     if (idx >= 0) {
       ui_->comboStreaming->setCurrentIndex(idx);
     }
   }
-  // QComboBox auto-selects index 0 on the first addItems(), but the blocker
-  // above swallows the corresponding currentTextChanged; emit once so the
-  // visible selection matches what listeners (StreamingSourceManager) hold.
+  // The blocker swallowed currentTextChanged (QComboBox auto-selects index 0 on the first addItems()): emit once so
+  // StreamingSourceManager holds what the combo shows.
   const QString current = ui_->comboStreaming->currentText();
   if (current != previous) {
     emit streamingSourceChanged(current);
@@ -322,8 +281,7 @@ void LeftPanel::applyPauseButtonState(QString theme) {
 
 void LeftPanel::applyRecordButtonState(const QString& theme) {
   const bool recording = ui_->buttonStreamingRecord->isChecked();
-  // The active glyph carries its own red fill, which the theme recolor leaves
-  // alone: recording is the one state that must read the same in both themes.
+  // The active glyph keeps its own red fill through the theme recolor, so recording reads the same in both themes.
   ui_->buttonStreamingRecord->setIcon(
       loadSvg(recording ? ":/resources/svg/record_active.svg" : ":/resources/svg/record.svg", theme));
   ui_->buttonStreamingRecord->setToolTip(
@@ -356,8 +314,7 @@ void LeftPanel::setRecordingStatusText(const QString& text) {
 }
 
 void LeftPanel::elideRecordingStatus() {
-  // The label's horizontal size policy is Ignored so a longer text never
-  // resizes the row; elide against the width the layout actually gave it.
+  // The label's horizontal policy is Ignored, so a longer text never resizes the row.
   QLabel* label = ui_->labelStreamingRecordStatus;
   const int available = label->contentsRect().width();
   label->setText(QFontMetrics(label->font()).elidedText(recording_status_text_, Qt::ElideRight, available));
@@ -392,7 +349,6 @@ bool LeftPanel::eventFilter(QObject* watched, QEvent* event) {
 QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
   QDomElement element = doc.createElement(u"left_panel_state"_s);
 
-  // sources_tab: report which of the three autoExclusive tabs is checked.
   if (ui_->tabFile->isChecked()) {
     element.setAttribute(u"sources_tab"_s, u"file"_s);
   } else if (ui_->tabStream->isChecked()) {
@@ -411,10 +367,7 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
     return;
   }
 
-  // sources_tab: setChecked(true) propagates via autoExclusive and the
-  // connected lambdas (which switch the inputStack page). We deliberately
-  // do NOT block these signals — switching the visible page is the
-  // intended side-effect of selecting a tab.
+  // Not blocked: the toggled handlers switch the visible page.
   if (element.hasAttribute(u"sources_tab"_s)) {
     const QString tab = element.attribute(u"sources_tab"_s);
     if (tab == "file"_L1) {
@@ -424,13 +377,10 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
     } else if (tab == "cloud"_L1) {
       ui_->tabCloud->setChecked(true);
     }
-    // Unknown tab string -> silent no-op.
   }
 
-  // streaming_source: pick the combo entry by display text. -1 from
-  // findText means the source isn't currently in the combo (plugin
-  // not installed) -> silent no-op. Block signals so we don't emit
-  // streamingSourceChanged during restore.
+  // A source that is not installed is skipped. Blocked, so QSettings is not written and no streamingSourceChanged
+  // is emitted.
   if (element.hasAttribute(u"streaming_source"_s)) {
     const QString src = element.attribute(u"streaming_source"_s);
     const int idx = ui_->comboStreaming->findText(src);
@@ -440,9 +390,7 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
     }
   }
 
-  // streaming_buffer: setValue triggers the connected lambda which
-  // writes QSettings AND emits streamingBufferChanged. Block signals
-  // to suppress both.
+  // setValue does not emit editingFinished, so this neither writes QSettings nor emits streamingBufferChanged.
   if (element.hasAttribute(u"streaming_buffer"_s)) {
     bool ok = false;
     const int seconds = element.attribute(u"streaming_buffer"_s).toInt(&ok);
@@ -467,12 +415,8 @@ void LeftPanel::applyIcons(QString theme) {
 
   const QSize icon_sz(chrome_metrics_.icon_size, chrome_metrics_.icon_size);
   const int button_extent = chrome_metrics_.icon_size + chrome_metrics_.icon_padding;
-  // Band height grows by 2 * layout_padding so the contentsMargins
-  // applied to inner layouts are absorbed by the container instead of
-  // squeezing the buttons.
+  // Includes the layout padding, so the inner margins grow the band instead of squeezing the buttons.
   const int band_extent = chrome_metrics_.bandHeight();
-  // Every icon-bearing button in this panel uses the same square chrome
-  // pattern; iterate by type rather than by name.
   for (auto* btn : findChildren<QToolButton*>()) {
     btn->setMinimumSize(button_extent, button_extent);
     btn->setMaximumSize(button_extent, button_extent);
@@ -483,10 +427,8 @@ void LeftPanel::applyIcons(QString theme) {
     btn->setMaximumSize(button_extent, button_extent);
     btn->setIconSize(icon_sz);
   }
-  // Override the .ui-baked 24-px height pins on the input header band
-  // and the streaming-row controls. Header bands grow to band_extent;
-  // the inline streaming controls stay button-tall so they line up
-  // visually with the buttons in their row.
+  // Replaces the .ui's fixed heights: the header band grows to band_extent, the row controls stay button-tall to line
+  // up with the buttons beside them.
   ui_->widgetLabelInput->setMinimumHeight(band_extent);
   ui_->widgetLabelInput->setMaximumHeight(band_extent);
   ui_->comboStreaming->setMinimumHeight(button_extent);
@@ -498,10 +440,6 @@ void LeftPanel::applyIcons(QString theme) {
   ui_->labelBuffer->setMinimumSize(button_extent, button_extent);
   ui_->labelBuffer->setMaximumSize(button_extent, button_extent);
   ui_->labelBuffer->setPixmap(renderSvgPixmap(":/resources/svg/share_eta.svg", theme, icon_sz, devicePixelRatioF()));
-  // Push layout_padding into every relevant layout — Sources header,
-  // the file/stream/cloud page outer layouts, and the two streaming
-  // rows. Spacing follows so individual items inside a row gain the
-  // same breathing room as the band edges.
   const QMargins margins(
       chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding,
       chrome_metrics_.layout_padding);
@@ -513,9 +451,8 @@ void LeftPanel::applyIcons(QString theme) {
       layout->setSpacing(chrome_metrics_.layout_spacing);
     }
   }
-  // The "Sources" title band leads via labelInput's own canonical padding-left
-  // (Tight), so its layout adds no left inset — otherwise the two stack into a
-  // doubled leading that no longer matches the other section bands.
+  // No left inset: labelInput's own padding-left leads the band, and both would double the leading the other
+  // section bands have.
   if (auto* layout = ui_->inputHeaderLayout) {
     layout->setContentsMargins(
         0, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding, chrome_metrics_.layout_padding);
@@ -529,16 +466,13 @@ void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& 
     const QSignalBlocker block(ui_->comboCloud);
     ui_->comboCloud->clear();
     for (const auto& tb : toolboxes) {
-      // The manifest lives on the loaded vtable as a constexpr char[]; a null
-      // vtable is a load failure already reported through the diagnostic sink.
+      // A null vtable is a load failure already reported through the diagnostic sink.
       const auto* vtable = tb.library.vtable();
       if (vtable == nullptr || vtable->manifest_json == nullptr) {
         continue;
       }
       auto manifest = nlohmann::json::parse(vtable->manifest_json, nullptr, /*allow_exceptions=*/false);
       if (!manifest.is_object()) {
-        // The plugin loaded but ships a malformed manifest; warn so a toolbox that
-        // silently never appears in the cloud list is diagnosable, then skip it.
         qWarning("LeftPanel: toolbox '%s' has an invalid manifest_json; skipping", tb.id.c_str());
         continue;
       }
@@ -546,8 +480,6 @@ void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& 
         continue;
       }
 
-      // One combo entry per cloud source: display name, plugin id as data
-      // (ids are stable across sessions; names/order are not).
       ui_->comboCloud->addItem(QString::fromStdString(tb.name), QString::fromStdString(tb.id));
       if (auto desc = manifest.find("description"); desc != manifest.end() && desc->is_string()) {
         ui_->comboCloud->setItemData(
@@ -555,8 +487,7 @@ void LeftPanel::populateCloudToolboxes(const std::vector<RuntimeToolboxPlugin>& 
       }
     }
 
-    // Restore selection: current pick wins over the persisted one (a rescan
-    // must not yank the user's live selection).
+    // The live pick wins over the persisted one: a rescan must not yank the user's selection.
     const QString desired = previous.isEmpty() ? QSettings().value(kCloudSourceKey).toString() : previous;
     const int idx = ui_->comboCloud->findData(desired);
     if (idx >= 0) {

@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A streaming source started WHILE paused must write into the secondary tail
-// buffer, never the frozen primary. startSession is UI-coupled, so this test
-// drives applyWriteTargetsForCurrentPauseState on a bare host to pin the
-// pause-target routing without the dialog. Removing the pause branch turns
-// the first EXPECT red.
+// A streaming source started while paused must write into the secondary tail buffer, never the frozen primary.
+// startSession is UI-coupled, so this test drives applyWriteTargetsForCurrentPauseState on a bare host to pin the
+// pause-target routing without the dialog.
 
 #include <gtest/gtest.h>
 
@@ -35,8 +33,7 @@ namespace {
 
 using sdk::SourceWriteHostView;
 
-// Org/app names sandbox QSettings reads (the manager reads its retention
-// window) away from the user's real preferences, without affecting other suites.
+// Org/app names sandbox QSettings (the manager reads its retention window) away from the user's real preferences.
 struct QtEnvironment : ::testing::Environment {
   void SetUp() override {
     if (!pj_app_test::isTestSuiteSelected("StreamingPauseTargetTest")) {
@@ -67,8 +64,7 @@ TEST(StreamingPauseTargetTest, SessionCreatedWhilePausedWritesToSecondary) {
   DataEngine& primary = session.sessionManager().dataEngine();
   DataEngine& secondary = manager.secondaryEngineForTests();
 
-  // Lockstep dataset on both engines with the SAME id — exactly what
-  // startSession sets up before building the runtime host.
+  // Lockstep dataset on both engines with the same id, as startSession sets up before building the runtime host.
   const auto td = primary.createTimeDomain("[stream] test");
   ASSERT_TRUE(td.has_value()) << td.error();
   ASSERT_TRUE(secondary.createTimeDomain("[stream] test", *td).has_value());
@@ -79,8 +75,8 @@ TEST(StreamingPauseTargetTest, SessionCreatedWhilePausedWritesToSecondary) {
       secondary.createDataset(DatasetDescriptor{.source_name = "[stream] test", .time_domain_id = *td}, dataset_id)
           .has_value());
 
-  // Host wired exactly as startSession wires it: primary engine + primary store,
-  // with the manager's own secondary store/engine as the pause tail buffer.
+  // Host wired as startSession wires it: primary engine + primary store, with the manager's own secondary
+  // store/engine as the pause tail buffer.
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
   DataSourceRuntimeHost host(
       primary, extensions, dataset_id, source_handle, session.sessionManager().objectStore(), "pause_target_source",
@@ -92,8 +88,7 @@ TEST(StreamingPauseTargetTest, SessionCreatedWhilePausedWritesToSecondary) {
   ASSERT_TRUE(writer_or.has_value()) << writer_or.error();
   SourceWriteHostView writer = *writer_or;
 
-  // The user is paused BEFORE this source starts. startSession applies the
-  // pause targets right before start(); do the same here.
+  // The user is paused before this source starts. startSession applies the pause targets right before start().
   manager.onPauseToggled(true);
   manager.applyWriteTargetsForCurrentPauseState(host);
 

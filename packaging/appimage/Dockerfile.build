@@ -7,8 +7,8 @@
 #     Ubuntu 22.04 (glibc 2.35 floor — hosted 22.04 runners retire 2027-04,
 #     actions/runner-images#14254) + apt/pip build deps + pinned
 #     linuxdeploy/appimagetool. NO Qt and NO Conan closure baked in: the CI
-#     container job provisions those per-run from actions/cache + the JFrog
-#     Conan remote (see .github/workflows/linux-appimage-release.yml).
+#     container job provisions those per-run from actions/cache, ConanCenter and
+#     the plotjuggler-conan remote (see .github/workflows/linux-appimage-release.yml).
 #     Published to ghcr.io/<owner>/<repository>-appimage-builder by
 #     .github/workflows/appimage-builder-image.yml.
 #

@@ -1,17 +1,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The QRhi model pass's caches (ModelRhiPass), rendered through a real view on
-// every backend:
+// The QRhi model pass's caches (ModelRhiPass), rendered through a real view on every backend:
 //
-//  - GPU meshes survive a modelRevision() bump when their MeshData pointer is
-//    unchanged: a model arriving one mesh at a time builds each mesh once, a
-//    pose-only SceneEntities batch builds nothing, a same-key reload rebuilds
-//    only that mesh;
+//  - GPU meshes survive a modelRevision() bump when their MeshData pointer is unchanged: a model arriving one mesh at a
+//    time builds each mesh once, a pose-only SceneEntities batch builds nothing, a same-key reload rebuilds only that
+//    mesh;
 //  - decoded textures are shared per view (content key + colour space);
 //  - wireframe edge lists are built on first use;
-//  - the instances are re-uploaded only when what they encode changes: orbit and
-//    zoom skip, a pose change or a TF-only link move (no revision bump) does not;
+//  - the instances are re-uploaded only when what they encode changes: orbit and zoom skip, a pose change or a TF-only
+//    link move (no revision bump) does not;
 //  - the caches change no pixel (A/B against setCachesEnabledForTest(false)).
 //
 // Needs a real display like the render harness (see scene3d_render_test_support.h).
@@ -62,7 +60,6 @@ constexpr QSize kViewSize{240, 180};
 constexpr char kWorld[] = "world";
 constexpr char kLink[] = "link";
 
-// A `size`-metre cube with flat normals and per-face UVs, one submesh of `material`.
 MeshData cube(float size, std::shared_ptr<const pj::scene3d::Material> material) {
   MeshData mesh;
   const float h = size * 0.5F;
@@ -121,7 +118,6 @@ void fixCamera(SceneViewWidget& view, glm::vec3 focal, float azimuth_deg, float 
   view.camera().adoptState(state);
 }
 
-// Filled grid, no axes, and a warm-up frame before a test fixes the camera.
 void settle(SceneViewWidget& view) {
   view.setGridStyle(SceneViewWidget::GridStyle::kFilledCells);
   view.setGridExtentMetres(10.0F);
@@ -147,7 +143,6 @@ class ModelView {
     view_->setTrackerTime(PJ::fromRaw(100));
   }
 
-  // False when the window never got exposed.
   bool show(const std::vector<pj::scene3d::Scene3DLayer*>& layers) {
     view_->setLayers(layers);
     window_.resize(kViewSize);
@@ -271,7 +266,6 @@ TEST_F(Scene3dRhiModelCacheTest, TexturesAreSharedAcrossMeshesAndLayers) {
   EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).lastTextureSlotCounts()[0], 4);
   EXPECT_EQ(scene.counters().texture_decodes, 2);
   EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).cachedTextureCountForTest(), 2);
-  // Replace every textured mesh (a layer without draws keeps its GPU state).
   first.erase("a");
   first.erase("b");
   first.put("e", cube(0.6F, solid({0.5F, 0.5F, 0.5F, 1.0F})));
@@ -282,11 +276,10 @@ TEST_F(Scene3dRhiModelCacheTest, TexturesAreSharedAcrossMeshesAndLayers) {
   EXPECT_EQ(SceneViewTestAccess::modelPass(scene.view()).cachedTextureCountForTest(), 0);
 }
 
-// Colour texels (base colour, emissive) are sRGB-encoded on every backend: a
-// cube textured with sRGB 128 renders like an untextured cube whose linear
-// factor is 128's decoded value, not its raw 128/255. Qt's OpenGL backend
-// ignores QRhiTexture::sRGB for uncompressed formats, so a texture sampled raw
-// there renders as linear 0.5 instead (ANYmal's red shell went salmon).
+// Colour texels (base colour, emissive) are sRGB-encoded on every backend: a cube textured with sRGB 128 renders like
+// an untextured cube whose linear factor is 128's decoded value, not its raw 128/255. Qt's OpenGL backend ignores
+// QRhiTexture::sRGB for uncompressed formats, so a texture sampled raw there renders as linear 0.5 (a red shell turns
+// salmon).
 TEST_F(Scene3dRhiModelCacheTest, ColorTexturesDecodeSrgbOnEveryBackend) {
   QImage grey(2, 2, QImage::Format_RGBA8888);
   grey.fill(QColor(128, 128, 128));
@@ -304,7 +297,6 @@ TEST_F(Scene3dRhiModelCacheTest, ColorTexturesDecodeSrgbOnEveryBackend) {
   layer.put("cube", cube(1.0F, solid({raw, raw, raw, 1.0F})), {0.5, 0.0, 0.5});
   ModelView scene;
   SKIP_UNLESS(scene.show({&layer}));
-  // The centre pixel of the cube drawn with `material`.
   const auto center = [&](std::shared_ptr<const pj::scene3d::Material> material) -> std::optional<QRgb> {
     layer.put("cube", cube(1.0F, std::move(material)), {0.5, 0.0, 0.5});
     const QImage image = grab(scene.view());
@@ -649,7 +641,7 @@ TEST_F(Scene3dRhiModelCacheTest, CachedFramesMatchUncachedPixelForPixel) {
   }
   EXPECT_GT(pj::scene3d::test::differingPixels(cached[1], cached[2], 60), 200) << "the TF step moved nothing";
   // Apple's software OpenGL (the macOS CI fallback) does not reproduce a shadowed
-  // frame from one render to the next (TECHNICAL_NOTES, "Known gaps"): no A/B
+  // frame from one render to the next (docs/TECHNICAL_NOTES.md "Apple software OpenGL"): no A/B
   // there. Metal gates the caches on the same machine, Mesa on Linux.
   if (QSysInfo::productType() == QLatin1String("macos") && PJ::preferredGraphicsApi() == QRhiWidget::Api::OpenGL) {
     GTEST_SKIP() << "Apple's software OpenGL is not frame-to-frame reproducible";

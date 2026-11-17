@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Golden behavioral coverage for the bundled Luau builtins (M9), relocated from
-// the retired C++ builtin spec corpora (which were the parity oracle until
-// M9). Each test drives a Luau twin from builtin_filters.luau over spec-anchored
-// inputs and asserts the same expected values the C++ specs asserted.
+// Golden behaviour of the bundled Luau filters (builtin_filters.luau): each test drives one class over fixed inputs
+// and asserts the expected values, hand-traced where the comment says so.
 
 #include <gtest/gtest.h>
 
@@ -63,7 +61,7 @@ const PJ::scripting::FilterClass* findClass(const std::string& id) {
   return nullptr;
 }
 
-// Build a Luau twin of bundled class `id` configured by `params_json`.
+// The bundled class `id` configured by `params_json`.
 std::unique_ptr<PJ::scripting::LuaSisoTransform> makeLuau(const std::string& id, const std::string& params_json) {
   const PJ::scripting::FilterClass* k = findClass(id);
   EXPECT_NE(k, nullptr) << "no bundled class with id " << id;
@@ -97,12 +95,8 @@ double dval(const std::optional<Sample>& o) {
 
 }  // namespace
 
-// ===================== ported builtin spec fragments =====================
-
 // ----------------------------- none / absolute ------------------------------
-// The mirror builtins (output="same"): they preserve the input column kind AND
-// value within 2^53 (relocated from the deleted None/Absolute C++ specs + the
-// parity int64-mirror test).
+// The mirror builtins (output="same") keep the input's column kind and, within 2^53, its value.
 TEST(GoldenNone, PassesValueAndTimestampThrough) {
   auto t = makeLuau("none", "{}");
   ASSERT_FALSE(t->failed()) << t->error();
@@ -439,8 +433,8 @@ TEST(GoldenMovingAverage, OutputKindIsFloat64) {
   EXPECT_EQ(kinds[0], PJ::StorageKind::kFloat64);  // base default
 }
 
-// The PJ3 "pad-with-current, divide-by-full-window" quirk, traced by hand with
-// window=3 over y = 10, 20, 30, 0 at ts 0, 100, 200, 300.
+// An underfull window is padded with the current value and divided by the full window; traced by hand with window=3
+// over y = 10, 20, 30, 0 at ts 0, 100, 200, 300.
 TEST(GoldenMovingAverage, PadsUnderfullWindowWithCurrentValue) {
   auto t = makeLuau("moving_average", R"({"window":3})");
   ASSERT_FALSE(t->failed()) << t->error();
@@ -550,7 +544,7 @@ TEST(GoldenMovingRMS, OutputKindIsFloat64) {
   EXPECT_EQ(kinds[0], PJ::StorageKind::kFloat64);
 }
 
-// Pad-with-current quirk: window==10, a single sample y==3 returns |y| == 3.
+// An underfull window is padded with the current value: window==10, a single sample y==3 returns |y| == 3.
 TEST(GoldenMovingRMS, FirstSamplePadsToCurrentValue) {
   auto t = makeLuau("moving_rms", "{}");  // default window == 10
   ASSERT_FALSE(t->failed()) << t->error();
@@ -688,8 +682,7 @@ TEST(GoldenMovingVariance, StdDevIsSqrtOfVariance) {
   EXPECT_DOUBLE_EQ(dval(out), std::sqrt(8.25));
 }
 
-// Pad-with-current quirk: a single sample in a window>1 pads the missing slots
-// with the current value, so variance collapses to 0 (no spread).
+// A single sample in a window>1 pads the missing slots with the current value, so variance is 0.
 TEST(GoldenMovingVariance, SingleSamplePaddedIsZeroVariance) {
   auto t = makeLuau("moving_variance", R"({"window":10})");
   ASSERT_FALSE(t->failed()) << t->error();
@@ -1134,8 +1127,8 @@ TEST(GoldenTimeSincePrevious, FirstSampleSuppressedThenDeltasInSeconds) {
   auto t = makeLuau("time_since_previous", "{}");
   ASSERT_FALSE(t->failed()) << t->error();
 
-  // Timestamps 0, 1e9, 3e9 ns (value ignored by the filter). `t` is seconds since
-  // session start, so the filter returns the gap in SECONDS as a double.
+  // Timestamps 0, 1e9, 3e9 ns (the filter ignores the value). `t` is in seconds, so the gap comes back in seconds as a
+  // double.
   const auto first = t->calculateNextPoint(Si(0, 0));
   EXPECT_FALSE(first.has_value());  // no predecessor -> suppressed
 
@@ -1172,21 +1165,8 @@ TEST(GoldenTimeSincePrevious, ResetReSuppressesFirstSample) {
   EXPECT_DOUBLE_EQ(std::get<double>(delta->value()), 2.0);  // 2e9 ns gap == 2 seconds
 }
 
-// -------------------------------- params_json (malformed-defaults behavior) --------------------------------
-// Ported from ParamsJsonTest. The six *RoundTrip cases assert only that C++
-// PUBLIC FIELDS survive saveParams()/loadParams() JSON round-trip — a pure
-// C++-class persistence-surface check with no input/expected-output and no
-// behavioral assertion. The Luau twin exposes no field-readback (saveParams()
-// returns the stored params string verbatim), so there is nothing observable to
-// reproduce; those cases are intentionally not ported (see cases_skipped).
-//
-// MalformedJsonKeepsDefaults DOES carry portable behavior: malformed params JSON
-// must leave the configured filter at its declared defaults. The Luau engine
-// reproduces this (createInstance seeds every declared param with its default,
-// then only applies overrides when the params JSON parses to an object; a
-// non-object — i.e. malformed — leaves all defaults in place). We verify it
-// behaviorally: a `scale` built from non-JSON keeps default value_scale=1.0,
-// value_offset=0.0, time_offset_sec=0.0 → passthrough affine at the same time.
+// Malformed params JSON leaves the filter at its declared defaults (createInstance seeds every default and applies
+// overrides only when the JSON parses to an object): a `scale` built from non-JSON passes values through unchanged.
 TEST(GoldenParamsJson, MalformedJsonKeepsDefaults) {
   auto t = makeLuau("scale", "definitely not json");
   ASSERT_FALSE(t->failed()) << t->error();

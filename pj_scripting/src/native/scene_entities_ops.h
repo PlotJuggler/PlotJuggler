@@ -10,7 +10,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_scripting/memory_budget.h"
 
-// Native SceneEntities builder behind a script's scene builder (D27). Luau-free, so the Luau and Python
+// Native SceneEntities builder behind a script's scene builder. Luau-free, so the Luau and Python
 // binders share it, like point_cloud_ops.h.
 namespace PJ::scripting::native {
 
@@ -19,7 +19,7 @@ namespace PJ::scripting::native {
 /// charged), so a builder grown in a loop stops at the limit. Coordinates must be finite, and every size
 /// (`diameter`, `size`, `font_size`, `thickness`) finite and greater than 0. Every rejection, the budget's
 /// aside, names the offending field. Timestamps stay 0: the runtime stamps the snapshot with the result's stamp, the
-/// newest resolved input time (docs/derived_objects/ARCHITECTURE.md §7).
+/// newest resolved input time (docs/derived_objects/ARCHITECTURE.md "Time and alignment").
 class SceneEntityBuilder {
  public:
   /// `id` is the snapshot's de-duplication key and must not be empty; `frame_id` may be. `budget` null:

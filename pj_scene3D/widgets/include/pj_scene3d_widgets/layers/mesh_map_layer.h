@@ -24,19 +24,15 @@ class QWidget;
 
 namespace pj::scene3d {
 
-// Scene3DLayer for an sdk::MeshMap topic and the sdk::MeshMapUpdate topics that
-// patch it. The layer owns the store side (which entries exist at the tracker
-// time, fetching and decoding them, spotting an update that arrived late) and
-// MeshMapReconstructor the mesh: which update belongs to the map, applying them
-// forward, starting over from the map on a rewind. Every MeshMapUpdate topic of
-// the dataset is a candidate stream; the `<topic>_updates` sibling (the
-// convention OccupancyGridLayer follows) is the one that also applies updates
-// with no geometry_id. The result is de-indexed for the view; an update that
-// only rewrote faces of the coloured channel re-colours that span alone
-// (stagedColorDelta()). The requested colour source is kept apart from the
-// effective one so a persisted request is honoured again once its channel
-// reappears. Placed at the tracker time (no renderStamp()): the drawn mesh is a
-// map plus updates with no single stamp.
+// Scene3DLayer for an sdk::MeshMap topic and the sdk::MeshMapUpdate topics that patch it. The layer owns the store side
+// (which entries exist at the tracker time, fetching and decoding them, spotting an update that arrived late) and
+// MeshMapReconstructor the mesh (which update belongs to the map, applying them forward, starting over from the map on
+// a rewind). Every MeshMapUpdate topic of the dataset is a candidate stream; the `<topic>_updates` sibling (the
+// convention OccupancyGridLayer follows) is the one that also applies updates with no geometry_id. The result is
+// de-indexed for the view; an update that only rewrote faces of the coloured channel re-colours that span alone
+// (stagedColorDelta()). The requested colour source is kept apart from the effective one so a persisted request is
+// honoured again once its channel reappears. Placed at the tracker time (no renderStamp()): the drawn mesh is a map
+// plus updates with no single stamp.
 class MeshMapLayer : public Scene3DLayer {
   Q_OBJECT
  public:
@@ -63,10 +59,9 @@ class MeshMapLayer : public Scene3DLayer {
 
   [[nodiscard]] std::optional<AABB> worldBounds() const override;
 
-  // QRhi view hook, called once per frame for a visible layer: rebuilds the mesh
-  // at the last tracker time when a tracker move or selector change is pending.
-  // The result is stagedMesh(); stagedRevision() bumps on every change, and the
-  // upload's geometry_revision only when the positions changed.
+  // QRhi view hook, once per frame for a visible layer: rebuilds the mesh at the last tracker time when a tracker move
+  // or selector change is pending. The result is stagedMesh(); stagedRevision() bumps on every change, the upload's
+  // geometry_revision only when the positions changed.
   void prepareForRender();
   [[nodiscard]] const std::optional<MeshMapUpload>& stagedMesh() const {
     return staged_mesh_;
@@ -74,9 +69,8 @@ class MeshMapLayer : public Scene3DLayer {
   [[nodiscard]] std::uint64_t stagedRevision() const {
     return staged_revision_;
   }
-  // Set when the step from revision stagedRevision() - 1 to stagedRevision()
-  // rewrote only this (non-empty) span of colour corners: a view holding the
-  // previous revision uploads just the span.
+  // Set when the step from revision stagedRevision() - 1 to stagedRevision() rewrote only this (non-empty) span of
+  // colour corners: a view holding the previous revision uploads just the span.
   [[nodiscard]] const std::optional<ElementRange>& stagedColorDelta() const {
     return staged_color_delta_;
   }
@@ -101,9 +95,8 @@ class MeshMapLayer : public Scene3DLayer {
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
-  // Display params. setColorBy re-colours on the next render; the rest are
-  // uniform-only. A channel key ("face:<name>" / "vertex:<name>"),
-  // kMeshMapSourceVertexColor, kMeshMapSourceSolid, or empty = auto.
+  // setColorBy re-colours on the next render, the other params are uniform-only. A channel key ("face:<name>" /
+  // "vertex:<name>"), kMeshMapSourceVertexColor, kMeshMapSourceSolid, or empty = auto.
   void setColorBy(const QString& source);
   void setColormap(PJ::Colormap colormap);
   void setAutoRange(bool on);
@@ -135,16 +128,12 @@ class MeshMapLayer : public Scene3DLayer {
 #endif
 
  signals:
-  // The channel list or the effective pick changed: the config panel's selector
-  // rebuilds from color_sources_.
   void colorSourcesChanged();
 
  private:
-  // Decode the first map at attach to learn the source frame + channel list.
   bool bootstrap();
-  // Bring the mesh to `time_ns` and stage the upload. Cheap no-op when the map
-  // and the updates at that time are the ones already staged, or that map was
-  // refused. Re-stages only when the geometry or the colours changed.
+  // Brings the mesh to `time_ns` and stages the upload: a cheap no-op when the map and updates at that time are already
+  // staged or that map was refused; re-stages only when the geometry or the colours changed.
   void renderAt(int64_t time_ns);
   // Decodes the map at `entry` and restarts the reconstruction from it; false
   // (base_warning_ set, nothing changed) when the map is refused.
@@ -153,25 +142,21 @@ class MeshMapLayer : public Scene3DLayer {
   // stamps in (lo, hi], merged in time order, fetched and decoded only when the
   // sink wants them.
   void feedUpdates(PJ::Timestamp lo, PJ::Timestamp hi, MeshMapReconstructor::Sink& sink);
-  // Turns what a replay skipped into update_warning_.
   void noteReplay(const MeshMapReplay& replay);
-  // Re-lists the dataset's MeshMapUpdate topics when its topic list changed.
   void refreshUpdateTopics();
-  // Identifies the set of updates at or before `time_ns`: per topic, the highest
-  // arrival UID and the latest-by-stamp entry's UID, folded.
+  // Identifies the set of updates at or before `time_ns`: per topic the highest arrival UID and the latest-by-stamp
+  // entry's UID, folded.
   [[nodiscard]] std::uint64_t updateKey(int64_t time_ns, std::vector<std::uint64_t>* max_uids = nullptr) const;
   // True when an update for this map arrived stamped at or before what was
   // already applied: any late one on a paired topic (the sibling or `matched`),
   // one naming this geometry on another topic (decoded to tell; the topic's
   // cursor then moves past those that do not).
   [[nodiscard]] bool lateUpdateArrived();
-  // Picks the effective colour source from the request and the state's channels.
   void resolveColorSource();
   // Stages the reconstructed mesh: the positions when `geometry_changed`, and
   // the colours whole, or, when only the last replay changed them
   // (`values_changed`), the span it rewrote. No-op when neither changed.
   void stage(bool geometry_changed, bool values_changed);
-  // A colormap or range edit: persist and repaint (uniforms only, no re-stage).
   void coloringChanged();
   void clearStaged();
   void resetStreamingState();
@@ -182,19 +167,16 @@ class MeshMapLayer : public Scene3DLayer {
   QString display_name_;
   Scene3DLayerContext ctx_;
   QMetaObject::Connection reload_connection_;
-  // A MeshMapUpdate topic of the dataset, a stream of reconstructor_ keyed by
-  // its topic id.
   struct UpdateTopic {
     PJ::ObjectTopicId id;
-    // Newest arrival at or before the reconstructor's appliedUntil() when it
-    // was last advanced: what arrived later is new to lateUpdateArrived().
+    // Newest arrival at or before the reconstructor's appliedUntil() when it was last advanced: later arrivals are new
+    // to lateUpdateArrived().
     std::uint64_t applied_max_uid = 0;
   };
   std::vector<UpdateTopic> update_topics_;
   std::vector<PJ::ObjectTopicId> known_topics_;  // the dataset's topics when update_topics_ was listed
 
-  // The mesh at the last rendered time. Its state owns its arrays (no anchor
-  // into a plugin DSO), so no binding keepalive is needed.
+  // The mesh at the last rendered time. Its state owns its arrays (no anchor into a plugin DSO): no keepalive needed.
   MeshMapReconstructor reconstructor_;
   std::uint64_t staged_update_key_ = 0;
   PJ::SequentialUID staged_base_uid_{};

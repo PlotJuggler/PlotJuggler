@@ -90,15 +90,11 @@ using namespace Qt::StringLiterals;
 
 namespace PJ {
 
-// Rendezvous between an import worker parked in the synchronous message-box ABI
-// and the GUI thread that answers it. Deliberately NOT FileLoader state: the
-// queued GUI lambda that would open the dialog and the worker blocked on the
-// answer can both outlive joinForShutdown — and even the FileLoader — so all
-// parties hold this by shared_ptr. A shut gate answers every request -1 and
-// never opens UI.
+// Rendezvous between an import worker parked in the synchronous message-box ABI and the GUI thread that answers it.
+// Shared, not FileLoader state: the queued GUI lambda and the blocked worker can outlive joinForShutdown and the
+// FileLoader itself. A shut gate answers every request -1 and never opens UI.
 struct PluginMessageGate {
-  // One worker question. finish() is release-once: the first answer (a button,
-  // dialog destruction, or shutdown) wins; later answers are ignored.
+  // The first answer (a button, dialog destruction, or shutdown) wins.
   struct Request {
     QSemaphore ready;
 
@@ -121,8 +117,7 @@ struct PluginMessageGate {
     std::atomic<bool> finished_{false};
   };
 
-  // Worker: register a request about to block. False when the gate is already
-  // shut — the caller must answer -1 itself and must not post any GUI work.
+  // Worker. False when the gate is shut: the caller answers -1 itself and posts no GUI work.
   [[nodiscard]] bool beginRequest(const std::shared_ptr<Request>& request) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (shutting_down_) {
@@ -142,9 +137,8 @@ struct PluginMessageGate {
     return shutting_down_;
   }
 
-  // GUI: refuse future requests and release every parked worker with -1, so
-  // joinForShutdown can join the worker without pumping the event queue the
-  // worker's dialog request may still be sitting in.
+  // GUI: releases every parked worker with -1, so joinForShutdown can join the worker without pumping the event
+  // queue its dialog request may still sit in.
   void shutdown() {
     std::vector<std::shared_ptr<Request>> pending;
     {
@@ -167,11 +161,8 @@ namespace {
 
 Q_LOGGING_CATEGORY(lcFileLoader, "pj.app.fileloader")
 
-// Await the callback-style dialog presenter while also handling its synchronous
-// no-dialog/contract-error completion paths. The shared state prevents a late
-// QDialog callback from touching a coroutine frame destroyed during shutdown,
-// and the destructor cancels a still-open dialog so the plugin is rejected
-// while its context is alive.
+// Awaits the callback-style dialog presenter, which may also complete synchronously (no dialog, contract error).
+// The shared state keeps a late QDialog callback off a coroutine frame destroyed during shutdown.
 class DataSourceDialogAwaiter {
  public:
   explicit DataSourceDialogAwaiter(dialog_presenter::DataSourceRequest request)
@@ -181,12 +172,9 @@ class DataSourceDialogAwaiter {
   DataSourceDialogAwaiter& operator=(const DataSourceDialogAwaiter&) = delete;
 
   ~DataSourceDialogAwaiter() {
-    // Runs either after normal resumption (the cancel below is then a no-op) or
-    // while the suspended frame is being destroyed at shutdown. Neuter the
-    // completion FIRST — resuming a frame mid-destruction is UB — then close a
-    // dialog still open so the plugin receives its one on_rejected while the
-    // frame's DataSourceHandle (declared before this awaiter, hence destroyed
-    // after it) still owns a live plugin context.
+    // Also runs when a suspended frame is destroyed at shutdown. Neuter the completion first (resuming a frame
+    // mid-destruction is UB), then close a still-open dialog so the plugin gets its on_rejected while the frame's
+    // DataSourceHandle, declared before this awaiter and so destroyed after it, still owns a live context.
     state_->alive = false;
     if (cancel_dialog_) {
       cancel_dialog_();
@@ -231,14 +219,12 @@ class DataSourceDialogAwaiter {
 
   dialog_presenter::DataSourceRequest request_;
   std::shared_ptr<State> state_;
-  // Synchronous teardown hook for the pending dialog; empty when the presenter
-  // completed without opening one.
+  // Empty when the presenter completed without opening a dialog.
   dialog_presenter::DialogCancelFn cancel_dialog_;
 };
 
-// Runs a blocking importer body on QThread and resumes its owning coroutine on
-// the GUI thread after QThread::finished. The FileLoader owns both the QThread
-// and coroutine frame, so shutdown can join first and then cancel continuation.
+// Runs a blocking importer body on a QThread and resumes the coroutine on the GUI thread after QThread::finished.
+// The FileLoader owns both the QThread and the frame, so shutdown joins first, then drops the continuation.
 class GuiResumingWorkerAwaiter {
  public:
   GuiResumingWorkerAwaiter(QObject* context, std::unique_ptr<QThread>& worker, std::function<void()> job)
@@ -273,10 +259,8 @@ class GuiResumingWorkerAwaiter {
   }
 
   void await_resume() {
-    // The continuation resumes only after QThread::finished, so wait() returns
-    // near-instantly here; it still closes the window where reset() could
-    // destroy the QThread object while it is mid-teardown from emitting that
-    // very signal, matching every other worker teardown site in this file.
+    // QThread::finished has fired, so wait() returns at once; it keeps reset() from destroying the QThread while it
+    // is still emitting that signal.
     worker_->wait();
     worker_.reset();
   }
@@ -319,10 +303,8 @@ QString normalizeExtension(const QString& path) {
   return suffix.isEmpty() ? QString() : u"."_s + suffix.toLower();
 }
 
-// Logs a load-outcome marker and, in the browser probe build, also appends it
-// to globalThis.pjWasmLoadOutcomes. Firefox can drop a console line before it
-// reaches the test runner (the load completes, its marker never arrives), so
-// the browser tests read the outcome from the page rather than the console.
+// In the browser probe build, also appends to globalThis.pjWasmLoadOutcomes: Firefox can drop a console line before
+// the test runner sees it, so the browser tests read outcomes from the page.
 void recordProbeOutcome(const QString& line) {
   qCInfo(lcFileLoader).noquote() << line;
 #if defined(PJ_WASM_ENABLE_INGRESS_PROBE) && defined(__EMSCRIPTEN__)
@@ -337,15 +319,12 @@ void recordProbeOutcome(const QString& line) {
 void logSuccessfulLoad(
     const DataEngine& engine, const CatalogModel& catalog, const QString& source_identity, const QString& plugin_name,
     const std::vector<DatasetId>& dataset_ids) {
-  // The catalog walk + up to kMaxLoggedSeries DataReader::series() reads below
-  // are pure diagnostic cost on the GUI thread; skip all of it when the
-  // category won't actually emit.
+  // Diagnostic cost on the GUI thread: skip it when the category is off.
   if (!lcFileLoader().isInfoEnabled()) {
     return;
   }
   if (dataset_ids.empty()) {
-    // No datasets — the filter below would degenerate to match-all and log a
-    // "success" enumerating the whole unrelated catalog.
+    // The filter below would match the whole catalog.
     return;
   }
 
@@ -487,10 +466,7 @@ void probeColdObjectFetch(ObjectStore& object_store, DatasetId dataset_id) {
 }
 #endif
 
-// Merge the file path into the (possibly empty) saved JSON config. Saved
-// config carries the dialog state from the previous load (delimiter, time
-// column, etc.) so the dialog opens pre-populated. If saved_config doesn't
-// parse, treat it as empty rather than failing the import.
+// The saved config (the previous load's dialog state) with `filepath` set; an unparsable one counts as empty.
 std::string buildLoadConfig(std::string_view saved_config, const QString& path) {
   QJsonObject obj;
   if (!saved_config.empty()) {
@@ -509,21 +485,7 @@ QString pluginConfigKey(const std::string& plugin_id) {
   return QString::fromLatin1(kPluginConfigKeyPrefix) + QString::fromStdString(plugin_id);
 }
 
-// A long plugin message (e.g. a per-row list of thousands of skipped CSV
-// lines) would stretch a plain QMessageBox label past the screen and push
-// the action buttons out of reach. Render it in an app-styled PJ::Dialog
-// (same chrome as DiagnosticsDialog): themed icon + summary on top, the
-// error text in a read-only monospace scroll view that manages its own space,
-// and role-styled buttons at the bottom. The scroll view bounds the dialog,
-// so it never grows past the screen no matter how many lines the plugin sends.
-//
-// A namespace-scope function rather than a branch inside the message-box
-// handler's nested lambdas: MSVC's front end rejects by-ref captures through
-// that lambda chain (bogus C3493 "'this' cannot be implicitly captured" /
-// C2065 '__this'), so the dialog construction lives here.
-//
-// Completes with the PJ_MSG_BTN_* mask of the clicked button; a window-close
-// (✕ / Esc) completes with -1, i.e. "do not proceed".
+// Called with the clicked PJ_MSG_BTN_* mask, or -1 (do not proceed) when the window is closed.
 using PluginMessageCompletion = std::function<void(int)>;
 
 struct PluginMessageState {
@@ -539,18 +501,14 @@ struct PluginMessageState {
   }
 };
 
-// `active_dialog` is heap-shared FileLoader state (see FileLoader.h): the
-// WA_DeleteOnClose dialog can outlive the loader, so its finished/destroyed
-// hooks capture the shared_ptr, never a pointer into FileLoader.
+// For long plugin messages (thousands of skipped CSV rows): a plain message-box label would grow past the screen and
+// push the buttons out of reach, so the text goes into a bounded monospace scroll view. A free function, not a branch
+// in the message-box handler's nested lambdas, because MSVC rejects by-ref captures through that chain (C3493 /
+// C2065). The WA_DeleteOnClose dialog can outlive the loader: its hooks capture `active_dialog`, never FileLoader.
 void openScrollableMessageDialog(
     QWidget* dialog_parent, const QString& q_title, const QString& q_text, int type, int buttons,
     const std::shared_ptr<QPointer<QDialog>>& active_dialog, PluginMessageCompletion completion) {
-  // Keep the first line as the summary (the non-scrolling label) and
-  // route everything else into the bounded scroll view. Producers put
-  // a one-line summary first; anything longer must scroll, never
-  // inflate the label -- otherwise we reproduce the very overflow this
-  // dialog exists to prevent. (A leading blank line, when a producer
-  // separates summary from detail with "\n\n", is dropped by trimmed().)
+  // The first line is the summary label; the rest always scrolls, or the label overflows again.
   const qsizetype nl = q_text.indexOf(QLatin1Char('\n'));
   const QString head = nl < 0 ? q_text : q_text.left(nl);
   const QString body = nl < 0 ? QString() : q_text.mid(nl + 1).trimmed();
@@ -567,8 +525,7 @@ void openScrollableMessageDialog(
     *active_dialog = dlg;
   }
   dlg->setAttribute(Qt::WA_DeleteOnClose);
-  // App-modal (not window-modal) restores the pre-branch exec() semantics:
-  // window-modality would leave floating ADS dock tool-windows interactive.
+  // Not window-modal: that would leave floating ADS dock windows interactive.
   dlg->setWindowModality(Qt::ApplicationModal);
   dlg->setDialogTitle(q_title);
   dlg->setMinimumSize(520, 360);
@@ -604,10 +561,6 @@ void openScrollableMessageDialog(
   header->addWidget(head_label, 1);
   vbox->addLayout(header);
 
-  // Read-only, monospace scroll view (the CurveTreeView FixedFont
-  // idiom): it scrolls its own content, so the dialog stays bounded.
-  // Skipped for a short (single-line) message — no detail to scroll, so the
-  // dialog stays compact instead of showing an empty scroll area.
   if (!body.isEmpty()) {
     auto* body_view = new QPlainTextEdit(body, body_widget);
     body_view->setReadOnly(true);
@@ -620,10 +573,7 @@ void openScrollableMessageDialog(
     vbox->addWidget(body_view, 1);
   }
 
-  // App button idiom (see PJ::MessageBox): objectName + msgbox_role
-  // dynamic property drive the themed look (primary = brand gradient,
-  // cancel = subtler). No QDialogButtonBox — the app reserves that for
-  // plugin-hosted dialogs.
+  // Themed through objectName + the msgbox_role property, as PJ::MessageBox does.
   struct BtnSpec {
     int mask;
     const char* label;
@@ -634,8 +584,7 @@ void openScrollableMessageDialog(
       {PJ_MSG_BTN_NO, QT_TR_NOOP("No"), "neutral"},      {PJ_MSG_BTN_CONTINUE, QT_TR_NOOP("Continue"), "primary"},
       {PJ_MSG_BTN_ABORT, QT_TR_NOOP("Abort"), "cancel"}, {PJ_MSG_BTN_CANCEL, QT_TR_NOOP("Cancel"), "cancel"},
   };
-  // Fall back to a lone OK when the plugin passed no button we render
-  // (mirrors the QMessageBox path in the caller); specs[0] is that OK entry.
+  // No button we render: a lone OK, as openPluginMessageBox does.
   int wanted = buttons;
   int known = 0;
   for (const auto& s : specs) {
@@ -680,8 +629,7 @@ void openScrollableMessageDialog(
     }
     state->finish(-1);
   });
-  // show(), not open(): QDialog::open() force-downgrades ApplicationModal back to
-  // WindowModal. show() honors the app-modality set above and still fires finished.
+  // show(), not open(): open() force-downgrades ApplicationModal to WindowModal.
   dlg->show();
 }
 
@@ -699,8 +647,7 @@ void openPluginMessageBox(
     *active_dialog = msg_box;
   }
   msg_box->setAttribute(Qt::WA_DeleteOnClose);
-  // App-modal (not window-modal) restores the pre-branch exec() semantics; see
-  // openScrollableMessageDialog.
+  // Not window-modal: see openScrollableMessageDialog.
   msg_box->setWindowModality(Qt::ApplicationModal);
   msg_box->setTitle(q_title);
   msg_box->setText(q_text);
@@ -746,11 +693,9 @@ void openPluginMessageBox(
   // show(), not open(): open() force-downgrades ApplicationModal to WindowModal.
   msg_box->show();
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
-  // Chromium can occasionally leave this short message box behind the
-  // main Qt canvas after many fresh threaded-WASM contexts. Keep the acceptance
-  // probe deterministic without changing production UI: the missing-parser
-  // scenario still proves presentation via PJ_WASM_PLUGIN_MESSAGE, then its
-  // sole acknowledgement is activated through the real button.
+  // Probe build only: Chromium can leave this message box behind the Qt canvas after many fresh threaded-WASM
+  // contexts. The missing-parser scenario proves presentation through PJ_WASM_PLUGIN_MESSAGE; clicking its only
+  // button keeps the probe deterministic.
   if (q_title == u"Parser Error"_s) {
     QTimer::singleShot(1000, msg_box, [acknowledgment]() {
       if (acknowledgment != nullptr) {
@@ -773,9 +718,8 @@ DataSourceRuntimeHost::MessageBoxHandler makePluginMessageBoxHandler(
                                    << u"text=%1"_s.arg(q_text);
 #endif
 
-    // The ABI is synchronous for the plugin, but browser UI is not. For a
-    // worker-originated question, sleep only that worker while the GUI keeps
-    // dispatching events; the WASM path below never nests a Qt event loop.
+    // The ABI is synchronous for the plugin, browser UI is not: a worker's question sleeps only that worker while
+    // the GUI keeps dispatching; WASM never nests a Qt event loop.
     if (QThread::currentThread() == qApp->thread()) {
       if (gate->isShutDown()) {
         return -1;  // shutdown in progress: never open UI or spin a nested loop
@@ -785,14 +729,8 @@ DataSourceRuntimeHost::MessageBoxHandler makePluginMessageBoxHandler(
       openPluginMessageBox(message_parent.data(), q_title, q_text, type, buttons, active_dialog, [](int) {});
       return -1;
 #else
-      // Native Qt can satisfy the plugin's synchronous ABI even when a
-      // main-thread lifecycle callback asks the question. Keep the nested loop
-      // out of WASM, where browser event-loop re-entry is unsupported.
-      //
-      // Heap-shared completion state: exec() can unwind WITHOUT an answer
-      // (QCoreApplication::exit() terminates nested loops), and the dialog's
-      // finished/destroyed hooks may deliver the completion afterwards — it
-      // must then write into live storage, not this frame's dead stack.
+      // Heap-shared: exec() can return without an answer (QCoreApplication::exit() ends nested loops) and the
+      // dialog's hooks may complete afterwards, into live storage rather than this dead frame.
       struct SyncAnswer {
         QEventLoop loop;
         int answer = -1;
@@ -820,9 +758,7 @@ DataSourceRuntimeHost::MessageBoxHandler makePluginMessageBoxHandler(
     const bool posted = QMetaObject::invokeMethod(
         qApp,
         [gate, request, message_parent, q_title, q_text, type, buttons, active_dialog]() {
-          // Can run after joinForShutdown — and after the FileLoader died —
-          // since the GUI event queue outlives both. Everything captured here
-          // is shared state, and a shut gate answers -1 without opening UI.
+          // May run after joinForShutdown and after the FileLoader died: capture shared state only.
           if (gate->isShutDown() || message_parent.isNull()) {
             request->finish(-1);
             return;
@@ -842,9 +778,8 @@ DataSourceRuntimeHost::MessageBoxHandler makePluginMessageBoxHandler(
   };
 }
 
-/// Nulls a pointer slot when it goes out of scope. Meant for coroutine frames:
-/// a frame destroyed while suspended skips every statement after its co_await,
-/// but still runs the destructors of the locals in scope.
+/// For coroutine frames: a frame destroyed while suspended skips the code after its co_await but still runs the
+/// destructors of its locals.
 template <typename T>
 class ScopedPointerReset {
  public:
@@ -859,10 +794,8 @@ class ScopedPointerReset {
   T*& slot_;
 };
 
-// The plugin's canonical post-load config, stripped of host-private replay
-// keys (a plugin may echo `__pj_saved_filepath` back from saveConfig, and the
-// result is what layouts persist). A saveConfig failure is non-fatal: it is
-// logged and yields an empty config, so the layout save skips plugin config.
+// The config layouts persist, stripped of host-private replay keys (a plugin may echo `__pj_saved_filepath`). A
+// saveConfig failure is logged and yields an empty config: the layout then saves no plugin config.
 std::string captureSavedConfig(DataSourceHandle& handle, const QString& source_name) {
   std::string captured_config;
   auto status = handle.saveConfig(captured_config);
@@ -892,28 +825,11 @@ std::string withSideFilePaths(const std::string& config, const LoadHints& hints,
 
 }  // namespace
 
-// Default ingest policies the app applies to every DataSourceRuntimeHost it
-// builds: scalars eager, objects lazy (decoded on pull). Under the default
-// kLazyObjectsEagerScalars the payload bytes are fetched ONCE at ingest so the
-// parser's scalar route can emit its slim timeseries (header stamp, frame_id,
-// counts), then dropped from RAM; object pulls re-fetch from the source, so
-// large blobs (clouds, images, grids) stay NON-resident either way and peak
-// RSS is unaffected. The price is one extra read of those messages at load
-// time — accepted so every header-bearing object topic (point clouds, images,
-// depth images, occupancy/voxel grids) exposes its header/timestamp series in
-// the curve tree, not only a 3D/2D object.
-// PURE-LAZY (bytes never fetched at ingest, no scalar series at all) is kept
-// only where even that one ingest-time read buys nothing worth plotting:
-//   * Video frames: reading every file-backed bitstream at load is a
-//     full-file pass for a couple of metadata columns; the video dock pulls
-//     frames on demand instead.
-//   * SceneEntities (markers) / ImageAnnotations: no meaningful scalar
-//     fields; their parsers return empty/slim rows purely so ingest survives
-//     under non-pure-lazy policies.
-// TF (kFrameTransforms) intentionally stays eager: its payload is tiny and its
-// scalar fields are useful. Static so the pre-dialog scratch session and the
-// per-fanout loop iterations stay in lockstep, and so it is unit-testable
-// against a bare resolver.
+// Under kLazyObjectsEagerScalars each object payload is read once at ingest for its scalar series (header stamp,
+// frame_id, counts) and then dropped; object pulls re-read the source. Pure-lazy (no ingest read, no scalars) only
+// where that read buys nothing: video frames (a full-file pass for a few columns) and scene entities / image
+// annotations (no useful scalars). TF stays eager: tiny payloads, useful scalars. Shared by the single-instance
+// ingest session and every fan-out iteration.
 void FileLoader::applyDefaultIngestPolicies(PJ::sdk::ObjectIngestPolicyResolver& resolver) {
   using PJ::sdk::BuiltinObjectType;
   using PJ::sdk::ObjectIngestPolicy;
@@ -922,46 +838,34 @@ void FileLoader::applyDefaultIngestPolicies(PJ::sdk::ObjectIngestPolicyResolver&
   resolver.setForType(BuiltinObjectType::kImageAnnotations, ObjectIngestPolicy::kPureLazy);
   resolver.setForType(BuiltinObjectType::kVideoFrame, ObjectIngestPolicy::kPureLazy);
 #ifdef PJ_TARGET_WASM
-  // The browser RobotModel consumes std_msgs/String through the object parser.
-  // That parser intentionally has no scalar handler, so keep its payload lazy
-  // until the layer requests the selected description. Fence this to WASM so
-  // the desktop application's ingest policy remains exactly unchanged.
+  // The browser RobotModel reads std_msgs/String through the object parser, which has no scalar handler: keep the
+  // payload lazy until the layer asks for the selected description.
   resolver.setForType(BuiltinObjectType::kRobotDescription, ObjectIngestPolicy::kPureLazy);
 #endif
 #ifdef PJ_WASM_ENABLE_MCAP_PROBE_PARSER
-  // The official 50k-message cancellation fixture uses this topic. Force its
-  // acceptance-only parser through the eager scalar route so the browser test
-  // has a deterministic window in which to exercise cooperative cancellation;
-  // normal builds retain the production policy above.
+  // Probe build only: the 50k-message cancellation fixture's topic goes eager, so the browser test has a
+  // deterministic window in which to cancel.
   resolver.setForTopic(kWasmProbeBulkTopic, ObjectIngestPolicy::kEager);
 #endif
 }
 
-// Per-load state for a single-instance worker load. Holds the bound plugin
-// handle + ingest host so they outlive the GUI prologue across the worker run.
+// A single-instance load's plugin handle and ingest host, kept alive from the GUI prologue through the worker run.
 struct FileLoader::LoadContext {
-  // DataSourceHandle has no default ctor (it wraps a created plugin instance),
-  // so the context is built by moving the bound handle + host in.
   LoadContext(DataSourceHandle bound_handle, std::unique_ptr<DataSourceRuntimeHost> bound_ingest)
       : handle(std::move(bound_handle)), ingest(std::move(bound_ingest)) {}
 
   QString path;
   QPointer<QWidget> dialog_parent;
-  QString source_name;
-  // The selected plugin's stable manifest id, carried alongside its display
-  // name (source_name) so the commit epilogue's fileLoaded reports both.
+  QString source_name;  // the plugin's display name
   QString source_manifest_id;
   std::string config;
   DatasetId dataset_id = 0;
-  quint64 ticket = 0;  // the request's LoadRequestId, for the worker-path terminal
+  quint64 ticket = 0;
   bool replacing = false;
-  // REPLACING loads only: display name applied at commit (plugin-supplied name,
-  // else the incoming file's basename). Deferred so a rollback keeps the prior
-  // dataset's name — a replace may point the dataset at a different file.
+  // Replacing loads: the name applied at commit, so a rollback keeps the prior name.
   QString commit_display_name;
-  // Engaged only on a REPLACING reload: the RAII transaction that detached the
-  // prior data up front. Committed on success/keep (onWorkerFinished); otherwise
-  // its destructor — fired by ctx_.reset()/destruction — rolls the dataset back.
+  // Replacing loads: committed on success or keep (onWorkerFinished); otherwise its destructor, run by ctx_.reset(),
+  // rolls the dataset back.
   std::optional<RefillGuard> refill_guard;
   int file_index = 1;
   int file_total = 1;
@@ -971,12 +875,11 @@ struct FileLoader::LoadContext {
   // their browser-staged copies after this prologue's frame is gone.
   std::vector<std::shared_ptr<void>> dialog_selected_files;
   IngestToken ingest_token{};
-  // Worker-owned: started on the GUI before the thread runs, then only the
-  // worker touches it (elapsed/restart) to pace flush+notify.
+  // Started on the GUI before the thread runs; afterwards only the worker touches it.
   QElapsedTimer flush_clock;
-  // Set once by on_progress_start (worker); read by the queued progress lambda.
+  // Written once by on_progress_start (worker); read by the queued progress lambda.
   uint64_t progress_total = 0;
-  // Worker -> GUI handoff (read in onWorkerFinished after the worker joins).
+  // Worker -> GUI, read in onWorkerFinished after the join.
   bool start_ok = false;
   QString start_error;
 };
@@ -999,8 +902,7 @@ struct FileLoader::BeginLoadTask {
   };
 
   explicit BeginLoadTask(std::coroutine_handle<promise_type> handle) : handle_(handle) {}
-  // Move ctor only: BeginLoadTask lives exclusively in a std::unique_ptr
-  // (make_unique + reset), which never move-assigns the pointee itself.
+  // No move assignment: it lives only in a std::unique_ptr.
   BeginLoadTask(BeginLoadTask&& other) noexcept : handle_(std::exchange(other.handle_, {})) {}
   BeginLoadTask& operator=(BeginLoadTask&&) = delete;
   BeginLoadTask(const BeginLoadTask&) = delete;
@@ -1045,10 +947,8 @@ FileLoader::~FileLoader() {
 #ifdef PJ_TARGET_WASM
   browser_picked_file::setReadFailureHandler({});
 #endif
-  // Stricter admission than a reusable shutdown: the final synchronous
-  // terminal flush inside joinForShutdown runs loadFinished slots, and one of
-  // them starting fresh work here would leave an accepted request nothing can
-  // ever resolve (and a worker outliving this object).
+  // joinForShutdown's synchronous terminal flush runs loadFinished slots; a load one of them starts now would never
+  // resolve and its worker would outlive this object.
   destroying_ = true;
   joinForShutdown();
 }
@@ -1069,19 +969,12 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
   QSettings settings;
   const QString last_dir = settings.value(kLastDirKey, QString()).toString();
 
-  // PJ::FileDialog wraps a non-native QFileDialog in our frameless
-  // chrome, or opens the system dialog where the user opted in
-  // (FileDialog::setUseSystemDialog, Windows and macOS only) — see
-  // pj_widgets/FileDialog.h. The shell-injected picker threads MainWindow's chrome
-  // metrics into the dialog (toolbar icon size, kept in step via
-  // chromeMetricsChanged) — see setFilePicker().
   const QStringList paths = file_picker_ != nullptr
                                 ? file_picker_(dialog_parent, tr("Load Data"), last_dir, filter, /*multi=*/true)
                                 : FileDialog::getOpenFileNames(dialog_parent, tr("Load Data"), last_dir, filter);
   if (paths.isEmpty()) {
     return;
   }
-  // Remember the directory of the last pick for next time.
   settings.setValue(kLastDirKey, QFileInfo(paths.last()).absolutePath());
   loadFiles(paths, dialog_parent);
 #endif
@@ -1112,7 +1005,6 @@ void FileLoader::replaceFromDialog(DatasetId dataset_id, QWidget* dialog_parent)
   const QString filter = extensions_.buildFileFilter();
   QSettings settings;
   const QString last_dir = settings.value(kLastDirKey, QString()).toString();
-  // Single-select: the pick replaces exactly one dataset.
   QString path;
   if (file_picker_ != nullptr) {
     const QStringList picked = file_picker_(dialog_parent, tr("Replace Data"), last_dir, filter, /*multi=*/false);
@@ -1130,9 +1022,7 @@ void FileLoader::replaceFromDialog(DatasetId dataset_id, QWidget* dialog_parent)
 
 #ifdef PJ_TARGET_WASM
 void FileLoader::loadFromBrowserPicker(QWidget* dialog_parent, LoadHints hints) {
-  // Qt's getOpenFileContent is the browser-native, non-blocking API.
-  // It must be invoked directly from this user-activation turn; no nested
-  // QEventLoop/exec() is involved.
+  // The browser picker must open in this user-activation turn; no nested event loop.
   QPointer<FileLoader> self(this);
   QPointer<QWidget> guarded_parent(dialog_parent);
   // A plain open needs no fingerprint up front (only saving a source-bound layout does), so it is computed while the
@@ -1224,10 +1114,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     if (created_live_dataset_id == 0) {
       return;
     }
-    // Non-replacing loads create directly in the live engine. If they fail
-    // before commit, drop any emitted catalog items (and TF state) before
-    // erasing the engine dataset so no reader/adapter can keep a dangling
-    // TopicStorage pointer.
     removeCreatedDataset(created_live_dataset_id);
     created_live_dataset_id = 0;
   };
@@ -1239,10 +1125,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   });
 
-  // One unified failure path — log, optionally pop a dialog, emit signals.
-  // Every fail() call is followed by co_return, so it is a terminal exit and
-  // resolves the request's ticket — terminalized BEFORE the re-entrant legacy
-  // surfaces (warning dialog, fileLoadFailed) run.
+  // Always followed by co_return. Terminalizes the ticket before the re-entrant warning dialog and fileLoadFailed.
   const auto fail = [&](const QString& reason) -> bool {
     erase_created_live_dataset();
     rollback_tombstones();
@@ -1281,22 +1164,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  // Interactive/native loads keep the established first-match behavior. A
-  // layout that names a plugin (browser source-bound replay, desktop layout
-  // replay) opts into the exact plugin it saved: silently choosing another
-  // extension match could parse the same bytes with different semantics.
-  // Matching is tiered on SEPARATE identities — the stable MANIFEST id
-  // (expected_manifest_id, when the layout carries one) exact across ALL
-  // matches first, then the display name (expected_plugin_id) exact as the
-  // fallback. Each hint field only ever compares against its own candidate
-  // field, so a manifest mismatch still falls back to the saved display name,
-  // and an ID-only legacy layout starts at the name tier — it can never
-  // select a plugin whose manifest id merely collides with the display name.
-  // Both tiers sweep the whole candidate list so an id match on a later
-  // candidate beats a name collision on an earlier one.
-  // GUI-thread catalog pointer. The async presenter resolves the dialog vtable
-  // synchronously before suspension; the created source handle pins its DSO for
-  // the rest of this coroutine/worker load.
+  // The first match, unless a layout names its plugin: another match could parse the same bytes differently.
+  // `source` points into the GUI-owned catalog, which a marketplace reload can reallocate: use it only before the
+  // dialog suspends; after that, the snapshots below (the handle pins the DSO).
   const LoadedDataSource* source = matches.front();
   if (hints.require_expected_plugin) {
     const LoadedDataSource* expected =
@@ -1319,24 +1189,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     (void)fail(tr("Plugin '%1': createHandle failed.").arg(source_name));
     co_return;
   }
-  // Snapshot everything needed after an asynchronous dialog. The handle owner
-  // pins the DSO even if a later desktop marketplace reload reallocates the
-  // GUI-owned catalog vector.
   const PJ_data_source_vtable_t* const source_vtable = source->library.vtable();
   const std::shared_ptr<void> source_library_owner = handle.libraryOwner();
   const std::string source_id = source->id;
   const std::string source_plugin_name = source->name;
 
-  // The v4 DataSource protocol resolves host services during bind(), so the
-  // target dataset must exist before loadConfig() and start().
+  // The DataSource protocol resolves host services in bind(), so the dataset must exist before bind().
   DataEngine& engine = session_.dataEngine();
 
   const QString display_name = input.display_name;
   const std::string display_name_utf8 = display_name.toStdString();
 
-  // One TimeDomain per loaded source so each is independently time-shiftable
-  // (the Source Timeline drives the per-domain display_offset). The staged
-  // replace path below mints its own; the live first-load uses this one.
+  // One TimeDomain per loaded source, so the Source Timeline can shift each on its own.
   auto td_or = engine.createTimeDomain(display_name_utf8);
   if (!td_or.has_value()) {
     (void)fail(tr("Could not create the time domain for %1.").arg(display_name));
@@ -1344,35 +1208,21 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
   const TimeDomainId td_id = *td_or;
 
-  // Same-source handling: layout replay reuses the existing DatasetId; an interactive load/reload replaces the
-  // dataset's data in place, keeping its DatasetId/TopicIds (and so all curve keys) stable. The engine names
-  // datasets by basename, so the basename match is only a pre-filter — reuse is gated on full-path identity,
-  // so two different files that share a basename (e.g. log.mcap in separate run dirs) stay distinct datasets
-  // instead of the second silently aliasing the first.
+  // Same source: layout replay reuses the DatasetId; a load or reload refills it in place, keeping DatasetId and
+  // TopicIds (so curve keys) stable. Matching is by full-path identity: two files sharing a basename stay distinct.
   DatasetId existing_primary_id = 0;
-  // The dataset "Replace" action targets a dataset chosen by the user, not by
-  // source identity — honor it directly. A target that vanished while the
-  // picker/config dialog was open degrades to a plain fresh load.
   if (hints.replace_dataset_id != 0 && engine.getDataset(hints.replace_dataset_id) != nullptr) {
     existing_primary_id = hints.replace_dataset_id;
   } else {
     if (strict_replace) {
-      // The caller pinned this load to one dataset, and silently loading the
-      // file fresh would break that association.
       (void)fail(tr("Replacement target dataset %1 no longer exists.").arg(hints.replace_dataset_id));
       co_return;
     }
-    // One pass over the datasets, ranking two match kinds (sameSourceIdentity
-    // canonicalizes paths — filesystem syscalls — so compute it once per dataset):
-    // 1. Path identity, honored only when the incoming path backs exactly ONE
-    //    dataset. This finds a replaced dataset — its engine source_name keeps
-    //    the ORIGINAL basename (there is no engine-level rename), so only its
-    //    tracked path identifies it. Fan-out children are one-of-several from
-    //    the same file, so a fresh load / layout replay of that file must not
-    //    silently refill one of them.
-    // 2. Engine basename, gated on path identity when a path is tracked; a
-    //    dataset with no tracked path (created outside FileLoader, e.g.
-    //    streaming/test data) keeps the legacy basename-only match.
+    // sameSourceIdentity canonicalizes paths (syscalls): once per dataset. Two ranked matches:
+    // 1. Path identity, only when exactly one dataset has the path. A replaced dataset keeps its original engine
+    //    basename, so only its path finds it; fan-out children share one file and must not be refilled singly.
+    // 2. Engine basename, gated on path identity when a path is tracked; untracked datasets (streaming, tests)
+    //    match by basename alone.
     DatasetId sole_path_match = 0;
     bool path_match_ambiguous = false;
     DatasetId basename_match = 0;
@@ -1395,13 +1245,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
 
   if (existing_primary_id != 0 && hints.prefer_reuse) {
-    // Reuse the id referenced by the layout; keep the recorded config
-    // when legacy XML has no preset. Match the recorded source by path
-    // (not just the most-recent one) so a multi-file session recovers the
-    // right file's config when reloading any of its sources. The emitted
-    // config is what the session records and a later Reload replays verbatim,
-    // so a preset gets the path rewrite a fresh load gets; one that is not a
-    // JSON object cannot carry a path and is emitted as it is.
+    // The emitted config is what a later Reload replays verbatim, so a preset gets a fresh load's path rewrite (a
+    // non-object preset is emitted as it is). Without a preset, the recorded config of this path is kept.
     QString emit_config = hints.preset_config_json;
     if (!emit_config.isEmpty()) {
       const std::optional<std::string> rewritten = detail::rewriteReplayFilepaths(
@@ -1411,8 +1256,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         emit_config = QString::fromStdString(*rewritten);
       }
     } else {
-      // loadedSources() paths are stored normalized; compare canonically so a
-      // symlink/relative alias of a tracked file still recovers its config.
+      // Canonical comparison: a symlink or relative alias still finds its config.
       const auto& prior = session_.loadedSources();
       const auto it = std::find_if(prior.begin(), prior.end(), [&source_identity](const auto& src) {
         return sameSourceIdentity(src.path, source_identity);
@@ -1425,18 +1269,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     session_.setDatasetSourcePath(existing_primary_id, source_identity);
     emitLoadFinished(ticket, LoadOutcome::kLoaded, source_identity, existing_primary_id, {existing_primary_id});
     emit fileLoaded(source_identity, QString(), source_name, emit_config, source_manifest_id);
-    co_return;  // layout-replay reuse: done synchronously, no worker
+    co_return;
   }
-  // Tombstone of a matched dataset is deferred to the post-ingest swap (single-instance) or the fanout fallback
-  // below: don't disturb the live dataset until the staged ingest has succeeded.
 
-  // Ingest target — always the LIVE engine/store (no staging engine). A first
-  // load creates a fresh dataset. A same-source single-instance reload binds to
-  // the EXISTING dataset and refills it in place under the transactional
-  // RefillGuard from beginRefill() (below), so its DatasetId/TopicIds — and every
-  // curve key — stay stable: the write host's ensureTopic reuses each topic by
-  // name, writing back into the original ids. (A fanout reload can't refill one
-  // dataset into N, so it falls back to remove-then-fresh-load; see the fanout branch.)
+  // Ingest always targets the live engine. A same-source single-instance reload refills the existing dataset under
+  // a RefillGuard; ensureTopic reuses topics by name, so their ids stay. A fan-out reload cannot refill one dataset
+  // into N: it removes and loads fresh (see the fan-out branch).
   const bool replacing = (existing_primary_id != 0);
   DatasetId dataset_id = existing_primary_id;
   if (!replacing) {
@@ -1450,25 +1288,17 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
 
-  // A non-replacing first load just created its dataset in the LIVE engine
-  // (above). Track it so a SYNCHRONOUS prologue failure (bind / loadConfig below,
-  // before the worker starts) erases the abandoned shell via fail()'s
-  // erase_created_live_dataset, instead of leaving an empty dataset a prefer_reuse
-  // layout replay could reattach to. Worker-thread failure / discard is handled
-  // symmetrically in onWorkerFinished (which knows the same dataset via !replacing).
+  // A prologue failure erases it, or a prefer_reuse replay could reattach to the empty shell. Worker failures and
+  // discards are handled in onWorkerFinished.
   if (!replacing) {
     created_live_dataset_id = dataset_id;
   }
 
-  // Parsers register directly under the live ids (no staged remap needed).
   DataSourceRuntimeHost::ObjectTopicParserRegistrar object_parser_registrar =
       [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
         session_.registerObjectTopicParser(id, std::move(parser));
       };
-  // Heap-owned so a single-instance load can MOVE it into ctx_ and let the
-  // worker thread run handle.start() against it after this prologue returns.
-  // The reference stays valid across that move (unique_ptr move transfers
-  // ownership; the object's address does not change).
+  // Heap-owned: a single-instance load moves it into ctx_ for the worker; the reference below stays valid.
   auto ingest_session_ptr = std::make_unique<DataSourceRuntimeHost>(
       engine, extensions_, dataset_id, source_handle, session_.objectStore(), source_id,
       std::move(object_parser_registrar), nullptr, nullptr, combineKeepalive(handle.libraryOwner(), input.lease),
@@ -1494,30 +1324,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  // Pre-populate the dialog with last-used settings so users don't re-pick
-  // delimiter/time column on every load. The layout-driven path (hints
-  // with a matching plugin id + a usable preset config) skips the dialog
-  // entirely; we fall back to the dialog with the QSettings pre-fill if
-  // either the id mismatches or loadConfig rejects the preset.
+  // The last-used settings pre-fill the dialog.
   QSettings persisted_settings;
   const QString config_key = pluginConfigKey(source_plugin_name);
   const std::string saved_config = persisted_settings.value(config_key, QString()).toString().toStdString();
 
   std::string config;
   bool skip_dialog = false;
-  // The layout preset's saved bytes — the one materialization both
-  // preset-driven policies start from.
-  // Its side-file names already point at the files this replay reads.
+  // Side-file names already resolved to the files this replay reads.
   const std::string preset_bytes = withSideFilePaths(hints.preset_config_json.toStdString(), hints, input.backing_path);
 
   if (hints.dialog_policy == DialogPolicy::kNever) {
-    // Automated (layout-driven) replay: the dialog is prohibited and the
-    // saved preset is AUTHORITATIVE, pointed at the file being loaded
-    // (optionally recording the replaced path for the plugin to rebase
-    // sidecar files). An empty preset is legitimate: a plugin whose saveConfig
-    // returned nothing gets the minimal fresh-filepath config. A rejected
-    // preset FAILS the source: silently retrying with the QSettings pre-fill
-    // would replay the layout with a configuration the user never saved.
+    // A rejected preset fails the source: the QSettings pre-fill would replay a configuration the user never saved.
     auto rewritten = detail::rewriteReplayFilepaths(
         preset_bytes, input.backing_path,
         hints.record_saved_filepath && !isBrowserUploadIdentity(source_identity) ? detail::SavedFilepath::kRecord
@@ -1536,10 +1354,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     config = preset;
     skip_dialog = true;
   } else {
-    // kPreferPreset: skip the dialog when the preset names the SELECTED
-    // plugin (each hint identity against its own candidate field) and applies
-    // cleanly. kInteractive, a missing/mismatched hint, or a rejected preset
-    // all drive the dialog with the QSettings pre-fill.
+    // Each hint identity compares only against its own field of the selected plugin.
     const bool expected_matches_selected =
         (!hints.expected_manifest_id.isEmpty() && hints.expected_manifest_id == source_manifest_id) ||
         (!hints.expected_plugin_id.isEmpty() && hints.expected_plugin_id == source_name);
@@ -1561,14 +1376,11 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   }
 
-  // Files the user picked in the dialog (a DBC, say) that the plugin reads
-  // during import: their browser-staged copies must outlive the dialog. The
-  // fan-out path awaits its imports in this frame; the single-instance path
-  // hands them to ctx_, which outlives the frame.
+  // Browser-staged copies of files picked in the dialog (a DBC, say) must outlive it while the import reads them:
+  // the fan-out path imports in this frame, the single-instance path hands them to ctx_.
   std::vector<std::shared_ptr<void>> dialog_selected_files;
   if (!skip_dialog) {
-    // Extract parser config saved from a previous session so DialogEngine can
-    // restore the embedded parser dialog to its last state.
+    // Restores the embedded parser dialog to its last state.
     std::string initial_parser_config;
     {
       auto saved_cfg = nlohmann::json::parse(saved_config, nullptr, false);
@@ -1577,12 +1389,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       }
     }
 
-    // Named frame local, deliberately NOT a co_await temporary: GCC 11.4 (the
-    // linux-ci / AppImage compiler) mishandles awaiter temporaries inside
-    // co_await expressions — as a temporary this segfaulted the
-    // DialogShutdownTest pair on CI while newer GCC/MSVC were fine. A named
-    // local keeps the same declaration order relative to `handle` (so frame
-    // destruction still rejects the dialog before the plugin context dies).
+    // A named local, not a co_await temporary: GCC 11.4 (linux-ci, AppImage) mishandles awaiter temporaries (the
+    // DialogShutdownTest pair segfaulted on CI; newer GCC and MSVC were fine). Declared after `handle`, so frame
+    // destruction rejects the dialog before the plugin context dies.
     DataSourceDialogAwaiter dialog_awaiter({
         .source = *source,
         .handle = handle,
@@ -1606,13 +1415,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       co_return;
     }
     if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
-      // Diagnostic marker: the reject path completed with no dataset committed
-      // (automation greps for it on every platform).
+      // Test automation greps this marker on every platform.
       recordProbeOutcome(u"PJ_FILE_LOAD_REJECTED plugin="_s + source_name + u" identity="_s + source_identity);
-      // The user declined the load: a terminal cancel for the ticket, while
-      // the legacy signals stay silent as they always have on this exit.
-      // Clean up before emitting so a slot observing the terminal sees the
-      // rolled-back state.
+      // A cancel terminal; fileLoaded/fileLoadFailed stay silent. Roll back first so the terminal sees it.
       erase_created_live_dataset();
       rollback_tombstones();
       emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
@@ -1624,9 +1429,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     if (dlg.payload.has_value()) {
       config = dlg.payload->saved_config;
       dialog_selected_files = std::move(dlg.payload->selected_files);
-      // If the dialog had an embedded parser slot, embed the parser config in the
-      // saved config so it survives across sessions and reaches the source via
-      // loadConfig(). The source extracts it under the "_parser_config" key.
+      // An embedded parser's config travels inside the source config under "_parser_config".
       if (!dlg.payload->parser_config.empty()) {
         auto cfg = nlohmann::json::parse(config, nullptr, false);
         if (!cfg.is_discarded()) {
@@ -1634,9 +1437,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
           config = cfg.dump();
         }
       }
-      // DialogEngine already wrote the dialog's choices back via the dialog vtable,
-      // but for plugins that split dialog state from source state the explicit
-      // reload keeps the contract uniform.
+      // The dialog vtable already applied the choices; this reaches plugins that keep dialog and source state apart.
       if (auto status = handle.loadConfig(config); !status) {
         (void)fail(tr("Plugin '%1': loadConfig (post-dialog) failed: %2")
                        .arg(source_name, QString::fromStdString(status.error())));
@@ -1645,11 +1446,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   }
 
-  // A cancel ("Remove All" / "Stop") issued while this prologue sat suspended at
-  // its config dialog set cancel_mode_ but had no worker to observe it. Honor it
-  // here rather than letting the cancel_mode_.store(0) below silently wipe it:
-  // roll back any partial state and abandon the load. (shutting_down_ is handled
-  // separately by joinForShutdown, which destroys the frame outright.)
+  // A cancel issued while the config dialog was open had no worker to observe it; the store(0) below would wipe it.
   if (cancel_mode_.load() != 0) {
     qCInfo(lcFileLoader) << "[FileLoader] load cancelled while suspended at its config dialog";
     cancel_mode_.store(0);
@@ -1660,30 +1457,21 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  // Persist before start() so dialog choices stick even if ingest fails.
-  // Skip on the hint path: layout-driven reloads should NOT overwrite the
-  // user's last interactive choice in QSettings (spec §11). Otherwise
-  // opening a layout would silently mutate the global per-plugin pre-fill.
+  // Before start(), so dialog choices stick even if ingest fails. A preset load skips it: opening a layout must not
+  // overwrite the user's last interactive choice.
   if (!skip_dialog) {
     persisted_settings.setValue(config_key, QString::fromStdString(config));
-    // The persisted config may still name files picked in earlier dialogs (a
-    // DBC for another channel), so new picks add to the kept ones.
+    // The config may still name earlier picks (a DBC for another channel): add, never replace.
     // ponytail: every pick stays staged for the session; prune by what the
     // config still references if large dialog-picked files become common.
     auto& kept = last_dialog_files_[source_name];
     kept.insert(kept.end(), dialog_selected_files.begin(), dialog_selected_files.end());
   }
 
-  // Detect multi-instance fanout. A DataSource plugin emits a `__pj_fanout`
-  // array on accept when one selection should expand into several independent
-  // imports — each entry becomes its own DatasetId. For single-instance
-  // importers the helper returns `{ config }` and the legacy flow runs unchanged.
+  // One entry per dataset; `{ config }` when the plugin emitted no `__pj_fanout`.
   const auto fanouts = detail::extractFanout(config);
 
-  // Strict replacement cannot survive a fan-out expansion: one pinned target
-  // cannot absorb N results, and the fan-out fallback (tombstone the target,
-  // mint fresh ids) would silently break the caller's dataset association.
-  // Rejected HERE, before the fan-out arm below mutates the target.
+  // One pinned target cannot absorb N results. Checked before the fan-out arm tombstones the target.
   if (strict_replace && fanouts.size() != 1) {
     (void)fail(tr("Cannot replace dataset %1: the selected configuration expands into %2 datasets.")
                    .arg(hints.replace_dataset_id)
@@ -1691,15 +1479,10 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  // Live DatasetIds that fanout entries actually loaded data into (Completed or
-  // Cancel-kept); the post-load TF ingest below runs on these. The pre-branch
-  // scratch dataset never qualifies — it stays empty in fanout mode, and on a
-  // replacing fanout its id is staged-engine-scoped (it may alias an unrelated
-  // live dataset).
+  // Fan-out datasets that kept data (completed or keep-stopped). The prologue's own dataset is never one of them.
   std::vector<DatasetId> fanout_loaded_ids;
   std::vector<DatasetId> fanout_created_ids;
-  // Loader-metadata documents staged by each entry's host, captured before the
-  // per-iteration host dies; published at the commit seam with the source paths.
+  // Captured before each entry's host dies; published with the source paths.
   std::unordered_map<DatasetId, QString> fanout_loader_metadata;
   bool fanout_committed = false;
   const auto rollback_fanout_on_cancel = qScopeGuard([&]() {
@@ -1711,42 +1494,22 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   });
 
-  // Fan-out results, declared here so the shared epilogue below the branch can
-  // route the three dataset-less shapes — every row discarded, every entry
-  // failed, the whole load stopped — away from the success tail. The
-  // single-instance arm never touches them. What survived IS fanout_loaded_ids
-  // and what went wrong IS failed_labels; no parallel counters restate them.
+  // Fan-out only, read by the shared epilogue.
   QStringList failed_labels;
-  // The whole-load stop that ended the fan-out early, in cancel_mode_'s encoding
-  // (0 none, 1 keep, 2 discard). Only the title-bar strip and shutdown write
-  // that scope, and it is set exactly where the loop breaks on it.
+  // The whole-load stop that ended the fan-out early, in cancel_mode_'s encoding.
   int whole_load_stop = 0;
 
   if (fanouts.size() == 1) {
-    // --- Single-instance load: run the read loop on a worker thread, filling
-    // the datastore progressively while the GUI stays interactive. The modal
-    // ProgressDialog above is unused here (destroyed when this prologue returns);
-    // progress + cancellation flow through ingestStarted/ingestProgress +
-    // cancelCurrent (the title-bar IngestProgressWidget), wired by MainWindow. ---
-    // Unreachable by construction: a live strict-replace target binds
-    // dataset_id to the pinned id, and the vanished-target and fan-out guards
-    // above fail every divergence — so a kLoaded strict replacement always
-    // reports produced == {replace_dataset_id}.
+    // Single instance: the read loop runs on a worker, filling the datastore progressively.
     Q_ASSERT(!strict_replace || dataset_id == hints.replace_dataset_id);
 
-    // issue #98: apply the plugin's dataset name before start() so the
-    // commit-driven catalog rebuild surfaces curves under the right tree-root.
-    // On a REPLACING load the rename waits for commit (finishLoadOnGui): the
-    // tree keeps the prior name while the refill runs, and a rollback must not
-    // leave the restored data mislabeled with the new source's name.
+    // Named before start(), so the catalog rebuilds under the right root. A replacing load renames at commit, so a
+    // rollback does not leave the restored data under the new source's name.
     const QString plugin_name = detail::parseDisplayName(config);
     if (!replacing && !plugin_name.isEmpty()) {
       catalog_.setDatasetDisplayName(dataset_id, plugin_name);
     }
 
-    // Move the bound handle + host into the per-load context so they outlive
-    // this prologue into the worker. The `ingest_session` reference stays valid
-    // (the move transfers ownership without relocating the heap object).
     ctx_ = std::make_unique<LoadContext>(std::move(handle), std::move(ingest_session_ptr));
     ctx_->dialog_selected_files = std::move(dialog_selected_files);
     ctx_->path = source_identity;
@@ -1769,20 +1532,13 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         transform_service_->beginReplacingLoad(existing_primary_id);
       }
 #endif
-      // Transactional in-place refill: DETACH (move aside, not free) the existing
-      // dataset's prior data, keeping its topics registered so the refill's
-      // ensureTopic rebinds each by name into the same ids. Constructed as the LAST
-      // prologue step — after every synchronous fail()-return above and after ctx_
-      // exists — so a synchronous prologue failure never touches the live data, and
-      // a worker failure / discard / shutdown rolls back via the guard (the prior
-      // data lives in the snapshot until commit()). Replaces the old up-front
-      // in-place clear, which destroyed the prior data with no rollback.
+      // Detaches the prior data (topics stay registered, so the refill reuses their ids). The last prologue step,
+      // so a prologue failure never touches live data; a worker failure, discard or shutdown rolls back through it.
       ctx_->refill_guard = session_.beginRefill(existing_primary_id);
     }
 
-    // Worker-driven progress. on_progress_* run on the WORKER; they touch only
-    // ctx_ (set before the thread starts, not mutated by the GUI until join) and
-    // the atomic cancel flag, and marshal every GUI access via invokeMethod.
+    // on_progress_* run on the worker: they touch only ctx_ (which the GUI leaves alone until the join) and
+    // cancel_mode_, and queue every GUI access.
     const std::uint64_t generation = load_generation_;
     DataSourceRuntimeHost& host = *ctx_->ingest;
     host.on_progress_start = [this, generation](std::string_view label, uint64_t total, bool cancellable) {
@@ -1813,20 +1569,19 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     };
     host.on_progress_update = [this, generation](uint64_t current) -> bool {
       if (cancel_mode_.load() != 0) {
-        return false;  // user asked to stop; the read loop exits cooperatively
+        return false;
       }
       if (ctx_->flush_clock.elapsed() < flush_throttle_ms_) {
         return true;
       }
-      ctx_->ingest->flushPending();  // worker-side: seal+commit -> rows visible
+      ctx_->ingest->flushPending();
       ctx_->flush_clock.restart();
       const DatasetId notify_dataset = ctx_->dataset_id;
       const uint64_t max = ctx_->progress_total;
       QMetaObject::invokeMethod(
           this,
           [this, generation, notify_dataset, current, max]() {
-            // A queued tick can survive shutdown and the loader can then be
-            // reused. Reject it unless it still belongs to this exact context.
+            // A tick can survive shutdown into a reused loader.
             if (generation != load_generation_ || ctx_ == nullptr || ctx_->dataset_id != notify_dataset) {
               return;
             }
@@ -1835,48 +1590,36 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
           Qt::QueuedConnection);
       return true;
     };
-    host.on_progress_finish = [] {};  // terminal flush is done in onWorkerFinished
+    host.on_progress_finish = [] {};  // onWorkerFinished does the terminal flush
 
     cancel_mode_.store(0);
     ctx_->flush_clock.start();
     worker_ = std::unique_ptr<QThread>(QThread::create([this, generation]() { runIngestOnWorker(generation); }));
     worker_->start();
-    rollback_armed = false;   // LoadContext/onWorkerFinished owns rollback now.
-    fanout_committed = true;  // No fanout datasets exist on this path.
+    rollback_armed = false;  // onWorkerFinished owns rollback now
+    fanout_committed = true;
     worker_handoff = true;
-    co_return;  // worker running; onWorkerFinished resumes the queue
+    co_return;
   } else {
-    // A same-source reload that fans out cannot refill in place (one source becomes N datasets). Fall back to
-    // remove-then-fresh: tombstone the existing dataset now (objects evicted past the rollback point below) and let
-    // the fanout create fresh datasets on the live engine. The handle bound to existing_primary_id above is never
-    // start()ed here (fanout mints its own per-entry handles), so the dataset takes no data before its removal.
+    // A same-source reload cannot refill one dataset into N: tombstone it now (erased past the rollback point
+    // below). The handle bound to it is never started, so it takes no data.
     if (replacing) {
       emit sourceReplacementAboutToCommit(ticket, source_identity, existing_primary_id);
     }
     if (replacing && catalog_.removeDataset(existing_primary_id)) {
       tombstoned_for_replace.push_back(existing_primary_id);
     }
-    // Multi-instance fanout. On a FRESH load the dataset created above for the bind is now an empty orphan;
-    // pj_datastore has no removeDataset, but an empty dataset has no committed topics so
-    // CatalogModel::rebuildFromDatastore skips it (no phantom entry). Each fanout entry mints its own handle +
-    // dataset + ingest_session. Continue-on-error per the user-confirmed policy: a bad entry does not lose the others.
-    // Outcome of ONE fanout entry. Kept keeps the entry's partial flush
-    // ("Cancel" — stop here but keep what was already parsed); Discarded throws
-    // it away. Whether the loop continues is a separate question, answered by
-    // the SCOPE of the stop (whole_load_stop), not by these.
+    // Each entry gets its own handle, dataset and host; a failed entry does not stop the others. Whether the loop
+    // continues after a stop depends on its scope (whole_load_stop), not on the entry outcome.
     enum class EntryOutcome { kCompleted, kFailed, kKept, kDiscarded };
 
     const QString basename = QFileInfo(display_name).completeBaseName();
-    // issue #98: let the plugin name the dataset root. `display_name` (if the
-    // plugin emitted it in the accepted config) replaces the file basename as
-    // the shared prefix; the per-episode `display_suffix` still forms the leaf.
+    // The plugin's `display_name` replaces the basename as the shared prefix; `display_suffix` names the leaf.
     const QString fanout_name = detail::parseDisplayName(config);
     const QString base = fanout_name.isEmpty() ? basename : fanout_name;
 
-    // Keep SDK control slots on the GUI thread. Only the finite import's
-    // blocking start() call runs on a worker; the coroutine frame keeps the
-    // handle and host alive until that worker has joined, then destroys them
-    // back here on the GUI thread.
+    // Only start() runs on a worker; the frame keeps handle and host alive until the join and destroys them here, on
+    // the GUI thread.
     cancel_mode_.store(0);
     const std::uint64_t fanout_generation = load_generation_;
     // One failed fan-out entry: logged, and reported once under "<identity> (<entry>)".
@@ -1896,8 +1639,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       const QString suffix = detail::parseDisplaySuffix(cfg_i, QString::number(idx + 1));
       const QString iter_display = base + QChar('/') + suffix;
 
-      // Each fanned dataset gets its own TimeDomain so it is independently
-      // draggable on the Source Timeline (rather than sharing the primary's).
       auto iter_td = engine.createTimeDomain(iter_display.toStdString());
       if (!iter_td.has_value()) {
         entry_failed(
@@ -1917,10 +1658,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       fanout_created_ids.push_back(iter_dataset_id);
       const PJ_data_source_handle_t iter_source_handle{static_cast<uint32_t>(iter_dataset_id)};
 
-      // Construct from the pinned vtable/owner snapshot rather than reading the
-      // GUI-owned catalog while start() is on the worker. A marketplace reload
-      // may reallocate the catalog, while source_library_owner keeps the DSO
-      // mapped.
+      // From the snapshot, never `source`: see the catalog note above.
       DataSourceHandle iter_handle(source_vtable, source_library_owner);
       if (!iter_handle.valid()) {
         entry_failed(idx, iter_display, tr("Plugin '%1': createHandle failed.").arg(source_name));
@@ -1964,12 +1702,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       uint64_t progress_total = 0;
       QElapsedTimer flush_clock;
       flush_clock.start();
-      // THIS entry's row stop: 0 none, 1 keep, 2 discard. One slot per entry, so
-      // a click that lands after its entry retired — the terminal is delivered
-      // through the event loop, and the session still accepts a cancel queued
-      // ahead of it — writes into a slot nobody reads again. Shared ownership
-      // because the row's cancel handler outlives this iteration (it lives in
-      // the session's ingest entry until the terminal).
+      // This entry's row stop, in cancel_mode_'s encoding. One slot per entry, so a click landing after the entry
+      // retired writes into a slot nobody reads. Shared: the row's cancel handler outlives the iteration.
       const auto entry_stop = std::make_shared<std::atomic<int>>(0);
       iter_ingest.on_progress_start = [this, fanout_generation, &progress_total, iter_dataset_id, idx, entry_stop,
                                        fanout_count = fanouts.size()](
@@ -1983,13 +1717,10 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
               if (fanout_generation != load_generation_) {
                 return;
               }
-              // A fan-out row stops ITS OWN entry: the siblings that already
-              // loaded keep their data and the entries after it still run.
-              // Whole-load stops stay with the title-bar strip and shutdown,
-              // which latch cancel_mode_ instead.
+              // A row stops its own entry only; the strip and shutdown latch cancel_mode_ for the whole load.
               auto cancel_handler = [this, fanout_generation, iter_dataset_id, entry_stop](bool keep_partial) {
                 if (fanout_generation != load_generation_) {
-                  return;  // a stale row from a load that already moved on
+                  return;
                 }
                 qCInfo(lcFileLoader) << "[FileLoader] fanout: row stop on dataset" << iter_dataset_id << "keep_partial"
                                      << keep_partial;
@@ -2004,8 +1735,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       };
       iter_ingest.on_progress_update = [this, fanout_generation, &iter_ingest, &flush_clock, &progress_total,
                                         iter_dataset_id, entry_stop](uint64_t current) -> bool {
-        // Either scope stops THIS entry; they differ only in what happens after
-        // it (see the epilogue's cancel_action).
         if (cancel_mode_.load() != 0 || entry_stop->load() != 0) {
           iter_ingest.requestStop();
           return false;
@@ -2022,8 +1751,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
               if (fanout_generation != load_generation_) {
                 return;
               }
-              // A fanout entry that never announced a start has no token, but it
-              // does have a dataset, and its committed rows must still publish.
+              // No token when the entry never announced a start; its rows still publish.
               const auto token_it = fanout_ingest_tokens_.find(iter_dataset_id);
               const IngestToken token = token_it != fanout_ingest_tokens_.end() ? token_it->second : IngestToken{};
               publishIngestProgress(iter_dataset_id, token, current, max);
@@ -2033,38 +1761,22 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       };
       iter_ingest.on_progress_finish = [] {};
 
-      // start() runs off-GUI although the SDK doc-tags it [main-thread]: a
-      // finite importer's start() blocks for the whole read loop, which would
-      // freeze the UI and deadlock the message-box marshal (it posts to the GUI
-      // thread and blocks the caller). Same accepted host-side deviation as the
-      // single-instance path's runIngestOnWorker; every other lifecycle slot
-      // (create/bind/loadConfig/destroy) stays on the GUI thread.
+      // start() runs off the GUI thread although the SDK tags it [main-thread]: a finite importer blocks in it for
+      // the whole read loop, which would freeze the UI and deadlock the message-box marshal. Every other lifecycle
+      // slot stays on the GUI thread (as in runIngestOnWorker).
       Status start_status = okStatus();
-      // Published so cancelCurrent/joinForShutdown can requestStop() a
-      // progress-silent plugin (one that polls is_stop_requested but rarely
-      // reports progress) — the coroutine-frame-local host is otherwise
-      // unreachable from the GUI-side cancel paths. GUI-thread writes only;
-      // the worker never reads this pointer.
       active_fanout_ingest_ = &iter_ingest;
       {
-        // Clears the published pointer when this scope ends, including when a
-        // shutdown destroys the frame while it is suspended below (a shutdown
-        // issued from a fan-out terminal joins the worker and resets
-        // begin_load_task_ before this continuation runs).
+        // Also clears it when a shutdown destroys the frame while suspended below.
         const ScopedPointerReset<DataSourceRuntimeHost> clear_active_ingest(active_fanout_ingest_);
-        // Named local, not a co_await temporary — see dialog_awaiter above
-        // (GCC 11.4 awaiter-temporary miscompile).
+        // A named local: see dialog_awaiter.
         GuiResumingWorkerAwaiter start_awaiter(
             this, worker_, [&iter_handle, &start_status]() { start_status = iter_handle.start(); });
         co_await std::move(start_awaiter);
       }
 
-      // Cancellation takes precedence over the plugin's status: finite
-      // importers commonly report a rejected progress update as start failure.
-      // Treating that as a recoverable plugin error would incorrectly continue
-      // into the next fanout entry.
-      // Whole-load scope wins: a strip/shutdown stop ends the fan-out, while a
-      // row's stop is consumed here and the loop moves to the next entry.
+      // A stop wins over the plugin's status: importers commonly report a refused progress update as a start
+      // failure. A whole-load stop ends the fan-out; a row stop is consumed here and the loop goes on.
       const int whole_load_action = cancel_mode_.load();
       const int entry_action = entry_stop->exchange(0);
       const int cancel_action = whole_load_action != 0 ? whole_load_action : entry_action;
@@ -2099,8 +1811,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
               : (outcome == EntryOutcome::kFailed ? IngestOutcome::kFailed : IngestOutcome::kCancelled);
       if (const auto token_it = fanout_ingest_tokens_.find(iter_dataset_id); token_it != fanout_ingest_tokens_.end()) {
         const IngestToken token = token_it->second;
-        // Erase first so an ingestEnded observer that re-enters shutdown cannot
-        // terminalize this token a second time.
+        // Erase first: an ingestEnded observer re-entering shutdown would end it a second time.
         fanout_ingest_tokens_.erase(token_it);
         postIngestTerminal(token, ingest_outcome);
       }
@@ -2114,10 +1825,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
                              << (stops_whole_load ? "(whole load)" : "(this row only)");
       }
       if (stops_whole_load) {
-        // A row discard drops only its own entry — which the cleanup loop below
-        // already does, since it never joined fanout_loaded_ids. A WHOLE-load
-        // stop is the one that ends the fan-out and, when it discards, drops
-        // even the entries that already completed.
         whole_load_stop = whole_load_action;
         break;
       }
@@ -2126,22 +1833,12 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
                          << "failed" << failed_labels;
     cancel_mode_.store(0);
 
-    // "Remove All" (discard) drops the WHOLE fanout load, not just the in-flight
-    // entry: entries that already Completed live in fanout_loaded_ids and would
-    // otherwise survive the cancel. Clear the loaded list so (a) the unified
-    // cleanup loop below real-deletes every created dataset (completed ones no
-    // longer match the keep-list), and (b) the downstream TF-ingest /
-    // source-path / time-reference loops skip them. "Stop and Keep" (mode 1)
-    // keeps them, so this arm is discard-only. TF is invalidated in the same
-    // loop, so nothing extra is needed here.
+    // A whole-load discard drops the entries that already completed too.
     if (whole_load_stop == 2) {
       fanout_loaded_ids.clear();
     }
 
-    // GUI-owned cleanup after the worker has stopped touching the datastore.
-    // Every created dataset NOT in the keep-list is real-deleted. A
-    // completed-then-discarded entry may have ingested FrameTransforms, which
-    // removeCreatedDataset invalidates before eviction empties its topic list.
+    // The worker has stopped: erase every created dataset that kept nothing.
     for (const DatasetId created_id : fanout_created_ids) {
       if (std::find(fanout_loaded_ids.begin(), fanout_loaded_ids.end(), created_id) != fanout_loaded_ids.end()) {
         continue;
@@ -2149,37 +1846,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       removeCreatedDataset(created_id);
     }
     if (!replacing && created_live_dataset_id != 0) {
-      // The initial handle binds against a scratch dataset before the dialog
-      // reveals fanout. It never receives rows; remove the shell now that all
-      // real fanout datasets have been created — no objects to evict.
+      // The prologue's dataset, bound before the dialog revealed the fan-out; it never took rows.
       removeCreatedDataset(created_live_dataset_id, /*evict_objects=*/false);
       created_live_dataset_id = 0;
     }
   }
 
-  // The fan-out produced nothing to keep. Leave the tombstones ALONE and take
-  // the rollback exits below: the scope guard restores the dataset this load
-  // was replacing, which is the whole point of tombstoning it instead of
-  // deleting it up front. Real-deleting before these checks would erase the
-  // user's existing dataset permanently on a discard or an all-failed fan-out —
-  // the two cases where nothing replaced it.
-  // What survived is the whole question: the load-wide discard, every entry
-  // failing and every row being thrown away one at a time all leave this list
-  // empty, and none of them may commit. (extractFanout never yields an empty
-  // list — every rejection falls back to a single-instance config — so an empty
-  // list here always means entries ran and none of them kept anything.)
+  // Nothing kept (whole-load discard, every entry failed or discarded): the tombstones stay for the rollback exits
+  // below, which restore the dataset being replaced. extractFanout never yields an empty list.
   const bool nothing_to_commit = fanout_loaded_ids.empty();
   if (!nothing_to_commit) {
-    // Past the last rollback point: the load committed in place (no staging swap).
-    // Free the ObjectStore topics, derived TF state, AND scalar engine storage of any
-    // datasets the fanout-reload fallback tombstoned. A fanout reload can't refill one
-    // dataset into N, so the old dataset is replaced by fresh ones and must be ERASED
-    // from the engine — not left as a shell a prefer_reuse layout replay could reattach
-    // to (#249's real-delete, fanout face). Deferred to here (not the tombstone site)
-    // because a mid-load failure rolls the tombstones back.
+    // Past the last rollback point: erase the tombstoned dataset, or a prefer_reuse replay could reattach to it.
     for (const DatasetId tombstoned_id : tombstoned_for_replace) {
-      // Already tombstoned above (catalog_.removeDataset(existing_primary_id));
-      // skip the redundant catalog call here.
       removeCreatedDataset(tombstoned_id, /*evict_objects=*/true, /*remove_from_catalog=*/false);
     }
     tombstoned_for_replace.clear();
@@ -2187,10 +1865,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     fanout_committed = true;
   }
 
-  catalog_.rebuildFromDatastore();  // reload: same keys ⇒ no spurious itemsRemoved
+  catalog_.rebuildFromDatastore();
 
-  // Publish tap-fed fanout buffers after their worker imports finish. When no
-  // tap is active, ingestNewTransforms drains the corresponding store entries.
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
     for (const DatasetId loaded_id : fanout_loaded_ids) {
@@ -2199,18 +1875,10 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
 #endif
 
-  // Capture the plugin's canonical post-load state AFTER start() + ingest so a
-  // layout persists discovered fields / applied defaults / ingest-time policy
-  // overrides. saveConfig failures here are non-fatal.
+  // After start(), so the layout persists what the import discovered.
   std::string captured_config = captureSavedConfig(handle, source_name);
 
-  // Remember which file each dataset came from so a later load of a DIFFERENT
-  // file sharing this basename is not mistaken for a reload of it (the match
-  // loop above gates reuse on this). Single-instance: `dataset_id` is the stable
-  // id (existing on reload, else the fresh one). Fanout: each dataset that took
-  // data.
-  // Publishes one entry's staged loader-metadata document; a rejected document
-  // is logged and never affects the committed load.
+  // A rejected metadata document is logged and never affects the load.
   const auto publish_loader_metadata =
       [this, &source_manifest_id](DatasetId loaded_id, const QString& json) {
         if (auto status = session_.setDatasetMetadata(loaded_id, json, source_manifest_id); !status) {
@@ -2234,11 +1902,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
   }
 
-  // The synchronous load committed its rows straight to DataEngine via the plugin
-  // write host, bypassing SessionManager::commitChunks — so the cross-dataset time
-  // origin was never re-evaluated. Refresh it per loaded dataset: a file whose data
-  // is EARLIER than any prior dataset must reframe every plot. No-op when "Use time
-  // offset" is off.
+  // The plugin write host bypasses SessionManager::commitChunks, so the time origin was never re-evaluated: data
+  // earlier than every prior dataset must reframe every plot.
   if (fanouts.size() == 1) {
     session_.refreshDatasetTimeReference(dataset_id);
   } else {
@@ -2248,22 +1913,14 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
 
   if (nothing_to_commit) {
-    // A replacing fan-out restores the dataset it was replacing on the way out
-    // (rollback guard, still armed): a load that kept nothing must not destroy
-    // the data the user already had.
     rollback_tombstones();
     if (whole_load_stop == 2 || failed_labels.isEmpty()) {
-      // "Remove All", or every row discarded by hand: nothing went wrong, the
-      // user threw this load away. Surface it as a discarded load, mirroring the
-      // single-instance discard — recording it (recents, loadedSources, layout
-      // data-source entries) or logging a success would resurrect a source the
-      // user explicitly removed.
+      // The user threw the load away: report a discard, as the single-instance path does. Recording it would
+      // resurrect a source the user removed.
       emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
       emit fileLoadFailed(source_identity, tr("Import discarded"));
       co_return;
     }
-    // Entries failed and nothing survived them: report the aggregate as a
-    // failure instead of announcing a dataset-less success.
     // Each failed entry already reported its own data-source-load-failed.
     const QString reason = tr("All %1 entries of '%2' failed to load:\n%3")
                                .arg(failed_labels.size())
@@ -2274,11 +1931,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  // "Stop and Keep" ended the fan-out early: the kept data is real (and the
-  // legacy fileLoaded below reports it as before), but the request ended by
-  // user cancel and the ticket classifies it as such. The primary dataset is
-  // the first entry that took data — the id the replace/reuse logic would
-  // treat as this source's principal dataset.
+  // A keep-stop still emits fileLoaded, but the ticket reports kCancelled.
   const DatasetId fanout_primary_id = fanout_loaded_ids.empty() ? 0 : fanout_loaded_ids.front();
   emitLoadFinished(
       ticket, whole_load_stop != 0 ? LoadOutcome::kCancelled : LoadOutcome::kLoaded, source_identity, fanout_primary_id,
@@ -2287,7 +1940,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   logSuccessfulLoad(engine, catalog_, source_identity, source_name, fanout_loaded_ids);
 #endif
   emit fileLoaded(source_identity, QString(), source_name, QString::fromStdString(captured_config), source_manifest_id);
-  co_return;  // fanout completed; process the next queued request
+  co_return;
 }
 
 bool FileLoader::loadFile(const QString& path, QWidget* dialog_parent, const LoadHints& hints) {
@@ -2300,18 +1953,13 @@ bool FileLoader::loadFile(LoadInput input, QWidget* dialog_parent, const LoadHin
 
 LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_parent, const LoadHints& hints) {
   if (destroying_) {
-    // The destructor's final terminal flush is delivering loadFinished right
-    // now; an accepted request could never be resolved and its worker would
-    // outlive the loader. Rejected per the 0-on-rejection contract — no
-    // signals or dialogs from a dying loader.
+    // See destroying_. No signals or dialogs from a dying loader.
     qCWarning(lcFileLoader) << "[FileLoader] load request rejected: the loader is being destroyed";
     return 0;
   }
   if (input.display_name.isEmpty() || input.backing_path.isEmpty() || input.source_identity.isEmpty()) {
-    // An unusable input (e.g. a trailing-slash directory path whose fileName() is
-    // empty) must surface the same user-visible failure as any other load error,
-    // not fail silently — MainWindow's layout replay relies on that contract.
-    // Rejected means never accepted: no ticket, no loadFinished.
+    // E.g. a trailing-slash directory path. Reported like any load error (MainWindow's layout replay relies on
+    // fileLoadFailed), but never accepted: no ticket, no loadFinished.
     const QString path = !input.source_identity.isEmpty() ? input.source_identity
                          : !input.backing_path.isEmpty()  ? input.backing_path
                                                           : input.display_name;
@@ -2345,23 +1993,20 @@ LoadRequestId FileLoader::loadFileTicketed(LoadInput input, QWidget* dialog_pare
   queue_.push_back(
       LoadRequest{.input = std::move(input), .dialog_parent = dialog_parent, .hints = hints, .ticket = ticket});
   startNext();
-  return ticket;  // accepted/enqueued — completion is async (loadFinished + legacy signals)
+  return ticket;
 }
 
 void FileLoader::startNext() {
   if (active_load_) {
     return;  // a suspended prologue or worker resumes the queue when done
   }
-  // Any prior task is now at final_suspend. Destroy it before installing the
-  // next frame; finishPrologue always schedules this method rather than calling
-  // it recursively from inside that frame.
+  // Any prior task is at final_suspend. finishPrologue queues this call, so we are not inside that frame.
   begin_load_task_.reset();
-  // A cancel belongs to the load it was raised for. Exits that never read the
-  // flag (a rejected config dialog, a failure after it) leave it latched, and
-  // the next load's prologue check would take it as its own.
+  // A cancel belongs to its own load: exits that never read it (a rejected dialog, a later failure) leave it
+  // latched, and the next prologue would take it as its own.
   cancel_mode_.store(0);
   if (queue_.empty()) {
-    load_generation_ = 0;  // idle: no load to bind a stop-dialog to
+    load_generation_ = 0;
     current_load_ticket_ = 0;
     current_load_identity_.clear();
     current_ticket_terminal_ = false;
@@ -2375,18 +2020,13 @@ void FileLoader::startNext() {
   if (next_load_generation_ == 0) {
     ++next_load_generation_;  // reserve zero for idle, even after wraparound
   }
-  // Old queued callbacks can never match a reused loader.
   load_generation_ = next_load_generation_;
-  // Ticket and generation advance TOGETHER, before loadGenerationAdvanced goes
-  // out, so a slot reading currentLoadTicket() there sees a consistent pair.
+  // Together, before loadGenerationAdvanced, so its slots read a consistent pair.
   current_load_ticket_ = request.ticket;
   current_load_identity_ = request.input.source_identity;
   current_ticket_terminal_ = false;
-  // Announce the ticket↔generation association first: a consumer tracking a
-  // ticket learns its generation before any generation-keyed UI reacts.
   emit requestStarted(current_load_ticket_, load_generation_);
-  // Before the coroutine runs: stale-generation UI must be gone before this
-  // load can raise its own (application-modal) dialogs.
+  // Before the coroutine: stale UI must be gone before this load raises its application-modal dialogs.
   emit loadGenerationAdvanced(load_generation_);
   begin_load_task_ = std::make_unique<BeginLoadTask>(beginLoad(std::move(request)));
 }
@@ -2400,31 +2040,24 @@ void FileLoader::finishPrologue() {
 }
 
 void FileLoader::runIngestOnWorker(std::uint64_t generation) {
-  // WORKER thread. ctx_ is set on the GUI thread before this thread starts and
-  // is not mutated by the GUI until after we post onWorkerFinished, so reading
-  // it here races nothing. start() blocks until the plugin finishes (or stops
-  // cooperatively when on_progress_update returns false).
+  // Worker thread. The GUI leaves ctx_ alone until onWorkerFinished.
   auto status = ctx_->handle.start();
   ctx_->start_ok = static_cast<bool>(status);
   if (!status) {
     ctx_->start_error = QString::fromStdString(status.error());
   }
-  // ThreadSanitizer cannot see QThread::wait(), a futex inside prebuilt Qt, so it
-  // reports every GUI-thread access after a join against the worker's earlier
-  // accesses to the same load state. The worker releases a token on the FileLoader
-  // after its last such access; the GUI thread acquires it once wait() returns
-  // (onWorkerFinished and the shutdown join), which makes the ordering the join
-  // already guarantees visible to TSan.
+  // ThreadSanitizer cannot see QThread::wait() (a futex inside prebuilt Qt). Released after the last worker access,
+  // acquired after every wait() (onWorkerFinished, the shutdown join), so TSan sees the join's ordering.
   tsan::release(this);
   QMetaObject::invokeMethod(this, [this, generation]() { onWorkerFinished(generation); }, Qt::QueuedConnection);
 }
 
 void FileLoader::onWorkerFinished(std::uint64_t generation) {
   if (generation != load_generation_ || !ctx_) {
-    return;  // shutdown/reuse already tore down or replaced this load
+    return;  // shutdown or reuse already replaced this load
   }
   if (worker_) {
-    worker_->wait();  // the worker posted us as its last act, so this returns promptly
+    worker_->wait();
     tsan::acquire(this);
     worker_.reset();
   }
@@ -2436,79 +2069,48 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
   const QString source_name = ctx_->source_name;
   const quint64 ticket = ctx_->ticket;
   const IngestToken ingest_token = ctx_->ingest_token;
-  // Transfer terminal ownership out of LoadContext before any legacy signal
-  // can re-enter joinForShutdown. Exactly one path below reports the outcome;
-  // shutdown owns the token only while it remains stored in the context.
+  // Taken out of the context before any signal can re-enter joinForShutdown, which ends only a token still stored.
   ctx_->ingest_token = {};
   IngestOutcome ingest_outcome = IngestOutcome::kCompleted;
-  // Terminal classification for the ticket. A user stop (either mode) reports
-  // kCancelled even where the wind-down otherwise ends in fileLoaded (keep) or
-  // fileLoadFailed (discard, or a stop the plugin surfaced as a failed start).
-  // Each arm terminalizes the ticket the moment its outcome is decided —
-  // BEFORE its legacy-emitting wind-down runs — so a re-entrant shutdown from
-  // a legacy slot cannot resolve the request a second time.
-  // Ingest-token exits mirror every worker terminal: discard -> kCancelled;
-  // start failure -> kFailed; derived replay failure -> kFailed (or
-  // kCancelled after keep-stop); ordinary completion -> kCompleted; and both
-  // keep/discard user stops -> kCancelled. joinForShutdown handles the sole
-  // bypass of this method.
+  // A user stop (either mode) reports kCancelled, even where fileLoaded or fileLoadFailed follows. Each arm
+  // terminalizes the ticket before its fileLoaded/fileLoadFailed, so a re-entrant shutdown cannot resolve it again.
 
   if (cancel == 2) {  // Discard
     ingest_outcome = IngestOutcome::kCancelled;
     emitLoadFinished(ticket, LoadOutcome::kCancelled, path, 0);
-    // Discard means "as if this load had never run". What that leaves behind
-    // depends on what was there BEFORE it: nothing on a first load, the prior
-    // data on a reload.
+    // As if this load never ran: nothing on a first load, the prior data on a reload.
     if (!replacing) {
       qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; the new dataset is removed";
-      // Real-delete the abandoned shell: evict its objects, drop catalog items
-      // WITHOUT a tombstone, invalidate any TF it ingested, and erase the
-      // engine's scalar storage, so a later prefer_reuse layout replay mints a
-      // fresh dataset instead of reattaching to an empty one.
+      // Erased, not tombstoned: a prefer_reuse replay must not reattach to an empty dataset.
       removeCreatedDataset(dataset_id);
       ctx_.reset();
       emit fileLoadFailed(path, tr("Import discarded"));
     } else {
       qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; the dataset keeps its pre-reload data";
-      // Roll back to the pre-reload data: the guard dtor reattaches the scalar +
-      // object data and retires the topics the abandoned refill added, and
-      // abortReplacingLoad drops the TF generation the worker was staging into.
-      // Deleting the dataset instead would punish a reload for being a reload —
-      // the user discarded THIS load, not the data they already had.
       failReplacingLoad(dataset_id, path, tr("Import discarded"));
     }
-  } else if (!ctx_->start_ok && cancel == 0) {  // start() failed (and not a user stop)
+  } else if (!ctx_->start_ok && cancel == 0) {
     ingest_outcome = IngestOutcome::kFailed;
     emitLoadFinished(ticket, LoadOutcome::kFailed, path, 0);
     const QString reason = tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
     logLoadFailure(path, reason);
     if (!replacing) {
-      // Real-delete the abandoned first-load shell (no tombstone), invalidating
-      // any TF it ingested before failing, then erase its engine storage, so a
-      // later prefer_reuse layout replay re-ingests instead of reattaching to
-      // the empty dataset a failed start() left behind.
       removeCreatedDataset(dataset_id);
       ctx_.reset();
       emit fileLoadFailed(path, reason);
     } else {
-      // Same rollback as Discard: a failed start() on a reload must restore the prior
-      // data rather than leave the dataset empty.
       failReplacingLoad(dataset_id, path, reason);
     }
-  } else {  // Completed, or Cancel(keep): make the parsed rows visible and finalize
+  } else {  // completed, or keep-stopped
     if (cancel == 1) {
       qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
     }
     ctx_->ingest->flushAll();
     bool refill_ok = true;
     if (ctx_->refill_guard) {
-      // Derived outputs were detached with the raw dataset. Replay them before
-      // pruning, while failure can still restore the complete prior snapshot.
+      // Derived outputs were detached with the dataset: replay them while a failure can still roll back.
       if (const Status replayed = ctx_->refill_guard->recomputeProcessors(); !replayed.has_value()) {
         ingest_outcome = cancel == 0 ? IngestOutcome::kFailed : IngestOutcome::kCancelled;
-        // Error terminal — except under a user keep-stop, whose ticket keeps
-        // reporting kCancelled (the user DID stop it; the replay error only
-        // decided that nothing could be kept).
         emitLoadFinished(ticket, cancel == 0 ? LoadOutcome::kFailed : LoadOutcome::kCancelled, path, 0);
         const QString reason = tr("Plugin '%1': derived-series replay failed: %2")
                                    .arg(source_name, QString::fromStdString(replayed.error()));
@@ -2520,17 +2122,12 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
         failReplacingLoad(dataset_id, path, reason);
         refill_ok = false;
       } else {
-        // On a COMPLETE reload (cancel == 0), retire prior topics the new file no
-        // longer has — they stayed empty through the refill (codex #2). Skipped on
-        // Cancel-Keep: a topic the partial load never reached is not "vanished". Must
-        // run BEFORE commit(), which frees the prior-topic snapshots it reads.
+        // Complete reloads only: a topic a partial load never reached has not vanished. Before commit(), which
+        // frees the snapshots it reads.
         if (cancel == 0) {
           ctx_->refill_guard->pruneVanishedTopics();
         }
-        // COMMIT the refill: both Completed and Cancel-Keep keep the refilled data, so
-        // free the prior-data snapshot. Must run BEFORE finishLoadOnGui() — it resets ctx_
-        // (destroying the guard), and an uncommitted guard would then silently roll back
-        // over the new data.
+        // Before finishLoadOnGui(), which resets ctx_: an uncommitted guard would roll back over the new data.
         ctx_->refill_guard->commit();
       }
     }
@@ -2538,7 +2135,6 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
       ingest_outcome = cancel == 1 ? IngestOutcome::kCancelled : IngestOutcome::kCompleted;
       emitLoadFinished(
           ticket, cancel == 1 ? LoadOutcome::kCancelled : LoadOutcome::kLoaded, path, dataset_id, {dataset_id});
-      // emits loadCommitting (unless keep-stopped) + fileLoaded; resets ctx_
       finishLoadOnGui(/*fully_loaded=*/cancel == 0);
     }
   }
@@ -2552,24 +2148,14 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
 }
 
 void FileLoader::publishIngestProgress(DatasetId dataset_id, IngestToken token, uint64_t current, uint64_t total) {
-  // The DATASET comes from the load context, never from the token: the plugin
-  // C ABI forwards progress_start and progress_update as independent slots and
-  // the host synthesizes no start, so a producer can tick without ever
-  // beginning an ingest. Its token is then 0/0 while the load still has a real
-  // dataset whose rows are already reader-visible.
   if (token.id != 0) {
-    // updateIngest publishes every committed batch before it announces the
-    // progress number, so plots and the playback range grow progressively even
-    // when a flush appended samples without adding a topic.
+    // Publishes the committed rows before the progress number.
     session_.updateIngest(token, current, total);
   } else {
-    // No lifecycle to report, but the data must never be held hostage to one:
-    // publish the same way updateIngest would.
+    // A producer that ticks without a start has no token; its rows still publish.
     const auto ids = session_.dataEngine().listTopics(dataset_id);
     session_.notifyIngest(QVector<TopicId>(ids.begin(), ids.end()), /*live=*/false);
   }
-  // Publish the worker-fed TF revision so a progressive scene refreshes. When
-  // no tap is active, the same call drains the new store entries first.
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
     transform_service_->publishTransforms(dataset_id);
@@ -2594,9 +2180,6 @@ void FileLoader::removeCreatedDataset(DatasetId dataset_id, bool evict_objects, 
   session_.removeDataset(dataset_id);
 }
 
-// Shared failure exit for a REPLACING reload: destroy the guard (its dtor
-// reattaches the prior data snapshot), refresh the catalog/UI to the restored
-// state, and report the failure.
 void FileLoader::failReplacingLoad(DatasetId dataset_id, const QString& path, const QString& reason) {
   ctx_->refill_guard.reset();
   refreshAfterReplacingRollback(dataset_id);
@@ -2605,8 +2188,7 @@ void FileLoader::failReplacingLoad(DatasetId dataset_id, const QString& path, co
 }
 
 void FileLoader::refreshAfterReplacingRollback(DatasetId dataset_id) {
-  // The RefillGuard restored the scalar + object data. The prior TF generation
-  // stayed active throughout, so rollback only discards the private generation.
+  // The prior TF generation stayed active throughout: only the private one is dropped.
   catalog_.rebuildFromDatastore();
 #ifndef PJ_WITH_SCENE3D
   Q_UNUSED(dataset_id)
@@ -2619,25 +2201,18 @@ void FileLoader::refreshAfterReplacingRollback(DatasetId dataset_id) {
 }
 
 void FileLoader::finishLoadOnGui(bool fully_loaded) {
-  // Locals, not ctx_ reads, past the loadCommitting emission below: a seam
-  // slot may re-enter joinForShutdown, which resets ctx_.
+  // Locals, not ctx_, past the loadCommitting emission: a slot may re-enter joinForShutdown, which resets ctx_.
   const DatasetId dataset_id = ctx_->dataset_id;
   const quint64 ticket = ctx_->ticket;
   const bool replacing = ctx_->replacing;
 
-  // A replacing load may have pointed the dataset at a different file; surface
-  // the new name in the same catalog rebuild that surfaces the new data.
   if (replacing && !ctx_->commit_display_name.isEmpty()) {
     catalog_.setDatasetDisplayName(dataset_id, ctx_->commit_display_name);
   }
 
-  // Capture the plugin's canonical post-load state for layout persistence.
   std::string captured_config = captureSavedConfig(ctx_->handle, ctx_->source_name);
   session_.setDatasetSourcePath(dataset_id, ctx_->path);
-  // Publish the loader-metadata document staged during this (now committed)
-  // load — successful and kept-partial commits alike; a discarded load never
-  // reaches this seam. RefillGuard::commit cleared the prior document on a
-  // replacing load, so no staged document means the dataset ends with none.
+  // RefillGuard::commit cleared a replaced dataset's document: no staged document leaves it with none.
   if (ctx_->ingest != nullptr) {
     if (auto staged = ctx_->ingest->stagedLoaderMetadata(); staged.has_value()) {
       if (auto status =
@@ -2652,22 +2227,14 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   const QString source_name = ctx_->source_name;
   const QString source_manifest_id = ctx_->source_manifest_id;
 
-  // (A replacing load's stale provider record was already detached by
-  // RefillGuard::commit — structurally, before this seam — so a promotion
-  // listener can attach the new content's record below.)
-
-  // Pre-catalog commit seam: dataset, source path, and captured config are all
-  // installed; the catalog rebuild that publishes the load follows immediately
-  // after, so a promotion service can attach source records atomically with
-  // catalog publication. Skipped on a keep-stop — the seam is for loads that
-  // finish kLoaded.
+  // RefillGuard::commit already detached a replaced dataset's provider record, so a loadCommitting slot can attach
+  // the new one.
   if (fully_loaded) {
     emit loadCommitting(ticket, QVector<DatasetId>{dataset_id}, source_name, QString::fromStdString(captured_config));
   }
   catalog_.rebuildFromDatastore();
 
-  // Publish a completed replacement generation atomically. A fresh load already
-  // populated its active buffer on the worker and needs only the ready signal.
+  // A replacement's TF generation is published atomically; a fresh load filled its active buffer on the worker.
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
     if (replacing) {
@@ -2678,30 +2245,21 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
   }
 #endif
 
-  // The terminal flush (onWorkerFinished) committed the file's rows straight to
-  // DataEngine via the plugin write host, bypassing SessionManager::commitChunks —
-  // so the cross-dataset time origin was never re-evaluated. Refresh it now: a short
-  // file whose data is EARLIER than any prior dataset must reframe every plot to the
-  // new origin. No-op when "Use time offset" is off.
+  // The plugin write host bypasses SessionManager::commitChunks: re-evaluate the time origin, and publish the rows,
+  // or a curve bound to a refilled dataset keeps the empty window it re-indexed when the refill began.
   session_.refreshDatasetTimeReference(dataset_id);
-  // The same bypass means no samplesIngested covered those rows. Publish them, or a
-  // curve already bound to the dataset (a reload/replace refills its topics in place)
-  // keeps the empty window it re-indexed when the refill began.
   const auto topic_ids = session_.dataEngine().listTopics(dataset_id);
   session_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/false);
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   logSuccessfulLoad(session_.dataEngine(), catalog_, path, source_name, {dataset_id});
 #endif
-  ctx_.reset();  // drop the handle/host before notifying — the load is complete
+  ctx_.reset();
 #if defined(PJ_WASM_ENABLE_INGRESS_PROBE) && (defined(PJ_WASM_WITH_ROS_PLUGIN) || defined(PJ_WASM_WITH_PROTOBUF_PLUGIN))
-  // Exercise the same cold-fetch + parser path used later by the accelerated
-  // scene consumers, after the MCAP source/runtime context has been destroyed.
+  // The scene consumers' cold-fetch + parser path, after the source and runtime host are gone.
   probeObjectDecoding(session_, session_.objectStore(), dataset_id);
 #endif
 #ifdef PJ_WASM_ENABLE_MCAP_PROBE_PARSER
-  // Resolve only after the source instance and runtime host are gone. Success
-  // proves the ObjectStore closure owns both the browser file lease and MCAP's
-  // post-import cold-reader state rather than borrowing either load context.
+  // After the source and runtime host are gone: proves the ObjectStore owns the file lease and the cold reader.
   probeColdObjectFetch(session_.objectStore(), dataset_id);
 #endif
   emit fileLoaded(path, QString(), source_name, QString::fromStdString(captured_config), source_manifest_id);
@@ -2720,15 +2278,11 @@ void FileLoader::logLoadFailure(const QString& identity, const QString& reason, 
 
 void FileLoader::reportLoadWarning(QWidget* parent, const QString& reason) {
   if (parent == nullptr) {
-    // Headless / no-UI load: the warning already went to the log. Accumulating
-    // it here would resurface it (with an inflated count) in the next PARENTED
-    // failure's dialog, since only a dialog ever clears the list.
+    // Not accumulated: only a dialog clears the list, so the next parented failure would show it.
     return;
   }
   load_warning_lines_ << reason;
 
-  // Reuse the still-open dialog: append this reason and retitle so N stacked
-  // failures read as one aggregated report instead of N overlapping boxes.
   const auto refresh_body = [this](MessageBox* box) {
     const int count = static_cast<int>(load_warning_lines_.size());
     box->setTitle(count > 1 ? tr("%1 loads failed").arg(count) : tr("Load failed"));
@@ -2743,14 +2297,11 @@ void FileLoader::reportLoadWarning(QWidget* parent, const QString& reason) {
   auto* dialog = new MessageBox(parent);
   active_load_warning_ = dialog;
   dialog->setAttribute(Qt::WA_DeleteOnClose);
-  // App-modal (not window-modal) restores the pre-branch exec() semantics.
+  // Not window-modal: see openScrollableMessageDialog.
   dialog->setWindowModality(Qt::ApplicationModal);
   refresh_body(dialog);
   dialog->addButton(tr("OK"), MessageBox::kPrimaryRole);
-  // Drop the aggregation state the moment the user dismisses it (finished
-  // fires before WA_DeleteOnClose's deferred deletion), so a failure arriving
-  // in that gap opens a fresh dialog instead of appending to the dying one —
-  // where the new reason would never be seen.
+  // On finished, not destroyed: a failure arriving before the deferred delete would append to a closing dialog.
   QObject::connect(dialog, &QDialog::finished, this, [this]() {
     active_load_warning_.clear();
     load_warning_lines_.clear();
@@ -2761,35 +2312,27 @@ void FileLoader::reportLoadWarning(QWidget* parent, const QString& reason) {
 
 void FileLoader::cancelCurrent(bool keep_partial) {
   if (!active_load_) {
-    // No load is processing. Latching cancel_mode_ now would silently kill the
-    // NEXT load at its prologue check instead of cancelling anything current.
+    // Latching now would cancel the next load at its prologue check.
     return;
   }
   cancel_mode_.store(keep_partial ? 1 : 2);
   if (ctx_ == nullptr) {
-    // Fanout has no single-instance LoadContext. The active entry's worker-side
-    // progress callback observes cancel_mode_ directly; wake a progress-silent
-    // plugin through the documented is_stop_requested channel too.
+    // Fan-out: the entry's progress callback reads cancel_mode_; requestStop also wakes a progress-silent plugin.
     if (active_fanout_ingest_ != nullptr) {
       active_fanout_ingest_->requestStop();
     }
     return;
   }
   if (ctx_->ingest) {
-    // Flag-only stop: cancelCurrent runs on the GUI thread while the worker may be in a
-    // host callback, so writing a reason here would race the worker's last_error_. The
-    // cooperative stop only needs the atomic flag; the reason is unused on this path.
+    // Flag only: writing a reason would race the worker's last_error_.
     ctx_->ingest->requestStop();
   }
 }
 
 void FileLoader::cancelCurrent(std::uint64_t generation, bool keep_partial) {
   if (generation == 0 || generation != load_generation_ || !active_load_) {
-    // The load this cancel was raised for already finished (and possibly a next
-    // one began): cancelling now would stop the wrong load. The !active_load_
-    // arm covers the fan-out epilogue's one-event-loop hop, where the finished
-    // load's generation is still current but startNext has not yet advanced it
-    // — a click landing there must not poison the queued next load.
+    // The load already finished. !active_load_ covers the hop before startNext advances the generation: a click
+    // there would latch a cancel against the next load.
     return;
   }
   cancelCurrent(keep_partial);
@@ -2797,17 +2340,13 @@ void FileLoader::cancelCurrent(std::uint64_t generation, bool keep_partial) {
 
 bool FileLoader::cancelLoad(quint64 ticket, bool keep_partial) {
   if (QThread::currentThread() != thread()) {
-    // Best-effort degrade for the one entry a batch worker may call off the
-    // loader's thread: the real answer requires this object's thread, so the
-    // cancel is marshalled and the caller learns the result via loadFinished.
     cancelLoadAsync(ticket, keep_partial);
     return false;
   }
   if (ticket == 0) {
     return false;
   }
-  // Still queued: remove the request before it ever starts, and schedule its
-  // terminal — nothing else will ever resolve this ticket.
+  // Still queued: nothing else will ever resolve this ticket.
   for (auto it = queue_.begin(); it != queue_.end(); ++it) {
     if (it->ticket == ticket) {
       const QString identity = it->input.source_identity;
@@ -2816,12 +2355,8 @@ bool FileLoader::cancelLoad(quint64 ticket, bool keep_partial) {
       return true;
     }
   }
-  // The active request. current_ticket_terminal_ closes the finished-but-not-
-  // yet-advanced event-loop hop: the terminal is already scheduled, so a
-  // cancel landing there must not latch cancel_mode_ against the NEXT load. A
-  // ticket can never name a LATER load — tickets advance with
-  // load_generation_ in startNext — so the generation-guarded delegate always
-  // targets the load this ticket was minted for.
+  // current_ticket_terminal_: the terminal is scheduled but startNext has not run; a cancel there would latch
+  // against the next load.
   if (ticket != current_load_ticket_ || !active_load_ || current_ticket_terminal_) {
     return false;
   }
@@ -2839,10 +2374,8 @@ void FileLoader::emitLoadFinished(
     QVector<DatasetId> produced_dataset_ids) {
   if (ticket == current_load_ticket_) {
     if (current_ticket_terminal_) {
-      // Already resolved — e.g. a re-entrant joinForShutdown ran inside a
-      // legacy signal slot after this path terminalized. Exactly-once: first
-      // wins. A DIFFERENT outcome here means an exit path broke the
-      // terminalize-before-legacy-emission convention — make that loud.
+      // First wins (e.g. a joinForShutdown re-entered from a fileLoaded slot). A different outcome means an exit
+      // path emitted fileLoaded/fileLoadFailed before terminalizing.
       if (outcome != current_ticket_outcome_) {
         qCWarning(lcFileLoader) << "[FileLoader] conflicting second resolution for ticket" << ticket << ": recorded"
                                 << static_cast<int>(current_ticket_outcome_) << ", ignoring"
@@ -2850,24 +2383,18 @@ void FileLoader::emitLoadFinished(
       }
       return;
     }
-    // Mark terminal BEFORE anything can re-enter: every exit path calls this
-    // ahead of its legacy fileLoaded/fileLoadFailed emission, so a slot
-    // re-entering cancelLoad/joinForShutdown sees the request as resolved
-    // instead of latching cancel_mode_ or resolving it a second time.
     current_ticket_terminal_ = true;
     current_ticket_outcome_ = outcome;
   }
   pending_terminals_.push_back(
       PendingTerminal{ticket, outcome, effective_path, dataset_id, std::move(produced_dataset_ids)});
-  // Queued delivery keeps the no-terminal-before-enqueue-returns contract;
-  // joinForShutdown flushes the deque synchronously instead, so teardown
-  // cannot lose a scheduled terminal.
+  // Queued, so no terminal arrives before loadFileTicketed returns; joinForShutdown flushes synchronously.
   QMetaObject::invokeMethod(this, [this]() { deliverPendingTerminal(); }, Qt::QueuedConnection);
 }
 
 void FileLoader::deliverPendingTerminal() {
   if (pending_terminals_.empty()) {
-    return;  // a shutdown flush ran before this metacall was delivered
+    return;  // a shutdown flush got there first
   }
   const PendingTerminal terminal = std::move(pending_terminals_.front());
   pending_terminals_.pop_front();
@@ -2894,10 +2421,7 @@ DatasetId FileLoader::activeLoadDatasetId() const {
 }
 
 void FileLoader::joinForShutdown() {
-  // Terminal bookkeeping for the requests this shutdown discards: the active
-  // load (unless it already resolved) and every queued request. Resolved at
-  // the END, once the loader is fully reset and reusable, so a slot reacting
-  // to a cancellation can immediately start a fresh load.
+  // Resolved at the end, once the loader is reset, so a slot reacting to the cancel can start a fresh load.
   struct CancelledRequest {
     quint64 ticket;
     QString identity;
@@ -2911,40 +2435,31 @@ void FileLoader::joinForShutdown() {
   }
 
   shutting_down_ = true;
-  // Invalidate every queued callback before waiting. next_load_generation_
-  // remains untouched, so a subsequent load cannot reuse this token.
+  // Invalidates every queued callback; next_load_generation_ is kept, so no later load reuses a value.
   load_generation_ = 0;
-  cancel_mode_.store(2);  // discard whatever is mid-flight
+  cancel_mode_.store(2);
   if (active_fanout_ingest_ != nullptr) {
-    // A fan-out entry's host lives in the coroutine frame; without this nudge a
-    // plugin that polls is_stop_requested but never reports progress would keep
-    // the worker (and the wait below) running to natural completion.
+    // A plugin that polls is_stop_requested but never reports progress would otherwise run to completion.
     active_fanout_ingest_->requestStop();
   }
-  // Unblock a worker parked in the synchronous message-box ABI BEFORE waiting
-  // on it: a pending question answers -1, and a request still queued on the GUI
-  // thread (i.e. behind this very call) becomes a no-op when it eventually runs
-  // — without this, wait() below deadlocks against the unserved queue entry.
+  // Before the wait: a worker parked in the message-box ABI waits on a GUI request queued behind this call, and
+  // wait() would deadlock.
   message_gate_->shutdown();
   if (!active_plugin_message_dialog_->isNull()) {
-    // finished is delivered synchronously on this GUI thread; its completion is
-    // release-once, so the gate release above cannot double-answer the worker.
+    // The completion is release-once: no double answer after the gate release above.
     (*active_plugin_message_dialog_)->reject();
     active_plugin_message_dialog_->clear();
   }
   if (ctx_ != nullptr && ctx_->ingest) {
-    ctx_->ingest->requestStop();  // flag-only: worker may be mid-ingest, avoid racing last_error_
+    ctx_->ingest->requestStop();
   }
   if (worker_) {
     worker_->wait();
     tsan::acquire(this);
     worker_.reset();
   }
-  // onWorkerFinished / the fan-out continuation will not run after this
-  // shutdown invalidated their generation and joined the worker. Close every
-  // token they would otherwise have terminalized. Detach the tokens from
-  // loader state first so an ingestEnded observer that re-enters shutdown sees
-  // nothing left to end a second time.
+  // onWorkerFinished and the fan-out continuation will not run: end their tokens, detached first so an ingestEnded
+  // observer re-entering shutdown finds nothing to end twice.
   std::vector<IngestToken> shutdown_ingest_tokens;
   if (ctx_ != nullptr && ctx_->ingest_token.id != 0) {
     shutdown_ingest_tokens.push_back(ctx_->ingest_token);
@@ -2958,53 +2473,35 @@ void FileLoader::joinForShutdown() {
   for (const IngestToken token : shutdown_ingest_tokens) {
     session_.endIngest(token, IngestOutcome::kCancelled);
   }
-  // A fanout worker captures locals in this coroutine frame, so cancel it only
-  // after the worker has joined. Destroying a prologue suspended on its plugin
-  // config dialog synchronously closes that dialog and rejects the plugin while
-  // the frame's DataSourceHandle still owns a live plugin context (the
-  // DataSourceDialogAwaiter destructor does both), so no tick or late resume
-  // can ever touch a freed ctx.
+  // Only after the join: a fan-out worker captures frame locals. A prologue suspended at its dialog closes it and
+  // rejects the plugin while the context is alive (~DataSourceDialogAwaiter).
   begin_load_task_.reset();
-  // The worker has joined; the queued onWorkerFinished will no-op once ctx_ is reset, so
-  // run the abandoned-load cleanup here. Capture the reload identity BEFORE ctx_.reset()
-  // destroys the guard. A discarded mid-flight NON-replacing first load created a dataset
-  // in the live engine — erase it (objects + TF state + catalog without a tombstone +
-  // engine storage) so a later prefer_reuse layout replay re-ingests instead of
-  // reattaching to the empty shell (matches onWorkerFinished's discard path). A REPLACING
-  // reload instead rolls back via the guard's destructor when ctx_ is reset, restoring the
-  // pre-reload data.
+  // onWorkerFinished will no-op: discard here, as it would. A first load's dataset is erased; a replacing reload
+  // rolls back through the guard when ctx_ is reset.
   const bool was_replacing = (ctx_ != nullptr && ctx_->replacing);
   const DatasetId reload_id = (ctx_ != nullptr) ? ctx_->dataset_id : 0;
   if (ctx_ != nullptr && !was_replacing) {
     removeCreatedDataset(reload_id);
   }
-  ctx_.reset();  // guard dtor rolls back a replacing reload; any queued onWorkerFinished no-ops
+  ctx_.reset();
   if (was_replacing) {
-    refreshAfterReplacingRollback(reload_id);  // reflect the restored data in catalog + TF
+    refreshAfterReplacingRollback(reload_id);
   }
   queue_.clear();
   active_load_ = false;
   current_load_ticket_ = 0;
   current_load_identity_.clear();
   current_ticket_terminal_ = false;
-  // Clear the shutdown's discard flag so the NEXT load's prologue does not
-  // mistake it for a user cancel issued while suspended (the V12a check reads
-  // cancel_mode_ at prologue resume).
+  // Or the next prologue takes it for a cancel issued at its dialog.
   cancel_mode_.store(0);
-  // Leave the loader reusable (a fresh load after shutdown must work): mint a
-  // new gate — the shut one keeps neutering any straggler queued message-box
-  // lambdas — and re-enable prologue completion.
+  // The loader stays reusable; the shut gate keeps neutering straggler message-box lambdas.
   message_gate_ = std::make_shared<PluginMessageGate>();
   shutting_down_ = false;
   // Every discarded request still resolves its ticket, in FIFO order.
   for (const CancelledRequest& cancelled : cancelled_requests) {
     emitLoadFinished(cancelled.ticket, LoadOutcome::kCancelled, cancelled.identity, 0);
   }
-  // The deliberate exception to queued terminal delivery: shutdown (and so
-  // destruction) must not lose terminals, so everything still pending — the
-  // cancellations above plus any terminal resolved earlier but not yet
-  // delivered — goes out NOW, before this call returns. The loader is fully
-  // reset, so re-entrancy from these slots is contained.
+  // The one synchronous delivery: teardown must not lose a terminal. The loader is reset, so re-entrant slots are safe.
   flushPendingTerminals();
 }
 

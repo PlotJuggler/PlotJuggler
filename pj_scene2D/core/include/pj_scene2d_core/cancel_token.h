@@ -9,12 +9,8 @@
 
 namespace PJ {
 
-/// Cooperative cancellation flag shared between a requester and a decoder.
-///
-/// The requester calls cancel(); the decoder polls isCancelled() between
-/// decode units (NAL packets, JPEG scans, etc.) and returns early when set.
-/// Shared via shared_ptr so both sides can hold it independently.
-/// See ARCHITECTURE.md §3.3.
+/// Cooperative cancellation shared by a requester and a decoder: the video decoder polls isCancelled() between
+/// packets and returns early.
 class CancelToken {
  public:
   CancelToken() = default;

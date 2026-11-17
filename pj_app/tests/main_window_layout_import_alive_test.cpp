@@ -1,13 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// GUI scenario 1 (T6): a materialize MISS import must keep the layout
-// restore ALIVE across the catalog-empty guard — before the batch wiring,
-// an import-only layout fell through to applyRestoredLayout on an empty
-// catalog ("No data is loaded" warning) and the layout was lost, because
-// isBusy() reflects only FileLoader's queue and a provider job is invisible
-// to it. Once the import's data arrives, the drain must bind the layout's
-// curves and commit.
+// A materialize-miss import keeps the layout restore alive across the catalog-empty guard: a provider job is
+// invisible to FileLoader's isBusy(), so without the batch an import-only layout would reach applyRestoredLayout on
+// an empty catalog ("No data is loaded") and be lost. Once the import's data arrives, the drain binds the layout's
+// curves and commits.
 
 #include <gtest/gtest.h>
 
@@ -66,8 +63,6 @@ TEST(MainWindowLayoutImportAliveTest, MissImportKeepsRestoreAliveAndBindsAtDrain
 
   ASSERT_TRUE(pumpUntil([&window]() { return !MainWindowLayoutImportTestPeer::progressiveInFlight(window); }));
 
-  // Drain settled: the curve bound against the imported data, the binder was
-  // consumed, and the batch was retired.
   EXPECT_EQ(MainWindowLayoutImportTestPeer::totalCurveCount(window), 1)
       << "the layout's curve must bind once the import's topic exists";
   EXPECT_TRUE(MainWindowLayoutImportTestPeer::binderEmpty(window));

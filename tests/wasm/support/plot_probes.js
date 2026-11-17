@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 const { expect } = require('@playwright/test');
 
-// Probe replies travel as console lines, so callers match them by `sequence=`
-// and retry when a line is lost. Follow-up: a synchronous probe could return its
-// report as the page.evaluate result (a C function returning a string), which
-// would remove the sequence matching and the retries; a delayed readback would
-// store its result for a later pull instead.
+// Probe replies travel as console lines, so callers match them by `sequence=` and retry when a line is lost.
 
 async function requestPlotState(page, consoleMessages, previousCount) {
   await page.evaluate(() => window.pjWasmReportPlotStateProbe());

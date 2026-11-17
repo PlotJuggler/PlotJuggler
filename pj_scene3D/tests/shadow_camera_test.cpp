@@ -1,16 +1,14 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Golden tests for the GL-free directional shadow-camera fit
-// (fitDirectionalShadowCamera). They pin the three properties that the rest of
-// the shadow feature depends on but that are hard to eyeball in a screenshot:
-//   1. Coverage  — every corner of the caster AABB lands inside the light's clip
-//      cube [-1,1]^3, so no caster falls outside the shadow map.
-//   2. Validity  — degenerate inputs (no bounds / a point box / a zero light
-//      direction) return valid == false so the caller disables shadows instead
-//      of fitting a garbage frustum.
-//   3. Texel snap — the frustum quantizes to the shadow-map texel grid, so the
-//      shadow edge does not crawl/shimmer as the scene moves sub-texel.
+// Golden tests for the GL-free directional shadow-camera fit (fitDirectionalShadowCamera). They pin three properties
+// the shadow feature depends on that are hard to eyeball in a screenshot:
+//   1. Coverage: every corner of the caster AABB lands inside the light's clip cube [-1,1]^3, so no caster falls
+//      outside the shadow map.
+//   2. Validity: degenerate inputs (no bounds / a point box / a zero light direction) return valid == false, so the
+//      caller disables shadows instead of fitting a garbage frustum.
+//   3. Texel snap: the frustum quantizes to the shadow-map texel grid, so the shadow edge does not crawl as the scene
+//      moves sub-texel.
 
 #include "pj_scene3d_core/shadow_camera.h"
 
@@ -37,7 +35,6 @@ AABB boxFromMinMax(glm::vec3 lo, glm::vec3 hi) {
   return b;
 }
 
-// World point -> light clip space (ortho, so w == 1 but divide anyway).
 glm::vec3 toClip(const ShadowCameraFit& fit, glm::vec3 world) {
   const glm::vec4 clip = fit.light_view_proj * glm::vec4(world, 1.0f);
   return glm::vec3(clip) / clip.w;
@@ -77,11 +74,9 @@ TEST(ShadowCameraFit, DegenerateLightDirectionDisablesShadows) {
 }
 
 TEST(ShadowCameraFit, SubTexelShiftYieldsIdenticalFrustum) {
-  // The whole point of texel-snapping: a caster shift that stays inside one texel
-  // cell must produce a BYTE-IDENTICAL light matrix, so a static receiver's shadow
-  // texels never crawl as other casters jitter the bounds. Naive per-frame
-  // re-centering (no snap) would instead shift the matrix by the sub-texel delta
-  // and fail this — which is exactly the regression this pins.
+  // Texel snapping: a caster shift that stays inside one texel cell must produce a BYTE-IDENTICAL light matrix, so a
+  // static receiver's shadow texels never crawl as other casters jitter the bounds (per-frame re-centering without
+  // the snap would shift the matrix by the sub-texel delta and fail this).
   const AABB box0 = boxFromMinMax({-1, -1, 0}, {1, 1, 1});
   const glm::vec3 to_light(0.2f, 0.1f, 1.0f);
   const ShadowCameraFit f0 = fitDirectionalShadowCamera(box0, to_light, kSize);
@@ -96,8 +91,6 @@ TEST(ShadowCameraFit, SubTexelShiftYieldsIdenticalFrustum) {
     }
   }
 }
-
-// --- extendAabbToGroundShadow: grow caster bounds to cover the floor shadow --------
 
 TEST(ExtendAabbToGroundShadow, OverheadLightDropsFloorDirectlyBelow) {
   // Light straight up: each corner's shadow lands at the same xy, on z=0. So the box
@@ -125,8 +118,6 @@ TEST(ExtendAabbToGroundShadow, HorizontalOrInvalidLightIsNoOp) {
   EXPECT_EQ(extendAabbToGroundShadow(box, {1, 0, 0}, 0.0f).min, box.min);  // horizontal
   EXPECT_FALSE(extendAabbToGroundShadow(AABB{}, {0, 0, 1}, 0.0f).valid);   // invalid box
 }
-
-// --- transformedAABB: model-space box -> world AABB (caster-bounds building block)
 
 TEST(TransformedAABB, IdentityIsUnchanged) {
   const AABB box = boxFromMinMax({-1, -2, -3}, {4, 5, 6});

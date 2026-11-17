@@ -134,14 +134,10 @@ inline constexpr SceneLimits kBrowserSceneLimits{
     .max_hdr_bytes_per_rhi = 512 * kMiB,
 };
 
-// Desktop: sized for real robotics data on a discrete GPU (aggregated lidar
-// maps of tens of millions of points, 16k occupancy maps, multi-million
-// triangle robots) but not unlimited: every per-view total stays below the
-// renderer's quint32 buffer sizes and int statistics counters (static_asserts
-// below and in scene_view_widget_rhi.cpp). Largest single buffers: 100M points x
-// 16 B = 1.6 GB, 20M marker vertices x 28 B = 560 MB. HDR: 3840x2160 x 64 B =
-// 506 MiB, so 1 GiB per view fits one 5K view and 4 GiB per QRhi eight 4K
-// docks. Model node depth stays at 256: it bounds recursion, not memory.
+// Desktop: sized for real robotics data on a discrete GPU (aggregated lidar maps of tens of millions of points, 16k
+// occupancy maps, multi-million triangle robots) but not unlimited: every per-view total stays below the renderer's
+// quint32 buffer sizes and int statistics counters (static_asserts below and in scene_view_widget_rhi.cpp). Model node
+// depth stays at 256: it bounds recursion, not memory.
 inline constexpr SceneLimits kDesktopSceneLimits{
     .max_points_per_cloud = 50'000'000,
     .max_point_wire_bytes_per_cloud = 2048 * kMiB,

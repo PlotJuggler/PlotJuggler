@@ -1,12 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Standalone visual demo for QComboBox styling.
-//
-// Interactive window with several PJ::ComboBox variants (basic, long
-// content, many items, editable, disabled) plus a DoubleScrubber for
-// side-by-side input-chrome comparison and a theme toggle. Click a
-// combobox to see the popup styling.
+// Standalone visual demo for QComboBox styling: several PJ::ComboBox variants (basic, long content, many items,
+// editable, disabled) plus a DoubleScrubber for side-by-side input-chrome comparison and a theme toggle. Click a combo
+// box to see the popup styling.
 
 #include <QApplication>
 #include <QComboBox>

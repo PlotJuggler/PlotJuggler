@@ -25,15 +25,10 @@ struct DiagnosticRecord {
   bool operator==(const DiagnosticRecord&) const = default;
 };
 
-// Rolling buffer of recent diagnostics. Single source of truth for the
-// title-bar bell + popup. Producers emit through pj_base::DiagnosticSink
-// (typed into the data pipeline); a QtDiagnosticBridge cross-threads the
-// records into Qt; this service stores a capped history (newest-first)
-// and re-emits each record for views to subscribe to.
-//
-// Default cap is kDefaultMaxRecords (200). Setting a smaller cap trims
-// the existing buffer; values < 1 are clamped to 1 so the buffer is
-// never destroyed entirely.
+// Rolling buffer of recent diagnostics: the single source of truth for the title-bar bell + popup. Producers emit
+// through pj_base::DiagnosticSink; a QtDiagnosticBridge cross-threads the records into Qt; this service stores a capped
+// history (newest-first) and re-emits each record for views. The default cap is kDefaultMaxRecords; a smaller cap trims
+// the existing buffer, and values < 1 clamp to 1 so the buffer is never destroyed entirely.
 class DiagnosticHistory : public QObject {
   Q_OBJECT
  public:

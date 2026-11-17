@@ -61,16 +61,14 @@ TEST(ExtractFanout, HappyPathReturnsEntriesInOrder) {
   EXPECT_EQ(extractFanout(cfg), (Vec{"a", "b"}));
 }
 
-// A malformed (non-string) entry must be skipped, not silently collapse the
-// whole array — the survivors are still fanned out.
+// A non-string entry is skipped, not collapsing the whole array: the survivors are still fanned out.
 TEST(ExtractFanout, NonStringEntriesAreSkipped) {
   const std::string cfg = R"({"__pj_fanout":["a",5,"b"]})";
   EXPECT_EQ(extractFanout(cfg), (Vec{"a", "b"}));
 }
 
-// If skipping leaves nothing usable, fall back to single-instance — NOT an
-// empty vector (an empty vector would send loadFile into the fanout branch with
-// zero iterations, importing nothing while reporting success).
+// If skipping leaves nothing usable, fall back to single-instance, never an empty vector (zero fan-out iterations:
+// nothing imported, success reported).
 TEST(ExtractFanout, AllNonStringEntriesFallBackToSingleInstance) {
   const std::string cfg = R"({"__pj_fanout":[1,2]})";
   EXPECT_EQ(extractFanout(cfg), Vec{cfg});

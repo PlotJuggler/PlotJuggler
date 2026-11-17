@@ -53,13 +53,10 @@ namespace PJ {
 
 namespace {
 
-// Best human-readable label for a source curve: prefer the field display fields,
-// falling back to the opaque catalog key only when those are empty.
-//
-// A materialized filter output is a single-column topic whose column is the
-// generic "value" (incremental_engine.cpp:413) — its identity lives in the topic name
-// (the alias, e.g. "/angular_velocity/y[Absolute]"), so a bare "value" field is
-// skipped in favour of the topic name rather than shown verbatim.
+// Best human-readable label for a source curve: the field display fields, falling back to the opaque catalog key only
+// when those are empty. A materialized filter output is a single-column topic whose column is the generic "value" (its
+// identity lives in the topic name, the alias, e.g. "/angular_velocity/y[Absolute]"), so a bare "value" field is
+// skipped in favour of the topic name.
 QString readableName(const CurveDescriptor& descriptor) {
   if (!descriptor.field_name.isEmpty() && descriptor.field_name != QLatin1String("value")) {
     return curveDisplayName(descriptor);  // full "topic/field" path, as the legend shows it
@@ -73,18 +70,18 @@ QString readableName(const CurveDescriptor& descriptor) {
   return descriptor.name;
 }
 
-// The catalog key identifying one column of a topic in a dataset — the canonical
-// "dataset:.../topic:.../column:..." string the catalog and host plots key curves by.
+// The catalog key of one column of a topic in a dataset: the canonical "dataset:.../topic:.../column:..." string the
+// catalog and the host plots key curves by.
 QString curveKey(DatasetId dataset_id, TopicId topic_id, std::size_t column) {
   return u"dataset:%1/topic:%2/column:%3"_s.arg(dataset_id).arg(topic_id).arg(column);
 }
 
-// Synthetic curve key/title for the in-memory filtered preview curve — never a
-// catalog key, so it lives only inside the preview PlotWidget.
+// Synthetic curve key and title of the in-memory filtered preview curve: never a catalog key, it lives only inside the
+// preview PlotWidget.
 const QString kFilteredPreviewTitle = u"__filter_preview__"_s;
 
-// Process-global "copied filter" (id + params JSON) — survives across panel
-// instances so a filter can be copied from one plot and pasted onto another.
+// Process-global "copied filter" (id + params JSON): survives across panel instances so a filter copied from one plot
+// can be pasted onto another.
 struct ClipboardFilter {
   std::string id;
   std::string params;
@@ -112,9 +109,7 @@ FilterEditorPanel::FilterEditorPanel(
 
   connect(ui_->transform_list, &QListWidget::currentRowChanged, this, [this](int) { onTransformChanged(); });
 
-  // Primary action: Apply (materialize + replace in place). "Generate time
-  // series" (an additive new series) is deferred under the replace-in-place
-  // model, so its button is hidden for now.
+  // Primary action: Apply (materialize and replace in place). The additive "Generate time series" button is hidden.
   ui_->save_btn->setText(tr("Apply"));
   connect(ui_->save_btn, &QPushButton::clicked, this, [this]() { applyToSelected(); });
   ui_->generate_btn->setVisible(false);
@@ -122,9 +117,8 @@ FilterEditorPanel::FilterEditorPanel(
   ui_->cancel_btn->setText(tr("Close"));
   connect(ui_->cancel_btn, &QPushButton::clicked, this, [this]() { emit closed(); });
 
-  // The generated parameter editor replaces the 7 hardcoded panel_* widgets. Its
-  // schema comes from the bundled Luau filter classes (read once from the app
-  // resource); M5 routes this through the FilterCatalogue instead.
+  // The generated parameter editor; its schema comes from the bundled Luau filter classes (read once from the app
+  // resource).
   filter_engine_ = scripting::makeLuauEngine();
   if (QFile f(u":/filters/builtin_filters.luau"_s); f.open(QIODevice::ReadOnly)) {
     if (auto classes = filter_engine_->inspectModule(f.readAll().toStdString(), "bundled"); classes.has_value()) {
@@ -138,9 +132,8 @@ FilterEditorPanel::FilterEditorPanel(
   ui_->paramsLayout->insertWidget(0, param_form_);
   connect(param_form_, &ParameterForm::changed, this, [this]() { scheduleRefresh(); });
 
-  // Copy / paste / apply-to-all of the visible filter parameters — icon buttons
-  // in the parameters-column header (the params are what is copied), matching the
-  // scene3d settings toolbar's SVGs and 20px sizing.
+  // Copy, paste and apply-to-all of the visible filter parameters: icon buttons in the parameters-column header (the
+  // params are what is copied), with the scene3d settings toolbar's SVGs and 20 px size.
   const auto make_icon_button = [this](const QString& svg, const QString& tip) {
     auto* button = new QToolButton(this);
     button->setAutoRaise(true);
@@ -165,28 +158,25 @@ FilterEditorPanel::FilterEditorPanel(
   connect(paste_button_, &QToolButton::clicked, this, &FilterEditorPanel::onPaste);
   connect(apply_all_button_, &QToolButton::clicked, this, &FilterEditorPanel::onApplyToAll);
 
-  // Once the user types an alias, stop auto-overwriting it (textEdited fires only
-  // on user input, never on our programmatic setText).
+  // Once the user types an alias, stop auto-overwriting it (textEdited fires only on user input, never on our
+  // programmatic setText).
   connect(ui_->alias_edit, &QLineEdit::textEdited, this, [this]() { alias_user_edited_ = true; });
 
-  // Preview vs controls split ~50/50 by default; the user can drag the handle.
+  // Preview and controls split ~50/50 by default; the user can drag the handle.
   ui_->previewSplitter->setStretchFactor(0, 1);
   ui_->previewSplitter->setStretchFactor(1, 1);
   ui_->previewSplitter->setSizes({10000, 10000});
 
-  // The first source is pre-selected (populateSources), but its selection signal
-  // fired before our handler was connected; seed active_source_key_ so its
-  // transform is remembered when the user switches away.
+  // The first source is pre-selected (populateSources) but its selection signal fired before our handler connected:
+  // seed active_source_key_ so its transform is remembered when the user switches away.
   active_source_key_ = sources_.empty() ? QString() : sources_.front().name;
 
   setupPreview();
 
-  // The filtered preview curve bakes the display offset into its x-values at compute
-  // time (previewFilteredPoints), while the datastore-backed ghost reads the offset
-  // live — PlotWidget re-reads only its DatastoreCurveAdapter curves in its own
-  // displayOffsetChanged handler. So when the t0 toggle flips the frame, the ghost
-  // moves but the filtered curve is stranded in the old frame. Recompute it here, then
-  // re-fit so both curves frame correctly regardless of slot order.
+  // The filtered preview curve bakes the display offset into its x-values at compute time (previewFilteredPoints),
+  // while the datastore-backed ghost reads it live (PlotWidget re-reads only its DatastoreCurveAdapter curves in its
+  // displayOffsetChanged handler). When the t0 toggle flips the frame the ghost moves and the filtered curve is
+  // stranded in the old frame: recompute it here, then re-fit so both frame correctly whatever the slot order.
   if (session_ != nullptr) {
     connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, [this]() {
       refreshPreview();
@@ -197,9 +187,9 @@ FilterEditorPanel::FilterEditorPanel(
   }
 
   onTransformChanged();
-  // Process the pre-selected source explicitly (its selection signal fired before
-  // setupPreview() connected our handler), so opening on a single already-filtered
-  // curve enters EDIT mode and shows its transform instead of "No Transform".
+  // Process the pre-selected source explicitly (its selection signal fired before setupPreview() connected our
+  // handler), so opening on a single already-filtered curve enters EDIT mode and shows its transform, not "No
+  // Transform".
   if (!sources_.empty()) {
     onSourceSelectionChanged();
   }
@@ -237,8 +227,8 @@ CurveDescriptor FilterEditorPanel::originalInputOf(const CurveDescriptor& descri
 void FilterEditorPanel::populateSources() {
   ui_->series_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
   for (std::size_t i = 0; i < sources_.size(); ++i) {
-    // A source that is itself a filter output is labelled by its ORIGINAL input
-    // series (not the output alias), so reopening reads as "edit <input>".
+    // A source that is itself a filter output is labelled by its original input series (not the output alias), so
+    // reopening reads as "edit <input>".
     auto* item = new QListWidgetItem(readableName(originalInputOf(sources_[i])), ui_->series_list);
     item->setData(Qt::UserRole, static_cast<int>(i));
   }
@@ -260,11 +250,10 @@ void FilterEditorPanel::populateTransforms() {
     item->setData(Qt::UserRole, QString::fromStdString(id));
   }
 
-  // (The freeform "Lua Function" custom-function entry returns once it ships as a
-  // Luau filter class — until then it would be an inert, empty-form selection.)
+  // No freeform "Lua Function" entry: it would be an inert, empty-form selection.
 
-  // Default to "-- No Transform --" (row 0): a freshly-opened source shows its
-  // original signal, not a filter the user didn't ask for.
+  // Default to "-- No Transform --" (row 0): a freshly opened source shows its original signal, not a filter nobody
+  // asked for.
   ui_->transform_list->setCurrentRow(0);
 }
 
@@ -276,8 +265,8 @@ std::string FilterEditorPanel::currentFilterId() const {
 void FilterEditorPanel::onTransformChanged() {
   const std::string id = currentFilterId();
 
-  // Generate the parameter editor for this filter's schema (empty for
-  // parameterless filters: none/absolute/time_since_previous).
+  // Generate the parameter editor for this filter's schema (empty for parameterless filters: none, absolute,
+  // time_since_previous).
   param_form_->setSchema(schemaForId(id));
 
   updateAlias();
@@ -286,9 +275,8 @@ void FilterEditorPanel::onTransformChanged() {
 }
 
 void FilterEditorPanel::updateApplyEnabled() {
-  // In EDIT mode Apply is always live: a transform updates the filter, "No
-  // Transform" removes it (reverting to the input). Otherwise Apply lights up when
-  // any source is configured (the visible transform or a remembered per-source one).
+  // In EDIT mode Apply is always live: a transform updates the filter, "No Transform" removes it (reverting to the
+  // input). Otherwise Apply lights up when any source is configured (the visible transform or a remembered one).
   ui_->save_btn->setEnabled(edit_recipe_.has_value() || currentFilterId() != "none" || !source_filters_.isEmpty());
 }
 
@@ -303,9 +291,8 @@ void FilterEditorPanel::updateAlias() {
     return;
   }
 
-  // Primary source = the first selected curve, else the first available curve.
-  // Resolve a filter-output source to its original input so the alias reads
-  // "<input>[Transform]", never "<input>[Old][New]".
+  // Primary source = the first selected curve, else the first available. A filter-output source resolves to its
+  // original input so the alias reads "<input>[Transform]", never "<input>[Old][New]".
   QString primary;
   const QList<QListWidgetItem*> selected = ui_->series_list->selectedItems();
   if (!selected.isEmpty()) {
@@ -335,9 +322,8 @@ void FilterEditorPanel::applyPreviewDisplay() {
   if (preview_plot_ == nullptr) {
     return;
   }
-  // Plot-level setters mirror how a real plot pens its curves — correct dot vs line
-  // pen widths, inherited by curves added later — so the preview matches the origin
-  // plot faithfully. They re-pen every curve, so ghost dashes must be re-applied after.
+  // Plot-level setters pen curves as a real plot does (correct dot and line widths, inherited by curves added later),
+  // so the preview matches the origin plot. They re-pen every curve, so ghost dashes must be re-applied afterwards.
   preview_plot_->setGridVisible(preview_grid_);
   preview_plot_->setDefaultStyle(preview_curve_style_);
   preview_plot_->setLineWidth(preview_line_width_);
@@ -348,9 +334,8 @@ void FilterEditorPanel::applyGhostPens() {
     if (entry.ghost == nullptr) {
       continue;
     }
-    // Active source -> faded dashed "before"; inactive ("No Transform") -> plain solid.
-    // entry.active is resolved once per refreshPreview() (see there); reused here so a
-    // reactive display change doesn't rebuild a Luau VM per ghost.
+    // Active source -> faded dashed "before"; inactive ("No Transform") -> plain solid. entry.active is resolved once
+    // per refreshPreview(), so a display change does not rebuild a Luau VM per ghost.
     QColor ghost_color = entry.color;
     QPen pen = entry.ghost->pen();
     if (entry.active) {
@@ -366,14 +351,13 @@ void FilterEditorPanel::applyGhostPens() {
 
 void FilterEditorPanel::setupPreview() {
   auto* layout = new QVBoxLayout(ui_->chart_preview);
-  // Keep a snug amount of breathing room below the plot.
+  // A snug amount of breathing room below the plot.
   layout->setContentsMargins(
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),
       PJ::theme::space(theme::Space::Snug));
 
-  // A real PlotWidget (zoom / legend / tracker), not a bare QwtPlot. It reads the
-  // same datastore, so the ghost (source) curve renders natively; the filtered
-  // curve is an in-memory series fed below.
+  // A real PlotWidget (zoom, legend, tracker), not a bare QwtPlot. It reads the same datastore, so the ghost (source)
+  // curve renders natively; the filtered curve is an in-memory series fed below.
   preview_plot_ = new PlotWidget(session_, catalog_, ui_->chart_preview);
   preview_plot_->setContextMenuEnabled(false);  // read-only preview: no right-click menu
   applyPreviewDisplay();                        // honor any display settings the host pushed pre-setup
@@ -384,7 +368,7 @@ void FilterEditorPanel::setupPreview() {
   preview_timer_->setInterval(150);
   connect(preview_timer_, &QTimer::timeout, this, &FilterEditorPanel::refreshPreview);
 
-  // Recompute whenever any parameter / source / transform changes (debounced).
+  // Recompute whenever a parameter, source or transform changes (debounced).
   for (QLineEdit* widget : findChildren<QLineEdit*>()) {
     connect(widget, &QLineEdit::textChanged, this, [this]() { scheduleRefresh(); });
   }
@@ -407,9 +391,8 @@ void FilterEditorPanel::setupPreview() {
 }
 
 void FilterEditorPanel::onSourceSelectionChanged() {
-  // Remember the transform of the source we are leaving, then restore the one we
-  // are entering — so each series keeps its own transform instead of inheriting
-  // whatever was last configured.
+  // Remember the transform of the source being left and restore the one being entered, so each series keeps its own
+  // transform instead of inheriting the last configured.
   saveActiveSourceFilter();
   alias_user_edited_ = false;  // the incoming source gets a fresh auto-alias
 
@@ -419,19 +402,19 @@ void FilterEditorPanel::onSourceSelectionChanged() {
       selected.isEmpty() ? nullptr : &sources_[static_cast<std::size_t>(selected.front()->data(Qt::UserRole).toInt())];
   const QString new_key = primary ? primary->name : QString();
 
-  // A single selected source that is itself a filter OUTPUT → edit that filter.
+  // A single selected source that is itself a filter output: edit that filter.
   bool loaded_from_recipe = false;
   if (selected.size() == 1 && primary != nullptr && session_ != nullptr) {
     if (const auto* recipe = session_->dataProcessorService().filterConfig(primary->topic_id)) {
       if (selectTransformById(recipe->processor_id)) {  // shows the matching panel
         edit_recipe_ = *recipe;
         if (recipe->processor) {
-          // The recipe has a LIVE processor; drive the form from its params JSON.
+          // The recipe has a live processor: drive the form from its params JSON.
           setWidgetsFromParams(recipe->processor_id, recipe->processor->saveParams());
         }
       } else {
-        // The restored filter's transform is not available in this build: show "No
-        // Transform" + a notice rather than silently editing an unrelated filter.
+        // The restored filter's transform is not available in this build: show "No Transform" and a notice rather than
+        // silently editing an unrelated filter.
         ui_->transform_list->setCurrentRow(0);
         ui_->status_label->setText(
             tr("Filter '%1' is not available").arg(QString::fromStdString(recipe->processor_id)));
@@ -447,7 +430,7 @@ void FilterEditorPanel::onSourceSelectionChanged() {
   active_source_key_ = new_key;
   updateAlias();
   updateApplyEnabled();
-  // The button always reads "Apply" (even in EDIT mode, where it updates in place).
+  // The button always reads "Apply", in EDIT mode too, where it updates in place.
   ui_->save_btn->setText(tr("Apply"));
   scheduleRefresh();
 }
@@ -456,10 +439,9 @@ void FilterEditorPanel::saveActiveSourceFilter() {
   if (active_source_key_.isEmpty()) {
     return;
   }
-  // Record the active source's visible config — INCLUDING for an existing filter
-  // output in EDIT mode, so a pasted/edited filter survives a selection change and
-  // Apply re-edits it in place. (No early-return on edit_recipe_: that previously
-  // dropped the edited config.)
+  // Record the active source's visible config, for an existing filter output in EDIT mode too, so a pasted or edited
+  // filter survives a selection change and Apply re-edits it in place. No early return on edit_recipe_: it would drop
+  // the edited config.
   if (std::unique_ptr<proc::DataProcessor> processor = buildConfiguredProcessor()) {
     source_filters_[active_source_key_] = {
         QString::fromStdString(processor->id()), QString::fromStdString(processor->saveParams())};
@@ -493,20 +475,19 @@ bool FilterEditorPanel::selectTransformById(const std::string& id) {
 }
 
 void FilterEditorPanel::setWidgetsFromParams(const std::string& id, const std::string& params_json) {
-  // Generic inverse of buildConfiguredProcessor(): rebuild the form for this
-  // filter's schema, then drive it from the params JSON (the keys are the
-  // parameter names) — no per-id static_cast, no throwaway processor.
+  // Generic inverse of buildConfiguredProcessor(): rebuild the form for this filter's schema, then drive it from the
+  // params JSON (keys are the parameter names), with no per-id cast and no throwaway processor.
   param_form_->setSchema(schemaForId(id));
-  // allow_exceptions=false returns a DISCARDED value on malformed JSON; setValues
-  // would then silently skip every row, leaving stale params. Detect and surface it.
+  // allow_exceptions=false returns a discarded value on malformed JSON; setValues would skip every row and leave stale
+  // params, so detect it and surface it.
   const nlohmann::json values = nlohmann::json::parse(params_json, nullptr, /*allow_exceptions=*/false);
   if (values.is_discarded()) {
     ui_->status_label->setText(tr("Could not read filter parameters; using defaults"));
   } else {
     param_form_->setValues(values);
   }
-  // setValues is silent (no changed()), so refresh the preview explicitly — e.g.
-  // pasting onto the already-selected filter wouldn't otherwise re-render.
+  // setValues is silent (no changed()), so refresh the preview explicitly: pasting onto the already-selected filter
+  // would not otherwise re-render.
   scheduleRefresh();
 }
 
@@ -536,8 +517,8 @@ void FilterEditorPanel::onPaste() {
     ui_->status_label->setText(tr("Nothing to paste"));
     return;
   }
-  // Select the transform row FIRST; only drive the form for clip.id once it is the
-  // actually-selected transform, or the form schema would mismatch currentFilterId().
+  // Select the transform row first and drive the form for clip.id only once it is the selected transform, or the form
+  // schema would mismatch currentFilterId().
   if (!selectTransformById(clip.id)) {
     ui_->status_label->setText(tr("Cannot paste filter '%1'").arg(QString::fromStdString(clip.id)));
     return;
@@ -547,8 +528,8 @@ void FilterEditorPanel::onPaste() {
 }
 
 void FilterEditorPanel::onApplyToAll() {
-  // "Copy into all others": stamp the visible filter onto every source's
-  // remembered transform, so switching to any series shows (and Apply applies) it.
+  // "Copy into all others": stamp the visible filter onto every source's remembered transform, so switching to any
+  // series shows (and Apply applies) it.
   std::unique_ptr<proc::DataProcessor> processor = buildConfiguredProcessor();
   if (!processor) {
     ui_->status_label->setText(tr("Pick a filter to copy to all series"));
@@ -573,9 +554,8 @@ void FilterEditorPanel::refreshPreview() {
     return;
   }
 
-  // Sources to preview = every selected curve (in list order), or the first
-  // available if nothing is selected. Each gets its own ghost + filtered pair, so a
-  // multi-select edit previews EVERY series Apply will touch — not just the first.
+  // Sources to preview = every selected curve (list order), or the first available if none is selected. Each gets its
+  // own ghost + filtered pair, so a multi-select edit previews every series Apply will touch.
   std::vector<int> indices;
   const QList<QListWidgetItem*> selected = ui_->series_list->selectedItems();
   if (!selected.isEmpty()) {
@@ -588,10 +568,9 @@ void FilterEditorPanel::refreshPreview() {
     indices.push_back(0);
   }
 
-  // Resolve each to its EFFECTIVE input (a filter-output source previews its ORIGINAL
-  // input, so re-editing reads as "input -> re-filtered output") and the SELECTED
-  // curve's plot colour. De-duplicate by input so two outputs of the same input
-  // collapse to one ghost.
+  // Resolve each to its effective input (a filter-output source previews its original input, so re-editing reads as
+  // "input -> re-filtered output") and the selected curve's plot colour. De-duplicate by input so two outputs of the
+  // same input collapse to one ghost.
   std::vector<PreviewSeries> wanted;
   QString set_key;
   for (const int idx : indices) {
@@ -611,25 +590,22 @@ void FilterEditorPanel::refreshPreview() {
     return;
   }
 
-  // Rebuild curves only when the SET of ghosts changes, so tuning a parameter keeps
-  // the user's current zoom on the preview.
+  // Rebuild curves only when the set of ghosts changes, so tuning a parameter keeps the preview's zoom.
   const bool rebuilt = (set_key != preview_set_key_);
   if (rebuilt) {
     preview_plot_->removeAllCurves();
     preview_set_key_ = set_key;
     for (PreviewSeries& entry : wanted) {
-      // Ghost = the datastore-backed source. Its dash/fade styling is set below.
+      // Ghost = the datastore-backed source; its dash and fade are set below.
       if (auto* ghost = preview_plot_->addCurve(entry.input.name, entry.color); ghost != nullptr) {
         entry.ghost = ghost->curve;
       }
-      // Filtered = a lazy datastore-backed curve that runs THIS source's filter
-      // over the input column on read. It reports the input topic as its source,
-      // so PlotWidget's samplesIngested handler refreshes it on the SAME signal as
-      // the ghost — the filtered "after" tracks streaming with no timer/extra
-      // wiring here. The factory builds a FRESH processor each recompute from the
-      // CURRENT config, so parameter edits take effect on the next invalidate().
-      // Keyed uniquely PER source (the `__filter_preview__` prefix never collides
-      // with a catalog topic). Legend title + visibility are set below.
+      // Filtered = a lazy datastore-backed curve that runs this source's filter over the input column on read. It
+      // reports the input topic as its source, so PlotWidget's samplesIngested handler refreshes it on the same signal
+      // as the ghost, and the "after" tracks streaming with no timer or extra wiring. The factory builds a fresh
+      // processor each recompute from the current config, so parameter edits take effect on the next invalidate().
+      // Keyed uniquely per source (the `__filter_preview__` prefix never collides with a catalog topic). Legend title
+      // and visibility are set below.
       auto factory = [this, source_key = entry.source_key]() -> std::unique_ptr<proc::DataProcessor> {
         return processorForSource(source_key);
       };
@@ -641,23 +617,21 @@ void FilterEditorPanel::refreshPreview() {
     }
     preview_series_ = std::move(wanted);
   } else {
-    // Same ghost set: keep the curves, just refresh each remembered colour (a curve
-    // may have been recoloured on the plot since the last preview).
+    // Same ghost set: keep the curves, refresh each remembered colour (a curve may have been recoloured since).
     for (std::size_t i = 0; i < preview_series_.size() && i < wanted.size(); ++i) {
       preview_series_[i].color = wanted[i].color;
     }
   }
 
-  // Resolve each source's active state ONCE — processorForSource() builds a Luau VM,
-  // so it must not be re-derived per redraw. Each source previews through its OWN
-  // filter (matching Apply): a source on "No Transform" stays plain even while another
-  // in the multi-selection is filtered. Reused by applyGhostPens() and the loop below.
+  // Resolve each source's active state once: processorForSource() builds a Luau VM, so it must not be re-derived per
+  // redraw. Each source previews through its own filter (as Apply): a source on "No Transform" stays plain while
+  // another in the multi-selection is filtered. Reused by applyGhostPens() and the loop below.
   for (PreviewSeries& entry : preview_series_) {
     entry.active = (processorForSource(entry.source_key) != nullptr);
   }
 
-  // Adopt the origin plot's grid/style/width on the (possibly just-rebuilt) curves
-  // BEFORE the ghost-pen styling, so the ghost's dash/fade is applied last and wins.
+  // Adopt the origin plot's grid, style and width on the (possibly rebuilt) curves before the ghost-pen styling, so the
+  // ghost's dash and fade are applied last and win.
   applyPreviewDisplay();
   applyGhostPens();
 
@@ -669,9 +643,8 @@ void FilterEditorPanel::refreshPreview() {
     const bool entry_active = entry.active;
 
     if (entry.filtered != nullptr) {
-      // Legend label: the single-source case keeps the user-editable alias; a
-      // multi-select preview labels each filtered curve by its own output name so
-      // the legend stays unambiguous.
+      // Legend label: a single source keeps the user-editable alias; a multi-select preview labels each filtered curve
+      // by its own output name so the legend stays unambiguous.
       QString title;
       if (preview_series_.size() == 1 && !alias.isEmpty()) {
         title = alias;
@@ -679,11 +652,9 @@ void FilterEditorPanel::refreshPreview() {
         title = readableName(entry.input) + "[" + transform_label + "]";
       }
       entry.filtered->setTitle(title.isEmpty() ? tr("filtered") : title);
-      // The adapter computes its own samples lazily; just mark it stale so a
-      // parameter edit (which keeps the same ghost set) re-runs the filter on the
-      // next paint. Streaming ingest invalidates it independently via PlotWidget's
-      // samplesIngested handler. When inactive ("No Transform") the factory returns
-      // nullptr -> empty curve, so hiding it is enough.
+      // The adapter computes its samples lazily: mark it stale so a parameter edit (same ghost set) re-runs the filter
+      // on the next paint. Streaming ingest invalidates it independently through PlotWidget's samplesIngested handler.
+      // When inactive ("No Transform") the factory returns nullptr and the curve is empty, so hiding it suffices.
       if (auto* adapter = dynamic_cast<FilteredCurveAdapter*>(entry.filtered->data()); adapter != nullptr) {
         adapter->invalidate();
       }
@@ -692,9 +663,8 @@ void FilterEditorPanel::refreshPreview() {
   }
 
   preview_plot_->replot();
-  // Refit the view to the data: always when the ghost set changed, and on every
-  // refresh while AutoZoom is on (so changing the transform — e.g. a Binary Filter
-  // whose output reaches 1 — rescales the Y axis instead of clipping).
+  // Refit the view to the data: always when the ghost set changed, and on every refresh while AutoZoom is on (so a
+  // transform whose output reaches 1, e.g. a Binary Filter, rescales Y instead of clipping).
   if (rebuilt || ui_->autozoom_check->isChecked()) {
     preview_plot_->zoomOut(false);
   }
@@ -705,10 +675,9 @@ std::unique_ptr<proc::DataProcessor> FilterEditorPanel::buildConfiguredProcessor
 }
 
 std::unique_ptr<proc::DataProcessor> FilterEditorPanel::processorForSource(const QString& source_key) const {
-  // A source with its OWN remembered config previews/applies through that; an unconfigured one
-  // falls back to the visible form (which is also what applyToSelected assigns it). This keeps a
-  // multi-source preview consistent with Apply instead of routing every series through the
-  // currently-visible filter.
+  // A source with its own remembered config previews and applies through it; an unconfigured one falls back to the
+  // visible form (what applyToSelected assigns it), so a multi-source preview matches Apply instead of routing every
+  // series through the visible filter.
   if (const auto it = source_filters_.constFind(source_key); it != source_filters_.constEnd()) {
     return buildProcessorFor(it->first.toStdString(), it->second.toStdString());
   }
@@ -720,9 +689,8 @@ std::unique_ptr<proc::DataProcessor> FilterEditorPanel::buildProcessorFor(
   if (id.empty() || id == "none") {
     return nullptr;  // "No Transform"
   }
-  // Produce the Luau filter for this id (configured from the params JSON, whose
-  // keys are the parameter names). The bundled resource is the only source; an id
-  // absent from it yields no processor (nullptr -> "Pick a filter").
+  // The Luau filter for this id, configured from the params JSON (keys are the parameter names). The bundled resource
+  // is the only source; an id absent from it yields nullptr ("Pick a filter").
   for (const scripting::FilterClass& cls : filter_classes_) {
     if (cls.id == id) {
       return std::make_unique<scripting::LuaSisoTransform>(filter_engine_, cls, params_json);
@@ -749,18 +717,17 @@ void FilterEditorPanel::applyToSelected() {
 
   auto& service = session_->dataProcessorService();
 
-  // Record the visible source's config into per-source memory FIRST, so a pasted /
-  // edited filter on the source you are looking at (even an existing output) is
-  // included — this is the single authority Apply reads, same as the preview.
+  // Record the visible source's config into per-source memory first, so a pasted or edited filter on the source being
+  // viewed (an existing output included) is part of it: the single authority Apply reads, as the preview does.
   saveActiveSourceFilter();
 
   const std::string visible_id = currentFilterId();
   QList<QPair<QString, QString>> replacements;
   QStringList failures;
 
-  // Removal: the active source is an existing filter OUTPUT set to "No Transform" ->
-  // remove its filter and revert the plotted curve to its original input. (Collected,
-  // not returned, so OTHER configured sources in the same Apply still run.)
+  // Removal: the active source is an existing filter output set to "No Transform": remove its filter and revert the
+  // plotted curve to its original input. Collected, not returned, so other configured sources in the same Apply still
+  // run.
   if (!active_source_key_.isEmpty() && visible_id == "none") {
     for (const CurveDescriptor& descriptor : sources_) {
       if (descriptor.name != active_source_key_) {
@@ -770,8 +737,8 @@ void FilterEditorPanel::applyToSelected() {
         const QString output_key = curveKey(recipe->dataset_id, recipe->output_topic_id, 0);
         const QString input_key = curveKey(recipe->dataset_id, recipe->input_topic_id, recipe->input_column_index);
         if (const auto removed = service.removeFilter(recipe->node_id); removed.has_value()) {
-          // Drop the now-orphaned output topic (removeNode leaves the series in the
-          // store); the trash blacklist keeps it off the next rebuild.
+          // Drop the now-orphaned output topic (removeNode leaves the series in the store); the trash blacklist keeps
+          // it off the next rebuild.
           catalog_->removeCurves({output_key});
           replacements.push_back({output_key, input_key});  // host swaps output -> input
         } else {
@@ -782,9 +749,8 @@ void FilterEditorPanel::applyToSelected() {
     }
   }
 
-  // Plain multi-selection convenience: a selected source with no remembered
-  // transform of its own inherits the currently-visible one, so ctrl-selecting N
-  // curves and picking a single filter applies it to all N.
+  // Plain multi-selection: a selected source with no remembered transform inherits the visible one, so ctrl-selecting N
+  // curves and picking one filter applies it to all N.
   if (visible_id != "none") {
     const QString visible_params = QString::fromStdString(param_form_->values().dump());
     for (const QListWidgetItem* item : selected) {
@@ -800,11 +766,10 @@ void FilterEditorPanel::applyToSelected() {
     return;
   }
 
-  // Apply every configured source, in list order. A source that is itself a filter
-  // OUTPUT is RE-EDITED IN PLACE (its recipe is updated, re-running on the original
-  // input — consistent with the preview); a plain source materializes a NEW output
-  // topic and is reported for in-place curve replacement on the host plot. Per-source
-  // failures are collected (not silently skipped, not masked by a later success).
+  // Apply every configured source, in list order. A source that is itself a filter output is re-edited in place (its
+  // recipe is updated and re-runs on the original input, as the preview does); a plain source materializes a new output
+  // topic and is reported for in-place curve replacement on the host plot. Per-source failures are collected, not
+  // skipped and not masked by a later success.
   bool updated_in_place = false;
   const bool single = source_filters_.size() == 1;
   for (const CurveDescriptor& descriptor : sources_) {
@@ -821,11 +786,11 @@ void FilterEditorPanel::applyToSelected() {
     }
 
     if (const auto* recipe = service.filterConfig(descriptor.topic_id)) {
-      // Existing filter output -> re-edit its recipe in place (re-runs on its input).
+      // Existing filter output: re-edit its recipe in place (re-runs on its input).
       std::shared_ptr<proc::DataProcessor> shared = std::move(processor);
       if (const auto updated = service.updateFilter(recipe->node_id, shared); updated.has_value()) {
-        // The output's data changed under existing adapters; notify so plots drop
-        // their cache and repaint (a bare replot keeps the stale samples).
+        // The output's data changed under existing adapters: notify so plots drop their cache and repaint (a bare
+        // replot keeps the stale samples).
         session_->notifyIngest({recipe->output_topic_id});
         updated_in_place = true;
       } else {
@@ -834,9 +799,8 @@ void FilterEditorPanel::applyToSelected() {
       continue;
     }
 
-    // Plain source -> materialize a new output and replace the curve in place. A lone
-    // configured source honours the user's custom alias; with several, each output is
-    // named per source so they stay distinct.
+    // Plain source: materialize a new output and replace the curve in place. A lone configured source honours the
+    // user's alias; with several, each output is named per source so they stay distinct.
     QString out_name;
     if (single && !ui_->alias_edit->text().isEmpty()) {
       out_name = ui_->alias_edit->text();
@@ -856,8 +820,8 @@ void FilterEditorPanel::applyToSelected() {
 
   catalog_->rebuildFromDatastore();
 
-  // Surface any failures both inline AND as an app diagnostic (which survives the
-  // panel closing), so a partial failure is never masked by a later success.
+  // Surface failures inline and as an app diagnostic (which survives the panel closing), so a partial failure is never
+  // masked by a later success.
   if (!failures.isEmpty()) {
     const QString summary = tr("%1 filter(s) failed: %2").arg(failures.size()).arg(failures.join(u"; "_s));
     ui_->status_label->setText(summary);
@@ -865,14 +829,13 @@ void FilterEditorPanel::applyToSelected() {
   }
 
   if (!replacements.isEmpty() || updated_in_place) {
-    // Non-empty -> the host swaps each source curve for its output; empty (only
-    // in-place updates) -> the host just replots and restores the chart area.
+    // Non-empty: the host swaps each source curve for its output; empty (only in-place updates): the host replots and
+    // restores the chart area.
     emit applied(replacements);
   } else if (failures.isEmpty()) {
     ui_->status_label->setText(tr("Nothing applied"));
   }
-  // failures-only (no successes): no applied() -> the panel stays open with the
-  // failure summary visible.
+  // Failures only: no applied(); the panel stays open with the failure summary visible.
 }
 
 }  // namespace PJ

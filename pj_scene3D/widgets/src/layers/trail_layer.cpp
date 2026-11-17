@@ -62,8 +62,7 @@ PJ::SceneLayerInfo TrailLayer::info() const {
 
 PJ::Range<PJ::Timepoint> TrailLayer::timeRange() const {
   if (stamps_.empty()) {
-    // Inverted sentinel (RobotModelLayer convention): an empty trail must not
-    // widen the playback timeline.
+    // Inverted sentinel (RobotModelLayer convention): an empty trail must not widen the playback timeline.
     return {PJ::Timepoint::max(), PJ::Timepoint::min()};
   }
   return {stamps_.front(), stamps_.back()};
@@ -77,8 +76,8 @@ QStringList TrailLayer::fallbackFrames() const {
 }
 
 QString TrailLayer::sourceFrame() const {
-  // A trail poses nothing through TF at render time (points are pre-baked in
-  // the fixed frame), so it never participates in the dock's orphan check.
+  // A trail poses nothing through TF at render time (points are pre-baked in the fixed frame): never in the orphan
+  // check.
   return {};
 }
 
@@ -88,9 +87,8 @@ std::size_t TrailLayer::pastCount(PJ::Timepoint time) const {
 }
 
 uint64_t TrailLayer::renderKey(PJ::Timepoint time) const {
-  // Decode-free by construction (a binary search over cached stamps). Between
-  // two consecutive samples the key is constant -> the dock's repaint gate
-  // coalesces scrubbing to zero repaints (the PR #259 contract).
+  // Decode-free (a binary search over cached stamps). The key is constant between two consecutive samples, so the
+  // dock's repaint gate coalesces scrubbing to zero repaints.
   uint64_t key = build_revision_ * 0x9E3779B97F4A7C15ULL;
   key ^= static_cast<uint64_t>(style_revision_) << 48U;
   key ^= static_cast<uint64_t>(pastCount(time)) + 0x9E3779B9ULL + (key << 6U) + (key >> 2U);
@@ -104,9 +102,8 @@ QDomElement TrailLayer::xmlSaveState(QDomDocument& doc) const {
     el.setAttribute(u"frame"_s, source_.frame);
   }
   if (source_.kind == TrailSource::Kind::kPoseTopic && ctx_.session != nullptr) {
-    // Persist the resolvable identity (dataset + topic name) so restore
-    // re-binds the SAME topic across sessions where load order changed the
-    // DatasetId — the RobotModelLayer topic-source idiom.
+    // Persist the resolvable identity (dataset + topic name) so restore re-binds the SAME topic across sessions where
+    // load order changed the DatasetId (the RobotModelLayer topic-source idiom).
     const auto desc = ctx_.session->objectStore().descriptor(source_.topic);
     el.setAttribute(u"source_topic_name"_s, QString::fromStdString(desc.topic_name));
     el.setAttribute(u"source_dataset_id"_s, static_cast<uint>(desc.dataset_id));
@@ -139,8 +136,7 @@ TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& elem
     if (frame.isEmpty()) {
       return XmlLoadResult::kInvalid;
     }
-    // Restored unconditionally: a frame absent from the current data behaves
-    // like an orphan until it appears (follow-frame restore philosophy).
+    // Restored unconditionally: a frame absent from the current data behaves like an orphan until it appears.
     restored_source = TrailSource::tfFrame(frame);
   } else if (kind == "pose_topic"_L1) {
     if (ctx_.session == nullptr) {
@@ -235,9 +231,8 @@ bool TrailLayer::attach(const PJ::SceneLayerContext& ctx) {
   }
   ctx_ = scene3d_ctx;
   if (ctx_.tf_buffer == nullptr) {
-    // Tolerated: layout restore replays layers BEFORE the config topic that
-    // binds TF, so a restored trail starts buffer-less and the dock pushes the
-    // buffer via setTransformBuffer once the binding lands.
+    // Tolerated: layout restore replays layers BEFORE the config topic that binds TF, so a restored trail starts
+    // buffer-less and the dock pushes the buffer via setTransformBuffer once the binding lands.
     setDataWarning(tr("waiting for TF"));
   }
   if (source_.kind == TrailSource::Kind::kPoseTopic &&
@@ -249,8 +244,8 @@ bool TrailLayer::attach(const PJ::SceneLayerContext& ctx) {
   stamps_.clear();
   points_.clear();
   ++build_revision_;
-  // fixed_frame_ stays empty: the view's first syncFixedFrame() adopts it
-  // (authoritative) and triggers the initial rebuild.
+  // fixed_frame_ stays empty: the view's first syncFixedFrame() adopts it (authoritative) and triggers the first
+  // rebuild.
   return true;
 }
 
@@ -281,15 +276,12 @@ void TrailLayer::setTransformBuffer(std::shared_ptr<TransformBuffer> tf_buffer) 
 }
 
 void TrailLayer::setFixedFrame(const QString& frame) {
-  // The view's syncFixedFrame() adopts the authoritative fixed frame and
-  // rebuilds there; a repaint is all that is needed to kick that path.
   Q_UNUSED(frame);
   emit repaintRequested();
 }
 
 void TrailLayer::setTrackerTime(PJ::Timepoint time) {
-  // The split position is derived from the view's time at render, so the tick
-  // itself only drives the live-append probe.
+  // The split position is derived from the view's time at render: the tick only drives the live-append probe.
   Q_UNUSED(time);
   maybeAppendLiveSamples();
   emit repaintRequested();  // the renderKey gate coalesces between samples
@@ -305,7 +297,6 @@ void TrailLayer::setVisible(bool visible) {
 }
 
 bool TrailLayer::syncFixedFrame(const std::string& fixed_frame) {
-  // Adopt + rebuild; draw from the next paint on.
   if (fixed_frame_ == fixed_frame) {
     return true;
   }
@@ -381,9 +372,8 @@ void TrailLayer::startRebuild(bool synchronous) {
     return;
   }
   if (source_.kind == TrailSource::Kind::kPoseTopic) {
-    // GUI-thread only: ObjectStore reads + parseLocked decodes are per-use
-    // GUI-thread contracts. Bounded: stamps decimate to kMaxTrailPoints BEFORE
-    // any decode.
+    // GUI-thread only: ObjectStore reads and parseLocked decodes are per-use GUI-thread contracts. Bounded: stamps
+    // decimate to kMaxTrailPoints BEFORE any decode.
     adoptPolyline(buildPoseTrailNow());
     return;
   }
@@ -486,9 +476,8 @@ std::optional<PoseTrailSample> TrailLayer::decodePoseSample(
   }
   auto object = resolveObject(binding, PJ::sdk::BuiltinObjectType::kPosesInFrame, entry->timestamp, entry->payload);
   if (!object.has_value()) {
-    // Aggregate, not per-entry: a schema regression fails ALL of them and a
-    // 50k-line log helps nobody. Callers log the count once and adoptPolyline
-    // surfaces it on the row.
+    // Aggregate, not per entry: a schema regression fails ALL of them and a 50k-line log helps nobody. Callers log the
+    // count once and adoptPolyline surfaces it on the row.
     ++decode_failures;
     return std::nullopt;
   }
@@ -496,7 +485,6 @@ std::optional<PoseTrailSample> TrailLayer::decodePoseSample(
   if (message == nullptr || message->poses.empty()) {
     return std::nullopt;
   }
-  // v1 contract: the FIRST pose only (one trail point per message).
   const auto& pose = message->poses.front();
   return PoseTrailSample{
       PJ::fromRaw(entry->timestamp), glm::dvec3(pose.position.x, pose.position.y, pose.position.z), message->frame_id,
@@ -518,10 +506,9 @@ void TrailLayer::maybeAppendLiveSamples() {
     if (tf_revision == last_seen_tf_revision_) {
       return;
     }
-    // An empty trail has no anchor stamp to append after — but new TF data
-    // means it may be buildable NOW. Revive with a full rebuild instead of
-    // leaving the "waiting"/"no motion samples" warning up forever. The gate
-    // advances first so a still-empty result cannot retrigger every tick.
+    // An empty trail has no anchor stamp to append after, but new TF data means it may be buildable NOW: revive with a
+    // full rebuild instead of leaving the "waiting"/"no motion samples" warning up forever. The gate advances first so
+    // a still-empty result cannot retrigger every tick.
     last_seen_tf_revision_ = tf_revision;
     if (stamps_.empty()) {
       requestRebuild();
@@ -541,7 +528,6 @@ void TrailLayer::maybeAppendLiveSamples() {
     return;
   }
   if (stamps_.empty()) {
-    // Same revival rule as the TF branch (the rebuild advances the cursor).
     requestRebuild();
     return;
   }
@@ -600,15 +586,13 @@ void TrailLayer::appendStyleRows(QFormLayout* form, QWidget* parent) {
     setThickness(static_cast<float>(v));
   });
 
-  // Color rows carry an eye toggle (the LayerListView row pattern) that hides
-  // that half of the ribbon independently. Resources are registered
-  // process-wide by pj_app.
+  // Colour rows carry an eye toggle (the LayerListView row pattern) that hides that half of the ribbon independently.
+  // Resources are registered process-wide by pj_app.
   const QString icon_theme = PJ::theme::appTheme() == PJ::theme::Theme::Light ? u"light"_s : u"dark"_s;
   const auto make_eye = [icon_theme](QWidget* eye_parent, bool visible_now) {
     auto* eye = new QToolButton(eye_parent);
-    // The shared objectName picks up the QSS rule that keeps eye toggles flat
-    // in every state (no checked/hover wash) — the glyph is the indicator,
-    // matching every other eye in the app.
+    // The shared objectName picks up the QSS rule that keeps eye toggles flat in every state (the glyph is the
+    // indicator), as every other eye in the app.
     eye->setObjectName(u"curveVisibilityToggle"_s);
     eye->setIconSize(QSize(20, 20));
     eye->setAutoRaise(true);
@@ -625,8 +609,6 @@ void TrailLayer::appendStyleRows(QFormLayout* form, QWidget* parent) {
         PJ::loadSvg(on ? u":/resources/svg/visibility.svg"_s : u":/resources/svg/visibility_off.svg"_s, icon_theme));
   };
 
-  // The past/future rows are twins: swatch + eye, differing only in the bound
-  // half. Member-pointer setters keep the lambda captures tiny.
   const auto add_color_row = [this, parent, form, make_eye, refresh_eye](
                                  const QString& label, const QColor& color, bool visible_now, const QString& tip,
                                  void (TrailLayer::*set_color)(QColor), void (TrailLayer::*set_visible)(bool)) {

@@ -242,8 +242,8 @@ node scripts/wasm_source_offer.mjs --links --output build-wasm/deploy/sources   
 ```
 
 `--links`, the mode `app.plotjuggler.io` publishes with (`packaging/web/`),
-archives only PlotJuggler 4, whose repository is private, and gives every other
-part its public address: the URL and SHA-256 of a hashed pin, the commit and
+archives only PlotJuggler 4 and gives every other part its public address: the
+URL and SHA-256 of a hashed pin, the commit and
 GitHub tarball of a git pin, the Qt Advanced Docking System fork's commit. The
 GPL v3 accepts source on another server when the object code carries clear
 directions to it, as long as it stays available there: every address is
@@ -286,14 +286,14 @@ pointer in the notices keeps working.
 
 On-demand Python scripts run in the browser through a static CPython 3.14 for
 Emscripten with pthreads. The option is `ON` by default, in the production
-build too (derived-objects slice P-d); `-DPJ_WASM_WITH_PYTHON=OFF` builds the
+build too; `-DPJ_WASM_WITH_PYTHON=OFF` builds the
 app without it, and a recipe in Python then fails to restore with "python is
 not available in this build". WASM CI's functional suite runs
 `tests/wasm/python.spec.js` (the lane's limits, per-call cost and main-thread
 gaps) and `tests/wasm/python_layout.spec.js` (a layout's Python recipes
 restored into a 3D scene, a broken one showing its compile error) in Chromium
 and Firefox. Python filters stay unavailable in the browser; what else remains
-is in `docs/derived_objects/ARCHITECTURE.md` §14.
+is in [`derived_objects/ARCHITECTURE.md`](./derived_objects/ARCHITECTURE.md) "Scripting languages".
 
 `cmake/PjWasmPython.cmake` builds CPython at configure time, from the SHA-256
 pinned release tarball (its only download) and the files in
@@ -319,16 +319,12 @@ cmake ... -DPJ_WASM_WITH_PYTHON=ON -DPJ_WASM_PYTHON_CACHE_DIR="$HOME/.cache/pj-w
 What to know before changing it:
 
 - **Size budget.** At startup it adds the interpreter linked into the module,
-  about 1.2 MB of Brotli download: 1.9 MB measured with and without Python
-  (2026-10-21), less the 0.68 MB the stdlib zip took before it moved out of the
-  module (2026-11-15, production package 15.87 MB -> 15.19 MB). The stdlib is
-  downloaded on demand, below. CI fails the production package above
-  16,932,000 B, 5 % over that measurement, raised to 17,090,000 B for the MCP
-  server in the browser (+156 KB, 2026-11-11), and set to 20,000,000 B on
-  2026-11-14 to leave room for built-in plugins (`scripts/wasm_size_budget.mjs`; the
-  sample `presets/` are fetched on demand and not counted): an absolute budget,
-  since both configurations now carry Python and a delta would need a third
-  build. The stdlib zip (0.67 MB Brotli, stored uncompressed so the
+  about 1.2 MB of Brotli download (measured 2026-11-15: production package
+  15.19 MB with Python). CI fails the production package's Brotli download above
+  the budget `wasm-ci.yml` passes to `scripts/wasm_size_budget.mjs` (the sample
+  `presets/` are fetched on demand and not counted). The budget is absolute
+  because every configuration carries Python: a delta would need a third build.
+  The stdlib zip (0.67 MB Brotli, stored uncompressed so the
   package's Brotli compresses it) is not part of it: it is a separate asset,
   `python_stdlib.zip` in the content-addressed bundle beside the module, which
   the first Python use downloads (a synchronous request on the Python worker,
@@ -342,7 +338,7 @@ What to know before changing it:
   without a request for the rest of the session. A validate meanwhile reports
   the script unchecked, not invalid (`tests/wasm/python.spec.js`).
 - **The stdlib zip** holds only the modules that importing the roots in
-  `stdlib_zip.py` loads (68 of them). A module the stdlib imports
+  `stdlib_zip.py` loads. A module the stdlib imports
   lazily is missed unless a root names it, and even one in the zip cannot be
   imported inside a strict run, whose audit hook refuses the file open: the
   sandbox loads the ones a strict script reaches at boot
@@ -434,7 +430,7 @@ downloads each one resolved against its data file's URL, checked against its
 fingerprint like a data file. Every configuration string equal to a
 `filename` is then rewritten to the staged copy before the import. On the
 desktop the same rewrite points each `filename` at that name in the loaded
-data file's folder. `<sideFile>` is optional: older layouts load unchanged.
+data file's folder. `<sideFile>` is optional.
 
 A layout opened by URL (a preset) replays its `<fileInfo>` sources without a
 picker instead. Each `filename` resolves against the layout's URL — the browser
@@ -517,3 +513,9 @@ The deployment test expects a package built with `--presets`: it also checks
 every deployed preset file and that the page fetches `presets/index.json`.
 Its response checks (`tests/wasm/support/deployment_contract.js`) also run
 against Caddy with `docs/wasm/Caddyfile`, in `robot_deployment.spec.js`.
+
+## Deterministic browser fixtures
+
+A browser test fixture must reproduce both the bytes and the UI's product state, not only the data. The Timeline
+prefers scalar and object bounds, and extra TF samples do not widen it, so a Scene3D seek fixture needs at least two
+object-bound samples.

@@ -23,13 +23,9 @@ namespace PJ {
 
 namespace {
 
-// Identity extractor: the entry's bytes already are the raw Annex-B NAL stream
-// for one frame (the round-trip / simulated-stream path), which is H.264.
-// Aliases the entry's own buffer — no copy.
+// The entry's bytes are one frame of raw H.264 Annex-B; the span aliases the entry's buffer.
 Expected<StreamingVideoDecoder::ExtractedFrame> identityNalExtractor(const ResolvedObjectEntry& entry) {
-  // No wrapping message to read a PTS from, so presentation == decode order here
-  // (this path is the raw-bytes/round-trip case, which has no B-frame reorder),
-  // reported on the payload clock like a message's own PTS.
+  // No message carries a PTS here, so the store key (DTS) presents.
   return StreamingVideoDecoder::ExtractedFrame{
       entry.payload.bytes, "h264", saturatingSub(entry.timestamp, entry.payload_stamp_shift)};
 }
@@ -79,14 +75,12 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeCurrent(Timestamp ts, const 
     return unexpected("unsupported video codec: '" + codec_format_ + "'");
   }
 
-  // Resolve the frame to PRESENT at `ts`: the one with the greatest PTS <= ts.
-  // The ObjectStore is keyed by DTS (decode order); presenting by PTS is what makes
-  // B-frame video play in order (with no B-frames PTS == DTS, so this is identity).
+  // The store is keyed by DTS; presenting the greatest PTS <= ts is what plays B-frame video in order.
   auto target = presentationTargetAt(ts);
   if (!target.has_value()) {
     return unexpected("no entry at timestamp");
   }
-  const Timestamp target_ts = target->first;  // PTS — the presentation key we serve by
+  const Timestamp target_ts = target->first;  // PTS
   const PacketIdentity target_packet = target->second;
   auto target_idx_opt = store_->indexOf(topic_, target_packet.uid);
   if (!target_idx_opt.has_value()) {
@@ -94,7 +88,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeCurrent(Timestamp ts, const 
   }
   const size_t target_idx = *target_idx_opt;
 
-  // Same frame re-requested (display polling faster than the clock / push rate).
+  // Same frame again: the display polls faster than frames arrive.
   if (initialized_ && last_served_ts_ == target_ts && !last_frame_.isNull()) {
     return last_frame_;
   }
@@ -107,23 +101,18 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeCurrent(Timestamp ts, const 
     }
   }
 
-  // Continue forward when the codec is live (not drained) and positioned
-  // at-or-before the target; otherwise seek to the nearest preceding keyframe.
-  // last_served_ts_ is in PTS space, so during forward playback (PTS monotonic)
-  // this stays a cheap continuation even with B-frames.
+  // Continue forward when the codec is live and at or before the target, else seek. last_served_ts_ is a PTS, so
+  // forward playback continues even with B-frames.
   const bool can_forward =
       initialized_ && !ended_ && last_sent_uid_.valid() && last_served_ts_.has_value() && target_ts >= *last_served_ts_;
   if (can_forward) {
-    // Resume after the last packet fed. last_sent_uid_ is the DTS feed cursor;
-    // re-resolve by timestamp (not a cached index) so front-eviction in live mode
-    // cannot leave a stale cursor.
+    // Re-resolve the feed cursor by UID: a front eviction shifts every index.
     auto fed_idx = store_->indexOf(topic_, last_sent_uid_);
     const size_t next_idx = fed_idx.has_value() ? *fed_idx + 1 : 0;
     return serveForward(next_idx, target_idx, target_packet.uid, target_ts, cancel);
   }
 
-  // --- Seek path: backward seek, first decode, or post-drain ---
-  // Seeking is a decode-order operation: find the keyframe before the target's DTS.
+  // Seek (backward, first decode, or after a drain): the keyframe before the target in decode order.
   if (keyframes_.empty()) {
     return unexpected("no keyframe yet");
   }
@@ -148,9 +137,6 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeCurrent(Timestamp ts, const 
     if (!kf_entry.has_value()) {
       return unexpected("keyframe entry not available");
     }
-    // Open the decoder from the keyframe entry's codec (VideoFrame.format). The
-    // bitstream parameter sets ride in-band on the keyframe, so init needs only
-    // the codec id; the bytes are decoded below by serveForward.
     auto nal = extract(*kf_entry);
     if (!nal.has_value()) {
       return unexpected("keyframe extraction failed: " + nal.error());
@@ -167,10 +153,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::decodeCurrent(Timestamp ts, const 
   last_sent_uid_ = {};
   ended_ = false;
 
-  // Cheaply skip-decode the GOP frames strictly before the target — they are never
-  // displayed for this request, and decodeSkip avoids materialising them.
-  // serveForward then materialises from the target onward (paying only the bounded
-  // reorder-depth of extra frames needed to flush the target out).
+  // Skip-decode the frames before the target; serveForward materialises from the target on.
   for (size_t i = kf_idx; i < target_idx; ++i) {
     if (cancel != nullptr && cancel->isCancelled()) {
       return unexpected("cancelled");
@@ -196,8 +179,7 @@ std::optional<DecodedFrame> StreamingVideoDecoder::takeReadyFrame(Timestamp ts) 
     return std::nullopt;
   }
   DecodedFrame frame = std::move(it->second);
-  // Forward playback never revisits an earlier frame without a seek, so drop every
-  // buffered frame at or before the one we are serving (keeps the buffer bounded).
+  // Forward playback never revisits an earlier frame without a seek: drop them, so the buffer stays bounded.
   ready_frames_.erase(ready_frames_.begin(), std::next(it));
   last_served_ts_ = ts;
   last_frame_ = frame;
@@ -224,27 +206,17 @@ std::optional<ResolvedObjectEntry> StreamingVideoDecoder::packetAt(
 Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
     size_t start_idx, size_t target_idx, SequentialUID target_uid, Timestamp target_ts, const CancelTokenPtr& cancel) {
   const size_t count = store_->entryCount(topic_);
-  // target_ts is the PTS we serve by; target_idx is the target's decode-order index
-  // (passed in — it cannot be re-derived from a PTS against the DTS-keyed store).
 
-  // A cancel may fire after the target packet has already been fed (its frame still
-  // buffered, un-received). Leaving last_sent_uid_ past the target would make the
-  // next forward request skip it ("forward decode produced no frame" for a valid
-  // timestamp). Reset the forward-continuation state so the next decodeAt re-seeks
-  // (which flushes the abandoned pipeline) and decodes the target cleanly.
+  // A cancel can land after the target packet was fed but before its frame came out; continuing forward would skip
+  // it ("forward decode produced no frame"), so a cancel forces the next decodeAt to re-seek.
   auto on_cancelled = [this]() -> Expected<DecodedFrame> {
     last_sent_uid_ = {};
     ready_frames_.clear();
     return unexpected("cancelled");
   };
 
-  // Receive every queued output BEFORE each send (materialising only frames at
-  // or after the target — earlier ones are the reorder-depth prefix, already
-  // past). Pumping to EAGAIN first guarantees the send below cannot itself hit
-  // EAGAIN, whose legacy recovery (sendPacket) silently DISCARDS a queued frame:
-  // under load (big frames keeping the codec's worker threads busy) that frame
-  // is the next request's display frame, lost forever — a one-frame "produced
-  // no frame" hiccup early in playback.
+  // Receive every queued frame BEFORE each send, so the send cannot hit EAGAIN, whose recovery discards a queued
+  // frame (see FfmpegDecoder::receiveFiltered). Frames before the target are not materialised.
   const auto want = [target_ts](int64_t frame_pts) { return frame_pts >= target_ts; };
   auto pump = [&]() -> std::optional<DecodedFrame> {
     while (true) {
@@ -263,8 +235,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
   };
 
   for (size_t i = start_idx; i < count; ++i) {
-    // Preempt a long forward (GOP) decode when a newer scrub target cancelled this
-    // token. Checked before each feed so last_sent_uid_ reflects only fed packets.
+    // Before each feed, so last_sent_uid_ names only fed packets.
     if (cancel != nullptr && cancel->isCancelled()) {
       return on_cancelled();
     }
@@ -273,8 +244,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
     }
     auto entry = packetAt(i, target_uid, target_idx);
     if (!entry.has_value()) {
-      // A hole strictly before the target breaks the decode chain; past the target
-      // we simply stop feeding and drain whatever the buffer already holds.
+      // A hole before the target breaks the decode chain; past it, stop feeding and drain.
       if (i <= target_idx) {
         return unexpected(fmt::format("entry evicted mid-GOP (index {})", i));
       }
@@ -295,9 +265,7 @@ Expected<DecodedFrame> StreamingVideoDecoder::serveForward(
     return *served;
   }
 
-  // Reached the tip without the target surfacing — drain the reorder/threading
-  // buffer (NULL packet) to flush the final frame(s). Draining ends the codec
-  // stream, so the next decodeAt must take the (flushing) seek path.
+  // At the tip without the target: drain. That ends the codec stream, so the next decodeAt must seek (flush).
   for (auto& f : decoder_->drain()) {
     if (!f.isNull() && f.pts >= target_ts) {
       ready_frames_.insert_or_assign(f.pts, std::move(f));
@@ -353,9 +321,6 @@ void StreamingVideoDecoder::decodeSampled(Timestamp interval_ns, const std::func
   if (store_ == nullptr || interval_ns <= 0 || store_->entryCount(topic_) == 0) {
     return;
   }
-  // Adaptive dispatch: when the source already carries keyframes at least as dense
-  // as the requested cadence, decode only ~1 keyframe per interval (same cadence,
-  // near-instant). Otherwise fall back to the forward pass.
   if (sampledUsesKeyframeOnly(interval_ns)) {
     decodeSampledKeyframes(interval_ns, sink);
   } else {
@@ -365,9 +330,7 @@ void StreamingVideoDecoder::decodeSampled(Timestamp interval_ns, const std::func
 
 void StreamingVideoDecoder::decodeSampledKeyframes(
     Timestamp interval_ns, const std::function<bool(const DecodedFrame&)>& sink) {
-  // Precondition (sampledUsesKeyframeOnly): keyframes_ is fresh and
-  // covers the cadence. Decode ~1 keyframe per interval; each is self-contained,
-  // so we flush and decode a single packet per pick — no GOP walk.
+  // Precondition: sampledUsesKeyframeOnly() held. Each pick is one keyframe decoded alone after a flush.
   std::optional<Timestamp> next_sample;
   for (const PacketIdentity& packet : keyframes_) {
     const Timestamp kf_ts = packet.dts;
@@ -596,8 +559,7 @@ void StreamingVideoDecoder::resolveCodec(std::string_view format) {
   if (codec_id_ != AV_CODEC_ID_NONE) {
     return;  // already latched
   }
-  // An empty format (the raw-bytes / identity path, or a producer that omitted
-  // it) defaults to H.264 — the legacy assumption of this decoder.
+  // An empty format (raw bytes, or a producer that omitted it) means H.264.
   codec_format_ = format.empty() ? std::string("h264") : std::string(format);
   codec_id_ = videoCodecIdFromFormat(codec_format_);
 }
@@ -629,18 +591,10 @@ bool StreamingVideoDecoder::initDecoder(std::string_view format, Span<const uint
   if (params == nullptr) {
     return false;  // unknown/unbuilt codec
   }
-  // Prime extradata from the keyframe's in-band parameter sets so the decoder
-  // opens configured like a demuxer-fed one (dimensions/profile known up front).
   primeKeyframeParamSets(params, keyframe_bytes.data(), keyframe_bytes.size());
-  // CRITICAL for B-frame streams: tell the decoder its output must lag its input
-  // by the stream's reorder depth. Opened with video_delay = 0, libavcodec's
-  // H.264 decoder can start emitting too early and then silently DISCARD the
-  // stream's first B-frame(s) as "already in the past" (observed on
-  // screen-recorder files: one early frame vanishes, so the presentation-ordered
-  // serve fails with "forward decode produced no frame" at that timestamp).
-  // In-band SPS parsing does NOT reliably correct this (no VUI bitstream
-  // restriction info); the container-derived value is authoritative, and the
-  // presentation index reproduces it exactly.
+  // Opened with video_delay 0, libavcodec's H.264 decoder can drop a B-frame stream's first B-frames, and the
+  // in-band SPS does not reliably correct it (no VUI bitstream restriction); the presentation index gives the
+  // reorder depth a demuxer would report (docs/TECHNICAL_NOTES.md "B-frames").
   params->video_delay = computeReorderDelay();
 
   decoder_ = std::make_unique<FfmpegDecoder>();

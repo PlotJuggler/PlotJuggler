@@ -1,12 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The Custom Topics panel lists derived series, but only DataProcessorService knows
-// which catalog topics are transform outputs. These tests pin that the panel is
-// DERIVED from the service rather than accumulated from announcements, on the two
-// paths that announce nothing: a layout restore, which rebuilds the whole processor
-// graph with no plugin involved, and a withdrawal through pj.data_processors.v1,
-// which an announce-only pass has nothing to say about.
+// The Custom Topics panel is derived from DataProcessorService (the only source of which catalog topics are
+// transform outputs), not accumulated from announcements. Pinned on the two paths that announce nothing: a layout
+// restore, and a withdrawal through pj.data_processors.v1.
 
 #include <gtest/gtest.h>
 
@@ -128,9 +125,8 @@ struct RestoredSession {
   }
 };
 
-// The restore replays the transform and materializes its output, but no plugin is
-// loaded to announce it. Nothing else would ever put the row on screen, so the
-// user's derived series were simply missing after reopening their own layout.
+// A restore replays the transform and materializes its output with no plugin loaded to announce it; the row must
+// still be listed.
 TEST(MainWindowCustomSeriesTest, RestoredTransformIsListed) {
   RestoredSession fx;
   ASSERT_TRUE(fx.setUp());
@@ -138,10 +134,7 @@ TEST(MainWindowCustomSeriesTest, RestoredTransformIsListed) {
   EXPECT_EQ(fx.panel->customTopicNames(), QStringList{QString::fromLatin1(kOutputTopic)});
 }
 
-// A withdrawal through the ABI: the transform is gone from the service, so the row
-// must go with it. It used to survive, and the panel's own Delete could not clear
-// it either — that action removes a row only after removing the transform behind
-// it, which by then no longer exists.
+// A withdrawal through the ABI removes the transform from the service; its row must go with it.
 TEST(MainWindowCustomSeriesTest, WithdrawnTransformLeavesNoRow) {
   RestoredSession fx;
   ASSERT_TRUE(fx.setUp());
@@ -153,9 +146,8 @@ TEST(MainWindowCustomSeriesTest, WithdrawnTransformLeavesNoRow) {
   EXPECT_TRUE(fx.panel->customTopicNames().isEmpty());
 }
 
-// The same withdrawal seen only through the catalog: retiring the output makes the
-// rebuild emit itemsRemoved, and the panel prunes on that alone. This is the net
-// under the sync above — it holds even when nobody re-derives the set.
+// The same withdrawal seen only through the catalog: retiring the output makes the rebuild emit itemsRemoved and
+// the panel prunes on that alone, even when nobody re-derives the set.
 TEST(MainWindowCustomSeriesTest, CatalogRemovalAlonePrunesTheRow) {
   RestoredSession fx;
   ASSERT_TRUE(fx.setUp());
@@ -167,10 +159,9 @@ TEST(MainWindowCustomSeriesTest, CatalogRemovalAlonePrunesTheRow) {
   EXPECT_TRUE(fx.panel->customTopicNames().isEmpty());
 }
 
-// A transform chain (downstream reads upstream's output) must survive a full
-// save -> restore: restore resolves inputs by name, so a dependent replayed before
-// its producer fails with "input topic not found" and the chain is lost. The saved
-// order comes from an unordered map, so this pins the round trip regardless of it.
+// A transform chain (downstream reads upstream's output) must survive save -> restore: restore resolves inputs by
+// name, so a dependent replayed before its producer fails with "input topic not found". The saved order comes from
+// an unordered map, so this pins the round trip regardless of it.
 TEST(MainWindowCustomSeriesTest, RestoreReplaysTransformChainInDependencyOrder) {
   QTemporaryDir extensions_dir;
   ASSERT_TRUE(extensions_dir.isValid());

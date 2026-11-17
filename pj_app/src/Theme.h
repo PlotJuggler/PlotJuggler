@@ -22,20 +22,15 @@ class Theme : public QObject {
 
   QString expandedQss() const;
 
-  // The Qt color scheme matching the current theme. Requested from Qt on every
-  // switch so a platform-drawn title bar follows it; a platform may ignore that.
+  // Requested from Qt on every switch so a platform-drawn title bar follows it; a platform may ignore that.
   Qt::ColorScheme colorScheme() const;
 
  public slots:
   void setTheme(const QString& name);
 
  signals:
-  // Fires when the theme name changes. Listeners refresh palette-tinted
-  // SVG icons from the new theme.
+  // Emitted before qssChanged.
   void themeChanged(const QString& name);
-
-  // Fires whenever expandedQss() changes. Listeners reapply the
-  // application stylesheet.
   void qssChanged();
 
  private:

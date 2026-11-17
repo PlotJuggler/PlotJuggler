@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Behavioural coverage for MeshMapLayer on the canonical-codec route: attach and
-// update-topic pairing (the `<topic>_updates` sibling, and any MeshMapUpdate
-// topic carrying the map's geometry_id), the auto colour pick, staging only on a
-// change, updates applied incrementally going forward and from the map going
-// back, a late update with an older stamp, an update for another geometry, colour
-// sources and a missing request, XML round-trip.
+// Behavioural coverage for MeshMapLayer on the canonical-codec route: attach and update-topic pairing (the
+// `<topic>_updates` sibling, and any MeshMapUpdate topic carrying the map's geometry_id), the auto colour pick, staging
+// only on a change, updates applied incrementally going forward and from the map going back, a late update with an
+// older stamp, an update for another geometry, colour sources and a missing request, XML round-trip.
 
 #include "pj_scene3d_widgets/layers/mesh_map_layer.h"
 
@@ -124,7 +122,6 @@ struct Rig {
                     .pushOwned(topic.value_or(updates_id), ts, serializedUpdate(ts, face, cost, geometry_id))
                     .has_value());
   }
-  // A MeshMapUpdate topic under an unrelated name, as a producer advertises it.
   PJ::ObjectTopicId registerUpdateTopic(const std::string& name) {
     const auto topic = session.objectStore().registerTopic(
         PJ::ObjectTopicDescriptor{
@@ -132,7 +129,6 @@ struct Rig {
     EXPECT_TRUE(topic.has_value());
     return topic.has_value() ? topic.value() : PJ::ObjectTopicId{};
   }
-  // The staged value of `face` (values are three per face).
   [[nodiscard]] float stagedCost(uint32_t face) const {
     const auto* mesh = layer.stagedMeshForTest();
     return mesh != nullptr && mesh->values.size() > 3 * face ? mesh->values[3 * face] : std::nanf("");

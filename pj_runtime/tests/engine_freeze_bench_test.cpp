@@ -21,7 +21,7 @@
 // CPU time excludes time spent idle waiting for events. On Windows the thread
 // clock ticks in scheduler quanta (about 15.6 ms), so read the Linux numbers.
 // Printed, never asserted: machine-dependent thresholds only make a bench flaky.
-// Skipped unless PJ_BENCH is set. Baselines: docs/derived_objects/ARCHITECTURE.md §19.
+// Skipped unless PJ_BENCH is set. Baselines: docs/derived_objects/ARCHITECTURE.md "Reference numbers".
 
 #include <gtest/gtest.h>
 
@@ -367,7 +367,7 @@ TEST(EngineFreezeBench, RerunMarkerRuleOverLongSeries) {
   report("RerunMarkerRuleOverLongSeries", costs);
 }
 
-// PERF-01, PERF-04: the GUI thread's CPU time of one playhead tick with one demanded on-demand recipe over a lazily
+// The GUI thread's CPU time of one playhead tick with one demanded on-demand recipe over a lazily
 // stored 260k-point cloud, through AppSession (the demanded keys, the conversion, the staging, the history lookup and
 // the submission): cold, a new instant each tick (a miss, submitted); warm, between two instants already computed (a
 // hit). The real Luau run passes the cloud through on a worker, off the timer. Then the CPU time of an install (the

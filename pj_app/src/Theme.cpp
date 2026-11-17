@@ -30,10 +30,8 @@ QString resourcePathFor(const QString& name) {
   return u":/resources/stylesheet_%1.qss"_s.arg(name);
 }
 
-// Expand `${KEY}` tokens against `palette`. Unknown keys are left as
-// literal `${KEY}` so they're visible in the rendered styling and the
-// developer notices, but we don't crash the app, since QSS files are
-// resources we control and a missing key is a build-time bug.
+// An unknown key stays a literal `${KEY}` with a warning: a missing key is a bug in our own resources, worth
+// seeing, not worth a crash.
 QString expandPlaceholders(const QString& body, const std::map<QString, QString>& palette) {
   QString out;
   out.reserve(body.size());
@@ -114,13 +112,9 @@ QString parseAndExpand(const QString& qss, std::map<QString, QString>* tokens_ou
   return expanded;
 }
 
-// Qt style sheets do NOT update QPalette, so widgets that paint themselves
-// outside QSS (the 3D view's background derives dark/light from
-// palette().color(QPalette::Window) luminance) would otherwise read the
-// PLATFORM palette and guess the theme wrong (dark scene in light mode on a
-// dark desktop). Keep the application palette's Window/WindowText in lockstep
-// with the theme tokens; QGuiApplication::setPalette also delivers
-// ApplicationPaletteChange to every widget, repainting them on theme switches.
+// Style sheets do not update QPalette, so a widget painting outside QSS (the 3D view's background follows the
+// Window colour's luminance) would read the platform palette and guess the theme wrong. setPalette also
+// delivers ApplicationPaletteChange to every widget, repainting them.
 void syncApplicationPalette(const std::map<QString, QString>& tokens) {
   if (qGuiApp == nullptr) {
     return;  // Theme constructed without a GUI application (tests)
@@ -152,8 +146,7 @@ QStringList Theme::availableThemes() {
 Theme::Theme(QObject* parent) : QObject(parent), name_(QSettings().value(kThemeSettingsKey, "light").toString()) {
   if (!availableThemes().contains(name_)) {
     name_ = u"light"_s;
-    // Rewrite stale or corrupt persisted name so subsequent readers
-    // (e.g. SvgUtil::currentTheme) see the same value Theme is using.
+    // Other readers of the key (SvgUtil::currentTheme) must see the same value.
     QSettings().setValue(kThemeSettingsKey, name_);
   }
   rebuildQss();
@@ -187,9 +180,8 @@ void Theme::setTheme(const QString& name) {
 }
 
 void Theme::rebuildQss() {
-  // The system title bar is drawn by the platform, not by QSS, so the app's own
-  // light/dark choice reaches it only through Qt's color scheme (honoured on
-  // Windows and macOS; a Linux window manager keeps drawing its own frame).
+  // The only way the choice reaches a platform-drawn title bar (Windows and macOS honour it; a Linux window
+  // manager does not).
   if (qGuiApp != nullptr) {  // no GUI application in some tests
     QGuiApplication::styleHints()->setColorScheme(colorScheme());
   }

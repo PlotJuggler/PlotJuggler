@@ -17,15 +17,13 @@ struct ArrowMeshParams {
   int segments = 24;          // tessellation around the axis (clamped to >= 3)
 };
 
-// CPU-side arrow mesh: interleaved (pos.xyz, normal.xyz), indexed triangles.
 struct ArrowMeshData {
   std::vector<float> vertices;
   std::vector<std::uint32_t> indices;
 };
 
-// Build the solid arrow mesh (cylinder shaft + cone head + back cap), the single
-// source of truth for every arrow the view draws (markers, frame and pose triads).
-// Pure CPU geometry — no GPU required. The per-section normal derivation is documented inline in the .cpp.
+// Builds the solid arrow mesh (cylinder shaft + cone head + back cap): the single source for every arrow the view draws
+// (markers, frame and pose triads). Pure CPU geometry; the per-section normal derivation is documented in the .cpp.
 [[nodiscard]] ArrowMeshData buildArrowMesh(const ArrowMeshParams& params);
 
 }  // namespace pj::scene3d

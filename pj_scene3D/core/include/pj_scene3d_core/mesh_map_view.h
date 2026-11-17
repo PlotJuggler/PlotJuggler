@@ -40,7 +40,6 @@ struct ElementRange {
   [[nodiscard]] bool empty() const {
     return begin >= end;
   }
-  // Grows the span to cover `index`.
   void add(uint32_t index) {
     if (empty()) {
       begin = index;
@@ -103,7 +102,6 @@ struct MeshMapState {
 // narrow to float; the offset moves into `origin` (when it is finite).
 [[nodiscard]] MeshMapState decodeMeshMap(const PJ::sdk::MeshMap& mesh);
 
-// What applyMeshMapUpdate() did.
 struct MeshMapUpdateResult {
   bool applied = false;          ///< false: geometry mismatch, nothing changed
   uint32_t skipped_indices = 0;  ///< sparse indices past the element count
@@ -135,7 +133,6 @@ void clearMeshMapDirty(MeshMapState& state);
 // else the vertex colour, else the first categorical channel, else solid.
 [[nodiscard]] std::string defaultMeshMapColorSource(const MeshMapState& state);
 
-// How the upload is coloured.
 enum class MeshMapColorMode : uint8_t {
   kChannel,  ///< `values` through the colormap
   kRgba,     ///< `colors`: vertex colour, or a categorical channel's palette

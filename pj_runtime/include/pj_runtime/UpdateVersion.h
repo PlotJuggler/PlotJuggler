@@ -7,24 +7,20 @@
 
 namespace PJ {
 
-// Collapse a `major.minor.patch` version string to a single comparable integer,
-// tolerating the shapes that show up in GitHub release tags:
+// Collapses a `major.minor.patch` version string to a single comparable integer, tolerating the shapes in GitHub
+// release tags:
 //   - an optional leading `v`/`V`   ("v3.999.0")
 //   - a pre-release/build suffix     ("3.999.0-rc1", "4.0.0+build.7")
-//   - a missing minor/patch          ("4", "4.1" → padded with zeros)
+//   - a missing minor/patch          ("4", "4.1" -> padded with zeros)
 //
-// Returns -1 for anything it cannot parse as at least one numeric component
-// (empty, "dev", "latest", a non-numeric segment), so a malformed tag or a
-// malformed local version can never be mistaken for "newer".
+// Returns -1 for anything it cannot parse as at least one numeric component (empty, "dev", "latest", a non-numeric
+// segment), so a malformed tag or local version is never mistaken for "newer".
 //
-// The radix (minor ×1000, major ×1'000'000) leaves room for a 3-digit minor —
-// deliberately, because our own beta version is 3.999.0. A minor/patch ≥ 1000
-// would overflow into the next field, so it is rejected (→ -1) rather than
-// silently mis-ordered.
+// The radix (minor x1000, major x1'000'000) leaves room for a 3-digit minor such as 3.999.0. A minor/patch >= 1000
+// would overflow into the next field, so it is rejected (-1) rather than silently mis-ordered.
 //
-// Bespoke rather than Qt's QVersionNumber (which pj_marketplace uses): that type
-// doesn't strip a leading `v`, and the "unparseable → never treated as newer"
-// policy in isNewerVersion() is not something QVersionNumber gives for free.
+// Bespoke rather than Qt's QVersionNumber (which pj_marketplace uses): that type does not strip a leading `v`, and the
+// "unparseable -> never treated as newer" policy of isNewerVersion() is not something QVersionNumber gives.
 inline int versionToComparable(const QString& version) {
   QString v = version.trimmed();
   if (v.isEmpty()) {

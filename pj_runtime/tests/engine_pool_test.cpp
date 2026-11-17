@@ -3,7 +3,7 @@
 //
 // EnginePool runs ready tasks: compute on a worker, publish back on the thread
 // that built the pool, in bounded drain passes. Per-node scheduling (one running
-// run, one pending request) is the consumer's job (D30), so nothing here queues,
+// run, one pending request) is the consumer's job, so nothing here queues,
 // coalesces or supersedes. Every wait is a latch or a bounded spin, never a sleep;
 // waits inside the pool itself (`waitIdle`) are guarded by a watchdog.
 
@@ -281,7 +281,7 @@ TEST(EnginePoolTest, PythonLaneIsOneThreadAndDoesNotBlockTheSharedLane) {
   EXPECT_EQ(first_thread, second_thread);
 }
 
-// Under D30 the consumer submits its pending request from the publish of the run
+// The consumer submits its pending request from the publish of the run
 // that just finished; waitIdle must cover the run submitted that way too.
 TEST(EnginePoolTest, PublishMaySubmitTheNextRun) {
   EnginePool pool;

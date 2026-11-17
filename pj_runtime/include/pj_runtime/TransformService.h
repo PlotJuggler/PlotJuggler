@@ -26,17 +26,15 @@ class SessionManager;
 
 // Owns the per-dataset TF buffers and the load-time TF ingest.
 //
-// Ownership follows the data's life cycle, which is the runtime's: the tree is
-// built from a topic at load, rebuilt after a dataset merge, cleared on reload
-// and trimmed by streaming retention. The service reaches the data it needs
-// through SessionManager's neutral surface only: ingestTaps(), objectStore(),
-// and parserBindingForObjectTopic(); pj_runtime never depends on pj_scene3D.
+// Ownership follows the data's life cycle, which is the runtime's: the tree is built from a topic at load, rebuilt
+// after a dataset merge, cleared on reload and trimmed by streaming retention. The service reaches the data through
+// SessionManager's neutral surface only (ingestTaps(), objectStore(), parserBindingForObjectTopic()); pj_runtime never
+// depends on pj_scene3D.
 //
-// One active TransformBuffer per dataset is shared by every attached 3D dock and
-// its layers, and stays the same object for the dataset's lifetime: invalidation,
-// the merge rebuild and a reload commit replace its state, never the buffer, so no
-// holder needs to rebind. An in-place reload may also own one private staging
-// generation. Per pj_scene3D REQUIREMENTS §9.
+// One active TransformBuffer per dataset is shared by every attached 3D dock and its layers and stays the same object
+// for the dataset's lifetime: invalidation, the merge rebuild and a reload commit replace its state, never the buffer,
+// so no holder needs to rebind. An in-place reload may also own one private staging generation. What the buffer
+// guarantees its readers: pj_scene3D/docs/ARCHITECTURE.md "TF buffer contract".
 //
 // THREADING: public methods run on the GUI thread. The registered ingest-tap
 // callback is the sole worker-thread entry point; its buffer routing uses a
@@ -58,39 +56,30 @@ class TransformService : public QObject {
   // The buffer is thread-safe for concurrent ingest writes + render reads.
   [[nodiscard]] std::shared_ptr<pj::tf::TransformBuffer> transformBuffer(PJ::DatasetId dataset_id);
 
-  // Explicit ObjectStore rebuild used after a destructive dataset merge. With
-  // the tap active it clears the active buffer and cursor state, then cold-drains
-  // the whole history so payload_stamp_shift is applied. With no active tap it
-  // uses the incremental UID cursor path. Always emits datasetTransformsReady.
-  //
-  // Threading: GUI-thread only, like every TransformService method (see the
-  // class comment). Synchronous; blocks the calling thread for the whole TF
-  // history.
+  // Explicit ObjectStore rebuild used after a destructive dataset merge. With the tap active it clears the active
+  // buffer and cursor state, then cold-drains the whole history so payload_stamp_shift is applied; without it, the
+  // incremental UID cursor path. Always emits datasetTransformsReady. GUI-thread only; synchronous, blocking the caller
+  // for the whole TF history.
   void ingestFrameTransformsForDataset(PJ::DatasetId dataset_id);
 
   /// Drains any store entries the tap did not feed (no-op with the tap active),
   /// then signals docks.
   void publishTransforms(PJ::DatasetId dataset_id);
 
-  // Bound the dataset's TransformBuffer to a rolling cache window so a
-  // live-streaming session does not retain every TF sample forever. Trims
-  // per-edge to (newest stamp - `window`) but always keeps the last sample of
-  // each edge, so static / once-published frames stay resolvable. File loads
-  // never call this and keep the buffer's kKeepAll default (see transformBuffer).
-  // Reconfiguring is cheap and can be re-issued whenever the retention budget
-  // changes; GUI-thread only.
+  // Bounds the dataset's TransformBuffer to a rolling cache window so a live-streaming session does not retain every TF
+  // sample forever: trims per edge to (newest stamp - `window`) but always keeps each edge's last sample, so static /
+  // once-published frames stay resolvable. File loads never call this and keep the buffer's kKeepAll default (see
+  // transformBuffer). Cheap to re-issue when the retention budget changes; GUI-thread only.
   void setLiveCacheWindow(PJ::DatasetId dataset_id, std::chrono::nanoseconds window);
 
-  // Forgets a dataset's TF state so the next ingest re-reads the store: drops the
-  // per-topic ingest cursors and non-TF classifications, and empties the existing
-  // TransformBuffer (TransformBuffer::clear replaces its state: 3D docks keep the
-  // buffer they hold and see the reset, snapshots keep the state they captured).
-  // Call when the dataset's object topics no longer hold the data the buffer was
-  // built from: dataset removal, eviction, or the explicit merge rebuild.
+  // Forgets a dataset's TF state so the next ingest re-reads the store: drops the per-topic ingest cursors and non-TF
+  // classifications and empties the existing TransformBuffer (clear() replaces its state: 3D docks keep the buffer
+  // they hold and see the reset, snapshots keep the state they captured). Call when the dataset's object topics no
+  // longer hold the data the buffer was built from: dataset removal, eviction, or the explicit merge rebuild.
   void invalidateDataset(PJ::DatasetId dataset_id);
 
-  // invalidateDataset() over every known dataset — the clear-all counterpart,
-  // paired with SessionManager::clearAllObjects() at the shell's wipe sites.
+  // invalidateDataset() over every known dataset, paired with SessionManager::clearAllObjects() at the shell's wipe
+  // sites.
   void invalidateAll();
 
   /// Starts an in-place reload generation without disturbing the active buffer.
@@ -107,31 +96,23 @@ class TransformService : public QObject {
   /// An inactive-tap service rebuilds from the restored ObjectStore history.
   void abortReplacingLoad(PJ::DatasetId dataset_id);
 
-  // Incremental, UID-keyed ObjectStore ingest for a service with no active tap.
-  // With the tap active this returns false immediately because the pushing worker
-  // already updated the buffer. GUI-thread only.
+  // Incremental, UID-keyed ObjectStore ingest for a service with no active tap; with the tap active it returns false
+  // immediately (the pushing worker already updated the buffer). GUI-thread only.
   //
-  // The bool reports whether THIS call applied any transforms — NOT a reliable
-  // "something changed" signal for repaint gating: the per-topic cursor is
-  // shared across sibling docks, so a sibling tick may have already advanced it
-  // and this call returns false while the buffer did change. Live followers
-  // should gate repaint on TransformBuffer::revision() instead. The return is
-  // kept because ingestFrameTransformsForDataset still logs it.
+  // The bool reports whether THIS call applied any transforms, NOT a reliable "something changed" signal for repaint
+  // gating: the per-topic cursor is shared across sibling docks, so a sibling tick may have advanced it already and
+  // this call returns false while the buffer changed. Live followers gate repaint on TransformBuffer::revision().
   bool ingestNewTransforms(PJ::DatasetId dataset_id);
 
-  // The dataset's TF as an immutable snapshot (pj_tf's TransformSnapshot), what
-  // scripts read: never changed by later ingest, retention, reload, merge,
-  // invalidation or removal; a later call sees those. Calls at one revision return
-  // the same object while any caller still holds it. O(1), no copy: the buffer
-  // copies its state on its next write instead (ARCHITECTURE.md §12, R4). Creates
-  // the buffer like transformBuffer(), so never null. GUI-thread only; the
-  // returned snapshot may be read from any thread without a lock.
-  // CONSUMER RULE: while the dataset's TF ingest is active (a first file load
-  // writes the active buffer directly, streaming never stops), every write after a
-  // new snapshot copies the whole, growing state under the buffer's write lock,
-  // which renders wait on (up to 72 ms / 648 MB per copy for a 1 h file,
-  // ARCHITECTURE.md §19). Take a new snapshot there no faster than the brake rate,
-  // or wait for the ingest to end, rather than whenever the revision moves.
+  // The dataset's TF as an immutable snapshot (pj_tf's TransformSnapshot), what scripts read: never changed by later
+  // ingest, retention, reload, merge, invalidation or removal; a later call sees those. Calls at one revision return
+  // the same object while any caller still holds it. O(1), no copy: the buffer copies its state on its next write
+  // instead. Creates the buffer like transformBuffer(), so never null. GUI-thread only; the returned snapshot may be
+  // read from any thread without a lock.
+  // CONSUMER RULE: while the dataset's TF ingest is active (a first file load writes the active buffer directly,
+  // streaming never stops), every write after a new snapshot copies the whole, growing state under the buffer's write
+  // lock, which renders wait on (up to 72 ms / 648 MB per copy for a 1 h file). Take a new snapshot there no faster
+  // than the brake rate, or wait for the ingest to end, rather than whenever the revision moves.
   [[nodiscard]] std::shared_ptr<const pj::tf::TransformSnapshot> snapshot(PJ::DatasetId dataset_id);
 
  signals:
@@ -160,16 +141,12 @@ class TransformService : public QObject {
   // Restores the active buffer from durable ObjectStore entries.
   void rebuildFromStore(PJ::DatasetId dataset_id);
 
-  // Per-topic ingest cursor: the SequentialUID of the last entry drained into the
-  // buffer. A UID is stable across front-eviction and per-topic SPARSE (UID
-  // allocation is process-global), so the next tick resumes strictly forward via
-  // ObjectStore::drainNewSince(cursor) — never by incrementing the value. This
-  // fixes both the index-shift TOCTOU (a concurrent front-eviction can never move a
-  // not-yet-ingested entry below the cursor) and the equal-timestamp skip (UIDs are
-  // unique even when timestamps tie) that a timestamp cursor suffered.
-  // Default-constructed (invalid) UID means "ingest from the first retained
-  // entry" — the bulk file-load start. An entry evicted before its UID is
-  // reached is unrecoverable by design: the store no longer holds it.
+  // Per-topic ingest cursor: the SequentialUID of the last entry drained into the buffer. UIDs are stable across
+  // front-eviction and per-topic SPARSE (allocation is process-global), so the next tick resumes strictly forward via
+  // ObjectStore::drainNewSince(cursor), never by incrementing the value: a concurrent front-eviction cannot move a
+  // not-yet-ingested entry below the cursor, and UIDs stay unique when timestamps tie (a timestamp cursor would skip
+  // those). An invalid (default) UID means "ingest from the first retained entry", the bulk file-load start. An entry
+  // evicted before its UID is reached is unrecoverable by design: the store no longer holds it.
   struct TfCursor {
     PJ::SequentialUID last_ingested;
   };

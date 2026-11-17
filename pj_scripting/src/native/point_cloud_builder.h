@@ -16,7 +16,7 @@
 #include "pj_base/expected.hpp"
 #include "pj_scripting/memory_budget.h"
 
-// Native PointCloud builder behind a script's `pj.cloud` (D14); `downsample` (point_cloud_ops.h) builds its output
+// Native PointCloud builder behind a script's `pj.cloud`; `downsample` (point_cloud_ops.h) builds its output
 // with it. Luau-free, so the Luau and Python binders share it, like scene_entities_ops.h.
 namespace PJ::scripting::native {
 

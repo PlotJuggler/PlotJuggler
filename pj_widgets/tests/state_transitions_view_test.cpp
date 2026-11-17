@@ -47,10 +47,9 @@ TEST(StateTransitionsView, NarrowSegmentsDropInBandLabels) {
   view.resize(500, 260);
   view.show();
   QApplication::processEvents();
-  // 20 one-second states; the name paints INSIDE its segment (Timeline-editor
-  // style), so a segment narrower than the bar-painter floor carries no text.
-  // Label room is measured on the segment CLIPPED to the viewport (labels pin
-  // into view), so only on-screen segments can carry text at all.
+  // 20 one-second states; the name paints inside its segment, so a segment narrower than the bar-painter floor carries
+  // no text. Label room is measured on the segment clipped to the viewport (labels pin into view), so only on-screen
+  // segments can carry text.
   std::vector<StateSegment> segments;
   for (int i = 0; i < 20; ++i) {
     segments.push_back(seg(i, i + 1, i % 2 == 0 ? "STATE_LONG_NAME_A" : "STATE_LONG_NAME_B"));
@@ -67,9 +66,8 @@ TEST(StateTransitionsView, NarrowSegmentsDropInBandLabels) {
   }
   EXPECT_EQ(crowded_count, 0);
 
-  // Zoomed far in: 1 s ≈ 400 px — the 500 px viewport shows segment 0 in full
-  // (labelled) and a 100 px slice of segment 1 (labelled, pinned); the rest sit
-  // off-screen right and carry no label.
+  // Zoomed far in: 1 s is ~400 px, so the 500 px viewport shows segment 0 in full (labelled) and a 100 px slice of
+  // segment 1 (labelled, pinned); the rest sit off-screen right and carry no label.
   view.setZoom(400.0 / kSecondNs);
   QApplication::processEvents();
   const std::vector<bool> roomy = view.visibleLabelsForTest(0);
@@ -156,10 +154,9 @@ TEST(StateTransitionsView, LabelPinsIntoViewWhenSegmentStartScrollsOffLeft) {
   ASSERT_EQ(labels.size(), 2U);
   EXPECT_TRUE(labels[0]);
 
-  // Viewport at [99.5 s, 149.5 s]: RUNNING's visible sliver is ~5 px — below
-  // the bar-painter text floor — so ITS label drops while IDLE (spanning the
-  // rest of the view) keeps its pinned label. The un-clamped rule would call
-  // RUNNING labelled here (1000 px wide) with the text drawn 990 px off-screen.
+  // Viewport at [99.5 s, 149.5 s]: RUNNING's visible sliver is ~5 px, below the bar-painter text floor, so its label
+  // drops while IDLE (spanning the rest of the view) keeps its pinned label. An un-clamped rule would call RUNNING
+  // labelled here (1000 px wide) with the text drawn 990 px off-screen.
   view.setViewportLeftDisplayNs(99'500'000'000LL);
   QApplication::processEvents();
   labels = view.visibleLabelsForTest(0);

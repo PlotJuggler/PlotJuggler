@@ -27,9 +27,8 @@ namespace {
 
 class FileDialogTest : public ::testing::Test {};
 
-// The dialog is modal — we close it from a single-shot timer so the test
-// doesn't hang. We verify the embedded extras checkbox state is reported
-// back to the caller, which is the whole reason the overload exists.
+// The dialog is modal: it is closed from a single-shot timer so the test does not hang. The embedded extras checkbox
+// state is reported back to the caller, the reason the overload exists.
 TEST_F(FileDialogTest, GetSaveFileNameWithOptionsReportsCheckboxState) {
   PJ::FileDialog::ExtraOption opt{u"Save Data Source"_s, /*default_checked=*/true};
   QTemporaryDir temp;
@@ -79,9 +78,8 @@ TEST_F(FileDialogTest, GetSaveFileNameWithOptionsCancelReturnsEmpty) {
   EXPECT_TRUE(result.option_states[0]);  // defaults preserved on cancel
 }
 
-// selected_name is filled in inside `dir`, the suggestion a plugin's structured
-// picker asks for. Compared canonically: macOS temp dirs sit behind a
-// /var -> /private/var symlink.
+// selected_name is filled in inside `dir`, the suggestion a plugin's structured picker asks for. Compared canonically:
+// macOS temp dirs sit behind a /var to /private/var symlink.
 TEST_F(FileDialogTest, GetSaveFileNameFillsInSelectedName) {
   QTemporaryDir temp;
   ASSERT_TRUE(temp.isValid());
@@ -104,9 +102,8 @@ TEST_F(FileDialogTest, GetSaveFileNameFillsInSelectedName) {
   EXPECT_EQ(info.fileName(), u"FT0017-AV.html"_s);
 }
 
-// Start-folder guard. Qt keeps its own file-dialog memory under QtProject; each
-// case points file-based settings at a private root. On Windows that memory is
-// in the registry, which QSettings::setPath does not redirect: there the cases
+// Start-folder guard. Qt keeps its own file-dialog memory under QtProject; each case points file-based settings at a
+// private root. On Windows that memory is in the registry, which QSettings::setPath does not redirect: there the cases
 // write the user's real QtProject key, as any QFileDialog use does.
 class FileDialogStartFolderTest : public ::testing::Test {
  protected:
@@ -154,9 +151,8 @@ TEST_F(FileDialogStartFolderTest, ReachableFolderIsUsedAndNoticeHidden) {
   });
 }
 
-// The folder answers only once the test lets it, after the dialog closed (or
-// after 10 s): a dialog that waits for the folder opens after it answered, so
-// the check needs no wall-clock bound on how long a dialog takes to open.
+// The folder answers only once the test lets it, after the dialog closed (or after 10 s): a dialog that waits for the
+// folder opens after it answered, so the check needs no wall-clock bound on how long a dialog takes to open.
 TEST_F(FileDialogStartFolderTest, SlowFolderFallsBackToHomeWithoutBlocking) {
   QTemporaryDir temp;
   ASSERT_TRUE(temp.isValid());

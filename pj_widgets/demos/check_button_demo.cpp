@@ -1,13 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Standalone visual demo for PJ::CheckButton (pill toggle),
-// PJ::DualOptionsWidget (segmented control), and PJ::ColorPickerWidget (swatch).
-// Shows both selected states and the "Override color" row layout
-// (CheckButton + swatch on one line), under the real app theme.
+// Standalone visual demo for PJ::CheckButton (pill toggle), PJ::DualOptionsWidget (segmented control) and
+// PJ::ColorPickerWidget (swatch): both selected states and the "Override color" row layout (CheckButton and swatch on
+// one line), under the real app theme.
 //
-// Interactive: ./build/pj_widgets/demos/pj_widgets_check_button_demo
-// Screenshot : ./build/pj_widgets/demos/pj_widgets_check_button_demo --screenshot out.png [--theme dark|light]
+// Interactive: ./build/pj_widgets/demos/pj_widgets_check_button_demo Screenshot :
+// ./build/pj_widgets/demos/pj_widgets_check_button_demo --screenshot out.png [--theme dark|light]
 
 #include <QApplication>
 #include <QFormLayout>

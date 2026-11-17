@@ -9,20 +9,17 @@
 
 namespace PJ {
 
-// Pins any non-native backing storage used by a load. Desktop paths leave this
-// empty; browser uploads use it to keep their MEMFS file alive for deferred
-// object fetchers.
+// Keeps a browser upload's MEMFS file alive for deferred object fetches; empty for native paths.
 using StorageLease = std::shared_ptr<void>;
 
 struct LoadInput {
-  QString display_name;     // UI label and extension-based plugin matching.
-  QString backing_path;     // Path passed to the DataSource plugin.
-  QString source_identity;  // Reload/dedup identity; never shown as a native path.
-  // Lower-case SHA-256 of browser-selected bytes. Empty for native paths. The
-  // browser source-layout path uses it only to distinguish otherwise
-  // indistinguishable same-basename sources; plugins never receive it.
+  QString display_name;     // UI label; its extension picks the plugin
+  QString backing_path;     // what the plugin opens
+  QString source_identity;  // reload/dedup identity; a pj-upload:// one is never shown as a path
+  // Lower-case SHA-256 of browser-selected bytes, empty for native paths. Only source-bound layouts use it, to tell
+  // same-basename sources apart; plugins never see it.
   QString content_sha256;
-  StorageLease lease;  // Empty for native files.
+  StorageLease lease;
 
   [[nodiscard]] static LoadInput fromNativePath(const QString& path) {
     return LoadInput{

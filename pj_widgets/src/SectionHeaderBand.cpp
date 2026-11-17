@@ -32,10 +32,9 @@ struct InternalScope {
   }
 };
 
-// Several PJ controls are pinned to one input-row height by the app QSS, and
-// QStyleSheetStyle applies that over any C++ size. This property selects the rule
-// that lifts the cap; re-polish so it counts even though the widget was styled
-// before it was docked.
+// Several PJ controls are pinned to one input-row height by the app QSS, and QStyleSheetStyle applies that over any C++
+// size. This property selects the rule that lifts the cap; the widget is re-polished so it counts even though it was
+// styled before it was docked.
 void markBandDocked(QWidget* widget) {
   if (widget->property("pjBandDocked").toBool()) {
     return;
@@ -68,18 +67,16 @@ SectionHeaderBand::SectionHeaderBand(const QString& title, QWidget* parent) : QW
   label_->setIndent(theme::space(theme::Space::Tight));
   layout_->addWidget(label_);
   layout_->addStretch(1);
-  // Remember the stretch so an expanding filter/combo can replace it later —
-  // by then it is no longer the last item (trailing controls may exist).
+  // The stretch is remembered so an expanding filter or combo can replace it later; by then it is no longer the last
+  // item (trailing controls may exist).
   stretch_ = layout_->itemAt(layout_->count() - 1);
 }
 
 void SectionHeaderBand::applyBandLayoutMetrics() {
-  // The canonical title-band insets, matching the app's own bands (see the
-  // "Datasets"/"Custom Series" recipe in CurveListPanel): NO left inset — the
-  // title label leads with its own Tight indent, and a second one would double
-  // it — and layout_padding on the other three sides. The band's fixed height
-  // absorbs the vertical pair, so chrome inside is contentHeight() tall rather
-  // than being squeezed.
+  // The canonical title-band insets, as the app's own bands ("Datasets" and "Custom Series" in CurveListPanel): no left
+  // inset (the title label leads with its own Tight indent, and a second would double it) and layout_padding on the
+  // other three sides. The band's fixed height absorbs the vertical pair, so chrome inside is contentHeight() tall
+  // instead of squeezed.
   layout_->setContentsMargins(
       0, current_metrics_.layout_padding, current_metrics_.layout_padding, current_metrics_.layout_padding);
   layout_->setSpacing(current_metrics_.layout_spacing);
@@ -113,10 +110,9 @@ void SectionHeaderBand::ensureFilter() {
   // field takes over that role once the filter exists, so drop it first.
   takeStretch();
 
-  // The canonical filter control: glyph + flat field sharing one background, the
-  // kBanner tone matching the band. It sizes to the band via onChromeMetricsChanged.
-  // Inserted right after the title so later-created trailing controls always end
-  // up on its right, whatever order the .ui set the properties in.
+  // The filter control: glyph and flat field sharing one background, the kBanner tone matching the band, sized to the
+  // band through onChromeMetricsChanged. Inserted right after the title, so later-created trailing controls end up on
+  // its right whatever order the .ui set the properties in.
   layout_->insertSpacing(1, theme::space(theme::Space::Tight));
   filter_search_ = new Search(this);
   filter_search_->setFieldObjectName(filter_field_name_);
@@ -183,8 +179,8 @@ void SectionHeaderBand::applyTrailingComboHeight() {
     return;
   }
   if (fill_docked_widgets_) {
-    // QComboBox pins its own min/max-height in QSS, so the cap has to be lifted
-    // before a fixed band height can take effect.
+    // QComboBox pins its own min and max height in QSS, so the cap is lifted before a fixed band height can take
+    // effect.
     markBandDocked(trailing_combo_);
     trailing_combo_->setFixedHeight(contentHeight());
   } else {
@@ -233,9 +229,8 @@ void SectionHeaderBand::ensureTrailingButton() {
     return;
   }
   InternalScope scope(creating_internal_);
-  // A flat, borderless icon button so it reads as a band affordance (like the
-  // filter's search glyph) rather than a chunky QPushButton. It stays a real
-  // QPushButton so the dialog host routes its click with no special-casing.
+  // A flat, borderless icon button, so it reads as a band affordance (like the filter's search glyph) and not a chunky
+  // QPushButton. It stays a real QPushButton, so the dialog host routes its click with no special-casing.
   trailing_button_ = new QPushButton(this);
   trailing_button_->setFlat(true);
   trailing_button_->setCursor(Qt::PointingHandCursor);
@@ -428,11 +423,10 @@ void SectionHeaderBand::setFillDockedWidgets(bool fill) {
 
 void SectionHeaderBand::applyDockedWidgetMetrics(QWidget* widget) const {
   markBandDocked(widget);
-  // A fixed height, not a stretching size policy: it is what survives the later
-  // setSizePolicy calls of whoever adapts the widget (the dialog host swaps a
-  // docked QCheckBox for a ToggleSwitch and re-declares its policy afterwards).
-  // Ordinary docked inputs stay aligned with their siblings outside the band;
-  // full-height control rows can opt into using the band's whole content box.
+  // A fixed height, not a stretching size policy: it survives the later setSizePolicy calls of whoever adapts the
+  // widget (the dialog host swaps a docked QCheckBox for a ToggleSwitch and re-declares its policy afterwards).
+  // Ordinary docked inputs stay aligned with their siblings outside the band; full-height control rows can opt into the
+  // band's whole content box.
   const int h = fill_docked_widgets_ ? contentHeight()
                                      : std::min(contentHeight(), theme::metric(theme::Metric::InputOuterHeight));
   widget->setFixedHeight(h);
@@ -443,14 +437,12 @@ void SectionHeaderBand::addTrailingWidget(QWidget* widget) {
     return;
   }
   docked_widgets_.append(QPointer<QWidget>(widget));
-  // Append after the title's stretch so the title stays left and docked widgets
-  // fill the right, in the order they were added. Centering keeps fixed-height
-  // controls aligned whether they use the input-row height or fill the content.
+  // Appended after the title's stretch, so the title stays left and docked widgets fill the right in the order added.
+  // Centering keeps fixed-height controls aligned whether they use the input-row height or fill the content.
   layout_->addWidget(widget, 0, Qt::AlignVCenter);
-  // Sizing waits for the next event-loop turn. The auto-dock path runs from
-  // childEvent, which QWidget's own constructor triggers — the child is still a
-  // bare QWidget there, so its real constructor would overwrite anything set now
-  // and the stylesheet has not seen it yet.
+  // Sizing waits for the next event-loop turn. The auto-dock path runs from childEvent, which QWidget's own constructor
+  // triggers: the child is still a bare QWidget there, so its real constructor would overwrite anything set now, and
+  // the stylesheet has not seen it yet.
   QPointer<SectionHeaderBand> self(this);
   QPointer<QWidget> docked(widget);
   QMetaObject::invokeMethod(
@@ -464,9 +456,8 @@ void SectionHeaderBand::addTrailingWidget(QWidget* widget) {
 }
 
 void SectionHeaderBand::childEvent(QChildEvent* event) {
-  // A widget nested inside the band in a .ui file is reparented onto the band by
-  // the loader — auto-dock it so the band acts as a container. The band's own
-  // sub-widgets are built under InternalScope and self-insert, so they are skipped.
+  // A widget nested inside the band in a .ui file is reparented onto it by the loader and auto-docked, so the band acts
+  // as a container. The band's own sub-widgets are built under InternalScope and self-insert, so they are skipped.
   if (creating_internal_ == 0 && event->added() && event->child()->isWidgetType()) {
     addTrailingWidget(qobject_cast<QWidget*>(event->child()));
   }

@@ -41,11 +41,9 @@ class McpJobsDialog : public Dialog {
   void setJobs(const std::vector<Job>& jobs);
 
  signals:
-  /// The user pressed Stop on job `id`.
   void stopRequested(quint64 id);
 
  private:
-  /// A job's row and the text in it.
   struct Row {
     QWidget* widget = nullptr;
     QLabel* text = nullptr;

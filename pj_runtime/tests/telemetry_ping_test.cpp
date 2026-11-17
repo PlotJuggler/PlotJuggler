@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Drives TelemetryPing against a local capturing HTTP server. This is where
-// the privacy contract is enforced on the wire: the POSTed body contains ONLY
-// the documented environment-fact keys (adding a payload field must break this
-// test), the user id is a stable salted hash (never the raw machine id),
-// unpackaged builds never reach the endpoint at all, and every failure mode
-// stays silent (finished(false), no crash).
+// Drives TelemetryPing against a local capturing HTTP server, enforcing the privacy contract on the wire: the
+// POSTed body holds only the documented environment-fact keys (adding a payload field breaks this test), the user id
+// is a stable salted hash (never the raw machine id), unpackaged builds never reach the endpoint, and every failure
+// mode stays silent (finished(false), no crash).
 
 #include <gtest/gtest.h>
 
@@ -30,8 +28,7 @@ using PJ::test::waitForSignal;
 
 namespace {
 
-// Sends one ping against a fresh capturing server and returns the POSTed JSON
-// body (the server accumulates requests, so each send gets its own server).
+// Sends one ping against a fresh capturing server (the server accumulates requests) and returns the POSTed JSON body.
 QJsonObject capturePingBody(const QString& installation) {
   LocalHttpServer server;
   server.setResponse("200 OK", "{}");
@@ -70,7 +67,6 @@ TEST(TelemetryPingTest, UserIdIsStableSaltedSha256Hex) {
   EXPECT_EQ(first, second);
   static const QRegularExpression hex64(u"^[0-9a-f]{64}$"_s);
   EXPECT_TRUE(hex64.match(first).hasMatch()) << first.toStdString();
-  // Never the raw machine id, in any encoding.
   const QByteArray raw_machine_id = QSysInfo::machineUniqueId();
   if (!raw_machine_id.isEmpty()) {
     EXPECT_NE(first.toLatin1(), raw_machine_id);
@@ -79,11 +75,9 @@ TEST(TelemetryPingTest, UserIdIsStableSaltedSha256Hex) {
 }
 
 TEST(TelemetryPingTest, UnpackagedBuildsNeverReachTheEndpoint) {
-  // "source" is the PJ_INSTALLATION default, so every self-built tree carries
-  // it: developers, CI, and any automation that launches the real app. They
-  // all report the in-development version, so a leak here invents users on a
-  // version that was never released. An unstamped build is refused for the
-  // same reason.
+  // "source" is the PJ_INSTALLATION default of every self-built tree (developers, CI, automation launching the real
+  // app); a ping from one would invent users on an unreleased version. An unstamped build is refused for the same
+  // reason.
   for (const QString& installation : {u"source"_s, QString()}) {
     LocalHttpServer server;
     server.setResponse("200 OK", "{}");
@@ -96,8 +90,7 @@ TEST(TelemetryPingTest, UnpackagedBuildsNeverReachTheEndpoint) {
 
     ASSERT_TRUE(waitForSignal(finished_spy)) << "installation: " << installation.toStdString();
     EXPECT_FALSE(finished_spy.takeFirst().at(0).toBool());
-    // Nothing must arrive even late: keep pumping past the terminal signal.
-    // WaitForMoreEvents idles between deliveries instead of spinning.
+    // Pump past the terminal signal to catch a late request; WaitForMoreEvents idles instead of spinning.
     QDeadlineTimer settle(250);
     while (!settle.hasExpired()) {
       QCoreApplication::processEvents(QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents, 50);
@@ -122,14 +115,13 @@ TEST(TelemetryPingTest, ServerErrorEmitsFinishedFalse) {
 }
 
 TEST(TelemetryPingTest, DefaultEndpointIsProductionUrl) {
-  // The wire contract: PJ4 reports to the same endpoint the PJ3-era dashboard
-  // reads from. A typo here silently zeroes the user counter.
+  // Wire contract: a typo in the endpoint silently zeroes the usage counter.
   PJ::TelemetryPing ping;
   EXPECT_EQ(ping.endpointUrl(), QUrl(u"https://app.plotjuggler.io/telemetry"_s));
 }
 
-// QSettings (the fallback-id path) and applicationVersion() need an app
-// identity; use a test-scoped one so the real PlotJuggler4.conf is untouched.
+// QSettings (the fallback-id path) and applicationVersion() need an app identity; a test-scoped one keeps the
+// real PlotJuggler4.conf untouched.
 namespace {
 
 class TelemetryPingEnvironment final : public ::testing::Environment {

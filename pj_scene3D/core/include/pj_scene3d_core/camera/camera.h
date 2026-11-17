@@ -12,10 +12,8 @@
 
 namespace pj::scene3d {
 
-// Axis-aligned bounding box in a single coordinate frame. `valid == false` means
-// "no bounds reported yet" and acts as the identity element for unionAABB(): an
-// invalid box contributes nothing to a union. Lives in pj_scene3d_core (Qt/GL-free)
-// so scene geometry and the camera can share it and the math stays headless-testable.
+// Axis-aligned bounding box in one coordinate frame. `valid == false` means no bounds yet and is the identity of
+// unionAABB().
 struct AABB {
   glm::vec3 min{0.0f};
   glm::vec3 max{0.0f};
@@ -23,8 +21,7 @@ struct AABB {
   friend bool operator==(const AABB&, const AABB&) = default;
 };
 
-// Grow `box` to include point `p`. Initializes `box` to the degenerate box at `p`
-// when it was invalid. Callers should pre-filter non-finite points.
+// Grow `box` to include `p` (a degenerate box at `p` when invalid). Callers pre-filter non-finite points.
 inline void expandAABB(AABB& box, const glm::vec3& p) {
   if (!box.valid) {
     box.min = p;
@@ -36,8 +33,7 @@ inline void expandAABB(AABB& box, const glm::vec3& p) {
   box.max = glm::max(box.max, p);
 }
 
-// Union of two boxes. An invalid box is the identity, so unioning over a mix of
-// reporting / non-reporting entities "just works".
+// Union of two boxes; an invalid box is the identity.
 inline AABB unionAABB(const AABB& a, const AABB& b) {
   if (!a.valid) {
     return b;
@@ -57,22 +53,14 @@ inline AABB unionAABB(const AABB& a, const AABB& b) {
   return 0.5f * (box.min + box.max);
 }
 
-// Length of the box's space diagonal (0 for a degenerate / point box).
 [[nodiscard]] inline float aabbDiagonal(const AABB& box) {
   return glm::length(box.max - box.min);
 }
 
-// Min/max of one axis (0=x, 1=y, 2=z) of `box` after transforming it by
-// `transform` — i.e. the extent of the box's image along a DESTINATION-frame axis.
-// Used to auto-range a point cloud colored by its FIXED-FRAME x/y/z: the per-point
-// colour is derived in the shader from the transformed position, so its colormap
-// bounds must be measured in that same destination frame, not in the box's own
-// source frame.
-//
-// Exact for the transformed BOX (all 8 corners are tested); for a sparse point set
-// inside the box this is a conservative (outer) bound — tight under translation and
-// yaw, slightly loose under large pitch/roll. Returns {0, 1} for an invalid box.
-// `axis` is clamped to [0, 2].
+// Min/max along one axis (0=x, 1=y, 2=z, clamped) of `box` after transforming it by `transform`: the extent along a
+// DESTINATION-frame axis. A cloud coloured by its fixed-frame x/y/z derives colour from the transformed position in the
+// shader, so its colormap bounds must be measured in that frame. Exact for the transformed box (all 8 corners); for a
+// point set inside it a conservative outer bound, loose under large pitch/roll. {0, 1} for an invalid box.
 [[nodiscard]] inline std::pair<float, float> transformedAabbAxisRange(
     const AABB& box, const glm::mat4& transform, int axis) {
   const int selected_axis = glm::clamp(axis, 0, 2);
@@ -92,31 +80,22 @@ inline AABB unionAABB(const AABB& a, const AABB& b) {
   return {lo, hi};
 }
 
-// One ROW of a 4x4, which glm's column-major storage does not give you directly: row i
-// gathers component i across the four columns. Both frustum helpers below read the
-// matrix by rows, so this is the shared idiom rather than two hand-indexed copies.
+// Row `index` of a 4x4 (glm stores columns).
 [[nodiscard]] inline glm::vec4 matrixRow(const glm::mat4& matrix, int index) {
   return glm::vec4(matrix[0][index], matrix[1][index], matrix[2][index], matrix[3][index]);
 }
 
-// The corner of `box` furthest along `direction` (an AABB support function). Both
-// helpers below need the extreme of a linear functional over the box, which is attained
-// at a corner, and each axis picks its end independently.
+// The corner of `box` furthest along `direction` (AABB support function): a linear functional's extreme over a box is
+// attained at a corner.
 [[nodiscard]] inline glm::vec3 aabbSupport(const AABB& box, const glm::vec3& direction) {
   return glm::vec3{
       direction.x >= 0.0f ? box.max.x : box.min.x, direction.y >= 0.0f ? box.max.y : box.min.y,
       direction.z >= 0.0f ? box.max.z : box.min.z};
 }
 
-// True when `box` lies entirely outside the frustum of `clip_from_box` — the
-// combined matrix taking the box's OWN frame all the way to clip space (e.g.
-// proj * view * model), so a caller never has to transform the box first.
-//
-// Extracts the six clip planes from that matrix (Gribb-Hartmann) and rejects the
-// box when the corner furthest along a plane's normal is still on its outside.
-// Conservative in the usual way: it never culls something visible, but a box
-// wedged into the corner between two planes can survive the test. An invalid box
-// is never culled — an unknown extent must mean "draw it".
+// True when `box` lies entirely outside the frustum of `clip_from_box`, the matrix from the box's OWN frame to clip
+// space (e.g. proj * view * model). Gribb-Hartmann planes; conservative: never culls something visible, but a box
+// wedged between two planes can survive. An invalid box is never culled (unknown extent means draw).
 [[nodiscard]] inline bool aabbOutsideFrustum(const AABB& box, const glm::mat4& clip_from_box) {
   if (!box.valid) {
     return false;
@@ -134,16 +113,9 @@ inline AABB unionAABB(const AABB& a, const AABB& b) {
   return false;
 }
 
-// [min, max] of the clip-space w coordinate over `box`, under the matrix taking the
-// box's OWN frame to clip space (the same `clip_from_box` aabbOutsideFrustum takes).
-//
-// Under a perspective projection that w IS the view-axis depth, so this is how far the
-// nearest and furthest of a cloud's points can be — enough to answer "is EVERY point of
-// this cloud closer/further than X" without touching the points. Under an orthographic
-// projection w is 1 everywhere and the range collapses, which is the correct answer
-// there: a parallel projection gives every point the same scale.
-//
-// An invalid box has no range.
+// [min, max] of clip-space w over `box` under `clip_from_box`. Under perspective w is the view-axis depth, so this
+// bounds how near and far a cloud's points are without touching them; under orthographic projection w is 1 and the
+// range collapses. An invalid box has no range.
 [[nodiscard]] inline std::pair<float, float> aabbClipWRange(const AABB& box, const glm::mat4& clip_from_box) {
   if (!box.valid) {
     return {0.0f, 0.0f};
@@ -153,11 +125,8 @@ inline AABB unionAABB(const AABB& a, const AABB& b) {
   return {glm::dot(normal, aabbSupport(box, -normal)) + w_row.w, glm::dot(normal, aabbSupport(box, normal)) + w_row.w};
 }
 
-// Smallest axis-aligned box that encloses `local` after transforming it by
-// `transform` (all 8 corners are mapped). The result is a conservative outer bound
-// of the transformed box — tight under translation/yaw, slightly loose under large
-// pitch/roll. Used to lift a mesh's model-space AABB into the world for the shadow
-// caster-bounds union. Returns an invalid box when `local` is invalid.
+// Smallest axis-aligned box enclosing `local` after transforming it by `transform` (all 8 corners): a conservative
+// outer bound, loose under large pitch/roll. Invalid when `local` is.
 [[nodiscard]] inline AABB transformedAABB(const glm::mat4& transform, const AABB& local) {
   if (!local.valid) {
     return {};
@@ -172,11 +141,9 @@ inline AABB unionAABB(const AABB& a, const AABB& b) {
   return out;
 }
 
-// AABB of an occupancy grid given its origin (the grid's min corner, in the
-// grid's own source frame), cell resolution (metres/cell), and dimensions in
-// cells. The grid is planar — the z extent is zero at origin.z (origin rotation
-// is intentionally ignored; scene bounds drive framing / adaptive near-far, not
-// precise culling). Returns an invalid box for an empty or degenerate grid.
+// AABB of an occupancy grid from its origin (min corner, in the grid's source frame), resolution (m/cell) and cell
+// dimensions. Planar: zero z extent at origin.z; the origin rotation is ignored (scene bounds drive framing and
+// adaptive near/far, not culling). Invalid for an empty or degenerate grid.
 inline AABB occupancyGridBounds(const glm::vec3& origin, double resolution, std::uint32_t width, std::uint32_t height) {
   if (width == 0 || height == 0 || resolution <= 0.0) {
     return {};
@@ -189,11 +156,9 @@ inline AABB occupancyGridBounds(const glm::vec3& origin, double resolution, std:
   return box;
 }
 
-// Serializable camera pose, shared by every controller. A controller exports its
-// pose with state() and adopts another's with adoptState(), so switching camera
-// models preserves where you were looking. `perspective == false` selects an
-// orthographic projection driven by `ortho_scale` (half-height in world units)
-// instead of `radius`/`fov_y`.
+// Serializable camera pose shared by every controller: state() exports it and adoptState() adopts it, so switching
+// camera models keeps the view. `perspective == false` selects an orthographic projection driven by `ortho_scale`
+// (half-height) instead of `radius`/`fov_y`.
 struct CameraState {
   glm::vec3 focal{0.0f};                 ///< Orbit pivot / look-at target (world).
   float radius{5.0f};                    ///< Eye distance from focal (perspective).
@@ -206,32 +171,24 @@ struct CameraState {
   friend bool operator==(const CameraState&, const CameraState&) = default;
 };
 
-// JSON (de)serialization of CameraState, for layout persistence. Round-trips all
-// fields. cameraStateFromJson is tolerant: unparseable, non-object, or wrong-typed
-// input returns `fallback` unchanged, and any individually-missing field is taken
-// from `fallback` (so an older / partial layout still loads). Surviving values are
-// sanitized (finite, in-range) so a corrupt layout can never drive a degenerate view.
+// JSON (de)serialization of CameraState for layout persistence. cameraStateFromJson is tolerant: unparseable or
+// wrong-typed input returns `fallback`, a missing field comes from `fallback`, and surviving values are sanitized
+// (finite, in range) so a corrupt layout cannot drive a degenerate view.
 [[nodiscard]] std::string cameraStateToJson(const CameraState& state);
 [[nodiscard]] CameraState cameraStateFromJson(const std::string& json, const CameraState& fallback = CameraState{});
 
-// Abstract camera controller. Concrete models (Orbit, XYOrbit, TopDownOrtho, Fly)
-// differ in how mouse/scroll input maps to CameraState and which projection they
-// emit, but all expose the same view/projection/position the renderer consumes.
-// Lives in pj_scene3d_core so the math is headless-testable (no Qt / GL).
+// Abstract camera controller. Models (Orbit, XYOrbit, TopDownOrtho, Fly) differ in how input maps to CameraState and
+// in the projection they emit; all expose the same view/projection/position. Qt/GL-free: headless-testable.
 class ICamera {
  public:
   virtual ~ICamera() = default;
 
   [[nodiscard]] virtual glm::mat4 viewMatrix() const = 0;
 
-  // View matrix for CAMERA-RELATIVE rendering: same orientation as viewMatrix(),
-  // but eye and focal are expressed relative to `render_origin` (subtracted in
-  // DOUBLE precision before the float cast). Pair it with geometry whose model
-  // matrices are offset by the SAME origin (the render origin of the view's frame) and a
-  // camera sitting at large world coordinates — e.g. "Follow a frame" parking the
-  // pivot on a far frame in a UTM/GPS map — no longer loses the eye→geometry delta
-  // to float32 cancellation (which made the whole scene swim on zoom). With
-  // `render_origin == {0,0,0}` it is exactly viewMatrix().
+  // View matrix for CAMERA-RELATIVE rendering: eye and focal are expressed relative to `render_origin`, subtracted in
+  // DOUBLE precision before the float cast. Pair it with model matrices offset by the same origin: at large world
+  // coordinates (e.g. following a far frame in a UTM map) a float32 eye->geometry delta cancels and the scene swims on
+  // zoom. `render_origin == {0,0,0}` equals viewMatrix().
   [[nodiscard]] virtual glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const = 0;
 
   [[nodiscard]] virtual glm::mat4 projMatrix(float aspect) const = 0;
@@ -241,21 +198,16 @@ class ICamera {
   // invalid AABB means "unknown" → working-distance fallback.
   virtual void setSceneBounds(const AABB& bounds) = 0;
 
-  // Shift the camera's anchor (look-at target / eye) by a world-space delta,
-  // WITHOUT changing orbit angle / zoom / orientation — the primitive the "follow
-  // a frame" feature applies each tick so the camera rides a moving frame while the
-  // user's framing is preserved (it only ADDS the frame's motion). Position-only
-  // follow: translation, no rotation. Each model shifts whatever anchor it owns
-  // (Orbit/TopDown: focal; Fly: eye); XYOrbit drops the z component to stay
-  // ground-locked. See SceneViewWidget::applyFollow.
+  // Shift the camera's anchor by a world-space delta without changing orbit angle, zoom or orientation: the primitive
+  // "follow a frame" applies each tick (translation only). Orbit/TopDown shift focal, Fly the eye; XYOrbit drops z to
+  // stay ground-locked. See SceneViewWidget::applyFollow.
   virtual void followShift(const glm::vec3& world_delta) = 0;
 
   virtual void rotate(float dx_pixels, float dy_pixels) = 0;
   virtual void pan(float dx_pixels, float dy_pixels) = 0;
   virtual void zoom(float scroll_ticks) = 0;
-  // Zoom keeping the world point under the cursor fixed. cursor_px is in Qt
-  // widget pixels (origin top-left). Falls back to center-of-view zoom() when no
-  // ground/focal-plane hit exists.
+  // Zoom keeping the world point under the cursor fixed; cursor_px in widget pixels (origin top-left). Falls back to
+  // centre zoom() when no ground/focal-plane hit exists.
   virtual void zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int viewport_w, int viewport_h) = 0;
 
   virtual void reset() = 0;  ///< Restore this model's default view.
@@ -265,14 +217,13 @@ class ICamera {
   virtual void adoptState(const CameraState& state) = 0;
 };
 
-// Spherical orbit camera: eye orbits `focal` at `radius`, parameterized by
-// azimuth/elevation. Z-up. Emits an adaptive near/far perspective projection and
-// supports cursor-anchored zoom. Non-final — XYOrbitCamera derives from it.
+// Spherical orbit camera, Z-up: the eye orbits `focal` at `radius` (azimuth/elevation), with adaptive near/far and
+// cursor-anchored zoom. Non-final: XYOrbitCamera derives from it.
 class OrbitCamera : public ICamera {
  public:
   [[nodiscard]] glm::mat4 viewMatrix() const override;
-  // Inherited unchanged by XYOrbitCamera (it shares state_): focal+radius·dir is
-  // the eye for both, so the ground-lock never affects the relative view build.
+  // Shared with XYOrbitCamera: focal + radius·dir is the eye for both, so the ground lock never affects the relative
+  // view.
   [[nodiscard]] glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const override;
   [[nodiscard]] glm::mat4 projMatrix(float aspect) const override;
   [[nodiscard]] glm::vec3 position() const override;
@@ -294,44 +245,38 @@ class OrbitCamera : public ICamera {
   void adoptState(const CameraState& state) override;
 
  protected:
-  // Set spherical state so position() == eye and the camera looks at `focal`
-  // (re-derives radius/azimuth/elevation; clamps radius/elevation but keeps the
-  // eye fixed). Shared by zoomToCursor and the XYOrbit ground re-lock.
+  // Sets the spherical state so position() == eye and the camera looks at `focal` (clamps radius/elevation but keeps
+  // the eye fixed). Shared by zoomToCursor and the XYOrbit re-lock.
   void setEyeFocal(const glm::vec3& eye, const glm::vec3& focal);
 
   CameraState state_{};
   AABB scene_bounds_{};  // last reported scene extent; consumed by adaptive near/far
 };
 
-// Orbit camera with the pivot locked to the ground plane (z=0): panning slides the
-// focal in the floor plane and zoom keeps focal.z == 0, so the orbit centre never
-// floats off the floor. Perspective. Derives from OrbitCamera.
+// Orbit camera with the pivot locked to the ground plane (z=0): pan slides the focal in the floor plane and zoom keeps
+// focal.z == 0.
 class XYOrbitCamera final : public OrbitCamera {
  public:
-  // Ground-locked override: shift focal in XY only (drop world_delta.z) so the
-  // pivot never floats off the floor while following a frame with vertical motion.
+  // Ground-locked: shifts focal in XY only, so the pivot stays on the floor while following a frame with vertical
+  // motion.
   void followShift(const glm::vec3& world_delta) override;
   void pan(float dx_pixels, float dy_pixels) override;
   void zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int viewport_w, int viewport_h) override;
-  // Re-lock the pivot to the floor (z=0) after adopting an arbitrary pose, keeping
-  // the eye fixed — without this, an adopted off-floor pivot makes the inherited
-  // center-zoom/rotate orbit an airborne point and the first pan snaps the eye
-  // vertically (the stale focal.z is zeroed). See OrbitCamera::adoptState for the base.
+  // Re-locks the pivot to the floor (z=0) after adopting an arbitrary pose, keeping the eye fixed; an off-floor pivot
+  // would make the inherited orbit/zoom act on an airborne point and the first pan snap the eye vertically.
   void adoptState(const CameraState& state) override;
 };
 
-// Orthographic bird's-eye camera looking straight down -Z, rotatable about the
-// vertical (map heading). The robotics "2D mode" for costmaps / occupancy grids /
-// trajectories. `ortho_scale` is the half-height of the view in world units; the
-// eye floats above the focal and near/far are derived from that height plus the
-// scene's vertical extent (the flat-scene guard, so a zoomed costmap never clips).
+// Orthographic bird's-eye camera looking down -Z, rotatable about the vertical (map heading); the 2D mode for
+// costmaps, occupancy grids and trajectories. `ortho_scale` is the view's half-height in world units; near/far derive
+// from it plus the scene's vertical extent (flat-scene guard: a zoomed costmap never clips).
 class TopDownOrthoCamera final : public ICamera {
  public:
   TopDownOrthoCamera();
 
   [[nodiscard]] glm::mat4 viewMatrix() const override;
-  // Overridden: the eye floats straight up by eyeHeight() above the focal, not
-  // focal+radius·dir, so the generic orbit reconstruction does not apply here.
+  // The eye floats eyeHeight() straight above the focal, not focal+radius·dir: the generic orbit reconstruction does
+  // not apply.
   [[nodiscard]] glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const override;
   [[nodiscard]] glm::mat4 projMatrix(float aspect) const override;
   [[nodiscard]] glm::vec3 position() const override;
@@ -353,26 +298,23 @@ class TopDownOrthoCamera final : public ICamera {
   void adoptState(const CameraState& state) override;
 
  private:
-  // Eye height above the focal plane, shared verbatim by position() and
-  // projMatrix() so they can never desync (M.7/M.8). It is the zoom-driven base
-  // height PLUS a scene-aware lift that keeps geometry above the focal plane in
-  // front of the near plane no matter how far the user zooms in.
+  // Eye height above the focal plane, shared by position() and projMatrix() so they cannot desync: the zoom-driven base
+  // height plus a scene-aware lift that keeps geometry above the focal plane in front of the near plane however far
+  // the user zooms in.
   [[nodiscard]] float eyeHeight() const;
 
   CameraState state_{};
   AABB scene_bounds_{};
 };
 
-// First-person / fly camera: free eye + yaw/pitch, no orbit pivot. LEFT looks
-// around, pan strafes, wheel dollies along forward (zoom-to-cursor degenerates to
-// a forward dolly, by design). Perspective, Z-up.
+// First-person camera, Z-up: free eye + yaw/pitch, no orbit pivot. LEFT looks around, pan strafes, wheel dollies along
+// forward (zoom-to-cursor degenerates to that dolly).
 class FlyCamera final : public ICamera {
  public:
   FlyCamera();
 
   [[nodiscard]] glm::mat4 viewMatrix() const override;
-  // Overridden: Fly owns a free eye (no orbit pivot), so the relative build offsets
-  // eye_ directly and keeps the yaw/pitch forward direction.
+  // Fly owns a free eye (no orbit pivot): offsets eye_ directly and keeps the yaw/pitch forward.
   [[nodiscard]] glm::mat4 viewMatrixRelativeTo(const glm::dvec3& render_origin) const override;
   [[nodiscard]] glm::mat4 projMatrix(float aspect) const override;
   [[nodiscard]] glm::vec3 position() const override;
@@ -395,16 +337,15 @@ class FlyCamera final : public ICamera {
   void resetToDefault();                        // eye (5,5,10) looking at the origin
   [[nodiscard]] glm::vec3 forward() const;      // unit view direction from yaw/pitch
   [[nodiscard]] float workingDistance() const;  // synthetic focal distance for near/far
-  // Motion-step basis: workingDistance() floored at kFlyNominalDistance so pan/zoom
-  // steps never collapse to ~0 near the AABB center (where workingDistance() → 0).
+  // Motion-step basis: workingDistance() floored at kFlyNominalDistance so pan/zoom steps never collapse near the AABB
+  // centre.
   [[nodiscard]] float motionDistance() const;
 
   glm::vec3 eye_{5.0f, 5.0f, 10.0f};
   float yaw_{0.0f};
   float pitch_{0.0f};
-  // Fly has no orbit radius or ortho frustum, but it must round-trip every
-  // CameraState field across model switches (camera.h:77-81). fov_y_ drives its
-  // own projection; ortho_scale_ is carried verbatim for a later switch to ortho.
+  // Fly has no orbit radius or ortho frustum but must round-trip every CameraState field across model switches: fov_y_
+  // drives its projection, ortho_scale_ is carried for a later switch to ortho.
   float fov_y_{glm::radians(45.0f)};
   float ortho_scale_{5.0f};
   AABB scene_bounds_{};

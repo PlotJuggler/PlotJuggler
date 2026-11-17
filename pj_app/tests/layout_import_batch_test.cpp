@@ -1,14 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Tests for LayoutImportBatch — the §6.2 rewrite-then-classify restore
-// coordinator. The provider is the shared descriptor-scripted fake toolbox
-// (tests/support/fake_import_provider.h, registered via
-// registerStaticToolbox), so each test declares its scenario in the layout
-// document itself. Stock cache-hit loads run through the real FileLoader +
-// the SDK's mock_file_source_plugin. Shell effects (workspace checkpoint/
-// rollback, dataset removal, the consolidated trust prompt, diagnostics)
-// are injected hook recorders — the batch is MainWindow-free by design.
+// LayoutImportBatch: the rewrite-then-classify restore coordinator. The provider is the descriptor-scripted fake
+// toolbox (tests/support/fake_import_provider.h, via registerStaticToolbox), so each test declares its scenario in the
+// layout document. Stock cache-hit loads run through the real FileLoader and the SDK's mock_file_source_plugin; the
+// shell effects (workspace checkpoint/rollback, dataset removal, trust prompt, diagnostics) are hook recorders.
 
 #include <gtest/gtest.h>
 
@@ -69,9 +65,8 @@ using pj_app_test::pumpUntil;
 constexpr const char* kMockPluginName = "Mock File Source";
 constexpr const char* kMockManifestId = "mock-file-source";
 
-// A statically registered file source claiming ".mcap", so a host-cache
-// artifact can be loaded through the real FileLoader in-process (the real
-// MCAP loader is an external plugin). Content-agnostic: writes one record.
+// A statically registered file source claiming ".mcap", so a host-cache artifact loads through the real FileLoader
+// in-process (the real MCAP loader is an external plugin). Writes one record.
 [[maybe_unused]] constexpr const char* kStaticMcapPluginName = "Static MCAP Source";
 [[maybe_unused]] constexpr const char* kStaticMcapManifestId = "static-mcap-source";
 
@@ -120,9 +115,7 @@ class StaticMcapSource : public PJ::FileSourceBase {
   return vt;
 }
 
-// ---------------------------------------------------------------------------
 // Layout-document builder
-// ---------------------------------------------------------------------------
 
 struct SourceSpec {
   QString filename;    // <fileInfo filename>
@@ -187,9 +180,7 @@ struct SourceSpec {
   return paths;
 }
 
-// ---------------------------------------------------------------------------
 // Fixture
-// ---------------------------------------------------------------------------
 
 class LayoutImportBatchTest : public ::testing::Test {
  protected:
@@ -199,8 +190,7 @@ class LayoutImportBatchTest : public ::testing::Test {
     const QString plugin_src = QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH);
     const QString plugin_dst = extensions_dir_.filePath(QFileInfo(plugin_src).fileName());
     ASSERT_TRUE(QFile::copy(plugin_src, plugin_dst)) << "could not stage " << plugin_src.toStdString();
-    // The parser the capture-mode fake provider pushes through, so a wired
-    // capture records real bytes and publishes a real cache artifact.
+    // The parser the capture-mode fake provider pushes through, so a wired capture publishes a real artifact.
     const QString parser_src = QString::fromUtf8(PJ_RUNTIME_HOST_OBJECT_PARSER_PATH);
     const QString parser_dst = extensions_dir_.filePath(QFileInfo(parser_src).fileName());
     ASSERT_TRUE(QFile::copy(parser_src, parser_dst)) << "could not stage " << parser_src.toStdString();
@@ -214,17 +204,15 @@ class LayoutImportBatchTest : public ::testing::Test {
     ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticPlugins(static_plugins));
     ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(u".mcap"_s).empty());
 
-    // The M3 host cache every batch of this fixture consults (empty unless a
-    // test publishes into it, so the pre-existing scenarios are unaffected).
+    // The host cache every batch of this fixture consults; empty unless a test publishes into it.
     ASSERT_TRUE(cache_dir_.isValid());
     cache_store_ = std::make_unique<PJ::SourceCacheStore>(std::filesystem::path(cache_dir_.path().toStdU16String()));
     capture_service_ = std::make_unique<PJ::SourceCaptureService>(*cache_store_);
 
     loader_ = std::make_unique<PJ::FileLoader>(
         app_session_->sessionManager(), app_session_->extensionCatalog(), app_session_->catalogModel());
-    // The shell (MainWindow::onFileLoaded) is what records loaded sources;
-    // mirror that wiring so the batch's already-loaded classification sees
-    // the same registry it does in production.
+    // MainWindow::onFileLoaded records loaded sources; mirror it so the already-loaded classification sees the
+    // production registry.
     QObject::connect(
         loader_.get(), &PJ::FileLoader::fileLoaded, loader_.get(),
         [this](
@@ -281,7 +269,6 @@ class LayoutImportBatchTest : public ::testing::Test {
     return *batch_;
   }
 
-  // extract + makeBatch + prepare — the common per-test preamble.
   PJ::LayoutImportBatch& prepareBatch(QDomDocument& doc, bool interactive, std::uint64_t max_transfer_bytes = 0) {
     const QList<PJ::layout_xml::DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir(data_dir_.path()));
     PJ::LayoutImportBatch& batch = makeBatch(interactive, max_transfer_bytes);
@@ -289,7 +276,7 @@ class LayoutImportBatchTest : public ::testing::Test {
     return batch;
   }
 
-  // start() (must report kRunning) + pump to the finished state.
+  // start() must report kRunning; then pumps until finished.
   [[nodiscard]] bool runToFinish(PJ::LayoutImportBatch& batch) {
     if (batch.start() != PJ::LayoutImportBatch::StartResult::kRunning) {
       ADD_FAILURE() << "start() did not report kRunning";
@@ -388,19 +375,15 @@ using Outcome = PJ::LayoutImportBatch::SourceOutcome;
 using StartResult = PJ::LayoutImportBatch::StartResult;
 using TrustChoice = PJ::LayoutImportBatch::TrustChoice;
 
-// ---------------------------------------------------------------------------
-// The classify matrix: already-loaded / cache hit / miss, with a plain
-// (no-materialize) sibling that the batch must never touch. Also pins the
-// §6.2 step 4+5 document rewrite (fileInfo filename + qualifier remap).
-// ---------------------------------------------------------------------------
+// Classify matrix: already-loaded / cache hit / miss next to a plain (no-materialize) sibling the batch must never
+// touch; also pins the fileInfo filename rewrite and the qualifier remap.
 TEST_F(LayoutImportBatchTest, ClassifyMatrixRewritesDocumentAndResolvesEachClass) {
   const QString loaded_path = makeMockFile(u"loaded.mock"_s);
   preloadMockFile(loaded_path);
   const QString hit_path = makeMockFile(u"hit.mock"_s);
   const QString miss_path = data_dir_.filePath(u"missing.mock"_s);
 
-  // Saved paths deliberately differ from the provider's effective paths so
-  // the rewrite is observable.
+  // Saved paths differ from the provider's effective paths so the rewrite is observable.
   QDomDocument doc = makeLayoutDoc({
       SourceSpec{u"/saved/loaded.mock"_s, makeDescriptor(u"s1"_s, u"trusted"_s, loaded_path)},
       SourceSpec{u"/saved/hit.mock"_s, makeDescriptor(u"s2"_s, u"trusted"_s, hit_path)},
@@ -413,13 +396,9 @@ TEST_F(LayoutImportBatchTest, ClassifyMatrixRewritesDocumentAndResolvesEachClass
   PJ::LayoutImportBatch& batch = makeBatch(/*interactive=*/false);
   batch.prepare(doc, refs);
 
-  // Step 4: the materialize-bearing fileInfo filenames now carry the
-  // provider's effective paths; the plain sibling is untouched.
   EXPECT_EQ(fileInfoFilenames(doc), (QStringList{loaded_path, hit_path, miss_path, u"/saved/plain.mock"_s}));
-  // Step 5: qualifier remap saved -> effective, plain sibling untouched.
   EXPECT_EQ(curveDatasetPaths(doc), (QStringList{loaded_path, hit_path, miss_path, u"/saved/plain.mock"_s}));
 
-  // The already-loaded source needs no work; hit + miss do.
   EXPECT_TRUE(batch.hasPendingWork());
   EXPECT_EQ(batch.pendingSourceLines(), (QStringList{hit_path, miss_path}));
 
@@ -454,9 +433,7 @@ TEST_F(LayoutImportBatchTest, AlreadyLoadedOnlyReportsNoAsyncWork) {
   EXPECT_EQ(capture_calls_, 0) << "no work -> no workspace checkpoint";
 }
 
-// ---------------------------------------------------------------------------
 // Trust gate
-// ---------------------------------------------------------------------------
 
 TEST_F(LayoutImportBatchTest, NonInteractiveNeedsConfirmationFailsWithDiagnosticAndNoDialog) {
   fail_if_confirm_ = true;
@@ -536,8 +513,7 @@ TEST_F(LayoutImportBatchTest, RefusedDescriptorAlwaysFails) {
 }
 
 TEST_F(LayoutImportBatchTest, NeedsConfirmationCacheHitLoadsWithoutPrompt) {
-  // Trust gates the NETWORK touch; a cache hit downloads nothing (§10:
-  // cache file present -> no network), so no confirmation is required.
+  // Trust gates the network touch; a cache hit downloads nothing, so no confirmation is required.
   fail_if_confirm_ = true;
   const QString hit_path = makeMockFile(u"hit.mock"_s);
   QDomDocument doc = makeLayoutDoc({
@@ -551,9 +527,7 @@ TEST_F(LayoutImportBatchTest, NeedsConfirmationCacheHitLoadsWithoutPrompt) {
   EXPECT_TRUE(sourceLoaded(hit_path));
 }
 
-// ---------------------------------------------------------------------------
-// Guard 3 (§7): estimated_bytes vs the batch's max_transfer_bytes ceiling.
-// ---------------------------------------------------------------------------
+// Size ceiling: estimated_bytes vs the batch's max_transfer_bytes
 
 TEST_F(LayoutImportBatchTest, Guard3NonInteractiveOverLimitRefusesAtLimitProceeds) {
   fail_if_confirm_ = true;
@@ -575,8 +549,7 @@ TEST_F(LayoutImportBatchTest, Guard3NonInteractiveOverLimitRefusesAtLimitProceed
   EXPECT_EQ(batch.result().sources[1].outcome, Outcome::kResolvedImported) << "estimated == ceiling proceeds";
   EXPECT_EQ(batch.result().sources[2].outcome, Outcome::kResolvedImported) << "unknown estimate (0) proceeds";
   EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"at", "unknown"}));
-  // The ceiling is the guard-3 enforcement channel: every started job must
-  // carry it.
+  // Every started job must carry the ceiling.
   EXPECT_EQ(g_log.maxBytes(), (std::vector<std::uint64_t>{1000, 1000}));
 }
 
@@ -594,9 +567,7 @@ TEST_F(LayoutImportBatchTest, Guard3InteractiveOverLimitJoinsTheConfirmation) {
   EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedImported);
 }
 
-// ---------------------------------------------------------------------------
-// §6.4 provider-absent / invalid-descriptor stock fallback
-// ---------------------------------------------------------------------------
+// Provider absent / invalid descriptor: stock-load fallback
 
 TEST_F(LayoutImportBatchTest, ProviderAbsentFallsBackToStockLoadPerSavedPath) {
   const QString exists_path = makeMockFile(u"cached.mock"_s);
@@ -609,7 +580,6 @@ TEST_F(LayoutImportBatchTest, ProviderAbsentFallsBackToStockLoadPerSavedPath) {
 
   PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
 
-  // No provider -> no rewrite: the document keeps its saved paths.
   EXPECT_EQ(fileInfoFilenames(doc), (QStringList{exists_path, missing_path}));
   EXPECT_EQ(diagnosticCount("layout-import-provider-unavailable"), 2) << "one distinct diagnostic per source";
 
@@ -641,9 +611,8 @@ TEST_F(LayoutImportBatchTest, ProviderFallbackRewritesThePresetFilepathToTheSave
   EXPECT_FALSE(config.contains(u"__pj_saved_filepath"_s)) << "the transient key must not be recorded";
 }
 
-// The saved path means "the data that used to sit beside this file" only for a
-// fallback, which loads the layout's own path. A provider-resolved hit replaced
-// it with a materialized cache path, so there is nothing to rebase from.
+// The saved path means "the data saved beside this file" only for a fallback, which loads the layout's own
+// path; a provider-resolved hit loads a materialized cache path, so there is nothing to rebase from.
 TEST_F(LayoutImportBatchTest, OnlyAProviderFallbackHandsThePluginTheSavedFilepath) {
   ASSERT_TRUE(pj_app_test::registerFilepathEcho(app_session_->extensionCatalog().pluginCatalog()));
   const QString hit_path = pj_app_test::writeEchoFile(data_dir_.filePath(u"hit.echo"_s), {u"1"_s});
@@ -695,9 +664,7 @@ TEST_F(LayoutImportBatchTest, InvalidDescriptorFallsBackToStockLoad) {
   EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedCacheHit);
 }
 
-// ---------------------------------------------------------------------------
 // Sequential jobs, failure isolation, cancel/rollback, finished-once
-// ---------------------------------------------------------------------------
 
 TEST_F(LayoutImportBatchTest, MissJobsRunSequentiallyThroughTerminalChaining) {
   const QString first_path = data_dir_.filePath(u"first.mock"_s);
@@ -770,8 +737,7 @@ TEST_F(LayoutImportBatchTest, CancelRollsBackProducedDatasetsAndWorkspace) {
   ASSERT_EQ(batch.start(), StartResult::kRunning);
   EXPECT_EQ(capture_calls_, 1) << "the prior workspace must be checkpointed before the first mutation";
 
-  // Wait until the FIRST job resolved (its dataset 101 is produced) while
-  // the second sits blocked on its gate.
+  // Wait until the first job resolved (dataset 101) while the second sits blocked on its gate.
   ASSERT_TRUE(pumpUntil([&batch]() { return batch.result().sources[0].outcome == Outcome::kResolvedImported; }));
   EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"first", "second"}));
 
@@ -784,7 +750,6 @@ TEST_F(LayoutImportBatchTest, CancelRollsBackProducedDatasetsAndWorkspace) {
   EXPECT_EQ(restore_calls_, 1) << "the prior workspace must be restored exactly once";
   EXPECT_EQ(finished_count_, 1);
 
-  // Repeated cancel after the terminal state must be inert.
   batch.cancel();
   flushQueuedEvents();
   EXPECT_EQ(finished_count_, 1);
@@ -805,11 +770,8 @@ TEST_F(LayoutImportBatchTest, FinishedIsEmittedExactlyOnceAndOnlyViaTheEventLoop
   EXPECT_EQ(finished_count_, 1);
 }
 
-// ---------------------------------------------------------------------------
-// T7 correlation + per-job cancel: activeImportDataset() mirrors the ACTIVE
-// job's zero-or-one dataset announcement, and cancelActiveImportJob() is the
-// keep-partial per-job stop (D3) — never the batch cancel/rollback path.
-// ---------------------------------------------------------------------------
+// activeImportDataset() mirrors the active job's zero-or-one dataset announcement; cancelActiveImportJob() is a
+// keep-partial per-job stop, not the batch cancel/rollback.
 
 TEST_F(LayoutImportBatchTest, ActiveImportDatasetTracksTheRunningJobsAnnouncedId) {
   const QString first_path = data_dir_.filePath(u"first.mock"_s);
@@ -824,16 +786,14 @@ TEST_F(LayoutImportBatchTest, ActiveImportDatasetTracksTheRunningJobsAnnouncedId
   EXPECT_FALSE(batch.activeImportDataset().has_value()) << "no job started yet";
   ASSERT_EQ(batch.start(), StartResult::kRunning);
 
-  // The first job announces its dataset and then HOLDS on the resume gate:
-  // the correlation must expose exactly that id while the job still runs.
+  // The first job announces its dataset, then holds on the resume gate: the id must be exposed while it runs.
   ASSERT_TRUE(pumpUntil([&batch]() { return batch.activeImportDataset().has_value(); }));
   EXPECT_EQ(*batch.activeImportDataset(), 101u);
   EXPECT_FALSE(batch.isFinished());
   EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"first"})) << "the second job must not have started";
 
-  // The terminal clears the correlation BEFORE the startNextJob() chain:
-  // once the (blocked, announces-nothing-yet) second job is up, the surface
-  // must be empty again — never the first job's stale id.
+  // The terminal clears the correlation before startNextJob(): once the blocked second job is up, the surface must be
+  // empty, not the first job's stale id.
   ASSERT_NE(g_instance, nullptr);
   g_instance->releaseResume();
   ASSERT_TRUE(pumpUntil([]() { return g_log.snapshot().size() == 2u; }));
@@ -851,8 +811,7 @@ TEST_F(LayoutImportBatchTest, ActiveImportDatasetTracksTheRunningJobsAnnouncedId
 }
 
 TEST_F(LayoutImportBatchTest, FailModeJobLeavesActiveImportDatasetEmptyEndToEnd) {
-  // D5: a job that never announces a dataset (race-loss/failure) leaves the
-  // correlation empty for its WHOLE life — no event will ever match it.
+  // A job that never announces a dataset (race loss or failure) leaves the correlation empty for its whole life.
   const QString miss_path = data_dir_.filePath(u"missing.mock"_s);
   QDomDocument doc = makeLayoutDoc({
       SourceSpec{u"/saved/a.mock"_s, makeDescriptor(u"s1"_s, u"trusted"_s, miss_path, 0, u"fail"_s)},
@@ -885,14 +844,12 @@ TEST_F(LayoutImportBatchTest, CancelActiveImportJobKeepsPartialAndContinues) {
 
   PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
   ASSERT_EQ(batch.start(), StartResult::kRunning);
-  // The first job resolves (its dataset 101 enters the ledger); the second
-  // starts and sits blocked on its start gate.
+  // The first job resolves (dataset 101 enters the ledger); the second starts and blocks on its start gate.
   ASSERT_TRUE(pumpUntil([&batch]() { return batch.result().sources[0].outcome == Outcome::kResolvedImported; }));
   ASSERT_EQ(g_log.snapshot(), (std::vector<std::string>{"first", "second"}));
   ASSERT_FALSE(batch.isFinished());
 
-  // D3 keep-partial: ONLY the active job dies; the batch continues to the
-  // third job, and nothing the earlier jobs produced is rolled back.
+  // Only the active job dies; the batch continues to the third, and nothing the earlier jobs produced is rolled back.
   batch.cancelActiveImportJob();
   ASSERT_TRUE(pumpUntil([&batch]() { return batch.isFinished(); }));
   flushQueuedEvents();
@@ -917,7 +874,6 @@ TEST_F(LayoutImportBatchTest, CancelActiveImportJobWithNoActiveJobIsANoOp) {
   });
 
   PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
-  // Before start(): nothing to cancel, nothing may change.
   batch.cancelActiveImportJob();
   EXPECT_FALSE(batch.isFinished());
   EXPECT_TRUE(batch.hasPendingWork());
@@ -926,7 +882,7 @@ TEST_F(LayoutImportBatchTest, CancelActiveImportJobWithNoActiveJobIsANoOp) {
   ASSERT_EQ(batch.result().sources.size(), 1);
   EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedImported);
 
-  // After the batch finished: still a no-op (no new terminal, no signal).
+  // After finish: no new terminal, no signal.
   batch.cancelActiveImportJob();
   flushQueuedEvents();
   EXPECT_EQ(finished_count_, 1);
@@ -934,10 +890,7 @@ TEST_F(LayoutImportBatchTest, CancelActiveImportJobWithNoActiveJobIsANoOp) {
   EXPECT_EQ(diagnosticCount("layout-import-cancelled"), 0);
 }
 
-// ---------------------------------------------------------------------------
-// Codex r1 F1: provider provenance + the is_materialized verdict are
-// authoritative for classification.
-// ---------------------------------------------------------------------------
+// Provider provenance and the is_materialized verdict decide the classification
 
 // Adds/overrides one field of a scripted descriptor (e.g. "materialized").
 [[nodiscard]] QString withField(const QString& descriptor, const QString& key, const QJsonValue& value) {
@@ -947,8 +900,6 @@ TEST_F(LayoutImportBatchTest, CancelActiveImportJobWithNoActiveJobIsANoOp) {
 }
 
 TEST_F(LayoutImportBatchTest, MaterializedFalseWithExistingFileIsAMissNotAHit) {
-  // A stale/partial file at the cache path must NOT be promoted to a hit
-  // when the provider's verdict says the artifact is not materialized.
   const QString stale_path = makeMockFile(u"stale.mock"_s);
   QDomDocument doc = makeLayoutDoc({
       SourceSpec{
@@ -981,10 +932,8 @@ TEST_F(LayoutImportBatchTest, MaterializedTrueWithMissingFileFailsAsProviderBug)
   EXPECT_TRUE(g_log.snapshot().empty()) << "no import job may start on an inconsistent cache verdict";
 }
 
-// A thin (M3) provider answers the query with no local path: the host owns
-// materialization, so the source is a MISS whose effective path is the host
-// cache slot for its identity — never a "no local path" fallback to the
-// (deleted) saved path.
+// A thin provider answers the query with no local path: the host owns materialization, so the source is a miss at
+// the host cache slot for its identity, not a "no local path" fallback to the saved path.
 TEST_F(LayoutImportBatchTest, ThinProviderWithoutLocalPathIsAMissAtTheHostCacheSlot) {
   const QString provider = QString::fromUtf8(kProviderId);
   const QString descriptor = makeDescriptor(u"thin"_s, u"trusted"_s, /*path=*/QString{});
@@ -1006,8 +955,8 @@ TEST_F(LayoutImportBatchTest, ThinProviderWithoutLocalPathIsAMissAtTheHostCacheS
 }
 
 TEST_F(LayoutImportBatchTest, PathMatchWithMismatchedSourceRecordIsNotAlreadyLoaded) {
-  // The cache slot was reused: a live dataset AT the effective path whose
-  // SourceRecord names DIFFERENT provenance must not classify already-loaded.
+  // The cache slot was reused: a live dataset at the effective path whose SourceRecord names different provenance
+  // must not classify already-loaded.
   const QString loaded_path = makeMockFile(u"loaded.mock"_s);
   preloadMockFile(loaded_path);
   const PJ::DatasetId dataset = datasetForPath(loaded_path);
@@ -1068,20 +1017,15 @@ TEST_F(LayoutImportBatchTest, EmptySourceIdentityFailsTheSource) {
   EXPECT_FALSE(sourceLoaded(hit_path));
 }
 
-// ---------------------------------------------------------------------------
-// Codex r2: seams exposed by the provenance fixes.
-// ---------------------------------------------------------------------------
-
-// R2-1: when already-loaded matches VIA RECORD but the provider's cache path
-// moved since the dataset was loaded, the document must be rewritten to the
-// MATCHED DATASET'S LIVE path — the queried path names a file nothing in the
-// session is loaded from, so path-tier curve/timeline binding would dangle.
+// When already-loaded matches via record but the provider's cache path moved since the dataset was loaded, the
+// document is rewritten to the matched dataset's live path: the queried path names a file nothing in the session is
+// loaded from, so path-tier curve/timeline binding would dangle.
 TEST_F(LayoutImportBatchTest, RecordMatchedAlreadyLoadedRewritesToLiveDatasetPath) {
   const QString live_path = makeMockFile(u"live.mock"_s);
   preloadMockFile(live_path);
   const PJ::DatasetId dataset = datasetForPath(live_path);
   ASSERT_NE(dataset, 0u);
-  const QString moved_path = data_dir_.filePath(u"moved-cache.mock"_s);  // the NEW cache location
+  const QString moved_path = data_dir_.filePath(u"moved-cache.mock"_s);
   const QString descriptor =
       withField(makeDescriptor(u"s1"_s, u"trusted"_s, moved_path), u"identity"_s, u"fake:stable-identity"_s);
   app_session_->sessionManager().attachSourceRecord(
@@ -1104,8 +1048,8 @@ TEST_F(LayoutImportBatchTest, RecordMatchedAlreadyLoadedRewritesToLiveDatasetPat
       << "dataset-path qualifiers must bind against the live dataset's tracked path";
 }
 
-// R2-2: a provider-resolved cache hit must attach the same provenance a
-// promoted miss gets, or the next layout save silently loses <materialize>.
+// A provider-resolved cache hit attaches the same provenance a promoted miss gets, or the next layout save loses
+// <materialize>.
 TEST_F(LayoutImportBatchTest, CacheHitAttachesProviderSourceRecord) {
   const QString hit_path = makeMockFile(u"hit.mock"_s);
   const QString descriptor = makeDescriptor(u"s1"_s, u"trusted"_s, hit_path);
@@ -1125,19 +1069,15 @@ TEST_F(LayoutImportBatchTest, CacheHitAttachesProviderSourceRecord) {
   EXPECT_EQ(record->descriptor_json, descriptor);
 }
 
-// Windows CI regression, reproduced portably: whenever the saved path's
-// SERIALIZED and RESOLVED forms differ (a relative path here; a drive-less
-// "/saved/x" on Windows, which QFileInfo does not treat as absolute), the
-// qualifier remap must match the document whichever form it holds — the
-// serialized value (raw documents, these fixtures) or the resolved form
-// MainWindow's resolveDatasetSourcePaths pre-pass produces.
+// When the saved path's serialized and resolved forms differ (a relative path here; a drive-less "/saved/x" on
+// Windows, which QFileInfo does not treat as absolute), the qualifier remap must match whichever form the document
+// holds: the serialized value (raw documents) or the form layout_xml::resolveDatasetSourcePaths writes.
 TEST_F(LayoutImportBatchTest, QualifierRemapMatchesSerializedAndResolvedSavedPaths) {
   const QString hit_path = makeMockFile(u"hit.mock"_s);
   const QString serialized = u"saved-rel/hit.mock"_s;
   const QString resolved = QDir(data_dir_.path()).absoluteFilePath(serialized);
   QDomDocument doc = makeLayoutDoc({SourceSpec{serialized, makeDescriptor(u"s1"_s, u"trusted"_s, hit_path)}});
-  // A second qualifier carrying the RESOLVED form (what the shell's
-  // resolveDatasetSourcePaths pre-pass writes before prepare() runs).
+  // A second qualifier carrying the resolved form (what resolveDatasetSourcePaths writes before prepare()).
   QDomElement resolved_curve = doc.createElement(u"curve"_s);
   resolved_curve.setAttribute(u"dataset_path"_s, resolved);
   doc.documentElement().appendChild(resolved_curve);
@@ -1151,17 +1091,12 @@ TEST_F(LayoutImportBatchTest, QualifierRemapMatchesSerializedAndResolvedSavedPat
   EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedCacheHit);
 }
 
-// ---------------------------------------------------------------------------
-// M3 host-cache-first restore.
-// ---------------------------------------------------------------------------
+// Host-cache-first restore
 
-// A published capture artifact restores through the STOCK loader alone: no
-// provider is consulted (the provider here does not even exist), the record
-// is attached for the next layout save, and the produced dataset holds a
-// read pin on the artifact until it is removed. The layout deliberately
-// names the MOCK plugin — an artifact is always a standard MCAP, so the
-// host-cache hit must build its own extension-driven hints instead of
-// requiring the layout's original (mismatched) plugin identity.
+// A published capture artifact restores through the stock loader alone: no provider is consulted (none exists here),
+// the record is attached for the next layout save, and the dataset holds a read pin on the artifact until it is
+// removed. The layout names the mock plugin; an artifact is always a standard MCAP, so the hit builds its own
+// extension-driven hints instead of requiring the layout's plugin identity.
 TEST_F(LayoutImportBatchTest, HostCacheHitRestoresWithoutProviderAndPinsTheArtifact) {
   const QString provider = u"absent.cloud.provider"_s;
   const QString descriptor = uR"({"kind":"k","request":{},"v":1})"_s;
@@ -1170,18 +1105,15 @@ TEST_F(LayoutImportBatchTest, HostCacheHitRestoresWithoutProviderAndPinsTheArtif
   QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/cached.mcap"_s, descriptor, provider, u"any-identity"_s}});
   PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
 
-  // The document now describes the artifact the restore will load.
   EXPECT_EQ(fileInfoFilenames(doc), (QStringList{published_artifact_path_}));
   EXPECT_EQ(batch.pendingSourceLines(), (QStringList{published_artifact_path_}));
-  // No provider was needed, so no provider-unavailable degrade fired.
   EXPECT_EQ(diagnosticCount("layout-import-provider-unavailable"), 0);
 
   ASSERT_TRUE(runToFinish(batch));
   ASSERT_EQ(batch.result().sources.size(), 1);
   EXPECT_EQ(batch.result().sources[0].outcome, Outcome::kResolvedCacheHit)
       << batch.result().sources[0].message.toStdString();
-  // The mismatched plugin naming neither failed the load nor destroyed the
-  // artifact (the F5 regression: hint mismatch must not trigger quarantine).
+  // A plugin-hint mismatch must not trigger quarantine.
   EXPECT_TRUE(QFileInfo::exists(published_artifact_path_));
 
   const PJ::DatasetId dataset = datasetForPath(published_artifact_path_);
@@ -1203,8 +1135,8 @@ TEST_F(LayoutImportBatchTest, HostCacheHitRestoresWithoutProviderAndPinsTheArtif
   EXPECT_TRUE(cache_store_->quarantine(identity, &reason)) << reason;
 }
 
-// Characterization guard: a host-cache hit ignores the layout's own preset
-// (it may name a non-MCAP provider format) and loads with a minimal config.
+// A host-cache hit ignores the layout's own preset (it may name a non-MCAP provider format) and loads with a minimal
+// config.
 TEST_F(LayoutImportBatchTest, HostCacheHitKeepsItsOwnMinimalConfig) {
   const QString provider = u"absent.cloud.provider"_s;
   const QString descriptor = uR"({"kind":"k","request":{},"v":1})"_s;
@@ -1221,10 +1153,8 @@ TEST_F(LayoutImportBatchTest, HostCacheHitKeepsItsOwnMinimalConfig) {
   EXPECT_TRUE(PJ::layout_xml::isSamePath(config.value(u"filepath"_s).toString(), published_artifact_path_));
 }
 
-// A cached artifact whose stock load genuinely fails is quarantined and the
-// source falls back to the live provider import, so a stale cache never
-// blocks a restore — and the corrective document rewrite repoints the
-// fileInfo filename + path qualifiers from the quarantined cache path at the
+// A cached artifact whose stock load fails is quarantined and the source falls back to the live provider import; the
+// document rewrite then repoints the fileInfo filename and path qualifiers from the quarantined cache path to the
 // provider's effective path, so path-tier binding works after the fallback.
 TEST_F(LayoutImportBatchTest, FailedHostCacheLoadQuarantinesAndFallsBackToProvider) {
   const QString miss_target = data_dir_.filePath(u"missing.mock"_s);
@@ -1235,7 +1165,6 @@ TEST_F(LayoutImportBatchTest, FailedHostCacheLoadQuarantinesAndFallsBackToProvid
 
   QDomDocument doc = makeLayoutDoc({SourceSpec{u"/saved/cached.mcap"_s, descriptor, provider}});
   PJ::LayoutImportBatch& batch = prepareBatch(doc, /*interactive=*/false);
-  // prepare() pointed the document at the cache artifact.
   EXPECT_EQ(fileInfoFilenames(doc), (QStringList{published_artifact_path_}));
   ASSERT_TRUE(runToFinish(batch));
 
@@ -1247,18 +1176,14 @@ TEST_F(LayoutImportBatchTest, FailedHostCacheLoadQuarantinesAndFallsBackToProvid
   std::string miss;
   EXPECT_FALSE(capture_service_->resolve(provider.toStdString(), descriptor.toStdString(), &miss).has_value());
   EXPECT_FALSE(QFileInfo::exists(published_artifact_path_));
-  // Corrective rewrite: the document no longer references the quarantined
-  // path — filename and qualifiers now name the provider's effective path.
+  // The document does not reference the quarantined path.
   EXPECT_EQ(fileInfoFilenames(doc), (QStringList{miss_target}));
   EXPECT_EQ(curveDatasetPaths(doc), (QStringList{miss_target}));
 }
 
-// The REAL wireSourceCapture handler, driven from a worker thread the way a
-// toolbox release does: it must attach the SourceRecord AND register the
-// published artifact as the dataset's saveable backing file (source path +
-// loadedSources entry) — the inputs the layout-save walk serializes into a
-// <fileInfo> + <materialize>, i.e. what makes a captured download survive a
-// layout save (F1).
+// The real wireSourceCapture handler, driven from a worker thread as a toolbox release does: it must attach the
+// SourceRecord and register the published artifact as the dataset's saveable backing file (source path +
+// loadedSources entry), which the layout-save walk serializes into <fileInfo> + <materialize>.
 TEST_F(LayoutImportBatchTest, WireSourceCaptureRegistersPublishedDownloadForLayoutSave) {
   const PJ::DatasetId dataset = pj_test::createDataset(*app_session_, "cloud-download");
   ASSERT_NE(dataset, 0u);
@@ -1291,14 +1216,11 @@ TEST_F(LayoutImportBatchTest, WireSourceCaptureRegistersPublishedDownloadForLayo
   }));
 }
 
-// T7 (acceptance rows 7/9): re-download REPAIRS the cache, then restores
-// offline. Run 1: the seeded artifact's stock load fails -> quarantine ->
-// provider fallback, whose capture-mode import publishes a REAL replacement
-// artifact through the wired capture pipeline (HeadlessDescriptorProviderSession
-// runs the same wireSourceCapture as MainWindow). Run 2: the same layout is
-// already loaded (record match) — no duplicate dataset. Run 3 (dataset
-// removed): the repaired artifact restores through the stock loader alone,
-// with no new provider job.
+// Re-download repairs the cache, then restores offline. Run 1: the seeded artifact's stock load fails -> quarantine ->
+// provider fallback, whose capture-mode import publishes a real replacement through the wired capture pipeline
+// (HeadlessDescriptorProviderSession runs the same wireSourceCapture as MainWindow). Run 2: the layout is already
+// loaded (record match), no duplicate dataset. Run 3 (dataset removed): the repaired artifact restores through the
+// stock loader alone, with no provider job.
 TEST_F(LayoutImportBatchTest, QuarantinedHitIsRepublishedByTheProviderThenRestoresOffline) {
   const QString provider = QString::fromUtf8(kProviderId);
   // The script rides inside "request" so the descriptor keeps the host's
@@ -1321,11 +1243,9 @@ TEST_F(LayoutImportBatchTest, QuarantinedHitIsRepublishedByTheProviderThenRestor
   }
   batch_.reset();
 
-  // The capture wiring republished a REAL artifact (same identity, so the
-  // same slot the quarantined seed occupied) and, on the GUI thread, attached
-  // the produced dataset's provenance + backing file. The manifest proves the
-  // bytes are the REPUBLISHED capture, not the seed: the capture-mode fake
-  // records "/s1", the seed declared "/imu".
+  // The capture wiring republished a real artifact (same identity, so the slot the quarantined seed occupied) and, on
+  // the GUI thread, attached the dataset's provenance and backing file. The manifest proves the bytes are the
+  // republished capture: the capture-mode fake records "/s1", the seed declared "/imu".
   QString repaired_path;
   ASSERT_TRUE(pumpUntil([&]() {
     std::string miss;
@@ -1377,10 +1297,9 @@ TEST_F(LayoutImportBatchTest, QuarantinedHitIsRepublishedByTheProviderThenRestor
   EXPECT_EQ(g_log.snapshot(), (std::vector<std::string>{"s1"})) << "the offline restore must not start an import job";
 }
 
-// T11 (P2): a CONTENDED cache miss (another instance mid-publish for the same
-// identity) fails that ONE source with the user-actionable diagnostic and
-// never contacts the provider — no retry loop, no duplicate download. An
-// ordinary absent miss in the same batch keeps today's provider fallback.
+// A contended cache miss (another instance mid-publish for the same identity) fails that one source with a
+// user-actionable diagnostic and never contacts the provider: no retry loop, no duplicate download. An ordinary absent
+// miss in the same batch still falls back to the provider.
 TEST_F(LayoutImportBatchTest, ContendedCacheMissFailsWithoutContactingTheProvider) {
   const QString provider = QString::fromUtf8(kProviderId);
   const QString contended_descriptor = uR"({"kind":"contended","request":{},"v":1})"_s;

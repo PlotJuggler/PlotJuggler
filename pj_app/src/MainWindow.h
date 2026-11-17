@@ -29,21 +29,21 @@
 #include <vector>
 
 #include "DialogWatch.h"
-#include "FileLoader.h"  // DialogPolicy, LoadRequestId
+#include "FileLoader.h"
 #include "LayoutXml.h"
 #include "LoadInput.h"
 #include "ToolboxPresenter.h"
-#include "pj_base/builtin/builtin_object.hpp"  // sdk::BuiltinObjectType — onPlaceholderTopicDropped's slot parameter
+#include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/diagnostic_sink.hpp"
-#include "pj_base/expected.hpp"       // PJ::Status — the plot-tab and viewport host services report through it
-#include "pj_base/plugin_data_api.h"  // PJ_service_registry_t — toolboxSessionServices returns it
-#include "pj_base/time.hpp"           // PJ::Timepoint — the frame-invariant absolute instant the reference line stores
+#include "pj_base/expected.hpp"
+#include "pj_base/plugin_data_api.h"
+#include "pj_base/time.hpp"
 #include "pj_base/types.hpp"
 #include "pj_plotting/CurveTracker.h"
-#include "pj_plugins/host_qt/embedded_view_host.hpp"  // makeEmbeddedViewHost returns it by value
-#include "pj_runtime/CurveDescriptor.h"               // openFilterEditor takes std::vector<CurveDescriptor> by value
+#include "pj_plugins/host_qt/embedded_view_host.hpp"
+#include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/HistoryScope.h"
-#include "pj_runtime/RecordingService.h"  // CaptureResult / SourceRecordingStart — recording slot parameters
+#include "pj_runtime/RecordingService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_widgets/ChromeMetrics.h"
 #include "pj_widgets/TimeFormat.h"
@@ -129,9 +129,7 @@ class FeatureCatalogHost;
 class TelemetryPing;
 class CoalescingTrigger;
 
-// Legend corner placement. Four corner buttons in the right toolbar act
-// as an exclusive group: click sets the position, click the active one
-// again hides the legend. Stored as int in QSettings ("MainWindow.legendStatus").
+// Persisted as int under QSettings "MainWindow.legendStatus": the values are fixed.
 enum class LegendStatus {
   kBottomRight = 0,
   kBottomLeft = 1,
@@ -142,8 +140,6 @@ enum class LegendStatus {
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
-  // Headless layout round-trip test reaches the private data-source save/apply
-  // seam and the Source Timeline controller through this peer.
   friend class MainWindowSourceLayoutTestPeer;
   friend class MainWindowFanoutAmbiguousTestPeer;
   friend class MainWindowViewportReframeTestPeer;
@@ -169,22 +165,15 @@ class MainWindow : public QMainWindow {
   friend class ToolboxPresenter;
 
  public:
-  // Creates the main window using the default extension directory.
   explicit MainWindow(QWidget* parent = nullptr);
-
-  // Creates the main window using an explicit extension directory.
   explicit MainWindow(QString extensions_dir, QWidget* parent = nullptr);
-
-  // Releases UI resources and the application session.
   ~MainWindow() override;
 
-  // Populates the session with generated data for smoke testing.
+  // --test-data: generated sin/cos series and one image.
   [[nodiscard]] bool populateTestData();
 
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
-  // Acceptance-only canonical layout fixture: serializes the live workspace
-  // through the same state serializers used by production save, but never
-  // writes a path.
+  // Acceptance-build probes. The layout bytes come from the production save serializers; nothing is written.
   [[nodiscard]] QByteArray wasmProbeLayoutBytes() const;
   [[nodiscard]] qsizetype wasmProbeDatasetCount() const;
   [[nodiscard]] std::size_t wasmProbeResidentPoolCapacity() const;
@@ -192,47 +181,39 @@ class MainWindow : public QMainWindow {
   void wasmProbeReportToolboxTransformResult() const;
   // Opens a toolbox as its Toolbox-menu entry does.
   void wasmProbeLaunchToolbox(const QString& plugin_id);
-  // Reports streaming controls, catalog/tree state, playback range, and the
-  // first plotted curve without triggering any application action.
+  // Reports streaming controls, catalog state, playback range and the first plotted curve; read-only.
   void wasmProbeReportStreamingState() const;
-  // Supersedes an in-flight source-replay picker without opening another host
-  // picker, making late-callback rejection deterministic in browser tests.
+  // Supersedes an in-flight source-replay picker without opening another, so browser tests can drive the
+  // late-callback rejection.
   void wasmProbeSupersedeBrowserReplayPicker();
-  // Installs the plot readback shortcuts (F8, F9, F10); defined with the other
-  // acceptance probes in tests/wasm_acceptance_probes.inc.
+  // Plot readback shortcuts (F8, F9, F10); defined in tests/wasm_acceptance_probes.inc.
   void installWasmPlotAcceptanceProbes();
 #endif
 
-  // Loads `path` on startup and auto-reloads its data source(s) without prompting
-  // (the --layout CLI option). Safe no-op if the layout binds to no source.
+  // --layout: reloads the layout's data sources without prompting.
   void loadLayoutAtStartup(const QString& path);
 
-  // Loads explicit files before applying the optional layout against their data.
-  // A failed/cancelled file aborts the layout and settles it false. Dialogs are
-  // allowed only for attended file loads; layout replay never prompts here.
+  // Loads explicit files, then applies the optional layout against their data. A failed or cancelled file
+  // aborts the layout and settles it false. Only attended file loads may open dialogs; the layout never prompts.
   void loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive);
 
   // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
   // non-interactive run never shows the question.
   void reviewUncleanShutdown(bool interactive);
 
-  // Builds a Custom Widget dock for widget `type` of plugin `plugin_id` and adopts it into the
-  // empty `dock`. The dock is adopted even when the widget cannot be created (library missing,
-  // Qt build mismatch): it then shows the reason and keeps the choice for the layout. Returns
-  // whether the plugin widget was created. The widget picker calls this on a click.
+  // Adopts a Custom Widget dock for widget `type` of `plugin_id` into the empty `dock`, also when the widget
+  // cannot be created (library missing, Qt build mismatch): it then shows the reason and keeps the choice for
+  // the layout. Returns whether the plugin widget was created.
   bool createCustomWidgetDock(DockWidget* dock, const QString& plugin_id, const QString& type);
 
-  // Opens the layout at `url` (http/https) as a preset, with no picker: its
-  // <fileInfo> sources are downloaded from beside it one at a time, staged and
-  // checked against their fingerprints, then imported all or nothing — any
-  // failure or cancel removes what this load imported and restores the previous
-  // workspace. Scene3D resources resolve against the same location. A layout
-  // load already pending makes this a no-op logged with reason=busy. Every call
-  // ends in exactly one layoutUrlLoadFinished.
+  // Opens the layout at `url` (http/https) as a preset, with no picker: its <fileInfo> sources download from
+  // beside it one at a time, are checked against their fingerprints, then imported all or nothing (a failure or
+  // cancel removes what this load imported and restores the previous workspace). Scene3D resources resolve
+  // against the same location. Refused with reason "busy" while a layout load is pending. Every call ends in
+  // exactly one layoutUrlLoadFinished.
   void loadLayoutFromUrl(const QUrl& url);
-  // Stops the loadLayoutFromUrl in flight, if any: its download is dropped, its
-  // own queued and running imports are cancelled (discarding their data) and
-  // the workspace comes back once they wind down. Other loads are left alone.
+  // Stops the loadLayoutFromUrl in flight, if any: its download is dropped, its own imports are cancelled
+  // (discarding their data) and the workspace comes back once they wind down. Other loads are left alone.
   void cancelLayoutFromUrl();
 
   // The page this build was opened from: fills a replayed stream's deployment variables
@@ -242,62 +223,41 @@ class MainWindow : public QMainWindow {
   }
 
 #ifdef PJ_TARGET_WASM
-  // Looks for the presets the page at `page_url` publishes (presets/index.json
-  // beside it) and, once found, offers them in the welcome dialog and under
-  // File → Presets, or opens the one a ?preset=<id> deep link names. A page
-  // without a usable index starts as if this were never called. Call once,
-  // from the event loop, after the window is shown.
+  // Looks for presets/index.json beside `page_url` and offers its presets in the welcome dialog and under
+  // File → Presets, or opens the one a ?preset=<id> deep link names; without a usable index nothing changes.
+  // Call once, from the event loop, after the window is shown.
   void startBrowserPresets(const QUrl& page_url);
 #endif
 
-  // Arms the --autoplay CLI option: begins looping playback the first time a data
-  // source provides a non-empty time range (so it works for both the synchronous
-  // --test-data path and the async --layout load). Starts once — the user's later
-  // pause/seek is respected. No-op if no data ever loads. Call before loading data.
+  // --autoplay: starts looping playback once, the first time a data source provides a non-empty time range.
+  // Call before loading data.
   void enableAutoplay();
 
   [[nodiscard]] TitleBar* titleBar() const {
     return title_bar_;
   }
 
-  // Diagnostic sink that fans out to the title-bar bell + popup via the
-  // DiagnosticHistory service. Use this from tools / CLI / dev feeds to
-  // emit through the same pipeline plugins use.
+  // The pipeline plugins report through (DiagnosticHistory, the title-bar bell).
   [[nodiscard]] DiagnosticSink diagnosticSink() const;
 
-  // The Qt-side bridge every in-process diagnostic re-emits through (queued).
-  // Exposed for additional subscribers — the --dump-diagnostics collector —
-  // beside the DiagnosticHistory bell service; never a mutation surface.
+  // Every in-process diagnostic re-emits through it, queued. For extra subscribers (--dump-diagnostics).
   [[nodiscard]] QtDiagnosticBridge* diagnosticBridge() const {
     return diagnostic_bridge_;
   }
 
-  // Shows a transient bottom-right toast. The message may contain rich text
-  // (an `<a href>` opens in the system browser). Lazily creates the toast
-  // manager on first use.
+  // `message` may be rich text; an `<a href>` opens in the system browser.
   void showToast(const QString& message, const QPixmap& icon = QPixmap());
 
-  // Kicks off a one-shot GitHub release check (lazily creating the
-  // UpdateChecker). A newer release always pops a toast. `interactive`
-  // distinguishes the two entry points: false = automatic startup check, which
-  // stays silent unless there's an update (no "up to date" / no error noise);
-  // true = the manual Help ▸ Check for Updates action, which also toasts the
-  // "you're up to date" and "couldn't check" outcomes.
+  // One release check. A newer release always toasts; only an `interactive` check (Help ▸ Check for Updates)
+  // also toasts "up to date" and "couldn't check".
   void checkForUpdates(bool interactive);
 
-  // One-shot startup scan for extension/plugin updates (distinct from the app
-  // release check above): fetches the marketplace registry and compares each
-  // entry against the installed version via ExtensionManager::hasUpdate. When
-  // any installed extension has a newer registry version, reveals the magenta
-  // "Update" button in the title bar (tooltip carries the count); clicking it
-  // opens the Marketplace. Fully silent on network/parse failure — no button,
-  // no toast. Lazily creates its own RegistryManager on first call.
+  // Startup scan of the installed extensions against the marketplace registry: reveals the title bar's Update
+  // button when any has a newer version. Silent on a network or parse failure.
   void checkExtensionUpdates();
 
 #ifndef PJ_TARGET_WASM
-  // main.cpp's gate skipped checkExtensionUpdates() for this launch (the
-  // --screenshot flag, or "check for updates on startup" turned off). Only
-  // tells the feature catalog why no registry is known; fetches nothing.
+  // main.cpp skipped checkExtensionUpdates(): tells the feature catalog why no registry is known.
   void noteRegistryScanSkipped();
 
   // Reports every fetch `manager` starts from now on to the feature catalog,
@@ -305,132 +265,95 @@ class MainWindow : public QMainWindow {
   void trackRegistryFetches(RegistryManager* manager);
 #endif
 
-  // Sends the anonymous daily-user ping (lazily creating the TelemetryPing).
-  // Fully silent — no user-facing notification. `installation` is the
-  // PJ_INSTALLATION build stamp, passed by main.cpp (the only pj_version.h
-  // consumer). The opt-out gate lives at the call site, not here.
+  // The anonymous daily-user ping, silent. `installation` is the PJ_INSTALLATION build stamp; the opt-out gate
+  // is the caller's.
   void sendTelemetryPing(const QString& installation);
 
-  // The PJ_INSTALLATION build stamp, passed by main.cpp. Decides where
-  // checkForUpdates() looks for a newer release and how the toast offers it.
+  // The PJ_INSTALLATION build stamp: decides where checkForUpdates() looks and how the toast offers an update.
   void setInstallation(const QString& installation);
 
-  // Presents the embedded external-process view in the central area (via
-  // presentPanel) and restores the chart when the session ends. Idempotent:
-  // a no-op if a panel is already presented.
+  // Presents the embedded external-process view in place of the chart area (replacing any presented panel)
+  // until its session ends. Desktop only.
   void openEmbeddedConsole();
 
-  // Global Chrome metrics for toolbar/panel buttons. Persisted to
-  // QSettings (ui/icon_size, ui/icon_padding, ui/layout_padding,
-  // ui/layout_spacing) and broadcast via chromeMetricsChanged so each
-  // icon-bearing widget can re-render.
+  // Persisted under QSettings ui/icon_size, ui/icon_padding, ui/layout_padding, ui/layout_spacing.
   [[nodiscard]] const ChromeMetrics& chromeMetrics() const {
     return chrome_metrics_;
   }
 
-  // Persist the current chrome metrics to QSettings in one write. The setters
-  // below only apply live (so a Preferences sizing-scrubber drag previews
-  // without thrashing the .ini); PreferencesDialog calls this on OK to commit.
+  // The setters only apply live, so a Preferences scrubber drag previews without writing; PreferencesDialog
+  // commits through this on OK.
   void persistChromeMetrics() const;
 
-  // Plugin search-folder configuration for the Preferences "Plugins" page;
-  // delegates to the extension catalog. Custom-folder edits apply on next launch.
+  // Custom-folder edits apply on the next launch.
   [[nodiscard]] QStringList customPluginFolders() const;
   void setCustomPluginFolders(const QStringList& folders);
   [[nodiscard]] QStringList builtinPluginFolders() const;
 
-  // Where launchToolbox presents the toolbox: the default chart-area
-  // takeover, or directly pinned as a central tab (the layout-restore path
-  // of the "migrate to tab" gesture). Lives in the public: section — moc
-  // rejects type declarations inside slots/signals sections.
+  // Where launchToolbox presents the toolbox; kPinnedTab is the layout restore of a pinned tab. Declared here
+  // because moc rejects type declarations inside slots/signals sections.
   enum class ToolboxLaunchTarget { kTakeover, kPinnedTab };
 
-  // Marketplace registry URL — the single owner of the Marketplace/registryUrl
-  // settings key. registryUrlSetting() is the raw persisted value, "" when
-  // unset (the built-in default applies); the setter persists immediately (""
-  // clears the override); effectiveRegistryUrl() is the validated read the
-  // marketplace opens with (invalid stored values fall back to the default),
-  // and isValidRegistryUrl() is the one validation rule (http/https/file) the
-  // Preferences editor and the read path share.
+  // The only owner of the "Marketplace/registryUrl" key. registryUrlSetting() is the raw value, "" for the
+  // built-in default; the setter persists at once. effectiveRegistryUrl() falls back to the default for an
+  // invalid stored value; isValidRegistryUrl() (http/https/file) is the rule the Preferences editor shares.
   [[nodiscard]] QString registryUrlSetting() const;
   void setRegistryUrlSetting(const QString& url);
   [[nodiscard]] QUrl effectiveRegistryUrl() const;
   [[nodiscard]] static bool isValidRegistryUrl(const QString& url);
 
-  // The built-in registry URL — the Preferences editor's placeholder.
   [[nodiscard]] static QString defaultRegistryUrl();
 
-  // Preferences key (bool) that opts in to PlotJuggler's own window frame
-  // instead of the system's. Read once at construction, so a change applies
-  // on the next launch.
+  // Preferences key (bool): PlotJuggler's own window frame. Read at construction; a change applies on the next
+  // launch.
   static constexpr QLatin1StringView kCustomTitleBarKey{"Preferences::custom_title_bar"};
 
-  // Preferences key (bool): open/save through the platform's file picker
-  // (FileDialog::setUseSystemDialog). Applied at construction and on
-  // Preferences OK.
+  // Preferences key (bool): the platform's file picker (FileDialog::setUseSystemDialog).
   static constexpr QLatin1StringView kSystemFileDialogKey{"Preferences::system_file_dialog"};
 
-  // Preferences key (bool): wall-clock time labels show UTC instead of the
-  // system time zone. Applied at construction and on Preferences OK.
+  // Preferences key (bool): wall-clock time labels in UTC instead of the system time zone.
   static constexpr QLatin1StringView kClockUtcKey{"Preferences::clock_utc"};
 
-  // Key (bool) of the date-time toggle (buttonUseDateTime): time labels read as
-  // a clock instead of seconds. The name is PJ3's.
+  // Key (bool) of the date-time toggle (buttonUseDateTime): time labels as a clock instead of seconds.
   static constexpr QLatin1StringView kDateTimeDisplayKey{"MainWindow.dateTimeDisplay"};
 
-  // Whether the user gets a choice of frame on this platform. False on macOS
-  // (the platform's window controls are not ours to imitate) and in the
-  // browser (see usesCustomFrame); the Preferences toggle is hidden there.
+  // False on macOS (its window controls are not ours to imitate) and in the browser, where the Preferences
+  // toggle is hidden.
   [[nodiscard]] static bool customFrameSelectable();
 
-  // Whether a new MainWindow draws its own frameless frame: the saved
-  // preference where selectable, always in the browser, never elsewhere.
+  // The saved preference where selectable, always in the browser, never elsewhere.
   [[nodiscard]] static bool usesCustomFrame();
 
   // --- Agent control: the services and actions the MCP server (src/mcp/) drives. ---
 
-  // Before deleting `removed_topics`, find every derived series (transform) that
-  // depends on them transitively, warn the user, and — if confirmed — remove those
-  // transforms and their Custom Topics entries, then run `proceed`. `proceed` runs
-  // at once when nothing depends on the removed series, and never on cancel or a
-  // failed removal. It may run after this returns (the browser prompt is
-  // non-blocking), so it must re-validate anything that could change meanwhile.
-  // `still_allowed`, when given, is asked once the prompt is accepted and before
-  // anything is removed: false abandons the whole delete (it reports why itself).
-  // `cancelled`, when given, runs instead of `proceed` when the delete is abandoned
-  // (the user cancelled, `still_allowed` refused, or removing the processors failed),
-  // so an asynchronous caller always hears exactly one outcome. `on_dialog`, when given,
-  // is told when the prompt opens and when it is gone.
+  // Before deleting `removed_topics`: finds the transforms depending on them transitively, asks, and on
+  // confirmation removes them and their Custom Topics entries, then runs `proceed` (at once when nothing
+  // depends on them). `proceed` may run after this returns (the browser prompt is non-blocking), so it must
+  // re-validate anything that could change meanwhile. `still_allowed` is asked after the prompt is accepted and
+  // before anything is removed; false abandons the delete (it reports why itself). `cancelled` runs instead of
+  // `proceed` when the delete is abandoned (user cancel, `still_allowed` refusal, failed removal), so a caller
+  // always hears exactly one outcome. `on_dialog` is told when the prompt opens and closes.
   void confirmAndRemoveDependentTransforms(
       const std::vector<TopicId>& removed_topics, std::function<void()> proceed,
       std::function<bool()> still_allowed = {}, std::function<void()> cancelled = {},
       dialog_presenter::DialogWatch on_dialog = {});
 
-  // Erases `dataset_ids` with no prompt (the caller has confirmed, and has already
-  // removed the derived series depending on them), then re-seeds playback (unless a
+  // No prompt: the caller has confirmed and removed the dependent derived series. Re-seeds playback (unless a
   // stream is live) and resets undo once for the batch.
   void removeDatasets(const QList<DatasetId>& dataset_ids);
 
-  // Reloads `dataset_id` from its file with the plugin + config recorded when that
-  // file was loaded. `policy` overrides the dialog policy the interactive reload picks
-  // (skip the dialog when both are known); `still_allowed` becomes the load's
-  // LoadHints::still_allowed. Returns the load ticket, 0 when the dataset is not
-  // file-backed or the load was rejected.
+  // Reloads `dataset_id` from its file with the plugin and config recorded at its load. `policy` overrides the
+  // interactive reload's dialog policy; `still_allowed` becomes LoadHints::still_allowed. Returns the load
+  // ticket, 0 when the dataset is not file-backed or the load was rejected.
   LoadRequestId reloadDataset(
       DatasetId dataset_id, std::optional<DialogPolicy> policy = std::nullopt,
       std::function<bool()> still_allowed = {});
 
-  // Re-derives the Custom Topics rows from the live transform recipes and the
-  // persistent on-demand recipes (one flat row per object output, with its node's
-  // state) and hands the whole set to the panel.
-  //
-  // The panel cannot maintain that list on its own: only the services know which
-  // catalog topics are derived. Every on-demand install (onDemandRecipeInstalled)
-  // calls this after the catalog has relisted; call it from any other path that changes the recipe set WITHOUT
-  // retiring the outputs' catalog items — a plugin creating or withdrawing a
-  // transform, and a layout restore. A path that does retire them needs nothing:
-  // the panel prunes on CatalogModel::itemsRemoved. Call it AFTER the catalog
-  // rebuild, or the new outputs have no keys yet.
+  // Rebuilds the Custom Topics rows from the transform and on-demand recipes; only the services know which
+  // catalog topics are derived. Call it, AFTER the catalog rebuild (or the new outputs have no keys yet), from
+  // every path that changes the recipe set without retiring the outputs' catalog items (an on-demand install,
+  // a plugin creating or withdrawing a transform, a layout restore); a retiring path needs nothing, the panel
+  // prunes on CatalogModel::itemsRemoved.
   void syncCustomTopicsPanel();
 
   // The session services the MCP server reads and drives; they live as long as this window.
@@ -457,7 +380,7 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] static PJ_service_registry_t toolboxSessionServices(ToolboxPanelSession& session);
 
 #ifndef PJ_TARGET_WASM
-  // The feature catalog `about` serves (desktop only).
+  // The feature catalog `about` serves.
   [[nodiscard]] FeatureCatalogHost* featureCatalog() const {
     return feature_catalog_.get();
   }
@@ -468,75 +391,53 @@ class MainWindow : public QMainWindow {
   // switch shows whether public access is open and applies on OK.
   static constexpr QLatin1StringView kMcpServerKey{"Preferences::mcp_server"};
 
-  // Opens MCP public access: any local agent (the bridge) may connect with a random token, which
-  // the discovery file advertises. Starts the server on a free 127.0.0.1 port unless it already
-  // runs for a toolbox plugin's endpoint (a failure goes to the diagnostics). A no-op while open.
-  // Shows a status-bar indicator while a public client is active.
+  // Any local agent (the bridge) may connect with a random token the discovery file advertises. Starts the
+  // server on a free 127.0.0.1 port unless it already runs for a plugin endpoint (a failure goes to the
+  // diagnostics). A no-op while open.
   void openMcpPublicAccess();
   // Closes public access (token and discovery file); agents' tabs and derived series stay. The
   // server keeps listening, refusing everything but toolbox plugins' private endpoints.
   void closeMcpPublicAccess();
   [[nodiscard]] bool mcpPublicAccess() const;
-  // Opens public access and links it to the agent relay at `relay` (McpBrowserLink): how the
-  // browser build, which cannot listen, reaches an agent (the page's ?mcp= parameter; --mcp-relay
-  // on the desktop). False, after a diagnostic, when `relay` is not a loopback http URL or the
-  // server cannot start. A second call replaces the link.
+  // Opens public access and links it to the agent relay at `relay` (McpBrowserLink): how the browser build,
+  // which cannot listen, reaches an agent (?mcp=; --mcp-relay on the desktop). False, after a diagnostic, when
+  // `relay` is not a loopback http URL or the server cannot start. A second call replaces the link.
   bool connectMcpRelay(const QUrl& relay);
 
  public slots:
-  // Apply-only: clamp, update chrome_metrics_, broadcast chromeMetricsChanged.
-  // These do NOT write QSettings — persistence is deferred to
-  // persistChromeMetrics() so dragging a sizing scrubber previews live but
-  // commits once (see PreferencesDialog).
+  // Apply live only (clamp, broadcast chromeMetricsChanged); persistChromeMetrics() writes QSettings.
   void setIconSize(int size);
   void setIconPadding(int padding);
   void setLayoutPadding(int padding);
   void setLayoutSpacing(int spacing);
 
  signals:
-  // Fires after qApp's stylesheet is applied; subwidgets refresh
-  // palette-tinted icons via their onStylesheetChanged slots.
+  // After qApp's stylesheet is applied.
   void stylesheetChanged(QString theme);
 
-  // The settlement boundary of a loadLayoutFromPath restore (the
-  // --exit-after-layout observation channel): emitted exactly once per layout
-  // load that reaches a terminal outcome. `success` is true only when the
-  // layout COMMITTED (the sync apply leg's tail, or the progressive drain
-  // after every restore waiter cleared and the import batch finished — so a
-  // quit on this signal can never tear down a still-active batch); false on
-  // an open/parse/apply failure, a user cancel, or a cancelled import batch.
-  // A progressive restore superseded by a newer load never settles — the
-  // superseding load emits its own settlement instead.
+  // Exactly once per loadLayoutFromPath that reaches a terminal outcome (--exit-after-layout observes it).
+  // `success` only when the layout committed, which for a progressive restore is after every restore waiter
+  // cleared and the import batch finished, so quitting here never tears down an active batch. False on an
+  // open/parse/apply failure, a user cancel or a cancelled batch. A superseded restore never settles.
   void layoutRestoreSettled(bool success);
 
-  // The terminal of one loadLayoutFromUrl: `reason` is empty on success, else
-  // the token its PJ_WASM_LAYOUT_LOAD_FAILED line names (busy, download, size,
-  // fingerprint, source-url, staging, import, source-shape, resources,
-  // apply-after-source-load, …) or "cancelled". A busy refusal is reported at
-  // once for the refused URL while the load in flight carries on. Emitted after
-  // the load's state is cleared, so a handler may start the next one.
+  // The terminal of one loadLayoutFromUrl: `reason` is empty on success, else the token its
+  // PJ_WASM_LAYOUT_LOAD_FAILED line names (busy, download, size, fingerprint, …) or "cancelled". A busy refusal
+  // is reported at once while the load in flight carries on. Emitted after the load's state is cleared, so a
+  // handler may start the next one.
   void layoutUrlLoadFinished(const QUrl& url, bool ok, const QString& reason);
 
-  // A data source of the loadLayoutFromUrl for `url` is downloading: `received` bytes so far of `total` (its
-  // declared size, or -1 when unknown), at most about ten times a second. Each source ends with received == total,
-  // its size, once it has fully arrived. A layout with several sources reports each in turn.
+  // A source of the loadLayoutFromUrl for `url` is downloading: `total` is its declared size or -1. Throttled;
+  // each source ends with received == total once it has fully arrived. Sources report one after another.
   void layoutUrlLoadProgress(const QUrl& url, qint64 received, qint64 total);
 
-  // Fires when any chrome metric changes. Bundled so consumers always
-  // recompute layout from a consistent snapshot:
+  // One signal for all metrics, so consumers recompute from a consistent snapshot:
   //   band height       = (icon_size + icon_padding) + 2 * layout_padding
-  //   chrome margins    = layout_padding
-  //   chrome / list gap = layout_spacing
-  // layout_padding feeds QLayout::setContentsMargins (band grows to
-  // absorb it), layout_spacing feeds QLayout::setSpacing and the
-  // CurveEditor list-row gap.
+  //   chrome margins    = layout_padding (QLayout::setContentsMargins)
+  //   chrome / list gap = layout_spacing (QLayout::setSpacing, CurveEditor row gap)
   void chromeMetricsChanged(const ChromeMetrics& metrics);
 
  private slots:
-  // Layout file flow: open / save / replay-recent. Persists the chosen file
-  // path into the recent-layouts list (cap kMaxRecentEntries) regardless of
-  // whether the on-disk format is meaningful yet. onLoadRecentLayout is invoked
-  // from the LeftPanel recent popup's Layouts section.
   void onLoadLayout();
   void onSaveLayout();
 #ifdef PJ_TARGET_WASM
@@ -544,288 +445,186 @@ class MainWindow : public QMainWindow {
 #endif
   void onLoadRecentLayout(const QString& path);
 
-  // Opens the extension marketplace dialog.
   void onOpenMarketplace();
-
-  // Opens the file-load workflow.
   void onLoadDataRequested();
-
-  // Reloads the remembered data source with its recorded plugin config.
+  // Reloads the most recent source with its recorded plugin and config.
   void onReloadDataRequested();
-
-  // Reloads ONE dataset from its tracked source path (curve tree "Reload") —
-  // the per-dataset variant of onReloadDataRequested for sessions with several
-  // files loaded. Recovers the plugin + config recorded for that path, not
-  // just the most recent load.
+  // Curve tree "Reload": that dataset's own recorded plugin and config, not the most recent load's.
   void onReloadDatasetRequested(DatasetId dataset_id);
-
-  // Curve tree "Replace": pick a different file and transactionally replace
-  // the dataset's data with it (FileLoader::replaceFromDialog).
+  // Curve tree "Replace": transactionally replaces the dataset's data with another file.
   void onReplaceDatasetRequested(DatasetId dataset_id);
-
-  // Curve tree "Info": show the dataset-info dialog (display name, backing
-  // file, and provenance from the dataset's SourceRecord when it has one).
   void onDatasetInfoRequested(DatasetId dataset_id);
 
-  // Updates playback bounds after a data file has populated datastore and
-  // object-store topics.
   void onFileLoaded(
       const QString& path, const QString& prefix, const QString& plugin_id, const QString& plugin_config_json,
       const QString& plugin_manifest_id);
 
-  // Removes selected catalog entries from the curve/object tree.
   void onCatalogTrashRequested(QStringList keys, bool covers_all);
-
-  // Removes the selected datasets (curve tree "Remove"): shows one
-  // combined confirmation, then removeDatasets(). Widget sync is signal-driven.
+  // One combined confirmation, then removeDatasets().
   void onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids);
-
-  // Merges the selected datasets (curve tree "Merge"): shows the shared
-  // destructive-merge confirmation, performs the merge, and marks the result on
-  // the Source Timeline so its bar reads as merged.
+  // Confirms, merges, and marks the result on the Source Timeline.
   void onMergeDatasetsRequested(const QList<DatasetId>& dataset_ids);
 
-  // Erase one dataset's data (TF buffer, object payloads, catalog items, then the
-  // engine's scalar storage — in that order) and drop its file association. Shared
-  // body of the multi-remove; does NOT confirm, re-seed playback, or reset undo —
-  // the caller does those once for the whole batch.
+  // Erases one dataset's data in this order: TF buffer, object payloads, catalog items, the engine's scalar
+  // storage; drops its file association. Does not confirm, re-seed playback or reset undo: the caller does
+  // those once per batch.
   void removeDatasetData(DatasetId dataset_id);
 
   void onShowPreferencesDialog();
-
-  // Opens the modal About box (Help ▸ About PlotJuggler…).
   void onShowAboutDialog();
-
-  // Help ▸ Check for Updates… — a manual, always-runs release check that also
-  // reports when the app is already current (unlike the silent startup check).
   void onCheckForUpdates();
 
-  // Target of the update toast's "Update now" link (the `pj-update:` scheme):
-  // starts the Windows maintenance tool in updater mode, then closes the app,
-  // whose files Windows keeps locked while it runs.
+  // The update toast's `pj-update:` link: starts the Windows maintenance tool in updater mode, then closes the
+  // app, whose files Windows keeps locked while it runs.
   void onUpdateLinkActivated(const QUrl& url);
 
-  // Rebuilds the Help ▸ Installed Extensions submenu from the current
-  // ExtensionCatalogService snapshot. Informational only (disabled
-  // entries): data sources, message parsers, toolboxes. Managing
-  // extensions happens in the Marketplace (File menu).
+  // Help ▸ Installed Extensions, informational (disabled entries).
   void onRebuildExtensionsMenu();
-
-  // Rebuilds the title-bar Toolbox menu from the current toolbox
-  // catalog. Lists only the launchable, *non-cloud* toolboxes (cloud
-  // toolboxes live in the Sources panel instead); each entry launches
-  // its toolbox via launchToolbox(). Built lazily on aboutToShow so it
-  // tracks whatever the catalog currently has loaded.
+  // The title-bar Toolbox menu, rebuilt on aboutToShow: launchable non-cloud toolboxes only (cloud ones are in
+  // the Sources panel).
   void onRebuildToolboxMenu();
 
-  // Point the title-bar progress strip at the last-started interactive toolbox
-  // import (title from toolbox_ingest_label_, busy bar, delayed show) and take
-  // displayed ownership for it. Callers gate on FileLoader being idle — the
-  // strip has one owner at a time and file loads win.
+  // Points the progress strip at the last-started interactive toolbox import and takes displayed ownership.
+  // Callers check FileLoader is idle: the strip has one owner and file loads win.
   void adoptToolboxIngestStrip();
 
-  // Permille progress on the strip (counts may be bytes far beyond int range);
-  // total 0 keeps the busy/indeterminate bar.
+  // Permille on the strip (counts may be bytes beyond int range); total 0 keeps the busy bar.
   void setIngestStripProgress(quint64 current, quint64 total);
 
-  // D8 survivor pick + display: hands the strip to the eligible active ingest
-  // per the arbitration rule at ingest_strip_owner_kind_, skipping `exclude`
-  // (a dataset that is ending/ineligible; 0 = none) and restoring the
-  // survivor's recorded label/progress. Returns false when no eligible ingest
-  // survives (the caller decides between linger-hide and leaving the strip to
-  // a file load). Precondition: callers invoke this only while the strip is
-  // already engaged (shown, or its show delay pending) — it never (re)starts
-  // the show timer.
+  // Hands the strip to a surviving eligible ingest (rule at ingest_strip_owner_kind_), skipping `exclude`
+  // (0 = none), with its recorded label and progress. False when none survives. Call only while the strip is
+  // engaged (shown or its show delay pending): it never starts the show timer.
   bool displaySurvivingIngestOnStrip(DatasetId exclude);
 
-  // The strip's displayed ingest ended (or became ineligible): switch to a
-  // survivor, or clear ownership and start the linger-hide (skipped while a
-  // file load is about to own the widget). No-op when `ended` is not the
-  // displayed dataset.
+  // The displayed ingest ended or became ineligible: switch to a survivor, or clear ownership and start the
+  // linger-hide (skipped while a file load is about to own the strip). No-op unless `ended` is displayed.
   void releaseIngestStripOwner(DatasetId ended);
 
-  // Flag-only cooperative cancel of every live toolbox bulk import: dedups by
-  // host, skips entries whose owning panel has closed (dead weak owner), and
-  // never dereferences a host until that owner check passes. Keep-partial — the
-  // toolbox ABI has no host-side rollback.
+  // Flag-only cooperative cancel of every live toolbox import, keep-partial (the toolbox ABI has no host-side
+  // rollback). A host is dereferenced only after its owning panel's weak owner is checked alive.
   void stopAllToolboxImports();
 
-  // Launches a toolbox by id: builds a ToolboxRuntimeHost, binds the
-  // toolbox, hosts its dialog in a PanelEngine, and presents it in the
-  // chart area (or pins it as a tab, per `target`). Close tears it all
-  // down. Shared by the Toolbox menu and LeftPanel::cloudToolboxRequested
-  // ("cloud" is just a manifest tag). If the toolbox is already pinned as a
-  // tab, launching focuses that tab instead (one live instance per id).
-  // `initial_config` (optional) is handed to the toolbox via loadConfig() before
-  // its dialog is built — used to open the Transform Editor pre-populated for an
-  // in-place edit of an existing derived series. `pin_tab_name` (kPinnedTab
-  // only) overrides the plugin display name as the tab label, so a layout
-  // restore re-creates a renamed tab born with its saved name.
+  // Builds the runtime host and presents the toolbox in the chart area, or pins it as a tab per `target`. One
+  // live instance per id: an already-pinned toolbox gets its tab focused. `initial_config` reaches the toolbox
+  // through loadConfig() before its dialog is built (the Transform Editor's in-place edit). `pin_tab_name`
+  // (kPinnedTab only) restores a renamed tab under its saved name.
   void launchToolbox(
       const QString& plugin_id, const QString& initial_config = QString(),
       ToolboxLaunchTarget target = ToolboxLaunchTarget::kTakeover, const QString& pin_tab_name = QString());
 
   void onThemeChanged(const QString& theme);
 
-  // Wires callbacks for a newly created plot tab.
   void onPlotTabAdded(PlotDocker* docker);
-  /// Focus the requesting dock and toggle the shared settings sidebar.
   void onSettingsPanelToggleRequested(DockWidget* dock);
 
-  // A placeholder 2D/3D icon was clicked: builds an empty scene dock of the
-  // matching kind (the shell owns the family→kind mapping) and adopts it into
-  // `dock`. Plot clicks are handled inside DockWidget itself.
+  // A placeholder 2D/3D icon was clicked: adopts an empty scene dock of that kind into `dock` (plot clicks are
+  // handled inside DockWidget).
   void onObjectFamilyRequested(DockWidget* dock, VisualizationKind family);
 
-  // A catalog drop named an advertised placeholder (see
-  // DockWidget::placeholderTopicDropped): routes to
-  // TopicDemandController::handlePlaceholderPlotDrop (object_type == kNone) or
-  // handleSceneDockPlaceholderDrop, instead of the normal add-curve/add-layer path.
+  // A drop of an advertised placeholder topic: routed to TopicDemandController (handlePlaceholderPlotDrop for
+  // kNone, else handleSceneDockPlaceholderDrop) instead of the normal add-curve/add-layer path.
   void onPlaceholderTopicDropped(
       DockWidget* dock, DatasetId dataset_id, QString topic_name, sdk::BuiltinObjectType object_type);
 
-  // Routes the focused DockWidget to the right config page and updates
-  // the curve-editor binding. Plot-only state changes still go through
-  // bindEditorToPlot.
+  // Picks the right-panel config page for the focused dock and rebinds the curve editor.
   void onDockFocused(DockWidget* dock);
 
-  // Wires callbacks for a newly created plot widget.
   void onPlotAdded(PlotWidget* plot);
 
-  // Opens the Filter Editor as a chart-area takeover panel (presentPanel) scoped
-  // to `sources`. On Apply each filtered output replaces its source curve on
-  // `origin` (PlotWidget::replaceCurve — same colour, in place); Close/Apply
-  // restore the chart area.
+  // A chart-area takeover scoped to `sources`; on Apply each filtered output replaces its source curve on
+  // `origin` in place (PlotWidget::replaceCurve).
   void openFilterEditor(std::vector<CurveDescriptor> sources, PlotWidget* origin);
-  // Push the current global grid / curve-style / curve-width onto a PlotWidget
-  // embedded in a plugin toolbox panel (e.g. the Transform Editor plugin), so the
-  // app's right-side display buttons drive the plugin preview too.
+  // Mirror the global grid, curve style and width onto a PlotWidget embedded in a toolbox panel (the
+  // Transform Editor's preview).
   void syncPanelPreviewDisplay();
-  // Deferred syncPanelPreviewDisplay for a panel that was just shown: its
-  // embedded PlotWidget only exists after the engine's first tick.
+  // For a panel just shown: its embedded PlotWidget exists only after the engine's first tick.
   void schedulePanelPreviewSync();
-  // Push the current global grid / curve-style / curve-width onto an open Filter
-  // Editor's preview plot so it matches the real plots. No-op unless the presented
-  // panel is a FilterEditorPanel. Called on open and from the viz-toolbar handlers.
+  // The same for an open Filter Editor's preview plot; no-op for any other panel.
   void syncFilterEditorPreviewDisplay();
 
-  /// Inherit the linked time range after a curve drop has fitted the receiving plot.
+  /// Inherits the linked time range after a curve drop has fitted the receiving plot.
   void onPlotCurvesDropped(bool was_empty);
-  // Mirrors X zoom to linked plots.
   void onPlotZoomChanged(PlotWidget* modified, QRectF rect);
-  // Linked-zoom feed from a State Transitions strip: fan its visible window's X
-  // onto plots and the other strips (mirror of onPlotZoomChanged, gated by the
-  // same link toggle).
+  // A State Transitions strip's visible X window, fanned onto plots and the other strips under the link toggle.
   void onStateTransitionsRangeChanged(StateTransitionsDockWidget* source, double t_min, double t_max);
 
-  // Updates playback time from a plot tracker move.
   void onTrackerMovedFromWidget(QPointF point);
 
-  // "Use time offset" toggled: flip the SessionManager frame (plots re-fit via
-  // displayOffsetChanged), re-seed the playback range, and shift the playhead by
-  // the per-dataset offset delta so the cursor stays on the same real instant.
+  // Flips the SessionManager frame, re-seeds the playback range and shifts the playhead by the offset delta, so
+  // the cursor stays on the same real instant.
   void onUseTimeOffsetToggled(bool checked);
 
-  // The representative dataset whose offset frames the global playhead and blue
-  // reference line: the active streaming dataset, else the first loaded one (0
-  // when the session is empty). Single-dataset sessions are exact; multi-dataset
-  // alignment is the future refinement the displayOffset seam leaves room for.
+  // The dataset whose offset frames the playhead and the reference line: the active stream, else the first
+  // loaded one, 0 when empty. Exact only for a single-dataset session.
   [[nodiscard]] DatasetId representativeDatasetId() const;
 
-  // The blue reference line's position in display-axis seconds, PROJECTED on
-  // demand from reference_instant_ through the current representative-dataset
-  // offset. nullopt when no reference is set. Re-evaluated on every frame change
-  // (displayOffsetChanged), so the line tracks the offset instead of going stale.
+  // The reference line in display-axis seconds, projected from reference_instant_ through the current offset;
+  // nullopt when unset. Re-evaluated on every displayOffsetChanged.
   [[nodiscard]] std::optional<double> referenceDisplaySeconds() const;
 
-  // Push the current reference-line position (referenceDisplaySeconds(), computed
-  // once) to every plot and the Source Timeline.
   void broadcastReferenceLine();
 
-  // Recomputes time_label_format_ from the date-time toggle and the UTC
-  // preference, and pushes it to every plot, the playback readout and the Source
-  // Timeline. Cheap to repeat: each receiver no-ops on an unchanged format.
+  // From the date-time toggle and the UTC preference, to every plot, the playback readout and the Source
+  // Timeline; receivers ignore an unchanged format.
   void applyTimeLabelFormat();
 
-  // Drop-time fast path for the live-ingest seed below: if data is already present
-  // when the user drops a scalar curve or object topic, set the playback range and
-  // playhead immediately. Live ingest can also seed without any drop.
+  // When data is already present at a scalar curve or object topic drop, seeds the playback range and playhead
+  // at once; live ingest also seeds without a drop.
   void seedStreamingPlaybackFromDrop();
   // The first topic dropped into an empty click-created object view: seeds streaming playback and frames it.
   void onFirstObjectTopicAdded(DockWidget* dock);
 
-  // Locks seeking (playback slider + Source Timeline) exactly while a followed stream
-  // is playing; called on every change of either condition.
+  // Locks seeking (playback slider, Source Timeline) exactly while a followed stream is playing; call on every
+  // change of either condition.
   void refreshStreamingSeekLock();
 
-  // Put the Source Timeline into read-only mode (called with streaming && playing,
-  // from refreshStreamingSeekLock). While the cursor is glued to the live
-  // tip, editing source offsets / order / merges or seeking the needle is unsafe;
-  // pausing the stream clears it so the retained window can be scrubbed/realigned.
-  // Locks the Timeline widget's manipulation gestures (setInteractionLocked) AND
-  // greys the external align rail (whose buttons drive the controller directly).
+  // Editing offsets, order or merges, or seeking, is unsafe while the cursor is glued to the live tip. Locks the
+  // Timeline's gestures and greys the align rail, whose buttons drive the controller directly.
   void setSourceTimelineStreamingLock(bool locked);
 
-  // Records a user-visible plot layout change. `force_new_state` pushes a fresh,
-  // non-coalescing undo entry — set it for discrete operations that must never merge
-  // into a preceding edit (e.g. applying/removing a filter).
+  // `force_new_state` pushes a non-coalescing undo entry, for discrete operations that must not merge into a
+  // preceding edit (applying or removing a filter).
   void onUndoableChange(bool force_new_state = false);
 
-  // Restores the previous layout snapshot.
   void onUndo();
-
-  // Restores the next layout snapshot after undo.
   void onRedo();
 
-  // Record button toggled in the streaming strip: records every live streaming
-  // source into one batch folder, one file each, or ends the running capture. A
-  // start that cannot proceed unchecks the button and explains itself in a
-  // toast, so the button never lies about the state.
+  // Records every live stream into one batch folder, one file each, or ends the capture. A start that cannot
+  // proceed unchecks the button and says why in a toast.
   void onRecordToggled(bool record);
 
-  // The capture opened: every file exists and every tap is attached.
+  // Every file exists and every tap is attached.
   void onRecordingStarted(
       const QString& capture_id, const QString& directory, const QVector<SourceRecordingStart>& sources);
 
-  // Terminal report of one capture. The toast names one file when there is one,
-  // the folder when every source is clean, and the failing sources otherwise;
-  // the per-source detail always goes to the log.
+  // The toast names the one file, the folder when every source is clean, or the failing sources; per-source
+  // detail goes to the log only.
   void onRecordingStopped(const CaptureResult& capture);
 
-  // 500 ms progress tick: refreshes the elapsed/size label and, once the byte
-  // budget has had to drop messages, says how many.
+  // `dropped`: messages the byte budget had to drop.
   void onRecordingProgress(quint64 messages, quint64 payload_bytes, quint64 dropped);
 
  private:
-  // Re-reads the recording settings the Preferences Recording page persists, so
-  // the next recording uses them without an app restart. Called on every
-  // Preferences dialog this window opens.
+  // So the next recording uses the Recording page's settings without a restart.
   void bindRecordingPreferences(PreferencesDialog& dialog);
 
-  // Pushes the derived-markers mode and reload rate the Preferences Plotting page
-  // persists to the batch engine: at startup, and on OK of every Preferences dialog
-  // this window opens (bindPlottingPreferences).
+  // Pushes the Plotting page's derived-markers mode and reload rate to the batch engine.
   void applyDerivedBatchPreferences();
-  // Connects the Plotting page's OK signals: the derived-markers settings above and
-  // the clock time zone (applyTimeLabelFormat).
+  // On OK: applyDerivedBatchPreferences and applyTimeLabelFormat.
   void bindPlottingPreferences(PreferencesDialog& dialog);
 
-  // Tells every plot which of the marker rules it displays are computing or failed
-  // (PlotWidget::setMarkerStatus), on BatchEngine::runningChanged. "Computing" waits
-  // until a rule has been running for 300 ms, so a quick run never flickers a note.
+  // PlotWidget::setMarkerStatus on BatchEngine::runningChanged. "Computing" shows only after a rule has run for
+  // kMarkerStatusShowDelay, so a quick run never flickers a note.
   void wireMarkerPlotStatus();
-  // Reports the standing marker status to `plot` (wireMarkerPlotStatus's push), when it is wired.
+  // The standing marker status, once wireMarkerPlotStatus has run.
   void reportMarkerStatus(PlotWidget* plot);
   void onPlotMarkerTargetsChanged();
   std::function<void(PlotWidget*)> push_marker_status_;
-  // Tells `only`, or every plot when null, which on-demand series are not computed yet
-  // (PlotWidget::setSeriesStatus); on SessionManager::seriesStateChanged and for a new plot.
+  // PlotWidget::setSeriesStatus to `only`, or every plot when null.
   void pushSeriesStatus(PlotWidget* only);
 
-  // Reloads a recorded source through its plugin + config (dialog skipped when both are known,
-  // unless `policy` says otherwise). Shared by the Reload button and reloadDataset (the per-dataset
-  // reload, also an MCP tool's); the loader asks `still_allowed` before applying anything. Returns
-  // the load ticket, 0 when the loader refused the request outright.
+  // The dialog is skipped when plugin and config are known, unless `policy` says otherwise; the loader asks
+  // `still_allowed` before applying anything. Returns the load ticket, 0 when the loader refused the request.
   LoadRequestId reloadSource(
       const QString& path, const QString& plugin_id, const QString& plugin_config_json,
       std::optional<DialogPolicy> policy = std::nullopt, std::function<bool()> still_allowed = {});
@@ -834,32 +633,24 @@ class MainWindow : public QMainWindow {
   // request's duration; call this from every way that request can end.
   void refreshReloadEnabled();
 
-  // Sets legend position (or hides if `position` already matches the
-  // current state — clicking the active corner toggles the legend off).
-  // Updates QSettings, refreshes button checked states, and re-applies
-  // to every plot.
+  // Persists `position` (kHidden hides), updates the legend button and applies to every plot.
   void setLegendStatus(LegendStatus position);
 
-  // Pushes the current toolbar toggle state (show_points / legend_status /
-  // activate_grid / dots) into one plot, so newly added plots match.
+  // The global toolbar toggles, for a new plot.
   void applyGlobalToggles(PlotWidget* plot);
   void applyShowPointsToDock(DockWidget* dock);
   void applyShowPointsTo2DWidgets();
   void applyLegendStatus(PlotWidget* plot);
-  // Slot: left-click cycles or restores the legend position.
+  // Left-click: next corner, hidden after the last one.
   void onLegendButtonClicked();
-  // Toggles dots overlay on Lines/LinesAndDots curves only; curves in
-  // Dots/Sticks/Steps keep their style.
+  // Switches the plot's default style between Lines and Lines+Dots; any other style is left alone.
   void applyDots(PlotWidget* plot);
 
-  // Refreshes button_time_tracker_'s icon to match tracker_info_.
   void updateTimeTrackerIcon();
-  // Slot: cycles tracker_info_ to the next state and applies to every plot.
   void onTimeTrackerButtonClicked();
 
-  // Per-tab union of X-ranges across non-XY plots when buttonLink is checked;
-  // independent zoom-out otherwise. XY plots always zoom out individually
-  // (their X axis is a curve value, not time, so the union is meaningless).
+  // With buttonLink checked, the per-tab union of non-XY plots' X ranges. XY plots always zoom out alone: their
+  // X axis is a value, not time.
   void linkedZoomOut();
 
   /// `SessionManager::displayTimeForSource` on the ABI's source handle, unwrapped to the axis double.
@@ -868,84 +659,56 @@ class MainWindow : public QMainWindow {
   /// unknown topic. The `to_display_time` of every `pj.playback.v1` the shell offers.
   [[nodiscard]] std::optional<double> displayTimeForTopic(std::string_view topic, int64_t absolute_ns) const;
 
-  // Convenience: emit a diagnostic into the session's sink. Source/id
-  // are stable string literals; message is a translated QString. The
-  // sink fans out to QtDiagnosticBridge → DiagnosticHistory and from
-  // there to the bell label + popup.
+  // `source` and `id` are stable string literals; `message` is translated.
   void emitDiagnostic(DiagnosticLevel level, const char* source, const char* id, const QString& message);
 
-  // Refreshes the streaming source selector from loaded plugins.
   void refreshStreamingCombo();
-  // Recomputes whether any Custom Widget type is installed and hands it, with the Custom-Widget-only object
-  // types, to every dock (CustomWidgetSupport).
+  // Tells every dock (CustomWidgetSupport) whether any Custom Widget type is installed, with the
+  // Custom-Widget-only object types.
   void refreshCustomWidgetsAvailability();
 
-  // Wires callbacks for plots already present after UI setup.
   void wireExistingPlots();
 
-  // Applies operation to each dock widget.
   void forEachDock(const std::function<void(DockWidget*)>& operation);
-
-  // Applies operation to each dock widget on the active top-level tab only (the
-  // on-screen docks). forEachDock's spatial sibling, used by the per-tick fan-out.
+  // The active top-level tab's docks only.
   void forEachVisibleDock(const std::function<void(DockWidget*)>& operation);
 
-  // Pushes the current tracker time (display-axis seconds) to every data dock and
-  // refreshes the curve-list Value column. The single seam for "the time cursor
-  // moved": playback ticks, seeks, and layout/undo restores all route through here.
+  // The one seam for "the time cursor moved" (display-axis seconds): every data dock and the curve list's Value
+  // column, on every tab.
   void broadcastTrackerTime(double display_seconds);
 
-  // Like broadcastTrackerTime, but only the active top-level tab's docks (plus the
-  // always-visible curve-list Value column). The per-tick playback/scrub fan-out
-  // uses this so off-screen tabs do no replot/decode/composite work; structural
-  // seeds use broadcastTrackerTime (all tabs) and the tab-switch handler re-seeds
-  // the newly active tab so a revealed tab is never stale.
+  // The per-tick playback and scrub fan-out: only the active tab's docks (plus the Value column), so off-screen
+  // tabs do no work. Structural seeds use broadcastTrackerTime, and a tab switch re-seeds the revealed tab.
   void broadcastTrackerTimeToVisible(double display_seconds);
 
-  // Applies operation to each 2D/3D scene dock hosted in a DockWidget.
   void forEachSceneDock(const std::function<void(SceneDockWidget*)>& operation);
-
-  // Applies operation to each plot widget.
   void forEachPlot(const std::function<void(PlotWidget*)>& operation);
   // Every mounted State Transitions strip across all tabs.
   void forEachStateStrip(const std::function<void(StateTransitionsDockWidget*)>& operation);
   // Every mounted Custom Widget panel across all tabs.
   void forEachCustomWidgetDock(const std::function<void(CustomWidgetDockWidget*)>& operation);
 
-  // Re-syncs every data widget to the catalog after a removal: each prunes its
-  // own dead pieces (plots drop dead curves; object viewers drop dead layers,
-  // resetting the dock to the placeholder when empty). Connected to the
-  // catalog's cleared()/itemsRemoved() signals.
+  // On the catalog's cleared()/itemsRemoved(): every data widget prunes its dead curves or layers (an emptied
+  // object dock returns to the placeholder).
   void syncWidgetsToCatalog();
 
   // Icons not owned by a subwidget with its own onStylesheetChanged.
   void applyIcons(QString theme);
 
-  // Builds the global toolbar column — vertical stack of Chart + Legend
-  // icons in a fixed 24-px wide strip that sits left of the local panel.
-  // No headers, no flow-layout, always visible regardless of the local
-  // panel's toggle state.
+  // The always-visible Chart and Legend icon column left of the local panel.
   void buildGlobalToolbar();
-
-  // Builds the timeline panel's align rail — a 24-px icon column on the right
-  // edge of the bottom panel that visually continues the global toolbar above
-  // it. Holds the Source Timeline alignment actions (align starts / centers);
-  // shown only while the strip is open (applyBottomPanelConstraints drives that).
+  // The Source Timeline's align actions, under the global toolbar; shown only while the strip is open
+  // (applyBottomPanelConstraints).
   void buildTimelineAlignRail();
-
-  // Builds the local panel — Curve Width + Curve Style header bands and
-  // their flow-layout icon strips above the CurveEditor. Snap/compact
-  // behaviour still applies (hidden by the "Toggle Right Panel" button,
-  // headers fold below ~72 px wide).
+  // The Curve Width and Curve Style strips above the CurveEditor.
   void buildLocalToolbar();
 
-  // Apply to every curve of the editor's bound plot. No-op when unbound.
+  // To every curve of the editor's bound plot; no-op when unbound.
   void applyActivePlotWidth(double width);
   void applyActivePlotStyle(int style);
 
-  /// Exact in-memory state of one dataset track. Portable qualifiers are carried
-  /// only so a source-replacement snapshot can map a reminted DatasetId; history
-  /// replay still requires the raw id to remain live.
+  /// The source qualifiers only let a source-replacement snapshot map a reminted DatasetId; history replay
+  /// requires the raw id to be live.
   struct TimelineTrackState {
     DatasetId dataset_id = 0;
     qint64 display_offset_ns = 0;
@@ -971,8 +734,7 @@ class MainWindow : public QMainWindow {
 
   using SnapshotScope = PJ::SnapshotScope;
 
-  /// One atomic workspace snapshot. XML stays on the established schema while
-  /// session-only timeline identity and chrome remain in memory.
+  /// One atomic workspace snapshot: the layout XML, plus the session-only timeline state the XML does not hold.
   struct CapturedWorkspace {
     QByteArray xml;
     TimelineState timeline;
@@ -983,9 +745,8 @@ class MainWindow : public QMainWindow {
   struct PendingSourceReplacement {
     CapturedWorkspace workspace;
     QString path;
-    // The arming load's LoadRequestId. The disarm compares tickets, not paths:
-    // loadFinished is queued, so a stale same-path terminal from another load
-    // could otherwise kill a live load's capture.
+    // The arming load's LoadRequestId. The disarm compares tickets, not paths: loadFinished is queued, so a
+    // stale same-path terminal from another load would otherwise kill a live load's capture.
     quint64 ticket = 0;
   };
 
@@ -999,38 +760,30 @@ class MainWindow : public QMainWindow {
 
   using TimelineResolutionPlan = std::vector<DatasetId>;
 
-  // Layout helpers.
-  //
-  // Whether the load may open dialogs (reload / trust / missing-curve
-  // prompts). Threaded EXPLICITLY through the whole restore — including any
-  // LayoutImportBatch, which captures it at construction — because late
-  // async continuations run long after the caller's stack (and any
-  // startup-time flag) has unwound (D5).
+  // Whether the load may open dialogs (reload, trust, missing-curve prompts). Passed explicitly through the whole
+  // restore, LayoutImportBatch included (captured at construction): late continuations run long after the
+  // caller's stack, and any startup flag, has unwound.
   enum class LayoutLoadInteractivity {
     kInteractive,  ///< user-driven (menu / recent list): prompts allowed
     kAutomated,    ///< --layout CLI: auto-reload, never any dialog
   };
   void loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity, bool use_current_data = false);
-  // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl
-  // (which is why they also build on the desktop). Every terminal outcome goes
-  // through finishBrowserLayoutLoad, which logs PJ_WASM_LAYOUT_LOAD_OK/FAILED.
+  // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl (which is why they build on the
+  // desktop too). Every terminal outcome goes through finishBrowserLayoutLoad, which logs
+  // PJ_WASM_LAYOUT_LOAD_OK/FAILED.
   enum class BrowserLayoutLoadResult { kApplied, kPending, kFailed };
 
   [[nodiscard]] QDomDocument browserGenericLayoutDocument() const;
   [[nodiscard]] std::optional<QDomDocument> browserSourceLayoutDocument(QString& error) const;
-  // The live streams as a source-bound save writes them: one record per session (its
-  // configuration template, display offset and Source Timeline slot), and in
-  // `identity_for_dataset` the pj-stream:// identity of each dataset a stream writes into,
-  // for layout_xml::stampDatasetIdentities. A session with no configuration is left out
-  // (nothing could start it again). Shared by the desktop and browser saves.
+  // The live streams as a source-bound save writes them (configuration template, display offset, timeline
+  // slot), and in `identity_for_dataset` each stream dataset's pj-stream:// identity for
+  // layout_xml::stampDatasetIdentities. A session without a configuration is left out: nothing could restart it.
   [[nodiscard]] QList<layout_xml::StreamingSourceRef> liveStreamRecords(
       QHash<std::uint32_t, QString>& identity_for_dataset) const;
-  // Each dataset's top-to-bottom slot on the Source Timeline (empty without one); a
-  // dataset that has no bar has no entry.
+  // Each dataset's top-to-bottom Source Timeline slot; a dataset without a bar has no entry.
   [[nodiscard]] QHash<DatasetId, int> timelineSlots() const;
-  // `layout_url` is where the bytes came from (empty for an upload): relative
-  // Scene3D resources and file sources resolve against it, and with it the
-  // sources download instead of being reselected.
+  // `layout_url` is where the bytes came from (empty for an upload): Scene3D resources and file sources resolve
+  // against it, and its sources download instead of being reselected.
   void loadLayoutFromBytes(const QByteArray& bytes, const QString& browser_name, const QUrl& layout_url = {});
   [[nodiscard]] BrowserLayoutLoadResult loadBrowserParsedLayout(
       QDomDocument doc, const QString& browser_name, const QUrl& layout_url);
@@ -1041,8 +794,7 @@ class MainWindow : public QMainWindow {
   void selectBrowserReplaySource();
   void loadBrowserReplaySource(
       quint64 picker_generation, QString browser_name, std::optional<LoadInput> input, QString error);
-  // Accepts `input` (already checked) for the replay's current source slot and moves to the
-  // next one; `name` is only logged.
+  // Accepts the checked `input` for the current source slot and moves on; `name` is only logged.
   void stageReplayInput(LoadInput input, const QString& name);
   // Relabels the decision dialog for the replay's next file to pick (a data file or a side file).
   void promptBrowserReplayFile();
@@ -1051,12 +803,11 @@ class MainWindow : public QMainWindow {
   // The decision text asking for side file `number` of `total`.
   [[nodiscard]] static QString browserReplaySideFilePrompt(
       const QString& name, const QString& source_path, int number, int total);
-  // Remote replay (layout_url set): downloads the next source, then stages it
-  // under the same generation token a picker selection uses.
+  // Remote replay: stages the download under the same generation token a picker selection uses.
   void downloadNextReplaySource();
   // Whether the replay still waits for the download started under `generation`.
   [[nodiscard]] bool isActiveReplayDownload(quint64 generation) const;
-  // End the replay over its current source: reason "download", or "size" (over kMaxPresetDataBytes).
+  // End the replay with reason "download", or "size" (over kMaxPresetDataBytes).
   void failReplayDownload(const QString& error);
   void failReplayOverCap();
   void addDownloadedReplaySource(quint64 generation, std::optional<LoadInput> input, const QString& error);
@@ -1072,15 +823,13 @@ class MainWindow : public QMainWindow {
     kPrompt,      ///< layout load: prompt the user (cancel aborts, remove strips them)
     kSilentDrop,  ///< compatibility restore: unresolved curves may be discarded
     kExact,       ///< history/rollback: fail rather than drop unresolved state
-    // Non-interactive batch restore (D5): never prompts, never opens a
-    // dialog — unresolved intents are RETAINED (never stripped/cleared) and
-    // reported through a diagnostic, so a later binding pass can still
-    // resolve them once their data arrives.
+    // Non-interactive batch restore: no dialog; unresolved intents are retained (never stripped) and diagnosed,
+    // so a later binding pass can resolve them once their data arrives.
     kRetainAndDiagnose,
   };
 
-  // One resolved layout source track, shared by the early offset write and
-  // the later track-order restore so neither pass can bind a different dataset.
+  // Shared by the early offset write and the later track-order restore, so the two cannot bind different
+  // datasets.
   struct LayoutTimelineTrack {
     DatasetId dataset_id;
     qint64 display_offset_ns;
@@ -1088,9 +837,8 @@ class MainWindow : public QMainWindow {
     int timeline_order;
   };
   using LayoutTimelinePlan = std::vector<LayoutTimelineTrack>;
-  // Where a layout's stream records landed: each record's pj-stream:// identity mapped
-  // to its session's dataset (for layout_xml::bindStreamQualifiers) and that dataset's
-  // Source Timeline track as the record saved it. add() fills both, so they never disagree.
+  // Where a layout's stream records landed: pj-stream:// identity to dataset (layout_xml::bindStreamQualifiers)
+  // and each dataset's saved timeline track. add() fills both, so they never disagree.
   struct LayoutStreamBinding {
     QHash<QString, std::uint32_t> dataset_for_identity;
     LayoutTimelinePlan tracks;
@@ -1103,24 +851,17 @@ class MainWindow : public QMainWindow {
     }
   };
 
-  // Applies a parsed layout to already-loaded data: curve rebind, plot/panel
-  // restore, recent-files. `policy` governs unresolved curves (the sync leg
-  // of the same policy the progressive drain captures). The progressive
-  // reload path uses beginProgressiveLayoutRestore instead so the structure
-  // can appear before the load queue drains.
-  // `stream_tracks` are the Source Timeline tracks of the streams this load started or
-  // bound to: they join the files' offsets and order, and a layout with some applies even
-  // though their datasets hold no data yet.
+  // The synchronous leg: applies a parsed layout to already-loaded data (the progressive leg is
+  // beginProgressiveLayoutRestore). `stream_tracks`, the timeline tracks of the streams this load started or
+  // bound, join the files' offsets and order; a layout with some applies though their datasets are still empty.
   void applyRestoredLayout(
       QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks);
-  // Starts each of `streams` from its saved configuration, without its plugin's dialog,
-  // and adds each one that starts to `binding`. Returns one "Stream '<id>': why" line per
-  // stream that did not start; the others are unaffected.
+  // Starts each stream from its saved configuration, without its plugin's dialog, and adds it to `binding`.
+  // Returns one "Stream '<id>': why" line per stream that did not start.
   [[nodiscard]] QStringList startLayoutStreams(
       const QList<layout_xml::StreamingSourceRef>& streams, LayoutStreamBinding& binding);
-  // `policy` is the caller-derived unresolved-intent policy (the load's
-  // interactivity) — captured into progressive_missing_curve_policy_ for the
-  // drain; never inferred from batch presence.
+  // `policy` comes from the load's interactivity and is captured for the drain, never inferred from whether a
+  // batch exists.
   void beginProgressiveLayoutRestore(
       QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks = {});
   void cancelProgressiveLayoutRestore();
@@ -1130,14 +871,12 @@ class MainWindow : public QMainWindow {
   /// Re-registers the document's unresolved curves with the pending binder
   /// (live scene pends survive; see PendingDisplayBinder::collect).
   void collectPendingDisplayBindings(const QDomDocument& doc);
-  /// collectPendingDisplayBindings + an immediate drain-pass flush — the
-  /// post-replay shape used by restore and rollback.
+  /// collectPendingDisplayBindings plus an immediate flush, after restore and rollback.
   void rebuildPendingDisplayBindings(const QDomDocument& doc);
   /// Coalesces plot-owned intent changes into one binder rebuild on the event loop.
   void schedulePendingDisplayBindingRebuild();
-  /// One post-restore settlement of every scene dock: dataset choice, final
-  /// pending retry, then the folded verdict (permanent failure / unresolved
-  /// BLOCKING topics).
+  /// Settles every scene dock after a restore: dataset choice, a last pending retry, then the verdict
+  /// (permanent failure, unresolved blocking topics).
   struct SceneRestoreVerdict {
     bool failed = false;
     QStringList blocking_topics;
@@ -1148,80 +887,51 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] QStringList unresolvedPendingSceneRestores();
   void clearPendingSceneRestores();
   void onProgressiveLayoutDrained();
-  // The end-of-drain owner of every unresolved-state teardown decision
-  // (binder intents, blocking scene pends, the scene-pend clear), switching
-  // on the SAME policy enum applyWorkspace honors: kRetainAndDiagnose keeps
-  // the intents (D5) and diagnoses; kPrompt runs the missing-curve prompt.
-  // Returns false when the user cancelled (the restore was aborted).
+  // The end-of-drain owner of every unresolved-state decision (binder intents, blocking scene pends), on the same
+  // policy applyWorkspace honours: kRetainAndDiagnose keeps the intents and diagnoses, kPrompt prompts. False
+  // when the user cancelled (the restore was aborted).
   [[nodiscard]] bool finalizeUnresolvedRestoreState(MissingCurvePolicy policy);
-  // Dialog-vs-diagnostic fork for drain-time restore failures: a
-  // kRetainAndDiagnose (non-interactive) restore reports through the
-  // diagnostic sink, every other policy through a warning dialog.
+  // A drain-time restore failure: diagnostic under kRetainAndDiagnose, warning dialog otherwise.
   void reportLayoutRestoreIssue(MissingCurvePolicy policy, const char* id, const QString& message);
-  // Builds the batch coordinator for one materialize-bearing restore, wiring
-  // the shell effects (the one-shot workspace checkpoint, removeDatasetData,
-  // the consolidated trust prompt, the diagnostic sink) as its hook seams.
-  // Takes bool (not LayoutLoadInteractivity) deliberately: the batch is
-  // MainWindow-free and must not name a MainWindow-scoped enum.
+  // For a restore with materialize-bearing sources; the shell effects (workspace checkpoint, removeDatasetData,
+  // trust prompt, diagnostics) are its hooks. Takes bool: the batch is MainWindow-free and cannot name
+  // LayoutLoadInteractivity.
   [[nodiscard]] std::unique_ptr<LayoutImportBatch> makeLayoutImportBatch(bool interactive);
-  // True while a layout-import batch still has work in flight — a pending
-  // import keeps the restore alive even when FileLoader is idle.
+  // A pending import keeps the restore alive even when FileLoader is idle.
   [[nodiscard]] bool layoutImportBatchActive() const;
-  // The single routing predicate for a restore that must go progressive:
-  // either the loader is still chewing the reload queue, or a batch import
-  // is producing data the drain must wait for (§6.2 "a pending import keeps
-  // the restore alive").
+  // The one predicate for a restore that must go progressive: the loader still has the reload queue, or a batch
+  // import is producing data the drain must wait for.
   [[nodiscard]] bool restoreHasPendingAsyncWork(bool reload_requested) const;
-  // The progressive-drain gate: proceeds only when NO registered restore
-  // waiter is still pending (FileLoader's queue and the batch — the batch's
-  // waiter is also what holds the drain open for T7's mid-import binding;
-  // the binder work registers nothing of its own here). A cancelled batch
-  // instead unwinds the progressive state: its rollback already restored
-  // the pre-layout workspace.
+  // The progressive-drain gate: proceeds only when no restore waiter is pending. A cancelled batch unwinds the
+  // progressive state instead: its rollback already restored the pre-layout workspace.
   void maybeSettleProgressiveRestore();
-  // D1: batch-scoped observation of SessionManager's ingest lifecycle —
-  // connects the three signals at the batch HANDOVER (and only then; plain
-  // layouts never install them). The batch job's announced dataset displays
-  // under kLayoutBatch ownership; every other began/progress rides the same
-  // arbitration as a concurrent interactive ingest.
+  // Connects SessionManager's three ingest lifecycle signals at the batch handover only. The batch's announced
+  // dataset shows under kLayoutBatch ownership; every other ingest takes the normal strip arbitration.
   void installLayoutBatchObservers();
-  // Disconnects the observers and releases a batch-owned strip display. MUST
-  // run BEFORE every layout_import_batch_.reset()/destruction (D1 ordering:
-  // no lifecycle event or Stop click may reach a dangling batch).
+  // Disconnects the observers and releases a batch-owned strip. Must run before every layout_import_batch_ reset
+  // or destruction, or a lifecycle event or Stop click reaches a dangling batch.
   void teardownLayoutBatchObservation();
-  // Drops the current batch (graceful if finished; HARD shutdown — children
-  // cancelled+joined, no rollback — if still running). Also ends the D5
-  // retention channel a kRetainAndDiagnose drain left alive (see
-  // pending_items_added_conn_).
+  // A still-running batch takes a hard shutdown (children cancelled and joined, no rollback). Outside a restore
+  // it also ends the retention channel a kRetainAndDiagnose drain left (pending_items_added_conn_).
   void resetLayoutImportBatch();
-  // The FULL supersede: tears down any in-flight progressive transaction
-  // (waiters/doc/binder/flag) AND retires the batch — every new layout load
-  // and closeEvent go through this, because a load that stays synchronous
-  // never reaches beginProgressiveLayoutRestore to clean up the old one.
+  // Tears down an in-flight progressive restore and retires the batch. Every new layout load and closeEvent go
+  // through it: a load that stays synchronous never reaches beginProgressiveLayoutRestore to clean up the old one.
   void supersedeActiveRestore();
-  // Re-applies the timeline state (offsets + track order) stashed by a progressive
-  // restore, now that the async worker has registered the reloaded datasets' source
-  // paths. Called from onProgressiveLayoutDrained BEFORE the processor graph replay
-  // (an all_datasets marker generator must recompute under the settled offset, not
-  // the pre-apply one) and BEFORE the viewport re-frame, so the saved absolute
-  // window converts with the settled offset. Returns whether any offset moved.
-  // No-op when nothing was stashed.
+  // Applies the timeline state a progressive restore stashed, once the reloaded datasets' paths are registered.
+  // Runs before the processor replay (an all_datasets marker generator must see the settled offset) and before
+  // the viewport re-frame (the saved window converts with it). Returns whether any offset moved.
   bool applyPendingTimelineState();
-  // Applies a byte-level layout with kExact, then its file sources' timeline
-  // state plus `stream_tracks` (the replay's streams, which have no data yet,
-  // so an empty catalog is not an error when there are some).
+  // kExact, then the file sources' timeline state plus `stream_tracks` (the replay's streams, still without
+  // data, so an empty catalog is not an error when there are some).
   [[nodiscard]] bool applyBrowserRestoredLayout(
       QDomDocument doc, const QString& browser_name, const LayoutTimelinePlan& stream_tracks = {});
-  // The replay's last step: applies it (startReplayStreamsAndApply), rolls it back on a
-  // failure or replaces the previous preset's data on a URL load's success, and finishes
-  // the load. `apply_failure` is the failure token when the layout itself does not apply.
+  // The replay's last step: applies it, rolls back on a failure or replaces the previous preset's data on a URL
+  // load's success, and finishes the load. `apply_failure` is the token if the layout itself does not apply.
   void applyBrowserReplay(QDomDocument apply_doc, const QString& apply_failure);
-  // Starts the replay's streams from their records, binds what the layout qualified by
-  // pj-stream:// to the new sessions and applies it. Returns the failure token ("stream",
-  // else `apply_failure`), empty on success.
+  // Starts the replay's streams, binds the pj-stream:// qualifiers to the new sessions and applies. Returns the
+  // failure token ("stream", else `apply_failure`), empty on success.
   [[nodiscard]] QString startReplayStreamsAndApply(QDomDocument apply_doc, const QString& apply_failure);
-  // After a preset load succeeded: records what it brought and removes what the
-  // preset before it brought (its file datasets and streams), nothing else.
+  // After a preset load succeeded: records what it brought and removes only what the preset before it brought.
   void replacePreviousPresetData();
   void restoreChromeAndPanels(
       const QDomDocument& doc, const QString& path, const LayoutTimelinePlan* resolved_timeline = nullptr);
@@ -1229,33 +939,24 @@ class MainWindow : public QMainWindow {
   void recordRecentLayout(const QString& path);
   [[nodiscard]] QStringList recentLayouts() const;
 
-  // Rewrites every curve's stable topic+field path to a concrete catalog key,
-  // resolving across all loaded datasets (first dataset that has the path).
-  // Returns the stable paths no loaded dataset could provide. Shared by layout
-  // load (which prompts on the unresolved set) and undo/redo restore.
+  // Rewrites every curve's stable topic+field path to the catalog key of the first loaded dataset that has it.
+  // Returns the paths no dataset provides.
   [[nodiscard]] QList<layout_xml::SeriesPath> rebindCurvesToLoadedDatasets(QDomDocument& doc);
 
   enum class TimelineRestoreMode {
     kExact,
     kPortableSourceReplacement,
   };
-  // Outcome of restoreWorkspaceState.
   enum class RestoreResult {
     kApplied,    ///< plots/toggles applied to the session
     kCancelled,  ///< user cancelled at the missing-curve prompt (kPrompt only)
     kFailed,     ///< xmlLoadState rejected the document
   };
   using RestoreIntent = PJ::RestoreIntent;
-  // Restore a COMPLETE workspace snapshot (filters + curve rebinding + plots/toggles)
-  // onto the live session — the single restore path shared by layout load and undo/redo,
-  // so the two can never drift (that drift is what let undo silently drop filters).
-  // Order matters: apply saved display offsets, recreate processors and marker
-  // generators, then rebind curve keys and apply plots/toggles via xmlLoadState.
-  // Snapshots carry stable topic/field paths, not per-load keys, so one
-  // survives an intervening data reload. Callers run it under applying_state_ as needed.
-  // `out_reason`, when non-null, receives the one-sentence rejection reason from
-  // a `kHistory` intent's exempt-dependency check (see `checkDataProcessorDependencies`);
-  // untouched on every other outcome.
+  // Restores a complete workspace snapshot; the one path for layout load and undo/redo, so the two cannot drift.
+  // Order: display offsets, processors and marker generators, then curve rebind and xmlLoadState. Snapshots
+  // carry stable topic/field paths, so one survives a data reload. Callers set applying_state_ as needed.
+  // `out_reason` receives a `kHistory` restore's refusal (checkDataProcessorDependencies), untouched otherwise.
   [[nodiscard]] RestoreResult restoreWorkspaceState(
       QDomDocument& doc, MissingCurvePolicy policy, const CapturedWorkspace* rollback_to = nullptr,
       RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
@@ -1264,16 +965,11 @@ class MainWindow : public QMainWindow {
       const CapturedWorkspace* rollback_to = nullptr, RestoreIntent intent = RestoreIntent::kReplace,
       QString* out_reason = nullptr);
 
-  /// Capture/apply helpers shared by history, rollback, progressive restore, and
-  /// source replacement. Timeline validation resolves every id and overflow
-  /// guard before the first offset is written.
   [[nodiscard]] CapturedWorkspace captureWorkspace(SnapshotScope scope) const;
-  // `SnapshotScope::kFull` — the convenience overload every non-history capture uses.
+  // SnapshotScope::kFull.
   [[nodiscard]] CapturedWorkspace captureWorkspace() const;
-  // `stamp_override_id`, when non-zero, stamps that dataset with
-  // `stamp_override_path` instead of its tracked path — used while a
-  // replacement load retires it in favor of datasets loaded from the NEW path,
-  // so the post-load rebind can map its charts onto them.
+  // A non-zero `stamp_override_id` is stamped with `stamp_override_path` instead of its tracked path: a
+  // replacement load retires it for datasets from the new path, and the rebind maps its charts onto them.
   [[nodiscard]] CapturedWorkspace capturePortableWorkspace(
       DatasetId stamp_override_id = 0, const QString& stamp_override_path = {}) const;
   [[nodiscard]] TimelineState captureTimelineState() const;
@@ -1282,12 +978,11 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] std::optional<DatasetId> resolveTimelineTrack(
       const TimelineTrackState& track, TimelineRestoreMode mode,
       const std::vector<std::pair<DatasetId, QString>>& live_datasets) const;
+  // Resolves every id and checks every overflow guard before the first offset is written.
   [[nodiscard]] std::optional<TimelineResolutionPlan> validateTimelineState(
       const TimelineState& state, TimelineRestoreMode mode) const;
-  // Before the processor replay, writes each track's
-  // display offset so a marker generator that replays right after sees the settled
-  // offset instead of the pre-restore one. `plan` must already be validated
-  // (validateTimelineState); false on a size mismatch, mutating nothing.
+  // Runs before the processor replay, so a marker generator sees the settled offset. `plan` comes from
+  // validateTimelineState; false on a size mismatch, mutating nothing.
   [[nodiscard]] bool applyTimelineOffsets(const TimelineState& state, const TimelineResolutionPlan& plan);
   [[nodiscard]] bool applyTimelineState(const TimelineState& state, const TimelineResolutionPlan& plan);
   [[nodiscard]] RestoreResult applyWorkspace(
@@ -1298,289 +993,199 @@ class MainWindow : public QMainWindow {
       TimelineRestoreMode timeline_mode, const CapturedWorkspace* rollback_to,
       RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
 
-  // kPlaceholders was removed: the SessionManager API for registering
-  // empty placeholder series doesn't exist yet, so the "Create empty
-  // placeholders" button was indistinguishable from "Remove from plots"
-  // (both just dropped the curves). Re-add the enumerator + the button
-  // once the underlying API lands.
   enum class MissingCurveChoice { kRemove, kCancel };
 
-  // Modal prompt mirroring PJ3's missing-curve dialog. `names` is shown to
-  // the user (truncated past ~10 entries). Returns the user's pick.
-  // `import_failures`: one "path: why" line per layout data source the
-  // import could not bring back — shown so the user learns WHY the curves
-  // are missing, not just that they are.
+  // Modal. A long `names` list is truncated. `import_failures` ("path: why" per source the import could not bring
+  // back) tells the user why the curves are missing.
   [[nodiscard]] MissingCurveChoice promptMissingCurves(
       const QStringList& names, const QStringList& import_failures = {});
   // The active batch's failed sources as "path: why" lines (empty without a batch).
   [[nodiscard]] QStringList layoutImportFailureLines() const;
 
-  // Builds <previouslyLoaded_Datafiles> from SessionManager's record, using
-  // a path relative to `layout_dir` when the source lives at or beneath it,
-  // absolute otherwise. Returns a null element when no source is recorded.
+  // <previouslyLoaded_Datafiles>: paths relative to `layout_dir` when at or beneath it, absolute otherwise. A null
+  // element when no source is recorded.
   [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const;
 
-  // The per-source Source Timeline state saved in `sources` (one DataSourceRef
-  // per <fileInfo>), applied after the layout's datasets are (re)loaded in two
-  // passes over ONE resolution: DatasetIds are re-minted each session, so
-  // `resolveLayoutTimelineTracks` matches each saved entry back to a live dataset
-  // by source path once (empty for generic layouts and pre-v3 layouts without
-  // timeline attrs); `applyLayoutTimelineOffsets` writes the display offsets
-  // (before the processor replay, so all_datasets generators see the settled
-  // frame) and returns true iff one actually MOVED; `applyLayoutTimelineOrder`
-  // rebuilds the timeline's vertical track order afterwards, when the chrome
-  // is restored. `applyTimelineStateFromLayout` runs all three back to back.
-  // `streams` are tracks already bound to a dataset (a layout's streams); they go
-  // through the same first-wins dedupe as the files, so two records bound to one
-  // running session never shift it twice or draw it in two slots.
+  // The per-<fileInfo> Source Timeline state, applied in two passes over one resolution. DatasetIds are
+  // re-minted each session, so resolveLayoutTimelineTracks matches each entry to a live dataset by source path
+  // (empty for generic layouts and those without timeline attributes). applyLayoutTimelineOffsets runs before
+  // the processor replay, so all_datasets generators see the settled frame, and returns whether an offset moved;
+  // applyLayoutTimelineOrder runs when the chrome is restored. applyTimelineStateFromLayout runs all three.
+  // `streams` (a layout's stream tracks) take the same first-wins dedupe as the files, so two records bound to
+  // one session never shift it twice or draw it in two slots.
   [[nodiscard]] LayoutTimelinePlan resolveLayoutTimelineTracks(
       const QList<layout_xml::DataSourceRef>& sources, const LayoutTimelinePlan& streams = {}) const;
   bool applyLayoutTimelineOffsets(const LayoutTimelinePlan& plan);
   void applyLayoutTimelineOrder(const LayoutTimelinePlan& plan);
   bool applyTimelineStateFromLayout(const QList<layout_xml::DataSourceRef>& sources);
 
-  // Builds <source_timeline zoom="…" scroll_left_ns="…" name_column_width="…"
-  // snap="…"/> — the timeline's global VIEW chrome (independent of per-source
-  // offsets/order, which ride <fileInfo>). Always emitted (pure UI chrome).
+  // <source_timeline zoom scroll_left_ns name_column_width snap/>: view chrome only; per-source offsets and order
+  // ride <fileInfo>. Always emitted.
   [[nodiscard]] QDomElement saveSourceTimelineViewState(QDomDocument& doc) const;
 
-  // Applies <source_timeline> view attributes: zoom first, then scroll, then the
-  // name-column width, then the snap toggle. Missing attributes are left at their
-  // current value. Must run AFTER the datasets reload so zoom/scroll map onto the
-  // rebuilt scene.
+  // Zoom, then scroll, then name-column width, then snap; a missing attribute keeps its value. Must run after the
+  // datasets reload, or zoom and scroll map onto the old scene.
   void restoreSourceTimelineViewState(const QDomElement& element);
 
-  // Builds <right_panel_state visible="…" width="…" style="…"
-  // splitter_sizes="…"/> from the four right-panel state sources. Always
-  // emits an element (none of the attributes are gated). Caller appends.
+  // <right_panel_state visible width style splitter_sizes/>, always emitted; the caller appends it.
   [[nodiscard]] QDomElement saveRightPanelState(QDomDocument& doc) const;
 
-  // Applies <right_panel_state> attributes individually; missing or
-  // mismatched values are silently ignored. Never writes to QSettings —
-  // layout-driven UI changes don't mutate the global per-user defaults.
+  // Missing or mismatched values are ignored. Never writes QSettings: a layout must not change the user's
+  // defaults.
   void restoreRightPanelState(const QDomElement& element);
 
-  // Builds <chrome_state main_splitter_sizes="..." timeline_splitter_sizes="..."/>.
-  // Covers cross-panel chrome geometry that isn't owned by an individual panel
-  // widget. Panel open/closed state is NOT serialized — it is a QSettings-backed
-  // app preference, not document state.
+  // <chrome_state main_splitter_sizes timeline_splitter_sizes/>. Panel open/closed state is not saved: it is a
+  // QSettings preference, not document state.
   [[nodiscard]] QDomElement saveChromeState(QDomDocument& doc) const;
 
-  // Applies <chrome_state> splitter geometry individually; missing or mismatched
-  // values are silently ignored. Panel visibility is intentionally left as-is
-  // (see saveChromeState).
+  // Missing or mismatched values are ignored; panel visibility is left as is.
   void restoreChromeState(const QDomElement& element);
 
-  // Thin wrappers over `DerivedObjects` (pj_runtime), which owns the derived-recipe
-  // layout persistence (`save` writes the <data_processors> block of a snapshot,
-  // `parse` reads it for an intent, `restore` replays it). `restoreDataProcessors` =
-  // `parse` + `checkDataProcessorDependencies` + `applyDataProcessors`; `out_reason`,
-  // when non-null, is cleared on entry and set only when a `kHistory` restore is refused.
+  // Thin wrappers over pj_runtime's DerivedObjects, which owns the <data_processors> persistence. This one is
+  // parse + checkDataProcessorDependencies + applyDataProcessors; `out_reason` is cleared on entry and set only
+  // when a `kHistory` restore is refused.
   [[nodiscard]] bool restoreDataProcessors(
       const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
 
   [[nodiscard]] DerivedObjects derivedObjects() const;
   // Reports each derived-recipe diagnostic as a "Layout" warning.
   void reportDerived(const std::vector<DerivedDiagnostic>& diagnostics);
-  // The read-only preflight a `kHistory` snapshot's restore runs before its first
-  // clear: false (reported, and the reason in `out_reason`) when removing the
-  // snapshot's non-exempt processors would strand an exempt transform or marker
-  // generator. `applyWorkspace` runs it before applyTimelineOffsets so a refusal never
-  // has to undo a moved offset.
+  // A `kHistory` restore's read-only preflight: false (reported, reason in `out_reason`) when removing the
+  // snapshot's non-exempt processors would strand an exempt transform or marker generator. Runs before
+  // applyTimelineOffsets, so a refusal never has to undo a moved offset.
   [[nodiscard]] bool checkDataProcessorDependencies(const DerivedSnapshot& snapshot, QString* out_reason = nullptr);
-  // Restores `snapshot` under its intent, reports its parse and apply warnings and
-  // re-derives the Custom Topics list. The default (empty) snapshot clears every recipe.
+  // Also reports its warnings and re-derives the Custom Topics list. An empty snapshot clears every recipe.
   [[nodiscard]] bool applyDataProcessors(DerivedSnapshot snapshot);
 
-  // The rows again with the transform rows of the last sync (rebuilt only once the catalog changed since):
-  // what a node's state or an offset changes. Costs per derived row, never per catalog row.
+  // For a node-state or offset change: reuses the last transform rows unless the catalog changed. Costs per
+  // derived row, never per catalog row.
   void refreshCustomTopicsPanel();
-  // Runs refreshCustomTopicsPanel once at the next event-loop turn, however many state
-  // changes asked for it before then (a node's state changes on every request).
+  // Coalesces to one refreshCustomTopicsPanel per event-loop turn (a node's state changes on every request).
   void scheduleCustomTopicsSync();
   // Mirrors the extension catalog's Custom Topics editor into the panel.
   void syncCustomTopicsEditor();
-  // The panel's Delete: an on-demand recipe's object topic or a transform output. Only
-  // the Custom Topics editor's rows are deleted; another owner's is refused with a
-  // warning (the panel disables the action; this is the backstop for any other caller).
+  // An on-demand recipe's object topic or a transform output. Only the Custom Topics editor's rows are deleted;
+  // another owner's is refused with a warning (the backstop behind the panel's disabled action).
   void deleteCustomTopic(const QString& catalog_key);
-  // The panel's Delete of several rows: each recipe once, however many of its rows (series
-  // columns, `id/output` object rows) are among `catalog_keys`, then the transform outputs.
+  // Each recipe once, however many of its rows are among `catalog_keys`, then the transform outputs.
   void deleteCustomTopics(const QStringList& catalog_keys);
-  // Removes the recipe `key` after confirming when other recipes read it (they stay,
-  // missing their input). A non-exempt recipe's removal is one undo step.
+  // Confirms when other recipes read it (they stay, missing their input). A non-exempt removal is one undo step.
   void deleteOnDemandRecipe(const std::string& key);
-  // Removes the transform whose output `catalog_key` is, with its dependents after confirming.
+  // With its dependents, after confirming.
   void deleteTransformOutput(const QString& catalog_key);
-  // Whether the Custom Topics editor may delete the transform writing `output_topic` now
-  // (`transformDeleteRefusal`); a refusal is reported before it returns false.
+  // transformDeleteRefusal; a refusal is reported before returning false.
   [[nodiscard]] bool mayDeleteTransformWriting(TopicId output_topic);
   // Words a refusal of CustomTopicsPolicy.h as a warning; a row whose recipe is gone is re-synced instead.
   void reportDeleteRefusal(const CustomTopicDeleteRefusal& refusal);
 
-  // Size the bottom panel from the Source Timeline strip's open/closed state:
-  // when OPEN, pin a minimum height so the strip can't be dragged to a clipped
-  // sliver; when CLOSED, fix the panel to the playback bar so the splitter
-  // handle can't drag the (hidden) strip open. The single source of truth for
-  // bottom-panel height constraints, called from every site that changes the
-  // strip's visibility (restore, toggle, layout load) + the chrome-metrics pass.
+  // The only owner of the bottom panel's height constraints: open strip, a minimum height so it cannot be
+  // dragged to a clipped sliver; closed, fixed to the playback bar so the splitter cannot drag it open. Call it
+  // from every site that changes the strip's visibility and from the chrome-metrics pass.
   void applyBottomPanelConstraints();
 
-  // Align the Source Timeline's left name column so its right separator sits
-  // exactly under the start of the playback bar's slider track. Measures the
-  // slider's left x within the playback bar and pins the column to it. No-op
-  // until the playback bar is laid out (post first show).
+  // Puts the name column's separator under the start of the playback slider track. No-op until the playback bar
+  // is laid out.
   void alignNameColumnToPlayback();
 
-  // Serializes the current app layout state. `scope` governs both processors
-  // and plot tabs; the no-arg overload is the full layout-file form.
+  // `scope` governs processors and plot tabs; the no-arg overload is the full layout-file form.
   [[nodiscard]] QDomDocument xmlSaveState(SnapshotScope scope) const;
   [[nodiscard]] QDomDocument xmlSaveState() const;
 
-  // Loads a previously serialized app layout state.
   bool xmlLoadState(const QDomDocument& state_document, RestoreIntent intent = RestoreIntent::kReplace);
 
-  // Initializes the undo stack with the post-construction state.
   void pushInitialUndoState();
 
-  // Discards undo/redo history and re-baselines from the current state. Called
-  // after a confirmed data removal: prior snapshots are serialized layouts that
-  // reference now-deleted curves by key, so replaying one would resurrect a
+  // After a data removal: older snapshots reference the deleted curves, and replaying one would resurrect a
   // layout pointing at missing data.
   void resetUndoHistory();
 
-  // Adds or replaces the newest undo snapshot.
   void pushUndoState(bool force_new_state = false);
 
-  // Replace the current history tip after non-undoable additive data growth or
-  // successful navigation, without creating a data-load undo operation.
+  // Replaces the history tip after data growth or navigation, without adding an undo step.
   void hydrateCurrentUndoState(bool refresh_data_universe = true);
   void restoreHistoryState(const CapturedWorkspace& target, bool undo);
   void reconcileHistoryWithDataUniverse();
 
-  // Exact raw storage identities that make existing history snapshots safe to
-  // replay. Processor outputs are workspace state and are excluded.
+  // The raw storage identities that keep the history safe to replay; processor outputs are workspace state and
+  // excluded.
   [[nodiscard]] QSet<QString> captureHistoryDataUniverse() const;
 
-  // Updates enabled state for undo / redo actions.
   void updateUndoRedoActions();
 
-  // Binds the CurveEditor to `plot` and enables/disables the width and
-  // style toolbar buttons accordingly (they no-op without an active plot).
+  // Also enables the width and style buttons, which need a bound plot.
   void bindEditorToPlot(PlotWidget* plot);
   [[nodiscard]] PlotWidget* firstPlotOfActiveTab() const;
-  // The dock driving the right config panel: the focused dock of the active
-  // tab, or its first dock when nothing is focused. Used to refresh the panel
-  // on events that don't emit ADS focus (tab switch, data clear) without ever
-  // mirroring a dock from a hidden tab.
+  // The active tab's focused dock, else its first: refreshes the right panel on events without ADS focus (tab
+  // switch, data clear) without mirroring a dock of a hidden tab.
   [[nodiscard]] DockWidget* activeFocusedDock() const;
 
  protected:
-  // Persists main-window settings before close.
   void closeEvent(QCloseEvent* event) override;
 
-  // First-show hook (runs once the splitters finally have real geometry):
-  // (1) restores the remembered left-panel splitter width — one-shot, guarded by
-  // left_splitter_restored_; a later --layout load still overrides it; and
-  // (2) pins the bottom timeline panel to a clean open/closed height
-  // (constructor-time sizing doesn't stick and left the strip squashed), sized
-  // deferred after the first layout pass.
+  // The first show is when the splitters have real geometry: restores the left-panel width once (a later
+  // --layout still overrides it) and sizes the bottom panel after the first layout pass (sizing in the
+  // constructor does not stick).
   void showEvent(QShowEvent* event) override;
 
-  // Keeps the toast stack pinned to the bottom-right corner as the window
-  // resizes.
   void resizeEvent(QResizeEvent* event) override;
 
-  // Frameless-window edge resize (custom frame only): catches mouse events on
-  // ourselves or any descendant widget, updates the cursor near edges, and
-  // starts a system-resize on press.
+  // Custom frame only: edge resize from mouse events on this window or any descendant.
   bool eventFilter(QObject* watched, QEvent* event) override;
 
-  // Local files dragged onto the window (from a file manager) load as if picked
-  // in Load Data. Plots and placeholders ignore file drags, and Qt offers an
-  // ignored drag-enter to each ancestor that accepts drops, so a drop on them
-  // reaches here too. Floating docks are separate windows and do not take file
-  // drops. Folders are not expanded.
+  // Local files dropped on the window load as if picked in Load Data; folders are not expanded. Plots and
+  // placeholders ignore file drags, so Qt offers them to this ancestor; floating docks are separate windows and
+  // take no file drops.
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dragMoveEvent(QDragMoveEvent* event) override;
   void dropEvent(QDropEvent* event) override;
 
-  // Paints a 1-px border flush with the window edge. Self-painted via
-  // PJ::theme:: token accessors — FrameworkTokens.h is built for exactly this
-  // case (a top-level widget QSS can't reach). Custom frame only (the system
-  // frame draws its own edge); no-op while maximized/fullscreen, where the
-  // window fills the screen and has no edge to outline.
+  // Custom frame only: a 1-px edge from the PJ::theme:: tokens, since QSS cannot reach a top-level widget. None
+  // while maximized or fullscreen.
   void paintEvent(QPaintEvent* event) override;
 
  private:
-  // Presents `panel` (non-null) in place of the chart area, as a page of
-  // ui_->centralAreaStack, dismissing any panel already up. restoreCentralArea
-  // tears the panel down and shows the chart again; releaseCentralPanel is the
-  // non-destructive variant that shows the chart and RETURNS the panel (hidden,
-  // still a child of the stack) instead of deleting it — the "migrate to tab"
-  // gesture uses it to keep the live toolbox widget. Neither reparents: the
-  // destination does that once (and a teardown deletes the panel in place),
-  // because every reparent unpolishes and repolishes the whole widget tree
-  // against the app stylesheet (~180 ms for a toolbox panel in a browser).
+  // Presents `panel` (non-null) in place of the chart area, dismissing any panel already up. restoreCentralArea
+  // tears it down; releaseCentralPanel returns it hidden, still a child of the stack, for "migrate to tab".
+  // Neither reparents: the destination does that once, because every reparent re-polishes the whole widget tree.
   void presentPanel(QWidget* panel);
   void restoreCentralArea();
   QWidget* releaseCentralPanel();
 
-  // Tears down whatever panel currently occupies the chart-area takeover —
-  // the same close-restore-delete sequence presentPanel uses when replacing
-  // it. No-op when no takeover is up. Called before focusing or restoring a
-  // pinned toolbox tab, which the takeover would otherwise hide.
-  //
-  // A takeover with work in flight is FOLDED into a background tab instead:
-  // teardown destroys the plugin instance, which is also its job's kill
-  // switch, so merely opening another panel must not cancel a download.
+  // Tears down the chart-area takeover, if any, before a pinned toolbox tab is focused or restored (the takeover
+  // would hide it). A takeover with work in flight is folded into a background tab instead: teardown destroys
+  // the plugin instance, which kills its job, and opening another panel must not cancel a download.
   void dismissTakeoverPanel();
 
-  // Folds the chart-area takeover into a pinned background tab, but only when
-  // `owner` is the identity of the toolbox presenting it (its sessionOwner())
-  // — an ingest belonging to some other panel must not move this one. `owner`
-  // is opaque: compared by address only, never dereferenced. `transient` marks
-  // a fold the host chose rather than the user (excluded from layout save).
-  // No-op once the panel is already pinned, so a second import does not
-  // re-fold it.
+  // Only when `owner` is the presenting toolbox's sessionOwner(): another panel's ingest must not move this one.
+  // `owner` is compared by address, never dereferenced. `transient` marks a fold the host chose (not saved in
+  // layouts). No-op once pinned.
   void foldTakeoverPanelIfOwnedBy(const void* owner, bool transient);
-  // A plugin just created one of its own tabs. When that plugin is the chart-area
-  // takeover the tab would stay hidden, so fold the takeover into a transient tab
-  // and make `docker` current.
+  // A plugin created a tab: when that plugin is the takeover, which would hide the tab, folds it into a
+  // transient tab and makes `docker` current.
   void revealOwnedTabOverTakeover(const QString& plugin_id, PlotDocker* docker);
 
-  // The toolbox presenting the chart-area takeover; null when the takeover is
-  // up but not a toolbox (the marketplace, the filter editor) or absent.
+  // Null when there is no takeover or it is not a toolbox (the marketplace, the filter editor).
   [[nodiscard]] ToolboxPresenter* takeoverToolbox() const;
 
-  // Asks whether to cancel a running job and close the surface it belongs to;
-  // false keeps both. Runs a modal event loop, so callers must re-validate any
-  // iterator or pointer they held across it. `label` names the surface.
+  // Runs a modal event loop: callers must re-validate any iterator or pointer held across it.
   bool confirmCancelRunningJob(const QString& label);
-  // Non-blocking form for the browser, whose Asyncify-free build cannot run a
-  // modal loop: `on_confirmed` runs only if the user chose to cancel, possibly
-  // after this returns, so it must re-find anything it acts on.
+  // For the browser, which cannot run a modal loop without Asyncify: `on_confirmed` runs only on a cancel,
+  // possibly after this returns, so it must re-find anything it acts on.
   void confirmCancelRunningJobAsync(const QString& label, std::function<void()> on_confirmed);
 
-  // Work-in-flight query and cooperative cancel for one panel's host. Both go
-  // through `host_work_in_flight_` / `stop_host_work_` when set, which is how a
-  // test drives the fold rules without a live parser-ingest context. A null
-  // host reads idle and stops nothing.
+  // Go through the `host_work_in_flight_` / `stop_host_work_` test seams when set. A null host reads idle.
   [[nodiscard]] bool hostHasWorkInFlight(ToolboxRuntimeHost* host) const;
   void stopHostWork(ToolboxRuntimeHost* host);
 
-  // The same content and plugin connections survive all presentation changes.
-  // `apply_chrome(pinned)` re-shows the banner in the chrome of a tab (dock +
-  // float + close) or of the docked takeover (tab + float + close).
+  // Content and plugin connections survive every presentation change. `apply_chrome(pinned)` switches the banner
+  // between tab chrome (dock, float, close) and takeover chrome (tab, float, close).
   struct WrappedToolboxPanel {
     QWidget* container = nullptr;
     std::function<void(bool pinned)> apply_chrome;
   };
 
-  // The callbacks a wrapped toolbox panel's chrome drives. Absent migration
-  // callbacks (on_migrate / on_float / on_dock) hide that destination's button;
-  // the banner's close button only ever calls on_close, so the close policy
-  // (busy fold, tab confirmation) is the caller's.
+  // An absent migration callback hides its button. Close only calls on_close: the close policy (busy fold, tab
+  // confirmation) is the caller's.
   struct ToolboxChromeHooks {
     std::function<void()> on_close;
     std::function<void()> on_migrate;
@@ -1588,33 +1193,23 @@ class MainWindow : public QMainWindow {
     std::function<void()> on_dock;
   };
 
-  // Wraps content in host chrome. Docked: tab/float/close; pinned: dock/float/close.
-  // Floating uses its own title bar (the float button hides the banner).
-  // persist_key identifies the drawer width in QSettings (empty disables persistence).
+  // Floating uses its own title bar. `persist_key` is the drawer width's QSettings key (empty: not persisted).
   WrappedToolboxPanel wrapToolboxPanel(
       QWidget* content, const QString& title, ToolboxChromeHooks hooks, const QString& persist_key = {});
 
-  // Builds the host-service assembly + plugin handle a launched toolbox binds
-  // to (null after reporting the failure through `report_error`). Kept apart
-  // from launchToolbox so the presentation logic reads on its own; the
-  // provider services it shares with HeadlessDescriptorProviderSession::create
-  // are built the same way there.
+  // The host services and plugin handle a launched toolbox binds to; null after `report_error`. The wiring it
+  // shares with HeadlessDescriptorProviderSession lives in ToolboxHostWiring.h.
   std::shared_ptr<ToolboxPanelSession> buildToolboxPanelSession(
       const RuntimeToolboxPlugin& toolbox, const QString& plugin_id, const QString& source,
       const std::function<void(const QString&, const QString&)>& report_error);
-  // The MCP server, started on a free 127.0.0.1 port when none runs (in the browser, where it
-  // does not listen, just started); nullptr when it cannot listen (reported to the diagnostics once
-  // per run of failures, not per call).
+  // Started on a free 127.0.0.1 port when none runs (the browser's does not listen). Null when it cannot
+  // listen, reported once per run of failures.
   McpServer* ensureMcpServer();
 
-  // The registry of live toolboxes, one presenter per plugin id whatever its
-  // presentation. registerToolbox requires the id to be absent; teardownToolbox
-  // extracts the entry FIRST, then runs the teardown, so a callback that lands
-  // mid-teardown finds no presenter instead of a half-dead one, and the
-  // session dies with the extracted presenter after the engine stopped.
+  // One presenter per plugin id. registerToolbox requires the id absent; teardownToolbox extracts the entry
+  // before tearing down, so a callback landing mid-teardown finds no presenter instead of a half-dead one.
   [[nodiscard]] ToolboxPresenter* findToolbox(const QString& plugin_id) const;
-  // Runs `fn` on the presenter registered under `plugin_id`, or nothing: the
-  // by-id lookup every deferred callback does instead of capturing a presenter.
+  // Deferred callbacks look the presenter up by id through this; they never capture it.
   template <typename Fn>
   void withToolbox(const QString& plugin_id, Fn&& fn) {
     if (ToolboxPresenter* live = findToolbox(plugin_id)) {
@@ -1624,129 +1219,86 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] ToolboxPresenter* toolboxForContainer(const QWidget* container) const;
   ToolboxPresenter& registerToolbox(const QString& plugin_id, ToolboxPresenter::Spec spec);
   void teardownToolbox(const QString& plugin_id, ToolboxPresenter::Teardown mode);
-  // Every live toolbox, every presentation, synchronously — the ~MainWindow
-  // path, run while the session, tab strip and services are all still alive.
+  // Synchronously, from ~MainWindow while the session, tab strip and services are still alive.
   void teardownAllToolboxes();
 
-  // Layout persistence of pinned toolbox tabs (NOT part of the undo
-  // snapshot; see TabbedPlotWidget::xmlSaveState). savePinnedToolboxes emits
-  // <pinned_toolboxes><toolbox plugin_id="...">config-json</toolbox>...</>,
-  // skipping transient folds — a background fold is not a workspace choice.
-  // A floating toolbox window is saved as a pinned tab too: floating is a
-  // session gesture, not a persisted presentation, so the layout restores it
-  // as a tab. restorePinnedToolboxes closes every live pinned tab AND every
-  // floating toolbox window — and a chart-area takeover the layout names,
-  // which would otherwise be folded and re-confirmed on its relaunch — then
-  // relaunches from the element (missing plugins surface a diagnostic and are
-  // dropped); it returns false when a busy panel kept the live set untouched:
-  // under kPrompt the user declined
-  // the cancel confirmation, under kRetainAndDiagnose (non-interactive
-  // restore — D5's no-dialog rule) the busy panels are retained unprompted
-  // and reported through the diagnostic sink.
+  // Pinned toolbox tabs in a layout file, not in the undo snapshot:
+  // <pinned_toolboxes><toolbox plugin_id="...">config-json</toolbox>...</>. Transient folds are skipped; a
+  // floating window is saved as a pinned tab. Restore closes every pinned tab, floating window and a takeover the
+  // layout names, then relaunches (a missing plugin is diagnosed and dropped). False when a busy panel kept the
+  // live set: the user declined the cancel (kPrompt), or kRetainAndDiagnose kept it unprompted and diagnosed it.
   [[nodiscard]] QDomElement savePinnedToolboxes(QDomDocument& doc) const;
   bool restorePinnedToolboxes(const QDomElement& root, MissingCurvePolicy policy);
 
-  // The single commit boundary of a layout open: runs what must happen only
-  // once every abort/rollback path has returned — replacing the pinned
-  // toolbox set with the layout's and re-baselining undo history. Both
-  // restore legs (sync applyRestoredLayout, progressive
-  // onProgressiveLayoutDrained) end here; restoreChromeAndPanels must NOT
-  // grow commit-only steps, it also runs on the abortable stretch. `policy`
-  // rides through to restorePinnedToolboxes' busy-panel handling (dialog vs
-  // diagnostic).
+  // The one commit boundary of a layout open, after every abort and rollback path: replaces the pinned toolbox
+  // set and re-baselines undo. Both restore legs end here. restoreChromeAndPanels must not take commit-only
+  // steps: it also runs while the restore can still abort.
   void commitRestoredLayout(const QDomDocument& doc, MissingCurvePolicy policy);
 
-  // Constructs + wires (but does not populate) an object-widget dock of the
-  // given kind ("scene3d" / "scene2d" / "state_transitions" / "CustomWidget"). Shared by both the drop and the
-  // layout-restore paths of the object-widget factory; returns nullptr for an
-  // unknown kind.
+  // An empty, wired object dock of `kind` ("scene3d", "scene2d", "state_transitions", "CustomWidget"); null for
+  // an unknown kind.
   IDataWidget* makeSceneDock(const QString& kind, QWidget* parent);
 
-  // makeSceneDock + seed the new dock's playhead to the current time, so a
-  // freshly built empty dock renders at the right moment (currentTimeChanged
-  // only fires on changes). Shared by the factory's restore branch and the
-  // click-to-create path. Returns nullptr for an unknown kind.
+  // Also seeds the playhead: currentTimeChanged fires only on changes.
   IDataWidget* makeSeededEmptyObjectDock(const QString& kind, QWidget* parent);
 
-  // The EmbeddedViewHost handed to plugin panels (`scene_view` frames): seeded
-  // scene widgets of the kind asked for, attached through the plugin scene tabs'
-  // own path (PluginSceneViewsController). Empty when this build has no scene
-  // family, so the panel then announces no scene-view capability.
+  // For plugin panels' `scene_view` frames, attached through PluginSceneViewsController. Empty without a scene
+  // family in the build, so the panel announces no scene-view capability.
   EmbeddedViewHost makeEmbeddedViewHost();
-  // The views it built. They are not ADS docks, so forEachDock never reaches
-  // them; the tracker broadcasts tick them here, and QPointer drops the ones
-  // that died with their panel.
+  // Not ADS docks, so forEachDock misses them: the tracker broadcasts tick them through tickEmbeddedViews.
   QList<QPointer<SceneDockWidget>> embedded_scene_views_;
-  // After a catalog change: every topic `view` attached whose layer is gone is attached
-  // again, under the id it now has, or recorded as evicted (0) so a detach skips it.
+  // After a catalog change: re-attaches each topic whose layer is gone under its new id, or records it as
+  // evicted (0) so a detach skips it.
   void reattachEmbeddedTopics(SceneDockWidget& view);
   void tickEmbeddedViews(double display_seconds, bool visible_only);
 
   Ui::MainWindow* ui_;
   QtDiagnosticBridge* diagnostic_bridge_ = nullptr;
   DiagnosticHistory* diagnostic_history_ = nullptr;
-  // Bell dialog, created on first click and reused (modeless).
   DiagnosticsDialog* diagnostics_dialog_ = nullptr;
   ToastManager* toast_manager_ = nullptr;
   UpdateChecker* update_checker_ = nullptr;
   QString installation_;
   TelemetryPing* telemetry_ping_ = nullptr;
-  // Outcome handlers are rebound on each checkForUpdates() call so the check's
-  // interactivity (silent startup vs. noisy Help ▸ Check for Updates) is captured
-  // per-request rather than living in shared mutable state.
+  // Rebound on each checkForUpdates(), so each check carries its own interactivity.
   QMetaObject::Connection update_available_conn_;
   QMetaObject::Connection up_to_date_conn_;
   QMetaObject::Connection check_failed_conn_;
-  // Registry fetcher for the startup extension-update scan (separate instance
-  // from the Marketplace window's own, so neither aborts the other's fetch).
+  // Separate from the Marketplace's, so neither aborts the other's fetch.
   RegistryManager* update_scan_registry_ = nullptr;
 #ifndef PJ_TARGET_WASM
-  // Backs "pj.feature_catalog.v1" for every toolbox session. Declared before
-  // session_ and the toolbox registry, so it outlives every plugin bound to it.
+  // Backs "pj.feature_catalog.v1". Declared before session_ and toolboxes_ so it outlives every bound plugin.
   std::unique_ptr<FeatureCatalogHost> feature_catalog_;
 #endif
-  // The MCP server, from the first need (public access or a plugin's endpoint) until ~MainWindow
-  // destroys it, after the toolboxes (whose endpoints revoke their tokens) and before the services
-  // its agent sessions point into.
+  // Created on first need. ~MainWindow resets it after the toolboxes (whose endpoints revoke their tokens) and
+  // before the services its agent sessions point into.
   std::unique_ptr<McpServer> mcp_server_;
   // A failed listen was reported and no start has succeeded since.
   bool mcp_listen_failure_reported_ = false;
-  // Status-bar indicator of AI agent activity: names the active MCP client and counts the jobs
-  // agents have running, and opens mcp_jobs_dialog_. Created on first use; shown while a client is
-  // active or a job runs.
+  // Status-bar agent indicator, shown while an MCP client is active or a job runs; opens mcp_jobs_dialog_.
   QToolButton* mcp_agent_button_ = nullptr;
   QString mcp_active_client_;
-  // The user's view of running agent jobs (Stop per job); created on first use, a child of this.
+  // Created on first use, a child of this.
   McpJobsDialog* mcp_jobs_dialog_ = nullptr;
-  // Refreshes mcp_jobs_dialog_ once a second while it is open; a child of it.
+  // Refreshes mcp_jobs_dialog_ while it is open; a child of it.
   QTimer* mcp_jobs_refresh_ = nullptr;
   // Brings mcp_agent_button_ and an open mcp_jobs_dialog_ in line with the server's state.
   void refreshMcpIndicator();
   void showMcpJobs();
-  // The relay link connectMcpRelay made (a child of mcp_server_, so it goes with it; its destructor
-  // touches nothing of the server); null for none. While set the browser skips its welcome dialog.
+  // A child of mcp_server_, so it dies with it. While set, the browser skips its welcome dialog.
   QPointer<QObject> mcp_relay_link_;
   QAction* undo_action_ = nullptr;
   QAction* redo_action_ = nullptr;
-  // App-wide QSettings instance injected into each Scene3DDockWidget
-  // (setSettings) for URDF package-resolver persistence — per-source package
-  // mappings and global search roots. Owned here so every dock shares one
-  // instance whose lifetime outlasts them all.
+  // Shared by every Scene3DDockWidget (setSettings) for the URDF package resolver; outlives the docks.
   std::unique_ptr<QSettings> app_settings_;
   std::unique_ptr<AppSession> session_;
   std::unique_ptr<PendingDisplayBinder> pending_binder_;
-  // Resolves displayed plots/scene docks to (DatasetId, topic_name) demand
-  // references (see TopicDemandTracker). Declared after pending_binder_, which
-  // it forwards placeholder scalar drops to.
+  // Declared after pending_binder_, which it forwards placeholder scalar drops to.
   std::unique_ptr<TopicDemandController> topic_demand_controller_;
-  // The plugin-composed plot tabs (pj.plot_tabs.v1 / pj.viewport.v1); builds the
-  // per-plugin bridge callbacks launchToolbox hands to the runtime hosts.
+  // pj.plot_tabs.v1 / pj.viewport.v1 for the toolbox runtime hosts.
   std::unique_ptr<PluginPlotTabsController> plugin_plot_tabs_;
-  // Bridges progressive ingest signals from SessionManager to CurveTreeView
-  // via CurveListPanel. Maintains linger/flash timers and ghost-row lifetime.
   std::unique_ptr<IngestProgressController> ingest_progress_controller_;
-  // Owns the per-dataset TF buffers + load-time ingest. Declared after session_
-  // so it is destroyed first (it holds a reference into session_).
+  // Declared after session_ so it dies first: it holds a reference into session_.
 #ifdef PJ_WITH_SCENE3D
   std::unique_ptr<PJ::TransformService> transform_service_;
   // The 3D docks' shared "last manual fixed frame" preference.
@@ -1754,90 +1306,54 @@ class MainWindow : public QMainWindow {
 #endif
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<StreamingSourceManager> streaming_manager_;
-  // Declared AFTER streaming_manager_ on purpose: members die in reverse order,
-  // so the runtime hosts holding this service's taps outlive it. Finalization
-  // does not rely on that ordering — closeEvent and ~MainWindow both stop() the
-  // recording explicitly, before any widget or host is gone. Always created,
-  // even where isSupported() is false: only the UI affordances go away there.
+  // Declared after streaming_manager_, so the runtime hosts holding its taps outlive it; closeEvent and
+  // ~MainWindow still stop() it explicitly before any widget or host is gone. Created even where isSupported()
+  // is false: only the UI affordances go away there.
   std::unique_ptr<RecordingService> recording_service_;
 #ifndef __EMSCRIPTEN__
-  // M3 transparent source cache (desktop only), constructed ONCE at startup
-  // from Preferences (SourceCacheStore::loadSettings) — a changed cache
-  // folder/budget takes effect on the next launch, because armed captures
-  // hold the store they were opened against. store first: the service holds a
-  // reference into it.
+  // Built once from Preferences: a changed cache folder or budget applies on the next launch, because armed
+  // captures hold the store they were opened against. The store comes first: the service references it.
   std::unique_ptr<SourceCacheStore> source_cache_store_;
   std::unique_ptr<SourceCaptureService> source_capture_service_;
 #endif
-  // Wall clock behind the "m:ss | N.N MB" status label; restarted on every start().
+  // Behind the "m:ss | N.N MB" status label; restarted on every start().
   QElapsedTimer recording_elapsed_;
-  // ~30 Hz rate cap for the tracker-time fan-out. Every per-cursor-move driver
-  // (playback ticks, scrubbing, seeks) routes through one coalescer so the
-  // expensive per-widget work (plot replot, scene decode/composite, value column)
-  // runs at most ~30 Hz regardless of how fast the cursor changes. Structural
-  // seeds (load/restore/undo) call broadcastTrackerTime() directly, unthrottled,
-  // so a freshly shown dock is never blank waiting for the trailing edge.
-  // pending_tracker_time_ holds the newest cursor time the trailing edge will use.
+  // Caps the per-cursor-move fan-out (playback ticks, scrubbing, seeks) at kTrackerBroadcastIntervalMs.
+  // Structural seeds (load, restore, undo) call broadcastTrackerTime() unthrottled, so a new dock is never blank
+  // waiting for the trailing edge, which uses pending_tracker_time_.
   std::unique_ptr<CoalescingTrigger> tracker_broadcast_trigger_;
   double pending_tracker_time_ = 0.0;
-  // Binds the Source Timeline widget (mounted in timelineStrip) to the runtime.
-  // Parented to this MainWindow (QObject-owned), so it is a raw pointer.
+  // A QObject child of this window.
   SourceTimelineController* source_timeline_controller_ = nullptr;
-  // The Source Timeline widget itself (QObject-owned by timelineStrip). Held so
-  // the reference-line toggle can drive its blue reference needle.
+  // Owned by timelineStrip.
   Timeline* source_timeline_ = nullptr;
-  // User's chosen name-column width (px); 0 = none, use the playback-aligned
-  // floor. Tracked from Timeline::nameColumnWidthChanged and restored from a
-  // layout so alignNameColumnToPlayback keeps the column at this width.
+  // The user's name-column width in px; 0 uses the playback-aligned floor.
   int timeline_name_column_width_ = 0;
-  // Active streaming dataset id while a session is live (0 = none).
-  // Scopes the playback slider range to this dataset's data only so unrelated
-  // file/scalar timestamps in the global store don't stretch the slider into
-  // ranges where no streamable data exists.
+  // 0 = none. Scopes the playback range to the stream's data, so unrelated file timestamps do not stretch it.
   DatasetId active_streaming_dataset_id_ = 0;
-  // Flips to true the first time a streaming topic is dropped into a view —
-  // a scalar curve into a plot (PlotWidget::curvesDropped) or an object topic
-  // into a 2D/3D dock (PlotDocker::firstObjectTopicAdded) — which seeds the
-  // playback range + playhead. Until then the slider is left untouched so merely
-  // subscribing to topics in the source dialog does not move it. Seeding is
-  // one-shot per session (seedStreamingPlaybackFromDrop early-returns once set),
-  // so a later drop can't re-snap a paused, scrubbed-back cursor. While true,
-  // live ingest tracks the live edge until the user pauses.
+  // Set by the first drop of a streaming topic into a view, which seeds the playback range and playhead once per
+  // session: subscribing in the source dialog does not move the slider, and a later drop cannot re-snap a
+  // paused, scrubbed-back cursor. While set, live ingest follows the live edge until the user pauses.
   bool streaming_playback_seeded_ = false;
   bool plugin_failure_toast_shown_ = false;
-  // While non-null, every "Layout" diagnostic is also appended here, so a
-  // failed restore can tell the user WHY instead of pointing at the bell.
+  // While non-null, every "Layout" diagnostic is also appended here, so a failed restore can say why.
   QStringList* layout_issue_capture_ = nullptr;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
   // Fixed for the window's lifetime: the native window is created frameless or not.
   const bool custom_frame_ = usesCustomFrame();
-  // Non-modal load progress strip parked in the title bar's center region (owned
-  // by title_bar_ once injected). Shown after a short delay so quick loads don't
-  // flash it; hidden a moment after the load queue drains.
+  // Owned by title_bar_. Shown after a delay so quick loads do not flash it.
   IngestProgressWidget* ingest_progress_ = nullptr;
   QTimer* ingest_show_timer_ = nullptr;
-  // Restartable single-shot linger before the strip hides after the last load /
-  // toolbox import drains; restarted (not re-minted) from each drain site so
-  // overlapping finishes coalesce into one hide.
+  // Restarted, not recreated, at each drain site, so overlapping finishes coalesce into one hide.
   QTimer* ingest_hide_timer_ = nullptr;
-  // Owned by QObject parentage while open; guards against stacking multiple
-  // stop confirmations from repeated title-bar clicks.
+  // Prevents stacking stop confirmations from repeated clicks.
   QPointer<MessageBox> ingest_stop_dialog_;
-  // Toolbox bulk-import STOP ROUTING only (the second producer of
-  // ingest_progress_, arbitration: FileLoader wins a collision). The lifecycle
-  // bookkeeping — which datasets are actively importing, label/progress, and
-  // the "still growing" query the on_data_changed TF bridge uses — lives in
-  // SessionManager (beginIngest/updateIngest/endIngest, #470 hoist); this hash
-  // keeps only what stop routing needs and mirrors that lifecycle: one entry
-  // per import dataset between on_ingest_started and on_ingest_finished (host
-  // teardown / release fire finished for anything the plugin left open, so
-  // pairing holds). `owner` weak-guards the ToolboxPanelSession whose
-  // ToolboxRuntimeHost runs the import — a closed panel can never be
-  // stop-routed into freed memory; `host` is dereferenced only after the owner
-  // check succeeds. `toolbox_ingest_label_`/`toolbox_ingest_dataset_` name the
-  // last-STARTED interactive import — the identity a fresh strip adopt (or a
-  // re-adopt once the file queue drains) shows; cleared when that import ends.
+  // Stop routing for toolbox imports only; the ingest lifecycle lives in SessionManager. One entry per import
+  // dataset between on_ingest_started and on_ingest_finished (host teardown fires finished for anything left
+  // open). `owner` weak-guards the panel session running the import; `host` is dereferenced only after that
+  // check, so a closed panel is never stop-routed into freed memory. toolbox_ingest_label_ / _dataset_ name
+  // the last-started interactive import, which a strip adopt shows; cleared when it ends.
   struct ToolboxIngestRef {
     IngestToken token;
     std::weak_ptr<void> owner;
@@ -1847,68 +1363,47 @@ class MainWindow : public QMainWindow {
   QString toolbox_ingest_label_;
   DatasetId toolbox_ingest_dataset_ = 0;
 
-  // D8: the strip's DISPLAYED OWNER — whose title/progress the widget shows,
-  // so Stop routes to exactly that producer and an ending producer hands the
-  // strip over instead of leaving stale text. The arbitration rule
-  // (deterministic):
-  //   * a file load always wins while FileLoader is busy (unchanged);
-  //   * a newly BEGUN toolbox ingest takes the strip (last-started wins,
-  //     unchanged), EXCEPT the layout batch's ingest never displaces a
-  //     displayed interactive one — a background restore must not steal the
-  //     strip from the user's own import;
-  //   * when the displayed ingest ends (or its batch dies), the strip
-  //     switches to a surviving eligible ingest with its recorded
-  //     label/progress — the last-started interactive if still active, else
-  //     the lowest surviving interactive DatasetId (engine ids are monotonic,
-  //     so lowest = first-created), else the batch job's; with no survivor
-  //     the normal linger-hide runs.
+  // Whose title and progress the strip shows, so Stop reaches exactly that producer and an ending producer
+  // hands the strip over. The rule:
+  //   * a file load wins while FileLoader is busy;
+  //   * a newly begun toolbox ingest takes the strip (last-started wins), except that the layout batch's never
+  //     displaces a displayed interactive one;
+  //   * when the displayed ingest ends (or its batch dies), the strip goes to the last-started interactive
+  //     ingest if still active, else the lowest surviving interactive DatasetId (ids are monotonic, so the
+  //     first created), else the batch's; with no survivor the linger-hide runs.
   enum class IngestStripOwnerKind { kNone, kFile, kInteractiveToolbox, kLayoutBatch };
   IngestStripOwnerKind ingest_strip_owner_kind_ = IngestStripOwnerKind::kNone;
   DatasetId ingest_strip_owner_dataset_ = 0;  ///< set for the two ingest kinds only
 
-  // T7 batch observation (D1): connections to the three SessionManager ingest
-  // lifecycle signals, installed ONLY while a handed-over batch lives and torn
-  // down (with ownership release) strictly before the batch is destroyed.
-  // `layout_batch_strip_dataset_` is the batch job's begun-and-not-ended
-  // ingest (0 = none), recorded by exact equality with the batch's announced
-  // activeImportDataset() — the classification key the arbitration uses.
+  // Up only while a handed-over batch lives; torn down before the batch is destroyed. The dataset is the batch's
+  // begun-and-not-ended ingest (0 = none), matched exactly against its activeImportDataset().
   std::vector<QMetaObject::Connection> layout_batch_ingest_conns_;
   DatasetId layout_batch_strip_dataset_ = 0;
-  // Help ▸ Installed Extensions — informational, rebuilt on aboutToShow.
   QMenu* installed_extensions_menu_ = nullptr;
-  // Local-panel header bands (grey "Curve Width" / "Curve Style" labels).
-  // Kept as members so build_section's findChild lookups for the
-  // exclusive radio buttons have a stable parent to query.
+  // The parents findChild queries for the exclusive width and style buttons.
   QWidget* curve_width_header_ = nullptr;
   QWidget* curve_style_header_ = nullptr;
-  // Curve-style + Curve-width buttons each form an exclusive radio-style
-  // group (one checked at a time; defaults: "Lines" / 1.0 px). The group
-  // owns no widgets — it just enforces the mutual-exclusion semantics on
-  // the existing toolbar buttons.
+  // Exclusivity only; the groups own no widgets.
   QButtonGroup* style_button_group_ = nullptr;
   QButtonGroup* width_button_group_ = nullptr;
 
-  // Stored so applyIcons() can re-tint them on theme change.
+  // Re-tinted by applyIcons().
   QAction* action_load_layout_ = nullptr;
   QAction* action_save_layout_ = nullptr;
   QAction* action_open_data_ = nullptr;
   QAction* action_preferences_ = nullptr;
-  // Byte-level layout loads (browser uploads and recipes, loadLayoutFromUrl on
-  // every platform) and their source replay. Desktop file loads never use it.
+  // Byte-level layout loads and their source replay; desktop file loads never use it.
   struct BrowserLayoutRuntime;
   std::unique_ptr<BrowserLayoutRuntime> browser_layout_runtime_;
   QAction* action_save_source_layout_ = nullptr;  // browser build only
 #ifdef PJ_TARGET_WASM
-  // Created once the page's preset index lists at least one preset; a child of
-  // this window, hidden between uses.
+  // Created once the preset index lists a preset; hidden between uses.
   WelcomePresetsDialog* presets_dialog_ = nullptr;
 #endif
-  // A byte-level layout load is in flight: layout actions stay disabled and a
-  // second one is refused until finishBrowserLayoutLoad.
+  // Until finishBrowserLayoutLoad: layout actions disabled, a second byte-level load refused.
   bool layout_selection_pending_ = false;
-  // The page this browser build was opened from (setDeploymentPageUrl); fills a
-  // replayed stream's deployment variables. Empty on the desktop, where a
-  // configuration that names one fails with "missing deployment context".
+  // Empty on the desktop, where a configuration naming a deployment variable fails with "missing deployment
+  // context".
   QUrl deployment_page_url_;
   std::deque<CapturedWorkspace> undo_states_;
   std::deque<CapturedWorkspace> redo_states_;
@@ -1916,19 +1411,12 @@ class MainWindow : public QMainWindow {
   QElapsedTimer undo_timer_;
   bool applying_state_ = false;
   bool progressive_layout_in_flight_ = false;
-  // The progressive binder's itemsAdded retry channel. Torn down with the
-  // restore on every arm EXCEPT a kRetainAndDiagnose drain, which leaves it
-  // alive as D5's retention channel (retained intents bind when their data
-  // arrives later — main_window_layout_import_binder_test pins this
-  // mid-import) until the next restore or resetLayoutImportBatch supersedes
-  // it.
+  // The binder's itemsAdded retry channel. Torn down with the restore, except after a kRetainAndDiagnose drain,
+  // which leaves it up so retained intents bind when their data arrives, until the next restore or
+  // resetLayoutImportBatch.
   QMetaObject::Connection pending_items_added_conn_;
-  // One reason the progressive drain must keep waiting, plus the connection
-  // that re-runs the gate when that reason may have cleared. The gate
-  // (maybeSettleProgressiveRestore) proceeds only once no waiter is pending;
-  // FileLoader registers isBusy() on queueDrained, the batch registers
-  // !isFinished() on finished — and that batch waiter doubles as the drain
-  // signal for the T7 mid-import binding (no third waiter exists).
+  // One reason the progressive drain must wait, with the connection that re-runs the gate when it may have
+  // cleared: FileLoader::isBusy() on queueDrained, and the batch's !isFinished() on finished.
   struct RestoreWaiter {
     std::function<bool()> pending;
     QMetaObject::Connection conn;
@@ -1943,57 +1431,36 @@ class MainWindow : public QMainWindow {
         });
   }
   void clearRestoreWaiters();
-  // The drain-time policy for unresolved intents, captured at
-  // beginProgressiveLayoutRestore from the SAME batch-interactivity decision
-  // the whole restore rides (D5: policy is data captured up front, never a
-  // late read of live batch state).
+  // Captured at beginProgressiveLayoutRestore from the restore's interactivity, never read late from the batch.
   MissingCurvePolicy progressive_missing_curve_policy_ = MissingCurvePolicy::kPrompt;
   bool pending_binding_rebuild_scheduled_ = false;
-  // Trailing-edge coalescer for scene-dock workspaceChanged: layer/view
-  // scrubbers emit per drag tick, and each push would serialize the whole
-  // workspace — one capture fires when the gesture goes quiet (the plot-side
-  // twin lives in the emitting widgets; scene docks have too many emitters,
-  // so the shell debounces its one subscription instead).
+  // Trailing edge for scene docks' workspaceChanged: scrubbers emit per drag tick, and each undo push serializes
+  // the whole workspace.
   QTimer scene_undo_debounce_;
-  // Timeline state (per-source offsets + track order) extracted during a progressive
-  // restore but not yet applicable: the async worker had not registered the reloaded
-  // datasets' source paths when restoreChromeAndPanels ran, so the offsets were
-  // skipped. onProgressiveLayoutDrained re-applies these once the paths settle. Empty
-  // outside a progressive restore.
+  // A progressive restore's timeline state, applied at the drain once the reloaded datasets' paths are
+  // registered. Empty outside a progressive restore.
   QList<layout_xml::DataSourceRef> pending_timeline_sources_;
-  // The stream tracks of the latest progressive restore (see applyRestoredLayout): both
-  // timeline passes (at begin and at the drain) resolve them with the files'. Set by
-  // beginProgressiveLayoutRestore, cleared when that restore is cancelled or superseded.
+  // Resolved with the files' tracks at begin and at the drain; cleared when the restore is cancelled or
+  // superseded.
   LayoutTimelinePlan progressive_stream_tracks_;
-  // The saved target must outlive begin so processors can replay only at drain.
+  // Kept from begin to the drain, where the processors replay.
   QDomDocument progressive_layout_doc_;
   std::optional<CapturedWorkspace> progressive_previous_workspace_;
   std::optional<PendingSourceReplacement> pending_source_replacement_;
-  // The layout-import transaction owner (§6.2): non-null only from a restore
-  // that found materialize-bearing sources until its drain settles. Declared
-  // AFTER session_/file_loader_ so its destructor (which reaches both) runs
-  // first. Ordinary layouts never construct one.
+  // Non-null from a restore with materialize-bearing sources until its drain settles. Declared after session_
+  // and file_loader_: its destructor reaches both.
   std::unique_ptr<LayoutImportBatch> layout_import_batch_;
-  // One-shot handover of the batch's workspace checkpoint into
-  // beginProgressiveLayoutRestore, so the batch hook's capture and the
-  // progressive snapshot are ONE capture: set by the
-  // begin_workspace_checkpoint hook, consumed (or dropped) at begin.
+  // Set by the batch's begin_workspace_checkpoint hook and consumed at beginProgressiveLayoutRestore, so both
+  // use one capture.
   std::shared_ptr<const CapturedWorkspace> batch_workspace_checkpoint_;
-  // True between enableAutoplay() and the first range-driven playback start (the
-  // --autoplay one-shot); cleared once playback begins so user control is respected.
+  // From enableAutoplay() to the first range-driven playback start.
   bool autoplay_pending_ = false;
-  // One-shot guard so the remembered left-panel splitter width is restored only on
-  // the first showEvent (later shows must not clobber a user/layout adjustment).
+  // Later shows must not clobber a user or layout adjustment.
   bool left_splitter_restored_ = false;
-  bool bottom_panel_sized_ = false;  // first-show guard for the bottom-panel sizing
-  // Lives inside localToolbarWidget; visibility piggybacks on the
-  // right-panel toggle in the tab strip.
+  bool bottom_panel_sized_ = false;
   CurveEditor* curve_editor_ = nullptr;
 
-  // Right-sidepanel content swap: the stack hosts a plot-config page
-  // (Curve Width / Style strips + CurveEditor) and per-family pages
-  // for 2D and 3D scenes. onDockFocused() picks the active page from
-  // the focused DockWidget's content type.
+  // onDockFocused() picks the page.
   QStackedWidget* right_panel_stack_ = nullptr;
   QWidget* plot_config_page_ = nullptr;
 #ifdef PJ_WITH_SCENE2D
@@ -2002,68 +1469,38 @@ class MainWindow : public QMainWindow {
 #ifdef PJ_WITH_SCENE3D
   QWidget* scene3d_config_page_ = nullptr;
 #endif
-  // Concrete widget instance behind scene3d_config_page_; held as a
-  // distinct member so onDockFocused() can call bindDock() on it
-  // without an extra qobject_cast.
 #ifdef PJ_WITH_SCENE3D
   class Scene3DConfigPanel* scene3d_config_panel_ = nullptr;
 #endif
-  // Same, for the 2D scene's layer panel (binds to the focused Scene2DDockWidget).
 #ifdef PJ_WITH_SCENE2D
   class Scene2DConfigPanel* scene2d_config_panel_ = nullptr;
 #endif
-  // Shown when the focused dock holds the VisualizationPlaceholderWidget —
-  // nothing to configure yet.
+  // For a dock still showing its placeholder.
   QWidget* empty_dock_page_ = nullptr;
-  // Custom Widget picker and config pages plus the active-widgets record. Owned by
-  // right_panel_stack_ (QObject parent); the record is cleared in ~MainWindow once the docks are gone.
+  // Owned by right_panel_stack_. ~MainWindow clears its active-widgets record once the docks are gone.
   CustomWidgetController* custom_widgets_ = nullptr;
 
-  // Active toolbox panel presented in place of the chart area by
-  // presentPanel()/restoreCentralArea(). At most one at a time.
-  // current_panel_engine_ is the owning PanelEngine when the panel is a
-  // toolbox dialog (null for non-toolbox panels like the console / filter
-  // editor); presentPanel() uses it to tear the previous toolbox down before
-  // showing a new one, so launching a toolbox replaces the open panel.
+  // The chart-area takeover, at most one. current_panel_engine_ is its PanelEngine when it is a toolbox (set by
+  // ToolboxPresenter), a non-owning reference.
   QWidget* current_panel_ = nullptr;
   PanelEngine* current_panel_engine_ = nullptr;
-  // The marketplace controller while its panel holds the central area, so a
-  // second open request re-activates it instead of building a second one (the
-  // title-bar Update button and the File menu both route to onOpenMarketplace).
-  // Cleared by the controller's own destruction, whichever exit the panel takes.
-  //
-  // Paired with `marketplace_container_` — the guard has to distinguish
-  // "marketplace IS the central panel" from "marketplace was migrated to a tab
-  // and some other panel now sits centrally": both leave `marketplace_panel_`
-  // non-null, but only the first should re-activate. `current_panel_ ==
-  // marketplace_container_` is the exact test.
+  // A second open re-activates the live marketplace instead of building another. It may have migrated to a tab
+  // with another panel now central: `current_panel_ == marketplace_container_` tells the two apart.
   QPointer<MarketplaceWindow> marketplace_panel_;
   QPointer<QWidget> marketplace_container_;
 
-  // Every live toolbox, keyed by plugin id (one instance per toolbox across
-  // takeover, tabs and floating windows alike). Each presenter owns its
-  // plugin session, so this is declared after session_: the entries are torn
-  // down in ~MainWindow and would in any case die before the AppSession they
-  // write into. unique_ptr: presenters are addressed by pointer from Qt
-  // callbacks and must not move.
+  // Each presenter owns its plugin session. ~MainWindow tears them down first; declared after session_ so they
+  // would die before the AppSession they write into anyway. unique_ptr: presenters must not move.
   std::map<QString, std::unique_ptr<ToolboxPresenter>> toolboxes_;
 
-  // Test seams for the fold rules. `confirm_running_job_` answers
-  // confirmCancelRunningJob without a modal; the other two stand in for a
-  // panel host's work-in-flight query and cooperative cancel, which a test
-  // cannot otherwise drive (an ingest context needs a real parser plugin).
-  // All unset in production.
+  // Test seams for the fold rules (an ingest context needs a real parser plugin); unset in production.
   std::function<bool(QString)> confirm_running_job_;
   std::function<bool(ToolboxRuntimeHost*)> host_work_in_flight_;
   std::function<void(ToolboxRuntimeHost*)> stop_host_work_;
-  // The plot a Filter Editor panel was opened on. Its style/width drive the
-  // before/after preview (the preview mirrors THAT plot, not a global default).
-  // Set after presentPanel() succeeds; cleared in restoreCentralArea(). QPointer so
-  // a torn-down origin reads back null. Only non-null while a FilterEditorPanel is up.
+  // The plot an open Filter Editor's preview mirrors; null otherwise.
   QPointer<PlotWidget> filter_editor_origin_;
 
-  // Global-column "Chart" icons — built in buildGlobalToolbar(), so
-  // stored as member pointers (no ui_-> accessor).
+  // Built in buildGlobalToolbar(), not in the .ui.
   QToolButton* button_link_ = nullptr;
   SvgButton* button_time_tracker_ = nullptr;
   QToolButton* button_show_point_ = nullptr;
@@ -2072,29 +1509,20 @@ class MainWindow : public QMainWindow {
   QToolButton* button_ratio_ = nullptr;
   QToolButton* button_dots_ = nullptr;
   QToolButton* button_reference_point_ = nullptr;
-  // Global-column "Legend" button — single icon that combines a corner
-  // picker (left-click) with a show/hide toggle (right-click). Checked
-  // while the legend is shown at one of the four corners; unchecked
-  // when hidden. The icon always reflects the "current position": the
-  // active corner while checked, or the saved corner that will be
-  // restored on the next show while unchecked.
-  SvgButton* button_legend_ = nullptr;  // SvgButton so setLegendStatus can setIconPath() the corner glyph
-  // Saved corner used while the legend is hidden. Updated on every
-  // visit to a corner so right-click → show restores the user's last
-  // position rather than always jumping back to a fixed default.
+  // Left-click cycles the corners, right-click shows or hides. Checked while shown; the icon shows the active
+  // corner, or the one the next show restores.
+  SvgButton* button_legend_ = nullptr;
+  // The corner the next show restores.
   LegendStatus previous_legend_corner_ = LegendStatus::kTopRight;
 
-  // Global-column view toggles. Persisted to QSettings; XML
-  // round-tripped; show_points_ applies to plots and 2D image viewers.
+  // QSettings preferences, never in layouts or undo snapshots; show_points_ also reaches 2D image viewers.
   LegendStatus legend_status_ = LegendStatus::kTopRight;
   bool show_points_ = false;
   bool activate_grid_ = false;
-  // Derived from kDateTimeDisplayKey + kClockUtcKey by applyTimeLabelFormat();
-  // new plots pick it up in applyGlobalToggles.
+  // Derived by applyTimeLabelFormat().
   TimeLabelFormat time_label_format_ = TimeLabelFormat::kSeconds;
   bool dots_ = false;
 
-  // A refreshCustomTopicsPanel is queued by scheduleCustomTopicsSync and has not run yet.
   bool custom_topics_sync_pending_ = false;
   int custom_topics_syncs_ = 0;            ///< refreshCustomTopicsPanel runs, read by the coalescing test
   int custom_topics_transform_scans_ = 0;  ///< transform-row rebuilds, read by the refresh test
@@ -2107,20 +1535,12 @@ class MainWindow : public QMainWindow {
   /// The catalog changed, or a sync asked for it, since custom_topic_transform_rows_ were built.
   bool custom_topic_transform_rows_stale_ = true;
 
-  // Loaded from QSettings before any child widget is built so the first
-  // applyIcons() of each widget already uses the saved metrics.
+  // Loaded before any child widget is built, so each widget's first applyIcons() uses it.
   ChromeMetrics chrome_metrics_;
-  // Three-state cycle for the playback tracker info level (line / +value /
-  // +value+name). Default kValue matches PJ3 (mainwindow.cpp:154).
   CurveTracker::Parameter tracker_info_ = CurveTracker::kValue;
-  // Session-only — PJ3 doesn't persist this either. Set at toggle-ON to the
-  // playback instant; tracker renders Δ values until cleared. Stored as a
-  // frame-invariant absolute Timepoint (NOT a display coordinate) so the blue
-  // line holds its instant when the display offset shifts — the "Use time
-  // offset" toggle, or a load that lowers a dataset's earliest stamp. The axis
-  // position is derived on demand by referenceDisplaySeconds().
+  // Session-only. An absolute instant, not a display coordinate, so the line holds its instant when the display
+  // offset shifts ("Use time offset", or a load that lowers a dataset's earliest stamp).
   std::optional<Timepoint> reference_instant_;
-  // PJ3 parity: 1:1 aspect is the expected default for XY plots.
   bool keep_ratio_ = true;
 };
 

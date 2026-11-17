@@ -1,9 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// SeriesProgressController (SER-17): the replay of an on-demand series is a loading entry of its topic, stoppable but
-// never discardable; its end lingers briefly as completed or cancelled, then the entry goes. Through a real AppSession
-// whose runs are `test::FakeRun`'s.
+// SeriesProgressController: the replay of an on-demand series is a loading entry of its topic, stoppable but never
+// discardable; its end lingers briefly as completed or cancelled, then the entry goes. Runs through a real
+// AppSession whose runs are `test::FakeRun`'s.
 
 #include <gtest/gtest.h>
 
@@ -43,7 +43,6 @@ struct Fixture : test::OnDemandSessionFixture {
   [[nodiscard]] std::optional<SeriesRunner::State> seriesState() {
     return manager.onDemandService().series().state(recipe.key());
   }
-  /// Whether some update carried `topic` in `state`.
   [[nodiscard]] bool sawState(TopicId topic, Progress::State state) const {
     return std::any_of(updates.begin(), updates.end(), [&](const ProgressSet& by_topic) {
       const auto found = by_topic.constFind(topic);

@@ -28,8 +28,8 @@ namespace PJ {
 
 namespace {
 
-// Synthetic path scheme for statically registered plugins (registerStatic*);
-// they have no backing file, so disk reconciliation must never evict them.
+// Synthetic path scheme for statically registered plugins (registerStatic*); with no backing file, disk reconciliation
+// must never evict them.
 constexpr std::string_view kStaticPathPrefix = "static://";
 
 bool isStaticPath(const std::string& path) {
@@ -78,12 +78,10 @@ bool extensionEquals(std::string_view lhs, std::string_view rhs) {
   return std::ranges::equal(lhs, rhs, [&](char a, char b) { return fold(a) == fold(b); });
 }
 
-// Whether a loaded library of `family` may leave the process's catalog by any other way than a user
-// disable: dropped when its file vanishes, evicted and reloaded when the file is rewritten, superseded
-// by a static registration. A Widget library may not: Qt calls into the widgets it created at times
-// the host does not control, so its panels must keep finding the same code. A rewritten file is
-// reported once as "updated on disk; restart required" instead. The SDK loader keeps the library
-// mapped for the life of the process whatever the catalog does with the WidgetLibrary object.
+// Whether a loaded library of `family` may leave the catalog other than by a user disable (its file vanishing or being
+// rewritten, a static registration superseding it). A Widget library may not: Qt calls into the widgets it created at
+// times the host does not control, so its panels must keep finding the same code. A rewritten file is reported once as
+// "updated on disk; restart required". The SDK loader keeps the library mapped for the process lifetime regardless.
 constexpr bool unloadableFamily(PluginFamily family) {
   return family != PluginFamily::kWidget;
 }
@@ -99,11 +97,10 @@ std::string readableLoadFailure(const std::string& loader_message) {
   return qt.empty() ? loader_message : qt + " [" + loader_message + "]";
 }
 
-// Why a Widget library's Qt build cannot be shared with this host, or nullopt when it can. The
-// widget objects live in the host's Qt, so the plugin must have been compiled against the same
-// major.minor (patch ignored), the same compiler family, and, where debug and release runtimes do
-// not mix (MSVC), the same configuration. The reason is a user-facing sentence: the dock shows it
-// in place of the missing widget.
+// Why a Widget library's Qt build cannot be shared with this host, or nullopt when it can. Its widget objects live in
+// the host's Qt, so it must be compiled against the same major.minor (patch ignored), the same compiler family and,
+// where debug and release runtimes do not mix (MSVC), the same configuration. The reason is a user-facing sentence
+// the dock shows in place of the missing widget.
 std::optional<std::string> widgetBuildMismatch(const PJ_widget_build_info_t* info) {
   if (info == nullptr) {
     return "this widget does not report which Qt it was built with";
@@ -131,9 +128,8 @@ std::optional<std::string> widgetBuildMismatch(const PJ_widget_build_info_t* inf
   return std::nullopt;
 }
 
-// Probes a fresh plugin instance and returns its capability mask, or nullopt
-// when the plugin's create() returned null — a broken build that must be
-// rejected rather than handed a null context via capabilities().
+// Probes a fresh plugin instance for its capability mask; nullopt when create() returned null, a broken build to
+// reject rather than hand a null context to capabilities().
 template <typename LibraryT>
 std::optional<uint64_t> probeCapabilities(const LibraryT& library) {
   const auto handle = library.createHandle();
@@ -196,16 +192,11 @@ void PluginRuntimeCatalog::setDisabledIds(std::unordered_set<std::string> disabl
 
 std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins() const {
   // Winner selection when the same plugin id appears in more than one folder:
-  //
-  //   0. An incompatible copy (ABI or SDK floor) is rejected on sight and never
-  //      claims its id, whatever folder it sits in — so an incompatible --plugin-dir
-  //      build falls back to the marketplace copy (reported as an error + a note).
-  //   1. Authoritative entries (custom folders + --plugin-dir; see PluginDirEntry)
-  //      are a HARD override. Once an id is claimed by an
-  //      authoritative folder, the highest-priority authoritative copy wins outright
-  //      — ignoring the version of any lower-priority folder.
-  //   2. Among the remaining (managed) folders — marketplace + bundled — the higher
-  //      version wins; a tie keeps the higher-priority folder.
+  //   0. An incompatible copy (ABI or SDK floor) is rejected on sight and never claims its id, whatever folder it sits
+  //      in, so an incompatible --plugin-dir build falls back to the marketplace copy (reported as an error + a note).
+  //   1. Authoritative entries (see PluginDirEntry) are a hard override: the highest-priority authoritative copy wins
+  //      outright, ignoring the version of any lower-priority folder.
+  //   2. Among managed folders the higher version wins; a tie keeps the higher-priority folder.
   const auto compatibility = [this](const PluginDescriptor& descriptor) { return descriptorCompatibility(descriptor); };
 
   std::vector<PluginDescriptor> winners;
@@ -218,9 +209,8 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
     if (dir.empty()) {
       continue;
     }
-    // Skip a folder already scanned in a higher-priority slot: without this, the
-    // same folder listed twice compares every plugin against itself and emits a
-    // confusing "ignoring duplicate id … already loaded from <same path>".
+    // Skip a folder already scanned in a higher-priority slot: listed twice, it would compare every plugin against
+    // itself and report a confusing "ignoring duplicate id ... already loaded from <same path>".
     if (!scanned_dirs.insert(canonicalPath(dir)).second) {
       continue;
     }
@@ -232,9 +222,8 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
     }
     reportScanDiagnostics(*scan);
     for (const PluginDescriptor& descriptor : scan->plugins) {
-      // Statically registered plugins (registerStatic*) outrank every folder
-      // tier: they are compiled into the host on purpose, so a scanned DSO with
-      // the same id never even competes.
+      // Statically registered plugins outrank every folder tier (compiled in on purpose), so a scanned DSO with the
+      // same id never competes.
       if (isStaticallyRegisteredId(descriptor.id)) {
         reportAt(
             DiagnosticLevel::kInfo, descriptor,
@@ -267,10 +256,10 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
       PluginDescriptor& incumbent = winners[it->second];
       const std::string incumbent_path = pathToUtf8(incumbent.dso_path);
 
-      // (1) A locked authoritative winner is a hard override — nothing displaces it.
+      // (1) A locked authoritative winner is a hard override: nothing displaces it.
       if (authoritative_win.count(descriptor.id) != 0) {
-        // Note when the loser is itself authoritative (just lower priority), so the
-        // diagnostic does not read as if a managed copy lost to an authoritative one.
+        // Note when the loser is itself authoritative (just lower priority), so the diagnostic does not read as if a
+        // managed copy lost to an authoritative one.
         const std::string candidate_note =
             dir_authoritative ? "; candidate is also from an authoritative folder (lower priority)" : "";
         reportAt(
@@ -279,8 +268,7 @@ std::vector<PluginDescriptor> PluginRuntimeCatalog::collectDeduplicatedPlugins()
                 incumbent.version + " already loaded from " + incumbent_path + candidate_note + ")");
         continue;
       }
-      // (1) An authoritative candidate overrides a managed incumbent, regardless of
-      //     version.
+      // (1) An authoritative candidate overrides a managed incumbent regardless of version.
       if (dir_authoritative) {
         reportAt(
             DiagnosticLevel::kInfo, descriptor,
@@ -438,15 +426,11 @@ bool PluginRuntimeCatalog::reload() {
 
 namespace {
 
-// Shared body for the three registerStatic* methods: load the static vtable,
-// parse the embedded manifest, fill the common Runtime*Plugin fields, and push.
-// `fill` adds the family-specific fields (capabilities / extensions /
-// encodings) and may veto the registration; `claim_id` then enforces the
-// catalog-wide id policy (reject duplicate statics, supersede a DSO-backed
-// entry). Keeping the mutating claim after every validation step makes a
-// DSO-to-static replacement transactional: a rejected candidate leaves the
-// incumbent DSO loaded. `report` bridges to the catalog's private diagnostic
-// sink.
+// Shared body of the registerStatic* methods: load the static vtable, parse the embedded manifest, fill the common
+// Runtime*Plugin fields and push. `fill` adds the family-specific fields and may veto; `claim_id` then enforces the
+// catalog-wide id policy (reject duplicate statics, supersede a DSO-backed entry). The mutating claim comes after every
+// validation step so a rejected DSO-to-static replacement leaves the incumbent DSO loaded. `report` bridges to the
+// catalog's private diagnostic sink.
 template <
     typename RuntimeT, typename LoadFn, typename ReportFn, typename CompatibilityFn, typename ClaimFn, typename FillFn>
 bool registerStaticPlugin(
@@ -458,10 +442,9 @@ bool registerStaticPlugin(
     report(DiagnosticLevel::kError, std::string{}, "static " + family_name + ": " + result.error());
     return false;
   }
-  // The SDK's canonical decoder — the same validation the DSO scan applies
-  // (required non-empty id/name/version, typed fields, parser encoding array).
-  // A second, laxer decoder here would let a malformed static plugin pass
-  // validation and evict a working DSO plugin at the claim below.
+  // The SDK's canonical decoder, the same validation the DSO scan applies (required non-empty id/name/version, typed
+  // fields, parser encoding array). A laxer decoder here would let a malformed static plugin pass and evict a working
+  // DSO plugin at the claim below.
   auto descriptor = decodeManifest(
       std::filesystem::path{std::string(kStaticPathPrefix) + family_name}, family,
       vtable->manifest_json != nullptr ? std::string_view{vtable->manifest_json} : std::string_view{});
@@ -480,8 +463,8 @@ bool registerStaticPlugin(
   loaded.id = descriptor->id;
   loaded.name = descriptor->name;
   loaded.version = descriptor->version;
-  // The id is the only identity a static plugin has: its synthetic path is
-  // derived from it so evictByPath/loadedMtimeForPath can address it.
+  // A static plugin's only identity is its id; the synthetic path derives from it so evictByPath/loadedMtimeForPath can
+  // address it.
   loaded.path = std::string(kStaticPathPrefix) + loaded.id;
   loaded.loaded_mtime = std::filesystem::file_time_type{};
   if (!fill(loaded, *descriptor)) {
@@ -513,10 +496,8 @@ bool PluginRuntimeCatalog::registerStaticDataSource(
           return false;
         }
         loaded.capabilities = *capabilities;
-        // Fail-fast parity with the dynamic path: a plugin that advertises
-        // kCapabilityHasDialog without a resolvable dialog vtable would
-        // otherwise reach the host's dialog flow and silently degrade to "no
-        // dialog".
+        // Fail-fast parity with the dynamic path: a plugin advertising kCapabilityHasDialog without a resolvable dialog
+        // vtable would otherwise reach the host's dialog flow and silently degrade to "no dialog".
         if ((loaded.capabilities & PJ_DATA_SOURCE_CAPABILITY_HAS_DIALOG) != 0) {
           auto vt = loaded.library.resolveDialogVtable();
           if (!vt) {
@@ -630,9 +611,8 @@ bool PluginRuntimeCatalog::registerStaticPlugins(const StaticPluginSet& plugins)
 }
 
 bool PluginRuntimeCatalog::loadAndRegister(const PluginDescriptor& descriptor) {
-  // Reduced-features visibility: a plugin whose full-feature floor exceeds
-  // this build's SDK still loads (the gate above passed) but some optional
-  // features stay inactive — say so once, at admission.
+  // A plugin whose full-feature floor exceeds this build's SDK still loads but some optional features stay inactive;
+  // say so once, at admission.
   if (const std::string note = evaluateFeatureCompleteness(descriptor.suggested_sdk_version); !note.empty()) {
     reportAt(DiagnosticLevel::kInfo, descriptor, note);
   }
@@ -678,11 +658,8 @@ bool PluginRuntimeCatalog::loadAndRegisterDataSource(const PluginDescriptor& des
   }
   loaded.capabilities = *capabilities;
 
-  // Fail-fast on plugins that lie about kCapabilityHasDialog: a misbuilt
-  // plugin that advertises the bit but doesn't export the dialog vtable
-  // would otherwise reach the host's dialog flow and silently degrade to
-  // "no dialog", confusing the user. Block it here so the broken plugin
-  // never enters the loaded set.
+  // Fail-fast on a plugin advertising kCapabilityHasDialog without exporting the dialog vtable: the host's dialog flow
+  // would silently degrade to "no dialog", so it never enters the loaded set.
   if ((loaded.capabilities & PJ_DATA_SOURCE_CAPABILITY_HAS_DIALOG) != 0) {
     auto vt = loaded.library.resolveDialogVtable();
     if (!vt) {
@@ -822,9 +799,8 @@ bool PluginRuntimeCatalog::claimStaticId(const std::string& id, const char* fami
         "static " + std::string(family) + ": plugin id \"" + id + "\" is already statically registered");
     return false;
   }
-  // A DSO-backed plugin with the same id yields to the static registration, the
-  // same precedence scans apply (collectDeduplicatedPlugins skips descriptors
-  // whose id is statically registered) — kept order-independent here.
+  // A DSO-backed plugin with the same id yields to the static registration, the same precedence scans apply
+  // (collectDeduplicatedPlugins skips statically registered ids), kept order-independent here.
   const auto evict_dso_backed = [&](auto& vec, PluginFamily family) {
     const auto before = vec.size();
     if (unloadableFamily(family)) {

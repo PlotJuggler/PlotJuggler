@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// EVAL-05: the summary of an object output that an evaluation report carries instead of its bytes.
+// The summary of an object output that an evaluation report carries instead of its bytes.
 
 #include "pj_scripting/object_summary.h"
 

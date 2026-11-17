@@ -177,7 +177,6 @@ test('Foxglove JPEG, annotations, split Scene2D docks, and recreation render', a
   }
 
   // The dataset's three sorted rows are annotations, JPEG A, and JPEG B.
-  // Every drop travels through CurveTreeView's production MIME path.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await dragQtCanvas(
     page,
@@ -272,8 +271,7 @@ test('Foxglove JPEG, annotations, split Scene2D docks, and recreation render', a
   expect(populated.docks[0].readback.white).toBeGreaterThan(populated.docks[1].readback.white + 1000);
   const populatedIdentities = populated.docks.map(dock => dock.identity);
 
-  // Resize through the real ADS splitter and require both QRhiWidget surfaces
-  // to repaint at their new framebuffer sizes.
+  // Resize through the ADS splitter; both QRhiWidget surfaces must repaint at their new framebuffer sizes.
   multiCount = consoleMessages.filter(message => message.includes('PJ_WASM_MULTI_SUMMARY')).length;
   const beforeResize = await requestMultiPlotState(page, consoleMessages, multiCount);
   const rightDock = beforeResize.docks[1];
@@ -291,9 +289,8 @@ test('Foxglove JPEG, annotations, split Scene2D docks, and recreation render', a
   expect(resized.docks[0].readback.white).toBeGreaterThan(500);
   expect(resized.docks[1].readback.green).toBeGreaterThan(20000);
 
-  // Undo applies a serialized workspace snapshot and reconstructs both Scene2D
-  // docks. The browser must release/recreate their QRhi resources and still
-  // render the independent image and annotation layers.
+  // Undo applies a serialized workspace snapshot and reconstructs both Scene2D docks: their QRhi resources must
+  // be released and recreated, and the image and annotation layers still render independently.
   await page.keyboard.press('Control+z');
   await page.waitForTimeout(1000);
   const undone = await settledScene();
@@ -302,11 +299,11 @@ test('Foxglove JPEG, annotations, split Scene2D docks, and recreation render', a
   expect(undone.docks[0].readback.white).toBeGreaterThan(500);
   expect(undone.docks[1].readback.green).toBeGreaterThan(30000);
 
-  // Capture immediately: this must not rely on the screenshot request itself
-  // causing a later compositor refresh.
+  // Capture immediately: the capture must not depend on the screenshot request itself causing a later
+  // compositor refresh.
   const finalImage = await page.screenshot();
-  // Exact QRhi readbacks above validate every dock's decoded content; this
-  // full-window golden only guards the browser compositor integration.
+  // The QRhi readbacks above validate every dock's decoded content; this full-window golden only guards the
+  // browser compositor integration.
   expect(finalImage).toMatchSnapshot('wasm-scene2d-foxglove-matrix.png', { maxDiffPixelRatio: 0.05 });
 
   expect(consoleMessages.some(message => message.includes('PJ_WASM_PROTOBUF_OBJECT_FAILED'))).toBe(false);
@@ -359,8 +356,8 @@ test('Foxglove H.264 video decodes, renders and seeks in Scene2D', async ({ page
     { x: screen.x + 820, y: screen.y + 390 },
   );
 
-  // The first frame arrives once the software decoder has produced it; poll
-  // rather than sleep so a slow decode worker does not make the check flaky.
+  // The first frame arrives once the software decoder has produced it; poll, since a slow decode worker must
+  // not make the check flaky.
   let stateMessages = consoleMessages.filter(message => message.includes('PJ_WASM_SCENE2D_SUMMARY')).length;
   let first;
   await expect.poll(async () => {

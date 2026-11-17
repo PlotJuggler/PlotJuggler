@@ -81,9 +81,8 @@ TEST(ToolRegistry, ListsAllToolsAndSchemas) {
   EXPECT_EQ(reg.find("play"), nullptr);
   EXPECT_NE(reg.find("plot_tab"), nullptr);
   EXPECT_NE(reg.find("scene_view"), nullptr);
-  // zoom_to_time_range/zoom_reset were folded into plot_tab's 'zoom' action:
-  // the user's plots are no longer reachable from any tool, only the tabs
-  // this assistant composed itself.
+  // The user's plots are not reachable from any tool, only the tabs this assistant composed itself (zoom lives in
+  // plot_tab's 'zoom' action).
   EXPECT_EQ(reg.find("zoom_to_time_range"), nullptr);
   EXPECT_EQ(reg.find("zoom_reset"), nullptr);
   // remove_markers exists but is scoped to the assistant's own marker set;
@@ -498,9 +497,8 @@ TEST(ToolRegistry, ReadSeriesBuckets) {
   EXPECT_EQ(j["buckets"]["mean"].size(), j["buckets"]["n"].size());
 }
 
-// Regular buckets (an even time grid, none dropped) reconstruct from t0/dt
-// alone -- no explicit "t" array, and t0/dt exactly reproduce what the old
-// per-bucket "t" values were.
+// Regular buckets (an even time grid, none dropped) reconstruct from t0/dt alone: no explicit "t" array, and t0/dt
+// exactly reproduce the per-bucket times.
 TEST(ToolRegistry, BucketsAreColumnar) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -534,10 +532,8 @@ TEST(ToolRegistry, BucketsAreColumnar) {
   EXPECT_NEAR(dt, 0.499, 0.05);
 }
 
-// bucketize's degenerate "one bucket per sample" path (fewer samples than
-// max_points) over UNEVEN timestamps cannot be reconstructed from t0/dt, so
-// the explicit "t" array must carry the true per-sample times -- same values
-// the old per-bucket "t" field held.
+// bucketize's degenerate "one bucket per sample" path (fewer samples than max_points) over UNEVEN timestamps cannot be
+// reconstructed from t0/dt, so the explicit "t" array must carry the true per-sample times.
 TEST(ToolRegistry, IrregularBucketsCarryExplicitTimes) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -595,11 +591,9 @@ TEST(ToolRegistry, EmptyBucketIsNull) {
   EXPECT_TRUE(found_null_bucket) << b.dump();
 }
 
-// The whole point of going columnar: under the same 16 KiB response cap, many
-// more buckets fit than the old one-object-per-bucket shape allowed (~240 for
-// a spiky series measured on real data). A 5000-sample series should now keep
-// several hundred buckets instead of coarsening down toward the 16-bucket
-// floor.
+// Columnar output: under the 16 KiB response cap many more buckets fit than a one-object-per-bucket shape would allow
+// (~240 for a spiky series measured on real data): a 5000-sample series keeps several hundred buckets instead of
+// coarsening toward the 16-bucket floor.
 TEST(ToolRegistry, ColumnarFitsMoreBucketsUnderTheCap) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -626,10 +620,8 @@ TEST(ToolRegistry, ColumnarFitsMoreBucketsUnderTheCap) {
   const std::size_t bucket_count = b["n"].size();
   EXPECT_GE(bucket_count, 400u) << "columnar buckets should fit far more than the old shape did: " << bucket_count;
 
-  // Reconstruct the equivalent old one-object-per-bucket array from this
-  // response's own arrays (same bucket count, same values) and dump it, so
-  // the before/after byte-per-bucket comparison below is measured on the
-  // exact same data rather than a hand-picked example.
+  // Reconstruct the equivalent one-object-per-bucket array from this response's own arrays (same bucket count, same
+  // values) and dump it, so the byte-per-bucket comparison below is measured on the same data.
   json old_shape = json::array();
   for (std::size_t i = 0; i < bucket_count; ++i) {
     const double t = b.contains("t") ? b["t"][i].get<double>()
@@ -825,10 +817,9 @@ void populateWideTopic(PJ::testing::ToolboxTestStore& store, const std::string& 
   }
 }
 
-// A servo topic with a dozen array fields, read one path at a time, is the
-// real-data pattern that motivated this: models asked for channel 0-4 and
-// never noticed the jammed surface sat on channel 5. A bare topic path now
-// reads every numeric field at once.
+// A servo topic with a dozen array fields, read one path at a time, is the real-data pattern behind this: models asked
+// for channel 0-4 and never noticed the jammed surface sat on channel 5. A bare topic path reads every numeric field
+// at once.
 TEST(ToolRegistry, WholeTopicExpandsToItsNumericFields) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -1529,10 +1520,8 @@ TEST(ToolRegistry, ReportsHowManyPointsSurviveAPartialJoin) {
   const json j = json::parse(r.content);
   EXPECT_EQ(j["points"], 1) << "only t=0 is common";
   EXPECT_EQ(j["shortest_input_points"], 4);
-  // The result states the outcome and stops there. It used to append
-  // "verify_with: read_series on ...", and models obliged — a full round trip
-  // spent fetching a number this response already had. What to do about the
-  // result is the model's call; this tool's job is to report it.
+  // The result states the outcome and stops there: a "verify_with: read_series on ..." hint makes models spend a full
+  // round trip fetching a number this response already had. What to do about the result is the model's call.
   EXPECT_FALSE(j.contains("verify_with")) << "a tool result must not prescribe the next call";
 }
 
@@ -2234,8 +2223,7 @@ TEST(ResolveSeriesPath, QualifiedPathPicksItsDataset) {
   EXPECT_EQ(monday.resolved->path, "run_monday.mcap:/speed/value");
 }
 
-// The failure the correctness sweep caught on screen: the bare path used to
-// resolve silently to whichever file loaded first, for reads AND installs.
+// The bare path must not resolve silently to whichever file loaded first, for reads and installs.
 TEST(ResolveSeriesPath, RefusesABarePathThatExistsInSeveralDatasets) {
   FakeMultiDatasetHost host;
   host.addDataset("run_monday.mcap", {"/imu", "/speed"}).addDataset("run_friday.mcap", {"/imu", "/speed"});
@@ -3253,11 +3241,9 @@ TEST(ToolRegistry, RawBatchCappedAtFour) {
   EXPECT_NE(r.content.find("at most 4"), std::string::npos) << r.content;
 }
 
-// The 4-paths/200-samples raw caps are a guess, not a measurement: a
-// realistic batch of long (dataset-qualified-looking) paths at 200 samples
-// each can still overrun kMaxResponseBytes. The raw envelope now measures
-// its own dump and shrinks the per-series sample count in lockstep, the same
-// way buckets' batch envelope already does, until it fits.
+// The 4-paths/200-samples raw caps are a guess, not a measurement: a realistic batch of long
+// (dataset-qualified-looking) paths at 200 samples each can overrun kMaxResponseBytes. The raw envelope measures its
+// own dump and shrinks the per-series sample count in lockstep, as buckets' batch envelope does, until it fits.
 TEST(ToolRegistry, RawBatchMeasuresAndShrinksToFitTheResponseCap) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -3359,9 +3345,8 @@ TEST(ToolRegistry, FlatSpanSurvivesAWindowOverAMovingPart) {
 
 // The host hooks a windowed read_series decodes only the window with, built over the store's whole read: read_window
 // serves the samples stamped in [first, last] plus the one before from a store of their own, so a read that leaned on
-// the rest of the series would find it missing; scan_values hands out blocks cut every third sample as chunk
-// boundaries cut them, a block of equal values as its one value as a constant chunk is. Each hook counts its calls
-// into `calls`.
+// the rest of the series would find it missing; scan_values hands out blocks cut every third sample as chunk boundaries
+// cut them, a block of equal values as its one value as a constant chunk is. Each hook counts its calls into `calls`.
 void addWindowHooks(ToolContext& ctx, int& calls) {
   ctx.read_window = [host = ctx.host, &calls](
                         PJ::sdk::FieldHandle field, std::int64_t first,
@@ -3622,10 +3607,8 @@ TEST(ToolRegistry, SinglePathKeepsTheOldShape) {
   EXPECT_EQ(legacy, batch) << "'series' still works so a conversation in flight does not break";
 }
 
-// The measured problem: the model reads 6-7 sibling channels one buckets call
-// at a time over the same stretch, and each was a full round trip. Several
-// paths now come back as a 'stats'-shaped envelope, each entry carrying its
-// own buckets.
+// The model reads 6-7 sibling channels one buckets call at a time over the same stretch, each a full round trip;
+// several paths come back as a 'stats'-shaped envelope, each entry carrying its own buckets.
 TEST(ToolRegistry, BucketsAcceptABatch) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
@@ -3738,11 +3721,9 @@ TEST(ToolRegistry, RejectsAnOversizedBatch) {
 
 }  // namespace
 
-// A name that is already taken is not a judgement call: installing over it
-// shadows something the user already has, and "create" was not asked to replace
-// anything. The tool description used to send the model to list_created "before
-// creating something that may already exist" — an instruction it had to
-// remember, in place of a check that costs nothing.
+// A name that is already taken is not a judgement call: installing over it shadows something the user already has, and
+// "create" was not asked to replace anything. The check costs nothing, whereas an instruction in the tool description
+// ("list_created before creating something that may already exist") has to be remembered by the model.
 TEST(ToolRegistry, RefusesToCreateOverAnExistingName) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// The browser samples' files on PlotJuggler's asset host, served to the suites from a local
-// mirror. The suites never reach the network (browser.js), so a sample that loads from the host
-// gets its files from a mirror that `npm run fetch:assets` fills once, each file checked against
-// its SHA-256 in fixtures/hosted_assets.json. PJ_WASM_ASSETS_MIRROR moves the mirror.
+// The browser samples' files on PlotJuggler's asset host, served to the suites from a local mirror: the
+// suites never reach the network (browser.js). `npm run fetch:assets` fills the mirror once, each file
+// checked against its SHA-256 in fixtures/hosted_assets.json. PJ_WASM_ASSETS_MIRROR moves the mirror.
 const fs = require('fs');
 const http = require('http');
 const path = require('path');

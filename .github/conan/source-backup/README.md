@@ -10,9 +10,9 @@ third-party download host being reachable from a datacenter IP.
 
 CI also sets `core.sources:download_urls` to `["origin", <ConanCenter's
 sha256-addressed source mirror>]`, so a recipe whose upstream host refuses a
-datacenter IP is retried against the mirror instead of failing the build. That
-is what unblocked `elfutils/0.190`, whose only URL, sourceware.org, answered 403
-to a release runner.
+datacenter IP is retried against the mirror instead of failing the build (for
+example `elfutils/0.190`, whose only URL, sourceware.org, answered 403 to a release
+runner).
 
 **`"origin"` must stay first.** Conan treats the two list positions very
 differently (`caching_file_downloader.py`): an *origin* failure of any kind is
@@ -35,14 +35,13 @@ under our control.
 uses for URDF mesh loading) has no source of its own: its Conan recipe downloads
 **zlib's** source tarball (minizip lives in zlib's `contrib/minizip/`) from a
 single URL, `https://zlib.net/fossils/zlib-1.2.13.tar.gz` — and zlib.net rejects
-GitHub-runner IPs with HTTP 415. Any cold Windows CI build was therefore a
-lottery: runs could die mid-`conan install` before the missing binary package
-was available in the PlotJuggler Conan repository.
+GitHub-runner IPs with HTTP 415. A cold Windows CI build can therefore die
+mid-`conan install` when the binary package is not in the PlotJuggler Conan
+repository.
 
-The recipe for zlib itself carries a GitHub mirror URL and never fails; the
-minizip recipe simply lacks one. An upstream PR adding the mirror to
-conan-center's minizip recipe accompanies this change — **once that merges and
-the pinned recipe revision picks it up, this directory can be retired.**
+The recipe for zlib itself carries a GitHub mirror URL; the minizip recipe lacks
+one. **Once conan-center's minizip recipe carries a mirror and the pinned recipe
+revision picks it up, this directory can be retired.**
 
 `mpdecimal/2.5.0` is the second entry. The `cpython` recipe pins it on macOS only (newer
 versions break `_decimal` there), and bytereef.org no longer serves the 2.5.0 tarball:
@@ -69,8 +68,8 @@ when the `cpython` recipe moves macOS off 2.5.0.
   that step, and only rebuilds gtest, which is GitHub-hosted. A seeded source is
   served locally; anything not seeded falls through to the recipe's own URLs
   as usual. The `<dir>/s/` layout is Conan-internal but observed stable across
-  Conan 2.x; if it ever changes, the seed simply misses and CI degrades to the
-  old (network-dependent) behavior rather than breaking.
+  Conan 2.x; if it changes, the seed misses and CI degrades to the
+  network-dependent behavior rather than breaking.
 
 ## Current contents
 

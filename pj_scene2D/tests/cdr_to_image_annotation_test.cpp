@@ -17,9 +17,7 @@
 namespace pj_demos {
 namespace {
 
-// -----------------------------------------------------------------------------
 // vision_msgs/Detection2DArray fixtures
-// -----------------------------------------------------------------------------
 
 std::vector<uint8_t> encodeDetection2DArray(
     int32_t header_sec, uint32_t header_nanosec, const std::string& frame_id,
@@ -104,9 +102,7 @@ TEST(CdrDetection2DTest, NullDataReturnsError) {
   EXPECT_FALSE(result.has_value());
 }
 
-// -----------------------------------------------------------------------------
 // yolo_msgs/DetectionArray fixtures
-// -----------------------------------------------------------------------------
 
 struct YoloDetection {
   int32_t class_id = 0;

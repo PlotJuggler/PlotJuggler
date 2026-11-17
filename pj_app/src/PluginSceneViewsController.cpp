@@ -185,8 +185,7 @@ Expected<ObjectTopicId> PluginSceneViewsController::attach(
 #else
   (void)replace_background;
 #endif
-  // The dock names why it refuses another dataset's topic (SCN-17); the generic
-  // message covers the rest.
+  // The dock names why it refuses another dataset's topic; the generic message covers the rest.
   (void)scene_dock->takeRefusalReason();
   if (!addToSceneDock(scene_dock, *resolved, topic)) {
     const QString refusal = scene_dock->takeRefusalReason();

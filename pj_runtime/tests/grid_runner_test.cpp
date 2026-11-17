@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// GridRunner: explicit evaluations over a window or at an instant (REQUIREMENTS D19). A real ObjectStore, DataEngine,
+// GridRunner: explicit evaluations over a window or at an instant. A real ObjectStore, DataEngine,
 // EnginePool, InFlightBudget, RecipeGraph, ResultHistory and InputStager; a NodeScheduler beside the runner for the
 // installed nodes' own cursor requests; an injected fake script run (one end-to-end case runs the real Luau engine)
 // and an injected clock. Every report is read back with the SDK's `parseEvaluationReport`.
@@ -451,8 +451,8 @@ double numberAt(const sdk::EvaluationReport& report, size_t bundle, const std::s
 
 // ---- The grid -----------------------------------------------------------------------------------------------
 
-// EVAL-01: a window evaluates at its start and at every instant inside it where an input changes, in time order,
-// each input resolved independently at or before the instant (D5); an instant is exactly its time.
+// A window evaluates at its start and at every instant inside it where an input changes, in time order,
+// each input resolved independently at or before the instant; an instant is exactly its time.
 TEST(GridRunnerTest, WindowGridIsTheUnionOfInputChangeInstants) {
   Fixture fx;
   pushReferenceData(fx);
@@ -511,7 +511,7 @@ TEST(GridRunnerTest, GridOverflowIsRejectedBeforeAllocating) {
   EXPECT_FALSE(done.has_value());
 }
 
-// DAG-08: a chained window takes its grid from the raw leaves of the whole chain, and evaluates the upstream itself:
+// A chained window takes its grid from the raw leaves of the whole chain, and evaluates the upstream itself:
 // nothing is materialized for the reader or the upstream.
 TEST(GridRunnerTest, ChainedWindowUsesRawLeafGridBeforeAnyMaterialization) {
   Fixture fx;
@@ -530,7 +530,7 @@ TEST(GridRunnerTest, ChainedWindowUsesRawLeafGridBeforeAnyMaterialization) {
   EXPECT_EQ(fx.store.entryCount(fx.topic("owner/crop/cropped")), 0u) << "the upstream's ring is untouched";
 }
 
-// DAG-11 (decided 2026-10-18): a pinned upstream is read, not evaluated. It adds its real stamp to the grid, not its
+// A pinned upstream is read, not evaluated. It adds its real stamp to the grid, not its
 // raw inputs' instants, and a reader resolves it only from that stamp.
 TEST(GridRunnerTest, PinnedUpstreamContributesItsRealStampToTheWindowGrid) {
   Fixture fx;
@@ -595,7 +595,7 @@ TEST(GridRunnerTest, PinnedUpstreamBesideARawObjectInputSharesTheWindowGrid) {
   EXPECT_EQ(fx.fake.runsOf("crop").size(), 1u) << "the finding never runs again";
 }
 
-// EVAL-04: a window starting before an input's oldest retained sample reports that leading part as a gap and
+// A window starting before an input's oldest retained sample reports that leading part as a gap and
 // evaluates from its end, the newest of the raw inputs' oldest samples, so inputs that begin at different times still
 // give bundles; a window the gap covers whole evaluates nothing.
 TEST(GridRunnerTest, WindowReportsGapsBeforeRetention) {
@@ -662,7 +662,7 @@ std::optional<GridRunner::Rows> rowsOf(
   return done;
 }
 
-// SER-02, SER-03, D10: a chunk runs at each object entry of its clock (a scalar side input's change adds no instant),
+// A chunk runs at each object entry of its clock (a scalar side input's change adds no instant),
 // writes one row per instant whose number outputs are all finite, and leaves a gap for a failed run, counting it and
 // keeping its reason, without stopping. `after` and `limit` slice the clock; an empty clock submits nothing.
 TEST(GridRunnerTest, RowsRunEachClockInstantOnceAndGapTheFailures) {
@@ -691,7 +691,7 @@ TEST(GridRunnerTest, RowsRunEachClockInstantOnceAndGapTheFailures) {
   EXPECT_EQ(fx.budget.reserved(), 0u);
 }
 
-// GAP-55: a chunk resumed after a watermark starts again from the clock's first instant when an entry arrived since the
+// A chunk resumed after a watermark starts again from the clock's first instant when an entry arrived since the
 // previous chunk's cut before the watermark (out of order); a newer append only extends the clock after it, and an
 // entry at the watermark's stamp (a latched source republishing it) changes nothing.
 TEST(GridRunnerTest, RowsRestartWhenAnEntryArrivesBeforeTheWatermark) {
@@ -722,7 +722,7 @@ TEST(GridRunnerTest, RowsRestartWhenAnEntryArrivesBeforeTheWatermark) {
   EXPECT_FALSE(rowsOf(fx, count, 30 * kSec, 64, late->seen).has_value()) << "nothing to compute, nothing replayed";
 }
 
-// GAP-60: `until` ends the clock (a live dataset's edge): the instants after it are neither evaluated nor counted.
+// `until` ends the clock (a live dataset's edge): the instants after it are neither evaluated nor counted.
 TEST(GridRunnerTest, RowsStopAtUntil) {
   Fixture fx;
   pushReferenceData(fx);  // clouds at 0, 5, 10, 20 s
@@ -734,7 +734,7 @@ TEST(GridRunnerTest, RowsStopAtUntil) {
   EXPECT_FALSE(rowsOf(fx, count, 10 * kSec, 64, capped->seen, 15 * kSec).has_value()) << "nothing up to 15 s";
 }
 
-// GAP-61: a series chunk's time budget is `kRowsMaxMillis`, not an evaluation's default, so a playhead request waits
+// A series chunk's time budget is `kRowsMaxMillis`, not an evaluation's default, so a playhead request waits
 // behind it for about that long at most on a lane of one thread.
 TEST(GridRunnerTest, ARowsChunkEndsOnItsOwnTimeBudget) {
   Fixture fx;
@@ -749,8 +749,8 @@ TEST(GridRunnerTest, ARowsChunkEndsOnItsOwnTimeBudget) {
   EXPECT_EQ(rows->left, 7u);
 }
 
-// GAP-17: the clock is the union of every object input's entries, each instant once; a chain adds its upstream's raw
-// object inputs, and the upstream's ring stays untouched (SER-10).
+// The clock is the union of every object input's entries, each instant once; a chain adds its upstream's raw
+// object inputs, and the upstream's ring stays untouched.
 TEST(GridRunnerTest, RowsClockIsTheUnionOfTheChainsObjectInputs) {
   Fixture fx;
   fx.pushCloud(0, 2);
@@ -771,7 +771,7 @@ TEST(GridRunnerTest, RowsClockIsTheUnionOfTheChainsObjectInputs) {
   EXPECT_EQ(fx.store.entryCount(fx.topic("owner/crop/cropped")), 0u) << "the upstream's ring is untouched";
 }
 
-// SER-04: a side input with nothing at or before an instant is that instant's gap ("missing input"); an unavailable or
+// A side input with nothing at or before an instant is that instant's gap ("missing input"); an unavailable or
 // non-finite number is one too, naming the output.
 TEST(GridRunnerTest, RowsGapAMissingSideInputAndAnUnavailableOrNonFiniteNumber) {
   Fixture fx;
@@ -800,7 +800,7 @@ TEST(GridRunnerTest, RowsGapAMissingSideInputAndAnUnavailableOrNonFiniteNumber) 
   EXPECT_EQ(not_finite->first_gap, "on-demand: output 'count' is not a finite number");
 }
 
-// GAP-18: a series replay holds one reservation per chunk, so a cursor request waiting in the budget's line runs
+// A series replay holds one reservation per chunk, so a cursor request waiting in the budget's line runs
 // between two chunks instead of after the whole replay.
 TEST(GridRunnerTest, CursorRequestsAreNotStarvedBehindASeriesReplay) {
   Fixture fx(InFlightBudget::kRunBytes);
@@ -828,7 +828,7 @@ TEST(GridRunnerTest, CursorRequestsAreNotStarvedBehindASeriesReplay) {
   EXPECT_EQ(series.state("owner/count")->rows, 100u);
 }
 
-// D30 under series load: with 32 series wanted, a cursor request waits for at most one series chunk, not one per
+// With 32 series wanted, a cursor request waits for at most one series chunk, not one per
 // series: the series take turns outside the budget's line.
 TEST(GridRunnerTest, ACursorRequestWaitsForAtMostOneSeriesChunk) {
   Fixture fx(InFlightBudget::kRunBytes);
@@ -926,7 +926,7 @@ TEST(GridRunnerTest, AGapOnlyReplayYieldsToTheEventLoopBetweenChunks) {
   EXPECT_LE(longest, 2 * SeriesRunner::kInstantsPerChunk) << "one pass ran " << longest << " instants";
 }
 
-// GAP-62, D30: a cancelled chunk whose run still holds the lane's thread counts as the one chunk in the runner until
+// A cancelled chunk whose run still holds the lane's thread counts as the one chunk in the runner until
 // the pool lets it go, so the next series' chunk does not queue ahead of a playhead request meanwhile.
 TEST(GridRunnerTest, ACancelledChunkHoldsTheTurnUntilItsRunEnds) {
   Fixture fx(InFlightBudget::kRunBytes);
@@ -954,7 +954,7 @@ TEST(GridRunnerTest, ACancelledChunkHoldsTheTurnUntilItsRunEnds) {
   EXPECT_EQ(series.state("owner/second")->rows, 3u);
 }
 
-// GAP-63, for 11b's progress: every change of a series' state is reported once, a stop and a chunk refused for a
+// Every change of a series' state is reported once, a stop and a chunk refused for a
 // removed upstream included, and so is its removal.
 TEST(GridRunnerTest, EveryStateChangeIsReported) {
   Fixture fx;
@@ -988,7 +988,7 @@ TEST(GridRunnerTest, EveryStateChangeIsReported) {
 
 // ---- Chains --------------------------------------------------------------------------------------------------
 
-// DAG-02: an explicit evaluation of a reader evaluates its upstream itself, at each requested time, and leaves the
+// An explicit evaluation of a reader evaluates its upstream itself, at each requested time, and leaves the
 // installed upstream's ring entries, their uids, its node state and cursor, and both history budgets as they were.
 TEST(GridRunnerTest, InstantEvaluationOfAReaderLeavesItsUpstreamUntouched) {
   Fixture fx;
@@ -1053,7 +1053,7 @@ TEST(GridRunnerTest, SharedAncestorRunsOncePerInstant) {
   EXPECT_EQ(fx.fake.runsOf("top"), instants);
 }
 
-// D25: an upstream output marked unavailable gates only the readers of that output; a reader of its sibling runs.
+// An upstream output marked unavailable gates only the readers of that output; a reader of its sibling runs.
 TEST(GridRunnerTest, UnavailableOutputGatesOnlyItsReaders) {
   Fixture fx;
   pushReferenceData(fx);
@@ -1070,7 +1070,7 @@ TEST(GridRunnerTest, UnavailableOutputGatesOnlyItsReaders) {
   EXPECT_TRUE(fx.fake.runsOf("gated").empty());
 }
 
-// CACHE-03: an upstream whose run did not read the query clock is reused across the instants where its own inputs
+// An upstream whose run did not read the query clock is reused across the instants where its own inputs
 // do not change; one that read it runs at every instant.
 TEST(GridRunnerTest, UnobservedClockReusesOneRunAcrossTheGrid) {
   Fixture fx;
@@ -1109,7 +1109,7 @@ TEST(GridRunnerTest, NothingIsPublishedByAWindow) {
   EXPECT_EQ(fx.history.cacheBytes(), 0u);
 }
 
-// GAP-33 (D19, D22): evaluating an installed node never moves its cursor, its state or what its ring shows.
+// Evaluating an installed node never moves its cursor, its state or what its ring shows.
 TEST(GridRunnerTest, EvaluationNeverMovesTheCursor) {
   Fixture fx;
   pushReferenceData(fx);
@@ -1127,7 +1127,7 @@ TEST(GridRunnerTest, EvaluationNeverMovesTheCursor) {
 
 // ---- Budgets -------------------------------------------------------------------------------------------------
 
-// EVAL-02: the time budget is checked between instants, on the injected clock: each run here takes 400 ms, so a
+// The time budget is checked between instants, on the injected clock: each run here takes 400 ms, so a
 // 1000 ms budget ends after the third instant, and a zero one after the first.
 TEST(GridRunnerTest, WindowStopsOnTimeBudget) {
   Fixture fx;
@@ -1161,7 +1161,7 @@ TEST(GridRunnerTest, WindowStopsOnEvaluationBudget) {
   EXPECT_EQ(fx.fake.runsOf("crop").size(), 2u) << "only the first job ran";
 }
 
-// BUD-08: the whole report, its coverage included, fits `max_report_bytes`: a budget of exactly its size completes
+// The whole report, its coverage included, fits `max_report_bytes`: a budget of exactly its size completes
 // it, one byte less drops the last bundle (`budget_report`), and a budget below the smallest report is refused.
 TEST(GridRunnerTest, CompleteReportIncludingCoverageFitsRequestedBytes) {
   Fixture fx;
@@ -1196,7 +1196,7 @@ TEST(GridRunnerTest, CompleteReportIncludingCoverageFitsRequestedBytes) {
   EXPECT_NE(refused.error().find("max_report_bytes"), std::string::npos) << refused.error();
 }
 
-// ABI-13's engine half: every budget is clamped to the host caps, so asking more is never refused: memory (the
+// Every budget is clamped to the host caps, so asking more is never refused: memory (the
 // reservation), time, evaluations and the report's size.
 TEST(GridRunnerTest, BudgetIsClampedToTheHostCaps) {
   Fixture fx(64 * InFlightBudget::kRunBytes);
@@ -1240,7 +1240,7 @@ TEST(GridRunnerTest, BudgetIsClampedToTheHostCaps) {
 
 // ---- Reservations ----------------------------------------------------------------------------------------------
 
-// BUD-05, BUD-10: a job holds one reservation, its memory budget, for its whole life: a chain, an upstream with two
+// A job holds one reservation, its memory budget, for its whole life: a chain, an upstream with two
 // object outputs and a node that infers its outputs all run under it.
 TEST(GridRunnerTest, OneReservationPerEvaluation) {
   Fixture fx;
@@ -1265,7 +1265,7 @@ TEST(GridRunnerTest, OneReservationPerEvaluation) {
   EXPECT_EQ(fx.budget.reserved(), 0u);
 }
 
-// BUD-09, changed: a job waits in the budget's line for its room instead of being refused, and runs when it comes;
+// A job waits in the budget's line for its room instead of being refused, and runs when it comes;
 // one that asks more than the whole budget runs alone.
 TEST(GridRunnerTest, AJobWaitsForRoomAndRunsWhenItComes) {
   Fixture fx(InFlightBudget::kRunBytes);
@@ -1290,7 +1290,7 @@ TEST(GridRunnerTest, AJobWaitsForRoomAndRunsWhenItComes) {
   EXPECT_EQ(small.evaluate(alone, false, 5 * kSec, 20 * kSec).parsed.evaluated, 3u);
 }
 
-// ABI-17's engine half: a job cancelled, or dropped, while it waits for room never runs, never calls back, and leaves
+// A job cancelled, or dropped, while it waits for room never runs, never calls back, and leaves
 // the line.
 TEST(GridRunnerTest, ReleaseWhilePendingNeverRunsOrPublishes) {
   Fixture fx(InFlightBudget::kRunBytes);
@@ -1317,7 +1317,7 @@ TEST(GridRunnerTest, ReleaseWhilePendingNeverRunsOrPublishes) {
   EXPECT_EQ(fx.store.entryCount(fx.topic("owner/crop/cropped")), 0u);
 }
 
-// CON-01's engine half: a job cancelled while its run computes stops that run inside the script, never calls back,
+// A job cancelled while its run computes stops that run inside the script, never calls back,
 // returns its room once the pool lets the run go, and leaves the pool usable.
 TEST(GridRunnerTest, CancelAfterDispatchLeavesThePoolUsable) {
   Fixture fx;
@@ -1528,7 +1528,7 @@ TEST(GridRunnerTest, AnUpstreamObjectAPythonReaderParksKeepsItsParserLibraryLoad
 
 // ---- Errors --------------------------------------------------------------------------------------------------
 
-// ABI-14: a failing run ends the window with the one report shape: the bundles before it, `stopped: "error"` and
+// A failing run ends the window with the one report shape: the bundles before it, `stopped: "error"` and
 // `coverage.error`, the failing instant not counted. A clean report has no error key.
 TEST(GridRunnerTest, AnErrorStopsWithTheOneReportShape) {
   Fixture fx;
@@ -1548,7 +1548,7 @@ TEST(GridRunnerTest, AnErrorStopsWithTheOneReportShape) {
   EXPECT_EQ(clean.json.find("\"error\""), std::string::npos);
 }
 
-// ABI-15: a failure's reason is kept up to 1024 bytes, and shortened further only to keep the report within its
+// A failure's reason is kept up to 1024 bytes, and shortened further only to keep the report within its
 // budget.
 TEST(GridRunnerTest, FailedEvaluationReasonIsKeptUpTo1024Chars) {
   Fixture fx;
@@ -1606,7 +1606,7 @@ TEST(GridRunnerTest, MemoryBudgetIsSplitBetweenTheVmAndTheNativeObjects) {
   EXPECT_EQ(fx.fake.native_bytes.load(), scripting::kDefaultNativeBudgetBytes);
 }
 
-// ABI-18's engine half: a new revision of the installed node, or a new epoch of its dataset, while the job is pending
+// A new revision of the installed node, or a new epoch of its dataset, while the job is pending
 // fails it with "evaluation inputs were replaced".
 TEST(GridRunnerTest, ReplacingTheInstalledNodeFailsThePendingJob) {
   Fixture fx;
@@ -1642,7 +1642,7 @@ TEST(GridRunnerTest, ReplacingTheInstalledNodeFailsThePendingJob) {
 
 // ---- The report's content ------------------------------------------------------------------------------------
 
-// EVAL-03: a valid empty object is "empty", with its summary, distinct from an unavailable output (D25); every
+// A valid empty object is "empty", with its summary, distinct from an unavailable output; every
 // object output travels as a summary, never as bytes.
 TEST(GridRunnerTest, EmptyStatusForAnEmptyCrop) {
   Fixture fx;
@@ -1680,7 +1680,7 @@ TEST(GridRunnerTest, ANonFiniteNumberIsAnOutputError) {
   EXPECT_EQ(count.reason, "not a finite number");
 }
 
-// ABI-09's engine half: a node that declares no output lists what its runs inferred in the report's root
+// A node that declares no output lists what its runs inferred in the report's root
 // "outputs", in first-seen order; a node that declares its outputs has none. The real Luau engine runs.
 TEST(GridRunnerTest, InferredOutputsAreListedWhenNoneWereDeclared) {
   Fixture fx(4 * InFlightBudget::kRunBytes, /*real_run=*/true);

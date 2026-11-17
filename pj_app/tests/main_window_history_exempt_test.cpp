@@ -251,9 +251,8 @@ class MainWindowHistoryExemptFixture : public ::testing::Test {
     return *window_;
   }
 
-  // Every case starts from a clean slate: no live processors/generators, and a
-  // fresh undo history baselined at the current (empty) state — the shell is
-  // shared across TEST_F cases in this binary (its dtor leaks process state).
+  // Every case starts clean: no live processors/generators, and a fresh undo history baselined at the current
+  // (empty) state; the shell is shared across TEST_F cases in this binary (its dtor leaks process state).
   void SetUp() override {
     PJ::DataProcessorService& service = PJ::MainWindowHistoryExemptTestPeer::processors(mainWindow());
     service.clearAllFilters();
@@ -282,8 +281,7 @@ class MainWindowHistoryExemptFixture : public ::testing::Test {
   inline static std::unique_ptr<PJ::MainWindow> window_;
 };
 
-// (a) An exempt series survives an unrelated undo: creating it, then undoing a
-// later, unrelated edit, must not touch it.
+// An exempt series survives an unrelated undo: creating it, then undoing a later, unrelated edit, must not touch it.
 TEST_F(MainWindowHistoryExemptFixture, ExemptSeriesSurvivesUnrelatedUndo) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -318,10 +316,8 @@ TEST_F(MainWindowHistoryExemptFixture, ExemptSeriesSurvivesUnrelatedUndo) {
       << "the exempt transform's output must remain in the catalog";
 }
 
-// (b) redo must not resurrect an exempt series a plugin deliberately removed:
-// undo/redo across an UNRELATED edit that happened while it was alive leaves it
-// gone, because no history document — before or after its creation — ever named
-// it.
+// Redo must not resurrect an exempt series a plugin deliberately removed: undo/redo across an unrelated edit made
+// while it was alive leaves it gone, because no history document, before or after its creation, ever named it.
 TEST_F(MainWindowHistoryExemptFixture, RedoDoesNotResurrectRemovedExemptSeries) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -352,9 +348,8 @@ TEST_F(MainWindowHistoryExemptFixture, RedoDoesNotResurrectRemovedExemptSeries) 
   })) << "redo must not resurrect a processor no history document ever carried";
 }
 
-// (c) An exempt transform round-trips through a kFull layout document
-// (history_exempt="1" written and restored) but is entirely absent from a
-// kHistory document.
+// An exempt transform round-trips through a kFull layout document (history_exempt="1" written and restored) but is
+// entirely absent from a kHistory document.
 TEST_F(MainWindowHistoryExemptFixture, ExemptTransformRoundTripsThroughFullNotHistoryScope) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -447,9 +442,8 @@ TEST_F(MainWindowHistoryExemptFixture, FullReplaceDropsReplacedTransformFromCust
       << "full replacement must remove the replaced transform's Custom Topics row";
 }
 
-// (d) A history restore that would strand an exempt dependent is rejected
-// atomically: neither the user's transform nor the assistant's dependent
-// exempt one is touched, and the reason names the exempt output.
+// A history restore that would strand an exempt dependent is rejected atomically: neither the user's transform nor
+// the assistant's exempt dependent is touched, and the reason names the exempt output.
 TEST_F(MainWindowHistoryExemptFixture, HistoryRestoreRejectsWhenExemptDependentWouldStrand) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -611,9 +605,8 @@ TEST_F(MainWindowHistoryExemptFixture, OwnedTabSurvivesUndoAsSameLivePage) {
   PJ::PlotDocker* ordinary = tabs.dockerAt(0);
   ASSERT_NE(ordinary, nullptr);
   ASSERT_FALSE(ordinary->isHistoryExempt());
-  // The shell's first tab starts with an empty dock, so give it a plot of our
-  // own rather than depending on an earlier case in this suite having left one
-  // there: each case now runs in its own process.
+  // The shell's first tab starts with an empty dock, so give it a plot of our own rather than depending on an
+  // earlier case having left one: each case runs in its own process.
   PJ::PlotWidget* ordinary_plot = ensurePlot(ordinary);
   ASSERT_NE(ordinary_plot, nullptr);
   ordinary_plot->setStateId(u"ordinary-after"_s);
@@ -705,9 +698,8 @@ TEST_F(MainWindowHistoryExemptFixture, DuplicateOfOwnedTabIsUserTabTheOwnerCanno
   EXPECT_EQ(find_copy(), copy.data());
 }
 
-// (e) A failed kReplace restore's rollback preimage is captured at kFull scope:
-// an exempt transform present only in the live state (not in the failing
-// document) survives because the rollback replays the FULL live snapshot, not a
+// A failed kReplace restore's rollback preimage is captured at kFull scope: an exempt transform present only in the
+// live state (not in the failing document) survives because the rollback replays the full live snapshot, not a
 // history-scoped one.
 TEST_F(MainWindowHistoryExemptFixture, FailedReplaceRestoreRollbackKeepsExemptWorkAlive) {
   PJ::MainWindow& window = mainWindow();
@@ -754,9 +746,8 @@ TEST_F(MainWindowHistoryExemptFixture, FailedReplaceRestoreRollbackKeepsExemptWo
   EXPECT_EQ(restored_tab->name(), u"Rollback analysis"_s);
 }
 
-// (f) A name collision under a history restore is atomic: the live exempt
-// series occupying the name is untouched, and the restore fails rather than
-// partially applying.
+// A name collision under a history restore is atomic: the live exempt series occupying the name is untouched, and
+// the restore fails rather than partially applying.
 TEST_F(MainWindowHistoryExemptFixture, NameCollisionUnderHistoryRestoreIsAtomic) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -778,7 +769,7 @@ TEST_F(MainWindowHistoryExemptFixture, NameCollisionUnderHistoryRestoreIsAtomic)
 
   // The user removes their transform, freeing the "X" output name.
   ASSERT_TRUE(service.removeTransform("user-plugin/negate").has_value());
-  // The assistant claims the now-free name as an EXEMPT transform.
+  // The assistant claims the freed name as an exempt transform.
   const auto assistant_x = service.upsertTransform(
       "assistant-test", "negate", {"/x"}, {"X"}, kNegateScript, "{}", /*ephemeral=*/false,
       /*input_column_index=*/0, /*history_exempt=*/true);
@@ -804,9 +795,8 @@ TEST_F(MainWindowHistoryExemptFixture, NameCollisionUnderHistoryRestoreIsAtomic)
   EXPECT_EQ(it->outputs, std::vector<std::string>{"X"});
 }
 
-// Regression [Codex #4]: history replay checks exemption on the SNAPSHOT entry,
-// not the live one, so undoing to a state that carried X as non-exempt overwrites
-// the live exempt X (script B) with the older non-exempt X (script A).
+// History replay checks exemption on the live entry, not the snapshot's: undoing to a state that carried X as
+// non-exempt must not overwrite the live exempt X (script B) with the older non-exempt X (script A).
 TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptTransformUnderSameId) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -844,7 +834,7 @@ TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptTransformUn
   EXPECT_EQ(it->script, kTimes10Script) << "the live exempt script must survive an unrelated undo";
 }
 
-// Regression [Codex #4], marker mirror: the same overwrite through BatchEngine::upsertGenerator.
+// Marker mirror: the same overwrite through BatchEngine::upsertGenerator.
 TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptMarkerUnderSameId) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -883,9 +873,8 @@ TEST_F(MainWindowHistoryExemptFixture, UndoDoesNotOverwriteLiveExemptMarkerUnder
   EXPECT_EQ(it->script, "createMarker(1.0)\n");
 }
 
-// Regression [Codex #7]: restore finalization calls applySavedViewportOrZoom on
-// EVERY plot, including preserved owned tabs, which have no saved viewport and
-// therefore auto-fit — an unrelated undo resets the owned plot's zoom.
+// Restore finalization must not auto-fit preserved owned tabs (they have no saved viewport): an unrelated undo keeps
+// the owned plot's zoom.
 TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoKeepsOwnedPlotViewport) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -930,9 +919,8 @@ TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoKeepsOwnedPlotViewport) {
   EXPECT_NEAR(after.bottom(), zoomed.bottom(), 1e-9);
 }
 
-// Regression [Codex #5]: an unrelated undo clears and recreates ordinary
-// transforms, retiring their output TopicIds; the catalog removal handler then
-// prunes the (preserved) owned tab's curve bound to the old output key.
+// An unrelated undo clears and recreates ordinary transforms, retiring their output TopicIds; the catalog removal
+// handler must not prune the preserved owned tab's curve bound to the old output key.
 TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoKeepsOwnedPlotCurveOfOrdinaryTransformOutput) {
   PJ::MainWindow& window = mainWindow();
   PJ::AppSession& app_session = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -1005,10 +993,9 @@ TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoKeepsOwnedPlotCurveOfOrdinar
   EXPECT_EQ(plot->curveList().size(), 1U) << "owned tab lost its curve when an unchanged filter was replayed";
 }
 
-// Repair pass: a filter reading a transform output is kept by the reconcile, but
-// the transform's script changed between snapshots, so the undo replaces the
-// transform and the removal cascades the filter out. The restore must re-apply
-// the filter on the transform's new output.
+// Repair pass: a filter reading a transform output is kept by the reconcile, but the transform's script changed
+// between snapshots, so the undo replaces the transform and the removal cascades the filter out. The restore must
+// re-apply the filter on the replaced transform's output.
 TEST_F(MainWindowHistoryExemptFixture, UndoReappliesFilterCascadedOutByReplacedTransform) {
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -1040,10 +1027,9 @@ TEST_F(MainWindowHistoryExemptFixture, UndoReappliesFilterCascadedOutByReplacedT
   EXPECT_FALSE(catalogKeyForTopic(app.catalogModel(), u"U_abs"_s).isEmpty());
 }
 
-// Repair pass over a filter -> transform -> filter chain whose middle link is
-// replaced: the head filter is kept untouched, the tail filter is re-applied on
-// the replayed transform's new output, and the result is stable (a second undo
-// of an unrelated edit changes nothing).
+// Repair pass over a filter -> transform -> filter chain whose middle link is replaced: the head filter is kept
+// untouched, the tail filter is re-applied on the replayed transform's output, and the result is stable (a second
+// undo of an unrelated edit changes nothing).
 TEST_F(MainWindowHistoryExemptFixture, UndoRepairsFilterTransformFilterChain) {
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -1095,9 +1081,8 @@ TEST_F(MainWindowHistoryExemptFixture, UndoRepairsFilterTransformFilterChain) {
   }
 }
 
-// A filter reading another filter, both replaced by the snapshot:
-// the downstream one must bind to the upstream's NEW output, not the TopicId
-// the snapshot's input resolved to before the upstream was cleared.
+// A filter reading another filter, both replaced by the snapshot: the downstream one must bind to the upstream's
+// re-created output, not the TopicId the snapshot's input resolved to before the upstream was cleared.
 TEST_F(MainWindowHistoryExemptFixture, UndoRebindsReplacedFilterChainToLiveInputs) {
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -1134,9 +1119,8 @@ TEST_F(MainWindowHistoryExemptFixture, UndoRebindsReplacedFilterChainToLiveInput
       << "B must read the replaced A, not its retired topic";
 }
 
-// A replace-restore (layout load) of raw -> transform -> filter into
-// a session that holds only the raw data: the filter's input does not exist when
-// the snapshot is parsed, so it must be applied once the transform is live.
+// A replace-restore (layout load) of raw -> transform -> filter into a session that holds only the raw data: the
+// filter's input does not exist when the snapshot is parsed, so it must be applied once the transform is live.
 TEST_F(MainWindowHistoryExemptFixture, ReplaceRestoreAppliesFilterOnTransformItRestores) {
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -1165,9 +1149,8 @@ TEST_F(MainWindowHistoryExemptFixture, ReplaceRestoreAppliesFilterOnTransformItR
   EXPECT_EQ(filters.front().input_topic_id, recipes.front().output_topic_ids.front());
 }
 
-// T -> F1 -> F2 -> F3 with T replaced: every filter is cascaded out
-// and each round can only re-create the next link, so the repair must run until
-// no progress is possible rather than a fixed number of rounds.
+// T -> F1 -> F2 -> F3 with T replaced: every filter is cascaded out and each round can only re-create the next link,
+// so the repair must run until no progress is possible rather than a fixed number of rounds.
 TEST_F(MainWindowHistoryExemptFixture, UndoRepairsThreeFilterTailBehindReplacedTransform) {
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -1202,7 +1185,7 @@ TEST_F(MainWindowHistoryExemptFixture, UndoRepairsThreeFilterTailBehindReplacedT
   EXPECT_EQ(filters[2].input_topic_id, filters[1].output_topic_id);
 }
 
-// Claim: an exempt dependent must not block undo when its ordinary producer is unchanged.
+// An exempt dependent must not block undo when its ordinary producer is unchanged.
 TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoWithExemptTransformDependentKeepsProducerAndAdvancesHistory) {
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);
@@ -1236,7 +1219,7 @@ TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoWithExemptTransformDependent
   }
 }
 
-// Claim: an exempt marker must not block undo when its ordinary producer is unchanged.
+// An exempt marker must not block undo when its ordinary producer is unchanged.
 TEST_F(MainWindowHistoryExemptFixture, UnrelatedUndoWithExemptMarkerDependentKeepsProducerAndAdvancesHistory) {
   auto& window = mainWindow();
   auto& app = PJ::MainWindowHistoryExemptTestPeer::appSession(window);

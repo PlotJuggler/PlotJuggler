@@ -1,13 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
-// The whole recording pipeline, end to end and headless: real
-// DataSourceRuntimeHosts (with a real parser plugin loaded through a hermetic
-// catalog) -> RecordTap -> Recorder -> McapRecordingWriter, orchestrated by
-// RecordingService, with the produced files reopened as ordinary MCAP. The unit
-// tests around each seam cannot see what only the assembled pipeline shows:
-// that pressing Record mid-stream captures topics bound long before, that
-// nothing pushed before the start leaks in, that two live sources land in two
-// files of one capture, and that ingest is untouched.
+// The whole recording pipeline, end to end and headless: real DataSourceRuntimeHosts (a real parser plugin through a
+// hermetic catalog) -> RecordTap -> Recorder -> McapRecordingWriter, orchestrated by RecordingService, with the
+// produced files reopened as ordinary MCAP. Covers what the unit tests around each seam cannot see: Record pressed
+// mid-stream captures topics bound long before, nothing pushed before the start leaks in, two live sources land in two
+// files of one capture, and ingest is untouched.
 #include <gtest/gtest.h>
 
 #include <QFileInfo>

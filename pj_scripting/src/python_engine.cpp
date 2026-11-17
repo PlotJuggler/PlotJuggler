@@ -37,27 +37,22 @@ std::string memoryMessage(const native::MemoryBudget& budget) {
   return "MemoryError: script memory limit (" + native::describeBytes(budget.limit()) + ") exceeded";
 }
 
-// The imports a filter script may reach. Data Processors compute over timeseries —
-// trigonometry, constants, basic statistics — so the filesystem, the network and
-// subprocesses are out of scope, and a script that reaches for them is told so
-// instead of receiving whatever error the module itself would have raised.
+// The imports a filter script may reach: filters compute over time series (trigonometry, constants, statistics), and a
+// script that reaches for the filesystem, the network or a subprocess is told so, not given the module's own error.
 //
-// NOT a security boundary. CPython cannot be sandboxed from within: an object-graph
-// walk reaches past any namespace we hand the script. This is a guardrail against
-// scope creep, and filter sources remain trusted input. `open` stays a builtin; the
-// shared audit hook (python_sandbox.h) refuses the call while a filter runs.
+// Not a security boundary: CPython cannot be confined from within, and an object-graph walk reaches past any
+// namespace handed to a script. Filter sources are trusted input. `open` stays a builtin; the shared audit hook
+// (python_sandbox.h) refuses the call while a filter runs.
 constexpr std::array<std::string_view, 3> kAllowedImports{"math", "cmath", "statistics"};
 
-// Only the root package is matched — "math.foo" is governed by the "math" entry, and
-// `from x import y` arrives here as an import of "x".
+// Only the root package is matched: "math.foo" follows the "math" entry, and `from x import y` arrives as "x".
 bool importAllowed(std::string_view module) {
   const std::string_view root = module.substr(0, module.find('.'));
   return std::find(kAllowedImports.begin(), kAllowedImports.end(), root) != kAllowedImports.end();
 }
 
-// A module namespace whose __builtins__ is the real one with __import__ swapped for
-// the allowlist gate. Allowed modules still import their own dependencies freely:
-// their bodies execute under their own globals, which carry unrestricted builtins.
+// A module namespace whose __builtins__ is the real one with __import__ swapped for the allowlist gate. Allowed modules
+// import their own dependencies freely: their bodies run under their own globals, with unrestricted builtins.
 py::dict makeFilterNamespace() {
   py::dict gated = py::module_::import("builtins").attr("__dict__").attr("copy")();
   py::object real_import = gated["__import__"];
@@ -192,8 +187,7 @@ class PythonFilterInstance final : public FilterInstance {
       if (r.is_none()) {
         return Result{true, 0.0, std::nullopt};
       }
-      // (out_time, value) when the script returns a 2-sequence; otherwise a scalar
-      // emitted at the input time (mirrors the Luau one/two-number convention).
+      // A 2-sequence is (out_time, value); a scalar is emitted at the input time, as in Luau.
       if (py::isinstance<py::tuple>(r) || py::isinstance<py::list>(r)) {
         auto seq = r.cast<py::sequence>();
         if (seq.size() == 2) {

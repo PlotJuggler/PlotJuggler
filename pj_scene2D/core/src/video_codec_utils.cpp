@@ -118,12 +118,7 @@ bool isAv1Keyframe(const uint8_t* data, size_t size) {
 
 int videoCodecIdFromFormat(std::string_view format) {
   const std::string name = toLower(format);
-  // Whitelist: only codecs this decoder FULLY supports — both an FFmpeg decoder
-  // and a keyframe oracle in isVideoKeyframe (H.264, HEVC, AV1). Other formats,
-  // even ones this FFmpeg can technically decode (VP8/VP9/MJPEG have decoders),
-  // return NONE so the caller surfaces a clear "unsupported codec" error rather
-  // than decoding a stream it cannot seek within (the keyframe index would stay
-  // empty — every scrub would fail).
+  // Only codecs with a keyframe oracle in isVideoKeyframe: without one every seek fails.
   const AVCodec* decoder = nullptr;
   if (name == "h264") {
     decoder = avcodec_find_decoder_by_name("h264");
@@ -164,9 +159,6 @@ AVCodecParameters* makeVideoCodecParams(int codec_id) {
   }
   params->codec_type = AVMEDIA_TYPE_VIDEO;
   params->codec_id = static_cast<AVCodecID>(codec_id);
-  // No extradata here — initDecoder primes it from the first keyframe's in-band
-  // parameter sets via primeKeyframeParamSets() (see its header doc for why an
-  // unprimed open is not equivalent and can drop the stream's first B-frames).
   return params;
 }
 

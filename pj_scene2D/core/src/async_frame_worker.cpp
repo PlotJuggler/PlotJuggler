@@ -37,9 +37,7 @@ void AsyncFrameWorker::start(DecodeFn decode, OnDecodeError on_error, Options op
 }
 
 void AsyncFrameWorker::stop() {
-  // Flip running_ UNDER request_mutex_ — see the class comment for the
-  // lost-wakeup hazard. Cancel the in-flight token so a long decode is
-  // preempted rather than blocking the join for a full decode.
+  // Under request_mutex_: see the lost-wakeup note in the class comment.
   {
     std::lock_guard lock(request_mutex_);
     running_.store(false);
@@ -74,9 +72,6 @@ void AsyncFrameWorker::requestDecode(Timestamp ts_ns) {
     std::lock_guard lock(request_mutex_);
     requested_ts_ = ts_ns;
     has_request_ = true;
-    // Preempt the worker's in-flight decode so it abandons the stale target —
-    // but only when the source's predicate agrees (a contiguous-playback step
-    // must let the decode finish: see Options::preempt_predicate).
     if (cancel_token_ && (!options_.preempt_predicate || options_.preempt_predicate(in_flight_ts_, ts_ns))) {
       cancel_token_->cancel();
     }
@@ -85,12 +80,8 @@ void AsyncFrameWorker::requestDecode(Timestamp ts_ns) {
 }
 
 void AsyncFrameWorker::invalidate() {
-  // Drop the equal-target dedup so the next requestDecode() goes through even
-  // at the same timestamp...
   last_requested_ts_ = INT64_MIN;
-  // ...and tell the source to clear its own same-entry dedup on the next
-  // dispatch (without this a source like ImagePipelineSource resolves the same
-  // entry and early-returns, so no frame is ever re-delivered).
+  // The source clears its own same-entry dedup too, or it resolves the same entry and delivers nothing.
   std::lock_guard lock(request_mutex_);
   force_redecode_ = true;
 }
@@ -140,17 +131,13 @@ void AsyncFrameWorker::workerLoop() {
       has_request_ = false;
       force_redecode_ = false;
       if (options_.use_cancel_token) {
-        // Fresh token for this decode; a later requestDecode() cancels it if
-        // the preempt predicate (fed the dispatch target) says so.
         cancel_token_ = makeCancelToken();
         in_flight_ts_ = request.target_ns;
         request.cancel = cancel_token_;
       }
     }
 
-    // Exception barrier (§R5 / ARCHITECTURE §10.5): a throwing parser plugin or
-    // a std::bad_alloc inside decode must not escape the std::thread callable
-    // (that calls std::terminate). Route to the owner's hook and keep serving.
+    // An exception leaving the thread callable would std::terminate (a throwing parser plugin, a bad_alloc).
     try {
       decode_(request, *this);
     } catch (const std::exception& ex) {
@@ -159,8 +146,6 @@ void AsyncFrameWorker::workerLoop() {
       on_error_("");
     }
 
-    // Pick up any newer request that arrived during decode — keeps latency
-    // bounded to one decode after the last requestDecode().
     {
       std::lock_guard lock(request_mutex_);
       if (has_request_) {

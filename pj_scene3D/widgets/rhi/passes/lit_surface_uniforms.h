@@ -14,9 +14,8 @@
 
 namespace pj::scene3d {
 
-/// The camera and light terms of the lit colormapped surfaces (gridmap.frag and
-/// meshmap.frag shade alike: ambient + key light + a headlight fill, without
-/// AO), the same for every layer of a frame.
+/// The camera and light terms of the lit colormapped surfaces (gridmap.frag and meshmap.frag shade alike: ambient +
+/// key light + a headlight fill, no AO), the same for every layer of a frame.
 struct LitSurfaceFrame {
   std::array<float, 4> eye{};     ///< camera position, relative to the render origin
   std::array<float, 4> view_z{};  ///< towards the viewer
@@ -39,10 +38,8 @@ struct LitSurfaceFrame {
           look::kLitSurfaceFill * shading.fill_light_scale}};
 }
 
-/// Fills the fields the two surfaces' uniform blocks share: `eye`, `view_z`,
-/// `key_dir`, `color_params` (the colormap range of `data` under `coloring`,
-/// the colormap id, `opacity`) and `light_params` (the weights, then the
-/// `lighting` switch).
+/// Fills the uniform fields the two surfaces' blocks share: `eye`, `view_z`, `key_dir`, `color_params` (colormap range
+/// of `data` under `coloring`, colormap id, `opacity`) and `light_params` (the weights, then the `lighting` switch).
 template <typename Uniforms>
 void fillLitSurfaceUniforms(
     Uniforms& uniforms, const LitSurfaceFrame& frame, const ChannelColoring& coloring, const FiniteRange& data,

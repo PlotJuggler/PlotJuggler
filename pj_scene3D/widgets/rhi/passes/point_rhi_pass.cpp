@@ -119,11 +119,9 @@ bool PointRhiPass::ensurePipelines(Layout layout, Geometry geometry, bool faded)
       .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/%1.frag.qsb").arg(shader)),
       .input_layout = input_layout,
       .bindings = layout_shader_resources_,
-      // The fan picks its faces from the eye against the cube's CENTRE: with the eye
-      // inside an axis slab (or inside the cube) a picked face is seen from behind.
-      // Opaque cubes hide it by depth, but the faded half writes no depth and would
-      // blend the interior in; culling drops exactly those faces (the fan is
-      // CCW-outward, cube_mesh.h).
+      // The fan picks its faces from the eye against the cube's CENTRE: with the eye inside an axis slab (or the
+      // cube) a picked face is seen from behind. Opaque cubes hide it by depth, but the faded half writes no depth and
+      // would blend the interior in; culling drops exactly those faces (the fan is CCW-outward, cube_mesh.h).
       .cull = fan ? QRhiGraphicsPipeline::Back : QRhiGraphicsPipeline::None,
   };
   // The point list is optional: a GPU that cannot build it draws quads instead.
@@ -167,7 +165,7 @@ void PointRhiPass::admit(const PlaceFn& place) {
 
 void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   draws_.clear();
   last_point_layer_count_ = 0;
@@ -213,8 +211,7 @@ void PointRhiPass::prepare(const RhiFrameContext& frame, const ViewInputs& view)
     const auto [range_minimum, range_maximum] = layer->scalarRange(glm::mat4(admitted.fixed_from_source.matrix()));
     layer->noteRenderedScalarRange(range_minimum, range_maximum);
 
-    // One decision for every shape: frustum reject against the
-    // geometry, camera-inside fallback, and the whole-cloud cube LOD.
+    // One decision for every shape: frustum reject against the geometry, camera-inside fallback, whole-cloud cube LOD.
     CubeCloudView cloud_view;
     cloud_view.centre_bounds = source_bounds.value_or(AABB{});
     cloud_view.clip_from_cloud = view.projection * frame.view * model;
@@ -375,13 +372,11 @@ bool PointRhiPass::ensureLayerGpu(QRhi* rhi, LayerGpu& gpu) {
   return true;
 }
 
-// Immutable, then Static once re-uploaded, never Dynamic: a cloud changes per
-// sample, not per frame, and a Dynamic buffer keeps one host-visible copy per frame
-// in flight. Vulkan frees an Immutable buffer's staging copy after the upload and
-// keeps a Static one's for the next. The layer pads its array for upload
-// (PJ::padForUpload()), so the upload is one copy the batch shares instead of copying; only the
-// backend's staging copy remains, and a static cloud's layer may then drop its own
-// reference (onVerticesUploaded()).
+// Immutable, then Static once re-uploaded, never Dynamic: a cloud changes per sample, not per frame, and a Dynamic
+// buffer keeps one host-visible copy per frame in flight. Vulkan frees an Immutable buffer's staging copy after the
+// upload and keeps a Static one's for the next. The layer pads its array for upload (PJ::padForUpload()), so the
+// upload is one copy the batch shares; only the backend's staging copy remains, and a static cloud's layer may then
+// drop its own reference (onVerticesUploaded()).
 bool PointRhiPass::uploadInstances(QRhi* rhi, QRhiResourceUpdateBatch* updates, PointRenderable* layer, LayerGpu& gpu) {
   if (gpu.uploaded_revision == layer->geometryRevision()) {
     return true;

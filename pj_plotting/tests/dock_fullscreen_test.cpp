@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// "Maximize one plot" (the dock title-bar Fullscreen button) must let the
-// surviving dock reflow to fill the whole tab, even in heterogeneous /
-// asymmetric nested-splitter layouts. The regression it guards against: hiding
-// sibling areas with a raw CDockAreaWidget::setVisible(false) never collapses
-// the emptied intermediate CDockSplitters, so the survivor is stranded in its
-// own sub-branch and the rest of the tab goes blank.
+// "Maximize one plot" (the dock title bar's Fullscreen button) lets the surviving dock reflow to fill the whole tab,
+// even in asymmetric nested-splitter layouts. Hiding sibling areas with a raw CDockAreaWidget::setVisible(false) would
+// not collapse the emptied intermediate CDockSplitters, stranding the survivor in its own sub-branch with the rest of
+// the tab blank.
 
 #include <DockAreaWidget.h>
 #include <DockSplitter.h>
@@ -49,9 +47,8 @@ void clickFullscreen(PJ::DockWidget* dock) {
 
 }  // namespace
 
-// Tree shape: H[ dock0 , V[dock1, dock2] ]. dock0 is a leaf in the left branch
-// while the docks to hide live in a *separate* nested splitter — the asymmetric
-// shape that strands the survivor under the old setVisible(false) approach.
+// Tree shape: H[ dock0 , V[dock1, dock2] ]. dock0 is a leaf in the left branch while the docks to hide live in a
+// separate nested splitter: the asymmetric shape that strands the survivor under a raw setVisible(false).
 TEST(DockFullscreenTest, MaximizingALeafCollapsesTheEmptiedSiblingBranch) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -203,8 +200,8 @@ TEST(DockFullscreenTest, SplittingWhileFullscreenLeavesFullscreenAndSavesASaneLa
   }
 }
 
-// A layout load (undo/redo, Load Layout) while a dock is maximized rebuilds the
-// tab; it must not inherit the old fullscreen bookkeeping.
+// A layout load (undo/redo, Load Layout) while a dock is maximized rebuilds the tab and starts from a normal one,
+// without the previous fullscreen bookkeeping.
 TEST(DockFullscreenTest, LoadingALayoutWhileFullscreenStartsFromANormalTab) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -339,9 +336,8 @@ TEST(DockFullscreenTest, RemovingTheMaximizedDockDropsItsSnapshot) {
       << "a stale snapshot overrode the loaded proportions";
 }
 
-// The reachable undo path: TabbedPlotWidget rebuilds every tab as a NEW docker,
-// so the maximize dies with the old one. What undo stores and brings back must
-// be the whole layout, not the folded one.
+// The reachable undo path: TabbedPlotWidget rebuilds every tab as a new docker, so the maximize dies with the old one;
+// what undo stores and brings back is the whole layout, not the folded one.
 TEST(DockFullscreenTest, HistoryRestoreWhileFullscreenRebuildsTheWholeLayout) {
   PJ::TabbedPlotWidget tabbed;
   PJ::PlotDocker* docker = tabbed.currentTab();

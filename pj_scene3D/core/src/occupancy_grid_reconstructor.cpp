@@ -33,25 +33,21 @@ void OccupancyGridReconstructor::invalidateAfter(PJ::Timestamp late_ts) {
   if (!have_epoch_) {
     return;
   }
-  // A late entry at or before the base keyframe can't be re-included by a forward
-  // replay within this epoch (applyRange's lower bound is the base ts), so fall
-  // back to the full from-base rebuild on the next reconstructAt().
+  // A late entry at or before the base keyframe cannot be re-included by a forward replay within this epoch
+  // (applyRange's lower bound is the base ts): fall back to the full rebuild on the next reconstructAt().
   if (late_ts <= grid_.base_timestamp_ns) {
     invalidate();
     return;
   }
-  // Drop every snapshot that could have skipped the late entry: a snapshot at
-  // ts >= late_ts was taken when the entry might already have been due but was
-  // not yet ingested. Snapshots strictly before late_ts only embed updates that
-  // genuinely predate it, so they remain trustworthy restore points.
+  // Drop every snapshot that could have skipped the late entry: one at ts >= late_ts was taken when the entry might
+  // already have been due but not yet ingested; earlier ones embed only updates that predate it.
   const auto first_invalid = std::lower_bound(
       snapshots_.begin(), snapshots_.end(), late_ts,
       [](const Snapshot& snapshot, PJ::Timestamp value) { return snapshot.ts < value; });
   snapshots_.erase(first_invalid, snapshots_.end());
   updates_since_snapshot_ = 0;
-  // Rewind the forward cursor to the nearest surviving snapshot at-or-before the
-  // late entry (or the pristine base). The next forward reconstructAt() replays
-  // (last_t_, t] — which now re-includes the late entry and everything after it.
+  // Rewind the forward cursor to the nearest surviving snapshot at or before the late entry (or the pristine base),
+  // so the next forward reconstructAt() replays (last_t_, t] and re-includes it.
   restoreNearestAtOrBefore(late_ts - 1);
 }
 
@@ -97,7 +93,6 @@ void OccupancyGridReconstructor::applyUpdate(const PJ::sdk::OccupancyGridUpdate&
 
   const int64_t gw = grid_.width;
   const int64_t gh = grid_.height;
-  // Clamp the patch rectangle to the grid bounds.
   const int64_t x0 = std::max<int64_t>(0, update.x);
   const int64_t y0 = std::max<int64_t>(0, update.y);
   const int64_t x1 = std::min<int64_t>(gw, static_cast<int64_t>(update.x) + update.width);
@@ -133,9 +128,8 @@ void OccupancyGridReconstructor::pushSnapshot(PJ::Timestamp ts) {
   }
   snapshots_.insert(pos, Snapshot{ts, grid_.cells});
 
-  // Honor the memory budget: while over budget, decimate (drop every other
-  // snapshot) so the survivors stay evenly spread across the timeline rather
-  // than clustering — keeping worst-case backward-replay distance bounded.
+  // Honor the memory budget: while over it, drop every other snapshot so the survivors stay evenly spread and the
+  // worst-case backward replay stays bounded.
   const std::size_t per = gridBytes();
   if (per == 0) {
     return;
@@ -175,9 +169,8 @@ void OccupancyGridReconstructor::applyRange(
 }
 
 void OccupancyGridReconstructor::restoreNearestAtOrBefore(PJ::Timestamp t) {
-  // snapshots_ is ts-sorted (pushSnapshot inserts in order): binary-search the
-  // largest snapshot ts <= t, else fall back to the pristine base keyframe. The
-  // full-buffer copy is the documented memory-vs-replay tradeoff of the design.
+  // snapshots_ is ts-sorted: binary-search the largest snapshot ts <= t, else fall back to the pristine base. The
+  // full-buffer copy trades memory for replay time.
   const auto first_after = std::upper_bound(
       snapshots_.begin(), snapshots_.end(), t,
       [](PJ::Timestamp value, const Snapshot& snapshot) { return value < snapshot.ts; });
@@ -197,7 +190,6 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
 
   const std::optional<BaseSample> base = base_at(t);
   if (!base) {
-    // No base grid at or before t — nothing to display.
     invalidate();
     return GridUpdate{grid_, GridUpdate::Kind::kEmpty, {}};
   }
@@ -210,16 +202,13 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
     return GridUpdate{grid_, GridUpdate::Kind::kEmpty, {}};
   }
 
-  // Exception barrier: this runs on the GUI thread (renderAt → reconstructAt);
-  // an escaped bad_alloc/length_error from a hostile file would unwind through
-  // the Qt event loop and terminate the app (same hazard class as the codec
-  // barriers in pointcloud_codecs.cpp). Reset so one corrupt sample cannot
-  // poison subsequent frames either.
+  // Exception barrier: this runs on the GUI thread (renderAt → reconstructAt); an escaped bad_alloc/length_error from
+  // a hostile file would unwind through the Qt event loop and terminate the app (same hazard as the codec barriers in
+  // pointcloud_codecs.cpp). Reset so one corrupt sample cannot poison later frames either.
   try {
     if (!have_epoch_ || base->identity != epoch_identity_) {
-      // New epoch: a different (or first) base keyframe entry is now in effect.
-      // Keyed on the entry identity, not the decoded timestamp — a replacement
-      // keyframe at the SAME timestamp must still reset (see BaseSample).
+      // New epoch: a different (or first) base keyframe entry is in effect. Keyed on the entry identity, not the
+      // decoded timestamp: a replacement keyframe at the SAME timestamp must still reset (see BaseSample).
       resetToBase(base->grid);
       epoch_identity_ = base->identity;
       applyRange(updates_in, grid_.base_timestamp_ns, t, /*allow_snapshots=*/true);
@@ -228,13 +217,11 @@ GridUpdate OccupancyGridReconstructor::reconstructAt(
     }
 
     if (t >= last_t_) {
-      // Forward within the epoch: apply only the new deltas incrementally.
       applyRange(updates_in, last_t_, t, /*allow_snapshots=*/true);
       last_t_ = t;
       return GridUpdate{grid_, GridUpdate::Kind::kIncremental, dirty_rects_};
     }
 
-    // Backward within the epoch: restore the nearest snapshot (or base) and replay.
     restoreNearestAtOrBefore(t);
     applyRange(updates_in, last_t_, t, /*allow_snapshots=*/false);
     last_t_ = t;

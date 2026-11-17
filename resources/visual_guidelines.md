@@ -1,420 +1,132 @@
 # Visual guidelines
 
-This document is the single source of truth for PJ4's theme, chrome
-layout, icon pipeline, and QSS authoring discipline. Every UI change
-should be reviewed against this file. If you find yourself wanting to
-introduce a new value that conflicts with what's here, update this
-doc first and have the change reviewed.
+PJ4's theme tokens, border radii, icon pipeline and QSS authoring rules. Review a UI change against this file; when a
+change conflicts with it, update the file in the same change.
 
-The supporting QSS lives in `resources/stylesheet_light.qss` and
-`resources/stylesheet_dark.qss`. Both share an identical token block
-delimited by `// PALETTE START` and `// PALETTE END`; `Theme.cpp`
-parses that block at load time and substitutes `${KEY}` placeholders
-in the body of each stylesheet. The body must contain **only** token
-references — no hard-coded colors, sizes, or paddings.
+## Source of truth
 
----
+- **Palette.** `resources/stylesheet_light.qss` and `stylesheet_dark.qss` each start with a token block between
+  `PALETTE START` and `PALETTE END` (`key: value` lines). `pj_app/src/Theme.cpp` parses it and substitutes `${key}`
+  in the stylesheet body. Both blocks carry the same keys with per-theme values; the size, type and motion tokens are
+  theme-agnostic and duplicated unchanged.
+- **Roles.** What each token family means (surfaces, interaction variants and states, ink, outline, overlay,
+  selection, elevation, gradients, size axes) is in [`ui_framework.md`](./ui_framework.md). Self-painted (QPainter)
+  widgets read the same tokens through `pj_widgets/include/pj_widgets/FrameworkTokens.h`; a value copied into C++
+  stops following the theme.
+- **Chrome heights** (title bar, section header bands) are runtime metrics (`ChromeMetrics`, changed by the user
+  live): use `bandHeight()` / `titleBarHeight()`, never a literal (`pj_widgets/CLAUDE.md`).
 
-## 1. Palette
+## Border radii
 
-The token names below are stable; the values differ per theme.
+Every corner radius comes from the `radius_*` token scale. QSS rules reference `${radius_*}`; self-painted C++ calls
+`PJ::theme::radius(PJ::theme::Radius::*)` (radii are theme-independent). The scale and its values are the
+`radius_*` keys of the palette; their use:
 
-### 1.1 Surfaces
+| Token | Used by |
+|---|---|
+| `radius_square` | Flat surfaces: chrome bars, panels, tabs, tables/lists, scrollbars, menus, tooltips, popups, frames. |
+| `radius_input` | Input chrome (`QLineEdit`, `QAbstractSpinBox`, `QComboBox`, `DoubleScrubber`) and every icon/tool button (`QToolButton`): the hover/press chip behind an icon is a rounded square. |
+| `radius_card` | Cards, toasts, and the message-box action buttons. |
+| `radius_dialog` | The `PJ::MessageBox` modal card and other floating hint banners. |
+| `radius_pill` | Fully-rounded capsules: toggle switches, scrollbar pills, range-slider handles, progress bars. |
 
-| Token | Light | Dark | Used for |
-|---|---|---|---|
-| `widget_background` | `transparent` | `transparent` | Default widget fill — lets the parent paint show through. |
-| `main_background` | `#eeeeee` | `#373743` | Generic content background (currently unused; reserve for non-chrome panels). |
-| `dark_background` | `#F5F5F5` | `#3B3B47` | `QMainWindow` and `QDialog` body fill. |
-| `titlebar_background` | `#e0e0e0` | `#1C1C22` | Every chrome row (TitleBar, dialog title bar, Sources / Datasets / Custom Series header bands). |
-| `widget_background_disabled` | `#eeeeee` | `#404040` | Disabled-state fill for input widgets. |
-| `input_background` | `#FFFFFF` | `#4D4D5A` | Fill for the input-chrome family (`QLineEdit`, `QAbstractSpinBox`, `QComboBox`, `DoubleScrubber`) — reads as a chart-surface inset rectangle. |
+Input chrome shares one fill and focus ring (the `input` surface and the focused outline), so text fields, spin boxes
+and combo boxes read as one inset-input family. A radius that is not on the scale is a new token, not a literal in one
+rule.
 
-### 1.2 Text
+App search/filter fields use the `PJ::Search` control (a non-interactive magnifier flush against a borderless field
+on one flat background, styled by the `PJ--Search` class rule), so they opt out of the inset-input family. Plugin
+fields that remain in a header band (`#seqFilter`, `#topicFilter`) and the prefix editor (`#lineEditPrefix`) opt
+out the same way through id selectors.
 
-| Token | Light | Dark | Used for |
-|---|---|---|---|
-| `default_text` | `#111111` | `#F0F0F0` | All body and chrome text. |
-| `disabled_text` | `#666666` | `#777777` | Text inside disabled widgets. |
-| `inverse_text` | `#ffffff` | `#111111` | Foreground ink on a saturated brand background (e.g. close-button hover/pressed). |
+All `QSplitter` instances use `setHandleWidth(1)` in C++; the handle paints with the divider outline token via QSS, so
+there is no separate handle widget to style.
 
-### 1.3 Borders
+## Icons
 
-| Token | Light | Dark | Used for |
-|---|---|---|---|
-| `border_default` | `#c0c0c0` | `#B0B0BF` | Every chrome separator: title-bar bottom border, splitter handles, `#timelineSeparator`, `#plotTabsSeparator`. |
-| `border_hover` | `#62c5ff` | `#148CD2` | Focus / hover border on data-input widgets (currently `IntScrubber` etc.). |
-| `border_checked` | `#1177ff` | `#1177ff` | Checked-state border on toggleable widgets. |
+### Source family
 
-### 1.4 Brand accents (theme-agnostic — same in both stylesheets)
+The Material icons in `resources/svg/` come from Google Material Symbols with the axes that are the defaults of
+`resources/scripts/download_material_icons.py`: `rounded` style, weight 300, grade 0, fill 0, optical size 48.
+`ICON_MAPPING` in the script maps each target filename to a Material Symbol name plus optional transforms
+(`rotate`, `hflip`, `vflip`, a per-entry `fill` or `fill_color`).
 
-| Token | Value | Used for |
-|---|---|---|
-| `blue` | `#1177FF` | Primary call-to-action; selection sub-page on `#timeSlider`. |
-| `light_blue` | `#C2DCFF` | Hover state on tabs / menu items in light theme; track of the selected portion of `#timeSlider`. |
-| `purple` | `#CC00CC` | Destructive / window-close hover on dark theme; pressed state in light. |
-| `purple_dark` (dark only) | `#990099` | Window-close pressed state in dark theme. |
-| `light_purple` | `#FFAEFF` | Window-close hover state in light theme. |
-
-### 1.5 Overlays
-
-`hover_overlay` and `pressed_overlay` are translucent inks that
-darken (light theme) or lighten (dark theme) whatever sits beneath
-them. Always prefer these to a solid background swap for transient
-states — the parent's color stays visible through them, so the
-effect reads as "this thing is interactive" rather than "this thing
-swapped identity".
-
-| Token | Light | Dark |
-|---|---|---|
-| `hover_overlay` | `rgba(0, 0, 0, 40)` | `rgba(255, 255, 255, 30)` |
-| `pressed_overlay` | `rgba(0, 0, 0, 70)` | `rgba(255, 255, 255, 70)` |
-| `ink_select` | `rgba(0, 0, 0, 60)` | `rgba(255, 255, 255, 60)` |
-
-### 1.6 Scrollbars / sliders
-
-| Token | Light | Dark | Used for |
-|---|---|---|---|
-| `scrollbar_handle` | `#787878` | `#787878` | Default scrollbar thumb fill. |
-| `scrollbar_handle_hover` | `#148CD2` | `#148CD2` | Hover/pressed thumb. |
-| `slider_handle` | `#999999` | `#999999` | Generic `QSlider` thumb (not the time slider). |
-| `slider_handle_hover` | `#99ccff` | `#99ccff` | Generic slider hover. |
-
-The playback `#timeSlider` is special-cased: handle is `light_purple`
-nominally, `purple` on hover/pressed.
-
-### 1.7 Selection
-
-| Token | Light | Dark |
-|---|---|---|
-| `item_selection_background` | `#C2DCFF` (= `light_blue`) | `#148CD2` |
-
----
-
-## 2. Chrome geometry
-
-Every horizontal chrome row in the app is **exactly 24 px tall**.
-That includes:
-
-- TitleBar (top app bar): app icon + embedded QMenuBar (File /
-  Toolbox / Help) on the left; notification bell, panel toggles and
-  window controls on the right
-- Sources / Datasets / Custom Series header bands
-- Playback row
-- Right-side toolbar column width (same value, vertical)
-
-The tab strip is the one exception: the strip itself is **23 px**,
-followed by a **1-px** sibling separator (`tabs_separator`) — total
-chrome contribution still 24 px so the plot area's top edge aligns
-with the curve-list content on the left column.
-
-Geometry tokens:
-
-| Token | Value | Used for |
-|---|---|---|
-| `chrome_bar_height` | `24` | Chrome row height in `.ui` files and runtime layout code. |
-| `chrome_tab_strip_height` | `23` | TabbedPlotWidget's strip. |
-| `chrome_button_size` | `24` | Flush button that fills its chrome row (Sources / Datasets / Custom Series / RHS / Playback). |
-| `chrome_button_size_inset` | `23` | Inset button that fits inside a chrome row that draws its own `border-bottom` (TitleBar, dialog title bar). |
-| `chrome_icon_size` | `20` | Icon rendered inside every chrome button. |
-| `chrome_spacing` | `4` | Horizontal gap between icon buttons in the same row; also label-text left padding. |
-| `chrome_border_width` | `1` | Every chrome border. |
-| `radius_square` / `radius_input` / `radius_card` / `radius_dialog` / `radius_pill` | `0` / `4` / `6` / `8` / `9999` | The canonical corner-radius scale (see §2.4). QSS references `${radius_*}`; self-painted C++ uses `PJ::theme::radius(PJ::theme::Radius::*)` (theme-independent). Never hardcode a radius literal. |
-| `input_min_height` | `18` | Min **content** height shared by every input-chrome widget so text fields, spin boxes and combo boxes resolve to one identical outer height (18 + 2×2 padding + 2×1 border = 24). |
-
-### 2.1 Why two button sizes
-
-The buttons are sized to **fill the inner content rect of their
-row, flush** — no 0.5-px asymmetry, no breathing room above or
-below.
-
-- Bars **without** a QSS `border-bottom` (Sources, Datasets, Custom
-  Series, RHS toolbar, Playback) have an inner rect equal to their
-  outer height: 24 px. Buttons inside them are `24×24`.
-- Bars **with** a `border-bottom: 1px solid border_default`
-  (TitleBar, dialog title bar) have an inner rect of `24 − 1 = 23`
-  px. Buttons inside them are `23×23`.
-
-The tab strip's elements (`PlotTabFrame`, `[+]` button) are also
-`23×23`, because the strip is 23 px and they fill its inner rect.
-The panel toggles share that size but live in the TitleBar's right
-cluster (created by TabbedPlotWidget, reparented by the shell).
-
-Icons inside any chrome button are always `20×20`, leaving a 1–2 px
-ink-ring of padding inside the button. **Do not** override icon
-size per widget — set it once on the button via `iconSize` and let
-the chrome look uniform.
-
-### 2.2 Spacing rules
-
-- Horizontal `spacing` between icon buttons in a chrome row: **0**
-  inside Sources/Datasets/Custom Series headers (buttons sit flush
-  next to each other and the gap is the icon ring); **4** inside
-  TitleBar and Playback (where the buttons need visual breathing
-  room because they carry text-adjacent icons).
-- Label-text → first widget gap: **`chrome_spacing` (4 px)**, set
-  via the label's `padding-left` or `setContentsMargins(4, 0, 0, 0)`.
-- Layout `contentsMargins` on chrome row containers: **`0, 0, 0, 0`**.
-  Vertical centering inside the row is done by Qt's automatic
-  alignment when the button is `Fixed,Fixed`-policy and matches the
-  row's inner content height.
-- Set `flush="true"` on a `QTabWidget` to remove its global inset; QSS zeros the widget/pane margins and padding and the tab-bar offset.
-- Inter-row spacing (between rows in a stacked widget like
-  `pageStream`): **`chrome_spacing` (4 px)** vertical.
-
-### 2.3 Splitter handles
-
-All `QSplitter` instances have `setHandleWidth(1)` in C++ and the
-handle paints with `border_default` via QSS. There's no separate
-splitter-handle widget to style.
-
-### 2.4 Border radii
-
-Every corner radius comes from **one canonical 5-step token scale** — never a
-hardcoded literal. QSS rules reference `${radius_*}`; self-painted C++ widgets
-call `PJ::theme::radius(PJ::theme::Radius::*)` (radii are theme-independent, so
-no theme argument is needed).
-
-| Token | px | Used by |
-|---|---|---|
-| `radius_square` | `0` | Flat surfaces: chrome bars, panels, tabs, tables/lists, scrollbars, menus, tooltips, popups, frames. |
-| `radius_input` | `4` | Input chrome (`QLineEdit`, `QAbstractSpinBox`, `QComboBox`, `DoubleScrubber`) **and every icon/tool button** (`QToolButton`) — the hover/press chip behind an icon is a 4px rounded square. |
-| `radius_card` | `6` | Cards, toasts, and the message-box action buttons. |
-| `radius_dialog` | `8` | The `PJ::MessageBox` modal card (a deliberately softer dialog corner) and other floating hint banners. |
-| `radius_pill` | `9999` | Fully-rounded capsules: toggle switches, scrollbar pills, range-slider handles, progress bars. |
-
-Input chrome also shares the `${input_background}` fill and `${border_hover}`
-focus ring, so text fields, spin boxes and combo boxes read as one consistent
-inset-input family. If you need a radius that isn't on the scale, add a token —
-do not sprinkle a magic number.
-
-App search/filter fields use the canonical **`PJ::Search`** control (a
-non-interactive magnifier butted flush against a borderless field, sharing
-one flat background), styled by the `PJ--Search` class rule — so they opt
-out of the inset-input family (transparent field, borderless, `padding: 0`);
-the leading magnifier already cues "type here". Plugin-provided fields still
-in a header band (`#seqFilter`, `#topicFilter`) and the prefix editor
-(`#lineEditPrefix`) opt out the same way via id selectors.
-
----
-
-## 3. Icons
-
-### 3.1 Source family
-
-All Material-design icons in `resources/svg/` come from **Google
-Material Symbols** with these axis settings:
-
-| Axis | Value | Why |
-|---|---|---|
-| `style` | `sharp` | Square geometry matches the app's chrome. |
-| `weight` | `300` | Light stroke — slim but readable at toolbar sizes. |
-| `grade` | `0` | Neutral grade. |
-| `fill` | `1` | Filled glyphs. |
-| `optical-size` | `24` | Standard for 16–24 px UI use. |
-
-### 3.2 Recipe
-
-Icons are generated by `resources/scripts/download_material_icons.py`,
-which fetches Google Material Symbols SVGs from the gstatic CDN per the
-inline `ICON_MAPPING` table (key = target filename, value = Material
-Symbol name + optional transforms) and injects the `--fill-color`
-(default `#3D3D3D`, the canonical light-theme ink). To add an icon, add
-an entry to `ICON_MAPPING` and re-run the script. The script's axis
-defaults differ from PJ4's house axes (§3.1), so pass them explicitly to
-match the existing set, e.g.:
+To add an icon, add an `ICON_MAPPING` entry and run:
 
 ```bash
-python3 resources/scripts/download_material_icons.py \
-    --style sharp --weight 300 --grade 0 --optical-size 24 --fill 1 \
-    -o resources/svg/
+python3 resources/scripts/download_material_icons.py -o resources/svg/
 ```
 
-Under the hood the script does, per icon:
+The script downloads each SVG from the gstatic CDN (`--dry-run` prints the URLs, `--overwrite` replaces existing
+files) and injects `--fill-color` (default `#3D3D3D`) as the `fill` of every `<path>`.
 
-1. Pull the icon SVG from Google's CDN at the path
-   `https://fonts.gstatic.com/s/i/short-term/release/materialsymbolssharp/<icon_id>/wght300grad0fill1/24px.svg`
-   where `<icon_id>` is the snake-case Material Symbol name
-   (e.g. `Add Column Right` → `add_column_right`).
-2. The CDN returns the SVG with no `fill` attribute; inject
-   `fill="#3D3D3D"` on every `<path>` element. This is the canonical
-   "light theme ink" — runtime recoloring in
-   `pj_widgets/SvgUtil.h::RecolorSvgInk()` swaps it to `#E0E0E0`
-   when the dark theme is active.
-3. Save as `resources/svg/<target_filename>.svg`.
+### Ink and recoloring
 
-For state variants (`_dark`, `_disabled_*`, `_hover`, `_pressed`):
-copy the base SVG, then replace the `fill` attribute. The runtime
-recoloring helper (`PJ::RecolorSvgInk` in
-`pj_widgets/include/pj_widgets/SvgUtil.h`) does this swap
-automatically based on the active theme.
+`#3D3D3D` is the authoring ink of a theme-following icon. `recolorSvgInk()` (`pj_widgets/include/pj_widgets/SvgUtil.h`,
+applied by the SVG loaders) folds that ink, legacy black and white, and the opposite theme's ink onto the active
+theme's icon ink, and gives a root `<svg>` without any `fill` one. An icon that must follow the theme is authored
+with `#3D3D3D`; `fill="currentColor"` would not be recolored.
 
-| Suffix | Fill / treatment | Used for |
+State variants are separate files for QSS `url()` references, which cannot be recolored at run time; their ink is
+fixed in the file:
+
+| Suffix | Fill / stroke | Used for |
 |---|---|---|
-| _(none)_ / `_light` | `fill="#3D3D3D"` | Light theme. |
-| `_dark` | `fill="#E0E0E0"` | Dark theme. |
-| `_disabled_light` | `fill="#3D3D3D"` + `opacity="0.4"` | Disabled in light. |
-| `_disabled_dark` | `fill="#E0E0E0"` + `opacity="0.4"` | Disabled in dark. |
-| `_hover` | `fill="#1177FF"` | QSS `:hover` (combo-box arrows etc.). |
-| `_pressed` | `fill="#CC00CC"` | QSS `:pressed`. |
+| none / `_light` | `#3D3D3D` | Light theme. |
+| `_dark` | `#E0E0E0` (used raw, never folded) | Dark theme. |
+| `_disabled_light` / `_disabled_dark` | as `_light` / `_dark` | Disabled state. |
+| `_hover` | `#1177FF` | QSS `:hover` (combo-box arrows). |
+| `_pressed` | `#CC00CC` | QSS `:pressed`. |
 
-### 3.3 Hand-crafted assets
+Some SVGs are not from Material Symbols and keep their own ink: `branch_*_light.svg` `#B8B8B8` and
+`branch_*_dark.svg` `#454545` (tree indicators), `close_windows_*`, `maximize` and `minimize` (strokes in the
+`#3D3D3D` / `#E0E0E0` family), `panel_*` and `play_arrow*` (`#3D3D3D`), and `plotjuggler.svg`, a multi-color logo that
+is not recolored.
 
-A small set of SVGs aren't from Material Symbols and follow their
-own palette:
+## QSS authoring discipline
 
-| File | Ink |
-|---|---|
-| `branch_*_light.svg` | `#B8B8B8` (intentional gray accent for `QTreeView` indicators) |
-| `branch_*_dark.svg` | `#454545` |
-| `close_windows_light.svg` | `stroke="#3D3D3D"` |
-| `close_windows_dark.svg` | `stroke="#E0E0E0"` |
-| `maximize.svg` / `minimize.svg` | `stroke="#3D3D3D"` |
-| `panel_{bottom,left,right}.svg` | `#3D3D3D` (fill + stroke) |
-| `play_arrow{,_left}.svg` | `fill="#3D3D3D"` |
-| `plotjuggler.svg` | Multi-color app logo — do not recolor. |
+- **Tokens, not literals.** Reference a palette token for every color, size and padding in a stylesheet body. A
+  hard-coded hex, rgba or px value is promoted to a token before a second rule reuses it, so a color or spacing
+  changes in one place.
 
----
+  ```css
+  /* avoid */  QFrame#mySection { background: #e0e0e0; border-bottom: 1px solid #c0c0c0; padding: 4px; }
+  /* use   */  QFrame#mySection { background: ${banner}; border-bottom: ${stroke_hairline}px solid ${separation}; }
+  ```
 
-## 4. QSS authoring discipline
+- **Reuse, don't copy.** Widgets that share a treatment share one rule (`#TitleBar, QDialog QWidget#dialogTitleBar {
+  ... }`); related rules cluster under a comment header (see "Frameless chrome bars" and "Chrome buttons" in the
+  stylesheets).
+- **Theme symmetry.** The light and dark stylesheets differ only in palette values. A selector or property in one
+  and not the other is a bug.
+- **Padding and margins inside chrome rows.** Outer row layout `contentsMargins(0, 0, 0, 0)`; no per-button padding
+  (the icon's own padding is the only ring); a label that needs separation from the row's left edge gets a
+  `space_*` token margin.
+- **`flush="true"`** on a `QTabWidget` removes its global inset: QSS zeroes the widget and pane margins and padding
+  and the tab-bar offset.
 
-### 4.1 Tokens, not literals
+### Inline `setStyleSheet`
 
-**Always reference a palette token.** A hard-coded hex / rgba / px
-value in the body of `stylesheet_*.qss` is a code smell — promote
-it to a token in the `PALETTE` block before re-using it in a second
-rule. The intent: a future contributor can change a color or a
-spacing in one place and have the whole app update consistently.
+Inline `QWidget::setStyleSheet(...)` is the exception. Before using it:
 
-Counter-example (avoid):
+1. Could it be an `objectName` plus a QSS rule (`QPushButton#foo { ... }`)? Then do that.
+2. Is the value data, such as a per-row color swatch where each instance carries its own color? Then inline is the
+   right expression.
+3. Is it a polish for a Qt internal that ignores QSS (the `QwtPlotCanvas` backing store, `QComboBox` popup palettes in
+   `WidgetTuner`)? Then it stays in C++ with a comment saying why.
 
-```css
-QFrame#mySection {
-    background: #e0e0e0;          /* ← what color was this again? */
-    border-bottom: 1px solid #c0c0c0;
-    padding: 4px;
-}
-```
+`setStyleSheet("")` calls deliberately clear inherited styling (`PlotDocker` disabling Qt-Advanced-Docking's own QSS
+layer).
 
-Use:
+## Runtime helpers
 
-```css
-QFrame#mySection {
-    background: ${titlebar_background};
-    border-bottom: ${chrome_border_width}px solid ${border_default};
-    padding: ${chrome_spacing}px;
-}
-```
+Some chrome lives in C++ because Qt's default styling has internals QSS cannot reach:
 
-### 4.2 Reuse, don't copy
+- `recolorSvgInk()` in `pj_widgets/include/pj_widgets/SvgUtil.h`, described above.
+- `pj_app/src/WidgetTuner`: an application-wide event filter that gives auto-generated context menus
+  `objectName="PJMenu"` (so the `QMenu#PJMenu` rules apply) and clamps `QComboBox` popup palettes.
+- `PJ::Style` (`pj_widgets/include/pj_widgets/Style.h`): a `QProxyStyle` over Fusion that suppresses the platform's
+  dialog-button icons (`SH_DialogButtonBox_ButtonsHaveIcons`) and mnemonic underlines (`SH_UnderlineShortcut`);
+  installed in `pj_app/src/main.cpp`.
 
-If two widgets share visual treatment, **combine the selectors in
-one rule** rather than authoring two near-identical blocks.
-
-Counter-example (avoid):
-
-```css
-#TitleBar { background: ${titlebar_background}; border-bottom: 1px solid ${border_default}; }
-QDialog QWidget#dialogTitleBar { background: ${titlebar_background}; border-bottom: 1px solid ${border_default}; }
-```
-
-Use:
-
-```css
-#TitleBar,
-QDialog QWidget#dialogTitleBar {
-    background: ${titlebar_background};
-    border-bottom: ${chrome_border_width}px solid ${border_default};
-}
-```
-
-Cluster the related rules together with a comment header. See the
-"`Frameless chrome bars`" and "`Chrome buttons`" sections in the
-stylesheets for the canonical pattern.
-
-### 4.3 Theme symmetry
-
-The light and dark stylesheets should differ **only in the values
-of the palette tokens** — never in selectors or property values.
-If you find a rule in one stylesheet that isn't in the other,
-that's a bug.
-
-### 4.4 Border radii
-
-Never write a radius literal. Reference a `${radius_*}` token in QSS (or
-`PJ::theme::radius(PJ::theme::Radius::*)` in C++) — see §2.4 for the scale.
-A `border-radius: 4px` slipped into a rule is a bug the same way a hardcoded
-colour is; if no existing token fits, add one to the scale rather than
-introducing a magic number in a single rule.
-
-### 4.5 Padding / margin discipline
-
-Inside chrome rows:
-
-- Outer row layout: `contentsMargins(0, 0, 0, 0)`.
-- Inter-button spacing: `0` or `chrome_spacing` (see § 2.2).
-- Per-button padding: `0`. The icon's intrinsic padding inside its
-  button is the only ring around the glyph.
-- Label content margin: `(chrome_spacing, 0, 0, 0)` if the label
-  needs separation from the row's left edge.
-
----
-
-## 4.6 Inline `setStyleSheet` is the exception, not the rule
-
-`QWidget::setStyleSheet(...)` calls in C++ should be **rare**. Audit
-checklist before you reach for one:
-
-1. **Could this be an `objectName` + a QSS rule?** If yes, do that.
-   The pattern is: in C++, `widget->setObjectName("foo")`; in
-   `stylesheet_*.qss`, write `QPushButton#foo { ... }`.
-2. **Is the value baked into a dynamic data element** (e.g. a
-   per-row colour swatch where each instance carries its own
-   colour)? Then inline `setStyleSheet` is the correct expression —
-   the colour is *data*, not chrome.
-3. **Is it a runtime polish for a Qt internal that doesn't honour
-   QSS** (e.g. `QwtPlotCanvas` backing store, `QComboBox` popup
-   palettes inside `WidgetTuner`)? Then it lives in C++ as a
-   documented exception. Add a `TODO(theme):` comment.
-
-The only `setStyleSheet("")` (empty) calls in the tree are
-deliberate "clear inherited Qt styling" calls (e.g. `PlotDocker`
-disabling Qt-Advanced-Docking's own QSS layer). Those are fine.
-
-## 5. Runtime helpers
-
-A few pieces of chrome live in C++ rather than QSS because Qt's
-default styling has hard-to-style internals:
-
-- `pj_widgets/include/pj_widgets/SvgUtil.h::RecolorSvgInk()` — swaps `#3D3D3D` ↔
-  `#E0E0E0` (and folds `#000000` / `#ffffff` onto the palette) so
-  every C++-loaded SVG follows the active theme without needing a
-  `_light` / `_dark` filename. Called from `LoadSvg()` and
-  `RenderSvgPixmap()`.
-- `pj_app/src/WidgetTuner` — application-wide event filter that
-  stamps `objectName="PJMenu"` on auto-generated context menus
-  (so they pick up the `QMenu#PJMenu` QSS rules) and clamps
-  `QComboBox` popup palettes.
-- `pj_widgets/include/pj_widgets/Style.h` — `PJ::Style`, a
-  `QProxyStyle` over Fusion that suppresses the platform's
-  auto-injected dialog-button icons (`SH_DialogButtonBox_ButtonsHaveIcons`)
-  and mnemonic underlines (`SH_UnderlineShortcut`); installed in
-  `pj_app/src/main.cpp` via
-  `QApplication::setStyle(new PJ::Style("Fusion"))`.
-
-If you add a new widget category that needs runtime polish, prefer
-extending one of these helpers over inventing a new one.
-
----
-
-## 6. When to update this document
-
-- A new palette token enters either stylesheet.
-- A new chrome geometry value (button size, bar height, spacing)
-  is introduced.
-- A new icon family or recoloring rule is added.
-- A new "duplicate the rule, change one thing" pattern emerges
-  that should be unified into a shared selector.
-
-Edits to this file should land in the same MR as the change they
-describe.
+A new widget category that needs runtime polish extends one of these helpers.

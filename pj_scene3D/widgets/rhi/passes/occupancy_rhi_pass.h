@@ -14,11 +14,8 @@ namespace pj::scene3d {
 
 class OccupancyGridLayer;
 
-/// The occupancy-grid family of the QRhi view: one R8 texture per layer drawn
-/// as a textured unit quad scaled to the grid. It owns its layout SRB, quad,
-/// per-layer GPU state and counters (the view's registry its pipeline); the view owns ordering, budgets'
-/// frame lifetime and the command buffer. Per frame the view calls, in order:
-/// admit() (once), prepare() (once), then submit() per ScenePass for each draw.
+/// The occupancy-grid family of the QRhi view: one R8 texture per layer drawn as a textured unit quad scaled to the
+/// grid. It owns its layout SRB, quad, per-layer GPU state and counters; its pipeline lives in the view's registry.
 class OccupancyRhiPass {
  public:
   struct Draw {
@@ -27,31 +24,24 @@ class OccupancyRhiPass {
     DrawClass draw_class = DrawClass::kOpaque;  ///< translucent below full layer opacity
   };
 
-  /// Registers the pipeline and creates the shared resources; false leaves the pass unusable
-  /// (the view then releases everything, as for any other family).
+  /// Registers the pipeline and creates the shared resources; false leaves the pass unusable.
   [[nodiscard]] bool initialize(const RhiPassSetup& setup);
   [[nodiscard]] bool ready() const {
     return pipeline_ != nullptr;
   }
-  /// Adopts the view's occupancy layers; drops GPU state of layers that left or
-  /// are hidden.
   void setLayers(const std::vector<OccupancyGridLayer*>& layers);
-  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
   [[nodiscard]] bool hasLayers() const {
     return !layers_.empty();
   }
 
-  /// Runs each visible layer's prepareForRender() against the per-view cell
-  /// budget, places it, and records the family's fixed-frame bounds (lastBounds()).
+  /// Admits visible layers against the per-view cell budget and records the family's fixed-frame bounds
+  /// (lastBounds()).
   void admit(const PlaceFn& place);
-  /// Uploads admitted layers' textures (full or dirty rects) and uniforms and
-  /// builds this frame's draws.
+  /// Uploads admitted layers' textures (full or dirty rects) and uniforms and builds this frame's draws.
   void prepare(const RhiFrameContext& frame);
-  /// The prepared draw of `layer` (none or one).
   [[nodiscard]] std::span<const Draw> drawsFor(const OccupancyGridLayer* layer) const {
     return findDraws(draws_, layer);
   }
-  /// Records one draw; false when its pipeline is unavailable for `pass`.
   bool submit(
       QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
       const QRhiViewport& viewport) const;

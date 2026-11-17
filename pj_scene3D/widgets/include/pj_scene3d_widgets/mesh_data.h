@@ -26,27 +26,20 @@ struct Vertex {
   glm::vec3 normal{0.0f, 0.0f, 1.0f};
   glm::vec4 color{0.7f, 0.7f, 0.7f, 1.0f};
   glm::vec2 uv{0.0f, 0.0f};
-  // Tangent in model space; .xyz is the U-axis direction, .w is the handedness
-  // sign (+/-1) used to reconstruct the bitangent as cross(normal, tangent.xyz) * w.
-  // Populated from assimp's aiProcess_CalcTangentSpace; defaults to a benign basis
-  // so meshes without UVs/tangents still upload a well-formed attribute.
+  // Tangent in model space: .xyz is the U-axis direction, .w the handedness sign (+/-1) for the bitangent
+  // cross(normal, tangent.xyz) * w. From aiProcess_CalcTangentSpace; a benign default basis keeps meshes without
+  // UVs/tangents uploading a well-formed attribute.
   glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
 };
 
-// One texture map of a material. The pixels come from EITHER an external file
-// (`path`) OR inline bytes (`bytes`, e.g. a glTF/GLB embedded image still in its
-// encoded PNG/JPEG form). `key` is a stable cache key used by the renderer's
-// per-context texture cache: the absolute path for external maps, a content hash
-// for embedded ones (so identical embedded textures dedup and the key survives
-// a QRhi recreation). Empty when the material lacks this map.
-// The source only describes content; the renderer owns upload policy and infers
-// each slot's color space (ModelRhiPass):
-// base-color/emissive are color data, metallic-roughness/normal/occlusion are
-// linear data.
-// Embedded `bytes` stay resident on the owning MeshData for the mesh's lifetime
-// (copied once per distinct Material and shared by its SubMeshes) so the renderer can
-// re-decode them for a new QRhi — memory traded for QRhi-recreation
-// robustness, fine for the usual handful of textured submeshes.
+// One texture map of a material. Pixels come from EITHER an external file (`path`) OR inline `bytes` (e.g. a glTF/GLB
+// embedded image still PNG/JPEG-encoded). `key` is the renderer's per-context texture cache key: the absolute path for
+// external maps, a content hash for embedded ones (identical embedded textures dedup and the key survives a QRhi
+// recreation); empty when the material lacks this map. The source only describes content; the renderer owns upload
+// policy and infers each slot's colour space (ModelRhiPass): base-colour/emissive are colour data,
+// metallic-roughness/normal/occlusion linear. Embedded `bytes` stay resident on the owning MeshData for the mesh's
+// lifetime (copied once per distinct Material, shared by its SubMeshes) so the renderer can re-decode them for a new
+// QRhi.
 struct TextureSource {
   QString path;
   std::vector<std::uint8_t> bytes;
@@ -59,7 +52,6 @@ struct TextureSource {
   [[nodiscard]] bool empty() const {
     return path.isEmpty() && bytes.empty();
   }
-  /// Whether the slot names a texture, loaded or still to fetch.
   [[nodiscard]] bool named() const {
     return !empty() || !unresolved_ref.isEmpty();
   }
@@ -83,11 +75,9 @@ struct Material {
   AlphaMode alpha_mode{AlphaMode::kOpaque};
   float alpha_cutoff{0.5f};
   bool has_pbr{false};
-  // glTF doubleSided (assimp AI_MATKEY_TWOSIDED). When the caller has back-face
-  // culling enabled, the renderer drops it for these submeshes. The mesh pass
-  // never enables culling itself and the app currently draws everything
-  // two-sided (the robust default for robot meshes with sloppy winding), so the
-  // flag stays latent until something turns culling on.
+  // glTF doubleSided (assimp AI_MATKEY_TWOSIDED). No pass reads it yet: the model pass never culls back faces, so the
+  // flag is latent until something enables culling. Reasoning, not measured: robot meshes often have inconsistent
+  // winding, which culling would expose.
   bool double_sided{false};
 
   TextureSource base_color;
@@ -96,8 +86,8 @@ struct Material {
   TextureSource occlusion;
   TextureSource emissive;
 
-  /// The five maps in the renderer's slot order: base colour, metallic-roughness,
-  /// normal, occlusion, emissive. ModelRhiPass::textureIsSrgb() keys off this order.
+  /// The five maps in the renderer's slot order: base colour, metallic-roughness, normal, occlusion, emissive;
+  /// ModelRhiPass::textureIsSrgb() keys off this order.
   [[nodiscard]] std::array<const TextureSource*, 5> textureSlots() const {
     return {&base_color, &metallic_roughness, &normal, &occlusion, &emissive};
   }
@@ -111,12 +101,10 @@ struct SubMesh {
   // is a multiple of 3 for drawable triangle ranges.
   std::size_t index_offset{0};
   std::size_t index_count{0};
-  // Material applied to this index range (factors + up to five texture maps).
-  // Shared, not owned per-submesh: assimp meshes routinely split one material
-  // across many submeshes, and copying would duplicate each map's embedded bytes.
-  // Invariant: the loader always populates this (a neutral fallback when the
-  // source has none); the renderer still null-guards with its own fallback, so a
-  // default-constructed SubMesh stays valid and allocation-free.
+  // Material applied to this index range. Shared, not owned per submesh: assimp routinely splits one material across
+  // many submeshes, and copying would duplicate each map's embedded bytes. Invariant: the loader always populates it (a
+  // neutral fallback when the source has none); the renderer still null-guards, so a default-constructed SubMesh stays
+  // valid and allocation-free.
   std::shared_ptr<const Material> material;
 };
 

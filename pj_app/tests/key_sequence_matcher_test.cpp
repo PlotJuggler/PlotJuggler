@@ -11,9 +11,8 @@ namespace {
 using PJ::KeySequenceMatcher;
 using PJ::stepHash;
 
-// Per-position step values for an arbitrary key sequence. These tests exercise
-// the generic engine, so the codes below are synthetic placeholders rather than
-// any particular real sequence.
+// Per-position step values for a key sequence. The key codes are synthetic placeholders: these tests exercise
+// the generic engine.
 std::vector<std::uint32_t> stepsFor(const std::vector<int>& keys) {
   std::vector<std::uint32_t> steps;
   steps.reserve(keys.size());
@@ -44,11 +43,11 @@ TEST(KeySequenceMatcher, WrongKeyResetsProgress) {
 
 TEST(KeySequenceMatcher, MismatchThatIsAlsoFirstElementRestartsAtOne) {
   KeySequenceMatcher m(stepsFor(kSeq));
-  EXPECT_FALSE(m.feed(kSeq[0]));  // index -> 1 (matches steps[0])
+  EXPECT_FALSE(m.feed(kSeq[0]));
   EXPECT_FALSE(m.feed(kSeq[1]));  // index -> 2 (kSeq[1] == kSeq[0])
   EXPECT_EQ(m.progress(), 2u);
-  // At index 2 the expected key differs; feeding kSeq[0] is a mismatch, but it
-  // equals the first element, so progress restarts at 1 rather than resetting.
+  // At index 2 the expected key differs, but kSeq[0] equals the first element, so progress restarts at 1 instead of
+  // resetting.
   EXPECT_FALSE(m.feed(kSeq[0]));
   EXPECT_EQ(m.progress(), 1u);
 }

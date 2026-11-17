@@ -23,9 +23,7 @@ namespace PJ {
 
 namespace {
 
-// The host-namespaced form of a plugin's own tab name. It becomes the docker's
-// stateId, which is what stops two plugins choosing the same name from ever
-// addressing each other's tab.
+// Becomes the docker's stateId, so two plugins choosing the same name never address each other's tab.
 QString ownedTabKey(const QString& plugin_id, const QString& tab_id) {
   return plugin_id + u"/"_s + tab_id;
 }
@@ -104,8 +102,7 @@ ViewportRuntimeHost::Callbacks PluginPlotTabsController::viewportCallbacks(const
 
 void PluginPlotTabsController::forEachPlotOwnedBy(
     const QString& plugin_id, const QString& tab_id, const std::function<void(PlotWidget*)>& operation) const {
-  // This is where the boundary is actually enforced: a plugin drives the view
-  // only where the user can see it is driving.
+  // The ownership boundary for view commands: a plugin drives only its own tabs.
   const QString tab_key = tab_id.isEmpty() ? QString() : ownedTabKey(plugin_id, tab_id);
   tabs_.forEachDocker([&plugin_id, &tab_key, &operation](PlotDocker* docker) {
     if (docker->ownerPlugin() != plugin_id || (!tab_key.isEmpty() && docker->stateId() != tab_key)) {
@@ -138,9 +135,7 @@ Status PluginPlotTabsController::zoomToTimeRange(
   if (zoomed != 0) {
     return okStatus();
   }
-  // Two distinct dead ends with two distinct remedies — open a tab, or put
-  // something in the one you have. Saying only "nothing to zoom" would leave a
-  // caller repeating whichever of the two it guessed.
+  // Two dead ends, two remedies (open a tab, or fill the one you have), so two messages.
   if (!tab_id.isEmpty()) {
     return unexpected(
         owned == 0 ? "this plugin owns no plot tab '" + tab_id.toStdString() + "'"
@@ -166,9 +161,8 @@ Status PluginPlotTabsController::zoomOut(const QString& plugin_id, const QString
 }
 
 PlotDocker* PluginPlotTabsController::ownedTab(const QString& plugin_id, const QString& tab_id) const {
-  // Ownership is only ever established in createTab, which stamps both the
-  // namespaced stateId and the owner metadata; requiring both to agree is what
-  // keeps a user-made tab from ever answering to a plugin.
+  // newOwnedTab stamps both the namespaced stateId and the owner metadata (a layout file restores both);
+  // requiring both to agree keeps a user-made tab from answering to a plugin.
   const QString key = ownedTabKey(plugin_id, tab_id);
   return tabs_.findDocker(
       [&](PlotDocker* docker) { return docker->stateId() == key && docker->ownerPlugin() == plugin_id; });
@@ -185,8 +179,6 @@ PlotDocker* PluginPlotTabsController::newOwnedTab(
     return nullptr;
   }
   docker->setStateId(ownedTabKey(plugin_id, tab_id));
-  // Plugin composition has no history step: the tab is outside undo/redo even
-  // though it is durable in a full layout file.
   docker->setHistoryExempt(true);
   docker->setOwnerMetadata(plugin_id, tab_id);
   docker->setOwnerBadge(extensions_.toolboxBadge(plugin_id));
@@ -285,9 +277,7 @@ Expected<std::string> PluginPlotTabsController::tabConfig(const QString& plugin_
       continue;
     }
     for (const auto& info : plot->curveList()) {
-      // Reported from the catalog entry the curve is actually bound to, so the
-      // dataset named here is the resolved one even when the caller left it
-      // blank — the point of a read-back is to answer "which run is this?".
+      // The dataset the curve is bound to, even when the caller left it blank.
       const std::optional<CatalogItem> item = catalog_.itemDescriptor(info.source_name);
       if (!item.has_value()) {
         continue;

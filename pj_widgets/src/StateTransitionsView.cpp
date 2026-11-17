@@ -32,10 +32,6 @@ using namespace Qt::StringLiterals;
 
 namespace PJ {
 
-// =============================================================================
-// StateTransitionsScene — display-free math/model.
-// =============================================================================
-
 void StateTransitionsScene::setRows(std::vector<StateRow> rows) {
   rows_ = std::move(rows);
 }
@@ -128,10 +124,6 @@ std::optional<StateTransitionsScene::HoverHit> StateTransitionsScene::hitTest(
   return HoverHit{.row = row_index, .segment = static_cast<int>(std::distance(segments.begin(), it))};
 }
 
-// =============================================================================
-// StateRowItem — one series row: sticky chip + transition labels + color band.
-// =============================================================================
-
 namespace state_transitions_detail {
 
 namespace {
@@ -158,10 +150,9 @@ QFont nameFont() {
 }
 }  // namespace
 
-/// One series row. The view feeds geometry: the item lives at
-/// (0, StateTransitionsScene::rowTop(index)) and spans the scene width; the
-/// chip is painted at the CURRENT viewport-left x (setSticky) so it never pans
-/// away with the data. Painting culls to the visible x window.
+/// One series row. The view feeds geometry: the item lives at (0, StateTransitionsScene::rowTop(index)) and spans the
+/// scene width; the chip is painted at the current viewport-left x (setSticky), so it never pans away with the data.
+/// Painting culls to the visible x window.
 class StateRowItem : public QGraphicsItem {
  public:
   explicit StateRowItem(StateRow row) : row_(std::move(row)) {}
@@ -194,10 +185,9 @@ class StateRowItem : public QGraphicsItem {
     update();
   }
 
-  /// The x-span a segment's label may occupy: the segment clipped to the
-  /// visible viewport. This is what keeps a label readable while ANY part of
-  /// its segment is on-screen — a segment wider than the view would otherwise
-  /// carry its label far off-screen left under horizontal zoom/pan.
+  /// The x-span a segment's label may occupy: the segment clipped to the visible viewport. A label stays readable while
+  /// any part of its segment is on screen: a segment wider than the view would otherwise carry its label far off-screen
+  /// left under horizontal zoom and pan.
   [[nodiscard]] std::pair<double, double> labelSpan(double x0, double x1) const {
     if (sticky_width_ <= 0.0) {
       return {x0, x1};  // no viewport known yet (headless/pre-layout): full bar
@@ -205,9 +195,8 @@ class StateRowItem : public QGraphicsItem {
     return {std::max(x0, sticky_left_x_), std::min(x1, sticky_left_x_ + sticky_width_)};
   }
 
-  /// Per-segment "wide enough to carry its state name inside" flags — the exact
-  /// rule the shared bar painter applies (see kBarMinLabelWidthPx) over the
-  /// SAME viewport-clipped labelSpan the paint path uses; the test seam behind
+  /// Per-segment "wide enough to carry its state name inside" flags: the rule the shared bar painter applies
+  /// (kBarMinLabelWidthPx) over the same viewport-clipped labelSpan the paint path uses; the seam behind
   /// StateTransitionsView::visibleLabelsForTest.
   [[nodiscard]] std::vector<bool> labelVisibility() const {
     std::vector<bool> visible;
@@ -237,10 +226,9 @@ class StateRowItem : public QGraphicsItem {
     const qint64 left_ns = TimelineScene::pxToNs(view_left, viewport_);
     const qint64 right_ns = TimelineScene::pxToNs(view_right, viewport_);
 
-    // --- color band: visible segments only (binary search the first candidate),
-    // each drawn through the SHARED timeline bar painter — translucent fill,
-    // hairline border, and the state name elided INSIDE the rectangle exactly
-    // like the Source Timeline's dataset bars.
+    // Color band: visible segments only (binary search for the first candidate), each drawn through the shared timeline
+    // bar painter (translucent fill, hairline border, the state name elided inside the rectangle), as the Source
+    // Timeline's dataset bars.
     painter->setFont(labelFont());
     const double band_y = kMetrics.chip_h;
     auto first = std::ranges::lower_bound(
@@ -282,10 +270,6 @@ class StateRowItem : public QGraphicsItem {
 };
 
 }  // namespace state_transitions_detail
-
-// =============================================================================
-// StateTransitionsView — the QWidget/QGraphicsView.
-// =============================================================================
 
 namespace {
 constexpr int kViewStateCommitDebounceMs = 250;
@@ -331,10 +315,9 @@ StateTransitionsView::StateTransitionsView(QWidget* parent) : QWidget(parent) {
   // One handler set for zoom/pan/hover/chip-close: filter the viewport and
   // re-dispatch (same seam Timeline uses).
   view_->viewport()->installEventFilter(this);
-  // ONE scroll pill, vertical rows only — the time axis is navigated by
-  // zoom/pan/linked-zoom, so no horizontal scroller appears over the ruler.
-  // Attached AFTER our filter (LIFO → its filter runs first) so a strip-drag
-  // never reaches the pan handler.
+  // One scroll pill, vertical rows only: the time axis is navigated by zoom, pan and linked zoom, so no horizontal
+  // scroller appears over the ruler. Attached after our filter (LIFO: its filter runs first), so a strip-drag never
+  // reaches the pan handler.
   v_scrollbar_ = new Scrollbar(Qt::Vertical);
   v_scrollbar_->setClickToScroll(true);
   v_scrollbar_->attach(view_);
@@ -351,19 +334,17 @@ StateTransitionsView::StateTransitionsView(QWidget* parent) : QWidget(parent) {
 
   ruler_item_ = new TimelineRulerItem();
   ruler_item_->setBottomAligned(true);
-  // Tick labels are ALWAYS the numeric display-axis value in seconds — the same
-  // number the plot X axis shows (small when the relative frame is on, epoch
-  // seconds when off) — so the two can never disagree. The Source Timeline's
-  // elapsed-vs-absolute relabelling has no equivalent here.
+  // Tick labels are always the numeric display-axis value in seconds, the number the plot X axis shows (small with the
+  // relative frame on, epoch seconds when off), so the two cannot disagree. The Source Timeline's elapsed-vs-absolute
+  // relabelling has no equivalent here.
   ruler_item_->setAbsoluteFormat(true);
   // Match the plot axis: same label size, and NO data-span tint on the band
   // (rebuild passes an empty span) so the ruler shares the rows' background.
   ruler_item_->setLabelPixelSize(13);
   gscene_->addItem(ruler_item_);
 
-  // Playback needle, Highlight (magenta) — the EXACT token the plots' tracker
-  // line uses, so the two cursors read as one. Read-only in this strip (no
-  // click-to-seek in v1): mouse-transparent, no hover lift, no drag cursor.
+  // Playback needle in Highlight (magenta), the token the plots' tracker line uses, so the two cursors read as one.
+  // Read-only in this strip (no click-to-seek): mouse-transparent, no hover lift, no drag cursor.
   const auto fw_theme = timeline_detail::frameworkTheme();
   playhead_item_ = new TimelineNeedleItem(
       theme::interaction(theme::Variant::Highlight, theme::State::Checked, fw_theme),
@@ -399,11 +380,10 @@ StateTransitionsView::StateTransitionsView(QWidget* parent) : QWidget(parent) {
 }
 
 StateTransitionsView::~StateTransitionsView() {
-  // Drop the scrollbar connections before our members tear down. ~QWidget (the
-  // base, run after our members are gone) deletes the child QGraphicsScene, which
-  // resets the view's scrollbars and emits valueChanged — that would otherwise
-  // fire the sticky-sync lambdas into deleted graphics items. (The `this`-context
-  // auto-disconnect only kicks in once ~QObject runs, which is too late.)
+  // The scrollbar connections are dropped before our members tear down. ~QWidget (the base, run after our members are
+  // gone) deletes the child QGraphicsScene, which resets the view's scrollbars and emits valueChanged, firing the
+  // sticky-sync lambdas into deleted graphics items. (The `this`-context auto-disconnect only runs in ~QObject, too
+  // late.)
   if (view_ != nullptr) {
     view_->horizontalScrollBar()->disconnect(this);
     view_->verticalScrollBar()->disconnect(this);
@@ -616,10 +596,9 @@ bool StateTransitionsView::eventFilter(QObject* watched, QEvent* event) {
   }
   switch (event->type()) {
     case QEvent::Resize: {
-      // The OUTER widget's resizeEvent can run before the child layout settles
-      // the viewport geometry (LayoutRequest is deferred), so an empty strip
-      // would keep a stale bottom-ruler position. The viewport's own resize is
-      // the authoritative moment to re-pin.
+      // The outer widget's resizeEvent can run before the child layout settles the viewport geometry (LayoutRequest is
+      // deferred), so an empty strip would keep a stale bottom-ruler position: the viewport's own resize is the
+      // authoritative moment to re-pin.
       applying_external_ = true;  // geometry change, not a user navigation
       rebuild();
       applying_external_ = false;
@@ -781,10 +760,9 @@ void StateTransitionsView::applyWheelZoom(double factor, double anchor_viewport_
   const double anchor_scene_x = view_->horizontalScrollBar()->value() + anchor_viewport_x;
   const qint64 anchor_ns = TimelineScene::pxToNs(anchor_scene_x, viewport_);
   double next_zoom = TimelineScene::zoom(viewport_, factor, anchor_scene_x).px_per_ns;
-  // Zoom-out floor: the visible window never grows past the display range —
-  // the same maximum-zoom-out limit the plots honor, so a wheel gesture here
-  // can never walk the (linked) view outside the data. A degenerate range
-  // (single sample, or none yet) floors at a 1 s window instead of unclamped.
+  // Zoom-out floor: the visible window never grows past the display range, the maximum-zoom-out limit the plots honor,
+  // so a wheel gesture here cannot walk the (linked) view outside the data. A degenerate range (single sample, or none
+  // yet) floors at a 1 s window instead of being unclamped.
   const qint64 range_span_ns = std::max(range_max_ns_ - range_min_ns_, timeline_detail::kSecondNs);
   next_zoom = std::max(next_zoom, viewportWidthPx() / static_cast<double>(range_span_ns));
   // Same absolute bounds the setZoom/setVisibleRange appliers enforce.

@@ -6,8 +6,8 @@
 // widget's own contextMenuEvent gets the first shot (re-sent under the
 // forwarding_context_menu_ guard so this filter passes it through instead of
 // recursing); only an IGNORED event falls back to the dock's standard menu.
-// A regression here either kills every content widget's own menu (e.g. the 3D
-// view's frame-gizmo menu) host-wide, or re-enters the filter forever.
+// Getting it wrong either kills every content widget's own menu (the 3D view's frame-gizmo menu) host-wide, or
+// re-enters the filter forever.
 
 #include <gtest/gtest.h>
 

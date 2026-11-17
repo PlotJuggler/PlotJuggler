@@ -12,7 +12,7 @@ TimelineSpanInput makeTrack(TimelineSourceId id, qint64 lo, qint64 hi, qint64 of
   return TimelineSpanInput{.id = id, .t_min_ns = lo, .t_max_ns = hi, .offset_ns = offset};
 }
 
-// Task 1: setTracks/tracks round-trip
+// setTracks / tracks round trip
 TEST(TimelineScene, SetTracksRoundTrips) {
   TimelineScene scene;
   scene.setTracks({makeTrack(1, 1000, 5000), makeTrack(2, 2000, 6000)});
@@ -21,9 +21,9 @@ TEST(TimelineScene, SetTracksRoundTrips) {
   EXPECT_EQ(scene.tracks()[1].t_max_ns, 6000);
 }
 
-// Task 2: displayWindow
+// displayWindow
 TEST(TimelineScene, DisplayWindowSubtractsOffset) {
-  // display = raw - offset. Positive offset shifts the source EARLIER.
+  // display = raw - offset: a positive offset shifts the source earlier.
   const auto w = TimelineScene::displayWindow(makeTrack(1, 1000, 5000, 200));
   EXPECT_EQ(w.min, 800);
   EXPECT_EQ(w.max, 4800);
@@ -35,7 +35,7 @@ TEST(TimelineScene, DisplayWindowNegativeOffsetShiftsLater) {
   EXPECT_EQ(w.max, 5300);
 }
 
-// Task 3: sceneExtent
+// sceneExtent
 TEST(TimelineScene, SceneExtentUnionsDisplayedWindows) {
   TimelineScene scene;
   scene.setTracks({makeTrack(1, 1000, 5000, 0), makeTrack(2, 3000, 9000, 1000)});
@@ -64,7 +64,7 @@ TEST(TimelineScene, SetDefaultExtentOverridesEmptySpan) {
   EXPECT_EQ(scene.sceneExtent().max, 10'000'000'000);
 }
 
-// Task 4: nsToPx, pxToNs, barSpan
+// nsToPx, pxToNs, barSpan
 TEST(TimelineScene, NsPxRoundTrip) {
   const TimelineViewport vp{.px_per_ns = 1e-3, .origin_ns = 1000};  // 1 px per 1000 ns
   EXPECT_DOUBLE_EQ(TimelineScene::nsToPx(2000, vp), 1.0);           // (2000-1000)*1e-3
@@ -81,7 +81,7 @@ TEST(TimelineScene, BarSpanGeometry) {
   EXPECT_DOUBLE_EQ(span.width, 4.0);
 }
 
-// Task 5: pxDeltaToNs + zoom
+// pxDeltaToNs and zoom
 TEST(TimelineScene, PxDeltaToNsIsOriginIndependent) {
   const TimelineViewport vp{.px_per_ns = 1e-3, .origin_ns = 999999};
   EXPECT_EQ(TimelineScene::pxDeltaToNs(5.0, vp), 5000);  // 5 px / 1e-3
@@ -97,7 +97,7 @@ TEST(TimelineScene, ZoomKeepsNsUnderAnchorFixed) {
   EXPECT_EQ(TimelineScene::pxToNs(100.0, zoomed), ns_at_anchor);
 }
 
-// Task 6: ruler
+// ruler
 TEST(TimelineScene, RulerPicksIntervalAndTicks) {
   // px_per_ns = 1e-3 (1 px per 1000 ns = per 1 us). target 80 px/tick => want
   // ~80000 ns/tick; the ladder's 100000 ns (100 us) is the first >= want.
@@ -121,12 +121,10 @@ TEST(TimelineScene, RulerHandlesNegativeOrigin) {
   EXPECT_EQ(r.ticks_ns.front(), -200'000);
 }
 
-// Degenerate extent guard: a wall-clock-epoch streaming source unioned with
-// relative-time file datasets blows the span up to ~20,000 days, at which the widest
-// ladder interval (1 h) would pack ~hundreds of thousands of ticks into the viewport.
-// The guard must widen the interval so labels stay legible (≥ ~48 px apart) and the
-// tick count stays bounded by the pixel budget — NOT thousands (which smeared the
-// ruler black and made every repaint pay for it).
+// Degenerate extent guard: a wall-clock-epoch streaming source unioned with relative-time file datasets blows the span
+// up to ~20,000 days, where the widest ladder interval (1 h) would pack hundreds of thousands of ticks into the
+// viewport. The guard widens the interval so labels stay legible (>= ~48 px apart) and the tick count stays bounded by
+// the pixel budget, not thousands (which smears the ruler black and makes every repaint pay for it).
 TEST(TimelineScene, RulerBoundsTickCountForDegenerateExtent) {
   // ~1.73e18 ns span over a 1200 px view -> px_per_ns ~6.9e-16 (the screenshot case).
   const TimelineViewport vp{.px_per_ns = 1200.0 / 1.73e18, .origin_ns = 1'816'585'200'000'000LL};
@@ -143,7 +141,7 @@ TEST(TimelineScene, RulerBoundsTickCountForDegenerateExtent) {
   }
 }
 
-// Task 7: alignStartsToCommonOrigin
+// alignStartsToCommonOrigin
 TEST(TimelineScene, AlignStartsLeftmostUnmovedOthersSnap) {
   TimelineScene scene;
   // displayed starts: t1 raw.min 1000 off 0 -> 1000 (leftmost);

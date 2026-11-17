@@ -16,17 +16,16 @@
 
 namespace {
 
-// QSS type selectors match on metaObject()->className(). The toast styling in
-// stylesheet_{dark,light}.qss targets `PJ--ToastNotification`, so pin the class
-// name: a namespace/rename regression would silently drop the styling instead
-// of failing loudly.
+// QSS type selectors match on metaObject()->className(). The toast styling in stylesheet_{dark,light}.qss targets
+// `PJ--ToastNotification`, so the class name is pinned: a namespace or rename regression would silently drop the
+// styling.
 TEST(ToastTest, ClassNameDrivesQssSelector) {
   PJ::ToastNotification toast("hello");
   EXPECT_STREQ(toast.metaObject()->className(), "PJ::ToastNotification");
 }
 
-// showToast() must create a ToastNotification under the manager's transparent
-// container (objectName preserved from PJ3 for stylesheet selectors).
+// showToast() creates a ToastNotification under the manager's transparent container (objectName preserved for
+// stylesheet selectors).
 TEST(ToastTest, ShowToastCreatesNotification) {
   QWidget host;
   host.resize(800, 600);
@@ -41,9 +40,8 @@ TEST(ToastTest, ShowToastCreatesNotification) {
   EXPECT_NE(host.findChild<PJ::ToastNotification*>(), nullptr);
 }
 
-// The message label is rich text with external links enabled — this is what
-// makes an `<a href>` in the message open in the system browser with no extra
-// wiring (the release-check "View on GitHub" link relies on it).
+// The message label is rich text with external links enabled, which makes an `<a href>` in the message open in the
+// system browser with no extra wiring (the release-check "View on GitHub" link relies on it).
 TEST(ToastTest, MessageLabelIsRichTextWithClickableLink) {
   QWidget host;
   host.resize(800, 600);
@@ -72,10 +70,9 @@ void pumpEventLoopFor(int ms) {
   loop.exec();
 }
 
-// The container spans the host's full height (a stable coordinate system for
-// the slide/stack animations), so its input region must be masked down to the
-// toasts themselves: hit-testing anywhere above the bottom-right stack has to
-// pass through to the host, at any point of a toast's lifetime.
+// The container spans the host's full height (a stable coordinate system for the slide and stack animations), so its
+// input region is masked down to the toasts: hit-testing anywhere above the bottom-right stack passes through to the
+// host, at any point of a toast's lifetime.
 TEST(ToastTest, ContainerDoesNotBlockClicksOutsideToasts) {
   QWidget host;
   host.resize(800, 600);
@@ -89,9 +86,8 @@ TEST(ToastTest, ContainerDoesNotBlockClicksOutsideToasts) {
   ASSERT_NE(container, nullptr);
   ASSERT_TRUE(container->isVisible());
 
-  // Top-right corner and the middle of the right edge are both far above the
-  // bottom-right toast stack: hit-testing there must not land on the toast
-  // overlay or anything inside it, at any point of the toast's lifetime.
+  // The top-right corner and the middle of the right edge are far above the bottom-right toast stack: hit-testing there
+  // must not land on the toast overlay or anything inside it.
   const QPoint top_right(host.width() - 10, 10);
   const QPoint mid_right(host.width() - 10, host.height() / 2);
   for (const QPoint& point : {top_right, mid_right}) {
@@ -138,10 +134,9 @@ TEST(ToastTest, ToastRemainsClickableInsideInputRegion) {
   EXPECT_EQ(host.childAt(close_button->mapTo(&host, close_button->rect().center())), close_button);
 }
 
-// While a toast is still sliding in, the mask must track its CURRENT geometry:
-// the toast is clickable where it is right now, and the final rect it has not
-// yet reached stays click-through. This is what the per-toast event filter
-// provides over the one-shot mask set in repositionToasts().
+// While a toast slides in, the mask tracks its current geometry: the toast is clickable where it is now, and the final
+// rect it has not reached stays click-through. This is what the per-toast event filter provides over the one-shot mask
+// set in repositionToasts().
 TEST(ToastTest, InputRegionTracksSlideAnimation) {
   QWidget host;
   host.resize(800, 600);
@@ -182,9 +177,8 @@ TEST(ToastTest, InputRegionTracksSlideAnimation) {
   }
 }
 
-// Two stacked toasts mask as the union of their rects; closing one shrinks the
-// region (the survivor restacks to the bottom slot and its vacated rect stops
-// blocking), and closing the last hides the overlay entirely.
+// Two stacked toasts mask as the union of their rects; closing one shrinks the region (the survivor restacks to the
+// bottom slot and its vacated rect stops blocking), and closing the last hides the overlay.
 TEST(ToastTest, InputRegionShrinksAsToastsClose) {
   QWidget host;
   host.resize(800, 600);

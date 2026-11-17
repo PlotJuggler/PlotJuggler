@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Exercises UpdateChecker's reply state machine against a local HTTP server, so
-// the "emit exactly one of updateAvailable/upToDate/checkFailed" contract, the
-// name-fallback, the 404/parse/missing-tag failure routing, and the
-// abort-on-supersede behavior are verified without touching real GitHub.
-// setCurrentVersion() makes the comparison deterministic without depending on
-// the runner's applicationVersion() or a PJ_VERSION_STRING definition.
+// Exercises UpdateChecker's reply state machine against a local HTTP server (never real GitHub): the "emit exactly one
+// of updateAvailable/upToDate/checkFailed" contract, the name fallback, the 404/parse/missing-tag failure routing and
+// abort-on-supersede. setCurrentVersion() makes the comparison independent of the runner's applicationVersion() and of
+// a PJ_VERSION_STRING definition.
 
 #include <gtest/gtest.h>
 
@@ -114,8 +112,8 @@ TEST(UpdateCheckerTest, Http404EmitsCheckFailedSilently) {
 
   ASSERT_TRUE(waitForSignal(failed_spy));
   EXPECT_EQ(failed_spy.count(), 1);
-  // The whole "dormant until first release" design rests on 404 NOT looking
-  // like an update or an up-to-date result.
+  // A 404 must look like neither an update nor an up-to-date result (the updater stays dormant until the first
+  // release).
   EXPECT_TRUE(update_spy.isEmpty());
   EXPECT_TRUE(uptodate_spy.isEmpty());
 }
@@ -179,14 +177,12 @@ TEST(UpdateCheckerTest, SupersededCheckEmitsNothing) {
   ASSERT_TRUE(waitForSignal(update_spy));
   EXPECT_EQ(update_spy.count(), 1);
   EXPECT_TRUE(uptodate_spy.isEmpty());
-  // The aborted (superseded) request must not surface as a failure.
   EXPECT_TRUE(failed_spy.isEmpty());
 }
 
 TEST(UpdateCheckerTest, DefaultUrlTargetsPublicRepo) {
-  // The check must hit the PUBLIC PlotJuggler/PlotJuggler repo: the private
-  // PlotJuggler/PJ4 dev repo is invisible to anonymous clients, so aiming the
-  // default there makes every check fail (403 rate-limit / 404 not-found).
+  // The check must hit the public PlotJuggler/PlotJuggler repo: a private repo is invisible to anonymous clients, so
+  // every check would fail (403 rate-limit / 404 not-found).
   PJ::UpdateChecker checker;
   const std::string url = checker.releaseApiUrl().toString().toStdString();
   EXPECT_NE(url.find("api.github.com"), std::string::npos) << url;
@@ -194,9 +190,7 @@ TEST(UpdateCheckerTest, DefaultUrlTargetsPublicRepo) {
   EXPECT_EQ(url.find("/PlotJuggler/PJ4/"), std::string::npos) << url;
 }
 
-// ---------------------------------------------------------------------------
 // Channel routing: deb asks apt, windows asks the maintenance tool.
-// ---------------------------------------------------------------------------
 
 namespace {
 

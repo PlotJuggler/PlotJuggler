@@ -21,16 +21,14 @@ constexpr int kFallbackGripMargin = 4;
 /// The divider is a hairline, matching the `border-right` the header's
 /// stylesheet paints on each section.
 constexpr int kDividerWidth = 1;
-/// Mirrors `QHeaderView::section { border-top: 1px }` in the app stylesheet.
-/// That rule is painted by the section, so it lands *inside* the viewport and
-/// the highlight has to start below it; the header's bottom border belongs to
-/// the widget frame instead, so it falls outside the viewport on its own.
+/// Mirrors `QHeaderView::section { border-top: 1px }` in the app stylesheet. That rule is painted by the section, so it
+/// lands inside the viewport and the highlight starts below it; the header's bottom border belongs to the widget frame,
+/// so it falls outside the viewport on its own.
 constexpr int kSectionTopBorder = 1;
 
 theme::Theme frameworkTheme() {
-  // Read the app-global palette, not the header's: under the app stylesheet
-  // QStyleSheetStyle clobbers per-widget palettes, so a widget's own palette can
-  // report the wrong theme.
+  // The app-global palette is read, not the header's: under the app stylesheet QStyleSheetStyle clobbers per-widget
+  // palettes, so a widget's own palette can report the wrong theme.
   const QColor window = QGuiApplication::palette().color(QPalette::Window);
   return theme::themeFor(window.lightness() >= 128);
 }
@@ -80,9 +78,8 @@ HeaderDividerHighlight::HeaderDividerHighlight(QHeaderView* header)
   overlay_ = new HeaderDividerLine(header_->viewport());
   connect(overlay_, &QObject::destroyed, this, [this]() { overlay_ = nullptr; });
 
-  // QHeaderView is a scroll area: pointer events are delivered to its viewport,
-  // not to the header itself. Hover events need the attribute set to be sent at
-  // all, which the header's own setup may or may not have done already.
+  // QHeaderView is a scroll area: pointer events go to its viewport, not the header. Hover events are sent only with
+  // the attribute set, which the header's own setup may or may not have done.
   header_->viewport()->setAttribute(Qt::WA_Hover, true);
   header_->viewport()->installEventFilter(this);
 
@@ -131,9 +128,8 @@ void HeaderDividerHighlight::showDivider(int section, bool pressed) {
   }
   const theme::State state = pressed ? theme::State::Pressed : theme::State::Hovered;
   overlay_->setColor(theme::interaction(theme::Variant::Highlight, state, frameworkTheme()));
-  // The section's stylesheet border-right occupies the last pixel *inside* the
-  // section, so the overlay sits there rather than on the following section, and
-  // starts below the section's border-top so the band's top rule stays unbroken.
+  // The section's stylesheet border-right occupies the last pixel inside the section, so the overlay sits there, not on
+  // the following section, and starts below the section's border-top so the band's top rule stays unbroken.
   const int edge = header_->sectionViewportPosition(section) + header_->sectionSize(section);
   const int height = header_->viewport()->height() - kSectionTopBorder;
   overlay_->setGeometry(edge - kDividerWidth, kSectionTopBorder, kDividerWidth, height);

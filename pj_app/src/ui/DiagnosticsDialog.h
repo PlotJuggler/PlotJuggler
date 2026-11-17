@@ -13,20 +13,16 @@ class DiagnosticsDialog;
 
 namespace PJ {
 
-// Modeless, resizable table of every diagnostic in a DiagnosticHistory, with
-// severity / source / text filters and a pane showing the selected record's
-// full message. Pure view: every history change and every filter change
-// rebuilds the table from `history->snapshot()` (capped at a couple hundred
-// rows, so this is cheap and mirrors eviction for free). While hidden the
-// dialog only marks itself stale and rebuilds on the next show. The history
-// must outlive the dialog.
+// Every diagnostic in a DiagnosticHistory, with severity / source / text filters and the selected record's full
+// message. Every history or filter change rebuilds the table from `history->snapshot()` (the history is capped, so
+// this is cheap and mirrors eviction); while hidden it only marks itself stale. The history must outlive the dialog.
 class DiagnosticsDialog : public Dialog {
   Q_OBJECT
  public:
   explicit DiagnosticsDialog(DiagnosticHistory* history, QWidget* parent = nullptr);
   ~DiagnosticsDialog() override;
 
-  // Rows surviving the current filters. Public for tests.
+  // Rows surviving the current filters.
   [[nodiscard]] int visibleRowCount() const;
   [[nodiscard]] QString paneText() const;
 

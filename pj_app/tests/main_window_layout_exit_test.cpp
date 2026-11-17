@@ -1,16 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// GUI suite for LayoutExitWatch, the --exit-after-layout exit-code decision
-// (stage-5 E5): exactly one decision per watch, mapped from the settlement
-// boundary — load failure -> kExitCodeLoadFailed, committed restore ->
-// kExitCodeSuccess, no settlement within the deadline -> kExitCodeTimeout
-// (with the decision latched: a timer that fires after a settlement, or vice
-// versa, must not re-decide). The timeout scenario leaves its import batch
-// PARKED so suite teardown proves the close-time hard shutdown stays clean.
-//
-// One MainWindow per binary; scenarios share it in declaration order (the
-// parked-batch timeout scenario is deliberately LAST).
+// LayoutExitWatch, the --exit-after-layout exit-code decision: exactly one decision per watch, mapped from the
+// settlement boundary (load failure -> kExitCodeLoadFailed, committed restore -> kExitCodeSuccess, no settlement
+// within the deadline -> kExitCodeTimeout) and latched, so a timer firing after a settlement, or vice versa, does not
+// re-decide. One MainWindow per binary; the cases share it in declaration order, and the timeout case is LAST: it
+// leaves its import batch parked so suite teardown proves the close-time hard shutdown stays clean.
 
 #include <gtest/gtest.h>
 
@@ -35,8 +30,8 @@ using pj_app_test::pumpUntil;
 namespace fake = pj_layout_import_gui;
 using Peer = MainWindowLayoutImportTestPeer;
 
-// Spin the loop for a fixed wall-clock window (to prove something does NOT
-// happen — a suppressed late timer/settlement).
+// Spins the loop for a fixed wall-clock window, to prove something does not happen (a suppressed late timer or
+// settlement).
 void pumpFor(int ms) {
   const QDeadlineTimer deadline(ms);
   while (!deadline.hasExpired()) {
@@ -56,9 +51,8 @@ class MainWindowLayoutExitTest : public ::testing::Test {
   }
 
   static void TearDownTestSuite() {
-    // The timeout scenario left a parked import batch behind on purpose: this
-    // reset IS the teardown under test — MainWindow's dtor hard-shuts the
-    // still-running batch (children cancelled + joined) without a crash.
+    // The timeout case left a parked import batch on purpose: this reset is the teardown under test (MainWindow's
+    // dtor hard-shuts the running batch, children cancelled and joined) and must not crash.
     window_.reset();
     project_dir_.reset();
     extensions_dir_.reset();
@@ -76,8 +70,7 @@ class MainWindowLayoutExitTest : public ::testing::Test {
   inline static std::unique_ptr<PJ::MainWindow> window_;
 };
 
-// (3): a failed load decides kExitCodeLoadFailed exactly once — and the armed
-// timeout, expiring afterwards, must NOT re-decide.
+// A failed load decides kExitCodeLoadFailed exactly once; the armed timeout expiring afterwards must not re-decide.
 TEST_F(MainWindowLayoutExitTest, LoadFailureDecidesLoadFailedOnceAndSuppressesTheLateTimeout) {
   std::vector<int> codes;
   PJ::LayoutExitWatch watch(window(), std::chrono::milliseconds(300), [&codes](int code) { codes.push_back(code); });
@@ -92,15 +85,14 @@ TEST_F(MainWindowLayoutExitTest, LoadFailureDecidesLoadFailedOnceAndSuppressesTh
   EXPECT_EQ(codes.size(), 1u) << "a decision is final — the late timeout must not re-fire";
 }
 
-// A committed restore decides kExitCodeSuccess.
 TEST_F(MainWindowLayoutExitTest, CommittedRestoreDecidesSuccess) {
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "plain.mcap", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), dataset, "/plain", 1'000, 2'000), 0u);
   appSession().catalogModel().rebuildFromDatastore();
   const QString layout_path = project_dir_->filePath(QStringLiteral("plain.pj4.xml"));
-  // The plain sync leg is enough here (the settle suite covers the batch
-  // leg); only the settlement -> exit-code mapping is under test.
+  // The plain sync leg is enough (the settle suite covers the batch leg): only the settlement -> exit-code mapping
+  // is under test.
   ASSERT_TRUE(fake::writeLayoutFile(layout_path, fake::buildGenericCurveLayoutDoc(QStringLiteral("/plain"))));
 
   std::vector<int> codes;
@@ -113,9 +105,8 @@ TEST_F(MainWindowLayoutExitTest, CommittedRestoreDecidesSuccess) {
   EXPECT_EQ(codes.front(), PJ::LayoutExitWatch::kExitCodeSuccess);
 }
 
-// (4): a never-settling restore (parked import job) decides kExitCodeTimeout
-// after the configured deadline; the batch is still active at that decision
-// and is left for the suite teardown to hard-cancel cleanly.
+// A never-settling restore (parked import job) decides kExitCodeTimeout after the deadline; the batch is still active
+// then, and left for the suite teardown to hard-cancel.
 TEST_F(MainWindowLayoutExitTest, NeverSettlingRestoreDecidesTimeoutWhileTheBatchIsStillActive) {
   const QString source_path = project_dir_->filePath(QStringLiteral("data/parked.mcap"));
   const QString layout_path = project_dir_->filePath(QStringLiteral("parked.pj4.xml"));
@@ -137,8 +128,7 @@ TEST_F(MainWindowLayoutExitTest, NeverSettlingRestoreDecidesTimeoutWhileTheBatch
   EXPECT_EQ(codes.front(), PJ::LayoutExitWatch::kExitCodeTimeout);
   EXPECT_TRUE(Peer::batchActive(window())) << "the batch never settled — timeout fired around it";
   EXPECT_TRUE(Peer::progressiveInFlight(window()));
-  // Deliberately NOT released: TearDownTestSuite's window reset must cancel
-  // the parked batch via the destructor's hard shutdown without crashing.
+  // Deliberately not released: TearDownTestSuite's window reset must hard-cancel the parked batch without crashing.
 }
 
 }  // namespace

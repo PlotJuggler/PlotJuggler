@@ -1,16 +1,12 @@
 set(CMAKE_AUTOMOC ON)
 
-# Shared cube-appearance GLSL (shaders/cube/*.glslinc), one source for every shader
-# that draws cubes: the .vert/.frag sources #include these files directly (qsb honours
-# GL_GOOGLE_include_directive, resolving against the including file's directory). The
-# .qsb staleness check below runs at configure time, so a changed helper has to
-# re-trigger configure for the check to see it.
+# Shared cube-appearance GLSL (shaders/cube/*.glslinc): the .vert/.frag sources #include these files directly (qsb
+# honours GL_GOOGLE_include_directive, resolving against the including file's directory). The .qsb staleness check
+# below runs at configure time, so a changed helper has to re-trigger configure for the check to see it.
 file(GLOB _pj_cube_glsl_sources "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cube/*.glslinc")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_pj_cube_glsl_sources})
 
-# The QRhi renderer, on the desktop and in the browser (WebGL2). The browser-only
-# policy it carries (file picking, bounded model and URL loading) is gated on
-# PJ_TARGET_WASM.
+# Browser-only policy (file picking, bounded model and URL loading) is gated on PJ_TARGET_WASM.
 set(CMAKE_AUTORCC ON)
 find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Widgets Gui GuiPrivate Xml Concurrent Network)
 if(NOT EMSCRIPTEN)
@@ -179,17 +175,11 @@ target_include_directories(pj_scene3d_widgets_testing PUBLIC testing rhi)
 target_link_libraries(pj_scene3d_widgets_testing PUBLIC pj_scene3d_widgets)
 target_compile_options(pj_scene3d_widgets_testing PRIVATE ${PJ_WARNING_FLAGS})
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-# The WASM build has no tests.
 if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
-  # The QRhi display runners need an RHI-capable QPA (xcb/wayland/windows/cocoa),
-  # never `offscreen` (see scene3d_render_test_support.h). Registered on every
-  # backend of the platform (RHI_BACKENDS); each needs a software or real driver
-  # (llvmpipe / lavapipe / WARP / Metal in CI), and PJ_REQUIRE_GPU_TESTS=1 turns a
-  # missing one into a failure.
+  # The QRhi display runners need an RHI-capable QPA (xcb/wayland/windows/cocoa), never `offscreen` (see
+  # scene3d_render_test_support.h). They register on every backend of the platform (RHI_BACKENDS), each needing a
+  # software or real driver (llvmpipe / lavapipe / WARP / Metal in CI); PJ_REQUIRE_GPU_TESTS=1 turns a missing one
+  # into a failure.
   find_package(Qt6 ${PJ_QT_REQUIRED_VERSION} REQUIRED COMPONENTS Test)
   pj_add_test_runner(scene3d_rhi_render_test
     MAIN gui WARNINGS RHI_BACKENDS
@@ -208,31 +198,23 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     LIBS pj_scene3d_widgets pj_resources pj_bench_probes
     DEFINES PJ_POINTCLOUD_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/golden/pointcloud"
   )
-  # Frame budgets of the view: a smoke at its default (tiny) sizes; larger ones
-  # come from its environment variables.
   pj_add_test_runner(scene3d_frame_benchmark
     MAIN gui WARNINGS RHI_BACKENDS
     SOURCES tests/scene3d_frame_benchmark.cpp
     LIBS pj_scene3d_widgets pj_scene3d_widgets_testing pj_resources pj_bench_probes
   )
-  # Point-pass behaviour the golden corpus does not pin (fan faces, cube LOD,
-  # sphere sizing, faded-range occlusion, frustum-edge quads); same display needs.
   pj_add_test_runner(scene3d_rhi_point_test
     MAIN gui WARNINGS RHI_BACKENDS
     SOURCES tests/scene3d_rhi_point_test.cpp
     LIBS pj_scene3d_widgets pj_scene3d_widgets_testing pj_resources Qt6::Test
     TIMEOUT 60
   )
-  # The failure state and the optional-stage fallbacks, driven by the fault
-  # injection of builds with tests (PJ_RHI_TEST_HOOKS); same display needs.
   pj_add_test_runner(scene3d_rhi_failure_test
     MAIN gui WARNINGS RHI_BACKENDS
     SOURCES tests/scene3d_rhi_failure_test.cpp
     LIBS pj_scene3d_widgets pj_scene3d_widgets_testing pj_resources Qt6::OpenGLWidgets Qt6::Test
     TIMEOUT 60
   )
-  # The marker instance cache, the model mesh/instance caches and the platform
-  # limits; same display needs.
   foreach(_pj_rhi_runner scene3d_rhi_marker_cache_test scene3d_rhi_model_cache_test scene3d_rhi_platform_test)
     pj_add_test_runner(${_pj_rhi_runner}
       MAIN gui WARNINGS RHI_BACKENDS
@@ -244,9 +226,8 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   endforeach()
   unset(_pj_rhi_runner)
 
-  # Shared test scaffolding (mock_parser_support.h: makeBoundHandle /
-  # CountingObjectParser / registerObjectTopic / pumpUntil) lives in tests/; put
-  # it on every test target's include path (directory-scoped — tests only).
+  # Shared test scaffolding (mock_parser_support.h) lives in tests/: on every test target's include path
+  # (directory-scoped, tests only).
   include_directories(${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
   # Test hooks add accessors in public library headers, so every test TU in a
@@ -254,33 +235,22 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   set(PJ_SCENE3D_WIDGET_TESTS)
   set(PJ_SCENE3D_WIDGET_PLAIN_TESTS)
 
-  # The grid geometry tests use glm directly for their expected vertices.
   find_package(glm REQUIRED)
 
-  # Pure (no GL/Qt) ground-grid geometry: full-checkerboard cell coverage +
-  # per-vertex parity, and the line-grid vertex counts.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/grid_geometry_test.cpp
     tests/rhi_conventions_test.cpp
   )
 
-  # FixedFrameMemory: the per-dataset manual fixed-frame preference (session cache,
-  # QSettings persistence by source identity). No GL.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/fixed_frame_memory_test.cpp
   )
 
-  # resolveObject() canonical fallback: with no MessageParser bound, decode a
-  # serialized pj_base blob via the canonical codec (the parser-less / toolbox
-  # path). Pure unit test — no session, no GL.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/resolve_object_test.cpp
   )
 
-  # Keep this executable separate: PJ_SCENE3D_SHADER_DIR is unique to its source.
-  # Reads the shader sources and packs as data: fails if a shader stops including the
-  # shared cube GLSL, re-inlines a literal appearance constant, or the GLSL drifts from
-  # cube_mesh.h's C++ mirrors. No GL context needed.
+  # Keep this executable separate: PJ_SCENE3D_SHADER_DIR is unique to its source. No GL context needed.
   add_executable(scene3d_shader_constants_test
     tests/shader_constants_test.cpp
   )
@@ -296,16 +266,12 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   target_compile_options(scene3d_shader_constants_test PRIVATE ${PJ_WARNING_FLAGS})
   add_test(NAME scene3d_shader_constants_test COMMAND scene3d_shader_constants_test)
 
-  # Geometry invariants of the shared cube: the CCW-outward winding every culling
-  # pipeline depends on, and the hexagon fan's coverage of the 3 camera-facing faces
-  # in all eight sign octants. Pure math — no GL context needed.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/cube_mesh_test.cpp
   )
 
-  # Pure (non-GL) URDF parser + package-resolver unit tests. They reach the
-  # private src/ headers (urdf_parser.h / urdf_package_resolver.h) and use small
-  # hand-written fixtures under tests/fixtures/ (NOT the external DATA/ datasets).
+  # Reaches the private src/ headers (urdf_parser.h / urdf_package_resolver.h); fixtures are hand-written under
+  # tests/fixtures/.
   # Keep this definition confined to the sources that already share its value.
   set(PJ_SCENE3D_WIDGET_FIXTURE_TESTS
     tests/urdf_parser_test.cpp
@@ -328,9 +294,6 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_library(cloudini::cloudini ALIAS cloudini::cloudini_lib)
   endif()
 
-  # PointCloudLayer sample-identity caches: reset on dataset replace (stale
-  # decoded/failed/pushed ids under a stable topic id), stamp-0 is data not a
-  # sentinel, and wanted_-gating of stale async decodes on mixed-mode topics.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/pointcloud_layer_cache_test.cpp
   )
@@ -339,148 +302,94 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/pointcloud_layer_fast_path_test.cpp
   )
 
-  # Copy/paste/apply-to-family: serializeLayerParams/applyLayerParams must
-  # round-trip every PointCloudLayer parameter (the data path the Scene3D config
-  # panel's copy/paste toolbar drives).
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/pointcloud_layer_param_transfer_test.cpp
   )
 
-  # Config-panel range coupling: the manual "Range Min" / "Range Max" scrubbers
-  # must stay ordered (min <= max) — pushing one past the other drags the other
-  # along. Drives the real DoubleScrubber widgets, so it needs a QApplication.
+  # Drives the real DoubleScrubber widgets, so it needs a QApplication.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/pointcloud_layer_range_coupling_test.cpp
   )
 
-  # DepthCloudLayer: a depth-encoded sdk::Image + CameraInfo (matched by frame_id)
-  # back-project into points via the kImage path; color images opt out; the
-  # encoding gate (isDepthEncoding) is pinned.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/depth_cloud_layer_test.cpp
   )
 
-  # Dock-level depth/color gate: Scene3DDockWidget::addTopic accepts a depth-
-  # encoded kImage as a DepthCloud layer and refuses a color kImage (the
-  # "droppable into 3D" guarantee behind drag-drop absorption). The dock is a
-  # QWidget, so this needs the shared QApplication main.
+  # The dock is a QWidget: needs the shared QApplication main.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/scene3d_dock_depth_gate_test.cpp
   )
 
-  # M.65: pin PointCloudLayer's per-use parser binding (raw renderAt path still
-  # calls parseLocked on the UI thread per tick — a reintroduced cached pointer is
-  # a same-file-reload use-after-free). Mirrors occupancy_grid_layer_rebind_test.
+  # Pins PointCloudLayer's per-use parser binding (the raw renderAt path calls parseLocked on the UI thread per tick);
+  # mirrors occupancy_grid_layer_rebind_test.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     ../tests/pointcloud_layer_rebind_test.cpp
   )
 
-  # RGB-direct colour mode: a cloud carrying per-point colour (foxglove
-  # red/green/blue/alpha or a packed rgba field) collapses the channels to a single
-  # RGB mode, defaults to it, and round-trips through layout XML.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     ../tests/pointcloud_layer_rgb_test.cpp
   )
 
-  # M.66: drive the latest-wins compressed-decode coalescing state machine
-  # (pending_ collapse, wanted_ staleness, failed_id_ memo) over the real
-  # QtConcurrent + QFutureWatcher path. Encodes valid fixtures with the Cloudini
-  # encoder (PRIVATE in pj_scene3d_core), so it links cloudini explicitly like
+  # Encodes valid fixtures with the Cloudini encoder (PRIVATE in pj_scene3d_core), so it links cloudini explicitly like
   # pointcloud_codecs_test does.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     ../tests/pointcloud_layer_coalescing_test.cpp
   )
 
-  # Layer-level coverage for the '<base>_updates' patch window: UID-based store
-  # traversal vs an independent cell-by-cell replay, the retroactive-ingest
-  # (behind-live-edge) invalidate path, and the base-keyframe parse memo.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/occupancy_grid_layer_updates_test.cpp
   )
 
-  # VoxelGridLayer behaviour: sample-UID memo (re-scrub does no re-parse — the
-  # zero-per-voxel-CPU contract), new-sample re-decode, streaming attach + self-heal,
-  # per-use parser rebind, XML round-trip, worldBounds. Mock VoxelGrid parser.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/voxel_grid_layer_test.cpp
   )
 
-  # PosesInFrameLayer: tracker-time decode -> triad expansion, scrub coalescing,
-  # size/opacity re-expansion, empty/orphan edges, the per-use parseLocked rebind
-  # guard, and the copy/paste/apply-to-family param round-trip (serializeLayerParams).
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/poses_in_frame_layer_test.cpp
   )
 
-  # The per-view budget latch of every budgeted layer, driven by tracker moves
-  # and prepareForRender() (QRhi): a rejected sample never blocks a later one
-  # that fits.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/layer_budget_latch_test.cpp
   )
 
-  # Camera "follow a frame": the active camera's pivot tracks a followed frame's
-  # origin each tracker tick (Position-only), no-jump on enable, gate-safe render
-  # key, and per-dock layout persistence. Drives a bare SceneViewWidget against a
-  # hand-built TransformBuffer + the dock's public surface; needs a QApplication.
+  # Needs a QApplication.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/scene3d_follow_test.cpp
   )
 
-  # TF R6 wiring of a bare SceneViewWidget, admitted without a display
-  # (SceneViewTestAccess::admitFrame()): a stamped layer is placed at its own stamp
-  # with its placement hold, the TF triads at the cursor in the entry clock.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/scene_view_placement_test.cpp
   )
 
-  # Scene3DDockWidget: persistence, TF binding, fixed frame, and the layers'
-  # XML/config surfaces. The view needs no GPU until it is shown.
+  # The view needs no GPU until it is shown.
 
-  # Regression: a TF-only 3D dock (FrameTransforms consumed as config, zero
-  # layers) must survive revalidateObjects (H.4), and the TF/dataset binding must
-  # reset+rebind when the bound dataset's topics are removed (M.17). Needs the
-  # PJ_SCENE3D_TEST_HOOKS accessors and a QApplication (the dock is a QWidget).
+  # Needs the PJ_SCENE3D_TEST_HOOKS accessors and a QApplication (the dock is a QWidget).
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/scene3d_dock_streaming_test.cpp
   )
 
-  # Layers on derived (on-demand) topics: the row warning and lag, the refresh on
-  # publication, the inputs' clock range, snapshots and findings. Runs the
-  # on-demand engine with pj_runtime's fake script run.
+  # Runs the on-demand engine with pj_runtime's fake script run.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/scene3d_dock_derived_topics_test.cpp
   )
 
-  # Regression: layout persistence round-trips FrameTransforms config topics
-  # (M.18), re-resolves dataset identity by stable source name across sessions
-  # (M.55), and forces the lazily-created view so a saved explicit fixed frame
-  # survives a zero-layer restore (M.19). Needs the PJ_SCENE3D_TEST_HOOKS
-  # accessors and a QApplication (the dock is a QWidget).
+  # Needs the PJ_SCENE3D_TEST_HOOKS accessors and a QApplication (the dock is a QWidget).
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/scene3d_dock_persistence_test.cpp
   )
 
-  # The camera's scene bounds the dock pushes to the view: every layer's
-  # worldBounds(), hidden ones included, poses none. No GPU (the view is never shown).
+  # No GPU (the view is never shown).
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/scene3d_dock_camera_bounds_test.cpp
   )
 
-  # feat: a newly-created 3D dock defaults its fixed frame to the last one the user
-  # picked by hand for the same dataset's TransformBuffer (in-session + cross-restart
-  # via TransformService). Drives the dock headless through a mock FrameTransforms
-  # parser; needs a QApplication (the dock is a QWidget).
+  # Drives the dock headless through a mock FrameTransforms parser; needs a QApplication.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/scene3d_dock_fixed_frame_test.cpp
   )
 
-  # Settings-panel row pitch: every layer's createConfigWidget() must use the
-  # same vertical spacing (Space::Snug) as the built-in Grid / Transforms grids
-  # in Scene3DConfigPanel, so the panel doesn't visibly loosen when a different
-  # topic type is selected. Builds real config widgets, so it needs a QApplication;
-  # links pj_resources so PJ::theme::space() resolves real QSS values
-  # instead of the -1/style-default fallback that would mask the Snug/Comfortable gap.
+  # Builds real config widgets, so it needs a QApplication; links pj_resources so PJ::theme::space() resolves real QSS
+  # values (the -1 fallback would mask the Snug/Comfortable gap).
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/layer_config_widget_row_spacing_test.cpp
   )
@@ -489,53 +398,31 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     tests/scene3d_layer_xml_validation_test.cpp
   )
 
-  # Mouse gestures on a bare SceneViewWidget: the drag mapping, and the self-heal
-  # when a right-click context menu's nested QMenu::exec() loop swallows the
-  # mouseRelease (see CLAUDE.md).
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/scene_view_widget_mouse_gesture_test.cpp
   )
 
-  # CPU-rasterized HUD panel (perf HUD + TF hover label): correct sizing,
-  # DPR-independent logical layout, actual glyph pixels, multi-line growth, and
-  # the empty->null contract. Needs a QApplication for the font system; no GPU.
+  # Needs a QApplication for the font system; no GPU.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/hud_overlay_test.cpp
   )
 
-  # Regression: a file reload re-registers each surviving topic's parser slot;
-  # layers must re-resolve the parser through SessionManager per use instead of
-  # caching the raw pointer from attach() (use-after-free on the next tick).
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     ../tests/occupancy_grid_layer_rebind_test.cpp
   )
 
-  # GridMapLayer behaviour: parser AND canonical-codec routes, field auto-pick vs
-  # requested-with-fallback, staged upload only on sample/selector change, NaN
-  # excluded from the auto range, renderKey without a payload resolve, source-frame
-  # and fixed-frame bounds, XML round-trip, dataset replace / detach reset.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/grid_map_layer_test.cpp
   )
 
-  # MeshMapLayer behaviour on the canonical-codec route: the `<topic>_updates`
-  # pairing, auto colour pick, staging only on change, updates applied forward and
-  # rebuilt going back, a late older-stamped update, a foreign geometry, colour
-  # modes and a missing request, XML round-trip.
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/mesh_map_layer_test.cpp
   )
 
-  # Headless TrailLayer unit tests (renderKey coalescing, XML style-only load,
-  # sync rebuild + live append against a hand-fed TransformBuffer, the renderer's
-  # fixed-frame adoption and async rebuild).
   list(APPEND PJ_SCENE3D_WIDGET_TESTS
     tests/trail_layer_test.cpp
   )
 
-  # The model pass's draw policy, GPU-free: texture colour space and cache
-  # key, mesh and placed bounds, visual/collision gating and opacity, blend
-  # routing, per-view shading.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/model_rhi_policy_test.cpp
   )
@@ -547,8 +434,6 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
     DEFINES PJ_SCENE3D_TEST_HOOKS
   )
   target_include_directories(pj_scene3d_widget_tests PRIVATE ${CMAKE_SOURCE_DIR}/pj_runtime/tests)
-  # The SceneEntities expansion (MarkerGeometry): unexpanded stream
-  # batches, per-segment/per-triangle validation and batch colours. Pure; no GPU.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/marker_geometry_test.cpp
   )

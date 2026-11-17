@@ -1,13 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Qt-free coverage of the MeshMap CPU path: decoding positions, indices and the
-// single-component channels (integer "no data" folded into NaN); applying
-// MeshMapUpdates (geometry id, dense and sparse patches, new channels, records
-// past the end, vertex-colour updates); the colour sources and the default pick
-// (categorical channels and colour components aside); the de-indexed upload in
-// each colour mode, with a face that has "no data" at one corner drawn as no
-// data; the categorical palette; link segments and the bounds.
+// Qt-free coverage of the MeshMap CPU path: decoding positions, indices and the single-component channels (integer
+// "no data" folded into NaN); applying MeshMapUpdates (geometry id, dense and sparse patches, new channels, records
+// past the end, vertex-colour updates); the colour sources and the default pick (categorical channels and colour
+// components aside); the de-indexed upload in each colour mode, with a face that has "no data" at one corner drawn as
+// no data; the categorical palette; link segments and the bounds.
 
 #include "pj_scene3d_core/mesh_map_view.h"
 
@@ -37,7 +35,6 @@ using Target = PJ::sdk::MeshChannel::Target;
 
 constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
-// Byte storage outliving the spans the fixture hands out.
 struct Bytes {
   std::vector<std::shared_ptr<std::vector<uint8_t>>> blobs;
 
@@ -209,19 +206,16 @@ TEST(MeshMapViewTest, AppliesPatches) {
   EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 1.5);
   EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[1], 9.0);
 
-  // Dense: replaces the channel; a dense patch of the wrong size is skipped.
   result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "cost", {5.0F, 6.0F}));
   EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 5.0);
   result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "cost", {7.0F}));
   EXPECT_EQ(result.skipped_patches, 1u);
   EXPECT_DOUBLE_EQ(state.find(Target::kFace, "cost")->values[0], 5.0);
 
-  // A new channel: "no data" where the patch is silent.
   result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kFace, "occupancy", {0.25F}, {0}));
   ASSERT_NE(state.find(Target::kFace, "occupancy"), nullptr);
   EXPECT_TRUE(std::isnan(state.find(Target::kFace, "occupancy")->values[1]));
 
-  // A vertex-colour update shows in the vertex-colour source.
   result = applyMeshMapUpdate(state, makeUpdate(bytes, Target::kVertex, "red", {99.0F}, {3}));
   MeshMapUpload upload;
   fillMeshMapGeometry(state, upload);
@@ -307,11 +301,9 @@ TEST(MeshMapViewTest, RefreshAsksForAWholeFillWhenASpanIsNotEnough) {
   fillMeshMapColors(state, "vertex:height", upload);
   (void)applyMeshMapUpdate(state, makeUpdate(bytes, Target::kVertex, "height", {5.0F}, {0}));
   EXPECT_FALSE(refreshMeshMapColors(state, "vertex:height", upload).has_value());
-  // Another channel's patch leaves this source alone.
   fillMeshMapColors(state, "face:cost", upload);
   EXPECT_EQ(refreshMeshMapColors(state, "face:cost", upload), ElementRange{});
 
-  // The vertex colour, when a component was written.
   clearMeshMapDirty(state);
   fillMeshMapColors(state, kMeshMapSourceVertexColor, upload);
   EXPECT_EQ(refreshMeshMapColors(state, kMeshMapSourceVertexColor, upload), ElementRange{});
@@ -472,7 +464,6 @@ TEST(MeshMapViewTest, OnlyUint8ColorChannelsAreTheVertexColor) {
   EXPECT_EQ(std::count(sources.begin(), sources.end(), std::string(kMeshMapSourceVertexColor)), 0);
   EXPECT_EQ(defaultMeshMapColorSource(state), "vertex:red");
 
-  // The uint8 fixture is the vertex colour.
   EXPECT_EQ(defaultMeshMapColorSource(decodeMeshMap(Fixture{}.mesh)), "face:cost");
   const auto uint8_sources = meshMapColorSources(decodeMeshMap(Fixture{}.mesh));
   EXPECT_EQ(std::count(uint8_sources.begin(), uint8_sources.end(), std::string(kMeshMapSourceVertexColor)), 1);

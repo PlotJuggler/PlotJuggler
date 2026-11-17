@@ -61,9 +61,8 @@ void sizeTitleBarButton(QAbstractButton* button, const ChromeMetrics& metrics) {
 Dialog::Dialog(QWidget* parent) : QDialog(parent), ui_(new Ui::Dialog) {
   ui_->setupUi(this);
 
-  // Frameless + no system shadow so the WM-drawn chrome doesn't overrule
-  // the app's title-bar style. WA_StyledBackground lets the QSS rule on
-  // QDialog (or the dialogTitleBar) actually paint.
+  // Frameless with no system shadow, so the WM-drawn chrome does not overrule the app's title-bar style.
+  // WA_StyledBackground lets the QSS rule on QDialog (or the dialogTitleBar) paint.
   setWindowFlag(Qt::FramelessWindowHint, true);
   setWindowFlag(Qt::NoDropShadowWindowHint, true);
   setAttribute(Qt::WA_StyledBackground, true);
@@ -74,9 +73,8 @@ Dialog::Dialog(QWidget* parent) : QDialog(parent), ui_(new Ui::Dialog) {
   setChromeMetrics(ChromeMetrics{});
   connect(ui_->buttonClose, &QToolButton::clicked, this, &QDialog::reject);
 
-  // Application-wide event filter so we can swap the cursor and start
-  // a system resize from any widget inside the dialog's edge band.
-  // Same pattern MainWindow uses; gated to widgets whose window is us.
+  // An application-wide event filter swaps the cursor and starts a system resize from any widget inside the dialog's
+  // edge band (as MainWindow); gated to widgets whose window is this dialog.
   qApp->installEventFilter(this);
 }
 
@@ -111,8 +109,8 @@ void Dialog::addTitleBarAction(QAbstractButton* button, TitleBarSlot slot) {
   button->setParent(ui_->dialogTitleBar);
   if (slot == TitleBarSlot::Leading) {
     if (leading_actions_ == 0) {
-      // [leading…][stretch][title][spacer][trailing…][✕]: the title sits
-      // between two expanding gaps, so it reads centred between the groups.
+      // [leading...][stretch][title][spacer][trailing...][close]: the title sits between two expanding gaps, so it
+      // reads centred between the groups.
       const int label_at = ui_->titleBarLayout->indexOf(ui_->dialogTitleLabel);
       ui_->titleBarLayout->insertStretch(label_at + 1, 1);  // the .ui's own spacer after the title is fixed-size
       ui_->titleBarLayout->insertStretch(label_at, 1);
@@ -133,10 +131,9 @@ void Dialog::setSideWidget(QWidget* widget, const QString& settings_key) {
     side_widget_->setParent(nullptr);  // hand the old widget back intact, not deleted
   }
   if (widget == nullptr) {
-    // Dismantle the splitter and hand dialogBody back to rootLayout directly
-    // — the exact layout a dialog that never called setSideWidget has, so a
-    // setSideWidget(w) / setSideWidget(nullptr) round trip (the toolbox
-    // tab<->floating-window migration) leaves no trace behind.
+    // Dismantles the splitter and hands dialogBody back to rootLayout directly: the layout of a dialog that never
+    // called setSideWidget, so a setSideWidget(w) and setSideWidget(nullptr) round trip (the toolbox tab and
+    // floating-window migration) leaves no trace.
     if (!side_splitter_.isNull()) {
       ui_->dialogBody->setParent(nullptr);
       ui_->rootLayout->insertWidget(0, ui_->dialogBody);
@@ -147,8 +144,8 @@ void Dialog::setSideWidget(QWidget* widget, const QString& settings_key) {
     return;
   }
   if (side_splitter_.isNull()) {
-    // First side widget: lift dialogBody into a splitter instead of the
-    // fixed hbox slot it started in, so the column becomes draggable.
+    // First side widget: dialogBody is lifted into a splitter instead of the fixed hbox slot it started in, so the
+    // column becomes draggable.
     side_splitter_ = makeSideDrawerSplitter(widget, ui_->dialogBody, settings_key);
     ui_->rootLayout->insertWidget(0, side_splitter_);
   } else {
@@ -198,9 +195,8 @@ void Dialog::applyIcons() {
 }
 
 void Dialog::mousePressEvent(QMouseEvent* event) {
-  // Drag the dialog when the press lands on the title-bar background or
-  // the title label itself. Clicks on the close button or anywhere in
-  // the content area fall through to default handling.
+  // The dialog is dragged when the press lands on the title-bar background or the title label; clicks on the close
+  // button or in the content area fall through to default handling.
   if (event->button() == Qt::LeftButton && ui_->dialogTitleBar->geometry().contains(event->position().toPoint())) {
     QWidget* hit = ui_->dialogTitleBar->childAt(ui_->dialogTitleBar->mapFrom(this, event->position().toPoint()));
     if (hit == nullptr || hit == ui_->dialogTitleLabel) {
@@ -208,9 +204,8 @@ void Dialog::mousePressEvent(QMouseEvent* event) {
         const bool system_move_started = h->startSystemMove();
 #ifdef Q_OS_WASM
         if (!system_move_started) {
-          // Qt-wasm's QPA implements no system move; drive the drag manually
-          // from the app-wide event filter until release. Desktop platforms
-          // keep their native behavior even when startSystemMove declines.
+          // Qt-wasm's QPA implements no system move: the drag is driven manually from the app-wide event filter until
+          // release. Desktop platforms keep their native behavior even when startSystemMove declines.
           manual_move_active_ = true;
           manual_press_global_ = event->globalPosition().toPoint();
           manual_press_geometry_ = geometry();
@@ -235,9 +230,8 @@ void Dialog::applyManualDrag(const QPoint& global_pos) {
   const QSize min_size = minimumSizeHint().expandedTo(minimumSize());
   const QSize max_size = maximumSize();
   QRect target = manual_press_geometry_;
-  // Grow/shrink only the pressed edges, keeping the opposite edge anchored.
-  // Clamping happens edge-wise so an over-shrunk drag pins the moving edge
-  // at the size limit instead of pushing the anchored edge around.
+  // Only the pressed edges grow or shrink, the opposite edge stays anchored. Clamping is per edge, so an over-shrunk
+  // drag pins the moving edge at the size limit instead of pushing the anchored edge around.
   if (manual_resize_edges_ & Qt::LeftEdge) {
     target.setLeft(
         std::clamp(
@@ -323,9 +317,8 @@ bool Dialog::eventFilter(QObject* watched, QEvent* event) {
     const bool system_resize_started = handle->startSystemResize(edges);
 #ifdef Q_OS_WASM
     if (!system_resize_started) {
-      // Qt-wasm's QPA implements no system resize (and frameless windows get
-      // none of its DOM resize handles); drive the geometry manually until
-      // release. Desktop platforms keep their native behavior.
+      // Qt-wasm's QPA implements no system resize (and frameless windows get none of its DOM resize handles): the
+      // geometry is driven manually until release. Desktop platforms keep their native behavior.
       manual_resize_edges_ = edges;
       manual_press_global_ = global_pos;
       manual_press_geometry_ = geometry();

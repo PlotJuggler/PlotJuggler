@@ -33,8 +33,8 @@ struct ObjectMergeConflict {
   DatasetId source_dataset_id = 0;
   sdk::BuiltinObjectType anchor_type{};
   sdk::BuiltinObjectType source_type{};
-  // objectPayloadFormatFromMetadata of each side ("" = canonical objects). Same
-  // type but different formats is a conflict too: one parser decodes the merge.
+  // objectPayloadFormatFromMetadata of each side ("" = canonical objects); the same type with different formats still
+  // conflicts, since one parser decodes the merge.
   std::string anchor_format;
   std::string source_format;
   // Same-named marker topics whose scope, target or owner differ: merging would keep
@@ -42,119 +42,82 @@ struct ObjectMergeConflict {
   bool marker_description_differs = false;
 };
 
-// Central runtime object for PlotJuggler 4. Owns long-lived application
-// services; pj_app instantiates one of these at startup and wires the
+// Central runtime object: owns the long-lived application services. pj_app instantiates one at startup and wires the
 // shell's widgets against the services it exposes.
 class AppSession : public QObject {
   Q_OBJECT
  public:
-  // Creates a session using the default extension directory.
   explicit AppSession(QObject* parent = nullptr);
 
-  // Creates a session using an explicit extension directory.
   explicit AppSession(QString extensions_dir, QObject* parent = nullptr);
 
-  // Creates a session with an explicit extension directory and diagnostics.
   AppSession(QString extensions_dir, DiagnosticSink sink, QObject* parent = nullptr);
 
-  // Creates a session with application-composed statically linked plugins.
-  // The vtable/dialog pointers inside the set must have static storage
-  // duration — the catalog retains them for its lifetime.
+  // Creates a session with application-composed statically linked plugins. The vtable/dialog pointers in the set must
+  // have static storage duration: the catalog retains them.
   AppSession(QString extensions_dir, DiagnosticSink sink, StaticPluginSet static_plugins, QObject* parent = nullptr);
 
-  // Releases all long-lived application services.
   ~AppSession() override;
 
-  // AppSession owns stateful services and cannot be copied.
   AppSession(const AppSession&) = delete;
 
-  // AppSession owns stateful services and cannot be assigned.
   AppSession& operator=(const AppSession&) = delete;
 
-  // Returns the session manager owned by this session.
   SessionManager& sessionManager() const {
     return *session_manager_;
   }
 
-  // Returns the playback engine owned by this session.
   PlaybackEngine& playbackEngine() const {
     return *playback_engine_;
   }
 
-  // Returns the catalog model owned by this session.
   CatalogModel& catalogModel() const {
     return *catalog_model_;
   }
 
-  // Returns the extension catalog owned by this session.
   ExtensionCatalogService& extensionCatalog() const {
     return *extension_catalog_;
   }
 
-  // Returns the demand tracker owned by this session: computes, per streaming
-  // dataset, the topics currently displayed (union always-active infrastructure),
-  // so a demand-capable streaming source can subscribe to exactly that set and
-  // leave the rest paused. See TopicDemandTracker for the ref-counting contract.
+  // Per streaming dataset, computes the topics currently displayed (plus always-active infrastructure) so a
+  // demand-capable source subscribes to exactly that set. See TopicDemandTracker for the ref-counting contract.
   TopicDemandTracker& topicDemandTracker() const {
     return *topic_demand_tracker_;
   }
 
-  // Returns the session's curve-color registry. It is owned by SessionManager
-  // (so plot widgets can reach it through the SessionManager pointer they hold
-  // without it being threaded through their constructors); this is a convenience
-  // delegate. Remembers each curve's color so it stays consistent across plots
-  // (issue #68); cleared whenever the catalog empties.
+  // Delegates to SessionManager, which owns the registry so plot widgets reach it through the SessionManager they
+  // already hold. Cleared whenever the catalog empties.
   [[nodiscard]] CurveColorRegistry& curveColorRegistry() const;
 
-  // Recomputes the playback range from the time bounds of the CATALOG-VISIBLE
-  // topics + object topics (per-topic granularity, not per-dataset).
-  // Visibility matters: the engine keeps removed/trashed topics' data
-  // (append-only tombstones), and those must not stretch the timeline.
-  // Recomputed from scratch each call, so the range also shrinks (remove or
-  // trash data, reload a shorter file). Caller contract: rebuild the catalog
-  // first, as the load/ingest paths already do.
+  // Recomputes the playback range from the time bounds of the CATALOG-VISIBLE topics and object topics (per topic, not
+  // per dataset): the engine keeps removed/trashed topics' data as append-only tombstones, which must not stretch the
+  // timeline. Recomputed from scratch, so the range also shrinks. Rebuild the catalog first (the load/ingest paths do).
   //
-  // First seed after the session starts (or after the catalog emptied): also
-  // snaps currentTime to the new minimum so the user lands at the start of the
-  // data. Later seeds preserve the scrub position (setRange re-clamps it).
-  //
-  // Returns true if any visible topic with data was found and the engine was
-  // updated; false when there is none.
+  // The first seed after the session starts (or the catalog empties) also snaps currentTime to the new minimum; later
+  // seeds keep the scrub position (setRange re-clamps it). Returns false when no visible topic has data.
   bool seedPlaybackFromSession();
 
-  // FOCUS playback on specific datasets (a toolbox bulk import, e.g. a cloud
-  // fetch): set the range to THEIR time bounds and snap currentTime to their
-  // start — unlike seedPlaybackFromSession this intentionally REPLACES the
-  // range, so a 10s snippet presents a 10s timeline even when older datasets
-  // span hours. Scalar series bound the range; object topics are consulted
-  // only when the datasets carry no scalar data at all (a 3D-only import) —
-  // latched/static objects (tf_static, stale markers) must not stretch it.
-  //
-  // Returns true if any data was found and the engine was updated (callers
-  // fall back to seedPlaybackFromSession otherwise).
+  // FOCUSES playback on specific datasets (a toolbox bulk import, e.g. a cloud fetch): sets the range to THEIR bounds
+  // and snaps currentTime to their start. Unlike seedPlaybackFromSession it REPLACES the range, so a 10 s snippet shows
+  // a 10 s timeline even when older datasets span hours. Scalar series bound the range; object topics count only when
+  // the datasets have no scalar data (a 3D-only import), since latched/static objects (tf_static, stale markers) must
+  // not stretch it. Returns false when no data was found (callers fall back to seedPlaybackFromSession).
   bool focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets);
 
-  // RAW [min,max] absolute-ns time bounds across a dataset's catalog-visible
-  // topics (scalar + object), or nullopt if the dataset has no time-bearing
-  // data. Pre-offset (the caller applies displayOffset). Shared by the Timeline
-  // bars and the playback-range computation.
+  // RAW absolute-ns [min,max] across a dataset's catalog-visible topics (scalar + object), nullopt when none has
+  // time-bearing data. Pre-offset (the caller applies displayOffset). Shared by the Timeline bars and the range
+  // computation.
   [[nodiscard]] std::optional<PJ::Range<PJ::Timestamp>> datasetRawTimeRange(PJ::DatasetId dataset_id) const;
 
-  // Recompute the playback RANGE from the offset-adjusted union of visible
-  // topics; when data remains this touches only the range (never currentTime,
-  // never the first-seed snap), for the live Timeline drag path — call
-  // throttled. Returns the union's display-min (the value seedPlaybackFromSession
-  // snaps the first-load playhead to). Returns nullopt when no topic has
-  // time-bearing data; in that case it collapses the transport to the empty
-  // state (resetPlaybackToEmpty: paused, [0,0] range, cursor 0) ONLY if the
-  // catalog is genuinely empty — a transient mid-reload (topics still visible
-  // but their chunks momentarily detached) leaves the current range untouched.
+  // Recomputes the playback RANGE from the offset-adjusted union of visible topics, for the live Timeline drag path
+  // (call throttled); never touches currentTime or the first-seed snap. Returns the union's display-min (what
+  // seedPlaybackFromSession snaps the first-load playhead to). Returns nullopt when no topic has time-bearing data,
+  // and then collapses the transport to the empty state (resetPlaybackToEmpty) ONLY if the catalog is genuinely empty:
+  // a transient mid-reload (topics visible, chunks momentarily detached) leaves the range untouched.
   std::optional<PJ::DisplaySeconds> recomputeRange();
 
-  // Tell the session which dataset is the active live stream (0 = none). While set
-  // AND playback is playing, recomputeRange() scopes the playback range to this
-  // dataset's tip only (not the union of all visible data), so a far-away file
-  // dataset can't widen range_max past the live edge and jolt the tip-pinned cursor.
+  // Sets the active live-stream dataset (0 = none). While set AND playing, recomputeRange() scopes the range to this
+  // dataset's tip, so a far-away file dataset cannot widen range_max past the live edge and jolt the tip-pinned cursor.
   void setActiveStreamingDataset(PJ::DatasetId id) {
     active_streaming_dataset_id_ = id;
   }
@@ -162,22 +125,16 @@ class AppSession : public QObject {
     return active_streaming_dataset_id_;
   }
 
-  // DESTRUCTIVELY merge the selected datasets into one (the OR/union), honoring
-  // their Source-Timeline arrangement. The anchor is the dataset whose displayed
-  // start is earliest (leftmost = min(raw_min - displayOffset)); its raw clock is
-  // kept and the others are shifted into it by their relative display offset, so
-  // the merged dataset starts at the anchor's absolute time and the data lands
-  // where the user arranged it. The anchor's topics keep their ids (curve keys
-  // survive); the other selected datasets are consumed and removed from the
-  // catalog, and the anchor is relabelled "<name>_merged". Object topics are
-  // folded by shared name or reparented when source-only. Not undoable.
-  // Returns the surviving anchor's DatasetId (the merged dataset), or 0 on a
-  // no-op (fewer than two of the selected datasets carry time-bearing data).
+  // DESTRUCTIVELY merges the selected datasets into one, honoring their Source-Timeline arrangement. The anchor is the
+  // dataset whose displayed start is earliest (min(raw_min - displayOffset)); its raw clock is kept and the others are
+  // shifted into it by their relative display offset. The anchor's topics keep their ids (curve keys survive); the
+  // others are consumed and removed from the catalog; the anchor is relabelled "<name>_merged". Object topics fold by
+  // shared name, or are reparented when source-only. Not undoable. Returns the anchor's DatasetId, or 0 on a no-op
+  // (fewer than two selected datasets carry time-bearing data).
   PJ::DatasetId mergeDatasets(const std::vector<PJ::DatasetId>& selected);
 
-  // Returns shared-name conflicts (canonical object type, payload format, or marker
-  // description) for the merge plan that mergeDatasets() would use. Pure preflight;
-  // does not mutate stores/catalog.
+  // Shared-name conflicts (canonical object type, payload format, marker description) in the merge plan
+  // mergeDatasets() would use. Pure preflight; mutates nothing.
   [[nodiscard]] std::vector<ObjectMergeConflict> objectMergeConflicts(const std::vector<PJ::DatasetId>& selected) const;
 
  signals:
@@ -189,12 +146,10 @@ class AppSession : public QObject {
     std::vector<DatasetMergeSource> sources;
   };
 
-  // Per-visible-time-bearing-topic raw bounds, surfaced to a callback. Walks the
-  // catalog-visible items once, deduping multi-field scalar topics by topic_id
-  // and object topics by ObjectTopicId, skipping items with no time-bearing
-  // data. The single scan shared by seedPlaybackFromSession / recomputeRange /
-  // datasetRawTimeRange so the visibility + dedup rules live in one place. The
-  // callback receives the item's DatasetId and the topic's RAW [min,max] ns.
+  // Raw [min,max] ns per visible time-bearing topic, passed to `visit` with the item's DatasetId. Walks the
+  // catalog-visible items once, deduping multi-field scalar topics by topic_id and object topics by ObjectTopicId: the
+  // one scan shared by seedPlaybackFromSession / recomputeRange / datasetRawTimeRange, so visibility and dedup rules
+  // live in one place.
   void forEachVisibleRawRange(
       const std::function<void(PJ::DatasetId dataset_id, PJ::Timestamp raw_min, PJ::Timestamp raw_max)>& visit) const;
 
@@ -209,13 +164,12 @@ class AppSession : public QObject {
   // re-binding).
   void refreshOnDemandRawInputs();
 
-  // Collapse the transport to the no-data state: pause, clear live hold, reset
-  // the range to [0,0] and the cursor to 0, and re-arm the first-seed snap.
-  // Called whenever the last visible data disappears (recomputeRange's empty
-  // branch and the CatalogModel::cleared() hook). Idempotent.
+  // Collapses the transport to the no-data state: pauses, clears the live hold, resets the range to [0,0] and the
+  // cursor to 0, and re-arms the first-seed snap. Called when the last visible data disappears (recomputeRange's empty
+  // branch, CatalogModel::cleared()). Idempotent.
   void resetPlaybackToEmpty();
 
-  // The active live-streaming dataset (0 = none); see setActiveStreamingDataset.
+  // 0 = none; see setActiveStreamingDataset.
   PJ::DatasetId active_streaming_dataset_id_ = 0;
   // The datasets whose derived-input tier holds topics (demandOnDemandRawInputs).
   std::set<PJ::DatasetId> raw_input_datasets_;
@@ -229,10 +183,8 @@ class AppSession : public QObject {
   // session-owned plugin handles die before loaded plugin libraries unload.
   std::unique_ptr<ExtensionCatalogService> extension_catalog_;
 
-  // Flips to true on the first successful seedPlaybackFromSession(); re-armed
-  // (set false) by the CatalogModel::cleared() hook when the catalog empties.
-  // Used to distinguish "first load" (snap currentTime) from "additional load"
-  // (preserve currentTime).
+  // Set by the first successful seedPlaybackFromSession(), cleared by the CatalogModel::cleared() hook; tells a first
+  // load (snap currentTime) from an additional load (keep it).
   bool playback_seeded_ = false;
 };
 

@@ -1,8 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Native image and depth operations over decoded pixels, and one run's media state
-// (docs/archive/derived_objects/SCENARIOS.md, rows MED-01, MED-19, MED-20, MED-21, BUD-22, BUD-23).
+// Native image and depth operations over decoded pixels, and one run's media state.
 
 #include "native/image_ops.h"
 
@@ -64,7 +63,7 @@ std::array<float, 3> pointAt(const sdk::PointCloud& cloud, std::size_t index) {
   return xyz;
 }
 
-// ---- image operations (MED-20, BUD-22) ------------------------------------------
+// ---- image operations -----------------------------------------------------------
 
 TEST(ImageOps, CropRetainsPairingAndOriginalCoordinates) {
   const NativeLimits limits;
@@ -224,7 +223,7 @@ TEST(ImageOps, RepresentationNamesTheStorageNotTheDecode) {
   EXPECT_EQ(native::countAnnotationPoints(sdk::ImageAnnotations{}), 0u);
 }
 
-// ---- depth unprojection (MED-19) ------------------------------------------------
+// ---- depth unprojection ---------------------------------------------------------
 
 TEST(DepthOps, UnprojectsMillimetersIntoOrganizedMetricCloud) {
   sdk::CameraInfo camera;
@@ -290,7 +289,7 @@ TEST(DepthOps, DepthAsImageSharesTheBytes) {
   EXPECT_FALSE(image.is_bigendian);
 }
 
-// ---- one run's media state (MED-01, MED-21, BUD-23) -------------------------------
+// ---- one run's media state -------------------------------------------------------
 
 /// Decodes any image into one sample per pixel, the image's width; counts its calls.
 class CountingDecoder final : public IImageDecoder {

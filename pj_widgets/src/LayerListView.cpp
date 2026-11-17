@@ -57,9 +57,8 @@ class LayerRowWidget : public QWidget {
     name_->setFullText(full_name_);
     name_->setToolTip(full_name_);
     name_->setAttribute(Qt::WA_TransparentForMouseEvents);
-    // This widget is the sole authority on the label's visibility (see
-    // resizeEvent); disable ElidingLabel's own hide-when-narrow so the two
-    // don't fight over it in the sub-16px band.
+    // This widget is the sole authority on the label's visibility (resizeEvent): ElidingLabel's own hide-when-narrow is
+    // disabled, so the two do not fight over it in the sub-16px band.
     name_->setHideBelowWidth(0);
 
     eye_ = new QToolButton(this);
@@ -196,9 +195,8 @@ class LayerRowWidget : public QWidget {
     const int h = height();
     const int total_w = width();
     const bool rtl = isRightToLeft();
-    // Geometry is laid out for LTR (name | … | eye | trash at the right edge),
-    // then mirrored horizontally for RTL so the buttons land on the leading
-    // edge as a mirrored UI expects.
+    // Geometry is laid out for LTR (name, ..., eye, trash at the right edge), then mirrored for RTL, so the buttons
+    // land on the leading edge as a mirrored UI expects.
     const auto place = [&](QWidget* w, int x_ltr, int width_px) {
       w->setGeometry(rtl ? total_w - x_ltr - width_px : x_ltr, 0, width_px, h);
     };
@@ -240,9 +238,8 @@ class LayerRowWidget : public QWidget {
 
   void applyWarningStyle() {
     if (is_warning_) {
-      // The semantic warning STATUS hue, not an interaction fill: the Highlight
-      // family's pale nominal fill is a background tone with near-zero contrast
-      // as text on the light data backdrop.
+      // The semantic warning status hue, not an interaction fill: the Highlight family's pale nominal fill is a
+      // background tone with near-zero contrast as text on the light data backdrop.
       const QColor warning = theme::status(theme::Status::Warning, frameworkTheme());
       name_->setStyleSheet(QStringLiteral("color: %1;").arg(warning.name()));
     } else {
@@ -276,9 +273,8 @@ class LayerListWidget : public QListWidget {
   explicit LayerListWidget(QWidget* parent) : QListWidget(parent) {
     setSelectionMode(QAbstractItemView::SingleSelection);
 #ifdef PJ_TARGET_WASM
-    // QListWidget's platform drag object does not complete an InternalMove in
-    // Qt/WASM. Row widgets feed the same insertion semantics through the
-    // pointer-only fallback below; native keeps Qt's standard DnD path.
+    // QListWidget's platform drag object does not complete an InternalMove in Qt/WASM. Row widgets feed the same
+    // insertion semantics through the pointer-only fallback below; native keeps Qt's standard DnD path.
     setDragDropMode(QAbstractItemView::NoDragDrop);
 #else
     setDragDropMode(QAbstractItemView::InternalMove);
@@ -441,9 +437,8 @@ void LayerListView::setRows(const std::vector<LayerRow>& rows) {
 
 void LayerListView::addRow(const LayerRow& row) {
   if (items_.find(row.id) != items_.end()) {
-    // Ids must be unique. addRow does not replace an existing row (that would
-    // orphan the old item widget); use setRowName/setRowVisible to mutate, or
-    // setRows to rebuild.
+    // Ids must be unique. addRow does not replace an existing row (that would orphan the old item widget); use
+    // setRowName and setRowVisible to mutate, or setRows to rebuild.
     return;
   }
   auto* item = new QListWidgetItem(list_);
@@ -480,8 +475,8 @@ void LayerListView::clearRows() {
 }
 
 void LayerListView::updateMinimumHeight() {
-  // Fixed (min == max) so the layout can neither stretch the list to its
-  // natural QListWidget sizeHint nor collapse it below the 4-row floor.
+  // Fixed (min == max), so the layout can neither stretch the list to its natural QListWidget sizeHint nor collapse it
+  // below the 4-row floor.
   const int rows = std::clamp(list_->count(), 4, 6);
   list_->setFixedHeight(kDefaultRowHeight * rows + 4);
 }

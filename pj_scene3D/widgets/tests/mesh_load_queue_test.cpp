@@ -64,7 +64,6 @@ MeshLoadQueue::JobId enqueue(MeshLoadQueue& queue, MeshLoadQueue::Source source,
       });
 }
 
-// Loads textured_quad.dae from `server` as a URL mesh and returns its outcome.
 std::optional<MeshLoadQueue::Outcome> loadQuadFrom(const FileHttpServer& server) {
   QObject context;
   MeshLoadQueue queue(&context);

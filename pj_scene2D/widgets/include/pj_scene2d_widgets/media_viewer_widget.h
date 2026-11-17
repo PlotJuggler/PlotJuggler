@@ -50,29 +50,14 @@ struct MediaViewState {
   friend bool operator==(const MediaViewState&, const MediaViewState&) = default;
 };
 
-/// GPU-accelerated scene/video viewer using QRhiWidget.
+/// The QRhiWidget that draws a MediaSource's frames: render() polls takeFrame(). Pixel layers, overlays and the
+/// view transform are described in docs/ARCHITECTURE.md "Rendering".
 ///
-/// Attach a MediaSource with setMediaSource(), then call setTimestamp() on each
-/// application tick. The widget polls the source in render() via takeFrame().
-///
-/// Supports YUV420P + NV12 (colorspace-aware YUV→RGB: BT.601/709 + limited/full
-/// range, selected per-frame), packed RGB/RGBA DecodedFrame payloads, and
-/// MediaFrame.pixel_layers alpha-composited in order.
-/// SceneFrame overlays (points/lines/circles/text) are tessellated CPU-side and
-/// drawn above the image; see ARCHITECTURE.md §7.1.
-///
-/// Zoom (mouse wheel, cursor-anchored) and pan (mouse drag) via a view
-/// transform matrix in the vertex shader. See REQUIREMENTS.md §4.7.
-///
-/// GPU failure: when the image pipeline, its samplers or its base textures cannot
-/// be created on the current QRhi, the viewer only clears to its background,
-/// emits renderFailed() and renderingWarningChanged() once, and retries on every
-/// later initialize() (a new QRhi or a resized target). A window that gets no
-/// QRhi at all (Qt's own renderFailed()) sets the same warning. An overlay or a frame
-/// texture that fails is dropped, and without the blending pipeline the pixel
-/// layers draw opaque, each with a warning logged once per QRhi; the next
-/// initialize() rebuilds a dropped overlay or blending pipeline. No draw ever
-/// references a resource whose create() failed.
+/// GPU failure: when the image pipeline, its samplers or its base textures cannot be created, the viewer only clears
+/// to its background, emits renderFailed() and renderingWarningChanged() once, and retries on every later
+/// initialize(); a window that gets no QRhi at all sets the same warning. A failed overlay or frame texture is
+/// dropped, and without the blending pipeline the pixel layers draw opaque. No draw may reference a resource whose
+/// create() failed (D3D11 crashes in beginPass on one).
 class MediaViewerWidget : public QRhiWidget {
   Q_OBJECT
   Q_PROPERTY(QColor clearColor READ clearColor WRITE setClearColor)
@@ -84,27 +69,20 @@ class MediaViewerWidget : public QRhiWidget {
   explicit MediaViewerWidget(QWidget* parent = nullptr);
   ~MediaViewerWidget() override;
 
-  /// Attach a MediaSource. The widget does NOT take ownership.
-  /// Call setTimestamp() to drive the source; render() polls takeFrame().
+  /// Not owned.
   void setMediaSource(MediaSource* source);
 
-  /// Forward a timestamp to the attached MediaSource.
-  /// No-op if no source is attached.
   void setTimestamp(int64_t ts_ns);
 
   /// Reset zoom to 1x and pan to origin; keeps the rotation.
   void resetView();
 
-  /// Returns the spatial viewport represented in Scene2D workspace XML.
   [[nodiscard]] MediaViewState viewState() const noexcept;
 
-  /// Applies a validated spatial viewport. Rejects non-finite values, zoom
-  /// outside [1, 20], non-zero pan at 1x and a rotation outside kViewRotations
-  /// without changing the current view.
-  /// Programmatic restore does not emit viewInteractionCommitted().
+  /// Rejects, leaving the view as is, non-finite values, zoom outside [1, 20], non-zero pan at 1x and a rotation
+  /// outside kViewRotations. Does not emit viewInteractionCommitted().
   bool setViewState(const MediaViewState& state);
 
-  /// Shared validation used to preflight XML before a destructive dock restore.
   [[nodiscard]] static bool isViewStateValid(const MediaViewState& state) noexcept;
 
   void setClearColor(const QColor& color);
@@ -168,38 +146,27 @@ class MediaViewerWidget : public QRhiWidget {
   [[nodiscard]] bool createBaseResources(const QShader& vert, const QShader& frag);
   // Enters (non-empty) or leaves (empty) the failed state.
   void setRenderingWarning(const QString& warning);
-  // Get-or-create the glyph mask texture for a given (text, font_size). Renders
-  // via QPainter on first miss and uploads as an R8 QRhiTexture. The texture
-  // pointer is owned by text_cache_; never delete the returned pointer.
+  // The returned entry is owned by text_cache_.
   struct TextEntry;
   TextEntry* getOrCreateTextTexture(const std::string& text, double font_size, QRhiResourceUpdateBatch* updates);
-  // Delete every TextEntry's owned QRhi resources and clear the cache + per-frame
-  // draw items. Caller must hold any locks that protect text_cache_ /
-  // text_draw_items_; called by setMediaSource() (under frame_mutex_) and by
-  // releaseResources() (Qt has already stopped rendering).
+  // Caller holds frame_mutex_, or Qt has stopped rendering (releaseResources()).
   void clearTextCache();
   // Evicts the least recently used labels the last text rebuild did not use
   // until at most kMaxGlyphCacheEntries remain (or none unused is left).
   void trimTextCache();
 
-  // Selects the YUV→RGB shader path. Values must match the `pixelFormat`
-  // uniform contract in shaders/yuv_to_rgb.frag. kNV12 uploads natively as a
-  // two-plane texture (R8 Y + RG8 interleaved UV) on the hardware-decode path,
-  // with a CPU deinterleave-to-YUV420P fallback when the backend lacks RG8.
-  // kMono8 (single R8 texture, expanded in-shader) and kBGRA (RGBA8 texture,
-  // swizzled in-shader) upload natively, skipping the CPU repack RGB/Mono need.
+  // The shader path. Values are the `pixelFormat` uniform of shaders/yuv_to_rgb.frag: change both together. NV12
+  // falls back to a CPU deinterleave when the backend lacks RG8.
   enum class TexturePathFormat : int32_t {
     kYUV420P = 0,
     kNV12 = 1,
     kRGBA = 2,
     kMono8 = 3,
     kBGRA = 4,
-    kDepth = 5,  ///< R32F metric depth; colormapped via a LUT in u_tex (GPU)
+    kDepth = 5,  ///< R32F depth; the colormap LUT is in u_tex
   };
 
-  // Single definition of the PixelFormat -> shader-path projection: planar YUV
-  // stays planar; every packed RGB/BGR/mono layout is CPU-converted and lands
-  // on the RGBA path.
+  // RGB888, RGBA8888, BGR888 and Mono16 are converted on the CPU to the RGBA path; the others upload natively.
   [[nodiscard]] static TexturePathFormat texturePathFor(PixelFormat format) noexcept;
   [[nodiscard]] static bool isUploadablePixelFormat(PixelFormat format) noexcept;
 
@@ -207,31 +174,26 @@ class MediaViewerWidget : public QRhiWidget {
     QRhiTexture* tex_y = nullptr;
     QRhiTexture* tex_u = nullptr;
     QRhiTexture* tex_v = nullptr;
-    QRhiTexture* tex_remap = nullptr;  ///< RG32UI rectification LUT (float bits of the source UV); null -> placeholder.
+    QRhiTexture* tex_remap = nullptr;  ///< RG32UI LUT holding the float bits of the source UV; null: placeholder
     QRhiBuffer* uniform_buf = nullptr;
     QRhiShaderResourceBindings* srb = nullptr;
-    int width = 0;   ///< Uploaded texture width = SOURCE (raw) width on the GPU-rectify path.
-    int height = 0;  ///< Uploaded texture height.
+    int width = 0;  ///< Uploaded size: the raw source's on the GPU-rectify path.
+    int height = 0;
     TexturePathFormat format = TexturePathFormat::kRGBA;
     float opacity = 1.0f;
-    int32_t rectify = 0;  ///< 1 when the shader must remap through tex_remap (GPU rectification).
-    int remap_w = 0;      ///< Size tex_remap was created at (the map's out_width/out_height).
+    int32_t rectify = 0;
+    int remap_w = 0;
     int remap_h = 0;
-    const void* remap_map_key = nullptr;  ///< Identity of the UndistortMap tex_remap was uploaded from.
-    // Depth colormap params (kDepth path) -> written into the uniform buffer for the shader.
+    const void* remap_map_key = nullptr;  ///< The UndistortMap tex_remap was uploaded from.
     int32_t invert = 0;
     float near_m = 0.0f;
     float far_m = 1.0f;
     int32_t colormap = 0;
-    // YUV→RGB colorimetry (kYUV420P / kNV12 paths) -> selects the shader color
-    // matrix via buildYuvMatrix(); ignored by RGB/mono/depth.
     YuvColorSpace color_space = YuvColorSpace::kBt709;
     YuvColorRange color_range = YuvColorRange::kFull;
-    // Cached YUV→RGB matrix for the above (rebuilt only when a frame's colorimetry
-    // changes, in uploadDecodedFrameToTexture) so the per-frame uniform upload does
-    // not recompute it on the ~60 Hz render path. Default = legacy full-range BT.709.
+    // Rebuilt only when the colorimetry changes.
     std::array<float, 16> color_matrix = buildYuvMatrix(YuvColorSpace::kBt709, YuvColorRange::kFull);
-    // Display magnification filter. A change rebuilds the SRB to swap the sampler.
+    // A change rebuilds the SRB.
     MagFilter mag_filter = MagFilter::kLinear;
     // A (re)create failed during this upload: uploadLayerFrame() destroys the layer.
     bool dropped = false;
@@ -258,30 +220,19 @@ class MediaViewerWidget : public QRhiWidget {
   bool ensureTextureLayer(TextureLayerResources& layer);
   bool uploadDecodedFrameToTexture(
       const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
-  // Build/upload (once per map) the RG32UI rectification LUT for `map` into
-  // layer.tex_remap, rebinding the layer's SRB to it, and set layer.rectify=1.
-  // The GPU then undistorts at draw time. Returns false on allocation failure.
+  // Uploads the LUT once per map and rebinds the SRB.
   bool ensureRemapTexture(TextureLayerResources& layer, const UndistortMap& map, QRhiResourceUpdateBatch* updates);
-  // Upload `frame` into `layer` and apply GPU rectification when the frame carries
-  // a rectify_map and the backend supports it. Used by BOTH the base and the
-  // pixel-layer paths so they never diverge. Returns the LOGICAL (displayed) size
-  // — the map's output size when rectifying on GPU, else the uploaded texture size
-  // — for the caller to drive overlay/aspect/inspector coords; empty on failure.
-  // The layer's uploads join `updates` only if the layer survives them.
+  // For the base and the pixel layers alike. Returns the LOGICAL size (the map's output size when rectifying on the
+  // GPU) that overlays, aspect and inspector use; empty on failure. The uploads join `updates` only if the layer
+  // survives them: a dropped layer's queued uploads reference deleted textures.
   [[nodiscard]] QSize uploadLayerFrame(
       const DecodedFrame& frame, TextureLayerResources& layer, QRhiResourceUpdateBatch* updates);
-  // Tell the attached source whether GPU rectification is available (probed in
-  // initialize()). Re-applied when a source is attached. No lock taken here.
+  // Takes no lock: setMediaSource() calls it with frame_mutex_ held.
   void applyGpuRectifyCapability();
   void updateTextureLayerUniform(
       TextureLayerResources& layer, const QMatrix4x4& view, QRhiResourceUpdateBatch* updates) const;
-  // Pick the y-plane and chroma/LUT samplers for a layer's SRB: depth always
-  // samples its R32F y-plane NEAREST (never blend the no-data sentinel) with a
-  // LINEAR LUT; every other format uses the layer's MagFilter for both planes.
+  // Depth samples nearest (blending would mix in the no-data 0) with a linear LUT; the rest follow MagFilter.
   void layerSamplers(const TextureLayerResources& layer, QRhiSampler*& y_sampler, QRhiSampler*& uv_sampler) const;
-  // Destroy + recreate a layer's SRB against its current textures and samplers
-  // (binds the real remap LUT when present, else the placeholder). Used by every
-  // upload branch after a (re)create; keeps the bind list in exactly one place.
   [[nodiscard]] bool rebuildLayerSrb(TextureLayerResources& layer);
   void destroyOverlayPipeline(OverlayPipeline& overlay);
   bool createOverlayVbo(OverlayPipeline& overlay, size_t initial_capacity);
@@ -290,26 +241,21 @@ class MediaViewerWidget : public QRhiWidget {
   bool createOverlayGraphicsPipeline(
       OverlayPipeline& overlay, const QShader& vert, const QShader& frag, QRhiGraphicsPipeline::Topology topology,
       const QRhiVertexInputLayout& input_layout, const char* name, bool warn);
-  // Builds whichever optional parts are missing (the blending pipeline, the
-  // overlay uniform buffer and the points/outline/text overlays), so a part
-  // dropped at creation or in render() returns on the next initialize().
-  // Needs the base resources; `vert`/`frag` are the image shaders, loaded when
-  // the blending pipeline is missing.
+  // Builds whichever optional part is missing, so a dropped one returns on the next initialize(). Needs the base
+  // resources.
   void createOptionalResources(QRhi* r, const QShader& vert, const QShader& frag);
   void uploadOverlayVertexData(OverlayPipeline& overlay, QRhiResourceUpdateBatch* updates);
 
-  // Pipeline for YUV→RGB shader (video frames)
-  QRhi* rhi_cached_ = nullptr;  ///< The QRhi whose resources this viewer holds; null after releaseResources().
-  // A colour-only target over colorTexture() (autoRenderTarget is off: nothing
-  // here depth-tests, so QRhiWidget's depth-stencil would be 4 B/px for nothing).
-  // The descriptor outlives resizes, so the pipelines do too.
+  QRhi* rhi_cached_ = nullptr;  ///< The QRhi this viewer's resources belong to; null after releaseResources().
+  // autoRenderTarget is off: nothing depth-tests, and QRhiWidget's depth-stencil would cost 4 B/px. The descriptor
+  // outlives resizes, so the pipelines do too.
   PJ::RhiColorTarget color_target_;
-  int max_texture_size_ = 0;           ///< the backend's TextureSizeMax, read in initialize()
+  int max_texture_size_ = 0;
   int max_texture_size_for_test_ = 0;  ///< 0: none
   bool oversize_frame_logged_ = false;
   std::uint64_t frame_upload_count_ = 0;
   std::uint64_t label_rasterizations_ = 0;
-  bool optional_failures_logged_ = false;  ///< An optional part's failure was logged for this QRhi.
+  bool optional_failures_logged_ = false;  ///< per QRhi
 #ifdef PJ_TARGET_WASM
   // Qt/WASM switches the top-level from raster to RHI composition when this
   // late-created widget submits its first frame. Re-armed by releaseResources().
@@ -319,30 +265,21 @@ class MediaViewerWidget : public QRhiWidget {
   QRhiGraphicsPipeline* composite_pipeline_ = nullptr;
   RhiFailureLatch rendering_warning_;  ///< Failed while set; survives releaseResources().
   QRhiSampler* sampler_ = nullptr;
-  // NEAREST/ClampToEdge sampler used when a layer requests MagFilter::kNearest
-  // (crisp "pixelated" magnification, e.g. for pixel inspection). Distinct from
-  // remap_sampler_, which is nearest for a different reason (exact LUT lookup).
   QRhiSampler* mag_nearest_sampler_ = nullptr;
-  // NEAREST sampler for the rectification LUT: every output pixel must read its
-  // exact precomputed source coord (LINEAR would interpolate across the
-  // out-of-bounds sentinel and smear the border).
   QRhiSampler* remap_sampler_ = nullptr;
   // 1x1 RG32UI placeholder bound at SRB slot 4 for layers that don't rectify, so
   // every texture-layer pipeline shares one SRB layout.
   QRhiTexture* remap_placeholder_tex_ = nullptr;
-  // True once initialize() confirms the backend can sample an RG32UI LUT; gates
-  // whether the source is told to defer rectification to the GPU.
+  // Set once initialize() has built the base pipeline, which binds an RG32UI placeholder LUT.
   std::atomic_bool gpu_rectify_supported_{false};
   TextureLayerResources base_texture_;
 
-  // MediaSource (not owned)
   MediaSource* media_source_ = nullptr;
 
-  // Last CPU-side frame. `has_pending_` marks whether it still needs an
-  // upload; the data itself is intentionally retained after upload so QRhi
-  // resource recreation can restore the latest visible image.
+  // Guards media_source_, the pending frames and inspector_frame_; GUI thread only, it keeps a source swap and the
+  // frame staging atomic. The last frame is kept after upload, so a new QRhi can restore it.
   std::mutex frame_mutex_;
-  DecodedFrame pending_decoded_;  // YUV420P or RGB frame
+  DecodedFrame pending_decoded_;
   DecodedFrame inspector_frame_;
   bool has_pending_ = false;
   std::vector<PixelLayer> pending_pixel_layers_;
@@ -368,8 +305,7 @@ class MediaViewerWidget : public QRhiWidget {
   std::atomic_bool point_inspector_enabled_{false};
   std::atomic_bool point_inspector_active_{false};
 
-  // Uniform buffer layout (std140) — must match the Uniforms block in
-  // shaders/yuv_to_rgb.{vert,frag} field-for-field:
+  // std140; must match the Uniforms block of shaders/yuv_to_rgb.{vert,frag} field for field:
   // mat4  viewTransform (64 bytes, offset 0)
   // mat4  colorMatrix   (64 bytes, offset 64)
   // int   pixelFormat   (4 bytes, offset 128)
@@ -382,36 +318,25 @@ class MediaViewerWidget : public QRhiWidget {
   // padding             (4 bytes, → 160, a multiple of the mat4 base alignment)
   static constexpr int kUniformBufSize = 160;
 
-  // ----- Vector overlay pipelines (markers / annotations) -----
-  // Drawn on top of the image pass, all sharing this uniform buffer so they
-  // track the same pan/zoom/letterbox view transform.
+  // Shared by the three overlay pipelines, so they follow the image's view transform.
   QRhiBuffer* marker_uniform_buf_ = nullptr;
-  std::vector<SceneFrame> last_overlays_;  ///< persisted across renders
-  bool overlays_dirty_ = false;            ///< rebuild VBO on next render
-  // Effective view scale (on-screen px per image px) the stroke geometry was last
-  // expanded at. Stroke width scales with zoom but is floored at 1px on screen,
-  // and that floor depends on this scale — so a change here, not just an
-  // annotation change, triggers re-expansion. 0 = never expanded.
+  std::vector<SceneFrame> last_overlays_;
+  bool overlays_dirty_ = false;
+  // On-screen px per image px at the last stroke expansion; the 1 px floor depends on it, so a change re-expands.
+  // 0 = never expanded.
   double last_overlay_scale_ = 0.0;
 
-  // ----- Fills pipeline (Triangles): kPoints squares + LineLoop/circle fills.
-  // Shares marker_uniform_buf_ with its own SRB and VBO. -----
+  // kPoints squares and line-loop and circle fills.
   OverlayPipeline points_overlay_;
 
-  // ----- Outline pipeline (Triangles): all line/circle strokes. -----
-  // Each segment is expanded CPU-side (overlay_geometry::appendLineStrokes) to a
-  // quad whose width scales with zoom but is floored at 1px on screen so edges
-  // never vanish. Line primitives would give only 1 px and could be guard-band
-  // culled when zoomed far in.
+  // Every stroke, as triangles: line primitives are 1 px wide and GL can cull whole segments (guard band) when zoomed
+  // far in.
   OverlayPipeline thick_overlay_;
 
-  // ----- Text pipeline (Triangles, textured quads with QPainter masks) -----
-  // Fifth QRhi pipeline. One textured quad per TextAnnotation; texture is an
-  // R8 alpha mask painted by QPainter, the per-vertex color provides the tint.
-  // Cache key = (text, font_size_q): two labels with same text+size but different
-  // colors share the same texture (color applied at fragment time).
-  OverlayPipeline text_overlay_;                 // pipeline layout SRB uses the placeholder texture
-  QRhiTexture* text_placeholder_tex_ = nullptr;  // owned, lives until releaseResources
+  // One quad per TextAnnotation over an R8 glyph mask, tinted by the vertex colour, so labels differing only in colour
+  // share a texture.
+  OverlayPipeline text_overlay_;  // its layout SRB binds the placeholder texture
+  QRhiTexture* text_placeholder_tex_ = nullptr;
   QRhiSampler* text_sampler_ = nullptr;
 
   struct TextKey {
@@ -428,28 +353,23 @@ class MediaViewerWidget : public QRhiWidget {
   };
   struct TextEntry {
     QRhiTexture* tex = nullptr;
-    QRhiShaderResourceBindings* srb = nullptr;  // Owns its own binding to `tex`.
+    QRhiShaderResourceBindings* srb = nullptr;  // per entry, so a draw cannot mix textures
     int width = 0;
     int height = 0;
     std::uint64_t last_used = 0;  ///< text_rebuilds_ when a rebuild last drew it
   };
-  // Bounded: an annotation stream with ever-new strings (counters, timestamps)
-  // would otherwise grow it forever. After each text rebuild the least recently
-  // used labels are evicted down to kMaxGlyphCacheEntries; the labels that
-  // rebuild drew stay, so a frame with more labels holds just those.
+  // Bounded, or a stream of ever-new strings (counters, timestamps) grows it forever: after each text rebuild the
+  // least recently used labels that rebuild did not draw are evicted down to kMaxGlyphCacheEntries.
   std::unordered_map<TextKey, TextEntry, TextKeyHash> text_cache_;
   static constexpr std::size_t kMaxGlyphCacheEntries = 512;
   std::uint64_t text_rebuilds_ = 0;
-  // Per-text quad metadata captured at rebuild time, consumed at draw time.
   struct TextDrawItem {
     QRhiShaderResourceBindings* srb;  // pointer borrowed from text_cache_
     size_t vbo_offset_bytes;
   };
   std::vector<TextDrawItem> text_draw_items_;
 
-  // Uniform layout for marker pipeline (std140). frameSize is vec4 (only .xy
-  // used) instead of vec2 to dodge a std140 alignment quirk in the OpenGL
-  // backend.
+  // std140. frameSize is a vec4 (only .xy used): a vec2 hit an std140 alignment quirk of the OpenGL backend.
   struct alignas(16) MarkerUbo {
     float view[16];
     float frame_size[4];

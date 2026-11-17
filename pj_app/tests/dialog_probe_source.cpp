@@ -1,18 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Test-only DataSource plugin that advertises kCapabilityHasDialog and carries an
-// embedded dialog, used to exercise FileLoader's shutdown-while-suspended-at-the-
-// plugin-config-dialog path. When a load runs with the interactive dialog policy, the prologue
-// coroutine suspends on DataSourceDialogAwaiter with this dialog open; tearing the
-// loader down must reject the plugin (exactly one onRejected) BEFORE the embedded
-// dialog is destroyed — otherwise a late reject reads a freed plugin ctx (UAF).
-//
-// The reject/destroy ordering happens across the DSO boundary, so it is recorded
-// to an append-only probe file whose path comes from the PJ_DIALOG_PROBE_FILE
-// env var: onRejected() appends "rejected\n", the dialog destructor appends
-// "destroyed\n". The test asserts exactly one "rejected" and that it precedes the
-// "destroyed" line. Claims ".dlgprobe".
+// Test-only DataSource plugin that advertises kCapabilityHasDialog and embeds a dialog, to exercise FileLoader's
+// shutdown while suspended at the plugin-config dialog. With the interactive dialog policy the prologue coroutine
+// suspends on DataSourceDialogAwaiter with the dialog open; tearing the loader down must reject the plugin (exactly
+// one onRejected) BEFORE the embedded dialog is destroyed, or a late reject reads a freed plugin ctx.
+// The ordering happens across the DSO boundary, so it is appended to the file named by PJ_DIALOG_PROBE_FILE:
+// onRejected() writes "rejected", the dialog destructor "destroyed". The test asserts exactly one "rejected"
+// preceding "destroyed". Claims ".dlgprobe".
 
 #include <fstream>
 #include <pj_base/sdk/data_source_patterns.hpp>
@@ -30,9 +25,8 @@ constexpr const char* kDialogManifestJson = R"({
   "description": "Records onRejected/destroy ordering for the shutdown UAF test"
 })";
 
-// A minimal but valid dialog UI: the QDialogButtonBox MUST be named "buttonBox"
-// and declare standardButtons, or the host renders no OK/Cancel (see the
-// dialog_protocol CLAUDE.md trap).
+// A minimal but valid dialog UI: the QDialogButtonBox must be named "buttonBox" (the host wires accept/reject through
+// that name) and declare standardButtons, or the host renders no OK/Cancel.
 constexpr const char* kUiContent = R"(<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>DialogProbe</class>
@@ -47,8 +41,8 @@ constexpr const char* kUiContent = R"(<?xml version="1.0" encoding="UTF-8"?>
 </ui>
 )";
 
-// Append one line to the probe file named by PJ_DIALOG_PROBE_FILE, flushing so an
-// abrupt teardown never loses the record. A no-op when the env var is unset.
+// Appends one line to the probe file named by PJ_DIALOG_PROBE_FILE, flushed so an abrupt teardown never loses
+// it. No-op when the env var is unset.
 void recordProbe(const char* line) {
   const auto path = PJ::sdk::getEnv("PJ_DIALOG_PROBE_FILE");
   if (!path.has_value() || path->empty()) {
@@ -65,11 +59,9 @@ void recordProbe(const char* line) {
 
 class DialogProbeDialog : public PJ::DialogPluginTyped {
  public:
-  // Record "destroyed" ONLY for the instance that was actually rejected. The
-  // catalog/loader may create+destroy throwaway source instances (each embedding
-  // a dialog) while probing capabilities; those were never opened or rejected, so
-  // gating on rejected_ keeps the probe log to exactly the load's dialog and lets
-  // the test assert reject-before-destroy for that one instance unambiguously.
+  // Records "destroyed" only for the instance that was rejected: the catalog/loader may create and destroy
+  // throwaway source instances (each embedding a dialog) while probing capabilities, and those must not show up
+  // in the probe log.
   ~DialogProbeDialog() override {
     if (rejected_) {
       recordProbe("destroyed");
@@ -122,8 +114,8 @@ class DialogProbeSource : public PJ::FileSourceBase {
   }
 
   PJ::Status importData() override {
-    // Never reached in the shutdown test (the dialog is cancelled before accept),
-    // but kept loadable so a full accept path would still ingest one row.
+    // Not reached by the shutdown test (the dialog is cancelled before accept); loadable so an accept would
+    // still ingest one row.
     auto topic = writeHost().ensureTopic("mock/file_data");
     if (!topic) {
       return PJ::unexpected(topic.error());

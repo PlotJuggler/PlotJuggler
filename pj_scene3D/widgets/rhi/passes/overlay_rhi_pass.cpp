@@ -27,9 +27,8 @@ struct alignas(16) GizmoUniforms {
 };
 static_assert(sizeof(GizmoUniforms) == kGizmoUniformBytes);
 
-// The corner gizmo's arrow, in a [-1.3, 1.3] orthographic box: its own mesh
-// rather than the scene's thinner unit arrow scaled, so its silhouette and
-// shading keep the desktop look (24 segments, the head 0.30 long).
+// The corner gizmo's arrow, in a [-1.3, 1.3] orthographic box: its own mesh rather than the scene's thinner unit
+// arrow scaled, so its silhouette and shading keep the desktop look.
 const ArrowMeshData& gizmoArrowMesh() {
   static const ArrowMeshData mesh = buildArrowMesh(
       ArrowMeshParams{

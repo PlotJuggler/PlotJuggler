@@ -371,9 +371,8 @@ size_t ArtifactStore::collectUnreferenced(const std::vector<GenerationDigest>& l
   const QDir root(artifactsRoot());
   for (const QFileInfo& entry : root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
     const QString name = entry.fileName();
-    // A candidate is only a canonical object directory: parsing the name back to a
-    // digest and re-deriving the directory name rejects scratch dirs
-    // (kArtifactScratchPrefix) and any stray entry without a hand-rolled hex check.
+    // A candidate is only a canonical object directory: parsing the name back to a digest and re-deriving the directory
+    // name rejects scratch directories (kArtifactScratchPrefix) and stray entries without a hand-rolled hex check.
     const auto digest = GenerationDigest::parse(name.toStdString());
     if (!digest || QString::fromStdString(objectDirectoryNameFor(*digest)) != name) {
       continue;
@@ -561,10 +560,8 @@ Expected<StoredArtifact, StoreRejection> ArtifactStore::materializeArtifact(
     return unexpected(
         storeRejection(StoreRejectionCode::kIoFailure, "artifact materialization destination is not empty"));
   }
-  // No pre-copy re-verification: this overload is for an object the caller just
-  // committed under this session's exclusive lease, whose file list is already
-  // known good. copyResidentFiles still rehashes the copy, catching real I/O
-  // corruption on the way out.
+  // No pre-copy re-verification: the caller just committed this object under this session's lease and its file list is
+  // known good. copyResidentFiles still rehashes the copy, catching I/O corruption on the way out.
   QString materialization_root = destination;
   if (artifact.stripped_archive_root.has_value()) {
     materialization_root = QDir(destination)

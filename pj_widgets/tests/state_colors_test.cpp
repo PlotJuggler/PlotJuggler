@@ -18,9 +18,8 @@ TEST(StateColors, SameStringSameIndexEveryCall) {
   }
 }
 
-// Pin concrete assignments: FNV-1a is deterministic, so any change to the hash
-// or the palette size silently recolors every existing screenshot/session —
-// this makes that change loud instead. Values frozen from the FNV-1a definition.
+// Pins concrete assignments: FNV-1a is deterministic, so any change to the hash or the palette size silently recolors
+// every existing screenshot and session; this makes that change loud. Values frozen from the FNV-1a definition.
 TEST(StateColors, HashAssignmentsArePinned) {
   static_assert(PJ::kStatePalette.size() == 10);
   static_assert(PJ::stateColorIndex("") == 7);

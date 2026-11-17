@@ -26,8 +26,7 @@
 
 namespace PJ {
 
-// Reaches MainWindow's private data-source save/apply seam plus the Source
-// Timeline controller, so the round-trip runs against the real widget tree.
+// Reaches MainWindow's private data-source save/apply seam plus the Source Timeline controller.
 class MainWindowSourceLayoutTestPeer {
  public:
   [[nodiscard]] static AppSession& session(MainWindow& window) {
@@ -58,8 +57,8 @@ class MainWindowSourceLayoutTestPeer {
 
 namespace {
 
-// Creates a dataset on its own TimeDomain (required for a per-source offset) and
-// writes a two-sample topic, mirroring FileLoader's one-domain-per-source.
+// Creates a dataset on its own TimeDomain (required for a per-source offset, as FileLoader does) with a two-sample
+// topic.
 PJ::DatasetId addDataset(PJ::AppSession& app, std::string_view source_name, std::string_view topic) {
   const PJ::DatasetId dataset = pj_test::createDataset(app, source_name, /*own_time_domain=*/true);
   if (dataset == 0 || pj_test::addScalarTopic(app, dataset, topic, /*first_ts=*/1'000, /*second_ts=*/2'000) == 0) {
@@ -68,9 +67,8 @@ PJ::DatasetId addDataset(PJ::AppSession& app, std::string_view source_name, std:
   return dataset;
 }
 
-// One file fans out into two datasets; each carries its own alignment offset and
-// timeline slot. The v4 <dataset> children must serialize every track and the
-// apply path must restore each on the matching fan-out sibling — never swapping.
+// One file fans out into two datasets, each with its own alignment offset and timeline slot: the <dataset> children
+// serialize every track and the apply path restores each on the matching sibling.
 TEST(MainWindowSourceLayoutTest, OneFanoutFileRoundTripsEveryOffsetAndTrackOrder) {
   QTemporaryDir extensions_dir;
   QTemporaryDir project_dir;
@@ -134,11 +132,10 @@ TEST(MainWindowSourceLayoutTest, OneFanoutFileRoundTripsEveryOffsetAndTrackOrder
   EXPECT_EQ(PJ::MainWindowSourceLayoutTestPeer::trackOrder(window), (std::vector<PJ::DatasetId>{right, left}));
 }
 
-// A dataset carrying a SessionManager::SourceRecord (provider provenance) must
-// save a <materialize> child under its <fileInfo> — a SIBLING of <plugin>, with
-// provider/identity attributes and the descriptor JSON as VERBATIM CDATA bytes
-// (a cross-repo identity contract, so it must survive the real XML pipeline
-// byte-exact, "]]>" included). A recordless source must emit no such child.
+// A dataset carrying a SessionManager::SourceRecord (provider provenance) saves a <materialize> child under its
+// <fileInfo>, a sibling of <plugin>, with provider/identity attributes and the descriptor JSON as verbatim CDATA
+// bytes (an identity contract with the provider: byte-exact through the XML pipeline, "]]>" included). A recordless
+// source emits no such child.
 TEST(MainWindowSourceLayoutTest, PrimaryDatasetSourceRecordEmitsMaterializeChild) {
   QTemporaryDir extensions_dir;
   QTemporaryDir project_dir;
@@ -185,8 +182,7 @@ TEST(MainWindowSourceLayoutTest, PrimaryDatasetSourceRecordEmitsMaterializeChild
   ASSERT_FALSE(wrapper.isNull());
   root.appendChild(wrapper);
 
-  // Locate each file's <fileInfo>. The recorded source order is stable, but key
-  // off the filename attribute so the assertion doesn't depend on it.
+  // Keyed on the filename attribute so the assertions do not depend on the recorded source order.
   QDomElement cloud_info;
   QDomElement plain_info;
   for (QDomElement file_info = wrapper.firstChildElement(QStringLiteral("fileInfo")); !file_info.isNull();
@@ -201,16 +197,15 @@ TEST(MainWindowSourceLayoutTest, PrimaryDatasetSourceRecordEmitsMaterializeChild
   ASSERT_FALSE(cloud_info.isNull());
   ASSERT_FALSE(plain_info.isNull());
 
-  // Old-reader pin: <materialize> is emitted as a DIRECT child of <fileInfo>,
-  // a sibling of the <plugin> element (never nested inside it).
+  // <materialize> is a direct child of <fileInfo>, a sibling of <plugin> (older readers do not expect it nested).
   const QDomElement materialize = cloud_info.firstChildElement(QStringLiteral("materialize"));
   ASSERT_FALSE(materialize.isNull());
   EXPECT_EQ(materialize.parentNode(), cloud_info);
   const QDomElement cloud_plugin = cloud_info.firstChildElement(QStringLiteral("plugin"));
   ASSERT_FALSE(cloud_plugin.isNull());
   EXPECT_EQ(cloud_plugin.parentNode(), cloud_info);
-  // The plugin element writes BOTH identities: the display name (ID — what old
-  // readers keep consuming) and the stable manifest id, when one was recorded.
+  // The plugin element writes both identities: the display name (ID, what older readers consume) and the stable
+  // manifest id, when one was recorded.
   EXPECT_EQ(cloud_plugin.attribute(QStringLiteral("ID")), QStringLiteral("MCAP Loader"));
   EXPECT_EQ(cloud_plugin.attribute(QStringLiteral("manifest_id")), QStringLiteral("mcap-loader"));
   const QDomElement plain_plugin = plain_info.firstChildElement(QStringLiteral("plugin"));
@@ -223,8 +218,7 @@ TEST(MainWindowSourceLayoutTest, PrimaryDatasetSourceRecordEmitsMaterializeChild
   EXPECT_TRUE(plain_info.firstChildElement(QStringLiteral("materialize")).isNull())
       << "a recordless source must not grow a materialize child";
 
-  // Verbatim descriptor bytes through the REAL pipeline: serialize + reparse +
-  // extractDataSource must return byte-identical descriptor JSON.
+  // Serialize + reparse + extractDataSource must return byte-identical descriptor JSON.
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
   const QList<PJ::layout_xml::DataSourceRef> refs = PJ::layout_xml::extractDataSource(reparsed, layout_dir);
@@ -240,13 +234,10 @@ TEST(MainWindowSourceLayoutTest, PrimaryDatasetSourceRecordEmitsMaterializeChild
   EXPECT_EQ(cloud_ref->plugin_manifest_id, QStringLiteral("mcap-loader"));
 }
 
-// T9 (M3, acceptance row 9): re-save after a cache hit. A host-cache restore
-// leaves exactly this session state behind (LayoutImportBatch's loadCommitting
-// + the shell's source registration): dataset source path = the cache
-// artifact, a plugin-less loadedSources entry, and a SourceRecord whose
-// identity is the host digest. The save walk must re-emit <fileInfo> +
-// <materialize> with the descriptor bytes VERBATIM, so the next restore keys
-// the same cache slot.
+// Re-save after a cache hit. A host-cache restore leaves this session state behind (LayoutImportBatch's
+// loadCommitting + the shell's source registration): dataset source path = the cache artifact, a plugin-less
+// loadedSources entry, and a SourceRecord whose identity is the host digest. The save walk must re-emit <fileInfo> +
+// <materialize> with the descriptor bytes verbatim, so the next restore keys the same cache slot.
 TEST(MainWindowSourceLayoutTest, CacheHitSessionStateResavesMaterializeWithByteExactDescriptor) {
   QTemporaryDir extensions_dir;
   QTemporaryDir project_dir;
@@ -266,8 +257,7 @@ TEST(MainWindowSourceLayoutTest, CacheHitSessionStateResavesMaterializeWithByteE
   app.catalogModel().rebuildFromDatastore();
   session.setDatasetSourcePath(dataset, artifact_path);
   session.recordLoadedSource(artifact_path, QString{});  // the wireSourceCapture form: no plugin identity
-  // Odd spacing and unicode on purpose: the bytes are the cross-repo identity
-  // contract and must survive the save walk untouched.
+  // Odd spacing and unicode on purpose: the bytes must survive the save walk untouched.
   const QString descriptor = QStringLiteral("{\"kind\":\"k\",  \"request\":{\"path\":\"caf\\u00e9\"},\n\"v\":1}");
   session.attachSourceRecord(
       dataset, PJ::SourceRecord{
@@ -285,7 +275,6 @@ TEST(MainWindowSourceLayoutTest, CacheHitSessionStateResavesMaterializeWithByteE
   ASSERT_FALSE(wrapper.isNull()) << "a plugin-less cache-hit source must still be saved";
   root.appendChild(wrapper);
 
-  // Round-trip through the real XML pipeline: serialize, reparse, extract.
   QDomDocument reparsed;
   ASSERT_TRUE(reparsed.setContent(doc.toByteArray(2)));
   const QList<PJ::layout_xml::DataSourceRef> refs = PJ::layout_xml::extractDataSource(reparsed, layout_dir);

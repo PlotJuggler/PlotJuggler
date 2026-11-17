@@ -59,7 +59,6 @@ test('Scene3D TF/grid renders, responds to input, and replays a generic layout',
     { timeout: 30000 },
   ).toContain('type=kFrameTransforms');
 
-  // Use the production tree drag path to create the Scene3D dock.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await dragQtCanvas(
     page,
@@ -93,7 +92,6 @@ test('Scene3D TF/grid renders, responds to input, and replays a generic layout',
   expect(sought.docks[0].identity).toBe(initialDock.identity);
   expect(sought.docks[0].readback.frameHash).not.toBe(initialDock.readback.frameHash);
 
-  // Real browser input changes the public camera state.
   const center = qtPointToCss(screen, sought, {
     x: sought.docks[0].view.x + (sought.docks[0].view.width / 2),
     y: sought.docks[0].view.y + (sought.docks[0].view.height / 2),
@@ -127,8 +125,8 @@ test('Scene3D TF/grid renders, responds to input, and replays a generic layout',
   expect(xml).not.toContain('pj-upload://');
   expect(xml).not.toContain('/pj_uploads/');
 
-  // Diverge controls, then prove generic replay builds a new dock and uniquely
-  // rebinds /tf without a persisted browser dataset identity.
+  // Diverge the controls; a generic replay must build a new dock and rebind /tf uniquely, with no persisted
+  // browser dataset identity.
   await selectNextComboItem(page, screen, configured, configured.docks[0].controls.fixed);
   await selectNextComboItem(page, screen, configured, configured.docks[0].controls.camera);
   const layoutChooser = await openLayoutChooser(page);

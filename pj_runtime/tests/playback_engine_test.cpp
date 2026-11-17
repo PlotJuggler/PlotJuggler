@@ -42,35 +42,30 @@ TEST(PlaybackEngineTest, SetRangeAndCurrentTimeSkipsIntermediateClamp) {
 TEST(PlaybackEngineTest, ClampTickTimeHoldAtTipBeatsLoop) {
   bool reached_end = true;
 
-  // Past the end, hold + loop both set: parks at the tip (hold wins), not end.
   EXPECT_DOUBLE_EQ(
       PJ::PlaybackEngine::clampTickTime(15.0, 0.0, 10.0, /*hold_at_max=*/true, /*looping=*/true, &reached_end), 10.0);
   EXPECT_FALSE(reached_end);
 
-  // hold off, loop on: wraps back into the range.
   EXPECT_DOUBLE_EQ(
       PJ::PlaybackEngine::clampTickTime(12.0, 0.0, 10.0, /*hold_at_max=*/false, /*looping=*/true, &reached_end), 2.0);
   EXPECT_FALSE(reached_end);
 
-  // hold off, loop off: parks at the tip and flags end (caller pauses).
   reached_end = false;
   EXPECT_DOUBLE_EQ(
       PJ::PlaybackEngine::clampTickTime(12.0, 0.0, 10.0, /*hold_at_max=*/false, /*looping=*/false, &reached_end), 10.0);
   EXPECT_TRUE(reached_end);
 
-  // hold-at-tip PINS to range_max even when the tick would land BELOW it — the cursor
-  // must not free-run forward between ingests (that overshoot/snap-back was the jitter).
+  // hold-at-tip pins to range_max even when the tick would land below it: the cursor must not free-run forward between
+  // ingests.
   EXPECT_DOUBLE_EQ(
       PJ::PlaybackEngine::clampTickTime(5.0, 0.0, 10.0, /*hold_at_max=*/true, /*looping=*/false, nullptr), 10.0);
 
-  // Not holding: within range passes through unchanged; below range clamps up to min.
   EXPECT_DOUBLE_EQ(PJ::PlaybackEngine::clampTickTime(5.0, 0.0, 10.0, false, true, nullptr), 5.0);
   EXPECT_DOUBLE_EQ(PJ::PlaybackEngine::clampTickTime(-3.0, 0.0, 10.0, false, false, nullptr), 0.0);
 }
 
-// Bug #13: pressing Play with the cursor already at the end of a finite range must
-// rewind to the start and replay — not no-op (the button used to just flicker because
-// the first tick pauses again before moving).
+// Pressing Play with the cursor already at the end of a finite range rewinds to the start and replays instead of a
+// no-op (the first tick would pause again before moving).
 TEST(PlaybackEngineTest, PlayAtEndRewindsToStart) {
   PJ::PlaybackEngine engine;
   engine.setRange(PJ::displayRange(0.0, 10.0));
@@ -82,8 +77,7 @@ TEST(PlaybackEngineTest, PlayAtEndRewindsToStart) {
   EXPECT_DOUBLE_EQ(engine.currentTime().value, 0.0) << "play() at the end must rewind to range_min";
 }
 
-// Looping wraps on its own, so play() must NOT force a rewind (leave the cursor where
-// it is; clampTickTime handles the wrap). Guards against the rewind over-firing.
+// Looping wraps on its own, so play() must not force a rewind; clampTickTime handles the wrap.
 TEST(PlaybackEngineTest, PlayAtEndDoesNotRewindWhenLooping) {
   PJ::PlaybackEngine engine;
   engine.setRange(PJ::displayRange(0.0, 10.0));

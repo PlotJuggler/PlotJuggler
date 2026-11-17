@@ -18,7 +18,6 @@ class PythonSyntaxHighlighter : public QSyntaxHighlighter {
   explicit PythonSyntaxHighlighter(QTextDocument* parent) : QSyntaxHighlighter(parent) {
     const auto fw_theme = theme::themeFor(QGuiApplication::palette().window().color().lightness() >= 128);
 
-    // Keywords
     QTextCharFormat keyword_fmt;
     keyword_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Keyword, fw_theme));
     keyword_fmt.setFontWeight(QFont::Bold);
@@ -30,25 +29,20 @@ class PythonSyntaxHighlighter : public QSyntaxHighlighter {
       rules_.append({QRegularExpression("\\b" + QString(kw) + "\\b"), keyword_fmt});
     }
 
-    // Decorators
     rules_.append({QRegularExpression("@\\w+"), keyword_fmt});
 
-    // Numbers
     QTextCharFormat number_fmt;
     number_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Number, fw_theme));
     rules_.append({QRegularExpression("\\b[0-9]+(\\.[0-9]+)?([eE][+-]?[0-9]+)?\\b"), number_fmt});
 
-    // Strings (single and double quoted, single-line)
     string_fmt_.setForeground(theme::syntaxInk(theme::SyntaxRole::String, fw_theme));
     rules_.append({QRegularExpression("\"[^\"]*\""), string_fmt_});
     rules_.append({QRegularExpression("'[^']*'"), string_fmt_});
 
-    // Single-line comments
     comment_fmt_.setForeground(theme::syntaxInk(theme::SyntaxRole::Comment, fw_theme));
     comment_fmt_.setFontItalic(true);
     rules_.append({QRegularExpression("#[^\n]*"), comment_fmt_});
 
-    // Built-in functions
     QTextCharFormat builtin_fmt;
     builtin_fmt.setForeground(theme::syntaxInk(theme::SyntaxRole::Builtin, fw_theme));
     const char* builtins[] = {"print", "len",   "range", "type",      "int",        "float",   "str",    "list",
@@ -61,7 +55,6 @@ class PythonSyntaxHighlighter : public QSyntaxHighlighter {
 
  protected:
   void highlightBlock(const QString& text) override {
-    // Apply single-line rules first.
     for (const auto& rule : rules_) {
       auto it = rule.pattern.globalMatch(text);
       while (it.hasNext()) {
@@ -70,8 +63,7 @@ class PythonSyntaxHighlighter : public QSyntaxHighlighter {
       }
     }
 
-    // Multi-line strings: """ ... """ and ''' ... '''
-    // State 0 = normal, 1 = inside """, 2 = inside '''
+    // Triple-quoted strings span blocks. Block state: 0 normal, 1 inside """, 2 inside '''.
     handleTripleQuote(text, "\"\"\"", 1);
     handleTripleQuote(text, "'''", 2);
   }

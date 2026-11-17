@@ -1,10 +1,5 @@
-# ---------------------------------------------------------------------------
-# Standalone build support
-#
-# When this file is the root of the build (standalone), we set up the project
-# and find all dependencies here. When used as a subdirectory of plotjuggler_sdk,
-# the parent already provides CXX standard, warning flags, GTest, and testing.
-# ---------------------------------------------------------------------------
+# Standalone build: when this file is the build root it sets up the project and finds its dependencies; as a
+# subdirectory the parent provides the C++ standard, warning flags, GTest and testing.
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   cmake_minimum_required(VERSION 3.22)
@@ -28,9 +23,7 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Test Concurrent)
 find_package(LibArchive REQUIRED)
 
-# ---------------------------------------------------------------------------
-# pj_marketplace — package download, checksum verification and zip extraction
-# ---------------------------------------------------------------------------
+# Core library: registry, download, extension lifecycle, content-addressed store.
 
 add_library(pj_marketplace STATIC
   src/core/DownloadManager.cpp
@@ -81,9 +74,7 @@ target_include_directories(pj_marketplace PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# src/ carries headers that are implementation detail of this library — internal/
-# helpers a consumer has no business including. PRIVATE keeps them off the public
-# interface while the sources here can still reach them by their own path.
+# src/ holds implementation-detail headers: PRIVATE keeps them off the public interface.
 target_include_directories(pj_marketplace PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -132,9 +123,7 @@ target_link_libraries(pj_marketplace PUBLIC plotjuggler_sdk::plugin_host)
 
 target_compile_options(pj_marketplace PRIVATE ${PJ_WARNING_FLAGS})
 
-# ---------------------------------------------------------------------------
-# pj_marketplace — main executable
-# ---------------------------------------------------------------------------
+# Standalone harness executable.
 
 option(PJ_BUILD_MARKETPLACE_APP "Build the standalone marketplace executable" ${PJ_BUILD_TESTS})
 if(PJ_BUILD_MARKETPLACE_APP)
@@ -156,14 +145,9 @@ if(PJ_BUILD_MARKETPLACE_APP)
     target_compile_options(pj_marketplace_app PRIVATE ${PJ_WARNING_FLAGS})
 endif()
 
-# ---------------------------------------------------------------------------
-# pj-plugin-check — Qt-free admission helper
-#
-# One-shot child process invoked by PluginCheckRunner. Loading the plugin DSO
-# happens INSIDE this process, so a plugin that crashes on dlopen or during
-# manifest read never touches the caller's process image. Stays Qt-free so the
-# crash surface it exposes is the plugin's own and nothing else.
-# ---------------------------------------------------------------------------
+# pj-plugin-check: Qt-free one-shot admission helper run by PluginCheckRunner. The plugin DSO is loaded inside this
+# process, so a plugin that crashes on dlopen or during manifest read never reaches the caller's process image. It
+# stays Qt-free so the crash surface is the plugin's own.
 add_executable(pj-plugin-check
   helper/main.cpp
 )
@@ -175,21 +159,14 @@ target_link_libraries(pj-plugin-check PRIVATE
 target_include_directories(pj-plugin-check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(pj-plugin-check PRIVATE ${PJ_WARNING_FLAGS})
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
 if(PJ_BUILD_TESTS)
     # Standalone builds do not pass through PJ4's root test-helper include.
     if(NOT COMMAND pj_add_test_runner)
         include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/PjTests.cmake")
     endif()
 
-    # content_manifest_test — the pure identity functions. No Qt, no network: they
-    # take a directory and return a digest, so they are exercised directly instead of
-    # through the install pipeline.
-    # artifact_store_test — the content-addressed store primitives. Builds its ZIP
-    # fixtures with libarchive directly, so it links it in addition to the library.
+    # content_manifest_test: the pure identity functions, no Qt and no network. artifact_store_test builds its ZIP
+    # fixtures with libarchive directly, so it links it too.
     pj_add_test_runner(pj_marketplace_tests MAIN gui WARNINGS
         SOURCES
             tests/download_manager_test.cpp
@@ -201,10 +178,8 @@ if(PJ_BUILD_TESTS)
         LIBS pj_marketplace pj_marketplace_ui Qt6::Network Qt6::Test LibArchive::LibArchive
     )
 
-    # Helper exit-status checks retain their independent process-lifecycle target.
-# plugin_check_runner_test — exercises the real pj-plugin-check helper in a
-# child process. Its path is injected at compile time so the runner-under-test
-# uses the freshly-built binary, not a system-installed one.
+# plugin_check_runner_test stays its own executable: it checks the helper's process exit results. The path of the
+# freshly built helper is injected at compile time.
 add_executable(plugin_check_runner_test tests/plugin_check_runner_test.cpp)
 target_link_libraries(plugin_check_runner_test PRIVATE pj_marketplace GTest::gtest Qt6::Core)
 target_compile_options(plugin_check_runner_test PRIVATE ${PJ_WARNING_FLAGS})
@@ -223,8 +198,8 @@ set_target_properties(plugin_check_runner_test PROPERTIES
 )
 add_test(NAME plugin_check_runner_test COMMAND plugin_check_runner_test)
 
-# The extension-manager suite re-executes its binary in lock-holder mode before
-# GoogleTest starts; its custom entry point and fixture guard must stay together.
+# extension_manager_test re-executes its binary in lock-holder mode (the interprocess store lease test) before
+# GoogleTest starts: its custom entry point and fixture guard stay together.
 if(TARGET mock_data_source_plugin AND TARGET mock_file_source_plugin
    AND TARGET mock_data_source_v2_plugin AND TARGET missing_id_data_source_plugin
    AND TARGET mock_data_source_pinning_plugin AND TARGET mock_data_source_pinning_v2_plugin
@@ -242,8 +217,7 @@ if(TARGET mock_data_source_plugin AND TARGET mock_file_source_plugin
     PJ_MISSING_ID_PLUGIN_PATH="$<TARGET_FILE:missing_id_data_source_plugin>"
     PJ_MOCK_PINNING_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_pinning_plugin>"
     PJ_MOCK_PINNING_V2_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_pinning_v2_plugin>"
-    # Declares min_plotjuggler_version 5.0.0 — the only fixture with a host-version
-    # floor, so it is what the local-ZIP compatibility gate is tested against.
+    # Declares min_sdk_required 99.0.0: the fixture the local-ZIP compatibility gate is tested against.
     PJ_MOCK_INCOMPATIBLE_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_incompatible_plugin>"
     PJ_MOCK_COMPATIBLE_FLOOR_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_compatible_floor_plugin>"
     PJ_MOCK_MALFORMED_FLOOR_PLUGIN_PATH="$<TARGET_FILE:mock_data_source_malformed_floor_plugin>"
@@ -268,10 +242,8 @@ if(TARGET mock_data_source_plugin AND TARGET mock_file_source_plugin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
   )
   target_compile_options(extension_manager_test PRIVATE ${PJ_WARNING_FLAGS})
-  # The admission path exercised here starts pj-plugin-check, which the runner
-  # locates next to the running binary (QCoreApplication::applicationDirPath()).
-  # Place the freshly-built helper beside the test so installs are admitted
-  # instead of failing with execve: No such file or directory.
+  # Admission starts pj-plugin-check, which the runner locates next to the running binary: place the freshly built
+  # helper beside the test, or installs fail with execve ENOENT.
   add_dependencies(extension_manager_test pj-plugin-check)
   add_custom_command(TARGET extension_manager_test POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -279,16 +251,13 @@ if(TARGET mock_data_source_plugin AND TARGET mock_file_source_plugin
     COMMENT "Placing pj-plugin-check next to extension_manager_test")
   add_test(NAME extension_manager_test COMMAND extension_manager_test)
 else()
-  # There is no legitimate configuration where tests are wanted but these fixtures
-  # are absent, so silence here means a real problem — most likely that a top-level
-  # add_subdirectory reorder moved pj_marketplace ahead of the module defining one
-  # of them. Without this the whole suite drops out of ctest and everything still
-  # reports green, which is exactly how it went unnoticed once already.
+  # No configuration wants these tests without their fixtures, so silence would hide a real problem (e.g. a top-level
+  # add_subdirectory reorder that moved pj_marketplace ahead of the module defining them) while the suite dropped out
+  # of ctest and everything reported green.
   message(WARNING "extension_manager_test skipped: mock plugin fixtures are not configured yet")
 endif()
 
-# Integration test — requires network access, excluded from CTest by default.
-# Run manually: ./tests/extension_manager_integration_test
+# Network-dependent harness, not registered with CTest: run its binary from the module's build tests/ directory.
 add_executable(extension_manager_check_plugin_management
   tests/extension_manager_check_plugin_management.cpp
 )

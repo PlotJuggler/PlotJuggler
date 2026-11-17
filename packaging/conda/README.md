@@ -71,7 +71,7 @@ build against what RoboStack's ROS packages were built against:
 | Humble | installs (ffmpeg 9, Python 3.14 build) |
 
 The marketplace ROS 2 plugin is built against `/opt/ros` and does not load in
-a RoboStack environment yet. Neither do the marketplace Widget plugins (the Log
+a RoboStack environment. Neither do the marketplace Widget plugins (the Log
 widget among them): they are built against the official Qt kit in
 `versions.env`, and the host refuses a widget library of another Qt minor.
 

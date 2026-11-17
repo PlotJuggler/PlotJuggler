@@ -19,45 +19,31 @@ namespace PJ {
 
 class ServiceRegistryBuilder;
 
-/// Host-side bridge that exposes the unified `pj.data_processors.v1` SDK service to a
-/// plugin and delegates to `BatchEngine` (the object engine; this bridge serves only
-/// kind="markers" — kind="transform" is routed to the IncrementalEngine bridge, owned by
-/// the transform-editor work).
-/// Implements the C ABI vtable (trampolines recover `this` from ctx), namespaces
-/// every node id under the calling plugin (so list/remove/config only ever
-/// see/affect THAT plugin's nodes), and stamps each submitted recipe with the
-/// dataset the host says is active. `create_data_processor_v2` accepts WINDOW (the
-/// rule's inputs are clipped to it; config echoes the staged `coverage_ns`) and refuses
-/// INSTANT, typed outputs and a `dataset_id`, each naming the kind; the evaluation slots
-/// are absent (the router refuses a submit on this kind).
+/// Host-side bridge exposing the unified `pj.data_processors.v1` SDK service to a plugin and delegating to
+/// `BatchEngine` (the object engine); it serves only kind="markers" (kind="transform" goes to
+/// `DataProcessorsRuntimeHost`, behind `DataProcessorsKindRouter`). Implements the C ABI vtable (trampolines recover
+/// `this` from ctx), namespaces every node id under the calling plugin (so list/remove/config only ever see or affect
+/// THAT plugin's nodes), and stamps each submitted recipe with the dataset the host says is active.
+/// `create_data_processor_v2` accepts WINDOW (the rule's inputs are clipped to it; config echoes the staged
+/// `coverage_ns`) and refuses INSTANT, typed outputs and a `dataset_id`, each naming the kind; the evaluation slots are
+/// absent (the router refuses a submit on this kind).
 ///
-/// Lifetime: the bridge is independent of the nodes it created — destroying it
-/// tears down only this object; the nodes keep living in `BatchEngine` (the
-/// host owns the script + runtime), so a plugin DSO unload never kills a running
-/// node. It records the previews it created (`previews()`), which its owner
-/// (`DerivedRuntimeHosts`) ends with the plugin instance. `service` must outlive
-/// this host. Not movable: the vtable fat pointer stores `this`.
-///
-/// NOTE: the class/file name is kept as `MarkersRuntimeHost` to bound churn; it
-/// bridges the kind="markers" path of the unified data-processors service. A rename is
-/// a cosmetic follow-up.
+/// Lifetime: the bridge is independent of the nodes it created: destroying it tears down only this object, the nodes
+/// keep living in `BatchEngine` (the host owns the script + runtime), so a plugin DSO unload never kills a running
+/// node. It records the previews it created (`previews()`), which its owner (`DerivedRuntimeHosts`) ends with the
+/// plugin instance. `service` must outlive this host. Not movable: the vtable fat pointer stores `this`.
 class MarkersRuntimeHost {
  public:
-  /// `plugin_id` namespaces submitted ids. `active_dataset` supplies the dataset a
-  /// newly submitted generator targets, given its declared input and output series
-  /// keys — host policy (the wire carries no dataset field; a key MAY carry the
-  /// host's "dataset_source:topic/field" qualifier, which the callback consumes:
-  /// it picks the dataset and rewrites the key to its bare form in place; the
-  /// recipe keeps the declared spelling so the script still reads it by that
-  /// name). An error return fails the create with that message. A
-  /// {"scope":"all"} generator does not consult `active_dataset`: its keys are
-  /// literal in every dataset, so a key whose prefix names a loaded source (per
-  /// `source_name_of` over the service's dataset lister) is rejected as a
-  /// contradiction. `source_name_of` (dataset → raw source name) also lets the
-  /// config read-back qualify an input whose bare name became ambiguous, when
-  /// the qualified form resolves back to the bound dataset; without it inputs
-  /// echo as declared. Both `service` and whatever the callbacks read must
-  /// outlive this.
+  /// `plugin_id` namespaces submitted ids. `active_dataset` supplies the dataset a newly submitted generator targets,
+  /// given its declared input and output series keys: host policy (the wire carries no dataset field). A key MAY carry
+  /// the host's "dataset_source:topic/field" qualifier, which the callback consumes: it picks the dataset and rewrites
+  /// the key to its bare form in place, while the recipe keeps the declared spelling so the script still reads it by
+  /// that name. An error return fails the create with that message. A {"scope":"all"} generator does not consult
+  /// `active_dataset`: its keys are literal in every dataset, so a key whose prefix names a loaded source (per
+  /// `source_name_of` over the service's dataset lister) is rejected as a contradiction. `source_name_of` (dataset ->
+  /// raw source name) also lets the config read-back qualify an input whose bare name became ambiguous, when the
+  /// qualified form resolves back to the bound dataset; without it inputs echo as declared. Both `service` and whatever
+  /// the callbacks read must outlive this.
   MarkersRuntimeHost(
       BatchEngine& service, std::string plugin_id,
       std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>

@@ -21,8 +21,7 @@
 namespace PJ {
 
 namespace {
-// SceneDockWidget keys layers by ObjectTopicId; LayerListView keys rows by an
-// opaque qint64. The dock's topic id IS that opaque key.
+// LayerListView's opaque qint64 row key is the layer's ObjectTopicId.
 [[nodiscard]] ObjectTopicId toTopicId(qint64 id) {
   ObjectTopicId tid;
   tid.id = static_cast<uint32_t>(id);
@@ -43,9 +42,7 @@ namespace {
 }  // namespace
 
 Scene2DConfigPanel::Scene2DConfigPanel(QWidget* parent) : QWidget(parent) {
-  // Zero outer margins so the section header bands span edge-to-edge, like
-  // the plotting panel's Curve Width / Curve Style strips; each content block
-  // under a band re-adds its own inset.
+  // Zero outer margins so the section bands span edge to edge; each block under a band re-adds its own inset.
   auto* root = new QVBoxLayout(this);
   root->setContentsMargins(
       PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None), PJ::theme::space(theme::Space::None),

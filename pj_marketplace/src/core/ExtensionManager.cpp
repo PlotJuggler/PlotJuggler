@@ -45,8 +45,7 @@ static constexpr const char* kPendingUninstallMarker = ".pj_pending_uninstall";
 static constexpr const char* kPendingInstallIntent = ".pj_pending_install";
 static constexpr const char* kQuarantinePrefix = ".pj_quarantine_";
 static constexpr int kMaxDiagnostics = 50;
-// QSettings key holding the QStringList of disabled extension ids (installed but
-// not loaded). Read by both the marketplace and the runtime plugin catalog.
+// Persisted name: the runtime plugin catalog reads the same list through disabledExtensionIds().
 static constexpr const char* kDisabledExtensionsKey = "Marketplace/disabledExtensions";
 
 QString extRoot(const QString& extensions_dir, const QString& id) {
@@ -57,12 +56,8 @@ QString pendingRoot(const QString& pending_dir, const QString& id) {
   return QDir(pending_dir).absoluteFilePath(id);
 }
 
-// Identity of an extension tree: the hash of every file it holds, paths included.
-//
-// Empty when the tree cannot be characterised — it is missing, or it holds
-// something the walk refuses such as a symlink. Callers must therefore treat an
-// empty result as "not comparable" and never as a match, or two unreadable trees
-// would be taken for the same tree.
+// Content identity of an extension tree: the hash of every file, paths included. Empty when the tree cannot be
+// characterised (missing, or a symlink): "not comparable", never a match.
 std::string contentDigestOf(const QString& directory) {
   const auto files = inspectContentManifest(std::filesystem::path(directory.toStdU16String()));
   if (!files) {
@@ -71,16 +66,7 @@ std::string contentDigestOf(const QString& directory) {
   return aggregateContentManifestDigest(*files);
 }
 
-// Path of the single-writer lock guarding `extensions_dir`.
-//
-// A hidden SIBLING of the managed dir, never a file inside it: everything under
-// extensions_dir is treated as extension payload, scanned and swept. The name is
-// derived from the store's resolved directory so that two managers over DIFFERENT
-// stores (a --plugin-dir run, a test's temp dir) never contend while two names for
-// the SAME store always do: the lock identifies the store, not the application and
-// not the path spelling.
-// True when both paths sit on the same mounted filesystem, so a rename between
-// them is an atomic move rather than an EXDEV failure.
+// True when a rename between the two paths is atomic (same mounted filesystem, no EXDEV).
 bool sameFilesystem(const QString& first, const QString& second) {
   const QStorageInfo first_volume(first);
   const QStorageInfo second_volume(second);
@@ -118,17 +104,15 @@ QString invalidExtensionIdReason(const QString& id) {
   return {};
 }
 
-// What a journal record asks this host to do. Absent or unrecognised is NOT one
-// of these: a record that fails to name its operation is invalid, never assumed.
+// What a journal record asks of this host. A record that names none of these is invalid, never assumed.
 enum class RemovalOperation {
   kUninstall,  // the user removed the extension; the id keeps its disabled tombstone
   kDowngrade,  // a version revert; the user's enable/disable choice is untouched
   kCleanup,    // path-only: delete this directory, no id and no authority over one
 };
 
-// A removal this host owes the user. `record_path` is the file this was parsed
-// FROM: retiring anything else would let a record name a victim and delete that
-// victim's record instead of its own.
+// A removal this host owes the user. `record_path` is the file it was parsed from: the drain retires that file, never
+// one the record names.
 struct RemovalIntent {
   RemovalOperation operation = RemovalOperation::kCleanup;
   QString id;  // empty for kCleanup, which carries no id authority at all
@@ -136,40 +120,22 @@ struct RemovalIntent {
   QString record_path;
 };
 
-// Bumped when the record shape changes. A record without it, or from a shape this
-// build does not know, is rejected rather than guessed at.
+// Persisted record shape; a record with another schema is rejected, not guessed at.
 constexpr int kRemovalJournalSchema = 1;
 
-// Where removal intent is journalled: a SIBLING of the extensions dir, on the same
-// discipline as the ".install_stage" and ".seed_stage" siblings.
-//
-// The location is the whole point. The intent used to live INSIDE the directory
-// being deleted, so a recursive delete that removed the marker and then failed on
-// the still-loaded DSO destroyed its own retry record: the directory survived and
-// nothing remained to say it should go. A journal outside the payload cannot be
-// consumed by the deletion it describes. Being a sibling also keeps it clear of
-// the recursive plugin scan, so a record is never discoverable content.
-//
-// Derived from the CANONICAL store root, like the lease file and the staging area:
-// two aliases of a symlinked store must journal into one directory, or each would
-// keep its own record of the same pending removal and drain the other's blind.
-//
-// `store_root` is expected ALREADY canonical — ExtensionManager resolves it once at
-// construction. Re-resolving here would put a realpath-class syscall behind every
-// call, and hasPendingUninstall() routes through this for each catalog row on every
-// marketplace table rebuild.
+// Removal journal root: a SIBLING of the extensions dir, outside the recursive plugin scan and outside the payload, so
+// a delete that fails part-way cannot consume its own retry record. Derived from the CANONICAL store root like the
+// lease file, so two aliases of a symlinked store share one journal. `store_root` must already be canonical (resolved
+// once at construction): hasPendingUninstall() calls this per catalog row on every marketplace table rebuild.
 QString removalJournalRoot(const QString& store_root) {
   return store_root + u".state"_s;
 }
 
-// One record per extension id, named for that id. The stem is not decoration: the
-// drain requires it to match the id inside, so a record cannot be filed under one
-// name and speak for a different extension.
+// One record per extension id, named for it: the drain requires the file stem to equal the id inside.
 QString removalIntentPath(const QString& store_root, const QString& id) {
   return QDir(removalJournalRoot(store_root)).absoluteFilePath(id + u".json"_s);
 }
 
-// A path-only record owns no id, so it cannot be named for one.
 QString cleanupIntentPath(const QString& store_root) {
   return QDir(removalJournalRoot(store_root))
       .absoluteFilePath(u"cleanup-%1.json"_s.arg(QUuid::createUuid().toString(QUuid::Id128)));
@@ -187,18 +153,11 @@ QString removalOperationToken(RemovalOperation operation) {
   return {};
 }
 
-// Empty when `path` is something this host may recursively delete; otherwise the
-// reason it may not.
-//
-// A journal record is a deletion capability, so the target is bound to the managed
-// store rather than trusted: it must be a DIRECT child of the canonical store root.
-// That one rule covers the store root itself, any ancestor, an unrelated absolute
-// path, anything reached through "..", and the sibling state/staging/seed roots and
-// lease file (siblings are not children). Confinement is checked on the CANONICAL
-// target as well, so a symlink planted inside the store cannot point the delete out
-// of it. A record naming a path that no longer exists is not rejected here — there
-// is nothing to delete and therefore no capability to abuse — but it still has to
-// name a location inside the store.
+// Empty when `path` may be recursively deleted, else the reason it may not. A record is a deletion capability, so the
+// target must be a DIRECT child of the canonical store root (which excludes the root, its ancestors, ".." and the
+// sibling state/staging/seed roots and lease file) and, once it exists, must also resolve inside the store so a
+// planted symlink cannot carry the delete out. A path that does not exist yet passes the canonical check: there is
+// nothing to delete.
 QString unmanagedPayloadRejection(const QString& store_root, const QString& path) {
   if (path.isEmpty()) {
     return u"record names no path"_s;
@@ -206,8 +165,7 @@ QString unmanagedPayloadRejection(const QString& store_root, const QString& path
   if (QDir::isRelativePath(path)) {
     return u"record path is not absolute"_s;
   }
-  // Already canonical (resolved once at construction); only the per-record TARGET
-  // below still needs resolving, since that is what a record controls.
+  // `store_root` is already canonical; only the record's target needs resolving.
   const QString root = QDir::cleanPath(store_root);
   const QString target = QDir::cleanPath(path);
   if (target == root) {
@@ -216,8 +174,7 @@ QString unmanagedPayloadRejection(const QString& store_root, const QString& path
   if (QFileInfo(target).absolutePath() != root) {
     return u"record targets a path outside the extensions store"_s;
   }
-  // canonicalFilePath() is empty for a path that does not exist, which is the
-  // already-drained case rather than an error.
+  // Empty for a path that does not exist (already drained): not an error.
   const QString canonical = QFileInfo(target).canonicalFilePath();
   if (!canonical.isEmpty()) {
     if (QFileInfo(canonical).absolutePath() != root) {
@@ -230,9 +187,8 @@ QString unmanagedPayloadRejection(const QString& store_root, const QString& path
   return {};
 }
 
-// Maps a record's operation token onto the enum. nullopt for absent or
-// unrecognised, which the caller must treat as invalid: defaulting would mean
-// picking "uninstall", the destructive reading, for a record that never said so.
+// Maps a record's operation token onto the enum. nullopt for absent or unrecognised: defaulting would pick
+// "uninstall", the destructive reading.
 std::optional<RemovalOperation> parseRemovalOperationToken(const QJsonObject& object) {
   const QString token = object.value(u"operation"_s).toString();
   if (token == u"uninstall"_s) {
@@ -247,10 +203,8 @@ std::optional<RemovalOperation> parseRemovalOperationToken(const QJsonObject& ob
   return std::nullopt;
 }
 
-// Empty when the record's identity agrees with the file it is filed under.
-// Binding the two is what stops a record filed as A.json from speaking for
-// extension B: acting on it would delete B's payload and retire a record that was
-// never B's. A cleanup record is the mirror case — it must own no id at all.
+// Empty when the record's identity agrees with the file it is filed under: otherwise a record filed as A.json could
+// speak for B and delete B's payload. A cleanup record is the mirror case: it must own no id.
 QString removalIdentityRejection(RemovalOperation operation, const QString& id, const QString& stem) {
   if (operation == RemovalOperation::kCleanup) {
     if (!id.isEmpty()) {
@@ -270,9 +224,8 @@ QString removalIdentityRejection(RemovalOperation operation, const QString& id, 
   return {};
 }
 
-// Parses and FULLY validates one record. Returns the reason it was refused, empty
-// on success. Every check fails closed: nothing is defaulted, inferred, or
-// repaired, because the only thing a record does is authorise a recursive delete.
+// Parses and fully validates one record; returns the refusal reason, empty on success. Fails closed: a record only
+// authorises a recursive delete, so nothing is defaulted, inferred or repaired.
 QString parseRemovalIntent(const QString& store_root, const QString& file_path, RemovalIntent* out) {
   QFile record(file_path);
   if (!record.open(QIODevice::ReadOnly)) {
@@ -314,8 +267,6 @@ QString parseRemovalIntent(const QString& store_root, const QString& file_path, 
   return {};
 }
 
-// The journal file an id-bearing record is filed under is the id's own, which the
-// drain then requires to match the id inside.
 RemovalIntent makeIdRemovalIntent(
     RemovalOperation operation, const QString& store_root, const QString& id, const QString& path) {
   RemovalIntent intent;
@@ -326,7 +277,6 @@ RemovalIntent makeIdRemovalIntent(
   return intent;
 }
 
-// A path-only record: no id, hence no authority over any extension's state.
 RemovalIntent makeCleanupIntent(const QString& store_root, const QString& path) {
   RemovalIntent intent;
   intent.operation = RemovalOperation::kCleanup;
@@ -335,11 +285,8 @@ RemovalIntent makeCleanupIntent(const QString& store_root, const QString& path) 
   return intent;
 }
 
-// Commits a record atomically: QSaveFile writes to a temporary and renames, so a
-// reader never sees a half-written intent and a crash mid-write leaves the
-// previous state rather than a corrupt one.
+// Commits atomically with QSaveFile (temporary file + rename): a crash mid-write leaves the previous state.
 bool writeRemovalIntent(const RemovalIntent& intent) {
-  // The record's own location names the journal directory it belongs to.
   if (!QDir().mkpath(QFileInfo(intent.record_path).absolutePath())) {
     return false;
   }
@@ -360,27 +307,20 @@ bool writeRemovalIntent(const RemovalIntent& intent) {
   return record.commit();
 }
 
-// Takes a refused record out of the journal instead of deleting it: the operator
-// keeps the evidence, and the glob no longer matches it so it is not re-refused on
-// every launch forever.
+// Renames a refused record to `*.rejected-<uuid>`: the evidence is kept and it no longer matches the `*.json` glob, so
+// it is not re-refused every launch.
 bool quarantineRemovalIntent(const QString& file_path) {
   const QString rejected = u"%1.rejected-%2"_s.arg(file_path, QUuid::createUuid().toString(QUuid::Id128));
   return QFile::rename(file_path, rejected);
 }
 
-// Every VALID record in the journal. Invalid ones never reach the caller.
-//
-// `rejections` opts into enforcement: when non-null each refused record is moved
-// aside and a message appended, so the drain can report and stop re-refusing it
-// every launch. Passing nullptr is a pure read for callers that must not mutate
-// the store (the disk scan runs constantly and may hold no lease).
+// Every VALID record in the journal. A non-null `rejections` quarantines each refused record and appends a message;
+// nullptr is a pure read for callers that must not mutate the store (the disk scan runs without needing the lease).
 QList<RemovalIntent> readRemovalIntents(const QString& extensions_dir, QStringList* rejections) {
   QList<RemovalIntent> intents;
   const QDir journal(removalJournalRoot(extensions_dir));
-  // Hidden|System is load-bearing, not defensive: a record is named for its id, and
-  // an id may start with a dot (".local-plugin" -> ".local-plugin.json"), so a
-  // listing without them would never see that record and its removal would stay
-  // pending forever while the payload stayed on disk and loadable.
+  // Hidden|System is load-bearing: an id may start with a dot (".local-plugin.json"), and without them that record
+  // would never be seen, so its removal would stay pending while the payload stays loadable.
   for (const QFileInfo& entry :
        journal.entryInfoList(QStringList{u"*.json"_s}, QDir::Files | QDir::Hidden | QDir::System)) {
     const QString record_path = entry.absoluteFilePath();
@@ -406,12 +346,9 @@ QString makeTransactionRoot(const QString& parent, const QString& id) {
       QString(".pj_install_%1_%2").arg(id, QUuid::createUuid().toString(QUuid::Id128)));
 }
 
-// Where every install extracts: a SIBLING of the extensions dir, so scratch
-// shares that dir's filesystem (the promoting rename stays atomic) while sitting
-// outside the recursive plugin scan. A transaction directory holds an unpacked
-// DSO and the scanner has no exclusion rule, so one left inside the tree by a
-// crash would be discoverable, loadable content. Same discipline as the bundled
-// seed's ".seed_stage" sibling.
+// Where every install extracts: a SIBLING of the extensions dir, on its filesystem (the promoting rename stays atomic)
+// and outside the recursive plugin scan, which has no exclusion rule: an unpacked DSO orphaned by a crash would
+// otherwise be loadable content.
 QString transactionStageRoot(const QString& extensions_dir) {
   return PlatformUtils::canonicalStoreRoot(extensions_dir) + u".install_stage"_s;
 }
@@ -426,9 +363,8 @@ void removeDirectoryIfSet(const QString& path) {
   }
 }
 
-// Retires a finished transaction, and the staging area with it once nothing else
-// occupies it — rmdir refuses a non-empty directory, so a concurrently staged
-// sibling is left alone.
+// Retires a finished transaction and, once empty, the staging area (rmdir refuses a non-empty directory, so a
+// concurrent transaction is left alone).
 void removeTransactionRoot(const QString& path) {
   if (path.isEmpty()) {
     return;
@@ -442,8 +378,7 @@ bool isTransactionDirectoryName(const QString& name) {
   return name.startsWith(".pj_install_");
 }
 
-// Absolute path of the single top-level directory a freshly extracted archive must
-// contain, or an empty string when it holds anything else.
+// The single top-level directory a freshly extracted archive must contain; empty when it holds anything else.
 QString soleTopLevelDirectory(const QString& transaction_root) {
   const QFileInfoList entries =
       QDir(transaction_root)
@@ -454,9 +389,8 @@ QString soleTopLevelDirectory(const QString& transaction_root) {
   return entries.first().absoluteFilePath();
 }
 
-// Registry installs additionally require that directory to be named for the id the
-// registry declared; a sideload cannot check that, since the id only becomes known
-// once the manifest inside that very directory has been read.
+// Registry installs also require that directory to be named for the registry id; a sideload cannot, its id comes from
+// the manifest inside.
 QString validateTransactionContents(const QString& transaction_root, const QString& expected_id) {
   const QString root = soleTopLevelDirectory(transaction_root);
   if (root.isEmpty() || QFileInfo(root).fileName() != expected_id) {
@@ -503,10 +437,8 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
 
     const auto candidate = SemVer::parse(declared);
     const auto incumbent = SemVer::parse(effective);
-    // A malformed floor must survive discovery so the installed extension
-    // remains visible/manageable and the shared compatibility gate can reject
-    // it. Once one malformed claim exists, no valid sibling claim can make the
-    // extension appear compatible.
+    // A malformed floor survives discovery so the extension stays visible and the shared compatibility gate rejects
+    // it; no valid sibling claim can then make the extension look compatible.
     if (!candidate) {
       effective = declared;
     } else if (incumbent && candidate->compare(*incumbent) == std::strong_ordering::greater) {
@@ -546,15 +478,10 @@ DirectoryDiscovery discoverExtensionDirectory(const QString& ext_root) {
   return result;
 }
 
-// Same contract as discoverExtensionDirectory, but the DSOs are opened by a
-// throwaway child process instead of this one. Used for admission — the first
-// look at bytes that just arrived from a registry download or a local archive —
-// where a plugin that aborts in a static initializer would otherwise take the
-// application down, and where opening the payload at its staging path poisons the
-// later provenance check for its final path.
-//
-// Deliberately not used for directories already admitted: those are inspected
-// in-process, as before.
+// discoverExtensionDirectory() in a throwaway child process, used for admission (bytes that just arrived: a registry
+// download or a local archive). A plugin that aborts in a static initializer cannot take the application down, and
+// opening the payload at its staging path would pin that image (docs/TECHNICAL_NOTES.md "dlopen pins the first
+// image") and poison the check at its final path. Directories already admitted are inspected in-process.
 DirectoryDiscovery discoverExtensionDirectoryOutOfProcess(const QString& ext_root) {
   DirectoryDiscovery result;
   const PluginCheckResult check = PluginCheckRunner{}.run(ext_root);
@@ -592,8 +519,7 @@ DirectoryDiscovery discoverExtensionDirectoryOutOfProcess(const QString& ext_roo
     }
     const auto candidate = SemVer::parse(declared.toStdString());
     const auto incumbent = SemVer::parse(effective.toStdString());
-    // Mirrors the in-process rule: a malformed floor wins so the extension stays
-    // visible and the shared compatibility gate is the one that rejects it.
+    // Same rule as the in-process path: a malformed floor wins so the shared gate rejects it.
     if (!candidate) {
       effective = declared;
     } else if (incumbent && candidate->compare(*incumbent) == std::strong_ordering::greater) {
@@ -708,10 +634,6 @@ PendingInstallIntent readPendingInstallIntent(const QString& root) {
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
-
 ExtensionManager::ExtensionManager()
     : QObject(nullptr), extensions_dir_(PlatformUtils::extensionsDir()), pending_dir_(PlatformUtils::pendingDir()) {
   initComponents();
@@ -729,47 +651,33 @@ ExtensionManager::ExtensionManager(
 }
 
 ExtensionManager::~ExtensionManager() {
-  // The whole point of this body is ORDER: the store session (which holds the
-  // writer lease) is released last, once nothing can write into the store any
-  // more. An extract worker unpacks into a transaction directory inside the
-  // store's staging area, so a lease released while one is running would let the
-  // next process take the store and start its own cleanup and promotion against a
-  // tree this process is still writing.
-  //
-  // Member destruction alone cannot give that order: the session dies before
-  // ~QObject deletes the child downloader whose destructor drains the workers.
-
-  // Signal wiring first: the completion handlers capture `this` and touch members,
-  // and none of them may run against a half-destroyed manager.
+  // Order is the point: cancel every operation, then release the store session (and the writer lease with it) last, so
+  // a running extract worker never writes into a store the next process already owns. Member destruction alone gives
+  // the wrong order: the session would die before ~QObject deletes the child downloader that drains the workers.
+  // Handlers capture `this`; disconnect them before anything is torn down.
   disconnectDlConns();
 
-  // Our own operation, whichever phase it is in. cancelAndWait returns only once
-  // the worker has stopped touching the transaction directory.
+  // cancelAndWait returns once the worker has stopped touching the transaction directory.
   if (pending_op_id_ != -1 && downloader_ != nullptr) {
     downloader_->cancelAndWait(pending_op_id_);
     pending_op_id_ = -1;
     pending_id_.clear();
   }
 
-  // Retire the scratch of the operation just cancelled instead of leaving it for
-  // the next writer to sweep: this process knows the directory is its own, and the
-  // handler that would normally clean it up was disconnected above.
+  // Retire the cancelled operation's scratch here: its completion handler is disconnected.
   if (hasStoreWriteAccess()) {
     removeTransactionRoot(pending_extract_dir_);
   }
   pending_extract_dir_.clear();
 
-  // An owned downloader is destroyed HERE rather than by ~QObject after this body:
-  // its destructor cancels and drains every worker it still has, and that has to
-  // finish while the lock is still held. A caller-supplied downloader is not ours
-  // to touch beyond the operation cancelled above.
+  // Deleted here, not by ~QObject: its destructor drains the remaining workers, which must finish while the lease is
+  // held. A caller-supplied downloader stays the caller's.
   if (owns_downloader_) {
     delete downloader_;
     downloader_ = nullptr;
   }
 
-  // The store holds a reference into the session, so it must go first; the session
-  // — and with it the lease — is released last.
+  // artifact_store_ references the session, so it goes first.
   artifact_store_.reset();
   store_session_.reset();
 }
@@ -783,17 +691,9 @@ QString ExtensionManager::storeWriteRefusal() const {
 }
 
 void ExtensionManager::acquireStoreLock() {
-  // One session owns the store's single-writer lease and everything derived from
-  // it — the same lease the content-addressed store commits under, the same PID
-  // liveness that makes the startup cleanup safe (a drain only ever meets this
-  // process's transactions or a dead one's). Opening always yields a session;
-  // contention or a lock-file failure yields a read-only one whose refusal the
-  // user is told about once, here.
-  // Turn a lease refusal into the user's terms. Contention and a filesystem
-  // failure both leave the session read-only but call for opposite actions: one
-  // means another PlotJuggler is running (restart once it closes), the other means
-  // this config dir cannot hold a lock file at all — and telling that user to
-  // close another instance sends them after a process that does not exist.
+  // One session owns the writer lease and everything derived from it, the content-addressed store included. Contention
+  // and a lock-file failure both leave it read-only but call for opposite actions (close the other instance vs. fix
+  // the config dir), so the text shown depends on the cause.
   const auto refusalText = [](const StoreRejection* refusal) -> QString {
     if (refusal != nullptr && refusal->code == StoreRejectionCode::kWriterLeaseUnavailable) {
       return u"Another PlotJuggler instance is managing extensions. Close it and restart PlotJuggler to manage "
@@ -827,55 +727,32 @@ void ExtensionManager::acquireStoreLock() {
 
 void ExtensionManager::initComponents() {
   if (!downloader_) {
-    // Not parented to `this`: the destructor deletes it explicitly, before the lock
-    // is released, and a QObject child would instead be destroyed after that.
+    // Not a child of `this`: the destructor deletes it before releasing the lease; a child would die after.
     downloader_ = new DownloadManager();
     owns_downloader_ = true;
   }
   if (!QDir().mkpath(extensions_dir_)) {
     reportDiagnostic({}, QString("Could not create extensions directory \"%1\"").arg(extensions_dir_), true);
   }
-  // Resolve the store path to its canonical form, ONCE, now that the directory
-  // exists. Everything derived from the store — the lease file, the staging and
-  // journal siblings — already goes through canonicalStoreRoot(), and record
-  // validation compares a record's parent against that same canonical root. If
-  // extensions_dir_ itself kept a symlink component (a symlinked config or home is
-  // ordinary), a record's lexical parent would never equal the canonical root and
-  // every valid uninstall would be quarantined as if it escaped the store. Pinning
-  // the canonical form here puts both sides of that comparison on one footing.
-  // canonicalStoreRoot() falls back to a cleaned path when the dir does not exist,
-  // covering the first-run case where mkpath just failed.
+  // Canonicalize once the directory exists: the lease, the staging and journal siblings and record confinement all
+  // compare against the canonical root, so a symlinked config or home would otherwise quarantine every valid uninstall.
   extensions_dir_ = PlatformUtils::canonicalStoreRoot(extensions_dir_);
-  // Before any cleanup: whether this instance owns the store decides whether the
-  // drains below may delete anything at all.
+  // Before any cleanup: lease ownership decides whether the drains below may delete anything.
   acquireStoreLock();
-  // The content-addressed shadow store rides on the same session as the writer
-  // lease acquired above, so there is exactly one lock on the store. Its objects
-  // live under extensions.artifacts/, a sibling of extensions_dir_, so nothing
-  // here scans them; a read-only session still constructs it, and its writes just
-  // no-op through hasStoreWriteAccess().
+  // The content-addressed store shares the session, so the store has one lock. A read-only session still constructs
+  // it; its writes no-op.
   if (store_session_ != nullptr) {
     artifact_store_ = std::make_unique<ArtifactStore>(*store_session_);
-    // Recover which store object backs each id from the prior session, so a
-    // launch that installs nothing still hands the runtime its store load path.
-    // applyPendingInstalls (below) re-adopts every staged update on top of this.
+    // Which object backs each id, from the previous session (applyPendingInstalls re-adopts staged updates on top).
     loaded_digests_ = readLoadedProfile(store_session_->layout().profilesRoot());
   }
-  // Drain restart-deferred work, THEN snapshot installed state. The order is
-  // load-bearing because of a glibc dlopen quirk: once an extension's .so has
-  // been opened in this process, dlopen keeps returning that first-loaded image
-  // for the same path name (plugin DSOs carry STB_GNU_UNIQUE symbols, so dlclose
-  // never unloads them). So an extension path must NOT be opened before a pending
-  // update replaces it — otherwise every later scan (including the marketplace
-  // window's showEvent refresh) reads the stale old version until the next
-  // restart. applyPendingInstalls promotes WITHOUT opening the old directory (it
-  // names the backup without inspecting it), and refreshInstalledFromDisk runs
-  // AFTER promotion, so the path's first in-process open is the new version.
+  // Drain restart-deferred work, THEN snapshot installed state: once glibc has dlopen'ed an extension path it keeps
+  // returning that first image (plugin DSOs carry STB_GNU_UNIQUE symbols, so dlclose never unloads them), so no path
+  // may be opened before a pending update replaces it (docs/TECHNICAL_NOTES.md "dlopen pins the first image").
   applyPendingUninstalls();
   applyPendingInstalls();
   refreshInstalledFromDisk();
-  // With the installed set now settled, drop store objects that no surviving
-  // install references. Runs here, before the runtime maps any object.
+  // Drop store objects no surviving install references, before the runtime maps any object.
   reconcileStore();
 }
 
@@ -893,14 +770,8 @@ void ExtensionManager::install(const Extension& ext) {
 }
 
 ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const Extension& ext) const {
-  // Platform: only enforced when the extension declares a `platforms` map at
-  // all. A locally-sideloaded row (installed via installFromLocalZip, then
-  // synthesized by MarketplaceWindow::rebuildExtensionList for the marketplace
-  // list) carries no registry-sourced fields — `platforms` is empty by design.
-  // Treating that as incompatible would mislabel a working local install as
-  // "Not available for this platform"; the caller-side sideloader has already
-  // validated the DSO loads on this build, so the check is meaningful only for
-  // registry entries with declared platforms.
+  // The platform check applies only when the record declares `platforms`: a sideloaded row carries no registry fields,
+  // and its DSO was already validated on this build.
   const QString platform = PlatformUtils::currentPlatform();
   if (!ext.platforms.isEmpty() && !ext.platforms.contains(platform)) {
     return {false, tr("Not available for this platform (%1)").arg(platform), {}};
@@ -922,9 +793,7 @@ ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const Ex
 }
 
 ExtensionManager::HostCompatibility ExtensionManager::hostCompatibility(const InstalledExtension& installed) const {
-  // There is no registry platform map for a sideload. The ABI and SDK contract
-  // claims come from the embedded descriptor and are evaluated by the same
-  // primitive the runtime loader and seed use.
+  // A sideload has no registry platform map; the ABI and SDK claims come from the embedded descriptor.
   const std::string version = installed.version.toStdString();
   const std::string minimum_sdk = installed.min_sdk_required.toStdString();
   const PluginCompatibilityResult result = evaluatePluginCompatibility(
@@ -948,8 +817,7 @@ void ExtensionManager::dropReplaceConfirmation() {
 }
 
 void ExtensionManager::setReplaceConfirmation(QObject* context, ReplaceConfirmation confirm) {
-  // A callback with no guard is exactly the hazard this signature exists to
-  // prevent, so an incomplete registration clears instead of half-arming.
+  // An incomplete registration clears instead of arming a callback without its lifetime guard.
   if (context == nullptr || !confirm) {
     dropReplaceConfirmation();
     return;
@@ -971,39 +839,29 @@ ExtensionManager::ReplaceDecision ExtensionManager::askReplaceConfirmation(
   if (!replace_confirmation_) {
     return ReplaceDecision::kNoConfirmation;
   }
-  // Whatever the callback captured died with its context, so it must not run.
-  // Dropping the registration puts the next conflict on the refuse path instead
-  // of asking again through the same dead pointer.
+  // The callback's captures died with its context: do not run it, and refuse the next conflict instead of asking again.
   if (replace_confirmation_context_.isNull()) {
     dropReplaceConfirmation();
     return ReplaceDecision::kOwnerGone;
   }
 
-  // Snapshot the whole registration before asking. The answer usually comes from a
-  // modal dialog, which spins the event loop, so another window can register or
-  // clear WHILE the callback is on the stack: invoking the member directly would
-  // let that assignment destroy the std::function currently executing. The copied
-  // callable is independent of the slot, and (owner, generation) records which
-  // registration asked.
+  // Snapshot the registration: a modal dialog spins the event loop, so another window can re-register while the
+  // callback is on the stack, and assigning to the executing std::function is undefined. (context, generation) says
+  // which registration asked.
   const ReplaceConfirmation confirm = replace_confirmation_;
   const QPointer<QObject> asked_context = replace_confirmation_context_;
   const quint64 asked_generation = replace_confirmation_generation_;
 
   const bool accepted = confirm(id, installedVersion(id), archive_version);
 
-  // The registrant died while its question was up. Its answer belongs to a window
-  // the user no longer has, so decline rather than stage a replacement nobody is
-  // watching for. Only drop the slot when it still holds THIS registration —
-  // clearing a successor's would disarm a live window.
+  // The registrant died while its question was up: decline. Drop the slot only if it still holds THIS registration.
   if (asked_context.isNull()) {
     if (replace_confirmation_generation_ == asked_generation) {
       dropReplaceConfirmation();
     }
     return ReplaceDecision::kOwnerGone;
   }
-  // The slot moved on: this answer came from a registration that has since been
-  // displaced or cleared. Accepting it because the CURRENT registrant happens to
-  // be alive would stage a replacement the live window never approved.
+  // The slot moved on: accepting would stage a replacement the live window never approved.
   if (replace_confirmation_generation_ != asked_generation) {
     return ReplaceDecision::kSuperseded;
   }
@@ -1028,23 +886,17 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
     return;
   }
 
-  // After the cheap guards: this walks the governed dir and dlopens each plugin, so
-  // a rejected click should not pay for it. Kept because it also sweeps stale
-  // transaction dirs and keeps installed_ coherent for the registration below; the
-  // conflict check no longer depends on it.
+  // After the cheap guards: this walks the managed dir and opens each plugin. It also sweeps stale transaction
+  // directories and keeps installed_ coherent for the registration below.
   refreshInstalledFromDisk();
 
   QDir().mkpath(extensions_dir_);
-  // Extraction lands in the staging sibling: outside the scanned tree, yet on the
-  // filesystem of the final destination so the promoting rename is an atomic
-  // move. The transaction directory is named after the file rather than the
-  // extension id, which is still unknown at this point.
+  // Extraction lands in the staging sibling (outside the scanned tree, on the destination's filesystem). Named after
+  // the file: the id is not known yet.
   const QString transaction_root = makeTransactionRoot(transactionStageRoot(extensions_dir_), u"local"_s);
   QDir().mkpath(transaction_root);
   if (!sameFilesystem(transaction_root, extensions_dir_)) {
-    // Refuse rather than fall back to a cross-device copy: promotion is a rename
-    // precisely so that a half-installed extension is unreachable, and a copy
-    // would trade that guarantee away silently.
+    // Refuse rather than copy across devices: promotion is a rename so that a half-installed extension is unreachable.
     removeTransactionRoot(transaction_root);
     emitInstallFailure(
         file_label,
@@ -1076,8 +928,7 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
       return;
     }
 
-    // The manifest read here is the whole validation: it dlopens the DSO at its
-    // transaction path and reports the id/version it declares about itself.
+    // The manifest read (out of process) is the whole validation: it reports the id and version the DSO declares.
     const DirectoryDiscovery discovered = discoverExtensionDirectoryOutOfProcess(root);
     if (!discovered.found_plugin) {
       fail({}, QString("Not a valid plugin package: %1").arg(discovered.error));
@@ -1089,60 +940,36 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
       fail(ext_id, id_error);
       return;
     }
-    // Asked of the DESTINATION directory, not of installed_: that snapshot is
-    // scoped to the governed dir, which under a --plugin-dir override is not
-    // where this install lands. Reading it here is safe even though the comment
-    // in applyPendingInstalls warns against opening a directory about to be
-    // replaced — a confirmed replacement is staged, so the promotion happens in
-    // the next process, where this dlopen cannot serve a stale image.
-    //
-    // A staged uninstall is checked first and separately: it already dropped the
-    // id from installed_, so isInstalled() below would send this down the
-    // fresh-install branch, which clears the destination — marker included — and
-    // would make the pending removal vanish without a word. doInstall() refuses
-    // the same case; this path does not route through it.
+    // A staged uninstall already dropped the id from installed_: without this check the fresh-install branch below
+    // would clear the destination and the pending removal would vanish. doInstall() refuses the same case.
     if (hasPendingUninstall(ext_id)) {
       fail(ext_id, QString("Uninstall of \"%1\" is staged; restart to apply it before installing again").arg(ext_id));
       return;
     }
 
-    // Apply the complete embedded ABI/SDK/application compatibility gate. It
-    // must precede BOTH branches below —
-    // the fresh install and the staged replacement — so an incompatible archive
-    // never reaches the extensions dir and never prompts for a replacement it
-    // would then refuse to run.
+    // The full ABI/SDK gate precedes both branches below, so an incompatible archive neither reaches the extensions dir
+    // nor prompts for a replacement it would refuse to run.
     if (const HostCompatibility compat = hostCompatibility(discovered.record); !compat.ok) {
       fail(ext_id, compat.reason);
       return;
     }
 
-    // A rebuild that produced the very same bytes has nothing to install, so it is
-    // answered here rather than travelling the replacement path: no question to the
-    // user, no staged copy, and no restart to promote a payload identical to the one
-    // already running. Placed after the compatibility gate so an archive that would
-    // be refused is still refused, whatever it contains.
+    // A byte-identical rebuild has nothing to install: no question, no staged copy, no restart. After the compatibility
+    // gate, so a refusable archive is still refused. Both trees are hashed now, not taken from a digest recorded at
+    // install time, so an installed tree edited underneath us takes the ordinary path. An unreadable tree yields an
+    // empty digest, never a match.
     //
-    // Both sides are hashed now instead of trusting a digest recorded at install
-    // time: an installed tree edited underneath us then compares different and takes
-    // the ordinary path, repairing itself. An unreadable tree yields an empty digest,
-    // which must never count as a match.
+    // Skipped while an install is staged for this id: the next launch promotes the stage, so matching the live bytes
+    // would drop the archive and leave a different payload queued.
     //
-    // Skipped while an install is staged for this id, because the stage — not the
-    // live directory — is what the next launch promotes. Matching against the live
-    // bytes there would drop the archive while leaving a different payload queued.
-    //
-    // The comparison targets the copy the scan RESOLVED to, never simply whatever
-    // occupies extensions/<id>. Two directories may embed one id, and the scan
-    // deliberately keeps the highest version, which can live under any name; the
-    // loser is bytes on disk that nothing loads. Comparing against it would discard
-    // an archive that does change which plugin runs, and would strand the duplicate,
-    // since promoting is what sweeps it.
+    // Compared against the copy the scan resolved to, not whatever occupies extensions/<id>: two directories can embed
+    // one id and the scan keeps the highest version, so matching the loser would discard an archive that changes what
+    // runs.
     const QString install_dst = extRoot(extensions_dir_, ext_id);
     const auto installed_record = installed_.constFind(ext_id);
     const QString resolved_install =
         installed_record != installed_.constEnd() ? QFileInfo(installed_record->path).canonicalFilePath() : QString();
-    // An empty canonical path means the directory is gone or unreadable, and must
-    // not compare equal to anything — including another empty one.
+    // An empty canonical path (missing or unreadable) must not compare equal to anything, another empty one included.
     const bool dst_holds_the_live_copy =
         !resolved_install.isEmpty() && resolved_install == QFileInfo(install_dst).canonicalFilePath();
     if (dst_holds_the_live_copy && !hasPendingInstall(ext_id)) {
@@ -1150,8 +977,7 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
       if (!installed_digest.empty() && installed_digest == contentDigestOf(root)) {
         removeTransactionRoot(transaction_root);
         pending_extract_dir_.clear();
-        // Paired with the outcome below so a listening UI sees a well-formed
-        // operation rather than a completion for something it never saw begin.
+        // Paired so a listening UI sees a well-formed operation.
         emit installStarted(ext_id);
         emit installUnchanged(ext_id);
         return;
@@ -1182,12 +1008,9 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
 
       emit installStarted(ext_id);
 
-      // Staged rather than written over the live directory: the running session
-      // may hold this DSO loaded, and dlopen keys its cache by path name, so a
-      // same-path replacement would never be re-read. applyPendingInstalls()
-      // promotes the stage at the next launch and backs up the displaced copy.
-      // No version comparison: rebuilding without bumping the version is the
-      // normal case for a local archive.
+      // Staged, not written over the live directory: the session may hold this DSO and dlopen keys its cache by path,
+      // so a same-path replacement would never be re-read. No version comparison: rebuilding a local archive without a
+      // version bump is normal.
       QString intent_error;
       if (!writePendingInstallIntent(root, ext_id, discovered.record.version, &intent_error)) {
         fail(ext_id, intent_error);
@@ -1212,8 +1035,7 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
 
     emit installStarted(ext_id);
 
-    // The managed layout keys directories by extension id, whereas the archive
-    // used whatever name its author chose.
+    // The managed layout keys directories by extension id, not by the name the archive's author chose.
     const QString dst = extRoot(extensions_dir_, ext_id);
     replaceConflictingInstallDirs(ext_id, dst);
     if (QDir(dst).exists() && !QDir(dst).removeRecursively()) {
@@ -1225,10 +1047,8 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
       return;
     }
 
-    // Re-read at the final location: rpath or relative-path assumptions can hold
-    // inside the transaction directory and break here. This is a different path
-    // from the pre-rename read, so the dlopen path-name cache cannot serve a
-    // stale image of it.
+    // Re-read at the final location: rpath or relative-path assumptions can hold in the transaction directory and break
+    // here. A different path, so the dlopen cache cannot serve a stale image.
     const DirectoryDiscovery final_check = discoverExtensionDirectory(dst);
     if (!final_check.found_plugin || final_check.record.id != ext_id) {
       QDir(dst).removeRecursively();
@@ -1265,15 +1085,13 @@ void ExtensionManager::installFromLocalZip(const QString& zip_path) {
         emitInstallFailure(failed_label, error);
       });
 
-  // A local file is served through the same fetch path as a remote artifact: an
-  // empty expected checksum skips verification, which is correct here because a
-  // local archive has nothing to be verified against.
+  // A local file goes through the fetch path; an empty expected checksum skips verification (a local archive has no
+  // provenance, the manifest scan is the gate).
   pending_op_id_ = downloader_->fetch(QUrl::fromLocalFile(zip_path), /*expected_checksum=*/QString(), transaction_root);
 }
 
 void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_existing) {
-  // Backstop for every entry point into the install machinery, including the
-  // testing hook that bypasses install()/update().
+  // Backstop for every entry point, including the testing hook.
   if (const QString refusal = storeWriteRefusal(); !refusal.isEmpty()) {
     emitInstallFailure(ext.id, refusal);
     return;
@@ -1294,20 +1112,15 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
     return;
   }
 
-  // A staged uninstall drops the id from installed_, so isInstalled() above no
-  // longer speaks for it — yet its directory is still on disk carrying the
-  // marker, and applyPendingUninstalls() will delete whatever occupies that name
-  // at the next launch. Installing into it now would be erased on startup, so
-  // refuse until the pending removal has actually been applied. update() already
-  // makes the same check for its own reasons.
+  // A staged uninstall dropped the id from installed_, yet its directory is still on disk and the next launch deletes
+  // whatever occupies that name: refuse until the removal has been applied.
   if (hasPendingUninstall(ext.id)) {
     emitInstallFailure(
         ext.id, QString("Uninstall of \"%1\" is staged; restart to apply it before installing again").arg(ext.id));
     return;
   }
 
-  // Refuse an extension the host can't run: wrong platform or a host older than
-  // the plugin's declared minimum (R1). The reason is surfaced to the user.
+  // Refuse an extension the host cannot run (wrong platform, or an SDK older than its floor); the reason is shown.
   if (const HostCompatibility compat = hostCompatibility(ext); !compat.ok) {
     emitInstallFailure(ext.id, compat.reason);
     return;
@@ -1315,26 +1128,17 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
   const QString platform = PlatformUtils::currentPlatform();
   const Platform& artifact = ext.platforms[platform];
 
-  // Extraction goes into a hidden transaction directory outside every scanned
-  // root, on the filesystem the final destination lives on, so the eventual
-  // rename is atomic. That destination is pending_dir_ for a deferred update
-  // (promoted at next startup) and extensions_dir_ for an immediate fresh
-  // install.
-  // The DSO is dlopened and its embedded manifest verified inside the
-  // transaction directory BEFORE the rename, then re-verified at the final
-  // location AFTER the rename — see the post-promotion check below.
+  // Extract into a transaction directory outside every scanned root, on the destination's filesystem so the final
+  // rename is atomic. The destination is pending_dir_ for a deferred update, extensions_dir_ for a fresh install. The
+  // DSO is verified there before the rename and again at its final location after it.
   const QString dest_dir = staging ? pending_dir_ : extensions_dir_;
   QDir().mkpath(dest_dir);
   const QString transaction_root = makeTransactionRoot(transactionStageRoot(extensions_dir_), ext.id);
-  // Create the transaction root eagerly so the refresh guard has a real path
-  // to protect from the moment install() returns — otherwise a Refresh that
-  // fires during the download window would find no directory to skip and the
-  // guard would appear untested even though it is exercised in practice.
+  // Created eagerly so the sweep guard (pending_extract_dir_) has a real directory to spare from the moment install()
+  // returns.
   QDir().mkpath(transaction_root);
   if (!sameFilesystem(transaction_root, dest_dir)) {
-    // Refuse rather than fall back to a cross-device copy: promotion is a rename
-    // precisely so that a half-installed extension is unreachable, and a copy
-    // would trade that guarantee away silently.
+    // Refuse rather than copy across devices: promotion is a rename so that a half-installed extension is unreachable.
     removeTransactionRoot(transaction_root);
     emitInstallFailure(
         ext.id,
@@ -1436,8 +1240,7 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
         }
 
         const QString dst = extRoot(extensions_dir_, ext.id);
-        // Replace any prior copy of this id stored under a different directory
-        // name so we don't leave a duplicate alongside the promoted "<id>" dir.
+        // Replace a prior copy of this id stored under another directory name, so "<id>" is the sole install.
         replaceConflictingInstallDirs(ext.id, dst);
         if (QDir(dst).exists() && !QDir(dst).removeRecursively()) {
           fail_after_extraction(QString("Could not replace existing extension directory \"%1\"").arg(dst));
@@ -1448,9 +1251,8 @@ void ExtensionManager::doInstall(const Extension& ext, bool staging, bool allow_
           return;
         }
 
-        // Double-check: the DSO loaded from the staging area; confirm it still
-        // loads from its final location. Catches issues like rpath/relative-path
-        // assumptions that hold in pending_dir_ but break in extensions_dir_.
+        // Re-verify at the final location: rpath or relative-path assumptions can hold in the transaction directory and
+        // break here.
         const DirectoryDiscovery final_check = discoverExtensionDirectory(dst);
         const QString final_error = validateRegistryIntent(final_check, ext.id, ext.version);
         if (!final_error.isEmpty()) {
@@ -1522,10 +1324,8 @@ void ExtensionManager::uninstall(const QString& extension_id) {
     return;
   }
 
-  // A core extension AT its bundled version cannot be removed — it ships with the
-  // application. One updated ABOVE its bundled version can be reverted (the UI's
-  // "downgrade to bundled"): allow the uninstall here, and the seed restores the
-  // bundled version on the next launch. This is the backend guard mirroring the UI.
+  // A core extension at its bundled version cannot be removed. One updated above it can be reverted, so the uninstall
+  // is allowed and the seed restores the bundled version at the next launch. Mirrors the UI guard.
   if (isBundled(extension_id)) {
     if (comparePluginVersions(
             installedVersion(extension_id).toStdString(), bundledVersion(extension_id).toStdString()) <= 0) {
@@ -1536,36 +1336,16 @@ void ExtensionManager::uninstall(const QString& extension_id) {
     }
   }
 
-  // Staged on every platform, never removed in place. Deleting the directory
-  // here would free its NAME for reuse while the DSO the session loaded stays
-  // mapped, and dlopen resolves by path name: a later install into that same
-  // name is answered from the resident image instead of the payload on disk.
-  // Deferring keeps a directory name from ever being reused inside one process,
-  // which is what makes that whole class of stale reads unreachable rather than
-  // merely guarded against. It also stops the UI overstating what happened —
-  // the extension keeps running until the restart either way, so "removed on
-  // the next launch" is the honest report. downgradeToBundled() stages for the
-  // same reason; applyPendingUninstalls() drains both at startup.
+  // Staged on every platform, never removed in place: deleting the directory would free its name for reuse while the
+  // loaded DSO stays mapped, and dlopen resolves by path name, so a later install under that name would be answered
+  // from the resident image. downgradeToBundled() stages the same way; applyPendingUninstalls() drains both.
   const QString dir_path = installed_[extension_id].path;
 
-  // Order matters, and it is ordered to fail closed.
-  //
-  // "Removed" has to outlive a deletion that never happens: the directory goes at
-  // the next launch, and that removal can lose to a locked file, antivirus, or a
-  // permission the user no longer has. The loader skips exactly the ids on the
-  // disabled list and knows nothing about pending removals, so an id left enabled
-  // would simply load again from the directory that survived.
-  //
-  // The disabled entry is therefore persisted and synced FIRST, before anything
-  // else is recorded, and the sync is CHECKED — an unwritten setting is not
-  // persistence, and proceeding on the assumption that it was would stage a removal
-  // whose safety half never reached the disk. A crash in the window that follows
-  // leaves a plugin that does not load and is still installed: recoverable, and
-  // never the reverse (a plugin the user removed quietly coming back).
-  //
-  // The entry then STAYS as a tombstone, even once the files are gone (see
-  // applyPendingUninstalls), so nothing in journal processing ever needs the power
-  // to enable an id. A later reinstall clears it (registerInstalledExtension).
+  // Fail-closed order. The loader skips exactly the ids on the disabled list and knows nothing of pending removals, so
+  // an id left enabled would load again if the deletion at the next launch loses to a locked file or antivirus. The
+  // disabled entry is therefore persisted FIRST and its sync CHECKED; a crash afterwards leaves a plugin that does not
+  // load and is still installed, never a removed one that comes back. The entry stays as a tombstone after the files
+  // are gone (see applyPendingUninstalls); a reinstall clears it (registerInstalledExtension).
   const bool was_enabled = isEnabled(extension_id);
   if (!writeDisabledState(extension_id, false)) {
     restoreEnabledState(extension_id, was_enabled);
@@ -1576,17 +1356,15 @@ void ExtensionManager::uninstall(const QString& extension_id) {
   }
 
   if (!writeRemovalIntent(makeIdRemovalIntent(RemovalOperation::kUninstall, extensions_dir_, extension_id, dir_path))) {
-    // Nothing was scheduled, so leave the user's own enable/disable choice as it
-    // was rather than a plugin that silently stopped loading.
+    // Nothing was scheduled: restore the user's own enable/disable choice.
     restoreEnabledState(extension_id, was_enabled);
     emitUninstallFailure(
         extension_id, QString("Could not record the removal of \"%1\"; uninstall not scheduled").arg(dir_path));
     return;
   }
 
-  // Keep the record: the extension leaves installed_ but stays on disk and keeps
-  // running until the restart, and a caller composing rows from the installed set
-  // would otherwise have nothing left to show for it (see stagedUninstalls).
+  // Keep the record: the extension stays on disk and running until the restart, and a UI composing rows from the
+  // installed set would have nothing to show for it (see stagedUninstalls).
   staged_uninstalls_.insert(extension_id, installed_[extension_id]);
   installed_.remove(extension_id);
   emit uninstallPendingRestart(extension_id);
@@ -1614,34 +1392,18 @@ void ExtensionManager::downgradeToBundled(const QString& extension_id) {
     return;
   }
 
-  // Stage the removal of the updated copy — do NOT delete now: an immediate remove
-  // would hot-swap the loaded DSO and the card would read "Install". Mark it for
-  // restart cleanup so the card shows "Needs Restart"; on the next launch
-  // applyPendingUninstalls removes it and the host seed restores the bundled
-  // version (always compatible, since it ships with the app).
+  // Staged, not deleted: removing now would hot-swap the loaded DSO. At the next launch applyPendingUninstalls removes
+  // the updated copy and the host seed restores the bundled version.
   const QString dir_path = installed_[extension_id].path;
-  // Journalled as a downgrade: a version revert preserves the user's enable/disable
-  // choice, so unlike an uninstall it leaves no tombstone behind for the restored
-  // bundled version to inherit.
+  // Journalled as a downgrade: it leaves the user's enable/disable choice untouched and no tombstone.
   if (!writeRemovalIntent(makeIdRemovalIntent(RemovalOperation::kDowngrade, extensions_dir_, extension_id, dir_path))) {
     emitUninstallFailure(extension_id, QString("Could not stage the downgrade of \"%1\"").arg(extension_id));
     return;
   }
-  // Do NOT remove the record from installed_ here: the downgrade is deferred, so
-  // the updated copy stays installed and loaded until the next launch. Keeping
-  // it (like a staged update does) lets the row keep showing "Installed vN" with
-  // the "Needs Restart" badge (driven by hasPendingUninstall), instead of the
-  // "—" not-installed placeholder for a plugin that is still live this session.
-  // applyPendingUninstalls promotes the removal at the next launch, and the host
-  // seed restores the bundled version. Deliberately do NOT touch the disabled
-  // entry either: a downgrade is a version change, not a removal, so it preserves
-  // the user's enable/disable choice, exactly like update() (see
-  // registerInstalledExtension's preserve_disabled_state path). uninstall() moves
-  // the entry in the opposite direction because the id is meant to stop loading.
-  //
-  // Keeping it in installed_ only holds until the next scan, which skips a
-  // journalled directory — so record it as a staged removal too, and the row
-  // survives every rescan for the rest of the session (see stagedUninstalls).
+  // The record stays in installed_ (the plugin is live until the next launch, so the row keeps "Installed vN" with
+  // "Needs Restart") and is also filed as a staged removal: the next scan skips a journalled directory, and the row
+  // must survive every rescan this session (see stagedUninstalls). The disabled entry is not touched: a downgrade is
+  // a version change, not a removal.
   staged_uninstalls_.insert(extension_id, installed_[extension_id]);
   emit downgradePendingRestart(extension_id);
 }
@@ -1653,12 +1415,9 @@ void ExtensionManager::update(const Extension& ext) {
   }
   refreshInstalledFromDisk();
 
-  // Updates defer to restart: the new version is staged in pending_dir_ and
-  // promoted — backing up the old version first — by applyPendingInstalls() at
-  // the next startup. This avoids hot-swapping a DSO the running session may
-  // still have loaded; the installed version stays live until the user restarts.
-  // (Fresh install() still promotes immediately, since there is no loaded
-  // version to clash with.)
+  // Updates are staged in pending_dir_ and promoted at the next startup by applyPendingInstalls(), which backs up the
+  // old version first, so a loaded DSO is never hot-swapped. A fresh install() promotes immediately: nothing loaded
+  // can clash with it.
   if (hasNewerInstalledVersion(ext)) {
     emitInstallFailure(
         ext.id, QString("Installed version \"%1\" is newer than registry version \"%2\"; downgrade is not allowed")
@@ -1666,12 +1425,8 @@ void ExtensionManager::update(const Extension& ext) {
     return;
   }
 
-  // An update already staged for this id — install OR uninstall — would just
-  // be re-downloaded and re-staged on top of the pending marker; the installed
-  // version does not change until restart, so a caller relying on hasUpdate()
-  // can ask again. Refuse rather than redo the work. Both markers matter: on
-  // Windows the uninstall path stages the removal, so a subsequent update()
-  // during that window would resurrect an id the user just asked to remove.
+  // A staged install or removal for this id: refuse rather than re-download on top of it, or resurrect an id the user
+  // just asked to remove.
   if (hasPendingInstall(ext.id) || hasPendingUninstall(ext.id)) {
     emitInstallFailure(ext.id, QString("Update for \"%1\" is already staged; restart to apply it").arg(ext.id));
     return;
@@ -1687,8 +1442,7 @@ void ExtensionManager::replaceConflictingInstallDirs(const QString& id, const QS
   for (const QFileInfo& entry : dir.entryInfoList(QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)) {
     const QString root = entry.absoluteFilePath();
     const QString clean = QDir::cleanPath(root);
-    // Never touch the promotion target itself, the staging area, or transaction/
-    // quarantine scratch dirs.
+    // Never touch the promotion target, the staging area, or transaction/quarantine scratch.
     if (clean == keep || clean == pending_clean) {
       continue;
     }
@@ -1698,11 +1452,9 @@ void ExtensionManager::replaceConflictingInstallDirs(const QString& id, const QS
     }
     const DirectoryDiscovery item = discoverExtensionDirectory(root);
     if (!item.found_plugin || item.record.id != id) {
-      continue;  // ids are unique per extension, so only a true prior copy matches
+      continue;
     }
-    // Move the shadow copy into the backup area (kept for recovery); fall back to
-    // outright removal if the rename fails. Either way it must leave extensions_dir_
-    // so the promoted "<id>" directory becomes the sole install of this extension.
+    // Back up the shadow copy (fall back to deleting it); either way it must leave extensions_dir_.
     QDir().mkpath(PlatformUtils::backupDir());
     const QString backup = QDir(PlatformUtils::backupDir())
                                .absoluteFilePath(id + "-replaced-" + QUuid::createUuid().toString(QUuid::Id128));
@@ -1716,9 +1468,7 @@ void ExtensionManager::replaceConflictingInstallDirs(const QString& id, const QS
       qWarning(
           "ExtensionManager: could not remove prior install of '%s' at '%s'", qUtf8Printable(id), qUtf8Printable(root));
     }
-    // Drop the record only if it tracks the displaced copy: after a promotion
-    // installed_[id] already points at keep_dir, and erasing it here would
-    // un-register the extension applyPendingInstalls just promoted.
+    // Drop the record only if it tracks the displaced copy: after a promotion installed_[id] points at keep_dir.
     const auto tracked = installed_.constFind(id);
     if (tracked != installed_.constEnd() && QDir::cleanPath(tracked->path) == clean) {
       installed_.remove(id);
@@ -1727,8 +1477,7 @@ void ExtensionManager::replaceConflictingInstallDirs(const QString& id, const QS
 }
 
 void ExtensionManager::applyPendingInstalls() {
-  // Promoting, quarantining and sweeping staged work all rewrite the store, and
-  // the staged directories may belong to the instance that owns it.
+  // Promoting, quarantining and sweeping rewrite the store, and the staged directories may belong to the lease holder.
   if (!hasStoreWriteAccess()) {
     return;
   }
@@ -1737,14 +1486,9 @@ void ExtensionManager::applyPendingInstalls() {
     return;
   }
 
-  // Conflict cleanup for the promoted ids runs AFTER the whole promotion loop.
-  // replaceConflictingInstallDirs() dlopens sibling directories to read their
-  // embedded ids, and opening a sibling's not-yet-promoted DSO pins its old
-  // image in the process (same glibc quirk as in initComponents): the rescan
-  // that follows this drain would then report the pre-update version for every
-  // pinned sibling, and the marketplace would re-offer updates that are
-  // already on disk. Deferring the scans guarantees any DSO they open is a
-  // post-promotion payload.
+  // Conflict cleanup runs AFTER the whole promotion loop: it opens sibling directories to read their ids, and opening a
+  // not-yet-promoted sibling would pin its pre-update image (docs/TECHNICAL_NOTES.md "dlopen pins the first image"), so
+  // the rescan would report old versions and the marketplace would re-offer updates already on disk.
   QList<std::pair<QString, QString>> promoted;  // (id, promoted dir)
 
   for (const QFileInfo& entry :
@@ -1752,13 +1496,12 @@ void ExtensionManager::applyPendingInstalls() {
     const QString staged_dir = entry.absoluteFilePath();
     const QString staged_name = entry.fileName();
     if (isTransactionDirectoryName(staged_name)) {
-      // Extraction scratch an older build wrote here rather than into the
-      // staging sibling; it is never a promotable stage.
+      // Extraction scratch is never a promotable stage.
       removeDirectoryIfSet(staged_dir);
       continue;
     }
     if (staged_name.startsWith(kQuarantinePrefix)) {
-      // Leftover from a previous failed promotion. Skip — manual inspection only.
+      // Left by a failed promotion; kept for manual inspection.
       continue;
     }
 
@@ -1768,9 +1511,8 @@ void ExtensionManager::applyPendingInstalls() {
           qUtf8Printable(message));
       QString final_message = message;
       if (!QDir(staged_dir).removeRecursively()) {
-        // Removal can fail on Windows when the DSO is still locked by another
-        // process. Move the broken stage aside so the next startup does not
-        // re-validate the same payload and emit the same diagnostic forever.
+        // Removal can fail on Windows while another process locks the DSO. Move the stage aside so every startup does
+        // not re-validate and re-report it.
         const QString quarantine =
             QDir(pending_dir_)
                 .absoluteFilePath(
@@ -1803,17 +1545,12 @@ void ExtensionManager::applyPendingInstalls() {
 
     const QString dst = extRoot(extensions_dir_, intent.id);
 
-    // Back up the existing install before the staged version takes its place:
-    // move the current dir aside first, so promoting an update never silently
-    // destroys the previous install (this is the single backup point for updates).
+    // Move the current directory aside first: promoting an update must not destroy the previous install. This is the
+    // only backup point for updates.
     pending_backup_path_.clear();
     if (QDir(dst).exists()) {
-      // Name the backup WITHOUT opening the old directory. dlopening dst here to
-      // read its version would pin its old image in the process (dlopen caches by
-      // path name and plugin DSOs are effectively NODELETE via unique symbols),
-      // so a later in-process scan of dst would keep reading the old version.
-      // A UUID keeps the backup unique; the embedded manifest inside still records
-      // the version for anyone inspecting the backup.
+      // Name the backup without opening the old directory: opening it would pin its image (docs/TECHNICAL_NOTES.md
+      // "dlopen pins the first image"). The UUID keeps it unique; the embedded manifest records the version.
       QDir().mkpath(PlatformUtils::backupDir());
       const QString candidate = QDir(PlatformUtils::backupDir())
                                     .absoluteFilePath(intent.id + "-" + QUuid::createUuid().toString(QUuid::Id128));
@@ -1835,12 +1572,8 @@ void ExtensionManager::applyPendingInstalls() {
           qUtf8Printable(dst));
       QString message = QString("Could not promote staged install to \"%1\"").arg(dst);
 
-      // Best-effort rollback so the user is never left with no extension. If
-      // the rollback rename also fails, leave pending_backup_path_ set so
-      // emitInstallFailure appends "Previous version remains in backup". The
-      // restored directory is re-registered by the refreshInstalledFromDisk()
-      // that runs after this drain (the path was never opened before, so that
-      // scan reads it fresh).
+      // Best-effort rollback so the user is not left without the extension. If it fails pending_backup_path_ stays set
+      // and emitInstallFailure names the backup. The next refreshInstalledFromDisk() re-registers the restored copy.
       if (!pending_backup_path_.isEmpty() && QDir().rename(pending_backup_path_, dst)) {
         message += " Previous version restored.";
         pending_backup_path_.clear();
@@ -1849,21 +1582,13 @@ void ExtensionManager::applyPendingInstalls() {
       continue;
     }
 
-    // Validate the promoted payload in a throwaway child process. An in-process
-    // scan here is unreliable: plugin DSOs export STB_GNU_UNIQUE symbols and are
-    // effectively NODELETE, so if this id was already dlopened in this process the
-    // re-scan resolves pj_plugin_abi_version and the embedded manifest to the copy
-    // already mapped and reports its identity instead of the bytes now on disk —
-    // silently admitting a staged payload that lies about its id, or rejecting a
-    // legitimate update. The helper reads the real bytes every time and leaves the
-    // parent's image table untouched, so the restored backup below reads cleanly.
+    // Validate out of process: an in-process scan resolves a DSO already mapped for this id to the mapped image and
+    // reports its identity instead of the bytes on disk, which would admit a payload that lies about its id or reject
+    // a legitimate update (docs/TECHNICAL_NOTES.md "dlopen pins the first image").
     const DirectoryDiscovery discovered = discoverExtensionDirectoryOutOfProcess(dst);
     if (const QString validation_error = validateRegistryIntent(discovered, intent.id, intent.version);
         !validation_error.isEmpty()) {
-      // Undo the promotion: drop the rejected payload and put the previous install
-      // back. The out-of-process check did not map dst into this process, so the
-      // restored copy reads cleanly; re-registration is left to the
-      // refreshInstalledFromDisk() that runs after this drain.
+      // Undo the promotion: drop the rejected payload, restore the previous install; the next refresh re-registers it.
       QDir(dst).removeRecursively();
       if (!pending_backup_path_.isEmpty() && QDir().rename(pending_backup_path_, dst)) {
         pending_backup_path_.clear();
@@ -1872,8 +1597,7 @@ void ExtensionManager::applyPendingInstalls() {
       continue;
     }
     if (const HostCompatibility compat = hostCompatibility(discovered.record); !compat.ok) {
-      // Same undo pattern as validation failure above: drop the rejected payload
-      // and restore the previous install.
+      // Same undo as above.
       QDir(dst).removeRecursively();
       if (!pending_backup_path_.isEmpty() && QDir().rename(pending_backup_path_, dst)) {
         pending_backup_path_.clear();
@@ -1883,51 +1607,41 @@ void ExtensionManager::applyPendingInstalls() {
     }
 
     QFile::remove(pendingInstallIntentPath(dst));
-    // Staged promotions are updates/replaces of an already-installed plugin;
-    // preserve the user's disable choice instead of forcing it back to enabled.
+    // A staged promotion is an update of an installed plugin: keep the user's disable choice.
     registerInstalledExtension(intent.id, dst, discovered.record, /*preserve_disabled_state=*/true);
     pending_backup_path_.clear();
     promoted.append({intent.id, dst});
     emit installFinished(intent.id, true);
   }
 
-  // Replace any prior copy of a promoted id stored under a different directory
-  // name (e.g. a bundled plugin) so "<id>" becomes the sole install of that id.
+  // Replace prior copies of a promoted id stored under other directory names (e.g. a bundled plugin).
   for (const auto& [promoted_id, promoted_dir] : promoted) {
     replaceConflictingInstallDirs(promoted_id, promoted_dir);
   }
 }
 
 void ExtensionManager::applyPendingUninstalls() {
-  // Deleting payloads is a store mutation like any other sweep: only the lease
-  // holder may drain. A read-only instance leaves both the records and the
-  // directories for the writer to handle.
+  // Deleting payloads is a store mutation: only the lease holder drains.
   if (!hasStoreWriteAccess()) {
     return;
   }
 
-  // Markers become external records BEFORE anything is deleted, so every deletion
-  // in this drain is authorised by a validated record outside the payload.
+  // Markers become records BEFORE anything is deleted, so every deletion here is authorised by a validated record
+  // outside the payload.
   externalizeLegacyUninstallMarkers();
 
   QStringList rejections;
   const QList<RemovalIntent> intents = readRemovalIntents(extensions_dir_, &rejections);
   for (const QString& rejection : rejections) {
-    // Never silently skipped: a record this host refuses to act on is either
-    // corruption or an attempt to borrow its delete privilege, and both are worth
-    // surfacing.
+    // A refused record is corruption or an attempt to borrow the delete privilege; surface it.
     reportDiagnostic({}, rejection, true);
   }
 
   for (const RemovalIntent& intent : intents) {
-    // Re-confine at the moment of deletion. parseRemovalIntent() skips the canonical
-    // check for a target that did not exist yet — there was nothing to abuse then —
-    // so a record admitted on the lexical rule alone leaves a window in which a
-    // matching-named symlink can be planted before this drain runs. QFileInfo::exists
-    // and removeRecursively both FOLLOW such a link, which would carry the recursive
-    // delete out of the store. A managed payload is a real directory, so a symlink at
-    // the target is refused outright, and confinement is re-checked against what is on
-    // disk NOW (this time the canonical branch fires, since the planted link exists).
+    // Re-confine at deletion time: parseRemovalIntent() skips the canonical check for a target that did not exist yet,
+    // leaving a window in which a symlink could be planted under that name, and exists()/removeRecursively() follow it
+    // out of the store. A managed payload is a real directory, so a symlink is refused and confinement is re-checked
+    // against the disk now.
     const QFileInfo target(intent.path);
     if (target.isSymLink() || target.exists()) {
       const QString rejection = target.isSymLink() ? u"record path became a symlink before deletion"_s
@@ -1941,14 +1655,11 @@ void ExtensionManager::applyPendingUninstalls() {
       }
     }
 
-    // A path already gone satisfies the intent; removeRecursively() reports false
-    // for a directory that does not exist, which would otherwise strand the record
-    // forever.
+    // A path already gone satisfies the intent (removeRecursively() reports false for it and would strand the record).
     const bool removed = !target.exists() || QDir(intent.path).removeRecursively();
     if (!removed) {
-      // Keep the record so the next launch retries. This is the partial-deletion
-      // case too: content already deleted stays deleted, and the record outlives it
-      // because it never lived in there.
+      // Keep the record so the next launch retries; after a partial deletion it outlives the content because it lives
+      // outside it.
       reportDiagnostic(
           intent.id,
           QString("Could not remove extension directory \"%1\"; restart the application or close any process using it")
@@ -1960,15 +1671,10 @@ void ExtensionManager::applyPendingUninstalls() {
     if (!intent.id.isEmpty()) {
       installed_.remove(intent.id);
     }
-    // Nothing here enables anything. An uninstall's disabled entry stays as a
-    // TOMBSTONE: the files are gone, so the entry costs nothing, and keeping it
-    // means journal processing never needs authority over the enable state at all.
-    // A corrupt or hostile record therefore cannot make a plugin loadable, and a
-    // same-id copy left elsewhere on disk cannot be resurrected by this deletion.
-    // A reinstall clears the tombstone (registerInstalledExtension).
-    //
-    // Retire the record FILE that was parsed, never a name recomputed from the id
-    // it claims, so a record cannot retire a different extension's record.
+    // Nothing here enables anything: an uninstall's disabled entry stays as a tombstone, so a corrupt or hostile record
+    // cannot make a plugin loadable and a same-id copy elsewhere cannot be resurrected by this deletion. A reinstall
+    // clears it (registerInstalledExtension). Retire the record file that was parsed, never a name recomputed from the
+    // id it claims.
     QFile::remove(intent.record_path);
   }
   // Goes with the last record (rmdir refuses a non-empty directory).
@@ -1976,19 +1682,12 @@ void ExtensionManager::applyPendingUninstalls() {
 }
 
 void ExtensionManager::externalizeLegacyUninstallMarkers() {
-  // Older builds recorded the intent inside the payload, where a partially failed
-  // recursive delete destroys it. Each such directory is converted into an external
-  // record FIRST, so the retry survives the deletion that follows.
+  // A `.pj_pending_uninstall` marker found inside a payload (a package can ship one) is converted into a path-only
+  // journal record before the deletion, so a partial failure cannot destroy the retry. The marker's content is never
+  // read: it is package-controlled, so the derived record carries no id and no authority over any extension's state.
   //
-  // The marker's CONTENT is never read. It is package-controlled filesystem content
-  // — a ZIP can ship one naming any id it likes — so the derived record is
-  // path-only: it carries no id and therefore no authority over any extension's
-  // state. Existence schedules a deletion of the directory holding it, nothing more.
-
-  // A marker whose deletion keeps failing survives from launch to launch. Without
-  // this, each pass would file yet another cleanup-<uuid> record for the same stuck
-  // directory and the journal would grow without bound. Skip a directory a live
-  // cleanup record already covers.
+  // Skip a directory a live cleanup record already covers, or a marker whose deletion keeps failing would file a new
+  // record every launch.
   QSet<QString> already_scheduled;
   for (const RemovalIntent& intent : readRemovalIntents(extensions_dir_, /*rejections=*/nullptr)) {
     if (intent.operation == RemovalOperation::kCleanup) {
@@ -2005,9 +1704,7 @@ void ExtensionManager::externalizeLegacyUninstallMarkers() {
     if (already_scheduled.contains(QDir::cleanPath(root))) {
       continue;
     }
-    // Confined like any other record, even though this one was found by scanning
-    // the store: a directory reached through a symlink still must not authorise a
-    // delete outside it.
+    // Confined like any record: a directory reached through a symlink must not authorise a delete outside the store.
     if (const QString rejection = unmanagedPayloadRejection(extensions_dir_, root); !rejection.isEmpty()) {
       reportDiagnostic(entry.fileName(), QString("Ignored a legacy uninstall marker: %1").arg(rejection), true);
       continue;
@@ -2034,10 +1731,7 @@ void ExtensionManager::setSeededVersions(const QMap<QString, QString>& id_to_ver
 }
 
 bool ExtensionManager::isBundled(const QString& id) const {
-  // "Core" = the id ships with the application. The host computes the bundled
-  // id -> version map from the bundled plugin directory and hands it in via
-  // setBundledVersions(); no per-folder marker. Empty (standalone marketplace app
-  // or a --plugin-dir run) means nothing is core.
+  // The host's bundled id -> version map decides; empty (standalone app, --plugin-dir) means nothing is core.
   return bundled_versions_.contains(id);
 }
 
@@ -2063,18 +1757,13 @@ QMap<QString, InstalledExtension> ExtensionManager::stagedUninstalls() const {
 }
 
 bool ExtensionManager::hasPendingUninstall(const QString& id) const {
-  // The journal is keyed by id, so this no longer has to guess which directory the
-  // removal was staged against — the directory NAME is not necessarily the id (it
-  // comes from the embedded manifest, so a copy placed by hand can be called
-  // anything), which is what made the in-payload marker awkward to find by id.
+  // The journal is keyed by id; the directory name is not necessarily the id.
   if (QFile::exists(removalIntentPath(extensions_dir_, id))) {
     return true;
   }
 
-  // A marker an older build left inside the payload still counts as a pending
-  // removal — its EXISTENCE is a fact about this installation that the badge and
-  // the install guards must respect. Its content remains untrusted (see
-  // sweepLegacyUninstallMarkers).
+  // A marker inside the payload (see externalizeLegacyUninstallMarkers) counts too: its existence is a fact the badge
+  // and the install guards respect; its content stays untrusted.
   const auto staged = staged_uninstalls_.constFind(id);
   const QString root = staged != staged_uninstalls_.constEnd() ? staged->path : extRoot(extensions_dir_, id);
   return QFile::exists(pendingUninstallMarkerPath(root));
@@ -2085,11 +1774,8 @@ QString ExtensionManager::installedVersion(const QString& id) const {
   if (it == installed_.constEnd()) {
     return {};
   }
-  // What the seed wrote wins outright over what the scan saw, in both directions:
-  // it is the later fact about the same directory, and the scan cannot be redone
-  // (see the header). A restore to the bundled build lands BELOW the scanned
-  // version, so anything that only ever moved the answer upwards would keep
-  // reporting the incompatible copy it just replaced.
+  // What the seed wrote wins, in both directions: it is the later fact about the directory and the scan cannot be
+  // redone (see the header). A restore to the bundled build lands below the scanned version.
   const auto seeded = seeded_versions_.constFind(id);
   if (seeded != seeded_versions_.constEnd() && !seeded->isEmpty()) {
     return *seeded;
@@ -2133,10 +1819,6 @@ bool ExtensionManager::hasUnsurfacedDiagnostics() const {
 void ExtensionManager::markDiagnosticsSurfaced() {
   diagnostics_surfaced_ = diagnostics_recorded_;
 }
-
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
 
 void ExtensionManager::disconnectDlConns() {
   disconnect(dl_progress_conn_);
@@ -2186,22 +1868,17 @@ void ExtensionManager::registerInstalledExtension(
     const QString& id, const QString& dst, InstalledExtension record, bool preserve_disabled_state) {
   record.path = dst;
   record.install_date = QFileInfo(dst).lastModified();
-  // Mirror the just-promoted bytes into the content-addressed shadow. Best-effort,
-  // and after the visible install is final, so it never gates the user's result.
+  // Mirror into the content-addressed store after the visible install is final; best-effort, never gates the result.
   shadowAdoptIntoStore(id, dst);
 
   if (preserve_disabled_state) {
-    // A staged update/replace keeps the user's enable/disable choice: promoting
-    // the new version must not re-enable a plugin the user explicitly disabled.
-    // Leave the persisted disabled entry untouched and mirror it into the record.
+    // A staged update keeps the user's enable/disable choice; mirror the persisted entry into the record.
     record.enabled = !disabledExtensionIds().contains(id);
     installed_[id] = record;
     return;
   }
 
-  // A fresh install starts enabled. Clear any stale disabled entry that may
-  // linger from a previous uninstall of the same id, so the plugin loads
-  // instead of being silently skipped on the next launch.
+  // A fresh install starts enabled: clear any stale disabled entry (e.g. a tombstone from an earlier uninstall).
   record.enabled = true;
   installed_[id] = record;
   setEnabled(id, true);
@@ -2211,15 +1888,11 @@ void ExtensionManager::shadowAdoptIntoStore(const QString& id, const QString& di
   if (artifact_store_ == nullptr || !artifact_store_->hasStoreWriteAccess()) {
     return;
   }
-  // adoptDirectory hashes the tree and writes it write-once: identical bytes that
-  // are already resident are a no-op, so a reinstall of the same payload adds
-  // nothing. A rejected tree (a symlink, a quota, an I/O fault) leaves the visible
-  // install untouched — it is what actually loads.
+  // adoptDirectory is write-once: an identical resident tree is a no-op. A rejected tree (symlink, quota, I/O fault)
+  // leaves the visible install, which is what loads, untouched.
   const auto adopted = artifact_store_->adoptDirectory(dir);
   if (!adopted) {
-    // Drop any prior mapping for this id: its store object no longer matches the
-    // freshly installed bytes, so the runtime must fall back to extensions/<id>/
-    // rather than load a stale version from the store.
+    // The store object no longer matches the installed bytes: drop the mapping so the runtime loads extensions/<id>/.
     reportDiagnostic(
         id,
         QString("Content-addressed shadow skipped for \"%1\": %2")
@@ -2251,30 +1924,24 @@ void ExtensionManager::dropStoreMapping(const QString& id) {
 
 std::vector<QString> ExtensionManager::managedPluginDirs() {
   std::vector<QString> dirs;
-  // Enumerate the managed dir from disk rather than the cached installed set: the
-  // bundled seed writes extensions/<id>/ AFTER that snapshot is taken, so a cached
-  // view would miss freshly-seeded plugins. The subdirectory name is the id.
+  // Enumerate from disk, not the cached set: the bundled seed writes extensions/<id>/ after that snapshot. The
+  // subdirectory name is the id.
   for (const QFileInfo& entry : QDir(extensions_dir_).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-    // Prefer the immutable store object when it backs this id and its bytes still
-    // verify against the recorded content manifest; fall back to the classic
-    // directory when the store does not (yet) hold it, was rejected, has been
-    // collected, or — the integrity guard — when the resident object no longer
-    // matches its digest.
+    // Prefer the store object when it backs this id and verifies against its recorded manifest; otherwise the classic
+    // directory.
     if (artifact_store_ != nullptr) {
       const auto digest_it = loaded_digests_.constFind(entry.fileName());
       if (digest_it != loaded_digests_.constEnd()) {
         if (const auto digest = GenerationDigest::parse(digest_it.value().toStdString())) {
           const QString object_dir = artifact_store_->artifactRootFor(*digest);
-          // Rehash the resident bytes against the object's manifest: an existence
-          // check alone would happily load an object corrupted after commit.
+          // A rehash, not an existence check: an object corrupted after commit must not load.
           if (artifact_store_->verifyArtifact(*digest)) {
             dirs.push_back(object_dir);
             continue;
           }
           if (QDir(object_dir).exists()) {
-            // Present but its bytes no longer match its digest (a half-written
-            // commit, disk corruption). Never load it: fall back to extensions/<id>/
-            // and surface why, since the store copy stays unusable until reinstall.
+            // Present but corrupt (half-written commit, disk fault): never load it, and say why. It stays unusable
+            // until reinstall.
             reportDiagnostic(
                 entry.fileName(),
                 QStringLiteral(
@@ -2295,8 +1962,7 @@ void ExtensionManager::reconcileStore() {
   if (artifact_store_ == nullptr || !artifact_store_->hasStoreWriteAccess()) {
     return;
   }
-  // Drop profile entries whose extensions/<id>/ is gone: an uninstall drained at
-  // startup leaves the mapping naming an install that no longer exists.
+  // Drop profile entries whose extensions/<id>/ is gone (an uninstall drained at startup).
   bool profile_changed = false;
   for (const QString& id : loaded_digests_.keys()) {
     if (!QDir(extRoot(extensions_dir_, id)).exists()) {
@@ -2307,9 +1973,8 @@ void ExtensionManager::reconcileStore() {
   if (profile_changed) {
     persistLoadedProfile();
   }
-  // Guard the sweep: an empty profile alongside live installs means the profile
-  // failed to load, and sweeping against an empty root set would erase the whole
-  // store. A genuinely empty install set (nothing installed) sweeps normally.
+  // An empty profile alongside live installs means the profile failed to load: sweeping against an empty root set
+  // would erase the whole store.
   if (loaded_digests_.isEmpty() && !installed_.isEmpty()) {
     return;
   }
@@ -2332,13 +1997,8 @@ void ExtensionManager::sweepTransactionRoots(const QString& parent) {
     if (!isTransactionDirectoryName(entry.fileName())) {
       continue;
     }
-    // Spare the transaction of an install still in progress: the worker is
-    // writing into it in the background and its completion handler owns the
-    // cleanup. Wiping it here (triggered by Refresh, or by starting an
-    // install/uninstall/update of a different plugin) would race with the worker
-    // and truncate a partial install into a broken final state. Both sides are
-    // normalized so the guard tolerates trailing slashes, `..` segments, and
-    // case-insensitive filesystems.
+    // Spare the transaction of an install in progress: its worker is writing into it and its completion handler owns
+    // the cleanup. Both sides are normalized (trailing slashes, `..`, case-insensitive filesystems).
     if (QDir::cleanPath(entry.absoluteFilePath()) != pending_extract_dir_) {
       removeDirectoryIfSet(entry.absoluteFilePath());
     }
@@ -2346,11 +2006,9 @@ void ExtensionManager::sweepTransactionRoots(const QString& parent) {
 }
 
 void ExtensionManager::refreshInstalledFromDisk() {
-  // Directories a journalled removal has claimed. They are still on disk (and still
-  // loaded) until the next launch drains them, but they must not read as installs,
-  // exactly as a marked directory did not.
-  // Both projections of the journal are taken in ONE pass: the claimed paths gate
-  // the scan below, and the claimed ids retire staged records further down.
+  // Directories a journalled removal has claimed are still on disk (and loaded) until the next launch drains them, but
+  // must not read as installs. Both projections of the journal come from one pass: paths gate the scan, ids retire
+  // staged records below.
   QSet<QString> removal_paths;
   QSet<QString> journalled_ids;
   for (const RemovalIntent& intent : readRemovalIntents(extensions_dir_, /*rejections=*/nullptr)) {
@@ -2379,10 +2037,7 @@ void ExtensionManager::refreshInstalledFromDisk() {
       continue;
     }
     if (discovered.contains(item.record.id)) {
-      // Two directories embed the same id (e.g. a promoted update left alongside
-      // a differently-named prior copy). Keep the HIGHEST version rather than
-      // whichever the directory scan happened to hit first, so the resolution is
-      // deterministic and an update never loses to a stale lower-version copy.
+      // Two directories embed one id: keep the HIGHEST version, not whichever the scan hit first.
       if (comparePluginVersions(item.record.version.toStdString(), discovered[item.record.id].version.toStdString()) <=
           0) {
         qWarning(
@@ -2398,15 +2053,10 @@ void ExtensionManager::refreshInstalledFromDisk() {
   }
   installed_ = std::move(discovered);
 
-  // Clear scratch a crashed or abandoned install left behind. The staging
-  // sibling is where transactions live and it goes with the last of them (rmdir
-  // refuses it while an in-flight transaction is still there); the in-tree pass
-  // is the migration path for residue an older build wrote into the scanned dir,
-  // which the recursive plugin scan would otherwise keep finding.
-  //
-  // Writer-only, both passes. `pending_extract_dir_` recognises this instance's
-  // own live transaction and nothing else, so a read-only session sweeping here
-  // would delete the extraction the lock holder is filling right now.
+  // Clear scratch a crashed or abandoned install left behind: the staging sibling (removed with its last transaction;
+  // rmdir refuses while one is in flight) and any `.pj_install_*` inside the scanned tree, which the recursive plugin
+  // scan would find. Writer-only: pending_extract_dir_ recognises only this instance's own transaction, so a read-only
+  // session would delete the lock holder's live extraction.
   if (hasStoreWriteAccess()) {
     const QString stage_root = transactionStageRoot(extensions_dir_);
     sweepTransactionRoots(stage_root);
@@ -2414,16 +2064,13 @@ void ExtensionManager::refreshInstalledFromDisk() {
     sweepTransactionRoots(extensions_dir_);
   }
 
-  // Retire a staged record once nothing schedules its removal any more — drained by
-  // a restart, or cleared because the directory was replaced. Read from the ids
-  // collected above rather than through hasPendingUninstall(), which would consult
-  // this very map while removeIf erases from it.
+  // Retire a staged record once nothing schedules its removal. Uses the ids collected above, not hasPendingUninstall(),
+  // which would read this map while removeIf erases from it.
   staged_uninstalls_.removeIf([&](const auto& entry) {
     return !journalled_ids.contains(entry.key()) && !QFile::exists(pendingUninstallMarkerPath(entry.value().path));
   });
 
-  // Reflect the persisted enable/disable state on each record so the UI can read
-  // installedExtensions()[id].enabled without consulting QSettings itself.
+  // Mirror the persisted enable state into the records so the UI need not read QSettings.
   const QStringList disabled = disabledExtensionIds();
   for (auto it = installed_.begin(); it != installed_.end(); ++it) {
     it.value().enabled = !disabled.contains(it.key());
@@ -2439,12 +2086,9 @@ bool ExtensionManager::isEnabled(const QString& id) const {
 }
 
 bool ExtensionManager::writeDisabledState(const QString& id, bool enabled) {
-  // ONE QSettings instance does the read, the modify, the write, the flush AND the
-  // verdict. status() belongs to the object that performed the write — on Windows a
-  // registry failure surfaces on that instance's flush — so syncing or reading
-  // status() from a freshly constructed temporary reports on an object that wrote
-  // nothing and silently swallows the failure. Reading through a second instance is
-  // just as wrong in the other direction: it can miss this one's unflushed edit.
+  // One QSettings instance does the read, write, flush and verdict: status() belongs to the object that wrote (on
+  // Windows a registry failure surfaces on that instance's flush), so checking through another instance would swallow
+  // a failure.
   QSettings settings;
   QStringList disabled = settings.value(QLatin1String(kDisabledExtensionsKey)).toStringList();
   const bool currently_disabled = disabled.contains(id);
@@ -2461,8 +2105,7 @@ bool ExtensionManager::writeDisabledState(const QString& id, bool enabled) {
   if (settings.status() != QSettings::NoError) {
     return false;
   }
-  // Keep the in-memory record in sync so the UI updates without a full rescan;
-  // the actual load/unload happens on the next launch.
+  // Keep the record in sync so the UI updates without a rescan; load/unload happens at the next launch.
   if (installed_.contains(id)) {
     installed_[id].enabled = enabled;
   }
@@ -2471,8 +2114,7 @@ bool ExtensionManager::writeDisabledState(const QString& id, bool enabled) {
 
 void ExtensionManager::restoreEnabledState(const QString& id, bool enabled) {
   if (!writeDisabledState(id, enabled)) {
-    // The rollback itself could not be written. Say so rather than leave the user
-    // guessing why a plugin whose uninstall failed also stopped loading.
+    // Say so: otherwise the user is left guessing why a plugin whose uninstall failed also stopped loading.
     reportDiagnostic(
         id, QString("Could not restore the enabled state of \"%1\"; it may load differently next launch").arg(id),
         true);
@@ -2480,8 +2122,7 @@ void ExtensionManager::restoreEnabledState(const QString& id, bool enabled) {
 }
 
 void ExtensionManager::setEnabled(const QString& id, bool enabled) {
-  // The disabled list is one global QSettings key shared by every instance, so a
-  // read-modify-write from a second one silently discards the writer's edits.
+  // The disabled list is one global QSettings key: a read-modify-write from a second instance would discard edits.
   if (const QString refusal = storeWriteRefusal(); !refusal.isEmpty()) {
     reportDiagnostic(id, refusal, true);
     return;

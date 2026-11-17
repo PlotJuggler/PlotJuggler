@@ -15,22 +15,18 @@ namespace pj::scene3d {
 namespace {
 // Drag sensitivity: screen pixels per radian of orbit rotation.
 constexpr float kPixelsPerRadian = 200.0f;
-// World units of focal/eye translation per pixel of drag, per unit of working distance.
-// At distance D a single pixel drag shifts the pivot by D * kPanUnitsPerPixel world units.
+// World units of focal/eye translation per drag pixel, per unit of working distance.
 constexpr float kPanUnitsPerPixel = 0.001f;
-// Elevation is clamped just short of the poles to avoid the gimbal singularity
-// (matches the clamp historically used by rotate()).
+// Elevation stays just short of the poles (gimbal singularity).
 constexpr float kPolarLimit = std::numbers::pi_v<float> * 0.5f - 0.05f;
 
-// Shared pan-offset kernel: translates `distance * kPanUnitsPerPixel` world units
-// per pixel along the view's right/up axes. `right` and `up` come from the view
-// matrix rows (OrbitCamera) or forward-cross products (FlyCamera).
+// Shared pan kernel: translates `distance * kPanUnitsPerPixel` per pixel along `right`/`up` (view-matrix rows for
+// OrbitCamera, forward cross products for FlyCamera).
 glm::vec3 panOffset(const glm::vec3& right, const glm::vec3& up, float dx_pixels, float dy_pixels, float distance) {
   return (-dx_pixels * right + dy_pixels * up) * distance * kPanUnitsPerPixel;
 }
 
-// Wrap an angle to (-pi, pi]. std::remainder(x, 2pi) gives the value in [-pi, pi]
-// nearest to 0, which is exactly the canonical azimuth range we want.
+// Wraps an angle to [-pi, pi], the value nearest 0 (the canonical azimuth range).
 float wrapToPi(float angle) {
   return std::remainder(angle, 2.0f * std::numbers::pi_v<float>);
 }
@@ -41,9 +37,8 @@ glm::vec3 sphericalDir(float azimuth, float elevation) {
       std::cos(elevation) * std::cos(azimuth), std::cos(elevation) * std::sin(azimuth), std::sin(elevation)};
 }
 
-// Azimuth (yaw about +Z) and pole-clamped elevation (pitch) of a unit direction —
-// the inverse of sphericalDir, sharing its gimbal clamp. The inner asin clamp
-// guards the domain; the outer keeps elevation off the pole singularity.
+// Azimuth (yaw about +Z) and pole-clamped elevation of a unit direction: the inverse of sphericalDir, with the same
+// gimbal clamp.
 struct AzimuthElevation {
   float azimuth;
   float elevation;
@@ -52,16 +47,11 @@ AzimuthElevation azimuthElevationFromDir(const glm::vec3& dir) {
   return {std::atan2(dir.y, dir.x), std::clamp(std::asin(std::clamp(dir.z, -1.0f, 1.0f)), -kPolarLimit, kPolarLimit)};
 }
 
-// Min/max orbit radius for the current scene: `lo` keeps the eye outside the near
-// plane; `hi` is scene-aware so a large costmap is reachable (or 1e7 when the
-// scene extent is unknown). `working_radius` is the radius the near plane is
-// derived from.
-//
-// `lo` is derived from the WORKING-DISTANCE-ONLY near term — NOT the ratio-capped
-// near adaptiveNearFar() returns. The ratio cap can lift near to far/1e5, which
-// for a scene with one distant finite outlier (reach ~1e6) would inflate lo to
-// tens of metres and hard-lock zoom-in (L.7). The eye only needs to clear the
-// close-inspection near plane, so lo tracks the working radius alone.
+// Min/max orbit radius for the current scene: `lo` keeps the eye outside the near plane, `hi` is scene-aware so a
+// large costmap is reachable (1e7 when the extent is unknown); `working_radius` is the radius the near plane derives
+// from. `lo` uses the working-distance-only near term, NOT adaptiveNearFar()'s ratio-capped near: the cap can lift
+// near to far/1e5, which with one distant finite outlier (reach ~1e6) would inflate lo to tens of metres and
+// hard-lock zoom-in.
 void radiusLimits(const AABB& bounds, const glm::vec3& focal, float working_radius, float& lo, float& hi) {
   const float reach = sceneReach(bounds, focal);
   const float working_near = std::max(working_radius * 1e-2f, 1e-3f);  // near from working distance only
@@ -69,11 +59,9 @@ void radiusLimits(const AABB& bounds, const glm::vec3& focal, float working_radi
   hi = bounds.valid ? std::max(1e7f, reach * 5.0f) : 1e7f;
 }
 
-// Repair an externally-sourced CameraState (a deserialized layout, or a state
-// adopted across a model switch) so it can never drive a degenerate projection:
-// non-finite fields fall back to the default, then ranges are clamped (radius/
-// ortho_scale > 0, fov_y off 0/π, elevation off the poles). One guard for every
-// untrusted entry point — cameraStateFromJson and each adoptState().
+// Repairs an externally sourced CameraState (deserialized layout, state adopted across a model switch) so it cannot
+// drive a degenerate projection: non-finite fields take the default, ranges are clamped (radius/ortho_scale > 0, fov_y
+// off 0/π, elevation off the poles). One guard for every untrusted entry point.
 CameraState sanitizeCameraState(CameraState state) {
   const CameraState defaults;
   const auto finite_or = [](float value, float fallback) { return std::isfinite(value) ? value : fallback; };
@@ -94,19 +82,16 @@ glm::mat4 OrbitCamera::viewMatrix() const {
 }
 
 glm::mat4 OrbitCamera::viewMatrixRelativeTo(const glm::dvec3& render_origin) const {
-  // Subtract the origin from the focal in DOUBLE, then add the (small) orbit offset
-  // radius·dir — so eye_rel/focal_rel stay near the radius scale even when the focal
-  // is at 1e6. With render_origin == focal, focal_rel is exactly 0.
+  // The focal minus the origin is taken in DOUBLE, then the small orbit offset radius·dir is added: eye_rel/focal_rel
+  // stay at radius scale even with the focal at 1e6.
   const glm::vec3 focal_rel = toRenderSpace(state_.focal, render_origin);
   const glm::vec3 eye_rel = focal_rel + state_.radius * sphericalDir(state_.azimuth, state_.elevation);
   return glm::lookAt(eye_rel, focal_rel, glm::vec3{0.0f, 0.0f, 1.0f});
 }
 
 glm::mat4 OrbitCamera::projMatrix(float aspect) const {
-  // Decoupled adaptive near/far: near tracks the working distance (so close
-  // inspection never clips), far reaches the whole scene, ratio-capped for depth
-  // precision. OrbitCamera is always perspective, so the working distance is the
-  // orbit radius.
+  // Near tracks the working distance (the orbit radius: always perspective) so close inspection never clips; far
+  // reaches the whole scene, ratio-capped for depth precision.
   const float d = state_.radius;
   float near_plane = 0.0f;
   float far_plane = 0.0f;
@@ -123,8 +108,7 @@ void OrbitCamera::setSceneBounds(const AABB& bounds) {
 }
 
 void OrbitCamera::followShift(const glm::vec3& world_delta) {
-  // Shift the orbit pivot; the eye is derived from focal + spherical(azimuth,
-  // elevation, radius), so it rides the pivot rigidly with the angle/zoom intact.
+  // The eye derives from focal + spherical(azimuth, elevation, radius), so it rides the pivot rigidly.
   state_.focal += world_delta;
 }
 
@@ -141,10 +125,8 @@ void OrbitCamera::pan(float dx_pixels, float dy_pixels) {
 }
 
 void OrbitCamera::zoom(float scroll_ticks) {
-  // Geometric step: each tick scales the orbit radius by 0.9 (zoom in) or 1/0.9
-  // (zoom out), so the perceived zoom rate is uniform at every scale. The old
-  // fixed [0.1, 1000] cap (which made large scenes impossible to frame) and the
-  // two-stage dolly are gone; the limits are scene-aware.
+  // Geometric step: each tick scales the radius by 0.9 (zoom in) or 1/0.9, so the zoom rate is uniform at every scale;
+  // limits are scene-aware.
   float lo = 0.0f;
   float hi = 0.0f;
   radiusLimits(scene_bounds_, state_.focal, state_.radius, lo, hi);
@@ -163,14 +145,10 @@ void OrbitCamera::zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int view
   const Ray ray = unprojectRay(cursor_px, viewport_w, viewport_h, view, proj);
   const glm::vec3 eye = position();
 
-  // World point under the cursor: ground plane z=0 first (the robotics common
-  // case), else the focal plane facing the eye. No forward hit → center zoom.
-  //
-  // The ground hit is REJECTED when it lands beyond a sanity bound (M.6): a
-  // grazing ray at low elevation, or a scene that sits far from z=0, makes the
-  // z=0 intersection hundreds of metres out — unrelated to what is under the
-  // cursor. Accepting it would homothety-fling the camera. Past the bound we fall
-  // through to the focal-plane anchor, which is always near the viewed geometry.
+  // World point under the cursor: ground plane z=0 first (the robotics common case), else the focal plane facing the
+  // eye; no forward hit means centre zoom. The ground hit is REJECTED beyond a sanity bound (a grazing ray, or a scene
+  // far from z=0, puts the intersection hundreds of metres out and would fling the camera); the focal-plane anchor is
+  // always near the viewed geometry.
   const float max_hit = std::max(sceneReach(scene_bounds_, state_.focal), 4.0f * state_.radius);
   glm::vec3 target{0.0f};
   float t = 0.0f;
@@ -191,30 +169,22 @@ void OrbitCamera::zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int view
     return;
   }
 
-  // Homothety about the cursor point: scaling eye AND focal toward `target` by the
-  // same factor is a uniform scaling, so it CANNOT rotate the eye→focal direction —
-  // azimuth/elevation are mathematically invariant and the hovered point stays
-  // pixel-locked. The old path recovered the new angles from new_eye − new_focal via
-  // setEyeFocal; when "Follow a frame" parks the pivot at large world coordinates
-  // (UTM/GPS, ~1e6 m) that difference of two ~1e6 vectors loses its low bits to
-  // float32 cancellation, spuriously spinning the view a fraction of a degree on
-  // every scroll tick (~1.9°/tick at 5e6). So keep the angles untouched, scale the
-  // radius, and slide the pivot along the cursor "lever" (target − focal) — never
-  // differencing two large absolute positions. (eye = focal + radius·dir, so this
-  // reproduces the homothety exactly: new_eye = new_focal + s·(eye − focal).)
+  // Homothety about the cursor point: scaling eye AND focal toward `target` by the same factor cannot rotate the
+  // eye→focal direction, so azimuth/elevation stay and the hovered point stays pixel-locked. Recovering the angles from
+  // new_eye − new_focal (setEyeFocal) loses low bits to float32 cancellation when the pivot sits at ~1e6 m (a followed
+  // frame in a UTM map) and spins the view about 1.9° per tick at 5e6. So scale the radius and slide the pivot along
+  // the cursor lever (target − focal), never differencing two large absolutes (eye = focal + radius·dir, so
+  // new_eye = new_focal + s·(eye − focal)).
   const float s = std::pow(0.9f, scroll_ticks);
   float lo = 0.0f;
   float hi = 0.0f;
   radiusLimits(scene_bounds_, state_.focal, state_.radius, lo, hi);
   const float new_radius = std::clamp(s * state_.radius, lo, hi);
-  // Slide by the EFFECTIVE post-clamp factor (new_radius/radius), so the cursor point
-  // stays pixel-locked even when the radius hits [lo,hi] — the homothety must use the
-  // factor the radius actually moved by. Without a clamp this is exactly s; setEyeFocal
-  // used to keep this lock by re-anchoring the focal (the cancellation source above).
+  // Slide by the EFFECTIVE post-clamp factor (new_radius/radius), so the cursor point stays pixel-locked even when the
+  // radius hits [lo,hi]; without a clamp this is exactly s.
   const float s_eff = new_radius / state_.radius;
   state_.focal += (1.0f - s_eff) * (target - state_.focal);
   state_.radius = new_radius;
-  // azimuth / elevation deliberately unchanged — see above.
 }
 
 void OrbitCamera::setEyeFocal(const glm::vec3& eye, const glm::vec3& focal) {
@@ -233,8 +203,8 @@ void OrbitCamera::setEyeFocal(const glm::vec3& eye, const glm::vec3& focal) {
   state_.azimuth = orientation.azimuth;
   state_.elevation = orientation.elevation;
   state_.radius = r;
-  // Re-anchor the focal so position() lands exactly on `eye` even after radius/
-  // elevation clamping — this is what keeps the cursor point pixel-locked.
+  // Re-anchors the focal so position() lands exactly on `eye` after radius/elevation clamping, keeping the cursor point
+  // pixel-locked.
   state_.focal = eye - r * sphericalDir(orientation.azimuth, orientation.elevation);
 }
 
@@ -242,17 +212,15 @@ void OrbitCamera::adoptState(const CameraState& state) {
   const CameraState sanitized = sanitizeCameraState(state);
   state_ = sanitized;
   if (!sanitized.perspective) {
-    // Coming from an orthographic model: seed the orbit radius from its scale so
-    // the perspective view frames roughly the same area.
+    // From an orthographic model: seed the radius from its scale so the view frames roughly the same area.
     state_.radius = sanitized.ortho_scale;
   }
   state_.perspective = true;
 }
 
 void OrbitCamera::reset() {
-  // Restore the default view in place. Must NOT do `*this = OrbitCamera{}` — that
-  // is illegal through an ICamera* and would slice. Scene bounds are scene-derived,
-  // not view state, so they are retained.
+  // Restores the default view in place (`*this = OrbitCamera{}` would slice through an ICamera*). Scene bounds are
+  // scene-derived, not view state, and are kept.
   state_ = CameraState{};
 }
 
@@ -264,13 +232,8 @@ void OrbitCamera::fitToBoundingBox(const AABB& bounds) {
   state_.radius = std::max(aabbDiagonal(bounds) * 0.75f, 0.5f);
 }
 
-// ---------------------------------------------------------------------------
-// XYOrbitCamera — orbit with the pivot locked to the ground plane (z = 0).
-// ---------------------------------------------------------------------------
-
 void XYOrbitCamera::followShift(const glm::vec3& world_delta) {
-  // Ground-locked: track the followed frame's horizontal motion only, keeping the
-  // pivot on the floor (focal.z stays 0) so the inherited orbit never goes airborne.
+  // Ground-locked: tracks the followed frame's horizontal motion only, so the inherited orbit never goes airborne.
   state_.focal.x += world_delta.x;
   state_.focal.y += world_delta.y;
 }
@@ -285,13 +248,10 @@ void XYOrbitCamera::zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int vi
   if (std::abs(state_.focal.z) <= 1e-6f) {
     return;  // pivot already on the floor — the common case (ground-hit cursor target)
   }
-  // Re-lock the pivot to z=0 WITHOUT re-deriving the orbit angles. The base call kept
-  // azimuth/elevation untouched; hold the eye and the view direction fixed and slide
-  // the pivot down the view ray until focal.z == 0. setEyeFocal() would instead recover
-  // the angles from (eye − focal) — a difference of two ~1e6 vectors that resurrects the
-  // large-coordinate angle noise the base-class fix removes (the bug this whole change is
-  // about), for the one camera that subclasses the fixed one. Subtracting a SMALL
-  // radius·dir from the ~1e6 eye keeps full precision; no two large absolutes are differenced.
+  // Re-lock the pivot to z=0 WITHOUT re-deriving the angles: hold the eye and view direction and slide the pivot down
+  // the view ray until focal.z == 0. setEyeFocal() would recover the angles from (eye − focal), a difference of two
+  // ~1e6 vectors that reintroduces the large-coordinate angle noise OrbitCamera::zoomToCursor avoids; subtracting a
+  // small radius·dir from the ~1e6 eye keeps full precision.
   const glm::vec3 dir = sphericalDir(state_.azimuth, state_.elevation);  // focal → eye, unit
   if (dir.z <= 1e-3f) {
     return;  // looking along/under the horizon: no finite ground pivot ahead, leave as-is
@@ -309,9 +269,8 @@ void XYOrbitCamera::zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, int vi
 void XYOrbitCamera::adoptState(const CameraState& state) {
   OrbitCamera::adoptState(state);
   if (std::abs(state_.focal.z) > 1e-6f) {
-    // Re-lock the adopted pivot to the floor, eye unchanged (same recipe as
-    // zoomToCursor's flatten): capture the eye, flatten the focal to z=0, and
-    // re-derive the spherical state so position() still lands on the eye.
+    // Re-lock the adopted pivot to the floor, eye unchanged (as in zoomToCursor's flatten): re-derive the spherical
+    // state so position() still lands on the eye.
     const glm::vec3 eye = position();
     glm::vec3 floor_focal = state_.focal;
     floor_focal.z = 0.0f;
@@ -319,15 +278,11 @@ void XYOrbitCamera::adoptState(const CameraState& state) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// TopDownOrthoCamera — orthographic bird's-eye looking straight down -Z.
-// ---------------------------------------------------------------------------
-
 namespace {
 constexpr float kDefaultOrthoScale = 10.0f;
 constexpr float kFlyNominalDistance = 5.0f;
-// Base eye height = this multiple of ortho_scale above the focal (before the
-// scene-aware lift in eyeHeight()). projMatrix()'s near is proportional to this base.
+// Base eye height as a multiple of ortho_scale above the focal (before eyeHeight()'s scene-aware lift); projMatrix()'s
+// near is proportional to it.
 constexpr float kOrthoEyeHeightFactor = 2.0f;
 
 glm::vec3 mapUp(float azimuth) {
@@ -354,9 +309,8 @@ glm::mat4 TopDownOrthoCamera::viewMatrixRelativeTo(const glm::dvec3& render_orig
 
 float TopDownOrthoCamera::eyeHeight() const {
   const float base = kOrthoEyeHeightFactor * state_.ortho_scale;  // zoom-driven height
-  // Scene-aware lift: raise the eye so geometry above the focal plane (e.g. a
-  // 1.5 m robot on a costmap zoomed to ortho_scale=0.5) stays in front of the
-  // near plane (M.7/M.8). Zero for an unknown scene or geometry below the focal.
+  // Scene-aware lift: raises the eye so geometry above the focal plane (a 1.5 m robot on a costmap zoomed to
+  // ortho_scale=0.5) stays in front of the near plane. Zero for an unknown scene or geometry below the focal.
   const float lift = scene_bounds_.valid ? std::max(0.0f, scene_bounds_.max.z - state_.focal.z) : 0.0f;
   return base + lift;
 }
@@ -364,13 +318,11 @@ float TopDownOrthoCamera::eyeHeight() const {
 glm::mat4 TopDownOrthoCamera::projMatrix(float aspect) const {
   const float base = kOrthoEyeHeightFactor * state_.ortho_scale;
   const float eye_height = eyeHeight();
-  // near is proportional to the zoom (base), NOT the lifted height: the lift
-  // already guarantees geometry above the focal sits in front of the eye, so the
-  // near plane can stay tight to the zoom without re-clipping it (M.8).
+  // Near is proportional to the zoom (base), not the lifted height: the lift already puts geometry above the focal in
+  // front of the eye.
   const float near_plane = 0.01f * base;
-  // far reaches the lowest scene point below the eye (scene-aware), degrading to
-  // the old ~3*base value for a flat scene. lowest_z is bounds.min.z clamped to
-  // the focal so an above-focal scene still gets the +0.5*base flat-scene margin.
+  // Far reaches the lowest scene point below the eye plus a 0.5*base margin; lowest_z is clamped to the focal so a
+  // scene above the focal keeps the margin.
   const float lowest_z = scene_bounds_.valid ? std::min(scene_bounds_.min.z, state_.focal.z) : state_.focal.z;
   const float far_plane = eye_height + (state_.focal.z - lowest_z) + 0.5f * base;
   const float half_w = state_.ortho_scale * aspect;
@@ -386,8 +338,8 @@ void TopDownOrthoCamera::setSceneBounds(const AABB& bounds) {
 }
 
 void TopDownOrthoCamera::followShift(const glm::vec3& world_delta) {
-  // Pan the bird's-eye view with the followed frame; eyeHeight()/near-far derive
-  // from focal so the framing stays consistent as the focal plane tracks z.
+  // Pans the view with the followed frame; eyeHeight() and near/far derive from focal, so framing stays consistent as
+  // the focal plane tracks z.
   state_.focal += world_delta;
 }
 
@@ -396,8 +348,8 @@ void TopDownOrthoCamera::rotate(float dx_pixels, float /*dy_pixels*/) {
 }
 
 void TopDownOrthoCamera::pan(float dx_pixels, float dy_pixels) {
-  // Drag the map: translate the focal in the ground plane. Sensitivity scales with
-  // ortho_scale so a pixel drags the same fraction of the view at any zoom.
+  // Drags the map: translates the focal in the ground plane; sensitivity scales with ortho_scale so a pixel moves the
+  // same fraction of the view at any zoom.
   constexpr float kPanFraction = 0.0025f;
   state_.focal +=
       (-dx_pixels * mapRight(state_.azimuth) + dy_pixels * mapUp(state_.azimuth)) * state_.ortho_scale * kPanFraction;
@@ -413,8 +365,8 @@ void TopDownOrthoCamera::zoomToCursor(float scroll_ticks, glm::vec2 cursor_px, i
     return;
   }
   const float aspect = static_cast<float>(viewport_w) / static_cast<float>(viewport_h);
-  // Ground point under the cursor before and after the scale change; shift the
-  // focal by the difference so it stays pixel-locked (exact, singularity-free).
+  // Ground point under the cursor before and after the scale change; the focal shifts by the difference so it stays
+  // pixel-locked.
   const auto ground_hit = [&](glm::vec2 px) -> glm::vec3 {
     const Ray ray = unprojectRay(px, viewport_w, viewport_h, viewMatrix(), projMatrix(aspect));
     float t = 0.0f;
@@ -450,21 +402,14 @@ void TopDownOrthoCamera::adoptState(const CameraState& state) {
   const CameraState sanitized = sanitizeCameraState(state);
   state_ = sanitized;
   if (sanitized.perspective) {
-    // Coming from a perspective model: seed ortho_scale from the orbit radius so
-    // the bird's-eye shows a comparable area.
+    // From a perspective model: seed ortho_scale from the orbit radius so the view shows a comparable area.
     state_.ortho_scale = std::max(sanitized.radius, 1e-3f);
   }
-  // The model's invariant is a ground-level pivot (reset()/fitToBoundingBox()
-  // enforce it). Adopting an elevated focal.z (e.g. Fly at altitude) would put
-  // the near/far clip range around z=focal.z, far-clipping the whole ground
-  // scene to a blank view (M.9). Flatten the pivot to the floor.
+  // The model's invariant is a ground-level pivot (reset()/fitToBoundingBox() enforce it): an elevated focal.z (e.g.
+  // Fly at altitude) would centre the near/far range on it and far-clip the whole ground scene to a blank view.
   state_.focal.z = 0.0f;
   state_.perspective = false;
 }
-
-// ---------------------------------------------------------------------------
-// FlyCamera — first-person free-look (eye + yaw/pitch, no orbit pivot).
-// ---------------------------------------------------------------------------
 
 FlyCamera::FlyCamera() {
   resetToDefault();
@@ -490,8 +435,8 @@ float FlyCamera::workingDistance() const {
 }
 
 float FlyCamera::motionDistance() const {
-  // Floor the motion-step basis so pan/zoom never collapse near the AABB center,
-  // where workingDistance() → ~0 froze the controls and made zoom() Zeno-decay (M.10).
+  // Floors the motion step so pan/zoom never collapse near the AABB centre, where workingDistance() → ~0 freezes the
+  // controls (zoom() decays Zeno-style).
   return std::max(workingDistance(), kFlyNominalDistance);
 }
 
@@ -508,10 +453,9 @@ glm::mat4 FlyCamera::projMatrix(float aspect) const {
   float near_plane = 0.0f;
   float far_plane = 0.0f;
   adaptiveNearFar(workingDistance(), sceneReach(scene_bounds_, eye_), near_plane, far_plane);
-  // Clamp the near plane small (M.10): distance-to-AABB-center is unrelated to
-  // what is in front of a fly camera, so a peripheral eye in a large scene would
-  // otherwise get a metre-scale near that clips geometry the user flew in to
-  // inspect. Keep the far/near ratio cap for depth precision as the lower bound.
+  // Near is clamped small: distance to the AABB centre says nothing about what is in front of a fly camera, so a
+  // peripheral eye in a large scene would get a metre-scale near that clips geometry the user flew in to inspect. The
+  // far/near ratio cap stays as the lower bound for depth precision.
   near_plane = std::max(std::min(near_plane, 0.05f), far_plane * 1e-5f);
   return glm::perspective(fov_y_, aspect, near_plane, far_plane);
 }
@@ -525,15 +469,13 @@ void FlyCamera::setSceneBounds(const AABB& bounds) {
 }
 
 void FlyCamera::followShift(const glm::vec3& world_delta) {
-  // No orbit pivot: translate the eye; yaw/pitch (view direction) are untouched, so
-  // the flier rides along with the followed frame keeping its heading.
+  // No orbit pivot: translates the eye and keeps yaw/pitch, so the flier keeps its heading while following.
   eye_ += world_delta;
 }
 
 void FlyCamera::rotate(float dx_pixels, float dy_pixels) {
-  // First-person look: dragging turns the camera in place (opposite sign to the
-  // orbit, which drags the scene around its pivot) — drag right looks right,
-  // drag down looks down.
+  // Drag turns the camera in place, opposite in sign to orbit (which drags the scene about its pivot): drag right looks
+  // right.
   yaw_ += dx_pixels / kPixelsPerRadian;
   pitch_ = std::clamp(pitch_ - dy_pixels / kPixelsPerRadian, -kPolarLimit, kPolarLimit);
 }
@@ -561,7 +503,6 @@ void FlyCamera::fitToBoundingBox(const AABB& bounds) {
   if (!bounds.valid) {
     return;
   }
-  // Back off along -forward so the whole box is in view.
   eye_ = aabbCenter(bounds) - forward() * std::max(aabbDiagonal(bounds), 1.0f);
 }
 
@@ -569,11 +510,9 @@ CameraState FlyCamera::state() const {
   CameraState s;
   s.focal = eye_ + forward() * kFlyNominalDistance;  // synthesize a pivot in front (nominal)
   s.radius = kFlyNominalDistance;
-  // CameraState azimuth/elevation parameterize the FOCAL-TO-EYE direction
-  // (OrbitCamera::position() = focal + radius*sphericalDir(az, el)), the REVERSE
-  // of forward(). Emit the reversed direction (H.2) so an orbit/XYOrbit adopting
-  // this state lands its eye on eye_ and looks along the original forward, rather
-  // than teleporting 2*nominal forward and flipping the view 180°.
+  // CameraState azimuth/elevation parameterize the FOCAL-TO-EYE direction (OrbitCamera::position() = focal +
+  // radius*sphericalDir(az, el)), the REVERSE of forward(): emit the reversed direction so an orbit/XYOrbit adopting
+  // this state lands its eye on eye_ and looks along the original forward.
   s.azimuth = wrapToPi(yaw_ + std::numbers::pi_v<float>);
   s.elevation = -pitch_;  // pitch_ is pole-clamped, so -pitch_ is within kPolarLimit
   s.fov_y = fov_y_;
@@ -584,8 +523,7 @@ CameraState FlyCamera::state() const {
 
 void FlyCamera::adoptState(const CameraState& state) {
   const CameraState sanitized = sanitizeCameraState(state);
-  // Carry the projection/look fields verbatim (parity with the other models, which
-  // round-trip fields they don't themselves consume); fov_y_ also drives projMatrix().
+  // Carried verbatim (parity with the other models); fov_y_ also drives projMatrix().
   fov_y_ = sanitized.fov_y;
   ortho_scale_ = sanitized.ortho_scale;
   if (sanitized.perspective) {
@@ -601,10 +539,6 @@ void FlyCamera::adoptState(const CameraState& state) {
     pitch_ = -kPolarLimit;
   }
 }
-
-// ---------------------------------------------------------------------------
-// CameraState JSON (de)serialization (layout persistence).
-// ---------------------------------------------------------------------------
 
 std::string cameraStateToJson(const CameraState& state) {
   const nlohmann::json j{
@@ -625,10 +559,8 @@ CameraState cameraStateFromJson(const std::string& json, const CameraState& fall
     return fallback;  // unparseable / not an object → fallback unchanged
   }
   CameraState state = fallback;
-  // value() throws json::type_error when a key is present with the wrong type
-  // (e.g. a hand-edited layout with "radius":"fast") — allow_exceptions=false
-  // only suppresses *parse* errors, not these. Treat any such field as malformed
-  // and fall back, honoring the tolerant contract.
+  // value() throws json::type_error for a present key of the wrong type (a hand-edited "radius":"fast");
+  // allow_exceptions=false only suppresses parse errors. Such a field is malformed: fall back.
   try {
     if (const auto it = parsed.find("focal"); it != parsed.end() && it->is_array() && it->size() == 3 &&
                                               (*it)[0].is_number() && (*it)[1].is_number() && (*it)[2].is_number()) {
@@ -643,8 +575,7 @@ CameraState cameraStateFromJson(const std::string& json, const CameraState& fall
   } catch (const nlohmann::json::exception&) {
     return fallback;  // wrong-typed field → fallback unchanged
   }
-  // Clamp out-of-range / non-finite values (e.g. "radius":0) before they reach
-  // glm::perspective / glm::lookAt and produce a degenerate view.
+  // Clamps out-of-range or non-finite values (e.g. "radius":0) before they reach glm::perspective / glm::lookAt.
   return sanitizeCameraState(state);
 }
 

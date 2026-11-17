@@ -1,10 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// AppSession drives the on-demand engine (docs/derived_objects/ARCHITECTURE.md §8): the playhead requests every
-// demanded recipe at its dataset's raw time, a display reference (the demand tracker) makes a recipe demanded, a
-// recipe just installed is requested where the cursor is parked, and a pinned finding at its pin. Driven through a
-// real AppSession with the fake script run (`test::FakeRun`) the session's scheduler uses.
+// AppSession drives the on-demand engine (docs/derived_objects/ARCHITECTURE.md "The on-demand pipeline"): the playhead
+// requests every demanded recipe at its dataset's raw time, a display reference (the demand tracker) makes a recipe
+// demanded, a recipe just installed is requested where the cursor is parked, and a pinned finding at its pin. Driven
+// through a real AppSession with the fake script run (`test::FakeRun`) the session's scheduler uses.
 
 #include <gtest/gtest.h>
 
@@ -46,7 +46,7 @@ std::string frameOf(Timestamp query_time) {
   return std::to_string(query_time);
 }
 
-// CUR-10: the playhead requests every demanded recipe at its instant; a revisited instant is a hit (no run, no
+// The playhead requests every demanded recipe at its instant; a revisited instant is a hit (no run, no
 // publication).
 TEST(OnDemandCursorFollowTest, MovingThePlayheadMaterializesEveryRecipeAtThatInstant) {
   CursorFixture fx;
@@ -73,7 +73,7 @@ TEST(OnDemandCursorFollowTest, MovingThePlayheadMaterializesEveryRecipeAtThatIns
   EXPECT_EQ(fx.state("owner/crop")->status, Status::kReady);
 }
 
-// CUR-11, D6: before the first input nothing runs and nothing is written; the state names the input.
+// Before the first input nothing runs and nothing is written; the state names the input.
 TEST(OnDemandCursorFollowTest, AnInstantBeforeTheFirstInputPublishesNothingAndDoesNotThrow) {
   CursorFixture fx;
   fx.install(recipe("crop"));
@@ -86,7 +86,7 @@ TEST(OnDemandCursorFollowTest, AnInstantBeforeTheFirstInputPublishesNothingAndDo
   EXPECT_NE(fx.state("owner/crop")->detail.find("'cloud'"), std::string::npos) << fx.state("owner/crop")->detail;
 }
 
-// CUR-12: a topic displayed before its recipe exists (an embedded scene view) is evaluated at the parked cursor
+// A topic displayed before its recipe exists (an embedded scene view) is evaluated at the parked cursor
 // when the recipe is installed, with no tick.
 TEST(OnDemandCursorFollowTest, UpsertAtAParkedCursorEvaluatesWithoutATick) {
   CursorFixture fx;
@@ -98,7 +98,7 @@ TEST(OnDemandCursorFollowTest, UpsertAtAParkedCursorEvaluatesWithoutATick) {
   EXPECT_EQ(fx.shown("owner/crop3/cropped", 20 * kSec).frame_id, frameOf(20 * kSec));
 }
 
-// CUR-13: an edit of a demanded recipe clears its output and evaluates again at the parked cursor.
+// An edit of a demanded recipe clears its output and evaluates again at the parked cursor.
 TEST(OnDemandCursorFollowTest, EditingADemandedRecipeReEvaluatesWithoutATick) {
   CursorFixture fx;
   fx.install(recipe("crop"));
@@ -115,7 +115,7 @@ TEST(OnDemandCursorFollowTest, EditingADemandedRecipeReEvaluatesWithoutATick) {
   EXPECT_EQ(fx.fake.finished(), 2);
 }
 
-// DEM-01: an undemanded recipe never follows the playhead.
+// An undemanded recipe never follows the playhead.
 TEST(OnDemandCursorFollowTest, OnlyDemandedRecipesFollowThePlayhead) {
   CursorFixture fx;
   fx.install(recipe("crop"));
@@ -127,7 +127,7 @@ TEST(OnDemandCursorFollowTest, OnlyDemandedRecipesFollowThePlayhead) {
   EXPECT_FALSE(fx.state("owner/crop2").has_value()) << "never requested";
 }
 
-// DEM-02: demand arriving while the cursor is parked evaluates now.
+// Demand arriving while the cursor is parked evaluates now.
 TEST(OnDemandCursorFollowTest, DemandArrivingAtAStationaryCursorEvaluatesNow) {
   CursorFixture fx;
   fx.install(recipe("crop2"));
@@ -138,7 +138,7 @@ TEST(OnDemandCursorFollowTest, DemandArrivingAtAStationaryCursorEvaluatesNow) {
   EXPECT_EQ(fx.ring("owner/crop2/cropped"), (std::vector<Timestamp>{20 * kSec}));
 }
 
-// DEM-03 (decided), GAP-09: when demand leaves, the pending request is dropped and the node is idle; the running run
+// When demand leaves, the pending request is dropped and the node is idle; the running run
 // completes and its result enters the history; nothing runs after it.
 TEST(OnDemandCursorFollowTest, DemandLeavingDropsThePendingRequestAndKeepsTheRunningResult) {
   CursorFixture fx;
@@ -162,7 +162,7 @@ TEST(OnDemandCursorFollowTest, DemandLeavingDropsThePendingRequestAndKeepsTheRun
   EXPECT_EQ(fx.fake.started(), 1) << "an undemanded node does not follow the playhead";
 }
 
-// ASY-09 (changed by D30): a seek during a run does not cancel it; the run publishes, then the new instant runs.
+// A seek during a run does not cancel it; the run publishes, then the new instant runs.
 TEST(OnDemandCursorFollowTest, SeekDuringComputeFinishesTheRunAndThenServesTheNewInstant) {
   CursorFixture fx;
   fx.fake.gated = true;
@@ -201,7 +201,7 @@ TEST(OnDemandCursorFollowTest, ASecondConsumerKeepsTheNodeDemanded) {
   EXPECT_EQ(fx.fake.started(), runs);
 }
 
-// PIN-05: a displayed finding is never followed by the playhead.
+// A displayed finding is never followed by the playhead.
 TEST(OnDemandCursorFollowTest, PinnedRecipesAreNotFollowed) {
   CursorFixture fx;
   RecipeGraph::Recipe pinned = recipe("pin");
@@ -219,7 +219,7 @@ TEST(OnDemandCursorFollowTest, PinnedRecipesAreNotFollowed) {
   EXPECT_EQ(fx.state("owner/pin")->requested_t, 20 * kSec);
 }
 
-// PIN-05 (changed by N7/D26): a finding is evaluated once, on install, at its pin, even undisplayed; its single
+// A finding is evaluated once, on install, at its pin, even undisplayed; its single
 // entry sits at the finding timestamp and its payload carries the pinned time.
 TEST(OnDemandCursorFollowTest, PinnedRecipeIsEvaluatedOnInstallOnly) {
   CursorFixture fx;
@@ -238,7 +238,7 @@ TEST(OnDemandCursorFollowTest, PinnedRecipeIsEvaluatedOnInstallOnly) {
   EXPECT_EQ(fx.fake.finished(), 1);
 }
 
-// GAP-33: evaluations, findings and publications never move the playhead.
+// Evaluations, findings and publications never move the playhead.
 TEST(OnDemandCursorFollowTest, EvaluationNeverMovesTheCursor) {
   CursorFixture fx;
   fx.seek(5 * kSec);
@@ -268,7 +268,7 @@ TEST(OnDemandCursorFollowTest, CursorConversionUsesEachDatasetsDisplayOffset) {
   EXPECT_EQ(fx.ring("owner/crop_b/cropped", shifted), (std::vector<Timestamp>{40 * kSec}));
 }
 
-// CUR-07: derived topics (a result, and a finding at the finding timestamp) never move the dataset's range or the
+// Derived topics (a result, and a finding at the finding timestamp) never move the dataset's range or the
 // playback range.
 TEST(OnDemandCursorFollowTest, DerivedTopicsDoNotMoveDatasetBounds) {
   CursorFixture fx;
@@ -294,7 +294,7 @@ TEST(OnDemandCursorFollowTest, DerivedTopicsDoNotMoveDatasetBounds) {
   EXPECT_DOUBLE_EQ(fx.session.playbackEngine().rangeMax().value, 20.0);
 }
 
-// D4 through the session: a recorded string field, named as the catalog names it, is an input, whose topic the
+// A recorded string field, named as the catalog names it, is an input, whose topic the
 // displayed recipe subscribes; the playhead hands the run the state at or before it.
 TEST(OnDemandCursorFollowTest, AStringFieldFollowsThePlayhead) {
   CursorFixture fx;
@@ -524,7 +524,7 @@ TEST(OnDemandCursorFollowTest, ADisplayOffsetChangeRequestsTheNewRawTime) {
   EXPECT_EQ(fx.state("owner/crop")->requested_t, 20 * kSec);
 }
 
-// DEM-05: a scene layer's display reference (the AppSession tracker) reaches the on-demand demand set.
+// A scene layer's display reference (the AppSession tracker) reaches the on-demand demand set.
 TEST(AppSessionTest, SceneLayerReferenceReachesTheOnDemandDemandSet) {
   CursorFixture fx;
   fx.install(recipe("crop"));

@@ -6,10 +6,9 @@ name: Release Linux packages
 # artifacts the Windows installer bundles. The Linux sibling of
 # windows-release.yml.
 #
-# Architecture (2026-07 redesign, docs/plans/2026-07-16-appimage-ci-redesign.md;
-# .deb addition, docs/plans/2026-08-03-debian-packaging.md):
-#   * appimage job: runs INSIDE ghcr.io/plotjuggler/pj4-appimage-builder
-#     (Ubuntu 22.04 / glibc 2.35 — hosted 22.04 runners retire 2027-04,
+# Jobs:
+#   * appimage job: runs INSIDE the builder image appimage-builder-image.yml
+#     publishes (Ubuntu 22.04 / glibc 2.35 — hosted 22.04 runners retire 2027-04,
 #     actions/runner-images#14254, so the floor lives in the container, not the
 #     runner label). Third-party Conan binaries restore from the actions/cache
 #     closure (seeded by linux-ci), with ConanCenter source builds as fallback;
@@ -37,7 +36,7 @@ name: Release Linux packages
 # Triggers:
 #   - workflow_dispatch          -> build from any branch (artifacts only, no Release upload)
 #   - push of a version tag      -> build + attach both artifacts to that tag's Release
-#     (e.g. `3.9.1` — no leading 'v')
+#     (e.g. `4.2.0` — no leading 'v')
 
 on:
   workflow_dispatch:
@@ -166,8 +165,8 @@ jobs:
       - name: Configure ccache
         # compiler_check=content + hash_dir=false + base_dir make object hashes
         # independent of the compiler binary's mtime and of the workspace root,
-        # so this container job (/__w/PJ4/PJ4) and linux-ci's runner job
-        # (/home/runner/work/PJ4/PJ4) hit each other's objects. Trade-off:
+        # so this container job (/__w/PlotJuggler/PlotJuggler) and linux-ci's runner job
+        # (/home/runner/work/PlotJuggler/PlotJuggler) hit each other's objects. Trade-off:
         # cached objects may embed the sibling workspace path in debug info.
         shell: bash
         run: |
@@ -208,7 +207,7 @@ jobs:
 
       - name: Conan install (app graph)
         # Resolve/build the app dependency graph up front so it can be
-        # published immediately — a later compile failure must not discard an
+        # saved to the cache immediately — a later compile failure must not discard an
         # otherwise reusable closure. The ./build.sh below re-resolves the
         # same graph, which is then a fast no-op.
         id: conan_install
@@ -292,11 +291,11 @@ jobs:
           echo "appimage_name=$(basename "$appimage_path")" >> "$GITHUB_OUTPUT"
 
       - name: Self-test the packaged Python backend
-        # The only step in any release flow that RUNS the AppImage. Everything else
-        # inspects it statically, which is why a Python backend that could not import
-        # its own stdlib shipped unnoticed. Covers the whole packaging contract at
-        # once: the bundled libpython resolves, PYTHONHOME points at the bundled
-        # stdlib, lib-dynload made it into the AppDir, and the import allowlist holds.
+        # The only step in this job that RUNS the AppImage; the others inspect it
+        # statically, which cannot catch a Python backend that fails to import its own
+        # stdlib. Covers the whole packaging contract at once: the bundled libpython
+        # resolves, PYTHONHOME points at the bundled stdlib, lib-dynload made it into
+        # the AppDir, and the import allowlist holds.
         # No display or QT_QPA_PLATFORM needed: --selftest-python is handled
         # before QApplication exists (see pj_app/src/main.cpp).
         shell: bash
@@ -541,8 +540,7 @@ jobs:
     #
     # Skipped entirely unless PJ4_APT_PUBLIC_URL is set (the `secrets` context
     # is not available in a job-level `if`, so the repo variable is what gates
-    # it). A fork, or this repo before the bucket exists, therefore releases
-    # exactly as it did before.
+    # it). A fork therefore releases without publishing.
     needs: [appimage, smoke, deb-release]
     if: startsWith(github.ref, 'refs/tags/') && vars.PJ4_APT_PUBLIC_URL != ''
     runs-on: ubuntu-latest

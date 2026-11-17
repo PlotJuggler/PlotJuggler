@@ -143,8 +143,8 @@ TEST(HeaderDividerHighlight, TheLastSectionsEdgeIsNotAdvertisedAsResizable) {
 TEST(HeaderDividerHighlight, HiddenSectionsAreSkippedWhenLocatingTheGrip) {
   Fixture f;
   f.header->hideSection(1);
-  // With column 1 hidden, column 0's right edge now abuts column 2, so it stays
-  // a real boundary; column 2 is last, so its edge stays inert.
+  // With column 1 hidden, column 0's right edge abuts column 2 and stays a real boundary; column 2 is last, so its edge
+  // stays inert.
   f.sendMouse(QEvent::MouseMove, f.edgeOf(0));
   EXPECT_TRUE(f.overlay->isVisibleTo(f.viewport));
 

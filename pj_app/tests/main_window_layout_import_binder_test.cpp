@@ -1,25 +1,16 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// GUI suite for the T7 binder shell work (D1/D3/D6/D7/D8/D9): the title-bar
-// ingest strip's DISPLAYED OWNER, the batch-scoped SessionManager
-// observation, the batch job's keep-partial Stop route, the #498
-// coexistence rules, and the D6 REAL-SURFACE progressive legs. Two fake
-// disciplines coexist here:
-//   * announce-then-block (Task 1) parks a job with a scripted counter
-//     DatasetId; those scenarios drive SessionManager::begin/update/endIngest
-//     directly (the alive-test out-of-band pattern) — deterministic and
-//     sufficient for presentation/arbitration semantics.
-//   * progressive / progressive-promoted (Task 3, the headline) drive the
-//     REAL bound host services from the job worker — createDataSource ->
-//     on_dataset(real id) -> createDatasetIngest/progressStart -> write-host
-//     topic/field/record -> ONE progressUpdate tick -> park — so the strip,
-//     the observers, and the mid-import curve binding are exercised through
-//     the production headless-session -> SessionManager chain with zero
-//     driven signals.
-//
-// One MainWindow per binary; the scenarios share it fold-test style and
-// clean up their driven ingests, seams, and panels.
+// GUI suite for the layout-import binder shell work: the title-bar ingest strip's displayed owner, the
+// batch-scoped SessionManager observation, the batch job's keep-partial Stop route, coexistence with a busy pinned
+// panel, and the progressive legs through the real host surfaces. Two fake disciplines coexist:
+//   * announce-then-block parks a job with a scripted counter DatasetId; those cases drive
+//     SessionManager::begin/update/endIngest directly (deterministic, enough for presentation/arbitration).
+//   * progressive / progressive-promoted drive the real bound host services from the job worker: createDataSource ->
+//     on_dataset(real id) -> createDatasetIngest/progressStart -> write-host topic/field/record -> one progressUpdate
+//     tick -> park, so the strip, the observers and the mid-import curve binding run through the production
+//     headless-session -> SessionManager chain with no driven signals.
+// One MainWindow per binary; the cases share it and clean up their driven ingests, seams and panels.
 
 #include <gtest/gtest.h>
 
@@ -67,8 +58,7 @@ using StripOwnerKind = Peer::StripOwnerKind;
 // far beyond int range, so the bar tracks permille of total.
 constexpr int kProgressResolution = 1000;
 
-// Minimal applyable layout with no data sources at all — the D7 "plain
-// layout" (no <materialize> anywhere -> no batch, no observers).
+// Minimal applyable layout with no data sources: no <materialize> anywhere, so no batch and no observers.
 [[nodiscard]] QDomDocument buildGenericLayoutDoc() {
   QDomDocument doc;
   QDomElement root = doc.createElement(QStringLiteral("root"));
@@ -110,9 +100,8 @@ void appendMaterializeFileInfo(QDomDocument& doc, const QString& path, const QSt
   wrapper.appendChild(file_info);
 }
 
-// One MainWindow per binary: the shell leaks process-global widget state
-// across instances, so every scenario shares this one and cleans up after
-// itself (driven ingests ended, seams reset, panels released).
+// One MainWindow per binary: the shell leaks process-global widget state across instances, so every case shares
+// this one and cleans up after itself (driven ingests ended, seams reset, panels released).
 class MainWindowLayoutImportBinderTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
@@ -120,9 +109,8 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
     project_dir_ = std::make_unique<QTemporaryDir>();
     ASSERT_TRUE(extensions_dir_->isValid());
     ASSERT_TRUE(project_dir_->isValid());
-    // Stage the mock source plugin BEFORE the window scans the extensions
-    // dir: the D4 promotion leg promotes through the real FileLoader replace
-    // transaction with this stock loader.
+    // Stage the mock source plugin before the window scans the extensions dir: the promotion case promotes through
+    // the real FileLoader replace transaction with this stock loader.
     const QString plugin_src = QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH);
     ASSERT_TRUE(QFile::copy(plugin_src, extensions_dir_->filePath(QFileInfo(plugin_src).fileName())))
         << "could not stage " << plugin_src.toStdString();
@@ -146,20 +134,18 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    // Unconditional (an ASSERT abort must not leak seams/panels into the
-    // next scenario). Busy is off before the forced close so no pinned
-    // panel can veto it; the seam closures capture this fixture instance,
-    // which outlives the reset below.
+    // Unconditional (an ASSERT abort must not leak seams/panels into the next case). Busy is off before the forced
+    // close so no pinned panel can veto it; the seam closures capture this fixture instance, which outlives the reset
+    // below.
     panel_busy_ = false;
     Peer::teardownAllToolboxes(window());
     if (QWidget* released = Peer::releaseCentralPanel(window()); released != nullptr) {
       delete released;
     }
     Peer::setHostSeams(window(), {}, {}, {});
-    // A scenario's final driven end has no production handler, so it can
-    // leave a stale displayed owner AND an engaged strip (fired show timer /
-    // pending timers) behind (see resetStripState) — reset the whole strip
-    // surface so the scenarios stay order-independent under gtest shuffle.
+    // A case's final driven end has no production handler, so it can leave a stale displayed owner and an engaged
+    // strip (fired show timer / pending timers) behind (see resetStripState): reset the whole strip surface so the
+    // cases stay order-independent under gtest shuffle.
     Peer::resetStripState(window());
   }
 
@@ -173,11 +159,9 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
     return appSession().sessionManager();
   }
 
-  // The ingest API is addressed by IngestToken, but every scenario below is
-  // written in terms of the dataset the batch announced. These remember the
-  // token minted for each dataset so the tests keep reading as "this dataset
-  // progressed", exactly as the production callbacks do via their own per-
-  // dataset token maps. Cleared per test by the fixture's SetUp.
+  // The ingest API is addressed by IngestToken, but the cases are written in terms of the dataset the batch
+  // announced: these remember the token minted for each dataset, as the production callbacks do with their
+  // per-dataset token maps. Cleared per test by SetUp.
   static PJ::IngestToken beginIngestFor(PJ::DatasetId dataset, const QString& label, quint64 total) {
     const PJ::IngestToken token = sessionManager().beginIngest(dataset, label, total, /*cancellable=*/false, {});
     ingest_tokens_[dataset] = token;
@@ -193,9 +177,8 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
 
   static inline QHash<PJ::DatasetId, PJ::IngestToken> ingest_tokens_;
 
-  // Missing-source materialize layout whose import job announces its dataset
-  // and then PARKS on the resume gate; loads it kAutomated and waits for the
-  // announced id (0 = the job never got there).
+  // Missing-source materialize layout whose import job announces its dataset and then parks on the resume gate;
+  // loads it kAutomated and waits for the announced id (0 = the job never got there).
   [[nodiscard]] static PJ::DatasetId startParkedBatchJob(const QString& stem) {
     const QString source = project_dir_->filePath(QStringLiteral("data/%1.mcap").arg(stem));
     const QString layout = project_dir_->filePath(QStringLiteral("%1.pj4.xml").arg(stem));
@@ -221,11 +204,9 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
     flushQueuedEvents();
   }
 
-  // Descriptor for the D6 real-surface progressive modes. `topic` is what
-  // the job publishes through the real write host mid-job; `materialized`
-  // overrides the fake's cache verdict independent of the filesystem (the
-  // promotion leg pre-creates its artifact yet must still classify as a
-  // MISS so the import job runs).
+  // Descriptor for the progressive modes. `topic` is what the job publishes through the real write host mid-job;
+  // `materialized` overrides the fake's cache verdict independent of the filesystem (the promotion case pre-creates
+  // its artifact yet must still classify as a MISS so the import job runs).
   [[nodiscard]] static QString makeProgressiveDescriptor(
       const QString& name, const QString& path, const QString& topic, bool promoted,
       std::optional<bool> materialized = std::nullopt) {
@@ -242,10 +223,9 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
     return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
   }
 
-  // Writes a layout whose single curve references `curve_topic` and whose
-  // <materialize> descriptor is `descriptor`, then loads it kAutomated. The
-  // progressive job announces its REAL dataset, publishes one record, ticks
-  // once, and parks on the resume gate — settleRestore() releases it.
+  // Writes a layout whose single curve references `curve_topic` and whose <materialize> descriptor is `descriptor`,
+  // then loads it kAutomated. The progressive job announces its real dataset, publishes one record, ticks once, and
+  // parks on the resume gate; settleRestore() releases it.
   static void loadProgressiveLayout(
       const QString& stem, const QString& curve_topic, const QString& source, const QString& descriptor) {
     const QString layout = project_dir_->filePath(QStringLiteral("%1.pj4.xml").arg(stem));
@@ -264,8 +244,8 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
     return metadata.has_value() ? static_cast<std::int64_t>(metadata->total_row_count) : -1;
   }
 
-  // Seam-driven pinned-panel state for the D9 scenario (fixture members, not
-  // locals: the closures must outlive an ASSERT abort until TearDown).
+  // Seam-driven pinned-panel state for the pinned-panel case (fixture members, not locals: the closures must
+  // outlive an ASSERT abort until TearDown).
   bool panel_busy_ = false;
   bool confirm_shown_ = false;
   std::vector<PJ::ToolboxRuntimeHost*> stopped_hosts_;
@@ -283,10 +263,9 @@ class MainWindowLayoutImportBinderTest : public ::testing::Test {
   inline static QStringList diagnostic_ids_;
 };
 
-// (a) D1/D7/D8: the batch job's driven ingest displays under layout-batch
-// ownership; observers exist exactly while the batch does.
+// The batch job's driven ingest displays under layout-batch ownership; observers exist exactly while the batch does.
 TEST_F(MainWindowLayoutImportBinderTest, BatchIngestDisplaysOnStripAndObserversAreBatchScoped) {
-  EXPECT_EQ(Peer::batchObserverCount(window()), 0) << "no batch yet -> no observers (D7)";
+  EXPECT_EQ(Peer::batchObserverCount(window()), 0) << "no batch yet -> no observers";
 
   const PJ::DatasetId dataset = startParkedBatchJob(QStringLiteral("a"));
   ASSERT_NE(dataset, 0u);
@@ -311,10 +290,10 @@ TEST_F(MainWindowLayoutImportBinderTest, BatchIngestDisplaysOnStripAndObserversA
 
   settleRestore();
   EXPECT_EQ(Peer::batch(window()), nullptr);
-  EXPECT_EQ(Peer::batchObserverCount(window()), 0) << "observers must die with the batch (D1/D7)";
+  EXPECT_EQ(Peer::batchObserverCount(window()), 0) << "observers must die with the batch";
 }
 
-// (c) D7: a layout with no <materialize> traverses zero binder code.
+// A layout with no <materialize> traverses no binder code.
 TEST_F(MainWindowLayoutImportBinderTest, PlainLayoutTraversesZeroBinderCode) {
   const QString layout = project_dir_->filePath(QStringLiteral("plain-c.pj4.xml"));
   ASSERT_TRUE(fake::writeLayoutFile(layout, buildGenericLayoutDoc()));
@@ -328,9 +307,8 @@ TEST_F(MainWindowLayoutImportBinderTest, PlainLayoutTraversesZeroBinderCode) {
   EXPECT_FALSE(Peer::stripEngaged(window()));
 }
 
-// (b) D3: the strip's Stop with the batch job displayed cancels exactly the
-// active job (keep-partial), and the batch continues to its next job — the
-// restore then COMMITS (retain+diagnose), never the rollback unwind.
+// The strip's Stop with the batch job displayed cancels exactly the active job (keep-partial) and the batch
+// continues to its next job; the restore then commits (retain+diagnose), never the rollback unwind.
 TEST_F(MainWindowLayoutImportBinderTest, StripStopRoutesToActiveJobKeepPartialAndBatchContinues) {
   const QString first_source = project_dir_->filePath(QStringLiteral("data/b-first.mcap"));
   const QString second_source = project_dir_->filePath(QStringLiteral("data/b-second.mcap"));
@@ -366,9 +344,8 @@ TEST_F(MainWindowLayoutImportBinderTest, StripStopRoutesToActiveJobKeepPartialAn
   EXPECT_GE(diagnostic_ids_.count(QStringLiteral("layout-import-cancelled")), 1)
       << "the active job must reach its kCancelled terminal; ids seen: "
       << diagnostic_ids_.join(QStringLiteral(", ")).toStdString();
-  // The commit-drain pair: the cancelled-batch UNWIND (a rollback) clears the
-  // binder and never runs the unresolved-curves finalization — seeing both
-  // proves the keep-partial route, not batch->cancel().
+  // The cancelled-batch unwind (a rollback) clears the binder and never runs the unresolved-curves finalization;
+  // seeing both proves the keep-partial route, not batch->cancel().
   EXPECT_TRUE(diagnostic_ids_.contains(QStringLiteral("layout-import-unresolved-curves")))
       << "ids seen: " << diagnostic_ids_.join(QStringLiteral(", ")).toStdString();
   EXPECT_FALSE(Peer::binderEmpty(window())) << "the retained intent proves the commit path (no rollback)";
@@ -376,10 +353,9 @@ TEST_F(MainWindowLayoutImportBinderTest, StripStopRoutesToActiveJobKeepPartialAn
   EXPECT_EQ(Peer::batchObserverCount(window()), 0);
 }
 
-// (d) D8 arbitration (rule documented at MainWindow's owner state): the
-// newest begin takes the strip, an interactive ingest always outranks the
-// background batch, Stop routes to the DISPLAYED owner only, and the ending
-// displayed ingest hands the strip to the survivor with ITS label/progress.
+// Arbitration (rule: MainWindow's strip owner state): the newest begin takes the strip, an interactive ingest
+// always outranks the background batch, Stop routes to the displayed owner only, and the ending displayed ingest
+// hands the strip to the survivor with its label/progress.
 TEST_F(MainWindowLayoutImportBinderTest, InteractiveIngestOutranksBatchAndStripSwitchesToSurvivor) {
   const PJ::DatasetId batch_dataset = startParkedBatchJob(QStringLiteral("d"));
   ASSERT_NE(batch_dataset, 0u);
@@ -426,17 +402,11 @@ TEST_F(MainWindowLayoutImportBinderTest, InteractiveIngestOutranksBatchAndStripS
   EXPECT_EQ(Peer::batchObserverCount(window()), 0);
 }
 
-// (f) D1 teardown ordering: a superseding load mid-ingest disconnects the
-// observers and clears strip ownership BEFORE the batch dies, and the strip
-// is handed to the surviving interactive ingest. Runs before the D9
-// scenario: its final driven END has no production route while no batch is
-// active (real ends go through the interactive host callback), so the
-// displayed owner it leaves behind is a test artifact — tolerable for D9's
-// fold/pin assertions, but this scenario's owner assertions must not
-// inherit one.
+// A superseding load mid-ingest disconnects the observers and clears strip ownership before the batch dies, and the
+// strip is handed to the surviving interactive ingest.
 TEST_F(MainWindowLayoutImportBinderTest, SupersedeMidIngestClearsObserversAndReselectsSurvivor) {
-  // The interactive ingest exists BEFORE the batch: with no observers and no
-  // interactive host callback in the loop, nothing displays it yet.
+  // The interactive ingest exists before the batch: with no observers and no interactive host callback in the loop,
+  // nothing displays it yet.
   const PJ::DatasetId interactive = pj_test::createDataset(appSession(), "inter-f");
   ASSERT_NE(interactive, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), interactive, "/inter-f"), 0u);
@@ -449,9 +419,8 @@ TEST_F(MainWindowLayoutImportBinderTest, SupersedeMidIngestClearsObserversAndRes
   ASSERT_EQ(Peer::stripOwnerKind(window()), StripOwnerKind::kLayoutBatch);
   ASSERT_EQ(Peer::batchObserverCount(window()), 3);
 
-  // A second layout load supersedes the restore MID-INGEST (batch hard
-  // shutdown): observers off + ownership handed to the survivor before the
-  // batch dies, and the loop keeps running safely afterwards.
+  // A second layout load supersedes the restore mid-ingest (batch hard shutdown): observers off and ownership handed
+  // to the survivor before the batch dies, and the loop keeps running safely afterwards.
   const QString generic = project_dir_->filePath(QStringLiteral("generic-f.pj4.xml"));
   ASSERT_TRUE(fake::writeLayoutFile(generic, buildGenericLayoutDoc()));
   Peer::loadLayout(window(), generic, /*interactive=*/false);
@@ -473,9 +442,8 @@ TEST_F(MainWindowLayoutImportBinderTest, SupersedeMidIngestClearsObserversAndRes
   endIngestFor(interactive);
 }
 
-// (e) D9: a headless batch job never traverses the panel-fold path, and the
-// batch drain leaves a busy pinned interactive panel — and a concurrent
-// interactive ingest — untouched (#498 coexistence).
+// A headless batch job never traverses the panel-fold path, and the batch drain leaves a busy pinned interactive
+// panel, and a concurrent interactive ingest, untouched.
 TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisplacesBusyPinnedPanel) {
   Peer::setHostSeams(
       window(),
@@ -486,14 +454,14 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
       [this](PJ::ToolboxRuntimeHost* host) { return host == pinnedHostToken() && panel_busy_; },
       [this](PJ::ToolboxRuntimeHost* host) { stopped_hosts_.push_back(host); });
 
-  // A busy pinned panel (the :8950 restore guard's subject)...
+  // A busy pinned panel (what the restore's pinned-toolbox-busy guard retains)...
   Peer::moveToTab(
       window(), new QWidget, QStringLiteral("binder-e-pinned"), QStringLiteral("Pinned"), pinnedHostToken());
   ASSERT_TRUE(Peer::isPinned(window(), QStringLiteral("binder-e-pinned")));
   panel_busy_ = true;
 
-  // ...plus a toolbox in the chart-area takeover (the interactive ingest-start
-  // fold's only target) and a concurrent driven interactive ingest.
+  // ...plus a toolbox in the chart-area takeover (the interactive ingest-start fold's only target) and a concurrent
+  // driven interactive ingest.
   const QString takeover_id = QStringLiteral("binder-e-takeover");
   ASSERT_TRUE(Peer::dockBare(window(), new QWidget, takeover_id, QStringLiteral("Takeover"), nullptr));
   const PJ::DatasetId interactive = pj_test::createDataset(appSession(), "inter-e");
@@ -509,7 +477,7 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
   beginIngestFor(batch_dataset, QStringLiteral("batch-e"), 0);
   updateIngestFor(batch_dataset, 1, 2);
   EXPECT_TRUE(Peer::isTakeover(window(), takeover_id))
-      << "a headless batch ingest must never traverse the panel-fold path (D9)";
+      << "a headless batch ingest must never traverse the panel-fold path";
 
   endIngestFor(batch_dataset);
   settleRestore();
@@ -527,22 +495,19 @@ TEST_F(MainWindowLayoutImportBinderTest, HeadlessBatchJobNeverFoldsPanelsNorDisp
   endIngestFor(interactive);
 }
 
-// (g) THE HEADLINE PIN (D6): a retained curve intent binds WHILE the import
-// job grows, through the REAL host surfaces only — the job worker creates
-// the dataset via the bound write host, announces it, publishes one record,
-// ticks the real ingest once, and parks. No SessionManager signal is driven
-// by the test; the strip lights up and the curve binds through the
-// production headless-session -> SessionManager -> CatalogModel chain. The
-// drain-time half of this guarantee stays pinned by
-// MissImportKeepsRestoreAliveAndBindsAtDrain (unchanged).
+// A retained curve intent binds while the import job grows, through the real host surfaces only: the job worker
+// creates the dataset via the bound write host, announces it, publishes one record, ticks the real ingest once, and
+// parks. The test drives no SessionManager signal; the strip lights up and the curve binds through the production
+// headless-session -> SessionManager -> CatalogModel chain. The drain-time half is pinned by
+// MissImportKeepsRestoreAliveAndBindsAtDrain.
 TEST_F(MainWindowLayoutImportBinderTest, ProgressiveImportBindsCurveMidJobThroughRealHostSurfaces) {
   const QString source = project_dir_->filePath(QStringLiteral("data/prog.mcap"));  // never exists: a MISS
   loadProgressiveLayout(
       QStringLiteral("prog"), QStringLiteral("/curve-prog"), source,
       makeProgressiveDescriptor(QStringLiteral("prog"), source, QStringLiteral("/curve-prog"), /*promoted=*/false));
 
-  // The curve must bind MID-JOB: the job is parked on its gate, so a binder
-  // that only completes at drain would never satisfy this wait.
+  // The curve must bind mid-job: the job is parked on its gate, so a binder that only completes at drain would never
+  // satisfy this wait.
   ASSERT_TRUE(pumpUntil([]() { return Peer::totalCurveCount(window()) == 1; }))
       << "the curve must bind while the import job is still running";
 
@@ -572,11 +537,8 @@ TEST_F(MainWindowLayoutImportBinderTest, ProgressiveImportBindsCurveMidJobThroug
       << diagnostic_ids_.join(QStringLiteral(", ")).toStdString();
 }
 
-// (h) D2 ordering pin: on_dataset's GUI delivery (which installs the batch
-// correlation) precedes the first ingestBegan delivery for that dataset —
-// the consult-verified ABI/marshal order (same worker, same GUI queue,
-// posted in order). Pinned so a future marshalling change fails here
-// instead of silently breaking the exact-id filtering.
+// on_dataset's GUI delivery (which installs the batch correlation) must precede the first ingestBegan delivery for
+// that dataset, or the exact-id filtering breaks.
 TEST_F(MainWindowLayoutImportBinderTest, OnDatasetCorrelationPrecedesFirstIngestBeganDelivery) {
   struct Probe {
     bool seen = false;
@@ -604,21 +566,18 @@ TEST_F(MainWindowLayoutImportBinderTest, OnDatasetCorrelationPrecedesFirstIngest
 
   ASSERT_TRUE(pumpUntil([probe]() { return probe->seen; })) << "the real ingest never began";
   EXPECT_TRUE(probe->correlated)
-      << "activeImportDataset() must already equal the id when its first ingestBegan is delivered (D2)";
+      << "activeImportDataset() must already equal the id when its first ingestBegan is delivered";
 
   settleRestore();
 }
 
-// (i) D4: a promoted progressive job runs the REAL promotion transaction —
-// SourcePromotionHostView against the staged mock_file_source_plugin, the
-// FileLoader replace pipeline, kSucceededPromoted only after the async
-// result reports ok. The mid-import-bound curve must survive the replace:
-// DatasetId AND TopicId stay stable through beginRefill, and the artifact's
-// rows stand in place of the eager ones.
+// A promoted progressive job runs the real promotion transaction: SourcePromotionHostView against the staged
+// mock_file_source_plugin, the FileLoader replace pipeline, kSucceededPromoted only after the async result reports
+// ok. The mid-import-bound curve must survive the replace: DatasetId and TopicId stay stable through beginRefill,
+// and the artifact's rows stand in place of the eager ones.
 TEST_F(MainWindowLayoutImportBinderTest, PromotedProgressiveJobSurvivesRealPromotionTransaction) {
-  // The artifact EXISTS up front (as if a download had produced it), but the
-  // scripted verdict says not-materialized so the source still classifies as
-  // a MISS and the import job runs.
+  // The artifact exists up front (as if a download had produced it), but the scripted verdict says not-materialized
+  // so the source still classifies as a MISS and the import job runs.
   ASSERT_TRUE(QDir(project_dir_->path()).mkpath(QStringLiteral("data")));
   const QString source = project_dir_->filePath(QStringLiteral("data/promo.mock"));
   {
@@ -653,9 +612,8 @@ TEST_F(MainWindowLayoutImportBinderTest, PromotedProgressiveJobSurvivesRealPromo
   EXPECT_EQ(Peer::totalCurveCount(window()), 1) << "the mid-import-bound curve must survive the replace";
   EXPECT_TRUE(Peer::binderEmpty(window()));
 
-  // kSucceededPromoted, not eager-only: the promotion attached the source
-  // record (provider identity HOST-DERIVED from the binding) and the
-  // eager-only degradation diagnostic must be absent.
+  // kSucceededPromoted, not eager-only: the promotion attached the source record (provider identity host-derived
+  // from the binding) and the eager-only degradation diagnostic must be absent.
   const PJ::SourceRecord* record = sessionManager().sourceRecord(dataset);
   ASSERT_NE(record, nullptr) << "a successful promotion must attach the source record";
   EXPECT_EQ(record->provider_id, QString::fromUtf8(fake::kProviderId));
@@ -668,12 +626,9 @@ TEST_F(MainWindowLayoutImportBinderTest, PromotedProgressiveJobSurvivesRealPromo
   EXPECT_EQ(diagnostic_ids_.count(QStringLiteral("layout-import-cancelled")), 0);
 }
 
-// (j) Out-of-band pure binder regression net (explicitly NON-headline, the
-// only scenario allowed to inject rows instead of driving the real write
-// host): with an announce-then-block job parked, rows injected via the
-// datastore helpers plus a driven SessionManager lifecycle must bind the
-// retained intent mid-import — the binder logic alone, isolated from the
-// D6 plugin-side machinery.
+// Out-of-band binder check, the only case allowed to inject rows instead of driving the real write host: with an
+// announce-then-block job parked, rows injected via the datastore helpers plus a driven SessionManager lifecycle must
+// bind the retained intent mid-import; the binder logic alone, isolated from the plugin-side machinery.
 TEST_F(MainWindowLayoutImportBinderTest, OutOfBandRowsBindPendingCurveMidImport) {
   const PJ::DatasetId announced = startParkedBatchJob(QStringLiteral("oob"));
   ASSERT_NE(announced, 0u);

@@ -1,69 +1,48 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Frame budgets of the Scene3D view (Gate A, TECHNICAL_NOTES §9). Each
-// case builds a real Scene3DDockWidget scene through public APIs, drives frames
-// and prints one line:
+// Frame budgets of the Scene3D view (docs/TECHNICAL_NOTES.md "Performance baseline"). Each case builds a real
+// Scene3DDockWidget scene through public APIs, drives frames and prints one line:
 //
 //   S3D_BENCH case=<name> build=rhi backend=<API> device="<adapter>" frames=N
-//     wall_ms=<median per frame> wall_min wall_p90 wall_max cpu_ms=<GUI-thread
-//     CPU per frame, mean> cpu_p50 cpu_p90 faults=<minor page faults per frame,
-//     median> ingest_ms ingest_cpu_ms rss_mib hwm_mib gpu_drm_mib gpu_vma_mib
-//     idle_frames first_show_ms cpu_mhz cold_ms warmup_frames warmup_ms gpu_mhz
-//     window_ns=<begin>-<end> [stages_ms=...] [case extras]
+//     wall_ms=<median per frame> wall_min wall_p90 wall_max cpu_ms=<GUI-thread CPU per frame, mean> cpu_p50 cpu_p90
+//     faults=<minor page faults per frame, median> ingest_ms ingest_cpu_ms rss_mib hwm_mib gpu_drm_mib gpu_vma_mib
+//     idle_frames first_show_ms cpu_mhz cold_ms warmup_frames warmup_ms gpu_mhz window_ns=<begin>-<end>
+//     [stages_ms=...] [case extras]
 //
 // wall is request-to-finished-frame (QRhiWidget::frameSubmitted); frames are driven back to back, so a GPU-bound case
-// reports its throughput. The measured frames follow a time-based warm-up
-// (pj_bench::WarmUp: at least 250 ms, 5 steady frames and a settled GPU clock,
-// at most 120 frames; warmup_frames, warmup_ms, and gpu_mhz at its end); cold_ms is the first
-// warm-up frame, the first interaction after a second of idle, when the GPU
-// clock is still low; gpu_mhz_range is the clock over the measured frames (i915
-// can still raise it among them). cpu and faults cover the same span as wall. A case
-// that feeds new data per frame (CloudStream) ingests it untimed before the
-// request; ingest_ms / ingest_cpu_ms report that ingestion (median wall, mean
-// GUI-thread CPU), apart from the frame. rss/hwm: VmRSS and its peak since
-// show() (Linux). gpu_drm_mib: the DRM driver's per-process total (Linux fdinfo;
-// n/a on software rasterizers and the NVIDIA driver); gpu_vma_mib: the
-// top-level QRhi's allocator (Vulkan). idle_frames: frames the settled view
-// still rendered in 1 s, required to be 0: its full render() calls (test
-// hooks), not frameSubmitted, which Qt also emits when it only composites the
-// retained texture (a repaint elsewhere in the window). cpu_mhz: the
-// mean scaling_cur_freq at the report. window_ns: the measured span in
-// CLOCK_MONOTONIC ns, to cut a `perf record -k CLOCK_MONOTONIC` profile to it.
+// reports its throughput. The measured frames follow a time-based warm-up (pj_bench::WarmUp: at least 250 ms, 5 steady
+// frames and a settled GPU clock, at most 120 frames); cold_ms is its first frame, the first interaction after a
+// second of idle, when the GPU clock is still low; gpu_mhz_range is the clock over the measured frames (i915 can still
+// raise it among them). cpu and faults cover the same span as wall. A case that feeds new data per frame (CloudStream)
+// ingests it untimed before the request and reports it apart (ingest_ms, mean GUI-thread ingest_cpu_ms). rss/hwm:
+// VmRSS and its peak since show() (Linux). gpu_drm_mib: the DRM driver's per-process total (Linux fdinfo; n/a on
+// software rasterizers and the NVIDIA driver); gpu_vma_mib: the top-level QRhi's allocator (Vulkan). idle_frames: full
+// render() calls (test hooks) the settled view still made in 1 s, required to be 0 (frameSubmitted would not do: Qt
+// also emits it when it only composites the retained texture). cpu_mhz: the mean scaling_cur_freq at the report.
+// window_ns: the measured span in CLOCK_MONOTONIC ns, to cut a `perf record -k CLOCK_MONOTONIC` profile to it.
 //
-// QSG_RHI_PROFILE=1 adds gpu_ms (the view's GPU time per frame,
-// QRhi timestamps; the profiling itself slows the frame), PJ_S3D_BENCH_NO_HDR=1
-// forces the direct pass (no HDR chain), PJ_S3D_BENCH_NO_SHADOWS=1 turns
-// shadows off and PJ_S3D_BENCH_NO_SSAO=1 / PJ_S3D_BENCH_NO_EDL=1 those stages,
-// all for attributing a GPU-bound frame, not for Gate A.
+// QSG_RHI_PROFILE=1 adds gpu_ms (the view's GPU time per frame; the profiling slows the frame). PJ_S3D_BENCH_NO_HDR=1
+// forces the direct pass, PJ_S3D_BENCH_NO_SHADOWS=1 turns shadows off and PJ_S3D_BENCH_NO_SSAO=1 / _NO_EDL=1 those
+// stages: for attributing a GPU-bound frame, not for the budget checks.
 //
-// stages_ms (with PJ_RHI_TEST_HOOKS): per-frame medians of step (the
-// case's own work before update()), sched (update() to render()), targets (HDR
-// chain), admit (layers' prepareForRender(): synchronous decode and pack,
-// placement), prepare (streams, upload enqueue, uniforms), submit (pass
-// recording) and present (render() end to frameSubmitted: on OpenGL the command
-// execution with its buffer uploads, then the swap). The dock and first-show
-// cases split their first frame the same way, with init (initialize()'s base
-// build: every family's pipelines). A dock move or first show can run several
-// callbacks (QRhiWidget renders synchronously on Show and resize): its split
-// sums the stages of every full render() in it, sched is the rest of its wall
-// outside render() and present (window and QRhi creation, initialize(), the
-// other callbacks' offscreen frames), and <kind>_paints / _renders / _skips
-// count its paint events, render() calls and the paints the view skipped
-// (SceneViewWidget::paintEvent: no offscreen frame).
+// stages_ms (with PJ_RHI_TEST_HOOKS): per-frame medians of step (the case's own work before update()), sched (update()
+// to render()), targets (HDR chain), admit (layers' prepareForRender(): synchronous decode and pack, placement),
+// prepare (streams, upload enqueue, uniforms), submit (pass recording) and present (render() end to frameSubmitted: on
+// OpenGL the command execution with its buffer uploads, then the swap). The dock and first-show cases split their
+// first frame the same way, with init (initialize()'s base build). A dock move or first show can run several callbacks
+// (QRhiWidget renders synchronously on Show and resize): the split sums the stages of every full render() in it, sched
+// is the rest of its wall outside render() and present, and <kind>_paints / _renders / _skips count its paint events,
+// render() calls and the paints the view skipped (SceneViewWidget::paintEvent).
 //
-// Sizes default to a ctest smoke; PJ_S3D_BENCH_FULL=1 selects the budget sizes
-// and PJ_S3D_BENCH_<NAME> overrides one (CLOUD_POINTS, STREAM_POINTS, CUBES,
-// LINE_VERTICES, MARKERS, LINKS, FRAMES, MOVES); PJ_S3D_BENCH_DUMP_DIR=<dir>
-// saves each case's final frame there, PJ_S3D_BENCH_CSV_DIR=<dir> its
-// per-frame samples with their spans (<case>_<build>.csv). Needs a real display; skips on
-// the offscreen QPA. It is registered per backend (PJ_GRAPHICS_API).
+// Sizes default to a ctest smoke; PJ_S3D_BENCH_FULL=1 selects the budget sizes and PJ_S3D_BENCH_<NAME> overrides one
+// (CLOUD_POINTS, STREAM_POINTS, CUBES, LINE_VERTICES, MARKERS, LINKS, FRAMES, MOVES); PJ_S3D_BENCH_DUMP_DIR=<dir> saves
+// each case's final frame, PJ_S3D_BENCH_CSV_DIR=<dir> its per-frame samples with their spans (<case>_<build>.csv).
+// Needs a real display; skips on the offscreen QPA. Registered per backend (PJ_GRAPHICS_API).
 //
-// As a ctest smoke it asserts no timing, only that each case did its work: the
-// cloud, markers or model drawn in its last frame (the view's draw counters)
-// and, for the animated cases, that the data
-// advanced (a new cloud uploaded every frame, the followed frame moved, the
-// robot's pose changed the image).
+// As a ctest smoke it asserts no timing, only that each case did its work: the cloud, markers or model drawn in its
+// last frame (the view's draw counters) and, for the animated cases, that the data advanced (a new cloud uploaded every
+// frame, the followed frame moved, the robot's pose changed the image).
 
 #include <gtest/gtest.h>
 
@@ -130,7 +109,6 @@ int robotLinks() {
   return static_cast<int>(benchSize("LINKS", 5, 50));
 }
 
-// `count` points uniformly in a 20 x 20 x 2 m box around the origin.
 std::vector<uint8_t> randomCloud(long long count, unsigned seed) {
   std::mt19937 rng(seed);
   std::uniform_real_distribution<float> xy(-10.0F, 10.0F);
@@ -142,8 +120,6 @@ std::vector<uint8_t> randomCloud(long long count, unsigned seed) {
   return pj::scene3d::test::serializeCloud(points, kFrame);
 }
 
-// A star-shaped robot: `links` box/cylinder/sphere visuals, each on a
-// continuous joint of base_link, so TF poses every link.
 QByteArray robotUrdf(int links) {
   QByteArray urdf = "<robot name=\"bench\">\n  <link name=\"base_link\"/>\n";
   for (int i = 0; i < links; ++i) {
@@ -158,8 +134,6 @@ QByteArray robotUrdf(int links) {
   return urdf + "</robot>\n";
 }
 
-// The robot's poses at step `k`: base_link at the map origin, link i on a
-// 10-wide grid, spinning about Z.
 std::vector<uint8_t> robotTf(int links, int k, PJ::Timestamp t) {
   PJ::sdk::FrameTransforms transforms;
   PJ::sdk::FrameTransform base;
@@ -181,15 +155,13 @@ std::vector<uint8_t> robotTf(int links, int k, PJ::Timestamp t) {
   return PJ::serializeFrameTransforms(transforms);
 }
 
-// A frame's stages (see the header comment); init is initialize()'s base build,
-// set on a dock move or first show only.
+// init is initialize()'s base build, set on a dock move or first show only.
 enum Stage : std::uint8_t { kStep, kSched, kTargets, kAdmit, kPrepare, kSubmit, kPresent, kInit, kStageCount };
 constexpr std::array<const char*, kStageCount> kStageNames{"step",    "sched",  "targets", "admit",
                                                            "prepare", "submit", "present", "init"};
 using Stages = std::array<double, kStageCount>;
 
-// One measured frame: wall and GUI-thread CPU ms, the process's minor page
-// faults, and its stages in ms (-1 where the build has no stamps).
+// One measured frame: wall and GUI-thread CPU ms, minor page faults, stages in ms (-1 where the build has no stamps).
 struct Sample {
   double wall_ms = 0.0;
   double cpu_ms = 0.0;
@@ -209,7 +181,6 @@ struct Sample {
 
 using pj_bench::SceneViewWork;
 
-// One Scene3D dock on a real session, the numbers of one case, and its report.
 class SceneBench {
  public:
   // Binds the session TF service first, as the app does.
@@ -230,13 +201,11 @@ class SceneBench {
   [[nodiscard]] std::uint64_t finished() const {
     return counter_ == nullptr ? 0 : counter_->count();
   }
-  // Frames the view drew: its full render() calls where the build counts them,
-  // else its finished frames.
+  // Frames the view drew: its full render() calls where the build counts them, else its finished frames.
   [[nodiscard]] std::uint64_t renders() {
     return counter_ == nullptr ? 0 : pj_bench::viewRenders(view(), *counter_);
   }
-  // The fewest uploads of any sample of the last drive(); 0 without the
-  // counters (no PJ_RHI_TEST_HOOKS).
+  // The fewest uploads of any sample of the last drive(); 0 without the counters (no PJ_RHI_TEST_HOOKS).
   [[nodiscard]] double minUploads() const {
     double least = samples_.empty() ? 0.0 : samples_.front().uploads;
     for (const Sample& sample : samples_) {
@@ -244,7 +213,6 @@ class SceneBench {
     }
     return least;
   }
-  // Per-frame wall times of the last drive().
   [[nodiscard]] std::vector<double> lastWallMs() const {
     std::vector<double> wall;
     for (const Sample& sample : samples_) {
@@ -253,7 +221,6 @@ class SceneBench {
     return wall;
   }
 
-  // A TF topic of the robot's link poses at steps 0..steps-1, ingested.
   void addRobotTf(int links, int steps) {
     const auto time_of = [](int k) { return 100 + static_cast<PJ::Timestamp>(k) * kStepNs; };
     const PJ::ObjectTopicId tf = fixture_.add("/tf", BT::kFrameTransforms, robotTf(links, 0, time_of(0)));
@@ -262,7 +229,6 @@ class SceneBench {
     }
     fixture_.transforms().ingestFrameTransformsForDataset(fixture_.dataset());
   }
-  // A local-file URDF robot layer.
   void addRobot(int links) {
     ASSERT_TRUE(urdf_dir_.isValid());
     const QString path = urdf_dir_.filePath(QStringLiteral("bench.urdf"));
@@ -273,9 +239,8 @@ class SceneBench {
     ASSERT_NE(dock().addRobotModelLayer(path).id, 0U);
   }
 
-  // Shows the window, waits for the first finished frame (false when none
-  // came; first_show_ms is show() to it), lets the scene settle and puts the
-  // camera over it.
+  // Shows the window, waits for the first finished frame (false when none came; first_show_ms is show() to it), lets
+  // the scene settle and puts the camera over it.
   [[nodiscard]] bool show() {
     if (fixture_.dock()->sceneView() == nullptr) {
       return false;
@@ -320,29 +285,25 @@ class SceneBench {
     (void)pj_bench::idleFrames([this] { return finished(); }, 1000, 15000, 0);
   }
 
-  // Puts the orbit camera at driven frame `k` (see drive()): k + 1 degrees of
-  // azimuth, and -2 / -1 degrees alternately while warming up, so the last
-  // frame does not depend on the warm-up's length.
+  // Puts the orbit camera at driven frame `k` (see drive()): k + 1 degrees of azimuth, and -2 / -1 degrees alternately
+  // while warming up, so the last frame does not depend on the warm-up's length.
   void orbit(int k) {
     camera_.azimuth = azimuth0_ + glm::radians(static_cast<float>(k >= 0 ? k + 1 : k % 2 - 1));
     view().camera().adoptState(camera_);
   }
-  // Pans the camera focal by `dy` metres along +Y (from wherever follow left it).
   void pan(float dy) {
     camera_ = view().camera().state();
     camera_.focal.y += dy;
     view().camera().adoptState(camera_);
   }
 
-  // How measure() splits a sample into stages, given the view's work before it.
   using StageSplit = std::function<Stages(const Sample&, const SceneViewWork&)>;
-  // The split of a lifecycle operation (a dock move, the first show).
   StageSplit lifecycle() {
     return [this](const Sample& sample, const SceneViewWork& before) { return lifecycleStages(sample, before); };
   }
 
-  // Runs `action` and waits until the view finished a frame after it: the
-  // sample of that span (wall ms negative on timeout), split by `split`.
+  // Runs `action`, waits until the view finished a frame after it and returns that span's sample (wall ms negative on
+  // timeout), split by `split`.
   Sample measure(const std::function<void()>& action, const StageSplit& split) {
     Sample sample;
     const std::uint64_t before = finished();
@@ -379,12 +340,10 @@ class SceneBench {
     return sample;
   }
 
-  // A warm-up (pj_bench::WarmUp), then `frames` measured frames of
-  // `step(k)`, k = 0, 1, ...; the warm-up frames run step(-1), step(-2), ...,
-  // which must request a frame that differs from the previous one and from
-  // step(0) without consuming data meant for the measured frames (their
-  // number varies). `ingest(k)` runs before each measured frame, outside its
-  // wall, CPU and faults, and is reported apart (ingest_ms, ingest_cpu_ms).
+  // A warm-up (pj_bench::WarmUp), then `frames` measured frames of `step(k)`, k = 0, 1, ...; the warm-up frames run
+  // step(-1), step(-2), ..., which must request a frame that differs from the previous one and from step(0) without
+  // consuming data meant for the measured frames (their number varies). `ingest(k)` runs before each measured frame,
+  // outside its wall, CPU and faults, and is reported apart.
   void drive(int frames, const std::function<void(int)>& step, const std::function<void(int)>& ingest = {}) {
     samples_.clear();
     ingest_wall_ms_.clear();
@@ -417,10 +376,8 @@ class SceneBench {
     window_end_ns_ = pj_bench::steadyNs();
   }
 
-  // Float (reparent to a new top-level), redock and tab-switch (hide, then
-  // show) the dock `moves` times, each timed to its first finished frame; the
-  // medians as "float_ms=.. redock_ms=.. tab_ms=..", then each move's first
-  // frame split into stages ("float_stages_ms=..").
+  // Float (reparent to a new top-level), redock and tab-switch (hide, then show) the dock `moves` times, each timed to
+  // its first finished frame; reports the medians and each move's first-frame stage split.
   std::string dockMoves(int moves) {
     std::array<std::vector<Sample>, 3> kinds;  // float, redock, tab
     PJ::Scene3DDockWidget* moved = &dock();
@@ -468,8 +425,6 @@ class SceneBench {
     return out;
   }
 
-  // Splits a first frame (show() or a dock move) that began at `begin_ns`:
-  // the extra of the first-show case.
   [[nodiscard]] std::string firstFrameStages() const {
     return stagesField("first_stages_ms", {first_show_sample_}) +
            " first_paints=" + fmtMs(first_show_sample_.paints, 0) +
@@ -477,8 +432,7 @@ class SceneBench {
            " first_skips=" + fmtMs(first_show_sample_.skips, 0);
   }
 
-  // Prints the case line: the last drive()'s numbers, the probes, then `extra`,
-  // after counting the settled view's idle frames (asserted 0).
+  // Prints the case line, after counting the settled view's idle frames (asserted 0).
   void report(const char* name, const std::string& extra = {}) {
     if (const QString dir = qEnvironmentVariable("PJ_S3D_BENCH_DUMP_DIR"); !dir.isEmpty()) {
       pj::scene3d::test::grab(view()).save(
@@ -538,8 +492,7 @@ class SceneBench {
   static std::string fmtMs(double value, int decimals = 2) {
     return pj_bench::fmt(value, decimals).toStdString();
   }
-  // " <name>=step:..,sched:..,.." of the per-stage medians over `samples`, or
-  // nothing where the view has no stage stamps (no PJ_RHI_TEST_HOOKS).
+  // Nothing where the view has no stage stamps (no PJ_RHI_TEST_HOOKS).
   static std::string stagesField(const char* name, const std::vector<Sample>& samples) {
     if (samples.empty() || samples.front().stages[kPresent] < 0.0) {
       return {};
@@ -555,8 +508,6 @@ class SceneBench {
     }
     return out;
   }
-  // PJ_S3D_BENCH_CSV_DIR/<name>_<build>.csv: one row per measured sample (the
-  // first-show sample when no frame was driven).
   void writeCsv(const char* name) const {
     const QString dir = qEnvironmentVariable("PJ_S3D_BENCH_CSV_DIR");
     if (dir.isEmpty()) {
@@ -585,7 +536,6 @@ class SceneBench {
     }
   }
 
-  // Adds the upload work done since `before` to `sample`.
   void noteWork(Sample& sample, const SceneViewWork& before) {
     const SceneViewWork now = pj_bench::viewWork(view());
     sample.uploads = now.uploads - before.uploads;
@@ -597,10 +547,8 @@ class SceneBench {
   }
 
 #ifdef PJ_RHI_TEST_HOOKS
-  // The split of a lifecycle operation (`sample`, work counted from `before`):
-  // the stage sums of its full renders, present from the last one to the
-  // finished frame, init its base builds, sched the rest of its wall (init
-  // included); every stage -1 when it drew no full frame.
+  // Stage sums of a lifecycle operation's full renders; present from the last one to the finished frame, init its base
+  // builds, sched the rest of its wall (init included); every stage -1 when it drew no full frame.
   Stages lifecycleStages(const Sample& sample, const SceneViewWork& before) {
     Stages stages;
     stages.fill(-1.0);
@@ -625,8 +573,7 @@ class SceneBench {
     const double ms = SceneViewTestAccess::stageTimes(view()).last_gpu_ms;
     return ms > 0.0 ? ms : -1.0;
   }
-  // The stage split of the frame finished last, requested at `requested_ns`
-  // after a step that began at `begin_ns`; every stage -1 without stamps.
+  // The stage split of the frame finished last; every stage -1 without stamps.
   Stages stagesSince(std::int64_t begin_ns, std::int64_t requested_ns) {
     Stages stages;
     stages.fill(-1.0);
@@ -676,14 +623,13 @@ class SceneBench {
   int warmup_frames_ = 0;
   double warmup_ms_ = 0.0;
   double warmup_gpu_mhz_ = -1.0;
-  // The measured span of the last drive(), dockMoves() or show() (steadyNs()):
-  // the window of a `perf record -k CLOCK_MONOTONIC` profile.
+  // The measured span of the last drive(), dockMoves() or show() (steadyNs()), for a `perf record -k CLOCK_MONOTONIC`.
   std::int64_t window_begin_ns_ = 0;
   std::int64_t window_end_ns_ = 0;
 };
 
-// What a case's last frame must have drawn, so a run whose cloud, markers or
-// model were never admitted fails instead of timing a near-empty frame.
+// What a case's last frame must have drawn, so a run whose workload was never admitted fails instead of timing an empty
+// frame.
 struct Workload {
   bool points = false;
   bool markers = false;  // instanced primitives and line strips
@@ -702,7 +648,6 @@ void expectDrawn(SceneViewWidget& view, Workload workload) {
   }
 }
 
-// What the last frame drew, so a run that silently drew nothing shows up.
 std::string drawn(SceneViewWidget& view) {
   return "points=" + std::to_string(SceneViewTestAccess::pointPass(view).lastPointVertexCount()) +
          " markers=" + std::to_string(SceneViewTestAccess::markerPass(view).lastInstanceCount()) +
@@ -724,7 +669,6 @@ class Scene3dFrameBenchmark : public ::testing::Test {
     PJ_SKIP_WITHOUT_GPU("the Scene3D view never presented a frame"); \
   }
 
-// A static cloud under a slowly orbiting camera.
 TEST_F(Scene3dFrameBenchmark, CloudStatic) {
   SceneBench bench;
   bench.fixture().add("/points", BT::kPointCloud, randomCloud(cloudPoints(), 1));
@@ -734,9 +678,8 @@ TEST_F(Scene3dFrameBenchmark, CloudStatic) {
   bench.report("cloud_static", drawn(bench.view()));
 }
 
-// A new cloud every frame (live streaming): pushed untimed, then the tracker
-// moves onto it. The warm-up alternates between two clouds already stored, so
-// the store holds the same samples whatever the warm-up's length.
+// A new cloud every frame (live streaming): pushed untimed, then the tracker moves onto it. The warm-up alternates
+// between two clouds already stored, so the store holds the same samples whatever the warm-up's length.
 TEST_F(Scene3dFrameBenchmark, CloudStream) {
   SceneBench bench;
   const long long points = benchSize("STREAM_POINTS", 5'000, 300'000);
@@ -756,7 +699,6 @@ TEST_F(Scene3dFrameBenchmark, CloudStream) {
   bench.report("cloud_stream", drawn(bench.view()));
 }
 
-// Many cube markers and long line strips, orbiting.
 TEST_F(Scene3dFrameBenchmark, CubesAndLinesOrbit) {
   SceneBench bench;
   const long long cube_count = benchSize("CUBES", 1'000, 100'000);
@@ -801,8 +743,7 @@ TEST_F(Scene3dFrameBenchmark, CubesAndLinesOrbit) {
   bench.report("cubes_lines_orbit", drawn(bench.view()));
 }
 
-// Many sphere markers while the camera pans and follows a TF frame that moves
-// every frame.
+// Many sphere markers while the camera pans and follows a TF frame that moves every frame.
 TEST_F(Scene3dFrameBenchmark, MarkersPanFollow) {
   SceneBench bench;
   const long long marker_count = benchSize("MARKERS", 100, 10'000);
@@ -869,7 +810,6 @@ TEST_F(Scene3dFrameBenchmark, RobotTfAnimated) {
   ASSERT_NO_FATAL_FAILURE(bench.addRobot(links));
   SHOW_OR_SKIP(bench);
   const QImage first = pj::scene3d::test::grab(bench.view());
-  // Warm-up frames alternate between the first TF sample and half way to the second.
   ASSERT_NO_FATAL_FAILURE(bench.drive(frames, [&](int k) {
     const PJ::Timestamp t =
         k < 0 ? 100 + (k % 2 != 0 ? kStepNs / 2 : 0) : 100 + static_cast<PJ::Timestamp>(k + 1) * kStepNs;
@@ -881,8 +821,7 @@ TEST_F(Scene3dFrameBenchmark, RobotTfAnimated) {
   bench.report("robot_tf_animated", drawn(bench.view()));
 }
 
-// `count` small clouds, one layer each, orbiting: the per-layer overhead.
-// The smoke runs a tenth of the layers.
+// `count` small clouds, one layer each, orbiting (the per-layer overhead); the smoke runs a tenth of the layers.
 void runLayers(const char* name, long long count) {
   if (!fullSizes()) {
     count = std::max(1LL, count / 10);
@@ -914,11 +853,10 @@ TEST_F(Scene3dFrameBenchmark, Layers1000) {
   runLayers("layers_1000", 1000);
 }
 
-// Float, redock and tab-switch of a dock holding a large cloud, then of one
-// holding a many-link robot, each to its first finished frame. Float is a
-// reparent to a new top-level (what an ADS floating container is), tab-switch
-// a hide/show on the same QRhi (what hiding a workspace tab or, with our ADS
-// fork, a dock-area tab does; mixed_layout_benchmark --tab-switch runs a real one).
+// Float (a reparent to a new top-level, what an ADS floating container is), redock and tab-switch (a hide/show on the
+// same QRhi, what hiding a workspace tab or, with our ADS fork, a dock-area tab does; mixed_layout_benchmark
+// --tab-switch runs a real one) of a dock holding a large cloud, then a many-link robot, each to its first finished
+// frame.
 TEST_F(Scene3dFrameBenchmark, DockMovesCloud) {
   SceneBench bench;
   bench.fixture().add("/points", BT::kPointCloud, randomCloud(cloudPoints(), 1));
@@ -955,10 +893,9 @@ TEST_F(Scene3dFrameBenchmark, FirstShow) {
   bench.report("first_show", extra);
 }
 
-// The HDR chain's depth replay (every draw re-submitted into the single-sample
-// depth target, forced by SceneViewTestAccess::setForceDepthReplay()) against the default
-// chain (the multisample depth resolve where the backend has one; the replay
-// elsewhere), in alternating blocks on one large cloud.
+// The HDR chain's depth replay (every draw re-submitted into the single-sample depth target, forced by
+// SceneViewTestAccess::setForceDepthReplay()) against the default chain (the multisample depth resolve where the
+// backend has one, the replay elsewhere), in alternating blocks on one large cloud.
 TEST_F(Scene3dFrameBenchmark, DepthReplayOnOff) {
   SceneBench bench;
   bench.fixture().add("/points", BT::kPointCloud, randomCloud(cloudPoints(), 1));

@@ -1,24 +1,19 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// FIX 1 + FIX 2: a layout's plot viewport must be framed with the display offset
-// that its <fileInfo> timeline state applies, NOT the offset in effect while the
-// plot XML was restored.
+// A layout's plot viewport is framed with the display offset its <fileInfo> timeline state applies, not the offset in
+// effect while the plot XML was restored.
 //
-//   * FIX 1 (sync leg): restoreWorkspaceState frames each plot's saved ABSOLUTE
-//     viewport with the CURRENT offset, then restoreChromeAndPanels applies the
-//     layout's per-source offsets. The plot's per-dataset displayOffsetChanged
-//     handler only replots (never reframes), so the viewport is left stale by the
-//     applied offset. The fix re-runs applySavedViewportOrZoom over every plot when
-//     applyTimelineStateFromLayout actually moved an offset.
+//   * Sync leg: restoreWorkspaceState frames each plot's saved absolute viewport with the current offset, then
+//     restoreChromeAndPanels applies the layout's per-source offsets. The plot's per-dataset displayOffsetChanged
+//     handler only replots, so applySavedViewportOrZoom is re-run over every plot when applyTimelineStateFromLayout
+//     actually moved an offset.
 //
-//   * FIX 2 (async leg): a progressive reload has not yet registered the reloaded
-//     dataset's source path when restoreChromeAndPanels runs, so the offsets are
-//     skipped. The refs are stashed and re-applied at drain via the testable
-//     applyPendingTimelineState() seam, before the viewport re-frame.
+//   * Async leg: a progressive reload has not yet registered the reloaded dataset's source path when
+//     restoreChromeAndPanels runs, so the offsets are skipped. The refs are stashed and re-applied at drain via
+//     applyPendingTimelineState(), before the viewport re-frame.
 //
-// One MainWindow per binary (its dtor leaks process state), so both legs share ONE
-// window inside a single TEST.
+// MainWindow's destructor leaks process state, so both legs share one window inside a single TEST.
 
 #include <gtest/gtest.h>
 
@@ -50,14 +45,13 @@ class MainWindowViewportReframeTestPeer {
   [[nodiscard]] static AppSession& session(MainWindow& window) {
     return *window.session_;
   }
-  // Restore the plots/curves from `doc` (kSilentDrop, the undo/redo policy). Returns
-  // whether the restore applied — wraps the private restoreWorkspaceState enum.
+  // Restores the plots/curves from `doc` under kSilentDrop (the undo/redo policy); true when the restore applied.
   static bool restoreWorkspace(MainWindow& window, QDomDocument& doc) {
     return window.restoreWorkspaceState(doc, MainWindow::MissingCurvePolicy::kSilentDrop) ==
            MainWindow::RestoreResult::kApplied;
   }
-  // Drive the sync re-frame the way restoreChromeAndPanels does: apply the timeline
-  // offsets, then (if any moved) re-frame every plot to its stashed viewport.
+  // The sync re-frame as restoreChromeAndPanels does it: apply the timeline offsets, then (if any moved) re-frame
+  // every plot to its stashed viewport.
   static void applyTimelineAndReframe(MainWindow& window, const QList<layout_xml::DataSourceRef>& sources) {
     if (window.applyTimelineStateFromLayout(sources)) {
       window.forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
@@ -84,8 +78,7 @@ class MainWindowViewportReframeTestPeer {
 
 namespace {
 
-// Samples at a realistic epoch so the offset shift is large enough that a
-// pre-apply vs post-apply viewport are clearly different numbers.
+// Samples at a realistic epoch so the pre-apply and post-apply viewports are clearly different numbers.
 constexpr PJ::Timestamp kT0Ns = 1'600'000'000'000'000'000;  // 1.6e9 s in ns
 constexpr PJ::Timestamp kOneSecondNs = 1'000'000'000;
 constexpr double kT0Sec = 1'600'000'000.0;
@@ -99,9 +92,8 @@ QString keyForTopic(PJ::CatalogModel& catalog, PJ::TopicId topic_id) {
   return {};
 }
 
-// Build a full layout document: a <root> with a main tabbed_widget holding one plot
-// on `curve_key`, an absolute <range> spanning [left_ns, right_ns], plus a
-// <previouslyLoaded_Datafiles>/<fileInfo> for `source_path` carrying `offset_ns`.
+// A layout document: a main tabbed_widget holding one plot on `curve_key` with an absolute <range> spanning
+// [left_ns, right_ns], plus a <previouslyLoaded_Datafiles>/<fileInfo> for `source_path` carrying `offset_ns`.
 QDomDocument buildLayoutDoc(
     const QString& curve_key, PJ::Timestamp left_ns, PJ::Timestamp right_ns, const QString& source_path,
     qint64 offset_ns) {
@@ -156,16 +148,15 @@ QDomDocument buildLayoutDoc(
 
 }  // namespace
 
-// One MainWindow drives BOTH legs. The async (FIX 2) seam runs first (it only reads
-// offsets), then the offset is reset and the sync (FIX 1) viewport re-frame is checked.
+// The async seam runs first (it only reads offsets), then the offset is reset and the sync re-frame is checked.
 TEST(MainWindowViewportReframeTest, TimelineOffsetReframesPlotOnSyncAndDrainLegs) {
   QTemporaryDir extensions_dir;
   QTemporaryDir project_dir;
   ASSERT_TRUE(extensions_dir.isValid());
   ASSERT_TRUE(project_dir.isValid());
   const QString source_path = project_dir.filePath(QStringLiteral("data/run.mcap"));
-  // isSamePath compares canonical paths, which are empty for a non-existent file, so
-  // the source path must exist on disk for the timeline apply's candidate match.
+  // isSamePath compares canonical paths, empty for a non-existent file: the source path must exist on disk for the
+  // timeline apply's candidate match.
   ASSERT_TRUE(QDir().mkpath(QFileInfo(source_path).absolutePath()));
   {
     QFile source_file(source_path);
@@ -175,8 +166,8 @@ TEST(MainWindowViewportReframeTest, TimelineOffsetReframesPlotOnSyncAndDrainLegs
   PJ::MainWindow window(extensions_dir.path());
   PJ::AppSession& app = PJ::MainWindowViewportReframeTestPeer::session(window);
   PJ::SessionManager& session = app.sessionManager();
-  // "Use time offset" OFF: display == absolute, so a pre-apply viewport frames the
-  // raw epoch window and the -5 s offset must SHIFT it on apply.
+  // "Use time offset" off: display == absolute, so a pre-apply viewport frames the raw epoch window and the -5 s
+  // offset must shift it on apply.
   session.setUseTimeOffset(false);
   const PJ::DatasetId dataset_id = pj_test::createDataset(app, "run.mcap", /*own_time_domain=*/true);
   ASSERT_NE(dataset_id, 0U);
@@ -193,11 +184,10 @@ TEST(MainWindowViewportReframeTest, TimelineOffsetReframesPlotOnSyncAndDrainLegs
   const QList<PJ::layout_xml::DataSourceRef> refs = PJ::layout_xml::extractDataSource(doc, QDir(project_dir.path()));
   ASSERT_EQ(refs.size(), 1);
 
-  // --- FIX 2 (async drain seam) ---
-  // Nothing stashed yet -> the seam is a no-op.
+  // Async drain seam: nothing stashed yet -> a no-op.
   EXPECT_FALSE(PJ::MainWindowViewportReframeTestPeer::applyPending(window));
   EXPECT_EQ(session.sourceDisplayOffset(dataset_id).value.count(), 0);
-  // Stash (as restoreChromeAndPanels does mid-progressive-load) then drain: offset binds.
+  // Stash (as restoreChromeAndPanels does mid-progressive-load), then drain: the offset binds.
   PJ::MainWindowViewportReframeTestPeer::stashPendingTimeline(window, refs);
   EXPECT_TRUE(PJ::MainWindowViewportReframeTestPeer::applyPending(window));
   EXPECT_EQ(session.sourceDisplayOffset(dataset_id).value.count(), -5 * kOneSecondNs)
@@ -205,12 +195,11 @@ TEST(MainWindowViewportReframeTest, TimelineOffsetReframesPlotOnSyncAndDrainLegs
   // The stash is consumed: a second drain does nothing.
   EXPECT_FALSE(PJ::MainWindowViewportReframeTestPeer::applyPending(window));
 
-  // Reset the offset for the sync-leg check below.
+  // Reset for the sync leg.
   session.setDisplayOffset(dataset_id, PJ::DisplayOffset{PJ::Duration{0}});
   ASSERT_EQ(session.sourceDisplayOffset(dataset_id).value.count(), 0);
 
-  // --- FIX 1 (sync leg viewport re-frame) ---
-  // Restore the plot (offset 0 -> viewport framed at the raw absolute window).
+  // Sync leg: restore the plot (offset 0 -> viewport framed at the raw absolute window).
   ASSERT_TRUE(PJ::MainWindowViewportReframeTestPeer::restoreWorkspace(window, doc));
   PJ::PlotWidget* plot = PJ::MainWindowViewportReframeTestPeer::firstPlot(window);
   ASSERT_NE(plot, nullptr) << "the layout must have created one plot";
@@ -218,11 +207,11 @@ TEST(MainWindowViewportReframeTest, TimelineOffsetReframesPlotOnSyncAndDrainLegs
   const QRectF before = plot->currentBoundingRect();
   EXPECT_NEAR(before.left(), kT0Sec, 1e-2);
 
-  // Apply the -5 s offset and run the sync re-frame (what restoreChromeAndPanels does).
+  // Apply the -5 s offset and run the sync re-frame.
   PJ::MainWindowViewportReframeTestPeer::applyTimelineAndReframe(window, refs);
 
-  // Post-apply: display = absolute - offset = absolute + 5 s. The axis frames the SAME
-  // absolute instant, now at [kT0+5, kT0+6] s in display coordinates.
+  // Post-apply: display = absolute - offset = absolute + 5 s. The axis frames the same absolute instant, now at
+  // [kT0+5, kT0+6] s in display coordinates.
   const QRectF after = plot->currentBoundingRect();
   EXPECT_NEAR(after.left(), kT0Sec + 5.0, 5e-2) << "the viewport must re-frame to the offset-shifted absolute window";
   EXPECT_NEAR(after.right() - after.left(), 1.0, 5e-2) << "the window width (1 s) is preserved";

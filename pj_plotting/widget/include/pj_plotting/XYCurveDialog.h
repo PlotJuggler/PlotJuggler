@@ -13,10 +13,9 @@ class XYCurveDialog;
 
 namespace PJ {
 
-// Modal dialog shown when creating an XY (scatter) curve from two dragged series.
-// Mirrors PJ3's SuggestDialog: the X and Y names are read-only (the two dragged
-// series), a Swap button exchanges them, and an editable Name field (auto-suggested)
-// becomes the curve's alias. OK is enabled only when the name is non-empty.
+// Modal dialog for creating an XY (scatter) curve from two dragged series: the X and Y names are read-only, a Swap
+// button exchanges them, and an editable Name field (auto-suggested) becomes the curve's alias. OK is enabled only when
+// the name is non-empty.
 class XYCurveDialog : public Dialog {
   Q_OBJECT
  public:

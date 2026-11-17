@@ -59,9 +59,8 @@ TEST(PluginCheckRunnerTest, LocateHelperReturnsExplicitOverride) {
   EXPECT_EQ(PJ::PluginCheckRunner::locateHelper(override_path), override_path);
 }
 
-// Runner returns `ok=false` when the directory does not exist. The helper
-// itself is reachable, so this exercises the helper's own no-valid-plugin
-// exit code path (kExitNoValidPlugin = 4).
+// ok=false when the directory does not exist: the helper is reachable, so this exercises its own no-valid-plugin exit
+// code (kExitNoValidPlugin = 4).
 TEST(PluginCheckRunnerTest, RejectsMissingDirectory) {
   const PJ::PluginCheckRunner runner(helperOptions());
   const PJ::PluginCheckResult result = runner.run(u"/tmp/pj-plugin-check-test-missing-path"_s);
@@ -188,11 +187,10 @@ TEST(PluginCheckRunnerTest, ANonUtf8DirectoryNameStillYieldsValidJson) {
 // crashes.
 TEST(PluginCheckRunnerTest, MissingHelperBinaryFailsGracefully) {
 #ifdef PJ_TSAN_BUILD
-  // QProcess learns that a child whose exec failed has exited through its SIGCHLD
-  // handler. TSan runs a deferred signal handler only when the thread next passes
-  // through one of its interceptors, and cmake/sanitizers/tsan.supp makes calls
-  // from libQt6Core bypass them, so Qt blocks forever reading a pipe that handler
-  // would have written. Measured: hangs with that entry, passes in 5 ms without it.
+  // QProcess learns that a child whose exec failed has exited through its SIGCHLD handler. TSan runs a deferred signal
+  // handler only when the thread next passes through one of its interceptors, and cmake/sanitizers/tsan.supp makes
+  // calls from libQt6Core bypass them, so Qt blocks forever reading a pipe that handler would have written. Observed:
+  // hangs with that entry, passes in 5 ms without it.
   GTEST_SKIP() << "QProcess exec-failure path deadlocks under TSan with libQt6Core interceptors ignored";
 #endif
   const PJ::PluginCheckOptions bad_options{std::chrono::milliseconds(5'000), u"/tmp/pj-plugin-check-does-not-exist"_s};

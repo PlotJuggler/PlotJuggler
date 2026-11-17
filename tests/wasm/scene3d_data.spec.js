@@ -51,19 +51,17 @@ function reportCount(consoleMessages) {
   return consoleMessages.filter(message => message.includes('PJ_WASM_SCENE3D_FOUNDATION_SUMMARY')).length;
 }
 
-// One <trail> element exactly as a desktop build writes it (TrailLayer::
-// xmlSaveState) for a trail owned by a pose layer. The source-bound attributes
-// are deliberate: the browser must restore the trail from the pose layer's own
-// topic, never retarget it from the payload.
+// One <trail> element exactly as a desktop build writes it (TrailLayer::xmlSaveState) for a trail owned by a
+// pose layer. The source-bound attributes are deliberate: the browser must restore the trail from the pose
+// layer's own topic, never retarget it from the payload.
 const DESKTOP_POSE_TRAIL = '<trail source_kind="pose_topic" source_topic_name="/poses"'
   + ' source_dataset_id="1" source_dataset_source="ros2_scene3d_order_real.mcap"'
   + ' past_color="#1f77b4" future_color="#9ecae1" thickness="4"'
   + ' past_visible="1" future_visible="1"/>';
 
-// Turn a browser-saved layout into the desktop-saved shape by nesting that
-// trail inside the pose layer's payload. QDom writes childless payloads
-// self-closed, but accept the paired spelling too so a serializer detail cannot
-// silently turn this into a no-op replacement.
+// Turns a browser-saved layout into the desktop-saved shape by nesting that trail inside the pose layer's
+// payload. QDom writes childless payloads self-closed; the paired spelling is accepted too, so a serializer
+// detail cannot turn this into a no-op replacement.
 function withDesktopPoseTrail(xml) {
   const selfClosing = /<poses_in_frame\b([^>]*?)\s*\/>/;
   const paired = /<poses_in_frame\b([^>]*)><\/poses_in_frame>/;
@@ -204,9 +202,8 @@ test('a desktop-saved pose trail replays and draws in the browser', async ({ pag
     { timeout: 15000 },
   ).toContain('scene3d-desktop-trail.pj4.xml');
 
-  // The identity check belongs INSIDE the predicate: a rejected pose payload
-  // would leave the pre-existing dock standing, and every count below would
-  // then pass against the dock the drops built rather than the replayed one.
+  // The identity check belongs inside the predicate: a rejected pose payload would leave the pre-existing
+  // dock standing, and every count below would then pass against the dock the drops built, not the replayed one.
   const restored = await waitForData(page, consoleMessages, (data, state) =>
     state.docks[0].identity !== live.docks[0].identity
     && data.poses.live === 1 && data.poses.arms === 768
@@ -242,9 +239,8 @@ test('heterogeneous physical order survives a generic layout replay', async ({ p
   state = await waitForData(page, consoleMessages, data =>
     data.rightPanel.visible && data.rows.length === 4);
   const list = state.docks[0].data.list;
-  // The Qt/WASM backing surface can be wider than its CSS canvas. The docked
-  // list is right-anchored, so recover its visible CSS left edge from the
-  // canvas edge while retaining its stable row geometry.
+  // The Qt/WASM backing surface can be wider than its CSS canvas and the docked list is right-anchored, so
+  // take its visible CSS left edge from the canvas edge.
   const rowX = screen.x + screen.width - list.width + Math.min(24, list.width * 0.2);
   await dragQtCanvas(
     page,

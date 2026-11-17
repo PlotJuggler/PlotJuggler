@@ -15,7 +15,7 @@ nix flake check                   # build + installed-package smoke checks
 ```
 
 `packages.x86_64-linux.plotjuggler` and `apps.x86_64-linux.plotjuggler` alias the
-default outputs, preserving the old flake's names. The executable is `plotjuggler4`.
+default outputs. The executable is `plotjuggler4`.
 The package includes the desktop entry, icon, and sibling `pj-plugin-check` helper.
 Tests, demos, and the optional GPL raster helper are excluded from the app build.
 

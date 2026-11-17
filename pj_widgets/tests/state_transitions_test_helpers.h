@@ -2,8 +2,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Shared StateRow/StateSegment fixture builders for the state-transitions
-// test binaries (scene + view). Test-only; not installed.
+// Shared StateRow and StateSegment fixture builders for the state-transitions test binaries (scene and view);
+// test-only.
 
 #include <QString>
 #include <utility>

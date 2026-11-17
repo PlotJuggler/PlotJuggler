@@ -6,11 +6,9 @@
  * @file version_compare.hpp
  * @brief Ordering for plugin package versions.
  *
- * Admission accepts only concrete SemVer 2.0.0 versions. This helper also has
- * to sort recovery/UI data that may predate that invariant, so valid versions
- * use the SDK's canonical SemVer precedence, a valid version outranks an
- * invalid one, and two invalid strings use a deterministic byte-wise fallback.
- * Invalid input never becomes installable merely because it can be displayed.
+ * Valid versions use the SDK's SemVer precedence; a valid version outranks an invalid one; two invalid strings fall
+ * back to a byte-wise comparison. Admission accepts only strict SemVer, so invalid input never becomes installable
+ * merely because it can be displayed or sorted.
  */
 
 #include <compare>
@@ -24,10 +22,8 @@ namespace PJ {
   return SemVer::isValid(version);
 }
 
-// Returns <0, 0, or >0 like strcmp. Build metadata compares equal because SDK
-// SemVer equality follows precedence equivalence. The invalid-data fallback is
-// intentionally not SemVer-like; it exists only to keep already-corrupt rows
-// and recovery decisions stable after admission has rejected the value.
+// Returns <0, 0 or >0 like strcmp. Build metadata compares equal (SDK SemVer equality is precedence equivalence). The
+// invalid-data fallback is deliberately not SemVer-like: it only keeps already-corrupt rows stable.
 [[nodiscard]] inline int comparePluginVersions(std::string_view lhs, std::string_view rhs) {
   const auto lhs_version = SemVer::parse(lhs);
   const auto rhs_version = SemVer::parse(rhs);

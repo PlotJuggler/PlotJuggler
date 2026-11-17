@@ -21,20 +21,16 @@ class CatalogModel;
 class PlaybackEngine;
 class SessionManager;
 
-/// Binds a StateTransitionsView to the runtime: owns one StateSeriesAdapter per
-/// row, maps raw-ns segments into the playback-display frame (per-dataset
-/// `SessionManager::displayOffset`), and keeps the view current across
-/// streaming ingest (coalesced ~10 Hz), display-offset changes (arithmetic-only
-/// re-map, no re-read), dataset replaces (synchronous adapter clear), catalog
-/// removals, and playback-range changes (the trailing open segment is pinned to
-/// the range max so bands reach the right edge).
+/// Binds a StateTransitionsView to the runtime: owns one StateSeriesAdapter per row, maps raw-ns segments into the
+/// playback-display frame (per-dataset `SessionManager::displayOffset`), and keeps the view current across streaming
+/// ingest (coalesced to ~10 Hz), display-offset changes (an arithmetic re-map, no re-read), dataset replaces
+/// (synchronous adapter clear), catalog removals and playback-range changes (the trailing open segment is pinned to the
+/// range max so bands reach the right edge).
 ///
-/// The view stays runtime-agnostic: this controller injects the droppable
-/// predicate (CatalogModel::isDiscreteKey — string/integer/bool series, and
-/// floats holding only whole numbers),
-/// answers its seriesDropped / rowRemoveRequested intents, and re-feeds rows.
-/// The dock widget owns persistence; it reads currentSeries() and replays keys
-/// via addSeries().
+/// The view stays runtime-agnostic: this controller injects the droppable predicate (CatalogModel::isDiscreteKey:
+/// string, integer and bool series, and floats holding only whole numbers), answers its seriesDropped /
+/// rowRemoveRequested intents and re-feeds rows. The dock widget owns persistence: it reads currentSeries() and
+/// replays keys through addSeries().
 class StateTransitionsController : public QObject {
   Q_OBJECT
  public:
@@ -42,41 +38,35 @@ class StateTransitionsController : public QObject {
       StateTransitionsView* view, SessionManager* session, CatalogModel* catalog, PlaybackEngine* playback,
       QObject* parent = nullptr);
 
-  /// Add a row for a catalog key. Rejects (returning false) duplicates,
-  /// non-discrete keys (float fields), and keys the catalog cannot resolve.
+  /// Adds a row for a catalog key. False for a duplicate, a non-discrete key (a float field) or a key the catalog
+  /// cannot resolve.
   bool addSeries(const QString& catalog_key);
-  /// Remove the row with this view row id. False if unknown.
+  /// Removes the row with this view row id; false if unknown.
   bool removeSeries(quint64 row_id);
-  /// Move the row at list position `from` to drop position `to`, with `to`
-  /// interpreted against the pre-removal list — the same drop-indicator
-  /// arithmetic as the 3D panel's layer list (detail::reorderIds). Reorders
-  /// the strip, the persisted series order, and the panel list. False on an
-  /// invalid or no-op move.
+  /// Moves the row at list position `from` to drop position `to`, interpreted against the pre-removal list (the 3D
+  /// panel's drop-indicator arithmetic, detail::reorderIds). Reorders the strip, the persisted series order and the
+  /// panel list. False on an invalid or no-op move.
   bool reorderSeries(int from, int to);
 
-  /// One row as the curves side-panel sees it: stable id, display name, and
-  /// the eye-toggle state.
+  /// One row as the curves side panel sees it: stable id, display name, eye-toggle state.
   struct SeriesEntry {
     quint64 row_id = 0;
     QString name;
     bool visible = true;
   };
-  /// All rows (hidden ones included), in display order — the side-panel list.
+  /// All rows (hidden included), in display order: the side-panel list.
   [[nodiscard]] std::vector<SeriesEntry> seriesEntries() const;
-  /// Eye toggle: a hidden row keeps its data/demand and its panel entry but is
-  /// not rendered in the strip. False if the id is unknown.
+  /// Eye toggle: a hidden row keeps its data, demand and panel entry but is not rendered. False if the id is unknown.
   bool setSeriesVisible(quint64 row_id, bool visible);
-  /// Remove every row (the panel's "Clear all curves").
+  /// Removes every row (the panel's "Clear all curves").
   void removeAllSeries();
 
-  /// Current rows' catalog keys, in display order (persistence).
+  /// The rows' catalog keys in display order (persistence).
   [[nodiscard]] QStringList currentSeriesKeys() const;
-  /// Current rows' full descriptors, in display order — the stable
-  /// dataset/topic/field identity the dock widget serializes.
+  /// The rows' full descriptors in display order: the stable dataset/topic/field identity the dock widget serializes.
   [[nodiscard]] std::vector<CurveDescriptor> currentSeries() const;
-  /// The displayed (dataset, topic-name) set — the shell's TopicDemandController
-  /// observes this (with seriesListChanged) to hold per-topic streaming
-  /// references, exactly as it does for plot curves.
+  /// The displayed (dataset, topic-name) set; the shell's TopicDemandController observes it (with seriesListChanged) to
+  /// hold per-topic streaming references, as for plot curves.
   [[nodiscard]] QList<QPair<DatasetId, QString>> displayedTopics() const;
 
   [[nodiscard]] int rowCount() const noexcept {
@@ -88,9 +78,8 @@ class StateTransitionsController : public QObject {
   }
 
  signals:
-  /// A row was added or removed (user drop/chip-close, catalog removal, or a
-  /// restore). The dock widget hooks this for undo snapshots + layout dirt;
-  /// the shell for topic-demand refresh.
+  /// A row was added or removed (a drop, chip close, catalog removal or restore). The dock widget hooks it for undo
+  /// snapshots and layout dirt; the shell for topic-demand refresh.
   void seriesListChanged();
 
  private:
@@ -103,17 +92,16 @@ class StateTransitionsController : public QObject {
   };
 
   void connectRuntime();
-  /// Coalesced refresh: rebind + rebuild dirty adapters, re-push every row whose
-  /// data or mapping changed, and refresh the view's display range.
+  /// Coalesced refresh: rebinds and rebuilds dirty adapters, re-pushes every row whose data or mapping changed and
+  /// refreshes the view's display range.
   void refreshNow();
-  /// Re-resolve a dirty row's payload from the catalog by key: an in-place
-  /// dataset reload keeps keys/TopicIds stable but may change the column's
-  /// field layout or primitive type, so the cached adapter must follow. False
-  /// when the key no longer names a discrete field (caller drops the row).
+  /// Re-resolves a dirty row's payload from the catalog by key: an in-place dataset reload keeps keys and TopicIds but
+  /// may change the column's layout or primitive type, so the cached adapter must follow. False when the key no longer
+  /// names a discrete field (the caller drops the row).
   [[nodiscard]] bool rebindRowFromCatalog(RowBinding& binding);
-  /// Map one binding's raw segments into display-frame StateRow form.
+  /// Maps one binding's raw segments into display-frame StateRow form.
   [[nodiscard]] StateRow displayRow(const RowBinding& binding) const;
-  /// Push the full row set to the view (structure changed: add/remove/restore).
+  /// Pushes the full row set to the view (after an add, remove or restore).
   void pushAllRows();
   [[nodiscard]] qint64 displayRangeMaxNs() const;
   void markTopicsDirty(const QVector<TopicId>& ids);

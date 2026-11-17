@@ -7,13 +7,11 @@
 
 namespace PJ {
 
-// A standard, fixed-size colour swatch: a rounded square painted in the current
-// colour that opens a ColorPickerPopup when clicked. The single reusable
-// replacement for the per-layer swatch buttons that each module used to hand-roll
-// (scene_entities / pointcloud / robot_model / poses).
+// A fixed-size colour swatch: a rounded square in the current colour that opens a ColorPickerPopup when clicked. The
+// one swatch control: do not hand-roll per-layer swatch buttons.
 //
-// colorChanged() fires only for USER picks made through the popup; setColor() is
-// programmatic and silent, so a host can seed/restore the swatch without feedback.
+// colorChanged() fires only for user picks in the popup; setColor() is programmatic and silent, so a host can seed or
+// restore the swatch without feedback.
 class ColorPickerWidget : public QAbstractButton {
   Q_OBJECT
  public:
@@ -23,7 +21,7 @@ class ColorPickerWidget : public QAbstractButton {
   [[nodiscard]] QColor color() const {
     return color_;
   }
-  // Programmatic set — updates the swatch, does NOT emit colorChanged().
+  // Updates the swatch; does not emit colorChanged().
   void setColor(const QColor& color);
 
   [[nodiscard]] QSize sizeHint() const override;

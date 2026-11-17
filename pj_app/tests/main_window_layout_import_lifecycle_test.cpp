@@ -1,21 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Restore-lifecycle GUI scenarios for the Codex r1 findings (one MainWindow
-// per binary, scenarios run sequentially on the same window):
-//   S1 (F3)  mixed kAutomated layout — every materialize source fails
-//            synchronously (batch discarded as kNoAsyncWork) while a plain
-//            sibling keeps FileLoader busy: the progressive policy must come
-//            from the LOAD's interactivity, not from batch survival — zero
-//            dialogs, retain+diagnose at drain.
-//   S2 (F6)  progressive apply failure (xmlLoadState rejects the doc) on a
-//            kAutomated restore: diagnostic, never the modal warning.
-//   S3 (F2)  a sync-path layout load superseding an in-flight progressive
-//            restore must tear the WHOLE transaction down (flag, waiters,
-//            batch) — not just the batch.
-//   S4 (F4)  kAutomated failing plain source: no load-failure modal.
-//   S5 (F4)  the same load kInteractive: the reload prompt and the failure
-//            dialog still appear (pin).
+// Restore-lifecycle GUI scenarios: one MainWindow per binary, scenarios run sequentially on the same window.
+// kAutomated restores open no dialog (retain + diagnose); kInteractive ones keep their prompts; a sync-path layout
+// load supersedes an in-flight progressive restore by tearing the whole transaction down (flag, waiters, batch).
 
 #include <gtest/gtest.h>
 
@@ -44,16 +32,14 @@ using PJ::MainWindowLayoutImportTestPeer;
 using pj_app_test::pumpUntil;
 namespace fake = pj_layout_import_gui;
 
-// Scans for visible modal dialogs from inside their own nested event loop
-// (timer-driven), records what it saw, and clicks/closes so a test FAILS on
-// an unexpected dialog instead of hanging on its exec().
+// Scans for visible modal dialogs from inside their own nested event loop (timer-driven), records what it saw and
+// clicks/closes them, so an unexpected dialog fails the test instead of hanging on its exec().
 struct DialogProbe {
   QTimer timer;
   bool saw_any = false;
   int one_button_modals = 0;    // e.g. the load-failure warning (OK)
   int multi_button_modals = 0;  // e.g. the 3-way reload prompt
-  // Per multi-button modal: which button to click, consumed front-first
-  // (empty = the first button). Lets a scenario answer "Cancel" (index 2).
+  // Per multi-button modal: which button to click, consumed front-first (empty = the first button).
   QList<int> multi_click_sequence;
 
   DialogProbe() {
@@ -90,8 +76,7 @@ struct DialogProbe {
   }
 };
 
-// A plain (record-less) <fileInfo> for the mock source plugin, appended next
-// to whatever buildImportLayoutDoc produced.
+// A plain (record-less) <fileInfo> for the mock source plugin, appended to buildImportLayoutDoc's output.
 void appendPlainFileInfo(QDomDocument& doc, const QString& path, const QString& preset_json) {
   QDomElement wrapper = doc.documentElement().firstChildElement(QStringLiteral("previouslyLoaded_Datafiles"));
   QDomElement file_info = doc.createElement(QStringLiteral("fileInfo"));
@@ -142,7 +127,7 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   QTemporaryDir project_dir;
   ASSERT_TRUE(extensions_dir.isValid());
   ASSERT_TRUE(project_dir.isValid());
-  // Stage the mock source plugin so plain .mock replays load for real.
+  // The mock source plugin makes plain .mock replays load for real.
   const QString plugin_src = QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH);
   ASSERT_TRUE(QFile::copy(plugin_src, extensions_dir.filePath(QFileInfo(plugin_src).fileName())));
 
@@ -155,8 +140,8 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   DialogProbe probe;
   probe.timer.start();
 
-  // ---- S1 (F3): mixed kAutomated — batch dies synchronously, plain load
-  // keeps the restore progressive; the policy must still be non-interactive.
+  // S1: mixed kAutomated: every materialize source fails synchronously (batch discarded as kNoAsyncWork) while the
+  // plain sibling keeps the restore progressive; the policy comes from the load's interactivity, not batch survival.
   const QString plain_path = pj_app_test::makeMockFile(project_dir, QStringLiteral("plain.mock"));
   const QString dead_source = project_dir.filePath(QStringLiteral("data/dead.mcap"));
   QDomDocument mixed = fake::buildImportLayoutDoc(
@@ -174,14 +159,13 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   EXPECT_FALSE(probe.saw_any) << "S1: a kAutomated mixed restore opened a dialog (policy inferred from batch survival)";
   EXPECT_FALSE(MainWindowLayoutImportTestPeer::binderEmpty(window))
       << "S1: the unresolved intent must be retained, not prompted away";
-  // Diagnostics reach the recorder through a queued emit: it can still be in the
-  // event queue when the restore reports itself settled.
+  // Diagnostics reach the recorder through a queued emit, still pending when the restore reports itself settled.
   EXPECT_TRUE(pumpUntil([&diagnostic_ids]() {
     return diagnostic_ids.contains(QStringLiteral("layout-import-unresolved-curves"));
   })) << "S1 ids seen: "
       << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
 
-  // ---- S2 (F6): progressive apply failure on a kAutomated restore.
+  // S2: progressive apply failure (xmlLoadState rejects the doc) on a kAutomated restore: diagnostic, no modal.
   probe.reset();
   diagnostic_ids.clear();
   const QString import_source = project_dir.filePath(QStringLiteral("data/import.mcap"));
@@ -201,7 +185,7 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
       << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
   EXPECT_FALSE(MainWindowLayoutImportTestPeer::progressiveInFlight(window));
 
-  // ---- S3 (F2): a sync-path load supersedes an in-flight restore fully.
+  // S3: a sync-path load supersedes an in-flight restore fully.
   probe.reset();
   const QString blocked_source = project_dir.filePath(QStringLiteral("data/blocked.mcap"));
   const QString blocked_path = project_dir.filePath(QStringLiteral("blocked.pj4.xml"));
@@ -226,10 +210,8 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   EXPECT_TRUE(MainWindowLayoutImportTestPeer::binderEmpty(window));
   EXPECT_FALSE(probe.saw_any) << "S3: the supersede sequence opened a dialog";
 
-  // ---- S4 (F4): kAutomated failing plain source -> zero dialogs. The
-  // failure mode is the loader prologue's fail() (no plugin serves the
-  // extension) — the ONE path that raises the aggregated load-failure
-  // dialog (reportLoadWarning); start-time plugin failures never do.
+  // S4: kAutomated failing plain source -> zero dialogs. The failure is the loader prologue's fail() (no plugin
+  // serves the extension), which calls reportLoadWarning.
   probe.reset();
   diagnostic_ids.clear();
   const QString failing_path = pj_app_test::makeMockFile(project_dir, QStringLiteral("failing.zzz"));
@@ -244,8 +226,7 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   probe.scan();  // catch a lingering non-modal-loop dialog too
   EXPECT_FALSE(probe.saw_any) << "S4: a kAutomated plain-source failure opened the load-failure dialog";
 
-  // ---- S6 (Codex r2-3): pre-classification ENTRY failures — unreadable
-  // path / malformed XML — honor the kAutomated zero-dialog contract too.
+  // S6: entry failures before classification (unreadable path, malformed XML) also open no dialog when kAutomated.
   probe.reset();
   diagnostic_ids.clear();
   const QString missing_layout = project_dir.filePath(QStringLiteral("does-not-exist.pj4.xml"));
@@ -264,14 +245,14 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
            diagnostic_ids.contains(QStringLiteral("layout-parse-failed"));
   })) << "S6: entry failures must surface as diagnostics; ids seen: "
       << diagnostic_ids.join(QStringLiteral(", ")).toStdString();
-  // Interactive pin: both entry failures keep their modal warnings.
+  // Interactive: both entry failures keep their modal warnings.
   probe.reset();
   MainWindowLayoutImportTestPeer::loadLayout(window, missing_layout, /*interactive=*/true);
   MainWindowLayoutImportTestPeer::loadLayout(window, malformed_layout, /*interactive=*/true);
   ASSERT_TRUE(pumpUntil([&probe]() { return probe.one_button_modals >= 2; }))
       << "S6: interactive entry failures must still warn (saw " << probe.one_button_modals << ")";
 
-  // ---- S5 (F4 pin): the same failing load kInteractive keeps its dialogs.
+  // S5: the same failing load kInteractive keeps its reload prompt and failure dialog.
   probe.reset();
   MainWindowLayoutImportTestPeer::loadLayout(window, failing_layout, /*interactive=*/true);
   ASSERT_TRUE(pumpUntil([&window]() { return !MainWindowLayoutImportTestPeer::progressiveInFlight(window); }));
@@ -279,9 +260,8 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
       << "S5: the interactive load-failure dialog must still appear";
   EXPECT_GE(probe.multi_button_modals, 1) << "S5: the interactive reload prompt must still appear";
 
-  // ---- S7 (regression review): cancelling the reload prompt of a SECOND
-  // layout load must be a COMPLETE no-op — the in-flight restore A keeps
-  // draining and completes exactly like an undisturbed run (base behavior).
+  // S7: cancelling the reload prompt of a second layout load is a complete no-op: the in-flight restore A keeps
+  // draining and completes like an undisturbed run.
   probe.reset();
   diagnostic_ids.clear();
   const QString a_source = project_dir.filePath(QStringLiteral("data/a-restore.mcap"));
@@ -306,8 +286,7 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   EXPECT_TRUE(MainWindowLayoutImportTestPeer::batchActive(window)) << "S7: A's import must still be running";
   EXPECT_EQ(MainWindowLayoutImportTestPeer::restoreWaiterCount(window), 2) << "S7: A's drain gate must survive";
 
-  // A completes identically to an undisturbed run: release the gated import,
-  // drain runs finalization (kAutomated -> retain + diagnose), batch retires.
+  // Release the gated import: the drain runs finalization (kAutomated -> retain + diagnose) and the batch retires.
   ASSERT_NE(fake::g_instance, nullptr) << "S7: A's provider instance must still be alive";
   fake::g_instance->releaseStart();
   ASSERT_TRUE(pumpUntil([&window]() { return !MainWindowLayoutImportTestPeer::progressiveInFlight(window); }));
@@ -320,8 +299,7 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   EXPECT_EQ(MainWindowLayoutImportTestPeer::batch(window), nullptr) << "S7: A settled and retired its batch";
   EXPECT_EQ(probe.one_button_modals, 0) << "S7: A's automated drain must stay dialog-free";
 
-  // ---- S8 (regression review pin): trust-gate Cancel = "keep what I had" —
-  // the NEW batch dies with nothing enqueued and the OLD restore drains on.
+  // S8: trust-gate Cancel = "keep what I had": the second batch dies with nothing enqueued, the first drains on.
   probe.reset();
   const QString a2_source = project_dir.filePath(QStringLiteral("data/a2.mcap"));
   const QString a2_layout = project_dir.filePath(QStringLiteral("a2.pj4.xml"));
@@ -347,8 +325,7 @@ TEST(MainWindowLayoutImportLifecycleTest, RestoreLifecycleHonorsPolicyAndSuperse
   EXPECT_TRUE(MainWindowLayoutImportTestPeer::batchActive(window)) << "S8: A2's import must still be running";
   EXPECT_EQ(MainWindowLayoutImportTestPeer::restoreWaiterCount(window), 2) << "S8: A2's drain gate must survive";
 
-  // Cleanup: a final automated load supersedes A2 (hard shutdown joins the
-  // gated job via destroy, which releases its start gate).
+  // Cleanup: a final automated load supersedes A2 (destroy joins the gated job and releases its start gate).
   MainWindowLayoutImportTestPeer::loadLayout(window, generic_path, /*interactive=*/false);
   EXPECT_FALSE(MainWindowLayoutImportTestPeer::progressiveInFlight(window));
   EXPECT_EQ(MainWindowLayoutImportTestPeer::batch(window), nullptr);

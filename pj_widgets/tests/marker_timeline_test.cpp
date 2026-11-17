@@ -92,7 +92,7 @@ TEST(MarkerTimelineTest, SetMarksIsSilentButEditsEmit) {
   t.setMarks(set);
   EXPECT_EQ(spy.count(), 0);  // owner-driven update must not loop the protocol
 
-  // next_id_ must clear existing ids so a new add does not collide.
+  // next_id_ clears existing ids, so a new add does not collide.
   const int id = t.addMark(Kind::kEvent, 600, 600);
   EXPECT_GT(id, 9);
   EXPECT_EQ(spy.count(), 1);

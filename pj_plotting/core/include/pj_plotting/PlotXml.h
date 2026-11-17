@@ -14,10 +14,9 @@ inline constexpr QLatin1StringView kXBasisAbsolute("absolute");
 /// XY-plot range edges expressed directly as data values.
 inline constexpr QLatin1StringView kXBasisValue("value");
 
-/// Marks an unresolved <curve> as real workspace intent: the pending binder
-/// fulfills it when its topic materializes, and no save/strip/prompt pass may
-/// discard it. One predicate/writer pair so the keep-alive semantics cannot
-/// drift between the layout passes, the binder, and the plot widget.
+/// Marks an unresolved <curve> as workspace intent: the pending binder fulfills it when its topic materializes, and no
+/// save, strip or prompt pass may discard it. One predicate/writer pair keeps the semantics identical across the
+/// layout passes, the binder and the plot widget.
 inline constexpr QLatin1StringView kPendingIntentAttribute("pending_intent");
 inline constexpr QLatin1StringView kPendingIntentTrue("true");
 

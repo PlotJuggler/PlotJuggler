@@ -15,9 +15,9 @@
 #include "point_cloud_ops.h"
 
 // Native operations over decoded pixels (pj_scripting/image_decoder.h), the heavy half of a script's image methods
-// (docs/derived_objects/ARCHITECTURE.md §6). Luau-free, so the Luau and Python binders share them. Every operation
-// first checks the pixels' shape (`validatePixels`); an allocating one charges its output to `limits.budget` before
-// allocating it and polls `limits.cancelled` once per row.
+// (docs/derived_objects/ARCHITECTURE.md "Types and bindings"). Luau-free, so the Luau and Python binders share them.
+// Every operation first checks the pixels' shape (`validatePixels`); an allocating one charges its output to
+// `limits.budget` before allocating it and polls `limits.cancelled` once per row.
 namespace PJ::scripting::native {
 
 /// How the source is stored, independent of how it decodes: "jpeg", "png", "raw:<encoding>" for the raw encodings

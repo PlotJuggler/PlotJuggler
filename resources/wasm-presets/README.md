@@ -9,11 +9,11 @@ Cloudflare R2 bucket whose `v1/` files never change) when the data is too large
 for the repository. How to author one, the packaging rules and the hosting notes are in
 [`docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
 
-| Sample | Files | Bytes |
-|---|---|---|
-| `builtin_filters/` | layout, thumbnail (recording hosted, see below) | 15,010 |
-| `anymal/` | layout, thumbnail (recording and robot models hosted, see below) | 32,273 |
-| `city_drive/` | layout, thumbnail (recording and car model hosted, see below) | 54,455 |
+| Sample | Files |
+|---|---|
+| `builtin_filters/` | layout, thumbnail (recording hosted, see below) |
+| `anymal/` | layout, thumbnail (recording and robot models hosted, see below) |
+| `city_drive/` | layout, thumbnail (recording and car model hosted, see below) |
 
 The layouts and this file are authored for this repository and fall
 under its license (MPL-2.0), and so do the thumbnails: PlotJuggler renders of
@@ -22,11 +22,6 @@ ANYmal and city-drive ones show only their 3D view, the built-in filters one its
 two plots).
 
 ## `builtin_filters/` — built-in filters
-
-| File | Bytes |
-|---|---|
-| `layout.pj4.xml` | 4,144 |
-| `thumbnail.png` | 10,866 |
 
 Three plots of one signal: a car's gyro yaw rate (`/nissan/gps/duro/imu`,
 `angular_velocity/z`, about 99 Hz) as recorded, the same signal through the
@@ -56,11 +51,6 @@ Redistribution basis: the dataset's authors provide it "for research and
 educational purposes" (© SZE-JKK).
 
 ## `anymal/` — ANYmal GrandTour
-
-| File | Bytes |
-|---|---|
-| `layout.pj4.xml` | 10,104 |
-| `thumbnail.png` | 22,169 |
 
 The layout loads three hosted folders (each with its own license and provenance
 notes; `https://assets.plotjuggler.io/index.html` lists every file):
@@ -102,11 +92,6 @@ curated MCAP of the same mission; the topics, rates and processing above are
 what it did.
 
 ## `city_drive/` — self-driving car
-
-| File | Bytes |
-|---|---|
-| `layout.pj4.xml` | 6,648 |
-| `thumbnail.png` | 47,807 |
 
 The layout loads `v1/boreas/boreas_city_drive.mcap` (261,292,684 bytes, SHA-256
 `db4e548caa266c5408c266bed953610e82676016ae7f48c890af5b53116db82b`, pinned by

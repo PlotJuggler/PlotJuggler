@@ -2,13 +2,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Shared scaffolding for the MainWindow layout-import GUI tests
-// (alive / policy / cancel / lifecycle / binder): the friend test peer, the
-// source-bound layout-file builder, the diagnostic recorder, and the common
-// main() macro. The descriptor-scripted fake provider itself is the shared
-// tests/support/fake_import_provider.h. MainWindow teardown leaks process
-// state, so runner cases use separate ctest processes; lifecycle scenarios
-// retain standalone executables and use the main() macro below.
+// Shared scaffolding for the MainWindow layout-import GUI tests (alive / policy / cancel / lifecycle / binder): the
+// friend test peer, the source-bound layout-file builder, the diagnostic recorder, and the common main() macro. The
+// descriptor-scripted fake provider is tests/support/fake_import_provider.h. MainWindow teardown leaks process
+// state, so runner cases use separate ctest processes; lifecycle scenarios keep standalone executables and use the
+// main() macro below.
 
 #include <gtest/gtest.h>
 
@@ -43,9 +41,8 @@
 
 namespace PJ {
 
-// Reaches the private restore surfaces of MainWindow for the layout-import
-// GUI scenarios: the explicit-interactivity load entry, the progressive
-// in-flight flag, the batch handle, and the pending binder state.
+// Reaches the private restore surfaces of MainWindow for the layout-import GUI scenarios: the explicit-interactivity
+// load entry, the progressive in-flight flag, the batch handle, and the pending binder state.
 class MainWindowLayoutImportTestPeer {
  public:
   [[nodiscard]] static AppSession& session(MainWindow& window) {
@@ -65,7 +62,7 @@ class MainWindowLayoutImportTestPeer {
   [[nodiscard]] static bool batchActive(const MainWindow& window) {
     return window.layoutImportBatchActive();
   }
-  // True when the pending binder holds NO retained intents.
+  // True when the pending binder holds no retained intents.
   [[nodiscard]] static bool binderEmpty(MainWindow& window) {
     return window.pending_binder_ == nullptr || window.pending_binder_->empty();
   }
@@ -99,7 +96,7 @@ class MainWindowLayoutImportTestPeer {
     return count;
   }
 
-  // --- T7 binder surfaces: strip displayed ownership + batch observation ---
+  // Ingest strip: displayed ownership and batch observation.
 
   using StripOwnerKind = MainWindow::IngestStripOwnerKind;
   [[nodiscard]] static StripOwnerKind stripOwnerKind(const MainWindow& window) {
@@ -108,15 +105,13 @@ class MainWindowLayoutImportTestPeer {
   [[nodiscard]] static DatasetId stripOwnerDataset(const MainWindow& window) {
     return window.ingest_strip_owner_dataset_;
   }
-  // "Engaged" = shown, or the anti-flash show delay is pending. These binaries
-  // never show() the window, so the widget's isVisible() is always false; the
-  // explicit hidden flag plus the timer is the observable pair.
+  // "Engaged" = shown, or the anti-flash show delay is pending. These binaries never show() the window, so the
+  // widget's isVisible() is always false; the explicit hidden flag plus the timer is the observable pair.
   [[nodiscard]] static bool stripEngaged(const MainWindow& window) {
     return window.ingest_show_timer_->isActive() || !window.ingest_progress_->isHidden();
   }
-  // The strip's caption rides the bar's format string (IngestProgressWidget
-  // has no title getter, deliberately); ingest owners never set counter text,
-  // so the format IS the displayed title here.
+  // The strip's caption rides the bar's format string (IngestProgressWidget has no title getter); ingest owners
+  // never set counter text, so the format is the displayed title here.
   [[nodiscard]] static QString stripTitle(const MainWindow& window) {
     const auto* bar = stripBar(window);
     return bar == nullptr ? QString() : bar->format();
@@ -141,14 +136,10 @@ class MainWindowLayoutImportTestPeer {
     stop->click();
     return true;
   }
-  // Test-only hygiene: a driven endIngest with no batch active reaches no
-  // production handler (real ends route through the interactive host
-  // callbacks or the batch observers), so a scenario's last driven end can
-  // leave a stale displayed owner behind — and a show timer that fired during
-  // pumping leaves the widget active (or a timer still pending) into the next
-  // scenario. Reset the whole strip surface — owner fields, both timers, the
-  // widget's active state — in TearDown so the scenarios stay
-  // order-independent. Unconditional-safe there: no active ingests remain.
+  // Resets the whole strip surface (owner fields, both timers, the widget's active state); call it in TearDown so
+  // scenarios stay order-independent. A driven endIngest with no batch active reaches no production handler, so it
+  // can leave a stale displayed owner behind, and a show timer that fired during pumping leaves the widget active
+  // (or a timer pending) into the next scenario. Safe unconditionally there: no active ingests remain.
   static void resetStripState(MainWindow& window) {
     window.ingest_strip_owner_kind_ = MainWindow::IngestStripOwnerKind::kNone;
     window.ingest_strip_owner_dataset_ = 0;
@@ -157,11 +148,9 @@ class MainWindowLayoutImportTestPeer {
     window.ingest_progress_->setActive(false);
   }
 
-  // --- Stage-5 live-E2E surfaces: the literal GUI menu actions (E6 automates
-  // the real QActions, never the slots directly), the dataset-removal shell
-  // route (the warm leg must unload first — findAlreadyLoaded resolves by
-  // provenance and would short-circuit the reload), and the direct save entry
-  // for re-save assertions that already proved the modal once. ---
+  // The real menu QActions (tests trigger them, never the slots), the dataset-removal route (a warm reload must
+  // unload first: findAlreadyLoaded resolves by provenance and would short-circuit it), and the direct save entry
+  // for re-save assertions that already proved the modal once.
 
   [[nodiscard]] static QAction* saveLayoutAction(MainWindow& window) {
     return window.action_save_layout_;
@@ -183,16 +172,14 @@ class MainWindowLayoutImportTestPeer {
     window.onUndo();
   }
 
-  // --- D9 scaffolding: the takeover-fold and pinned-panel seams (the same
-  // private surfaces ToolboxPanelFoldTest drives, re-exposed here so the
-  // binder suite can prove a headless batch job never reaches them). ---
+  // The takeover-fold and pinned-panel seams (the private surfaces ToolboxPanelFoldTest drives), so the binder
+  // suite can prove a headless batch job never reaches them.
 
   [[nodiscard]] static bool presentPanel(MainWindow& window, QWidget* panel) {
     window.presentPanel(panel);
     return window.current_panel_ == panel;
   }
-  // Presents `container` as the chart-area takeover through a bare presenter
-  // (the fold's only target).
+  // Presents `container` as the chart-area takeover through a bare presenter (the fold's only target).
   [[nodiscard]] static bool dockBare(
       MainWindow& window, QWidget* container, const QString& plugin_id, const QString& title,
       ToolboxRuntimeHost* host) {
@@ -259,8 +246,7 @@ class MainWindowLayoutImportTestPeer {
 
 namespace pj_layout_import_gui {
 
-// The shared fake provider, re-exported so the GUI tests keep addressing it
-// through this namespace.
+// The shared fake provider, re-exported so GUI tests address it through this namespace.
 using pj_fake_import::g_instance;
 using pj_fake_import::kFakeVtable;
 using pj_fake_import::kProviderId;
@@ -270,10 +256,9 @@ using pj_fake_import::kProviderId;
   return pj_fake_import::makeDescriptor(QStringLiteral("gui"), trust, path, 0, import_mode);
 }
 
-// One plot with a topic-addressed (unresolved) curve plus one
-// materialize-bearing <fileInfo> whose descriptor scripts the fake.
-// `provider` overrides the <materialize provider> attribute (an unknown id
-// drives the §6.4 provider-absent fallback).
+// One plot with a topic-addressed (unresolved) curve plus one materialize-bearing <fileInfo> whose descriptor
+// scripts the fake. `provider` overrides the <materialize provider> attribute (an unknown id drives the
+// provider-absent fallback).
 [[nodiscard]] inline QDomDocument buildImportLayoutDoc(
     const QString& curve_topic, const QString& source_path, const QString& descriptor,
     const QString& provider = QString::fromUtf8(kProviderId)) {
@@ -296,8 +281,8 @@ using pj_fake_import::kProviderId;
   plot.setAttribute(QStringLiteral("id"), QStringLiteral("plot1"));
   plot.setAttribute(QStringLiteral("mode"), QStringLiteral("TimeSeries"));
   QDomElement curve = doc.createElement(QStringLiteral("curve"));
-  // Stable topic identity only — no concrete key: the curve resolves (or is
-  // retained as a pending intent) against whatever the import produces.
+  // Stable topic identity only, no concrete key: the curve resolves (or is retained as a pending intent) against
+  // whatever the import produces.
   curve.setAttribute(QStringLiteral("topic"), curve_topic);
   plot.appendChild(curve);
   dock_area.appendChild(plot);
@@ -319,8 +304,8 @@ using pj_fake_import::kProviderId;
   return doc;
 }
 
-// A generic-binding layout with one curve on `curve_topic`: no data sources,
-// no <materialize> — the plain SYNC-apply shape (binds against loaded data).
+// A generic-binding layout with one curve on `curve_topic`: no data sources, no <materialize>; the plain
+// synchronous-apply shape (binds against loaded data).
 [[nodiscard]] inline QDomDocument buildGenericCurveLayoutDoc(const QString& curve_topic) {
   QDomDocument doc;
   QDomElement root = doc.createElement(QStringLiteral("root"));
@@ -359,15 +344,14 @@ using pj_fake_import::kProviderId;
   return true;
 }
 
-// The buildImportLayoutDoc + writeLayoutFile nest every scenario starts with.
+// buildImportLayoutDoc + writeLayoutFile: the pair every scenario starts with.
 [[nodiscard]] inline bool writeImportLayout(
     const QString& layout_path, const QString& curve_topic, const QString& source_path, const QString& descriptor,
     const QString& provider = QString::fromUtf8(kProviderId)) {
   return writeLayoutFile(layout_path, buildImportLayoutDoc(curve_topic, source_path, descriptor, provider));
 }
 
-// Records every diagnostic id the window reports into `ids` (delivery is
-// queued — pump before asserting).
+// Records every diagnostic id the window reports into `ids` (delivery is queued: pump before asserting).
 inline void recordDiagnosticIds(PJ::MainWindow& window, QStringList& ids) {
   QObject::connect(
       PJ::MainWindowLayoutImportTestPeer::diagnosticBridge(window), &PJ::QtDiagnosticBridge::diagnosticReported,

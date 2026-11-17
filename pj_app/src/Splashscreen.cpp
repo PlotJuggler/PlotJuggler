@@ -25,11 +25,7 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 namespace {
 
-// Picks a random "funny meme" from the bundled pool (:/resources/memes),
-// avoiding the handful most recently shown (persisted in QSettings) so
-// consecutive launches don't repeat until the pool cycles. The pool is
-// enumerated at runtime, so adding a meme is a pure resource change — no code
-// edit. Returns a null QPixmap when the pool is empty.
+// Avoids the most recently shown memes (persisted in QSettings). Null when the pool is empty.
 QPixmap getFunnySplashscreen() {
   QDir memes_dir(u":/resources/memes"_s);
   const QStringList files = memes_dir.entryList({u"*.jpg"_s}, QDir::Files, QDir::Name);
@@ -39,8 +35,7 @@ QPixmap getFunnySplashscreen() {
 
   QSettings settings;
   QStringList recent = settings.value(u"previousFunnyMemesList"_s).toStringList();
-  // Never block more entries than (pool - 1), otherwise the pick loop below
-  // could never find an unseen meme and would spin forever.
+  // At most pool - 1, or the pick loop below would spin forever.
   const qsizetype avoid_count = std::min<qsizetype>(recent.size(), files.size() - 1);
   const QStringList avoid = recent.mid(recent.size() - avoid_count);
 
@@ -49,7 +44,6 @@ QPixmap getFunnySplashscreen() {
     chosen = files.at(QRandomGenerator::global()->bounded(static_cast<int>(files.size())));
   } while (avoid.contains(chosen));
 
-  // Keep the 10 most-recent picks (PJ3's history depth).
   recent.append(chosen);
   while (recent.size() > 10) {
     recent.removeFirst();
@@ -59,8 +53,6 @@ QPixmap getFunnySplashscreen() {
   return capMemeToSplashBox(QPixmap(memes_dir.filePath(chosen)));
 }
 
-// The pool of subtitles for the "serious" splashscreen; one is picked at random
-// each launch.
 const QStringList& seriousSubtitles() {
   static const QStringList kSubtitles = {
       u"Now you're plotting"_s,
@@ -82,10 +74,7 @@ const QStringList& seriousSubtitles() {
   return kSubtitles;
 }
 
-// Renders the "serious" splashscreen: the PlotJuggler logo + wordmark over
-// framework surface and brand-gradient tokens, with a random
-// subtitle underneath. Composed with QPainter rather than baked into an image
-// so every element stays crisp at any DPI and the subtitle can vary per launch.
+// Painted rather than an image, so it stays crisp at any DPI and the subtitle can vary.
 QPixmap makeSeriousSplashscreen() {
   constexpr int kW = 720;
   constexpr int kH = 300;
@@ -103,19 +92,16 @@ QPixmap makeSeriousSplashscreen() {
   const auto token_theme = theme::themeFor(true);
   const auto brand = theme::gradient(theme::Gradient::Brand, token_theme);
 
-  // Soft framework surface gradient.
   QLinearGradient bg(canvas.topLeft(), canvas.bottomRight());
   bg.setColorAt(0.0, theme::surface(theme::Surface::Backdrop, token_theme));
   bg.setColorAt(1.0, theme::surface(theme::Surface::Backdrop, token_theme));
   p.fillRect(canvas, bg);
 
-  // A thin brand-gradient accent along the bottom edge.
   QLinearGradient accent(canvas.bottomLeft(), canvas.bottomRight());
   accent.setColorAt(0.0, brand.first);
   accent.setColorAt(1.0, brand.second);
   p.fillRect(QRectF(0, kH - 4, kW, 4), accent);
 
-  // Logo, vertically centred on the left.
   constexpr qreal kLogoSize = 156;
   const QRectF logo_rect(56, (kH - kLogoSize) / 2.0, kLogoSize, kLogoSize);
   QSvgRenderer logo(u":/resources/plotjuggler.svg"_s);
@@ -126,14 +112,11 @@ QPixmap makeSeriousSplashscreen() {
   const qreal text_x = logo_rect.right() + 44;
   const qreal wordmark_baseline = kH / 2.0 - 18;
 
-  // Wordmark "PlotJuggler": draw the whole word in slate grey, then overdraw the
-  // two juggling capitals in the brand colours (P blue, J magenta). The coloured
-  // glyphs land exactly on top of the grey ones, so the spacing is identical to
-  // a single drawText of the full word.
+  // The whole word in grey, then the P and J overdrawn in brand colours, so the spacing is one drawText's.
   QFont wordmark_font;
   wordmark_font.setFamilies({u"Khula"_s, u"Roboto"_s, wordmark_font.defaultFamily()});
   wordmark_font.setPixelSize(76);
-  wordmark_font.setWeight(QFont::Thin);  // thinnest available weight, for an airy banner look
+  wordmark_font.setWeight(QFont::Thin);
   p.setFont(wordmark_font);
   const QString wordmark = u"PlotJuggler"_s;
   const QFontMetricsF wordmark_fm(wordmark_font);
@@ -147,11 +130,10 @@ QPixmap makeSeriousSplashscreen() {
   p.drawText(
       QPointF(text_x + wordmark_fm.horizontalAdvance(QStringLiteral("Plot")), wordmark_baseline), QStringLiteral("J"));
 
-  // Random subtitle, centred horizontally under the wordmark, in the same ink.
   QFont subtitle_font;
   subtitle_font.setFamilies({u"Roboto"_s, subtitle_font.defaultFamily()});
   subtitle_font.setPixelSize(26);
-  subtitle_font.setWeight(QFont::Light);  // thin, airy weight to match the banner
+  subtitle_font.setWeight(QFont::Light);
   p.setFont(subtitle_font);
   p.setPen(wordmark_ink);
   const QStringList& subs = seriousSubtitles();
@@ -159,7 +141,6 @@ QPixmap makeSeriousSplashscreen() {
   const qreal subtitle_width = QFontMetricsF(subtitle_font).horizontalAdvance(subtitle);
   p.drawText(QPointF(text_x + (wordmark_width - subtitle_width) / 2.0, wordmark_baseline + 56), subtitle);
 
-  // Version, small and unobtrusive in the corner.
   QFont version_font;
   version_font.setPixelSize(13);
   p.setFont(version_font);

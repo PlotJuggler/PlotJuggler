@@ -1,17 +1,13 @@
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg Test)
 find_package(nlohmann_json REQUIRED)
 
-# backward-cpp (Conan): symbolized crash backtraces. The package exports the
-# `Backward` config and the `Backward::Backward` target, which propagates the
-# BACKWARD_HAS_* defines and links the stack-detail backend (elfutils/libdw)
-# transitively. main.cpp installs the signal handler.
+# backward-cpp: symbolized crash backtraces (main.cpp installs the handler). Backward::Backward carries the
+# BACKWARD_HAS_* defines and the libdw backend transitively.
 if(NOT EMSCRIPTEN)
     find_package(Backward REQUIRED)
 endif()
 
-# The whole shell as an OBJECT library so a headless test can link the exact
-# same MainWindow object files (see main_window_source_layout_test) instead of
-# duplicating the widget tree. The executable below is a thin main.cpp wrapper.
+# The shell as an OBJECT library so tests link the same MainWindow objects; the executable wraps main.cpp.
 add_library(pj_app_shell OBJECT
     src/BuiltinPlugins.cpp
     src/BuiltinPlugins.h
@@ -246,9 +242,7 @@ else()
     add_executable(pj_app src/main.cpp src/BundledFont.cpp)
 endif()
 set_target_properties(pj_app PROPERTIES
-    # The CMake target id stays `pj_app` (internal module name), but the installed
-    # binary is `plotjuggler4` — the user-facing command and what packaging ships
-    # (e.g. /usr/bin/plotjuggler4). Keeps the source module rename a separate concern.
+    # The user-facing command packaging ships; the target id stays pj_app.
     OUTPUT_NAME plotjuggler4
 )
 if(WIN32)
@@ -278,16 +272,9 @@ target_link_libraries(pj_app PRIVATE
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_resources>
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:Backward::Backward>)
 
-# The admission helper is resolved at runtime as a sibling of the executable
-# (PluginCheckRunner::locateHelper -> applicationDirPath), which is what an
-# install layout gives for free: both land in bin/. A build tree does not — each
-# target writes into its own module directory — so mirror the helper next to the
-# app after linking. Without this the runner falls back to a bare name and only
-# finds the helper if it happens to be on PATH.
-#
-# Driven from here rather than by overriding the helper's output directory: this
-# keeps the dependency pointing from the consumer to the tool, and leaves the
-# standalone marketplace build (where no app target exists) untouched.
+# PluginCheckRunner::locateHelper looks for the admission helper next to the executable. An install puts both
+# in bin/; a build tree does not, so copy it next to the app (else only PATH finds it). Done from the consumer
+# so the standalone marketplace build, which has no app target, stays untouched.
 if(TARGET pj-plugin-check)
     add_dependencies(pj_app pj-plugin-check)
     add_custom_command(TARGET pj_app POST_BUILD
@@ -297,14 +284,9 @@ if(TARGET pj-plugin-check)
     install(TARGETS pj-plugin-check RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
-# Install layout (`cmake --install`): the app and its admission helper side by
-# side in bin/ (see above); on Linux also the desktop entry and icons. The app
-# seeds bundled plugins from <bindir>/../lib/plotjuggler/plugins (macOS:
-# <bindir>/../Resources/plugins; ExtensionCatalogService), which the install
-# leaves empty. Every other dependency is linked in or comes from the prefix, so
-# a plain configure/build/install (conda, distro packages) gives a working
-# install. The bundled plugins, the CPython runtime and Qt's own files stay with
-# the packaging that bundles them (packaging/appimage, deb, installer, macos).
+# `cmake --install`: the app and its admission helper in bin/, on Linux the desktop entry and icons. The bundled
+# plugins folder ExtensionCatalogService seeds from (<bindir>/../lib/plotjuggler/plugins, macOS
+# <bindir>/../Resources/plugins) stays empty; bundled plugins, CPython and Qt's files belong to packaging/.
 if(NOT EMSCRIPTEN)
     install(TARGETS pj_app RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} BUNDLE DESTINATION .)
     if(UNIX AND NOT APPLE)
@@ -318,14 +300,10 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 
-# App version: single source of truth is versions.env, stamped by the root
-# CMakeLists into generated/pj_version.h (PJ_VERSION_STRING). main.cpp — the only
-# user — includes that header directly, so no per-target compile definition is
-# needed (a duplicate -D here would redefine the macro under -Werror).
+# PJ_VERSION_STRING comes from generated/pj_version.h, which main.cpp includes: a -D here would redefine it
+# under -Werror.
 
-# -Werror guards against the bug class that bit the reload path: a merge that
-# drops wiring leaves an unused variable behind, which these flags turn into a
-# build failure instead of a silent regression.
+# -Werror: a merge that drops wiring leaves an unused variable behind; this makes it a build failure.
 if(DEFINED PJ_WARNING_FLAGS)
     target_compile_options(pj_app_shell PRIVATE ${PJ_WARNING_FLAGS})
     # CXX only: pj_app also compiles plotjuggler.rc on Windows, and rc.exe rejects
@@ -337,13 +315,8 @@ if(MSVC)
     target_compile_options(pj_app_shell PRIVATE /bigobj)
 endif()
 
-# Don't re-export symbols pulled in from static archive members. Without
-# this, Conan-built libpng/libjpeg/etc. symbols are exported globally from
-# pj_app and the dynamic linker can interpose them ahead of the system
-# copies that GTK/glib load — see for example the libpng 1.6.43 (system)
-# vs 1.6.58 (Conan) ABI skew that crashes QGtk3Interface::fileIcon during
-# QFileDialog with an "invalid pointer" free. --exclude-libs,ALL is the
-# GNU/LLD spelling; harmless on other linkers but only meaningful here.
+# Keep static-archive symbols (Conan libpng, libjpeg, ...) out of the dynamic symbol table: exported, they
+# interpose ahead of the system copies GTK loads, and a libpng ABI skew crashes QFileDialog. GNU/LLD spelling.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT WIN32 AND NOT EMSCRIPTEN)
     target_link_options(pj_app PRIVATE "LINKER:--exclude-libs,ALL")
 endif()
@@ -391,16 +364,11 @@ if(EMSCRIPTEN)
     pj_wasm_write_notices("${CMAKE_CURRENT_BINARY_DIR}/THIRD_PARTY_NOTICES.txt" "${PJ_WASM_PYTHON_NOTICES}")
 endif()
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
 if(PJ_BUILD_TESTS)
     find_package(GTest REQUIRED)
 
-    # Qt-only helpers compile their implementation once without the shell's
-    # dependency closure. Discovery keeps a fresh QApplication per test case.
-    # no WARNINGS: 1 of 9 merged tests never compiled with -Werror
+    # Qt-only helpers, compiled without the shell's dependency closure. No WARNINGS: not every test here builds
+    # under -Werror.
     pj_add_test_runner(pj_app_unit_tests
         MAIN gui
         SOURCES
@@ -422,11 +390,7 @@ if(PJ_BUILD_TESTS)
             src/BrowserPersistence.h
             src/FileSelectionService.cpp
             src/FileSelectionService.h
-            # Pure config-parsing logic (no GUI), compiled standalone so it's
-            # linkable without pj_app_shell. FanoutConfig.cpp is also part of pj_app.
             src/FanoutConfig.cpp
-            # LayoutXml is a self-contained DOM helper module (no Qt::Widgets,
-            # no MainWindow), so compile it directly into this test runner.
             src/LayoutXml.cpp
             src/LayoutXml.h
             src/KeySequence.cpp
@@ -474,11 +438,8 @@ if(PJ_BUILD_TESTS)
         endif()
     endif()
 
-    # Guards the meme splash pool against its two silent failure modes: a meme
-    # present in resources/memes/ but absent from memes.qrc is invisible at
-    # runtime (rcc has no globbing), and an oversized meme must be bounded on
-    # both axes, not just width. Links pj_resources so the test inspects the
-    # real shipped pool, and is handed the source directory to compare against.
+    # A meme in resources/memes/ but not in memes.qrc is invisible at runtime (rcc has no globbing), and an
+    # oversized one must be bounded on both axes; inspects the shipped pool against the source directory.
     add_executable(splash_meme_pool_test
         tests/splash_meme_pool_test.cpp
         src/Splashscreen.cpp
@@ -492,15 +453,9 @@ if(PJ_BUILD_TESTS)
     endif()
     add_test(NAME SplashMemePoolTest COMMAND splash_meme_pool_test)
 
-    # Proves --exclude-libs,ALL (above) still keeps third-party static-archive
-    # symbols out of pj_app's dynamic symbol table. Needs a real ELF and binutils,
-    # so it is a script test rather than a gtest binary.
-    #
-    # `nm` is resolved HERE rather than inside the script so the "no binutils"
-    # case is decided once, visibly, at configure time: a bare toolchain gets a
-    # STATUS line saying the guard is off instead of either a mystery build
-    # failure or a test that silently passes without checking anything. Every CI
-    # image has binutils, so the guard always runs where it matters.
+    # Proves --exclude-libs,ALL (above) keeps static-archive symbols out of pj_app's dynamic symbol table.
+    # `nm` is resolved at configure time so a toolchain without binutils says the guard is off, instead of a
+    # test that passes without checking.
     if(NOT WIN32 AND NOT APPLE AND NOT EMSCRIPTEN)
         find_program(PJ_NM_EXECUTABLE nm)
         if(PJ_NM_EXECUTABLE)
@@ -537,7 +492,7 @@ if(PJ_BUILD_TESTS)
         COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
 
     # The Reload button comes back on every way a reload request ends, including the exits the
-    # legacy load signals stay silent on (rejected config dialog, queued cancel).
+    # fileLoaded / fileLoadFailed signals stay silent on (rejected config dialog, queued cancel).
     list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_reload_button_test.cpp)
     set_source_files_properties(tests/main_window_reload_button_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:dialog_probe_source_plugin>")
@@ -580,13 +535,12 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/preferences_selector_size_test.cpp)
 
-    # MR !261 depth guard: a source added while streaming is paused must write
-    # into the secondary tail buffer, not the frozen primary. Exercises the
-    # extracted pause-target seam (applyWriteTargetsForCurrentPauseState) headlessly.
+    # A source added while streaming is paused writes into the secondary tail buffer, not the frozen primary
+    # (applyWriteTargetsForCurrentPauseState).
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/streaming_pause_target_test.cpp)
 
-    # One streaming poll tick through the extracted ingestTickForTests seam: eager
+    # One streaming poll tick through the ingestTickForTests seam: eager
     # processors advance over every topic of the dataset and the ingest
     # announcement names them all.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
@@ -610,7 +564,7 @@ if(PJ_BUILD_TESTS)
         tests/main_window_source_layout_test.cpp)
 
     # Fan-out timeline matcher: when a saved same-named fan-out shape no longer
-    # matches the loaded one, no offset may bind (FIX 4).
+    # matches the loaded one, no offset may bind.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_fanout_ambiguous_test.cpp)
 
@@ -668,7 +622,7 @@ if(PJ_BUILD_TESTS)
         COMPILE_DEFINITIONS PJ_CUSTOM_TOPICS_EDITOR_FIXTURE_PATH="$<TARGET_FILE:custom_topics_editor_fixture_plugin>")
 
     # A hand-made 3D view filled by a user drop frames its first content; a
-    # restored layout keeps its saved fixed frame and camera (SCN-16).
+    # restored layout keeps its saved fixed frame and camera.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_scene3d_drop_framing_test.cpp)
 
@@ -697,12 +651,12 @@ if(PJ_BUILD_TESTS)
             tests/main_window_file_drop_test.cpp)
     endif()
 
-    # Viewport re-frame after a layout's timeline offsets settle: sync leg (FIX 1)
-    # and the progressive-drain pending-timeline seam (FIX 2).
+    # Viewport re-frame after a layout's timeline offsets settle: the sync path and the progressive-drain
+    # pending-timeline seam.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_viewport_reframe_test.cpp)
 
-    # SDK 0.28 owned views: tab ids stay stable across renames and reordering,
+    # Plugin-owned views: tab ids stay stable across renames and reordering,
     # and displayTimeForSource refuses a topic that two datasets both advertise.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_plugin_views_test.cpp)
@@ -717,10 +671,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_history_exempt_test.cpp)
 
-    # Layout-import batch restore (T6), with isolated ctest processes:
+    # Layout-import batch restore, with isolated ctest processes:
     #   alive  — a materialize MISS import keeps the restore alive across the
     #            catalog-empty guard; curves bind at the batch-gated drain.
-    #   policy — D5: a non-interactive restore opens zero dialogs; unresolved
+    #   policy — a non-interactive restore opens zero dialogs; unresolved
     #            intents are retained + diagnosed, never cleared.
     #   cancel — cancel mid-import rolls back to the pre-layout workspace.
     # Keep the alive/cancel/lifecycle scenarios standalone to preserve their
@@ -743,12 +697,8 @@ if(PJ_BUILD_TESTS)
         target_compile_options(main_window_layout_import_cancel_test PRIVATE ${PJ_WARNING_FLAGS})
     endif()
     add_test(NAME MainWindowLayoutImportCancelTest COMMAND main_window_layout_import_cancel_test)
-    #   lifecycle — Codex r1 F2/F3/F4/F6: explicit progressive policy on a
-    #              mixed automated restore, apply-failure diagnostics, full
-    #              supersession by a sync-path load, and automated plain-source
-    #              failure dialog suppression (with the interactive pin).
-    #              Stages the mock source plugin so plain replays load/fail
-    #              for real.
+    #   lifecycle — explicit progressive policy on a mixed automated restore, apply-failure diagnostics, full
+    #              supersession by a sync-path load, and automated plain-source failure dialog suppression.
     add_executable(main_window_layout_import_lifecycle_test tests/main_window_layout_import_lifecycle_test.cpp)
     target_include_directories(main_window_layout_import_lifecycle_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(main_window_layout_import_lifecycle_test PRIVATE pj_app_shell pj_resources GTest::gtest)
@@ -760,13 +710,9 @@ if(PJ_BUILD_TESTS)
         PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>"
     )
     add_dependencies(main_window_layout_import_lifecycle_test mock_file_source_plugin)
-    #   binder — T7 (D2/D4/D6/D8/D9): the ingest strip's displayed ownership +
-    #            batch-scoped SessionManager observation, the batch job's
-    #            keep-partial Stop route, #498 coexistence (no panel folds
-    #            from headless jobs; busy pinned panels survive the batch
-    #            drain), and the D6 real-surface legs — mid-import curve
-    #            binding, on_dataset/ingestBegan ordering, and the real
-    #            promotion transaction (mock source plugin staged for it).
+    #   binder — the ingest strip's displayed ownership, batch-scoped SessionManager observation, the batch
+    #            job's keep-partial Stop route, toolbox panels vs headless jobs (no fold; busy pinned panels
+    #            survive the drain), mid-import curve binding, on_dataset/ingestBegan order, the real promotion.
     # This suite's plugin-path definition must not propagate to other sources.
     add_executable(main_window_layout_import_binder_test tests/main_window_layout_import_binder_test.cpp)
     target_include_directories(main_window_layout_import_binder_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -780,18 +726,14 @@ if(PJ_BUILD_TESTS)
     )
     add_dependencies(main_window_layout_import_binder_test mock_file_source_plugin)
 
-    #   settle — stage-5 E5: layoutRestoreSettled fires exactly once per load
+    #   settle — layoutRestoreSettled fires exactly once per load
     #            terminal (open-failure false + dump composition, plain sync
     #            true, batch true only at batch finish — never mid-import).
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_layout_settle_test.cpp)
-    #   e2e    — stage-5 E1(a): the LIVE cross-repo gui-test — real MainWindow,
-    #            REAL plugin DSOs (mcap-cloud + mcap-loader + ros-parser) from
-    #            $MCAP_CLOUD_E2E_EXTENSIONS, live server at $MCAP_CLOUD_E2E_URL,
-    #            frozen descriptor vectors from $MCAP_CLOUD_E2E_VECTORS. SKIPs
-    #            cleanly (all five scenarios) when that env is absent; the
-    #            e2e-layout-import.sh harness provides it and treats SKIP as
-    #            failure (smoke's pattern).
+    #   e2e    — live cross-repo test: real plugin DSOs from $MCAP_CLOUD_E2E_EXTENSIONS, a live server at
+    #            $MCAP_CLOUD_E2E_URL, descriptor vectors from $MCAP_CLOUD_E2E_VECTORS. SKIPs without that env;
+    #            the e2e-layout-import.sh harness provides it and treats SKIP as failure.
     # The private HOME/XDG sandbox must exist before QApplication construction.
     add_executable(main_window_layout_import_e2e_test tests/main_window_layout_import_e2e_test.cpp)
     target_include_directories(main_window_layout_import_e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -811,11 +753,8 @@ if(PJ_BUILD_TESTS)
     endif()
     add_test(NAME MainWindowLayoutExitTest COMMAND main_window_layout_exit_test)
 
-    # --dump-diagnostics collector (stage-5 E2): full-run accumulation from the
-    # queued bridge (incl. pre-attach records), the stable five-field JSON
-    # shape, and no truncation at the DiagnosticHistory ring cap. No MainWindow
-    # is constructed; the runner links the shell for DiagnosticDump + the
-    # bridge and supplies the Qt event loop.
+    # --dump-diagnostics collector: full-run accumulation from the queued bridge (pre-attach records included),
+    # the five-field JSON shape, no truncation at the DiagnosticHistory ring cap. No MainWindow.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/diagnostic_dump_test.cpp)
 
@@ -850,11 +789,8 @@ if(PJ_BUILD_TESTS)
     # plugin library); the fixtures are built by pj_custom_widgets/tests.
     include(${CMAKE_SOURCE_DIR}/pj_custom_widgets/tests/E2E.cmake)
 
-    # Test-only DataSource plugin that calls the runtime host's message box from
-    # the import worker thread (guards the cross-thread-QMessageBox regression;
-    # also records its askContinue outcome to PJ_MSGBOX_PROBE_FILE so a test can
-    # observe the shutdown gate's -1 answer). Built like the SDK's mock plugins:
-    # a SHARED lib linking only pj_base.
+    # Test-only DataSource plugin that calls the host's message box from the import worker thread and records
+    # its askContinue outcome to PJ_MSGBOX_PROBE_FILE (the shutdown gate answers -1). Links only pj_base.
     add_library(msgbox_mock_source_plugin SHARED tests/msgbox_mock_source.cpp)
     target_compile_features(msgbox_mock_source_plugin PRIVATE cxx_std_20)
     target_link_libraries(msgbox_mock_source_plugin PRIVATE plotjuggler_sdk::base)
@@ -872,9 +808,7 @@ if(PJ_BUILD_TESTS)
     endif()
 
     # Test-only DataSource plugin with an embedded config dialog (kCapabilityHasDialog).
-    # Drives FileLoader's shutdown-while-suspended-at-the-plugin-dialog path so the
-    # reject-before-destroy ordering (the UAF guard) can be asserted deterministically.
-    # Links plugin_sdk for the DialogPluginTyped/WidgetData symbols.
+    # Shutdown while suspended at the plugin dialog: the dialog is rejected before the plugin is destroyed.
     add_library(dialog_probe_source_plugin SHARED tests/dialog_probe_source.cpp)
     target_compile_features(dialog_probe_source_plugin PRIVATE cxx_std_20)
     target_link_libraries(dialog_probe_source_plugin PRIVATE plotjuggler_sdk::plugin_sdk)
@@ -882,14 +816,9 @@ if(PJ_BUILD_TESTS)
         target_compile_options(dialog_probe_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
     endif()
 
-    # Shared scaffolding for the standalone FileLoader-pipeline suites
-    # (file_loader_test, source_promotion_host_test,
-    # headless_descriptor_provider_session_test): the loader TUs compiled ONCE
-    # and reused by all three binaries (FileLoader has no MainWindow dependency
-    # by design — see setFilePicker). The one-binary-per-suite pattern stays;
-    # per-suite compile definitions (mock-plugin paths) live on each
-    # executable. Their plugin-path definitions differ, so they cannot share
-    # a runner. The header-side twin is tests/support/loader_test_support.h.
+    # The loader TUs, compiled once for the standalone FileLoader-pipeline suites (file_loader_test,
+    # source_promotion_host_test, headless_descriptor_provider_session_test). Their plugin-path definitions
+    # differ, so each keeps its own executable. Header side: tests/support/loader_test_support.h.
     add_library(pj_app_loader_testlib OBJECT
         src/SourcePromotionHost.cpp
         src/SourcePromotionHost.h
@@ -927,10 +856,8 @@ if(PJ_BUILD_TESTS)
         target_compile_options(pj_app_loader_testlib PRIVATE ${PJ_WARNING_FLAGS})
     endif()
 
-    # End-to-end FileLoader pipeline test (same-file reload semantics + the
-    # worker-thread message-box marshal regression). Ingests through the SDK's
-    # mock_file_source_plugin (and the local msgbox_mock_source_plugin), staged
-    # into a temp extensions dir at runtime.
+    # End-to-end FileLoader pipeline: same-file reload, the worker-thread message-box marshal. The mock plugins
+    # are staged into a temp extensions dir at runtime.
     add_executable(file_loader_test
         tests/file_loader_test.cpp
         tests/file_loader_shutdown_progress_test.cpp
@@ -975,11 +902,9 @@ if(PJ_BUILD_TESTS)
     endif()
     add_test(NAME SourcePromotionHostTest COMMAND source_promotion_host_test)
 
-    # Headless per-batch owner of ONE descriptor-import provider toolbox
-    # instance (T5b): manifest-id resolution, bind, extension view, promotion
-    # service, queued-only callback marshal, and the quiescence teardown pin.
-    # Driven against a fake provider toolbox registered statically (no DSO);
-    # same standalone shape as source_promotion_host_test above.
+    # Headless per-batch owner of one descriptor-import provider toolbox instance: manifest-id resolution, bind,
+    # extension view, promotion service, queued-only callback marshal, quiescence teardown. Fake provider
+    # registered statically (no DSO).
     add_executable(headless_descriptor_provider_session_test
         tests/headless_descriptor_provider_session_test.cpp
     )
@@ -990,14 +915,9 @@ if(PJ_BUILD_TESTS)
     endif()
     add_test(NAME HeadlessDescriptorProviderSessionTest COMMAND headless_descriptor_provider_session_test)
 
-    # The §6.2 rewrite-then-classify restore coordinator (T6): classify
-    # matrix, trust gate, guard-3 ceiling, provider-absent fallback,
-    # sequential job chaining, cancel/rollback. Driven against a
-    # descriptor-scripted fake provider toolbox (registerStaticToolbox) plus
-    # the real FileLoader + mock_file_source_plugin for stock cache-hit loads.
-    # Desktop-only: the fixture stands up the M3 source cache
-    # (SourceCacheStore/SourceCaptureService refuse to compile in the
-    # browser), same gate as pj_runtime's capture tests.
+    # The rewrite-then-classify restore coordinator: classify matrix, trust gate, guard-3 ceiling,
+    # provider-absent fallback, job chaining, cancel/rollback; a descriptor-scripted fake provider plus the real
+    # FileLoader. Desktop only: SourceCacheStore/SourceCaptureService do not compile in the browser.
     if(NOT EMSCRIPTEN)
         add_executable(layout_import_batch_test
             tests/layout_import_batch_test.cpp
@@ -1022,8 +942,7 @@ if(PJ_BUILD_TESTS)
         add_test(NAME LayoutImportBatchTest COMMAND layout_import_batch_test)
     endif()
 
-    # Binds the Source Timeline widget to the runtime; the regression test pins that
-    # the bars track data growth (samplesIngested), not just new catalog topics.
+    # The Source Timeline binding: the bars track data growth (samplesIngested), not just new catalog topics.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/source_timeline_controller_test.cpp
         tests/timeline_widget_test.cpp)

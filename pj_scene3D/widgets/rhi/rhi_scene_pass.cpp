@@ -60,7 +60,6 @@ struct ScenePipeline {
   bool optional = false;
   mutable bool failed = false;  // optional only: a variant could not be created
   std::unique_ptr<QRhiGraphicsPipeline> direct;
-  // The HDR variants are a cache resolve() fills, hence mutable.
   mutable std::unique_ptr<QRhiGraphicsPipeline> hdr;
   mutable std::unique_ptr<QRhiGraphicsPipeline> depth;
 };
@@ -164,8 +163,7 @@ QRhiGraphicsPipeline* ScenePipelineRegistry::resolve(const ScenePipeline* pipeli
     return nullptr;
   }
   if (pass != ScenePass::kDirect && failure_.has_value()) {
-    // The frame is withheld and the next one drops the HDR chain: no compile
-    // is retried on every later bind of this frame.
+    // The frame is withheld and the next one drops the HDR chain: no compile is retried on each later bind.
     return nullptr;
   }
   switch (pass) {
@@ -177,9 +175,8 @@ QRhiGraphicsPipeline* ScenePipelineRegistry::resolve(const ScenePipeline* pipeli
       }
       return pipeline->hdr.get();
     case ScenePass::kDepthReplay:
-      // The composite finds the background by depth, so a draw that writes no
-      // depth leaves no coverage there: the pixels it tints over the background
-      // stay ungraded background, and SSAO/EDL never see it.
+      // The composite finds the background by depth: a draw that writes none leaves no coverage, so its tint over
+      // the background stays ungraded and SSAO/EDL never see it.
       if (!pipeline->desc.depth_write) {
         return nullptr;
       }
@@ -217,10 +214,8 @@ std::unique_ptr<QRhiGraphicsPipeline> ScenePipelineRegistry::createVariant(
 
 namespace {
 
-// The box around `source`'s eight corners mapped by `place` (double in, double
-// out) minus `origin`, skipping non-finite corners. The origin is subtracted in
-// double: casting world coordinates to float first would collapse a far-away
-// box before it is made camera-relative.
+// The box around `source`'s eight corners mapped by `place`, minus `origin`, skipping non-finite corners. The origin
+// is subtracted in double: casting world coordinates to float first would collapse a far-away box.
 template <typename Place>
 AABB placedCorners(const AABB& source, const glm::dvec3& origin, Place place) {
   if (!source.valid) {

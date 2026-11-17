@@ -9,8 +9,7 @@ Restore fixtures in the format users of release-4.1 have on disk. Read by
 | `generic.pj4.xml` | `MainWindow::saveLayoutToPath(path, /*include_data_source=*/false)` |
 | `history_snapshot.xml` | `MainWindow::xmlSaveState(SnapshotScope::kHistory)` (an undo snapshot) |
 
-Source commit: `a5796f385` (release-4.1, "perf(markers): copy a marker rule's input
-series in linear time (#710)"), written by the real save paths of that build.
+Source commit: `a5796f385` (release-4.1), written by the real save paths of that build.
 
 ## The session
 
@@ -38,10 +37,10 @@ Not producible on release-4.1, so not in the fixtures: a generator window
 (release-4.1's `GeneratorRecipe` has none), and a scene dock mixing datasets
 (`SceneDockWidget::addLayer` already refuses a second dataset there).
 
-As released, a generator's `dataset_path` is absolute in every file, the generic
-layout included. Later builds make it relocatable like the other qualifiers and strip
-a generator's dataset qualifiers from a generic layout, so the generic resave check
-expects the fixture with that strip applied.
+In release-4.1 a generator's `dataset_path` is absolute in every file, the generic
+layout included. The current format makes it relocatable like the other qualifiers and
+strips a generator's dataset qualifiers from a generic layout, so the generic resave
+check expects the fixture with that strip applied.
 
 ## Regenerating
 

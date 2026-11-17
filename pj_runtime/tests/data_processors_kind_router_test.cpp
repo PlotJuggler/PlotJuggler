@@ -382,7 +382,7 @@ TEST(DataProcessorsKindRouterTest, RegisterServicesFailsWhenTheServiceNameIsTake
   EXPECT_NE(status.error().find("duplicate name"), std::string::npos) << status.error();
 }
 
-// GAP-34: a request shorter than the v1 prefix is refused before `kind` is read, so no
+// A request shorter than the v1 prefix is refused before `kind` is read, so no
 // backend sees it — not even through an ownership probe — on either typed slot.
 TEST(DataProcessorsKindRouterTest, KindRouterChecksStructSizeFirst) {
   Fixture fx;
@@ -430,7 +430,6 @@ TEST(DataProcessorsKindRouterTest, LargerRequestPrefixIsAcceptedAndShortPrefixRe
   EXPECT_EQ(fx.markers.ids.count("m2"), 0u);
 }
 
-// ABI-24.
 TEST(DataProcessorsKindRouterTest, CreateV2RoutesByKind) {
   Fixture fx;
   const PJ::sdk::DataProcessorsHostView view = fx.view();
@@ -454,7 +453,7 @@ TEST(DataProcessorsKindRouterTest, CreateV2RoutesByKind) {
   EXPECT_EQ(fx.markers.ids.count("m2"), 0u);
 }
 
-// ABI-21: kind="on_demand" with a bound third backend routes create/validate to THAT
+// Kind="on_demand" with a bound third backend routes create/validate to THAT
 // backend exclusively; config/remove (no kind) resolve to it by ownership.
 TEST(DataProcessorsKindRouterTest, OnDemandKindRoutesToThirdBackend) {
   Fixture fx;
@@ -479,7 +478,7 @@ TEST(DataProcessorsKindRouterTest, OnDemandKindRoutesToThirdBackend) {
   EXPECT_TRUE(fx.on_demand.ids.empty());
 }
 
-// ABI-22: with no third backend bound, kind="on_demand" is an unknown kind on every
+// With no third backend bound, kind="on_demand" is an unknown kind on every
 // slot that carries a kind, and nothing is created anywhere.
 TEST(DataProcessorsKindRouterTest, OnDemandKindWithoutBackendIsRejected) {
   Fixture fx(/*bind_on_demand=*/false);
@@ -526,7 +525,7 @@ TEST(DataProcessorsKindRouterTest, ListUnionsThreeBackends) {
   EXPECT_EQ(std::set<std::string>(ids.begin(), ids.end()), (std::set<std::string>{"m1", "t1", "od1"}));
 }
 
-// ABI-23: the cross-kind collision guard holds pairwise across all three backends, on
+// The cross-kind collision guard holds pairwise across all three backends, on
 // both create slots, and sees a preview its backend's config hides. Probing ownership
 // never goes through config (which rewrites the backend's borrowed storage).
 TEST(DataProcessorsKindRouterTest, IdCollisionAcrossThreeBackends) {
@@ -559,7 +558,7 @@ TEST(DataProcessorsKindRouterTest, IdCollisionAcrossThreeBackends) {
   EXPECT_EQ(fx.markers.config_calls + fx.transforms.config_calls + fx.on_demand.config_calls, 0);
 }
 
-// ABI-25: submit goes to the kind's backend and returns a router handle; poll and
+// Submit goes to the kind's backend and returns a router handle; poll and
 // release reach the issuing backend through it.
 TEST(DataProcessorsKindRouterTest, SubmitPollReleaseRouteThroughRouterHandles) {
   Fixture fx;
@@ -585,7 +584,7 @@ TEST(DataProcessorsKindRouterTest, SubmitPollReleaseRouteThroughRouterHandles) {
   EXPECT_NE(twice.error().find("unknown"), std::string::npos) << twice.error();
   EXPECT_FALSE(view.pollEvaluation(*handle).has_value());
 
-  // A kind whose backend has no evaluation is refused naming the kind (ABI-34).
+  // A kind whose backend has no evaluation is refused naming the kind.
   PJ::sdk::DataProcessorRequest on_transform = typed("t1", "transform");
   on_transform.instant_ns = 5;
   const auto refused = view.submitEvaluation(on_transform);
@@ -743,7 +742,7 @@ TEST(DataProcessorsKindRouterTest, AHostileKindKeepsTheReasonInTheMessage) {
   EXPECT_TRUE(contains(err, "unknown data processor kind 'on\\x00demand'")) << err.message;
 }
 
-// ABI-26: unbound backends are skipped without a null vtable dereference.
+// Unbound backends are skipped without a null vtable dereference.
 TEST(DataProcessorsKindRouterTest, UnboundBackendsAreSkipped) {
   FakeBackend transforms;
   transforms.accepted_kind = "transform";
@@ -809,7 +808,7 @@ TEST(DataProcessorsKindRouterTest, CheckForwardsToTheBackendsCheckElseMapsItsVal
   EXPECT_GT(std::strlen(err.message), 0u);
 }
 
-// ABI-27: every router refusal is PJ_ERROR_CODE_REJECTED, and a null ctx still says why.
+// Every router refusal is PJ_ERROR_CODE_REJECTED, and a null ctx still says why.
 TEST(DataProcessorsKindRouterTest, RefusalsCarryTheRejectedCodeAndNullCtxFillsTheError) {
   Fixture fx;
   const PJ_data_processors_host_t r = fx.r();

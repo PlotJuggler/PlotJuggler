@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// One streaming poll tick (StreamingSourceManager::onIngestTick), driven through
-// ingestTickForTests over a bare DataSourceRuntimeHost: no plugin, no worker
-// thread. Eager processors advance over every topic of the dataset, including
-// one committed straight into the engine as a toolbox does, and the ingest
-// announcement names every topic.
+// One streaming poll tick (StreamingSourceManager::onIngestTick), driven through ingestTickForTests over a bare
+// DataSourceRuntimeHost: no plugin, no worker thread. Eager processors advance over every topic of the dataset,
+// including one committed straight into the engine as a toolbox does, and the ingest announcement names every topic.
 
 #include <gtest/gtest.h>
 
@@ -39,8 +37,7 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 namespace {
 
-// Org/app names sandbox QSettings reads (the manager reads its retention
-// window) away from the user's real preferences, without affecting other suites.
+// Org/app names sandbox QSettings (the manager reads its retention window) away from the user's real preferences.
 struct QtEnvironment : ::testing::Environment {
   void SetUp() override {
     if (!pj_app_test::isTestSuiteSelected("StreamingIngestTickTest")) {
@@ -143,7 +140,6 @@ class StreamingIngestTickTest : public ::testing::Test {
   TopicId b_neg_{0};
 };
 
-// Every topic of the dataset advances, wherever its rows came from.
 TEST_F(StreamingIngestTickTest, ATickAdvancesProcessorsOverEveryTopicOfTheDataset) {
   writeA(2, 2.0);
   commitB(2, 2.0);
@@ -154,7 +150,6 @@ TEST_F(StreamingIngestTickTest, ATickAdvancesProcessorsOverEveryTopicOfTheDatase
   EXPECT_EQ(primaryRows(b_neg_), 2U) << "a row committed outside the write hosts must still reach its processor";
 }
 
-// A tick that finds nothing new leaves every output as it was.
 TEST_F(StreamingIngestTickTest, ATickWithNothingNewLeavesTheOutputsAlone) {
   writeA(2, 2.0);
   manager_.ingestTickForTests(dataset_id_);

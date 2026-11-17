@@ -1,9 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Regression coverage for FileLoader's queued single-load progress callback.
-// The crashing scenario runs in a subprocess so the parent reports one normal
-// GTest failure instead of losing the rest of the FileLoader test executable.
+// FileLoader's queued single-load progress callback must not touch the context joinForShutdown destroyed. The
+// crashing scenario runs in a subprocess so the parent reports one normal GTest failure instead of losing the rest
+// of the FileLoader test executable.
 
 #include <gtest/gtest.h>
 
@@ -56,8 +56,8 @@ bool waitForProbeMarker(const QString& path, const QByteArray& marker) {
     if (readProbe(path).contains(marker)) {
       return true;
     }
-    // Deliberately do not process Qt events here: the progress metacall must
-    // remain queued until joinForShutdown has joined and reset ctx_.
+    // Deliberately no Qt event processing: the progress metacall must stay queued until joinForShutdown has joined
+    // and reset ctx_.
     QThread::msleep(1);
   }
   return false;
@@ -120,9 +120,8 @@ TEST(FileLoaderShutdownProgressChild, DispatchesQueuedProgressAfterJoin) {
   hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
   ASSERT_TRUE(loader.loadFile(input_path, nullptr, hints));
 
-  // Drain only far enough to install the token. The probe sleeps for 100 ms
-  // between progressStart and progressUpdate, so the later update remains a
-  // queued straggler for the shutdown regression below.
+  // Drain only far enough to install the token. The probe sleeps 100 ms between progressStart and progressUpdate,
+  // so the later update stays a queued straggler.
   if (!began_token.has_value()) {
     QTimer::singleShot(5000, &wait_for_begin, &QEventLoop::quit);
     wait_for_begin.exec();
@@ -135,9 +134,8 @@ TEST(FileLoaderShutdownProgressChild, DispatchesQueuedProgressAfterJoin) {
   ASSERT_TRUE(waitForProbeMarker(probe_path, QByteArrayLiteral("progress_callback_returned")))
       << "plugin never returned from progressUpdate; no queued callback was proven";
 
-  // The plugin is still running. joinForShutdown requests stop, waits for it,
-  // destroys the abandoned load's ctx_, and leaves the queued progress metacall
-  // untouched in this GUI thread's event queue.
+  // The plugin is still running. joinForShutdown requests stop, waits for it, destroys the abandoned load's ctx_ and
+  // leaves the queued progress metacall untouched in this GUI thread's event queue.
   loader.joinForShutdown();
   ASSERT_TRUE(readProbe(probe_path).contains(QByteArrayLiteral("stop_observed")))
       << "join did not exercise the running-worker shutdown path";
@@ -149,10 +147,8 @@ TEST(FileLoaderShutdownProgressChild, DispatchesQueuedProgressAfterJoin) {
   EXPECT_FALSE(session.hasActiveIngests());
   EXPECT_EQ(progressed, 0) << "the queued progress tick must still be pending at shutdown";
 
-  // Deliver the straggler tick. Without the generation/ctx_ guard in the
-  // queued lambda this would dereference the context joinForShutdown reset —
-  // the child process crashing here is exactly what the parent test asserts
-  // does not happen.
+  // Deliver the straggler tick. Without the generation/ctx_ guard in the queued lambda it would dereference the
+  // context joinForShutdown reset (the child process would crash; the parent test asserts it does not).
   QCoreApplication::sendPostedEvents(&loader, QEvent::MetaCall);
   EXPECT_EQ(progressed, 0) << "a post-shutdown tick must not update the ended ingest token";
   EXPECT_EQ(ended.size(), 1u) << "the stale tick must not synthesize another terminal";

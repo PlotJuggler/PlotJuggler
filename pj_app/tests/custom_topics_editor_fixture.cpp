@@ -1,11 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Test-only Toolbox plugin standing in for the Transform Editor: its manifest declares the
-// `custom_topics_editor` capability, so the host makes it the Custom Topics editor, and its panel
-// previews the topic `/cloud` in an embedded 3D scene view (the `scenePreview` frame's
-// `scene_view` document). Its `droppedItems` label is a drop target that shows the names and data sources the
-// last drop delivered, one per line, so a test reads what the plugin received. Consumed by
+// Test-only Toolbox plugin standing in for the Transform Editor: its manifest declares `custom_topics_editor`, so
+// the host makes it the Custom Topics editor, and its panel previews `/cloud` in an embedded 3D scene view (the
+// `scenePreview` frame's `scene_view` document). The `droppedItems` label is a drop target showing the names and
+// data sources of the last drop, one per line, so a test can read what the plugin received. Consumed by
 // main_window_editor_integration_test.
 
 #include <pj_base/sdk/toolbox_plugin_base.hpp>

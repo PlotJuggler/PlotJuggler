@@ -39,7 +39,7 @@ HeadlessDescriptorProviderSession::HeadlessDescriptorProviderSession(
 Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSession::create(
     SessionManager& session_manager, ExtensionCatalogService& extensions, FileLoader& loader, CatalogModel& catalog,
     const QString& provider_manifest_id, DiagnosticSink diagnostics, SourceCaptureService* capture_service) {
-  // 1. Find the provider toolbox by STABLE MANIFEST ID (RuntimeToolboxPlugin::id).
+  // By manifest id (RuntimeToolboxPlugin::id), never by display name.
   const std::string wanted = provider_manifest_id.toStdString();
   const auto& toolboxes = extensions.toolboxes();
   const auto it = std::find_if(
@@ -53,44 +53,28 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
       session_manager, catalog, provider_manifest_id, source_name, std::move(diagnostics)));
   auto* self = session.get();
 
-  // 2. Assemble the host services — the SAME set the interactive path binds
-  //    (MainWindow::launchToolbox), so the plugin sees an identical host
-  //    environment headless vs interactive. Registration strictly BEFORE the
-  //    handle's bind() (the ServiceRegistryBuilder contract).
+  // The services MainWindow::launchToolbox binds, all registered before bind() (the ServiceRegistryBuilder
+  // contract).
   session->settings_ = std::make_unique<QSettingsBackend>();
   session->builder_ = std::make_unique<ServiceRegistryBuilder>();
 
   ToolboxRuntimeHost::Callbacks callbacks;
-  // The DATA half of MainWindow's on_data_changed: publish the ingested
-  // topics into the catalog tree and refresh each ingested dataset's time
-  // reference (FileLoader parity — without it the t0-offset origin memo can
-  // stay pinned at the 0 it acquired before any data existed). The
-  // PRESENTATION half is deliberately absent here, because it lives on
-  // MainWindow-owned surfaces this session has no business reaching:
-  // 3D-scene TF bridging (transform_service_), playback focus/seeding
-  // (AppSession::focusPlaybackOnDatasets / seedPlaybackFromSession), and the
-  // Custom Topics panel rows. MainWindow (the batch owner) supplies that
-  // presentation from outside: its batch-scoped SessionManager observers
-  // (installLayoutBatchObservers) drive the title-bar ingest strip
-  // mid-import, and the progressive-restore drain settles the rest.
+  // The data half of MainWindow's on_data_changed. Refreshing the time reference matters: without it the t0
+  // origin can stay at the 0 it took before any data existed. The presentation half (TF bridging, playback focus,
+  // Custom Topics rows) is MainWindow's, through its batch-scoped SessionManager observers.
   callbacks.on_data_changed = [self](std::vector<DatasetId> ingested_datasets) {
     self->catalog_.rebuildFromDatastore();
     for (const DatasetId id : ingested_datasets) {
       self->session_.refreshDatasetTimeReference(id);
     }
   };
-  // Same information MainWindow forwards to its diagnostic history: mapped
-  // level, human-readable source, message text.
   callbacks.on_message = [self](PJ_toolbox_message_level_t level, std::string message) {
     emitDiagnosticTo(
         self->diagnostics_, toolboxDiagnosticLevel(level), self->source_name_.toStdString(),
         self->provider_id_.toStdString(), std::move(message));
   };
-  // Ingest lifecycle: the SessionManager bookkeeping only (the #470 hoist).
-  // MainWindow's versions add strip-widget presentation and FileLoader
-  // arbitration on top; a headless session has no strip.
-  // A headless session has no UI to stop anything from, so the plugin's own
-  // cancellable declaration is deliberately ignored here.
+  // SessionManager bookkeeping only; MainWindow adds the strip widget and FileLoader arbitration. With no UI to
+  // stop from, the plugin's cancellable flag is ignored.
   callbacks.on_ingest_started = [self](DatasetId dataset, std::string label, uint64_t total, bool /*cancellable*/) {
     const IngestToken token =
         self->session_.beginIngest(dataset, QString::fromStdString(label), total, /*cancellable=*/false, {});
@@ -105,21 +89,16 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
   callbacks.on_ingest_finished = [self](DatasetId dataset) {
     const auto token_it = self->ingest_tokens_.find(dataset);
     if (token_it != self->ingest_tokens_.end()) {
-      // A headless session's producer reports no outcome, so kUnknown is the
-      // truthful terminal — claiming kCompleted would assert success nobody saw.
+      // The producer reports no outcome; kCompleted would claim a success nobody saw.
       self->session_.endIngest(token_it->second, IngestOutcome::kUnknown);
       self->ingest_tokens_.erase(token_it);
     }
   };
 
-  // Parser-ingest deps: identical to the interactive path, including parser
-  // registration before the first pushed message (see ToolboxHostWiring.h).
   ToolboxRuntimeHost::ParserIngestDeps ingest_deps;
   ingest_deps.catalog = &extensions;
   ingest_deps.ingest_taps = session_manager.ingestTapsShared();
   ingest_deps.register_object_parser = makeObjectParserRegistrar(session_manager);
-  // M3: capture this binding's delegated downloads into the source cache
-  // (identical to the interactive path; no-op when capture_service is null).
   wireSourceCapture(ingest_deps, capture_service, wanted, session_manager);
 
   session->host_ = std::make_unique<ToolboxRuntimeHost>(
@@ -134,11 +113,8 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
     return unexpected("failed to publish data-processor services for '" + wanted + "': " + status.error());
   }
 
-  // Source promotion, bound per plugin instance: provider identity is THIS
-  // binding's manifest id (host-derived, unspoofable) and the ownership
-  // predicate is this instance's own ingest bookkeeping. `host_` outlives
-  // `promotion_host_` (see the destructor), so the captured raw pointer
-  // stays valid for the predicate's whole life.
+  // The provider identity is this binding's manifest id, never plugin-supplied. `host_` outlives `promotion_host_`
+  // (see the destructor), so the captured pointer stays valid.
   session->promotion_host_ = std::make_unique<SourcePromotionHost>(
       loader, session_manager, provider_manifest_id,
       [host = session->host_.get()](DatasetId dataset_id) { return host->hasIngestForDataset(dataset_id); });
@@ -146,10 +122,7 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
     return unexpected("failed to publish the source-promotion service for '" + wanted + "': " + status.error());
   }
 
-  // 3. Create + bind the plugin instance. Every failure from here returns
-  //    through `session`'s destructor: no jobs exist yet, so the quiescence
-  //    step is trivially satisfied and the handle (if created) is released —
-  //    nothing leaks.
+  // A failure from here releases the handle through `session`'s destructor (no jobs exist yet).
   session->handle_ = std::make_unique<ToolboxHandle>(it->library.createHandle());
   if (!session->handle_->valid()) {
     return unexpected("descriptor-import provider toolbox '" + wanted + "' failed to create a plugin instance");
@@ -158,8 +131,6 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
     return unexpected("failed to bind descriptor-import provider toolbox '" + wanted + "': " + status.error());
   }
 
-  // 4. Resolve the descriptor-import extension (tail-slot gated) and gate on
-  //    the view's struct_size validation.
   const void* extension = session->handle_->getPluginExtension(PJ_DESCRIPTOR_IMPORT_EXTENSION_V1);
   if (extension == nullptr) {
     return unexpected("toolbox '" + wanted + "' does not expose the " PJ_DESCRIPTOR_IMPORT_EXTENSION_V1 " extension");
@@ -171,41 +142,20 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
         "' exposes a " PJ_DESCRIPTOR_IMPORT_EXTENSION_V1
         " extension whose struct_size does not cover the v1 query_descriptor/start_import slots");
   }
-  return session;  // implicit move (returning a local by name)
+  return session;
 }
 
 HeadlessDescriptorProviderSession::~HeadlessDescriptorProviderSession() {
-  // (1) Cancel every import job, then FAIL THE PROMOTION INTAKE BEFORE
-  // JOINING. A provider worker may legally block its terminal on an ACCEPTED
-  // promotion's exactly-once result callback — the ABI has no way to cancel
-  // a promotion — so joining first can deadlock: joinAll waits on a terminal
-  // that waits on a callback only shutdown() can deliver. shutdown()
-  // (idempotent; phase 1 of the two-phase teardown, uniform with
-  // ~ToolboxPanelSession) closes the intake and fails every
-  // accepted-but-unfinished promotion (ok=false), which reaches plugin
-  // code — the instance/DSO is still alive here, exactly as its contract
-  // demands.
+  // Order and reasons: the class comment. Shutdown before the join: the ABI cannot cancel an accepted promotion,
+  // and a worker may block its terminal on that promotion's result.
   cancelAll();
   if (promotion_host_ != nullptr) {
     promotion_host_->shutdown();
   }
-  // (2) QUIESCENCE: join + destroy every import job while the plugin
-  // instance, its DSO, and every host it can call into are still alive.
-  // After this, no provider worker exists and (per the SDK's JoinableJob
-  // contract) no job callback can ever run again — which is the
-  // precondition ToolboxRuntimeHost's destructor demands and what makes the
-  // ~QObject purge of any still-queued terminal metacalls legal.
   joinAll();
   jobs_.clear();
-  // (3) The plugin instance persists its state through the settings backend
-  // in its destructor, so the handle dies while builder/hosts/settings live.
-  // The promotion-host OBJECT survives until after the handle: a straggler
-  // call into the raw service pointer during instance destroy hits
-  // shutdown()'s safe synchronous rejection, never a use-after-free.
   handle_.reset();
   promotion_host_.reset();
-  // (4) Service views into the hosts, then the hosts, then the backend —
-  // the same relative order as MainWindow's ~ToolboxPanelSession.
   builder_.reset();
   derived_hosts_.reset();
   host_.reset();
@@ -222,10 +172,7 @@ Expected<HeadlessDescriptorProviderSession::JobId> HeadlessDescriptorProviderSes
     std::function<void(DescriptorImportOutcome, std::string)> on_terminal) {
   const JobId job_id = ++next_job_id_;
 
-  // Queued-only marshal (the locked project rule): the provider's
-  // job-callback thread only POSTS; host-side code runs exclusively on the
-  // GUI thread. Qt::QueuedConnection unconditionally — never Auto — so
-  // delivery is uniform and never inline.
+  // Always queued, never Auto: delivery is never inline, even from the GUI thread.
   auto queued_dataset = [this, cb = std::move(on_dataset)](DatasetId dataset) {
     if (!cb) {
       return;
@@ -237,11 +184,7 @@ Expected<HeadlessDescriptorProviderSession::JobId> HeadlessDescriptorProviderSes
     QMetaObject::invokeMethod(
         this,
         [this, job_id, cb, outcome, message = std::move(message)]() {
-          // Conclude BEFORE the owner callback: the registry is already
-          // consistent (and re-entrant startImport calls are fine) when the
-          // callback observes the terminal. Destroying the job here is not a
-          // self-destroy — the provider's terminal returned when it posted
-          // this metacall, and destroy() joins from the GUI thread.
+          // Conclude before the owner callback, which may call startImport again.
           concludeJob(job_id);
           if (cb) {
             cb(outcome, message);
@@ -261,7 +204,7 @@ Expected<HeadlessDescriptorProviderSession::JobId> HeadlessDescriptorProviderSes
 void HeadlessDescriptorProviderSession::cancelJob(JobId job_id) {
   const auto it = jobs_.find(job_id);
   if (it == jobs_.end()) {
-    return;  // unknown or already concluded — per-job cancel is best-effort
+    return;
   }
   it->second.cancel();
 }
@@ -281,12 +224,10 @@ void HeadlessDescriptorProviderSession::joinAll() {
 void HeadlessDescriptorProviderSession::concludeJob(JobId job_id) {
   const auto it = jobs_.find(job_id);
   if (it == jobs_.end()) {
-    return;  // defensive: no live path reaches here — teardown purges pending continuations
+    return;
   }
   JoinableJob job = std::move(it->second);
   jobs_.erase(it);
-  // `job` destructs here: destroy = cancel+join, idempotent after the
-  // terminal already returned on the provider side.
 }
 
 }  // namespace PJ

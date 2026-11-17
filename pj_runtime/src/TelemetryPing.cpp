@@ -55,8 +55,8 @@ QString anonymousUserId() {
 // The full ping payload — the privacy contract: environment facts only, never
 // behavior, never user content (paths, file names, topic names). Adding a
 // field requires updating docs/TELEMETRY.md and telemetry_ping_test's
-// allowed-key set. The four PJ3-era keys (user_id/os/version/installation)
-// keep their exact names so the existing endpoint needs no changes.
+// allowed-key set. The keys user_id/os/version/installation are the
+// endpoint's existing names: renaming one breaks the endpoint.
 QJsonObject buildTelemetryPayload(const QString& installation) {
   QJsonObject payload;
   payload[u"user_id"_s] = anonymousUserId();

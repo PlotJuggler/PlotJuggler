@@ -1,11 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
-//
-// Tests for the shared ComboRule parser behind the "pj_enable_when" and
-// "pj_visible_when" declarative .ui properties (widget_binding.hpp): the
-// ';'-joined compound-clause syntax (AND across clauses), the visible-rule
-// wins-over-plugin-push guarantee applyWidgetData gives enable rules too, and
-// that hiding both halves of a QFormLayout row actually collapses it.
+// Tests for the ComboRule parser behind the "pj_enable_when" and "pj_visible_when" .ui properties (widget_binding.hpp):
+// the ';'-joined compound-clause syntax (AND across clauses), the guarantee that a visible rule wins over a plugin push
+// (as enable rules do), and that hiding both halves of a QFormLayout row collapses it.
 
 #include <QApplication>
 #include <QBuffer>
@@ -23,16 +20,15 @@
 
 namespace {
 
-// The runner's shared main (cmake/test_mains/pj_test_main_gui.cpp) owns the
-// QApplication; this only returns the instance.
+// The runner's shared main (cmake/test_mains/pj_test_main_gui.cpp) owns the QApplication; this only returns the
+// instance.
 QApplication* qapp() {
   return qobject_cast<QApplication*>(QCoreApplication::instance());
 }
 
-// Two combos (backendCombo: A, B; modeCombo: X, Y) and a QFormLayout row per
-// rule shape under test: single-clause visibility (a/b rows), a compound
-// two-clause visibility (customEdit), a single-clause enable (enEdit), and an
-// unresolvable combo name (badEdit) that must be left exactly as authored.
+// Two combos (backendCombo: A, B; modeCombo: X, Y) and a QFormLayout row per rule shape under test: single-clause
+// visibility (a and b rows), a compound two-clause visibility (customEdit), a single-clause enable (enEdit), and an
+// unresolvable combo name (badEdit) that is left exactly as authored.
 QDialog* buildDialog() {
   const QByteArray ui = R"(<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
@@ -139,7 +135,7 @@ TEST(ComboRules, CompoundClauseIsAnAndAcrossBothCombos) {
   auto* mode = dlg->findChild<QComboBox*>("modeCombo");
   auto* customEdit = dlg->findChild<QLineEdit*>("customEdit");
 
-  // backendCombo:0 (default) + modeCombo:0 (default) — only one clause holds.
+  // backendCombo:0 and modeCombo:0 (the defaults): only one clause holds.
   EXPECT_TRUE(customEdit->isHidden());
 
   mode->setCurrentIndex(1);
@@ -150,12 +146,9 @@ TEST(ComboRules, CompoundClauseIsAnAndAcrossBothCombos) {
   delete dlg;
 }
 
-// A hidden QFormLayout row (label + field both hidden) must actually shrink
-// the dialog — Qt's layout skips fully-hidden items when sizing — not just
-// leave an invisible gap. Proves pj_visible_when is wired to real widgets,
-// not just a flag nobody reads. Toggles modeCombo only (backendCombo stays at
-// 0) so the customEdit row is the single thing that changes state — a and b
-// rows don't confound the comparison by swapping which of them is visible.
+// A hidden QFormLayout row (label and field both hidden) shrinks the dialog: Qt's layout skips fully hidden items when
+// sizing, so it is more than an invisible gap. Toggles modeCombo only (backendCombo stays at 0), so the customEdit row
+// is the one thing that changes state.
 TEST(ComboRules, HidingARowShrinksTheDialog) {
   qapp();
   QDialog* dlg = buildDialog();
@@ -175,9 +168,8 @@ TEST(ComboRules, HidingARowShrinksTheDialog) {
   delete dlg;
 }
 
-// applyWidgetData wraps every apply in a QSignalBlocker and re-asserts the
-// combo rules afterward (see its doc comment) — a plugin-pushed `visible`
-// must lose to a "pj_visible_when" rule exactly as it does for `enabled`.
+// applyWidgetData wraps every apply in a QSignalBlocker and re-asserts the combo rules afterwards: a plugin-pushed
+// `visible` loses to a "pj_visible_when" rule exactly as `enabled` does.
 TEST(ComboRules, PluginPushedVisibleLosesToTheRule) {
   qapp();
   QDialog* dlg = buildDialog();
@@ -194,11 +186,8 @@ TEST(ComboRules, PluginPushedVisibleLosesToTheRule) {
   delete dlg;
 }
 
-// Regression guard: InitialStateAtBackendA... and SwitchingBackendFlips...
-// above already exercise the single-clause "pj_enable_when" on enEdit
-// unchanged from before compound clauses existed. This covers the other
-// half: a compound "pj_enable_when" ANDs across its clauses the same way
-// "pj_visible_when" does.
+// A compound "pj_enable_when" ANDs across its clauses as "pj_visible_when" does (single-clause enable rules are covered
+// by the tests above).
 TEST(ComboRules, EnableWhenCompoundClauseAndsAcrossCombos) {
   qapp();
   QDialog* dlg = buildDialog();
@@ -218,7 +207,7 @@ TEST(ComboRules, EnableWhenCompoundClauseAndsAcrossCombos) {
   delete dlg;
 }
 
-// Claim: a rule authored on the loaded root obeys the same apply-time precedence as a child's rule.
+// A rule authored on the loaded root obeys the same apply-time precedence as a child's rule.
 TEST(ComboRules, LoadedRootRuleIsInstalledAndReassertedAfterComboData) {
   qapp();
   QWidget root;

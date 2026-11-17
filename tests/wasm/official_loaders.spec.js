@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-// The official file loaders built into the wasm app import browser-selected
-// files: ULog, Parquet, the Arrow IPC, InfluxDB and NavMap parsers (inside
-// MCAP), and the CAN logs (candump with a DBC
-// picked from its own dialog, BLF, MF4). Fixtures: fixtures/generate_official_loader_fixtures.py
-// (Parquet, MF4, Arrow MCAP); sample.blf is pj-official-plugins' data_load_blf/test_data/sample.blf.
+// The official file loaders built into the wasm app import browser-selected files: ULog, Parquet, the Arrow
+// IPC, InfluxDB and NavMap parsers (inside MCAP), and the CAN logs (candump with a DBC picked from its own
+// dialog, BLF, MF4). fixtures/generate_official_loader_fixtures.py writes the Parquet, MF4 and the Arrow,
+// InfluxDB and NavMap MCAP fixtures; sample.blf is pj-official-plugins' data_load_blf/test_data/sample.blf.
 const crypto = require('crypto');
 const fs = require('fs');
 const { test, expect } = require('@playwright/test');
@@ -244,10 +243,9 @@ test('official candump loader decodes with a DBC picked in its dialog', async ({
   expect(errors).toEqual([]);
 });
 
-// The DBC picked in the loader's dialog is a side file of the source: the
-// source-bound layout names it and its fingerprint like the data file, and a
-// replay in a fresh page asks for both before the import decodes as before;
-// opened as a preset, it downloads both.
+// The DBC picked in the loader's dialog is a side file of the source: the source-bound layout names it and
+// its fingerprint like the data file, and a replay in a fresh page asks for both before importing; opened
+// as a preset, it downloads both.
 test('a source layout saves the DBC picked in the candump dialog and replays it after both are reselected', async ({ page }) => {
   test.setTimeout(180000);
   const consoleMessages = [];
@@ -284,7 +282,7 @@ test('a source layout saves the DBC picked in the candump dialog and replays it 
     () => replay.consoleMessages.some(message => message.includes('PJ_WASM_SOURCE_LAYOUT_STAGED index=1')),
     { timeout: 15000 },
   ).toBe(true);
-  // The same decision now asks for the dictionary; nothing is imported yet.
+  // The same decision then asks for the dictionary; nothing is imported yet.
   geometry = await sourceLayoutDecisionGeometry(replay.page, replay.consoleMessages);
   const dbcChooser = await openSourceReplayChooser(replay.page, replay.screen, geometry, replay.consoleMessages);
   await dbcChooser.setFiles(dictionary);

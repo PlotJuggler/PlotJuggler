@@ -22,10 +22,8 @@ namespace PJ {
 
 namespace {
 
-// Map the codec-signalled colour matrix to our two-way space tag. Unknown /
-// unspecified falls back to the universal heuristic (SD height -> BT.601, else
-// BT.709) that players use when a stream omits the matrix. BT.2020 is mapped to
-// BT.709 for now (HDR is out of scope — see REQUIREMENTS §7).
+// Unspecified falls back to the players' heuristic (SD height -> BT.601, else BT.709). BT.2020 takes the same
+// heuristic: HDR is not supported (docs/ARCHITECTURE.md "Known gaps").
 YuvColorSpace mapColorSpace(AVColorSpace cs, int height) noexcept {
   switch (cs) {
     case AVCOL_SPC_BT709:
@@ -76,17 +74,9 @@ void keepRange(SwsContext* context, bool full_range) {
   sws_setColorspaceDetails(context, inverse_table, range, table, range, brightness, contrast, saturation);
 }
 
-// Open an FFmpeg hardware-device context for `type`, or nullptr if none works.
-//
-// VAAPI is special: its device IS a specific DRM render node. Passing nullptr
-// opens the *default* node (/dev/dri/renderD128), which on a multi-GPU machine
-// is often a GPU with no VAAPI driver (e.g. an NVIDIA dGPU on the proprietary
-// driver) while the VAAPI-capable GPU sits on renderD129. So for VAAPI we honor
-// an explicit PJ_VAAPI_DEVICE override, then walk the render nodes and take the
-// first that initialises — making HW decode "just work" on iGPU+dGPU laptops
-// regardless of vendor or enumeration order. Every other backend (CUDA,
-// D3D11VA, VideoToolbox, …) has no node concept and uses the library default.
-// The render-node walk is Linux-only and guarded accordingly.
+// nullptr if no device opens. A VAAPI device is a DRM render node, and the default one is often a GPU without a
+// VAAPI driver: honour PJ_VAAPI_DEVICE, else take the first render node that initialises (docs/TECHNICAL_NOTES.md
+// "VAAPI device selection"). Other backends use the library default device.
 AVBufferRef* tryHwDevice(AVHWDeviceType type) {
   AVBufferRef* ctx = nullptr;
 #ifdef __linux__
@@ -97,9 +87,7 @@ AVBufferRef* tryHwDevice(AVHWDeviceType type) {
       }
       ctx = nullptr;
     }
-    // DRM render nodes are numbered from 128. Probe a generous range and take
-    // the first node whose VAAPI driver initialises. tryHwDevice runs once per
-    // stream (at decoder open), so the walk is not on any hot path.
+    // Render nodes are numbered from 128; this runs once per decoder open.
     for (int node = 128; node < 192; ++node) {
       const std::string path = "/dev/dri/renderD" + std::to_string(node);
       if (av_hwdevice_ctx_create(&ctx, type, path.c_str(), nullptr, 0) >= 0) {
@@ -116,9 +104,7 @@ AVBufferRef* tryHwDevice(AVHWDeviceType type) {
   return nullptr;
 }
 
-// The hardware surface pixel format this codec exposes for `type` (e.g.
-// AV_PIX_FMT_VAAPI), or AV_PIX_FMT_NONE if the codec has no HW config for it —
-// e.g. a profile the GPU can't decode, in which case we stay on software.
+// AV_PIX_FMT_NONE when the codec has no hardware config for `type`.
 AVPixelFormat hwPixelFormatFor(const AVCodec* codec, AVHWDeviceType type) {
   for (int i = 0;; ++i) {
     const AVCodecHWConfig* config = avcodec_get_hw_config(codec, i);
@@ -131,11 +117,8 @@ AVPixelFormat hwPixelFormatFor(const AVCodec* codec, AVHWDeviceType type) {
   }
 }
 
-// get_format callback: deterministically pick the hardware surface format when
-// the decoder offers it, otherwise defer to FFmpeg's default (software) choice
-// so the stream still decodes on machines/codecs without that HW path. The
-// wanted HW pixel format is carried in codec_ctx->opaque (set in open()), which
-// keeps this a free function so ffmpeg_decoder.h stays free of FFmpeg includes.
+// Picks the hardware surface format when offered, else FFmpeg's software default. The wanted format travels in
+// codec_ctx->opaque, which keeps FFmpeg types out of ffmpeg_decoder.h.
 AVPixelFormat pickHwFormat(AVCodecContext* ctx, const AVPixelFormat* formats) {
   const auto wanted = static_cast<AVPixelFormat>(reinterpret_cast<std::intptr_t>(ctx->opaque));
   for (const AVPixelFormat* p = formats; *p != AV_PIX_FMT_NONE; ++p) {
@@ -191,18 +174,9 @@ bool FfmpegDecoder::open(const AVCodecParameters* params) {
     return false;
   }
 
-  // Pick a hardware backend: first the explicit preference list, then every
-  // remaining backend this FFmpeg build exposes, keeping the first that (a)
-  // has a HW decode path for this codec and (b) opens a device. The generic
-  // av_hwdevice_iterate_types() fallback transparently covers whatever a given
-  // build/platform offers (CUDA, VideoToolbox, …) with no edits — but its enum
-  // order puts DXVA2 before D3D11VA, so a build with both (our win-64 package)
-  // would silently pick the legacy backend; the preference pass fixes that.
-  // Checking the codec's HW config first skips opening devices for backends
-  // that can't decode this stream anyway, and lets a backend that opens but
-  // lacks the codec config yield to the next one instead of dropping straight
-  // to software. If none qualify, hw_device_ctx_ stays null and decoding runs
-  // in software.
+  // The preference list first, then every other backend of this build; the first with a hardware config for the
+  // codec and a device that opens wins, else software. The preference pass exists because
+  // av_hwdevice_iterate_types() lists DXVA2 before D3D11VA, and the Windows package builds both.
   AVHWDeviceType hw_type = AV_HWDEVICE_TYPE_NONE;
   AVPixelFormat hw_pix_fmt = AV_PIX_FMT_NONE;
   const auto try_hw_type = [&](AVHWDeviceType type) {
@@ -233,8 +207,6 @@ bool FfmpegDecoder::open(const AVCodecParameters* params) {
     try_hw_type(type);
   }
 
-  // Pin the chosen HW surface format via get_format so the hardware path is
-  // selected deterministically; software stays the fallback when no device won.
   if (hw_device_ctx_ != nullptr) {
     codec_ctx_->opaque = reinterpret_cast<void*>(static_cast<std::intptr_t>(hw_pix_fmt));
     codec_ctx_->get_format = &pickHwFormat;
@@ -261,27 +233,21 @@ bool FfmpegDecoder::open(const AVCodecParameters* params) {
 
 int FfmpegDecoder::sendPacket(const uint8_t* data, size_t size, int64_t pts, int64_t dts, SendPolicy policy) {
   AVPacket* pkt = av_packet_alloc();
-  // We point pkt->data at the caller's buffer and never set pkt->buf, so
-  // avcodec_send_packet takes its own (ref-counted) copy of the bytes before it
-  // returns. The caller's buffer therefore does NOT need to outlive this call —
-  // which is what lets the streaming decoder feed zero-copy spans that alias a
-  // transient ObjectStore entry. Do not set pkt->buf to an external ref.
+  // pkt->buf stays unset, so avcodec_send_packet copies the bytes: the streaming decoder feeds spans aliasing a
+  // transient store entry. Setting pkt->buf to an external ref would break that.
   pkt->data = const_cast<uint8_t*>(data);
   pkt->size = static_cast<int>(size);
-  // pts carries the true presentation timestamp (so the decoded frame's pts comes
-  // back in presentation order); dts is the decode-order timestamp. They differ
-  // for B-frame streams — feeding pts==dts would scramble the output ordering.
   pkt->pts = pts;
   pkt->dts = dts;
 
   int ret = avcodec_send_packet(codec_ctx_, pkt);
   if (ret == AVERROR(ENOMEM) && policy != SendPolicy::kDecodeSkip) {
-    // Surface pool exhaustion — flush and retry once
+    // Surface pool exhausted: flush and retry once.
     avcodec_flush_buffers(codec_ctx_);
     ret = avcodec_send_packet(codec_ctx_, pkt);
   }
   if (ret == AVERROR(EAGAIN) && policy == SendPolicy::kCombinedDecode) {
-    // Legacy combined calls drain-and-discard on EAGAIN before retrying.
+    // Receive and discard on EAGAIN, then retry.
     AVFrame* drain_frame = av_frame_alloc();
     avcodec_receive_frame(codec_ctx_, drain_frame);
     av_frame_free(&drain_frame);
@@ -303,7 +269,7 @@ Expected<DecodedFrame> FfmpegDecoder::receiveFrame(const std::function<bool(int6
   }
   if (want && !want(frame->pts)) {
     av_frame_free(&frame);
-    return DecodedFrame{};  // isNull() == true: state advanced, no pixels paid
+    return DecodedFrame{};  // decoded, but `want` rejected it
   }
   auto result = avFrameToDecodedFrame(frame);
   if (result.has_value()) {
@@ -324,7 +290,6 @@ bool FfmpegDecoder::sendOnly(const uint8_t* data, size_t size, int64_t pts, int6
   if (codec_ctx_ == nullptr) {
     return false;
   }
-  // Streaming callers pre-drain the output queue; preserve ENOMEM retry only.
   int ret = sendPacket(data, size, pts, dts, SendPolicy::kStreamingPump);
   return ret >= 0;
 }
@@ -362,7 +327,6 @@ int64_t FfmpegDecoder::decodeSkip(const uint8_t* data, size_t size, int64_t pts,
     return -1;
   }
 
-  // Preserve decodeSkip's historical no-retry send path, including EAGAIN.
   int ret = sendPacket(data, size, pts, dts, SendPolicy::kDecodeSkip);
   if (ret < 0 && ret != AVERROR(EAGAIN)) {
     return -1;
@@ -387,7 +351,6 @@ std::vector<DecodedFrame> FfmpegDecoder::drain() {
     return frames;
   }
 
-  // Send NULL packet to drain
   avcodec_send_packet(codec_ctx_, nullptr);
 
   AVFrame* frame = av_frame_alloc();
@@ -415,7 +378,6 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   AVFrame* sw_frame = frame;
   AVFrame* tmp_frame = nullptr;
 
-  // Transfer HW frame to CPU if needed
   if (frame->hw_frames_ctx != nullptr) {
     tmp_frame = av_frame_alloc();
     if (av_hwframe_transfer_data(tmp_frame, frame, 0) < 0) {
@@ -429,19 +391,13 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
   int h = sw_frame->height;
   auto src_fmt = static_cast<AVPixelFormat>(sw_frame->format);
 
-  // Carry the codec-signalled colorimetry so the GPU builds the right YUV→RGB
-  // matrix (BT.601 vs BT.709) and range scale (limited vs full). Read it from the
-  // decoded frame: a hardware download fills `sw_frame` with pixels, not frame
-  // properties. sws_scale below only repacks the pixel layout (keepRange), so these
-  // tags stay valid for the converted output too.
+  // Read the colour tags from the decoded frame: a hardware download fills `sw_frame` with pixels only. The repack
+  // below keeps the range, so the tags stay valid.
   const YuvColorSpace color_space = mapColorSpace(frame->colorspace, h);
   const YuvColorRange color_range = mapColorRange(frame->color_range, src_fmt);
   const bool full_range = color_range == YuvColorRange::kFull;
 
-  // Output YUV420P — no color conversion on CPU. The GPU shader applies the
-  // YUV→RGB matrix selected from color_space/color_range above.
   if (src_fmt == AV_PIX_FMT_YUV420P) {
-    // Already YUV420P — just copy planes to contiguous buffer
     int uv_w = (w + 1) / 2;
     int uv_h = (h + 1) / 2;
     auto buf_size = expectedBufferSize(w, h, PixelFormat::kYUV420P);
@@ -450,16 +406,13 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
     int y_size = w * h;
     int uv_size = uv_w * uv_h;
 
-    // Y plane
     for (int row = 0; row < h; ++row) {
       std::memcpy(dst + row * w, sw_frame->data[0] + row * sw_frame->linesize[0], static_cast<size_t>(w));
     }
-    // U plane
     for (int row = 0; row < uv_h; ++row) {
       std::memcpy(
           dst + y_size + row * uv_w, sw_frame->data[1] + row * sw_frame->linesize[1], static_cast<size_t>(uv_w));
     }
-    // V plane
     for (int row = 0; row < uv_h; ++row) {
       std::memcpy(
           dst + y_size + uv_size + row * uv_w, sw_frame->data[2] + row * sw_frame->linesize[2],
@@ -480,10 +433,7 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
     return result;
   }
 
-  // NV12 (the usual hardware-decode download format): emit it natively as a Y
-  // plane + interleaved UV plane and let the GPU sample the two-plane texture —
-  // skipping the full-frame sws_scale repack to YUV420P. The widget falls back to
-  // a CPU repack only if the backend can't sample a two-channel (RG8) texture.
+  // NV12 stays NV12: the viewer samples it as two planes (no repack).
   if (src_fmt == AV_PIX_FMT_NV12) {
     const int uv_w = (w + 1) / 2;
     const int uv_h = (h + 1) / 2;
@@ -516,7 +466,7 @@ Expected<DecodedFrame> FfmpegDecoder::avFrameToDecodedFrame(AVFrame* frame) {
     return result;
   }
 
-  // Any other format (P010, YUV422, etc.) — convert to YUV420P via sws_scale
+  // Any other format (P010, YUV422, ...) is repacked to YUV420P.
   if (sws_ctx_ == nullptr || w != sws_src_w_ || h != sws_src_h_ || static_cast<int>(src_fmt) != sws_src_fmt_ ||
       full_range != sws_full_range_) {
     if (sws_ctx_ != nullptr) {
@@ -569,13 +519,10 @@ bool convertToRgb24(const DecodedFrame& frame, uint8_t* out) {
   }
   const int width = frame.width;
   const int height = frame.height;
-  // Nearest chroma (each pixel reads its 2x2 block): the shader's sampling. SWS_POINT alone is swscale's unscaled
-  // converter, within 3 levels per channel of the shader's matrix (2 at full range) at 0.6 ms per 1080p YUV420P frame
-  // (2.6 ms NV12, which swscale converts with its generic scaler); the exact rounding is within 1 at 11-13 ms. The
-  // unscaled converter's x86 kernel writes 16 pixels at a time, so at any other width it leaves a row's last pixels
-  // unwritten or writes past the frame, and swscale takes it only at an even height: any other frame takes the exact
-  // path, NV12 included, whose bound was measured on the same frames. (Without SWS_POINT, NV12's chroma is
-  // interpolated.)
+  // Nearest chroma, as the shader samples it. SWS_POINT alone (swscale's fast converter) only at a width that is a
+  // multiple of 16 and an even height: its x86 kernel writes 16 pixels at a time and elsewhere leaves a row's last
+  // pixels unwritten or writes past the frame. Other frames take the exact rounding (docs/TECHNICAL_NOTES.md "CPU
+  // RGB conversion for scripts").
   const bool fast = width % 16 == 0 && height % 2 == 0;
   const int flags = fast ? SWS_POINT : SWS_POINT | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT | SWS_FULL_CHR_H_INP;
   const int* coefficients =

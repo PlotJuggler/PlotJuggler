@@ -299,9 +299,8 @@ TEST(ImagePipelineSourceTest, ThrowingParserDoesNotTerminateProcess) {
   ASSERT_TRUE(parser.bindSchema("image", PJ::Span<const uint8_t>{}));
   PJ::ImagePipelineSource source(&store, *topic, &parser, /*parser_mutex=*/nullptr, /*parser_keepalive=*/nullptr);
 
-  // A parser that throws inside parseObject must NOT terminate the process: the
-  // worker catches at the thread boundary (ARCHITECTURE §10.5) and produces no
-  // frame. Without the barrier this aborts the entire test binary.
+  // A parser that throws inside parseObject must not terminate the process: the worker catches at the thread
+  // boundary (docs/ARCHITECTURE.md "Errors and missing data") and produces no frame.
   source.setTimestamp(1'000);
   std::this_thread::sleep_for(kIdleSettleTime);
   EXPECT_FALSE(source.takeFrame().has_value());
@@ -664,8 +663,7 @@ TEST(ImagePipelineSourceTest, CanonicalFramesCarryThePayloadStampOnTheDatasetClo
 TEST(ImagePipelineSourceTest, CanonicalCodecDecodesSerializedPngWrappedRgb8) {
   // The real Mosaico shape: a serialized sdk::Image whose encoding is "rgb8" but
   // whose data is the flat buffer wrapped in a grayscale PNG (width=row_step).
-  // Exercises both halves of the fix end to end: canonical deserialize, then
-  // PNG-unwrap + reinterpret at the logical geometry.
+  // End to end: canonical deserialize, then PNG unwrap and reinterpret at the logical geometry.
   const std::vector<uint8_t> rgb = {
       10, 20, 30, 40,  50,  60,  // row 0
       70, 80, 90, 100, 110, 120  // row 1
@@ -785,10 +783,8 @@ TEST(ImagePipelineSourceTest, GpuModeKeepsRawFrameAndAttachesRectifyMap) {
 }
 
 TEST(ImagePipelineSourceTest, RectifyDisabledPassesFrameThroughRawInCpuMode) {
-  // setRectifyEnabled(false) is the user override for the always-on auto-decision
-  // (TECHNICAL_NOTES §12): a matching CameraInfo exists, but the operator wants the
-  // raw image (e.g. the stream is already rectified). The frame must pass through at
-  // its SOURCE resolution with no rescale and no map — the safe passthrough contract.
+  // A matching CameraInfo exists but rectification is off (docs/TECHNICAL_NOTES.md "Rectification assumption"): the
+  // frame passes through at its source resolution, with no rescale and no map.
   const std::vector<uint8_t> rgb(static_cast<size_t>(4) * 3 * 3, 128);  // solid 4x3 rgb8
   const std::vector<uint8_t> blob = makeRawRgbBlob(4, 3, "cam", rgb);
   PJ::ObjectStore store;

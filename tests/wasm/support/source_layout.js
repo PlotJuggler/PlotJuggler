@@ -3,8 +3,8 @@ const fs = require('fs');
 const { expect } = require('@playwright/test');
 
 async function sourceLayoutDecisionGeometry(page, consoleMessages) {
-  // MessageBox finalizes wrapped-body height and re-centers in showEvent; wait
-  // for that first layout pass before sampling canvas-global button geometry.
+  // MessageBox finalizes its wrapped-body height and re-centers in showEvent: sample button geometry after
+  // that first layout pass.
   await page.waitForTimeout(500);
   const previousReselect = consoleMessages.filter(
     message => message.includes('PJ_WASM_SOURCE_LAYOUT_RESELECT center='),
@@ -69,9 +69,8 @@ async function downloadSourceLayoutFromFileMenu(page, screen, consoleMessages) {
   const download = await downloadPromise;
   const downloadPath = await download.path();
   expect(downloadPath).not.toBeNull();
-  // The browser download event and the worker's diagnostic reach Playwright on
-  // separate channels. Require both without assuming which notification arrives
-  // first.
+  // The browser's download event and the worker's diagnostic reach Playwright on separate channels, in
+  // either order.
   await expect.poll(
     () => consoleMessages.filter(
       message => message.includes('PJ_WASM_SOURCE_LAYOUT_DOWNLOAD_REQUESTED'),

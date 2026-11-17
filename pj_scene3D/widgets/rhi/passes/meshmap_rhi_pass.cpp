@@ -57,13 +57,11 @@ QRhiVertexInputLayout inputLayout() {
   return layout;
 }
 
-// Grows `buffer` to hold `bytes`; false when it cannot be allocated.
 bool ensureBuffer(QRhi* rhi, QRhiBuffer*& buffer, quint32& capacity, std::size_t bytes) {
   return bytes <= std::numeric_limits<quint32>::max() &&
          ensureStaticVertexBuffer(rhi, buffer, capacity, static_cast<quint32>(bytes), kMinimumBufferBytes);
 }
 
-// Records the upload of `bytes` of `data` into `buffer`, already large enough.
 void recordUpload(QRhiResourceUpdateBatch* updates, QRhiBuffer* buffer, const void* data, std::size_t bytes) {
   if (bytes != 0) {
     PJ::uploadStaticBufferInPieces(updates, buffer, 0, static_cast<quint32>(bytes), data);
@@ -200,7 +198,7 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
 
 void MeshMapRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams& shading) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   draws_.clear();
   last_layer_count_ = 0;

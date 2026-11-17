@@ -52,9 +52,8 @@ struct Fixture {
     return sum;
   }
 
-  /// Simulates a user drag of the divider on @p section's right edge. Qt applies
-  /// the new size first and the policy reacts to the signal, exactly as during a
-  /// real drag.
+  /// Simulates a user drag of the divider on @p section's right edge: Qt applies the new size first and the policy
+  /// reacts to the signal, as during a real drag.
   void dragDivider(int section, int by) {
     header->resizeSection(section, header->sectionSize(section) + by);
   }
@@ -67,10 +66,9 @@ int expectedFloor(QHeaderView* header, const QString& label) {
   return QFontMetrics(header->font()).horizontalAdvance(label) + kSideMargins;
 }
 
-// A seed width above every non-fill label floor. The floor depends on the
-// platform plugin's font (offscreen on Windows renders these labels wider than
-// 96 px), and a seed below it is clamped up, so tests about seeds or resizes
-// rather than the floor rule seed with this.
+// A seed width above every non-fill label floor. The floor depends on the platform plugin's font (offscreen on Windows
+// renders these labels wider than 96 px) and a seed below it is clamped up, so tests about seeds or resizes seed with
+// this.
 int seedAboveFloors(const Fixture& f) {
   int seed = kSeedWidth;
   for (int i = 1; i < f.header->count(); ++i) {
@@ -80,9 +78,8 @@ int seedAboveFloors(const Fixture& f) {
 }
 
 TEST(HeaderResizePolicy, SeedingWidthsDoesNotStarveLaterColumns) {
-  // The regression this guards: seeding through QHeaderView::resizeSection is
-  // read back as a user drag, so each seed steals from the next column and the
-  // rightmost ones end up under their labels.
+  // Seeding through QHeaderView::resizeSection is read back as a user drag, so each seed steals from the next column
+  // and the rightmost end up under their labels.
   Fixture f({"Channel name", "Schema", "Encoding", "Msg Count"});
   const int seed = seedAboveFloors(f);
   for (int i = 1; i < f.header->count(); ++i) {
@@ -119,10 +116,9 @@ TEST(HeaderResizePolicy, WideningCascadesPastANeighbourAlreadyAtItsFloor) {
   // Column 1's label is wider than the seed, so it has nothing to give. The
   // width has to come from column 2 instead of the drag simply doing nothing.
   Fixture f({"Name", kWideLabel, "Encoding"});
-  // Column 2 takes the room the other two leave, less a little for the fill
-  // column: fixed at half the table, it overflowed where the platform font
-  // renders the labels wider (offscreen on Windows), and an overflowing drag
-  // takes no width from anyone by design.
+  // Column 2 takes the room the other two leave, less a little for the fill column: fixed at half the table it
+  // overflowed where the platform font renders the labels wider (offscreen on Windows), and an overflowing drag takes
+  // no width from anyone by design.
   const int room =
       f.header->width() - expectedFloor(f.header, QStringLiteral("Name")) - expectedFloor(f.header, kWideLabel);
   constexpr int kDrag = 40;
@@ -187,9 +183,8 @@ TEST(HeaderResizePolicy, HiddenHeaderGrowingAColumnKeepsTheTotal) {
   EXPECT_GE(f.header->sectionSize(0), kAbsoluteFloor);
 }
 
-// A data grid (e.g. the CSV loader's preview): more columns than the view can
-// hold, every one already at its label floor. Splitter semantics leave no
-// neighbour with width to give, so without a fallback no divider moves at all.
+// A data grid (a wide preview): more columns than the view can hold, every one at its label floor. Splitter semantics
+// leave no neighbour with width to give, so without a fallback no divider moves at all.
 QStringList overflowingLabels() {
   QStringList labels{QStringLiteral("Name")};
   for (int i = 0; i < 8; ++i) {
@@ -233,9 +228,8 @@ TEST(HeaderResizePolicy, OverflowingHeaderLetsTheLastColumnGrow) {
 }
 
 TEST(HeaderResizePolicy, OverflowingFillColumnKeepsItsWidthAcrossAResize) {
-  // The fill column normally absorbs slack and so is shrunk back on every
-  // resize; once the user sizes it in a grid that cannot fit anyway, that
-  // width must survive the next resize instead of snapping to the floor.
+  // The fill column normally absorbs slack and is shrunk back on every resize; once the user sizes it in a grid that
+  // cannot fit anyway, that width survives the next resize instead of snapping to the floor.
   Fixture f(overflowingLabels());
   const int widened = f.header->sectionSize(0) + 60;
 
@@ -262,9 +256,8 @@ TEST(HeaderResizePolicy, FillColumnAbsorbsSlackAgainOnceTheGridFits) {
   EXPECT_EQ(f.header->sectionSize(0), std::max(kAbsoluteFloor, expectedFloor(f.header, QStringLiteral("Name"))));
 }
 
-// The curve list hides its Values column by default. A hidden section keeps a
-// stored size Qt still counts in length(), so the fill must be sized from the
-// visible sections only or it stops short of the view.
+// The curve list hides its Values column by default. A hidden section keeps a stored size Qt still counts in length(),
+// so the fill is sized from the visible sections only, or it stops short of the view.
 TEST(HeaderResizePolicy, HiddenLastColumnLeavesTheFillSpanningTheView) {
   Fixture f({QStringLiteral("Name"), QStringLiteral("Values")});
   f.policy->setSectionWidth(1, 60);
@@ -275,10 +268,9 @@ TEST(HeaderResizePolicy, HiddenLastColumnLeavesTheFillSpanningTheView) {
   EXPECT_EQ(f.header->sectionSize(0), f.header->width());
 }
 
-// A narrowing drag that turns an overflowing grid into one that fits must stop
-// at the exact fit: past it the splitter takes over, so the freed width goes to
-// the next column and the divider stays under the cursor, instead of the fill
-// column on the left absorbing it.
+// A narrowing drag that turns an overflowing grid into one that fits stops at the exact fit: past it the splitter takes
+// over, so the freed width goes to the next column and the divider stays under the cursor, instead of the fill column
+// on the left absorbing it.
 TEST(HeaderResizePolicy, NarrowingIntoAFittingGridHandsOverToTheSplitter) {
   Fixture f(overflowingLabels());
   f.dragDivider(3, 40);  // give column 3 room above its floor

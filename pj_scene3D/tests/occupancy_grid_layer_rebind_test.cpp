@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Regression test for the file-reload crash: SessionManager::replaceDataset()
-// re-registers each surviving topic's parser slot, destroying the previous
-// MessageParserHandle. A layer that cached the raw parser pointer at attach()
-// then calls parseObject() on freed memory on the next tracker tick. Layers
-// must instead resolve the parser binding through the session on every use,
-// so a reload transparently rebinds them to the new parser.
+// File-reload crash: SessionManager::replaceDataset() re-registers each surviving topic's parser slot, destroying the
+// previous MessageParserHandle; a layer that cached the raw parser pointer at attach() would call parseObject() on
+// freed memory. Layers must resolve the parser binding through the session on every use, so a reload rebinds them to
+// the new parser.
 
 #include <gtest/gtest.h>
 
@@ -42,9 +40,6 @@ std::atomic<int> g_first_parser_calls{0};
 std::atomic<int> g_second_parser_calls{0};
 std::atomic<int> g_streaming_parser_calls{0};
 
-// Object-construction body for the mock grid parser: a fixed 1x1 grid. Counting
-// is handled by CountingObjectParser, so this is just the emit half (same
-// signature as SchemaHandler::parse_object).
 PJ::Expected<PJ::sdk::ObjectRecord> emitGrid(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   static const uint8_t k_cell[1] = {0};
   PJ::sdk::OccupancyGrid grid;
@@ -79,16 +74,13 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
   ASSERT_TRUE(layer.attach(ctx));
   EXPECT_EQ(g_first_parser_calls.load(), 1);  // bootstrap decoded the first sample
 
-  // Keep the first parser's memory alive from the test, so the buggy
-  // stale-pointer call below shows up as a deterministic wrong-parser call
-  // instead of undefined behavior. Production holds no such guard — there the
-  // same call is a use-after-free crash.
+  // The test keeps the first parser's memory alive so a stale-pointer call shows up as a deterministic wrong-parser
+  // call instead of undefined behavior (production has no such guard: a use-after-free).
   const auto stale_guard = session.parserKeepaliveForObjectTopic(*topic_id);
   ASSERT_NE(stale_guard, nullptr);
 
-  // Simulate the same-file reload: replaceDataset() re-registers the surviving
-  // topic's parser under its stable id, overwriting the slot and dropping the
-  // old handle.
+  // Simulate the same-file reload: replaceDataset() re-registers the surviving topic's parser under its stable id,
+  // dropping the old handle.
   session.registerObjectTopicParser(*topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
     return new CountingObjectParser(
         kSchema, PJ::sdk::BuiltinObjectType::kOccupancyGrid, &g_second_parser_calls, &emitGrid);
@@ -103,11 +95,9 @@ TEST(OccupancyGridLayerRebind, ReloadSwapsParserWithoutTouchingStaleOne) {
   EXPECT_GE(g_second_parser_calls.load(), 1) << "layer did not rebind to the re-registered parser";
 }
 
-// M.21/M.22: a grid topic attached before its first sample (layout restore at
-// stream start, catalog drag onto a live session) must NOT be dropped. attach()
-// returns true as long as session + parser binding exist; bootstrap failing on
-// an empty store is a warn-and-continue, and the layer self-heals once a sample
-// lands. The sibling pointcloud/scene-entities layers already behave this way.
+// A grid topic attached before its first sample (layout restore at stream start, drag onto a live session) must NOT be
+// dropped: attach() returns true while session + parser binding exist, a bootstrap failing on an empty store is
+// warn-and-continue, and the layer self-heals once a sample lands (as the pointcloud and scene-entities layers do).
 TEST(OccupancyGridLayerStreamingAttach, AttachSucceedsBeforeFirstSampleAndSelfHeals) {
   g_streaming_parser_calls.store(0);
 
@@ -120,9 +110,8 @@ TEST(OccupancyGridLayerStreamingAttach, AttachSucceedsBeforeFirstSampleAndSelfHe
   const auto topic_id = store.registerTopic(desc);
   ASSERT_TRUE(topic_id.has_value());
 
-  // Parser registered, but NO sample pushed yet — the streaming-start case.
-  // The create function must be non-capturing (a plain fn ptr for vtableWithCreate),
-  // so it routes through a file-scope counter rather than a captured local.
+  // Parser registered, NO sample pushed yet (streaming start). The create function must be non-capturing (a plain fn
+  // ptr for vtableWithCreate), so it routes through a file-scope counter.
   session.registerObjectTopicParser(*topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
     return new CountingObjectParser(
         kSchema, PJ::sdk::BuiltinObjectType::kOccupancyGrid, &g_streaming_parser_calls, &emitGrid);
@@ -134,12 +123,10 @@ TEST(OccupancyGridLayerStreamingAttach, AttachSucceedsBeforeFirstSampleAndSelfHe
   ASSERT_TRUE(layer.attach(ctx)) << "attach must tolerate an empty store and keep the layer";
   EXPECT_EQ(g_streaming_parser_calls.load(), 0) << "bootstrap on an empty store must not parse anything";
 
-  // A frame before any sample is a no-op (empty reconstruction), not a crash.
   layer.setTrackerTime(PJ::fromRaw(100));
   layer.prepareForRender(kNoBudget);
   EXPECT_TRUE(layer.grid().empty());
 
-  // First sample arrives post-attach: the layer self-heals on the next frame.
   ASSERT_TRUE(store.pushOwned(*topic_id, 100, std::vector<uint8_t>{0x01}).has_value());
   layer.setTrackerTime(PJ::fromRaw(100));
   layer.prepareForRender(kNoBudget);

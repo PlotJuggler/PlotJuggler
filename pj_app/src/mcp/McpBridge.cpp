@@ -484,7 +484,6 @@ class Bridge {
 
   std::string client_;
   qint64 selected_ = 0;
-  /// Numbers the calls forwarded to an instance.
   quint64 forwarded_ = 0;
 };
 

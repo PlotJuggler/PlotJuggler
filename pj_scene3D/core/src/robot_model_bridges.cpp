@@ -25,8 +25,6 @@ std::vector<StampedTransform> fixedJointStaticTransforms(const RobotModel& model
 int injectMissingStaticTransforms(TransformBuffer& buf, const std::vector<StampedTransform>& edges) {
   int injected = 0;
   for (const StampedTransform& edge : edges) {
-    // Guard: skip any child the data (or a prior inject) already parents, so we
-    // never reparent — and never trip the buffer's first-parent-wins drop.
     if (buf.getParent(edge.child_frame).has_value()) {
       continue;
     }

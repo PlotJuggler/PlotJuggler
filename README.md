@@ -51,7 +51,7 @@ help keep large recordings responsive as you explore.
   </tr>
 </table>
 
-## Whatever your data is, we.ve got you covered
+## Whatever your data is, we've got you covered
 
 Open supported formats directly and connect to your existing sensor and messaging
 systems. Install ready-to-use loaders, streamers and tools through

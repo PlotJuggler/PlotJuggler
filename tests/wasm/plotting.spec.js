@@ -41,9 +41,8 @@ async function seekQtPlot(page, canvas, fromRatio, toRatio) {
   await page.mouse.move(canvas.x + (toRatio * canvas.width), y, { steps: 16 });
   await page.mouse.up({ button: 'left' });
   await page.keyboard.up('Shift');
-  // PlaybackEngine updates immediately, while the visible tracker fan-out is
-  // intentionally coalesced to about 30 Hz. Let its trailing edge render before
-  // asking the observation-only probe for a framebuffer readback.
+  // The visible tracker fan-out is coalesced to about 30 Hz: let its trailing edge render before the probe
+  // reads the framebuffer.
   await page.waitForTimeout(150);
 }
 
@@ -285,9 +284,8 @@ test('QRhi WebGL canvas renders an imported scalar curve', async ({ page }) => {
     { timeout: 15000 },
   ).toContain('plot/temp:3@0..2000000000=10..30');
 
-  // Create the first real PlotWidget through the user-facing placeholder. F9
-  // is compiled only into the acceptance probe build and calls addCurve() on
-  // that real plot, avoiding a synthetic Qt drag/drop gesture.
+  // Create the first PlotWidget through the user-facing placeholder. F9 (compiled only into the acceptance
+  // probe build) calls addCurve() on that plot, avoiding a synthetic Qt drag/drop gesture.
   { const icon = await placeholderIconCenter(page, screen, consoleMessages, 'plot');
     await page.mouse.click(icon.x, icon.y); }
   await page.waitForTimeout(1500);
@@ -321,18 +319,15 @@ test('QRhi WebGL canvas renders an imported scalar curve', async ({ page }) => {
   expect(curvePixels).not.toBeNull();
   expect(Number(curvePixels[1])).toBeGreaterThan(0);
 
-  // PlotRhiCanvas schedules one full top-level repaint after its first
-  // submitted frame, settling the raster->RHI compositor switch and
-  // initializing untouched raster backing-store regions. Exercise a later
-  // raster-only partial update and ensure it does not clear untouched UI
-  // or the accelerated plot to black.
+  // PlotRhiCanvas schedules one full top-level repaint after its first submitted frame, settling the
+  // raster->RHI compositor switch and initializing untouched raster backing-store regions. A later
+  // raster-only partial update must not clear the untouched UI or the accelerated plot to black.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await page.waitForTimeout(500);
   const updatedWindow = await page.screenshot();
-  // This full-window golden guards catastrophic raster/RHI compositor loss
-  // (for example a black or stale plot surface), not pixel geometry. Exact
-  // curve vertices and framebuffer pixels are asserted above, while normal Qt
-  // layout rounding can move widget edges by a couple of pixels.
+  // This full-window golden guards raster/RHI compositor loss (a black or stale plot surface), not pixel
+  // geometry: Qt layout rounding moves widget edges by a couple of pixels, and the exact vertices and
+  // framebuffer pixels are asserted above.
   expect(updatedWindow).toMatchSnapshot('wasm-rhi-window-after-partial-update.png', {
     maxDiffPixelRatio: 0.05,
   });
@@ -370,9 +365,8 @@ test('QRhi scalar reduction preserves an isolated extremum within its frame budg
   { const icon = await placeholderIconCenter(page, screen, consoleMessages, 'plot');
     await page.mouse.click(icon.x, icon.y); }
   await page.waitForTimeout(1500);
-  // F10 is the probe-build variant that also fits the complete series, so the
-  // reducer receives all 6,001 points instead of the shared timeline's initial
-  // two guard samples. Production builds expose neither shortcut.
+  // F10 is the probe-build variant that also fits the complete series, so the reducer receives all 6,001
+  // points instead of the shared timeline's initial two guard samples. Production builds have neither shortcut.
   await page.keyboard.press('F10');
 
   await expect.poll(
@@ -432,9 +426,8 @@ test('real curve drag and drop drives the QRhi plot lifecycle', async ({ page })
     { timeout: 15000 },
   ).toContain('scalar_series=drag/temp,drag/time,drag/value');
 
-  // Drag the real scalar leaves from probe-reported row centers. No F9/F10 add
-  // probe is used: these gestures must traverse CurveTreeView's production
-  // QDrag MIME path and the placeholder/live-plot drop handlers.
+  // Drag the scalar leaves from probe-reported row centers, not through the F9/F10 probes: the gestures must
+  // traverse CurveTreeView's QDrag MIME path and the placeholder/live-plot drop handlers.
   const placeholder = { x: screen.x + 820, y: screen.y + 390 };
   await dragQtCanvas(page, await curveRowCenter(page, screen, consoleMessages, 'drag.csv/drag/temp'), placeholder);
 
@@ -464,10 +457,8 @@ test('real curve drag and drop drives the QRhi plot lifecycle', async ({ page })
     { timeout: 10000 },
   ).toMatch(/drag\/temp:#[0-9a-f]{8}:[1-9]\d*,drag\/value:#[0-9a-f]{8}:[1-9]\d*/i);
 
-  // Use the real canvas context menu. Qt WASM does not route End through a
-  // non-blocking QMenu popup reliably, so click its final visible action.
-  // This still exercises the production remove-all QAction; no probe mutates
-  // plot state.
+  // The canvas context menu is used for real: Qt WASM does not reliably route End through a non-blocking
+  // QMenu popup, so click its final visible action (the remove-all QAction).
   await page.mouse.click(canvasCenter.x, canvasCenter.y, { button: 'right' });
   await page.waitForTimeout(250);
   const menuMessages = consoleMessages.filter(message => message.includes('PJ_WASM_MENU_ACTION name=')).length;
@@ -699,9 +690,8 @@ test('dense dotted curves draw complete without a budget retry', async ({ page }
     { timeout: 30000 },
   ).toContain('dense-dash/temp:20001@');
 
-  // The reduction probe creates the real plot/curve and fits the complete
-  // series. Only the pen mutation is probe-only; rendering and budgeting use
-  // the same Qwt item and PlotRhiCanvas path as production.
+  // The reduction probe creates the plot and curve and fits the complete series. Only the pen mutation is
+  // probe-only; rendering and budgeting take the production Qwt item and PlotRhiCanvas path.
   { const icon = await placeholderIconCenter(page, screen, consoleMessages, 'plot');
     await page.mouse.click(icon.x, icon.y); }
   await page.waitForTimeout(1500);
@@ -839,8 +829,7 @@ test('right-drag creates XY curves through nonblocking dialogs and rolls back ca
   await page.mouse.click(ayRow.x, ayRow.y);
   await page.keyboard.up('Control');
 
-  // First exercise cancellation on the placeholder route. The temporary empty
-  // plot must disappear again, leaving the dock reusable for the next drop.
+  // Cancelling on the placeholder route: the temporary empty plot must disappear, leaving the dock reusable.
   await dragQtCanvas(page, axRow, placeholder, 'right');
   let dialogMessages = 0;
   let dialog = await requestXyDialog(page, consoleMessages, dialogMessages);
@@ -855,7 +844,6 @@ test('right-drag creates XY curves through nonblocking dialogs and rolls back ca
   expect(multi.docks).toHaveLength(1);
   expect(multi.docks[0].kind).toBe('placeholder');
 
-  // Repeat the same real right-drag and accept the production XY dialog.
   await dragQtCanvas(page, axRow, placeholder, 'right');
   dialog = await requestXyDialog(page, consoleMessages, dialogMessages);
   dialogMessages += 1;
@@ -869,9 +857,8 @@ test('right-drag creates XY curves through nonblocking dialogs and rolls back ca
   expect(state.titles).toEqual([firstAlias]);
   expect(state.xy).toBe(true);
 
-  // A repeated pair starts with the same alias. Accepting it must open the
-  // asynchronous duplicate warning, then restore the SAME XY dialog. Swap the
-  // axes, edit the retained dialog's alias, and accept a second curve.
+  // A repeated pair starts with the same alias. Accepting it must open the asynchronous duplicate warning,
+  // then restore the same XY dialog. Swap the axes, edit the retained dialog's alias, accept a second curve.
   const canvasCenter = {
     x: screen.x + state.canvas.x + (state.canvas.width / 2),
     y: screen.y + state.canvas.y + (state.canvas.height / 2),
@@ -951,14 +938,12 @@ test('Escape-cancelled curve drag adds nothing and leaves the tree grab balanced
     { timeout: 15000 },
   ).toContain('scalar_series=cancel-drag/temp,cancel-drag/time,cancel-drag/value');
 
-  // Expand dataset -> topic, same as the successful-drag scenario.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await page.mouse.click(screen.x + 30, screen.y + 212);
 
-  // Enter the real placeholder drop target, then cancel while the initiating
-  // button is still held. This must exercise CurveTreeView::event's Escape
-  // path: abortWasmDrag sends DragLeave, releases the MIME payload, and
-  // balances QAbstractItemView's source press without ever sending Drop.
+  // Enter the placeholder drop target, then cancel while the initiating button is still held. This exercises
+  // CurveTreeView::event's Escape path: abortWasmDrag sends DragLeave, releases the MIME payload and balances
+  // QAbstractItemView's source press without ever sending Drop.
   const source = { x: screen.x + 95, y: screen.y + 232 };
   const placeholder = { x: screen.x + 820, y: screen.y + 390 };
   await page.mouse.move(source.x, source.y);
@@ -970,16 +955,14 @@ test('Escape-cancelled curve drag adds nothing and leaves the tree grab balanced
   await page.keyboard.press('Escape');
   await page.mouse.up({ button: 'left' });
 
-  // No plot ever gets created, so there is nothing for F8 to report against;
-  // give the (absent) drop a moment to settle instead of racing a marker
-  // that this scenario must NOT produce.
+  // No plot is created, so F8 has nothing to report against: give the absent drop a moment to settle instead
+  // of racing a marker this scenario must not produce.
   await page.waitForTimeout(750);
   expect(consoleMessages.some(message => message.includes('PJ_WASM_PLOT_RHI_READY'))).toBe(false);
   expect(consoleMessages.some(message => message.includes('PJ_WASM_PLOT_STATE_FAILED'))).toBe(false);
 
-  // Prove the grab was released cleanly: a subsequent plain drag from the
-  // same source row must add exactly one curve, not a stale multi-row
-  // selection spanning the earlier (unbalanced) press point.
+  // The grab was released cleanly: a plain drag from the same source row adds exactly one curve, not a stale
+  // multi-row selection spanning the earlier (unbalanced) press point.
   await dragQtCanvas(page, source, placeholder);
 
   await expect.poll(
@@ -1054,9 +1037,8 @@ test('real rectangle/wheel zoom, Ctrl-drag pan, and reset navigate the QRhi plot
   await page.mouse.move(rectangleStart.x, rectangleStart.y);
   await page.mouse.down({ button: 'left' });
   await page.mouse.move(rectangleEnd.x, rectangleEnd.y, { steps: 18 });
-  // A newly dirtied QRhi surface can reach the DevTools capture path one
-  // compositor frame after Qt's framebuffer probe. Prime that boundary so
-  // the clipped snapshot records the live drag overlay instead of its clear.
+  // A newly dirtied QRhi surface can reach the DevTools capture path one compositor frame after Qt's
+  // framebuffer probe: prime it so the clipped snapshot records the live drag overlay, not its clear.
   await page.screenshot();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(
     () => requestAnimationFrame(resolve),
@@ -1148,7 +1130,6 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
     { timeout: 15000 },
   ).toContain('scalar_series=tracker/temp,tracker/time');
 
-  // Build the plot through the same production tree drag/drop path as W8c.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await page.mouse.click(screen.x + 30, screen.y + 212);
   await dragQtCanvas(
@@ -1207,8 +1188,7 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
     expect(Math.abs(state.view.top - initial.view.top)).toBeLessThan(1e-9);
   };
   const assertTrackerAt = (readback, ratio) => {
-    // The UI framework's checked Highlight token replaced the retired legacy
-    // purple constant; pin the semantic palette value used by the light theme.
+    // The tracker color is the UI framework's checked Highlight token; pin the value the light theme uses.
     expect(readback.color.toLowerCase()).toBe('#ffff99ff');
     expect(readback.pixels).toBeGreaterThan(0);
     expect(readback.bounds.maxX - readback.bounds.minX).toBeLessThanOrEqual(
@@ -1240,13 +1220,11 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   assertUnchangedView(backward);
   assertTrackerAt(backwardTracker, 0.40);
 
-  // Cycle the real toolbar control through value+name, line-only, and back to
-  // value. The QRhi text layer must follow Qwt marker visibility exactly while
-  // the legend remains independently visible.
+  // Cycle the toolbar control through value+name, line-only, and back to value. The QRhi text layer must
+  // follow Qwt marker visibility exactly while the legend stays independently visible.
   textMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK')).length;
-  // Forward/backward state probes also schedule framebuffer readbacks. Start
-  // from the current count so this assertion cannot consume one of those older
-  // legend-only samples when the browser runs the timers late.
+  // The forward/backward state probes also schedule framebuffer readbacks: start from the current count so a
+  // late timer cannot hand this assertion one of those older legend-only samples.
   textPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_PIXELS')).length;
   await page.evaluate(() => window.pjWasmCycleTimeTrackerProbe());
   const valueNameState = await requestPlotState(page, consoleMessages, stateMessages);
@@ -1366,9 +1344,8 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   expect(recoveredText.vertices).toBe(12);
   expect(recoveredPixels.pixels).toBeGreaterThan(degradedPixels.pixels);
 
-  // A missing QRhi pipeline is a whole-render failure rather than the
-  // geometry-only text degradation above. Even on this early return the valid
-  // render target must receive a defined clear, never retain the old curve.
+  // A missing QRhi pipeline is a whole-render failure, unlike the geometry-only text degradation above: even
+  // on this early return the valid render target must receive a defined clear and not retain the old curve.
   stateMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STATE count=')).length;
   let pipelineCurveMessages = consoleMessages.filter(
     message => message.includes('PJ_WASM_PLOT_CURVE_PIXELS'),
@@ -1489,8 +1466,8 @@ test.describe('HiDPI QRhi text', () => {
     expect(pixels.pixels).toBeGreaterThan(initialPixels.pixels);
     expect(Math.abs((pixels.framebuffer.width / state.canvas.width) - 2)).toBeLessThan(0.05);
     expect(Math.abs((pixels.framebuffer.height / state.canvas.height) - 2)).toBeLessThan(0.05);
-    // This is measured from the physical cropped layer images versus their
-    // logical QRhi quads, so a 1x atlas merely upscaled by the shader fails.
+    // Measured from the physical cropped layer images against their logical QRhi quads, so a 1x atlas merely
+    // upscaled by the shader fails.
     expect(Math.abs(text.rasterScale.x - 2)).toBeLessThan(0.05);
     expect(Math.abs(text.rasterScale.y - 2)).toBeLessThan(0.05);
     expect(text.atlas.width * text.atlas.height).toBeLessThan(
@@ -1747,8 +1724,8 @@ test('two split QRhi plots render distinct curves and synchronize playback track
     y: screen.y + initial.canvas.y + (initial.canvas.height / 2),
   };
 
-  // Invoke the real PlotWidget split QAction. The probe only reports its
-  // geometry because a canvas menu has no DOM node for Playwright to locate.
+  // The split QAction is clicked for real; the probe only reports its geometry, because a canvas menu has no
+  // DOM node for Playwright to locate.
   await page.mouse.click(initialCenter.x, initialCenter.y, { button: 'right' });
   await page.waitForTimeout(250);
   const splitMenuMessages = consoleMessages.filter(
@@ -1781,14 +1758,13 @@ test('two split QRhi plots render distinct curves and synchronize playback track
   } while (Date.now() < splitDeadline);
   expect(split.docks).toHaveLength(2);
   expect(split.plots).toHaveLength(1);
-  // Use the last keyed observation immediately before the drop so an ADS
-  // reflow cannot leave automation targeting the placeholder's stale geometry.
+  // The last keyed observation before the drop, so an ADS reflow cannot leave the drag aimed at the
+  // placeholder's stale geometry.
   const placeholder = split.docks.find(dock => dock.kind === 'placeholder');
   expect(placeholder).toBeDefined();
   expect(placeholder.rect.width).toBeGreaterThan(200);
   expect(placeholder.rect.height).toBeGreaterThan(300);
 
-  // Populate the new sibling through the production CurveTreeView MIME path.
   await dragQtCanvas(
     page,
     { x: screen.x + 95, y: screen.y + 282 },
@@ -1797,9 +1773,8 @@ test('two split QRhi plots render distinct curves and synchronize playback track
       y: screen.y + placeholder.rect.y + (placeholder.rect.height / 2),
     },
   );
-  // The ADS split and the new QRhiWidget initialize asynchronously. Generic
-  // READY logs cannot identify which canvas emitted them, so poll the keyed
-  // per-canvas observation until both widgets have final-sized WebGL content.
+  // The ADS split and the new QRhiWidget initialize asynchronously, and a READY log does not say which canvas
+  // emitted it: poll the keyed per-canvas observation until both widgets have final-sized WebGL content.
   let populated;
   const populatedDeadline = Date.now() + 10000;
   do {
@@ -1847,24 +1822,20 @@ test('two split QRhi plots render distinct curves and synchronize playback track
   expect(tempOnValue.pixels).toBe(0);
   expect(tempPlot.canvas.x + tempPlot.canvas.width).toBeLessThanOrEqual(valuePlot.canvas.x);
 
-  // Chromium's first DevTools capture after adding a second QRhiWidget can
-  // sample mixed raster/RHI surfaces before its capture compositor synchronizes
-  // them, even though the on-screen window and a subsequent capture are correct.
-  // Prime that capture-only boundary, wait two browser frames, then snapshot the
-  // stable full window. Keyed framebuffer checks above remain authoritative.
+  // Chromium's first DevTools capture after adding a second QRhiWidget can sample mixed raster/RHI surfaces
+  // before its capture compositor synchronizes them, although the on-screen window and a later capture are
+  // correct. Prime the capture, wait two browser frames, then snapshot the stable window.
   await page.screenshot();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(
     () => requestAnimationFrame(resolve),
   )));
   const twoPlotImage = await page.screenshot();
-  // Exact per-canvas readbacks above verify the rendered data. This broader
-  // golden catches a missing or stale composed surface while allowing minor
-  // Qt layout rounding across otherwise identical browser runs.
+  // The per-canvas readbacks above verify the rendered data; this golden catches a missing or stale composed
+  // surface and tolerates minor Qt layout rounding between runs.
   expect(twoPlotImage).toMatchSnapshot('wasm-rhi-two-plots.png', { maxDiffPixelRatio: 0.05 });
 
-  // One global legend action must produce near-black legend pixels in each
-  // keyed framebuffer. This observes the post-draw result per canvas, so two
-  // unqualified CPU-atlas logs from one canvas cannot fake independence.
+  // One global legend action must produce near-black legend pixels in each keyed framebuffer: per-canvas
+  // post-draw pixels, since two unqualified CPU-atlas logs could both come from one canvas.
   expect(populated.plots.every(plot => plot.readback.textPixels === 0)).toBe(true);
   await page.evaluate(() => window.pjWasmShowLegendProbe());
   const withLegends = await requestMultiPlotState(page, consoleMessages, multiMessages);
@@ -1956,8 +1927,8 @@ test('official MCAP scalar imports, renders through QRhi, and seeks playback', a
     mimeType: 'application/octet-stream',
     buffer: base64Fixture('ros2_float64.mcap.b64'),
   });
-  // The cancelled worker has released its progress/cancel windows, but Qt may
-  // need one additional canvas frame before mapping the next large MCAP dialog.
+  // The cancelled worker has released its progress and cancel windows, but Qt may need one more canvas frame
+  // before it maps the next large MCAP dialog.
   await page.waitForTimeout(2000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
 
@@ -1974,9 +1945,7 @@ test('official MCAP scalar imports, renders through QRhi, and seeks playback', a
   const lastSampleTime = Number(sampleRange[2]) / 1e9;
   expect(lastSampleTime).toBeGreaterThan(firstSampleTime);
 
-  // Expand ros2-float64.mcap -> /ros2/value, then exercise the same real
-  // CurveTreeView drag/drop path used by CSV. The leaf is the decoded ROS2
-  // Float64 `data` field, not a probe-injected synthetic series.
+  // The leaf is the decoded ROS2 Float64 `data` field of /ros2/value, not a probe-injected series.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await page.mouse.click(screen.x + 30, screen.y + 212);
   await dragQtCanvas(
@@ -2082,11 +2051,9 @@ test('official MCAP indexless offset fetch renders and seeks stored scalars', as
   expect(imported).toContain('scalar_series=/unchunked/seek/data');
   expect(imported).toContain('/unchunked/seek/data:12@0..2750000000=0..88');
 
-  // This checked-in fixture is generated with use_chunking=False and
-  // IndexType.NONE. A successful 12-payload decode therefore exercises the
-  // plugin's indexless serial branch and its offset-backed fetchers during
-  // eager scalar import. Seeking below reads the stored series; it does not
-  // claim a second MCAP file read at tracker time.
+  // The fixture is generated with use_chunking=False and IndexType.NONE, so decoding its 12 payloads takes the
+  // plugin's indexless serial branch and its offset-backed fetchers during eager scalar import. Seeking below
+  // reads the stored series and asserts no second file read at tracker time.
   await page.mouse.click(screen.x + 10, screen.y + 192);
   await page.mouse.click(screen.x + 30, screen.y + 212);
   await dragQtCanvas(

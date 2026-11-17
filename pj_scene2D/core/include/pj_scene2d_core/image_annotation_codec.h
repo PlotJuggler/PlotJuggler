@@ -11,8 +11,7 @@
 
 namespace PJ {
 
-// Singular-named wrappers around the canonical (plural) SDK codec. These
-// exist purely so consumers in this module can keep their existing spelling.
+// Singular-named aliases of the SDK's plural ImageAnnotations codec.
 [[nodiscard]] inline std::vector<uint8_t> serializeImageAnnotation(const ImageAnnotation& ia) {
   return serializeImageAnnotations(ia);
 }

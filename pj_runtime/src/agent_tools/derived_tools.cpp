@@ -1,12 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Agent tool executors. Each is a pure function of (args, host views) and
-// returns a ToolResult whose `content` the model reads. Every failure is
-// returned as data (ok=false), never thrown.
-//
-// This file: create_derived_series, evaluate, create_derived_object, create_markers, remove_markers, list_created,
-// remove_derived_series.
+// Agent tool executors: each a pure function of (args, host views) returning a ToolResult whose `content` the model
+// reads; every failure is returned as data (ok=false), never thrown. This file: create_derived_series, evaluate,
+// create_derived_object, create_markers, remove_markers, list_created, remove_derived_series.
 
 #include <algorithm>
 #include <atomic>
@@ -43,22 +40,15 @@ const char* markerKindName(PJ::sdk::MarkerKind k) {
   return "other";
 }
 
-// What the host ACTUALLY published for a marker set, read back out of the
-// object store.
+// What the host ACTUALLY published for a marker set, read back from the object store. The model cannot see the plot:
+// told only "created", it cannot tell twelve shaded regions from four thousand vertical lines that merge into a wall,
+// and would report both as success. The breakdown by kind carries the meaning ("4182 events" is a wall, "12 regions"
+// an annotation).
 //
-// This exists because the model cannot see the plot. Told only "created", it
-// has no way to distinguish twelve shaded regions from four thousand vertical
-// lines that merge into a wall — and it will report both as a success, because
-// from where it sits they are identical. The breakdown by kind is the part that
-// carries the meaning: "4182 events" is a wall, "12 regions" is an annotation.
-//
-// A marker topic holds ONE serialized PlotMarkers blob (MarkerService pushes the
-// whole set at Timestamp{0} and republishes it on every change), so entryCount()
-// would report 1 no matter how many markers there are — the payload has to be
-// decoded. Same read path the anomaly detector uses for its live preview.
-//
-// Returns a null json when the optional read service is absent: the answer then
-// carries no count, which is strictly better than the tool failing.
+// A marker topic holds ONE serialized PlotMarkers blob (MarkerService pushes the whole set at Timestamp{0} and
+// republishes on every change), so entryCount() reads 1 however many markers there are: the payload must be decoded.
+// Returns a null json when the optional read service is absent: the answer then carries no count, strictly better than
+// failing the tool.
 json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::string>& object_topics) {
   if (!ctx.objects.valid()) {
     return nullptr;
@@ -92,13 +82,10 @@ json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::strin
   if (!by_kind.empty()) {
     out["by_kind"] = by_kind;
   }
-  // `covered_s` is the UNION of the region intervals — the log time the regions
-  // actually cover, which is what a model quotes back to the user. The envelope
-  // (first start to last end) used to be reported here as `span_s`, and models
-  // read it as coverage every single time: two regions covering 95.1 s were
-  // announced as "~122 s, half the drive" because the slow stretch between them
-  // sat inside the envelope. Zero-duration marker kinds contribute nothing, and
-  // a set with no regions omits the field rather than reporting a meaningless 0.
+  // `covered_s` is the UNION of the region intervals: the log time the regions actually cover, which a model quotes
+  // back to the user. Not the envelope (first start to last end): reported as `span_s`, models read it as coverage
+  // every time (two regions covering 95.1 s announced as "~122 s, half the drive"). Zero-duration marker kinds
+  // contribute nothing, and a set with no regions omits the field rather than reporting a meaningless 0.
   if (!regions.empty()) {
     std::sort(regions.begin(), regions.end());
     PJ::Timestamp covered_ns = 0;
@@ -119,13 +106,10 @@ json publishedMarkerSummary(const ToolContext& ctx, const std::vector<std::strin
   return out;
 }
 
-// Whether the HOST can address this series by name for a marker rule, and the
-// error to hand back when it cannot. A rule names its series by bare name;
-// when the same topic/field exists in several datasets the bare name no longer
-// picks one, so handing it over would either fail or land on whichever dataset
-// the host resolves first. Reads are unaffected — they go by handle — so this
-// is a create-only limit, refused loudly here instead of silently mistargeted
-// there.
+// Whether the HOST can address this series by name for a marker rule, and the error to hand back when it cannot. A rule
+// names its series by bare name; when the same topic/field exists in several datasets the bare name picks none, and
+// handing it over would fail or land on whichever dataset the host resolves first. Reads go by handle and are
+// unaffected, so this is a create-only limit, refused loudly here rather than silently mistargeted there.
 std::optional<std::string> hostCreateBlocker(const PJ::sdk::CatalogSnapshot& catalog, const ResolvedSeries& resolved) {
   const auto bare = resolveSeriesPath(catalog, resolved.host_path);
   if (!bare.ambiguous) {
@@ -194,49 +178,38 @@ auto createHistoryExempt(ToolContext& ctx, const std::string& id, Fn&& fn, bool&
 #else
     (void)ctx;
     (void)id;
-    // Built against an SDK with no history-exempt bit, so nothing was ever
-    // requested and the node IS in undo's reach. Say so: the reject-retry path
-    // above discloses the same thing, and without this the one configuration
-    // that actually ships today is the only one that stays silent -- the model
-    // then tells the user it created something persistent, and an undo removes
-    // it.
+    // Built against an SDK with no history-exempt bit: nothing was requested and the node IS in undo's reach. Say so,
+    // as the reject-retry path above does; otherwise this configuration stays silent while the model tells the user it
+    // created something persistent that an undo removes.
     undo_protection_unavailable = true;
 #endif
   }
   return result;
 }
 
-// Adds the disclosure key when undo/redo protection could not be secured for
-// the node just created. The wording carries the consequence, not just the
-// fact: a bare "unavailable" leaves the model to guess what it means for the
-// user, and the reason differs (this build has no flag / this host refused or
-// did not confirm it) while the consequence never does.
+// Adds the disclosure key when undo/redo protection could not be secured for the node just created. The wording
+// carries the consequence, not just the fact: a bare "unavailable" leaves the model guessing what it means for the
+// user, and the reason differs (this build has no flag; the host refused or did not confirm it) while the consequence
+// never does.
 void annotateUndoProtection(json& result, bool unavailable) {
   if (unavailable) {
     result["undo_protection"] = "unavailable: an undo can remove this";
   }
 }
 
-// Unique per-call id for evaluate()'s ephemeral node, scoped to this
-// plugin's own id namespace on the host (so two plugin instances, or two
-// calls in flight, never collide). Never reused — a leftover from a failed
-// remove is easy to spot rather than silently shadowed by the next call.
+// Unique per-call id for evaluate()'s ephemeral node, in this plugin's own id namespace on the host (two plugin
+// instances, or two calls in flight, never collide). Never reused: a leftover from a failed remove is easy to spot
+// rather than silently shadowed by the next call.
 std::atomic<unsigned> g_evaluate_counter{0};
 
-// --- evaluate()'s object / on-demand path -----------------------------------
-//
-// Selected when any input is an object topic, or 'at_s'/'window' was given —
-// see evaluateSeries below. Unlike the scalar path (a per-sample transform
-// read back through the catalog), this submits a kind="on_demand" request
-// through DataProcessorsHostView::submitEvaluation and reads the answer out
-// of the report JSON directly: objects never round-trip through the catalog
-// as bytes, only as the host's own summaries.
+// evaluate()'s object / on-demand path: selected when any input is an object topic or 'at_s'/'window' was given (see
+// evaluateSeries). Unlike the scalar path (a per-sample transform read back through the catalog) it submits a
+// kind="on_demand" request through DataProcessorsHostView::submitEvaluation and reads the answer from the report JSON:
+// objects never round-trip through the catalog as bytes, only as the host's summaries.
 
-// One evaluation bundle's *_ns fields (requested_ns, stamp_ns, each input's
-// resolved_ns), converted to display seconds (*_s) via the same anchor
-// toRawNs used going in. The untouched raw values ride along under "raw_ns"
-// only when `debug` is set — the model reads display seconds by default,
-// same as every other time this file reports.
+// One evaluation bundle's *_ns fields (requested_ns, stamp_ns, each input's resolved_ns) converted to display seconds
+// (*_s) through the same anchor toRawNs used going in. The raw values ride along under "raw_ns" only when `debug` is
+// set: the model reads display seconds by default, like every other time this file reports.
 json convertBundleTimes(const json& bundle_in, ToolContext& ctx, PJ::sdk::DataSourceHandle source, bool debug) {
   json bundle = bundle_in;
   json raw = json::object();
@@ -273,10 +246,8 @@ json convertBundleTimes(const json& bundle_in, ToolContext& ctx, PJ::sdk::DataSo
   return bundle;
 }
 
-// A report's "bundles" array, time-converted and capped to the LAST 50 (the
-// most recent instants are what a model asks a WINDOW evaluation for; the
-// earliest ones are the ones worth dropping when the budget produced more
-// than fit in a response).
+// A report's "bundles" array, time-converted and capped to the LAST 50: a WINDOW evaluation is asked for its most
+// recent instants, so the earliest are the ones to drop when the budget produced more than fit in a response.
 struct RenderedBundles {
   json bundles = json::array();
   bool truncated = false;
@@ -407,11 +378,9 @@ std::optional<std::string> installedNodeErrorDetail(ToolContext& ctx, const std:
   return detail != config.end() && detail->is_string() ? detail->get<std::string>() : std::string("unknown error");
 }
 
-// evaluate()'s object path proper: validate 'outputs'/'body', resolve every
-// input (object or scalar), turn 'at_s'/'window' (display seconds) or the
-// current playhead into raw ns, submit an EPHEMERAL on_demand evaluation,
-// and hand back the time-converted report. Never installs or notifies —
-// same contract as the scalar path's ephemeral transform.
+// evaluate()'s object path proper: validates 'outputs'/'body', resolves every input (object or scalar), turns
+// 'at_s'/'window' (display seconds) or the playhead into raw ns, submits an EPHEMERAL on_demand evaluation and returns
+// the time-converted report. Never installs or notifies, like the scalar path's ephemeral transform.
 ToolResult evaluateObjectPath(const json& args, ToolContext& ctx, const std::vector<std::string>& raw_inputs) {
   if (!args.contains("outputs") || !args["outputs"].is_array() || args["outputs"].empty()) {
     return ToolResult::failure(
@@ -555,9 +524,8 @@ ToolResult createMarkersFromRule(const json& args, ToolContext& ctx) {
     }
     inputs.push_back(canonicalSeriesPath(in.get<std::string>()));
   }
-  // Same resolution as create_derived_series, and for the same reason: the rule
-  // looks its inputs up by exact name via series(...), so a path that is merely
-  // close produces a rule that matches nothing and silently draws no markers.
+  // Same resolution as create_derived_series, for the same reason: the rule looks its inputs up by exact name via
+  // series(...), so a merely close path yields a rule that matches nothing and silently draws no markers.
   if (auto catalog = ctx.host.catalogSnapshot()) {
     for (auto& in : inputs) {
       auto lookup = resolveSeriesPath(*catalog, in);
@@ -619,12 +587,9 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
         "e.g. 'value * 2') OR 'body' (full Luau statements ending in return, with optional 'global' state)");
   }
   const std::string name = args["name"].get<std::string>();
-  // One node can produce SEVERAL series. The host has always accepted a span of
-  // outputs and our wrapper already forwards every value the body returns
-  // (MULTRET), so the single-output limit was ours alone — it forced three
-  // separate nodes, each recomputing the same intermediate, for something like
-  // roll/pitch/yaw out of one quaternion. Defaults to [name], so nothing that
-  // worked before changes.
+  // One node can produce SEVERAL series: the host accepts a span of outputs and our wrapper forwards every value the
+  // body returns (MULTRET), so roll/pitch/yaw out of one quaternion is one node rather than three recomputing the same
+  // intermediate. Defaults to [name].
   std::vector<std::string> outputs;
   if (args.contains("outputs") && args["outputs"].is_array()) {
     for (const auto& o : args["outputs"]) {
@@ -645,17 +610,11 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   if (inputs.empty()) {
     return ToolResult::failure("'inputs' contained no string paths");
   }
-  // Resolve every input against the catalog before handing it to the host.
-  // Two reasons: an abbreviated path becomes the real one here (no correction
-  // round-trip), and a path that names nothing fails loudly instead of
-  // installing a transform whose input never matches — which produces an empty
-  // curve and looks like it worked.
-  // Installing over a name that is already taken is not a judgement call the
-  // model gets to make — it silently replaces or shadows something the user has,
-  // and neither outcome is what "create" was asked to do. The description used to
-  // tell the model to call list_created "before creating something that may
-  // already exist"; checking here costs nothing and does not depend on it
-  // remembering to.
+  // Resolve every input against the catalog before handing it to the host: an abbreviated path becomes the real one (no
+  // correction round trip), and a path naming nothing fails loudly instead of installing a transform whose input never
+  // matches, which yields an empty curve that looks like it worked.
+  // Installing over an already-taken name silently replaces or shadows something the user has, which is not what
+  // "create" asks for; checking here does not depend on the model remembering to call list_created first.
   if (auto existing = ctx.dp.list()) {
     for (const auto& id : *existing) {
       if (id == name || std::find(outputs.begin(), outputs.end(), id) != outputs.end()) {
@@ -685,11 +644,9 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
         }
       }
     }
-    // The same failure the resolution above guards against — an empty curve that
-    // looks like it worked — reached the other way: inputs that all exist but
-    // share no timestamps. Refuse to build it, and point at what does work,
-    // because wanting to relate two recordings is legitimate even when a joined
-    // series cannot express it.
+    // The same failure as above (an empty curve that looks like it worked) reached the other way: inputs that all exist
+    // but share no timestamps. Refuse, and point at what does work: relating two recordings is legitimate even when a
+    // joined series cannot express it.
     if (inputs.size() > 1) {
       forecast = forecastJoin(ctx, *catalog, inputs);
       if (forecast.checked && forecast.shared == 0) {
@@ -708,7 +665,7 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
   const std::size_t num_extra = inputs.size() - 1;
   // `body` (full statements, for stateful transforms like a derivative) wins;
   // otherwise wrap the stateless `expression` in a return. `global` runs once
-  // per instance and its locals persist across samples (PJ3 global semantics).
+  // per instance and its locals persist across samples.
   const std::string global = args.value("global", std::string{});
   const std::string body =
       has_body ? args["body"].get<std::string>() : "    return (" + args["expression"].get<std::string>() + ")";
@@ -750,13 +707,9 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
       {"series", outputs.size() == 1 ? json(outputs.front() + "/value") : series_paths},
       {"inputs", inputs}};
   annotateUndoProtection(result, undo_protection_unavailable);
-  // Report what the call produced, not what to do about it. This used to carry a
-  // "verify_with: read_series on ..." string, and models took the hint: across
-  // the creation scenarios it cost 79 extra read_series calls, each one a full
-  // round trip re-sending the whole conversation, to learn a number we already
-  // had here. Deciding whether a result warrants a second look is the model's
-  // job — it knows what the user asked for and this code does not. Ours is to
-  // hand it the fact, once, at no cost.
+  // Report what the call produced, not what to do about it: a "verify_with: read_series on ..." hint cost 79 extra
+  // read_series calls across the creation scenarios, each a full round trip, to learn a number already here. Whether a
+  // result warrants a second look is the model's call; this code hands it the fact once.
   if (forecast.checked) {
     // Multi-input: the join is what determines the length, and losing most of
     // the rows to it ("of 20000 samples, 340 line up") is the difference between
@@ -801,13 +754,10 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
     return ToolResult::failure("'inputs' contained no string paths");
   }
 
-  // The OBJECT path: selected when any input is an object topic (per the v2
-  // catalog), or when the model asked to evaluate at a specific time
-  // ('at_s'/'window') rather than over the whole series. This is a
-  // different host surface (kind="on_demand" via submitEvaluation, not a
-  // per-sample transform read back through the catalog), so it is routed
-  // out to its own function before anything below — which stays exactly
-  // the scalar-path code that shipped before objects existed.
+  // The OBJECT path: selected when any input is an object topic (per the v2 catalog) or the model asked to evaluate at
+  // a specific time ('at_s'/'window') rather than over the whole series. A different host surface (kind="on_demand" via
+  // submitEvaluation, not a per-sample transform read back through the catalog), so it is routed out first; the code
+  // below is the scalar path only.
   {
     bool any_object_input = false;
     if (auto v2 = ctx.host.catalogSnapshotV2()) {
@@ -825,10 +775,9 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
     }
   }
 
-  // Same resolution and join-forecast rules as create_derived_series, and for
-  // the same reasons: an unresolved or ambiguous input would install (briefly)
-  // a transform that computes nothing meaningful, and inputs that share no
-  // timestamps join to zero points either way.
+  // Same resolution and join-forecast rules as create_derived_series, for the same reasons: an unresolved or ambiguous
+  // input would briefly install a transform that computes nothing meaningful, and inputs that share no timestamps join
+  // to zero points either way.
   JoinForecast forecast;
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {
@@ -920,12 +869,10 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
   return ToolResult::success(result.dump());
 }
 
-// Install a persisted kind="on_demand" node (an object-producing computation
-// the host re-evaluates on request, never eagerly) and, on success, evaluate
-// it once so the model sees a finding instead of taking "created" on faith.
-// Shares evaluateObjectPath's input resolution, time conversion and report
-// rendering; the difference is createV2 (persisted, HISTORY_EXEMPT like
-// create_derived_series) in place of an EPHEMERAL submitEvaluation.
+// Installs a persisted kind="on_demand" node (an object-producing computation the host re-evaluates on request, never
+// eagerly) and on success evaluates it once so the model sees a finding rather than taking "created" on faith. Shares
+// evaluateObjectPath's input resolution, time conversion and report rendering; differs in createV2 (persisted,
+// HISTORY_EXEMPT like create_derived_series) instead of an EPHEMERAL submitEvaluation.
 ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
   if (!ctx.dp.valid()) {
     return ToolResult::failure("the host did not expose pj.data_processors.v1 (cannot create)");
@@ -962,9 +909,7 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
     return ToolResult::failure("'inputs' contained no string paths");
   }
 
-  // Same "already taken" guard create_derived_series applies, for the same
-  // reason: installing over a name the user already has is not a judgement
-  // call this code gets to make.
+  // Same "already taken" guard as create_derived_series.
   if (auto existing = ctx.dp.list()) {
     for (const auto& id : *existing) {
       if (id == name) {
@@ -1051,12 +996,9 @@ ToolResult createDerivedObject(const json& args, ToolContext& ctx) {
   }
   annotateUndoProtection(result, undo_protection_unavailable);
 
-  // Evaluate the installed node once, at the pin (if given) or the current
-  // playhead, so the model sees what it made instead of taking "created" on
-  // faith — the same principle "Closing the loop on what it creates"
-  // documents for markers and derived series. Best-effort: the node IS
-  // installed either way, so a failed read-back degrades the response
-  // rather than the tool call.
+  // Evaluate the installed node once, at the pin (if given) or the playhead, so the model sees what it made instead of
+  // taking "created" on faith. Best-effort: the node IS installed either way, so a failed read-back degrades the
+  // response, not the tool call.
   std::optional<std::int64_t> eval_ns = pin_ns;
   if (!eval_ns && ctx.playback.valid()) {
     if (auto state = ctx.playback.state()) {
@@ -1103,12 +1045,9 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
     return ToolResult::failure("the host did not expose pj.data_processors.v1 (cannot create markers)");
   }
 
-  // Two mutually exclusive forms (mirrors create_derived_series's
-  // expression-XOR-body): a raw Luau `rule` over declared `inputs` — the model
-  // writes the whole marker script against the vocabulary documented in the
-  // tool schema — or the simple series/comparison/threshold template kept for
-  // small models. On PJ4 main the host rejects kind="markers" and either form
-  // returns that error to the model by design (graceful degrade).
+  // Two mutually exclusive forms (as create_derived_series's expression-XOR-body): a raw Luau `rule` over declared
+  // `inputs` (the model writes the whole marker script against the vocabulary in the tool schema), or the simple
+  // series/comparison/threshold template kept for small models.
   const bool has_rule = args.contains("rule") && args["rule"].is_string();
   const bool has_template = args.contains("series") || args.contains("threshold");
   if (has_rule && has_template) {
@@ -1126,9 +1065,8 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
   }
   std::string series = canonicalSeriesPath(args["series"].get<std::string>());
   // The rule embeds this name and the host resolves it by itself, so it must
-  // be the resolved HOST form — the raw argument used to go straight through,
-  // which is how a bare name that exists in two datasets landed on whichever
-  // one the host tried first.
+  // be the resolved HOST form: a raw bare name present in two datasets lands on
+  // whichever one the host tries first.
   std::string display_series = series;
   if (auto catalog = ctx.host.catalogSnapshot()) {
     auto lookup = resolveSeriesPath(*catalog, series);

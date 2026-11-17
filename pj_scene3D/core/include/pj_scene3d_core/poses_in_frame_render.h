@@ -19,17 +19,14 @@ struct PoseTriadInstance {
   glm::vec4 color;
 };
 
-// How a PosesInFrame is expanded into arm instances. Geometry (`x_arrow_only`)
-// and coloring (`override_color`) are independent: you can recolor a full triad
-// or keep a single X arm in its natural red. Kept separate from the message so a
-// knob edit re-expands the same decoded sample cheaply.
+// How a PosesInFrame is expanded into arm instances. Geometry (`x_arrow_only`) and colouring (`override_color`) are
+// independent. Kept separate from the message so a knob edit re-expands the same decoded sample cheaply.
 struct PoseTriadStyle {
   // Arm length in meters — a uniform scale of the unit arrow, so thickness stays
   // proportional, matching the TF "Frames" gizmos.
   float axis_length = 0.15f;
   // Clamped to [0,1] and written to every arm's color alpha.
   float opacity = 1.0f;
-  // Draw only the local +X arm (1 instance/pose) instead of the full XYZ triad.
   bool x_arrow_only = false;
   // Replace the per-axis R/G/B with `color`, in BOTH triad and X-only modes, so
   // every arm of every pose shares one user color.
@@ -38,17 +35,13 @@ struct PoseTriadStyle {
   glm::vec3 color = glm::vec3(0.95f, 0.30f, 0.30f);
 };
 
-// Append the arm instances of one triad rooted at `base` (a frame-local or
-// world model matrix) per `style` — a full XYZ triad (X red, Y green, Z blue)
-// or a single X arm (`x_arrow_only`), recolored by `override_color`. The X/Y/Z
-// arm rotations and per-axis colors are the single source of truth for both the
-// PosesInFrame layers and the 3D scene's TF "Frames" gizmos. Pure CPU, no GL.
+// Appends the arm instances of one triad rooted at `base` (a frame-local or world model matrix) per `style`. The X/Y/Z
+// arm rotations and per-axis colors (X red, Y green, Z blue) are the single source of truth for both the PosesInFrame
+// layers and the 3D scene's TF "Frames" gizmos. Pure CPU, no GL.
 void appendTriadArms(const glm::mat4& base, const PoseTriadStyle& style, std::vector<PoseTriadInstance>& out);
 
-// Expand a PosesInFrame into arm instances per `style`. Each pose becomes either
-// a full coordinate triad (X red, Y green, Z blue, in that order -> 3 arms) or a
-// single X-axis arm (`x_arrow_only` -> 1 arm); `override_color` recolors whichever
-// arms are produced. Empty in -> empty out. Pure CPU geometry: no Qt, no GL.
+// Expands a PosesInFrame into arm instances per `style`: 3 arms per pose, or 1 with `x_arrow_only`. Empty in, empty
+// out.
 [[nodiscard]] std::vector<PoseTriadInstance> buildPoseTriadInstances(
     const PJ::sdk::PosesInFrame& msg, const PoseTriadStyle& style);
 

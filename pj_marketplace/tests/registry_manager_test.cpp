@@ -1,13 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Tests for PJ::RegistryManager
-//
-// Coverage:
-//   [1] Downloads JSON from a local test URL
-//   [2] Parses JSON correctly and constructs Extension objects
-//   [3] Emits fetchStarted, fetchFinished, and fetchError with the right values
-//   [4] Handles network errors gracefully (connection refused, invalid JSON, missing fields)
+// Tests for PJ::RegistryManager: download, parsing into Extension objects, the fetchStarted / fetchFinished /
+// fetchError signals, and network and parse failures.
 
 #include "pj_marketplace/registry_manager.hpp"
 
@@ -29,9 +24,7 @@
 #include "pj_marketplace/extension_manager.hpp"
 #include "pj_marketplace/marketplace_window.hpp"
 
-// ---------------------------------------------------------------------------
-// Minimal HTTP/1.1 server — serves one fixed JSON body per connection
-// ---------------------------------------------------------------------------
+// Minimal HTTP/1.1 server serving one fixed JSON body per connection.
 
 class TestHttpServer : public QTcpServer {
  public:
@@ -71,10 +64,6 @@ class TestHttpServer : public QTcpServer {
 
   QByteArray body_;
 };
-
-// ---------------------------------------------------------------------------
-// JSON fixtures
-// ---------------------------------------------------------------------------
 
 // Full extension with every supported field populated
 static const QByteArray kFullRegistryJson = R"({
@@ -122,10 +111,6 @@ static const QByteArray kMultiExtensionJson = R"({
 
 static const QByteArray kEmptyExtensionsJson = R"({ "extensions": [] })";
 
-// ---------------------------------------------------------------------------
-// Test fixture
-// ---------------------------------------------------------------------------
-
 namespace PJ {
 namespace {
 
@@ -144,10 +129,6 @@ class RegistryManagerTest : public ::testing::Test {
 
   TestHttpServer* server_ = nullptr;
 };
-
-// ---------------------------------------------------------------------------
-// [3] Signals — fetchStarted
-// ---------------------------------------------------------------------------
 
 // url() names the fetch by the time fetchStarted fires, so a listener needs no
 // other source for it.
@@ -207,13 +188,8 @@ TEST_F(RegistryManagerTest, EmitsFetchStartedOnEachCall) {
 
   EXPECT_EQ(spy_started.count(), 2);
 
-  // Wait for the second request to complete
   ASSERT_TRUE(spy_finished.wait(3000));
 }
-
-// ---------------------------------------------------------------------------
-// [1] + [3] Download and fetchFinished(true) on success
-// ---------------------------------------------------------------------------
 
 TEST_F(RegistryManagerTest, EmitsFetchFinishedTrueOnSuccessfulDownload) {
   RegistryManager mgr;
@@ -226,10 +202,6 @@ TEST_F(RegistryManagerTest, EmitsFetchFinishedTrueOnSuccessfulDownload) {
   ASSERT_EQ(spy_finished.count(), 1);
   EXPECT_TRUE(spy_finished.first().at(0).toBool());
 }
-
-// ---------------------------------------------------------------------------
-// [2] Parsing — required fields
-// ---------------------------------------------------------------------------
 
 TEST_F(RegistryManagerTest, ParsesRequiredFields) {
   RegistryManager mgr;
@@ -248,7 +220,7 @@ TEST_F(RegistryManagerTest, ParsesRequiredFields) {
   EXPECT_EQ(ext.version, "1.2.0");
 }
 
-// [2] Optional string fields
+// Optional string fields
 TEST_F(RegistryManagerTest, ParsesOptionalStringFields) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -273,8 +245,8 @@ TEST_F(RegistryManagerTest, ParsesOptionalStringFields) {
   EXPECT_EQ(ext.min_plotjuggler_version, "3.8.0");
 }
 
-// [2] entry_point: the optional "where to find it" override the feature catalog
-// forwards. Absent means undeclared, read as empty so the host derives a default.
+// entry_point: the optional "where to find it" override the feature catalog forwards; absent means undeclared, read
+// as empty so the host derives a default.
 TEST_F(RegistryManagerTest, ParsesEntryPointAndLeavesItEmptyWhenAbsent) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -291,7 +263,7 @@ TEST_F(RegistryManagerTest, ParsesEntryPointAndLeavesItEmptyWhenAbsent) {
   EXPECT_TRUE(mgr.findById("without").entry_point.isEmpty());
 }
 
-// [2] Tags array
+// Tags array
 TEST_F(RegistryManagerTest, ParsesTags) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -307,7 +279,7 @@ TEST_F(RegistryManagerTest, ParsesTags) {
   EXPECT_TRUE(tags.contains("file"));
 }
 
-// [2] Platforms map (url + checksum per platform key)
+// Platforms map (url + checksum per platform key)
 TEST_F(RegistryManagerTest, ParsesPlatformArtifacts) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -369,7 +341,7 @@ TEST_F(RegistryManagerTest, CompatibleExtensionsFiltersByRequestedPlatform) {
   EXPECT_TRUE(mgr.compatibleExtensions("imaginary-os-arch").isEmpty());
 }
 
-// [2] Changelog map (version -> description)
+// Changelog map (version -> description)
 TEST_F(RegistryManagerTest, ParsesChangelog) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -384,7 +356,7 @@ TEST_F(RegistryManagerTest, ParsesChangelog) {
   EXPECT_EQ(changelog["1.0.0"], "Initial release");
 }
 
-// [2] Registry with multiple extensions
+// Registry with multiple extensions
 TEST_F(RegistryManagerTest, ParsesMultipleExtensions) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -399,7 +371,7 @@ TEST_F(RegistryManagerTest, ParsesMultipleExtensions) {
   EXPECT_EQ(exts.at(1).id, "ext-b");
 }
 
-// [2] Empty extensions array is valid — results in an empty list
+// Empty extensions array is valid — results in an empty list
 TEST_F(RegistryManagerTest, AcceptsEmptyExtensionsArray) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -412,7 +384,7 @@ TEST_F(RegistryManagerTest, AcceptsEmptyExtensionsArray) {
   EXPECT_TRUE(mgr.extensions().isEmpty());
 }
 
-// [2] findById returns the matching extension
+// findById returns the matching extension
 TEST_F(RegistryManagerTest, FindByIdReturnsCorrectExtension) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -426,7 +398,7 @@ TEST_F(RegistryManagerTest, FindByIdReturnsCorrectExtension) {
   EXPECT_EQ(ext.name, "CSV Loader");
 }
 
-// [2] findById returns a default-constructed (empty id) extension when not found
+// findById returns a default-constructed (empty id) extension when not found
 TEST_F(RegistryManagerTest, FindByIdReturnsEmptyExtensionOnMiss) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -437,10 +409,6 @@ TEST_F(RegistryManagerTest, FindByIdReturnsEmptyExtensionOnMiss) {
 
   EXPECT_TRUE(mgr.findById("nonexistent-plugin").id.isEmpty());
 }
-
-// ---------------------------------------------------------------------------
-// [4] Network error handling — connection refused
-// ---------------------------------------------------------------------------
 
 // Closing the server before the request ensures nothing is listening on that port
 TEST_F(RegistryManagerTest, EmitsFetchErrorOnConnectionRefused) {
@@ -459,10 +427,6 @@ TEST_F(RegistryManagerTest, EmitsFetchErrorOnConnectionRefused) {
   EXPECT_FALSE(spy_error.first().at(0).toString().isEmpty());
 }
 
-// ---------------------------------------------------------------------------
-// [4] Parse error handling
-// ---------------------------------------------------------------------------
-
 TEST_F(RegistryManagerTest, EmitsFetchErrorOnMalformedJson) {
   RegistryManager mgr;
   QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
@@ -477,7 +441,7 @@ TEST_F(RegistryManagerTest, EmitsFetchErrorOnMalformedJson) {
   EXPECT_TRUE(mgr.extensions().isEmpty());
 }
 
-// [4] JSON root is an array instead of an object
+// JSON root is an array instead of an object
 TEST_F(RegistryManagerTest, EmitsFetchErrorWhenRootIsNotObject) {
   RegistryManager mgr;
   QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
@@ -491,7 +455,7 @@ TEST_F(RegistryManagerTest, EmitsFetchErrorWhenRootIsNotObject) {
   EXPECT_GE(spy_error.count(), 1);
 }
 
-// [4] Root object is missing the "extensions" key
+// Root object is missing the "extensions" key
 TEST_F(RegistryManagerTest, EmitsFetchErrorWhenExtensionsKeyMissing) {
   RegistryManager mgr;
   QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
@@ -505,7 +469,7 @@ TEST_F(RegistryManagerTest, EmitsFetchErrorWhenExtensionsKeyMissing) {
   EXPECT_GE(spy_error.count(), 1);
 }
 
-// [4] Required field "id" is absent from an extension entry
+// Required field "id" is absent from an extension entry
 TEST_F(RegistryManagerTest, EmitsFetchErrorOnMissingRequiredFieldId) {
   RegistryManager mgr;
   QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
@@ -520,7 +484,7 @@ TEST_F(RegistryManagerTest, EmitsFetchErrorOnMissingRequiredFieldId) {
   EXPECT_TRUE(mgr.extensions().isEmpty());
 }
 
-// [4] Required field "version" is absent from an extension entry
+// Required field "version" is absent from an extension entry
 TEST_F(RegistryManagerTest, EmitsFetchErrorOnMissingRequiredFieldVersion) {
   RegistryManager mgr;
   QSignalSpy spy_error(&mgr, &RegistryManager::fetchError);
@@ -603,7 +567,7 @@ TEST_F(RegistryManagerTest, RejectsWrongTypeCompatibilityFloor) {
   }
 }
 
-// [4] extensions() is empty after a parse error, even if a previous fetch succeeded
+// extensions() is empty after a parse error, even if a previous fetch succeeded
 TEST_F(RegistryManagerTest, ExtensionsEmptyAfterParseError) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -623,9 +587,8 @@ TEST_F(RegistryManagerTest, ExtensionsEmptyAfterParseError) {
   EXPECT_TRUE(mgr.extensions().isEmpty());
 }
 
-// [2] A duplicate id collapses to a single entry, keeping the highest version —
-// otherwise the marketplace shows a phantom second row that can never be
-// selected (the footer always resolves an id to its first match).
+// A duplicate id collapses to a single entry keeping the highest version; otherwise the marketplace shows a phantom
+// second row that can never be selected (the footer resolves an id to its first match).
 TEST_F(RegistryManagerTest, DeduplicatesByIdKeepingHighestVersion) {
   RegistryManager mgr;
   QSignalSpy spy_finished(&mgr, &RegistryManager::fetchFinished);
@@ -650,10 +613,9 @@ TEST_F(RegistryManagerTest, DeduplicatesByIdKeepingHighestVersion) {
   EXPECT_EQ(exts.at(1).id, "other");
 }
 
-// The duplicate-id collapse is destructive, so eligibility has to be decided
-// BEFORE it: platform filtering (compatibleExtensions) runs on the already
-// collapsed list, so a higher-versioned entry built for another platform would
-// otherwise discard the only artifact this host can install, for good.
+// The duplicate-id collapse is destructive, so eligibility is decided BEFORE it: platform filtering runs on the
+// already collapsed list, and a higher-versioned entry built for another platform would otherwise discard the only
+// artifact this host can install.
 TEST_F(RegistryManagerTest, PlatformEligibilityPrecedesVersionOrdering) {
   RegistryManager mgr;
   mgr.setEligibility("linux-x86_64");
@@ -699,10 +661,8 @@ TEST_F(RegistryManagerTest, HighestHostCompatibleVersionWinsWhenOneExists) {
   EXPECT_EQ(exts.at(0).version, "2.0.0") << "3.0.0 needs SDK 99.0.0, so the highest installable one must win";
 }
 
-// When no candidate is host-compatible the highest one is kept rather than
-// dropped, so the marketplace can still show the row and flag it as
-// incompatible (an entry that vanishes from the list is unexplainable to the
-// user; a flagged one is not).
+// When no candidate is host-compatible the highest is kept, so the marketplace can show the row and flag it as
+// incompatible (a vanished entry is unexplainable to the user).
 TEST_F(RegistryManagerTest, KeepsHighestVersionWhenNoCandidateIsHostCompatible) {
   RegistryManager mgr;
   mgr.setEligibility("linux-x86_64");
@@ -722,8 +682,8 @@ TEST_F(RegistryManagerTest, KeepsHighestVersionWhenNoCandidateIsHostCompatible) 
   EXPECT_EQ(exts.at(0).version, "3.0.0");
 }
 
-// A pre-release must lose the duplicate-id race against its own release, which
-// is only true once the shared comparator implements SemVer precedence.
+// A pre-release loses the duplicate-id race against its own release, which holds only once the shared comparator
+// implements SemVer precedence.
 TEST_F(RegistryManagerTest, DeduplicationPrefersReleaseOverPreRelease) {
   RegistryManager mgr;
   mgr.setEligibility("linux-x86_64");

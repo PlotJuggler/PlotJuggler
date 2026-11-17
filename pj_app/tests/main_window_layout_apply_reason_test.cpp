@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A layout that parses but cannot be applied must say WHY in the same
-// message the user sees, not only in a separate bell diagnostic: the
-// "Layout" diagnostics emitted during the restore are captured and appended
-// to the layout-apply-failed report.
+// A layout that parses but cannot be applied says why in the message the user sees: the "Layout" diagnostics
+// emitted during the restore are captured and appended to the layout-apply-failed report.
 
 #include <gtest/gtest.h>
 

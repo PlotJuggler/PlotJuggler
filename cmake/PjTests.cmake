@@ -23,9 +23,8 @@ function(pj_add_test_runner target)
     # PROPERTIES: extra ctest properties for every discovered case (DISABLED, ENVIRONMENT, ...).
     set(multiValueArgs SOURCES LIBS DEFINES PROPERTIES)
     cmake_parse_arguments(R "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
-    # plain = no Qt at all. It exists because core was previously the floor, so a
-    # module with no Qt in any of its test sources still linked Qt6::Core purely to
-    # satisfy this parameter. Pick the least the runner actually needs.
+    # plain = no Qt at all, so a module with no Qt in any of its test sources does not
+    # link Qt6::Core. Pick the least the runner actually needs.
     if(NOT R_MAIN MATCHES "^(plain|core|gui)$")
         message(FATAL_ERROR "pj_add_test_runner(${target}): MAIN must be plain, core or gui")
     endif()

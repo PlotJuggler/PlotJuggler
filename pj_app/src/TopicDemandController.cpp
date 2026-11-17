@@ -34,18 +34,13 @@ TopicDemandController::TopicDemandController(
       pending_binder_(pending_binder),
       engine_(engine),
       visible_start_(std::move(visible_start)) {
-  // The one persistent catalog wiring this controller owns: drives preview
-  // release-on-promotion, the advertise-burst census, and preview teardown.
   connect(&catalog_, &CatalogModel::itemsAdded, this, &TopicDemandController::onCatalogItemsAdded);
   connect(&catalog_, &CatalogModel::cleared, this, &TopicDemandController::onCatalogCleared);
-  // Disowns a preview's fake-interest samples the moment a REAL reference
-  // arrives for a preview-promoted topic (see onActiveTopicsChanged).
   connect(&tracker_, &TopicDemandTracker::activeTopicsChanged, this, &TopicDemandController::onActiveTopicsChanged);
 }
 
 TopicDemandController::~TopicDemandController() {
-  // Balance every held preview reference on teardown (the timers are children of
-  // this object and are destroyed by ~QObject).
+  // Balances every preview reference; the timers are children and die with ~QObject.
   for (const auto& [id, timer] : active_previews_) {
     static_cast<void>(timer);
     tracker_.removeReference(id.first, id.second);
@@ -60,9 +55,7 @@ void TopicDemandController::appendTopicRefs(
     out.emplace_back(dataset_id, topic_name);
     return;
   }
-  // A Data Processor output is not itself a streamed topic (no plugin owns that
-  // name) — reference its resolved SOURCE(s) instead, per the v1 derived-input
-  // resolution rule.
+  // No plugin streams an output's name: reference its sources instead.
   for (const auto& [source_dataset_id, source_name] : sources) {
     out.emplace_back(source_dataset_id, QString::fromStdString(source_name));
   }
@@ -80,8 +73,7 @@ void TopicDemandController::registerPlot(PlotWidget* plot) {
       reportVisibleStart(plot, found->second);
     }
   });
-  // A canvas drop named an advertised placeholder — register demand + a pending
-  // bind instead of the (impossible, no storage id) normal add-curve path.
+  // An advertised placeholder has no storage id to add a curve for: demand it and bind once it materializes.
   connect(plot, &PlotWidget::placeholderCurveDropped, this, [this, plot](const QString& catalog_key) {
     const auto item = catalog_.itemDescriptor(catalog_key);
     if (item.has_value()) {
@@ -117,7 +109,7 @@ void TopicDemandController::syncPlot(PlotWidget* plot) {
     }
     const auto item = catalog_.itemDescriptor(info.source_name);
     if (!item.has_value()) {
-      continue;  // stale/unresolvable source_name — nothing to reference
+      continue;
     }
     const TopicId topic_id = isScalarField(*item) ? asScalarField(*item)->topic_id : 0;
     appendTopicRefs(current, item->dataset_id, item->topic_name, topic_id);
@@ -148,10 +140,7 @@ void TopicDemandController::applyTopicDelta(
 
   std::vector<std::pair<DatasetId, QString>> added;
   std::vector<std::pair<DatasetId, QString>> removed;
-  // Multiset diff: current/previous may carry duplicates (two curves on the same
-  // topic each hold their own reference), and std::set_difference over sorted
-  // ranges subtracts per-multiplicity, so removing ONE curve on a shared topic
-  // releases exactly one reference and leaves the other curve's intact.
+  // std::set_difference over sorted ranges subtracts per multiplicity: the multiset diff the header promises.
   std::set_difference(current.begin(), current.end(), previous.begin(), previous.end(), std::back_inserter(added));
   std::set_difference(previous.begin(), previous.end(), current.begin(), current.end(), std::back_inserter(removed));
 
@@ -360,15 +349,12 @@ void TopicDemandController::handleSceneDockPlaceholderDrop(
   }
 }
 
-// --- bounded field-preview subscriptions ------------------------------------
-
 void TopicDemandController::setPreviewTimeoutMsForTest(int timeout_ms) {
   preview_timeout_ms_ = timeout_ms;
 }
 
 void TopicDemandController::onCatalogItemsAdded(const std::vector<CatalogItem>& items) {
-  // Release first (a promotion batch may also carry unrelated new placeholders),
-  // then census the freshly-advertised scalar placeholders.
+  // Release first: a promotion batch may also carry new placeholders, which the census may then start.
   releaseCompletedPreviews(items);
   runCensus(items);
   emit displayedSeriesChanged();
@@ -381,7 +367,7 @@ void TopicDemandController::releaseCompletedPreviews(const std::vector<CatalogIt
   std::vector<PreviewId> promoted;
   for (const CatalogItem& item : items) {
     if (asAdvertisedTopic(item) != nullptr) {
-      continue;  // still a placeholder — the real sample has not landed yet
+      continue;  // still a placeholder: the real sample has not landed yet
     }
     const PreviewId id{item.dataset_id, item.topic_name};
     if (active_previews_.count(id) > 0) {
@@ -390,12 +376,9 @@ void TopicDemandController::releaseCompletedPreviews(const std::vector<CatalogIt
   }
   for (const PreviewId& id : promoted) {
     finishPreview(id.first, id.second);  // idempotent: duplicate field rows collapse to one release
-    // The stored sample(s) are fake interest — flag them for disowning the
-    // moment something REALLY subscribes (see onActiveTopicsChanged). UNLESS a
-    // real hold (a pend completing, forced streaming) claimed the topic while
-    // the preview was in flight: the topic stayed active through the preview's
-    // release, so everything stored is really-requested history and a later
-    // disown would wipe it.
+    // Flag the preview samples for disowning once something really subscribes, UNLESS a real hold (a pend
+    // completing, forced streaming) claimed the topic while the preview was in flight: then it stayed active through
+    // the release, everything stored is requested history, and a disown would wipe it.
     const auto active = tracker_.activeTopics(id.first);
     if (std::find(active.begin(), active.end(), id.second) == active.end()) {
       preview_promoted_pending_disown_.insert(id);
@@ -407,9 +390,7 @@ void TopicDemandController::onActiveTopicsChanged(DatasetId dataset_id, const st
   if (preview_promoted_pending_disown_.empty()) {
     return;
   }
-  // Consume every pending entry for this dataset whose topic just became
-  // actively referenced. The preview reference itself can't retrigger this:
-  // the entry is only inserted AFTER the preview released on promotion.
+  // The preview's own reference cannot trigger this: the entry is inserted only after the preview released.
   for (const QString& topic_name : active_topics) {
     const PreviewId id{dataset_id, topic_name};
     if (preview_promoted_pending_disown_.erase(id) > 0) {
@@ -419,9 +400,7 @@ void TopicDemandController::onActiveTopicsChanged(DatasetId dataset_id, const st
 }
 
 void TopicDemandController::disownPreviewHistory(DatasetId dataset_id, const QString& topic_name) {
-  // Resolve the topic's scalar TopicId(s) through the catalog. One name maps to
-  // one engine topic, but the scan tolerates catalog churn (fields all carry
-  // the same topic_id; duplicates collapse via the sorted-unique pass).
+  // Every field row of the topic carries the same TopicId; the sort-unique collapses them.
   std::vector<TopicId> topic_ids;
   for (const CatalogItem& item : catalog_.items()) {
     if (item.dataset_id != dataset_id || item.topic_name != topic_name) {
@@ -433,9 +412,8 @@ void TopicDemandController::disownPreviewHistory(DatasetId dataset_id, const QSt
   }
   std::sort(topic_ids.begin(), topic_ids.end());
   topic_ids.erase(std::unique(topic_ids.begin(), topic_ids.end()), topic_ids.end());
-  // curveListChanged may have already populated plot caches from the preview.
-  // Drop them synchronously before freeing chunks; no paint or event-loop turn
-  // may intervene between invalidation and eviction.
+  // Plot caches may already hold preview samples: drop them before freeing the chunks, with no paint or event-loop
+  // turn in between.
   for (const auto& [plot, topics] : plot_topics_) {
     static_cast<void>(topics);
     for (const auto& info : plot->curveList()) {
@@ -463,13 +441,13 @@ void TopicDemandController::runCensus(const std::vector<CatalogItem>& items) {
   for (const CatalogItem& item : items) {
     const auto* advertised = asAdvertisedTopic(item);
     if (advertised == nullptr || advertised->classification != sdk::BuiltinObjectType::kNone) {
-      continue;  // real entry, or an object-classified placeholder (size-filtered out)
+      continue;  // a real entry, or an object placeholder (too large to preview)
     }
     if (!catalog_.isPerTopicPauseCapable(item.dataset_id)) {
-      continue;  // non-demand source / file dataset — census is meaningless there
+      continue;  // a source without demand, or a file: it already delivers everything
     }
     if (censused_topics_.count({item.dataset_id, item.topic_name}) > 0) {
-      continue;  // previewed once already this session — re-advertise must not re-preview
+      continue;
     }
     requestFieldPreview(item.dataset_id, item.topic_name);
   }
@@ -482,7 +460,7 @@ void TopicDemandController::requestFieldPreview(DatasetId dataset_id, const QStr
   }
   const auto active = tracker_.activeTopics(dataset_id);
   if (std::find(active.begin(), active.end(), topic_name) != active.end()) {
-    return;  // a real display/pend reference already holds this topic — don't disturb it
+    return;  // a real reference already holds it
   }
   if (static_cast<int>(active_previews_.size()) < kMaxConcurrentPreviews) {
     startPreview(dataset_id, topic_name);
@@ -493,8 +471,6 @@ void TopicDemandController::requestFieldPreview(DatasetId dataset_id, const QStr
 
 bool TopicDemandController::previewInFlight(DatasetId dataset_id, const QString& topic_name) const {
   const PreviewId id{dataset_id, topic_name};
-  // The queue never exceeds one advertise burst's worth of topics — a linear
-  // scan beats maintaining a membership mirror.
   return active_previews_.count(id) > 0 ||
          std::find(preview_queue_.begin(), preview_queue_.end(), id) != preview_queue_.end();
 }
@@ -522,7 +498,7 @@ void TopicDemandController::finishPreview(DatasetId dataset_id, const QString& t
   const PreviewId id{dataset_id, topic_name};
   const auto it = active_previews_.find(id);
   if (it == active_previews_.end()) {
-    return;  // promotion and timeout can race — the first one wins, the second no-ops
+    return;  // promotion and timeout both land here: the first wins
   }
   it->second->stop();
   it->second->deleteLater();
@@ -536,8 +512,7 @@ void TopicDemandController::pumpPreviewQueue() {
   while (static_cast<int>(active_previews_.size()) < kMaxConcurrentPreviews && !preview_queue_.empty()) {
     const PreviewId id = preview_queue_.front();
     preview_queue_.pop_front();
-    // Re-validate: while queued the topic may have promoted, gained a real
-    // reference, lost its dataset's capability, or already started elsewhere.
+    // While queued the topic may have promoted, gained a real reference, lost its capability, or started.
     if (active_previews_.count(id) > 0 || !catalog_.isPerTopicPauseCapable(id.first) ||
         topicHasRealEntry(id.first, id.second)) {
       continue;
