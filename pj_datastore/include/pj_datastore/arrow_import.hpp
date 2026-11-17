@@ -36,7 +36,7 @@ struct ArrowColumnMapping {
 ///
 /// `timestamp_column` indexes the Arrow schema: an int64, uint64 or int32 column taken as nanoseconds, or a TIMESTAMP
 /// column scaled from its unit to nanoseconds (a value that overflows int64 nanoseconds is an error). -1 uses row
-/// indices 0, 1, 2, ...; a column of any other type falls back to row indices as well.
+/// indices 0, 1, 2, ...; a column of any other type is an error, raised before any row is written.
 [[nodiscard]] PJ::Status importIpcStream(
     DataWriter& writer, TopicId topic_id, PJ::Span<const uint8_t> ipc_stream,
     const std::vector<ArrowColumnMapping>& mappings, int timestamp_column = -1);

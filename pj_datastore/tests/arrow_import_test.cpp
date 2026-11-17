@@ -732,5 +732,55 @@ TEST(ArrowImportTest, SyntheticTimestampsContinueAcrossBatches) {
   EXPECT_EQ(rows, expected);  // the second batch continues at 2, not back at 0
 }
 
+// A plugin names its time column; one of a type the importer cannot read as nanoseconds must not become row
+// indices that restart at every batch.
+TEST(ArrowImportTest, FloatTimestampColumnIsAnError) {
+  DataEngine engine;
+  auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
+  ASSERT_TRUE(ds_or.has_value());
+  DataWriter writer = engine.createWriter();
+
+  nanoarrow::UniqueSchema schema;
+  ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
+  ArrowSchemaInit(schema->children[0]);
+  ASSERT_EQ(ArrowSchemaSetType(schema->children[0], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema->children[0], "timestamp"), NANOARROW_OK);
+  ArrowSchemaInit(schema->children[1]);
+  ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
+  ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "v"), NANOARROW_OK);
+
+  nanoarrow::UniqueArrayStream stream;
+  nanoarrow::UniqueSchema stream_schema;
+  ASSERT_EQ(ArrowSchemaDeepCopy(schema.get(), stream_schema.get()), NANOARROW_OK);
+  ASSERT_EQ(ArrowBasicArrayStreamInit(stream.get(), stream_schema.get(), 2), NANOARROW_OK);
+  for (int64_t b = 0; b < 2; ++b) {
+    nanoarrow::UniqueArray array;
+    ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
+    ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
+    for (int i = 0; i < 2; ++i) {
+      const double seconds = static_cast<double>(b * 2 + i) + 0.5;
+      ASSERT_EQ(ArrowArrayAppendDouble(array->children[0], seconds), NANOARROW_OK);
+      ASSERT_EQ(ArrowArrayAppendDouble(array->children[1], seconds * 10.0), NANOARROW_OK);
+      ASSERT_EQ(ArrowArrayFinishElement(array.get()), NANOARROW_OK);
+    }
+    ASSERT_EQ(ArrowArrayFinishBuildingDefault(array.get(), nullptr), NANOARROW_OK);
+    ArrowBasicArrayStreamSetArray(stream.get(), b, array.get());
+  }
+
+  auto sid = *writer.registerSchema("float_ts", makePrimitive("v", PrimitiveType::kFloat64));
+  auto tid = *writer.registerTopic(*ds_or, TopicDescriptor{.name = "float_ts_topic", .schema_id = sid});
+  const std::vector<ArrowColumnMapping> mappings = {{
+      .arrow_column_index = 1,
+      .pj_column_index = 0,
+      .pj_type = PrimitiveType::kFloat64,
+      .field_name = "v",
+  }};
+  auto status = importArrowStream(writer, tid, stream.get(), mappings, /*timestamp_column=*/0);
+  ASSERT_FALSE(status.has_value()) << "a float64 timestamp column was imported";
+  EXPECT_NE(status.error().find("double"), std::string::npos) << status.error();
+  EXPECT_TRUE(writer.flushAll().empty());
+}
+
 }  // namespace
 }  // namespace PJ::arrow_import
