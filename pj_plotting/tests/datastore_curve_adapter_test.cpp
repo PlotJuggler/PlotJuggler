@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <new>
+#include <optional>
 
 #include "pj_base/dataset.hpp"
 #include "pj_base/type_tree.hpp"
@@ -336,6 +337,70 @@ TEST(PointSeriesXYTest, SameTopicPairsRowsByIndex) {
   EXPECT_DOUBLE_EQ(bounds.right(), 12.0);
   EXPECT_DOUBLE_EQ(bounds.top(), 100.0);
   EXPECT_DOUBLE_EQ(bounds.bottom(), 102.0);
+}
+
+// A parser writes only the fields a message carried, so one topic's columns can be
+// null on different rows (an omitted protobuf `optional`). A row missing either
+// axis is no point: it must not pair with a neighbour or read as 0.
+TEST(PointSeriesXYTest, SameTopicSkipsRowsWithANullAxis) {
+  SessionManager session;
+  auto dataset_or = session.dataEngine().createDataset(DatasetDescriptor{.source_name = "xy"});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+
+  auto writer = session.dataEngine().createWriter();
+  auto schema_or = writer.registerSchema(
+      "xy",
+      makeStruct("xy", {makePrimitive("x", PrimitiveType::kFloat64), makePrimitive("y", PrimitiveType::kFloat64)}));
+  ASSERT_TRUE(schema_or.has_value()) << schema_or.error();
+
+  TopicDescriptor descriptor;
+  descriptor.name = "/xy";
+  descriptor.schema_id = *schema_or;
+  descriptor.max_chunk_rows = 2;
+  auto topic_or = writer.registerTopic(*dataset_or, descriptor);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+
+  // t=0 both, t=1 x only, t=2 y only, t=3 both. An unset column is padded null.
+  auto append = [&](int t, std::optional<double> x, std::optional<double> y) {
+    ASSERT_TRUE(writer.beginRow(*topic_or, static_cast<Timestamp>(t) * kNs).has_value());
+    if (x) {
+      writer.set(*topic_or, 0, *x);
+    }
+    if (y) {
+      writer.set(*topic_or, 1, *y);
+    }
+    ASSERT_TRUE(writer.finishRow(*topic_or).has_value());
+  };
+  append(0, 10.0, 100.0);
+  append(1, -50.0, std::nullopt);
+  append(2, std::nullopt, 500.0);
+  append(3, 13.0, 103.0);
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+
+  CurveDescriptor x_descriptor{
+      .name = "/xy/x", .topic_id = *topic_or, .dataset_id = *dataset_or, .column_index = 0, .field_path = "x"};
+  CurveDescriptor y_descriptor{
+      .name = "/xy/y", .topic_id = *topic_or, .dataset_id = *dataset_or, .column_index = 1, .field_path = "y"};
+
+  PointSeriesXY series(&session, x_descriptor, y_descriptor);
+  ASSERT_EQ(series.size(), 2U);
+  EXPECT_DOUBLE_EQ(series.sample(0).x(), 10.0);
+  EXPECT_DOUBLE_EQ(series.sample(0).y(), 100.0);
+  EXPECT_DOUBLE_EQ(series.sample(1).x(), 13.0);
+  EXPECT_DOUBLE_EQ(series.sample(1).y(), 103.0);
+
+  // The half-rows' lone values (-50, 500) stay out of the bounds.
+  const QRectF bounds = series.boundingRect();
+  EXPECT_DOUBLE_EQ(bounds.left(), 10.0);
+  EXPECT_DOUBLE_EQ(bounds.right(), 13.0);
+  EXPECT_DOUBLE_EQ(bounds.top(), 100.0);
+  EXPECT_DOUBLE_EQ(bounds.bottom(), 103.0);
+
+  // The tracker over a half-row holds the last complete pair.
+  const auto at_half_row = series.sampleFromTime(2.0);
+  ASSERT_TRUE(at_half_row.has_value());
+  EXPECT_DOUBLE_EQ(at_half_row->x(), 10.0);
+  EXPECT_DOUBLE_EQ(at_half_row->y(), 100.0);
 }
 
 TEST(PointSeriesXYTest, DifferentTopicsPairOnlyExactTimestampsAndInvalidateOnCommit) {
