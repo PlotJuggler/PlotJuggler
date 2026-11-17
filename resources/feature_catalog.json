@@ -182,7 +182,7 @@
     {
       "id": "publish_to_robot",
       "summary": "PlotJuggler 4 only receives and displays data; it cannot publish messages or send commands back to a robot or device.",
-      "evidence": "CLAUDE.md#`StatePublisher` parity; pj_runtime/include/pj_runtime/PluginRuntimeCatalog.h#Toolbox and Widget families"
+      "evidence": "pj_runtime/include/pj_runtime/PluginRuntimeCatalog.h#Toolbox and Widget families"
     },
     {
       "id": "edit_loaded_data",
