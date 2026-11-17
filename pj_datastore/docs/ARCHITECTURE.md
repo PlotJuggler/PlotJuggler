@@ -265,8 +265,9 @@ and parser object write, and toolbox object read.
 - Each host turns ABI calls into `DataWriter`, `DataEngine` and `ObjectStore` operations. The host seals and commits
   (`flushPending()`); plugins never do.
 - An exception must not cross the ABI: entry points catch it and return an error status.
-- The write hosts collapse repeated slashes in topic and field names (and drop a field's leading slash); parser-binding
-  and object topic names are not normalized.
+- The write hosts collapse repeated slashes in topic and field names (and drop a field's leading slash). A parser
+  binding names its scalar topic through the same rule (`normalizeTopicName()`), so it reaches the topic the
+  direct-write path made; object topic names are not normalized.
 - The write hosts take the engine lock on every call, both engines when mirroring.
 - Registering an object topic whose (dataset, name) exists with identical metadata reuses it, so a refill keeps the id
   and the curves bound to it; different metadata is an error.

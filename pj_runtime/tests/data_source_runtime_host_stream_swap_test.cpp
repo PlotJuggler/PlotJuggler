@@ -482,6 +482,32 @@ TEST_F(StreamParserSwapTest, ParserBindingReusesTheDatasetsExistingSameNamedTopi
   EXPECT_GT(rowCount(primary_engine_, existing_id), 0U) << "rows landed somewhere other than the reused topic";
 }
 
+// The direct-write path stores "robot//imu" as "robot/imu"; a parser binding on the same name must reach that topic,
+// not mint a second one under the raw name.
+TEST_F(StreamParserSwapTest, ParserBindingCollapsesSlashesLikeTheDirectWritePath) {
+  PJ::sdk::ServiceRegistry services(registry_builder_.view());
+  auto writer_or = services.require<PJ::sdk::SourceWriteHostService>();
+  ASSERT_TRUE(writer_or.has_value()) << writer_or.error();
+  const auto topic = writer_or->ensureTopic("robot//imu");
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+
+  auto binding_or = runtime().ensureParserBinding(
+      PJ::ParserBindingRequest{
+          .topic_name = "robot//imu",
+          .parser_encoding = "streaming_caching",
+          .type_name = "streaming/cached_scalar",
+          .schema = PJ::Span<const uint8_t>{},
+          .parser_config_json = "{}",
+      });
+  ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
+
+  EXPECT_EQ(primary_engine_.listTopics(dataset_id_).size(), 1U) << "the binding minted a second topic";
+  ASSERT_TRUE(pushFloat(*binding_or, 1000, 1.0F).has_value());
+  host_->flushPending();
+  EXPECT_GT(rowCount(primary_engine_, topic->id), 0U)
+      << "the binding wrote somewhere other than the direct-write topic";
+}
+
 // The same reuse path seen from the streaming pause/resume lockstep: the mirror
 // stays idempotent — an id the secondary already holds is not re-created — and
 // the two engines keep matching ids.

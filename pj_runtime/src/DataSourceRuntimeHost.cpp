@@ -698,6 +698,8 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     // (WriteCore::ensureTopic via lockWriteEngines), so the two paths can never
     // invert against each other. The engine mutex is recursive, so createTopic
     // re-acquiring inside is fine.
+    // The engine name as the direct-write path stores it; the binding keeps the source's name.
+    const std::string engine_topic_name = normalizeTopicName(topic_name);
     TopicId topic_id = 0;
     {
       const EngineLockPair engine_locks = lockEnginePair(self->engine_, self->secondary_data_engine_);
@@ -706,16 +708,16 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
       std::sort(existing_ids.begin(), existing_ids.end());
       for (const TopicId tid : existing_ids) {
         const auto* storage = self->engine_.getTopicStorage(tid);
-        if (storage != nullptr && storage->descriptor().name == topic_name) {
+        if (storage != nullptr && storage->descriptor().name == engine_topic_name) {
           topic_id = tid;
           break;
         }
       }
       if (topic_id == 0) {
-        auto topic_or = self->engine_.createTopic(self->dataset_id_, TopicDescriptor{.name = std::string(topic_name)});
+        auto topic_or = self->engine_.createTopic(self->dataset_id_, TopicDescriptor{.name = engine_topic_name});
         if (!topic_or.has_value()) {
           return self->fail(
-              out_error, ("failed to create topic '" + std::string(topic_name) + "': " + topic_or.error()).c_str());
+              out_error, ("failed to create topic '" + engine_topic_name + "': " + topic_or.error()).c_str());
         }
         topic_id = *topic_or;
       }
@@ -733,11 +735,11 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
       if (self->secondary_data_engine_ != nullptr &&
           self->secondary_data_engine_->getTopicStorage(topic_id) == nullptr) {
         auto mirrored = self->secondary_data_engine_->createTopic(
-            self->dataset_id_, TopicDescriptor{.name = std::string(topic_name)}, topic_id);
+            self->dataset_id_, TopicDescriptor{.name = engine_topic_name}, topic_id);
         if (!mirrored.has_value()) {
           return self->fail(
               out_error,
-              ("failed to mirror topic '" + std::string(topic_name) + "' into secondary engine: " + mirrored.error())
+              ("failed to mirror topic '" + engine_topic_name + "' into secondary engine: " + mirrored.error())
                   .c_str());
         }
       }

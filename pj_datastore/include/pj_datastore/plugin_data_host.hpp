@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <string>
 #include <string_view>
 
 #include "pj_base/expected.hpp"
@@ -33,6 +34,10 @@ using IngestWarningHandler = void (*)(std::string_view message);
 
 /// Process-wide; nullptr (the default) discards. Safe while ingest threads run.
 void setIngestWarningHandler(IngestWarningHandler handler) noexcept;
+
+/// The name the scalar write hosts store a topic under ("//" collapsed to "/"). Another ingest path that finds or
+/// creates scalar topics by name must use it too, or one source name maps to two topics.
+[[nodiscard]] std::string normalizeTopicName(std::string_view name);
 
 /// `pj.source_write` for one DataSource session.
 class DatastoreSourceWriteHost {
