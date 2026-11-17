@@ -94,7 +94,7 @@ test('dataset removal asks without blocking and honours Cancel and Remove', asyn
     return box;
   };
 
-  // Cancel keeps the data: the question no longer reads as an instant "No".
+  // Cancel keeps the data: the prompt waits for the click instead of resolving at once as "No".
   let box = await openRemovePrompt();
   await page.mouse.click(box.buttons.get('Cancel').x, box.buttons.get('Cancel').y);
   await expect.poll(async () => (await messageBox(page, screen, consoleMessages)).present).toBe(false);

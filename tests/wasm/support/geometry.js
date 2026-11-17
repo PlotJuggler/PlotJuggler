@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 const { expect } = require('@playwright/test');
 
-// Probe-driven canvas geometry: dataset rows and placeholder icons are
-// addressed by NAME, so the specs survive the row-pitch, header-height, and
-// icon-set changes that repeatedly invalidated hard-coded pixel positions.
+// Probe-driven canvas geometry: dataset rows and placeholder icons are addressed by name, not by pixel
+// position, which moves with row pitch, header height and the icon set.
 
 async function reportedLines(page, consoleMessages, trigger, marker) {
   const before = consoleMessages.length;
@@ -19,9 +18,7 @@ async function reportedLines(page, consoleMessages, trigger, marker) {
 // 'drag.csv/drag/value'). Expands the whole dataset tree as a side effect so
 // the row is revealed before its geometry is reported.
 async function curveRowCenter(page, screen, consoleMessages, path) {
-  // The dataset tree populates asynchronously after PJ_FILE_LOAD_OK, so retry
-  // the whole report until the requested row exists rather than pushing sleeps
-  // into every caller.
+  // The dataset tree populates after PJ_FILE_LOAD_OK, so retry the report until the row exists.
   let row;
   for (let attempt = 0; attempt < 8 && !row; ++attempt) {
     if (attempt > 0) {

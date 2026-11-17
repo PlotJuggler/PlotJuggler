@@ -8,8 +8,8 @@ const { waitForQtApp } = require('./support/app');
 
 // The watchdog's 2 s budget plus its poll and a loaded runner's scheduling.
 const WATCHDOG_BOUND_MS = 2200;
-// A GUI compile never waits for the GIL (slice P-c; it waited up to 2 s before), and a validate waits at most its
-// 100 ms bound (kPythonValidateWaitMillis): that, one 20 ms tick and a loaded runner's scheduling.
+// A GUI compile never waits for the GIL, and a validate waits at most its 100 ms bound
+// (kPythonValidateWaitMillis): that, one 20 ms tick and a loaded runner's scheduling.
 const BUSY_COMPILE_GAP_BOUND_MS = 250;
 // Python per call against the same script in Luau. Firefox's ratio depends on the CPU core it lands on (on a hybrid
 // laptop 1.2x on efficiency cores, 1.55x on performance cores; 0.85x on CI), Chromium's does not (1.0-1.26x).
@@ -101,7 +101,8 @@ test('on-demand Python: stdlib, value, per-call cost, watchdog, strict profile, 
   expect(number('PJ_WASM_PY_PERCALL luau', 'value')).toBeCloseTo(Math.sqrt(10), 5);
   expect(pythonMicros).toBeGreaterThan(0);
   expect(pythonMicros).toBeLessThanOrEqual(PER_CALL_RATIO_BOUND[browserName] * luauMicros);
-  // Allocation-heavy code is measured, not bounded (ARCHITECTURE §14 quotes it per browser).
+  // Allocation-heavy code is measured, not bounded (docs/derived_objects/ARCHITECTURE.md "Reference numbers"
+  // quotes it per browser).
   expect(number('PJ_WASM_PY_ALLOC sum_range', 'value')).toBe(499999500000);
   expect(number('PJ_WASM_PY_ALLOC sum_range', 'ns_per_element')).toBeGreaterThan(0);
   const watchdog = line('PJ_WASM_PY_WATCHDOG');

@@ -697,7 +697,7 @@ test('a recording without a pin is downloaded on every visit', async ({ page }) 
 });
 
 // The cache is a convenience: a browser that has none (or refuses to store, e.g. over its quota) loads the
-// recording from the network as before, and nothing is kept.
+// recording from the network, and nothing is kept.
 test('a recording loads when the browser cannot keep it', async ({ page }) => {
   test.setTimeout(240000);
   const errors = [];
@@ -752,10 +752,9 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
   }
 });
 
-// The deployed samples (resources/wasm-presets) in the acceptance package that
-// carries them (scripts/package_wasm.mjs --presets), served like production
-// from presets/ beside the page. Every other spec boots the plain package, so
-// no welcome dialog sits over its window.
+// The deployed samples (resources/wasm-presets) in the acceptance package that carries them
+// (scripts/package_wasm.mjs --presets), served like production from presets/ beside the page. Every other
+// spec boots the plain package, so no welcome dialog sits over its window.
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_DIRECTORY = path.join(__dirname, '..', '..', 'resources', 'wasm-presets');
@@ -983,16 +982,13 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
     const context = page.context();
     await page.close();
     const run = await bootSamples(context, errors, samples);
-    // While `load` runs: the longest main-thread task, and the longest gap between
-    // painted frames. Only the task is bounded. The gap also holds the frame after
-    // it, and headless Chromium has no GPU: compositing reads the WebGL canvas
-    // back and waits for SwiftShader to rasterise the first Scene3D frame (HDR,
-    // MSAA, SSAO, EDL, shadows), 450-630 ms on top of the 600-990 ms workspace
-    // restore task. That wait is the test machine's software GL, not the app.
-    // Firefox has no Long Tasks API, so nothing is bounded there. Its frame gap
-    // carries that same software GL wait, and the app's own restore timing follows
-    // the runner (925 to 2265 ms on GitHub-hosted runners, one commit giving 925
-    // and 1570; about 730 ms on Depot), so both are only logged.
+    // While `load` runs: the longest main-thread task, and the longest gap between painted frames. Only the
+    // task is bounded. The gap also holds the frame after it: headless Chromium has no GPU, so compositing
+    // reads the WebGL canvas back and waits for SwiftShader to rasterise the first Scene3D frame (HDR, MSAA,
+    // SSAO, EDL, shadows), 450-630 ms on top of the 600-990 ms workspace restore task. That wait is the test
+    // machine's software GL, not the app. Firefox has no Long Tasks API, so nothing is bounded there; its
+    // frame gap carries the same software GL wait and the app's own restore timing follows the runner (925
+    // to 2265 ms observed on GitHub-hosted runners), so both are only logged.
     const watchMainThread = async (load) => {
       await run.page.evaluate(() => {
         const watch = { last: performance.now(), frameGap: 0, task: null, running: true, observer: null };
@@ -1040,14 +1036,14 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
       if (task !== null) {
         expect(task, pass).toBeLessThan(MAX_MAIN_THREAD_TASK_MS);
       }
-      // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a
-      // replaced sample releases its own, so nothing else is left behind.
+      // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a replaced sample releases
+      // its own.
       expect(await stagedFiles(run.page, run.messages), pass).toBe(staged);
     };
 
     await openAnymal('load', 1);
-    // Switching to another sample brings its views and replaces the one it
-    // switched from; reopening ANYmal brings its robot back.
+    // Switching to another sample brings its views and replaces the previous sample's; reopening ANYmal
+    // brings its robot back.
     expect(await pickSample(run, samples, 'builtin_filters')).toContain('PJ_WASM_LAYOUT_LOAD_OK');
     await expectFiltersViews(run);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
@@ -1111,12 +1107,11 @@ test('a sample that fails releases what it staged and leaves the open sample as 
   }
 });
 
-// A recording streams from the network into its staged file, never through the
-// wasm heap: the download leaves no copy behind and peaks at no copy on the way.
-// Served the wrong bytes, a recording takes the whole download and staging path
-// and is refused before any import, so no parsed data blurs the figures. The
-// bounds sit far below one copy of the recording, yet above allocator noise and
-// one 20 % growth step of the linear memory.
+// A recording streams from the network into its staged file, never through the wasm heap: the download
+// leaves no copy behind and peaks at no copy on the way. Served the wrong bytes, a recording takes the whole
+// download and staging path and is refused before any import, so no parsed data blurs the figures. The
+// bounds sit far below one copy of the recording, yet above allocator noise and one 20 % growth step of the
+// linear memory.
 test('a preset recording downloads without passing through the wasm heap', async ({ page }) => {
   test.setTimeout(180000);
   const errors = [];

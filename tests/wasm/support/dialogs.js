@@ -23,9 +23,8 @@ async function activeDialogButtonGeometry(page, consoleMessages) {
 
 
 async function clickActiveDialogButton(page, screen, consoleMessages, button) {
-  // Canonical host chrome may legitimately change the dialog's size and
-  // centering. Query Qt for the live canvas-global button center, then retain a
-  // physical Playwright mouse click through the same production event path.
+  // The host chrome changes a dialog's size and centering, so ask Qt for the live canvas-global button
+  // center and click it with a physical mouse event.
   await page.waitForTimeout(250);
   const geometry = await activeDialogButtonGeometry(page, consoleMessages);
   const point = geometry[button];

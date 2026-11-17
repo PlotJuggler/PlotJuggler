@@ -67,10 +67,8 @@ async function ingestControlGeometry(page, consoleMessages, required) {
   throw new Error(`ingest ${required} control did not become visible`);
 }
 
-// Stops the in-flight import from the loading row's own affordances. The two
-// glyphs ARE the choice — ✕ ('keep') keeps what arrived, the bin ('remove')
-// discards it — so this is one click and no confirmation dialog: the host acts
-// on which glyph was hit rather than asking afterwards.
+// Stops the in-flight import from the loading row's own affordances. The two glyphs are the choice (✕ 'keep'
+// keeps what arrived, the bin 'remove' discards it): one click, no confirmation dialog.
 async function stopIngest(page, screen, consoleMessages, action) {
   const controls = await ingestControlGeometry(page, consoleMessages, action);
   await page.mouse.click(screen.x + controls[action].x, screen.y + controls[action].y);
@@ -233,17 +231,14 @@ test('browser file dialog can reject then accept without a nested event loop', a
   test.setTimeout(90000);
   const errors = [];
   const consoleMessages = [];
-  // Qt prefers the File System Access API when Chrome exposes it. Playwright's
-  // setFiles hook targets `<input type=file>`, so force Qt's documented HTML
-  // fallback for this automation-only byte injection.
+  // Qt prefers the File System Access API when the browser exposes it; Playwright's setFiles only reaches an
+  // `<input type=file>`, so remove the API to force Qt's HTML fallback.
   await page.addInitScript(() => { delete window.showOpenFilePicker; });
   page.on('pageerror', error => errors.push(String(error)));
   page.on('console', message => consoleMessages.push(message.text()));
   await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
   await waitForQtApp(page, consoleMessages);
 
-  // Qt renders widgets into its canvas. Address the upload icon on the file
-  // page relative to that canvas.
   const screen = await page.locator('#screen').boundingBox();
   expect(screen).not.toBeNull();
   const chooser = await openFileChooser(page, screen);
@@ -252,14 +247,12 @@ test('browser file dialog can reject then accept without a nested event loop', a
     mimeType: 'application/octet-stream',
     buffer: Buffer.from([1, 2, 3, 4, 5]),
   });
-  // The static fixture has a real plugin configuration dialog. Rejecting must
-  // release FileLoader's suspended coroutine and leave the queue usable.
-  // Let the dialog's finished callback unwind the suspended coroutine and let
-  // Qt dispose the browser input element before invoking the picker again.
+  // The fixture has a plugin configuration dialog; rejecting it must release FileLoader's suspended coroutine
+  // and leave the queue usable. The wait lets the dialog's callback unwind the coroutine and Qt dispose the
+  // browser input element before the picker is invoked again.
   await page.waitForTimeout(1500);
   await clickActiveDialogButton(page, screen, consoleMessages, 'cancel');
-  // Wait for FileLoader's own rejection marker instead of a fixed delay, so
-  // the absence check below can't race the coroutine unwind.
+  // The rejection marker, not a delay, orders the absence check below after the coroutine unwind.
   await expect.poll(
     async () => (await loadOutcomeCount(page, 'PJ_FILE_LOAD_REJECTED')) > 0,
     { timeout: 10000 },
@@ -302,7 +295,6 @@ test('official CSV plugin previews and imports browser-selected data', async ({ 
     buffer: Buffer.from('time,value,temp\n0,1,10\n1,2,20\n2,3,30\n'),
   });
 
-  // Accept the production CSV configuration through its live Qt button.
   await page.waitForTimeout(1000);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
   await expect.poll(
@@ -339,12 +331,10 @@ test('official CSV plugin applies delimiter and time-column choices', async ({ p
   });
   await page.waitForTimeout(750);
 
-  // An unambiguous semicolon file is auto-detected: the dialog locks the
-  // delimiter (auto-detection on, combo disabled) and the imported series names
-  // below prove it was applied. Then switch the Time Axis mode to "Selected
-  // Column" and pick `time`. The controls live in Qt's canvas; sample their
-  // current geometry because the canonical host title bar changes the embedded
-  // plugin's origin.
+  // An unambiguous semicolon file is auto-detected: the dialog locks the delimiter (auto-detection on, combo
+  // disabled) and the imported series names below prove it was applied. Then switch the Time Axis mode to
+  // "Selected Column" and pick `time`. Control geometry is sampled live because the host title bar shifts
+  // the embedded plugin's origin.
   let controls = await csvDialogControlGeometry(page, consoleMessages);
   expect(controls.autoDelimiter.checked).toBe(true);
   expect(controls.delimiter.enabled).toBe(false);
@@ -398,10 +388,9 @@ test('official CSV plugin can continue after a malformed-row warning', async ({ 
   await page.waitForTimeout(750);
   await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
 
-  // CsvSource asks on its ingest worker while the GUI remains event-driven.
-  // Wait for FileLoader to queue the real QMessageBox, then activate its
-  // default Continue action by keyboard; the app-modal dialog's position can
-  // change as Qt lays out the wrapped text.
+  // CsvSource asks on its ingest worker while the GUI stays event-driven. Once FileLoader has queued the
+  // QMessageBox, press its default Continue by keyboard: the app-modal dialog's position moves with its
+  // wrapped text.
   await expect.poll(
     () => consoleMessages.find(message => message.includes('PJ_WASM_PLUGIN_MESSAGE')) || '',
     { timeout: 15000 },
@@ -607,16 +596,13 @@ test('official Protobuf parser reports a bad descriptor and leaves the load queu
     () => consoleMessages.find(message => message.includes('PJ_WASM_PLUGIN_MESSAGE title=Parser Error')) || '',
     { timeout: 15000 },
   ).toContain('failed to parse FileDescriptorSet');
-  // QMessageBox geometry depends on the wrapped diagnostic text. Its default
-  // OK action is keyboard-stable even when the button's canvas coordinate is
-  // not. The diagnostic is emitted just before the queued GUI presentation, so
-  // wait for the modal window to acquire focus before sending Enter.
+  // QMessageBox geometry depends on the wrapped diagnostic text, so press its default OK by keyboard. The
+  // diagnostic is logged just before the queued GUI presentation: wait for the modal to take focus first.
   await page.waitForTimeout(750);
   await page.keyboard.press('Enter');
   await page.waitForTimeout(1500);
 
-  // A failed MCAP import must release the suspended worker and queue. Prove it
-  // with a real CSV import rather than only checking that the error appeared.
+  // A failed MCAP import must release the suspended worker and queue: a real CSV import afterwards proves it.
   const retryChooser = await openFileChooser(page, screen, true);
   await retryChooser.setFiles({
     name: 'after-mcap-error.csv',

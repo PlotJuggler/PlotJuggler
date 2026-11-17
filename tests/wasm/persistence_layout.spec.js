@@ -200,8 +200,8 @@ test('browser persistence survives refresh through a bounded allowlist and scrub
     { timeout: 10000 },
   ).toContain('recipes=5');
 
-  // The probe deliberately simulates two unsafe keys from the pre-W9d default
-  // backend. Only the next cold construction exercises migration/scrubbing.
+  // The probe writes two unsafe keys straight into durable storage, as the NativeFormat settings backend
+  // leaves them; only the next cold construction scrubs them.
   let readyCount = consoleMessages.filter(message => message.includes('PJ_WASM_APP_READY')).length;
   await page.reload();
   await waitForQtApp(page, consoleMessages, readyCount);
@@ -367,10 +367,8 @@ test('browser layouts open transactionally and download with exact round-trip st
   expect(afterIncompatible.titles).toEqual(original.titles);
   expect(afterIncompatible.view).toEqual(original.view);
 
-  // This target passes curve rebinding, replaces the plot dock during
-  // xmlLoadState, and only then fails scene validation. The production restore
-  // transaction must reconstruct the original plot rather than leave the
-  // partially applied scene workspace behind.
+  // This layout passes curve rebinding, replaces the plot dock during xmlLoadState, and only then fails scene
+  // validation: the restore transaction must reconstruct the original plot, not leave a partial workspace.
   const lateFailureLayout = makeInvalidSceneLayout(customizeLayout(canonicalLayout, 0.75, 1.5));
   expect(lateFailureLayout.toString('utf8')).toContain('<scene3d>');
   const lateFailureChooser = await openLayoutChooser(page);
@@ -422,8 +420,7 @@ test('browser layouts open transactionally and download with exact round-trip st
   expect(elementAttribute(restoredDocument, 'curve_list_state', 'show_topics')).toBe('false');
   expect(elementAttribute(restoredDocument, 'curve_list_state', 'show_values')).toBe('true');
   expect(elementAttribute(restoredDocument, 'curve_list_state', 'datasets_filter')).toBe('workspace-one-filter');
-  // QSplitter may clamp requested pixels to child minimum sizes. Preserve the
-  // intended proportion without coupling the contract to one Qt geometry pass.
+  // QSplitter may clamp the requested pixels to its children's minimum sizes, so compare the proportion.
   expect(splitterRatio(restoredDocument)).toBeCloseTo(360 / 1160, 1);
   expect(Number(elementAttribute(restoredDocument, 'source_timeline', 'zoom'))).toBeCloseTo(0.000001, 12);
   expect(elementAttribute(restoredDocument, 'source_timeline', 'scroll_left_ns')).toBe('500000000');
@@ -462,8 +459,8 @@ test('browser layouts open transactionally and download with exact round-trip st
   expect(elementAttribute(reopenedDocument, 'source_timeline', 'scroll_left_ns')).toBe('750000000');
   expect(elementAttribute(reopenedDocument, 'source_timeline', 'snap')).toBe('true');
 
-  // Use real File-menu clicks so serialization + saveFileContent run within a
-  // trusted browser gesture. Qt's fallback emits a Playwright download event.
+  // Real File-menu clicks, so serialization and saveFileContent run inside a trusted browser gesture; Qt's
+  // fallback emits a Playwright download event.
   const downloaded = await downloadLayoutFromFileMenu(page, screen, consoleMessages);
   expect(downloaded.fileName).toBe('plotjuggler-layout.pj4.xml');
   expect(downloaded.bytes.equals(reopenedDocument)).toBe(true);
@@ -482,8 +479,8 @@ test('browser layouts open transactionally and download with exact round-trip st
   expect(consoleMessages.some(message => message.includes('PJ_WASM_LAYOUT_DOWNLOAD_REQUESTED'))).toBe(true);
   expect(await pickerApisRemainExact(page)).toBe(true);
 
-  // Diverge the live workspace, then feed the downloaded bytes back through
-  // W9a and require the saved second profile to win again.
+  // Diverge the live workspace, then feed the downloaded bytes back through the layout picker and require the
+  // saved second profile to win again.
   const divergedChooser = await openLayoutChooser(page);
   await divergedChooser.setFiles({
     name: 'workspace-diverged.pj4.xml',
@@ -524,8 +521,7 @@ test('browser layouts open transactionally and download with exact round-trip st
   expect(splitterRatio(roundTripDocument)).toBeCloseTo(420 / 1160, 1);
   expect(Number(elementAttribute(roundTripDocument, 'source_timeline', 'zoom'))).toBeCloseTo(0.000002, 12);
 
-  // A second real save proves the scoped capability mask was fully restored
-  // and the action does not park on an unobservable completion callback.
+  // A second real save must produce the same bytes: the first leaves no state behind.
   const secondDownload = await downloadLayoutFromFileMenu(page, screen, consoleMessages);
   expect(secondDownload.fileName).toBe('plotjuggler-layout.pj4.xml');
   expect(secondDownload.bytes.equals(roundTripDocument)).toBe(true);
@@ -694,11 +690,8 @@ test('source-bound browser layouts download logical references and replay after 
     message => message.includes('PJ_WASM_SOURCE_LAYOUT_DOWNLOAD_REQUESTED'),
   )).toBe(true);
 
-  // Each independent replay scenario gets a fresh Page target. This destroys
-  // staged MEMFS files, upload tokens, and the preceding scenario's native
-  // chooser interception state. The browser context remains the same, so the
-  // persistence boundary stays realistic and every scenario still enters
-  // through physical user gestures.
+  // Each replay scenario gets a fresh Page target, which drops staged MEMFS files, upload tokens and the
+  // previous scenario's chooser interception; the browser context, and with it persistence, stays.
   let decisionCount = 0;
   const startReplayScenario = async () => {
     ({ page, consoleMessages, screen } = await replaceRuntimeTarget(page, allConsoleMessages, errors));
@@ -744,15 +737,14 @@ test('source-bound browser layouts download logical references and replay after 
   ).length;
   expect(await requestDatasetCount(page, consoleMessages, datasetCountMessages)).toBe(0);
 
-  // A new target proves cancellation released every callback/state without
-  // carrying native chooser interception state into the stale-callback case.
+  // A new target: the cancel must have released every callback, and no chooser interception may carry into the
+  // stale-callback case.
   await startReplayScenario();
   await openSavedSourceLayout();
   geometry = await sourceLayoutDecisionGeometry(page, consoleMessages);
   const sourceChooser = await openSourceReplayChooser(page, screen, geometry, consoleMessages);
-  // Supersede the pending generation before delivering its callback. This is
-  // the deterministic equivalent of a rapid second click whose browser picker
-  // never calls back: the first staged result must be discarded without
+  // Supersede the pending generation before delivering its callback, the deterministic equivalent of a rapid
+  // second click whose browser picker never calls back: the first staged result must be discarded without
   // closing the decision or advancing into import.
   await page.evaluate(() => window.pjWasmSupersedeSourceLayoutPickerProbe());
   await sourceChooser.setFiles({
@@ -768,10 +760,8 @@ test('source-bound browser layouts download logical references and replay after 
     message => message.includes('PJ_WASM_DATASET_COUNT count='),
   ).length;
   expect(await requestDatasetCount(page, consoleMessages, staleCountMessages)).toBe(0);
-  // The decision remains present and retryable after the stale callback. Run
-  // the eventual successful import in its own target so this assertion does
-  // not depend on Chromium delivering another native chooser event to a Page
-  // target whose preceding interception was deliberately invalidated.
+  // The decision stays present and retryable after the stale callback. The successful import runs in its own
+  // target: this one's chooser interception was invalidated, so Chromium may not deliver another chooser event.
   geometry = await sourceLayoutDecisionGeometry(page, consoleMessages);
   expect(geometry.reselect.x).toBeGreaterThanOrEqual(0);
   expect(geometry.reselect.y).toBeGreaterThanOrEqual(0);
@@ -853,11 +843,9 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
   expect(screen).not.toBeNull();
   let decisionCount = 0;
   const openFreshRuntimePage = async () => {
-    // A missed native chooser event can leave Chromium's interception state
-    // unusable for that Page target even though Qt keeps the decision dialog
-    // retryable. Each replay transaction is independent and already crosses a
-    // full runtime boundary, so use a new Page target while retaining the same
-    // browser context/storage and the exact downloaded layout bytes.
+    // A missed native chooser event can leave Chromium's interception unusable for that Page target although
+    // Qt keeps the decision retryable. Each replay is independent, so it gets a new Page target on the same
+    // browser context and storage, with the same downloaded layout bytes.
     const context = page.context();
     await page.close();
     consoleMessages = [];
@@ -949,9 +937,8 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
     const geometry = await sourceLayoutDecisionGeometry(page, consoleMessages);
     const chooser = await openSourceReplayChooser(page, screen, geometry, consoleMessages);
     await chooser.setFiles({ name: 'duplicate.csv', mimeType: 'text/csv', buffer: bytes });
-    // setFiles resolves when Chromium populated the input. The Qt callback still
-    // has to stage the bytes and advance the decision to the next source; do not
-    // click that decision again while the preceding picker callback is in flight.
+    // setFiles resolves when Chromium has populated the input; the Qt callback still has to stage the bytes
+    // and advance the decision, so do not click it again while that callback is in flight.
     await expect.poll(
       () => consoleMessages.filter(
         message => message.includes('PJ_WASM_SOURCE_LAYOUT_STAGED index='),
@@ -1038,9 +1025,8 @@ test('multi-source browser layouts stage duplicate basenames transactionally and
   expect(await requestDatasetCount(page, consoleMessages, failedCountMessages)).toBe(0);
   await page.evaluate(() => window.pjWasmDismissLayoutDialogProbe());
 
-  // Start successful replay in a third replay Page target. Retaining the browser
-  // context keeps persistence semantics realistic, while replacing the target
-  // proves neither failed runtime nor its MEMFS paths are required.
+  // A third Page target on the same browser context: neither the failed runtime nor its MEMFS paths may be
+  // needed.
   await openFreshRuntimePage();
 
   // The clean replay imports in source order, remaps both logical aliases to

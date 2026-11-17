@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // On-demand Python through the product path: a layout carrying Python recipes restores over a loaded dataset, and a
-// 3D scene shows what they compute. The browser Transform Editor cannot create one yet, so the recipes come in the
+// 3D scene shows what they compute. The browser Transform Editor cannot create one, so the recipes come in the
 // layout, as a desktop session saves them (DerivedObjects::save). A recipe that does not compile restores silently and
-// shows its compile error on its layer once the scene demands it (slice P-c). Without Python in the build the spec
+// shows its compile error on its layer once the scene demands it. Without Python in the build the spec
 // skips, unless PJ_WASM_PYTHON=1 says the build must have it (WASM CI).
 const { test, expect } = require('@playwright/test');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');

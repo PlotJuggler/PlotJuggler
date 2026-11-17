@@ -4,8 +4,8 @@ const { count, latest } = require('./console');
 
 async function waitForQtApp(page, consoleMessages, previousReadyCount = 0) {
   await expect(page.locator('#screen')).toBeVisible({ timeout: 60000 });
-  // Qt creates its HTML canvas before MainWindow is ready to receive input.
-  // Wait for the first-show marker; the count makes this safe across reloads.
+  // Qt creates its canvas before MainWindow accepts input; the first-show marker is the ready signal, and
+  // counting it makes the wait safe across reloads.
   await expect.poll(
     () => consoleMessages.filter(message => message.includes('PJ_WASM_APP_READY')).length,
     { timeout: 60000 },
@@ -56,8 +56,8 @@ async function replaceRuntimeTarget(currentPage, allMessages, errors, { hideOpen
   return { page, consoleMessages, screen };
 }
 
-// The wasm heap: the bytes malloc holds, the linear memory's size (it never
-// shrinks, so it is the peak so far) and the resident payload pool's capacity.
+// The wasm heap: the bytes malloc holds, the linear memory's size (it never shrinks, so it is the peak so
+// far) and the resident payload pool's capacity.
 async function wasmHeap(page, messages) {
   const before = count(messages, 'PJ_WASM_HEAP in_use=');
   await page.evaluate(() => window.pjWasmReportHeapProbe());
