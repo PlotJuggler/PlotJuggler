@@ -26,7 +26,7 @@ builds one, and `CCACHE_DIR=<dir>` in the environment compiles through ccache,
 so the variants and later builds reuse each other's objects.
 
 Release tags publish both through `.github/workflows/conda-release.yml`, for
-linux-64 and osx-arm64 (macOS 13+). Pull requests that touch the recipes build
+linux-64 and osx-arm64 (macOS 14+: conda-forge's Qt needs it). Pull requests that touch the recipes build
 one variant there.
 
 Publishing requires the repository Actions secret `PREFIX_API_KEY`, with write
@@ -48,7 +48,8 @@ A conda environment holds one version of each library, so the package has to
 build against what RoboStack's ROS packages were built against:
 
 - **Pins** in `variants.yaml` and `recipes/variants.yaml` follow RoboStack's
-  `conda_build_config.yaml`: GCC 14 on Linux, clang 19 on macOS, fmt 12.1, and
+  `conda_build_config.yaml`: GCC 14 on Linux, clang 19 on macOS, fmt 12.1,
+  lz4-c 1.10 (RoboStack's `vtk-base` cannot install next to 1.11), and
   Qt 6.11 (`qt6_main`; the build passes it to CMake as `PJ_QT_MIN_VERSION`, below
   the release kit in `versions.env`). There is one build per Python RoboStack
   ships (3.12 and 3.14), since the embedded interpreter links that `libpython`.
@@ -56,8 +57,8 @@ build against what RoboStack's ROS packages were built against:
   headers (QRhi and others), which change ABI every minor release.
 - **Qt-Advanced-Docking** is conda-forge's `qt6-advanced-docking-system` from
   build 3 on, which carries the fork's "keep inactive tabs parented" patch (`PJ_SYSTEM_ADS`, see the root `CMakeLists.txt`).
-- **plotjuggler_sdk** and **pocketfft** are on neither channel yet, so the
-  configure step downloads them (pinned by SHA-256) and the build cannot run
+- **plotjuggler_sdk** (on the `plotjuggler` channel for linux-64 only) and
+  **pocketfft** (on neither channel) are not taken from conda: the configure step downloads them (pinned by SHA-256) and the build cannot run
   with `FETCHCONTENT_FULLY_DISCONNECTED`.
 - **ffmpeg** and **libarchive** come from conda-forge's LGPL builds (PJ4 is
   MPL-2.0; the GPL libarchive links lzo). There are two builds, one per ffmpeg
@@ -70,7 +71,9 @@ build against what RoboStack's ROS packages were built against:
 | Humble | installs (ffmpeg 9, Python 3.14 build) |
 
 The marketplace ROS 2 plugin is built against `/opt/ros` and does not load in
-a RoboStack environment yet.
+a RoboStack environment yet. Neither do the marketplace Widget plugins (the Log
+widget among them): they are built against the official Qt kit in
+`versions.env`, and the host refuses a widget library of another Qt minor.
 
 `PJ_INSTALLATION=conda`: the in-app update check points conda users at the
 GitHub release, not at `pixi update`.
