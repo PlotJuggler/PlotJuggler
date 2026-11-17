@@ -130,7 +130,6 @@ class MeshMapReconstructor {
   /// from then on.
   [[nodiscard]] bool claims(uint64_t stream, uint64_t identity, const PJ::sdk::MeshMapUpdate& update);
 
-  // --- Introspection (tests / diagnostics) ---
   [[nodiscard]] std::size_t foreignEntryCount() const;
 
  private:

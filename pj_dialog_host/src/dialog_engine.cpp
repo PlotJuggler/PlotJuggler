@@ -48,15 +48,14 @@ namespace PJ {
 
 DialogEngine::DialogEngine(PJ::DialogHandle handle, DialogEngineConfig config)
     : handle_(std::move(handle)), config_(config) {
-  // A modal dialog embeds no scene view (panels only), so it announces no capability.
+  // Only panels embed scene views: no capability to announce.
   detail::announceHostInfo(handle_, /*capabilities=*/0);
 }
 
 namespace {
 
-// Fire-and-forget coroutine used only to retain the dialog setup stack until
-// QDialog::finished. final_suspend=suspend_never destroys the coroutine frame
-// immediately after the completion callback returns.
+// Fire-and-forget coroutine that keeps the dialog setup stack alive until QDialog::finished; the frame is
+// destroyed as soon as the completion callback returns.
 struct DetachedDialogTask {
   struct promise_type {
     DetachedDialogTask get_return_object() const noexcept {
@@ -75,9 +74,8 @@ struct DetachedDialogTask {
   };
 };
 
-// Await QDialog completion without QDialog::exec() or QEventLoop::exec(). The
-// destroyed connection covers a parent window disappearing while the dialog is
-// pending; QPointer lets the continuation avoid touching the deleted widget.
+// Awaits QDialog completion without a nested event loop. The destroyed connection covers a parent window
+// disappearing while the dialog is pending; the QPointer keeps the continuation off the deleted widget.
 class DialogFinishedAwaiter {
  public:
   explicit DialogFinishedAwaiter(QDialog* dialog) : dialog_(dialog) {}
@@ -117,13 +115,11 @@ class DialogFinishedAwaiter {
   std::shared_ptr<State> state_;
 };
 
-// Wraps a callback handed to sender-owned connections (widget signals, drop
-// filter) with a liveness flag. Each connection stores its own std::function
-// copy inside the SENDER widget, which lives until the dialog's deferred
-// deleteLater — i.e. past the coroutine frame the [&] captures reference. Once
-// the flag is cleared (at dialog completion) a late signal — a queued event, a
-// focus-out during teardown, or a signal emitted from a child's destructor —
-// becomes a no-op instead of a call into a destroyed frame.
+// Wraps a callback handed to sender-owned connections (widget signals, drop filter) with a liveness flag. Each
+// connection keeps its own copy inside the sender widget, which lives until the dialog's deleteLater, past the
+// coroutine frame the [&] captures reference. Once the flag is cleared (at dialog completion) a late signal (a
+// queued event, a focus-out during teardown, a signal from a child's destructor) is a no-op instead of a call into
+// a destroyed frame.
 template <typename Fn>
 auto guardedCallback(std::shared_ptr<const bool> alive, Fn fn) {
   return [alive = std::move(alive), fn = std::move(fn)](auto&&... args) {
@@ -133,8 +129,7 @@ auto guardedCallback(std::shared_ptr<const bool> alive, Fn fn) {
   };
 }
 
-// QUiLoader creates plugin section bands with their class default. Match them
-// to the live application chrome only when the caller supplied its metrics.
+// QUiLoader creates plugin section bands at their class default; match the app chrome when metrics were supplied.
 void applySectionBandMetrics(QWidget* root, const std::optional<ChromeMetrics>& metrics) {
   if (root == nullptr || !metrics.has_value()) {
     return;
@@ -144,11 +139,9 @@ void applySectionBandMetrics(QWidget* root, const std::optional<ChromeMetrics>& 
   }
 }
 
-// Opt-in via the `pjButtonsFillWidth` .ui property on a QDialogButtonBox: make
-// its buttons span the box width instead of hugging one edge. QDialogButtonBox
-// lays its buttons out in a QBoxLayout padded with style-driven stretch spacers;
-// a plugin .ui cannot reach those inner items, so the host neutralizes the
-// spacers' stretch and gives each button an Expanding policy + stretch weight.
+// The `pjButtonsFillWidth` .ui property on a QDialogButtonBox: its buttons span the box instead of hugging one
+// edge. The box lays them out in a QBoxLayout padded with style-inserted stretch spacers a .ui cannot reach, so the
+// host zeroes the spacers' stretch and gives each button an Expanding policy and a stretch weight.
 void applyButtonBoxFillWidth(QWidget* root) {
   if (root == nullptr) {
     return;
@@ -162,9 +155,7 @@ void applyButtonBoxFillWidth(QWidget* root) {
       continue;
     }
     box_layout->setContentsMargins(0, 0, 0, 0);
-    // Framework-based padding so a filled button reads with snug breathing room
-    // rather than hugging its text; the widget stylesheet cascades over the app
-    // QSS, so border/background/hover still come from the theme.
+    // The widget stylesheet cascades over the app QSS: border, background and hover still come from the theme.
     const QString button_padding =
         QStringLiteral("QPushButton { padding: %1px; }").arg(theme::space(theme::Space::Snug));
     for (int i = 0; i < box_layout->count(); ++i) {
@@ -174,18 +165,16 @@ void applyButtonBoxFillWidth(QWidget* root) {
         button->setStyleSheet(button_padding);
         box_layout->setStretch(i, 1);
       } else {
-        // A style-inserted stretch spacer — stop it from eating the width.
+        // A style-inserted stretch spacer.
         box_layout->setStretch(i, 0);
       }
     }
   }
 }
 
-// QUiLoader applies a root QDialog's authored <geometry> to QWidget::size(),
-// but that size is not part of the widget's sizeHint once the root is embedded
-// as declarative content. Preserve the authored content extent and add only the
-// canonical host title bar. Plain QWidget roots have no authored window extent
-// and continue to size from their layout hints.
+// QUiLoader applies a root QDialog's authored <geometry> to size(), which is not part of its sizeHint once the
+// root is embedded in the host dialog. The authored extent plus the host title bar is the dialog size. A plain
+// QWidget root has no authored window extent and sizes from its layout.
 QSize authoredDialogContentSize(QWidget* root) {
   return qobject_cast<QDialog*>(root) != nullptr ? root->size() : QSize{};
 }
@@ -201,10 +190,7 @@ void applyAuthoredDialogContentSize(PJ::Dialog* host, const QSize& content_size)
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// JSON diff: compute which widget keys changed between old and new data
-// ---------------------------------------------------------------------------
-
+// The keys of `new_data` that are new or changed against `old_data`.
 static nlohmann::json computeDiff(const nlohmann::json& old_data, const nlohmann::json& new_data) {
   nlohmann::json diff = nlohmann::json::object();
   for (const auto& [key, val] : new_data.items()) {
@@ -215,20 +201,14 @@ static nlohmann::json computeDiff(const nlohmann::json& old_data, const nlohmann
   return diff;
 }
 
-// ---------------------------------------------------------------------------
-// apply_and_diff: re-read widget data, apply (diffed or full), update prev
-// ---------------------------------------------------------------------------
-
-/// Holds the result of applying widget data: whether accept was requested and
-/// whether a sub-dialog was requested (with its UI XML).
+/// The one-shot requests carried by a widget-data payload: accept, and a sub-dialog (with its UI XML).
 struct ApplyResult {
   bool wants_accept = false;
   std::optional<std::string> sub_dialog_ui;
 };
 
-/// The engine's memory of the last payload delivered to a widget tree: the
-/// parsed per-widget state (key-diffing) plus the raw bytes (byte-identical
-/// skip guard). The two are always mutated together.
+/// The last payload delivered to a widget tree: the parsed state (for key diffing) and the raw bytes (the
+/// byte-identical skip guard). Mutated together.
 struct PayloadMemo {
   nlohmann::json data = nlohmann::json::object();
   std::string raw;
@@ -240,9 +220,8 @@ static ApplyResult applyAndDiff(
   const bool enable_diff = config.enable_diff;
   int& diff_apply_count = stats.diff_apply_count;
   std::string raw = handle.widget_data();
-  // A plugin that reports "changed" but re-emits byte-identical widget data
-  // pays nothing: skip the parse + diff + apply (same guard as PanelEngine).
-  // One-shot requests (accept/sub-dialog) flip the bytes, so they still fire.
+  // A byte-identical payload skips parse, diff and apply. One-shot requests (accept, sub-dialog) change the
+  // bytes, so they still fire.
   if (raw == memo.raw) {
     ++stats.skipped_identical_count;
     return {};
@@ -258,7 +237,7 @@ static ApplyResult applyAndDiff(
   result.wants_accept = full_view.requestAccept();
   result.sub_dialog_ui = full_view.subDialogUi();
 
-  // Strip commands before diffing (they're one-shot)
+  // One-shot commands are not widget state.
   new_data.erase("__request_accept");
   new_data.erase("__request_sub_dialog");
 
@@ -276,10 +255,6 @@ static ApplyResult applyAndDiff(
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// show_dialog
-// ---------------------------------------------------------------------------
-
 struct DialogEngine::AsyncRunner {
   static DetachedDialogTask run(DialogEngine& self, QWidget* parent, Completion completion) {
     auto& handle_ = self.handle_;
@@ -288,7 +263,6 @@ struct DialogEngine::AsyncRunner {
     auto& parser_config_ = self.parser_config_;
     stats_ = {};
 
-    // 1. Load .ui
     std::string ui = handle_.ui_content();
     QByteArray data(ui.data(), static_cast<int>(ui.size()));
     QBuffer buffer(&data);
@@ -304,8 +278,7 @@ struct DialogEngine::AsyncRunner {
     adaptStyledWidgets(loaded);
     const QSize authored_content_size = authoredDialogContentSize(loaded);
 
-    // 2. Plugin UIs are declarative content. The host owns their window chrome,
-    // so embed every root (including QDialog roots) in the canonical app dialog.
+    // The host owns window chrome: every root, QDialog roots included, is embedded in the app's Dialog.
     auto* dialog = new PJ::Dialog(parent);
     if (config_.section_band_metrics) {
       dialog->setChromeMetrics(*config_.section_band_metrics);
@@ -314,12 +287,9 @@ struct DialogEngine::AsyncRunner {
     dialog->contentLayout()->addWidget(loaded);
     forwardEmbeddedDialogClose(loaded, dialog);
 
-    // Dialogs with a parser slot embed a parser-options widget whose height varies
-    // with the chosen message protocol (a single msgpack checkbox vs a tall
-    // Protobuf table). A fixed .ui size can't fit both without dead space or
-    // clipping, so for these — and only these — the host sizes the dialog to its
-    // actual content at runtime. Plain dialogs (topic-table loaders, toolboxes…)
-    // have no parser slot and keep their authored .ui size untouched.
+    // A parser slot embeds a parser-options widget whose height varies with the protocol (one msgpack checkbox vs a
+    // tall Protobuf table), so no fixed .ui size fits: these dialogs, and only these, are sized to their content
+    // at run time. Others keep the authored .ui size.
     const bool content_fit_dialog = loaded->findChild<QWidget*>("pj_parser_slot") != nullptr;
     if (!content_fit_dialog) {
       applyAuthoredDialogContentSize(dialog, authored_content_size);
@@ -328,16 +298,15 @@ struct DialogEngine::AsyncRunner {
     auto clamp_to_browser_screen = [dialog]() {
       Q_UNUSED(dialog);  // captured for the browser branch only
 #ifdef Q_OS_WASM
-      // A browser canvas is the whole available desktop. Authored plugin
-      // dialogs can be taller than it (MCAP is 732 px before its title bar),
-      // which otherwise leaves the button box outside the clickable canvas.
+      // The browser canvas is the whole desktop. An authored dialog can be taller than it (the MCAP one is 732 px
+      // before its title bar), which leaves the button box outside the clickable canvas.
       if (const QScreen* screen = dialog->screen()) {
         constexpr int kWindowFrameAllowance = 48;
         const QSize available =
             screen->availableGeometry().size() - QSize(kWindowFrameAllowance, kWindowFrameAllowance);
         const QSize maximum = available.expandedTo(QSize(320, 240));
-        // Lower any authored floor before the cap. Qt otherwise keeps a minimum
-        // larger than the browser canvas and the footer remains unreachable.
+        // Lower the authored minimum first: Qt keeps a minimum larger than the canvas, and the footer stays
+        // unreachable.
         dialog->setMinimumSize(dialog->minimumSize().boundedTo(maximum));
         dialog->setMaximumSize(maximum);
         dialog->resize(dialog->size().boundedTo(maximum));
@@ -347,18 +316,15 @@ struct DialogEngine::AsyncRunner {
 #endif
     };
 
-    // Snap the dialog to its real content: drop the authored fixed minimum heights
-    // (the dialog's own and the parser slot's reservation) and collapse expanding
-    // vertical spacers so there's no dead space, but give tables/lists/editors a
-    // readable minimum so they don't shrink to a tiny default. Idempotent — safe
-    // to call on every protocol change.
+    // Sizes the dialog to its content: drops the authored fixed minimum heights (the dialog's and the parser
+    // slot's) and collapses expanding vertical spacers, but keeps tables, lists and editors readable. Idempotent;
+    // runs on every protocol change.
     auto fit_to_content = [loaded, dialog, clamp_to_browser_screen]() {
       QWidget* slot = loaded->findChild<QWidget*>("pj_parser_slot");
       if (slot == nullptr) {
         return;
       }
-      // Reset both dimensions: the floor installed after the prior parser page
-      // must not prevent a narrower/shorter page from being measured afresh.
+      // The floor left by the previous parser page must not stop a narrower or shorter page from being measured.
       loaded->setMinimumSize(0, 0);
       dialog->setMinimumSize(0, 0);
       slot->setMinimumSize(0, 0);
@@ -370,8 +336,7 @@ struct DialogEngine::AsyncRunner {
           QLayoutItem* item = layout->itemAt(i);
           if (QSpacerItem* spacer = item->spacerItem()) {
             if (spacer->expandingDirections() & Qt::Vertical) {
-              // Remove the size hint while retaining vertical expansion so a
-              // short page stays top-aligned when its splitter pane is taller.
+              // No size hint, but still expanding: a short page stays top-aligned in a taller splitter pane.
               spacer->changeSize(
                   theme::space(theme::Space::None), theme::space(theme::Space::None), QSizePolicy::Minimum,
                   QSizePolicy::Expanding);
@@ -383,15 +348,12 @@ struct DialogEngine::AsyncRunner {
         layout->invalidate();
       };
       collapse_vspacers(loaded->layout());
-      // Splitters own panes as widgets, so their nested layouts are not reached
-      // by the recursion above.
+      // Splitter panes are widgets, so the recursion above does not reach their layouts.
       for (QWidget* descendant : loaded->findChildren<QWidget*>()) {
         collapse_vspacers(descendant->layout());
       }
-      // Parser options that carry a table (Protobuf, ROS1/ROS2) need room to be
-      // usable; give such tables/editors a generous minimum height. Protocols
-      // without a table (msgpack/cbor/json) have no item view here and stay
-      // compact.
+      // Parser options with a table (Protobuf, ROS1/ROS2) need room; protocols without one (msgpack, cbor, json)
+      // have no item view and stay compact.
       const auto ensure_readable = [](QWidget* w) {
         if (w->minimumHeight() < 300) {
           w->setMinimumHeight(300);
@@ -408,19 +370,15 @@ struct DialogEngine::AsyncRunner {
       }
       dialog->adjustSize();
       clamp_to_browser_screen();
-      // Reinstall the real content floor, capped to the browser maximum. This
-      // prevents resize-crush on desktop without recreating an unreachable WASM
-      // dialog when content is taller than the canvas.
+      // The content floor, capped to the browser maximum: no resize-crush on desktop, no unreachable dialog in the
+      // browser when the content is taller than the canvas.
       dialog->setMinimumSize(dialog->minimumSizeHint().boundedTo(dialog->maximumSize()));
     };
 
-    // Owner side of guardedCallback(): flipped to false the moment the dialog
-    // completes, severing every widget/drop callback that captures this frame
-    // by reference before the frame dies at co_return.
+    // Owner side of guardedCallback(): cleared when the dialog completes, before the frame dies at co_return.
     auto callbacks_alive = std::make_shared<bool>(true);
 
-    // Wire buttonBox signals — works whether the loaded widget was a QDialog
-    // or a plain QWidget. Needed so Close/OK/Cancel buttons function correctly.
+    // Connected here because the root may be a plain QWidget, whose button box nothing else wires.
     {
       auto* button_box = loaded->findChild<QDialogButtonBox*>("buttonBox");
       if (button_box) {
@@ -434,12 +392,11 @@ struct DialogEngine::AsyncRunner {
       }
     }
 
-    // Restore saved dialog geometry (keyed by plugin manifest name)
+    // Saved dialog geometry is keyed by the plugin's manifest name.
     auto manifest_json = nlohmann::json::parse(handle_.manifest(), nullptr, false);
     std::string plugin_name = manifest_json.is_object() ? manifest_json.value("name", "") : "";
     QString geometry_key = QString("DialogGeometry/%1").arg(QString::fromStdString(plugin_name));
-    // Content-fit dialogs never restore a saved size — it would override the fit
-    // (a stale large geometry re-applied on show is exactly what left dead space).
+    // A content-fit dialog never restores a saved size: it would override the fit and leave dead space.
     if (!plugin_name.empty() && !content_fit_dialog) {
       QSettings settings;
       auto saved = settings.value(geometry_key).toByteArray();
@@ -448,26 +405,23 @@ struct DialogEngine::AsyncRunner {
       }
     }
 
-    // Task 7: detect parser slot widget
     stats_.has_parser_slot = loaded->findChild<QWidget*>("pj_parser_slot") != nullptr;
 
-    // --- Parser slot injection state ---
     QWidget* parser_slot = nullptr;
-    QWidget* parser_slot_container = nullptr;  // Parent GroupBox to show/hide
+    QWidget* parser_slot_container = nullptr;  // the slot's parent, shown only while a parser dialog is injected
     QVBoxLayout* parser_slot_layout = nullptr;
     QWidget* parser_dialog_widget = nullptr;
     std::unique_ptr<PJ::DialogHandle> parser_dialog_handle;
     PayloadMemo parser_memo;
-    // Staged-file leases of every pick delivered to the plugin. A lease keeps the picked file readable at its
-    // backing_path, which the plugin may re-read any time until the dialog completes and the host until the import
-    // ends. A re-pick does not release the earlier one: one picker can fill several entries of the config (a CAN
-    // loader's DBC per interface), and a browser lease is only a reference to the picked File, not a copy. All are
-    // handed over on accept; reject releases them.
+    // Leases of every pick delivered to the plugin: the picked file stays readable at its backing_path until the
+    // dialog completes for the plugin, and until the import ends for the host. A re-pick does not release the
+    // earlier one (one picker can fill several config entries, such as a CAN loader's DBC per interface; a browser
+    // lease only references the picked File). Handed over on accept; reject releases them.
     std::vector<std::shared_ptr<void>> selected_file_leases;
     bool file_picker_active = false;
     std::uint64_t parser_dialog_generation = 0;
 
-    // Parameterized file/folder picker handlers (work for any dialog handle)
+    // The picker handlers serve the main dialog's handle and the parser dialog's.
     auto show_file_picker_for = [&](const std::string& widget_name, PJ::DialogHandle* handle, QWidget* target_widget,
                                     PayloadMemo& target_memo) {
       if (!config_.enable_file_picker || !handle) {
@@ -477,7 +431,7 @@ struct DialogEngine::AsyncRunner {
       if (!view.isFilePicker(widget_name)) {
         return;
       }
-      // Delivers the pick and, when the plugin asks for it (onFileSelected returned true), re-reads its widget data.
+      // Delivers the pick and, when onFileSelected returns true, re-reads the plugin's widget data.
       auto apply_selected_path = [&, widget_name, handle, target_widget](const std::string& path) {
         if (!handle->sendEvent(widget_name, PJ::WidgetEventBuilder::fileSelected(path))) {
           return;
@@ -490,8 +444,7 @@ struct DialogEngine::AsyncRunner {
           PJ::WidgetDataView updated_view(raw);
           applyWidgetData(target_widget, updated_view);
           target_memo.data = std::move(new_data);
-          // The direct picker path applies state without consuming one-shot
-          // commands, so the next poll must inspect this payload once.
+          // One-shot commands in this payload were not consumed: the next poll must inspect it once.
           target_memo.raw.clear();
         }
       };
@@ -517,8 +470,7 @@ struct DialogEngine::AsyncRunner {
                 return;
               }
               apply_selected_path(selected->backing_path);
-              // Retained whatever onFileSelected returned: that return means "re-read my widget data", not
-              // "path accepted", so a plugin may keep the path and still return false.
+              // Kept whatever onFileSelected returned: it means "re-read my widget data", not "path accepted".
               selected_file_leases.push_back(std::move(selected->lease));
             });
         return;
@@ -547,9 +499,8 @@ struct DialogEngine::AsyncRunner {
         return;
       }
 #ifdef Q_OS_WASM
-      // Only toolbox (PanelEngine) folder pickers become browser downloads: a
-      // dialog's folder picker selects a folder to read (protobuf's include
-      // folders), which a browser cannot provide.
+      // A dialog's folder picker selects a folder to read (protobuf's include folders), which a browser cannot
+      // provide; only toolbox (PanelEngine) folder pickers work there, as downloads.
       Q_UNUSED(target_widget)
       Q_UNUSED(target_memo)
       qWarning("DialogEngine: plugin folder pickers are unavailable on WebAssembly");
@@ -567,8 +518,7 @@ struct DialogEngine::AsyncRunner {
             PJ::WidgetDataView v(raw);
             applyWidgetData(target_widget, v);
             target_memo.data = std::move(new_data);
-            // The direct picker path applies state without consuming one-shot
-            // commands, so the next poll must inspect this payload once.
+            // One-shot commands in this payload were not consumed: the next poll must inspect it once.
             target_memo.raw.clear();
           }
         }
@@ -607,8 +557,7 @@ struct DialogEngine::AsyncRunner {
             PJ::WidgetDataView v(raw);
             applyWidgetData(target_widget, v);
             target_memo.data = std::move(new_data);
-            // The direct picker path applies state without consuming one-shot
-            // commands, so the next poll must inspect this payload once.
+            // One-shot commands in this payload were not consumed: the next poll must inspect it once.
             target_memo.raw.clear();
           }
         }
@@ -616,10 +565,10 @@ struct DialogEngine::AsyncRunner {
 #endif
     };
 
-    // Lambda: inject parser dialog for the given encoding
+    // Replaces the parser dialog with the one for `encoding`; the container is hidden when there is none. The
+    // generation lets a late browser file pick detect that its parser dialog was replaced.
     auto inject_parser_dialog = [&](const QString& encoding) {
       ++parser_dialog_generation;
-      // 1. Clear previous parser dialog
       if (parser_dialog_widget) {
         parser_slot_layout->removeWidget(parser_dialog_widget);
         delete parser_dialog_widget;
@@ -628,7 +577,6 @@ struct DialogEngine::AsyncRunner {
       parser_dialog_handle.reset();
       parser_memo = {};
 
-      // 2. Query parser dialog vtable via provider
       if (!config_.parser_dialog_provider) {
         if (parser_slot_container) {
           parser_slot_container->setVisible(false);
@@ -638,22 +586,18 @@ struct DialogEngine::AsyncRunner {
 
       const PJ_dialog_vtable_t* vtable = config_.parser_dialog_provider(encoding.toStdString());
       if (vtable == nullptr) {
-        // Parser has no dialog - hide the container
         if (parser_slot_container) {
           parser_slot_container->setVisible(false);
         }
         return;
       }
 
-      // 3. Create parser dialog handle
       parser_dialog_handle = std::make_unique<PJ::DialogHandle>(vtable);
 
-      // 3b. Load initial parser config if provided (restores previous state)
       if (!config_.initial_parser_config.empty()) {
         (void)parser_dialog_handle->load_config(config_.initial_parser_config);
       }
 
-      // 4. Load parser dialog UI
       std::string parser_ui = parser_dialog_handle->ui_content();
       QByteArray parser_data(parser_ui.data(), static_cast<int>(parser_ui.size()));
       QBuffer parser_buffer(&parser_data);
@@ -672,14 +616,12 @@ struct DialogEngine::AsyncRunner {
       applySectionBandMetrics(parser_dialog_widget, config_.section_band_metrics);
       applyButtonBoxFillWidth(parser_dialog_widget);
 
-      // 5. Insert into slot and show container
       parser_slot_layout->addWidget(parser_dialog_widget);
       if (parser_slot_container) {
         parser_slot_container->setVisible(true);
       }
       stats_.parser_dialog_injected = true;
 
-      // 6. Apply initial parser widget data
       std::string parser_initial_raw = parser_dialog_handle->widget_data();
       parser_memo.raw = parser_initial_raw;
       parser_memo.data = nlohmann::json::parse(parser_initial_raw, nullptr, false);
@@ -691,18 +633,14 @@ struct DialogEngine::AsyncRunner {
         applyWidgetData(parser_dialog_widget, view);
       }
 
-      // 7. Wire parser dialog signals (events go to parser handle) + the
-      //    declarative "pj_enable_when"/"pj_visible_when" rules (this widget is
-      //    injected after the one-time install on binding_root, so it needs its
-      //    own pass).
+      // Injected after the one-time rule install on binding_root, so it needs its own pass.
       installDeclarativeRules(parser_dialog_widget);
       connectWidgetSignals(
           parser_dialog_widget,
           guardedCallback(callbacks_alive, [&](const std::string& name, const std::string& event_json) {
             stats_.event_count++;
             if (parser_dialog_handle && parser_dialog_handle->sendEvent(name, event_json)) {
-              // Re-apply parser widget data with the same byte-identical guard
-              // as the top-level dialog.
+              // Same byte-identical guard as the main dialog.
               std::string raw = parser_dialog_handle->widget_data();
               if (raw == parser_memo.raw) {
                 ++stats_.skipped_identical_count;
@@ -725,28 +663,23 @@ struct DialogEngine::AsyncRunner {
               }
             }
 
-            // Handle file/folder pickers in parser dialog
             show_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_memo);
             show_folder_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_memo);
             show_save_file_picker_for(name, parser_dialog_handle.get(), parser_dialog_widget, parser_memo);
           }));
     };
 
-    // Setup parser slot if detected and provider is available
     if (stats_.has_parser_slot && config_.parser_dialog_provider) {
       parser_slot = loaded->findChild<QWidget*>("pj_parser_slot");
       if (parser_slot) {
-        parser_slot_container = parser_slot->parentWidget();  // Usually a QGroupBox
+        parser_slot_container = parser_slot->parentWidget();
         parser_slot_layout = new QVBoxLayout(parser_slot);
         parser_slot_layout->setContentsMargins(
             theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
             theme::space(theme::Space::None));
 
-        // Connect encoding combo to trigger parser dialog injection, then re-fit.
-        // The fit is deferred with singleShot(0) so it runs AFTER the layout has
-        // measured the freshly-injected widget — calling it synchronously here
-        // would size the dialog to the PREVIOUS protocol's options (a one-step lag,
-        // where each selection shows the prior protocol's size).
+        // The re-fit is deferred with singleShot(0) so it runs after the layout has measured the injected widget;
+        // run synchronously it would size the dialog to the previous protocol's options.
         if (auto* combo = loaded->findChild<QComboBox*>("comboBoxProtocol")) {
           QObject::connect(
               combo, &QComboBox::currentTextChanged, dialog,
@@ -754,31 +687,26 @@ struct DialogEngine::AsyncRunner {
                 inject_parser_dialog(encoding);
                 QTimer::singleShot(0, dialog, [fit_to_content]() { fit_to_content(); });
               }));
-          // Note: initial injection happens AFTER widget_data is applied (see below)
+          // The initial injection follows the first widget-data apply, once the combo is populated.
         }
       }
     }
 
     QWidget* binding_root = loaded;
 
-    // 3. Apply initial widget data
     std::string initial_raw = handle_.widget_data();
     PayloadMemo memo;
     memo.data = nlohmann::json::parse(initial_raw, nullptr, false);
     if (memo.data.is_discarded()) {
       memo.data = nlohmann::json::object();
     }
-    // Keep raw empty until the first event/tick delivery. The asynchronous
-    // engine historically consumes one-shot commands already present in the
-    // initial payload on that first delivery (for example a requested
-    // sub-dialog); pre-seeding raw here would suppress that command forever.
+    // memo.raw stays empty until the first event or tick delivery: that delivery consumes the one-shot commands of
+    // the initial payload (a requested sub-dialog); seeding it here would suppress them for good.
     {
       PJ::WidgetDataView view(initial_raw);
       applyWidgetData(binding_root, view);
     }
 
-    // 3b. Trigger initial parser dialog injection now that combo is populated,
-    // then size the dialog to its content.
     if (parser_slot != nullptr) {
       if (auto* combo = loaded->findChild<QComboBox*>("comboBoxProtocol")) {
         inject_parser_dialog(combo->currentText());
@@ -788,20 +716,14 @@ struct DialogEngine::AsyncRunner {
     applySectionBandMetrics(loaded, config_.section_band_metrics);
     applyButtonBoxFillWidth(loaded);
 
-    // The one sub-dialog currently open (pre-branch exec() allowed only one at a
-    // time). While it is set, maybe_open_sub_dialog is a no-op — a plugin that
-    // leaves __request_sub_dialog set across ticks otherwise spawns a fresh
-    // sub-dialog every tick. Cleared in the sub-dialog's finished handler and
-    // severed at frame teardown (below) so a shutdown-time reject cannot reach a
-    // dead frame.
+    // The one open sub-dialog. While it is set, maybe_open_sub_dialog does nothing: a plugin that leaves
+    // __request_sub_dialog set across ticks would otherwise spawn one per tick. Cleared by the sub-dialog's
+    // finished handler, which is severed at frame teardown so a shutdown-time reject cannot reach a dead frame.
     QPointer<QDialog> active_sub_dialog;
 
-    // Helper: open a sub-dialog from UI XML (app-modal, matching the pre-branch
-    // exec()). `on_finished`, when set, runs after the sub-dialog is dismissed —
-    // used to preserve the plugin-visible order of "sub-dialog then file picker"
-    // that the old blocking exec() gave for free. When a sub-dialog is already
-    // open (or none is requested), on_finished runs immediately so the caller's
-    // continuation is never dropped.
+    // Opens an application-modal sub-dialog from the UI XML. `on_finished` runs after it is dismissed, which keeps
+    // the plugin-visible order "sub-dialog, then file picker"; when one is already open or none is requested it
+    // runs at once, so the continuation is never dropped.
     auto maybe_open_sub_dialog = [&, callbacks_alive](const ApplyResult& ar, std::function<void()> on_finished = {}) {
       if (!ar.sub_dialog_ui || !active_sub_dialog.isNull()) {
         if (on_finished) {
@@ -840,16 +762,12 @@ struct DialogEngine::AsyncRunner {
         QObject::connect(sub_bb, &QDialogButtonBox::rejected, sub_dialog, &QDialog::reject);
       }
 
-      // The modal loop below blocks the plugin from driving field states — honor
-      // the .ui's declarative "pj_enable_when"/"pj_visible_when" rules here, like
-      // PanelEngine does.
+      // Plugin widget data is applied to the main dialog's tree only, so the sub-dialog's field states come from
+      // the .ui's declarative "pj_enable_when" / "pj_visible_when" rules.
       installDeclarativeRules(sub_dialog);
 
       active_sub_dialog = sub_dialog;
-      // Chain any continuation to the dismissal (guarded: at frame teardown the
-      // callbacks flag is cleared, so a late finished cannot re-enter a dead
-      // frame). Clearing active_sub_dialog re-arms the stacking guard for a
-      // subsequent request.
+      // Guarded: at frame teardown the flag is cleared, so a late finished cannot re-enter a dead frame.
       QObject::connect(
           sub_dialog, &QDialog::finished, dialog,
           guardedCallback(callbacks_alive, [&active_sub_dialog, on_finished = std::move(on_finished)](int) {
@@ -859,26 +777,18 @@ struct DialogEngine::AsyncRunner {
             }
           }));
 
-      // The result is intentionally ignored (this is an informational/help
-      // sub-dialog). ApplicationModal blocks input app-wide while the browser
-      // event loop keeps running; WA_DeleteOnClose hands ownership to Qt so the
-      // dialog self-destructs once dismissed. show() (not open()) preserves
-      // ApplicationModal — open() would force it down to WindowModal.
+      // The result is ignored: a sub-dialog is informational. show(), not open(), keeps ApplicationModal (open()
+      // forces WindowModal); WA_DeleteOnClose frees it once dismissed.
       sub_dialog->setWindowModality(Qt::ApplicationModal);
       sub_dialog->setAttribute(Qt::WA_DeleteOnClose);
       sub_dialog->show();
     };
 
-    // 5. Wire signals + the declarative "pj_enable_when"/"pj_visible_when"
-    //    combo->field rules.
     installDeclarativeRules(binding_root);
     connectWidgetSignals(
         binding_root, guardedCallback(callbacks_alive, [&](const std::string& name, const std::string& event_json) {
           stats_.event_count++;
-          // Pre-branch exec() ran the file/folder/save pickers only after any
-          // sub-dialog was dismissed. Chain them through maybe_open_sub_dialog's
-          // continuation so plugin-visible ordering is unchanged; when no sub-dialog
-          // opens the continuation fires immediately.
+          // The pickers run after any sub-dialog is dismissed (the continuation fires at once when none opens).
           auto run_pickers = [&, name]() {
             show_file_picker_for(name, &handle_, binding_root, memo);
             show_folder_picker_for(name, &handle_, binding_root, memo);
@@ -896,13 +806,11 @@ struct DialogEngine::AsyncRunner {
           run_pickers();
         }));
 
-    // 5b. Install button keyboard shortcuts declared in widget data
     {
       PJ::WidgetDataView shortcut_view(handle_.widget_data());
       installButtonShortcuts(dialog, shortcut_view);
     }
 
-    // 5c. Install drop event filter for declared drop targets
     {
       PJ::WidgetDataView drop_view(initial_raw);
       auto targets = drop_view.dropTargets();
@@ -925,7 +833,6 @@ struct DialogEngine::AsyncRunner {
       }
     }
 
-    // 6. Start tick timer
     QTimer tick_timer;
     tick_timer.setInterval(config_.tick_interval_ms);
     QObject::connect(&tick_timer, &QTimer::timeout, [&]() {
@@ -941,23 +848,18 @@ struct DialogEngine::AsyncRunner {
     });
     tick_timer.start();
 
-    // Re-fit once the dialog is actually shown and laid out: the pre-show sizeHint
-    // is stale (measured before the window exists), so a deferred singleShot(0)
-    // fit gives the right size from the start. We only RE-FIT here — the parser
-    // options were already injected and populated above, so we must NOT re-inject
-    // (that would replace the populated widget with a fresh, empty one).
+    // The pre-show sizeHint is stale (measured before the window exists): fit again once the dialog is shown. Only
+    // a re-fit: re-injecting would replace the populated parser widget with an empty one.
     if (content_fit_dialog) {
       QTimer::singleShot(0, dialog, [fit_to_content]() { fit_to_content(); });
     }
 
-    // Plain authored dialogs do not pass through fit_to_content(). Clamp every
-    // dialog once before it is mapped; the helper is a no-op on native builds.
+    // Plain dialogs skip fit_to_content(), so clamp every dialog once before it is mapped (a no-op natively).
     clamp_to_browser_screen();
 
-    // 7. Open dialog and suspend this coroutine until QDialog::finished. Every
-    // local above lives in the coroutine frame, so its signal callbacks, parser
-    // handle, diff state, and tick timer remain valid without a nested loop.
-    // Registering the dialog lets cancelActiveDialog() reject it synchronously.
+    // Suspends this coroutine until QDialog::finished: every local above lives in its frame, so the callbacks,
+    // parser handle, diff state and tick timer stay valid without a nested loop. Registering the dialog lets
+    // cancelActiveDialog() reject it.
     QPointer<QDialog> dialog_guard(dialog);
     self.active_dialog_ = dialog;
     if (config_.non_modal) {
@@ -965,37 +867,27 @@ struct DialogEngine::AsyncRunner {
       dialog->show();
       dialog->activateWindow();
     } else {
-      // App-modal, not window-modal: window-modality only blocks the parent's
-      // window, leaving floating ADS dock tool-windows (separate top-levels)
-      // interactive. This restores the pre-branch exec() semantics (implicitly
-      // app-modal) without a nested event loop. Use show(), NOT QDialog::open():
-      // open() force-downgrades any non-WindowModal modality back to WindowModal,
-      // which is the very regression being fixed. show() honors the set modality
-      // and still fires QDialog::finished for the awaiter below.
+      // Application-modal: window-modal only blocks the parent's window, leaving floating dock tool-windows
+      // (separate top-levels) interactive. show(), not open(): open() forces any other modality down to
+      // WindowModal. show() still fires QDialog::finished for the awaiter.
       dialog->setWindowModality(Qt::ApplicationModal);
       dialog->show();
     }
-    // Named local, not a co_await temporary: GCC 11.4 (linux-ci / AppImage)
-    // mishandles awaiter temporaries inside co_await expressions.
+    // A named local: GCC 11.4 (linux-ci, AppImage) mishandles awaiter temporaries inside co_await.
     DialogFinishedAwaiter finished_awaiter(dialog);
     const int result = co_await std::move(finished_awaiter);
     tick_timer.stop();
-    // The frame dies at co_return but the dialog (and every sender-held copy of
-    // the callbacks above) survives until its deferred delete: sever them now,
-    // before notifying the plugin, so nothing can re-enter this frame.
+    // The dialog and every sender-held copy of the callbacks outlive this frame (until deleteLater): sever them
+    // before notifying the plugin, so nothing re-enters it.
     *callbacks_alive = false;
     self.active_dialog_.clear();
-    // Close a sub-dialog still open when the main dialog completes (e.g. a
-    // cancelActiveDialog while a help sub-dialog is up). Its finished handler is
-    // already severed above, so this just tears it down without re-entering the
-    // dead frame; WA_DeleteOnClose frees it.
+    // A sub-dialog still open (a cancelActiveDialog while it is up): its finished handler is already severed.
     if (!active_sub_dialog.isNull()) {
       active_sub_dialog->reject();
     }
 
-    // A parent can disappear while a dialog is pending. QDialog then vanishes
-    // without a usable widget for geometry/cleanup, but the plugin still receives
-    // one rejection and the caller still receives one completion.
+    // The parent disappeared while the dialog was pending: no widget is left for geometry or cleanup, but the
+    // plugin still gets one rejection and the caller one completion.
     if (dialog_guard.isNull()) {
       handle_.reject();
       parser_config_.clear();
@@ -1004,11 +896,9 @@ struct DialogEngine::AsyncRunner {
       co_return;
     }
 
-    // 8. Notify plugin and clean up
     DialogResult dr;
     if (result == QDialog::Accepted) {
       handle_.accept(handle_.save_config());
-      // Save parser config if a parser dialog was shown
       if (parser_dialog_handle) {
         parser_config_ = parser_dialog_handle->save_config();
       } else {
@@ -1021,8 +911,7 @@ struct DialogEngine::AsyncRunner {
       parser_config_.clear();
       dr = DialogResult::kRejected;
     }
-    // Save dialog geometry for next time (not for content-fit dialogs — they
-    // always size to content, so a remembered manual size must not stick).
+    // Not for content-fit dialogs: they size to content, so a remembered manual size must not stick.
     if (!plugin_name.empty() && !content_fit_dialog) {
       QSettings settings;
       settings.setValue(geometry_key, dialog->saveGeometry());
@@ -1052,11 +941,9 @@ void DialogEngine::cancelActiveDialog() {
   if (!dialog_open_ || active_dialog_.isNull()) {
     return;  // never opened, already completed, or destroyed with its parent
   }
-  // reject() emits QDialog::finished, whose same-thread hook resumes the
-  // suspended AsyncRunner immediately: the runner severs its widget callbacks,
-  // delivers exactly one on_rejected to the plugin, and runs the completion
-  // with kRejected — all before reject() returns. Taking the pointer first
-  // keeps a re-entrant cancel (e.g. from inside that completion) a no-op.
+  // reject() emits QDialog::finished, which resumes the suspended coroutine in the same call: it severs the widget
+  // callbacks, delivers one on_rejected and runs the completion before reject() returns. Clearing the pointer
+  // first makes a re-entrant cancel (from inside that completion) a no-op.
   QPointer<QDialog> dialog = active_dialog_;
   active_dialog_.clear();
   dialog->reject();
@@ -1068,11 +955,9 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
   qWarning("DialogEngine::showDialog uses a nested event loop and is unavailable on WebAssembly; use openDialog");
   return DialogResult::kRejected;
 #else
-  // Heap-shared completion state: QCoreApplication::exit()/quit() can unwind
-  // the nested loop below WITHOUT the completion having run. The suspended
-  // dialog coroutine then outlives this frame, and its eventual completion must
-  // write into live storage, not this dead stack (same hazard/mitigation as the
-  // plugin message-box gate in FileLoader).
+  // Heap-shared: QCoreApplication::exit() can unwind the nested loop before the completion has run. The suspended
+  // coroutine then outlives this frame, and its eventual completion must write into live storage, not this dead
+  // stack.
   struct SyncState {
     DialogResult result = DialogResult::kRejected;
     bool finished = false;
@@ -1088,18 +973,13 @@ DialogResult DialogEngine::showDialog(QWidget* parent) {
     state->loop.exec();
   }
   if (!state->finished) {
-    // Early unwind: complete the coroutine NOW, while this engine is still
-    // alive — a caller destroying the stack engine with the frame suspended
-    // would otherwise leave the pending dialog to resume against freed state.
+    // Early unwind: complete the coroutine now, while the engine is alive; a caller destroying a stack engine would
+    // otherwise leave the dialog to resume against freed state.
     cancelActiveDialog();
   }
   return state->result;
 #endif
 }
-
-// ---------------------------------------------------------------------------
-// run_headless
-// ---------------------------------------------------------------------------
 
 std::string DialogEngine::savedConfig() const {
   return handle_.save_config();

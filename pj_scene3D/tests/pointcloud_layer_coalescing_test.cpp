@@ -1,23 +1,18 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Coverage for PointCloudLayer's latest-wins compressed-decode coalescing state
-// machine (M.66). The async decode (requestDecode/startDecode/onDecodeFinished)
-// runs on the Qt thread pool with several subtle invariants verified by nothing
-// before this test:
-//   (a) the single-slot pending_ latest-wins queue collapses a superseded sample
-//       (request A while inflight, then B, then C -> only C is decoded after A);
-//   (b) wanted_ staleness: a late decode that finished after the tracker scrubbed
-//       away (even back onto a cached frame) is cached but NOT painted over the
-//       live frame;
-//   (c) failed_id_ memoization: an undecodable sample is recorded and a second
-//       renderAt at that time issues NO new decode (asserted via the startDecode
-//       counter).
+// PointCloudLayer's latest-wins compressed-decode coalescing state machine. The async decode
+// (requestDecode/startDecode/onDecodeFinished) runs on the Qt thread pool; pinned here:
+//   (a) the single-slot pending_ queue collapses a superseded sample (request A while inflight, then B, then C: only
+//       C is decoded after A);
+//   (b) wanted_ staleness: a late decode that finished after the tracker scrubbed away (even back onto a cached frame)
+//       is cached but NOT painted over the live frame;
+//   (c) failed_id_ memoization: an undecodable sample is recorded and a second renderAt at that time issues NO new
+//       decode (asserted via the startDecode counter).
 //
-// Headless-testable because QtConcurrent + QFutureWatcher run under the
-// QCoreApplication event loop in main(); processEvents() drives the worker's
-// queued finished() slot. Valid clouds are built with the REAL Cloudini encoder
-// (the same fixture path pointcloud_codecs_test uses) so the decode succeeds.
+// Headless: QtConcurrent + QFutureWatcher run under the QCoreApplication event loop in main(); processEvents() drives
+// the worker's queued finished() slot. Valid clouds are built with the REAL Cloudini encoder (as in
+// pointcloud_codecs_test).
 
 #include <gtest/gtest.h>
 
@@ -53,20 +48,18 @@ namespace {
 using namespace pj::scene3d::test;
 
 constexpr std::string_view kSchema = "mock/compressed_point_cloud";
-// Samples stamped at/after this produce a CompressedPointCloud whose format the
-// decoder does not recognize (decode always fails); earlier stamps produce a
-// valid lossless-Cloudini blob.
+// Samples stamped at/after this produce a CompressedPointCloud with an unrecognized format (decode always fails);
+// earlier stamps produce a valid lossless-Cloudini blob.
 constexpr PJ::Timestamp kGarbageStampThreshold = 100000;
 
 std::atomic<int> g_parser_calls{0};
 
-// A 4-float point: x, y, z, intensity (point_step = 16).
 struct Pt {
   float x, y, z, intensity;
 };
 
-// Cloudini-encode a small cloud with the lossless (NONE first-stage + ZSTD) path
-// so the decode round-trips exactly. Mirrors pointcloud_codecs_test::encodeCloudini.
+// The lossless (NONE first-stage + ZSTD) path, so the decode round-trips exactly; mirrors
+// pointcloud_codecs_test::encodeCloudini.
 std::shared_ptr<std::vector<uint8_t>> encodeValidCloudini() {
   std::vector<Pt> pts;
   for (int i = 0; i < 8; ++i) {
@@ -93,9 +86,8 @@ std::shared_ptr<std::vector<uint8_t>> encodeValidCloudini() {
   return out;
 }
 
-// Pre-encoded blobs shared by all parser instances. Set up once before any
-// test runs; the parser's create function is non-capturing (a plain fn ptr for
-// vtableWithCreate), so it reaches these through file scope.
+// Pre-encoded blobs shared by all parser instances, set up before any test runs (the parser's create function is
+// non-capturing, a plain fn ptr for vtableWithCreate, so it reaches them through file scope).
 std::shared_ptr<std::vector<uint8_t>> g_valid_blob;
 
 // Valid samples at this stamp are in another frame than the rest ("lidar").
@@ -121,9 +113,8 @@ PJ::sdk::CompressedPointCloud wrapGarbage(PJ::Timestamp ts) {
   return cloud;
 }
 
-// Object construction for the mock parser: produces a valid (ts < threshold) or
-// undecodable (ts >= threshold) CompressedPointCloud. Wrapped by
-// test::CountingObjectParser, which bumps g_parser_calls per parse.
+// A valid (ts < threshold) or undecodable (ts >= threshold) CompressedPointCloud; test::CountingObjectParser bumps
+// g_parser_calls per parse.
 PJ::Expected<PJ::sdk::ObjectRecord> emitCloud(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   if (ts >= kGarbageStampThreshold) {
     return PJ::sdk::ObjectRecord{.ts = ts, .object = wrapGarbage(ts)};
@@ -131,9 +122,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitCloud(PJ::Timestamp ts, PJ::sdk::Payload
   return PJ::sdk::ObjectRecord{.ts = ts, .object = wrapValid(ts)};
 }
 
-// A fresh session + store + parser-registered topic per test, with one sample
-// pushed per timestamp in `stamps`. The store payload bytes are placeholders —
-// the parser ignores them and synthesizes the cloud from the timestamp.
+// A fresh session + store + parser-registered topic per test, one sample per timestamp in `stamps`. The store payload
+// bytes are placeholders: the parser synthesizes the cloud from the timestamp.
 struct Harness {
   PJ::SessionManager session;
   PJ::ObjectTopicId topic_id;
@@ -152,17 +142,16 @@ struct Harness {
   }
 };
 
-// Pumps the event loop until the layer's async decode chain is idle (no inflight
-// and no pending), or the deadline passes. onDecodeFinished is a queued slot, and
-// draining pending_ can re-arm inflight_, so a single processEvents is not enough.
+// Pumps the event loop until the layer's async decode chain is idle (no inflight, no pending) or the deadline passes:
+// onDecodeFinished is a queued slot and draining pending_ can re-arm inflight_, so one processEvents is not enough.
 void drainDecode(pj::scene3d::PointCloudLayer& layer) {
   const bool settled = pumpUntil([&layer] { return !layer.decodeInFlightForTest(); }, std::chrono::seconds(10));
   ASSERT_TRUE(settled) << "compressed decode chain never settled";
 }
 
-// TF R6: attach() starts decoding a time-shifted merge's first compressed cloud, and
-// its own renderAt finds that decode running. The decoded cloud must still carry its
-// stamp on the dataset clock, as a raw cloud does (pointcloud_layer_cache_test).
+// attach() starts decoding a time-shifted merge's first compressed cloud and its own renderAt finds that decode
+// running. The decoded cloud must still carry its stamp on the dataset clock, as a raw cloud does
+// (pointcloud_layer_cache_test).
 TEST(PointCloudLayerCoalescing, BootstrapDecodeCarriesTheMergeShiftedStamp) {
   PJ::SessionManager session;
   PJ::ObjectStore& store = session.objectStore();
@@ -187,23 +176,20 @@ TEST(PointCloudLayerCoalescing, BootstrapDecodeCarriesTheMergeShiftedStamp) {
 // only the latest, so after A finishes the layer decodes C (not B) and paints C.
 TEST(PointCloudLayerCoalescing, LatestWinsCollapsesSupersededPending) {
   g_parser_calls.store(0);
-  // 10 is the bootstrap sample (decoded + cached at attach); A=100, B=200, C=300
-  // are all distinct and UNCACHED so each is a fresh decode candidate.
+  // 10 is the bootstrap sample (decoded and cached at attach); A=100, B=200, C=300 are distinct and UNCACHED.
   Harness harness({10, 100, 200, 300});
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &harness.session;
   pj::scene3d::PointCloudLayer layer(harness.topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kCompressedPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
-  // attach() bootstrap-decodes the first sample (10) asynchronously; let it settle
-  // so the test starts from a clean (no inflight, no pending) state.
+  // attach() bootstrap-decodes the first sample asynchronously: settle to a clean (no inflight, no pending) state.
   drainDecode(layer);
 
   const int decodes_before = layer.startDecodeCountForTest();
 
-  // Drive A, then B, then C WITHOUT pumping the loop: A's worker may finish on the
-  // pool thread, but onDecodeFinished is a queued slot that cannot run until we
-  // processEvents, so inflight_ stays A and B/C route into pending_ (B superseded).
+  // Drive A, B, C WITHOUT pumping the loop: onDecodeFinished is a queued slot that cannot run before processEvents, so
+  // inflight_ stays A and B/C route into pending_ (B superseded).
   layer.renderAtForTest(100);
   ASSERT_TRUE(layer.decodeInFlightForTest()) << "first request did not start a decode";
   layer.renderAtForTest(200);
@@ -211,8 +197,7 @@ TEST(PointCloudLayerCoalescing, LatestWinsCollapsesSupersededPending) {
 
   drainDecode(layer);
 
-  // Exactly two decodes since the snapshot: A (100) and the collapsed-latest C
-  // (300). B (200) must never have been dispatched.
+  // Exactly two decodes since the snapshot: A (100) and the collapsed-latest C (300); B (200) is never dispatched.
   EXPECT_EQ(layer.startDecodeCountForTest(), decodes_before + 2)
       << "the superseded pending sample B was decoded instead of being collapsed";
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{300})
@@ -231,22 +216,18 @@ TEST(PointCloudLayerCoalescing, LateDecodeDoesNotRepaintAfterScrubBack) {
   ASSERT_TRUE(layer.attach(ctx));
   drainDecode(layer);
 
-  // Decode + cache + paint the earlier frame (100) fully.
   layer.renderAtForTest(100);
   drainDecode(layer);
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
 
-  // Tracker moves to the later sample (500): an async decode of 500 starts.
   layer.renderAtForTest(500);
   ASSERT_TRUE(layer.decodeInFlightForTest());
 
-  // Before 500 lands, the tracker scrubs back to 100 — served instantly from the
-  // decode cache, so 100 becomes the live painted frame again (wanted_ = 100).
+  // Before 500 lands the tracker scrubs back to 100, served from the decode cache (wanted_ = 100).
   layer.renderAtForTest(100);
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
 
-  // The late 500 decode finishes: it is stale (wanted_ is 100), so it is cached but
-  // must NOT repaint over the live 100 frame.
+  // The late 500 decode is stale (wanted_ is 100): cached, but NOT repainted over the live 100 frame.
   drainDecode(layer);
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100})
       << "a late, scrubbed-away decode repainted a stale frame";
@@ -300,16 +281,12 @@ TEST(PointCloudLayerCoalescing, FailedSampleIsMemoizedAndNotRedecoded) {
   ASSERT_TRUE(layer.attach(ctx));
   drainDecode(layer);
 
-  // First visit to the garbage sample: a decode is dispatched and fails.
   layer.renderAtForTest(kGarbageStampThreshold);
   drainDecode(layer);
   const int decodes_after_failure = layer.startDecodeCountForTest();
   EXPECT_GE(decodes_after_failure, 1) << "the garbage sample was never decoded";
-  // The failure path clears the view rather than painting stale points.
   EXPECT_EQ(layer.lastPushedStampForTest(), std::nullopt) << "a failed decode left a sample painted";
 
-  // Second visit to the SAME garbage sample: failed_id_ short-circuits renderAt
-  // before any decode is requested, so the counter must not move.
   layer.renderAtForTest(kGarbageStampThreshold);
   EXPECT_FALSE(layer.decodeInFlightForTest()) << "a known-failed sample was re-requested";
   EXPECT_EQ(layer.startDecodeCountForTest(), decodes_after_failure)
@@ -341,7 +318,6 @@ TEST(PointCloudLayerCoalescing, EvictedCloudRederivesFromTheCacheElseDecodesAsyn
   EXPECT_EQ(layer.vertexBytes(), uploaded);
   EXPECT_EQ(layer.geometryRevision(), revision);
 
-  // A stale decode of 500 lands in the cache while 100 stays on screen.
   layer.renderAtForTest(500);
   layer.renderAtForTest(100);
   drainDecode(layer);

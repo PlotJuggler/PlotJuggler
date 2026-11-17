@@ -21,7 +21,7 @@
 
 namespace PJ {
 
-/// The store timestamp of a finding (D26): a pinned node's single entry sits here, so every
+/// The store timestamp of a finding: a pinned node's single entry sits here, so every
 /// at-or-before read returns it at any `t`. Its payload keeps the real stamp. A sentinel, never a
 /// time: no consumer may do arithmetic on it (a lag, a lifetime or a range reads the payload stamp).
 inline constexpr Timestamp kFindingTimestamp = std::numeric_limits<Timestamp>::min();
@@ -40,7 +40,7 @@ struct ResultPublishOptions {
   ResultPayloads payloads;
 };
 
-/// Where the on-demand results of every node live (docs/derived_objects/ARCHITECTURE.md §9, §10):
+/// Where the on-demand results of every node live:
 /// the ring (each object output's derived topic in the ObjectStore, serialized) and the compute cache
 /// (decoded bundles, without the object outputs the ring holds). Each has one global byte budget and the same rule: a
 /// window around the node's cursor, then, while over budget, the result farthest from its node's cursor goes, across
@@ -50,7 +50,7 @@ struct ResultPublishOptions {
 /// GUI thread only: no Qt, no threads, no script runs. Number and string outputs never reach the store.
 class ResultHistory {
  public:
-  /// What determined a result (§10). The request's key leaves the observations empty; a stored key
+  /// What determined a result. The request's key leaves the observations empty; a stored key
   /// also records what its run observed.
   struct CacheKey {
     uint64_t revision = 0;         ///< `RecipeGraph::Node::revision`
@@ -69,7 +69,7 @@ class ResultHistory {
       return video_content == request.video_content && completes(request, t, tf_revision_now);
     }
     /// `serves`, but a moved video content revision alone does not count: a run's completion still serves the current
-    /// request, since what it superseded is new packets, not the meaning of the request (D30).
+    /// request, since what it superseded is new packets, not the meaning of the request.
     [[nodiscard]] bool completes(const CacheKey& request, Timestamp t, uint64_t tf_revision_now) const {
       return revision == request.revision && epoch == request.epoch && inputs == request.inputs &&
              (!query_clock || *query_clock == t) && (!tf_revision || *tf_revision == tf_revision_now);
@@ -128,20 +128,19 @@ class ResultHistory {
   /// eviction distance, and where its displayed result is read. Call it on every request, hit or not.
   void noteRequest(std::string_view key, Timestamp t);
 
-  /// Records one result of `node` (its installed revision), requested at `requested_t`, whose newest
-  /// resolved input is at `stamp`. Writes its object outputs to the ring in one `pushOwnedBundle`, so a
-  /// rejected publication writes nothing (an allocation failure inside the store is its documented
-  /// exception). A payload keeps the stamp its script left; an unavailable object output writes an empty
-  /// object of its type stamped `stamp` (a tombstone; a point cloud's goes in the frame the output was last
-  /// published in). A finding is written at `kFindingTimestamp`. Writes nothing to the store when `key`
-  /// already sits at that stamp with every entry still present (the dedup ledger), except to trim the window;
-  /// a different result at the same stamp replaces it, unless `options.cache_only` (a late result that does
-  /// not serve the cursor's request: the entry there does; see `ResultPublishOptions`). Then caches `bundle`, without a
-  /// decoded copy of the object outputs the ring now holds: a result the ring does not hold is cached whole.
-  /// `keepalives` hold the plugin libraries the run's inputs need: an input passed through to an output may be an
-  /// object a parser made, so the cached bundle drops its outputs before them. Only the node's first result sets its
-  /// cursor (to `requested_t`): a late result keeps the one the last request set. Then trims both windows around the
-  /// cursor, sparing the ring's displayed result, and enforces both budgets. On error nothing is cached or written.
+  /// Records one result of `node` (its installed revision), requested at `requested_t`, whose newest resolved input is
+  /// at `stamp`. Writes its object outputs to the ring in one `pushOwnedBundle`, so a rejected publication writes
+  /// nothing (an allocation failure inside the store is its documented exception). A payload keeps the stamp its
+  /// script left; an unavailable object output writes an empty object of its type stamped `stamp` (a tombstone; a
+  /// point cloud's goes in the frame the output was last published in). A finding is written at `kFindingTimestamp`.
+  /// Nothing is written when `key` already sits at that stamp with every entry present (the dedup ledger), except to
+  /// trim the window; a different result at the same stamp replaces it, unless `options.cache_only` (a late result:
+  /// the entry there serves the cursor's request). Then caches `bundle` without a decoded copy of the object outputs
+  /// the ring now holds (a result the ring does not hold is cached whole). `keepalives` hold the plugin libraries the
+  /// run's inputs need: an input passed through to an output may be an object a parser made, so the cached bundle
+  /// drops its outputs before them. Only the node's first result sets its cursor (to `requested_t`); a late result
+  /// keeps the one the last request set. Then trims both windows around the cursor, sparing the ring's displayed
+  /// result, and enforces both budgets. On error nothing is cached or written.
   [[nodiscard]] Status publish(
       const RecipeGraph::Node& node, Timestamp requested_t, Timestamp stamp, const CacheKey& key,
       scripting::ScriptBundle bundle, std::vector<std::shared_ptr<const void>> keepalives = {},
@@ -175,14 +174,13 @@ class ResultHistory {
     Timestamp stamp = 0;  ///< the result time; a finding's real stamp, never `kFindingTimestamp`
     ObjectTopicId topic;
     SequentialUID uid;  ///< the output's entry in the ring; a new revision's results get new ones
-    /// Why the output was unavailable (D25): its ring entry is only a tombstone, not an input.
+    /// Why the output was unavailable: its ring entry is only a tombstone, not an input.
     std::optional<std::string> unavailable;
   };
-  /// Object output `output` of the newest result of `key` whose stamp is at or before `t` and whose entries
-  /// are still in the store. A finding is compared by its real stamp, so before it was computed there is
-  /// none (decided 2026-10-18). Never deserializes. nullopt: no such result or output. The scheduler asks
-  /// after the upstream's own request at `t`, so this is the upstream's displayed result, which the ring
-  /// never evicts.
+  /// Object output `output` of the newest result of `key` whose stamp is at or before `t` and whose entries are still
+  /// in the store. A finding is compared by its real stamp, so before it was computed there is none. Never
+  /// deserializes. nullopt: no such result or output. The scheduler asks after the upstream's own request at `t`, so
+  /// this is the upstream's displayed result, which the ring never evicts.
   [[nodiscard]] std::optional<OutputAt> resultAt(std::string_view key, std::string_view output, Timestamp t) const;
 
   /// The derived topics of `key`'s object outputs, in declaration order; empty for an unknown key.

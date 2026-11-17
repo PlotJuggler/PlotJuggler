@@ -75,7 +75,6 @@ TEST(LayoutResourcesTest, NormalizesTopicRootsAndUrlSources) {
   EXPECT_EQ(attribute(model(doc, 1), u"source_value"_s), "https://host.test/presets/fr3/robots/arm.urdf");
   EXPECT_EQ(root(model(doc, 1), u"arm_description"_s), "../meshes/arm_description/");
 
-  // A desktop layout anchors at its file:// location.
   QDomDocument local =
       parse(uR"xml(<root><robot_model source_type="topic" package_url_roots='{"pkg":"assets/pkg/"}'/></root>)xml"_s);
   ASSERT_TRUE(pj::scene3d::resolveLayoutResourceUrls(local, QUrl(u"file:///data/layouts/robot.pj4.xml"_s), &error))

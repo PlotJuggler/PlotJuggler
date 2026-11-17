@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Headless TrailLayer tests (no GPU, no session): renderKey coalescing and split
-// counts, timeRange sentinel, XML round-trip (style-only load), synchronous TF
-// rebuild against a hand-fed TransformBuffer, the renderer's fixed-frame
+// Headless TrailLayer tests (no GPU, no session): renderKey coalescing and split counts, timeRange sentinel, XML
+// round-trip (style-only load), synchronous TF rebuild against a hand-fed TransformBuffer, the renderer's fixed-frame
 // adoption with its async rebuild, and live-edge append with the ring cap. GUI-thread-only Qt pieces run under a
 // QCoreApplication.
 
@@ -121,7 +120,6 @@ TEST(TrailLayerTest, XmlRoundTripStyleOnly) {
   QDomElement wrong_tag = doc.createElement(u"poses_in_frame"_s);
   EXPECT_FALSE(restored.xmlLoadState(wrong_tag));
 
-  // A pose-topic trail persists its kind but no frame attribute.
   const TrailLayer pose_trail(PJ::ObjectTopicId{44}, TrailSource::poseTopic(PJ::ObjectTopicId{7}));
   const QDomElement pose_saved = pose_trail.xmlSaveState(doc);
   EXPECT_EQ(pose_saved.attribute(u"source_kind"_s), u"pose_topic"_s);
@@ -134,7 +132,6 @@ TEST(TrailLayerTest, XmlLoadStateResultInstallsSourceOrDefers) {
   QDomDocument doc;
   const QDomElement tf_payload = saved.xmlSaveState(doc);
 
-  // TF source installs sessionless (orphan-until-frame-appears philosophy).
   TrailLayer restored(PJ::ObjectTopicId{43});
   ASSERT_EQ(restored.xmlLoadStateResult(tf_payload), TrailLayer::XmlLoadResult::kRestored);
   EXPECT_EQ(restored.source().kind, TrailSource::Kind::kTfFrame);
@@ -164,7 +161,6 @@ TEST(TrailLayerTest, SynchronousTfRebuildAgainstBuffer) {
   EXPECT_EQ(layer.pointCountForTest(), 2U);
   EXPECT_TRUE(layer.statusWarning().isEmpty());
 
-  // Disconnected fixed frame -> empty trail + a warning naming both frames.
   layer.rebuildNowForTest(u"mars"_s);
   EXPECT_EQ(layer.pointCountForTest(), 0U);
   EXPECT_FALSE(layer.statusWarning().isEmpty());
@@ -181,11 +177,9 @@ TEST(TrailLayerTest, LiveAppendGrowsTrailAndRespectsRevisionGate) {
   ASSERT_EQ(layer.pointCountForTest(), 2U);
   const uint64_t key_before = layer.renderKey(tp(9999ns));
 
-  // No TF change -> a tracker tick appends nothing (revision gate).
   layer.setTrackerTime(tp(20ns));
   EXPECT_EQ(layer.pointCountForTest(), 2U);
 
-  // Two newer stamps arrive (streaming): the next tick appends exactly those.
   (void)buffer->setTransform(stampedAt(30ns, "odom", "base", 3.0));
   (void)buffer->setTransform(stampedAt(40ns, "odom", "base", 4.0));
   layer.setTrackerTime(tp(40ns));
@@ -221,7 +215,6 @@ TEST(TrailLayerTest, RenderSelfHealsFixedFrameAndAsyncRebuildLands) {
   ASSERT_EQ(layer.pointCountForTest(), 2U);
   EXPECT_TRUE(layer.statusWarning().isEmpty());
   EXPECT_NE(layer.buildRevision(), revision_before);
-  // The retained CPU polyline the renderer draws, in the fixed frame.
   ASSERT_EQ(layer.points().size(), 2U);
   EXPECT_EQ(layer.points()[0], glm::dvec3(1.0, 0.0, 0.0));
   EXPECT_EQ(layer.points()[1], glm::dvec3(2.0, 0.0, 0.0));
@@ -239,7 +232,6 @@ TEST(TrailLayerTest, RenderSelfHealsFixedFrameAndAsyncRebuildLands) {
 
 TEST(TrailLayerTest, EmptyTrailRevivesWhenTfDataArrives) {
   auto buffer = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
-  // The tracked frame does not exist yet: the initial build is empty.
   (void)buffer->setTransform(stampedAt(10ns, "odom", "decoy", 1.0));
 
   TrailLayer layer(PJ::ObjectTopicId{42}, TrailSource::tfFrame(u"base"_s));

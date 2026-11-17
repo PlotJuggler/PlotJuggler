@@ -49,9 +49,8 @@ constexpr const char* kDualOptionsWidgetProperty = "_pj_dual_options_widget";
 constexpr const char* kDualOptionsRadiosProperty = "_pj_dual_options_radios";
 constexpr const char* kDualOptionsDesiredVisibleProperty = "_pj_dual_options_desired_visible";
 
-// Markdown supplied by a plugin is self-contained display text. Prevent the
-// rich view from resolving image/file resources referenced by that text; links
-// are handled separately by widget_binding as explicit user actions.
+// A plugin's Markdown is self-contained display text: the view must not resolve image or file resources it
+// references. Links are explicit user actions handled by widget_binding.
 class MarkdownDocument final : public QTextDocument {
  public:
   using QTextDocument::QTextDocument;
@@ -61,9 +60,9 @@ class MarkdownDocument final : public QTextDocument {
   }
 };
 
-// The stock image handler bypasses loadResource: when the document returns no
-// data it reads the file by name itself and caches the result in the document.
-// Replacing it lays out and paints nothing, so an image reference never opens a file.
+// The stock image handler bypasses loadResource: when that returns no data it reads the file by name itself and
+// caches it in the document. This replacement lays out and paints nothing, so an image reference never opens a
+// file.
 class BlockedImageHandler final : public QObject, public QTextObjectInterface {
   Q_OBJECT
   Q_INTERFACES(QTextObjectInterface)
@@ -92,8 +91,7 @@ static PJ::DualOptionsWidget* pairedDualOptionsWidget(const QWidget* widget) {
   return qobject_cast<PJ::DualOptionsWidget*>(obj);
 }
 
-// The radios an adapted DualOptionsWidget replaces, in segment order. Empty if
-// any of them has been destroyed.
+// The radios an adapted DualOptionsWidget replaces, in segment order; empty if any was destroyed.
 static QList<QRadioButton*> adaptedRadios(const PJ::DualOptionsWidget* dual) {
   QList<QRadioButton*> radios;
   const QObjectList objects = dual->property(kDualOptionsRadiosProperty).value<QObjectList>();
@@ -107,9 +105,8 @@ static QList<QRadioButton*> adaptedRadios(const PJ::DualOptionsWidget* dual) {
   return radios;
 }
 
-// Mirror each source radio's enabled state onto its segment, so a disabled option
-// greys out and cannot be switched to rather than disabling the whole control —
-// which stays interactive while any segment remains enabled.
+// Mirrors each source radio's enabled state onto its segment: a disabled option greys out and cannot be chosen,
+// and the control stays interactive while any segment is enabled.
 static void applyRadioEnabledStates(DualOptionsWidget* dual, const QList<QRadioButton*>& radios) {
   bool any_enabled = false;
   for (qsizetype i = 0; i < radios.size(); ++i) {
@@ -238,10 +235,10 @@ static bool gridSegmentContainsOnlyGroupOrSpacer(
 struct RadioGroupPlacement {
   QBoxLayout* box_layout = nullptr;
   QGridLayout* grid_layout = nullptr;
-  // Box: index range [begin_index, end_index] the group occupies in the layout.
+  // Box: the index range [begin_index, end_index] the group occupies.
   int begin_index = -1;
   int end_index = -1;
-  // Grid: the cell span covering the whole group.
+  // Grid: the cell span covering the group.
   int row = 0;
   int column = 0;
   int column_span = 0;
@@ -296,8 +293,8 @@ static bool radiosHaveExplicitExclusiveGroup(const QList<QRadioButton*>& radios)
   return std::all_of(radios.begin(), radios.end(), [group](QRadioButton* radio) { return radio->group() == group; });
 }
 
-// Orders `radios` left-to-right by their slot in the shared layout (box index
-// or grid column). False when no layout places the whole group together.
+// Orders `radios` by their slot in the shared layout (box index or grid column). False when no layout places the
+// whole group together.
 static bool sortRadiosByLayout(QWidget* parent, QList<QRadioButton*>& radios) {
   RadioGroupPlacement placement;
   if (!findRadioGroupPlacement(parent->layout(), radios, placement)) {
@@ -332,14 +329,11 @@ static void insertDualOptionsWidget(QWidget* parent, const QList<QRadioButton*>&
   if (placement.box_layout != nullptr) {
     QBoxLayout* box = placement.box_layout;
     const bool horizontal = box->direction() == QBoxLayout::LeftToRight || box->direction() == QBoxLayout::RightToLeft;
-    // The segmented control adopts the source radios' layout axis: a vertical
-    // radio column becomes a vertical strip whose chip slides up/down.
+    // The segmented control takes the radios' layout axis: a vertical column becomes a vertical strip.
     dual->setOrientation(horizontal ? Qt::Horizontal : Qt::Vertical);
     const int insert_at = placement.begin_index;
-    // The push-to-right-edge rearrangement below is only valid for the classic
-    // `[... group (expanding spacer)]` tail rows. If any real widget follows the
-    // group (e.g. `[label, group, stretch, checkbox]`), rearranging would scramble
-    // the row — those rows keep the group's original slot instead.
+    // The push-to-right-edge below fits only `[... group (expanding spacer)]` tail rows: with a widget after the
+    // group (`[label, group, stretch, checkbox]`) it would scramble the row, so the group keeps its slot.
     bool trailing_widget = false;
     for (int i = placement.end_index + 1; i < box->count(); ++i) {
       if (box->itemAt(i)->widget() != nullptr) {
@@ -347,19 +341,15 @@ static void insertDualOptionsWidget(QWidget* parent, const QList<QRadioButton*>&
         break;
       }
     }
-    // A row can opt out of the push-to-right-edge treatment — e.g. an inline
-    // "label → input → then: → group" row that wants the group to sit one snug
-    // gap after its preceding label — by tagging its first radio with the
-    // pjInlineGroup dynamic property. The group then keeps its authored slot.
+    // `pjInlineGroup` on the first radio opts a row out (an inline "label, input, then:, group" row where the group
+    // sits one snug gap after the label).
     const bool keep_inline = !radios.isEmpty() && radios.first()->property("pjInlineGroup").toBool();
     for (QRadioButton* radio : radios) {
       box->removeWidget(radio);
     }
     if (horizontal && !trailing_widget && !keep_inline) {
-      // Drop the trailing horizontal spacer that used to hold the group on the left,
-      // then re-append as [stretch][group][inset] so the group is pushed to the
-      // right edge of its row with the canonical comfortable inset — lining up
-      // with the row-filling ToggleSwitches (which use the same inset).
+      // Drops the trailing horizontal spacer that held the group on the left, then re-appends [stretch][group]
+      // [inset]: the group sits at the row's right edge, lined up with the row-filling ToggleSwitches.
       for (int i = box->count() - 1; i >= 0; --i) {
         QSpacerItem* sp = box->itemAt(i)->spacerItem();
         if (sp != nullptr && (sp->expandingDirections() & Qt::Horizontal)) {
@@ -399,8 +389,8 @@ static bool tryAdaptRadios(QList<QRadioButton*> radios) {
   if (!radiosHaveExplicitExclusiveGroup(radios)) {
     return false;
   }
-  // A group loaded without an initial selection has no segment to highlight —
-  // defer until plugin data checks one (the reactive tryAdaptStyledWidget path).
+  // Without an initial selection there is no segment to highlight: wait until plugin data checks one
+  // (tryAdaptStyledWidget).
   if (checked_count != 1) {
     return false;
   }
@@ -453,12 +443,10 @@ static bool tryAdaptRadios(QList<QRadioButton*> radios) {
   return true;
 }
 
-// Try to adapt the exclusive button group that `radio` belongs to. No-op when
-// the radio is already adapted, has no group, the group is non-exclusive, or
-// the group has fewer than two radios sharing `radio`'s parent. Cheap and
-// idempotent — safe to call per radio whenever its data is applied, which is
-// how a group that only becomes adaptable AFTER plugin data selects an option
-// gets converted without re-walking the whole widget tree on every data tick.
+// Adapts the exclusive button group `radio` belongs to. No-op when the radio is adapted already, has no group,
+// the group is non-exclusive, or fewer than two of its radios share `radio`'s parent. Cheap and idempotent, so
+// it runs per radio whenever its data is applied: a group that becomes adaptable only after plugin data selects an
+// option converts without re-walking the tree every tick.
 static void tryAdaptRadioGroup(QRadioButton* radio) {
   if (radio == nullptr || pairedDualOptionsWidget(radio) != nullptr) {
     return;
@@ -479,7 +467,7 @@ static void tryAdaptRadioGroup(QRadioButton* radio) {
   }
 }
 
-// --- QCheckBox -> ToggleSwitch ------------------------------------------------
+// --- QCheckBox -> ToggleSwitch ---
 
 constexpr const char* kToggleSwitchProperty = "_pj_toggle_switch";                   // on the hidden QCheckBox
 constexpr const char* kToggleCheckBoxProperty = "_pj_toggle_checkbox";               // on the ToggleSwitch
@@ -490,10 +478,8 @@ static PJ::ToggleSwitch* pairedToggleSwitch(const QWidget* widget) {
   return qobject_cast<PJ::ToggleSwitch*>(obj);
 }
 
-// True when `widget` lives inside one of the host composite widgets that manage
-// their own internal child controls (CredentialsEditor's allow-insecure box,
-// DateRangePicker's sub-widgets). Those internals are opaque — adapting a
-// checkbox buried in them would corrupt the composite, so they are left alone.
+// True when `widget` lives inside a host composite that manages its own child controls (CredentialsEditor's
+// allow-insecure box, DateRangePicker's sub-widgets). Adapting a checkbox inside one would corrupt it.
 static bool isInsideHostComposite(const QWidget* widget) {
   for (QWidget* p = widget->parentWidget(); p != nullptr; p = p->parentWidget()) {
     if (qobject_cast<CredentialsEditor*>(p) != nullptr || qobject_cast<DateRangePicker*>(p) != nullptr) {
@@ -503,7 +489,7 @@ static bool isInsideHostComposite(const QWidget* widget) {
   return false;
 }
 
-// Push the checkbox's current state onto its ToggleSwitch (keeping it hidden).
+// Pushes the checkbox's state onto its ToggleSwitch.
 static void syncToggleFromCheckBox(QCheckBox* checkbox) {
   auto* toggle = pairedToggleSwitch(checkbox);
   if (toggle == nullptr) {
@@ -516,9 +502,8 @@ static void syncToggleFromCheckBox(QCheckBox* checkbox) {
   toggle->setChecked(checkbox->isChecked(), /*animate=*/false);
 }
 
-// Swap `old_w` for `new_w` in `parent`'s layout, preserving position/span.
-// QLayout::replaceWidget searches nested layouts recursively and returns the
-// item that wrapped `old_w` (which we delete; `old_w` itself stays alive).
+// Swaps `old_w` for `new_w` in `parent`'s layout, keeping position and span. QLayout::replaceWidget searches nested
+// layouts and returns the item that wrapped `old_w`; that item is deleted, `old_w` stays alive.
 static bool replaceWidgetInLayout(QWidget* parent, QWidget* old_w, QWidget* new_w) {
   QLayout* layout = parent->layout();
   if (layout == nullptr) {
@@ -532,11 +517,9 @@ static bool replaceWidgetInLayout(QWidget* parent, QWidget* old_w, QWidget* new_
   return true;
 }
 
-// Replace a plain QCheckBox with a labelled ToggleSwitch (label on the LEFT,
-// switch on the right). The checkbox is kept hidden+alive so plugin data and
-// the connectWidgetSignals event callback keep flowing through it; the toggle
-// just drives it. No-op for tristate / textless / composite-internal / already
-// adapted checkboxes.
+// Replaces a QCheckBox with a labelled ToggleSwitch (label left, switch right). The checkbox stays hidden and
+// alive, so plugin data and the connectWidgetSignals callback keep flowing through it; the toggle drives it.
+// No-op for tristate, textless, composite-internal and already adapted checkboxes.
 static bool tryAdaptCheckBox(QCheckBox* checkbox) {
   if (checkbox == nullptr || pairedToggleSwitch(checkbox) != nullptr) {
     return false;
@@ -552,9 +535,8 @@ static bool tryAdaptCheckBox(QCheckBox* checkbox) {
   auto* toggle = new ToggleSwitch(parent);
   toggle->setText(checkbox->text());
   toggle->setLabelSide(ToggleSwitch::LabelSide::Left);
-  // Fill the row so the switch (drawn at the widget's right edge for a Left-side
-  // label) is pushed to the far right of its settings area, settings-list style,
-  // instead of hugging the label text. The pill itself stays a fixed width.
+  // Fills the row so the switch (drawn at the widget's right edge) sits at the far right, not against the label.
+  // The pill itself keeps a fixed width.
   toggle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   toggle->setToolTip(checkbox->toolTip());
   toggle->setEnabled(checkbox->isEnabled());
@@ -585,37 +567,25 @@ static bool tryAdaptCheckBox(QCheckBox* checkbox) {
 
 // --- QTableView interior-only cell grid --------------------------------------
 
-constexpr const char* kInteriorGridProperty = "pjInteriorGrid";                // opt-in, set in the .ui
+constexpr const char* kInteriorGridProperty = "pjInteriorGrid";                // set in the .ui
 constexpr const char* kInteriorGridAppliedProperty = "pjInteriorGridApplied";  // idempotency marker
 
-// Item delegate for an interior-grid table. Draws:
-//  - vertical dividers: the right edge of every cell EXCEPT the last visible
-//    column, so the table has no outer-right line that would double the column
-//    splitter / scrollbar chrome on its right;
-//  - horizontal dividers: the bottom edge of EVERY row INCLUDING the last, so the
-//    bottom of the data is closed and the final row reads like the rest (a short
-//    table has empty space, not chrome, below it, so it needs its own bottom line).
-// Paired with setShowGrid(false): yields the internal grid plus a clean bottom rule,
-// without the native grid's outer-right edge line.
+// Item delegate of an interior-grid table, used with setShowGrid(false). Draws a vertical divider on the right
+// edge of every cell except the last visible column (no outer-right line against the splitter or scrollbar
+// chrome), and a horizontal divider under every row including the last (a short table has empty space, not
+// chrome, below it).
 //
-// Why this exists: QTableView::paintEvent always draws the trailing
-// column/row edge (no last-line special-case), so with a stretched first column
-// the native grid's right edge lands flush on the surrounding splitter/scrollbar
-// chrome and reads as a doubled border. The grid is painted AFTER all items, so
-// a delegate cannot erase it — the only robust route is to turn the native grid
-// off and paint the interior lines ourselves. QSS can't do this either (Qt drops
-// per-::item left/right borders and tints every column edge in the selection
-// color — the spurious blue line this replaces).
-//
-// The divider color is fetched the exact way QTableView picks the native grid
-// color (styleHint SH_Table_GridLineColor), so it tracks the QSS `gridline-color`
-// token and the active theme with no hardcoded color and no theme-switch wiring.
+// QTableView::paintEvent always draws the trailing column and row edge, and paints the grid after the items, so a
+// delegate cannot erase it: the native grid is turned off and the interior lines are drawn here. QSS cannot do
+// it: Qt drops per-::item left and right borders and tints every column edge in the selection color. The divider
+// color comes from styleHint SH_Table_GridLineColor, as QTableView picks it, so it follows the QSS `gridline-color`
+// token and the active theme.
 class InteriorGridDelegate : public QStyledItemDelegate {
  public:
   using QStyledItemDelegate::QStyledItemDelegate;
 
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-    QStyledItemDelegate::paint(painter, option, index);  // content + selection first
+    QStyledItemDelegate::paint(painter, option, index);
 
     const auto* view = qobject_cast<const QTableView*>(option.widget);
     if (view == nullptr) {
@@ -623,28 +593,23 @@ class InteriorGridDelegate : public QStyledItemDelegate {
     }
     const int rgb = view->style()->styleHint(QStyle::SH_Table_GridLineColor, &option, view);
     QPen pen(QColor::fromRgb(static_cast<QRgb>(rgb)));
-    pen.setCosmetic(true);  // exactly one device pixel, DPI-independent
+    pen.setCosmetic(true);  // one device pixel at any DPI
     pen.setWidth(0);
 
     painter->save();
     painter->setPen(pen);
     const QRect r = option.rect;
-    // Vertical divider on the cell's right edge — only between columns, never on the
-    // last visible column (that outer-right line would double the column splitter /
-    // scrollbar chrome on the table's right).
+    // Only between columns, never on the last visible one.
     if (hasVisibleColumnAfter(view, index)) {
       painter->drawLine(r.topRight(), r.bottomRight());
     }
-    // Horizontal divider on the cell's bottom edge — under EVERY row, including the
-    // last, so the bottom of the data is closed and the final row reads like the rest.
     painter->drawLine(r.bottomLeft(), r.bottomRight());
     painter->restore();
   }
 
  private:
-  // True when a visible column exists after `index`'s column, so a divider on that
-  // cell's right edge is interior (not the table's outer-right edge). Skips hidden
-  // columns so a hidden trailing column can't leave a stray outer-right line.
+  // True when a visible column follows `index`'s column, so a divider on its right edge is interior. Hidden
+  // columns are skipped, so a hidden trailing column leaves no stray outer-right line.
   static bool hasVisibleColumnAfter(const QTableView* view, const QModelIndex& index) {
     const QAbstractItemModel* model = view->model();
     const int count = model->columnCount(index.parent());
@@ -663,8 +628,7 @@ void adaptRadioGroups(QWidget* root) {
   if (root == nullptr) {
     return;
   }
-  // One pass over every radio; tryAdaptRadioGroup is idempotent, so visiting
-  // both members of a pair just no-ops the second time.
+  // tryAdaptRadioGroup is idempotent: the second radio of a group is a no-op.
   const QList<QRadioButton*> radios = root->findChildren<QRadioButton*>();
   for (QRadioButton* radio : radios) {
     tryAdaptRadioGroup(radio);
@@ -685,11 +649,8 @@ void adaptComboBoxes(QWidget* root) {
   if (root == nullptr) {
     return;
   }
-  // Unlike radios/checkboxes, PJ::ComboBox IS a QComboBox, so there is no swap:
-  // we upgrade each plain QComboBox in place (gradient delegate + popup frame
-  // fixes), which preserves its model, current index, and signal connections.
-  // Skip ones already promoted to PJ::ComboBox, ones inside opaque host
-  // composites, and ones already upgraded (marker keeps it idempotent).
+  // PJ::ComboBox is a QComboBox, so each plain one is upgraded in place (no swap), keeping its model, current
+  // index and connections. Skipped: ones already PJ::ComboBox, inside host composites, or already upgraded (marker).
   static constexpr const char* kComboStyledProperty = "_pj_combo_styled";
   const QList<QComboBox*> combos = root->findChildren<QComboBox*>();
   for (QComboBox* combo : combos) {
@@ -703,9 +664,8 @@ void adaptComboBoxes(QWidget* root) {
 }
 
 void adaptScrollAreas(QWidget* root) {
-  // The canonical walker lives in pj_widgets alongside PJ::Scrollbar so app
-  // windows can reuse it; the host only adds its composite-widget veto (a plugin
-  // custom widget's internal scroll areas must not get overlaid).
+  // The walker lives in pj_widgets with PJ::Scrollbar; the host adds its composite veto (a plugin custom widget's
+  // internal scroll areas must not get overlays).
   PJ::attachPillScrollbars(root, [](QAbstractScrollArea* area) { return isInsideHostComposite(area); });
 }
 
@@ -713,17 +673,16 @@ void adaptGridTables(QWidget* root) {
   if (root == nullptr) {
     return;
   }
-  // Opt-in via a dynamic bool property set in the plugin .ui — the host hardcodes
-  // no table name, so this stays domain-neutral. QTableWidget is a QTableView, so
-  // findChildren<QTableView*> covers both. Idempotent via the marker property.
+  // Opt-in through the .ui property, so the host names no table. QTableWidget is a QTableView, so one search
+  // covers both.
   const QList<QTableView*> tables = root->findChildren<QTableView*>();
   for (QTableView* table : tables) {
     if (!table->property(kInteriorGridProperty).toBool() || table->property(kInteriorGridAppliedProperty).toBool()) {
       continue;
     }
-    table->setShowGrid(false);                                // native grid off (kills its outer edges)
-    table->setFrameShape(QFrame::NoFrame);                    // no outer frame either
-    table->setItemDelegate(new InteriorGridDelegate(table));  // draw interior dividers only
+    table->setShowGrid(false);  // the native grid always draws the outer edges
+    table->setFrameShape(QFrame::NoFrame);
+    table->setItemDelegate(new InteriorGridDelegate(table));
     table->setProperty(kInteriorGridAppliedProperty, true);
   }
 }
@@ -732,10 +691,9 @@ void adaptMarkdownEdits(QWidget* root) {
   if (root == nullptr) {
     return;
   }
-  // Dynamic .ui properties are only available after QUiLoader has built the
-  // tree, which is why this promotion lives in the engines' post-load adapter
-  // pass rather than PjUiLoader::createWidget(). Only child edits in a layout
-  // can be replaced without changing the loaded root pointer.
+  // Dynamic .ui properties exist only after QUiLoader built the tree, so the promotion runs in the post-load adapter
+  // pass, not PjUiLoader::createWidget(). Only a child edit in a layout can be replaced without changing the
+  // loaded root pointer.
   const QList<QPlainTextEdit*> edits = root->findChildren<QPlainTextEdit*>();
   for (QPlainTextEdit* edit : edits) {
     if (!edit->property(kMarkdownProperty).toBool()) {
@@ -800,9 +758,8 @@ bool isButtonBox(QLayoutItem* item) {
   return qobject_cast<QDialogButtonBox*>(item->widget()) != nullptr;
 }
 
-// The item is the button box itself, or a wrapper widget / button row whose own
-// items include it. Deeper nesting means the item is content that merely
-// contains buttons somewhere (a splitter, a stacked page), not a footer.
+// The item is the button box itself, or a wrapper widget or button row whose own items include it. Deeper nesting
+// is content that merely contains buttons (a splitter, a stacked page), not a footer.
 bool holdsButtonBox(QLayoutItem* item) {
   if (isButtonBox(item)) {
     return true;
@@ -826,7 +783,7 @@ void adaptDialogFooter(QWidget* root) {
   if (layout == nullptr || layout->direction() != QBoxLayout::TopToBottom || layout->count() == 0) {
     return;
   }
-  // A padded root insets its buttons along with everything else: nothing to frame.
+  // A padded root already insets its buttons: nothing to frame.
   const QMargins outer = layout->contentsMargins();
   if (outer.left() != 0 || outer.right() != 0 || outer.bottom() != 0) {
     return;
@@ -841,15 +798,13 @@ void adaptDialogFooter(QWidget* root) {
   auto* footer = new QWidget(root);
   footer->setObjectName(QLatin1String(kDialogFooterName));
   footer->setAttribute(Qt::WA_StyledBackground, true);  // the QSS hairline needs it
-  // Vertically Fixed like the QDialogButtonBox it usually replaces: a Preferred
-  // footer would share the dialog's spare height with the content above it.
+  // Vertically Fixed like the QDialogButtonBox it replaces: a Preferred footer would take a share of the spare height.
   footer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
   auto* footer_layout = new QVBoxLayout(footer);
   const int inset = theme::space(theme::Space::Comfortable);
   footer_layout->setContentsMargins(inset, inset, inset, inset);
   footer_layout->setSpacing(0);
 
-  // The footer's inset replaces the moved item's own outer padding.
   if (last_widget != nullptr) {
     if (qobject_cast<QDialogButtonBox*>(last_widget) == nullptr && last_widget->layout() != nullptr) {
       last_widget->layout()->setContentsMargins(0, 0, 0, 0);
@@ -916,8 +871,7 @@ void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer) {
   if (inner == nullptr || outer == nullptr) {
     return;
   }
-  // Esc (or any programmatic accept/reject) on the embedded root closes the
-  // hosting chrome with the same result instead of hiding just the content.
+  // Esc, accept or reject on the embedded root closes the hosting chrome with the same result, not just the content.
   QObject::connect(inner, &QDialog::finished, outer, [outer](int result) { outer->done(result); });
 }
 

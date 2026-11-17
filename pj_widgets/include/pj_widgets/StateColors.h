@@ -13,19 +13,16 @@
 
 namespace PJ {
 
-/// Plain 8-bit RGB triple so the palette + hash stay usable without QtGui
-/// (mirrors Colormap.h's ColormapRgb convention).
+/// Plain 8-bit RGB triple, so the palette and hash work without QtGui (as Colormap.h's ColormapRgb).
 struct StateRgb {
   uint8_t r = 0;
   uint8_t g = 0;
   uint8_t b = 0;
 };
 
-/// Categorical palette for state-transition bands. Hand-picked, colorblind-aware
-/// (Okabe-Ito plus two extensions), medium saturation so white/black label text
-/// stays legible on both themes. Order matters: stateColorIndex() indexes into
-/// it, so reordering silently recolors every saved screenshot — append, don't
-/// shuffle.
+/// Categorical palette for state-transition bands: hand-picked, colorblind-aware (Okabe-Ito plus two extensions),
+/// medium saturation so white and black label text stays legible on both themes. Append only: stateColorIndex() indexes
+/// into it, so reordering recolors every saved screenshot.
 inline constexpr std::array<StateRgb, 10> kStatePalette = {{
     {.r = 0x00, .g = 0x72, .b = 0xB2},  // blue
     {.r = 0xD5, .g = 0x5E, .b = 0x00},  // vermillion
@@ -39,21 +36,20 @@ inline constexpr std::array<StateRgb, 10> kStatePalette = {{
     {.r = 0xBC, .g = 0xBD, .b = 0x22},  // olive
 }};
 
-/// Stable palette index for a state value: FNV-1a over the UTF-8 bytes, modulo
-/// the palette size. Deterministic across sessions/platforms — the same string
-/// maps to the same color everywhere in the app, with zero configuration.
-/// Distinct values CAN collide (10 buckets); that is accepted for v1.
+/// Stable palette index of a state value: FNV-1a over the UTF-8 bytes, modulo the palette size. Deterministic across
+/// sessions and platforms, so a string has one color everywhere with no configuration. Distinct values can collide (10
+/// buckets); accepted.
 [[nodiscard]] constexpr std::size_t stateColorIndex(std::string_view value) noexcept {
   return static_cast<std::size_t>(fnv1a(value) % kStatePalette.size());
 }
 
-/// The palette color for a state value (Qt-free form).
+/// The palette color of a state value (Qt-free form).
 [[nodiscard]] constexpr StateRgb stateRgb(std::string_view value) noexcept {
   return kStatePalette[stateColorIndex(value)];
 }
 
-/// The palette color for a state value as a QColor. Hashes the UTF-8 encoding,
-/// so it agrees with stateRgb()/stateColorIndex() on any input.
+/// The palette color of a state value as a QColor. Hashes the UTF-8 encoding, so it agrees with stateRgb() and
+/// stateColorIndex() on any input.
 [[nodiscard]] inline QColor stateColor(const QString& value) {
   const QByteArray utf8 = value.toUtf8();
   const StateRgb rgb = stateRgb(std::string_view(utf8.constData(), static_cast<std::size_t>(utf8.size())));

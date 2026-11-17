@@ -15,7 +15,7 @@ struct Platform {
   QString checksum;  ///< Format: "sha256:<hex>"
 };
 
-// Registry-declared plugin entry kept for backward-compatible metadata display.
+// A registry `plugins` entry. RegistryManager does not parse it: Extension::plugins stays empty.
 struct ExtensionPlugin {
   QString name;     ///< Plugin class name
   QString type;     ///< "data_loader" | "data_stream" | "message_parser" | "toolbox"

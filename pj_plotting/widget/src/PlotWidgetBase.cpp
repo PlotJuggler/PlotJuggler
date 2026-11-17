@@ -58,9 +58,8 @@ namespace {
          isUsableRect(info.curve->data()->boundingRect());
 }
 
-// The Data Backdrop fill for the active theme. Theme detection uses the synced
-// application palette's Window lightness (Theme::syncApplicationPalette keeps it
-// in lockstep with the theme tokens), so this must be read AFTER a theme applies.
+// The Data Backdrop fill for the active theme. Theme detection reads the synced application palette's Window lightness
+// (Theme::syncApplicationPalette keeps it in lockstep with the theme tokens), so read this after a theme applies.
 [[nodiscard]] QColor dataBackdropForCurrentTheme() {
   const bool is_light = QGuiApplication::palette().color(QPalette::Window).lightness() >= 128;
   return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(is_light));
@@ -74,8 +73,8 @@ namespace {
   return k_colors[static_cast<std::size_t>(index) % k_colors.size()];
 }
 
-// The raster canvas: the non-GPU choice, and the replacement for a failed GPU
-// canvas. Its backing store also serves the panner's drag image.
+// The raster canvas: the non-GPU choice and the replacement for a failed GPU canvas. Its backing store also serves the
+// panner's drag image.
 [[nodiscard]] QwtPlotCanvas* newRasterCanvas(const QPalette& palette) {
   auto* canvas = new QwtPlotCanvas();
   canvas->setFrameStyle(QFrame::Box | QFrame::Plain);
@@ -85,9 +84,8 @@ namespace {
   return canvas;
 }
 
-// Session-wide override for the GPU canvas choice, set by
-// PlotWidgetBase::setGpuCanvasDisabledOverride (the --disable-opengl CLI flag).
-// Read once per plot at construction; only written at startup.
+// Session-wide override of the GPU canvas choice (PlotWidgetBase::setGpuCanvasDisabledOverride, the --disable-opengl
+// flag); read once per plot at construction, written only at startup.
 bool g_gpu_canvas_disabled_override = false;
 
 }  // namespace
@@ -139,8 +137,8 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
 
     magnifier->setAxisEnabled(QwtPlot::xTop, false);
     magnifier->setAxisEnabled(QwtPlot::yRight, false);
-    // Plots default to time-series (xy_mode_ == false); enable the ≥2 ns X zoom
-    // floor up front so a plot that never calls setModeXY is still clamped.
+    // Plots default to time-series (xy_mode_ == false): enable the >= 2 ns X zoom floor up front so a plot that never
+    // calls setModeXY is still clamped.
     magnifier->setTimeXAxis(true);
     magnifier->setZoomInKey(Qt::Key_Plus, Qt::ControlModifier);
     magnifier->setZoomOutKey(Qt::Key_Minus, Qt::ControlModifier);
@@ -150,8 +148,8 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
     panner2->setMouseButton(Qt::MiddleButton, Qt::NoModifier);
 
     connect(zoomer, &PlotZoomer::zoomed, this, [this](const QRectF& rect) { this->resized_callback(rect); });
-    // No replot here: PlotMagnifier::rescale() replots before emitting so the
-    // canvas maps are already committed when this callback runs.
+    // No replot here: PlotMagnifier::rescale() replots before emitting, so the canvas maps are committed when this
+    // callback runs.
     connect(magnifier, &PlotMagnifier::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
     connect(panner1, &PlotPanner::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
     connect(panner2, &PlotPanner::rescaled, this, [this](const QRectF& rect) { this->resized_callback(rect); });
@@ -179,8 +177,8 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
 
   void resizeEvent(QResizeEvent* event) override {
     QwtPlot::resizeEvent(event);
-    // Window geometry is not a viewport gesture. XY plots still need their
-    // aspect ratio corrected, but that correction must not create history.
+    // Window geometry is not a viewport gesture: XY plots still need their aspect ratio corrected, but that must not
+    // create history.
     if (parent->isXYPlot() && parent->keepRatioXY()) {
       parent->applyRectKeepingRatio(canvasBoundingRect());
       replot();
@@ -224,11 +222,9 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
     }
   };
 
-  // QwtPlotCanvas uses a backing-store paint path that ignores QSS background
-  // rules, so the canvas needs a solid palette colour. The Main Plot is the
-  // Data Backdrop surface (ui_framework.md § Data Backdrop); read it from the
-  // framework for the current theme. changeEvent() re-applies it when the theme
-  // is applied after construction or toggled at runtime.
+  // QwtPlotCanvas paints through a backing store that ignores QSS background rules, so the canvas needs a solid
+  // palette colour: the Main Plot is the Data Backdrop surface, read from the framework for the current theme.
+  // changeEvent() re-applies it when the theme is applied after construction or toggled at run time.
   const QColor canvas_bg = dataBackdropForCurrentTheme();
 
   const bool gpu_canvas = gpuCanvasEnabled();
@@ -244,15 +240,13 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
   canvas->setObjectName("qwtCanvas");
 
   plot_ = new QwtPlotPimpl(this, canvas, on_view_resized, on_event);
-  // The canvas is constructed before the plot exists (QwtPlot adopts its canvas
-  // during its own ctor), so bind the source plot now instead of resolving it
-  // from parentWidget() on every frame.
+  // The canvas is constructed before the plot exists (QwtPlot adopts its canvas during its own ctor): bind the source
+  // plot now instead of resolving it from parentWidget() on every frame.
   if (rhi_canvas != nullptr) {
     rhi_canvas->setPlot(plot_);
 #ifndef PJ_TARGET_WASM
-    // A plot must stay usable: on a GPU failure the desktop falls back to the
-    // raster canvas (the browser keeps the canvas's banner). Queued: the canvas
-    // can emit from inside its render(), and the swap deletes it.
+    // A plot must stay usable: on a GPU failure the desktop falls back to the raster canvas (the browser keeps the
+    // canvas's banner). Queued: the canvas can emit from inside its render(), and the swap deletes it.
     connect(rhi_canvas, &QRhiWidget::renderFailed, this, &PlotWidgetBase::fallBackToRasterCanvas, Qt::QueuedConnection);
 #endif
   }
@@ -263,18 +257,17 @@ PlotWidgetBase::PlotWidgetBase(QWidget* parent) : QWidget(parent) {
       PJ::theme::space(theme::Space::None));
   layout->addWidget(plot_);
 
-  // Charts fill their container edge-to-edge; breathing room lives INSIDE the
-  // chart. QwtPlot lays out within contentsRect() and the QSS `QwtPlot` rule
-  // paints the Data Backdrop across the full widget rect, so this margin reads
-  // as chart surface — never as the dock backdrop ringing the plot.
+  // Charts fill their container edge to edge; breathing room lives inside the chart. QwtPlot lays out within
+  // contentsRect() and the QSS `QwtPlot` rule paints the Data Backdrop across the full widget rect, so this margin
+  // reads as chart surface, never as the dock backdrop ringing the plot.
   const int chart_pad = PJ::theme::space(theme::Space::Comfortable);
   plot_->setContentsMargins(chart_pad, chart_pad, chart_pad, chart_pad);
 
   plot_->setMinimumSize(100, 100);
   plot_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
   plot_->canvas()->setMouseTracking(true);
-  // Opaque background: a transparent canvas forces a per-paint alpha-composite of the whole
-  // canvas (slow in software raster) instead of a fast opaque blit. canvas_bg matches the palette set above.
+  // Opaque background: a transparent canvas forces a per-paint alpha composite of the whole canvas (slow in software
+  // raster) instead of a fast opaque blit. canvas_bg matches the palette set above.
   plot_->setCanvasBackground(canvas_bg);
   plot_->setAxisAutoScale(QwtPlot::yLeft, true);
   plot_->setAxisAutoScale(QwtPlot::xBottom, true);
@@ -295,9 +288,8 @@ void PlotWidgetBase::fallBackToRasterCanvas() {
   if (failed == nullptr || qobject_cast<QwtPlotCanvas*>(failed) != nullptr) {
     return;
   }
-  // setCanvas() deletes the failed canvas. A context menu or modal dialog
-  // opened from one of its events runs a nested loop that still owns that
-  // event, so wait until it closes; the banner shows meanwhile.
+  // setCanvas() deletes the failed canvas. A context menu or modal dialog opened from one of its events runs a nested
+  // loop that still owns that event, so wait until it closes; the banner shows meanwhile.
   // ponytail: a QDrag::exec loop is not detected; poll it too if drags from the canvas ever block.
   if (QApplication::activePopupWidget() != nullptr || QApplication::activeModalWidget() != nullptr) {
     // One retry chain, however many failures arrive meanwhile.
@@ -318,10 +310,9 @@ void PlotWidgetBase::fallBackToRasterCanvas() {
   canvas->setMouseTracking(failed->hasMouseTracking());
   canvas->setAcceptDrops(failed->acceptDrops());
   canvas->setFocusPolicy(failed->focusPolicy());
-  // The interaction tools are children of the canvas, and setCanvas() deletes
-  // the old one: move them over disabled, then re-enable them after the plot's
-  // own filter so every canvas event filter keeps its original order (the
-  // legend's Ctrl+wheel in eventFilter() must still run before the magnifier).
+  // The interaction tools are children of the canvas and setCanvas() deletes the old one: move them over disabled, then
+  // re-enable them after the plot's own filter so every canvas event filter keeps its original order (the legend's
+  // Ctrl+wheel in eventFilter() must run before the magnifier).
   const auto move_disabled = [canvas](auto* tool) {
     const bool enabled = tool->isEnabled();
     tool->setEnabled(false);
@@ -359,8 +350,8 @@ void PlotWidgetBase::refreshCanvasBackground() {
 
 void PlotWidgetBase::changeEvent(QEvent* event) {
   QWidget::changeEvent(event);
-  // QGuiApplication::setPalette (Theme::syncApplicationPalette) delivers
-  // ApplicationPaletteChange to every widget; re-derive the Data Backdrop then.
+  // QGuiApplication::setPalette (Theme::syncApplicationPalette) delivers ApplicationPaletteChange to every widget;
+  // re-derive the Data Backdrop then.
   if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange) {
     refreshCanvasBackground();
   }
@@ -382,12 +373,10 @@ PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
   curve->setRenderHint(QwtPlotItem::RenderAntialiased, true);
   curve->attach(qwtPlot());
 
-  // Per-curve tracker marker: the dot that rides an XY curve at the playback
-  // cursor (PlotWidget's XY tracker moves + shows it). Fill matches the curve so
-  // multi-curve XY plots stay legible (all markers show at once — a single
-  // shared color would make them unattributable); hidden until the XY tracker
-  // reveals it. The outline uses the data-backdrop ink so the dot separates
-  // from the identically-colored curve underneath.
+  // Per-curve tracker marker: the dot that rides an XY curve at the playback cursor (PlotWidget's XY tracker moves and
+  // shows it). The fill matches the curve so multi-curve XY plots stay legible (all markers show at once; a shared
+  // colour would make them unattributable); hidden until the XY tracker reveals it. The outline uses the data-backdrop
+  // ink so the dot separates from the identically coloured curve underneath.
   auto* marker = new QwtPlotMarker;
   marker->attach(qwtPlot());
   marker->setVisible(false);
@@ -433,8 +422,7 @@ bool PlotWidgetBase::isEmpty() const noexcept {
 std::map<QString, QColor> PlotWidgetBase::curveColors() const {
   std::map<QString, QColor> colors;
   for (const auto& info : plot_->curve_list) {
-    // Key by source_name (the catalog key), not the display title, so consumers can
-    // match against CurveDescriptor::name.
+    // Key by source_name (the catalog key), not the display title, so consumers can match CurveDescriptor::name.
     colors.insert({info.source_name, info.curve->pen().color()});
   }
   return colors;
@@ -518,10 +506,9 @@ Range<double> PlotWidgetBase::getVisualizationRangeY(Range<double> range_x) cons
     top = 1.0;
   }
 
-  // A curve (or set of curves) whose samples all share one value collapses to a
-  // zero-height range, which Qwt renders as an unreadable flat axis. The 2.5%
-  // proportional margin is 0 in that case, so fall back to a fixed ±0.1 pad that
-  // centers the constant value with visible headroom.
+  // A curve (or set) whose samples all share one value collapses to a zero-height range, which Qwt renders as an
+  // unreadable flat axis; the 2.5% proportional margin is 0 then, so fall back to a fixed +-0.1 pad that centers the
+  // constant value with headroom.
   double margin = (top - bottom) * 0.025;
   if (margin == 0.0) {
     margin = 0.1;
@@ -530,12 +517,11 @@ Range<double> PlotWidgetBase::getVisualizationRangeY(Range<double> range_x) cons
 }
 
 void PlotWidgetBase::setModeXY(bool enable) {
-  // XY (scatter) plots use the plot-level curve style like any other plot — the
-  // Curve Style toolbar controls them; the mode is not tied to a forced style.
+  // XY (scatter) plots use the plot-level curve style like any plot (the Curve Style toolbar controls it); the mode is
+  // not tied to a forced style.
   xy_mode_ = enable;
-  // A time-series plot's X is absolute time; enable the magnifier's ≥2 ns zoom
-  // floor for it. An XY plot's X is a data value with no ns quantization, so no
-  // clamp there.
+  // A time-series plot's X is absolute time: enable the magnifier's >= 2 ns zoom floor. An XY plot's X is a data value
+  // with no ns quantization, so no clamp.
   if (plot_ != nullptr && plot_->magnifier != nullptr) {
     plot_->magnifier->setTimeXAxis(!enable);
   }
@@ -561,8 +547,8 @@ void PlotWidgetBase::applyTimeAxisFormat() {
     engine = new PlotTimeScaleEngine(format);
     plot_->setAxisScaleDraw(QwtPlot::xBottom, new PlotTimeScaleDraw(format));
   }
-  // The visible interval stays as last set by setAxisScale: Qwt keeps the axis
-  // min/max across an engine swap and only re-divides the ticks.
+  // The visible interval stays as last set by setAxisScale: Qwt keeps the axis min/max across an engine swap and only
+  // re-divides the ticks.
   engine->setAttribute(QwtScaleEngine::Floating, true);
   plot_->setAxisScaleEngine(QwtPlot::xBottom, engine);
   replot();
@@ -581,8 +567,7 @@ void PlotWidgetBase::setLegendSize(int size) {
 
 void PlotWidgetBase::setLegendAlignment(Qt::Alignment alignment) {
   plot_->legend->setAlignmentInCanvas(alignment);
-  // The retained QRhi buffers need an explicit dirty signal after the item
-  // mutation.
+  // The retained QRhi buffers need an explicit dirty signal after the item mutation.
   replot();
 }
 
@@ -609,8 +594,8 @@ bool PlotWidgetBase::gridVisible() const noexcept {
 
 void PlotWidgetBase::setCanvasAlignedToScales(bool aligned) {
   plot_->plotLayout()->setAlignCanvasToScales(aligned);
-  // The internal chart padding belongs to the default (dock-hosted) mode only;
-  // embedded charts sit flush against the surrounding chrome.
+  // The internal chart padding belongs to the default (dock-hosted) mode; embedded charts sit flush against the
+  // surrounding chrome.
   const int chart_pad = aligned ? PJ::theme::space(theme::Space::Comfortable) : PJ::theme::space(theme::Space::None);
   plot_->setContentsMargins(chart_pad, chart_pad, chart_pad, chart_pad);
   plot_->updateLayout();
@@ -656,14 +641,14 @@ void PlotWidgetBase::setKeepRatioXY(bool active) {
   if (!isXYPlot()) {
     return;
   }
-  // Reshape current view; otherwise the toggle only takes effect on the next
-  // drag-zoom. OFF re-fits to data bounds (loses zoom by design).
+  // Reshape the current view; otherwise the toggle takes effect only on the next drag-zoom. OFF re-fits to the data
+  // bounds (loses zoom by design).
   if (active) {
     applyRectKeepingRatio(currentBoundingRect());
     replot();
   } else {
-    // resetZoom() refreshes max bounds first: data may have changed since the
-    // last reset, so the cached max_zoom_rect_ could be stale.
+    // resetZoom() refreshes the max bounds first: data may have changed since the last reset, so the cached
+    // max_zoom_rect_ could be stale.
     resetZoom();
   }
 }
@@ -714,10 +699,9 @@ void PlotWidgetBase::updateCurvesStyle() {
 
 void PlotWidgetBase::setLineWidth(LineWidth width) {
   line_width_ = width;
-  // Re-apply the current style at the new width so every curve gets the
-  // style-correct pen (Lines use lineWidthValue, Dots use the larger
-  // dotWidthValue, Lines+Dots dot widths follow) — the same treatment a new
-  // curve gets from addCurve(). A plain pen-width loop would miss that.
+  // Re-apply the current style at the new width so every curve gets the style-correct pen (Lines use lineWidthValue,
+  // Dots the larger dotWidthValue, Lines+Dots dot widths follow), as addCurve() gives a new curve; a plain pen-width
+  // loop would miss that.
   updateCurvesStyle();
 }
 
@@ -757,9 +741,8 @@ void PlotWidgetBase::setStyle(QwtPlotCurve* curve, CurveStyle style) {
 }
 
 void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
-  // kLinesAndDots draws plain Lines plus dots at each sample: PlotCurve's
-  // batched drawDots pass on the QPainter canvases, square dot geometry of the
-  // same width in PlotRhiCanvas.
+  // kLinesAndDots draws plain Lines plus dots at each sample: PlotCurve's batched drawDots pass on the QPainter
+  // canvases, square dot geometry of the same width in PlotRhiCanvas.
   if (auto* plot_curve = dynamic_cast<PlotCurve*>(curve); plot_curve != nullptr) {
     plot_curve->setDotWidth(0.0);
   }
@@ -810,8 +793,7 @@ void PlotWidgetBase::setGpuCanvasDisabledOverride(bool disabled) {
 }
 
 bool PlotWidgetBase::gpuCanvasEnabled() {
-  // The browser has no raster canvas; on desktop the "GPU canvas" preference and
-  // --disable-opengl select it.
+  // The browser has no raster canvas; on desktop the "GPU canvas" preference and --disable-opengl select it.
 #ifdef PJ_TARGET_WASM
   return true;
 #else

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // ResultHistory: the ring (derived topics in a real ObjectStore) and the compute cache, driven
-// directly, as the scheduler (slice 6a-4) drives them. Nodes come from a real RecipeGraph over a
+// directly, as the scheduler drives them. Nodes come from a real RecipeGraph over a
 // fake resolver; bundles are built by hand, no script runs.
 
 #include <gtest/gtest.h>
@@ -146,9 +146,9 @@ struct Fixture {
   ResultHistory history;
 };
 
-// ---- CUR: what a publication writes ---------------------------------------------------------------
+// ---- What a publication writes --------------------------------------------------------------------
 
-// CUR-01: the entry sits at the result time (the newest resolved input), not at the requested time,
+// The entry sits at the result time (the newest resolved input), not at the requested time,
 // and the payload keeps the stamp its script left.
 TEST(ResultHistoryTest, ObjectOutputsAreStampedAtTheirInputsNotAtTheRequestedTime) {
   Fixture fx;
@@ -176,7 +176,7 @@ TEST(ResultHistoryTest, ObjectOutputsAreStampedAtTheirInputsNotAtTheRequestedTim
   EXPECT_EQ(timestampsOf(fx.store, topic), (std::vector<Timestamp>{10 * kSec, 15 * kSec}));
 }
 
-// CUR-03: seeking back to a computed instant is a cache hit with the same values; nothing new lands.
+// Seeking back to a computed instant is a cache hit with the same values; nothing new lands.
 TEST(ResultHistoryTest, SeekBackAndForthReusesCacheAndDedupes) {
   Fixture fx;
   const auto& node = fx.install(cropRecipe());
@@ -192,7 +192,7 @@ TEST(ResultHistoryTest, SeekBackAndForthReusesCacheAndDedupes) {
   EXPECT_EQ(fx.store.entryCount(fx.topic("owner/crop/witness")), 2u);
 }
 
-// CUR-05: an unavailable object output writes an empty object of its type (a cloud with no points, a
+// An unavailable object output writes an empty object of its type (a cloud with no points, a
 // scene that deletes everything), so the layer clears; the next available result draws again.
 TEST(ResultHistoryTest, UnavailableOutputPublishesEmptyObject) {
   Fixture fx;
@@ -215,7 +215,7 @@ TEST(ResultHistoryTest, UnavailableOutputPublishesEmptyObject) {
   EXPECT_EQ(decodeAt<sdk::PointCloud>(fx.store, cropped, 20 * kSec).width, 3u);
 }
 
-// CUR-09 (the ring half): a failed run's tombstones go in the frame each output was last published in,
+// A failed run's tombstones go in the frame each output was last published in,
 // at the result time.
 TEST(ResultHistoryTest, ScriptErrorPublishesEmptyObjectsInTheLastFrame) {
   Fixture fx;
@@ -365,9 +365,9 @@ TEST(ResultHistoryTest, AnUnavailableOutputOfAnyProducibleTypeWritesAStampedTomb
   EXPECT_EQ(voxels.timestamp_ns, t);
 }
 
-// ---- PUB: derived topics --------------------------------------------------------------------------
+// ---- Derived topics -------------------------------------------------------------------------------
 
-// PUB-01: a new revision keeps the topic id and drops the previous revision's entries; the same
+// A new revision keeps the topic id and drops the previous revision's entries; the same
 // revision again changes nothing; forgetting the node retires the topic.
 TEST(ResultHistoryTest, ReinstallAndForgetClearPreviousEntries) {
   Fixture fx;
@@ -400,7 +400,7 @@ TEST(ResultHistoryTest, ReinstallAndForgetClearPreviousEntries) {
   EXPECT_EQ(fx.history.cacheBytes(), 0u);
 }
 
-// PUB-02: removal retires every object topic of the node and returns them; an edit retires none; a
+// Removal retires every object topic of the node and returns them; an edit retires none; a
 // second removal has nothing to retire. Number and string outputs never get a topic.
 TEST(ResultHistoryTest, RemovalRetiresObjectTopicsButEditKeepsThem) {
   Fixture fx;
@@ -423,7 +423,7 @@ TEST(ResultHistoryTest, RemovalRetiresObjectTopicsButEditKeepsThem) {
   EXPECT_TRUE(fx.history.forget(recipe.key()).empty());
 }
 
-// PUB-03: an edit that drops or retypes an output retires that output's topic only.
+// An edit that drops or retypes an output retires that output's topic only.
 TEST(ResultHistoryTest, EditRetiresTopicsOfDroppedOutputsAndKeepsTheRest) {
   Fixture fx;
   auto recipe = recipeWith("edit", {croppedSpec(), witnessSpec()});
@@ -509,9 +509,9 @@ TEST(ResultHistoryTest, InstallConflictLeavesEveryPreviousOutputUntouched) {
       << "the new revision is not installed";
 }
 
-// ---- MAT: the window, the budget, the bundle ------------------------------------------------------
+// ---- The window, the budget, the bundle -----------------------------------------------------------
 
-// MAT-01: entries farther than the window from the requested time are trimmed, also by a publication
+// Entries farther than the window from the requested time are trimmed, also by a publication
 // that writes nothing new; the cache and the ledger follow, so a revisit computes and lands again.
 TEST(ResultHistoryTest, MaterializationWindowTrimsFarEntriesAndRepublishesRevisits) {
   Fixture fx;
@@ -532,7 +532,7 @@ TEST(ResultHistoryTest, MaterializationWindowTrimsFarEntriesAndRepublishesRevisi
   EXPECT_EQ(fx.store.entryCount(topic), 2u) << "no stale dedup record for a trimmed entry";
 }
 
-// MAT-02 (changed, N7): a dense window is never refused; past the ring budget the result farthest from
+// A dense window is never refused; past the ring budget the result farthest from
 // the cursor goes.
 TEST(ResultHistoryTest, RingEvictsTheOldestInsteadOfRefusingADenseWindow) {
   const size_t one = serializedSize(sdk::BuiltinObject(makeCloud(1)));
@@ -549,7 +549,7 @@ TEST(ResultHistoryTest, RingEvictsTheOldestInsteadOfRefusingADenseWindow) {
   EXPECT_EQ(timestampsOf(fx.store, topic), std::vector<Timestamp>{100 * kSec});
 }
 
-// MAT-03 (changed, N7): one global budget; an oversized result is not refused, the displayed one is
+// One global budget; an oversized result is not refused, the displayed one is
 // never evicted, and the excess is reported.
 TEST(ResultHistoryTest, GlobalBudgetNeverRefusesAnOversizedResultNorEvictsTheDisplayedOne) {
   const size_t one = serializedSize(sdk::BuiltinObject(makeCloud(1)));
@@ -565,7 +565,7 @@ TEST(ResultHistoryTest, GlobalBudgetNeverRefusesAnOversizedResultNorEvictsTheDis
   EXPECT_EQ(fx.history.protectedExcessBytes(), 1u);
 }
 
-// MAT-04: the window and the eviction distance saturate at the Timestamp limits.
+// The window and the eviction distance saturate at the Timestamp limits.
 TEST(ResultHistoryTest, MaterializationWindowSaturatesAtTimestampLimits) {
   {
     // A non-current neighbour next to each limit stays in the window: the window saturates, never wraps.
@@ -609,7 +609,7 @@ TEST(ResultHistoryTest, MaterializationWindowSaturatesAtTimestampLimits) {
   }
 }
 
-// MAT-05 (changed, N7): the outputs of one result land together or not at all. A serialization
+// The outputs of one result land together or not at all. A serialization
 // failure (an output of the wrong type) or a staging failure (a topic gone) leaves every output's
 // previous entry, and the history, as they were.
 TEST(ResultHistoryTest, BundlePublicationIsAllOrNothing) {
@@ -804,7 +804,7 @@ TEST(ResultHistoryTest, ACachedBundleReleasesItsOutputsBeforeTheirKeepalives) {
   EXPECT_EQ(*released, (std::vector<std::string>{"object", "library"}));
 }
 
-// MAT-06: a different result at the same stamp replaces the entry; an external eviction leaves no
+// A different result at the same stamp replaces the entry; an external eviction leaves no
 // stale dedup record, so the next publication of the same key lands again.
 TEST(ResultHistoryTest, SameStampReplacementAndExternalEvictionDoNotLeaveStaleDedup) {
   Fixture fx;
@@ -830,9 +830,9 @@ TEST(ResultHistoryTest, SameStampReplacementAndExternalEvictionDoNotLeaveStaleDe
   EXPECT_EQ(fx.store.entryCount(topic), 1u);
 }
 
-// ---- CACHE: identity and observations -------------------------------------------------------------
+// ---- Cache identity and observations --------------------------------------------------------------
 
-// CACHE-01: another dataset epoch is another result.
+// Another dataset epoch is another result.
 TEST(ResultHistoryTest, EpochInvalidatesTheCache) {
   Fixture fx;
   const auto& node = fx.install(passthroughRecipe());
@@ -843,7 +843,7 @@ TEST(ResultHistoryTest, EpochInvalidatesTheCache) {
   EXPECT_TRUE(fx.history.lookup(node.recipe.key(), keyOf(node, 20 * kSec), 20 * kSec, 20 * kSec, 0).has_value());
 }
 
-// CACHE-02, CACHE-03: a run that never read the query clock (input-clock mode never does) is one
+// A run that never read the query clock (input-clock mode never does) is one
 // result at every instant its inputs resolve the same: one publication, one entry.
 TEST(ResultHistoryTest, AnUnobservedClockReusesOneResultAcrossInstants) {
   Fixture fx;
@@ -872,7 +872,7 @@ TEST(ResultHistoryTest, AnUnobservedClockReusesOneResultAcrossInstants) {
   EXPECT_FALSE(fx.history.lookup("owner/clocked", request_clocked, 10 * kSec, 13 * kSec, 0).has_value());
 }
 
-// CACHE-04: a run that read the clock is keyed by its instant. The ring holds one result per stamp, so the
+// A run that read the clock is keyed by its instant. The ring holds one result per stamp, so the
 // 13 s result replaces the 12 s one at their shared stamp, and the cache, which kept no decoded copy of
 // it, lets it go too: back at 12 s is a miss.
 TEST(ResultHistoryTest, ReadingTheClockKeysPerInstant) {
@@ -892,7 +892,7 @@ TEST(ResultHistoryTest, ReadingTheClockKeysPerInstant) {
       << "replaced in the ring at its stamp";
 }
 
-// CACHE-05: a run that read the TF tree at an explicit time observed the TF revision, not the clock:
+// A run that read the TF tree at an explicit time observed the TF revision, not the clock:
 // a hit at every instant until the TF changes.
 TEST(ResultHistoryTest, ObservingOnlyTheTfKeysByTheTfRevision) {
   Fixture fx;
@@ -905,7 +905,7 @@ TEST(ResultHistoryTest, ObservingOnlyTheTfKeysByTheTfRevision) {
   EXPECT_FALSE(fx.history.lookup(node.recipe.key(), request, 20 * kSec, 22 * kSec, 8).has_value());
 }
 
-// CACHE-06: observation is per run: a result that observed nothing stays timeless next to results of
+// Observation is per run: a result that observed nothing stays timeless next to results of
 // other inputs that are keyed per instant.
 TEST(ResultHistoryTest, ObservationIsPerRun) {
   Fixture fx;
@@ -969,9 +969,9 @@ TEST(ResultHistoryTest, ClockReadingResultsOfOneKeyAreCachedPerStamp) {
   EXPECT_NE(hit->bundle, nullptr) << "the 10 s result has its own cache entry";
 }
 
-// ---- PIN: findings ---------------------------------------------------------------------------------
+// ---- Findings --------------------------------------------------------------------------------------
 
-// PIN-02 (store half, changed: D26): a finding's single entry sits at kFindingTimestamp and keeps its
+// A finding's single entry sits at kFindingTimestamp and keeps its
 // stamp in the payload; the same result again writes nothing, a new one replaces it.
 TEST(ResultHistoryTest, PinnedFindingSitsAtTheFindingTimestamp) {
   Fixture fx;
@@ -996,7 +996,7 @@ TEST(ResultHistoryTest, PinnedFindingSitsAtTheFindingTimestamp) {
   EXPECT_EQ(decodeAt<sdk::PointCloud>(fx.store, topic, 0).width, 3u);
 }
 
-// PIN-03: a finding's bytes count against the ring; past the budget they
+// A finding's bytes count against the ring; past the budget they
 // are the protected excess, never evicted.
 TEST(ResultHistoryTest, FindingsAccountingCountsPinnedBytes) {
   const size_t one = serializedSize(sdk::BuiltinObject(makeCloud(2, 20 * kSec)));
@@ -1011,7 +1011,7 @@ TEST(ResultHistoryTest, FindingsAccountingCountsPinnedBytes) {
   EXPECT_EQ(fx.store.entryCount(fx.topic("owner/pin/cropped")), 1u);
 }
 
-// PIN-04 (store half, changed: D26): a finding is never trimmed by the window nor evicted by the
+// A finding is never trimmed by the window nor evicted by the
 // budget, whatever the cursors; forgetting it (dismiss) removes it and its bytes.
 TEST(ResultHistoryTest, PinnedFindingsAreNeverTrimmedNorEvicted) {
   const size_t one = serializedSize(sdk::BuiltinObject(makeCloud(1)));
@@ -1034,7 +1034,7 @@ TEST(ResultHistoryTest, PinnedFindingsAreNeverTrimmedNorEvicted) {
   EXPECT_FALSE(fx.store.findTopic(kDataset, "owner/pin/cropped").has_value());
 }
 
-// GAP-01 (store half): an at-or-before read returns the finding at any instant, the sentinel itself
+// An at-or-before read returns the finding at any instant, the sentinel itself
 // included; the payload keeps the real stamp.
 TEST(ResultHistoryTest, PinnedFindingIsVisibleAtAnyInstant) {
   Fixture fx;
@@ -1053,7 +1053,7 @@ TEST(ResultHistoryTest, PinnedFindingIsVisibleAtAnyInstant) {
 
 // ---- The ring and the cache under one rule ---------------------------------------------------------
 
-// GAP-11: the ring evicts the result farthest from the cursor, not the oldest; a backward seek within
+// The ring evicts the result farthest from the cursor, not the oldest; a backward seek within
 // the retained span is served from the ring.
 TEST(ResultHistoryTest, RingEvictsFarthestFromCursor) {
   const size_t one = serializedSize(sdk::BuiltinObject(makeCloud(1)));
@@ -1075,7 +1075,7 @@ TEST(ResultHistoryTest, RingEvictsFarthestFromCursor) {
   EXPECT_EQ(timestampsOf(fx.store, topic), (std::vector<Timestamp>{2 * kSec, 3 * kSec, 4 * kSec, 5 * kSec}));
 }
 
-// GAP-41: one budget across nodes: the victim is the result farthest from its own node's cursor,
+// One budget across nodes: the victim is the result farthest from its own node's cursor,
 // never a node's displayed result, and nothing is refused.
 TEST(ResultHistoryTest, GlobalBudgetEvictsFarthestAcrossNodes) {
   const size_t one = serializedSize(sdk::BuiltinObject(makeCloud(1)));
@@ -1105,7 +1105,7 @@ TEST(ResultHistoryTest, GlobalBudgetEvictsFarthestAcrossNodes) {
   EXPECT_EQ(tight.history.protectedExcessBytes(), one);
 }
 
-// GAP-10: a 100 Hz live edge for 40 s of stamps never fails a publication, and the window bounds the
+// A 100 Hz live edge for 40 s of stamps never fails a publication, and the window bounds the
 // entries per topic.
 TEST(ResultHistoryTest, LiveEdgeNeverRefusesAt100Hz) {
   Fixture fx;
@@ -1124,7 +1124,7 @@ TEST(ResultHistoryTest, LiveEdgeNeverRefusesAt100Hz) {
   EXPECT_GE(fx.store.timeRange(topic).first, 10 * kSec);
 }
 
-// GAP-50: a compute-cache miss whose result is still in the ring is answered "stored": the store
+// A compute-cache miss whose result is still in the ring is answered "stored": the store
 // already shows it, so nothing is recomputed. An entry gone from the store is a miss.
 TEST(ResultHistoryTest, CacheMissChecksTheStoreFirst) {
   Fixture fx(Limits{.cache_bytes = 1});
@@ -1148,7 +1148,7 @@ TEST(ResultHistoryTest, CacheMissChecksTheStoreFirst) {
       << "one output gone: the result is not in the store any more";
 }
 
-// GAP-51: the compute cache is sized by time span, not by an entry count: a 1.5 s jog at 10 Hz stays a
+// The compute cache is sized by time span, not by an entry count: a 1.5 s jog at 10 Hz stays a
 // hit end to end.
 TEST(ResultHistoryTest, ComputeCacheIsSizedByTimeSpan) {
   Fixture fx;
@@ -1164,7 +1164,7 @@ TEST(ResultHistoryTest, ComputeCacheIsSizedByTimeSpan) {
   }
 }
 
-// BUD-02 (changed, N7): the compute cache is bounded in decoded bytes; past the budget the result
+// The compute cache is bounded in decoded bytes; past the budget the result
 // farthest from its node's cursor goes, and nothing is refused (a 1-byte budget keeps nothing).
 TEST(ResultHistoryTest, CacheBytesAreBounded) {
   {
@@ -1203,7 +1203,7 @@ TEST(ResultHistoryTest, CacheBytesAreBounded) {
   }
 }
 
-// GAP-49: a decoded object is sized from its fields (a point cloud's buffer), never by serializing it.
+// A decoded object is sized from its fields (a point cloud's buffer), never by serializing it.
 TEST(ResultHistoryTest, ByteEstimateDoesNotSerialize) {
   constexpr size_t kPoints = size_t{1} << 20;  // 16 MiB of points
   const scripting::ScriptValue cloud = sdk::BuiltinObject(makeCloud(kPoints));
@@ -1354,7 +1354,7 @@ TEST(ResultHistoryTest, CacheOnlyResultKeepsItsDecodedBundle) {
   EXPECT_EQ(fx.history.cacheBytes(), entry) << "the replaced result went with its ring entry";
 }
 
-// GAP-14 (store half): a payload a layer holds stays readable and unchanged after a replacement at its
+// A payload a layer holds stays readable and unchanged after a replacement at its
 // stamp and an eviction of its entry.
 TEST(ResultHistoryTest, HeldFrameSurvivesPublicationAndEviction) {
   const size_t one = serializedSize(sdk::BuiltinObject(makeCloud(3)));
@@ -1409,10 +1409,9 @@ TEST(ResultHistoryTest, DroppingResultsPrunesEveryEntryOfTheTopicsLeft) {
   EXPECT_EQ(fx.store.entryCount(cropped), 0u);
 }
 
-// The GUI-thread cost of one publication (serialize, pushOwnedBundle, ledger, cache, budgets) with
-// ~100 entries retained per topic, within the ring budget and with room for only ~50 results, where every
-// publication evicts one. Step 0 measured 0.16 ms (small objects) and 0.4-0.85 ms (1.5 MB cloud) for the
-// prototype's publication.
+// The GUI-thread cost of one publication (serialize, pushOwnedBundle, ledger, cache, budgets) with ~100 entries
+// retained per topic, within the ring budget and with room for only ~50 results, where every publication evicts one. An
+// early prototype of the publication measured 0.16 ms (small objects) and 0.4-0.85 ms (1.5 MB cloud).
 TEST(ResultHistoryBench, PublishCost) {
   if (!sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";

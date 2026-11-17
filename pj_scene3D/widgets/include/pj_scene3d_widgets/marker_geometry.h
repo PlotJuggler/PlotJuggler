@@ -25,7 +25,6 @@ struct MarkerInstanceSource {
   float top_scale = 1.0F;
 };
 
-// A marker colour as the renderer's float RGBA: each channel / 255.
 [[nodiscard]] inline glm::vec4 markerColor(const PJ::sdk::ColorRGBA& color) {
   return {color.r / 255.0F, color.g / 255.0F, color.b / 255.0F, color.a / 255.0F};
 }
@@ -38,7 +37,6 @@ struct MarkerStreamBatch {
   glm::dmat4 model{1.0};
   std::vector<glm::dvec3> points;
   std::vector<std::uint32_t> indices;
-  // Per-point colours, parallel to `points`; empty when every vertex is `color`.
   std::vector<PJ::sdk::ColorRGBA> colors;
   glm::vec4 color{1.0F};
   std::uint32_t frame_index = 0;
@@ -59,7 +57,6 @@ struct MarkerBounds {
 
 struct MarkerGeometry {
   std::vector<std::string> frames;
-  // Frame-local bounds, parallel to `frames`.
   std::vector<MarkerBounds> frame_bounds;
   std::vector<MarkerInstanceSource> cubes;
   std::vector<MarkerInstanceSource> spheres;
@@ -68,7 +65,6 @@ struct MarkerGeometry {
   std::vector<MarkerInstanceSource> axes;
   std::vector<MarkerStreamBatch> lines;
   std::vector<MarkerStreamBatch> triangles;
-  // Expanded vertices: the sums of the batches' vertexCount().
   std::uint64_t line_vertices = 0;
   std::uint64_t triangle_vertices = 0;
   std::uint64_t skipped_texts = 0;

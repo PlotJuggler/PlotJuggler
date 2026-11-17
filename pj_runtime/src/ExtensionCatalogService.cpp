@@ -54,16 +54,11 @@ QString defaultPendingDir() {
 // User-managed extra plugin folders (Preferences page). QStringList.
 constexpr auto kCustomPluginFoldersKey = "Preferences::plugin_folders";
 
-// Plugins bundled with an installed build (the "share" dir). Per the FHS
-// bin/lib split (the binary installs to <prefix>/bin, arch-dependent code to
-// <prefix>/lib), the bundled plugins live at <prefix>/lib/plotjuggler/plugins,
-// resolved relative to the executable so the install stays relocatable — the
-// same path works under /usr, /usr/local, or a mounted AppImage. It is a seed
-// source only (see seedBundledPlugins), never a scanned load path. A dev build
-// tree has no such directory, so seeding is a no-op there; developers point at
-// their freshly built plugins with --plugin-dir instead. A macOS app bundle
-// keeps them in Contents/Resources/plugins: each plugin directory holds a
-// manifest next to its library, and code signing refuses non-code files under
+// Plugins bundled with an installed build (the "share" dir): <prefix>/lib/plotjuggler/plugins per the FHS bin/lib
+// split, resolved relative to the executable so the install stays relocatable (/usr, /usr/local, a mounted AppImage).
+// A seed source only (see seedBundledPlugins), never a scanned load path. A dev build tree has no such directory, so
+// seeding is a no-op there; developers use --plugin-dir. A macOS app bundle keeps them in Contents/Resources/plugins:
+// each plugin directory holds a manifest next to its library, and code signing refuses non-code files under
 // Contents/PlugIns (packaging/macos).
 QString bundledPluginsDir() {
 #if defined(Q_OS_MACOS)
@@ -154,14 +149,10 @@ bool sameDsoSignature(const std::filesystem::path& installed_dso, const std::fil
   return !ec && installed_time == bundled_time;
 }
 
-// Manifest descriptor of the copy of `id` installed under dir, or nullopt when
-// the folder is absent or holds no loadable plugin with that id (a gutted or
-// half-written copy) — both mean "reseed".
-//
-// Returns the full descriptor rather than just the version, because the seed's
-// compat check needs abi_major and min_sdk_required — a stale
-// installed copy that would be rejected at load time gets replaced with the
-// bundled build, which is compatible by construction.
+// Manifest descriptor of the copy of `id` installed under dir, or nullopt when the folder is absent or holds no
+// loadable plugin with that id (a gutted or half-written copy): both mean "reseed". Returns the full descriptor, not
+// just the version, because the seed's compat check needs abi_major and min_sdk_required: a stale installed copy the
+// load would reject is replaced with the bundled build, compatible by construction.
 std::optional<PluginDescriptor> installedPluginDescriptor(const std::filesystem::path& dir, const std::string& id) {
   std::error_code ec;
   if (!std::filesystem::exists(dir, ec)) {
@@ -205,11 +196,8 @@ ExtensionCatalogService::ExtensionCatalogService(
   marketplace_dir_ = default_marketplace ? defaultExtensionsDir() : std::move(paths.marketplace_dir);
   extensions_dir_ = default_mode_ ? marketplace_dir_ : std::move(paths.install_dir);
   bundled_dir_ = paths.bundled_dir.isEmpty() ? bundledPluginsDir() : std::move(paths.bundled_dir);
-  // The staging dir must live with the MANAGED dir it stages for — i.e., the
-  // marketplace dir, never the --plugin-dir override. The platform default is
-  // used only when the marketplace dir itself is the platform default. Anchored
-  // to marketplace_dir_ (not extensions_dir_) so a --plugin-dir override leaves
-  // installs/staging on the real managed path.
+  // The staging dir must live with the MANAGED dir it stages for: the marketplace dir, never the --plugin-dir override
+  // (the platform default only when the marketplace dir itself is the default).
   const QString pending_dir = default_marketplace ? defaultPendingDir() : marketplace_dir_ + "/.pending";
 
 #ifndef PJ_TARGET_WASM
@@ -226,18 +214,14 @@ ExtensionCatalogService::ExtensionCatalogService(
     reportDiagnostic(DiagnosticLevel::kError, message);
   }
 
-  // The ExtensionManager tracks what the marketplace INSTALLS and MANAGES; that
-  // is always marketplace_dir_, independent of any --plugin-dir override (which
-  // only reorders the LOAD scan hierarchy via buildScanHierarchy). Passing
-  // extensions_dir_ here would make the marketplace UI look at the CLI override
-  // dir and lose sight of every plugin the user actually installed.
+  // The ExtensionManager tracks what the marketplace INSTALLS and MANAGES: always marketplace_dir_, independent of any
+  // --plugin-dir override (which only reorders the LOAD scan hierarchy via buildScanHierarchy). Passing extensions_dir_
+  // would make the marketplace UI look at the override dir and lose sight of every plugin the user installed.
   extension_manager_ = std::make_unique<ExtensionManager>(nullptr, marketplace_dir_, pending_dir, sink_, this);
 
-  // Sync bundled plugins into the marketplace dir BEFORE the scan — the bundled
-  // dir is never scanned, so the seed is the only route by which shipped
-  // plugins load. Runs in every mode, after the ExtensionManager applied
-  // pending staged installs above, so a staged upgrade is promoted before the
-  // seed's version comparison sees it.
+  // Sync bundled plugins into the marketplace dir BEFORE the scan: the bundled dir is never scanned, so the seed is the
+  // only route by which shipped plugins load. Runs in every mode, after the ExtensionManager applied pending staged
+  // installs, so a staged upgrade is promoted before the seed's version comparison sees it.
   seedBundledPlugins();
 #else
   (void)pending_dir;
@@ -306,21 +290,17 @@ QStringList ExtensionCatalogService::builtinPluginFolders() const {
 
 std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool extensions_dir_is_explicit) const {
   std::vector<PluginDirEntry> dirs;
-  // A folder that doesn't exist on disk contributes no plugins, so skip it
-  // rather than hand it to the catalog — scanning a missing directory reports a
-  // kError per launch, which for an absent *optional* folder (e.g. a user-typed
-  // custom folder already shown in red in the Preferences page) is noise that
-  // masks real plugin-load errors.
+  // A folder that does not exist contributes no plugins: skip it rather than hand it to the catalog, since scanning a
+  // missing directory reports a kError per launch, which for an absent *optional* folder (e.g. a user-typed custom
+  // folder already shown in red in Preferences) is noise masking real plugin-load errors.
   const auto add_if_exists = [&dirs](const QString& folder, bool authoritative) {
     if (!folder.isEmpty() && QDir(folder).exists()) {
       dirs.push_back({std::filesystem::path(folder.toStdU16String()), authoritative});
     }
   };
-  // Priority order: the --plugin-dir override outranks everything, then the
-  // custom Preferences folders, then the managed marketplace dir. The
-  // user-explicit tiers are authoritative — a version-blind hard override in
-  // the catalog's duplicate-id resolution — so an explicitly given folder wins
-  // even when it holds an older build.
+  // Priority: the --plugin-dir override, then the custom Preferences folders, then the managed marketplace dir. The
+  // user-explicit tiers are authoritative (a version-blind hard override in the catalog's duplicate-id resolution), so
+  // an explicitly given folder wins even when it holds an older build.
   if (extensions_dir_is_explicit) {
     add_if_exists(extensions_dir_, true);
   }
@@ -328,13 +308,10 @@ std::vector<PluginDirEntry> ExtensionCatalogService::buildScanHierarchy(bool ext
     add_if_exists(folder, true);
   }
 #ifndef PJ_TARGET_WASM
-  // The managed marketplace tier is one directory per installed extension, each
-  // resolved to its content-addressed store object when the store backs it and to
-  // extensions/<id>/ otherwise. Scanning per id (rather than the extensions dir
-  // wholesale plus a separate store tier) discovers each managed plugin exactly
-  // once — no duplicate-id churn — and loads it from the immutable object when
-  // available. managedPluginDirs() returns only dirs that exist, so they skip the
-  // add_if_exists existence gate.
+  // The managed marketplace tier is one directory per installed extension, each resolved to its content-addressed
+  // store object when the store backs it, else extensions/<id>/. Scanning per id (not the extensions dir wholesale plus
+  // a store tier) discovers each managed plugin once, with no duplicate-id churn, and loads it from the immutable
+  // object when available. managedPluginDirs() returns only existing dirs, so they skip the add_if_exists gate.
   for (const QString& plugin_dir : extension_manager_->managedPluginDirs()) {
     dirs.push_back({std::filesystem::path(plugin_dir.toStdU16String()), false});
   }
@@ -374,16 +351,11 @@ void ExtensionCatalogService::seedBundledPlugins() {
     }
   }
 
-  // The seed is a writer into the managed dir that does not go through the
-  // ExtensionManager mutating API: it clears the shared seed-stage tree and renames
-  // payloads straight in. So it needs the same permission every other mutation
-  // needs. Without the store's writer lease another live instance owns that dir,
-  // and seeding anyway would write across the lease it just failed to take.
-  //
-  // Skipping costs this session the bundled refresh only: the plugins already in
-  // the managed dir still load, and the instance that owns the store has either
-  // done the seed or will. Core marketplace mutations are refused by the lease
-  // anyway, while the read-only shipped-artifact map above remains available.
+  // The seed writes into the managed dir without going through the ExtensionManager mutating API (it clears the shared
+  // seed-stage tree and renames payloads straight in), so it needs the permission every mutation needs. Without the
+  // store's writer lease another live instance owns that dir, and seeding anyway would write across the lease it just
+  // failed to take. Skipping costs this session the bundled refresh only: plugins already in the managed dir still
+  // load, and the instance owning the store has done or will do the seed.
   if (!extension_manager_->hasStoreWriteAccess()) {
     const QString message =
         u"Another PlotJuggler instance is managing extensions: bundled plugins were not refreshed this session."_s;
@@ -392,15 +364,12 @@ void ExtensionCatalogService::seedBundledPlugins() {
     return;
   }
 
-  // Refresh staging area: a SIBLING of the marketplace dir, so the promote
-  // rename never crosses a filesystem, yet an interrupted seed can never leak
-  // a stale payload into the plugin scan (which walks the marketplace dir
-  // recursively). Leftovers from a crashed launch are cleared before anything
-  // else — even when the bundled dir is absent this run.
-  // Derived from the RESOLVED store, like every other sibling PlotJuggler keeps
-  // next to the extensions dir (see PlatformUtils::canonicalStoreRoot): beside a
-  // symlinked store the staging area can land on another filesystem, and then the
-  // promoting rename below is EXDEV instead of an atomic move.
+  // Refresh staging area: a SIBLING of the marketplace dir, so the promote rename never crosses a filesystem, yet an
+  // interrupted seed cannot leak a stale payload into the plugin scan (which walks the marketplace dir recursively).
+  // Leftovers from a crashed launch are cleared first, even when the bundled dir is absent. Derived from the RESOLVED
+  // store like every other sibling kept next to the extensions dir (PlatformUtils::canonicalStoreRoot): beside a
+  // symlinked store the staging area could land on another filesystem, making the promoting rename EXDEV instead of
+  // atomic.
   const std::filesystem::path market_root(marketplace_dir_.toStdU16String());
   const std::filesystem::path stage_root(
       (PlatformUtils::canonicalStoreRoot(marketplace_dir_) + u".seed_stage"_s).toStdU16String());
@@ -431,11 +400,9 @@ void ExtensionCatalogService::seedBundledPlugins() {
     return;
   }
 
-  // Only the ids whose payload this run actually promoted, mapped to the version
-  // now on disk. The marketplace cannot re-read them: reading an installed
-  // version above opens its DSO, and glibc serves every later dlopen of that path
-  // from the first-loaded image, so the scan snapshot is frozen at the pre-seed
-  // version for the rest of the process.
+  // Only the ids whose payload this run promoted, mapped to the version now on disk. The marketplace cannot re-read
+  // them: reading an installed version opens its DSO, and glibc serves every later dlopen of that path from the
+  // first-loaded image, so the scan snapshot stays at the pre-seed version for the rest of the process.
   QMap<QString, QString> seeded_versions;
   // Set when a failed promote could not restore the old copy: the stage dir
   // then holds the only surviving payload and must not be deleted below.
@@ -468,17 +435,14 @@ void ExtensionCatalogService::seedBundledPlugins() {
       continue;
     }
 
-    // The marketplace dir stays at least as new as the bundled set: absent or
-    // unreadable -> copy; older -> refresh; same-or-newer -> untouched (a
-    // marketplace update above the bundled version is never downgraded, and an
-    // equal version never refreshes — ship a change by bumping the version).
+    // The marketplace dir stays at least as new as the bundled set: absent or unreadable -> copy; older -> refresh;
+    // same-or-newer -> untouched (a marketplace update above the bundled version is never downgraded, and an equal
+    // version never refreshes: ship a change by bumping the version).
     //
-    // Exception to "never downgrade": an installed copy above the bundled
-    // version that the current host would reject at load time (ABI/SDK drift,
-    // a malformed floor, or min_sdk_required too high). Leaving it in place gives the user a
-    // dead "installed" that never loads and no bundled fallback (the bundled
-    // dir is never scanned as a load path). Rescue by refreshing to the bundled
-    // build — compatible by construction, since it ships with this host.
+    // Exception: an installed copy above the bundled version that the current host would reject at load time (ABI/SDK
+    // drift, a malformed floor, min_sdk_required too high) would be a dead "installed" that never loads, with no
+    // bundled fallback (the bundled dir is never scanned). Rescue by refreshing to the bundled build, compatible by
+    // construction since it ships with this host.
     const std::optional<PluginDescriptor> installed = installedPluginDescriptor(dst, descriptor.id);
     bool rescue_incompat = false;
     QString rescue_reason;
@@ -487,11 +451,9 @@ void ExtensionCatalogService::seedBundledPlugins() {
       if (installed_reason.isEmpty()) {
         continue;  // Installed is compatible — user's marketplace update wins.
       }
-      // Second preflight: only rescue if the bundled build is itself
-      // compatible. Downstream repackagers or an out-of-tree build with a
-      // stale share dir could ship a mismatched bundled; overwriting a broken
-      // installed with an equally-broken bundled destroys the user's
-      // marketplace history for no gain.
+      // Second preflight: rescue only if the bundled build is itself compatible. A downstream repackager or an
+      // out-of-tree build with a stale share dir could ship a mismatched bundle; overwriting a broken install with an
+      // equally broken one destroys the user's marketplace history for no gain.
       const QString bundled_reason = ExtensionCatalogService::descriptorIncompatReason(descriptor);
       if (!bundled_reason.isEmpty()) {
         reportDiagnostic(
@@ -547,11 +509,10 @@ void ExtensionCatalogService::seedBundledPlugins() {
 
     seeded_versions.insert(id, QString::fromStdString(descriptor.version));
 
-    // The seed just wrote extensions/<id>/ outside the adopt path, so any store
-    // object recorded for this id no longer matches these bytes. Drop the mapping:
-    // the runtime loads the freshly-seeded directory and reconcileStore collects
-    // the orphan. Without this, a bundled refresh over an earlier adopted install
-    // would keep loading the stale store version.
+    // The seed wrote extensions/<id>/ outside the adopt path, so any store object recorded for this id no longer
+    // matches these bytes. Drop the mapping: the runtime loads the freshly seeded directory and reconcileStore collects
+    // the orphan; otherwise a bundled refresh over an earlier adopted install would keep loading the stale store
+    // version.
     extension_manager_->dropStoreMapping(id);
 
     if (installed) {
@@ -576,10 +537,9 @@ void ExtensionCatalogService::seedBundledPlugins() {
     std::filesystem::remove_all(stage_root, stage_cleanup_ec);
   }
 
-  // What this run wrote into the managed dir. Reported in every mode, unlike the
-  // bundled map below: it is not a policy about which plugins are core but a fact
-  // about a directory the marketplace also reads, and the seed writes that
-  // directory whether or not a --plugin-dir override reorders the load hierarchy.
+  // What this run wrote into the managed dir. Reported in every mode, unlike the bundled map below: it is a fact about
+  // a directory the marketplace also reads, written whether or not a --plugin-dir override reorders the load
+  // hierarchy.
   extension_manager_->setSeededVersions(seeded_versions);
 
   // The bundled map powers the marketplace "core plugin" policy: uninstall lock
@@ -598,22 +558,17 @@ void ExtensionCatalogService::reload() {
 #ifdef PJ_TARGET_WASM
   return;
 #else
-  // Re-read the disabled list before rescanning: it is a snapshot, and installing
-  // an extension whose id lingered there from an earlier uninstall clears the
-  // QSettings entry (ExtensionManager re-enables a fresh install). Without this
-  // refresh the stale snapshot keeps skipping the id, so the plugin stays unloaded
-  // until the next launch rebuilds the snapshot.
+  // Re-read the disabled list before rescanning: it is a snapshot, and installing an extension whose id lingered there
+  // from an earlier uninstall clears the QSettings entry (ExtensionManager re-enables a fresh install). A stale
+  // snapshot would keep skipping the id until the next launch.
   std::unordered_set<std::string> disabled_ids;
   for (const QString& id : ExtensionManager::disabledExtensionIds()) {
     disabled_ids.insert(id.toStdString());
   }
 
-  // Rebuild the scan hierarchy before rescanning: the managed tier is one
-  // directory per installed extension (buildScanHierarchy -> managedPluginDirs),
-  // so a plugin installed since the last scan — its extensions/<id>/ now on disk
-  // and its store object freshly adopted — is only picked up if the hierarchy is
-  // recomputed here. A wholesale directory scan saw new installs for free; a
-  // per-id snapshot taken at construction does not.
+  // Rebuild the scan hierarchy before rescanning: the managed tier is one directory per installed extension
+  // (buildScanHierarchy -> managedPluginDirs), so a plugin installed since the last scan (its extensions/<id>/ now on
+  // disk, its store object freshly adopted) is picked up only if the hierarchy is recomputed.
   std::vector<PluginDirEntry> scan_dirs = buildScanHierarchy(!default_mode_);
 
   bool changed = false;
@@ -663,9 +618,8 @@ ParserClaimProvenance ExtensionCatalogService::provenanceForParser(const LoadedM
   if (parser.from_authoritative_dir) {
     return ParserClaimProvenance::kFolderDrop;
   }
-  // Bundled tier requires the loaded artifact to BE the shipped build (id,
-  // version, and DSO signature). Artifact-controlled ids and versions alone
-  // cannot forge the top trust tier. Authenticated receipts are the full answer.
+  // Bundled tier requires the loaded artifact to BE the shipped build (id, version, DSO signature): artifact-controlled
+  // ids and versions alone cannot forge the top trust tier.
   const auto bundled = bundled_plugin_versions_.find(parser.id);
   if (bundled != bundled_plugin_versions_.end() && bundled->second.version == parser.version &&
       sameDsoSignature(pathFromUtf8(parser.path), bundled->second.dso_path)) {

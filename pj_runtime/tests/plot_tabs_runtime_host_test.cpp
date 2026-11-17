@@ -313,8 +313,8 @@ TEST(PlotTabsRuntimeHostTest, NullOutParamsAreRejected) {
   EXPECT_FALSE(raw.vtable->tab_config(raw.ctx, PJ::sdk::toAbiString("tab1"), nullptr, &err));
 }
 
-// GAP-44: a host fills each tail slot it implements, independently of the others, so
-// a plugin probing one with PJ_HAS_TAIL_SLOT learns exactly what is served.
+// A host fills each tail slot it implements, independently of the others, so a plugin probing one with
+// PJ_HAS_TAIL_SLOT learns exactly what is served.
 TEST(PlotTabsRuntimeHostTest, EachTailSlotIsPresentOnItsOwn) {
   RecordingCallbacks none_cb;
   auto none = none_cb.make();

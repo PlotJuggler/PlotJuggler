@@ -4,7 +4,7 @@ Shader snippets in this module derived from external sources. Each file
 carrying derived shader code opens with a comment block naming the source;
 full license texts live here.
 
-## AgX tonemapper (`scene_view_widget.cpp` composite present shader; `widgets/rhi/shaders/present.frag`)
+## AgX tonemapper (`widgets/rhi/shaders/present.frag`)
 
 Adapted from three.js `tonemapping_pars_fragment.glsl.js` (AgX implementation,
 itself derived from Filament's AgX by Benoit Mayaux and Troy Sobotka's
@@ -30,12 +30,12 @@ reference). License: **MIT**.
 > FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 > IN THE SOFTWARE.
 
-## ACES filmic approximation (`scene_view_widget.cpp`, composite present shader)
+## ACES filmic approximation (`widgets/rhi/shaders/present.frag`)
 
 Krzysztof Narkowicz, "ACES Filmic Tone Mapping Curve" (2016). Released by the
 author as **CC0 / public domain**.
 
-## Khronos PBR Neutral tonemapper (`scene_view_widget.cpp` composite present shader; `widgets/rhi/shaders/present.frag`)
+## Khronos PBR Neutral tonemapper (`widgets/rhi/shaders/present.frag`)
 
 The `PBRNeutral` tone-mapping curve is the **Khronos PBR Neutral** tone mapper
 from the glTF Sample Viewer, adopted via three.js `NeutralToneMapping`
@@ -43,21 +43,21 @@ from the glTF Sample Viewer, adopted via three.js `NeutralToneMapping`
 **MIT** (three.js port). The three.js MIT text is reproduced under the AgX
 section above; the Apache-2.0 grant is the standard Khronos license.
 
-## sRGB OETF (`scene_view_widget.cpp`, composite present shader)
+## sRGB OETF (`widgets/rhi/shaders/srgb.glslinc`)
 
 The piecewise sRGB encode function per **IEC 61966-2-1** (a standard formula,
 not copyrightable expression; listed for provenance).
 
-## Analytic environment BRDF (`passes/mesh_render_pass.cpp`, mesh fragment shader)
+## Analytic environment BRDF (`widgets/rhi/shaders/model.frag`)
 
-`envBRDFApprox` is Brian Karis' analytic fit to the split-sum environment BRDF
+`environmentBrdf()` is Brian Karis' analytic fit to the split-sum environment BRDF
 ("Physically Based Shading on Mobile", Epic Games, 2014;
 https://www.unrealengine.com/blog/physically-based-shading-on-mobile). Released
 by the author for free use; a short polynomial, listed for provenance. The
-surrounding analytic-IBL ambient (procedural ground→sky `envRadiance`,
+surrounding analytic-IBL ambient (procedural ground→sky `environmentRadiance`,
 roughness-blurred reflection prefilter) is original PJ4 code.
 
-## SSAO (`passes/ssao_pass.cpp`)
+## SSAO (`widgets/rhi/shaders/ssao.frag`, `widgets/include/pj_scene3d_widgets/ssao_kernel.h`)
 
 Hemisphere-kernel SSAO and the 4×4 tile blur adapted from **LearnOpenGL**
 ("SSAO", Joey de Vries), licensed **CC BY 4.0**
@@ -66,12 +66,12 @@ https://learnopengl.com/Advanced-Lighting/SSAO. Modified: view-space position
 reconstructs through the inverse projection matrix (supports orthographic
 cameras) and the rotation noise is an in-shader 4×4-tiled hash.
 
-## Depth→normal reconstruction (`passes/ssao_pass.cpp`)
+## Depth→normal reconstruction (`normalFromDepth()` in `widgets/rhi/shaders/ssao.frag`)
 
 The closer-derivative 5-tap normal reconstruction adapted from **Ben Golus**,
 "Normals from depth" (MIT).
 
-## EDL — eye-dome lighting (`passes/edl_pass.cpp`)
+## EDL — eye-dome lighting (`widgets/rhi/shaders/present.frag`)
 
 Shade-factor algorithm derived from **Potree**'s `EDLRenderer`/`edl.fs`
 (https://github.com/potree/potree), licensed **BSD-2-Clause**, © 2011-2020

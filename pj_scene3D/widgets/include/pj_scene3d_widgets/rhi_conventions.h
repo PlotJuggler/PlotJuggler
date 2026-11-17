@@ -6,9 +6,8 @@
 
 namespace pj::scene3d {
 
-/// The three per-backend QRhi conventions a screen-space pass depends on, as
-/// reported by `QRhi::isYUpInNDC()`, `isYUpInFramebuffer()` and
-/// `isClipDepthZeroToOne()`. Plain bools so the math is testable without a QRhi.
+/// The per-backend QRhi conventions a screen-space pass depends on (QRhi::isYUpInNDC(), isYUpInFramebuffer(),
+/// isClipDepthZeroToOne()). Plain bools so the math is testable without a QRhi.
 struct RhiConventions {
   bool y_up_in_ndc = true;
   bool y_up_in_framebuffer = true;
@@ -44,7 +43,6 @@ struct RhiConventions {
   const float v_scale = fullscreenNeedsYFlip(conventions) ? -0.5F : 0.5F;
   const float depth_scale = conventions.clip_depth_zero_to_one ? 1.0F : 0.5F;
   const float depth_bias = conventions.clip_depth_zero_to_one ? 0.0F : 0.5F;
-  // Row-major scalar constructor.
   return QMatrix4x4(
       0.5F, 0.0F, 0.0F, 0.5F,               //
       0.0F, v_scale, 0.0F, 0.5F,            //

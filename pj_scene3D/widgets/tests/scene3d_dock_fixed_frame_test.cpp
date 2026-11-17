@@ -1,16 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// A newly-created 3D dock defaults its fixed frame to the last one the user
-// manually picked for the same dataset's TransformBuffer (feat:
-// scene3d-remember-fixed-frame). Recording happens on the explicit-selection
-// path (setFixedFrame); seeding happens in the auto-root path
-// (onAvailableFrames -> resolveAutoFixedFrame), preferring the remembered frame
-// over the map/world/odom heuristic when it is present in the live TF tree.
+// A newly created 3D dock defaults its fixed frame to the last one the user picked by hand for the same dataset's
+// TransformBuffer. Recording happens on the explicit-selection path (setFixedFrame); seeding in the auto-root path
+// (onAvailableFrames -> resolveAutoFixedFrame), preferring the remembered frame over the map/world/odom heuristic when
+// it is present in the live TF tree.
 //
-// Driven headless through the dock's public surface + a mock FrameTransforms
-// parser, like scene3d_dock_persistence_test: the view touches no GPU until it
-// is shown, so an offscreen, never-shown dock needs none.
+// Driven headless through the dock's public surface and a mock FrameTransforms parser, like
+// scene3d_dock_persistence_test: the view touches no GPU until it is shown.
 
 #include <gtest/gtest.h>
 
@@ -47,9 +44,8 @@ using namespace pj::scene3d::test;
 
 constexpr std::string_view kTfSchema = "mock/frame_transforms";
 
-// A static three-frame TF tree map -> odom -> base_link. The map/world/odom/...
-// heuristic (pickFixedFrame) resolves this to "map", so a remembered "odom" or
-// "base_link" is observably different from the default.
+// A static three-frame TF tree map -> odom -> base_link: the map/world/odom heuristic (pickFixedFrame) resolves it to
+// "map", so a remembered "odom" or "base_link" is observably different from the default.
 PJ::Expected<PJ::sdk::ObjectRecord> emitTfTree(PJ::Timestamp ts, PJ::sdk::PayloadView /*payload*/) {
   PJ::sdk::FrameTransforms ft;
   const auto add = [&](const char* parent, const char* child) {
@@ -71,9 +67,8 @@ struct DatasetTopic {
   PJ::ObjectTopicId topic_id;
 };
 
-// Create an engine dataset (source_name keys the cross-session memory), register a
-// FrameTransforms topic under it bound to the emitTfTree parser, push one sample,
-// and bulk-ingest its TF so the shared frame tree is populated.
+// Creates an engine dataset (source_name keys the cross-session memory), registers a FrameTransforms topic bound to the
+// emitTfTree parser, pushes one sample and bulk-ingests its TF so the shared frame tree is populated.
 DatasetTopic makeTfDataset(
     PJ::SessionManager& session, PJ::TransformService& tf, const std::string& source, const std::string& topic_name) {
   const auto dataset_or =
@@ -96,8 +91,7 @@ DatasetTopic makeTfDataset(
   return {dataset_id, topic_id};
 }
 
-// Bring up a dock bound to session/tf, add the TF topic, and let its lazily
-// created view come into existence (the base schedules it via singleShot(0)).
+// Brings up a dock bound to session/tf with the TF topic and lets its lazily created view exist (singleShot(0)).
 void attachTfTopic(
     PJ::Scene3DDockWidget& dock, PJ::SessionManager& session, PJ::TransformService& tf,
     pj::scene3d::FixedFrameMemory& memory, PJ::ObjectTopicId topic_id) {
@@ -108,7 +102,6 @@ void attachTfTopic(
   ASSERT_TRUE(pumpUntil([&] { return dock.sceneView() != nullptr; })) << "the lazily-created view must come up";
 }
 
-// A new dock prefers the dataset's remembered manual frame over the heuristic root.
 TEST(Scene3DDockFixedFrame, NewDockSeedsRememberedFrameWhenPresent) {
   PJ::SessionManager session;
   PJ::TransformService tf(session);
@@ -124,8 +117,7 @@ TEST(Scene3DDockFixedFrame, NewDockSeedsRememberedFrameWhenPresent) {
       << "a new dock must default to the dataset's remembered frame, not the map/world/odom heuristic";
 }
 
-// When the remembered frame is absent from the dock's TF tree, fall back to the
-// heuristic root (guards the seeding change against breaking the default path).
+// A remembered frame absent from the dock's TF tree falls back to the heuristic root.
 TEST(Scene3DDockFixedFrame, NewDockFallsBackToHeuristicWhenRememberedAbsent) {
   PJ::SessionManager session;
   PJ::TransformService tf(session);

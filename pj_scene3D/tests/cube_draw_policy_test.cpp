@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// chooseCubeDrawMode() is the one place that decides how a cloud of cubes is drawn, for
-// both the point-cloud and the voxel-grid passes. Every decision it makes can silently
-// lose data or silently cost performance, and none of them needs a GL context to check —
-// which is the whole reason the policy is Qt-free and lives in core.
+// chooseCubeDrawMode() decides how a cloud of cubes is drawn, for both the point-cloud and the voxel-grid passes. Each
+// decision can silently lose data or cost performance, and none needs a GL context to check, which is why the policy
+// is Qt-free and lives in core.
 
 #include "pj_scene3d_core/cube_draw_policy.h"
 
@@ -32,7 +31,6 @@ float pixelsPerMetre(const glm::mat4& proj) {
   return proj[1][1] * static_cast<float>(kHeightPx) * 0.5f;
 }
 
-// Camera at the origin looking down -Z, cloud placed `distance` in front of it.
 CubeCloudView viewAt(float distance, float half_extent, float cube_size_m, float lod_threshold_px) {
   const glm::mat4 proj = glm::perspective(glm::radians(kFovYDegrees), 1.0f, 0.05f, 1000.0f);
   const glm::mat4 view = glm::lookAt(glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -66,8 +64,8 @@ TEST(CubeDrawPolicyTest, CloudBehindTheCameraIsSkipped) {
   EXPECT_EQ(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSkip);
 }
 
-// The bug this policy exists to prevent: culling against the CENTRE box drops geometry
-// that still reaches into the frustum. With a 1 m cube the overhang is half a metre.
+// Culling against the CENTRE box would drop geometry that still reaches into the frustum: with a 1 m cube the overhang
+// is half a metre.
 TEST(CubeDrawPolicyTest, CubeOverhangingTheFrustumEdgeSurvives) {
   const float distance = 10.0f;
   const float half_height = distance * std::tan(glm::radians(kFovYDegrees) * 0.5f);
@@ -82,7 +80,6 @@ TEST(CubeDrawPolicyTest, CubeOverhangingTheFrustumEdgeSurvives) {
   EXPECT_NE(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSkip)
       << "the centre is outside the frustum but the cube is not — this is the inflation step";
 
-  // Shrink the cube and the same centre really is all there is: now it may be culled.
   view.cube_size_m = 0.01f;
   EXPECT_EQ(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSkip);
 }
@@ -104,7 +101,6 @@ TEST(CubeDrawPolicyTest, SpriteReachingIntoTheViewSurvives) {
 }
 
 TEST(CubeDrawPolicyTest, DistantCloudDegradesToSprites) {
-  // 5 cm cubes at 200 m: well under a pixel at this projection.
   EXPECT_EQ(chooseCubeDrawMode(viewAt(200.0f, 2.0f, 0.05f, 1.0f), kAll), CubeDrawMode::kSprite);
 }
 
@@ -115,7 +111,6 @@ TEST(CubeDrawPolicyTest, NearCloudKeepsRealGeometry) {
 // The gate is whole-cloud: one above-threshold cube anywhere keeps the entire cloud on
 // the fan, because splitting a cloud between two programs measured slower than not.
 TEST(CubeDrawPolicyTest, CloudStraddlingTheThresholdKeepsTheFan) {
-  // Deep in Z, so the near face is well above the threshold and the far face well below.
   EXPECT_EQ(chooseCubeDrawMode(viewAt(60.0f, 55.0f, 0.05f, 1.0f), kAll), CubeDrawMode::kFan);
 }
 
@@ -129,7 +124,6 @@ TEST(CubeDrawPolicyTest, CameraInsideTheCloudFallsBackToTheSolid) {
   CubeCloudView view = viewAt(0.0f, 20.0f, 0.5f, 1.0f);  // box straddles the origin = the eye
   EXPECT_EQ(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSolid);
 
-  // Step the camera outside the same box and the cheap geometry comes back.
   view.eye_in_cloud = glm::vec3(0.0f, 0.0f, 500.0f);
   EXPECT_NE(chooseCubeDrawMode(view, kAll), CubeDrawMode::kSolid);
 
@@ -154,7 +148,6 @@ TEST(CubeDrawPolicyTest, DegradesToTheBestAvailableGeometry) {
   off_screen.centre_bounds.max.x += 5000.0f;
   EXPECT_EQ(chooseCubeDrawMode(off_screen, kSolidOnly), CubeDrawMode::kSkip);
 
-  // A caller with no solid must still get something drawable when the eye is inside.
   CubeCloudView inside = viewAt(0.0f, 20.0f, 0.5f, 1.0f);
   EXPECT_EQ(chooseCubeDrawMode(inside, kFanOnly), CubeDrawMode::kFan);
 }

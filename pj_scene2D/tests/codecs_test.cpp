@@ -269,7 +269,7 @@ TEST(BayerDecodeTest, RejectsBufferTooSmallForDimensions) {
 // A transport that losslessly PNG-wraps a raw buffer (Mosaico stores a 16UC1
 // depth frame as an 8-bit grayscale PNG of width=stride) must round-trip back to
 // the exact flat bytes, so the depth path reads them as raw 16UC1 instead of
-// mis-reading the compressed PNG as depth (the camera/kinect/depth all-black bug).
+// mis-reading the compressed PNG as depth (an all-black image).
 TEST(RecoverContainerRawSamplesTest, EightBitGrayPngWrappedDepthRoundTrips) {
   // A 2x2 16UC1 frame (4 px) = 8 little-endian bytes, stored as an 8-bit
   // grayscale PNG of width=stride(4) x height(2) = 8 samples.

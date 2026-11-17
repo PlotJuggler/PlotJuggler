@@ -23,9 +23,7 @@ for Thin and Light from its own font list (Khula, then Roboto, then the platform
 and its own Bold won. OFL-1.1 allows modified versions, and Noto Sans declares no Reserved Font Name, so the font can
 be renamed. Renamed, it renders the same everywhere.
 
-**Size.** The two faces are 442 KB Brotli. Before them, PlotJuggler shipped the variable font with its width axis
-pinned (491 KB) and, before that, the upstream variable font (919 KB). `make_fonts.py` drops the glyph-name table,
-which Qt never reads, and its output is byte-reproducible.
+**Size.** `make_fonts.py` drops the glyph-name table, which Qt never reads, and its output is byte-reproducible.
 
 ## Regenerate
 

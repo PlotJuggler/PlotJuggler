@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// SceneImageDecoder, the codec on-demand scripts decode through (docs/archive/derived_objects/SCENARIOS.md, rows
-// MED-11, MED-12, BUD-12, GAP-26): the raw encodings, Scene2D's JPEG and PNG codecs, and the charges taken before
-// either runs.
+// SceneImageDecoder: the raw encodings, Scene2D's JPEG and PNG codecs, and the budget charges taken before either
+// runs.
 
 #include <gtest/gtest.h>
 #include <turbojpeg.h>
@@ -255,8 +254,6 @@ TEST(SceneImageDecoder, RefusesAJpegOfMoreThanFourComponents) {
   EXPECT_EQ(decoded.error(), "invalid or missing jpeg header");
   EXPECT_EQ(budget->used(), 0u);
 }
-
-// ---- benchmarks -----------------------------------------------------------------------------------------------
 
 // PJ_BENCH=1: SceneImageDecoder at 1080p on the calling thread (ms, median of 21): a JPEG, a PNG and raw rgb8.
 TEST(SceneImageDecoderBench, Decode1080p) {

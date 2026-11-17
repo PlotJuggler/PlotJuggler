@@ -12,31 +12,26 @@ from `pj-official-plugins` source and embedding it.
 full build. Use it when the registry is not an option — offline builds, testing
 unpublished plugin changes, or building against a not-yet-released SDK.
 
-## The full bundled set (19 + ROS 2)
+## The bundled set
 
-| Loaders | Parsers | Streams | Toolboxes |
-|---|---|---|---|
-| csv, mcap, parquet, ulog, mp4, pointcloud-3d | ros, protobuf, json, data-tamer, arrow | dummy-streamer, foxglove-bridge, plotjuggler-bridge, webrtc-client, ros2-topic-subscriber | quaternion, transform-editor, mosaico, assistant-agent (Linux-only: POSIX CLI backends) |
-
-(Excluded by request: `toolbox-colormap`, `toolbox-reactive-scripts-editor`.
-The set matches `BUNDLE_IDS` in `build_appimage.sh`; keep the two in lockstep.)
+The compiled set is `RELEASE_FLAT_SOS` in `build_release_appimage.sh` plus the ROS 2 bundle. It matches
+`BUNDLE_IDS` in `build_appimage.sh` (keep the two in lockstep) except `log-widget`: the aggregate plugin build
+does not build Widget plugins, so only registry mode bundles it. `toolbox-assistant-agent` is Linux-only
+(POSIX CLI backends).
 
 ## Two build flows, tied together
 
-1. **ROS 2 (multi-distro)** — `data_stream_ros2/docker/run-local.sh --bundle` builds a
-   distro-agnostic proxy plus one binary per supported ROS 2 distro
-   (`humble`, `iron`, `jazzy`, `rolling`), each compiled in its own Docker image. At load
-   time the proxy dispatches to the binary matching the ROS 2 distro installed on the
-   user's machine.
-2. **App + non-ROS 2 plugins + package** — the default is `packaging/appimage/build_in_docker.sh
-   --plugins-dir <sdk>/pj_ported_plugins`, which compiles both the app and the aggregate
-   plugin set in the Ubuntu 22.04 builder image (glibc 2.35), picks up the ROS 2 bundle
-   from step 1, and packages the AppImage. `build_release_appimage.sh` then extracts the
-   result, drops any `.so` outside the curated 19 (the aggregate build produces more),
-   and repacks — so the released AppImage is portable **and** carries exactly the 19 (plus the ROS 2 bundle).
-   With `--host-build` the same 19-plugin filter runs but the app + plugins are built on
-   the host (`./build.sh` and `pj_ported_plugins/build.sh`), producing a faster iteration
-   but non-portable AppImage tied to the host's glibc.
+1. **ROS 2 (multi-distro)** — `data_stream_ros2/docker/run-local.sh --bundle` (in `pj-official-plugins`)
+   builds a distro-agnostic proxy plus one binary per ROS 2 distro (`--ros2-distros`, default `humble iron
+   jazzy rolling`), each compiled in its own Docker image. At load time the proxy dispatches to the binary
+   matching the ROS 2 distro installed on the user's machine.
+2. **App + non-ROS 2 plugins + package** — the default is `packaging/appimage/build_in_docker.sh --plugins-dir
+   <pj-official-plugins checkout>`, which compiles both the app and the aggregate plugin set in the Ubuntu
+   22.04 builder image (glibc 2.35), picks up the ROS 2 bundle from step 1, keeps only the curated entries
+   (`PJ_INCLUDE_PLUGINS`) and packages the AppImage, so the result is portable. With `--host-build` the app
+   (`./build.sh`) and the plugins (the plugin repo's `./build.sh`) are built on the host, the curated `.so`
+   files are staged and `build_appimage.sh --plugins-dir` packages them: faster, but the AppImage is tied to
+   the host's glibc.
 
 ```bash
 packaging/appimage/build_release_appimage.sh                       # DEFAULT: docker (portable, glibc 2.35)
@@ -69,7 +64,6 @@ resulting AppImage inherits the host's glibc floor (e.g. Ubuntu 24.04 → glibc 
 
 `build_release_appimage.sh` is a convenience wrapper over the two flows above, kept for
 local/offline embedded builds. The release CI does not use it: it compiles only the app
-(inside `ghcr.io/plotjuggler/pj4-appimage-builder`, the thin `ci-base` target of
-[`Dockerfile.build`](Dockerfile.build), published by
+(inside the thin `ci-base` target of [`Dockerfile.build`](Dockerfile.build), published by
 `.github/workflows/appimage-builder-image.yml`) and takes every plugin from the
 registry.

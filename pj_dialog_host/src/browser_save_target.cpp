@@ -37,8 +37,7 @@ QStringList BrowserSaveTarget::writtenPaths() const {
   if (!dir_.isValid()) {
     return {};
   }
-  // Keyed by download name, so the paths come out in that order (a multimap:
-  // two names that flatten alike, sub/a.csv and sub_a.csv, are both kept).
+  // A multimap keyed by download name: two names that flatten alike (sub/a.csv, sub_a.csv) are both kept.
   QMultiMap<QString, QString> by_name;
   QDirIterator it(dir_.path(), QDir::Files, QDirIterator::Subdirectories);
   while (it.hasNext()) {
@@ -50,7 +49,7 @@ QStringList BrowserSaveTarget::writtenPaths() const {
 
 void BrowserSaveTarget::offerDownloads() const {
 #ifdef Q_OS_WASM
-  // Qt's portable download path: see ScopedOpenFilePickerFallback.
+  // Qt's portable download path (ScopedOpenFilePickerFallback).
   const ScopedOpenFilePickerFallback fallback;
   for (const QString& path : writtenPaths()) {
     QFile file(path);

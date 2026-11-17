@@ -28,17 +28,14 @@ class TrailRhiPass;
 class VoxelRhiPass;
 struct QualityStageState;
 
-// Test-only access to a SceneViewWidget's internals, through the view's
-// friendship: what the last submitted frame drew, the state of its quality
-// stages, and the test overrides. Linked only by the tests, the benchmarks and
-// the browser acceptance probes (target pj_scene3d_widgets_testing), which
-// builds without PJ_RHI_TEST_HOOKS too. Reads observe; the setters change the
-// view as a failure or an option would and invalidate its content.
+// Test-only access to a SceneViewWidget's internals through the view's friendship: what the last submitted frame
+// drew, the state of its quality stages, and the test overrides. Linked only by tests, benchmarks and browser
+// acceptance probes (target pj_scene3d_widgets_testing), which builds without PJ_RHI_TEST_HOOKS too. Reads observe;
+// the setters change the view as a failure or an option would and invalidate its content.
 class SceneViewTestAccess {
  public:
   using Stage = SceneViewWidget::QualityStage;
 
-  // ---- The last submitted frame ----
   // The families' own counters (lastLayerCount(), lastBounds(), ...) are read
   // through the passes below; the view's own are here.
   [[nodiscard]] static int lastLineVertexCount(const SceneViewWidget& view) {
@@ -84,8 +81,7 @@ class SceneViewTestAccess {
   [[nodiscard]] static const ScenePipelineRegistry& pipelines(const SceneViewWidget& view) {
     return *view.pipelines_;
   }
-  // The scene families built on demand that are built now, by name ("points",
-  // "trails", "occupancy", "voxels", "markers", "models", "grid maps").
+  // The on-demand scene families that are built now, by name.
   [[nodiscard]] static QStringList builtFamilies(const SceneViewWidget& view);
 
   // The passes themselves (rhi/passes/*.h): their last-frame counters and caches.
@@ -123,9 +119,7 @@ class SceneViewTestAccess {
     return *view.overlay_pass_;
   }
 
-  // ---- Quality stages: last frame's state, resources and capability error ----
-  // last_active, capability_error, resource_generation, ...
-  // (rhi/scene_view_widget_rhi_quality_p.h).
+  // A quality stage's last-frame state and capability error (rhi/scene_view_widget_rhi_quality_p.h).
   [[nodiscard]] static const QualityStageState& stage(const SceneViewWidget& view, Stage stage) {
     return view.stageState(stage);
   }
@@ -146,16 +140,14 @@ class SceneViewTestAccess {
   // The mask target and the model pass's mask pipelines exist.
   [[nodiscard]] static bool edlResourcesReady(const SceneViewWidget& view);
 
-  // ---- Placement without a display ----
-  // Frame contract step 1 (every family's layers admitted and placed) and the TF
-  // triads, at the view's tracker time, without a QRhi: what render() places.
+  // Frame contract admission (every family's layers admitted and placed) and the TF triads, at the view's tracker
+  // time, without a QRhi: what render() places.
   static void admitFrame(SceneViewWidget& view);
   // The TF triad arms admitFrame() or the last render built, relative to the render origin.
   [[nodiscard]] static const std::vector<PoseTriadInstance>& tfTriads(const SceneViewWidget& view) {
     return view.tf_triad_instances_;
   }
 
-  // ---- Test overrides ----
   // Holds `stage` down as a failure would (its capability error names the
   // override; the browser acceptance specs match it), or lets it build again.
   static void forceStageFallback(SceneViewWidget& view, Stage stage, bool force) {

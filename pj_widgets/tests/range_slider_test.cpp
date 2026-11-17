@@ -10,11 +10,9 @@
 
 namespace {
 
-// The host's widget binding forwards EVERY lowerValueChanged/upperValueChanged
-// emission to the plugin as a full event round trip, so a setter that re-emits
-// an unchanged value turns a single handle drag into an event storm. The
-// setters must be no-ops (no signal, no repaint) when the post-clamp value
-// equals the current one.
+// The host's widget binding forwards every lowerValueChanged and upperValueChanged emission to the plugin as a full
+// event round trip, so a setter that re-emits an unchanged value turns one handle drag into an event storm: the setters
+// are no-ops (no signal, no repaint) when the post-clamp value equals the current one.
 TEST(RangeSliderTest, SetLowerValueEmitsOnlyOnRealChange) {
   PJ::RangeSlider slider(Qt::Horizontal, PJ::RangeSlider::kDoubleHandles);
   slider.setRange(0, 1000);
@@ -41,9 +39,8 @@ TEST(RangeSliderTest, SetUpperValueEmitsOnlyOnRealChange) {
   EXPECT_EQ(spy.count(), 1);
 }
 
-// A value that clamps back onto the current one is also "unchanged": dragging a
-// handle past the track end floods setLowerValue/setUpperValue with
-// out-of-range positions that all clamp to the same boundary.
+// A value that clamps back onto the current one is also "unchanged": dragging a handle past the track end floods
+// setLowerValue and setUpperValue with out-of-range positions that all clamp to the same boundary.
 TEST(RangeSliderTest, ClampedToCurrentValueDoesNotEmit) {
   PJ::RangeSlider slider(Qt::Horizontal, PJ::RangeSlider::kDoubleHandles);
   slider.setRange(0, 1000);

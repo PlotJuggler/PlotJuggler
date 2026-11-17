@@ -16,8 +16,6 @@ namespace {
 using PJ::sdk::PointField;
 using PJ::sdk::VoxelGrid;
 
-// Build a densely-packed VoxelGrid whose `data` views `bytes` (kept alive by the
-// caller). Strides default to the no-padding packing for `cell_stride`.
 VoxelGrid makeGrid(
     uint32_t cols, uint32_t rows, uint32_t slices, uint32_t cell_stride, std::vector<PointField> fields,
     const std::vector<uint8_t>& bytes) {
@@ -72,11 +70,7 @@ TEST(VoxelGridView, CountZeroWhenAnyDimZero) {
   EXPECT_EQ(voxelCount(makeGrid(4, 4, 0, 1, {}, bytes)), 0U);
 }
 
-// Per-datatype scalar reads are exercised by packScalarField below (and the
-// shared readScalarAt has its own exhaustive coverage in pointcloud_convert_test).
-
 TEST(VoxelGridView, PackScalarFieldUint8InZyxOrder) {
-  // 2x2x1 grid, occupancy byte at offset 0. data laid out x-fastest, then y.
   std::vector<uint8_t> bytes = {10, 20, 30, 40};
   const VoxelGrid grid = makeGrid(2, 2, 1, 1, {scalarField("occ", 0, PointField::Datatype::kUint8)}, bytes);
   const std::vector<float> packed = packScalarField(grid, grid.fields[0]);
@@ -112,15 +106,11 @@ TEST(VoxelGridView, PackScalarFieldShortDataPacksZero) {
   EXPECT_FLOAT_EQ(packed[1], 0.0f);  // out-of-bounds voxel → 0
 }
 
-// column/row/slice_count are unbounded uint32 read straight off the wire (no codec
-// cross-checks them against data.size()), and pack* size their output from the
-// product. A corrupt grid declaring huge dims — here 2^32-1 x 2^32-1 x 1, whose
-// product (~1.84e19) exceeds std::vector::max_size() — would make out.reserve(count)
-// throw std::length_error (a smaller-but-still-huge count would throw std::bad_alloc);
-// packing runs on the Qt render thread with no try/catch, so that throw would become
-// std::terminate. packScalarField now refuses any count past kMaxVoxels and returns
-// empty instead, so the pack cannot throw and the render pass drops the grid
-// (scalar.size() != voxelCount → has_grid_ = false).
+// column/row/slice_count are unbounded uint32 off the wire (no codec cross-checks them against data.size()) and pack*
+// size their output from their product. A corrupt grid declaring 2^32-1 x 2^32-1 x 1 (past std::vector::max_size())
+// would make out.reserve(count) throw std::length_error, and packing runs on the Qt render thread with no try/catch
+// (std::terminate). packScalarField refuses any count past kMaxRenderableVoxels and returns empty (the layer checks the
+// same cap and warns before packing).
 TEST(VoxelGridView, PackScalarFieldHugeDimsRefused) {
   std::vector<uint8_t> bytes(16, 0);  // tiny payload; the dims lie about the real size
   const VoxelGrid grid =

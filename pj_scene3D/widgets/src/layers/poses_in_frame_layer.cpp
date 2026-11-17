@@ -276,10 +276,9 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
     return false;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  // Scrub coalescing, checked metadata-first (latestEntryIdAt — no payload
-  // resolve, so an unchanged entry never pays a cold refetch of an evicted pool
-  // seed): the same store entry under the same style is already staged. Shared by
-  // the gate and the post-resolve re-check (a racing insert can change the pick).
+  // Scrub coalescing, checked metadata-first (latestEntryIdAt, no payload resolve: an unchanged entry never pays a cold
+  // refetch of an evicted pool seed): the same store entry under the same style is already staged. Shared by the gate
+  // and the post-resolve re-check (a racing insert can change the pick).
   const auto already_staged = [this](PJ::SequentialUID uid) {
     return uid == staged_uid_ && style_revision_ == staged_revision_;
   };
@@ -289,7 +288,6 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
   }
   auto entry = entry_id.has_value() ? store.latestAt(topic_id_, time_ns) : std::nullopt;
   if (!entry.has_value() || entry->payload.bytes.empty()) {
-    // No sample at/before this time -> show nothing.
     const bool changed = !instances_.empty() || !dataWarning().isEmpty();
     clearGeometry();
     staged_uid_ = {};
@@ -299,7 +297,7 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
   if (already_staged(entry->sequential_uid)) {
     return false;
   }
-  // Every exit below stages this sample, so a bad one is not retried per frame.
+  // Set before validation: a bad sample stays staged, so it is not retried every frame.
   staged_uid_ = entry->sequential_uid;
   staged_revision_ = style_revision_;
   const auto fail = [this](QString warning) {
@@ -312,7 +310,6 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
                     .arg(QString::number(static_cast<double>(entry->payload.bytes.size()) / (1024.0 * 1024.0), 'f', 1))
                     .arg(kSceneLimits.max_pose_wire_bytes_per_layer / kMiB));
   }
-  // Per-use binding fetch (never cached) — a reload re-registers the parser slot.
   const auto binding = ctx_.session->parserBindingForObjectTopic(topic_id_);
   auto obj = resolveObject(binding, PJ::sdk::BuiltinObjectType::kPosesInFrame, entry->timestamp, entry->payload);
   if (!obj.has_value()) {
@@ -367,9 +364,8 @@ bool PosesInFrameLayer::updateAt(int64_t time_ns) {
 }
 
 void PosesInFrameLayer::setFixedFrame(const QString& frame) {
-  // The poses are frame-relative; the renderer re-resolves the fixed frame each
-  // paint, so a change only needs a repaint. The trail is the exception — it
-  // rebuilds its polyline against the fixed frame.
+  // The poses are frame-relative and the renderer re-resolves the fixed frame each paint, so a change needs only a
+  // repaint; the trail is the exception: it rebuilds its polyline against the fixed frame.
   fixed_frame_ = frame;
   if (trail_ != nullptr) {
     trail_->setFixedFrame(frame);
@@ -392,7 +388,6 @@ void PosesInFrameLayer::setVisible(bool visible) {
   }
   visible_ = visible;
   if (!visible_) {
-    // Release the retained arms while hidden; un-hiding re-decodes.
     clearGeometry();
     staged_uid_ = {};
     staged_revision_ = -1;
@@ -402,7 +397,6 @@ void PosesInFrameLayer::setVisible(bool visible) {
     trail_->setVisible(visible);  // the trail is part of this layer, not a peer
   }
   emit visibilityChanged(visible);
-  // Catch-up on un-hide is the dock's job (it re-delivers the last tracker time).
   emit repaintRequested();
 }
 
@@ -425,7 +419,6 @@ std::uint64_t PosesInFrameLayer::renderKey(PJ::Timepoint time) const {
 }
 
 bool PosesInFrameLayer::prepareForRender(std::uint64_t remaining_view_arms) {
-  // The budget_ candidate: the sample at the playhead (settings changes reset the latch).
   const auto candidate = [this] {
     return PJ::latestEntryRenderKey(
         ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_,
@@ -498,9 +491,8 @@ void PosesInFrameLayer::setTrailEnabled(bool enabled) {
     return;
   }
   trail_ = std::make_unique<TrailLayer>(topic_id_, TrailSource::poseTopic(topic_id_));
-  // Nothing else would ever repaint, persist, or surface a warning on the
-  // trail's behalf: it is not a dock layer, so it has no row of its own and the
-  // dock's wireScene3DLayer never sees it.
+  // Nothing else would repaint, persist or surface a warning on the trail's behalf: it is not a dock layer, so it has
+  // no row of its own and the dock's wireScene3DLayer never sees it.
   connect(trail_.get(), &TrailLayer::repaintRequested, this, &PosesInFrameLayer::repaintRequested);
   connect(trail_.get(), &TrailLayer::configurationChanged, this, &PosesInFrameLayer::configurationChanged);
   connect(trail_.get(), &TrailLayer::statusWarningChanged, this, &PosesInFrameLayer::statusWarningChanged);
@@ -541,8 +533,6 @@ void PosesInFrameLayer::setOverrideColor(QColor color) {
   }
   override_color_ = color;
   ++style_revision_;
-  // Only changes what is drawn while the override is enabled, but bump
-  // unconditionally so the next paint reflects it immediately when it is.
   markDirty();
   emit configurationChanged();
   emit repaintRequested();
@@ -582,14 +572,13 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
     setGizmoOpacity(static_cast<float>(v));
   });
 
-  // "X Arrow only" geometry toggle: a single X arm per pose instead of the triad.
   auto* x_only_toggle = new PJ::ToggleSwitch(container);
   x_only_toggle->setChecked(x_arrow_only_, /*animate=*/false);
   form->addRow(tr("X Arrow only:"), x_only_toggle);
   QObject::connect(x_only_toggle, &PJ::ToggleSwitch::toggled, this, [this](bool on) { setXArrowOnly(on); });
 
-  // Override color: the sliding switch + swatch sit on one row. Recolors the
-  // single X arm OR the whole triad; picking a color auto-enables the override.
+  // Override colour: the switch + swatch sit on one row; it recolours the single X arm OR the whole triad, and picking
+  // a colour auto-enables it.
   auto* override_row = new QWidget(container);
   auto* override_layout = new QHBoxLayout(override_row);
   override_layout->setContentsMargins(
@@ -614,9 +603,8 @@ QWidget* PosesInFrameLayer::createConfigWidget(QWidget* parent) {
     setOverrideColorEnabled(true);  // apply now; the toggled-driven call lags the slide animation
   });
 
-  // Trail: opt-in toggle, and when on the owned trail's own style rows are
-  // appended to THIS form — same label column as the rows above, and the single
-  // definition of those controls (TrailLayer::appendStyleRows).
+  // Trail: an opt-in toggle; when on, the owned trail's style rows are appended to THIS form (same label column, the
+  // single definition of those controls: TrailLayer::appendStyleRows).
   auto* trail_toggle = new PJ::ToggleSwitch(container);
   trail_toggle->setChecked(trail_ != nullptr, /*animate=*/false);
   trail_toggle->setToolTip(tr("Trace this topic's pose across the whole time range"));

@@ -323,9 +323,8 @@ QDomElement RobotModelLayer::xmlSaveState(QDomDocument& doc) const {
   QDomElement el = doc.createElement(u"robot_model"_s);
   el.setAttribute(u"source_type"_s, sourceTypeToString(source_type_));
   el.setAttribute(u"source_value"_s, source_value_);
-  // For a topic source, source_value_ is only a display string. Persist the
-  // resolvable identity (dataset_id + topic_name) so restore re-binds the SAME
-  // topic even when the user switched the config combo to a different one.
+  // For a topic source, source_value_ is only a display string: persist the resolvable identity (dataset_id +
+  // topic_name) so restore re-binds the SAME topic even when the user switched the config combo to a different one.
   if (source_type_ == SourceType::kTopic && ctx_.session != nullptr) {
     const auto desc = ctx_.session->objectStore().descriptor(source_topic_id_);
     el.setAttribute(u"source_topic_name"_s, QString::fromStdString(desc.topic_name));
@@ -501,7 +500,6 @@ bool RobotModelLayer::attach(const PJ::SceneLayerContext& ctx) {
   const auto& scene3d_ctx = static_cast<const Scene3DLayerContext&>(ctx);
   ctx_ = scene3d_ctx;
   tf_buffer_ = ctx_.tf_buffer;  // the dock re-pushes it via setTransformBuffer on rebind
-  // disconnect first: the reload path re-attaches without an intervening detach.
   disconnect(reload_connection_);
   reload_connection_ = {};
   if (ctx_.session != nullptr) {
@@ -514,8 +512,8 @@ bool RobotModelLayer::attach(const PJ::SceneLayerContext& ctx) {
       qCWarning(lcRobotModelLayer) << "attach: session is null";
       return false;
     }
-    // Existence check only — the binding is re-resolved per decode (see
-    // tryLoadTopicDescription) so a reload that swaps the parser slot rebinds us.
+    // Existence check only: the binding is re-resolved per decode (tryLoadTopicDescription) so a reload that swaps the
+    // parser slot rebinds us.
     if (!ctx_.session->parserBindingForObjectTopic(source_topic_id_)) {
       qCWarning(lcRobotModelLayer) << "attach: no parser for robot-description topic" << source_topic_id_.id;
       return false;
@@ -574,17 +572,15 @@ void RobotModelLayer::rebuildDrawCalls() {
       ModelDrawCall call;
       call.frame_id = prefix + link.name;
       call.group = collision ? ModelDrawGroup::kCollision : ModelDrawGroup::kVisual;
-      // Primitives and the placeholder carry the call's colour alone (their unit
-      // meshes' material and vertex colours would apply it a second time); only a
-      // mesh without an explicit URDF colour shows its own materials.
+      // Primitives and the placeholder carry the call's colour alone (their unit meshes' material and vertex colours
+      // would apply it a second time); only a mesh without an explicit URDF colour shows its own materials.
       call.use_material = false;
       call.mesh_key = std::string(kPlaceholderKey);
       bool explicit_color = true;
       if (geom.has_color) {
         call.override_color = geom.color;
       } else if (collision) {
-        // Collision geometry with no <material>: orange tint so hulls read as
-        // distinct from the visual meshes (RViz convention).
+        // Collision geometry with no <material>: orange tint, so hulls read as distinct from the visual meshes (RViz).
         call.override_color = look::kCollisionDefaultColor;
       } else {
         explicit_color = false;
@@ -644,8 +640,6 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   form->setContentsMargins(
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
-  // Match the Grid / Transforms section grids in Scene3DConfigPanel: comfortable
-  // label↔field gap, snug row pitch — so the panel keeps one consistent rhythm.
   form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
@@ -689,13 +683,11 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
   file_layout->setContentsMargins(
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
-  // Shows only the file name (full path lives in source_value_ / the tooltip); the
-  // field is read-only — Browse is the way to change it.
+  // Shows only the file name (the full path lives in source_value_ and the tooltip); read-only, Browse changes it.
   auto* file_edit =
       new QLineEdit(source_type_ == SourceType::kFile ? QFileInfo(source_value_).fileName() : QString(), file_row);
   file_edit->setReadOnly(true);
   file_edit->setToolTip(source_type_ == SourceType::kFile ? source_value_ : QString());
-  // Themed icon buttons, matching the app's chrome.
   const QString icon_theme = QGuiApplication::palette().color(QPalette::Window).valueF() < 0.5 ? u"dark"_s : u"light"_s;
   auto* browse_button = new QToolButton(file_row);
   browse_button->setAutoRaise(true);
@@ -936,7 +928,6 @@ void RobotModelLayer::setSourceTopic(PJ::ObjectTopicId topic_id, QString display
     source_value_ = display_name_;
   }
   if (ctx_.session != nullptr) {
-    // Existence check only; the actual decode re-resolves the binding per use.
     if (!ctx_.session->parserBindingForObjectTopic(source_topic_id_)) {
       fail(tr("No parser for %1").arg(source_value_));
       return;
@@ -1286,7 +1277,6 @@ void RobotModelLayer::queueMeshLoads() {
   if (!model_.has_value()) {
     return;
   }
-  // Links sharing a mesh file queue one load.
   std::unordered_set<std::string> queued;
   const auto inspect = [this, &queued](const LinkGeom& geometry) {
     const auto* mesh = std::get_if<GeomMesh>(&geometry.shape);
@@ -1327,8 +1317,6 @@ void RobotModelLayer::admitMesh(const std::string& key, MeshData mesh) {
     if (!retainedMeshFits(retained, mesh_retained_bytes_)) {
       mesh_errors_[key] = tr("mesh would exceed the layer memory limit");
     } else {
-      // The settle requests its own repaint, so a landed mesh replaces its
-      // placeholder without waiting for an unrelated paint.
       model_meshes_[key] = std::make_shared<const MeshData>(std::move(mesh));
       mesh_bytes_[key] = retained;
       mesh_retained_bytes_ += retained;
@@ -1339,7 +1327,6 @@ void RobotModelLayer::admitMesh(const std::string& key, MeshData mesh) {
 }
 
 void RobotModelLayer::onMeshLoadSettled() {
-  // A placeholder cube must swap to the freshly-loaded mesh.
   rebuildDrawCalls();
   updateMeshCounters();
   updateStatus();
@@ -1437,8 +1424,7 @@ void RobotModelLayer::setStatus(QString status) {
 }
 
 QStringList RobotModelLayer::unresolvedPackagesList() const {
-  // Per-MODEL, not resolver-global: the resolver is dock-shared across robot
-  // layers. Distinct package names, in first-seen order.
+  // Per MODEL, not resolver-global (the resolver is dock-shared across robot layers); distinct names, first-seen order.
   QStringList packages;
   if (!model_.has_value()) {
     return packages;
@@ -1468,8 +1454,6 @@ QString RobotModelLayer::unresolvedIssueClause() const {
   if (!model_.has_value()) {
     return {};
   }
-  // kBlockedHttp and kMissingFile are the kinds Locate cannot fix, so name them
-  // explicitly.
   int blocked_http = 0;
   int missing_file = 0;
   const auto tally = [&](const LinkGeom& geom) {

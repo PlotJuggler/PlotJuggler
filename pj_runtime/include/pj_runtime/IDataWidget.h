@@ -34,21 +34,18 @@ class IDataWidget {
 
   /// Called with the playback cursor position as **display-axis seconds**:
   /// `time = toAxisDouble(currentTime())`, which equals `raw_ns * 1e-9` minus
-  /// the session's DisplayOffset (see Time.h).  Today no production code sets a
-  /// nonzero DisplayOffset, so display-axis seconds and absolute seconds are
-  /// identical in practice — but implementors MUST NOT treat this value as an
-  /// absolute store timestamp. Converting to an absolute Timepoint requires
-  /// re-adding the DisplayOffset: `toAbsolute(time, offsetOf(domain))`.
+  /// the session's DisplayOffset (see Time.h). It is not an absolute store
+  /// timestamp: the timeline sets nonzero offsets (SourceTimelineController).
+  /// Converting to an absolute Timepoint re-adds the DisplayOffset:
+  /// `toAbsolute(time, offsetOf(domain))`.
   /// SceneDockWidget::onTrackerTime and Scene3DDockWidget::driveVisibleLayersToLiveEdge
   /// are the two scene-family entry points; they must remain consistent (both
   /// ultimately call pushTrackerTimeToView with absolute ns).
   virtual void onTrackerTime(double time) = 0;
 
-  // Optional hook: a host (DockWidget) may offer a freshly-dropped object
-  // topic to an existing widget that wants to consume it instead of being
-  // replaced. Default = refuse, which preserves the historical replace-on-drop
-  // behavior for plot and 2D widgets. Multi-topic 3D widgets override this to
-  // accept compatible types in place. Return true if the topic was accepted.
+  // Optional hook: a host (DockWidget) may offer a freshly dropped object topic to an existing widget that wants to
+  // consume it instead of being replaced. Default = refuse, so the widget is replaced on drop (plot and 2D widgets);
+  // multi-topic 3D widgets override it to accept compatible types in place. Returns true if the topic was accepted.
   virtual bool tryAcceptObjectTopic(
       ObjectTopicId /*topic_id*/, sdk::BuiltinObjectType /*object_type*/, const QString& /*title*/) {
     return false;
@@ -61,12 +58,10 @@ class IDataWidget {
     return true;
   }
 
-  // Optional hook, sibling of tryAcceptObjectTopic for SCALAR catalog keys: a
-  // host (DockWidget) offers the keys of a curve-list drop to a mounted widget
-  // that consumes scalar series itself (the state-transitions strip takes
-  // discrete series this way). The widget filters to the keys it can host and
-  // returns whether it accepted any. Default = refuse, preserving the
-  // historical scalar-drop behavior (plots are built by the host, not offered).
+  // Optional hook, sibling of tryAcceptObjectTopic for SCALAR catalog keys: a host (DockWidget) offers the keys of a
+  // curve-list drop to a mounted widget that consumes scalar series itself (the state-transitions strip takes discrete
+  // series this way). The widget filters to the keys it can host and returns whether it accepted any. Default =
+  // refuse (plots are built by the host, not offered).
   virtual bool tryAcceptSeriesKeys(const QStringList& /*catalog_keys*/) {
     return false;
   }

@@ -33,10 +33,9 @@ inline constexpr int kIncompleteRequestTimeoutMs = 10'000;
 /// The header the bridge names its MCP client in. The server derives the owner from it.
 inline constexpr char kClientHeader[] = "x-pj-client";
 
-/// What every tool's reply was missing a service assembly says.
+/// The tool error when the host could not build the services an agent tool needs.
 inline constexpr char kNoServicesError[] = "PlotJuggler could not build the services this tool needs";
 
-/// An object JSON schema with `properties` and the `required` names.
 [[nodiscard]] nlohmann::json schema(nlohmann::json properties, nlohmann::json required = nlohmann::json::array());
 
 /// One tools/list entry with the MCP annotations every tool here carries (readOnlyHint from
@@ -58,9 +57,8 @@ inline constexpr char kNoServicesError[] = "PlotJuggler could not build the serv
 /// token: the agent tools, without the app's own).
 enum class ToolSet { kFull, kAgentOnly };
 
-/// Turns the UI tools (McpUiTools: ui_tree, ui_click, ...) on for this process: main, from
-/// `--mcp-ui-tools` (desktop only); tests. They act as the user, so they run under the user's
-/// dialogs, and only on the public token.
+/// Process-wide switch for the UI tools (McpUiTools), set from `--mcp-ui-tools` (desktop only) and
+/// by tests. They act as the user, so they run under the user's dialogs, and only on the public token.
 void setUiToolsEnabled(bool enabled);
 [[nodiscard]] bool uiToolsEnabled();
 /// Whether `name` is one of the UI tools, whether or not they are enabled.
@@ -78,12 +76,10 @@ inline constexpr int kMaxUiTypedChars = 1000;
 /// uiToolsEnabled(). Static, so the bridge can list tools while no PlotJuggler runs.
 [[nodiscard]] nlohmann::json toolList(ToolSet set);
 
-/// The agent tool layer (pj_runtime's `agent_tools`), one instance for listing and calls.
+/// pj_runtime's `agent_tools`: one instance for listing and calls.
 [[nodiscard]] const agent_tools::ToolRegistry& agentTools();
 
-/// True for tools that never change the session: the only ones allowed while the user has a modal
-/// dialog open (the UI tools aside). `screenshot` is not one (its `tab` focuses a tab); the server lets it through
-/// without `tab`.
+/// Tools that never change the session. `screenshot` is not one (its `tab` focuses a tab).
 [[nodiscard]] bool isReadOnlyTool(const std::string& name);
 
 /// Whether a call of `name` with `args` may run while the user has a modal dialog open: the

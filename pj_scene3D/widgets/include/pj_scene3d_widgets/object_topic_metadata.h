@@ -10,14 +10,13 @@
 
 namespace pj::scene3d {
 
-/// Decode the 'builtin_object_type' key from an ObjectTopicDescriptor's
-/// metadata_json (the store-level metadata contract). Returns kNone when the
-/// field is absent, not a string, or unrecognised. Single decoder so the dock
-/// and any layer config widget share one parse path and can't silently diverge.
+/// Decodes the 'builtin_object_type' key of an ObjectTopicDescriptor's metadata_json (the store-level metadata
+/// contract); kNone when absent, not a string or unrecognised. The single decoder, so the dock and every layer config
+/// widget share one parse path.
 [[nodiscard]] PJ::sdk::BuiltinObjectType builtinObjectTypeFor(const PJ::ObjectTopicDescriptor& descriptor);
 
 /// True when the descriptor marks a snapshot stream (`sdk::kSnapshotMetadataKey` = "true"): every entry is a
-/// complete clear-and-replace snapshot, as each result of a derived SceneEntities topic is (D27).
+/// complete clear-and-replace snapshot, as each result of a derived SceneEntities topic is.
 [[nodiscard]] bool isSnapshotStream(const PJ::ObjectTopicDescriptor& descriptor);
 
 struct UniqueObjectTopicResolution {

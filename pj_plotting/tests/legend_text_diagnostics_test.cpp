@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Verifies the opt-in PJ_PLOT_TEXT_DEBUG diagnostics (PlotLegend / CurveTracker)
-// actually emit on a real legend paint. This is the tool used to chase the
-// intermittent "canvas text disappears" bug, so we must know it fires — a silent
-// diagnostic is worse than none. The test does NOT reproduce the bug; it proves
-// the instrument is live so the field log can be trusted.
+// The opt-in PJ_PLOT_TEXT_DEBUG diagnostics (PlotLegend, CurveTracker) emit on a real legend paint: a silent
+// diagnostic is worse than none, so the instrument must be live for the field log to be trusted. This does not
+// reproduce a text-disappearing failure.
 
 #include <gtest/gtest.h>
 #include <qwt_plot.h>

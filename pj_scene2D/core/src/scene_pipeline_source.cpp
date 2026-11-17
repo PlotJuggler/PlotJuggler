@@ -18,20 +18,17 @@ ScenePipelineSource::ScenePipelineSource(
 
 void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
   if (ts_ns == last_ts_) {
-    return;  // same timestamp — reuse pending result, skip redundant decode
+    return;
   }
   last_ts_ = ts_ns;
 
-  // No annotation at this time: clear the overlays IF something is currently shown.
-  // Coalesced via last_emitted_empty_ so an already-clear layer emits nothing.
+  // No annotation here: clear only if something is shown.
   auto mark_cleared = [this] {
     pending_scene_.reset();
     pending_clear_ = !last_emitted_empty_;
   };
 
-  // Copy bytes out of the store before decoding — keep no series-mutex held
-  // through the decode (lock-discipline pattern documented in
-  // ObjectStore::entryTimestamps).
+  // No store lock is held through the decode.
   auto entry = store_->latestAt(topic_, ts_ns);
   if (!entry.has_value() || entry->payload.anchor == nullptr || entry->payload.bytes.empty()) {
     mark_cleared();
@@ -42,8 +39,6 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
     if (result.has_value()) {
       pending_scene_ = std::move(*result);
     } else {
-      // Covers both decode failures and a parser contract violation (the decoder's
-      // decode(object) returns an error when the BuiltinObject isn't its type).
       fprintf(
           stderr, "[ScenePipelineSource] decode failed at ts=%lld: %s\n", static_cast<long long>(ts_ns),
           result.error().c_str());
@@ -52,11 +47,8 @@ void ScenePipelineSource::setTimestamp(int64_t ts_ns) {
   };
 
   if (entry_decoder_) {
-    // The host owns parser lookup, locking and lifetime. Keeping that policy out
-    // of this core avoids a second copy of SessionManager's binding abstraction.
     apply(entry_decoder_(*decoder_, entry->timestamp, entry->payload));
   } else {
-    // Canonical-producer topic: the store holds canonical bytes; decode as-is.
     apply(decoder_->decode(entry->payload.bytes.data(), entry->payload.bytes.size()));
   }
 }
@@ -70,8 +62,6 @@ std::optional<MediaFrame> ScenePipelineSource::takeFrame() {
     return mf;
   }
   if (pending_clear_) {
-    // Empty-overlay frame: the compositor replaces this layer's overlays with an
-    // empty set, clearing the previously-shown annotations.
     pending_clear_ = false;
     last_emitted_empty_ = true;
     return MediaFrame{};
@@ -80,8 +70,6 @@ std::optional<MediaFrame> ScenePipelineSource::takeFrame() {
 }
 
 void ScenePipelineSource::invalidate() {
-  // Drop the timestamp dedup so the next setTimestamp re-decodes even at an
-  // unchanged time (composite rebuild re-seeds at the current tracker time).
   last_ts_ = INT64_MIN;
   pending_scene_.reset();
 }

@@ -4,9 +4,10 @@
 
 PJ4's four build lanes are `none`, `asan` (ASan + UBSan), `tsan`
 (ThreadSanitizer) and `msan` (MemorySanitizer).
-The build and test scripts accept `--sanitize none|asan|tsan|msan`, or
-`PJ_SANITIZE` as the environment equivalent; the command-line option wins.
-The default is `none`.
+`build.sh` and `packaging/appimage/build_in_docker.sh` accept
+`--sanitize none|asan|tsan|msan`, `test.sh` accepts `none|asan|tsan` (the `msan`
+lane runs its tests inside `build.sh`); `PJ_SANITIZE` is the environment
+equivalent and the command-line option wins. The default is `none`.
 
 | Diagnostic lane | Selector | Build tree | Coverage |
 | --- | --- | --- | --- |
@@ -132,16 +133,19 @@ PJ_REQUIRE_GPU_TESTS=1 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.j
 
 [`PjSanitizers.cmake`](../cmake/PjSanitizers.cmake) enables
 `-fsanitize=address`, `-fsanitize=undefined`, frame pointers, and
-`-fno-sanitize-recover=all`. UBSan findings terminate the process. The default
-libstdc++ annotations, `_GLIBCXX_SANITIZE_STD_ALLOCATOR=1` and
-`_GLIBCXX_SANITIZE_VECTOR=1`, detect accesses beyond a vector's size even when
-they remain within its allocated capacity. These definitions must agree
-across translation units exchanging vectors; `PJ_SANITIZE_CONTAINERS=OFF` is
-the CMake escape hatch for diagnosed dependency-boundary false positives.
+`-fno-sanitize-recover=all`. UBSan findings terminate the process.
+`PJ_SANITIZE_CONTAINERS=ON` adds the libstdc++ annotations
+`_GLIBCXX_SANITIZE_STD_ALLOCATOR=1` and `_GLIBCXX_SANITIZE_VECTOR=1`, which
+detect accesses beyond a vector's size even within its capacity. They are off
+by default: the definitions must agree across every translation unit exchanging
+vectors, the prebuilt Conan packages were built without them, and with them on
+the lane reports a Luau ODR false positive. `build.sh` passes the option on
+every configure (default `OFF`), so a stale cache entry cannot turn them back on.
 The ASan lane defaults to `PJ_DEBUG_INFO=lines` for symbolized reports.
 
 The datastore's `sanitizer_selftest` runner includes death tests for a heap
-use-after-free, signed integer overflow, and vector container-overflow. They
+use-after-free, signed integer overflow and, when the container annotations are
+on, vector container-overflow. They
 pass only when their child process dies with the expected diagnostic. A clean
 child exit is a failure: it can mean the required instrumentation was lost.
 
@@ -151,16 +155,10 @@ child exit is a failure: it can mean the required instrumentation was lost.
 ./build.sh --sanitize tsan
 ```
 
-This builds **and runs** the app plus the whole configured test suite — 3048
-tests at the time of writing — instrumented with `-fsanitize=thread`, in a
-separate `build/tsan` tree. `--tsan` remains a deprecated alias.
-
-It used to build three named targets with `PJ4_BUILD_APP=OFF`. That list covered
-two of the seven PJ4 modules that spawn threads, and nothing in the plugins or
-the SDK; a hand-maintained set stops covering new threaded code silently, the
-moment someone forgets to extend it. The app was excluded only because the
-container entrypoint always packages, which is a packaging constraint rather
-than a ThreadSanitizer one.
+This builds **and runs** the app plus the whole configured test suite,
+instrumented with `-fsanitize=thread`, in a separate `build/tsan` tree. `--tsan`
+is a deprecated alias. The lane covers everything rather than a list of threaded
+targets: a hand-maintained list stops covering new threaded code silently.
 
 The lane also runs through the container, where it exercises the plugins and the
 SDK as well:
@@ -185,7 +183,7 @@ test process (`setarch -R`), which needs no host sysctl change.
 
 **A relaxed seccomp profile in Docker.** The syscall that needs (`personality`)
 is denied by Docker's default profile, so `build_in_docker.sh` passes
-`--security-opt seccomp=unconfined` for this lane only.
+`--security-opt seccomp=unconfined` for the `tsan` and `msan` lanes only.
 
 ### Suppressions are not optional here
 
@@ -200,9 +198,7 @@ counts, not only the first per test process:
 | `tsan.supp` without `called_from_lib:libQt6Core.so` | 391 | 390, 385 of them inside `libQt6Core` |
 | `cmake/sanitizers/tsan.supp` | 1 | 1: the SDK's `JobControl::armWatchdog` race, a genuine bug fixed upstream |
 
-GCC 11's runtime added double-lock reports on every timed condition-variable
-wait, because it has no `pthread_cond_clockwait` interceptor; Clang 22 reports
-none. Where the hand-off is a join on a worker PJ4 owns, the code tells TSan
+Where the hand-off is a join on a worker PJ4 owns, the code tells TSan
 about it instead of suppressing: `FileLoader` and `EnginePool` use
 `PJ::tsan::release/acquire` (`pj_runtime/TsanAnnotations.h`) to pair the two sides
 (a worker's last access with the `QThread::wait()` return; a task's submission
@@ -301,10 +297,9 @@ reason TSan does; see above. No AppImage is produced: this is a test lane.
 
 `sanitizer_msan_selftest` deliberately reads uninitialised heap memory. CTest
 passes it only on a `MemorySanitizer: use-of-uninitialized-value` report, so a
-clean exit and a startup abort are both failures. Its
-first version passed vacuously because an inline-asm memory clobber unpoisoned
-the buffer it was meant to read — which is exactly the failure it exists to
-catch, so do not reintroduce an optimiser escape there.
+clean exit and a startup abort are both failures. Keep optimiser escapes out of
+it: an inline-asm memory clobber unpoisons the buffer it reads, and the test
+then passes vacuously.
 
 ## Runtime environment and suppressions
 
@@ -375,7 +370,6 @@ The `tsan` and `msan` lanes produce **no** AppImage. Both are test lanes, and an
 instrumented binary from either needs its runtime environment tuned before it
 will start, so shipping one would hand users an artifact that aborts on launch.
 
-
 ## Plugins in the ASan lane
 
 `--sanitize asan --plugins-dir <source repo>` instruments the plugins too, and it is
@@ -415,12 +409,6 @@ instrumentation in every sanitizer lane by default (`PJ_SANITIZE_QT_ADS=OFF`).
 Its dock-manager teardown trips UBSan's vptr check inside its own destructors,
 and it is third-party code we do not patch. Pass `-DPJ_SANITIZE_QT_ADS=ON` to
 instrument it anyway.
-
-TSan produces **no AppImage**. `build_in_docker.sh --sanitize tsan` runs the lane
-across the plugins, the SDK and PJ4 and then stops: an instrumented binary needs
-its runtime environment tuned before it will even start, so packaging one as a
-release artifact would hand users something that aborts on launch. The app
-itself IS built and its GUI tests do run, offscreen, under instrumentation.
 
 **MemorySanitizer covers the Qt-free `pj_datastore` closure only** (see its
 section above). The rest of the app would need an instrumented Qt, CPython and

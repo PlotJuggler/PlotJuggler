@@ -137,9 +137,8 @@ TEST(LuaSisoTransform, BadScriptStartsFailed) {
   EXPECT_FALSE(xf.calculateNextPoint(Sample::scalar(0, PJ::VarValue{1.0})).has_value());
 }
 
-// [d] output_kind="same" on a uint64 column must not clamp the upper half of the domain to
-// INT64_MAX. A pass-through filter on a uint64 value above 2^63 must stay above 2^63 (the old
-// code routed it through toInt64 and the signed clamp lost everything past INT64_MAX).
+// output_kind="same" on a uint64 column must not clamp the upper half of the domain to INT64_MAX: a pass-through
+// filter keeps a value above 2^63 above 2^63.
 TEST(LuaSisoTransform, MirrorUint64DoesNotClampUpperHalf) {
   auto engine = makeLuauEngine();
   auto classes = engine->inspectModule(kIdentitySame, "test");

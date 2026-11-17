@@ -11,9 +11,9 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_scripting/memory_budget.h"
 
-// The headless video seam of the object scripts (docs/derived_objects/ARCHITECTURE.md §6): `video:frame_at(t)` decodes
-// the frame presented at `t` through a source the session injects (`RunOptions::video_source`), so scripting links no
-// codec.
+// The headless video seam of the object scripts (docs/derived_objects/ARCHITECTURE.md "Types and bindings"):
+// `video:frame_at(t)` decodes the frame presented at `t` through a source the session injects
+// (`RunOptions::video_source`), so scripting links no codec.
 
 namespace PJ::scripting {
 

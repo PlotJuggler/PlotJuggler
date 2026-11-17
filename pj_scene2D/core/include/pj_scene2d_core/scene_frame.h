@@ -9,10 +9,7 @@
 
 namespace PJ {
 
-// Compatibility aliases. Existing pj_scene2D consumers spell these in the
-// singular ("ImageAnnotation"); the canonical SDK exports them in the plural
-// ("ImageAnnotations"). Keep both readable so the canonical-object refactor
-// does not also force a global rename in this module.
+// Module-local names for the SDK annotation types (this module spells ImageAnnotation in the singular).
 using AnnotationTopology = sdk::AnnotationTopology;
 using CircleAnnotation = sdk::CircleAnnotation;
 using ColorRGBA = sdk::ColorRGBA;
@@ -21,8 +18,7 @@ using Point2 = sdk::Point2;
 using PointsAnnotation = sdk::PointsAnnotation;
 using TextAnnotation = sdk::TextAnnotation;
 
-// Time-stamped batch of image-overlay annotations produced by an
-// ISceneDecoder. Carried as a frame on the media pipeline.
+// The annotations an ISceneDecoder produced for one entry.
 struct SceneFrame {
   Timestamp timestamp = 0;
   std::vector<ImageAnnotation> annotations;

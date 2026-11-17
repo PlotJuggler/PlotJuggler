@@ -14,12 +14,10 @@ struct Ray {
   glm::vec3 dir{0.0f, 0.0f, -1.0f};
 };
 
-// Express a world position relative to the camera-relative RENDER ORIGIN. The
-// subtraction happens in DOUBLE before the float downcast — that ordering is the
-// whole point: it keeps the small (eye→geometry) delta when `world_pos` and
-// `origin` are both at large world coordinates (~1e6, where float32 has ~0.1 m of
-// resolution), which a `vec3 - vec3` would lose to cancellation. With origin
-// {0,0,0} it is just the float of `world_pos`.
+// Express a world position relative to the camera-relative RENDER ORIGIN, subtracting in DOUBLE before the float
+// downcast: that ordering keeps the small eye→geometry delta when both sit at large coordinates (~1e6, where float32
+// has ~0.1 m resolution), which a `vec3 - vec3` would lose to cancellation. With origin {0,0,0} it is just the float of
+// `world_pos`.
 [[nodiscard]] inline glm::vec3 toRenderSpace(const glm::vec3& world_pos, const glm::dvec3& origin) {
   return glm::vec3(glm::dvec3(world_pos) - origin);
 }
@@ -30,20 +28,17 @@ struct Ray {
 // Returns 0 for an invalid (unknown) AABB → callers fall back to working distance.
 [[nodiscard]] float sceneReach(const AABB& bounds, const glm::vec3& focal);
 
-// Decoupled adaptive near/far for a perspective camera. `working_distance` is the
-// eye-to-focal distance (orbit radius); `scene_reach` is sceneReach() (0 = unknown).
-//   near_plane  = max(working_distance * 1e-2, 1e-3)   — from working distance ONLY, so
-//                 close inspection never clips regardless of how large the scene is.
-//   far_plane   = max(working_distance * 4, scene_reach) * 1.5
-//   near_plane  = max(near_plane, far_plane / 1e5)     — ratio cap to bound depth precision.
-// Writes results to out-params (kept testable without constructing a projection).
+// Decoupled adaptive near/far for a perspective camera. `working_distance` is the eye-to-focal distance (orbit
+// radius); `scene_reach` is sceneReach() (0 = unknown).
+//   near_plane = max(working_distance * 1e-2, 1e-3): working distance ONLY, so close inspection never clips
+//   far_plane  = max(working_distance * 4, scene_reach) * 1.5
+//   near_plane = max(near_plane, far_plane / 1e5): ratio cap bounding depth precision
+// Writes out-params (testable without constructing a projection).
 void adaptiveNearFar(float working_distance, float scene_reach, float& near_plane, float& far_plane);
 
-// Build the world-space ray through a pixel. `cursor_px` is in Qt widget
-// coordinates (origin top-left, y increasing downward); the y-flip into NDC is
-// handled here. `view`/`proj` are the matrices currently in effect. Returns a
-// default ray (origin 0, dir -Z) for a degenerate viewport or non-invertible
-// transform. Works for both perspective and orthographic `proj`.
+// Builds the world-space ray through a pixel. `cursor_px` is in Qt widget coordinates (origin top-left, y down); the
+// y-flip into NDC is done here. Returns a default ray (origin 0, dir -Z) for a degenerate viewport or non-invertible
+// transform. Works for perspective and orthographic `proj`.
 [[nodiscard]] Ray unprojectRay(
     glm::vec2 cursor_px, int viewport_w, int viewport_h, const glm::mat4& view, const glm::mat4& proj);
 

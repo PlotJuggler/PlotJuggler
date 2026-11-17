@@ -66,9 +66,8 @@ TEST(SectionHeaderBandTest, InternalSubWidgetsAreNotAutoDockedTwice) {
   EXPECT_EQ(band.findChildren<QPushButton*>(QStringLiteral("regexToggle")).size(), 1);
 }
 
-// Docked controls are pinned to the app-wide input-row height (clamped by the
-// band content height) so they match their siblings outside the band, and carry
-// the stylesheet hook that lets the app QSS lift its single-input-row height cap.
+// Docked controls are pinned to the app-wide input-row height (clamped by the band content height), so they match their
+// siblings outside the band, and carry the stylesheet hook that lets the app QSS lift its single-input-row height cap.
 TEST(SectionHeaderBandTest, DockedChildrenAreSizedToTheInputRowHeight) {
   SectionHeaderBand band(QStringLiteral("Settings"));
   auto* checkbox = new QCheckBox(QStringLiteral("One file per group"), &band);
@@ -76,9 +75,8 @@ TEST(SectionHeaderBandTest, DockedChildrenAreSizedToTheInputRowHeight) {
   // that queued call. processEvents() alone does not reach an unshown widget tree.
   QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
 
-  // The canonical title-band recipe (CurveListPanel's "Custom Series" band):
-  // layout_padding on top/bottom/right, none on the left (the title label leads
-  // with its own indent), leaving icon_size + icon_padding for the chrome.
+  // The title-band recipe (CurveListPanel's "Custom Series" band): layout_padding on top, bottom and right, none on the
+  // left (the title label leads with its own indent), leaving icon_size + icon_padding for the chrome.
   const PJ::ChromeMetrics metrics{};
   const int content_height = metrics.bandHeight() - (2 * metrics.layout_padding);
   EXPECT_EQ(content_height, metrics.icon_size + metrics.icon_padding);

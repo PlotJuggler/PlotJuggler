@@ -1,16 +1,12 @@
-# ---------------------------------------------------------------------------
-# pj_scene3d_core - geometry/scene core, no Qt or GL dependency. TF types
-# (Transform/TransformBuffer) come from the pj_tf leaf.
-# ---------------------------------------------------------------------------
+# pj_scene3d_core: geometry/scene core, no Qt or GL dependency. TF types (Transform/TransformBuffer) come from the
+# pj_tf leaf.
 
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 if(EMSCRIPTEN)
-  # Expose only the backend-neutral slice used by the product QRhi view and its
-  # layers. Compressed canonical clouds add only the existing transcoder when
-  # their explicit browser dependency option is enabled. The native branch
-  # below is unchanged.
+  # Browser build: only the backend-neutral slice the QRhi view and its layers use. Compressed canonical clouds add
+  # the transcoder only when the explicit browser dependency option is enabled.
   set(_pj_scene3d_core_sources
     src/camera/camera.cpp
     src/camera/camera_math.cpp
@@ -139,8 +135,7 @@ if(PJ_BUILD_TESTS)
     LIBS pj_scene3d_core draco::draco cloudini::cloudini glm::glm
   )
 
-  # Reproducibility helper for the checked browser MCAP. EXCLUDE_FROM_ALL keeps
-  # the native application and ordinary test build unchanged; W19a invokes this
+  # Reproducibility helper for the checked browser MCAP: EXCLUDE_FROM_ALL keeps it out of the ordinary build; run the
   # target explicitly before the Python ROS2 CDR/MCAP packager.
   add_executable(wasm_compressed_pointcloud_payload_generator EXCLUDE_FROM_ALL
     ../../tests/wasm/fixtures/generate_compressed_pointcloud_payloads.cpp)

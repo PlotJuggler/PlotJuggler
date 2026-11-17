@@ -7,10 +7,10 @@
 // larger than the wasm address space and costs no memory while it is open. The page side is browser_picked_file.js.
 //
 // Costs, all on the browser main thread (every pthread's file syscalls are proxied there): a read that misses the
-// node's 1 MiB read-ahead block blocks that thread for one Worker round trip, about 0.1-0.2 ms plus the copy.
-// A File changed or deleted on disk after the pick makes its reads fail with EIO. A Worker that errors, or a read it
-// leaves unanswered for 30 s, retires both Workers: every mounted pick then fails its reads (and pending hashes)
-// until the next pick starts new ones.
+// node's read-ahead block blocks that thread for one Worker round trip. A File changed or deleted on disk after the
+// pick makes its reads fail with EIO. A Worker that errors, or a read it leaves unanswered (kTimeoutMs in the .js),
+// retires both Workers: every mounted pick then fails its reads (and pending hashes) until the next pick starts new
+// ones.
 //
 // All functions run on the browser main (GUI) thread; every callback runs later, from its event loop.
 
@@ -36,8 +36,8 @@ void pick(const QString& accept, PickCallback callback);
 void forget(quint32 pick_id);
 
 /// Computes the lowercase hex SHA-256 of the File mounted at `path`, in a Worker, never on the main thread:
-/// `done` gets an empty string when the File cannot be read whole (changed or removed since the pick). The hash
-/// runs at about 100 MB/s; reads of the mounted file never wait for it.
+/// `done` gets an empty string when the File cannot be read whole (changed or removed since the pick). Reads of
+/// the mounted file never wait for it.
 void hash(const QString& path, std::function<void(QString sha256)> done);
 
 /// Runs `handler(path)` once per mounted file whose read first fails (its File changed or was removed on disk since

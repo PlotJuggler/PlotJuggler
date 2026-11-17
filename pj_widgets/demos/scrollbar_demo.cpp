@@ -1,19 +1,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Standalone visual demo for PJ::Scrollbar in reserved-gutter placement (the
-// attachPillScrollbars default). Left: a table whose trailing column holds
-// per-row action buttons — content an overlay pill would cover and click-steal;
-// its pill is pinned visible (pjScrollbarAutoHide=false) so a screenshot shows
-// the pill inside the reserved gutter, clear of the buttons.
-// Middle: the curve-list shape (two-column tree + HeaderResizePolicy) — shows
-// the gutter's header band painted as the header's continuation, with the
-// groove inset below it. Right: a scroll page with auto-hide left on — its
-// gutter reads as an empty strip until hovered/scrolled. All under the real
-// app theme.
+// Standalone visual demo for PJ::Scrollbar in reserved-gutter placement (the attachPillScrollbars default). Left: a
+// table whose trailing column holds per-row action buttons, content an overlay pill would cover and click-steal; its
+// pill is pinned visible (pjScrollbarAutoHide=false) so a screenshot shows it inside the reserved gutter, clear of the
+// buttons. Middle: the curve-list shape (two-column tree and HeaderResizePolicy), showing the gutter's header band
+// painted as the header's continuation, with the groove inset below it. Right: a scroll page with auto-hide left on:
+// its gutter reads as an empty strip until hovered or scrolled. All under the real app theme.
 //
-// Interactive: ./build/pj_widgets/demos/pj_widgets_scrollbar_demo
-// Screenshot : ./build/pj_widgets/demos/pj_widgets_scrollbar_demo --screenshot out.png [--theme dark|light]
+// Interactive: ./build/pj_widgets/demos/pj_widgets_scrollbar_demo Screenshot :
+// ./build/pj_widgets/demos/pj_widgets_scrollbar_demo --screenshot out.png [--theme dark|light]
 
 #include <QApplication>
 #include <QHBoxLayout>

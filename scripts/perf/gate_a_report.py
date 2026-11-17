@@ -7,7 +7,7 @@
 Reads DIR/raw/<round>/<config>__<case>.log, takes each metric's per-run value
 (the benchmark's own median of its frames), and writes DIR/gate_a.md: the median
 of the rounds with [min-max], the candidate / reference ratio and the verdict
-under the Gate A rules (pj_scene3D/docs/TECHNICAL_NOTES.md §9):
+under the Gate A rules (pj_scene3D/docs/TECHNICAL_NOTES.md "Performance baseline"):
 
   time (wall, GUI CPU):  RHI <= max(1.2 x REF, REF + 1 ms)
   memory (RSS, GPU):     RHI <= 1.10 x REF

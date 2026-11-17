@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// TF R6 object placement: an object is placed at its own header stamp in the TF
-// header clock; an unstamped object, or a stamp the header clock cannot resolve,
-// is placed at the cursor in the entry clock.
+// An object is placed at its own header stamp in the TF header clock; an unstamped object, or a stamp the header
+// clock cannot resolve, is placed at the cursor in the entry clock.
 #include "pj_scene3d_core/tf/object_placement.h"
 
 #include <gtest/gtest.h>
@@ -24,7 +23,6 @@ constexpr TimePoint ms(int64_t value) {
   return TimePoint{std::chrono::milliseconds(value)};
 }
 
-// map<-lidar stamped 100 and 200 ms (x = 1, 2), logged 40 ms later.
 void feedLoggedLate(TransformBuffer& buffer) {
   for (int sample = 1; sample <= 2; ++sample) {
     StampedTransform edge{

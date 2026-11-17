@@ -1,57 +1,30 @@
-# Pre-commit Scripts
+# Pre-commit scripts
+
+The local C/C++ hooks of `.pre-commit-config.yaml`. Each prints the offending line and exits 1 on a violation, 0
+when clean.
 
 ## `check-forbidden-patterns.py`
 
-Detects forbidden patterns in C++ source files that should never be committed.
+Regex checks for constructs that break a shipped platform:
 
-### Current Patterns
+- `std::getenv()`: not portable (MSVC C4996); use `sdk::getEnv()`.
+- Identifiers named `near` / `far`: empty macros in `windows.h`.
+- `path::string()`: narrows through the ANSI code page on Windows; use `PJ::pathToUtf8`.
+- `std::filesystem::path(qstring.toStdString())`: decodes UTF-8 through the ANSI code page; use `toStdU16String()`.
 
-- **`std::getenv()`** — Not portable (Windows MSVC C4996 warning); use `sdk::getEnv()` instead.
+To add a check, append a tuple to `FORBIDDEN_PATTERNS` in the script: the regex, the message, the file extensions it
+applies to, `code_only` (ignore comments and string literals, for words that also occur in prose) and `skip_tests`
+(do not apply under a `tests/` directory).
 
-### Extending with New Patterns
+## `check-canonical-chrome.py`
 
-Edit the `FORBIDDEN_PATTERNS` list in `check-forbidden-patterns.py` to add new checks:
+Fails on a raw `QDialog`, `QMessageBox`, `QFileDialog` or `QInputDialog` (OS window decorations); use `PJ::Dialog`,
+`PJ::MessageBox` or `PJ::FileDialog` from `pj_widgets`. Exempt: `pj_widgets/` (the wrappers), `tests/` and `demos/`
+directories, `*_test.*` files, and a line carrying `NOLINT(pj-canonical-chrome)` (a reviewed exception).
 
-```python
-FORBIDDEN_PATTERNS = [
-    (
-        r'\bstd::getenv\s*\(',  # regex pattern
-        "Error message shown to user",  # descriptive message
-        {'.cpp', '.h', '.hpp', '.cxx', '.cc', '.c'},  # file extensions to check
-    ),
-    # Add new patterns here:
-    (
-        r'malloc\s*\(',  # example: disallow malloc
-        "Use std::make_unique or std::make_shared instead of malloc",
-        {'.cpp', '.h', '.hpp'},
-    ),
-]
-```
-
-### Testing
-
-Test the script manually before running via pre-commit:
+## Running
 
 ```bash
-# Test on a specific file
-scripts/pre-commit/check-forbidden-patterns.py path/to/file.cpp
-
-# Exit code 0 = no violations, 1 = violations found
+scripts/pre-commit/check-forbidden-patterns.py path/to/file.cpp      # one hook on specific files
+pre-commit run check-canonical-chrome --all-files                    # one hook through pre-commit
 ```
-
-### Running via Pre-commit
-
-```bash
-# Run only this hook
-pre-commit run check-forbidden-patterns --all-files
-
-# Run all hooks on staged files
-pre-commit run
-```
-
-### Notes
-
-- Patterns are regex-based (`re.search()`)
-- Each file is checked against only the extensions listed in its pattern entry
-- Line content is printed for context
-- The hook is automatically run before commits (configured in `.pre-commit-config.yaml`)

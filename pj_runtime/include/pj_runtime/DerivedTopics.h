@@ -12,7 +12,7 @@
 // A derived (on-demand) object topic is marked in its ObjectTopicDescriptor's
 // metadata_json, never by its name: a name convention would hide the topic from any
 // consumer that reads metadata but not names, and collide with a plugin's own topic
-// that contains the text (docs/derived_objects/ARCHITECTURE.md §13).
+// that contains the text.
 
 namespace PJ {
 
@@ -21,7 +21,7 @@ namespace PJ {
 /// markers', has its own value, so logic for one kind never touches another's topics).
 /// `findOrRegisterTopic` reuses a topic only for byte-identical metadata, so equal
 /// `type`s must give equal bytes (the builder fixes the key order). A complete
-/// SceneEntities / ImageAnnotations snapshot is published on every evaluation (D27), so
+/// SceneEntities / ImageAnnotations snapshot is published on every evaluation (absent ids disappear), so
 /// those two types are marked as snapshot streams and a stateless consumer renders each
 /// entry alone. An image topic declares `image_codec: pj_image_v1`: its entries are serialized `sdk::Image` records
 /// and it has no parser, so the tag is what tells Scene2D to unwrap them. `type` must be a builtin, non-`kNone` type

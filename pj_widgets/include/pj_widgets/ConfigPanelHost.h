@@ -14,13 +14,11 @@ class ConfigPanelHost : public QWidget {
  public:
   explicit ConfigPanelHost(QWidget* parent = nullptr);
 
-  // Shows `widget` as the sole hosted panel, taking ownership of it: the host
-  // reparents it and schedules the previously hosted widget for deletion via
-  // deleteLater(). Callers must not delete a widget after handing it over.
-  // Passing nullptr is equivalent to clear().
+  // Shows `widget` as the sole hosted panel and takes ownership: the host reparents it and deleteLater()s the previous
+  // one. Callers must not delete a widget after handing it over. nullptr is clear().
   void setConfigWidget(QWidget* widget);
 
-  // Removes and deletes (deleteLater) the current hosted widget, if any.
+  // Removes the hosted widget, if any, with deleteLater().
   void clear();
 
  private:

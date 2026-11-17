@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A deliberately tiny end-to-end fixture for the browser ingress milestone.
-// It is compiled only with PJ_WASM_ENABLE_INGRESS_PROBE: the browser picker
-// stages bytes into MEMFS, FileLoader injects that backing path into config,
-// and this statically registered source must reopen and consume the file.
+// A deliberately tiny end-to-end fixture for the browser ingress path. Compiled only with
+// PJ_WASM_ENABLE_INGRESS_PROBE: the browser picker stages bytes into MEMFS, FileLoader injects that backing path
+// into config, and this statically registered source must reopen and consume the file.
 
 #include <cstdio>
 #include <fstream>

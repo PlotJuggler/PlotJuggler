@@ -104,16 +104,13 @@ TEST_F(ExtensionCatalogSeedTest, FirstLaunchSeedsBundledIntoMarketplaceDir) {
   EXPECT_EQ(service->extensionManager().bundledVersion(QString::fromUtf8(kMockId)), "1.0.0");
 }
 
-// Regression: a plugin whose directory appears in the managed dir AFTER the
-// service is built — an install done while running — must load on reload()
-// without a restart. The managed scan tier is one directory per installed
-// extension and is rebuilt on every reload, so a mid-session install is picked
-// up; a snapshot frozen at construction would miss it.
+// A plugin whose directory appears in the managed dir after the service is built (an install done while running)
+// must load on reload() without a restart: the managed scan tier is one directory per installed extension, rebuilt on
+// every reload.
 TEST_F(ExtensionCatalogSeedTest, ReloadPicksUpAPluginInstalledAfterConstruction) {
   const auto service = makeDefaultModeService();
   ASSERT_EQ(findMock(*service), nullptr) << "nothing installed yet";
 
-  // Simulate an install landing in the managed dir after construction.
   placePlugin(seededDir(), PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
   ASSERT_EQ(findMock(*service), nullptr) << "an unscanned on-disk plugin is not loaded until reload";
 
@@ -124,9 +121,8 @@ TEST_F(ExtensionCatalogSeedTest, ReloadPicksUpAPluginInstalledAfterConstruction)
   EXPECT_EQ(mock->version, "1.0.0");
 }
 
-// Regression: a bundled refresh writes extensions/<id>/ outside the adopt path, so
-// a store object recorded for that id by an earlier registry install goes stale.
-// The seed must drop the mapping, or the runtime keeps loading the old store
+// A bundled refresh writes extensions/<id>/ outside the adopt path, so a store object recorded for that id by an
+// earlier registry install goes stale; the seed must drop the mapping, or the runtime keeps loading the old store
 // version instead of the freshly-seeded bundled bytes.
 TEST_F(ExtensionCatalogSeedTest, BundledRefreshDropsStaleStoreMapping) {
   const QString store_root = PlatformUtils::canonicalStoreRoot(marketplace_.path());
@@ -136,8 +132,8 @@ TEST_F(ExtensionCatalogSeedTest, BundledRefreshDropsStaleStoreMapping) {
   placePlugin(seededDir(), PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("old_v1"));
   placePlugin(bundled_.path(), PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH, pluginFileName("ds"));
 
-  // A stale store object + profile mapping, as an earlier adopt of the v1 install
-  // would have left. Without the fix managedPluginDirs would prefer this v1 object.
+  // A stale store object + profile mapping, as an earlier adopt of the v1 install would leave; managedPluginDirs would
+  // prefer it.
   const QString digest_hex = QStringLiteral("a").repeated(64);
   placePlugin(store_root + ".artifacts/" + digest_hex, PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
   ASSERT_TRUE(writeLoadedProfile(profiles_root, {{QString::fromUtf8(kMockId), "sha256:" + digest_hex}}));
@@ -218,14 +214,10 @@ TEST_F(ExtensionCatalogSeedTest, OverrideModeSeedsMarketplaceDirWithoutCoreLock)
   EXPECT_FALSE(service->extensionManager().isBundled(QString::fromUtf8(kMockId)));
 }
 
-// What the seed wrote is reported to the marketplace in EVERY mode, unlike the
-// bundled id -> version map, which stays scoped to default mode. The marketplace
-// reads the managed dir, and the seed writes that dir whether or not
-// --plugin-dir reorders the load hierarchy.
-//
-// This is the case no rule over (scanned, bundled) can satisfy: the core map is
-// empty here, and the scan snapshot was taken before the refresh, so the seed's
-// own report is the only thing that can name the version now on disk.
+// What the seed wrote is reported to the marketplace in every mode, unlike the bundled id -> version map, which stays
+// scoped to default mode: the marketplace reads the managed dir, which the seed writes whether or not --plugin-dir
+// reorders the load hierarchy. No rule over (scanned, bundled) can satisfy this case: the core map is empty and the
+// scan snapshot predates the refresh, so the seed's own report is the only thing that can name the version now on disk.
 TEST_F(ExtensionCatalogSeedTest, OverrideModeReportsTheSeededVersionToTheMarketplace) {
   placePlugin(seededDir(), PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("old_v1"));     // installed 1.0.0
   placePlugin(bundled_.path(), PJ_MOCK_DATA_SOURCE_V2_PLUGIN_PATH, pluginFileName("ds"));  // bundled 2.0.0
@@ -284,17 +276,11 @@ TEST_F(ExtensionCatalogSeedTest, ConstructorStaticPluginsRegisterAndShadowSameId
   EXPECT_EQ(mock_count, 1);
 }
 
-// --plugin-dir mode: the CLI override reorders the LOAD scan hierarchy, but the
-// marketplace UI must keep tracking the plugins it INSTALLED (the marketplace
-// dir), not the override dir. A regression would swap the ExtensionManager's
-// root to the override dir, so an extension installed via the marketplace
-// disappears from installedExtensions() the moment --plugin-dir is used.
-//
-// The mocked v1 and v2 DSOs share the id "mock-data-source" but differ by
-// version, giving us a two-value discriminator on the same key: place v1 under
-// the marketplace dir (what the user "installed"), v2 under --plugin-dir (the
-// dev override), then read back the version the marketplace reports installed.
-// Marketplace-tracks-marketplace-dir ⇒ v1; regression to override-dir ⇒ v2.
+// --plugin-dir mode: the CLI override reorders the load scan hierarchy, but the marketplace UI must keep tracking the
+// plugins it installed (the marketplace dir), not the override dir; otherwise an extension installed via the
+// marketplace disappears from installedExtensions() once --plugin-dir is used. The mock v1 and v2 DSOs share the id
+// "mock-data-source" and differ by version, a two-value discriminator: v1 under the marketplace dir (user-installed),
+// v2 under --plugin-dir (dev override); the version the marketplace reports must be v1.
 TEST_F(ExtensionCatalogSeedTest, OverrideModeExtensionManagerTracksMarketplaceDirNotOverrideDir) {
   const QString installed_root = marketplace_.path() + "/" + kMockId;
   placePlugin(installed_root, PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));  // v1 in marketplace
@@ -387,9 +373,7 @@ TEST_F(ExtensionCatalogSeedTest, SeedRunsOnceTheStoreLeaseIsFree) {
   EXPECT_TRUE(QDir(seededDir()).exists()) << "the seed must resume for the session that owns the store";
 }
 
-// -----------------------------------------------------------------------------
-// Folder names outside the Windows code page
-// -----------------------------------------------------------------------------
+// ---- Folder names outside the Windows code page ----
 
 // "資料-🚀" as UTF-8 bytes, so the literal does not depend on the compiler's source charset.
 // No legacy Windows code page holds these characters, so reading the UTF-8 bytes of a QString
@@ -434,8 +418,8 @@ TEST_F(ExtensionCatalogSeedTest, SeedsAndLoadsThroughFoldersNamedOutsideTheCodeP
 TEST_F(ExtensionCatalogSeedTest, ScansAnOverrideFolderNamedOutsideTheCodePage) {
   const QString override_dir = override_.path() + "/" + kUnicodeFolder + "-override";
   placePlugin(override_dir, PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, pluginFileName("ds"));
-  // An empty file with the DSO suffix: the SDK scanner reports it with its path, which on
-  // Windows it once narrowed through the code page and threw on, aborting the whole scan.
+  // An empty file with the DSO suffix: the SDK scanner reports it with its path, and narrowing that path through the
+  // Windows code page would throw and abort the whole scan.
   QFile broken(override_dir + "/" + pluginFileName("broken"));
   ASSERT_TRUE(broken.open(QIODevice::WriteOnly));
   broken.close();
@@ -451,16 +435,11 @@ TEST_F(ExtensionCatalogSeedTest, ScansAnOverrideFolderNamedOutsideTheCodePage) {
       << "the broken file's diagnostic lost the folder name";
 }
 
-// -----------------------------------------------------------------------------
-// Host-compatibility helpers used by the seed's rescue path
-// -----------------------------------------------------------------------------
+// ---- Host-compatibility helpers used by the seed's rescue path ----
 
-// The seed uses descriptorIsCompatibleWithHost() to decide whether an installed
-// copy above the bundled version can survive: when the answer is false, the
-// bundled build overwrites it (rescue). These tests pin the compat semantics
-// the seed relies on — end-to-end coverage of the rescue itself needs a mock
-// DSO that declares incompatible metadata, which requires an SDK-side test
-// asset; the follow-up lands separately.
+// The seed uses descriptorIsCompatibleWithHost() to decide whether an installed copy above the bundled version can
+// survive: when false, the bundled build overwrites it (rescue). These tests pin the compat semantics the seed relies
+// on; end-to-end coverage of the rescue needs a mock DSO that declares incompatible metadata.
 
 PluginDescriptor makeDescriptor(uint32_t abi_major, std::string min_sdk = {}) {
   PluginDescriptor d;
@@ -493,8 +472,8 @@ TEST(ExtensionCatalogCompatTest, MismatchedAbiIsIncompatible) {
 }
 
 TEST(ExtensionCatalogCompatTest, DeprecatedApplicationFloorNeverGates) {
-  // min_plotjuggler_version is decoded for back-compat but no longer gates:
-  // abi_major is the generation gate and app-level feature gaps degrade.
+  // min_plotjuggler_version is decoded but does not gate: abi_major is the generation gate and app-level feature gaps
+  // degrade.
   auto d = makeDescriptor(PJ_ABI_VERSION);
   d.min_plotjuggler_version = "999.0.0";
   EXPECT_TRUE(ExtensionCatalogService::descriptorIsCompatibleWithHost(d));

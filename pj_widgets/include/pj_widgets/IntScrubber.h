@@ -8,8 +8,7 @@
 
 namespace PJ {
 
-// Integer variant of the Blender-style scrubber. Public API mirrors
-// QSpinBox so .ui files can be migrated by promoting the widget.
+// Integer variant of the Blender-style scrubber; the API mirrors QSpinBox, so a .ui migrates by promoting the widget.
 class IntScrubber : public ScrubberBase {
   Q_OBJECT
   Q_PROPERTY(int value READ value WRITE setValue NOTIFY valueChanged USER true)
@@ -52,8 +51,8 @@ class IntScrubber : public ScrubberBase {
   void setSingleStep(int v);
   void setSuffix(const QString& s);
   void setPrefix(const QString& s);
-  // Zero-pad the displayed value to at least `w` digits (0 = none). Display
-  // only — editing/commit still parse a plain integer. E.g. w=2: 5 -> "05".
+  // Zero-pads the displayed value to at least `w` digits (0 = none); display only, editing and commit parse a plain
+  // integer. w=2: 5 shows "05".
   void setPadWidth(int w);
 
  signals:

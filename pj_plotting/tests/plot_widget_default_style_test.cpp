@@ -88,8 +88,7 @@ TEST(PlotWidgetCurveStyle, StyleAndWidthAreInheritedByNewCurves) {
 }
 
 // A point-only (Dots) curve draws its dots at dotWidthValue, so they are as
-// visible as the dots of a Lines+Dots curve — not 1px specks. (Regression for
-// the old per-curve style toggle that left the thin line pen in place.)
+// visible as the dots of a Lines+Dots curve, not 1 px specks (the thin line pen must not stay).
 TEST(PlotWidgetCurveStyle, DotsUseDotWidth) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -130,11 +129,9 @@ TEST(PlotWidgetCurveStyle, StyleIsSavedOnThePlotNotPerCurve) {
   EXPECT_FALSE(curve.hasAttribute(u"line_width"_s));
 }
 
-// XY (scatter) plots default to Dots, and a plot-level style/width change must
-// NOT downgrade them to Lines. Regression: making style/width plot-level means
-// every plot-level restyle runs over XY curves too. XY curves are NOT forced to a
-// style — they use the plot-level style like any curve (the Curve Style toolbar
-// controls them), and a later plot-level restyle keeps them on that style.
+// XY (scatter) plots default to Dots, and a plot-level style/width change must not downgrade them to Lines: a
+// plot-level restyle runs over XY curves too. XY curves are not forced to a style; they use the plot-level style like
+// any curve (the Curve Style toolbar controls them), and a later restyle keeps them on it.
 TEST(PlotWidgetCurveStyle, XyPlotUsesPlotLevelStyle) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -253,11 +250,9 @@ TEST(PlotWidgetCurveStyle, XyLoadRestoresAliasWithoutDialog) {
 }
 
 // The empty-plot canvas paints the Data Backdrop surface for the ACTIVE theme,
-// and follows a theme change delivered AFTER construction. Regression: the canvas
-// colour used to be resolved once at construction, so a plot built before the dark
-// palette synced (startup) or a runtime toggle kept the light backdrop. Theme is
-// detected from QPalette::Window lightness, which Theme::syncApplicationPalette
-// keeps in lockstep with the theme tokens.
+// and follows a theme change delivered after construction (a plot built before the dark palette synced at startup, or
+// a runtime toggle, must not keep the light backdrop). The theme is detected from QPalette::Window lightness, which
+// Theme::syncApplicationPalette keeps in lockstep with the theme tokens.
 TEST(PlotWidgetCanvas, DataBackdropFollowsTheme) {
   const auto set_window = [](const QColor& c) {
     QPalette pal = QApplication::palette();

@@ -8,13 +8,12 @@
 
 namespace PJ {
 
-/// 64-bit FNV-1a: cheap, stable, non-cryptographic. Used for in-process
-/// identities (render keys, cache keys, change signatures) and for the palette
-/// index of StateColors.h, whose pinned assignments depend on these exact values.
+/// 64-bit FNV-1a: cheap, stable, non-cryptographic. Used for in-process identities (render keys, cache keys, change
+/// signatures) and for the palette index of StateColors.h, whose pinned assignments depend on these exact values.
 inline constexpr std::uint64_t kFnv1aOffsetBasis = 0xcbf29ce484222325ULL;
 
-/// One FNV-1a step that folds `value` in as a single word, not byte by byte:
-/// the word-wise variant the render keys and fingerprints over numbers use.
+/// One FNV-1a step that folds `value` in as a single word, not byte by byte: the word-wise variant the render keys and
+/// number fingerprints use.
 [[nodiscard]] constexpr std::uint64_t fnv1aMix(std::uint64_t hash, std::uint64_t value) noexcept {
   return (hash ^ value) * 0x100000001b3ULL;
 }
@@ -30,8 +29,8 @@ template <typename Float>
   }
 }
 
-/// The standard byte-wise FNV-1a of `bytes`, any range of char or 8-bit
-/// elements (std::string_view, std::vector<std::uint8_t>, std::span, ...).
+/// The standard byte-wise FNV-1a of `bytes`, any range of char or 8-bit elements (std::string_view,
+/// std::vector<std::uint8_t>, std::span).
 template <typename Bytes>
 [[nodiscard]] constexpr std::uint64_t fnv1a(const Bytes& bytes) noexcept {
   std::uint64_t hash = kFnv1aOffsetBasis;

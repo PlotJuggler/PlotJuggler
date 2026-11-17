@@ -11,26 +11,22 @@ class QVariantAnimation;
 
 namespace PJ {
 
-// A "segmented control" — a joined strip of pill segments that replaces an
-// exclusive group of QRadioButtons in config panels. Clicking a segment selects
-// it; the selected segment renders as a raised neutral chip that slides to the
-// new position while the others show the input background. Despite the
-// (historical) name it supports any number of segments >= 2; the two-option
-// constructors remain as the common-case convenience.
+// A segmented control: a joined strip of pill segments that replaces an exclusive group of QRadioButtons in config
+// panels. Clicking a segment selects it; the selected segment is a raised neutral chip that slides to the new position,
+// the others show the input background. Any number of segments >= 2 is supported; the two-option constructors are the
+// common-case convenience.
 //
-// Orientation is configurable (default Horizontal): a Horizontal strip lays the
-// segments left-to-right and the chip slides sideways; a Vertical strip stacks
-// them top-to-bottom and the chip slides up/down. The host radio-group adapter
-// picks the orientation from the source radios' layout axis.
+// Orientation is configurable (default Horizontal): a horizontal strip lays segments left to right and the chip slides
+// sideways, a vertical one stacks them top to bottom and the chip slides up and down. The host radio-group adapter
+// picks it from the source radios' layout axis.
 //
-// Usage:
 //   auto* w = new DualOptionsWidget("Frame", "Arrow");
 //   auto* m = new DualOptionsWidget(QStringList{"Contains", "Wildcard", "RegExp"});
 //   w->setSelectedIndex(0);                           // 0 = first (left/top)
 //   w->setOrientation(Qt::Vertical);                  // stack + slide up/down
 //   connect(w, &DualOptionsWidget::selectionChanged, [](int i){ ... });
 //
-// Colors come from the QSS via Qt stylesheet qproperties:
+// Colors come from the QSS through qproperties:
 //   PJ--DualOptionsWidget {
 //     qproperty-accentColor:       ${border_checked};
 //     qproperty-borderColor:       ${border_default};
@@ -51,13 +47,12 @@ class DualOptionsWidget : public QWidget {
  public:
   explicit DualOptionsWidget(QWidget* parent = nullptr);
   explicit DualOptionsWidget(const QString& opt0, const QString& opt1, QWidget* parent = nullptr);
-  // Applies `options` via setOptions, so a list with fewer than 2 entries
-  // leaves the "Option A"/"Option B" defaults in place.
+  // Applies `options` through setOptions, so a list with fewer than 2 entries keeps the "Option A" / "Option B"
+  // defaults.
   explicit DualOptionsWidget(const QStringList& options, QWidget* parent = nullptr);
 
-  // Replace all labels at once; triggers a geometry update. Lists with fewer
-  // than 2 entries are ignored. If the current selection falls beyond the new
-  // list it clamps to the last segment (emitting selectionChanged).
+  // Replaces all labels at once. Lists with fewer than 2 entries are ignored; a selection beyond the new list clamps to
+  // the last segment (emitting selectionChanged).
   void setOptions(const QStringList& options);
   void setOptions(const QString& opt0, const QString& opt1);
 
@@ -77,8 +72,8 @@ class DualOptionsWidget : public QWidget {
   [[nodiscard]] Qt::Orientation orientation() const {
     return orientation_;
   }
-  // Horizontal (default) lays segments left-to-right; Vertical stacks them
-  // top-to-bottom and slides the chip up/down. Swaps the size policy + geometry.
+  // Horizontal (default) lays segments left to right; Vertical stacks them and slides the chip up and down. Swaps the
+  // size policy and geometry.
   void setOrientation(Qt::Orientation orientation);
 
   [[nodiscard]] QColor accentColor() const {
@@ -109,17 +104,14 @@ class DualOptionsWidget : public QWidget {
   [[nodiscard]] QSize sizeHint() const override;
   [[nodiscard]] QSize minimumSizeHint() const override;
 
-  // Per-segment enable. A disabled segment renders greyed and cannot be
-  // selected — click, keyboard navigation, and setSelectedIndex all skip it —
-  // so it is impossible to switch to. Out-of-range indices are ignored; a
-  // segment with no explicit state defaults to enabled.
+  // Per-segment enable. A disabled segment renders greyed and cannot be selected: click, keyboard navigation and
+  // setSelectedIndex all skip it. Out-of-range indices are ignored; a segment with no explicit state is enabled.
   void setSegmentEnabled(int index, bool enabled);
   [[nodiscard]] bool isSegmentEnabled(int index) const;
 
  public slots:
-  // Selects the segment at index (0 = leftmost). Out-of-range or DISABLED
-  // indices are ignored; no-op when already selected. Emits selectionChanged
-  // when the value actually changes.
+  // Selects the segment at index (0 = leftmost). Out-of-range or disabled indices are ignored, as is the current one;
+  // emits selectionChanged when the value changes.
   void setSelectedIndex(int index);
 
  signals:
@@ -134,14 +126,12 @@ class DualOptionsWidget : public QWidget {
 
  private:
   void animateSelectedIndex(int index);
-  // First enabled segment reached by stepping `step` from the current selection.
-  // `wrap` rolls past the ends (Space cycling) instead of stopping at them (arrow
-  // keys). Returns the current selection when no other segment is reachable.
+  // The first enabled segment reached by stepping `step` from the current selection. `wrap` rolls past the ends (Space
+  // cycling) instead of stopping (arrow keys). The current selection when no other segment is reachable.
   [[nodiscard]] int nextEnabledIndex(int step, bool wrap) const;
 
   QStringList options_{"Option A", "Option B"};
-  // Per-index enable flags, always sized to options_. A false entry greys the
-  // segment and blocks selecting it.
+  // Per-index enable flags, always sized to options_.
   QList<bool> segment_enabled_{true, true};
   Qt::Orientation orientation_ = Qt::Horizontal;
   int selected_ = 0;

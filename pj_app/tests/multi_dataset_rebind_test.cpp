@@ -1,17 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Two datasets loaded side by side (comparing two runs of the same robot)
-// usually share topic names. A layout / undo-redo snapshot identifies each
-// curve by its stable (topic, field) path plus dataset qualifiers (dataset_id
-// + dataset_source, written by PlotWidget::xmlSaveState), and the restore path
-// (MainWindow::rebindCurvesToLoadedDatasets -> layout_xml::rebindCurveKeys ->
-// CatalogModel::resolveCurveKey) re-resolves that qualified path against the loaded
-// datasets. Rebinding must keep every curve on the dataset it was plotted
-// from — not collapse all of them onto the first dataset in load order,
-// which silently swaps the plotted data (and its display offset) on every
-// undo/redo — and must reject ambiguity rather than guess when the saved
-// identity no longer pins down exactly one dataset.
+// Two datasets loaded side by side (two runs of the same robot) usually share topic names. A layout / undo-redo
+// snapshot identifies each curve by its (topic, field) path plus dataset qualifiers (dataset_id + dataset_source,
+// written by PlotWidget::xmlSaveState), and the restore path (MainWindow::rebindCurvesToLoadedDatasets ->
+// layout_xml::rebindCurveKeys -> CatalogModel::resolveCurveKey) re-resolves that qualified path against the loaded
+// datasets. Rebinding keeps every curve on the dataset it was plotted from (collapsing onto the first dataset in
+// load order would swap the plotted data and its display offset) and rejects ambiguity rather than guessing when the
+// saved identity no longer pins down exactly one dataset.
 
 #include <gtest/gtest.h>
 
@@ -36,20 +32,19 @@ using PJ::layout_xml::SeriesPath;
 using pj_test::addScalarTopic;
 using pj_test::createDataset;
 
-// Concrete catalog key of `topic` (a plain scalar series, whose single column
-// materializes as field "value") within one specific dataset.
+// Catalog key of `topic` (a plain scalar series, whose single column is field "value") within one dataset.
 QString keyInDataset(PJ::CatalogModel& catalog, PJ::DatasetId dataset_id, const QString& topic) {
   const auto descriptor = catalog.descriptorForPath(dataset_id, topic, u"value"_s);
   return descriptor.has_value() ? descriptor->name : QString();
 }
 
-// Runs the snapshot-restore rebind exactly like MainWindow::rebindCurvesToLoadedDatasets.
+// The snapshot-restore rebind, as MainWindow::rebindCurvesToLoadedDatasets runs it.
 QList<SeriesPath> rebind(QDomDocument& doc, PJ::CatalogModel& catalog) {
   return PJ::layout_xml::rebindCurveKeys(
       doc, [&catalog](const SeriesPath& path) { return catalog.resolveCurveKey(path); });
 }
 
-// Serializes `plot` into a fresh snapshot document, like MainWindow::xmlSaveState.
+// Serializes `plot` into a fresh snapshot document, as MainWindow::xmlSaveState does.
 QDomDocument saveSnapshot(const PJ::PlotWidget& plot) {
   QDomDocument doc;
   QDomElement root = doc.createElement(u"root"_s);
@@ -64,11 +59,9 @@ QDomElement firstCurve(const QDomDocument& doc) {
 
 }  // namespace
 
-// The undo/redo reproduction: a curve plotted from the SECOND dataset, saved
-// and rebound while a first dataset with the same topic is also loaded, must
-// resolve back to the second dataset's key. xmlSaveState stamps dataset_id +
-// dataset_source (the raw source label) on the curve, so the exact-id branch
-// of resolveCurveKey pins the rebind to dataset 2.
+// A curve plotted from the second dataset, saved and rebound while a first dataset with the same topic is also
+// loaded, resolves back to the second dataset's key: xmlSaveState stamps dataset_id + dataset_source (the raw source
+// label) on the curve, so the exact-id branch of resolveCurveKey pins the rebind to dataset 2.
 TEST(MultiDatasetRebind, TimeSeriesCurveStaysOnItsDataset) {
   PJ::AppSession app_session;
   const PJ::DatasetId run1 = createDataset(app_session, "run1");
@@ -97,8 +90,8 @@ TEST(MultiDatasetRebind, TimeSeriesCurveStaysOnItsDataset) {
   EXPECT_EQ(curve.attribute(u"name"_s), run2_key);
 }
 
-// Same guarantee for an XY curve: both axis series were picked from the second
-// dataset and must rebind there, each axis carrying its own x_/y_ qualifiers.
+// The same for an XY curve: both axis series come from the second dataset, each axis carrying its own x_/y_
+// qualifiers.
 TEST(MultiDatasetRebind, XyCurveStaysOnItsDataset) {
   PJ::AppSession app_session;
   const PJ::DatasetId run1 = createDataset(app_session, "run1");
@@ -133,10 +126,9 @@ TEST(MultiDatasetRebind, XyCurveStaysOnItsDataset) {
   EXPECT_EQ(curve.attribute(u"curve_y"_s), y_key);
 }
 
-// A qualified curve whose saved dataset id is gone (e.g. the layout was
-// reopened in a fresh session) must still resolve when the raw source label
-// (dataset_source) names exactly ONE loaded dataset — the source-fallback leg
-// of resolveCurveKey / SessionManager::resolveDatasetIdentity.
+// A qualified curve whose saved dataset id is gone (e.g. the layout was reopened in a fresh session) still resolves
+// when the raw source label (dataset_source) names exactly one loaded dataset: the source-fallback leg of
+// resolveCurveKey / SessionManager::resolveDatasetIdentity.
 TEST(MultiDatasetRebind, GoneDatasetFallsBackToUniqueSameSourceCandidate) {
   PJ::AppSession app_session;
   const PJ::DatasetId run2 = createDataset(app_session, "run2");
@@ -150,8 +142,8 @@ TEST(MultiDatasetRebind, GoneDatasetFallsBackToUniqueSameSourceCandidate) {
   ASSERT_NE(plot.addCurve(run2_key), nullptr);
   QDomDocument doc = saveSnapshot(plot);
 
-  // Rebind against a DIFFERENT session where the saved DatasetId no longer
-  // exists, but exactly one loaded dataset shares the saved source label.
+  // A different session where the saved DatasetId no longer exists, but exactly one loaded dataset shares the saved
+  // source label.
   PJ::AppSession other_session;
   const PJ::DatasetId other_run = createDataset(other_session, "run2");
   addScalarTopic(other_session, other_run, "/imu/accel");
@@ -162,10 +154,8 @@ TEST(MultiDatasetRebind, GoneDatasetFallsBackToUniqueSameSourceCandidate) {
   EXPECT_EQ(curve.attribute(u"name"_s), keyInDataset(other_catalog, other_run, u"/imu/accel"_s));
 }
 
-// Same scenario, but the target session has TWO datasets sharing the saved
-// source label. The source-fallback must reject the ambiguity rather than
-// pick one by load order: rebindCurveKeys clears the curve's key and reports
-// it unresolved.
+// Two datasets share the saved source label: the source-fallback rejects the ambiguity rather than picking one by
+// load order, and rebindCurveKeys clears the curve's key and reports it unresolved.
 TEST(MultiDatasetRebind, GoneDatasetWithTwoSameSourceCandidatesStaysUnresolved) {
   PJ::AppSession app_session;
   const PJ::DatasetId run2 = createDataset(app_session, "run2");
@@ -181,11 +171,9 @@ TEST(MultiDatasetRebind, GoneDatasetWithTwoSameSourceCandidatesStaysUnresolved) 
   const QDomElement saved_curve = firstCurve(doc);
   ASSERT_EQ(saved_curve.attribute(u"dataset_source"_s), u"run2"_s);
 
-  // Target session: TWO datasets both named "run2" (a same-named reload/fan-out).
-  // A leading decoy dataset with a DIFFERENT source name absorbs the saved
-  // dataset_id (a fresh DataEngine mints ids from 1), so the saved identity's
-  // exact-id branch genuinely misses (source label mismatch) and resolution
-  // must fall through to the source-only scan across BOTH same-source datasets.
+  // Two datasets both named "run2" (a same-named reload/fan-out). A leading decoy dataset with a different source
+  // name absorbs the saved dataset_id (a fresh DataEngine mints ids from 1), so the exact-id branch misses (source
+  // label mismatch) and resolution falls through to the source-only scan across both same-source datasets.
   PJ::AppSession other_session;
   createDataset(other_session, "unrelated.mcap");
   const PJ::DatasetId other_a = createDataset(other_session, "run2");
@@ -204,8 +192,8 @@ TEST(MultiDatasetRebind, GoneDatasetWithTwoSameSourceCandidatesStaysUnresolved) 
       << "ambiguous source fallback must clear the key rather than guess by load order";
 }
 
-// A fully unqualified curve (no dataset hint at all — an old/generic layout)
-// binds when the topic+field is unique across the loaded datasets.
+// A fully unqualified curve (no dataset hint, as in a generic layout) binds when the topic+field is unique across
+// the loaded datasets.
 TEST(MultiDatasetRebind, UnqualifiedCurveBindsWhenTopicIsUnique) {
   PJ::AppSession app_session;
   const PJ::DatasetId only = createDataset(app_session, "run1");
@@ -227,8 +215,8 @@ TEST(MultiDatasetRebind, UnqualifiedCurveBindsWhenTopicIsUnique) {
   EXPECT_EQ(rebound.attribute(u"name"_s), keyInDataset(catalog, only, u"/imu/accel"_s));
 }
 
-// Same fully-unqualified curve, but two datasets provide the topic: strict
-// semantics reject the ambiguity instead of collapsing onto load order.
+// The same unqualified curve with two datasets providing the topic stays unresolved instead of collapsing onto load
+// order.
 TEST(MultiDatasetRebind, UnqualifiedCurveStaysUnresolvedWhenTopicIsAmbiguous) {
   PJ::AppSession app_session;
   const PJ::DatasetId run1 = createDataset(app_session, "run1");

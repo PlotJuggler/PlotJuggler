@@ -15,15 +15,11 @@ namespace pj::scene3d {
 
 class MeshMapLayer;
 
-/// The MeshMap family of the QRhi view: per layer, the de-indexed triangles of a
-/// channel mesh (positions + one colour attribute: a channel value through the
-/// in-shader colormap, or an RGBA8 vertex colour) and, optionally, its link
-/// segments as a line list. A categorical channel arrives as RGBA8 colours,
-/// coloured on the CPU from its category colours or a palette. Flat normals come from screen-space derivatives in
-/// the fragment shader, which WebGL2 supports. Owns its per-layer buffers and
-/// uniforms (the view's registry its pipelines); the view owns ordering and the
-/// command buffer. Per frame: admit() (once), prepare() (once), then submit()
-/// per ScenePass for each draw.
+/// The MeshMap family of the QRhi view: per layer, the de-indexed triangles of a channel mesh (positions + one colour
+/// attribute: a channel value through the in-shader colormap, or an RGBA8 vertex colour) and, optionally, its link
+/// segments as a line list. A categorical channel arrives as RGBA8 colours, coloured on the CPU from its category
+/// colours or a palette. Flat normals come from screen-space derivatives in the fragment shader (WebGL2 supports
+/// them). Owns its per-layer buffers and uniforms; its pipelines live in the view's registry.
 class MeshMapRhiPass {
  public:
   struct Draw {
@@ -40,22 +36,18 @@ class MeshMapRhiPass {
     return opaque_pipeline_ != nullptr && translucent_pipeline_ != nullptr && line_pipeline_ != nullptr &&
            translucent_line_pipeline_ != nullptr;
   }
-  /// Adopts the view's mesh-map layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<MeshMapLayer*>& layers);
-  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
   [[nodiscard]] bool hasLayers() const {
     return !layers_.empty();
   }
 
   /// Drains each visible layer's pending sample and places it.
   void admit(const PlaceFn& place);
-  /// Uploads changed meshes and this frame's uniforms and builds the draws.
   void prepare(const RhiFrameContext& frame, const MeshShadingParams& shading);
   /// The prepared draws of `layer` (surface, then links).
   [[nodiscard]] std::span<const Draw> drawsFor(const MeshMapLayer* layer) const {
     return findDraws(draws_, layer);
   }
-  /// Records one draw; false when its pipeline is unavailable for `pass`.
   bool submit(
       QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
       const QRhiViewport& viewport) const;

@@ -1,13 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The --dump-diagnostics collector (stage-5 E2): accumulates EVERY diagnostic
-// of the run from a QtDiagnosticBridge — including ones sunk BEFORE the
-// collector attached (the bridge re-emits queued, so nothing is delivered
-// until the event loop first spins) — and serializes them as a versioned
-// envelope ({"version": 1, "records": [...]}) of stable five-field records.
-// Deliberately NOT a DiagnosticHistory view: that ring caps at 200 and a
-// long headless run must not silently truncate.
+// The --dump-diagnostics collector: accumulates EVERY diagnostic of the run from a QtDiagnosticBridge, including
+// ones sunk before it attached (the bridge re-emits queued, so nothing is delivered until the event loop first
+// spins), and serializes them as a versioned envelope ({"version": 1, "records": [...]}) of five-field records.
+// Not a DiagnosticHistory view: that ring caps at DiagnosticHistory::kDefaultMaxRecords, and a long headless run
+// must not truncate.
 
 #include <gtest/gtest.h>
 
@@ -37,18 +35,13 @@ namespace {
   return done();
 }
 
-// Deterministically deliver every posted event. A single processEvents() does
-// NOT guarantee that: under the glib dispatcher one non-blocking iteration
-// dispatches only the highest-priority ready GSources, and a GTK-backed
-// platform theme (gtk3 — Qt's default on GNOME, X11 or Wayland) attaches
-// sources to the same default context that can win the first iteration, so
-// the posted-event source is skipped.
+// Delivers every posted event deterministically. A single processEvents() does not: under the glib dispatcher one
+// non-blocking iteration dispatches only the highest-priority ready sources, and a GTK platform theme (gtk3, Qt's
+// default on GNOME) attaches sources to the same context that can win it, skipping the posted-event source.
 void flushPostedEvents() {
   QCoreApplication::sendPostedEvents();
 }
 
-// The dump's top level is a versioned envelope — {"version": 1, "records":
-// [...]} — so run-level metadata can be added compatibly later.
 [[nodiscard]] QJsonObject readDumpEnvelope(const QString& path) {
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly)) {
@@ -70,8 +63,7 @@ TEST(DiagnosticDumpTest, CapturesPreAttachDiagnosticsWithAllFiveFields) {
   const PJ::DiagnosticSink sink = bridge.sink();
   PJ::DiagnosticDump dump(dump_path);
 
-  // Sunk BEFORE attach: still queued (no loop ran yet), so the collector must
-  // see it once the loop spins — the "from app start" guarantee.
+  // Sunk before attach: still queued (no loop ran yet), so the collector must see it once the loop spins.
   sink(PJ::Diagnostic{PJ::DiagnosticLevel::kWarning, "Layout", "layout-open-failed", "cannot open"});
   dump.attachTo(&bridge);
   sink(PJ::Diagnostic{PJ::DiagnosticLevel::kError, "Loader", "load-failed", "boom"});
@@ -111,8 +103,7 @@ TEST(DiagnosticDumpTest, DoesNotTruncateBeyondTheHistoryRingCap) {
   PJ::DiagnosticDump dump(dump_path);
   dump.attachTo(&bridge);
 
-  // Strictly more than the 200-record DiagnosticHistory ring: the collector
-  // must keep the WHOLE run.
+  // Strictly more than the DiagnosticHistory ring: the collector must keep the whole run.
   constexpr int count = PJ::DiagnosticHistory::kDefaultMaxRecords + 50;
   for (int i = 0; i < count; ++i) {
     sink(
@@ -130,9 +121,8 @@ TEST(DiagnosticDumpTest, DoesNotTruncateBeyondTheHistoryRingCap) {
 }
 
 TEST(DiagnosticDumpTest, WriteDrainsStillQueuedDeliveriesFirst) {
-  // The aboutToQuit shape: a diagnostic emitted moments before a
-  // QCoreApplication::exit() is still a posted event when write() runs — the
-  // serializer must drain the queue first or the tail of the run is lost.
+  // The aboutToQuit shape: a diagnostic emitted just before QCoreApplication::exit() is still a posted event when
+  // write() runs, so write() must drain the queue first or the tail of the run is lost.
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   const QString dump_path = dir.filePath(QStringLiteral("tail.json"));
@@ -153,9 +143,8 @@ TEST(DiagnosticDumpTest, WriteDrainsStillQueuedDeliveriesFirst) {
 }
 
 TEST(DiagnosticDumpTest, WriteDrainsOnlyTheBridgeNeverUnrelatedPostedEvents) {
-  // The quit-time drain is deliberately NARROW: on the --exit-after-layout
-  // timeout path, unrelated queued work (e.g. a late batch `finished`) must
-  // NOT run inside the aboutToQuit write — only the bridge's own re-emits.
+  // The quit-time drain is deliberately narrow: unrelated queued work (e.g. a late batch `finished`) must not run
+  // inside the aboutToQuit write, only the bridge's own re-emits.
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
 
@@ -179,13 +168,9 @@ TEST(DiagnosticDumpTest, WriteDrainsOnlyTheBridgeNeverUnrelatedPostedEvents) {
 }
 
 TEST(DiagnosticDumpTest, PumpBeforeAttachLosesEarlyDiagnostics) {
-  // Characterization of the hazard main.cpp's attach point guards against
-  // (passes by construction — it pins Qt's delivery semantics, not new
-  // code): once ANY pump runs, queued bridge re-emits are delivered to
-  // whoever is subscribed at that moment. Delivered-to-nobody is
-  // unrecoverable — which is why main.cpp attaches the collector
-  // IMMEDIATELY after MainWindow construction, before the splash wait or
-  // --test-data can processEvents().
+  // Pins Qt's delivery semantics (passes by construction): once any pump runs, queued bridge re-emits go to whoever
+  // is subscribed then, and a delivery to nobody is lost. main.cpp therefore attaches the collector right after
+  // MainWindow construction, before the splash wait or --test-data can processEvents().
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
 
@@ -202,8 +187,7 @@ TEST(DiagnosticDumpTest, PumpBeforeAttachLosesEarlyDiagnostics) {
 }
 
 TEST(DiagnosticDumpTest, WriteReportsFailureOnAnUnwritablePath) {
-  // A regular file cannot be a parent directory, so <temp>/blocker/diag.json is
-  // guaranteed unwritable on every platform — no assumption about host paths.
+  // A regular file cannot be a parent directory, so <temp>/blocker/diag.json is unwritable on every platform.
   QTemporaryDir temp;
   ASSERT_TRUE(temp.isValid());
   const QString blocker = QDir(temp.path()).filePath(QStringLiteral("blocker"));

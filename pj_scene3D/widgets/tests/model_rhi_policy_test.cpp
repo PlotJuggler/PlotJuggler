@@ -1,11 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// GPU-free tests of the QRhi model pass's draw policy (ModelRhiPass): the
-// texture-slot colour space, the texture-cache key, mesh and placed bounds, the
-// visual/collision gating and opacity, blend routing, and per-view shading.
-// admit() runs without a QRhi; everything that uploads or draws is covered by the
-// display suites (scene3d_rhi_model_cache_test, scene3d_rhi_render_test).
+// GPU-free tests of the QRhi model pass's draw policy (ModelRhiPass): the texture-slot colour space, the
+// texture-cache key, mesh and placed bounds, the visual/collision gating and opacity, blend routing, and per-view
+// shading. admit() runs without a QRhi; everything that uploads or draws is covered by the display suites
+// (scene3d_rhi_model_cache_test, scene3d_rhi_render_test).
 
 #include <gtest/gtest.h>
 
@@ -32,7 +31,6 @@
 namespace pj::scene3d {
 namespace {
 
-// Material texture slots, in ModelRhiPass order.
 constexpr std::size_t kBaseColor = 0;
 constexpr std::size_t kMetallicRoughness = 1;
 constexpr std::size_t kNormal = 2;
@@ -47,7 +45,6 @@ Vertex at(float x, float y, float z) {
   return vertex;
 }
 
-// A unit box (corners at +-1) with one submesh.
 std::shared_ptr<const MeshData> unitBox() {
   auto mesh = std::make_shared<MeshData>();
   mesh->ok = true;
@@ -66,7 +63,6 @@ ModelDrawCall drawOf(ModelDrawGroup group, glm::dvec3 translation) {
   return draw;
 }
 
-// "map" sits 5 m above the fixed frame; nothing else can be placed.
 std::optional<Transform> placeMap(
     const std::string& source_frame, std::optional<PJ::Timepoint> /*object_stamp*/, PlacementHold* /*hold*/) {
   if (source_frame != "map") {
@@ -77,7 +73,6 @@ std::optional<Transform> placeMap(
   return fixed_from_map;
 }
 
-// The placed bounds of one admission of `layer`.
 AABB admitOnce(FakeModelLayer& layer, const MeshShadingParams& shading) {
   ModelRhiPass pass;
   pass.setLayers({&layer});
@@ -117,7 +112,6 @@ TEST(ModelRhiPolicy, TextureCacheIsKeyedByKeyAndColorSpace) {
   EXPECT_EQ(cache.size(), 2U);
 }
 
-// Unkeyed sources share only with themselves.
 TEST(ModelRhiPolicy, UnkeyedTexturesKeyByIdentity) {
   TextureSource first;
   TextureSource second;
@@ -147,8 +141,8 @@ TEST(ModelRhiPolicy, NonScalingDecodeIsBoundedBySourcePixels) {
           map, ModelRhiPass::decodedTextureSize(map, 16384, kBrowserSceneLimits), false, kBrowserSceneLimits));
 }
 
-// A browser robot with fourteen 2048x2048 maps (ANYmal) fits one layer's decoded
-// texture budget; over it, the whole layer would fail to draw.
+// A browser robot with fourteen 2048x2048 maps fits one layer's decoded texture budget; over it, the whole layer would
+// fail to draw.
 TEST(ModelRhiPolicy, BrowserLayerTextureBudgetFitsARobotOf2kMaps) {
   constexpr std::uint64_t kMaps = 14;
   const QSize size = ModelRhiPass::decodedTextureSize(QSize(2048, 2048), 8192, kBrowserSceneLimits);
@@ -183,7 +177,6 @@ TEST(ModelRhiPolicy, CasterBoundsAreTheTransformedMeshBox) {
   EXPECT_EQ(placed.max, glm::vec3(10, 1, 1));
 }
 
-// admit() unions each drawn mesh's box, placed by TF times the draw's model.
 TEST(ModelRhiPolicy, AdmitUnionsPlacedMeshBounds) {
   FakeModelLayer layer;
   layer.meshes["box"] = unitBox();
@@ -194,7 +187,6 @@ TEST(ModelRhiPolicy, AdmitUnionsPlacedMeshBounds) {
   EXPECT_EQ(bounds.max, glm::vec3(11, 1, 6));
 }
 
-// No draws, or none that can be placed: no bounds.
 TEST(ModelRhiPolicy, AdmitWithoutPlacedDrawsHasNoBounds) {
   FakeModelLayer layer;
   layer.meshes["box"] = unitBox();
@@ -286,7 +278,6 @@ TEST(ModelRhiPolicy, BlendedMaterialRouting) {
   EXPECT_FALSE(translucent(ModelDrawGroup::kIndependent, 1.0F, blend, false));
   EXPECT_TRUE(translucent(ModelDrawGroup::kIndependent, 0.5F, opaque, true));
   EXPECT_TRUE(translucent(ModelDrawGroup::kCollision, 1.0F, opaque, true));
-  // The alpha the rule sees already carries the layer and view opacities.
   MeshShadingParams shading;
   shading.mesh_opacity = 0.5F;
   EXPECT_TRUE(translucent(

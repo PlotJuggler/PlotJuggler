@@ -26,9 +26,7 @@ AboutDialog::AboutDialog(QWidget* parent) : Dialog(parent), ui_(new Ui::AboutDia
   ui_->noticesLabel->hide();
 #endif
 
-  // The frameless Dialog chrome otherwise opens at its 320x120 base minimum and
-  // clips the content. Lock the box to the content's hint so it opens showing
-  // everything and cannot be resized — a fixed About box, as in PJ3.
+  // The frameless Dialog chrome otherwise opens at its base minimum and clips the content.
   layout()->activate();
   setFixedSize(sizeHint());
 }

@@ -108,10 +108,9 @@ std::vector<std::string> dracoFieldNames(
   return names;
 }
 
-// row_step = point_step * width, computed in uint64 and clamped to UINT32_MAX so an
-// adversarial width/point_step product cannot silently wrap the uint32 field (L.10).
-// Real clouds never approach this; the clamp keeps the published canonical object's
-// row_step honest for any out-of-module consumer that addresses rows by it.
+// row_step = point_step * width, computed in uint64 and clamped to UINT32_MAX so an adversarial product cannot wrap the
+// uint32 field; the clamp keeps the published canonical object's row_step honest for any consumer that addresses rows
+// by it.
 uint32_t rowStepFor(uint32_t point_step, uint32_t width) {
   const uint64_t row_step = static_cast<uint64_t>(point_step) * static_cast<uint64_t>(width);
   return row_step > std::numeric_limits<uint32_t>::max() ? std::numeric_limits<uint32_t>::max()
@@ -378,7 +377,6 @@ PJ::Expected<PJ::sdk::PointCloud> decodeDracoImpl(
         continue;
       }
       const int nc = attr->num_components();
-      // Recover the original field name from Draco attribute metadata when present.
       std::string meta_name;
       if (metadata != nullptr) {
         const draco::AttributeMetadata* am =
@@ -430,9 +428,8 @@ PJ::Expected<PJ::sdk::PointCloud> decodeDracoImpl(
         const draco::AttributeValueIndex avi = pa.attr->mapped_index(draco::PointIndex(i));
         auto* dst = point_base + pa.offset;
         if (pa.direct_copy) {
-          // Typical bitstream case (draco_point_cloud_transport / Foxglove encode
-          // everything as float32): a plain copy, skipping ConvertValue's per-call
-          // data_type switch and per-component dispatch.
+          // Typical bitstream case (everything float32): a plain copy, skipping ConvertValue's per-call data_type
+          // switch and per-component dispatch.
           std::memcpy(dst, pa.attr->GetAddress(avi), static_cast<size_t>(pa.num_components) * 4u);
         } else {
           // ConvertValue returns false only on an unsupported source type; the buffer is

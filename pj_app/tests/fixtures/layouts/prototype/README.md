@@ -1,8 +1,8 @@
 # Layouts saved by the derived-objects prototype
 
-Restore fixtures in the `<on_demand>` format of the prototype that preceded the
-carved on-demand engine. Read by `main_window_release41_layout_test.cpp`
-(`MainWindowPrototypeLayoutTest.RestoresLayoutSavedByPrototype`, GAP-39).
+Restore fixtures in the `<on_demand>` format written by a prototype build that
+predates the current on-demand engine. Read by `main_window_release41_layout_test.cpp`
+(`MainWindowPrototypeLayoutTest.RestoresLayoutSavedByPrototype`).
 
 | File | Written by |
 |---|---|
@@ -11,9 +11,9 @@ carved on-demand engine. Read by `main_window_release41_layout_test.cpp`
 | `history_snapshot.xml` | `MainWindow::xmlSaveState(SnapshotScope::kHistory)` (an undo snapshot) |
 
 Source commit: `766b20eeb` (branch `spike/pull-vs-ring`, built against the SDK at
-`b40bf62`, 0.36.0), written by the real save paths of that build
-(`MainWindow.cpp:6845`, the `<on_demand>` block). Only the source-bound file is
-read by a test; the other two are kept as the prototype wrote them.
+`b40bf62`, 0.36.0), written by the real save paths of that build. Only the
+source-bound file is read by a test; the other two are kept as the prototype wrote
+them.
 
 ## The session
 
@@ -29,8 +29,8 @@ cloud output `cropped` unless noted:
 - `fixture-assistant/exempt`, history-exempt;
 - `fixture-toolbox/inferred`, with `infer_outputs="1"`.
 
-The carved format writes neither `label` nor `infer_outputs`, and reads both
-without effect.
+The current format writes neither `label` nor `infer_outputs`, and reads past both
+(`DerivedObjects.cpp`).
 
 ## Regenerating
 

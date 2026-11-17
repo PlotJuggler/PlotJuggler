@@ -1,7 +1,4 @@
-# ---------------------------------------------------------------------------
-# pj_tf - the TF frame tree (Transform/StampedTransform/TransformBuffer), a
-# Qt-free leaf both pj_scene3d_core and pj_runtime link.
-# ---------------------------------------------------------------------------
+# pj_tf: the TF frame tree, a Qt-free leaf linked by pj_scene3d_core, pj_runtime and pj_scripting.
 
 find_package(glm REQUIRED)
 find_package(nlohmann_json REQUIRED)
@@ -17,7 +14,7 @@ target_link_libraries(pj_tf
 )
 
 if(PJ_BUILD_TESTS)
-  # plain: pj_tf links no Qt and none of its tests reference it.
+  # No Qt: plain main.
   pj_add_test_runner(pj_tf_tests
     MAIN plain WARNINGS
     SOURCES

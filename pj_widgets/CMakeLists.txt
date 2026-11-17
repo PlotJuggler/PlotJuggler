@@ -143,10 +143,9 @@ if(PJ_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# Both demo trees are pj_widgets demo apps: demos/ (the gallery of standalone
-# widget demos) and demo/ (the framework demo). PJ_BUILD_WIDGET_DEMOS governs
-# both, so --no-widget-demos removes all of them; demos/ additionally follows
-# the global PJ_BUILD_DEMOS like every other module's demos.
+# Both demo trees are pj_widgets demo apps: demos/ (standalone widget demos) and demo/ (the framework demo).
+# PJ_BUILD_WIDGET_DEMOS governs both, so --no-widget-demos removes all of them; demos/ also follows the global
+# PJ_BUILD_DEMOS like every other module's demos.
 option(PJ_BUILD_WIDGET_DEMOS "Build pj_widgets demo apps" ${PJ_BUILD_TESTS})
 if(PJ_BUILD_DEMOS AND PJ_BUILD_WIDGET_DEMOS AND NOT EMSCRIPTEN)
     add_subdirectory(demos)

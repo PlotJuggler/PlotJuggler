@@ -13,30 +13,17 @@
 
 namespace PJ::scripting {
 
-/// A self-describing script filter installed as a multi-input / multi-output
-/// `PJ::IMIMOTransform` node in the `IncrementalEngine`. The engine joins the N inputs
-/// and calls `calculate()` once per joined sample; this wraps a Luau
-/// `FilterInstance` whose `calculate(self, t, v, v1..vN-1)` returns M values.
+/// A script filter as a multi-input / multi-output `PJ::IMIMOTransform` node of the `IncrementalEngine`: the engine
+/// joins the N inputs and calls it once per joined sample, and the script's `calculate(self, t, v, v1..vN-1)` returns
+/// M values. Time contract, sticky failure and output-kind coercion are those of `LuaSisoTransform`.
+/// A one-input, one-output filter takes the dedicated SISO node (`LuaSisoTransform`) instead.
 ///
-/// It mirrors `LuaSisoTransform` for the N→M case (same time contract, sticky
-/// failure, and output-kind coercion). The SISO transform stays the 1→1 path;
-/// this is the general one (SISO is N=M=1 through here too, but the engine keeps
-/// the dedicated SISO node for single-input filters).
-///
-/// TIME CONTRACT (critical, identical to LuaSisoTransform): the script sees
-/// `t` = SECONDS SINCE SESSION START. The session start (int64 ns) is captured
-/// from the first sample and subtracted on the int64 spine BEFORE the double cast.
-///
-/// JOIN SEMANTICS are the engine node's concern, NOT this class: `inputs` arrive
-/// already aligned to one timestamp. Whether that alignment is an exact-timestamp
-/// join (`addMimoTransform`) or a nearest-sample-to-primary join is decided by
-/// which engine node installs this transform; the script and this wrapper are
-/// agnostic to it.
+/// The join (exact-timestamp or nearest-sample-to-primary) is decided by the engine node that installs it; `inputs`
+/// arrive already aligned to one timestamp.
 class LuaMimoTransform : public PJ::IMIMOTransform {
  public:
-  /// Builds and primes a live instance from `klass` + `params_json`. `num_outputs`
-  /// is the count of declared output topics (M); `calculate` must return exactly
-  /// that many values or the node sticky-fails and suppresses.
+  /// Builds a live instance from `klass` + `params_json`. `calculate` must return exactly `num_outputs` values (the
+  /// declared output topics); any other count emits no row and sets `error()`.
   LuaMimoTransform(
       std::shared_ptr<ScriptEngine> engine, FilterClass klass, std::string params_json, std::size_t num_outputs);
 
@@ -46,16 +33,15 @@ class LuaMimoTransform : public PJ::IMIMOTransform {
       PJ::Timestamp time, PJ::Span<const PJ::VarValue> inputs, PJ::Timestamp& out_time,
       std::vector<PJ::VarValue>& output) override;
 
-  /// Sticky failed state (script error / no instance). Part of the
-  /// IMIMOTransform contract: the engine distinguishes a sticky failure (staged
-  /// batch invalidated) from ordinary row suppression through this override.
+  /// Sticky failure (script error or no instance): the engine tells it from a suppressed row through this and
+  /// invalidates the staged batch.
   [[nodiscard]] bool failed() const override {
     return !instance_ || instance_->failed();
   }
   [[nodiscard]] const std::string& error() const override {
     return error_;
   }
-  /// The module source this filter was parsed from (for layout `<source_fallback>`).
+  /// The module source, embedded in a layout as `<source_fallback>`.
   [[nodiscard]] const std::string& sourceText() const noexcept {
     return klass_.source;
   }
@@ -63,8 +49,7 @@ class LuaMimoTransform : public PJ::IMIMOTransform {
  private:
   void rebuildInstance();  ///< create a fresh instance from klass_ + params_json_
 
-  /// How a script's double output maps to a stored column kind (one mode for all
-  /// M outputs — the class schema carries a single `output` kind).
+  /// How the double outputs map to a column kind: one mode for all M outputs, the class's single `output`.
   enum class OutputMode { kDouble, kInt64, kMirror };
   [[nodiscard]] PJ::VarValue makeOutputValue(double computed, const PJ::VarValue& mirror_input) const;
 

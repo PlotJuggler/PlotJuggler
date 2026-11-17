@@ -35,12 +35,10 @@ std::uint64_t readU64Le(const char* bytes) {
   return value;
 }
 
-// C4's cheap validation: plausibly sized, magic at both ends, and a sane
-// footer frame (opcode 0x02, length 20, summary_start inside the file) so
-// foreign bytes that merely end in the magic still fail cheaply. The digest
-// in the filename is over the identity STRING, not the content, so this
-// deliberately does not hash the body; a corrupt body that keeps this shape
-// reaches the loader once and is then quarantined.
+// Cheap validation: plausibly sized, magic at both ends and a sane footer frame (opcode 0x02, length 20, summary_start
+// inside the file), so foreign bytes that merely end in the magic still fail cheaply. The filename digest is over the
+// identity STRING, not the content, so this does not hash the body; a corrupt body that keeps this shape reaches the
+// loader once and is then quarantined.
 bool looksLikeMcap(const std::filesystem::path& file, const std::string&, std::string* error) {
   std::ifstream in(file, std::ios::binary);  // fs::path overload: wide-safe on Windows
   if (!in) {
@@ -68,10 +66,9 @@ di::CacheSpec makeSpec(std::filesystem::path root) {
   di::CacheSpec spec;
   spec.root = std::move(root);
   spec.artifact_suffix = ".mcap";
-  // The host digests the PROVIDER'S identity string: identities are opaque
-  // here (C1), and hashing the string lets one cache serve every provider
-  // without knowing any prefix. The digest width is named in the prefix (SDK
-  // convention) so a future width change cannot orphan existing files.
+  // The host digests the PROVIDER'S identity string: identities are opaque here, and hashing the string lets one cache
+  // serve every provider without knowing any prefix. The digest width is named in the prefix (SDK convention) so a
+  // width change cannot orphan existing files.
   spec.identity.prefix = "pj:v1:sha256/128:";
   spec.identity.digest_hex_chars = 32;
   return spec;
@@ -85,17 +82,14 @@ std::string hostIdentity(const di::RequestArtifactCache& cache, std::string_view
   return cache.spec().identity.identityFor(provider_identity);
 }
 
-// A miss is CONTENDED only on filesystem EVIDENCE of an active publisher: a
-// fresh "<artifact>.partial.<pid>" file (created the moment a capture's
-// recorder opens it). The SDK's "(retry)" lease hint cannot classify — a
-// FIRST publication misses as "no artifact" before the lease is even tried,
-// and the hint also decorates plain lock-file open errors (a read-only lock
-// file would read as contended forever). Freshness bounds a crashed writer:
-// the SDK's cleanup reaps orphan partials only after orphan_partial_age, so
-// without the window a stale partial would be permanent false contention.
-// ponytail: a stalled-but-alive download whose partial mtime exceeds the
-// window classifies kAbsent (the safe provider-fallback behavior); probe the
-// identity lock instead if that ever bites.
+// A miss is CONTENDED only on filesystem EVIDENCE of an active publisher: a fresh "<artifact>.partial.<pid>" file
+// (created the moment a capture's recorder opens it). The SDK's "(retry)" lease hint cannot classify: a FIRST
+// publication misses as "no artifact" before the lease is even tried, and the hint also decorates plain lock-file open
+// errors (a read-only lock file would read as contended forever). Freshness bounds a crashed writer: the SDK's cleanup
+// reaps orphan partials only after orphan_partial_age, so without the window a stale partial would be permanent false
+// contention.
+// ponytail: a stalled-but-alive download whose partial mtime exceeds the window classifies kAbsent (the safe
+// provider-fallback behavior); probe the identity lock instead if that ever bites.
 constexpr auto kPartialFreshnessWindow = std::chrono::minutes(1);
 
 bool hasFreshPartial(const std::filesystem::path& artifact) {

@@ -1,8 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The Luau object-script engine: compile, run, output binding, field reads, the point-cloud methods
-// and pj.tf (docs/archive/derived_objects/SCENARIOS.md, rows REC, LUA, CACHE, TFL, BUD).
+// The Luau object-script engine: compile, run, output binding, field reads, the point-cloud methods and pj.tf.
 
 #include "pj_scripting/object_script.h"
 
@@ -178,7 +177,7 @@ std::ostream& operator<<(std::ostream& out, const ScriptError& error) {
   return out << error.message;
 }
 
-// ---- output declarations (REC-06, GAP-42) --------------------------------------
+// ---- output declarations --------------------------------------
 
 TEST(ObjectScript, ParseOutputSpecAcceptsAndRejects) {
   auto number_spec = parseOutputSpec("max_z:number");
@@ -209,7 +208,7 @@ TEST(ObjectScript, ParseOutputSpecAcceptsAndRejects) {
   EXPECT_FALSE(parseOutputSpec("x:").has_value());          // empty type
 }
 
-// GAP-42: an output may only name a type a script can produce: one with a field table.
+// An output may only name a type a script can produce: one with a field table.
 TEST(ObjectScript, UnproducibleOutputTypeIsRejected) {
   for (const char* producible :
        {"a:kPointCloud", "a:kSceneEntities", "a:kImageAnnotations", "a:kImage", "a:kDepthImage", "a:kCameraInfo"}) {
@@ -226,7 +225,7 @@ TEST(ObjectScript, UnproducibleOutputTypeIsRejected) {
   EXPECT_TRUE(contains(inferred.error(), "cannot produce")) << inferred.error();
 }
 
-// ---- output binding: inference with no declared outputs (REC-07) ------------------
+// ---- output binding: inference with no declared outputs ------------------
 
 TEST(ObjectScriptInferred, NonTableNumberIsValue) {
   auto result = run("return 3.5");
@@ -281,7 +280,7 @@ TEST(ObjectScriptInferred, UnsupportedValueNamesOutputAndType) {
   EXPECT_TRUE(contains(result.error(), "boolean")) << result.error();
 }
 
-// P3 folded (REC-07): lenient binding is the only binding. A non-table binds to the single declared output,
+// Lenient binding is the only binding. A non-table binds to the single declared output,
 // an array by position, a keyed table by name; an undeclared key and a missing output stay errors.
 TEST(ObjectScriptInferred, DeclaredOutputsBindLeniently) {
   const auto one = specs({"total:number"});
@@ -315,7 +314,7 @@ TEST(ObjectScriptInferred, DeclaredOutputsBindLeniently) {
   EXPECT_TRUE(contains(wrong.error(), "must be a number")) << wrong.error();
 }
 
-// ---- output contract (LUA-08) -----------------------------------------------------
+// ---- output contract -----------------------------------------------------
 
 TEST(ObjectScript, MissingDeclaredOutputIsError) {
   auto result = run("return { foo = nil }", {}, specs({"foo:number"}));
@@ -363,7 +362,7 @@ TEST(ObjectScript, ScalarInputsAreVisible) {
   EXPECT_EQ(text(*result, "mode"), "auto!");
 }
 
-// An input type with no field table never enters the VM (REC-03 at the engine).
+// An input type with no field table never enters the VM.
 TEST(ObjectScript, InputWithoutAFieldTableIsAnError) {
   auto result = run("return 1", {object("grid", sdk::OccupancyGrid{})});
   ASSERT_FALSE(result.has_value());
@@ -371,7 +370,7 @@ TEST(ObjectScript, InputWithoutAFieldTableIsAnError) {
   EXPECT_TRUE(contains(result.error(), "cannot read")) << result.error();
 }
 
-// LUA-10: the syntax check is the compile; the error names the line.
+// The syntax check is the compile; the error names the line.
 TEST(ObjectScript, CompileRejectsSyntaxError) {
   EXPECT_TRUE(compileOnDemandScript("local inputs = ...\nreturn {}").has_value());
   auto bad = compileOnDemandScript("local x = 1\nthis is not (( valid luau");
@@ -379,7 +378,7 @@ TEST(ObjectScript, CompileRejectsSyntaxError) {
   EXPECT_TRUE(contains(bad.error(), ":2:")) << bad.error();
 }
 
-// ---- object reads (LUA-07) and lazy lists ---------------------------------------------
+// ---- object reads and lazy lists ---------------------------------------------
 
 TEST(ObjectScript, FieldAccess) {
   auto cloud = makeCloud({{0, 0, 0, 0}});
@@ -517,7 +516,7 @@ double runOverBag(const Bag& bag, const std::string& source) {
 
 }  // namespace
 
-// Lists are read element by element (ARCHITECTURE §6): iterating N elements reads each one once, so the
+// Lists are read element by element: iterating N elements reads each one once, so the
 // cost is linear (a binder that materializes the list on every field access reads N * N times).
 TEST(ObjectScript, ListElementsAreReadLazily) {
   for (const size_t count : {size_t{1000}, size_t{2000}}) {
@@ -540,7 +539,7 @@ TEST(ObjectScript, ListElementsAreReadLazily) {
   }
 }
 
-// ---- point-cloud methods (LUA-01, -02, -03, -11, -13) ----------------------------------------
+// ---- point-cloud methods ----------------------------------------
 
 TEST(ObjectScript, CountBoundsExtremeOnSyntheticCloud) {
   auto cloud = makeCloud({{0, 0, 0, 0.1f}, {1, 2, 3, 0.5f}, {-1, -2, -3, 0.9f}});
@@ -636,7 +635,7 @@ TEST(ObjectScript, EmptyCropYieldsZeroCountAndUnavailable) {
   EXPECT_EQ(max_z->reason, "no finite points in region");
 }
 
-// ---- builders: the US1 + US5 reference script (LUA-04), pj.annotations (LUA-05), pj.scene (LUA-06) ----
+// ---- builders: the reference script, pj.annotations, pj.scene --------------------------------------
 
 namespace {
 
@@ -647,7 +646,7 @@ const T* objectOf(const ScriptBundle& bundle, std::string_view name) {
   return object != nullptr ? object->get<T>() : nullptr;
 }
 
-// US1 + US5: crop a region, measure its highest point, report it in words and draw a witness there.
+// Crop a region, measure its highest point, report it in words and draw a witness there.
 constexpr const char* kReferenceScript = R"LUAU(
   local inputs, params = ...
   local cropped = inputs.cloud:crop_box{min={-5,-5,params.zmin}, max={5,5,inputs.threshold}}
@@ -709,7 +708,7 @@ TEST(ObjectScript, ReferenceScriptHappyPath) {
   EXPECT_EQ(entity.texts[0].color, (sdk::ColorRGBA{255, 255, 255, 255}));  // no colour: opaque white
 }
 
-// LUA-03 through the reference script: nothing in the region leaves max_z unavailable, with its reason, and
+// Through the reference script: nothing in the region leaves max_z unavailable, with its reason, and
 // the witness clears the topic.
 TEST(ObjectScript, ReferenceScriptOnAnEmptyRegion) {
   auto result = runReferenceScript(makeCloud({{10, 10, 10, 0.5f}}));
@@ -857,7 +856,7 @@ TEST(ObjectScript, BuilderOutputsAreInferredByType) {
   EXPECT_EQ(describe(*result), "scene:kSceneEntities,annotations:kImageAnnotations");
 }
 
-// D16: a script builds a dense VoxelGrid and returns it, declared or inferred; its indices are 1-based, as every Luau
+// A script builds a dense VoxelGrid and returns it, declared or inferred; its indices are 1-based, as every Luau
 // index is.
 TEST(ObjectScript, VoxelGridOutputIsProducible) {
   auto spec = parseOutputSpec("occupied:kVoxelGrid");
@@ -909,7 +908,7 @@ TEST(ObjectScript, VoxelGridOutputIsProducible) {
   expectScriptErrorNaming("pj.voxels.new{frame_id='m', cell_size=1, dims={2,2,2}}", "'origin'");
 }
 
-// D16: a VoxelGrid reads through its SDK field table, built by the script or given as an input; its cells are a raw
+// A VoxelGrid reads through its SDK field table, built by the script or given as an input; its cells are a raw
 // buffer, as a cloud's points are.
 TEST(ObjectScript, VoxelGridFieldsAreReadable) {
   constexpr const char* kScript = R"LUAU(
@@ -935,7 +934,7 @@ TEST(ObjectScript, VoxelGridFieldsAreReadable) {
   EXPECT_DOUBLE_EQ(number(*result, "given_size"), 0.25);
 }
 
-// D14: a script builds a cloud from scratch with a PCL-like preset, and downsamples one into voxel centroids.
+// A script builds a cloud from scratch with a PCL-like preset, and downsamples one into voxel centroids.
 TEST(ObjectScript, CloudBuilderBuildsPresetsAndDownsamples) {
   constexpr const char* kScript = R"LUAU(
     local b = pj.cloud.new{preset="xyzrgb", frame_id="map"}
@@ -1200,7 +1199,7 @@ TEST(ObjectScript, CloudTransformAppliesRigidMotion) {
   EXPECT_NEAR(number(*result, "z3"), 1.0, 1e-6);  // on the axis
 }
 
-// ---- native budget (BUD-15) and the garbage-collection retry ------------------------------------
+// ---- native budget and the garbage-collection retry ------------------------------------
 
 // The default budget fits the transform of a 128-beam lidar scan (128 x 2048 records of 48 bytes, about
 // 12.6 MB), which an 8 MB budget does not.
@@ -1248,7 +1247,7 @@ TEST(ObjectScript, ANativeOpRetriesOnceAfterAGarbageCollection) {
   EXPECT_DOUBLE_EQ(number(*result, "value"), 300'000.0);
 }
 
-// ---- pj.tf (TFL-12, GAP-29) -----------------------------------------------------------------
+// ---- pj.tf -----------------------------------------------------------------
 
 TEST(ObjectScript, TfLookupReturnsTransformOrReason) {
   const RunOptions host = hostAt(2 * kSecond);
@@ -1302,7 +1301,7 @@ TEST(ObjectScript, TfFramesListsTheSnapshot) {
   EXPECT_EQ(text(*result, "frames"), "base_link,map");
 }
 
-// GAP-29: a lookup with no time reads the entry clock at the query instant; a lookup at an object reads
+// A lookup with no time reads the entry clock at the query instant; a lookup at an object reads
 // the header clock at the object's own stamp, on the dataset clock: a merge's payload_stamp_shift moved
 // the TF header stamps at ingest, and the engine moves the object's stamp by the same shift.
 TEST(ObjectScript, TfLookupUsesTheInputsTimeBase) {
@@ -1332,7 +1331,7 @@ TEST(ObjectScript, TfLookupUsesTheInputsTimeBase) {
   EXPECT_DOUBLE_EQ(number(*result, "queried_x"), 1.0);
 }
 
-// ---- observation flags (CACHE-07, CACHE-08) ------------------------------------------------------
+// ---- observation flags ------------------------------------------------------
 
 namespace {
 
@@ -1408,9 +1407,9 @@ TEST(ObjectScript, ClockAndPlainScriptsDoNotObserveTheTf) {
   EXPECT_FALSE(runObserving("return 1", hostAt(0)).observed_tf);
 }
 
-// ---- sandbox and limits (LUA-09, LUA-14, BUD-13, BUD-14, GAP-27, GAP-38) ---------------------------
+// ---- sandbox and limits ---------------------------
 
-// GAP-38: runs on one thread share a sandboxed state (F8), yet nothing a run writes reaches the next one: not a
+// Runs on one thread share a sandboxed state, yet nothing a run writes reaches the next one: not a
 // global, not a stdlib table, not a builtin metatable, not `_G` nor `pj`.
 TEST(ObjectScript, GlobalsDoNotLeakBetweenRuns) {
   constexpr const char* kWriter = R"LUAU(
@@ -1535,7 +1534,7 @@ TEST(ObjectScript, OutOfMemoryNamesTheScriptLimit) {
   EXPECT_EQ(result.error().message, "script memory limit (8 MB) exceeded");
 }
 
-// GAP-27: the interpreter polls the cancel check, and a script's pcall cannot swallow the cancellation.
+// The interpreter polls the cancel check, and a script's pcall cannot swallow the cancellation.
 TEST(ObjectScript, LuauLoopHonoursTheCancelToken) {
   int polls = 0;
   RunOptions options;
@@ -1545,7 +1544,7 @@ TEST(ObjectScript, LuauLoopHonoursTheCancelToken) {
   EXPECT_TRUE(contains(result.error(), "cancelled")) << result.error();
 }
 
-// ---- hostile scripts and edge values (review round) ------------------------------------------------
+// ---- hostile scripts and edge values ------------------------------------------------
 
 // A binder function called on a value of another kind raises an error; it never dereferences it.
 TEST(ObjectScript, PointIteratorRejectsAForeignState) {
@@ -1709,7 +1708,7 @@ TEST(ObjectScriptInferred, ArrayCannotHoldUnavailable) {
   EXPECT_TRUE(contains(result.error(), "name the output")) << result.error();
 }
 
-// D25: the caller does not run a node whose input is unavailable.
+// The caller does not run a node whose input is unavailable.
 TEST(ObjectScript, UnavailableInputIsAnError) {
   auto result = run("return 1", {NamedValue{.name = "threshold", .value = ScriptValue{Unavailable{"no sample"}}}});
   ASSERT_FALSE(result.has_value());
@@ -1819,7 +1818,7 @@ TEST(ObjectScriptBench, BinderPerElementCost) {
 }
 
 // PJ_BENCH=1 prints a trivial run's cost (median of 2001 calls, us) against a sandboxed state's creation and close
-// alone, what one state per worker saves (F8, Luau VM reuse), and the full collection that ends every run.
+// alone, what one state per worker saves (Luau VM reuse), and the full collection that ends every run.
 TEST(ObjectScriptBench, SandboxedStateShareOfATrivialRun) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";
@@ -1893,7 +1892,7 @@ TEST(ObjectScriptBench, EstimateBytesOfLargeLists) {
       micros, micros * 1000.0 / 100'000.0);
 }
 
-// ---- images: decode, decoded pixels, depth, pairing (MED-01, MED-02, MED-03, MED-08, MED-15, MED-17) -----------
+// ---- images: decode, decoded pixels, depth, pairing -----------
 
 namespace {
 
@@ -2198,7 +2197,7 @@ TEST(ObjectScript, ParserDepthImageSupportsProjectionAndRejectsOrdinaryImages) {
   expectMediaError("local inputs = ...; return inputs.image:to_point_cloud(inputs.image)", "camera info");
 }
 
-// ---- video: frame_at, the frames' pairing (MED-16, MED-22) ------------------------------------------------------
+// ---- video: frame_at, the frames' pairing ------------------------------------------------------
 
 using test::BucketVideo;
 using test::videoInput;
@@ -2338,7 +2337,7 @@ TEST(ObjectScript, FrameAtPassesTheRunsCancelCheck) {
   EXPECT_TRUE(video->saw_cancel_check);
 }
 
-// A run's state lives on after it (F8), yet what the run read or built and kept only in the VM is released when it
+// A run's state lives on after it, yet what the run read or built and kept only in the VM is released when it
 // ends: the input cloud's buffer, an operation's cloud, the decoded pixels, a video frame and a builder's output.
 TEST(ObjectScript, WhatARunKeptInItsVmIsReleasedWhenItEnds) {
   RunOptions options = withVideo(std::make_shared<BucketVideo>(), std::make_shared<FakeImageDecoder>(4, 3));

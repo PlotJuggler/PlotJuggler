@@ -2,15 +2,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Helpers that turn a URDF's FIXED joints into static TF edges, so a robot model
-// renders the links the data's /tf never places — e.g. a gripper rigidly mounted
-// to an arm flange whose mount transform lives only in the URDF, not in /tf. Pure
-// core: depends only on robot_model + the TF buffer (no Qt, no GL).
+// Turns a URDF's FIXED joints into static TF edges, so a robot model renders links the data's /tf never places (e.g.
+// a gripper whose mount transform lives only in the URDF). Depends only on robot_model and the TF buffer (no Qt, no
+// GL).
 //
-// Why FIXED joints only: a fixed joint has a constant transform, so it is a safe
-// /tf_static-style edge. Movable joints (revolute/prismatic) need a joint-angle
-// source and are deferred. The recording's own /tf always wins — injection is
-// guarded so it never overrides a frame the data publishes.
+// FIXED only: a fixed joint has a constant transform, a safe /tf_static-style edge; movable joints need a joint-angle
+// source and are not injected. The recording's own /tf always wins: injection never overrides a frame the data
+// publishes.
 
 #include <vector>
 
@@ -25,12 +23,10 @@ using pj::tf::TimePoint;
 using pj::tf::Transform;
 using pj::tf::TransformBuffer;
 
-// One static StampedTransform per FIXED joint in `model`: parent_frame =
-// joint.parent, child_frame = joint.child, transform = {origin_xyz,
-// rpyToQuat(origin_rpy)}, stamped at `stamp`. Movable joints (and joints missing
-// a parent or child) are skipped. The default `stamp` is the epoch sentinel, so
-// the single-sample edge resolves at every real query time via nearest-previous
-// (the /tf_static semantic), and the buffer never evicts it.
+// One static StampedTransform per FIXED joint in `model` (parent_frame = joint.parent, child_frame = joint.child),
+// stamped at `stamp`. Movable joints (and joints missing a parent or child) are skipped. The default `stamp` is the
+// epoch sentinel, so the single-sample edge resolves at every real query time via nearest-previous (the /tf_static
+// semantic) and the buffer never evicts it.
 [[nodiscard]] std::vector<StampedTransform> fixedJointStaticTransforms(
     const RobotModel& model, TimePoint stamp = TimePoint{});
 

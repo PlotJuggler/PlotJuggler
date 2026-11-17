@@ -112,7 +112,7 @@ void OccupancyRhiPass::admit(const PlaceFn& place) {
 
 void OccupancyRhiPass::prepare(const RhiFrameContext& frame) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   draws_.clear();
   draws_.reserve(admitted_.size());
@@ -167,8 +167,8 @@ void OccupancyRhiPass::prepare(const RhiFrameContext& frame) {
     uniforms.display_params = {
         layer->opacity(), layer->colorScheme() == OccupancyColorScheme::kCostmap ? 1.0F : 0.0F, 0.0F, 0.0F};
     frame.updates->updateDynamicBuffer(gpu.uniform_buffer, 0, kOccupancyUniformBytes, &uniforms);
-    // The grid never writes depth; below full opacity it blends over whatever
-    // opaque geometry lies under it, so it draws with the translucent phase.
+    // The grid never writes depth; below full opacity it blends over the opaque geometry under it, so it draws in the
+    // translucent phase.
     const DrawClass draw_class = layer->opacity() < 0.999F ? DrawClass::kTranslucent : DrawClass::kOpaque;
     draws_.push_back(Draw{layer, gpu.shader_resources, draw_class});
     ++last_layer_count_;

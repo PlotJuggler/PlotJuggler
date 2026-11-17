@@ -11,9 +11,8 @@
 namespace PJ {
 namespace {
 
-// One QApplication for the whole test binary; QWidget construction requires it.
-// A real icon present on origin/main, so loadSvg (resources.qrc is linked into the
-// test binary) yields a non-null themed pixmap.
+// One QApplication for the whole test binary; QWidget construction requires it. A real icon, so loadSvg (resources.qrc
+// is linked into the test binary) yields a non-null themed pixmap.
 constexpr auto kIcon = ":/resources/svg/trash.svg";
 
 TEST(SvgButton, DefaultSizeIs24) {

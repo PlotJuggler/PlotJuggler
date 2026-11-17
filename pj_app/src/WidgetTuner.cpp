@@ -36,9 +36,7 @@ QColor popupTextColor() {
   return theme::onSurface(theme::Surface::Input, theme::Emphasis::Default, popupTheme());
 }
 
-// Force every palette role that Fusion reads when painting a popup
-// surface to the theme's popup background. We touch Window, Base,
-// AlternateBase, Button (Fusion uses Button for some popup paints).
+// Every role Fusion reads when painting a popup surface (Button included).
 void applyPopupPalette(QWidget* w) {
   if (w == nullptr) {
     return;
@@ -64,18 +62,14 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
     return QObject::eventFilter(watched, event);
   }
 
-  // QMenus (including Qt-internal context menus) — tag for QSS.
   if (auto* menu = qobject_cast<QMenu*>(watched); menu != nullptr && menu->objectName().isEmpty()) {
     menu->setObjectName(u"PJMenu"_s);
   }
 
-  // QMessageBox: strip the native system frame. No other chrome.
   if (auto* msg = qobject_cast<QMessageBox*>(watched)) {
     msg->setWindowFlag(Qt::FramelessWindowHint, true);
   }
 
-  // QComboBox popup view — paint its palette directly so Fusion uses
-  // our colour, no QSS specificity required.
   if (auto* combo = qobject_cast<QComboBox*>(watched)) {
     if (auto* view = combo->view(); view != nullptr) {
       applyPopupPalette(view);
@@ -88,7 +82,6 @@ bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
     }
   }
 
-  // QComboBoxPrivateContainer — strip frame and shadow, paint palette.
   if (auto* w = qobject_cast<QWidget*>(watched);
       w != nullptr && QString::fromUtf8(w->metaObject()->className()) == "QComboBoxPrivateContainer"_L1) {
     w->setWindowFlag(Qt::NoDropShadowWindowHint, true);

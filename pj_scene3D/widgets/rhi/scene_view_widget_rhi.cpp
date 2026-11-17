@@ -69,9 +69,8 @@
 #include "rhi_scene_pass.h"
 #include "scene_view_widget_rhi_quality_p.h"
 
-// The resource object lives in a static archive.  Explicit initialization both
-// retains it at link time and keeps Q_INIT_RESOURCE's generated symbol lookup in
-// the global namespace.
+// The resource object lives in a static archive: explicit initialization retains it at link time and keeps
+// Q_INIT_RESOURCE's symbol lookup in the global namespace.
 static void initializeScene3dRhiResources() {
   Q_INIT_RESOURCE(scene3d_rhi_shaders);
 }
@@ -216,8 +215,6 @@ struct Overloaded : Visitors... {
   using Visitors::operator()...;
 };
 
-// Submits one prepared draw through its family: the std::visit visitor over
-// PreparedFrame::DrawRef.
 struct SubmitDraw {
   QRhiCommandBuffer* command_buffer;
   ScenePass pass;
@@ -275,9 +272,8 @@ const MeshMapLayer* familyKey(
 }  // namespace
 
 SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
-  // Each per-view budget fills one quint32-sized buffer (the point and pose
-  // budgets bound the sum of per-layer buffers). Prove both policies fit; the
-  // marker and model passes check their own budgets.
+  // A per-view budget must fit one quint32-sized buffer (the point and pose budgets bound the sum of per-layer
+  // buffers); the marker and model passes check their own.
   constexpr auto fits_buffers = [](const SceneLimits& limits) {
     constexpr std::uint64_t kMaxBytes = std::numeric_limits<quint32>::max();
     return limits.max_point_vertices_per_view * sizeof(PointVertex) <= kMaxBytes &&
@@ -311,9 +307,8 @@ SceneViewWidget::SceneViewWidget(QWidget* parent) : QRhiWidget(parent) {
   }();
   (void)resources_initialized;
 
-  // QRhiWidget's API is immutable after platform resources exist.  Set it while
-  // the widget is still parentless; SceneDockWidget reparents only after this
-  // constructor returns.
+  // QRhiWidget's API is immutable once platform resources exist: set it while the widget is still parentless
+  // (SceneDockWidget reparents only after this constructor returns).
   setApi(PJ::preferredGraphicsApi());
   setSampleCount(1);  // initialize() picks the output target's sample count per QRhi
   setObjectName(QStringLiteral("scene3dRhiCanvas"));
@@ -605,7 +600,7 @@ void SceneViewWidget::setMeshShadingParams(const MeshShadingParams& params) {
 }
 
 void SceneViewWidget::grabPresentedFrame(std::function<void(const QImage&)> done) {
-  invalidateContent();  // the presented frame must be a real one (TECHNICAL_NOTES §3)
+  invalidateContent();  // the presented frame must be a real one (docs/TECHNICAL_NOTES.md "Qt workarounds")
   PJ::grabPresentedFrame(*this, std::move(done));
 }
 
@@ -714,9 +709,8 @@ void SceneViewWidget::buildTfTriads(const glm::dvec3& render_origin, const std::
   if (tf_ == nullptr || fixed_frame.empty() || !axes_visible_) {
     return;
   }
-  // Solid arrow triads. The frame's
-  // fixed-from-frame transform (camera-relative) is baked into each arm's model,
-  // so the draw uses an identity fixed_from_source uniform.
+  // The frame's fixed-from-frame transform (camera-relative) is baked into each arm's model, so the draw uses an
+  // identity fixed_from_source uniform.
   const PoseTriadStyle triad_style{
       .axis_length = gizmo_size_m_, .opacity = gizmo_opacity_, .x_arrow_only = false, .override_color = false};
   std::pair<std::size_t, std::size_t> hovered_arms{0, 0};
@@ -776,11 +770,9 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* command_buffer) {
     resource_rhi_ = current_rhi;
     rhi_backend_name_ = QString::fromLatin1(current_rhi->backendName());
     max_3d_texture_size_ = max3dTextureSize(*current_rhi);
-    // The output multisamples only where the GPU cannot run the HDR chain (the
-    // direct pass draws the whole scene on it); over the chain's (already
-    // multisampled) present it is single-sample, and the corner gizmo brings
-    // its own 4x target. Decided per QRhi, not per frame: a change rebuilds
-    // every resource, so a runtime HDR refusal (size, budget, a missing
+    // The output multisamples only where the GPU cannot run the HDR chain (the direct pass draws the whole scene on
+    // it); over the chain's present it is single-sample, and the corner gizmo brings its own 4x target. Decided per
+    // QRhi, not per frame: a change rebuilds every resource, so a runtime HDR refusal (size, budget, a missing
     // pipeline variant) draws its direct pass without MSAA.
     if (const int samples = hdrUnsupportedReason(*current_rhi).isEmpty() ? 1 : kDirectSampleCount;
         sampleCount() != samples) {
@@ -991,9 +983,8 @@ struct SceneViewWidget::FrameView {
   bool inverse_projection_valid = false;  // SSAO and EDL rebuild view positions with it
 };
 
-// The prepared draws of one frame and the quality stages it runs. Every pass
-// replays the draws (the HDR colour pass, the depth replay or the direct pass,
-// the EDL mesh mask, the shadow map).
+// The prepared draws of one frame and the quality stages it runs; every pass (HDR colour, depth replay or direct, EDL
+// mesh mask, shadow map) replays the draws.
 struct SceneViewWidget::PreparedFrame {
   template <typename Family>
   struct DrawOf {
@@ -1098,8 +1089,7 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
   hdr_->state.last_active = frame.hdr_active;
   const QSize render_size = frame.hdr_active ? scaled_size : output_size;
 
-  // The frame contract (rhi_scene_pass.h): admit once, prepare once;
-  // every pass below replays `frame`.
+  // The frame contract (rhi_scene_pass.h): admit once, prepare once; every pass below replays `frame`.
   FrameAdmission admission;
 #ifdef PJ_RHI_TEST_HOOKS
   stage_times_.targets_ready_ns = steadyNowNs();
@@ -1156,10 +1146,8 @@ void SceneViewWidget::render(QRhiCommandBuffer* command_buffer) {
     }
   }
 
-  // Scene backdrop tracks the active theme (the same token, read per frame). A
-  // PaletteChange invalidates the content, so a theme switch re-applies here.
-  // The HDR target is linear-light — the present pass re-encodes to sRGB — so
-  // linearize the display-referred token on write.
+  // The backdrop tracks the active theme, read per frame (a PaletteChange invalidates the content). The HDR target is
+  // linear-light and the present pass re-encodes to sRGB, so linearize the display-referred token on write.
   const QColor scene_bg = sceneThemeColors().backdrop;
   const auto linear_channel = [](float channel) { return static_cast<float>(look::srgbToLinear(channel)); };
   const QColor hdr_scene_clear = QColor::fromRgbF(
@@ -1271,14 +1259,12 @@ void SceneViewWidget::paintEvent(QPaintEvent* event) {
 }
 
 bool SceneViewWidget::retainsLastFrame() const {
-  // last_frame_request_ is reset by every release (a new top-level or a destroyed
-  // QRhi) and every initialize() (a recreated target), so a set one means the
-  // target holds our last full frame, as that request built it. Comparing it
-  // with the current request catches a resize or a format change QRhiWidget has
-  // not applied yet: setColorBufferFormat(), setFixedColorBufferSize() and a
-  // resize only request a new target, which QRhiWidget builds in the paint this
-  // would skip. A resize or DPR change under a fixed colour-buffer size keeps the
-  // target but moves the overlays, which the logical size and DPR catch.
+  // last_frame_request_ is reset by every release (a new top-level or a destroyed QRhi) and every initialize() (a
+  // recreated target), so a set one means the target holds our last full frame, as that request built it. Comparing
+  // it with the current request catches a resize or format change QRhiWidget has not applied yet:
+  // setColorBufferFormat(), setFixedColorBufferSize() and a resize only request a new target, which QRhiWidget builds
+  // in the paint this would skip. A resize or DPR change under a fixed colour-buffer size keeps the target but moves
+  // the overlays, which the logical size and DPR catch.
   return last_frame_request_.has_value() && *last_frame_request_ == requestedTarget() && rhi() != nullptr &&
          rhi() == resource_rhi_;
 }
@@ -1290,9 +1276,8 @@ SceneViewWidget::TargetRequest SceneViewWidget::requestedTarget() const {
   return {colorBufferFormat(), fixed.isEmpty() ? size() * dpr : fixed, sampleCount(), size(), dpr};
 }
 
-// Frame contract step 1: runs every visible layer's prepareForRender() against
-// the per-view budgets and places it in the fixed frame. The only place a
-// budget is consumed.
+// Frame contract, admission: runs every visible layer's prepareForRender() against the per-view budgets and places it
+// in the fixed frame. The only place a budget is consumed.
 void SceneViewWidget::admitFrame(QRhi* rhi, FrameAdmission& admission) {
   admission.fixed_frame = effectiveFixedFrame();
   const std::string& fixed_frame = admission.fixed_frame;
@@ -1311,8 +1296,8 @@ void SceneViewWidget::admitFrame(QRhi* rhi, FrameAdmission& admission) {
   model_pass_->admit(place, shading_params_, shading_params_.shadows_enabled && tf_ != nullptr);
 }
 
-// Frame contract step 2: the camera matrices. The aspect is the logical
-// widget's, whatever the DPR and render scale round the framebuffer to.
+// Frame contract, camera: the matrices. The aspect is the logical widget's, whatever the DPR and render scale round
+// the framebuffer to.
 SceneViewWidget::FrameView SceneViewWidget::frameView(QRhi* rhi) const {
   FrameView view;
   view.render_origin = glm::dvec3(camera_->state().focal);
@@ -1328,9 +1313,8 @@ SceneViewWidget::FrameView SceneViewWidget::frameView(QRhi* rhi) const {
   return view;
 }
 
-// Frame contract step 3: builds this frame's GPU data (streams, instances,
-// uploads, uniforms) from the admission and orders every draw for submission.
-// Returns the update batch the first pass must consume.
+// Frame contract, preparation: builds this frame's GPU data (streams, instances, uploads, uniforms) from the
+// admission and orders every draw for submission. Returns the update batch the first pass must consume.
 QRhiResourceUpdateBatch* SceneViewWidget::prepareFrame(
     QRhi* rhi, const QSize& render_size, const FrameView& view, const FrameAdmission& admission, PreparedFrame& frame) {
   const glm::dvec3& render_origin = view.render_origin;
@@ -1796,7 +1780,6 @@ void SceneViewWidget::prepareOverlays(
         hover_label_frame_ = *hovered_frame_;
       }
       if (hover_ring_image_.isNull()) {
-        // A 1.5 px ring of radius 3 on the frame origin ties the label to its gizmo.
         constexpr qreal kRingBox = 10.0;
         hover_ring_image_ =
             QImage(QSize(qCeil(kRingBox * dpr), qCeil(kRingBox * dpr)), QImage::Format_ARGB32_Premultiplied);
@@ -1810,7 +1793,6 @@ void SceneViewWidget::prepareOverlays(
         painter.end();
         hover_ring_image_ = toOverlayFormat(hover_ring_image_);
       }
-      // Above-right of the origin, clamped inside the view.
       const QSizeF box = hover_label_image_.deviceIndependentSize();
       const int box_w = static_cast<int>(std::lround(box.width()));
       const int box_h = static_cast<int>(std::lround(box.height()));

@@ -21,10 +21,9 @@ namespace PJ {
 
 namespace {
 
-// Geometry mirrors the app's playback slider (QSlider#timeSlider) so the range
-// slider reads as the same control: a full-height rectangular track with a thin
-// vertical handle. Colors resolve from the semantic framework tokens that back
-// the stylesheet.
+// Geometry mirrors the app's playback slider (QSlider#timeSlider) so the range slider reads as the same control: a
+// full-height rectangular track with a thin vertical handle. Colors resolve from the semantic framework tokens that
+// back the stylesheet.
 const int kScHandleWidth = 8;   // timeSlider handle: 6px content + 1px border each side = 8px rendered
 const int kScTrackHeight = 24;  // timeSlider groove + handle height (px)
 const int kScLeftRightMargin = 1;
@@ -45,9 +44,8 @@ struct RangeSliderColors {
 };
 
 theme::Theme frameworkTheme() {
-  // Read the APPLICATION palette, never the widget's: QStyleSheetStyle rewrites
-  // widget palettes under QSS (a styled ancestor can resolve Window to #000000),
-  // which mis-detects "dark" inside plugin dialogs. Theme.cpp keeps
+  // The application palette is read, never the widget's: QStyleSheetStyle rewrites widget palettes under QSS (a styled
+  // ancestor can resolve Window to #000000), which mis-detects "dark" inside plugin dialogs. Theme.cpp keeps
   // QGuiApplication::palette()'s Window in lockstep with the theme backdrop.
   const QColor window = QGuiApplication::palette().color(QPalette::Window);
   return theme::themeFor(window.lightness() >= 128);
@@ -102,9 +100,8 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
   const RangeSliderColors colors = rangeSliderColors();
   const QRectF left_handle_rect = firstHandleRect();
   const QRectF right_handle_rect = secondHandleRect();
-  // Only the track OUTLINE carries the framework rounding (playback-bar
-  // parity); everything inside — fill, hatch, markers, handles — draws SQUARE
-  // and is clipped to the rounded outline so nothing pokes out of the corners.
+  // Only the track outline carries the framework rounding (playback-bar parity); everything inside (fill, hatch,
+  // markers, handles) draws square and is clipped to the rounded outline, so nothing pokes out of the corners.
   const qreal corner_radius = theme::radius(theme::Radius::Input, fw_theme);
   QPainterPath track_path;
   track_path.addRoundedRect(background_rect, corner_radius, corner_radius);
@@ -112,9 +109,8 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
   painter.save();
   painter.setClipPath(track_path);
 
-  // 1. Selected-range fill (between the two handles) — PJLightBlue, like the
-  //    playback slider's played sub-page. Drawn first; the groove border is
-  //    stroked on top so it always reads crisply.
+  // 1. Selected-range fill (between the two handles), PJLightBlue like the playback slider's played sub-page. Drawn
+  // first; the groove border is stroked on top so it reads crisply.
   QRectF selected_rect(background_rect);
   if (orientation_ == Qt::Horizontal) {
     selected_rect.setLeft(type_.testFlag(kLeftHandle) ? left_handle_rect.right() : left_handle_rect.left());
@@ -123,21 +119,18 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
     selected_rect.setTop(type_.testFlag(kLeftHandle) ? left_handle_rect.bottom() : left_handle_rect.top());
     selected_rect.setBottom(type_.testFlag(kRightHandle) ? right_handle_rect.top() : right_handle_rect.bottom());
   }
-  // Darker-accent outline on the selected fill (playback-slider parity). Inset by
-  // 0.5 px so the 1-px stroke lands crisply inside the fill rect. Disabled keeps
-  // the same geometry but flattens to the accent family's Disabled fill —
-  // identical to the playback slider's ::sub-page:disabled.
+  // Darker-accent outline on the selected fill (playback-slider parity), inset by 0.5 px so the 1-px stroke lands
+  // crisply inside the fill rect. Disabled keeps the geometry but flattens to the accent family's Disabled fill, as the
+  // playback slider's ::sub-page:disabled.
   painter.setPen(QPen(enabled ? colors.selection_border : colors.selection_disabled, 1));
   painter.setBrush(enabled ? colors.selection : colors.selection_disabled);
   painter.drawRect(selected_rect.adjusted(0.5, 0.5, -0.5, -0.5));
 
-  // 1b. "No data" texture: the shared app hatch (PJ::drawNoDataHatch), over the UNSELECTED
-  //     part of the TRACK (background_rect minus the [lower, upper] fill), in both enabled +
-  //     disabled states. Phased to this widget's GLOBAL origin, so the diagonal lines line up
-  //     with every other widget that paints the hatch (the Timeline, ...). CONTAINED to the
-  //     track height: the hatch reads as one horizontal strip flanking the selection and never
-  //     bleeds into the floating-label rows above/below the track. Clipped to the unselected
-  //     region, so the lines stay STATIC as a handle drags (only the clip moves).
+  // 1b. "No data" texture: the shared app hatch (PJ::drawNoDataHatch) over the unselected part of the track
+  // (background_rect minus the [lower, upper] fill), enabled and disabled. Phased to this widget's global origin, so
+  // its diagonal lines line up with every other widget that paints the hatch (the Timeline). Contained to the track
+  // height: it reads as one horizontal strip flanking the selection and never bleeds into the floating-label rows above
+  // and below. Clipped to the unselected region, so the lines stay static as a handle drags (only the clip moves).
   {
     QRegion unselected(background_rect.toAlignedRect());
     unselected -= selected_rect.toAlignedRect();  // handles, drawn later, cover their own width on top
@@ -145,10 +138,9 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
     // Intersect with the ambient rounded-track clip so the hatch stays inside
     // the rounded corners AND the unselected region.
     painter.setClipRegion(unselected, Qt::IntersectClip);
-    // Backdrop + hatch in ONE shared call (drawNoDataHatch), so the unselected track
-    // composites the same ink over the same framework data backdrop the Timeline uses.
-    // Without the backdrop fill the bare groove let the white dialog show through, giving
-    // the identical ink ~26% more contrast (255 vs 238 backdrop) and a "busier" read.
+    // Backdrop and hatch in one shared call (drawNoDataHatch), so the unselected track composites the same ink over the
+    // same framework data backdrop the Timeline uses. Without the backdrop fill the bare groove let the white dialog
+    // show through, giving the same ink ~26% more contrast (255 vs 238 backdrop) and a busier read.
     drawNoDataHatch(painter, background_rect, mapToGlobal(QPointF(0, 0)), enabled);
     painter.restore();
   }
@@ -163,10 +155,9 @@ void RangeSlider::paintEvent(QPaintEvent* a_event) {
     drawMarkers(painter, background_rect);
   }
 
-  // 3. Handles — thin full-height SQUARE grips (timeSlider handle shape):
-  //    highlight nominal at rest, hovered on hover, pressed while dragging,
-  //    the highlight family's Disabled fill when the slider is disabled
-  //    (identical to the playback slider's ::handle:disabled).
+  // 3. Handles: thin full-height square grips (the timeSlider handle shape): highlight nominal at rest, hovered on
+  // hover, pressed while dragging, the highlight family's Disabled fill when disabled (as the playback slider's
+  // ::handle:disabled).
   auto paint_handle = [&](const QRectF& r, bool hovered, bool pressed) {
     painter.setPen(QPen(colors.handle_border, 1));
     QColor fill = colors.handle;
@@ -364,8 +355,8 @@ void RangeSlider::leaveEvent(QEvent* e) {
 }
 
 QSize RangeSlider::minimumSizeHint() const {
-  // Track height (== the playback scrubber) + ONE label row above it for the
-  // floating handle labels. No reserve below the track — that was wasted padding.
+  // Track height (as the playback scrubber) plus one label row above it for the floating handle labels; no reserve
+  // below the track.
   int h = kScTrackHeight;
   if (floating_labels_) {
     QFontMetrics fm(font());
@@ -394,9 +385,8 @@ void RangeSlider::setLowerValue(int a_lower_value) {
   if (a_lower_value < minimum_) {
     a_lower_value = minimum_;
   }
-  // Post-clamp no-ops must not emit: the dialog host forwards every emission
-  // as a full plugin event round trip, so a drag held past the track end (or a
-  // same-value echo re-apply) would flood it with no-op events.
+  // Post-clamp no-ops must not emit: the dialog host forwards every emission as a full plugin event round trip, so a
+  // drag held past the track end (or a same-value echo re-apply) would flood it with no-op events.
   if (a_lower_value == lower_value_) {
     return;
   }
@@ -521,17 +511,16 @@ void RangeSlider::drawMarkers(QPainter& painter, const QRectF& background_rect) 
     const int box_w = x1 - x0;
     const QRect box(x0, top, box_w, height);
 
-    // Shade the box when its [start, end] overlaps the current [lower, upper]
-    // selection — the "which chunk falls in the range" cue. Translucent over the
-    // groove so the blue selection fill still reads underneath.
+    // The box is shaded when its [start, end] overlaps the current [lower, upper] selection: the "which chunk falls in
+    // the range" cue. Translucent over the groove, so the blue selection fill still reads underneath.
     if (m.start < upper_value_ && m.end > lower_value_) {
       painter.setPen(Qt::NoPen);
       painter.setBrush(colors.marker_in_range);
       painter.drawRect(box);
     }
 
-    // Box outline at the chunk's TRUE extent. Disjoint chunks therefore read as
-    // separate boxes with blank slider space between them (the gaps).
+    // The box outline is at the chunk's true extent: disjoint chunks read as separate boxes with blank slider space
+    // between them.
     painter.setPen(QPen(colors.marker_line, theme::stroke(theme::Stroke::Hairline, frameworkTheme())));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(box.adjusted(0, 0, -1, -1));
@@ -649,9 +638,8 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
   painter.setFont(label_font);
   QFontMetrics fm(label_font);
 
-  // A disabled slider dims its floating labels so the dark HUD pills / accent
-  // duration chip read as inactive alongside the disabled track and handles,
-  // instead of staying full-strength (which looks like a live control).
+  // A disabled slider dims its floating labels, so the dark HUD pills and the accent duration chip read as inactive
+  // beside the disabled track and handles, not as a live control.
   painter.save();
   if (!isEnabled()) {
     painter.setOpacity(0.4);
@@ -686,9 +674,8 @@ void RangeSlider::drawFloatingLabels(QPainter& painter) {
     upper_label_rect_ = draw_label(secondHandleRect(), formatHandleValue(static_cast<double>(upper_value_)));
   }
 
-  // Selected-duration chip sits ON the track, centered between the handles (the
-  // start/end labels above float; the duration reads inside the selected fill).
-  // Hidden when the handles are too close to fit it.
+  // The selected-duration chip sits on the track, centered between the handles (the start and end labels float above;
+  // the duration reads inside the selected fill). Hidden when the handles are too close to fit it.
   if (center_label_formatter_) {
     QString center_text = center_label_formatter_(static_cast<double>(lower_value_), static_cast<double>(upper_value_));
     if (!center_text.isEmpty()) {

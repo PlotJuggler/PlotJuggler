@@ -41,10 +41,8 @@ QStringList sourcePool() {
   return memesIn(QString::fromUtf8(PJ_MEMES_SOURCE_DIR));
 }
 
-// rcc has no globbing, so a meme reaches the splash only if memes.qrc lists
-// it explicitly. A file added to the directory but left out of the manifest is
-// invisible at runtime with no build error and no warning — it simply never
-// shows, and the only symptom is a meme nobody ever sees.
+// rcc has no globbing: a meme reaches the splash only if memes.qrc lists it. A file left out of the manifest is
+// invisible at runtime, with no build error or warning.
 TEST(SplashMemePool, EveryMemeOnDiskIsListedInTheManifest) {
   const QStringList on_disk = sourcePool();
   ASSERT_FALSE(on_disk.isEmpty()) << "no memes found under " << PJ_MEMES_SOURCE_DIR;
@@ -90,9 +88,8 @@ TEST(SplashMemePool, CapNeverUpscalesAPoolMeme) {
   }
 }
 
-// A width-only cap leaves a tall image at full height, which is what put an
-// 883px-tall meme on screen. Synthetic sizes pin both orientations regardless of
-// what the pool happens to contain today.
+// A width-only cap would leave a tall image at full height. Synthetic sizes pin both orientations whatever the
+// pool holds.
 TEST(SplashMemePool, CapBoundsPortraitAndLandscapeAlike) {
   QPixmap landscape(1200, 300);
   landscape.fill(Qt::red);

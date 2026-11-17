@@ -50,82 +50,61 @@ class IImageDecoder;
 class IVideoFrameSource;
 }  // namespace scripting
 
-/// Result of resolving a persisted dataset identity against the live session.
-/// `ambiguous` distinguishes "not loaded yet" from multiple equally valid
-/// candidates, which lets deferred scene/plot restore wait for the former and
-/// reject the latter without ever selecting by load order. `id == nullopt` with
-/// `ambiguous == false` means no live dataset matches (yet).
+/// A persisted dataset identity resolved against the live session. `id == nullopt` with `ambiguous == false` means
+/// "not loaded yet" (a deferred restore waits); `ambiguous` means several candidates (the restore rejects instead of
+/// choosing by load order).
 struct DatasetIdentityResolution {
   std::optional<DatasetId> id;
   bool ambiguous = false;
 };
 
-/// Provenance for a dataset produced by a provider plugin: which plugin made it
-/// (provider_id), that provider's durable identity for the source
-/// (source_identity — typically a canonical-descriptor digest, a FAST-PATH key
-/// only), and the full canonical descriptor JSON needed to re-obtain the
-/// dataset. Deliberately dataset-keyed, NOT part of LoadedSource: loaded
-/// sources are path-level and dedup-by-path, while one file/fetch fans out to
-/// many datasets, each with its own provenance.
+/// How a provider plugin can re-obtain a dataset: the plugin (`provider_id`), its durable key for the source
+/// (`source_identity`, a fast-path key only) and the canonical descriptor JSON. Keyed by dataset, not by
+/// LoadedSource: one file or fetch fans out to several datasets, each with its own record.
 struct SourceRecord {
   QString provider_id;
   QString source_identity;
   QString descriptor_json;
 };
 
-/// Loader-supplied descriptive metadata about a dataset's loaded artifact
-/// (facts a loader read out of the file), attributed to the emitting plugin.
-/// Distinct from SourceRecord: metadata DESCRIBES what was loaded; the record
-/// controls how the host can re-obtain it. The host renders it generically and
-/// never interprets individual keys.
+/// Facts a loader read out of the loaded artifact, attributed to the emitting plugin. The host renders it
+/// generically and never interprets keys; unlike SourceRecord it does not say how to re-obtain the data.
 struct DatasetMetadata {
   QString plugin_id;
   QString json;  ///< Validated JSON object document, stored verbatim.
 };
 
-/// Unique identifier for an ingest session. 0 = invalid/stale.
+/// 0 = invalid/stale.
 using IngestId = quint64;
 
-/// Token identifying a specific ingest operation on a dataset. Minted at
-/// beginIngest and used to route all subsequent updates, cancellations, and
-/// terminations. A new beginIngest on the same dataset invalidates the prior
-/// token (any calls with the old token become silent no-ops). This prevents
-/// late terminations from an old run from erasing a new run's entry.
+/// One ingest run on a dataset. A new beginIngest on the dataset supersedes the token: later calls carrying the old
+/// one are silent no-ops, so a late terminal of an old run cannot erase the new run's entry.
 struct IngestToken {
-  IngestId id = 0;           // Monotonically increasing, 0 = invalid/stale
-  DatasetId dataset_id = 0;  // The dataset this ingest targets
+  IngestId id = 0;  // monotonic, 0 = invalid/stale
+  DatasetId dataset_id = 0;
 };
 
 /// Outcome of a completed ingest operation.
 enum class IngestOutcome {
-  kCompleted,  // Successfully finished
-  kCancelled,  // Cancelled by requestCancel
-  kFailed,     // Error occurred during ingest
-  kUnknown,    // Unknown outcome (SDK plugins without outcome callback)
+  kCompleted,
+  kCancelled,  // requestCancel was accepted, whatever the producer reported
+  kFailed,
+  kUnknown,  // the plugin C-ABI's on_ingest_finished carries no outcome
 };
 
-/// Signature for a handler invoked when requestCancel succeeds. The producer
-/// supplies how to stop itself. keep_partial mirrors the file path's keep/discard
-/// choice; producers that cannot honour it ignore it.
+/// How a producer stops itself once requestCancel is accepted. A producer that cannot honour `keep_partial` ignores it.
 using IngestCancelFn = std::function<void(bool keep_partial)>;
 
-/// What a producer is able to do when its ingest is stopped. Some producers can
-/// only stop: the toolbox ingest ABI has no host-side rollback, so a stop there
-/// always keeps what arrived. Declaring that up front lets the UI present the
-/// discard affordance as unavailable instead of offering an action the producer
-/// would silently turn into a keep.
+/// Whether a producer can discard on stop. The toolbox ingest ABI has no host-side rollback, so a toolbox stop always
+/// keeps; declaring that lets the UI disable the discard affordance instead of silently turning it into a keep.
 enum class IngestStop {
   kKeepOrDiscard,  ///< keep_partial is honoured either way
   kStopOnly,       ///< stopping always keeps; a discard request must be refused
 };
 
-// Owns the datastore for the current app session. v1 scalar commit calls are
-// expected on the GUI thread so plot adapters never observe mutation during
-// paint. The object-topic parser registry is the exception: it is written from
-// the streaming worker thread (the registrar callback fires when a plugin
-// discovers a topic mid-stream) and read from the GUI thread every render tick,
-// so it carries its own lock (object_parsers_mutex_) — see the parser* accessors
-// and object_topic_parsers_ for the contract.
+// Owns the datastore of the app session. Call it on the GUI thread, so plot adapters never see a mutation during
+// paint. Exception: the object-topic parser registry is written from streaming worker threads (a plugin discovers a
+// topic mid-stream) and read from the GUI thread every render tick, under object_parsers_mutex_.
 class SessionManager : public QObject {
   Q_OBJECT
  public:
@@ -153,10 +132,8 @@ class SessionManager : public QObject {
   [[nodiscard]] std::shared_ptr<ObjectIngestTapRegistry> ingestTapsShared() const noexcept {
     return ingest_taps_;
   }
-  // Plot markers (findings) live in the ObjectStore as serialized PlotMarkers
-  // object topics (one set per (dataset, topic, owner), republished wholesale by
-  // the producer; see MarkerTopics.h). Call notifyMarkersChanged() after a
-  // producer pushes/clears a marker object topic to repaint the plot overlays.
+  // Plot markers live in the ObjectStore as PlotMarkers object topics (MarkerTopics.h). Call after pushing or clearing
+  // one to repaint the plot overlays.
   void notifyMarkersChanged() {
     emit markersChanged();
   }
@@ -165,63 +142,44 @@ class SessionManager : public QObject {
   void notifyObjectTopicsChanged() {
     emit objectTopicsChanged();
   }
-  // Ends the previews among `transform_keys` (ephemeral transforms), `generator_ids`
-  // (ephemeral marker rules) and `on_demand_keys` (on-demand previews), repainting the
-  // overlays once if a marker preview went and announcing `objectTopicsChanged` once if
-  // an on-demand preview's topics retired; a gone or persistent one is skipped. A preview belongs to the plugin
-  // instance that made it: `DerivedRuntimeHosts` passes the ones its bridges created
-  // and still hold when that instance ends. Persistent recipes are the user's data.
+  // Ends the previews among the keys still present and still ephemeral, repainting the overlays once if a marker
+  // preview went and announcing `objectTopicsChanged` once if on-demand topics retired. `DerivedRuntimeHosts` passes
+  // the previews its bridges created when their plugin instance ends; persistent recipes are the user's data.
   void removeEphemerals(
       const std::unordered_set<std::string>& transform_keys, const std::unordered_set<std::string>& generator_ids,
       const std::unordered_set<std::string>& on_demand_keys);
-  // A dataset just became listed (the catalog published it): mark every
-  // all-datasets marker rule stale for the batch engine's brake, since the newcomer
-  // may contribute. Wired by CatalogModel; the commit recompute runs before the
-  // catalog rebuild, so it can never see a new dataset itself.
+  // A dataset was just listed by the catalog: marks every all-datasets marker rule stale, since the newcomer may
+  // contribute. Wired by CatalogModel; the commit recompute runs before the catalog rebuild, so it never sees it.
   void publishSharedMarkersToNewDatasets();
 
-  // The session-wide budget for ingest-seeded object payload residency (see
-  // ResidentPayloadPool). One pool for the whole session so every dataset's
-  // seeds compete for a single byte cap; exposed for diagnostics and tests.
+  // The one session-wide byte budget for ingest-seeded object payloads; every dataset competes for it.
   [[nodiscard]] const std::shared_ptr<ResidentPayloadPool>& residentPayloadPool() const noexcept {
     return resident_payload_pool_;
   }
 
-  // Session-scoped memory of each curve's assigned color, so a curve keeps its
-  // color when dragged into another plot (issue #68). Plot widgets reach it
-  // through the SessionManager pointer they already hold, so the registry need
-  // not be threaded through the widget constructors. AppSession clears it when
-  // the catalog empties.
+  // Remembers each curve's color across plots. AppSession clears it when the catalog empties.
   [[nodiscard]] CurveColorRegistry& curveColorRegistry() noexcept {
     return curve_color_registry_;
   }
 
-  // The session's data-processor service (filters/transforms run as eager
-  // IncrementalEngine nodes over this session's DataEngine). Plot widgets reach it
-  // through the SessionManager pointer they already hold — the same "not threaded
-  // through widget constructors" access pattern as curveColorRegistry above.
+  // Filters and transforms, as eager IncrementalEngine nodes over this session's DataEngine.
   [[nodiscard]] DataProcessorService& dataProcessorService() noexcept {
     return *processor_service_;
   }
 
-  // The session's whole-series batch engine (host-driven PlotMarkers generators
-  // run via pj_scripting and published to the ObjectStore). The marker sibling of
-  // dataProcessorService; AppSession injects its series resolver once the catalog
-  // exists (see setResolver).
+  // Marker rules, published to the ObjectStore. AppSession injects its series resolver once the catalog exists.
   [[nodiscard]] BatchEngine& batchEngine() noexcept {
     return *batch_engine_;
   }
 
-  // The session's on-demand engine (docs/derived_objects/ARCHITECTURE.md §8): recipes are installed and removed
-  // through it, AppSession requests them from the playhead and the demand tracker, and the dataset life cycle
-  // (reload, rollback, merge, removal, eviction) suspends and re-binds them here.
+  // The on-demand engine. The dataset life cycle (reload, rollback, merge, removal, eviction) suspends and re-binds
+  // its recipes here.
   [[nodiscard]] OnDemandService& onDemandService() noexcept {
     return *on_demand_;
   }
 
-  /// The DataEngine topics the host derives (processor outputs and on-demand series), only the previews' when
-  /// `ephemeral_only`: what a reload must not treat as the file's, an undo snapshot as raw data, and the catalog list
-  /// when they are previews.
+  /// The DataEngine topics the host derives (processor outputs and on-demand series), only the previews' with
+  /// `ephemeral_only`: a reload does not treat them as the file's, nor an undo snapshot as raw data.
   [[nodiscard]] std::unordered_set<TopicId> derivedScalarTopics(bool ephemeral_only) const;
   // The workers the derived-data engines run on; `waitIdle` publishes everything submitted.
   [[nodiscard]] EnginePool& enginePool() noexcept {
@@ -234,391 +192,245 @@ class SessionManager : public QObject {
   /// (topic, column) of the scalar series `name` (bare, the catalog's series naming) in a dataset.
   using ScalarSeriesLookup =
       std::function<std::optional<std::pair<TopicId, std::size_t>>(DatasetId dataset, const std::string& name)>;
-  /// How on-demand recipes resolve and sample scalar series (with a scalar topic's own name, `scalarInput`):
-  /// AppSession injects the catalog's lookup; until then no scalar input resolves. GUI thread.
+  /// How on-demand scalar inputs resolve when they do not name a scalar topic (`scalarInput`). AppSession injects
+  /// the catalog's lookup; until then no such input resolves. GUI thread.
   void setScalarSeriesLookup(ScalarSeriesLookup lookup);
-  /// Where on-demand runs read the TF state from (the shell owns the service and may destroy it first: the
-  /// session watches it). Without one, runs see no TF. GUI thread.
+  /// Where on-demand runs read TF from. The shell owns the service and may destroy it first (held as a QPointer).
+  /// Without one, runs see no TF. GUI thread.
   void setTransformService(TransformService* service);
   /// Replaces the clock the TF snapshot brake reads; for tests.
   void setTfClock(std::function<std::chrono::steady_clock::time_point()> clock);
-  /// What on-demand scripts decode images through (`scripting::RunOptions::image_decoder`): the shell owns the codec
-  /// (pj_app's `SceneImageDecoder`, where Scene2D is built), so the runtime links none. A run keeps the decoder it was
-  /// submitted with; without one, a script's `decode` reports "no image decoder". GUI thread.
+  /// The image decoder on-demand scripts use (pj_app's `SceneImageDecoder`, so the runtime links no codec). A run
+  /// keeps the decoder it was submitted with; without one `decode` reports "no image decoder". GUI thread.
   void setImageDecoder(std::shared_ptr<const scripting::IImageDecoder> decoder) {
     image_decoder_ = std::move(decoder);
   }
-  /// What on-demand scripts' `video:frame_at` decodes through (`scripting::RunOptions::video_source`; pj_app's
-  /// `SceneVideoFrameSource`, where Scene2D is built). The session retires a dataset's topics in it before their
-  /// storage changes (`suspendOnDemand`). Without one, `frame_at` reports "no video frame source". GUI thread.
+  /// What `video:frame_at` decodes through (pj_app's `SceneVideoFrameSource`). `suspendOnDemand` retires a dataset's
+  /// topics in it before their storage changes. Without one, `frame_at` reports "no video frame source". GUI thread.
   void setVideoFrameSource(std::shared_ptr<scripting::IVideoFrameSource> source) {
     video_source_ = std::move(source);
   }
 
   [[nodiscard]] DataReader createReader() const;
 
-  /// The clock range a derived topic covers (docs/derived_objects/ARCHITECTURE.md §9, the declared range): the
-  /// envelope of its node's raw inputs' ranges, upstream nodes followed to their raw leaves, never what has been
-  /// computed. Inverted (`{max, min}`) for a finding, which covers no clock range, and when no input has data;
-  /// nullopt for a topic that is no on-demand output. GUI thread.
+  /// The clock range a derived topic covers: the envelope of its node's raw inputs' ranges, upstream nodes followed
+  /// to their raw leaves, never what was computed. Inverted (`{max, min}`) for a finding and when no input has
+  /// data; nullopt when the topic is no on-demand output. GUI thread.
   [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> derivedTopicInputRange(ObjectTopicId topic) const;
 
-  /// Associates a file-backed dataset with the normalized full path from which
-  /// FileLoader created it. DatasetInfo::source_name is intentionally only a
-  /// display/raw-source label (often a basename), so it cannot distinguish two
-  /// files with the same name in different directories. Native paths are
-  /// normalized on store (canonicalFilePath, falling back to absoluteFilePath)
-  /// so lookups match regardless of symlink/relative aliasing. Non-file URI
-  /// identities are retained verbatim. Empty `path` removes the association.
-  /// GUI-thread only.
+  /// The normalized full path FileLoader created `dataset_id` from (`normalizedSourcePath`; non-file URIs verbatim).
+  /// `DatasetInfo::source_name` is only a display label and cannot tell same-named files apart. Empty `path`
+  /// removes the association. GUI thread.
   void setDatasetSourcePath(DatasetId dataset_id, QString path);
 
-  /// Normalized full source path registered for `dataset_id`, or empty for a
-  /// streaming/test dataset and for an id no longer tracked by FileLoader.
+  /// Empty for a streaming or test dataset.
   [[nodiscard]] QString datasetSourcePath(DatasetId dataset_id) const;
 
-  /// Attaches (or overwrites) the provenance record for `dataset_id` — how this
-  /// dataset came to be and how to re-obtain it. Same GUI-thread-only contract
-  /// as the source-path registry it parallels. Three events invalidate a
-  /// record structurally: removeDataset drops it, a successful destructive
-  /// merge invalidates every contributor's record (mergeDatasets), and a
-  /// committed in-place refill detaches it (RefillGuard::commit — the content
-  /// no longer comes from the recorded source; a promotion listener re-attaches
-  /// in FileLoader's loadCommitting seam).
+  /// Attaches or overwrites `dataset_id`'s provenance. GUI thread. Dropped by removeDataset, by a destructive merge
+  /// (every contributor) and by a committed in-place refill (the content no longer comes from the recorded source;
+  /// FileLoader's promotion listener re-attaches).
   void attachSourceRecord(DatasetId dataset_id, SourceRecord record);
 
-  /// The provenance record attached to `dataset_id`, or nullptr when none. The
-  /// pointer is invalidated by the next attach/detach/removeDataset/merge —
-  /// copy the record out instead of retaining the pointer.
+  /// nullptr when none. Invalidated by the next attach, detach, removeDataset or merge: copy it out.
   [[nodiscard]] const SourceRecord* sourceRecord(DatasetId dataset_id) const;
 
   void detachSourceRecord(DatasetId dataset_id);
 
-  /// Ties an opaque resource to `dataset_id`'s lifetime — released when the
-  /// dataset is removed or consumed by a destructive merge (the same lifecycle
-  /// as its SourceRecord). The M3 source cache uses it to hold a read pin on
-  /// the artifact a cache-hit dataset was loaded from, so the artifact cannot
-  /// be evicted while the dataset reads it. GUI-thread only; several resources
-  /// may accumulate on one dataset.
+  /// Ties an opaque resource to `dataset_id`'s lifetime: released on removeDataset and when a destructive merge
+  /// consumes the dataset. The source cache holds a read pin this way, so the artifact a cache-hit dataset reads is
+  /// not evicted. GUI thread; resources accumulate.
   void pinDatasetResource(DatasetId dataset_id, std::shared_ptr<void> resource);
 
-  /// Stores the loader-metadata document for `dataset_id`, replacing any prior
-  /// one. Same GUI-thread-only contract and lifecycle as the source-path and
-  /// source-record registries it parallels: erased by removeDataset, invalidated
-  /// for EVERY contributor of a destructive merge (anchor included), cleared by
-  /// a committed in-place refill (the next load's document, if any, replaces
-  /// it). An empty or `{}` document clears. On refusal (see
-  /// validateDatasetMetadata) the previous document is kept and the reason is
-  /// returned — rejection must never affect the ingest that carried it.
+  /// Stores `dataset_id`'s loader-metadata document, replacing the previous one; an empty or `{}` document clears.
+  /// GUI thread. Same lifecycle as the source record (a committed refill clears it). A refusal
+  /// (validateDatasetMetadata) keeps the previous document and returns the reason; it never affects the ingest.
   Status setDatasetMetadata(DatasetId dataset_id, const QString& json, QString plugin_id);
 
-  /// The metadata document for `dataset_id`, or nullptr when none. Invalidated
-  /// by the next set/clear/removeDataset/merge — copy it out, never retain.
+  /// nullptr when none. Invalidated by the next set, clear, removeDataset or merge: copy it out.
   [[nodiscard]] const DatasetMetadata* datasetMetadata(DatasetId dataset_id) const;
 
   void clearDatasetMetadata(DatasetId dataset_id);
 
-  /// Acceptance bounds for a metadata document: a JSON object, at most 1 MiB
-  /// serialized, nesting depth at most 32, at most 16384 values in total.
-  /// Rejects (with the reason) rather than truncating.
+  /// A JSON object, at most 1 MiB serialized, nesting depth 32, 16384 values in total. Rejects, never truncates.
   [[nodiscard]] static Status validateDatasetMetadata(const QString& json);
 
-  /// The physical-path normalization every stored source path goes through
-  /// (setDatasetSourcePath, recordLoadedSource): canonicalFilePath when the
-  /// file exists (resolving symlink/relative aliases); for a missing file, its
-  /// canonical folder plus the file name, else the cleaned absolute path. Exposed so callers and tests can compare
-  /// against the stored form — on Windows even an absolute Unix-style input gains a drive prefix.
+  /// The normalization every stored source path goes through: canonicalFilePath when the file exists, else its
+  /// canonical folder plus the file name, else the cleaned absolute path. On Windows even an absolute Unix-style
+  /// input gains a drive prefix, so compare against this form.
   [[nodiscard]] static QString normalizedSourcePath(const QString& path);
 
-  /// Resolves a persisted identity without guessing. Resolution order:
-  ///  1. The exact `saved_id`, trusted only while every supplied qualifier (raw
-  ///     source label and/or full source path) still agrees — this is what lets
-  ///     a same-session undo keep its exact DatasetId even amid duplicates.
-  ///  2. If the id was reminted, a path-qualified identity falls back to exactly
-  ///     one dataset whose registered path (and source label) matches.
-  ///  3. A legacy layout without a path falls back to an exactly-one source-label
-  ///     match.
-  /// More than one candidate at step 2/3 returns `{id=nullopt, ambiguous=true}`
-  /// rather than choosing by load order. An id carrying no portable qualifiers
-  /// (empty source AND empty path) is valid only while that exact id still
-  /// exists; otherwise it resolves to nothing (not ambiguous).
+  /// Resolves a persisted identity without guessing:
+  ///  1. `saved_id`, trusted only while every supplied qualifier (source label, full path) still agrees, so a
+  ///     same-session undo keeps its exact id amid duplicates;
+  ///  2. exactly one dataset whose registered path (and source label) matches;
+  ///  3. without a path, exactly one source-label match.
+  /// Several candidates at 2 or 3 return `{nullopt, ambiguous=true}`. An id with neither source nor path is valid
+  /// only while that exact id exists; otherwise it resolves to nothing (not ambiguous).
   [[nodiscard]] DatasetIdentityResolution resolveDatasetIdentity(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path = {}) const;
 
-  /// Record-qualified overload for identities that also persisted the dataset's
-  /// SourceRecord. Resolution order becomes:
-  ///  1. the exact `saved_id`, trusted only while EVERY supplied qualifier —
-  ///     now including the source record — still agrees;
-  ///  2. a unique attached-record match: (provider_id, source_identity) is only
-  ///     the fast path — trust requires CONFIRMING the full canonical
-  ///     descriptor, i.e. byte-equal descriptor_json (a matching identity with
-  ///     different descriptor bytes is NOT a match and falls through);
-  ///  3./4. the existing path and source-name tiers, unchanged.
-  /// Multiple confirmed record matches return `{id=nullopt, ambiguous=true}` —
-  /// never a guess. An empty `saved_record` makes this identical to the
-  /// 3-argument form (which forwards here).
+  /// Adds the persisted SourceRecord as a qualifier and a tier between the id and the path: a unique attached record
+  /// whose (provider_id, source_identity) matches AND whose descriptor_json is byte-equal (a matching identity with
+  /// other descriptor bytes falls through). Several confirmed matches are ambiguous. An empty `saved_record` makes
+  /// this the 3-argument form.
   [[nodiscard]] DatasetIdentityResolution resolveDatasetIdentity(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path,
       const SourceRecord& saved_record) const;
 
-  /// Topic-aware fallback for a same-file single<->fan-out remint. When full-path
-  /// identity alone names several datasets (resolveDatasetIdentity returns
-  /// ambiguous), returns a dataset only if exactly one of those siblings owns an
-  /// object topic named `object_topic_name`; still ambiguous if several do.
+  /// For a same-file single<->fan-out remint: when the path names several datasets, returns the one sibling owning
+  /// an object topic named `object_topic_name`; still ambiguous if several do.
   [[nodiscard]] DatasetIdentityResolution resolveObjectDatasetIdentity(
       DatasetId saved_id, const QString& saved_source, const QString& saved_path,
       const QString& object_topic_name) const;
 
-  /// TOTAL display shift used by everything that renders on the display axis
-  /// (plot curves, scenes, the playback range/cursor): the dataset's per-source
-  /// alignment offset PLUS the global "Use time offset" reference. So
-  /// display_time = raw_time - sourceDisplayOffset - globalTimeReference().
-  /// The two are summed here, not stored together, so a toggle of the global
+  /// The total display shift: the per-source alignment plus the global "Use time offset" reference, so
+  /// display_time = raw_time - sourceDisplayOffset - globalTimeReference(). Summed on read, so toggling the global
   /// frame never disturbs the per-source alignment the Source Timeline owns.
   [[nodiscard]] DisplayOffset displayOffset(DatasetId dataset_id) const;
 
-  /// `absolute_ns` on the display axis under the dataset's current
-  /// `displayOffset`, or nullopt when `dataset_id` is not a loaded dataset (the
-  /// caller's handle is stale or invalid, so there is no mapping to give).
+  /// nullopt when `dataset_id` is not loaded (a stale or invalid handle).
   [[nodiscard]] std::optional<DisplaySeconds> displayTimeForSource(DatasetId dataset_id, int64_t absolute_ns) const;
 
-  /// Per-source ALIGNMENT shift ONLY (the dataset's TimeDomain offset, read
-  /// LIVE): exactly what the Source Timeline edits via setDisplayOffset (drag /
-  /// align / reset) and what positions its bars. Excludes the global "Use time
-  /// offset" reference, so the Timeline's bar positions stay invariant when that
-  /// global frame is toggled — only their number FORMATTING changes. Use this
-  /// (not displayOffset) anywhere bar/track positions must not follow the toggle.
+  /// The per-source alignment only (the dataset's TimeDomain offset, what the Source Timeline edits and positions its
+  /// bars by). Use it wherever positions must not follow the global "Use time offset" toggle.
   [[nodiscard]] DisplayOffset sourceDisplayOffset(DatasetId dataset_id) const;
 
-  /// The single global origin (raw ns) subtracted from ALL displayed times when
-  /// "Use time offset" is on: the earliest raw sample across loaded time-bearing
-  /// datasets (excluding static reference geometry), applied UNIFORMLY so cross-dataset time gaps are preserved (unlike
-  /// a per-source rebase, which collapses every dataset to zero). Zero when the
-  /// toggle is off. Memoized; invalidated on every commit/ingest. The host (the
-  /// Source Timeline controller) reads it to bridge the playback frame
-  /// (raw - source - global) and the Timeline frame (raw - source).
+  /// The one origin (raw ns) subtracted from every displayed time when "Use time offset" is on: the earliest raw
+  /// sample across loaded datasets (static reference geometry excluded), applied uniformly so cross-dataset gaps are
+  /// kept; 0 when off. Memoized, invalidated on commit and ingest. The Source Timeline controller uses it to bridge
+  /// the playback frame (raw - source - global) and the Timeline frame (raw - source).
   [[nodiscard]] Timestamp globalTimeReference() const;
 
-  /// A zero-time geometry dataset is a static reference, not part of the playback clock.
-  /// Its point cloud/mesh and optional scalar summaries all have timestamp zero.
+  /// A dataset whose point clouds/meshes and scalar summaries all sit at timestamp zero: a static reference, outside
+  /// the playback clock and the global origin.
   [[nodiscard]] bool isStaticReferenceDataset(DatasetId dataset_id) const;
 
-  /// Write a source's display shift (display_time = raw_time - offset) and
-  /// notify consumers via displayOffsetChanged(DatasetId). Resolves dataset ->
-  /// its TimeDomain -> DataEngine; no-op + warning if the dataset is unknown or
-  /// bound to the default (id 0) domain. This is the per-source Timeline-drag
-  /// seam; it composes with the global "Use time offset" frame below (the offset
-  /// it writes is the latent TimeDomain shift displayOffset() reads).
+  /// Writes a source's alignment shift (display_time = raw_time - offset) and emits displayOffsetChanged(DatasetId);
+  /// unchanged offsets emit nothing. A warning and no-op for an unknown dataset or one bound to the default (id 0)
+  /// time domain.
   void setDisplayOffset(DatasetId dataset_id, DisplayOffset offset);
 
-  /// Where the plots showing `dataset_id`'s on-demand series start their view, on the display axis: a series whose
-  /// rows stop before it computes from there to the end first, then backfills (`SeriesRunner::setVisibleStart`).
+  /// Where the plots showing `dataset_id`'s on-demand series start their view (display axis): a series computes from
+  /// there to the end first, then backfills (`SeriesRunner::setVisibleStart`).
   void setSeriesVisibleStart(DatasetId dataset_id, DisplaySeconds start);
 
-  /// Time bounds of ONE dataset's data — scalar topics (DataEngine) and object
-  /// topics (ObjectStore) unioned — in DISPLAY-relative seconds (display_time =
-  /// raw_time - the dataset's display_offset). nullopt when the dataset holds no
-  /// data. Centralizes the raw-ns -> display-seconds conversion so the streaming
-  /// playback seed shares the file-load seed's offset-aware origin
-  /// (AppSession::seedPlaybackFromSession); a bare raw-ns range can never reach
-  /// the playback axis offset-blind.
+  /// One dataset's scalar and object bounds, in display seconds; nullopt when it holds no data. Every raw-to-display
+  /// range conversion for playback goes through here, so no raw range reaches the playback axis offset-blind.
   [[nodiscard]] std::optional<DisplayRange> datasetDisplayRange(DatasetId dataset_id) const;
 
-  // --- "Use time offset": switch the displayed time frame between absolute
-  // Unix-epoch seconds (off) and seconds relative to a single GLOBAL origin (on).
-  // The shift is one uniform global reference (globalTimeReference) applied to
-  // every dataset, so multi-dataset time gaps are preserved. It is layered on top
-  // of (never overwrites) the per-source alignment offset, so toggling it leaves
-  // the Source Timeline's bar positions untouched. Only the boolean is state. ---
+  // "Use time offset" switches the displayed frame between absolute epoch seconds (off) and seconds since
+  // globalTimeReference() (on). Only the boolean is state.
 
-  /// Whether the relative-time frame is enabled. Default off (neutral); the app
-  /// shell sets the user-facing policy (PJ3 parity = on) via setUseTimeOffset.
+  /// Default off; the shell applies the user's preference.
   [[nodiscard]] bool useTimeOffset() const noexcept {
     return use_time_offset_;
   }
 
-  /// Toggle the global relative-time frame and emit the no-arg
-  /// displayOffsetChanged() on an actual change. It flips only globalTimeReference
-  /// (ON → earliest raw sample across all datasets; OFF → 0); it does NOT touch
-  /// any per-source alignment offset, so a Timeline drag/align is independent and
-  /// survives a toggle. Callers re-render on the signal: drop curve-adapter offset
-  /// caches + replot, re-seed the playback range, reformat the Timeline numbers.
+  /// Emits the no-arg displayOffsetChanged() on a change. Touches no per-source offset, so a Timeline alignment
+  /// survives a toggle.
   void setUseTimeOffset(bool use);
 
   [[nodiscard]] std::vector<TopicId> commitChunks(std::vector<std::pair<TopicId, TopicChunk>> chunks);
 
-  // Re-emit hook for callers that wrote straight through the DataEngine,
-  // bypassing commitChunks() (file/stream ingest has no Qt awareness) — without
-  // it, plot adapter caches never invalidate on the ingested data. `live`
-  // propagates to samplesIngested; follow-live consumers (PlotWidget auto-fit,
-  // Scene2DDockWidget frame advance) act only when it is true.
-  // A live announcement first requests the on-demand recipes of its datasets at
-  // their live edge (OnDemandService::followLiveEdge): the datasets of `ids`, and
-  // `dataset`, which a streaming tick names so that a tick of object topics only
-  // (no scalar ids) still reaches them.
+  // Announces data written straight to the DataEngine (file and stream ingest bypass commitChunks); without it plot
+  // adapter caches never invalidate. `live` reaches samplesIngested: follow-live consumers act only on it. A live
+  // announcement first requests the on-demand recipes of its datasets at their live edge: the datasets of `ids`,
+  // and `dataset`, so a tick of object topics only (no scalar ids) still reaches them.
   void notifyIngest(QVector<PJ::TopicId> ids, bool live = false, std::optional<DatasetId> dataset = std::nullopt);
   /// `dataset_id`'s stream ended: its on-demand series compute the tail past their live edge (`SeriesRunner::endLive`).
   void notifyStreamEnded(DatasetId dataset_id);
-  /// The dataset had a live announcement within the TF brake period (`setTfClock`'s clock): it streams now.
+  /// A live announcement within the TF brake period (`kTfSnapshotPeriod` on `setTfClock`'s clock).
   [[nodiscard]] bool isLive(DatasetId dataset_id) const;
 
-  // --- Progressive bulk-import lifecycle (hoisted from MainWindow, #470). The
-  // session owns WHICH datasets are actively receiving a progressive import so
-  // any observer (the title-bar progress strip today, a batch coordinator
-  // tomorrow) can watch begin/progress/end without going through the window;
-  // presentation (strip widgets, FileLoader arbitration, stop routing to the
-  // importing hosts) stays in the app layer. GUI-thread only — the
-  // ToolboxRuntimeHost marshals its callbacks there. ---
+  // Progressive import lifecycle: which datasets are receiving a progressive import, for any observer; the
+  // presentation stays in pj_app. GUI thread (ToolboxRuntimeHost marshals its callbacks here).
 
-  /// Start a progressive import of a dataset. Returns a token routing future
-  /// updates/cancellations to this specific ingest. The token is unique per begin;
-  /// a subsequent begin on the same dataset invalidates the prior token (late calls
-  /// with the old token silently no-op). The superseded ingest's entry is erased
-  /// from the active set immediately: the token becomes stale at this moment even
-  /// if an old end/update call arrives later, preventing a replaced load from being
-  /// reported as active alongside the new one. Triggers one structural catalog
-  /// publication so object-only datasets materialize a row immediately.
+  /// Starts a progressive import and returns its token. A begin on a dataset with a live ingest supersedes it at
+  /// once: the old run is reported as ingestEnded(old, kCancelled) before the new ingestBegan, and the old token goes
+  /// stale. Triggers one structural catalog publication, so an object-only dataset gets its row at once.
   ///
-  /// GUI-thread only. cancellable gates whether requestCancel can succeed for this
-  /// ingest; producers that cannot be cancelled pass false, suppressing the UI
-  /// cancel affordance. on_cancel is invoked only if requestCancel succeeds on this
-  /// token. `stop` declares whether this producer can honour a discard at all —
-  /// a kStopOnly ingest refuses requestCancel(keep_partial=false) outright rather
-  /// than quietly downgrading it to a keep.
+  /// `cancellable` false refuses every requestCancel (no stop affordance). `on_cancel` runs only when requestCancel
+  /// succeeds. A `kStopOnly` ingest refuses requestCancel(keep_partial=false).
   ///
-  /// The supersede terminal above is emitted synchronously, so an observer may
-  /// begin yet another ingest on this dataset from inside it. That successor
-  /// supersedes THIS call's entry before it has announced itself, and the
-  /// `ingestBegan` for the returned token is then suppressed — a began must never
-  /// arrive after the began of the token that replaced it. The returned token is
-  /// stale in that case: every later call carrying it no-ops, exactly as for any
-  /// superseded token.
+  /// The supersede terminal is emitted synchronously, so an observer may begin another ingest on this dataset from
+  /// inside it. That successor supersedes this call before it announced itself: the `ingestBegan` for the returned
+  /// token is suppressed (a began never follows the began of its replacement) and the returned token is stale.
   [[nodiscard]] IngestToken beginIngest(
       DatasetId dataset_id, QString label, quint64 total, bool cancellable, IngestCancelFn on_cancel,
       IngestStop stop = IngestStop::kKeepOrDiscard);
 
-  /// Record progress on an ingest. Stale tokens (superseded by a newer begin on the
-  /// same dataset) are silently ignored. Publishes the dataset's flushed topics via
-  /// notifyIngest (so data appears before the progress number announcing it).
+  /// Stale tokens are ignored. Publishes the dataset's flushed topics through notifyIngest first, so data appears
+  /// before the progress number announcing it.
   void updateIngest(IngestToken token, quint64 current, quint64 total);
 
-  /// End an ingest and report its outcome. Stale tokens are silently ignored. Erases
-  /// the entry and emits ingestEnded with the outcome. If requestCancel was
-  /// previously called on this token, the reported outcome is kCancelled regardless
-  /// of the outcome passed here.
+  /// Stale tokens are ignored. Reports kCancelled whatever `outcome` is when a cancel was accepted.
   void endIngest(IngestToken token, IngestOutcome outcome);
 
-  /// Request cancellation of an ingest. Returns true if the ingest is stopping,
-  /// false when the request was refused (unknown/stale token, already ended, not
-  /// cancellable, or a discard asked of a kStopOnly producer). On the first
-  /// accepted request the handler is invoked synchronously with keep_partial and
-  /// the ingest's terminal reports kCancelled whatever the producer passes (the
-  /// cancellation intent wins).
+  /// True when the ingest is stopping. False when refused: unknown or stale token, already ended, not cancellable,
+  /// or a discard asked of a kStopOnly producer. The first accepted request runs the handler synchronously.
   ///
-  /// FIRST INTENT WINS: a request on an ingest that is ALREADY stopping returns
-  /// true without re-announcing the stop or re-running the handler — including
-  /// one made from inside ingestStopping, which would otherwise recurse. A second
-  /// click with the opposite keep_partial therefore cannot override the choice
-  /// the producer is already acting on.
+  /// The first intent wins: a request on an ingest already stopping returns true without re-running the handler
+  /// (also from inside ingestStopping, which would otherwise recurse), so a second click with the opposite
+  /// keep_partial cannot override the choice the producer is acting on.
   bool requestCancel(IngestToken token, bool keep_partial);
 
   [[nodiscard]] bool hasActiveIngests() const noexcept {
     return !active_ingests_.empty();
   }
 
-  /// One live ingest as seen by a display/arbitration consumer: what it is
-  /// called, how far along it is, and whether it can be stopped. Deliberately
-  /// omits the cancel handler — reach cancellation through requestCancel(token)
-  /// so intent is recorded and the terminal outcome reports kCancelled.
+  /// One live ingest as a display consumer sees it. Has no cancel handler: cancel through requestCancel(token), so
+  /// the intent is recorded.
   struct ActiveIngest {
     IngestToken token;
     QString label;
     quint64 current = 0;
-    quint64 total = 0;  // 0 = size unknown (indeterminate progress)
+    quint64 total = 0;  // 0 = size unknown
     bool cancellable = false;
-    bool discardable = true;  // false = stopping this producer always keeps
+    bool discardable = true;  // false: stopping always keeps
   };
 
-  /// Live ingests keyed by dataset. At most one entry per dataset: a new begin
-  /// on a dataset supersedes its previous token, and the superseded ingest stops
-  /// being live at that moment.
-  ///
-  /// Returned BY VALUE — a snapshot rebuilt per call, because the internal store
-  /// is keyed by IngestId, not by dataset. It does NOT track later begin/end
-  /// calls, so re-query rather than holding it across an event-loop turn.
+  /// Live ingests by dataset, at most one each. A snapshot per call: re-query instead of holding it across an
+  /// event-loop turn.
   [[nodiscard]] std::unordered_map<DatasetId, ActiveIngest> activeIngests() const;
 
-  /// Whether `dataset_id` has a live ingest right now. Cheaper than scanning
-  /// activeIngests() when only membership matters.
   [[nodiscard]] bool ingestActive(DatasetId dataset_id) const;
 
-  // In-place reload swap: replace `primary_id`'s scalar + object data with the
-  // data staged under `staged_id` in `staged_engine`/`staged_store`, keeping the
-  // primary DatasetId/TopicId/ObjectTopicId — and thus every curve key and
-  // 2D-dock binding — STABLE. Ordered transaction: datasetAboutToBeReplaced ->
-  // DataEngine + ObjectStore replaceDatasetFrom -> re-register staged object
-  // parsers under the stable primary ids and drop removed ones -> notifyIngest.
-  // Runs NO event loop. Caller must stage into a throwaway engine/store, run no
-  // event loop between staging and this call, and rebuild the catalog after it
-  // returns (also with no event loop in between).
+  // In-place reload swap: replaces `primary_id`'s scalar and object data with what was staged under `staged_id`,
+  // keeping the primary DatasetId, TopicIds and ObjectTopicIds (every curve key and dock binding stays valid). Order:
+  // datasetAboutToBeReplaced, the engine and store swaps, staged object parsers re-registered under the primary ids,
+  // notifyIngest. Stage into a throwaway engine and store, and run no event loop between staging, this call and the
+  // catalog rebuild that must follow it: a repaint in between would read freed chunks.
   void replaceDataset(
       DataEngine& staged_engine, ObjectStore& staged_store, DatasetId staged_id, DatasetId primary_id,
       std::vector<std::pair<ObjectTopicId, std::unique_ptr<MessageParserHandle>>> staged_object_parsers);
 
-  // Begin a TRANSACTIONAL in-place refill of `dataset_id` — the progressive-load
-  // reload prep that keeps its DatasetId / TopicIds / ObjectTopicIds registered, so
-  // bound plot adapters stay valid and the refill writes back into the same ids. The
-  // returned RAII guard has already, on the GUI thread with NO event loop:
-  //   1) emit datasetAboutToBeReplaced(dataset_id)  // adapters drop cached TopicChunk*
-  //   2) DETACHED (moved aside, NOT freed) the scalar chunks + object entries, and
-  //      taken shared ownership of each prior object topic's parser slot
-  //   3) notifyIngest(<dataset's topic ids>, live=false)  // UI shows it empty
-  // Step 1 BEFORE 2 is the invariant that prevents a use-after-free on cached chunk
-  // pointers (same ordering as replaceDataset); a dataset with no topics skips the
-  // notify (notifyIngest no-ops on an empty id list). The caller commit()s the guard
-  // once the refill succeeds (or to keep a partial load); otherwise the guard's
-  // destructor ROLLS BACK, restoring the exact prior data, retiring/removing topics
-  // the failed refill added, and re-notifying the UI. Detaching rather than freeing is
-  // what makes the rollback possible — the prior data lives in the snapshot until
-  // commit(). Runs NO event loop until commit/rollback.
+  // Begins a transactional in-place refill of `dataset_id` that keeps its ids, so bound plot adapters stay valid and
+  // the refill writes back into the same ids. On return, on the GUI thread with no event loop, it has:
+  //   1) emitted datasetAboutToBeReplaced (adapters drop cached TopicChunk*),
+  //   2) detached (moved aside, not freed) the scalar chunks and object entries, sharing each prior object topic's
+  //      parser slot,
+  //   3) notifyIngest(<the dataset's topic ids>, live=false), so the UI shows it empty.
+  // 1 before 2, or cached chunk pointers dangle. The caller commit()s the guard on success (or to keep a partial
+  // load); otherwise its destructor rolls back to the exact prior data.
   [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
 
-  /// Mark stale the marker generators whose inputs are among `changed`; the batch
-  /// engine re-runs them off the GUI thread behind its brake, and each published
-  /// burst repaints the overlays (`markersChanged`). The shared hook for every path
-  /// that commits new samples to existing inputs (file commit, streaming tick). Cheap
-  /// no-op when no generators exist. `changed` are TopicIds resolved to names here;
-  /// one whose (last timestamp, row count) has not moved since the last call is
-  /// dropped, since a streaming tick reports every topic of its dataset.
-  /// `scope` is the dataset whose data actually moved; it bounds an `all_datasets`
-  /// generator to that dataset instead of re-running it over every loaded one. Pass 0
-  /// only when the change cannot be attributed to a single dataset.
+  /// Marks stale the marker rules whose inputs are among `changed` (file commit, streaming tick); the batch engine
+  /// re-runs them on the pool behind its brake. A topic whose stamp (newest timestamp, row count, retention floor,
+  /// series generation) has not moved since the last call is dropped, since a streaming tick names every topic of
+  /// its dataset. `scope` is the dataset whose data moved, bounding an `all_datasets` rule to it; 0 only when the
+  /// change belongs to no single dataset.
   void recomputeMarkersForChanged(const std::vector<TopicId>& changed, DatasetId scope = 0);
 
-  // Destructively fold `sources` (each with a raw timestamp shift) into the
-  // `anchor` dataset via DataEngine::mergeDatasets. Mirrors replaceDataset's
-  // ordered transaction: emit datasetAboutToBeReplaced for the anchor + every
-  // source (adapters drop cached chunk pointers) -> engine merge -> object-store
-  // merge (fold shared names, reparent source-only object topics) -> notifyIngest
-  // the anchor's changed topics. Returns the engine's report on success, or
-  // std::nullopt when the engine REJECTED the merge (the store is untouched), so
-  // the caller can leave the catalog consistent rather than removing sources
-  // whose data still lives in the store — distinct from a successful merge that
-  // happens to fold no topics (a non-null but empty report). The caller computes
-  // the anchor/shifts (display-offset policy) and, only on success, updates the
-  // catalog (remove the consumed datasets, relabel the anchor). Runs no event
-  // loop; the caller must rebuild the catalog after it returns.
+  // Folds `sources` (each with a raw timestamp shift) into `anchor`. Order: datasetAboutToBeReplaced for the anchor
+  // and every source, engine merge, object-store merge, notifyIngest of the anchor's changed topics. nullopt when the
+  // engine rejected the merge (the store is untouched, so the caller must not remove the sources), unlike a merge
+  // that folds no topics (an empty report). The caller picks the anchor and shifts and, on success only, updates the
+  // catalog. Runs no event loop; rebuild the catalog after it returns.
   std::optional<DatasetMergeReport> mergeDatasets(DatasetId anchor, const std::vector<DatasetMergeSource>& sources);
 
-  // Registers (or replaces) the parser for one object topic. Called from the
-  // streaming worker thread via the registrar callback when a plugin discovers a
-  // topic mid-stream; takes object_parsers_mutex_ exclusively. A replacement
-  // installs a fresh ObjectParserSlot but never frees a parser a consumer still
-  // holds: ParserBinding captures the keepalive (the old handle's shared_ptr), so
-  // an in-flight parse keeps running against its snapshot until that binding
-  // drops. The replaced slot is destructed AFTER the lock is released — its dtor
-  // can run plugin teardown (and potentially dlclose), which must not happen
-  // under the parser lock.
+  // Registers or replaces one object topic's parser; called from streaming worker threads. A replaced slot is
+  // destroyed after object_parsers_mutex_ is released (its destructor may run plugin teardown and dlclose), and a
+  // ParserBinding taken earlier keeps the old parser alive for its holder.
   void registerObjectTopicParser(ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser);
   struct ParserBinding {
     MessageParserPluginBase* parser = nullptr;
@@ -630,65 +442,42 @@ class SessionManager : public QObject {
     }
   };
 
-  /// Returns the parser pointer, shared parse mutex, and DSO keepalive for one
-  /// object topic as a single snapshot. Empty when no valid parser is registered.
-  ///
-  /// Thread-safety: read from the GUI thread every render tick while the streaming
-  /// worker may concurrently (re-)register the same topic; the read takes
-  /// object_parsers_mutex_ shared, copies the three shared_ptrs out, and releases.
-  /// A subsequent slot replacement never frees a parser this snapshot still names:
-  /// take the binding per use and HOLD its keepalive across the parseObject call —
-  /// do not cache the raw `parser` pointer past the snapshot's lifetime.
+  /// The parser, its per-topic mutex and its DSO keepalive, copied out under object_parsers_mutex_ (shared). Empty
+  /// when no valid parser is registered. Take a binding per use and hold its keepalive across parseObject; a cached
+  /// raw `parser` pointer dangles once the slot is replaced.
   [[nodiscard]] ParserBinding parserBindingForObjectTopic(ObjectTopicId id) const;
   [[nodiscard]] MessageParserPluginBase* parserForObjectTopic(ObjectTopicId id) const;
 
-  // Mutex shared by every consumer of parserForObjectTopic(id). MessageParser
-  // plugins are not thread-safe (fastcdr et al. keep stateful scratch), so
-  // workers sharing the singleton parser MUST hold this around each parseObject
-  // call. Returns nullptr if no parser is registered for the topic.
+  // MessageParser plugins are not thread-safe (stateful scratch), so every caller of parseObject on this topic's
+  // parser holds this mutex. nullptr when no parser is registered.
   [[nodiscard]] std::shared_ptr<std::mutex> parserMutexForObjectTopic(ObjectTopicId id) const;
 
-  // Shared keepalive for the parser handle behind parserForObjectTopic(id):
-  // holding it keeps the parser instance AND its plugin DSO mapped until the
-  // consumer drops it. Display sources run a decode worker that calls
-  // parseObject; on app shutdown the extension catalog (and the plugin DSO) can
-  // be torn down before that worker is joined, so the worker MUST hold this to
-  // avoid a use-after-free / use-after-dlclose. Returns nullptr if no parser is
-  // registered for the topic.
+  // Holding it keeps the parser instance and its plugin DSO mapped. A decode worker calling parseObject must hold
+  // it: at shutdown the extension catalog and the DSO can go before the worker is joined. nullptr when no parser
+  // is registered.
   [[nodiscard]] std::shared_ptr<void> parserKeepaliveForObjectTopic(ObjectTopicId id) const;
 
   struct LoadedSource {
     QString path;
     QString prefix;
-    QString plugin_id;           // Empty when the loader didn't record a plugin (e.g. legacy paths).
-    QString plugin_config_json;  // Plugin's saveConfig() JSON at load time.
-    // The plugin's stable manifest id (its embedded-manifest "id" field), the
-    // durable identity layouts persist alongside the display name above.
-    // Empty when the loader predates the field or didn't record a plugin.
+    QString plugin_id;           // empty when the loader recorded no plugin
+    QString plugin_config_json;  // the plugin's saveConfig() JSON at load time
+    // The plugin's manifest "id", persisted in layouts beside the display name; empty when not recorded.
     QString plugin_manifest_id;
   };
 
-  // All data files loaded into this session, in load order (deduped by path —
-  // see recordLoadedSource). The layout-save path serializes one <fileInfo> per
-  // entry so a multi-file session round-trips; callers that only care about the
-  // most recent file use lastLoadedSource() instead.
+  // Every data file loaded, in load order, deduped by normalized path; a layout saves one <fileInfo> per entry.
   [[nodiscard]] const std::vector<LoadedSource>& loadedSources() const noexcept {
     return loaded_sources_;
   }
-  // The most recently loaded source, or nullopt if none. Backs the quick-reload
-  // button, the 3D dock's source-path seeding, and the layout same-source check.
   [[nodiscard]] std::optional<LoadedSource> lastLoadedSource() const noexcept {
     if (loaded_sources_.empty()) {
       return std::nullopt;
     }
     return loaded_sources_.back();
   }
-  // Records a loaded file. `path` is normalized on store (same rules as
-  // setDatasetSourcePath), so a symlink/relative alias of an already-tracked
-  // file updates its entry in place (preserving list order — a reload keeps the
-  // file's position); otherwise the source is appended. This dedup-by-physical-
-  // path keeps reloads from growing duplicate <fileInfo> entries while additive
-  // loads of distinct files all persist.
+  // `path` is normalized (normalizedSourcePath): an alias of a tracked file updates its entry in place, keeping its
+  // position; a new file is appended.
   void recordLoadedSource(
       QString path, QString prefix, QString plugin_id = {}, QString plugin_config_json = {},
       QString plugin_manifest_id = {});
@@ -696,82 +485,50 @@ class SessionManager : public QObject {
     loaded_sources_.clear();
   }
 
-  // Object eviction. DataEngine scalars are append-only, so dataset removal keeps
-  // them (catalog tombstone); ObjectStore canonical objects are heavy and
-  // evictable, so removal frees them outright.
+  // Dataset removal keeps DataEngine scalars (a catalog tombstone) but frees ObjectStore objects.
   void evictDatasetObjects(DatasetId dataset_id);
-  // Evicts a specific set of object topics (and their parsers), for trashing a
-  // selection of object-topic entries rather than a whole dataset.
   void evictObjectTopics(const std::vector<ObjectTopicId>& topic_ids);
   void clearAllObjects();
 
-  // REAL removal of a dataset's scalar storage from the engine, paired with
-  // invalidating its time-origin caches so globalTimeReference() re-bases to the
-  // surviving data. Use this instead of reaching into dataEngine().removeDataset
-  // directly — the latter leaves the memoized earliest-sample origin stale.
-  // Callers must first tear down readers/catalog items (removeDataset's
-  // invalidate-first contract) and evict the dataset's objects.
+  // Removes the dataset's scalar storage from the engine and invalidates its time-origin caches, so
+  // globalTimeReference() re-bases to the survivors. Use it, not dataEngine().removeDataset(), which leaves the
+  // memoized origin stale. Tear down readers and catalog items and evict the dataset's objects first.
   void removeDataset(DatasetId dataset_id);
 
-  // Recompute `dataset_id`'s pinned earliest-sample origin from its CURRENT data
-  // and emit the global reframe if the cross-dataset origin moved. FileLoader calls
-  // this at a load-completion seam: plugin ingest commits straight to DataEngine via
-  // the C-ABI write host (bypassing commitChunks/notifyIngest), so a finished short
-  // file whose data is earlier than any prior dataset would otherwise leave curve
-  // adapters on a stale display offset. No-op when "Use time offset" is off (the
-  // global reference is 0 regardless). Invalidates the dataset's min pin first so a
-  // shrunk/earlier range is picked up.
+  // Recomputes `dataset_id`'s earliest-sample pin from its current data and emits the global reframe if the origin
+  // moved. FileLoader calls it when a load completes: plugin ingest commits through the C-ABI write host, bypassing
+  // commitChunks/notifyIngest, so an earlier file would otherwise leave adapters on a stale offset. No-op when
+  // "Use time offset" is off.
   void refreshDatasetTimeReference(DatasetId dataset_id);
 
  signals:
-  // Emitted when topics receive new samples (commit/ingest path). `live` is
-  // true only for follow-live writers (streaming today). Cache-invalidation
-  // consumers can drop the trailing arg; auto-pan/auto-fit consumers branch
-  // on it.
+  // New samples on `ids`. `live` is true only for follow-live writers (streaming).
   void samplesIngested(QVector<PJ::TopicId> ids, bool live);
 
-  // Emitted by every notifyIngest, ahead of samplesIngested and also when that one is
-  // suppressed (no scalar ids, not live): object entries may have landed with no
-  // scalar topic to name them. Consumers of object topics listen here. It fires before a live
-  // ingest is stamped live (isLive) and before the on-demand recipes follow the live edge: a
-  // listener that needs either must defer its work.
+  // Emitted by every notifyIngest, before samplesIngested and also when that is suppressed (no scalar ids, not
+  // live): object entries may have landed with no scalar topic to name them. It fires before a live ingest is
+  // stamped live (isLive) and before the on-demand recipes follow the live edge: a listener needing either defers.
   void dataPublished();
 
-  // Emitted by replaceDataset just before a reload swaps a dataset's chunks in
-  // place. Bound plot adapters must synchronously drop cached chunk pointers; the
-  // DatasetId/TopicIds stay valid (unlike catalog removal), only chunks change.
+  // Emitted before a reload swaps a dataset's chunks in place. Bound adapters drop cached chunk pointers
+  // synchronously; the DatasetId and TopicIds stay valid.
   void datasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
-  // Emitted when the session's plot markers change (a producer republished or
-  // cleared a marker object topic), so plot overlays re-read the ObjectStore and
-  // replot. Carries no payload: an all_datasets generator republishes on every
-  // loaded dataset, so most emitters could only say "all" — listeners re-derive
-  // their rows via publishedMarkerScopes (MarkerTopics.h) instead.
+  // Plot markers changed. No payload (an all-datasets rule touches every dataset): listeners re-derive their rows
+  // through publishedMarkerScopes (MarkerTopics.h).
   void markersChanged();
 
-  // Emitted when the shared display offset changes (the "Use time offset" frame
-  // toggled, or a load moved the earliest sample). No topic changed, so plot
-  // widgets must drop EVERY curve adapter's cached offset and replot — a
-  // per-topic samplesIngested would skip them all. Connect with qOverload<>(...)
-  // (overloaded against the per-dataset signal below).
+  // The global display frame changed (toggle, or a load moved the earliest sample). No topic changed, so plots drop
+  // every curve adapter's cached offset and replot. Connect with qOverload<>(...).
   void displayOffsetChanged();
 
-  // Emitted when ONE dataset's display offset changes (a Timeline drag/align via
-  // setDisplayOffset). No data moved — only its display->raw mapping; consumers
-  // drop that dataset's offset caches and replot/re-snap without re-indexing
-  // samples. Connect with qOverload<PJ::DatasetId>(...).
+  // One dataset's display offset changed (setDisplayOffset); no data moved. Connect with qOverload<PJ::DatasetId>.
   void displayOffsetChanged(PJ::DatasetId dataset_id);
 
-  // Progressive bulk-import lifecycle: ingestBegan/Progressed/Ended carry the token.
-  // The terminal signal also carries the outcome. Fires on GUI thread. ingestProgressed
-  // fires AFTER the tick's samplesIngested publication, so an observer sees the data
-  // before the progress number that announced it.
+  // GUI thread. ingestProgressed fires after the tick's samplesIngested, so data precedes the number announcing it.
   void ingestBegan(PJ::IngestToken token, QString label, quint64 total, bool cancellable, bool discardable);
-  /// The user's stop was ACCEPTED and the producer has been asked to stop.
-  /// Emitted before the producer's handler runs, so the UI can acknowledge the
-  /// click immediately instead of waiting out a cooperative stop that may take
-  /// anywhere from milliseconds to seconds. `keep_partial` is what was asked
-  /// for. The terminal still arrives later as ingestEnded.
+  /// A stop was accepted; emitted before the producer's handler runs, so the UI acknowledges the click before a
+  /// cooperative stop completes. The terminal still arrives as ingestEnded.
   void ingestStopping(PJ::IngestToken token, bool keep_partial);
   void ingestProgressed(PJ::IngestToken token, quint64 current, quint64 total);
   void ingestEnded(PJ::IngestToken token, PJ::IngestOutcome outcome);
@@ -787,137 +544,101 @@ class SessionManager : public QObject {
   void seriesStateChanged(QString key);
   /// Object topics were retired (an on-demand install or removal): the catalog re-lists them.
   void objectTopicsChanged();
-  /// The source path registered for `dataset_id` was added, changed or removed (setDatasetSourcePath).
-  /// Identity resolution that compares paths (a saved object wire names one) gives a new answer, and
-  /// nothing else announces it: an asynchronous file load registers the path only when it commits.
+  /// The source path registered for `dataset_id` changed (setDatasetSourcePath). Nothing else announces it, and
+  /// path-comparing identity resolution (a saved object wire) gives a new answer: an asynchronous load registers the
+  /// path only when it commits.
   void datasetSourcePathChanged(PJ::DatasetId dataset_id);
 
  private:
-  // RefillGuard drives the transactional reload through this class's public
-  // detach/reattach + notify surface; it needs the private signal-emit helper
-  // below so the datasetAboutToBeReplaced emission stays inside SessionManager.
   friend class RefillGuard;
-  // Emit datasetAboutToBeReplaced from inside the class (a foreign object's
-  // signal must not be emitted from outside its own members under moc).
+  // A Qt signal is emitted only from the object's own members.
   void notifyDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
-  // The distinct datasets that own the given object topics (skipping the unset
-  // dataset id 0). Callers snapshot this set BEFORE removing the topics, so the
-  // affected datasets' pinned minima can be invalidated once their descriptors
-  // are gone. Shared by evictObjectTopics and clearAllObjects.
+  // Datasets owning `topic_ids` (dataset 0 skipped). Take it before removing the topics, whose descriptors are needed.
   [[nodiscard]] std::unordered_set<DatasetId> datasetsOwningObjectTopics(
       const std::vector<ObjectTopicId>& topic_ids) const;
 
-  // [min, max] raw-ns bounds across one dataset's scalar + object topics, or
-  // nullopt when it holds no data. The one time-bounds union loop.
   [[nodiscard]] std::optional<std::pair<Timestamp, Timestamp>> datasetRawBounds(DatasetId dataset_id) const;
 
-  // Earliest raw-ns timestamp of one dataset (0 when empty), pinned in
-  // dataset_min_cache_. The per-dataset shift "Use time offset" subtracts it.
-  // The value may move earlier when older/out-of-order data arrives, but does
-  // not move later just because streaming retention evicted old rows.
+  // Earliest raw timestamp of one dataset (0 when empty), pinned in dataset_min_cache_. Moves earlier with older
+  // data, never later because retention evicted rows.
   [[nodiscard]] Timestamp datasetMinTimestamp(DatasetId dataset_id) const;
   [[nodiscard]] Timestamp datasetDomainDisplayOffset(DatasetId dataset_id) const;
   [[nodiscard]] Timestamp rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const;
   /// Returns the datasets of `ids`.
   std::unordered_set<DatasetId> refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
   void invalidateDatasetMinTimestamp(DatasetId dataset_id) const;
-  // Emits the no-arg displayOffsetChanged signal exactly when the numerical
-  // global reference moved since consumers were last notified. Transactional
-  // replace/refill/eviction paths invalidate the origin cache before mutating
-  // data, so comparing at this final seam is more reliable than retaining a
-  // local "old" value across the mutation.
+  // Emits the no-arg displayOffsetChanged exactly when the global reference moved since the last emission.
   void notifyGlobalTimeReferenceIfChanged();
 
   struct ObjectParserSlot {
-    // shared_ptr (not unique_ptr) so a display source can hold the handle alive
-    // past topic removal / app teardown — keeping the parser instance and its
-    // plugin DSO mapped until that source's decode worker is joined.
+    // shared_ptrs so a decode worker or an in-flight parse keeps the parser, its DSO and its lock alive past topic
+    // removal and app teardown.
     std::shared_ptr<MessageParserHandle> handle;
-    // shared_ptr so consumers can keep the mutex alive past topic removal —
-    // the lock guards their in-flight parseObject call to completion.
     std::shared_ptr<std::mutex> mutex;
   };
 
-  // Returns the slot for `id` iff it holds a live parser handle, else nullptr.
-  // Collapses the find + null + valid() guard shared by the parser* accessors.
-  // Precondition: the caller already holds object_parsers_mutex_ (shared is
-  // enough). Does NOT lock itself — so locking accessors never recurse into the
-  // mutex, and the returned pointer stays valid only while that lock is held.
+  // The slot for `id` iff it holds a live handle. The caller holds object_parsers_mutex_; the pointer is valid only
+  // while it does.
   [[nodiscard]] const ObjectParserSlot* findValidParserSlotLocked(ObjectTopicId id) const;
 
-  // One object topic's parser registration as it stood at snapshot time. An
-  // EMPTY `slot` records "no parser was registered for this id", which restoring
-  // reproduces as an erase — otherwise a rollback would leave a binding the
+  // An empty `slot` means no parser was registered; restoring it erases, or a rollback would leave a binding the
   // restored bytes were never written under.
   struct ObjectParserSnapshotEntry {
     uint32_t topic_id = 0;
     ObjectParserSlot slot;
   };
 
-  // Shared-ownership copy of the parser slots currently registered for
-  // `topic_ids`, one entry per id in order. Copying the slot's shared_ptrs is
-  // what makes the snapshot restorable: it keeps the parser instance AND its
-  // plugin DSO mapped even after the map entry is replaced, so nothing can be
-  // torn down out from under a pending restore. Takes object_parsers_mutex_
-  // shared.
+  // Shares the slots registered for `topic_ids`, so a pending restore keeps parser and DSO alive after the map entry
+  // is replaced. Takes object_parsers_mutex_ shared.
   [[nodiscard]] std::vector<ObjectParserSnapshotEntry> snapshotObjectTopicParsers(
       const std::vector<ObjectTopicId>& topic_ids) const;
 
-  // Reinstall a snapshotObjectTopicParsers() result, discarding whatever was
-  // registered for those ids since. Slots displaced by the restore are destroyed
-  // AFTER the lock releases — a slot dtor can run plugin teardown (dlclose),
-  // which must never happen under object_parsers_mutex_.
+  // Reinstalls a snapshot. Displaced slots are destroyed after the lock is released (dlclose under
+  // object_parsers_mutex_ would run plugin teardown under it).
   void restoreObjectTopicParsers(std::vector<ObjectParserSnapshotEntry> snapshot);
 
   struct ActiveIngestEntry {
-    // The live token id for this dataset. A call carrying any other id names a
-    // superseded run and is ignored (see liveEntry).
+    // Any other id names a superseded run.
     IngestId id = 0;
     QString label;
     quint64 current = 0;
-    quint64 total = 0;  // 0 = size unknown (indeterminate progress)
+    quint64 total = 0;  // 0 = size unknown
     bool cancellable = false;
     bool discardable = true;
     bool cancel_requested = false;
-    // Wall-clock ms when the user asked to stop, or 0. Only for the
-    // pj.runtime.ingest.cancel diagnostic: a cooperative stop is only observed
-    // by the producer at its next chunk boundary, so the gap between this and
-    // the terminal IS the delay the user feels after clicking.
+    // Wall-clock ms of the stop request, or 0; the pj.runtime.ingest.cancel diagnostic reports the delay until the
+    // terminal (a cooperative stop is seen only at the producer's next chunk boundary).
     qint64 cancel_requested_ms = 0;
     IngestCancelFn on_cancel;
   };
 
-  // The dataset's live ingest, or null when `token` names none: an id that is
-  // not the dataset's current one belongs to a superseded run, and a token of 0
-  // names nothing at all. THE staleness rule — updateIngest, endIngest and
-  // requestCancel all ask here rather than re-deriving it.
+  // The staleness rule: null when `token` is 0 or not the dataset's current id. updateIngest, endIngest and
+  // requestCancel all ask here.
   [[nodiscard]] ActiveIngestEntry* liveEntry(IngestToken token);
 
-  /// Before a meaning-changing change of the dataset's storage: a new epoch (a run in flight is never published), and
-  /// the on-demand nodes suspended (results dropped, runs cancelled, requests held) and the dataset retired in the
-  /// video source. Pair each with `resumeOnDemandLater`.
+  /// Before a meaning-changing change of the dataset's storage: a new epoch (a run in flight is never published),
+  /// the on-demand nodes suspended (results dropped, runs cancelled, requests held), the dataset retired in the video
+  /// source. Pair each with `resumeOnDemandLater`.
   void suspendOnDemand(DatasetId dataset_id);
   /// Ends one `suspendOnDemand` from the event loop, so the requests it serves see the storage, the catalog and
   /// the TF state their caller rebuilds after the change, with no event loop in between.
   void resumeOnDemandLater(DatasetId dataset_id);
-  /// Installs the on-demand recipes of the merged datasets (`shifts`: each dataset's raw shift, the anchor's 0) again,
-  /// producers before readers, from one snapshot, so they re-bind on `anchor`: an input qualified with a consumed
-  /// dataset resolves there; a finding's pinned time and a requested node's cursor move by the shift. One that no
-  /// longer resolves is removed, with a warning.
+  /// Re-installs the merged datasets' on-demand recipes (`shifts`: each dataset's raw shift, the anchor's 0),
+  /// producers first, from one snapshot, so they bind on `anchor`; a finding's pinned time and a requested node's
+  /// cursor move by the shift. One that no longer resolves is removed, with a warning.
   void rebindOnDemandAfterMerge(DatasetId anchor, const std::unordered_map<DatasetId, Timestamp>& shifts);
-  /// The dataset's TF for an on-demand run: while the dataset ingests (a live ingest, or a live announcement within
-  /// the last `kTfSnapshotPeriod`: a stream never begins an ingest), the snapshot of at most `kTfSnapshotPeriod` ago
-  /// (ARCHITECTURE §19); null without a TransformService.
+  /// The dataset's TF for an on-demand run. While it ingests (a live ingest, or a live announcement within
+  /// `kTfSnapshotPeriod`: a stream never begins an ingest) the held snapshot, at most `kTfSnapshotPeriod` old, so TF
+  /// writes do not copy the growing state per request. Null without a TransformService.
   [[nodiscard]] std::shared_ptr<const pj::tf::TransformSnapshot> onDemandTf(DatasetId dataset_id);
   /// The revision `onDemandTf` would answer now, taking no snapshot.
   [[nodiscard]] uint64_t onDemandTfRevision(DatasetId dataset_id);
   /// Whether `onDemandTf` brakes the dataset's snapshots now.
   [[nodiscard]] bool tfIngesting(DatasetId dataset_id) const;
 
-  /// (topic, column) of an on-demand scalar input: the scalar topic named `name`, whose first column it reads, else
-  /// the series the injected lookup names (`topic/field`), as a transform input resolves. nullopt before the lookup
-  /// is set.
+  /// (topic, column) of an on-demand scalar input: the scalar topic named `name` (its first column), else the series
+  /// the injected lookup names (`topic/field`). nullopt before the lookup is set.
   [[nodiscard]] std::optional<std::pair<TopicId, std::size_t>> scalarInput(
       DatasetId dataset, const std::string& name) const;
 
@@ -926,49 +647,30 @@ class SessionManager : public QObject {
   std::shared_ptr<ObjectIngestTapRegistry> ingest_taps_;
   std::shared_ptr<ResidentPayloadPool> resident_payload_pool_;
   CurveColorRegistry curve_color_registry_;
-  // "Use time offset" frame state. Neutral default (off); the app shell drives
-  // the user-facing default (on, PJ3 parity) through setUseTimeOffset.
   bool use_time_offset_ = false;
-  // Per-dataset earliest-stamp pin for displayOffset() (read per playback tick +
-  // per catalog item). Normal ingest can only lower it; dataset replacement
-  // invalidates it so reloads rebase to the new contents.
+  // Per-dataset earliest-stamp pin for displayOffset(). Ingest only lowers it; replacement invalidates it.
   mutable std::unordered_map<DatasetId, Timestamp> dataset_min_cache_;
-  // Earliest raw stamp across ALL datasets, memoized for globalTimeReference().
-  // Independent of the toggle (it's a raw-data fact), so it survives a
-  // setUseTimeOffset but is cleared on every commit/ingest like the per-dataset
-  // memo. nullopt = not yet computed; 0 = computed, no data.
-  //
-  // INVARIANT: the globalTimeReference() recompute TRUSTS the per-dataset pins
-  // (dataset_min_cache_) instead of rescanning raw bounds, so anything that can
-  // RAISE a dataset's earliest sample (removeDataset / evictObjectTopics /
-  // clearAllObjects / refill / refreshDatasetTimeReference) MUST invalidate that
-  // dataset's pin AND reset this global memo — invalidateDatasetMinTimestamp does
-  // both. Ingest can only LOWER a pin (rememberDatasetMinTimestamp never raises
-  // it), so the ingest path only resets this memo. Skipping either reset on a
-  // raise path would leave the recompute reading a stale-low origin.
+  // Earliest raw stamp across all datasets, for globalTimeReference(); nullopt = not computed, 0 = no data.
+  // Independent of the toggle; reset on every commit and ingest.
+  // The recompute trusts the per-dataset pins instead of rescanning, so every path that can raise a dataset's
+  // earliest sample (removeDataset, evictObjectTopics, clearAllObjects, refill, refreshDatasetTimeReference) calls
+  // invalidateDatasetMinTimestamp, which drops the pin and this memo. Ingest only lowers pins
+  // (rememberDatasetMinTimestamp never raises), so it only resets the memo. A missed reset leaves a stale-low origin.
   mutable std::optional<Timestamp> global_min_cache_;
-  // The globalTimeReference() value at the most recent displayOffsetChanged
-  // emission (from setUseTimeOffset or notifyGlobalTimeReferenceIfChanged), so
-  // the latter suppresses a redundant frame-change signal when the origin is
-  // unmoved. 0 matches the neutral "no data / offset off" origin.
+  // globalTimeReference() at the last displayOffsetChanged(), to suppress a redundant one.
   Timestamp last_notified_global_reference_ = 0;
-  // Owns the session's filter/transform engine; constructed in the ctor body
-  // after data_engine_ is alive (it binds an IncrementalEngine to data_engine_).
+  // Built in the constructor body, after data_engine_ (its IncrementalEngine binds to it).
   std::unique_ptr<DataProcessorService> processor_service_;
-  // The memory the derived-data engines' runs on the pool hold at once, one line of
-  // waiters for both. Declared before the pool so it outlives it: a run still on the
-  // pool holds its reservation.
+  // Declared before the pool so it outlives it: a run still on the pool holds its reservation.
   std::unique_ptr<InFlightBudget> in_flight_budget_;
-  // The workers the derived-data engines run scripts on. Declared before the engines
-  // so it is destroyed after them: each engine cancels its runs, then the pool joins.
+  // Declared before the engines so it is destroyed after them: each engine cancels its runs, then the pool joins.
   std::unique_ptr<EnginePool> engine_pool_;
   // After the pool and the budget: destroyed first, its scheduler cancelling the runs the pool then joins.
   std::unique_ptr<OnDemandService> on_demand_;
-  /// `setSeriesVisibleStart`'s, on the display axis: an offset change moves the raw instant the series receive.
+  /// On the display axis: an offset change moves the raw instant the series receive.
   std::map<DatasetId, DisplaySeconds> series_visible_start_;
-  /// Gives the series of `series_visible_start_`'s datasets their raw visible start under the current offsets.
   void pushSeriesVisibleStarts();
-  // Each dataset's epoch, moved by suspendOnDemand; a result staged under another is never current.
+  // Moved by suspendOnDemand; a result staged under another epoch is never current.
   std::unordered_map<DatasetId, uint64_t> epochs_;
   ScalarSeriesLookup scalar_lookup_;
   // Consumed dataset -> anchor. A consumed dataset stays registered, so its source keeps qualifying on-demand inputs,
@@ -977,23 +679,18 @@ class SessionManager : public QObject {
   QPointer<TransformService> transform_service_;
   std::shared_ptr<const scripting::IImageDecoder> image_decoder_;
   std::shared_ptr<scripting::IVideoFrameSource> video_source_;
-  // How long a TF snapshot serves on-demand runs while its dataset ingests: the brake rate.
+  // The brake: how long one TF snapshot serves on-demand runs while its dataset ingests.
   static constexpr std::chrono::milliseconds kTfSnapshotPeriod{500};
   std::function<std::chrono::steady_clock::time_point()> tf_clock_ = [] { return std::chrono::steady_clock::now(); };
   struct HeldTf {
     std::shared_ptr<const pj::tf::TransformSnapshot> snapshot;
     std::chrono::steady_clock::time_point taken;
   };
-  // The snapshot onDemandTf hands out per dataset while its ingest is live.
   std::unordered_map<DatasetId, HeldTf> held_tf_;
-  // When each dataset last had a live announcement (notifyIngest).
   std::unordered_map<DatasetId, std::chrono::steady_clock::time_point> live_at_;
-  // Owns the session's whole-series marker generators (host-driven PlotMarkers);
-  // constructed in the ctor after object_store_/data_engine_. Its series resolver
-  // is injected by AppSession once the catalog exists (setResolver).
+  // Built after object_store_ and data_engine_.
   std::unique_ptr<BatchEngine> batch_engine_;
-  // What recomputeMarkersForChanged last saw of a topic: a topic whose stamp did not
-  // move is not reported as a changed input.
+  // What recomputeMarkersForChanged last saw of each topic.
   struct MarkerInputStamp {
     Timestamp time_range_max = 0;
     uint64_t total_row_count = 0;
@@ -1002,65 +699,36 @@ class SessionManager : public QObject {
     bool operator==(const MarkerInputStamp&) const = default;
   };
   std::unordered_map<TopicId, MarkerInputStamp> marker_input_stamps_;
-  // Per-object-topic parser slots. WRITTEN from the streaming worker thread (the
-  // registrar callback fires when a plugin discovers/replaces a topic mid-stream)
-  // and READ from the GUI thread on every render tick (each scene3D layer +
-  // TransformService resolves its binding per use). Guarded by
-  // object_parsers_mutex_: shared on the parser* accessors, exclusive on
-  // register/evict/clear. Slot replacement keeps the keepalive shared_ptr
-  // semantics — a replaced slot is destroyed OUTSIDE the lock (its dtor may run
-  // plugin teardown / dlclose), and any ParserBinding snapshot keeps the replaced
-  // parser alive for the consumer that captured it.
+  // Written from streaming worker threads (a plugin discovers or replaces a topic mid-stream) and read on the GUI
+  // thread every render tick: guarded by object_parsers_mutex_ (shared in the parser* accessors, exclusive in
+  // register, evict and clear). A replaced slot is destroyed outside the lock (its destructor may dlclose).
   mutable std::shared_mutex object_parsers_mutex_;
   std::unordered_map<uint32_t, ObjectParserSlot> object_topic_parsers_;
-  // FileLoader-owned portable identity, centralized here so plots, processors,
-  // and both scene families resolve the same (id, source, full-path) contract.
-  // Paths are stored normalized (see setDatasetSourcePath).
+  // The portable identity FileLoader registers; plots, processors and both scene families resolve against it.
   std::unordered_map<DatasetId, QString> dataset_source_paths_;
-  // Dataset-keyed provenance from provider plugins (attachSourceRecord) —
-  // sibling registry to dataset_source_paths_ with the same lifecycle: erased
-  // on removeDataset, invalidated for every contributor of a successful
-  // destructive merge (the anchor included).
+  // These three registries and dataset_resources_ share one lifecycle: erased on removeDataset, invalidated for
+  // every contributor of a destructive merge (anchor included).
   std::unordered_map<DatasetId, SourceRecord> dataset_source_records_;
-  // Loader-metadata documents (setDatasetMetadata) — third sibling registry,
-  // same lifecycle as the two above.
   std::unordered_map<DatasetId, DatasetMetadata> dataset_metadata_;
-  // Opaque dataset-lifetime resources (pinDatasetResource) — released on
-  // removeDataset and for every contributor of a destructive merge, exactly
-  // like the records above.
   std::unordered_map<DatasetId, std::vector<std::shared_ptr<void>>> dataset_resources_;
-  // Datasets currently receiving a progressive import, at most one each: a
-  // dataset IS the identity of its live ingest, and the entry carries the token
-  // id that owns it. Lifecycle: inserted by beginIngest (id minted monotonic),
-  // erased by endIngest or by the next beginIngest on the same dataset, which
-  // supersedes it. Keying by dataset is what makes a late call from a
-  // superseded run a lookup miss rather than a stale entry to trip over.
+  // At most one live ingest per dataset, carrying the id of the token that owns it; a call from a superseded run is a
+  // lookup miss.
   std::unordered_map<DatasetId, ActiveIngestEntry> active_ingests_;
-  // Monotonically increasing ingest id source (never 0).
+  // Never 0.
   IngestId next_ingest_id_ = 1;
   std::vector<LoadedSource> loaded_sources_;
 };
 
-/// RAII transaction wrapping a "replacing reload" (see SessionManager::beginRefill).
-/// Construction emits datasetAboutToBeReplaced, then DETACHES the dataset's prior data
-/// into a side snapshot instead of freeing it, leaving every TopicId/ObjectTopicId
-/// registered + empty so a progressive refill writes back into the same ids. Default
-/// outcome is ROLLBACK: a guard destroyed without commit()
-/// restores the exact prior scalar + object data AND the parser each prior object
-/// topic was bound to (only for topics the dataset still owns — a topic destructively
-/// removed mid-refill stays unbound, since its raw id may already be reused), retires/
-/// removes topics the failed refill added, evicts parsers for ADDED object topics, and
-/// re-notifies the UI.
-/// commit() keeps the refilled data (frees the snapshot; the dtor then no-ops).
+/// The transaction of a replacing reload (SessionManager::beginRefill). Construction emits datasetAboutToBeReplaced,
+/// then detaches the dataset's prior data into a snapshot, leaving every TopicId/ObjectTopicId registered and empty
+/// so a progressive refill writes back into the same ids. Destroyed without commit() it rolls back: the exact prior
+/// scalar and object data, and the parser each prior object topic was bound to (only for topics the dataset still
+/// owns: a topic removed mid-refill stays unbound, its raw id may be reused); topics the refill added are retired or
+/// removed with their parsers, and the UI is re-notified. The parsers matter: a replacement load's parser lands in the
+/// same slot, so without them a rolled-back topic would decode prior bytes with the replacement's schema.
 ///
-/// Restoring the parser bindings is not cosmetic: reusing the stable ObjectTopicId
-/// means a replacement load's parser lands in the SAME slot, so without this a
-/// rolled-back topic would serve prior-era bytes through the replacement's schema.
-///
-/// GUI-thread only; runs NO event loop between construction and commit/rollback.
-/// Move-only (held in std::optional<RefillGuard> by FileLoader's LoadContext). Does
-/// NOT touch the per-dataset TF buffer — FileLoader owns transform_service_ and
-/// rebuilds TF after rollback from the restored ObjectStore.
+/// GUI thread; no event loop between construction and commit/rollback. Does not touch the dataset's TF buffer:
+/// FileLoader owns the TransformService and rebuilds TF after a rollback from the restored ObjectStore.
 class RefillGuard {
  public:
   RefillGuard(SessionManager& session, DatasetId dataset_id);
@@ -1070,38 +738,30 @@ class RefillGuard {
   RefillGuard(const RefillGuard&) = delete;
   RefillGuard& operator=(const RefillGuard&) = delete;
 
-  /// Keep the refilled data: drop the snapshot so the destructor no longer rolls back.
+  /// Keeps the refilled data; the destructor then does nothing.
   void commit();
-  /// Replay processor outputs after the final raw flush and before vanished-topic
-  /// pruning, then re-run the dataset's marker rules over them (the replay does not
-  /// fire the outputs-changed sink: the rules run once, after it). Failure leaves
-  /// the transaction live for destructor rollback.
+  /// Replays processor outputs after the final raw flush and before pruneVanishedTopics, then re-runs the dataset's
+  /// marker rules once (the replay does not fire the outputs-changed sink). On failure the transaction stays live for
+  /// the destructor's rollback.
   [[nodiscard]] Status recomputeProcessors();
-  /// Retire prior topics that VANISHED from the reloaded file (codex #2): a prior
-  /// scalar/object topic still empty after the refill is one the new file no longer
-  /// has (beginRefill emptied every prior topic; the refill writes back only the
-  /// ones still present), so retire the empty scalar topics and remove the empty
-  /// object topics to avoid a ghost entry lingering in the catalog. Call ONLY after
-  /// a COMPLETE refill (an unreached topic on a partial/cancelled load is not
-  /// "vanished") and BEFORE commit() (which frees the prior-topic snapshots this
-  /// reads). No-op when nothing was detached. A prior topic that the new file still
-  /// declares but with zero rows is also retired — a dataless topic has no curve.
+  /// Retires prior topics the reloaded file no longer has: a prior topic still empty after the refill (every prior
+  /// topic was emptied; the refill writes back only those present), including one declared with zero rows. Call only
+  /// after a complete refill (on a partial load an unreached topic has not vanished) and before commit(), which frees
+  /// the snapshots this reads.
   void pruneVanishedTopics();
-  /// Held-aside scalar (approximate) + object (exact) bytes — observability for the
-  /// transient ~1x memory overshoot. 0 when nothing was detached or after commit().
+  /// Bytes held aside (scalar approximate, object exact); 0 when nothing was detached or after commit().
   [[nodiscard]] std::size_t snapshotBytes() const noexcept;
 
  private:
   void rollback();
 
-  SessionManager* session_ = nullptr;  // nulled after a move so the moved-from dtor no-ops
+  SessionManager* session_ = nullptr;  // null after a move, so the moved-from destructor does nothing
   DatasetId dataset_id_ = 0;
   DataEngine::DatasetChunkSnapshot scalar_snapshot_;
   ObjectStore::ObjectDatasetSnapshot object_snapshot_;
   std::vector<ObjectTopicId> prior_object_topic_ids_;
-  // Shared ownership of the parser each prior object topic was bound to, so a
-  // replacement that re-registers the stable id cannot destroy the parser this
-  // transaction may still have to reinstate. Dropped on commit().
+  // Keeps the parser of each prior object topic alive, so a replacement re-registering the id cannot destroy one this
+  // transaction may reinstate. Dropped on commit().
   std::vector<SessionManager::ObjectParserSnapshotEntry> object_parser_snapshot_;
   std::vector<TopicId> replaced_source_topic_ids_;
   std::unordered_set<TopicId> processor_output_topic_ids_;
@@ -1110,7 +770,6 @@ class RefillGuard {
 
 }  // namespace PJ
 
-// The ingest signals carry these by value. Registration is what lets them cross
-// a queued connection and be read back out of a QVariant (QSignalSpy does both).
+// Registered so the ingest signals cross queued connections and QVariant (QSignalSpy).
 Q_DECLARE_METATYPE(PJ::IngestToken)
 Q_DECLARE_METATYPE(PJ::IngestOutcome)

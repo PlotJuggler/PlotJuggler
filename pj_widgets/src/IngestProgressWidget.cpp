@@ -15,15 +15,13 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 IngestProgressWidget::IngestProgressWidget(QWidget* parent) : QWidget(parent) {
-  // Hug the content (bar + buttons). Without this the widget expands to fill
-  // whatever container hosts it (e.g. the title-bar center region between its
-  // spacers); since the bar is fixed-width with no stretch item, that surplus
-  // becomes dead space that stretches the strip far past its ~200px of content.
-  // Maximum still lets it shrink if the window gets narrow.
+  // Hugs the content (bar and buttons). Otherwise the widget expands to fill its container (the title-bar centre region
+  // between its spacers), and since the bar is fixed-width with no stretch item the surplus becomes dead space
+  // stretching the strip far past its ~200px of content. Maximum still lets it shrink in a narrow window.
   setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
 
   auto* layout = new QHBoxLayout(this);
-  // The strip is the bar + buttons, with only the canonical inter-control gap.
+  // The strip is the bar and buttons, with only the canonical inter-control gap.
   layout->setContentsMargins(
       theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
       theme::space(theme::Space::None));

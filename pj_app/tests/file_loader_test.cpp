@@ -1,15 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// End-to-end tests for FileLoader. Single-instance loads run progressively on a
-// worker thread (loadFile enqueues and returns; completion is async via
-// fileLoaded/fileLoadFailed), and a same-file reload REPLACES the dataset's data
-// in place (stable DatasetId/TopicIds, no duplicate topics, no re-append) via
-// beginRefill's detach + the write-host's by-name topic reuse — NOT a staging
-// swap. Drives the real plugin pipeline headlessly: the SDK's
-// mock_file_source_plugin (claims ".mock", writes topic "mock/file_data" with
-// 3 rows at t=100/200/300) loaded through ExtensionCatalogService, with
-// skip-dialog LoadHints standing in for the data-source dialog.
+// End-to-end tests for FileLoader against the real plugin pipeline, headless: the SDK's mock_file_source_plugin
+// (claims ".mock", writes topic "mock/file_data" with 3 rows at t=100/200/300) loaded through
+// ExtensionCatalogService, with skip-dialog LoadHints standing in for the data-source dialog. Single-instance loads
+// run on a worker thread (loadFile enqueues and returns; completion is async via fileLoaded/fileLoadFailed). A
+// same-file reload REPLACES the dataset in place (stable DatasetId/TopicIds, no duplicate topics) through
+// beginRefill's detach and the write host's by-name topic reuse, not a staging swap.
 
 #include <gtest/gtest.h>
 
@@ -77,8 +74,8 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-// Read a probe file's newline-separated markers (see dialog_probe_source.cpp /
-// msgbox_mock_source.cpp), skipping blank lines. Missing file → empty vector.
+// Reads a probe file's newline-separated markers (see dialog_probe_source.cpp / msgbox_mock_source.cpp), skipping
+// blank lines; empty when the file is missing.
 std::vector<std::string> readProbeLines(const QString& path) {
   std::vector<std::string> out;
   QFile file(path);
@@ -94,9 +91,8 @@ std::vector<std::string> readProbeLines(const QString& path) {
   return out;
 }
 
-// Reuse the real mock source implementation behind a second catalog identity.
-// The copied vtable has static storage because registerStaticDataSource keeps a
-// non-owning pointer to it for the catalog lifetime.
+// Reuses the real mock source implementation behind a second catalog identity. The copied vtable has static storage
+// because registerStaticDataSource keeps a non-owning pointer to it for the catalog lifetime.
 const PJ_data_source_vtable_t* alternateMockSourceVtable(const PJ_data_source_vtable_t* source) {
   static PJ_data_source_vtable_t alternate;
   alternate = *source;
@@ -105,11 +101,9 @@ const PJ_data_source_vtable_t* alternateMockSourceVtable(const PJ_data_source_vt
   return &alternate;
 }
 
-// Decoy whose MANIFEST ID equals the real mock source's DISPLAY NAME. With the
-// tiered matcher (manifest id across ALL candidates first, display name only
-// as a fallback), an expected id of "Mock File Source" must select THIS plugin
-// by its manifest id even though the real mock — an earlier extension match —
-// carries that exact string as its display name.
+// Decoy whose MANIFEST ID equals the real mock source's DISPLAY NAME: with the tiered matcher (manifest id across ALL
+// candidates first, display name only as a fallback), an expected id of "Mock File Source" must select THIS plugin
+// even though the real mock, an earlier extension match, carries that string as its display name.
 const PJ_data_source_vtable_t* decoyWithIdEqualToMockDisplayName(const PJ_data_source_vtable_t* source) {
   static PJ_data_source_vtable_t decoy;
   decoy = *source;
@@ -118,9 +112,8 @@ const PJ_data_source_vtable_t* decoyWithIdEqualToMockDisplayName(const PJ_data_s
   return &decoy;
 }
 
-// In-process DataSource used to put fanout cancellation at an exact point:
-// entry 1 has completed, entry 2 has appended one row, and entry 3 has not
-// started. Keeping the probe in this executable makes the GUI/worker handoff a
+// In-process DataSource that puts fan-out cancellation at an exact point: entry 1 has completed, entry 2 has
+// appended one row, entry 3 has not started. Living in this executable makes the GUI/worker handoff a
 // condition-variable rendezvous instead of a timing-dependent plugin delay.
 struct FanoutProbeCall {
   std::string slot;
@@ -167,9 +160,8 @@ void releaseFanoutProbeCancelEntry() {
   state.release_cv.notify_all();
 }
 
-// CONSUME-ONCE: the release is taken by the entry that observes it, so a fan-out
-// with several "cancel" entries parks at each one instead of running the rest
-// past a latch a previous entry already opened.
+// Consume-once: the entry that observes the release takes it, so a fan-out with several "cancel" entries parks at
+// each one instead of running the rest past a latch an earlier entry opened.
 bool waitForFanoutProbeCancelRelease() {
   FanoutProbeState& state = fanoutProbeState();
   std::unique_lock lock(state.mutex);
@@ -213,10 +205,8 @@ std::vector<std::string> fanoutProbeControlCallsOffMain() {
   const std::lock_guard lock(state.mutex);
   std::vector<std::string> out;
   for (const FanoutProbeCall& call : state.calls) {
-    // Finite-import start() is a separate ABI decision: its current blocking
-    // shape cannot simply move to the GUI thread. This assertion covers the
-    // newly shifted control slots that the published SDK unambiguously marks
-    // main-thread; start's contract must be reconciled independently.
+    // start() is excluded (a finite import's start() blocks, so it runs on the worker); the other control slots are
+    // main-thread in the SDK.
     if (call.slot == "start" || call.thread == state.main_thread) {
       continue;
     }
@@ -286,9 +276,8 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
       return PJ::unexpected(std::move(reason));
     };
 
-    // "nostart" never announces a start: the plugin ABI's progress_start and
-    // progress_update are independent slots and the host synthesizes no start,
-    // so this is a real producer shape the host must survive.
+    // "nostart" never announces a start: progress_start and progress_update are independent ABI slots and the host
+    // synthesizes no start, so this is a real producer shape the host must survive.
     const std::string title = "fanout-probe:" + suffix_;
     if (suffix_ != "nostart") {
       if (auto status = runtimeHost().progressStart(title, 3, true); !status) {
@@ -296,9 +285,8 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
       }
     }
 
-    // Deterministic terminal-path seam: unlike the mock source's fail_start
-    // option, this failure happens after progressStart, so FileLoader has
-    // already minted an ingest token that must be ended with kFailed.
+    // Unlike the mock source's fail_start option, this failure happens after progressStart, so FileLoader has already
+    // minted an ingest token that must end with kFailed.
     if (suffix_ == "fail") {
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kError, "probe error");
       return fail("configured failure after progress start");
@@ -327,10 +315,9 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
       if (!waitForFanoutProbeCancelRelease()) {
         return fail("timed out waiting for the GUI cancellation rendezvous");
       }
-      // Match real finite-import plugins: cancellation is reported as a failed
-      // start after the host's progress callback returns false. FileLoader must
-      // inspect its cancellation mode before classifying that status as a
-      // normal plugin failure.
+      // Match real finite-import plugins: cancellation is reported as a failed start after the host's progress callback
+      // returns false. FileLoader must check its cancellation mode before classifying that status as a plugin
+      // failure.
       if (!runtimeHost().progressUpdate(1)) {
         return fail("cancelled via progress");
       }
@@ -372,9 +359,8 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
   PJ::DataSourceState state_ = PJ::DataSourceState::kIdle;
 };
 
-// One static vtable per in-process test source: registerStaticDataSource keeps
-// a non-owning pointer for the catalog lifetime, and the create hook must be a
-// capture-less noexcept factory. One manifest per Source type — the first
+// One static vtable per in-process test source: registerStaticDataSource keeps a non-owning pointer for the catalog
+// lifetime, and the create hook must be a capture-less noexcept factory. One manifest per Source type: the first
 // call's manifest wins (each wrapper below passes a single literal).
 template <typename Source>
 const PJ_data_source_vtable_t* staticSourceVtable(const char* manifest_json) {
@@ -396,11 +382,9 @@ const PJ_data_source_vtable_t* fanoutProbeVtable() {
       R"("file_extensions":[".fanoutprobe"]})");
 }
 
-// Review finding 4: a source whose loadConfig REJECTS one specific preset
-// (marker "poison") but accepts everything else. Distinguishes the strict
-// DialogPolicy::kNever contract (rejected preset -> the load FAILS) from the
-// interactive fallback (rejected preset -> silently retry with the QSettings
-// pre-fill, which this plugin accepts, and the load would SUCCEED).
+// A source whose loadConfig REJECTS one specific preset (marker "poison") but accepts everything else. Separates the
+// strict DialogPolicy::kNever contract (rejected preset -> the load FAILS) from the interactive fallback (rejected
+// preset -> silently retry with the QSettings pre-fill, which this plugin accepts, so the load would SUCCEED).
 class RejectingPresetSource final : public PJ::DataSourcePluginBase {
  public:
   uint64_t capabilities() const override {
@@ -453,11 +437,9 @@ const PJ_data_source_vtable_t* rejectingPresetVtable() {
       R"("file_extensions":[".cfgreject"]})");
 }
 
-// In-process DataSource whose CONTENT comes from its config, and which can park
-// the worker once it has written (and flushed) that content. Telling a
-// transactional rollback from a commit needs both: a replacement that differs
-// from what it replaced — identical rows read the same either way — and a
-// shutdown that lands while the replacement is genuinely mid-flight.
+// In-process DataSource whose CONTENT comes from its config and which can park the worker after writing and flushing
+// it. Telling a transactional rollback from a commit needs both: a replacement that differs from what it replaced
+// (identical rows read the same either way) and a shutdown that lands while the replacement is genuinely mid-flight.
 struct ReloadProbeState {
   std::mutex mutex;
   bool parked = false;
@@ -528,9 +510,8 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
         return fail(status.error());
       }
       if (park_ && index == rows_) {
-        // FileLoader throttles worker-side flushes (50 ms). Sleep past it so the
-        // progressUpdate below really commits these rows into the live engine —
-        // the partial replacement the shutdown then has to undo.
+        // FileLoader throttles worker-side flushes (50 ms): sleep past it so the progressUpdate below commits these
+        // rows into the live engine, the partial replacement the shutdown then has to undo.
         std::this_thread::sleep_for(std::chrono::milliseconds(80));
       }
       if (!runtimeHost().progressUpdate(static_cast<uint64_t>(index))) {
@@ -544,8 +525,7 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
         const std::lock_guard lock(state.mutex);
         state.parked = true;
       }
-      // Hold the worker on the real running-worker path: joinForShutdown's
-      // requestStop() is what releases it.
+      // Hold the worker on the real running-worker path: joinForShutdown's requestStop() releases it.
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
       while (!runtimeHost().isStopRequested() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -585,8 +565,8 @@ const PJ_data_source_vtable_t* reloadProbeVtable() {
       R"("file_extensions":[".reloadprobe"]})");
 }
 
-// Records every loadFinished emission so tests can assert exactly-once and the
-// terminal payload (outcome / effective path / dataset ids) per ticket.
+// Records every loadFinished emission so tests can assert exactly-once and the terminal payload (outcome / effective
+// path / dataset ids) per ticket.
 struct LoadFinishedRecorder {
   struct Event {
     quint64 ticket;
@@ -622,9 +602,8 @@ struct LoadFinishedRecorder {
   QMetaObject::Connection connection;
 };
 
-// Records SessionManager's token-scoped ingest lifecycle. FileLoader's
-// progress callbacks cross from a worker to the GUI thread, so the session
-// signals are the authoritative surface for pairing begin/update/end.
+// Records SessionManager's token-scoped ingest lifecycle: FileLoader's progress callbacks cross from a worker to the
+// GUI thread, so the session signals are the authoritative surface for pairing begin/update/end.
 struct IngestLifecycleRecorder {
   struct Began {
     PJ::IngestToken token;
@@ -714,16 +693,14 @@ class FileLoaderTest : public ::testing::Test {
     ASSERT_TRUE(extensions_dir_.isValid());
     ASSERT_TRUE(data_dir_.isValid());
 
-    // Stage a copy of the plugin instead of pointing at the build dir: the SDK
-    // builds deliberately-broken sibling test plugins next to this one, and
-    // they would pollute the catalog with load-error diagnostics.
+    // Stage a copy of the plugin instead of pointing at the build dir: the SDK builds deliberately-broken sibling test
+    // plugins next to it, and they would pollute the catalog with load-error diagnostics.
     const QString plugin_src = QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH);
     const QString plugin_dst = extensions_dir_.filePath(QFileInfo(plugin_src).fileName());
     ASSERT_TRUE(QFile::copy(plugin_src, plugin_dst)) << "could not stage " << plugin_src.toStdString();
 
-    // AppSession bundles SessionManager/CatalogModel/ExtensionCatalogService
-    // with the destruction order the plugin handles require (session-held
-    // parser handles die before the plugin libraries unload).
+    // AppSession bundles SessionManager/CatalogModel/ExtensionCatalogService with the destruction order the plugin
+    // handles require (session-held parser handles die before the plugin libraries unload).
     app_session_ = std::make_unique<PJ::AppSession>(extensions_dir_.path());
     ASSERT_FALSE(app_session_->extensionCatalog().findSourcesForExtension(u".mock"_s).empty())
         << "mock_file_source_plugin did not load from the staged extensions dir";
@@ -778,7 +755,6 @@ class FileLoaderTest : public ::testing::Test {
     return pj_app_test::mockLoadHints(config, prefer_reuse);
   }
 
-  // Back-compat alias used by the progressive-load tests.
   PJ::LoadHints skipDialogHints(bool prefer_reuse = false) {
     return loadHints(u"{}"_s, prefer_reuse);
   }
@@ -890,10 +866,9 @@ TEST_F(FileLoaderTest, ReloadingSameFileReplacesDatasetInPlace) {
   ASSERT_EQ(singleTopicRowCount(dataset_id), 3);
   EXPECT_EQ(catalog().items().size(), 1u);
 
-  // Second load of the same file: replace in place — same DatasetId, same
-  // topic, same row count. The pre-fix wiring ingested into the LIVE engine
-  // (appending duplicate rows) and then swapped from the EMPTY staged engine
-  // (retiring every topic); the row-count check catches both regressions.
+  // Second load of the same file replaces in place: same DatasetId, same topic, same row count. Ingesting into the
+  // live engine would append duplicate rows; swapping from an empty staged engine would retire every topic; the
+  // row-count check catches both.
   ASSERT_TRUE(load());
 
   EXPECT_EQ(session().createReader().listDatasets().size(), 1u) << "reload must not mint a second dataset";
@@ -902,11 +877,10 @@ TEST_F(FileLoaderTest, ReloadingSameFileReplacesDatasetInPlace) {
   EXPECT_EQ(catalog().items().size(), 1u) << "curve tree must survive a same-file reload";
 }
 
-// "Replace dataset": the replace hint targets a dataset BY ID, so a different
-// file refills it in place — same DatasetId (curve keys survive for matching
-// topic names), display name and source path repointed to the new file.
+// The replace hint targets a dataset BY ID, so a different file refills it in place: same DatasetId (curve keys
+// survive for matching topic names), display name and source path repointed to the new file.
 TEST_F(FileLoaderTest, ReplaceHintRefillsTargetedDatasetFromDifferentFile) {
-  ASSERT_TRUE(load());  // sensors.mock, 3 rows
+  ASSERT_TRUE(load());
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
   ASSERT_EQ(singleTopicRowCount(dataset_id), 3);
@@ -923,10 +897,9 @@ TEST_F(FileLoaderTest, ReplaceHintRefillsTargetedDatasetFromDifferentFile) {
   EXPECT_EQ(catalog().items().size(), 1u);
 }
 
-// A curve plotted before a reload keeps its binding (same TopicId) and re-reads
-// only when samplesIngested names its topic. The refill announces the topic
-// while it is still empty, so the load must announce it again once the rows are
-// in, or the curve stays empty (PlotJuggler#1456).
+// A curve plotted before a reload keeps its binding (same TopicId) and re-reads only when samplesIngested names its
+// topic. The refill announces the topic while it is still empty, so the load must announce it again once the rows
+// are in, or the curve stays empty.
 TEST_F(FileLoaderTest, ReloadAnnouncesRefilledRowsToBoundCurves) {
   ASSERT_TRUE(load());
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
@@ -958,10 +931,10 @@ TEST_F(FileLoaderTest, ReplaceAnnouncesRefilledRowsToBoundCurves) {
   EXPECT_EQ(rows_seen.back(), 3) << "the last announcement must come after the rows are in";
 }
 
-// A failed replace must be invisible: prior data, name, and source path all
-// survive (the rename is deferred to commit precisely for this rollback).
+// A failed replace is invisible: prior data, name and source path all survive (the rename is deferred to commit
+// for this rollback).
 TEST_F(FileLoaderTest, FailedReplaceRollsBackDataNameAndSourcePath) {
-  ASSERT_TRUE(load());  // sensors.mock, 3 rows
+  ASSERT_TRUE(load());
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
 
@@ -976,12 +949,11 @@ TEST_F(FileLoaderTest, FailedReplaceRollsBackDataNameAndSourcePath) {
   EXPECT_EQ(catalog().items().size(), 1u) << "curve tree restored after the failed replace";
 }
 
-// After a replace, the dataset's engine source_name still carries the ORIGINAL
-// basename (there is no engine-level rename) — only the tracked source path
-// identifies it. A later load of the new path must therefore match by path and
-// refill in place, not mint a duplicate dataset.
+// After a replace, the dataset's engine source_name still carries the ORIGINAL basename (no engine-level rename);
+// only the tracked source path identifies it. A later load of the new path must match by path and refill in place,
+// not mint a duplicate dataset.
 TEST_F(FileLoaderTest, ReloadOfNewPathAfterReplaceRefillsInsteadOfDuplicating) {
-  ASSERT_TRUE(load());  // sensors.mock
+  ASSERT_TRUE(load());
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
 
@@ -998,8 +970,8 @@ TEST_F(FileLoaderTest, ReloadOfNewPathAfterReplaceRefillsInsteadOfDuplicating) {
   EXPECT_EQ(datasetDisplayName(dataset_id), u"other.mock"_s);
 }
 
-// A replace whose target vanished while the picker/config dialog was open must
-// degrade to a plain fresh load instead of failing or refilling a stranger.
+// A replace whose target vanished while the picker/config dialog was open degrades to a plain fresh load instead
+// of failing or refilling a stranger.
 TEST_F(FileLoaderTest, ReplaceHintWithVanishedTargetLoadsFresh) {
   PJ::LoadHints hints = loadHints();
   hints.replace_dataset_id = 424242;  // never existed
@@ -1062,9 +1034,8 @@ TEST_F(FileLoaderTest, ExactPluginOptInSelectsRequestedNonFirstExtensionMatch) {
   EXPECT_EQ(exact_plugin, u"Alternate Mock File Source"_s)
       << "exact layout replay must select the requested non-first match (display-name fallback tier)";
 
-  // Same selection through the plugin's stable MANIFEST id (what new layouts
-  // persist as manifest_id, carried in its OWN hint field): the id tier must
-  // resolve the same plugin without any display-name hint.
+  // Same selection through the plugin's stable MANIFEST id (persisted in layouts as manifest_id, its OWN hint field):
+  // the id tier must resolve the same plugin without any display-name hint.
   PJ::LoadHints manifest_hints = loadHints();
   manifest_hints.expected_plugin_id.clear();
   manifest_hints.expected_manifest_id = u"alternate-mock-file-source"_s;
@@ -1076,9 +1047,8 @@ TEST_F(FileLoaderTest, ExactPluginOptInSelectsRequestedNonFirstExtensionMatch) {
       << "a manifest-id hint must select the requested non-first match";
 }
 
-// Review finding 5: a manifest-id mismatch must FALL BACK to the saved
-// display name — the two identities ride separate fields, so an uninstalled
-// manifest id does not doom a layout whose display name still matches.
+// A manifest-id mismatch FALLS BACK to the saved display name: the two identities ride separate fields, so an
+// uninstalled manifest id does not doom a layout whose display name still matches.
 TEST_F(FileLoaderTest, ManifestIdMismatchFallsBackToDisplayName) {
   auto& extensions = app_session_->extensionCatalog();
   const auto original_matches = extensions.findSourcesForExtension(u".mock"_s);
@@ -1103,10 +1073,8 @@ TEST_F(FileLoaderTest, ManifestIdMismatchFallsBackToDisplayName) {
       << "a manifest mismatch must fall back to the saved display name, not fail or first-match";
 }
 
-// Review finding 5: a legacy ID-only layout (display name only, no
-// manifest_id) starts at the NAME tier — it must never select a plugin whose
-// MANIFEST id merely collides with the saved display name (that would be a
-// silent semantic change of which plugin parses the bytes).
+// A legacy layout (display name only, no manifest_id) starts at the NAME tier and must never select a plugin whose
+// MANIFEST id merely collides with the saved display name (a silent change of which plugin parses the bytes).
 TEST_F(FileLoaderTest, IdOnlyLayoutNeverMatchesByManifestId) {
   auto& extensions = app_session_->extensionCatalog();
   const auto original_matches = extensions.findSourcesForExtension(u".mock"_s);
@@ -1134,11 +1102,9 @@ TEST_F(FileLoaderTest, IdOnlyLayoutNeverMatchesByManifestId) {
   EXPECT_EQ(selected_manifest_id, u"mock-file-source"_s);
 }
 
-// The consult-locked tier order: manifest id exact — scanned across ALL
-// extension matches — outranks a display-name match on an EARLIER candidate.
-// The decoy's manifest id equals the real mock's display name, so a matcher
-// that compares (id OR name) per candidate in order, or name before id, would
-// select the wrong plugin.
+// Tier order: manifest id exact, scanned across ALL extension matches, outranks a display-name match on an EARLIER
+// candidate. The decoy's manifest id equals the real mock's display name, so a matcher that compares (id OR name)
+// per candidate in order, or name before id, would select the wrong plugin.
 TEST_F(FileLoaderTest, ManifestIdTierOutranksDisplayNameTierAcrossAllCandidates) {
   auto& extensions = app_session_->extensionCatalog();
   const auto original_matches = extensions.findSourcesForExtension(u".mock"_s);
@@ -1152,9 +1118,8 @@ TEST_F(FileLoaderTest, ManifestIdTierOutranksDisplayNameTierAcrossAllCandidates)
   ASSERT_EQ(QString::fromStdString(matches.back()->id), u"Mock File Source"_s);
 
   PJ::LoadHints hints = loadHints();
-  // As a NEW layout would save the decoy: both identities, in their own
-  // fields. The manifest tier must win even though an EARLIER candidate's
-  // display name equals the manifest id.
+  // As a layout would save the decoy: both identities, in their own fields. The manifest tier must win even though an
+  // EARLIER candidate's display name equals the manifest id.
   hints.expected_manifest_id = u"Mock File Source"_s;  // the DECOY's manifest id
   hints.expected_plugin_id = u"Manifest Tier Decoy"_s;
   hints.require_expected_plugin = true;
@@ -1174,10 +1139,9 @@ TEST_F(FileLoaderTest, ManifestIdTierOutranksDisplayNameTierAcrossAllCandidates)
   EXPECT_EQ(selected_manifest_id, u"Mock File Source"_s) << "fileLoaded must report the selected plugin's manifest id";
 }
 
-// hint_eligible must accept an expected id that is the plugin's MANIFEST id
-// (not only its display name): the dialog stays skipped and the layout preset
-// applies byte-exact. A regression re-opens the dialog (headless here — the
-// load would fall to the QSettings/dialog path and the preset marker is lost).
+// An expected id that is the plugin's MANIFEST id (not only its display name) must still make the layout preset
+// eligible: the dialog stays skipped and the preset applies byte-exact. Otherwise the load falls to the
+// QSettings/dialog path (headless here) and the preset marker is lost.
 TEST_F(FileLoaderTest, ManifestIdHintStillSkipsDialogAndAppliesPreset) {
   const QString preset = uR"({"filepath":"desktop-layout-value","marker":"manifest-id-hint"})"_s;
   PJ::LoadHints hints = loadHints(preset);
@@ -1267,10 +1231,7 @@ TEST_F(FileLoaderTest, BrowserLayoutEmptyPresetCanStillInjectFreshBackingPathAnd
   EXPECT_NE(datasetNamed("sensors.mock"), 0u);
 }
 
-// With several files loaded, reloading ONE of them must replace only that
-// dataset. The staged ingest always allocates dataset id 1 in its throwaway
-// engine, so any id confusion between staged and primary leaks the reload into
-// whichever primary dataset shares the staged id (here: the first file).
+// With several files loaded, reloading ONE of them replaces only that dataset and leaves the others intact.
 TEST_F(FileLoaderTest, ReloadWithMultipleDatasetsLeavesOthersIntact) {
   const QString path_a = makeMockFile(u"a.mock"_s);
   const QString path_b = makeMockFile(u"b.mock"_s);
@@ -1292,11 +1253,10 @@ TEST_F(FileLoaderTest, ReloadWithMultipleDatasetsLeavesOthersIntact) {
   EXPECT_EQ(catalog().items().size(), 2u) << "curve tree must keep both datasets' curves";
 }
 
-// Two files that share a basename but live in different directories (e.g.
-// run1/log.mcap and run2/log.mcap — common for per-run robotics logs) must load
-// as TWO distinct datasets. The same-source match keys on full-path identity,
-// not basename, so the second file is not mistaken for a reload of the first
-// (which would silently alias its data and lose the second file entirely).
+// Two files that share a basename but live in different directories (e.g. run1/log.mcap and run2/log.mcap, common
+// for per-run robotics logs) must load as TWO distinct datasets. The same-source match keys on full-path identity,
+// not basename; otherwise the second file would be taken for a reload of the first, aliasing its data and losing
+// the second file.
 TEST_F(FileLoaderTest, SameBasenameDifferentDirsLoadAsDistinctDatasets) {
   ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runA"_s));
   ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runB"_s));
@@ -1310,10 +1270,7 @@ TEST_F(FileLoaderTest, SameBasenameDifferentDirsLoadAsDistinctDatasets) {
   EXPECT_EQ(catalog().items().size(), 2u) << "both files' curves must appear in the tree";
 }
 
-// The layout-reload path (prefer_reuse) of two same-basename files in different
-// dirs must likewise restore both — the multi-file layout feature this depends
-// on. Pre-fix the second prefer_reuse load reused the first dataset and emitted
-// no new one, collapsing the session to a single file.
+// The layout-reload path (prefer_reuse) of two same-basename files in different dirs must likewise restore both.
 TEST_F(FileLoaderTest, LayoutReloadOfSameBasenameDifferentDirsRestoresBoth) {
   ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runA"_s));
   ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runB"_s));
@@ -1326,24 +1283,20 @@ TEST_F(FileLoaderTest, LayoutReloadOfSameBasenameDifferentDirsRestoresBoth) {
       << "layout reload of two same-basename files must restore two datasets";
 }
 
-// FileLoader maps each loaded dataset back to the file it came from (so the
-// shell can drop the right loaded-source entry when a dataset is removed).
-// untrackDataset clears that association.
+// The shell uses the dataset -> file mapping to drop the right loaded-source entry when a dataset is removed.
 TEST_F(FileLoaderTest, SourcePathForDatasetTracksLoadedFileAndUntracks) {
-  ASSERT_TRUE(load());  // loads mock_path_ (sensors.mock)
+  ASSERT_TRUE(load());
   const PJ::DatasetId id = datasetNamed("sensors.mock");
   ASSERT_NE(id, 0u);
   EXPECT_EQ(loader_->sourcePathForDataset(id), mock_path_);
-  // An unknown id has no recorded path.
   EXPECT_TRUE(loader_->sourcePathForDataset(id + 1000).isEmpty());
 
   loader_->untrackDataset(id);
   EXPECT_TRUE(loader_->sourcePathForDataset(id).isEmpty()) << "untrackDataset must drop the association";
 }
 
-// Source-path identity has ONE owner: SessionManager's registry. FileLoader is
-// a pass-through, so plots/scenes/processors resolving through the session see
-// exactly what the loader recorded — and untrackDataset clears the shared entry.
+// Source-path identity has ONE owner: SessionManager's registry. FileLoader is a pass-through, so plots/scenes/
+// processors resolving through the session see what the loader recorded, and untrackDataset clears the shared entry.
 TEST_F(FileLoaderTest, SourcePathRegistryLivesInSessionManager) {
   ASSERT_TRUE(load());
   const PJ::DatasetId id = datasetNamed("sensors.mock");
@@ -1355,11 +1308,9 @@ TEST_F(FileLoaderTest, SourcePathRegistryLivesInSessionManager) {
   EXPECT_TRUE(session().datasetSourcePath(id).isEmpty());
 }
 
-// Core of the resurrection fix (MainWindow::appendDataSourceElement's liveness
-// filter): once a dataset is removed, the file it came from must drop out of the
-// set of source paths still backing a live dataset — otherwise a saved layout
-// would re-list and resurrect it on reload. Exercised with the real
-// CatalogModel + FileLoader (the XML emission itself lives in MainWindow).
+// Once a dataset is removed, the file it came from must drop out of the set of source paths still backing a live
+// dataset (MainWindow::appendDataSourceElement's liveness filter), or a saved layout would re-list and resurrect
+// it on reload. Uses the real CatalogModel + FileLoader; the XML emission itself lives in MainWindow.
 TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
   const QString path_a = makeMockFile(u"a.mock"_s);
   const QString path_b = makeMockFile(u"b.mock"_s);
@@ -1368,8 +1319,8 @@ TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
   const PJ::DatasetId id_a = datasetNamed("a.mock");
   ASSERT_NE(id_a, 0u);
 
-  // The set of source paths still backing a live catalog dataset — exactly how
-  // appendDataSourceElement decides which <fileInfo> entries to write.
+  // The source paths still backing a live catalog dataset, as appendDataSourceElement decides which <fileInfo> entries
+  // to write.
   const auto live_paths = [&]() {
     QSet<QString> paths;
     for (const auto& [id, name] : catalog().datasets()) {
@@ -1394,10 +1345,9 @@ TEST_F(FileLoaderTest, RemovedDatasetDropsFromLiveSourcePaths) {
   EXPECT_TRUE(live.contains(path_b)) << "surviving dataset's file stays a live source";
 }
 
-// A real "Remove Dataset" (no tombstone) truly erases the dataset from the engine, so a
-// later load of the SAME source — even via the layout-replay prefer_reuse path — mints a
-// FRESH dataset and re-ingests the data, instead of reattaching to an emptied/tombstoned
-// shell (the bug: the 2nd load showed no progress bar and no data).
+// A real "Remove Dataset" (no tombstone) erases the dataset from the engine, so a later load of the SAME source, even
+// via the layout-replay prefer_reuse path, mints a FRESH dataset and re-ingests the data instead of reattaching to
+// an emptied or tombstoned shell.
 TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
   ASSERT_TRUE(load());
   const PJ::DatasetId id = datasetNamed("sensors.mock");
@@ -1405,8 +1355,8 @@ TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
   ASSERT_EQ(singleTopicRowCount(id), 3);
   ASSERT_EQ(catalog().items().size(), 1u);
 
-  // Real delete the way MainWindow::removeDatasetData now does it: erase objects,
-  // drop catalog items WITHOUT a tombstone, then erase the engine's scalar storage.
+  // Real delete the way MainWindow::removeDatasetData does it: erase objects, drop catalog items WITHOUT a tombstone,
+  // then erase the engine's scalar storage.
   session().evictDatasetObjects(id);
   catalog().removeDataset(id, /*tombstone=*/false);
   session().dataEngine().removeDataset(id);
@@ -1415,16 +1365,14 @@ TEST_F(FileLoaderTest, RealDeleteThenPreferReuseReloadReIngestsFreshDataset) {
   EXPECT_TRUE(catalog().items().empty()) << "no catalog items survive a real delete";
   EXPECT_EQ(datasetNamed("sensors.mock"), 0u) << "no tombstoned shell left behind";
 
-  // Reload the same source as a layout replay would (prefer_reuse). Pre-fix this reused
-  // the emptied dataset (restoreDataset + return-false: no worker, no re-ingest); now the
-  // erased dataset is gone from listDatasets, so the loader mints a fresh one and ingests.
+  // Reload the same source as a layout replay would (prefer_reuse): the erased dataset is gone from listDatasets, so
+  // the loader mints a fresh one and ingests.
   PJ::LoadHints hints;
   hints.expected_plugin_id = u"Mock File Source"_s;
   hints.preset_config_json = u"{}"_s;
   hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
   hints.prefer_reuse = true;
-  // The dataset was erased, so prefer_reuse finds nothing to reuse and falls through
-  // to a FRESH single-instance load — which is async (worker). Wait for it.
+  // Nothing to reuse, so prefer_reuse falls through to a FRESH single-instance load, which is async (worker).
   ASSERT_TRUE(loadAndWait(mock_path_, hints));
 
   const PJ::DatasetId reloaded = datasetNamed("sensors.mock");
@@ -1451,7 +1399,7 @@ TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
 
   PJ::LoadHints reuse_hints = loadHints(u"{}"_s);
   reuse_hints.prefer_reuse = true;
-  // Old dataset erased → prefer_reuse falls through to a fresh async load; wait for it.
+  // Old dataset erased: prefer_reuse falls through to a fresh async load.
   ASSERT_TRUE(loadAndWait(path, reuse_hints));
 
   const PJ::DatasetId reloaded = datasetNamed("fanout.mock");
@@ -1460,11 +1408,9 @@ TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
   EXPECT_EQ(singleTopicRowCount(reloaded), 3) << "fresh prefer_reuse load must ingest rows";
 }
 
-// A replacing fan-out tombstones the dataset it is replacing and real-deletes
-// it only once the replacement has committed. Discarding the load means nothing
-// replaced it, so the tombstone must be rolled back — the user keeps the data
-// they already had. (The delete used to run above these exits, which erased it
-// permanently.)
+// A replacing fan-out tombstones the dataset it is replacing and real-deletes it only once the replacement has
+// committed. Discarding the load means nothing replaced it, so the tombstone must be rolled back: the user keeps
+// the data they already had.
 TEST_F(FileLoaderTest, DiscardedReplacingFanoutRestoresTheDatasetItWasReplacing) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"replaced.fanoutprobe"_s);
@@ -1475,8 +1421,7 @@ TEST_F(FileLoaderTest, DiscardedReplacingFanoutRestoresTheDatasetItWasReplacing)
   const std::size_t catalog_items_before = catalog().items().size();
   ASSERT_GT(catalog_items_before, 0u);
 
-  // Reload the same path as a fan-out (which replaces in place) and discard the
-  // whole load at its second entry.
+  // Reload the same path as a fan-out (which replaces in place) and discard the whole load at its second entry.
   const PJ::LoadHints hints =
       fanoutProbeHints(uR"({"__pj_fanout":["{\"display_suffix\":\"complete\"}","{\"display_suffix\":\"cancel\"}"]})"_s);
   bool cancel_sent = false;
@@ -1502,8 +1447,8 @@ TEST_F(FileLoaderTest, DiscardedReplacingFanoutRestoresTheDatasetItWasReplacing)
   EXPECT_EQ(datasetNamed("replaced/cancel"), 0u);
 }
 
-// Same contract on the other dataset-less exit: every fan-out entry failing is
-// not a licence to delete the dataset the load was replacing.
+// Same contract on the other dataset-less exit: every fan-out entry failing must not delete the dataset the load was
+// replacing.
 TEST_F(FileLoaderTest, AllFailedReplacingFanoutRestoresTheDatasetItWasReplacing) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"allfail.fanoutprobe"_s);
@@ -1523,12 +1468,10 @@ TEST_F(FileLoaderTest, AllFailedReplacingFanoutRestoresTheDatasetItWasReplacing)
   EXPECT_EQ(catalog().items().size(), catalog_items_before);
 }
 
-// An observer of a fan-out entry's terminal is allowed to shut the loader down —
-// closing the window while an import runs is exactly that. joinForShutdown
-// resets begin_load_task_, which DESTROYS the coroutine frame the fan-out loop
-// is running in, so the terminal must not be emitted from inside that frame: the
-// loop would return into freed storage. Delivering it through the event loop is
-// what makes this survivable, and the loader has to stay usable afterwards.
+// An observer of a fan-out entry's terminal may shut the loader down (closing the window while an import runs).
+// joinForShutdown resets begin_load_task_, which DESTROYS the coroutine frame the fan-out loop is running in, so the
+// terminal must not be emitted from inside that frame (the loop would return into freed storage): it is delivered
+// through the event loop, and the loader must stay usable afterwards.
 TEST_F(FileLoaderTest, ShutdownFromInsideAFanoutTerminalLeavesTheLoaderUsable) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"terminalshutdown.fanoutprobe"_s);
@@ -1559,11 +1502,9 @@ TEST_F(FileLoaderTest, ShutdownFromInsideAFanoutTerminalLeavesTheLoaderUsable) {
   EXPECT_NE(datasetNamed("terminalshutdown.fanoutprobe"), 0u);
 }
 
-// Discarding EVERY row of a fan-out leaves precisely what a "Remove All" leaves:
-// nothing. A row discard is neither a failure nor a load-wide stop, so this case
-// used to reach the success tail — real-deleting the dataset the load was
-// replacing (the tombstone exists to protect exactly that) and then announcing a
-// successful load that produced no dataset at all.
+// Discarding EVERY row of a fan-out leaves what a "Remove All" leaves: nothing. A row discard is neither a failure nor
+// a load-wide stop, but the load must still end cancelled and keep the dataset it was replacing (the tombstone
+// protects exactly that), not announce a successful load that produced no dataset.
 TEST_F(FileLoaderTest, FanoutWithEveryRowDiscardedIsCancelledAndKeepsTheReplacedDataset) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"rowdiscard.fanoutprobe"_s);
@@ -1573,14 +1514,12 @@ TEST_F(FileLoaderTest, FanoutWithEveryRowDiscardedIsCancelledAndKeepsTheReplaced
   ASSERT_EQ(singleTopicRowCount(original), 3);
   const std::size_t catalog_items_before = catalog().items().size();
 
-  // Reload the same path as a fan-out (which replaces in place) and discard both
-  // entries through their own rows.
+  // Reload the same path as a fan-out (which replaces in place) and discard both entries through their own rows.
   const PJ::LoadHints hints =
       fanoutProbeHints(uR"({"__pj_fanout":["{\"display_suffix\":\"cancel\"}","{\"display_suffix\":\"cancel\"}"]})"_s);
   LoadFinishedRecorder recorder(*loader_);
-  // The replacement announcement carries the arming load's ticket: the shell
-  // disarms its workspace capture by ticket equality, so a stale same-path
-  // terminal from another load can never kill a live load's capture.
+  // The replacement announcement carries the arming load's ticket: the shell disarms its workspace capture by ticket
+  // equality, so a stale same-path terminal from another load can never kill a live load's capture.
   quint64 arm_ticket = 0;
   const auto arm_connection = QObject::connect(
       loader_.get(), &PJ::FileLoader::sourceReplacementAboutToCommit, loader_.get(),
@@ -1618,9 +1557,8 @@ TEST_F(FileLoaderTest, FanoutWithEveryRowDiscardedIsCancelledAndKeepsTheReplaced
       << "the announcement carries the SAME ticket the load's terminal reports";
 }
 
-// A fan-out row's bin discards THAT ENTRY and nothing else: the sibling that
-// already loaded keeps its data, and the entries after it still run. The row is
-// the unit the user aimed at, and it names one dataset.
+// A fan-out row's bin discards THAT ENTRY and nothing else: the sibling that already loaded keeps its data, and the
+// entries after it still run. The row is the unit the user aimed at, and it names one dataset.
 TEST_F(FileLoaderTest, FanoutRowDiscardDropsOnlyThatEntryAndKeepsSiblings) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"rowstop.fanoutprobe"_s);
@@ -1628,8 +1566,8 @@ TEST_F(FileLoaderTest, FanoutRowDiscardDropsOnlyThatEntryAndKeepsSiblings) {
       uR"({"__pj_fanout":["{\"display_suffix\":\"first\"}","{\"display_suffix\":\"cancel\"}","{\"display_suffix\":\"third\"}"]})"_s);
   IngestLifecycleRecorder ingest_lifecycle(session());
 
-  // The production route for a row click: the view resolves its row key to this
-  // token and asks the session, exactly as wireIngestProgress does.
+  // The production route for a row click: the view resolves its row key to this token and asks the session, as
+  // wireIngestProgress does.
   bool cancel_sent = false;
   const auto cancel_connection = QObject::connect(
       &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
@@ -1644,9 +1582,8 @@ TEST_F(FileLoaderTest, FanoutRowDiscardDropsOnlyThatEntryAndKeepsSiblings) {
 
   (void)loadAndWait(path, hints);
   QObject::disconnect(cancel_connection);
-  // The fan-out delivers each entry's ingest terminal through the event loop
-  // (it runs inside the load coroutine, whose frame a re-entrant observer may
-  // destroy), so drain it before asserting on ingest lifecycle state.
+  // The fan-out delivers each entry's ingest terminal through the event loop (it runs inside the load coroutine, whose
+  // frame a re-entrant observer may destroy), so drain it before asserting on ingest lifecycle state.
   pj_app_test::flushQueuedEvents(2);
 
   ASSERT_TRUE(cancel_sent) << "the second fanout entry never reached its cancellation rendezvous";
@@ -1680,8 +1617,7 @@ TEST_F(FileLoaderTest, FanoutRowDiscardDropsOnlyThatEntryAndKeepsSiblings) {
   EXPECT_FALSE(session().hasActiveIngests());
 }
 
-// The ✕ arm of the same scope: the stopped row keeps what it received, and the
-// fan-out carries on.
+// The keep arm of the same scope: the stopped row keeps what it received, and the fan-out carries on.
 TEST_F(FileLoaderTest, FanoutRowKeepRetainsThatEntryAndContinues) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"rowkeep.fanoutprobe"_s);
@@ -1718,9 +1654,8 @@ TEST_F(FileLoaderTest, FanoutRowKeepRetainsThatEntryAndContinues) {
   EXPECT_FALSE(session().hasActiveIngests());
 }
 
-// WHOLE-LOAD scope (the title-bar strip's stop, cancelCurrent): it ends the
-// fan-out at the entry in flight and drops everything the load produced. The
-// per-row affordance is scoped differently — see the FanoutRow* tests below.
+// WHOLE-LOAD scope (the title-bar strip's stop, cancelCurrent): it ends the fan-out at the entry in flight and drops
+// everything the load produced. The per-row affordance is scoped differently (see the FanoutRow* tests).
 TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntries) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"cancel.fanoutprobe"_s);
@@ -1740,9 +1675,8 @@ TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntr
         releaseFanoutProbeCancelEntry();
       });
 
-  // Discard may reasonably terminate through either fileLoaded or
-  // fileLoadFailed; this test pins the dataset/cancellation contract instead of
-  // coupling it to that separate signal-policy decision.
+  // Discard may terminate through either fileLoaded or fileLoadFailed; this test pins the dataset/cancellation
+  // contract, not that signal policy.
   (void)loadAndWait(path, hints);
   QObject::disconnect(cancel_connection);
   pj_app_test::flushQueuedEvents(2);
@@ -1777,8 +1711,8 @@ TEST_F(FileLoaderTest, FanoutRemoveAllStopsAtCancelledEntryAndDropsCompletedEntr
   EXPECT_FALSE(session().hasActiveIngests());
 }
 
-// WHOLE-LOAD scope, keep arm: the fan-out still ends early, but the entries it
-// already produced (and the partial one) are kept.
+// WHOLE-LOAD scope, keep arm: the fan-out still ends early, but the entries it already produced (and the partial one)
+// are kept.
 TEST_F(FileLoaderTest, FanoutStopAndKeepStopsAtCancelledEntryAndKeepsPartialEntry) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"keep.fanoutprobe"_s);
@@ -1879,11 +1813,9 @@ TEST_F(FileLoaderTest, FanoutControlLifecycleStaysOnSdkMainThread) {
                                 << joinFanoutProbeCalls(off_main);
 }
 
-// A producer may tick without ever announcing a start (the plugin ABI's
-// progress_start and progress_update are independent slots). There is then no
-// ingest lifecycle to report, but the rows it committed are already visible to
-// readers, so the publish must happen anyway: dropping data because a lifecycle
-// call never arrived is the one thing this path must not do.
+// A producer may tick without ever announcing a start (progress_start and progress_update are independent ABI
+// slots). There is then no ingest lifecycle to report, but the rows it committed are already visible to readers, so
+// the publish must still happen: dropping data because a lifecycle call never arrived is what this path must not do.
 TEST_F(FileLoaderTest, ProgressTickWithoutABeginStillPublishesTheDatasetRows) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"nostart.fanoutprobe"_s);
@@ -1898,8 +1830,8 @@ TEST_F(FileLoaderTest, ProgressTickWithoutABeginStillPublishesTheDatasetRows) {
           ++notifications;
         }
       });
-  // Space the records past the 50 ms flush throttle so the ticks really reach
-  // the GUI, the same way the progressive test paces its flushes.
+  // Space the records past the 50 ms flush throttle so the ticks really reach the GUI, as the progressive test paces
+  // its flushes.
   QTimer::singleShot(100, []() { releaseFanoutProbeProgressStep(1); });
   QTimer::singleShot(200, []() { releaseFanoutProbeProgressStep(2); });
   QTimer::singleShot(300, []() { releaseFanoutProbeProgressStep(3); });
@@ -1934,8 +1866,7 @@ TEST_F(FileLoaderTest, ProgressiveFlushNotifiesStableTopicAndRefreshesRangeEachT
           return;
         }
         ++notification_count;
-        // Mirrors MainWindow's non-live samplesIngested handler: progressive
-        // notifications are what make the playback/timeline range grow.
+        // Mirrors MainWindow's non-live samplesIngested handler: progressive notifications grow the playback range.
         app_session_->recomputeRange();
       });
   const auto start_connection = QObject::connect(
@@ -2011,7 +1942,7 @@ TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReus
 
   PJ::LoadHints reuse_hints = loadHints(u"{}"_s);
   reuse_hints.prefer_reuse = true;
-  // Old dataset erased → prefer_reuse falls through to a fresh async load; wait for it.
+  // Old dataset erased: prefer_reuse falls through to a fresh async load.
   ASSERT_TRUE(loadAndWait(path, reuse_hints));
 
   const PJ::DatasetId reloaded = datasetNamed("failed.mock");
@@ -2020,8 +1951,6 @@ TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReus
   EXPECT_EQ(catalog().items().size(), 1u) << "curves come back after the successful reload";
 }
 
-// Several files enqueued without waiting between them run sequentially on the
-// worker; queueDrained fires once when the last completes, and all datasets land.
 TEST_F(FileLoaderTest, QueueProcessesEnqueuedLoadsSequentially) {
   const QString a = makeMockFile(u"qa.mock"_s);
   const QString b = makeMockFile(u"qb.mock"_s);
@@ -2046,12 +1975,10 @@ TEST_F(FileLoaderTest, QueueProcessesEnqueuedLoadsSequentially) {
   EXPECT_EQ(drained, 1) << "queueDrained fires once when the queue empties";
 }
 
-// The stop-confirmation dialog binds to loadGeneration() and must auto-dismiss
-// when its load stops being the current one. fileLoaded/fileLoadFailed cannot
-// signal that hand-over — they fire while the finished load is still the
-// current generation — and queueDrained stays silent while a next load is
-// queued. Pin the covering signal: every queued takeover emits
-// loadGenerationAdvanced with a fresh generation, before queueDrained.
+// The stop-confirmation dialog binds to loadGeneration() and must auto-dismiss when its load stops being the
+// current one. fileLoaded/fileLoadFailed cannot signal that hand-over (they fire while the finished load is still
+// the current generation) and queueDrained stays silent while a next load is queued, so every queued takeover must
+// emit loadGenerationAdvanced with a fresh generation, before queueDrained.
 TEST_F(FileLoaderTest, QueuedNextLoadEmitsLoadGenerationAdvanced) {
   const QString a = makeMockFile(u"gen_a.mock"_s);
   const QString b = makeMockFile(u"gen_b.mock"_s);
@@ -2091,12 +2018,11 @@ TEST_F(FileLoaderTest, QueuedNextLoadEmitsLoadGenerationAdvanced) {
          "dismissal signal a stale stop dialog gets between back-to-back loads";
 }
 
-// A fan-out load finishes its coroutine frame (active_load_ false) one event-loop
-// hop BEFORE the queued startNext advances the generation. A generation-gated
-// cancel landing in that hop still matches the finished load's generation — it
-// must be rejected, or the latched cancel_mode_ silently kills the queued NEXT
-// load at its prologue. The Qt::QueuedConnection below runs exactly in that hop
-// (posted during the fan-out's fileLoaded emit, ahead of the queued startNext).
+// A fan-out load finishes its coroutine frame (active_load_ false) one event-loop hop BEFORE the queued startNext
+// advances the generation. A generation-gated cancel landing in that hop still matches the finished load's
+// generation and must be rejected, or the latched cancel_mode_ silently kills the queued NEXT load at its prologue.
+// The Qt::QueuedConnection below runs exactly in that hop (posted during the fan-out's fileLoaded emit, ahead of
+// the queued startNext).
 TEST_F(FileLoaderTest, StaleGenerationCancelInFanoutEpilogueHopIsNoOp) {
   const QString a = makeMockFile(u"hop_a.mock"_s);
   const QString b = makeMockFile(u"hop_b.mock"_s);
@@ -2133,10 +2059,9 @@ TEST_F(FileLoaderTest, StaleGenerationCancelInFanoutEpilogueHopIsNoOp) {
   EXPECT_NE(datasetNamed("hop_b.mock"), 0u) << "the stale-generation cancel must not kill the queued next load";
 }
 
-// Two browser uploads sharing a display name and a backing-file basename carry
-// DISTINCT opaque pj-upload:// identities: the reload-match loop must key on
-// the identity (literal compare), never collapse them by filesystem-path shape
-// — and reloading one identity must replace exactly that dataset in place.
+// Two browser uploads sharing a display name and a backing-file basename carry DISTINCT opaque pj-upload:// identities:
+// the reload-match loop must key on the identity (literal compare), never collapse them by filesystem-path shape,
+// and reloading one identity must replace exactly that dataset in place.
 TEST_F(FileLoaderTest, BrowserUploadsSharingBasenameStayDistinctAndReloadInPlace) {
   ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"u1"_s));
   ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"u2"_s));
@@ -2205,11 +2130,8 @@ TEST_F(FileLoaderTest, BrowserUploadsSharingBasenameStayDistinctAndReloadInPlace
   EXPECT_EQ(datasetWithIdentity(identity_b), id_b) << "the sibling upload must be untouched";
 }
 
-// V10: an unusable LoadInput (a trailing-slash directory path → empty fileName,
-// so display_name is empty) must NOT fail silently. loadFile returns false AND
-// emits fileLoadFailed exactly once with a user-visible reason — MainWindow's
-// layout replay relies on that contract ("FileLoader shows its own error on
-// failure").
+// An unusable LoadInput (a trailing-slash directory path has an empty fileName, so display_name is empty) must not fail
+// silently: loadFile returns false AND emits fileLoadFailed exactly once with a user-visible reason.
 TEST_F(FileLoaderTest, InvalidLoadInputEmitsFileLoadFailedOnce) {
   int failed_count = 0;
   QString failed_path;
@@ -2219,8 +2141,8 @@ TEST_F(FileLoaderTest, InvalidLoadInputEmitsFileLoadFailedOnce) {
         failed_path = path;
       });
 
-  // A directory path with a trailing slash: QFileInfo::fileName() is empty, so
-  // LoadInput::fromNativePath produces an empty display_name.
+  // A directory path with a trailing slash: QFileInfo::fileName() is empty, so LoadInput::fromNativePath produces an
+  // empty display_name.
   const QString dir_path = data_dir_.path() + u"/"_s;
   const bool accepted = loader_->loadFile(dir_path, nullptr);
 
@@ -2230,9 +2152,9 @@ TEST_F(FileLoaderTest, InvalidLoadInputEmitsFileLoadFailedOnce) {
   EXPECT_FALSE(loader_->isBusy()) << "nothing was enqueued";
 }
 
-// V9: two failing loads (unmatched extension → synchronous prologue fail) that
-// share a parent must aggregate into ONE warning dialog whose body mentions both
-// failures and whose title reads "2 loads failed" — not two overlapping boxes.
+// Two failing loads (unmatched extension, a synchronous prologue failure) that share a parent aggregate into ONE
+// warning dialog whose body mentions both failures and whose title reads "2 loads failed", not two overlapping
+// boxes.
 TEST_F(FileLoaderTest, ConsecutiveFailuresAggregateIntoOneWarningDialog) {
   QWidget parent;  // owns the aggregated warning dialog (a MessageBox child)
 
@@ -2244,8 +2166,8 @@ TEST_F(FileLoaderTest, ConsecutiveFailuresAggregateIntoOneWarningDialog) {
     ++failed_count;
   });
 
-  // Both extensions have no matching plugin → the prologue's fail() runs
-  // synchronously (before any dialog await) and routes through reportLoadWarning.
+  // Neither extension has a plugin, so the prologue's fail() runs synchronously (before any dialog await) and routes
+  // through reportLoadWarning.
   EXPECT_TRUE(loader_->loadFile(bad_a, &parent));
   EXPECT_TRUE(loader_->loadFile(bad_b, &parent));
 
@@ -2268,7 +2190,7 @@ TEST_F(FileLoaderTest, ConsecutiveFailuresAggregateIntoOneWarningDialog) {
   ASSERT_EQ(warnings.size(), 1) << "N failures must yield ONE aggregated dialog, not N stacked boxes";
 
   PJ::MessageBox* warning = warnings.front();
-  // setTitle() mirrors onto windowTitle(); "2 loads failed" reflects the count.
+  // setTitle() mirrors onto windowTitle().
   EXPECT_TRUE(warning->windowTitle().contains(u"2"_s))
       << "aggregated title must reflect two failures, got: " << warning->windowTitle().toStdString();
 
@@ -2282,35 +2204,29 @@ TEST_F(FileLoaderTest, ConsecutiveFailuresAggregateIntoOneWarningDialog) {
   warning->reject();  // dismiss so the fixture tears down cleanly
 }
 
-// Tearing the loader down mid-load (the closeEvent path) must join the worker
-// and drain the queue without crashing or hanging; the loader stays usable after.
+// Tearing the loader down mid-load (the closeEvent path) must join the worker and drain the queue without crashing or
+// hanging; the loader stays usable after.
 TEST_F(FileLoaderTest, JoinForShutdownDuringLoadDoesNotCrash) {
   EXPECT_TRUE(loader_->loadFile(mock_path_, nullptr, skipDialogHints()));
   loader_->joinForShutdown();  // worker may still be running
   EXPECT_FALSE(loader_->isBusy());
 
-  // The loader recovers: a fresh load after shutdown still completes.
+  // A fresh load after shutdown still completes.
   EXPECT_TRUE(load());
   EXPECT_NE(datasetNamed("sensors.mock"), 0u);
 }
 
-// A REPLACING reload is transactional: if the reload fails after the prior data was
-// detached, the RefillGuard rolls back to that prior data instead of leaving the
-// dataset empty. Before this guard, the up-front in-place clear destroyed the prior
-// data with no recovery — the regression this fixes (codex #1 on PR #246).
-// The success/commit path is covered by ReloadingSameFileReplacesDatasetInPlace
-// above (it now routes through beginRefill + commit); commit-vs-rollback SEMANTICS
-// are pinned deterministically at the SessionManager layer (the mock writes the same
-// 3 rows every load, so the two are indistinguishable by row count here).
+// A REPLACING reload is transactional: if the reload fails after the prior data was detached, the RefillGuard rolls
+// back to that prior data instead of leaving the dataset empty. Commit-vs-rollback semantics are pinned at the
+// SessionManager layer: the mock writes the same 3 rows every load, so row counts cannot tell them apart here.
 TEST_F(FileLoaderTest, ReplacingReloadStartFailureRestoresPriorData) {
-  ASSERT_TRUE(load());  // loads sensors.mock (3 rows)
+  ASSERT_TRUE(load());
   const PJ::DatasetId id = datasetNamed("sensors.mock");
   ASSERT_NE(id, 0u);
   ASSERT_EQ(singleTopicRowCount(id), 3);
 
-  // Reload the SAME file with a configured start() failure. beginRefill detaches the
-  // prior data up front; start() then fails on the worker, so onWorkerFinished's
-  // replacing start-fail arm must ROLL BACK to the prior data, not leave it empty.
+  // Reload the SAME file with a configured start() failure. beginRefill detaches the prior data up front; start() then
+  // fails on the worker, so onWorkerFinished's replacing start-fail arm must ROLL BACK to the prior data.
   EXPECT_FALSE(loadWithConfig(mock_path_, uR"({"fail_start":true})"_s));
 
   EXPECT_EQ(datasetNamed("sensors.mock"), id) << "DatasetId stays stable across a failed reload";
@@ -2318,15 +2234,11 @@ TEST_F(FileLoaderTest, ReplacingReloadStartFailureRestoresPriorData) {
   EXPECT_EQ(catalog().items().size(), 1u) << "curve tree restored after the failed reload";
 }
 
-// Tearing the loader down mid REPLACING-reload discards the in-flight reload and
-// rolls back to the prior data (joinForShutdown captures was_replacing before
-// ctx_.reset(), whose guard dtor performs the rollback).
-//
-// The reload deliberately writes DIFFERENT rows than the load it replaces, and
-// parks after flushing them: the shutdown therefore lands with partial
-// replacement data committed in the engine, and a defect that COMMITTED that
-// data instead of rolling it back changes the values the dataset ends up with.
-// With identical content on both sides the two outcomes are indistinguishable.
+// Tearing the loader down mid REPLACING-reload discards the in-flight reload and rolls back to the prior data
+// (joinForShutdown captures was_replacing before ctx_.reset(), whose guard dtor performs the rollback). The reload
+// deliberately writes DIFFERENT rows than the load it replaces and parks after flushing them, so the shutdown lands
+// with partial replacement data committed in the engine; with identical content the rollback and a commit would be
+// indistinguishable.
 TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresThePriorContentNotTheReplacement) {
   ASSERT_TRUE(installReloadProbe());
   const QString path = makeMockFile(u"reloaded.reloadprobe"_s);
@@ -2337,8 +2249,7 @@ TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresThePriorConte
   ASSERT_EQ(singleTopicValues(id), original_values);
   const std::size_t catalog_items_before = catalog().items().size();
 
-  // Replacing reload of the same path, parked once its own (different) rows are
-  // in the engine.
+  // Replacing reload of the same path, parked once its own (different) rows are in the engine.
   ASSERT_TRUE(loader_->loadFile(path, nullptr, reloadProbeHints(uR"({"first_value":700,"rows":2,"park":true})"_s)));
   ASSERT_TRUE(pj_app_test::pumpUntil([]() { return reloadProbeParked(); }))
       << "the replacing reload never reached its rendezvous";
@@ -2351,30 +2262,27 @@ TEST_F(FileLoaderTest, JoinForShutdownDuringReplacingReloadRestoresThePriorConte
       << "the shutdown must roll the reload back to the prior content, not commit the partial replacement";
   EXPECT_EQ(catalog().items().size(), catalog_items_before) << "the curve tree comes back with the data";
 
-  // The loader recovers: a fresh load after shutdown still completes, and it is
-  // the one that finally replaces the content.
+  // A fresh load after shutdown still completes, and it is the one that finally replaces the content.
   EXPECT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"first_value":50,"rows":1})"_s)));
   EXPECT_EQ(singleTopicValues(datasetNamed("reloaded.reloadprobe")), (std::vector<double>{51.0}));
 }
 
 // ---------------------------------------------------------------------------
-// LoadTicket: request-scoped load tracking. loadFileTicketed mints a ticket at
-// enqueue; every ACCEPTED request must resolve with EXACTLY ONE loadFinished —
-// on the success, failure, cancel(queued), cancel(active), dialog-reject, and
-// shutdown paths alike. cancelLoad targets one request by ticket.
+// LoadTicket: loadFileTicketed mints a ticket at enqueue, and every ACCEPTED request must resolve with EXACTLY ONE
+// loadFinished on the success, failure, cancel(queued), cancel(active), dialog-reject and shutdown paths alike.
+// cancelLoad targets one request by ticket.
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// Deliver queued loadFinished terminals: two zero-timer loop passes, because a
-// terminal may itself be scheduled from another queued event (a worker's
-// completion metacall, a cross-thread cancel marshal).
+// Delivers queued loadFinished terminals: two zero-timer loop passes, because a terminal may itself be scheduled from
+// another queued event (a worker's completion metacall, a cross-thread cancel marshal).
 void flushQueuedTerminals() {
   pj_app_test::flushQueuedEvents(2);
 }
 
-// Pump the event loop until the loader's queue drains (bounded, so a regression
-// fails instead of hanging CI), then deliver any queued terminals.
+// Pumps the event loop until the loader's queue drains (bounded, so a failure does not hang CI), then delivers any
+// queued terminals.
 void pumpUntilIdle(PJ::FileLoader& loader) {
   QEventLoop loop;
   QObject::connect(&loader, &PJ::FileLoader::queueDrained, &loop, &QEventLoop::quit);
@@ -2434,7 +2342,6 @@ TEST_F(FileLoaderTest, TicketedLoadRejectionReturnsZeroWithoutLoadFinished) {
     ++legacy_failed;
   });
 
-  // Trailing-slash directory → empty display_name → rejected at enqueue.
   const QString dir_path = data_dir_.path() + u"/"_s;
   EXPECT_EQ(loader_->loadFileTicketed(PJ::LoadInput::fromNativePath(dir_path)), 0u);
 
@@ -2523,8 +2430,7 @@ TEST_F(FileLoaderTest, CancelQueuedTicketResolvesCancelledWithoutStarting) {
   EXPECT_EQ(recorder.countForTicket(ticket_a), 1u);
   EXPECT_EQ(recorder.countForTicket(ticket_b), 1u);
   ASSERT_EQ(recorder.events.size(), 2u);
-  // b's terminal was scheduled at cancel time, before a's completion could
-  // schedule its own — delivery keeps that order.
+  // b's terminal was scheduled at cancel time, before a's completion could schedule its own; delivery keeps that order.
   EXPECT_EQ(recorder.events[0].ticket, ticket_b);
   EXPECT_EQ(recorder.events[0].outcome, PJ::LoadOutcome::kCancelled);
   EXPECT_EQ(recorder.events[0].path, b);
@@ -2535,18 +2441,16 @@ TEST_F(FileLoaderTest, CancelQueuedTicketResolvesCancelledWithoutStarting) {
   EXPECT_EQ(datasetNamed("ticket_qb.mock"), 0u) << "the cancelled queued request must never load";
 }
 
-// Discard means "as if this load had never run", so what it leaves behind is
-// whatever was there BEFORE it: on a REPLACING reload that is the pre-reload
-// data, restored in place. (A first-load discard has nothing prior and deletes
-// the dataset — CancelActiveTicketDiscardReportsCancelledExactlyOnce.)
+// Discard means "as if this load had never run": on a REPLACING reload what is left is the pre-reload data, restored in
+// place. (A first-load discard has nothing prior and deletes the dataset; see
+// CancelActiveTicketDiscardReportsCancelledExactlyOnce.)
 TEST_F(FileLoaderTest, ReplacingReloadDiscardRestoresPriorData) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"reload_discard.fanoutprobe"_s);
   LoadFinishedRecorder recorder(*loader_);
 
-  // First load: a plain entry that runs to completion, so the dataset exists.
-  // The "cancel" entry cannot serve here — it reports a failed start whether or
-  // not the rendezvous cancels, so it never commits a dataset to reload.
+  // First load: a plain entry that runs to completion, so the dataset exists. The "cancel" entry cannot serve here: it
+  // reports a failed start whether or not the rendezvous cancels, so it never commits a dataset to reload.
   ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(uR"({"display_suffix":"initial"})"_s)));
   const PJ::DatasetId dataset_id = datasetNamed("reload_discard.fanoutprobe");
   ASSERT_NE(dataset_id, 0u) << "the first load must have committed a dataset";
@@ -2555,9 +2459,8 @@ TEST_F(FileLoaderTest, ReplacingReloadDiscardRestoresPriorData) {
   const std::size_t catalog_items_before = catalog().items().size();
   ASSERT_GT(catalog_items_before, 0u);
 
-  // Reload the same file (replaces in place) and discard mid-flight. The probe's
-  // cancel entry appends one row before parking, so a failure to roll back shows
-  // up as a row count of 1 rather than the restored 3.
+  // Reload the same file (replaces in place) and discard mid-flight. The probe's cancel entry appends one row before
+  // parking, so a failure to roll back shows up as a row count of 1 rather than the restored 3.
   bool cancel_sent = false;
   const auto cancel_connection = QObject::connect(
       &session(), &PJ::SessionManager::ingestBegan, loader_.get(),
@@ -2576,8 +2479,7 @@ TEST_F(FileLoaderTest, ReplacingReloadDiscardRestoresPriorData) {
   QObject::disconnect(cancel_connection);
   ASSERT_TRUE(cancel_sent) << "the reload never reached its cancellation rendezvous";
 
-  // The dataset survives with exactly its pre-reload contents, and none of the
-  // abandoned reload's partial rows.
+  // The dataset survives with exactly its pre-reload contents, and none of the abandoned reload's partial rows.
   EXPECT_EQ(datasetNamed("reload_discard.fanoutprobe"), dataset_id) << "the dataset must survive with its id";
   EXPECT_TRUE(engineHasDataset(dataset_id));
   EXPECT_EQ(session().createReader().listDatasets().size(), 1u) << "the discard must not mint a second dataset";
@@ -2615,8 +2517,8 @@ TEST_F(FileLoaderTest, CancelActiveTicketDiscardReportsCancelledExactlyOnce) {
         releaseFanoutProbeCancelEntry();
       });
 
-  // Single-instance probe entry that parks on the worker until the cancel
-  // rendezvous releases it — the cancel deterministically hits an ACTIVE load.
+  // Single-instance probe entry that parks on the worker until the cancel rendezvous releases it, so the cancel
+  // deterministically hits an ACTIVE load.
   ticket = loader_->loadFileTicketed(
       PJ::LoadInput::fromNativePath(path), nullptr, fanoutProbeHints(uR"({"display_suffix":"cancel"})"_s));
   ASSERT_NE(ticket, 0u);
@@ -2723,8 +2625,8 @@ TEST_F(FileLoaderTest, JoinForShutdownReportsCancelledForActiveAndQueuedTickets)
 
   loader_->joinForShutdown();  // discards the active load and drains the queue
 
-  // Shutdown is the deliberate exception to queued terminal delivery: teardown
-  // must not lose terminals, so they are flushed synchronously here.
+  // Shutdown is the deliberate exception to queued terminal delivery: teardown must not lose terminals, so they are
+  // flushed synchronously here.
   ASSERT_EQ(recorder.events.size(), 2u) << "shutdown must resolve every accepted request before returning";
   EXPECT_EQ(recorder.events[0].ticket, ticket_a);
   EXPECT_EQ(recorder.events[0].outcome, PJ::LoadOutcome::kCancelled);
@@ -2734,8 +2636,7 @@ TEST_F(FileLoaderTest, JoinForShutdownReportsCancelledForActiveAndQueuedTickets)
   EXPECT_EQ(recorder.events[1].path, b);
   EXPECT_FALSE(loader_->isBusy());
 
-  // The loader stays usable after shutdown, and the fresh request gets a fresh
-  // terminal of its own.
+  // The loader stays usable after shutdown, and the fresh request gets a fresh terminal of its own.
   const quint64 ticket_c = loader_->loadFileTicketed(PJ::LoadInput::fromNativePath(mock_path_), nullptr, loadHints());
   ASSERT_NE(ticket_c, 0u);
   pumpUntilIdle(*loader_);
@@ -2744,9 +2645,6 @@ TEST_F(FileLoaderTest, JoinForShutdownReportsCancelledForActiveAndQueuedTickets)
   EXPECT_EQ(recorder.events[2].outcome, PJ::LoadOutcome::kLoaded);
 }
 
-// Review finding 1: ~FileLoader used to purge queued terminal emissions, so
-// accepted loads got NO terminal when the loader died without another event
-// loop pass. Destruction must deliver every outstanding terminal.
 TEST_F(FileLoaderTest, DestroyWithoutPumpingDeliversAllTerminals) {
   const QString a = makeMockFile(u"ticket_da.mock"_s);
   const QString b = makeMockFile(u"ticket_db.mock"_s);
@@ -2766,10 +2664,8 @@ TEST_F(FileLoaderTest, DestroyWithoutPumpingDeliversAllTerminals) {
   EXPECT_EQ(recorder.events[1].outcome, PJ::LoadOutcome::kCancelled);
 }
 
-// Review finding 1, resolved-but-undelivered flavor: a terminal that was
-// already scheduled (the load resolved) but not yet delivered must be flushed
-// by destruction with its TRUE outcome — not dropped, not rewritten to
-// kCancelled.
+// A terminal that was already scheduled (the load resolved) but not yet delivered must be flushed by destruction with
+// its TRUE outcome, not dropped and not rewritten to kCancelled.
 TEST_F(FileLoaderTest, DestroyDeliversResolvedButUndeliveredTerminal) {
   const QString bad = makeMockFile(u"ticket_dd.unhandledext"_s);
   LoadFinishedRecorder recorder(*loader_);
@@ -2785,11 +2681,9 @@ TEST_F(FileLoaderTest, DestroyDeliversResolvedButUndeliveredTerminal) {
   EXPECT_EQ(recorder.events[0].outcome, PJ::LoadOutcome::kFailed) << "the resolved outcome survives teardown";
 }
 
-// Codex residual R1: the destructor's synchronous terminal flush delivers
-// loadFinished while the loader is mid-destruction, and joinForShutdown has
-// already restored reusability (shutting_down_ false) — so a slot could
-// legally start NEW work whose terminal nothing would ever resolve and whose
-// worker would outlive the loader. Admission during destruction must be
+// The destructor's synchronous terminal flush delivers loadFinished while the loader is mid-destruction, and
+// joinForShutdown has already restored reusability (shutting_down_ false), so a slot could start NEW work whose
+// terminal nothing would resolve and whose worker would outlive the loader. Admission during destruction must be
 // rejected outright: ticket 0, nothing enqueued, destruction stays clean.
 TEST_F(FileLoaderTest, LoadRequestedDuringDestructorFlushIsRejected) {
   const QString a = makeMockFile(u"ticket_destroy.mock"_s);
@@ -2812,11 +2706,9 @@ TEST_F(FileLoaderTest, LoadRequestedDuringDestructorFlushIsRejected) {
   EXPECT_EQ(recorder.events.size(), 1u) << "no terminal may be lost, and none minted for the rejected request";
 }
 
-// Review finding 2: legacy fileLoadFailed/fileLoaded fire before the ticket
-// used to be marked terminal, so a direct slot re-entering joinForShutdown
-// recorded a shutdown kCancelled AND the original path then scheduled its own
-// kFailed — two terminals. The ticket must be terminalized before any
-// externally re-entrant legacy emission.
+// A direct slot on legacy fileLoadFailed/fileLoaded may re-enter joinForShutdown. The ticket must be terminalized
+// before any externally re-entrant legacy emission, or the shutdown records kCancelled AND the original path then
+// schedules its own kFailed: two terminals.
 TEST_F(FileLoaderTest, ReentrantShutdownFromLegacyFailureSlotYieldsOneTerminal) {
   const QString bad = makeMockFile(u"ticket_reentrant.unhandledext"_s);
   LoadFinishedRecorder recorder(*loader_);
@@ -2837,9 +2729,8 @@ TEST_F(FileLoaderTest, ReentrantShutdownFromLegacyFailureSlotYieldsOneTerminal) 
       << "the original failure outcome wins over the re-entrant shutdown's cancel";
 }
 
-// The stop-dialog binds to loadGeneration(); currentLoadTicket() must expose
-// the ticket that generation belongs to at every loadGenerationAdvanced, so a
-// ticket can never be attributed to a later load's generation.
+// The stop-dialog binds to loadGeneration(); currentLoadTicket() must expose the ticket that generation belongs to at
+// every loadGenerationAdvanced, so a ticket can never be attributed to a later load's generation.
 TEST_F(FileLoaderTest, CurrentLoadTicketTracksEachGenerationAdvance) {
   const QString a = makeMockFile(u"ticket_ga.mock"_s);
   const QString b = makeMockFile(u"ticket_gb.mock"_s);
@@ -2861,10 +2752,10 @@ TEST_F(FileLoaderTest, CurrentLoadTicketTracksEachGenerationAdvance) {
   EXPECT_NE(advances[0].first, advances[1].first) << "each ticket maps to its own generation";
 }
 
-// The prefer_reuse fast path resolves without a worker; its terminal must
-// still be delivered through the event loop, never inside loadFileTicketed.
+// The prefer_reuse fast path resolves without a worker; its terminal must still be delivered through the event loop,
+// never inside loadFileTicketed.
 TEST_F(FileLoaderTest, PreferReuseTerminalArrivesAsynchronously) {
-  ASSERT_TRUE(load());     // sensors.mock, tracked path
+  ASSERT_TRUE(load());
   flushQueuedTerminals();  // deliver the setup load's terminal before recording
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
@@ -2883,9 +2774,8 @@ TEST_F(FileLoaderTest, PreferReuseTerminalArrivesAsynchronously) {
   EXPECT_EQ(recorder.events[0].produced, QVector<PJ::DatasetId>{dataset_id});
 }
 
-// requestStarted announces the (ticket, generation) association the moment a
-// request becomes current, immediately before that generation's
-// loadGenerationAdvanced.
+// requestStarted announces the (ticket, generation) association the moment a request becomes current, immediately
+// before that generation's loadGenerationAdvanced.
 TEST_F(FileLoaderTest, RequestStartedPairsTicketWithItsGeneration) {
   const QString a = makeMockFile(u"ticket_ra.mock"_s);
   const QString b = makeMockFile(u"ticket_rb.mock"_s);
@@ -2922,17 +2812,15 @@ TEST_F(FileLoaderTest, RequestStartedPairsTicketWithItsGeneration) {
   EXPECT_GT(starts[1].second, starts[0].second);
 }
 
-// The one FileLoader entry a batch worker may hit off-thread: cancelLoadAsync
-// marshals to the loader's thread and the cancel resolves through the normal
-// queued terminal.
+// The one FileLoader entry a batch worker may hit off-thread: cancelLoadAsync marshals to the loader's thread and the
+// cancel resolves through the normal queued terminal.
 TEST_F(FileLoaderTest, CancelLoadAsyncFromWorkerThreadCancelsQueuedTicket) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path_a = makeMockFile(u"ticket_async.fanoutprobe"_s);
   const QString path_b = makeMockFile(u"ticket_async_b.mock"_s);
   LoadFinishedRecorder recorder(*loader_);
 
-  // A parks on the worker at the cancel rendezvous, so B stays QUEUED while
-  // the off-thread cancel runs.
+  // A parks on the worker at the cancel rendezvous, so B stays QUEUED while the off-thread cancel runs.
   const quint64 ticket_a = loader_->loadFileTicketed(
       PJ::LoadInput::fromNativePath(path_a), nullptr, fanoutProbeHints(uR"({"display_suffix":"cancel"})"_s));
   const quint64 ticket_b = loader_->loadFileTicketed(PJ::LoadInput::fromNativePath(path_b), nullptr, loadHints());
@@ -2950,7 +2838,6 @@ TEST_F(FileLoaderTest, CancelLoadAsyncFromWorkerThreadCancelsQueuedTicket) {
   EXPECT_EQ(recorder.events[0].ticket, ticket_b);
   EXPECT_EQ(recorder.events[0].outcome, PJ::LoadOutcome::kCancelled);
 
-  // Wind down A through the ticket API and drain.
   EXPECT_TRUE(loader_->cancelLoad(ticket_a, /*keep_partial=*/false));
   releaseFanoutProbeCancelEntry();
   pumpUntilIdle(*loader_);
@@ -2959,8 +2846,8 @@ TEST_F(FileLoaderTest, CancelLoadAsyncFromWorkerThreadCancelsQueuedTicket) {
   EXPECT_EQ(datasetNamed("ticket_async_b.mock"), 0u) << "the cancelled queued request must never load";
 }
 
-// Strict replacement: require_replacement forbids the silent degrade to a
-// fresh load when the replace target vanished before the request was dequeued.
+// Strict replacement: require_replacement forbids the silent degrade to a fresh load when the replace target vanished
+// before the request was dequeued.
 TEST_F(FileLoaderTest, RequireReplacementFailsWhenTargetVanished) {
   LoadFinishedRecorder recorder(*loader_);
   QString failure_reason;
@@ -2989,7 +2876,7 @@ TEST_F(FileLoaderTest, RequireReplacementFailsWhenTargetVanished) {
 }
 
 TEST_F(FileLoaderTest, RequireReplacementReplacesExistingTarget) {
-  ASSERT_TRUE(load());     // sensors.mock
+  ASSERT_TRUE(load());
   flushQueuedTerminals();  // deliver the setup load's terminal before recording
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
@@ -3011,12 +2898,10 @@ TEST_F(FileLoaderTest, RequireReplacementReplacesExistingTarget) {
   EXPECT_EQ(session().createReader().listDatasets().size(), 1u);
 }
 
-// Review finding 6: the require_replacement target-exists check ran at
-// dequeue, but a fan-out expansion then tombstoned the target, minted fresh
-// ids, and reported kLoaded — strict replacement defeated. A config that
-// expands to fan-out must be rejected BEFORE any target mutation.
+// The require_replacement target-exists check runs at dequeue, so a config that expands to fan-out (which would
+// tombstone the target, mint fresh ids and report kLoaded) must be rejected BEFORE any target mutation.
 TEST_F(FileLoaderTest, RequireReplacementRejectsFanoutExpansion) {
-  ASSERT_TRUE(load());     // sensors.mock, 3 rows
+  ASSERT_TRUE(load());
   flushQueuedTerminals();  // deliver the setup load's terminal before recording
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
@@ -3049,12 +2934,11 @@ TEST_F(FileLoaderTest, RequireReplacementRejectsFanoutExpansion) {
   EXPECT_EQ(catalog().items().size(), 1u) << "the target's curves survive (no tombstone)";
 }
 
-// Review finding 3: a successful replacement rewrites the dataset's content
-// from a NEW source, so the target's old provider SourceRecord is stale
-// provenance — it must be detached BEFORE the loadCommitting seam, where a
-// promotion listener attaches the record for the new content.
+// A successful replacement rewrites the dataset's content from a NEW source, so the target's old provider SourceRecord
+// is stale provenance: it must be detached BEFORE the loadCommitting seam, where a promotion listener attaches the
+// record for the new content.
 TEST_F(FileLoaderTest, SuccessfulReplaceDetachesStaleSourceRecordBeforeCommitSeam) {
-  ASSERT_TRUE(load());  // sensors.mock
+  ASSERT_TRUE(load());
   flushQueuedTerminals();
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
@@ -3072,8 +2956,8 @@ TEST_F(FileLoaderTest, SuccessfulReplaceDetachesStaleSourceRecordBeforeCommitSea
       [&](quint64, const QVector<PJ::DatasetId>& produced, const QString&, const QString&) {
         if (produced.contains(dataset_id)) {
           stale_gone_at_seam = session().sourceRecord(dataset_id) == nullptr;
-          // What a promotion listener does with the seam: attach the NEW
-          // content's record atomically with catalog publication.
+          // What a promotion listener does with the seam: attach the NEW content's record atomically with catalog
+          // publication.
           session().attachSourceRecord(
               dataset_id, PJ::SourceRecord{
                               .provider_id = u"new-provider"_s,
@@ -3096,7 +2980,7 @@ TEST_F(FileLoaderTest, SuccessfulReplaceDetachesStaleSourceRecordBeforeCommitSea
 }
 
 TEST_F(FileLoaderTest, FailedReplaceKeepsSourceRecord) {
-  ASSERT_TRUE(load());  // sensors.mock
+  ASSERT_TRUE(load());
   flushQueuedTerminals();
   const PJ::DatasetId dataset_id = datasetNamed("sensors.mock");
   ASSERT_NE(dataset_id, 0u);
@@ -3118,8 +3002,8 @@ TEST_F(FileLoaderTest, FailedReplaceKeepsSourceRecord) {
   EXPECT_EQ(record->provider_id, u"cloud-provider"_s);
 }
 
-// A fan-out load reports EVERY dataset it produced; the primary argument stays
-// the first loaded entry as the single-id convenience.
+// A fan-out load reports EVERY dataset it produced; the primary argument stays the first loaded entry as the
+// single-id convenience.
 TEST_F(FileLoaderTest, FanoutLoadReportsAllProducedDatasets) {
   const QString path = makeMockFile(u"ticket_fan.mock"_s);
   LoadFinishedRecorder recorder(*loader_);
@@ -3161,9 +3045,8 @@ TEST_F(FileLoaderTest, FanoutLoadReportsAllProducedDatasets) {
   EXPECT_FALSE(session().hasActiveIngests());
 }
 
-// The pre-catalog commit seam: loadCommitting fires synchronously while a
-// fully-loaded single-instance request commits — dataset + source path +
-// captured config installed, catalog rebuild not yet published — and strictly
+// The pre-catalog commit seam: loadCommitting fires synchronously while a fully-loaded single-instance request
+// commits (dataset + source path + captured config installed, catalog rebuild not yet published) and strictly
 // before fileLoaded/loadFinished.
 TEST_F(FileLoaderTest, LoadCommittingFiresWithSourceInstalledBeforeCatalogAndTerminal) {
   LoadFinishedRecorder recorder(*loader_);
@@ -3213,9 +3096,8 @@ TEST_F(FileLoaderTest, LoadCommittingFiresWithSourceInstalledBeforeCatalogAndTer
   EXPECT_EQ(commits[0].plugin_id, u"Mock File Source"_s);
   EXPECT_TRUE(commits[0].dataset_in_engine) << "the produced dataset must exist by commit time";
   EXPECT_EQ(commits[0].source_path_at_commit, mock_path_) << "the source path must be installed by commit time";
-  // The fast mock never flushes mid-load (50ms worker throttle), so no
-  // samplesIngested-gate rebuild precedes the commit: the catalog must still
-  // be unpublished at the seam and published right after.
+  // The fast mock never flushes mid-load (50 ms worker throttle), so no samplesIngested-gate rebuild precedes the
+  // commit: the catalog must still be unpublished at the seam and published right after.
   EXPECT_EQ(commits[0].catalog_items_at_commit, 0u)
       << "loadCommitting must fire BEFORE the catalog rebuild publishes the load";
   EXPECT_EQ(catalog().items().size(), 1u);
@@ -3237,10 +3119,9 @@ TEST_F(FileLoaderTest, LoadCommittingSkippedOnFailedLoad) {
   EXPECT_EQ(committing, 0) << "the commit seam fires only for loads that finish kLoaded";
 }
 
-// Review finding 4: under DialogPolicy::kNever the layout's preset is
-// AUTHORITATIVE — a preset the plugin rejects must FAIL the source (kFailed)
-// instead of silently retrying with the QSettings pre-fill (which this
-// plugin would accept, turning a broken replay into a wrong-config success).
+// Under DialogPolicy::kNever the layout's preset is AUTHORITATIVE: a preset the plugin rejects must FAIL the source
+// (kFailed) instead of silently retrying with the QSettings pre-fill (which this plugin would accept, turning a
+// broken replay into a wrong-config success).
 TEST_F(FileLoaderTest, DialogPolicyNeverRejectedPresetFailsInsteadOfFallback) {
   ASSERT_TRUE(app_session_->extensionCatalog().pluginCatalog().registerStaticDataSource(rejectingPresetVtable()));
   const QString path = makeMockFile(u"strict.cfgreject"_s);
@@ -3269,11 +3150,10 @@ TEST_F(FileLoaderTest, DialogPolicyNeverRejectedPresetFailsInsteadOfFallback) {
   EXPECT_TRUE(session().createReader().listDatasets().empty()) << "no dataset may survive the strict rejection";
 }
 
-// Fixture for the shutdown-while-suspended-at-the-plugin-config-dialog path.
-// Stages the test-only dialog_probe_source plugin (kCapabilityHasDialog, embedded
-// dialog that records onRejected/destroy order to PJ_DIALOG_PROBE_FILE) and drives
-// a real FileLoader against it with the INTERACTIVE dialog policy, so the
-// prologue coroutine suspends on DataSourceDialogAwaiter with the dialog open.
+// Fixture for the shutdown-while-suspended-at-the-plugin-config-dialog path: stages the test-only dialog_probe_source
+// plugin (kCapabilityHasDialog, embedded dialog that records onRejected/destroy order to PJ_DIALOG_PROBE_FILE) and
+// drives a real FileLoader against it with the INTERACTIVE dialog policy, so the prologue coroutine suspends on
+// DataSourceDialogAwaiter with the dialog open.
 class DialogShutdownTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -3335,11 +3215,10 @@ class DialogShutdownTest : public ::testing::Test {
   std::unique_ptr<PJ::FileLoader> loader_;
 };
 
-// Tearing the loader down while a load is suspended on its plugin config dialog
-// must reject the plugin EXACTLY ONCE and BEFORE the embedded dialog (and its
-// plugin ctx) is destroyed — a UAF/ordering bug shows up as a missing/duplicate
-// "rejected" or a "destroyed" that precedes it (recorded across the DSO boundary
-// via the probe file). joinForShutdown must also return without hanging.
+// Tearing the loader down while a load is suspended on its plugin config dialog must reject the plugin EXACTLY ONCE
+// and BEFORE the embedded dialog (and its plugin ctx) is destroyed (recorded across the DSO boundary via the probe
+// file): a missing or duplicate "rejected", or a "destroyed" that precedes it, is the use-after-free ordering bug.
+// joinForShutdown must also return without hanging.
 TEST_F(DialogShutdownTest, ShutdownWhileSuspendedAtDialogRejectsBeforeDestroy) {
   QWidget parent;  // real GUI-thread parent so the dialog actually opens (interactive policy)
 
@@ -3352,10 +3231,9 @@ TEST_F(DialogShutdownTest, ShutdownWhileSuspendedAtDialogRejectsBeforeDestroy) {
 
   LoadFinishedRecorder recorder(*loader_);
 
-  // No hints → the interactive dialog policy → the prologue awaits the plugin dialog.
+  // No hints: the interactive dialog policy, so the prologue awaits the plugin dialog.
   ASSERT_TRUE(loader_->loadFile(path, &parent, PJ::LoadHints{}));
 
-  // Pump the event loop until the plugin config dialog is actually shown.
   QEventLoop wait_for_dialog;
   QTimer poll;
   poll.setInterval(5);
@@ -3373,15 +3251,13 @@ TEST_F(DialogShutdownTest, ShutdownWhileSuspendedAtDialogRejectsBeforeDestroy) {
   // Nothing recorded yet: the load's dialog is open, not rejected, not destroyed.
   ASSERT_TRUE(readProbeLines(probe_path_).empty());
 
-  // Destroy the suspended prologue frame. The DataSourceDialogAwaiter dtor cancels
-  // the dialog (reject → onRejected), THEN the frame's DataSourceHandle destroys
-  // the embedded dialog.
+  // Destroys the suspended prologue frame: the DataSourceDialogAwaiter dtor cancels the dialog (reject -> onRejected),
+  // THEN the frame's DataSourceHandle destroys the embedded dialog.
   loader_->joinForShutdown();
   EXPECT_FALSE(loader_->isBusy());
   EXPECT_EQ(visibleDialog(&parent), nullptr) << "shutdown must close the plugin dialog";
 
-  // A shutdown that destroys the suspended prologue still resolves its ticket
-  // (terminal delivery is queued).
+  // A shutdown that destroys the suspended prologue still resolves its ticket (terminal delivery is queued).
   flushQueuedTerminals();
   ASSERT_EQ(recorder.events.size(), 1u) << "shutdown must resolve the dialog-suspended request's ticket";
   EXPECT_EQ(recorder.events[0].outcome, PJ::LoadOutcome::kCancelled);
@@ -3403,11 +3279,9 @@ TEST_F(DialogShutdownTest, ShutdownWhileSuspendedAtDialogRejectsBeforeDestroy) {
   EXPECT_FALSE(loader_->isBusy());
 }
 
-// V12a: a cancel issued while the prologue sits suspended at its config dialog
-// must be HONORED when the prologue resumes — not silently wiped by the
-// cancel_mode_.store(0) that precedes the worker. The user accepts the dialog
-// AFTER cancelling; the load must still roll back (fileLoadFailed, no dataset
-// created, no worker started).
+// A cancel issued while the prologue sits suspended at its config dialog must be HONORED when the prologue resumes, not
+// wiped by the cancel_mode_.store(0) that precedes the worker. The user accepts the dialog AFTER cancelling; the load
+// must still roll back (fileLoadFailed, no dataset created, no worker started).
 TEST_F(DialogShutdownTest, CancelWhileSuspendedAtDialogIsHonoredOnResume) {
   QWidget parent;
 
@@ -3430,7 +3304,6 @@ TEST_F(DialogShutdownTest, CancelWhileSuspendedAtDialogIsHonoredOnResume) {
 
   ASSERT_TRUE(loader_->loadFile(path, &parent, PJ::LoadHints{}));
 
-  // Pump until the plugin config dialog is shown (prologue suspended).
   QEventLoop wait_for_dialog;
   QTimer poll;
   poll.setInterval(5);
@@ -3446,16 +3319,15 @@ TEST_F(DialogShutdownTest, CancelWhileSuspendedAtDialogIsHonoredOnResume) {
   QDialog* dialog = visibleDialog(&parent);
   ASSERT_NE(dialog, nullptr) << "the plugin config dialog never opened";
 
-  // The prologue created a dataset SHELL before opening the dialog (bind() needs
-  // it), but no worker has run, so it holds no rows yet.
+  // The prologue created a dataset SHELL before opening the dialog (bind() needs it), but no worker has run, so it
+  // holds no rows yet.
   const std::size_t datasets_while_suspended = app_session_->sessionManager().createReader().listDatasets().size();
 
-  // Issue the cancel WHILE suspended (the title-bar Stop → Remove All path), then
-  // let the user "accept" the dialog. The pending cancel must win.
+  // Issue the cancel WHILE suspended (the title-bar Stop -> Remove All path), then let the user "accept" the dialog:
+  // the pending cancel must win.
   loader_->cancelCurrent(/*keep_partial=*/false);
   dialog->accept();
 
-  // Pump until the prologue resumes and the load resolves.
   QEventLoop settle;
   QObject::connect(loader_.get(), &PJ::FileLoader::fileLoadFailed, &settle, &QEventLoop::quit);
   QObject::connect(loader_.get(), &PJ::FileLoader::fileLoaded, &settle, &QEventLoop::quit);
@@ -3472,18 +3344,17 @@ TEST_F(DialogShutdownTest, CancelWhileSuspendedAtDialogIsHonoredOnResume) {
   flushQueuedTerminals();
   ASSERT_EQ(recorder.events.size(), 1u);
   EXPECT_EQ(recorder.events[0].outcome, PJ::LoadOutcome::kCancelled);
-  // The dataset shell created before the dialog must be rolled back: the count
-  // returns to whatever it was BEFORE this load began (0 here).
+  // The dataset shell created before the dialog must be rolled back: the count returns to what it was BEFORE this load
+  // began (0 here).
   EXPECT_EQ(app_session_->sessionManager().createReader().listDatasets().size(), datasets_while_suspended - 1)
       << "the cancelled load's dataset shell must be erased on rollback";
   EXPECT_EQ(app_session_->sessionManager().createReader().listDatasets().size(), 0u)
       << "no dataset may survive a cancel honored at prologue resume";
 }
 
-// The user rejecting the plugin config dialog is a terminal exit with NO legacy
-// signal at all (deliberately — see beginLoad's kRejected arm). The ticket
-// surface must still resolve it: exactly one loadFinished(kCancelled), while
-// fileLoaded/fileLoadFailed stay silent as before.
+// The user rejecting the plugin config dialog is a terminal exit with NO legacy signal at all (deliberately; see
+// beginLoad's kRejected arm). The ticket surface must still resolve it: exactly one loadFinished(kCancelled), while
+// fileLoaded/fileLoadFailed stay silent.
 TEST_F(DialogShutdownTest, ConfigDialogRejectReportsCancelledTicketExactlyOnce) {
   QWidget parent;
 
@@ -3507,7 +3378,6 @@ TEST_F(DialogShutdownTest, ConfigDialogRejectReportsCancelledTicketExactlyOnce) 
   const quint64 ticket = loader_->loadFileTicketed(PJ::LoadInput::fromNativePath(path), &parent, PJ::LoadHints{});
   ASSERT_NE(ticket, 0u);
 
-  // Pump until the plugin config dialog is shown (prologue suspended).
   QEventLoop wait_for_dialog;
   QTimer poll;
   poll.setInterval(5);
@@ -3543,9 +3413,8 @@ TEST_F(DialogShutdownTest, ConfigDialogRejectReportsCancelledTicketExactlyOnce) 
   EXPECT_EQ(failed_count, 0) << "the reject path stays silent on the legacy signals";
 }
 
-// A cancel belongs to the load it was raised for. One raised while the load
-// waits at its config dialog, which the user then rejects, ends with that load:
-// the next load must run instead of being cancelled at its prologue check.
+// A cancel belongs to the load it was raised for. One raised while the load waits at its config dialog, which the user
+// then rejects, ends with that load: the next load must run instead of being cancelled at its prologue check.
 TEST_F(DialogShutdownTest, CancelThenRejectAtDialogDoesNotCancelTheNextLoad) {
   QWidget parent;
 
@@ -3586,12 +3455,10 @@ TEST_F(DialogShutdownTest, CancelThenRejectAtDialogDoesNotCancelTheNextLoad) {
       << "the cancel raised for the previous load leaked into this one";
 }
 
-// Review finding 4: an automated (layout-driven) replay of a source whose
-// saved config is legitimately EMPTY must load without EVER prompting — the
-// dialog is prohibited under DialogPolicy::kNever and the empty preset is
-// authoritative (it becomes the minimal fresh-filepath config). This plugin
-// HAS a dialog, so any fallback-to-dialog regression parks the load on an
-// open dialog and times this test out.
+// An automated (layout-driven) replay of a source whose saved config is legitimately EMPTY must load without EVER
+// prompting: the dialog is prohibited under DialogPolicy::kNever and the empty preset is authoritative (it becomes
+// the minimal fresh-filepath config). This plugin HAS a dialog, so a fallback to the dialog parks the load on an open
+// dialog and the test fails.
 TEST_F(DialogShutdownTest, DialogPolicyNeverEmptyPresetNeverOpensDialog) {
   QWidget parent;  // a real parent: the dialog COULD open if the strict flag failed
 
@@ -3631,13 +3498,10 @@ TEST_F(DialogShutdownTest, DialogPolicyNeverEmptyPresetNeverOpensDialog) {
   EXPECT_TRUE(readProbeLines(probe_path_).empty()) << "the embedded dialog must never be exercised";
 }
 
-// Header-bearing object types (clouds, images, grids) ingest with EAGER
-// scalars so their header/timestamp series appear in the curve tree; the
-// bytes are fetched once for the scalar parse and dropped, so blobs stay
-// non-resident (objects remain lazy). Pure-lazy is reserved for video frames
-// and scalar-less scene/annotation payloads, where even the one ingest-time
-// read buys nothing worth plotting. TF stays eager (tiny payload, useful
-// scalars).
+// Header-bearing object types (clouds, images, grids) ingest with EAGER scalars so their header/timestamp series appear
+// in the curve tree; the bytes are fetched once for the scalar parse and dropped, so blobs stay non-resident
+// (objects remain lazy). Pure-lazy is for video frames and scalar-less scene/annotation payloads, where even one
+// ingest-time read buys nothing worth plotting. TF stays eager (tiny payload, useful scalars).
 TEST(FileLoaderIngestPolicy, HeaderBearingTypesGetEagerScalarsOthersStayPureLazy) {
   using PJ::sdk::BuiltinObjectType;
   using PJ::sdk::ObjectIngestPolicy;
@@ -3668,9 +3532,8 @@ TEST(FileLoaderIngestPolicy, HeaderBearingTypesGetEagerScalarsOthersStayPureLazy
   EXPECT_NE(resolver.resolve("src", "/tf", BuiltinObjectType::kFrameTransforms), ObjectIngestPolicy::kPureLazy);
 }
 
-// Captures Qt log messages for the lifetime of the instance. The cross-thread
-// QObject::setParent warning fires on the import worker thread, so the sink is
-// mutex-guarded. One instance at a time (tests run sequentially).
+// Captures Qt log messages for the lifetime of the instance. The cross-thread QObject::setParent warning fires on the
+// import worker thread, so the sink is mutex-guarded. One instance at a time (tests run sequentially).
 class QtMessageCapture {
  public:
   QtMessageCapture() {
@@ -3711,9 +3574,8 @@ class QtMessageCapture {
   QtMessageHandler previous_ = nullptr;
 };
 
-// Fixture for the cross-thread message-box regression. Stages the test-only
-// msgbox_mock_source plugin (calls runtimeHost().askContinue() from the import
-// worker thread when configured) and drives a real FileLoader against it.
+// Fixture for the cross-thread message-box tests: stages the test-only msgbox_mock_source plugin (calls
+// runtimeHost().askContinue() from the import worker thread when configured) and drives a real FileLoader.
 class MessageBoxMarshalTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -3737,15 +3599,12 @@ class MessageBoxMarshalTest : public ::testing::Test {
   std::unique_ptr<PJ::FileLoader> loader_;
 };
 
-// REGRESSION (CSV-load segfault, cross-thread message box): a DataSource plugin
-// may call the runtime host's message box from the import worker thread (the
-// SDK contract tags show_message_box [main-thread] and promises the host
-// marshals it). Pre-fix, FileLoader's setMessageBoxHandler built the message box
-// directly on the worker → "QObject::setParent: ... different thread" + a
-// paint-engine segfault. Here we pass a real GUI-thread dialog_parent (the
-// handler is only installed when non-null), trigger a worker-thread askContinue,
-// auto-click Continue from the GUI thread, and assert no cross-thread warning
-// was emitted and the load completed.
+// A DataSource plugin may call the runtime host's message box from the import worker thread (the SDK contract tags
+// show_message_box [main-thread] and promises the host marshals it). The host must open the box on the GUI thread:
+// building it on the worker gives "QObject::setParent: ... different thread" and a paint-engine crash. The test
+// passes a real GUI-thread dialog_parent (the handler is only installed when non-null), triggers a worker-thread
+// askContinue, auto-clicks Continue from the GUI thread, and asserts that no cross-thread warning was emitted and
+// the load completed.
 TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   QtMessageCapture capture;
   QWidget parent;  // a real GUI-thread-owned parent for the marshaled message box
@@ -3762,9 +3621,8 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   hints.preset_config_json = uR"({"ask_msgbox":true})"_s;
   hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
 
-  // The GUI thread opens the message box asynchronously while only the ingest
-  // worker waits. This timer clicks Continue so askContinue returns true and
-  // the load proceeds without a nested GUI event loop.
+  // The GUI thread opens the message box asynchronously while only the ingest worker waits. This timer clicks
+  // Continue so askContinue returns true and the load proceeds without a nested GUI event loop.
   QTimer dismiss;
   dismiss.setInterval(20);
   QObject::connect(&dismiss, &QTimer::timeout, [&]() {
@@ -3821,11 +3679,9 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
   EXPECT_TRUE(ok) << "the marshaled askContinue must return Continue and complete the load";
 }
 
-// REGRESSION (desktop plugin contract): FileLoader calls loadConfig() on the
-// GUI thread after bind(). show_message_box is nevertheless a synchronous ABI:
-// it must block until the user answers and return that exact button. The current
-// GUI-thread branch opens the dialog asynchronously and immediately returns -1,
-// so the plugin observes Abort even though this test clicks Continue.
+// FileLoader calls loadConfig() on the GUI thread after bind(). show_message_box is a synchronous ABI: on desktop the
+// host blocks in a nested loop until the user answers and must return that exact button, not -1 (only the WASM
+// build, which never nests a Qt loop, answers a GUI-thread request with -1).
 TEST_F(MessageBoxMarshalTest, GuiThreadLoadConfigReceivesClickedMessageBoxAnswer) {
   QTemporaryDir probe_dir;
   ASSERT_TRUE(probe_dir.isValid());
@@ -3943,18 +3799,16 @@ TEST_F(MessageBoxMarshalTest, ShutdownRejectsWorkerMessageBeforeJoining) {
   }
   ASSERT_TRUE(found) << "worker never opened its asynchronous message box";
 
-  // Must return: joinForShutdown rejects the dialog first, releasing the worker
-  // from the synchronous plugin ABI, and only then waits for QThread::finished.
+  // Must return: joinForShutdown rejects the dialog first, releasing the worker from the synchronous plugin ABI, and
+  // only then waits for QThread::finished.
   loader_->joinForShutdown();
   EXPECT_FALSE(loader_->isBusy());
 }
 
-// The harder shutdown race: the worker posts its message-box request but the GUI
-// thread never dispatches it (we never pump the event loop before joining). The
-// gate must still unblock the worker with -1 so joinForShutdown returns without
-// hanging, and the queued GUI open — if it ever runs — is a no-op. We assert the
-// join is bounded and the plugin's askContinue observed -1 (recorded "aborted",
-// never "continued") via the probe file.
+// The harder shutdown race: the worker posts its message-box request but the GUI thread never dispatches it (the event
+// loop is not pumped before joining). The gate must still unblock the worker with -1 so joinForShutdown returns
+// without hanging, and the queued GUI open, if it ever runs, is a no-op. Asserts the join is bounded and the
+// plugin's askContinue observed -1 (recorded "aborted", never "continued") via the probe file.
 TEST_F(MessageBoxMarshalTest, ShutdownAnswersQueuedWorkerMessageWithMinusOne) {
   QTemporaryDir probe_dir;
   ASSERT_TRUE(probe_dir.isValid());
@@ -3974,9 +3828,8 @@ TEST_F(MessageBoxMarshalTest, ShutdownAnswersQueuedWorkerMessageWithMinusOne) {
   hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
   ASSERT_TRUE(loader_->loadFile(path, &parent, hints));
 
-  // Deliberately do NOT pump the event loop: the worker's queued GUI open sits
-  // unserved. joinForShutdown must shut the gate (answering the worker -1) BEFORE
-  // waiting on the worker, or it would deadlock against that unserved queue entry.
+  // Deliberately do NOT pump the event loop: the worker's queued GUI open sits unserved. joinForShutdown must shut the
+  // gate (answering the worker -1) BEFORE waiting on the worker, or it would deadlock against that queue entry.
   QElapsedTimer timer;
   timer.start();
   loader_->joinForShutdown();
@@ -3985,14 +3838,14 @@ TEST_F(MessageBoxMarshalTest, ShutdownAnswersQueuedWorkerMessageWithMinusOne) {
   EXPECT_FALSE(loader_->isBusy());
   EXPECT_LT(elapsed_ms, 5000) << "joinForShutdown must return promptly, not block on the unserved GUI open";
 
-  // No visible message box was ever dispatched (we never ran the event loop).
+  // No visible message box was ever dispatched (the event loop never ran).
   for (QWidget* widget : QApplication::topLevelWidgets()) {
     EXPECT_FALSE(qobject_cast<PJ::MessageBox*>(widget) != nullptr && widget->isVisible())
         << "the queued message box must not have opened";
   }
 
-  // The worker (joined by joinForShutdown) recorded its askContinue outcome: the
-  // gate answered -1, so askContinue was false and the plugin aborted.
+  // The worker (joined by joinForShutdown) recorded its askContinue outcome: the gate answered -1, so askContinue was
+  // false and the plugin aborted.
   const std::vector<std::string> markers = readProbeLines(probe_path);
   ASSERT_FALSE(markers.empty()) << "the worker never reached askContinue";
   EXPECT_EQ(std::count(markers.begin(), markers.end(), std::string("aborted")), 1)
@@ -4002,8 +3855,8 @@ TEST_F(MessageBoxMarshalTest, ShutdownAnswersQueuedWorkerMessageWithMinusOne) {
 }
 
 // ---------------------------------------------------------------------------
-// Load diagnostics: load failures (data-source-load-failed) and the loading
-// plugin's warnings/errors (data-source-message) reach the DiagnosticSink.
+// Load diagnostics: load failures (data-source-load-failed) and the loading plugin's warnings/errors
+// (data-source-message) reach the DiagnosticSink.
 // ---------------------------------------------------------------------------
 
 // Owns a bridge and records everything it re-emits. Declare it in the test body

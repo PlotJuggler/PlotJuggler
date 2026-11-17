@@ -300,7 +300,7 @@ std::optional<PJ::MarkerTopicInfo> markerInfoOf(
   return id.has_value() ? PJ::markerTopicInfo(store.descriptor(*id).metadata_json) : std::nullopt;
 }
 
-// GAP-43: a generator's topic is registered with the markers type, the scope and target
+// A generator's topic is registered with the markers type, the scope and target
 // its output key means, and its owner. The metadata, not the name, identifies it.
 TEST(BatchEngineTest, SeriesScopeTopicCarriesItsMetadata) {
   PJ::ObjectStore store;
@@ -702,7 +702,7 @@ TEST(BatchEngineTest, ScopedRecomputeIgnoresGeneratorsBoundElsewhere) {
 }
 
 // An ephemeral preview is published but excluded from recipes() (never persisted);
-// remove() tears it down. Preview is now just create(ephemeral) + remove.
+// remove() tears it down. Preview is create(ephemeral) + remove.
 TEST(BatchEngineTest, EphemeralPreviewPublishesAndRemoves) {
   PJ::ObjectStore store;
   BatchEngine service(store, rampResolver(6));
@@ -794,7 +794,7 @@ TEST(BatchEngineTest, FindsExemptGeneratorDependingOnRemovedProcessorOutput) {
   EXPECT_TRUE(service.exemptDependentsOf({"user"}).empty());
 }
 
-// N1: markers merge set-aware — the anchor's set plus each source's set shifted
+// Markers merge set-aware — the anchor's set plus each source's set shifted
 // onto the anchor clock, republished as one blob, and the source topics dropped.
 // (This is what markers opt out of the generic ObjectStore fold to do.)
 TEST(BatchEngineTest, MergeMarkerTopicsConcatenatesAndShifts) {
@@ -1744,7 +1744,7 @@ TEST(BatchEngineTest, ASourceTimelineDragRepublishesNoMarkerSet) {
   EXPECT_EQ(ownerPublishUid(session.objectStore(), kAllDatasetsMarkerDataset, all_topic, "plug/g"), before);
 }
 
-// ---- scheduled runs: staging, the brake, modes, demand, D30 ------------------
+// ---- scheduled runs: staging, the brake, modes, demand ------------------
 
 namespace {
 
@@ -2061,7 +2061,7 @@ TEST(BatchEngineTest, ChangeMarksStaleAndTheBrakeCoalescesRuns) {
   EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 3) << "the run saw the last change";
 }
 
-// D30: a run whose inputs change while it computes is still published (the display
+// A run whose inputs change while it computes is still published (the display
 // moves forward), and the generator stays stale until one follow-up run, with the
 // newest inputs, is published too.
 TEST(BatchEngineTest, ChangeDuringARunPublishesItAndRerunsWithTheNewestInputs) {
@@ -2109,7 +2109,7 @@ TEST(BatchEngineTest, ChangeDuringARunPublishesItAndRerunsWithTheNewestInputs) {
   EXPECT_EQ(entered.load(), 2);
 }
 
-// D30: inputs that change faster than the rule runs never freeze the markers. Every
+// Inputs that change faster than the rule runs never freeze the markers. Every
 // completed run is published while the stream goes on, and once it stops the
 // display converges to the newest inputs.
 TEST(BatchEngineTest, MarkersKeepUpdatingWhileInputsKeepChanging) {
@@ -2138,7 +2138,7 @@ TEST(BatchEngineTest, MarkersKeepUpdatingWhileInputsKeepChanging) {
   EXPECT_EQ(readPublished(store, kDataset, "in").markers.front().t_start, 60) << "converged to the newest inputs";
 }
 
-// D30 (GAP-08): the stream never lets a run finish on the newest inputs, yet every valid run publishes, in order, so
+// The stream never lets a run finish on the newest inputs, yet every valid run publishes, in order, so
 // the markers never freeze; the stale flag stays up until a run covers the newest input. Each run is held mid-compute
 // until the next change has arrived, so the order is the test's, not the clock's.
 TEST(BatchEngineTest, StreamingMarkersKeepPublishingUnderConstantChange) {
@@ -2400,7 +2400,7 @@ TEST(BatchEngineTest, ScriptRunsOffTheGuiThread) {
   EXPECT_NE(compute_thread.load(), gui_thread) << "computeRun executes on a pool worker thread";
 }
 
-// OWN-04: a removal supersedes the preview's run in flight: it publishes nothing, and its room returns once the
+// A removal supersedes the preview's run in flight: it publishes nothing, and its room returns once the
 // pool lets the run go.
 TEST(BatchEngineTest, RemovedPendingPreviewCannotResurrectItsTopic) {
   PJ::ObjectStore store;
@@ -2457,7 +2457,7 @@ TEST(BatchEngineTest, RefreshAllTargetsTheRequestedDatasetBinding) {
   EXPECT_FALSE(service.isStale(recipe.id));
 }
 
-// ASY-13: twelve refreshes during a run cost one more capture, and the one run in flight holds the room of one run.
+// Twelve refreshes during a run cost one more capture, and the one run in flight holds the room of one run.
 TEST(BatchEngineTest, RepeatedRefreshStagesOnlyOneLatestPendingSnapshot) {
   PJ::ObjectStore store;
   PJ::InFlightBudget budget(BatchEngine::kMarkerRunBytes + kOneRunSlack);
@@ -2833,7 +2833,7 @@ TEST(BatchEngineTest, AReloadThatBreaksARuleRecordsAndReportsItsError) {
   EXPECT_EQ(reported.size(), 1u) << "the same error is reported once";
 }
 
-// ---- the in-flight budget (BUD-11, docs/derived_objects/ARCHITECTURE.md §11) -------------
+// ---- the in-flight budget (docs/derived_objects/ARCHITECTURE.md "Scheduling and execution") -------------
 
 namespace {
 
@@ -2862,7 +2862,7 @@ BatchEngine::GeneratorRecipe ruleReading(const std::string& key, std::string scr
 
 }  // namespace
 
-// BUD-11 (changed): every binding's run reserves the run's ceiling before it stages and its staged copy once staged,
+// Every binding's run reserves the run's ceiling before it stages and its staged copy once staged,
 // so the runs together stay within the budget. A large rule whose copy does not fit beside the runs in flight gives
 // its room back, keeps its copy and waits at the head of the line: the rule behind it is not let in to stage
 // meanwhile, and the large one runs next, on the copy it kept.
@@ -3145,7 +3145,7 @@ TEST(BatchEngineTest, ABoundedCreateThatFinishedReturnsItsRoomAtOnce) {
 }
 
 // A bounded create (a layout load) that finds no room at once does not run inline: the rule is installed and its
-// first run waits in the line like a refresh, then stages, runs on the pool and publishes late (BAT-07: a layout
+// first run waits in the line like a refresh, then stages, runs on the pool and publishes late (a layout
 // load's rule may draw progressively). Only a bounded create without a pool runs inline.
 TEST(BatchEngineTest, ABoundedCreateWithoutRoomWaitsInTheLine) {
   const ScopedCreateBudget create_budget(PJ::test::kGenerousCreateBudget);

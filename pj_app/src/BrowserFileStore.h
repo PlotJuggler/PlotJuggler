@@ -13,9 +13,8 @@
 
 namespace PJ {
 
-// Stages browser-selected bytes in Emscripten MEMFS behind a lifetime lease.
-// The implementation is plain QFile/QDir, which also makes it testable against
-// a temporary directory in a native build.
+// Stages browser-selected bytes in Emscripten MEMFS behind a lifetime lease. Plain QFile/QDir, so a native
+// build tests it against a temporary directory.
 class BrowserFileStore {
  public:
   struct StageResult {
@@ -26,30 +25,16 @@ class BrowserFileStore {
 
   explicit BrowserFileStore(QString root = QStringLiteral("/pj_uploads"));
 
-  // Synchronous staging: writes the whole buffer in one QFile::write. Retained
-  // for native code paths and tests. On the browser main thread this blocks the
-  // event loop for the full memcpy of a large buffer; browser data-file picks
-  // never come here (FileSelectionService::selectAndStageFile mounts the File
-  // lazily at a reserve()d path instead). `bytes` is consumed (moved-from) so the
-  // caller's copy can be released as early as this call.
+  // Writes the whole buffer in one QFile::write: on the browser main thread it blocks the event loop for the
+  // whole copy, so browser picks use stageAsync() or reserve(). `bytes` is consumed.
   [[nodiscard]] StageResult stage(const QString& browser_name, QByteArray bytes);
 
-  // Browser-main-thread-friendly staging: writes the buffer in fixed-size
-  // chunks, yielding to the event loop between chunks via QTimer::singleShot(0)
-  // so a large pick never freezes rendering for the whole memcpy. `completion`
-  // runs on the event loop (never re-entrantly from this call) with the same
-  // StageResult stage() would return. `bytes` is moved into an internal async
-  // job and dropped the moment the last chunk is written — before `completion`
-  // fires — so the source copy is gone before the load prologue starts parser
-  // work. (QByteArray cannot free partially, so that single wasm-heap copy lives
-  // until the final chunk; the JS-side transient ArrayBuffer, released by the
-  // caller's move, is gone immediately.) Requires a running Qt event loop.
-  //
-  // Concurrency: each call captures an independent upload id + directory, so
-  // overlapping stagings never collide and need no explicit cancellation — a
-  // job whose caller loses interest simply completes into a lease nobody holds,
-  // which self-deletes. Safe even if this store is destroyed mid-staging: the
-  // job snapshots every value it needs at kickoff and touches the store no more.
+  // Writes in chunks, yielding to the event loop between them, so a large pick does not freeze rendering.
+  // `completion` runs later on the event loop, never re-entrantly, with what stage() would return; `bytes` is
+  // released after the last chunk and before `completion`, so the copy is gone before parsing starts. Requires
+  // a running event loop. Each call gets its own upload id and directory, so overlapping stagings never collide;
+  // the job copies what it needs at kickoff, so the store may be destroyed mid-staging. There is no cancel: a job
+  // whose caller lost interest completes into a lease nobody holds, which deletes itself.
   void stageAsync(const QString& browser_name, QByteArray bytes, StageCompletion completion);
 
   // Places a file the caller creates itself (a download streamed into MEMFS, a lazily mounted pick) and returns
@@ -59,14 +44,11 @@ class BrowserFileStore {
 
   [[nodiscard]] static QString sanitizedBasename(const QString& browser_name);
 
-  // Recovers the browser-provided display name carried in a pj-upload://
-  // identity. Returns empty for another scheme or a malformed identity. The
-  // backing MEMFS path is intentionally not involved.
+  // The display name carried in a pj-upload:// identity; empty for another scheme or a malformed identity.
   [[nodiscard]] static QString displayNameForIdentity(const QString& identity);
 
  private:
-  // Immutable per-file placement + naming derived once at kickoff, so async jobs
-  // are decoupled from the store's lifetime after they start.
+  // Computed once at kickoff, so an async job never touches the store after it starts.
   struct StagePlacement {
     QString session_directory;
     QString leaf_directory;
@@ -76,13 +58,8 @@ class BrowserFileStore {
     QString content_sha256;
   };
 
-  // Allocate the next id, build the target directory, and compute the identity.
-  // Returns the placement, or an error StageResult when the directory or name
-  // is unusable.
   [[nodiscard]] std::optional<StagePlacement> preparePlacement(const QString& browser_name, QString& error_out);
 
-  // Assemble the success LoadInput (with its self-deleting StagedFile lease)
-  // from a fully-written, verified placement.
   [[nodiscard]] static StageResult makeSuccess(const StagePlacement& placement);
 
   QString root_;

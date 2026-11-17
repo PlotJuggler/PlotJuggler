@@ -28,11 +28,8 @@ class MediaViewerWidget;
 class Scene2DLayer;
 class SessionManager;
 
-/// 2D scene dock on top of pj_scene_common's layered SceneDockWidget.
-///
-/// Registers image/video/depth/annotation/entity layer types, wires their
-/// MediaSources into a CompositeMediaSource, and nudges live layers to the newest
-/// ObjectStore sample when streaming data arrives.
+/// The 2D scene dock: its layers' MediaSources feed one CompositeMediaSource, and live layers follow the newest
+/// ObjectStore sample as streaming data arrives.
 class Scene2DDockWidget : public SceneDockWidget {
   Q_OBJECT
  public:
@@ -46,10 +43,8 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Stores a non-owning SessionManager pointer in the base and reconnects the
   /// live-sample follow connection. Replacing the session drops the old connection.
   void setSessionManager(SessionManager* session) override;
-  /// Interactive drop: overlays (annotations/markers) stack, but a full-frame
-  /// image/depth/video replaces the current background and is drawn beneath the
-  /// overlays. The old background is removed only after the new one attached.
-  /// addTopic() stays a plain append (workspace restore, programmatic stacking).
+  /// Interactive drop: overlays stack, a full-frame image, depth or video replaces the background beneath them (the old
+  /// one is removed only after the new one attached). addTopic() always appends.
   bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
   /// Adds a 2D render layer for the topic. Returns false when the object type is
   /// unsupported or layer attach fails; success also updates the dock title.
@@ -66,8 +61,6 @@ class Scene2DDockWidget : public SceneDockWidget {
   void setViewRotation(int degrees);
   [[nodiscard]] int viewRotation() const;
 
-  /// Single source of truth for the canonical object types the 2D scene family
-  /// handles (render layers; the 2D family has no scene-wide config topics).
   /// Host-side drop routing and acceptsObjectType() both read this.
   [[nodiscard]] static bool handlesObjectType(sdk::BuiltinObjectType object_type);
 
@@ -76,8 +69,7 @@ class Scene2DDockWidget : public SceneDockWidget {
   [[nodiscard]] std::vector<ObjectTopicId> compositeTopicOrderForTesting() const;
   /// Polls the composite as the viewer does, without a GPU (nullopt: nothing new, or no composite).
   [[nodiscard]] std::optional<MediaFrame> takeCompositeFrameForTesting();
-  /// True while the empty-state placeholder (the greyed image icon) should be
-  /// shown instead of the GPU viewer — i.e. there are no visible layers.
+  /// True while there are no visible layers.
   [[nodiscard]] bool emptyPlaceholderActiveForTesting() const noexcept {
     return empty_placeholder_active_;
   }
@@ -90,10 +82,7 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Workspace XML tag for the 2D scene dock.
   [[nodiscard]] QString xmlTag() const override;
   [[nodiscard]] bool acceptsStateChildTag(const QString& tag) const override;
-  /// Builds the real MediaViewerWidget, fronted by a stacked empty-state placeholder shown until
-  /// the first layer arrives.
   QWidget* createSceneView() override;
-  /// Re-tints the placeholder icon when the palette/theme changes.
   void changeEvent(QEvent* event) override;
   /// Supplies the current session pointer to Scene2DLayer::attach().
   std::unique_ptr<SceneLayerContext> makeContext() override;
@@ -123,13 +112,9 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Makes `topic_id` the only background, drawn beneath the overlays.
   void promoteBackground(ObjectTopicId topic_id);
   void primeRestoreLayerKind(const QDomElement& layer_element);
-  /// Builds the centered, greyed image-SVG placeholder shown while the dock is
-  /// empty (a nicer "drop a topic here" affordance than a blank GPU surface).
   QWidget* makeEmptyPlaceholder(QWidget* parent);
-  /// Re-renders the placeholder icon for the active theme (LoadSvg ink tint).
   void retintEmptyPlaceholder();
-  /// Switches the stacked view between the placeholder and the viewer to match
-  /// empty_placeholder_active_. No-op until createSceneView() has run.
+  /// No-op until createSceneView() has run.
   void applyEmptyPlaceholderState();
   /// Connects live ObjectStore ingestion to jump visible layers to the data edge.
   void reconnectLiveSamples(SessionManager* session);
@@ -144,21 +129,15 @@ class Scene2DDockWidget : public SceneDockWidget {
   // The real viewer is non-owning here; Qt parent ownership is the container made
   // by createSceneView(), while composite_ owns the source it polls.
   MediaViewerWidget* viewer_ = nullptr;
-  // Stacked front for the scene view: page 0 is the empty-state placeholder page
-  // (built by makeEmptyPlaceholder(), holding empty_placeholder_icon_), page 1 is
-  // the viewer. Stacking (not overlaying) avoids compositing a raster label over
-  // the QRhiWidget's surface. Both null until createSceneView() runs.
+  // Both null until createSceneView() runs.
   QStackedWidget* view_stack_ = nullptr;
   QLabel* empty_placeholder_icon_ = nullptr;
-  // Whether the empty-state placeholder should front the viewer (no visible
-  // layers). Tracked independently of the (lazily created) view so it is correct
-  // the moment createSceneView() runs.
+  // Tracked apart from the lazily created view, so it is right when createSceneView() runs.
   bool empty_placeholder_active_ = true;
   std::unique_ptr<CompositeMediaSource> composite_;
   // Live-follow subscription; reconnectLiveSamples owns disconnect/replacement.
   QMetaObject::Connection live_samples_conn_;
-  // Visible topic ids in the exact order pushed into composite_; testing reads it
-  // to verify layer reorder/add/remove reconciliation.
+  // Visible topic ids in composite_'s order.
   std::vector<ObjectTopicId> composite_topic_order_;
   std::unordered_map<int64_t, ImageLayerKind> restore_image_layer_kinds_;
 };

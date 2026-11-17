@@ -1,98 +1,72 @@
 # pj_scene2D
 
-2D media/scene widget family: decoding and GPU display of images, video,
-depth maps, and pixel-space annotation overlays, synchronized with the global
-timeline. Ships as two CMake targets with a strict dependency direction:
-`pj_scene2d_core` (Qt-free C++20 — decoders, `MediaSource` pipeline sources,
-keyframe indexing, compositing) and `pj_scene2d_widgets` (Qt — the
-`QRhiWidget`-based `MediaViewerWidget`, the `Scene2DDockWidget` layer stack on
-top of `pj_scene_common`). pj_scene2D is a read-only consumer of
-`pj_datastore::ObjectStore`; it never writes to storage.
+The 2D media widget family: decoding and GPU display of images, video, depth maps and pixel-space annotation
+overlays, synchronized with the global timeline. Two targets: `pj_scene2d_core` (Qt-free decoders, `MediaSource`
+sources, keyframe indexing, compositing) and `pj_scene2d_widgets` (the `QRhiWidget` viewer and the
+`Scene2DDockWidget` layer stack on `pj_scene_common`). How it works: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md);
+measured evidence: [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md); schemas: the SDK's
+[`builtin_type.md`](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md).
 
-Core tests are grouped into the `pj_scene2d_core_tests` and
-`pj_scene2d_core_source_dir_tests` gtest runners, registered with
-`gtest_discover_tests`: ctest names are `<runner>.<Suite>.<Case>`, with one process
-per case. The source-directory runner uses the repository root for video fixtures.
-`mcap_integration_test` and `dual_store_test` stay separate because both define
-`MCAP_IMPLEMENTATION`; `ffmpeg_decoder_test` stays separate to preserve its ctest
-`LSAN_OPTIONS` environment. The viewer's pixel checks (YUV/NV12 colour matrices,
-BGRA, depth colormap, rectification, overlays, scissoring) are
-`media_viewer_render_test`, a QRhi display runner registered once per backend of
-the platform; it skips under `test.sh`'s `offscreen` QPA and runs in the CI
-display lanes.
+## Invariants
 
-**Depth images** arrive as `sdk::Image` with a depth `encoding` (16UC1 / 32FC1 /
-compressedDepth) — there is no `kDepthImage` producer. `Scene2DDockWidget` peeks a
-`kImage` topic's first sample and routes depth-encoded images to the colormap
-`DepthImageLayer` (per-layer colormap turbo/viridis/plasma/grayscale, invert, a
-manual near-far range with an on-demand **Auto-fit** button that snaps to the current
-frame's depth percentiles) and everything else to the plain `ImageLayer` (which
-renders images with **nearest** (pixelated) magnification and exposes a **rectify**
-toggle that undistorts the image with its `CameraInfo` — on by default, turn off to
-override the always-on auto-decision for an already-rectified stream).
-The toggle is disabled with an explanation until the decoded image has a usable
-`CameraInfo` with the same `frame_id` in its dataset. Calibration topics are
-recognized by their object classification (or the legacy `/camera_info` suffix),
-and can contain parser-bound messages or canonical CameraInfo bytes.
-An explicit clear (an empty-image tombstone or a seek before the shown image)
-resets rectification eligibility; a no-update result preserves the displayed image's status.
-Both
-`ImagePipelineSource` and `DepthPipelineSource` obtain the `sdk::Image` from a store
-entry through one shared seam — `image_resolve.h::resolveImage` (the topic's
-MessageParser when present, else the canonical `pj_image_v1` codec). The depth decode
-— including the heavy compressedDepth PNG inflate — runs **off the UI thread** on an
-`AsyncFrameWorker`, like the image/video sources; `setTimestamp()` posts and returns,
-`takeFrame()` polls, and a frame-ready callback drives the repaint.
-
-The colormap is applied **on the GPU**: `DepthPipelineSource` emits a raw float
-depth frame (`PixelFormat::kDepthR32F`) plus `DepthColorParams` (near/far/invert/
-colormap), and `MediaViewerWidget`'s media shader (`pixelFormat == 5`) normalizes by
-[near,far] and looks the result up in a colormap LUT (`u_tex`, built once from
-`pj_widgets/Colormap.h::buildColormapLut`). So there is no per-pixel CPU colormap, and
-changing colormap/range/invert is a uniform write with no re-decode. The colormap set
-+ its math live **once** in `pj_widgets/Colormap.h` (`Colormap` enum, `colorFor()`,
-`buildColormapLut()`, and `colormapGlsl()` for the 3D in-shader path), shared with the
-3D pointcloud colouring so a scalar maps to the same colour in both views. The Qt-free
-core stays decoupled: `DepthPipelineSource::setColormap` takes an opaque `uint8_t`
-colormap id (== `Colormap` value == LUT row), not the enum.
-
-The hover **Point Inspector** (`pixel_inspector.{h,cpp}`) is **format-aware**: ordinary
-images get the zoom grid + RGB readout, but a `kDepthR32F` frame shows the **metric
-depth** (`depthMetersAt`, "— (no data)" for non-finite/≤0 pixels) plus a swatch of the
-on-screen colormapped colour (`depthColormapColor`, which reuses the same
-`Colormap.h::colorFor()` the GPU LUT is built from) — no zoom grid, since a
-colormapped pixel has no per-pixel RGB worth magnifying. See
-[`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) §13.
-
-## Docs
-
-Read in this order:
-
-- [`docs/REQUIREMENTS.md`](./docs/REQUIREMENTS.md) — the WHAT: scope, use cases, functional requirements, module contract.
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — the HOW: module structure, data flow, scrub architecture, codec pipeline, threading model, key invariants.
-- [`docs/TECHNICAL_NOTES.md`](./docs/TECHNICAL_NOTES.md) — domain background: the pinned Qt's QRhi specifics, codec caveats, HW-accel matrices, lessons learned.
-- [`docs/builtin_type.md` in the SDK repo](https://github.com/PlotJuggler/plotjuggler_sdk/blob/main/docs/builtin_type.md) — canonical builtin-type catalog (the SDK owns all canonical scene/object schemas: Image, DepthImage, VideoFrame, PointCloud, OccupancyGrid, SceneEntities, FrameTransforms, ImageAnnotations, etc.).
+- **Read-only consumer** of `ObjectStore`; at-or-before is the only time query, in `int64_t` ns on the dataset
+  clock.
+- **Frames reach the viewer only through `MediaSource::takeFrame()`**, never through Qt signals: queued frames
+  cannot be withdrawn and stale ones reach the display during a scrub.
+- **Video decode cancels only on a scrub** (`StreamingVideoSource`'s preempt predicate): cancelling on every
+  playback tick delivers no frame at all.
+- **The depth no-data rule (`isValidDepth`) equals the shader's `!(d > 0)`**, or the inspector disagrees with the
+  display.
+- **The view transform and its inverse** (`pixel_inspector.h`) change together, or the inspector reads the wrong
+  pixel.
+- **`setCameraInfoMap` runs before the first `setTimestamp()`**: the worker reads the map unlocked.
+- **No draw references a resource whose `create()` failed** (D3D11 crashes in `beginPass`).
+- **Every `QRhiWidget` is constructed parentless, then inserted**, or a raster window never switches to QRhi.
+- **Editing a shader means re-baking its `.qsb`** with the pinned `qsb` (`widgets/shaders/bake.sh`) and committing
+  both, or the WASM configure hash check fails.
 
 ## Key headers
 
-- `core/include/pj_scene2d_core/media_source.h` — the uniform `setTimestamp`/`takeFrame` frame-delivery contract everything plugs into.
-- `core/include/pj_scene2d_core/image_pipeline_source.h`, `streaming_video_source.h`, `depth_pipeline_source.h`, `scene_pipeline_source.h`, `composite_media_source.h` — the concrete `MediaSource` implementations. The composite also pairs the annotations of a derived topic, which name their image, with the delivered frame (`setLayerPairing`, ARCHITECTURE §8.3a); a parser's are shown as they are.
-- `core/include/pj_scene2d_core/image_resolve.h` — `resolveImage`, the single seam that turns a store entry into an `sdk::Image` (parser or canonical codec) and its stamp on the dataset clock (the payload's plus the entry's merge shift, carried as `DecodedFrame::stamp` for annotation pairing); shared by the image and depth pipeline sources.
-- `core/include/pj_scene2d_core/streaming_video_decoder.h`, `ffmpeg_decoder.h` — GOP-aware streaming video decode on top of FFmpeg. `FfmpegDecoder` carries the codec's colorimetry onto each frame and emits native NV12 on the hardware-decode path.
-- `core/include/pj_scene2d_core/video_color.h` — `buildYuvMatrix(space, range)`: the per-frame YUV→RGB matrix (BT.601/709 + limited/full range) the media shader uploads. `depth_range.h` — `depthPercentileRange` backing the depth Auto-fit.
-- `core/include/pj_scene2d_core/overlay_geometry.h` — backend-agnostic tessellation of annotation overlays (lines/points/fills/circles) into GPU vertex data; stroke width scales with zoom but is **floored at 1px on screen** so edges never go sub-pixel and vanish.
-- `widgets/include/pj_scene2d_widgets/media_viewer_widget.h` — the `QRhiWidget` renderer (YUV/RGB pipelines + annotation overlays).
-- `widgets/include/pj_scene2d_widgets/Scene2DDockWidget.h` — the dock widget wiring layers into `pj_scene_common`'s `SceneDockWidget`.
+Core (`core/include/pj_scene2d_core/`):
 
-## Working conventions
+- `media_source.h`: the `setTimestamp` / `takeFrame` contract; `async_frame_worker.h`: the shared latest-wins worker.
+- `image_pipeline_source.h`, `depth_pipeline_source.h`, `streaming_video_source.h`, `scene_pipeline_source.h`: the
+  sources; `composite_media_source.h`: fuses them and pairs a derived topic's annotations with its image
+  (`setLayerPairing`).
+- `image_resolve.h`: `resolveImage`, store entry to `sdk::Image` plus its dataset-clock stamp.
+- `streaming_video_decoder.h`, `ffmpeg_decoder.h`, `video_codec_utils.h`: GOP-aware decode, hardware backends,
+  keyframe oracles.
+- `codecs.h`, `codec_pipeline.h`: image codecs; `scene_decoder.h`: annotations and 2D scene entities.
+- `undistort_remap.h`, `image_rectifier.h`: rectification maps (GPU LUT, CPU fallback).
+- `video_color.h`: `buildYuvMatrix`; `depth_range.h`: depth validity and Auto-fit percentiles;
+  `overlay_geometry.h`: stroke tessellation with the 1 px screen floor.
 
-- Run the module tests and make sure they pass before any commit.
-- Keep the markdown files in `docs/` in sync with the code you change (see the
-  root `CLAUDE.md` freshness discipline); hard-won lessons go in `TECHNICAL_NOTES.md`
-  (root `CLAUDE.md` rule).
-- Editing a shader means re-baking its `.qsb` with the pinned `qsb` (`widgets/shaders/bake.sh`) and committing both,
-  or the WASM configure hash check fails.
-- Derived topics (script outputs) reach this module as ordinary store topics, through `pj_scene_common` and the
-  catalog; see `docs/derived_objects/ARCHITECTURE.md` §8 (the on-demand pipeline) and §17 (scene integration).
-- Think test-first: prefer automated reproduction over asking the user to run
-  the app. When an issue is reported, reproduce it in a test before fixing it.
+Widgets (`widgets/include/pj_scene2d_widgets/`):
+
+- `media_viewer_widget.h`: the QRhi renderer; `pixel_inspector.h`: hover magnifier and the view-transform math.
+- `Scene2DDockWidget.h`: the dock; `layers/`: `ImageLayer` (Rectify toggle), `DepthImageLayer` (colormap,
+  Auto-fit), `VideoLayer`, `SceneDecoderLayer`.
+
+Depth images arrive as `kImage` with a depth encoding; the dock routes them by the first sample's encoding.
+
+## Tests
+
+```bash
+./test.sh -R 'pj_scene2d_core|scene2d_dock|PixelInspector|mcap_integration|dual_store|ffmpeg_decoder|media_viewer'
+```
+
+- `pj_scene2d_core_tests` and `pj_scene2d_core_source_dir_tests` (video fixtures, run from the repository root)
+  register each case as `<runner>.<Suite>.<Case>`, one process per case. The dock and inspector tests are
+  `scene2d_dock_widget_test`, `scene2d_dock_widget_dispatch_test` and `PixelInspector`.
+- `mcap_integration_test` and `dual_store_test` are separate binaries (both define `MCAP_IMPLEMENTATION`);
+  `ffmpeg_decoder_test` is separate for its `LSAN_OPTIONS`.
+- `media_viewer_render_test` (pixel checks: colour matrices, depth colormap, rectification, overlays) is a QRhi
+  display runner, one per backend; it skips under `test.sh`'s `offscreen` QPA and runs in the CI display lanes.
+- `video_playback_bench_test` skips unless `PJ_BENCH_MP4` names a file.
+
+## Pointers
+
+- Derived topics (script outputs) reach this module as ordinary store topics; see
+  [docs/derived_objects/ARCHITECTURE.md](../docs/derived_objects/ARCHITECTURE.md), "The on-demand pipeline" and
+  "Scene integration".
+- Hard-won lessons go in `docs/TECHNICAL_NOTES.md` as evidence (observed, conditions, re-test).

@@ -73,8 +73,7 @@ jobs:
     # took 925-2268 ms for the same sample restore). The nightly run, which nobody
     # waits on, stays on GitHub's free runners. Same choice for the browser jobs.
     runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
-    # Generous first-run ceiling (cold Qt+emsdk+ccache); warm runs are expected
-    # in the 20-30 minute band. Tighten once real timings accumulate.
+    # Generous ceiling for a cold run (Qt + emsdk + ccache); warm runs take 20-30 minutes.
     timeout-minutes: 120
 
     steps:
@@ -230,13 +229,11 @@ jobs:
           diff -qr build-wasm-prod/deploy build-wasm-prod/deploy-b
 
       - name: Download budget of the production package
-        # 5 % over the measured 16,125,617 B (2026-10-21, Python and the
-        # notices included), plus 158,000 B for the MCP server in the browser
-        # (2026-11-11: 16,836,762 B on main -> 16,992,912 B with it). Set to
-        # 20,000,000 B on 2026-11-14 to leave room for built-in plugins such as
-        # the log widget. Raise it deliberately. The Python stdlib zip
-        # (python_stdlib.zip, about 0.67 MB) is downloaded on first Python use
-        # and not counted since 2026-11-15 (-0.68 MB).
+        # Measured 16,125,617 B on 2026-10-21 (Python and the notices included), about
+        # 17 MB with the browser MCP server (16,992,912 B on 2026-11-11); the 20,000,000 B
+        # budget leaves room for built-in plugins such as the log widget. Raise it
+        # deliberately. The Python stdlib zip (python_stdlib.zip, about 0.67 MB) is
+        # downloaded on first Python use and not counted.
         run: node scripts/wasm_size_budget.mjs build-wasm-prod/deploy/manifest.json 20000000
 
       - name: Cache Playwright browsers

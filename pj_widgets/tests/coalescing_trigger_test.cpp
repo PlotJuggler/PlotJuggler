@@ -69,10 +69,9 @@ TEST(CoalescingTrigger, QuietWindowFiresNoTrailingAction) {
 }
 
 TEST(CoalescingTrigger, ReentrantRequestFromActionCoalescesInsteadOfRecursing) {
-  // An action that re-enters request() (e.g. a tracker broadcast that indirectly
-  // causes another cursor update) must coalesce into the trailing edge, not
-  // recurse synchronously. The window is opened before the action runs, so the
-  // nested request() sees the timer active and only marks pending.
+  // An action that re-enters request() (a tracker broadcast causing another cursor update) coalesces into the trailing
+  // edge instead of recursing: the window opens before the action runs, so the nested request() sees the timer active
+  // and only marks pending.
   int calls = 0;
   bool reenter_once = true;
   PJ::CoalescingTrigger* self = nullptr;

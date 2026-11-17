@@ -156,7 +156,6 @@ std::string describe(QWidget* w, const std::optional<std::string>& text = std::n
   return out;
 }
 
-/// "checked" or "unchecked".
 const char* checkFlag(bool checked) {
   return checked ? "checked" : "unchecked";
 }
@@ -666,8 +665,6 @@ ulong UiDriver::nextStamp() {
   if (!clock_.isValid()) {
     clock_.start();
   }
-  // Two calls on one spot must not make a double-click: each call's press comes at least a
-  // double-click interval after the previous one.
   const auto gap = static_cast<ulong>(QGuiApplication::styleHints()->mouseDoubleClickInterval()) + 1;
   last_stamp_ = std::max(static_cast<ulong>(clock_.elapsed()), last_stamp_ + gap);
   return last_stamp_;

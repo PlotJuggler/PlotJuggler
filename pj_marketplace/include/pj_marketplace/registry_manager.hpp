@@ -13,16 +13,9 @@
 
 namespace PJ {
 
-// Downloads and parses the marketplace registry JSON from a remote URL.
-//
-// Usage:
-//   auto* mgr = new RegistryManager(this);
-//   connect(mgr, &RegistryManager::fetchFinished, this, [mgr](bool ok) {
-//     if (ok) use(mgr->extensions());
-//   });
-//   mgr->fetchRegistry(QUrl("https://raw.githubusercontent.com/.../registry.json"));
-//
-// A new fetchRegistry() call cancels any in-flight request.
+// Downloads and parses the marketplace registry JSON from a remote URL. A new fetchRegistry() call cancels any
+// in-flight request. A failure to download, parse or resolve is reported as fetchError() followed by
+// fetchFinished(false).
 class RegistryManager : public QObject {
   Q_OBJECT
 
@@ -43,20 +36,16 @@ class RegistryManager : public QObject {
   // Returns the parsed extensions after a successful fetch; empty list otherwise.
   QList<Extension> extensions() const;
 
-  // Same as extensions(), but drops entries whose `platforms` map has no
-  // artifact for `platform` (e.g. "linux-x86_64"). Use this for catalog
-  // views — installation would fail anyway for the dropped entries (see
-  // ExtensionManager::doInstall). The platform key is injected by the
-  // caller so RegistryManager stays independent of host detection.
+  // Same as extensions(), minus entries whose `platforms` map has no artifact for `platform` (e.g. "linux-x86_64").
+  // The platform key is injected so RegistryManager stays independent of host detection.
   QList<Extension> compatibleExtensions(const QString& platform) const;
 
   // Returns the first extension whose id matches, or a default-constructed Extension
   // (id is empty) when not found.
   Extension findById(const QString& id) const;
 
-  // Overrides the platform key and application version used by the headless
-  // candidate resolver. The SDK version remains the running SDK's own value.
-  // Production wires nothing; this is the test seam. Takes effect on the next parse.
+  // Overrides the platform key the candidate resolver ranks by. Test seam: production wires nothing. Takes effect on
+  // the next parse.
   void setEligibility(const QString& platform);
 
  signals:
@@ -65,8 +54,8 @@ class RegistryManager : public QObject {
   void fetchError(const QString& error_message);
 
  private:
-  // Parses raw JSON bytes into extensions_.
-  // Emits fetchError() and returns false on any parse failure.
+  // Parses raw JSON bytes into extensions_ through the candidate resolver. Emits fetchError() and returns false on any
+  // parse or resolution failure.
   bool parseJson(const QByteArray& data);
 
   QNetworkAccessManager* network_;

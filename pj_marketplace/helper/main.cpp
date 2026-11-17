@@ -1,19 +1,13 @@
 // Copyright 2026 Pablo Iñigo Blasco
 // SPDX-License-Identifier: MPL-2.0
 
-// pj-plugin-check — Qt-free, one-shot admission helper.
+// pj-plugin-check: Qt-free, one-shot admission helper.
 //
-// Contract:
 //   pj-plugin-check <extension-directory>
 //
-//   Prints one JSON document (schema 1) describing the plugins the SDK could
-//   discover in that directory, then exits. Loading the DSOs happens inside
-//   this child process; a plugin that crashes on dlopen or during manifest
-//   read never touches the caller's memory space.
-//
-// This is the minimum viable spike of the release-4.0 fault-boundary idea,
-// designed to be cabled into the classic ExtensionManager without pulling in
-// ProfileStore, ArtifactStore, LoadPlan or the generation-based catalog.
+// Prints one JSON document (schema 1) describing the plugins the SDK could discover in that directory, then exits
+// (0 admitted, 2 usage, 4 no valid plugin). The DSOs are loaded inside this child process, so a plugin that crashes on
+// dlopen or during manifest read never touches the caller's memory.
 
 #include <filesystem>
 #include <iostream>
@@ -52,9 +46,8 @@ nlohmann::json descriptorToJson(const PJ::PluginDescriptor& descriptor) {
   j["id"] = descriptor.id;
   j["name"] = descriptor.name;
   j["version"] = descriptor.version;
-  // description and category are display fields the caller stores in its installed
-  // record; they are only reachable from the embedded manifest, which is precisely
-  // what the parent must not open for itself.
+  // description and category are display fields the caller stores in its installed record; the embedded manifest is
+  // their only source, and the parent must not open it itself.
   j["description"] = descriptor.description;
   j["category"] = descriptor.category;
   j["family"] = familyToString(descriptor.family);

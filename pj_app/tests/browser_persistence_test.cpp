@@ -150,9 +150,8 @@ TEST(BrowserPersistencePolicy, AcceptsOnlyBoundedSourceFreeLayoutRecipes) {
   EXPECT_FALSE(
       BrowserPersistence::isSafeGenericLayoutRecipe(
           "<root pj4_version=\"4\" binding=\"generic\"><x>pj-upload://dead</x></root>"));
-  // Cloud-materialized source records are source-bound by definition; even a
-  // hand-crafted document carrying one outside <previouslyLoaded_Datafiles>
-  // must never enter durable browser storage.
+  // Cloud-materialized source records are source-bound: one outside <previouslyLoaded_Datafiles> in a hand-crafted
+  // document must still be rejected.
   EXPECT_FALSE(
       BrowserPersistence::isSafeGenericLayoutRecipe(
           "<root pj4_version=\"4\" binding=\"generic\"><materialize provider=\"p\"/></root>"));
@@ -160,8 +159,8 @@ TEST(BrowserPersistencePolicy, AcceptsOnlyBoundedSourceFreeLayoutRecipes) {
 }
 
 TEST(BrowserPersistenceTest, StreamRecordsNeverBecomeDurableRecipes) {
-  // A stream record carries plugin configuration (endpoints, maybe credentials), so neither the
-  // record nor its identity may enter durable browser storage, even in a document marked generic.
+  // A stream record carries plugin configuration (endpoints, maybe credentials), so neither it nor its identity may
+  // enter durable browser storage, even in a document marked generic.
   const QByteArray stream_block =
       "<root pj4_version=\"5\" binding=\"generic\"><previouslyLoaded_StreamingSources/></root>";
   const QByteArray nested_record =
@@ -178,8 +177,8 @@ TEST(BrowserPersistenceTest, StreamRecordsNeverBecomeDurableRecipes) {
   EXPECT_FALSE(error.isEmpty());
   EXPECT_TRUE(persistence.recentLayouts().isEmpty());
 
-  // The shell retains an opened browser layout as a recipe only when it is not source-bound:
-  // a stream record alone makes a layout source-bound.
+  // The shell retains an opened browser layout as a recipe only when it is not source-bound; a stream record
+  // alone makes a layout source-bound.
   const auto source_bound = [](const char* xml) {
     QDomDocument doc;
     EXPECT_TRUE(static_cast<bool>(doc.setContent(QByteArray(xml)))) << xml;

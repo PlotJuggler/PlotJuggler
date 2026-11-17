@@ -37,9 +37,9 @@ node packaging/web/deploy.mjs --package build-wasm-prod/deploy --env production
 release without `sources/SOURCE-OFFER.txt`, and `--dry-run` prints what it would do. Old releases stay in the
 bucket; delete one only when no deployment can need it again.
 
-The first production deploy moves `app.plotjuggler.io` off the telemetry Worker, which holds it as a
-custom domain attached in the dashboard (its own `wrangler.toml` declares no route, so its redeploys
-do not take it back). Detach it from `plotjuggler` first (Workers → plotjuggler → Domains), then
-deploy; installed releases' pings to `/telemetry` fail only in between.
+`wrangler.toml` declares `app.plotjuggler.io` and `stats.plotjuggler.io` as this Worker's custom domains. A
+domain attached to another Worker in the dashboard (for instance `app.plotjuggler.io` on the telemetry Worker
+`plotjuggler`: Workers → plotjuggler → Domains) must be detached before this Worker's deploy can take it;
+installed releases' pings to `/telemetry` fail only in between.
 
 Tests: `node --test packaging/web/worker.test.mjs`.

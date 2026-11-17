@@ -7,15 +7,12 @@
 
 namespace PJ {
 
-// A checkable rounded-rectangle toggle button (the same look as the pointcloud
-// "auto" toggle): the label sits inside a 4px-radius rectangle with a hairline
-// border; unchecked is a plain button, checked fills with the accent selection
-// colour. A labelled, click-the-whole-control alternative to QCheckBox — distinct
-// from ToggleSwitch, which is an iOS-style sliding switch with no inline text.
+// A checkable rounded-rectangle toggle: the label sits inside a 4px-radius rectangle with a hairline border; unchecked
+// is a plain button, checked fills with the accent selection colour. A labelled, click-the-whole-control alternative to
+// QCheckBox, distinct from ToggleSwitch (a sliding switch with no inline text).
 //
-// Checkable by default, so it is a drop-in for a QCheckBox: just connect
-// toggled(). Self-painted; every colour is a Qt stylesheet property, so the app
-// theme drives them from the QSS (and they stay consistent across light/dark):
+// Checkable by default, so a drop-in for QCheckBox: connect toggled(). Self-painted; every colour is a Qt stylesheet
+// property, so the app theme drives them from the QSS in light and dark:
 //   PJ--CheckButton {
 //     qproperty-accentColor:      ${border_checked};            // checked + hover border
 //     qproperty-borderColor:      ${border_default};            // unchecked border
@@ -24,9 +21,9 @@ namespace PJ {
 //   }
 class CheckButton : public QAbstractButton {
   Q_OBJECT
-  // Border when checked / hovered (the active accent).
+  // Border when checked or hovered (the active accent).
   Q_PROPERTY(QColor accentColor READ accentColor WRITE setAccentColor)
-  // Border when unchecked + at rest (a quiet hairline).
+  // Border when unchecked and at rest.
   Q_PROPERTY(QColor borderColor READ borderColor WRITE setBorderColor)
   // Fill when checked.
   Q_PROPERTY(QColor checkedFillColor READ checkedFillColor WRITE setCheckedFillColor)

@@ -1,8 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
-//
-// The bell dialog is a pure view over DiagnosticHistory: filters hide rows,
-// new records rebuild the table, the cap evicts, Clear empties everything.
+// The bell dialog is a pure view over DiagnosticHistory: filters hide rows, new records rebuild the table, the cap
+// evicts, Clear empties everything.
 
 #include <gtest/gtest.h>
 

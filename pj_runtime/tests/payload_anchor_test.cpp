@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Regression test for the data-source plugin DSO use-after-free on teardown: a
-// lazy ObjectStore payload anchor carries the plugin's `release` function
-// pointer, which must NOT be invoked after the plugin .so is dlclosed. The host
-// wrapper must keep the producing DSO's token alive until the anchor is gone.
+// A lazy ObjectStore payload anchor carries the plugin's `release` function pointer, which must not be invoked after
+// the plugin .so is dlclosed: the host wrapper keeps the producing DSO's token alive until the anchor is gone.
 
 #include "pj_runtime/detail/payload_anchor.h"
 

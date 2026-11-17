@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Phase-1 parity spike: the Luau marker engine must produce the same markers a
-// sol2 anomaly rule would, for the same series. We assert exact markers for known
-// synthetic inputs (the cheapest way to prove the language port is faithful).
+// The Luau marker engine over known synthetic series: exact markers, and the failure paths (non-finite input, byte
+// ceiling, cancellation).
 
 #include "pj_scripting/marker_engine.h"
 
@@ -178,8 +177,8 @@ TEST(MarkerEngine, NonFiniteMarkerTimeErrorsInsteadOfUB) {
   }
 }
 
-// A non-finite argument to series:atTime must not read out of bounds (a NaN query
-// used to collapse lower_bound to begin() and underflow the low index to SIZE_MAX).
+// A non-finite argument to series:atTime must not read out of bounds: a NaN query would collapse lower_bound to begin()
+// and wrap the low index.
 TEST(MarkerEngine, AtTimeNonFiniteDoesNotReadOutOfBounds) {
   SeriesView sv;
   sv.timestamps = {0, 1 * kSec, 2 * kSec};

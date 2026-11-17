@@ -2,51 +2,27 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Shared descriptor-import fake for the layout-import suites.
-//
-// Two layers:
-//   * FakeJob + kFakeJobVtable — a PJ_joinable_job_t whose worker blocks on a
-//     start gate as its FIRST action (so no callback can precede
-//     start_import's return, the ABI contract), released by the test, by
-//     cancel, or by destroy. Instrumentation is optional per-job hooks
-//     (`on_event` for event logs, `unlink` for owner detach), so both the
-//     scripted provider below and the headless-session test's
-//     event-ordering fake ride the SAME job mechanics.
-//   * The descriptor-SCRIPTED provider toolbox (registerStaticToolbox, no
-//     DSO): the descriptor JSON drives it —
+// Shared descriptor-import fake for the layout-import suites, in two layers:
+//   * FakeJob + kFakeJobVtable: a PJ_joinable_job_t whose worker blocks on a start gate as its first action (so no
+//     callback can precede start_import's return, the ABI contract), released by the test, by cancel, or by destroy.
+//     Optional per-job hooks (`on_event` for event logs, `unlink` for owner detach) let the scripted provider below
+//     and the headless-session test's event-ordering fake share the same job mechanics.
+//   * A descriptor-scripted provider toolbox (registerStaticToolbox, no DSO), driven by the descriptor JSON:
 //       {"name":"s1","trust":"trusted|confirm|refused","path":"<effective>",
-//        "estimated":123,"import":"eager|promoted|fail|block",
+//        "estimated":123,"import":"<mode>",
 //        "materialized":bool,   // optional: overrides the cache verdict
 //        "identity":"...",      // optional: overrides the source identity
-//        "topic":"...",         // optional: progressive modes' published topic
+//        "topic":"...",         // optional: published topic of the progressive and capture modes
 //        "loader":"..."}        // optional: progressive-promoted's stock loader
-//     query_descriptor answers trust/path/identity/estimate + the
-//     is_materialized verdict (defaults: identity = "fake:"+path,
-//     materialized derived from the file's existence — override them to
-//     script verdicts INDEPENDENT of the filesystem); start_import runs the
-//     scripted outcome on a real worker thread through the C ABI. Import
-//     modes: eager|promoted|fail|block|announce-then-block ("block" holds
-//     the job BEFORE any callback; "announce-then-block" announces its
-//     dataset and then holds on the resume gate, so a test can observe a
-//     mid-import state deterministically).
-//
-//     The REAL-SURFACE modes (T7 D6): "progressive" and
-//     "progressive-promoted" drive the host services cached at fakeBind
-//     (registry views are valid for the plugin-session lifetime) from the
-//     job worker, mirroring the cloud connector's fetch-worker discipline:
-//     ToolboxHostView::createDataSource -> on_dataset(REAL handle) ->
-//     createDatasetIngest + progressStart -> ensureTopic/ensureField/
-//     appendRecord through the real write host (topic = the descriptor's
-//     "topic", default "/"+name; one float64 field "value") -> ONE
-//     deterministic progressUpdate tick (immediately throttle-eligible;
-//     the tick flushes the write host, so the record is reader-visible) ->
-//     park on the resume gate. On release: progressFinish -> release the
-//     ingest -> ["progressive-promoted": the REAL promotion transaction
-//     via SourcePromotionHostView (loader = the descriptor's "loader",
-//     default "mock-file-source"; artifact = the descriptor's "path"),
-//     PROMOTED reported only after the async result says ok] ->
-//     notifyDataChanged -> terminal. The start-return gate invariant is
-//     preserved: the worker still blocks on the start gate FIRST.
+//     query_descriptor answers trust/path/identity/estimate and the is_materialized verdict (defaults: identity =
+//     "fake:"+path, materialized = whether the file exists; override both to script verdicts independent of the
+//     filesystem). start_import runs the scripted outcome on a real worker thread through the C ABI. Import modes:
+//       eager|promoted|fail   run to their terminal once released (every mode but "block" is released by a queued
+//                             0-timer after start_import returned).
+//       block                 holds the job before any callback.
+//       announce-then-block   announces its dataset, then holds on the resume gate: a deterministic mid-import state.
+//       progressive[-promoted], capture   drive the host services cached at fakeBind from the job worker (below).
+//     The start-return gate invariant holds for every mode: the worker blocks on the start gate first.
 
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -82,18 +58,15 @@ inline constexpr const char* kProviderId = "fake-import-provider";
   return PJ_string_view_t{text, std::strlen(text)};
 }
 
-// ---------------------------------------------------------------------------
-// The job half.
-// ---------------------------------------------------------------------------
+// ---- The job half ----
 
 struct FakeJob {
   std::thread worker;
   std::atomic<bool> cancelled{false};
   std::binary_semaphore start_gate{0};
   std::atomic<bool> start_released{false};
-  // Second blocking point, used only by the announce-then-block mode: the
-  // worker re-blocks here AFTER announcing its dataset. Same release
-  // discipline as the start gate (test, cancel, or destroy).
+  // Second blocking point (announce-then-block and the progressive modes): the worker re-blocks here after
+  // announcing its dataset. Released like the start gate (test, cancel, or destroy).
   std::binary_semaphore resume_gate{0};
   std::atomic<bool> resume_released{false};
   // Optional instrumentation: `on_event` receives the vtable-side events
@@ -163,9 +136,7 @@ inline void fakeJobDestroy(void* ctx) noexcept {
 inline constexpr PJ_joinable_job_vtable_t kFakeJobVtable{
     sizeof(PJ_joinable_job_vtable_t), 0, &fakeJobCancel, &fakeJobJoin, &fakeJobDestroy};
 
-// ---------------------------------------------------------------------------
-// The scripted provider half.
-// ---------------------------------------------------------------------------
+// ---- The scripted provider half ----
 
 struct FakeLog {
   std::mutex mu;
@@ -199,11 +170,9 @@ inline FakeProviderInstance* g_instance = nullptr;
 
 struct FakeProviderInstance {
   PJ_descriptor_import_provider_v1_t ext{};
-  // Host services cached at fakeBind (D6): registry views are valid for the
-  // plugin-session lifetime (service_registry.hpp), and the session joins
-  // every job before the instance dies, so job workers may use copies of
-  // these views for their whole run. Invalid (default) views mean the host
-  // did not register the service — progressive jobs then FAIL loudly.
+  // Host services cached at fakeBind: registry views stay valid for the whole plugin session and the session joins
+  // every job before the instance dies, so job workers use copies for their whole run. Default (invalid) views mean
+  // the host did not register the service: progressive and capture jobs then fail loudly.
   PJ::sdk::ToolboxHostView toolbox_host;
   PJ::ToolboxRuntimeHostView runtime_host;
   PJ::SourcePromotionHostView promotion_host;
@@ -280,13 +249,9 @@ inline bool fakeQueryDescriptor(
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// The D6 real-surface progressive job (modes "progressive" and
-// "progressive-promoted"). Everything the worker needs is captured BY VALUE:
-// the views are borrowed fat pointers valid for the plugin-session lifetime,
-// and the session joins every job before teardown (the quiescence contract),
-// so no capture can dangle.
-// ---------------------------------------------------------------------------
+// ---- The progressive and progressive-promoted modes ----
+// Everything the worker needs is captured by value: the views are borrowed fat pointers valid for the plugin session,
+// and the session joins every job before teardown, so no capture can dangle.
 
 struct ProgressiveScript {
   PJ::sdk::ToolboxHostView toolbox;
@@ -307,8 +272,7 @@ using ImportDatasetFn = void (*)(void*, PJ_data_source_handle_t) PJ_NOEXCEPT;
 inline void progressiveWorker(
     FakeJob* job, const ProgressiveScript& script, ImportDatasetFn on_dataset, ImportTerminalFn on_terminal,
     void* callback_ctx) {
-  // The start-return gate invariant (the ABI contract): block FIRST, before
-  // any host call or callback.
+  // Block first, before any host call or callback: none may precede start_import's return (the ABI contract).
   job->start_gate.acquire();
   if (job->cancelled.load()) {
     on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_CANCELLED, sv("cancelled"));
@@ -319,9 +283,8 @@ inline void progressiveWorker(
     return;
   }
 
-  // D6 step 2: a REAL dataset from the bound write host, announced via
-  // on_dataset — strictly before progress_start (the ABI order the D2 pin
-  // rides: same worker, so the two GUI marshals land in this order).
+  // A real dataset from the bound write host, announced via on_dataset strictly before progress_start (same worker,
+  // so the two GUI marshals land in that order).
   const auto source = script.toolbox.createDataSource(script.name);
   if (!source.has_value()) {
     on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_FAILED, sv("progressive fake: createDataSource failed"));
@@ -331,7 +294,6 @@ inline void progressiveWorker(
     on_dataset(callback_ctx, PJ_data_source_handle_t{source->id});
   }
 
-  // D6 step 3: the dataset-scoped ingest lifecycle on the real runtime host.
   const auto ingest = script.runtime.createDatasetIngest(source->id);
   if (!ingest.has_value()) {
     on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_FAILED, sv("progressive fake: createDatasetIngest failed"));
@@ -347,7 +309,6 @@ inline void progressiveWorker(
   };
   static_cast<void>(ingest->progressStart(script.name, /*total_steps=*/2, /*cancellable=*/true));
 
-  // D6 step 4: topic/field/record through the real write host.
   const auto topic = script.toolbox.ensureTopic(*source, script.topic);
   if (!topic.has_value()) {
     conclude(PJ_DESCRIPTOR_IMPORT_FAILED, "progressive fake: ensureTopic failed");
@@ -363,10 +324,9 @@ inline void progressiveWorker(
     return;
   }
 
-  // D6 step 5: ONE deterministic tick — immediately throttle-eligible, it
-  // flushes the write host so the record is reader-visible, then the host
-  // marshals on_ingest_progress -> SessionManager::updateIngest ->
-  // samplesIngested -> CatalogModel::itemsAdded. Then park (step 6).
+  // One deterministic tick: immediately throttle-eligible, it flushes the write host so the record is
+  // reader-visible, then the host marshals on_ingest_progress to the GUI thread (SessionManager::updateIngest
+  // publishes samplesIngested). Then park until released.
   static_cast<void>(ingest->progressUpdate(1));
   job->resume_gate.acquire();
   if (job->cancelled.load()) {
@@ -374,10 +334,9 @@ inline void progressiveWorker(
     return;
   }
 
-  // D6 step 7: finish + release the ingest, then (promoted mode) the REAL
-  // promotion transaction — the artifact was "downloaded" already (the
-  // descriptor's path), and PROMOTED is reported only after the async
-  // result says the replace transaction succeeded.
+  // Finish + release the ingest, then (promoted mode) the real promotion transaction: the artifact was already
+  // "downloaded" (the descriptor's path), and PROMOTED is reported only once the async result says the replace
+  // transaction succeeded.
   ingest->progressFinish();
   static_cast<void>(script.runtime.releaseDatasetIngest(source->id));
   PJ_descriptor_import_outcome_t outcome = PJ_DESCRIPTOR_IMPORT_SUCCEEDED_EAGER_ONLY;
@@ -389,9 +348,6 @@ inline void progressiveWorker(
     request.loader_plugin_id = script.loader_id;
     request.loader_config_json = "{}";
     request.descriptor_json = script.descriptor;
-    // The result callback may outlive this frame only on the accepted path,
-    // where this worker blocks until it ran — plain by-reference captures
-    // would be fine, but shared state keeps the closure self-contained.
     auto promotion_ok = std::make_shared<std::atomic<bool>>(false);
     auto promotion_done = std::make_shared<std::binary_semaphore>(0);
     const auto accepted =
@@ -408,22 +364,17 @@ inline void progressiveWorker(
       }
     }
   }
-  // Completion notify: the toolbox-instance runtime host publishes the
-  // ingested dataset (catalog rebuild + time-reference refresh in the
-  // headless session's on_data_changed).
+  // The toolbox-instance runtime host publishes the ingested dataset (catalog rebuild + time-reference refresh in
+  // the headless session's on_data_changed).
   script.runtime.notifyDataChanged();
   on_terminal(callback_ctx, outcome, sv("done"));
 }
 
-// ---------------------------------------------------------------------------
-// The M3 "capture" mode: a delegated download in the exact shape the source
-// capture publication gate requires — descriptor attached BEFORE the first
-// push, raw bytes through a REAL parser binding (encoding
-// "runtime_host_object": the suite stages that parser plugin), an explicit
-// COMPLETED terminal, then the ingest release (the capture commit point).
-// A host wired with SourceCaptureService therefore publishes a real cache
-// artifact for the request.
-// ---------------------------------------------------------------------------
+// ---- The capture mode ----
+// A delegated download in the shape the source-capture publication gate requires: descriptor attached before the first
+// push, raw bytes through a real parser binding (encoding "runtime_host_object": the suite stages that parser
+// plugin), an explicit COMPLETED terminal, then the ingest release (the capture commit point). A host wired with
+// SourceCaptureService therefore publishes a real cache artifact for the request.
 
 struct CaptureScript {
   PJ::sdk::ToolboxHostView toolbox;
@@ -536,7 +487,6 @@ inline bool fakeStartImport(
     return true;
   }
   if (mode == QStringLiteral("progressive") || mode == QStringLiteral("progressive-promoted")) {
-    // The D6 real-surface job: everything it needs travels by value.
     ProgressiveScript script;
     script.toolbox = self->toolbox_host;
     script.runtime = self->runtime_host;
@@ -569,9 +519,8 @@ inline bool fakeStartImport(
   const bool promoted = mode == QStringLiteral("promoted");
   const bool announce_then_block = mode == QStringLiteral("announce-then-block");
   job->worker = std::thread([job, on_dataset, on_terminal, callback_ctx, fail, promoted, announce_then_block] {
-    // Every worker blocks on its start gate FIRST, so no job callback can
-    // precede start_import's return (the ABI contract). Non-"block" modes
-    // are auto-released by the queued 0-timer below.
+    // Every worker blocks on its start gate first, so no job callback can precede start_import's return (the ABI
+    // contract). Non-"block" modes are auto-released by the queued 0-timer below.
     job->start_gate.acquire();
     if (job->cancelled.load()) {
       on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_CANCELLED, sv("cancelled"));
@@ -585,9 +534,8 @@ inline bool fakeStartImport(
       on_dataset(callback_ctx, PJ_data_source_handle_t{g_next_dataset_id.fetch_add(1)});
     }
     if (announce_then_block) {
-      // Hold the job OPEN between its dataset announcement and its terminal
-      // (a deterministic mid-import window), until the test releases the
-      // resume gate — or a cancel/destroy does.
+      // Hold the job open between its dataset announcement and its terminal (a deterministic mid-import window)
+      // until the test releases the resume gate, or a cancel/destroy does.
       job->resume_gate.acquire();
       if (job->cancelled.load()) {
         on_terminal(callback_ctx, PJ_DESCRIPTOR_IMPORT_CANCELLED, sv("cancelled"));
@@ -599,11 +547,9 @@ inline bool fakeStartImport(
         sv("done"));
   });
   if (mode != QStringLiteral("block")) {
-    // start_import runs on the GUI thread: a queued 0-timer releases the
-    // gate strictly after this call returned to the event loop, keeping the
-    // "no callback before start_import returns" contract without manual
-    // test intervention. `self` may be destroyed before the timer fires;
-    // the g_instance guard makes the release a no-op then.
+    // start_import runs on the GUI thread: a queued 0-timer releases the gate strictly after this call returned to
+    // the event loop, keeping the "no callback before start_import returns" contract. `self` may be destroyed before
+    // the timer fires; the g_instance guard makes the release a no-op then.
     QTimer::singleShot(0, [self]() {
       if (g_instance == self) {
         self->releaseStart();
@@ -634,9 +580,8 @@ inline uint64_t fakeCapabilities(void* /*ctx*/) noexcept {
 }
 
 inline bool fakeBind(void* ctx, PJ_service_registry_t registry, PJ_error_t* /*out_error*/) noexcept {
-  // Cache the real bound host services for the progressive modes (D6 step 1).
-  // Optional lookups: suites that bind this fake through hosts without one of
-  // these services keep working — only a progressive job requires them.
+  // Cache the bound host services for the progressive and capture modes. Optional lookups: suites that bind this
+  // fake through hosts without one of these services keep working; only those modes require them.
   auto* self = static_cast<FakeProviderInstance*>(ctx);
   const PJ::sdk::ServiceRegistry services(registry);
   self->toolbox_host = services.get<PJ::sdk::ToolboxHostService>().value_or(PJ::sdk::ToolboxHostView{});

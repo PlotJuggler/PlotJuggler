@@ -1,14 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Completeness guard for the semantic UI framework (resources/ui_framework.md).
-//
-// The QSS palette in resources/stylesheet_{dark,light}.qss is the single ground
-// truth for framework values. FrameworkTokens is a typed C++ reader over it.
-// This test drives the real reader against the real (qrc-linked) stylesheets and
-// asserts that every role the framework exposes resolves in BOTH themes, plus a
-// few relationship/contrast invariants. Adding an enum value without its QSS
-// token, deleting a token, or a typo'd value all fail here.
+// Completeness guard for the semantic UI framework (resources/ui_framework.md). The QSS palette in
+// resources/stylesheet_{dark,light}.qss is the ground truth for framework values and FrameworkTokens a typed reader
+// over it. This test drives the real reader against the real (qrc-linked) stylesheets and asserts that every role the
+// framework exposes resolves in both themes, plus a few relationship and contrast invariants. An enum value without its
+// QSS token, a deleted token, or a typo'd value fails here.
 
 #include <gtest/gtest.h>
 
@@ -362,12 +359,9 @@ TEST(FrameworkTokens, NonColorRelationshipsHold) {
 
 }  // namespace
 
-// Every ${token} referenced in a stylesheet BODY must be defined in that
-// stylesheet's palette block. A missing key survives Theme.cpp's expansion as a
-// literal "${...}", which is a Qt CSS parse error — and one parse error makes
-// Qt drop the ENTIRE application stylesheet (this exact failure shipped once,
-// via ${input_background}). The enum-driven tests above cannot catch body-only
-// tokens, so this walks the raw QSS text.
+// Every ${token} referenced in a stylesheet body is defined in that stylesheet's palette block. A missing key survives
+// Theme.cpp's expansion as a literal "${...}", a Qt CSS parse error, and one parse error makes Qt drop the entire
+// application stylesheet. The enum-driven tests above cannot catch body-only tokens, so this walks the raw QSS text.
 TEST(FrameworkTokens, EveryBodyPlaceholderIsDefinedInThePalette) {
   const std::array<QString, 2> sheets = {
       QStringLiteral(":/resources/stylesheet_dark.qss"), QStringLiteral(":/resources/stylesheet_light.qss")};

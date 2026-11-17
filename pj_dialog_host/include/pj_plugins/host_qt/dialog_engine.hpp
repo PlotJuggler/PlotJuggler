@@ -22,14 +22,12 @@ namespace PJ {
 /// Result of showing a dialog.
 enum class DialogResult { kAccepted, kRejected };
 
-/// Callback to resolve a parser's dialog vtable by encoding name.
-/// Returns nullptr if no dialog is available for that encoding.
-/// Used by DialogEngine to inject parser-specific options UI into data source dialogs.
+/// Resolves a parser's dialog vtable by encoding name; nullptr when that encoding has no dialog. DialogEngine
+/// injects the parser's options UI into data source dialogs with it.
 using QueryParserDialogFn = std::function<const PJ_dialog_vtable_t*(const std::string& encoding)>;
 
-/// A content-selected file staged at a path a legacy plugin can read. The host
-/// retains `lease` until the dialog ends so backing_path cannot disappear while
-/// the plugin is still using it.
+/// A content-selected file staged at a path a plugin can read. The host holds `lease` until the dialog ends so
+/// backing_path stays readable while the plugin uses it.
 struct DialogSelectedFile {
   std::string backing_path;
   std::shared_ptr<void> lease;
@@ -42,108 +40,86 @@ using DialogFileSelector = std::function<void(
 /// Configuration for DialogEngine.
 struct DialogEngineConfig {
   int tick_interval_ms = 50;
-  bool enable_diff = true;         // Only apply changed widgets on tick
-  bool enable_file_picker = true;  // Show QFileDialog for file_picker actions
+  bool enable_diff = true;         // apply only the widgets that changed on a tick
+  bool enable_file_picker = true;  // show a file dialog for file_picker actions
 
-  /// Optional callback to resolve parser dialog vtables.
-  /// When set and the loaded UI contains a widget named "pj_parser_slot",
-  /// the engine will inject the parser's dialog widget into that slot
-  /// whenever the encoding combo (comboBoxProtocol) changes.
+  /// Resolves parser dialog vtables. With it set and a widget named "pj_parser_slot" in the loaded UI, the engine
+  /// injects the parser's dialog widget into that slot whenever the encoding combo (comboBoxProtocol) changes.
   QueryParserDialogFn parser_dialog_provider;
 
-  /// Optional asynchronous content picker for hosts that cannot return a real
-  /// user filesystem path (notably browsers). Native builds leave this empty
-  /// and retain the existing synchronous desktop QFileDialog behavior.
+  /// Asynchronous content picker for hosts that cannot return a real filesystem path (browsers). Native builds
+  /// leave it empty and use the synchronous file dialog.
   DialogFileSelector file_selector;
 
-  /// Initial parser config to restore when injecting the parser dialog.
-  /// If non-empty, the parser dialog's loadConfig() is called with this.
+  /// Config handed to the parser dialog's loadConfig() when it is injected; skipped when empty.
   std::string initial_parser_config;
 
-  /// If true, the dialog is shown non-modally (Qt::NonModal) so the parent
-  /// window remains interactive. Required for drag-and-drop from the host UI
-  /// into the dialog. Defaults to false (modal).
+  /// Shows the dialog non-modally so the parent window stays interactive (needed for drag-and-drop from the host
+  /// UI into the dialog).
   bool non_modal = false;
 
   /// Put before the plugin dialog's own title (say, who asked for it). Sub-dialogs keep theirs.
   QString title_prefix{};
 
-  /// Chrome metrics for sizing plugin SectionHeaderBand widgets to the app's
-  /// canonical band height. A plugin .ui inflates its bands at the widget's
-  /// default height, with no wiring to the host — so without this they render
-  /// shorter than every other section band in the app. When set, the engine
-  /// applies these metrics to every SectionHeaderBand in the loaded UI so the
-  /// bands match the panel-hosted toolboxes. Unset -> bands keep their default
-  /// height (headless runs and tests, which have no live app metrics).
+  /// Sizes the plugin's SectionHeaderBand widgets to the app's band height: a plugin .ui creates them at the
+  /// widget's default height, which is shorter than every other band in the app. Unset (headless runs, tests: no
+  /// live app metrics): bands keep the default height.
   std::optional<ChromeMetrics> section_band_metrics;
 };
 
-/// Orchestrates the full dialog lifecycle for a plugin:
-///   1. Load .ui via QUiLoader
-///   2. Wrap in QDialog, wire QDialogButtonBox
-///   3. Apply initial get_widget_data()
-///   4. Wire signals -> on_widget_event
-///   5. Start tick timer -> on_tick -> diff apply
-///   6. ApplicationModal QDialog::show() (not open(), which would downgrade
-///      the modality) and return to the application event loop
-///   7. On finished, call on_accepted / on_rejected and the completion
+/// Runs a plugin dialog: loads its .ui, wraps it in the app's Dialog, applies the plugin's widget data, forwards
+/// widget events to the plugin, and ticks the plugin to diff-apply its widget data until the dialog finishes (then
+/// on_accepted / on_rejected and the completion). The dialog is application-modal through show(), not open(),
+/// which would downgrade it to window-modal, and no nested event loop runs.
 class DialogEngine {
  public:
   using Completion = std::function<void(DialogResult)>;
 
   explicit DialogEngine(PJ::DialogHandle handle, DialogEngineConfig config = {});
 
-  /// Build and open the plugin dialog without entering a nested event loop.
-  /// The engine and the plugin context borrowed by its DialogHandle must
-  /// outlive the callback. Completion runs on the GUI thread.
+  /// Opens the plugin dialog and returns. The engine and the plugin context borrowed by its DialogHandle must
+  /// outlive the completion, which runs on the GUI thread. A second call while a dialog is open completes at once
+  /// with kRejected.
   void openDialog(QWidget* parent, Completion completion);
 
-  /// Desktop compatibility facade. The dialog lifecycle itself is implemented
-  /// by openDialog(); this wrapper waits in a nested loop only on native builds.
-  /// Calling it on WebAssembly is rejected at runtime.
+  /// Blocking wrapper over openDialog() that waits in a nested event loop; desktop only (kRejected, with a
+  /// warning, on WebAssembly). Do not add new callers.
   [[nodiscard]] DialogResult showDialog(QWidget* parent = nullptr);
 
-  /// Synchronously tear down the dialog opened by openDialog(), if one is still
-  /// open: the plugin receives exactly one on_rejected, every widget/tick
-  /// callback is severed, and the completion runs with kRejected — all before
-  /// this returns. Callers use it to close a pending dialog while the plugin
-  /// context borrowed by the engine's DialogHandle is still alive; afterwards no
-  /// tick, widget event, or late completion can reach the plugin. No-op when no
-  /// dialog is open (already completed, or openDialog was never called).
+  /// Tears down the dialog opened by openDialog(), if still open, before returning: the plugin gets exactly one
+  /// on_rejected, every widget and tick callback is severed, and the completion runs with kRejected. Call it while
+  /// the plugin context borrowed by the DialogHandle is still alive; afterwards nothing can reach the plugin. No-op
+  /// when no dialog is open.
   void cancelActiveDialog();
 
   [[nodiscard]] bool isDialogOpen() const {
     return dialog_open_;
   }
 
-  /// Run plugin headlessly (no UI): pump N ticks, return final widget_data JSON.
+  /// Pumps `max_ticks` plugin ticks without a UI and returns the final widget_data JSON.
   [[nodiscard]] std::string runHeadless(int max_ticks);
 
-  /// Return the plugin's current saved config.
+  /// The plugin's current saved config.
   [[nodiscard]] std::string savedConfig() const;
 
-  /// Return the parser dialog's saved config (empty if no parser dialog was shown).
-  /// Only valid after showDialog() returns kAccepted.
+  /// The parser dialog's saved config; empty when no parser dialog was shown. Valid after an accepted dialog.
   [[nodiscard]] std::string parserConfig() const;
 
-  /// Hand over the leases of every file picked in an accepted dialog, including
-  /// re-picks and picks of a replaced parser sub-dialog (browser builds mount each
-  /// pick read-only in MEMFS, backed by the picked File). A plugin that reads those
-  /// paths after the dialog, e.g. a DBC opened during import, needs them until
-  /// it is done: the caller keeps the returned owners for that long. Empty after
-  /// a rejected dialog and after the first call.
+  /// Hands over the leases of every file picked in an accepted dialog, including re-picks and picks in a replaced
+  /// parser dialog (browser builds mount each pick read-only in MEMFS, backed by the picked File). A plugin that
+  /// reads those paths after the dialog (a DBC opened during import) needs them until it is done: the caller keeps
+  /// the returned owners that long. Empty after a rejected dialog and after the first call.
   [[nodiscard]] std::vector<std::shared_ptr<void>> takeSelectedFiles();
 
-  /// Stats from the last showDialog() call.
+  /// Counters of the last dialog.
   struct Stats {
     int tick_count = 0;
     int event_count = 0;
     int diff_apply_count = 0;
-    /// Re-reads whose payload was byte-identical to the previous one and were
-    /// dropped before parsing (a gauge of plugin chattiness).
+    /// Re-reads of a byte-identical payload, dropped before parsing (a gauge of plugin chattiness).
     int skipped_identical_count = 0;
     bool has_parser_slot = false;
-    bool parser_dialog_injected = false;  // True if a parser dialog was actually injected
+    bool parser_dialog_injected = false;
   };
   [[nodiscard]] Stats lastStats() const {
     return stats_;
@@ -155,11 +131,10 @@ class DialogEngine {
   PJ::DialogHandle handle_;
   DialogEngineConfig config_;
   Stats stats_;
-  std::string parser_config_;                          // Saved parser config (populated on accept)
-  std::vector<std::shared_ptr<void>> selected_files_;  // Staged picks of the accepted dialog
+  std::string parser_config_;                          // set on accept
+  std::vector<std::shared_ptr<void>> selected_files_;  // staged picks of the accepted dialog
   bool dialog_open_ = false;
-  // The QDialog currently driven by openDialog(); cancelActiveDialog() rejects
-  // through it. Cleared when the dialog completes.
+  // Cleared when the dialog completes; cancelActiveDialog() rejects through it.
   QPointer<QDialog> active_dialog_;
 };
 

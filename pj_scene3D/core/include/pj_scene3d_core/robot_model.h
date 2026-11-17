@@ -2,13 +2,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Pure URDF data model — no Qt, no assimp, no GL. The URDF parser
-// (pj_scene3d_widgets/urdf_parser) fills these structs; render passes consume
-// them. The URDF is primarily a frame→visual decoration map (links) posed by the
-// live TF tree — TF still owns kinematics. Joints ARE represented now, but only so
-// a FIXED joint can be injected as a static TF edge to bridge a frame the data
-// never publishes (e.g. a gripper mount); see robot_model_bridges.h. Movable
-// joints are parsed and classified but not yet articulated.
+// Pure URDF data model (no Qt, assimp or GL). The URDF parser (pj_scene3d_widgets/urdf_parser) fills these structs and
+// render passes consume them. A URDF is a frame→visual decoration map (links) posed by the live TF tree: TF owns
+// kinematics. Joints are represented only so a FIXED joint can be injected as a static TF edge bridging a frame the
+// data never publishes (e.g. a gripper mount); see robot_model_bridges.h. Movable joints are parsed and classified
+// but not articulated.
 
 #include <cstdint>
 #include <string>
@@ -25,9 +23,8 @@
 
 namespace pj::scene3d {
 
-// Why a mesh reference did not resolve to a loadable path. Pure data so both the
-// resolver (which sets it) and the layer (which reports it in the status line)
-// can speak it without depending on Qt. kNone means resolved (or never attempted).
+// Why a mesh reference did not resolve to a loadable path. Pure data: the resolver sets it and the layer reports it in
+// the status line, without depending on Qt.
 enum class MeshResolveIssue : std::uint8_t {
   kNone,               // resolved, or no resolution attempted
   kBlockedHttp,        // http(s) ref dropped because the source is not a URL
@@ -82,24 +79,20 @@ struct LinkGeom {
   bool has_color{false};  // true when an explicit <material><color> applied
 };
 
-// One <link>: its name (== TF frame name) plus all visual & collision geoms.
-// A link is posed by the TF frame of the same name; joints (below) only matter
-// when the data's TF lacks an edge a FIXED joint can supply.
+// One <link>: its name (== TF frame name) plus all visual & collision geoms. A link is posed by the TF frame of the
+// same name; joints (below) only matter when the data's TF lacks an edge a FIXED joint can supply.
 struct RobotLink {
   std::string name;
   std::vector<LinkGeom> visuals;
   std::vector<LinkGeom> collisions;
 };
 
-// URDF joint type. Only kFixed is currently consumed (as a static TF bridge);
-// the movable kinds are parsed and classified for the future articulation work
-// but otherwise unused. kOther covers any unrecognized type string.
+// URDF joint type. Only kFixed is consumed (as a static TF bridge); the movable kinds are parsed and classified but
+// unused. kOther covers any unrecognized type string.
 enum class JointType : std::uint8_t { kFixed, kRevolute, kContinuous, kPrismatic, kFloating, kPlanar, kOther };
 
-// One <joint>: the kinematic edge parent_link → child_link with its static origin
-// offset (translation + RPY). axis/limit/mimic are intentionally NOT parsed yet —
-// they are only needed to articulate movable joints, which is deferred. `parent`
-// and `child` are link names (== TF frame names).
+// One <joint>: the kinematic edge `parent` → `child` (link names, == TF frame names) with its static origin offset
+// (translation + RPY). axis/limit/mimic are not parsed: only articulating movable joints would need them.
 struct RobotJoint {
   std::string name;
   std::string parent;

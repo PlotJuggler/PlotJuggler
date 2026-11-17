@@ -338,7 +338,7 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
 
 void ModelRhiPass::prepare(const RhiFrameContext& frame, const MeshShadingParams& shading) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   QRhi* rhi = frame.rhi;
   admitted_prepared_ = true;

@@ -339,7 +339,7 @@ jobs:
         # pass (every float recompiles the whole pipeline set at 4x the pixels;
         # Linux runs it). Scheduled and manual runs only: up to 24 min on the
         # software renderer, so pull requests gate on Metal alone.
-        # pj_scene3D/docs/TECHNICAL_NOTES.md, "macOS OpenGL fallback".
+        # pj_scene3D/docs/TECHNICAL_NOTES.md, "Apple software OpenGL".
         if: always() && steps.build.outcome == 'success' && github.event_name != 'pull_request'
         shell: bash
         env:

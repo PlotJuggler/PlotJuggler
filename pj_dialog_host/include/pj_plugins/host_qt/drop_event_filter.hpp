@@ -19,9 +19,8 @@
 
 namespace PJ {
 
-/// Single event filter installed on the dialog root that handles drag-and-drop
-/// of PJ fields. Registered widgets are tracked by objectName. When a drop
-/// lands on (or inside) a registered widget, the callback fires an itemsDropped event.
+/// Event filter on the dialog root that turns drops of catalog items into itemsDropped events. Targets are
+/// registered by objectName; a drop on or inside one fires the callback.
 class DropEventFilter : public QObject {
   Q_OBJECT
 
@@ -36,15 +35,14 @@ class DropEventFilter : public QObject {
     targets_.insert(widget_name);
   }
 
-  /// Optional: map each dragged catalog key to a topic or series name before it is
-  /// delivered to the plugin. Keys that resolve to empty are kept verbatim.
+  /// Maps each dragged catalog key to a topic or series name before delivery; a key that resolves to empty is kept
+  /// verbatim.
   void setKeyResolver(std::function<std::string(const std::string&)> resolver) {
     key_resolver_ = std::move(resolver);
   }
 
-  /// Optional: map each dragged catalog key to its data source id, which the plugin
-  /// reads as DroppedItem::data_source_id (0 = unknown). Names alone cannot tell two
-  /// datasets' same-named series apart.
+  /// Maps each dragged catalog key to its data source id (DroppedItem::data_source_id, 0 = unknown); names alone
+  /// cannot tell two datasets' same-named series apart.
   void setKeyDataSourceResolver(std::function<uint32_t(const std::string&)> resolver) {
     key_data_source_resolver_ = std::move(resolver);
   }
@@ -60,7 +58,6 @@ class DropEventFilter : public QObject {
     } else if (event->type() == QEvent::DragMove) {
       auto* e = static_cast<QDragMoveEvent*>(event);
       if (e->mimeData()->hasFormat(kCatalogItemsMime)) {
-        // Only accept if the cursor is over a registered target.
         if (findTargetAt(e->position().toPoint())) {
           e->acceptProposedAction();
         } else {
@@ -80,8 +77,7 @@ class DropEventFilter : public QObject {
             data_sources.push_back(key_data_source_resolver_(label));
           }
         }
-        // The PJ4 curve tree drags opaque catalog keys; resolve each to a name
-        // the plugin can interpret. Unresolved keys pass through verbatim.
+        // The curve tree drags opaque catalog keys; the plugin needs names.
         if (key_resolver_) {
           for (auto& label : labels) {
             if (std::string name = key_resolver_(label); !name.empty()) {
@@ -102,9 +98,8 @@ class DropEventFilter : public QObject {
   }
 
  private:
-  // The PJ4 curve tree publishes dragged catalog entries under this MIME type
-  // (CurveTreeView::catalogItemsMimeType): a QDataStream sequence of the selected
-  // catalog keys (curve/field paths), with no count prefix.
+  // The MIME type CurveTreeView::catalogItemsMimeType publishes: a QDataStream sequence of the selected catalog
+  // keys (curve and field paths), with no count prefix.
   static constexpr const char* kCatalogItemsMime = "plotjuggler/catalog-items";
 
   QWidget* root_;
@@ -113,7 +108,7 @@ class DropEventFilter : public QObject {
   std::function<std::string(const std::string&)> key_resolver_;
   std::function<uint32_t(const std::string&)> key_data_source_resolver_;
 
-  /// Walk up from the widget at pos to find a registered drop target.
+  /// Walks up from the widget at `pos` to a registered target.
   const std::string* findTargetAt(QPoint pos) const {
     auto* w = root_->childAt(pos);
     while (w && w != root_) {
@@ -128,7 +123,7 @@ class DropEventFilter : public QObject {
   }
 
   static std::vector<std::string> parseMime(const QByteArray& data) {
-    // Matches CurveTreeView::encodeCatalogKeys: a bare sequence of QString keys.
+    // The inverse of CurveTreeView::encodeCatalogKeys.
     QDataStream stream(data);
     std::vector<std::string> labels;
     while (!stream.atEnd()) {

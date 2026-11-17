@@ -23,8 +23,6 @@
 
 namespace PJ::agent_tools {
 
-// --- Luau text -------------------------------------------------------------
-
 // Escape a string for embedding inside a double-quoted Luau or Python string literal (names, labels
 // and series paths land verbatim in generated scripts): backslash, quote, line break and tab.
 [[nodiscard]] std::string luaStringEscape(std::string_view s);
@@ -40,8 +38,6 @@ namespace PJ::agent_tools {
 [[nodiscard]] std::string buildTransformScript(
     const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
     std::size_t num_extra);
-
-// --- catalog helpers -------------------------------------------------------
 
 // Cap on how many near misses an error names (the text is fed back to a model and re-sent on
 // every later round trip, so an unbounded list would be paid for repeatedly).
@@ -130,8 +126,6 @@ struct TopicLookup {
 [[nodiscard]] std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name);
 
-// --- on-demand inputs / outputs -------------------------------------------
-
 // One resolved input: either a scalar series or an object topic. `host_path` is the literal
 // name the script's `inputs["<host_path>"]` addresses; `display_path` is what gets echoed
 // back; `request_path` is the dataset-qualified ABI input. `source`/`has_source` carry the
@@ -179,8 +173,8 @@ struct ResolvedEvalInputs {
 [[nodiscard]] ResolvedEvalInputs resolveEvalInputs(
     PJ::sdk::ToolboxHostView& host, const PJ::sdk::CatalogSnapshotV2& v2, const std::vector<std::string>& raw_inputs);
 
-// Build the on-demand Luau chunk for resolved inputs: keeps both the requested and the historical
-// bare script aliases without textual substitution in user code.
+// Builds the on-demand Luau chunk for resolved inputs: keeps both the requested and the bare script aliases without
+// textual substitution in user code.
 [[nodiscard]] std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEvalInputs& resolved);
 
 // Declared outputs ("name:type" strings) split for DataProcessorRequest.outputs.

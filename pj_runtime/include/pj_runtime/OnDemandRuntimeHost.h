@@ -25,8 +25,8 @@ class ObjectStore;
 class OnDemandService;
 
 /// Serves `kind="on_demand"` of `pj.data_processors.v1` to ONE plugin instance over the session's `OnDemandService`
-/// (docs/derived_objects/ARCHITECTURE.md §18): the typed create, list, config, remove and validate, and the
-/// evaluations (submit, poll, release) run by its `GridRunner`. `DataProcessorsKindRouter` reaches it as its third
+/// (docs/derived_objects/ARCHITECTURE.md "Plugin surfaces"): the typed create, list, config, remove and validate, and
+/// the evaluations (submit, poll, release) run by its `GridRunner`. `DataProcessorsKindRouter` reaches it as its third
 /// backend; every request arrives decoded and is decoded again here (`sdk::readDataProcessorRequest`).
 ///
 /// Ids are namespaced per plugin: a persistent recipe is `<plugin>/<id>`, shared by the plugin's instances; a preview
@@ -37,13 +37,12 @@ class OnDemandService;
 ///
 /// Create (v2 only; v1 is refused naming v2): typed outputs required; params at most `kMaxParamsBytes` and
 /// `scripting::kMaxParamsDepth` levels; INSTANT pins the node (a finding, which the session requests at its pin);
-/// WINDOW refused. A refused create leaves the previous recipe as it was. Submit takes an
-/// installed node of this plugin (only its id, kind, flags and time fields) or a script evaluated as a preview,
-/// installed nowhere; a script that does not bind, or a Luau one that does not compile, is refused at submit (Python
-/// compiles at its first run, never on the calling thread: its compile error is the node's state, and an evaluation's
-/// report). Validate and the three-way check compile Luau, and Python as `scripting::checkOnDemandScriptPython` does:
-/// at most `kPythonValidateWaitMillis`, then unchecked, which the check reports and validate passes (it has no third
-/// answer). Budget fields of 0 take
+/// WINDOW refused. A refused create leaves the previous recipe as it was. Submit takes an installed node of this plugin
+/// (only its id, kind, flags and time fields) or a script evaluated as a preview, installed nowhere; a script that does
+/// not bind, or a Luau one that does not compile, is refused at submit (Python compiles at its first run, never on the
+/// calling thread: its compile error is the node's state, and an evaluation's report). Validate and the three-way
+/// check compile Luau, and Python as `scripting::checkOnDemandScriptPython` does: at most `kPythonValidateWaitMillis`,
+/// then unchecked, which the check reports and validate passes (it has no third answer). Budget fields of 0 take
 /// `GridRunner::Budget`'s defaults, and the runner clamps them to its host caps. A finished evaluation is FAILED when
 /// it stopped on an error before any bundle, COMPLETED otherwise; both carry `GridRunner::toJson`'s report, written on
 /// a worker (the handle stays PENDING until it lands) and stable until release. State 3 (reserved) is never emitted.
@@ -53,9 +52,9 @@ class OnDemandService;
 /// returns its capacity at once.
 ///
 /// At most `kMaxRunningEvaluations` of them are in the runner at once: a job holds an in-flight reservation for its
-/// whole life, so 64 jobs in the budget's line would hold the playhead's request back behind all of them (D30). The
-/// others wait PENDING in a FIFO here and go to the runner as the running one finishes or is released; one the runner
-/// then refuses (an upstream removed meanwhile) is FAILED with the runner's error. A queued one released never runs. A
+/// whole life, so many jobs in the budget's line would hold the playhead's request back behind all of them. The others
+/// wait PENDING in a FIFO here and go to the runner as the running one finishes or is released; one the runner then
+/// refuses (an upstream removed meanwhile) is FAILED with the runner's error. A queued one released never runs. A
 /// queued installed node is evaluated as it was at submit, so a new revision meanwhile fails it ("replaced").
 /// ponytail: one per plugin instance; several plugins still add up in the line. Reserving per run in `GridRunner`
 /// would lift both.

@@ -28,10 +28,8 @@ std::int64_t toInt64(double d) {
   return static_cast<std::int64_t>(std::llround(d));
 }
 
-// Finite-guarded double → uint64. Negative/non-finite → 0; >= ~2^64 → UINT64_MAX. Avoids the
-// llround-overflow-near-2^63 UB by truncating in the high band (values there are already past
-// double's 53-bit integer precision). Replaces a buggy toInt64()+cast that clamped the whole
-// upper half of the uint64 domain to INT64_MAX.
+// Finite-guarded double -> uint64: negative or non-finite -> 0, >= ~2^64 -> UINT64_MAX. The high band truncates
+// because llround overflows near 2^63 (such values are already past a double's 53-bit integers).
 std::uint64_t toUint64(double d) {
   if (!std::isfinite(d) || d <= 0.0) {
     return 0;
@@ -107,21 +105,19 @@ const char* LuaSisoTransform::bracketLabel() const {
 }
 
 proc::TraitMask LuaSisoTransform::traits() const {
-  // Conservative: treat every script filter as causal+stateful so the engine
-  // schedules it EAGERLY (correct for integral/derivative/window; harmless for
-  // stateless maps). Per-class trait refinement is a later optimization.
+  // Every script filter is treated as causal and stateful, so the engine runs it eagerly: correct for integral,
+  // derivative and window filters, harmless for stateless ones.
   return proc::kCausalStateful;
 }
 
 bool LuaSisoTransform::isStreamSafe() const {
-  // false => recompute-from-start, never lazy — the safe default for arbitrary
-  // stateful script filters.
+  // False: a recompute starts from the beginning and never runs lazily, as arbitrary script state requires.
   return false;
 }
 
 void LuaSisoTransform::reset() {
-  // Construct-new-and-swap: a fresh VM/instance is the only guaranteed-clean
-  // reset for arbitrary script state (the engine's pre-batch-recompute hook).
+  // A fresh VM is the only guaranteed-clean reset of arbitrary script state; the engine calls this before a batch
+  // recompute.
   rebuildInstance();
 }
 
@@ -134,8 +130,7 @@ std::optional<proc::Sample> LuaSisoTransform::calculateNextPoint(const proc::Sam
     return std::nullopt;
   }
 
-  // Capture the session epoch from the first sample, then rebase on the int64
-  // spine BEFORE the double cast (see header: epoch-in-double quantizes to ~256 ns).
+  // The time origin is the first sample; subtract it on the int64 spine before the double cast (see the header).
   if (!has_session_start_) {
     session_start_ns_ = in.raw_ts_ns;
     has_session_start_ = true;
@@ -145,16 +140,15 @@ std::optional<proc::Sample> LuaSisoTransform::calculateNextPoint(const proc::Sam
 
   const FilterInstance::Result r = instance_->calculate(t_sec, v);
   if (instance_->failed()) {
-    error_ = instance_->error();  // sticky: fail the node, do not corrupt downstream
+    error_ = instance_->error();
     return std::nullopt;
   }
   if (r.suppress) {
     return std::nullopt;
   }
 
-  // Reconstruct the absolute int64 spine for the output timestamp. The script's
-  // out_time is UNTRUSTED: guard NaN/Inf (llround would be UB) and range/overflow
-  // so a malicious or buggy filter can't produce a corrupt timestamp.
+  // Rebuild the absolute int64 timestamp. The script's out_time is untrusted: NaN, infinity and an out-of-range or
+  // overflowing value suppress the row instead of producing a corrupt timestamp.
   PJ::Timestamp out_ns = in.raw_ts_ns;
   if (r.out_time.has_value()) {
     const double ot_sec = *r.out_time;
@@ -166,7 +160,7 @@ std::optional<proc::Sample> LuaSisoTransform::calculateNextPoint(const proc::Sam
     constexpr std::int64_t kMax = std::numeric_limits<std::int64_t>::max();
     constexpr std::int64_t kMin = std::numeric_limits<std::int64_t>::min();
     if ((rel > 0 && session_start_ns_ > kMax - rel) || (rel < 0 && session_start_ns_ < kMin - rel)) {
-      return std::nullopt;  // session_start + rel would overflow int64
+      return std::nullopt;  // the origin plus `rel` would overflow int64
     }
     out_ns = session_start_ns_ + rel;
   }

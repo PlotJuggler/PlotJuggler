@@ -1,23 +1,13 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A minimal scalar MessageParser that CACHES a FieldHandle on its first parse
-// and reuses it on every subsequent message via appendBoundRecord — the
-// parser_protobuf pattern. This is precisely what exposes the parser path to
-// the streaming pause/resume "stale cached handle" bug.
+// A scalar MessageParser that caches a FieldHandle on its first parse and reuses it on every later message via
+// appendBoundRecord (the parser_protobuf pattern). A parser that writes scalars by name re-resolves the field through
+// a fresh WriteCore after each setDataEngineTarget swap, so only a cached handle exercises a pause/resume swap.
 //
-// Why a custom plugin is needed: the default MessageParserPluginBase dispatch
-// (and the existing runtime_host_object test parser) writes scalars BY NAME
-// every message. The by-name path re-resolves the field through a fresh
-// WriteCore after each setDataEngineTarget swap and so self-heals — it would
-// never reproduce the bug. Only a parser that holds a FieldHandle across the
-// swap hits the stale-id failure.
-//
-// Payload contract: the first 4 bytes are a native-endian float32 written to a
-// field named "value"; shorter payloads write 0.0. The bound type is
-// "streaming/cached_scalar" (a scalar topic — BuiltinObjectType::kNone), so the
-// runtime host routes pushMessage straight through parse() to the scalar write
-// host.
+// Payload: the first 4 bytes are a native-endian float32 written to field "value"; shorter payloads write 0.0.
+// The bound type "streaming/cached_scalar" is a scalar topic (BuiltinObjectType::kNone), so the runtime host routes
+// pushMessage straight to parse().
 
 #include <cstring>
 #include <optional>
@@ -31,9 +21,8 @@ namespace {
 class StreamingCachingParser : public PJ::MessageParserPluginBase {
  public:
   StreamingCachingParser() {
-    // Register the bound type so classifySchema()/bind() accept it. The
-    // handler's parse_scalars is never invoked (we override parse() below); it
-    // exists only so the type classifies as a scalar topic.
+    // Register the bound type so classifySchema()/bind() accept it; parse_scalars is never invoked (parse() is
+    // overridden).
     registerSchemaHandler(
         "streaming/cached_scalar",
         PJ::sdk::SchemaHandler{
@@ -45,9 +34,8 @@ class StreamingCachingParser : public PJ::MessageParserPluginBase {
         });
   }
 
-  // Resolve+cache the FieldHandle once, then write bound records — exactly the
-  // pattern that breaks across a pause/resume DataEngine swap when the secondary
-  // engine was never told about the field at a matching id.
+  // Resolve and cache the FieldHandle once, then write bound records; the handle must stay valid across a pause/resume
+  // DataEngine swap.
   PJ::Status parse(PJ::Timestamp timestamp_ns, PJ::Span<const uint8_t> payload) override {
     if (!writeHostBound()) {
       return PJ::unexpected(std::string("streaming caching parser: write host not bound"));

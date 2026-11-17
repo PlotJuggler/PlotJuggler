@@ -1,11 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The four fold rules a toolbox panel with work in flight obeys, plus the
-// auto-fold on import start and the completion-close suppression that keeps a
-// folded tab alive. Every rule is keyed on one domain-neutral predicate — "this
-// panel has work in flight" — so the fixture drives it from a bool rather than
-// standing up a live parser-ingest context (which needs a real parser plugin).
+// The fold rules of a toolbox panel with work in flight: the banner X folds it into a tab instead of tearing it down
+// (idle, it tears down); closing a folded tab asks first (idle, it closes unprompted), declining keeps the tab and
+// the transfer, confirming cancels that panel's host only. Plus the auto-fold on import start and the completion-close
+// suppression that keeps a folded tab alive. Every rule is keyed on one domain-neutral predicate, "this panel has
+// work in flight", so the fixture drives it from a bool rather than standing up a live parser-ingest context (which
+// needs a real parser plugin).
 
 #include <gtest/gtest.h>
 #include <pj_widgets/Dialog.h>
@@ -100,8 +101,8 @@ class ToolboxPanelFoldTestPeer {
     window.withToolbox(plugin_id, [](ToolboxPresenter& live) { live.moveToTab(/*transient=*/false); });
   }
 
-  // `interactive` maps to the two policies that reach commitRestoredLayout in
-  // production: kPrompt (layout open) / kRetainAndDiagnose (batch drain, D5).
+  // `interactive` maps to the two policies that reach commitRestoredLayout in production: kPrompt (layout open) /
+  // kRetainAndDiagnose (batch drain).
   [[nodiscard]] static bool restorePinnedToolboxes(MainWindow& window, const QDomElement& root, bool interactive) {
     return window.restorePinnedToolboxes(
         root,
@@ -292,12 +293,10 @@ class ToolboxPanelFoldTestPeer {
 
 namespace {
 
-// A `QSplitter::saveState()` blob for a two-pane horizontal splitter with the
-// given pane widths and a 1-px handle — the exact shape makeSideDrawerSplitter
-// builds — so a test can plant a persisted width without going through a real
-// drag. Sized so the scratch splitter's total width matches `first + second +
-// 1` (the handle), which is what a caller must also give the real splitter
-// for restoreState to reproduce these sizes verbatim rather than rescaling.
+// A `QSplitter::saveState()` blob for a two-pane horizontal splitter with the given pane widths and a 1-px handle (the
+// shape makeSideDrawerSplitter builds), so a test can plant a persisted width without a real drag. The scratch
+// splitter's total width is `first + second + 1` (the handle); a caller must give the real splitter the same total
+// for restoreState to reproduce these sizes rather than rescale.
 QByteArray twoPaneSplitterStateBlob(int first, int second) {
   QSplitter scratch(Qt::Horizontal);
   scratch.setHandleWidth(1);
@@ -440,7 +439,7 @@ class ToolboxPanelFoldTest : public ::testing::Test {
     return container_.data();
   }
 
-  // Pins the wrapped panel as a folded tab, the state rules 3-4 start from.
+  // Pins the wrapped panel as a folded tab, the state the folded-tab close cases start from.
   void pinPanel() {
     wrapPanel();
     PJ::ToolboxPanelFoldTestPeer::moveToTab(
@@ -645,23 +644,22 @@ TEST_F(ToolboxPanelFoldTest, ClosingAToolboxEndsItsPreviewsAndKeepsItsRecipes) {
   EXPECT_NE(recipes.find(own + "/kept_probe"), nullptr);
 }
 
-// Rule 2 — the banner X with a download running. Tearing the panel down would
-// destroy the plugin instance, which is also the download's kill switch.
+// The banner X with a download running: tearing the panel down would destroy the plugin instance, which is also
+// the download's kill switch.
 TEST_F(ToolboxPanelFoldTest, BannerCloseFoldsWhileWorkInFlight) {
   wrapPanel();
   setWorkInFlight(true);
 
   bannerCloseButton()->click();
 
-  // The X takes the HOST-chosen fold disposition, never the migrate button's
-  // user-pin path: a user who pressed close chose a pin even less than an
-  // auto-fold did.
+  // The X takes the host-chosen fold disposition, never the migrate button's user-pin path: a user who pressed close
+  // chose a pin even less than an auto-fold did.
   EXPECT_TRUE(busyFolded());
   EXPECT_FALSE(userPinned());
   EXPECT_FALSE(closed());
 }
 
-// Rule 1 — nothing running, so the X keeps its plain teardown.
+// Nothing running, so the X keeps its plain teardown.
 TEST_F(ToolboxPanelFoldTest, BannerCloseTearsDownWhenIdle) {
   wrapPanel();
   setWorkInFlight(false);
@@ -672,7 +670,7 @@ TEST_F(ToolboxPanelFoldTest, BannerCloseTearsDownWhenIdle) {
   EXPECT_FALSE(foldedIntoTab());
 }
 
-// Rule 4 — declining leaves both the tab and the transfer exactly as they were.
+// Declining leaves both the tab and the transfer exactly as they were.
 TEST_F(ToolboxPanelFoldTest, FoldedTabCloseDeclinedKeepsEngineAlive) {
   pinPanel();
   setWorkInFlight(true);
@@ -685,8 +683,7 @@ TEST_F(ToolboxPanelFoldTest, FoldedTabCloseDeclinedKeepsEngineAlive) {
   EXPECT_TRUE(stoppedHosts().empty());
 }
 
-// Rule 4, confirmed — the cancel lands on THIS panel's host only, so another
-// folded panel's import keeps running.
+// Confirming cancels this panel's host only, so another folded panel's import keeps running.
 TEST_F(ToolboxPanelFoldTest, FoldedTabCloseConfirmedStopsThatHostOnly) {
   pinPanel();
   setWorkInFlight(true);
@@ -698,7 +695,7 @@ TEST_F(ToolboxPanelFoldTest, FoldedTabCloseConfirmedStopsThatHostOnly) {
   EXPECT_EQ(stoppedHosts(), std::vector<PJ::ToolboxRuntimeHost*>{ownHost()});
 }
 
-// Rule 3 — an idle folded panel closes like any other tab, unprompted.
+// An idle folded panel closes like any other tab, unprompted.
 TEST_F(ToolboxPanelFoldTest, FoldedTabCloseWhenIdleNeedsNoConfirmation) {
   pinPanel();
   setWorkInFlight(false);
@@ -720,8 +717,8 @@ TEST_F(ToolboxPanelFoldTest, IngestStartFoldsTheTakeoverPanel) {
   EXPECT_FALSE(closed());
 }
 
-// UI-11: a plugin that covers the chart area and creates one of its own tabs would
-// otherwise leave that tab hidden behind its panel.
+// A plugin that covers the chart area and creates one of its own tabs would otherwise leave that tab hidden behind
+// its panel.
 TEST_F(ToolboxPanelFoldTest, PluginCreatingOwnedTabFoldsItsTakeoverAndShowsTheTab) {
   presentAsTakeover();
 
@@ -782,8 +779,8 @@ TEST_F(ToolboxPanelFoldTest, BackgroundFoldIsExcludedFromLayoutSave) {
   EXPECT_FALSE(savedLayoutMentions(pluginId()));
 }
 
-// A folded panel outlives its own batch: the tab is the user's surface now and
-// stays connected so another job can be queued into it.
+// A folded panel outlives its own batch: the tab is the user's surface and stays connected so another job can be
+// queued into it.
 TEST_F(ToolboxPanelFoldTest, CompletionCloseRequestIsIgnoredWhilePinned) {
   pinPanel();
 
@@ -830,9 +827,8 @@ TEST_F(ToolboxPanelFoldTest, MigrateButtonPinIsIncludedInLayoutSave) {
   EXPECT_TRUE(savedLayoutMentions(pluginId()));
 }
 
-// D5: a non-interactive restore (a batch drain lands minutes after the layout
-// open) must never raise the cancel-confirmation modal. Busy pinned panels are
-// retained unprompted — same resolution as a decline — with a diagnostic.
+// A non-interactive restore (a batch drain lands minutes after the layout open) must never raise the
+// cancel-confirmation modal. Busy pinned panels are retained unprompted, as on a decline, with a diagnostic.
 TEST_F(ToolboxPanelFoldTest, NonInteractiveRestoreKeepsBusyPinnedPanelsUnprompted) {
   pinPanel();
   setWorkInFlight(true);
@@ -881,7 +877,7 @@ TEST_F(ToolboxPanelFoldTest, InteractiveRestoreConfirmedReplacesBusyPinnedPanels
 }
 
 // The marketplace has no presenter: after "Move to a tab" its banner X must
-// still close the tab it now lives in, not the (empty) central area.
+// still close the tab it lives in, not the (empty) central area.
 TEST_F(ToolboxPanelFoldTest, MarketplaceTabBannerCloseClosesTheTab) {
   using Peer = PJ::ToolboxPanelFoldTestPeer;
   Peer::openMarketplace(mainWindow());
@@ -990,11 +986,9 @@ TEST_F(ToolboxPanelFoldTest, SavedDrawerWidthIsRestoredWhenItFits) {
   QSettings().remove(key);
 }
 
-// The other half of the round trip, and the one that was silently broken: a
-// width the user drags has to reach QSettings. It is saved from
-// QSplitter::splitterMoved -- an earlier version persisted from a
-// QEvent::Destroy filter installed on the splitter itself, which never fires
-// reliably for the object being destroyed, so every resize was lost on exit.
+// A width the user drags has to reach QSettings. It is saved from QSplitter::splitterMoved: a QEvent::Destroy filter
+// on the splitter itself does not fire reliably for the object being destroyed, so a width saved there is lost on
+// exit.
 TEST_F(ToolboxPanelFoldTest, DraggingTheDrawerPersistsItsWidth) {
   const QString key = u"ToolboxDrawerWidth/%1"_s.arg(pluginId());
   QSettings().remove(key);
@@ -1050,10 +1044,9 @@ TEST_F(ToolboxPanelFoldTest, AbsurdSavedDrawerWidthIsIgnored) {
   QSettings().remove(key);
 }
 
-// The gap the review flagged: the tab presentation persists a width under
-// ToolboxDrawerWidth/<key>; PJ::Dialog::setSideWidget — the floating
-// presentation's mechanism — must open at that same width when given the
-// same key, since both dock through makeSideDrawerSplitter.
+// The tab presentation persists a width under ToolboxDrawerWidth/<key>; PJ::Dialog::setSideWidget, the floating
+// presentation's mechanism, must open at that same width given the same key, since both dock through
+// makeSideDrawerSplitter.
 TEST_F(ToolboxPanelFoldTest, TabSavedWidthCarriesToFloatingPresentation) {
   const QString key = u"ToolboxDrawerWidth/%1"_s.arg(pluginId());
   QSettings().remove(key);
@@ -1119,9 +1112,8 @@ TEST_F(ToolboxPanelFoldTest, DialogSideWidgetRoundTripRestoresOriginalLayout) {
   delete drawer;
 }
 
-// A chrome action with chromeActionSlot="leading" gets its banner proxy BEFORE
-// the title, and the title centres itself; without the slot the proxy stays
-// after the title as before.
+// A chrome action with chromeActionSlot="leading" gets its banner proxy before the title, and the title centres
+// itself; without the slot the proxy stays after the title.
 TEST_F(ToolboxPanelFoldTest, LeadingChromeActionProxyPrecedesTheTitle) {
   auto* content = new QWidget;
   auto* content_layout = new QVBoxLayout(content);
@@ -1372,10 +1364,9 @@ TEST_F(ToolboxPanelFoldTest, RestoreReplacesATakeoverThatFoldsDuringTheConfirmat
   setWorkInFlight(false);
 }
 
-// D5 again, for a busy toolbox that sits in the chart-area takeover while the
-// layout being restored names it as a pinned tab (with a config, so the restore
-// must relaunch it): a non-interactive restore must retain it unprompted, not
-// fold it and then raise the tab's cancel confirmation on the relaunch.
+// A busy toolbox sits in the chart-area takeover while the layout being restored names it as a pinned tab (with a
+// config, so the restore must relaunch it): a non-interactive restore must retain it unprompted, not fold it and
+// then raise the tab's cancel confirmation on the relaunch.
 TEST_F(ToolboxPanelFoldTest, NonInteractiveRestoreKeepsBusyTakeoverNamedByTheLayoutUnprompted) {
   wrapPanel();
   ASSERT_TRUE(
@@ -1414,8 +1405,8 @@ TEST_F(ToolboxPanelFoldTest, RelaunchingABusyTakeoverFoldsItIntoATabAndFocusesIt
           mainWindow(), panelContainer(), pluginId(), u"Docked"_s, ownHost()));
   ASSERT_TRUE(PJ::ToolboxPanelFoldTestPeer::isTakeover(mainWindow(), pluginId()));
   setWorkInFlight(true);
-  // A regression that tears the panel down instead reaches the catalog lookup,
-  // whose miss raises a modal: dismiss it so the failure is reported, not hung.
+  // Tearing the panel down instead would reach the catalog lookup, whose miss raises a modal: dismiss it so the
+  // failure is reported, not hung.
   QObject modal_guard;
   QTimer::singleShot(200, &modal_guard, []() {
     if (QWidget* modal = QApplication::activeModalWidget()) {
@@ -1485,7 +1476,7 @@ TEST_F(ToolboxPanelFoldTest, DirectDestructionReleasesFloatingSessionWhileServic
 
 namespace {
 
-// Preserve this suite's settings scope without changing other runner cases.
+// Settings scope for this suite only: set when it is selected, so other cases of the runner keep theirs.
 class SettingsEnvironment : public ::testing::Environment {
  public:
   void SetUp() override {

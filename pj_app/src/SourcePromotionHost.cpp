@@ -29,7 +29,6 @@ bool promotionReject(PJ_error_t* out_error, const char* message) noexcept {
 }
 
 QString toQString(PJ_string_view_t view) {
-  // sdk::toStringView already encodes the null-data rule (empty view).
   const std::string_view text = sdk::toStringView(view);
   return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size()));
 }
@@ -49,9 +48,7 @@ SourcePromotionHost::SourcePromotionHost(
           .promote_to_file_source = &SourcePromotionHost::onPromote,
       },
       raw_{this, &vtable_} {
-  // All three observers run on the GUI thread (direct connections — the
-  // loader lives there too) and filter by ticket, so unrelated loads pass
-  // through untouched.
+  // Direct connections (the loader lives on the GUI thread too), filtered by ticket.
   connect(
       loader_.data(), &FileLoader::loadCommitting, this,
       [this](quint64 ticket, const QVector<DatasetId>& produced, const QString&, const QString&) {
@@ -61,16 +58,12 @@ SourcePromotionHost::SourcePromotionHost(
         }
         const std::shared_ptr<Promotion>& promotion = it->second;
         if (!produced.contains(promotion->dataset)) {
-          // Cannot happen under require_replacement (the commit keeps the
-          // DatasetId), but ok=true must IMPLY "record attached" — so guard
-          // it instead of assuming.
+          // Not expected under require_replacement, but ok=true must imply the record is attached.
           promotion->failure_reason = tr("the committed load did not preserve dataset %1").arg(promotion->dataset);
           return;
         }
-        // The pre-catalog seam: dataset, source path, and captured config are
-        // installed and the publishing catalog rebuild follows immediately —
-        // attaching here makes record and catalog publication atomic. The
-        // provider identity is the HOST-side binding id, never request data.
+        // Before the catalog publishes, so record and catalog appear together. provider_id is the binding's,
+        // never request data.
         session_.attachSourceRecord(
             promotion->dataset, SourceRecord{
                                     .provider_id = provider_id_,
@@ -80,18 +73,15 @@ SourcePromotionHost::SourcePromotionHost(
         promotion->record_attached = true;
       });
   connect(loader_.data(), &FileLoader::fileLoadFailed, this, [this](const QString& path, const QString& reason) {
-    // Terminal loadFinished carries no reason; this legacy signal does.
-    // It fires synchronously inside the failing path: either while OUR
-    // loadFileTicketed call is still on the stack (issuing_ — the ticket
-    // is not known yet) or for the loader's CURRENT request. The identity
-    // check keeps an unrelated rejected enqueue (which emits this without
-    // touching the current ticket) from polluting a promotion's reason.
+    // loadFinished carries no reason; this signal does, synchronously: inside our loadFileTicketed (issuing_) or
+    // for the loader's current request. The path check keeps an unrelated rejected enqueue, which emits it too,
+    // from taking over a promotion's reason.
     if (issuing_ != nullptr) {
       issuing_->failure_reason = reason;
       return;
     }
     if (loader_.isNull()) {
-      return;  // loader was destroyed
+      return;
     }
     const auto it = by_ticket_.find(loader_->currentLoadTicket());
     if (it != by_ticket_.end() && FileLoader::sameSourceIdentity(path, it->second->local_path)) {
@@ -130,7 +120,7 @@ void SourcePromotionHost::shutdown() {
   {
     const std::lock_guard lock(mu_);
     if (shutting_down_) {
-      return;  // idempotent: the destructor re-runs this after an explicit shutdown()
+      return;
     }
     shutting_down_ = true;
     for (auto& [id, promotion] : pending_) {
@@ -141,21 +131,11 @@ void SourcePromotionHost::shutdown() {
     }
     pending_.clear();
   }
-  // Stop observing the loader: a promotion load that outlives this host
-  // completes as an ordinary strict replace with no record attach — that is
-  // deliberate (the replaced data is still valid; only the promotion
-  // transaction is reported failed below), and the disconnect guarantees its
-  // later loadFinished cannot re-fire anything. Guard the dereference in case
-  // the loader was destroyed.
+  // A promotion load still running completes as a plain replace (its data is valid); the disconnect keeps its
+  // loadFinished from reaching this object.
   if (!loader_.isNull()) {
     QObject::disconnect(loader_.data(), nullptr, this, nullptr);
   }
-  // Fail every accepted-but-unfinished promotion while the plugin instance /
-  // DSO behind result_cb is still alive (the owners run shutdown() BEFORE
-  // releasing the plugin handle). New arrivals are rejected synchronously
-  // from here on (shutting_down_) — and keep being rejected safely for as
-  // long as the object lives, which is what lets the owners destroy the
-  // host only AFTER the plugin's workers are joined.
   by_ticket_.clear();
   constexpr const char* kMessage = "the promotion host is shutting down";
   for (const auto& promotion : unfinished) {
@@ -176,12 +156,10 @@ bool SourcePromotionHost::onPromote(
     return promotionReject(out_error, "invalid arguments");
   }
   if (result_cb == nullptr) {
-    // An accepted call promises result_cb exactly once — unfulfillable here.
     return promotionReject(out_error, "result_cb must not be null");
   }
   try {
-    // Growth-contract gate: read only fields wholly covered by struct_size.
-    // Every v1 field is required, so anything smaller is malformed.
+    // Read only fields struct_size covers; every v1 field is required.
     constexpr uint32_t kMinRequestSize =
         offsetof(PJ_source_promotion_request_v1_t, descriptor_json) + sizeof(PJ_string_view_t);
     if (request->struct_size < kMinRequestSize) {
@@ -195,8 +173,7 @@ bool SourcePromotionHost::onPromote(
       return promotionReject(out_error, "request carries an empty local path");
     }
 
-    // Copy the COMPLETE request before returning — the caller's views die at
-    // return, and the job crosses onto the GUI thread.
+    // The caller's views die at return.
     auto promotion = std::make_shared<Promotion>();
     promotion->dataset = static_cast<DatasetId>(request->dataset.id);
     promotion->source_identity = toQString(request->source_identity);
@@ -216,22 +193,13 @@ bool SourcePromotionHost::onPromote(
       promotion->id = promotion_id;
       self->pending_.emplace(promotion_id, std::move(promotion));
       try {
-        // Queued unconditionally (even from the GUI thread): promote_to_file_
-        // source is [asynchronous] and this keeps the entry path re-entrancy-
-        // free. Queued metacalls die with the QObject, so a teardown before
-        // the job runs leaves only the destructor's pending_ sweep — which is
-        // exactly the accepted-then-failed contract. Posted while STILL
-        // HOLDING mu_ (QueuedConnection never runs the lambda synchronously,
-        // so no recursion): the destructor must take mu_ for its sweep, so it
-        // cannot free the QObject between this thread's admission and its
-        // post — ~QObject's posted-event purge runs strictly after. A call
-        // arriving entirely AFTER the destructor returned would lock a
-        // destroyed mutex — unprotectable inside the class; safety rests on
-        // import-job quiescence ordering (the panel session tears the
-        // plugin's jobs down while this host is still alive).
+        // Queued even from the GUI thread, so the entry path is never re-entrant. Posted while holding mu_:
+        // shutdown() takes mu_ for its sweep, so the object cannot die between admission and post, and a queued
+        // call purged by ~QObject is failed by that sweep. A call after destruction would lock a destroyed mutex;
+        // the owners prevent it by joining the plugin's workers while this object is alive.
         QMetaObject::invokeMethod(self, &SourcePromotionHost::processPromotion, Qt::QueuedConnection, promotion_id);
       } catch (...) {
-        // Never accepted after all: the sweep must not fire result_cb for it.
+        // Not accepted after all: the sweep must not call result_cb for it.
         self->pending_.erase(promotion_id);
         throw;
       }
@@ -250,15 +218,12 @@ void SourcePromotionHost::processPromotion(quint64 promotion_id) {
     const std::lock_guard lock(mu_);
     const auto it = pending_.find(promotion_id);
     if (it == pending_.end()) {
-      return;  // already resolved (teardown sweep)
+      return;  // failed by shutdown()
     }
     promotion = it->second;
   }
 
-  // Ownership gate: the target must have been produced by the bound
-  // provider's ingest — the host-side substitute for a generation token.
-  // Liveness needs no separate check: require_replacement makes FileLoader
-  // fail a vanished target instead of degrading to a fresh load.
+  // Stands in for a generation token. Liveness is require_replacement's job.
   if (!owns_dataset_ || !owns_dataset_(promotion->dataset)) {
     finishPromotion(
         promotion, false, tr("dataset %1 was not produced by this plugin's ingest").arg(promotion->dataset));
@@ -273,15 +238,11 @@ void SourcePromotionHost::processPromotion(quint64 promotion_id) {
   // provider's staging area, is rewritten to the file being loaded.
   hints.dialog_policy = DialogPolicy::kNever;
   hints.replace_dataset_id = promotion->dataset;
-  hints.require_replacement = true;  // strict: a vanished target FAILS, never a fresh load
+  hints.require_replacement = true;
 
-  // A synchronous failure inside loadFileTicketed emits fileLoadFailed before
-  // the ticket is known — issuing_ routes that reason to this promotion. It
-  // must not survive a throwing enqueue, or a later unrelated fileLoadFailed
-  // would misroute its reason here.
+  // issuing_ must not survive a throwing enqueue, or a later unrelated fileLoadFailed would land here.
   issuing_ = promotion;
   LoadRequestId ticket = 0;
-  // Guard against loader being destroyed before this queued call runs.
   if (loader_.isNull()) {
     issuing_.reset();
     finishPromotion(promotion, false, tr("the file loader was destroyed"));
@@ -300,15 +261,13 @@ void SourcePromotionHost::processPromotion(quint64 promotion_id) {
         promotion->failure_reason.isEmpty() ? tr("the file loader rejected the request") : promotion->failure_reason);
     return;
   }
-  // Accepted by the loader: loadFinished for this ticket arrives through the
-  // event loop, never before this method returns.
+  // Its loadFinished arrives through the event loop, never before this returns.
   by_ticket_.emplace(ticket, std::move(promotion));
 }
 
 void SourcePromotionHost::finishPromotion(
     const std::shared_ptr<Promotion>& promotion, bool ok, const QString& message) {
-  // Convert BEFORE taking the fired flag: if the allocation throws, the
-  // promotion stays pending and the destructor sweep still fails it.
+  // Before taking `fired`: if the allocation throws, the promotion stays pending and shutdown() still fails it.
   const QByteArray utf8 = message.toUtf8();
   {
     const std::lock_guard lock(mu_);

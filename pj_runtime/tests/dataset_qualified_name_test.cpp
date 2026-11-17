@@ -96,8 +96,8 @@ TEST(ResolveMarkerDataset, UnqualifiedUniqueKeyResolves) {
   EXPECT_EQ(*ds, 2u);
 }
 
-// The failure this whole contract exists to stop: the old behaviour fell back
-// to the first-loaded dataset, stranding the generator on the wrong data.
+// A fallback to the first-loaded dataset would strand the generator on the wrong data; the duplicated bare key is
+// refused.
 TEST(ResolveMarkerDataset, DuplicatedBareKeyIsRefusedWithQualifiedCandidates) {
   const std::string key = PJ::sdk::markerSeriesKey("/speed", "value");
   const std::vector<CatalogItem> items = {scalarItem(1, "/speed", "value"), scalarItem(2, "/speed", "value")};
@@ -163,8 +163,8 @@ TEST(ResolveMarkerDataset, LongestSourcePrefixDecidesEvenWhenTheShorterFormExist
   EXPECT_EQ(inputs.front(), "/t/value");
 }
 
-// Bug (PR #619 #6): a recognized qualifier returns as soon as it selects a dataset,
-// so "a:/missing/value" and the empty bare "a:" pass without any series check.
+// A recognized qualifier must not return as soon as it selects a dataset: "a:/missing/value" and the empty bare "a:"
+// need a series check too.
 TEST(ResolveMarkerDataset, QualifiedInputMustExistInItsDataset) {
   const auto names = namesOf({{1, "a"}});
   const std::vector<CatalogItem> items = {scalarItem(1, "/speed", "value")};

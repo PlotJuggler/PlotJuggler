@@ -18,10 +18,9 @@
 
 namespace PJ {
 
-// The compressed / per-entry / total expanded caps and the path-depth cap are the
-// shared archive budgets defined in archive_limits.hpp, and reused here so the
-// store and the classic extractor agree on one set of numbers. Only the
-// entry-count default carries a store-specific name.
+// The compressed, per-entry and total expanded caps and the path-depth cap are the archive budgets of
+// archive_limits.hpp, reused here so both extractors share one set of numbers. Only the entry-count default carries a
+// store-specific name.
 /// Default archive-entry cap, bounding both file and directory metadata amplification.
 inline constexpr size_t kDefaultMaximumFileCount = 4096U;
 

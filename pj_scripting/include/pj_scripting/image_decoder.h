@@ -13,8 +13,8 @@
 #include "pj_base/types.hpp"
 #include "pj_scripting/memory_budget.h"
 
-// The headless image codec seam of the object scripts (docs/derived_objects/ARCHITECTURE.md §6): a script
-// decodes an image's original samples, independent of any viewer's colormap, rectification or zoom. The session
+// The headless image codec seam of the object scripts (docs/derived_objects/ARCHITECTURE.md "Types and bindings"): a
+// script decodes an image's original samples, independent of any viewer's colormap, rectification or zoom. The session
 // injects the codec (`RunOptions::image_decoder`), so scripting links no codec library.
 
 namespace PJ::scripting {

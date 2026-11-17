@@ -10,9 +10,9 @@ namespace pj_app_test {
 
 void GuiTestEnvironment::SetUp() {
   PJ::PlotWidgetBase::setGpuCanvasDisabledOverride(true);
-  // A layout load waits a bounded time for each marker rule; under ctest -j that run may
-  // outlive the 8 ms budget, so every case waits for it to finish instead. A test of the
-  // bounded wait sets the production budget itself.
+  // A layout load waits a bounded time for each marker rule; under ctest -j that run may outlive
+  // BatchEngine::kCreateBudget, so every case waits for it to finish instead. A test of the bounded wait sets the
+  // production budget itself.
   PJ::BatchEngine::setCreateBudgetForTest(std::chrono::seconds(30));
 }
 

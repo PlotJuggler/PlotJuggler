@@ -6,7 +6,7 @@ on Mesa 26 llvmpipe (see "Regenerating"). They hold the QRhi renderer to the
 same images on every backend of the platform: ctest
 runs the cases once per backend, `pointcloud_golden_test.<backend>.*`
 (`RHI_BACKENDS` in `cmake/PjTests.cmake`). Why the backends differ, and the
-measured worst case per backend, are in `pj_scene3D/docs/TECHNICAL_NOTES.md` §7.
+measured worst case per backend, are in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Golden images".
 
 Every scene: 256x256 view at DPR 1, light theme (white application palette),
 grid/TF axes/TF lines off, default look (tonemap, SSAO, EDL, MSAA), orbit camera
@@ -176,18 +176,3 @@ Needs a real display (`xvfb-run -a` in CI, or a private headless compositor);
 the `offscreen` platform skips. The writer is deterministic: two runs on Mesa
 26.0.3 produce identical files, equal to the images the comparison renders
 (which the exact rule on its stack holds it to).
-
-The images keep the look of the retired GL renderer. Against
-its renders of the same scenes every scene passes (the filled grids aside: that
-renderer drew the grid darker under the gizmo's square, so they are compared
-only with the QRhi view's own renders), with at most 0.48% of pixels
-off per pixel (`scene_robot_primitives`), coverage within 0.02% and mean colour
-within 1. The corner gizmo covers the same pixels, its arms' interiors within 2
-levels on average; its anti-aliased edges resolve differently (60-140 pixels of
-the 80x80 corner off by more than 16, at most 80; about 250 where grid lines
-cross the corner, which the GL renderer drew differently under the gizmo's
-square). Outside the gizmo,
-most pixels that differ do so by at most 3 per channel; more than 16 only on
-sphere rims in `field_turbo_spheres` (16 pixels, a coverage scene), primitive
-silhouettes in `scene_robot_primitives` (74 pixels, up to 61) and 1-2 edge
-pixels of the markers, the colour scenes and `shape_points_1px`.

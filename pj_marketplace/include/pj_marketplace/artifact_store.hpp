@@ -30,15 +30,10 @@ struct VerifiedArtifact {
   GenerationDigest digest;
 };
 
-/// Result of publishing or finding one artifact-addressed object generation.
-///
-/// `artifact_digest` is always the CONTENT-MANIFEST digest (an aggregate over
-/// `path\0sha256\n` records), computed identically for extracted archives and
-/// adopted directories — so identical bytes share one identity regardless of
-/// how they arrived, and the #549 immutable-release check compares like with
-/// like across origins. The transport archive's own SHA-256, when one existed,
-/// is preserved separately as `transport_digest` (empty for adoptions); it is
-/// provenance, not identity.
+/// Result of publishing or finding one object. `artifact_digest` is always the content-manifest digest (an aggregate
+/// over `path\0sha256:<hex>\n` records), computed identically for extracted archives and adopted directories, so
+/// identical bytes share one identity whatever their origin. The transport archive's own SHA-256, when one existed, is
+/// kept as `transport_digest` (empty for adoptions): provenance, not identity.
 struct StoredArtifact {
   std::string artifact_digest;
   std::string transport_digest;
@@ -49,11 +44,9 @@ struct StoredArtifact {
   bool already_present = false;
 };
 
-/// Called with the object's content digest after hashing and BEFORE the publish
-/// rename makes it visible to garbage collection. Callers use this to register
-/// an in-flight GC root with no window in which a concurrent collection could
-/// observe the object unrooted. The callback runs on the calling thread; if the
-/// commit subsequently fails the caller owns releasing whatever it registered.
+/// Called with the object's content digest after hashing and BEFORE the publish rename makes it visible to garbage
+/// collection, so a caller can register an in-flight GC root with no window in which a concurrent collection sees the
+/// object unrooted. Runs on the calling thread; if the commit then fails, the caller releases whatever it registered.
 using ArtifactDigestKnownHook = std::function<void(const GenerationDigest&)>;
 
 /// Commit fault boundaries exposed for deterministic crash-consistency tests.
@@ -63,22 +56,15 @@ enum class ArtifactStoreCommitFault {
   kAfterRename,
 };
 
-/// Durable byte layer for marketplace generations.
-///
-/// `<canonical-root>.artifacts`, `<canonical-root>.extraction`, and
-/// `<canonical-root>.profiles` are hidden suffix siblings of the canonical
-/// store root, so lifecycle state can never be discovered as recursively
-/// scanned content. All must share its filesystem: publication is a single
-/// directory rename, never a recursive copy. Extracted files are forced to
-/// durable storage before close and the artifacts parent is forced after rename;
-/// success is reported only after both steps. Every mutation requires the same
-/// PID-liveness writer lease used by ExtensionManager.
+/// Durable byte layer for marketplace generations. `<canonical-root>.artifacts`, `.extraction` and `.profiles` are
+/// hidden suffix siblings of the canonical store root, so lifecycle state is never discovered as scanned content; all
+/// must share its filesystem, because publication is a single directory rename, never a copy. Extracted files are
+/// forced to durable storage before close and the artifacts parent after the rename; success is reported only after
+/// both. Every mutation requires the PID-liveness writer lease shared with ExtensionManager.
 class ArtifactStore {
  public:
-  /// Use a caller-owned session and its already-acquired writer lease.
-  ///
-  /// The session must outlive this store. QLockFile is not reentrant, even within
-  /// one process, so ExtensionManager and ArtifactStore must share one session.
+  /// Uses a caller-owned session (which must outlive the store) and its already-acquired writer lease. QLockFile is not
+  /// reentrant, even within one process, so ExtensionManager and ArtifactStore must share one session.
   explicit ArtifactStore(StoreSession& session, StoreQuotas quotas = {});
 
   /// Standalone convenience factory that opens and owns a store session.
@@ -97,49 +83,37 @@ class ArtifactStore {
   /// Canonical managed-store identity from which every sibling is derived.
   [[nodiscard]] const QString& storeRoot() const noexcept;
 
-  /// Write-once `<canonical-root>.objects/<artifact-sha256>/` parent.
+  /// Write-once `<canonical-root>.artifacts/<digest>/` parent.
   [[nodiscard]] const QString& artifactsRoot() const noexcept;
 
-  /// The store directory that holds (or would hold) the digest's object. The
-  /// ONE home of the objects-root layout — callers must never derive
-  /// "<artifactsRoot>/<hex>" themselves.
+  /// The store directory that holds (or would hold) the digest's object: the one home of the objects-root layout.
+  /// Never derive "<artifactsRoot>/<hex>" yourself.
   [[nodiscard]] QString artifactRootFor(const GenerationDigest& digest) const;
 
   /// Operation-private extraction parent; never a runtime scan root.
   [[nodiscard]] const QString& extractionRoot() const noexcept;
 
-  /// Validate, extract, and atomically publish transport-verified bytes.
-  ///
-  /// The transport digest verifies arrival; the published identity is the
-  /// content-manifest digest of the extracted files (see StoredArtifact). The
-  /// sole directory wrapping every archive file is removed so the object is
-  /// descriptor-rooted like adopted directories. The extractor's incrementally
-  /// computed file digests are reused, and a cheap file-set/type/size check
-  /// guards staging mutation. Files and the objects parent are forced to durable
-  /// storage before success.
+  /// Validates, extracts and atomically publishes transport-verified bytes. The transport digest verifies arrival; the
+  /// published identity is the content-manifest digest of the extracted files (see StoredArtifact). The sole directory
+  /// wrapping every archive file is removed, so the object is descriptor-rooted like adopted directories. The
+  /// extractor's incrementally computed file digests are reused and a cheap file-set/type/size check guards staging
+  /// mutation. Files and the objects parent are forced to durable storage before success.
   [[nodiscard]] Expected<StoredArtifact, StoreRejection> commitArchive(
       const VerifiedArtifact& artifact, const std::atomic<bool>* cancel_requested = nullptr,
       const ArtifactDigestKnownHook& digest_known = {});
 
-  /// Publish already-resident legacy bytes through the same hashed write-once tail.
-  ///
-  /// The source is never made a special runtime root: every regular file is
-  /// copied into private staging, rehashed, manifested, and atomically renamed
-  /// into the ordinary artifact-addressed object namespace.
+  /// Publishes already-resident bytes through the same hashed write-once tail. The source is never a runtime root:
+  /// every regular file is copied into private staging, rehashed, manifested and atomically renamed into the
+  /// artifact-addressed object namespace.
   [[nodiscard]] Expected<StoredArtifact, StoreRejection> adoptDirectory(
       const QString& directory, const std::atomic<bool>* cancel_requested = nullptr,
       const ArtifactDigestKnownHook& digest_known = {});
 
-  /// Materialize an object this process just committed, skipping the resident
-  /// re-verification: `object` already carries the known-good file list, and the
-  /// bytes were written under this session's exclusive lease moments ago. The
-  /// post-copy rehash still runs, so copy corruption is still caught. Use the
-  /// digest overload for objects of unknown age (profile activation, repair).
-  /// `verify_copy_hashes=false` skips the post-copy rehash for a THROWAWAY
-  /// materialization (the helper's executed candidate, discarded before
-  /// promotion): the helper independently rehashes what it inspects, so the
-  /// extra pass certified a copy that is deleted moments later. The promoted
-  /// copy must keep the default and be rehashed.
+  /// Materializes an object this process just committed into an empty `destination`, skipping the resident
+  /// re-verification: `artifact` carries the known-good file list and the bytes were written under this session's lease
+  /// moments ago. The post-copy rehash still runs, so copy corruption is caught; `verify_copy_hashes=false` skips it
+  /// for a throwaway materialization that is discarded before promotion. For an object of unknown age, call
+  /// verifyArtifact() first.
   [[nodiscard]] Expected<StoredArtifact, StoreRejection> materializeArtifact(
       const StoredArtifact& artifact, const QString& destination, const std::atomic<bool>* cancel_requested = nullptr,
       bool verify_copy_hashes = true) const;
@@ -147,12 +121,11 @@ class ArtifactStore {
   /// Rehash and verify one resident artifact without mutating the store.
   [[nodiscard]] Expected<StoredArtifact, StoreRejection> verifyArtifact(const GenerationDigest& digest) const;
 
-  /// Delete every resident object whose digest is not in `live` (a mark-and-sweep
-  /// GC; `live` must be the COMPLETE set of still-referenced digests, or a live
-  /// object is lost). Only canonical object directories are candidates: in-flight
-  /// scratch directories and any non-digest name are left untouched, and a
-  /// directory that cannot be removed (e.g. a mapped file) is left for a later
-  /// sweep. No-op without the writer lease. Returns the number of objects removed.
+  /// Deletes every resident object whose digest is not in `live`: a mark-and-sweep GC, so `live` must be the COMPLETE
+  /// set of still-referenced digests, or a live object is lost. Only canonical object directories are candidates:
+  /// in-flight scratch directories and any non-digest name are left alone, and a directory that cannot be removed
+  /// (e.g. a mapped file) waits for a later sweep. No-op without the writer lease. Returns the number of objects
+  /// removed.
   size_t collectUnreferenced(const std::vector<GenerationDigest>& live);
 
   /// Test-only write interposition used to model a full or failed volume.

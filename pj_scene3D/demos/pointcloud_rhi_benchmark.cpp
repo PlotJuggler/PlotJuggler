@@ -1,32 +1,24 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Point-cloud GPU/CPU benchmark for the QRhi point pass. It
-// drives the production PointRhiPass on an offscreen QRhi, the way the view does
-// with its quality chain on: the colour pass into a 4x RGBA16F + D32F target, then
-// the single-sample RGBA8 + D32F depth replay SSAO/EDL read (their full-screen
-// passes cost the same for every topology, so they are left out). It compares the
-// instanced quads against the point-list fast path, for three clouds: a static
-// one; a changing one, the same array re-uploaded every frame; and a streaming one,
-// a new sample every frame the layer's way: a wire PointCloud (x/y/z of
-// --field-type, a float32 intensity) packed the layer's way: packPointVertices()
-// on the thread pool, into the retained PointVertex array (rewritten in place once
-// the upload released it) after the frame began, which the pass uploads shared.
+// Benchmark of the production PointRhiPass on an offscreen QRhi, drawn the way the view does with its quality chain
+// on: the colour pass into a 4x RGBA16F + D32F target, then the single-sample RGBA8 + D32F depth replay SSAO/EDL read
+// (their full-screen passes cost the same for every topology, so they are left out). It compares the instanced quads
+// against the point-list fast path for three clouds: a static one; a changing one, the same array re-uploaded every
+// frame; and a streaming one, a new sample every frame the layer's way: a wire PointCloud (x/y/z of --field-type, a
+// float32 intensity) packed by packPointVertices() on the thread pool into the retained PointVertex array (rewritten
+// in place once the upload released it) after the frame began, which the pass uploads shared.
 //
 //   pointcloud_rhi_benchmark [--api opengl|vulkan] [--points N] [--frames F]
 //                            [--shape point|sphere|cube] [--size WxH]
 //                            [--replay on|off] [--field-type u16|u32|f32]
 //
-// Prints the backend + adapter, then per mode, after a warm-up (pj_bench::WarmUp),
-// the medians of: GPU frame time (QRhi timestamps); the CPU wall of prepare
-// (admit + prepare), of enqueue
-// (recording the passes) and of endFrame (submission, the backend's uploads and,
-// offscreen, the wait for the GPU) with endFrame's own-thread CPU time; whole-frame
-// wall time; and, for a streaming cloud, the conversion, a strided min/max scan of
-// the wire x/y/z (what bounds would cost a path uploading the wire bytes as-is)
-// and the decode-to-visible latency (conversion start to the frame completed).
-// Then the backend's GPU memory in use where it reports one (Vulkan), and the
-// process's peak RSS.
+// Prints the backend + adapter, then per mode, after a warm-up (pj_bench::WarmUp), the medians of: GPU frame time
+// (QRhi timestamps); the CPU wall of prepare (admit + prepare), of enqueue (recording the passes) and of endFrame
+// (submission, the backend's uploads and, offscreen, the wait for the GPU) with endFrame's own-thread CPU time;
+// whole-frame wall time; and, for a streaming cloud, the conversion, a strided min/max scan of the wire x/y/z (what
+// bounds would cost a path uploading the wire bytes as-is) and the decode-to-visible latency (conversion start to the
+// frame completed). Then the backend's GPU memory in use where it reports one (Vulkan), and the process's peak RSS.
 
 #include <rhi/qrhi.h>
 

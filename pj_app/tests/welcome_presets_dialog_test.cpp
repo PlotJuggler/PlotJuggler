@@ -96,7 +96,6 @@ TEST(WelcomePresetsDialogTest, SelectionUploadAndCancel) {
   EXPECT_FALSE(retry_button->isVisible());
   EXPECT_FALSE(status->isVisible());
 
-  // Picking a preset reports it and shows the load until the shell settles it.
   open_second->click();
   ASSERT_EQ(selected.size(), 1);
   EXPECT_EQ(selected.at(0).at(0).toString(), second.id);
@@ -116,13 +115,11 @@ TEST(WelcomePresetsDialogTest, SelectionUploadAndCancel) {
   EXPECT_TRUE(open_first->isEnabled());
   EXPECT_TRUE(upload_button->isEnabled());
 
-  // A failure says so and offers to repeat the same preset.
   open_first->click();
   dialog.layoutLoadFinished(first.layout_url, false, u"download"_s);
   EXPECT_TRUE(retry_button->isVisible());
   EXPECT_FALSE(cancel_button->isVisible());
   EXPECT_TRUE(status->isVisible());
-  // A sentence for the user; the reason token is for the log.
   EXPECT_EQ(status->text(), u"FIRST could not be loaded."_s);
   EXPECT_TRUE(open_second->isEnabled());
   retry_button->click();
@@ -135,21 +132,18 @@ TEST(WelcomePresetsDialogTest, SelectionUploadAndCancel) {
   retry_button->click();
   ASSERT_EQ(selected.size(), 4);
 
-  // Success closes the dialog; reopened, it is idle again.
   dialog.layoutLoadFinished(first.layout_url, true, {});
   EXPECT_FALSE(dialog.isVisible());
   dialog.show();
   EXPECT_FALSE(cancel_button->isVisible());
   EXPECT_FALSE(retry_button->isVisible());
 
-  // A deep link selects without a click, through the same path.
   dialog.selectPreset(second.id);
   ASSERT_EQ(selected.size(), 5);
   EXPECT_EQ(selected.at(4).at(0).toString(), second.id);
   EXPECT_TRUE(cancel_button->isVisible());
   dialog.layoutLoadFinished(second.layout_url, false, u"cancelled"_s);
 
-  // Upload closes the dialog and hands over to the data-file picker.
   upload_button->click();
   EXPECT_EQ(upload.size(), 1);
   EXPECT_FALSE(dialog.isVisible());
@@ -176,7 +170,6 @@ TEST(WelcomePresetsDialogTest, ClosingWhileLoadingCancels) {
   EXPECT_FALSE(dialog.isVisible());
   EXPECT_EQ(cancel.size(), 1);
 
-  // Escape closes it the same way.
   dialog.layoutLoadFinished(first.layout_url, false, u"cancelled"_s);
   dialog.show();
   dialog.selectPreset(first.id);
@@ -212,7 +205,6 @@ TEST(WelcomePresetsDialogTest, DownloadProgressFillsTheBar) {
   EXPECT_EQ(bar->value(), 459);
   EXPECT_EQ(status->text(), u"Downloading FIRST: 120 of 261 MB"_s);
 
-  // No declared size: the count without a percentage.
   dialog.layoutLoadProgress(first.layout_url, 130'000'000, -1);
   EXPECT_EQ(bar->maximum(), 0);
   EXPECT_EQ(status->text(), u"Downloading FIRST: 130 MB"_s);

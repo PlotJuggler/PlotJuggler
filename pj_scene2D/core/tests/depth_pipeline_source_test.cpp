@@ -71,7 +71,7 @@ const DecodedFrame* onlyPixelLayerFrame(const MediaFrame& frame) {
 }
 
 // Bridges the source's worker-thread frame-ready callback to a condition variable
-// the test can block on (decoding is now off-thread). Install AFTER the set*()
+// the test can block on. Install AFTER the set*()
 // calls and before the first setTimestamp().
 // Declare it BEFORE the source it is installed on: the source's worker thread
 // calls into it until the source is destroyed.
@@ -147,7 +147,7 @@ TEST(DepthPipelineSourceTest, EmitsRawDepthFloatsWithParams) {
   EXPECT_EQ(layer_frame->depth.colormap, 0u);  // kTurbo
 }
 
-// Resolve-before-memo regression: a request landing on the already-delivered
+// A request landing on the already-delivered
 // entry must dedup on metadata alone WITHOUT resolving payload bytes — a resolve
 // is a cold refetch (file read + whole-chunk decompress) once the
 // ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt

@@ -10,10 +10,9 @@
 
 #include "host_info_capture.hpp"
 
-/// State shared between the test and the MockPanelPlugin instance.
-/// The dialog plugin ABI has no per-instance test parameterization, so the
-/// plugin reads/writes from this single global, and tests reset it before
-/// each scenario via resetMockPanelState().
+/// State shared between the test and the MockPanelPlugin instance. The dialog plugin ABI has no per-instance test
+/// parameterization, so the plugin reads and writes this single global; tests reset it before each scenario with
+/// resetMockPanelState().
 struct MockPanelState {
   std::string text;
   std::string label = "Hello";
@@ -30,16 +29,15 @@ struct MockPanelState {
 
   std::vector<std::string> events_seen;
 
-  // Number of widget_data() polls the host has made — lets tests pin how many
-  // full document builds a given interaction costs.
+  // Number of widget_data() polls the host has made, to pin how many full document builds an interaction costs.
   int widget_data_calls = 0;
 
   // The `scenePreview` frame's scene_view request; no key while `kind` is empty.
   PJ::SceneView scene_view;
   // Every scene_view_error received, as "<frame>|<kind>|<topic>|<dataset>|<reason>".
   std::vector<std::string> scene_view_errors;
-  // Answers to a scene_view_error: a one-shot close request ("scene error"), and a
-  // label reading "errors:<count received>".
+  // Answers to a scene_view_error: a one-shot close request ("scene error") and a label reading "errors:<count
+  // received>".
   bool close_on_scene_error = false;
   bool label_counts_scene_errors = false;
 

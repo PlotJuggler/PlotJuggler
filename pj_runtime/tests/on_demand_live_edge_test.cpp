@@ -1,9 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The on-demand live edge (docs/derived_objects/ARCHITECTURE.md §16): a live announcement requests each demanded
-// recipe of its dataset at its inputs' newest stamp, the time the docks show, whatever the playhead does; a finding
-// at its pin when an input arrived at or before it. Driven through a real AppSession with the fake script run.
+// The on-demand live edge (docs/derived_objects/ARCHITECTURE.md "Streaming"): a live announcement requests each
+// demanded recipe of its dataset at its inputs' newest stamp, the time the docks show, whatever the playhead does; a
+// finding at its pin when an input arrived at or before it. Driven through a real AppSession with the fake script run.
 
 #include <gtest/gtest.h>
 
@@ -81,7 +81,7 @@ struct LiveFixture : test::OnDemandSessionFixture {
   std::optional<ScalarSeriesHandle> gain;
 };
 
-// STR-02, D30: a live tick evaluates a demanded recipe once per new input stamp; a tick with nothing new computes
+// A live tick evaluates a demanded recipe once per new input stamp; a tick with nothing new computes
 // nothing.
 TEST(OnDemandLiveEdgeTest, LiveIngestEvaluatesOncePerNewStamp) {
   LiveFixture fx;
@@ -174,7 +174,7 @@ TEST(OnDemandLiveEdgeTest, PinnedAndUndemandedNodesDoNotFollowTheEdge) {
   EXPECT_EQ(fx.fake.finished(), runs) << "an input after the pin changes nothing the finding reads";
 }
 
-// PIN-02: a sample arriving at or before a finding's pin (a late one) evaluates the finding again there; one after
+// A sample arriving at or before a finding's pin (a late one) evaluates the finding again there; one after
 // it does not, and an input evicted from under the pin keeps the finding's result.
 TEST(OnDemandLiveEdgeTest, APinnedFindingIsRefreshedWhenAnInputArrivesBeforeItsPin) {
   LiveFixture fx;
@@ -253,7 +253,7 @@ struct StringStateFixture : LiveFixture {
   TopicId status = 0;
 };
 
-// D6: a null state arriving on the live stream is a missing input at its time: the result the previous state made is
+// A null state arriving on the live stream is a missing input at its time: the result the previous state made is
 // cleared, also for a recipe that reads the string alone, though no cloud came with it.
 TEST(OnDemandLiveEdgeTest, ANullStringRowClearsTheLiveResult) {
   StringStateFixture fx;
@@ -285,7 +285,7 @@ TEST(OnDemandLiveEdgeTest, ANullStringRowArrivingWhilePausedClearsTheResultOnRes
   playback.pause();
 }
 
-// DAG-09: a displayed reader of an upstream nothing displays follows its upstream's raw inputs.
+// A displayed reader of an upstream nothing displays follows its upstream's raw inputs.
 TEST(OnDemandLiveEdgeTest, LiveIngestReachesDemandedDescendants) {
   LiveFixture fx;
   fx.install(recipe("z"));
@@ -301,7 +301,7 @@ TEST(OnDemandLiveEdgeTest, LiveIngestReachesDemandedDescendants) {
   EXPECT_EQ(fx.newest("owner/a/cropped"), 40 * kSec);
 }
 
-// STR-05/07 removed: no changed-object feed. A dataset of object topics only announces no ids, and a write that no
+// There is no changed-object feed: a dataset of object topics only announces no ids, and a write that no
 // write host saw (a toolbox's, straight into the store) is found by inspecting the store after the announcement.
 TEST(OnDemandLiveEdgeTest, ObjectOnlyAndToolboxWritesReachTheLiveEdge) {
   LiveFixture fx;
@@ -370,7 +370,7 @@ TEST(OnDemandLiveEdgeTest, ATfOnlyTickRetriesARecipeThatReadTheTf) {
   fx.manager.setTransformService(nullptr);
 }
 
-// GAP-10, the scheduling half: a 100 Hz stream for longer than the ring's window keeps the derived topic publishing
+// A 100 Hz stream for longer than the ring's window keeps the derived topic publishing
 // at every tick (the ring evicts, it never refuses).
 TEST(OnDemandLiveEdgeTest, LiveEdgeKeepsPublishingAt100Hz) {
   LiveFixture fx;
@@ -388,7 +388,7 @@ TEST(OnDemandLiveEdgeTest, LiveEdgeKeepsPublishingAt100Hz) {
   EXPECT_EQ(fx.state("owner/crop")->status, Status::kReady);
 }
 
-// D30: a recipe slower than the stream is never cancelled by a tick: each run publishes, the pending request keeps
+// A recipe slower than the stream is never cancelled by a tick: each run publishes, the pending request keeps
 // only the newest edge, and once the ingest stops the recipe converges on it.
 TEST(OnDemandLiveEdgeTest, SlowLiveRecipeKeepsPublishingAndConvergesAfterIngestStops) {
   LiveFixture fx;
@@ -567,7 +567,7 @@ TEST(OnDemandLiveEdgeTest, TheLivePassOwnsTheRequestsWhileTheTransportFollowsThe
   EXPECT_EQ(fx.state("owner/crop")->requested_t, 10 * kSec) << "paused: the cursor requests again";
 }
 
-// An upstream that fails at a finding's pin clears the finding (D6): only inputs that left the window keep it.
+// An upstream that fails at a finding's pin clears the finding: only inputs that left the window keep it.
 TEST(OnDemandLiveEdgeTest, AnUpstreamFailingAtThePinClearsTheFinding) {
   LiveFixture fx;
   fx.install(recipe("b"));
@@ -708,11 +708,11 @@ TEST(OnDemandLiveEdgeBench, LiveEdgeAmongTenThousandTopics) {
       edge * 1000.0, follow * 1000.0);
 }
 
-// F10 (TF R5), PJ_BENCH=1: a simulated live session of 30 s, streaming ticks every 50 ms (the poll's period), a cloud
+// PJ_BENCH=1: a simulated live session of 30 s, streaming ticks every 50 ms (the poll's period), a cloud
 // input at 20, 10, 5 and 1 Hz, and live TF at 100 Hz on frames the recipe does not read (`odom` <- `imu`), the recipe's
 // own `map` <- `base_link` written once. Prints the runs past the necessary ones (one per new cloud), over every phase
-// of the clouds against the TF snapshot brake (500 ms): each was caused by a TF revision bump alone, which R5
-// (recording the edges and samples a run used) would avoid.
+// of the clouds against the TF snapshot brake (500 ms): each was caused by a TF revision bump alone, which recording
+// the edges and samples a run used would avoid.
 TEST(OnDemandLiveEdgeBench, TfOnlyRerunsOnALiveSession) {
   if (!sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";
@@ -776,9 +776,8 @@ TEST(OnDemandLiveEdgeBench, TfOnlyRerunsOnALiveSession) {
   }
 }
 
-// PERF-02 (PJ_STREAM_BENCH=1): 5 minutes of a 10 Hz stream of 2048-point clouds kept 5 s, one demanded recipe at the
-// live edge, simulated tick by tick (no wall clock): the raw entries, the ring and the cache plateau, the ring under
-// its budget.
+// PJ_STREAM_BENCH=1: 5 minutes of a 10 Hz stream of 2048-point clouds kept 5 s, one demanded recipe at the live edge,
+// simulated tick by tick (no wall clock): the raw entries, the ring and the cache plateau, the ring under its budget.
 TEST(DerivedStreamingBench, FiveMinuteRetentionAndMemoryPlateau) {
   if (!sdk::getEnv("PJ_STREAM_BENCH")) {
     GTEST_SKIP() << "set PJ_STREAM_BENCH=1";

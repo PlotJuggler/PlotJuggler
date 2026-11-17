@@ -13,10 +13,9 @@
 
 namespace PJ {
 
-// The RecordTap a runtime host holds: co-owns the recorder, so an in-flight
-// onMessage can never find it destroyed, and forwards each message. The
-// binding→channel table is the recorder's, so the tap has no state of its own
-// and no lock: the recorder's mu_ is the only mutex on the push path.
+// The RecordTap a runtime host holds. Co-owns the recorder (an in-flight onMessage never finds it destroyed); the
+// binding-to-channel table is the recorder's, so the tap has no state or lock and mu_ is the only mutex on the push
+// path.
 class Recorder::SourceTap final : public RecordTap {
  public:
   explicit SourceTap(std::shared_ptr<Recorder> recorder) : recorder_(std::move(recorder)) {}
@@ -36,10 +35,8 @@ class Recorder::SourceTap final : public RecordTap {
   std::shared_ptr<Recorder> recorder_;
 };
 
-// A queue-budget charge that is given back unless it reaches the queue. The
-// charge is taken under mu_ and the payload copied outside it; releasing it
-// through one destructor is what keeps the two ways out of that window — the
-// recording ending, and the copy throwing — from drifting apart.
+// A queue-budget charge given back unless it reaches the queue. Taken under mu_, with the payload copied outside it;
+// one destructor keeps the two exits from that window (the recording ending, the copy throwing) from drifting apart.
 class Recorder::BudgetReservation {
  public:
   BudgetReservation(Recorder& recorder, uint64_t cost) : recorder_(recorder), cost_(cost) {}
@@ -188,9 +185,8 @@ uint32_t Recorder::channelFor(uint32_t binding_id, const RecordedBindingView& bi
 
 bool Recorder::makeRoomFor(uint64_t incoming_cost) {
   while (queued_bytes_ + incoming_cost > options_.queue_budget_bytes) {
-    // Nothing queued is bigger than the newcomer, so the newcomer is the
-    // largest member of the set and loses. A message costing more than the
-    // whole budget takes this exit against an empty queue: it can never fit.
+    // Nothing queued is bigger, so the newcomer is the largest and loses. A message costing more than the whole
+    // budget exits here against an empty queue: it can never fit.
     if (size_index_.empty() || size_index_.rbegin()->first.first <= incoming_cost) {
       return false;
     }
@@ -242,14 +238,12 @@ TapVerdict Recorder::enqueueMessage(
     logical_channel = channelFor(binding_id, binding);
     if (options_.overflow_policy == RecorderOptions::OverflowPolicy::kDropLargest && !makeRoomFor(queued_size)) {
       ++dropped_messages_;
-      // The recording lost a message, not its tap: dropping IS the policy
-      // working, so the source keeps feeding the ones that follow.
+      // Dropping IS the policy working: the source keeps feeding the messages that follow.
       return TapVerdict::kContinue;
     }
-    // Charge the budget here and copy below, outside the lock: holding mu_
-    // across the copy would park the writer and every other producer behind one
-    // memcpy, while reserving first stops concurrent producers from all
-    // admitting themselves into the same free space.
+    // Charge the budget here, copy outside the lock: holding mu_ across the copy would park the writer and every other
+    // producer behind one memcpy, and reserving first stops concurrent producers admitting themselves into the same
+    // free space.
     queued_bytes_ += queued_size;
   }
 

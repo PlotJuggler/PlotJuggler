@@ -79,8 +79,7 @@ class ConsumerUnwrap : public ::testing::Test {
 };
 
 // The decoder, fed RAW canonical wire messages and a view-extractor that unwraps
-// each one to its Annex-B `data`, decodes a real frame. This is the key feature
-// regression: the consumer parses-per-entry and never copies the H.264 blob.
+// each one to its Annex-B `data`, decodes a real frame.
 TEST_F(ConsumerUnwrap, DecodesCanonicalWireEntriesViaViewExtractor) {
   ObjectStore store;
   auto topic = store.registerTopic({.dataset_id = 1, .topic_name = "/camera/video", .metadata_json = "{}"});
@@ -167,10 +166,8 @@ TEST_F(ConsumerUnwrap, ViewExtractorUnwrapsCanonicalWireToRawAnnexB) {
 }
 
 // The parser-mode source must hold the opaque parser keepalive for its WHOLE
-// lifetime and drop it only after its decode worker is joined. This is the
-// regression for the shutdown use-after-free: on app close the extension catalog
-// dlcloses the parser plugin, so the worker (which calls parseObject) would touch
-// a freed/unmapped parser unless the source keeps it alive. parser=nullptr here:
+// lifetime and drop it only after its decode worker is joined: on app close the extension catalog dlcloses the
+// parser plugin, and the worker calls parseObject. parser=nullptr here:
 // the worker never decodes, we only assert the keepalive lifetime.
 TEST(StreamingVideoSourceKeepalive, HoldsParserKeepaliveForSourceLifetime) {
   ObjectStore store;
@@ -189,7 +186,7 @@ TEST(StreamingVideoSourceKeepalive, HoldsParserKeepaliveForSourceLifetime) {
   EXPECT_TRUE(weak.expired()) << "source must drop the keepalive once destroyed (after worker join)";
 }
 
-// Scrub-settle regression. StreamingVideoSource decodes on a worker thread, so a
+// Scrub settle. StreamingVideoSource decodes on a worker thread, so a
 // single takeFrame() right after setTimestamp() — the GUI's one update()/render()
 // per onTrackerTime — races the (tens-of-ms) GOP seek and returns nothing. With
 // no notification, the decoded frame is never re-polled, so a scrub that stops

@@ -11,15 +11,9 @@
 
 namespace PJ {
 
-/// Stateless HD-capped JPEG thumbnail codec shared by entry-sourced thumbnail
-/// builders. Downscale-to-JPEG and JPEG-to-frame both work on YUV420P (the
-/// format every FfmpegDecoder output uses), so no colour conversion is needed —
-/// the GPU shader does YUV→RGB. Contexts are created per call: cheap relative to
-/// a decode, and these run on a background build thread / on scrub, not per
-/// playback frame.
+// Stateless JPEG thumbnail codec. Thumbnails stay YUV420P end to end (an NV12 input is deinterleaved first), so the
+// media shader draws them like live frames.
 
-/// Maximum thumbnail width. Anything larger is downscaled (aspect-preserving)
-/// so a 4K source yields HD (1280x720-class) thumbnails, never 4K ones.
 inline constexpr int kThumbnailMaxWidth = 1280;
 inline constexpr int kThumbnailJpegQuality = 80;
 
@@ -29,9 +23,8 @@ struct JpegThumbnail {
   int height = 0;             ///< Decoded thumbnail height.
 };
 
-/// Downscale a YUV420P frame to <= `max_width` (even dimensions) and JPEG-encode
-/// it. Returns an empty `.jpeg` if `src` is not a valid YUV420P frame or on
-/// codec failure.
+/// Downscales to <= `max_width` (aspect kept, even dimensions) and JPEG-encodes. Empty `.jpeg` when `src` is not a
+/// valid YUV420P or NV12 frame or the codec fails.
 [[nodiscard]] JpegThumbnail encodeThumbnailJpeg(const DecodedFrame& src, int max_width, int quality);
 
 /// Decompress a JPEG thumbnail (encoded by encodeThumbnailJpeg) back to a

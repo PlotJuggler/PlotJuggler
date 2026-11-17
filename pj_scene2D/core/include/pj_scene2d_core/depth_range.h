@@ -8,31 +8,19 @@
 #include <optional>
 #include <vector>
 
-#include "pj_base/types.hpp"  // PJ::Range
+#include "pj_base/types.hpp"
 
 namespace PJ {
 
-/// A depth sample is "valid" (a real measurement) iff it is finite and > 0; the 0
-/// no-data sentinel and NaN/inf mean "no return". Single source of truth for this
-/// rule, shared by the depth Auto-fit (depthPercentileRange), the depth decode
-/// (DepthPipelineSource), and the depth Point Inspector readout (depthMetersAt) —
-/// and it matches the media shader's `!(d > 0)` no-data test.
+/// Finite and > 0; 0 is the no-data sentinel. The rule of the decode, Auto-fit and Point Inspector; it must match
+/// the media shader's `!(d > 0)` test, or the inspector disagrees with the transparent pixels on screen.
 [[nodiscard]] inline bool isValidDepth(float value) noexcept {
   return std::isfinite(value) && value > 0.0f;
 }
 
-/// Compute a robust [near, far] metric-depth range from a raw float32 depth buffer
-/// by taking the `lo_frac`/`hi_frac` percentiles of the *valid* samples (finite and
-/// > 0; the 0 no-data sentinel and NaN/inf are ignored). This is what the depth
-/// layer's "Auto-fit" action uses: a percentile range is robust to the speckle
-/// outliers that made a naive per-frame min/max flicker.
-///
-/// Returns nullopt when there are no valid samples. When the two percentiles
-/// coincide (e.g. a flat depth image) the upper bound is nudged up so the range is
-/// never degenerate (the shader divides by far-near).
-///
-/// `lo_frac`/`hi_frac` are clamped to [0,1] and ordered; `count` is the number of
-/// floats `data` points to. The returned Range has `min` = near, `max` = far.
+/// The `lo_frac`/`hi_frac` percentiles of the valid samples (percentiles, not min/max, so speckle outliers do not
+/// move it), as `min` = near, `max` = far. Equal percentiles nudge far up: the shader divides by far - near. nullopt
+/// without valid samples.
 [[nodiscard]] inline std::optional<Range<float>> depthPercentileRange(
     const float* data, std::size_t count, float lo_frac = 0.02f, float hi_frac = 0.98f) {
   if (data == nullptr || count == 0) {
@@ -65,7 +53,7 @@ namespace PJ {
   };
 
   float near_m = pick(lo);
-  float far_m = pick(hi);  // valid is now partially reordered; pick() re-partitions, which is fine.
+  float far_m = pick(hi);
   if (far_m < near_m) {
     std::swap(near_m, far_m);
   }

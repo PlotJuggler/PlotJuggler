@@ -62,10 +62,9 @@ PJ::Range<PJ::Timepoint> MeshMapLayer::timeRange() const {
   const auto* store = ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr;
   PJ::Range<PJ::Timepoint> range = PJ::liveTopicTimeRange(store, topic_id_);
   for (const UpdateTopic& topic : update_topics_) {
-    // Like OccupancyGridLayer: live updates routinely extend past the last full
-    // map, so union their range in, or the scrub clamp would pin the tracker at
-    // the last map while updates keep arriving. A geometry-paired topic joins
-    // once one of its updates applied, and stays joined across later maps.
+    // As OccupancyGridLayer: live updates routinely extend past the last full map, so union their range in, or the
+    // scrub clamp would pin the tracker at the last map while updates keep arriving. A geometry-paired topic joins once
+    // one of its updates applied, and stays joined across later maps.
     if (!reconstructor_.paired(topic.id.id)) {
       continue;
     }
@@ -96,8 +95,8 @@ uint64_t MeshMapLayer::renderKey(PJ::Timepoint time) const {
     const std::uint64_t update_uid = updateKey(PJ::toRaw(time));
     key ^= update_uid + 0x9e3779b97f4a7c15ULL + (key << 6U) + (key >> 2U);
   }
-  // Cursor-placed (entry clock), as OccupancyGridLayer: the drawn mesh is a map
-  // plus later updates, with no single stamp to place it at.
+  // Cursor-placed (entry clock), as OccupancyGridLayer: the drawn mesh is a map plus later updates, with no single
+  // stamp.
   return foldFrameTransformIntoKey(key, ctx_.tf_buffer.get(), fixed_frame_, source_frame_, std::nullopt, time, nullptr);
 }
 
@@ -124,8 +123,8 @@ bool MeshMapLayer::xmlLoadState(const QDomElement& element) {
       !detail::parseZeroOne(element, "links", true, links)) {
     return false;
   }
-  // The request is restored verbatim: a missing channel falls back at render
-  // time and the request is honoured again once a map carrying it arrives.
+  // The request is restored verbatim: a missing channel falls back at render time and is honoured again once a map
+  // carrying it arrives.
   setColorBy(element.attribute(u"color_by"_s));
   setColormap(coloring->colormap());
   setAutoRange(coloring->autoRange());
@@ -169,8 +168,8 @@ void MeshMapLayer::detach() {
 }
 
 void MeshMapLayer::resetStreamingState() {
-  // The pairings go only with the topic's history: a new dataset, a new attach.
-  // The streams themselves are listed again by the next refreshUpdateTopics().
+  // The pairings go only with the topic's history (a new dataset, a new attach); the streams are listed again by the
+  // next refreshUpdateTopics().
   reconstructor_.reset();
   update_topics_.clear();
   known_topics_.clear();
@@ -192,8 +191,7 @@ void MeshMapLayer::onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id) {
   if (ctx_.session == nullptr || ctx_.session->objectStore().descriptor(topic_id_).dataset_id != dataset_id) {
     return;
   }
-  // The topic id survives the swap but every UID is minted fresh: a stale memo
-  // must never serve the old bytes.
+  // The topic id survives the swap but every UID is minted fresh: a stale memo must never serve the old bytes.
   clearStaged();
   resetStreamingState();
   tracker_dirty_ = true;
@@ -222,7 +220,6 @@ bool MeshMapLayer::rebase(const PJ::ResolvedObjectEntry& entry) {
     base_warning_ = tr("Mesh map decode returned an object of another type");
     return false;
   }
-  // Wire layouts are untrusted until validated, whichever route decoded them.
   if (const auto valid = PJ::validateMeshMap(*mesh); !valid) {
     base_warning_ = tr("Invalid mesh map: %1").arg(QString::fromStdString(valid.error()));
     return false;
@@ -340,7 +337,6 @@ bool MeshMapLayer::lateUpdateArrived() {
         return true;
       }
     }
-    // None was ours: they are not examined again.
     topic.applied_max_uid = std::max(topic.applied_max_uid, cursor.value);
   }
   return false;
@@ -348,7 +344,6 @@ bool MeshMapLayer::lateUpdateArrived() {
 
 void MeshMapLayer::feedUpdates(PJ::Timestamp lo, PJ::Timestamp hi, MeshMapReconstructor::Sink& sink) {
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  // Every topic's window, merged in time order (stable by topic order on ties).
   struct Pending {
     PJ::ObjectTopicId topic;
     PJ::ObjectStore::TimeRangeEntry ref;
@@ -473,7 +468,6 @@ void MeshMapLayer::renderAt(int64_t time_ns) {
     return;
   }
 
-  // The staged positions stay valid while the map entry is the same one.
   const bool geometry_changed = !staged_mesh_.has_value() || !same_base;
   // A late update stamped at or before what was already applied invalidates the
   // incremental state as surely as a rewind does.
@@ -698,7 +692,6 @@ QWidget* MeshMapLayer::createConfigWidget(QWidget* parent) {
     const QSignalBlocker block(color_combo);
     color_combo->clear();
     for (const std::string& source : color_sources_) {
-      // "face:cost" reads as "cost", "vertex:cost" as "cost (vertex)".
       QString label = QString::fromStdString(source);
       if (source == kMeshMapSourceVertexColor) {
         label = tr("Vertex color");

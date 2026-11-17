@@ -15,8 +15,8 @@
 #include "pj_scripting/memory_budget.h"
 
 // Native operations over a canonical `sdk::PointCloud`, the heavy half of the object-script contract
-// (docs/derived_objects/ARCHITECTURE.md §6): a script composes these instead of looping over points in the
-// interpreter. Luau-free, so the Luau and Python binders share them.
+// (docs/derived_objects/ARCHITECTURE.md "Types and bindings"): a script composes these instead of looping over points
+// in the interpreter. Luau-free, so the Luau and Python binders share them.
 //
 // Layout contract: little-endian only; x/y/z are float32 or float64 scalar channels; an organized cloud
 // (height > 1) honours `row_step`, and rows may not overlap; the declared extent must fit `data`. A record
@@ -71,7 +71,7 @@ struct Point {
     const sdk::PointCloud& cloud, const XyzAccess& access, std::size_t& index, std::size_t max_records = SIZE_MAX);
 
 /// Axis-aligned bounds of the finite points. `min`/`max` mean something only when `count > 0`; the caller
-/// decides what an empty cloud means (D25).
+/// decides what an empty cloud means.
 struct Bounds {
   sdk::Vector3 min;
   sdk::Vector3 max;
@@ -91,7 +91,7 @@ enum class Extreme : uint8_t { kMin, kMax };
     const sdk::PointCloud& cloud, std::string_view channel, Extreme which);
 
 /// Records whose finite coordinates lie inside `[min, max]` on every axis. The output is compacted
-/// (height 1, dense) and copies whole records, so every extra channel survives (D15); it keeps the input's
+/// (height 1, dense) and copies whole records, so every extra channel survives; it keeps the input's
 /// frame. It is charged exactly what it keeps, plus one bit per input record while it runs.
 [[nodiscard]] Expected<sdk::PointCloud> cropBox(
     const sdk::PointCloud& cloud, const sdk::Vector3& min, const sdk::Vector3& max, const NativeLimits& limits);

@@ -34,7 +34,6 @@ QFont hudFont() {
 
 }  // namespace
 
-// A single non-empty line yields a non-null image with room for text + padding.
 TEST(HudOverlay, SingleLineProducesSizedImage) {
   const QImage img = renderHudPanel({u"base_link"_s}, hudFont(), 1.0, kPad, kAlpha, kTextColor);
   ASSERT_FALSE(img.isNull());
@@ -54,7 +53,6 @@ TEST(HudOverlay, LayoutIsDevicePixelRatioIndependent) {
   ASSERT_FALSE(at2.isNull());
   EXPECT_DOUBLE_EQ(at1.devicePixelRatio(), 1.0);
   EXPECT_DOUBLE_EQ(at2.devicePixelRatio(), 2.0);
-  // Same logical box; the 2x image has exactly twice the pixels on each axis.
   EXPECT_EQ(at2.width(), at1.width() * 2);
   EXPECT_EQ(at2.height(), at1.height() * 2);
 }

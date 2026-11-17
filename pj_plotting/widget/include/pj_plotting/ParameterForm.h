@@ -12,23 +12,22 @@ class QFormLayout;
 
 namespace PJ {
 
-/// A parameter editor built ENTIRELY from a filter class's parameter schema —
-/// the deliberate dynamic-widget exception to the ".ui-first" rule. One widget
-/// per `ParamSpec` (int→QSpinBox, number→QLineEdit, boolean→ToggleSwitch,
-/// enum→PJ::ComboBox, string→QLineEdit, text→QPlainTextEdit), bound generically
-/// through the params JSON whose keys ARE the parameter names. No per-filter Qt.
+/// A parameter editor built entirely from a filter class's parameter schema: the deliberate dynamic-widget exception to
+/// the ".ui-first" rule. One widget per `ParamSpec` (int -> QSpinBox, number -> QLineEdit, boolean -> ToggleSwitch,
+/// enum -> PJ::ComboBox, string -> QLineEdit, text -> QPlainTextEdit), bound through the params JSON whose keys are the
+/// parameter names. No per-filter Qt.
 class ParameterForm : public QWidget {
   Q_OBJECT
  public:
   explicit ParameterForm(QWidget* parent = nullptr);
 
-  /// Rebuild the rows for `schema`, seeding each editor with its default.
+  /// Rebuilds the rows for `schema`, seeding each editor with its default.
   void setSchema(const std::vector<scripting::ParamSpec>& schema);
   void clear();
 
-  /// Populate the editors from a params JSON WITHOUT emitting `changed()`.
+  /// Populates the editors from a params JSON without emitting `changed()`.
   void setValues(const nlohmann::json& values);
-  /// Current editor state as a params JSON (keys == parameter names).
+  /// The editor state as a params JSON (keys == parameter names).
   [[nodiscard]] nlohmann::json values() const;
 
   [[nodiscard]] bool isEmpty() const {

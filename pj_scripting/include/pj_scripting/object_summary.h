@@ -26,7 +26,7 @@ namespace PJ::scripting {
 /// Whether `object` has no content in the sense of `summarizeObject`'s counts: a cloud with no points, scene
 /// entities with no entity (deletions are not content: a clear-only snapshot is empty), annotations with no
 /// primitive, transforms with no transform. Never true for another type. A report's "empty" status, distinct
-/// from "unavailable" (D25).
+/// from "unavailable".
 [[nodiscard]] bool isEmptyObject(const sdk::BuiltinObject& object);
 
 }  // namespace PJ::scripting

@@ -7,9 +7,9 @@ description: Use when a PJ4 change is believed complete and it's time to prepare
 
 ## Overview
 
-Recorded failure modes at the finish line: shipping with a stalled recompile, misreading a pre-existing red as a regression (or vice versa), hook-dirty commits after rebases, stale docs, and committing without approval. Run the gates **in order**; each exists because skipping it has cost real time.
+Recorded failure modes at the finish line: shipping with a stalled recompile, misreading a pre-existing red as a regression (or vice versa), hook-dirty commits after rebases, stale docs, and acting without a go-ahead. Run the gates **in order**; each exists because skipping it has cost real time.
 
-**Gate 0 — approval is not yours to grant.** Get the user's explicit go-ahead before each commit, push or PR (root `CLAUDE.md` → Commit policy lists the exact actions; a documentation-only change is its stated exception). The end state of this skill is a surfaced diff and a question, not a commit.
+**Gate 0 — the go-ahead.** Root `CLAUDE.md` "Commit policy" lists the actions that need the user's explicit go-ahead (PRs and issues, releases and uploads, deletions, force-pushing another's branch); it comes after the user has seen the diff. `git commit` and `git push` to your own branch need none.
 
 ## Gate 1 — Build proof + full tests
 
@@ -20,10 +20,9 @@ Recorded failure modes at the finish line: shipping with a stalled recompile, mi
 
 ## Gate 2 — Red-test triage (decision procedure, not judgment)
 
-1. **Known-red?** `extension_manager_test.ConstructionReflectsStagedUpdateInOnePass` fails deterministically on clean checkouts (/tmp backup-rename). If your diff is outside `pj_marketplace`: note it, not a blocker.
-2. **Pre-existing?** Reproduce on clean `origin/main` (primary checkout or fresh worktree). Red there too → pre-existing: **report it, don't fix it** unless asked, don't let it block.
-3. **Yours.** Red only with your diff → fix before any "done" claim.
-4. **Never** delete, weaken, `GTEST_SKIP`, or comment-out a failing test to get green. Surfacing a real failure is success; hiding it is the failure.
+1. **Pre-existing?** Reproduce on clean `origin/main` (primary checkout or fresh worktree). Red there too → pre-existing: **report it, don't fix it** unless asked, don't let it block.
+2. **Yours.** Red only with your diff → fix before any "done" claim.
+3. **Never** delete, weaken, `GTEST_SKIP`, or comment-out a failing test to get green. Surfacing a real failure is success; hiding it is the failure.
 
 ## Gate 3 — Hooks and hygiene
 
@@ -44,23 +43,23 @@ Read the full diff once, checking exactly:
 - [ ] No module-dependency violation (root CLAUDE.md → Architecture and Placement rules) in any `CMakeLists.txt` / `#include` change
 - [ ] SPDX header on every new file
 - [ ] No `.ui` `objectName` renamed
-- [ ] No history comments ("previously", "changed from", "instead of", "NOT persisted")
+- [ ] No history or change-note comments ("previously", "changed from", "instead of", "NOT persisted"), no PR or phase numbers in comments and docs
 - [ ] Host stayed domain-neutral (no plugin-specific terms in `pj_app`/`pj_runtime`/`conanfile.txt`)
 - [ ] No leftover debug output, commented-out code, or scratch files
 
-## Gate 6 — Surface and stop
+## Gate 6 — Surface and ask
 
-Present: summary of the change, test results (including any known-red noted), the diff or `git diff --stat`, and the proposed commit message:
+Present: summary of the change, test results (including any pre-existing red), the diff or `git diff --stat`, and the proposed commit message:
 
 ```
 type(scope): subject          # feat|fix|chore|ci|docs|refactor|perf|test; scope = module/feature
 
-<body: why + what; PR/issue refs>
+<body: why + what>
 
 Co-Authored-By: <model attribution>
 ```
 
-Then **stop and ask**. Commit only on explicit confirmation in that turn.
+Then commit and push your own branch; **stop and ask** before any Gate 0 action (opening the PR, for one).
 
 ## After approval — git execution traps
 
@@ -79,16 +78,16 @@ Then **stop and ask**. Commit only on explicit confirmation in that turn.
   gh run view <run-id> --json jobs -q '.jobs[] | select(.conclusion=="failure") | "\(.databaseId) \(.name)"'
   gh api repos/PlotJuggler/PlotJuggler/actions/jobs/<job-id>/logs | tr -d '\r' | grep -n -E "error|FAILED|Error:" | head -40
   ```
-- **Windows CI is `continue-on-error`** even though Windows is a required target: read per-step status via `gh run view <id>`, never the run-level ✓.
+- **Windows CI's unit-suite `Test` step is `continue-on-error`** (the job blocks only on compile and the D3D11 runners), so a green run can hide a red `Test` step: read per-step status via `gh run view <id>`, never the run-level ✓.
 - Windows red at `conan install` with "Cannot load recipe / conanfile.py not found" after a cache HIT = **poisoned Conan cache**, not your code → invalidate the key that the `Compute Conan cache key` step of `windows-ci.yml` produces.
 
 ## Rationalization table
 
 | Excuse | Reality |
 |---|---|
-| "Only one test red, probably flaky" | Run the triage procedure; PJ4 has exactly one documented known-red |
+| "Only one test red, probably flaky" | Run the triage procedure; "flaky" is a conclusion from a clean-`origin/main` rerun, not a guess |
 | "Failure is in a module I didn't touch" | Still triage — step 2 takes two minutes and settles it |
 | "I'll fix the docs in a follow-up PR" | Same change or an explicit question; stale docs don't ship |
 | "Skip pre-commit, CI will catch it" | CI catching it costs a full round-trip; the hook costs seconds |
-| "The user said run to completion" | Run-to-completion stops **at** the commit boundary, not through it |
-| "Windows CI is green" | It's continue-on-error; green means nothing until you read the steps |
+| "The user said run to completion" | Run-to-completion stops **at** the Gate 0 actions, not through them |
+| "Windows CI is green" | Its `Test` step is non-blocking; green means nothing until you read the steps |

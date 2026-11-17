@@ -105,18 +105,16 @@ TEST_F(PluginCatalogTest, RuntimeCatalogDedupsDuplicateIdFirstFolderWins) {
 
   ASSERT_EQ(catalog.dataSources().size(), 1U);
   EXPECT_EQ(catalog.dataSources()[0].id, "mock-data-source");
-  // The winner must come from the first folder. Compare at the filesystem level
-  // (std::filesystem::equivalent) so it holds regardless of how the stored path
-  // is spelled — Windows back/forward slashes, drive-letter case, canonicalisation.
+  // The winner must come from the first folder; compared with std::filesystem::equivalent so it holds however the
+  // stored path is spelled (slashes, drive-letter case, canonicalisation).
   const std::filesystem::path winner(catalog.dataSources()[0].path);
   EXPECT_TRUE(std::filesystem::equivalent(winner.parent_path(), dir_a))
       << "winner " << winner << " is not in the first folder " << dir_a;
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogSkipsDuplicateScanFolders) {
-  // The same folder listed twice in setPluginDirs is scanned once: the second pass is
-  // skipped, so no plugin is ever compared against itself — which would otherwise emit a
-  // confusing "ignoring duplicate id … already loaded from <same path>" diagnostic.
+  // The same folder listed twice in setPluginDirs is scanned once, so no plugin is compared against itself (which would
+  // emit a confusing "ignoring duplicate id ... already loaded from <same path>" diagnostic).
   const std::filesystem::path dir_a = dir_ / "a";
   std::filesystem::create_directories(dir_a);
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, dir_a / pluginFileName("ds"));
@@ -157,8 +155,7 @@ TEST_F(PluginCatalogTest, RuntimeCatalogPrefersHigherVersionOverFolderPriority) 
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogKeepsHigherPriorityWhenNewerVersionIsHigherPriority) {
-  // Mirror of the above: the newer version now sits in the HIGHER-priority folder.
-  // The winner is still v2.0.0, confirming the tie-break never demotes it.
+  // Mirror: the newer version in the higher-priority folder still wins.
   const std::filesystem::path dir_a = dir_ / "a";
   const std::filesystem::path dir_b = dir_ / "b";
   std::filesystem::create_directories(dir_a);
@@ -353,10 +350,9 @@ TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderMayBeASymlink) {
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderSupersedesEarlierManagedIncumbent) {
-  // The authoritative folder is scanned AFTER a managed one (it sits lower in the scan
-  // list), so a managed incumbent is already recorded when the authoritative copy arrives.
-  // The authoritative candidate must still supersede it — the override is not order
-  // dependent. Complements the existing tests, which place the authoritative folder first.
+  // The authoritative folder is scanned after a managed one, so a managed incumbent is already recorded when the
+  // authoritative copy arrives; the authoritative candidate must still supersede it (the override is not order
+  // dependent).
   const std::filesystem::path dir_managed = dir_ / "managed";  // higher priority, managed, v2.0.0
   const std::filesystem::path dir_auth = dir_ / "auth";        // lower priority, authoritative, v1.0.0
   std::filesystem::create_directories(dir_managed);
@@ -376,7 +372,6 @@ TEST_F(PluginCatalogTest, RuntimeCatalogAuthoritativeFolderSupersedesEarlierMana
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogLoadsDistinctIdsFromMultipleFolders) {
-  // Different plugins in different folders all load.
   const std::filesystem::path dir_a = dir_ / "a";
   const std::filesystem::path dir_b = dir_ / "b";
   std::filesystem::create_directories(dir_a);
@@ -417,9 +412,7 @@ TEST_F(PluginCatalogTest, RuntimeCatalogStaticRegistrationSurvivesScanAndReload)
 }
 
 TEST_F(PluginCatalogTest, StaticPluginSetParticipatesInFilteringAndHandleCreation) {
-  // The application supplies entry points as data; the runtime owns the
-  // registration policy. Prove the composed path, rather than only the
-  // individual registerStaticDataSource() primitive.
+  // The application supplies entry points as data; the runtime owns the registration policy.
   static const PJ_data_source_vtable_t vt = [] {
     auto value = pj_mock::makeMockDataSourceVtable(
         R"({"id":"static-file","name":"Static File","version":"1.0.0","file_extensions":[".probe"]})");
@@ -666,11 +659,9 @@ TEST_F(PluginCatalogTest, RuntimeCatalogStaticRegistrationRejectsBadVtable) {
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogStaticMessageParserRequiresEncoding) {
-  // The manifest contract (message_parser_protocol.h) requires a non-empty
-  // "encoding" array — it is how binding requests find a parser, so an
-  // encoding-less static parser is useless. The SDK's shared decodeManifest
-  // enforces this identically for DSO and static registration; a laxer static
-  // path would let such a parser evict a working same-id DSO parser.
+  // The manifest contract (message_parser_protocol.h) requires a non-empty "encoding" array, which is how binding
+  // requests find a parser. The SDK's decodeManifest enforces it for DSO and static registration alike; a laxer static
+  // path would let an encoding-less parser evict a working same-id DSO parser.
   static const PJ_message_parser_vtable_t no_encoding =
       pj_mock::makeMockMessageParserVtable(R"({"id":"static-parser","name":"Static Parser","version":"1.0.0"})");
   static const PJ_message_parser_vtable_t empty_encoding = pj_mock::makeMockMessageParserVtable(
@@ -727,10 +718,8 @@ TEST_F(PluginCatalogTest, RegisterStaticPluginsContinuesPastFailedEntryAndKeepsS
 // ─── setDisabledIds (installed-but-not-loaded winners are dropped before load) ──
 
 TEST_F(PluginCatalogTest, RuntimeCatalogDropsDisabledIdsFromWinners) {
-  // A winner whose id sits in disabled_ids_ must not appear in the loaded set —
-  // this is what turns the marketplace's "disable installed plugin" toggle into a
-  // real runtime effect on the next launch. The diagnostic tells the user WHY
-  // they don't see the plugin.
+  // A winner whose id is in disabled_ids_ must not appear in the loaded set (the marketplace's "disable installed
+  // plugin" toggle takes effect on the next launch), and a diagnostic tells the user why.
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 
   std::vector<Diagnostic> diagnostics;
@@ -746,9 +735,7 @@ TEST_F(PluginCatalogTest, RuntimeCatalogDropsDisabledIdsFromWinners) {
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogKeepsIdsAbsentFromDisabledSet) {
-  // The filtering must be scoped: an unrelated id (or an empty disabled set)
-  // leaves every winner in place. Otherwise a copy/paste bug in setDisabledIds
-  // could quietly kill the loaded plugin set on every launch.
+  // Filtering is scoped: an unrelated id or an empty disabled set leaves every winner in place.
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 
   PluginRuntimeCatalog catalog;
@@ -761,10 +748,8 @@ TEST_F(PluginCatalogTest, RuntimeCatalogKeepsIdsAbsentFromDisabledSet) {
 }
 
 TEST_F(PluginCatalogTest, RuntimeCatalogReloadHonoursNewlyDisabledId) {
-  // The disabled set is consulted on every scan, not baked in at construction:
-  // toggling a plugin off after startup, then calling reload(), must remove it
-  // from the loaded set. reload() reports the change (returns true), which is
-  // the signal the host uses to re-notify the app runtime.
+  // The disabled set is consulted on every scan, not baked in at construction: toggling a plugin off after startup and
+  // calling reload() removes it, and reload() returns true (the host's signal to re-notify the app runtime).
   std::filesystem::copy_file(PJ_MOCK_DATA_SOURCE_PLUGIN_PATH, dir_ / pluginFileName("ds"));
 
   PluginRuntimeCatalog catalog;

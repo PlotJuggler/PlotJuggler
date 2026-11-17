@@ -33,38 +33,20 @@ namespace scripting {
 class FilterCatalogue;
 }
 
-/// Host service that applies "Data Processors" (filters / transforms) to
-/// datastore topics by running them as EAGER `pj_datastore::IncrementalEngine` nodes
-/// (a `PJ::proc::ProcessorSisoAdapter` wraps each native processor). Owns one
-/// `IncrementalEngine` bound to the session's `DataEngine`.
+/// Runs filters and transforms as eager `IncrementalEngine` nodes over the session's `DataEngine`, and owns that
+/// `IncrementalEngine`.
 ///
-/// v1 scope (filters-first, file data): `applyFilter` registers a node, runs the
-/// processor over all currently-committed input rows, and materializes a new
-/// output topic. Streaming/pause (incremental `advanceOnCommit`) and recipe
-/// persistence (layout save/restore) are handled; hidden-output tiers and
-/// promotion remain later milestones.
-///
-/// Threading: GUI/main-thread only. The streaming ingest worker writes samples
-/// directly through the `DataEngine` (serialized by the engine lock) and never
-/// calls into this service; `advanceOnCommit` is hopped to the GUI thread
-/// (`QMetaObject::invokeMethod`) before it runs. So the recipe maps are read
-/// (`advanceOnCommit`) and mutated (`applyFilter` / `upsertTransform` /
-/// `removeTransform`) only from that one thread — no internal locking needed.
+/// GUI thread only, so the recipe maps need no lock. Streaming ingest writes through the `DataEngine` and never calls
+/// in here; `StreamingSourceManager` calls `advanceOnCommit` from its GUI-thread tick.
 class DataProcessorService {
  public:
-  /// Wall time one materialization tick may take: half a 60 Hz frame. In a
-  /// browser Qt shares the page's main thread and the zero-timer between two
-  /// ticks is a clamped nested setTimeout (measured ~5-6 ms after a busy tick in
-  /// Chromium and Firefox), so a tick cycle is ~13-14 ms and input and paint run
-  /// in the gap. A 10 ms budget stalled Firefox's page timers for ~100 ms once
-  /// per replay, so the browser keeps 8 ms too.
+  /// Wall time one materialization tick may take: half a 60 Hz frame (TECHNICAL_NOTES.md "Time-sliced replay in the
+  /// browser" for why the browser keeps it too).
   static constexpr std::chrono::milliseconds kMaterializationSliceBudget{8};
-  /// Least interval between two announcements of a growing replay's rows (about
-  /// 15 Hz): each one makes every plot showing the output re-read it.
+  /// Least interval between two announcements of a growing replay's rows: each makes every plot showing the output
+  /// re-read it.
   static constexpr std::chrono::milliseconds kMaterializationNotifyInterval{66};
 
-  /// A filter applied to one input topic: the engine node id plus the
-  /// materialized output topic it produced.
   struct FilterHandle {
     NodeId node_id = 0;
     TopicId output_topic_id = 0;
@@ -72,43 +54,38 @@ class DataProcessorService {
     std::string output_name;
   };
 
-  /// Stored description of a live filter, keyed by its output topic — enough to
-  /// re-open the editor on the output, repopulate the parameter panels, and edit
-  /// the filter in place. Holds the live configured processor (see D2/§9).
+  /// A live filter, keyed by its output topic: what the Filter Editor needs to re-open on the output and edit it in
+  /// place, including the live configured processor.
   struct FilterRecipe {
     NodeId node_id = 0;
     TopicId output_topic_id = 0;
     TopicId input_topic_id = 0;
     std::size_t input_column_index = 0;
-    std::string input_field_path;  ///< semantic leaf identity; survives schema column reorder
+    std::string input_field_path;  ///< the leaf's identity; survives a schema column reorder
     DatasetId dataset_id = 0;
-    std::string processor_id;  ///< builtin id (e.g. "scale") — selects the panel
+    std::string processor_id;  ///< catalogue id (e.g. "scale"), selects the panel
     std::string output_name;
-    std::shared_ptr<proc::DataProcessor> processor;  ///< live processor, for re-edit
-    /// Full Luau module source the filter class was parsed from, captured from the
-    /// catalogue so a layout can embed it as `<source_fallback>` (M7) and reopen on
-    /// a machine without the filter installed. Empty for native C++ builtins (which
-    /// round-trip by `processor_id` alone).
+    std::shared_ptr<proc::DataProcessor> processor;
+    /// The Luau module source of the filter class, embedded in a layout as `<source_fallback>` so it reopens on a
+    /// machine without the filter. Empty for native builtins, which round-trip by `processor_id`.
     std::string filter_source;
   };
 
-  /// A filter as a layout snapshot describes it, with its input already resolved
-  /// against the live session — the persisted half of a `FilterRecipe`. Identity is
-  /// (`dataset_id`, `output_name`): output names are unique per dataset only. The
-  /// other fields decide whether the live filter under that identity is the same.
+  /// A filter as a layout snapshot describes it, input resolved against the live session. Identity is (`dataset_id`,
+  /// `output_name`): output names are unique per dataset only. The other fields decide whether the live filter is the
+  /// same.
   struct PersistedFilter {
     TopicId input_topic_id = 0;
     DatasetId dataset_id = 0;
     std::size_t input_column_index = 0;
     std::string processor_id;
-    std::string params_json;    ///< what the live processor's `saveParams()` must equal
-    std::string filter_source;  ///< embedded Luau module source, empty for native builtins
+    std::string params_json;    ///< must equal the live processor's `saveParams()`
+    std::string filter_source;  ///< empty for native builtins
     std::string output_name;
   };
 
-  /// Persisted identity of one transform input. The session dataset id is only
-  /// a same-session hint; source, topic, and field carry the reload-stable
-  /// identity, while the column remains a fallback for metadata-poor topics.
+  /// Persisted identity of one transform input. `dataset_id` is only a same-session hint; source, topic and field are
+  /// stable across reloads; the column is a fallback for metadata-poor topics.
   struct TransformInputBinding {
     DatasetId dataset_id = 0;
     std::string dataset_source;
@@ -117,41 +94,32 @@ class DataProcessorService {
     std::size_t column_index = 0;
   };
 
-  /// A plugin-created TRANSFORM: a named, owner-tagged, session-persisted node,
-  /// distinct from a per-curve `FilterRecipe`. It shares the eager `IncrementalEngine`
-  /// substrate but is keyed by a namespaced `"<plugin_id>/<id>"` key and carries
-  /// its script payload + bindings BY VALUE, so it round-trips through a
-  /// session/workspace recipe and replays on load WITHOUT the originating plugin
-  /// (which is needed only for re-editing). The first three field groups are the
-  /// persisted recipe; `node_id`/`output_topic_ids`/`dataset_id` are runtime state
-  /// re-derived on (re)install.
+  /// A plugin-created transform: named, owner-tagged, keyed `"<plugin_id>/<id>"`, carrying its script and bindings by
+  /// value so it replays from a layout without the plugin (needed only to re-edit it). The last four fields are
+  /// runtime state, re-derived on install.
   struct TransformRecipe {
-    std::string key;           ///< "<plugin_id>/<id>" — the authoritative upsert key
-    std::string owner_plugin;  ///< stable manifest plugin id (NOT the DSO path)
-    /// Persisted in layout files but outside undo/redo authority. A layout
-    /// replacement or explicit removal may still replace it.
+    std::string key;           ///< "<plugin_id>/<id>", the upsert key
+    std::string owner_plugin;  ///< manifest plugin id, not the DSO path
+    /// Persisted, but outside undo/redo; a layout replacement or an explicit removal still replaces it.
     bool history_exempt = false;
-    std::string user_id;                 ///< per-plugin id (no prefix); also the script's class id
-    std::vector<std::string> inputs;     ///< input topic names (v1: exactly 1)
-    std::size_t input_column_index = 0;  ///< column within the input topic (default 0)
-    std::vector<std::string> outputs;    ///< named catalog output topics (v1: exactly 1)
-    std::string script;                  ///< full backend payload (Luau source today; binary-safe)
-    std::string params_json;             ///< create(params), forwarded verbatim to the backend
-    std::string backend = "luau";        ///< inferred from the payload: "luau" | (future) "python"/"wasm"
+    std::string user_id;                 ///< the per-plugin id; also the script's class id
+    std::vector<std::string> inputs;     ///< input names: a topic, or `topic/field`
+    std::size_t input_column_index = 0;  ///< column of a single whole-topic input
+    std::vector<std::string> outputs;    ///< output topic names; `"t:a,b"` is one grouped topic `t`
+    std::string script;                  ///< backend payload, binary-safe
+    std::string params_json;             ///< create(params), verbatim
+    std::string backend = "luau";        ///< "luau" or "python", inferred from the payload
     std::string api_version = "1";
     std::string backend_version;
-    /// Exact input identities captured after a successful initial resolution.
-    /// Empty means a legacy name-only recipe.
+    /// Exact input identities captured at the first successful resolution; empty for a name-only recipe.
     std::vector<TransformInputBinding> input_bindings;
-    /// Ephemeral (preview) node: a real `IncrementalEngine` node like any other, but
-    /// excluded from `transformRecipes()` so it never persists to a layout. The
-    /// caller also keeps its output topics out of the catalog (does not rebuild),
-    /// so a live preview leaves no trace once `removeTransform`d. Not persisted.
+    /// A preview: a real node, but not in `transformRecipes()` (never persisted). The caller keeps its outputs out of
+    /// the catalog, so nothing remains once it is removed.
     bool ephemeral = false;
-    NodeId node_id = 0;                     ///< runtime: the engine node (not persisted)
-    std::vector<TopicId> input_topic_ids;   ///< runtime: exact live input topics
-    std::vector<TopicId> output_topic_ids;  ///< runtime: materialized output topics
-    DatasetId dataset_id = 0;               ///< runtime: resolved from the input topic's dataset
+    NodeId node_id = 0;                     ///< runtime
+    std::vector<TopicId> input_topic_ids;   ///< runtime
+    std::vector<TopicId> output_topic_ids;  ///< runtime
+    DatasetId dataset_id = 0;               ///< runtime: the first input's dataset
   };
 
   explicit DataProcessorService(DataEngine& engine);
@@ -160,201 +128,120 @@ class DataProcessorService {
   DataProcessorService(const DataProcessorService&) = delete;
   DataProcessorService& operator=(const DataProcessorService&) = delete;
 
-  /// Apply a filter by its catalogue `processor_id` (e.g. "absolute",
-  /// "moving_average") to column `input_column_index` (default 0) of
-  /// `input_topic_id`, materializing a new output topic named `output_name` in
-  /// `dataset_id`, then running it over all committed input rows. The column
-  /// index selects one field of a multi-column topic (e.g. `/imu/.../x`).
-  /// Returns the handle, or an error string (unknown id / engine rejection /
-  /// empty output / column out of range / a preview transform's output as input,
-  /// since a filter is persistent).
+  /// Applies the catalogue filter `processor_id` to column `input_column_index` of `input_topic_id`, materializing
+  /// `output_name` in `dataset_id` and running it over every committed input row. Errors: unknown id, engine
+  /// rejection, empty output, column out of range, or a preview transform's output as input (a filter persists).
   [[nodiscard]] Expected<FilterHandle> applyFilter(
       TopicId input_topic_id, DatasetId dataset_id, std::string_view processor_id, std::string output_name,
       std::size_t input_column_index = 0);
 
-  /// Apply an already-CONFIGURED processor (params set by the caller, e.g. the
-  /// Filter Editor dialog) to column `input_column_index` of the input topic.
-  /// Same materialize-and-run semantics as the by-id overload; takes ownership
-  /// of `processor`.
+  /// As the by-id overload, with a processor the caller configured (the Filter Editor).
   [[nodiscard]] Expected<FilterHandle> applyFilter(
       TopicId input_topic_id, DatasetId dataset_id, std::unique_ptr<proc::DataProcessor> processor,
       std::string output_name, std::size_t input_column_index = 0);
 
-  /// Drop a filter, retire its output, and remove exact-TopicId downstream
-  /// processors leaf-first. An unknown node id is an error.
+  /// Drops a filter, retires its output and removes its exact-TopicId dependents leaf-first. Unknown id: error.
   Status removeFilter(NodeId node_id);
 
-  /// Remove every live filter except those whose output TopicId is in
-  /// `keep_outputs`: for each one, drop its engine node AND `retireTopic` its
-  /// materialized output (so `CatalogModel::rebuildFromDatastore` stops listing it
-  /// — `removeNode` alone leaves a catalog zombie), then forget its recipe. The
-  /// reconcile primitive behind snapshot restore (undo/redo + layout load): clear
-  /// what the snapshot drops or changes, then re-apply the rest, so a restored
-  /// state can never duplicate or leak a filter. Removed leaf-first (a filter's own
-  /// dependents are cascaded via `removeFilter` before the filter itself), so a
-  /// kept filter can still fall to the cascade of a removed input. The output
-  /// `TopicStorage` is kept alive (only retired), so any cached reader pointer sees
-  /// an empty deque, not freed memory. Idempotent; a no-op when nothing is live. A
-  /// `FilterRecipe` carries no exemption bit: history keeps a filter only by
-  /// `keep_outputs`, never by intent.
+  /// Removes every live filter except those whose output is in `keep_outputs`: drops the node and retires its output
+  /// (`removeNode` alone leaves a catalog zombie), dependents first, so a kept filter can still fall to the cascade of
+  /// a removed input. The retired `TopicStorage` stays allocated, so a cached reader pointer sees an empty deque. The
+  /// reconcile primitive of snapshot restore (undo/redo, layout load). A filter has no exemption bit: history keeps
+  /// one only through `keep_outputs`.
   void clearAllFilters(const std::unordered_set<TopicId>& keep_outputs = {});
-  /// Output TopicIds of the live filters a restore leaves unchanged: those whose
-  /// (dataset, `output_name`) matches a `wanted` entry with the same resolved
-  /// input topic and column, processor id, `saveParams()` and embedded source.
-  /// Feed the result to `clearAllFilters` / `liveNonExemptNodeIds` as
-  /// `keep_outputs` so the kept filters survive with those TopicIds.
+  /// Outputs of the live filters a restore leaves unchanged: (dataset, `output_name`) matches a `wanted` entry with
+  /// the same input topic and column, processor id, `saveParams()` and source. Pass them as `keep_outputs`.
   [[nodiscard]] std::unordered_set<TopicId> unchangedFilterOutputs(const std::vector<PersistedFilter>& wanted) const;
-  /// Whether a filter named `output_name` is live in `dataset_id` — the
-  /// (dataset, output name) identity `PersistedFilter` carries.
   [[nodiscard]] bool isFilterLive(DatasetId dataset_id, std::string_view output_name) const;
-  /// Whether a persisted (non-ephemeral) transform with this namespaced key is
-  /// live — membership in what `transformRecipes()` lists, without the copy.
-  /// `include_ephemeral` also answers for a preview.
+  /// A persistent transform with this key (what `transformRecipes()` lists); `include_ephemeral` adds previews.
   [[nodiscard]] bool isTransformLive(std::string_view namespaced_key, bool include_ephemeral = false) const;
 
-  /// Remove every persistent transform, leaf-first (a preview stays, unless the
-  /// cascade of a removed input takes it). `RestoreIntent::kHistory`
-  /// reconciles only the non-exempt transforms and leaves the `history_exempt`
-  /// ones untouched; `kReplace` removes all. `keep_keys` names further transforms
-  /// to leave live (a restore keeps those whose recipe the snapshot does not
-  /// change, so their output TopicIds — and every curve bound to them — survive).
-  /// A kept transform can still fall to the removal cascade of one of its inputs.
+  /// Removes every persistent transform, leaf-first (a preview stays unless an input's cascade takes it). `kHistory`
+  /// leaves the `history_exempt` ones; `kReplace` removes all. `keep_keys` names others to keep, so their output
+  /// TopicIds and the curves bound to them survive; a kept one can still fall to an input's cascade.
   void clearTransforms(RestoreIntent intent, const std::unordered_set<std::string>& keep_keys = {});
-  /// Keys of the live transforms a restore leaves unchanged: those within the
-  /// intent's authority (every one under `kReplace`; the non-exempt ones under
-  /// `kHistory`) whose persisted recipe equals the `wanted` entry with the same
-  /// key. Compares exactly the fields a layout file carries — runtime node/topic
-  /// ids are irrelevant — so a binding-less legacy `wanted` entry never matches.
-  /// Feed the result to `clearTransforms` / `liveNonExemptNodeIds` as `keep_keys`.
+  /// Keys of the live transforms within the intent's authority whose persisted recipe equals the `wanted` entry of
+  /// the same key, field by field as a layout carries it; a `wanted` entry without bindings never matches. Pass them
+  /// as `keep_keys`.
   [[nodiscard]] std::unordered_set<std::string> unchangedTransformKeys(
       const std::vector<TransformRecipe>& wanted, RestoreIntent intent) const;
-  /// Whether any live transform is `history_exempt` (cheap gate for the
-  /// history-restore dependency preflight).
+  /// The cheap gate of the history-restore dependency preflight.
   [[nodiscard]] bool hasHistoryExemptTransforms() const;
 
-  /// The recipe behind a filter output topic, or nullptr if `output_topic_id` is
-  /// not a known filter output. Lets the Filter Editor re-open on an existing
-  /// filtered curve and restore its parameters.
+  /// nullptr when `output_topic_id` is no filter output.
   [[nodiscard]] const FilterRecipe* filterConfig(TopicId output_topic_id) const;
 
-  /// Replace a live filter's processor IN PLACE (same node + same output topic)
-  /// and recompute — the editor's "apply an edit" path, so the plotted curve
-  /// updates without re-binding. Updates the stored recipe. Takes a shared
-  /// processor so the recipe can keep editing it later.
+  /// Replaces a live filter's processor in place (same node and output topic) and recomputes, so the plotted curve
+  /// updates without re-binding.
   [[nodiscard]] Status updateFilter(NodeId node_id, std::shared_ptr<proc::DataProcessor> processor);
 
-  /// Drive the eager engine after a commit and BEFORE retention eviction — the
-  /// streaming correctness order (plan §5/D6). Advances all live filter nodes
-  /// over the newly committed input so stateful processors (integral, …) consume
-  /// every sample before it can be evicted, then returns the filter output topics
-  /// for the caller to re-notify (so plots refresh). MUST be called between the
-  /// raw commit and `DataEngine::enforceRetention`. Best-effort: never throws
-  /// mid-ingest. Returns empty if no filters are registered.
-  /// [main-thread] — the streaming worker hops here via the GUI thread (see class
-  /// note); it never calls this directly, so reading the recipe maps needs no lock.
+  /// Advances every live filter over the newly committed input and returns the filter outputs to re-notify. Call it
+  /// between the raw commit and `DataEngine::enforceRetention`: a stateful processor (integral) must consume every
+  /// sample before it is evicted. Never throws. GUI thread.
   [[nodiscard]] std::vector<TopicId> advanceOnCommit(const std::vector<TopicId>& changed_inputs);
 
-  /// Strict reload path: re-resolve semantic fields in place, preserve node and
-  /// output ids, then replay the complete affected graph once.
+  /// Reload path: re-resolves inputs by their semantic fields in place, keeping node and output ids, then replays the
+  /// affected graph once.
   [[nodiscard]] Expected<std::vector<TopicId>> rebindAndRecomputeForReplacedSources(
       const std::vector<TopicId>& replaced_inputs);
 
-  /// Snapshot of every live filter recipe (unspecified order) — for layout
-  /// persistence: the host serializes these and re-applies them on load.
+  /// Every live filter, unordered, for layout persistence.
   [[nodiscard]] std::vector<FilterRecipe> recipes() const;
 
-  /// (id, human-label) for every catalogued filter, in catalogue order — for
-  /// populating a menu/dialog without the UI touching the script engine directly.
-  /// Empty when no catalogue is installed.
+  /// (id, label) of every catalogued filter, in catalogue order; empty without a catalogue.
   [[nodiscard]] std::vector<std::pair<std::string, std::string>> availableFilters() const;
 
-  /// Install the Luau filter catalogue (set by the app at startup). The by-id
-  /// `applyFilter` and `availableFilters` resolve through it; without it the service
-  /// has no filters (the bundled resource always installs one in the real app).
+  /// The by-id `applyFilter` and `availableFilters` resolve through it; without one there are no filters.
   void setFilterCatalogue(std::shared_ptr<scripting::FilterCatalogue> catalogue);
-  /// The installed catalogue, or null when none is.
   [[nodiscard]] const scripting::FilterCatalogue* filterCatalogue() const {
     return filter_catalogue_.get();
   }
 
-  /// Resolve a persisted layout entry to a processor for restore, in priority
-  /// order (never silently mis-binds): the live catalogue by `id` → the layout's
-  /// embedded `source_fallback` (compiled through the sandboxed engine, even with
-  /// no catalogue installed) → `nullptr` (the caller logs a skip). The embedded-
-  /// source leg lets a layout open on a machine without the filter installed.
+  /// A processor for a persisted filter: the catalogue entry `id`, else the layout's embedded `source_fallback`
+  /// (compiled even with no catalogue installed), else nullptr (the caller logs a skip).
   [[nodiscard]] std::unique_ptr<proc::DataProcessor> makeRestoredProcessor(
       const std::string& id, const std::string& params_json, const std::string& source_fallback) const;
 
-  // --- Plugin-created transforms (pj.data_processors.v1 host side) ---
+  // pj.data_processors.v1 transforms
 
-  /// Create-or-replace (upsert by `"<plugin_id>/<id>"`) a named, plugin-owned
-  /// transform. Initial name resolution is reject-ambiguous and captures a
-  /// dataset/source/topic/field binding for every input. Restores resolve that
-  /// binding through SessionManager's dataset identity policy. Output topics are
-  /// created in the first input's dataset. Shape is
-  /// N->M: 1->1 installs a SISO node (`LuaSisoTransform`), anything else a MIMO node
-  /// (`LuaMimoTransform` via `addMimoTransform`, which joins inputs on exact
-  /// timestamp). A compatible replacement swaps the operator in place and rolls
-  /// back root plus dependents on replay failure; shape-changing replacements are
-  /// rejected before mutation.
-  /// [main-thread]
+  /// Creates or replaces (by `"<plugin_id>/<id>"`) a plugin transform. GUI thread. The first resolution refuses
+  /// ambiguous names and captures a dataset/source/topic/field binding per input; restores resolve it through
+  /// SessionManager's identity policy. Outputs live in the first input's dataset. 1->1 installs a SISO node, anything
+  /// else a MIMO node joining inputs on exact timestamps. A compatible replacement swaps the operator in place and
+  /// rolls back root and dependents if the replay fails; a shape change is rejected before mutating.
   ///
-  /// `ephemeral` marks a preview node: it installs and runs identically, but is left
-  /// out of `transformRecipes()` (never persisted). The caller is responsible for not
-  /// surfacing its output in the catalog and for `removeTransform`-ing it when done.
+  /// `ephemeral`: a preview, never persisted; the caller keeps it out of the catalog and removes it. A persistent
+  /// transform reading a preview's output is refused (the preview's removal would cascade into it).
   ///
-  /// `history_exempt` marks the installed recipe immune to undo/redo (see
-  /// `TransformRecipe::history_exempt`); trailing so every existing positional call
-  /// site (which stops at `input_column_index`) keeps compiling unchanged.
-  ///
-  /// A persistent transform reading an ephemeral one's output is refused: the
-  /// preview's removal would cascade into it. Another preview may read it.
-  ///
-  /// A NEW persistent key replays the committed input history time-sliced: only the
-  /// first `kMaterializationSliceBudget` slice runs inside the call (so a script
-  /// failing on its first rows is still rejected), the rest from a zero-timer on
-  /// the calling thread (see `stepMaterialization`), so the event loop keeps turning
-  /// while a large history replays. The recipe and its output topic exist on return
-  /// and the output grows in time order until it equals a synchronous replay's. An
-  /// ephemeral create and an in-place replacement replay synchronously.
+  /// A new persistent key replays the input history time-sliced: only the first `kMaterializationSliceBudget` slice
+  /// runs in the call (so a script failing on its first rows is still rejected), the rest from a zero-timer
+  /// (`stepMaterialization`). Recipe and output exist on return and the output grows in time order to what a
+  /// synchronous replay gives. Previews and in-place replacements replay synchronously.
   [[nodiscard]] Expected<TransformRecipe> upsertTransform(
       std::string_view plugin_id, std::string_view id, std::vector<std::string> inputs,
       std::vector<std::string> outputs, std::string_view script, std::string_view params_json, bool ephemeral = false,
       std::size_t input_column_index = 0, bool history_exempt = false);
 
-  /// One tick of the pending time-sliced replays (`IncrementalEngine::deferredNodes`,
-  /// oldest first) for about `budget` of wall time; processors chained on a growing
-  /// output follow it within the same budget. The new rows are announced through
-  /// `SessionManager::notifyIngest` at most every `kMaterializationNotifyInterval`,
-  /// and at once when a replay completes or fails. Returns true when none is
-  /// pending afterwards. Removing, editing or recomputing a transform ends its
-  /// replay by itself. The service's zero-timer calls this; tests may too.
-  /// [main-thread]
+  /// One tick of the pending replays (oldest first) for about `budget`; processors chained on a growing output follow
+  /// within the same budget. New rows are announced through `SessionManager::notifyIngest` at most every
+  /// `kMaterializationNotifyInterval`, and at once when a replay completes or fails. True when none is pending.
+  /// Removing, editing or recomputing a transform ends its replay. GUI thread.
   bool stepMaterialization(std::chrono::nanoseconds budget = kMaterializationSliceBudget);
 
-  /// Completes now the pending replays whose output — or the output of a processor
-  /// chained on it — is `read`, for a reader that must not see a partial series.
-  /// Installed as the engine's `DataEngine::awaitCompleteSeries` barrier, which
-  /// whole-series readers (toolbox snapshot reads, marker generator inputs) call.
-  /// [main-thread]
+  /// Completes the pending replays whose output (or a chained processor's) is `read`. Installed as the
+  /// `DataEngine::awaitCompleteSeries` barrier for whole-series readers. GUI thread.
   void finishPendingMaterialization(TopicId read);
 
-  /// Where transform failures are reported: every transform whose node fails in a
-  /// scheduling pass (a streaming commit, a replay tick, a chained processor) is
-  /// reported once as an error `Diagnostic` keyed by its transform key, and again
-  /// only after it recovered. Without a sink the failure is only logged.
+  /// Every transform whose node fails in a scheduling pass is reported once as an error `Diagnostic` keyed by its
+  /// transform key, and again only after it recovered. Without a sink, only logged.
   void setDiagnosticSink(DiagnosticSink sink) {
     diagnostic_sink_ = std::move(sink);
   }
 
-  /// Receives the topic names of processor outputs (transform or filter) whose rows
-  /// changed, with the dataset they live in (never an empty list). Called when an
-  /// upsert, a filter apply, an in-place edit or a restore leaves an output complete,
-  /// when a time-sliced replay ends (not on its partial output), and before a removal
-  /// (cascade included); the processors chained on an edited or replayed output are
-  /// named too. A reload's rebind does not call it: `RefillGuard::recomputeProcessors`
-  /// runs the marker rules itself afterwards. `SessionManager` marks the marker rules
-  /// reading the names stale. [main-thread]
+  /// Receives the names of processor outputs whose rows changed, with their dataset (never empty): when an upsert,
+  /// filter apply, in-place edit or restore leaves an output complete, when a time-sliced replay ends, and before a
+  /// removal (cascade included); chained processors are named too. A reload's rebind does not call it
+  /// (`RefillGuard::recomputeProcessors` runs the marker rules itself). GUI thread.
   using OutputsChangedSink = std::function<void(const std::vector<std::string>& names, DatasetId dataset)>;
   void setOutputsChangedSink(OutputsChangedSink sink) {
     outputs_changed_sink_ = std::move(sink);
@@ -363,146 +250,101 @@ class DataProcessorService {
   /// True while a time-sliced replay has input left.
   [[nodiscard]] bool materializationPending() const;
 
-  /// Refuses a script language no transform backend runs: anything but "luau" or "python" (empty means luau). The
-  /// one guard of `validateScript` and the plugin bridge's script check.
+  /// Anything but "luau" or "python" (empty means luau) is refused; shared by `validateScript` and the bridge.
   [[nodiscard]] static Status checkLanguage(std::string_view language);
 
-  /// Validate a transform script WITHOUT installing anything: compile it with the
-  /// backend for `language` ("luau" today; other values are rejected until their
-  /// backend lands, e.g. "python") and run one synthetic test point to catch
-  /// syntax + trivial runtime errors (a nil/non-numeric return). Returns ok if the
-  /// script is well-formed, else the compiler/runtime error message. [main-thread]
+  /// Compiles for `language` and runs one synthetic point to catch syntax and trivial runtime errors (a nil or
+  /// non-numeric return), installing nothing. GUI thread.
   Status validateScript(std::string_view script, std::string_view language, std::string_view params_json);
 
-  /// Transitive closure of named transforms consuming exact removed TopicIds.
-  /// Filters participate in traversal so mixed chains remain visible.
+  /// Transforms transitively consuming the removed TopicIds; filters are traversed so mixed chains count.
   [[nodiscard]] std::vector<TransformRecipe> transformsDependingOn(const std::vector<TopicId>& removed_topics) const;
 
-  /// Output TopicIds of every processor (filter or transform, ephemeral
-  /// included — matching what removeProcessorsDependingOn would delete)
-  /// transitively depending on any of `input_topics`; parents before children.
+  /// Outputs of every processor (previews included, as removeProcessorsDependingOn) transitively depending on
+  /// `input_topics`, parents first.
   [[nodiscard]] std::vector<TopicId> dependentProcessorOutputs(const std::vector<TopicId>& input_topics) const;
 
-  /// Remove every filter/transform transitively consuming `input_topics`, in
-  /// leaf-first order so no recipe remains attached to a retired topic.
+  /// Leaf-first, so no recipe stays attached to a retired topic.
   [[nodiscard]] Status removeProcessorsDependingOn(const std::vector<TopicId>& input_topics);
 
-  /// Every live processor node a history restore is about to remove: the filters
-  /// whose output TopicId is not in `keep_filter_outputs` plus the non-exempt
-  /// transforms whose key is not in `keep_keys`. Feed the result to
-  /// `exemptDependentsOf` before clearing anything, so a history restore can
-  /// reject up front instead of cascading into an exempt dependent.
+  /// The processor nodes a history restore would remove (filters outside `keep_filter_outputs`, non-exempt transforms
+  /// outside `keep_keys`): pass them to `exemptDependentsOf` before clearing, to reject instead of cascading into an
+  /// exempt dependent.
   [[nodiscard]] std::vector<NodeId> liveNonExemptNodeIds(
       const std::unordered_set<std::string>& keep_keys = {},
       const std::unordered_set<TopicId>& keep_filter_outputs = {}) const;
 
-  /// What a restore with these keep sets would take down, computed in one
-  /// dependency walk from the processors its clears remove: the filters outside
-  /// `keep_filter_outputs` and the transforms outside `keep_keys`, sparing the
-  /// history-exempt ones only under `RestoreIntent::kHistory` (`kReplace` removes them).
+  /// What a restore with these keep sets takes down, in one dependency walk; exempt transforms are spared only under
+  /// `kHistory`.
   struct RemovalImpact {
-    /// Output names of every history-exempt transform the removal cascades into
-    /// (sorted, unique). Non-empty under `kHistory` means the restore must be rejected.
+    /// Output names (sorted, unique) of the exempt transforms the cascade reaches; non-empty under `kHistory` means
+    /// reject.
     std::vector<std::string> exempt_transform_names;
-    /// Materialized output topic names of every processor removed, directly or by
-    /// cascade (a kept filter or transform reading a removed output falls with it,
-    /// and is re-created under a new TopicId). A grouped declaration `"t:a,b"`
-    /// reports its single topic `"t"`. Marker generators declare dependencies by
-    /// series name, so this is the view their preflight and their unchanged check
-    /// match against.
+    /// Topic names of every processor removed, directly or by cascade (a kept processor reading a removed output falls
+    /// too and returns under a new TopicId); `"t:a,b"` reports `"t"`. Marker rules match their series keys against it.
     std::vector<std::string> removed_output_names;
   };
   [[nodiscard]] RemovalImpact removalImpact(
       RestoreIntent intent, const std::unordered_set<std::string>& keep_keys,
       const std::unordered_set<TopicId>& keep_filter_outputs) const;
 
-  /// Output names of every history-exempt TRANSFORM transitively depending on any
-  /// of `nodes`. Empty means removing `nodes` would strand nothing exempt. The
-  /// closure matches exactly what `removeProcessorsDependingOn` would cascade
-  /// into. Scoped to filters/transforms (this service's own graph); a marker
-  /// generator's dependency on a removed transform output is not tracked here.
+  /// Output names of the exempt transforms transitively depending on `nodes`, as removeProcessorsDependingOn would
+  /// cascade. Marker rules' dependencies on these outputs are not tracked here.
   [[nodiscard]] std::vector<std::string> exemptDependentsOf(const std::vector<NodeId>& nodes) const;
 
-  /// Materialized output topic names (sorted, unique) that `removeTransform(transform_key)` would retire: the
-  /// transform's own and those of every processor its removal cascades into, the view name-bound readers (marker
-  /// generators, on-demand recipes) match against. Empty for an unknown key.
+  /// Topic names (sorted, unique) `removeTransform(transform_key)` would retire, cascade included. Empty for an unknown
+  /// key.
   [[nodiscard]] std::vector<std::string> removedOutputNames(std::string_view transform_key) const;
 
-  /// Remove a transform by its namespaced key, cascading through every exact
-  /// downstream processor and retiring all affected outputs. Unknown key = error.
+  /// Cascades through every exact downstream processor. Unknown key: error.
   Status removeTransform(std::string_view namespaced_key);
-  /// `removeTransform` for a removal the transform's owner asks for itself (a plugin through
-  /// `pj.data_processors.v1`, an AI agent): refused, removing nothing, when the cascade would also
-  /// take a processor another owner made (a transform with another `owner_plugin`, or a filter);
-  /// the error names each and its owner. The shell's own removals ask the user first and keep
-  /// cascading through `removeTransform`.
+  /// For a removal the owner asks for (a plugin, an agent): refused, removing nothing, when the cascade would take a
+  /// processor of another owner (a transform of another `owner_plugin`, or a filter); the error names each. The shell
+  /// asks the user and uses `removeTransform`.
   Status removeOwnTransform(std::string_view namespaced_key);
 
-  /// Remove the EPHEMERAL (preview) transforms among `keys`, cascading like
-  /// `removeTransform`; a key that is gone or persistent is skipped. A preview belongs
-  /// to the plugin instance that made it: `DerivedRuntimeHosts` passes the ones its
-  /// bridge created when the instance ends. Persistent transforms are the user's data.
+  /// Removes the previews among `keys`, cascading; gone or persistent keys are skipped. `DerivedRuntimeHosts` passes
+  /// its bridge's previews when the plugin instance ends.
   void removeEphemerals(const std::unordered_set<std::string>& keys);
 
-  /// `clearTransforms(RestoreIntent::kReplace)` — tear down every persistent
-  /// transform at once (reconcile primitive for a full restore).
   void clearAllTransforms();
 
-  /// Tear down every transform whose resolved output lives in `dataset_id`
-  /// (dataset removal).
+  /// Every transform whose output lives in `dataset_id`.
   void clearTransformsForDataset(DatasetId dataset_id);
 
-  /// The per-plugin ids (no prefix) of `plugin_id`'s live transforms — backs the
-  /// ABI `list` slot (scoped to the calling plugin).
+  /// For the ABI `list` slot.
   [[nodiscard]] std::vector<std::string> transformIdsForPlugin(std::string_view plugin_id) const;
 
-  /// A transform's recipe as
-  /// `{"inputs":[…],"outputs":[…],"params":{…},"backend":…,"history_exempt":…,`
-  /// `"gaps":[{"from_ns":…,"to_ns":…}]}` for the ABI `config` slot (re-edit/probe).
-  /// `gaps` are the retention gaps `IncrementalEngine::gaps` recorded for the
-  /// node (oldest first, at most 16): ranges of input evicted before it consumed
-  /// it (`from_ns` is null for a node that had fed nothing yet).
-  /// `nullopt` if the key is unknown.
+  /// For the ABI `config` slot: `{"inputs","outputs","params","backend","history_exempt","gaps"}`, `gaps` being the
+  /// node's retention gaps (`IncrementalEngine::gaps`: input evicted before the node consumed it; `from_ns` null when
+  /// it had consumed nothing). nullopt for an unknown key.
   [[nodiscard]] std::optional<std::string> transformRecipeJson(std::string_view namespaced_key) const;
 
-  /// Snapshot of every live transform recipe (unspecified order) — for layout save.
+  /// Every live transform, unordered, for layout save.
   [[nodiscard]] std::vector<TransformRecipe> transformRecipes() const;
 
-  /// The live transform (a preview excluded, as in `transformRecipes()`) one of whose outputs is `output_topic`;
-  /// nullopt when no transform writes it.
+  /// Previews excluded.
   [[nodiscard]] std::optional<TransformRecipe> transformOwning(TopicId output_topic) const;
 
-  /// Resolved SOURCE topics of a displayed Data Processor output: `output_topic_id`
-  /// is looked up first as a filter output, then as a transform output, and each
-  /// input topic name is resolved back to its live (dataset, name) via the same
-  /// name scan `resolveInputTopic` uses. Lets a demand-tracking consumer (see
-  /// `PJ::TopicDemandTracker`) keep a displayed derived series' inputs subscribed —
-  /// without this a streaming source would unsubscribe the input the moment only
-  /// the derived output is on screen, silently stalling the filter. Read-only.
-  /// Empty when `output_topic_id` is not a known filter/transform output, or when
-  /// an input topic can no longer be resolved by name (e.g. removed upstream).
+  /// The live (dataset, topic name) inputs of a filter or transform output, so `TopicDemandTracker` keeps a displayed
+  /// derived series' inputs subscribed (otherwise a streaming source would unsubscribe them and stall the filter).
+  /// Empty for an unknown output or an input no longer resolvable by name.
   [[nodiscard]] std::vector<std::pair<DatasetId, std::string>> sourceTopicsForOutput(TopicId output_topic_id) const;
 
-  /// The materialized output topic ids of every EPHEMERAL transform (the preview
-  /// nodes). The catalog excludes these from `rebuildFromDatastore`, so a live
-  /// preview never surfaces its prefixed output topics in the Sources tree.
+  /// Preview outputs; the catalog leaves them out.
   [[nodiscard]] std::unordered_set<TopicId> ephemeralOutputTopics() const;
 
-  /// Every live materialized processor output, including preview transforms.
+  /// Previews included.
   [[nodiscard]] std::unordered_set<TopicId> processorOutputTopics() const;
 
-  /// Replay a persisted transform recipe on session load. Same install path as
-  /// `upsertTransform`; an unknown/unavailable backend returns an error WITHOUT
-  /// storing it (the caller keeps the persisted XML and surfaces the diagnostic).
+  /// Layout load: the `upsertTransform` install path. An unavailable backend is an error and stores nothing (the
+  /// caller keeps the XML and reports it).
   [[nodiscard]] Expected<TransformRecipe> restoreTransform(const TransformRecipe& recipe);
 
-  /// The namespaced upsert key `"<plugin_id>/<id>"` — the single source of truth
-  /// for how the ABI bridge maps a plugin's per-id calls onto stored transforms.
   [[nodiscard]] static std::string makeTransformKey(std::string_view plugin_id, std::string_view id);
 
-  /// The topic names `recipe`'s outputs materialize: a grouped declaration `"t:a,b"` is
-  /// ONE topic `"t"`, any other output is its own scalar topic under its declared name.
-  /// What a series key of a downstream processor or marker rule is rooted at.
+  /// The topic names `recipe`'s outputs materialize (`"t:a,b"` is one topic `"t"`): what downstream series keys are
+  /// rooted at.
   [[nodiscard]] static std::vector<std::string> materializedTopicNames(const TransformRecipe& recipe);
 
   [[nodiscard]] IncrementalEngine& incrementalEngine() noexcept {
@@ -510,70 +352,44 @@ class DataProcessorService {
   }
 
  private:
-  /// Shared upsert/restore install path (see `upsertTransform`). Fills the runtime
-  /// fields of `recipe` and stores it on success.
-  /// `time_sliced`: a new node replays only its first slice here (see upsertTransform).
+  /// The upsert and restore install path; `time_sliced` replays only the first slice here.
   [[nodiscard]] Expected<TransformRecipe> installTransform(TransformRecipe recipe, bool time_sliced = false);
-  /// Starts the zero-timer that drives stepMaterialization() (a no-op without a Qt
-  /// application: tests then step by hand).
+  /// Without a Qt application tests step by hand.
   void armMaterializationTimer();
-  /// `node`'s output topics followed by those of every processor chained on them;
-  /// `dependents` (optional) receives the chained processors' node ids, oldest first.
+  /// `dependents` receives the chained processors' node ids, oldest first.
   [[nodiscard]] std::vector<TopicId> outputsWithDependents(
       NodeId node, std::vector<NodeId>* dependents = nullptr) const;
-  /// Announces the outputs grown since the last announcement.
   void announceGrownOutputs();
-  /// Hands `outputs`' names, grouped by dataset, to the outputs-changed sink.
   void announceChangedOutputs(const std::vector<TopicId>& outputs) const;
-  /// Whether one of `inputs` is a preview transform's output. A preview's removal
-  /// cascades into what reads it, so a persistent recipe may not.
+  /// A persistent recipe may not read a preview's output: the preview's removal would cascade into it.
   [[nodiscard]] bool readsAPreview(const std::vector<TopicId>& inputs) const;
-  /// Reports each transform that failed since the last call (see setDiagnosticSink)
-  /// and forgets the ones that recovered or were removed. Called around every
-  /// scheduling pass, so a recovery by an edit between passes re-arms the report.
+  /// Reports transforms newly failed and forgets recovered or removed ones; called around every scheduling pass.
   void reportTransformFailures();
-  /// Make `DataEngine::awaitCompleteSeries` finish a pending replay of that topic.
   void installCompleteReadBarrier();
   [[nodiscard]] Status removeFilterOnly(NodeId node_id);
   [[nodiscard]] Status removeTransformOnly(std::string_view namespaced_key);
-  /// Resolve a topic NAME to (topic id, dataset id) by scanning the engine — there
-  /// is no name→id index. `nullopt` if no live topic has that name, or several do
-  /// (`*ambiguous` is then set, to tell the two apart).
+  /// By scanning the engine (no name index). nullopt for no match or several (`*ambiguous` set).
   [[nodiscard]] std::optional<std::pair<TopicId, DatasetId>> resolveInputTopic(
       const std::string& name, std::optional<DatasetId> only_dataset = std::nullopt, bool* ambiguous = nullptr) const;
-  /// An input resolved to a specific leaf column of a topic.
   struct ResolvedInput {
     TopicId topic_id = 0;
     DatasetId dataset_id = 0;
     std::size_t column = 0;  ///< flattened-leaf column index feeding the transform
   };
-  /// Resolve an input NAME — either a whole topic ("pose/orientation" → column 0) or
-  /// a topic-field path ("pose/orientation/x") — to (topic, dataset, leaf column).
-  /// `nullopt` if no live topic matches, or the field is not a leaf of that topic,
-  /// or several candidates match (`*ambiguous` is then set, to tell the two apart).
-  /// `only_dataset` restricts the scan to one dataset — the dataset-qualified
-  /// plugin input path resolves the qualifier first and then looks the bare
-  /// name up in there. Topic names are not guaranteed unique even inside one
-  /// dataset: a whole-topic name matching twice is ambiguous, and no shorter
-  /// "<topic>/<field>" reading is attempted for it.
+  /// A whole topic ("pose/orientation", column 0) or a field path ("pose/orientation/x") to (topic, dataset, leaf
+  /// column). nullopt when nothing matches, the field is no leaf, or several match (`*ambiguous` set). Topic names can
+  /// repeat inside one dataset: a whole-topic name matching twice is ambiguous, with no shorter `topic/field` reading.
   [[nodiscard]] std::optional<ResolvedInput> resolveInputField(
       const std::string& name, std::optional<DatasetId> only_dataset = std::nullopt, bool* ambiguous = nullptr) const;
-  /// Raw source name of a loaded dataset (the qualifier form), nullopt when unknown.
+  /// The qualifier form; nullopt when unknown.
   [[nodiscard]] std::optional<std::string> datasetSourceName(DatasetId dataset_id) const;
-  /// The input spelling the config read-back echoes for one bound input: bare, unless
-  /// the bare name is ambiguous across the loaded datasets AND "source:bare" resolves
-  /// back to the binding's dataset. A name for which neither spelling round-trips is
-  /// unrepresentable and echoes bare.
+  /// The spelling the config read-back echoes: bare, unless the bare name is ambiguous across datasets and
+  /// "source:bare" resolves back to the binding's dataset.
   [[nodiscard]] std::string readBackInputName(const std::string& bare, const TransformInputBinding& binding) const;
-  /// Resolve a saved binding's dataset through SessionManager's shared identity
-  /// policy, then resolve its exact topic and semantic leaf.
   [[nodiscard]] Expected<ResolvedInput> resolveInputBinding(const TransformInputBinding& binding) const;
 
-  /// The processors a clear or a history restore removes directly: the filters
-  /// outside `keep_filter_outputs` and the persistent transforms outside `keep_keys`
-  /// (minus the `history_exempt` ones when `keep_history_exempt`); a preview ends
-  /// with its plugin instance, never with a restore. The clears and the
-  /// preflight queries all derive from this one set, so they cannot disagree.
+  /// The processors a clear or a history restore removes directly; previews end with their plugin instance, never
+  /// with a restore. The clears and the preflight queries all derive from it, so they cannot disagree.
   struct RemovalSet {
     std::vector<NodeId> filter_nodes;
     std::vector<std::string> transform_keys;
@@ -582,39 +398,32 @@ class DataProcessorService {
   [[nodiscard]] RemovalSet removalSet(
       const std::unordered_set<std::string>& keep_keys, const std::unordered_set<TopicId>& keep_filter_outputs,
       bool keep_history_exempt) const;
-  /// Grows `affected` through every processor the removal of those topics
-  /// cascades into and returns the output names of the history-exempt
-  /// transforms among them (sorted, unique).
+  /// Grows `affected` through the cascade; returns the exempt transforms' output names.
   [[nodiscard]] std::vector<std::string> exemptTransformsDependingOn(std::unordered_set<TopicId>& affected) const;
-  /// Names of the materialized topics among `topics`, sorted and unique (a retired or unknown id is skipped).
+  /// Retired or unknown ids are skipped.
   [[nodiscard]] std::vector<std::string> topicNames(const std::unordered_set<TopicId>& topics) const;
 
-  /// Fixpoint walk of every processor transitively depending on a topic in
-  /// `affected` (which grows with each visited processor's outputs). Visits
-  /// each recipe exactly once, parents before children. When
-  /// !include_ephemeral_transforms, ephemeral transform recipes are neither
-  /// visited nor propagated through (transformsDependingOn's contract).
+  /// Visits each processor transitively depending on `affected` once, parents first; `affected` grows. Without
+  /// `include_ephemeral_transforms` previews are neither visited nor traversed.
   void forEachDependentProcessor(
       std::unordered_set<TopicId>& affected, bool include_ephemeral_transforms,
       const std::function<void(TopicId, const FilterRecipe&)>& on_filter,
       const std::function<void(const std::string&, const TransformRecipe&)>& on_transform) const;
-  /// True if `name` is already a live engine topic or another transform's output
-  /// (a transform owned by `except_key` is excluded, so an in-place replace is allowed).
+  /// A live engine topic or another transform's output; `except_key`'s own outputs are allowed (in-place replace).
   [[nodiscard]] bool outputNameInUse(const std::string& name, const std::string& except_key) const;
 
-  DataEngine& engine_;  ///< engine derived_ writes into; needed to retire orphaned filter outputs on clear
-  SessionManager* session_ = nullptr;  ///< production identity resolver; null only in engine-level tests
+  DataEngine& engine_;
+  SessionManager* session_ = nullptr;  ///< the identity resolver; null only in engine-level tests
   std::unique_ptr<IncrementalEngine> derived_;
-  std::unordered_map<TopicId, FilterRecipe> recipes_;                   ///< output topic id -> live recipe
+  std::unordered_map<TopicId, FilterRecipe> recipes_;                   ///< by output topic
   std::unordered_map<std::string, TransformRecipe> transform_recipes_;  ///< "<plugin>/<id>" -> live transform
-  std::shared_ptr<scripting::FilterCatalogue> filter_catalogue_;        ///< optional Luau filter source
-  DiagnosticSink diagnostic_sink_;                                      ///< receives transform failures; may be empty
-  OutputsChangedSink outputs_changed_sink_;                             ///< may be empty
-  std::unordered_set<std::string> reported_failures_;                   ///< keys of failed transforms already reported
-  std::unordered_set<TopicId> unannounced_outputs_;                     ///< replay outputs grown since the last notify
+  std::shared_ptr<scripting::FilterCatalogue> filter_catalogue_;
+  DiagnosticSink diagnostic_sink_;
+  OutputsChangedSink outputs_changed_sink_;
+  std::unordered_set<std::string> reported_failures_;  ///< keys of failed transforms already reported
+  std::unordered_set<TopicId> unannounced_outputs_;    ///< replay outputs grown since the last notify
   std::chrono::steady_clock::time_point last_announcement_{};
-  /// Zero-interval timer driving stepMaterialization(); created on first use. Declared
-  /// after derived_ so it dies first and can never fire into a destroyed engine.
+  /// Drives stepMaterialization(). Declared after derived_ so it dies first and never fires into a destroyed engine.
   std::unique_ptr<QTimer> materialize_timer_;
 };
 

@@ -290,7 +290,7 @@ void writeExport(ExportRun& run, const EnginePool::CancelToken& stop) {
                ? (span < static_cast<double>(kMaxExportRows) ? static_cast<std::size_t>(span) + 1 : kMaxExportRows + 1)
                : 0;
   } else {
-    // Each series is in time order, so a merge builds the grid; a sort of every stamp costs ~20x as much.
+    // Each series is in time order, so a merge builds the grid, cheaper than sorting every stamp.
     std::vector<int64_t> merged;
     for (const Column& column : run.columns) {
       const auto first = std::lower_bound(column.stamps.begin(), column.stamps.end(), run.t0_ns);
@@ -347,8 +347,8 @@ void writeExport(ExportRun& run, const EnginePool::CancelToken& stop) {
     out.clear();
   };
   // Each value as the shortest text that reads back to the same double, in the C locale whatever the process's (a
-  // decimal comma would split a column). std::to_chars is ~2.5x faster than QByteArray::number, but Apple's libc++ has
-  // its floating-point overloads only from macOS 13.3, above Qt's 13.0 floor, and does not advertise them.
+  // decimal comma would split a column). std::to_chars where available, as it is faster; Apple's libc++ has its
+  // floating-point overloads only from macOS 13.3, above Qt's 13.0 floor, and does not advertise them.
   std::array<char, 32> digits{};
   const auto append_value = [&](double value) {
     if (std::isnan(value)) {

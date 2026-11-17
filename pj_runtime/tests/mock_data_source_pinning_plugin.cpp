@@ -7,7 +7,7 @@
 // emits it as STB_GNU_UNIQUE and the dynamic relocation in `pin_anchor` binds
 // it at dlopen, which also marks the DSO NODELETE — the mechanism real plugin
 // builds pin by. The precondition for extension_manager_test's
-// staged-promotion regression coverage.
+// staged-promotion coverage.
 //
 // Compiled twice (PIN_MOCK_VERSION "1.0.0" / "2.0.0") so tests can stage a
 // version upgrade of the same id.

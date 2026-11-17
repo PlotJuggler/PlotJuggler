@@ -121,18 +121,14 @@ ToolboxRuntimeHost::~ToolboxRuntimeHost() {
   for (auto& [id, slot] : captures) {
     abortCapture(std::move(slot));
   }
-  // Close any import the plugin never finished AND deliver any terminal that
-  // was queued but not yet pumped: the shell's started/finished callbacks must
-  // stay paired or its progress UI / SessionManager lifecycle wedges on a
-  // mid-import panel close. Direct call — teardown runs on the construction
-  // thread (the same contract every marshalled callback already assumes), and
-  // a queued metacall is purged with marshaller_ before delivery. The phase
-  // exchange is the sweep's claim: kActive (never finished) and kFinishQueued
-  // (queued but unpumped) both fire; a DELIVERED terminal already returned to
-  // kIdle — exactly-once holds in both directions. A swept finish whose BEGIN
-  // was still queued (it dies with marshaller_) lands on an absent key at the
-  // consumer — endIngest's documented silent no-op — so the pairing contract
-  // degrades safely rather than wedging.
+  // Close any import the plugin never finished AND deliver any terminal queued but not yet pumped: the shell's
+  // started/finished callbacks must stay paired or its progress UI / SessionManager lifecycle wedges on a mid-import
+  // panel close. Direct call: teardown runs on the construction thread (the contract every marshalled callback
+  // assumes) and a queued metacall is purged with marshaller_ before delivery. The phase exchange is the sweep's claim:
+  // kActive (never finished) and kFinishQueued (queued but unpumped) both fire; a DELIVERED terminal already returned
+  // to kIdle, so exactly-once holds in both directions. A swept finish whose BEGIN was still queued (it dies with
+  // marshaller_) lands on an absent key at the consumer, endIngest's documented silent no-op, so the pairing degrades
+  // safely rather than wedging.
   for (auto& [id, state] : progress) {
     const uint64_t prior = state->state.exchange(0);
     if ((prior & IngestProgress::kPhaseMask) != IngestProgress::kPhaseIdle && callbacks_.on_ingest_finished) {
@@ -145,14 +141,11 @@ ToolboxRuntimeHost::~ToolboxRuntimeHost() {
 }
 
 uint64_t ToolboxRuntimeHost::claimIngestFinish(IngestProgress& progress) {
-  // Pairing gate: only an ACTIVE sequence emits finished. progressFinish
-  // without a start is a documented safe no-op (the SDK's finite-import
-  // pattern calls it unconditionally), and release after a clean finish must
-  // add nothing — an unpaired finished would disturb the shell's bookkeeping
-  // for some other import. Single-shot on the loaded word, NEVER retried: a
-  // failed CAS means the sequence was already terminated or superseded by a
-  // re-arm, and retrying against a re-armed word would claim the NEWER
-  // sequence's terminal.
+  // Pairing gate: only an ACTIVE sequence emits finished. progressFinish without a start is a documented safe no-op
+  // (the SDK's finite-import pattern calls it unconditionally), and release after a clean finish must add nothing: an
+  // unpaired finished would disturb the shell's bookkeeping for another import. Single-shot on the loaded word, NEVER
+  // retried: a failed CAS means the sequence was already terminated or superseded by a re-arm, and retrying against a
+  // re-armed word would claim the NEWER sequence's terminal.
   uint64_t expected = progress.state.load(std::memory_order_acquire);
   if ((expected & IngestProgress::kPhaseMask) != IngestProgress::kPhaseActive) {
     return 0;
@@ -166,10 +159,9 @@ void ToolboxRuntimeHost::postIngestFinished(
   QMetaObject::invokeMethod(
       &marshaller_,
       [self = this, dataset_id, progress, claimed_word]() {
-        // Delivery consumes exactly the claimed word (same generation, same
-        // phase). A re-armed sequence changed the generation and the sweep
-        // zeroed the word, so either makes this CAS fail — a stale delivery
-        // can neither double-fire nor steal a newer sequence's terminal.
+        // Delivery consumes exactly the claimed word (same generation, same phase). A re-armed sequence changed the
+        // generation and the sweep zeroed the word, so either makes this CAS fail: a stale delivery can neither
+        // double-fire nor steal a newer sequence's terminal.
         uint64_t expected = claimed_word;
         const uint64_t idle = claimed_word & ~IngestProgress::kPhaseMask;
         if (!progress->state.compare_exchange_strong(expected, idle)) {
@@ -178,23 +170,16 @@ void ToolboxRuntimeHost::postIngestFinished(
         if (self->callbacks_.on_ingest_finished) {
           self->callbacks_.on_ingest_finished(dataset_id);
         }
-        // Deliberately NO map cleanup here: a re-created context for the same
-        // dataset holds this exact entry (onCreateParserIngest reuses the
-        // slot) and may still be idle-phase — indistinguishable, from this
-        // lambda, from a dead slot. Erasing would untrack that live context:
-        // its release would find no entry, its finished would never queue,
-        // and the shell's keyed pairing would wedge. Entries are retained
-        // until host teardown.
+        // Deliberately NO map cleanup here: a re-created context for the same dataset holds this exact entry
+        // (onCreateParserIngest reuses the slot) and may still be idle-phase, indistinguishable from a dead slot.
+        // Erasing would untrack that live context: its release would find no entry, its finished would never queue, and
+        // the shell's keyed pairing would wedge. Entries are retained until host teardown.
       },
-      // QueuedConnection, never Auto: release is a [thread-safe] slot, so
-      // this post may legally run ON the marshaller thread while the
-      // sequence's begin — queued by an off-thread progress_start — is still
-      // in flight. A direct delivery would emit finish BEFORE begin: the end
-      // lands on an absent key (endIngest's documented silent no-op) and the
-      // late begin re-inserts an entry nothing will ever erase. Forced
-      // queuing keeps every terminal FIFO behind its own sequence's begin
-      // through marshaller_ — the begin is always enqueued no later than the
-      // claim that produced this post.
+      // QueuedConnection, never Auto: release is a [thread-safe] slot, so this post may run ON the marshaller thread
+      // while the sequence's begin (queued by an off-thread progress_start) is still in flight. A direct delivery would
+      // emit finish BEFORE begin: the end lands on an absent key (endIngest's silent no-op) and the late begin
+      // re-inserts an entry nothing erases. Forced queuing keeps every terminal FIFO behind its own sequence's begin
+      // through marshaller_, since the begin is enqueued no later than the claim that produced this post.
       Qt::QueuedConnection);
 }
 
@@ -279,12 +264,10 @@ void ToolboxRuntimeHost::onNotifyDataChanged(void* ctx) noexcept {
         [self]() {
           try {
             self->write_host_.flushPending();
-            // Report the bulk-import datasets: created/released contexts are
-            // drained per notify, while a MID-IMPORT context (active progress
-            // sequence) re-reports on EVERY notify so the shell's playback
-            // focus follows the growing import instead of collapsing back to
-            // the union between ticks. Composed here (GUI thread) so the set
-            // and the callback observing it stay ordered.
+            // Report the bulk-import datasets: created/released contexts are drained per notify, while a MID-IMPORT
+            // context (active progress sequence) re-reports on EVERY notify so the shell's playback focus follows the
+            // growing import instead of collapsing back to the union between ticks. Composed here (GUI thread) so the
+            // set and the callback observing it stay ordered.
             std::vector<DatasetId> ingested;
             {
               std::lock_guard lock(self->parser_ingest_mu_);
@@ -349,13 +332,10 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
           /*secondary_object_store=*/nullptr, /*secondary_data_engine=*/nullptr,
           /*library_keepalive=*/std::shared_ptr<void>{}, self->parser_ingest_deps_.ingest_taps);
 
-      // Arm the M3 source capture BEFORE publishing the context into the maps,
-      // so a throw anywhere in between leaves neither map with a half-built
-      // entry (the slot and the host die with their locals). Binding at
-      // creation keys the capture to THIS host generation: a re-created
-      // context arms a fresh capture, and the old one was finalized/aborted
-      // with its own context, so stale evidence can never publish under a
-      // replacement.
+      // Arm the source capture BEFORE publishing the context into the maps, so a throw in between leaves neither map
+      // with a half-built entry (the slot and the host die with their locals). Binding at creation keys the capture to
+      // THIS host generation: a re-created context arms a fresh capture, and the old one was finalized/aborted with
+      // its own context, so stale evidence can never publish under a replacement.
       std::unique_ptr<CaptureSlot> capture_slot;
 #ifndef __EMSCRIPTEN__
       // captureEnabled() is the Preferences toggle: it gates arming only,
@@ -380,18 +360,14 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
         }
       }
 
-      // Progress hooks: the plugin's progress_start/update/finish calls on the
-      // fat pointer drive the shell's progressive-import surface. They run on
-      // the plugin's ingest thread — flushes are engine-lock-safe there, and
-      // UI-facing callbacks marshal through marshaller_ like every other
-      // callback. `raw` is the context that invokes the hook, so it outlives
-      // every invocation; `self` outlives the plugin per the teardown contract.
+      // Progress hooks: the plugin's progress_start/update/finish calls on the fat pointer drive the shell's
+      // progressive-import surface. They run on the plugin's ingest thread (flushes are engine-lock-safe there) and
+      // UI-facing callbacks marshal through marshaller_ like every other callback. `raw` is the invoking context, so it
+      // outlives every invocation; `self` outlives the plugin per the teardown contract.
       DataSourceRuntimeHost* raw = it->second.get();
-      // REUSE the dataset's progress entry across release/re-create rather
-      // than replacing it: a replaced entry would orphan a still-undelivered
-      // terminal (Phase::kFinishQueued) from the previous context, hiding it
-      // from the destructor's sweep. phase/total are re-armed by
-      // progress_start.
+      // REUSE the dataset's progress entry across release/re-create: a replaced entry would orphan a still-undelivered
+      // terminal (Phase::kFinishQueued) from the previous context, hiding it from the destructor's sweep. phase/total
+      // are re-armed by progress_start.
       auto& progress_slot = self->ingest_progress_[data_source_id];
       if (progress_slot == nullptr) {
         progress_slot = std::make_shared<IngestProgress>();
@@ -427,10 +403,9 @@ bool ToolboxRuntimeHost::onCreateParserIngest(
             return true;
           }
           progress->last_flush = now;
-          // Seal both write surfaces so the marshalled on_ingest_progress can
-          // treat "this tick" as "these rows are reader-visible": the context's
-          // own parser-binding writers AND the toolbox write host the plugin
-          // may be appending through (the cloud connector's Arrow/object path).
+          // Seal both write surfaces so the marshalled on_ingest_progress can treat "this tick" as "these rows are
+          // reader-visible": the context's own parser-binding writers AND the toolbox write host the plugin may be
+          // appending through.
           raw->flushPending();
           self->write_host_.flushPending();
           QMetaObject::invokeMethod(
@@ -500,12 +475,10 @@ bool ToolboxRuntimeHost::onReleaseParserIngest(void* ctx, uint32_t data_source_i
       // retained until teardown — see the ingest_progress_ member doc.
       if (auto pit = self->ingest_progress_.find(data_source_id); pit != self->ingest_progress_.end()) {
         progress = pit->second;
-        // CLAIM the terminal while still under the lock: a re-arm needs this
-        // same mutex (create) before its progress_start can bump the
-        // generation, so the claim can only take THIS context's sequence — a
-        // claim after unlock could race a re-create and steal the newer
-        // sequence's terminal. The marshalled post waits until after the
-        // terminal flush below, preserving rows-sealed-before-finished.
+        // CLAIM the terminal while still under the lock: a re-arm needs this same mutex (create) before its
+        // progress_start can bump the generation, so the claim can only take THIS context's sequence; a claim after
+        // unlock could race a re-create and steal the newer sequence's terminal. The marshalled post waits until after
+        // the terminal flush below, preserving rows-sealed-before-finished.
         claimed_word = claimIngestFinish(*progress);
       }
     }

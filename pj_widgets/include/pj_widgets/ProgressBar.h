@@ -6,27 +6,19 @@
 
 namespace PJ {
 
-// App-styled QProgressBar variant: a rounded, thick-outlined trough with a
-// light-blue rounded fill and a single-colour centred caption (e.g.
-// "Loading MCAP"). The look is supplied entirely by the host app's
-// stylesheet through the class selector `PJ--ProgressBar` — see the
-// `PJ--ProgressBar` / `PJ--ProgressBar::chunk` rules in
-// resources/stylesheet_{light,dark}.qss.
+// App-styled QProgressBar: a rounded, thick-outlined trough with a light-blue rounded fill and a single-colour centred
+// caption ("Loading"). The look comes entirely from the host stylesheet through the class selector `PJ--ProgressBar`
+// (`PJ--ProgressBar` and `PJ--ProgressBar::chunk` in resources/stylesheet_{light,dark}.qss).
 //
-// Why a subclass at all, given it carries no extra logic: a bare
-// `QProgressBar { }` QSS rule would restyle *every* progress bar in the app
-// (the ProgressDialog bar included). A dedicated type gives the stylesheet a
-// `PJ--ProgressBar` selector to scope the look to opt-in instances. That only
-// works because Q_OBJECT gives this class its own meta-object — without it
-// `metaObject()->className()` would still report "QProgressBar" and the
-// selector would silently never match. Do not drop Q_OBJECT.
+// A subclass with no logic because a bare `QProgressBar { }` rule would restyle every progress bar in the app
+// (ProgressDialog's included); a dedicated type gives the stylesheet a selector that scopes the look to opt-in
+// instances. That works only because Q_OBJECT gives the class its own meta-object: without it `className()` reports
+// "QProgressBar" and the selector silently never matches. Do not drop Q_OBJECT.
 //
-// The caption is the standard QProgressBar `format()` string: set a literal
-// (`setFormat("Loading MCAP")`) for a fixed label, or keep the default "%p%"
-// for a percentage. The value/range still drive the fill width regardless.
-// The text is drawn once, on top of the fill, in a single colour — it does
-// NOT split/invert where the fill crosses behind it (that effect would need a
-// custom paintEvent, which this variant deliberately avoids).
+// The caption is the QProgressBar `format()` string: a literal (`setFormat("Loading")`) for a fixed label, or the
+// default "%p%". Value and range still drive the fill width. The text is drawn once, over the fill, in one colour: it
+// does not split or invert where the fill crosses behind it (that would need a custom paintEvent, which this variant
+// avoids).
 class ProgressBar : public QProgressBar {
   Q_OBJECT
  public:

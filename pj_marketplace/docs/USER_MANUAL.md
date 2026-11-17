@@ -1,179 +1,178 @@
 # PlotJuggler Marketplace — User Manual
 
-> **Version:** 1.0.0
-> **Last Updated:** 2026-05-19
-> **Audience:** End users, developers, and LLMs assisting with the project
+> **Audience:** end users, plugin developers, and LLMs assisting with the project. The marketplace is part of the
+> desktop application; the browser build does not include it.
 
 ---
 
-## 1. Quick Start
+## Quick Start
 
 ### For End Users
 
 1. Open PlotJuggler
 2. Open the **File** menu and choose **Extensions Marketplace…** (keyboard shortcut Ctrl+Shift+M)
-3. Search for the extension you need (e.g., "ROS 2")
-4. Click **Install**
-5. Restart PlotJuggler if prompted
-6. Your new plugin is ready to use
+3. Search for the extension you need (e.g., "ROS 2") and select its row
+4. Click **Install** in the **Details** footer
+5. Close the marketplace: a freshly installed extension is loaded without a restart. Updates, removals and downgrades
+   are applied the next time PlotJuggler starts
 
 ### For Plugin Developers
 
-1. Write the plugin against the SDK ([`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk): the guides under `pj_plugins/docs/`)
-2. Package the built library as a ZIP and try it with **Install from local ZIP** (§3.1)
-3. Publish a release per platform and add it to the registry (§5.2)
+1. Write the plugin against the SDK ([`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk): the guides
+   under `pj_plugins/docs/`)
+2. Package the built library as a ZIP and try it with **Install local...** (see "Installing from a Local ZIP")
+3. Publish a release per platform and add it to the registry (see "Registry URL")
 
 ---
 
-## 2. User Guide
+## User Guide
 
-### 2.1 Opening the Marketplace
+### Opening the Marketplace
 
-**From PlotJuggler:**
-- Open the **File** menu and choose **Extensions Marketplace…**. The **Help ▸ Installed Extensions** submenu lists already-installed plugins (informational only — managing extensions happens in the Marketplace).
-- Keyboard shortcut: Ctrl+Shift+M
+- Open the **File** menu and choose **Extensions Marketplace…**, or press Ctrl+Shift+M. The **Help ▸ Installed
+  Extensions** submenu lists the plugins already loaded (informational only; managing extensions happens in the
+  Marketplace).
+- For development, the `pj_marketplace_app` target is a standalone harness around the same window.
 
-**Standalone (development only):**
-```bash
-./build/pj_marketplace/pj_marketplace_app
-```
+### Browsing Extensions
 
-### 2.2 Browsing Extensions
-
-The marketplace window shows a list of all extensions with their status:
+The marketplace window shows a table of extensions:
 
 | Column | Content |
 |--------|---------|
-| **Name** | Extension name |
-| **Category** | The registry category (data loader, streamer, parser, toolbox, ...) |
+| **Name** | Extension name; hover for its description |
+| **Category** | The registry category (`data_loader`, `data_stream`, `message_parser`, `toolbox`, ...) |
 | **Installed** | The installed version, or "—" when it is not installed. A locally newer build shows its own version |
-| **Marketplace** | The registry version, highlighted when it is an update |
+| **Marketplace** | The registry version. Highlighted when it is an update, and in amber when the release cannot run on this PlotJuggler (hover for the reason) |
 | **Description** | Short description |
 
-**To see extension details:** select a row. The **Details** footer under the table shows that extension and carries its secondary actions (uninstall, the enable toggle).
+Click a column header to sort by Name, Category, Installed or Marketplace; the default order groups by category.
 
-If PlotJuggler already has the plugin loaded at startup, the marketplace is seeded with that loaded state before the first render so the card version matches what the app already opened.
+**To see extension details:** select a row. The **Details** footer under the table shows its publisher, license,
+description and changelog, and carries every action: Install, Update, Uninstall (or Downgrade to bundled), the enable
+toggle and a **Visit Website** button.
 
-**Quick tip:** Hover over an extension to see a brief description tooltip.
+### Searching and Filtering
 
-### 2.3 Searching and Filtering
-
-**Search box:** Type to filter by name, description, or tags
+**Search box:** type to filter by name, description, or tags
 - Example: `ros` finds "ROS 2 Streaming", "ROS Bag Loader"
 - Example: `csv` finds "CSV Loader", "CSV Exporter"
 
-**Filter row:** A row of toggle buttons under the toolbar. Any number of them can
-be active at the same time.
+**Filter row:** four toggle buttons beside the search box, all on by default. Any combination can be active:
 
-- **Installed** — only extensions that are already installed
-- **Data Source** — extensions that load data from files
-- **Data Streamer** — extensions that stream data continuously
+- **Data Sources** — extensions that load data from files
+- **Data Streamers** — extensions that stream data continuously
 - **Parsers** — extensions that decode byte blobs into fields
 - **Toolboxes** — extensions that add a tool with its own GUI
 
-The four category toggles combine as "any of these": with none active every
-category is listed, and activating several lists the extensions belonging to any
-one of them. **Installed** is independent — it narrows whichever categories are
-active rather than replacing them, so "Installed + Parsers" lists the installed
-parsers. The search box narrows the result further.
+A category is listed only while its toggle is on. An extension whose category is none of these four is always listed.
+The search box narrows the result further.
 
-### 2.4 Installing an Extension
+### Installing an Extension
 
-1. Find the extension in the list
-2. (Optional) Select it to see its details in the footer
-3. Click the **[install]** button next to the extension
-4. Wait for download and extraction
-5. See "Installation complete" message
-6. Button changes to **[installed]**
+1. Find the extension in the list and select its row
+2. Click **Install** in the Details footer
+3. Wait for download, verification and extraction; the status line shows the progress and ends with "Installed …"
+4. The footer shows an **Installed** badge; close the marketplace and the plugin is available
 
-**On Windows:** You may see "Restart required to complete installation"
+If the extension needs a newer plugin SDK than this PlotJuggler ships, **Install** is disabled and the footer explains
+why (hover over the button too). Installs run one at a time: further clicks wait in a queue.
 
-### 2.5 Updating an Extension
+### Updating an Extension
 
-1. Extensions with updates show an **Update available** badge
-2. Click on the extension
-3. Click **Update**
-4. The new version is staged and the extension shows **Needs Restart** — the update is applied on the next launch, so the currently loaded plugin keeps working for the rest of the session
-5. Once every queued update has been staged, a **Restart required** dialog summarizes how many changes are waiting (one dialog per batch, also shown for staged uninstalls and downgrades)
-6. On restart, the old version is automatically backed up before the new one is promoted
-7. If promotion fails, the old version remains in `.backup/` and can be recovered manually
+1. An extension with a newer compatible version shows its Marketplace cell highlighted and an **Update** button in the
+   footer
+2. Select it and click **Update**
+3. The new version is staged and the footer shows **Needs Restart**: the update is applied on the next launch, so the
+   currently loaded plugin keeps working for the rest of the session
+4. Once every queued change has been staged, a **Restart required** dialog says how many are waiting (one dialog per
+   batch; staged uninstalls and downgrades count too)
+5. On restart, the old version is moved to `.backup/` before the new one is promoted
+6. If promotion fails, the previous version is put back; if that also fails, the diagnostics name where it is in
+   `.backup/` so it can be recovered by hand
 
-**Update All:** Click "Update All" in the toolbar to stage updates for all extensions at once
+**Update All:** click "Update All" in the toolbar to stage every available update that is compatible and not already
+staged.
 
-### 2.6 Uninstalling an Extension
+### Uninstalling an Extension
 
-1. Click on the installed extension
-2. Click **Uninstall**
-3. Confirm in the dialog
-4. The removal is **staged**: the extension leaves the list and its row shows
-   **Needs Restart**, and the files are deleted the next time PlotJuggler starts
+1. Select the installed extension
+2. Click **Uninstall** in the Details footer (there is no confirmation dialog)
+3. The removal is **staged**: the row shows **Needs Restart**, and the files are deleted the next time PlotJuggler
+   starts
 
-An extension the session already loaded keeps running until that restart —
-its code cannot be unmapped from a live process — so the removal is reported as
-pending rather than done. The same id cannot be reinstalled until the restart
+An extension the session already loaded keeps running until that restart — its code cannot be unmapped from a live
+process — so the removal is reported as pending rather than done. The same id cannot be reinstalled until the restart
 has applied the removal.
 
-If the deletion cannot go through at that next start (a file locked by another
-process, antivirus, missing permissions), the extension is reported in the
-diagnostics and retried at the following start. It stays unloaded in the
+If the deletion cannot go through at that next start (a file locked by another process, antivirus, missing
+permissions), the extension is reported in the diagnostics and retried at the following start. It stays unloaded in the
 meantime, so a removal that is stuck on disk never brings the plugin back.
 
-An uninstalled id stays on the disabled list even after its files are gone, so
-that nothing but an explicit install can make it load again. Installing the
-extension a second time clears that automatically. The one case where it shows:
-copying an extension folder back by hand does **not** re-enable it, so use the
-enable toggle after doing so.
+An uninstalled id stays on the disabled list even after its files are gone, so that nothing but an explicit install can
+make it load again. Installing the extension a second time clears that automatically. The one case where it shows:
+copying an extension folder back by hand does **not** re-enable it, so use the enable toggle after doing so.
 
-Core (bundled) extensions have no Uninstall action — see §2.8.
+Core (bundled) extensions have no usable Uninstall action — see "Core (Bundled) Extensions".
 
-### 2.7 Enabling/Disabling Extensions
+### Installing from a Local ZIP
 
-Select an installed extension and use the enable toggle in the **Details** footer. The choice is saved at once and takes effect at the next start: a disabled extension stays installed and is not loaded.
+**Install local...** in the toolbar installs a plugin from a ZIP on disk, which is how to try a build before it is
+published. The archive must hold exactly one top-level directory with the plugin library (and any `.ui` file) in it. It
+is checked like a registry download except that its origin cannot be verified: it must contain a loadable plugin whose
+embedded manifest passes the compatibility gate.
 
-### 2.8 Core (Bundled) Extensions
+- A new id is installed at once, like a registry install.
+- An id that is already installed asks whether to **Replace** it; a confirmed replacement is applied at the next start.
+- An archive identical to the installed files changes nothing: the status line says so and no restart is needed.
 
-Extensions shipped with the application (inside the installer or AppImage) are
-**core** extensions. At every startup they are seeded into the extensions
-directory, so they are managed like any other install — with three differences:
+### Enabling/Disabling Extensions
 
-- **They cannot be uninstalled.** The id ships with the app; removing it would
-  just be undone on the next launch.
-- **They follow application upgrades.** When a new PlotJuggler version bundles a
-  newer plugin, your installed copy is refreshed to it automatically. A copy you
-  updated *above* the bundled version through the marketplace is left alone.
-- **Downgrade to bundled.** If you updated a core extension and want the shipped
-  version back, use **Downgrade to bundled** (staged, applied on restart).
+Select an installed extension and use the enable toggle in the **Details** footer. The choice is saved at once and
+takes effect at the next start: a disabled extension stays installed and is not loaded.
 
-To pin a core plugin to an older build, place that build in a custom plugin
-folder (Preferences → Plugins): custom folders override the extensions dir
-regardless of version. The same page lists every scanned plugin folder.
+### Core (Bundled) Extensions
+
+Extensions shipped with the application (inside the installer or AppImage) are **core** extensions. At every startup
+they are seeded into the extensions directory, so they are managed like any other install — with three differences:
+
+- **They cannot be uninstalled.** The id ships with the app; removing it would just be undone on the next launch. The
+  **Uninstall** button is disabled.
+- **They follow application upgrades.** When a new PlotJuggler version bundles a newer plugin, your installed copy is
+  refreshed to it automatically. A copy you updated *above* the bundled version through the marketplace is left alone.
+- **Downgrade to bundled.** If you updated a core extension and want the shipped version back, use **Downgrade to
+  bundled** (staged, applied on restart).
+
+To pin a core plugin to an older build, place that build in a custom plugin folder (Preferences → Plugins): custom
+folders override the extensions dir regardless of version. The same page lists every scanned plugin folder.
 
 ---
 
-## 3. Developer Guide
+## Developer Guide
 
 > **Note on plugin shape:**
 >
-> Plugins are pure C++ DSOs that consume the C ABI declared in
-> `plotjuggler_sdk/pj_plugins`. They do **not** link Qt — only the
-> host (PlotJuggler / the marketplace) does (Widget plugins excepted). Each plugin exposes a
-> small embedded JSON manifest (`id`, `name`, `version`, …) through the
-> SDK export macro; the marketplace reads that manifest to recognise
-> installed plugins. The workflow below describes the full process
-> for these plugins.
+> Data plugins (sources, parsers, toolboxes) are C++ DSOs that consume the C ABI declared in
+> `plotjuggler_sdk/pj_plugins`. They do **not** link Qt — only the host does. Widget plugins are the exception: they
+> create Qt widgets and link Qt. Each plugin exposes a small embedded JSON manifest (`id`, `name`, `version`, …)
+> through the SDK export macro; the marketplace reads that manifest to recognise installed plugins.
 >
-> **CI Options:** Extensions can live in separate repos (one per
-> extension) or in a mono-repo with per-component releases (see
-> [Foxglove MCAP](https://github.com/foxglove/mcap) as reference). The
-> registry supports both approaches.
+> **CI Options:** Extensions can live in separate repos (one per extension) or in a mono-repo with per-component
+> releases (see [Foxglove MCAP](https://github.com/foxglove/mcap) as reference). The registry supports both approaches.
 
-### 3.1 Creating a New Extension
+### Creating a New Extension
 
-1. **Write the plugin.** Start from the SDK guide of its family (`data-source-guide.md`, `message-parser-guide.md`, `toolbox-guide.md`, `dialog-plugin-guide.md` under `pj_plugins/docs/` in the [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) repository). The plugins in [`pj-official-plugins`](https://github.com/PlotJuggler/pj-official-plugins) are working examples, with their build and release setup.
-2. **Try it locally.** Either start PlotJuggler with `--plugin-dir <folder holding the built library>`, or zip the library (plus any `.ui` file) and use **Install from local ZIP** in the Marketplace. A local ZIP is checked like a registry download: it must hold a loadable plugin whose embedded manifest passes the compatibility gate.
-3. **Publish.** Build one ZIP per supported platform (§5.3), publish them where they can be downloaded by direct URL, and add the release to the registry (§5.2; the entry format is in `REQUIREMENTS.md` §11.1).
+1. **Write the plugin.** Start from the SDK guide of its family (`data-source-guide.md`, `message-parser-guide.md`,
+   `toolbox-guide.md`, `dialog-plugin-guide.md` under `pj_plugins/docs/` in the
+   [`plotjuggler_sdk`](https://github.com/PlotJuggler/plotjuggler_sdk) repository). The plugins in
+   [`pj-official-plugins`](https://github.com/PlotJuggler/pj-official-plugins) are working examples, with their build
+   and release setup.
+2. **Try it locally.** Either start PlotJuggler with `--plugin-dir <folder holding the built library>`, or zip the
+   library (plus any `.ui` file) and use **Install local...** (see "Installing from a Local ZIP").
+3. **Publish.** Build one ZIP per supported platform (see "Supported Platforms"), publish them where they can be downloaded by direct URL,
+   and add the release to the registry (see "Registry URL"; the entry format is in the spec, "Registry — Format and Hosting").
 
-### 3.2 Embedded Plugin Manifest
+### Embedded Plugin Manifest
 
 Every plugin DSO must export an embedded manifest through the SDK macro:
 
@@ -187,67 +186,74 @@ PJ_DATA_SOURCE_PLUGIN(MyPlugin,
 | `id` | Yes | Unique identifier (lowercase, hyphens) |
 | `name` | Yes | Human-readable plugin name |
 | `version` | Yes | Semantic version (X.Y.Z) |
+| `description`, `category` | No | Shown in the marketplace for a plugin the registry does not list |
+| `min_sdk_required` | No | The oldest plugin SDK the plugin needs; a host with an older SDK refuses to install it |
+| `suggested_sdk_version` | No | The SDK release at which every capability the plugin uses is available; an older host shows a reduced-features note |
+| `min_plotjuggler_version` | No | Deprecated: shown, never gates |
 | `encoding` | Parsers only | Message encoding handled by a parser plugin |
 | `file_extensions` | No | File suffixes handled by a file source plugin |
 | `capabilities` | No | Optional capability tags |
 
-### 3.3 Plugin Types
+### Plugin Types
 
-| Type | Base class (export macro) | Purpose |
-|------|---------------------------|---------|
+| Registry category | Base class (export macro) | Purpose |
+|-------------------|---------------------------|---------|
 | `data_loader` | `PJ::DataSourcePluginBase` (`PJ_DATA_SOURCE_PLUGIN`) | Load data from files |
-| `data_streamer` | `PJ::DataSourcePluginBase` (`PJ_DATA_SOURCE_PLUGIN`) | Real-time data streaming |
-| `parser` | `PJ::MessageParserPluginBase` (`PJ_MESSAGE_PARSER_PLUGIN`) | Parse binary data to fields |
+| `data_stream` | `PJ::DataSourcePluginBase` (`PJ_DATA_SOURCE_PLUGIN`) | Real-time data streaming |
+| `message_parser` | `PJ::MessageParserPluginBase` (`PJ_MESSAGE_PARSER_PLUGIN`) | Parse binary data to fields |
 | `toolbox` | `PJ::ToolboxPluginBase` (`PJ_TOOLBOX_PLUGIN`) | Custom tools with UI |
 
-A single `DataSourcePluginBase` serves both file and streaming sources; whether it loads files or streams live data is declared via `capabilities()`/manifest, not by a separate base class.
+A single `DataSourcePluginBase` serves both file and streaming sources; whether it loads files or streams live data is
+declared via `capabilities()`/manifest, not by a separate base class.
 
-### 3.4 Best Practices
+### Best Practices
 
-- **No Qt dependency:** use the SDK, not Qt directly. Widget plugins are the exception: they link Qt and must be built against the Qt version PlotJuggler ships
+- **No Qt dependency:** use the SDK, not Qt directly. Widget plugins are the exception: they link Qt and must be built
+  against the Qt version PlotJuggler ships
 - **Static linking:** Embed all dependencies
 - **Test on all platforms:** Use CI matrix build
-- **Semantic versioning:** Follow semver strictly
+- **Semantic versioning:** Follow semver strictly; the plugin version and its floors must be strict SemVer
 - **Clear README:** Explain what your plugin does
 - **License:** Include LICENSE file (Apache-2.0 recommended)
 
 ---
 
-## 4. Troubleshooting
+## Troubleshooting
 
-### 4.0 Diagnostics dialog
+### Diagnostics dialog
 
-The marketplace toolbar shows a **Details** button whenever there are recent diagnostics. Click it to open a read-only log of marketplace lifecycle events (install/uninstall/staged-promotion failures, quarantine moves, registry-fetch failures). The most recent error also appears in the status bar; a successful registry refresh clears the sticky error so progress messages aren't suppressed.
+A **Details** button appears next to the status line whenever diagnostics were recorded since the marketplace was
+opened, with a count when there are several. Click it to open a read-only log of marketplace lifecycle events
+(install/uninstall/staged-promotion failures, quarantine moves, registry-fetch failures). The most recent error also
+appears in the status line; a successful registry refresh clears the sticky error so progress messages are not
+suppressed.
 
-When the marketplace runs **inside** a host application (e.g. PlotJuggler), the host can subscribe to the same diagnostic stream alongside its own plugin-load events; see ARCHITECTURE.md §3.3 *ExtensionManager — Diagnostic propagation*.
+When the marketplace runs inside a host application, the host receives the same diagnostics alongside its own
+plugin-load events (see ARCHITECTURE.md, "Diagnostics").
 
-### 4.1 Common Issues
+### Common Issues
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
 | "Extension not loading" | Incompatible version | Check the extension's `min_sdk_required` against the SDK version in the error |
 | "Requires PlotJuggler SDK X or newer" | The package needs a newer plugin SDK than this PlotJuggler build ships. Raised for a local ZIP as well, from the manifest embedded in its plugin | Update PlotJuggler, or obtain a build of the extension made for this version |
-| "Download failed" | Network issue | Check internet, try again |
+| "Plugin ABI N does not match host ABI M" | The plugin was built for another plugin ABI generation | Obtain a build made for this PlotJuggler |
+| "Installation failed: …" | Network issue, or the archive could not be read | Check internet, try again; the reason follows the colon |
 | "Checksum mismatch" | Corrupted download | Try again, report if persistent |
-| "Cannot update (Windows)" | DLL in use | Restart PlotJuggler |
 | "Installed version is newer" | Local plugin is ahead of registry | Downgrade is blocked; keep the local version |
-| "Update failed after backup" | New artifact did not install | Check marketplace diagnostics for the retained backup path |
+| "Update for … is already staged" | An update is waiting for the restart | Restart PlotJuggler |
+| "Uninstall of … is staged; restart to apply it before installing again" | A removal of the same id is pending | Restart PlotJuggler, then install |
+| "Previous version remains in backup: …" | The new artifact did not install or promote | Check the marketplace diagnostics for the retained backup path |
 | "Post-promotion validation failed" | The DSO loads in the staging area but not from `extensions/` (rpath/dep issue) | The install is rolled back; check the diagnostic for the linker error |
-| "Could not mark … for restart cleanup" | Marketplace could not write the `.pj_pending_uninstall` marker (permissions, or AV on Windows) | The uninstall is **not** scheduled; resolve the file-permission issue and retry |
+| "Could not record the removal of …; uninstall not scheduled" | The removal record could not be written (permissions, disk) | Nothing is scheduled and the plugin keeps its enable state; resolve the problem and retry |
 | "Moved to quarantine: …" | A previous staged update could not be removed; it has been moved aside | Inspect the quarantined directory and delete it manually once safe |
-| "Invalid registry URL" when saving Preferences | The Marketplace registry URL field holds a non-http(s)/file value | Fix the URL or clear the field to restore the default (see §5.2) |
+| "Another PlotJuggler instance is managing extensions" | A second PlotJuggler is running over the same extensions | Close the other instance and restart PlotJuggler; meanwhile extensions are listed but cannot be changed |
+| The registry URL field in Preferences turns red | The URL is not http(s) or file, or does not respond (advisory: nothing is blocked; a value that is not a valid URL is not saved) | Fix the URL or switch back to *default* (see "Registry URL") |
 
-### 4.2 Log Locations
+### Reset Marketplace
 
-| OS | Path |
-|----|------|
-| Linux | `~/.local/share/PlotJuggler/logs/` |
-| Windows | `%APPDATA%/PlotJuggler/logs/` |
-| macOS | `~/Library/Application Support/PlotJuggler/logs/` |
-
-### 4.3 Reset Marketplace
-
-If the marketplace is broken, remove the extensions and staging directories under your platform's config root (see §5.1):
+If the marketplace is broken, close PlotJuggler and remove the extensions and staging directories under your platform's
+config root (see "Directory Structure"):
 
 ```bash
 # Linux
@@ -256,29 +262,35 @@ rm -rf ~/.local/share/PlotJuggler/PlotJuggler4/.extension_staging/
 
 # macOS
 rm -rf ~/Library/Application\ Support/PlotJuggler/PlotJuggler4/extensions/
+rm -rf ~/Library/Application\ Support/PlotJuggler/PlotJuggler4/.extension_staging/
 
 # Windows
 rmdir /s %LOCALAPPDATA%\PlotJuggler\PlotJuggler4\extensions
 rmdir /s %LOCALAPPDATA%\PlotJuggler\PlotJuggler4\.extension_staging
 ```
 
-### 4.4 Reporting Bugs
+The next start re-seeds the core extensions. The other `extensions.*` directories beside `extensions/` (see "Directory Structure") hold the
+removal journal and the content-addressed copies; they are rebuilt or cleaned up from `extensions/` and need not be
+removed by hand.
 
-1. Check existing issues at https://github.com/plotjuggler/marketplace/issues
+### Reporting Bugs
+
+1. Check existing issues at https://github.com/PlotJuggler/PlotJuggler/issues (**Help ▸ Report an Issue** opens it)
 2. Include:
    - PlotJuggler version
    - OS and version
    - Extension name and version
-   - Error message or log excerpt
+   - Error message or the marketplace diagnostics
    - Steps to reproduce
 
 ---
 
-## 5. Reference
+## Reference
 
-### 5.1 Directory Structure
+### Directory Structure
 
-The marketplace uses the application's writable data location (resolved by `QStandardPaths::AppDataLocation`, i.e. the `PlotJuggler/PlotJuggler4` org/app pair):
+The marketplace uses the application's writable data location (resolved by `QStandardPaths::AppDataLocation`, i.e. the
+`PlotJuggler/PlotJuggler4` org/app pair):
 
 | OS | Root |
 |----|------|
@@ -293,47 +305,40 @@ Inside that root:
 ├── extensions/                      # Active installed extensions, including
 │   └── my-extension/                # core (bundled) ones seeded at startup
 │       └── libmy_plugin.so
-├── .extension_staging/      # Staging area: updates land here and are promoted
-│   │                                # on the next startup; a fresh install uses it
-│   │                                # only as the post-promotion validation gate
-│   │                                # (it activates immediately)
+├── extensions.install_stage/        # Transient: downloads are unpacked here before they are promoted
+├── extensions.state/                # Pending removals, one record per extension
+├── extensions.artifacts/            # Content-addressed copies of the installed extensions
+├── .extension_staging/              # Staged updates, promoted on the next startup
 │   └── my-extension/
-│       └── .pj_pending_install      # Intent file for restart-time update apply
-└── .backup/                         # Pre-update backups (all platforms); automatic rollback deferred — restore manually
+│       └── .pj_pending_install      # Intent file for the restart-time apply
+└── .backup/                         # The previous version of an updated extension
 ```
 
-### 5.2 Registry URL
+(`extensions.seed_stage/`, `extensions.extraction/`, `extensions.profiles/` and `.extensions.lock` also live there;
+they are bookkeeping.)
+
+### Registry URL
 
 **Default:** `https://raw.githubusercontent.com/PlotJuggler/pj-plugin-registry/refs/heads/development/registry.json`
 
-**Custom registry:** open **Preferences → Plugins**. The *Marketplace registry
-URL* row has a **default / custom** switch: *default* shows the built-in URL
-read-only; *custom* enables the field for editing. When you finish editing,
-the value is checked — it must be an http(s) or file URL and, when the system
-is online, it must actually respond — and the text turns **red** while the
-check fails (advisory: nothing blocks or reverts, and offline the reachability
-check is skipped so you can prepare a URL that will work later). On OK a valid
-custom URL persists in the application settings (key `Marketplace/registryUrl`;
-default mode stores "no override") and the marketplace fetches from it the
-next time it opens. The standalone `pj_marketplace_app` harness always uses
-its built-in default.
+**Custom registry:** open **Preferences → Plugins**. The *Marketplace registry URL* row has a **default / custom**
+switch: *default* shows the built-in URL read-only; *custom* enables the field for editing. When you finish editing, the
+value is checked — it must be an http(s) or file URL and, when the system is online, it must actually respond — and the
+text turns **red** while the check fails (advisory: nothing blocks or reverts, and offline the reachability check is
+skipped so you can prepare a URL that will work later). On OK a valid custom URL persists in the application settings
+(key `Marketplace/registryUrl`; default mode stores "no override") and an open marketplace re-fetches from it at once.
+The standalone `pj_marketplace_app` harness always uses its built-in default.
 
-### 5.3 Supported Platforms
+### Supported Platforms
 
-| Platform | Architecture | Status |
-|----------|--------------|--------|
-| Linux | x86_64 | Full support |
-| Linux | arm64 | Planned |
-| Windows | x86_64 | Full support |
-| macOS | arm64 (Apple Silicon) | Full support |
-| macOS | x86_64 (Intel) | Planned |
+Registry artifacts are keyed by `<os>-<arch>` (`linux-x86_64`, `windows-x86_64`, `macos-arm64`). The marketplace offers
+the artifact of the platform it runs on.
 
-### 5.4 Extension Categories
+### Extension Categories
 
 | Category | Code | Examples |
 |----------|------|----------|
 | Data Loader | `data_loader` | CSV, MCAP, ROS bags |
-| Data Streamer | `data_streamer` | ROS 2, MQTT, ZMQ |
-| Parser | `parser` | Protobuf, FlatBuffers |
+| Data Streamer | `data_stream` | ROS 2, MQTT, ZMQ |
+| Parser | `message_parser` | Protobuf, FlatBuffers |
 | Toolbox | `toolbox` | FFT, CSV exporter |
-| Bundle | `bundle` | ROS 2 Complete |

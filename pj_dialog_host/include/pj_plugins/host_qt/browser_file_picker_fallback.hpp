@@ -10,11 +10,9 @@
 
 namespace PJ {
 
-// Qt gates BOTH its open and save File System Access paths on
-// window.showOpenFilePicker. In the cross-origin-isolated (COOP/COEP) context a
-// threaded build needs, those pickers are not dependable. Holding this masks
-// only that capability probe, so a Qt getOpenFileContent / saveFileContent
-// call made meanwhile picks Qt's portable <input type=file> or
+// Qt gates both its open and save File System Access paths on window.showOpenFilePicker, which is not dependable in
+// the cross-origin-isolated (COOP/COEP) context a threaded build needs. While this object lives, that capability
+// probe is masked, so a Qt getOpenFileContent / saveFileContent call picks Qt's portable <input type=file> or
 // Blob/<a download> path; the browser API is restored on destruction.
 class ScopedOpenFilePickerFallback {
  public:

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MPL-2.0
-# Gate A performance run (pj_scene3D/docs/TECHNICAL_NOTES.md §9): the frame
-# benchmarks of a candidate tree against a frozen baseline, B's method. Builds
-# nothing.
+# Gate A performance run (pj_scene3D/docs/TECHNICAL_NOTES.md, "Performance baseline"): the frame
+# benchmarks of a candidate tree against a baseline tree or a frozen baseline run. Builds nothing.
 #
 #   scripts/perf/gate_a.sh --candidate build [--baseline TREE | --baseline-run DIR]
 #       [--out DIR] [--rounds 5] [--frames 30] [--display :96] [--only REGEX]
@@ -15,7 +14,7 @@
 #   (config base) interleaved with the candidate in every round: the least noisy
 #   comparison.
 # --baseline-run: instead, an earlier gate_a.sh run directory whose rhi_gl runs
-#   are the frozen baseline (e.g. the final P6 run); only the candidate runs.
+#   are the frozen baseline; only the candidate runs.
 # Neither: the report compares nothing and gates only the absolute limits.
 #
 # Method: a private headless GNOME Shell with a rootful Xwayland on --display

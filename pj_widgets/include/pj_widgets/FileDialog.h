@@ -16,64 +16,55 @@
 
 namespace PJ {
 
-// Frameless wrapper around QFileDialog: embeds a non-native
-// QFileDialog inside PJ::Dialog's chrome so file pickers match the
-// rest of the app (custom title bar, drag-to-move, edge resize) instead
-// of the native GTK frame. Most call sites should use the static
-// getOpenFileName / getSaveFileName helpers below.
+// Frameless wrapper around QFileDialog: embeds a non-native QFileDialog in PJ::Dialog's chrome so file pickers match
+// the app (custom title bar, drag to move, edge resize) instead of the native GTK frame. Most call sites use the static
+// getOpenFileName / getSaveFileName helpers.
 //
-// Start-folder guard: a folder on a dead network share blocks QFileDialog's
-// GUI thread for ~80 s, so setDirectory() first gives it 2 s to answer
-// off-thread and otherwise stays at the home folder with a notice. Only the
-// start folder is guarded; navigating into a dead location from inside the
-// dialog still blocks (Qt's file system model is synchronous).
+// Start-folder guard: a folder on a dead network share blocks QFileDialog's GUI thread for about 80 s, so
+// setDirectory() first gives it 2 s to answer off-thread and otherwise stays at the home folder with a notice. Only the
+// start folder is guarded; navigating into a dead location from inside the dialog still blocks (Qt's file system model
+// is synchronous).
 class FileDialog : public Dialog {
   Q_OBJECT
  public:
   explicit FileDialog(QWidget* parent = nullptr);
   ~FileDialog() override;
 
-  // Forwarders to the embedded QFileDialog. Add more as callers need.
+  // Forwarders to the embedded QFileDialog; add more as callers need them.
   void setAcceptMode(QFileDialog::AcceptMode mode);
   void setFileMode(QFileDialog::FileMode mode);
   void setNameFilter(const QString& filter);
-  // Falls back to the home folder (with a visible notice) when `directory` does
-  // not answer within ~2 s.
+  // Falls back to the home folder, with a visible notice, when `directory` does not answer within about 2 s.
   void setDirectory(const QString& directory);
   void setDefaultSuffix(const QString& suffix);
   void selectFile(const QString& filename);
 
   [[nodiscard]] QStringList selectedFiles() const;
-  // First entry of selectedFiles(), or an empty string when nothing selected.
+  // The first entry of selectedFiles(), empty when nothing is selected.
   [[nodiscard]] QString selectedFile() const;
 
-  // Drop-in replacements for QFileDialog::getOpenFileName / getSaveFileName.
-  // A non-empty `selected_name` (a bare file name) is filled in as the
-  // suggestion, the way QFileDialog pre-selects a `dir` that names a file.
+  // Drop-in replacements for QFileDialog::getOpenFileName / getSaveFileName. A non-empty `selected_name` (a bare file
+  // name) is filled in as the suggestion, as QFileDialog does for a `dir` that names a file.
   static QString getOpenFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
       const QString& selected_name = QString());
-  // Multi-select open (QFileDialog::ExistingFiles). Returns every chosen path,
-  // empty on cancel.
+  // Multi-select open (QFileDialog::ExistingFiles): every chosen path, empty on cancel.
   static QStringList getOpenFileNames(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter);
   static QString getSaveFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
       const QString& default_suffix = QString(), const QString& selected_name = QString());
-  // Drop-in replacement for QFileDialog::getExistingDirectory (Directory mode +
-  // ShowDirsOnly). Returns the chosen directory, empty on cancel.
+  // Drop-in replacement for QFileDialog::getExistingDirectory (Directory mode, ShowDirsOnly): the chosen directory,
+  // empty on cancel.
   static QString getExistingDirectory(QWidget* parent, const QString& caption, const QString& dir = QString());
 
-  // Opt in to the platform's own picker for the open, save and folder helpers
-  // (not getSaveFileNameWithOptions, whose checkboxes need the embedded
-  // picker). Unlike the Qt-drawn picker, it lists drives without waiting on
-  // disconnected network drives, at the cost of the app's styling. Process
-  // wide; the app applies its Preferences value. No effect unless
-  // systemDialogSupported().
+  // Opts in to the platform's own picker for the open, save and folder helpers (not getSaveFileNameWithOptions, whose
+  // checkboxes need the embedded picker). Unlike the Qt-drawn picker it lists drives without waiting on disconnected
+  // network drives, at the cost of the app's styling. Process-wide; the app applies its Preferences value. No effect
+  // unless systemDialogSupported().
   static void setUseSystemDialog(bool enabled);
-  // Windows and macOS only: on Linux the native GTK picker crashes on this
-  // app's libpng ABI skew (pj_app/CMakeLists.txt, --exclude-libs), and the
-  // browser has its own picker.
+  // Windows and macOS only: on Linux the native GTK picker crashes on this app's libpng ABI skew
+  // (pj_app/CMakeLists.txt, --exclude-libs), and the browser has its own picker.
   [[nodiscard]] static constexpr bool systemDialogSupported() {
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     return true;
@@ -82,13 +73,10 @@ class FileDialog : public Dialog {
 #endif
   }
 
-  // Test-only: replace the reachability probe run by setDirectory() and for
-  // the persisted sidebar shortcuts (empty restores the default,
-  // QFileInfo::exists). The probe runs on a detached
-  // thread, so it must not touch Qt objects.
+  // Test-only: replaces the reachability probe run by setDirectory() and for the persisted sidebar shortcuts (empty
+  // restores the default, QFileInfo::exists). The probe runs on a detached thread, so it must not touch Qt objects.
   static void setStartFolderProbeForTest(std::function<bool(const QString&)> probe);
-  // Test-only: override how long setDirectory() waits for the probe, in ms
-  // (negative restores the default).
+  // Test-only: overrides how long setDirectory() waits for the probe, in ms (negative restores the default).
   static void setStartFolderTimeoutForTest(int timeout_ms);
 
   struct ExtraOption {
@@ -100,19 +88,16 @@ class FileDialog : public Dialog {
     std::vector<bool> option_states;  // same order/length as the input extras
   };
 
-  // Save dialog that embeds one or more checkboxes (one per ExtraOption) in
-  // a row between the file list and the OK/Cancel buttons. Returns the
-  // chosen path plus the final state of each checkbox. Path is empty on
-  // cancel; option_states is left default-checked in that case.
+  // Save dialog that embeds one checkbox per ExtraOption in a row between the file list and the OK and Cancel buttons.
+  // Returns the chosen path and the final state of each checkbox; on cancel the path is empty and option_states stays
+  // at its defaults.
   static SaveResult getSaveFileNameWithOptions(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter, const QString& default_suffix,
       const std::vector<ExtraOption>& extras);
 
-  // Templated overloads that wire chrome metrics from a signal source.
-  // The source must expose `chromeMetrics()` returning a (const?)
-  // ChromeMetrics(&) and a Qt signal `chromeMetricsChanged(const
-  // ChromeMetrics&)`. In practice that's MainWindow; the template lets
-  // pj_widgets stay decoupled from pj_app types.
+  // Templated overloads that wire chrome metrics from a signal source, which exposes `chromeMetrics()` returning a
+  // ChromeMetrics and a signal `chromeMetricsChanged(const ChromeMetrics&)` (in practice MainWindow). The template
+  // keeps pj_widgets decoupled from pj_app.
   template <typename SignalSourceT>
   static QString getOpenFileName(
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter,
@@ -131,18 +116,14 @@ class FileDialog : public Dialog {
       const std::vector<ExtraOption>& extras, SignalSourceT* metrics_source);
 
  public slots:
-  // Apply chrome metrics (icon size) to the embedded QFileDialog. Connect
-  // MainWindow::chromeMetricsChanged to this to keep the toolbar icons
-  // in step with the rest of the app — the templated static helpers do
-  // both the prime + connect for you.
+  // Applies chrome metrics (icon size) to the embedded QFileDialog; connect MainWindow::chromeMetricsChanged to it to
+  // keep the toolbar icons in step. The templated static helpers prime and connect for you.
   void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  private:
-  // Append a horizontal row of checkboxes (one per ExtraOption) to the
-  // QFileDialog's QGridLayout, spanning all columns so it sits cleanly
-  // above the OK/Cancel buttons. Returns the checkbox pointers in input
-  // order so callers can read state on accept. No-op (and returns an
-  // empty vector) when `extras` is empty.
+  // Appends a horizontal row of checkboxes (one per ExtraOption) to the QFileDialog's QGridLayout, spanning all
+  // columns, above the OK and Cancel buttons. Returns the checkboxes in input order so callers read their state on
+  // accept; an empty vector when `extras` is empty.
   std::vector<QCheckBox*> embedExtras(const std::vector<ExtraOption>& extras);
 
   // True when the helpers should hand over to runSystemDialog().

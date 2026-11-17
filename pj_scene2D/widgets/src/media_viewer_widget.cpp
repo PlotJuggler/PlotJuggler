@@ -18,9 +18,9 @@
 
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_core/overlay_geometry.h"
-#include "pj_scene2d_core/video_color.h"  // buildYuvMatrix (BT.601/709 + limited/full range)
+#include "pj_scene2d_core/video_color.h"
 #include "pj_scene2d_widgets/pixel_inspector.h"
-#include "pj_widgets/Colormap.h"  // shared Colormap enum + buildColormapLut + colormapGlsl
+#include "pj_widgets/Colormap.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "pj_widgets/RhiBlend.h"
@@ -69,12 +69,8 @@ MediaViewerWidget::MediaViewerWidget(QWidget* parent) : QRhiWidget(parent) {
 }
 
 MediaViewerWidget::~MediaViewerWidget() {
-  // Qt does NOT call releaseResources() on widget destruction — only when the QRhi
-  // context changes (reparent / window move). Without this, every GPU resource
-  // (the pipelines, textures, buffers, samplers, SRBs, glyph cache and pixel-layer
-  // textures) leaks each time a dock destroys a viewer. releaseResources() is
-  // idempotent (it nulls each pointer), and the QRhiWidget base that owns the QRhi
-  // is destroyed AFTER this derived destructor, so the rhi is still alive here.
+  // Qt calls releaseResources() only when the QRhi changes, not on destruction: without this every GPU resource
+  // leaks per destroyed viewer. The QRhiWidget base, which owns the QRhi, is destroyed after this destructor.
   releaseResources();
 }
 
@@ -170,29 +166,19 @@ bool MediaViewerWidget::setViewState(const MediaViewState& state) {
 void MediaViewerWidget::setMediaSource(MediaSource* source) {
   std::lock_guard lock(frame_mutex_);
   media_source_ = source;
-  // Tell the new source whether the GPU can rectify (already probed if the widget
-  // is initialized; default false until then, which the next initialize() corrects).
+  // False until initialize() probes; initialize() tells the source again.
   applyGpuRectifyCapability();
   inspector_frame_ = {};
   point_inspector_active_.store(false, std::memory_order_relaxed);
   hidePointInspector();
   last_overlays_.clear();
   overlays_dirty_ = true;
-  // Drop the previous source's pixel-layer stack so its segmentation/depth
-  // overlays don't keep compositing over the new source. The GPU textures are
-  // reconciled when the next frame arrives; until then pixel_layers_active_ is
-  // false, so they stay inert.
+  // The previous source's pixel layers and labels must not show over the new one.
   resetPendingPixelLayers();
-  // Drop glyph textures keyed to the previous source's labels; new source
-  // likely brings a different label set, and the cache currently has no LRU.
   clearTextCache();
 }
 
 namespace {
-
-// Overlay tessellation (lines/points/fills/circles) lives in the backend-agnostic
-// pj_scene2d_core/overlay_geometry.h so it can be unit-tested; only the
-// Qt/QRhi-specific helpers below remain here.
 
 // The output pixels the image quad covers under `view` (GL clip space). QRhi
 // scissors put y = 0 at the bottom, like clip space, on every backend.
@@ -269,11 +255,8 @@ QRhiVertexInputLayout textVertexInputLayout() {
   return layout;
 }
 
-// `y_sampler` filters the y-plane (binding 1) independently of the u/v planes
-// (binding 2/3, `sampler`). The depth path needs this: its R32F depth in y_tex
-// must be sampled NEAREST so a pixel never interpolates a valid metric depth with
-// the 0.0 no-data sentinel (that would paint a "near"-colored fringe around depth
-// holes/silhouettes), while its colormap LUT in u_tex still wants LINEAR.
+// `y_sampler` (binding 1) is separate from the u/v planes' (bindings 2/3): depth samples its R32F y-plane nearest
+// (interpolating with the 0 no-data value paints a fringe around holes) while its LUT in u_tex stays linear.
 void setTextureLayerBindings(
     QRhiShaderResourceBindings* srb, QRhiBuffer* uniform_buf, QRhiTexture* tex_y, QRhiTexture* tex_u,
     QRhiTexture* tex_v, QRhiSampler* sampler, QRhiTexture* tex_remap, QRhiSampler* remap_sampler,
@@ -489,8 +472,6 @@ bool MediaViewerWidget::isUploadablePixelFormat(PixelFormat format) noexcept {
 void MediaViewerWidget::layerSamplers(
     const TextureLayerResources& layer, QRhiSampler*& y_sampler, QRhiSampler*& uv_sampler) const {
   if (layer.format == TexturePathFormat::kDepth) {
-    // Depth R32F: y NEAREST so no pixel blends real depth with the 0 no-data
-    // sentinel; the colormap LUT in u_tex stays LINEAR.
     y_sampler = remap_sampler_;
     uv_sampler = sampler_;
     return;
@@ -525,9 +506,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     return false;
   }
 
-  // NV12's interleaved UV plane needs an RG8 (two-channel) texture. On the rare
-  // backend without RG8 (GL < 3.0), deinterleave to planar YUV420P on the CPU so
-  // NV12 still displays — the native two-plane GPU path below is the fast default.
+  // A backend without RG8 (GL < 3.0) gets NV12 deinterleaved to YUV420P on the CPU.
   auto* r = rhi();
   DecodedFrame nv12_fallback;
   const DecodedFrame* frame_ptr = &frame_in;
@@ -540,13 +519,9 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
   }
   const DecodedFrame& frame = *frame_ptr;
 
-  // Carry per-frame colour/display state onto the layer: the YUV→RGB matrix
-  // (updateTextureLayerUniform) and the SRB sampler choice read it. A change of
-  // magnification filter forces an SRB rebuild (the sampler is baked into bindings).
+  // A magnification filter change rebuilds the SRB: the sampler is baked into the bindings.
   layer.color_space = frame.color_space;
   layer.color_range = frame.color_range;
-  // Rebuild the YUV→RGB matrix here (only on a new frame) so the per-tick uniform
-  // upload in updateTextureLayerUniform() just copies the cached bytes.
   layer.color_matrix = buildYuvMatrix(frame.color_space, frame.color_range);
   const bool mag_changed = (layer.mag_filter != frame.mag_filter);
   layer.mag_filter = frame.mag_filter;
@@ -652,23 +627,21 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     return true;
   }
 
-  // Single-plane upload. Mono8 and BGRA go to the GPU verbatim (R8 / RGBA8) and
-  // are expanded/swizzled in the shader — no CPU repack. RGB888/BGR888 (3-byte)
-  // have no clean 4-byte-row GPU layout, so they still expand to RGBA on the CPU.
+  // Mono8 and BGRA upload verbatim; RGB888/BGR888 have no 3-byte texture format and expand to RGBA on the CPU.
   QRhiTexture::Format tex_format = QRhiTexture::RGBA8;
   const uint8_t* upload_data = nullptr;
   size_t upload_size = 0;
 
   if (path == TexturePathFormat::kDepth) {
     tex_format = QRhiTexture::R32F;
-    upload_data = src;  // float32 metric depth; the shader colormaps via the LUT in u_tex
+    upload_data = src;
     upload_size = static_cast<size_t>(w) * static_cast<size_t>(h) * sizeof(float);
   } else if (path == TexturePathFormat::kMono8) {
     tex_format = QRhiTexture::R8;
     upload_data = src;
     upload_size = static_cast<size_t>(w) * static_cast<size_t>(h);
   } else if (path == TexturePathFormat::kBGRA) {
-    upload_data = src;  // shader swizzles .bgra
+    upload_data = src;
     upload_size = src_size;
   } else if (frame.format == PixelFormat::kRGBA8888) {
     upload_data = src;
@@ -711,8 +684,7 @@ bool MediaViewerWidget::uploadDecodedFrameToTexture(
     layer.width = w;
     layer.height = h;
     layer.format = path;
-    // rebuildLayerSrb() reads layer.format (set above): depth keeps its NEAREST
-    // y-plane + LINEAR LUT; other formats honour the layer's magnification filter.
+    // After layer.format is set: rebuildLayerSrb() picks the samplers from it.
     if (!rebuildLayerSrb(layer)) {
       return dropTextureLayer(layer);
     }
@@ -731,16 +703,11 @@ void MediaViewerWidget::updateTextureLayerUniform(
     return;
   }
   updates->updateDynamicBuffer(layer.uniform_buf, 0, 64, view.constData());
-  // Color matrix: cached per-layer (rebuilt in uploadDecodedFrameToTexture only when
-  // a new frame's colorimetry changes) so SD / limited-range video converts correctly
-  // — BT.709 + full reproduces the old hardcoded matrix exactly. Ignored by the
-  // shader for RGB/mono/depth paths.
   updates->updateDynamicBuffer(layer.uniform_buf, 64, 64, layer.color_matrix.data());
   const int32_t fmt = static_cast<int32_t>(layer.format);
   updates->updateDynamicBuffer(layer.uniform_buf, 128, 4, &fmt);
   updates->updateDynamicBuffer(layer.uniform_buf, 132, 4, &layer.opacity);
   updates->updateDynamicBuffer(layer.uniform_buf, 136, 4, &layer.rectify);
-  // Depth-colormap uniforms (kDepth path); ignored by the shader for other formats.
   updates->updateDynamicBuffer(layer.uniform_buf, 140, 4, &layer.invert);
   updates->updateDynamicBuffer(layer.uniform_buf, 144, 4, &layer.near_m);
   updates->updateDynamicBuffer(layer.uniform_buf, 148, 4, &layer.far_m);
@@ -756,7 +723,6 @@ bool MediaViewerWidget::ensureRemapTexture(
   const int out_w = map.out_width;
   const int out_h = map.out_height;
 
-  // (Re)create the LUT texture when the rectified output size changes.
   if (layer.tex_remap == nullptr || layer.remap_w != out_w || layer.remap_h != out_h) {
     delete layer.tex_remap;
     layer.tex_remap = r->newTexture(QRhiTexture::RG32UI, QSize(out_w, out_h));
@@ -774,17 +740,13 @@ bool MediaViewerWidget::ensureRemapTexture(
     }
     layer.remap_w = out_w;
     layer.remap_h = out_h;
-    layer.remap_map_key = nullptr;  // force a re-upload into the new texture.
-    // Bind slot 4 to the new LUT instead of the placeholder.
+    layer.remap_map_key = nullptr;  // re-upload into the new texture
     if (!rebuildLayerSrb(layer)) {
       return dropTextureLayer(layer);
     }
   }
 
-  // Upload the LUT only when the underlying map changes (calibration is constant
-  // per camera, so this runs once). QRhi has no RG32F, so the normalized source UV
-  // goes up as the bits of its two floats (RG32UI, 8 B/px) and the shader
-  // reinterprets them.
+  // QRhi has no RG32F: the two floats go up as their bits in RG32UI and the shader reinterprets them.
   if (layer.remap_map_key != static_cast<const void*>(&map)) {
     const std::vector<float> rg = undistortMapToNormalizedRG(map);
     if (rg.size() != static_cast<size_t>(out_w) * static_cast<size_t>(out_h) * 2) {
@@ -814,8 +776,7 @@ QSize MediaViewerWidget::uploadLayerFrame(
   QRhiResourceUpdateBatch* layer_updates = rhi()->nextResourceUpdateBatch();
   QSize logical;
   if (uploadDecodedFrameToTexture(frame, layer, layer_updates)) {
-    // GPU path: the uploaded frame is RAW; the displayed (logical) size — which
-    // annotation/aspect/inspector coords use — is the map's output size.
+    // The uploaded frame is raw; the logical size is the map's output size.
     const bool rectify_on_gpu = gpu_rectify_supported_.load(std::memory_order_relaxed) &&
                                 frame.rectify_map != nullptr &&
                                 ensureRemapTexture(layer, *frame.rectify_map, layer_updates);
@@ -944,18 +905,15 @@ bool MediaViewerWidget::createBaseResources(const QShader& vert, const QShader& 
   auto* r = rhi();
   sampler_ = r->newSampler(
       QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
-  // NEAREST sampler for layers requesting MagFilter::kNearest (crisp magnification).
   mag_nearest_sampler_ = r->newSampler(
       QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::ClampToEdge,
       QRhiSampler::ClampToEdge);
-  // NEAREST sampler for the rectification LUT (exact per-output-pixel source coord).
+  // Nearest: each output pixel reads its exact source coord; linear would smear the out-of-bounds sentinel.
   remap_sampler_ = r->newSampler(
       QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None, QRhiSampler::ClampToEdge,
       QRhiSampler::ClampToEdge);
-  // 1x1 RG32UI placeholder bound at slot 4 for non-rectifying layers so all
-  // texture-layer SRBs share one binding layout (and the shader's usampler2D).
+  // Bound at slot 4 for layers that do not rectify, so every texture-layer SRB has one layout.
   remap_placeholder_tex_ = r->newTexture(QRhiTexture::RG32UI, QSize(1, 1));
-  // Uniform buffer + placeholder textures (1x1) — resized on first frame.
   if (!sampler_->create() || !mag_nearest_sampler_->create() || !remap_sampler_->create() ||
       !remap_placeholder_tex_->create() || !ensureTextureLayer(base_texture_)) {
     return false;
@@ -996,8 +954,7 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     return;
   }
 
-  // Use YUV→RGB shader (handles both YUV and RGBA passthrough). Each shader
-  // pair loads only for a pipeline being (re)built.
+  // Shaders load only for a pipeline being (re)built.
   QShader vert;
   QShader frag;
   if (pipeline_ == nullptr || composite_pipeline_ == nullptr) {
@@ -1015,16 +972,11 @@ void MediaViewerWidget::initialize(QRhiCommandBuffer* /*cb*/) {
     }
     setRenderingWarning({});
   }
-  // The optional parts are (re)built whenever missing, so one dropped at
-  // creation or in render() comes back on the next initialize().
   createOptionalResources(r, vert, frag);
 
-  // GPU rectification needs only the base pipeline: its RG32UI placeholder is
-  // the LUT's format, so the LUT works wherever the pipeline was created. Not
-  // isTextureFormatSupported(RG32UI): Qt's GLES backend reports the 32-bit
-  // integer formats from ES 3.1 on, though RG32UI is core in ES 3.0 (WebGL2).
-  // When available, the source defers rectification to the GPU (raw upload +
-  // map); otherwise it keeps rectifying on the CPU (the precompute fallback).
+  // GPU rectification needs only the base pipeline, whose placeholder LUT is RG32UI. Not
+  // isTextureFormatSupported(RG32UI): Qt's GLES backend reports 32-bit integer formats only from ES 3.1, though
+  // RG32UI is core in ES 3.0 (WebGL2) (docs/TECHNICAL_NOTES.md "WebGL2 and RG32UI").
   gpu_rectify_supported_.store(pipeline_ != nullptr, std::memory_order_relaxed);
   applyGpuRectifyCapability();
 
@@ -1059,10 +1011,7 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
     }
   }
 
-  // ----- Marker / overlay shaders + shared uniform -----
-  // The scene_lines shaders (position + colour) drive both the point quads and the
-  // thick (Triangles) outline pipeline below; the uniform buffer (view + frame
-  // size) is shared by every overlay pipeline.
+  // The scene_lines shaders serve both the fills and the outlines; one uniform buffer serves every overlay.
   QShader marker_vert;
   QShader marker_frag;
   if (marker_uniform_buf_ == nullptr || thick_overlay_.pipeline == nullptr || points_overlay_.pipeline == nullptr) {
@@ -1084,8 +1033,6 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
   }
   bool rebuilt = false;
 
-  // ----- kPoints quad pipeline -----
-  // Solid-fill triangles, shares marker_uniform_buf_ but has its own SRB and VBO.
   if (marker_vert.isValid() && marker_frag.isValid() && points_overlay_.pipeline == nullptr) {
     destroyOverlayPipeline(points_overlay_);
     rebuilt = createOverlayVbo(points_overlay_, 64 * 1024) && createUniformOverlaySrb(points_overlay_) &&
@@ -1094,10 +1041,6 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
                   "points", warn);
   }
 
-  // ----- Outline pipeline (Triangles) -----
-  // All line/circle outlines render here. Each segment is expanded CPU-side
-  // (overlay_geometry::appendLineStrokes) into a cosmetic-width quad — same vertex
-  // layout as the fills (vec2 pos + vec4 color, stride 24), Triangles topology.
   if (marker_vert.isValid() && marker_frag.isValid() && thick_overlay_.pipeline == nullptr) {
     destroyOverlayPipeline(thick_overlay_);
     rebuilt = (createOverlayVbo(thick_overlay_, 64 * 1024) && createUniformOverlaySrb(thick_overlay_) &&
@@ -1107,7 +1050,6 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
               rebuilt;
   }
 
-  // ----- Text pipeline (textured quads, R8 alpha mask + tint color) -----
   if (text_overlay_.pipeline == nullptr) {
     const QShader text_vert = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_text.vert.qsb"));
     const QShader text_frag = PJ::loadRhiShader(QStringLiteral(":/shaders/scene_text.frag.qsb"));
@@ -1126,8 +1068,7 @@ void MediaViewerWidget::createOptionalResources(QRhi* r, const QShader& vert, co
             QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::None, QRhiSampler::ClampToEdge,
             QRhiSampler::ClampToEdge);
 
-        // Placeholder 1x1 alpha texture used only as the pipeline's layout-compat SRB.
-        // Real per-draw SRBs are stored in TextEntry inside text_cache_.
+        // Only for the pipeline's layout SRB; each TextEntry has its own.
         text_placeholder_tex_ = r->newTexture(QRhiTexture::R8, QSize(1, 1));
 
         text_overlay_.srb = r->newShaderResourceBindings();
@@ -1176,9 +1117,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
   {
     std::lock_guard lock(frame_mutex_);
 
-    // Poll MediaSource if attached. MediaFrame may carry both a pixel base
-    // and vector overlays; capture each independently — a frame can update
-    // either layer in isolation.
+    // A frame can update pixels and overlays independently.
     if (media_source_ != nullptr) {
       auto frame = media_source_->takeFrame();
       if (frame.has_value()) {
@@ -1230,9 +1169,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       for (size_t i = 0; i < pending_pixel_layers_.size(); ++i) {
         auto& texture = pixel_layer_textures_[i];
         texture.opacity = std::clamp(pending_pixel_layers_[i].opacity, 0.0f, 1.0f);
-        // Rectify each layer that carries a map (the camera image flows through
-        // here, not `base`, once it's inside a composite). The first uploadable
-        // layer's logical size drives the overlay/aspect/inspector coordinate space.
+        // The first uploadable layer's logical size sets the overlay, aspect and inspector space.
         const QSize logical = uploadLayerFrame(pending_pixel_layers_[i].frame, texture, updates);
         if (!logical.isEmpty() && !set_frame_size) {
           tex_width_ = logical.width();
@@ -1259,7 +1196,6 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     schedulePointInspectorRefresh();
   }
 
-  // Update uniforms
   // `view` is in GL clip space, which QRhi scissors also use; the shaders get it
   // corrected for the backend (Vulkan's y-down clip space, [0,1] depth elsewhere).
   QMatrix4x4 view = buildViewTransform(output_size);
@@ -1271,15 +1207,8 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     }
   }
 
-  // ----- Overlay geometry: rebuild VBOs + update uniforms -----
-  // Stroke widths are in image pixels, so they SCALE with zoom — but are floored
-  // so a stroke is never thinner than 1px on screen. Without that floor a stroke
-  // shown below ~1:1 goes sub-pixel and (no MSAA) drops edges depending on
-  // sub-pixel alignment — the "lines disappear when zoomed out" bug. The floor is
-  // expressed in screen pixels, so it depends on the effective view scale; stroke
-  // geometry is therefore re-expanded whenever that scale changes, not only when
-  // the annotation set changes. effective_scale = on-screen px per image px =
-  // zoom × aspect-preserving fit (so a single isotropic scalar is exact).
+  // Strokes are re-expanded when the annotations or the effective scale (on-screen px per image px = zoom x fit)
+  // change: their 1 px screen floor depends on the scale (overlay_geometry.h).
   double effective_scale = 0.0;
   if (tex_width_ > 0 && tex_height_ > 0 && output_size.width() > 0 && output_size.height() > 0) {
     const int shown_width = isQuarterTurn(rotation_deg_) ? tex_height_ : tex_width_;
@@ -1324,14 +1253,12 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       uploadOverlayVertexData(points_overlay_, updates);
       last_overlay_scale_ = effective_scale;
 
-      // ----- Text rebuild (textured quads) — only when the annotation set or
-      // the rotation changes (quads are counter-rotated to stay upright); text
-      // size is not cosmetic, so a pure zoom change leaves it. -----
+      // Text quads are image-space and counter-rotated: rebuilt on an annotation or rotation change, not on zoom.
       if (overlays_dirty_ && text_overlay_.pipeline != nullptr) {
         ++text_rebuilds_;
         text_overlay_.vertex_data.clear();
         text_draw_items_.clear();
-        constexpr size_t kFloatsPerTextQuad = 6 * 8;  // 6 verts × (pos2+uv2+color4) = 48 floats
+        constexpr size_t kFloatsPerTextQuad = 6 * 8;  // 6 vertices of pos2 + uv2 + color4
         size_t total_texts = 0;
         for (const auto& sf : last_overlays_) {
           for (const auto& ia : sf.annotations) {
@@ -1377,9 +1304,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     {
       MarkerUbo ubo{};
       std::memcpy(ubo.view, shader_view.constData(), sizeof(ubo.view));
-      // Annotation overlays are authored in the displayed image's pixel space.
-      // The decode pipeline rectifies a calibrated camera to its native (full)
-      // resolution, so the texture dimensions are the correct normalization base.
+      // Annotations are in the logical image's pixel space.
       ubo.frame_size[0] = static_cast<float>(tex_width_);
       ubo.frame_size[1] = static_cast<float>(tex_height_);
       updates->updateDynamicBuffer(marker_uniform_buf_, 0, kMarkerUniformBufSize, &ubo);
@@ -1411,13 +1336,9 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     cb->draw(3);
   }
 
-  // Second draw call: vector overlays (markers) on top of the image, blended.
-  // Draw order: image (already drawn) → fills (Triangles) → outlines (Triangles).
-  // Rationale: fills must be UNDER strokes so that LineLoop fill_color does not
-  // hide its own outline, and circle outlines render on top of circle fills.
-  // Viewport is reset on pipeline switch in some QRhi backends, so set explicitly.
+  // Fills before outlines, so a fill never hides its own outline. Some backends reset the viewport on a pipeline
+  // switch, so it is set again.
 
-  // Fills: kPoints quads + LineLoop fills + circle fills.
   if (points_overlay_.pipeline != nullptr && points_vertex_count > 0 && tex_width_ > 0) {
     cb->setGraphicsPipeline(points_overlay_.pipeline);
     cb->setViewport(
@@ -1428,9 +1349,6 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     cb->draw(static_cast<quint32>(points_vertex_count));
   }
 
-  // Outlines: all line/circle strokes, expanded to cosmetic-width triangles.
-  // (Native GL_LINES was retired — it gave only 1 px and could be guard-band
-  // culled when zoomed far in; triangles clip robustly and honour thickness.)
   if (thick_overlay_.pipeline != nullptr && thick_vertex_count > 0 && tex_width_ > 0) {
     cb->setGraphicsPipeline(thick_overlay_.pipeline);
     cb->setViewport(
@@ -1441,9 +1359,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
     cb->draw(static_cast<quint32>(thick_vertex_count));
   }
 
-  // Text labels — drawn last so they sit on top of all other overlays. Each
-  // text uses its own pre-created SRB (one per cached texture) so the bindings
-  // are stable between submission and execution. One draw call per text.
+  // Text last, on top of everything.
   if (text_overlay_.pipeline != nullptr && !text_draw_items_.empty() && tex_width_ > 0) {
     cb->setGraphicsPipeline(text_overlay_.pipeline);
     cb->setViewport(
@@ -1452,7 +1368,7 @@ void MediaViewerWidget::render(QRhiCommandBuffer* cb) {
       cb->setShaderResources(item.srb);
       const QRhiCommandBuffer::VertexInput txi(text_overlay_.vbo, static_cast<quint32>(item.vbo_offset_bytes));
       cb->setVertexInput(0, 1, &txi);
-      cb->draw(6);  // 1 quad = 2 triangles = 6 vertices
+      cb->draw(6);
     }
   }
 
@@ -1569,9 +1485,8 @@ void MediaViewerWidget::refreshPointInspector() {
     return;
   }
 
-  // On the GPU-rectify path the frame is RAW: the displayed (logical) coordinate
-  // space is the map's output size, so the cursor maps there; the sampled value
-  // comes from the source pixel the map points at (the same one the GPU shows).
+  // On the GPU-rectify path the cursor maps to the logical (map output) space and the value comes from the source
+  // pixel the map points at, the one the GPU shows.
   const bool gpu_rectified = frame.rectify_map != nullptr && frame.rectify_map->valid();
   const int logical_w = gpu_rectified ? frame.rectify_map->out_width : frame.width;
   const int logical_h = gpu_rectified ? frame.rectify_map->out_height : frame.height;
@@ -1598,10 +1513,7 @@ void MediaViewerWidget::refreshPointInspector() {
     point_inspector_ = std::make_unique<PixelInspector>();
   }
 
-  // Depth frames carry metric depth (metres), not RGB — the colour is the GPU's
-  // colormap output. Show the depth value + a swatch of that colour instead of a
-  // meaningless RGB readout, and skip the zoom grid. Unlike the RGB path, a no-data
-  // pixel still shows the tooltip ("— (no data)") rather than hiding it.
+  // Depth shows metres and a swatch of the colormapped colour, no zoom grid; a no-data pixel still shows the tooltip.
   if (frame.format == PixelFormat::kDepthR32F) {
     const auto depth_m = depthMetersAt(frame, sample_x, sample_y);
     point_inspector_->updateDepth(image_point->x(), image_point->y(), depth_m, frame.depth);
@@ -1655,7 +1567,6 @@ MediaViewerWidget::TextEntry* MediaViewerWidget::getOrCreateTextTexture(
   if (r == nullptr) {
     return nullptr;
   }
-  // Render glyph mask via QPainter into an Alpha8 image (white pixels = opaque).
   QFont font;
   font.setPixelSize(static_cast<int>(font_size + 0.5));
   QFontMetricsF fm(font);
@@ -1683,10 +1594,8 @@ MediaViewerWidget::TextEntry* MediaViewerWidget::getOrCreateTextTexture(
   sub_desc.setSourceSize(QSize(w, h));
   updates->uploadTexture(tex, QRhiTextureUploadDescription({0, 0, sub_desc}));
 
-  // Each TextEntry owns its own SRB so per-draw rebinding is impossible —
-  // QRhi reads the SRB at submit time, not at the cb->setShaderResources call,
-  // so reusing one SRB and mutating it between draws ends up with all draws
-  // reading the LAST binding. One SRB per cached texture sidesteps that.
+  // One SRB per entry: QRhi reads an SRB at submit time, so one SRB rebound between draws gives every draw the last
+  // binding.
   auto* srb = r->newShaderResourceBindings();
   srb->setBindings({
       QRhiShaderResourceBinding::uniformBuffer(

@@ -9,12 +9,10 @@
 namespace PJ {
 
 namespace {
-// ~30 Hz. Nothing the cursor drives needs 60 Hz: video tops out ~30 Hz, ROS
-// messages 10-20 Hz, the curve-list Value column is capped at 10 Hz, and a 30 Hz
-// tracker line is already smooth (film is 24). Halving the tick halves the
-// downstream replot/decode/composite work for every consumer at once — capping
-// once at the origin instead of throttling each widget separately. Playback speed
-// is unaffected: onTick derives the cursor from elapsed wall-clock, not tick count.
+// Tick period, ~30 Hz. Nothing the cursor drives needs 60 Hz (video tops out ~30 Hz, ROS messages 10-20 Hz, the
+// curve-list Value column is capped at 10 Hz); halving the tick halves the downstream replot/decode/composite work for
+// every consumer at once, capped at the origin rather than throttled per widget. Playback speed is unaffected: onTick
+// derives the cursor from elapsed wall-clock, not tick count.
 constexpr int kTickIntervalMs = 33;  // ~30 Hz
 }  // namespace
 
@@ -108,10 +106,9 @@ double PlaybackEngine::clampTickTime(
   if (reached_end != nullptr) {
     *reached_end = false;
   }
-  // Live streaming: the cursor is pinned to the live tip (range_max), period — it does
-  // NOT free-run forward by wall-clock between ingests. Advancing only to clamp back is
-  // exactly what let the handle/needle overshoot the data and snap back (the jitter);
-  // and it IGNORES the loop toggle so a stream never wraps to the start.
+  // Live streaming: the cursor is pinned to the live tip (range_max); it does NOT free-run forward by wall-clock
+  // between ingests, since advancing only to clamp back made the needle overshoot the data and snap back. The loop
+  // toggle is IGNORED so a stream never wraps to the start.
   if (hold_at_max) {
     return range_max;
   }
@@ -135,12 +132,10 @@ void PlaybackEngine::play() {
   if (playing_) {
     return;
   }
-  // Rewind-on-play: pressing Play while the cursor already sits at (or past) the end
-  // of a finite range would otherwise do nothing — the first onTick computes
-  // next > range_max, clampTickTime reports reached_end, and onTick pauses again
-  // before the cursor moves (the button just flickers). Snap back to the start so
-  // Play replays from the beginning, like any media player. Skipped while holding at
-  // the live tip (streaming) and when looping (which wraps on its own).
+  // Rewind-on-play: pressing Play with the cursor at (or past) the end of a finite range would otherwise do nothing:
+  // the first onTick computes next > range_max, clampTickTime reports reached_end and onTick pauses again before the
+  // cursor moves. Snap back to the start so Play replays from the beginning. Skipped while holding at the live tip
+  // (streaming) and when looping (which wraps on its own).
   if (!hold_at_range_max_ && !looping_ && range_max_ > range_min_ && current_time_ >= range_max_) {
     current_time_ = range_min_;
     emit currentTimeChanged(current_time_);

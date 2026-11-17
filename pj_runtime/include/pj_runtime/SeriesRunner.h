@@ -24,7 +24,7 @@
 
 namespace PJ {
 
-/// The plottable series of the on-demand nodes (REQUIREMENTS D10; docs/derived_objects/ARCHITECTURE.md §15): a node
+/// The plottable series of the on-demand nodes (docs/derived_objects/ARCHITECTURE.md "Series"): a node
 /// that is not pinned, reads an object (a topic or an upstream's output) and declares a number output writes one
 /// `DataEngine` topic named like its key, with one float64 column per number output, in declaration order. Its rows
 /// sit at the node's object clock (`GridRunner::submitRows`): computed in chunks of `kInstantsPerChunk` instants, each
@@ -34,7 +34,7 @@ namespace PJ {
 /// At most `kMaxRunningChunks` chunks of all series are in the runner at once, a cancelled one counted until its run
 /// lets the pool thread go; the other wanted series wait their turn in a FIFO here, outside the budget's line, so a
 /// playhead request waits for at most that many chunks (each `GridRunner::kRowsMaxMillis` long at most) however many
-/// series compute (D30). A series whose chunk ended goes to the back, and the next chunk starts on a later event-loop
+/// series compute. A series whose chunk ended goes to the back, and the next chunk starts on a later event-loop
 /// turn, so a chunk whose every instant is a gap (staged and skipped without a run) never chains into the next one
 /// inside the same turn.
 /// ponytail: one chunk at a time session-wide, so series never compute in parallel on idle pool threads; reserving per
@@ -105,7 +105,7 @@ class SeriesRunner {
 
   /// Whether `node` has a series: not pinned, an object input, a number output.
   [[nodiscard]] static bool isSeries(const RecipeGraph::Node& node);
-  /// Why installing `node` would fail: a topic of its key's name in its dataset that is not its own series' (SER-12).
+  /// Why installing `node` would fail: a topic of its key's name in its dataset that is not its own series'.
   /// Changes nothing; ok for a node with no series.
   [[nodiscard]] PJ::Status check(const RecipeGraph::Node& node) const;
   /// After `node`'s new revision, `demanded` when its topic name is displayed already: its series (or the parked one)
@@ -142,8 +142,8 @@ class SeriesRunner {
   /// Where the plots of `dataset` start their view (raw): read when the series' next chunk is chosen. While the dataset
   /// is live, a start past the live edge splits nothing.
   void setVisibleStart(DatasetId dataset, Timestamp start);
-  /// A whole-series read of `topic` (a plugin's `read_series_arrow`): an explicit request of its series (decision 2),
-  /// which the reader sees grow from the rows so far.
+  /// A whole-series read of `topic` (a plugin's `read_series_arrow`): an explicit request of its series, which the
+  /// reader sees grow from the rows so far.
   void requestTopic(TopicId topic);
 
   [[nodiscard]] std::optional<State> state(std::string_view key) const;

@@ -64,8 +64,7 @@ void DualOptionsWidget::setOptions(const QStringList& options) {
     return;
   }
   options_ = options;
-  // Prior enable state survives wherever the index still exists; segments the
-  // new option list adds default to enabled.
+  // The prior enable state survives wherever the index still exists; segments the new option list adds are enabled.
   segment_enabled_.resize(options_.size(), true);
   if (selected_ >= optionCount()) {
     setSelectedIndex(optionCount() - 1);
@@ -104,21 +103,19 @@ void DualOptionsWidget::setOrientation(Qt::Orientation orientation) {
     return;
   }
   orientation_ = orientation;
-  // Horizontal: fill-width row, fixed height. Vertical: fixed width, fill-height
-  // column. Maximum on the growing axis keeps the strip snug to its content.
+  // Horizontal: fill-width row, fixed height. Vertical: fixed width, fill-height column. Maximum on the growing axis
+  // keeps the strip snug to its content.
   setSizePolicy(
       orientation_ == Qt::Horizontal ? QSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed)
                                      : QSizePolicy(QSizePolicy::Fixed, QSizePolicy::Maximum));
-  // Hard-pin the stacked height so a constrained parent (e.g. an aligned
-  // sub-layout, which only honours minimumSize — not minimumSizeHint) cannot
-  // squash the vertical pills below their text. Horizontal keeps its natural
-  // single-row height.
+  // The stacked height is hard-pinned, so a constrained parent (an aligned sub-layout, which honours minimumSize but
+  // not minimumSizeHint) cannot squash the vertical pills below their text. Horizontal keeps its natural single-row
+  // height.
   setMinimumHeight(orientation_ == Qt::Vertical ? sizeHint().height() : 0);
-  // The app QSS pins PJ--DualOptionsWidget to a single input-row height
-  // (min/max-height), which QStyleSheetStyle enforces OVER the C++ size hints —
-  // correct for a horizontal strip, fatal for a stacked one. This property lets
-  // the stylesheet lift that cap for the vertical case so the height above wins;
-  // re-polish so the selector re-evaluates immediately.
+  // The app QSS pins PJ--DualOptionsWidget to a single input-row height (min and max-height), which QStyleSheetStyle
+  // enforces over the C++ size hints: right for a horizontal strip, fatal for a stacked one. This property lets the
+  // stylesheet lift that cap for the vertical case so the height above wins; re-polished so the selector re-evaluates
+  // at once.
   setProperty("pjOrientation", orientation_ == Qt::Vertical ? "vertical" : "horizontal");
   if (QStyle* s = style(); s != nullptr) {
     s->unpolish(this);
@@ -179,9 +176,8 @@ QSize DualOptionsWidget::sizeHint() const {
   if (orientation_ == Qt::Horizontal) {
     return {optionCount() * segment_w, segment_h};
   }
-  // Vertical: one segment wide (all segments share the widest label), N tall.
-  // A stacked column gives each pill its own row; snug breathing room keeps the
-  // stack compact enough to pair with a single input-row-scale neighbour (the
+  // Vertical: one segment wide (all segments share the widest label), N tall. A stacked column gives each pill its own
+  // row; snug breathing room keeps the stack compact enough to pair with a single input-row-scale neighbour (the
   // comfortable horizontal inset would fatten each row well past the row grid).
   const int vertical_segment_h = std::max(segment_h, fm.height() + 2 * theme::space(theme::Space::Snug));
   return {segment_w, optionCount() * vertical_segment_h};
@@ -217,9 +213,8 @@ void DualOptionsWidget::paintEvent(QPaintEvent* /*event*/) {
 
   const QRectF box =
       QRectF(rect()).adjusted(border_width / 2.0, border_width / 2.0, -border_width / 2.0, -border_width / 2.0);
-  // Segment geometry runs along the strip's axis; a fractional position (the
-  // animated visual_selection_ for the chip, the integer index for a label) maps
-  // to a rect the full cross-axis thickness.
+  // Segment geometry runs along the strip's axis; a fractional position (the animated visual_selection_ for the chip,
+  // the integer index for a label) maps to a rect of the full cross-axis thickness.
   const bool horizontal = orientation_ == Qt::Horizontal;
   const qreal segment_extent = (horizontal ? box.width() : box.height()) / optionCount();
   const auto segment_box = [&](qreal pos) -> QRectF {

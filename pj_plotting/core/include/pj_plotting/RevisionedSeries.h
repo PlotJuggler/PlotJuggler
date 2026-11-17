@@ -7,16 +7,14 @@
 
 namespace PJ {
 
-// A plot series (a QwtSeriesData) whose served samples change only together with
-// contentRevision(): every path that can change what size()/sample() return,
-// including a new rect of interest, bumps it first. Plot canvases use it to keep
-// retained geometry across a replot of unchanged data; a series without it is
-// rebuilt on every replot. Implemented by the PJ-owned adapters.
+// A plot series (a QwtSeriesData) whose served samples change only together with contentRevision(): every path that
+// can change what size()/sample() return, a new rect of interest included, bumps it first. Canvases keep retained
+// geometry across a replot of unchanged data on it; a series without it is rebuilt on every replot. Implemented by
+// the PJ-owned adapters.
 //
-// Revisions are unique for the process lifetime, not per series: a canvas keys
-// retained geometry on the revisions alone, so a series freed and replaced by a
-// new one at the same address (a transform applied in place) cannot repeat the
-// old key. A series inherits this class and calls bumpContentRevision().
+// Revisions are unique for the process lifetime, not per series: a canvas keys retained geometry on the revisions
+// alone, so a series freed and replaced at the same address (a transform applied in place) cannot repeat an old key. A
+// series inherits this class and calls bumpContentRevision().
 class RevisionedSeries {
  public:
   virtual ~RevisionedSeries() = default;

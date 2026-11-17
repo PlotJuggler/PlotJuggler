@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Qt-free coverage of the GridMap CPU pack: de-interleave of one field out of a
-// multi-field record, NaN holes preserved, short payloads pack as holes, the
-// finite-only range, the default elevation pick, and the source-frame bounds with
-// a rotated origin.
+// Qt-free GridMap CPU pack: de-interleave of one field from a multi-field record, NaN holes preserved, short payloads
+// pack as holes, the finite-only range, the default elevation pick, and source-frame bounds with a rotated origin.
 
 #include "pj_scene3d_core/grid_map_view.h"
 
@@ -134,11 +132,9 @@ TEST(GridMapView, BoundsFollowRotatedOriginAndElevationRange) {
   EXPECT_NEAR(box.min.z, 0.5f, 1e-4f);
   EXPECT_NEAR(box.max.z, 3.0f, 1e-4f);
 
-  // No elevation channel (the "None" flat mode): the plane at z = 0.
   const AABB flat = gridMapBounds(f.grid, std::nullopt);
   EXPECT_NEAR(flat.min.z, 1.0f, 1e-4f);
   EXPECT_NEAR(flat.max.z, 1.0f, 1e-4f);
-  // An elevation channel with no finite sample renders nothing: no bounds.
   EXPECT_FALSE(gridMapBounds(f.grid, FiniteRange{}).valid);
   f.grid.column_count = 0;
   EXPECT_FALSE(gridMapBounds(f.grid, std::nullopt).valid);

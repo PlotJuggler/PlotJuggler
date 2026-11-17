@@ -32,12 +32,11 @@ DerivedRuntimeHosts::DerivedRuntimeHosts(SessionManager& session, CatalogModel& 
       markers_(
           session.batchEngine(), plugin_id,
           [&catalog, this](std::vector<std::string>& inputs, std::vector<std::string>& outputs) -> Expected<DatasetId> {
-            // Bind the generator to the dataset its keys name (qualified keys pick it
-            // explicitly and are normalized to bare form); an unqualified input that
-            // exists in several datasets is refused with the qualified candidates —
-            // landing on the first-loaded dataset silently stranded generators on the
-            // wrong data. Policy lives in DatasetQualifiedName so it is testable and
-            // stays in step with the series resolver AppSession installs.
+            // Bind the generator to the dataset its keys name (qualified keys pick it explicitly and are normalized to
+            // bare form); an unqualified input that exists in several datasets is refused with the qualified
+            // candidates, since landing on the first-loaded dataset would strand the generator on the wrong data. The
+            // policy lives in DatasetQualifiedName so it is testable and stays in step with the series resolver
+            // AppSession installs.
             std::vector<DatasetId> datasets;
             for (const auto& [id, label] : catalog.datasets()) {
               datasets.push_back(id);

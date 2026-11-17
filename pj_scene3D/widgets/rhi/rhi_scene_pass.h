@@ -3,22 +3,18 @@
 
 #pragma once
 
-// Shared vocabulary of the QRhi view's render passes: the scene-pass modes, the
-// opaque/translucent draw classes, the pipeline registry every family registers
-// its direct pipelines into, the geometry the view shares between families, and
-// the helpers every family builds its pipelines, bindings and draws with.
+// Shared vocabulary of the QRhi view's render passes: the pipeline registry every family registers its pipelines
+// into, the geometry shared between families, and the helpers every family builds pipelines, bindings and draws with.
 //
-// Frame contract (SceneViewWidget::render()): each frame first ADMITS every
-// layer once (prepareForRender, fixed-frame placement, per-view budgets, scene
-// bounds), then PREPARES once (uploads, uniforms, the classified draw list). Every
-// scene-pass mode below, the EDL mesh mask and the shadow pass replay those
-// prepared draws; none of them re-admits a layer or consumes a budget again.
+// Frame contract (SceneViewWidget::render()): each frame first ADMITS every layer once (prepareForRender,
+// fixed-frame placement, per-view budgets, scene bounds), then PREPARES once (uploads, uniforms, the classified
+// draw list). Every scene-pass mode, the EDL mesh mask and the shadow pass replay those prepared draws; none of
+// them re-admits a layer or consumes a budget again.
 //
-// Every scene family exposes the same shape: initialize(RhiPassSetup) (which
-// registers its pipelines), setLayers(layers), admit(place, bounds),
-// prepare(RhiFrameContext, ...), drawsFor(layer) (a span of Draws, each with a
-// draw_class), submit(command_buffer, draw, ScenePass, registry, viewport) and
-// release().
+// Every family has the same shape: initialize(RhiPassSetup), setLayers, hasLayers (the view builds a family only while
+// a layer of it is in the view; prepare() of a never-built family does nothing), admit, prepare, drawsFor(layer)
+// (draws with a draw_class), submit (false when nothing was recorded for the pass, e.g. its pipeline is unavailable)
+// and release.
 
 #include <rhi/qrhi.h>
 
@@ -54,23 +50,19 @@ using pj::tf::Transform;
 struct ArrowMeshData;
 struct PlacementHold;
 
-/// The scene passes that replay the prepared draw list with different targets.
+/// The targets the prepared draw list is replayed into.
 enum class ScenePass {
   kDirect,       ///< straight into the widget's render target (no HDR chain)
   kHdrColor,     ///< the multisample RGBA16F HDR target
   kDepthReplay,  ///< single-sample RGBA8 coverage + D32F depth (SSAO/EDL input)
 };
 
-/// A prepared draw's blending class. Submission draws every opaque draw (in
-/// logical/dock order), then every translucent one (again in logical order): a
-/// translucent surface blends over all opaque geometry behind it. Not
-/// order-independent transparency: translucent draws are not depth-sorted.
+/// Submission draws every opaque draw, then every translucent one, each in logical (dock) order, so a translucent
+/// surface blends over all opaque geometry behind it. Translucent draws are not depth-sorted.
 enum class DrawClass : std::uint8_t { kOpaque, kTranslucent };
 
-/// The state of one pipeline; the defaults are the scene's (data blend, depth
-/// test and write, LessOrEqual, no culling). A scene pipeline's description is
-/// kept (ScenePipelineRegistry), and every variant of it is built from it, so a
-/// state set here reaches the direct pipeline and its HDR and depth-replay variants alike.
+/// One pipeline's state; the defaults are the scene's. The registry keeps the description and builds every variant
+/// from it, so state set here reaches the direct pipeline and its HDR and depth-replay variants alike.
 struct PipelineDesc {
   QRhiGraphicsPipeline::Topology topology = QRhiGraphicsPipeline::Triangles;
   QShader vertex{};
@@ -87,18 +79,14 @@ struct PipelineDesc {
   QRhiGraphicsPipeline::Flags flags{};
 };
 
-/// `desc` built and created for `render_pass` with `sample_count` samples: the
-/// one route every graphics pipeline of the view takes (the scene pipelines and
-/// their variants, the quality stages', the overlays'). nullptr for an
-/// incomplete `desc` or when it cannot be created. So the shader-named fault
-/// injection (rhiTestShaderFault(), pj_widgets/RhiTestHooks.h; e.g.
-/// PJ_RHI_TEST_FAIL_SHADER=trail.frag.qsb) fails any of them.
+/// `desc` built for `render_pass` with `sample_count` samples: the one route every graphics pipeline of the view takes
+/// (scene, quality stages, overlays), so shader-named fault injection (rhiTestShaderFault(), pj_widgets/RhiTestHooks.h,
+/// PJ_RHI_TEST_FAIL_SHADER=trail.frag.qsb) fails any of them. nullptr for an incomplete `desc` or a failed create.
 std::unique_ptr<QRhiGraphicsPipeline> createPipeline(
     QRhi* rhi, const PipelineDesc& desc, QRhiRenderPassDescriptor* render_pass, int sample_count);
 
-/// A scene pipeline that could not be created, and how far that reaches. An
-/// optional pipeline (ScenePipelineRegistry::add(..., optional)) is no failure:
-/// its family draws the same thing another way.
+/// A scene pipeline that could not be created, and how far that reaches. An optional pipeline is no failure: its
+/// family draws the same thing another way.
 struct PipelineFailure {
   enum class Severity : std::uint8_t {
     kRequired,    ///< a built family's own pipeline: the view's failure state, named `part`
@@ -108,17 +96,13 @@ struct PipelineFailure {
   const char* part = nullptr;  ///< the family that registered it
 };
 
-/// One registered scene pipeline: its description and the variants built from
-/// it. Owned by ScenePipelineRegistry; families keep the handle and resolve() it.
+/// Opaque handle to one registered pipeline and its variants; owned by ScenePipelineRegistry.
 struct ScenePipeline;
 
-/// The one owner of the scene pipelines (every family's, the grid's and the TF
-/// triads'): it keeps each description and builds its variants from it on
-/// demand, the direct one for the widget's target and the HDR-colour and
-/// depth-replay ones for the HDR chain's. Nothing is built at registration
-/// (add()): a GPU running the HDR chain builds only the variants its frames
-/// bind, and one without it builds the direct ones before its first frame
-/// (createDirects()). Families hold handles, never pipelines.
+/// Owner of every scene pipeline (the families', the grid's, the TF triads'). It keeps each description and builds
+/// variants on demand: the direct one for the widget's target, the HDR-colour and depth-replay ones for the HDR
+/// chain. add() builds nothing: with the HDR chain only the variants a frame binds are built, without it
+/// createDirects() builds the direct ones before the first frame. Families hold handles, never pipelines.
 class ScenePipelineRegistry {
  public:
   ScenePipelineRegistry();
@@ -126,9 +110,8 @@ class ScenePipelineRegistry {
   ScenePipelineRegistry(const ScenePipelineRegistry&) = delete;
   ScenePipelineRegistry& operator=(const ScenePipelineRegistry&) = delete;
 
-  /// The target the direct variants draw into (the widget's render target),
-  /// until clear(): createDirects() builds for it (add() builds nothing). The view's other pipelines on that target
-  /// (the overlays) read it back (directRenderPass(), directSampleCount()).
+  /// The target the direct variants draw into (the widget's render target), until clear(). The view's other
+  /// pipelines on that target (the overlays) read it back (directRenderPass(), directSampleCount()).
   void setDirectTarget(QRhi* rhi, QRhiRenderPassDescriptor* render_pass, int sample_count);
   [[nodiscard]] QRhiRenderPassDescriptor* directRenderPass() const {
     return direct_;
@@ -136,48 +119,39 @@ class ScenePipelineRegistry {
   [[nodiscard]] int directSampleCount() const {
     return direct_samples_;
   }
-  /// Registers `desc` as a pipeline of `part` and builds nothing: its direct
-  /// variant is created by createDirects(), its HDR variants when a frame first
-  /// binds them. nullptr only for an incomplete `desc` (a shader pack that could
-  /// not be read, no layout SRB). An `optional` pipeline's failure latches
-  /// nothing: it only marks the pipeline optionalFailed(), whose family then
-  /// draws the same thing another way (the point list as quads, the grid's
-  /// cells unshadowed).
+  /// Registers `desc` as a pipeline of `part`; nullptr only for an incomplete `desc` (a shader pack that could not
+  /// be read, no layout SRB). An `optional` pipeline's failure latches nothing: it marks the pipeline
+  /// optionalFailed() and its family draws the same thing another way (the point list as quads, the grid's cells
+  /// unshadowed).
   const ScenePipeline* add(const PipelineDesc& desc, const char* part, bool optional = false);
   /// True once a variant of the optional `pipeline` could not be created; it
   /// resolves to nullptr from then on (nullptr ignored).
   [[nodiscard]] bool optionalFailed(const ScenePipeline* pipeline) const;
   /// Deletes `pipeline` and its variants (nullptr ignored).
   void remove(const ScenePipeline* pipeline);
-  /// Creates every direct variant not created yet: what a frame without the HDR
-  /// chain does before recording, so no pipeline fails half way through its
-  /// passes. False, and nothing retried, once a required one could not be
-  /// created (failure() is then kRequired and names its part).
+  /// Creates every direct variant not created yet, so a frame without the HDR chain does not fail half way through
+  /// its passes. False, and nothing retried, once a required one could not be created (failure() is then kRequired).
   bool createDirects();
   /// The failure latched since the registrations (kRequired, until clear()) or
   /// since the variants were last released (kHdrVariant); nullopt: none.
   [[nodiscard]] const std::optional<PipelineFailure>& failure() const {
     return failure_;
   }
-  /// The render passes the HDR variants target, on the direct target's QRhi:
-  /// HDR colour (`hdr`, `hdr_samples`) and depth replay (`depth`, one sample,
-  /// alpha-only writes). New targets drop every variant first.
+  /// The render passes the HDR variants target, on the direct target's QRhi: HDR colour and depth replay (one
+  /// sample, alpha-only writes). New targets drop every variant first.
   void setVariantTargets(QRhiRenderPassDescriptor* hdr, int hdr_samples, QRhiRenderPassDescriptor* depth);
-  /// Deletes every HDR variant and forgets their targets; keeps the
-  /// registrations and the direct variants (the HDR chain went down).
+  /// Deletes every HDR variant and forgets their targets (the HDR chain went down); keeps registrations and direct
+  /// variants.
   void releaseVariants();
   /// Deletes every pipeline and forgets every registration and target (the
   /// resources they bind are going away).
   void clear();
-  /// The pipeline `pass` binds for `pipeline`: its direct variant for kDirect
-  /// (once created), else its HDR variant, created on this first request.
-  /// nullptr means "do not draw": always for kDepthReplay when the description
-  /// writes no depth (the depth replay records only depth-writing coverage), and
-  /// when not created yet, without targets, or when the variant cannot be
-  /// created (failure() is then kHdrVariant, unless the pipeline is optional:
-  /// see add()). While a failure is latched no HDR
-  /// variant is created or returned (that frame is withheld anyway): a
-  /// kHdrVariant latch clears in releaseVariants(), a kRequired one in clear().
+  /// The pipeline `pass` binds for `pipeline`: its direct variant for kDirect (once created), else its HDR variant,
+  /// created on first request. nullptr means "do not draw": always for kDepthReplay when the description writes no
+  /// depth (the replay records only depth-writing coverage), and when not created yet, without targets, or when the
+  /// variant cannot be created (failure() is then kHdrVariant, unless the pipeline is optional). While a failure is
+  /// latched no HDR variant is created or returned (that frame is withheld anyway); a kHdrVariant latch clears in
+  /// releaseVariants(), a kRequired one in clear().
   [[nodiscard]] QRhiGraphicsPipeline* resolve(const ScenePipeline* pipeline, ScenePass pass) const;
   /// Every created direct variant satisfies pipelineBuiltFor(render_pass, sample_count).
   [[nodiscard]] bool directsBuiltFor(const QRhiRenderPassDescriptor* render_pass, int sample_count) const;
@@ -206,9 +180,8 @@ class ScenePipelineRegistry {
   QRhiRenderPassDescriptor* depth_ = nullptr;
 };
 
-/// Unit meshes shared by several families, owned by the view (created in
-/// initialize(), released after every pipeline that draws them) and handed to
-/// the families that draw them.
+/// Unit meshes shared by several families, owned by the view: created in initialize(), released after every pipeline
+/// that draws them.
 struct RhiSharedGeometry {
   QRhiBuffer* cube_vertices = nullptr;     ///< kCubeVertices: voxels
   QRhiBuffer* cube_indices = nullptr;      ///< kCubeIndices, uint16
@@ -223,10 +196,9 @@ struct RhiSharedGeometry {
   void release();
 };
 
-/// Places a source frame in the fixed frame (placeObject()): a stamped object at its
-/// own stamp, else at the frame's render time (the cursor), with the layer's
-/// placement hold (nullable); nullopt when it cannot be placed this frame (the
-/// family then skips the layer without consuming its budget).
+/// Places a source frame in the fixed frame (placeObject()): a stamped object at its own stamp, else at the frame's
+/// render time (the cursor), with the layer's nullable placement hold. nullopt when it cannot be placed this frame
+/// (the family then skips the layer without consuming its budget).
 using PlaceFn = std::function<std::optional<Transform>(
     const std::string& source_frame, std::optional<PJ::Timepoint> object_stamp, PlacementHold* hold)>;
 
@@ -255,13 +227,11 @@ inline glm::mat4 relativeModel(glm::dmat4 model, const glm::dvec3& origin) {
   return glm::mat4(model);
 }
 
-/// Sizes `buffer` (a `type` vertex buffer, Static or Immutable, filled by
-/// uploadStaticBuffer()) for `required_bytes` with the point pass's rule:
-/// reallocates to grow, or to give back a buffer more than twice
-/// max(required_bytes, minimum_capacity / 2), to max(required_bytes,
-/// minimum_capacity), and when its type differs; keeps it otherwise. A reallocated
-/// buffer holds nothing. Zero bytes keeps any buffer. False, and `buffer` null,
-/// when it cannot be allocated.
+/// Sizes `buffer` (a `type` vertex buffer, Static or Immutable, filled by uploadStaticBuffer()) for `required_bytes`
+/// with the point pass's rule: reallocates to max(required_bytes, minimum_capacity) to grow, to give back a buffer
+/// more than twice max(required_bytes, minimum_capacity / 2), and when its type differs; otherwise keeps it. A
+/// reallocated buffer holds nothing. Zero bytes keeps any buffer. False, and `buffer` null, when it cannot be
+/// allocated.
 bool ensureStaticVertexBuffer(
     QRhi* owner, QRhiBuffer*& buffer, quint32& capacity, quint32 required_bytes, quint32 minimum_capacity,
     QRhiBuffer::Type type = QRhiBuffer::Static);
@@ -291,27 +261,22 @@ struct RhiPassSetup {
   QRhiBuffer* annotation_render_mode_uniforms = nullptr;  ///< binding 8 of annotation (tonemap-bypass) draws
   QRhiBuffer* view_uniforms = nullptr;                    ///< binding 0: the camera-relative view-projection (mat4)
   const RhiSharedGeometry* geometry = nullptr;            ///< the view's shared unit meshes
-  /// Takes the constant contents of the resources initialize() creates (unit
-  /// meshes, lookup textures), recorded once there instead of on a frame. The
-  /// view submits it before any draw, or discards it when a family fails to
-  /// build. Valid only during initialize().
+  /// Takes the constant contents of the resources initialize() creates (unit meshes, lookup textures). The view
+  /// submits it before any draw, or discards it when a family fails to build. Valid only during initialize().
   QRhiResourceUpdateBatch* updates = nullptr;
-  /// The owner of the family's scene pipelines: it registers each description
-  /// there (add(), named `part`) and keeps the handles. It holds the widget's
-  /// render target (ScenePipelineRegistry::setDirectTarget()).
+  /// Where the family registers each pipeline description (add(), named `part`) and keeps the handles; it holds the
+  /// widget's render target.
   ScenePipelineRegistry* pipelines = nullptr;
   const char* part = nullptr;
 };
 
-/// A pass's user-facing message, translated in the view's context: the view
-/// shows what its families report.
+/// Translates a pass's user-facing message in the view's context.
 inline QString tr(const char* text) {
   return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
 }
 
-/// PJ::straightAlphaBlend() (every data-graded scene pipeline's) that adds
-/// nothing to destination alpha (the present pass's data/annotation split):
-/// annotations (triads, TF lines) are not graded.
+/// PJ::straightAlphaBlend() that adds nothing to destination alpha, for annotations (triads, TF lines), which the
+/// present pass's data/annotation split does not grade.
 inline QRhiGraphicsPipeline::TargetBlend annotationAlphaBlend() {
   QRhiGraphicsPipeline::TargetBlend blend = PJ::straightAlphaBlend();
   blend.srcAlpha = QRhiGraphicsPipeline::Zero;
@@ -358,11 +323,10 @@ void pruneLayerGpu(Map& gpu, const typename Map::key_type& layer, Release&& rele
   }
 }
 
-/// The families' setLayers(): releases the GPU state of layers that left the
-/// list or are hidden, then adopts the new list. The families key their caches by layer
-/// address and revision; this is what keeps a layer created at a freed layer's
-/// address from meeting a stale entry: the dock syncs a layer out of the view's
-/// list (SceneDockWidget::removeTopic(), clearLayers()) before destroying it.
+/// The families' setLayers(): releases the GPU state of layers that left the list or are hidden, then adopts the new
+/// list. Families key their caches by layer address and revision; the dock syncs a layer out of the view's list
+/// (SceneDockWidget::removeTopic(), clearLayers()) before destroying it, so a layer created at a freed layer's
+/// address never meets a stale entry.
 template <typename Layer, typename Map, typename Release>
 void adoptLayerList(const std::vector<Layer*>& layers, std::vector<Layer*>& current, Map& gpu, Release&& release) {
   std::erase_if(gpu, [&](auto& entry) {
@@ -376,15 +340,12 @@ void adoptLayerList(const std::vector<Layer*>& layers, std::vector<Layer*>& curr
   current = layers;
 }
 
-/// The admission loop of the budgeted families (point, pose, occupancy, voxel):
-/// refills `admitted` for this frame. Per visible layer, in list order: the layer
-/// refreshes against the budget left (prepareForRender(remaining)); one that is
-/// not `drawable` has its GPU state pruned; one whose frame cannot be placed is
-/// skipped and keeps it. Placement first, budget second: only a placed layer
-/// takes its `cost` from the budget, so a temporarily unplaceable one never
-/// reserves capacity ahead of a later layer whose frame resolves. An admitted
-/// layer's `placed_bounds(layer, fixed_from_source)` (nullopt: none) are
-/// unioned into the result, the family's bounds.
+/// The admission loop of the budgeted families (point, pose, occupancy, voxel): refills `admitted` for this frame.
+/// Per visible layer, in list order: it refreshes against the budget left (prepareForRender(remaining)); one that is
+/// not `drawable` has its GPU state pruned; one whose frame cannot be placed is skipped and keeps it. Placement
+/// first, budget second: only a placed layer takes its `cost`, so a temporarily unplaceable layer never reserves
+/// capacity ahead of a later one whose frame resolves. Returns the union of `placed_bounds(layer,
+/// fixed_from_source)` (nullopt: none) over the admitted layers.
 template <typename Layer, typename Map, typename Release, typename Drawable, typename Cost, typename PlacedBounds>
 AABB admitLayers(
     const std::vector<Layer*>& layers, std::uint64_t budget, const PlaceFn& place,

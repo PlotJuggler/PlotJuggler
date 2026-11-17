@@ -392,7 +392,7 @@ TEST(PointCloudOps, Float64CoordinatesAreReadAndWritten) {
   EXPECT_EQ(valueAt<uint16_t>(*cropped, 0, 0), 8u);  // the ring travels with its record
 }
 
-// CON-15: a long native loop stops once the run is cancelled, mid-scan, and holds no memory after.
+// A long native loop stops once the run is cancelled, mid-scan, and holds no memory after.
 TEST(PointCloudOps, NativeOpsHonourTheCancelToken) {
   const auto cloud = makeLineCloud(2'000'000);
   for (int op = 0; op < 3; ++op) {
@@ -998,7 +998,7 @@ TEST(PointCloudOpsBench, NanosecondsPerPoint) {
 
 // ---- memory accounting ------------------------------------------------------
 
-// BUD-13 / BUD-14: a crop whose output would pass the evaluation's native limit fails before allocating,
+// A crop whose output would pass the evaluation's native limit fails before allocating,
 // and the error names that limit.
 TEST(PointCloudOps, ByteBudgetTripsOnHugeCrop) {
   const auto cloud = makeLineCloud(600'000);  // 9.6 MB of records
@@ -1017,7 +1017,7 @@ TEST(PointCloudOps, ByteBudgetTripsOnHugeCrop) {
   EXPECT_LT(limits.budget->used(), 10u * 16u + sizeof(PointCloud) + 1024u);
 }
 
-// BUD-15: retained outputs count against one limit per evaluation and release it when destroyed.
+// Retained outputs count against one limit per evaluation and release it when destroyed.
 TEST(PointCloudOps, AggregateNativeCloudBudgetRejectsRetainedSecondOutput) {
   const auto cloud = makeXyziCloud(std::vector<std::array<float, 4>>(327'680, {0, 0, 0, 1}));  // 5 MiB
   const NativeLimits limits = limitedTo(std::size_t{8} << 20);
@@ -1129,7 +1129,7 @@ TEST(SceneEntityBuilder, SceneBuilderChainsAllPrimitives) {
   EXPECT_EQ(entity.lines[0].points[3], (sdk::Point3{1, 1, 1}));
 }
 
-// D27's builder names the field a script got wrong.
+// The builder names the field a script got wrong.
 TEST(SceneEntityBuilder, SceneBuilderRejectsBadArgs) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const Vector3 bad{nan, 0, 0};
@@ -1330,7 +1330,7 @@ TEST(ImageAnnotationsBuilder, AnnotationsBuilderChargesTheBudget) {
   EXPECT_EQ(budget->used(), 0u);
 }
 
-// ---- point-cloud builder and downsampling (D14, D16) ------------------------------
+// ---- point-cloud builder and downsampling ------------------------------
 
 /// The float32 `channel` of record `record`, read through the cloud's own field table.
 float channelAt(const PointCloud& cloud, size_t record, std::string_view channel) {
@@ -1598,7 +1598,7 @@ TEST(PointCloudOps, DownsampleByVoxelKeepsCentroids) {
   EXPECT_EQ(stopped.error(), kCancelledError);
 }
 
-// ---- voxel-grid builder (D16) -------------------------------------------------
+// ---- voxel-grid builder -------------------------------------------------
 
 float cellAt(const sdk::VoxelGrid& grid, uint32_t i, uint32_t j, uint32_t k) {
   float value = 0;

@@ -79,9 +79,8 @@ class CurveTreeViewTestPeer {
     return view.drag_curve_names_.empty() && view.drag_catalog_keys_.isEmpty();
   }
 
-  // How many row keys are still filed under a tree path. Observed because the
-  // map is otherwise invisible, and a mapping that outlives its key would
-  // accumulate for the whole session.
+  // How many row keys are still filed under a tree path: observed because the map is otherwise invisible, and a mapping
+  // that outlives its key would accumulate for the whole session.
   static int datasetPathMappingCount(const CurveTreeView& view) {
     return static_cast<int>(view.row_key_to_tree_path_.size());
   }
@@ -525,9 +524,8 @@ TEST(CurveTreeViewTest, EncodesCatalogItemDragPayloads) {
   EXPECT_EQ(keys[1], u"curve:1"_s);
 }
 
-// Regression: dragging a multi-selection onto an empty pane (which consumes the
-// catalog-key payload) must add every selected curve, not just one. The catalog
-// payload used to carry only the row under the cursor at press time.
+// Dragging a multi-selection onto an empty pane (which consumes the catalog-key payload) adds every selected curve, not
+// just the row under the cursor at press time.
 TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedScalarCurve) {
   PJ::CurveTreeView view;
   view.addCurve(u"vehicle/speed"_s);
@@ -567,8 +565,7 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedScalarCurve) {
   EXPECT_EQ(curve_count, 3);
 }
 
-// Regression: the same defect on the object-topic side — a multi-selection of
-// image/object topics (which carry no scalar curve names) must still ship every
+// The same on the object-topic side: a multi-selection of image or object topics (no scalar curve names) ships every
 // selected catalog key.
 TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
   PJ::CurveTreeView view;
@@ -611,10 +608,9 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
   EXPECT_TRUE(catalog_keys.contains("object:b"_L1));
 }
 
-// An object topic whose type no view can display (draggable=false, e.g. an
-// occupancy-grid update) stays selectable but never starts a drag, shows the
-// caller-supplied "why" tooltip, and is skipped by the drag payload even when
-// it sits inside a dragged multi-selection.
+// An object topic whose type no view can display (draggable=false, an occupancy-grid update) stays selectable but never
+// starts a drag, shows the caller-supplied "why" tooltip, and is skipped by the drag payload even inside a dragged
+// multi-selection.
 TEST(CurveTreeViewTest, UndisplayableObjectTopicIsNotDraggableAndExcludedFromDragPayload) {
   PJ::CurveTreeView view;
   view.addCatalogItem(
@@ -641,18 +637,16 @@ TEST(CurveTreeViewTest, UndisplayableObjectTopicIsNotDraggableAndExcludedFromDra
   EXPECT_TRUE(cloud->flags().testFlag(Qt::ItemIsDragEnabled));
   EXPECT_TRUE(cloud->toolTip(0).isEmpty());
 
-  // Alone, the undisplayable topic produces no drag payload at all — but the
-  // COMPLETE selection collector still sees it: deletion and selection-count
-  // logic must not mistake "only not-draggable rows selected" for "nothing selected"
-  // (which the trash path widens to "everything").
+  // Alone, the undisplayable topic produces no drag payload, but the complete selection collector still sees it:
+  // deletion and selection-count logic must not read "only not-draggable rows selected" as "nothing selected" (which
+  // the trash path widens to "everything").
   calib->setSelected(true);
   EXPECT_EQ(toStdStrings(view.selectedCatalogKeysRecursive()), (std::vector<std::string>{"object:calib"}));
   std::unique_ptr<QMimeData> solo(view.createDragMimeData(Qt::LeftButton));
   EXPECT_EQ(solo, nullptr);
 
-  // In a mixed selection, only the displayable topic's key ships; the not-draggable
-  // key is reported through the skipped-keys out-param. The complete collector
-  // keeps returning both.
+  // In a mixed selection only the displayable topic's key ships; the not-draggable key is reported through the
+  // skipped-keys out-param. The complete collector returns both.
   cloud->setSelected(true);
   QStringList skipped_keys;
   std::unique_ptr<QMimeData> mixed(view.createDragMimeData(Qt::LeftButton, &skipped_keys));
@@ -665,9 +659,8 @@ TEST(CurveTreeViewTest, UndisplayableObjectTopicIsNotDraggableAndExcludedFromDra
       toStdStrings(view.selectedCatalogKeysRecursive()), (std::vector<std::string>{"object:calib", "object:cloud"}));
 }
 
-// A pull past the drag threshold on a not-draggable object row starts no drag,
-// so the view must say why: dragAttemptedOnNotDraggableRow fires once per press gesture,
-// carrying the row's tooltip for the host to surface (PJ4 shows a toast).
+// A pull past the drag threshold on a not-draggable object row starts no drag, so the view says why:
+// dragAttemptedOnNotDraggableRow fires once per press gesture, carrying the row's tooltip for the host to surface.
 TEST(CurveTreeViewTest, PullOnNotDraggableObjectTopicEmitsNoticeOnce) {
   TestCurveTreeView view;
   view.resize(320, 240);
@@ -696,9 +689,8 @@ TEST(CurveTreeViewTest, PullOnNotDraggableObjectTopicEmitsNoticeOnce) {
   EXPECT_EQ(attempt_reasons, QStringList{u"Camera calibration topic"_s});
 }
 
-// The "Value" column keeps decimal points vertically aligned in a monospace
-// right-aligned cell by formatting at a fixed precision then blanking trailing
-// zeros (and a bare trailing dot) with spaces. Ported from PJ3.
+// The "Value" column keeps decimal points vertically aligned in a monospace right-aligned cell: fixed precision, then
+// trailing zeros (and a bare trailing dot) blanked with spaces.
 TEST(CurveTreeViewTest, FormatScalarForColumnTrimsTrailingZerosToAlignDecimals) {
   EXPECT_EQ(PJ::formatScalarForColumn(1.2, 3), u"1.2"_s + QString(3, QChar(' ')));
   EXPECT_EQ(PJ::formatScalarForColumn(5.0, 3), u"5"_s + QString(5, QChar(' ')));
@@ -728,11 +720,9 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesFillsScalarLeavesAndSkipsGroups) {
   EXPECT_EQ(group->child(1)->text(1), u"42 "_s);
 }
 
-// A value too wide for the Value column elides on the right: the tree's
-// left elide (which keeps a curve name's distinctive tail) would drop a
-// number's sign and leading digits, so -123456.789 and +123456.789 would both
-// paint "…6.789". Checked on the option the style paints the cell with: pixels
-// depend on the platform's fonts.
+// A value too wide for the Value column elides on the right: the tree's left elide (which keeps a curve name's
+// distinctive tail) would drop a number's sign and leading digits, so -123456.789 and +123456.789 would both paint
+// "...6.789". Checked on the option the style paints the cell with: pixels depend on the platform's fonts.
 TEST(CurveTreeViewTest, ValueTooWideForItsColumnKeepsItsSign) {
   struct RecordingStyle : QProxyStyle {
     mutable QString text;
@@ -784,9 +774,8 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesIsNoOpWhenValueColumnHidden) {
   EXPECT_EQ(leaf->text(1), u"42 "_s) << "hidden value column must not refresh";
 }
 
-// Regression: expanding a collapsed group must fill the newly-revealed leaves
-// from the retained provider, without the caller re-driving the refresh
-// (previously a freshly-expanded row stayed blank until the tracker moved).
+// Expanding a collapsed group fills the newly revealed leaves from the retained provider, without the caller re-driving
+// the refresh.
 TEST(CurveTreeViewTest, RefreshVisibleValuesRefillsRowsRevealedByExpansion) {
   PJ::CurveTreeView view;
   view.addCurve(u"vehicle/speed"_s);
@@ -809,9 +798,8 @@ TEST(CurveTreeViewTest, RefreshVisibleValuesRefillsRowsRevealedByExpansion) {
   EXPECT_EQ(leaf->text(1), u"42 "_s) << "expanding must fill the revealed leaf";
 }
 
-// Regression: scrolling down must fill the rows that scroll into view at the
-// bottom of the viewport. A walk that stops at the first off-screen row (rather
-// than culling each row independently) leaves the freshly-revealed rows blank.
+// Scrolling down fills the rows that scroll into view at the bottom of the viewport: a walk that stops at the first
+// off-screen row (instead of culling each row independently) leaves them blank.
 TEST(CurveTreeViewTest, RefreshVisibleValuesFillsRowsRevealedByScrolling) {
   PJ::CurveTreeView view;
   for (int i = 0; i < 60; ++i) {
@@ -887,10 +875,9 @@ TEST(CurveTreeViewTest, ValueOnlyLeafIsNotDraggableAndExcludedFromDragPayload) {
 }
 
 TEST(CurveTreeViewTest, ExpandedGroupPathsSurviveRebuild) {
-  // A full rebuild (clearCurves + re-add) runs on every catalog removal —
-  // routine under demand-driven streaming (placeholder supersede). The
-  // expanded-state snapshot must restore what still exists, skip what
-  // vanished, and leave everything else collapsed as it was.
+  // A full rebuild (clearCurves and re-add) runs on every catalog removal, routine under demand-driven streaming
+  // (placeholder supersede). The expanded-state snapshot restores what still exists, skips what vanished, and leaves
+  // everything else collapsed.
   PJ::CurveTreeView view;
   const auto add_all = [&view]() {
     view.addCatalogItems({
@@ -1085,8 +1072,7 @@ TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresOnceThenRespectsManualC
   ASSERT_NE(data_group, nullptr);
   EXPECT_TRUE(data_group->isExpanded()) << "the promoted topic group auto-expands once";
 
-  // One-shot: a manual collapse must survive the next rebuild (the intent was
-  // already consumed).
+  // One-shot: a manual collapse survives the next rebuild (the intent was already consumed).
   data_group->setExpanded(false);
   promote();
   QTreeWidgetItem* imu2 = peekChildByText(view.topLevelItem(0), u"imu"_s);
@@ -1115,9 +1101,8 @@ TEST(CurveTreeViewTest, RequestExpansionWhenPromotedFiresInShowTopicsView) {
            .field = u"orientation.w"_s,
        }});
 
-  // In show-topics view the topic is a single verbatim node "/imu/data" whose
-  // text diverges from the normalized search path — the search-role keying still
-  // resolves and expands it.
+  // In show-topics view the topic is a single verbatim node "/imu/data" whose text diverges from the normalized search
+  // path; the search-role keying still resolves and expands it.
   QTreeWidgetItem* root = view.topLevelItem(0);
   ASSERT_NE(root, nullptr);
   QTreeWidgetItem* topic = peekChildByText(root, u"/imu/data"_s);
@@ -1435,9 +1420,8 @@ TEST(CurveTreeViewTest, DatasetProgressSurvivesClearCurvesAndReAdd) {
   ASSERT_EQ(view.topLevelItemCount(), 1);
   expectDatasetProgress(view.topLevelItem(0), expected);
 
-  // Retained progress becomes a ghost while the tree is empty, then moves back
-  // to the real dataset row after the rebuild. Matching names must not make the
-  // insertion reuse (and later delete) the ghost.
+  // Retained progress becomes a ghost while the tree is empty, then moves back to the real dataset row after the
+  // rebuild. Matching names must not make the insertion reuse (and later delete) the ghost.
   view.clearCurves();
   ASSERT_EQ(view.topLevelItemCount(), 1);
   EXPECT_TRUE(view.topLevelItem(0)->data(0, kDatasetGhostRoleForTest).toBool());
@@ -1535,9 +1519,8 @@ TEST(CurveTreeViewTest, DatasetProgressCreatesAndRemovesGhost) {
   EXPECT_EQ(view.topLevelItemCount(), 0);
 }
 
-// A row showing load progress must survive the filter. It reports work in
-// flight and carries the only affordances that can stop it, so filtering it away
-// takes the stop button with it. A ghost matches no filter text at all.
+// A row showing load progress survives the filter: it reports work in flight and carries the only affordances that can
+// stop it. A ghost matches no filter text at all.
 TEST(CurveTreeViewTest, ProgressRowsSurviveAFilterThatMatchesNothing) {
   PJ::CurveTreeView view;
   view.addCurves({u"veh/imu/x"_s});
@@ -1578,10 +1561,9 @@ TEST(CurveTreeViewTest, ProgressRowsSurviveAFilterThatMatchesNothing) {
   EXPECT_TRUE(after->isHidden()) << "once the progress is gone the filter applies normally";
 }
 
-// A ghost's label is its display name, and that name changes under a stable row
-// key when the row adopts its dataset's name. The fraction-only fast path must
-// repaint the text AND re-sort, or the row keeps the producer's title — in the
-// position that title sorted to — until the row set happens to change.
+// A ghost's label is its display name, which changes under a stable row key when the row adopts its dataset's name. The
+// fraction-only fast path repaints the text and re-sorts, or the row keeps the producer's title, in the position that
+// title sorted to, until the row set happens to change.
 TEST(CurveTreeViewTest, GhostLabelAndOrderFollowItsDisplayNameOnAFractionOnlyTick) {
   PJ::CurveTreeView view;
   constexpr quint64 kRenamedKey = 73;
@@ -1611,10 +1593,9 @@ TEST(CurveTreeViewTest, GhostLabelAndOrderFollowItsDisplayNameOnAFractionOnlyTic
       << "the ghost kept a stale label or a stale sort position";
 }
 
-// progress_row_cache_ holds raw item pointers. QTreeWidget::clear() is inherited,
-// non-virtual and public, so any caller can delete those items without the view
-// hearing about it — and the next same-membership tick is the pass that trusts
-// the cache without re-resolving.
+// progress_row_cache_ holds item references. QTreeWidget::clear() is inherited, non-virtual and public, so any caller
+// can delete those items without the view hearing about it, and the next same-membership tick trusts the cache without
+// re-resolving.
 TEST(CurveTreeViewTest, InheritedClearCannotLeaveTheProgressCacheDangling) {
   PJ::CurveTreeView view;
   view.addCurves({u"veh/imu/x"_s});
@@ -1641,10 +1622,9 @@ TEST(CurveTreeViewTest, InheritedClearCannotLeaveTheProgressCacheDangling) {
   expectDatasetProgress(row, progress);
 }
 
-// The path->key map is only useful while its key names a live ingest. Pruning it
-// on retirement is what keeps it from growing for the whole session — but a
-// mapping registered ahead of its key's first publication must survive, because
-// that ordering is the normal one (the path resolves, then progress is emitted).
+// The path-to-key map is useful only while its key names a live ingest. Pruning it on retirement keeps it from growing
+// for the whole session, but a mapping registered ahead of its key's first publication survives: that ordering is the
+// normal one (the path resolves, then progress is emitted).
 TEST(CurveTreeViewTest, RetiredRowKeysDropTheirTreePathMappings) {
   PJ::CurveTreeView view;
   view.addCurves({u"veh/imu/x"_s});
@@ -1666,9 +1646,8 @@ TEST(CurveTreeViewTest, RetiredRowKeysDropTheirTreePathMappings) {
   view.setDatasetProgress({});  // the load ended
   EXPECT_EQ(PJ::CurveTreeViewTestPeer::datasetPathMappingCount(view), 0) << "a retired key kept its path mapping";
 
-  // A reload of the same dataset files a fresh key under the same path, and a
-  // mapping for a key nobody has published yet must not be pruned by someone
-  // else's membership change.
+  // A reload of the same dataset files a fresh key under the same path, and a mapping for a key nobody has published
+  // yet is not pruned by someone else's membership change.
   view.setDatasetRowKey(u"veh"_s, kSecondKey);
   view.setDatasetRowKey(u"other"_s, kUnpublishedKey);
   view.setDatasetProgress(progressSet(kSecondKey, progress));
@@ -1676,11 +1655,10 @@ TEST(CurveTreeViewTest, RetiredRowKeysDropTheirTreePathMappings) {
       << "a mapping whose key has not been published yet must survive someone else's membership change";
 }
 
-// A key has ONE live path. A dataset's tree path changes under a stable key (a
-// sibling's removal relabels "foo (2)" back to "foo" and cascades), and the full
-// pass resolves a key through whichever of its mapped paths it meets first in an
-// unordered hash — so a path left behind can decorate another dataset's row and
-// hand that row's stop click to this ingest.
+// A key has one live path. A dataset's tree path changes under a stable key (a sibling's removal relabels "foo (2)"
+// back to "foo" and cascades), and the full pass resolves a key through whichever of its mapped paths it meets first in
+// an unordered hash, so a path left behind could decorate another dataset's row and hand that row's stop click to this
+// ingest.
 TEST(CurveTreeViewTest, RemappingARowKeyRetiresItsPreviousPath) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -1713,8 +1691,8 @@ TEST(CurveTreeViewTest, RemappingARowKeyRetiresItsPreviousPath) {
   EXPECT_TRUE(beta->data(0, kDatasetProgressRoleForTest).isValid());
   EXPECT_EQ(beta->data(0, kDatasetRowKeyRoleForTest).value<quint64>(), kRowKey);
 
-  // The click follows the decoration: the stop on the row this key now names
-  // reports that key, and the row it left behind offers nothing to click.
+  // The click follows the decoration: the stop on the row this key now names reports that key, and the row it left
+  // behind offers nothing to click.
   std::vector<std::pair<quint64, bool>> requests;
   QObject::connect(&view, &PJ::CurveTreeView::cancelRequested, &view, [&requests](quint64 row_key, bool keep_partial) {
     requests.emplace_back(row_key, keep_partial);
@@ -1733,11 +1711,10 @@ TEST(CurveTreeViewTest, RemappingARowKeyRetiresItsPreviousPath) {
   EXPECT_EQ(requests.size(), 1u) << "a stop click landed on a row that shows no load";
 }
 
-// Two live keys can name one dataset path: a reload's ingest resolves to the
-// dataset while the finished one is still lingering on it. A row carries ONE
-// decoration and routes its stop to ONE ingest, so the LAST key registered for a
-// path owns the real row and the key it displaces falls back to a ghost —
-// deterministic, where sharing the row would leave the winner to hash order.
+// Two live keys can name one dataset path: a reload's ingest resolves to the dataset while the finished one still
+// lingers on it. A row carries one decoration and routes its stop to one ingest, so the last key registered for a path
+// owns the real row and the key it displaces falls back to a ghost: deterministic, where sharing the row would leave
+// the winner to hash order.
 TEST(CurveTreeViewTest, TheLatestKeyForAPathOwnsTheRowAndDisplacesTheOlderToAGhost) {
   PJ::CurveTreeView view;
   view.addCurves({u"foo/imu/x"_s});
@@ -1779,9 +1756,8 @@ TEST(CurveTreeViewTest, TheLatestKeyForAPathOwnsTheRowAndDisplacesTheOlderToAGho
   EXPECT_EQ(PJ::CurveTreeViewTestPeer::datasetPathMappingCount(view), 1) << "a path names exactly one live key";
 }
 
-// The two affordances must be distinguishable by position alone: the row IS the
-// keep-or-discard choice, so a host that got the wrong flag would silently
-// discard data the user asked to keep.
+// The two affordances are distinguishable by position alone: the row is the keep-or-discard choice, so a host that got
+// the wrong flag would silently discard data the user asked to keep.
 TEST(CurveTreeViewTest, KeepAndDiscardAffordancesReportOppositeKeepPartial) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -1832,10 +1808,8 @@ TEST(CurveTreeViewTest, KeepAndDiscardAffordancesReportOppositeKeepPartial) {
   EXPECT_EQ(requests[1], std::make_pair(kRowKey, false));  // bin discards
 }
 
-// Hover must be driven by pointer movement, not sampled from the global cursor
-// when the row happens to repaint for another reason — that made the highlight
-// wait for the next progress tick, which reads as lag, and never arrive at all
-// on a stalled row.
+// Hover is driven by pointer movement, not sampled from the global cursor when the row repaints for another reason:
+// sampling made the highlight wait for the next progress tick (reads as lag) and never arrive on a stalled row.
 TEST(CurveTreeViewTest, StopButtonHoverTracksPointerMovement) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -1868,9 +1842,8 @@ TEST(CurveTreeViewTest, StopButtonHoverTracksPointerMovement) {
   EXPECT_EQ(PJ::CurveTreeViewTestPeer::hoveredStopButton(view), 0);
 }
 
-// A stop is acknowledged the moment it is accepted, not when the producer
-// finishes — a cooperative stop can take seconds. The row must then be inert:
-// clicking again would ask a second time for something already in flight.
+// A stop is acknowledged when it is accepted, not when the producer finishes (a cooperative stop can take seconds). The
+// row is then inert: clicking again would ask a second time for something already in flight.
 TEST(CurveTreeViewTest, StoppingRowIsInertForBothAffordances) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -1905,10 +1878,9 @@ TEST(CurveTreeViewTest, StoppingRowIsInertForBothAffordances) {
   EXPECT_EQ(requests, 0);
 }
 
-// The indeterminate band is phased from when the animation STARTED, so a load
-// always opens with the band entering from the left. Phasing it off absolute
-// wall-clock time instead made the sweep begin wherever the clock happened to
-// land — a fresh load could show the band already near the right edge.
+// The indeterminate band is phased from when the animation started, so a load opens with the band entering from the
+// left. Phasing off absolute wall-clock time starts the sweep wherever the clock lands: a fresh load could show the
+// band already near the right edge.
 TEST(CurveTreeViewTest, MarqueeBandEntersFromTheLeftAtStart) {
   const QRect track(0, 0, 400, 20);
   constexpr qint64 kPeriod = 1200;
@@ -1943,10 +1915,9 @@ TEST(CurveTreeViewTest, MarqueeBandEntersFromTheLeftAtStart) {
   }
 }
 
-// A producer that can stop but not discard (the toolbox ingest ABI has no
-// rollback) still gets the bin DRAWN — losing a cell mid-load reads as a glitch
-// — but it must be inert, or the click would promise a discard the producer
-// would silently turn into a keep.
+// A producer that can stop but not discard (the toolbox ingest ABI has no rollback) still gets the bin drawn (losing a
+// cell mid-load reads as a glitch), but inert: the click would promise a discard the producer would silently turn into
+// a keep.
 TEST(CurveTreeViewTest, NonDiscardableRowKeepsTheBinButIgnoresIt) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -1988,9 +1959,8 @@ TEST(CurveTreeViewTest, NonDiscardableRowKeepsTheBinButIgnoresIt) {
   EXPECT_EQ(requests[0], std::make_pair(kRowKey, true));
 }
 
-// The affordances stay painted through the terminal linger so the cluster does
-// not lose two of its three cells as the row retires — but they are inert
-// there: the ingest has already ended, so a click must not reach the host.
+// The affordances stay painted through the terminal linger, so the cluster does not lose two of its three cells as the
+// row retires, but they are inert there: the ingest has ended, so a click must not reach the host.
 TEST(CurveTreeViewTest, TerminalRowAffordancesAreInert) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -2023,10 +1993,9 @@ TEST(CurveTreeViewTest, TerminalRowAffordancesAreInert) {
   EXPECT_EQ(requests, 0);
 }
 
-// The ✕ and the bin are painted glyphs with no label, so nothing tells the user
-// which one keeps the partial data and which one throws it away until they
-// hover. The tooltips resolve through the same hit-test as the click, so a
-// tooltip can never describe a glyph other than the one that would be pressed.
+// The cross and the bin are painted glyphs with no label, so only hover says which keeps the partial data and which
+// throws it away. The tooltips resolve through the same hit-test as the click, so a tooltip never describes a glyph
+// other than the one that would be pressed.
 TEST(CurveTreeViewTest, StopAffordanceTooltipsDistinguishKeepFromDiscard) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -2054,17 +2023,15 @@ TEST(CurveTreeViewTest, StopAffordanceTooltipsDistinguishKeepFromDiscard) {
       PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, discardButtonPosition(view, loading)),
       u"Stop loading and discard the partial data"_s);
 
-  // The cluster's tooltips must not leak across the rest of the row: the name
-  // is not an affordance, and a row-wide "stop loading" tooltip would be a lie
-  // about where to click.
+  // The cluster's tooltips do not leak across the rest of the row: the name is not an affordance, and a row-wide "stop
+  // loading" tooltip would lie about where to click.
   const QRect row_rect = view.visualItemRect(loading);
   const QPoint name_pos(row_rect.left() + 4, row_rect.center().y());
   EXPECT_TRUE(PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, name_pos).isEmpty());
 }
 
-// A producer that can stop but cannot roll back paints the bin greyed. That is
-// the affordance that most needs a tooltip: it still looks like a choice, so it
-// has to say why it is not one.
+// A producer that can stop but cannot roll back paints the bin greyed: it still looks like a choice, so its tooltip
+// says why it is not one.
 TEST(CurveTreeViewTest, InertBinTooltipExplainsThatTheSourceCannotDiscard) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -2095,9 +2062,8 @@ TEST(CurveTreeViewTest, InertBinTooltipExplainsThatTheSourceCannotDiscard) {
       u"Stop loading and keep the data received so far"_s);
 }
 
-// Both glyphs stay painted through the terminal linger so the cluster keeps its
-// shape as the row retires. They answer to nothing there, so they must not
-// offer a stop that can no longer happen either.
+// Both glyphs stay painted through the terminal linger, keeping the cluster's shape as the row retires. They answer to
+// nothing there, so they offer no stop that can no longer happen.
 TEST(CurveTreeViewTest, FinishedRowStopAffordancesOfferNoTooltip) {
   TestCurveTreeView view;
   view.resize(360, 180);
@@ -2125,16 +2091,15 @@ TEST(CurveTreeViewTest, FinishedRowStopAffordancesOfferNoTooltip) {
   EXPECT_TRUE(PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, cancelButtonPosition(view, done)).isEmpty());
   EXPECT_TRUE(PJ::CurveTreeViewTestPeer::stopButtonTooltip(view, discardButtonPosition(view, done)).isEmpty());
 
-  // The event is still consumed: the pointer is over a glyph, so a tooltip left
-  // showing from the live phase is hidden rather than replaced by the row's own.
+  // The event is still consumed: the pointer is over a glyph, so a tooltip left showing from the live phase is hidden,
+  // not replaced by the row's own.
   const QPoint keep_pos = cancelButtonPosition(view, done);
   QHelpEvent over_inert_glyph(QEvent::ToolTip, keep_pos, view.viewport()->mapToGlobal(keep_pos));
   EXPECT_TRUE(view.viewportEvent(&over_inert_glyph));
 }
 
-// In production the tooltip is only ever reached through QEvent::ToolTip, so
-// drive a real one: over a glyph the view answers it, and everywhere else it
-// falls through to the normal per-item tooltip path.
+// In production the tooltip is reached only through QEvent::ToolTip, so a real one is driven: over a glyph the view
+// answers it, everywhere else it falls through to the per-item tooltip path.
 TEST(CurveTreeViewTest, ToolTipEventOverAStopAffordanceIsAnsweredByTheView) {
   TestCurveTreeView view;
   view.resize(360, 180);

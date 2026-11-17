@@ -15,8 +15,8 @@
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/builtin/field_table.hpp"
 
-// The object half of the Luau object-script binding (docs/derived_objects/ARCHITECTURE.md §6): canonical
-// objects as read-only views over their SDK field tables, read lazily (a list is a view whose elements
+// The object half of the Luau object-script binding (docs/derived_objects/ARCHITECTURE.md "Types and bindings"):
+// canonical objects as read-only views over their SDK field tables, read lazily (a list is a view whose elements
 // are read one at a time through `list_at`, so iterating N elements costs N reads), the point-cloud
 // methods over native/point_cloud_ops.h, the image methods (decode, decoded pixels, depth unprojection) over
 // native/image_ops.h and native/depth_ops.h, the scene, annotation, cloud and voxel builders over

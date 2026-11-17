@@ -1,12 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Pins an empirical claim about the ephemeral-transform preview path: a
-// transform created with the EPHEMERAL flag is hidden from the GUI
-// CatalogModel and from DataProcessorService::transformRecipes(), but IS
-// visible through the plugin-facing ABI catalog snapshot (which enumerates
-// straight from the DataEngine, unlike CatalogModel's exclusion filter) and
-// its samples are readable through the ABI's read_series_arrow.
+// A transform created with the EPHEMERAL flag is hidden from CatalogModel and DataProcessorService::transformRecipes(),
+// but visible through the plugin-facing ABI catalog snapshot (which enumerates straight from the DataEngine, unlike
+// CatalogModel's exclusion filter), and its samples are readable through the ABI's read_series_arrow.
 
 #include <gtest/gtest.h>
 
@@ -94,7 +91,6 @@ TEST(EphemeralTransformAbiVisibilityTest, EphemeralTransformVisibleToAbiNotToGui
   ASSERT_TRUE(toolbox_or.has_value());
   sdk::ToolboxHostView toolbox(*toolbox_or);
 
-  // (1) the ABI catalog snapshot lists a field whose topic is the ephemeral output.
   auto snapshot = toolbox.catalogSnapshot();
   ASSERT_TRUE(snapshot.has_value()) << snapshot.error();
   std::optional<sdk::FieldHandle> field;
@@ -107,7 +103,6 @@ TEST(EphemeralTransformAbiVisibilityTest, EphemeralTransformVisibleToAbiNotToGui
   }
   ASSERT_TRUE(field.has_value()) << "ephemeral output '" << output_name << "' missing from the ABI catalog snapshot";
 
-  // (2) readSeries(handle) on it returns the negated samples.
   auto series = toolbox.readSeries(*field);
   ASSERT_TRUE(series.has_value()) << series.error();
   ASSERT_EQ(series->rowCount(), 2u);
@@ -116,14 +111,12 @@ TEST(EphemeralTransformAbiVisibilityTest, EphemeralTransformVisibleToAbiNotToGui
   EXPECT_DOUBLE_EQ(values[0], -2.0);
   EXPECT_DOUBLE_EQ(values[1], -4.0);
 
-  // (3) the GUI CatalogModel::items() does NOT list it.
   const std::vector<CatalogItem> items = app_session.catalogModel().items();
   const bool listed_in_gui = std::any_of(items.begin(), items.end(), [&](const CatalogItem& item) {
     return item.topic_name.toStdString() == output_name;
   });
   EXPECT_FALSE(listed_in_gui);
 
-  // (4) DataProcessorService::transformRecipes() does NOT list it.
   const std::vector<DataProcessorService::TransformRecipe> recipes = service.transformRecipes();
   EXPECT_TRUE(std::none_of(recipes.begin(), recipes.end(), [&](const DataProcessorService::TransformRecipe& recipe) {
     return recipe.key == created->key;
@@ -131,7 +124,6 @@ TEST(EphemeralTransformAbiVisibilityTest, EphemeralTransformVisibleToAbiNotToGui
 
   EXPECT_FALSE(service.transformOwning(created->output_topic_ids.front()).has_value());
 
-  // (5) after remove, the ABI snapshot no longer lists it.
   ASSERT_TRUE(service.removeTransform(created->key).has_value());
   EXPECT_EQ(catalog_mutations, 0);
   auto snapshot_after = toolbox.catalogSnapshot();

@@ -1,11 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// 3D layers on derived (on-demand) topics (docs/derived_objects/ARCHITECTURE.md §9, §17). A layer reads a derived
-// topic from the store like any other: the newest entry at or before the dock's time. There is no readiness gate:
-// the node's ring keeps the previous result while a newer one computes (D30) and holds an empty tombstone for a
-// missing input or an error (D6). What the dock adds: the row warning (why it is empty), the row status (the lag),
-// a refresh when a result lands at the dock's time, the inputs' clock range, and the finding rules (D26).
+// 3D layers on derived (on-demand) topics (docs/derived_objects/ARCHITECTURE.md "Where results live" and "Scene
+// integration"). A layer reads a derived topic from the store like any other: the newest entry at or before the dock's
+// time. There is no readiness gate: the node's ring keeps the previous result while a newer one computes and holds an
+// empty tombstone for a missing input or an error. What the dock adds: the row warning (why it is empty), the row
+// status (the lag), a refresh when a result lands at the dock's time, the inputs' clock range, and the finding rules.
 //
 // The on-demand engine runs `test::FakeRun` (pj_runtime/tests/on_demand_test_utils.h): its cloud outputs pass the
 // first cloud input through, its SceneEntities outputs hold `FakeRun::entities(query time)`.
@@ -101,7 +101,6 @@ class ProbeDock : public PJ::Scene3DDockWidget {
   }
 };
 
-/// The fake run every on-demand service built while it lives uses.
 struct ScopedFakeRun {
   explicit ScopedFakeRun(PJ::test::FakeRun& fake) {
     PJ::OnDemandService::setRunForTest(fake.function());
@@ -149,7 +148,6 @@ struct Fixture {
   void request(const std::string& id, Timestamp t) {
     session.onDemandService().requestAt("owner/" + id, t);
   }
-  /// Publishes every run submitted, then runs what the publications posted.
   void settle() {
     session.enginePool().waitIdle();
     QCoreApplication::processEvents();
@@ -185,9 +183,7 @@ struct Fixture {
   ProbeDock dock;
 };
 
-// ---- plain store topics (no node): the replay semantics the derived ones build on --------------------------------
-
-// SCN-01: a canonical SceneEntities topic with no parser attaches and renders.
+// A canonical SceneEntities topic with no parser attaches and renders.
 TEST(Scene3DDockDerivedTopics, ParserlessSceneEntitiesTopicAttaches) {
   Fixture fx;
   const auto topic = registerCanonicalTopic(fx.store, fx.ds, "entities", PJ::sdk::BuiltinObjectType::kSceneEntities);
@@ -198,7 +194,7 @@ TEST(Scene3DDockDerivedTopics, ParserlessSceneEntitiesTopicAttaches) {
   EXPECT_EQ(layer->currentEntities().size(), 2u);
 }
 
-// SCN-02: a same-stamp republish reopens the dock's per-tick gate and replaces the set.
+// A same-stamp republish reopens the dock's per-tick gate and replaces the set.
 TEST(Scene3DDockDerivedTopics, SameStampReplacementReplacesSet) {
   Fixture fx;
   const auto topic = registerCanonicalTopic(fx.store, fx.ds, "entities", PJ::sdk::BuiltinObjectType::kSceneEntities);
@@ -213,7 +209,7 @@ TEST(Scene3DDockDerivedTopics, SameStampReplacementReplacesSet) {
   EXPECT_TRUE(layer->currentEntities().contains("c"));
 }
 
-// SCN-03: a backward-inserted entry is what the store shows at or before an earlier cursor.
+// A backward-inserted entry is what the store shows at or before an earlier cursor.
 TEST(Scene3DDockDerivedTopics, BackwardSeekShowsSnapshotAtThatTime) {
   Fixture fx;
   const auto topic = registerCanonicalTopic(fx.store, fx.ds, "entities", PJ::sdk::BuiltinObjectType::kSceneEntities);
@@ -230,7 +226,7 @@ TEST(Scene3DDockDerivedTopics, BackwardSeekShowsSnapshotAtThatTime) {
   EXPECT_EQ(layer->currentEntities().size(), 1u);
 }
 
-// SCN-09: a finite entity lifetime expires as the cursor moves, with no new sample.
+// A finite entity lifetime expires as the cursor moves, with no new sample.
 TEST(Scene3DDockDerivedTopics, SceneEntityLifetimeAdvancesWithoutANewSample) {
   Fixture fx;
   const auto topic = registerCanonicalTopic(fx.store, fx.ds, "entities", PJ::sdk::BuiltinObjectType::kSceneEntities);
@@ -245,9 +241,7 @@ TEST(Scene3DDockDerivedTopics, SceneEntityLifetimeAdvancesWithoutANewSample) {
   EXPECT_TRUE(layer->currentEntities().empty());
 }
 
-// ---- derived topics ------------------------------------------------------------------------------------------
-
-// SCN-04: evaluated with no scene open, then shown: the dock renders both outputs and follows a seek.
+// Evaluated with no scene open, then shown: the dock renders both outputs and follows a seek.
 TEST(Scene3DDockDerivedTopics, OnDemandOutputsRenderThroughTheDock) {
   Fixture fx;
   fx.install("crop");
@@ -271,7 +265,7 @@ TEST(Scene3DDockDerivedTopics, OnDemandOutputsRenderThroughTheDock) {
   EXPECT_TRUE(cloud->statusWarning().isEmpty());
 }
 
-// SCN-05 (inverted by D30), GAP-05, GAP-37: a 90 ms function behind the cursor keeps showing its newest earlier
+// A 90 ms function behind the cursor keeps showing its newest earlier
 // result, never a blank layer, and the row says how far behind it is; no warning (computing is not a fault).
 TEST(Scene3DDockDerivedTopics, PendingDerivedTopicKeepsThePreviousResultAndShowsTheLag) {
   Fixture fx;
@@ -293,7 +287,7 @@ TEST(Scene3DDockDerivedTopics, PendingDerivedTopicKeepsThePreviousResultAndShows
   fx.settle();
 }
 
-// D30: once the cursor stops, the display converges to the current request's result and the lag goes.
+// Once the cursor stops, the display converges to the current request's result and the lag goes.
 TEST(Scene3DDockDerivedTopics, LagDisappearsWhenTheParkedCursorConverges) {
   Fixture fx;
   fx.install("crop");
@@ -344,7 +338,7 @@ TEST(Scene3DDockDerivedTopics, AFirstRequestShowsComputingWithoutALag) {
   EXPECT_TRUE(fx.dock.derivedStatus().isEmpty());
 }
 
-// SCN-06: a result landing at the dock's time repaints it without a tracker tick.
+// A result landing at the dock's time repaints it without a tracker tick.
 TEST(Scene3DDockDerivedTopics, PublishedSignalRefreshesTheDockAtItsTrackerTime) {
   Fixture fx;
   fx.install("crop");
@@ -359,7 +353,7 @@ TEST(Scene3DDockDerivedTopics, PublishedSignalRefreshesTheDockAtItsTrackerTime) 
   EXPECT_EQ(witness->currentEntities().size(), 1u);
 }
 
-// SCN-07 (replaced by D30): pending ticks keep the shown entities and decode nothing new.
+// Pending ticks keep the shown entities and decode nothing new.
 TEST(Scene3DDockDerivedTopics, PendingDoesNotResetTheReplay) {
   Fixture fx;
   fx.install("crop");
@@ -381,7 +375,7 @@ TEST(Scene3DDockDerivedTopics, PendingDoesNotResetTheReplay) {
   fx.settle();
 }
 
-// D27: each result of a derived SceneEntities topic is a complete snapshot: an entity absent from the next one goes.
+// Each result of a derived SceneEntities topic is a complete snapshot: an entity absent from the next one goes.
 TEST(Scene3DDockDerivedTopics, DerivedSnapshotDropsAnEntityAbsentFromTheNextResult) {
   Fixture fx;
   fx.fake.entities = [](Timestamp t) {
@@ -407,7 +401,7 @@ TEST(Scene3DDockDerivedTopics, DerivedSnapshotDropsAnEntityAbsentFromTheNextResu
   EXPECT_EQ(witness->currentEntities().size(), 2u);
 }
 
-// SCN-10 (changed by N7: an error from the script): an error hides the geometry with a warning set by the state
+// An error hides the geometry with a warning set by the state
 // change itself, and the next good result brings it back and clears the warning.
 TEST(Scene3DDockDerivedTopics, ScriptErrorHidesGeometryWithAWarningAndRecovers) {
   Fixture fx;
@@ -447,7 +441,7 @@ TEST(Scene3DDockDerivedTopics, ScriptErrorHidesGeometryWithAWarningAndRecovers) 
   EXPECT_EQ(witness->currentEntities().size(), 1u);
 }
 
-// D6: an edit drops the node's results, which the layers keep drawing at the unchanged cursor (an eviction); the
+// An edit drops the node's results, which the layers keep drawing at the unchanged cursor (an eviction); the
 // new revision's failure writes the tombstone that clears them, although the ring shows nothing any more.
 TEST(Scene3DDockDerivedTopics, AnEditThatFailsClearsTheKeptGeometry) {
   Fixture fx;
@@ -473,7 +467,7 @@ TEST(Scene3DDockDerivedTopics, AnEditThatFailsClearsTheKeptGeometry) {
   EXPECT_EQ(witness->statusWarning(), u"error: boom"_s);
 }
 
-// GAP-07, D6: an input lost under a layer that showed geometry clears it at once and says which input is missing.
+// An input lost under a layer that showed geometry clears it at once and says which input is missing.
 TEST(Scene3DDockDerivedTopics, MissingInputClearsALayerThatHadGeometry) {
   Fixture fx;
   fx.install("crop");
@@ -494,7 +488,7 @@ TEST(Scene3DDockDerivedTopics, MissingInputClearsALayerThatHadGeometry) {
   EXPECT_TRUE(witness->statusWarning().contains(u"missing input 'cloud'"_s)) << witness->statusWarning().toStdString();
 }
 
-// D25: one output marked unavailable leaves its sibling's geometry shown, and neither row warns (the node is ready).
+// One output marked unavailable leaves its sibling's geometry shown, and neither row warns (the node is ready).
 TEST(Scene3DDockDerivedTopics, UnavailableSiblingDoesNotHideAvailableOutput) {
   Fixture fx;
   fx.fake.unavailable = {"witness"};
@@ -513,7 +507,7 @@ TEST(Scene3DDockDerivedTopics, UnavailableSiblingDoesNotHideAvailableOutput) {
   EXPECT_TRUE(witness->statusWarning().isEmpty());
 }
 
-// D25: a valid empty result is not a fault: the layer draws nothing and warns about nothing.
+// A valid empty result is not a fault: the layer draws nothing and warns about nothing.
 TEST(Scene3DDockDerivedTopics, AValidEmptyResultShowsNothingWithoutAWarning) {
   Fixture fx;
   fx.fake.empty_clouds = true;
@@ -528,7 +522,7 @@ TEST(Scene3DDockDerivedTopics, AValidEmptyResultShowsNothingWithoutAWarning) {
   EXPECT_TRUE(cloud->statusWarning().isEmpty()) << cloud->statusWarning().toStdString();
 }
 
-// GAP-15: a dock whose only layer is derived clamps the cursor to its inputs' range, not to what was computed.
+// A dock whose only layer is derived clamps the cursor to its inputs' range, not to what was computed.
 TEST(Scene3DDockDerivedTopics, DerivedOnlyDockDoesNotClampTheCursorToTheComputedSpan) {
   Fixture fx;
   fx.install("crop");
@@ -543,7 +537,7 @@ TEST(Scene3DDockDerivedTopics, DerivedOnlyDockDoesNotClampTheCursorToTheComputed
   EXPECT_EQ(fx.dock.lastTrackerNsForTest(), std::optional<int64_t>(20 * kSec)) << "the inputs end at 20 s";
 }
 
-// GAP-14 (layer half): what a layer drew stays drawn when later publications evict the entry it read.
+// What a layer drew stays drawn when later publications evict the entry it read.
 TEST(Scene3DDockDerivedTopics, AHeldCloudSurvivesPublicationAndEviction) {
   Fixture fx;
   fx.install("crop");
@@ -629,9 +623,7 @@ TEST(Scene3DDockDerivedTopics, AnEvictedSnapshotKeepsItsEntitiesOnASeekBackWithi
   EXPECT_FALSE(witness->geometry().empty());
 }
 
-// ---- findings (D26) ------------------------------------------------------------------------------------------
-
-// GAP-01: a finding is visible at any instant, before its stamp included.
+// A finding is visible at any instant, before its stamp included.
 TEST(Scene3DDockDerivedTopics, AFindingIsVisibleWhenScrubbingBeforeItsStamp) {
   Fixture fx;
   fx.install("pin", 12 * kSec);
@@ -645,7 +637,7 @@ TEST(Scene3DDockDerivedTopics, AFindingIsVisibleWhenScrubbingBeforeItsStamp) {
   EXPECT_EQ(fx.dock.layerStatus(fx.output("pin", "witness")), u"computed at 12 s"_s);
 }
 
-// GAP-01: a finding ignores a finite entity lifetime (its entry sits at kFindingTimestamp).
+// A finding ignores a finite entity lifetime (its entry sits at kFindingTimestamp).
 TEST(Scene3DDockDerivedTopics, FindingIgnoresEntityLifetime) {
   Fixture fx;
   fx.fake.entities = [](Timestamp) {
@@ -664,7 +656,7 @@ TEST(Scene3DDockDerivedTopics, FindingIgnoresEntityLifetime) {
   }
 }
 
-// GAP-01: the dock's time-range clamp and live-edge fold skip a finding: its kFindingTimestamp neither lowers the
+// The dock's time-range clamp and live-edge fold skip a finding: its kFindingTimestamp neither lowers the
 // clamp nor drives the dock to the far past.
 TEST(Scene3DDockDerivedTopics, DockClampAndLiveEdgeFoldSkipFindings) {
   Fixture fx;
@@ -765,8 +757,6 @@ TEST(Scene3DDockDerivedTopics, EachEntityFrameKeepsItsOwnPlacementHold) {
   EXPECT_DOUBLE_EQ(b->t.x, 2.0);
 }
 
-// ---- measurements -----------------------------------------------------------------------------------------------
-
 // A 10 Hz publication stream refreshes the dock about once per publication: at most 20 repaint requests a second,
 // under the 60 Hz gate (counted, not timed).
 TEST(Scene3DDockDerivedTopics, APublicationStreamStaysUnderTheRepaintGate) {
@@ -791,9 +781,6 @@ TEST(Scene3DDockDerivedTopics, APublicationStreamStaysUnderTheRepaintGate) {
   EXPECT_LE(fx.dock.refreshes - before, 2 * kPublications);
 }
 
-// ---- initial framing (SCN-08) ---------------------------------------------------------------------------------
-
-/// A cloud in frame "lidar" with points on the x axis at `xs`.
 std::vector<uint8_t> lidarCloud(const std::vector<float>& xs, Timestamp stamp) {
   std::vector<uint8_t> bytes(xs.size() * PJ::test::kPointStride, 0);
   for (size_t index = 0; index < xs.size(); ++index) {

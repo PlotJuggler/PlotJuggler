@@ -44,8 +44,7 @@ bool KeySequenceWatcher::eventFilter(QObject* watched, QEvent* event) {
   if (event->type() == QEvent::KeyPress) {
     auto* key_event = static_cast<QKeyEvent*>(event);
     const quint64 ts = key_event->timestamp();
-    // Collapse the per-widget re-deliveries of one physical press (see header):
-    // they share a timestamp, so feed the matcher only on the first one.
+    // One physical press, re-delivered per widget (see header).
     const bool duplicate = (ts != 0 && ts == last_key_timestamp_);
     last_key_timestamp_ = ts;
     if (!duplicate && !key_event->isAutoRepeat()) {
@@ -54,7 +53,7 @@ bool KeySequenceWatcher::eventFilter(QObject* watched, QEvent* event) {
       }
     }
   }
-  return QObject::eventFilter(watched, event);  // default false: never consume
+  return QObject::eventFilter(watched, event);  // false: never consume
 }
 
 }  // namespace PJ

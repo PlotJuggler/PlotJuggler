@@ -46,7 +46,6 @@ const std::array<std::uint8_t, 4096>& zeros() {
   return buffer;
 }
 
-// `size` float32 xyz points (all at the origin: finite, which is what counts).
 PJ::Expected<PJ::sdk::ObjectRecord> emitCloud(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   PJ::sdk::PointCloud cloud;
   cloud.timestamp_ns = ts;
@@ -101,7 +100,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitPoses(PJ::Timestamp ts, PJ::sdk::Payload
   return PJ::sdk::ObjectRecord{.ts = ts, .object = poses};
 }
 
-// A row of `size` uint8 voxels.
 PJ::Expected<PJ::sdk::ObjectRecord> emitVoxels(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   PJ::sdk::VoxelGrid grid;
   grid.timestamp_ns = ts;
@@ -118,7 +116,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitVoxels(PJ::Timestamp ts, PJ::sdk::Payloa
   return PJ::sdk::ObjectRecord{.ts = ts, .object = grid};
 }
 
-// A free `size` x `size` occupancy grid.
 PJ::Expected<PJ::sdk::ObjectRecord> emitOccupancy(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   PJ::sdk::OccupancyGrid grid;
   grid.timestamp_ns = ts;
@@ -142,7 +139,6 @@ PJ::ObjectTopicId registerTyped(PJ::SessionManager& session, const std::string& 
   return *id;
 }
 
-// One topic with a big sample at t=100 and a small one at t=200.
 template <typename CreateFn>
 PJ::ObjectTopicId addTopic(
     PJ::SessionManager& session, const std::string& name, BT type, CreateFn create, std::uint8_t big,

@@ -64,14 +64,11 @@ class ChannelColoring {
   // layer can reject the whole element before changing anything.
   [[nodiscard]] static std::optional<ChannelColoring> parseXml(const QDomElement& element);
 
-  // Adds the rows "Colors:", "Auto range:", "Range min:", "Range max:" to `form`,
-  // initialised from this state. The scrubbers are named `<prefix>_range_min` /
-  // `<prefix>_range_max` and the colormap combo `<prefix>_colormap` (stable
-  // names: tests and stylesheets find them). A user edit goes through this
-  // object's setters and then calls `changed`, only when the state changed.
-  // Switching auto off seeds the scrubbers from the last auto range; nudging one
-  // scrubber past the other drags it along. `context` owns the connections and
-  // must not outlive this object (the layer that holds both).
+  // Adds the rows "Colors:", "Auto range:", "Range min:", "Range max:" to `form`, initialised from this state. The
+  // scrubbers are named `<prefix>_range_min` / `<prefix>_range_max` and the colormap combo `<prefix>_colormap` (tests
+  // and stylesheets find them by these names). A user edit goes through this object's setters, then calls `changed`
+  // only when the state changed. Switching auto off seeds the scrubbers from the last auto range; nudging one scrubber
+  // past the other drags it along. `context` owns the connections and must not outlive this object.
   void addConfigRows(
       QFormLayout* form, QWidget* parent, QObject* context, const QString& prefix, std::function<void()> changed);
 

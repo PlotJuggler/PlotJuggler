@@ -3,15 +3,11 @@
 
 #pragma once
 
-// Shared gtest fixtures for the pj_app dataset-identity + timeline tests
-// (multi_dataset_rebind_test, pending_display_binder_test,
-// main_window_source_layout_test, main_window_fanout_ambiguous_test,
-// main_window_viewport_reframe_test): create a dataset and append a two-sample
-// scalar topic through the live AppSession, then refresh the catalog. Failures
-// are signaled with ADD_FAILURE (not ASSERT_*) so the helpers stay usable from
-// value-returning call sites; the caller checks the returned id (0 = failure)
-// where it cares. Also the readers of what a marker generator published
-// (publishedMarkers / markerTimes), shared by the history and restore suites.
+// Shared gtest fixtures for the pj_app dataset-identity and timeline tests: create a dataset and append a two-sample
+// scalar topic through the live AppSession, then refresh the catalog. Failures are signaled with ADD_FAILURE (not
+// ASSERT_*) so the helpers stay usable from value-returning call sites; callers check the returned id (0 =
+// failure) where they care. Also the readers of what a marker generator published (publishedMarkers /
+// markerTimes).
 
 #include <gtest/gtest.h>
 
@@ -33,13 +29,9 @@
 
 namespace pj_test {
 
-// Creates a dataset with the given raw source_name (defaults to "test" for the
-// single-dataset tests that don't care about the label). Returns 0 on failure.
-// When `own_time_domain` is set, the dataset is bound to a fresh per-source
-// TimeDomain (mirroring FileLoader's one-domain-per-source) instead of the
-// default (id 0) domain — required by any test that writes a per-source display
-// offset (Source Timeline / "align starts"), since that shift lives on the
-// domain and the default domain carries none.
+// Creates a dataset with the given raw source_name. Returns 0 on failure. `own_time_domain` binds it to a fresh
+// per-source TimeDomain, as FileLoader does: required by any test that writes a per-source display offset (Source
+// Timeline "align starts"), because the offset lives on the domain and time domain 0 means none.
 inline PJ::DatasetId createDataset(
     PJ::AppSession& app_session, std::string_view source_name = "test", bool own_time_domain = false) {
   PJ::DatasetDescriptor descriptor{.source_name = std::string(source_name)};
@@ -59,9 +51,8 @@ inline PJ::DatasetId createDataset(
   return *dataset;
 }
 
-// Appends a two-sample float64 scalar series named `topic_name` to `dataset_id`
-// at the given timestamps, commits it, and rebuilds the catalog. Returns the new
-// topic's id (0 on failure).
+// Appends a two-sample float64 scalar series named `topic_name` to `dataset_id` at the given timestamps, commits
+// it, and rebuilds the catalog. Returns the new topic's id (0 on failure).
 inline PJ::TopicId addScalarTopic(
     PJ::AppSession& app_session, PJ::DatasetId dataset_id, std::string_view topic_name, PJ::Timestamp first_ts,
     PJ::Timestamp second_ts) {
@@ -81,15 +72,13 @@ inline PJ::TopicId addScalarTopic(
   return handle->topic_id;
 }
 
-// Convenience overload at the default two-sample timestamps (100, 200 ns).
 inline PJ::TopicId addScalarTopic(PJ::AppSession& app_session, PJ::DatasetId dataset_id, std::string_view topic_name) {
   return addScalarTopic(app_session, dataset_id, topic_name, /*first_ts=*/100, /*second_ts=*/200);
 }
 
-// The set marker generator `owner` last published for `output` on `dataset`
-// (nullopt when it never did). An all-datasets rule publishes on
-// PJ::kAllDatasetsMarkerDataset under PJ::kAllDatasetsMarkerTopic, with t_start
-// already in the display frame (raw − the contributing dataset's offset).
+// The set marker generator `owner` last published for `output` on `dataset` (nullopt when it never did). An
+// all-datasets rule publishes on PJ::kAllDatasetsMarkerDataset under PJ::kAllDatasetsMarkerTopic, with t_start in
+// the display frame (raw minus the contributing dataset's offset).
 inline std::optional<PJ::sdk::PlotMarkers> publishedMarkers(
     PJ::AppSession& app_session, PJ::DatasetId dataset, std::string_view output, std::string_view owner) {
   const PJ::ObjectStore& store = app_session.sessionManager().objectStore();

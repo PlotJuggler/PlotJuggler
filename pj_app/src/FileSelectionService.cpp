@@ -37,14 +37,11 @@ QString FileSelectionService::browserAcceptList(const QString& name_filter) {
 }
 
 void FileSelectionService::selectFileContent(QWidget* parent, const QString& name_filter, Callback callback) {
-  // The aggregate first filter already contains every supported extension.
   const QString browser_filter = browserContentFilter(name_filter);
 #ifdef Q_OS_WASM
-  // Qt 6.11 prefers the File System Access API when Chromium exposes it, but
-  // showOpenFilePicker can reject immediately in the cross-origin-isolated
-  // context required by a threaded build. Qt chooses its implementation during
-  // this call, so mask only the open-picker probe long enough to select its
-  // portable <input type=file> path, then restore the browser API immediately.
+  // Workaround (Qt 6.11 observed): Qt prefers the File System Access API when Chromium has it, but
+  // showOpenFilePicker can reject at once in the cross-origin-isolated context a threaded build needs. Qt picks
+  // its path during this call, so hide the probe only for the call to get the <input type=file> path.
   ScopedOpenFilePickerFallback fallback;
 #endif
   QFileDialog::getOpenFileContent(  // NOLINT(pj-canonical-chrome): Qt's browser byte API has no PJ wrapper.
@@ -57,11 +54,8 @@ void FileSelectionService::selectFileContent(QWidget* parent, const QString& nam
 
 void FileSelectionService::saveFileContent(QWidget* parent, const QByteArray& bytes, const QString& file_name_hint) {
 #ifdef Q_OS_WASM
-  // Qt 6.11 gates BOTH its open and save File System Access paths on
-  // showOpenFilePicker. In the COOP/COEP context needed by this threaded build,
-  // the save picker is not dependable. Mask only the capability probe for the
-  // duration of this call so Qt chooses its synchronous Blob/<a download>
-  // fallback, then restore the browser API immediately.
+  // Workaround (Qt 6.11 observed): Qt gates its save File System Access path on showOpenFilePicker too, and the
+  // save picker is not dependable under COOP/COEP. Hide the probe for this call to get the Blob/<a download> path.
   ScopedOpenFilePickerFallback fallback;
 #endif
   QFileDialog::saveFileContent(  // NOLINT(pj-canonical-chrome): Qt's browser download API has no PJ wrapper.

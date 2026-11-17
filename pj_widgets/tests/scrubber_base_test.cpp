@@ -21,15 +21,14 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-// Fixed widget size so the arrow / body hit-zones are deterministic without
-// showing the widget: centerRect() is x ∈ [16, 64), arrows are the 16-px edges.
+// Fixed widget size, so the arrow and body hit-zones are deterministic without showing the widget: centerRect() is x in
+// [16, 64), arrows are the 16-px edges.
 constexpr int kWidth = 80;
 constexpr int kHeight = 20;
 
-// Send a synchronous mouse event with explicit local + global positions (the
-// scrubber's drag math reads globalPosition(); zone detection reads pos()).
-// Global coords stay well inside the offscreen screen so the screen-edge
-// cursor-wrap path never triggers during the test drag.
+// Sends a synchronous mouse event with explicit local and global positions (the scrubber's drag math reads
+// globalPosition(); zone detection reads pos()). Global coords stay well inside the offscreen screen, so the
+// screen-edge cursor-wrap path never triggers during the test drag.
 void sendMouse(
     QWidget* widget, QEvent::Type type, QPointF local, QPointF global, Qt::MouseButton button,
     Qt::MouseButtons buttons) {
@@ -82,9 +81,8 @@ TEST(ScrubberBase, NoEditingFinishedWhileDragInProgress) {
   EXPECT_EQ(finished_spy.count(), 0);  // still dragging — not settled yet
 }
 
-// If the platform swallowed the release outside the app, the first move with
-// no pressed left button must settle the drag instead of leaving the global
-// wasm event filter active until another click.
+// If the platform swallowed the release outside the app, the first move with no pressed left button settles the drag
+// instead of leaving the global wasm event filter active until another click.
 TEST(ScrubberBase, ButtonlessMoveSelfHealsLostDragRelease) {
   PJ::IntScrubber scrubber;
   configure(scrubber);
@@ -154,9 +152,8 @@ TEST(ScrubberBase, EscapeRevertDoesNotFireEditingFinished) {
   EXPECT_EQ(finished_spy.count(), 0);
 }
 
-// Return (and keypad Enter) in the inline editor commits and closes it. QLineEdit
-// ignores the key after emitting returnPressed, so it must not bubble to the
-// scrubber, whose keyPressEvent would reopen the editor on it. Focus stays on the
+// Return (and keypad Enter) in the inline editor commits and closes it. QLineEdit ignores the key after emitting
+// returnPressed, so it must not bubble to the scrubber, whose keyPressEvent would reopen the editor. Focus stays on the
 // scrubber, and a Return aimed at the scrubber itself still opens the editor.
 TEST(ScrubberBase, ReturnCommitsAndClosesEditorWithoutReopening) {
   for (const int key : {Qt::Key_Return, Qt::Key_Enter}) {
@@ -184,11 +181,10 @@ TEST(ScrubberBase, ReturnCommitsAndClosesEditorWithoutReopening) {
   }
 }
 
-// Closing the editor hides its focused QLineEdit, which makes Qt hand focus to the
-// next widget in the window's focus chain. Committing with Return/Enter or
-// reverting with Escape must put focus back on the scrubber (so Space/Return keep
-// reaching it, not a sibling text field); clicking or tabbing to another widget
-// closes the editor too but must leave focus where the user sent it.
+// Closing the editor hides its focused QLineEdit, which makes Qt hand focus to the next widget in the window's focus
+// chain. Committing with Return or Enter, or reverting with Escape, puts focus back on the scrubber (so Space and
+// Return keep reaching it, not a sibling text field); clicking or tabbing to another widget closes the editor too but
+// leaves focus where the user sent it.
 TEST(ScrubberBase, EditorExitFocusGoesBackToScrubberOnlyForKeyboardExits) {
   QWidget window;
   QLineEdit sibling(&window);  // created first: earlier in the focus chain than the scrubber

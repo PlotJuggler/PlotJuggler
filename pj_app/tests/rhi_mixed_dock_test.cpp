@@ -365,10 +365,9 @@ TEST_F(RhiMixedDockFixture, HiddenTabsRenderAgainWhenShown) {
   }
 }
 
-// A dock-area tab switch keeps the hidden tab parented (our ADS patch,
-// pj_scene3D/docs/TECHNICAL_NOTES.md §5): after the first visit, switching back
-// to a tab adopts no QRhi, rebuilds nothing and uploads nothing, and what
-// changed while the Scene3D tab was hidden shows when it comes back.
+// A dock-area tab switch keeps the hidden tab parented (our ADS fork, pj_scene3D/docs/TECHNICAL_NOTES.md "ADS and
+// window-system quirks"): after the first visit, switching back to a tab adopts no QRhi, rebuilds nothing and uploads
+// nothing, and what changed while the Scene3D tab was hidden shows when it comes back.
 TEST_F(RhiMixedDockFixture, TabSwitchesAfterTheFirstVisitRebuildNothing) {
   manager_->addDockWidgetTabToArea(scene_dock_, plot_dock_->dockAreaWidget());
   manager_->addDockWidgetTabToArea(media_dock_, plot_dock_->dockAreaWidget());
@@ -486,7 +485,8 @@ TEST_F(RhiMixedDockFixture, FloatingDocksMovedToAScreenWithAnotherPixelRatio) {
     if (qEnvironmentVariableIntValue("PJ_REQUIRE_MIXED_DPR") == 1) {
       FAIL() << "PJ_REQUIRE_MIXED_DPR=1 but no screen has another device-pixel ratio";
     }
-    GTEST_SKIP() << "needs two screens with different device-pixel ratios (TECHNICAL_NOTES §8, mixed-DPR lane)";
+    GTEST_SKIP()
+        << "needs two screens with different device-pixel ratios (pj_scene3D/docs/TECHNICAL_NOTES.md \"CI lanes\")";
   }
   if (QGuiApplication::platformName() == u"wayland") {
     GTEST_SKIP() << "the Wayland compositor places windows; run on xcb";

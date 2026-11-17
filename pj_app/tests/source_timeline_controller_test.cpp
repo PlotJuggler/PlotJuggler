@@ -18,15 +18,10 @@
 namespace PJ {
 namespace {
 
-// Regression: the timeline bar extent (and thus the needle's clamp) must match the
-// authoritative PlaybackEngine range, which is recomputed comprehensively over both
-// scalar AND lazily-ingested object topics. Catalog itemsAdded fires only when a
-// topic first appears, and samplesIngested is scalar-only — so an extent that grows
-// after the topic is catalogued (progressive file ingest, an object/image topic
-// filling in, a streaming live edge) is NOT seen by either. recomputeRange catches
-// it and emits rangeChanged; the controller rebuilds the bars off THAT signal so the
-// bars never fall short of the playback range (which caused the needle to max out at
-// ~70% of the handle and playback to run past the bars).
+// The timeline bars follow the PlaybackEngine range, which is recomputed over scalar and lazily-ingested object
+// topics. An extent that grows after its topic is catalogued fires neither the catalog's itemsAdded nor
+// samplesIngested (scalar-only), so the controller rebuilds the bars off rangeChanged; otherwise they fall short of
+// what playback traverses.
 TEST(SourceTimelineController, BarExtentTracksRecomputedRange) {
   AppSession session;
   DataEngine& engine = session.sessionManager().dataEngine();
@@ -35,14 +30,12 @@ TEST(SourceTimelineController, BarExtentTracksRecomputedRange) {
   const auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "drive.mcap", .time_domain_id = *domain});
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
 
-  // One writer/handle kept alive so the second phase GROWS the same topic rather
-  // than minting a new one (registerScalarSeries creates a fresh topic each call).
+  // One writer/handle kept alive so the second step grows the same topic rather than registering another.
   DataWriter writer = engine.createWriter();
   auto handle = writer.registerScalarSeries(*dataset, "/x", NumericType::kFloat64);
   ASSERT_TRUE(handle.has_value()) << handle.error();
 
-  // Phase 1: data spans [0, 10] s. Build the catalog so the topic is visible, and
-  // seed the authoritative range.
+  // Data spans [0, 10] s: build the catalog so the topic is visible and seed the authoritative range.
   writer.appendScalar(*handle, 0, 1.0);
   writer.appendScalar(*handle, 10'000'000'000LL, 1.0);
   std::ignore = session.sessionManager().commitChunks(writer.flushAll());
@@ -56,9 +49,8 @@ TEST(SourceTimelineController, BarExtentTracksRecomputedRange) {
   EXPECT_EQ(initial.min, 0);
   EXPECT_EQ(initial.max, 10'000'000'000LL);
 
-  // Phase 2: the SAME topic grows to 20 s WITHOUT a catalog change. recomputeRange
-  // (the file-load completion / live-edge path) picks it up and emits rangeChanged,
-  // which must drive the bars to follow — synchronously, no event loop needed.
+  // The same topic grows to 20 s without a catalog change. recomputeRange (the file-load completion / live-edge
+  // path) emits rangeChanged, which must drive the bars synchronously, with no event loop.
   writer.appendScalar(*handle, 20'000'000'000LL, 1.0);
   std::ignore = session.sessionManager().commitChunks(writer.flushAll());
   session.recomputeRange();
@@ -67,11 +59,9 @@ TEST(SourceTimelineController, BarExtentTracksRecomputedRange) {
   EXPECT_EQ(grown.max, 20'000'000'000LL) << "timeline bars did not follow the recomputed range";
 }
 
-// Regression: with "Use time offset" ON, a dataset loaded AFTER the controller is
-// wired moves the global reference from 0 to the epoch. The widget's time-frame
-// offset must follow (refreshed on rangeChanged) AND re-frame the playhead, or the
-// needle strands at the small playback value (~0) while the bars sit at epoch ns —
-// "the needle doesn't appear at the right place, with its own min/max".
+// With "Use time offset" on, a dataset loaded after the controller is wired moves the global reference from 0 to
+// the epoch. The widget's time-frame offset must follow (refreshed on rangeChanged) and re-frame the playhead, or
+// the needle strands at the small playback value while the bars sit at epoch ns.
 TEST(SourceTimelineController, NeedleFollowsFrameOnLoadWithOffsetOn) {
   constexpr Timestamp kEpoch = 1'700'000'000'000'000'000LL;
   AppSession session;
@@ -80,7 +70,7 @@ TEST(SourceTimelineController, NeedleFollowsFrameOnLoadWithOffsetOn) {
   Timeline widget;
   SourceTimelineController controller(&widget, &session);  // seeds with ref 0
 
-  // Load an epoch-scale dataset now — the global reference jumps 0 -> kEpoch.
+  // An epoch-scale dataset: the global reference jumps 0 -> kEpoch.
   DataEngine& engine = session.sessionManager().dataEngine();
   const auto domain = engine.createTimeDomain("a");
   ASSERT_TRUE(domain.has_value());
@@ -95,8 +85,8 @@ TEST(SourceTimelineController, NeedleFollowsFrameOnLoadWithOffsetOn) {
   session.catalogModel().rebuildFromDatastore();
   session.seedPlaybackFromSession();  // recompute range + snap currentTime to the data min
 
-  // Bars live at raw epoch ns; the needle must too (snapped to the data start), NOT
-  // at the small playback value under a stale 0 frame offset.
+  // Bars live at raw epoch ns; the needle must too (snapped to the data start), not at the small playback value
+  // under a stale 0 frame offset.
   EXPECT_EQ(widget.sceneExtentForTest().min, kEpoch);
   EXPECT_EQ(widget.playheadNsForTest(), kEpoch);
 }

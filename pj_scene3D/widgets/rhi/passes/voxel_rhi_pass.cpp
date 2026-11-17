@@ -120,7 +120,7 @@ void VoxelRhiPass::admit(QRhi* rhi, const PlaceFn& place) {
 
 void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
   if (!ready()) {
-    return;  // never built: no layer of this family since the last release
+    return;
   }
   draws_.clear();
   last_layer_count_ = 0;
@@ -159,9 +159,8 @@ void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
     const glm::vec3 cell_size = layer->cellSize();
     const glm::mat4 fixed_from_grid =
         relativeModel(admitted.fixed_from_source.matrix() * source_from_grid.matrix(), frame.render_origin);
-    // Whole-grid frustum reject, from the shared policy: voxel
-    // centres, inflated by half the largest cell side. The clip-space-corrected
-    // view-projection only loosens the near plane (0..w depth), never over-culls.
+    // Whole-grid frustum reject from the shared policy: voxel centres inflated by half the largest cell side. The
+    // clip-space-corrected view-projection only loosens the near plane (0..w depth), never over-culls.
     CubeCloudView cloud_view;
     const glm::vec3 grid_extent = glm::vec3(
                                       static_cast<float>(layer->columnCount()), static_cast<float>(layer->rowCount()),
@@ -188,8 +187,7 @@ void VoxelRhiPass::prepare(const RhiFrameContext& frame) {
     uniforms.mode_params = {
         color_maximum, static_cast<float>(layer->drawMode()), static_cast<float>(layer->colormap()), 0.0F};
     frame.updates->updateDynamicBuffer(gpu.uniform_buffer, 0, kVoxelUniformBytes, &uniforms);
-    // Voxels write depth either way; below full opacity they blend, so they
-    // draw after every opaque draw.
+    // Voxels write depth either way; below full opacity they blend, so they draw after every opaque draw.
     draws_.push_back(
         Draw{
             layer, gpu.shader_resources, static_cast<quint32>(layer->voxelCount()),

@@ -7,10 +7,9 @@
 
 namespace pj::scene3d {
 
-// Fixed-window moving average over the most recent N samples, backed by a
-// std::deque used as a circular buffer. Smooths jittery per-frame timing
-// numbers (GPU / CPU ms) for display. Single source for the window size, so the
-// GPU and CPU readouts can't drift apart. Not thread-safe (render thread only).
+// Fixed-window moving average over the most recent N samples (a std::deque as a circular buffer), smoothing jittery
+// per-frame timing numbers (GPU / CPU ms) for display; one window size for the GPU and CPU readouts. Not thread-safe
+// (render thread only).
 class MovingAverage {
  public:
   explicit MovingAverage(std::size_t window = 30) : window_(window) {}
@@ -26,7 +25,6 @@ class MovingAverage {
     return samples_.empty();
   }
 
-  // Mean of the buffered samples; 0 when empty.
   [[nodiscard]] double average() const noexcept {
     if (samples_.empty()) {
       return 0.0;

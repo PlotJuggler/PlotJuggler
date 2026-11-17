@@ -18,9 +18,8 @@ namespace PJ {
 // plugin's side, from the host applying it and the effect just not taking.
 constexpr uint32_t kKnownFlags = PJ_DATA_PROCESSOR_FLAG_EPHEMERAL | PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT;
 
-/// The output names of a decoded typed create for a kind whose outputs are untyped and
-/// whose inputs resolve by name (transform and markers, until the catalog v2 work):
-/// the views borrow `request`. Refuses, naming `kind`, a typed output or a dataset_id.
+/// The output names of a decoded typed create for a kind whose outputs are untyped and whose inputs resolve by name
+/// (transform and markers): the views borrow `request`. Refuses, naming `kind`, a typed output or a dataset_id.
 [[nodiscard]] inline Expected<std::vector<PJ_string_view_t>> untypedOutputNames(
     const PJ_data_processor_request_t& request, std::string_view kind) {
   if (request.dataset_id != 0) {

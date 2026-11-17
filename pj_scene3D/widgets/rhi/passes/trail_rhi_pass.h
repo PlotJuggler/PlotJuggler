@@ -20,10 +20,10 @@ class PosesInFrameLayer;
 class Scene3DLayer;
 class TrailLayer;
 
-/// The trail family of the QRhi view: each trail is a screen-space ribbon (a
-/// triangle strip, two vertices per polyline point) drawn as a past and a future half in their own colours from one
-/// vertex buffer. A trail is either a standalone TrailLayer or the one a PosesInFrameLayer owns; the owner is what the
-/// view orders. Trails have no per-view budget and add nothing to the scene bounds.
+/// The trail family of the QRhi view: each trail is a screen-space ribbon (a triangle strip, two vertices per
+/// polyline point), drawn as a past and a future half in their own colours from one vertex buffer. A trail is a
+/// standalone TrailLayer or the one a PosesInFrameLayer owns; the owner is what the view orders. Trails have no
+/// per-view budget and add nothing to the scene bounds.
 class TrailRhiPass {
  public:
   struct Draw {
@@ -41,28 +41,23 @@ class TrailRhiPass {
   [[nodiscard]] bool ready() const {
     return pipeline_ != nullptr;
   }
-  /// A trail's owner, as the view registered it (SceneContributions): the layer
-  /// the view orders, which keys the draw, and where its trail comes from.
+  /// A trail's owner as registered through SceneContributions: the layer the view orders, which keys the draw.
   struct Owner {
     Scene3DLayer* layer = nullptr;
     TrailLayer* trail = nullptr;         ///< a standalone trail (the layer itself)
     PosesInFrameLayer* poses = nullptr;  ///< or the pose layer whose trail() comes and goes
   };
-  /// Adopts the view's trail owners, in logical order. Drops the GPU state of
-  /// owners that left.
+  /// Adopts the view's trail owners, in logical order.
   void setLayers(const std::vector<Owner>& owners);
-  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
   [[nodiscard]] bool hasLayers() const {
     return !owners_.empty();
   }
 
-  /// Syncs each visible trail to `fixed_frame`, uploads changed polylines and this
-  /// frame's uniforms, and splits each ribbon at `time`. `render_size` is the
-  /// scene target in pixels and `render_scale` its supersampling factor.
+  /// Syncs each visible trail to `fixed_frame`, uploads changed polylines and uniforms, and splits each ribbon at
+  /// `time`. `render_size` is the scene target in pixels, `render_scale` its supersampling factor.
   void prepare(
       const RhiFrameContext& frame, const std::string& fixed_frame, PJ::Timepoint time, const QSize& render_size,
       float render_scale);
-  /// The prepared draw of `owner` (none or one).
   [[nodiscard]] std::span<const Draw> drawsFor(const Scene3DLayer* owner) const {
     return findDraws(draws_, owner);
   }

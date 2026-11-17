@@ -41,12 +41,10 @@ constexpr const char* kToolbarButtons[] = {
     "backButton", "forwardButton", "toParentButton", "newFolderButton", "listModeButton", "detailModeButton",
 };
 
-// Shared height for the filename field and the look-in / file-type combos.
-// QFileDialog lays them in a grid whose row height tracks the combo's
-// minimumSizeHint — the style floors that a few px above a bare QLineEdit,
-// so QSS min/max-height can't pull the combos down to match the field.
-// Pin all three in C++ instead. Value mirrors the app's input-chrome box
-// model in the stylesheets: input_min_height (18) + 2*2 padding + 2*1 border.
+// Shared height of the filename field and the look-in and file-type combos. QFileDialog lays them in a grid whose row
+// height tracks the combo's minimumSizeHint; the style floors that a few px above a bare QLineEdit, so QSS min and
+// max-height cannot pull the combos down to match the field. All three are pinned in C++. The value mirrors the app's
+// input-chrome box model in the stylesheets: input_min_height (18) + 2*2 padding + 2*1 border.
 constexpr int kInputRowHeightPx = 24;
 
 // Test hooks (see FileDialog.h); read on the GUI thread only.
@@ -65,14 +63,12 @@ struct ProbeState {
 };
 #endif
 
-// For each path, whether stat'ing it answered within one shared timeout (empty
-// paths count as answered). The answer itself is irrelevant: a path that
-// exists, does not exist, or is a file all return promptly; only a dead network
-// share hangs, for ~80 s.
+// For each path, whether stat'ing it answered within one shared timeout (empty paths count as answered). The answer
+// itself is irrelevant: a path that exists, does not exist, or is a file all return promptly; only a dead network share
+// hangs, for ~80 s.
 //
-// Detached std::threads rather than QThreadPool/QtConcurrent: a pool worker
-// would stay pinned on the dead share and the pool would wait for it at
-// application exit. A detached thread costs nothing at exit.
+// Detached std::threads rather than QThreadPool or QtConcurrent: a pool worker would stay pinned on the dead share and
+// the pool would wait for it at application exit; a detached thread costs nothing at exit.
 std::vector<char> foldersAnsweringInTime(const QStringList& paths) {
   std::vector<char> answered(static_cast<std::size_t>(paths.size()), 1);
 #ifndef PJ_TARGET_WASM  // no network shares in the browser
@@ -112,10 +108,9 @@ struct QtFileDialogState {
   QList<QUrl> shortcuts;
 };
 
-// Reads Qt's QtProject/FileDialog group (shared by every Qt application of the
-// user) and removes it, plus the legacy Qt/filedialog key: QFileDialog's
-// constructor would otherwise stat the persisted last folder and sidebar
-// shortcuts on the GUI thread before any directory we pass is applied.
+// Reads Qt's QtProject/FileDialog group (shared by every Qt application of the user) and removes it, plus the
+// Qt/filedialog key: QFileDialog's constructor would otherwise stat the persisted last folder and sidebar shortcuts on
+// the GUI thread before any directory we pass is applied.
 QtFileDialogState takeQtFileDialogState() {
   QSettings qt_settings(QSettings::UserScope, u"QtProject"_s);
   QtFileDialogState state;
@@ -148,9 +143,8 @@ QList<QUrl> answeringShortcuts(const QList<QUrl>& shortcuts) {
   return kept;
 }
 
-// Re-skin a QFileDialog toolbar button identified by objectName with one
-// of the app's themed SVG icons. Silent no-op when the button is missing
-// (defensive against Qt internal renames between versions).
+// Re-skins a QFileDialog toolbar button, identified by objectName, with one of the app's themed SVG icons. No-op when
+// the button is missing (Qt may rename internals between versions).
 void applySvgIcon(QFileDialog* dialog, const char* object_name, const QString& svg_resource) {
   if (auto* button = dialog->findChild<QToolButton*>(QString::fromLatin1(object_name))) {
     button->setIcon(QIcon(loadSvg(svg_resource, currentTheme())));
@@ -163,16 +157,13 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
   setDialogTitle(tr("Open File"));
   resize(820, 560);
 
-  // Qt's own memory is dropped before the inner dialog exists (see
-  // takeQtFileDialogState); PJ4 keeps its own last folder per caller. Because
-  // the group is shared with other Qt applications, the rest is carried over.
+  // Qt's own memory is dropped before the inner dialog exists (takeQtFileDialogState); PJ4 keeps its own last folder
+  // per caller. The group is shared with other Qt applications, so the rest is carried over.
   const QtFileDialogState qt_state = takeQtFileDialogState();
 
-  // Build the inner picker as a plain child widget — Qt::Widget strips
-  // the default Qt::Dialog window flags so it doesn't try to be its own
-  // top-level window. DontUseNativeDialog forces the Qt-drawn widget
-  // tree, which is what our stylesheet targets. The explicit start folder also
-  // keeps Qt from consulting its in-process last-visited folder.
+  // The inner picker is a plain child widget: Qt::Widget strips the default Qt::Dialog window flags, so it does not try
+  // to be a top-level window. DontUseNativeDialog forces the Qt-drawn widget tree, which our stylesheet targets. The
+  // explicit start folder also keeps Qt from consulting its in-process last-visited folder.
   inner_ = new QFileDialog(contentWidget(), QString(), QDir::homePath());
   if (qt_state.view_mode == u"Detail"_s) {
     inner_->setViewMode(QFileDialog::Detail);
@@ -187,9 +178,8 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
 
   contentLayout()->addWidget(inner_);
 
-  // Shown by setDirectory() when the requested start folder did not answer. A
-  // full-width row of the picker's own grid, like embedExtras(), so it lines
-  // up with the picker's content.
+  // Shown by setDirectory() when the requested start folder did not answer: a full-width row of the picker's own grid,
+  // as embedExtras(), so it lines up with the picker's content.
   start_folder_notice_ = new QLabel(inner_);
   start_folder_notice_->setObjectName(u"startFolderNotice"_s);
   start_folder_notice_->setWordWrap(true);
@@ -200,30 +190,25 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
     grid->addWidget(start_folder_notice_, grid->rowCount(), 0, 1, grid->columnCount());
   }
 
-  // Swap Qt's stock SP_FileDialog* icons (native theme glyphs that clash
-  // with our flat chrome) for our keyboard_arrow_* chevrons. The _light
-  // variants carry the #3D3D3D authoring ink that loadSvg's recolor pipeline
-  // folds onto the active theme ink (the _dark variants' #E0E0E0 is
-  // deliberately NOT folded and would stay pale on the light theme).
+  // Qt's stock SP_FileDialog* icons (native theme glyphs that clash with the flat chrome) are swapped for our
+  // keyboard_arrow_* chevrons. The _light variants carry the #3D3D3D authoring ink that loadSvg's recolor pipeline
+  // folds onto the active theme ink (the _dark variants' #E0E0E0 is deliberately not folded and would stay pale on the
+  // light theme).
   applySvgIcon(inner_, "backButton", ":/resources/svg/keyboard_arrow_left_light.svg");
   applySvgIcon(inner_, "forwardButton", ":/resources/svg/keyboard_arrow_right_light.svg");
   applySvgIcon(inner_, "toParentButton", ":/resources/svg/keyboard_arrow_up_light.svg");
   applySvgIcon(inner_, "newFolderButton", ":/resources/svg/create_new_folder.svg");
-  // QFileDialog's "list mode" is the columns-of-icons display, "detail
-  // mode" is the table with name/size/type/date columns — match Material's
-  // visual convention: Grid View for the icon-grid mode, View List for
-  // the row-with-metadata mode.
+  // QFileDialog's "list mode" is the columns-of-icons display, "detail mode" the table with name, size, type and date
+  // columns: they get Material's Grid View and View List icons.
   applySvgIcon(inner_, "listModeButton", ":/resources/svg/grid_view.svg");
   applySvgIcon(inner_, "detailModeButton", ":/resources/svg/view_list.svg");
 
-  // Prime icon size from ChromeMetrics defaults. Callers (or the
-  // templated static helpers) override with the live MainWindow values
-  // and may wire chromeMetricsChanged to stay in step.
+  // Icon size is primed from the ChromeMetrics defaults; callers (or the templated static helpers) override it with the
+  // live MainWindow values and may wire chromeMetricsChanged to stay in step.
   onChromeMetricsChanged(chrome_metrics_);
 
-  // Equalize the input row heights (see kInputRowHeightPx). Both combos
-  // (lookInCombo, fileTypeCombo) and the filename field get the same
-  // fixed height so they line up instead of the combos rendering taller.
+  // Equalizes the input row heights (kInputRowHeightPx): both combos (lookInCombo, fileTypeCombo) and the filename
+  // field get the same fixed height, instead of the combos rendering taller.
   for (auto* combo : inner_->findChildren<QComboBox*>()) {
     combo->setFixedHeight(kInputRowHeightPx);
   }
@@ -239,13 +224,11 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
 
 void FileDialog::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   chrome_metrics_ = metrics;
-  // Size the chrome title bar to the live metrics so the file picker's chrome
-  // matches the main window (and every other dialog) rather than sitting at the
-  // constructor's default height.
+  // The chrome title bar is sized to the live metrics, so the file picker matches the main window and every other
+  // dialog instead of sitting at the constructor's default height.
   setChromeMetrics(metrics);
-  // Mirror CurveListPanel: the icon gets icon_size, the button's outer
-  // extent gets icon_size + icon_padding. Setting only setIconSize leaves
-  // the button at its default ~16px size and the larger icon clips.
+  // As CurveListPanel: the icon gets icon_size, the button's outer extent icon_size + icon_padding. Setting only
+  // setIconSize leaves the button at its default ~16px size and the larger icon clips.
   const QSize icon_sz(metrics.icon_size, metrics.icon_size);
   const int button_extent = metrics.icon_size + metrics.icon_padding;
   for (const char* name : kToolbarButtons) {

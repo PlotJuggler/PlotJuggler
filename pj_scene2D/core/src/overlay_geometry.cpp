@@ -13,13 +13,7 @@ namespace {
 
 constexpr double kPi = 3.14159265358979323846;
 
-// Image-space half-width of a stroke. `thickness` is in image pixels, so the
-// width SCALES with zoom (the view transform enlarges the geometry as you zoom
-// in). It is FLOORED so the stroke is never thinner than kMinStrokeScreenPx ON
-// SCREEN — without that floor a sub-pixel stroke can miss every pixel center and
-// vanish, which is exactly how rectangle/cube edges disappeared when zoomed out.
-// image_px_per_screen_px (= 1 / effective_view_scale) converts the screen-pixel
-// floor into image-space units at the current zoom.
+// Image-space half-width, floored at kMinStrokeScreenPx on screen (see the header).
 double strokeHalfWidth(double thickness, double image_px_per_screen_px) {
   const double floor_image = kMinStrokeScreenPx * image_px_per_screen_px;
   return 0.5 * std::max(thickness, floor_image);

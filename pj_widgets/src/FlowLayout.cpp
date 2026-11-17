@@ -101,13 +101,10 @@ int FlowLayout::doLayout(const QRect& rect, bool test_only) const {
     }
 
     int next_x = x + item->sizeHint().width() + space_x;
-    // Off-by-one trap: `effective.right()` is the inclusive last pixel
-    // (rect.x() + rect.width() - 1), so we wrap iff the item's right
-    // edge would land *past* that pixel — i.e. `x + width > right + 1`,
-    // which is `x + width > rect.x() + rect.width()`. The naive form
-    // `next_x - space_x > effective.right()` wraps unnecessarily when
-    // an item ends exactly on the rect's right edge (e.g. two 24-px
-    // icons with 0 spacing in a 48-px rect), forcing single-column.
+    // Off-by-one trap: `effective.right()` is the inclusive last pixel (rect.x() + rect.width() - 1), so the layout
+    // wraps iff the item's right edge would land past that pixel: `x + width > rect.x() + rect.width()`. The naive
+    // `next_x - space_x > effective.right()` wraps unnecessarily when an item ends exactly on the rect's right edge
+    // (two 24-px icons with 0 spacing in a 48-px rect), forcing a single column.
     if (x + item->sizeHint().width() > effective.x() + effective.width() && line_height > 0) {
       x = effective.x();
       y += line_height + space_y;

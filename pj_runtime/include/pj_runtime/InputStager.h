@@ -27,11 +27,11 @@ namespace PJ {
 
 /// Resolves a node's inputs at a requested time on the GUI thread without fetching or decoding any
 /// object payload (`stage`), and decodes them later on any thread (`decode`), so a lazy entry's fetch
-/// and chunk decode run on a worker (docs/derived_objects/ARCHITECTURE.md §8, §9 requirement 5). Each
-/// input resolves independently at its newest sample at or before the requested time (§7).
+/// and chunk decode run on a worker. Each
+/// input resolves independently at its newest sample at or before the requested time.
 class InputStager {
  public:
-  /// One scalar sample, a number or a string (D4), and the row it was read from.
+  /// One scalar sample, a number or a string, and the row it was read from.
   struct ScalarSample {
     TopicId topic = 0;
     std::size_t column = 0;
@@ -105,7 +105,7 @@ class InputStager {
     Timestamp stamp = 0;  ///< the upstream result's time, at or before the requested one
     /// Enters the reader's cache key in place of a ring entry's uid: equal for one result, distinct between two.
     std::vector<uint64_t> identity;
-    /// A ring entry to decode, the decoded object, or why the output was unavailable (D25: a missing input).
+    /// A ring entry to decode, the decoded object, or why the output was unavailable (a missing input).
     std::variant<Entry, Object, scripting::Unavailable> value;
   };
   /// The override for output `output` of upstream `upstream`; null: read the history.
@@ -114,14 +114,13 @@ class InputStager {
   /// Keeps references to the store and the history; they must outlive the stager.
   InputStager(const ObjectStore& store, const ResultHistory& history, ScalarSampler scalars, ParserLookup parsers);
 
-  /// GUI thread. Resolves every input of `node` at `t` and builds the request's cache key (§10) under
+  /// GUI thread. Resolves every input of `node` at `t` and builds the request's cache key under
   /// `epoch`, the dataset's: an object topic by the identity of its entry at or before `t` and of its parser
   /// (nothing is fetched), a video topic also by its content revision (`ObjectStore::contentIdentity`), a scalar by its
   /// sample's row (`ScalarSample::chunk`, `row`), its value copied; an upstream output by its ring entry in the newest
-  /// result at or before `t` (`ResultHistory::resultAt`), compared by the result's stamp, so a pinned finding is an
-  /// input only from its real stamp (decided 2026-10-18). Error `on-demand: missing input '<alias>'` when an input has
+  /// input only from its real stamp. Error `on-demand: missing input '<alias>'` when an input has
   /// nothing at or before `t` (a null string cell is nothing), followed by `: <reason>` when it is an upstream output
-  /// that was unavailable (D6, D25: no run, the caller clears). With `overrides`, an upstream output they cover is read
+  /// that was unavailable (no run, the caller clears). With `overrides`, an upstream output they cover is read
   /// from them instead (its stamp, its identity, its value).
   [[nodiscard]] Expected<Staged> stage(
       const RecipeGraph::Node& node, Timestamp t, uint64_t epoch, const Overrides& overrides = {}) const;

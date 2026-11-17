@@ -33,8 +33,7 @@ namespace PJ {
 
 namespace {
 
-// We own the title via DockToolbar — the built-in ADS title bar is always
-// hidden.
+// The title is owned by DockToolbar: the built-in ADS title bar is always hidden.
 class HiddenTitleBar : public ads::CDockAreaTitleBar {
  public:
   using ads::CDockAreaTitleBar::CDockAreaTitleBar;
@@ -52,17 +51,15 @@ class SplittableComponentsFactory : public ads::CDockComponentsFactory {
   }
 };
 
-// A splitter drag emits splitterMoved per mouse move; coalesce into one
-// history snapshot after the drag goes quiet.
+// A splitter drag emits splitterMoved per mouse move: coalesce into one history snapshot after the drag goes quiet.
 constexpr int kSplitterUndoDebounceMs = 200;
 
 QString newStateId() {
   return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
-// `remembered_sizes` overrides a splitter's live sizes() (see
-// PlotDocker::pre_fullscreen_sizes_); entries whose count no longer matches the
-// splitter are ignored.
+// `remembered_sizes` overrides a splitter's live sizes() (PlotDocker::pre_fullscreen_sizes_); entries whose count no
+// longer matches the splitter are ignored.
 QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget, const PlotDocker::SplitterSizes& remembered_sizes) {
   if (widget == nullptr) {
     return {};
@@ -109,10 +106,9 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget, const PlotDo
     if (dock_widget == nullptr) {
       continue;
     }
-    // Plot widgets emit <plot>; object widgets (Scene3DDockWidget, …)
-    // emit whatever their xmlSaveState returns (e.g. <scene3d>). A null
-    // QDomElement from an object widget means "I don't persist state yet",
-    // so we skip it honestly rather than writing an empty stub.
+    // Plot widgets emit <plot>; object widgets (Scene3DDockWidget, ...) emit whatever their xmlSaveState returns
+    // (<scene3d>, ...). A null QDomElement from an object widget means it persists no state yet: skip it rather than
+    // write an empty stub.
     QDomElement payload;
     if (auto* plot = dock_widget->plotWidget()) {
       payload = plot->xmlSaveState(doc);
@@ -122,8 +118,8 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget, const PlotDo
         continue;
       }
     } else {
-      // The chooser is workspace state: omitting it makes undo of a visualization
-      // choice restore an empty plot instead of the chooser.
+      // The chooser is workspace state: omitting it makes undo of a visualization choice restore an empty plot instead
+      // of the chooser.
       payload = doc.createElement(u"placeholder"_s);
     }
     area_element.setAttribute(u"id"_s, dock_widget->stateId());
@@ -185,8 +181,8 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
     for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
       LayoutNode child_node = parseLayoutNode(child);
       if (!child_node.valid) {
-        // A splitter is one structural unit. Skipping one malformed branch
-        // would silently delete its plots while applying the valid siblings.
+        // A splitter is one structural unit: skipping a malformed branch would silently delete its plots while applying
+        // the valid siblings.
         return node;
       }
       node.children.push_back(std::move(child_node));
@@ -212,8 +208,8 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
     node.type = LayoutNode::Type::kArea;
     node.area_id = element.attribute(u"id"_s);
     node.area_name = element.attribute(u"name"_s);
-    // One PJ dock has exactly one payload. Picking the first of several would
-    // turn a malformed document into a successful but lossy restore.
+    // One PJ dock has exactly one payload: picking the first of several would make a malformed document a successful
+    // but lossy restore.
     const QDomElement payload = element.firstChildElement();
     if (payload.isNull() || !payload.nextSiblingElement().isNull()) {
       return node;
@@ -234,9 +230,8 @@ LayoutNode parseLayoutNode(const QDomElement& element) {
   return node;
 }
 
-// First leaf-area dock element reachable from `node`, descending into the
-// first child of each splitter. Used to decide between plot-pool and
-// empty-object-widget construction at the top of the restore tree.
+// The first leaf-area dock element reachable from `node`, descending into the first child of each splitter: decides
+// between plot-pool and empty-object-widget construction at the top of the restore tree.
 QDomElement firstLeafElement(const LayoutNode& node) {
   const LayoutNode* cur = &node;
   while (cur->type == LayoutNode::Type::kSplitter && !cur->children.isEmpty()) {
@@ -248,10 +243,9 @@ QDomElement firstLeafElement(const LayoutNode& node) {
   return {};
 }
 
-// A dock's content element is an object widget (Scene3DDockWidget,
-// Scene2DDockWidget, …) when it is present and is not the PlotWidget's own
-// <plot> element. Restore hands its tagName() to the object-widget factory as
-// the "kind", so pj_plotting stays agnostic to specific scene families.
+// A dock's content element is an object widget (Scene3DDockWidget, Scene2DDockWidget, ...) when it is present and is
+// not the PlotWidget's own <plot>. Restore hands its tagName() to the object-widget factory as the "kind", so
+// pj_plotting stays agnostic to scene families.
 bool isObjectWidgetElement(const QDomElement& element) {
   return !element.isNull() && element.tagName() != "plot"_L1 && element.tagName() != "placeholder"_L1;
 }
@@ -352,16 +346,12 @@ void applySplitterSizes(const LayoutNode& node, const QVector<DockWidget*>& widg
     return;
   }
 
-  // Express the saved ratios as large relative weights instead of scaling them by
-  // the widgets' *current* pixel sizes. During layout restore the docker is not
-  // laid out at its final size yet — TabbedPlotWidget builds a brand-new PlotDocker
-  // per tab and restores into it before it is shown — so widget->width()/height()
-  // report placeholder geometry that distorts the proportions (and the splitter
-  // later "grows" to fit, pulling the split toward 50/50). QSplitter::setSizes only
-  // stores relative weights: when the splitter is first laid out it shrinks these
-  // oversized hints to fit, distributing space proportionally, so a large common
-  // scale reproduces the saved ratios exactly regardless of when the dock area
-  // becomes visible.
+  // Express the saved ratios as large relative weights, not scaled by the widgets' current pixel sizes: during layout
+  // restore the docker is not laid out at its final size (TabbedPlotWidget builds a new PlotDocker per tab and restores
+  // into it before it is shown), so widget->width()/height() report placeholder geometry that distorts the proportions
+  // (and the splitter later "grows" to fit, pulling the split toward 50/50). QSplitter::setSizes stores relative
+  // weights: on first layout the splitter shrinks these oversized hints to fit, distributing space proportionally, so a
+  // large common scale reproduces the saved ratios whenever the dock area becomes visible.
   constexpr double kRelativeScale = 1'000'000.0;
   const double total_ratio = std::accumulate(node.size_ratios.cbegin(), node.size_ratios.cend(), 0.0);
   QList<int> sizes;
@@ -390,9 +380,8 @@ bool restoreNode(
     }
 
     if (isObjectWidgetElement(dock_element)) {
-      // Object-widget path: build an empty dock by kind (the XML tag), then ask
-      // it to load its own payload. Unknown kind (no factory / null result) →
-      // leave the dock as-is rather than mis-parsing a scene element as a plot.
+      // Object-widget path: build an empty dock by kind (the XML tag), then have it load its own payload. An unknown
+      // kind (no factory, null result) leaves the dock as is rather than mis-parsing a scene element as a plot.
       IDataWidget* obj = object_factory ? object_factory(dock_element.tagName(), nullptr, widget) : nullptr;
       if (obj == nullptr) {
         return false;
@@ -401,7 +390,7 @@ bool restoreNode(
       return obj->xmlLoadState(dock_element);
     }
 
-    // Plot path
+    // Plot path.
     PlotWidget* plot = widget->plotWidget();
     if (plot == nullptr) {
       plot = pool.takeForArea(node);
@@ -427,7 +416,7 @@ bool restoreNode(
     const bool child_is_object = isObjectWidgetElement(firstLeafElement(child));
     const bool child_is_placeholder = isPlaceholderElement(firstLeafElement(child));
     if (child_is_object || child_is_placeholder) {
-      // No plot needed — the leaf will install an object widget itself.
+      // No plot needed: the leaf installs an object widget itself.
       split_anchor =
           node.orientation == Qt::Horizontal ? split_anchor->splitHorizontal() : split_anchor->splitVertical();
     } else {
@@ -453,8 +442,8 @@ bool restoreNode(
 
 PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* catalog, QWidget* parent)
     : ads::CDockManager(parent), state_id_(newStateId()), name_(std::move(name)), session_(session), catalog_(catalog) {
-  // Disable ADS's built-in stylesheet. The flag keeps it off: ADS 5's FollowPalette
-  // re-applies it on every ApplicationPaletteChange, which a theme switch sends.
+  // Disable ADS's built-in stylesheet; the flag keeps it off (ADS 5's FollowPalette re-applies it on every
+  // ApplicationPaletteChange, which a theme switch sends).
   ads::CDockManager::setConfigFlag(ads::CDockManager::DisableStylesheet, true);
   setStyleSheet("");
   setComponentsFactory(new SplittableComponentsFactory());
@@ -462,15 +451,14 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
   connect(this, &ads::CDockManager::dockWidgetRemoved, this, [this](ads::CDockWidget* removed) {
     auto* removed_dock = qobject_cast<DockWidget*>(removed);
     const bool removed_was_focused = (removed_dock != nullptr && removed_dock == focused_dock_);
-    // The maximize dies with its dock: bring the hidden siblings back and drop the
-    // snapshot before anything else rebuilds the tree.
+    // The maximize dies with its dock: bring the hidden siblings back and drop the snapshot before anything else
+    // rebuilds the tree.
     if (removed_dock != nullptr && removed_dock == fullscreen_dock_) {
       exitFullscreen();
     }
     ensureAtLeastOneWidget();
-    // ADS doesn't move focus to a survivor when the focused dock is closed, so
-    // do it here: the right panel mirrors the focused dock, and leaving focus
-    // on a deleted dock would strand stale settings on screen.
+    // ADS does not move focus to a survivor when the focused dock closes: do it here, since the right panel mirrors the
+    // focused dock and focus left on a deleted dock would strand stale settings on screen.
     if (removed_was_focused && !restoring_state_) {
       refocusAfterRemoval(removed_dock);
     }
@@ -499,8 +487,7 @@ PlotDocker::PlotDocker(QString name, SessionManager* session, CatalogModel* cata
   splitter_undo_debounce_.setSingleShot(true);
   splitter_undo_debounce_.setInterval(kSplitterUndoDebounceMs);
   connect(&splitter_undo_debounce_, &QTimer::timeout, this, [this]() {
-    // Re-check at fire time: a debounce armed just before a restore must not
-    // publish into it.
+    // Re-check at fire time: a debounce armed just before a restore must not publish into it.
     if (!restoring_state_) {
       emit undoableChange();
     }
@@ -533,8 +520,7 @@ void PlotDocker::onSplitterMoved(int /*position*/, int /*index*/) {
 bool PlotDocker::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
   if (focus_overlay_ != nullptr && (type == QEvent::Enter || type == QEvent::Leave)) {
-    // Walk up from the watched child (canvas or axis widget) to its
-    // containing DockWidget so we can hand the overlay its CDockAreaWidget.
+    // Walk up from the watched child (canvas or axis widget) to its DockWidget to hand the overlay its CDockAreaWidget.
     for (QObject* node = watched; node != nullptr; node = node->parent()) {
       auto* dock_widget = qobject_cast<ads::CDockWidget*>(node);
       if (dock_widget == nullptr) {
@@ -652,14 +638,13 @@ void PlotDocker::refreshOwnerWatermark() {
 
 void PlotDocker::refocusAfterRemoval(DockWidget* removed) {
   DockWidget* target = nullptr;
-  // Prefer the previously focused dock so the user lands back where they were.
-  // QPointer keeps it null if it was deleted in the meantime.
+  // Prefer the previously focused dock so the user lands back where they were; the QPointer is null if it was deleted
+  // meanwhile.
   if (previous_dock_ != nullptr && previous_dock_ != removed) {
     target = previous_dock_;
   } else {
-    // Otherwise focus the first surviving dock. ensureAtLeastOneWidget() has
-    // already guaranteed at least one exists, so closing the last real widget
-    // lands focus on the freshly created placeholder (an empty config panel).
+    // Otherwise focus the first surviving dock. ensureAtLeastOneWidget() guarantees one exists, so closing the last
+    // real widget lands focus on the fresh placeholder (an empty config panel).
     for (int i = 0; i < plotCount(); ++i) {
       if (DockWidget* dock = plotAt(i); dock != nullptr && dock != removed) {
         target = dock;
@@ -735,8 +720,8 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
     return false;
   }
 
-  // Parse and validate the complete structural tree before changing the live
-  // docker. Floating containers are disabled, so exactly one is restorable.
+  // Parse and validate the complete structural tree before changing the live docker. Floating containers are disabled,
+  // so exactly one is restorable.
   QDomElement container;
   int container_count = 0;
   for (QDomElement child = tab_element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
@@ -770,8 +755,8 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
     setName(tab_element.attribute(u"tab_name"_s));
   }
 
-  // The old tab's docks go away below and the restore splits new ones: do not let
-  // either meet a maximize that still refers to them.
+  // The old tab's docks go away below and the restore splits new ones: neither may meet a maximize that still refers to
+  // them.
   exitFullscreen();
 
   const bool was_hidden = isHidden();
@@ -793,9 +778,9 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
     dock->deleteLater();
   }
 
-  // Decide top-level dock kind by peeking the first leaf's content tag. An
-  // object-widget root (<scene3d>, <scene2d>, …) needs a plot-less placeholder
-  // DockWidget, into which restoreNode installs the dock via the factory.
+  // Decide the top-level dock kind by peeking the first leaf's content tag: an object-widget root (<scene3d>,
+  // <scene2d>, ...) needs a plot-less placeholder DockWidget, into which restoreNode installs the dock through the
+  // factory.
   const QDomElement root_element = firstLeafElement(root_node);
   const bool root_is_object = isObjectWidgetElement(root_element);
   const bool root_is_placeholder = isPlaceholderElement(root_element);
@@ -835,9 +820,8 @@ void PlotDocker::focusDock(DockWidget* dock) {
     return;
   }
   if (dock == focused_dock_) {
-    // Already focused: ADS won't re-emit focusedDockWidgetChanged, but the
-    // dock's content just changed (e.g. a drop populated a focused placeholder
-    // after every widget was closed), so refresh listeners directly.
+    // Already focused: ADS will not re-emit focusedDockWidgetChanged, but the dock's content just changed (a drop
+    // populated a focused placeholder after every widget was closed), so refresh listeners directly.
     emit dockFocused(dock);
   } else {
     setDockWidgetFocused(dock);
@@ -856,14 +840,11 @@ void PlotDocker::toggleFullscreen(DockWidget* dock) {
   if (dock == nullptr) {
     return;
   }
-  // Enter: hide every currently shown dock except the target. toggleView(false)
-  // routes through ADS' hideDockWidget -> hideEmptyParentSplitters, collapsing
-  // the emptied branches so the survivor reflows to fill the tab. (It only
-  // deletes content under DeleteContentOnClose, not the DeleteOnClose flag the
-  // docks carry, so the hidden docks survive to be restored.)
-  // openedDockWidgets() (not dockWidgetsMap(), which is keyed by objectName —
-  // every PJ4 dock is named "Plot", so the map collapses to a single entry and
-  // only one sibling would hide).
+  // Enter: hide every currently shown dock except the target. toggleView(false) goes through ADS' hideDockWidget ->
+  // hideEmptyParentSplitters, collapsing the emptied branches so the survivor reflows to fill the tab (it deletes
+  // content only under DeleteContentOnClose, not the DeleteOnClose flag the docks carry, so the hidden docks survive to
+  // be restored). Use openedDockWidgets(), not dockWidgetsMap(): that is keyed by objectName and every PJ4 dock is
+  // named "Plot", so the map collapses to one entry and only one sibling would hide.
   hidden_by_fullscreen_.clear();
   pre_fullscreen_sizes_.clear();
   for (ads::CDockSplitter* splitter : findChildren<ads::CDockSplitter*>()) {
@@ -881,16 +862,14 @@ void PlotDocker::toggleFullscreen(DockWidget* dock) {
 }
 
 void PlotDocker::exitFullscreen() {
-  // Take the state out before any foreign code runs: re-showing a dock emits
-  // viewToggled, and a slot may exit again (the nested call then finds nothing
-  // left to undo) or delete the maximized dock (hence the guarded pointer).
-  // Runs even when the maximized dock is already gone, so no snapshot outlives it.
+  // Take the state out before any foreign code runs: re-showing a dock emits viewToggled, and a slot may exit again
+  // (the nested call then finds nothing to undo) or delete the maximized dock (hence the guarded pointer). Runs even
+  // when the maximized dock is already gone, so no snapshot outlives it.
   const QPointer<DockWidget> maximized = std::exchange(fullscreen_dock_, nullptr);
   const QList<QPointer<ads::CDockWidget>> hidden = std::exchange(hidden_by_fullscreen_, {});
   pre_fullscreen_sizes_.clear();
-  // Re-show exactly the docks the maximize hid (those still alive).
-  // toggleView(true) re-shows each dock and its collapsed parent splitters,
-  // restoring the layout the maximize folded away.
+  // Re-show exactly the docks the maximize hid (those still alive): toggleView(true) re-shows each dock and its
+  // collapsed parent splitters, restoring the folded layout.
   for (const QPointer<ads::CDockWidget>& dock : hidden) {
     if (dock) {
       dock->toggleView(true);

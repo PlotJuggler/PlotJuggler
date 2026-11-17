@@ -680,7 +680,7 @@ TEST_F(LayoutDatasetPathsTest, GeneratorResolvesByPathAmongSameNamedDatasets) {
   ASSERT_TRUE(restore(Processor::kGenerator, second, u"run.csv"_s));
 
   Peer::saveLayout(window, folders.saved + u"/layout.pj4.xml"_s, /*include_data_source=*/true);
-  // The files reload in the opposite order: each id now stands for the other path.
+  // The files reload in the opposite order: each id then stands for the other path.
   app().sessionManager().setDatasetSourcePath(first, folders.moved + u"/data/two/run.csv"_s);
   app().sessionManager().setDatasetSourcePath(second, folders.moved + u"/data/one/run.csv"_s);
   ASSERT_TRUE(QFile::copy(folders.saved + u"/layout.pj4.xml"_s, folders.moved + u"/layout.pj4.xml"_s));
@@ -950,8 +950,8 @@ TEST_F(LayoutDatasetPathsTest, GenericLayoutCarriesNoTransformDatasetAndBindsToT
   EXPECT_EQ(restored.front().input_bindings.front().dataset_id, other);
 }
 
-// A layout written before the generator path was relative (absolute path) and
-// before transform inputs carried one still restores onto the live dataset.
+// An older-format layout (generator with an absolute path, transform inputs with none) still restores onto the live
+// dataset.
 TEST_F(LayoutDatasetPathsTest, OldFormatLayoutStillRestoresGeneratorAndTransform) {
   ASSERT_TRUE(folders.create());
   const QString data_path = folders.saved + u"/data/one/run.csv"_s;

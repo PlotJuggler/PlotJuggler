@@ -164,16 +164,10 @@ TEST(ToolboxParserIngestRealRos, TfMessageBecomesFrameTransformsObjectTopic) {
   ASSERT_TRUE(ingest_or.has_value()) << ingest_or.error();
   auto ingest = *ingest_or;
 
-  // "{}" (non-empty) is LOAD-BEARING. DataSourceRuntimeHost skips
-  // parser->loadConfig() entirely when parser_config_json is empty
-  // (DataSourceRuntimeHost.cpp ~:452), and parser_ros selects its SPECIALIZED
-  // handlers (the TF entry carrying object_type=kFrameTransforms) only inside
-  // loadConfig -> compileBoundSchema(register_specialized_handler=true)
-  // (ros_parser.cpp ~:430). bindSchema alone registers only the kDefault
-  // generic handler -> classifySchema returns kNone -> no object topic.
-  // Any non-empty JSON works ("{}" included); "" silently degrades to
-  // scalar-only ingest. Empirically falsified: with "" this test fails at the
-  // topics.size() assertion.
+  // A non-empty parser_config_json ("{}" suffices) is load-bearing: ParserRoutingService calls parser->loadConfig()
+  // only when it is non-empty, and parser_ros registers its specialized handlers (the TF entry carrying
+  // object_type=kFrameTransforms) only inside loadConfig. Without it bindSchema registers only the generic handler,
+  // classifySchema returns kNone and no object topic appears (observed: the topics.size() assertion fails).
   const std::string_view schema{kTfSchema};
   auto binding = ingest.ensureParserBinding(
       PJ::ParserBindingRequest{
@@ -191,10 +185,7 @@ TEST(ToolboxParserIngestRealRos, TfMessageBecomesFrameTransformsObjectTopic) {
   ASSERT_TRUE(push.has_value()) << push.error();
   ASSERT_TRUE((*runtime).releaseParserIngest(ds->id).has_value());
 
-  // 3D contract: kFrameTransforms metadata (drag routing), one stored entry
-  // (render source), render parser registered (SessionManager contract).
-  // sdk::name(kFrameTransforms) == "kFrameTransforms" (builtin_object.hpp), so
-  // metadata_json is {"builtin_object_type":"kFrameTransforms"}.
+  // metadata_json is {"builtin_object_type":"kFrameTransforms"} (sdk::name(kFrameTransforms), builtin_object.hpp).
   const auto topics = object_store.listTopics(static_cast<PJ::DatasetId>(ds->id));
   ASSERT_EQ(topics.size(), 1u);
   const auto& desc = object_store.descriptor(topics.front());

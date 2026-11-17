@@ -291,8 +291,7 @@ TEST(AsyncFrameWorkerTest, ExceptionBarrierKeepsWorkerServing) {
 }
 
 TEST(AsyncFrameWorkerTest, TeardownUnderLoadNeverHangs) {
-  // Lost-wakeup regression (the historical scene2d_dock_widget_test deadlock):
-  // hammer construct → request → destruct; a racy stop would hang the join.
+  // Lost wakeup: construct, request, destruct in a loop; a racy stop hangs the join.
   for (int i = 0; i < 200; ++i) {
     AsyncFrameWorker worker;
     worker.start(

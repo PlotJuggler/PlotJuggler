@@ -180,8 +180,7 @@ TEST(CurveEditorGlobalMarkers, RowLabelsCarryDatasetNameWithTwoDatasets) {
   ASSERT_NE(footer, nullptr);
   const auto rows = footerRows(footer);
   ASSERT_EQ(rows.size(), 1);
-  // QLabel has Q_OBJECT (ElidingLabel itself does not, so it must be looked up
-  // through its Q_OBJECT base — see pj_plotting/CLAUDE.md).
+  // ElidingLabel has no Q_OBJECT of its own, so findChild looks it up through its Q_OBJECT base, QLabel.
   auto* name_label = rows.front()->findChild<QLabel*>(u"curveNameLabel"_s);
   ASSERT_NE(name_label, nullptr);
   const QString expected = QStringLiteral("Dataset markers — %1").arg(plot.datasetDisplayName(*dataset_a));

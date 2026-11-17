@@ -33,10 +33,7 @@ bool waitForSignal(QSignalSpy& spy, int timeout_ms = 5000) {
   return !spy.isEmpty();
 }
 
-// ---------------------------------------------------------------------------
-// Minimal HTTP/1.1 server that serves a fixed body to all incoming requests.
-// Binds to a random loopback port; no external network required.
-// ---------------------------------------------------------------------------
+// Minimal HTTP/1.1 server serving a fixed body to every request, on a random loopback port (no external network).
 
 class LocalHttpServer {
  public:
@@ -74,11 +71,8 @@ class LocalHttpServer {
   QByteArray body_;
 };
 
-// ---------------------------------------------------------------------------
-// libarchive reports failures through return codes. Unchecked, a builder that
-// silently produced a truncated or empty archive would surface downstream as
-// "Could not open ZIP" and be mistaken for the policy under test rejecting it.
-// ---------------------------------------------------------------------------
+// libarchive reports failures through return codes. Unchecked, a builder that silently produced a truncated or empty
+// archive would surface as "Could not open ZIP" and be mistaken for the policy under test rejecting it.
 
 void requireArchiveOk(int status, struct archive* a, const char* what) {
   ASSERT_EQ(status, ARCHIVE_OK) << what << ": " << (archive_error_string(a) != nullptr ? archive_error_string(a) : "");
@@ -90,9 +84,7 @@ void requireBytesWritten(la_ssize_t written, qsizetype expected, struct archive*
       << " bytes: " << (archive_error_string(a) != nullptr ? archive_error_string(a) : "");
 }
 
-// ---------------------------------------------------------------------------
-// Helper: builds an in-memory ZIP from a map of {filename -> content}
-// ---------------------------------------------------------------------------
+// Builds an in-memory ZIP from a map of {filename -> content}.
 
 QByteArray buildZip(const QMap<QString, QByteArray>& files) {
   std::vector<char> buffer(4 * 1024 * 1024);
@@ -128,11 +120,8 @@ static QString sha256Hex(const QByteArray& data) {
   return QCryptographicHash::hash(data, QCryptographicHash::Sha256).toHex();
 }
 
-// ---------------------------------------------------------------------------
-// Helper: builds a ZIP holding one entry of a caller-chosen type. buildZip()
-// only emits regular files, and the entry-kind policy is precisely about what
-// happens to everything else.
-// ---------------------------------------------------------------------------
+// Builds a ZIP holding one entry of a caller-chosen type: buildZip() emits only regular files, and the entry-kind
+// policy is about everything else.
 
 // filetype is __LA_MODE_T, libarchive's own alias: mode_t only where POSIX
 // provides it, unsigned short on Windows. The AE_IF* constants carry that type.
@@ -160,16 +149,10 @@ QByteArray buildZipWithEntry(const QString& name, __LA_MODE_T filetype, const QB
   return QByteArray(buffer.data(), static_cast<int>(used));
 }
 
-// ---------------------------------------------------------------------------
-// Helper: builds a ZIP whose entries do NOT declare their size.
-//
-// Omitting archive_entry_set_size() makes libarchive defer the sizes to a
-// descriptor after each payload, and padding the archive comment pushes the
-// end-of-central-directory record out of the window the seekable reader scans —
-// so the reader falls back to the streaming path and sees only the local
-// headers, where the sizes are zero. Both conditions are required: either one
-// alone still yields a declared size.
-// ---------------------------------------------------------------------------
+// Builds a ZIP whose entries do NOT declare their size. Omitting archive_entry_set_size() makes libarchive defer the
+// sizes to a descriptor after each payload, and padding the archive comment pushes the end-of-central-directory record
+// out of the window the seekable reader scans, so the reader streams and sees only local headers (sizes zero). Both
+// conditions are required: either alone still yields a declared size.
 
 QByteArray buildZipWithoutDeclaredSizes(const QMap<QString, QByteArray>& files) {
   constexpr int kCommentBytes = 40000;  // must exceed the reader's trailing scan window
@@ -218,15 +201,9 @@ QByteArray buildZipWithoutDeclaredSizes(const QMap<QString, QByteArray>& files) 
   return QByteArray(buffer.data(), static_cast<int>(used));
 }
 
-// ---------------------------------------------------------------------------
-// Helper: builds a ZIP whose entry understates its own size.
-//
-// libarchive's writer records whatever size it was told and then writes what it
-// was given, so the inconsistency is patched in afterwards: the uncompressed
-// size lives at +22 of the local file header and at +24 of the central
-// directory, and a seekable reader consults the latter, so both must be lowered
-// for the reader to believe the smaller number.
-// ---------------------------------------------------------------------------
+// Builds a ZIP whose entry understates its own size. libarchive's writer records the size it was told, so the
+// inconsistency is patched in afterwards: the uncompressed size lives at +22 of the local file header and at +24 of
+// the central directory, and a seekable reader consults the latter, so both are lowered.
 
 QByteArray buildZipUnderstatingSize(const QString& name, const QByteArray& content, uint32_t declared) {
   QByteArray zip = buildZip({{name, content}});
@@ -246,12 +223,9 @@ QByteArray buildZipUnderstatingSize(const QString& name, const QByteArray& conte
   return zip;
 }
 
-// Drives one archive through the full pipeline under `limits` and reports whether
-// it was refused *for the expected reason*.
-//
-// Matching the reason is the point: an unreadable archive, a network error or a
-// different quota all produce a refusal, so asserting only that something failed
-// would report the policy under test as working when it never ran.
+// Drives one archive through the full pipeline under `limits` and reports whether it was refused *for the expected
+// reason*: an unreadable archive, a network error or a different quota also refuse, so asserting only that something
+// failed could report the policy as working when it never ran.
 testing::AssertionResult installIsRefused(
     const QByteArray& zip_data, const PJ::ArchiveLimits& limits, const QString& expected_reason) {
   LocalHttpServer server;
@@ -282,10 +256,6 @@ testing::AssertionResult installIsRefused(
   }
   return testing::AssertionSuccess();
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 TEST(DownloadManagerTest, InvalidUrlEmitsFailed) {
   PJ::DownloadManager dm;
@@ -372,10 +342,8 @@ TEST(DownloadManagerTest, UppercaseSha256PrefixIsAccepted) {
 
 TEST(DownloadManagerTest, MixedCaseChecksumIsAccepted) {
   const QByteArray zip_data = buildZip({{"hello.txt", "world"}});
-  // Every second hex digit uppercased so the check exercises a truly mixed
-  // input rather than an all-upper or all-lower one — guards against a
-  // well-meaning "normalise both sides with toLower()" refactor that would
-  // still pass the all-upper test but subtly break other well-formed inputs.
+  // Every second hex digit uppercased: a truly mixed input, so a "normalise both sides with toLower()" refactor that
+  // still passes the all-upper test is caught.
   QString hex = sha256Hex(zip_data);
   for (int i = 0; i < hex.size(); i += 2) {
     hex[i] = hex[i].toUpper();
@@ -417,10 +385,8 @@ TEST(DownloadManagerTest, EmptyChecksumSkipsVerification) {
   EXPECT_TRUE(QFile::exists(tmp.path() + "/readme.txt"));
 }
 
-// A bare "sha256:" prefix with no digest is a malformed registry field. It must
-// fail (a garbage checksum should not silently pass), but with a message that
-// names the registry, not the generic "Checksum mismatch" that implies a corrupt
-// or tampered artifact.
+// A bare "sha256:" prefix with no digest is a malformed registry field: it fails with a message that names the
+// registry, not the generic "Checksum mismatch", which implies a corrupt or tampered artifact.
 TEST(DownloadManagerTest, BareSha256PrefixFailsAsMalformedNotMismatch) {
   const QByteArray zip_data = buildZip({{"readme.txt", "content"}});
 
@@ -574,9 +540,7 @@ TEST(DownloadManagerTest, PhaseChangedSkipsVerifyingWhenChecksumEmpty) {
 }
 
 TEST(DownloadManagerTest, CancelDuringExtractEmitsCancelled) {
-  // Many small entries so the extract loop has plenty of cancel checkpoints
-  // and the flag is observed before the loop completes. Each iteration in
-  // extractFromMemory checks the cancel flag before consuming the next entry.
+  // Many small entries, so the extract loop has plenty of cancel checkpoints (it checks the flag before each entry).
   QMap<QString, QByteArray> files;
   const QByteArray blob(4 * 1024, 'x');
   for (int i = 0; i < 400; ++i) {
@@ -597,9 +561,8 @@ TEST(DownloadManagerTest, CancelDuringExtractEmitsCancelled) {
 
   const int id = dm.fetch(server.url(), {}, tmp.path());
 
-  // Trigger cancel the moment the worker announces the Extracting phase.
-  // Receiver is &dm so the lambda runs on the manager's thread — cancel()
-  // touches internal maps which the manager only reads from its own thread.
+  // Trigger cancel when the worker announces the Extracting phase; the receiver is &dm, so the lambda runs on the
+  // manager's thread (cancel() touches maps the manager reads only there).
   QObject::connect(
       &dm, &PJ::DownloadManager::phaseChanged, &dm, [&dm, id](int the_id, PJ::DownloadManager::WorkPhase phase) {
         if (the_id == id && phase == PJ::DownloadManager::WorkPhase::Extracting) {
@@ -629,12 +592,7 @@ TEST(DownloadManagerTest, MultipleOperationsHaveUniqueIds) {
   dm.cancel(id3);
 }
 
-// ---------------------------------------------------------------------------
-// Archive limits
-//
-// The budgets are injected so a breach costs a few bytes instead of the 256 MiB
-// a default-sized fixture would need.
-// ---------------------------------------------------------------------------
+// Archive limits: the budgets are injected so a breach costs a few bytes instead of a default-sized fixture.
 
 TEST(DownloadManagerTest, ArchiveWithinLimitsStillInstalls) {
   const QByteArray zip_data = buildZip({{"lib/plugin.so", "0123456789"}});
@@ -737,8 +695,7 @@ TEST(DownloadManagerTest, BackslashSeparatorIsRefused) {
 }
 
 TEST(DownloadManagerTest, EntriesWithoutADeclaredSizeStillInstall) {
-  // Regression: treating an undeclared size as a declared zero refused the first
-  // data block of a perfectly valid archive.
+  // An undeclared size must not read as a declared zero (which refused the first data block of a valid archive).
   const QByteArray zip_data = buildZipWithoutDeclaredSizes(
       {{"quota-probe/manifest.json", QByteArray(516, 'm')}, {"quota-probe/libplugin.so", QByteArray(9000, 'p')}});
 
@@ -783,23 +740,16 @@ TEST(DownloadManagerTest, UndeclaredEntriesRespectTheAggregateTotal) {
 
 TEST(DownloadManagerTest, DeclaredSizeThatUnderstatesIsRefused) {
 #ifdef Q_OS_WIN
-  // The fixture is a STORED entry whose declared uncompressed size is hand-patched
-  // below its real length. Whether the reader hands the excess over as data blocks
-  // (so the per-block cap trips with this message) or resolves the malformed stored
-  // entry some other way depends on the libarchive build, and the Windows build
-  // takes the other path. The cap itself is exercised cross-platform by the
-  // undeclared-size tests above; only this bomb-shaped fixture is build-specific.
+  // The fixture is a STORED entry whose declared size is patched below its real length. Whether the reader hands the
+  // excess over as data blocks (tripping the per-block cap with this message) depends on the libarchive build, and the
+  // Windows build takes another path; the cap itself is covered cross-platform by the undeclared-size tests.
   GTEST_SKIP() << "malformed-STORED-entry fixture is libarchive-build-specific on Windows; the cap is covered by the "
                   "undeclared-size tests";
 #endif
-  // The decompression-bomb shape: the header promises little and the payload
-  // delivers more, so the budget is charged for a fraction of what would land.
-  //
-  // The payload has to outgrow the reader's own output buffer. Below that it
-  // decompresses in one go and the reader reports the mismatch itself before
-  // handing over a single block; past it, blocks arrive and the cap is what
-  // stops them — which is the case that matters, since that is when the excess
-  // would otherwise reach the disk.
+  // The decompression-bomb shape: the header promises little and the payload delivers more, so the budget is charged
+  // for a fraction of what would land. The payload must outgrow the reader's own output buffer: below that it
+  // decompresses in one go and the reader reports the mismatch itself; past it, blocks arrive and the cap is what stops
+  // them, which is the case that matters.
   const QByteArray zip_data = buildZipUnderstatingSize(u"quota-probe/liar.bin"_s, QByteArray(1024 * 1024, 'x'), 64);
 
   EXPECT_TRUE(installIsRefused(zip_data, PJ::ArchiveLimits{}, u"holds more bytes than it declares"_s));

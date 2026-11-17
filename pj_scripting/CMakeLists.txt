@@ -1,16 +1,12 @@
 # ---------------------------------------------------------------------------
-# pj_scripting — Luau scripting engine for PJ4.
+# pj_scripting: the Luau and Python script engines. Qt-free.
 #
-# Dual-mode:
-#  - IN-TREE (PJ4 app): builds pj_scripting_core (the Luau engine + whole-series
-#    marker analysis) AND pj_scripting (the SISO DataProcessor/IncrementalEngine
-#    adapter) AND the tests.
-#  - STANDALONE (Conan, `conan create`): builds ONLY pj_scripting_core against the
-#    Conan plotjuggler_sdk::base + Luau + pocketfft, and installs it. The SDK-only
-#    headless runner and the GUI plugin link this same engine, so a rule runs
-#    identically GUI <-> headless.
-#
-# Qt-free. core: pj_base + Luau (+ pocketfft) — NOT pj_datastore. MPL-2.0.
+# Two modes:
+#  - In tree: pj_scripting_core (Luau engine + whole-series marker analysis), pj_scripting (the data-processor
+#    adapters, the on-demand engines) and the tests.
+#  - Standalone (Conan, `conan create`): only pj_scripting_core, against the Conan plotjuggler_sdk::base, Luau and
+#    pocketfft. The SDK-only headless runner and the GUI plugin link this same engine, so a rule runs identically in
+#    both. The core depends on pj_base and Luau (+ pocketfft) only, never pj_datastore.
 # ---------------------------------------------------------------------------
 
 if(NOT TARGET plotjuggler_sdk::base)
@@ -124,8 +120,7 @@ if(NOT WIN32 AND _pj_python_home)
 endif()
 
 # --- pj_scripting_core: the Luau engine + whole-series marker analysis ---------
-# Depends ONLY on pj_base + Luau (+ pocketfft for bandPower) — NOT pj_datastore. This
-# is the shareable unit.
+# Depends only on pj_base, Luau and pocketfft (bandPower), never pj_datastore: the shareable unit.
 add_library(pj_scripting_core STATIC
   src/luau_engine.cpp
   src/marker_engine.cpp
@@ -167,15 +162,14 @@ if(_PJS_STANDALONE)
   return()
 endif()
 
-# --- pj_scripting: the DataProcessor/IncrementalEngine adapter (in-tree only) ------
-# The SISO streaming path that couples the engine to pj_datastore's IncrementalEngine.
-# Marker analysis does NOT use this; it stays out of the shareable core.
-# Luau lives in pj_scripting_core (linked PUBLIC below); python is desktop-only.
+# --- pj_scripting: the data-processor adapters and on-demand engines (in tree only) ---
+# Couples the engine to pj_datastore's IncrementalEngine; marker analysis does not use it. Luau lives in
+# pj_scripting_core (linked PUBLIC below).
 set(PJ_SCRIPTING_SOURCES
   src/lua_siso_transform.cpp
   src/lua_mimo_transform.cpp
   src/filter_catalogue.cpp
-  # Native object operations (point clouds, scene entities, image annotations) for the object-script binders; pj_base only.
+  # Native object operations (point clouds, scene entities, image annotations) for the object-script binders.
   src/native/point_cloud_ops.cpp
   src/native/point_cloud_builder.cpp
   src/native/voxel_grid_ops.cpp
@@ -249,8 +243,8 @@ endif()
 # ---------------------------------------------------------------------------
 
 if(PJ_BUILD_TESTS)
-  # --- Luau filter engine (Approach A) ---
-  # no WARNINGS: 6 of 6 merged tests never compiled with -Werror
+  # --- Luau and Python filter engines ---
+  # No WARNINGS: these tests are built without PJ_WARNING_FLAGS (-Werror).
   pj_add_test_runner(pj_scripting_tests
     MAIN core
     SOURCES
@@ -258,20 +252,17 @@ if(PJ_BUILD_TESTS)
       tests/python_engine_test.cpp
       tests/lua_siso_transform_test.cpp
       tests/lua_time_precision_test.cpp
-      # --- M2: sandbox + watchdog ---
       tests/luau_sandbox_test.cpp
       tests/luau_watchdog_test.cpp
     LIBS pj_scripting
     PREFIX "pj_scripting.")
 
-  # --- Phase 1: whole-series marker engine (parity spike) ---
-  # Links ONLY pj_scripting_core (no pj_datastore) — proves the marker engine is
-  # self-contained and shareable with the SDK-only headless runner.
+  # --- whole-series marker engine: links only pj_scripting_core, which keeps it shareable with the headless runner ---
   add_executable(marker_engine_test tests/marker_engine_test.cpp)
   target_link_libraries(marker_engine_test PRIVATE pj_scripting_core GTest::gtest_main)
   add_test(NAME marker_engine_test COMMAND marker_engine_test)
 
-  # --- M9: golden behavioral coverage relocated from the retired C++ builtin specs ---
+  # --- golden behaviour of the bundled filters ---
   add_executable(builtin_golden_test tests/builtin_golden_test.cpp)
   target_link_libraries(builtin_golden_test PRIVATE pj_scripting GTest::gtest_main)
   target_compile_definitions(builtin_golden_test PRIVATE
@@ -307,7 +298,7 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(pj_scripting_python_test_probe PRIVATE cpython::embed)
   endif()
 
-  # --- M5: filter catalogue ---
+  # --- filter catalogue ---
   add_executable(filter_catalogue_test tests/filter_catalogue_test.cpp)
   target_link_libraries(filter_catalogue_test PRIVATE pj_scripting GTest::gtest_main)
   target_compile_definitions(filter_catalogue_test PRIVATE

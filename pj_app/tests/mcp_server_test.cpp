@@ -435,7 +435,6 @@ TEST_F(McpServerTest, UnderTheUsersDialogOnlyReadsRun) {
     boxes.front()->reject();
   });
   probe.start(50);
-  // The user's own prompt, modal like every desktop question.
   openUsersDialog();
   ASSERT_TRUE(pumpUntil([&] { return change.has_value() && visible<PJ::MessageBox>().empty(); }));
   const auto [status_text, status_error] = result(*status);

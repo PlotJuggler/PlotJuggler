@@ -45,16 +45,11 @@ namespace {
 
 Q_LOGGING_CATEGORY(lcStream, "pj.app.streamingmanager")
 
-// v1 hardcoded. Promote to a member + setter if/when we want it configurable.
-// 50ms (20Hz) balances perceived latency against host overhead.
+// 20 Hz: perceived latency against per-poll host overhead (reasoning, not measured).
 constexpr int kPollPeriodMs = 50;
 
-// ObjectStore memory ceiling per object topic. Finite so the tail buffer
-// (post-pause pushes accumulating on the secondary store) is bounded;
-// at the cap the standard FIFO retention drops the oldest tail entries.
-// 64 MiB is low enough to expose tail growth quickly with raw 1080p
-// imagery during testing (~10 frames at 6 MB/frame). Production might
-// raise this; image-compression (Fase 3) will revisit.
+// ObjectStore memory ceiling per object topic. Finite so the paused tail buffer stays bounded: at the cap, FIFO
+// retention drops the oldest entries.
 constexpr size_t kStreamingObjectMemoryBudget = 64U * 1024U * 1024U;
 
 constexpr const char* kPluginConfigKeyPrefix = "PluginConfig/";
@@ -66,8 +61,6 @@ QString pluginConfigKey(const std::string& plugin_id) {
 
 }  // namespace
 
-// Per-session state. Held by unique_ptr in the manager's map so the worker
-// thread can hold a stable pointer to it across map mutations.
 struct StreamingSourceManager::StreamingSession {
   std::string plugin_id;    ///< display name, as shown in the streaming combo
   std::string manifest_id;  ///< the plugin's stable manifest id, for provenance
@@ -75,15 +68,13 @@ struct StreamingSourceManager::StreamingSession {
   QString label;
   /// The layout record this session started from; empty for an interactive start.
   QString layout_id;
-  /// What a source-bound save writes back: the layout's template, or the
-  /// configuration the dialog produced. Set before the worker starts and never
-  /// after, so the GUI thread reads it without calling into the plugin.
+  /// What a source-bound save writes back: the layout's template, or the configuration the dialog produced. Set
+  /// before the worker starts and never after, so the GUI thread reads it without calling into the plugin.
   QString config_template;
   DatasetId dataset_id = 0;
   DataSourceHandle handle;
-  /// handle.capabilities(), read once after start(): a plugin call, and the
-  /// ABI gives no way for the mask to change once the source runs, so every
-  /// later gate (per-topic pause, recordability) reads this instead.
+  /// handle.capabilities(), read once after start(): it is a plugin call, and the ABI gives the mask no way to change
+  /// once the source runs, so every later gate (per-topic pause, recordability) reads this copy.
   uint64_t capabilities = 0;
   std::unique_ptr<DataSourceRuntimeHost> runtime_host;
   std::unique_ptr<QThread> worker;
@@ -115,8 +106,7 @@ StreamingSourceManager::StreamingSourceManager(
 
 StreamingSourceManager::~StreamingSourceManager() {
   cancelPendingStarts();  // their dialogs borrow session handles that die with this object
-  // Cooperative stop + join for every live session. We can't go through
-  // onWorkerFinished here because the UI event loop won't run again.
+  // Stop and join here: the queued onWorkerFinished will never run. All stops are requested before the first join.
   for (auto& [dataset_id, sess] : sessions_) {
     if (sess->runtime_host != nullptr) {
       sess->runtime_host->requestStop();  // flag-only: the workers are still running
@@ -163,10 +153,8 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
     tsan::acquire(sess);  // see the end of workerLoop
   }
 
-  // streamStopped carries only the FAILURE that ended the stream, if the
-  // worker hit one before this stop landed. A requested stop is orderly, so
-  // the signal's reason stays empty and a recording of this source stays clean
-  // (RecordingService marks any non-empty reason non-clean).
+  // Only a FAILURE the worker hit before this stop landed: a requested stop is orderly, so the reason stays empty
+  // and a recording of this source stays clean (RecordingService marks any non-empty reason non-clean).
   QString stopped_reason;
   if (sess->runtime_host != nullptr) {
     stopped_reason = QString::fromStdString(sess->runtime_host->stopFailure());
@@ -175,12 +163,9 @@ bool StreamingSourceManager::stopDatasetAndWait(DatasetId dataset_id, const QStr
   rememberSkippedLazy(*sess);
   sessions_.erase(it);
   removeSecondaryDataset(dataset_id);
-  // After erase: clearDataset's activeTopicsChanged emission finds no session for
-  // this id in onActiveTopicsChanged and is silently ignored, instead of pushing
-  // one redundant empty set through a handle about to be destroyed.
-  // Capability flag first: clearDataset's empty-set emission triggers the
-  // panel's dimming refresh, which must already see the dataset as
-  // non-pausable — otherwise rows with data stay grey after disconnect.
+  // After the erase, so clearDataset's activeTopicsChanged finds no session and pushes nothing through a dying
+  // handle. The capability flag goes first: that emission triggers the panel's dimming refresh, which must already
+  // see the dataset as non-pausable, or rows with data stay grey after the disconnect.
   catalog_.setPerTopicPauseCapable(dataset_id, false);
   topic_demand_tracker_.clearDataset(dataset_id);
   catalog_.clearAdvertisedTopics(dataset_id);
@@ -225,17 +210,14 @@ RecordingTargets StreamingSourceManager::recordingTargets() {
   RecordingTargets result;
   result.targets.reserve(sessions_.size());
   for (const auto& [dataset_id, session] : sessions_) {
-    // D1: the recorder taps the delegated-ingest seam. A source that writes
-    // decoded samples straight into the datastore never passes through it, so a
-    // tap on it would produce an empty, channel-less file.
+    // The recorder taps the delegated-ingest seam. A source that writes decoded samples straight into the datastore
+    // never passes through it, so a tap on it would produce an empty, channel-less file.
     if ((session->capabilities & kCapabilityDelegatedIngest) == 0) {
       result.excluded << QString::fromStdString(session->plugin_id);
       continue;
     }
     result.targets.push_back(
         RecordingTarget{
-            // The dataset id IS the identity a recording addresses this source
-            // by, so the display name stays a display name.
             .target_key = static_cast<uint64_t>(dataset_id),
             .source_id = session->plugin_id,
             .plugin_id = session->manifest_id,
@@ -252,8 +234,7 @@ RecordingTargets StreamingSourceManager::recordingTargets() {
               if (const auto found = sessions_.find(dataset_id); found != sessions_.end()) {
                 return found->second->runtime_host->recordTapSkippedLazy();
               }
-              // The session ended mid-recording: report the counter as it stood
-              // when its host died, so the holes it left still reach the user.
+              // Ended mid-recording: the counter as it stood when its host died, so its holes still reach the user.
               const auto ended = ended_skipped_lazy_.find(dataset_id);
               return ended != ended_skipped_lazy_.end() ? ended->second : 0;
             },
@@ -267,12 +248,9 @@ void StreamingSourceManager::onSourceChanged(const QString& plugin_id) {
 }
 
 void StreamingSourceManager::onBufferChanged(int seconds) {
-  // The worker loop re-applies the budget on each UI-thread hop (see
-  // workerLoop below), so simply storing the new value is enough — the
-  // change reaches every live session on the next iteration (~50 ms).
+  // Every session's next onIngestTick applies the new window to its stores; consumers with their own history
+  // (the 3D TF buffer) hear it through retentionWindowChanged.
   retention_seconds_ = seconds;
-  // Re-publish the window to history-retaining consumers (the 3D TF buffer):
-  // the worker only re-applies the ObjectStore budget, not the derived caches.
   const auto window_ns = static_cast<qint64>(retention_seconds_) * 1'000'000'000LL;
   for (const auto& [dataset_id, _sess] : sessions_) {
     emit retentionWindowChanged(dataset_id, window_ns);
@@ -290,8 +268,7 @@ void StreamingSourceManager::onStartRequested() {
 
 void StreamingSourceManager::applyWriteTargetsForCurrentPauseState(DataSourceRuntimeHost& host) {
   if (paused_) {
-    // Secondary tail buffer while paused: the primary stays frozen by absence
-    // of writes — that's what consumers (Scene2DDockWidget, PlotWidget) read.
+    // The primary, which the views read, stays frozen because nothing writes to it.
     host.setObjectStoreTarget(secondary_object_store_.get());
     host.setDataEngineTarget(secondary_data_engine_.get());
   } else {
@@ -308,17 +285,15 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
     }
     return;
   }
-  // Resume. Swap targets BEFORE flushing so any push already in flight
-  // finishes on the secondary and the NEXT push goes to primary; otherwise
-  // the flush would race against new arrivals.
+  // Resume. Swap targets BEFORE flushing so any push already in flight finishes on the secondary and the next one
+  // goes to the primary; otherwise the flush races new arrivals.
   for (auto& [_id, sess] : sessions_) {
     applyWriteTargetsForCurrentPauseState(*sess->runtime_host);
   }
   flushSecondaryIntoPrimary();
   flushSecondaryDataEngineIntoPrimary();
-  // Catch up eager filters on the whole paused tail now merged into the primary,
-  // BEFORE re-trimming, so a stateful integral consumes the soon-to-be-evicted
-  // interval (the pause/resume arm of the streaming correctness order).
+  // Catch the eager filters up on the merged tail BEFORE re-trimming, so a stateful node (an integral) consumes the
+  // interval about to be evicted.
   for (const auto& [streaming_dataset_id, _catchup_sess] : sessions_) {
     const auto filter_inputs = session_manager_.createReader().listTopics(streaming_dataset_id);
     (void)session_manager_.dataProcessorService().advanceOnCommit(filter_inputs);
@@ -326,18 +301,15 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
     // pre-pause data: mark it stale, and the batch engine's brake re-runs it.
     session_manager_.recomputeMarkersForChanged(filter_inputs, streaming_dataset_id);
   }
-  // DataEngine::flushTo moves chunks without trimming; re-trim the merged primary
-  // to the window (objects are already trimmed by ObjectStore::flushTo). Scope the
-  // trim to each streaming dataset so a co-loaded file's history is left intact.
+  // DataEngine::flushTo does not trim (ObjectStore::flushTo does). Scoped to each streaming dataset, so a co-loaded
+  // file keeps its history.
   {
     const auto window_ns = static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL;
     for (const auto& [streaming_dataset_id, _sess] : sessions_) {
       session_manager_.dataEngine().enforceRetention(window_ns, streaming_dataset_id);
     }
   }
-  // Catch-up nudge so consumers (PlotWidget auto-fit, Scene2DDockWidget jump
-  // to latest frame) land on the post-flush live edge. Mirrors PJ3 "flush at
-  // play" semantics.
+  // A live ingest, so follow-live consumers (plot auto-fit, Scene2D latest frame) land on the merged live edge.
   for (const auto& [dataset_id, _] : sessions_) {
     const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
     session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/true, dataset_id);
@@ -345,25 +317,18 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
 }
 
 void StreamingSourceManager::flushSecondaryDataEngineIntoPrimary() {
-  // Zero-copy bulk transfer: DataEngine::flushTo moves every sealed chunk
-  // deque from secondary to primary by pointer move; no chunk buffer is
-  // reconstructed. Topics are matched by descriptor (dataset_id + name),
-  // and the lockstep registration in startSession guarantees the matching
-  // descriptors exist on both sides. The secondary's topics stay registered
-  // (only contents transfer) so the next pause does not re-mirror.
+  // Moves chunk deques, copies no buffer. Topics match by dataset id and name (the ids are mirrored at session
+  // creation); the secondary keeps its topics registered, so the next pause does not re-mirror. Fails as a whole
+  // when one source topic has no destination.
   if (auto result = secondary_data_engine_->flushTo(session_manager_.dataEngine()); !result) {
     qCWarning(lcStream) << "flushSecondaryDataEngineIntoPrimary failed:" << QString::fromStdString(result.error());
   }
 }
 
 void StreamingSourceManager::flushSecondaryIntoPrimary() {
-  // Zero-copy bulk transfer: ObjectStore::flushTo moves every ObjectEntry
-  // from secondary into primary by value-moving the entry (its std::variant
-  // / std::any holds either a shared_ptr or a closure; both transfer with
-  // their captured state intact, so no payload bytes are copied and no lazy
-  // closure is invoked during the flush). Topics matched by descriptor;
-  // lockstep registration in DataSourceRuntimeHost::cbEnsureParserBinding
-  // guarantees compatibility. Topics stay registered on the secondary.
+  // Moves each entry (a shared payload or a fetch closure), so no payload bytes are copied and no lazy fetcher runs.
+  // Topics match by descriptor (DataSourceRuntimeHost::cbEnsureParserBinding registers them on both stores) and stay
+  // registered on the secondary.
   if (auto result = secondary_object_store_->flushTo(session_manager_.objectStore()); !result) {
     qCWarning(lcStream) << "flushSecondaryIntoPrimary failed:" << QString::fromStdString(result.error());
   }
@@ -382,11 +347,9 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
   DataEngine& engine = session_manager_.dataEngine();
   const QString display_name = u"[stream] %1"_s.arg(label);
 
-  // One TimeDomain per stream so each is independently time-shiftable on the
-  // Source Timeline. DUAL-ENGINE: the secondary (pause/tail buffer) must hold
-  // the SAME id, so force it explicitly — the two engines' counters drift
-  // whenever the primary gets a domain the secondary doesn't (e.g. a file load
-  // between streams). Relying on counter order would desync them.
+  // One TimeDomain per stream, so each shifts independently on the Source Timeline. The secondary must hold the
+  // same id, forced explicitly: the engines' counters drift whenever the primary gets a domain the secondary does
+  // not (a file load between streams).
   auto td_or = engine.createTimeDomain(display_name.toStdString());
   if (!td_or.has_value()) {
     error = tr("Could not create the time domain.");
@@ -408,14 +371,8 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
   const DatasetId dataset_id = static_cast<DatasetId>(*dataset_or);
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
 
-  // Lockstep mirror onto the secondary engine. Topics are mirrored
-  // individually inside DataSourceRuntimeHost; the dataset has to exist here so
-  // cbEnsureParserBinding can use the same DatasetId on both engines without
-  // translation. Create it with the SAME id explicitly: the two engines'
-  // auto-increment counters drift whenever the primary gets a dataset the
-  // secondary doesn't (e.g. a file load between streams), so a plain
-  // createDataset() on the secondary would return a different id and the next
-  // stream would abort here. Forcing the id keeps them in lockstep regardless.
+  // Same id on the secondary, forced for the same reason as the time domain; DataSourceRuntimeHost mirrors the
+  // topics under it (cbEnsureParserBinding).
   auto mirrored_dataset = secondary_data_engine_->createDataset(
       DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id}, dataset_id);
   if (!mirrored_dataset.has_value()) {
@@ -424,12 +381,9 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
     return nullptr;
   }
 
-  // Capture the plugin's DSO token BEFORE moving `handle` into the session. The
-  // streaming runtime host stores lazy ObjectStore anchors/fetchers that are
-  // plugin-DSO code and can outlive the catalog entry (mid-session marketplace
-  // reload, or app close), so the .so must stay mapped until those drop. Reading
-  // handle.libraryOwner() AFTER the std::move would yield a moved-from (null)
-  // token, silently disabling the protection — the exact gap this site had.
+  // Read BEFORE `handle` moves into the session (a moved-from handle yields a null token). The runtime host stores
+  // lazy ObjectStore anchors/fetchers that are plugin-library code and can outlive the catalog entry (a marketplace
+  // reload mid-session, app close), so the library must stay mapped until they drop.
   auto library_keepalive = handle.libraryOwner();
   auto session = std::make_unique<StreamingSession>(std::move(handle));
   session->plugin_id = source.name;
@@ -443,22 +397,18 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
       },
       secondary_object_store_.get(), secondary_data_engine_.get(), std::move(library_keepalive),
       session_manager_.ingestTapsShared());
-  // Streaming has no persistent file to re-read: a lazy policy's re-fetch
-  // closure would re-invoke each message's fetcher on every pull, so keep
-  // object bytes resident (kEager) instead of the resolver's lazy default.
+  // No file to re-read: a lazy policy would re-invoke each message's fetcher on every pull, so object bytes stay
+  // resident.
   session->runtime_host->policyResolver().setDefault(sdk::ObjectIngestPolicy::kEager);
 #ifdef PJ_TARGET_WASM
-  // Browser RobotDescription handlers are object-only. Defer their payloads
-  // until RobotModel requests one instead of invoking the absent scalar path.
-  // The native streaming policy remains untouched.
+  // Browser RobotDescription handlers are object-only: defer their payloads until RobotModel requests one instead
+  // of invoking the absent scalar path.
   session->runtime_host->policyResolver().setForType(
       sdk::BuiltinObjectType::kRobotDescription, sdk::ObjectIngestPolicy::kPureLazy);
 #endif
-  // [worker/poll thread, per DataSourceRuntimeHost::on_available_topics] — hop to
-  // the GUI thread before touching CatalogModel/TopicDemandTracker, mirroring the
-  // samplesIngested marshal in workerLoop below. The lambda may run before start()
-  // even returns (some plugins advertise everything up front) or repeatedly during
-  // poll(), so applyAdvertisedTopics re-checks the session still exists.
+  // Called on the plugin's thread (inside start() or poll()): hop to the GUI thread before touching CatalogModel or
+  // TopicDemandTracker. It may fire before start() returns or after the session is gone, so applyAdvertisedTopics
+  // re-checks the session.
   session->runtime_host->on_available_topics =
       [this, dataset_id](std::vector<DataSourceRuntimeHost::AdvertisedTopicInfo> topics) {
         std::vector<AdvertisedTopic> owned;
@@ -551,17 +501,13 @@ void StreamingSourceManager::configureAndLaunch(
   const QString source_name = QString::fromStdString(source.name);
   const QString config_key = pluginConfigKey(source.name);
   const std::string config = QSettings().value(config_key, QString()).toString().toStdString();
-  // Always invoke loadConfig — even on a first run with empty config. Stream
-  // plugins use this hook to wire the runtime host into their dialog (e.g.
-  // populating the available-encodings combo via list_available_encodings).
-  // Skipping it leaves the dialog with "(no parsers available)" and the OK
-  // button disabled.
+  // Always, even with an empty config: stream plugins wire the runtime host into their dialog here (the encodings
+  // combo, via list_available_encodings); skipped, the dialog shows "(no parsers available)" and OK stays disabled.
   if (auto status = session.handle.loadConfig(config); !status) {
     qCInfo(lcStream) << "loadConfig failed; proceeding with plugin defaults:" << QString::fromStdString(status.error());
   }
 
-  // Extract parser config saved from a previous session so the embedded
-  // parser sub-dialog (e.g. JSON "Use embedded timestamp") is pre-populated.
+  // Pre-populates the embedded parser sub-dialog (e.g. JSON "Use embedded timestamp").
   std::string initial_parser_config;
   {
     auto saved_cfg = nlohmann::json::parse(config, nullptr, false);
@@ -570,11 +516,10 @@ void StreamingSourceManager::configureAndLaunch(
     }
   }
 
-  // The rest of the start, once the dialog is answered (at once for a source that has none). It
-  // owns the cleanup: createSession made the dataset before the dialog opened, so any exit that
-  // does not launch takes it back, or an empty dataset lingers and counts in the catalog's
-  // duplicate-label ordinals. The session goes first (as in startFromLayout) and the dataset is
-  // gone before the failure is reported.
+  // The rest of the start, once the dialog is answered (at once for a source that has none). It owns the cleanup:
+  // createSession made the dataset before the dialog opened, so any exit that does not launch takes it back, or an
+  // empty dataset lingers and counts in the catalog's duplicate-label ordinals. The session goes first (as in
+  // startFromLayout) and the dataset is gone before the failure is reported.
   auto finish = [self = QPointer<StreamingSourceManager>(this), this, pending, source_name, config_key, config,
                  still_allowed, done = std::move(done)](const dialog_presenter::DataSourceResult& dlg) {
     if (self == nullptr) {
@@ -596,10 +541,7 @@ void StreamingSourceManager::configureAndLaunch(
       bool configured = true;
       if (dlg.payload.has_value()) {
         chosen = dlg.payload->saved_config;
-        // Embed the parser sub-dialog config (e.g. JSON embedded-timestamp
-        // settings) into the main plugin config under "_parser_config" so the
-        // stream plugin forwards it to ensureParserBinding when each topic's
-        // parser binding is created in the worker loop.
+        // Under "_parser_config", the key the stream plugin forwards to ensureParserBinding for each topic.
         if (!dlg.payload->parser_config.empty()) {
           auto cfg = nlohmann::json::parse(chosen, nullptr, false);
           if (!cfg.is_discarded()) {
@@ -630,8 +572,8 @@ void StreamingSourceManager::configureAndLaunch(
       done(launched ? dataset_id : 0, error);
     }
   };
-  // Never the blocking presenter: a browser cannot run a nested event loop, and one path for every
-  // platform keeps the desktop tests covering what the browser runs. The dialog is still modal.
+  // Never the blocking presenter: a browser cannot run a nested event loop, and one path for every platform keeps
+  // the desktop tests covering what the browser runs. The dialog is still modal.
   pending->cancel = dialog_presenter::showDataSourceDialogAsync(
       {
           .source = source,
@@ -691,15 +633,10 @@ DatasetId StreamingSourceManager::startFromLayout(
 
 bool StreamingSourceManager::launchSession(std::unique_ptr<StreamingSession> session, QString& error) {
   const DatasetId dataset_id = session->dataset_id;
-  // Apply the current pause state to this session's write hosts BEFORE start(),
-  // so a source added mid-pause writes into the secondary tail buffer from its
-  // very first sample. This is the latest safe seam: an interactive start's modal
-  // source dialog runs a nested event loop where the user could toggle pause, so
-  // paused_ is read AFTER it returns; and start() is the plugin's "go" signal, so
-  // setting the target before it closes the window for a push-model plugin that
-  // delivers from its own thread inside start(). From here on, the start runs
-  // synchronously (no event loop), so paused_ cannot change before the worker
-  // starts; onPauseToggled keeps every live session in step thereafter.
+  // Before start(), so a source added mid-pause writes into the tail buffer from its first sample (a push-model
+  // plugin may deliver from its own thread inside start()), and after the dialog, during which the user may have
+  // toggled pause. From here to the worker's start nothing runs the event loop, so paused_ cannot change;
+  // onPauseToggled keeps every live session in step afterwards.
   applyWriteTargetsForCurrentPauseState(*session->runtime_host);
 
   if (auto status = session->handle.start(); !status) {
@@ -709,22 +646,16 @@ bool StreamingSourceManager::launchSession(std::unique_ptr<StreamingSession> ses
   }
 
   session->capabilities = session->handle.capabilities();
-  // Record the capability for the UI (CurveListPanel dims a topic as
-  // "unsubscribed" only for a dataset that actually supports the pause — a
-  // non-demand source sends everything regardless of display state).
+  // CurveListPanel dims a topic as unsubscribed only for a dataset that supports the pause.
   catalog_.setPerTopicPauseCapable(dataset_id, (session->capabilities & kCapabilityPerTopicPause) != 0);
 
-  // Push the current (usually empty — nothing is displayed yet) active-topic set
-  // once, right after start(), so a demand-capable source is explicitly told to
-  // subscribe to nothing rather than relying on its own default (e.g. a stale
-  // discovery-filter selection from a previous session). Later changes arrive via
-  // TopicDemandTracker::activeTopicsChanged -> onActiveTopicsChanged.
+  // Usually empty (nothing is displayed yet): a demand-capable source is told to subscribe to nothing instead of
+  // keeping its own default (a stale selection from a previous session). Later changes arrive through
+  // onActiveTopicsChanged.
   pushActiveTopics(*session, topic_demand_tracker_.activeTopics(dataset_id));
 
-  // QThread::create runs the lambda as the thread's run(); no Qt event loop
-  // needed in the worker — we only post back via QueuedConnection.
-  // The worker gets its session, never a sessions_ lookup: the GUI thread inserts and erases other
-  // sessions while it runs. The session outlives the worker (it is erased only after the join).
+  // No event loop in the worker: it only posts back. It gets its session, never a sessions_ lookup (the GUI thread
+  // inserts and erases other sessions while it runs); the session is erased only after the join.
   StreamingSession* const worker_session = session.get();
   session->worker.reset(QThread::create([this, worker_session]() { workerLoop(*worker_session); }));
 
@@ -733,8 +664,6 @@ bool StreamingSourceManager::launchSession(std::unique_ptr<StreamingSession> ses
   worker_ptr->start();
 
   emit streamStarted(dataset_id);
-  // Publish the new session's retention window so history-retaining consumers
-  // (the 3D TF buffer) can bound themselves in step with the ObjectStore.
   emit retentionWindowChanged(dataset_id, static_cast<qint64>(retention_seconds_) * 1'000'000'000LL);
   return true;
 }
@@ -828,18 +757,8 @@ void StreamingSourceManager::workerLoop(StreamingSession& session) {
       break;
     }
     sess->runtime_host->flushPending();
-    // Broadcast live-advance on the UI thread so plot adapters invalidate
-    // their sample caches AND follow-live consumers auto-fit. The write
-    // host wrote directly through DataEngine and bypassed SessionManager's
-    // own commitChunks → neither Qt signal would fire otherwise.
-    //
-    // The `live` flag is gated on `paused_`: when the user has paused the
-    // stream, samples keep being committed but the plot stops following the
-    // live edge (PlotWidget skips resetZoom and just replots in place).
-    //
-    // Retention enforcement piggybacks on the same UI-thread hop so
-    // `retention_seconds_` stays UI-thread-only (no atomic needed). Trim
-    // runs before notifyIngest so consumers observe the post-trim engine.
+    // The write host bypasses SessionManager::commitChunks, so the GUI-thread tick announces the ingest. It also
+    // runs the trim, which keeps retention_seconds_ and paused_ GUI-thread only.
     tsan::invokeQueued(this, [this, dataset_id]() { onIngestTick(dataset_id); });
     QThread::msleep(kPollPeriodMs);
   }
@@ -860,58 +779,38 @@ void StreamingSourceManager::ingestTickForTests(DatasetId dataset_id) {
 
 void StreamingSourceManager::onIngestTick(DatasetId dataset_id) {
   const auto window_ns = static_cast<int64_t>(retention_seconds_) * 1'000'000'000LL;
-  // Apply the budget on every tick: cheap (one map iteration per
-  // session) and idempotent. Solves the cold-start problem where the
-  // plugin creates new object topics mid-stream (post-startSession)
-  // and would otherwise miss the budget set by setObjectRetentionBudget.
+  // Every tick, because the plugin creates object topics mid-stream and a one-time budget would miss them;
+  // idempotent and cheap.
   if (const auto session_it = sessions_.find(dataset_id); session_it != sessions_.end()) {
     session_it->second->runtime_host->setObjectRetentionBudget(window_ns, kStreamingObjectMemoryBudget);
   }
   const auto topic_ids = session_manager_.createReader().listTopics(dataset_id);
-  // Run eager filters over the freshly committed input BEFORE retention
-  // can evict it (the streaming correctness order, plan §5/D6): a stateful
-  // node must consume every sample before it ages out of the window. On
-  // the UI thread here, serialized with the Filter Editor's own
-  // apply/update and with the retention trim just below. Deliberately EVERY
-  // topic of the dataset: rows reach it through more than the poll's write
-  // hosts (a toolbox commits straight to the engine, the terminal flush runs
-  // after the last tick), and a node with nothing new is cheap
-  // (docs/derived_objects/ARCHITECTURE.md §16 has the measured cost). While
-  // paused the writes land in the secondary engine (no IncrementalEngine);
-  // the resume catch-up in onPauseToggled advances the whole buffered tail
-  // before re-trimming.
+  // Eager filters run BEFORE the trim: a stateful node must consume every sample before it ages out of the window.
+  // On the GUI thread, serialized with the Filter Editor's apply/update. Every topic of the dataset, not only the
+  // poll's: rows also arrive from a toolbox committing straight to the engine and from the terminal flush after the
+  // last tick, and a node with nothing new is cheap (docs/derived_objects/ARCHITECTURE.md "Streaming"). While
+  // paused the writes land in the secondary engine (no IncrementalEngine); the resume catches up.
   if (!paused_) {
     (void)session_manager_.dataProcessorService().advanceOnCommit(topic_ids);
   }
 
-  // Trim the engine currently being written: B while paused (bounds the
-  // tail), the primary while live. The frozen engine is never touched,
-  // preserving the primary snapshot for scrub-back. Scope the trim to THIS
-  // streaming dataset so a file the user loaded into the same engine keeps
-  // its full history.
+  // Trim only the engine being written (the secondary while paused): the frozen primary keeps its snapshot for
+  // scrub-back. Scoped to this dataset, so a co-loaded file keeps its full history.
   if (paused_) {
     secondary_data_engine_->enforceRetention(window_ns, dataset_id);
   } else {
     session_manager_.dataEngine().enforceRetention(window_ns, dataset_id);
   }
 
-  // Mark stale the whole-series marker generators whose inputs moved (the
-  // session drops the listed topics that did not). The streaming write host
-  // commits straight to the engine, bypassing SessionManager::commitChunks, so
-  // this is the live-data marker recompute hook (cheap no-op when no
-  // generators exist). The per-topic stamp filter inside (newest timestamp,
-  // row count, retention floor, series generation) is what sees a
-  // retention-only change on a quiet topic. Paused writes land in the
-  // secondary engine with no IncrementalEngine, matching the filter-advance gate.
+  // The live-data marker hook (the write host bypasses SessionManager::commitChunks): marks stale the marker
+  // generators whose inputs moved; its per-topic stamp (newest timestamp, row count, retention floor, series
+  // generation) also sees a retention-only change on a quiet topic. Skipped while paused, like the filters.
   if (!paused_) {
     session_manager_.recomputeMarkersForChanged(topic_ids, dataset_id);
   }
-  // The processors write their outputs into this dataset through the engine, so
-  // no write host reports them and a plot of a filtered curve refreshes only
-  // through this list; a retention trim also moves topics that received no row.
-  // Never skipped when nothing changed: `live` alone drives the object-only
-  // consumers (Scene2D / Scene3D docks), and the dataset it names reaches the
-  // on-demand live edge even when it has no scalar topic.
+  // Every topic: processor outputs and retention-only changes reach no write host, so a filtered curve refreshes
+  // only through this list. Never skipped when nothing changed: `live` alone drives the object-only consumers
+  // (Scene2D / Scene3D docks), and the dataset reaches the on-demand live edge even with no scalar topic.
   session_manager_.notifyIngest(QVector<TopicId>(topic_ids.begin(), topic_ids.end()), /*live=*/!paused_, dataset_id);
 }
 
@@ -925,15 +824,13 @@ void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
     sess->worker->wait();
     tsan::acquire(sess);  // see the end of workerLoop
   }
-  // Empty for an orderly end — the plugin's own end-of-stream included — and
-  // the failure that ended the stream otherwise; a callback failure the plugin
-  // recovered from stays in the log and out of the signal. Read past the join,
-  // after every writer of it has stopped.
+  // Empty for an orderly end, the plugin's own end-of-stream included; a callback failure the plugin recovered from
+  // stays in the log. Read after the join, once every writer of it has stopped.
   const QString reason = QString::fromStdString(sess->runtime_host->stopFailure());
 
   rememberSkippedLazy(*sess);
   sessions_.erase(it);
-  catalog_.setPerTopicPauseCapable(dataset_id, false);  // before clearDataset — see requestStop
+  catalog_.setPerTopicPauseCapable(dataset_id, false);  // before clearDataset: see stopDatasetAndWait
   topic_demand_tracker_.clearDataset(dataset_id);
   catalog_.clearAdvertisedTopics(dataset_id);
   emit streamStopped(dataset_id, reason);
@@ -941,7 +838,7 @@ void StreamingSourceManager::onWorkerFinished(DatasetId dataset_id) {
 
 void StreamingSourceManager::pushActiveTopics(StreamingSession& session, const std::vector<QString>& active_topics) {
   if ((session.capabilities & kCapabilityPerTopicPause) == 0) {
-    return;  // source doesn't support per-topic pause — behave exactly as before
+    return;
   }
   std::vector<std::string> owned;
   owned.reserve(active_topics.size());
@@ -964,7 +861,7 @@ void StreamingSourceManager::onActiveTopicsChanged(DatasetId dataset_id, const s
 
 void StreamingSourceManager::applyAdvertisedTopics(DatasetId dataset_id, std::vector<AdvertisedTopic> topics) {
   if (sessions_.find(dataset_id) == sessions_.end()) {
-    return;  // session already torn down before this marshal landed
+    return;  // torn down before this queued call landed
   }
   std::vector<QString> infra_names;
   for (const AdvertisedTopic& topic : topics) {

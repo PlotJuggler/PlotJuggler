@@ -28,9 +28,8 @@ FetchResult readLocalFile(const QString& path) {
     return result;
   }
 #ifdef PJ_TARGET_WASM
-  // Browser-local sources are MEMFS files supplied by data/layout state. Bound
-  // them before QByteArray allocation; native retains its existing unbounded
-  // local-file behavior below.
+  // Browser-local sources are MEMFS files supplied by data/layout state: bound them before the QByteArray allocation.
+  // Native local files are read unbounded below.
   const qint64 size = file.size();
   const bool fits = size >= 0 && size <= UrlFetcher::kMaxFetchBytes;
   if (fits) {
@@ -48,11 +47,9 @@ FetchResult readLocalFile(const QString& path) {
   return result;
 }
 
-// The local filesystem path for `url` when it denotes a local file, else
-// nullopt. Three local forms are recognized: a file:// URL, a scheme-less bare
-// path, and a Windows drive-letter path that QUrl mis-parses as a single-letter
-// "scheme" (e.g. QUrl("C:/dir/x") -> scheme "c", path "/dir/x"). Genuine
-// network/other schemes (http/https/ftp/...) return nullopt.
+// The local filesystem path for `url` when it denotes a local file, else nullopt. Recognized: a file:// URL, a
+// scheme-less bare path, and a Windows drive-letter path that QUrl mis-parses as a single-letter "scheme"
+// (QUrl("C:/dir/x") -> scheme "c", path "/dir/x"). Network/other schemes (http/https/ftp/...) return nullopt.
 std::optional<QString> localFilePath(const QUrl& url) {
   if (url.isLocalFile()) {
     return url.toLocalFile();
@@ -62,8 +59,6 @@ std::optional<QString> localFilePath(const QUrl& url) {
     return url.toString();
   }
   if (scheme.size() == 1 && scheme.at(0).isLetter()) {
-    // A one-letter "scheme" is a Windows drive letter, not a URL scheme:
-    // rebuild "<drive>:<path>" so QFile can open it.
     return scheme + u":"_s + url.path();
   }
   return std::nullopt;
@@ -72,16 +67,11 @@ std::optional<QString> localFilePath(const QUrl& url) {
 }  // namespace
 
 UrlFetcher::UrlFetcher(QObject* parent) : QObject(parent) {
-  // Persist fetched remote models so re-opening the dataset (or the next session)
-  // serves them from disk instead of re-downloading. QNetworkDiskCache honors HTTP
-  // Cache-Control/ETag: a fresh entry is served without touching the network; a
-  // stale one is revalidated when online (304 → reuse) and served from cache when
-  // the origin is unreachable (so the model still renders offline, possibly from
-  // an older copy). Local file reads bypass the cache.
-  //
-  // The directory defaults to <AppData>/models, overridable via the
-  // PJ_MODEL_CACHE_DIR environment variable — both to relocate the cache and to
-  // let tests redirect it to a throwaway dir without touching the real home.
+  // Persist fetched remote models so re-opening the dataset (or the next session) serves them from disk.
+  // QNetworkDiskCache honors HTTP Cache-Control/ETag: a fresh entry is served without the network; a stale one is
+  // revalidated when online (304 -> reuse) and served from cache when the origin is unreachable. Local file reads
+  // bypass the cache. The directory defaults to <AppData>/models, overridable via PJ_MODEL_CACHE_DIR (to relocate the
+  // cache, and to let tests redirect it to a throwaway dir).
 #ifndef PJ_TARGET_WASM
   QString cache_dir = qEnvironmentVariable("PJ_MODEL_CACHE_DIR");
   if (cache_dir.isEmpty()) {
@@ -100,9 +90,8 @@ void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchRes
 }
 
 void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done) {
-  // Local sources never touch the network: file:// URLs, scheme-less bare paths,
-  // and Windows drive-letter paths read straight from disk (still delivered
-  // asynchronously). See localFilePath() for why the drive-letter case matters.
+  // Local sources never touch the network (see localFilePath() for the drive-letter case): read straight from disk,
+  // still delivered asynchronously.
   if (const std::optional<QString> local = localFilePath(url)) {
     deliverLater(std::move(on_done), readLocalFile(*local));
     return;
@@ -113,7 +102,6 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
     deliverLater(std::move(on_done), std::move(result));
     return;
   }
-  // `this` as context: destroying the fetcher drops the callback.
   PJ::fetchBytesWithLimit(
       url, kMaxFetchBytes, std::chrono::seconds(15), this,
       [on_done = std::move(on_done)](PJ::FetchedBytes fetched) {

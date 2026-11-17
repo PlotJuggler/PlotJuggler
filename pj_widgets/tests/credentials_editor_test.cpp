@@ -22,9 +22,8 @@ const QString kCross = QString::fromUtf8("✗");  // red cross
 const QString kKeyPattern = u"^msco_[a-z0-9]{32}_[0-9a-f]{8}$"_s;
 const QString kValidKey = u"msco_abcdefghijklmnopqrstuvwxyz012345_0123abcd"_s;
 
-// The sub-dialog harvester (PanelEngine) walks findChildren by objectName and
-// drives the plugin's onTextChanged/onToggled from these exact names, so they
-// are the load-bearing contract of this widget.
+// The sub-dialog harvester (PanelEngine) walks findChildren by objectName and drives the plugin's onTextChanged and
+// onToggled from these exact names: they are the widget's load-bearing contract.
 TEST(CredentialsEditor, ExposesNamedChildInputsForHarvester) {
   PJ::CredentialsEditor editor;
 
@@ -86,9 +85,8 @@ TEST(CredentialsEditor, IsCertReadableChecksFileExistence) {
   EXPECT_TRUE(PJ::CredentialsEditor::isCertReadable(f.fileName()));
 }
 
-// Live ticks: PJ3 CertDialog showed ✓/✗ as the user typed (cert_dialog.cpp:139-177).
-// Pre-fill via setText fires textChanged too, so initial validity also shows.
-// Default (no injected pattern) → any non-empty key is valid.
+// Live ticks show validity as the user types; a pre-fill through setText fires textChanged too, so initial validity
+// also shows. With no injected pattern any non-empty key is valid.
 TEST(CredentialsEditor, ApiKeyTickDefaultsToNonEmptyLive) {
   PJ::CredentialsEditor editor;
   auto* api_key = editor.findChild<QLineEdit*>("apiKey");

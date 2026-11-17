@@ -46,8 +46,7 @@ TEST(TopicDemandTrackerTest, InfrastructureTopicStaysActiveAcrossDisplayChurn) {
   ASSERT_EQ(spy.count(), 1);
   EXPECT_EQ(emittedTopics(spy, 0), (std::vector<QString>{"/tf"}));
 
-  // Displaying and un-displaying the infra topic itself changes nothing —
-  // it was already active and stays active.
+  // The infra topic is already active, so displaying and un-displaying it changes nothing.
   tracker.addReference(kDatasetA, "/tf");
   tracker.removeReference(kDatasetA, "/tf");
   EXPECT_EQ(spy.count(), 1) << "infra topic's active-membership never changed";
@@ -151,7 +150,7 @@ TEST(TopicDemandTrackerTest, ClearDatasetEmitsEmptySetOnlyIfItHadActiveTopics) {
   EXPECT_TRUE(emittedTopics(spy, 0).empty());
   EXPECT_TRUE(tracker.activeTopics(kDatasetA).empty());
 
-  // Already empty/unknown — must not emit again.
+  // Already empty or unknown: must not emit again.
   tracker.clearDataset(kDatasetA);
   tracker.clearDataset(kDatasetB);
   EXPECT_EQ(spy.count(), 1);
@@ -242,7 +241,6 @@ TEST(TopicDemandTrackerTest, DatasetsAreIndependent) {
   EXPECT_EQ(spy.at(0).at(0).value<PJ::DatasetId>(), kDatasetB);
   EXPECT_EQ(emittedTopics(spy, 0), (std::vector<QString>{"/gps"}));
 
-  // Dataset A is untouched by B's activity.
   const std::vector<QString> expected_a{"/imu", "/tf"};
   EXPECT_EQ(tracker.activeTopics(kDatasetA), expected_a);
 

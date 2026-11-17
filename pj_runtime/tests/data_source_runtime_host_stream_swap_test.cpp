@@ -1,42 +1,21 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Streaming pause/resume two-engine lockstep — runtime-host INTEGRATION level.
+// Streaming pause/resume two-engine lockstep at runtime-host integration level.
 //
-// Background. PJ4 streaming double-buffers the DataEngine: live messages land
-// in the primary (A); on pause, incoming messages are rerouted into a
-// secondary (B) so the frozen view stays stable and bounded; on resume, B
-// flushes back into A. The reroute is DataSourceRuntimeHost::setDataEngineTarget.
+// Streaming double-buffers the DataEngine: live messages land in the primary (A); on pause,
+// DataSourceRuntimeHost::setDataEngineTarget reroutes incoming messages into a secondary (B) so the frozen view stays
+// stable and bounded; on resume, B flushes back into A. A plugin registers its topic/fields once (data_stream_dummy in
+// onStart(); parser_protobuf on first message), caches the returned TopicHandle / FieldHandle and reuses them on every
+// sample via appendBoundRecord. A handle is an integer id into one engine, so after setDataEngineTarget(B) the cached
+// id must resolve to the same topic/field in B; if it does not, the first post-pause write fails and the streaming
+// worker dies.
 //
-// The bug PR #200 fixes: a streaming plugin registers its topic/fields ONCE
-// (data_stream_dummy in onStart(); parser_protobuf on first message) and caches
-// the returned TopicHandle / FieldHandle, then reuses them on every subsequent
-// sample via appendBoundRecord. A handle is just an integer id into ONE engine.
-// After setDataEngineTarget(B) the cached id must resolve to the SAME topic/field
-// in B — but on origin/main the source-level write path mirrors NOTHING to the
-// secondary, and the parser path mirrors topics but not fields. So the first
-// post-pause write fails ("topic N not found" / field lookup fails) and the
-// streaming worker dies. That is the reported "data_stream_dummy dies on first
-// pause/resume" crash.
-//
-// These are the runtime-INTEGRATION companion to the datastore-unit tests in
-// pj_datastore/tests/streaming_mirror_test.cpp. The unit tests verify the
-// createTopicField / setSecondaryEngine MECHANISM in isolation (driving
-// DatastoreSourceWriteHost directly). The tests here verify that
-// DataSourceRuntimeHost actually WIRES that mechanism — calling
-// setSecondaryEngine() on the source write host and on every parser binding —
-// and that a plugin's cached handles survive a real setDataEngineTarget swap
-// end to end.
-//
-// They touch only the host's PUBLIC surface (the secondary_data_engine ctor arg
-// + setDataEngineTarget), which the fix leaves unchanged, so:
-//   * without the fix they FAIL — the host never mirrors source/parser writes
-//     to the secondary engine, so the cached handle goes stale across the swap;
-//     i.e. they reproduce the reported "data_stream_dummy dies on first
-//     pause/resume" bug (source path) and its parser-path variant,
-//   * with the fix they PASS, and
-//   * they guard the WIRING itself: deleting the host's setSecondaryEngine call
-//     re-breaks streaming while the datastore-unit tests stay green.
+// Companion to the datastore-unit tests in pj_datastore/tests/streaming_mirror_test.cpp, which verify the
+// createTopicField / setSecondaryEngine mechanism in isolation. These tests verify that DataSourceRuntimeHost wires it
+// (setSecondaryEngine() on the source write host and on every parser binding) and that a plugin's cached handles
+// survive a real setDataEngineTarget swap, through the host's public surface only (the secondary_data_engine ctor arg
+// and setDataEngineTarget).
 
 #include <gtest/gtest.h>
 
@@ -96,10 +75,8 @@ using PJ::sdk::TopicHandle;
   return count;
 }
 
-// Two lockstep engines + a DataSourceRuntimeHost wired for streaming
-// pause/resume, exercising the SOURCE-LEVEL scalar write path
-// (SourceWriteHostService) — the path a plugin like data_stream_dummy uses
-// when it caches handles in onStart() and writes bound records per sample.
+// Two lockstep engines + a DataSourceRuntimeHost wired for streaming pause/resume, exercising the source-level scalar
+// write path (SourceWriteHostService), the one a plugin like data_stream_dummy uses.
 class StreamEngineSwapTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -109,9 +86,8 @@ class StreamEngineSwapTest : public ::testing::Test {
     ASSERT_TRUE(primary_dataset.has_value()) << primary_dataset.error();
     dataset_id_ = static_cast<PJ::DatasetId>(*primary_dataset);
 
-    // Lockstep dataset on the secondary with the SAME DatasetId — mirrors the
-    // real streaming manager, which creates the dataset on both engines so a
-    // later topic mirror can address it by id on either side.
+    // Lockstep dataset on the secondary with the same DatasetId, as the real streaming manager creates it, so a topic
+    // mirror can address it by id on either side.
     auto secondary_dataset =
         secondary_engine_.createDataset(PJ::DatasetDescriptor{.source_name = "stream", .time_domain_id = 0});
     ASSERT_TRUE(secondary_dataset.has_value()) << secondary_dataset.error();
@@ -143,11 +119,9 @@ class StreamEngineSwapTest : public ::testing::Test {
   PJ::ServiceRegistryBuilder registry_builder_;
 };
 
-// The first ensureTopic/ensureField on the source path must lockstep-mirror the
-// new topic + columns onto the secondary engine with the SAME ids — otherwise a
-// later setDataEngineTarget(secondary) lands on an engine that has no topic for
-// the plugin's cached handle. On origin/main the source write host mirrors
-// nothing, so the secondary has no "imu" topic at all → RED here.
+// The first ensureTopic/ensureField on the source path lockstep-mirrors the new topic and columns onto the secondary
+// engine with the same ids; otherwise a later setDataEngineTarget(secondary) lands on an engine that has no topic for
+// the plugin's cached handle.
 TEST_F(StreamEngineSwapTest, FirstEnsureLockstepsTopicAndFieldIdsOntoSecondaryEngine) {
   SourceWriteHostView writer = sourceWriter();
 
@@ -155,17 +129,15 @@ TEST_F(StreamEngineSwapTest, FirstEnsureLockstepsTopicAndFieldIdsOntoSecondaryEn
   const auto field_ax = *writer.ensureField(topic, "ax", PrimitiveType::kFloat32);
   const auto field_ay = *writer.ensureField(topic, "ay", PrimitiveType::kFloat32);
 
-  // FieldIds are dense from 0 — the first field of a topic legitimately gets
-  // id 0. (PR #200's std::optional sentinel exists precisely so a forced id 0
-  // is not confused with "auto-assign".)
+  // FieldIds are dense from 0: the first field of a topic legitimately gets id 0, which must not read as
+  // "auto-assign".
   EXPECT_EQ(field_ax.id, 0U);
   EXPECT_EQ(field_ay.id, 1U);
 
   ASSERT_TRUE(writer.appendBoundRecord(topic, 10, {{.field = field_ax, .value = 1.0F}}).has_value());
   host_->flushPending();
 
-  // The crux: the secondary engine must hold the same topic id and the same
-  // (name, id) columns.
+  // The secondary engine must hold the same topic id and the same (name, id) columns.
   const auto* sec_storage = secondary_engine_.getTopicStorage(topic.id);
   ASSERT_NE(sec_storage, nullptr) << "secondary engine never received the lockstep topic mirror";
   const auto& cols = sec_storage->columnDescriptors();
@@ -176,36 +148,30 @@ TEST_F(StreamEngineSwapTest, FirstEnsureLockstepsTopicAndFieldIdsOntoSecondaryEn
   EXPECT_EQ(cols[1].field_id, field_ay.id);
 }
 
-// The reported bug, end to end: cache handles, write to A, pause (swap to B),
-// then write THROUGH THE SAME CACHED HANDLES. On origin/main the post-pause
-// write fails because B has no matching topic/field → RED. Resume (swap back to
-// A) must keep the handles valid too.
+// Cache handles, write to A, pause (swap to B), then write through the same cached handles: B must already know the
+// topic and fields. Resume (swap back to A) keeps the handles valid too.
 TEST_F(StreamEngineSwapTest, CachedSourceHandlesResolveAcrossPauseAndResumeSwap) {
   SourceWriteHostView writer = sourceWriter();
 
-  // Plugin registers + caches its handles once (data_stream_dummy::onStart).
   const auto topic = *writer.ensureTopic("imu");
   const auto field_ax = *writer.ensureField(topic, "ax", PrimitiveType::kFloat32);
   const auto field_ay = *writer.ensureField(topic, "ay", PrimitiveType::kFloat32);
 
-  // Live phase — writes land in the primary.
   ASSERT_TRUE(
       writer.appendBoundRecord(topic, 10, {{.field = field_ax, .value = 1.0F}, {.field = field_ay, .value = 2.0F}})
           .has_value());
   host_->flushPending();
 
-  // Pause: reroute scalar writes to the secondary engine.
   host_->setDataEngineTarget(&secondary_engine_);
 
-  // Write through the cached handles — this is the exact call that died before
-  // the fix. The secondary must already know the topic+fields at matching ids.
+  // Write through the cached handles: the secondary must already know the topic and fields at matching ids.
   const auto paused_write =
       writer.appendBoundRecord(topic, 20, {{.field = field_ax, .value = 3.0F}, {.field = field_ay, .value = 4.0F}});
   ASSERT_TRUE(paused_write.has_value()) << "cached FieldHandle did not resolve on the secondary engine after pause: "
                                         << paused_write.error();
   host_->flushPending();
 
-  // Resume: swap back to the primary. Bidirectional lockstep keeps both valid.
+  // Resume: swap back to the primary; bidirectional lockstep keeps both valid.
   host_->setDataEngineTarget(&primary_engine_);
   const auto resumed_write =
       writer.appendBoundRecord(topic, 30, {{.field = field_ax, .value = 5.0F}, {.field = field_ay, .value = 6.0F}});
@@ -219,17 +185,12 @@ TEST_F(StreamEngineSwapTest, CachedSourceHandlesResolveAcrossPauseAndResumeSwap)
   EXPECT_EQ(rowCount(secondary_engine_, topic.id), 1U);
 }
 
-// Source-level (non-parser) analogue of the mid-pause new-topic case — the path
-// data_stream_dummy uses. Here the write host is a SINGLE shared host retargeted
-// at pause (not a fresh per-binding host), and WriteCore always creates the
-// topic on the active engine AND mirrors it to the other, so this path is
-// expected to already be safe: a topic first ensured mid-pause should land its
-// sample on the secondary and leave the frozen primary empty. This pins that
-// second, independent case so the fix is not argued from the parser path alone.
+// A topic first ensured mid-pause on the source path lands its sample on the secondary and leaves the frozen primary
+// empty. The write host is a single shared host retargeted at pause, and WriteCore creates the topic on the active
+// engine and mirrors it to the other.
 TEST_F(StreamEngineSwapTest, SourceTopicCreatedWhilePausedWritesToSecondaryEngine) {
   SourceWriteHostView writer = sourceWriter();
 
-  // Enter the pause window BEFORE the topic has ever been ensured.
   host_->setDataEngineTarget(&secondary_engine_);
 
   const auto topic = *writer.ensureTopic("late_imu");
@@ -249,12 +210,9 @@ TEST_F(StreamEngineSwapTest, SourceTopicCreatedWhilePausedWritesToSecondaryEngin
   EXPECT_EQ(rowCount(primary_engine_, topic.id), 1U) << "the paused tail did not flush back on resume";
 }
 
-// Two lockstep engines + a DataSourceRuntimeHost driving the PARSER write path:
-// a real parser plugin (streaming_caching_parser_plugin) that caches a
-// FieldHandle on its first parse and reuses it — the parser_protobuf pattern.
-// PR #200's commit message claims it "closes the latent FieldHandle-stale bug
-// for parser plugins (parser_protobuf et al.)", yet ships no parser-path test.
-// This fixture is that missing coverage.
+// Two lockstep engines + a DataSourceRuntimeHost driving the parser write path: a real parser plugin
+// (streaming_caching_parser_plugin) that caches a FieldHandle on its first parse and reuses it, the parser_protobuf
+// pattern.
 class StreamParserSwapTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -286,7 +244,6 @@ class StreamParserSwapTest : public ::testing::Test {
     return runtime_or.has_value() ? *runtime_or : PJ::DataSourceRuntimeHostView{};
   }
 
-  // Push one message carrying a float32 payload through the bound parser.
   [[nodiscard]] PJ::Status pushFloat(PJ::ParserBindingHandle binding, PJ::Timestamp timestamp, float value) {
     std::vector<uint8_t> payload(sizeof(float));
     std::memcpy(payload.data(), &value, sizeof(float));
@@ -306,12 +263,10 @@ class StreamParserSwapTest : public ::testing::Test {
   PJ::ServiceRegistryBuilder registry_builder_;
 };
 
-// The parser-path analogue of the source-path repro. The host mirrors the bound
-// TOPIC onto the secondary engine, but on origin/main the parser write host
-// never mirrors the FIELD. So after the pause swap, the parser's cached
-// FieldHandle points at a column the secondary topic does not have, and the
-// post-pause push fails → RED. PR #200 wires setSecondaryEngine() onto the
-// parser binding's write host, mirroring the field at a matching id → GREEN.
+// Parser-path analogue of the source-path case: the host mirrors the bound topic onto the secondary engine, and the
+// parser write host must mirror the field too (setSecondaryEngine() on the binding's write host, at a matching id),
+// or after the pause swap the parser's cached FieldHandle points at a column the secondary topic lacks and the
+// post-pause push fails.
 TEST_F(StreamParserSwapTest, CachedParserFieldHandleResolvesAfterPauseSwap) {
   auto binding_or = runtime().ensureParserBinding(
       PJ::ParserBindingRequest{
@@ -324,45 +279,28 @@ TEST_F(StreamParserSwapTest, CachedParserFieldHandleResolvesAfterPauseSwap) {
   ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
   const auto binding = *binding_or;
 
-  // Live phase: first parse caches the FieldHandle and writes to the primary.
   ASSERT_TRUE(pushFloat(binding, 10, 1.0F).has_value());
   host_->flushPending();
 
-  // Pause: reroute parser scalar writes to the secondary engine.
   host_->setDataEngineTarget(&secondary_engine_);
 
-  // The parser reuses its cached FieldHandle. On origin/main the field was
-  // never mirrored to the secondary → this push fails.
   const auto paused_push = pushFloat(binding, 20, 2.0F);
   ASSERT_TRUE(paused_push.has_value())
       << "parser's cached FieldHandle did not resolve on the secondary engine after pause: " << paused_push.error();
   host_->flushPending();
 
-  // Resume keeps it valid too.
   host_->setDataEngineTarget(&primary_engine_);
   ASSERT_TRUE(pushFloat(binding, 30, 3.0F).has_value());
   host_->flushPending();
 }
 
-// Mid-session new topic while PAUSED. A topic first observed AFTER the pause
-// swap gets its parser binding minted mid-pause. setDataEngineTarget only
-// retargeted the bindings that existed at swap time, so the new binding's write
-// host initialised against the PRIMARY (frozen) engine — its first push landed
-// on the frozen primary and dragged the global timeline, even though every
-// pre-existing binding respected the pause. The dummy streamer never hit this
-// (it declares all topics in onStart, before any pause could apply); real
-// streamers publishing a brand-new topic mid-session (ZMQ, MQTT) did.
-//
-// The fix initialises a freshly-minted binding's write host to the ACTIVE
-// target, so a binding born during pause writes into the secondary like every
-// other paused write. Pre-fix the sample lands on the primary → RED here; with
-// the fix it lands on the secondary and the frozen primary stays at zero rows.
+// A topic first observed after the pause swap gets its parser binding minted mid-pause. A freshly minted binding's
+// write host initialises to the active target, so the sample lands on the secondary like every other paused write and
+// the frozen primary stays at zero rows; on the frozen primary it would drag the global timeline. Real streamers
+// publishing a brand-new topic mid-session (ZMQ, MQTT) hit this; the dummy streamer declares all topics in onStart.
 TEST_F(StreamParserSwapTest, BindingCreatedWhilePausedWritesToSecondaryEngine) {
-  // Enter the pause window BEFORE the topic has ever been seen.
   host_->setDataEngineTarget(&secondary_engine_);
 
-  // First observation of the topic happens now, mid-pause: the binding (and its
-  // write host) is minted while the swap is already active.
   auto binding_or = runtime().ensureParserBinding(
       PJ::ParserBindingRequest{
           .topic_name = "/late/value",
@@ -373,9 +311,8 @@ TEST_F(StreamParserSwapTest, BindingCreatedWhilePausedWritesToSecondaryEngine) {
       });
   ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
 
-  // The empty topic descriptor is minted on both engines at bind time (that is
-  // harmless — no samples, no time bounds); the SAMPLE is what must not touch
-  // the frozen primary.
+  // The empty topic descriptor is minted on both engines at bind time (no samples, no time bounds); the sample is what
+  // must not touch the frozen primary.
   const auto topic_ids = primary_engine_.listTopics(dataset_id_);
   ASSERT_EQ(topic_ids.size(), 1U);
   const PJ::TopicId topic_id = topic_ids.front();
@@ -413,7 +350,6 @@ TEST_F(StreamParserSwapTest, IdenticalRebindReusesBindingInsteadOfDuplicatingTop
   EXPECT_EQ(countTopicsNamed(primary_engine_, dataset_id_, "/imu/value"), 1U)
       << "rebind must not register a duplicate engine topic";
 
-  // The reused handle keeps ingesting into the SAME topic.
   ASSERT_TRUE(pushFloat(*second, 20, 2.0F).has_value());
   host_->flushPending();
   EXPECT_EQ(countTopicsNamed(primary_engine_, dataset_id_, "/imu/value"), 1U);
@@ -440,21 +376,12 @@ TEST_F(StreamParserSwapTest, RetypedRebindMintsFreshBinding) {
   EXPECT_NE(second->id, first->id) << "a retyped topic must get a fresh binding";
 }
 
-// The offline pin for the delegated-ingest TopicId-stability contract.
-//
-// SessionManager::beginRefill keeps a reloading source's TopicIds REGISTERED so
-// the refill writes back into the same ids and every curve key survives. That
-// only holds if binding a name the dataset ALREADY carries resolves to the
-// existing topic instead of minting a new one — which the direct-write API
-// (WriteCore::ensureTopic) and the object route have always done, and which
-// this scalar parser-binding path did NOT do until the fix this test pins.
-//
-// The gap was invisible to every other offline test because the test/mock
-// loaders write through the direct-write API (which reuses by name); only a
-// REAL delegated-ingest loader (data_load_mcap — i.e. every cloud promotion)
-// took the broken path, so the bug surfaced first in the live layout-import
-// E2E. Pre-fix this fails on the first assertion: the bind mints a second
-// same-named topic and the dataset carries two.
+// TopicId stability of delegated ingest. SessionManager::beginRefill keeps a reloading source's TopicIds registered
+// so the refill writes back into the same ids and every curve key survives. That requires binding a name the dataset
+// already carries to resolve to the existing topic instead of minting a new one, as the direct-write API
+// (WriteCore::ensureTopic) and the object route do. Only a real delegated-ingest loader (data_load_mcap, i.e. every
+// cloud promotion) takes the scalar parser-binding path; test/mock loaders write through the direct-write API. A
+// violation shows as a second same-named topic on the dataset.
 TEST_F(StreamParserSwapTest, ParserBindingReusesTheDatasetsExistingSameNamedTopic) {
   // A topic the dataset already carries — the shape a refill/reload presents.
   auto existing_or = primary_engine_.createTopic(dataset_id_, PJ::TopicDescriptor{.name = "/reused"});
@@ -471,12 +398,10 @@ TEST_F(StreamParserSwapTest, ParserBindingReusesTheDatasetsExistingSameNamedTopi
       });
   ASSERT_TRUE(binding_or.has_value()) << binding_or.error();
 
-  // No duplicate minted, and the id the refill contract depends on is intact.
   ASSERT_EQ(countTopicsNamed(primary_engine_, dataset_id_, "/reused"), 1U)
       << "binding minted a duplicate same-named topic";
   EXPECT_EQ(primary_engine_.listTopics(dataset_id_).front(), existing_id);
 
-  // And the binding actually writes into that same topic.
   ASSERT_TRUE(pushFloat(*binding_or, 1000, 1.0F).has_value());
   host_->flushPending();
   EXPECT_GT(rowCount(primary_engine_, existing_id), 0U) << "rows landed somewhere other than the reused topic";
@@ -512,8 +437,7 @@ TEST_F(StreamParserSwapTest, ParserBindingCollapsesSlashesLikeTheDirectWritePath
 // stays idempotent — an id the secondary already holds is not re-created — and
 // the two engines keep matching ids.
 TEST_F(StreamParserSwapTest, ParserBindingReuseKeepsTheSecondaryEngineMirrorIdempotent) {
-  // Both engines already carry the topic under the same id — the post-refill
-  // state a rebind lands in. (SetUp already pinned the two datasets' ids.)
+  // Both engines already carry the topic under the same id: the post-refill state a rebind lands in.
   auto primary_or = primary_engine_.createTopic(dataset_id_, PJ::TopicDescriptor{.name = "/mirrored"});
   ASSERT_TRUE(primary_or.has_value()) << primary_or.error();
   auto secondary_or = secondary_engine_.createTopic(dataset_id_, PJ::TopicDescriptor{.name = "/mirrored"}, *primary_or);

@@ -12,13 +12,10 @@ namespace pj::scene3d {
 // Pose/Point3/Vector3/ColorRGBA narrowings the core and the widgets need. No Qt,
 // no GPU — pure geometry, safe in the core.
 
-// Compose a primitive's LOCAL model matrix from its pose: T * R, so the rotation
-// acts about the pose's own origin and is then offset to the position (the correct
-// rigid-body-pose semantics; R * T would orbit the frame origin). The rotation
-// stays a quaternion all the way to the matrix (no Euler round-trip, no gimbal
-// lock). Two gotchas handled here: the canonical sdk::Quaternion is {x, y, z, w}
-// but glm::quat takes (w, x, y, z); and we normalize defensively in case a producer
-// emits a non-unit quaternion (mat4_cast assumes unit length).
+// Composes a primitive's LOCAL model matrix from its pose: T * R, so the rotation acts about the pose's own origin (R *
+// T would orbit the frame origin). The rotation stays a quaternion up to the matrix (no Euler round-trip). Two traps
+// handled: canonical sdk::Quaternion is {x, y, z, w} but glm::quat takes (w, x, y, z); and a non-unit producer
+// quaternion is normalized (mat4_cast assumes unit length).
 [[nodiscard]] glm::mat4 poseToMat4(const PJ::sdk::Pose& pose);
 
 [[nodiscard]] glm::vec3 toVec3(const PJ::sdk::Point3& point);

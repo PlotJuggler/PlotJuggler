@@ -25,17 +25,11 @@ std::unique_ptr<CodecPipeline> makeScene2DPipelineFor(sdk::BuiltinObjectType obj
     case sdk::BuiltinObjectType::kCameraInfo:
     case sdk::BuiltinObjectType::kOccupancyGridUpdate:
     case sdk::BuiltinObjectType::kLog:
-    // kPosesInFrame is a 3D pose-array geometry type with no 2D decode path;
-    // listed to keep this exhaustive switch -Werror=switch clean.
+    // The cases below have no 2D decode path; listed so the switch stays exhaustive (-Werror=switch).
     case sdk::BuiltinObjectType::kPosesInFrame:
-    // kPlotMarkers renders in pj_plotting (time-series overlay), not the 2D
-    // scene; listed to keep this exhaustive switch -Werror=switch clean.
     case sdk::BuiltinObjectType::kPlotMarkers:
-    // kVoxelGrid is a dense 3D volume rendered only by pj_scene3D; no 2D path.
     case sdk::BuiltinObjectType::kVoxelGrid:
-    // kGridMap is a heightfield rendered only by pj_scene3D; no 2D path.
     case sdk::BuiltinObjectType::kGridMap:
-    // kMeshMap(+Update) is a triangle mesh rendered only by pj_scene3D; no 2D path.
     case sdk::BuiltinObjectType::kMeshMap:
     case sdk::BuiltinObjectType::kMeshMapUpdate:
       return nullptr;

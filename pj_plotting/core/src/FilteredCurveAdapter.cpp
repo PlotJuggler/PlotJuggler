@@ -24,8 +24,8 @@ namespace {
   return {0.0, std::numeric_limits<double>::quiet_NaN()};
 }
 
-// Empty/sentinel rect (negative size) — matches DatastoreCurveAdapter so Qwt
-// treats an empty filtered curve identically to an empty raw one.
+// Empty/sentinel rect (negative size), as DatastoreCurveAdapter's, so Qwt treats an empty filtered curve like an empty
+// raw one.
 [[nodiscard]] QRectF invalidRect() {
   return {1.0, 1.0, -2.0, -2.0};
 }
@@ -69,9 +69,8 @@ QRectF FilteredCurveAdapter::boundingRect() const {
 
 std::optional<Range<double>> FilteredCurveAdapter::visibleYRange(Range<double> /*x_range_sec*/) const {
   ensureFiltered();
-  // Gate on the bounds being valid, not merely on having points: an all-NaN filter
-  // leaves points in filtered_ but no finite bounds (invalid rect), and filtered_y_range_
-  // is only meaningful when finite bounds were found.
+  // Gate on valid bounds, not on having points: an all-NaN filter leaves points but no finite bounds, and
+  // filtered_y_range_ is meaningful only when finite bounds were found.
   if (!cached_bounding_rect_.isValid()) {
     return std::nullopt;
   }
@@ -89,8 +88,8 @@ void FilteredCurveAdapter::onDataCleared() {
 }
 
 void FilteredCurveAdapter::onDisplayOffsetChanged() {
-  // Base first: it drops the cached offset that ensureFiltered() converts
-  // through; then the baked display-X points must be rebuilt.
+  // Base first: it drops the cached offset that ensureFiltered() converts through; then the baked display-X points
+  // must be rebuilt.
   DatastoreCurveAdapter::onDisplayOffsetChanged();
   invalidate();
 }
@@ -112,8 +111,8 @@ void FilteredCurveAdapter::ensureFiltered() const {
   if (sess == nullptr || !factory_) {
     return;
   }
-  // Fresh processor per recompute: processors are stateful (integral/derivative),
-  // so reusing one across recomputes would leak an accumulator into the preview.
+  // Fresh processor per recompute: processors are stateful (integral, derivative), so a reused one would carry an
+  // accumulator into the preview.
   std::unique_ptr<proc::DataProcessor> processor = factory_();
   if (!processor) {
     return;  // "No Transform" -> empty overlay.
@@ -121,11 +120,9 @@ void FilteredCurveAdapter::ensureFiltered() const {
 
   const CurveDescriptor& input = source();
 
-  // Read the WHOLE input column through the SAME reader the ghost uses, so the
-  // filtered "after" spans exactly the ghost's domain: identical sealed chunks,
-  // retention floor, and null-skipping. Reading the raw chunks directly would let
-  // the two curves disagree (e.g. the filtered tail lagging behind, or null rows
-  // counted as 0). All-rows range; the processor covers the whole series.
+  // Read the whole input column through the same reader as the raw curve, so the filtered curve spans exactly the
+  // raw one's domain (same sealed chunks, retention floor and null skipping); reading raw chunks directly would let
+  // them disagree (a lagging tail, null rows counted as 0). All-rows range: the processor covers the whole series.
   auto series_or = sess->createReader().series(input.topic_id, input.column_index);
   if (!series_or.has_value()) {
     return;
@@ -141,10 +138,9 @@ void FilteredCurveAdapter::ensureFiltered() const {
     return;
   }
 
-  // x in display seconds via the SAME seam the ghost uses (SessionManager::
-  // displayOffset -> TimeDomain shift + the per-dataset "Use time offset" shift),
-  // so filtered and ghost stay aligned across the t0 toggle. Bounds are folded in
-  // this one pass so boundingRect()/visibleYRange() stay O(1) on the auto-fit path.
+  // x in display seconds through the same seam as the raw curve (SessionManager::displayOffset: TimeDomain shift plus
+  // the per-dataset "Use time offset" shift), so both stay aligned across the toggle. Bounds fold in this one pass, so
+  // boundingRect() and visibleYRange() stay O(1).
   const DisplayOffset offset = sess->displayOffset(input.dataset_id);
   const std::vector<proc::Sample> out = processor->applyBatch(samples);
   filtered_.reserve(out.size());
@@ -157,10 +153,8 @@ void FilteredCurveAdapter::ensureFiltered() const {
     const double secs = toAxisDouble(rawToDisplaySeconds(sample.raw_ts_ns, offset));
     const double value = toDouble(sample.value());
     filtered_.push_back(QPointF(secs, value));
-    // Only finite points define the bounds. NaN/inf are ignored by std::min/std::max
-    // (comparisons are false), so folding them in would leave the sentinels untouched
-    // and yield an inverted range (min > max) that corrupts auto-fit. Mirrors
-    // PointSeriesXY::updateFiniteRange.
+    // Only finite points define the bounds: NaN and inf are ignored by std::min/std::max, which would leave the
+    // sentinels untouched and yield an inverted range that corrupts auto-fit. As PointSeriesXY::updateFiniteRange.
     if (std::isfinite(secs) && std::isfinite(value)) {
       x_min = std::min(x_min, secs);
       x_max = std::max(x_max, secs);
@@ -172,8 +166,8 @@ void FilteredCurveAdapter::ensureFiltered() const {
   if (!found_finite) {
     return;  // no finite point (all rows suppressed or NaN): leave bounds invalid.
   }
-  // Same (x_min,y_min)->(x_max,y_max) construction as DatastoreCurveAdapter, so
-  // top()/bottom() carry the value min/max consistently across both curves.
+  // Same (x_min, y_min) -> (x_max, y_max) construction as DatastoreCurveAdapter, so top()/bottom() carry the value
+  // min/max in both curves.
   cached_bounding_rect_ = QRectF(QPointF(x_min, y_min), QPointF(x_max, y_max)).normalized();
   filtered_y_range_ = Range<double>{.min = y_min, .max = y_max};
 }

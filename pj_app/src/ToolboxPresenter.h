@@ -17,16 +17,10 @@ class PanelEngine;
 class ToolboxRuntimeHost;
 struct ToolboxPanelSession;
 
-// One live toolbox: the wrapped panel (from MainWindow::wrapToolboxPanel), its
-// PanelEngine, the plugin session that keeps the host services and plugin
-// instance alive, and the presentation it currently has. MainWindow owns one
-// per plugin id in its registry; the same container moves between
-// presentations without teardown, and teardown() is the single way out.
-//
-// Callbacks handed to Qt (tab close, window finished, engine close requests)
-// look the presenter up by plugin id through MainWindow rather than capturing
-// it, so a callback arriving after teardown finds nothing instead of a
-// dangling pointer.
+// One live toolbox: the wrapped panel, its PanelEngine, the plugin session that keeps the host services and
+// plugin instance alive, and its presentation. MainWindow owns one per plugin id; the container moves between
+// presentations without teardown, and teardown() is the single way out. Callbacks handed to Qt look the
+// presenter up by plugin id, never capture it: one arriving after teardown must find nothing.
 class ToolboxPresenter {
  public:
   enum class Presentation { kDetached, kTakeover, kTab, kFloating };
@@ -35,15 +29,13 @@ class ToolboxPresenter {
   struct Spec {
     QWidget* container = nullptr;   // the wrapped panel; parentless when handed over
     PanelEngine* engine = nullptr;  // null for engine-less panels (tests drive the chrome alone)
-    // The launch's session, owned here so it dies with the presenter (after
-    // the engine stopped touching the plugin's dialog). Its address is the
-    // identity ingest callbacks report, so it also keys the takeover fold.
+    // Dies with the presenter, after the engine stopped touching the plugin's dialog. Its address is the
+    // identity ingest callbacks report, which keys the takeover fold.
     std::shared_ptr<ToolboxPanelSession> session;
     ToolboxRuntimeHost* host = nullptr;  // owned by `session`, valid for the presenter's whole life
     QString title;
     std::function<QString()> save_config;  // the toolbox's saveConfig JSON for layout save
-    // Re-shows the banner in tab (pinned=true) or docked chrome; the floating
-    // window hides it (MainWindow::wrapToolboxPanel).
+    // Re-shows the banner in tab (pinned) or docked chrome; the floating window hides it.
     std::function<void(bool pinned)> apply_chrome;
   };
 
@@ -52,54 +44,37 @@ class ToolboxPresenter {
   ToolboxPresenter(const ToolboxPresenter&) = delete;
   ToolboxPresenter& operator=(const ToolboxPresenter&) = delete;
 
-  // Presentation changes. Each releases the container from where it is and
-  // attaches it elsewhere; the plugin session, drawer and actions ride along.
-  // Each is a no-op when there is no container to place. moveToTab's
-  // `transient` marks a host-chosen fold, excluded from layout save.
+  // The session, drawer and actions ride along; a no-op without a container. `transient` marks a host-chosen
+  // fold, excluded from layout save.
   void moveToDock();
   void moveToTab(bool transient);
   void moveToFloating();
 
-  // Detaches the container from its presentation without teardown and returns
-  // it hidden, updating title() from the tab strip's (possibly renamed) label.
-  // It is NOT reparented: it stays a child of where it was presented (a
-  // floating window is only deleted later) until its destination reparents it
-  // or teardown deletes it in place — see MainWindow::releaseCentralPanel for
-  // why. Null when nothing is presented or the presentation no longer holds
-  // this container, which leaves it untouched.
+  // Detaches the container without teardown and returns it hidden, taking title() from the tab strip. It is
+  // NOT reparented (every reparent re-polishes the tree; see MainWindow::releaseCentralPanel): it stays where it
+  // was until its destination reparents it or teardown deletes it. Null when the presentation no longer holds
+  // this container.
   QWidget* release();
 
-  // Stops the engine and destroys container, window and engine — deferred via
-  // deleteLater, or immediately for bulk closes (layout replace, shutdown),
-  // where the engine must be gone before a relaunch binds a fresh plugin
-  // instance. Once only: MainWindow::teardownToolbox extracts the registry
-  // entry first, so nothing can reach the presenter again. The session is
-  // released when the presenter dies, after the engine stopped using the
-  // plugin's dialog.
+  // Stops the engine and destroys container, window and engine: deferred, or immediate for bulk closes (layout
+  // replace, shutdown), where the engine must be gone before a relaunch binds a fresh plugin instance. Called
+  // once, by MainWindow::teardownToolbox after it extracted the registry entry.
   void teardown(Teardown mode);
 
-  // The chrome's close button. A tab closes through the strip's vetoable path
-  // (busy confirmation); a floating window through its own close; a docked
-  // takeover with work in flight FOLDS into a transient tab instead of tearing
-  // down (rule 2: teardown is the job's kill switch, and a user who pressed
-  // close chose a pin even less than an auto-fold did), idle it tears down.
+  // The chrome's close button. A tab closes through the strip's vetoable path (busy confirmation), a floating
+  // window through its own close. A docked takeover with work in flight folds into a transient tab, since
+  // teardown would cancel the job; idle, it tears down.
   void requestClose();
 
-  // Routes a plugin-initiated requestClose for the current presentation;
-  // returns whether the engine may tear itself down. A tab ignores
-  // "import_complete" (a folded panel is the user's surface once pinned and
-  // outlives its own batch) and answers false so the kept-open tab keeps
-  // exchanging widget data instead of becoming an inert shell; every other
-  // reason closes the tab, and a declined busy confirmation also keeps the
-  // engine.
+  // A plugin-initiated close; returns whether the engine may tear itself down. A tab ignores "import_complete"
+  // (a folded panel outlives its batch) and answers false so it keeps exchanging widget data; any other reason
+  // closes the tab, unless a busy confirmation is declined.
   bool onEngineCloseRequested(const std::string& reason);
 
   [[nodiscard]] const QString& pluginId() const {
     return plugin_id_;
   }
-  // The chart-area takeover has no registry of its own: MainWindow's current
-  // panel is the ground truth, whichever path presented the container, so
-  // kTakeover/kDetached are derived from it rather than recorded.
+  // kTakeover/kDetached are derived from MainWindow's current panel, the only record of the takeover.
   [[nodiscard]] Presentation presentation() const;
   [[nodiscard]] QWidget* container() const {
     return container_.data();
@@ -110,9 +85,7 @@ class ToolboxPresenter {
   [[nodiscard]] ToolboxRuntimeHost* host() const {
     return host_;
   }
-  // The tab label: read live from the strip while presentation() == kTab (the
-  // sole store of a user rename), otherwise the one it was pinned or last
-  // released with.
+  // Read live from the strip while kTab (the only store of a user rename), else the last pinned/released label.
   [[nodiscard]] QString title() const;
   [[nodiscard]] bool transient() const {
     return transient_;
@@ -120,18 +93,15 @@ class ToolboxPresenter {
   [[nodiscard]] QString saveConfig() const {
     return save_config_ ? save_config_() : QString();
   }
-  // Work in flight on this toolbox's host (through the shell's test seam).
   [[nodiscard]] bool hasWorkInFlight() const;
-  // The identity ingest callbacks report for this toolbox: its session's
-  // address (the presenter's own for an engine-less one). Compared, never
-  // dereferenced.
+  // The identity ingest callbacks report: the session's address (the presenter's own without one). Compared,
+  // never dereferenced.
   [[nodiscard]] const void* sessionOwner() const;
 
  private:
   friend class ToolboxPanelFoldTestPeer;
 
-  // The container to attach next: what release() gives back, or the container
-  // itself when it was never presented (a fresh launch).
+  // What release() gives back, or the container itself on a fresh launch.
   QWidget* releasableContent();
   void attachAsTab(QWidget* content, bool transient);
   void attachAsFloating(QWidget* content);
@@ -147,9 +117,8 @@ class ToolboxPresenter {
   std::function<void(bool pinned)> apply_chrome_;
   Presentation presentation_ = Presentation::kDetached;
   bool transient_ = false;
-  // The floating PJ::Dialog while presentation_ == kFloating, and its
-  // finished() -> teardown connection (disconnected by release(), so closing
-  // the emptied window tears down nothing).
+  // While kFloating. release() disconnects finished() -> teardown, so closing the emptied window tears down
+  // nothing.
   QPointer<QWidget> floating_window_;
   QMetaObject::Connection on_window_finished_;
 };

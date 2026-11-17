@@ -225,8 +225,7 @@ TEST(UndistortRemapTest, MapRecordsSourceDimensions) {
 
 TEST(UndistortRemapTest, DifferentSourceSizeGivesDifferentSampling) {
   // Same camera, two decoded resolutions -> the source-sampling coords scale with
-  // the decoded size. Reusing a map built for the wrong size (the bug B3 fixes)
-  // would sample the wrong source region; this is why the cache must key on size.
+  // the decoded size. A map built for another size samples the wrong region, so the cache keys on size.
   const auto ci = cameraFrontCalibration();
   const auto small = computeUndistortMap(ci, 480, 320, static_cast<int>(ci.width), static_cast<int>(ci.height));
   const auto big = computeUndistortMap(ci, 960, 640, static_cast<int>(ci.width), static_cast<int>(ci.height));

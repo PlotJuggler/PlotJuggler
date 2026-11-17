@@ -30,7 +30,6 @@ inline QString presentVertexShaderPath(const QRhi& rhi) {
                                                    : QStringLiteral(":/scene3d_rhi/present.vert.qsb");
 }
 
-/// Samples of the HDR chain's colour and depth targets.
 constexpr int kHdrSampleCount = 4;
 constexpr quint32 kShadowUniformBytes = 64U;
 constexpr quint32 kCompositeUniformBytes = 128U;
@@ -59,31 +58,26 @@ struct alignas(16) SsaoUniforms {
 };
 static_assert(sizeof(SsaoUniforms) == kSsaoUniformBytes);
 
-/// Bookkeeping every optional quality stage carries, in its resource owner:
-/// whether it ran last frame (cleared by the owner's release), the test override
-/// holding it down, the size-keyed failure latch (a resize re-probes: a failure
-/// never blocks the stage for the QRhi's whole lifetime), and the resource
-/// generation the probes report.
+/// Bookkeeping every optional quality stage carries in its resource owner: whether it ran last frame (cleared by the
+/// owner's release), the test override holding it down, the size-keyed failure latch (a resize re-probes: a failure
+/// never blocks the stage for the QRhi's whole lifetime) and the resource generation the probes report.
 struct QualityStageState {
   bool last_active = false;
   bool forced_off = false;
   QSize rejected_size;
   QString capability_error;
   std::uint64_t resource_generation = 0;
-  /// True while the stage must stay down for this output size: a failure is
-  /// latched only against the size it happened at.
+  /// True while the stage must stay down for this output size.
   [[nodiscard]] bool blockedFor(const QSize& size) const {
     return !capability_error.isEmpty() && rejected_size == size;
   }
 };
 
-// The quality stages' GPU resources, one owner per stage. Each release() deletes
-// a resource only after everything of its own that binds it (bindings before
-// targets before attachments, pipelines and targets before their render-pass
-// descriptor); the members are declared in the reverse of that order, so a plain
-// destruction keeps it too. The view releases them explicitly, while their QRhi
-// lives, after the resources of other owners that bind them (the model pass's
-// caster and mask pipelines, the grid's shadow receiver, the registry's HDR variants).
+// The quality stages' GPU resources, one owner per stage. Each release() deletes a resource only after everything of
+// its own that binds it (bindings before targets before attachments, pipelines and targets before their render-pass
+// descriptor); the members are declared in the reverse of that order, so a plain destruction keeps it too. The view
+// releases them explicitly, while their QRhi lives, after the resources of other owners that bind them (the model
+// pass's caster and mask pipelines, the grid's shadow receiver, the registry's HDR variants).
 
 /// The shadow map: a kShadowMapSize² D32F depth texture, its target and the
 /// casters' light bindings. The model pass's caster pipeline and materials and

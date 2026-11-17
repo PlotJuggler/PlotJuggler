@@ -1,9 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The Custom Widget side-panel pages: the picker of installed widget types, the per-panel config
-// page (inputs, wires, settings form), and the shell flow from the fifth placeholder icon to a
-// bound panel. Set PJ_UI_TEST_DUMP_DIR to also save dark-theme captures of both pages.
+// The Custom Widget side-panel pages (picker of installed widget types, per-panel config page with inputs, wires
+// and settings form) and the shell flow from the placeholder's Custom Widget button to a bound panel. Set
+// PJ_UI_TEST_DUMP_DIR to also save dark-theme captures of both pages.
 
 #include <gtest/gtest.h>
 
@@ -87,7 +87,7 @@ constexpr const char* kIntegerManifest =
     R"({"type":"gauge","name":"Gauge","settings":[)"
     R"({"key":"decimals","type":"integer","min":0,"max":6,"default":2,"label":"Decimals"}]}]})";
 
-// Nine types: past the picker's filter threshold.
+// Nine types: past the picker's filter threshold (CustomWidgetPickerPanel::kFilterThreshold).
 constexpr const char* kManyManifest =
     R"({"id":"many_widgets","name":"Many","version":"1.0.0","widgets":[)"
     R"({"type":"w1","name":"W1"},{"type":"w2","name":"W2"},{"type":"w3","name":"W3"},)"
@@ -568,8 +568,8 @@ TEST(CustomWidgetShellAvailabilityTest, FifthIconFollowsTheInstalledWidgetCatalo
 }
 
 // Docks born after the shell wired their tab (a new tab, a split) take the Custom Widget availability from
-// the tab widget (CustomWidgetSupport), and a catalog change reaches every dock of every tab. An earlier
-// per-dock lambda connection was refused by Qt with a warning, and those docks kept the default.
+// the tab widget (CustomWidgetSupport), and a catalog change reaches every dock of every tab, without Qt
+// connection warnings.
 TEST(CustomWidgetShellAvailabilityTest, DocksAddedAfterTheTabWasWiredFollowTheCatalogWithoutConnectionWarnings) {
   WarningCapture warnings;
   QTemporaryDir extensions_dir;
@@ -819,9 +819,8 @@ TEST_F(CustomWidgetShellFlowTest, AChoiceForAPanelFilledMeanwhileDoesNothing) {
   EXPECT_EQ(g.widgets_created, 0);
 }
 
-// Choosing a type while the picker's list holds the keyboard focus: switching the side panel away from
-// the picker hides the list, and the focus it gives up must not land on a sibling dock and pull that
-// dock's page in mid-switch. One page shows, and the new panel is the focused dock.
+// Choosing a type while the picker's list holds the keyboard focus: the page switch hides the list, and the focus
+// it gives up must not land on a sibling dock and pull that dock's page in mid-switch.
 TEST_F(CustomWidgetShellFlowTest, AChoiceLeavesOnlyTheNewPanelsPageShowingAndFocusesIt) {
   clickIcon("buttonVizPlot");
   ASSERT_NE(dock_->plotWidget(), nullptr);

@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Acceptance-only parser for the MCAP container milestone. It deliberately
-// recognizes just the tiny std_msgs/Float64 fixture and classifies it as an
-// image so FileLoader's production pure-lazy policy exercises MCAP's cold
-// byte-store path after import. Real ROS decoding belongs to the next
-// milestone; this source is compiled only with PJ_WASM_ENABLE_INGRESS_PROBE.
+// Acceptance-only parser for the MCAP container path. It recognizes just the tiny std_msgs/Float64 fixture and
+// classifies it as an image so FileLoader's production pure-lazy policy exercises MCAP's cold byte-store path after
+// import. Compiled only with PJ_WASM_ENABLE_INGRESS_PROBE.
 
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 

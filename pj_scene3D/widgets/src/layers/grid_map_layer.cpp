@@ -35,7 +35,6 @@ namespace pj::scene3d {
 namespace {
 Q_LOGGING_CATEGORY(lcGridMap, "pj.scene3d.grid_map")
 
-// The scalar field named `name`, or nullptr when absent or not single-element.
 const PJ::sdk::PointField* scalarField(const std::vector<PJ::sdk::PointField>& fields, const std::string& name) {
   const PJ::sdk::PointField* field = name.empty() ? nullptr : findField(fields, name);
   return field != nullptr && isScalarGridMapField(*field) ? field : nullptr;
@@ -78,9 +77,8 @@ QString GridMapLayer::sourceFrame() const {
 }
 
 uint64_t GridMapLayer::renderKey(PJ::Timepoint time) const {
-  // Sample identity by SequentialUID from latestEntryIdAt() (a binary search that
-  // never resolves payload bytes) folded with the fixed<-source transform, the
-  // same recipe as PointCloudLayer::renderKey.
+  // Sample identity by SequentialUID from latestEntryIdAt() (a binary search that never resolves payload bytes) folded
+  // with the fixed<-source transform, as PointCloudLayer::renderKey does.
   uint64_t key =
       0x9e3779b97f4a7c15ULL ^
       PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
@@ -321,8 +319,8 @@ void GridMapLayer::renderAt(int64_t time_ns) {
     emit fallbackFramesChanged(fallbackFrames());
   }
 
-  // Wire dims are untrusted until validated: the host splice path does not yet
-  // validate attached bytes (SDK follow-up), so every consumer checks here.
+  // Wire dims are untrusted until validated: the host splice path does not validate attached bytes, so every consumer
+  // checks here.
   if (const auto valid = PJ::validateGridMap(grid); !valid) {
     bail(tr("Invalid grid map: %1").arg(QString::fromStdString(valid.error())));
     return;
@@ -375,7 +373,7 @@ void GridMapLayer::setFixedFrame(const QString& frame) {
   if (fixed_frame_ == frame) {
     return;
   }
-  fixed_frame_ = frame;  // placement is resolved per frame via FrameContext
+  fixed_frame_ = frame;  // the view resolves placement per frame
   emit repaintRequested();
 }
 

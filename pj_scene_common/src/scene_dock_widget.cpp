@@ -55,11 +55,8 @@ SceneDockWidget::SceneDockWidget(QWidget* parent) : QWidget(parent) {
 }
 
 SceneDockWidget::~SceneDockWidget() {
-  // clearLayers() must not run here: it reconciles the concrete view through
-  // the pure-virtual syncViewLayers(), which cannot be dispatched during
-  // base-class destruction. Concrete docks whose view references layers call
-  // clearLayers() in their own destructor; by the time we get here that has
-  // either happened (this is a no-op) or no view reconciliation was needed.
+  // Not clearLayers(): it calls the pure-virtual syncViewLayers(), which cannot dispatch during base-class
+  // destruction. Concrete docks whose view references layers call clearLayers() in their own destructor.
   destroyLayersUnsynced();
 }
 
@@ -79,7 +76,7 @@ void SceneDockWidget::setSessionManager(SessionManager* session) {
   derived_published_conn_ = connect(
       session, &SessionManager::derivedEntriesPublished, this,
       [this](const QString&, const std::vector<ObjectTopicId>& topics) { refreshDerivedLayers(topics); });
-  // A finding's "computed at" is in display seconds.
+  // A finding's "computed at" text is in display seconds.
   derived_offset_conn_ = connect(
       session, qOverload<>(&SessionManager::displayOffsetChanged), this, [this] { resyncDerivedPresentations(); });
   derived_dataset_offset_conn_ = connect(
@@ -96,12 +93,12 @@ void SceneDockWidget::setSessionManager(SessionManager* session) {
 
 void SceneDockWidget::refreshDerivedLayers(const std::vector<ObjectTopicId>& topics) {
   if (!last_tracker_) {
-    return;  // no tick yet: the first one shows what is there
+    return;  // no tick yet
   }
   for (const ObjectTopicId topic_id : topics) {
     if (ISceneLayer* layer = layerFor(topic_id); layer != nullptr && layer->info().visible) {
       if (layer->refreshAt(*last_tracker_)) {
-        invalidateTrackerRenderKey();  // painted outside the per-tick gate
+        invalidateTrackerRenderKey();  // this paint bypasses the gate
       }
     }
   }
@@ -111,7 +108,7 @@ void SceneDockWidget::resyncDerivedPresentations() {
   std::vector<ObjectTopicId> topics;
   topics.reserve(derived_presentations_.size());
   for (const auto& [key, presentation] : derived_presentations_) {
-    topics.push_back(ObjectTopicId{static_cast<uint32_t>(key)});  // topicKey widened the id
+    topics.push_back(ObjectTopicId{static_cast<uint32_t>(key)});
   }
   for (const ObjectTopicId topic_id : topics) {
     syncDerivedPresentation(topic_id);
@@ -145,7 +142,7 @@ void SceneDockWidget::updateDerivedStatus() {
   for (const auto& [key, presentation] : derived_presentations_) {
     if (const auto shown = layer_visibility_cache_.find(key);
         shown != layer_visibility_cache_.end() && !shown->second) {
-      continue;  // the strip sums up what the dock shows
+      continue;  // the strip leaves out hidden layers
     }
     computing = computing || presentation.computing;
     if (presentation.lag && (most_behind == nullptr || *presentation.lag > *most_behind->lag)) {
@@ -174,7 +171,7 @@ std::optional<int64_t> SceneDockWidget::visibleLayersLiveEdge() const {
     if (layer == nullptr || !layer->info().visible) {
       continue;
     }
-    // Empty layers and findings report an inverted range and are skipped.
+    // Empty layers and findings report an inverted range.
     const PJ::Range<PJ::Timepoint> range = clockRangeOf(*layer);
     if (range.min <= range.max) {
       const int64_t edge = PJ::toRaw(range.max);
@@ -202,15 +199,12 @@ void SceneDockWidget::setObjectDatasetResolver(ObjectDatasetResolver resolver) {
 
 bool SceneDockWidget::tryAcceptObjectTopic(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
-  // No acceptsObjectType() pre-gate: addLayer() consults handleSceneConfigTopic()
-  // first (a family may consume a topic as scene-wide config, e.g. TF, without it
-  // being a render layer) and rejects unsupported types via createAndAttachLayer().
+  // No acceptsObjectType() pre-check: addLayer() offers the topic to handleSceneConfigTopic() first.
   return addTopic(topic_id, object_type, title);
 }
 
 bool SceneDockWidget::addTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) {
-  // Public accept/refuse contract: both "layer added" and "consumed as config"
-  // count as accepted. Callers needing the distinction use addLayer().
+  // A layer added and a topic consumed as config both count as accepted.
   return addLayer(topic_id, object_type, title) != AddOutcome::kRejected;
 }
 
@@ -261,10 +255,9 @@ bool SceneDockWidget::insertLayer(ObjectTopicId topic_id, std::unique_ptr<IScene
   ever_had_content_ = true;
   wireLayerSignals(layer.get(), topic_id);
   registerLayer(key, std::move(layer));
-  syncDerivedPresentation(topic_id);  // a layer on a failed derived topic says why from the start
+  syncDerivedPresentation(topic_id);
 
-  // Mutate -> reconcile view -> notify: the view already includes the new layer
-  // when observers react to layerAdded (a slot may trigger a paint).
+  // Order: mutate, reconcile the view, then notify, so the view includes the layer when a layerAdded slot paints.
   syncViewLayers();
   refreshView();
   emit layerAdded(topic_id);
@@ -295,7 +288,7 @@ void SceneDockWidget::registerLayer(int64_t key, std::unique_ptr<ISceneLayer> la
   layer_visibility_cache_[key] = layer_raw->info().visible;
   layers_.emplace(key, std::move(layer));
   draw_order_.push_back(key);
-  invalidateTrackerRenderKey();  // new layer → next tick must repaint
+  invalidateTrackerRenderKey();
 
   if (layer_raw->info().visible) {
     seedLayerTrackerTime(layer_raw);
@@ -310,8 +303,7 @@ void SceneDockWidget::seedLayerTrackerTime(ISceneLayer* layer) {
     const PJ::Timepoint seed = (last >= first) ? std::clamp(*last_tracker_, first, last) : *last_tracker_;
     layer->setTrackerTime(seed);
   } else if (last >= first) {
-    // No tracker tick yet: deliberately show the layer's first frame instead
-    // of fabricating a time (0 is a valid timestamp; absence is explicit).
+    // No tracker tick yet: show the layer's first frame (0 is a valid timestamp, so no time is invented).
     layer->setTrackerTime(first);
   }
 }
@@ -457,8 +449,6 @@ bool SceneDockWidget::deferTopicIntent(
 }
 
 bool SceneDockWidget::restoreOnePending(const QDomElement& element) {
-  // Base default: every deferred element is a render <layer>. A family with other
-  // deferred element kinds (e.g. 3D's <config_topic>) overrides this hook to dispatch.
   return restoreLayerElement(element);
 }
 
@@ -474,14 +464,10 @@ bool SceneDockWidget::removeTopic(ObjectTopicId topic_id) {
     notifyWorkspaceChanged();
     return true;
   }
-  invalidateTrackerRenderKey();  // layer set shrank → next tick must repaint
-  // Mutate -> reconcile view -> detach -> notify. syncViewLayers() drives
-  // SceneViewWidget::setLayers, which releases the GPU state the view holds for
-  // the dropped layer. detach() MUST follow that: it tears down the layer's
-  // caches (e.g. meshes, textures), which the view must no longer reference
-  // when they go. Keep the removed layer alive until after the
-  // notification so a paint from a layerRemoved slot never borrows a destroyed
-  // source. Destroyed at scope exit.
+  invalidateTrackerRenderKey();
+  // Order: mutate, reconcile the view (it releases its GPU state for the layer), detach (tears down the layer's
+  // meshes and textures, which the view must no longer reference), then notify. The layer outlives the
+  // notification, so a paint from a layerRemoved slot never touches a destroyed source.
   std::unique_ptr<ISceneLayer> removed = std::move(it->second);
   layers_.erase(it);
   layer_visibility_cache_.erase(key);
@@ -510,10 +496,8 @@ bool SceneDockWidget::detachTopic(ObjectTopicId topic_id) {
 }
 
 bool SceneDockWidget::revalidateObjects() {
-  // The keep-if-never-populated rule lives HERE (non-virtual) so no override can
-  // forget it: an intentionally-empty dock (click-created or restored empty,
-  // never populated) survives, while a dock whose content was all evicted resets
-  // to the placeholder. Subclasses only customize the family-specific prune.
+  // Keeps an intentionally empty dock (click-created, restored empty, never populated); only a dock whose content
+  // was all evicted resets to the placeholder.
   return pruneEvictedObjects() || !pending_restore_elements_.empty() || !ever_had_content_;
 }
 
@@ -522,12 +506,9 @@ bool SceneDockWidget::pruneEvictedObjects() {
     return false;
   }
   if (session_ == nullptr) {
-    return true;  // layers present but no store to validate against — keep them
+    return true;  // no store to validate against
   }
-  // A live topic carries a name; an evicted one resolves to the empty
-  // descriptor. Collect first — removeTopic() mutates layers_ and runs the
-  // full removal path (detach, view re-point, layerRemoved notification), so
-  // observers like the layer-list panels stay coherent for free.
+  // An evicted topic resolves to an empty descriptor. Collect first: removeTopic() mutates layers_.
   ObjectStore& store = session_->objectStore();
   std::vector<ObjectTopicId> dead;
   for (const auto& [key, layer] : layers_) {
@@ -557,11 +538,8 @@ void SceneDockWidget::setLayerVisible(ObjectTopicId topic_id, bool visible) {
     return;
   }
   layer->setVisible(visible);
-  invalidateTrackerRenderKey();  // visible set changed → next tick must repaint
-  // Hidden layers receive no tracker ticks (onTrackerTime skips them), so on
-  // un-hide re-deliver the current playhead clamped to this layer's range (same
-  // seeding as registerLayer): the layer catches up instead of repainting the
-  // geometry it held at the moment of hiding.
+  invalidateTrackerRenderKey();
+  // Hidden layers get no tracker ticks: catch up on un-hide.
   if (visible && !old_visible) {
     seedLayerTrackerTime(layer);
   }
@@ -617,11 +595,9 @@ ISceneLayer* SceneDockWidget::layerFor(ObjectTopicId topic_id) const {
 }
 
 void SceneDockWidget::onTrackerTime(double time) {
-  // `time` is display-axis seconds. Recover the ABSOLUTE instant the scene
-  // stores objects by, by adding back the dataset's "Use time offset" shift
-  // (display = raw - offset). A scene dock shows one dataset today, so a single
-  // representative offset (representativeDatasetId() -> displayOffset) is exact; a
-  // future mixed-dataset dock would convert per layer. NaN/inf carry no position.
+  // `time` is display seconds (display = absolute - the dataset's display offset). A dock shows one dataset, so
+  // one offset, from representativeDatasetId(), is exact. NaN and inf carry no position: casting them to int64 is
+  // undefined.
   if (!std::isfinite(time)) {
     return;
   }
@@ -634,11 +610,8 @@ void SceneDockWidget::onTrackerTime(double time) {
   const PJ::Timepoint clamped = clampToLayerRange(PJ::toAbsolute(PJ::displaySeconds(time), offset));
   last_tracker_ = clamped;
 
-  // Per-tick repaint coalescing: if every visible layer would render exactly what
-  // it rendered at the last painted frame (same active sample, same transform),
-  // nothing moved — skip the layer advance AND the repaint. This is what keeps a
-  // 60 Hz playhead from repainting the scene/image docks 60×/s over <10 Hz data.
-  // Settings/async changes bypass this gate via repaintRequested → refreshView.
+  // Repaint gate: an unchanged key skips the layer advance and the repaint. Settings and async changes bypass it
+  // through repaintRequested -> refreshView.
   const uint64_t key = trackerRenderKey(clamped);
   if (have_render_key_ && key == last_render_key_) {
     return;
@@ -655,8 +628,7 @@ void SceneDockWidget::onTrackerTime(double time) {
 }
 
 namespace {
-// splitmix64 finalizer — strong 64-bit avalanche so per-layer keys XOR-combine
-// without the cancellation/clustering a plain XOR of raw ids would suffer.
+// splitmix64 finalizer: avalanches the keys so XOR-combining them does not cancel or cluster the way raw ids would.
 [[nodiscard]] uint64_t mix64(uint64_t x) {
   x += 0x9e3779b97f4a7c15ULL;
   x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
@@ -666,26 +638,19 @@ namespace {
 }  // namespace
 
 uint64_t SceneDockWidget::trackerRenderKey(PJ::Timepoint time) const {
-  // XOR of per-layer (topic ⊕ renderKey) mixes: order-independent (an
-  // unordered_map rehash can't flip it) and collision-resistant via mix64.
+  // Order-independent: an unordered_map rehash cannot flip the key.
   uint64_t key = 0;
   for (const auto& [k, layer] : layers_) {
     if (layer != nullptr && layer->info().visible) {
       key ^= mix64(static_cast<uint64_t>(k) * 0x9e3779b97f4a7c15ULL ^ layer->renderKey(time));
     }
   }
-  // Fold in view-owned, non-layer content (e.g. the 3D TF overlay), so the gate
-  // coalesces it without freezing it. Run it through mix64 like the per-layer terms
-  // so a future viewRenderKey() override returning a sparse value (a small enum /
-  // bitmask) still avalanches and can't cancel a layer's bits. mix64(0) is a
-  // harmless constant offset for the default (no view content) case.
+  // Mixed like the layer terms, so a sparse viewRenderKey() (an enum, a bitmask) cannot cancel a layer's bits.
   key ^= mix64(viewRenderKey(time));
   return key;
 }
 
 DatasetId SceneDockWidget::representativeDatasetId() const {
-  // First non-zero dataset_id among render layers. Guarded so a direct subclass
-  // call with no session is safe (onTrackerTime already gates on session_).
   if (session_ == nullptr) {
     return 0;
   }
@@ -882,9 +847,7 @@ std::vector<SceneDockWidget::PendingRestoreDemand> SceneDockWidget::pendingResto
     std::optional<DatasetId> preferred;
     if (id_ok && raw_id <= std::numeric_limits<DatasetId>::max()) {
       preferred = static_cast<DatasetId>(raw_id);
-      // Same resolution ladder as restore itself (injected policy, else the
-      // session default): the demand preference must never regress to trusting
-      // a raw saved id that the restore path would refuse.
+      // The restore's own resolution, so the preference never trusts a raw saved id the restore would refuse.
       const auto resolved = resolveObjectDataset(
           *preferred, element.attribute(u"dataset_source"_s), element.attribute(u"dataset_path"_s), pending.topic_name);
       if (resolved.has_value()) {
@@ -909,10 +872,7 @@ void SceneDockWidget::erasePendingRestoresIf(const std::function<bool(const Pend
   }
 }
 
-// True when any element of the pending payload references `dataset_id` through
-// a dataset-reference attribute. Convention (see the base header): payload
-// attributes named `dataset_id` / `source_dataset_id` are dataset references;
-// discard honors exactly these.
+// True when an element of the payload names `dataset_id` in a `dataset_id` or `source_dataset_id` attribute.
 static bool documentReferencesDataset(const QDomDocument& document, DatasetId dataset_id) {
   const QDomNodeList elements = document.elementsByTagName(u"*"_s);
   for (int index = -1; index < elements.size(); ++index) {
@@ -951,7 +911,7 @@ void SceneDockWidget::appendPendingRestoreElements(QDomDocument& doc, QDomElemen
 
 SceneDockWidget::PendingRestoreSnapshot SceneDockWidget::capturePendingRestoreState() const {
   PendingRestoreSnapshot snapshot;
-  snapshot.elements = pending_restore_elements_;  // QDomDocument handles are implicitly shared — cheap copies
+  snapshot.elements = pending_restore_elements_;  // QDomDocument is implicitly shared: a cheap copy
   snapshot.saved_datasets = saved_datasets_;
   snapshot.restore_failure_count = restore_failure_count_;
   snapshot.ever_had_content = ever_had_content_;
@@ -1153,9 +1113,6 @@ std::optional<DatasetId> SceneDockWidget::resolveObjectDataset(
   if (object_dataset_resolver_) {
     return object_dataset_resolver_(saved_id, saved_source, saved_path, topic_name);
   }
-  // Default policy: the session's ambiguity-safe object identity ladder. An
-  // injected resolver overrides it (custom host policies, tests); without a
-  // session the restore stays pending.
   if (session_ == nullptr) {
     return std::nullopt;
   }
@@ -1192,20 +1149,15 @@ void SceneDockWidget::ensureSceneViewCreated() {
   scene_view_->setParent(this);
   scene_view_->setContentsMargins(0, 0, 0, 0);
   scene_view_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-  layout->insertWidget(0, scene_view_);  // above the status strip
+  layout->insertWidget(0, scene_view_);
 }
 
 PJ::Timepoint SceneDockWidget::clampToLayerRange(PJ::Timepoint time) const {
-  // Latched-layer rule (semantics ported from pj_scene3d_core's
-  // clampTrackerTimeToRanges, which the 3D dock used before migrating onto this
-  // base): a *spanning* layer (first < last) bounds both ends; a *latched /
-  // one-shot* layer (first == last, e.g. a map pinned to the recording start)
-  // is valid from its stamp ONWARD — it lowers `lo` but must NOT cap `hi`, or
-  // its lone early stamp would drag the live playhead backwards and hide
-  // everything keyed to "now" (the old "TF doesn't render unless another topic
-  // is present" bug). With no spanning layer there is no upper bound; with no
-  // usable range the time passes through unchanged. `lo`/`hi` are guarded by
-  // have_lo/have_hi — never a default Timepoint (which is epoch, not a bound).
+  // A spanning layer (first < last) bounds both ends. A latched layer (first == last, a map pinned to the
+  // recording start) is valid from its stamp onward: it lowers `lo` but must not cap `hi`, or its lone early
+  // stamp drags the live playhead backwards and hides everything keyed to "now". With no spanning layer there is
+  // no upper bound; with no usable range the time passes through. have_lo/have_hi, not a default Timepoint (the
+  // epoch), say whether a bound exists.
   bool have_lo = false;
   bool have_hi = false;
   PJ::Timepoint lo{};
@@ -1218,7 +1170,7 @@ PJ::Timepoint SceneDockWidget::clampToLayerRange(PJ::Timepoint time) const {
     const PJ::Timepoint first = range.min;
     const PJ::Timepoint last = range.max;
     if (last < first) {
-      continue;  // inverted: no data, or a finding (it bounds no clock range)
+      continue;  // no data, or a finding (it bounds no clock range)
     }
     if (!have_lo || first < lo) {
       lo = first;
@@ -1262,11 +1214,8 @@ void SceneDockWidget::clearLayers() {
     return;
   }
   invalidateTrackerRenderKey();
-  // Contract (the ordering removeTopic uses): re-point the view off every
-  // layer (a sync with an empty draw order) while the layers are still alive, so
-  // the view releases the GPU state it holds for each BEFORE any detach. Only then
-  // detach (which tears down the layers' caches). The retired layers are destroyed
-  // at scope exit.
+  // As in removeTopic: the view is re-pointed off every layer before any detach, so it releases its GPU state for
+  // each while the layers are alive.
   auto retired = std::move(layers_);
   layers_.clear();
   draw_order_.clear();

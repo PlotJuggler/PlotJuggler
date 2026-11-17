@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// A marker generator saved in a layout is replayed by restoreDataProcessors, which
-// runs its script immediately. That happens on a session where no toolbox panel has
-// ever been opened — the case these tests pin, because the catalog-backed series
-// resolver the script reads through used to be installed only when a toolbox was
-// launched, so every restored rule ran against no data and failed.
+// A marker generator saved in a layout is replayed by restoreDataProcessors, which runs its script immediately,
+// on a session where no toolbox panel has ever been opened: the catalog-backed series resolver the script reads
+// through must not depend on a toolbox having been launched.
 
 #include <gtest/gtest.h>
 
@@ -104,9 +102,7 @@ std::optional<PJ::sdk::PlotMarkers> publishedMarkers(PJ::AppSession& app, PJ::Da
   return pj_test::publishedMarkers(app, dataset, kSeriesKey, kGeneratorId);
 }
 
-// The whole point: no toolbox is ever launched here, yet the restored rule must see
-// its input series and publish. Before the resolver moved to MainWindow construction,
-// series() returned nil and the restore failed.
+// No toolbox is launched here, yet the restored rule must see its input series and publish.
 TEST(MainWindowMarkerGeneratorRestoreTest, RestoresGeneratorWithoutLaunchingAToolbox) {
   QTemporaryDir extensions_dir;
   ASSERT_TRUE(extensions_dir.isValid());

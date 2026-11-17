@@ -1,11 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Standalone visual demo for pj_widgets/MessageBox.
-//
-// Interactive window with one button per MessageBox variant
-// (information / warning / critical / question / destructive) plus a
-// theme toggle.
+// Standalone visual demo for pj_widgets/MessageBox: one button per variant (information, warning, critical, question,
+// destructive) plus a theme toggle.
 
 #include <QApplication>
 #include <QDebug>

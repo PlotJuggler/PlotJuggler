@@ -36,7 +36,8 @@ plugins are not signed by our team. `--notarize` submits the signed image with
 
 The workflow signs and notarizes on tags and manual runs, from the
 `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PWD` and `MACOS_SIGNING_IDENTITY`
-secrets (a "Developer ID Application" certificate); a tag fails without them.
+secrets (a "Developer ID Application" certificate) and the `APPLE_*` secrets above;
+a tag fails without them.
 Pull requests that touch this folder build an ad-hoc image.
 
 An ad-hoc or un-notarized image still runs, but macOS blocks a downloaded copy

@@ -47,10 +47,9 @@ struct ParserRouteWinner {
 // claims the object route) decides the topic's builtin object identity and
 // serves as its lazy decoder.
 struct ParserRouteSelection {
-  // True when the SDK claim catalog resolved the routes. False when the
-  // encoding is outside the SDK registry (or the type name cannot be
-  // normalized): both winners then come from the first provider registered
-  // for the encoding, which is the same parser the pre-routing host selected.
+  // True when the SDK claim catalog resolved the routes. False when the encoding is outside the SDK registry (or the
+  // type name cannot be normalized): both winners then come from the first provider registered for the encoding (the
+  // legacy single-provider selection).
   bool route_dispatch = false;
   std::optional<ParserRouteWinner> scalar;
   std::optional<ParserRouteWinner> object;

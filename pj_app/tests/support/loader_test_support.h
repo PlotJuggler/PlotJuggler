@@ -2,13 +2,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Shared scaffolding for the standalone FileLoader-pipeline test binaries
-// (file_loader_test, source_promotion_host_test,
-// headless_descriptor_provider_session_test): the queued-event pump helpers
-// and the common main() (offscreen QApplication + QSettings redirect). The
-// one-binary-per-suite pattern stays — only the verbatim scaffolding lives
-// here. The matching compiled scaffolding is the pj_app_loader_testlib
-// OBJECT library in pj_app/CMakeLists.txt.
+// Shared scaffolding for the standalone FileLoader-pipeline test binaries (file_loader_test,
+// source_promotion_host_test, headless_descriptor_provider_session_test): the queued-event pump helpers and the
+// common main() (offscreen QApplication + QSettings redirect). The compiled counterpart is the
+// pj_app_loader_testlib OBJECT library in pj_app/CMakeLists.txt.
 
 #include <gtest/gtest.h>
 
@@ -72,9 +69,8 @@ inline void flushQueuedEvents(int passes = 3) {
   return canonical.isEmpty() ? path : canonical;
 }
 
-// Unified hints builder: skip the dialog, target the mock source, with an
-// optional preset config (e.g. {"fail_start":true} or a __pj_fanout list) and
-// the prefer_reuse flag a layout replay sets.
+// Hints that skip the dialog and target the mock source, with an optional preset config (e.g.
+// {"fail_start":true} or a __pj_fanout list) and the prefer_reuse flag a layout replay sets.
 [[nodiscard]] inline PJ::LoadHints mockLoadHints(
     const QString& config = QStringLiteral("{}"), bool prefer_reuse = false) {
   PJ::LoadHints hints;

@@ -111,7 +111,6 @@ class DockFixture {
   PJ::Scene3DDockWidget dock_;
 };
 
-// Processes events until every listed layer holds decoded bounds (decodes may be async).
 bool waitForBounds(PJ::Scene3DDockWidget& dock, const std::vector<PJ::ObjectTopicId>& topics) {
   QElapsedTimer timer;
   timer.start();

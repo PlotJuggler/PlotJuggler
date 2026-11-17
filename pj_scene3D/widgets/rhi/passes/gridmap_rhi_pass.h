@@ -15,12 +15,9 @@ namespace pj::scene3d {
 
 class GridMapLayer;
 
-/// The GridMap family of the QRhi view: a lit, colormapped heightfield per layer,
-/// drawn attribute-less (6 procedural vertices per quad, elevation and colour
-/// fetched from two R32F textures) with in-shader colormaps (colormap.glslinc). Owns its
-/// per-layer textures and uniforms (the view's registry its pipelines); the view owns ordering and the
-/// command buffer. Per frame: admit() (once), prepare() (once), then submit()
-/// per ScenePass for each draw.
+/// The GridMap family of the QRhi view: a lit, colormapped heightfield per layer, drawn attribute-less (6 procedural
+/// vertices per quad; elevation and colour fetched from two R32F textures) with in-shader colormaps
+/// (colormap.glslinc). Owns its per-layer textures and uniforms; its pipelines live in the view's registry.
 class GridMapRhiPass {
  public:
   struct Draw {
@@ -35,22 +32,17 @@ class GridMapRhiPass {
   [[nodiscard]] bool ready() const {
     return opaque_pipeline_ != nullptr && translucent_pipeline_ != nullptr;
   }
-  /// Adopts the view's grid-map layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<GridMapLayer*>& layers);
-  /// A layer of this family is in the view: the view builds the family (initialize()) only then.
   [[nodiscard]] bool hasLayers() const {
     return !layers_.empty();
   }
 
   /// Drains each visible layer's pending sample and places it.
   void admit(const PlaceFn& place);
-  /// Uploads changed grids and this frame's uniforms and builds the draws.
   void prepare(const RhiFrameContext& frame, const MeshShadingParams& shading);
-  /// The prepared draw of `layer` (none or one).
   [[nodiscard]] std::span<const Draw> drawsFor(const GridMapLayer* layer) const {
     return findDraws(draws_, layer);
   }
-  /// Records one draw; false when its pipeline is unavailable for `pass`.
   bool submit(
       QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
       const QRhiViewport& viewport) const;

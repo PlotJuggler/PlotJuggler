@@ -222,7 +222,7 @@ TEST_F(PlotWidgetTest, TheNoteStaysClearOfALeftAlignedLegend) {
   EXPECT_LT(plot_.markerStatusNoteRect().center().x(), middle) << "a bottom legend does not meet a top note";
 }
 
-// GAP-40: a plotted series that is not computed says so after its legend title, "not computed" or "computing N%", as
+// A plotted series that is not computed says so after its legend title, "not computed" or "computing N%", as
 // its host reports it; the curve's title, its identity, stays; a series of another dataset, or none, says nothing.
 TEST_F(PlotWidgetTest, UncomputedSeriesLegendSaysSo) {
   const PJ::PlotWidgetBase::CurveInfo& info = plot_.curveList().front();

@@ -20,8 +20,6 @@ using pj::scene3d::GridUpdate;
 using pj::scene3d::OccupancyGridReconstructor;
 using pj::scene3d::ReconstructedGrid;
 
-// --- Builders: own the cell bytes via a shared_ptr anchor so the Span stays valid. ---
-
 sdk::OccupancyGrid makeBase(Timestamp ts, uint32_t w, uint32_t h, std::vector<uint8_t> bytes) {
   auto buf = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
   sdk::OccupancyGrid g;
@@ -50,8 +48,8 @@ sdk::OccupancyGridUpdate makeUpdate(
   return u;
 }
 
-// --- Independent reference: cell-by-cell replay (different code path than the
-//     reconstructor's row-memcpy), so equivalence is a genuine cross-check. ---
+// Independent reference: a cell-by-cell replay (a different code path than the reconstructor's row-memcpy), so
+// equivalence is a genuine cross-check.
 
 std::vector<int8_t> refReplay(
     const sdk::OccupancyGrid& base, const std::vector<sdk::OccupancyGridUpdate>& updates, Timestamp t) {
@@ -81,12 +79,8 @@ std::vector<int8_t> refReplay(
   return cells;
 }
 
-// --- Providers over in-memory timelines. ---
-
-// BaseSample::identity is the base's position in the timeline vector (+1, so 0
-// stays "none") — a unique per-entry token, standing in for the production
-// SequentialUID. Equal-ts bases: the LAST one wins (>=), matching the store's
-// indexAtOrBefore pick over duplicate timestamps.
+// BaseSample::identity is the base's position in the timeline vector (+1, so 0 stays "none"), standing in for the
+// production SequentialUID. Equal-ts bases: the LAST one wins (>=), matching the store's indexAtOrBefore pick.
 OccupancyGridReconstructor::BaseProvider baseProviderFor(const std::vector<sdk::OccupancyGrid>& bases) {
   return [&bases](Timestamp t) -> std::optional<OccupancyGridReconstructor::BaseSample> {
     std::optional<OccupancyGridReconstructor::BaseSample> best;
@@ -117,7 +111,6 @@ OccupancyGridReconstructor::UpdatesProvider updatesProviderFor(const std::vector
   };
 }
 
-// Build a base + N in-bounds updates with deterministic pseudo-random placement.
 struct Timeline {
   std::vector<sdk::OccupancyGrid> bases;
   std::vector<sdk::OccupancyGridUpdate> updates;
@@ -153,14 +146,12 @@ TEST(OccupancyGridReconstructorTest, BaseOnlyNoUpdates) {
   EXPECT_EQ(g.width, 8u);
   EXPECT_EQ(g.height, 8u);
   EXPECT_EQ(g.cells, refReplay(tl.bases.front(), tl.updates, 2000));
-  // First call with a base in effect → a full (re)build, not incremental.
   EXPECT_EQ(update.kind, GridUpdate::Kind::kFull);
 }
 
-// A replacement base at the SAME timestamp — a NEW timeline entry (fresh
-// identity), possible because the store permits duplicate stamps — must start a
-// new epoch. Keyed on the decoded timestamp alone it would be invisible and the
-// forward path would keep the old keyframe's cells.
+// A replacement base at the SAME timestamp (a NEW timeline entry with a fresh identity; the store permits duplicate
+// stamps) must start a new epoch: keyed on the decoded timestamp alone it would be invisible and the forward path
+// would keep the old keyframe's cells.
 TEST(OccupancyGridReconstructorTest, SameTimestampReplacementBaseResetsEpoch) {
   std::vector<sdk::OccupancyGrid> bases;
   bases.push_back(makeBase(1000, 4, 4, std::vector<uint8_t>(16, 10)));
@@ -210,7 +201,6 @@ TEST(OccupancyGridReconstructorTest, BackwardSeekMatchesReplay) {
   const auto bp = baseProviderFor(tl.bases);
   const auto up = updatesProviderFor(tl.updates);
   OccupancyGridReconstructor r;
-  // Go to the end, then step backward to several earlier times.
   r.reconstructAt(1000 + 10 * 151, bp, up);
   for (const Timestamp t :
        {Timestamp{1000 + 10 * 120}, Timestamp{1000 + 10 * 40}, Timestamp{1000 + 10 * 5}, Timestamp{1000}}) {
@@ -221,7 +211,6 @@ TEST(OccupancyGridReconstructorTest, BackwardSeekMatchesReplay) {
 
 TEST(OccupancyGridReconstructorTest, NewEpochResetsAndIsReversible) {
   Timeline tl = makeTimeline(8, 20);
-  // A second, differently-sized base keyframe at a later time.
   std::vector<uint8_t> b2(6u * 6u, 42u);
   tl.bases.push_back(makeBase(5000, 6, 6, std::move(b2)));
   const auto bp = baseProviderFor(tl.bases);
@@ -232,7 +221,6 @@ TEST(OccupancyGridReconstructorTest, NewEpochResetsAndIsReversible) {
   EXPECT_EQ(g_after.width, 6u);
   EXPECT_EQ(g_after.cells, refReplay(tl.bases.back(), tl.updates, 6000));
 
-  // Seek back into the first epoch.
   const ReconstructedGrid& g_before = r.reconstructAt(1000 + 10 * 10, bp, up).grid;
   EXPECT_EQ(g_before.width, 8u);
   EXPECT_EQ(g_before.cells, refReplay(tl.bases.front(), tl.updates, 1000 + 10 * 10));
@@ -254,18 +242,15 @@ TEST(OccupancyGridReconstructorTest, SnapshotMemoryBudgetHonored) {
   const auto bp = baseProviderFor(tl.bases);
   const auto up = updatesProviderFor(tl.updates);
   OccupancyGridReconstructor r(/*snapshot_budget_bytes=*/4096);  // ≤ 4 snapshots
-  // Drive a full forward pass to accumulate snapshots.
   r.reconstructAt(1000 + 10 * 1001, bp, up);
   EXPECT_LE(r.snapshotBytes(), 4096u);
-  // Correctness is independent of the (now sparse) snapshot cache.
   for (const Timestamp t : {1000 + 10 * 800, 1000 + 10 * 300, 1000 + 10 * 50}) {
     EXPECT_EQ(r.reconstructAt(t, bp, up).grid.cells, refReplay(tl.bases.front(), tl.updates, t));
   }
 }
 
-// H.13 contract at the core boundary: when the timeline gains an entry BEHIND
-// the consumed cursor (live ingest jitter), the forward fast-path cannot see it
-// by design; invalidate() must force a full rebuild that picks it up.
+// When the timeline gains an entry BEHIND the consumed cursor (live ingest jitter) the forward fast path cannot see
+// it; invalidate() must force a full rebuild that picks it up.
 TEST(OccupancyGridReconstructorTest, LateEntryBehindCursorForcesRebuild) {
   Timeline tl = makeTimeline(16, 50);  // updates at ts 1010..1500
   const auto bp = baseProviderFor(tl.bases);
@@ -275,28 +260,24 @@ TEST(OccupancyGridReconstructorTest, LateEntryBehindCursorForcesRebuild) {
   const Timestamp t_high = 1700;
   r.reconstructAt(t_high, bp, up);  // forward cursor now at t_high
 
-  // The providers close over tl.updates by reference, so this append mutates
-  // the live timeline mid-test: a retroactive entry at ts 1600 < t_high.
+  // The providers close over tl.updates by reference: this append mutates the live timeline mid-test (a retroactive
+  // entry at ts 1600 < t_high).
   const std::vector<sdk::OccupancyGridUpdate> updates_before = tl.updates;
   tl.updates.push_back(makeUpdate(1600, 5, 5, 3, 3, std::vector<uint8_t>(9, 99)));
 
   // Forward fast-path window (last_t_, t] is empty — the grid stays stale.
   EXPECT_EQ(r.reconstructAt(t_high, bp, up).grid.cells, refReplay(tl.bases.front(), updates_before, t_high));
 
-  // invalidate() discards the epoch (and the snapshots that pre-date the late
-  // entry): the next call rebuilds from base + full replay and includes it.
   r.invalidate();
   const GridUpdate rebuilt = r.reconstructAt(t_high, bp, up);
   EXPECT_EQ(rebuilt.kind, GridUpdate::Kind::kFull);
   EXPECT_EQ(rebuilt.grid.cells, refReplay(tl.bases.front(), tl.updates, t_high));
-  // Sanity: the late update actually changes the grid, so the check above is meaningful.
   EXPECT_NE(rebuilt.grid.cells, refReplay(tl.bases.front(), updates_before, t_high));
 }
 
-// M.13: several updates share a timestamp straddling the snapshot stride (64).
-// A snapshot taken mid-way through the equal-ts run captures only a prefix of
-// the group, and the backward replay's exclusive lower bound (lo < ts) never
-// re-applies the rest — the restored grid diverges from a from-scratch replay.
+// Several updates share a timestamp straddling the snapshot stride (64): a snapshot taken mid-way through the equal-ts
+// run holds only a prefix of the group, and the backward replay's exclusive lower bound (lo < ts) never re-applies the
+// rest, so the restored grid would diverge from a from-scratch replay.
 TEST(OccupancyGridReconstructorTest, DuplicateTimestampSnapshotBoundary) {
   constexpr uint32_t kGrid = 16;
   Timeline tl;
@@ -315,17 +296,14 @@ TEST(OccupancyGridReconstructorTest, DuplicateTimestampSnapshotBoundary) {
   OccupancyGridReconstructor r;
   r.reconstructAt(2000, bp, up);  // forward pass applies all 100, snapshotting en route
 
-  // Backward seeks landing on / just after the straddled group (ts 1130) must
-  // match the reference replay, which includes the WHOLE equal-ts group.
   for (const Timestamp t : {Timestamp{1130}, Timestamp{1135}, Timestamp{1090}, Timestamp{1010}}) {
     EXPECT_EQ(r.reconstructAt(t, bp, up).grid.cells, refReplay(tl.bases.front(), tl.updates, t))
         << "backward mismatch at t=" << t;
   }
 }
 
-// M.11/M.12: wire dims are untrusted — absurd width*height must yield Empty
-// instead of throwing a multi-exabyte allocation through the GUI thread, and
-// must not poison reconstruction of a later sane base on the same timeline.
+// Wire dims are untrusted: absurd width*height must yield Empty instead of a multi-exabyte allocation on the GUI
+// thread, and must not poison reconstruction of a later sane base on the same timeline.
 TEST(OccupancyGridReconstructorTest, OversizedDimsYieldEmpty) {
   std::vector<sdk::OccupancyGrid> bases{makeBase(1000, 0xFFFFFFFFu, 0xFFFFFFFFu, std::vector<uint8_t>(16, 7))};
   std::vector<sdk::OccupancyGridUpdate> updates;
@@ -337,7 +315,6 @@ TEST(OccupancyGridReconstructorTest, OversizedDimsYieldEmpty) {
   EXPECT_EQ(update.kind, GridUpdate::Kind::kEmpty);
   EXPECT_TRUE(update.grid.empty());
 
-  // A sane base later on the same timeline still reconstructs.
   bases.push_back(makeBase(3000, 4, 4, std::vector<uint8_t>(16, 25)));
   const GridUpdate recovered = r.reconstructAt(3500, bp, up);
   EXPECT_EQ(recovered.kind, GridUpdate::Kind::kFull);

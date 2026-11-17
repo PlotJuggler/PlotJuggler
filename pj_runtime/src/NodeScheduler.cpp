@@ -123,7 +123,7 @@ void NodeScheduler::serve(
     }
     const Slot& up = upstream->second;
     if (up.status == NodeStatus::kMissingInput || up.status == NodeStatus::kError) {
-      // An upstream that failed clears a finding (D6); one missing its inputs (they left the window) does not.
+      // An upstream that failed clears a finding; one missing its inputs (they left the window) does not.
       settleMissing(
           entry, node, epoch, "on-demand: missing input '" + node.recipe.inputs[index] + "': " + up.detail,
           /*keep_finding=*/up.status == NodeStatus::kMissingInput);

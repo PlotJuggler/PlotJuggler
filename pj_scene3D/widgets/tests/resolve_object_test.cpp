@@ -1,12 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// resolveObject() canonical fallback. With NO MessageParser bound (an empty
-// ParserBinding — the path a data-source/toolbox canonical producer takes, e.g.
-// the Mosaico cloud toolbox), the helper must decode a serialized pj_base blob
-// via the canonical codec selected by builtin_object_type. This is the host-side
-// half that lets a parser-less canonical object render in 3D. Pure unit test:
-// no SessionManager session, no ObjectStore, no GL.
+// resolveObject() canonical fallback. With NO MessageParser bound (an empty ParserBinding: the path a
+// data-source/toolbox canonical producer takes), the helper must decode a serialized pj_base blob via the canonical
+// codec selected by builtin_object_type: the host-side half that lets a parser-less canonical object render in 3D.
+// Pure unit test: no SessionManager session, no ObjectStore, no GL.
 
 #include "pj_scene3d_widgets/resolve_object.h"
 
@@ -29,7 +27,6 @@ namespace {
 
 using BT = PJ::sdk::BuiltinObjectType;
 
-// Wrap serialized bytes as a self-owning PayloadView (anchors its own buffer).
 PJ::sdk::PayloadView payloadOf(std::vector<std::uint8_t> bytes) {
   return PJ::sdk::PayloadView(std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes)));
 }

@@ -2,12 +2,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Content identity for immutable store objects, plus the rejection vocabulary
-// its parsing shares with the store layer.
-//
-// A SHA-256 over an artifact's bytes names the directory that artifact lives in,
-// so identity (what the bytes are) is decoupled from provenance (where they came
-// from). Carries no Qt, filesystem, or loader types.
+// Content identity for immutable store objects, plus the rejection vocabulary its parsing shares with the store layer.
+// A SHA-256 names the directory an artifact lives in, so identity (what the bytes are) is decoupled from provenance
+// (where they came from). Carries no Qt, filesystem or loader types.
 
 #include <compare>
 #include <string>
@@ -17,8 +14,7 @@
 
 namespace PJ {
 
-/// The layer that refused an operation. Carried on every rejection so a caller
-/// can route by origin instead of matching on message text.
+/// The layer that refused an operation, so a caller can route by origin instead of matching on message text.
 enum class RejectionDomain {
   kDescriptor,
   kPluginCheck,
@@ -29,7 +25,8 @@ enum class RejectionDomain {
 
 [[nodiscard]] std::string_view rejectionDomainToString(RejectionDomain domain) noexcept;
 
-/// Machine-readable reasons a generation descriptor or transition was refused.
+/// Machine-readable reasons a generation descriptor or transition was refused. Only kInvalidDigest is produced today,
+/// by GenerationDigest::parse().
 enum class DescriptorRejectionCode {
   kInvalidJson,
   kLimitExceeded,
@@ -54,8 +51,6 @@ enum class DescriptorRejectionCode {
   kDuplicateFilePath,
   kModuleFileMissing,
   kModuleFileDigestMismatch,
-  // Admission-domain codes will claim these when that domain exists. They stay
-  // here while the descriptor model remains their only caller.
   kMultiFamilyDso,
   kReleaseMutation,
 };
@@ -90,10 +85,8 @@ class GenerationDigest {
   std::string canonical_;
 };
 
-/// The directory NAME an immutable store object uses for this digest: the
-/// bare hex, no "sha256:" prefix. The one home of the objects-root layout
-/// token — ArtifactStore and the resolver adapter both call this; nothing
-/// may strip the prefix by hand.
+/// The directory NAME an immutable store object uses for this digest: the bare hex, without "sha256:". The one home of
+/// that layout token; nothing may strip the prefix by hand.
 [[nodiscard]] std::string objectDirectoryNameFor(const GenerationDigest& digest);
 
 }  // namespace PJ

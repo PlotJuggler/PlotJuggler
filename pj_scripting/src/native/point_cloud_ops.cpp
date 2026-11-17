@@ -501,8 +501,8 @@ Expected<Charged<PointCloud>> downsample(const PointCloud& cloud, double voxel_s
   if (!finished) {
     return unexpected(std::string(kCancelledError));
   }
-  // ponytail: a comparison sort, about 60% of the 61 ns per point (ARCHITECTURE §19); a radix sort over the key bits
-  // the cloud's extent uses is the upgrade if downsampling shows up in a profile.
+  // ponytail: a comparison sort, the main cost of downsample (docs/derived_objects/ARCHITECTURE.md "Reference
+  // numbers"); a radix sort over the key bits the cloud's extent uses is the upgrade if it shows up in a profile.
   std::sort(keyed.begin(), keyed.end(), [](const Keyed& a, const Keyed& b) { return a.key < b.key; });
   std::size_t cubes = 0;
   for (std::size_t index = 0; index < keyed.size(); ++index) {

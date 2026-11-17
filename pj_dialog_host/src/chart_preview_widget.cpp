@@ -39,8 +39,7 @@
 namespace PJ {
 
 namespace {
-/// Default matplotlib "tab10" palette — 10 distinct colors, used to color a
-/// series when it carries no explicit hex color (Qwt has no automatic theme).
+/// The matplotlib "tab10" palette, for series without an explicit hex color (Qwt has no automatic theme).
 const std::vector<QColor>& kDefaultPalette() {
   static const std::vector<QColor> k_palette = {
       QColor(0x1f, 0x77, 0xb4), QColor(0xff, 0x7f, 0x0e), QColor(0x2c, 0xa0, 0x2c), QColor(0xd6, 0x27, 0x28),
@@ -50,9 +49,8 @@ const std::vector<QColor>& kDefaultPalette() {
   return k_palette;
 }
 
-/// Fixed-notation tick labels (6 decimals, trailing zeros stripped) so the
-/// preview matches the main plots. Twin of pj_plotting's PlotScaleDraw, which
-/// this module cannot link (module boundary) — keep the two in sync.
+/// Fixed-notation tick labels (6 decimals, trailing zeros stripped), as the main plots show them. Duplicates
+/// pj_plotting's PlotScaleDraw: keep the two in sync.
 class PreviewScaleDraw : public QwtScaleDraw {
  public:
   [[nodiscard]] QwtText label(double value) const override {
@@ -129,9 +127,9 @@ class PreviewMarkersItem final : public QwtPlotItem {
 }  // namespace
 
 ChartPreviewWidget::ChartPreviewWidget(QWidget* parent) : QwtPlot(parent) {
-  // Theme from the APPLICATION palette, never the widget's: QStyleSheetStyle
-  // rewrites widget palettes under QSS, mis-detecting the theme inside styled
-  // plugin dialogs (Theme.cpp keeps the app palette's Window in lockstep).
+  // The theme comes from the application palette, never the widget's: QStyleSheetStyle rewrites widget palettes
+  // under QSS, which mis-detects the theme inside styled plugin dialogs (Theme.cpp keeps the app palette's Window
+  // in lockstep).
   const auto fw_theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
   setCanvasBackground(theme::surface(theme::Surface::DataBackdrop, fw_theme));
   setFrameStyle(QFrame::NoFrame);
@@ -143,8 +141,7 @@ ChartPreviewWidget::ChartPreviewWidget(QWidget* parent) : QwtPlot(parent) {
     c->setLineWidth(0);
   }
 
-  // Bottom legend with checkable entries: clicking one toggles its curve's
-  // visibility (mirrors the old Qt Charts interactive legend).
+  // Clicking a legend entry toggles its curve.
   auto* legend = new QwtLegend(this);
   legend->setDefaultItemMode(QwtLegendData::Checkable);
   insertLegend(legend, QwtPlot::BottomLegend);
@@ -155,8 +152,7 @@ ChartPreviewWidget::ChartPreviewWidget(QWidget* parent) : QwtPlot(parent) {
     }
   });
 
-  // Background grid (major dashed, minor dotted) — mirrors the main plot widget
-  // (PlotWidgetBase). Shown only while interactive (toggled in setZoomEnabled).
+  // As the main plot widget's grid (PlotWidgetBase); shown only while interactive (setZoomEnabled).
   grid_ = new QwtPlotGrid();
   grid_->enableX(true);
   grid_->enableY(true);
@@ -167,17 +163,15 @@ ChartPreviewWidget::ChartPreviewWidget(QWidget* parent) : QwtPlot(parent) {
   grid_->attach(this);
   grid_->setVisible(false);
 
-  // Rubber-band zoom (left-drag to zoom in, right-click steps out). Disabled
-  // until setZoomEnabled(true); wheel zoom is handled in eventFilter().
+  // Rubber-band zoom (left-drag in, right-click out), disabled until setZoomEnabled(true).
   zoomer_ = new QwtPlotZoomer(canvas());
   zoomer_->setEnabled(false);
-  // The middle button pans here; Qwt binds it to "zoom back one step" on release, which
-  // would undo a rubber-band zoom at the end of every middle-drag pan.
+  // The middle button pans here, and Qwt binds it to "zoom back one step" on release, which would undo a
+  // rubber-band zoom at the end of every middle-drag pan.
   zoomer_->setMousePattern(QwtEventPattern::MouseSelect3, Qt::NoButton);
   QObject::connect(zoomer_, &QwtPlotZoomer::zoomed, this, [this](const QRectF&) { emitViewChanged(); });
 
-  // Pan (middle-drag, plus Ctrl+left-drag so it coexists with the left-drag zoomer) and
-  // wheel zoom live in eventFilter().
+  // Ctrl+left-drag pans too, so it coexists with the left-drag zoomer.
   canvas()->installEventFilter(this);
 }
 
@@ -207,8 +201,7 @@ void ChartPreviewWidget::setSeries(const std::vector<Series>& series) {
     }
     curve->setSamples(points);
 
-    // Color precedence: explicit hex (if valid) wins; otherwise a palette entry
-    // chosen by series index (wraps modulo the palette size).
+    // A valid explicit hex wins; otherwise the palette entry for the series index, modulo the palette size.
     QColor color;
     if (!s.color.empty()) {
       color = QColor(QString::fromStdString(s.color));
@@ -237,8 +230,7 @@ void ChartPreviewWidget::setSeries(const std::vector<Series>& series) {
   }
 
   replot();
-  // Make the freshly-fit view the rubber-band zoom-out base. Block the zoomer's
-  // signals so this programmatic reset doesn't emit a spurious viewChanged().
+  // The fitted view becomes the zoom-out base; the zoomer's signals are blocked so this reset emits no viewChanged().
   {
     const QSignalBlocker blocker(zoomer_);
     zoomer_->setZoomBase(true);
@@ -273,7 +265,7 @@ void ChartPreviewWidget::clearSeries() {
 
 void ChartPreviewWidget::setZoomEnabled(bool enabled) {
   if (enabled == zoom_enabled_) {
-    return;  // idempotent: the panel re-declares this every tick
+    return;  // the panel re-declares this every tick
   }
   zoom_enabled_ = enabled;
   endPan();

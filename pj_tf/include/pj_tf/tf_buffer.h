@@ -26,16 +26,11 @@ namespace pj::tf {
 
 using Duration = PJ::Duration;
 
-// Why setTransform rejected a single edge. Every value is a recoverable *data*
-// error in a bulk feed (a real bag can carry any of these), not a programmer
-// error — callers count/log and continue rather than aborting the whole ingest.
+// Why setTransform rejected a single edge. Each is a recoverable data error a real bag can carry: callers count
+// and continue instead of aborting the ingest.
 enum class SetTransformError {
-  // Child is already parented to a *different* frame. Deliberate divergence from
-  // tf2, which lets the latest published parent win: we drop every post-reparent
-  // edge for that child *forever* (the frame freezes at its last pre-reparent
-  // pose), rather than start a new history. Surfaced only as an aggregate
-  // caller-side drop counter, never per-edge in the UI — see L.102 in the
-  // 2026-06-12 scene3D review for the rationale and trade-off.
+  // Child is already parented to a different frame. Unlike tf2 (the latest parent wins), every later edge for that
+  // child is dropped for good: the frame freezes at its last pre-reparent pose instead of starting a new history.
   kReparentConflict,
   kSelfLoop,              // child == parent (a frame relative to itself)
   kInvalidFrameName,      // parent_frame or child_frame is empty
@@ -43,8 +38,7 @@ enum class SetTransformError {
   kNonFiniteTranslation,  // translation has a non-finite (NaN/Inf) component
 };
 
-// Why a TF lookup failed. An enum (not a string) keeps render-loop misses
-// allocation-free; the throwing wrapper maps it back to a message.
+// Why a TF lookup failed. An enum, not a string, keeps render-loop misses allocation-free.
 enum class LookupError {
   kUnknownSource,   // source frame not present in the buffer
   kUnknownTarget,   // target frame not present in the buffer
@@ -52,27 +46,21 @@ enum class LookupError {
   kNoSampleAtTime,  // an edge on the connecting path has no sample at the requested time
 };
 
-// The time base a lookup is expressed in. Every sample carries two stamps: its own
-// header stamp, and the entry time of the message that carried it (the dataset's
-// store timestamp, e.g. MCAP log time). They differ by the transport latency, or
-// entirely when header stamps use simulated time; with header == entry for every
-// sample both clocks give identical results.
+// The time base a lookup is expressed in. Every sample carries two stamps: its header stamp and the entry time of
+// the message that carried it (the dataset's store timestamp, e.g. MCAP log time). They differ by the transport
+// latency, or entirely under simulated-time headers; when header == entry for every sample the clocks agree.
+// Which consumer uses which: docs/derived_objects/ARCHITECTURE.md "The two clocks".
 enum class Clock {
-  // The cursor's clock: per edge, the newest-stamped sample that had arrived by `t`.
-  // For anything addressed by a query time: what the recording knew at t. Which
-  // consumer uses which clock: docs/derived_objects/ARCHITECTURE.md §12.
+  // The cursor's clock: per edge, the newest-stamped sample that had arrived by `t` (what the recording knew at t).
+  // For anything addressed by a query time.
   kEntry,
-  // The transforms' own stamps: per edge, the newest sample stamped at or before `t`.
-  // For placing an object at its own header stamp ("where was the frame when this
-  // was measured").
+  // The transforms' own stamps: per edge, the newest sample stamped at or before `t`. For placing an object at its
+  // own header stamp.
   kHeader,
 };
 
-// Case-insensitive (ASCII) less for frame names. Frame identity stays
-// case-sensitive in the buffer; this is *display order* only. It is the single
-// definition of user-facing frame ordering: getFrameHierarchy()'s sibling sort
-// and any dock-level merge sort (e.g. the fixed-frame combo's clusters) must
-// agree, so both call this.
+// Case-insensitive (ASCII) less for frame names: display order only, frame identity stays case-sensitive. The one
+// definition of user-facing frame ordering; getFrameHierarchy()'s sibling sort and any dock-level merge sort call it.
 [[nodiscard]] bool frameNameLess(std::string_view a, std::string_view b) noexcept;
 
 struct FrameRow {
@@ -115,10 +103,8 @@ class TransformSnapshot {
   explicit TransformSnapshot(uint64_t revision) : revision_(revision) {}
   TransformSnapshot(const TransformSnapshot&) = default;
 
-  // Defined in-header (not forward-declared) because std::unordered_map requires
-  // a complete mapped_type at member-declaration time on libstdc++ (GCC 11);
-  // only newer libstdc++ tolerates an incomplete one. Keeping these inline keeps
-  // the buffer portable across the supported toolchains.
+  // Defined here, not forward-declared: libstdc++ 11 (GCC 11) needs a complete mapped_type for std::unordered_map
+  // members.
   struct EdgeHistory {
     struct Sample {
       TimePoint stamp;
@@ -164,17 +150,14 @@ class TransformSnapshot {
     EdgeHistory history;
   };
 
-  // One hop in a frame's chain toward its root. Carries the edge already resolved
-  // by chainToRoot so lookup composition never re-hashes the same name (the
-  // pointer is valid only while parents_ is unmodified). `link` is null for the
-  // topmost (root) frame, which has no edge.
+  // One hop in a frame's chain toward its root, with the edge chainToRoot already resolved (valid only while
+  // parents_ is unmodified). `link` is null for the topmost frame, which has no edge.
   struct ChainHop {
     std::string frame;
     const ParentLink* link;
   };
 
-  // Index into a source/target chain where the two first meet, found by linear
-  // scan (chains are short, so this beats per-lookup hash containers).
+  // Index into a source/target chain where the two first meet.
   struct MeetPoint {
     std::size_t src_k = 0;
     std::size_t tgt_k = 0;
@@ -185,180 +168,135 @@ class TransformSnapshot {
   uint64_t revision_;
 
   static std::optional<Transform> sampleAt(const EdgeHistory& history, TimePoint time, Clock clock);
-  // Walk `frame` to its root, recording each hop's resolved edge into `out`
-  // (cleared at entry). Cycle-safe: a repeated frame stops the walk so a
-  // malformed tree fails cleanly. Caller-supplied output so hot lookups can
-  // reuse scratch storage instead of heap-allocating a vector per call.
+  // Walk `frame` to its root into `out` (cleared first, so hot lookups reuse scratch storage). A repeated frame
+  // stops the walk, so a cyclic tree fails the lookup instead of spinning.
   void chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const;
-  // Lowest common ancestor of two chains (shared by lookup + latestCommonTime).
+  // Lowest common ancestor of two chains.
   static MeetPoint findCommonAncestor(const std::vector<ChainHop>& src, const std::vector<ChainHop>& tgt);
-  // True if `frame` appears anywhere in the buffer (as a child or a parent).
-  // Used only on the lookup-failure path to classify Unknown* vs Disconnected.
+  // True if `frame` appears anywhere in the buffer (as a child or a parent). O(n): only for classifying a failed
+  // lookup as Unknown* vs Disconnected.
   bool isKnownFrame(const std::string& frame) const;
-  // getAllFrames() into the caller's vector (cleared first).
   void framesInto(std::vector<std::string>& out) const;
 };
 
 class TransformBuffer {
  public:
-  // Pass as the cache window to disable eviction entirely (keep all samples).
-  // Use this for bulk-ingested, bounded sources (e.g. a loaded file): the whole
-  // recording's TF is fed in up front, so a rolling window would trim every
-  // dynamic edge to its tail and break lookups earlier in the timeline. The
-  // finite default suits live streaming, where it bounds memory on a growing buffer.
+  // Cache window that disables eviction. For bulk-ingested bounded sources (a loaded file): the whole recording is
+  // fed up front, so a rolling window would trim every dynamic edge to its tail and break lookups earlier in the
+  // timeline. The finite default suits live streaming, where it bounds memory.
   static constexpr Duration kKeepAll = Duration::max();
 
   explicit TransformBuffer(Duration cache_window = std::chrono::seconds(10));
   ~TransformBuffer();
 
-  // Insert or replace the edge for `tf.child_frame`. A newer sample exactly equal
-  // (component-wise, no tolerance) to the edge's last stored one is not stored:
-  // zero-order hold makes it redundant. The edge still records its stamp and entry
-  // time (see getLatestSample), which advance the eviction cutoffs, and an entry
-  // time earlier than the stored sample's counts for it in the entry clock, so the
-  // repeat bumps revision() only if that evicts something or moves the entry clock.
+  // Insert or replace the edge for `tf.child_frame`; the rotation is normalized on write. A newer sample exactly
+  // equal (component-wise) to the edge's last stored one is not stored (zero-order hold makes it redundant), but
+  // the edge still records its stamp and entry time (see getLatestSample), which advance the eviction cutoffs, and
+  // an earlier entry time counts for the stored sample in the entry clock. Such a repeat bumps revision() only if
+  // that evicts something or moves the entry clock.
   //
-  // Returns the rejected-edge reason instead of throwing, so a malformed edge in a bulk feed drops one
-  // edge rather than aborting the whole load. There is no static/dynamic flag: a
-  // transform published once (/tf_static, however it is namespaced) is just a
-  // single-sample history that resolves at every later time via nearest-previous.
-  // Validation order (each a recoverable SetTransformError, see the enum):
-  // InvalidFrameName -> InvalidRotation -> NonFiniteTranslation -> SelfLoop ->
-  // ReparentConflict. The name + rotation + translation checks run *before* the
-  // self-loop / reparent checks (and before glm::normalize), so a zero-length or
-  // NaN quaternion never reaches normalize and never poisons a lookup.
+  // A rejected edge returns its reason, never throws. Validation order: InvalidFrameName, InvalidRotation,
+  // NonFiniteTranslation, SelfLoop, ReparentConflict; the first three run before glm::normalize, so a zero-length
+  // or NaN quaternion never poisons a lookup. There is no static/dynamic flag: a transform published once
+  // (/tf_static, however namespaced) is a single-sample history that resolves at every later time.
   //
-  // `entry_time` is when the sample entered the dataset (Clock::kEntry); the
-  // overload without it uses tf.stamp, so both clocks coincide.
+  // `entry_time` is when the sample entered the dataset (Clock::kEntry); the overload without it uses tf.stamp.
   [[nodiscard]] PJ::Expected<void, SetTransformError> setTransform(const StampedTransform& tf, TimePoint entry_time);
   [[nodiscard]] PJ::Expected<void, SetTransformError> setTransform(const StampedTransform& tf);
 
-  // Throwing lookup (tf2 ergonomics): the SE(3) target<-source transform at
-  // `stamp` in `clock`, or throws std::runtime_error if unavailable. Thin wrapper
+  // The SE(3) target<-source transform at `stamp` in `clock`; throws std::runtime_error when unavailable. Wrapper
   // over tryLookupTransform.
   [[nodiscard]] Transform lookupTransform(
       const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const;
 
-  // Non-throwing lookup — the primary accessor. Returns the transform at `stamp`,
-  // read in `clock`, or a LookupError reason; lookupTransform is sugar over it.
+  // The transform at `stamp`, read in `clock`, or the LookupError reason.
   [[nodiscard]] PJ::Expected<Transform, LookupError> tryLookupTransform(
       const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const;
 
-  // True iff `target` and `source` share a common ancestor in the forest, i.e. a
-  // transform between them could be composed at *some* time. A pure connectivity
-  // predicate (no time argument, no per-edge sample bound) — strictly cheaper
-  // than latestCommonTime for callers that only need reachability.
+  // True iff `target` and `source` share a common ancestor, i.e. a transform between them could be composed at some
+  // time. Connectivity only, cheaper than latestCommonTime.
   [[nodiscard]] bool areConnected(const std::string& target, const std::string& source) const;
 
-  // The root of `frame`'s tree: its topmost ancestor, or `frame` itself when it has
-  // no parent or is unknown. Two connected frames share it. In a parent cycle, the
-  // last frame reached before the walk repeats.
+  // The topmost ancestor of `frame`, or `frame` itself when it has no parent or is unknown; two connected frames
+  // share it. In a parent cycle, the last frame reached before the walk repeats.
   [[nodiscard]] std::string rootOf(const std::string& frame) const;
 
-  // Newest time, in `clock`, at which every edge between the two frames has a
-  // sample (the newest stamp or entry time each edge received; edges published at a
-  // single stamp hold for all time, so they impose no bound). nullopt if the frames
-  // are disconnected. CONTRACT SURPRISE: when the connecting path is
-  // made up *entirely* of single-sample edges (the all-static case), the result
-  // is an ENGAGED TimePoint{} (the Unix epoch sentinel), meaning "connected and
-  // valid at any time at or after the newest single-sample stamp on the path" —
-  // NOT nullopt. A caller that feeds the returned time straight into
-  // tryLookupTransform may therefore get NoSampleAtTime on a pure-static path
-  // (real stamps are all > epoch); callers wanting only reachability should use
-  // areConnected() instead.
+  // Newest time, in `clock`, at which every edge between the two frames has a sample (the newest stamp or entry
+  // time each edge received; single-stamp edges hold for all time and impose no bound). nullopt if disconnected.
+  // A path made up entirely of single-sample edges (all static) returns an engaged TimePoint{} (the Unix epoch),
+  // not nullopt: "connected, valid from the newest single-sample stamp on". Feeding that straight into
+  // tryLookupTransform can fail with kNoSampleAtTime (real stamps are > epoch); use areConnected() for
+  // reachability.
   [[nodiscard]] std::optional<TimePoint> latestCommonTime(
       const std::string& target, const std::string& source, Clock clock) const;
 
-  // Union of every edge's stored sample times in `clock` (a repeat of the previous value is not stored) along the
-  // connecting path between `target` and `source` (both chains up to their common ancestor), clipped to [lo, hi]
-  // inclusive, sorted ascending and deduplicated into `out` (cleared first): the instants at which a lookup in `clock`
-  // can change. Empty when either frame is unknown, the two are disconnected (same reachability rule as
-  // tryLookupTransform), or target == source.
-  // This is the natural sampling grid for a motion trail: a frame whose own
-  // edge is static still moves whenever an edge higher up the chain does.
+  // Union of every edge's stored sample times in `clock` along the connecting path (both chains up to their common
+  // ancestor), clipped to [lo, hi] inclusive, sorted and deduplicated into `out` (cleared first): the instants at
+  // which a lookup in `clock` can change, i.e. the sampling grid for a motion trail (a static edge's frame still
+  // moves when an edge higher up the chain does). Empty when either frame is unknown, the two are disconnected, or
+  // target == source.
   void chainSampleTimes(
       const std::string& target, const std::string& source, TimePoint lo, TimePoint hi, Clock clock,
       std::vector<TimePoint>& out) const;
 
   [[nodiscard]] std::vector<std::string> getAllFrames() const;
-  // Same result as getAllFrames(), but refills the caller's vector (cleared
-  // first) so it can reuse capacity across calls — used by per-frame render
-  // passes to avoid a heap allocation every paint. Same locking as the
-  // by-value overload, which now delegates here.
+  // As getAllFrames(), into the caller's vector (cleared first) so per-frame render passes reuse its capacity.
   void getAllFrames(std::vector<std::string>& out) const;
   [[nodiscard]] std::optional<std::string> getParent(const std::string& child) const;
   // Newest header stamp the edge received (Clock::kHeader), including repeats
   // setTransform skipped.
   [[nodiscard]] std::optional<TimePoint> getLatestSample(const std::string& child) const;
 
-  // Depth-annotated DFS pre-order of the TF forest. Roots and same-parent
-  // siblings are alphabetically sorted; cycle-safe via visited set. Frames inside
-  // a parent cycle (no reachable root) are still emitted at depth 0 so a broken
-  // tree never vanishes silently from the fixed-frame combo.
+  // Depth-annotated DFS pre-order of the TF forest; roots and siblings sorted by frameNameLess. Frames inside a
+  // parent cycle (no reachable root) are emitted at depth 0 so a broken tree does not vanish from the fixed-frame
+  // combo.
   [[nodiscard]] std::vector<FrameRow> getFrameHierarchy() const;
 
-  // Same forest as `getFrameHierarchy`, shaped as nested JSON:
+  // Same forest as getFrameHierarchy, as nested JSON:
   //   [ { "name": "odom", "children": [ { "name": "base_link", ... } ] }, ... ]
-  // Intended for debug dumps, scripting integration, and layout-file diffs.
   [[nodiscard]] nlohmann::json getFrameHierarchyJson() const;
 
-  // Replace the rolling cache window and immediately trim every edge to it using
-  // the SAME rule as setTransform's eviction (per-edge, per-clock cutoff = newest
-  // stamp or entry time - `window`; a sample goes only when neither clock still
-  // needs it), always keeping at least the last sample per edge — that invariant
-  // is what keeps a stopped / once-published (static) frame resolvable forever.
-  // Pass kKeepAll to disable eviction (and drop nothing). Used to switch a buffer
-  // from file (kKeepAll) to live-streaming (finite) retention without rebuilding.
+  // Replaces the rolling cache window and trims every edge to it with setTransform's eviction rule (per edge and
+  // clock, cutoff = newest stamp or entry time - `window`; a sample goes only when neither clock still needs it).
+  // The last sample of an edge is always kept, so a stopped or once-published frame stays resolvable. kKeepAll
+  // drops nothing.
   void setCacheWindow(Duration window);
   [[nodiscard]] Duration cacheWindow() const;
 
-  // Monotonic change-detection token: bumps under the write lock on every change
-  // to the stored samples or to what lookups resolve — an insert, a replace with a
-  // different value, an earlier entry time, an eviction (during setTransform or
-  // setCacheWindow), and clear(). A skipped repeat that changes none of these does
-  // not bump, although getLatestSample / latestCommonTime can advance without one.
-  // Lets a caller gate expensive recomputation (orphan state, hierarchy) on "did
-  // the buffer change since I last looked?" without diffing. A bump does NOT imply
-  // connectivity changed (an in-place sample replace bumps it too). Every value
-  // comes from one process-wide counter, so no two buffers ever report the same
-  // revision: a revision stays a valid cache key when the buffer is replaced.
+  // Change-detection token, bumped under the write lock on every change to the stored samples or to what lookups
+  // resolve: an insert, a replace with a different value, an earlier entry time, an eviction (during setTransform
+  // or setCacheWindow) and clear(). A skipped repeat that changes none of these does not bump, although
+  // getLatestSample / latestCommonTime can advance without one. A bump does not imply connectivity changed. Values
+  // come from one process-wide counter, so no two buffers report the same revision and it stays a valid cache key
+  // when a buffer is replaced.
   [[nodiscard]] uint64_t revision() const noexcept;
 
-  // The current state, frozen, in O(1) and without copying: the snapshot shares
-  // the state until the next write, which copies it first (once per snapshot, the
-  // whole state: the cost of a snapshot of a mutating buffer, ARCHITECTURE.md §19).
-  // A buffer that is not written again (a loaded file) is never copied.
+  // The current state, frozen, in O(1): it is shared until the next write, which copies the whole state first
+  // (once per snapshot; the cost is in docs/derived_objects/ARCHITECTURE.md "Reference numbers"). A buffer that is
+  // not written again (a loaded file) is never copied.
   [[nodiscard]] std::shared_ptr<const TransformSnapshot> snapshot() const;
 
-  // Empties the buffer by replacing its state with a new, empty one: holders of the
-  // buffer see the reset, snapshots keep the state they hold.
+  // Replaces the state with an empty one: holders of the buffer see the reset, snapshots keep what they hold.
   void clear();
 
-  // Replaces this buffer's state with `other`'s current one, in O(1) and without a
-  // copy (the first write to either buffer copies the then-shared state): holders of
-  // this buffer see the replacement, snapshots keep theirs. Keeps this buffer's cache
-  // window. A write to `other` after the call no longer reaches this buffer.
+  // Replaces this buffer's state with `other`'s current one in O(1) (the first write to either buffer copies the
+  // then-shared state): holders of this buffer see the replacement, snapshots keep theirs. Keeps this buffer's
+  // cache window; later writes to `other` do not reach this buffer.
   void adoptStateOf(const TransformBuffer& other);
 
-  // Counts the whole-state replacements, clear() and adoptStateOf(); a write never
-  // moves it. A reader that extends a cached result when revision() moves (a trail
-  // appending samples after its last stamp) rebuilds it when the epoch moves instead.
+  // Counts whole-state replacements (clear(), adoptStateOf()); a write never moves it. A reader that extends a
+  // cached result when revision() moves (a trail appending samples) rebuilds it when the epoch moves.
   [[nodiscard]] uint64_t epoch() const noexcept;
 
  private:
-  // Strict-weak-order comparator for frame names as a std::set/std::map key.
-  // Orders case-insensitively (matching frameNameLess, the user-facing display
-  // order) but tie-breaks case-sensitively, so two names differing only by ASCII
-  // case ("Lidar" vs "lidar") are distinct keys and neither is silently dropped
-  // from the hierarchy — frame identity stays case-sensitive everywhere.
+  // Set/map key order: frameNameLess with a case-sensitive tie-break, so "Lidar" and "lidar" stay distinct keys
+  // and neither drops out of the hierarchy.
   struct FrameNameLess {
     bool operator()(const std::string& a, const std::string& b) const noexcept;
   };
 
-  // parent -> case-insensitively-sorted children, plus the forest roots and the
-  // full frame set. Built once per hierarchy call under the caller's shared_lock
-  // so getFrameHierarchy and getFrameHierarchyJson share one root-detection +
-  // sibling-ordering definition (they previously duplicated it verbatim).
+  // parent -> sorted children, the forest roots and the full frame set, shared by getFrameHierarchy and
+  // getFrameHierarchyJson.
   using ChildrenMap = std::unordered_map<std::string, std::set<std::string, FrameNameLess>>;
   using RootSet = std::set<std::string, FrameNameLess>;
   struct ForestIndex {
@@ -371,31 +309,23 @@ class TransformBuffer {
   using ChainHop = TransformSnapshot::ChainHop;
   using MeetPoint = TransformSnapshot::MeetPoint;
 
-  // The current state; every read goes through it under parents_mutex_. Written in
-  // place only while no snapshot shares it (see writableLocked).
+  // The current state; read under parents_mutex_, written in place only while no snapshot shares it.
   std::shared_ptr<TransformSnapshot> current_;
   mutable std::shared_mutex parents_mutex_;
   Duration cache_window_;
-  uint64_t epoch_ = 0;  // see epoch(); guarded by parents_mutex_
+  uint64_t epoch_ = 0;  // guarded by parents_mutex_
 
-  // The current state, ready for a write: copied first when a snapshot shares it.
-  // Caller holds the unique_lock.
+  // The current state, copied first when a snapshot shares it. Caller holds the unique_lock.
   TransformSnapshot& writableLocked();
-  // Makes samples[index] known by `entry_time`: lowers its entry key, and every
-  // earlier key above it, to `entry_time` (keeping the suffix-minimum invariant).
-  // Returns whether any key moved, i.e. whether entry-clock lookups changed.
+  // Lowers samples[index]'s entry key, and every earlier key above it, to `entry_time` (the suffix-minimum
+  // invariant). Returns whether any key moved, i.e. whether entry-clock lookups changed.
   static bool knownBy(std::deque<EdgeHistory::Sample>& samples, std::size_t index, TimePoint entry_time);
-  // Build the children/roots/all_frames index from the current state. Caller holds
-  // the shared_lock. Roots are "frames never seen as a child"; a parent cycle yields
-  // a frame with no reachable root, so callers DFS the roots first, then any
-  // not-yet-visited frame at depth 0 to surface cycle members too.
+  // Caller holds the shared_lock. Roots are frames never seen as a child, so a parent cycle has no reachable root:
+  // callers DFS the roots, then every unvisited frame at depth 0 to surface cycle members.
   ForestIndex buildForestIndexLocked() const;
-  // Trim the edge's samples to cache_window_ in place, relative to the newest
-  // received stamp and entry time: per clock, keeps the newest sample at or before
-  // that clock's cutoff (it holds the value valid there, however old it is) and
-  // everything after, and always at least the last sample. No-op when
-  // cache_window_ == kKeepAll. Returns whether it dropped anything. Caller holds
-  // the unique_lock.
+  // Trims the edge to cache_window_ relative to the newest received stamp and entry time: per clock, keeps the
+  // newest sample at or before the cutoff (it holds the value valid there, however old) and everything after, and
+  // always the last sample. No-op for kKeepAll. Returns whether it dropped anything. Caller holds the unique_lock.
   bool evictEdgeLocked(EdgeHistory& history) const;
 };
 

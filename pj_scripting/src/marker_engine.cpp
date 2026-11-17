@@ -1,15 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Luau backend for the whole-series → markers path (see marker_engine.h). A
-// freeform script runs once with a read accessor over the WHOLE series plus the
-// marker-emitting primitives bound as read-only globals; emitted markers are
-// collected into a per-run context. Mirrors the semantics of the Anomaly
-// Detector's sol2 engine exactly (timestamps stay in nanoseconds as doubles, no
-// rebasing) so a rule produces identical markers under either backend.
-//
-// Luau API gotchas: headers are C++ linkage (no extern "C"); globals must be bound
-// BEFORE luaL_sandbox freezes them; lua_upvalueindex carries the per-run context.
+// Luau backend of the whole-series -> markers path (marker_engine.h). A script runs once with a read accessor over the
+// whole series and the marker primitives bound as read-only globals; emitted markers collect in a per-run context
+// (`lua_upvalueindex`). Timestamps stay in nanoseconds as doubles, with no rebasing. Globals must be bound before
+// `luaL_sandbox` freezes them.
 
 #include "pj_scripting/marker_engine.h"
 
@@ -34,8 +29,6 @@
 
 namespace PJ::scripting {
 
-// ---- SeriesView accessors --------------------------------------------------
-
 std::optional<MarkerSample> SeriesView::at(std::size_t index) const {
   if (index >= values.size() || index >= timestamps.size()) {
     return std::nullopt;
@@ -48,9 +41,8 @@ double SeriesView::atTime(double t) const {
   if (n == 0 || timestamps.size() != n) {
     return 0.0;
   }
-  // A non-finite query (NaN/inf from a rule) makes every comparison below false,
-  // so the front/back guards would fall through and lower_bound would return
-  // begin(), making lo = 0 - 1 wrap to SIZE_MAX and read out of bounds. Reject it.
+  // A NaN query makes the front/back guards below false, lower_bound returns begin(), and `lo = 0 - 1` wraps and reads
+  // out of bounds.
   if (!std::isfinite(t)) {
     return 0.0;
   }
@@ -60,8 +52,7 @@ double SeriesView::atTime(double t) const {
   if (t >= timestamps.back()) {
     return values.back();
   }
-  // t is finite and strictly greater than timestamps.front() (the guards above),
-  // so lower_bound lands at index >= 1 and lo never underflows.
+  // t > timestamps.front(), so lower_bound lands at index >= 1 and `lo` cannot underflow.
   const auto it = std::lower_bound(timestamps.begin(), timestamps.end(), t);
   const std::size_t hi = static_cast<std::size_t>(it - timestamps.begin());
   const std::size_t lo = hi - 1;
@@ -73,8 +64,6 @@ double SeriesView::atTime(double t) const {
 namespace {
 
 using namespace detail;
-
-// ---- per-run context (carried into the bound primitives as an upvalue) -----
 
 struct RunContext {
   const SeriesProvider* provider = nullptr;
@@ -89,8 +78,8 @@ RunContext* ctxFromUpvalue(lua_State* L) {
   return static_cast<RunContext*>(lua_tolightuserdata(L, lua_upvalueindex(1)));
 }
 
-// Every emitted marker goes through here, so the native result is bounded independently of the
-// VM's memory cap. A marker counts its sizeof plus its strings; vector slack is not counted.
+// Every emitted marker goes through here, so the native result is capped apart from the VM's memory cap. A marker
+// counts its sizeof plus its strings; vector slack is not counted.
 void appendMarker(lua_State* L, RunContext* ctx, PJ::sdk::PlotMarker&& marker) {
   const std::size_t bytes =
       sizeof(PJ::sdk::PlotMarker) + marker.label.size() + marker.description.size() + marker.category.size();
@@ -100,8 +89,6 @@ void appendMarker(lua_State* L, RunContext* ctx, PJ::sdk::PlotMarker&& marker) {
   ctx->output_bytes += bytes;
   ctx->emitted.push_back(std::move(marker));
 }
-
-// ---- opts parsing (label/color/severity/status/category/description) -------
 
 std::optional<PJ::sdk::ColorRGBA> parseHexColor(const std::string& hex) {
   if (hex.size() != 7 || hex[0] != '#') {
@@ -154,7 +141,6 @@ PJ::sdk::MarkerStatus parseStatus(const std::string& s) {
   return PJ::sdk::MarkerStatus::kNone;
 }
 
-// Read string field `key` from the table at `idx`, or nullopt if absent/non-string.
 std::optional<std::string> optString(lua_State* L, int idx, const char* key) {
   lua_getfield(L, idx, key);
   std::optional<std::string> out;
@@ -165,7 +151,7 @@ std::optional<std::string> optString(lua_State* L, int idx, const char* key) {
   return out;
 }
 
-// Apply the optional opts table (the LAST argument if it is a table) to `m`.
+// Applies the opts table, the last argument when it is a table, to `m`.
 void applyOpts(lua_State* L, int opts_idx, PJ::sdk::PlotMarker& m) {
   if (!lua_istable(L, opts_idx)) {
     return;
@@ -191,8 +177,6 @@ void applyOpts(lua_State* L, int opts_idx, PJ::sdk::PlotMarker& m) {
     m.status = parseStatus(*v);
   }
 }
-
-// ---- series accessor (a Lua table with closures over a SeriesView*) --------
 
 const SeriesView* viewFromArg(lua_State* L, int idx) {
   if (!lua_istable(L, idx)) {
@@ -236,7 +220,6 @@ int l_series_atTime(lua_State* L) {
   return 1;
 }
 
-// series("name") -> a table {__sv=ptr, size=, at=, atTime=} or nil.
 int l_series(lua_State* L) {
   RunContext* ctx = ctxFromUpvalue(L);
   const char* name = lua_tostring(L, 1);
@@ -274,14 +257,9 @@ int l_getSeriesNames(lua_State* L) {
   return 1;
 }
 
-// ---- marker-emitting primitives --------------------------------------------
-
-// Convert a Luau number to an absolute-ns timestamp, rejecting anything a
-// double->int64 cast cannot represent: non-finite (math.huge / 0/0) AND finite
-// values outside the int64 range (e.g. 1e19) — both are undefined behavior in the
-// cast. ±9.22e18 ns is ~292 years, so no real marker time is excluded. Raises a
-// Luau error (longjmp; luaL_error is noreturn) — every marker script runs under a
-// protected call.
+// A Luau number as an absolute-ns timestamp. A non-finite value or one outside the int64 range (~292 years) is an
+// undefined double->int64 cast, so it raises a Luau error (a longjmp: every marker script runs under a protected
+// call).
 std::int64_t finiteToNs(lua_State* L, double x) {
   constexpr double kInt64Max = 9.223372036854775e18;  // just inside INT64_MAX as a double
   if (!std::isfinite(x) || x < -kInt64Max || x > kInt64Max) {
@@ -315,9 +293,8 @@ int l_closeMarker(lua_State* L) {
   return 0;
 }
 
-// The three marker shapes, factored so the flexible `createMarker` and the explicit
-// shortcuts emit byte-identical markers. `opts_idx` is the stack slot of the opts
-// table (it differs: createMarker passes it as arg 3, the shortcuts as arg 2).
+// The three marker shapes shared by `createMarker` and the explicit shortcuts, so both emit identical markers.
+// `opts_idx` is the stack slot of the opts table: arg 3 for createMarker, arg 2 for the shortcuts.
 
 // A vertical line at x: an event carrying no value.
 void emitVline(RunContext* ctx, double x, int opts_idx, lua_State* L) {
@@ -355,9 +332,8 @@ void emitPoint(RunContext* ctx, double x, double y, int opts_idx, lua_State* L) 
   appendMarker(L, ctx, std::move(m));
 }
 
-// createMarker(x?, y?, opts?): only x -> vertical line | only y -> horizontal line |
-// both -> point. The do-everything primitive; the three create*Marker functions below
-// are readable shortcuts for each single case (use whichever reads best, or mix them).
+// createMarker(x?, y?, opts?): only x -> vertical line, only y -> horizontal line, both -> point; the three
+// create*Marker functions below are shortcuts for each case.
 int l_createMarker(lua_State* L) {
   RunContext* ctx = ctxFromUpvalue(L);
   const bool has_x = !lua_isnoneornil(L, 1);
@@ -372,19 +348,16 @@ int l_createMarker(lua_State* L) {
   return 0;
 }
 
-// createVerticalMarker(x, opts?): a vertical line at x.
 int l_createVerticalMarker(lua_State* L) {
   emitVline(ctxFromUpvalue(L), lua_tonumber(L, 1), 2, L);
   return 0;
 }
 
-// createHorizontalMarker(y, opts?): a horizontal line at y.
 int l_createHorizontalMarker(lua_State* L) {
   emitHline(ctxFromUpvalue(L), lua_tonumber(L, 1), 2, L);
   return 0;
 }
 
-// createPointMarker(x, y, opts?): a point at (x, y).
 int l_createPointMarker(lua_State* L) {
   emitPoint(ctxFromUpvalue(L), lua_tonumber(L, 1), lua_tonumber(L, 2), 3, L);
   return 0;
@@ -403,11 +376,10 @@ int l_createBandMarker(lua_State* L) {
   return 0;
 }
 
-// ---- bandPower(series, fLo, fHi): summed FFT power in [fLo,fHi] Hz, DC-removed --
-
-// Same rule as toolbox_fft's fftLength (pj-official-plugins): pocketfft's Bluestein path (large
-// prime factors) needs ~76 bytes per sample, so above the budget analyze the largest even
-// 11-smooth length instead (~12 bytes per sample; drops well under 1% of the samples).
+// bandPower(series, fLo, fHi): summed FFT power in [fLo, fHi] Hz, DC removed.
+//
+// Above this budget the series is truncated to the largest even 11-smooth length, the rule of toolbox_fft's fftLength
+// (pj-official-plugins), so a rule matches the plugin. pj_scripting/docs/TECHNICAL_NOTES.md "`bandPower` memory".
 #ifdef __EMSCRIPTEN__
 constexpr std::size_t kBandPowerMemoryBudgetBytes = 350'000'000;
 #else
@@ -449,15 +421,13 @@ double computeBandPower(const SeriesView& sv, double fLo, double fHi) {
   }
   mean /= static_cast<double>(n);
 
-  // Float, like the kissfft build this replaces: half the memory of double on pocketfft's
-  // Bluestein path (~76 vs ~152 bytes per sample), ~1e-7 relative accuracy.
+  // Float: half the memory of double on pocketfft's Bluestein path, at ~1e-7 relative accuracy.
   std::vector<float> data(n);
   for (std::size_t i = 0; i < n; ++i) {
     data[i] = static_cast<float>(sv.values[i] - mean);
   }
   try {
-    // O(n log n) for any n (Bluestein for large prime factors). In place, the output is
-    // FFTPACK half-complex: re0, re1, im1, re2, im2, ..., re(n/2) (n even).
+    // In place; the output is FFTPACK half-complex: re0, re1, im1, re2, im2, ..., re(n/2) (n even).
     pocketfft::detail::pocketfft_r<float>(n).exec(data.data(), 1.0f, true);
   } catch (const std::bad_alloc&) {
     return 0.0;
@@ -483,8 +453,6 @@ int l_bandPower(lua_State* L) {
   lua_pushnumber(L, sv != nullptr ? computeBandPower(*sv, fLo, fHi) : 0.0);
   return 1;
 }
-
-// ---- bind a context-carrying C closure as a read-only global ---------------
 
 void bindGlobal(lua_State* L, RunContext* ctx, const char* name, lua_CFunction fn) {
   lua_pushlightuserdata(L, ctx);
@@ -528,7 +496,7 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
     lua_pushnil(L);
     lua_setglobal(L, lib);
   }
-  // Bind the primitives BEFORE luaL_sandbox freezes the globals read-only.
+  // Before luaL_sandbox freezes the globals.
   bindGlobal(L, &ctx, "series", l_series);
   bindGlobal(L, &ctx, "GetSeriesNames", l_getSeriesNames);
   bindGlobal(L, &ctx, "startMarker", l_startMarker);
@@ -544,8 +512,7 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
   lua_callbacks(L)->userdata = &budget;
   lua_callbacks(L)->interrupt = budgetInterrupt;
   budget.max_bytes = limits.mem_bytes;
-  // A whole-series run is one execution that scans the series; budget it like
-  // module-eval (setup_fuel), not a single per-sample calculate (call_fuel).
+  // One run scans a whole series, so it gets the module-evaluation fuel, not a per-sample calculate's.
   budget.fuel = static_cast<std::int64_t>(limits.setup_fuel);
 
   size_t bc_size = 0;
@@ -602,8 +569,7 @@ bool validateScript(const std::string& code, std::string* error) {
     }
     return false;
   }
-  // Compile-only: a fresh VM just to host luau_load; no primitives bound, no pcall,
-  // no inputs — so this is cheap and side-effect-free (drives the editor semaphore).
+  // A fresh VM only to host luau_load: no primitives, no pcall, no inputs.
   BudgetState budget;
   budget.max_bytes = std::numeric_limits<std::size_t>::max();
   budget.fuel = std::numeric_limits<std::int64_t>::max();

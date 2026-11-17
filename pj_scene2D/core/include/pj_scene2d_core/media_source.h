@@ -9,16 +9,9 @@
 
 namespace PJ {
 
-/// Uniform frame-delivery interface between decoder backends and
-/// MediaViewerWidget.  The main thread calls setTimestamp() when the
-/// global time changes and takeFrame() at render rate.
-///
-/// Concrete implementations:
-///   ImagePipelineSource  — worker-backed CodecPipeline + ObjectStore
-///   StreamingVideoSource — wraps StreamingVideoDecoder + worker thread
-///   DepthPipelineSource  — worker-backed depth decode (raw R32F + GPU colormap)
-///   ScenePipelineSource  — synchronous vector overlays decoded from ObjectStore
-///   CompositeMediaSource — fans out across N layers, returns one MediaFrame
+/// Pull-based frame delivery to MediaViewerWidget. Every method is called on the GUI thread: setTimestamp() when the
+/// time changes, takeFrame() at render rate. Frames never travel through Qt signals (docs/ARCHITECTURE.md "Frame
+/// delivery").
 class MediaSource {
  public:
   virtual ~MediaSource() = default;
@@ -29,30 +22,18 @@ class MediaSource {
   MediaSource(MediaSource&&) = delete;
   MediaSource& operator=(MediaSource&&) = delete;
 
-  /// Called by main thread when the global time changes.
-  /// May decode synchronously (scene) or post to an internal worker
-  /// (image/video/depth), depending on the implementation.
+  /// Decodes synchronously or posts to the source's worker.
   virtual void setTimestamp(int64_t ts_ns) = 0;
 
-  /// Called by main thread at render rate.
-  /// Returns the latest MediaFrame (base pixels and/or overlays), or nullopt
-  /// if nothing new since the last call.
+  /// The latest frame, or nullopt when nothing is new since the last call.
   virtual std::optional<MediaFrame> takeFrame() = 0;
 
-  /// Clear any "already produced this timestamp" caches so the next
-  /// setTimestamp() re-decodes even at an unchanged time. The compositor calls
-  /// this after a layer rebuild (add/remove/visibility): the underlying sources
-  /// are re-seeded at the same tracker time and would otherwise dedup the
-  /// request away, leaving a stale or empty frame until the tracker next moves.
-  /// Default: no-op (sources without a timestamp cache need nothing).
+  /// Makes the next setTimestamp() decode even at an unchanged time. Called after a layer rebuild, which re-seeds the
+  /// sources at the same time; without it they dedup the request and keep a stale or empty frame.
   virtual void invalidate() {}
 
-  /// Tell the source whether its consumer (the widget) can rectify camera frames
-  /// on the GPU. When true, a rectifying source may deliver the RAW frame with a
-  /// DecodedFrame::rectify_map attached instead of paying for a CPU resample; when
-  /// false it must deliver a display-ready (already-rectified) frame. The widget
-  /// calls this once it has probed its GPU capability. Default: no-op (sources
-  /// that don't rectify, or always rectify on the CPU, ignore it).
+  /// Whether the widget rectifies on the GPU. True: a rectifying source may deliver the raw frame with
+  /// DecodedFrame::rectify_map set. False: it must deliver an already rectified frame, or the image shows distorted.
   virtual void setGpuRectificationAvailable(bool /*available*/) {}
 };
 

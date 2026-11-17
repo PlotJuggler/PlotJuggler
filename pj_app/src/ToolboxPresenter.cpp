@@ -158,9 +158,8 @@ void ToolboxPresenter::attachAsTab(QWidget* content, bool transient) {
   const QString id = plugin_id_;
   TabbedPlotWidget& tabs = *shell_.ui_->tabbedPlotWidget;
   tabs.addWidgetTab(title_, content, [&shell, id]() { shell.teardownToolbox(id, Teardown::kDeferred); });
-  // Rules 3-4: an idle folded panel closes like any tab; one with a job in
-  // flight confirms first, because the teardown above cancels that job. The
-  // presenter's own host is what makes the cancellation land on THIS panel.
+  // A panel with a job in flight confirms first, because the teardown cancels that job; stopping through its
+  // own host makes the cancellation land on this panel only.
 #ifdef PJ_TARGET_WASM
   tabs.setWidgetTabPreClose(content, [&shell, id, tab_content = QPointer<QWidget>(content)]() {
 #else
@@ -187,8 +186,7 @@ void ToolboxPresenter::attachAsTab(QWidget* content, bool transient) {
       return false;
     }
 #endif
-    // The confirmation ran a modal event loop, so `live` may be gone: re-find
-    // rather than stopping through a dangling host.
+    // The confirmation ran a modal event loop, so `live` may be gone: re-find it.
     if (ToolboxPresenter* confirmed = shell.findToolbox(id)) {
       shell.stopHostWork(confirmed->host());
     }
@@ -199,29 +197,23 @@ void ToolboxPresenter::attachAsTab(QWidget* content, bool transient) {
 void ToolboxPresenter::attachAsFloating(QWidget* content) {
   MainWindow& shell = shell_;
   const QString id = plugin_id_;
-  // A PJ::Dialog, not a bare QWidget or QDialog: the app QSS paints QWidget
-  // transparent (a top-level one renders black), and only the canonical dialog
-  // family paints the app's own themed, frameless chrome.
+  // A PJ::Dialog: the app QSS paints QWidget transparent (a top-level one renders black), and only the dialog
+  // family paints the themed frameless chrome.
   auto* window = new PJ::Dialog(&shell_);
-  window->setDialogTitle(title_);  // the chrome's own title bar
-  window->setWindowTitle(title_);  // and the WM/taskbar entry
+  window->setDialogTitle(title_);
+  window->setWindowTitle(title_);  // the WM/taskbar entry
   window->setChromeMetrics(shell_.chrome_metrics_);
-  // The panel goes into the chrome's content area, NOT onto the dialog itself:
-  // PJ::Dialog already owns the dialog's layout (title bar above, body below),
-  // so parenting a second layout to the window would fight it.
+  // Into the content area: PJ::Dialog owns the window's own layout.
   if (auto* layout = window->contentLayout(); layout != nullptr) {
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(content);
   }
-  // The panel's chrome pieces follow it into the window: its side drawer
-  // becomes the window's side column, and its tagged actions get proxies in
-  // the title bar (the banner, with its own proxies, is hidden while
-  // floating). Both go back when the panel returns to a tab.
+  // The side drawer becomes the window's side column and the tagged actions get title-bar proxies (the banner
+  // is hidden while floating); both go back when the panel returns to a tab.
   if (QSplitter* splitter = toolboxDrawerSplitter(content); splitter != nullptr && splitter->count() > 0) {
     QWidget* first = splitter->widget(0);
     if (first != nullptr && first->property(kToolboxSideDrawerProperty).toBool()) {
-      // Same key the tab presentation's splitter uses, so a width set in
-      // one presentation is the width the other opens with.
+      // The tab splitter's key: both presentations share the width.
       window->setSideWidget(first, toolboxDrawerWidthSettingsKey(plugin_id_));
     }
   }
@@ -230,19 +222,11 @@ void ToolboxPresenter::attachAsFloating(QWidget* content) {
         makeChromeActionProxy(src, window),
         isLeadingChromeAction(src) ? PJ::Dialog::TitleBarSlot::Leading : PJ::Dialog::TitleBarSlot::Trailing);
   }
-  // releaseCentralPanel() hid the container EXPLICITLY, and a layout does not
-  // undo an explicit hide — without this the window opens with an empty body.
+  // releaseCentralPanel() hid it explicitly, which a layout does not undo.
   content->show();
-  // Enter inside the floating QDialog is handled by Qt's native default-button
-  // interception (the dialog-host's returnPressed wiring stands down inside
-  // QDialogs). Two adjustments make that native path work:
-  //  - strip autoDefault: it makes Enter click whichever button happens to
-  //    HOLD FOCUS — and Qt silently moves focus to the next button (e.g.
-  //    Cancel) when a focused button is disabled mid-turn, turning Enter into
-  //    an accidental cancel;
-  //  - re-assert the panel's declared default: the .ui declared it long
-  //    before this reparent gave the button a QDialog ancestor, so toggle it
-  //    for the dialog to pick it up.
+  // Enter in a QDialog goes to Qt's default button (the dialog host's returnPressed wiring stands down there).
+  // autoDefault would make Enter click the focused button, and Qt moves focus on to the next one (e.g. Cancel)
+  // when a focused button is disabled; the declared default is toggled so the new dialog ancestor picks it up.
   for (auto* btn : window->findChildren<QPushButton*>()) {
     btn->setAutoDefault(false);
     if (btn->isDefault()) {
@@ -250,26 +234,15 @@ void ToolboxPresenter::attachAsFloating(QWidget* content) {
       btn->setDefault(true);
     }
   }
-  // Starting size only (user-resizable). A panel that declares a side
-  // drawer needs room for the drawer PLUS the content beside it, not just
-  // the content — e.g. a ~160px drawer floor next to a ~380px content
-  // minimum, plus margins — so 720 is the floor, comfortably over that sum.
-  // Prefer the window's own projected size (drawer included, via
-  // setSideWidget above) when it asks for more than that floor.
+  // Starting size only; the width floor leaves room for a side drawer beside the content.
   window->resize(qMax(720, window->sizeHint().width()), 620);
-  // Single teardown point. Every way the window can close funnels through
-  // QDialog::done() — the chrome's ✕ and Escape call reject(), and so does
-  // closeEvent, so a plugin-initiated close() lands here too — and done()
-  // emits finished() while the panel is still alive, so the engine is torn
-  // down before the deferred deletes run. Single-shot: a second close is a
-  // no-op, and release() disconnects it first so closing the emptied window
-  // then tears down nothing.
+  // Every close (✕, Escape, closeEvent, a plugin's close()) goes through QDialog::done(), which emits finished()
+  // while the panel is alive, so the engine is torn down before the deferred deletes run.
   on_window_finished_ = QObject::connect(
       window, &QDialog::finished, &shell_, [&shell, id](int) { shell.teardownToolbox(id, Teardown::kDeferred); },
       Qt::SingleShotConnection);
   floating_window_ = window;
   presentation_ = Presentation::kFloating;
-  // The ways back, in the window's own title bar next to its ✕.
   SvgButton* to_tab_button = makeChromeButton(u":/resources/svg/tab_move.svg"_s, QObject::tr("Move to a tab"), window);
   to_tab_button->setObjectName(u"buttonFloatingMigrateTab"_s);
   window->addTitleBarAction(to_tab_button);
@@ -334,8 +307,7 @@ bool ToolboxPresenter::onEngineCloseRequested(const std::string& reason) {
 }
 
 void ToolboxPresenter::teardown(Teardown mode) {
-  // Quiesce the plugin FIRST, while the session that owns it is still alive:
-  // close() reaches plugin code through the borrowed dialog.
+  // First, while the session that owns the plugin is alive: close() reaches plugin code through its dialog.
   if (!engine_.isNull()) {
     engine_->close();
   }
@@ -344,8 +316,7 @@ void ToolboxPresenter::teardown(Teardown mode) {
   switch (presentation()) {
     case Presentation::kTakeover:
     case Presentation::kTab:
-      // Safe from inside the strip's own on_close too: the strip re-derives
-      // its entry afterwards and finds this tab already gone.
+      // Safe inside the strip's own on_close: the strip re-derives its entry afterwards.
       static_cast<void>(release());
       break;
     case Presentation::kFloating:

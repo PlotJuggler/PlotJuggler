@@ -43,10 +43,7 @@ std::string compactJson(const QJsonObject& object) {
   return QJsonDocument(object).toJson(QJsonDocument::Compact).toStdString();
 }
 
-// Applies `fn` to each `__pj_fanout` child that is a string parsing as a JSON
-// object. Other entries (malformed children, non-strings) pass through
-// untouched: extractFanout diagnoses them later, and hiding a plugin's
-// malformed child behind a different valid object would mask the fault.
+// Only children that parse as objects; the others pass through untouched, for extractFanout to diagnose.
 QJsonObject mapFanoutChildren(QJsonObject object, const std::function<QJsonObject(QJsonObject)>& fn) {
   const QJsonValue fanout_value = object.value(u"__pj_fanout"_s);
   if (!fanout_value.isArray()) {
@@ -177,9 +174,7 @@ std::vector<std::string> extractFanout(std::string_view config) {
   for (qsizetype idx = 0; idx < arr.size(); ++idx) {
     const QJsonValue entry = arr.at(idx);
     if (!entry.isString()) {
-      // A non-string entry means the plugin emitted a malformed fanout array.
-      // Skipping it would silently drop an instance the user asked for, so log
-      // it — the caller surfaces the aggregate result to the user.
+      // Logged: skipping it silently would hide an instance the plugin meant to emit.
       qCWarning(lcFanout) << "[FileLoader] extractFanout: dropping non-string __pj_fanout entry at index" << idx;
       continue;
     }

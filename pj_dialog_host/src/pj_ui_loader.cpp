@@ -15,8 +15,7 @@
 namespace PJ {
 
 PjUiLoader::PjUiLoader(QObject* parent) : QUiLoader(parent) {
-  // Don't let QUiLoader pull in widgets from external designer plugin paths;
-  // we only ever create standard Qt widgets + the ones registered below.
+  // No widgets from external designer plugin paths: only standard Qt widgets and the ones below.
   setLanguageChangeEnabled(false);
 }
 
@@ -33,15 +32,12 @@ QWidget* PjUiLoader::createWidget(const QString& class_name, QWidget* parent, co
   } else if (class_name == QLatin1String("SectionHeaderBand")) {
     w = new SectionHeaderBand(QString(), parent);
   } else if (class_name == QLatin1String("Search")) {
-    // The canonical search/filter input. Plugins bind the field by name via the
-    // `fieldObjectName` .ui property (the inner QLineEdit gets that objectName).
+    // Plugins bind the field by name through the `fieldObjectName` .ui property (the inner QLineEdit gets it).
     w = new Search(parent);
   } else if (class_name == QLatin1String("ToggleSwitch")) {
     w = new ToggleSwitch(parent);
   } else if (class_name == QLatin1String("PJ::ComboBox")) {
-    // The app-canonical dropdown (gradient popup delegate + popup frame
-    // fixes); .ui files opt in with the promoted-widget class name, exactly
-    // like pj_app's LeftPanel.ui does.
+    // .ui files opt in with the promoted-widget class name, as pj_app's .ui files do.
     w = new ComboBox(parent);
   }
 

@@ -688,8 +688,7 @@ TEST_F(WidgetRuntimeHostCanonicalTest, AParserBackedTopicDeliversCanonicalBytes)
 }
 
 // The total is the range's, whatever the query's shape: a full read counts an entry it cannot deliver, as a
-// one-sample (decimated) probe does. A widget compares the two; when they disagreed, the log widget reloaded
-// its whole history on every update once a topic held one such entry.
+// one-sample (decimated) probe does. A widget compares the two; a mismatch makes it reload its whole history.
 TEST_F(WidgetRuntimeHostCanonicalTest, AnEntryThatDoesNotDecodeIsCountedLikeADecimatedReadCountsIt) {
   const ObjectTopicId topic = addObjectWire(sdk::BuiltinObjectType::kLog, {"one", "bad", "three"});
   session_.registerObjectTopicParser(topic, makeTextLogParser());

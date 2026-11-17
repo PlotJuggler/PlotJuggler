@@ -49,8 +49,8 @@ The layout is what **File → Save Layout with sources** writes
   file's URL) and checks its fingerprint like a data file's.
 - `<plugin ID="…" manifest_id="…" filepath_mode="source">` — every replay rewrites
   the plugin configuration's `filepath` to the file it loads (here, the downloaded
-  file), so the same layout also opens on the desktop next to its data. The marker
-  itself exists for older 4.x builds, which rewrite only when it is present.
+  file), so the same layout also opens on the desktop next to its data. Earlier
+  4.x releases rewrite only when the marker is present.
 - A robot whose URDF arrives on a topic resolves `package://` meshes through
   `<robot_model package_url_roots='{"pkg":"rel/dir/"}'>`, relative to the
   layout, or an absolute `https://` root on an asset host. Keep each package's
@@ -291,15 +291,14 @@ The package is a static site with the response contract of
 `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Embedder-Policy:
 require-corp`, `Cross-Origin-Resource-Policy: same-origin`, `nosniff`, the
 manifest's MIME types and cache classes, and ideally the precompressed `.br` /
-`.gz` representations chosen by `Accept-Encoding`. **No public host is selected**;
-account provisioning, DNS, credentials and publication are outside this feature. A robot
-serving the app beside its bridge uses the Caddy recipe in
-[`WASM_HOSTING.md`](./WASM_HOSTING.md).
+`.gz` representations chosen by `Accept-Encoding`. PlotJuggler's own deployment,
+`app.plotjuggler.io`, is a Cloudflare Worker serving the package from R2
+([`packaging/web/README.md`](../packaging/web/README.md)). A robot serving the app
+beside its bridge uses the Caddy recipe in [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 
-### Cloudflare Pages (reference candidate)
+### Cloudflare Pages
 
-Cloudflare Pages is the reference candidate because it reads the generated
-`_headers`. Its published limits
+Cloudflare Pages reads the generated `_headers`. Its published limits
 ([Pages limits](https://developers.cloudflare.com/pages/platform/limits/),
 [headers](https://developers.cloudflare.com/pages/configuration/headers/); re-check
 them before publishing) are 25 MiB per file, 20,000 files per deployment on the

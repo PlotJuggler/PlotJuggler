@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // The shared GUI test main gives every test process settings and data folders of its own
-// (cmake/test_mains/pj_test_main_gui.cpp). The data folder holds the default extension store, which
-// a window locks: test processes that shared it failed each other at random.
+// (cmake/test_mains/pj_test_main_gui.cpp). The data folder holds the default extension store, which a window locks:
+// processes that shared it would fail each other at random ("another instance is managing extensions").
 
 #include <gtest/gtest.h>
 

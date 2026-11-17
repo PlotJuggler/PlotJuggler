@@ -10,22 +10,16 @@ namespace PJ::scripting {
 /// Largest script source an engine compiles: the compilers run on the host heap, outside a script's caps.
 inline constexpr std::size_t kMaxSourceBytes = std::size_t{1} << 20;
 
-/// Per-VM execution budget for an untrusted filter script. Filters run IN-PROCESS
-/// on the commit thread, so a runaway loop or unbounded allocation would stall
-/// ingest/render or exhaust memory — these limits make that a recoverable error
-/// instead. Capabilities are handled separately by `luaL_sandbox` (read-only
-/// globals) + Luau's already-curated stdlib (no io/loadstring/package by default).
+/// Per-VM execution budget of a script. Filters run in-process on the GUI thread, so a runaway loop or unbounded
+/// allocation would stall the app: these limits turn that into a recoverable error.
 struct BudgetLimits {
-  /// Watchdog "fuel": one unit is spent per VM safepoint (loop back-edge,
-  /// call/return). When it reaches zero mid-execution the script is aborted with
-  /// a catchable error. Armed per protected region.
-  std::uint64_t call_fuel = 5'000'000;    ///< budget for a single calculate()
-  std::uint64_t setup_fuel = 20'000'000;  ///< budget for module-eval + create() (NOT luau_compile,
-                                          ///< which runs on the host heap — that is bounded by source size)
+  /// Luau watchdog fuel: one unit per VM safepoint (loop back-edge, call/return), armed per protected region. At zero
+  /// the script is aborted with an error a script `pcall` can catch, which is why the host also checks the sticky trip.
+  std::uint64_t call_fuel = 5'000'000;    ///< a single calculate()
+  std::uint64_t setup_fuel = 20'000'000;  ///< module evaluation + create(); luau_compile is bounded by kMaxSourceBytes
 
-  /// Peak live bytes a single VM may hold; the allocator returns null past this,
-  /// which Luau surfaces as a catchable out-of-memory error.
-  std::size_t mem_bytes = 64ull << 20;  ///< 64 MiB / VM
+  /// Peak live bytes of one Luau VM; past it the allocator fails and Luau raises an out-of-memory error.
+  std::size_t mem_bytes = 64ull << 20;
 
   /// Python: the wall clock of one on-demand run, and of a filter's module evaluation plus `create()`. The timeout
   /// lands at the next bytecode, never inside a native call.

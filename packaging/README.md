@@ -44,7 +44,7 @@ elsewhere. It needs a display and runs under POSIX `sh`, Git Bash included.
 The AppImage smoke running after its upload is deliberate: a smoke failure
 must not cost the release its AppImage. A change that affects rendering is
 therefore gated by a `workflow_dispatch` of both release workflows on its
-branch before it merges (the QRhi cut-over is proven that way).
+branch before it merges.
 
 To regenerate the fixture, open it in a QRhi build with `--test-data`, change
 it, and save it with File > Save Layout... (not "with Sources").

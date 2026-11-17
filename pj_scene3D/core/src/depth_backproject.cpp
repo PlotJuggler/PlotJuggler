@@ -27,10 +27,6 @@ std::vector<glm::vec3> depthToPoints(
   if (scalar_out != nullptr) {
     scalar_out->clear();
   }
-  // Defaults for every early-return (invalid intr / encoding / buffer) path: no
-  // points -> an invalid AABB and a unit colormap range. `bounds` is the live
-  // accumulator, written out below once the points are built — in the SAME loop,
-  // so callers need no extra AABB or min/max sweep.
   AABB bounds;
   if (bounds_out != nullptr) {
     *bounds_out = AABB{};
@@ -42,7 +38,6 @@ std::vector<glm::vec3> depthToPoints(
     return points;
   }
 
-  // Bytes per sample + conversion to metres, keyed off the encoding string.
   int bytes_per_sample = 0;
   float to_metres = 1.0f;
   bool is_uint16 = false;
@@ -66,9 +61,8 @@ std::vector<glm::vec3> depthToPoints(
     return points;  // truncated/inconsistent buffer
   }
 
-  // Rescale intrinsics to the depth image's own resolution when they were
-  // calibrated at a different one (CameraInfo at color resolution + aligned,
-  // downsampled depth). Identity when width/height are 0 or already match.
+  // Rescale intrinsics to the depth image's own resolution when calibrated at a different one (CameraInfo at color
+  // resolution + aligned, downsampled depth).
   double fx = intr.fx;
   double fy = intr.fy;
   double cx = intr.cx;
@@ -124,8 +118,8 @@ std::vector<glm::vec3> depthToPoints(
     *bounds_out = bounds;
   }
   if (scalar_range_out != nullptr && bounds.valid) {
-    // scalar == point.z, so the depth range is exactly the AABB's z extent — no
-    // second pass over the scalars. Widen a flat range so the colormap still spans.
+    // scalar == point.z, so the depth range is exactly the AABB's z extent; widen a flat range so the colormap still
+    // spans.
     float lo = bounds.min.z;
     float hi = bounds.max.z;
     if (hi - lo < 1e-6f) {

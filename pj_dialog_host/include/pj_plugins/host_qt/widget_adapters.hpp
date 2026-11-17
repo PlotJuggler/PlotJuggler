@@ -8,82 +8,64 @@ class QDialog;
 
 namespace PJ {
 
-// Styled-widget adapters: swap plain controls that come out of a plugin's .ui
-// for PlotJuggler's own styled equivalents, while keeping the ORIGINAL control
-// hidden and alive so plugin data/events keep flowing through it unchanged.
+// Styled-widget adapters swap the plain controls of a plugin .ui for PlotJuggler's styled ones:
 //
 //   QRadioButton (exclusive group, 2+ buttons) -> DualOptionsWidget (segmented control)
 //   QCheckBox                                   -> ToggleSwitch (inline label on the left)
 //   QComboBox                                   -> PJ::ComboBox styling (gradient popup)
 //   QPlainTextEdit + pjMarkdown                 -> QTextBrowser (Markdown view)
 //
-// For interactive controls, the originals stay hidden and remain the source of
-// truth for WidgetData/events while the styled replacements drive them. The
-// read-only Markdown promotion replaces its original outright while preserving
-// the binding name. Adaptation is structural, so engines run it once after load.
+// For interactive controls the original stays hidden and alive as the source of truth for WidgetData and events,
+// and the replacement drives it. The read-only Markdown promotion replaces its original outright, keeping the
+// binding name. Adaptation is structural: engines run it once after load.
 
-/// Adapt every adaptable control under `root` (radios, checkboxes, comboboxes,
-/// and opted-in Markdown edits).
-/// Call once after the .ui is loaded. Idempotent and safe to re-run.
+/// Adapts every adaptable control under `root` (radios, checkboxes, comboboxes, opted-in Markdown edits). Call
+/// once after the .ui is loaded; idempotent.
 void adaptStyledWidgets(QWidget* root);
 
-/// When a plugin .ui's ROOT is a QDialog embedded as content inside the host's
-/// PJ::Dialog chrome, forward the inner dialog's finished(result) to the outer
-/// dialog. Without this, Esc lands on the inner QDialog::keyPressEvent, which
-/// rejects and hides ONLY the content while the outer modal chrome stays open
-/// and empty. No-op when `content` is not a QDialog.
+/// When a plugin .ui's root is a QDialog embedded in the host's PJ::Dialog chrome, forwards the inner dialog's
+/// finished(result) to the outer one. Otherwise Esc rejects and hides only the inner content while the outer modal
+/// chrome stays open and empty. No-op when `content` is not a QDialog.
 void forwardEmbeddedDialogClose(QWidget* content, QDialog* outer);
 
-/// Per-kind entry points (adaptStyledWidgets calls each). Exposed individually
-/// so each adapter can be unit-tested in isolation.
+/// Per-kind entry points that adaptStyledWidgets calls; exposed for isolated tests.
 void adaptRadioGroups(QWidget* root);
 void adaptCheckBoxes(QWidget* root);
 void adaptComboBoxes(QWidget* root);
-/// Promote child QPlainTextEdit widgets with dynamic bool property `pjMarkdown`
-/// to read-only QTextBrowser instances after .ui properties are available. The
-/// replacement keeps the authored object name and dynamic properties, so normal
-/// WidgetData plain_text binding addresses it. A QPlainTextEdit used as `root`
-/// itself is outside this structural adapter's child-in-layout contract.
+/// Promotes child QPlainTextEdit widgets with the bool property `pjMarkdown` to read-only QTextBrowsers. The
+/// replacement keeps the object name and dynamic properties, so plain_text binding addresses it. A QPlainTextEdit
+/// that is `root` itself is not promoted (the adapter replaces children in their layout).
 void adaptMarkdownEdits(QWidget* root);
-/// Give every QTableView under `root` that opts in (dynamic bool property
-/// "pjInteriorGrid", set in the plugin .ui) an interior-only cell grid: native
-/// showGrid is turned off and an item delegate draws only the dividers BETWEEN
-/// cells, never the table's outer right/bottom edge. Keeps internal H+V gridlines
-/// while leaving the table's edges to the surrounding chrome (header, splitter
-/// handle), so a stretched-column table no longer doubles the native grid's
-/// trailing line against the chrome. Idempotent (marker property).
+/// Gives every QTableView under `root` with the bool property "pjInteriorGrid" an interior-only cell grid: native
+/// showGrid is off and an item delegate draws only the dividers between cells, never the outer right and bottom
+/// edge, which belongs to the surrounding chrome (header, splitter handle). Idempotent (marker property).
 void adaptGridTables(QWidget* root);
-/// Frame the footer of an edge-to-edge plugin dialog the way the host frames
-/// its title bar. When `root`'s vertical layout has zero left/right/bottom
-/// margins and its last item holds a QDialogButtonBox (the box itself, a
-/// wrapper widget, or a button row layout), that item is moved into a host
-/// footer (objectName "pjDialogFooter") that draws a hairline above it and pads
-/// it by one standard inset, replacing the item's own outer margins. Padded
-/// dialogs are left alone. Idempotent.
+/// Frames the footer of an edge-to-edge plugin dialog like the host's title bar. When `root`'s vertical layout has
+/// zero left, right and bottom margins and its last item holds a QDialogButtonBox (the box, a wrapper widget or a
+/// button row layout), that item moves into a host footer (objectName "pjDialogFooter") with a hairline above it
+/// and one standard inset of padding, replacing the item's own outer margins. Padded dialogs are left alone.
+/// Idempotent.
 void adaptDialogFooter(QWidget* root);
-/// Attach a PJ::Scrollbar overlay (one horizontal + one vertical) to every
-/// QAbstractScrollArea found under `root` that has not yet been adapted. The
-/// native bars are hidden (policy forced to AlwaysOff); the pill overlays own
-/// hover/fade/drag. Idempotent: a marker property prevents double-attachment.
+/// Attaches PJ::Scrollbar overlays (one horizontal, one vertical) to every QAbstractScrollArea under `root` not yet
+/// adapted. The native bars are forced to AlwaysOff; the overlays own hover, fade and drag. Idempotent (marker
+/// property).
 ///
-/// Per-area config (set as dynamic properties BEFORE calling this function):
-///   pjScrollbarAutoHide (bool, default true)  — fade-on-hover vs always-on
-///   pjScrollbarFadeMs   (int,  default 150)   — fade animation duration
+/// Per-area dynamic properties, set before this call:
+///   pjScrollbarAutoHide (bool, default true): fade on hover vs always on
+///   pjScrollbarFadeMs   (int,  default 150):  fade duration
 void adaptScrollAreas(QWidget* root);
 
-/// Reactively adapt the single widget `w` if it just became adaptable (e.g.
-/// plugin data selected one option of a previously-unselected radio group, or
-/// gave a checkbox its text). No-op if `w` is already adapted or not adaptable.
+/// Adapts `w` if it just became adaptable (plugin data selected an option of a radio group, or gave a checkbox
+/// its text). No-op if `w` is adapted already or not adaptable.
 void tryAdaptStyledWidget(QWidget* w);
 
-/// Push `w`'s freshly-applied state (checked / enabled) onto its styled
-/// replacement. No-op if `w` is not an adapted original.
+/// Pushes `w`'s freshly applied state (checked, enabled) onto its styled replacement. No-op if `w` is not an
+/// adapted original.
 void syncStyledWidget(QWidget* w);
 
-/// If `w` is an adapted original whose replacement owns the visible geometry,
-/// stash the desired visibility on `w` (the replacement derives its own) and
-/// return true. Returns false when `w` is not adapted — the caller should then
-/// apply visibility to `w` directly.
+/// If `w` is an adapted original whose replacement owns the visible geometry, records the wanted visibility on `w`
+/// (the replacement derives its own) and returns true. False when `w` is not adapted: the caller sets visibility
+/// on `w` directly.
 [[nodiscard]] bool redirectAdaptedVisibility(QWidget* w, bool visible);
 
 }  // namespace PJ

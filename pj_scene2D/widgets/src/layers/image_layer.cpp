@@ -45,7 +45,7 @@ bool topicUsesCanonicalImageCodec(const std::string& metadata_json) {
 }
 
 // Calibration is dataset-local and joined by frame_id. Classified topics need
-// no naming convention; the suffix also covers legacy topics without type metadata.
+// no naming convention; the suffix covers topics without type metadata.
 std::unordered_map<std::string, sdk::CameraInfo> collectCameraInfoByFrameId(
     SessionManager* session, ObjectStore* store, DatasetId dataset_id) {
   std::unordered_map<std::string, sdk::CameraInfo> by_frame;
@@ -79,8 +79,7 @@ std::unordered_map<std::string, sdk::CameraInfo> collectCameraInfoByFrameId(
       }
       continue;
     }
-    // MessageParser plugins aren't thread-safe; serialize via the shared mutex,
-    // exactly as ImagePipelineSource does for the image parser.
+    // MessageParser plugins are not thread-safe: serialize on the shared mutex, as ImagePipelineSource does.
     const auto mutex = session->parserMutexForObjectTopic(id);
     auto record = [&] {
       if (mutex) {
@@ -136,11 +135,8 @@ std::unique_ptr<MediaSource> ImageLayer::createMediaSource(const SceneLayerConte
     image_src = std::make_unique<ImagePipelineSource>(store, topicId(), std::move(pipeline));
   }
 
-  // Supply dataset-local camera calibration so the
-  // decode worker can rectify frames to native resolution and 2D annotation
-  // overlays line up. Built once here, before the first setTimestamp() request:
-  // sufficient for file load (all camera_info is ingested before the layer
-  // attaches); a camera_info published after attach is not retro-applied.
+  // Built once, before the first setTimestamp() (the source refuses it later): enough for a file, whose
+  // camera_info is ingested before attach; a camera_info published after attach is not applied.
   image_src->setCameraInfoMap(collectCameraInfoByFrameId(session, store, store->descriptor(topicId()).dataset_id));
 
   image_source_ = image_src.get();
@@ -157,7 +153,7 @@ QWidget* ImageLayer::createConfigWidget(QWidget* parent) {
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
 
   auto* rectify = new ToggleSwitch(widget);
-  rectify->setChecked(rectify_enabled_, /*animate=*/false);  // snap to state without emitting toggled
+  rectify->setChecked(rectify_enabled_, /*animate=*/false);  // does not emit toggled
   updateRectifyControl(rectify);
   connect(this, &ImageLayer::repaintRequested, rectify, [this, rectify]() { updateRectifyControl(rectify); });
   layout->addRow(tr("Rectify"), rectify);
@@ -209,9 +205,7 @@ void ImageLayer::applyOptions() {
   if (image_source_ == nullptr) {
     return;
   }
-  // setRectifyEnabled invalidates the worker when the value changes so it re-emits the
-  // current frame in the new mode; re-apply the current tracker time so the re-emit
-  // happens now (not on the next tick) while paused.
+  // Re-applying the tracker time re-emits the frame in the new mode now, also while paused.
   image_source_->setRectifyEnabled(rectify_enabled_);
   if (const auto ts = lastTrackerTimeNs(); ts.has_value()) {
     image_source_->setTimestamp(*ts);
@@ -224,8 +218,7 @@ void ImageLayer::saveOptions(QDomElement& element) const {
 }
 
 bool ImageLayer::loadOptions(const QDomElement& element) {
-  // Absent attribute (layout saved before this toggle existed) keeps the current
-  // default (true) -> rectification stays on, preserving the historical behaviour.
+  // An absent attribute keeps the default (on).
   const QString saved = element.attribute(u"rectify_enabled"_s, rectify_enabled_ ? u"true"_s : u"false"_s);
   if (saved != u"true"_s && saved != u"false"_s) {
     return false;

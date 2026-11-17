@@ -5,10 +5,9 @@
 
 namespace PJ {
 
-// Interprets `data` (size `size_bytes`) as a pj_raster shared segment and returns
-// a QImage VIEW over the currently-active buffer (no copy; the caller must keep
-// `data` alive and locked while using the image, or call .copy()). Returns a null
-// QImage if the header is invalid or the segment is too small.
+// Interprets `data` (`size_bytes`) as a pj_raster shared segment and returns a QImage view over the active buffer (no
+// copy: the caller keeps `data` alive and locked while using the image, or calls .copy()). A null QImage if the header
+// is invalid or the segment is too small.
 QImage imageForActiveFrame(const unsigned char* data, int size_bytes);
 
 }  // namespace PJ

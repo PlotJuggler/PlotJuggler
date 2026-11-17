@@ -35,7 +35,6 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
     qint64 hi = 0;  // displayed end
   };
 
-  // Dataset names from the catalog (id → name).
   std::unordered_map<DatasetId, QString> names;
   for (const auto& [id, name] : session.catalogModel().datasets()) {
     names[id] = name;
@@ -46,15 +45,13 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
   for (const DatasetId ds : datasets) {
     const auto bounds = session.datasetRawTimeRange(ds);
     if (!bounds) {
-      continue;  // no time-bearing data → not a merge participant
+      continue;  // not a merge participant
     }
     const qint64 offset = sessions.sourceDisplayOffset(ds).value.count();
     info[ds] =
         Info{names.count(ds) != 0 ? names.at(ds) : QString::number(ds), bounds->min - offset, bounds->max - offset};
   }
 
-  // Precompute each selected dataset's topic-name set once; the pairwise loop
-  // below would otherwise recompute a dataset's set for every pair it appears in.
   DataEngine& engine = sessions.dataEngine();
   std::unordered_map<DatasetId, std::set<std::string>> topic_names_by_dataset;
   for (const DatasetId ds : datasets) {
@@ -66,7 +63,6 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
     }
   }
 
-  // Pairwise: displayed-range overlap, and overlap that also shares a topic name.
   std::set<DatasetId> overlapping;
   std::set<DatasetId> colliding;
   for (std::size_t i = 0; i < datasets.size(); ++i) {
@@ -99,9 +95,7 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
     }
   }
 
-  // Each caveat is a lead sentence followed by the affected file names as an HTML
-  // bullet list (the <ul> gives the space-before/space-after). MessageBox's body
-  // QLabel is AutoText, so this renders as rich text. Names are HTML-escaped.
+  // Rich text: MessageBox's body label is AutoText, so names are HTML-escaped.
   const auto bullet_list = [&info](const std::set<DatasetId>& set) {
     QString html = u"<ul>"_s;
     for (const DatasetId ds : set) {
@@ -132,7 +126,6 @@ QString composeDatasetMergeWarning(const AppSession& session, const std::vector<
 void confirmAndMergeDatasets(
     QWidget* parent, AppSession& session, const std::vector<DatasetId>& ids,
     std::function<void(DatasetId anchor)> on_merged) {
-  // Keep only data-bearing datasets; need at least two to merge.
   std::vector<DatasetId> datasets;
   datasets.reserve(ids.size());
   for (const DatasetId id : ids) {
@@ -153,10 +146,7 @@ void confirmAndMergeDatasets(
     return;
   }
 
-  // Canonical-type conflict gate (shared by BOTH merge entry points — timeline and
-  // curve tree). If two contributors share an object-topic NAME but disagree on the
-  // builtin object type, fuse-by-name would silently merge incompatible payloads, so
-  // hard-stop: name the offenders and abort before any state is touched.
+  // The merge fuses object topics by name: incompatible payloads under one name would merge silently.
   if (const auto conflicts = session.objectMergeConflicts(datasets); !conflicts.empty()) {
     constexpr qsizetype kMaxConflictItems = 10;
     QString list = u"<ul>"_s;

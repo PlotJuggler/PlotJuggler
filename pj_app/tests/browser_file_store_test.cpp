@@ -17,14 +17,11 @@
 namespace PJ {
 namespace {
 
-// stageAsync() drives itself with QTimer::singleShot(0), so the tests need
-// the runner's application and its event dispatcher throughout each stage.
+// stageAsync() schedules each step with QTimer::singleShot(0), so the runner's QCoreApplication must be alive.
 QCoreApplication& testApp() {
   return *QCoreApplication::instance();
 }
 
-// Pump the event loop until `done` becomes true or the deadline elapses.
-// Returns whether `done` was observed true within the timeout.
 [[nodiscard]] bool pumpUntil(const bool& done, int timeout_ms = 5000) {
   QDeadlineTimer deadline(timeout_ms);
   while (!done && !deadline.hasExpired()) {
@@ -98,8 +95,7 @@ TEST(BrowserFileStore, DuplicateBasenamesHaveIndependentLeases) {
   EXPECT_FALSE(QFile::exists(second_path));
 }
 
-// A streamed download writes its file itself: reserve() hands out the placement,
-// and its lease removes whatever was written there, like a staged upload's.
+// reserve() only places the file (the caller creates it); the lease removes it and its directories, like a staged one.
 TEST(BrowserFileStore, ReservedPlacementIsReleasedWithItsLease) {
   QTemporaryDir temporary;
   ASSERT_TRUE(temporary.isValid());
@@ -137,16 +133,14 @@ TEST(BrowserFileStore, ZeroByteFileIsValid) {
       result.input->content_sha256, QStringLiteral("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
 }
 
-// A payload spanning several 16 MiB chunks must land byte-identical and produce
-// a valid browser-upload LoadInput, exercising the multi-yield chunk loop.
+// A payload spanning several 16 MiB chunks lands byte-identical (multi-yield chunk loop).
 TEST(BrowserFileStore, StageAsyncMultiChunkIsByteIdentical) {
   testApp();
   QTemporaryDir temporary;
   ASSERT_TRUE(temporary.isValid());
   BrowserFileStore store(temporary.path());
 
-  // ~40 MiB with a non-repeating pattern so a mis-ordered or short chunk write
-  // is detectable, not just a length check.
+  // Non-repeating pattern so a mis-ordered or short chunk write is detectable.
   const qsizetype payload_size = 40 * 1024 * 1024 + 7;
   QByteArray payload(payload_size, Qt::Uninitialized);
   for (qsizetype i = 0; i < payload_size; ++i) {
@@ -176,8 +170,7 @@ TEST(BrowserFileStore, StageAsyncMultiChunkIsByteIdentical) {
   staged.close();
 }
 
-// MEMFS regrows (and copies) a file's backing array as appends extend it, so
-// stageAsync sizes the file to its final length before the first chunk lands.
+// MEMFS regrows (and copies) a file's backing array as appends extend it, so stageAsync sizes the file up front.
 TEST(BrowserFileStore, StageAsyncSizesFileBeforeFirstChunk) {
   testApp();
   QTemporaryDir temporary;
@@ -203,7 +196,6 @@ TEST(BrowserFileStore, StageAsyncSizesFileBeforeFirstChunk) {
   EXPECT_EQ(staged.readAll(), QByteArray(payload_size, 'p'));
 }
 
-// A file smaller than one chunk still routes through the async path cleanly.
 TEST(BrowserFileStore, StageAsyncSingleChunkSmallFile) {
   testApp();
   QTemporaryDir temporary;
@@ -230,7 +222,6 @@ TEST(BrowserFileStore, StageAsyncSingleChunkSmallFile) {
   staged.close();
 }
 
-// A zero-byte selection is a valid upload on the async path too.
 TEST(BrowserFileStore, StageAsyncZeroByteFile) {
   testApp();
   QTemporaryDir temporary;
@@ -252,8 +243,7 @@ TEST(BrowserFileStore, StageAsyncZeroByteFile) {
   EXPECT_EQ(QFileInfo(captured->input->backing_path).size(), 0);
 }
 
-// Completion must arrive through the event loop, never re-entrantly from the
-// stageAsync() call itself. Assert the callback has NOT run before we pump.
+// Completion arrives through the event loop, never re-entrantly from stageAsync().
 TEST(BrowserFileStore, StageAsyncCompletesOnEventLoopNotReentrantly) {
   testApp();
   QTemporaryDir temporary;
@@ -267,11 +257,8 @@ TEST(BrowserFileStore, StageAsyncCompletesOnEventLoopNotReentrantly) {
   EXPECT_TRUE(pumpUntil(done));
 }
 
-// The source buffer moved into stageAsync must be released by completion time.
-// QByteArray offers no public detach/use-count seam, so we assert via move
-// semantics: the caller's rvalue was moved in, and by completion the async job
-// has cleared its own copy (source.clear() before finish()). We verify by
-// staging a large payload and confirming the caller's post-move array is empty.
+// The job's own copy has no public seam, so only the caller-side move is observable (the job clears its copy
+// before completion).
 TEST(BrowserFileStore, StageAsyncReleasesSourceByCompletion) {
   testApp();
   QTemporaryDir temporary;
@@ -284,15 +271,11 @@ TEST(BrowserFileStore, StageAsyncReleasesSourceByCompletion) {
     ASSERT_TRUE(result.input.has_value()) << result.error.toStdString();
     done = true;
   });
-  // The caller's array was moved from at the call site; the internal copy is
-  // dropped before completion. There is no public seam on the internal buffer,
-  // but the caller-side move is observable: `payload` is now detached/empty.
   EXPECT_TRUE(payload.isEmpty()) << "std::move into stageAsync did not transfer ownership";
   ASSERT_TRUE(pumpUntil(done));
 }
 
-// Pump until every deferred deletion (QTimer::singleShot's self-deleting timer
-// objects, and with them their captured functors) has run or `witness` expired.
+// Pump until QTimer::singleShot's self-deleting timers (and the functors they capture) are gone or `witness` expired.
 void pumpUntilExpired(const std::weak_ptr<int>& witness) {
   QDeadlineTimer deadline(5000);
   while (!witness.expired() && !deadline.hasExpired()) {
@@ -301,11 +284,8 @@ void pumpUntilExpired(const std::weak_ptr<int>& witness) {
   }
 }
 
-// The async job owns the completion functor until the job itself is destroyed,
-// so a token captured in the completion witnesses the job's destruction. This
-// pins the no-self-cycle invariant: if the job ever again stores a callable
-// that captures its own owning shared_ptr, the token never expires and this
-// test fails instead of silently leaking every staged upload.
+// The job owns the completion until it is destroyed, so a token captured by the completion witnesses the job's
+// destruction. A job storing a callable that captures its own shared_ptr would never release it.
 TEST(BrowserFileStore, StageAsyncDestroysJobAfterSuccess) {
   testApp();
   QTemporaryDir temporary;
@@ -326,8 +306,7 @@ TEST(BrowserFileStore, StageAsyncDestroysJobAfterSuccess) {
   EXPECT_TRUE(witness.expired()) << "async staging job (and its completion) leaked after success";
 }
 
-// Same witness on the jobless failure path (placement rejected before any job
-// exists): the completion must still run exactly once and then be released.
+// Same witness on the jobless failure path (placement rejected before any job exists).
 TEST(BrowserFileStore, StageAsyncDestroysCompletionAfterPlacementFailure) {
   testApp();
   QTemporaryDir temporary;

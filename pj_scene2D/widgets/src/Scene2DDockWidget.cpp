@@ -112,8 +112,7 @@ constexpr auto kDepthKind = "depth";
       return false;
     }
 
-    // Legacy kImage XML has no layer_kind. Depth settings are unambiguous, so
-    // validate with the same concrete class that first-sample dispatch selects.
+    // kImage XML without layer_kind: depth settings identify a depth layer, as first-sample dispatch would.
     const bool has_depth_options = payload.hasAttribute(u"colormap"_s) || payload.hasAttribute(u"invert"_s) ||
                                    payload.hasAttribute(u"near_m"_s) || payload.hasAttribute(u"far_m"_s) ||
                                    payload.hasAttribute(u"opacity"_s);
@@ -363,9 +362,8 @@ bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
     return false;  // reject before the base destructively replaces the layer stack
   }
 
-  // The base fills legacy order attributes while restoring, and generic layouts
-  // need concrete dataset identities before that destructive pass. Work on a
-  // private clone so neither normalization mutates the caller's XML document.
+  // Both the base's order-attribute fill and the identity resolution rewrite the XML: work on a clone, not the
+  // caller's document.
   QDomDocument restore_doc;
   QDomElement restore_element = restore_doc.importNode(element, /*deep=*/true).toElement();
   restore_doc.appendChild(restore_element);
@@ -373,10 +371,8 @@ bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
     return false;
   }
 
-  // The base restore clears the live layer stack before replay. Preserve a
-  // private snapshot so a late duplicate/attach/payload failure can put this
-  // same widget back exactly; direct clipboard paste has no MainWindow-level
-  // transaction wrapper.
+  // The base restore clears the layer stack before replay: this snapshot puts the widget back on a late failure.
+  // A clipboard paste has no MainWindow-level transaction around it.
   QDomDocument previous_doc;
   QDomElement previous_element = xmlSaveState(previous_doc);
   previous_doc.appendChild(previous_element);
@@ -519,9 +515,7 @@ QWidget* Scene2DDockWidget::createSceneView() {
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
   layout->setSpacing(PJ::theme::space(PJ::theme::Space::None));
 
-  // Page 0 = empty-state placeholder, page 1 = GPU viewer. A stack (rather than
-  // an overlay) keeps the raster placeholder off the QRhiWidget's surface, where
-  // it would not composite reliably.
+  // A stack, not an overlay: a raster widget over the QRhiWidget's surface does not composite reliably.
   view_stack_ = new QStackedWidget(container);
   layout->addWidget(view_stack_, /*stretch=*/1);
   view_stack_->addWidget(makeEmptyPlaceholder(view_stack_));
@@ -538,8 +532,7 @@ QWidget* Scene2DDockWidget::createSceneView() {
   connect(viewer_, &MediaViewerWidget::rotationChanged, this, &Scene2DDockWidget::viewRotationChanged);
   view_stack_->addWidget(viewer_);
 
-  // Below the viewer, not over it: a raster label does not composite reliably on
-  // the QRhiWidget's surface. Shown while the viewer cannot render.
+  // Below the viewer, not over it, for the same compositing reason. Shown while the viewer cannot render.
   QLabel* rendering_warning = PJ::createRenderingWarningLabel(container, u"scene2dRenderingWarning"_s);
   layout->addWidget(rendering_warning);
   connect(
@@ -568,7 +561,6 @@ QWidget* Scene2DDockWidget::makeEmptyPlaceholder(QWidget* parent) {
   empty_placeholder_icon_ = new QLabel(page);
   empty_placeholder_icon_->setObjectName(u"scene2dEmptyPlaceholderIcon"_s);
   empty_placeholder_icon_->setAlignment(Qt::AlignCenter);
-  // Dim the icon so it reads as a "drop a topic here" watermark, not chrome.
   auto* opacity = new QGraphicsOpacityEffect(empty_placeholder_icon_);
   opacity->setOpacity(0.35);
   empty_placeholder_icon_->setGraphicsEffect(opacity);
@@ -695,9 +687,7 @@ void Scene2DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
     if (scene2d_layer == nullptr) {
       continue;
     }
-    // Tag the layer with its underlying source pointer so the rebuilt composite
-    // can inherit this layer's last frame from the outgoing one (carry-over
-    // below), instead of starting blank and forcing a re-decode.
+    // Tagged with the underlying source, so adoptContributions() below can carry its last frame over.
     MediaSource* underlying = scene2d_layer->mediaSource();
     if (!info.visible || underlying == nullptr) {
       postAnnotationWarning(QPointer<Scene2DLayer>(scene2d_layer), QString());  // left out, it hides nothing
@@ -710,24 +700,18 @@ void Scene2DDockWidget::syncViewLayers(const std::vector<ISceneLayer*>& ordered_
     composite_topic_order_.push_back(info.topic_id);
   }
 
-  // Carry the persisting layers' current frame into the rebuilt composite so the
-  // viewer keeps showing them across the swap instead of going black until each
-  // source re-decodes (the "black until play" symptom on add/remove/hide).
+  // Without the carry-over the viewer shows black after an add, remove or hide until each source re-decodes.
   if (composite_ != nullptr) {
     next->adoptContributions(*composite_);
   }
 
-  // Repoint the viewer at the new composite BEFORE the previous one is freed,
-  // so the viewer never holds a dangling MediaSource — not even transiently
-  // between the swap and the setMediaSource call.
+  // Repoint the viewer before the previous composite is freed: it must never hold a dangling MediaSource.
   auto previous = std::move(composite_);
   composite_ = std::move(next);
   if (viewer_ != nullptr) {
     viewer_->setMediaSource(composite_.get());
   }
-  // `previous` is destroyed here, after the viewer no longer references it.
   syncCompositeTimestamp(ordered_layers);
-  // Show the placeholder iff no visible layer feeds the viewer.
   empty_placeholder_active_ = composite_topic_order_.empty();
   applyEmptyPlaceholderState();
   refreshView();
@@ -753,7 +737,7 @@ void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) 
   }
   const QString saved_kind = layer_element.attribute(QString::fromLatin1(kLayerKind));
   if (saved_kind != QString::fromLatin1(kImageKind) && saved_kind != QString::fromLatin1(kDepthKind)) {
-    return;  // legacy layout: retain first-sample encoding dispatch
+    return;  // no saved kind: first-sample encoding dispatch decides
   }
 
   bool dataset_ok = false;
@@ -852,10 +836,8 @@ void Scene2DDockWidget::syncCompositeTimestamp(const std::vector<ISceneLayer*>& 
   if (composite_ == nullptr) {
     return;
   }
-  // A rebuild rewraps the same underlying sources, which still hold their
-  // per-timestamp dedup; invalidate first so the re-seed below re-decodes at the
-  // (usually unchanged) current time instead of leaving a stale/empty frame
-  // until the tracker next moves (the "black until play" symptom).
+  // The rewrapped sources still dedup on the timestamp: without invalidate() the re-seed at an unchanged time
+  // decodes nothing and the frame stays stale until the tracker moves.
   composite_->invalidate();
   const auto seed = seedTimestampNs(ordered_layers);
   if (seed.has_value()) {

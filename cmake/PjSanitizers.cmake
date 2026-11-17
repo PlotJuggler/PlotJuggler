@@ -8,7 +8,7 @@ option(PJ_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer with AddressSanitizer"
 # compiled without them lets the linker hand one instantiation to code built under
 # the other assumption. The instrumented AppImage reported exactly that — a
 # container-overflow inside Luau::BytecodeBuilder::emitAux, in a vector Luau owns
-# end to end, reached via pj_scripting's luau_engine.cpp:341. That is a false
+# end to end, reached via pj_scripting's luau_engine.cpp. That is a false
 # positive from the ODR mismatch, not a defect in Luau or in PJ4.
 #
 # Turn it ON only for a run where every C++ translation unit sharing a std::vector

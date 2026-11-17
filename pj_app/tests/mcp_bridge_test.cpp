@@ -390,7 +390,7 @@ TEST_F(McpBridgeTest, DirectHttpCannotPickAnOwnerOrSkipTheToken) {
       {"params", {{"name", "get_status"}, {"arguments", json::object()}}}};
   EXPECT_TRUE(post({}, status).startsWith("HTTP/1.1 401"));
   EXPECT_TRUE(post(auth + "Origin: http://example.com\r\n", status).startsWith("HTTP/1.1 403"));
-  // The spike's raw owner header is ignored; the client header is mapped into the agent namespace.
+  // A raw X-PJ-Owner header is ignored; X-PJ-Client is mapped into the agent namespace.
   const QByteArray reply =
       post(auth + "X-PJ-Owner: toolbox_assistant_agent\r\nX-PJ-Client: toolbox_assistant_agent\r\n", status);
   ASSERT_TRUE(reply.startsWith("HTTP/1.1 200")) << reply.toStdString();

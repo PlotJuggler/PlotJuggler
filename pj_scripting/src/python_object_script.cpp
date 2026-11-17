@@ -384,7 +384,7 @@ Expected<PyObject*> compiledCode(const PythonCode& script) {
       detail::ensureInterpreter();
     } catch (const detail::StdlibDownloadError& error) {
       return unexpected("Python error: " + std::string(error.what()));
-    } catch (const std::exception&) {  // a failed boot: compileNow reports it and it is kept, as before
+    } catch (const std::exception&) {  // a failed boot: compileNow reports it and it is kept
     }
     Expected<PyObject*> code = compileNow(script.source);
     std::string().swap(script.source);

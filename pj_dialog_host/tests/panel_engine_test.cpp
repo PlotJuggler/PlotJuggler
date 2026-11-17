@@ -42,14 +42,13 @@
 #include "mock_panel_plugin.hpp"
 using namespace Qt::StringLiterals;
 
-// Defined in mock_panel_plugin.cpp via PJ_DIALOG_PLUGIN(MockPanelPlugin).
+// Defined in mock_panel_plugin.cpp through PJ_DIALOG_PLUGIN(MockPanelPlugin).
 extern "C" const PJ_dialog_vtable_t* PJ_get_dialog_vtable() noexcept;
 
 namespace {
 
-// The runner's shared main (cmake/test_mains/pj_test_main_gui.cpp) owns the
-// QApplication and gives the process the non-empty organization/application
-// identity QSettings needs on Windows; this only returns the instance.
+// The runner's shared main (cmake/test_mains/pj_test_main_gui.cpp) owns the QApplication and gives the process the
+// organization and application identity QSettings needs on Windows; this only returns the instance.
 QApplication* qapp() {
   return qobject_cast<QApplication*>(QCoreApplication::instance());
 }
@@ -75,8 +74,7 @@ TEST(ChartPreviewWidgetTest, MarkerOverlayReplacesAndClearsWithoutChangingAxes) 
   EXPECT_EQ(chart.axisScaleDiv(QwtPlot::xBottom).upperBound(), 10.0);
   const QImage overlay = chart.canvas()->grab().toImage();
   EXPECT_NE(overlay, bare);
-  // The region's badge has a solid marker-color background. The former Qwt
-  // zone renderer had no region label at all, only a translucent fill.
+  // The region's badge has a solid marker-color background.
   const int region_x = static_cast<int>(chart.canvasMap(QwtPlot::xBottom).transform(2.0));
   EXPECT_EQ(overlay.pixelColor(region_x + 7, 10).rgb(), QColor("#e6463c").rgb());
 
@@ -86,8 +84,7 @@ TEST(ChartPreviewWidgetTest, MarkerOverlayReplacesAndClearsWithoutChangingAxes) 
   EXPECT_EQ(chart.canvas()->grab().toImage(), bare);
 }
 
-// Pump the event loop for `ms` milliseconds to let timers and queued
-// connections fire.
+// Pumps the event loop for `ms` milliseconds so timers and queued connections fire.
 void pumpEventLoop(int ms) {
   QEventLoop loop;
   QTimer::singleShot(ms, &loop, &QEventLoop::quit);
@@ -195,9 +192,8 @@ class PanelEngineTest : public ::testing::Test {
   }
 };
 
-/// An EmbeddedViewHost whose views are bare QWidgets: it refuses the topics in
-/// `refused` and records, at every attach, how many scene_view_error events the
-/// plugin had received by then.
+/// An EmbeddedViewHost whose views are bare QWidgets: it refuses the topics in `refused` and records, at every attach,
+/// how many scene_view_error events the plugin had received by then.
 struct RefusingEmbeddedViews {
   std::vector<std::string> refused;
   std::vector<size_t> errors_seen_at_attach;
@@ -224,8 +220,8 @@ struct RefusingEmbeddedViews {
   }
 };
 
-// ABI-42: the engine announces itself once, right after construction: the scene-view
-// capability bit is set exactly when an EmbeddedViewHost is installed.
+// The engine announces itself once, right after construction: the scene-view capability bit is set exactly when an
+// EmbeddedViewHost is installed.
 TEST_F(PanelEngineTest, HostInfoAnnouncesSceneViewsOnlyWithAnEmbeddedViewHost) {
   {
     PJ::PanelEngine engine(makeMockHandle());
@@ -248,8 +244,8 @@ TEST_F(PanelEngineTest, HostInfoAnnouncesSceneViewsOnlyWithAnEmbeddedViewHost) {
   }
 }
 
-// GAP-45: a topic the host cannot attach reaches the plugin as a scene_view_error,
-// after the whole update was applied, once until the requested set changes.
+// A topic the host cannot attach reaches the plugin as a scene_view_error, after the whole update was applied, once
+// until the requested set changes.
 TEST_F(PanelEngineTest, SceneViewAttachFailureReachesPlugin) {
   RefusingEmbeddedViews views;
   views.refused = {"/bad", "/worse"};
@@ -278,8 +274,7 @@ TEST_F(PanelEngineTest, SceneViewAttachFailureReachesPlugin) {
   EXPECT_EQ(mockPanelState().scene_view_errors.back(), "scenePreview|3d|/worse||refused /worse");
 }
 
-/// A sub-panel or sub-dialog with its own `scenePreview` frame, so the same
-/// `scene_view` request reaches it.
+/// A sub-panel or sub-dialog with its own `scenePreview` frame, so the same `scene_view` request reaches it.
 constexpr char kSceneSubUi[] = R"(<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>SceneSub</class>
@@ -343,8 +338,8 @@ TEST_F(PanelEngineTest, AnswerToAnInitialSceneViewErrorIsApplied) {
   EXPECT_EQ(reason, "scene error");
 }
 
-// The panel keeps ticking while an interactive sub-panel is open, so the plugin's
-// answer to the sub-panel's scene_view_error is applied.
+// The panel keeps ticking while an interactive sub-panel is open, so the plugin's answer to the sub-panel's
+// scene_view_error is applied.
 TEST_F(PanelEngineTest, TicksRunWhileAnInteractiveSubPanelIsOpen) {
   RefusingEmbeddedViews views;
   views.refused = {"/bad"};
@@ -368,8 +363,8 @@ TEST_F(PanelEngineTest, TicksRunWhileAnInteractiveSubPanelIsOpen) {
   EXPECT_EQ(label->text(), u"errors:2"_s);
 }
 
-// The preview's own controls stay the view's: changing its camera model sends the
-// plugin no event (a reply recreating the view would delete the emitting combo).
+// The preview's own controls stay the view's: changing its camera model sends the plugin no event (a reply recreating
+// the view would delete the emitting combo).
 TEST_F(PanelEngineTest, EmbeddedViewControlsSendThePluginNoEvent) {
   QPointer<QComboBox> camera_model;
   PJ::PanelEngineConfig config;
@@ -426,8 +421,8 @@ TEST_F(PanelEngineTest, ModalSubDialogEmbedsNoSceneView) {
   EXPECT_EQ(views.views.size(), 1U) << "no view is created for the modal sub-dialog";
 }
 
-// A Show catch-up tick queued while a modal sub-dialog runs its nested loop waits:
-// the outer apply that opened the dialog is still suspended.
+// A Show catch-up tick queued while a modal sub-dialog runs its nested loop waits: the outer apply that opened the
+// dialog is still suspended.
 TEST_F(PanelEngineTest, ModalSubDialogHoldsTheShowCatchUpTick) {
   PJ::PanelEngineConfig config;
   config.tick_interval_ms = 100000;  // only the catch-up path ticks
@@ -448,8 +443,8 @@ TEST_F(PanelEngineTest, ModalSubDialogHoldsTheShowCatchUpTick) {
       return;
     }
     ticks_before = engine.stats().tick_count;
-    // A reveal, as a tab switch back to the panel delivers it, queues a catch-up
-    // tick that the modal's own loop dispatches.
+    // A reveal, as a tab switch back to the panel delivers it, queues a catch-up tick that the modal's own loop
+    // dispatches.
     QShowEvent reveal;
     QCoreApplication::sendEvent(panel.get(), &reveal);
     QTimer::singleShot(20, modal, [&, modal] {
@@ -479,7 +474,7 @@ TEST_F(PanelEngineTest, OpenPanelReturnsConstructedWidget) {
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
 
-  // The mock UI has labelHello, textBox, and buttonClose.
+  // The mock UI has labelHello, textBox and buttonClose.
   EXPECT_NE(panel->findChild<QLabel*>("labelHello"), nullptr);
   EXPECT_NE(panel->findChild<QLineEdit*>("textBox"), nullptr);
   EXPECT_NE(panel->findChild<QPushButton*>("buttonClose"), nullptr);
@@ -506,11 +501,9 @@ TEST_F(PanelEngineTest, InitialWidgetDataIsApplied) {
 }
 
 TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
-  // Host-themed icons (setButtonIconNamed → loadSvg) are applied once and then
-  // diffed away, so a live theme switch must re-apply the panel's last
-  // widget-data to re-tint them. The icon color can't be observed here (no
-  // resources linked), so we prove the re-apply fires by watching a plain widget
-  // value get restored from the plugin's last data on a StyleChange.
+  // Host-themed icons (setButtonIconNamed) are applied once and then diffed away, so a live theme switch re-applies the
+  // panel's last widget data. The icon color cannot be observed here (no resources linked): the re-apply is shown by a
+  // plain widget value restored from the plugin's last data on a StyleChange.
   const QString saved_theme = QSettings().value(u"StyleSheet::theme"_s).toString();
   QSettings().setValue(u"StyleSheet::theme"_s, u"light"_s);
 
@@ -522,19 +515,19 @@ TEST_F(PanelEngineTest, ThemeChangeReappliesWidgetData) {
   ASSERT_NE(label, nullptr);
   ASSERT_EQ(label->text(), u"FromPlugin"_s);
 
-  // Externally clobber the label. A normal tick won't restore it — the plugin's
-  // data is unchanged, so the diff is empty — only the theme-change re-apply will.
+  // The label is clobbered externally. A normal tick does not restore it (the plugin's data is unchanged, so the diff
+  // is empty); only the theme-change re-apply does.
   label->setText(u"CLOBBERED"_s);
 
-  // Theme changes, then the app re-polishes the panel (StyleChange): the engine
-  // re-applies the plugin's last data, restoring the label.
+  // After the theme changes the app re-polishes the panel (StyleChange): the engine re-applies the plugin's last data
+  // and the label is restored.
   QSettings().setValue(u"StyleSheet::theme"_s, u"dark"_s);
   QEvent style_change(QEvent::StyleChange);
   QApplication::sendEvent(panel, &style_change);
   EXPECT_EQ(label->text(), u"FromPlugin"_s);
 
-  // A second StyleChange with no further theme change must NOT re-apply (the
-  // applied-theme gate prevents redundant re-applies on unrelated polish events).
+  // A second StyleChange with no further theme change does not re-apply: the applied-theme gate blocks redundant
+  // re-applies on unrelated polish events.
   label->setText(u"CLOBBERED2"_s);
   QEvent style_change2(QEvent::StyleChange);
   QApplication::sendEvent(panel, &style_change2);
@@ -587,7 +580,7 @@ TEST_F(PanelEngineTest, TickPropagatesPluginStateChanges) {
   ASSERT_NE(panel, nullptr);
   panel->show();  // hidden panels tick at 1/10 rate; exercise the visible fast path
 
-  // After mutating plugin state, the next tick should refresh the label.
+  // After mutating plugin state, the next tick refreshes the label.
   mockPanelState().label = "Updated";
   pumpEventLoop(50);  // ample for several ticks
 
@@ -613,7 +606,7 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
   ASSERT_NE(panel, nullptr);
   panel->show();  // hidden panels tick at 1/10 rate; exercise the visible fast path
 
-  // Ask the plugin to request close on next tick.
+  // Asks the plugin to request close on the next tick.
   mockPanelState().close_on_next_tick = true;
   mockPanelState().close_reason = "import_complete";
 
@@ -625,12 +618,8 @@ TEST_F(PanelEngineTest, RequestCloseFiresCallback) {
   delete panel;
 }
 
-// A host that keeps the panel alive past its own batch completion (a pinned tab
-// ignoring "import_complete") declines the close, and the session MUST keep
-// running. Regression: the engine used to tear itself down regardless of the
-// callback, so the kept-open tab stayed on screen as an inert shell — no ticks,
-// no widget-data exchange, every click silently dropped, unrecoverable without
-// reopening the plugin.
+// A host that keeps the panel alive past its own batch completion (a pinned tab ignoring "import_complete") declines
+// the close, and the session keeps running: still ticking and exchanging widget data, not an inert shell.
 TEST_F(PanelEngineTest, DeclinedCloseKeepsTheSessionRunning) {
   PJ::PanelEngine engine(
       makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
@@ -649,7 +638,7 @@ TEST_F(PanelEngineTest, DeclinedCloseKeepsTheSessionRunning) {
   pumpEventLoop(50);
   ASSERT_GT(close_requests, 0) << "the plugin never asked to close; test is not exercising the path";
 
-  // The engine must still be ticking AND still applying plugin widget data.
+  // The engine still ticks and still applies plugin widget data.
   const int ticks_after_decline = engine.stats().tick_count;
   mockPanelState().close_on_next_tick = false;
   mockPanelState().label = "StillAlive";
@@ -667,8 +656,8 @@ TEST_F(PanelEngineTest, HiddenPanelStillTicksAtReducedRate) {
   PJ::PanelEngine engine(makeMockHandle(), {/*tick_interval_ms=*/5, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
   QWidget* panel = engine.openPanel();
   ASSERT_NE(panel, nullptr);
-  // Never shown: the plugin's periodic logic must stay alive regardless —
-  // a pinned toolbox in a non-current tab keeps fetching/advancing.
+  // Never shown: the plugin's periodic logic stays alive regardless (a pinned toolbox in a non-current tab keeps
+  // fetching).
   mockPanelState().label = "Updated";
   pumpEventLoop(200);  // 40 timer fires -> at least a few 1/10-rate ticks
 
@@ -681,9 +670,8 @@ TEST_F(PanelEngineTest, HiddenPanelStillTicksAtReducedRate) {
 }
 
 TEST_F(PanelEngineTest, ButtonBoxRejectClosesPanel) {
-  // The panel's standard QDialogButtonBox (Close) is wired to the close path:
-  // connectWidgetSignals skips button-box buttons and the non-modal panel has
-  // no QDialog::reject, so without that wiring Close would be inert.
+  // The panel's QDialogButtonBox (Close) is wired to the close path: connectWidgetSignals skips button-box buttons and
+  // a panel has no QDialog::reject, so without the wiring Close would be inert.
   PJ::PanelEngine engine(makeMockHandle());
   std::string captured_reason;
   bool fired = false;
@@ -719,8 +707,7 @@ TEST_F(PanelEngineTest, WidgetEventReachesPlugin) {
   ASSERT_NE(text, nullptr);
 
   text->setText("typed by test");
-  // QLineEdit::textChanged is synchronous; let one tick run to apply diffed
-  // state from the plugin back to the widget.
+  // QLineEdit::textChanged is synchronous; one tick applies the diffed state from the plugin back to the widget.
   pumpEventLoop(30);
 
   EXPECT_EQ(mockPanelState().text, "typed by test");
@@ -757,10 +744,9 @@ TEST_F(PanelEngineTest, SubPanelUsesLoadedRootPreferredSize) {
 }
 
 TEST_F(PanelEngineTest, WidgetEventCostsOneWidgetDataBuild) {
-  // A forwarded widget event needs exactly ONE widget_data() poll (the
-  // applyAndDiff after sendEvent). The per-event file-picker check must reuse
-  // that already-fetched document — a second full build + parse per event
-  // doubled the cost of every slider-drag tick.
+  // A forwarded widget event needs exactly one widget_data() poll (the applyAndDiff after sendEvent): the per-event
+  // file-picker check reuses that document, as a second build and parse per event doubled the cost of a slider-drag
+  // tick.
   PJ::PanelEngineConfig config;
   config.tick_interval_ms = 100000;  // keep the tick timer out of the count
   PJ::PanelEngine engine(makeMockHandle(), config);
@@ -790,11 +776,9 @@ TEST_F(PanelEngineTest, ConfiguredWidgetEventRestartsTickDeadline) {
   ASSERT_NE(timer, nullptr);
   ASSERT_NE(text, nullptr);
 
-  // A coarse 1 s QTimer may round every restart down by as much as 5%, so its
-  // reported remaining time can stay near 950 ms before and after a real
-  // restart. Make only this timing observation precise; production keeps the
-  // default timer type and the behavior under test is still PanelEngine's
-  // event-driven start().
+  // A coarse 1 s QTimer may round every restart down by up to 5%, so its remaining time can stay near 950 ms before and
+  // after a real restart. Only this timing observation is made precise; production keeps the default timer type, and
+  // the behavior under test is still PanelEngine's event-driven start().
   timer->stop();
   timer->setTimerType(Qt::PreciseTimer);
   timer->start();
@@ -821,7 +805,7 @@ TEST_F(PanelEngineTest, CloseIsIdempotent) {
   delete panel;
 }
 
-// Claim: the owner's close callback may stop and deleteLater the engine without duplicate teardown or late ticks.
+// The owner's close callback may stop and deleteLater the engine without duplicate teardown or late ticks.
 TEST_F(PanelEngineTest, OwnerCloseCallbackMayScheduleEngineDeletion) {
   auto* engine = new PJ::PanelEngine(makeMockHandle(), {.tick_interval_ms = 10});
   QPointer<PJ::PanelEngine> guard(engine);
@@ -845,11 +829,9 @@ TEST_F(PanelEngineTest, OwnerCloseCallbackMayScheduleEngineDeletion) {
 
 namespace {
 
-// A panel whose widget_data() is EMPTY whenever nothing changed (the documented
-// "no update" answer, and what real plugins do to avoid serializing a document
-// 20 times a second), and whose only non-empty payload is a sub-dialog request.
-// Two consecutive requests are therefore byte-identical, and the host's
-// skip-identical shortcut must not swallow the second one.
+// A panel whose widget_data() is empty whenever nothing changed (the documented "no update" answer, which real plugins
+// give to avoid serializing a document 20 times a second), and whose only non-empty payload is a sub-dialog request.
+// Two consecutive requests are byte-identical, and the skip-identical shortcut must not swallow the second.
 constexpr char kSilentSettingsUi[] = R"(<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>SilentSettings</class>
@@ -932,9 +914,8 @@ PJ::DialogHandle makeSilentWhenIdleHandle() {
 }  // namespace
 
 TEST_F(PanelEngineTest, SubDialogReopensAfterCancelWhenThePluginIsSilentInBetween) {
-  // Settings, Cancel, Settings: the second request carries the same bytes as
-  // the first (nothing changed in between, and the plugin answered "" on every
-  // poll since), so a host that dedups on raw equality never opens it again.
+  // Settings, Cancel, Settings: the second request carries the same bytes as the first (nothing changed, and the plugin
+  // answered "" on every poll since), so a host that dedups on raw equality would never open it again.
   PJ::PanelEngineConfig config;
   config.tick_interval_ms = 100000;  // drive everything through the click path
   config.enable_diff = true;
@@ -946,8 +927,7 @@ TEST_F(PanelEngineTest, SubDialogReopensAfterCancelWhenThePluginIsSilentInBetwee
 
   int opened = 0;
   auto click_then_cancel = [&] {
-    // Fires inside the sub-dialog's nested exec() when one opened — and
-    // harmlessly from the pump below when none did.
+    // Fires inside the sub-dialog's nested exec() when one opened, and harmlessly from the pump below when none did.
     QTimer::singleShot(0, panel, [&] {
       if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget())) {
         ++opened;

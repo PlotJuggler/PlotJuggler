@@ -1,11 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Agent tool executors. Each is a pure function of (args, host views) and
-// returns a ToolResult whose `content` the model reads. Every failure is
-// returned as data (ok=false), never thrown.
-//
-// This file: read_series.
+// Agent tool executors: each a pure function of (args, host views) returning a ToolResult whose `content` the model
+// reads; every failure is returned as data (ok=false), never thrown. This file: read_series.
 
 #include <algorithm>
 #include <chrono>
@@ -60,13 +57,12 @@ std::vector<double> seriesValuesAsDoubles(
 namespace PJ::agent_tools::detail {
 namespace {
 
-// Cap on a single tool response handed back to the model, so a wide catalog or
-// a long series can't blow the context window. read_series coarsens to fit.
+// Cap on a single tool response handed back to the model, so a wide catalog or a long series cannot blow the context
+// window; read_series coarsens to fit.
 constexpr std::size_t kMaxResponseBytes = 16 * 1024;
 
-// Materialize a numeric field into parallel timestamp + double columns (a null
-// as NaN, see seriesValuesAsDoubles). Returns false for a non-numeric column
-// (string/bool) or an empty/mismatched read.
+// Materializes a numeric field into parallel timestamp + double columns (a null as NaN, see seriesValuesAsDoubles).
+// False for a non-numeric column (string/bool) or an empty/mismatched read.
 bool readSeriesDoubles(
     const PJ::sdk::MaterializedSeriesView& view, std::vector<std::int64_t>& out_ts, std::vector<double>& out_vals) {
   const std::size_t n = view.rowCount();
@@ -81,10 +77,8 @@ bool readSeriesDoubles(
 
 json statsToJson(const SeriesStats& s) {
   json out = {{"count", s.count}, {"duration_s", s.duration_s}, {"rate_hz", s.rate_hz}};
-  // NaN/inf poison a straight sum, so min/max/mean/stddev are computed over
-  // finite values only; when none exist there is nothing honest to report, so
-  // they are omitted rather than serialized as NaN (which nlohmann turns into
-  // `null` — indistinguishable from a field that was never populated).
+  // NaN/inf poison a straight sum, so min/max/mean/stddev cover finite values only; when none exist they are omitted
+  // rather than serialized as NaN (nlohmann writes `null`, indistinguishable from a field never populated).
   if (s.has_values) {
     out["min"] = s.min;
     out["max"] = s.max;
@@ -95,10 +89,9 @@ json statsToJson(const SeriesStats& s) {
   } else {
     out["note"] = "no finite values";
   }
-  // The spacing facts that count/mean/rate cannot carry: a dropout leaves all
-  // three untouched. The keys are self-describing on purpose — the tool's
-  // schema description says nothing about them, so they cost prefix tokens in
-  // no turn and appear exactly when a series is read.
+  // The spacing facts count/mean/rate cannot carry (a dropout leaves all three untouched). The keys are
+  // self-describing on purpose: the tool's schema description does not mention them, so they cost prefix tokens in no
+  // turn and appear exactly when a series is read.
   if (s.has_gap) {
     out["max_gap_s"] = s.max_gap_s;
     out["max_gap_at_s"] = s.max_gap_at_s;
@@ -110,34 +103,25 @@ json statsToJson(const SeriesStats& s) {
   return out;
 }
 
-// Cap on how many series one call may read. Stats are small and fixed-size per
-// series, so this is not about the response cap — it is about not turning a
-// single tool call into an unbounded scan of the whole dataset.
+// Cap on series per call: stats are small and fixed-size, so this is not about the response cap but about not turning
+// one call into an unbounded scan of the dataset.
 constexpr std::size_t kMaxBatchPaths = 32;
 
-// Buckets are the expensive, variable payload — several of them share ONE
-// response cap (see batchBuckets), so the batch stays smaller than the flat
-// per-path cap above: past this many series sharing the cap coarsens every
-// one of them past usefulness rather than saving a round trip.
+// Buckets are the expensive, variable payload and several share ONE response cap (see batchBuckets), so their batch is
+// smaller than the flat per-path cap: past this many, sharing the cap coarsens every series past usefulness.
 constexpr std::size_t kMaxBucketsBatchPaths = 8;
 
-// Hard cap on samples mode 'raw' returns per series: raw exists so the model
-// can see actual values once it has narrowed to a handful of interesting
-// ones, not to ship a whole recording through the tool loop one call at a
-// time.
+// Hard cap on samples mode 'raw' returns per series: raw is for seeing actual values once narrowed to a few, not for
+// shipping a recording through the tool loop.
 constexpr std::size_t kMaxRawSamples = 200;
 
-// Batch cap for mode 'raw' — tighter than buckets' own, since each series
-// here can carry up to kMaxRawSamples individual numbers rather than a
-// bounded bucket count, so a handful of series already approaches the
-// response cap.
+// Batch cap for mode 'raw', tighter than buckets': each series can carry up to kMaxRawSamples numbers, so a few series
+// already approach the response cap.
 constexpr std::size_t kMaxRawBatchPaths = 4;
 
-// Best-effort absolute-ns -> display-seconds conversion for one series,
-// preferring the dataset-scoped host call (immune to the "ambiguous topic
-// between datasets" failure mode the plain topic-scoped one has) and falling
-// back to the topic-scoped one when the host does not offer the former.
-// Empty when neither is bound or neither succeeds — never guessed.
+// Best-effort absolute-ns to display-seconds conversion for one series: prefers the dataset-scoped host call (immune
+// to the "ambiguous topic between datasets" failure of the topic-scoped one), else the topic-scoped one. Empty when
+// neither is bound or succeeds; never guessed.
 std::optional<double> toDisplaySeconds(
     ToolContext& ctx, const std::optional<PJ::sdk::DataSourceHandle>& source, const std::string& topic,
     std::int64_t absolute_ns) {
@@ -214,9 +198,8 @@ void cutToWindow(
     return;
   }
 
-  // Trim by INDEX, not by copying through the iterators above: ts and vals
-  // are reassigned in place below, and an iterator pair that aliases the
-  // vector being assigned is not safe to feed straight to vector::assign.
+  // Trim by INDEX: ts and vals are reassigned in place below, and an iterator pair aliasing the vector being assigned
+  // is not safe for vector::assign.
   const auto lo = static_cast<std::size_t>(lo_it - r.ts.begin());
   const auto hi = static_cast<std::size_t>(hi_it - r.ts.begin());
   std::vector<std::int64_t> windowed_ts(
@@ -253,12 +236,9 @@ void applyDisplayWindow(
   cutToWindow(r, *window, r.ts.back(), t_start_s, t_end_s);
 }
 
-// Round to `sig_figs` significant decimal digits before serializing: the raw
-// float32 sources rarely carry more precision than that, and a double's full
-// ~17-digit decimal expansion is roughly twice the bytes for no information
-// the model can use. Leaves 0 and non-finite values untouched (a NaN/inf
-// still round-trips through nlohmann as JSON null via renderBucketArray's own
-// isfinite guard, not through this helper).
+// Rounds to `sig_figs` significant decimal digits before serializing: float32 sources rarely carry more, and a
+// double's ~17-digit expansion is about twice the bytes for no usable information. Leaves 0 and non-finite values
+// untouched (a NaN/inf becomes JSON null through renderBucketArray's own isfinite guard, not this helper).
 double roundSignificant(double v, int sig_figs = 6) {
   if (!std::isfinite(v) || v == 0.0) {
     return v;
@@ -267,20 +247,13 @@ double roundSignificant(double v, int sig_figs = 6) {
   return std::round(v * magnitude) / magnitude;
 }
 
-// Bucketize and render as the columnar JSON object both readSeriesTool's
-// 'buckets' mode (single-series and batched) and evaluate's optional bucket
-// summary send back: parallel arrays ("n"/"min"/"max"/"mean") instead of one
-// object per bucket, since every bucket used to repeat the same handful of
-// keys — measured 69 bytes/bucket as objects vs. 16 as columns on a real
-// response, which is the difference between ~240 and ~1000 buckets under the
-// 16 KiB cap. "t0"/"dt" let the model reconstruct t_i = t0 + i*dt; an
-// explicit "t" array is emitted only when some bucket's actual t_rel_s
-// deviates from that reconstruction by more than a tiny tolerance — either
-// bucketize's "one bucket per sample" path over uneven timestamps, or a
-// bucket dropped entirely because its window held no samples at all (both
-// break the even grid the t0/dt formula assumes). A bucket with no finite
-// samples reports null min/max/mean but keeps its 0 in "n", so a window of
-// missing data is visible rather than silently absent from the arrays.
+// Bucketizes and renders the columnar JSON object that readSeriesTool's 'buckets' mode (single and batched) and
+// evaluate's optional bucket summary send back: parallel arrays ("n"/"min"/"max"/"mean") instead of one object per
+// bucket, since objects repeat the same keys (measured on one real response: 69 bytes/bucket as objects, 16 as
+// columns, about 240 vs 1000 buckets under the 16 KiB cap). "t0"/"dt" reconstruct t_i = t0 + i*dt; an explicit "t"
+// array is emitted only when some bucket's t_rel_s deviates from that grid by more than a tiny tolerance (bucketize's
+// "one bucket per sample" path over uneven timestamps, or a bucket dropped because its window held no samples). A
+// bucket with no finite samples reports null min/max/mean but keeps its 0 in "n", so missing data stays visible.
 json renderBucketArray(std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points) {
   auto buckets = bucketize(ts, vals, max_points);
   json out = json::object();
@@ -337,29 +310,20 @@ json renderBucketArray(std::span<const std::int64_t> ts, std::span<const double>
   return out;
 }
 
-// Render a windowed, successfully-read series as mode 'raw' samples: once the
-// model has narrowed to a handful of points, buckets can no longer show it
-// the actual values, so this closes that last step -- but only inside a
-// window the caller set, and only up to `sample_cap` of them (kMaxRawSamples,
-// halved by the raw envelope's own shrink-to-fit when the batch is too big),
-// so a raw call cannot become an unbounded dump of a whole recording. Times
-// are seconds relative to the first RETURNED sample's OWN display time
-// ("t0_display_s"), not to the window's t_start_s, mirroring how bucket "t0"
-// is relative to the first bucket rather than to the window bound. Values
-// are rounded the same way bucket min/max/mean are; a non-finite value comes
-// back as JSON null rather than poisoning the array. A window holding more
-// than `sample_cap` is truncated to its first `sample_cap` samples and
-// flagged "truncated", with "window_samples" carrying the true count, so the
-// model knows to narrow further rather than assume it saw everything.
+// Renders a windowed, successfully-read series as mode 'raw' samples, the last step once buckets can no longer show
+// actual values: only inside a caller-set window and up to `sample_cap` samples (kMaxRawSamples, halved by the raw
+// envelope's shrink-to-fit when the batch is big), so a raw call cannot dump a recording. Times are seconds relative
+// to the first RETURNED sample's own display time ("t0_display_s"), not the window's t_start_s, as bucket "t0" is
+// relative to the first bucket. Values are rounded like bucket min/max/mean; a non-finite value is JSON null. A window
+// holding more than `sample_cap` samples is truncated to the first `sample_cap` and flagged "truncated", with
+// "window_samples" carrying the true count so the model narrows further.
 json renderRawSamples(
     ToolContext& ctx, const PJ::sdk::CatalogSnapshot& catalog, const SeriesRead& r, std::size_t sample_cap) {
   const std::size_t window_samples = r.ts.size();
   const std::size_t count = std::min(window_samples, sample_cap);
   const std::int64_t t0_ns = r.ts.front();
-  // The window's already-computed offset (display(ts) = ts*1e-9 + offset)
-  // applies to any ns in this series, so reuse it instead of re-running the
-  // ns->display conversion for this first sample; absent a window, fall back
-  // to the call this always used to make.
+  // The window's offset (display(ts) = ts*1e-9 + offset) applies to any ns in this series: reuse it instead of
+  // re-running the ns->display conversion; without a window, convert.
   const std::optional<double> t0_display =
       r.display_offset_s ? std::optional<double>(static_cast<double>(t0_ns) * 1e-9 + *r.display_offset_s)
                          : toDisplaySeconds(ctx, catalog, r, t0_ns);
@@ -386,11 +350,9 @@ json renderRawSamples(
   return out;
 }
 
-// Shrink `max_points` by half, re-rendering via `build`, until the serialized
-// payload fits `cap` or `max_points` bottoms out at 16 -- the halving loop
-// withCoarsenedBuckets and batchBuckets both ran themselves, over a
-// single-series render and a whole batch envelope respectively. Adds a
-// "note" to the last rendering when it still does not fit at the floor.
+// Halves `max_points`, re-rendering via `build`, until the payload fits `cap` or `max_points` bottoms out at 16: the
+// loop withCoarsenedBuckets (one series) and batchBuckets (a whole envelope) share. Adds a "note" to the last
+// rendering when it still does not fit at the floor.
 json shrinkToFit(const std::function<json(std::size_t)>& build, std::size_t cap, std::size_t max_points) {
   for (;;) {
     json out = build(max_points);
@@ -405,13 +367,10 @@ json shrinkToFit(const std::function<json(std::size_t)>& build, std::size_t cap,
   }
 }
 
-// Several series' buckets, sharing ONE response cap instead of each getting
-// the single-series kMaxResponseBytes on its own: min(N, 4) times that cap,
-// halved in lockstep across every series until the whole envelope fits (or
-// each is down to 16 buckets — the same floor withCoarsenedBuckets uses). A
-// bad path becomes an {"error"} entry beside the ones that worked, same as
-// 'stats'. Stats do not depend on max_points, so they are computed once,
-// outside the halving loop that only re-renders the bucket arrays.
+// Several series' buckets sharing ONE response cap: min(N, 4) times the single-series kMaxResponseBytes, halved in
+// lockstep across every series until the envelope fits (or each is down to 16 buckets, withCoarsenedBuckets' floor). A
+// bad path becomes an {"error"} entry beside the good ones, as in 'stats'. Stats do not depend on max_points, so they
+// are computed once, outside the halving loop.
 json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::size_t max_points) {
   const std::size_t n = reads.size();
   const std::size_t cap = std::min(n, std::size_t{4}) * kMaxResponseBytes;
@@ -450,12 +409,10 @@ json batchBuckets(ToolContext& ctx, const std::vector<SeriesRead>& reads, std::s
       cap, max_points);
 }
 
-// Every numeric field of one already-resolved topic, as read_series paths
-// in catalog order -- what a topic-only path expands to. Qualified with
-// "dataset:" using the same rule resolveSeriesPath's own qualifying does, so
-// an expanded path is never ambiguous even when several loaded datasets
-// share this topic name. Takes the caller's own datasetByTopicIndex result,
-// same reasoning as resolveTopicPath.
+// Every numeric field of one resolved topic as read_series paths in catalog order: what a topic-only path expands to.
+// Qualified with "dataset:" by the same rule as resolveSeriesPath, so an expanded path is unambiguous even when
+// several loaded datasets share the topic name. Takes the caller's datasetByTopicIndex result, as resolveTopicPath
+// does.
 std::vector<std::string> topicNumericFieldPaths(
     const PJ::sdk::CatalogSnapshot& catalog, std::uint32_t topic_index, const TopicDatasetMap& topic_dataset) {
   std::vector<std::string> out;
@@ -478,11 +435,9 @@ std::vector<std::string> topicNumericFieldPaths(
   return out;
 }
 
-// Numeric field NAMES of one topic (relative to the topic, not full paths),
-// excluding header/*-style fields -- timestamps and sequence numbers are not
-// signals, so they count toward neither "numeric_fields" nor "fields" in the
-// "unread" disclosure below. Field-name analogue of topicNumericFieldPaths,
-// in the same catalog order.
+// Numeric field NAMES of one topic (relative to it, not full paths), excluding header/*-style fields (timestamps and
+// sequence numbers are not signals, so they count toward neither "numeric_fields" nor "fields" of the "unread"
+// disclosure). Field-name analogue of topicNumericFieldPaths, in the same order.
 std::vector<std::string> topicNumericFieldNames(const PJ::sdk::CatalogSnapshot& catalog, std::uint32_t topic_index) {
   std::vector<std::string> out;
   auto topics = catalog.topics();
@@ -505,11 +460,9 @@ std::vector<std::string> topicNumericFieldNames(const PJ::sdk::CatalogSnapshot& 
   return out;
 }
 
-// The field name a successful read actually covered, relative to its owning
-// topic -- e.g. "channels[4]" out of a resolved path
-// "/mavros/rc/out/channels[4]" -- recovered by stripping the same
-// dataset-qualifier and topic prefix joinSeriesPath added, so it lines up
-// with topicNumericFieldNames's entries below.
+// The field name a successful read covered, relative to its topic (e.g. "channels[4]" from
+// "/mavros/rc/out/channels[4]"): strips the dataset qualifier and topic prefix joinSeriesPath added, to line up with
+// topicNumericFieldNames.
 std::string fieldNameFromResolvedPath(const SeriesRead& r) {
   std::string path = r.path;
   if (!r.dataset.empty()) {
@@ -527,22 +480,15 @@ std::string fieldNameFromResolvedPath(const SeriesRead& r) {
   return path;
 }
 
-// Cap on how many unread field names the "unread" disclosure below names per
-// topic -- fed back to the model and re-sent on every later round-trip of the
-// turn, so an unbounded list would be paid for repeatedly. Same reasoning as
-// kMaxCandidates.
+// Cap on unread field names the "unread" disclosure lists per topic: it is re-sent on every later round trip of the
+// turn, so an unbounded list is paid for repeatedly. Same reasoning as kMaxCandidates.
 constexpr std::size_t kMaxUnreadFields = 12;
 
-// read_series discloses, per response, which topic(s) it read only PART of:
-// grouped by owning topic, a topic where THIS call read fewer distinct
-// numeric fields (excluding header/*) than it has gets a "read"/
-// "numeric_fields" count and the unread field names, pointing at the
-// bare-topic form that would have read all of them in one call (see the
-// commit this shipped with: faults on unread fields went unnoticed because
-// the model asked for only the first few of a wide array). Built once from
-// the raw reads so every read_series mode attaches it the same way. Empty
-// (no "unread" key at the call site) when every topic touched by this call
-// was read whole.
+// Discloses, per response, which topics read_series read only PART of: grouped by owning topic, a topic where THIS call
+// read fewer distinct numeric fields (excluding header/*) than it has gets "read"/"numeric_fields" counts and the
+// unread field names, pointing at the bare-topic form that reads all in one call (faults on unread fields went
+// unnoticed when the model asked for only the first few of a wide array). Built once from the raw reads so every mode
+// attaches it alike. Empty (no "unread" key) when every topic touched was read whole.
 json unreadDisclosure(
     const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads,
     const TopicDatasetMap& topic_dataset) {
@@ -604,10 +550,8 @@ json unreadDisclosure(
   return out;
 }
 
-// How many of a topic's OWN numeric fields one read_series call may expand
-// into before the mode's degradation kicks in (see expandRequestedPaths) --
-// the same limit the mode already enforces on the whole call, so a topic
-// that fits comfortably never trips a second, tighter limit later.
+// How many of a topic's OWN numeric fields one call may expand into before the mode's degradation (see
+// expandRequestedPaths): the mode's whole-call limit, so a topic that fits never trips a second, tighter one.
 std::size_t topicExpansionCap(const std::string& mode) {
   if (mode == "buckets") {
     return kMaxBucketsBatchPaths;
@@ -618,21 +562,17 @@ std::size_t topicExpansionCap(const std::string& mode) {
   return kMaxBatchPaths;
 }
 
-// One item read_series works on after path expansion. `forced` bypasses the
-// normal lookup+read entirely: it is set for an ambiguous topic, a topic
-// with no numeric fields, or (mode buckets/raw) a topic too big for this
-// call's cap -- cases expandRequestedPaths has already turned into a final
-// answer, rendered by forcedFailure exactly like any other per-path error.
+// One item read_series works on after path expansion. `forced` bypasses lookup+read: set for an ambiguous topic, a
+// topic with no numeric fields or (buckets/raw) a topic too big for the call's cap, which expandRequestedPaths already
+// turned into a final answer, rendered by forcedFailure like any per-path error.
 struct PathTask {
   std::string path;
   bool forced = false;
   std::string forced_error;
 };
 
-// A forced PathTask rendered as a SeriesRead failure, so every read_series
-// mode's existing per-entry error rendering (built for a normal failed
-// lookup) handles a topic-expansion error the same way, with no
-// special-casing needed in the mode branches below.
+// A forced PathTask as a SeriesRead failure, so every mode's per-entry error rendering handles a topic-expansion error
+// with no special-casing.
 SeriesRead forcedFailure(const PathTask& task) {
   SeriesRead r;
   r.path = task.path;
@@ -640,21 +580,14 @@ SeriesRead forcedFailure(const PathTask& task) {
   return r;
 }
 
-// Expand each requested path: unchanged when it already names a series (a
-// field path always wins over a topic-only reading of the same string),
-// and also unchanged when it names neither a series nor a topic -- the
-// existing "unknown series" error fires later exactly as it did before this
-// feature. Only a path that fails as a series AND succeeds as a bare topic
-// expands, into every numeric field of that topic, in catalog order. A
-// field a topic expands to is dropped when the caller also named it
-// explicitly elsewhere in the same call, so the two never duplicate each
-// other -- but two explicit requests for the same series are NOT
-// deduplicated against each other, unchanged from before this feature
-// (RawBatchCappedAtFour and friends rely on a repeated path still costing a
-// slot against the batch cap). `notes_out` collects the "read the first N,
-// cap" note mode 'stats' surfaces when a topic alone has more numeric
-// fields than the cap; 'buckets' and 'raw' never populate it -- they fail
-// that one task instead (see topicExpansionCap).
+// Expands each requested path: unchanged when it names a series (a field path wins over a topic-only reading of the
+// same string) or names neither a series nor a topic (readOne fails it later as "unknown series"). Only a path that
+// fails as a series AND succeeds as a bare topic expands, into every numeric field of that topic in catalog order. A
+// field a topic expands to is dropped when the caller also named it explicitly in the same call, so they never
+// duplicate; two explicit requests for the same series are NOT deduplicated (RawBatchCappedAtFour and friends rely on
+// a repeated path costing a slot against the batch cap). `notes_out` collects the "read the first N, cap" note mode
+// 'stats' surfaces when a topic alone has more numeric fields than the cap; 'buckets' and 'raw' never populate it,
+// they fail that task instead (see topicExpansionCap).
 std::vector<PathTask> expandRequestedPaths(
     const PJ::sdk::CatalogSnapshot& catalog, const std::vector<std::string>& paths, const std::string& mode,
     std::vector<std::string>& notes_out, const TopicDatasetMap& topic_dataset) {
@@ -662,19 +595,15 @@ std::vector<PathTask> expandRequestedPaths(
   out.reserve(paths.size());
   const std::size_t cap = topicExpansionCap(mode);
 
-  // Resolve every requested path as a series exactly once -- reused below
-  // both to seed explicit_canonical and, in the main loop, as `direct` --
-  // rather than resolving each one twice (a pre-pass, then the loop).
+  // Resolve every requested path as a series once, reused to seed explicit_canonical and as `direct` in the main loop.
   std::vector<SeriesLookup> direct_lookups;
   direct_lookups.reserve(paths.size());
   for (const auto& want : paths) {
     direct_lookups.push_back(resolveSeriesPath(catalog, want, topic_dataset));
   }
 
-  // Canonical form of every path in THIS call that resolves directly as a
-  // series, computed once up front (order-independent) so a topic expansion
-  // can skip a field the caller also named explicitly, regardless of
-  // whether that explicit path appears before or after the topic path.
+  // Canonical form of every path in THIS call that resolves directly as a series, computed up front so a topic
+  // expansion skips a field the caller also named explicitly, whether that path comes before or after the topic path.
   std::vector<std::string> explicit_canonical;
   for (const auto& lookup : direct_lookups) {
     if (lookup.resolved) {
@@ -709,8 +638,7 @@ std::vector<PathTask> expandRequestedPaths(
       continue;
     }
     if (!topic.topic_index) {
-      // Not a topic either: pass through unchanged, same as before this
-      // feature -- readOne will fail it with the usual "unknown series".
+      // Not a topic either: pass through unchanged; readOne fails it with the usual "unknown series".
       PathTask task;
       task.path = want;
       out.push_back(std::move(task));
@@ -761,15 +689,11 @@ std::vector<PathTask> expandRequestedPaths(
   return out;
 }
 
-// The batch-shaped {count, read, failed?, unread?, note?} envelope built
-// from already-read series, regardless of how many there are -- render each
-// into its entry JSON (a failed read becomes {"series", "error"};
-// `render_entry` renders a successful one, and may itself add an "error" --
-// raw's renderRawSamples does, when the display time cannot be mapped), and
-// count the failures. `extra_note`, when non-empty, is stats' own extra: the
-// topic-expansion-cap note. Split out from finishReadEnvelope below so raw's
-// shrink-to-fit loop (which needs a plain json to measure) can call it
-// directly, without going through the single-task unwrapping.
+// The batch-shaped {count, read, failed?, unread?, note?} envelope from already-read series, however many: renders each
+// into its entry JSON (a failed read becomes {"series", "error"}; `render_entry` renders a successful one and may add
+// an "error" itself, as renderRawSamples does when the display time cannot be mapped) and counts the failures.
+// `extra_note`, when non-empty, is stats' topic-expansion-cap note. Split from finishReadEnvelope so raw's
+// shrink-to-fit loop (which needs a plain json to measure) can call it without the single-task unwrapping.
 json buildReadEnvelope(
     const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads, const TopicDatasetMap& topic_dataset,
     const std::function<json(const SeriesRead&)>& render_entry, const std::string& extra_note = {}) {
@@ -803,9 +727,8 @@ ToolResult finishReadEnvelope(
     const PJ::sdk::CatalogSnapshot& catalog, const std::vector<SeriesRead>& reads, const TopicDatasetMap& topic_dataset,
     const std::function<json(const SeriesRead&)>& render_entry, const std::string& extra_note = {}) {
   const json out = buildReadEnvelope(catalog, reads, topic_dataset, render_entry, extra_note);
-  // A lone path keeps the shape it has always had, so nothing that worked
-  // before starts reading differently. A whole-topic path that expanded to
-  // several series never takes this branch (reads.size() > 1 then).
+  // A lone path keeps the unwrapped single-series shape; a whole-topic path that expanded to several series never
+  // takes this branch (reads.size() > 1 then).
   if (reads.size() == 1) {
     json only = out["read"].front();
     if (only.contains("error")) {
@@ -861,14 +784,11 @@ JoinForecast forecastJoin(
   return out;
 }
 
-// Collect the requested paths from either a bare string or an array.
-//
-// The parameter is named `paths` rather than `series` on purpose. The object
-// store holds point clouds, images and occupancy grids behind the same read
-// view, and when this call learns to summarize those too, "series" would be the
-// wrong word for what it takes. The model learns the name from the description,
-// so renaming it later is more expensive than choosing it now. `series` still
-// works, undocumented, so a conversation already in flight does not break.
+// Collects the requested paths from a bare string or an array. The parameter is named `paths` rather than `series` on
+// purpose: the object store holds point clouds, images and occupancy grids behind the same read view, so `series`
+// would be the wrong word if this call ever summarizes those (reasoning, not measured). The model learns the name from
+// the description, so renaming later costs more. `series` still works, undocumented, so a conversation in flight does
+// not break.
 std::vector<std::string> requestedPaths(const json& args, std::initializer_list<const char*> keys) {
   std::vector<std::string> out;
   for (const char* key : keys) {
@@ -904,12 +824,10 @@ json statsWithDisplayStart(
       stats_json["t_start_display_s"] = *display_s;
     }
   }
-  // Whole-series facts (see FlatRunSummary): a constant channel says so
-  // instead of the flat span, which would just restate "the whole thing".
-  // Each fact carries a fixed-text interpretation alongside it -- "constant"
-  // reads as "stuck" to a model unless told it just means "never sampled
-  // differently", and a bare flat span invites the same misreading in the
-  // other direction (a change WITHIN the recording, not since the start).
+  // Whole-series facts (see FlatRunSummary): a constant channel says so instead of the flat span, which would restate
+  // "the whole thing". Each carries a fixed-text interpretation: "constant" reads as "stuck" to a model unless told it
+  // means "never sampled differently", and a bare flat span invites the opposite misreading (a change WITHIN the
+  // recording, not since the start).
   if (flat.constant) {
     stats_json["constant"] = true;
     stats_json["constant_note"] =
@@ -1040,11 +958,9 @@ SeriesRead readOneWindowed(
 
 }  // namespace
 
-// Coarsen until the serialized payload fits the response cap so spiky data
-// stays representable without overrunning the model's context. Returns
-// `base` with a "buckets" array attached (and a "note" when it still does not
-// fit at the smallest allowed resolution). Shared by read_series's single-path
-// 'buckets' mode and evaluate's optional bucket summary.
+// Coarsens until the payload fits the response cap, so spiky data stays representable without overrunning the model's
+// context. Returns `base` with a "buckets" array (and a "note" when it still does not fit at the smallest resolution).
+// Shared by read_series' single-path 'buckets' mode and evaluate's optional bucket summary.
 json withCoarsenedBuckets(
     json base, std::span<const std::int64_t> ts, std::span<const double> vals, std::size_t max_points) {
   return shrinkToFit(
@@ -1064,10 +980,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   }
   const std::string mode = args.value("mode", std::string("stats"));
 
-  // Optional display-axis window, shared by every path in this call (not
-  // per-path — one read_series call reads one moment in time). Validated
-  // once here so a backwards range fails the whole call instead of quietly
-  // producing an empty-window error on every entry.
+  // Optional display-axis window shared by every path in this call (one call reads one moment in time); validated once
+  // so a backwards range fails the whole call instead of producing an empty-window error on every entry.
   std::optional<double> t_start_s;
   std::optional<double> t_end_s;
   if (args.contains("t_start_s") && !args["t_start_s"].is_null()) {
@@ -1084,14 +998,11 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   if (!catalog) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
-  // Built once and threaded through every lookup this call makes (expansion,
-  // resolution, the unread disclosure) instead of each one rebuilding it.
+  // Built once and threaded through every lookup this call makes (expansion, resolution, the unread disclosure).
   const TopicDatasetMap topic_dataset = datasetByTopicIndex(*catalog);
 
-  // A path naming a bare topic (no field) expands to every numeric field of
-  // that topic here -- see expandRequestedPaths. This is where the caps
-  // below start counting: a topic that names twelve fields costs twelve,
-  // exactly as if the model had named them one by one.
+  // A path naming a bare topic expands to every numeric field of it (see expandRequestedPaths); the caps below count
+  // from here, so a topic naming twelve fields costs twelve.
   std::vector<std::string> topic_notes;
   const std::vector<PathTask> tasks = expandRequestedPaths(*catalog, paths, mode, topic_notes, topic_dataset);
   if (tasks.size() > kMaxBatchPaths) {
@@ -1100,18 +1011,14 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
         std::to_string(tasks.size()) + " after expanding any whole-topic paths to their fields");
   }
 
-  // readOne, then narrow to the window when one was requested — shared by
-  // every mode below so 'stats' and 'buckets', single-path and batched, all
-  // apply the same window the same way.
+  // readOne, then narrow to the window when one was requested: shared by every mode so all apply the window alike.
   auto readWindowed = [&](const std::string& want) {
     return readOneWindowed(*catalog, ctx, want, topic_dataset, t_start_s, t_end_s);
   };
   auto readTask = [&](const PathTask& task) { return task.forced ? forcedFailure(task) : readWindowed(task.path); };
 
   if (mode == "stats") {
-    // One entry per requested path, each carrying its own error. A single typo
-    // must not cost the whole round trip — which is the entire point of asking
-    // for several at once.
+    // One entry per requested path, each carrying its own error: a single typo must not cost the whole round trip.
     std::vector<SeriesRead> reads;
     reads.reserve(tasks.size());
     for (const auto& task : tasks) {
@@ -1138,9 +1045,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   }
 
   if (mode == "buckets") {
-    // Several series' buckets share ONE response cap (batchBuckets), so the
-    // batch is capped tighter than the flat kMaxBatchPaths above: past this
-    // many, sharing the cap would coarsen every one of them past usefulness.
+    // Several series' buckets share ONE response cap (batchBuckets), so the batch is capped tighter than
+    // kMaxBatchPaths: past this many, sharing the cap coarsens every series past usefulness.
     if (tasks.size() > kMaxBucketsBatchPaths) {
       return ToolResult::failure(
           "mode 'buckets' takes at most " + std::to_string(kMaxBucketsBatchPaths) +
@@ -1148,9 +1054,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
           "the series worth the shape.");
     }
     const std::size_t max_points = static_cast<std::size_t>(std::clamp(args.value("max_points", 200), 1, 500));
-    // A lone path keeps the shape it has always had, at full single-series
-    // resolution — the batch envelope (and its shared, smaller cap) only
-    // kicks in once there is more than one series to fit together.
+    // A lone path keeps full single-series resolution; the batch envelope (and its shared, smaller cap) applies only to
+    // more than one series.
     if (tasks.size() == 1) {
       SeriesRead r = readTask(tasks.front());
       return finishReadEnvelope(*catalog, {r}, topic_dataset, [&](const SeriesRead& rr) {
@@ -1176,17 +1081,15 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
   }
 
   if (mode == "raw") {
-    // Raw returns actual values, not a summary, so an unbounded window would
-    // let one call dump an entire recording — the window is mandatory rather
-    // than optional-and-defaulting-to-everything the way it is for stats and
-    // buckets.
+    // Raw returns actual values, so the window is mandatory (unlike stats and buckets, which default to everything): an
+    // unbounded one would let a call dump a recording.
     if (!t_start_s || !t_end_s) {
       return ToolResult::failure(
           "mode 'raw' needs t_start_s and t_end_s: it returns samples, so the window is not "
           "optional");
     }
-    // Each series can carry up to kMaxRawSamples individual numbers here,
-    // not a bounded bucket count, so the batch cap is tighter than buckets'.
+    // Each series can carry up to kMaxRawSamples numbers, not a bounded bucket count, so the batch cap is tighter than
+    // buckets'.
     if (tasks.size() > kMaxRawBatchPaths) {
       return ToolResult::failure(
           "mode 'raw' takes at most " + std::to_string(kMaxRawBatchPaths) +
@@ -1201,11 +1104,9 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
     for (const auto& task : tasks) {
       reads.push_back(readTask(task));
     }
-    // The 4-paths/200-samples caps above are a guess, not a measurement: a
-    // realistic batch of dataset-qualified paths at 200 samples each can
-    // still overrun kMaxResponseBytes. Shrink the per-series sample count in
-    // lockstep, same as buckets' batch envelope, until the whole response
-    // fits (or every series is down to 16 samples).
+    // The 4-paths/200-samples caps are a guess, not a measurement: a realistic batch of dataset-qualified paths at 200
+    // samples can still overrun kMaxResponseBytes. Shrink the per-series sample count in lockstep, as buckets' batch
+    // envelope does, until it fits (or each series is down to 16 samples).
     const json out = shrinkToFit(
         [&](std::size_t sample_cap) {
           return buildReadEnvelope(*catalog, reads, topic_dataset, [&](const SeriesRead& r) {
@@ -1213,9 +1114,7 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
           });
         },
         kMaxResponseBytes, kMaxRawSamples);
-    // A lone path keeps the shape it has always had, same as 'stats' and
-    // single-path 'buckets': the batch envelope only kicks in once there is
-    // more than one series to fit together.
+    // A lone path keeps the unwrapped shape, as in 'stats' and single-path 'buckets'.
     if (reads.size() == 1) {
       json only = out["read"].front();
       if (only.contains("error")) {

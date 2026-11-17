@@ -15,10 +15,10 @@ namespace PJ {
 class MessageParserPluginBase;
 
 /// The video source an on-demand script's `video:frame_at(t)` decodes through (docs/derived_objects/ARCHITECTURE.md
-/// §6): one Scene2D `StreamingVideoDecoder` per topic, the frame presented at `t` (B-frames reordered), converted to
-/// rgb8 under the run's native budget. Calls on one topic take turns; calls on different topics run at once. Built with
-/// Scene2D; `MainWindow` hands it to `SessionManager::setVideoFrameSource`, so `pj_runtime` links no codec. The store
-/// must outlive it.
+/// "Types and bindings"): one Scene2D `StreamingVideoDecoder` per topic, the frame presented at `t` (B-frames
+/// reordered), converted to rgb8 under the run's native budget. Calls on one topic take turns; calls on different
+/// topics run at once. Built with Scene2D; `MainWindow` hands it to `SessionManager::setVideoFrameSource`, so
+/// `pj_runtime` links no codec. The store must outlive it.
 class SceneVideoFrameSource final : public scripting::IVideoFrameSource {
  public:
   /// Makes the extractor of a topic's decoder, once per decoder, on the calling thread: the topic's parser when it has

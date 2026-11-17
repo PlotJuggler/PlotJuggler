@@ -227,7 +227,7 @@ struct CustomTopicsFixture {
   }
 };
 
-// UI-02: persistent recipes (a finding included) list their object topics in Custom Topics and leave the Datasets
+// Persistent recipes (a finding included) list their object topics in Custom Topics and leave the Datasets
 // tree; a preview is in neither, yet stays resolvable in the catalog; its removal leaves nothing behind.
 TEST(MainWindowCustomTopicsTest, CustomTopicsListsPersistentRecipesOnly) {
   CustomTopicsFixture fx;
@@ -261,7 +261,7 @@ TEST(MainWindowCustomTopicsTest, CustomTopicsListsPersistentRecipesOnly) {
   EXPECT_EQ(fx.panel->customTopicNames().size(), 2);
 }
 
-// UI-03: use-only unless the declared editor made it: the pencil follows the row's owner.
+// Use-only unless the declared editor made it: the pencil follows the row's owner.
 TEST(MainWindowCustomTopicsTest, EditIsEnabledOnlyForEditorRows) {
   CustomTopicsFixture fx;
   ASSERT_TRUE(fx.setUp());
@@ -275,7 +275,7 @@ TEST(MainWindowCustomTopicsTest, EditIsEnabledOnlyForEditorRows) {
   EXPECT_TRUE(fx.edit->isEnabled());
 }
 
-// UI-04: the delete handler refuses another plugin's recipe on its own (the panel disables the action, but nothing
+// The delete handler refuses another plugin's recipe on its own (the panel disables the action, but nothing
 // else may reach it), and the editor's own recipe goes with its topic and rows.
 TEST(MainWindowCustomTopicsTest, DeleteOfAnotherPluginsRecipeIsRefused) {
   CustomTopicsFixture fx;
@@ -300,7 +300,7 @@ TEST(MainWindowCustomTopicsTest, DeleteOfAnotherPluginsRecipeIsRefused) {
   EXPECT_EQ(fx.panel->customTopicNames(), QStringList{u"assistant/crop/cropped"_s});
 }
 
-// UI-04: the same backstop for a transform output: another plugin's is use-only, with no editor declared nothing is
+// The same backstop for a transform output: another plugin's is use-only, with no editor declared nothing is
 // deletable, and the editor's own goes.
 TEST(MainWindowCustomTopicsTest, DeleteOfAnotherPluginsTransformIsRefused) {
   CustomTopicsFixture fx;
@@ -327,7 +327,7 @@ TEST(MainWindowCustomTopicsTest, DeleteOfAnotherPluginsTransformIsRefused) {
   EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty()) << "the editor's own goes";
 }
 
-// UI-04: deleting the editor's transform never cascades into another plugin's: a reader owned elsewhere refuses the
+// Deleting the editor's transform never cascades into another plugin's: a reader owned elsewhere refuses the
 // delete up front, by name, and nothing is removed.
 TEST(MainWindowCustomTopicsTest, DeleteCascadingIntoAnotherPluginsTransformIsRefused) {
   CustomTopicsFixture fx;
@@ -351,7 +351,7 @@ TEST(MainWindowCustomTopicsTest, DeleteCascadingIntoAnotherPluginsTransformIsRef
       fx.reported.front(), u"delete-cascade-read-only: 'neg' cannot be deleted: 'neg' of assistant reads its output"_s);
 }
 
-// UI-04: the owner is checked again when the prompt is answered: an editor unloaded while the dependents prompt of an
+// The owner is checked again when the prompt is answered: an editor unloaded while the dependents prompt of an
 // on-demand delete is open leaves its recipe in place.
 TEST(MainWindowCustomTopicsTest, OnDemandDeleteRechecksTheOwnerAfterThePrompt) {
   CustomTopicsFixture fx;
@@ -374,7 +374,7 @@ TEST(MainWindowCustomTopicsTest, OnDemandDeleteRechecksTheOwnerAfterThePrompt) {
   EXPECT_TRUE(fx.reported.join(u"; "_s).contains(u"delete-read-only"_s)) << fx.reported.join(u"; "_s).toStdString();
 }
 
-// UI-04: selecting several rows of one recipe (its `id/output` rows) and pressing Delete asks about the recipe once:
+// Selecting several rows of one recipe (its `id/output` rows) and pressing Delete asks about the recipe once:
 // a Cancel is not asked again for the next row, and a Delete removes it as one undo step.
 TEST(MainWindowCustomTopicsTest, DeletingTwoRowsOfOneRecipeDeletesItOnce) {
   CustomTopicsFixture fx;
@@ -420,7 +420,7 @@ TEST(MainWindowCustomTopicsTest, DeletingTwoRowsOfOneRecipeDeletesItOnce) {
   EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before + 1) << "one undo step";
 }
 
-// UI-04: the same recheck on the transform path, before the dependents go: unloading the editor behind the prompt
+// The same recheck on the transform path, before the dependents go: unloading the editor behind the prompt
 // leaves the whole chain.
 TEST(MainWindowCustomTopicsTest, TransformDeleteRechecksTheOwnerBeforeRemovingDependents) {
   CustomTopicsFixture fx;
@@ -441,7 +441,7 @@ TEST(MainWindowCustomTopicsTest, TransformDeleteRechecksTheOwnerBeforeRemovingDe
   EXPECT_EQ(transforms.transformIdsForPlugin(kEditor).size(), 2U) << "neither the transform nor its dependent goes";
 }
 
-// UI-04: a delete never strands a history-exempt reader: the delete is an undo step, and its redo would be refused
+// A delete never strands a history-exempt reader: the delete is an undo step, and its redo would be refused
 // for the reader it strands. Refused up front, naming the reader, and nothing is removed.
 TEST(MainWindowCustomTopicsTest, DeleteReadByAHistoryExemptRecipeIsRefused) {
   CustomTopicsFixture fx;
@@ -465,7 +465,7 @@ TEST(MainWindowCustomTopicsTest, DeleteReadByAHistoryExemptRecipeIsRefused) {
       u"delete-exempt-reader: 'crop' cannot be deleted: the protected 'assistant/finding/cropped' reads its output"_s);
 }
 
-// LAY-12 across a file load: a derived topic is no part of the data universe history is checked against, so the load
+// Across a file load: a derived topic is no part of the data universe history is checked against, so the load
 // after a delete keeps the undo step, and the undo brings the recipe back.
 TEST(MainWindowCustomTopicsTest, ADeleteKeepsItsUndoAcrossTheNextFileLoad) {
   CustomTopicsFixture fx;
@@ -489,7 +489,7 @@ TEST(MainWindowCustomTopicsTest, ADeleteKeepsItsUndoAcrossTheNextFileLoad) {
   EXPECT_NE(fx.service().graph().find(mine.key()), nullptr) << "the undo brings the recipe back";
 }
 
-// UI-07: the scheduled refresh (a node state, an offset) rebuilds the on-demand rows only. The transform rows come from
+// The scheduled refresh (a node state, an offset) rebuilds the on-demand rows only. The transform rows come from
 // the last full sync, rebuilt once more after the catalog changed.
 TEST(MainWindowCustomTopicsTest, AScheduledRefreshReusesTheTransformRows) {
   CustomTopicsFixture fx;
@@ -520,7 +520,7 @@ TEST(MainWindowCustomTopicsTest, AScheduledRefreshReusesTheTransformRows) {
   EXPECT_TRUE(fx.panel->customTopicNames().contains(u"sensor/chain"_s));
 }
 
-// UI-05: "+" exists only while a toolbox declares `custom_topics_editor`; with none every row is read-only.
+// "+" exists only while a toolbox declares `custom_topics_editor`; with none every row is read-only.
 TEST(MainWindowCustomTopicsTest, NoDeclaredEditorHidesPlusAndMakesRowsReadOnly) {
   CustomTopicsFixture fx;
   ASSERT_TRUE(fx.setUp());
@@ -534,7 +534,7 @@ TEST(MainWindowCustomTopicsTest, NoDeclaredEditorHidesPlusAndMakesRowsReadOnly) 
   EXPECT_FALSE(fx.edit->isEnabled());
 }
 
-// UI-06: rows are flat and named by recipe (the id, or `id/output` for several object outputs); an external owner
+// Rows are flat and named by recipe (the id, or `id/output` for several object outputs); an external owner
 // is badged, by its id when it is not loaded; the tooltip names the dataset.
 TEST(MainWindowCustomTopicsTest, CustomTopicsRowsAreFlatNamedByRecipe) {
   CustomTopicsFixture fx;
@@ -564,7 +564,7 @@ TEST(MainWindowCustomTopicsTest, CustomTopicsRowsAreFlatNamedByRecipe) {
   EXPECT_TRUE(crop->toolTip(0).contains(u"dataset run.mcap"_s)) << crop->toolTip(0).toStdString();
 }
 
-// PIN-08 (the panel half): removing a finding, announced by whoever removed it, takes its row out of Custom Topics
+// Removing a finding, announced by whoever removed it, takes its row out of Custom Topics
 // and the catalog with no further call from the shell.
 TEST(MainWindowCustomTopicsTest, RemovingAFindingRemovesItsRowEverywhere) {
   CustomTopicsFixture fx;
@@ -581,7 +581,7 @@ TEST(MainWindowCustomTopicsTest, RemovingAFindingRemovesItsRowEverywhere) {
   EXPECT_TRUE(fx.keyOf("assistant/pin/cropped").isEmpty());
 }
 
-// UI-07 through the session: the row glyph follows the node state, and a burst of state changes is one refresh
+// Through the session: the row glyph follows the node state, and a burst of state changes is one refresh
 // at the next event-loop turn, not one per change.
 TEST(MainWindowCustomTopicsTest, RowGlyphFollowsTheNodeStateAndBurstsCoalesce) {
   CustomTopicsFixture fx;
@@ -610,7 +610,7 @@ TEST(MainWindowCustomTopicsTest, RowGlyphFollowsTheNodeStateAndBurstsCoalesce) {
   EXPECT_EQ(MainWindowCustomTopicsTestPeer::customTopicsSyncs(fx.window), before + 1);
 }
 
-// PIN-09 through the shell: a finding's "Pinned at" follows the Source Timeline: a drag of its dataset (the
+// Through the shell: a finding's "Pinned at" follows the Source Timeline: a drag of its dataset (the
 // per-dataset offset signal) re-words it although no recipe row changed.
 TEST(MainWindowCustomTopicsTest, PinnedTooltipFollowsTheDatasetOffset) {
   CustomTopicsFixture fx;

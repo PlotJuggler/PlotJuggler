@@ -12,11 +12,8 @@
 
 namespace PJ {
 
-// Floating, centered translucent hint banner shown over an empty chart frame
-// (e.g. a drag-and-drop prompt). Mirrors the Timeline's lock overlay: transparent
-// to the mouse, sized to its text, and re-centered whenever the host frame
-// resizes. The host shows it while the chart has no series and hides it once data
-// arrives.
+// Centered translucent hint banner over an empty chart frame (a drag-and-drop prompt): transparent to the mouse,
+// sized to its text, re-centered when the host frame resizes. The host shows it while the chart has no series.
 class ChartPlaceholderOverlay : public QLabel {
   Q_OBJECT
  public:
@@ -50,22 +47,19 @@ class ChartPlaceholderOverlay : public QLabel {
     recenter();
   }
 
-  // Center over the host frame, sized to the text (capped to the frame width).
+  // Centers over the host frame, sized to the text (capped to the frame width).
   void recenter() {
     QWidget* host = parentWidget();
     if (host == nullptr) {
       return;
     }
-    // Only recompute when the host actually changed size. This lets recenter() be
-    // called from the Paint eventFilter every repaint without churning the layout
-    // (the wrap toggle + resize would otherwise re-fire on each paint), while still
-    // re-centering the first time the host reaches a new (e.g. final) size.
+    // Recomputes only when the host size changed, so the Paint filter can call it on every repaint without
+    // re-firing the wrap toggle and resize.
     if (host->size() == last_host_size_) {
       return;
     }
     last_host_size_ = host->size();
-    // Cap the banner to the host width (small inset); wrap only when the
-    // single-line text would overflow it.
+    // Wraps only when the single-line text would overflow the host width.
     const int avail_w = std::max(80, host->width() - 48);
     setWordWrap(false);
     int w = sizeHint().width();
@@ -73,11 +67,8 @@ class ChartPlaceholderOverlay : public QLabel {
       setWordWrap(true);
       w = avail_w;
     }
-    // heightForWidth() is the reliable wrapped height. QLabel::sizeHint() does not
-    // track a constrained width, so adjustSize() mis-sizes (and clips) a wrapped
-    // banner — which then centers off, since the centering maths use that wrong
-    // height. When not wrapping, sizeHint() is exact. resize() (not setFixed*)
-    // keeps it re-measurable on every recenter.
+    // heightForWidth() is the wrapped height: QLabel::sizeHint() does not track a constrained width, so
+    // adjustSize() would clip a wrapped banner and center it off. resize(), not setFixed*, keeps it re-measurable.
     const int h = wordWrap() ? heightForWidth(w) : sizeHint().height();
     resize(w, std::max(h, 1));
     move(std::max(0, (host->width() - width()) / 2), std::max(0, (host->height() - height()) / 2));
@@ -86,12 +77,8 @@ class ChartPlaceholderOverlay : public QLabel {
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override {
-    // Resize/Show cover the common cases; Paint is the timing-proof safety net —
-    // it fires after the final layout settles, so even when the host frame reaches
-    // its final size through a path that delivers no Resize event the overlay saw
-    // (e.g. the frame was sized before this overlay existed, during dialog
-    // construction), the first paint re-centers it. recenter() is a no-op once the
-    // geometry already matches, so this does not churn on ordinary repaints.
+    // Resize and Show cover the common cases; Paint fires after the final layout settles, so a host sized before
+    // this overlay existed (during dialog construction) is still centered on the first paint.
     if (obj == parentWidget() &&
         (event->type() == QEvent::Resize || event->type() == QEvent::Show || event->type() == QEvent::Paint)) {
       recenter();
@@ -100,7 +87,7 @@ class ChartPlaceholderOverlay : public QLabel {
   }
 
  private:
-  QSize last_host_size_;  // guards recenter() against re-running at an unchanged host size
+  QSize last_host_size_;
 };
 
 }  // namespace PJ

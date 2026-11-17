@@ -33,26 +33,18 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 
 namespace {
-// Compact tab-strip height. We aim for the tab column's *total* chrome
-// (the strip itself plus the 1-px tabs_separator drawn underneath) to
-// match the Sources/Datasets header bars, which are 24 px and have no
-// separator below. So the strip itself is 23 px and the separator
-// adds the final 1 px → 24 total — keeping the plot content's top
-// edge pixel-aligned with the curve-list content on the left column.
+// Compact tab-strip height: the tab column's total chrome (the strip plus the 1-px tabs_separator under it) matches the
+// 24-px Sources/Datasets header bars, which have no separator, so the strip is 23 px and the plot content's top edge
+// stays pixel-aligned with the curve-list content on the left.
 constexpr int kTabBarHeight = 23;
-// Tab/button footprint inside the bar — flush with the bar height
-// (no breathing room) because tabs have their own coloured backgrounds;
-// any gap would show a strip of bar-background above and below the tab.
-// The [+] and panel-toggle buttons match so the whole row is uniform.
+// Tab and button footprint inside the bar: flush with the bar height, because tabs have coloured backgrounds and any
+// gap would show a strip of bar background above and below. The [+] and panel-toggle buttons match.
 constexpr int kTabBarButtonSize = 23;
-// Icon size — matches the title bar's 20-px glyph so the tab-strip
-// buttons read at the same visual weight as the rest of the chrome.
+// Icon size: the title bar's 20-px glyph, so the strip buttons read at the same weight as the rest of the chrome.
 constexpr int kTabBarIconSize = 20;
 
-// QScrollArea variant that redirects vertical wheel input to the
-// horizontal scrollbar. Lets the user wheel-scroll an overflowing
-// tab strip the same way Chrome / VSCode do, without us needing to
-// show a (visually heavy) horizontal scrollbar.
+// QScrollArea variant that redirects vertical wheel input to the horizontal scrollbar, so an overflowing tab strip
+// wheel-scrolls as in Chrome or VSCode without a heavy horizontal scrollbar.
 class HorizontalScrollArea : public QScrollArea {
  public:
   using QScrollArea::QScrollArea;
@@ -70,8 +62,7 @@ class HorizontalScrollArea : public QScrollArea {
   }
 };
 
-// ADS config flags are process-global and must be set before the first
-// CDockManager is instantiated. Call once, lazily.
+// ADS config flags are process-global and must be set before the first CDockManager is instantiated; call once, lazily.
 void applyAdsConfigOnce() {
   static bool done = false;
   if (done) {
@@ -88,10 +79,8 @@ void applyAdsConfigOnce() {
 }
 }  // namespace
 
-// Small private widget for one tab in the strip. Holds a name label
-// plus a close button. Double-clicking flips the label out for an
-// in-place QLineEdit; pressing Enter commits the rename, Escape or
-// loss of focus reverts to the previous name.
+// Private widget for one tab in the strip: a name label and a close button. Double-clicking swaps the label for an
+// in-place QLineEdit; Enter commits the rename, Escape or focus loss reverts.
 class PlotTabFrame : public QFrame {
   Q_OBJECT
  public:
@@ -100,9 +89,8 @@ class PlotTabFrame : public QFrame {
     setProperty("selected", false);
     setAttribute(Qt::WA_StyledBackground, true);
     setCursor(Qt::PointingHandCursor);
-    // Fill the bar height exactly — tabs have a colored background, so
-    // any breathing room above or below would render as a visible
-    // 1-px stripe of bar-background flanking the tab.
+    // Fill the bar height exactly: tabs have a coloured background, so any gap above or below would show as a 1-px
+    // stripe of bar background.
     setFixedHeight(kTabBarButtonSize);
 
     auto* layout = new QHBoxLayout(this);
@@ -187,8 +175,7 @@ class PlotTabFrame : public QFrame {
   bool eventFilter(QObject* watched, QEvent* event) override {
     if (watched == edit_ && edit_active_) {
       if (event->type() == QEvent::FocusOut) {
-        // Reverting on focus loss is the user-requested behaviour;
-        // explicit commit only happens on Enter.
+        // Reverting on focus loss is the requested behaviour; only Enter commits.
         cancelEdit();
       } else if (event->type() == QEvent::KeyPress) {
         if (static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
@@ -206,9 +193,8 @@ class PlotTabFrame : public QFrame {
       return;
     }
     const QString new_text = edit_->text();
-    // An empty name is never useful — and for a widget tab it would silently
-    // fall back to the default label on layout restore (the empty rename is
-    // not serialized). Treat it as a cancelled rename.
+    // An empty name is never useful, and for a widget tab it would silently fall back to the default label on layout
+    // restore (the empty rename is not serialized): treat it as a cancelled rename.
     if (new_text.trimmed().isEmpty()) {
       cancelEdit();
       return;
@@ -251,13 +237,8 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
       PJ::theme::space(theme::Space::None));
   root_layout->setSpacing(PJ::theme::space(theme::Space::None));
 
-  // Tab strip — outer hbox with two regions:
-  //   * a horizontally scrollable area containing the [+] add button
-  //     and one PlotTabFrame per tab (left-aligned via a trailing
-  //     stretch). When the tabs together exceed the viewport, the
-  //     scroll area shows a horizontal scrollbar instead of squeezing
-  //     the panel buttons off-screen.
-  //   * the three panel-toggle buttons, pinned at the far right.
+  // Tab strip, an outer hbox of two regions: the [+] add button and one PlotTabFrame per tab (left-aligned through a
+  // trailing stretch), and the three panel-toggle buttons pinned at the far right.
   auto* tabs_bar_widget = new QWidget(this);
   tabs_bar_widget->setObjectName("plotTabsBar");
   tabs_bar_widget->setContentsMargins(
@@ -269,21 +250,8 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
       PJ::theme::space(theme::Space::None));
   outer_layout->setSpacing(PJ::theme::space(theme::Space::None));
 
-  // QScrollArea-based wrapper removed — the scroll area's viewport was
-  // reserving a couple of pixels of vertical chrome that pushed the
-  // tabs and [+] button down inside the 24-px bar, even with both
-  // scrollbar policies set to AlwaysOff. Without it, overflowing tabs
-  // simply squish via QHBoxLayout's default behavior.
-  //
-  //   auto* tabs_scroll = new HorizontalScrollArea(tabs_bar_widget);
-  //   tabs_scroll->setObjectName("plotTabsScrollArea");
-  //   tabs_scroll->setFrameShape(QFrame::NoFrame);
-  //   tabs_scroll->setWidgetResizable(true);
-  //   tabs_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  //   tabs_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  //   tabs_scroll->setFixedHeight(kTabBarHeight);
-  //   tabs_scroll->setWidget(tabs_inner);
-  //   outer_layout->addWidget(tabs_scroll, 1);
+  // No QScrollArea wrapper: its viewport reserved a couple of pixels of vertical chrome that pushed the tabs and [+]
+  // down inside the 24-px bar, even with both scrollbar policies off. Overflowing tabs squish through QHBoxLayout.
   tabs_inner_ = new QWidget(tabs_bar_widget);
   tabs_inner_->setObjectName("plotTabsInner");
   tabs_inner_->setContentsMargins(
@@ -307,17 +275,14 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
 
   outer_layout->addWidget(tabs_inner_, 1);
 
-  // Panel-toggle buttons control the surrounding shell panels (left
-  // column, timeline, right toolbar). Created here so the accessors and
-  // the MainWindow wiring keep working, but NOT mounted in the tab
-  // strip: the shell reparents them into the title bar's right cluster
-  // (TitleBar::addRightClusterWidget) after construction.
+  // The panel-toggle buttons control the shell panels (left column, timeline, right toolbar). They are created here
+  // so the accessors and the MainWindow wiring work, but not mounted in the tab strip: the shell reparents them into
+  // the title bar's right cluster (TitleBar::addRightClusterWidget) after construction.
   auto make_panel_button = [this](const char* tip) {
     auto* button = new QPushButton(this);
     button->setObjectName(u"plotTabsPanelButton"_s);
     button->setFlat(true);
-    // Not checkable — MainWindow swaps the glyph between filled (panel
-    // visible) and outlined (panel hidden) variants on click.
+    // Not checkable: MainWindow swaps the glyph between filled (panel visible) and outlined (hidden) on click.
     button->setFixedSize(QSize(kTabBarButtonSize, kTabBarButtonSize));
     button->setIconSize(QSize(kTabBarIconSize, kTabBarIconSize));
     button->setFocusPolicy(Qt::NoFocus);
@@ -330,8 +295,7 @@ TabbedPlotWidget::TabbedPlotWidget(QString name, QWidget* parent) : QWidget(pare
 
   root_layout->addWidget(tabs_bar_widget);
 
-  // 1px separator — same paint pattern as the title-bar / timeline /
-  // right-toolbar dividers so all chrome lines look identical.
+  // 1-px separator, painted as the title-bar, timeline and right-toolbar dividers so all chrome lines look alike.
   auto* tabs_separator = new QFrame(this);
   tabs_separator->setObjectName("plotTabsSeparator");
   tabs_separator->setFrameShape(QFrame::NoFrame);
@@ -417,10 +381,8 @@ PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
   PlotTabFrame* frame = createTabFrame(tab_name);
 
   stack_->addWidget(docker);
-  // Insert frame just before the add-button (which is at index 0 after
-  // the stretch we appended) so tabs grow leftward of the [+] button.
-  // Explicit AlignVCenter — same rationale as the [+] button: matches
-  // the 1-px-breathing-room rhythm of the rest of the chrome bars.
+  // Insert the frame just before the add button (index 0 after the appended stretch) so tabs grow leftward of [+].
+  // Explicit AlignVCenter, as the [+] button, to match the chrome bars' 1-px rhythm.
   const int insert_index = static_cast<int>(tabs_.size());
   tabs_bar_layout_->insertWidget(insert_index, frame, 0, Qt::AlignVCenter);
   tabs_.push_back({.frame = frame, .docker = docker});
@@ -521,8 +483,8 @@ PlotDocker* TabbedPlotWidget::duplicateTab(PlotDocker* source) {
     closeTab(tabs_.back().frame, /*honor_veto=*/false);
     return nullptr;
   }
-  // addTab appended the copy; move it next to its source. The strip layout
-  // holds the tab frames at the same indexes as tabs_.
+  // addTab appended the copy: move it next to its source (the strip layout holds the tab frames at the same indexes as
+  // tabs_).
   const int target_index = source_index + 1;
   tabs_bar_layout_->removeWidget(tabs_.back().frame);
   tabs_bar_layout_->insertWidget(target_index, tabs_.back().frame, 0, Qt::AlignVCenter);
@@ -608,9 +570,8 @@ void TabbedPlotWidget::onTabRenameRequested(PlotTabFrame* frame, const QString& 
     return;
   }
   if (entry->docker == nullptr) {
-    // Widget tab: the frame label (already updated by the in-place editor)
-    // is the sole name store, and widget tabs live outside the undo
-    // snapshot — so nothing to propagate and no undo state to push.
+    // Widget tab: the frame label (already updated by the in-place editor) is the sole name store, and widget tabs live
+    // outside the undo snapshot, so there is nothing to propagate and no undo state to push.
     return;
   }
   entry->docker->setName(new_name);
@@ -641,16 +602,16 @@ void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {
   if (entry == nullptr) {
     return;
   }
-  // The veto is consulted before ANY side effect — including the last-plot-tab
-  // spawn below — so a declined close leaves the tab set exactly as it was.
+  // The veto is consulted before any side effect, the last-plot-tab spawn below included, so a declined close leaves
+  // the tab set unchanged.
   if (honor_veto && entry->pre_close) {
     const std::function<bool()> pre_close = entry->pre_close;
     const QPointer<PlotTabFrame> frame_guard(frame);
     if (!pre_close()) {
       return;
     }
-    // pre_close may have run a modal event loop: tabs_ can have been
-    // reallocated, and this very tab closed (deleting its frame) meanwhile.
+    // pre_close may have run a modal event loop: tabs_ can have been reallocated and this very tab closed (its frame
+    // deleted) meanwhile.
     if (frame_guard.isNull()) {
       return;
     }
@@ -659,8 +620,7 @@ void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {
       return;
     }
   }
-  // Keep one ordinary plot tab available for history snapshots. Widget and
-  // history-exempt pages cannot satisfy that invariant.
+  // Keep one ordinary plot tab available for history snapshots; widget and history-exempt pages cannot satisfy that.
   if (entry->docker != nullptr && entry->docker->isSerializable(SnapshotScope::kHistory) &&
       historySerializableDockerCount() == 1) {
     onAddTabButtonPressed();
@@ -673,13 +633,11 @@ void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {
   const bool is_widget_tab = entry->docker == nullptr;
   QWidget* content = contentOf(*entry);
   PlotTabFrame* frame_widget = entry->frame;
-  // Owner teardown runs before the widget dies. Move the callback out first
-  // so a reentrant close of the same tab (owner teardown looping back
-  // through closeWidgetTab) finds it empty instead of running it twice.
+  // Owner teardown runs before the widget dies. Move the callback out first so a reentrant close of the same tab
+  // (teardown looping back through closeWidgetTab) finds it empty instead of running it twice.
   const std::function<void()> on_close = std::move(entry->on_close);
   entry->on_close = nullptr;
-  // Past the veto the close is committed, so a reentrant close of this tab must
-  // not put the question a second time.
+  // Past the veto the close is committed, so a reentrant close of this tab must not ask a second time.
   entry->pre_close = nullptr;
   if (on_close) {
     on_close();
@@ -703,8 +661,7 @@ void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {
   }
   updateSelectionStyle();
   emit currentTabChanged(qobject_cast<PlotDocker*>(stack_->currentWidget()));
-  // Closing a pinned widget tab is not part of the plot workspace, so it
-  // must not push an undo state (undo can never resurrect its content).
+  // Closing a pinned widget tab is not part of the plot workspace: no undo state (undo cannot resurrect its content).
   if (!is_widget_tab) {
     emit undoableChange();
   }
@@ -756,13 +713,10 @@ void TabbedPlotWidget::updateSelectionStyle() {
 }
 
 void TabbedPlotWidget::adaptWidgetTabPagePolicies() {
-  // QStackedWidget sizes from the union of every page, so a hidden toolbox
-  // page with a large hint would constrain the plot area even while
-  // invisible: only the current page keeps its real policy (same pattern as
-  // LeftPanel's input stack). Driven by the stack's own currentChanged so
-  // every page switch enforces it, not just tab-strip clicks. The equality
-  // check matters: setSizePolicy posts a LayoutRequest even for an
-  // unchanged value, and this runs for every widget tab per switch.
+  // QStackedWidget sizes from the union of every page, so a hidden toolbox page with a large hint would constrain the
+  // plot area while invisible: only the current page keeps its real policy (as LeftPanel's input stack). Driven by the
+  // stack's currentChanged so every page switch enforces it, not just tab-strip clicks. The equality check matters:
+  // setSizePolicy posts a LayoutRequest even for an unchanged value, and this runs for every widget tab per switch.
   QWidget* current = stack_->currentWidget();
   for (const TabEntry& entry : tabs_) {
     if (entry.widget == nullptr) {
@@ -800,9 +754,8 @@ PlotDocker* TabbedPlotWidget::createDocker(const QString& tab_name) {
 
 PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name) {
   auto* frame = new PlotTabFrame(tab_name, this);
-  // Tab frames default to kTabBarButtonSize; rebind to the live chrome
-  // extent so a tab added after the user customised icon metrics still
-  // fills the bar.
+  // Tab frames default to kTabBarButtonSize; rebind to the live chrome extent so a tab added after the user customised
+  // icon metrics still fills the bar.
   const int chrome_extent = std::max(
       1, (chrome_metrics_.icon_size + chrome_metrics_.icon_padding) - 1 + (2 * chrome_metrics_.layout_padding));
   frame->setFixedHeight(chrome_extent);
@@ -821,17 +774,14 @@ PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name) {
 
 void TabbedPlotWidget::onChromeMetricsChanged(const ChromeMetrics& metrics) {
   chrome_metrics_ = metrics;
-  // The tab strip historically uses (icon + icon_padding − 1) for the
-  // strip height and chrome buttons, plus a 1-px separator below for
-  // alignment with full-extent left-column bands. Layout padding adds
-  // on top, growing the strip uniformly.
+  // The strip height and chrome buttons use (icon + icon_padding - 1), plus a 1-px separator below, to align with the
+  // full-extent left-column bands. Layout padding adds on top, growing the strip uniformly.
   const int chrome_extent = std::max(1, (metrics.icon_size + metrics.icon_padding) - 1 + (2 * metrics.layout_padding));
   if (tabs_inner_ != nullptr) {
     tabs_inner_->setFixedHeight(chrome_extent);
   }
-  // Only the add-tab button lives in the strip; the panel-toggle buttons are
-  // reparented into the TitleBar right cluster, which sizes them to its own
-  // chrome extent — sizing them here would overflow the title-bar row.
+  // Only the add-tab button lives in the strip; the panel-toggle buttons are reparented into the TitleBar right
+  // cluster, which sizes them to its own chrome extent (sizing them here would overflow the title-bar row).
   if (button_add_tab_ != nullptr) {
     button_add_tab_->setFixedSize(QSize(chrome_extent, chrome_extent));
     button_add_tab_->setIconSize(QSize(metrics.icon_size, metrics.icon_size));
@@ -847,9 +797,8 @@ void TabbedPlotWidget::onStylesheetChanged(QString theme) {
   if (button_add_tab_ != nullptr) {
     button_add_tab_->setIcon(loadSvg(":/resources/svg/add.svg", theme));
   }
-  // Panel-toggle button icons are owned by MainWindow because their
-  // open/close glyph depends on the live visibility of the target
-  // panel — knowledge this widget intentionally doesn't have.
+  // Panel-toggle button icons are owned by MainWindow: their open/close glyph depends on the target panel's live
+  // visibility, which this widget does not know.
   const QIcon close_icon = loadSvg(":/resources/svg/close-button.svg", theme);
   for (const TabEntry& entry : tabs_) {
     if (auto* close_btn = entry.frame->closeButton()) {
@@ -867,8 +816,8 @@ QDomElement TabbedPlotWidget::xmlSaveState(QDomDocument& doc, SnapshotScope scop
   tabbed_area.setAttribute(u"name"_s, name_);
   tabbed_area.setAttribute(u"parent"_s, u"main_window"_s);
 
-  // currentTabIndex counts only pages written at this scope. A current page
-  // outside the scope restores selection to the first serialized plot tab.
+  // currentTabIndex counts only pages written at this scope; a current page outside the scope restores selection to the
+  // first serialized plot tab.
   PlotDocker* current = qobject_cast<PlotDocker*>(stack_->currentWidget());
   int current_index = 0;
   int docker_index = 0;
@@ -916,8 +865,8 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
 
   restoring_state_ = true;
 
-  // Lift pages outside this restore's authority out of the tab strip, rebuild
-  // the target plot pages, then reattach the preserved live objects.
+  // Lift pages outside this restore's authority out of the tab strip, rebuild the target plot pages, then reattach the
+  // preserved live objects.
   std::vector<TabEntry> preserved_tabs;
   for (TabEntry& entry : tabs_) {
     if (entry.docker == nullptr || !entry.docker->isSerializable(scope)) {
@@ -933,9 +882,8 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   tabs_.clear();
   tab_suffix_count_ = 0;
 
-  // Runs on EVERY exit below (success or failed docker load) so the
-  // preserved tabs are never orphaned outside tabs_ (their stack pages were
-  // never removed).
+  // Runs on every exit below (success or failed docker load) so the preserved tabs are never orphaned outside tabs_
+  // (their stack pages were never removed).
   const auto reattach_preserved_tabs = [this, &preserved_tabs]() {
     for (TabEntry& entry : preserved_tabs) {
       tabs_bar_layout_->insertWidget(static_cast<int>(tabs_.size()), entry.frame, 0, Qt::AlignVCenter);
@@ -960,10 +908,9 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   reattach_preserved_tabs();
 
   const int requested_index = tabbed_area.firstChildElement(u"currentTabIndex"_s).attribute(u"index"_s, u"0"_s).toInt();
-  // The saved index counts rebuilt (serialized) docker tabs only; after the
-  // rebuild those occupy the leading slots, so clamp against target_tabs'
-  // count (not dockerCount(), which also counts the re-appended widget and
-  // history-exempt tabs).
+  // The saved index counts rebuilt (serialized) docker tabs only; after the rebuild those occupy the leading slots, so
+  // clamp against target_tabs' count, not dockerCount() (which also counts the re-appended widget and history-exempt
+  // tabs).
   const int max_index = static_cast<int>(target_tabs.size()) - 1;
   const int current_index = std::clamp(requested_index, 0, std::max(0, max_index));
   if (PlotDocker* docker = dockerAt(current_index)) {

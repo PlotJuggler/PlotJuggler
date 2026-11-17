@@ -13,11 +13,9 @@
 
 namespace PJ {
 
-// Host-side SettingsBackend backed by QSettings, providing the "pj.settings.v1"
-// service (see sdk::SettingsStoreHost). Persists to the app's configuration
-// (PlotJuggler4.conf, via the org/app name set on QApplication) or to an
-// explicit INI file for headless hosts and tests. Keys use '/' which QSettings
-// maps to nested groups (e.g. the [mosaico] section); scalars are stored as
+// Host-side SettingsBackend backed by QSettings, providing the "pj.settings.v1" service (see sdk::SettingsStoreHost).
+// Persists to the app's configuration (PlotJuggler4.conf, via the org/app name set on QApplication) or to an explicit
+// INI file for headless hosts and tests. Keys use '/', which QSettings maps to nested groups; scalars are stored as
 // strings, lists as a native QStringList.
 class QSettingsBackend : public sdk::SettingsBackend {
  public:

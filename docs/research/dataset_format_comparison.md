@@ -2,6 +2,8 @@
 
 ## MCAP (ROS 2 / Foxglove) vs RLDS vs LeRobot vs Zarr
 
+A survey of the formats' public documentation and ecosystems as of May 2026; not re-checked since.
+
 | Aspect | **MCAP** | **RLDS** | **LeRobot (v2/v3)** | **Zarr** |
 |---|---|---|---|---|
 | **Primary purpose** | Recording & replay of live robot data streams | Storing RL/IL episodes for ML training | Storing robot demonstrations for policy training | Storing chunked N-dimensional arrays |

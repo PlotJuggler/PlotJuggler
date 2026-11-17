@@ -47,11 +47,8 @@ sdk::BufferAnchor wrapPayloadAnchor(const PJ_payload_anchor_t& anchor, std::shar
 
 }  // namespace detail
 
-// Per-binding constants for the lazy-fetch failure logs. Shared (via one
-// shared_ptr per binding, created on first use) by every lazy closure that
-// binding mints — a load creates one closure per object message, so
-// per-message copies of these strings would be pure waste. Namespace-scope to
-// match the forward declaration in DataSourceRuntimeHost.h.
+// Per-binding constants for lazy-fetch failure logs, shared by every lazy closure of the binding (one closure per
+// object message). Namespace scope to match the header's forward declaration.
 struct LazyFetchTopicContext {
   DatasetId dataset_id = 0;
   ObjectTopicId object_topic_id{};
@@ -73,11 +70,8 @@ std::vector<uint8_t> copyPayloadBytes(const PJ_payload_t& payload) {
   return bytes;
 }
 
-// Idempotent resident closure (kEager only) that replays the same PayloadView
-// on every read. `anchor` is the payload's already-wrapped upstream anchor:
-// non-null, the closure inherits it so the buffer lives for the ObjectStore
-// entry's lifetime (zero copy); null (transient buffer), the bytes are copied
-// into a shared_ptr<vector> that serves as its own anchor.
+// Idempotent resident closure (kEager only) replaying one PayloadView. A non-null `anchor` keeps the buffer for the
+// entry's lifetime (zero copy); with a null one (transient buffer) the bytes are copied into their own anchor.
 std::function<sdk::PayloadView()> makeCapturedPayloadClosure(const PJ_payload_t& payload, sdk::BufferAnchor anchor) {
   if (anchor == nullptr) {
     auto bytes = std::make_shared<const std::vector<uint8_t>>(copyPayloadBytes(payload));
@@ -106,13 +100,9 @@ struct FetcherOwner {
   FetcherOwner& operator=(const FetcherOwner&) = delete;
 
   ~FetcherOwner() {
-    // fetcher.release is plugin-DSO code. The destructor BODY runs while
-    // library_keepalive is still held (members are destroyed only after the
-    // body completes), so the producing .so cannot be dlclosed underneath this
-    // call — even when this owner holds the LAST DSO reference (post-evict /
-    // app close). Hold the keepalive as a member here; do NOT rely on a
-    // separate lambda capture, whose destruction order relative to this owner
-    // is unspecified and would let the DSO unmap before fetcher.release runs.
+    // fetcher.release is plugin code. The destructor body runs while library_keepalive (a member) is still held, so
+    // the DSO cannot be dlclosed underneath this call even when this owner holds its last reference. A separate
+    // lambda capture would not do: its destruction order relative to this owner is unspecified.
     if (fetcher.release != nullptr) {
       fetcher.release(fetcher.ctx);
     }
@@ -130,29 +120,19 @@ QString errorMessage(const PJ_error_t& err) {
   return QString::fromUtf8(err.message);
 }
 
-// Deferred lazy closure: re-invokes the fetcher on every read, wrapping each
-// invocation's anchor in a per-call shared_ptr so a returned PayloadView can
-// outlive the call without holding the fetcher. Keeps object bytes
-// non-resident — used by kPureLazy, and by kLazyObjectsEagerScalars once the
-// ingest-time scalar parse is done with them.
+// Deferred lazy closure: re-invokes the fetcher on every read, wrapping each call's anchor in a per-call shared_ptr so
+// a returned PayloadView outlives the call. Keeps object bytes non-resident (kPureLazy, and kLazyObjectsEagerScalars
+// after the ingest-time scalar parse).
 //
-// Returns nullopt when the source cannot re-produce usable bytes, so the
-// ObjectStore flags the entry fetch_failed instead of conflating failure with
-// a legitimately empty payload. A zero-byte result IS a failure here: the SDK's
-// pushMessage glue reports ok=true for a plugin-side fetch that produced an
-// empty view (it only reports false on an exception), so "no bytes" is how a
-// file-source cold-path failure actually arrives across the C ABI — and no
-// builtin object decodes from zero bytes anyway. The cost of that bias is a
-// possible false LOST attribution for a payload that is legitimately zero
-// bytes (e.g. an empty FrameTransforms set serializes to 0 bytes); removing
-// the ambiguity needs a real failure signal in the SDK pushMessage glue,
-// which is an SDK change (tracked follow-up).
+// nullopt when the source cannot re-produce usable bytes, so the ObjectStore flags the entry fetch_failed. Zero bytes
+// count as a failure: the SDK's pushMessage glue reports ok=true for a fetch that produced an empty view (false only on
+// an exception), so "no bytes" is how a file-source failure arrives, and no builtin object decodes from zero bytes.
+// The cost is a false loss for a legitimately empty payload (an empty FrameTransforms set); removing the ambiguity
+// needs a failure signal in the SDK glue.
 PJ::LazyCallback makeLazyFetchClosure(
     std::shared_ptr<FetcherOwner> owner, std::shared_ptr<std::mutex> fetch_mutex,
     std::shared_ptr<const LazyFetchTopicContext> context, int64_t timestamp_ns) {
-  // The DSO keepalive lives inside `owner` (FetcherOwner), so it is the single
-  // source of truth here too — reach it via owner->library_keepalive when
-  // wrapping each fetched anchor, rather than a parallel capture.
+  // The DSO keepalive is owner->library_keepalive, the one source of truth for each wrapped anchor.
   return [owner = std::move(owner), fetch_mutex = std::move(fetch_mutex), context = std::move(context),
           timestamp_ns]() -> std::optional<sdk::PayloadView> {
     PJ_payload_t payload{};
@@ -212,11 +192,7 @@ PJ::LazyCallback makeLazyFetchClosure(
 }
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// ParserBinding — out-of-line definitions so the header only needs forward
-// declarations of MessageParserHandle / DatastoreParserWriteHost /
-// ServiceRegistryBuilder.
-// ---------------------------------------------------------------------------
+// ParserBinding: out of line, so the header needs only forward declarations.
 
 DataSourceRuntimeHost::ParserBinding::ParserBinding() = default;
 
@@ -240,10 +216,6 @@ DataSourceRuntimeHost::ParserBinding::ParserBinding(ParserBinding&&) noexcept = 
 DataSourceRuntimeHost::ParserBinding& DataSourceRuntimeHost::ParserBinding::operator=(ParserBinding&&) noexcept =
     default;
 
-// ---------------------------------------------------------------------------
-// Vtable — single static instance shared by every session.
-// ---------------------------------------------------------------------------
-
 const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
     .protocol_version = 1,
     .struct_size = sizeof(PJ_data_source_runtime_host_vtable_t),
@@ -264,10 +236,6 @@ const PJ_data_source_runtime_host_vtable_t DataSourceRuntimeHost::kVtable = {
     .set_dataset_metadata = &DataSourceRuntimeHost::cbSetDatasetMetadata,
 };
 
-// ---------------------------------------------------------------------------
-// Construction / destruction
-// ---------------------------------------------------------------------------
-
 DataSourceRuntimeHost::DataSourceRuntimeHost(
     DataEngine& engine, ExtensionCatalogService& catalog, DatasetId dataset_id, PJ_data_source_handle_t source_handle,
     ObjectStore& object_store, std::string source_id, ObjectTopicParserRegistrar parser_registrar,
@@ -286,13 +254,8 @@ DataSourceRuntimeHost::DataSourceRuntimeHost(
       lazy_fetch_mutex_(std::make_shared<std::mutex>()),
       library_keepalive_(std::move(library_keepalive)),
       ingest_taps_(std::move(ingest_taps)) {
-  // Wire the source-level write host with the secondary engine for the
-  // streaming pause/resume two-engine lockstep. Without this, a plugin that
-  // caches TopicHandle/FieldHandle on start() (e.g. data_stream_dummy) sees
-  // them go stale after the first pause — the secondary engine has no
-  // matching ids — and the worker dies on the first post-pause write.
-  // Mirroring happens inside DatastoreSourceWriteHost via DataEngine's new
-  // createTopic(requested_id) + createTopicField(requested_id) primitives.
+  // The two-engine lockstep of streaming pause/resume: a plugin caching TopicHandle/FieldHandle at start() would find
+  // no matching ids in the secondary after the first pause and its worker would die on the next write.
   source_write_host_.setSecondaryEngine(secondary_data_engine_);
   // Values the datastore stores as null (don't fit their column's type) are
   // reported here. Process-wide and idempotent: every host installs the same sink.
@@ -302,10 +265,6 @@ DataSourceRuntimeHost::DataSourceRuntimeHost(
 }
 
 DataSourceRuntimeHost::~DataSourceRuntimeHost() = default;
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
 
 Status DataSourceRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
   if (auto status = registerRequiredService<sdk::SourceWriteHostService>(registry, source_write_host_.raw()); !status) {
@@ -324,11 +283,8 @@ void DataSourceRuntimeHost::flushAll() {
   }
   flushed_ = true;
   source_write_host_.flushPending();
-  // Each parser binding owns its own DatastoreParserWriteHost / DataWriter
-  // pair — their open chunks are independent from the source's. Without this
-  // their pending rows never reach the reader, so the catalog sees the
-  // column descriptors but bounds()/samples() return nothing and curves
-  // drop in with empty plots.
+  // Each parser binding has its own writer with independent open chunks: unflushed, the catalog sees the columns but
+  // every curve is empty.
   for (auto& [binding_id, binding] : parser_bindings_) {
     if (binding.write_host != nullptr) {
       binding.write_host->flushPending();
@@ -387,8 +343,7 @@ std::string DataSourceRuntimeHost::lastError() const {
 }
 
 void DataSourceRuntimeHost::setObjectRetentionBudget(int64_t time_window_ns, size_t max_memory_bytes) {
-  // Budget the active store (B while paused) so the paused tail stays bounded;
-  // the frozen store is untouched (eviction is push-triggered anyway).
+  // The active store (the secondary while paused), so the paused tail stays bounded; the frozen store is untouched.
   ObjectStore* target = object_store_target_.load();
   for (auto& [_id, binding] : parser_bindings_) {
     if (!binding.object_topic_id.has_value()) {
@@ -401,16 +356,11 @@ void DataSourceRuntimeHost::setObjectRetentionBudget(int64_t time_window_ns, siz
 }
 
 void DataSourceRuntimeHost::setObjectStoreTarget(ObjectStore* target) {
-  // Route cbPushMessage's lazy-object push through the swap (it pushed straight
-  // to the primary before, evicting the paused scrub-back snapshot).
   object_store_target_.store(target);
-  // TODO(stream-pause): deferred edge cases: an in-flight push can strand a
-  // frame in B across the resume flush; resume's catch-up notifyIngest lists
-  // only scalar TopicIds (object-only flush nudge).
-  // Retarget the source-level object write host and every per-parser-binding
-  // one (the streaming hot path). Each host's atomic swap lets in-flight
-  // pushes finish on the old target while the next lands on the new one; the
-  // manager guarantees `target` already has the topics (lockstep mirror).
+  // TODO(stream-pause): an in-flight push can strand a frame in the secondary across the resume flush; resume's
+  // catch-up notifyIngest lists only scalar TopicIds, so an object-only flush gets no nudge.
+  // Each host's atomic swap lets in-flight pushes finish on the old target; the manager guarantees `target` already
+  // has the topics (lockstep mirror).
   source_object_write_host_.setTarget(target);
   for (auto& [_id, binding] : parser_bindings_) {
     if (binding.object_write_host != nullptr) {
@@ -420,11 +370,8 @@ void DataSourceRuntimeHost::setObjectStoreTarget(ObjectStore* target) {
 }
 
 void DataSourceRuntimeHost::setDataEngineTarget(DataEngine* target) {
-  // Mirrors setObjectStoreTarget but for scalar writes. Retargets the
-  // source-level write host and every parser binding so all scalar pushes
-  // land on the secondary engine during pause and on the primary on resume.
-  // Record it so a binding created AFTER this swap (a mid-pause new topic)
-  // initializes against the active target rather than the frozen primary.
+  // A binding created after this swap (a topic first seen mid-pause) initializes against the active target, not the
+  // frozen primary.
   data_engine_target_.store(target);
   source_write_host_.setTarget(target);
   for (auto& [_id, binding] : parser_bindings_) {
@@ -456,10 +403,6 @@ bool DataSourceRuntimeHost::fail(PJ_error_t* out_error, const char* message) noe
   sdk::fillError(out_error, 1, "pj.runtime.ingest", last_error_);
   return false;
 }
-
-// ---------------------------------------------------------------------------
-// C-ABI callbacks
-// ---------------------------------------------------------------------------
 
 void DataSourceRuntimeHost::cbReportMessage(
     void* ctx, PJ_data_source_message_level_t level, PJ_string_view_t message) noexcept {
@@ -534,18 +477,14 @@ bool DataSourceRuntimeHost::cbIsStopRequested(void* ctx) noexcept {
 
 void DataSourceRuntimeHost::cbNotifyState(void* /*ctx*/, PJ_data_source_state_t /*state*/) noexcept {}
 
-// [thread-safe] in the ABI: a plugin may raise this from its own network
-// thread while its poll thread is inside fail(), so only the two requestStop
-// overloads are touched here — the flag is atomic and the failure reason has
-// its own lock — and last_error_ never is.
+// Thread-safe in the ABI: a plugin may call it from its own thread while its poll thread is inside fail(), so only the
+// requestStop overloads are touched (atomic flag, locked reason), never last_error_.
 void DataSourceRuntimeHost::cbRequestStop(
     void* ctx, PJ_data_source_state_t terminal, PJ_string_view_t reason) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
   const std::string_view text(reason.data, reason.size);
-  // STOPPED is the plugin's orderly end (end of file, a peer that closed
-  // cleanly): its reason is narrative for the log, not a verdict, and must not
-  // become an error that marks a recording of this source lossy. Any other
-  // terminal state is a failure and its reason is the stream's verdict.
+  // STOPPED is an orderly end (end of file, a peer closing cleanly): its reason is narrative and must not mark a
+  // recording of this source lossy. Any other terminal state is a failure.
   if (terminal == PJ_DATA_SOURCE_STATE_STOPPED) {
     qCInfo(lcIngest) << "source requested an orderly stop:"
                      << QString::fromUtf8(text.data(), static_cast<int>(text.size()));
@@ -574,9 +513,8 @@ void DataSourceRuntimeHost::setRecordTap(std::shared_ptr<RecordTap> tap) {
     released = std::exchange(record_tap_, std::move(tap));
     record_tap_active_.store(record_tap_ != nullptr, std::memory_order_relaxed);
   }
-  // `released` dies here, outside the lock: dropping the last reference to a
-  // Recorder joins its writer thread, and push threads must never queue behind
-  // that mutex while it does.
+  // `released` dies here, outside the lock: dropping the last reference to a Recorder joins its writer thread, and push
+  // threads must not queue behind the mutex meanwhile.
 }
 
 uint64_t DataSourceRuntimeHost::recordTapSkippedLazy() const noexcept {
@@ -603,8 +541,7 @@ void DataSourceRuntimeHost::dropRecordTap(const std::shared_ptr<RecordTap>& tap)
 void DataSourceRuntimeHost::recordMessage(
     const std::shared_ptr<RecordTap>& tap, uint32_t binding_id, const ParserBinding& binding, int64_t timestamp_ns,
     const uint8_t* data, uint64_t size) {
-  // Only the signature is the host's to report: the tap stamps the source
-  // identity, which is the recording's view of this source.
+  // Only the signature is the host's to report; the tap stamps the source identity.
   const RecordedBindingView view{
       .topic = binding.topic_name,
       .encoding = binding.signature.encoding,
@@ -638,10 +575,9 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     if (request->parser_config_json.size > 0) {
       parser_config.assign(request->parser_config_json.data, request->parser_config_json.size);
     }
-    // The reuse identity deliberately ignores catalog reloads: an identical
-    // re-request revives the existing binding (and its lazy object decoder)
-    // so history is never re-decoded by a replacement provider. Re-resolving
-    // after reload needs per-entry decoder generation pinning first.
+    // The reuse identity ignores catalog reloads: an identical re-request revives the existing binding and its lazy
+    // decoder, so history is never re-decoded by a replacement provider (re-resolving would need per-entry decoder
+    // generation pinning).
     ParserBinding::Signature signature{
         std::string(encoding), std::string(type_name),
         request->schema.size > 0
@@ -649,11 +585,8 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
             : std::string{},
         parser_config};
 
-    // A demand-driven plugin re-requests the binding on every re-subscribe
-    // (its cache dies with the subscription). Hand back the existing binding
-    // for an identical request instead of re-registering the topic — a second
-    // createTopic mints a duplicate engine topic with the same name, doubling
-    // every field in the catalog.
+    // A demand-driven plugin re-requests the binding on every re-subscribe: hand back the existing one, since a second
+    // createTopic duplicates every field in the catalog.
     if (auto existing = self->findReusableBinding(topic_name, signature); existing.has_value()) {
       *out = PJ_parser_binding_handle_t{*existing};
       qCInfo(lcIngestBind) << "[parser-bind] reuse topic="
@@ -662,42 +595,24 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
       return true;
     }
 
-    // Per-route parser selection: the scalar winner takes this binding, the
-    // object winner (if any) decides the topic's object identity and becomes its
-    // lazy decoder. Both arrive prepared (bindSchema + loadConfig applied) and
-    // own their DSO keepalive, so they stay valid past a later catalog reload().
-    // This runs on the plugin poll thread; selection is serialized against a
-    // GUI-thread reload inside the catalog service.
+    // The scalar winner takes this binding; the object winner (if any) decides the topic's object identity and becomes
+    // its lazy decoder. Both arrive prepared and own their DSO keepalive, so they survive a catalog reload(). Runs on
+    // the plugin poll thread; the catalog serializes selection against a GUI-thread reload.
     const Span<const uint8_t> schema_span(request->schema.data, request->schema.size);
     ParserRouteSelection selection =
         self->catalog_.resolveParserRoutes(encoding, type_name, schema_span, parser_config);
     if (!selection.scalar.has_value()) {
-      // No encoding/type prefix: the plugin names the channel when it
-      // re-reports this through its own 224-byte PJ_error_t message, and the
-      // routing service already logged the full text.
+      // No prefix: the plugin re-reports this through its 224-byte PJ_error_t, and the routing service logged it all.
       return self->fail(out_error, selection.scalar_failure.c_str());
     }
     auto parser = std::make_unique<MessageParserHandle>(std::move(selection.scalar->parser));
 
-    // Reuse the dataset's existing same-named scalar topic before minting a new
-    // one — the transactional-refill contract (SessionManager::beginRefill keeps
-    // TopicIds REGISTERED precisely so a same-source reload / import promotion
-    // writes back into the same ids and every curve key survives) depends on it.
-    // The direct-write API (WriteCore::ensureTopic) and the object route below
-    // (ObjectStore::findTopic) already reuse by name; this scalar parser-binding
-    // path was the one asymmetric spot that always createTopic'd — which
-    // renumbered every TopicId on a delegated-ingest reload (data_load_mcap et
-    // al.) and silently dropped every bound curve at the replace boundary
-    // (caught live by the layout-import E2E's promotion leg).
-    // Scan + create + mirror run under the engine lock(s), held across the whole
-    // sequence: getTopicStorage() does NOT lock (engine.hpp's threading
-    // contract), so a returned pointer is only valid while the lock is held —
-    // and this runs on the plugin poll thread while the GUI thread may be
-    // mutating the engine (a dataset removal frees TopicStorage). lockEnginePair
-    // is the SAME helper the direct-write sibling locks through
-    // (WriteCore::ensureTopic via lockWriteEngines), so the two paths can never
-    // invert against each other. The engine mutex is recursive, so createTopic
-    // re-acquiring inside is fine.
+    // Reuse the dataset's same-named scalar topic: the transactional refill (SessionManager::beginRefill) keeps
+    // TopicIds registered so a reload or import promotion writes back into them and every curve key survives; minting a
+    // new topic here would renumber every TopicId of a delegated-ingest reload and drop every bound curve. Scan, create
+    // and mirror under the engine lock(s) for the whole sequence: getTopicStorage() does not lock, and the GUI thread
+    // may free a TopicStorage meanwhile (dataset removal). lockEnginePair is the helper the direct-write path
+    // (WriteCore::ensureTopic) locks through, so the two never invert. The mutex is recursive (createTopic re-locks).
     // The engine name as the direct-write path stores it; the binding keeps the source's name.
     const std::string engine_topic_name = normalizeTopicName(topic_name);
     TopicId topic_id = 0;
@@ -722,16 +637,10 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
         topic_id = *topic_or;
       }
 
-      // Lockstep-mirror into the secondary engine with the SAME TopicId. The two
-      // engines' TopicId counters drift whenever the primary gets topics the
-      // secondary doesn't (e.g. a file loaded between streams), so we force the
-      // secondary topic id to match the primary's instead of relying on the
-      // counters staying in step. A later push uses one id against whichever
-      // engine is the active target, so the ids MUST match. (On the reuse path
-      // the secondary may already hold the id; mirror only when absent — the
-      // same idempotent retry the direct-write mirror applies. Like that
-      // sibling, the skip is name-blind: an id already present is assumed
-      // mirrored rather than re-checked by name.)
+      // Mirror into the secondary with the same TopicId: the engines' counters drift whenever the primary gets topics
+      // the secondary does not (a file loaded between streams), and a push uses one id against whichever engine is
+      // active. On reuse the secondary may already hold the id: mirror only when absent (name-blind, as the
+      // direct-write mirror).
       if (self->secondary_data_engine_ != nullptr &&
           self->secondary_data_engine_->getTopicStorage(topic_id) == nullptr) {
         auto mirrored = self->secondary_data_engine_->createTopic(
@@ -747,27 +656,16 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     const PJ_topic_handle_t topic_handle{static_cast<uint32_t>(topic_id)};
 
     auto write_host = std::make_unique<DatastoreParserWriteHost>(self->engine_, topic_handle);
-    // Same lockstep wiring as the source-level write host (see the runtime
-    // host constructor). Closes the latent FieldHandle-stale bug for parser
-    // plugins that cache handles across messages (parser_protobuf et al.):
-    // every ensureField inside parserAppendRecord/appendBoundRecord is now
-    // mirrored to the secondary engine via DataEngine::createTopicField with
-    // the same FieldId, so the cached handle resolves after a pause/resume
-    // target swap.
+    // Lockstep for parser plugins caching handles across messages: every ensureField is mirrored to the secondary with
+    // the same FieldId, so a cached handle resolves after a pause/resume swap.
     write_host->setSecondaryEngine(self->secondary_data_engine_);
-    // If this binding is minted while paused, the source-level swap already
-    // happened, so point it at the active target (secondary) now — otherwise
-    // this mid-pause topic's samples would write into the frozen primary and
-    // drag the global timeline. When live, this is the primary (a no-op).
+    // A binding minted while paused writes to the active (secondary) engine, or its samples land on the frozen
+    // primary and stretch the timeline.
     write_host->setTarget(self->data_engine_target_.load());
 
-    // Build the service registry the parser binds against. The builder must
-    // outlive bind() because the plugin may hold a view into it; we move it
-    // into the ParserBinding so its lifetime matches the parser's.
+    // The plugin may keep a view into the builder: it lives in the ParserBinding, as long as the parser.
     auto registry_builder = std::make_unique<ServiceRegistryBuilder>();
-    // The parser's scalar sink: message_parser_plugin_base require<>()s it, so a
-    // rejection must fail the binding here rather than surface later as an
-    // unexplained parse failure.
+    // message_parser_plugin_base require<>()s it: fail the binding here, not later as an unexplained parse failure.
     if (auto status = registerRequiredService<sdk::ParserWriteHostService>(*registry_builder, write_host->raw());
         !status) {
       return self->fail(out_error, ("failed to register the parser write host: " + status.error()).c_str());
@@ -778,10 +676,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     std::optional<ObjectTopicId> object_topic_id;
     std::unique_ptr<DatastoreParserObjectWriteHost> object_write_host;
     if (object_kind == sdk::BuiltinObjectType::kNone) {
-      // The parser declined to classify this topic as a builtin object — it
-      // will only produce scalar columns. Traced once per binding so an
-      // operator chasing why an image-shaped topic is not showing in the
-      // catalog as an ObjectTopic can see the classification verdict.
+      // Scalar columns only; traced once per binding for anyone chasing why a topic is not an object topic.
       qCInfo(lcIngestBind) << "[parser-bind] classifySchema=kNone topic="
                            << QString::fromUtf8(topic_name.data(), static_cast<int>(topic_name.size()))
                            << "type=" << QString::fromUtf8(type_name.data(), static_cast<int>(type_name.size()))
@@ -798,17 +693,15 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
                                         << "old provider" << QString::fromStdString(previous_provider->second)
                                         << "new provider" << QString::fromStdString(object_provider_id)
                                         << "— binding remains scalar-only";
-          // Fail closed for this binding: retain the existing topic and decoder,
-          // but do not enqueue or directly write objects through the replacement.
+          // Fail closed: keep the existing topic and decoder, write no object through the replacement.
         } else {
-          // KNOWN LIMITATION: a same-provider retype to a DIFFERENT builtin
-          // object type reuses the original metadata_json until stream restart.
+          // Known limitation: a same-provider retype to another builtin type keeps the original metadata_json until the
+          // stream restarts.
           object_topic_id = existing;
         }
       } else {
-        // The payload's wire format travels with the topic: the bytes are only
-        // decodable by a parser for this encoding + schema, which a dataset merge
-        // must check before fusing same-name topics (objectPayloadFormatFromMetadata).
+        // The wire format travels with the topic: a dataset merge checks it before fusing same-named topics
+        // (objectPayloadFormatFromMetadata).
         const std::string metadata_json =
             nlohmann::json{
                 {"builtin_object_type", sdk::name(object_kind)},
@@ -828,11 +721,7 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
               ("failed to register object topic '" + std::string(topic_name) + "': " + registered.error()).c_str());
         }
         object_topic_id = *registered;
-        // Lockstep-mirror into the secondary store with the SAME ObjectTopicId.
-        // The two stores' id counters drift whenever the primary gets topics the
-        // secondary doesn't (e.g. a file loaded between streams), so we force the
-        // secondary id to match the primary's. A later push uses one id against
-        // whichever store is the active target, so the ids MUST match.
+        // Mirror into the secondary with the same ObjectTopicId (the stores' counters drift, as the engines' do).
         if (self->secondary_object_store_ != nullptr) {
           auto mirrored = self->secondary_object_store_->registerTopic(descriptor, *registered);
           if (!mirrored.has_value()) {
@@ -845,21 +734,15 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
       }
       if (object_topic_id.has_value()) {
         self->object_topic_decoder_providers_.try_emplace(object_topic_id->id, object_provider_id);
-        // When the scalar and object routes selected DIFFERENT providers, the
-        // scalar parser must not write objects — the topic's object content
-        // belongs to the object winner. Live entries still flow through the lazy
-        // push in cbPushMessage and decode via the registrar instance below.
+        // When the routes chose different providers, the scalar parser writes no object: the object winner owns the
+        // topic's objects, which flow through the lazy push and decode through the registrar instance below.
         if (object_provider_id == selection.scalar->provider_id) {
           object_write_host =
               std::make_unique<DatastoreParserObjectWriteHost>(self->object_store_, object_topic_id->id);
-          // Same mid-pause rule as the scalar host above: a binding minted while
-          // paused must push into the active (secondary) store, not the frozen
-          // primary. When live, object_store_target_ is the primary (a no-op).
+          // Mid-pause rule, as for the scalar host above.
           object_write_host->setTarget(self->object_store_target_.load());
-          // Required at THIS point despite being an optional service in general: the
-          // host only reaches here after committing this topic to object ingest (the
-          // object topic is registered and mirrored). Merely warning would let the
-          // parser bind with no object sink and drop every object payload silently.
+          // Required here, though optional in general: the topic is committed to object ingest, and a parser bound
+          // without an object sink would drop every payload silently.
           if (auto status = registerRequiredService<sdk::ParserObjectWriteHostService>(
                   *registry_builder, object_write_host->raw());
               !status) {
@@ -871,17 +754,15 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
         }
 
         if (self->object_topic_parser_registrar_) {
-          // The registrar keeps one decoder slot per object topic; the provider
-          // guard above keeps another provider from replacing it. A replacement
-          // build with the same provider id still needs per-entry pinning.
+          // One decoder slot per object topic; the provider guard above keeps another provider out. A replacement build
+          // with the same provider id would still need per-entry pinning.
           self->object_topic_parser_registrar_(
               *object_topic_id, std::make_unique<MessageParserHandle>(std::move(selection.object->parser)));
         }
       }
     }
 
-    // A bind(registry) failure is terminal: the resolver is not re-entered for
-    // the next candidate.
+    // Terminal: the resolver is not re-entered for another candidate.
     if (auto status = parser->bind(registry_builder->view()); !status) {
       return self->fail(out_error, ("failed to bind parser services: " + status.error()).c_str());
     }
@@ -931,17 +812,14 @@ bool DataSourceRuntimeHost::cbPushMessage(
       return self->fail(out_error, "message data fetcher is null");
     }
 
-    // Object ingest policy only applies to parser bindings that actually
-    // classify as builtin objects. Scalar-only topics must stay eager so a
-    // broad default lazy policy cannot accidentally drop normal curves.
+    // Only builtin-object bindings follow the object ingest policy: scalar topics stay eager, so a broad lazy default
+    // cannot drop normal curves.
     const bool is_object_topic = binding.object_topic_id.has_value();
     const auto policy = is_object_topic
                             ? self->policy_resolver_.resolve(self->source_id_, binding.topic_name, binding.object_kind)
                             : sdk::ObjectIngestPolicy::kEager;
 
-    // Get-or-create the binding's shared lazy-fetch log context — one
-    // allocation per binding, not one per message. [worker thread, same single
-    // caller as the rest of cbPushMessage; parser_bindings_ is unsynchronized.]
+    // One log context per binding (worker thread; parser_bindings_ is unsynchronized).
     auto lazy_context = [self, &binding]() -> std::shared_ptr<const LazyFetchTopicContext> {
       if (binding.lazy_fetch_context == nullptr) {
         binding.lazy_fetch_context = std::make_shared<const LazyFetchTopicContext>(LazyFetchTopicContext{
@@ -968,8 +846,7 @@ bool DataSourceRuntimeHost::cbPushMessage(
     };
 
     if (policy == sdk::ObjectIngestPolicy::kPureLazy) {
-      // No bytes are fetched on this thread, so there is nothing to record;
-      // count the gap instead of silently dropping it.
+      // No bytes on this thread, nothing to record: count the gap.
       if (self->hasRecordTap()) {
         self->record_tap_skipped_lazy_.fetch_add(1);
       }
@@ -985,15 +862,12 @@ bool DataSourceRuntimeHost::cbPushMessage(
       fetched = fetcher_owner->fetcher.fetchMessageData(fetcher_owner->fetcher.ctx, &payload, out_error);
     }
     if (!fetched) {
-      // The fetcher populated out_error itself; still latch the failure —
-      // a capture whose bytes were never produced must not publish.
+      // out_error is already filled; latch anyway: a capture whose bytes were never produced must not publish.
       self->ingest_callback_failures_.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
 
-    // Wrap the payload anchor FIRST, so every exit below — including the
-    // failure paths — releases the plugin's buffer exactly once. The store
-    // paths may extend its lifetime: kEager's captured closure keeps it for the
+    // Wrap the anchor first, so every exit releases the plugin's buffer exactly once. kEager's closure keeps it for the
     // entry's lifetime, the lazy-scalars seed until the pool evicts it.
     auto payload_anchor = detail::wrapPayloadAnchor(payload.anchor, self->library_keepalive_);
 
@@ -1002,10 +876,7 @@ bool DataSourceRuntimeHost::cbPushMessage(
     }
 
     self->tap_eligible_messages_.fetch_add(1, std::memory_order_relaxed);
-    // The session recorder sees the plugin's raw bytes, before any decoding.
-    // The binding travels with the message, so a recording started mid-stream
-    // gets a channel for every topic that keeps producing — including ones
-    // subscribed long before it started.
+    // Raw bytes, before decoding; the binding travels with the message (see setRecordTap).
     if (self->hasRecordTap()) {
       if (const auto tap = self->recordTapSnapshot(); tap != nullptr) {
         self->recordMessage(tap, handle.id, binding, timestamp_ns, payload.data, payload.size);
@@ -1013,10 +884,8 @@ bool DataSourceRuntimeHost::cbPushMessage(
     }
 
     if (auto status = binding.parser->parse(timestamp_ns, Span<const uint8_t>(payload.data, payload.size)); !status) {
-      // An object-only schema has no scalar route, so its parse() has nothing to
-      // write and reports the absent route as an error on every message. That is
-      // not a failed message: the object below is all there is to store. parse()
-      // is still called, because a parser may override it to validate or diagnose.
+      // An object-only schema has no scalar route, so parse() reports an error on every message; that is not a failed
+      // message. parse() still runs: a parser may validate or diagnose in it.
       if (!binding.object_only) {
         return self->fail(out_error, status.error().c_str());
       }
@@ -1045,9 +914,8 @@ bool DataSourceRuntimeHost::cbPushMessage(
       }
       return true;
     }();
-    // File-backed tapped objects are decoded before storage and keep only their
-    // re-readable catalog closure. Untapped objects retain the ingest-time seed
-    // so live-edge consumers do not re-fetch bytes already in hand.
+    // File-backed tapped objects are decoded before storage and keep only their re-readable closure; untapped ones keep
+    // the ingest-time seed so live-edge reads do not re-fetch.
     if (policy == sdk::ObjectIngestPolicy::kLazyObjectsEagerScalars) {
       auto fallback = makeLazyFetchClosure(fetcher_owner, self->lazy_fetch_mutex_, lazy_context(), timestamp_ns);
       if (tapped) {
@@ -1063,8 +931,7 @@ bool DataSourceRuntimeHost::cbPushMessage(
         seed = sdk::PayloadView{
             Span<const uint8_t>{payload.data, static_cast<size_t>(payload.size)}, std::move(payload_anchor)};
       } else if (payload.size > 0) {
-        // Anchorless transient buffer: the bytes die with this call, so the
-        // seed needs its own copy.
+        // A transient buffer dies with this call: the seed needs its own copy.
         seed = sdk::makePayloadView(std::vector<uint8_t>(payload.data, payload.data + payload.size));
       }
       if (auto status = self->object_store_target_.load()->pushLazyWithSeed(
@@ -1074,9 +941,8 @@ bool DataSourceRuntimeHost::cbPushMessage(
       }
       return true;
     }
-    // Streaming has no durable source to re-read. Its kEager entries therefore
-    // keep the captured payload even when a tap also consumed it synchronously,
-    // and are charged its size so the per-topic memory budget can evict them.
+    // Streaming has no source to re-read: kEager entries keep the payload even when a tap consumed it, charged its size
+    // so the per-topic memory budget can evict them.
     if (auto status = self->object_store_target_.load()->pushLazy(
             *binding.object_topic_id, timestamp_ns, makeCapturedPayloadClosure(payload, std::move(payload_anchor)),
             static_cast<size_t>(payload.size));
@@ -1117,10 +983,8 @@ int DataSourceRuntimeHost::cbShowMessageBox(
 const char* DataSourceRuntimeHost::cbListAvailableEncodings(void* ctx) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
   try {
-    // Build a JSON array of unique encodings the catalog knows. Cached on
-    // the session so the returned char* is valid until the next call (per
-    // the protocol contract). parserEncodings() snapshots under the catalog's
-    // shared lock (this may run off the GUI thread) — already sorted+unique.
+    // Cached because the returned char* must stay valid until the next call (protocol contract). parserEncodings()
+    // snapshots under the catalog's shared lock (this may run off the GUI thread), sorted and unique.
     const std::vector<std::string> unique_encodings = self->catalog_.parserEncodings();
     std::string json = "[";
     bool first = true;
@@ -1139,29 +1003,21 @@ const char* DataSourceRuntimeHost::cbListAvailableEncodings(void* ctx) noexcept 
   }
 }
 
-// Runs on the plugin's poll/stream thread — deliberately the SAME thread and
-// catalog/parser access pattern cbEnsureParserBinding has always used.
+// The plugin's poll/stream thread, as cbEnsureParserBinding.
 sdk::BuiltinObjectType DataSourceRuntimeHost::classifyAvailableTopic(const PJ_available_topic_t& topic) const noexcept {
   const std::string_view encoding(topic.parser_encoding.data, topic.parser_encoding.size);
   const std::string_view type_name(topic.type_name.data, topic.type_name.size);
   const Span<const uint8_t> schema_span(topic.schema.data, topic.schema.size);
   try {
-    // The advertised type is an object exactly when some provider holds the
-    // OBJECT route for it — the same resolution bind time performs, so the
-    // probe work is shared through the resolver cache. No config exists here.
+    // An object exactly when some provider holds the object route: the bind-time resolution, sharing its cache.
     if (const auto object_type = catalog_.classifyParserObjectRoute(encoding, type_name, schema_span);
         object_type.has_value()) {
       return *object_type;
     }
-  } catch (...) {
-    // Fall through to the name-matching fallback below.
-  }
-  // Fallback: match the type name against the two infra-tier schemas so TF/CameraInfo
-  // stay classified for advertising even when this host has no parser for the encoding
-  // (or the parser's classify_schema returned kNone). Compare the LEAF segment
-  // (after the last '/' or '.') exactly, not a substring — a substring match would
-  // misclassify e.g. `my_msgs/CameraInfoStatus` as CameraInfo infrastructure and
-  // wrongly pin it always-subscribed.
+  } catch (...) {}
+  // Fallback: the type name's leaf segment (after the last '/' or '.') compared exactly with the two infra schemas, so
+  // TF and CameraInfo stay classified without a parser. A substring match would pin `my_msgs/CameraInfoStatus`
+  // always-subscribed.
   const std::size_t leaf_start = type_name.find_last_of("/.");
   const std::string_view leaf = leaf_start == std::string_view::npos ? type_name : type_name.substr(leaf_start + 1);
   if (leaf == "FrameTransforms") {
@@ -1192,15 +1048,12 @@ bool DataSourceRuntimeHost::cbNotifyAvailableTopics(
     }
     return true;
   } catch (...) {
-    // Advertising is best-effort informational traffic — never fail the plugin's
-    // poll loop over it.
+    // Best-effort: never fail the plugin's poll loop over advertising.
     return true;
   }
 }
 
-// ---------------------------------------------------------------------------
-// Source-capture surface (attach_source_record / complete_ingest)
-// ---------------------------------------------------------------------------
+// Source capture (attach_source_record / complete_ingest)
 
 std::optional<std::string> DataSourceRuntimeHost::sourceRecordDescriptor() const {
   std::lock_guard<std::mutex> lock(capture_mu_);
@@ -1226,16 +1079,13 @@ std::optional<std::string> DataSourceRuntimeHost::stagedLoaderMetadata() const {
   std::lock_guard<std::mutex> lock(capture_mu_);
   return loader_metadata_;
 }
-// Descriptive loader metadata (set_dataset_metadata, SDK 0.32): validate the
-// document against the session bounds, then stage it on this ingest context —
-// publication to the dataset happens at the owning load's commit seam. A
-// rejection returns false + reason and never affects ingestion or capture.
+// set_dataset_metadata: validated against the session bounds and staged; published at the load's commit seam. A
+// rejection returns false and a reason and never affects ingestion or capture.
 bool DataSourceRuntimeHost::cbSetDatasetMetadata(
     void* ctx, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
   try {
-    // ABI guard first: a null pointer with a nonzero size is a malformed call
-    // (toStringView would carry the size over substitute storage).
+    // A null pointer with a nonzero size is malformed (toStringView would keep the size over substitute storage).
     if (metadata_json.data == nullptr && metadata_json.size != 0) {
       return self->fail(out_error, "dataset metadata: null data with nonzero size");
     }
@@ -1257,22 +1107,17 @@ bool DataSourceRuntimeHost::cbAttachSourceRecord(
     void* ctx, PJ_string_view_t descriptor_json, PJ_error_t* out_error) noexcept {
   auto* self = static_cast<DataSourceRuntimeHost*>(ctx);
 #ifdef __EMSCRIPTEN__
-  // The browser build has no capture service (and no pj_source support
-  // library): refuse without latching, same as any refused record.
+  // No capture service in the browser: refuse without latching.
   (void)descriptor_json;
   return self->rejectAttachment(out_error, "source capture is not available in this build");
 #else
   try {
-    // The ABI guard comes first: a null pointer with a nonzero size is a
-    // malformed call, and toStringView() would preserve that size over
-    // substitute storage — a view running off the end of it.
+    // A null pointer or empty size is malformed (toStringView would keep the size over substitute storage).
     if (descriptor_json.data == nullptr || descriptor_json.size == 0) {
       return self->rejectAttachment(out_error, "source record descriptor is empty");
     }
     const std::string_view bytes(descriptor_json.data, descriptor_json.size);
-    // Validation failures REFUSE without latching or vetoing: a refused
-    // record only means no caching, and the provider may correct and
-    // re-attach before the first push.
+    // Refuse without latching or vetoing: the provider may correct and re-attach before the first push.
     if (auto parsed = sdk::source::parseSourceRecordEnvelope(bytes); !parsed) {
       return self->rejectAttachment(out_error, parsed.error());
     }
@@ -1297,8 +1142,7 @@ bool DataSourceRuntimeHost::cbAttachSourceRecord(
       }
       self->source_record_ = std::string(bytes);  // last attachment before ingest wins
     }
-    // Outside the lock: user code (the capture service opening its cache
-    // transaction) must never run under capture_mu_.
+    // Outside the lock: the capture service's hook must not run under capture_mu_.
     std::function<void(std::string_view, bool)> attached_hook;
     {
       std::lock_guard<std::mutex> lock(self->hooks_mu_);

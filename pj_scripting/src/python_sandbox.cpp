@@ -194,9 +194,9 @@ struct AllocationRecord {
 };
 
 /// Blocks are 16-byte aligned. The shift keeps neighbouring blocks in neighbouring buckets, which a loop of small
-/// allocations fills and empties in order; a mixing hash scatters them across cache lines and measures 2 to 4 times
-/// slower with a million live blocks. ponytail: homogeneous blocks of a few hundred bytes alias onto every n-th bucket
-/// and probe a few steps further (measured 1.3 times the bare loop); mix the high bits only if that ever matters.
+/// allocations fills and empties in order; a mixing hash scatters them across cache lines
+/// (pj_scripting/docs/TECHNICAL_NOTES.md "Python allocation cap"). ponytail: homogeneous blocks of a few hundred bytes
+/// alias onto every n-th bucket and probe a few steps further; mix the high bits only if that ever matters.
 struct BlockHash {
   std::size_t operator()(const void* block) const noexcept {
     return reinterpret_cast<std::uintptr_t>(block) >> 4;

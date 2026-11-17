@@ -103,9 +103,8 @@ class FakeObjectWidget : public QWidget, public PJ::IDataWidget {
   void onTrackerTime(double /*time*/) override {}
 };
 
-// Persists a non-null element tagged like a real scene dock (<scene2d>/<scene3d>),
-// so an *empty* instance still round-trips through layout save/restore instead of
-// being skipped. Mirrors SceneDockWidget::xmlSaveState's "always emit a root".
+// Persists a non-null element tagged like a real scene dock (<scene2d>/<scene3d>), so an empty instance still
+// round-trips through layout save and restore instead of being skipped (as SceneDockWidget::xmlSaveState).
 class FakeStatefulObjectWidget : public QWidget, public PJ::IDataWidget {
  public:
   explicit FakeStatefulObjectWidget(QString tag, QWidget* parent = nullptr) : QWidget(parent), tag_(std::move(tag)) {}
@@ -184,9 +183,8 @@ class FakeClipboardObjectWidget : public QWidget, public PJ::IDataWidget {
   QString loaded_value_;
 };
 
-// Accepts every offered object topic in place (like the multi-topic 3D dock), so
-// a drop onto an already-mounted empty widget exercises DockWidget's "offer"
-// path rather than the factory-replace path.
+// Accepts every offered object topic in place (like the multi-topic 3D dock), so a drop onto a mounted empty widget
+// exercises DockWidget's "offer" path, not the factory-replace path.
 class FakeAcceptingObjectWidget : public QWidget, public PJ::IDataWidget {
  public:
   using QWidget::QWidget;
@@ -261,10 +259,9 @@ PJ::DockWidget* splitFrom(PJ::PlotDocker& docker, PJ::DockWidget* dock, int expe
 
 }  // namespace
 
-// Focus behavior needs ADS's FocusController, which only exists when the
-// FocusHighlighting config flag is set at CDockManager construction. The flag
-// is process-global; set it per-test and restore it so test order can't leak
-// focus behavior into tests that don't expect it.
+// Focus behaviour needs ADS's FocusController, which exists only when the FocusHighlighting flag is set at
+// CDockManager construction. The flag is process-global: set it per test and restore it so order cannot leak focus
+// behaviour into other tests.
 class DockFocusTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -395,12 +392,10 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetCopyPasteUsesClipboardXmlAndKeepsTarge
   EXPECT_EQ(undo_count, 1);
 }
 
-// Two datasets share "/imu/accel". The curve is copied from dataset 2, then
-// pasted into a session where dataset 1 (same topic, loaded first) is also
-// present. xmlSaveState stamps dataset_id + dataset_source on the clipboard
-// XML, so rebindClipboardCurveKeys must resolve the pasted curve back to
-// dataset 2's key via CatalogModel::resolveDatasetIdentity — never dataset 1's,
-// which a naive first-match topic+field scan would pick.
+// Two datasets share "/imu/accel". The curve is copied from dataset 2 and pasted into a session where dataset 1 (same
+// topic, loaded first) is also present: xmlSaveState stamps dataset_id and dataset_source on the clipboard XML, so
+// rebindClipboardCurveKeys must resolve the pasted curve to dataset 2's key through
+// CatalogModel::resolveDatasetIdentity, not dataset 1's, which a first-match topic + field scan would pick.
 TEST(DockWidgetPlaceholderTest, PlotWidgetPasteResolvesDatasetQualifiedCurveToItsSourceDataset) {
   QGuiApplication::clipboard()->clear();
 
@@ -429,10 +424,9 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetPasteResolvesDatasetQualifiedCurveToIt
       << "the dataset qualifier must bind the paste to dataset 2, not dataset 1's same-topic key";
 }
 
-// Same two-dataset setup, but the copied curve's dataset qualifiers are
-// stripped before paste (an old/generic copy). Two datasets provide
-// "/imu/accel", so the paste must NOT rebind to either — the copied concrete
-// key is left as-is, which xmlLoadState then fails to resolve into a curve.
+// Same two-dataset setup with the copied curve's dataset qualifiers stripped (a generic copy): two datasets provide
+// "/imu/accel", so the paste must not rebind to either and the copied key stays, which xmlLoadState then fails to
+// resolve into a curve.
 TEST(DockWidgetPlaceholderTest, PlotWidgetPasteOfUnqualifiedAmbiguousCurveDoesNotRebindToFirstDataset) {
   QGuiApplication::clipboard()->clear();
 
@@ -453,8 +447,7 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetPasteOfUnqualifiedAmbiguousCurveDoesNo
   ASSERT_NE(source.addCurve(key1), nullptr);
   ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
 
-  // Strip the dataset qualifiers the source just stamped, simulating a copy
-  // made before this identity contract existed (or a hand-edited clipboard).
+  // Strip the dataset qualifiers the source stamped (a copy without the identity contract, or a hand-edited clipboard).
   QDomDocument clipboard_doc;
   ASSERT_TRUE(clipboard_doc.setContent(QGuiApplication::clipboard()->text()));
   QDomElement curve = clipboard_doc.documentElement().firstChildElement(u"curve"_s);
@@ -471,11 +464,9 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetPasteOfUnqualifiedAmbiguousCurveDoesNo
       << "an unqualified ambiguous topic+field must keep the copied concrete key, not rebind to either dataset";
 }
 
-// FIX C: a copied curve is QUALIFIED for a dataset that is gone at paste time, but
-// its stale concrete key (from the copy session) happens to still name a LIVE series
-// in a different dataset. Because the curve is qualified and its identity fails to
-// resolve, rebindClipboardCurveKeys must CLEAR the concrete key so it can never
-// collide with the unrelated live series — the curve then drops in xmlLoadState.
+// A copied curve is qualified for a dataset that is gone at paste time, while its stale concrete key still names a live
+// series of a different dataset. Qualified and unresolvable, so rebindClipboardCurveKeys must clear the concrete key so
+// it never collides with the unrelated series; the curve then drops in xmlLoadState.
 TEST(DockWidgetPlaceholderTest, PlotWidgetPasteOfQualifiedMissingDatasetDropsInsteadOfBindingStaleKey) {
   QGuiApplication::clipboard()->clear();
 
@@ -492,8 +483,8 @@ TEST(DockWidgetPlaceholderTest, PlotWidgetPasteOfQualifiedMissingDatasetDropsIns
   ASSERT_NE(source.addCurve(live_key), nullptr);
   ASSERT_TRUE(QMetaObject::invokeMethod(&source, "copyWidgetToClipboard", Qt::DirectConnection));
 
-  // Rewrite the clipboard so the curve carries the SAME live concrete key but a
-  // dataset qualifier naming an ABSENT source (a copy from a since-closed dataset).
+  // Rewrite the clipboard so the curve carries the same live concrete key but a qualifier naming an absent source (a
+  // copy from a since-closed dataset).
   QDomDocument clipboard_doc;
   ASSERT_TRUE(clipboard_doc.setContent(QGuiApplication::clipboard()->text()));
   QDomElement curve = clipboard_doc.documentElement().firstChildElement(u"curve"_s);
@@ -667,8 +658,7 @@ TEST_F(DockFocusTest, DropFocusesReceivingDock) {
   PJ::DockWidget* focused = nullptr;
   QObject::connect(&docker, &PJ::PlotDocker::dockFocused, [&](PJ::DockWidget* d) { focused = d; });
 
-  // Drop a scalar onto the second dock — it should immediately gain focus so
-  // its settings show, rather than waiting for a manual click.
+  // Drop a scalar onto the second dock: it gains focus at once so its settings show, without a manual click.
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock1, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
@@ -731,7 +721,7 @@ TEST_F(DockFocusTest, ClosingFocusedDockRefocusesPreviouslyFocused) {
   auto* dock2 = splitFrom(docker, dock1, 3);
   ASSERT_NE(dock2, nullptr);
 
-  // Establish focus history: … → dock1 → dock2, so the previous is dock1.
+  // Focus history: ... -> dock1 -> dock2, so the previous is dock1.
   docker.setDockWidgetFocused(dock1);
   docker.setDockWidgetFocused(dock2);
   ASSERT_EQ(docker.focusedDock(), dock2);
@@ -741,8 +731,8 @@ TEST_F(DockFocusTest, ClosingFocusedDockRefocusesPreviouslyFocused) {
 
   dock2->closeDockWidget();
 
-  // Focus returns to the previously focused dock (dock1), not merely the first
-  // surviving sibling (dock0) — and never stays on the deleted dock.
+  // Focus returns to the previously focused dock (dock1), not the first surviving sibling (dock0), and never stays on
+  // the deleted dock.
   EXPECT_EQ(focused, dock1);
   EXPECT_EQ(docker.focusedDock(), dock1);
   EXPECT_EQ(docker.plotCount(), 2);
@@ -763,8 +753,8 @@ TEST_F(DockFocusTest, ClosingLastRealDockFocusesPlaceholder) {
 
   dock0->closeDockWidget();
 
-  // A fresh placeholder is created and focused; it is not the deleted dock,
-  // so the panel falls back to its empty page instead of stale settings.
+  // A fresh placeholder is created and focused, not the deleted dock, so the panel falls back to its empty page instead
+  // of stale settings.
   ASSERT_EQ(docker.plotCount(), 1);
   EXPECT_NE(focused, dock0);
   EXPECT_EQ(focused, docker.plotAt(0));
@@ -794,8 +784,8 @@ TEST_F(DockFocusTest, DropOntoAlreadyFocusedPlaceholderRefreshes) {
   PJ::DockWidget* focused = nullptr;
   QObject::connect(&docker, &PJ::PlotDocker::dockFocused, [&](PJ::DockWidget* d) { focused = d; });
 
-  // Dropping onto the already-focused placeholder populates it; ADS won't emit a
-  // focus change (focus didn't move), but the panel must still refresh.
+  // Dropping onto the already-focused placeholder populates it; ADS emits no focus change (focus did not move), but the
+  // panel must still refresh.
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           placeholder, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
@@ -828,8 +818,8 @@ TEST(DockWidgetPlaceholderTest, ScalarDropConvertsPlaceholderToPlot) {
   EXPECT_EQ(dock->plotWidget()->curveList().size(), 1U);
 }
 
-// A single-column topic of an arbitrary primitive, via the schema path (the
-// registerScalarSeries shortcut is float-only).
+// A single-column topic of an arbitrary primitive, through the schema path (the registerScalarSeries shortcut is
+// float-only).
 PJ::TopicId addTypedTopic(
     PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name, PJ::PrimitiveType type) {
   PJ::DataWriter writer = session.dataEngine().createWriter();
@@ -852,8 +842,8 @@ PJ::TopicId addTypedTopic(
   return *topic_or;
 }
 
-// An integer field is discrete AND plottable; plottable wins the empty-tile
-// tie, so the drop builds a plot — never a state-transitions strip.
+// An integer field is discrete and plottable; plottable wins the empty-tile tie, so the drop builds a plot, never a
+// state-transitions strip.
 TEST(DockWidgetPlaceholderTest, IntegerDropConvertsPlaceholderToPlotNotStrip) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -882,8 +872,8 @@ TEST(DockWidgetPlaceholderTest, IntegerDropConvertsPlaceholderToPlotNotStrip) {
   EXPECT_EQ(dock->objectWidget(), nullptr);
 }
 
-// String-only drop mounts the strip (nothing plottable); a follow-up integer
-// drop routes through tryAcceptSeriesKeys into the SAME mounted strip.
+// A string-only drop mounts the strip (nothing plottable); a follow-up integer drop routes through tryAcceptSeriesKeys
+// into the same mounted strip.
 TEST(DockWidgetPlaceholderTest, IntegerDropOntoMountedStripAddsRow) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -926,8 +916,8 @@ TEST(DockWidgetPlaceholderTest, IntegerDropOntoMountedStripAddsRow) {
   EXPECT_EQ(mounted->controller()->rowCount(), 2);
 }
 
-// Shared setup for the DockToolbar inline-rename behaviour: a PlotDocker with one
-// dock, exposing that dock's toolbar, title label, and (hidden) rename editor.
+// Shared setup for the DockToolbar inline-rename tests: a PlotDocker with one dock, exposing its toolbar, title label
+// and (hidden) rename editor.
 class DockToolbarRenameTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -941,8 +931,7 @@ class DockToolbarRenameTest : public ::testing::Test {
     ASSERT_NE(edit_, nullptr);
   }
 
-  // Double-click the label through its public seam (eventFilter), entering edit
-  // mode. Asserts the event is consumed.
+  // Double-click the label through its public seam (eventFilter), entering edit mode; asserts the event is consumed.
   void doubleClickLabel() {
     QMouseEvent dbl(
         QEvent::MouseButtonDblClick, QPointF(1, 1), QPointF(1, 1), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
@@ -959,8 +948,8 @@ class DockToolbarRenameTest : public ::testing::Test {
 };
 
 TEST_F(DockToolbarRenameTest, DoubleClickEntersInlineEditAndEnterCommits) {
-  // Double-clicking the title label swaps it for an in-place QLineEdit (no modal
-  // dialog); pressing Enter writes the edited text back and emits titleChanged.
+  // Double-clicking the title label swaps it for an in-place QLineEdit (no modal dialog); Enter writes the text back
+  // and emits titleChanged.
   label_->setText(u"original"_s);
 
   QString emitted_title;
@@ -990,8 +979,7 @@ TEST_F(DockToolbarRenameTest, DoubleClickEntersInlineEditAndEnterCommits) {
 }
 
 TEST_F(DockToolbarRenameTest, InlineEditEscapeRevertsWithoutRenaming) {
-  // Escape (and focus loss) cancels the inline edit, leaving the original name —
-  // matching the tab-rename behaviour.
+  // Escape (and focus loss) cancels the inline edit and keeps the original name, as the tab rename.
   label_->setText(u"original"_s);
 
   int emit_count = 0;
@@ -1011,14 +999,12 @@ TEST_F(DockToolbarRenameTest, InlineEditEscapeRevertsWithoutRenaming) {
 }
 
 TEST_F(DockToolbarRenameTest, InlineEditDefaultsToCompactWidthAndGrowsWithText) {
-  // The editor is a compact 300 px by default (not the full bar width) and only
-  // grows when the text would not fit.
+  // The editor is a compact 300 px by default (not the full bar width) and grows only when the text would not fit.
   toolbar_->resize(1200, 30);  // wide geometry so the growth cap is large
   label_->setText(u"short"_s);
 
   doubleClickLabel();
-  // A short name fits in the default width, so the editor stays at exactly 300 px
-  // (well under the wide toolbar).
+  // A short name fits the default width, so the editor stays at exactly 300 px (well under the wide toolbar).
   EXPECT_EQ(edit_->width(), 300);
 
   // Typing a long name grows the editor past the default, but not unbounded.
@@ -1028,9 +1014,8 @@ TEST_F(DockToolbarRenameTest, InlineEditDefaultsToCompactWidthAndGrowsWithText) 
 }
 
 TEST_F(DockToolbarRenameTest, TitleBarUsesGrabCursorWithButtonAndEditorOverrides) {
-  // The bar hints it is draggable with an open-hand cursor; clickable buttons
-  // and the rename editor keep their own (pointing-hand / text) cursors so the
-  // inherited grab hand doesn't bleed onto them.
+  // The bar hints it is draggable with an open-hand cursor; the buttons and the rename editor keep their own
+  // (pointing-hand, text) cursors so the inherited grab hand does not bleed onto them.
   EXPECT_EQ(toolbar_->cursor().shape(), Qt::OpenHandCursor);
   EXPECT_EQ(toolbar_->buttonClose()->cursor().shape(), Qt::PointingHandCursor);
   EXPECT_EQ(toolbar_->buttonFullscreen()->cursor().shape(), Qt::PointingHandCursor);
@@ -1160,10 +1145,8 @@ TEST(DockWidgetPlaceholderTest, ClearObjectContentRestoresPlaceholder) {
 }
 
 TEST(DockWidgetPlaceholderTest, RestoreRoutesObjectWidgetTagsToFactoryByKind) {
-  // Regression: a saved <scene2d> dock (and <scene3d>) must be recognized on
-  // restore and routed to the object-widget factory keyed by its XML tag. Before
-  // the generic-restore fix the layout parser collected only <plot> and
-  // <scene3d>, so <scene2d> docks silently vanished on reload.
+  // A saved <scene2d> (and <scene3d>) dock is recognized on restore and routed to the object-widget factory keyed by
+  // its XML tag, instead of vanishing on reload.
   for (const QString& kind : {u"scene2d"_s, u"scene3d"_s}) {
     PJ::SessionManager session;
     PJ::CatalogModel catalog(&session);
@@ -1282,8 +1265,7 @@ TEST(DockWidgetPlaceholderTest, ObjectDockRejectsAnIncompatibleHoverWithoutAddin
 }
 
 TEST(VisualizationPlaceholderTest, ThreeDIconIsEnabledAndNamed) {
-  // The 3D icon used to render disabled (greyed); it must now be enabled and
-  // full-tinted like the others. All three carry stable objectNames.
+  // The 3D icon is enabled and full-tinted like the others; all three carry stable objectNames.
   TestPlaceholderWidget placeholder;
   for (const char* name : {"buttonVizPlot", "buttonVizScene2D", "buttonVizScene3D", "buttonVizCustomWidget"}) {
     auto* button = iconButton(&placeholder, name);
@@ -1310,9 +1292,8 @@ TEST(VisualizationPlaceholderTest, IconClicksEmitVisualizationRequested) {
 }
 
 TEST(VisualizationPlaceholderTest, RealMouseClickPassesThroughDragFilterAndEmits) {
-  // The icon buttons carry the placeholder's drag event filter (for catalog
-  // drops). A plain mouse click must still reach the button and emit the request
-  // — i.e. the filter must not swallow press/release. click() bypasses the
+  // The icon buttons carry the placeholder's drag event filter (for catalog drops): a plain mouse click must still
+  // reach the button and emit the request, so the filter must not swallow press and release. click() bypasses the
   // filter, so drive real QMouseEvents through it.
   TestPlaceholderWidget placeholder;
   placeholder.resize(400, 200);
@@ -1360,8 +1341,8 @@ TEST(DockWidgetPlaceholderTest, SceneIconClickRequestsObjectFamilyWithoutBuildin
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
 
-  // Both the DockWidget signal and the PlotDocker re-emit must carry the dock +
-  // family, so MainWindow (the only scene-kind-aware module) can build the dock.
+  // Both the DockWidget signal and the PlotDocker re-emit carry the dock and family, so MainWindow (the only
+  // scene-kind-aware module) can build the dock.
   PJ::DockWidget* dock_signal_arg = nullptr;
   PJ::VisualizationKind dock_kind = PJ::VisualizationKind::kPlot;
   int dock_count = 0;
@@ -1387,7 +1368,7 @@ TEST(DockWidgetPlaceholderTest, SceneIconClickRequestsObjectFamilyWithoutBuildin
   EXPECT_EQ(dock_kind, PJ::VisualizationKind::kScene3D);
   EXPECT_EQ(docker_count, 1);
   EXPECT_EQ(docker_kind, PJ::VisualizationKind::kScene3D);
-  // The dock does not build the widget itself — that stays MainWindow's job.
+  // The dock does not build the widget itself: that stays MainWindow's job.
   EXPECT_EQ(dock->objectWidget(), nullptr);
   EXPECT_EQ(dock->plotWidget(), nullptr);
 }
@@ -1417,8 +1398,7 @@ TEST(DockWidgetPlaceholderTest, AdoptNullObjectWidgetRevertsToPlaceholder) {
   auto* dock = docker.plotAt(0);
   ASSERT_NE(dock, nullptr);
 
-  // A null build (unknown kind / factory refusal) must leave a usable placeholder
-  // rather than a blank dock.
+  // A null build (unknown kind, factory refusal) leaves a usable placeholder, not a blank dock.
   dock->adoptObjectWidget(nullptr);
 
   EXPECT_EQ(dock->objectWidget(), nullptr);
@@ -1427,9 +1407,8 @@ TEST(DockWidgetPlaceholderTest, AdoptNullObjectWidgetRevertsToPlaceholder) {
 }
 
 TEST(DockWidgetPlaceholderTest, EmptyObjectWidgetSurvivesLayoutSaveRestore) {
-  // Corner case behind the click-to-create-empty path: an empty object dock must
-  // round-trip through xmlSaveState/xmlLoadState (undo/redo + layout save). It must
-  // NOT be skipped on save, and must come back as an object widget, not a plot.
+  // An empty object dock (the click-to-create path) round-trips through xmlSaveState / xmlLoadState (undo/redo and
+  // layout save): it is not skipped on save and comes back as an object widget, not a plot.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
 
@@ -1461,10 +1440,9 @@ TEST(DockWidgetPlaceholderTest, EmptyObjectWidgetSurvivesLayoutSaveRestore) {
 }
 
 TEST(DockLayoutSizeTest, RestorePreservesSplitterProportions) {
-  // Save an asymmetric split, then restore it into a *fresh* docker that has not
-  // been shown/sized yet (the path TabbedPlotWidget takes: every tab gets a brand
-  // new PlotDocker, then xmlLoadState runs before it is laid out). The restored
-  // splitter must keep the saved proportions once shown.
+  // Save an asymmetric split and restore it into a fresh docker that has not been shown or sized (the path
+  // TabbedPlotWidget takes: every tab gets a new PlotDocker and xmlLoadState runs before layout); the restored splitter
+  // keeps the saved proportions once shown.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
 
@@ -1478,7 +1456,7 @@ TEST(DockLayoutSizeTest, RestorePreservesSplitterProportions) {
   auto* dock1 = splitFrom(source, dock0, 2);
   ASSERT_NE(dock1, nullptr);
 
-  // Force a known, strongly asymmetric 80/20 horizontal split.
+  // A known, strongly asymmetric 80/20 horizontal split.
   QSplitter* src_splitter = nullptr;
   for (QSplitter* splitter : source.findChildren<QSplitter*>()) {
     if (splitter->count() == 2) {
@@ -1512,14 +1490,12 @@ TEST(DockLayoutSizeTest, RestorePreservesSplitterProportions) {
   const double total = static_cast<double>(sizes[0] + sizes[1]);
   ASSERT_GT(total, 0.0);
   const double ratio0 = static_cast<double>(sizes[0]) / total;
-  // The saved layout is 80/20. The bug collapsed it toward 50/50 because the
-  // restore measured widget geometry before the docker was laid out.
+  // The saved layout is 80/20; measuring widget geometry before the docker is laid out would collapse it toward 50/50.
   EXPECT_NEAR(ratio0, 0.8, 0.02) << "restored sizes=" << sizes[0] << "," << sizes[1];
 }
 
 TEST(DockLayoutSizeTest, RestorePreservesThreeWaySplitterProportions) {
-  // A 3-way asymmetric split exercises a multi-child splitter, where geometry-based
-  // restore distorts every pane, not just one boundary.
+  // A 3-way asymmetric split exercises a multi-child splitter, where geometry-based restore distorts every pane.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
 
@@ -1572,10 +1548,9 @@ TEST(DockLayoutSizeTest, RestorePreservesThreeWaySplitterProportions) {
 }
 
 TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWidget) {
-  // Streaming seed: an empty click-created dock has no data to play, so adopt does
-  // NOT seed playback. When its FIRST topic is dropped (absorbed in place), the
-  // dock signals firstObjectTopicAdded so the host can seed live playback — and it
-  // must fire exactly once (subsequent topics are normal additions).
+  // Streaming seed: an empty click-created dock has no data to play, so adopting it does not seed playback. Its first
+  // topic, absorbed in place, makes the dock signal firstObjectTopicAdded so the host can seed live playback, exactly
+  // once (later topics are normal additions).
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream.mcap"});
@@ -1587,8 +1562,8 @@ TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWid
   ASSERT_EQ(items.size(), 2U);
 
   PJ::PlotDocker docker(u"test"_s, &session, &catalog);
-  // A factory is required for the object-drop path to reach the in-place "offer",
-  // even though the adopted widget is the one that absorbs the topics.
+  // A factory is required for the object-drop path to reach the in-place "offer", though the adopted widget absorbs the
+  // topics.
   docker.setObjectWidgetFactory([](const QString&, const PJ::ObjectDropSeed*, QWidget* parent) -> PJ::IDataWidget* {
     return new FakeAcceptingObjectWidget(parent);
   });
@@ -1603,8 +1578,7 @@ TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWid
       QMetaObject::invokeMethod(
           dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{items[0].key})));
   EXPECT_EQ(seed_count, 1);
-  // Dragging a topic must NOT rename the dock — it keeps its default "..." name
-  // (the user renames it explicitly via the title bar if they want to).
+  // A drop does not rename the dock: it keeps its default "..." name (the user renames it through the title bar).
   EXPECT_EQ(dock->name(), u"..."_s);
 
   ASSERT_TRUE(
@@ -1615,9 +1589,8 @@ TEST(DockWidgetPlaceholderTest, FirstObjectTopicAddedFiresOnceForAdoptedEmptyWid
 }
 
 TEST(DockWidgetPlaceholderTest, IncompatibleObjectDropOntoCommittedObjectWidgetIsRejected) {
-  // A committed object dock that refuses the dropped topic (a different family,
-  // e.g. an image dropped on a 3D view or a pointcloud on a 2D view) must keep
-  // its widget — NOT be replaced by a factory-created one of the other family.
+  // A committed object dock that refuses the dropped topic (a different family: an image on a 3D view, a pointcloud on
+  // a 2D view) keeps its widget and gets no factory-created one of the other family.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1649,8 +1622,7 @@ TEST(DockWidgetPlaceholderTest, IncompatibleObjectDropOntoCommittedObjectWidgetI
 }
 
 TEST(DockWidgetPlaceholderTest, ScalarDropOntoCommittedObjectWidgetIsRejected) {
-  // The mirror case: a scalar dropped on a committed object dock must not replace
-  // it with a plot.
+  // The mirror case: a scalar dropped on a committed object dock does not replace it with a plot.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1674,7 +1646,7 @@ TEST(DockWidgetPlaceholderTest, ScalarDropOntoCommittedObjectWidgetIsRejected) {
 }
 
 TEST(DockWidgetPlaceholderTest, CompatibleObjectDropOntoCommittedWidgetIsAcceptedInPlace) {
-  // Regression: a compatible object drop is still absorbed in place (not rejected).
+  // A compatible object drop is still absorbed in place, not rejected.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1706,9 +1678,8 @@ TEST(DockWidgetPlaceholderTest, CompatibleObjectDropOntoCommittedWidgetIsAccepte
 }
 
 TEST(DockWidgetPlaceholderTest, ObjectDropOntoCommittedPlotIsRejected) {
-  // The fourth cross-family combination: an object topic dropped on a committed
-  // plot dock must be rejected, not replace the plot (which would destroy its
-  // curves).
+  // The fourth cross-family combination: an object topic dropped on a committed plot dock is rejected, so the plot and
+  // its curves survive.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1744,7 +1715,7 @@ TEST(DockWidgetPlaceholderTest, ObjectDropOntoCommittedPlotIsRejected) {
   ASSERT_NE(dock->plotWidget(), nullptr);
   ASSERT_EQ(dock->plotWidget()->curveList().size(), 1U);
 
-  // Dropping an object topic must be rejected: the plot and its curve are kept.
+  // Dropping an object topic is rejected: the plot and its curve are kept.
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{image_key})));
@@ -1756,15 +1727,13 @@ TEST(DockWidgetPlaceholderTest, ObjectDropOntoCommittedPlotIsRejected) {
 
 // ---------- plotWidgetAdded fires for every creation path -------------------
 //
-// MainWindow applies the global view toggles (grid, dots, legend, and the time
-// TRACKER display level) to each plot through its onPlotAdded slot, which is
-// wired to PlotDocker::plotWidgetAdded. If a creation path forgets to emit that
-// signal, the new plot silently keeps CurveTracker's constructor default
-// (kValue) and ignores the user's global tracker setting. These tests pin the
-// signal for each way a plot can be born.
+// MainWindow applies the global view toggles (grid, dots, legend, the tracker display level) to each plot through its
+// onPlotAdded slot, wired to PlotDocker::plotWidgetAdded. A creation path that does not emit it leaves the new plot on
+// CurveTracker's constructor default (kValue), ignoring the global tracker setting. These tests pin the signal for each
+// way a plot can be born.
 
-// Simulates MainWindow: every plot that announces itself gets the global tracker
-// parameter applied, exactly as applyGlobalToggles() does.
+// Simulates MainWindow: every plot that announces itself gets the global tracker parameter applied, as
+// applyGlobalToggles() does.
 struct TrackerConfigHarness {
   TrackerConfigHarness(PJ::PlotDocker& docker, PJ::CurveTracker::Parameter global) : global_param(global) {
     QObject::connect(&docker, &PJ::PlotDocker::plotWidgetAdded, &docker, [this](PJ::PlotWidget* plot) {
@@ -1802,8 +1771,8 @@ TEST(NewPlotTrackerConfig, DropCreatedPlotInheritsGlobalTrackerParameter) {
 }
 
 TEST(NewPlotTrackerConfig, IconClickCreatedPlotInheritsGlobalTrackerParameter) {
-  // The PR #211 path: clicking the placeholder's plot icon builds an empty plot
-  // via onVisualizationRequested(kPlot) -> ensurePlotWidget().
+  // Clicking the placeholder's plot icon builds an empty plot through onVisualizationRequested(kPlot) ->
+  // ensurePlotWidget().
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   PJ::PlotDocker docker(u"test"_s, &session, &catalog);
@@ -1821,8 +1790,8 @@ TEST(NewPlotTrackerConfig, IconClickCreatedPlotInheritsGlobalTrackerParameter) {
 }
 
 TEST(NewPlotTrackerConfig, SplitCreatedPlotInheritsGlobalTrackerParameter) {
-  // Splitting yields a new placeholder dock; dropping a curve into it creates the
-  // plot. The split-born dock must also be wired so its plot announces itself.
+  // Splitting yields a new placeholder dock; dropping a curve into it creates the plot, and the split-born dock must
+  // be wired so its plot announces itself.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1847,10 +1816,9 @@ TEST(NewPlotTrackerConfig, SplitCreatedPlotInheritsGlobalTrackerParameter) {
 }
 
 TEST(NewPlotTrackerConfig, PlotInSecondTabInheritsGlobalTrackerParameter) {
-  // The screenshot scenario: a plot created in a SECOND tab. Mimics MainWindow's
-  // tab wiring exactly — tabAdded wires the new docker's plotWidgetAdded, and the
-  // tab created in the TabbedPlotWidget constructor is wired separately (the role
-  // wireExistingPlots() plays at startup).
+  // A plot created in a second tab, with MainWindow's tab wiring: tabAdded wires the new docker's plotWidgetAdded, and
+  // the tab created in the TabbedPlotWidget constructor is wired separately (the role of wireExistingPlots() at
+  // startup).
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1890,12 +1858,9 @@ TEST(NewPlotTrackerConfig, PlotInSecondTabInheritsGlobalTrackerParameter) {
 
 // ---------- kLineOnly tracker keeps its value box hidden --------------------
 //
-// The real bug behind "the new plot's tracker ignores the global line-only
-// setting and shows a box": the tracker PARAMETER is applied correctly, but
-// CurveTracker::setEnabled() force-shows the value box, and several callers
-// (PlotWidget::addCurve, setTrackerEnabled, …) re-enable the tracker WITHOUT a
-// following setPosition to re-apply the parameter-based visibility. So adding a
-// curve to a line-only plot resurrects a stale "time : …" box.
+// The tracker parameter is applied correctly, but CurveTracker::setEnabled() force-shows the value box, and several
+// callers (PlotWidget::addCurve, setTrackerEnabled, ...) re-enable the tracker without a following setPosition to
+// re-apply the parameter-based visibility: adding a curve to a line-only plot must not bring back a "time : ..." box.
 
 TEST(NewPlotTrackerConfig, LineOnlyTrackerKeepsValueBoxHiddenWhenCurveAdded) {
   PJ::SessionManager session;
@@ -1910,15 +1875,14 @@ TEST(NewPlotTrackerConfig, LineOnlyTrackerKeepsValueBoxHiddenWhenCurveAdded) {
   plot.setTrackerParameter(PJ::CurveTracker::kLineOnly);
   ASSERT_FALSE(plot.trackerValueBoxVisible());
 
-  // The user's path: drag a curve in. addCurve() re-enables the tracker; a
-  // line-only tracker must not resurrect its value box.
+  // Dragging a curve in: addCurve() re-enables the tracker; a line-only tracker must not bring back its value box.
   ASSERT_NE(plot.addCurve(curves[0].name), nullptr);
   EXPECT_FALSE(plot.trackerValueBoxVisible());
 }
 
 TEST(NewPlotTrackerConfig, LineOnlyTrackerStaysHiddenWhenReEnabled) {
-  // The restore/undo path: xmlLoadState calls setTrackerEnabled(true) after the
-  // global toggles already set kLineOnly. Re-enabling must not show the box.
+  // The restore/undo path: xmlLoadState calls setTrackerEnabled(true) after the global toggles set kLineOnly;
+  // re-enabling must not show the box.
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1937,10 +1901,8 @@ TEST(NewPlotTrackerConfig, LineOnlyTrackerStaysHiddenWhenReEnabled) {
 }
 
 TEST(NewPlotTrackerConfig, ValueTrackerShowsValueBoxWhenCurveAdded) {
-  // The mirror invariant: a line+value tracker MUST keep its value box when a
-  // curve is added. (Regression guard — an over-broad kLineOnly fix once routed
-  // setEnabled through setPosition, which hid the box for kValue because the
-  // view isn't fit yet at addCurve time.)
+  // The mirror invariant: a line+value tracker keeps its value box when a curve is added (routing setEnabled through
+  // setPosition would hide it, as the view is not fit yet at addCurve time).
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
@@ -1957,11 +1919,9 @@ TEST(NewPlotTrackerConfig, ValueTrackerShowsValueBoxWhenCurveAdded) {
 
 // --- Object-classified placeholder drops (demand-driven streaming) ---
 //
-// An advertised topic classified as an object (e.g. kPointCloud) has no
-// storage id yet — data only starts flowing once the drop registers demand.
-// Dropping one on an empty tile must materialize a dock of the right family
-// through the factory (null-id seed) and emit placeholderTopicDropped so the
-// shell can stage the pending drop that completes when data arrives.
+// An advertised topic classified as an object (kPointCloud) has no storage id yet: data flows only once the drop
+// registers demand. Dropping one on an empty tile materializes a dock of the right family through the factory (null-id
+// seed) and emits placeholderTopicDropped so the shell can stage the pending drop that completes when data arrives.
 
 namespace {
 
@@ -2057,7 +2017,7 @@ TEST(DockWidgetPlaceholderTest, MultiObjectPlaceholderDropPendsEveryKey) {
       &docker, &PJ::PlotDocker::placeholderTopicDropped, &docker,
       [&](PJ::DockWidget*, PJ::DatasetId, QString topic, PJ::sdk::BuiltinObjectType) { dropped_topics << topic; });
 
-  // A two-key drop must build ONE dock and stage a pending drop for EACH topic.
+  // A two-key drop builds one dock and stages a pending drop for each topic.
   const QStringList both_keys{front_key, back_key};
   ASSERT_TRUE(
       QMetaObject::invokeMethod(dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, both_keys)));
@@ -2269,7 +2229,7 @@ TEST(DockWidgetPlaceholderTest, ObjectPlaceholderDropOntoCommittedPlotIsRejected
           dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{curves[0].name})));
   ASSERT_NE(dock->plotWidget(), nullptr);
 
-  // An object placeholder dropped on a committed plot must not replace it.
+  // An object placeholder dropped on a committed plot does not replace it.
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{placeholder_key})));

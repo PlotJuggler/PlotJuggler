@@ -29,37 +29,25 @@ using namespace Qt::StringLiterals;
 namespace pj::scene3d {
 namespace {
 
-// Post-process flags shared by both entry points (design §B.4):
-//   Triangulate          — render passes draw triangles only.
-//   GenSmoothNormals      — generate normals only for meshes that arrive WITHOUT
-//                           any (assimp skips meshes that already carry normals,
-//                           e.g. STL/OBJ, leaving their normals untouched).
-//   JoinIdenticalVertices — index the soup so we get a real index buffer.
-//   FlipUVs               — match the GL texture origin convention.
-//   ImproveCacheLocality  — reorder indices for the post-T&L vertex cache
-//                           (added in lieu of meshoptimizer).
-//   CalcTangentSpace      — generate per-vertex tangents/bitangents for normal
-//                           mapping (only for meshes that carry UVs + normals).
-// Deliberately NOT aiProcess_PreTransformVertices: it bakes the scene graph into
-// world space. We keep the node hierarchy so appendNode() can apply each node's
-// transform itself — including the root transform assimp's Collada importer uses
-// to normalize the file's <up_axis> to assimp's internal Y-up convention.
+// Post-process flags shared by both entry points. GenSmoothNormals only adds normals to meshes that arrive WITHOUT any
+// (assimp leaves existing ones, e.g. STL/OBJ, untouched); ImproveCacheLocality reorders indices for the post-T&L
+// vertex cache (instead of meshoptimizer); CalcTangentSpace needs UVs + normals. Deliberately NOT
+// aiProcess_PreTransformVertices: it bakes the scene graph into world space, while appendNode() applies each node's
+// transform itself, including the root transform assimp's Collada importer uses to normalize <up_axis> to assimp's
+// internal Y-up.
 constexpr unsigned int kPostProcessFlags = aiProcess_Triangulate | aiProcess_GenSmoothNormals |
                                            aiProcess_JoinIdenticalVertices | aiProcess_FlipUVs |
                                            aiProcess_ImproveCacheLocality | aiProcess_CalcTangentSpace;
 
-// Explicit Y-up -> Z-up rotation (+90deg about X): (x, y, z) -> (x, -z, y).
-// Applied to formats that assimp delivers in Y-up — glTF (Y-up by spec) AND
-// Collada, which assimp's importer normalizes from the file's <up_axis> to its
-// internal Y-up. Verified empirically (zup_marker.dae fixture): a Z_UP-authored
-// apex at (0,0,1) arrives as (0,1,0) and is restored to (0,0,1) by this flip.
+// Explicit Y-up -> Z-up rotation (+90deg about X): (x, y, z) -> (x, -z, y). Applied to formats assimp delivers Y-up:
+// glTF (Y-up by spec) and Collada, which assimp's importer normalizes from <up_axis> to its internal Y-up (observed
+// with the zup_marker.dae fixture: a Z_UP-authored apex at (0,0,1) arrives as (0,1,0)).
 glm::mat3 zUpFromYUpRotation() {
-  // R_x(+90deg): (x, y, z) -> (x, -z, y).
   return glm::mat3(glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
 }
 
-// FNV-1a over a byte span — a cheap, stable content hash for embedded-texture
-// cache keys (dedups identical embedded images and survives a QRhi recreation).
+// FNV-1a over a byte span: a cheap, stable content hash for embedded-texture cache keys (dedups identical embedded
+// images and survives a QRhi recreation).
 std::string contentHashKey(const std::uint8_t* data, std::size_t size) {
   const std::uint64_t h = PJ::fnv1a(std::span(data, size));
   std::array<char, 17> buf{};
@@ -67,14 +55,11 @@ std::string contentHashKey(const std::uint8_t* data, std::size_t size) {
   return std::string("emb:") + buf.data();
 }
 
-// Resolve one texture map of a material into a TextureSource. Embedded glTF/GLB
-// images (assimp ref "*N") become inline bytes keyed by content hash; external
-// refs become an absolute filesystem path (resolved relative to base_dir, with a
-// small extension-retry for refs that drop their suffix); with no base_dir (an
-// in-memory import) every ref stays `unresolved_ref`, never a local path. Only compressed
-// embedded images (PNG/JPEG, the universal glTF case where aiTexture::mHeight ==
-// 0) are supported; raw embedded RGBA (mHeight > 0, rare) is skipped and the
-// slot stays empty.
+// Resolves one texture map of a material into a TextureSource. Embedded glTF/GLB images (assimp ref "*N") become inline
+// bytes keyed by content hash; external refs become an absolute path (relative to base_dir, retrying extensions for
+// refs that drop their suffix); with no base_dir (an in-memory import) every ref stays `unresolved_ref`, never a local
+// path. Only compressed embedded images (PNG/JPEG, aiTexture::mHeight == 0) are supported; raw embedded RGBA
+// (mHeight > 0) is skipped and the slot stays empty.
 struct TextureCopyBudget {
   std::uint64_t bytes = 0;
   bool exceeded = false;
@@ -98,9 +83,8 @@ TextureSource resolveTexture(
       return {};  // missing, or raw-RGBA embedded (unsupported) — leave untextured.
     }
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(tex->pcData);
-    // Charged once per resolved slot (not per distinct image): every resolved
-    // slot retains its own encoded copy below, so per-copy charging is what
-    // bounds worst-case CPU retention.
+    // Charged once per resolved slot (not per distinct image): every resolved slot retains its own encoded copy below,
+    // so per-copy charging is what bounds worst-case CPU retention.
     if (texture_budget != nullptr &&
         (texture_budget->bytes + tex->mWidth > kSceneLimits.max_model_encoded_texture_bytes_per_mesh)) {
       texture_budget->exceeded = true;
@@ -145,9 +129,8 @@ TextureSource resolveTexture(
   return source;
 }
 
-// Read a full metallic-roughness material (factors + five texture maps) from one
-// assimp material. `has_pbr` records whether the source actually specified PBR
-// factors, so the renderer can fall back to the scene-wide shading defaults for
+// Reads a full metallic-roughness material (factors + five texture maps) from one assimp material. `has_pbr` records
+// whether the source specified PBR factors, so the renderer can fall back to the scene-wide shading defaults for
 // materials that carry none (STL, untextured primitives).
 Material readMaterial(
     const aiScene* scene, unsigned int material_index, const QString& base_dir, TextureCopyBudget* texture_budget) {
@@ -201,9 +184,7 @@ Material readMaterial(
     out.alpha_cutoff = cutoff;
   }
 
-  // glTF doubleSided (and whatever other formats assimp maps to TWOSIDED): when
-  // back-face culling is enabled, the renderer drops it for these submeshes
-  // (see Material::double_sided in mesh_data.h).
+  // glTF doubleSided (and whatever other formats assimp maps to TWOSIDED), surfaced as Material::double_sided.
   int two_sided = 0;
   if (mat->Get(AI_MATKEY_TWOSIDED, two_sided) == AI_SUCCESS) {
     out.double_sided = two_sided != 0;
@@ -213,9 +194,8 @@ Material readMaterial(
   if (!out.base_color.named()) {
     out.base_color = resolveTexture(scene, mat, aiTextureType_DIFFUSE, base_dir, texture_budget);
   }
-  // assimp's glTF2 importer exposes the packed metallic-roughness image under the
-  // metalness slot (and aiTextureType_UNKNOWN on older versions) — same file, the
-  // shader reads G=roughness/B=metallic.
+  // assimp's glTF2 importer exposes the packed metallic-roughness image under the metalness slot (and
+  // aiTextureType_UNKNOWN on older versions): the same file, the shader reads G=roughness/B=metallic.
   out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_METALNESS, base_dir, texture_budget);
   if (!out.metallic_roughness.named()) {
     out.metallic_roughness = resolveTexture(scene, mat, aiTextureType_DIFFUSE_ROUGHNESS, base_dir, texture_budget);
@@ -232,12 +212,11 @@ Material readMaterial(
   return out;
 }
 
-// Walk the node graph, accumulating each mesh's transformed vertices/indices.
-// `node_transform` is the cumulative parent transform (column-major glm).
+// Walks the node graph, accumulating each mesh's transformed vertices/indices; `node_transform` is the cumulative
+// parent transform (column-major glm).
 void appendNode(
     const aiScene* scene, const aiNode* node, const glm::mat4& parent_transform, const glm::mat3& extra_rotation,
     const std::vector<std::shared_ptr<const Material>>& materials, MeshData& out) {
-  // assimp row-major aiMatrix4x4 -> glm column-major.
   const aiMatrix4x4& m = node->mTransformation;
   glm::mat4 local(
       m.a1, m.b1, m.c1, m.d1,   // col 0
@@ -267,10 +246,9 @@ void appendNode(
       }
       vert.position = extra_rotation * pos;
       vert.normal = glm::normalize(extra_rotation * nrm);
-      // Vertex color carries ONLY genuine per-vertex colors (glTF COLOR_0); the
-      // material base color lives in SubMesh::material and is applied by the
-      // shader. A white default leaves untextured/non-vertex-colored meshes to be
-      // driven purely by the material factor (no double-application).
+      // Vertex colour carries ONLY genuine per-vertex colours (glTF COLOR_0); the material base colour lives in
+      // SubMesh::material and is applied by the shader. A white default leaves untextured meshes driven purely by the
+      // material factor (no double-application).
       vert.color =
           mesh->HasVertexColors(0)
               ? glm::vec4(mesh->mColors[0][v].r, mesh->mColors[0][v].g, mesh->mColors[0][v].b, mesh->mColors[0][v].a)
@@ -279,9 +257,8 @@ void appendNode(
         const aiVector3D& uv = mesh->mTextureCoords[0][v];
         vert.uv = glm::vec2(uv.x, uv.y);
       }
-      // Tangent basis for normal mapping (aiProcess_CalcTangentSpace). Transform
-      // into world like the geometry, re-orthogonalize against the final normal
-      // (Gram-Schmidt), and store the bitangent handedness in .w.
+      // Tangent basis for normal mapping (aiProcess_CalcTangentSpace): transformed into world like the geometry,
+      // re-orthogonalized against the final normal (Gram-Schmidt), bitangent handedness stored in .w.
       if (mesh->HasTangentsAndBitangents()) {
         const aiVector3D& t = mesh->mTangents[v];
         const aiVector3D& b = mesh->mBitangents[v];
@@ -299,8 +276,8 @@ void appendNode(
     const std::size_t range_start = out.indices.size();
     for (unsigned int f = 0; f < mesh->mNumFaces; ++f) {
       const aiFace& face = mesh->mFaces[f];
-      // aiProcess_Triangulate guarantees 3 indices per face; skip any degenerate
-      // line/point primitive assimp may still emit for stray geometry.
+      // aiProcess_Triangulate guarantees 3 indices per face; skip any degenerate line/point primitive assimp may still
+      // emit.
       if (face.mNumIndices != 3) {
         continue;
       }
@@ -325,9 +302,8 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
     out.error = u"assimp returned no scene for %1"_s.arg(source);
     return out;
   }
-  // Assimp has already parsed the bounded source bytes, but do not let
-  // file-declared mesh counts drive our own material/vertex/index allocations.
-  // Widen every accumulation before comparing with the scene limits.
+  // Assimp has already parsed the bounded source bytes, but file-declared mesh counts must not drive our own
+  // material/vertex/index allocations: widen every accumulation before comparing with the scene limits.
   std::uint64_t vertex_count = 0;
   std::uint64_t index_count = 0;
   std::uint64_t submesh_count = 0;
@@ -387,8 +363,8 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
   out.vertices.reserve(static_cast<std::size_t>(vertex_count));
   out.indices.reserve(static_cast<std::size_t>(index_count));
   out.submeshes.reserve(static_cast<std::size_t>(submesh_count));
-  // Resolve each material once (embedded-texture extraction is per-material, not
-  // per-mesh) and index into it by aiMesh::mMaterialIndex while walking the graph.
+  // Resolve each material once (embedded-texture extraction is per-material, not per-mesh) and index into it by
+  // aiMesh::mMaterialIndex while walking the graph.
   std::vector<std::shared_ptr<const Material>> materials;
   materials.reserve(scene->mNumMaterials);
   TextureCopyBudget texture_budget;
@@ -423,20 +399,17 @@ MeshData buildMeshData(const aiScene* scene, bool flip_to_z_up, const QString& s
 
 bool MeshLoader::wantsZUpFlip(const QString& format_hint) {
   const QString h = format_hint.toLower();
-  // glTF is Y-up by spec; assimp also normalizes Collada's <up_axis> to its
-  // internal Y-up (verified empirically — see zUpFromYUpRotation). Both need the
-  // explicit Y->Z flip into our Z-up world. STL/OBJ carry no up-axis convention
-  // and assimp passes their coordinates through unrotated, so they stay false.
+  // glTF is Y-up by spec and assimp also normalizes Collada's <up_axis> to its internal Y-up (see zUpFromYUpRotation):
+  // both need the explicit Y->Z flip into our Z-up world. STL/OBJ carry no up-axis convention and assimp passes their
+  // coordinates through unrotated, so they stay false.
   return h == QLatin1String("glb") || h == QLatin1String("gltf") || h == QLatin1String("gltf2") ||
          h == QLatin1String("dae") || h == QLatin1String("collada");
 }
 
 MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
-  // Exception barrier: assimp drives allocations from file-declared counts and
-  // buildMeshData reserves from them too, so hostile input can throw
-  // bad_alloc/length_error. This runs on a QtConcurrent worker — an escaped
-  // exception would be rethrown by QFuture::result() on the GUI thread and
-  // terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
+  // Exception barrier: assimp drives allocations from file-declared counts and buildMeshData reserves from them too, so
+  // hostile input can throw bad_alloc/length_error. This runs on a QtConcurrent worker: an escaped exception would be
+  // rethrown by QFuture::result() on the GUI thread and terminate the app. Mirrors pointcloud_codecs.cpp's barriers.
   try {
     const QFileInfo source_info(path);
     if (source_info.size() < 0 ||
@@ -504,18 +477,16 @@ MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& fo
 }
 
 namespace {
-// Compose the cache key from the resolved path and the effective flip. A NUL
-// byte separates them: NUL cannot appear in a filesystem path, so the two flip
-// variants of one path can never collide with each other or with another path.
+// Composes the cache key from the resolved path and the effective flip, separated by a NUL byte (it cannot appear in a
+// filesystem path), so the two flip variants of one path never collide with each other or with another path.
 QString meshCacheKey(const QString& resolved_path, bool flip) {
   return resolved_path + QLatin1Char('\0') + QLatin1Char(flip ? '1' : '0');
 }
 }  // namespace
 
 QFuture<MeshData> MeshLoader::load(const QString& resolved_path, std::optional<bool> flip_override) {
-  // assimp infers the format from the extension. The effective flip is the
-  // caller's override when given, else the per-format default (wantsZUpFlip):
-  // DAE/glTF arrive Y-up and flip; STL/OBJ stay as-is.
+  // assimp infers the format from the extension. The effective flip is the caller's override when given, else the
+  // per-format default (wantsZUpFlip): DAE/glTF arrive Y-up and flip; STL/OBJ stay as-is.
   const bool flip = flip_override.value_or(wantsZUpFlip(QFileInfo(resolved_path).suffix()));
   const QString key = meshCacheKey(resolved_path, flip);
   QMutexLocker lock(&cache_mutex_);
@@ -544,8 +515,8 @@ void MeshLoader::clearCache() {
 
 void MeshLoader::evict(const QString& resolved_path) {
   QMutexLocker lock(&cache_mutex_);
-  // The cache is keyed by path+effective-flip; remove both flip variants so a
-  // Retry re-imports regardless of which override was in effect at load time.
+  // The cache is keyed by path+effective-flip: remove both variants so a Retry re-imports whichever override was in
+  // effect at load time.
   cache_.remove(meshCacheKey(resolved_path, false));
   cache_.remove(meshCacheKey(resolved_path, true));
 }

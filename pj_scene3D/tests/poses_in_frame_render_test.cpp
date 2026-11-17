@@ -35,7 +35,6 @@ glm::vec4 apply(const glm::mat4& m, glm::vec4 v) {
   return m * v;
 }
 
-// One triad = exactly three arm instances (X, Y, Z), in that order, per pose.
 TEST(PosesInFrameRenderTest, ProducesThreeInstancesPerPose) {
   const PosesInFrame msg = twoPoseMessage();
   const std::vector<PoseTriadInstance> out = buildPoseTriadInstances(msg, {.axis_length = 0.2f, .opacity = 1.0f});
@@ -69,7 +68,6 @@ TEST(PosesInFrameRenderTest, ArmsOrientLocalXOntoWorldAxes) {
   EXPECT_NEAR(z_dir.z, len, 1e-5f);
 }
 
-// Every arm of a pose is anchored at that pose's position.
 TEST(PosesInFrameRenderTest, ArmOriginSitsAtPosePosition) {
   const PosesInFrame msg = twoPoseMessage();
   const std::vector<PoseTriadInstance> out = buildPoseTriadInstances(msg, {.axis_length = 0.3f, .opacity = 1.0f});
@@ -97,7 +95,6 @@ TEST(PosesInFrameRenderTest, YawedPoseRotatesArms) {
   EXPECT_NEAR(x_dir.z, 0.0f, 1e-5f);
 }
 
-// Opacity rides in the color alpha and is clamped to [0,1].
 TEST(PosesInFrameRenderTest, OpacityGoesIntoAlphaClamped) {
   PosesInFrame msg;
   msg.poses.push_back(Pose{});
@@ -112,7 +109,6 @@ TEST(PosesInFrameRenderTest, OpacityGoesIntoAlphaClamped) {
   }
 }
 
-// Standard coordinate-frame colors: X red-dominant, Y green-dominant, Z blue-dominant.
 TEST(PosesInFrameRenderTest, PerAxisColorDominance) {
   PosesInFrame msg;
   msg.poses.push_back(Pose{});
@@ -132,14 +128,12 @@ TEST(PosesInFrameRenderTest, EmptyPosesYieldEmpty) {
   EXPECT_TRUE(buildPoseTriadInstances(msg, {.axis_length = 0.2f, .opacity = 1.0f}).empty());
 }
 
-// X-arrow-only mode: exactly one arm (the X axis) per pose, not three.
 TEST(PosesInFrameRenderTest, XArrowOnlyProducesOneArmPerPose) {
   const PosesInFrame msg = twoPoseMessage();  // 2 poses
   const std::vector<PoseTriadInstance> out = buildPoseTriadInstances(msg, {.axis_length = 0.3f, .x_arrow_only = true});
   EXPECT_EQ(out.size(), 2U);
 }
 
-// The single arm is still the X axis: local +X maps to world +X, scaled by length.
 TEST(PosesInFrameRenderTest, XArrowOnlyArmPointsAlongLocalX) {
   PosesInFrame msg;
   msg.poses.push_back(Pose{});  // origin, identity
@@ -163,8 +157,7 @@ TEST(PosesInFrameRenderTest, XArrowOnlyWithoutOverrideIsAxisRed) {
   EXPECT_GT(out[0].color.r, out[0].color.b);
 }
 
-// Override color in FULL-TRIAD mode: all three arms carry the override color
-// (rgb) instead of the per-axis R/G/B. This is the case the redesign adds.
+// Override colour in FULL-TRIAD mode: all three arms carry the override colour instead of the per-axis R/G/B.
 TEST(PosesInFrameRenderTest, OverrideColorRecolorsWholeTriad) {
   PosesInFrame msg;
   msg.poses.push_back(Pose{});

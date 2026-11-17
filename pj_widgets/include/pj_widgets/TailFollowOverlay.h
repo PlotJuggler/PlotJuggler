@@ -9,10 +9,9 @@
 
 namespace PJ {
 
-// The "jump to the latest" affordance of a tail-following scroll area: a round
-// HUD button pinned to the viewport's bottom-right corner, shown only while the
-// reader has scrolled away from the end. Clicking scrolls to the end. Parented
-// to the viewport so it paints over the content and moves with it.
+// The "jump to the latest" affordance of a tail-following scroll area: a round HUD button at the viewport's
+// bottom-right corner, shown only while the reader has scrolled away from the end; clicking scrolls to the end.
+// Parented to the viewport, so it paints over the content and moves with it.
 class TailFollowOverlay : public QWidget {
   Q_OBJECT
  public:

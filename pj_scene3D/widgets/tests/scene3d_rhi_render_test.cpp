@@ -3,21 +3,14 @@
 //
 // Headless render harness for the QRhi Scene3D renderer.
 //
-// QRhiWidget::grabFramebuffer() renders a frame synchronously on a QPA with
-// RHI-based rendering (xcb, wayland); the `offscreen` QPA has none, so this
-// runner never defaults to it. CI runs it under Xvfb with Mesa llvmpipe
-// (OpenGL) and lavapipe (Vulkan), and on Windows with the `windows` QPA on D3D11
-// WARP; PJ_GRAPHICS_API picks the backend and PJ_REQUIRE_GPU_TESTS=1 turns a
-// missing one into a failure.
+// QRhiWidget::grabFramebuffer() renders synchronously only on a QPA with RHI-based rendering (xcb, wayland); the
+// `offscreen` QPA has none, so this runner never defaults to it. PJ_GRAPHICS_API picks the backend and
+// PJ_REQUIRE_GPU_TESTS=1 turns a missing one into a failure. A never-shown widget is good for one grab only
+// (Qt 6.11.1, see grabPresentedFrame()).
 //
-// Scenes are grabbed from a shown top-level through grabPresentedFrame(); a
-// never-shown widget is good for one grab only (Qt 6.11.1, see that method).
-//
-// Checks are image DIFFS (same scene with one element toggled) compared against
-// the camera's own projection, so they hold regardless of theme colours and
-// tonemapping but catch Y/X flips, broken depth conventions and blend ordering.
-// PJ_RHI_TEST_DUMP_DIR=<dir> saves every grabbed image as a PNG and appends the
-// view's per-frame counters to <dir>/counters.txt (for before/after audits).
+// Checks are image DIFFS (same scene, one element toggled) compared against the camera's own projection: they hold
+// regardless of theme colours and tonemapping but catch Y/X flips, broken depth conventions and blend ordering.
+// PJ_RHI_TEST_DUMP_DIR=<dir> saves every grabbed image as a PNG and appends the per-frame counters to counters.txt.
 
 #include <gtest/gtest.h>
 
@@ -87,7 +80,6 @@ using pj::scene3d::test::differingPixels;
 using pj::scene3d::test::gizmoRect;
 using pj::scene3d::test::maxChannelDelta;
 
-// Logs the backend + driver per view (runs once the shared main's QApplication exists).
 struct GraphicsLog : ::testing::Environment {
   void SetUp() override {
     QLoggingCategory::setFilterRules(u"pj.graphics.info=true"_s);
@@ -98,8 +90,6 @@ struct GraphicsLog : ::testing::Environment {
 constexpr char kFrame[] = "base_link";
 constexpr QSize kViewSize{480, 360};
 
-// Backend the run asked for (PJ_GRAPHICS_API, else the platform default), as
-// QRhi::backendName() spells it.
 QString requestedBackend() {
   return pjRhiBackendName(PJ::preferredGraphicsApi());
 }
@@ -114,7 +104,6 @@ void dump(const QImage& image, const char* name) {
   image.save(u"%1/%2_%3_%4.png"_s.arg(dir, requestedBackend(), QString::fromLatin1(test->name()), QLatin1String(name)));
 }
 
-// One line of the view's last-frame counters, appended under PJ_RHI_TEST_DUMP_DIR.
 void dumpCounters(const SceneViewWidget& v, const char* name) {
   const QString dir = qEnvironmentVariable("PJ_RHI_TEST_DUMP_DIR");
   if (dir.isEmpty()) {
@@ -176,7 +165,7 @@ void dumpCounters(const SceneViewWidget& v, const char* name) {
   file.write(line.toUtf8());
 }
 
-// test::grab() plus the optional PNG + counter dump. Null when no frame was presented.
+// Null when no frame was presented.
 QImage grab(SceneViewWidget* view, const char* name) {
   QImage image = pj::scene3d::test::grab(*view);
   dump(image, name);
@@ -184,7 +173,6 @@ QImage grab(SceneViewWidget* view, const char* name) {
   return image;
 }
 
-// Pixels where two frames differ noticeably: count, centroid, and bounding box.
 struct DiffMask {
   int count = 0;
   QPointF centroid;
@@ -223,8 +211,6 @@ DiffMask diffMask(const QImage& a, const QImage& b, int threshold = 60) {
   return mask;
 }
 
-// Pixels in `area` (the whole image when empty) that got darker by more than
-// `threshold` luminance levels from `lit` to `shaded`.
 int darkenedPixels(const QImage& shaded, const QImage& lit, int threshold = 12, QRect area = {}) {
   area = area.isEmpty() ? shaded.rect() : area.intersected(shaded.rect());
   int count = 0;
@@ -236,8 +222,7 @@ int darkenedPixels(const QImage& shaded, const QImage& lit, int threshold = 12, 
   return count;
 }
 
-// World point -> image pixel through the view's own camera (GL clip space,
-// image Y down): what the renderer must reproduce on every backend.
+// Through the view's own camera (GL clip space, image Y down): what the renderer must reproduce on every backend.
 QPointF project(const SceneViewWidget& view, const glm::vec3& world, const QSize& image) {
   const float aspect = static_cast<float>(image.width()) / static_cast<float>(image.height());
   const glm::vec4 clip = view.camera().projMatrix(aspect) * view.camera().viewMatrix() * glm::vec4(world, 1.0F);
@@ -245,7 +230,6 @@ QPointF project(const SceneViewWidget& view, const glm::vec3& world, const QSize
   return {(ndc.x * 0.5 + 0.5) * image.width(), (0.5 - ndc.y * 0.5) * image.height()};
 }
 
-// Mean colour of a small square around `centre`.
 QColor meanColor(const QImage& image, QPointF centre, int half = 3) {
   int r = 0;
   int g = 0;
@@ -265,7 +249,6 @@ QColor meanColor(const QImage& image, QPointF centre, int half = 3) {
   return n == 0 ? QColor() : QColor(r / n, g / n, b / n);
 }
 
-// A dense cube of points, `n`^3 of them, centred on `centre` with side `side`.
 std::vector<glm::vec3> pointBlock(glm::vec3 centre, float side, int n) {
   std::vector<glm::vec3> points;
   for (int i = 0; i < n; ++i) {
@@ -290,21 +273,19 @@ PJ::sdk::SceneEntity cubeEntity(std::string id, glm::vec3 centre, float side, PJ
   return entity;
 }
 
-// Shows `window` and waits until it is exposed: its backing store then owns
-// the QRhi every grab renders through.
+// The exposed window's backing store owns the QRhi every grab renders through.
 bool showExposed(QWidget& window) {
   window.show();
   return QTest::qWaitForWindowExposed(&window);
 }
 
-// The shared render fixture, all in one frame so no TF is required.
+// Everything sits in one frame, so no TF is required.
 class RhiScene {
  public:
   PJ::ObjectTopicId addPoints(const std::vector<glm::vec3>& points, const std::string& topic = "/points") {
     return fixture_.add(topic, BT::kPointCloud, pj::scene3d::test::serializeCloud(points, kFrame));
   }
-  // Layer opacity forced to 1 (the layer default is translucent), so each
-  // cube's own alpha decides opaque vs translucent.
+  // Layer opacity forced to 1 (the default is translucent) so each cube's own alpha decides.
   PJ::ObjectTopicId addEntities(std::vector<PJ::sdk::SceneEntity> entities, const std::string& topic = "/entities") {
     PJ::sdk::SceneEntities scene;
     scene.entities = std::move(entities);
@@ -312,8 +293,7 @@ class RhiScene {
     setLayerAttribute(id, u"opacity"_s, u"1"_s);
     return id;
   }
-  // One scalar uint8 voxel per value along +X, `cell` metres each, the grid's
-  // lower corner at `origin`.
+  // One scalar uint8 voxel per value along +X, `cell` metres each.
   PJ::ObjectTopicId addVoxelRow(const std::vector<std::uint8_t>& values, glm::vec3 origin, float cell) {
     PJ::sdk::VoxelGrid grid;
     grid.frame_id = kFrame;
@@ -334,7 +314,6 @@ class RhiScene {
     grid.data = PJ::Span<const std::uint8_t>(values.data(), values.size());
     return fixture_.add("/voxels", BT::kVoxelGrid, PJ::serializeVoxelGrid(grid));
   }
-  // One identity-oriented pose at `position`, its triad arms `size` metres long.
   PJ::ObjectTopicId addPose(glm::vec3 position, float size) {
     PJ::sdk::PosesInFrame poses;
     poses.frame_id = kFrame;
@@ -346,11 +325,9 @@ class RhiScene {
     setLayerAttribute(id, u"gizmo_size"_s, QString::number(size));
     return id;
   }
-  // A one-edge TF tree: `child` at `offset` from kFrame.
   void addTf(const std::string& child, glm::dvec3 offset) {
     addTf({{child, offset}});
   }
-  // A one-level TF tree: each child at its offset from kFrame.
   void addTf(const std::vector<std::pair<std::string, glm::dvec3>>& children) {
     dock()->setTransformService(&fixture_.transforms());
     fixture_.add("/tf", BT::kFrameTransforms, pj::scene3d::test::serializeTfEdges(kFrame, children, 100));
@@ -365,8 +342,7 @@ class RhiScene {
     state.setAttribute(name, value);
     EXPECT_TRUE(layer->xmlLoadState(state));
   }
-  // A local URDF file robot: its visual is the renderer's shadow caster, and
-  // the local TF buffer it brings is what enables shadows.
+  // A local URDF robot: its visual is the shadow caster and its own TF buffer is what enables shadows.
   void addRobot(const QByteArray& urdf, const QString& file_name = u"caster.urdf"_s) {
     ASSERT_TRUE(urdf_dir_.isValid());
     const QString path = urdf_dir_.filePath(file_name);
@@ -377,9 +353,7 @@ class RhiScene {
     EXPECT_NE(dock()->addRobotModelLayer(path).id, 0U);
   }
 
-  // An `n` x `n` free (0) occupancy grid of `cell`-metre cells, its corner at
-  // `corner` on the ground, with its "<topic>_updates" sibling registered for
-  // pushOccupancyPatch().
+  // Also registers the "<topic>_updates" sibling pushOccupancyPatch() writes to.
   PJ::ObjectTopicId addOccupancy(int n, float cell, glm::vec2 corner) {
     occupancy_updates_ = fixture_.registerTopic("/map_updates", BT::kOccupancyGridUpdate);
     const std::vector<uint8_t> cells(static_cast<std::size_t>(n) * n, 0);
@@ -394,7 +368,6 @@ class RhiScene {
     grid.data = PJ::Span<const uint8_t>(cells.data(), cells.size());
     return fixture_.add("/map", BT::kOccupancyGrid, PJ::serializeOccupancyGrid(grid));
   }
-  // A `size` x `size` patch of `value` at cell `corner`, stamped `t`.
   void pushOccupancyPatch(PJ::Timestamp t, glm::ivec2 corner, int size, uint8_t value) {
     const std::vector<uint8_t> cells(static_cast<std::size_t>(size) * size, value);
     PJ::sdk::OccupancyGridUpdate update;
@@ -408,7 +381,6 @@ class RhiScene {
     fixture_.push(occupancy_updates_, t, PJ::serializeOccupancyGridUpdate(update));
   }
 
-  // A single-field (elevation) GridMap of `n` x `n` cells in the shared frame.
   PJ::ObjectTopicId addGridMap(glm::vec2 corner, float cell, int n, float elevation) {
     std::vector<uint8_t> bytes(static_cast<std::size_t>(n) * n * sizeof(float));
     for (int i = 0; i < n * n; ++i) {
@@ -467,8 +439,6 @@ class RhiScene {
     mesh.links = {link};
     return fixture_.add("/mesh_map", BT::kMeshMap, PJ::serializeMeshMap(mesh));
   }
-  // A sparse update of the wall's `cost` on its `<topic>_updates` sibling,
-  // writing `value` to `faces` at time `t`.
   void pushMeshMapCost(PJ::Timestamp t, const std::vector<uint32_t>& faces, float value) {
     if (!mesh_map_updates_.has_value()) {
       mesh_map_updates_ = fixture_.registerTopic("/mesh_map_updates", BT::kMeshMapUpdate);
@@ -488,8 +458,7 @@ class RhiScene {
     update.patches = {patch};
     fixture_.push(*mesh_map_updates_, t, PJ::serializeMeshMapUpdate(update));
   }
-  // A pose topic whose first pose visits `positions`, one sample per 100 ns
-  // from t = 100. Binds the fixture's TF service first: trails need a TF buffer.
+  // Binds the fixture's TF service first: trails need a TF buffer.
   PJ::ObjectTopicId addPoseTrack(const std::vector<glm::vec3>& positions) {
     dock()->setTransformService(&fixture_.transforms());
     const auto sample = [](const glm::vec3& position, PJ::Timestamp t) {
@@ -513,10 +482,8 @@ class RhiScene {
   SceneViewWidget* view() {
     return dock()->sceneView();
   }
-  // Fixes frame, grid and a deterministic front-above camera. Call after the
-  // layers exist (the view is created lazily), after a warm-up frame. With
-  // `show` false the view stays a never-shown widget (one valid grab only, see
-  // the top).
+  // Call after the layers exist (the view is created lazily) and a warm-up frame. `show` false keeps the view a
+  // never-shown widget (one valid grab only).
   void frame(bool show = true) {
     SceneViewWidget* v = view();
     ASSERT_NE(v, nullptr);
@@ -544,9 +511,7 @@ class RhiScene {
   PJ::Scene3DDockWidget* dock() {
     return fixture_.dock();
   }
-  // Binds the (empty) session TF service; topics added afterwards bind its
-  // buffer. The view renders shadows only with a transform buffer, which a
-  // scene without robots does not otherwise get.
+  // The view renders shadows only with a transform buffer, which a scene without robots does not otherwise get.
   void bindTransforms() {
     dock()->setTransformService(&fixture_.transforms());
   }
@@ -594,8 +559,7 @@ TEST_F(Scene3dRhiRenderTest, BackendMatchesRequestAndImageSize) {
   EXPECT_TRUE(view->renderingWarning().isEmpty()) << view->renderingWarning().toStdString();
 }
 
-// A Y flip puts the ground grid in the upper half; the grid diff must sit below
-// the horizon line the camera projects, and never in the top band (sky).
+// A Y flip puts the grid in the upper half: its diff must sit below the camera's horizon line, never in the top band.
 TEST_F(Scene3dRhiRenderTest, GroundGridFillsLowerHalf) {
   RhiScene scene;
   scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));
@@ -613,17 +577,12 @@ TEST_F(Scene3dRhiRenderTest, GroundGridFillsLowerHalf) {
   EXPECT_EQ(grid.count_in(top_band), 0) << "grid drawn in the sky band: Y flipped?";
   EXPECT_GT(grid.count_in(bottom_band), bottom_band.width() * bottom_band.height() / 2)
       << "grid missing from the lower band: Y flipped?";
-  // The far grid edge (y = +5 m) projects to a horizon line; no grid above it.
   const double horizon = project(*view, {0.0F, 5.0F, 0.0F}, with_grid.size()).y();
   EXPECT_EQ(grid.count_in(QRect(0, 0, w, std::max(0, int(horizon) - 3))), 0) << "horizon at y=" << horizon;
 }
 
-// An odd division count: the filled grid's cells start half a cell off the
-// origin, and its analytic lines must follow their edges instead of bisecting
-// every cell. Along y = 0.25 m of a 3 m, 3-division grid (inside the middle row
-// of cells) the edges are at x = +-0.5 m, where a line pixel lies outside the
-// two tones beside it; x = 0 and x = 1 are cell centres, as plain as a point
-// 0.25 m away.
+// An odd division count puts the filled grid's cells half a cell off the origin: its analytic lines must follow the
+// cell edges (x = +-0.5 m along y = 0.25 m of a 3 m, 3-division grid), not bisect the cells.
 TEST_F(Scene3dRhiRenderTest, FilledGridLinesFollowOddCellEdges) {
   RhiScene scene;
   scene.addPoints(pointBlock({0.0F, 0.0F, 40.0F}, 0.1F, 2));  // behind the camera: only the grid shows
@@ -638,14 +597,12 @@ TEST_F(Scene3dRhiRenderTest, FilledGridLinesFollowOddCellEdges) {
   state.elevation = glm::radians(60.0F);
   view->camera().adoptState(state);
   GRAB_OR_SKIP(image, view, "odd_grid");
-  // R + G + B of the pixel `dx` columns right of where (x, 0.25, 0) projects.
   const auto intensity = [&](float x, int dx = 0) {
     const QPointF pixel = project(*view, {x, 0.25F, 0.0F}, image.size());
     const QRgb rgb =
         image.pixel(static_cast<int>(std::lround(pixel.x())) + dx, static_cast<int>(std::lround(pixel.y())));
     return qRed(rgb) + qGreen(rgb) + qBlue(rgb);
   };
-  // The largest step between x's pixels (+-1 px) and a reference 0.25 m away in the same cell.
   const auto step = [&](float x, float reference) {
     int largest = 0;
     for (int dx = -1; dx <= 1; ++dx) {
@@ -653,7 +610,6 @@ TEST_F(Scene3dRhiRenderTest, FilledGridLinesFollowOddCellEdges) {
     }
     return largest;
   };
-  // Whether a pixel within +-2 px of edge x lies outside both neighbouring tones.
   const auto line_on_edge = [&](float x) {
     const int low = std::min(intensity(x - 0.25F), intensity(x + 0.25F));
     const int high = std::max(intensity(x - 0.25F), intensity(x + 0.25F));
@@ -670,8 +626,7 @@ TEST_F(Scene3dRhiRenderTest, FilledGridLinesFollowOddCellEdges) {
   EXPECT_TRUE(line_on_edge(-0.5F)) << "no line on the cell edge at x = -0.5";
 }
 
-// A point block up and to the right of the focal must render in the upper-right
-// quadrant, exactly where the camera projects it (catches X and Y flips).
+// A point block up and right of the focal lands in the upper-right quadrant where the camera projects it.
 TEST_F(Scene3dRhiRenderTest, PointCloudLandsWhereProjected) {
   RhiScene scene;
   const glm::vec3 centre{2.5F, 0.0F, 2.0F};
@@ -696,18 +651,15 @@ TEST_F(Scene3dRhiRenderTest, PointCloudLandsWhereProjected) {
       << "centroid " << mask.centroid.x() << "," << mask.centroid.y();
 }
 
-// Opaque cubes must depth-test against each other regardless of draw order
-// (the occluded blue cube is drawn last), and a translucent cube must blend
-// over the opaque cube behind it wherever its layer sits in the dock order: the
-// renderer draws every opaque draw before any translucent one.
+// Opaque cubes depth-test against each other regardless of draw order, and a translucent cube blends over the opaque
+// cube behind it wherever its layer sits in dock order: every opaque draw precedes any translucent one.
 void checkOcclusionAndTranslucency(bool glass_layer_first) {
   RhiScene scene;
   const glm::vec3 near_red{-1.5F, -1.0F, 0.5F};
   const glm::vec3 far_blue{-1.5F, 2.5F, 1.0F};
   const glm::vec3 glass{2.0F, -1.0F, 0.6F};
   const glm::vec3 behind_glass{2.0F, 1.5F, 0.9F};
-  // Any translucent cube turns its whole layer's cubes translucent, so the glass
-  // is its own layer.
+  // One translucent cube makes its whole layer translucent, so the glass is its own layer.
   const auto add_glass = [&] { scene.addEntities({cubeEntity("glass", glass, 1.0F, {40, 255, 40, 90})}, "/glass"); };
   if (glass_layer_first) {
     add_glass();
@@ -766,7 +718,6 @@ constexpr auto kCasterUrdf = R"(<robot name="caster">
   </link>
 </robot>)";
 
-// A one-link URDF robot: a `side`-metre box centred at `centre` in kFrame, a mesh shadow caster.
 QByteArray boxUrdf(glm::vec3 centre, float side) {
   return u"<robot name=\"box\"><link name=\"base_link\"><visual><origin xyz=\"%1 %2 %3\"/>"
          "<geometry><box size=\"%4 %4 %4\"/></geometry></visual></link></robot>"_s.arg(centre.x)
@@ -776,9 +727,8 @@ QByteArray boxUrdf(glm::vec3 centre, float side) {
              .toUtf8();
 }
 
-// The full quality chain runs on a mesh + points + markers scene: HDR, SSAO,
-// EDL and shadows all active (no silent fallback), and the mesh actually casts
-// a shadow on the grid (turning shadows off brightens ground pixels).
+// The full quality chain runs on a mesh + points + markers scene (HDR, SSAO, EDL and shadows, no silent fallback) and
+// the mesh casts a shadow on the grid (shadows off brightens ground pixels).
 TEST_F(Scene3dRhiRenderTest, QualityStagesActiveAndMeshCastsShadow) {
   RhiScene scene;
   scene.addRobot(kCasterUrdf);
@@ -810,10 +760,8 @@ TEST_F(Scene3dRhiRenderTest, QualityStagesActiveAndMeshCastsShadow) {
   EXPECT_GT(darkenedPixels(shadowed, unshadowed), 300) << "enabling shadows darkened no ground pixels";
 }
 
-// Only meshes cast shadows: a URDF box and a SceneEntities cube hang side by
-// side over the ground, and enabling shadows darkens the ground under the box
-// and nowhere under the cube. Markers receive none either: the cube's front
-// face (facing the camera) keeps its colour.
+// Only meshes cast shadows: with a URDF box and a SceneEntities cube side by side, enabling shadows darkens the ground
+// under the box and not under the cube, and the cube's camera-facing face keeps its colour (markers receive none).
 TEST_F(Scene3dRhiRenderTest, MarkersCastNoShadowMeshesDo) {
   RhiScene scene;
   const glm::vec3 box{-1.5F, 0.0F, 1.2F};
@@ -848,12 +796,9 @@ TEST_F(Scene3dRhiRenderTest, MarkersCastNoShadowMeshesDo) {
       << "the marker received a shadow";
 }
 
-// Removing the data drops the floor shadow of a model that outlives it: a
-// dataset unload clears the view's transform buffer
-// (Scene3DDockWidget::resetTransformBindingIfDatasetGone), but a surviving
-// caster layer (a URDF robot here, which keeps its own buffer) still holds its
-// geometry. With no buffer nothing may cast: the ground under the box turns as
-// bright as with shadows off, with shadows still enabled.
+// A model that outlives its data casts no floor shadow: a dataset unload clears the view's transform buffer
+// (Scene3DDockWidget::resetTransformBindingIfDatasetGone) while a URDF robot keeps its own buffer and geometry. With
+// no buffer nothing may cast: the ground under the box is as bright as with shadows off, shadows still enabled.
 TEST_F(Scene3dRhiRenderTest, FloorShadowClearsWhenDataRemoved) {
   RhiScene scene;
   const glm::vec3 box{0.0F, 0.0F, 1.2F};
@@ -863,7 +808,6 @@ TEST_F(Scene3dRhiRenderTest, FloorShadowClearsWhenDataRemoved) {
   auto params = view->meshShadingParams();
   params.key_light_dir = glm::normalize(glm::vec3(0.1F, -0.2F, 1.0F));  // the shadow falls right under the box
   view->setMeshShadingParams(params);
-  // Ground pixels under the box darker in `shaded` than in `lit`.
   const auto darkened_under_box = [&](const QImage& shaded, const QImage& lit) {
     const QPointF centre = project(*view, {box.x, box.y, 0.0F}, shaded.size());
     const int dpr = qRound(view->devicePixelRatio());
@@ -891,7 +835,7 @@ TEST_F(Scene3dRhiRenderTest, FloorShadowClearsWhenDataRemoved) {
   EXPECT_EQ(darkened_under_box(unbound, unshadowed), 0) << "the floor shadow outlived the transform buffer";
 }
 
-// Pixels of `mask` in each image quadrant: {top-left, top-right, bottom-left, bottom-right}.
+// {top-left, top-right, bottom-left, bottom-right}
 std::array<int, 4> quadrantCounts(const DiffMask& mask, const QSize& size) {
   const int w = size.width() / 2;
   const int h = size.height() / 2;
@@ -939,11 +883,9 @@ constexpr char kMarkedQuadDae[] = R"(<?xml version="1.0" encoding="utf-8"?>
 )";
 
 #ifdef PJ_RHI_TEST_HOOKS
-// A settled view whose target properties change (the colour-buffer format, a
-// fixed colour-buffer size) renders the new target, with nothing but Qt's own
-// update() (QRhiWidget's setters): the paint skip compares the requested target,
-// not the existing one. So does a resize that keeps a fixed-size target (the
-// overlays follow the logical size). No grab, which would request a frame itself.
+// A settled view whose target properties change (colour-buffer format, fixed colour-buffer size) renders the new
+// target on Qt's own update() alone (QRhiWidget's setters): the paint skip compares the requested target, not the
+// existing one. So does a resize that keeps a fixed-size target. No grab, which would request a frame itself.
 TEST_F(Scene3dRhiRenderTest, TargetPropertyChangesRenderWithoutAnUpdate) {
   RhiScene scene;
   scene.addPoints(pointBlock({0.0F, 0.0F, 1.0F}, 1.0F, 4));
@@ -975,10 +917,8 @@ TEST_F(Scene3dRhiRenderTest, TargetPropertyChangesRenderWithoutAnUpdate) {
 #endif
 
 #ifdef PJ_RHI_TEST_HOOKS
-// The shadow map is kept while every input it is a function of holds: an orbit
-// (the render origin is the camera focal) keeps it, and the frame is identical
-// to one that re-rendered it; a pan (a new render origin) and a new caster
-// render it again.
+// The shadow map is kept while every input it depends on holds: an orbit (the render origin is the camera focal)
+// keeps it and the frame matches a re-rendered one; a pan (a new render origin) and a new caster re-render it.
 TEST_F(Scene3dRhiRenderTest, ShadowMapReusedOnlyWhileItsInputsHold) {
   RhiScene scene;
   scene.addRobot(boxUrdf({0.0F, 0.0F, 1.2F}, 1.0F));
@@ -1016,10 +956,9 @@ TEST_F(Scene3dRhiRenderTest, ShadowMapReusedOnlyWhileItsInputsHold) {
 }
 #endif
 
-// A textured model whose texture marks one corner: its top-left quadrant is green,
-// the rest red. Standing upright facing the camera (image top = +Z, image left =
-// -X), the green quadrant must land top-left on screen on every backend: a
-// mirrored or Y-flipped texture sample (or upload) moves it to another quadrant.
+// A textured model whose texture marks one corner (top-left quadrant green, rest red), upright facing the camera
+// (image top = +Z, left = -X): the green quadrant must land top-left on every backend, a mirrored or Y-flipped
+// texture sample or upload moves it.
 TEST_F(Scene3dRhiRenderTest, OrientationTextureMarkedCornerStaysTopLeft) {
   QTemporaryDir mesh_dir;
   ASSERT_TRUE(mesh_dir.isValid());
@@ -1076,10 +1015,9 @@ TEST_F(Scene3dRhiRenderTest, OrientationTextureMarkedCornerStaysTopLeft) {
   EXPECT_TRUE(is_red(bottom_right)) << "bottom-right rgb=" << bottom_right.red() << "," << bottom_right.green();
 }
 
-// A box mesh lifted off the ground under a key light from the left and behind:
-// its shadow must fall right of and in front of the box, where the light ray
-// through the cube's centre meets the ground. A Y-flipped shadow-map lookup (or
-// a flipped depth comparison) moves or loses it.
+// A box lifted off the ground under a key light from the left and behind: its shadow falls right of and in front of
+// the box, where the light ray through the box centre meets the ground. A Y-flipped shadow-map lookup (or flipped
+// depth comparison) moves or loses it.
 TEST_F(Scene3dRhiRenderTest, OrientationShadowFallsAwayFromTheLight) {
   RhiScene scene;
   const glm::vec3 cube{-1.0F, 0.5F, 1.2F};
@@ -1096,8 +1034,7 @@ TEST_F(Scene3dRhiRenderTest, OrientationShadowFallsAwayFromTheLight) {
   view->setMeshShadingParams(params);
   GRAB_OR_SKIP(unshadowed, view, "no_shadows");
 
-  // Pixels the shadow darkened on the ground (the box's faces the camera sees
-  // face away from the light, so the shadow does not darken them).
+  // Ground pixels only: the box faces the camera sees face away from the light, so the shadow does not darken them.
   DiffMask shadow;
   double sx = 0.0;
   double sy = 0.0;
@@ -1125,13 +1062,11 @@ TEST_F(Scene3dRhiRenderTest, OrientationShadowFallsAwayFromTheLight) {
   EXPECT_NEAR(centroid.y(), expected.y(), shadowed.height() * 0.025) << "expected y=" << expected.y();
 }
 
-// Content only in the top-left quadrant: SSAO (a concave crease between two
-// cubes) and EDL (a box model's depth edges) must darken only there. The
-// present pass samples the coverage, AO and depth textures; any of them read
-// flipped in Y or mirrored in X moves the darkening into another quadrant.
+// Content only in the top-left quadrant: SSAO (a concave crease between two cubes) and EDL (a box model's depth
+// edges) must darken only there. The present pass samples coverage, AO and depth textures; any read flipped in Y or
+// mirrored in X moves the darkening to another quadrant.
 TEST_F(Scene3dRhiRenderTest, OrientationSsaoAndEdlStayWithTheirContent) {
   RhiScene scene;
-  // A wall facing the camera with a small cube against it: a concave crease.
   scene.addEntities({
       cubeEntity("wall", {-2.6F, 1.0F, 2.6F}, 2.0F, {180, 180, 180, 255}),
       cubeEntity("bump", {-2.6F, -0.3F, 2.6F}, 0.6F, {180, 180, 180, 255}),
@@ -1170,11 +1105,9 @@ TEST_F(Scene3dRhiRenderTest, OrientationSsaoAndEdlStayWithTheirContent) {
   }
 }
 
-// A draw that writes no depth (here a translucent cube) leaves no coverage in
-// the depth replay, where the background is found by depth:
-// where it tints only the background the present pass keeps that pixel
-// ungraded, so the tonemap cannot change it. Over an opaque cube the same glass
-// is graded.
+// A draw that writes no depth (a translucent cube) leaves no coverage in the depth replay, where the background is
+// found by depth: where it tints only the background the present pass keeps that pixel ungraded, so the tonemap
+// cannot change it. Over an opaque cube the same glass is graded.
 TEST_F(Scene3dRhiRenderTest, NoDepthWriteDrawLeavesBackgroundUngraded) {
   RhiScene scene;
   const glm::vec3 glass{0.0F, 0.0F, 1.0F};
@@ -1202,9 +1135,8 @@ TEST_F(Scene3dRhiRenderTest, NoDepthWriteDrawLeavesBackgroundUngraded) {
       << "glass over the opaque cube was not graded";
 }
 
-// OpenGL and Vulkan resolve the multisample depth in the HDR pass; the forced
-// depth replay (D3D11 and WebGL's path) must draw the same frame, SSAO and EDL
-// included: only the edge pixels the resolved sample and the replay's pixel
+// OpenGL and Vulkan resolve the multisample depth in the HDR pass; the forced depth replay (D3D11 and WebGL's path)
+// must draw the same frame, SSAO and EDL included: only edge pixels the resolved sample and the replay's pixel
 // centre see differently may move.
 TEST_F(Scene3dRhiRenderTest, DepthResolveMatchesTheForcedReplay) {
   RhiScene scene;
@@ -1303,12 +1235,10 @@ TEST_F(Scene3dRhiRenderTest, SurvivesShowResizeReparentAndSiblingDestruction) {
 }
 
 #ifdef PJ_RHI_TEST_HOOKS
-// A view hidden and shown again on the same QRhi, its target unchanged (a hidden
-// tab), skips QRhiWidget's synchronous Show paint, offscreen frame included: with
-// nothing changed while hidden it presents the retained frame and renders none,
-// else it draws once, in the repaint the Show schedules. A view resized while
-// hidden draws at its new size; one shown in another top-level (a new QRhi, its
-// resources released) paints normally.
+// A view hidden and shown again on the same QRhi with its target unchanged (a hidden tab) skips QRhiWidget's
+// synchronous Show paint: with nothing changed while hidden it presents the retained frame and renders none, else it
+// draws once, in the repaint the Show schedules. A view resized while hidden draws at its new size; one shown in
+// another top-level (a new QRhi, resources released) paints normally.
 TEST_F(Scene3dRhiRenderTest, ShowOfAnUnchangedTargetSkipsTheSynchronousPaint) {
   RhiScene scene;
   const auto points = pointBlock({0.0F, 0.0F, 1.0F}, 1.0F, 6);
@@ -1455,9 +1385,8 @@ TEST_F(Scene3dRhiRenderTest, TargetChangeWhileHiddenRendersOnShow) {
 }
 #endif
 
-// ---- Presentation: corner gizmo, overlays, picking, render scale, tonemaps ----
-// These also run at QT_SCALE_FACTOR=2 (the .opengl_dpr2. ctest pass): every
-// check goes through devicePixelRatio() or logical widget coordinates.
+// These also run at QT_SCALE_FACTOR=2 (the .opengl_dpr2. ctest pass): every check goes through devicePixelRatio() or
+// logical widget coordinates.
 
 // A robot whose body sits away from the origin, so the TF triad of its "tool"
 // frame at the origin is free to see and hover (a single-link robot publishes
@@ -1482,10 +1411,9 @@ void sendMouseMove(SceneViewWidget* view, QPointF logical) {
   QApplication::sendEvent(view, &move);
 }
 
-// The world axis gizmo sits in the bottom-right corner, follows the camera
-// rotation and never draws outside its 80-logical-pixel square. Its own pass
-// runs only when its rotation changed: a pan or a still frame re-composites the
-// image it holds.
+// The world axis gizmo sits in the bottom-right corner, follows the camera rotation and never draws outside its
+// 80-logical-pixel square. Its pass runs only when its rotation changed: a pan or still frame re-composites the image
+// it holds.
 TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoFollowsCamera) {
   RhiScene scene;
   const PJ::ObjectTopicId topic = scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));
@@ -1523,10 +1451,9 @@ TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoFollowsCamera) {
   EXPECT_GT(red_arm.red(), red_arm.green() + 80) << "red arm not to the right of the gizmo centre";
 }
 
-// The corner gizmo is anti-aliased like the scene (4x MSAA), also on the
-// single-sample output of the HDR chain: along its silhouette, pixels that
-// only partly cover an arm blend towards the backdrop. Aliased edges leave every
-// silhouette pixel at a full arm colour.
+// The corner gizmo is anti-aliased like the scene (4x MSAA), also on the HDR chain's single-sample output: along its
+// silhouette, pixels that only partly cover an arm blend towards the backdrop (aliased edges leave every silhouette
+// pixel at a full arm colour).
 TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoIsAntiAliased) {
   RhiScene scene;
   const PJ::ObjectTopicId topic = scene.addPoints(pointBlock({0.0F, 0.0F, 0.5F}, 0.2F, 2));
@@ -1576,9 +1503,8 @@ TEST_F(Scene3dRhiRenderTest, PresentationCornerGizmoIsAntiAliased) {
       << ")";
 }
 
-// The hover label (and its ring) and the perf HUD are texture quads over the
-// presented image, positioned in logical pixels; frameAt() is the one picking
-// primitive behind the hover.
+// The hover label (with its ring) and the perf HUD are texture quads over the presented image, positioned in logical
+// pixels; frameAt() is the one picking primitive behind the hover.
 TEST_F(Scene3dRhiRenderTest, PresentationHoverLabelAndPerfHud) {
   RhiScene scene;
   scene.addRobot(kOffsetRobotUrdf);
@@ -1606,14 +1532,12 @@ TEST_F(Scene3dRhiRenderTest, PresentationHoverLabelAndPerfHud) {
   const QRect label = SceneViewTestAccess::lastOverlayRects(*view)[1];
   const QRect ring = SceneViewTestAccess::lastOverlayRects(*view)[2];
   ASSERT_TRUE(label.isValid() && ring.isValid());
-  // Above-right of the origin, in output pixels.
   EXPECT_GT(label.left(), origin.x() * dpr);
   EXPECT_LT(label.bottom(), origin.y() * dpr);
   EXPECT_TRUE(ring.contains((origin * dpr).toPoint()));
   const DiffMask label_mask = diffMask(plain, labelled, 30);
   EXPECT_GT(label_mask.count_in(label), label.width() * label.height() / 10) << "label not drawn";
-  // Outside the overlay rectangles only the hovered frame's triad changes: it
-  // brightens.
+  // Outside the overlay rectangles only the hovered frame's triad changes: it brightens.
   const QRgb background = plain.pixel(4, 4);
   int stray = 0;
   int brightened = 0;
@@ -1672,7 +1596,6 @@ TEST_F(Scene3dRhiRenderTest, PresentationRenderScaleSupersamples) {
       SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active &&
       SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kSsao).last_active &&
       SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kEdl).last_active);
-  // The same picture, only anti-aliased: few pixels move noticeably.
   const DiffMask moved = diffMask(scale1, scale2, 90);
   EXPECT_LT(moved.count, output.width() * output.height() / 50) << "supersampled image differs beyond edges";
 
@@ -1696,7 +1619,6 @@ TEST_F(Scene3dRhiRenderTest, PresentationRenderScaleSupersamples) {
   EXPECT_EQ(SceneViewTestAccess::hdrRenderSize(*view), output);
   EXPECT_LT(diffMask(scale1, back, 3).count, output.width() * output.height() / 1000) << "scale 1 not restored";
 
-  // A resize at scale 2 follows the new output.
   view->setRenderScale(2.0F);
   scene.dock()->setFixedSize(kViewSize - QSize(100, 80));
   const qreal dpr = view->devicePixelRatio();
@@ -1835,9 +1757,8 @@ TEST_F(Scene3dRhiRenderTest, TfFrameTriadDrawsAtFrameOrigin) {
   EXPECT_GT(mask.count_in(QRect(int(x_tip.x()) - 4, int(x_tip.y()) - 4, 9, 9)), 0) << "+X arm tip not drawn";
 }
 
-// Magenta pixels: red and blue both well above green, as the TF parent-connection
-// lines draw (look::kTfConnectionColor, outside the tonemap). Nothing else in a
-// scene without grid, axes or visible layers qualifies: the backdrop is neutral.
+// Magenta pixels (red and blue well above green) are the TF parent-connection lines (look::kTfConnectionColor,
+// outside the tonemap); nothing else in a scene without grid, axes or visible layers qualifies.
 int magentaPixels(const QImage& image) {
   return countPixels(image, [](QRgb c) {
     return qRed(c) > 100 && qBlue(c) > 100 && qRed(c) - qGreen(c) > 50 && qBlue(c) - qGreen(c) > 50;
@@ -1849,7 +1770,6 @@ int magentaPixels(const QImage& image) {
 // view's resources released and rebuilt).
 TEST_F(Scene3dRhiRenderTest, MagentaLinesAppearOnlyWhenVisible) {
   RhiScene scene;
-  // A star of children around kFrame, which the camera frames at the centre.
   scene.addTf(
       {{"child_0", {1.0F, 0.0F, 0.0F}},
        {"child_1", {-1.0F, 0.0F, 0.0F}},
@@ -1890,14 +1810,10 @@ TEST_F(Scene3dRhiRenderTest, MagentaLinesAppearOnlyWhenVisible) {
   EXPECT_EQ(magentaPixels(reparented_hidden), 0) << "the lines ignore visibility after the reparent";
 }
 
-// ---- GridMap, trails, frame context menu ------------------------------------
-
-// The occupancy texture catches up with every change staged while the layer
-// was not drawn. The grid is made unplaceable (an unknown fixed frame) while a
-// patch lands, then placed again as a second patch lands: both must reach the
-// GPU. Then the same for a full refresh (a backward seek) followed by a patch.
-// Each state is compared against the same state uploaded from scratch (a hidden
-// layer drops its texture, and showing it again rebuilds it).
+// The occupancy texture catches up with every change staged while the layer was not drawn: a patch lands while the
+// grid is unplaceable (unknown fixed frame), another after it is placed again, then a full refresh (a backward
+// seek) followed by a patch. Each state is compared against the same state uploaded from scratch (a hidden layer
+// drops its texture and showing it rebuilds it).
 TEST_F(Scene3dRhiRenderTest, OccupancyTextureCatchesUpAfterSkippedFrames) {
   RhiScene scene;
   const PJ::ObjectTopicId grid = scene.addOccupancy(8, 0.5F, {-2.0F, -2.0F});
@@ -2001,7 +1917,6 @@ TEST_F(Scene3dRhiRenderTest, MeshMapDrawsChannelColoursAndNoData) {
   EXPECT_NEAR(mask.centroid.x(), expected.x(), opaque.width() * 0.05);
   EXPECT_NEAR(mask.centroid.y(), expected.y(), opaque.height() * 0.05);
 
-  // Sample each quad well inside it, above the link that crosses at z = 1/3.
   const auto centre = [&](float x) { return project(*view, {x, 0.0F, 0.75F}, opaque.size()); };
   const QColor low = meanColor(opaque, centre(-1.0F));
   const QColor high = meanColor(opaque, centre(0.0F));
@@ -2017,7 +1932,6 @@ TEST_F(Scene3dRhiRenderTest, MeshMapDrawsChannelColoursAndNoData) {
       8)
       << "the no-data quad took a colormap colour: " << no_data.name().toStdString();
 
-  // Half opacity lies between the opaque colour and the backdrop.
   const QColor half_low = meanColor(half, centre(-1.0F));
   const QColor backdrop_low = meanColor(hidden, centre(-1.0F));
   EXPECT_GT(delta(half_low, low), 30) << "half opacity drew the opaque colour";
@@ -2184,7 +2098,6 @@ TEST_F(Scene3dRhiRenderTest, FrameContextMenuPicksFrame) {
   ASSERT_TRUE(right_click(origin));
   ASSERT_EQ(requested.size(), 1);
   EXPECT_TRUE(requested.front() == u"base_link"_s || requested.front() == u"tool"_s) << requested.front().toStdString();
-  // The call above already returned, so the menu cannot be modal.
   auto* menu = scene.dock()->findChild<QMenu*>(u"scene3dFrameMenu"_s);
   ASSERT_NE(menu, nullptr);
   EXPECT_TRUE(menu->isVisible());

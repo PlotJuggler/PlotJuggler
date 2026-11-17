@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// SceneVideoFrameSource, what an on-demand script's `video:frame_at(t)` decodes through
-// (docs/archive/derived_objects/SCENARIOS.md, rows MED-13, MED-14, CON-13): the frame presented at a time over
-// Scene2D's streaming decoder, a topic id reused after a clear, and a dataset retired while a call is in flight.
+// SceneVideoFrameSource: the frame presented at a time over Scene2D's streaming decoder, a topic id reused after a
+// clear, and a dataset retired while a call is in flight.
 
 #include <gtest/gtest.h>
 
@@ -162,8 +161,8 @@ TEST(SceneVideoFrameSourceTest, InvalidationRetiresInFlightIndexWithoutBlockingO
   EXPECT_EQ(decoders_made, 2);
 }
 
-// A topic's parser registered again (a stream retyped) is a new generation: the next call decodes through a decoder
-// made with the new parser's extractor, while the old one is left to the call that holds it.
+// A topic's parser registered again is a new generation: the next call decodes through a decoder made with the new
+// parser's extractor, while the old one is left to the call that holds it.
 TEST(SceneVideoFrameSourceTest, AReRegisteredParserIsUsedByTheNextFrame) {
   ObjectStore store;
   ObjectTopicId topic;

@@ -1,12 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// On-demand recipes through MainWindow's history (docs/derived_objects/ARCHITECTURE.md §13): undo and redo restore
-// what a step removed, its topic and the scene layer bound to it; they never touch a history-exempt recipe or
-// an open panel's previews; removing every dataset ends the previews. Deletion goes through OnDemandService
-// directly (the plugin remove slot is slice 8a-2b's) or through the Custom Topics delete, which is its own undo
-// step; a restore fills Custom Topics. A series (a number output over an object input) is a Custom Topics row too,
-// whose replay draws a stoppable bar. The fake script run (`test::FakeRun`) computes.
+// On-demand recipes through MainWindow's history (docs/derived_objects/ARCHITECTURE.md "Life cycle of recipes and
+// results"): undo and redo restore what a step removed, its topic and the scene layer bound to it; they never touch a
+// history-exempt recipe or an open panel's previews; removing every dataset ends the previews. Deletion goes through
+// OnDemandService directly or through the Custom Topics delete, which is its own undo step; a restore fills Custom
+// Topics. A series (a number output over an object input) is a Custom Topics row too, whose replay draws a
+// stoppable bar. The fake script run (`test::FakeRun`) computes.
 
 #include <gtest/gtest.h>
 
@@ -200,7 +200,7 @@ struct Fixture {
   PJ::ObjectTopicId cloud;
 };
 
-// LAY-12: deleting an ordinary recipe retires its topic and the scene layer bound to it; undo brings the recipe,
+// Deleting an ordinary recipe retires its topic and the scene layer bound to it; undo brings the recipe,
 // its topic and the layer back, redo removes them again.
 TEST(MainWindowOnDemandRestoreTest, DeleteOfOrdinaryRecipeRetiresTopicAndLayerAndIsUndoable) {
   Fixture fx;
@@ -226,7 +226,7 @@ TEST(MainWindowOnDemandRestoreTest, DeleteOfOrdinaryRecipeRetiresTopicAndLayerAn
   EXPECT_EQ(fx.sceneLayers(), 0U);
 }
 
-// LAY-12 through the Custom Topics delete: the editor's ordinary recipe goes with its topic, its row and the scene
+// Through the Custom Topics delete: the editor's ordinary recipe goes with its topic, its row and the scene
 // layer bound to it as one undo step of its own; undo brings all of them back, redo removes them again.
 TEST(MainWindowOnDemandRestoreTest, CustomTopicsDeleteOfOrdinaryRecipeIsOneUndoStep) {
   Fixture fx;
@@ -261,7 +261,7 @@ TEST(MainWindowOnDemandRestoreTest, CustomTopicsDeleteOfOrdinaryRecipeIsOneUndoS
   EXPECT_EQ(fx.sceneLayers(), 0U);
 }
 
-// LAY-12 without a bound view: no layout change marks the step, and the install pushed no state of its own, so the
+// Without a bound view: no layout change marks the step, and the install pushed no state of its own, so the
 // delete itself must refresh the baseline and push the step, or undo would find nothing to undo.
 TEST(MainWindowOnDemandRestoreTest, CustomTopicsDeleteIsAnUndoStepWithoutABoundView) {
   Fixture fx;
@@ -280,7 +280,7 @@ TEST(MainWindowOnDemandRestoreTest, CustomTopicsDeleteIsAnUndoStepWithoutABoundV
   EXPECT_TRUE(fx.customTopics().isEmpty());
 }
 
-// LAY-15: a restore fills Custom Topics itself (its installs announce nothing while it runs): the restored recipe's
+// A restore fills Custom Topics itself (its installs announce nothing while it runs): the restored recipe's
 // row is there when it returns.
 TEST(MainWindowOnDemandRestoreTest, RestoreFillsCustomTopics) {
   Fixture fx;
@@ -297,7 +297,7 @@ TEST(MainWindowOnDemandRestoreTest, RestoreFillsCustomTopics) {
   EXPECT_EQ(fx.customTopics(), QStringList{u"owner/crop/cropped"_s});
 }
 
-// LAY-13: an undo of an unrelated step leaves a history-exempt recipe and its scene layer as they were: the same
+// An undo of an unrelated step leaves a history-exempt recipe and its scene layer as they were: the same
 // topic id, no run.
 TEST(MainWindowOnDemandRestoreTest, UndoLeavesExemptRecipeAndItsSceneLayerIntact) {
   Fixture fx;
@@ -322,7 +322,7 @@ TEST(MainWindowOnDemandRestoreTest, UndoLeavesExemptRecipeAndItsSceneLayerIntact
   EXPECT_EQ(fx.sceneLayers(), 1U);
 }
 
-// LAY-14: history snapshots do not carry an exempt recipe, so deleting one is not undone by an unrelated undo or
+// History snapshots do not carry an exempt recipe, so deleting one is not undone by an unrelated undo or
 // redo.
 TEST(MainWindowOnDemandRestoreTest, DeleteOfExemptRecipeIsNotResurrectedByUndoRedo) {
   Fixture fx;
@@ -344,7 +344,7 @@ TEST(MainWindowOnDemandRestoreTest, DeleteOfExemptRecipeIsNotResurrectedByUndoRe
   EXPECT_FALSE(fx.topic(topicOf(exempt)).has_value());
 }
 
-// OWN-12: an undo and a redo leave an open panel's previews in every engine (on-demand, transform, marker rule),
+// An undo and a redo leave an open panel's previews in every engine (on-demand, transform, marker rule),
 // and still undo the persisted state of the step.
 TEST(MainWindowOnDemandRestoreTest, UndoKeepsAnOpenPanelsPreviewsInEveryEngine) {
   Fixture fx;
@@ -383,7 +383,7 @@ TEST(MainWindowOnDemandRestoreTest, UndoKeepsAnOpenPanelsPreviewsInEveryEngine) 
   EXPECT_EQ(transforms.transformIdsForPlugin("tbx").size(), 1U);
 }
 
-// OWN-13: removing every dataset removes the data an on-demand preview reads: every preview ends, an open panel's
+// Removing every dataset removes the data an on-demand preview reads: every preview ends, an open panel's
 // or not.
 TEST(MainWindowOnDemandRestoreTest, RemoveAllDatasetsEndsTheOpenPanelsPreviews) {
   Fixture fx;
@@ -452,7 +452,7 @@ std::optional<PJ::CurveTreeView::DatasetProgress> rowProgress(PanelViews& views,
   return row->data(0, kProgressRoleForTest).value<PJ::CurveTreeView::DatasetProgress>();
 }
 
-// SER-16: a series is one flat Custom Topics row per number output, named `recipe/output`, owned like the object rows
+// A series is one flat Custom Topics row per number output, named `recipe/output`, owned like the object rows
 // (the editor's own: editable, no badge) and gone from Datasets; deleting the row deletes the recipe and retires the
 // topic as one undo step.
 TEST(MainWindowOnDemandRestoreTest, SeriesRowListsInCustomTopicsAndDeleteRemovesTheRecipe) {
@@ -490,7 +490,7 @@ TEST(MainWindowOnDemandRestoreTest, SeriesRowListsInCustomTopicsAndDeleteRemoves
   EXPECT_EQ(fx.customTopics(), QStringList{QString::fromStdString(recipe.key())}) << "and its row";
 }
 
-// SER-17: a replaying series draws a stoppable bar on its row; the row's stop keeps the rows computed and leaves the
+// A replaying series draws a stoppable bar on its row; the row's stop keeps the rows computed and leaves the
 // series incomplete and installed; the bar goes after its linger.
 TEST(MainWindowOnDemandRestoreTest, SeriesReplayShowsProgressAndStopKeepsRows) {
   Fixture fx;
@@ -539,7 +539,7 @@ TEST(MainWindowOnDemandRestoreTest, SeriesReplayShowsProgressAndStopKeepsRows) {
   EXPECT_EQ(fx.service().series().state(recipe.key())->rows, running.rows) << "a stopped run computes nothing more";
 }
 
-// SER-17: a series that finishes shows its end briefly, then its bar is retired; the row stays.
+// A series that finishes shows its end briefly, then its bar is retired; the row stays.
 TEST(MainWindowOnDemandRestoreTest, CompletedSeriesRetiresItsBar) {
   Fixture fx;
   PanelViews views(fx.window);
@@ -572,7 +572,7 @@ TEST(MainWindowOnDemandRestoreTest, CompletedSeriesRetiresItsBar) {
   EXPECT_NE(findRowByKey(views.custom->invisibleRootItem(), key), nullptr) << "the row stays";
 }
 
-// SER-16: another plugin's series row is use-only: its Delete is refused and nothing is removed.
+// Another plugin's series row is use-only: its Delete is refused and nothing is removed.
 TEST(MainWindowOnDemandRestoreTest, SeriesRowOfAnotherPluginCannotBeDeleted) {
   Fixture fx;
   Peer::setCustomTopicsEditorId(fx.window, u"toolbox"_s);

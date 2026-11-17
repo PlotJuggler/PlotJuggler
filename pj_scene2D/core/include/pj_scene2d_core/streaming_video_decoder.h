@@ -24,26 +24,14 @@ namespace PJ {
 
 class FfmpegDecoder;
 
-/// Decodes streaming VideoFrame entries stored in ObjectStore, codec-generically
-/// (H.264, HEVC, AV1) keyed on each topic's sdk::VideoFrame::format.
+/// Decodes the VideoFrame entries of one ObjectStore topic, codec-generically (H.264, HEVC, AV1, from
+/// sdk::VideoFrame::format).
 ///
-/// Each ObjectStore entry is exactly one frame: an Annex-B NAL stream (H.264 /
-/// HEVC) or an OBU temporal unit (AV1). Keyframes carry their parameter sets
-/// in-band (H.264 SPS/PPS, HEVC VPS/SPS/PPS, AV1 sequence header), so the decoder
-/// opens from the codec id alone (no extradata) and learns geometry on the first
-/// keyframe. A codec outside the supported set (e.g. VP9, which has an FFmpeg
-/// decoder but no keyframe oracle, so it could not be sought) makes decodeAt()
-/// fail with a clear "unsupported video codec" error rather than mis-decoding.
-///
-/// Two modes of use (mutually exclusive per REQUIREMENTS.md §4.3):
-/// - **Live mode**: call decodeAt(timeRange().second) on each tick.
-///   The decoder advances sequentially — no seeking needed.
-/// - **Scrub mode**: buffer is frozen (no pushes/eviction). Call decodeAt()
-///   with any timestamp in the retained window. The decoder seeks to the
-///   nearest preceding keyframe and decodes forward to the target.
-///
-/// The decoder builds a keyframe index incrementally by NAL-inspecting each
-/// new entry. This is the "streaming sources" path from REQUIREMENTS.md §4.4.
+/// Each entry is exactly one frame: an Annex-B NAL stream (H.264/HEVC) or an OBU temporal unit (AV1). Keyframes
+/// carry their parameter sets in-band; the decoder opens on the first keyframe, priming extradata from them. Another
+/// codec (e.g. VP9: an FFmpeg decoder but no keyframe oracle, so no seeking) fails decodeAt() with "unsupported video
+/// codec". A target at or after the last served frame continues forward; any other target seeks to the keyframe
+/// before it and decodes forward. The keyframe index is built incrementally from the store.
 class StreamingVideoDecoder {
  public:
   /// One frame's compressed bytes plus its codec, extracted from a resolved
@@ -105,7 +93,7 @@ class StreamingVideoDecoder {
   ///   newer scrub target can preempt it instead of waiting it out.
   Expected<DecodedFrame> decodeAt(Timestamp ts, const CancelTokenPtr& cancel = nullptr);
 
-  /// Reset decoder state. Call when switching modes or after ObjectStore::clear().
+  /// Drops the decoder and its index.
   void reset();
 
   /// Has the decoder seen at least one keyframe and successfully opened?

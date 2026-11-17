@@ -6,9 +6,7 @@
 # The builder image (tagged with the Qt/arch pins from versions.env) bakes Qt,
 # the entire Conan dependency closure, and a pinned linuxdeploy into its layers, so running the
 # container fetches nothing — except, with --plugins-registry, the published plugin
-# zips. Adapts PJ3's AppImage Docker build to PJ4:
-#   * no --privileged (linuxdeploy runs extracted via APPIMAGE_EXTRACT_AND_RUN);
-#   * Qt + Conan are baked, not installed from system packages each run.
+# zips. It needs no --privileged (linuxdeploy runs extracted via APPIMAGE_EXTRACT_AND_RUN).
 #
 # Usage:
 #   packaging/appimage/build_in_docker.sh                                # app-only AppImage
@@ -42,11 +40,10 @@
 #     SDK_VERSION file + scripts/ensure_core.sh). The sources are copied into the
 #     builder and COMPILED there, so the plugins inherit the container's old glibc
 #     baseline (2.35) and actually load on the runtime image / older distros.
-#     Building host .so against a newer glibc is the #1 reason bundled plugins
-#     silently fail to dlopen — so this is the correct, automatic path. The single
-#     aggregate ./build.sh now produces all plugins including toolbox_mosaico:
-#     Arrow is built once with Flight + gRPC + protobuf, so Mosaico is present
-#     without a second standalone build; or
+#     A host-built .so links a newer glibc and silently fails to dlopen on older
+#     distros, so a source repo is always compiled here. The single aggregate
+#     ./build.sh produces all plugins including toolbox_mosaico (Arrow is built
+#     once with Flight + gRPC + protobuf); or
 #   * a directory of already-built, self-contained plugins (e.g. unpacked
 #     marketplace zips), which is copied in verbatim.
 # Either way the host path may live anywhere — it is bind-mounted for you; you
@@ -282,9 +279,8 @@ tsan_stage_rc=0
 # caller value as well as nonempty overrides, with or without --with-tests.
 if [[ "${PJ_SANITIZE}" == asan || "${PJ_SANITIZE}" == tsan ]]; then
   # Both instrumented lanes are DIAGNOSTIC, so they need source locations. Without
-  # this the tsan lane fell through to the packaging default of "none" and compiled
-  # PJ4 and the SDK with -g0, so every race and double-lock report named a function
-  # and no file:line — the reports were real but not actionable.
+  # them (the packaging default is "none", -g0) every race and double-lock report
+  # names a function and no file:line.
   DEBUG_INFO_DEFAULT="lines"
 elif [[ "${WITH_TESTS}" == "1" ]]; then
   DEBUG_INFO_DEFAULT="split"
@@ -332,8 +328,7 @@ fi
 # under /out to KEEP (e.g. ".so basenames" + the ros2 bundle dir name). When
 # set, everything else at the top level is removed before the package step, so
 # the released AppImage carries only the requested curated set instead of the
-# full aggregate. Unset/empty preserves the current behaviour (everything the
-# aggregate build produced ships).
+# full aggregate. Unset/empty ships everything the aggregate build produced.
 if [[ -n "${PLUGIN_SRC}" ]]; then
   # Lane-scoped so an instrumented run can never pick up Release plugin binaries
   # left by a previous build (and vice versa). Still under build/, which the
@@ -423,15 +418,15 @@ if [[ -n "${PLUGIN_SRC}" ]]; then
       fi
       scripts/ensure_core.sh   # build plotjuggler_sdk/<SDK_VERSION> at the container glibc
       # In a sanitizer lane ./build.sh also RUNS the plugin tests, so a reported
-      # race returns nonzero. Under `set -e` that skipped everything after it —
-      # including the standalone plugin below, which the aggregate deliberately
-      # excludes, leaving it entirely untested whenever any other plugin reported.
+      # race returns nonzero. Under `set -e` that would skip everything after it,
+      # including the standalone toolbox_transform_editor build below.
       # Record the status and carry on; it is re-raised at the end of the stage.
       plugin_rc=0
       ./build.sh ${PLUGIN_BUILD_ARGS} || plugin_rc=$?   # all plugins incl. toolbox_mosaico (Arrow once with Flight)
       cp -a /tmp/psrc/${PLUGIN_BUILD_SUBDIR}/all/Release/bin/. /out/ || plugin_rc=$?
-      # toolbox_transform_editor is outside the aggregate add_subdirectory list,
-      # so build it standalone.
+      # toolbox_transform_editor is also built standalone. The aggregate list of the
+      # current pj-official-plugins CMakeLists.txt already includes it, so this build
+      # is redundant there (checked against that file, not by a build).
       echo "==> Building toolbox_transform_editor standalone…"
       ./build.sh ${PLUGIN_BUILD_ARGS} toolbox_transform_editor || plugin_rc=$?
       cp -a /tmp/psrc/${PLUGIN_BUILD_SUBDIR}/toolbox_transform_editor/Release/bin/. /out/ || plugin_rc=$?

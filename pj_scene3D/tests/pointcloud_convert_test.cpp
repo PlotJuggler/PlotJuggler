@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Direct unit tests for the raw PointCloud byte readers in pointcloud_convert.
-// These parse arbitrary little-endian field layouts straight from untrusted bytes,
-// so the coverage targets sign extension, float64 truncation, and — crucially — the
-// offset/buffer validation that is the renderer's last line of defense against an
-// out-of-bounds heap read on a malformed/hostile cloud (M.23/M.24).
+// Direct unit tests for the raw PointCloud byte readers in pointcloud_convert, which parse arbitrary little-endian
+// layouts straight from untrusted bytes: sign extension, float64 truncation and, crucially, the offset/buffer
+// validation that is the renderer's last line of defense against an out-of-bounds heap read on a hostile cloud.
 
 #include "pj_scene3d_core/pointcloud_convert.h"
 
@@ -52,8 +50,6 @@ constexpr uint32_t packRgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
          (static_cast<uint32_t>(a) << 24);
 }
 
-// --- Little-endian byte writers -------------------------------------------------
-
 void putBytes(std::vector<uint8_t>& buffer, const void* src, std::size_t count) {
   const auto* bytes = static_cast<const uint8_t*>(src);
   buffer.insert(buffer.end(), bytes, bytes + count);
@@ -61,15 +57,12 @@ void putBytes(std::vector<uint8_t>& buffer, const void* src, std::size_t count) 
 
 template <typename Scalar>
 std::vector<uint8_t> leBytes(Scalar value) {
-  // The host running the test suite is little-endian (x86); std::bit-pattern of the
-  // native value already matches the wire layout the readers assemble byte-by-byte.
+  // The host is little-endian (x86): the native value's bit pattern already matches the wire layout.
   std::vector<uint8_t> out(sizeof(Scalar));
   std::memcpy(out.data(), &value, sizeof(Scalar));
   return out;
 }
 
-// Wrap an owned byte buffer into a PointCloud, anchoring the bytes so the Span stays
-// valid for the cloud's lifetime.
 PointCloud makeCloud(uint32_t width, uint32_t point_step, std::vector<PointField> fields, std::vector<uint8_t> bytes) {
   auto owned = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
   PointCloud cloud;
@@ -84,8 +77,6 @@ PointCloud makeCloud(uint32_t width, uint32_t point_step, std::vector<PointField
   cloud.anchor = owned;
   return cloud;
 }
-
-// --- Raw scalar reader: sign extension and float decode -------------------------
 
 TEST(PointCloudConvertScalar, Int8SignExtends) {
   const auto bytes = leBytes<int8_t>(-5);
@@ -112,7 +103,6 @@ TEST(PointCloudConvertScalar, Float32And64) {
 
   const auto f64 = leBytes<double>(2.718281828459045);
   EXPECT_DOUBLE_EQ(readFloat64At(f64.data()), 2.718281828459045);
-  // float64 -> float32 truncation: the scalar reader narrows to float.
   EXPECT_FLOAT_EQ(readScalarAt(f64.data(), DT::kFloat64), static_cast<float>(2.718281828459045));
 }
 
@@ -120,8 +110,6 @@ TEST(PointCloudConvertScalar, UnknownDatatypeYieldsZero) {
   const std::vector<uint8_t> bytes(8, 0xFF);
   EXPECT_FLOAT_EQ(readScalarAt(bytes.data(), DT::kUnknown), 0.0f);
 }
-
-// --- convertCanonical: happy path -----------------------------------------------
 
 TEST(PointCloudConvert, DecodesXyzAndIntScalarWithSignExtension) {
   // Layout per point (point_step = 16): x f32, y f32, z f32, intensity int16 (+ 2 pad).
@@ -157,7 +145,6 @@ TEST(PointCloudConvert, DecodesXyzAndIntScalarWithSignExtension) {
   EXPECT_EQ(out.cloud.scalar_field_name, "intensity");
   EXPECT_EQ(out.cloud.frame_id, "lidar");
 
-  // AABB accumulated in the same pass spans both points (L.50).
   ASSERT_TRUE(out.bounds.valid);
   EXPECT_FLOAT_EQ(out.bounds.min.x, -4.0f);
   EXPECT_FLOAT_EQ(out.bounds.max.x, 1.0f);
@@ -210,10 +197,7 @@ TEST(PointCloudConvert, NonFinitePointsExcludedFromBounds) {
   EXPECT_FLOAT_EQ(out.bounds.max.x, 7.0f);
 }
 
-// --- Color detection + extraction (RGB-direct mode) -----------------------------
-
 TEST(PointCloudColor, DetectsPackedRgbaField) {
-  // Canonical normalized layout: a single uint32 'rgba' field.
   std::vector<PointField> fields = {
       {"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}, {"rgba", 12, DT::kUint32, 1}};
   const PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/16, std::move(fields), std::vector<uint8_t>(16, 0));
@@ -339,8 +323,6 @@ TEST(PointCloudConvert, RejectsColorChannelOffsetPastPointStep) {
   EXPECT_TRUE(out.cloud.rgba.empty());
 }
 
-// --- convertCanonical: rejection (returns empty) --------------------------------
-
 TEST(PointCloudConvert, RejectsBigEndian) {
   std::vector<PointField> fields = {{"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}};
   PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/12, std::move(fields), std::vector<uint8_t>(12, 0));
@@ -369,7 +351,7 @@ TEST(PointCloudConvert, RejectsMissingSpatialField) {
 }
 
 TEST(PointCloudConvert, RejectsFieldOffsetPastPointStep) {
-  // M.23/M.24: z declares a float32 at offset 8 with point_step=10 -> read crosses
+  // Z declares a float32 at offset 8 with point_step=10 -> read crosses
   // the point boundary (8 + 4 > 10). Must be rejected BEFORE any read.
   std::vector<PointField> fields = {{"x", 0, DT::kFloat32, 1}, {"y", 4, DT::kFloat32, 1}, {"z", 8, DT::kFloat32, 1}};
   PointCloud cloud = makeCloud(/*width=*/1, /*point_step=*/10, std::move(fields), std::vector<uint8_t>(10, 0));
@@ -406,8 +388,6 @@ TEST(PointCloudConvert, MalformedScalarOffsetDoesNotPoisonHugeAdversarialValue) 
   const ConvertedPointCloud out = convertCanonical(cloud, "intensity");
   EXPECT_TRUE(out.cloud.positions.empty());
 }
-
-// --- packPointVertices: equivalence with convertCanonical + packing ------------
 
 // The two-step path packPointVertices replaces: convertCanonical, then every point
 // with a finite position packed with its scalar or colour in the format they need,
@@ -660,7 +640,6 @@ TEST(PointCloudPack, ChunkedMatchesSerial) {
   EXPECT_EQ(actual.scalar_range, expected.scalar_range);
   expectPackMatchesConvert(cloud, "intensity", false);
 
-  // A lower chunk cap packs the same bytes in fewer, larger chunks.
   std::vector<std::byte> capped(plan->maxBytes());
   const PackedPointVertices two = packPointVertices(
       cloud, *plan, capped,

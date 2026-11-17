@@ -7,15 +7,10 @@
 
 namespace PJ {
 
-// LoadHints for replaying ONE layout-recorded source — the shape the desktop
-// reload (loadLayoutFromPath), the browser source-bound replay, and the
-// layout-import batch's stock cache-hit loads share: both saved plugin
-// identities ride their own tier fields, a layout that names a plugin
-// requires it, and replay is automated (dialogs prohibited, the saved preset
-// authoritative — DialogPolicy::kNever). Every replay points the preset (and
-// its fan-out children) at the path it actually loads, so a moved or copied
-// layout folder replays the data beside it; its side files resolve beside that
-// data file unless the caller names their paths.
+// LoadHints for replaying one layout-recorded source, shared by the desktop layout load, the browser source-bound
+// replay and the import batch's stock loads: a layout that names a plugin requires it, no dialog runs and the saved
+// preset is authoritative. The preset's filepath becomes the path actually loaded, so a moved layout folder replays
+// the data beside it; side files resolve beside that data file unless the caller fills in their paths.
 [[nodiscard]] inline LoadHints layoutReplayHints(const layout_xml::DataSourceRef& source, bool prefer_reuse) {
   const bool names_plugin = !source.plugin_manifest_id.isEmpty() || !source.plugin_id.isEmpty();
   QHash<QString, QString> side_file_paths;

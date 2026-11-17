@@ -12,9 +12,8 @@ class QWidget;
 
 namespace PJ {
 
-// Persistent MRU list rendered as a popup menu. enabledChanged() fires only
-// on empty<->non-empty transitions and not from the constructor; callers
-// must seed the initial enabled state via isEmpty().
+// Persistent MRU list rendered as a popup menu. enabledChanged() fires only on empty/non-empty transitions and not from
+// the constructor: callers seed the initial enabled state with isEmpty().
 class RecentFilesMenu : public QObject {
   Q_OBJECT
  public:

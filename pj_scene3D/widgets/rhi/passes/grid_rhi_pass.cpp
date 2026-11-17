@@ -104,8 +104,6 @@ bool GridRhiPass::createShadowReceiver(
           QRhiShaderResourceBinding::uniformBuffer(
               8, QRhiShaderResourceBinding::FragmentStage, setup_.render_mode_uniforms),
       });
-  // Optional: a GPU that cannot build it draws the cells unshadowed, and the
-  // view turns shadows off (shadowReceiverFailed()), instead of failing the scene.
   shadow_pipeline_ = registry.add(
       {
           .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),

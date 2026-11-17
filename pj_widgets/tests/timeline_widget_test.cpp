@@ -46,14 +46,14 @@ TEST(Timeline, BarDragEmitsOffsetChange) {
     ++hits;
   });
 
-  // Drag right by 100 px. display = raw - offset; dragging RIGHT (later) => the
-  // new offset = base_offset - pxDeltaToNs(+100), i.e. strictly negative.
+  // Drag right by 100 px. display = raw - offset; dragging right (later) gives new offset = base_offset -
+  // pxDeltaToNs(+100), strictly negative.
   widget.applyBarDragForTest(7, /*dx_px=*/100.0);
   EXPECT_EQ(hits, 1);
   EXPECT_EQ(got_id, 7u);
   EXPECT_LT(got_offset, 0);  // dragged later => negative offset
 
-  // Dragging left yields a positive offset (source appears earlier).
+  // Dragging left yields a positive offset (the source appears earlier).
   widget.applyBarDragForTest(7, /*dx_px=*/-100.0);
   EXPECT_GT(got_offset, 0);
 }
@@ -77,10 +77,9 @@ TEST(Timeline, BarDragOffsetAddsToExistingBase) {
   EXPECT_EQ((after_right + left_off) / 2, 5000);
 }
 
-// Dragging the needle into the empty region past the bars emits a seek CLAMPED to
-// the data extent (min/max) instead of an out-of-range value. The playhead is a pure
-// slave — seekToSceneX returns the clamped display-seconds it emits (the host writes
-// that to the engine, whose echo repositions the needle), so we pin the emitted value.
+// Dragging the needle into the empty region past the bars emits a seek clamped to the data extent (min and max), not an
+// out-of-range value. The playhead is a pure slave: seekToSceneX returns the clamped display-seconds it emits (the host
+// writes that to the engine, whose echo repositions the needle), so the emitted value is pinned.
 TEST(Timeline, NeedleDragClampsToDataExtent) {
   Timeline widget;  // not shown -> rebuild never refits, so the zoom below holds
   widget.setTracks({TimelineTrack{.id = 1, .name = "a", .t_min_ns = 0, .t_max_ns = 10'000'000, .offset_ns = 0}});
@@ -110,9 +109,8 @@ TEST(Timeline, AlignButtonEmitsAlignRequested) {
   EXPECT_EQ(spy.count(), 1);
 }
 
-// While locked (the host does this during live streaming) every manipulation
-// gesture and needle seek is suppressed and the Align button greys out; the
-// needle still tracks playback via setPlayhead. Unlocking restores everything.
+// While locked (the host does this during live streaming) every manipulation gesture and needle seek is suppressed and
+// the Align button greys out; the needle still tracks playback through setPlayhead. Unlocking restores everything.
 TEST(Timeline, InteractionLockSuppressesManipulationAndSeek) {
   Timeline widget;
   widget.setTracks({
@@ -200,9 +198,8 @@ TEST(Timeline, ScrollPillDragScrollsTheView) {
   w->releaseViewportForTest(QPoint(260, vh - 3));
 }
 
-// The mouse wheel zooms the timeline horizontally (cursor-anchored). Locked (live
-// streaming + playing) swallows it so the view stays pinned to the live edge;
-// unlocking restores zooming.
+// The mouse wheel zooms the timeline horizontally (cursor-anchored). Locked (live streaming and playing) it is
+// swallowed, so the view stays pinned to the live edge; unlocking restores zooming.
 TEST(Timeline, InteractionLockBlocksWheelZoom) {
   auto w = makeScrollableTimeline();
   const double before = w->zoom();
@@ -241,9 +238,8 @@ TEST(Timeline, InteractionLockShowsOverlay) {
 
 TEST(Timeline, NameColumnRowAlignsWithEachBar) {
   auto w = makeScrollableTimeline();  // two tracks
-  // One name row per track, and each name's top lines up with its bar's row top
-  // (the "align in height perfectly" contract). No vertical scroll at this size,
-  // so the panel's viewport-y equals the bar's scene-y exactly.
+  // One name row per track, and each name's top lines up with its bar's row top. No vertical scroll at this size, so
+  // the panel's viewport-y equals the bar's scene-y exactly.
   ASSERT_EQ(w->nameRowCountForTest(), 2);
   for (int i = 0; i < 2; ++i) {
     EXPECT_DOUBLE_EQ(w->nameRowTopForTest(i), w->barRowTopForTest(i)) << "row " << i << " misaligned";
@@ -312,9 +308,8 @@ TEST(Timeline, ZoomRoundTripsAndClamps) {
 
 TEST(Timeline, ViewportLeftDisplayNsRoundTrips) {
   auto w = makeScrollableTimeline();  // wide tracks → scrollable
-  // Self-relative: shift the visible left edge 5 s later and read it back. The
-  // tolerance covers the integer-pixel rounding of the scrollbar (≈1 px ≈ 1e7 ns
-  // at the default zoom).
+  // Self-relative: the visible left edge is shifted 5 s later and read back. The tolerance covers the integer-pixel
+  // rounding of the scrollbar (~1 px, ~1e7 ns at the default zoom).
   const qint64 before = w->viewportLeftDisplayNs();
   const qint64 target = before + 5'000'000'000LL;
   w->setViewportLeftDisplayNs(target);
@@ -336,10 +331,8 @@ TEST(Timeline, NameColumnWidthResizesAndHonorsFloor) {
 }
 
 TEST(Timeline, EmptyTimelineOpensWithZeroAtLeftEdge) {
-  // A freshly booted, data-less timeline must open with 0ms flush at the view's
-  // left edge (under the playback track start), not into the negative left
-  // buffer. Before the fix the empty extent padded -1 min on the left, so the
-  // left edge showed -60 s; now the empty extent starts at 0 (origin 0).
+  // A freshly booted, data-less timeline opens with 0 ms flush at the view's left edge (under the playback track
+  // start), not into the negative left buffer: the empty extent starts at 0 (origin 0), not padded -1 min on the left.
   auto w = std::make_unique<Timeline>();
   w->setTracks({});  // empty
   w->resize(800, 160);
@@ -361,8 +354,8 @@ TEST(Timeline, EmptyTimelineFitsPlaybackRangeToView) {
   const double zoom_10s = w->zoom();
   EXPECT_NEAR(static_cast<double>(w->viewportLeftDisplayNs()), 0.0, 2e7);  // 0 ms at the left edge
 
-  // Same view, double the range → half the px-per-ns (the span is fitted to the
-  // fixed view width, with no absolute viewport-width dependency in the check).
+  // Same view, double the range gives half the px-per-ns (the span is fitted to the fixed view width, with no absolute
+  // viewport-width dependency in the check).
   w->setDisplayRange(0.0, 20.0);
   QApplication::processEvents();
   EXPECT_NEAR(w->zoom(), zoom_10s / 2.0, zoom_10s * 1e-6);
@@ -405,9 +398,8 @@ TEST(Timeline, AutoZoomDisabledKeepsZoomOnLoad) {
 }
 
 TEST(Timeline, FitToContentsReframesAfterExtentChange) {
-  // Mirrors the post-alignment re-fit the controller triggers: after the union of
-  // the bars widens (an offset spreads two overlapping tracks apart),
-  // fitToContents() re-fits to the new, larger extent.
+  // Mirrors the post-alignment re-fit the controller triggers: after the union of the bars widens (an offset spreads
+  // two overlapping tracks apart), fitToContents() re-fits to the new, larger extent.
   auto w = std::make_unique<Timeline>();
   w->resize(800, 160);
   w->show();
@@ -489,8 +481,8 @@ TEST(Timeline, StickyRulerTracksVerticalScroll) {
   auto w = makeTallTimeline();
   w->setVerticalScrollForTest(0);
   EXPECT_DOUBLE_EQ(w->rulerSceneYForTest(), 0.0);
-  // Scrolling down moves the ruler item to the new viewport top (scene-y == scroll
-  // value), so the number line stays put while the rows move underneath it.
+  // Scrolling down moves the ruler item to the new viewport top (scene-y == scroll value), so the number line stays put
+  // while the rows move underneath it.
   w->setVerticalScrollForTest(50);
   EXPECT_DOUBLE_EQ(w->rulerSceneYForTest(), 50.0);
 }
@@ -518,10 +510,9 @@ TEST(Timeline, DatasetFilterShowsOnlyMatchingTracks) {
   EXPECT_EQ(w.barCount(), 3);
 }
 
-// Name-column multi-selection drives the merge prompt, and the dataset filter
-// gates the prompt + merge payload on the VISIBLE selected subset (selection
-// itself persists across filtering — a destructive merge never silently includes
-// a source the filter is hiding).
+// Name-column multi-selection drives the merge prompt, and the dataset filter gates the prompt and merge payload on the
+// visible selected subset (the selection itself persists across filtering): a destructive merge never silently includes
+// a source the filter is hiding.
 TEST(Timeline, NameColumnSelectionGatesMergeButtonOnVisibleSelection) {
   Timeline w;
   w.setTracks({
@@ -564,10 +555,9 @@ TEST(Timeline, NameColumnSelectionGatesMergeButtonOnVisibleSelection) {
 
 // --- time-frame offset precision --------------------------------------------
 
-// A playback-frame setPlayhead under a large (epoch-scale) time-frame offset must
-// land BIT-EXACT in the bar frame. The offset is added in integer ns, so the only
-// double involved is the small playback value — adding the epoch offset in `double`
-// seconds instead would round to ~240 ns and desync the timeline from playback.
+// A playback-frame setPlayhead under a large (epoch-scale) time-frame offset lands bit-exact in the bar frame. The
+// offset is added in integer ns, so the only double involved is the small playback value; adding the epoch offset in
+// double seconds would round to ~240 ns and desync the timeline from playback.
 TEST(Timeline, TimeFrameOffsetIsBitExactAtEpochScale) {
   Timeline w;
   constexpr qint64 kEpochNs = 1'700'000'000'000'000'000LL;  // ~2023
@@ -583,9 +573,8 @@ TEST(Timeline, TimeFrameOffsetIsBitExactAtEpochScale) {
   EXPECT_EQ(w.playheadNsForTest(), 5'123'456'789LL);
 }
 
-// The absolute marker label must ROUND to the nearest millisecond (matching the
-// playback readout's QString::number('f',3)), not truncate — truncation read a ms
-// low and made the timeline disagree with playback by 0.001 s. Always 3 decimals.
+// The absolute marker label rounds to the nearest millisecond (as the playback readout's QString::number('f',3)), not
+// truncates: truncation reads a ms low and makes the timeline disagree with playback by 0.001 s. Always 3 decimals.
 TEST(Timeline, AbsoluteLabelRoundsMillisecondsLikePlayback) {
   Timeline w;
   w.setAbsoluteTimeLabels(true);

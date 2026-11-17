@@ -28,7 +28,7 @@ If the edit "had no effect", suspect this step before suspecting the code.
 ./run.sh --plugin-dir ../pj-official-plugins/build/all/Release/bin   # locally-built plugins
 ```
 
-- `run.sh` already unsets `QT_IM_MODULE` (IBus segfault) and pins the bundled Qt plugins — launch through it, not the raw binary.
+- `run.sh` blanks `QT_IM_MODULE` (the system IBus context segfaults under the pinned Qt) and points `QT_PLUGIN_PATH` at the pinned Qt — launch through it, not the raw binary.
 - Test data: module test assets (`tests/` fixtures), or a recording the user names.
 - Bound the run: `timeout 20 ./run.sh …` for scripted checks so nothing hangs the session.
 
@@ -37,12 +37,12 @@ If the edit "had no effect", suspect this step before suspecting the code.
 **Visual / layout / widget:**
 - Screenshot when cheap: the MCP `screenshot` tool on the running app (any tab), or `plotjuggler4 --screenshot <png>` (grabs the first 3D view, then exits).
 - **GNOME Wayland blocks external window capture** (grim etc. return nothing) — that's the environment, not the app. Use the in-app paths above or XWayland.
-- Sizing looks wrong / C++ sizing calls ignored: that's QSS overriding C++ (`QStyleSheetStyle`). Diagnose in the **live** app with an env-gated `qWarning` dump of size/min/max/iconSize + `style()->className()` — offscreen tests use a different style and cannot reproduce it. Fix in QSS, not C++.
+- Sizing looks wrong / C++ sizing calls ignored: usually QSS overriding C++ (`QStyleSheetStyle`). Diagnose in the **live** app with an env-gated `qWarning` dump of size/min/max/iconSize + `style()->className()` — offscreen tests use a different style and cannot reproduce it. If QSS is the cause, fix it there; a C++ size call will be overridden again.
 
 **Performance:**
 - Produce a **number**: repaint/replot rate (must stay ≤60 Hz), frame time, on-CPU samples. Adjectives are not verification.
 - Tools: `./run.sh --apitrace` (GL trace), `./run.sh --heaptrack` (heap), `perf` on the live PID (see the `perf-profile` skill).
-- Suspect hot-path reads: anything calling `latestAt` inside a per-tick gate decompresses cold chunks — use `indexAt`/`entryTimestamps` and re-measure.
+- Suspect hot-path reads: an `ObjectStore::latestAt` inside a per-tick gate fetches (decompresses) the payload on a cache miss — `latestEntryIdAt`, `indexAt` and `entryTimestamps` read no payload; swap, then re-measure.
 
 **Behavioral (non-visual):**
 - Prefer an automated reproduction (gtest in the module) over eyeballing; the live run then confirms wiring, not logic.

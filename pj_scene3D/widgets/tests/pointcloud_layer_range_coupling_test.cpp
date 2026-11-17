@@ -30,8 +30,6 @@ PJ::ObjectTopicId topic(uint32_t id) {
   return topic_id;
 }
 
-// Builds a layer in manual-range mode and returns its config widget plus the two
-// range scrubbers, found by objectName.
 struct RangePanel {
   std::unique_ptr<QWidget> widget;
   PJ::DoubleScrubber* min_spin = nullptr;

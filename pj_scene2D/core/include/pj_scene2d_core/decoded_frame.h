@@ -11,9 +11,8 @@
 
 namespace PJ {
 
-struct UndistortMap;  // pj_scene2d_core/undistort_remap.h — only held by shared_ptr here.
+struct UndistortMap;
 
-/// Pixel format tag for decoded image data.
 enum class PixelFormat : uint8_t {
   kRGB888,
   kRGBA8888,
@@ -23,38 +22,30 @@ enum class PixelFormat : uint8_t {
   kMono16,
   kYUV420P,
   kNV12,
-  kDepthR32F,  // single-channel float32 metric depth; GPU-colormapped in the media shader
+  kDepthR32F,  // float32 metres; 0 = no data
 };
 
-/// YUV→RGB luma-coefficient set for the GPU color-conversion matrix. Carried on a
-/// decoded YUV frame so the shader applies the matrix the source was actually
-/// encoded with instead of a hardcoded default (BT.601 for SD, BT.709 for HD —
-/// applying the wrong one shifts saturated hues). Ignored by non-YUV formats.
+/// The YUV→RGB coefficients a YUV frame was encoded with (the wrong one shifts saturated hues).
 enum class YuvColorSpace : uint8_t {
-  kBt601,  ///< SMPTE 170M / BT.470BG — standard-definition video
-  kBt709,  ///< BT.709 — high-definition video (the common default)
+  kBt601,  ///< SMPTE 170M / BT.470BG
+  kBt709,
 };
 
-/// YUV sample range. Most camera/file H.264 is "limited" (luma 16..235, chroma
-/// 16..240); "full" (0..255, a.k.a. JPEG/PC range) needs a different scale+offset.
-/// Decoding limited-range pixels with a full-range matrix washes out blacks/whites.
+/// Limited: luma 16..235, chroma 16..240. Full: 0..255 (JPEG range).
 enum class YuvColorRange : uint8_t {
-  kLimited,  ///< studio / TV range (the common default)
-  kFull,     ///< full / JPEG / PC range
+  kLimited,
+  kFull,
 };
 
-/// Magnification (texture-min/mag) filter for displaying a frame zoomed past 1:1.
-/// Set by the producing source, not user-selectable: image frames stamp kNearest
-/// (crisp pixels for inspection), video uses the kLinear default (smooth), and depth
-/// always samples nearest regardless (see media_viewer_widget): blending the no-data
-/// sentinel is wrong.
+/// Display filter, set by the producing source: images use kNearest, video kLinear. Depth is always sampled
+/// nearest, whatever this says: blending would mix the no-data 0 into valid depths.
 enum class MagFilter : uint8_t {
-  kLinear,   ///< bilinear interpolation (default)
-  kNearest,  ///< nearest-neighbour ("pixelated")
+  kLinear,
+  kNearest,
 };
 
-/// Compute the expected pixel buffer size in bytes for a given format and dimensions.
-/// Uses ceil(w/2), ceil(h/2) for chroma planes (correct for odd dimensions).
+/// Buffer size in bytes; chroma planes are ceil(w/2) x ceil(h/2). Size every YUV/NV12 allocation with it, or an odd
+/// dimension overflows the buffer.
 [[nodiscard]] inline size_t expectedBufferSize(int width, int height, PixelFormat format) noexcept {
   auto w = static_cast<size_t>(width);
   auto h = static_cast<size_t>(height);
@@ -87,81 +78,56 @@ enum class MagFilter : uint8_t {
   return 0;
 }
 
-/// Per-frame parameters for GPU depth colormapping (PixelFormat::kDepthR32F). The
-/// media shader maps raw metric depth (metres) through a colormap LUT: normalize
-/// by [near_m, far_m], optionally invert, then look up colormap row. `active` is
-/// true only for depth frames.
+/// How the media shader colours a kDepthR32F frame: normalize by [near_m, far_m], optionally invert, look up the
+/// colormap row. `active` only on depth frames.
 struct DepthColorParams {
   float near_m = 0.0f;
   float far_m = 1.0f;
   bool invert = false;
-  uint8_t colormap = 0;  ///< colormap id (pj_widgets Colormap) == LUT row
+  uint8_t colormap = 0;  ///< pj_widgets Colormap value == LUT row
   bool active = false;
 };
 
-/// Decoded pixel buffer produced by decoders and codec stages
-/// and consumed by MediaViewerWidget for GPU upload.
-///
-/// Ownership: `pixels` is shared via shared_ptr, enabling zero-copy
-/// handoff between pipeline stages and MediaSource delivery paths.
-///
-/// For YUV420P: pixels contains Y plane (w*h), then U plane
-/// ((w+1)/2 * (h+1)/2), then V plane (same size) — contiguous.
-/// Use expectedBufferSize() for correct allocation.
+/// A decoded image. `pixels` is shared and never mutated after delivery: the viewer skips the upload when a frame
+/// brings the buffer it already holds, so a producer hands out a fresh buffer per decoded frame. YUV420P is the Y
+/// plane, then U, then V, contiguous.
 struct DecodedFrame {
-  std::shared_ptr<std::vector<uint8_t>> pixels;  ///< Pixel data (contiguous, layout depends on format)
-  int width = 0;                                 ///< Image width in pixels
-  int height = 0;                                ///< Image height in pixels
-  PixelFormat format = PixelFormat::kRGB888;     ///< Pixel layout in the buffer
-  int64_t pts = -1;                              ///< Presentation timestamp (-1 if unknown)
+  std::shared_ptr<std::vector<uint8_t>> pixels;
+  int width = 0;
+  int height = 0;
+  PixelFormat format = PixelFormat::kRGB888;
+  int64_t pts = -1;  ///< ns; -1 = unknown
   /// The source image's own stamp (its payload's `timestamp_ns`) on the dataset clock: what annotations made from the
   /// image carry, which may differ from `pts`, the store entry's time. Unset for a frame with no payload stamp (video).
   std::optional<int64_t> stamp;
   /// The time of the store entry the frame was decoded from, which a lookup among the topic's entries takes; `pts` can
   /// be a parser's record stamp or the image's own. Unset for a frame that came from no single entry (video).
   std::optional<int64_t> entry_ts;
-  std::string frame_id;  ///< Source frame (from sdk::Image); lets a consumer find the CameraInfo.
+  std::string frame_id;  ///< From sdk::Image; keys the CameraInfo lookup.
 
-  /// YUV→RGB conversion parameters (only meaningful for kYUV420P / kNV12). Set by
-  /// the video decoder from the codec's signalled colorimetry; the GPU shader's
-  /// color matrix is built from these. Defaults match the historical assumption
-  /// (full-range BT.709) so non-decoder producers need not set them.
+  /// YUV formats only; the video decoder sets them from the codec's colorimetry.
   YuvColorSpace color_space = YuvColorSpace::kBt709;
   YuvColorRange color_range = YuvColorRange::kFull;
 
-  /// Display magnification filter (see MagFilter). A display hint, not a decode
-  /// property; set by the layer that owns this stream.
   MagFilter mag_filter = MagFilter::kLinear;
 
-  /// Deferred-rectification handle. When non-null this frame is RAW (still in
-  /// source pixel space, `width`/`height` = source size) and the consumer must
-  /// rectify it through this map before display — the GPU path, where the widget
-  /// undistorts at draw time. The map's `out_width`/`out_height` is the logical
-  /// (rectified) display size that annotation/aspect/inspector coordinate spaces
-  /// use. Null means the frame is already display-ready (CPU path or no
-  /// calibration). Shared + immutable: many frames of one camera reuse it.
+  /// Non-null: the frame is raw (`width`/`height` = source size) and the consumer rectifies it through this map; the
+  /// map's `out_width`/`out_height` is the logical size annotations, aspect and inspector use. Null: display-ready.
   std::shared_ptr<const UndistortMap> rectify_map;
 
-  /// GPU depth-colormap parameters; `depth.active` is set only for kDepthR32F frames.
   DepthColorParams depth;
 
-  /// True if no pixel data is present (null or empty buffer).
   [[nodiscard]] bool isNull() const noexcept {
     return pixels == nullptr || pixels->empty();
   }
 
-  /// True if pixels, dimensions, and format are mutually consistent.
   [[nodiscard]] bool isValid() const noexcept {
     return !isNull() && width > 0 && height > 0 && pixels->size() == expectedBufferSize(width, height, format);
   }
 };
 
-/// Deinterleave an NV12 frame into a planar YUV420P frame, preserving all metadata
-/// (colorimetry, pts, frame_id, mag filter, rectify map). NV12 is the native
-/// hardware-decode download format; the GPU display path uploads it directly, but
-/// CPU consumers that only understand planar YUV420P (e.g. the thumbnail encoder, or
-/// a backend lacking RG8 textures) call this first. Returns a null frame if `nv12`
-/// isn't a well-formed NV12 frame.
+/// Keeps every metadata field. For consumers of planar YUV only (the thumbnail encoder, a backend without RG8
+/// textures). A null frame when `nv12` is not well-formed NV12.
 [[nodiscard]] inline DecodedFrame nv12ToYuv420p(const DecodedFrame& nv12) {
   const int w = nv12.width;
   const int h = nv12.height;
@@ -177,7 +143,7 @@ struct DecodedFrame {
 
   auto pixels = std::make_shared<std::vector<uint8_t>>(expectedBufferSize(w, h, PixelFormat::kYUV420P));
   uint8_t* dst = pixels->data();
-  std::memcpy(dst, src, static_cast<size_t>(y_size));  // Y plane is identical
+  std::memcpy(dst, src, static_cast<size_t>(y_size));
   const uint8_t* uv = src + y_size;
   uint8_t* u_out = dst + y_size;
   uint8_t* v_out = dst + y_size + uv_size;
@@ -186,7 +152,7 @@ struct DecodedFrame {
     v_out[i] = uv[i * 2 + 1];
   }
 
-  DecodedFrame out = nv12;  // copy metadata (colour space/range, pts, frame_id, mag, rectify_map)
+  DecodedFrame out = nv12;
   out.pixels = std::move(pixels);
   out.format = PixelFormat::kYUV420P;
   return out;

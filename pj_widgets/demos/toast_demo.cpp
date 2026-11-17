@@ -1,16 +1,14 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Standalone visual demo for pj_widgets/ToastManager + ToastNotification.
+// Standalone visual demo for pj_widgets/ToastManager and ToastNotification.
 //
-// Interactive: buttons trigger each toast the release-update feature uses
-// (a "new release available" toast with the success_kid icon + a clickable
-// "View on GitHub" link, an "up to date" toast, and a failure toast).
+// Interactive: buttons trigger each toast the release-update feature uses (a "new release available" toast with the
+// success_kid icon and a clickable "View on GitHub" link, an "up to date" toast, and a failure toast).
 //
-// Headless: `--screenshot <path>` shows the release toast, waits for the
-// slide-in to finish, grabs the window to a PNG, and exits — used to capture
-// the toast without a window server (QWidget::grab renders in-process, so it
-// works under QT_QPA_PLATFORM=offscreen). `--theme dark|light` selects palette.
+// Headless: `--screenshot <path>` shows the release toast, waits for the slide-in to finish, grabs the window to a PNG
+// and exits; QWidget::grab renders in-process, so it works under QT_QPA_PLATFORM=offscreen. `--theme dark|light`
+// selects the palette.
 
 #include <QApplication>
 #include <QLabel>

@@ -58,11 +58,9 @@ bool hasCanonical3DCodec(BT type) noexcept {
 
 PJ::Expected<PJ::sdk::ObjectRecord> resolveObject(
     const PJ::SessionManager::ParserBinding& binding, BT type, PJ::Timestamp ts, const PJ::sdk::PayloadView& payload) {
-  // Parser bound -> the topic's objects are parser-decoded messages.
   if (binding) {
     return parseLocked(binding, ts, payload);
   }
-  // No parser -> the bytes are a serialized canonical object; decode by type.
   const auto* data = payload.bytes.data();
   const auto size = payload.bytes.size();
   switch (type) {

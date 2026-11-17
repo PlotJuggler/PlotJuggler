@@ -23,10 +23,9 @@ float readFloat32At(const uint8_t* data) {
   return std::bit_cast<float>(bits);
 }
 
-// Hot-path float read for the packing loop. On a little-endian host (every PJ target) a memcpy
-// is a single (possibly unaligned) load the compiler vectorizes — ~10x cheaper than
-// readFloat32At's byte-by-byte assembly — and stays alignment-safe / UB-free (no
-// reinterpret_cast). The explicit byte assembly is kept only for a hypothetical big-endian host.
+// Hot-path float read for the packing loop: on a little-endian host (every PJ target) a memcpy is one (possibly
+// unaligned) load the compiler vectorizes, ~10x cheaper than readFloat32At's byte assembly, and stays alignment-safe
+// (no reinterpret_cast). The byte assembly is kept only for a hypothetical big-endian host.
 namespace {
 inline float readFloat32Host(const uint8_t* data) {
   if constexpr (std::endian::native == std::endian::little) {
@@ -106,8 +105,6 @@ bool fieldFitsInPoint(const PointField& field, uint32_t point_step) {
 
 ColorLayout detectColorLayout(const PointCloud& src) {
   ColorLayout layout;
-  // 1. Canonical packed color: a single uint32 field named "rgba" (with alpha) or
-  //    "rgb" (alpha forced opaque). Its 4 bytes are R,G,B,A in increasing address.
   for (const std::string_view name : {std::string_view("rgba"), std::string_view("rgb")}) {
     const PointField* packed = findField(src.fields, name);
     if (packed != nullptr && packed->datatype == PointField::Datatype::kUint32) {
@@ -120,7 +117,6 @@ ColorLayout detectColorLayout(const PointCloud& src) {
       return layout;
     }
   }
-  // 2. Separate uint8 channels (the raw, un-normalized foxglove layout).
   const PointField* red = findField(src.fields, "red");
   const PointField* green = findField(src.fields, "green");
   const PointField* blue = findField(src.fields, "blue");
@@ -160,17 +156,15 @@ std::optional<PointVertexPlan> planPointVertices(
   if (plan.x == nullptr || plan.y == nullptr || plan.z == nullptr) {
     return std::nullopt;  // no spatial fields
   }
-  // M.23/M.24: validate field offsets against point_step BEFORE indexing the buffer.
-  // Field offsets come from the wire/parser verbatim; an offset whose read crosses
-  // point_step is an out-of-bounds heap read on the tail point (and far worse for an
-  // adversarial uint32 offset). Reject every field we actually read here.
+  // Validate field offsets against point_step BEFORE indexing: they come from the wire verbatim, and a read crossing
+  // point_step is an out-of-bounds heap read on the tail point (far worse for an adversarial uint32 offset). Reject
+  // every field read here.
   if (!fieldFitsInPoint(*plan.x, src.point_step) || !fieldFitsInPoint(*plan.y, src.point_step) ||
       !fieldFitsInPoint(*plan.z, src.point_step)) {
     return std::nullopt;
   }
-  // RGB-direct mode (extract_rgba) takes precedence over scalar extraction: it reads
-  // the cloud's color field instead of a colormap scalar. Validate every color byte we
-  // will read against point_step, the same OOB guard applied to x/y/z above.
+  // RGB-direct mode (extract_rgba) takes precedence over scalar extraction and reads the colour field instead;
+  // validate every colour byte read against point_step as for x/y/z.
   if (extract_rgba) {
     plan.color = detectColorLayout(src);
     if (plan.color.valid) {
@@ -368,7 +362,7 @@ ConvertedPointCloud convertCanonical(const PointCloud& src, std::string_view sca
   }
 
   // Single pass over the point buffer: positions, optional scalar, and the finite-point
-  // AABB all read from the same `base` so large clouds touch each point once (L.50).
+  // AABB all read from the same `base` so large clouds touch each point once.
   for (std::size_t point_index = 0; point_index < plan->point_count; ++point_index) {
     const uint8_t* base = src.data.data() + point_index * plan->step;
     const glm::vec3 position{readCoord(plan->x, base), readCoord(plan->y, base), readCoord(plan->z, base)};

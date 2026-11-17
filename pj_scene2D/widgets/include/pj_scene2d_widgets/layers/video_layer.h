@@ -10,15 +10,8 @@ namespace PJ {
 
 class MediaSource;
 
-// Scene2DLayer for a single streaming-video topic: per-frame canonical
-// PJ.VideoFrame / Foxglove CompressedVideo messages in ObjectStore (one
-// compressed H.264 frame per entry). Contributes a parser-mode
-// StreamingVideoSource — which unwraps each entry to its Annex-B NAL span
-// (zero-copy) and decodes on a worker thread — to the dock's composite. No
-// per-layer configuration beyond the base.
-//
-// Every ObjectStore entry is one encoded frame on the wire, so decode is
-// GOP-aware and runs through StreamingVideoDecoder.
+// A video topic: one encoded frame (H.264, HEVC or AV1) per ObjectStore entry, unwrapped by the topic's parser,
+// which it requires, and decoded by a StreamingVideoSource.
 class VideoLayer final : public Scene2DLayer {
   Q_OBJECT
  public:

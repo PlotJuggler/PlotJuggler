@@ -1,7 +1,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// NodeScheduler under D30, driven through the OnDemandService facade that wires it: a real ObjectStore,
+// NodeScheduler, driven through the OnDemandService facade that wires it: a real ObjectStore,
 // DataEngine, EnginePool, ResultHistory and InputStager, and an injected fake script run that records where and
 // what it ran and waits for a gate or a delay (90 ms for the slow script). One end-to-end test runs the real Luau
 // engine. Waits are `EnginePool::waitIdle` or a bounded event pump, never a nested WaitForMoreEvents loop.
@@ -205,7 +205,7 @@ std::string frameOf(Timestamp query_time) {
 
 // ---- lanes --------------------------------------------------------------------------------------------------------
 
-// PY-01: a Python recipe's runs take the Python lane, the one thread the GIL serializes anyway: two Python nodes run
+// A Python recipe's runs take the Python lane, the one thread the GIL serializes anyway: two Python nodes run
 // there and settle ready, a Luau node beside them runs on the shared lane.
 TEST(NodeSchedulerTest, PythonRecipeEvaluatesOnThePythonLane) {
   Fixture fx;
@@ -416,9 +416,9 @@ TEST(NodeSchedulerTest, RemovingAPythonRecipeWhileItCompilesPublishesNothing) {
 #endif
 }
 
-// ---- D30: the result policy --------------------------------------------------------------------------------
+// ---- -------------------------------------------------------------------------------- ----------------------
 
-// GAP-02: requests every 33 ms against a 90 ms run keep producing results while the cursor moves. Every completed
+// Requests every 33 ms against a 90 ms run keep producing results while the cursor moves. Every completed
 // run is published (none dropped for being overtaken by a newer time), the display only moves forward, and it
 // converges on the last request.
 TEST(NodeSchedulerTest, SlowScriptStillPublishesWhileCursorMoves) {
@@ -451,7 +451,7 @@ TEST(NodeSchedulerTest, SlowScriptStillPublishesWhileCursorMoves) {
   EXPECT_EQ(fx.shown("owner/crop/cropped", last).frame_id, frameOf(last));
 }
 
-// GAP-03: one running run and one pending request, which keeps only the latest time: nine requests during a run
+// One running run and one pending request, which keeps only the latest time: nine requests during a run
 // cost one more run, at the newest time.
 TEST(NodeSchedulerTest, PendingSlotKeepsOnlyTheLatestTime) {
   Fixture fx;
@@ -479,7 +479,7 @@ TEST(NodeSchedulerTest, PendingSlotKeepsOnlyTheLatestTime) {
   EXPECT_EQ(fx.state("owner/crop").requested_t, 10 * kSec);
 }
 
-// D30, ASY-09: a seek back while a run computes cancels nothing. The running run completes and is published, then
+// A seek back while a run computes cancels nothing. The running run completes and is published, then
 // the pending request runs, and the display settles on the newest request's result.
 TEST(NodeSchedulerTest, TimeOnlyChangeDoesNotCancelTheRunningRun) {
   Fixture fx;
@@ -504,8 +504,8 @@ TEST(NodeSchedulerTest, TimeOnlyChangeDoesNotCancelTheRunningRun) {
   EXPECT_EQ(fx.state("owner/crop").requested_t, 5 * kSec);
 }
 
-// D30: a change of meaning cancels the running run and drops its result. A new revision (ASY-03) re-evaluates at
-// the node's cursor without a new request (CUR-13). A new epoch of the dataset (ASY-04) drops the run's result at
+// A change of meaning cancels the running run and drops its result. A new revision re-evaluates at
+// the node's cursor without a new request. A new epoch of the dataset drops the run's result at
 // its publication, which serves the cursor again, and cancels the run at the next request. Removal:
 // RemovalMidFlightPublishesNothing.
 TEST(NodeSchedulerTest, MeaningChangeCancelsTheRunningRun) {
@@ -555,9 +555,8 @@ TEST(NodeSchedulerTest, MeaningChangeCancelsTheRunningRun) {
   EXPECT_EQ(fx.state("owner/crop").status, Status::kReady);
 }
 
-// D30: an older completion never replaces a newer result. The 10 s run lands after the 20 s request was served from
-// the cache: the store's at-or-before read at 20 s still shows the 20 s result, and the state stays the newest
-// request's.
+// An older completion never replaces a newer result. The 10 s run lands after the 20 s request was served from the
+// cache: the store's at-or-before read at 20 s still shows the 20 s result, and the state stays the newest request's.
 TEST(NodeSchedulerTest, OlderCompletionNeverReplacesNewerResult) {
   Fixture fx;
   fx.pushCloud(10 * kSec);
@@ -581,7 +580,7 @@ TEST(NodeSchedulerTest, OlderCompletionNeverReplacesNewerResult) {
   EXPECT_EQ(state.lag, Timestamp{0});
 }
 
-// D30 (clarified 2026-10-18): the lag is how far the shown result is behind the one the current request produces.
+// The lag is how far the shown result is behind the one the current request produces.
 // With a sparse input the up-to-date result shows no lag, though the cursor is 5 s past its stamp.
 TEST(NodeSchedulerTest, LagIsMeasuredAgainstTheCurrentRequestsTarget) {
   Fixture fx;
@@ -605,9 +604,9 @@ TEST(NodeSchedulerTest, LagIsMeasuredAgainstTheCurrentRequestsTarget) {
   EXPECT_EQ(fx.state("owner/crop").lag, Timestamp{0});
 }
 
-// ---- D6, D25: missing and unavailable inputs ---------------------------------------------------------------
+// ---- --------------------------------------------------------------- ---------------------------------------
 
-// ASY-01: a request goes pending, then ready once its run is published.
+// A request goes pending, then ready once its run is published.
 TEST(NodeSchedulerTest, RequestAtGoesPendingThenReady) {
   Fixture fx;
   fx.pushCloud(10 * kSec);
@@ -621,7 +620,7 @@ TEST(NodeSchedulerTest, RequestAtGoesPendingThenReady) {
   EXPECT_EQ(fx.ring("owner/crop/cropped"), std::vector<Timestamp>{10 * kSec});
 }
 
-// ASY-07, CUR-06, CUR-11 (D6): a missing input runs nothing, says which input, and with nothing shown to clear
+// A missing input runs nothing, says which input, and with nothing shown to clear
 // writes nothing.
 TEST(NodeSchedulerTest, AMissingInputRunsNothingAndNamesTheInput) {
   Fixture fx;
@@ -638,7 +637,7 @@ TEST(NodeSchedulerTest, AMissingInputRunsNothingAndNamesTheInput) {
   EXPECT_TRUE(fx.ring("owner/crop/cropped").empty());
 }
 
-// D6: a missing input clears the display even where a previous result was shown.
+// A missing input clears the display even where a previous result was shown.
 TEST(NodeSchedulerTest, MissingInputClearsEvenWithPreviousResult) {
   Fixture fx;
   fx.pushCloud(10 * kSec);
@@ -658,7 +657,7 @@ TEST(NodeSchedulerTest, MissingInputClearsEvenWithPreviousResult) {
   EXPECT_EQ(fx.fake.finished(), 1);
 }
 
-// D6: a run whose input is lost while it computes, its time requested again meanwhile, does not show its result as
+// A run whose input is lost while it computes, its time requested again meanwhile, does not show its result as
 // ready when it ends: after every completion the scheduler serves the current request again.
 TEST(NodeSchedulerTest, AnInputLostWhileItsRunComputesIsMissingWhenTheRunEnds) {
   Fixture fx;
@@ -676,7 +675,7 @@ TEST(NodeSchedulerTest, AnInputLostWhileItsRunComputesIsMissingWhenTheRunEnds) {
   EXPECT_EQ(fx.shown("owner/crop/cropped", 10 * kSec).width, 0u) << "the old geometry is not shown";
 }
 
-// D6, D30: a result served for the current request drops the tombstones it supersedes, stamped after it up to the
+// A result served for the current request drops the tombstones it supersedes, stamped after it up to the
 // cursor. The cloud is lost and 20 s clears; a cloud stamped 18 s arrives and 20 s is requested again: it shows.
 TEST(NodeSchedulerTest, AResultForTheCurrentRequestDropsTheTombstonesItSupersedes) {
   Fixture fx;
@@ -697,7 +696,7 @@ TEST(NodeSchedulerTest, AResultForTheCurrentRequestDropsTheTombstonesItSupersede
   EXPECT_EQ(fx.shown("owner/crop/cropped", 20 * kSec).width, 4u);
 }
 
-// D6: a request its remembered failure serves clears what the ring shows there before reporting the error: 12 s
+// A request its remembered failure serves clears what the ring shows there before reporting the error: 12 s
 // fails, an earlier time succeeds, and 12 s is revisited.
 TEST(NodeSchedulerTest, ARevisitedFailureClearsWhatIsShown) {
   Fixture fx;
@@ -738,7 +737,7 @@ TEST(NodeSchedulerTest, AMissingInputTombstoneIsStampedAtTheRequestedTime) {
       << "nothing drawn at 14 s: no second tombstone";
 }
 
-// D25, DAG-06: an output marked unavailable is a missing input of the node reading it, with the reason; a sibling
+// An output marked unavailable is a missing input of the node reading it, with the reason; a sibling
 // output, here a valid empty cloud, still feeds its reader.
 TEST(NodeSchedulerTest, SiblingOutputStillFlowsWhenOneIsUnavailable) {
   Fixture fx;
@@ -758,7 +757,7 @@ TEST(NodeSchedulerTest, SiblingOutputStillFlowsWhenOneIsUnavailable) {
   EXPECT_EQ(fx.fake.finished(), 2) << "the split once, then only the upper reader";
 }
 
-// DAG-06: a failed upstream is its reader's missing input, with the failure's text; the reader does not run.
+// A failed upstream is its reader's missing input, with the failure's text; the reader does not run.
 TEST(NodeSchedulerTest, AnUpstreamErrorIsItsReadersMissingInput) {
   Fixture fx;
   fx.fake.fail = "boom";
@@ -774,7 +773,7 @@ TEST(NodeSchedulerTest, AnUpstreamErrorIsItsReadersMissingInput) {
   EXPECT_EQ(fx.fake.finished(), 1);
 }
 
-// CUR-09 (D6): a failed run clears the display, its empty objects in the output's last frame, and says why. The
+// A failed run clears the display, its empty objects in the output's last frame, and says why. The
 // same inputs fail again without a run; new inputs run again.
 TEST(NodeSchedulerTest, AFailedRunClearsTheDisplayAndIsNotRetriedOnTheSameInputs) {
   Fixture fx;
@@ -806,7 +805,7 @@ TEST(NodeSchedulerTest, AFailedRunClearsTheDisplayAndIsNotRetriedOnTheSameInputs
   EXPECT_EQ(fx.fake.finished(), 3) << "new inputs may succeed";
 }
 
-// D6, D30: a failure clears the display only when it serves the current request. The clock-reading run for 10.2 s
+// A failure clears the display only when it serves the current request. The clock-reading run for 10.2 s
 // fails once the cursor is at 10.3 s: the result shown there (10.1 s's, stamped 10 s) stays while 10.3 s computes.
 // The failure is still remembered: a revisit fails and clears (ARevisitedFailureClearsWhatIsShown).
 TEST(NodeSchedulerTest, ALateFailureForAnOlderRequestKeepsTheDisplay) {
@@ -874,7 +873,7 @@ TEST(NodeSchedulerTest, AResultThatServesTheCurrentRequestSettlesItWithoutALooku
 
 // ---- Serving from the history ------------------------------------------------------------------------------
 
-// CUR-10, ASY-06: a revisit is served from the history inline: no run, no publication, the result the run made.
+// A revisit is served from the history inline: no run, no publication, the result the run made.
 TEST(NodeSchedulerTest, AHitComputesNothingAndCopiesNoBundle) {
   Fixture fx;
   fx.pushCloud(5 * kSec);
@@ -901,7 +900,7 @@ TEST(NodeSchedulerTest, AHitComputesNothingAndCopiesNoBundle) {
   EXPECT_EQ(fx.service->history().cacheBytes(), cached) << "no copy of the bundle reaches the history";
 }
 
-// D30: a late result never replaces the one the ring shows for the current request. A run for 11 s, which read the
+// A late result never replaces the one the ring shows for the current request. A run for 11 s, which read the
 // query clock, ends after 12 s was served at the same stamp: it is kept in the cache, the ring keeps the 12 s result,
 // and nothing has to run again, even with no compute cache to bring the 12 s result back from.
 TEST(NodeSchedulerTest, ALateResultReLooksUpTheCursor) {
@@ -925,7 +924,7 @@ TEST(NodeSchedulerTest, ALateResultReLooksUpTheCursor) {
   EXPECT_EQ(fx.state("owner/crop").requested_t, 12 * kSec);
 }
 
-// ASY-08: a run that reads the query clock serves only its own instant: 13 s waits in the pending slot and gets its
+// A run that reads the query clock serves only its own instant: 13 s waits in the pending slot and gets its
 // own run, never the 12 s result.
 TEST(NodeSchedulerTest, RequestsAtDifferentInstantsOfAClockReadingRunNeverShareAResult) {
   Fixture fx;
@@ -949,7 +948,7 @@ TEST(NodeSchedulerTest, RequestsAtDifferentInstantsOfAClockReadingRunNeverShareA
   EXPECT_EQ(fx.shown("owner/crop/cropped", 12 * kSec).frame_id, frameOf(12 * kSec));
 }
 
-// CUR-04: a scalar input's new sample is a new request: it runs again on the same cloud entry.
+// A scalar input's new sample is a new request: it runs again on the same cloud entry.
 TEST(NodeSchedulerTest, AScalarInputChangeRunsAgainOnTheSameCloud) {
   Fixture fx;
   fx.pushCloud(10 * kSec);
@@ -966,7 +965,7 @@ TEST(NodeSchedulerTest, AScalarInputChangeRunsAgainOnTheSameCloud) {
   EXPECT_EQ(fx.ring("owner/crop/cropped"), (std::vector<Timestamp>{10 * kSec, 19 * kSec}));
 }
 
-// CUR-04 with a string: a recorded state that changes runs the node again on the same cloud, and the run reads the
+// A recorded string state that changes runs the node again on the same cloud, and the run reads the
 // state as a string.
 TEST(NodeSchedulerTest, AStringStateChangeReEvaluatesWithoutANewCloud) {
   Fixture fx;
@@ -1022,7 +1021,7 @@ TEST(NodeSchedulerTest, TheRunReadsTheTfSnapshotTakenAtItsSubmission) {
 
 // ---- Threads ------------------------------------------------------------------------------------------------
 
-// Invariant 6: the decode (the parser here) and the script run on a pool worker, never on the GUI thread.
+// The decode (the parser here) and the script run on a pool worker, never on the GUI thread.
 TEST(NodeSchedulerTest, DecodeAndScriptDoNotRunOnTheGuiThread) {
   Fixture fx;
   ASSERT_TRUE(fx.store.pushOwned(fx.lidar, 10 * kSec, std::vector<uint8_t>(8 * test::kPointStride, 0)).has_value());
@@ -1039,7 +1038,7 @@ TEST(NodeSchedulerTest, DecodeAndScriptDoNotRunOnTheGuiThread) {
 
 // ---- Chains ------------------------------------------------------------------------------------------------
 
-// DAG-01, DAG-07, GAP-13: a request for a reader first requests its upstream at the same time and waits for it; a
+// A request for a reader first requests its upstream at the same time and waits for it; a
 // missing leaf input reaches the reader; the reader decodes the upstream's output from its ring entry, a view
 // with no copy; a revisit is served from both histories.
 TEST(NodeSchedulerTest, ChainRunsUpstreamFirstAndReadsItsResultFromTheRing) {
@@ -1072,7 +1071,7 @@ TEST(NodeSchedulerTest, ChainRunsUpstreamFirstAndReadsItsResultFromTheRing) {
 
 void readerKeepsUpdatingWhileItsSlowUpstreamLags(size_t budget_bytes);
 
-// D30 for chains: a reader keeps updating while its slow upstream lags behind a moving cursor. A moving cursor never
+// In a chain, a reader keeps updating while its slow upstream lags behind a moving cursor. A moving cursor never
 // lets the upstream's newest request settle, so the reader runs on each result the upstream publishes, and it
 // converges on the upstream's last result once the cursor stops.
 TEST(NodeSchedulerTest, AReaderKeepsUpdatingWhileItsSlowUpstreamLags) {
@@ -1082,7 +1081,7 @@ TEST(NodeSchedulerTest, AReaderKeepsUpdatingWhileItsSlowUpstreamLags) {
   }
 }
 
-// One budget: with room for one run, the upstream and its reader take turns (§11: waiters first in, first out).
+// One budget: with room for one run, the upstream and its reader take turns (waiters first in, first out).
 void readerKeepsUpdatingWhileItsSlowUpstreamLags(size_t budget_bytes) {
   Fixture fx(budget_bytes);
   fx.fake.slow_delay = 90ms;
@@ -1182,7 +1181,7 @@ TEST(NodeSchedulerTest, ASettlementReachesEveryReaderDownTheChain) {
   EXPECT_EQ(fx.fake.finished(), 1);
 }
 
-// DAG-05: a removed upstream is its readers' missing input, with the reason, and clears their display; reinstalled,
+// A removed upstream is its readers' missing input, with the reason, and clears their display; reinstalled,
 // it relinks by name and the readers run again at their cursors.
 TEST(NodeSchedulerTest, ARemovedUpstreamIsItsReadersMissingInputUntilReinstalled) {
   Fixture fx;
@@ -1205,9 +1204,8 @@ TEST(NodeSchedulerTest, ARemovedUpstreamIsItsReadersMissingInputUntilReinstalled
   EXPECT_EQ(fx.shown("owner/again/cropped", 10 * kSec).width, 4u);
 }
 
-// DAG-04: an upstream's new revision supersedes its readers: their results go at once, a reader's run in flight is
-// cancelled (its revision did not change, its input's meaning did), and both re-evaluate at their cursors, upstream
-// first.
+// An upstream's new revision supersedes its readers: their results go at once, a reader's run in flight is cancelled
+// (its revision did not change, its input's meaning did), and both re-evaluate at their cursors, upstream first.
 TEST(NodeSchedulerTest, AnUpstreamEditSupersedesItsReaders) {
   Fixture fx;
   fx.pushCloud(10 * kSec);
@@ -1247,7 +1245,7 @@ TEST(NodeSchedulerTest, AnUpstreamEditSupersedesItsReaders) {
 
 // ---- Life cycle ---------------------------------------------------------------------------------------------
 
-// ASY-02: a node removed mid-flight publishes nothing and leaves no state; reinstalled, it inherits none.
+// A node removed mid-flight publishes nothing and leaves no state; reinstalled, it inherits none.
 TEST(NodeSchedulerTest, RemovalMidFlightPublishesNothing) {
   Fixture fx;
   fx.fake.gated = true;
@@ -1296,7 +1294,7 @@ TEST(NodeSchedulerTest, PublishAfterTheServiceIsGoneIsSafe) {
   EXPECT_TRUE(fx.published.empty());
 }
 
-// ASY-05: two nodes requested together both publish.
+// Two nodes requested together both publish.
 TEST(NodeSchedulerTest, TwoNodesRequestedTogetherBothPublish) {
   Fixture fx;
   fx.pushCloud(10 * kSec);
@@ -1309,9 +1307,8 @@ TEST(NodeSchedulerTest, TwoNodesRequestedTogetherBothPublish) {
   EXPECT_EQ(fx.ring("owner/second/cropped"), std::vector<Timestamp>{10 * kSec});
 }
 
-// BUD-04, BUD-05 (§11): each run reserves its VM ceiling from the shared in-flight budget, once whatever its outputs;
-// a run that does not fit stays the pending request until room comes back. One larger than the whole budget runs
-// alone.
+// Each run reserves its VM ceiling from the shared in-flight budget, once whatever its outputs; a run that does not fit
+// stays the pending request until room comes back. One larger than the whole budget runs alone.
 TEST(NodeSchedulerTest, InFlightBudgetDefersARunThatDoesNotFit) {
   Fixture fx(InFlightBudget::kRunBytes * 3 / 2);
   fx.fake.gated = true;
@@ -1341,7 +1338,7 @@ TEST(NodeSchedulerTest, InFlightBudgetDefersARunThatDoesNotFit) {
   EXPECT_EQ(small.state("owner/crop").status, Status::kReady) << "alone, rather than never";
 }
 
-// §11: runs waiting for room start first in, first out. With room for one run, `b` and then `c` wait behind `a`;
+// Runs waiting for room start first in, first out. With room for one run, `b` and then `c` wait behind `a`;
 // `b` leaves the line (its input is missing) and joins it again behind `c`, so `c` runs before it.
 TEST(NodeSchedulerTest, AWaitForRoomIsFirstInFirstOut) {
   Fixture fx(InFlightBudget::kRunBytes);
@@ -1365,7 +1362,7 @@ TEST(NodeSchedulerTest, AWaitForRoomIsFirstInFirstOut) {
   EXPECT_EQ(records[2].query_time, 13 * kSec);
 }
 
-// ---- One in-flight budget for both engines (BUD-11, §11) ---------------------------------------------------------
+// ---- One in-flight budget for both engines ---------------------------------------------------------
 
 /// A manual marker rule on the fixture's dataset, on its pool and its budget, reading the one-sample series "level";
 /// each staging is counted, with the on-demand runs started by then.
@@ -1510,7 +1507,7 @@ TEST(BatchEngineTest, AGrantThatRequestsTheFinishingNodeAgainRunsTheNewerRequest
   EXPECT_EQ(fx.budget.reserved(), 0u);
 }
 
-// DEM-03: a withdrawn node drops its waiting request (behind its run, or in the budget's line) and is idle; its
+// A withdrawn node drops its waiting request (behind its run, or in the budget's line) and is idle; its
 // running run still publishes into the history and nothing starts after it; a reader that still has a request
 // keeps its upstream; the next request serves the node again.
 TEST(NodeSchedulerTest, WithdrawDropsTheWaitingRequestOnly) {
@@ -1570,7 +1567,7 @@ TEST(NodeSchedulerTest, WithdrawDropsTheWaitingRequestOnly) {
 
 // ---- The facade ---------------------------------------------------------------------------------------------
 
-// PUB-03, the SDK contract (create_data_processor_v2): a failed edit leaves the previous recipe, its outputs and its
+// SDK contract (create_data_processor_v2): a failed edit leaves the previous recipe, its outputs and its
 // results intact. The edit adds an output whose name a foreign topic holds: refused, naming it. The previous
 // revision stays installed: installing it again changes nothing, and its result is still a hit.
 TEST(OnDemandServiceTest, FailedEditPreservesPreviousRecipeTopicsAndResult) {
@@ -1649,7 +1646,7 @@ TEST(OnDemandServiceTest, FailedFirstInstallLeavesNothingBehind) {
 
 // ---- End to end -------------------------------------------------------------------------------------------
 
-// CUR-02 with the real Luau run: each input resolves at or before the requested time on its own, the result is
+// With the real Luau run: each input resolves at or before the requested time on its own, the result is
 // stamped at the newest one, and two requests leave two results in the ring.
 TEST(OnDemandServiceTest, ALuauRecipeOverAStoredCloudYieldsTwoResults) {
   Fixture fx(8 * InFlightBudget::kRunBytes, /*real_run=*/true);

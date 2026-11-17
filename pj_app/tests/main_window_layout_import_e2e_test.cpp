@@ -1,47 +1,37 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// LIVE cross-repo E2E for the canonical layout import (stage-5 §1 E1(a), E4,
-// E6): a real MainWindow offscreen, the REAL plugin DSOs (mcap-cloud +
-// mcap-loader + ros-parser) staged into its extensions dir, against a LIVE
-// pj-cloud server. Five scenarios, declaration order, one window per binary:
-//   1. cold import -> promoted, with the live progressive witness
-//      (>=1 real ingestProgressed; curve bound while the batch is active);
-//   2. the literal GUI flow (E6): real save/load QActions with automated
-//      modals, warm reload after unload, zero-network Prometheus counters;
-//   3. EAGER_ONLY via the regular-file cache root (MCAP_CLOUD_CACHE_DIR
-//      pointing at a FILE makes <file>/<digest>.lock fail non-contended =>
-//      tee dropped => spec §9.6), `layout-import-eager-only` asserted
-//      in-process, no artifact, re-save carries no <materialize>;
-//   4. trust gate: fresh-miss refusal with the ledger deleted (zero network),
-//      then ledger-seeded success;
-//   5. three-way catalog-equality signature (E4d): complete EAGER dataset at
-//      the pre-replace boundary (datasetAboutToBeReplaced) == promoted
-//      dataset == later warm stock load, dataset-ID-normalized, with
+// Live cross-repo E2E for the canonical layout import: a real MainWindow offscreen, the real plugin DSOs
+// (mcap-cloud, mcap-loader, ros-parser) staged into its extensions dir, against a live pj-cloud server. Five cases, in
+// declaration order, one window per binary:
+//   1. cold import -> promoted, with the live progressive witness (>=1 real ingestProgressed; curve bound while the
+//      batch is active);
+//   2. the literal GUI flow: real save/load QActions with automated modals, warm reload after unload, zero-network
+//      Prometheus counters;
+//   3. EAGER_ONLY via a regular-file cache root (MCAP_CLOUD_CACHE_DIR pointing at a FILE makes <file>/<digest>.lock
+//      fail non-contended, so the tee is dropped), `layout-import-eager-only` asserted in-process, no artifact, the
+//      re-save carries no <materialize>;
+//   4. trust gate: fresh-miss refusal with the ledger deleted (zero network), then ledger-seeded success;
+//   5. three-way catalog-equality signature: complete EAGER dataset at the pre-replace boundary
+//      (datasetAboutToBeReplaced) == promoted dataset == later warm stock load, dataset-ID-normalized, with
 //      DatasetId/TopicId stability and bound-curve survival.
 //
-// LIVE-GATED: every scenario GTEST_SKIPs cleanly unless ALL of
+// Live-gated: every case GTEST_SKIPs cleanly unless ALL of
 //   MCAP_CLOUD_E2E_URL         (e.g. ws://localhost:8082)
 //   MCAP_CLOUD_E2E_EXTENSIONS  (dir with the three staged .so + manifests)
 //   MCAP_CLOUD_E2E_VECTORS     (path to source-descriptor-vectors.json)
-// are set — the env contract the e2e-layout-import.sh harness provides.
+// are set (the env contract the e2e-layout-import.sh harness provides).
 //
-// Scenario identities are the FROZEN e2e-8082-* vector cases; their
-// descriptor bytes + identities are consumed VERBATIM from the vectors file
-// (the `canonical` string goes into the <materialize> CDATA byte-for-byte;
-// no re-canonicalization — the vector is an independent witness of the
-// cross-repo canonicalizer).
+// The cases use the frozen e2e-8082-* vector cases; their descriptor bytes and identities are consumed verbatim from
+// the vectors file (the `canonical` string goes into the <materialize> CDATA byte-for-byte, with no
+// re-canonicalization: the vector is an independent witness of the cross-repo canonicalizer).
 //
-// XDG sandboxing (stage-5 §2, binding): main() below builds a PRIVATE
-// XDG_CONFIG_HOME/XDG_CACHE_HOME/XDG_DATA_HOME (+ HOME + test org/app names)
-// BEFORE QApplication/MainWindow construction — the plugin reads
-// XDG_CONFIG_HOME directly at ImportRuntime construction. The sandbox is
-// never switched mid-process; per-scenario state mutations (trust ledger
-// file, MCAP_CLOUD_CACHE_DIR) are legal because every load's
-// HeadlessDescriptorProviderSession constructs a FRESH plugin instance that
-// re-reads them — and each scenario mutates only after the prior batch
-// settled and was retired. Each scenario documents the sandbox state it
-// assumes and restores.
+// XDG sandboxing: main() below builds a private XDG_CONFIG_HOME/XDG_CACHE_HOME/XDG_DATA_HOME (+ HOME + test org/app
+// names) before QApplication/MainWindow construction, because the plugin reads XDG_CONFIG_HOME directly at
+// ImportRuntime construction. The sandbox is never switched mid-process; per-case state mutations (trust ledger file,
+// MCAP_CLOUD_CACHE_DIR) are legal because every load's HeadlessDescriptorProviderSession constructs a fresh plugin
+// instance that re-reads them, and each case mutates only after the prior batch settled and was retired. Each case
+// documents the sandbox state it assumes and restores.
 
 #include <gtest/gtest.h>
 
@@ -90,21 +80,18 @@ using pj_app_test::flushQueuedEvents;
 using pj_app_test::pumpUntil;
 using Peer = MainWindowLayoutImportTestPeer;
 
-// The cloud connector's stable manifest id — the <materialize provider>
-// routing key (HeadlessDescriptorProviderSession::create resolves it in the
-// plugin catalog) and the provider id a promotion-attached SourceRecord must
-// carry.
+// The cloud connector's stable manifest id: the <materialize provider> routing key
+// (HeadlessDescriptorProviderSession::create resolves it in the plugin catalog) and the provider id a
+// promotion-attached SourceRecord must carry.
 constexpr const char* kProviderId = "mcap-cloud";
 
-// The three frozen stage-5 vector case names (docs/source-descriptor-
-// vectors.json). Bytes are read from $MCAP_CLOUD_E2E_VECTORS at runtime.
+// The three frozen vector case names; their bytes are read from $MCAP_CLOUD_E2E_VECTORS at runtime.
 constexpr const char* kCaseMain = "e2e-8082-main-cold-warm";
 constexpr const char* kCaseEager = "e2e-8082-eager-leg";
 constexpr const char* kCaseTrust = "e2e-8082-trust-leg";
 
-// Curve references into the deterministic gen-ci-fixtures corpus, decoded by
-// the REAL ros-parser (specialized sensor_msgs/Imu and nav_msgs/Odometry
-// handlers): field paths as parser_ros emits them (no leading slash).
+// Curve references into the deterministic gen-ci-fixtures corpus, decoded by the real ros-parser (specialized
+// sensor_msgs/Imu and nav_msgs/Odometry handlers): field paths as parser_ros emits them (no leading slash).
 constexpr const char* kImuTopic = "/imu";
 constexpr const char* kImuField = "linear_acceleration/x";
 constexpr const char* kOdomTopic = "/odom";
@@ -116,9 +103,8 @@ struct VectorCase {
   QString identity;   // "mcap-cloud:v1:sha256/128:<32 hex>"
 };
 
-// Records every layoutRestoreSettled delivery for one load cycle. The window
-// is suite-static, so the receiver context must be scenario-scoped (the
-// settle-test pattern): an ASSERT abort tears the connection down with it.
+// Records every layoutRestoreSettled delivery for one load cycle. The window is suite-static, so the receiver context
+// must be case-scoped (as in the settle test): an ASSERT abort tears the connection down with it.
 struct SettleProbe {
   QObject scope;
   std::vector<bool> values;
@@ -137,7 +123,7 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     const QString extensions = qEnvironmentVariable("MCAP_CLOUD_E2E_EXTENSIONS");
     const QString vectors = qEnvironmentVariable("MCAP_CLOUD_E2E_VECTORS");
     if (url.isEmpty() || extensions.isEmpty() || vectors.isEmpty()) {
-      // Not live: leave window_ null; every scenario SKIPs from SetUp().
+      // Not live: leave window_ null; every case SKIPs from SetUp().
       return;
     }
     live_ = true;
@@ -158,8 +144,8 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     ASSERT_TRUE(project_dir_->isValid());
 
     window_ = std::make_unique<PJ::MainWindow>(extensions);
-    // The staged mcap-loader must be discoverable, or the promotion/warm legs
-    // would silently degrade into provider-only observations.
+    // The staged mcap-loader must be discoverable, or the promotion/warm legs would silently degrade into
+    // provider-only observations.
     ASSERT_FALSE(appSession().extensionCatalog().findSourcesForExtension(QStringLiteral(".mcap")).empty())
         << "mcap-loader did not load from " << extensions.toStdString();
     pj_layout_import_gui::recordDiagnosticIds(*window_, diagnostic_ids_);
@@ -175,22 +161,19 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
       GTEST_SKIP() << "live E2E env not set (need MCAP_CLOUD_E2E_URL, "
                       "MCAP_CLOUD_E2E_EXTENSIONS, MCAP_CLOUD_E2E_VECTORS)";
     }
-    // Diagnostic delivery is QUEUED: drain the previous scenario's stragglers
-    // BEFORE clearing, or they land mid-scenario and poison the id counts.
+    // Diagnostic delivery is queued: drain the previous case's stragglers before clearing, or they land mid-case and
+    // poison the id counts.
     flushQueuedEvents();
     diagnostic_ids_.clear();
   }
 
   void TearDown() override {
-    // MCAP_CLOUD_CACHE_DIR is scenario-3's lever; it must never leak into a
-    // later scenario's fresh plugin instance (unconditional: an ASSERT abort
-    // inside scenario 3 lands here too).
+    // MCAP_CLOUD_CACHE_DIR is the eager-only case's lever; it must never leak into a later case's fresh plugin
+    // instance (unconditional: an ASSERT abort inside that case lands here too).
     qunsetenv("MCAP_CLOUD_CACHE_DIR");
-    // Same reasoning for scenario 4's lever. It deletes the trust ledger and
-    // re-seeds it only after two ASSERTs that can abort in between, which
-    // would leave every later scenario refused as untrusted — a misleading
-    // cascade on an already-failing run. The ledger content is fixed, so
-    // restoring it here is idempotent; scenario 4 only ever deletes.
+    // Same for the trust case's lever: it deletes the trust ledger and re-seeds it only after two ASSERTs that can
+    // abort in between, leaving every later case refused as untrusted, a misleading cascade on an already-failing
+    // run. The ledger content is fixed, so restoring it here is idempotent; that case only ever deletes.
     if (live_) {
       writeTrustLedger();
     }
@@ -250,8 +233,8 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     return qEnvironmentVariable("XDG_CONFIG_HOME") + QStringLiteral("/mcap_cloud/trusted_origins.json");
   }
 
-  // Write the ledger trusting the harness origin (port explicit — the
-  // serialized-origin shape the plugin's TrustedOrigins uses).
+  // Write the ledger trusting the harness origin (port explicit: the serialized-origin shape the plugin's
+  // TrustedOrigins uses).
   static void writeTrustLedger() {
     const QUrl parsed(server_url_);
     const QString origin = QStringLiteral("%1://%2:%3").arg(parsed.scheme(), parsed.host()).arg(parsed.port());
@@ -273,9 +256,8 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
            QStringLiteral(".mcap");
   }
 
-  // Unload every dataset through the shell's removal route (never the engine
-  // directly). The warm legs REQUIRE this first: findAlreadyLoaded() resolves
-  // by provenance and would short-circuit the reload into
+  // Unload every dataset through the shell's removal route (never the engine directly). The warm legs require this
+  // first: findAlreadyLoaded() resolves by provenance and would short-circuit the reload into
   // kResolvedAlreadyLoaded, proving nothing.
   static void removeAllLoadedDatasets() {
     for (const auto& [dataset_id, name] : appSession().catalogModel().datasets()) {
@@ -287,10 +269,9 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
 
   // ---- layout authoring ---------------------------------------------------
 
-  // One plot with a (topic, field) curve plus one <materialize>-bearing
-  // <fileInfo> carrying the FROZEN vector bytes: provider/identity as
-  // attributes, the canonical descriptor VERBATIM as CDATA. The saved
-  // filename is the identity's artifact path (what a production save records).
+  // One plot with a (topic, field) curve plus one <materialize>-bearing <fileInfo> carrying the frozen vector bytes:
+  // provider/identity as attributes, the canonical descriptor verbatim as CDATA. The saved filename is the identity's
+  // artifact path (what a production save records).
   [[nodiscard]] static QDomDocument buildE2eLayoutDoc(
       const QString& curve_topic, const QString& curve_field, const VectorCase& vec) {
     QDomDocument doc;
@@ -436,12 +417,10 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     return records;
   }
 
-  // Dataset-ID-normalized catalog signature (E4d): one sorted line per scalar
-  // field — (topic, field_path, logical_type, row_count, time range) — and per
-  // object topic — (topic, object_type, normalized metadata, count, range).
-  // Counts/ranges come from the DATASTORE (DataReader / ObjectStore), the
-  // authoritative source at the pre-replace boundary; structure comes from the
-  // CatalogModel items. No DatasetId/TopicId ever enters a line.
+  // Dataset-ID-normalized catalog signature: one sorted line per scalar field (topic, field_path, logical_type,
+  // row_count, time range) and per object topic (topic, object_type, normalized metadata, count, range). Counts and
+  // ranges come from the datastore (DataReader / ObjectStore), the authoritative source at the pre-replace boundary;
+  // structure comes from the CatalogModel items. No DatasetId/TopicId enters a line.
   [[nodiscard]] static QStringList captureSignature(PJ::DatasetId dataset_id) {
     QStringList lines;
     const PJ::DataReader reader = sessionManager().createReader();
@@ -478,7 +457,7 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     return lines;
   }
 
-  // ---- modal automation (E6, the file_dialog_test technique) --------------
+  // ---- modal automation (the pj_widgets file_dialog_test technique) ----------------------------
 
   // Drives the SAVE modal: reads the "bind to this data source" checkbox
   // default (first sighting), selects `path`, accepts.
@@ -511,11 +490,10 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     });
   }
 
-  // selectFile() with a cross-directory ABSOLUTE path never lands offscreen:
-  // the directory switch kicks an async QFileSystemModel load that clears the
-  // filename edit again, so accept() keeps silently no-op'ing on an empty
-  // name. Pin the directory, select the RELATIVE name, and backstop the
-  // filename edit directly — idempotent, converges under re-driving.
+  // selectFile() with a cross-directory absolute path never lands offscreen: the directory switch kicks an async
+  // QFileSystemModel load that clears the filename edit again, so accept() keeps silently no-op'ing on an empty name.
+  // Pin the directory, select the relative name, and backstop the filename edit directly (idempotent, converges under
+  // re-driving).
   static void selectPathInFileDialog(QFileDialog* file_dialog, const QString& path) {
     const QFileInfo info(path);
     file_dialog->setDirectory(info.absolutePath());
@@ -526,14 +504,11 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     }
   }
 
-  // Polls (50ms cadence, bounded) for an active modal and hands it to `drive`
-  // on EVERY tick while one is up — QFileDialog::accept() silently no-ops
-  // until its async directory model has populated the filename edit, so a
-  // single selectFile+accept can be swallowed; idempotent re-driving until
-  // the modal actually CLOSES is the robust shape. Stops once a modal was
-  // seen and is gone (or the ~15s budget runs out — the blocked trigger then
-  // times the test out visibly). Must be armed BEFORE triggering the QAction:
-  // the modal blocks the caller until the driver closes it.
+  // Polls (50ms cadence, bounded) for an active modal and hands it to `drive` on every tick while one is up:
+  // QFileDialog::accept() silently no-ops until its async directory model has populated the filename edit, so a single
+  // selectFile+accept can be swallowed; idempotent re-driving until the modal actually closes is the robust shape.
+  // Stops once a modal was seen and is gone (or the ~15s budget runs out; the blocked trigger then times the test out
+  // visibly). Must be armed before triggering the QAction: the modal blocks the caller until the driver closes it.
   static void driveWhenModal(std::function<void(QWidget*)> drive) {
     auto* timer = new QTimer(&window());
     timer->setInterval(50);
@@ -554,13 +529,10 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
     timer->start();
   }
 
-  // Auto-answers any message box that appears while armed (E6: "if a
-  // trust/reload message box appears on this path, automate the choice"),
-  // recording one entry per box. Handles BOTH the themed PJ::MessageBox
-  // (a QDialog named "pjMessageBox"; its buttons are "pjMessageBoxButton"
-  // QPushButtons in addButton order — the FIRST is the primary/recommended
-  // action, e.g. "Reload source file" on the layout-load prompt) and a stock
-  // QMessageBox. Scoped: disarms on destruction.
+  // Auto-answers any message box that appears while armed, recording one entry per box. Handles both the themed
+  // PJ::MessageBox (a QDialog named "pjMessageBox"; its buttons are "pjMessageBoxButton" QPushButtons in addButton
+  // order, the first being the primary/recommended action, e.g. "Reload source file" on the layout-load prompt) and a
+  // stock QMessageBox. Scoped: disarms on destruction.
   class MessageBoxAutomator {
    public:
     MessageBoxAutomator() {
@@ -601,12 +573,9 @@ class MainWindowLayoutImportE2ETest : public ::testing::Test {
   inline static QStringList diagnostic_ids_;
 };
 
-// (1) Cold import -> promoted, with the live progressive witness.
-//
-// Sandbox: assumes a fresh cache (no artifact for the main identity) and
-// writes the trust ledger (ws origin, port explicit). Leaves: the promoted
-// dataset loaded, the artifact materialized, the ledger present — scenario 2
-// builds on exactly this state.
+// Cold import -> promoted, with the live progressive witness. Sandbox: assumes a fresh cache (no artifact for the
+// main identity) and writes the trust ledger (ws origin, port explicit). Leaves: the promoted dataset loaded, the
+// artifact materialized, the ledger present; the GUI-flow case builds on exactly this state.
 TEST_F(MainWindowLayoutImportE2ETest, ColdImportPromotesWithLiveProgressiveWitness) {
   const VectorCase vec = vectorCase(kCaseMain);
   ASSERT_FALSE(vec.identity.isEmpty());
@@ -618,10 +587,9 @@ TEST_F(MainWindowLayoutImportE2ETest, ColdImportPromotesWithLiveProgressiveWitne
 
   const QString layout = writeE2eLayout(QStringLiteral("cold-main"), kImuTopic, kImuField, vec);
 
-  // Live progressive witness (E4e): >=1 REAL SessionManager::ingestProgressed
-  // for the batch-announced dataset, and the curve observed bound WHILE the
-  // batch was still active. Sampled inside the deliveries themselves (both
-  // the progress ticks and the plots' curveListChanged), not after the fact.
+  // Live progressive witness: >=1 real SessionManager::ingestProgressed for the batch-announced dataset, and the curve
+  // observed bound while the batch was still active. Sampled inside the deliveries themselves (both the progress
+  // ticks and the plots' curveListChanged), not after the fact.
   QObject scope;
   int progress_events = 0;
   bool curve_bound_mid_flight = false;
@@ -680,11 +648,9 @@ TEST_F(MainWindowLayoutImportE2ETest, ColdImportPromotesWithLiveProgressiveWitne
   ASSERT_NE(record, nullptr) << "promotion must attach the SourceRecord";
   EXPECT_EQ(record->provider_id, QLatin1String(kProviderId));
   EXPECT_EQ(record->source_identity, vec.identity) << "the identity is the frozen cross-repo witness";
-  // The as-built promotion record carries the plugin's DISPLAY-form
-  // serialization (toSourceDescriptorJson: the canonical fields with
-  // "display_name" inserted first). Our cold layout embedded the canonical
-  // bytes (which carry no display_name), so the expected record is a pure
-  // byte-splice of the FROZEN vector bytes — no re-canonicalization here.
+  // The promotion record carries the plugin's display-form serialization (toSourceDescriptorJson: the canonical
+  // fields with "display_name" inserted first). The cold layout embedded the canonical bytes (no display_name), so the
+  // expected record is a pure byte-splice of the frozen vector bytes, with no re-canonicalization.
   const QString expected_record = QStringLiteral("{\"display_name\":\"\",") + vec.canonical.mid(1);
   EXPECT_EQ(record->descriptor_json, expected_record)
       << "the promotion-attached descriptor must be the display-form projection of the frozen bytes; got: "
@@ -695,11 +661,9 @@ TEST_F(MainWindowLayoutImportE2ETest, ColdImportPromotesWithLiveProgressiveWitne
   EXPECT_EQ(curveNames(), curve_names_at_bind) << "the mid-flight-bound curve must survive promotion";
 }
 
-// (2) The literal GUI flow (E6) — automated modals, warm reload, zero network.
-//
-// Sandbox: assumes scenario 1's state (promoted dataset loaded, artifact
-// present, ledger present). Leaves: the warm-reloaded dataset loaded, the
-// saved layout file in the project dir, artifact + ledger untouched.
+// The literal GUI flow: automated modals, warm reload, zero network. Sandbox: assumes the cold-import case's state
+// (promoted dataset loaded, artifact present, ledger present). Leaves: the warm-reloaded dataset loaded, the saved
+// layout file in the project dir, artifact and ledger untouched.
 TEST_F(MainWindowLayoutImportE2ETest, GuiSaveUnloadReloadIsWarmAndZeroNetwork) {
   const VectorCase vec = vectorCase(kCaseMain);
   ASSERT_FALSE(appSession().catalogModel().datasets().empty()) << "scenario 1 must have left its dataset loaded";
@@ -724,15 +688,14 @@ TEST_F(MainWindowLayoutImportE2ETest, GuiSaveUnloadReloadIsWarmAndZeroNetwork) {
   ASSERT_EQ(records.size(), 1u) << "the saved layout must carry exactly one <materialize>";
   EXPECT_EQ(records.front().provider, QLatin1String(kProviderId));
   EXPECT_EQ(records.front().identity, vec.identity) << "the identity attribute is the frozen cross-repo witness";
-  // The saved CDATA is the promotion-attached record: the plugin's display
-  // form of the FROZEN canonical bytes (scenario 1 pinned that projection) —
-  // asserted byte-exactly via the same pure splice, no re-serialization.
+  // The saved CDATA is the promotion-attached record: the plugin's display form of the frozen canonical bytes (the
+  // cold-import case pinned that projection), asserted byte-exactly via the same pure splice.
   EXPECT_EQ(records.front().descriptor, QStringLiteral("{\"display_name\":\"\",") + vec.canonical.mid(1))
       << "the saved CDATA must be the display-form projection of the frozen canonical bytes; got: "
       << records.front().descriptor.toStdString();
 
-  // --- unload (consult-flagged): findAlreadyLoaded() would otherwise
-  // short-circuit by provenance and the warm leg would prove nothing ---
+  // --- unload: findAlreadyLoaded() would otherwise short-circuit by provenance and the warm leg would prove
+  // nothing ---
   removeAllLoadedDatasets();
   ASSERT_TRUE(appSession().catalogModel().datasets().empty());
 
@@ -741,8 +704,8 @@ TEST_F(MainWindowLayoutImportE2ETest, GuiSaveUnloadReloadIsWarmAndZeroNetwork) {
   ASSERT_TRUE(sessions_before.has_value() && connections_before.has_value())
       << "metrics scrape failed against " << metrics_host_.toStdString() << ":" << metrics_port_;
 
-  // --- the real Load Layout QAction, modal automated; any message box on the
-  // path is auto-accepted and recorded ---
+  // --- the real Load Layout QAction, modal automated; any message box on the path is auto-accepted and
+  // recorded ---
   SettleProbe settle(window());
   MessageBoxAutomator boxes;
   QAction* load_action = Peer::loadLayoutAction(window());
@@ -757,8 +720,8 @@ TEST_F(MainWindowLayoutImportE2ETest, GuiSaveUnloadReloadIsWarmAndZeroNetwork) {
   EXPECT_EQ(diagnostic_ids_.count(QStringLiteral("layout-import-unresolved-curves")), 0)
       << "ids seen: " << diagnostic_ids_.join(QStringLiteral(", ")).toStdString();
 
-  // WARM HIT witnesses: zero network (both counters unchanged) + artifact
-  // untouched (same mtime — nothing re-materialized it).
+  // Warm-hit witnesses: zero network (both counters unchanged) and the artifact untouched (same mtime: nothing
+  // re-materialized it).
   const auto sessions_after = scrapeCounter(QStringLiteral("pj_cloud_sessions_total"));
   const auto connections_after = scrapeCounter(QStringLiteral("pj_cloud_ws_connections_total"));
   ASSERT_TRUE(sessions_after.has_value() && connections_after.has_value());
@@ -773,22 +736,18 @@ TEST_F(MainWindowLayoutImportE2ETest, GuiSaveUnloadReloadIsWarmAndZeroNetwork) {
   }
 }
 
-// (3) EAGER_ONLY — the pinned §10 requirement, via the E4c lever.
-//
-// Sandbox: assumes the ledger present (scenario 1). Starts by unloading every
-// dataset. Sets MCAP_CLOUD_CACHE_DIR to a REGULAR FILE for exactly this load
-// (a read-only DIRECTORY does NOT work — the cache chmods its root 0700
-// first; the file makes <file>/<digest>.lock fail non-contended => the tee is
-// dropped => spec §9.6 EAGER_ONLY). Restores: unsets the env (also in
-// TearDown), removes nothing else. Scenario 1 is the writable-cache baseline
-// that proves the parsers decode — keep the declaration order.
+// EAGER_ONLY via a regular-file cache root. Sandbox: assumes the ledger present. Starts by unloading every dataset.
+// Sets MCAP_CLOUD_CACHE_DIR to a regular file for exactly this load (a read-only directory does not work: the cache
+// chmods its root 0700 first; a file makes <file>/<digest>.lock fail non-contended, so the tee is dropped and the
+// import degrades to EAGER_ONLY). Restores: unsets the env (also in TearDown), removes nothing else. The cold-import
+// case is the writable-cache baseline that proves the parsers decode: keep the declaration order.
 TEST_F(MainWindowLayoutImportE2ETest, BrokenCacheRootDegradesToEagerOnly) {
   const VectorCase vec = vectorCase(kCaseEager);
   ASSERT_FALSE(vec.identity.isEmpty());
   removeAllLoadedDatasets();
   ASSERT_FALSE(QFileInfo::exists(artifactPath(vec.identity))) << "eager leg requires a fresh identity (cache MISS)";
 
-  // The lever: a REGULAR FILE as cache root.
+  // The lever: a regular file as cache root.
   const QString cache_root_file = project_dir_->filePath(QStringLiteral("cache-root-as-file"));
   const QByteArray broken_root_marker("not a directory");
   {
@@ -806,24 +765,23 @@ TEST_F(MainWindowLayoutImportE2ETest, BrokenCacheRootDegradesToEagerOnly) {
 
   qunsetenv("MCAP_CLOUD_CACHE_DIR");  // restore immediately (TearDown backstops)
 
-  // §10 observations: the degradation diagnostic fired, the eager data is
-  // usable (curve bound), and NOTHING was materialized anywhere.
+  // Observations: the degradation diagnostic fired, the eager data is usable (curve bound), and nothing was
+  // materialized anywhere.
   EXPECT_GE(diagnostic_ids_.count(QStringLiteral("layout-import-eager-only")), 1)
       << "ids seen: " << diagnostic_ids_.join(QStringLiteral(", ")).toStdString();
   EXPECT_EQ(Peer::totalCurveCount(window()), 1) << "the eager dataset must still bind the curve";
   EXPECT_EQ(diagnostic_ids_.count(QStringLiteral("layout-import-job-failed")), 0)
       << "EAGER_ONLY must not be a job failure; ids seen: " << diagnostic_ids_.join(QStringLiteral(", ")).toStdString();
   EXPECT_FALSE(QFileInfo::exists(artifactPath(vec.identity))) << "no artifact may exist in the XDG cache";
-  // The broken root must still BE the regular file the lever made it — i.e.
-  // nothing replaced it with a directory and materialized underneath. (A path
-  // check below it would be vacuous: every stat under a regular file is
-  // ENOTDIR, so it could never fail.)
+  // The broken root must still be the regular file the lever made it, i.e. nothing replaced it with a directory and
+  // materialized underneath. (A path check below it would be vacuous: every stat under a regular file is ENOTDIR, so
+  // it could never fail.)
   const QFileInfo broken_root(cache_root_file);
   EXPECT_TRUE(broken_root.isFile()) << "the broken cache root must remain a regular file";
   EXPECT_EQ(broken_root.size(), broken_root_marker.size()) << "the broken cache root was written to";
 
-  // A re-save carries NO <materialize> for the eager-only source (scenario 2
-  // already proved the modal; the direct entry suffices here).
+  // A re-save carries no <materialize> for the eager-only source (the GUI-flow case already proved the modal; the
+  // direct entry suffices here).
   const QString resaved = project_dir_->filePath(QStringLiteral("eager-resave.pj4.xml"));
   Peer::saveLayoutToPath(window(), resaved, /*include_data_source=*/true);
   ASSERT_TRUE(QFileInfo::exists(resaved));
@@ -831,12 +789,9 @@ TEST_F(MainWindowLayoutImportE2ETest, BrokenCacheRootDegradesToEagerOnly) {
       << "an EAGER_ONLY dataset has no import record — the re-saved layout must carry no <materialize>";
 }
 
-// (4) Trust gate — fresh-miss refusal, then ledger-seeded success.
-//
-// Sandbox: starts by unloading every dataset and DELETING the trust ledger
-// (the fresh identity guarantees a cache MISS — cache hits deliberately
-// bypass the gate). Restores: re-writes the ledger (the state every earlier
-// scenario ran under) and leaves its import loaded.
+// Trust gate: fresh-miss refusal, then ledger-seeded success. Sandbox: starts by unloading every dataset and deleting
+// the trust ledger (the fresh identity guarantees a cache MISS; cache hits deliberately bypass the gate). Restores:
+// re-writes the ledger (the state every earlier case ran under) and leaves its import loaded.
 TEST_F(MainWindowLayoutImportE2ETest, TrustGateRefusesFreshMissUntilLedgerSeeded) {
   const VectorCase vec = vectorCase(kCaseTrust);
   ASSERT_FALSE(vec.identity.isEmpty());
@@ -860,17 +815,16 @@ TEST_F(MainWindowLayoutImportE2ETest, TrustGateRefusesFreshMissUntilLedgerSeeded
     EXPECT_TRUE(appSession().catalogModel().datasets().empty());
   }
 
-  // Zero-network witness: the refusal happened at the bounded query — no
-  // session, no connection.
+  // Zero-network witness: the refusal happened at the bounded query, so no session and no connection.
   const auto sessions_mid = scrapeCounter(QStringLiteral("pj_cloud_sessions_total"));
   const auto connections_mid = scrapeCounter(QStringLiteral("pj_cloud_ws_connections_total"));
   ASSERT_TRUE(sessions_mid.has_value() && connections_mid.has_value());
   EXPECT_EQ(*sessions_mid, *sessions_before) << "a trust refusal must open ZERO sessions";
   EXPECT_EQ(*connections_mid, *connections_before) << "a trust refusal must open ZERO ws connections";
 
-  // Ledger seeded -> the SAME layout now imports for real.
+  // Ledger seeded -> the same layout imports for real.
   writeTrustLedger();
-  flushQueuedEvents();  // drain block-1 stragglers before the clean count
+  flushQueuedEvents();  // drain the refused block's stragglers before the clean count
   diagnostic_ids_.clear();
   {
     SettleProbe settle(window());
@@ -884,20 +838,16 @@ TEST_F(MainWindowLayoutImportE2ETest, TrustGateRefusesFreshMissUntilLedgerSeeded
   EXPECT_EQ(Peer::totalCurveCount(window()), 1) << "the trusted import must bind the curve";
 }
 
-// (5) Catalog equality (§12, E4d) — the three-way normalized signature on a
-// dedicated cold cycle over the SAME main identity.
-//
-// Sandbox: assumes the ledger present (restored by scenario 4). Starts by
-// unloading every dataset and DELETING the main artifact so the import runs
-// cold again. Leaves: the warm-reloaded dataset, artifact re-materialized.
+// Catalog equality: the three-way normalized signature on a dedicated cold cycle over the same main identity.
+// Sandbox: assumes the ledger present (restored by the trust case). Starts by unloading every dataset and deleting the
+// main artifact so the import runs cold again. Leaves: the warm-reloaded dataset, artifact re-materialized.
 TEST_F(MainWindowLayoutImportE2ETest, CatalogSignatureIsEqualAcrossEagerPromotedAndWarm) {
   const VectorCase vec = vectorCase(kCaseMain);
   removeAllLoadedDatasets();
   ASSERT_TRUE(QFile::remove(artifactPath(vec.identity))) << "scenario 1/2 must have left the artifact in place";
 
-  // (a) the complete EAGER dataset immediately before the promotion replace:
-  // datasetAboutToBeReplaced is emitted synchronously at the head of the
-  // replace transaction, before any detach — the honest pre-replace
+  // (a) the complete EAGER dataset immediately before the promotion replace: datasetAboutToBeReplaced is emitted
+  // synchronously at the head of the replace transaction, before any detach, so it is the honest pre-replace
   // observation point (direct connection, data still fully readable).
   QObject scope;
   QStringList signature_eager;
@@ -959,9 +909,8 @@ TEST_F(MainWindowLayoutImportE2ETest, CatalogSignatureIsEqualAcrossEagerPromoted
       << "PROMOTED vs WARM catalog signatures must be identical\n--- promoted ---\n"
       << signature_promoted.join(QStringLiteral("\n")).toStdString() << "\n--- warm ---\n"
       << signature_warm.join(QStringLiteral("\n")).toStdString();
-  // Dataset-ID-normalized curve identity: the warm dataset is a NEW id, so
-  // the raw curve KEY differs by construction; the resolved (topic, field)
-  // coordinates must not.
+  // Dataset-ID-normalized curve identity: the warm dataset has a fresh id, so the raw curve key differs by
+  // construction; the resolved (topic, field) coordinates must not.
   EXPECT_EQ(curveTopicFieldPairs(), curves_after_promotion)
       << "the curve must rebind onto the same (topic, field) on the warm load";
   EXPECT_EQ(Peer::totalCurveCount(window()), 1);
@@ -969,12 +918,9 @@ TEST_F(MainWindowLayoutImportE2ETest, CatalogSignatureIsEqualAcrossEagerPromoted
 
 }  // namespace
 
-// The live-E2E main(): the private XDG sandbox + test org/app identity are
-// installed BEFORE QApplication/MainWindow construction (the plugin reads
-// XDG_CONFIG_HOME directly at ImportRuntime construction; QSettings and the
-// plugin cache land inside the sandbox via the same env). Never switched
-// mid-process. PJ_MAIN_WINDOW_TEST_MAIN is NOT used: it cannot install env
-// this early.
+// The live-E2E main(): installs the XDG sandbox and test org/app identity before QApplication/MainWindow construction
+// (see the file header; QSettings and the plugin cache land inside the sandbox via the same env).
+// PJ_MAIN_WINDOW_TEST_MAIN is not used: it cannot install env this early.
 int main(int argc, char** argv) {
   if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
     qputenv("QT_QPA_PLATFORM", "offscreen");

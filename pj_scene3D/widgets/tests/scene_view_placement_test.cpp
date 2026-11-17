@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// TF R6 wiring of the view, admitted without a display
-// (SceneViewTestAccess::admitFrame()): a stamped point layer is placed at its own
-// stamp in the TF header clock, with its placement hold, while the TF triads stay
-// at the cursor in the entry clock. Breaking either wiring moves a placement here.
+// Placement wiring of the view, admitted without a display (SceneViewTestAccess::admitFrame()): a stamped point layer
+// is placed at its own stamp in the TF header clock, with its placement hold, while the TF triads stay at the cursor
+// in the entry clock. Breaking either wiring moves a placement here.
 
 #include <gtest/gtest.h>
 
@@ -116,13 +115,11 @@ PJ::Timepoint ms(int64_t value) {
   return PJ::Timepoint{std::chrono::milliseconds(value)};
 }
 
-// map <- base along x: header `stamp`, logged at `entry`.
 void feed(TransformBuffer& tf, PJ::Timepoint stamp, PJ::Timepoint entry, double x) {
   const StampedTransform edge{stamp, "map", "base", Transform{{x, 0.0, 0.0}, glm::dquat{1.0, 0.0, 0.0, 0.0}}};
   ASSERT_TRUE(tf.setTransform(edge, entry).has_value());
 }
 
-// The cloud's placed x (its point is the frame origin) after admitting a frame at `cursor`.
 float admittedCloudX(SceneViewWidget& view, FakeCloud& cloud, PJ::Timepoint cursor) {
   view.setTrackerTime(cursor);
   SceneViewTestAccess::pointPass(view).setLayers({&cloud});

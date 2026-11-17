@@ -12,8 +12,8 @@
 namespace PJ {
 namespace {
 
-/// Breathing room on each side of a header label, so a column at its floor
-/// still shows the title with a gap rather than butted against the dividers.
+/// Breathing room on each side of a header label, so a column at its floor still shows the title with a gap and not
+/// butted against the dividers.
 constexpr int kLabelSideMargin = 6;
 
 }  // namespace
@@ -40,8 +40,8 @@ HeaderResizePolicy::HeaderResizePolicy(QHeaderView* header, int fill_section, in
   header_->setMinimumSectionSize(minimum_section_size_);
 
   connect(header_, &QHeaderView::sectionResized, this, &HeaderResizePolicy::onSectionResized);
-  // A new column arrives Interactive-by-default only if the *global* mode is
-  // re-applied, and the fill section has to reclaim the slack either way.
+  // A new column arrives Interactive by default only if the global mode is re-applied, and the fill section must
+  // reclaim the slack either way.
   connect(header_, &QHeaderView::sectionCountChanged, this, [this](int old_count, int new_count) {
     header_->setSectionResizeMode(QHeaderView::Interactive);
     sizeNewSections(old_count, new_count);
@@ -85,8 +85,8 @@ void HeaderResizePolicy::sizeNewSections(int old_count, int new_count) {
     if (header_->isSectionHidden(i)) {
       continue;
     }
-    // Default width, but never more than the fill section can give up while
-    // staying at its own floor, so the new column does not overflow the view.
+    // The default width, but never more than the fill section can give up while staying at its own floor, so the new
+    // column does not overflow the view.
     const int spare = std::max(0, header_->sectionSize(fill) - minimumWidthFor(fill));
     const int width = std::max(minimumWidthFor(i), std::min(header_->defaultSectionSize(), spare));
     header_->resizeSection(i, width);
@@ -179,9 +179,8 @@ void HeaderResizePolicy::onSectionResized(int section, int old_size, int new_siz
   const int before = visibleWidthExcept(section) + old_size;
   const int available = availableWidth();
   if (before > available) {
-    // Overflowing: no width to trade, so behave like a stock header (see class
-    // doc). A narrowing stops where the columns exactly fit; the rest of the
-    // drag continues under splitter semantics, with the divider under the cursor.
+    // Overflowing: no width to trade, so behave like a stock header (see the class doc). A narrowing stops where the
+    // columns exactly fit; the rest of the drag continues under splitter semantics, with the divider under the cursor.
     const int width = std::max(new_size, old_size - (before - available));
     if (section == fillSection()) {
       user_fill_width_ = std::max(width, minimumWidthFor(section));
@@ -203,10 +202,9 @@ void HeaderResizePolicy::onSectionResized(int section, int old_size, int new_siz
   adjusting_ = true;
   int granted = 0;
   if (new_size > old_size) {
-    // Widening takes width from the columns that follow, nearest first, each
-    // down to its own label floor. Draining only the immediate neighbour would
-    // strand the divider the moment that one neighbour is already at its floor,
-    // even with room to spare further along.
+    // Widening takes width from the columns that follow, nearest first, each down to its own label floor. Draining only
+    // the immediate neighbour would strand the divider as soon as that neighbour is at its floor, even with room
+    // further along.
     int wanted = new_size - old_size;
     for (int i = next; i >= 0 && wanted > 0; i = nextVisibleSection(i)) {
       const int size = header_->sectionSize(i);

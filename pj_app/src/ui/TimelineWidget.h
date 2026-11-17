@@ -16,9 +16,8 @@ namespace PJ {
 
 class PlaybackEngine;
 
-// Bottom time strip: current-time readout, loop toggle, play button,
-// RealSlider, Speed / Step-size spinners. View over PlaybackEngine; user
-// interaction calls into the engine and engine signals update the display.
+// The bottom time strip, a view over PlaybackEngine: gestures call into the engine, engine signals update the
+// display.
 class TimelineWidget : public QWidget {
   Q_OBJECT
  public:
@@ -28,14 +27,11 @@ class TimelineWidget : public QWidget {
   void setPlaybackEngine(PlaybackEngine* engine);
   void setSeekLocked(bool locked);
 
-  /// The date-time toggle's state (buttonUseDateTime), set by the host without
-  /// emitting useDateTimeToggled.
+  /// Does not emit useDateTimeToggled.
   void setUseDateTime(bool checked);
-  /// The time-offset toggle's state (buttonTimeOffset), set by the host without
-  /// emitting useTimeOffsetToggled.
+  /// Does not emit useTimeOffsetToggled.
   void setUseTimeOffset(bool checked);
-  /// Format of the playback readout (displayTime). Wall-clock formats add the
-  /// date, which the plot axis omits, so the readout pins the exact instant.
+  /// Wall-clock formats add the date, which the plot axis omits, so the readout pins the exact instant.
   void setTimeLabelFormat(TimeLabelFormat format);
 
  signals:
@@ -47,9 +43,6 @@ class TimelineWidget : public QWidget {
  public slots:
   void onStylesheetChanged(QString theme);
 
-  // Rebinds Chrome metrics broadcast from MainWindow. Re-runs
-  // applyIcons() so buttons, label pixmaps, layout padding, and the
-  // spacing between row items all update atomically.
   void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  private slots:
@@ -59,9 +52,7 @@ class TimelineWidget : public QWidget {
   void onEngineRateChanged(double rate);
 
   void onSliderValueChanged(double value);
-  // Slider handle released after a drag: flush any throttled-but-undelivered
-  // final position immediately so the released frame appears (and playback
-  // resumes) without waiting out the remaining throttle window.
+  // Delivers a throttled final position at once, so the released frame appears without waiting out the window.
   void onSliderReleased();
   void onPlayToggled(bool checked);
   void onLoopToggled(bool checked);
@@ -72,42 +63,32 @@ class TimelineWidget : public QWidget {
   bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
-  // Fits displayTime to the widest label of time_label_format_ in its current
-  // (styled) font, so a dated wall-clock readout is never clipped.
+  // Fits displayTime to the widest label of time_label_format_ in its styled font, so a dated readout never clips.
   void updateReadoutWidth();
 
   void applyIcons(QString theme);
-  // Swaps the play button between play_arrow.svg and pause.svg based on
-  // its current checked state, re-tinted for the given theme.
   void applyPlayPauseIcon(const QString& theme);
 
-  // Slider-drag throttle: image decode on the GUI thread takes tens of ms per
-  // tick; QSlider with 1 ms step resolution can emit thousands of valueChanged
-  // events per drag. We rate-limit setCurrentTime to ~30 Hz with a leading-edge
-  // + trailing-edge throttle so the final position is always committed without
-  // backlog. See PlaybackEngine docs for context.
+  // Trailing edge of the slider-drag throttle: seeks are rate-limited (leading and trailing edge) because a seek can
+  // decode images synchronously on the GUI thread, and a drag emits a valueChanged per millisecond step; the final
+  // position is always committed, with no backlog.
   void flushPendingSeek();
 
-  // Applies one engine time to the slider + numeric readout (called directly from
-  // onEngineTimeChanged for every tick; the needle is driven off the same signal, so
-  // both stay in lockstep).
+  // Not throttled: the Source Timeline needle follows the same signal, and both must move in lockstep.
   void applyEngineTime(double t);
 
-  // Reapplies the step in seconds after the slider range/resolution changes.
-  // Empty ranges are skipped; steps larger than the range reach its endpoint.
+  // Empty ranges are skipped; a step larger than the range reaches its endpoint.
   void applySliderStep();
 
-  // Enables/disables the transport controls from range_empty_ + seek_locked_:
-  // an empty (no-data) range disables play/loop/slider entirely; otherwise the
-  // slider is additionally gated by the streaming seek-lock.
+  // An empty range disables loop and slider, and play unless the engine is playing (a live stream must stay
+  // pausable); the slider also follows the seek lock.
   void updateTransportEnabled();
 
   Ui::TimelineWidget* ui_;
   PlaybackEngine* engine_ = nullptr;
   bool updating_from_engine_ = false;
   bool seek_locked_ = false;
-  // No scrubbable data (range collapsed to a point): the transport is disabled.
-  // Starts true so a freshly-constructed strip is disabled until data loads.
+  // Range collapsed to a point. Starts true, so the strip is disabled until data loads.
   bool range_empty_ = true;
   QTimer seek_throttle_timer_;
   double pending_seek_value_ = 0.0;
@@ -115,7 +96,6 @@ class TimelineWidget : public QWidget {
 
   TimeLabelFormat time_label_format_ = TimeLabelFormat::kSeconds;
 
-  // Chrome metrics from MainWindow::chromeMetricsChanged.
   ChromeMetrics chrome_metrics_;
 };
 

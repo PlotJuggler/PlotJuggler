@@ -56,10 +56,7 @@ namespace PJ {
 
 namespace {
 
-// First-launch defaults for the chrome-metric scrubbers. Mirrored from
-// MainWindow.cpp's k*Default constants — kept in sync by hand because
-// the reset button has to match the codepath that runs when QSettings
-// has no saved value yet.
+// Must equal MainWindow.cpp's k*Default constants (kept by hand): Reset matches a first launch.
 constexpr int kDefaultIconSize = 24;
 constexpr int kDefaultIconPadding = 4;
 constexpr int kDefaultLayoutPadding = 2;
@@ -82,8 +79,7 @@ QIcon loadIconInkIcon(const QString& resource_path, theme::Theme token_theme) {
   return QIcon(QPixmap::fromImage(image));
 }
 
-// Open `dir` in the system file manager, creating it first so a folder that
-// nothing has written to yet still opens instead of failing silently.
+// Creates `dir` first: a folder nothing has written to yet would otherwise fail to open, silently.
 void openFolder(const QString& dir) {
   QDir().mkpath(dir);
   QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
@@ -100,45 +96,29 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
           qobject_cast<MainWindow*>(parent) != nullptr ? qobject_cast<MainWindow*>(parent)->chromeMetrics()
                                                        : ChromeMetrics{}) {
   setDialogTitle(tr("Preferences"));
-  // The Dialog content area already has its own (zero-margin) layout, so
-  // we instantiate the .ui onto a child body widget rather than setupUi(this).
+  // The Dialog content area has its own layout, hence a body widget rather than setupUi(this).
   auto* body = new QWidget;
   ui_->setupUi(body);
   contentLayout()->addWidget(body);
-  // Free the dialog to resize down. The base Dialog's top-level layout uses Qt's
-  // default SetDefaultConstraint, which on every activation forces the window's
-  // minimum size up to the layout's computed minimum — and with the Appearance
-  // page's Fixed-height scrubber rows that minimum is tall enough to block
-  // shrinking (and to override a smaller restored/explicit size). SetNoConstraint
-  // stops the layout from imposing that minimum (children still fill via their
-  // own layouts); the explicit minimum below is then the only floor.
+  // SetDefaultConstraint would raise the minimum to the layout's on every activation, which the Appearance
+  // page's fixed-height scrubber rows make too tall to shrink (or to restore a smaller size). The explicit
+  // minimum below is the only floor.
   if (auto* root = layout()) {
     root->setSizeConstraint(QLayout::SetNoConstraint);
   }
-  // The width floor is what the pages need, not a literal: any narrower and the
-  // pages' QFormLayouts squeeze their Fixed-size segmented selectors below their
-  // sizeHint, which overlaps the option labels. The height floor stays a literal
-  // (see above).
+  // Narrower than the pages' minimum, the forms squeeze the fixed-size segmented selectors below their
+  // sizeHint and their option labels overlap.
   const int min_width = std::max(420, minimumSizeHint().width());
   setMinimumSize(min_width, 300);
-  // Restore the user's last dialog size if they resized it before; otherwise a
-  // sensible default (room for the 160 px nav column + a comfortable page body).
-  // The dialog is resizable (edge-drag handled by the base class); geometry is
-  // saved on close (see the destructor).
+  // The destructor saves the geometry.
   {
     QSettings settings;
     const QByteArray geometry = settings.value(u"Preferences::dialog_geometry"_s).toByteArray();
-    // A stale/corrupt blob (Qt upgrade, truncated .ini) makes restoreGeometry
-    // return false and apply nothing — fall back to the default size rather than
-    // opening off-screen or at 0x0.
     if (geometry.isEmpty() || !restoreGeometry(geometry)) {
       resize(std::max(560, min_width), 400);
     }
   }
 
-  // Populate the left-hand nav column. Each row is a click-target that
-  // switches pagesStack to the matching index. The trailing stretch in
-  // navLayout (added in .ui) pushes the rows to the top.
   auto* nav_layout = qobject_cast<QVBoxLayout*>(ui_->navContainer->layout());
   std::vector<QString> nav_names{
       tr("Appearance"),
@@ -147,10 +127,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       tr("Scene 3D"),
   };
 #ifdef PJ_TARGET_WASM
-  // The browser loads only its built-in plugins and has no marketplace, so the
-  // page's folders and registry would govern nothing. It precedes Recording in
-  // the stack, which the browser never shows either, so row indices still
-  // match page indices.
+  // The browser loads only built-in plugins and has no marketplace. Row indices still match page indices only
+  // because the one page after Plugins, Recording, is hidden in the browser too.
   ui_->pagePlugins->hide();
 #else
   nav_names.push_back(tr("Plugins"));
@@ -158,8 +136,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   if (RecordingService::isSupported()) {
     nav_names.push_back(tr("Recording"));
   } else {
-    // No sink to record into, so no nav row; hiding the page also keeps it out
-    // of the stack's size hint.
+    // Hidden also to keep it out of the stack's size hint.
     ui_->pageRecording->hide();
   }
   nav_rows_.reserve(nav_names.size());
@@ -180,10 +157,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->pagesStack->setCurrentIndex(kAppearancePage);
   }
 
-  // Developer-only chrome-metric scrubbers (icon/layout sizing) ship hidden;
-  // --debug-mode reveals them. They sit in a spanning row of the Appearance
-  // form, so toggle the whole row (setRowVisible) to reclaim its vertical space
-  // when hidden — hiding only the widget would leave the row's gap.
+  // The chrome-metric scrubbers show only under --debug-mode. Hide the whole form row: hiding the widget
+  // alone leaves its gap.
   if (auto* appearance_form = qobject_cast<QFormLayout*>(ui_->pageAppearance->layout())) {
     int row = -1;
     QFormLayout::ItemRole role{};
@@ -192,21 +167,14 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       appearance_form->setRowVisible(row, isDebugMode());
     }
   }
-  // The footer reset button only resets those scrubbers (see its handler below),
-  // so outside --debug-mode it would be a button that visibly does nothing.
+  // It resets only those scrubbers.
   ui_->buttonResetDefaults->setVisible(isDebugMode());
 
-  // Scene 3D page is a placeholder for now — the asset-folder controls are
-  // shown but disabled until the feature lands.
+  // The Scene 3D asset-folder controls have no function yet.
   ui_->pageScene3D->setEnabled(false);
 
-  // Icon-size + icon-padding scrubbers. Ranges match the spec and the
-  // clamps inside MainWindow::setIconSize / setIconPadding. Initial
-  // values come from MainWindow so the dialog reflects the running
-  // app's current state. Live preview: each valueChanged tick pushes
-  // straight through MainWindow's setter (which clamps, persists, and
-  // emits iconMetricsChanged) so the running app resizes in real time
-  // while the user scrubs. On reject (Esc or the title-bar close) we restore the snapshot.
+  // Ranges match MainWindow's k*Range clamps. Each tick previews live through MainWindow's setter; OK persists,
+  // reject restores the snapshot.
   auto* main_window = qobject_cast<MainWindow*>(parent);
   ui_->iconSizeScrubber->setRange(12, 48);
   ui_->iconSizeScrubber->setSingleStep(1);
@@ -228,29 +196,14 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   ui_->layoutSpacingScrubber->setSuffix(u" px"_s);
   ui_->layoutSpacingScrubber->setValue(original_metrics_.layout_spacing);
 
-  // Value preferences seeded together (one QSettings read pass) and committed on
-  // OK below. The scoped block keeps `settings` from shadowing the same-named
-  // local in the accept/reject handlers (which run later as slots):
-  //  - Float precision (Appearance): 1-6 decimals; its readers (plot tooltips,
-  //    the curve tracker, the curve-list value column) re-read the key on their
-  //    next redraw.
-  //  - Curve-colour sequence (Plotting): global = one continuous colour sequence
-  //    across all plots; per plot = the sequence restarts within each plot.
-  //  - Frameless window (Appearance): default off (the system frame);
-  //    MainWindow reads the key once at construction, so it applies on the
-  //    next launch. Hidden where the platform leaves no choice.
-  //  - GPU canvas (Appearance): default on; PlotWidgetBase reads the key when a plot
-  //    is constructed (applies to newly created plots). --disable-opengl can
-  //    force it off for a session without touching this saved value.
+  // Committed on OK. When each applies: precision on its readers' next redraw; the frameless window at the next
+  // launch (MainWindow reads it once); the GPU canvas to plots created later (--disable-opengl overrides it
+  // for a session without touching it).
   ui_->scrubberFloatPrecision->setRange(1, 6);
   ui_->scrubberFloatPrecision->setSingleStep(1);
   ui_->curveColorMode->setOptions(tr("global"), tr("per plot"));
   ui_->splashMode->setOptions(tr("memes"), tr("serious"));
-  // Derived markers (Plotting): the batch engine's mode and its automatic reload
-  // rate; MainWindow applies both at startup and on OK (derivedBatchSettingsChanged).
   ui_->derivedBatchMode->setOptions(tr("Automatic"), tr("Manual"));
-  // Clock time zone (Plotting): wall-clock labels in the system zone or UTC;
-  // MainWindow re-applies it on OK (timeLabelSettingsChanged).
   ui_->clockTimeZone->setOptions(tr("local"), tr("UTC"));
   ui_->scrubberDerivedReloadHz->setRange(BatchEngine::kMinReloadHz, BatchEngine::kMaxReloadHz);
   {
@@ -283,8 +236,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
         settings.value(MainWindow::kSystemFileDialogKey, false).toBool(),
         /*animate=*/false);
 #ifndef PJ_TARGET_WASM
-    // The switch shows whether public access is open now (--mcp included), so OK can always revoke
-    // it. A toolbox plugin's private endpoint does not count: it is not for outside agents.
+    // Whether public access is open now (--mcp included), so OK can always revoke it. A plugin's private
+    // endpoint does not count.
     ui_->mcpServerToggle->setChecked(main_window != nullptr && main_window->mcpPublicAccess(), /*animate=*/false);
 #endif
     if (!FileDialog::systemDialogSupported()) {
@@ -292,9 +245,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       ui_->systemFileDialogToggle->hide();
     }
 #ifdef PJ_TARGET_WASM
-    // Neither startup network call exists in the browser build (see main.cpp):
-    // a tab cannot self-update, and it is a page view rather than an installed
-    // user. Hide the two switches instead of offering controls over nothing.
+    // The browser build makes neither startup network call (main.cpp).
     ui_->labelCheckUpdates->hide();
     ui_->checkUpdatesToggle->hide();
     ui_->labelTelemetry->hide();
@@ -318,10 +269,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     connect(ui_->layoutSpacingScrubber, &IntScrubber::valueChanged, main_window, &MainWindow::setLayoutSpacing);
   }
 
-  // Plugins page: the user-managed custom folder list (drag-reorderable, with
-  // add/remove) plus the read-only built-in folders. Folders that do not exist
-  // on disk render in red. The custom list persists on OK and applies on next
-  // launch (no hot reload of extensions).
+  // The custom plugin folders persist on OK and apply at the next launch (no hot reload of extensions).
   if (main_window != nullptr) {
     auto paint_missing = [this](QListWidget* list) {
       const auto token_theme = theme::themeFor(theme_.currentTheme() == QLatin1String("light"));
@@ -337,8 +285,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->listCustomPluginFolders->setDragDropMode(QAbstractItemView::InternalMove);
     ui_->listCustomPluginFolders->addItems(main_window->customPluginFolders());
     paint_missing(ui_->listCustomPluginFolders);
-    // A drag-reorder re-serializes the items and drops their foreground brush, so
-    // repaint the missing-folder tint after a move.
+    // A drag-reorder drops the items' foreground brush.
     connect(ui_->listCustomPluginFolders->model(), &QAbstractItemModel::rowsMoved, this, [this, paint_missing]() {
       paint_missing(ui_->listCustomPluginFolders);
     });
@@ -352,11 +299,6 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       paint_missing(ui_->listDefaultPluginFolders);
     });
 
-    // Marketplace registry URL editor. An explicit default/custom mode switch:
-    // "default" shows the built-in URL read-only, "custom" enables the field.
-    // Validation runs when editing finishes and paints the text red while the
-    // URL is invalid or unreachable — advisory, never blocking (see
-    // onRegistryUrlEditingFinished).
     ui_->registryUrlMode->setOptions(tr("default"), tr("custom"));
     const QString stored_override = main_window->registryUrlSetting();
     ui_->registryUrlMode->setSelectedIndex(stored_override.isEmpty() ? 0 : 1);
@@ -376,13 +318,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     });
     connect(
         ui_->lineEditRegistryUrl, &QLineEdit::editingFinished, this, &PreferencesDialog::onRegistryUrlEditingFinished);
-    // A stored custom URL gets checked (and possibly painted red) right away,
-    // so a stale override is visible without touching the field.
+    // A stale stored override shows red without touching the field.
     if (!stored_override.isEmpty()) {
       onRegistryUrlEditingFinished();
     }
 
-    // SvgButton re-tints itself on a theme change — no manual retint wiring.
     ui_->buttonAddPluginFolder->setIconPath(u":/resources/svg/add.svg"_s);
     ui_->buttonAddPluginFolder->setExtent(26, 24);
     ui_->buttonRemovePluginFolder->setIconPath(u":/resources/svg/trash.svg"_s);
@@ -402,24 +342,19 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     });
   }
 
-  // Recording page. Wired only where the page is reachable, so an unreachable
-  // page's .ui defaults can never be committed over the stored settings.
+  // Wired only where the page is reachable: an unreachable page's .ui defaults must never overwrite the stored
+  // settings.
   if (RecordingService::isSupported()) {
     const RecordingService::Settings stored = RecordingService::loadSettings();
     ui_->lineEditRecordingDir->setText(stored.directory);
-    // Left empty, recordings land in the default folder: name it so the user can
-    // find the files without having to pick a folder first.
     ui_->lineEditRecordingDir->setToolTip(tr("Leave empty to use the default folder: %1")
                                               .arg(QDir::toNativeSeparators(RecordingService::defaultDirectory())));
     ui_->scrubberRecordingQueueMiB->setValue(stored.queue_budget_mib);
 
-    // SvgButton re-tints itself on a theme change — no manual retint wiring.
     ui_->buttonRecordingDirBrowse->setIconPath(u":/resources/svg/folder_open.svg"_s);
     ui_->buttonRecordingDirBrowse->setExtent(26, 24);
     ui_->buttonRecordingDirBrowse->setToolTip(tr("Choose the recordings folder…"));
     connect(ui_->buttonRecordingDirBrowse, &QToolButton::clicked, this, [this]() {
-      // An empty field means the default folder, so start the picker there
-      // rather than in the process working directory.
       const QString field = ui_->lineEditRecordingDir->text().trimmed();
       const QString dir = PJ::FileDialog::getExistingDirectory(
           this, tr("Choose the recordings folder"), field.isEmpty() ? RecordingService::defaultDirectory() : field);
@@ -428,8 +363,6 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       }
     });
 
-    // Open the folder in the system file manager. The default folder may not
-    // exist before the first recording, so create it rather than fail silently.
     ui_->buttonRecordingDirOpen->setIconPath(u":/resources/svg/open_in_new.svg"_s);
     ui_->buttonRecordingDirOpen->setExtent(26, 24);
     ui_->buttonRecordingDirOpen->setToolTip(tr("Open the recordings folder"));
@@ -438,15 +371,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       openFolder(field.isEmpty() ? RecordingService::defaultDirectory() : field);
     });
 
-    // No rejected handler: none of the recording-page values is applied live
-    // from this dialog, so Cancel never reaches the QSettings writes below.
-    // ONE accepted handler for the whole page: the cache settings must be
-    // saved BEFORE recordingSettingsChanged fires, because MainWindow's
-    // handler re-reads them to apply the capture toggle immediately.
+    // One handler for the whole page: the cache settings must be saved before recordingSettingsChanged,
+    // whose MainWindow handler re-reads them to apply the capture toggle at once.
     connect(this, &QDialog::accepted, this, [this]() {
       RecordingService::Settings settings;
-      // Trimmed, so a stray space cannot turn the empty "default folder" value
-      // into a relative path.
+      // Trimmed: a stray space would turn the empty "default folder" value into a relative path.
       settings.directory = ui_->lineEditRecordingDir->text().trimmed();
       settings.queue_budget_mib = ui_->scrubberRecordingQueueMiB->value();
       RecordingService::saveSettings(settings);
@@ -461,10 +390,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     });
 
 #ifndef __EMSCRIPTEN__
-    // Source-cache section of the same page (M3). Same defaults handling as
-    // the recordings folder; the note on the page says folder and budget
-    // apply at the next launch (armed captures hold the store they were
-    // opened against), while the capture toggle applies immediately.
+    // Folder and budget apply at the next launch (armed captures hold the store they opened); the capture
+    // toggle applies at once.
     const SourceCacheStore::Settings cache_stored = SourceCacheStore::loadSettings();
     ui_->lineEditSourceCacheDir->setText(cache_stored.directory);
     const QString cache_default = QString::fromStdU16String(SourceCacheStore::defaultRoot().u16string());
@@ -493,13 +420,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
 #endif
   }
 
-  // Reset-to-defaults button. Snaps each scrubber back to the
-  // first-launch defaults; the scrubbers' valueChanged signals
-  // already feed MainWindow's setters, so the running app live-
-  // previews the reset, and rejecting the dialog (Esc / title-bar close)
-  // still reverts to the dialog's open-time snapshot.
-  // Same glyph as the timeline align-rail "reset all" button (restart_alt).
-  // SvgButton re-tints itself on a theme change.
+  // Previews live through the scrubbers; reject still reverts to the snapshot.
   ui_->buttonResetDefaults->setIconPath(u":/resources/svg/restart_alt.svg"_s);
   ui_->buttonResetDefaults->setSize(SvgButton::Size::kDefault);
   connect(ui_->buttonResetDefaults, &QToolButton::clicked, this, [this]() {
@@ -509,15 +430,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->layoutSpacingScrubber->setValue(kDefaultLayoutSpacing);
   });
 
-  // Toggle: thumb-left = light, thumb-right = dark. The icon visible
-  // in the un-covered slot represents the *destination* state — moon
-  // when in light mode (click to go dark), sun when in dark mode.
-  // Mapping: thumb-right (checked = true) → light theme, sun
-  // visible in the left slot. thumb-left (checked = false) → dark
-  // theme, moon visible in the right slot. "ON" reads as the
-  // bright/active state.
-  //
-  // Larger than the compact 34x18 default so the sun/moon icons read clearly.
+  // Checked (thumb right) = light, the sun showing in the left slot; unchecked = dark, the moon on the right.
   ui_->themeToggle->setFixedSize(44, 24);
   auto apply_toggle_icons = [this]() {
     const auto token_theme = theme::themeFor(theme_.currentTheme() == QLatin1String("light"));
@@ -525,37 +438,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->themeToggle->setRightIcon(loadIconInkIcon(QStringLiteral(":/resources/svg/dark_mode_light.svg"), token_theme));
   };
   apply_toggle_icons();
-  // Snap the toggle to the active theme without animating — the
-  // dialog opens with the thumb already at its correct endpoint,
-  // not mid-slide from 0 to 1 across the first 180ms after open.
   ui_->themeToggle->setChecked(original_theme_ == QLatin1String("light"), /*animate=*/false);
 
-  // One-shot lock around the whole click → animation → setTheme →
-  // propagation cycle. Three pieces:
-  //
-  //   1. `clicked` fires from mouseReleaseEvent / keyPressEvent
-  //      right after the animation starts, BEFORE any subsequent
-  //      input can be delivered. Disabling here blocks every
-  //      further click for the entire 180ms slide, so the toggle
-  //      can't be "trilled" mid-animation.
-  //
-  //   2. `toggled` fires only on natural animation completion
-  //      (ToggleSwitch ties it to QPropertyAnimation::finished),
-  //      so setTheme runs exactly once per locked cycle at the
-  //      settled state.
-  //
-  //   3. `stylesheetChanged` re-enables — but via Qt::QueuedConnection.
-  //      The signal is emitted synchronously inside setTheme (deep
-  //      in MainWindow::onThemeChanged, after qApp->setStyleSheet
-  //      + applyIcons + every dependent widget's onStylesheetChanged
-  //      runs). A direct re-enable here would land mid-cascade,
-  //      while the rest of setTheme (qssChanged → apply_theme_chrome →
-  //      another qApp->setStyleSheet) is still running. Queued
-  //      posts to the event loop and only fires after the entire
-  //      synchronous chain has unwound and the event loop has
-  //      drained any queued repaint events. By that point the
-  //      toggle's visual state and theme_.currentTheme() are
-  //      guaranteed to match.
+  // The toggle is locked from click to the end of the theme change: `clicked` (as the slide starts) disables it,
+  // `toggled` (when the slide ends) runs setTheme once, and stylesheetChanged re-enables it. MainWindow emits
+  // that from its queued onThemeChanged; this queued slot runs after it has finished.
   if (main_window != nullptr) {
     connect(
         main_window, &MainWindow::stylesheetChanged, this,
@@ -570,10 +457,6 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     theme_.setTheme(checked ? u"light"_s : u"dark"_s);
   });
 
-  // Plotting page: auto-zoom plots. When on, adding/removing a curve rescales
-  // that plot's Y axis to fit (see PlotWidget::autoZoomPlotVertically). Seed
-  // from the persisted preference (no animation — open at the settled
-  // position); like the other plotting prefs this commits only on OK.
   {
     QSettings settings;
     ui_->autoZoomToggle->setChecked(
@@ -589,8 +472,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       main_window->setLayoutSpacing(original_metrics_.layout_spacing);
     }
   });
-  // The chrome setters above only apply live — commit to QSettings on OK. Rejecting
-  // restores the snapshot and never persisted, so the .ini keeps the originals.
+  // The chrome setters only preview; OK persists them.
   connect(this, &QDialog::accepted, this, [this, main_window]() {
     if (main_window != nullptr) {
       main_window->persistChromeMetrics();
@@ -600,10 +482,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       }
       main_window->setCustomPluginFolders(plugin_folders);
 
-      // Registry URL: default mode (or a custom value equal to the default)
-      // stores "no override", so the user keeps following future defaults. A
-      // syntactically valid custom URL persists; reachability is advisory (red
-      // text), never a blocker — the URL may legitimately be offline right now.
+      // The default (or a custom value equal to it) stores no override, so future defaults still apply. An
+      // invalid custom URL is not stored; an unreachable one is.
       const bool custom_registry = ui_->registryUrlMode->selectedIndex() == 1;
       const QString registry_url = ui_->lineEditRegistryUrl->text().trimmed();
       if (!custom_registry || registry_url == MainWindow::defaultRegistryUrl()) {
@@ -631,8 +511,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     settings.setValue(MainWindow::kClockUtcKey, ui_->clockTimeZone->selectedIndex() == 1);
     emit timeLabelSettingsChanged();
 #ifndef PJ_TARGET_WASM
-    // The MCP switch applies only when it differs from the current state: public access opened
-    // with --mcp stays open (the stored setting untouched) unless the user turns it off here.
+    // Applies only when it differs from the current state: access opened with --mcp stays open, the stored
+    // setting untouched, unless turned off here.
     if (const bool mcp_on = ui_->mcpServerToggle->isChecked();
         main_window != nullptr && mcp_on != main_window->mcpPublicAccess()) {
       settings.setValue(MainWindow::kMcpServerKey, mcp_on);
@@ -649,8 +529,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
 }
 
 PreferencesDialog::~PreferencesDialog() {
-  // Remember the dialog size across launches regardless of OK/Cancel — window
-  // size is a UI preference, not a settings change.
+  // Saved on Cancel too: the size is not a setting the dialog edits.
   QSettings settings;
   settings.setValue(u"Preferences::dialog_geometry"_s, saveGeometry());
   delete ui_;
@@ -666,7 +545,7 @@ void PreferencesDialog::showPage(int index) {
 void PreferencesDialog::onRegistryUrlEditingFinished() {
   const QString url_text = ui_->lineEditRegistryUrl->text().trimmed();
   if (url_text == last_checked_registry_url_) {
-    return;  // already checked (or being checked) — no duplicate probe
+    return;
   }
   last_checked_registry_url_ = url_text;
 
@@ -681,9 +560,7 @@ void PreferencesDialog::onRegistryUrlEditingFinished() {
     return;
   }
 
-  // Reachability probe. When the system is not reported Online (offline, or no
-  // usable backend to tell), skip it and show the value as fine — a network
-  // outage must not paint a URL red that will work once connectivity returns.
+  // Not reported Online (or no backend to tell): an outage must not paint red a URL that works later.
   [[maybe_unused]] static const bool backend_loaded = QNetworkInformation::loadDefaultBackend();
   QNetworkInformation* network_info = QNetworkInformation::instance();
   if (network_info == nullptr || network_info->reachability() != QNetworkInformation::Reachability::Online) {
@@ -696,8 +573,7 @@ void PreferencesDialog::onRegistryUrlEditingFinished() {
   }
   httpGetWithTimeout(
       *network_, QNetworkRequest(url), std::chrono::seconds(5), this, [this, url_text](QNetworkReply& reply) {
-        // The user may have edited again while this probe was in flight; a
-        // stale result must not repaint the newer text.
+        // A stale probe must not repaint newer text.
         if (ui_->lineEditRegistryUrl->text().trimmed() != url_text) {
           return;
         }

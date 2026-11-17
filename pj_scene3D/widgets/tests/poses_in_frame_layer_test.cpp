@@ -1,11 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Layer-level coverage for PosesInFrameLayer: tracker-time decode -> triad
-// expansion, scrub coalescing (an unchanged sample is not re-parsed), style edits
-// re-expanding the current sample, the empty/orphan edges, the per-use parseLocked
-// rebind guard (a re-registered parser must not leave a dangling pointer), and the
-// copy/paste/apply-to-family param round-trip (serializeLayerParams).
+// Layer-level coverage for PosesInFrameLayer: tracker-time decode -> triad expansion, scrub coalescing (an unchanged
+// sample is not re-parsed), style edits re-expanding the current sample, the empty/orphan edges, the per-use
+// parseLocked rebind guard (a re-registered parser must not leave a dangling pointer), and the copy/paste/apply-to-
+// family param round-trip (serializeLayerParams).
 
 #include "pj_scene3d_widgets/layers/poses_in_frame_layer.h"
 
@@ -72,8 +71,6 @@ class PosesInFrameLayerTest : public ::testing::Test {
     ASSERT_TRUE(session_.objectStore().pushOwned(topic_, ts, std::move(payload)).has_value());
   }
 
-  // |model * local_+X|, i.e. the world-space length of an arm's axis -> the
-  // triad arm length (== gizmo size for an identity-orientation pose).
   static float armLength(const pj::scene3d::PoseTriadInstance& inst) {
     return glm::length(glm::vec3(inst.model * glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)));
   }
@@ -82,12 +79,10 @@ class PosesInFrameLayerTest : public ::testing::Test {
   PJ::ObjectTopicId topic_;
 };
 
-// Resolve-before-memo regression: an unchanged staged sample must skip on
-// metadata alone WITHOUT resolving payload bytes — a resolve is a cold refetch
-// (file read + whole-chunk decompress on the GUI thread) once the
-// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
-// cache would mask a redundant resolve, so it is deliberately reset between
-// renders via an out-of-order push.
+// An unchanged staged sample must skip on metadata alone WITHOUT resolving payload bytes: a resolve is a cold refetch
+// (file read + whole-chunk decompress on the GUI thread) once the ResidentPayloadPool has evicted the entry's seed.
+// The store's warm latestAt cache would mask a redundant resolve, so it is reset between renders via an out-of-order
+// push.
 TEST_F(PosesInFrameLayerTest, UnchangedSampleDoesNotResolvePayload) {
   auto fetch_count = std::make_shared<int>(0);
   pushLazyCounting(session_.objectStore(), topic_, 100, std::vector<uint8_t>{2}, fetch_count);
@@ -102,8 +97,8 @@ TEST_F(PosesInFrameLayerTest, UnchangedSampleDoesNotResolvePayload) {
   const int parses_after_first_render = g_parser_calls.load();
   ASSERT_GT(fetches_after_first_render, 0);
 
-  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
-  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve by the next render must re-invoke the
+  // lazy fetcher.
   auto old_fetch_count = std::make_shared<int>(0);
   pushLazyCounting(session_.objectStore(), topic_, 50, std::vector<uint8_t>{1}, old_fetch_count);
 
@@ -125,13 +120,10 @@ TEST_F(PosesInFrameLayerTest, DecodesPosesIntoThreeArmsEachAtTrackerTime) {
   EXPECT_EQ(layer.sourceFrame(), u"map"_s);
 }
 
-// A data-source/toolbox canonical topic carries serialized pj_base blobs and has
-// NO MessageParser bound (the Mosaico toolbox path). The layer must still attach
-// and decode the blob host-side via the canonical codec (resolveObject's
-// fallback) — previously attach() rejected any parser-less object topic.
+// A data-source/toolbox canonical topic carries serialized pj_base blobs and has NO MessageParser bound: the layer
+// must still attach and decode the blob host-side via the canonical codec (resolveObject's fallback).
 TEST_F(PosesInFrameLayerTest, RendersCanonicalBlobWithoutParser) {
   const PJ::ObjectTopicId canon_topic = registerObjectTopic(session_, "/poses_canonical");
-  // Deliberately NO registerObjectTopicParser for this topic.
   PJ::sdk::PosesInFrame msg;
   msg.frame_id = "map";
   msg.timestamp_ns = 200;
@@ -153,7 +145,7 @@ TEST_F(PosesInFrameLayerTest, RendersCanonicalBlobWithoutParser) {
   EXPECT_EQ(g_parser_calls.load(), 0);  // canonical path, parser never invoked
 }
 
-// TF R6: the layer reports the pose array's own header stamp, which the view
+// The layer reports the pose array's own header stamp, which the view
 // places it at (header clock), not the store (log) time it was found at. An
 // unstamped array reports none and is placed at the cursor.
 TEST_F(PosesInFrameLayerTest, RenderStampIsThePosesOwnHeaderStamp) {
@@ -253,7 +245,6 @@ TEST_F(PosesInFrameLayerTest, DecodeSurvivesParserReRegistration) {
   layer.renderAtForTest(100);
   ASSERT_EQ(layer.instancesForTest().size(), 6U);
 
-  // Reload: a brand-new parser instance replaces the one the first decode used.
   session_.registerObjectTopicParser(topic_, makeBoundHandle(kSchema, []() noexcept -> void* {
                                        return new CountingObjectParser(
                                            kSchema, PJ::sdk::BuiltinObjectType::kPosesInFrame, &g_parser_calls,

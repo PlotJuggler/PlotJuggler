@@ -13,7 +13,7 @@ DWARF user-stacks unwinding to nothing through stripped Qt while LBR resolved fu
 chains (`paintGL` → `QOpenGL2PaintEngineEx` → libgallium). The rule: **count first,
 record cheap and single-view, unwind exactly once, never re-process.**
 
-This machine: perf 7.0.12, i7-13700H hybrid (`cpu_core` = CPUs 0-11, `cpu_atom` = 12-19),
+This machine: perf 7.0.14, i7-13700H hybrid (`cpu_core` = CPUs 0-11, `cpu_atom` = 12-19),
 Arch LBR depth 32 on both PMUs, tracefs root-only, `sudo` prompts. Check
 `cat /proc/sys/kernel/perf_event_paranoid` first: the recipes below assume ≤1; at ≥3
 (the Debian/Ubuntu default) even user-space sampling of your own PID needs `sudo` or
@@ -21,7 +21,7 @@ Arch LBR depth 32 on both PMUs, tracefs root-only, `sudo` prompts. Check
 
 ## Step -1 — Cheap wall-clock A/B before any capture
 
-A suspected regression ("load went from 11 s to 38 s since PR #N") is settled by
+A suspected regression ("load got several times slower since commit X") is settled by
 a number, not a profile. Run the same headless load on both builds first; profile
 only if the delta is real:
 
@@ -105,13 +105,15 @@ gaps in hotspot's GUI-thread band. For the switch-out **stacks** without root
 5. **Workers hot, GUI starved** → record with `--latency`, report `--latency`
    (parallelism-weighted overhead finds the serialized critical path).
 
-## Do NOT try here (verified dead ends)
+## Observed not to work on this machine (re-test if the condition changes)
 
-- `perf record -a`, tracepoints (`sched:*`, `--filter`), `perf sched`, `perf trace`,
-  `perf probe` — all root-only on this box (perf_event_paranoid ≥1 + tracefs 0700).
-- `perf record --off-cpu` — perf built without BPF skeletons; flag parses, then refuses.
-- Hunting libunwind — DWARF unwinding here goes through libdw (`libunwind: OFF` is fine).
-- Rebuilding Qt with frame pointers — LBR already unwinds through Qt; don't.
+- `perf record -a`, tracepoints (`sched:*`, `--filter`), `perf sched`, `perf trace`, `perf probe`: refused without
+  root here (`perf_event_paranoid` 1, tracefs mode 0700). Re-test after relaxing either.
+- `perf record --off-cpu`: this perf has `bpf_skeletons: OFF` (`perf version --build-options`); the flag parses,
+  then refuses. Re-test with another perf build.
+- `libunwind: OFF` in the same listing is not a fault: DWARF unwinding goes through libdw.
+- Frame pointers in Qt: LBR already unwound through the stripped Qt, so a Qt rebuild with them was not needed for
+  the recipes above (not tried).
 
 Performance claims need numbers (see `verify-live`): before/after sample share of the
 named symbol, or replot rate ≤60 Hz — and say which views actually ran.

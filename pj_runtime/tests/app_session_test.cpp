@@ -182,8 +182,7 @@ TEST(AppSessionTest, SeedPlaybackUsesDisplayRelativeSecondsForShiftedDataset) {
 
   session.catalogModel().rebuildFromDatastore();
   EXPECT_TRUE(session.seedPlaybackFromSession());
-  // Display seconds = (raw - 2e9)/1e9 -> [3, 7], NOT the absolute [5, 9] the old
-  // offset-blind seeding produced.
+  // Display seconds = (raw - 2e9)/1e9 -> [3, 7], not the offset-blind absolute [5, 9].
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMin().value, 3.0);
   EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 7.0);
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 3.0);

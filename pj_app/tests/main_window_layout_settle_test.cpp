@@ -1,20 +1,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// GUI suite for the --exit-after-layout settlement boundary (stage-5 E5): the
-// layoutRestoreSettled signal fires EXACTLY ONCE per loadLayoutFromPath
-// terminal outcome —
-//   * an open failure settles false synchronously (and composes with the
-//     --dump-diagnostics collector: the failure record reaches the file);
-//   * a plain (no-batch) layout settles true on the SYNC apply leg;
-//   * a materialize-import layout settles true only at the progressive drain,
-//     strictly after the batch finished and every restore waiter cleared —
-//     never mid-import.
-// It also covers what the same entry tells the user: the report naming stream
-// records that cannot start, and warning boxes that show their text as text.
+// The --exit-after-layout settlement boundary: layoutRestoreSettled fires exactly once per loadLayoutFromPath
+// terminal outcome:
+//   * an open failure settles false synchronously (the failure record reaches the --dump-diagnostics file);
+//   * a plain (no-batch) layout settles true on the sync apply leg;
+//   * a materialize-import layout settles true only at the progressive drain, strictly after the batch finished and
+//     every restore waiter cleared.
+// Also covers what the same entry tells the user: the report naming stream records that cannot start, and warning
+// boxes that show their text as text.
 //
-// Each ctest case constructs its own MainWindow, so settlement observations
-// cannot inherit process-global widget state from another scenario.
+// Each ctest case runs in its own process (gtest_discover_tests) with its own MainWindow, so settlement observations
+// cannot inherit process-global widget state from another case.
 
 #include <gtest/gtest.h>
 
@@ -88,8 +85,8 @@ class MainWindowLayoutSettleTest : public ::testing::Test {
   inline static std::unique_ptr<PJ::MainWindow> window_;
 };
 
-// A layout whose data file no plugin handles: FileLoader's failure reaches the
-// diagnostics (and so --dump-diagnostics), not only the console.
+// A layout whose data file no plugin handles: FileLoader's failure reaches the diagnostics (and so
+// --dump-diagnostics), not only the console.
 TEST_F(MainWindowLayoutSettleTest, UnloadableLayoutSourceReachesTheDumpAsLoadFailed) {
   const QString data_path = project_dir_->filePath(QStringLiteral("data.pjbogus"));
   {
@@ -134,17 +131,14 @@ TEST_F(MainWindowLayoutSettleTest, UnloadableLayoutSourceReachesTheDumpAsLoadFai
   EXPECT_TRUE(saw_load_failed) << "the dump must carry data-source-load-failed";
 }
 
-// (1) + (5): an unreadable layout settles false synchronously, and the
-// --dump-diagnostics composition holds on the failure path — the
-// layout-open-failed record reaches the JSON file.
+// An unreadable layout settles false synchronously and its layout-open-failed record reaches the dump file.
 TEST_F(MainWindowLayoutSettleTest, FailedOpenSettlesFalseAndTheDumpCarriesTheFailure) {
   const QString dump_path = project_dir_->filePath(QStringLiteral("failure-diag.json"));
   PJ::DiagnosticDump dump(dump_path);
   dump.attachTo(window().diagnosticBridge());
 
-  // Scenario-scoped receiver context: the window is suite-static, so a plain
-  // connection would outlive this stack frame on an early ASSERT abort and
-  // the next scenario's settlement would write through the dead `settles`.
+  // Receiver context scoped to the test: the window is suite-static, so a plain connection would outlive this stack
+  // frame on an early ASSERT abort and a later settlement would write through the dead `settles`.
   QObject scope;
   std::vector<bool> settles;
   QObject::connect(
@@ -155,10 +149,8 @@ TEST_F(MainWindowLayoutSettleTest, FailedOpenSettlesFalseAndTheDumpCarriesTheFai
   ASSERT_EQ(settles.size(), 1u) << "an open failure must settle synchronously, exactly once";
   EXPECT_FALSE(settles.front());
 
-  // Deliberately NO pump between the settlement and the write — main.cpp's
-  // real shape (settle -> QCoreApplication::exit -> aboutToQuit -> write)
-  // leaves the queued bridge delivery undrained; write() must drain it so
-  // the failure id reaches the file (scripts assert ids, never message text).
+  // No pump between settlement and write, as in main.cpp (settle -> QCoreApplication::exit -> aboutToQuit -> write):
+  // the queued bridge delivery is undrained, so write() must drain it for the failure id to reach the file.
   ASSERT_TRUE(dump.write());
   const QJsonObject envelope = readDumpEnvelope(dump_path);
   EXPECT_EQ(envelope.value(QStringLiteral("version")).toInt(), 1);
@@ -171,8 +163,7 @@ TEST_F(MainWindowLayoutSettleTest, FailedOpenSettlesFalseAndTheDumpCarriesTheFai
   EXPECT_TRUE(saw_open_failed) << "the dump written on the failure path must carry layout-open-failed";
 }
 
-// (2a): a plain layout (no batch, no pending loads) settles true on the sync
-// leg, exactly once, with no batch ever constructed.
+// A plain layout (no batch, no pending loads) settles true on the sync leg, exactly once, with no batch constructed.
 TEST_F(MainWindowLayoutSettleTest, PlainLayoutSettlesTrueOnTheSyncApplyLeg) {
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "plain.mcap", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0u);
@@ -182,7 +173,7 @@ TEST_F(MainWindowLayoutSettleTest, PlainLayoutSettlesTrueOnTheSyncApplyLeg) {
   const QString layout_path = project_dir_->filePath(QStringLiteral("plain.pj4.xml"));
   ASSERT_TRUE(fake::writeLayoutFile(layout_path, fake::buildGenericCurveLayoutDoc(QStringLiteral("/plain"))));
 
-  // Scenario-scoped receiver context (see the first scenario's rationale).
+  // Receiver context scoped to the test (as in the failed-open test).
   QObject scope;
   std::vector<bool> settles;
   QObject::connect(
@@ -199,10 +190,9 @@ TEST_F(MainWindowLayoutSettleTest, PlainLayoutSettlesTrueOnTheSyncApplyLeg) {
   EXPECT_EQ(settles.size(), 1u) << "no late duplicate settlement";
 }
 
-// (2b): a materialize-import layout settles true ONLY at the progressive
-// drain — after the batch finished and every restore waiter cleared. The
-// mid-import window (job parked) must observe ZERO settlements: quitting on
-// settlement can therefore never tear down a still-active batch.
+// A materialize-import layout settles true only at the progressive drain, after the batch finished and every
+// restore waiter cleared; no settlement while the job is parked, so quitting on settlement never tears down an
+// active batch.
 TEST_F(MainWindowLayoutSettleTest, BatchLayoutSettlesTrueOnlyAtBatchFinish) {
   const QString source_path = project_dir_->filePath(QStringLiteral("data/run.mcap"));
   const QString layout_path = project_dir_->filePath(QStringLiteral("import.pj4.xml"));
@@ -217,7 +207,7 @@ TEST_F(MainWindowLayoutSettleTest, BatchLayoutSettlesTrueOnlyAtBatchFinish) {
     int waiters = -1;
     bool in_flight = true;
   };
-  // Scenario-scoped receiver context (see the first scenario's rationale).
+  // Receiver context scoped to the test (as in the failed-open test).
   QObject scope;
   std::vector<AtSettle> settles;
   QObject::connect(&window(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok) {
@@ -238,8 +228,7 @@ TEST_F(MainWindowLayoutSettleTest, BatchLayoutSettlesTrueOnlyAtBatchFinish) {
   flushQueuedEvents();
   EXPECT_TRUE(settles.empty()) << "still parked: the settlement must wait for the batch waiter";
 
-  // The import "arrives": inject the dataset+topic the job is fetching, then
-  // release the blocked worker so the batch concludes and the drain settles.
+  // Inject the dataset+topic the job is fetching, then release the blocked worker so the batch concludes.
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "run.mcap", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0u);
   ASSERT_NE(pj_test::addScalarTopic(appSession(), dataset, "/left", 1'000, 2'000), 0u);
@@ -260,9 +249,8 @@ TEST_F(MainWindowLayoutSettleTest, BatchLayoutSettlesTrueOnlyAtBatchFinish) {
 }
 
 #ifdef PJ_WITH_SCENE3D
-// Scene3D resource references are resolved at ingress, before anything
-// restores: a malformed robot package mapping fails the load, settles false
-// with a diagnostic, and the layout's plot never reaches the workspace.
+// Scene3D resource references are resolved at ingress, before anything restores: a malformed robot package mapping
+// fails the load, settles false with a diagnostic, and the layout's plot never reaches the workspace.
 TEST_F(MainWindowLayoutSettleTest, InvalidSceneResourcesFailBeforeTheWorkspaceChanges) {
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "resources.mcap", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0u);
@@ -298,8 +286,8 @@ TEST_F(MainWindowLayoutSettleTest, InvalidSceneResourcesFailBeforeTheWorkspaceCh
 }
 #endif
 
-// A source-bound layout whose stream plugins are not installed names every stream it
-// could not start, once, and still applies the rest of the layout.
+// A source-bound layout whose stream plugins are not installed names every stream it could not start, once, and
+// still applies the rest of the layout.
 TEST_F(MainWindowLayoutSettleTest, StreamsThatCannotStartAreNamedAndTheLayoutStillApplies) {
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "streams.mcap", /*own_time_domain=*/true);
   ASSERT_NE(dataset, 0u);
@@ -345,8 +333,7 @@ TEST_F(MainWindowLayoutSettleTest, StreamsThatCannotStartAreNamedAndTheLayoutSti
   EXPECT_TRUE(warnings.front().contains(QStringLiteral("'right'"))) << warnings.front().toStdString();
 }
 
-// Text a load interpolates into its warning box (here the path) reaches the
-// box escaped, so markup it spells is shown, never rendered.
+// Text a load interpolates into its warning box (here the path) reaches the box escaped: markup is shown, not rendered.
 TEST_F(MainWindowLayoutSettleTest, WarningBoxShowsInterpolatedTextAsPlainText) {
   const QString path = project_dir_->filePath(QStringLiteral("<b>bold</b><a href=x>link</a>.pj4.xml"));
   QString shown;

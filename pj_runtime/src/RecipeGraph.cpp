@@ -238,7 +238,7 @@ Expected<RecipeGraph::Node> RecipeGraph::bind(Recipe recipe) const {
     }
   }
 
-  // D7: exactly one dataset binds every input.
+  // Exactly one dataset binds every input.
   std::optional<std::vector<DatasetId>> common;
   for (const auto& input_candidates : candidates) {
     if (input_candidates.empty()) {

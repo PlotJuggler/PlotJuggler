@@ -15,10 +15,6 @@
 
 namespace PJ {
 
-// ---------------------------------------------------------------------------
-// JpegCodec
-// ---------------------------------------------------------------------------
-
 JpegCodec::JpegCodec() : tj_(tjInitDecompress()) {}
 
 JpegCodec::~JpegCodec() {
@@ -65,10 +61,6 @@ Expected<DecodedFrame> JpegCodec::decode(const DecodedFrame& input) const {
   return frame;
 }
 
-// ---------------------------------------------------------------------------
-// PngCodec
-// ---------------------------------------------------------------------------
-
 namespace {
 
 struct PngReadCtx {
@@ -87,12 +79,9 @@ void pngReadCb(png_structp png, png_bytep out, png_size_t count) {
   ctx->offset += count;
 }
 
-// Runs png_read_image under libpng's setjmp inside ITS OWN frame, so no caller
-// local (the pixel buffer, the row-pointer vector, the format enum) lives across
-// the longjmp. That both (a) lets the caller's RAII objects unwind normally on a
-// corrupt/truncated IDAT — fixing the historical leak of placing setjmp before the
-// allocations — and (b) avoids GCC's -Wclobbered on those locals. Returns false if
-// libpng raised an error while reading the image.
+// Runs png_read_image under libpng's setjmp in ITS OWN frame, so no caller local lives across the longjmp: the
+// caller's RAII objects unwind normally on a corrupt IDAT (a setjmp before the allocations leaks them), and GCC's
+// -Wclobbered stays quiet. False when libpng raised an error.
 [[nodiscard]] bool pngReadImageGuarded(png_structp png, png_bytep* rows) {
   // NOLINTNEXTLINE(cert-err52-cpp) — libpng's only error channel is setjmp/longjmp.
   if (setjmp(png_jmpbuf(png))) {
@@ -208,10 +197,6 @@ Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
   return frame;
 }
 
-// ---------------------------------------------------------------------------
-// NormalizeMono16
-// ---------------------------------------------------------------------------
-
 Expected<DecodedFrame> NormalizeMono16::decode(const DecodedFrame& input) const {
   if (input.isNull()) {
     return unexpected("empty image data");
@@ -221,10 +206,6 @@ Expected<DecodedFrame> NormalizeMono16::decode(const DecodedFrame& input) const 
   }
   return input;
 }
-
-// ---------------------------------------------------------------------------
-// ImageDecodeCascade
-// ---------------------------------------------------------------------------
 
 Expected<DecodedFrame> ImageDecodeCascade::decode(const DecodedFrame& input) const {
   if (input.isNull()) {
@@ -245,10 +226,6 @@ Expected<DecodedFrame> ImageDecodeCascade::decode(const DecodedFrame& input) con
   return unexpected("unsupported image payload: expected JPEG or PNG");
 }
 
-// ---------------------------------------------------------------------------
-// AutoImageCodec
-// ---------------------------------------------------------------------------
-
 Expected<DecodedFrame> AutoImageCodec::decode(const DecodedFrame& input) const {
   if (input.isNull()) {
     return unexpected("empty image data");
@@ -264,10 +241,6 @@ Expected<DecodedFrame> AutoImageCodec::decode(const DecodedFrame& input) const {
   }
   return normalize_.decode(*decoded);
 }
-
-// ---------------------------------------------------------------------------
-// Mono16ToGrayscale
-// ---------------------------------------------------------------------------
 
 Expected<DecodedFrame> Mono16ToGrayscale::decode(const DecodedFrame& input) const {
   // Generic uint16 grayscale for Image/PNG mono16 topics; DepthImage keeps a separate float/colormap path.
@@ -315,10 +288,6 @@ Expected<DecodedFrame> Mono16ToGrayscale::decode(const DecodedFrame& input) cons
   frame.format = PixelFormat::kRGB888;
   return frame;
 }
-
-// ---------------------------------------------------------------------------
-// SegmentationPalette
-// ---------------------------------------------------------------------------
 
 Expected<DecodedFrame> SegmentationPalette::decode(const DecodedFrame& input) const {
   if (input.isNull() || input.width == 0 || input.height == 0) {
@@ -390,10 +359,6 @@ Expected<DecodedFrame> SegmentationPalette::decode(const DecodedFrame& input) co
   return frame;
 }
 
-// ---------------------------------------------------------------------------
-// BayerDecode
-// ---------------------------------------------------------------------------
-
 namespace {
 
 // Channel sampled by the CFA at (row, col): 0=R, 1=G, 2=B. Indexed by the
@@ -463,10 +428,6 @@ Expected<DecodedFrame> BayerDecode::decode(const DecodedFrame& input) const {
   return frame;
 }
 
-// ---------------------------------------------------------------------------
-// Pipeline builders
-// ---------------------------------------------------------------------------
-
 std::unique_ptr<CodecPipeline> makeJpegPipeline() {
   auto p = std::make_unique<CodecPipeline>();
   p->addStage(std::make_unique<JpegCodec>());
@@ -522,10 +483,6 @@ std::optional<std::shared_ptr<std::vector<uint8_t>>> recoverContainerRawSamples(
   }
   return out;
 }
-
-// ---------------------------------------------------------------------------
-// Container headers
-// ---------------------------------------------------------------------------
 
 ImageHeader peekImageHeader(const uint8_t* data, size_t size, ImageContainer container) noexcept {
   if (container == ImageContainer::kPng) {

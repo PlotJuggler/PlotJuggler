@@ -19,12 +19,9 @@ class PosesInFrameLayer;
 /// position, normal) and one PoseTriadInstance per instance (binding 1).
 QRhiVertexInputLayout poseTriadInputLayout();
 
-/// The pose-triad family of the QRhi view: instanced solid arrows over the
-/// shared unit-arrow mesh, one draw per PosesInFrameLayer plus one for the TF
-/// frame triads (the view's "Frames" gizmos), which reuse the same pipeline.
-/// Poses are always opaque. Per frame the view calls, in order: admit() (once),
-/// prepare() (once), then submit() per ScenePass for each draw and
-/// submitTfTriads() in the scene prelude.
+/// The pose-triad family of the QRhi view: instanced solid arrows over the shared unit-arrow mesh, one draw per
+/// PosesInFrameLayer plus one for the TF frame triads (the view's "Frames" gizmos), which reuse the same pipeline.
+/// Poses are always opaque; submitTfTriads() draws the TF triads in the scene prelude.
 class PoseRhiPass {
  public:
   struct Draw {
@@ -41,23 +38,19 @@ class PoseRhiPass {
   [[nodiscard]] bool ready() const {
     return pipeline_ != nullptr;
   }
-  /// Adopts the view's pose layers; drops GPU state of layers that left or are hidden.
   void setLayers(const std::vector<PosesInFrameLayer*>& layers);
 
-  /// Runs each visible layer's prepareForRender() against the per-view arm
-  /// budget, places it, and records the family's fixed-frame bounds (lastBounds()).
+  /// Admits visible layers against the per-view arm budget and records the family's fixed-frame bounds
+  /// (lastBounds()).
   void admit(const PlaceFn& place);
-  /// Uploads admitted layers' instances (when their revision moved) and
-  /// uniforms, and this frame's TF triads (fixed-frame arms relative to the
-  /// render origin, drawn with an identity fixed_from_source; re-uploaded only
-  /// when `tf_triads_revision` moved).
+  /// Uploads admitted layers' instances (when their revision moved) and uniforms, and this frame's TF triads
+  /// (fixed-frame arms relative to the render origin, drawn with an identity fixed_from_source; re-uploaded only when
+  /// `tf_triads_revision` moved).
   void prepare(
       const RhiFrameContext& frame, const std::vector<PoseTriadInstance>& tf_triads, std::uint64_t tf_triads_revision);
-  /// The prepared draw of `layer` (none or one).
   [[nodiscard]] std::span<const Draw> drawsFor(const PosesInFrameLayer* layer) const {
     return findDraws(draws_, layer);
   }
-  /// Records one draw; false when its pipeline is unavailable for `pass`.
   bool submit(
       QRhiCommandBuffer* command_buffer, const Draw& draw, ScenePass pass, const ScenePipelineRegistry& registry,
       const QRhiViewport& viewport) const;

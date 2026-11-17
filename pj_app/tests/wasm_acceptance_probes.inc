@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Test-only implementation included by MainWindow.cpp only when the
-// browser acceptance configuration enables PJ_WASM_ENABLE_INGRESS_PROBE.
-// Keeping it out of the shell source makes the production ownership boundary
-// explicit while preserving same-translation-unit access to probe helpers.
+// Test-only: included by MainWindow.cpp only when the browser acceptance configuration enables
+// PJ_WASM_ENABLE_INGRESS_PROBE. Kept out of the shell source so production never owns it, yet in the same
+// translation unit so it reaches MainWindow's private helpers.
 
 #include <emscripten/heap.h>
 #include <emscripten/val.h>
@@ -1092,11 +1091,9 @@ WasmLineCadence findWasmVerticalCadence(
       }
     }
   }
-  // Major and minor grid pens now share the framework's Gridline token, so
-  // color alone cannot distinguish them. Search every target-color column for
-  // the requested cosmetic Qt cadence: 6 rows / 4 on for DashLine, 3 / 1 for
-  // DotLine. This still observes the rendered framebuffer rather than the CPU
-  // pen state, and it remains independent of DPR.
+  // Major and minor grid pens share the framework's Gridline token, so color alone cannot distinguish them. Search
+  // every target-color column for the requested cosmetic Qt cadence: 6 rows / 4 on for DashLine, 3 / 1 for DotLine.
+  // This still observes the rendered framebuffer rather than the CPU pen state, and it remains independent of DPR.
   WasmLineCadence best;
   best.period = expected_period;
   bool best_has_expected_duty = false;

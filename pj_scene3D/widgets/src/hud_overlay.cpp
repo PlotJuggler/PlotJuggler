@@ -40,7 +40,6 @@ QImage renderHudPanel(
   const QFontMetrics metrics(font);
   const int line_h = metrics.height();
 
-  // Logical (device-independent) box: widest line advance + symmetric padding.
   int text_w = 0;
   for (const QString& line : lines) {
     text_w = std::max(text_w, metrics.horizontalAdvance(line));
@@ -63,14 +62,12 @@ QImage renderHudPanel(
   painter.setRenderHint(QPainter::TextAntialiasing, true);
   painter.setFont(font);
 
-  // Translucent rounded panel.
   painter.setPen(Qt::NoPen);
   const auto active_theme = appTheme();
   painter.setBrush(PJ::theme::overlay(PJ::theme::Overlay::Hud, active_theme));
   const int radius = PJ::theme::radius(PJ::theme::Radius::Input, active_theme);
   painter.drawRoundedRect(QRectF(0, 0, box_w, box_h), radius, radius);
 
-  // Lines left-aligned, stacked top to bottom on successive baselines.
   painter.setPen(text_color);
   int baseline = padding + metrics.ascent();
   for (const QString& line : lines) {

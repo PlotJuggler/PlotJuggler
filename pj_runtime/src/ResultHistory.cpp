@@ -43,10 +43,9 @@ struct OwnedBundle {
   scripting::ScriptBundle bundle;
 };
 
-/// What a layer shows at `stamp` for an unavailable output: nothing, never the previous geometry (D6). At
-/// stamp 0 a tombstone can serialize to zero bytes (empty annotations), which the SDK 0.36 decoders refuse;
-/// the scheduler stamps a missing-input tombstone at the requested time, and the decoder fix is an SDK
-/// follow-up.
+/// What a layer shows at `stamp` for an unavailable output: nothing, never the previous geometry. At
+/// stamp 0 a tombstone can serialize to zero bytes (empty annotations), which the SDK decoders refuse;
+/// the scheduler stamps a missing-input tombstone at the requested time.
 Expected<std::vector<uint8_t>> emptyObjectBytes(
     sdk::BuiltinObjectType type, Timestamp stamp, const std::string& frame) {
   sdk::BuiltinObject empty;

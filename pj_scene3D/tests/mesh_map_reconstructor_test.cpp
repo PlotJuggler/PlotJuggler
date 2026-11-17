@@ -27,7 +27,6 @@ using Target = PJ::sdk::MeshChannel::Target;
 constexpr uint64_t kSibling = 1;
 constexpr uint64_t kOther = 2;
 
-// Byte storage outliving the spans handed out.
 std::vector<std::shared_ptr<std::vector<uint8_t>>>& blobs() {
   static std::vector<std::shared_ptr<std::vector<uint8_t>>> storage;
   return storage;
@@ -41,7 +40,6 @@ PJ::Span<const uint8_t> keep(const std::vector<T>& values) {
   return {blob->data(), blob->size()};
 }
 
-// Four faces around a centre vertex, a float `cost` face channel of zeros.
 MeshMapState makeState(const std::string& geometry_id) {
   PJ::sdk::MeshMap mesh;
   mesh.frame_id = "map";
@@ -59,7 +57,6 @@ MeshMapState makeState(const std::string& geometry_id) {
   return decodeMeshMap(mesh);
 }
 
-// A sparse update writing `value` to `face` of `cost`.
 MeshMapUpdate makeUpdate(uint32_t face, float value, const std::string& geometry_id) {
   PJ::sdk::MeshChannelPatch patch;
   patch.channel.name = "cost";

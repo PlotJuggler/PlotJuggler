@@ -46,10 +46,6 @@ using namespace Qt::StringLiterals;
 
 namespace PJ {
 
-// =============================================================================
-// TimelineScene — Qt-free timing/geometry/alignment math.
-// =============================================================================
-
 namespace {
 constexpr double kMinPxPerNs = 1e-12;
 constexpr double kMaxPxPerNs = 1e-1;
@@ -150,14 +146,11 @@ TimelineRuler TimelineScene::ruler(const TimelineViewport& vp, double width_px, 
   out.interval_ns = chooseInterval(vp.px_per_ns, target_px_per_tick);
   const qint64 lo = vp.origin_ns;
   const qint64 hi = vp.origin_ns + static_cast<qint64>(std::llround(width_px / vp.px_per_ns));
-  // Degenerate-extent guard: when the visible span is so large that even the widest
-  // ladder interval (1 h) would pack thousands of ticks into the viewport — e.g. a
-  // wall-clock-epoch streaming source unioned with relative-time file datasets, a span
-  // of ~20,000 days — widen the interval so ticks stay at least kMinTickSpacingPx
-  // apart. Without this the labels overpaint into a black smear and every repaint pays
-  // for ~kMaxTicks labels + gridlines (the streaming "lags hard"). Round ladder
-  // intervals are abandoned here (the labels are non-round), but that only happens in
-  // the already-degenerate regime; normal zoom levels keep the ladder interval.
+  // Degenerate-extent guard: when the visible span is so large that even the widest ladder interval (1 h) would pack
+  // thousands of ticks into the viewport (a wall-clock-epoch streaming source unioned with relative-time file datasets,
+  // a span of ~20,000 days), the interval is widened so ticks stay at least kMinTickSpacingPx apart. Without it the
+  // labels overpaint into a smear and every repaint pays for ~kMaxTicks labels and gridlines. Round ladder intervals
+  // are abandoned here (the labels are non-round), but only in that degenerate regime.
   constexpr double kMinTickSpacingPx = 48.0;
   if (hi > lo && out.interval_ns > 0 && width_px > 0.0) {
     const auto max_ticks_for_width = std::max<qint64>(1, static_cast<qint64>(width_px / kMinTickSpacingPx));
@@ -246,18 +239,12 @@ TimelineScene::EdgeSnap TimelineScene::snapToEdges(
   return result;
 }
 
-// =============================================================================
-// Graphics items — bar / ruler / playhead. Module-private (timeline_detail).
-// =============================================================================
-
 namespace timeline_detail {
 
-/// One source rendered as a draggable bar. Ported from the PJ3 prototype's
-/// TopicItem and rebound: it no longer reads a model — the widget feeds it pixel
-/// geometry (from TimelineScene::barSpan) plus the SourceId/label/color for
-/// hit-testing and painting. The "ghost" dx is a live, view-only preview of an
-/// in-flight horizontal drag; the authoritative offset is written by the host in
-/// response to offsetChangeRequested, never by this item.
+/// One source rendered as a draggable bar. The widget feeds it pixel geometry (TimelineScene::barSpan) plus the source
+/// id, label and color for hit-testing and painting. The "ghost" dx is a live, view-only preview of an in-flight
+/// horizontal drag; the authoritative offset is written by the host in response to offsetChangeRequested, never by this
+/// item.
 class TimelineBarItem : public QGraphicsRectItem {
  public:
   TimelineBarItem(TimelineSourceId id, QString label, const QColor& fill)
@@ -287,16 +274,15 @@ class TimelineBarItem : public QGraphicsRectItem {
 
   /// Preview a pending horizontal drag of `dx_px` pixels (does not commit).
   void setGhostDx(double dx_px) {
-    // boundingRect() widens by |ghost_dx_px_|, so this is a geometry change: the
-    // scene's spatial index must be told before the rect changes, or the old
-    // (narrower) cached rect leaves repaint trails during a drag.
+    // boundingRect() widens by |ghost_dx_px_|, so this is a geometry change: the scene's spatial index must be told
+    // before the rect changes, or the old (narrower) cached rect leaves repaint trails during a drag.
     prepareGeometryChange();
     ghost_dx_px_ = dx_px;
     update();
   }
 
   [[nodiscard]] QRectF boundingRect() const override {
-    // Widen by the ghost offset so a previewed drag isn't clipped to the old rect.
+    // Widened by the ghost offset, so a previewed drag is not clipped to the old rect.
     const QRectF r = QGraphicsRectItem::boundingRect();
     const double extra = std::abs(ghost_dx_px_);
     return r.adjusted(-extra, 0, extra, 0);
@@ -336,10 +322,9 @@ struct TimelineNameRow {
   bool selected = false;  // painted with a selection background when set
 };
 
-/// Left track-name column. One row per timeline track, pinned on the left so a
-/// dataset's name stays visible even when its bar is scrolled out horizontally or
-/// squashed thin. The Timeline owns the geometry: it feeds rows in viewport-local
-/// y (synced to vertical scroll) so each name aligns exactly with its bar's row.
+/// Left track-name column: one row per timeline track, pinned on the left so a dataset's name stays visible when its
+/// bar is scrolled out horizontally or squashed thin. The Timeline owns the geometry: it feeds rows in viewport-local y
+/// (synced to vertical scroll) so each name aligns with its bar's row.
 class TimelineNamePanel : public QWidget {
  public:
   static constexpr int kDefaultWidth = 140;  // initial column width (px); user-resizable
@@ -350,11 +335,9 @@ class TimelineNamePanel : public QWidget {
     setMinimumWidth(kMinWidth);
     setMouseTracking(true);  // hover (no button) drives the grab cursor
 
-    // Header band aligned with the ruler on the right: the "Datasets" title on the
-    // left and a label-less merge button on the right (where the kebab used to be).
-    // The band tone + 2-px title indent come from shared QSS keyed on these object
-    // names. WA_StyledBackground so the band's QSS fill paints; opaque so rows
-    // scrolled up never bleed into the header.
+    // Header band aligned with the ruler on the right: the "Datasets" title on the left and a label-less merge button
+    // on the right. The band tone and 2-px title indent come from shared QSS keyed on these object names.
+    // WA_StyledBackground so the band's QSS fill paints; opaque so rows scrolled up never bleed into the header.
     header_ = new QWidget(this);
     header_->setObjectName(u"timelineDatasetsHeader"_s);
     header_->setAttribute(Qt::WA_StyledBackground, true);
@@ -367,9 +350,8 @@ class TimelineNamePanel : public QWidget {
     header_label_ = new QLabel(tr("Datasets"), header_);
     header_label_->setObjectName(u"timelineDatasetsLabel"_s);
 
-    // Merge button (merge icon, no label; 24-px to match the app chrome).
-    // An SvgButton, so it re-tints itself on theme change — no applyHeaderTheme hook.
-    // The Timeline enables it only when ≥2 sources are selected and wires its click.
+    // Merge button (merge icon, no label; 24 px to match the app chrome). An SvgButton, so it re-tints itself on a
+    // theme change. The Timeline enables it only with 2 or more sources selected and wires its click.
     merge_button_ = new SvgButton(u":/resources/svg/merge.svg"_s, SvgButton::Size::kDefault, header_);
     merge_button_->setObjectName(u"timelineMergeButton"_s);
     merge_button_->setToolTip(tr("Merge the selected datasets"));
@@ -472,7 +454,7 @@ class TimelineNamePanel : public QWidget {
     painter.setOpacity(1.0);
   }
 
-  // y of the insertion line for the current drop_index_ (gap midpoint / ends).
+  // y of the insertion line for the current drop_index_ (gap midpoint or ends).
   [[nodiscard]] double dropLineY() const {
     if (rows_.empty()) {
       return 0.0;
@@ -501,34 +483,24 @@ class TimelineNamePanel : public QWidget {
 
 }  // namespace timeline_detail
 
-// =============================================================================
-// Timeline — the QWidget (consolidated SourceTimelineWidget).
-// =============================================================================
-
 namespace {
 constexpr double kRowHeight = 24.0;
 constexpr double kRowGap = 2.0;
-// Vertical offset of the first dataset row — the blank header band above it (the
-// view's ruler is drawn within it on the view side; sized for a standard icon-row
-// of breathing room).
+// Vertical offset of the first dataset row: the blank header band above it (the view's ruler is drawn within it).
 constexpr double kRowsTopOffset = 28.0;  // first-dataset vertical offset (px)
 constexpr double kMinBarWidthPx = 2.0;
 constexpr double kSnapThresholdPx = 8.0;     // catch distance for edge-snap during a drag
 constexpr double kSnapReleaseExtraPx = 6.0;  // extra hysteresis band before an active snap releases
-// Chrono-derived so the seconds<->ns factor can never drift from the unit it
-// converts (mirrors PJ::kNanosecondsPerSecond in pj_runtime/Time.h, which
-// pj_widgets cannot include per its dependency rule). The widget's public
-// playhead/reference/range slots speak display-seconds — the fleet-wide
-// IDataWidget/PlaybackEngine double contract — and convert to the ns-native
-// interior here.
+// Chrono-derived, so the seconds-to-ns factor cannot drift from the unit it converts (mirrors PJ::kNanosecondsPerSecond
+// in pj_runtime/Time.h, which pj_widgets cannot include). The public playhead, reference and range slots speak
+// display-seconds (the IDataWidget / PlaybackEngine double contract) and convert to the ns-native interior here.
 constexpr double kNanosecondsPerSecond = static_cast<double>(std::chrono::nanoseconds::period::den);
 constexpr double kNanosecondsPerMillisecond =
     static_cast<double>(std::chrono::nanoseconds::period::den) / std::chrono::milliseconds::period::den;
 constexpr double kZoomInFactor = 1.25;
 constexpr double kZoomOutFactor = 1.0 / 1.25;
-// Padding added to each side of the content so a source can be dragged a little
-// near the edges without the scrollable scene immediately growing. The scene only
-// grows past this when a bar is pushed beyond the buffer (see computeBufferedExtent).
+// Padding added to each side of the content, so a source can be dragged a little near the edges without the scrollable
+// scene growing. The scene grows past it only when a bar is pushed beyond the buffer (computeBufferedExtent).
 constexpr qint64 kBufferNs = 60'000'000'000LL;  // ±1 minute
 
 /// Format a display-relative ns offset as a precise H:MM:SS.mmm-ish timestamp for
@@ -571,11 +543,9 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // shows in any viewport area beyond the scene rect. Kept in step via changeEvent.
   view_->setBackgroundBrush(timelineBackdrop());
   view_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-  // The native bars are hidden in favour of PJ::Scrollbar overlay pills
-  // (h_scrollbar_ / v_scrollbar_). AlwaysOff hides the widget but KEEPS each
-  // scrollbar's range + value live, so panning still flows through setValue().
-  // Scrollbar::attach() re-applies AlwaysOff, so the lines below are belt-and-
-  // suspenders and harmless if called before attach().
+  // The native bars are hidden in favour of PJ::Scrollbar overlay pills (h_scrollbar_, v_scrollbar_). AlwaysOff hides
+  // the widget but keeps each scrollbar's range and value live, so panning still flows through setValue().
+  // Scrollbar::attach() re-applies AlwaysOff, so the lines below are harmless if called before attach().
   view_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   view_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   view_->setTransformationAnchor(QGraphicsView::NoAnchor);
@@ -588,12 +558,10 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   // Forward the view's mouse/wheel events to this widget's overrides so a single
   // set of handlers drives bar drag, playhead seek, scroll, and zoom.
   view_->viewport()->installEventFilter(this);
-  // Attach PJ::Scrollbar overlays AFTER Timeline's own viewport event filter so
-  // each Scrollbar's filter is installed last (LIFO → called first), letting it
-  // consume strip-drag/hover events before Timeline's pan/zoom handler sees them.
-  // The Timeline owns its whole viewport (no foreign clickable content under the
-  // strips), so opt into click-to-scroll: a press anywhere in the strip grabs and
-  // jumps the handle, matching the pre-extraction TimelineScrollPill behavior.
+  // The Scrollbar overlays attach after Timeline's own viewport event filter, so each Scrollbar's filter is installed
+  // last (LIFO: called first) and consumes strip drag and hover events before Timeline's pan and zoom handler sees
+  // them. The Timeline owns its whole viewport (no foreign clickable content under the strips), so click-to-scroll is
+  // on: a press anywhere in the strip grabs and jumps the handle.
   h_scrollbar_ = new Scrollbar(Qt::Horizontal);
   h_scrollbar_->setClickToScroll(true);
   h_scrollbar_->attach(view_);
@@ -614,22 +582,18 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
       theme::space(theme::Space::None));
   toolbar->addWidget(align_button_);
   toolbar->addStretch(1);
-  // Host the toolbar in its own widget so it can be hidden as a unit. Hidden for
-  // now (the Align action stays wired via alignRequested for when it returns); a
-  // hidden widget is skipped by the layout, so no empty row is left above the view.
+  // The toolbar sits in its own widget so it can be hidden as a unit. Hidden for now (the Align action stays wired
+  // through alignRequested); a hidden widget is skipped by the layout, so no empty row is left above the view.
   auto* toolbar_row = new QWidget(this);
   toolbar_row->setLayout(toolbar);
   toolbar_row->hide();
 
-  // Left name column beside the view, in a splitter so its right edge is a
-  // draggable separator the user can pull to widen/narrow the column. The panel
-  // paints one row per track aligned to the bars; the view scrolls/zooms while the
-  // names stay pinned.
+  // The left name column sits beside the view in a splitter, so its right edge is a draggable separator. The panel
+  // paints one row per track aligned to the bars; the view scrolls and zooms while the names stay pinned.
   name_panel_ = new timeline_detail::TimelineNamePanel(this);
   name_panel_->installEventFilter(this);  // central handling of row drag-to-reorder
-  // The header's merge button (merge icon, no label) lives in the name
-  // column's "Datasets" band. The Timeline enables it only when ≥2 sources are
-  // selected (see updateMergeButton); a click merges the visible selection.
+  // The header's merge button (merge icon, no label) lives in the name column's "Datasets" band. The Timeline enables
+  // it only with 2 or more sources selected (updateMergeButton); a click merges the visible selection.
   connect(name_panel_->mergeButton(), &QToolButton::clicked, this, [this]() {
     const QList<quint64> ids = visibleSelectedIdsList();
     if (!interaction_locked_ && ids.size() >= 2) {
@@ -637,9 +601,8 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
     }
   });
 
-  // Plain QSplitter so its handle is the app's standard separator: the global
-  // QSS styles QSplitter::handle as a 1-px separator line that turns the
-  // Highlight (pressed) accent while grabbed, identical to every other splitter.
+  // A plain QSplitter, so its handle is the app's standard separator: the global QSS styles QSplitter::handle as a 1-px
+  // line that turns the Highlight accent while grabbed, as every other splitter.
   name_splitter_ = new QSplitter(Qt::Horizontal, this);
   name_splitter_->setObjectName(u"timelineNameSplitter"_s);
   name_splitter_->setChildrenCollapsible(false);
@@ -699,18 +662,16 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
   snap_line_item_->setVisible(false);
   gscene_->addItem(snap_line_item_);
 
-  // "Frozen" overlay: a centered pill shown over the scene while the timeline is
-  // interaction-locked (live streaming + playing), telling the user how to interact.
-  // Purely informational — WA_TransparentForMouseEvents so it never changes event
-  // routing (the press/wheel gates already block interaction). Hidden until locked.
+  // "Frozen" overlay: a centered pill over the scene while the timeline is interaction-locked (live streaming and
+  // playing), telling the user how to interact. Informational: WA_TransparentForMouseEvents, so it never changes event
+  // routing (the press and wheel gates already block interaction). Hidden until locked.
   lock_overlay_ = new QLabel(tr("Streaming: pause playback to interact with the timeline"), this);
   lock_overlay_->setObjectName(u"timelineLockOverlay"_s);
   lock_overlay_->setAttribute(Qt::WA_TransparentForMouseEvents);
   lock_overlay_->setAlignment(Qt::AlignCenter);
   lock_overlay_->setWordWrap(true);
-  // Rounded grey pill centered over the scene (geometry set in
-  // updateLockOverlayGeometry): sized to the text + padding, NOT a full-width band —
-  // prominent enough to read at a glance while leaving the streaming bars visible.
+  // A rounded grey pill centered over the scene (geometry in updateLockOverlayGeometry), sized to the text plus
+  // padding, not a full-width band: readable at a glance while the streaming bars stay visible.
   lock_overlay_->setStyleSheet(
       QStringLiteral(
           "QLabel#timelineLockOverlay { background-color: %1; color: %2; "
@@ -741,12 +702,10 @@ Timeline::Timeline(QWidget* parent) : QWidget(parent) {
 }
 
 Timeline::~Timeline() {
-  // Drop the scrollbar connections before our members tear down. ~QWidget (the
-  // base, run after our members are gone) deletes the child QGraphicsScene, which
-  // resets the view's scrollbars and emits valueChanged — that would otherwise
-  // fire the lambdas into updateNamePanel()/syncStickyHeader() after scene_ et al.
-  // are already destroyed. (The `this`-context auto-disconnect only kicks in once
-  // ~QObject runs, which is too late.)
+  // The scrollbar connections are dropped before the members tear down. ~QWidget (the base, run after our members are
+  // gone) deletes the child QGraphicsScene, which resets the view's scrollbars and emits valueChanged, firing the
+  // lambdas into updateNamePanel() and syncStickyHeader() after scene_ and the rest are destroyed. (The `this`-context
+  // auto-disconnect only runs in ~QObject, too late.)
   if (view_ != nullptr) {
     view_->horizontalScrollBar()->disconnect(this);
     view_->verticalScrollBar()->disconnect(this);
@@ -759,11 +718,10 @@ int Timeline::barCount() const {
 
 void Timeline::setTracks(const std::vector<TimelineTrack>& tracks) {
   all_tracks_ = tracks;
-  // Hash the RAW data (id + raw bounds, NOT offsets) of the FULL list to tell a
-  // genuine data change (load/remove/reload) from an offset-only update (a drag).
-  // Computing it from the full list — not the filtered subset — means the dataset
-  // filter never resets the extent or triggers auto-zoom. The combine is order-
-  // INDEPENDENT (XOR of per-track hashes) so a pure reorder leaves it unchanged.
+  // Hash of the raw data (id and raw bounds, not offsets) of the full list, to tell a data change (load, remove,
+  // reload) from an offset-only update (a drag). Computed from the full list, not the filtered subset, so the dataset
+  // filter never resets the extent or triggers auto-zoom. Order-independent (XOR of per-track hashes), so a pure
+  // reorder leaves it unchanged.
   quint64 sig = 0;
   for (const TimelineTrack& t : all_tracks_) {
     std::uint64_t h = kFnv1aOffsetBasis;
@@ -792,10 +750,9 @@ void Timeline::setDatasetFilter(const QString& text) {
 }
 
 void Timeline::applyDatasetFilter() {
-  // Feed only the filter-matching tracks into the scene; the bars, name rows,
-  // extent, and reorder all operate on this filtered subset, so the rest of the
-  // widget needs no filter awareness. Case-insensitive substring match on the
-  // dataset name; an empty filter shows everything.
+  // Feeds only the filter-matching tracks into the scene; bars, name rows, extent and reorder all operate on this
+  // subset, so the rest of the widget needs no filter awareness. Case-insensitive substring match on the dataset name;
+  // an empty filter shows everything.
   std::vector<TimelineSpanInput> spans;
   bar_colors_.clear();
   bar_labels_.clear();
@@ -813,20 +770,19 @@ void Timeline::applyDatasetFilter() {
 }
 
 void Timeline::setPlayhead(double display_seconds) {
-  // `display_seconds` arrives in the host's external (playback) frame; shift into
-  // the bars' internal frame by adding the offset in INTEGER ns (never via an
-  // epoch-scale double add, which would lose ~one ulp ≈ 240 ns of precision).
+  // `display_seconds` arrives in the host's external (playback) frame and is shifted into the bars' internal frame by
+  // adding the offset in integer ns, never through an epoch-scale double add, which loses ~one ulp (~240 ns).
   playhead_ns_ = static_cast<qint64>(std::llround(display_seconds * kNanosecondsPerSecond)) + time_frame_offset_ns_;
   repositionPlayhead();
-  // The needle is a pure slave (seekToSceneX no longer sets the pill), so update the
-  // grabbed time pill here from the echoed engine value while a drag is in progress.
+  // The needle is a pure slave (seekToSceneX does not set the pill), so the grabbed time pill is updated here from the
+  // echoed engine value while a drag is in progress.
   if (dragging_playhead_) {
     playhead_item_->setLabel(markerLabel(playhead_ns_));
   }
 }
 
 QString Timeline::markerLabel(qint64 display_ns) const {
-  // fixed_ms=true so the pill matches the playback readout (always 3 decimals).
+  // fixed_ms = true, so the pill matches the playback readout (always 3 decimals).
   if (!absolute_time_labels_) {
     return formatMarkerTime(display_ns - ruler_epoch_ns_);
   }
@@ -839,7 +795,7 @@ void Timeline::setAbsoluteTimeLabels(bool absolute) {
   }
   absolute_time_labels_ = absolute;
   ruler_item_->setAbsoluteFormat(absolute);
-  // Refresh the (lazily-shown) pill labels so the next grab reads the new format.
+  // Refreshes the lazily shown pill labels, so the next grab reads the new format.
   playhead_item_->setLabel(markerLabel(playhead_ns_));
   reference_item_->setLabel(markerLabel(reference_ns_));
 }
@@ -855,22 +811,20 @@ void Timeline::setAbsoluteClockFormat(TimeLabelFormat format) {
 }
 
 void Timeline::setTimeFrameOffsetNs(qint64 offset_ns) {
-  // The ns gap between the host's external (playback) frame — in which the playhead,
-  // range, and reference are supplied/emitted — and the bars' internal frame. Adding
-  // it in integer ns (here and in the setters) keeps the needle bit-exact with the
-  // playback instant; doing the same shift in epoch-scale double seconds would round
-  // to ~240 ns and make the timeline and playback readouts disagree on the last digit.
-  // Bars are fed in the internal frame directly (setTracks), so they're unaffected.
+  // The ns gap between the host's external (playback) frame, in which the playhead, range and reference are supplied
+  // and emitted, and the bars' internal frame. Adding it in integer ns (here and in the setters) keeps the needle
+  // bit-exact with the playback instant; the same shift in epoch-scale double seconds would round to ~240 ns and make
+  // the timeline and playback readouts disagree on the last digit. Bars are fed in the internal frame directly
+  // (setTracks), so they are unaffected.
   const qint64 delta = offset_ns - time_frame_offset_ns_;
   if (delta == 0) {
     return;
   }
   time_frame_offset_ns_ = offset_ns;
-  // The playhead/reference hold a fixed playback INSTANT; re-express it in the new bar
-  // frame so the needle doesn't strand at the old position when the offset moves (a
-  // load/toggle changing the global reference). The host often does NOT re-push
-  // currentTime on a load (it may be unchanged), so this self-correction is required.
-  // setPlayhead/setReferenceLine still overwrite absolutely, so this never double-applies.
+  // The playhead and reference hold a fixed playback instant; it is re-expressed in the new bar frame so the needle
+  // does not strand at the old position when the offset moves (a load or toggle changing the global reference). The
+  // host often does not re-push currentTime on a load (it may be unchanged), so this self-correction is required.
+  // setPlayhead and setReferenceLine still overwrite absolutely, so it never double-applies.
   playhead_ns_ += delta;
   reference_ns_ += delta;
   repositionPlayhead();
@@ -878,11 +832,10 @@ void Timeline::setTimeFrameOffsetNs(qint64 offset_ns) {
 }
 
 void Timeline::setDisplayRange(double lo_seconds, double hi_seconds) {
-  // When tracks are present the displayed extent comes from their data; this
-  // range only governs the EMPTY timeline, which we make exactly as long as the
-  // playback by adopting [lo, hi] as the empty-state span (rebuild() then fits it
-  // to the view width — see the empty-fit block there). Stored on the scene so
-  // every sceneExtent() caller (extent, ruler epoch) sees the same empty span.
+  // With tracks present the displayed extent comes from their data; this range governs only the empty timeline, made
+  // exactly as long as the playback by adopting [lo, hi] as the empty-state span (rebuild() then fits it to the view
+  // width; see the empty-fit block there). Stored on the scene, so every sceneExtent() caller (extent, ruler epoch)
+  // sees the same empty span.
   scene_.setDefaultExtent(
       static_cast<qint64>(std::llround(lo_seconds * kNanosecondsPerSecond)) + time_frame_offset_ns_,
       static_cast<qint64>(std::llround(hi_seconds * kNanosecondsPerSecond)) + time_frame_offset_ns_);
@@ -907,15 +860,12 @@ void Timeline::fitToContents() {
   // Request a fit on the next rebuild; rebuild() honors it only when auto-zoom is
   // on and there is data (the empty timeline always fits the playback range).
   fit_pending_ = true;
-  // Re-pad the scene around the CURRENT content. computeBufferedExtent() only ever
-  // GROWS the extent on an offset-only update, which is right for a drag (small,
-  // and the scene must not resize under the cursor) but wrong for the callers of
-  // this function: an alignment moves sources by the whole inter-source gap, then
-  // collapses the content. Without a reset the scene keeps the width of the
-  // pre-alignment spread, so scene_w = (that huge span) x (the zoom just fitted to
-  // the small content) — and the full-scene-width ruler and background items grow
-  // past what Qt will render, leaving a timeline that draws its bars but loses its
-  // ruler, gridlines and hatch.
+  // Re-pads the scene around the current content. computeBufferedExtent() only grows the extent on an offset-only
+  // update, right for a drag (small, and the scene must not resize under the cursor) but wrong for the callers of this
+  // function: an alignment moves sources by the whole inter-source gap, then collapses the content. Without a reset the
+  // scene keeps the width of the pre-alignment spread, so scene_w is that huge span times the zoom just fitted to the
+  // small content, and the full-scene-width ruler and background items grow past what Qt will render: bars draw, ruler,
+  // gridlines and hatch are lost.
   extent_needs_reset_ = true;
   rebuild();
 }
@@ -1026,25 +976,22 @@ void Timeline::rebuild() {
   // The horizontal scrollbar owns panning, so the origin (display-ns at scene
   // x=0) is pinned to the scene's left edge here — never moved by zoom/scroll.
   viewport_.origin_ns = buffered_extent_.min;
-  // Anchor the ruler's 0:00 reference ONCE, when the data changes — not on a
-  // drag. This keeps the timing headers stationary while a dataset is moved (the
-  // axis is an absolute frame; only the dragged bar moves).
+  // The ruler's 0:00 reference is anchored once, when the data changes, not on a drag: the timing headers stay
+  // stationary while a dataset is moved (the axis is an absolute frame; only the dragged bar moves).
   if (did_reset) {
     ruler_epoch_ns_ = scene_extent.min;
   }
 
   const double vp_w =
       (view_->viewport() && view_->viewport()->width() > 0) ? static_cast<double>(view_->viewport()->width()) : 100.0;
-  // Auto-fit the zoom to the view width. Both cases are gated on isVisible() so
-  // they never run during the constructor's pre-show rebuild (whose fallback
-  // width would bake a bogus zoom into viewport_ that the first dataset inherits):
-  //   * Empty timeline: ALWAYS fit the playback range (buffered_extent_), so the
-  //     data-less timeline is exactly as long as the playback.
-  //   * Data timeline: fit the largest extent (the union of all bars) when
-  //     auto-zoom is on AND new data just arrived (did_reset) or a fit was asked
-  //     for (fit_pending_, e.g. after an alignment). Otherwise it keeps the user's
-  //     zoom.
-  // Re-runs on resize (resizeEvent -> rebuild) so the empty fit stays snug.
+  // Auto-fit of the zoom to the view width. Both cases are gated on isVisible(), so they never run during the
+  // constructor's pre-show rebuild (whose fallback width would bake a bogus zoom into viewport_ that the first dataset
+  // inherits):
+  //   * Empty timeline: always fits the playback range (buffered_extent_), so the data-less timeline is as long as the
+  //     playback.
+  //   * Data timeline: fits the largest extent (the union of all bars) when auto-zoom is on and new data just arrived
+  //     (did_reset) or a fit was asked for (fit_pending_, after an alignment); otherwise it keeps the user's zoom.
+  // Re-runs on resize (resizeEvent calls rebuild), so the empty fit stays snug.
   const bool empty = scene_.tracks().empty();
   // force_fit_pending_ is an explicit user "zoom to fit" (the align rail's
   // zoom-out-horizontally button); it fits regardless of the auto-zoom preference.
@@ -1066,9 +1013,8 @@ void Timeline::rebuild() {
   const double scene_h = sceneHeight();
   gscene_->setSceneRect(0, 0, scene_w, scene_h);
 
-  // Compute the ruler tick layout ONCE per rebuild and feed it to both the
-  // background gridlines and the ruler numbers, so the two share a single tick
-  // list (no per-paint recompute, no comment-only "same positions" contract).
+  // The ruler tick layout is computed once per rebuild and fed to both the background gridlines and the ruler numbers,
+  // so the two share one tick list.
   const TimelineRuler ruler = TimelineScene::ruler(viewport_, scene_w);
   // The data union span both tints the ruler and bounds the empty-area hatch.
   const TimeSpan data_span = scene_.tracks().empty() ? TimeSpan{0, 0} : scene_extent;
@@ -1097,11 +1043,10 @@ void Timeline::rebuild() {
   repositionPlayhead();
   repositionReference();
 
-  // Whenever we (re-)fit — fresh data, an empty timeline, or an explicit
-  // fitToContents (alignment) — scroll so the earliest content sits at the left
-  // edge: data fills the view from its start (±1 min buffer reachable by scrolling
-  // left), and the empty timeline opens with 0:00 flush at the left edge (under
-  // the playback track start). Only on a fit, so it never fights user scrolling.
+  // Whenever the view is (re-)fit (fresh data, an empty timeline, an explicit fitToContents after an alignment) it
+  // scrolls so the earliest content sits at the left edge: data fills the view from its start (the +-1 min buffer is
+  // reachable by scrolling left), and the empty timeline opens with 0:00 flush at the left edge (under the playback
+  // track start). Only on a fit, so it never fights user scrolling.
   if (did_reset || do_fit) {
     const qint64 content_min = scene_extent.min;
     view_->horizontalScrollBar()->setValue(
@@ -1118,9 +1063,8 @@ void Timeline::syncStickyHeader() {
   if (ruler_item_ == nullptr) {
     return;
   }
-  // The viewport top maps to scene-y == verticalScrollBar value (no vertical
-  // scaling). Keep the ruler (and the needles' header anchor) there so the rows
-  // scroll underneath a stationary number line.
+  // The viewport top maps to scene-y == verticalScrollBar value (no vertical scaling). The ruler (and the needles'
+  // header anchor) stays there, so the rows scroll under a stationary number line.
   const auto vscroll = static_cast<double>(view_->verticalScrollBar()->value());
   ruler_item_->setPos(0, vscroll);
   if (playhead_item_ != nullptr) {
@@ -1133,11 +1077,10 @@ void Timeline::syncStickyHeader() {
 
 TimeSpan Timeline::computeBufferedExtent() const {
   const TimeSpan content = scene_.sceneExtent();
-  // Empty timeline: span EXACTLY the default extent (the playback range), with no
-  // buffer and no sticky growth — so it is always exactly as long as the playback
-  // (tracking setDisplayRange even when extent_needs_reset_ is false) and the
-  // empty-fit in rebuild() makes that span fill the view, 0ms flush at the left
-  // edge. The sticky-buffer logic below is only meaningful while bars exist.
+  // Empty timeline: spans exactly the default extent (the playback range), with no buffer and no sticky growth, so it
+  // is always as long as the playback (tracking setDisplayRange even when extent_needs_reset_ is false) and the
+  // empty-fit in rebuild() makes that span fill the view, 0 ms flush at the left edge. The sticky-buffer logic below
+  // applies only while bars exist.
   if (scene_.tracks().empty()) {
     return content;
   }
@@ -1145,9 +1088,8 @@ TimeSpan Timeline::computeBufferedExtent() const {
     // Fresh data: pad ±1 min around the content.
     return {content.min - kBufferNs, content.max + kBufferNs};
   }
-  // Offset-only update (a drag): keep the current padded extent so small drags
-  // inside the buffer don't resize the scene. Re-pad only the side a bar was
-  // pushed past, so the extent grows (never shrinks) when dragged beyond.
+  // Offset-only update (a drag): the current padded extent is kept, so small drags inside the buffer do not resize the
+  // scene. Only the side a bar was pushed past is re-padded, so the extent grows (never shrinks) when dragged beyond.
   TimeSpan out = buffered_extent_;
   if (content.min < out.min) {
     out.min = content.min - kBufferNs;
@@ -1163,10 +1105,9 @@ void Timeline::updateLockOverlayGeometry() {
     return;
   }
   const QWidget* vp = view_->viewport();
-  // Centered rounded pill sized to its text. adjustSize() alone mis-sizes a
-  // word-wrapped QLabel into a tall narrow box, so the width is set explicitly (the
-  // single-line natural width, capped to the viewport so a narrow timeline wraps
-  // instead of overflowing) and adjustSize only derives the matching height.
+  // A centered rounded pill sized to its text. adjustSize() alone mis-sizes a word-wrapped QLabel into a tall narrow
+  // box, so the width is set explicitly (the single-line natural width, capped to the viewport so a narrow timeline
+  // wraps instead of overflowing) and adjustSize only derives the matching height.
   constexpr int kMargin = 24;
   const int max_w = std::max(120, vp->width() - 2 * kMargin);
   lock_overlay_->setWordWrap(false);
@@ -1296,9 +1237,8 @@ void Timeline::applyTrackReorder(int from, int drop_index) {
     }
   }
   order.insert(order.begin() + ins, from);
-  // Reconstruct the track list in the new order and re-feed via setTracks. The
-  // data signature is order-independent, so this re-lays-out the rows without
-  // resetting the extent/scroll. Then announce the order for the host to adopt.
+  // The track list is rebuilt in the new order and re-fed through setTracks. The data signature is order-independent,
+  // so the rows re-lay-out without resetting extent or scroll. Then the order is announced for the host to adopt.
   std::vector<TimelineTrack> reordered;
   reordered.reserve(static_cast<std::size_t>(n));
   QList<quint64> ids;
@@ -1321,15 +1261,12 @@ void Timeline::applyTrackReorder(int from, int drop_index) {
 
 void Timeline::rebuildRuler(const TimelineRuler& ruler, const TimeSpan& data) {
   const double width_px = gscene_->sceneRect().width();
-  // `data` is the data-covered span (union of all datasets, or an empty span when
-  // there are no tracks) rebuild() already computed — it tints the ruler distinctly
-  // from the empty ±buffer.
-  // Labels are relative to the FIXED epoch (set on data load), so the timing
-  // headers stay put while a dataset is dragged.
+  // `data` is the data-covered span (union of all datasets, empty with no tracks) that rebuild() already computed; it
+  // tints the ruler distinctly from the empty +-buffer. Labels are relative to the fixed epoch (set on data load), so
+  // the timing headers stay put while a dataset is dragged.
   ruler_item_->setLayout(viewport_, width_px, ruler, ruler_epoch_ns_, data.min, data.max);
-  // Keep the ruler at the current viewport top (sticky); rebuild() also calls
-  // syncStickyHeader() after this, but positioning here keeps rebuildRuler correct
-  // on its own.
+  // The ruler stays at the current viewport top (sticky); rebuild() also calls syncStickyHeader() after this, but
+  // positioning here keeps rebuildRuler correct on its own.
   ruler_item_->setPos(0, static_cast<double>(view_->verticalScrollBar()->value()));
 }
 
@@ -1339,10 +1276,9 @@ void Timeline::updateDataSpanFromItems() {
     background_item_->setDataSpan(0, 0);
     return;
   }
-  // Union the bars' current VISUAL extents (item position + the in-flight drag's
-  // ghost dx), so the ruler tint AND the empty-area hatch track the dragged
-  // bar(s) live. Reading the items (not scene_) keeps this correct whether or
-  // not a host has fed the offset back.
+  // Unions the bars' current visual extents (item position plus the in-flight drag's ghost dx), so the ruler tint and
+  // the empty-area hatch track the dragged bars live. Reading the items, not scene_, is correct whether or not a host
+  // has fed the offset back.
   double min_x = std::numeric_limits<double>::max();
   double max_x = std::numeric_limits<double>::lowest();
   for (const TimelineBarItem* bar : bar_items_) {
@@ -1368,13 +1304,11 @@ double Timeline::seekToSceneX(double scene_x) {
     // frame) without emitting a seek, so callers/test seams see no movement.
     return static_cast<double>(playhead_ns_ - time_frame_offset_ns_) / kNanosecondsPerSecond;
   }
-  // Clamp to the data extent (union of the bars, or the playback range when empty)
-  // so an out-of-range drag emits a sane value. The needle is a PURE SLAVE: we do
-  // NOT move playhead_ns_ here. The host writes this time to the PlaybackEngine, and
-  // its currentTimeChanged echo (setPlayhead, synchronous) is the SINGLE source that
-  // repositions the needle — so it stays exactly in lockstep with the playback handle
-  // (same source, same value) instead of holding a locally-set value the engine never
-  // adopted.
+  // Clamped to the data extent (union of the bars, or the playback range when empty), so an out-of-range drag emits a
+  // sane value. The needle is a pure slave: playhead_ns_ is not moved here. The host writes this time to the
+  // PlaybackEngine, and its currentTimeChanged echo (setPlayhead, synchronous) is the one source that repositions the
+  // needle, keeping it in lockstep with the playback handle (same source, same value) instead of holding a locally set
+  // value the engine never adopted.
   const TimeSpan extent = scene_.sceneExtent();
   const qint64 ns = std::clamp(TimelineScene::pxToNs(scene_x, viewport_), extent.min, extent.max);
   // Emit in the host's external (playback) frame: undo the frame offset in integer
@@ -1437,8 +1371,8 @@ void Timeline::setInteractionLocked(bool locked) {
     }
   }
   if (locked) {
-    // Cancel any in-flight gesture so a drag started just before the lock can't
-    // dangle (the press gates below stop NEW gestures; this clears live ones).
+    // Cancels any in-flight gesture, so a drag started just before the lock cannot dangle (the press gates below stop
+    // new gestures; this clears live ones).
     drag_group_.clear();
     dragging_playhead_ = false;
     dragging_reference_ = false;
@@ -1452,10 +1386,9 @@ void Timeline::setInteractionLocked(bool locked) {
   }
   // The merge prompt is suppressed while locked, restored (if ≥2 still selected) on unlock.
   updateMergeButton();
-  // Disable/enable scroll-pill drag on the overlay scrollbars. The Scrollbar
-  // filter runs first (LIFO; installed after Timeline's own viewport filter), so
-  // setInteractive(false) is required to stop it consuming strip-drag events while
-  // the timeline is locked — returning early in our handlers is not sufficient.
+  // Scroll-pill drag on the overlay scrollbars is disabled or enabled. The Scrollbar filter runs first (LIFO; installed
+  // after Timeline's own viewport filter), so setInteractive(false) is required to stop it consuming strip-drag events
+  // while the timeline is locked: returning early in our handlers is not enough.
   if (h_scrollbar_ != nullptr) {
     h_scrollbar_->setInteractive(!locked);
   }
@@ -1469,10 +1402,9 @@ Timeline::DragSnap Timeline::computeDragSnap(qint64 raw_delta_ns) {
     snap_active_ = false;
     return {false, raw_delta_ns, 0};
   }
-  // Dragged edges come from the DRAG-START display position (raw bounds − base
-  // offset). The host may have fed the mid-drag offset back into scene_ during the
-  // drag, so reading scene_ for the dragged bars would double-count raw_delta and
-  // make the snap target drift/flicker. Candidates are the fixed neighbours.
+  // Dragged edges come from the drag-start display position (raw bounds minus base offset). The host may have fed the
+  // mid-drag offset back into scene_, so reading scene_ for the dragged bars would double-count raw_delta and make the
+  // snap target drift and flicker. Candidates are the fixed neighbours.
   std::set<TimelineSourceId> dragged;
   std::vector<qint64> dragged_edges;
   for (const DragMember& m : drag_group_) {
@@ -1493,9 +1425,8 @@ Timeline::DragSnap Timeline::computeDragSnap(qint64 raw_delta_ns) {
   }
 
   const auto catch_ns = static_cast<qint64>(std::llround(kSnapThresholdPx / viewport_.px_per_ns));
-  // Hysteresis: keep the active snap while the cursor stays within a wider release
-  // band, so it doesn't chatter between two nearby candidates. "Keep dragging to
-  // unsnap" = leave that band.
+  // Hysteresis: the active snap is kept while the cursor stays within a wider release band, so it does not chatter
+  // between two nearby candidates; leaving that band unsnaps.
   const auto release_ns =
       static_cast<qint64>(std::llround((kSnapThresholdPx + kSnapReleaseExtraPx) / viewport_.px_per_ns));
   if (snap_active_ && std::llabs(snap_active_delta_ - raw_delta_ns) <= release_ns) {
@@ -1559,8 +1490,8 @@ void Timeline::applyBarDragForTest(TimelineSourceId id, double dx_px) {
 }
 
 double Timeline::seekToSceneXForTest(double scene_x) {
-  // Pure slave: seekToSceneX no longer moves playhead_ns_, it returns the clamped
-  // display-seconds it emitted. That emitted (clamped) value is what the test pins.
+  // Pure slave: seekToSceneX does not move playhead_ns_, it returns the clamped display-seconds it emitted; that value
+  // is what the test pins.
   return seekToSceneX(scene_x);
 }
 
@@ -1806,9 +1737,8 @@ QList<quint64> Timeline::selectedIdsList() const {
 }
 
 QList<quint64> Timeline::visibleSelectedIdsList() const {
-  // Selected ids that survive the current dataset filter (i.e. are in scene_),
-  // in display order. The merge prompt + action operate on this, so the filter
-  // can hide a selected source without the prompt offering to merge it.
+  // The selected ids that survive the current dataset filter (are in scene_), in display order. The merge prompt and
+  // action operate on this, so the filter can hide a selected source without the prompt offering to merge it.
   QList<quint64> ids;
   for (const TimelineSpanInput& t : scene_.tracks()) {
     if (selected_ids_.count(t.id) != 0) {
@@ -1839,11 +1769,10 @@ void Timeline::wheelEvent(QWheelEvent* event) {
     return;
   }
 
-  // The wheel zooms horizontally, anchored at the cursor: the instant under the
-  // pointer stays fixed on screen (like the plot's X-axis wheel-zoom). The origin
-  // stays pinned to the scene's left edge (rebuild owns it); we keep the anchored
-  // ns under the cursor by adjusting the horizontal scrollbar after the rebuild.
-  // Pan is the left-drag gesture (see mousePressEvent); the scroll pill remains.
+  // The wheel zooms horizontally, anchored at the cursor: the instant under the pointer stays fixed on screen (as the
+  // plot's X-axis wheel zoom). The origin stays pinned to the scene's left edge (rebuild owns it); the anchored ns is
+  // kept under the cursor by adjusting the horizontal scrollbar after the rebuild. Pan is the left-drag gesture
+  // (mousePressEvent).
   const double factor = angle > 0 ? kZoomInFactor : kZoomOutFactor;
   const double anchor_vp_x = event->position().x();
   const double anchor_scene_x = view_->mapToScene(event->position().toPoint()).x();
@@ -1864,13 +1793,11 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
   }
   const QPoint view_pos = view_->viewport()->mapFromGlobal(event->globalPosition().toPoint());
 
-  // Locked (e.g. live streaming + playing): the whole view is frozen — no needle
-  // seek, or bar-offset drag. Scrolling/zooming is also blocked (see wheelEvent).
-  // The needles still track playback via setPlayhead. The PJ::Scrollbar overlays
-  // are also suppressed: their event filter runs FIRST (installed last, LIFO order),
-  // and setInteractionLocked calls h_scrollbar_->setInteractive(false) /
-  // v_scrollbar_->setInteractive(false) so their filter passes all events through
-  // without starting or consuming a drag — this filter then runs and returns early.
+  // Locked (live streaming and playing): the whole view is frozen: no needle seek or bar-offset drag, and scrolling and
+  // zooming are blocked too (wheelEvent). The needles still track playback through setPlayhead. The PJ::Scrollbar
+  // overlays are suppressed as well: their event filter runs first (installed last, LIFO), and setInteractionLocked
+  // calls setInteractive(false) on both, so their filter passes all events through without starting or consuming a
+  // drag; this filter then runs and returns early.
   if (interaction_locked_) {
     event->accept();
     return;
@@ -1919,9 +1846,9 @@ void Timeline::mousePressEvent(QMouseEvent* event) {
     return;
   }
 
-  // Empty space (not a bar/needle): a left-drag pans the view; a plain click
-  // (no movement past the threshold) clears the name-column selection. mouseMove
-  // promotes this to a pan once the cursor moves; mouseRelease decides which it was.
+  // Empty space (not a bar or needle): a left-drag pans the view; a plain click (no movement past the threshold) clears
+  // the name-column selection. mouseMove promotes the press to a pan once the cursor moves; mouseRelease decides which
+  // it was.
   panning_ = true;
   pan_moved_ = false;
   pan_start_global_x_ = event->globalPosition().x();
@@ -1933,9 +1860,8 @@ void Timeline::mouseMoveEvent(QMouseEvent* event) {
   const QPoint view_pos = view_->viewport()->mapFromGlobal(event->globalPosition().toPoint());
   const QPointF scene_pos = view_->mapToScene(view_pos);
 
-  // Background pan: drag the view horizontally (content follows the cursor, so the
-  // scrollbar moves opposite the delta). A move past the threshold commits it to a
-  // pan, so the release no longer reads as a deselecting click.
+  // Background pan: the view is dragged horizontally (content follows the cursor, so the scrollbar moves opposite the
+  // delta). A move past the threshold commits to a pan, so the release no longer reads as a deselecting click.
   if (panning_) {
     constexpr double kPanThresholdPx = 3.0;
     const double dx = event->globalPosition().x() - pan_start_global_x_;
@@ -2031,8 +1957,8 @@ void Timeline::mouseReleaseEvent(QMouseEvent* event) {
     bar_drag_changed_ = false;
     hideSnapLine();
     view_->viewport()->unsetCursor();
-    // A rebuild was suppressed during the drag; re-lay-out now from whatever the
-    // host wrote back (or the original state if it ignored the intent).
+    // A rebuild was suppressed during the drag: re-lay-out now from whatever the host wrote back (or the original state
+    // if it ignored the intent).
     rebuild();
     if (changed) {
       emit offsetChangeCommitted();
@@ -2053,9 +1979,8 @@ void Timeline::changeEvent(QEvent* event) {
   QWidget::changeEvent(event);
   if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange ||
       event->type() == QEvent::StyleChange) {
-    // Items read framework tokens each paint; refresh the view's own backing
-    // brush and force a full repaint so the theme switch is immediate. The
-    // needles captured their colors at construction — re-resolve them here.
+    // Items read framework tokens each paint; the view's own backing brush is refreshed and a full repaint forced, so
+    // the theme switch is immediate. The needles captured their colors at construction and are re-resolved here.
     const auto fw_theme = frameworkTheme();
     if (playhead_item_ != nullptr) {
       playhead_item_->setColors(

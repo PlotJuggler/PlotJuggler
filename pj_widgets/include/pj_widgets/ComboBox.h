@@ -6,30 +6,23 @@
 
 namespace PJ {
 
-// Apply PJ's dropdown styling to an EXISTING QComboBox in place: install the
-// gradient item delegate and strip the popup's native frame/shadow so only the
-// QSS border shows. This is the shared core of PJ::ComboBox's constructor, also
-// used to upgrade plain QComboBoxes loaded from plugin .ui files without
-// swapping the widget (so their model, current index, and signal connections
-// survive). Idempotent. NOTE: the 2px popup-overlap nudge in
-// ComboBox::showPopup() is NOT applied here — it needs the subclass.
+// Applies PJ's dropdown styling to an existing QComboBox in place: installs the gradient item delegate and strips the
+// popup's native frame and shadow so only the QSS border shows. The core of PJ::ComboBox's constructor, also used to
+// upgrade plain QComboBoxes loaded from plugin .ui files without swapping the widget (model, current index and
+// connections survive). Idempotent. The popup-overlap nudge of ComboBox::showPopup() is not applied here: it needs the
+// subclass.
 void applyComboBoxStyling(QComboBox* combo);
 
-// QComboBox subclass that auto-installs PJ::ComboBoxGradientDelegate so
-// the popup paints the app's light_purple → light_blue gradient on the
-// selected / hovered item. Use this instead of QComboBox everywhere in
-// PJ4 so every dropdown gets the styling without per-call-site wiring.
-//
-// In .ui files, promote QComboBox to PJ::ComboBox via Qt Designer's
-// "Promoted Widgets" mechanism (header: pj_widgets/ComboBox.h).
+// QComboBox that installs PJ::ComboBoxGradientDelegate, so the popup paints the app's light_purple to light_blue
+// gradient on the selected or hovered item. Use it instead of QComboBox everywhere, so every dropdown is styled without
+// per-call-site wiring. In .ui files, promote QComboBox to PJ::ComboBox (header pj_widgets/ComboBox.h).
 class ComboBox : public QComboBox {
   Q_OBJECT
  public:
   explicit ComboBox(QWidget* parent = nullptr);
 
-  // Nudge the popup window up by a small offset so its top border
-  // overlaps the closed combo's bottom border rather than stacking next
-  // to it (which reads as a double line on some compositors).
+  // Nudges the popup up so its top border overlaps the closed combo's bottom border instead of stacking next to it (a
+  // double line on some compositors).
   void showPopup() override;
 };
 

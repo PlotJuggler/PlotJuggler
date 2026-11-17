@@ -1,16 +1,13 @@
 #pragma once
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
-//
-// Date/time range picker bundle. Registered with the host's PjUiLoader so
-// plugin .ui files can declare a "DateRangePicker" by class name. Comprises:
-//   CalendarWidget        — single painted month grid (title-less; the range
-//                           widget's header row carries month/year + nav)
-//   TimePickerWidget      — from/to 24-hour time
-//   RangeCalendarWidget   — one calendar + [<][Month][Year][>] header row
-//   DateRangePicker       — inline presets + from/to fields + calendar overlay
-// DateRangePicker emits filterChanged(RangeFilter); the host binding serializes
-// it into a dateRangeChanged event.
+// Date/time range picker bundle, registered with the host's PjUiLoader so a plugin .ui can declare "DateRangePicker" by
+// class name:
+//   CalendarWidget       a painted month grid (title-less; the range widget's header row carries month, year, nav)
+//   TimePickerWidget     from and to 24-hour time
+//   RangeCalendarWidget  one calendar plus a [<][Month][Year][>] header row
+//   DateRangePicker      inline presets, from/to fields and a calendar overlay
+// DateRangePicker emits filterChanged(RangeFilter); the host binding serializes it into a dateRangeChanged event.
 
 #include <QDate>
 #include <QList>
@@ -30,7 +27,7 @@ namespace PJ {
 class IntScrubber;
 class SvgButton;
 
-// --- CalendarWidget -------------------------------------------------------
+// --- CalendarWidget ---
 
 class CalendarWidget : public QWidget {
   Q_OBJECT
@@ -91,7 +88,7 @@ class CalendarWidget : public QWidget {
   bool mediated_ = false;
 };
 
-// --- TimePickerWidget -----------------------------------------------------
+// --- TimePickerWidget ---
 
 class TimePickerWidget : public QWidget {
   Q_OBJECT
@@ -116,11 +113,10 @@ class TimePickerWidget : public QWidget {
   IntScrubber* to_minute_;
 };
 
-// --- RangeCalendarWidget ----------------------------------------------------
-// ONE month grid + a [<] [Month] [Year] [>] header row. Two-click range
-// selection with hover preview (click start, click end; a new click restarts).
-// The month/year combos jump anywhere in the data's multi-year span directly,
-// which chevron marching can't do.
+// --- RangeCalendarWidget ---
+// One month grid plus a [<][Month][Year][>] header row. Two-click range selection with hover preview (click the start,
+// click the end; a new click restarts). The month and year combos jump anywhere in the data's multi-year span, which
+// chevron marching cannot.
 class RangeCalendarWidget : public QWidget {
   Q_OBJECT
  public:
@@ -128,13 +124,12 @@ class RangeCalendarWidget : public QWidget {
 
   void setExternalRange(const QDate& from, const QDate& to);
 
-  // Bounds for the year combo (from the picker's earliest/latest data hints);
-  // invalid dates fall back to a [current-6, current] span.
+  // Bounds of the year combo (from the picker's earliest and latest data hints); invalid dates fall back to [current-6,
+  // current].
   void setYearSpan(const QDate& earliest, const QDate& latest);
 
-  // Re-render the nav chevrons + repaint the calendar for the active theme.
-  // Called by DateRangePicker on a live theme toggle (the icons are baked, so a
-  // plain repaint wouldn't re-ink them).
+  // Re-renders the nav chevrons and repaints for the active theme. DateRangePicker calls it on a live theme toggle: the
+  // icons are baked, so a plain repaint would not re-ink them.
   void retheme();
 
  signals:
@@ -164,9 +159,8 @@ class RangeCalendarWidget : public QWidget {
   int month_;
   int min_year_ = 0;  // year-combo span (inclusive)
   int max_year_ = 0;
-  // Last-applied chevron hint signature (syncHeaderControls): -1 = never
-  // applied, so the first sync always inks the buttons. Per-instance on
-  // purpose — a rebuilt overlay must not inherit a stale skip.
+  // The last chevron hint signature applied by syncHeaderControls (-1: never, so the first sync always inks the
+  // buttons). Per instance, so a rebuilt overlay does not inherit a stale skip.
   int last_hint_sig_ = -1;
 
   bool selecting_ = false;
@@ -175,7 +169,7 @@ class RangeCalendarWidget : public QWidget {
   QDate hover_date_;
 };
 
-// --- RangeFilter + DateRangePicker -----------------------------------------
+// --- RangeFilter and DateRangePicker ---
 
 struct RangeFilter {
   std::optional<QDate> date_from;
@@ -224,8 +218,8 @@ class DateRangePicker : public QWidget {
   static constexpr int kPresetPast24h = 1;
   static constexpr int kPresetLast7Days = 2;
   static constexpr int kPresetLastMonth = 3;
-  // Not a date window: checked when the fields hold a range no preset matches;
-  // clicking it opens the calendar overlay to define one.
+  // Not a date window: checked when the fields hold a range no preset matches; clicking it opens the calendar overlay
+  // to define one.
   static constexpr int kPresetCustom = 4;
 
   QButtonGroup* preset_group_ = nullptr;
@@ -240,8 +234,8 @@ class DateRangePicker : public QWidget {
   SvgButton* overlay_close_ = nullptr;  // corner X, positioned in repositionOverlay
   RangeCalendarWidget* range_calendar_ = nullptr;
   TimePickerWidget* time_picker_ = nullptr;
-  // Data-span hints (setEarliestDate/setLatestDate) — forwarded to the range
-  // calendar's year combo; retained because the overlay is built lazily.
+  // Data-span hints (setEarliestDate / setLatestDate), forwarded to the range calendar's year combo and retained
+  // because the overlay is built lazily.
   QDate earliest_hint_;
   QDate latest_hint_;
 

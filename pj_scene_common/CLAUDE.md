@@ -1,13 +1,47 @@
-pj_scene_common owns the backend-agnostic layered scene dock framework shared by scene widget families. Start with `include/pj_scene_common/scene_layer.h`, `layer_factory.h`, and `scene_dock_widget.h`; rendering-specific view state belongs in the 2D/3D families, not in this module. `layer_params.h` adds two free helpers (`serializeLayerParams`/`applyLayerParams`) that round-trip a layer's settings through its `xmlSaveState`/`xmlLoadState` as a portable XML string — the backbone for copy/paste of layer parameters between same-family layers. Layers normally enter a dock through `addTopic` → `LayerFactory`; family-owned synthetic layers that are not backed by a store topic (3D robot models, trails) bypass the factory via the protected `SceneDockWidget::insertLayer(topic_id, layer)` seam, which runs the same attach/wire/register/notify pipeline under a family-allocated synthetic id.
+# pj_scene_common
 
-**Persistent workspace contract.** `SceneDockWidget` owns deferred layer/config intents as detached XML until its host-injected, ambiguity-safe object resolver can bind them; the application binder may hold topic-demand references for those entries but never materializes them. `workspaceChanged` reports committed persistent mutations and is suppressed by `beginWorkspaceRestore()` during XML replay and deferred completion. `workspaceRestoreFailed()` and the blocking/unresolved queue views let the shell distinguish permanent rejection, still-unavailable saved state, and durable advertised-topic intent.
+The backend-agnostic layered scene dock framework shared by the scene families (`pj_scene2D`, `pj_scene3D`):
+`SceneDockWidget` owns an ordered stack of `ISceneLayer`s, one per object topic, plus tracker time, repaint gating,
+one-dataset-per-dock, layer persistence and deferred restore. Rendering-specific view state belongs in the
+families. Links `pj_runtime` and `pj_datastore`. How it works: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
-**One dataset per dock.** A dock has one display clock (and, in 3D, one TF tree), so `addLayer` and `deferTopicIntent` refuse a topic whose dataset differs from `representativeDatasetId()`. The refusal is never silent: the protected `refuseForeignTopic(topic_id)` emits `topicRefused(reason)` with a user-facing sentence naming both datasets, and the shell turns that into a toast; refusals within one event-loop turn (a multi-select drop, a mixed layout) report once. A caller adding topics one at a time reads each refusal's own reason with `takeRefusalReason()`, which is never coalesced. Restore code in the base and in each family calls the same helper for saved elements, so a layout that mixed datasets still loads and the foreign element is dropped with the same visible reason rather than failing the whole restore. Which dataset wins is decided by the saved layout, not by load order: `xmlLoadState` records the distinct datasets its `<layer>`/`<config_topic>` children name (`recordSavedDatasets`), restore code resolves them through `datasetForSavedElement` instead of `resolveObjectDataset` (no element of a later dataset binds before the first saved dataset resolves; once it has, the others are refused), and the host calls `finishRestore()` (the `IDataWidget` hook: settle the dataset choice, then one last `retryPendingRestores`) once the load is final — `MainWindow::settleSceneRestores` after a whole layout load, `DockWidget` after a paste or family switch — so the dataset the dock already shows (else the first saved dataset that is loaded) wins when the first never arrived, and the winner's own pending elements stay pending. Runtime pending intents and `pendingRestoreDemands()` are not gated.
+## Invariants
 
-**Per-tick repaint coalescing.** Playback ticks at 60 Hz, but scene/image data changes at <10 Hz, so `SceneDockWidget::onTrackerTime` does not blindly repaint each tick. Each layer exposes a cheap `ISceneLayer::renderKey(time)` — a fingerprint of what it would draw (its active sample stamp ⊕ any positioning transform), computed WITHOUT decoding (a stamp-only `indexAt`/`entryTimestamps` lookup, never `latestAt`/byte resolution). The dock XOR-combines the visible layers' keys; when the combined key is unchanged from the last painted frame it skips the layer advance AND the repaint. The default `renderKey` returns the tracker time itself ("always changed" — safe, never skips a real change), so a layer opts into coalescing by overriding it. The gate covers only the per-tick tracker path; async/settings repaints flow through `repaintRequested → refreshView` independently. A 3D family subclass must therefore drive its view's per-tick work (render-time push, scene-bounds refresh) from `refreshView()`, not `onTrackerTime()`, so it is gated together with the repaint. `invalidateTrackerRenderKey()` forces a repaint after any structural change (add/remove/visibility), and a subclass that paints **outside** the gate (e.g. a live-edge streaming push) must call it after that paint so the gate's last-painted key never lags the pixels on screen.
+- A layer's `timeRange()` is the data as it stands now (`liveTopicTimeRange`), never a value cached at the last
+  render: the dock clamps the tracker to it, and a stale range freezes the scene while streaming.
+- A layer's `renderKey()` is cheap (no payload decode) and changes whenever its output would. A key that misses a
+  change leaves a stale frame; the default (the tracker time) is safe but never coalesces.
+- A family drives its per-tick view work from `refreshView()`, not `onTrackerTime()` (so it is gated with the
+  repaint); content the view draws outside any layer goes through `viewRenderKey()`, or it freezes while the layer
+  keys are unchanged. A paint outside the gate calls `invalidateTrackerRenderKey()` afterwards.
+- A concrete dock whose view holds raw layer pointers calls `clearLayers()` in its own destructor: the base
+  destructor cannot reconcile the view, which would be left pointing at freed layers.
+- Layers are removed in the order: view re-pointed, `detach()`, `layerRemoved`. The view must not reference a
+  layer's caches when `detach()` tears them down.
+- A dock shows one dataset: `addLayer` and `deferTopicIntent` refuse a foreign topic through `topicRefused`, and
+  restore code calls `refuseForeignTopic` for saved elements, so a mixed layout loads with a visible reason
+  instead of failing. The saved layout, not load order, picks the winner; the host calls `finishRestore()` after a
+  restore is final.
+- Pending (deferred) restore elements are detached XML until the object resolver can bind them. Restore code that
+  writes view state synchronously calls `ensureSceneViewCreated()` first, or the write finds no view.
+- `workspaceChanged` goes through `notifyWorkspaceChanged()`, which is silent while a restore replays.
+- Attributes named `dataset_id` / `source_dataset_id` anywhere in a deferred payload are dataset references, and
+  family payloads follow that: `discardPendingRestoresFor*` match exactly those.
 
-**Content drawn by the view, not a layer** (e.g. the 3D family's TF axis triads + parent-connection lines, which pose the whole frame forest at the tracker time) is NOT in any layer's `renderKey` and would otherwise *freeze* whenever every visible layer's key is unchanged. Such content folds into the gate through the `SceneDockWidget::viewRenderKey(time)` hook (default 0; `Scene3DDockWidget` returns the view's `tfRenderKey`), which `trackerRenderKey()` XORs in alongside the per-layer keys. So the gate repaints a moving TF tree at the TF rate while still coalescing when it (and the layers) are static.
+## Key headers (`include/pj_scene_common/`)
 
-**Derived (on-demand) topics.** A layer reads one like any store topic; the dock adds what the node's state says (`derivedTopicPresentation` in `scene_layer.h` owns the contract): the layer's derived warning part (missing input, error), the row status (`layerStatus`/`layerStatusChanged`: the lag, "computing…", a finding's time) and the dock's status strip (`derivedStatus`). A published result re-runs the layers on its topics at the dock's time (`ISceneLayer::refreshAt`), and the clamp and the live-edge fold use `clockRangeOf` (the inputs' range; none for a finding). See `docs/derived_objects/ARCHITECTURE.md` §17.
+- `scene_layer.h`: `ISceneLayer`, `SceneLayerContext`, `SceneWarningParts`, `liveTopicTimeRange`,
+  `latestEntryRenderKey` / `kNoSampleRenderKey`, `derivedTopicPresentation`, `topicKey`.
+- `scene_dock_widget.h`: `SceneDockWidget`, the dock base a family subclasses.
+- `layer_factory.h`: `LayerFactory`, a family's object-type to layer registry.
+- `layer_params.h`: `serializeLayerParams` / `applyLayerParams`, copy and paste of a layer's settings as XML.
 
-**Tests.** `tests/scene_common_test.cpp` uses `pj_scene_common_tests` and the shared offscreen-capable `QApplication` main. `gtest_discover_tests` registers every case as `pj_scene_common_tests.<suite>.<case>` and runs it in its own process. Run the module with `./test.sh -R '^pj_scene_common_tests\.'`.
+## Tests
+
+`./test.sh -R '^pj_scene_common_tests\.'` (`tests/scene_common_test.cpp`, offscreen `QApplication`, one process per
+case). The derived-topic tests use the fake script run in `pj_runtime/tests`.
+
+## Docs
+
+[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): layer life cycle, tracker time, repaint coalescing, one dataset per
+dock, persistence and restore, derived topics, recipes for a new layer type or family, known gaps.

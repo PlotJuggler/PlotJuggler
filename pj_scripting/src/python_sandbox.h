@@ -3,8 +3,8 @@
 #pragma once
 
 // The one embedded CPython interpreter and the hardening shared by the Python filter engine and the on-demand Python
-// lane. NOT a sandbox (pj_scripting/CLAUDE.md): CPython cannot be confined from inside the process. Each piece
-// narrows one escape and says what it leaves open.
+// lane. A guardrail, not a sandbox (pj_scripting/CLAUDE.md): CPython cannot be confined from inside the process. Each
+// piece narrows one escape and says what it leaves open.
 
 #include <pybind11/pybind11.h>
 

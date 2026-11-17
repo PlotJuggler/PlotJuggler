@@ -27,7 +27,7 @@ using ValueRef = std::variant<NullValue, TypedNull,
     int8_t, int16_t, int32_t, int64_t,
     uint8_t, uint16_t, uint32_t, uint64_t,
     bool, std::string_view>;
-// TypedNull is a null carrying an explicit column type — see §6.
+// TypedNull is a null carrying an explicit column type (see "Common Pitfalls").
 ```
 
 **Never cast int64 or uint64 to double.** Values larger than 2^53 lose precision. Push native types directly:

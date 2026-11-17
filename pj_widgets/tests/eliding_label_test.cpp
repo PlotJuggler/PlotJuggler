@@ -78,9 +78,8 @@ TEST(ElidingLabelTest, WiderBudgetRestoresMoreText) {
   EXPECT_GT(label.text().length(), narrow.length());
 }
 
-// A QSS-polished font arrives after construction; the label must re-elide
-// with the new metrics at the width it was last granted, not stay laid out
-// for the construction-time font.
+// A QSS-polished font arrives after construction: the label re-elides with the new metrics at the width it was last
+// granted, not at the construction-time font.
 TEST(ElidingLabelTest, FontChangeReElidesAtLastBudget) {
   PJ::ElidingLabel label;
   label.setMaxLineCount(2);

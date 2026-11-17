@@ -7,23 +7,18 @@
 
 namespace PJ {
 
-// Static helpers for platform detection and standard directory resolution.
-//
-// All path helpers return absolute paths without a trailing separator.
-// Directories are NOT created here — callers are responsible for mkpath.
+// Static helpers for platform detection and standard directory resolution. Path helpers return absolute paths without
+// a trailing separator; directories are NOT created here, callers mkpath.
 class PlatformUtils {
  public:
-  // Returns the platform identifier used as key in registry artifact maps.
-  // Format: "<os>-<arch>", e.g. "linux-x86_64", "windows-x86_64", "macos-arm64".
+  // The platform id used as key in registry artifact maps: "<os>-<arch>", e.g. "linux-x86_64", "windows-x86_64",
+  // "macos-arm64".
   static QString currentPlatform();
 
-  // Returns true on Windows builds.
+  // True on Windows builds.
   static bool isWindows();
 
-  // Returns the shared library extension for the current platform:
-  //   Linux:   ".so"
-  //   Windows: ".dll"
-  //   macOS:   ".dylib"
+  // The shared-library extension of the platform: ".so", ".dll" or ".dylib".
   static std::string pluginExtension();
 
   // Root of all PlotJuggler user data (QStandardPaths::AppDataLocation, i.e. the
@@ -36,31 +31,19 @@ class PlatformUtils {
   // <config-root>/extensions/ — active, loaded extensions.
   static QString extensionsDir();
 
-  // <config-root>/.extension_staging/ — restart staging for Windows updates.
+  // <config-root>/.extension_staging/ — where staged updates wait for the restart that promotes them (all platforms).
   static QString pendingDir();
 
-  // <config-root>/.backup/ — pre-update backups (F-12, deferred to April+).
+  // <config-root>/.backup/ — the previous version of an extension is moved here when a staged update is promoted.
   static QString backupDir();
 
-  // Identity of a managed store: `store_dir` made absolute with symlinks resolved.
-  //
-  // Anything placed BESIDE a store must be derived from this rather than from the
-  // configured string, because a configured path can be a symlink: a packaged
-  // install pointing at a data volume, a developer linking the store elsewhere.
-  // Derived textually, a sibling is created next to the LINK, which resolves onto
-  // a different filesystem than the store itself and turns promote-by-rename into
-  // EXDEV; and two names for one store yield two different sibling paths, so a
-  // lock file keyed that way would hand out two writer leases for one store.
-  //
-  // Shared policy for every sibling PlotJuggler keeps next to the extensions dir:
-  // the writer lease (ExtensionManager), the install transaction staging area
-  // (ExtensionManager), and the bundled-seed staging area (pj_runtime's
-  // ExtensionCatalogService).
-  //
-  // Falls back to the cleaned path when resolution fails — canonicalFilePath() is
-  // empty for a path that does not exist, which is the first-run state rather than
-  // an error. Create the store before deriving siblings from it to stay off that
-  // path.
+  // Identity of a managed store: `store_dir` made absolute with symlinks resolved. Everything placed BESIDE a store
+  // (the writer lease, the install staging area, the removal journal, the content-addressed store, and the bundled
+  // seed's staging area in pj_runtime's ExtensionCatalogService) must derive from this, not from the configured
+  // string: derived textually, a sibling lands next to a symlink, possibly on another filesystem than the store, which
+  // turns promote-by-rename into EXDEV, and two names for one store would yield two lock files and two writer leases.
+  // Falls back to the cleaned path when resolution fails (a path that does not exist yet); create the store first to
+  // avoid that.
   static QString canonicalStoreRoot(const QString& store_dir);
 };
 

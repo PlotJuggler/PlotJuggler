@@ -53,7 +53,7 @@ using namespace Qt::StringLiterals;
 
 namespace PJ {
 
-/// Exercise the shell callbacks that enforce plugin identity and dataset liveness.
+/// Exercises the shell callbacks that enforce plugin identity and dataset liveness.
 class MainWindowPluginViewsTestPeer {
  public:
   [[nodiscard]] static PluginPlotTabsController& pluginTabs(MainWindow& window) {
@@ -182,8 +182,7 @@ class MainWindowPluginViewsTestPeer {
     app.catalogModel().rebuildFromDatastore();
   }
 
-  // ABI-38: create a 3D tab, attach a canonical PointCloud topic, read it back,
-  // detach it, focus and close the tab.
+  // Create a 3D tab, attach a canonical PointCloud topic, read it back, detach it, focus and close the tab.
   static void checkSceneViewsLifecycle(MainWindow& window) {
     const QString owner = u"scene-view-plugin"_s;
     AppSession& app = *window.session_;
@@ -242,8 +241,8 @@ class MainWindowPluginViewsTestPeer {
   }
 
 #ifdef PJ_WITH_SCENE3D
-  // DEM-06: a view embedded in a plugin panel is built by the shell, demands the
-  // topics it shows, follows the playback cursor and dies with its frame.
+  // A view embedded in a plugin panel is built by the shell, demands the topics it shows, follows the playback
+  // cursor and dies with its frame.
   static void checkEmbeddedSceneView(MainWindow& window) {
     AppSession& app = *window.session_;
     const auto dataset = pj_test::createDataset(app, "embedded-scene-view", true);
@@ -285,8 +284,7 @@ class MainWindowPluginViewsTestPeer {
     host.detach(view, u"/embedded-cloud"_s, u"embedded-scene-view"_s);
     EXPECT_EQ(scene->layers().size(), 0U);
 
-    // The protected tracker accessor, reached through a member pointer formed in a
-    // derived class (the test hooks accessor is not compiled into this runner).
+    // The protected tracker accessor, reached through a member pointer formed in a derived class.
     struct TrackerPeek : SceneDockWidget {
       static auto accessor() {
         return &TrackerPeek::lastTrackerNs;
@@ -551,7 +549,7 @@ class MainWindowPluginViewsTestPeer {
 #endif
 
 #ifdef PJ_HAS_FFMPEG
-  // ABI-40: a 2D tab takes a video topic as its background.
+  // A 2D tab takes a video topic as its background.
   static void checkVideoSceneView(MainWindow& window) {
     auto& app = *window.session_;
     const auto dataset = pj_test::createDataset(app, "video-scene-view", true);
@@ -577,8 +575,8 @@ class MainWindowPluginViewsTestPeer {
   }
 #endif
 
-  // LAY-16: a full-layout save/restore rebuilds an owned scene tab as a scene, found
-  // by (plugin, id) from a fresh controller, history-exempt, with its topic kept.
+  // A full-layout save/restore rebuilds an owned scene tab as a scene, found by (plugin, id) from a fresh
+  // controller, history-exempt, with its topic kept.
   static void checkSceneViewsLayoutRoundTrip(MainWindow& window) {
     const QString owner = u"scene-view-roundtrip-plugin"_s;
     AppSession& app = *window.session_;
@@ -617,9 +615,8 @@ class MainWindowPluginViewsTestPeer {
     EXPECT_EQ(restored_scene->layers().size(), 1U) << "the attached topic must survive the round trip";
   }
 
-  // ABI-39: one id namespace per plugin across kinds. Another kind closes the old tab
-  // and starts empty; the same kind clears a plot tab's curves but only retitles a
-  // scene tab (its topics stay); v1 create is the "plot" kind.
+  // One id namespace per plugin across kinds. Another kind closes the old tab and starts empty; the same kind
+  // clears a plot tab's curves but only retitles a scene tab (its topics stay); v1 create is the "plot" kind.
   static void checkSharedIdNamespace(MainWindow& window) {
     const QString owner = u"namespace-plugin"_s;
     AppSession& app = *window.session_;
@@ -942,8 +939,7 @@ class MainWindowPluginViewsTestPeer {
     ASSERT_TRUE(api.view.close("view"));
   }
 
-  // GAP-44: a kind this build cannot show is refused naming it, and an existing tab
-  // under that id stays as it was.
+  // A kind this build cannot show is refused naming it, and an existing tab under that id stays as it was.
   static void checkKnownUnservableKind(MainWindow& window) {
     const QString owner = u"unservable-plugin"_s;
     auto controller = makeController(window, [](const QString&, QWidget*) -> IDataWidget* { return nullptr; });
@@ -963,9 +959,8 @@ class MainWindowPluginViewsTestPeer {
     ASSERT_TRUE(api.view.close("t"));
   }
 
-  // SCN-17 through the plugin: a scene tab showing dataset A refuses B's topic with the
-  // dock's own reason; an unqualified name two datasets share is refused with both
-  // qualified candidates.
+  // A scene tab showing dataset A refuses B's topic with the dock's own reason; an unqualified name two datasets
+  // share is refused with both qualified candidates.
   static void checkAttachOfAnotherDatasetsTopic(MainWindow& window) {
     const QString owner = u"scene-dataset-plugin"_s;
     AppSession& app = *window.session_;
@@ -1256,12 +1251,12 @@ TEST_F(MainWindowPluginViewsTest, NewPlotInheritsLinkedTimeRangeWithoutChangingP
   PJ::MainWindowPluginViewsTestPeer::checkNewPlotLinkedZoom(*window_);
 }
 
-// Claim: time-range zoom preserves Y and both zoom operations leave user and other-plugin plots untouched.
+// Time-range zoom preserves Y; both zoom operations leave user and other-plugin plots untouched.
 TEST_F(MainWindowPluginViewsTest, ViewportCommandsOnlyChangeCallingPluginsPlots) {
   PJ::MainWindowPluginViewsTestPeer::checkViewportIsolation(*window_);
 }
 
-// Claim: curve operations resolve one dataset, enforce ownership, and replacing a tab clears its contents.
+// Curve operations resolve one dataset and enforce ownership; replacing a tab clears its contents.
 TEST_F(MainWindowPluginViewsTest, CurveCommandsEnforceOwnershipAndRejectAmbiguousDatasets) {
   PJ::MainWindowPluginViewsTestPeer::checkCurveOwnershipAndResolution(*window_);
 }

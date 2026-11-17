@@ -6,17 +6,13 @@
 
 namespace pj_widgets_demos {
 
-// Mirrors pj_app::Theme's QSS preprocessor (palette block + ${token}
-// substitution). pj_widgets demos can't depend on pj_app — pj_widgets is
-// a leaf module per CLAUDE.md — so this is the demo-private copy. Loads
-// stylesheet_<theme>.qss from PJ_QSS_DIR, expands ${token} placeholders
+// Mirrors pj_app::Theme's QSS preprocessor (palette block and ${token} substitution); pj_widgets demos cannot depend on
+// pj_app, so this is the demo-private copy. Loads stylesheet_<theme>.qss from PJ_QSS_DIR, expands ${token} placeholders
 // against the palette block, and returns the body ready for setStyleSheet.
 QString loadAndExpandQss(const QString& theme);
 
-// Convenience: load + apply via qApp->setStyleSheet, and write
-// QSettings("StyleSheet::theme") so pj_widgets controls that consult
-// currentTheme() (DoubleScrubber, SvgUtil icon palette, etc.) pick the
-// matching per-theme paint colours.
+// Loads and applies it through qApp->setStyleSheet, and writes QSettings("StyleSheet::theme") so pj_widgets controls
+// that consult currentTheme() (DoubleScrubber, the SvgUtil icon palette) pick the matching per-theme colours.
 void applyTheme(const QString& theme);
 
 }  // namespace pj_widgets_demos

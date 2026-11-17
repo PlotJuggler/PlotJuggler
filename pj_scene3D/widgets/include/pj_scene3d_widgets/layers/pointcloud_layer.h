@@ -31,40 +31,26 @@ class QWidget;
 
 namespace pj::scene3d {
 
-// A packPointVertices() ParallelFor on the global thread pool, the one the layer
-// converts with; the calling thread runs chunks too while it waits.
+// A packPointVertices() ParallelFor on the global thread pool; the calling thread runs chunks too while it waits.
 void parallelForOnPool(std::size_t count, const std::function<void(std::size_t)>& body);
 
-// First concrete Scene3DLayer: a single sensor_msgs/PointCloud2 topic.
+// A single sensor_msgs/PointCloud2 topic. Dual-mode: raw PointCloud objects are converted and pushed synchronously,
+// CompressedPointCloud blobs (Draco / Cloudini) decode on the Qt thread pool and push when the result lands; the mode
+// is derived per sample, never latched.
 //
-// Dual-mode: the topic may carry raw PointCloud objects (converted and pushed
-// synchronously) or CompressedPointCloud blobs (Draco / Cloudini), which are
-// decoded on the Qt thread pool and pushed when the result lands. The mode is
-// derived per-sample from the parsed object, never latched.
-//
-// Every sample is admitted against kSceneLimits (per-cloud limits, decode limits
-// before decompression; fail-closed with a status warning). The layer converts to
-// source-frame PointVertex data that the view reads through PointRenderable,
-// under the view's vertex budget, and drops a static cloud's array once it is
-// uploaded (re-converting it for a new QRhi).
-//
-// Exposes a per-instance config widget containing the color-field combo.
-// Adding new per-instance parameters (point size, alpha, colormap choice)
-// is local to this class — Scene3DDockWidget and Scene3DConfigPanel do
-// not need to change.
+// Every sample is admitted against kSceneLimits (per-cloud limits, decode limits before decompression; fail-closed
+// with a status warning). The layer converts to source-frame PointVertex data the view reads through PointRenderable
+// under the view's vertex budget, and drops a static cloud's array once uploaded (re-converting it for a new QRhi).
 class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   Q_OBJECT
  public:
-  // The topic id + initial display name are needed before attach() since
-  // info() can be called immediately after construction (e.g. by the
-  // dock to populate its row). object_type is what info() reports (the layer
-  // renders kPointCloud and kCompressedPointCloud topics identically).
+  // Needed before attach(): info() can be called right after construction (the dock populates its row). `object_type`
+  // is what info() reports (kPointCloud and kCompressedPointCloud render identically).
   PointCloudLayer(
       PJ::ObjectTopicId topic_id, QString display_name, PJ::sdk::BuiltinObjectType object_type,
       QObject* parent = nullptr);
   ~PointCloudLayer() override;
 
-  // Scene3DLayer
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
   [[nodiscard]] QStringList fallbackFrames() const override;
@@ -80,23 +66,19 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
 
   void setFixedFrame(const QString& frame) override;
   void setTrackerTime(PJ::Timepoint time) override;
-  // Fingerprints the active cloud sample at `time` plus the fixed←source transform
-  // (so the dock skips repaints when the same cloud sits at the same pose, but
-  // repaints the instant a new sample lands or the sensor frame moves). No decode.
+  // Fingerprints the active cloud sample at `time` plus the fixed<-source transform, so the dock skips repaints while
+  // the same cloud sits at the same pose and repaints the instant a new sample lands or the sensor frame moves. No
+  // decode.
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   void setVisible(bool visible) override;
 
-  // Source-frame extent of the decoded cloud, recomputed on each decode in
-  // renderAt(). nullopt until the first cloud is decoded.
+  // Source-frame extent of the decoded cloud, recomputed on each decode in renderAt(); nullopt until the first decode.
   [[nodiscard]] std::optional<AABB> worldBounds() const override {
     return world_bounds_;
   }
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
-  // PointCloud-specific accessors used by the config widget. Kept on the
-  // concrete class so the abstract base doesn't carry pointcloud
-  // concepts.
   [[nodiscard]] QStringList availableColorFields() const {
     return available_color_fields_;
   }
@@ -115,9 +97,8 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] PointColorType colorType() const override {
     return color_type_;
   }
-  // True when the active cloud carries a per-point colour field (a packed 'rgba'/'rgb'
-  // field, or separate red/green/blue[/alpha] channels). Gates the config widget's
-  // single "RGB" colour-type entry.
+  // True when the active cloud carries a per-point colour field (a packed 'rgba'/'rgb' field, or separate
+  // red/green/blue[/alpha] channels); gates the config widget's single "RGB" colour-type entry.
   [[nodiscard]] bool hasColorField() const {
     return has_color_;
   }
@@ -159,21 +140,19 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   void setAutoRange(bool enable);
   void setManualRange(float min_value, float max_value);
 
-  // Full validation of a <pointcloud> payload without mutating any layer, so a
-  // dock can vet a whole workspace before it tears down its live layers.
+  // Full validation of a <pointcloud> payload without mutating any layer, so a dock can vet a whole workspace before
+  // tearing down its live layers.
   [[nodiscard]] static bool validateXml(const QDomElement& element);
 
   // Compressed-decode worker counters, read by the browser acceptance probes.
   [[nodiscard]] bool isCompressedForTest() const {
     return object_type_ == PJ::sdk::BuiltinObjectType::kCompressedPointCloud;
   }
-  // True while an async compressed decode is in flight (or its finished event
-  // is still queued) — lets tests pump the loop until the result landed.
+  // True while an async compressed decode is in flight (or its finished event is still queued).
   [[nodiscard]] bool decodeInFlightForTest() const {
     return decode_worker_.busy();
   }
-  // Number of decodes actually dispatched. The coalescing test asserts on this:
-  // a superseded pending sample, a known-failed sample, and a redundant
+  // Number of decodes actually dispatched: a superseded pending sample, a known-failed sample and a redundant
   // re-request must NOT bump it.
   [[nodiscard]] int startDecodeCountForTest() const {
     return static_cast<int>(decode_worker_.starts());
@@ -185,10 +164,8 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
     return static_cast<int>(decode_worker_.offMainCompletions());
   }
 
-  // PointRenderable (read by the view).
-  // prepareForRender() drains a pending tracker move (one decode per painted
-  // frame) and enforces the view's aggregate vertex budget: an over-budget cloud
-  // is dropped with a warning and retried once the budget frees up.
+  // prepareForRender() drains a pending tracker move (one decode per painted frame) and enforces the view's aggregate
+  // vertex budget: an over-budget cloud is dropped with a warning and retried once the budget frees up.
   bool prepareForRender(std::uint64_t remaining_view_vertices) override;
   [[nodiscard]] const QByteArray& vertexBytes() const override {
     return vertex_bytes_;
@@ -202,9 +179,8 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   [[nodiscard]] std::uint64_t geometryRevision() const override {
     return geometry_revision_;
   }
-  // A static cloud (no new sample within kStreamingWindow before it) drops its
-  // array as soon as it is uploaded; a stream keeps it for the in-place rewrite
-  // until it has been quiet for that long.
+  // A static cloud (no new sample within kStreamingWindow before it) drops its array as soon as it is uploaded; a
+  // stream keeps it for the in-place rewrite until it has been quiet for that long.
   void onVerticesUploaded(std::uint64_t revision) override;
   bool ensureVertexBytes() override;
 #ifdef PJ_SCENE3D_TEST_HOOKS
@@ -232,8 +208,8 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   }
   [[nodiscard]] int scalarAxis() const override;
   [[nodiscard]] std::pair<float, float> scalarRange(const glm::mat4& fixed_from_source) const override;
-  // The view owns fixed<-source, so it reports the effective auto range after
-  // applying TF; an interactive auto->manual toggle freezes exactly these colours.
+  // The view owns fixed<-source, so it reports the effective auto range after applying TF; an interactive auto->manual
+  // toggle freezes exactly these colours.
   void noteRenderedScalarRange(float minimum, float maximum) override;
   [[nodiscard]] bool isDepthCloud() const override {
     return false;
@@ -243,37 +219,28 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   void renderAtForTest(int64_t time_ns) {
     renderAt(time_ns);
   }
-  // Store stamp of the sample currently held by the render pass; nullopt when
-  // nothing is pushed (the default SampleId sentinel).
+  // Store stamp of the sample the render pass holds; nullopt when nothing is pushed.
   [[nodiscard]] std::optional<int64_t> lastPushedStampForTest() const {
     return last_pushed_id_ == SampleId{} ? std::nullopt : std::optional<int64_t>{last_pushed_id_.timestamp};
   }
 #endif
 
  signals:
-  // Emitted whenever the color-field set or selection changes — the
-  // config widget (if alive) listens and updates its combo without
-  // having to be rebuilt.
   void colorFieldsChanged(const QStringList& fields);
   void currentColorFieldChanged(const QString& field);
-  // Auto-range mode pushes the computed (min, max) back to the panel so
-  // the spinboxes (when subsequently unhidden) start from real data
-  // values rather than stale defaults.
+  // Auto-range pushes the computed (min, max) back so the panel's hidden spinboxes start from real data.
   void autoRangeComputed(float min_value, float max_value);
 
  private:
-  // Identity of an ObjectStore sample, computable WITHOUT resolving the payload:
-  // the entry's SequentialUID (never reused, so it cannot collide across
-  // duplicate stamps, same-size payload swaps, or dataset reloads) plus its
-  // store timestamp, carried along for display/tests. Exactly what
-  // latestEntryIdAt() returns; value-initialized {} is the "none" sentinel.
+  // Identity of an ObjectStore sample, computable WITHOUT resolving the payload: the entry's SequentialUID (never
+  // reused, so no collision across duplicate stamps, same-size payload swaps or dataset reloads) plus its store
+  // timestamp for display and tests. Exactly what latestEntryIdAt() returns; {} is the "none" sentinel.
   using SampleId = PJ::ObjectStore::TimeRangeEntry;
   struct DecodeResult {
     SampleId id;
     std::shared_ptr<PJ::sdk::PointCloud> cloud;  // null on decode failure
     QString error;
   };
-  // Every persisted <pointcloud> attribute, parsed and range-checked.
   struct Settings {
     PointShape shape = PointShape::kSphere;
     float size_meters = 0.0f;
@@ -297,135 +264,102 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
     SampleId id;
   };
 
-  // Decode the first sample once at attach so we know available fields,
-  // source frame, and time range before render is called.
+  // Decode the first sample once at attach: the available fields, source frame and time range must be known before
+  // render.
   bool bootstrap();
-  // Decode + push the cloud at time_ns into the retained vertices. No-op when
-  // we don't have a parser or when the store has no sample at/before
-  // time_ns. Skips all work when the layer already holds exactly that
-  // sample with the current color field (the common tracker tick).
+  // Decode + push the cloud at time_ns into the retained vertices. No-op without a parser or a sample at/before
+  // time_ns; skips all work when the layer already holds that sample with the current colour field (the common tracker
+  // tick).
   void renderAt(int64_t time_ns);
-  // Decode at the playhead when a tracker move is pending (once per painted
-  // frame, by prepareForRender()).
   void drainPendingUpdate();
-  // The budget_ candidate the playhead asks for: the UID of its sample.
   [[nodiscard]] std::uint64_t budgetCandidate() const;
-  // Consults the sample-identity memos for `id`, recording it as wanted_.
-  // Returns true when no payload resolve is needed: the sample is already
-  // pushed under the current color settings, was re-pushed from the decoded
-  // cache, or is a known-failed decode. Shared by renderAt's metadata-first
-  // gate and its post-resolve re-check (a streaming insert can change which
-  // entry is latest between the two store queries).
+  // Consults the sample-identity memos for `id`, recording it as wanted_. True when no payload resolve is needed: the
+  // sample is already pushed under the current colour settings, was re-pushed from the decoded cache, or is a
+  // known-failed decode. Shared by renderAt's metadata-first gate and its post-resolve re-check (a streaming insert can
+  // change which entry is latest between the two store queries).
   bool servedFromMemos(SampleId id);
-  // Re-decode at the current playhead (or the first sample before any tracker
-  // tick) after a color-field or auto-range change, so the renderer reflects
-  // the new state without waiting for the next tracker tick.
+  // Re-decode at the current playhead (or the first sample before any tracker tick) after a colour-field or auto-range
+  // change, without waiting for the next tracker tick.
   void refreshNow();
 
-  // Drops every sample-identity memo (decode cache, failure memo, pushed sample,
-  // wanted_) and invalidates queued and running decodes. Used when the store
-  // bytes behind a stable topic id are replaced, and (QRhi) when a hidden layer
-  // releases its retained cloud.
+  // Drops every sample-identity memo (decode cache, failure memo, pushed sample, wanted_) and invalidates queued and
+  // running decodes. Used when the store bytes behind a stable topic id are replaced, and when a hidden layer releases
+  // its retained cloud.
   void invalidateSampleState();
 
-  // Convert a canonical PointCloud (raw, or freshly decompressed) into the retained
-  // vertices. The single point where a cloud reaches the GPU,
-  // shared by the raw and compressed paths. `id` identifies the pushed sample for
-  // the redundant-push skip in renderAt(). `rederive` (QRhi): `id` is the pushed
-  // sample, materialized again for an upload (rederivePushedSample()); the push
-  // keeps geometry_revision_ and the streaming state and requests no repaint (the
-  // frame that asked for it is being prepared).
+  // Converts a canonical PointCloud (raw, or freshly decompressed) into the retained vertices: the single point where
+  // a cloud reaches the GPU, shared by the raw and compressed paths. `id` identifies the pushed sample for renderAt()'s
+  // redundant-push skip. `rederive` (QRhi): `id` is the pushed sample, materialized again for an upload
+  // (rederivePushedSample()); the push keeps geometry_revision_ and the streaming state and requests no repaint (the
+  // frame that asked is being prepared).
   void pushCloud(const PJ::sdk::PointCloud& cloud, SampleId id, bool rederive = false);
 
-  // Drops the uploaded retained array (evicted()); the metadata stays.
   void evictVertices();
-  // A static cloud's uploaded array was dropped: point_count_, vertex_format_,
-  // world_bounds_, the scalar range and geometry_revision_ still describe it, and
-  // ensureVertexBytes() rebuilds it from last_pushed_id_ when a new QRhi needs the
-  // upload again.
+  // A static cloud's uploaded array was dropped: point_count_, vertex_format_, world_bounds_, the scalar range and
+  // geometry_revision_ still describe it, and ensureVertexBytes() rebuilds it from last_pushed_id_ when a new QRhi
+  // needs the upload again.
   [[nodiscard]] bool evicted() const {
     return vertex_bytes_.isEmpty() && point_count_ != 0;
   }
-  // Re-converts last_pushed_id_ under the current style into vertex_bytes_
-  // (pushCloud()'s `rederive`): from the decode cache, else the store entry. A
-  // compressed entry the cache no longer holds clears the cloud until its decode
-  // (off the UI thread) lands; a sample the store no longer has clears it and lets
-  // the next frame decode at the playhead.
+  // Re-converts last_pushed_id_ under the current style into vertex_bytes_ (pushCloud()'s `rederive`): from the decode
+  // cache, else the store entry. A compressed entry the cache no longer holds clears the cloud until its off-UI-thread
+  // decode lands; a sample the store no longer has clears it and lets the next frame decode at the playhead.
   void rederivePushedSample();
 
-  // Fail-closed outcome for sample `id`: clears the drawn cloud, shows `warning`
-  // on the layer row, and memoizes the failure so the sample is not re-decoded
-  // until a reload (or re-show) resets the memos.
+  // Fail-closed outcome for sample `id`: clears the drawn cloud, shows `warning` on the layer row, and memoizes the
+  // failure so the sample is not re-decoded until a reload (or re-show) resets the memos.
   void failSample(SampleId id, const QString& warning);
-  // Drops the retained vertices and their bounds.
   void clearGeometry();
   // Whether the vertices carry the colormap scalar: only for a colormapped
   // non-spatial field (colour, range cull and fade read it; no other style does).
   [[nodiscard]] bool storesScalar() const;
 
-  // Track a (possibly changing) source frame_id; notify the dock/panel on change.
   void updateSourceFrame(const std::string& frame_id);
 
-  // For a fixed-frame (x/y/z) colour axis: the [min,max] of that axis over the
-  // cached source bounds transformed into the fixed frame at the current tracker
-  // time. Used to freeze a sensible world-axis range when auto-range is switched
-  // off. std::nullopt when bounds/TF/time are unavailable (e.g. before first push).
+  // For a fixed-frame (x/y/z) colour axis: the [min,max] of that axis over the cached source bounds transformed into
+  // the fixed frame at the current tracker time. nullopt when bounds, TF or time are unavailable (before the first
+  // push).
   [[nodiscard]] std::optional<std::pair<float, float>> currentWorldAxisRange(int axis) const;
 
-  // Shared body of setAutoRange. `seed_manual_from_world` governs the auto-OFF
-  // path: true (interactive toggle) seeds the manual range from the world-axis
-  // range currently on screen so colours don't jump; false (state restore) keeps
-  // the existing manual_range_min_/max_ verbatim. Restore MUST pass false — the
-  // dock attach()es the layer (rendering the first sample, so world_bounds_ is
-  // already populated) before calling xmlLoadState, so seeding would overwrite
-  // the just-restored saved range with the recomputed data range.
+  // Shared body of setAutoRange. `seed_manual_from_world` governs the auto-OFF path: true (interactive toggle) seeds
+  // the manual range from the world-axis range on screen so colours do not jump; false (state restore) keeps
+  // manual_range_min_/max_ verbatim. Restore MUST pass false: the dock attach()es the layer (rendering the first
+  // sample, so world_bounds_ is populated) before xmlLoadState, and seeding would overwrite the restored range.
   void applyAutoRange(bool enable, bool seed_manual_from_world);
 
-  // --- Compressed-cloud async decode (Draco / Cloudini) ---
-  // Compressed decode is CPU-heavy (~100ms for large Draco clouds), so it runs on the
-  // Qt thread pool and never blocks the UI. requestDecode() records the request as
-  // wanted_ and coalesces latest-wins; onDecodeFinished() runs on the GUI thread,
-  // caches the result, and pushes it only if it still matches wanted_.
-  // Raw PointCloud topics skip all of this and convert synchronously (cheap).
+  // Compressed decode is CPU-heavy (~100 ms for large Draco clouds), so it runs on the Qt thread pool: requestDecode()
+  // records the request as wanted_ and coalesces latest-wins; onDecodeFinished() runs on the GUI thread, caches the
+  // result and pushes it only if it still matches wanted_. Raw PointCloud topics convert synchronously.
   void requestDecode(const PJ::sdk::CompressedPointCloud& cloud, SampleId id);
   // The worker job: pure, touches no layer state (safe past the layer's death).
   [[nodiscard]] static DecodeResult decodeCompressed(const PendingDecode& request);
   void onDecodeFinished(DecodeResult result);
   void populateColorFields(const PJ::sdk::PointCloud& cloud);
 
-  // Invoked by SessionManager::datasetAboutToBeReplaced (any dataset; filtered to
-  // this layer's). A reload keeps the ObjectTopicId stable while swapping the
-  // store bytes; every sample-identity memo — decode cache, failure memo, pushed
-  // sample, wanted_/in-flight — resets so pre-reload content is dropped and the
-  // new bytes re-render.
+  // Invoked by SessionManager::datasetAboutToBeReplaced (any dataset, filtered to this layer's). A reload keeps the
+  // ObjectTopicId stable while swapping the store bytes: every sample-identity memo resets so pre-reload content is
+  // dropped and the new bytes re-render.
   void onDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
   PJ::ObjectTopicId topic_id_;
   QString display_name_;
   Scene3DLayerContext ctx_;
-  // Parsers are deliberately NOT cached: every decode resolves a fresh
-  // ParserBinding through ctx_.session (see parseLocked()), so a file reload
-  // that re-registers the topic's parser slot can never leave us dangling.
+  // Parsers are deliberately NOT cached: every decode resolves a fresh ParserBinding through ctx_.session (see
+  // parseLocked()), so a file reload that re-registers the topic's parser slot cannot leave a dangling one.
 
   std::string color_field_;
   QStringList available_color_fields_;
   // The latest requested sample's frame (sourceFrame(), the dock's frame
   // checks); a pending compressed decode's frame lands here before its points do.
   std::string source_frame_;
-  // The frame of the committed geometry, which the view places it in.
   std::string geometry_frame_;
-  // The committed cloud's own stamp on the TF header clock (objectStamp()).
   std::optional<PJ::Timepoint> geometry_stamp_;
   QString fixed_frame_;
-  // The latest tracker time pushed to this layer; the Timepoint the cached VBO
-  // was (re)decoded at. Used by refreshNow() to re-decode at the current playhead.
-  // nullopt until the first tracker tick — 0 ns is a valid timestamp, so absence
-  // is explicit (the dock's stance; see SceneDockWidget::registerLayer).
+  // The latest tracker time pushed to this layer, which refreshNow() re-decodes at. nullopt until the first tracker
+  // tick: 0 ns is a valid timestamp, so absence is explicit (see SceneDockWidget::registerLayer).
   std::optional<PJ::Timepoint> decoded_at_ns_;
-  // Set by setTrackerTime, consumed by drainPendingUpdate(): the decode (parse +
-  // convert + GPU upload) is deferred to the next painted frame instead of
-  // running eagerly per tracker tick. Qt coalesces repaints, so a fast scrub that fires many ticks
-  // decodes only the final cloud once, not every skipped intermediate frame.
+  // Set by setTrackerTime, consumed by drainPendingUpdate(): the decode is deferred to the next painted frame, and Qt
+  // coalesces repaints, so a fast scrub decodes only the final cloud.
   bool tracker_dirty_ = false;
 
   bool visible_ = true;
@@ -434,22 +368,16 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // store had no entries yet (0 is a valid stamp, so absence is explicit).
   std::optional<int64_t> ts_first_;
 
-  // Source-frame bounds of the most recently decoded cloud (see worldBounds()).
   std::optional<AABB> world_bounds_;
 
-  // User-tunable per-cloud parameters. Mirror the render pass's current
-  // values; the panel reads them on rebuild so a re-opened config widget
-  // always reflects what the user picked.
+  // User-tunable parameters, mirrored from the render pass; the config widget reads them on rebuild.
   PointShape shape_ = PointShape::kSphere;
   float size_meters_ = 0.02f;
   float size_pixels_ = 2.0f;
   PointColorType color_type_ = PointColorType::kField;
-  // True once the active cloud is known to carry a per-point colour field. Drives the
-  // "RGB" combo entry and the fresh-attach default to kRgb.
   bool has_color_ = false;
-  // Set when the colour mode was chosen explicitly (layout restore or a user combo
-  // pick), so populateColorFields() does NOT override it with the colour-present RGB
-  // default on the next decoded sample. Cleared state = "pick a smart default".
+  // Set when the colour mode was chosen explicitly (layout restore or a user combo pick), so populateColorFields() does
+  // NOT override it with the colour-present RGB default on the next decoded sample.
   bool color_choice_explicit_ = false;
   QColor solid_color_{255, 0, 0};
   PJ::Colormap colormap_ = PJ::Colormap::kTurbo;
@@ -460,42 +388,33 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   float manual_range_min_ = 0.0f;
   float manual_range_max_ = 1.0f;
 
-  // What info() reports; kPointCloud and kCompressedPointCloud render identically.
   PJ::sdk::BuiltinObjectType object_type_ = PJ::sdk::BuiltinObjectType::kPointCloud;
 
-  // Sample + color field currently held by the render pass; lets renderAt() skip
-  // the per-tick parse/convert/upload when nothing changed.
+  // Sample and colour field the render pass holds; lets renderAt() skip the per-tick parse/convert/upload.
   SampleId last_pushed_id_;
   std::string last_pushed_color_field_;
-  // Whether the last GPU push extracted per-point RGBA (kRgb mode). Part of the
-  // renderAt() skip key so toggling RGB on/off forces a re-decode even on the same
-  // sample (color_field_ alone doesn't change between field/solid and rgb).
+  // Whether the last GPU push extracted per-point RGBA (kRgb mode). Part of the renderAt() skip key: toggling RGB must
+  // re-decode even on the same sample, since color_field_ alone does not change between field/solid and rgb.
   bool last_pushed_rgb_ = false;
   bool last_pushed_scalar_ = false;  // the last push stored the colormap scalar (storesScalar())
-  // Scalar axis of the last push (-1 non-spatial, 0/1/2 = x/y/z). onGpuAabb() reads
-  // it to decide whether an async GPU bounds result must also refresh the
-  // spatial-axis colormap range.
+  // Scalar axis of the last push (-1 non-spatial, 0/1/2 = x/y/z); written by pushCloud(), read nowhere.
   int last_pushed_axis_ = -1;
 
-  // Async compressed-cloud decode state. Inert for raw PointCloud topics.
   std::shared_ptr<PJ::sdk::PointCloud> decoded_cache_;  // last decoded cloud, reused on color-field change
   SampleId decoded_cache_id_;                           // identity of decoded_cache_
   SampleId wanted_;         // the sample the tracker currently wants; gates painting async results
   SampleId failed_id_;      // last failed sample; not retried until a dataset reload swaps the store bytes
   QString failed_warning_;  // the warning re-shown whenever failed_id_ is revisited
 
-  // Lives only while attached: resets the sample-identity caches when a dataset
-  // reload swaps this topic's store bytes (see onDatasetAboutToBeReplaced).
+  // Lives only while attached: resets the sample-identity caches when a reload swaps this topic's store bytes.
   QMetaObject::Connection reload_connection_;
 
-  // What the view reads (PointRenderable).
   QByteArray vertex_bytes_;  // vertex_format_ records: finite points of the active cloud, source frame
   PointVertexFormat vertex_format_ = PointVertexFormat::kXyz;  // layout of vertex_bytes_
   std::size_t point_count_ = 0;                                // records in vertex_bytes_ (the rest is padding)
   std::uint64_t geometry_revision_ = 0;
-  // A new sample followed the previous one within kStreamingWindow: the uploaded
-  // array stays for the next sample's in-place rewrite, and evict_timer_ drops it
-  // once the stream has been quiet for that long.
+  // A new sample followed the previous one within kStreamingWindow: the uploaded array stays for the next sample's
+  // in-place rewrite, and evict_timer_ drops it once the stream has been quiet for that long.
   bool streaming_ = false;
   QElapsedTimer last_sample_push_;
   std::uint64_t uploaded_revision_ = ~std::uint64_t{0};  // last onVerticesUploaded()
@@ -505,7 +424,6 @@ class PointCloudLayer : public Scene3DLayer, public PointRenderable {
   // from world_bounds_ under the live transform instead).
   std::pair<float, float> automatic_scalar_range_{0.0f, 1.0f};
   std::pair<float, float> last_rendered_scalar_range_{0.0f, 1.0f};
-  // Point count and sample of a cloud dropped for the view budget.
   BudgetLatch budget_;
 
   LatestWinsWorker<PendingDecode, DecodeResult> decode_worker_{

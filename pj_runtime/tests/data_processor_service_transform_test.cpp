@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// M4.2 Task 4 — the DataProcessorService *transform* API (plugin-created,
-// named, owned, persisted nodes), distinct from the per-curve filter path.
-// Transforms share the eager IncrementalEngine substrate but live in their own
-// recipe map keyed by "<plugin_id>/<id>".
+// The DataProcessorService transform API (plugin-created, named, owned, persisted nodes), distinct from the per-curve
+// filter path. Transforms share the eager IncrementalEngine substrate but live in their own recipe map keyed by
+// "<plugin_id>/<id>".
 
 #include <gtest/gtest.h>
 
@@ -408,7 +407,6 @@ TEST(DataProcessorTransformTest, RemoveRetiresTopic) {
   EXPECT_FALSE(fx.listed(out));  // retired -> dropped from the catalog
   EXPECT_TRUE(fx.service.transformRecipes().empty());
 
-  // Removing an unknown key is an error.
   EXPECT_FALSE(fx.service.removeTransform("pluginA/ghost").has_value());
 }
 
@@ -420,7 +418,6 @@ TEST(DataProcessorTransformTest, RollbackLeavesNoZombieTopic) {
   EXPECT_FALSE(fx.service.upsertTransform("pluginA", "boom", {"speed"}, {"speed/out"}, kBoom, "{}").has_value());
   EXPECT_TRUE(fx.service.transformRecipes().empty());
 
-  // A healthy transform can re-use the freed name.
   const auto ok = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"speed/out"}, kNegate, "{}");
   EXPECT_TRUE(ok.has_value()) << ok.error();
 }
@@ -434,15 +431,13 @@ TEST(DataProcessorTransformTest, OutputNameCollisionRejected) {
   // A different transform claiming the same output name is rejected, not clobbered.
   const auto b = fx.service.upsertTransform("pluginB", "other", {"speed"}, {"speed/out"}, kNegate, "{}");
   EXPECT_FALSE(b.has_value());
-  // A's output is untouched and A's recipe survives.
   EXPECT_EQ(fx.service.transformRecipes().size(), 1u);
   EXPECT_TRUE(fx.listed(a->output_topic_ids.front()));
 }
 
-// Field-level input binding on a schemaless topic: a "<topic>/<field>" input must
-// resolve to the named column (separator normalized '/'->'.'), not topic column 0.
-// Regression: schema_id == 0 topics (JSON scalar-only ingest) were unresolvable by
-// field name, and nested fields failed on the '/' vs '.' separator mismatch.
+// Field-level input binding on a schemaless topic (schema_id == 0, the JSON scalar-only ingest shape): a
+// "<topic>/<field>" input must resolve to the named column (separator normalized '/'->'.', so nested fields work), not
+// topic column 0.
 TEST(DataProcessorTransformTest, ResolvesSchemalessNestedFieldInput) {
   Fixture fx;
   // /imu with dotted nested columns; "orientation.w" is the LAST column (index 3),
@@ -547,7 +542,6 @@ TEST(DataProcessorTransformTest, GroupsStructuredOutputIntoOneTopic) {
 
   const auto rec = fx.service.upsertTransform("pluginA", "split", {"speed"}, {"rpy:a,b"}, kSplit, "{}");
   ASSERT_TRUE(rec.has_value()) << rec.error();
-  // Grouped: exactly ONE output topic, not two.
   ASSERT_EQ(rec->output_topic_ids.size(), 1u);
   const TopicId out = rec->output_topic_ids.front();
 
@@ -561,7 +555,6 @@ TEST(DataProcessorTransformTest, GroupsStructuredOutputIntoOneTopic) {
   const PJ::TypeTreeNode* root = fx.engine.typeRegistry().lookup(schema_id);
   ASSERT_NE(root, nullptr);
   EXPECT_EQ(PJ::flattenFieldPaths(*root), (std::vector<std::string>{"a", "b"}));
-  // Column 0 = value, column 1 = -value.
   EXPECT_EQ(readColumn(fx.engine, out, 0), (std::vector<double>{1.0, 2.0, 3.0}));
   EXPECT_EQ(readColumn(fx.engine, out, 1), (std::vector<double>{-1.0, -2.0, -3.0}));
 }
@@ -710,8 +703,7 @@ TEST(DataProcessorTransformTest, ColonNameThatMatchesNoSourceGetsTheQualifierHin
   EXPECT_NE(rec.error().find("dataset qualifier"), std::string::npos) << rec.error();
 }
 
-// Bug (PR #619 #4): qualified inputs naming two different datasets are resolved
-// independently and accepted; the SDK contract says they must agree on one.
+// Qualified inputs naming two different datasets are rejected: the SDK contract says they must agree on one.
 TEST(DataProcessorTransformTest, QualifiedInputsNamingTwoDatasetsAreRejected) {
   Fixture fx;
   fx.seed("speed", {3.0});  // source "s"
@@ -726,9 +718,8 @@ TEST(DataProcessorTransformTest, QualifiedInputsNamingTwoDatasetsAreRejected) {
   EXPECT_NE(rec.error().find("dataset"), std::string::npos) << rec.error();
 }
 
-// Bug (PR #619 #3): the config read-back a plugin re-edits from (transformRecipeJson,
-// behind data_processor_config) returns bare input names, so resubmitting it is
-// ambiguous once `speed` exists in two datasets.
+// The config read-back a plugin re-edits from (transformRecipeJson, behind data_processor_config) must stay
+// resubmittable: a bare input name is qualified once `speed` exists in two datasets.
 TEST(DataProcessorTransformTest, ConfigReadBackResubmitsUnambiguously) {
   Fixture fx;
   fx.seed("speed", {3.0});  // source "s"
@@ -1027,9 +1018,8 @@ TEST(DataProcessorTransformTest, ExemptDependentsOfEmptyWhenNoExemptDependent) {
   EXPECT_TRUE(fx.service.exemptDependentsOf(removable).empty());
 }
 
-// Regression [Codex #6]: removalImpact() reports the grouped DECLARATION
-// "rpy:a,b", not the materialized topic "rpy", so an exempt marker
-// generator reading "rpy/a" is not found as a dependent and undo can strand it.
+// removalImpact() must report the materialized topic "rpy", not the grouped declaration "rpy:a,b", so an exempt
+// marker generator reading "rpy/a" is found as a dependent and undo cannot strand it.
 TEST(DataProcessorTransformTest, StrandPreflightSeesGroupedTransformOutputTopic) {
   Fixture fx;
   fx.seed("speed", {1.0, 2.0});
@@ -1151,9 +1141,7 @@ TEST(DataProcessorTransformTest, EditingOrRemovingATransformMarksTheRulesReading
   EXPECT_FALSE(markers.isStale("p/other"));
 }
 
-// ---------------------------------------------------------------------------
-// Time-sliced first materialization (a new persistent transform)
-// ---------------------------------------------------------------------------
+// ---- Time-sliced first materialization (a new persistent transform) ----
 
 // Large enough that the Luau replay needs several 8 ms slices even on a fast box.
 constexpr std::size_t kLargeRows = 200'000;
@@ -1280,7 +1268,6 @@ TEST(DataProcessorTimeSliceTest, DeleteDuringReplayDropsIt) {
   EXPECT_FALSE(fx.service.materializationPending());
   EXPECT_TRUE(fx.service.stepMaterialization());
   EXPECT_TRUE(fx.service.transformRecipes().empty());
-  // The name is free again.
   EXPECT_TRUE(createAccumulator(fx.service, "acc", "x", "acc_out").has_value());
 }
 
@@ -1358,7 +1345,6 @@ TEST(DataProcessorTimeSliceTest, UndoAndRedoOfACreateDuringReplay) {
   const std::vector<DataProcessorService::TransformRecipe> snapshot = fx.service.transformRecipes();
   ASSERT_EQ(snapshot.size(), 1u);
 
-  // Undo: restore the pre-create history state (no transforms).
   fx.service.clearTransforms(RestoreIntent::kHistory);
   EXPECT_FALSE(fx.service.materializationPending());
   EXPECT_TRUE(fx.service.transformRecipes().empty());
@@ -1409,7 +1395,6 @@ TEST(DataProcessorTimeSliceTest, FailureAfterTheFirstSliceIsReportedAsAnError) {
   EXPECT_NE(reported.front().message.find("late_out"), std::string::npos) << reported.front().message;
   EXPECT_NE(reported.front().message.find("late boom"), std::string::npos) << reported.front().message;
   EXPECT_NE(reported.front().message.find("incomplete"), std::string::npos) << reported.front().message;
-  // The transform stays, with the rows committed before the failing slice.
   EXPECT_EQ(fx.service.transformRecipes().size(), 1u);
   EXPECT_LT(readRows(fx.engine, sliced->output_topic_ids.front()).size(), kFailAfter);
 }
@@ -1444,7 +1429,6 @@ TEST(DataProcessorTimeSliceTest, StreamingTransformThatStartsFailingIsReportedOn
   commit_rows(7, 3);  // still failing: not reported again
   EXPECT_EQ(reported.size(), 1u);
 
-  // An edit replays the history healthily; its next failure is a new one.
   ASSERT_TRUE(
       fx.service.upsertTransform("p", "late", {"x"}, {"late_out"}, lateFailureScript("late", 12), "{}").has_value());
   commit_rows(10, 1);  // 11 rows: healthy

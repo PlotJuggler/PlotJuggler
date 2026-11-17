@@ -45,7 +45,6 @@ PJ::sdk::LinePrimitive line(PJ::sdk::LineType type, std::vector<PJ::sdk::Point3>
   return output;
 }
 
-// The expanded vertex positions of a batch, as the renderer reads them.
 std::vector<glm::dvec3> expanded(const MarkerStreamBatch& batch) {
   std::vector<glm::dvec3> output;
   for (const std::uint32_t index : batch.indices) {

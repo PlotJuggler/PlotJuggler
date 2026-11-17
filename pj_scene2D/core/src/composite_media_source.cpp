@@ -44,11 +44,6 @@ void CompositeMediaSource::setLayerPairing(
 }
 
 void CompositeMediaSource::adoptContributions(const CompositeMediaSource& previous) {
-  // A rebuild rewraps the same underlying sources in a fresh composite whose
-  // layer caches are empty, so the first takeFrame() would drop to nullopt and
-  // the viewer would blank until each source re-decodes. Copy each persisting
-  // layer's last fused output (matched by identity) and arm a one-shot emit so
-  // the rebuilt composite paints the current frame on its very next poll.
   for (auto& layer : layers_) {
     if (layer.identity == nullptr) {
       continue;
@@ -72,25 +67,18 @@ void CompositeMediaSource::setTimestamp(int64_t ts_ns) {
 }
 
 void CompositeMediaSource::invalidate() {
-  // Fan out to every layer so they drop their per-timestamp dedup and re-decode
-  // on the next setTimestamp — used after a composite rebuild re-seeds at the
-  // (often unchanged) current tracker time.
   for (auto& layer : layers_) {
     layer.source->invalidate();
   }
 }
 
 void CompositeMediaSource::setGpuRectificationAvailable(bool available) {
-  // Fan out so each rectifying layer (an ImagePipelineSource behind a
-  // BorrowedMediaSource) learns whether to defer undistortion to the GPU.
   for (auto& layer : layers_) {
     layer.source->setGpuRectificationAvailable(available);
   }
 }
 
 std::optional<MediaFrame> CompositeMediaSource::takeFrame() {
-  // Refresh the cached contribution of every layer that produced a new frame
-  // this tick; layers that report nothing new keep their previous contribution.
   bool any_new = false;
   for (auto& layer : layers_) {
     auto fresh = layer.source->takeFrame();
@@ -112,17 +100,11 @@ std::optional<MediaFrame> CompositeMediaSource::takeFrame() {
     layer.overlays = std::move(fresh->overlays);
   }
 
-  // Nothing new since the last poll: the consumer keeps the composite it has —
-  // unless adoptContributions() armed a one-shot emit after a rebuild, in which
-  // case we must hand the carried composite to the (just-repointed) consumer now
-  // so it doesn't blank waiting for the next decode.
   if (!any_new && !force_emit_) {
     return std::nullopt;
   }
   force_emit_ = false;
 
-  // Reassemble the full stack from every layer's retained contribution so a
-  // layer that did not update this tick is still present in the composite.
   MediaFrame composite;
   const Layer* base_layer = nullptr;
   for (const auto& layer : layers_) {

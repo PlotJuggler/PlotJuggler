@@ -252,12 +252,10 @@ ParserRoutingService::PreparedInstance ParserRoutingService::prepareInstance(
   if (!prepared.ok() || context.parser_config_json.empty()) {
     return prepared;
   }
-  // bindSchema captured the handle's expected object type BEFORE the config
-  // existed; a config-dependent classifier (parser_ros' RobotDescription rule)
-  // may answer differently now, and parseObject validates emitted objects
-  // against that expectation. A failed refresh must not leave the stale
-  // expectation in place, so on this route-dispatch path it rejects the
-  // instance (the legacy path keeps its failure-as-kNone contract).
+  // bindSchema captured the handle's expected object type BEFORE the config existed; a config-dependent classifier may
+  // answer differently now, and parseObject validates emitted objects against that expectation. A failed refresh must
+  // not leave the stale expectation in place, so on this route-dispatch path it rejects the instance (the legacy path
+  // keeps its failure-as-kNone contract).
   auto kind = rawClassifySchema(prepared.handle, context.normalized_type_name, context.schema);
   if (!kind) {
     prepared.diagnostic = "classify_schema after load_config: " + kind.error();
@@ -296,17 +294,15 @@ ParserRouteSelection ParserRoutingService::resolveLegacy(
     selection.scalar_failure = std::move(scalar.diagnostic);
     return selection;
   }
-  // The pre-routing host asked the one selected parser; classifySchema's
-  // failure-as-kNone fold is that path's contract (and it refreshes the
-  // handle's expectation after the config load).
+  // The legacy path asks the one selected parser; classifySchema's failure-as-kNone fold is that path's contract (and
+  // it refreshes the handle's expectation after the config load).
   const sdk::BuiltinObjectType kind = scalar.handle.classifySchema(type_name, schema);
   if (kind == sdk::BuiltinObjectType::kNone) {
     selection.scalar = ParserRouteWinner{.provider_id = provider->id, .parser = std::move(scalar.handle)};
     return selection;
   }
-  // The object decoder is a second instance of the same provider. Its failure
-  // fails the whole binding, as it always has: a topic committed to object
-  // ingest must never silently degrade to scalar-only.
+  // The object decoder is a second instance of the same provider. Its failure fails the whole binding: a topic
+  // committed to object ingest must never silently degrade to scalar-only.
   PreparedInstance object = prepareBoundInstance(provider->id, type_name, schema, parser_config_json);
   if (!object.ok()) {
     selection.scalar_failure = "object decoder: " + object.diagnostic;
@@ -574,9 +570,8 @@ ParserRouteSelection ParserRoutingService::resolveParserRoutes(
     return resolveLegacy(encoding, type_name, schema, parser_config_json);
   }
 
-  // THREADING: this runs on the source poll thread — the same thread class the
-  // legacy ensure-binding path has always used for create/bindSchema/loadConfig
-  // during live ingest; route dispatch adds volume, not a new thread class.
+  // THREADING: this runs on the source poll thread, the thread class the legacy ensure-binding path uses for
+  // create/bindSchema/loadConfig during live ingest; route dispatch adds volume, not a new thread class.
   ParserRouteSelection selection;
   selection.route_dispatch = true;
   discoverParserExactClaims(*context);

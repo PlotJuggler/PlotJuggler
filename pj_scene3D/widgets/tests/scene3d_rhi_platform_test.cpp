@@ -32,7 +32,6 @@ namespace {
 
 using pj::scene3d::SceneViewTestAccess;
 
-// The 3D-texture limit `rhi`'s driver reports; 0 when this build cannot ask.
 int driverMax3dTextureSize(QRhi& rhi) {
   switch (rhi.backend()) {
     case QRhi::OpenGLES2: {

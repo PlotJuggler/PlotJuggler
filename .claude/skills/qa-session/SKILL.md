@@ -164,4 +164,4 @@ When asked to do QA or to test with the QA agent, without a narrower charter:
    browser one, the package path.
 3. Check every reported **Bug** yourself against the code and its replay before acting on it; drop artifacts.
 4. Report a table: charter, bugs, UX notes, tool limits. Fix each confirmed bug in its own PR, with a test that
-   fails before the fix (as #1534 and #1535 did after the first trial).
+   fails before the fix.

@@ -247,7 +247,7 @@ class FakeRun {
   std::optional<double> fail_on_number;     ///< the run fails ("boom") when a number input equals this
   std::vector<Timestamp> fail_at;           ///< ... and at these query times
   std::vector<std::string> unavailable;     ///< outputs it marks unavailable ("no points")
-  bool empty_clouds = false;                ///< its cloud outputs are empty (valid, D25)
+  bool empty_clouds = false;                ///< its cloud outputs are empty (valid)
   /// What its SceneEntities outputs hold at a query time; empty: no entity.
   std::function<std::vector<sdk::SceneEntity>(Timestamp)> entities;
   std::string text = "ok";  ///< its string outputs' value

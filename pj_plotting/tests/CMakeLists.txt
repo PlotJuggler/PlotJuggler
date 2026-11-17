@@ -1,7 +1,7 @@
 find_package(GTest REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
-# no WARNINGS: 3 of 3 merged tests never compiled with -Werror
+# No WARNINGS: built without PJ_WARNING_FLAGS (-Werror).
 pj_add_test_runner(pj_plotting_core_tests
     MAIN core
     SOURCES
@@ -11,7 +11,7 @@ pj_add_test_runner(pj_plotting_core_tests
     LIBS pj_plotting_core
 )
 
-# no WARNINGS: 2 of 20 merged tests never compiled with -Werror
+# No WARNINGS: built without PJ_WARNING_FLAGS (-Werror).
 pj_add_test_runner(pj_plotting_widget_tests
     MAIN gui
     SOURCES
@@ -41,9 +41,8 @@ pj_add_test_runner(pj_plotting_widget_tests
         plot_widget_first_rows_fit_test.cpp
         plot_magnifier_clamp_test.cpp
         plot_state_transaction_test.cpp
-        # Links pj_resources so :/filters/builtin_filters.luau is embedded and
-        # auto-registered — SessionManager reads it to install the Luau filter catalogue.
-        # Without it the panel would have no filters to list or apply.
+        # Links pj_resources so :/filters/builtin_filters.luau is embedded and auto-registered: SessionManager reads it
+        # to install the Luau filter catalogue, without which the panel has no filters to list or apply.
         filter_editor_panel_test.cpp
         parameter_form_test.cpp
     LIBS

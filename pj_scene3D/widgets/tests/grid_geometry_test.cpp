@@ -15,24 +15,19 @@ namespace {
 constexpr float kExtent = 10.0f;
 constexpr int kDivisions = 10;
 
-// Recover the integer cell index (i, j) that a quad vertex belongs to, from its
-// position on the centered z=0 plane. half = extent/2, cell = extent/divisions.
 std::pair<int, int> cellIndexOf(const glm::vec3& pos, float extent_m, int divisions) {
   const float half = extent_m * 0.5f;
   const float cell = extent_m / static_cast<float>(divisions);
   return {static_cast<int>(std::lround((pos.x + half) / cell)), static_cast<int>(std::lround((pos.y + half) / cell))};
 }
 
-// The whole point of the change: a *full* checkerboard emits every cell, not
-// just the even ones. Six vertices (two triangles) per cell, no cell skipped.
+// A *full* checkerboard emits every cell, not just the even ones: six vertices (two triangles) per cell, none skipped.
 TEST(GridGeometryTest, CheckerboardEmitsEveryCell) {
   const auto verts = buildCheckerboardCells(kExtent, kDivisions);
   EXPECT_EQ(verts.size(), static_cast<std::size_t>(kDivisions) * kDivisions * 6U);
 
-  // Every (i, j) cell in [0, divisions) appears, and each appears exactly once.
   std::set<std::pair<int, int>> covered;
   for (std::size_t base = 0; base < verts.size(); base += 6U) {
-    // The first vertex of each quad is the (x0, y0) corner of its cell.
     covered.insert(cellIndexOf(verts[base].pos, kExtent, kDivisions));
   }
   EXPECT_EQ(covered.size(), static_cast<std::size_t>(kDivisions) * kDivisions);
@@ -58,7 +53,7 @@ TEST(GridGeometryTest, CheckerboardParityAlternates) {
   EXPECT_TRUE(saw_one);
 }
 
-// Lines are unchanged: (divisions+1) per axis, 2 verts each, all parity 0.
+// Lines: (divisions+1) per axis, 2 vertices each, all parity 0.
 TEST(GridGeometryTest, LinesCountAndParity) {
   const auto verts = buildGridLines(kExtent, kDivisions);
   EXPECT_EQ(verts.size(), static_cast<std::size_t>(kDivisions + 1) * 4U);

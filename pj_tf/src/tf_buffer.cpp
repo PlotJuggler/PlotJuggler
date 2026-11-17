@@ -18,9 +18,6 @@
 
 namespace pj::tf {
 
-// EdgeHistory and ParentLink are defined in tf_buffer.h (required complete by
-// std::unordered_map on GCC 11's libstdc++).
-
 namespace {
 
 // One counter for every buffer in the process, so a revision names one state.
@@ -45,17 +42,15 @@ TransformBuffer::TransformBuffer(Duration cache_window)
 TransformBuffer::~TransformBuffer() = default;
 
 TransformSnapshot& TransformBuffer::writableLocked() {
-  // Owners are added by snapshot() and adoptStateOf() under the shared lock, so they
-  // cannot appear while we hold the unique lock, and by TransformService's weak
-  // cache (weak_ptr::lock) with no lock at all: that one reads the state only after
-  // taking this buffer's shared lock, i.e. after an in-place write that missed its
-  // new owner has finished, and every later write sees the owner and copies. A count
-  // that falls meanwhile only costs a needless copy.
+  // snapshot() and adoptStateOf() add owners under the shared lock, so none appears while we hold the unique lock.
+  // TransformService's weak cache (weak_ptr::lock) adds one with no lock, but reads the state only after taking
+  // this buffer's shared lock, i.e. after an in-place write that missed it has finished; every later write sees
+  // the owner and copies. A count that falls meanwhile only costs a needless copy.
   if (current_.use_count() > 1) {
     current_.reset(new TransformSnapshot(*current_));
   } else {
-    // use_count() is a relaxed load: order the last other owner's release (its
-    // reads of the state) before our in-place writes.
+    // use_count() is a relaxed load: order the last other owner's release (its reads of the state) before our
+    // in-place writes.
     std::atomic_thread_fence(std::memory_order_acquire);
   }
   return *current_;
@@ -68,16 +63,12 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
 PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const StampedTransform& tf, TimePoint entry_time) {
   std::unique_lock lock(parents_mutex_);
 
-  // Validate the wire data BEFORE the structural checks (and before
-  // glm::normalize): an empty name, a zero-length / NaN quaternion, or a
-  // non-finite translation is a recoverable data error a real bag can carry, and
-  // a zero-length quaternion normalized to all-NaN would otherwise be stored and
-  // silently poison every lookup composing through that edge.
+  // Wire-data checks come before glm::normalize: a zero-length quaternion would normalize to all-NaN and poison
+  // every lookup through that edge.
   if (tf.parent_frame.empty() || tf.child_frame.empty()) {
     return PJ::unexpected(SetTransformError::kInvalidFrameName);
   }
-  // glm::dot of a quaternion is w*w + x*x + y*y + z*z (the squared norm). Reject
-  // a degenerate quaternion before normalize divides by (near-)zero.
+  // glm::dot of a quaternion is its squared norm.
   if (!isFinite(tf.transform.q) || glm::dot(tf.transform.q, tf.transform.q) < 1e-12) {
     return PJ::unexpected(SetTransformError::kInvalidRotation);
   }
@@ -86,43 +77,31 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
   }
 
   if (tf.child_frame == tf.parent_frame) {
-    // A frame relative to itself is the identity; storing it would create a
-    // self-loop in the parent map and hang chainToRoot. Drop it (recoverable).
+    // Storing it would be a self-loop in the parent map.
     return PJ::unexpected(SetTransformError::kSelfLoop);
   }
 
   TransformSnapshot& state = writableLocked();
   auto& link = state.parents_[tf.child_frame];
-  // The empty-name reject above makes this sentinel sound: link.parent is empty
-  // ONLY for a freshly default-constructed link (never for a real edge), so an
-  // empty parent unambiguously means "no link yet", not "child<-empty parent".
+  // The empty-name reject above makes an empty link.parent mean "no link yet".
   if (!link.parent.empty() && link.parent != tf.parent_frame) {
-    // A second publisher claims this child under a different parent. Drop this
-    // one edge rather than aborting the whole bulk ingest.
     return PJ::unexpected(SetTransformError::kReparentConflict);
   }
 
   link.parent = tf.parent_frame;
 
-  // No static/dynamic distinction: every edge is a time-ordered history resolved
-  // by nearest-previous (see sampleAt). A transform published once — /tf_static,
-  // however namespaced — is simply a single-sample history that holds for all
-  // later query times, so static-ness never has to be inferred from a topic name.
   const Transform normalized{tf.transform.t, glm::normalize(tf.transform.q)};
   auto& history = link.history;
   auto& samples = history.samples;
   const bool first_sample = samples.empty();
-  // A fresh sample enters with no entry key; knownBy() then sets it and restores the
-  // suffix minimum over the earlier samples.
+  // A fresh sample enters with no entry key; knownBy() sets it and restores the suffix minimum.
   constexpr TimePoint kNotYetKnown = TimePoint::max();
   bool changed = true;
   if (first_sample || tf.stamp > samples.back().stamp) {
-    // Exact under zero-order hold for in-order arrival, in both clocks: a skipped
-    // repeat's entry time is folded into the stored sample it repeats. Accepted
-    // trade-off: an out-of-order sample landing inside a run of skipped repeats
-    // keeps its value until the next stored sample, where the full history would
-    // have returned the repeated value again (rare; exact handling would need the
-    // skipped stamps).
+    // Exact under zero-order hold for in-order arrival, in both clocks: a skipped repeat's entry time is folded
+    // into the stored sample it repeats. Known inexactness: an out-of-order sample landing inside a run of skipped
+    // repeats keeps its value until the next stored sample, where the full history would return the repeated value
+    // again (exact handling would need the skipped stamps).
     if (!first_sample && samples.back().value == normalized) {
       changed = knownBy(samples, samples.size() - 1, entry_time);
     } else {
@@ -134,8 +113,7 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
     auto it = std::lower_bound(samples.begin(), samples.end(), tf.stamp, EdgeHistory::KeyLess{Clock::kHeader});
     const auto index = static_cast<std::size_t>(it - samples.begin());
     if (it->stamp == tf.stamp) {
-      // Same stamp: the new value applies from the sample's earliest entry key on
-      // (the entry clock cannot hold two values for one stamp).
+      // Same stamp: the new value applies from the sample's earliest entry key on (one value per stamp).
       changed = it->value != normalized;
       it->value = normalized;
       changed = knownBy(samples, index, entry_time) || changed;
@@ -149,8 +127,7 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
 
   history.newest_stamp = first_sample ? tf.stamp : std::max(history.newest_stamp, tf.stamp);
   history.newest_entry = first_sample ? entry_time : std::max(history.newest_entry, entry_time);
-  // A skipped repeat still advances the newest stamp and entry time and can evict,
-  // which changes what lookups resolve, so eviction alone also counts as a change.
+  // A skipped repeat can still evict, which changes what lookups resolve.
   const bool evicted = evictEdgeLocked(history);
   if (changed || evicted) {
     state.revision_ = nextRevision();
@@ -170,22 +147,14 @@ bool TransformBuffer::knownBy(std::deque<EdgeHistory::Sample>& samples, std::siz
 
 bool TransformBuffer::evictEdgeLocked(EdgeHistory& history) const {
   auto& samples = history.samples;
-  // kKeepAll disables eviction: bulk-ingested bounded sources (a loaded file)
-  // feed the whole recording up front, so a rolling window would trim every
-  // edge to its tail and break lookups earlier in the timeline. Under a finite
-  // window (live streaming) `samples.size() > 1` pins the most recent sample —
-  // an edge is NEVER evicted to empty, so a slow / stopped / once-published frame
-  // keeps resolving forever instead of orphaning. That "always keep the last
-  // sample" guarantee is what lets us drop the static flag: it gives static-like
-  // persistence to every edge uniformly. (The current cutoff is per-edge-relative
-  // so the guard is presently belt-and-suspenders, but it pins the invariant
-  // should eviction ever switch to a global clock.)
+  // `samples.size() > 1` keeps the last sample: an edge is never evicted to empty, so a stopped or once-published
+  // frame keeps resolving. (The cutoffs are per-edge relative, so the guard is redundant today; it pins the
+  // invariant should eviction ever use a global clock.)
   //
-  // The front goes only once its successor is at or before the cutoff in BOTH
-  // clocks: the newest sample at or before a clock's cutoff holds the value valid
-  // there, and with repeats skipped it may be far older than the cutoff. The entry
-  // cutoff keeps the cursor's live window (the store retains by entry time); the
-  // header cutoff keeps recent objects' own stamps resolvable.
+  // The front goes only once its successor is at or before the cutoff in both clocks: the newest sample at or
+  // before a cutoff holds the value valid there, and with repeats skipped it may be far older. The entry cutoff
+  // keeps the cursor's live window (the store retains by entry time); the header cutoff keeps recent objects' own
+  // stamps resolvable.
   if (samples.empty() || cache_window_ >= kKeepAll) {
     return false;
   }
@@ -203,11 +172,8 @@ std::optional<Transform> TransformSnapshot::sampleAt(const EdgeHistory& history,
   if (history.samples.empty()) {
     return std::nullopt;
   }
-  // Nearest-previous (zero-order hold) in `clock`: the last sample whose key is at
-  // or before `time` (both keys are non-decreasing along the deque). A single-sample
-  // edge therefore resolves at every time >= its key. A query strictly before the
-  // first key has no value yet (the frame had not been announced, or had not
-  // arrived, at that time) -> nullopt.
+  // Zero-order hold in `clock`: the last sample whose key is at or before `time` (both keys are non-decreasing
+  // along the deque), so a single-sample edge resolves at every time >= its key. Before the first key: nullopt.
   auto hi = std::upper_bound(history.samples.begin(), history.samples.end(), time, EdgeHistory::KeyLess{clock});
   if (hi == history.samples.begin()) {
     return std::nullopt;
@@ -223,14 +189,9 @@ void TransformSnapshot::chainToRoot(const std::string& frame, std::vector<ChainH
     if (it == parents_.end()) {
       break;  // `cur` is a root (or unknown): no outgoing edge.
     }
-    // Record the resolved edge on the hop we just added, then advance to the
-    // parent — so lookup composition reuses it instead of re-hashing `cur`.
     out.back().link = &it->second;
     cur = it->second.parent;
-    // Cycle guard: a repeated frame means a malformed tree (e.g. A→B→A, which
-    // the reparent guard does not catch). Stop so the lookup fails cleanly
-    // instead of spinning. Linear scan — chains are short, so this beats a
-    // per-lookup hash set.
+    // Cycle guard (A→B→A passes the reparent check). Linear scan: chains are short, so it beats a hash set.
     const bool seen = std::any_of(out.begin(), out.end(), [&cur](const ChainHop& hop) { return hop.frame == cur; });
     if (seen) {
       break;
@@ -241,9 +202,7 @@ void TransformSnapshot::chainToRoot(const std::string& frame, std::vector<ChainH
 
 TransformSnapshot::MeetPoint TransformSnapshot::findCommonAncestor(
     const std::vector<ChainHop>& src, const std::vector<ChainHop>& tgt) {
-  // Lowest common ancestor: the first src frame (walking up from source) that
-  // also appears in tgt. Linear scan — chains are short, so this is cheaper than
-  // building a hash index on every lookup.
+  // The first frame walking up from source that also appears in tgt. Linear scan: chains are short.
   for (std::size_t i = 0; i < src.size(); ++i) {
     for (std::size_t j = 0; j < tgt.size(); ++j) {
       if (src[i].frame == tgt[j].frame) {
@@ -256,11 +215,11 @@ TransformSnapshot::MeetPoint TransformSnapshot::findCommonAncestor(
 
 bool TransformSnapshot::isKnownFrame(const std::string& frame) const {
   if (parents_.find(frame) != parents_.end()) {
-    return true;  // appears as a child
+    return true;
   }
   for (const auto& [child, link] : parents_) {
     if (link.parent == frame) {
-      return true;  // appears as a parent (a root frame)
+      return true;
     }
   }
   return false;
@@ -272,10 +231,8 @@ PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
     return Transform::identity();
   }
 
-  // Reuse per-thread scratch instead of heap-allocating two vectors per lookup
-  // (this is the per-frame, per-link render hot path). Safe: chainToRoot results
-  // never escape this call, and lookups never recurse, so the two buffers can't
-  // be aliased mid-walk.
+  // Per-thread scratch: this is the per-frame, per-link render hot path. Safe only because the chains never escape the
+  // call and a lookup never re-enters another on the same thread.
   static thread_local std::vector<ChainHop> tgt_chain;
   static thread_local std::vector<ChainHop> src_chain;
   chainToRoot(target, tgt_chain);
@@ -283,8 +240,7 @@ PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
 
   const MeetPoint meet = findCommonAncestor(src_chain, tgt_chain);
   if (!meet.found) {
-    // Distinguish "frame not in the buffer" from "known but disconnected". The
-    // O(n) scans run only on this (rare) failure path, never in the steady loop.
+    // The O(n) scans run only on this failure path.
     if (!isKnownFrame(source)) {
       return PJ::unexpected(LookupError::kUnknownSource);
     }
@@ -294,8 +250,7 @@ PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
     return PJ::unexpected(LookupError::kDisconnected);
   }
 
-  // Compose source->common, then common->target inverse. Every hop below the
-  // common ancestor carries a non-null edge (only the root hop is null).
+  // Every hop below the common ancestor has a non-null link; only the root hop is null.
   Transform t_common_from_source = Transform::identity();
   for (std::size_t i = 0; i < meet.src_k; ++i) {
     const auto sample = sampleAt(src_chain[i].link->history, stamp, clock);
@@ -319,8 +274,6 @@ PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
 
 Transform TransformBuffer::lookupTransform(
     const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
-  // Thin wrapper: delegate to the non-throwing accessor (which takes the lock)
-  // and surface the LookupError as a message for tf2-style callers.
   auto result = tryLookupTransform(target, source, stamp, clock);
   if (!result) {
     throw std::runtime_error("pj_scene3d: no transform from '" + source + "' to '" + target + "' at requested time");
@@ -367,9 +320,7 @@ std::optional<TimePoint> TransformBuffer::latestCommonTime(
     return std::nullopt;
   }
 
-  // Newest time bounded by every edge that received more than one stamp. Edges
-  // published at a single stamp (the static case) hold for all time, so they
-  // impose no upper bound.
+  // Single-stamp edges (the static case) hold for all time and impose no bound.
   auto walk = [clock](const std::vector<ChainHop>& chain, std::size_t k, std::optional<TimePoint>& acc) {
     for (std::size_t i = 0; i < k; ++i) {
       const auto& edge = chain[i].link->history;
@@ -485,10 +436,7 @@ void TransformBuffer::setCacheWindow(Duration window) {
   if (window >= kKeepAll) {
     return;  // nothing to evict, and no state to copy for it
   }
-  // Apply the new window retroactively so a buffer switched from kKeepAll (file)
-  // to a finite window (live) is trimmed immediately, not only on the next write
-  // per edge. evictEdgeLocked keeps the last sample per edge, so static frames
-  // stay resolvable.
+  // Trim now, not on each edge's next write, so a file buffer switched to a live window shrinks immediately.
   TransformSnapshot& state = writableLocked();
   bool evicted = false;
   for (auto& [child, link] : state.parents_) {
@@ -531,12 +479,6 @@ std::shared_ptr<const TransformSnapshot> TransformBuffer::snapshot() const {
 }
 
 bool TransformBuffer::FrameNameLess::operator()(const std::string& a, const std::string& b) const noexcept {
-  // Case-insensitive display order with a case-sensitive tie-break: still a
-  // strict weak order, but two names equal under frameNameLess ("Lidar" vs
-  // "lidar") stay DISTINCT keys, so neither collapses out of a std::set the way
-  // a pure case-insensitive comparator would (it treats equivalent keys as
-  // duplicates). Frame identity is case-sensitive everywhere else; this keeps
-  // the hierarchy consistent with getAllFrames/lookups.
   if (frameNameLess(a, b)) {
     return true;
   }
@@ -588,10 +530,7 @@ std::vector<FrameRow> TransformBuffer::getFrameHierarchy() const {
   for (const auto& root : index.roots) {
     dfs(dfs, root, 0);
   }
-  // A parent cycle (e.g. map<->odom) leaves its members with no reachable root,
-  // so they would otherwise vanish from the hierarchy entirely. Emit any frame
-  // still unvisited as its own depth-0 entry (sorted for stable output) so a
-  // broken tree degrades to a flat list rather than disappearing.
+  // Frames in a parent cycle (map<->odom) have no reachable root: emit them at depth 0, sorted.
   RootSet leftover;
   for (const auto& frame : index.all_frames) {
     if (visited.count(frame) == 0) {
@@ -614,7 +553,7 @@ nlohmann::json TransformBuffer::getFrameHierarchyJson() const {
     node["name"] = name;
     node["children"] = nlohmann::json::array();
     if (!visited.insert(name).second) {
-      return node;  // cycle guard — emit node with no children
+      return node;  // cycle guard
     }
     auto it = index.children.find(name);
     if (it != index.children.end()) {
@@ -629,8 +568,7 @@ nlohmann::json TransformBuffer::getFrameHierarchyJson() const {
   for (const auto& root : index.roots) {
     out.push_back(build(build, root));
   }
-  // Same cycle handling as getFrameHierarchy: surface any frame no root reaches
-  // (cycle members) as its own top-level entry so the two views stay identical.
+  // Cycle members, as in getFrameHierarchy.
   RootSet leftover;
   for (const auto& frame : index.all_frames) {
     if (visited.count(frame) == 0) {

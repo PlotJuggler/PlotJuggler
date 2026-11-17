@@ -13,21 +13,18 @@
 
 namespace PJ {
 
-// The admission claims carried by one plugin descriptor. Version is required
-// for real descriptors and must be strict SemVer. A zero ABI and an empty
-// floor mean "not declared" so older manifests remain admissible until the
-// protocol loader performs its own ABI-symbol validation. The manifest's
-// min_plotjuggler_version is deprecated and no longer gates: abi_major is the
-// generation gate, and app-level feature gaps degrade rather than block.
+// The admission claims of one plugin descriptor. A non-empty `version` must be strict SemVer. A zero ABI and an empty
+// floor mean "not declared", so older manifests stay admissible until the protocol loader performs its own ABI-symbol
+// validation. min_plotjuggler_version is deprecated and never gates: abi_major is the generation gate, and app-level
+// feature gaps degrade rather than block.
 struct PluginCompatibilityRequirements {
   std::string_view version;
   uint32_t abi_major = 0;
   std::string_view min_sdk_required;
 };
 
-// The host contract against which admission, seeding, and runtime loading all
-// evaluate the same claims. Tests may supply an explicit context; production
-// callers normally use currentPluginHostCompatibility().
+// The host contract against which admission, seeding and runtime loading all evaluate the same claims. Tests may
+// supply an explicit context; production uses currentPluginHostCompatibility().
 struct PluginHostCompatibility {
   uint32_t abi_major = PJ_ABI_VERSION;
   std::string_view sdk_version = sdkVersion();
@@ -38,8 +35,7 @@ struct PluginCompatibilityResult {
   std::string reason;
 };
 
-// Evaluate every admission dimension in fail-closed order. Plugin values are
-// strict SemVer 2.0.0.
+// Evaluates every admission dimension in fail-closed order; plugin values are strict SemVer 2.0.0.
 [[nodiscard]] inline PluginCompatibilityResult evaluatePluginCompatibility(
     const PluginCompatibilityRequirements& requirements, const PluginHostCompatibility& host) {
   if (!requirements.version.empty()) {
@@ -78,13 +74,10 @@ struct PluginCompatibilityResult {
   return {};
 }
 
-// Feature-completeness note, deliberately SEPARATE from the binary gate above:
-// it must never affect ok/reason — install enforcement and admission are
-// fail-closed on that result, while this is display-only. `suggested` is the
-// manifest's suggested_sdk_version (the full-feature floor). Returns the
-// human-readable note when the host's SDK is older than the claim, empty when
-// full-featured, absent, or unparseable (fail-open: a bad claim never blocks
-// and never warns).
+// Feature-completeness note, SEPARATE from the binary gate above: install enforcement and admission are fail-closed
+// on that result, while this is display-only and never affects ok/reason. `suggested` is the manifest's
+// suggested_sdk_version (the full-feature floor). Returns the note when the host's SDK is older than the claim, empty
+// when full-featured, absent or unparseable (a bad claim neither blocks nor warns).
 [[nodiscard]] inline std::string evaluateFeatureCompleteness(
     std::string_view suggested, std::string_view host_sdk = sdkVersion()) {
   if (suggested.empty()) {

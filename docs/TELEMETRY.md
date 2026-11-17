@@ -1,8 +1,7 @@
 # Anonymous usage statistics
 
 PlotJuggler 4 sends **one small anonymous ping per launch** to
-`https://app.plotjuggler.io/telemetry` to count daily users — the same
-mechanism PlotJuggler 3 used, hardened for privacy.
+`https://app.plotjuggler.io/telemetry` to count daily users.
 
 **Unpackaged and browser builds never ping:**
 
@@ -15,8 +14,8 @@ mechanism PlotJuggler 3 used, hardened for privacy.
   installed user, and it cannot be recognised across reloads (see Opting out),
   so counting one would inflate the installed base rather than measure it.
 
-This is a denylist, not an allowlist: our own releases stamp `appimage`, `deb`
-or `windows`, but any *other* non-empty stamp is sent as-is, so a downstream
+This is a denylist, not an allowlist: our own releases stamp `appimage`, `deb`,
+`windows` or `macos`, but any *other* non-empty stamp is sent as-is, so a downstream
 packager who sets their own channel name still shows up rather than silently
 vanishing. The endpoint should treat an unrecognised channel as exactly that —
 a third-party package — and never expect `source`.
@@ -28,7 +27,7 @@ a third-party package — and never expect `source`.
 | `user_id` | `3f2c…` (SHA-256) | Salted hash of the OS machine id — counts unique machines; cannot be reversed or linked to other applications. `QSysInfo::machineUniqueId()` is empty on platforms Qt does not implement it for, and the `QSettings` fallback is only as durable as the settings backend: a build whose settings do not survive a restart mints a fresh id every launch and inflates the unique-user count. |
 | `os` / `os_version` | `ubuntu` / `24.04` | Platform-support decisions. |
 | `version` | `4.0.1` | Adoption per release. |
-| `installation` | `appimage` | Package-channel share. Our releases send `appimage`, `deb` or `windows`; a downstream package sends whatever it stamped. A `source` or empty stamp suppresses the ping entirely. |
+| `installation` | `appimage` | Package-channel share. Our releases send `appimage`, `deb`, `windows` or `macos`; a downstream package sends whatever it stamped. A `source` or empty stamp suppresses the ping entirely. |
 | `arch` | `x86_64` | Whether arm64 builds are worth shipping. |
 | `display_server` | `wayland` | Linux only: Wayland vs X11 session share. |
 
@@ -62,8 +61,8 @@ Automation that launches the real GUI inside a container must set
 WebAssembly build does not ping at all: `getenv` under Emscripten reads a
 synthetic table that never inherits the host process environment, so `CI` is
 invisible to the running module. The browser suites in `tests/wasm/` boot the
-application dozens of times per run on US-hosted CI runners; they would have
-been indistinguishable from real users. `tests/wasm/support/browser.js` adds a
+application dozens of times per run on CI runners, indistinguishable from real
+users. `tests/wasm/support/browser.js` adds a
 second, independent barrier: Chromium fails resolution of every non-localhost
 name (`MAP * ~NOTFOUND`) — note that mapping to `0.0.0.0` would NOT do this,
 since the kernel rewrites a connect to the unspecified address as a connect to
@@ -79,7 +78,7 @@ switch is hidden in that build rather than offering control over nothing.
 `pj_app/src/main.cpp` behind the `Preferences::send_anonymous_stats` setting
 and a `#ifndef PJ_TARGET_WASM` guard. The packaging channel comes from
 the `PJ_INSTALLATION` CMake cache variable (default `source`; release CI
-stamps `appimage` / `deb` / `windows`).
+stamps `appimage` / `deb` / `windows` / `macos`).
 
 The channel gate lives in `TelemetryPing::send()` (a single chokepoint,
 pinned by `telemetry_ping_test`'s `UnpackagedBuildsNeverReachTheEndpoint`);

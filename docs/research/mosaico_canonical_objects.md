@@ -79,10 +79,10 @@ Relevant code:
 
 ## 2. What is stored in Mosaico and what PJ receives
 
-The Mosaico server implementation is not in this worktree, so the exact database
-tables or cloud API DTOs are outside this repository. What this worktree does
-show is the client-side contract: the Mosaico toolbox treats the server output as
-typed object ontologies such as:
+The Mosaico server and the Mosaico toolbox plugin live outside this repository,
+so this section describes the contract as seen from PlotJuggler's side (not
+re-checked against the toolbox's source). The toolbox treats the server output
+as typed object ontologies such as:
 
 - `point_cloud2`
 - `pose`
@@ -300,14 +300,15 @@ ObjectStore latestAt(...)
   -> sdk::BuiltinObject
 ```
 
-That returned `sdk::BuiltinObject` is a `std::any` holding the concrete SDK type.
-The layer then uses `std::any_cast` to get the type it expects.
+That returned `sdk::BuiltinObject` holds the concrete SDK type with its
+`BuiltinObjectType` tag. The layer recovers the type it expects with
+`object.get<T>()`, which returns null for any other tag.
 
 Example from `PointCloudLayer`:
 
 ```text
 resolveObject(...)
-  -> any_cast<CompressedPointCloud>
+  -> get<CompressedPointCloud>
   -> async compressed-cloud decode
   -> PointCloud
   -> render
@@ -315,7 +316,7 @@ resolveObject(...)
 or
 
 resolveObject(...)
-  -> any_cast<PointCloud>
+  -> get<PointCloud>
   -> render
 ```
 
@@ -323,7 +324,7 @@ Example from `PosesInFrameLayer`:
 
 ```text
 resolveObject(...)
-  -> any_cast<PosesInFrame>
+  -> get<PosesInFrame>
   -> build pose triad instances
   -> render
 ```
@@ -332,7 +333,7 @@ Example from `TransformService`:
 
 ```text
 resolveObject(...)
-  -> any_cast<FrameTransforms>
+  -> get<FrameTransforms>
   -> insert edges into TransformBuffer
 ```
 
@@ -473,7 +474,7 @@ Mosaico compressed cloud
   -> decodeCloudini/decodeDraco(...)
   -> sdk::PointCloud
   -> convertCanonical(...) or fast path
-  -> PointcloudRenderPass
+  -> PointRhiPass
 ```
 
 ## 8. Poses and motion-state objects
@@ -648,7 +649,7 @@ ObjectStore sample
   -> resolve CameraInfo intrinsics by frame_id
   -> depthToPoints(...)
   -> DecodedPointCloud
-  -> PointcloudRenderPass
+  -> PointRhiPass
 ```
 
 Back-projection is in:
@@ -664,7 +665,7 @@ Back-projection is in:
 5. Builds a parallel depth scalar array for colormapping.
 6. Computes the point-cloud AABB and scalar range in the same pass.
 
-The resulting cloud is rendered by the same `PointcloudRenderPass` used for
+The resulting cloud is rendered by the same `PointRhiPass` used for
 normal point clouds.
 
 ## 12. Rendering summary
@@ -676,7 +677,7 @@ After canonicalization, rendering is type-specific but straightforward.
 ```text
 sdk::PointCloud
   -> fast path or convertCanonical(...)
-  -> PointcloudRenderPass
+  -> PointRhiPass
   -> GL_POINTS or sphere/cube imposters
 ```
 
@@ -721,7 +722,7 @@ sdk::Image with depth encoding
   -> recover wrapped raw samples if needed
   -> depthToPoints(...)
   -> DecodedPointCloud
-  -> PointcloudRenderPass
+  -> PointRhiPass
 ```
 
 ## 13. Mental model for debugging

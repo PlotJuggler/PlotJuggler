@@ -61,27 +61,11 @@ There are two ways to bundle them (and a no-plugin default):
 
 ### Curated set (`--plugins-registry`)
 
-The registry lists every official extension; the AppImage bundles this subset
-(`BUNDLE_IDS` — same set as the Windows installer's `$PluginIds`, plus the
-Linux-only `ros2-topic-subscriber` and `toolbox-assistant-agent`, whose CLI
-backends are POSIX-only):
-
-`csv-loader`, `mcap-loader`, `parquet-loader`, `ulog-loader`, `mp4-loader`,
-`pointcloud-3d-loader`, `dummy-streamer`, `foxglove-bridge`,
-`plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
-`json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
-`toolbox-transform-editor`, `toolbox-mosaico`, `arrow-parser`,
-`toolbox-fft`, `toolbox-anomaly-detector`, `toolbox-data-exporter`,
-`influx-parser`, `navmap-parser`, `candump-loader`, `blf-loader`, `mf4-loader`,
-`log-widget`, `toolbox-assistant-agent`, `ros2-topic-subscriber`.
-
-Every plugin of the browser build (`cmake/PjWasmOfficialPlugins.cmake`) is in
-this set.
-
-Not bundled: `toolbox-colormap`, `toolbox-reactive-scripts-editor` (excluded by
-request); `mqtt-subscriber`, `udp-server`, `zmq-subscriber`,
-`lerobot-loader` (published, but not curated — installable via the in-app
-marketplace).
+The registry lists every official extension; the AppImage bundles this subset (`BUNDLE_IDS` in
+`build_appimage.sh`: the same set as the Windows installer's `$PluginIds`, plus the Linux-only
+`ros2-topic-subscriber` and `toolbox-assistant-agent`, whose CLI backends are POSIX-only). It includes
+every plugin of the browser build (`cmake/PjWasmOfficialPlugins.cmake`). Published plugins outside the
+set are installable from the in-app marketplace.
 
 ### Where plugins live, and why
 
@@ -137,9 +121,8 @@ and no retro payload ships.
 image (`Dockerfile.build`). It defaults to `PJ_BUILD_TESTS=OFF PJ_BUILD_DEMOS=OFF
 PJ_BUILD_WIDGET_DEMOS=OFF` and `PJ_BUILD_TARGET=pj_app` (`--target pj_app`), so only
 the shipped app and its dependencies, including `pj-plugin-check`, are built.
-A fresh packaging tree is **~0.95 GB** and contains only the app closure
-(**5 executables**). Packaging defaults to `PJ_DEBUG_INFO=none`; the AppImage
-ships without DWARF.
+A fresh packaging tree contains only the app closure. Packaging defaults to
+`PJ_DEBUG_INFO=none`; the AppImage ships without DWARF.
 
 The image ships Conan static dependency archives with debug info stripped; use
 `REBUILD_IMAGE=1` to refresh the baked cache.
@@ -150,22 +133,11 @@ and demos for a later `ctest` run inside the builder image. It compiles the test
 but does not run them. Per-module gtest runners use `gtest_discover_tests` to
 register ctest names `<runner>.<Suite>.<Case>`, with one process per case;
 `ctest -R '^pj_runtime_tests\.' --test-dir build` filters the runtime module.
-For the tests-on tree size, see workspace findings
-`2026-09-08-build-size-reduction-results.md`.
 
-`--with-tests` defaults to `PJ_DEBUG_INFO=split` and `PJ_COMPRESS_DEBUG=ON`, matching
-the Linux developer defaults in `build.sh`. Both environment knobs are overridable:
-`PJ_DEBUG_INFO=none|lines|full|split` selects no debug info, minimal line/backtrace
-info, full DWARF, or DWARF in `.dwo` sidecars kept in the build tree;
-`PJ_COMPRESS_DEBUG=ON|OFF` controls zlib compression. The policy lives in
-[`cmake/PjDebugInfo.cmake`](../../cmake/PjDebugInfo.cmake).
-
-Linux builds with GNU/Clang compilers use thin archives to avoid copying object
-files, and `resources.qrc` plus the splash memes in `memes.qrc` are compiled once as `pj_resources`.
-[`scripts/build_tree_size.sh`](../../scripts/build_tree_size.sh) `<build-dir>`
-reports bytes by artifact class in decimal GB. Use a fresh build tree when
-measuring the smaller default; disabling targets does not remove artifacts from
-an existing tree.
+`--with-tests` defaults to `PJ_DEBUG_INFO=split` and `PJ_COMPRESS_DEBUG=ON`, as in `build.sh`; both are environment
+knobs, documented with the policy in [`cmake/PjDebugInfo.cmake`](../../cmake/PjDebugInfo.cmake).
+[`scripts/build_tree_size.sh`](../../scripts/build_tree_size.sh) `<build-dir>` reports bytes by artifact class in
+decimal GB; measure on a fresh tree, since disabling targets does not remove artifacts from an existing one.
 
 Plugins:
 
@@ -199,10 +171,10 @@ runs in host-side `*-appimage-docker/` directories, so rebuilds are incremental.
 ## CI
 
 `.github/workflows/linux-appimage-release.yml` (the release build) compiles the
-app inside the `pj4-appimage-builder` container (glibc 2.35 floor), bundles the
+app inside the AppImage builder image (`appimage-builder-image.yml`; glibc 2.35 floor), bundles the
 curated plugin set with `--plugins-registry` and the retro payload with
 `--retro-wad`, audits the result's glibc needs,
-and — on a version tag (e.g. `3.9.1`, no leading `v`) — attaches the AppImage to the GitHub Release
+and — on a version tag (e.g. `4.2.0`, no leading `v`) — attaches the AppImage to the GitHub Release
 (`workflow_dispatch` builds an artifact only).
 
 ## Multi-distro ROS 2
@@ -223,16 +195,15 @@ into `usr/lib/plotjuggler/plugins/<id>/` verbatim, preserving the
 glibc audit exempts the per-distro inners (they are built in each distro's own
 container and only ever `dlopen`-ed on machines running that distro).
 
-## How it differs from PlotJuggler 3
+## Qt and Conan discovery
 
-PJ3 linked the system Qt 5, so `linuxdeploy-plugin-qt` found Qt on system paths.
-PJ4 links Qt from `./.qt` and most external dependencies from Conan, so the build
-script points `linuxdeploy` at both (`QMAKE`, `PATH`, and sourcing
+PJ4 links Qt from `./.qt` (not a system path `linuxdeploy-plugin-qt` would find) and most external
+dependencies from Conan, so the build script points `linuxdeploy` at both (`QMAKE`, `PATH`, and sourcing
 `build/conanrun.sh` for the Conan library closure).
 
 ## Known limitations
 
 1. **Qt-module coverage for plugins is not separately analyzed.** The Qt plugin
    deploys modules based on `plotjuggler4`; a plugin needing a Qt module that the
-   app does not pull would be missed. None observed yet; revisit if a plugin
+   app does not pull would be missed. None observed; check this first if a plugin
    fails to load with a missing-`libQt6*` error.

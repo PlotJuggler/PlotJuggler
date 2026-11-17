@@ -52,15 +52,13 @@ struct ToolResult {
 struct ToolContext {
   PJ::sdk::ToolboxHostView host;       // catalog snapshot + readSeries
   PJ::sdk::DataProcessorsHostView dp;  // createTransform / createMarkers / validateScript
-  // Reads back what we just created — markers are objects, and entryCount() is
-  // the only way to know how many were actually produced. Optional: an unbound
-  // view means the answer carries no count, never that the tool fails.
+  // Reads back what we just created: markers are objects, and entryCount() is the only way to know how many were
+  // produced. Optional: an unbound view means the answer carries no count, never that the tool fails.
   PJ::sdk::ToolboxObjectReadHostView objects;
-  // App-control path. Optional on the same terms: an unbound view degrades to a
-  // clean "host did not expose <service>" the model reads.
+  // App-control path, optional on the same terms: an unbound view degrades to a clean "host did not expose <service>".
   PJ::sdk::PlaybackHostView playback;  // play/pause/seek/rate/state + ns->display-seconds
-  // Tabs this agent composed, and the only plots it may touch. The viewport
-  // view is bounded to them by the host, so the two travel together.
+  // Tabs this agent composed, and the only plots it may touch. The host bounds the viewport view to them, so the two
+  // travel together.
   PJ::sdk::PlotTabHostView plot_tabs;
   PJ::sdk::ViewportHostView viewport;  // zoom, scoped to the tabs above
   // Zooms ONE of the caller's tabs, `tab`, to `range` (display-axis seconds), or fits it to its data when `range`

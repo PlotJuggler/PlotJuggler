@@ -33,12 +33,10 @@ Graphics — important: **every GPU widget goes through Qt's RHI**: the `pj_scen
 `pj_scene3D` view (its own HDR / SSAO / EDL / AgX passes on `QRhiWidget`) and the
 plot canvas (`PlotRhiCanvas`), on the native API (OpenGL on Linux, D3D11 on
 Windows, Metal on macOS, WebGL2 in the browser). QRhi changes matter to all
-three, and `<rhi/qrhi.h>` has no cross-minor compatibility guarantee, so every
-channel stays on the pinned minor.
-The Qt 6.11 behaviours the QRhi code works around (grab-only frames, the OpenGL
+three. The Qt behaviours the QRhi code works around (grab-only frames, the OpenGL
 depth resolve and multisample textures, the Metal fallback, `QRhiWidget` pipeline
-caches) are in `pj_scene3D/docs/TECHNICAL_NOTES.md` §3; the 6.12 upgrade
-checklist is in `pj_scene3D/docs/QRHI_NEXT.md`.
+caches) are in [`pj_scene3D/docs/TECHNICAL_NOTES.md`](../pj_scene3D/docs/TECHNICAL_NOTES.md)
+"Qt workarounds", with the Qt version each was found on.
 
 ## New APIs worth reaching for (added 6.9–6.11)
 
@@ -92,10 +90,9 @@ Prefer these over hand-rolled equivalents. Names are exact.
 ## Deprecations & removals — act/avoid
 
 - **Qt Charts is deprecated since 6.10** (migrate-to-Qt-Graphs messaging) and is
-  **removed in Qt 7**. PJ4 **no longer depends on Qt Charts**: its one consumer,
-  `pj_dialog_host`'s `ChartPreviewWidget`, was reimplemented on the vendored
-  **Qwt** (`plotjuggler_qwt`); the dialog-protocol chart API (`setChartSeries` /
-  `onChartViewChanged`) is unchanged. **Do NOT** reach for **Qt Graphs** as the
+  **removed in Qt 7**. PJ4 does not use Qt Charts: `pj_dialog_host`'s
+  `ChartPreviewWidget` (behind the dialog-protocol chart API `setChartSeries` /
+  `onChartViewChanged`) draws with **Qwt** (`plotjuggler_qwt`). **Do NOT** reach for **Qt Graphs** as the
   replacement — its 2D path renders via Qt Quick Shapes / `QQuickWidget`, which
   would drag QML into a pure-Widgets module. Qwt (already used by `pj_plotting`)
   is the project's charting tool.
@@ -133,7 +130,8 @@ Prefer these over hand-rolled equivalents. Names are exact.
   or `get_activation_token` with no matching `activate`.
 - The first `QRhiWidget`/`QOpenGLWidget` added to an already-shown window switches
   it from raster to GPU composition, and Qt (6.4+) destroys and recreates its
-  native window to do so: on Wayland the window visibly flashes.
+  native window to do so: on Wayland the window visibly flashes. How PJ4 avoids it:
+  [`pj_scene2D/docs/TECHNICAL_NOTES.md`](../pj_scene2D/docs/TECHNICAL_NOTES.md) "QRhiWidget in a raster window".
 
 ## House style: string literal suffixes
 
@@ -159,5 +157,5 @@ FFmpeg). scene3D's photorealism is hand-written QRhi passes, *not* Qt Quick 3D.
 
 - [`../versions.env`](../versions.env) — pins the Qt version consumed by CMake, scripts, Docker, and CI.
 - [`../scripts/install_qt6.sh`](../scripts/install_qt6.sh) — installs the pinned Linux Qt build.
-- `pj_scene2D/docs/TECHNICAL_NOTES.md` — `QRhiWidget` lifecycle + video-rendering
-  specifics (the APIs there became public/usable in 6.8 and remain so on 6.11).
+- [`../pj_scene2D/docs/TECHNICAL_NOTES.md`](../pj_scene2D/docs/TECHNICAL_NOTES.md) "QRhiWidget in a raster window" —
+  `QRhiWidget` composition switch and lifecycle across docks.

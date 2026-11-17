@@ -99,16 +99,13 @@ TEST_F(SessionManagerIngestCancelTest, StaleTokenIsNoOp) {
   EXPECT_EQ(end_spy[0][0].value<IngestToken>().id, token1.id);
   EXPECT_EQ(end_spy[0][1].value<IngestOutcome>(), IngestOutcome::kCancelled);
 
-  // Old token's updateIngest should be silently ignored.
   manager_.updateIngest(token1, 50, 100);
   EXPECT_EQ(progress_spy.count(), 0);  // No new signal.
 
-  // Old token's endIngest should be silently ignored.
   manager_.endIngest(token1, IngestOutcome::kCompleted);
   EXPECT_EQ(end_spy.count(), 1);             // Still just the supersede terminal.
   EXPECT_TRUE(manager_.hasActiveIngests());  // New ingest still active.
 
-  // New token's signals should work.
   manager_.updateIngest(token2, 50, 100);
   EXPECT_EQ(progress_spy.count(), 1);
 
@@ -153,11 +150,9 @@ TEST_F(SessionManagerIngestCancelTest, RequestCancelReturnsFailureForStaleToken)
   IngestCancelFn cancel_fn1 = [](bool) {};
   const IngestToken token1 = manager_.beginIngest(dataset_id, "label1", 100, /*cancellable=*/true, cancel_fn1);
 
-  // Start a new ingest, invalidating token1.
   IngestCancelFn cancel_fn2 = [](bool) {};
   manager_.beginIngest(dataset_id, "label2", 100, /*cancellable=*/true, cancel_fn2);
 
-  // Attempt to cancel with the old token should fail.
   const bool result = manager_.requestCancel(token1, /*keep_partial=*/true);
 
   EXPECT_FALSE(result);
@@ -173,11 +168,9 @@ TEST_F(SessionManagerIngestCancelTest, CancelAfterTerminalIsIgnored) {
   manager_.endIngest(token, IngestOutcome::kCompleted);
   EXPECT_EQ(end_spy.count(), 1);
 
-  // Attempt to cancel after the terminal should fail.
   const bool result = manager_.requestCancel(token, /*keep_partial=*/true);
   EXPECT_FALSE(result);
 
-  // No additional signal should be emitted.
   EXPECT_EQ(end_spy.count(), 1);
 }
 
@@ -188,12 +181,10 @@ TEST_F(SessionManagerIngestCancelTest, CancelRecordsIntentForTerminal) {
   IngestCancelFn cancel_fn = [](bool) {};
   const IngestToken token = manager_.beginIngest(dataset_id, "label", 100, /*cancellable=*/true, cancel_fn);
 
-  // Request cancellation.
   const bool cancel_result = manager_.requestCancel(token, /*keep_partial=*/true);
   EXPECT_TRUE(cancel_result);
 
-  // End the ingest with kCompleted, but since cancel was requested, it should
-  // report kCancelled instead.
+  // cancel requested, so the terminal reports kCancelled even though the producer ends with kCompleted.
   manager_.endIngest(token, IngestOutcome::kCompleted);
 
   EXPECT_EQ(end_spy.count(), 1);
@@ -455,7 +446,6 @@ TEST_F(SessionManagerIngestCancelTest, MonotonicTokenIds) {
 TEST_F(SessionManagerIngestCancelTest, InvalidTokensIgnored) {
   const IngestToken invalid_token{0, 0};
 
-  // These should all silently no-op without crashing.
   manager_.updateIngest(invalid_token, 50, 100);
   manager_.endIngest(invalid_token, IngestOutcome::kCompleted);
   const bool result = manager_.requestCancel(invalid_token, true);

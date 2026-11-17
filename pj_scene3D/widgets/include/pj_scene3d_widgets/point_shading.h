@@ -9,8 +9,6 @@
 
 namespace pj::scene3d {
 
-// Point-cloud shading inputs the point pass feeds its shaders.
-
 // Sphere perspective falloff softens beyond this view depth (metres).
 inline constexpr float kSphereDepthThreshold = 5.0f;
 // Physical point-size clamps (px); callers scale them by the device pixel ratio.

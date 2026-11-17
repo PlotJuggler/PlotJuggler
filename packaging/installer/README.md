@@ -1,7 +1,7 @@
 # PlotJuggler 4 — Windows installer (Qt Installer Framework)
 
 A self-contained Windows installer for PJ4, built with the **Qt Installer
-Framework** (IFW) — the same mechanism PlotJuggler 3 uses. Output is a single
+Framework** (IFW). Output is a single
 offline `.exe`: a wizard that installs the app with a Start-Menu + Desktop
 shortcut and a maintenance/uninstall tool. Tag-triggered releases name it
 `PlotJuggler-<version>-Windows-x64.exe` (`-CleanReleaseName`, matching the
@@ -70,7 +70,7 @@ modules there too.
   The `cpython/*:shared=True` override matches Windows CI and produces
   `python3XX.dll` — the local default is static on MSVC and the installer
   would then fail to find the runtime.
-- **Qt 6.12.0 msvc2022_64** — for `windeployqt.exe`. Auto-detected under `.qt`
+- **The `msvc2022_64` Qt kit of `PJ_QT_VERSION`** (`versions.env`) — for `windeployqt.exe`. Auto-detected under `.qt`
   (the `scripts/install_qt6.sh` / aqt layout); otherwise pass `-QtDir`.
 - **Qt Installer Framework tools** — for `binarycreator.exe`. Install via the Qt
   Maintenance Tool, or `aqt install-tool --outputdir .qt windows desktop tools_ifw`.
@@ -80,30 +80,13 @@ modules there too.
   mandatory. Use `-SkipPlugins` for an app-only installer, or point
   `-PluginRegistryUrl` at a local registry mirror.
 
-## GitHub Actions Conan repository
+## Conan packages in CI
 
-The Windows CI and release workflows first resolve Conan 2 packages through the
-shared `plotjuggler-conan` repository at
-`https://plotjuggler.jfrog.io/artifactory/api/conan/plotjuggler-conan`. Configure
-these repository-level GitHub Actions settings before dispatching a build:
-
-- Variable `JFROG_USER`: the username shown by the JFrog profile menu (often the
-  account email address). An Actions secret with the same name is also accepted
-  for organizations that provision both JFrog values as secrets.
-- Secret `JFROG_TOKEN`: a scoped JFrog identity/access token with read and
-  deploy/write access to the repository.
-
-These may be repository- or organization-level settings. Organization-level
-settings must grant `PlotJuggler/PJ4` access.
-
-Trusted push and manual jobs authenticate, install with
-`-r=plotjuggler-conan -r=conancenter`, and publish only missing Conan revisions
-to JFrog. This requires one local Conan repository in JFrog; an Artifactory
-remote proxy and virtual repository are not required. Pull-request and
-noncanonical-repository jobs never reference the JFrog credential; Windows CI
-uses public ConanCenter for those jobs and never uploads. Release jobs require
-the JFrog settings and fail early with an actionable error when either is
-missing. No workflow archives or restores the complete `~/.conan2` directory.
+The Windows CI and release workflows install with `-r=plotjuggler-conan -r=conancenter`
+(`scripts/configure_conan_remote.sh` registers the first; anonymous read is enough), keep
+`~/.conan2` in the Actions cache keyed on `conanfile.txt` and `conan.lock` (the "Compute Conan
+cache key" step of `windows-ci.yml`), and build from source what neither remote has. No
+workflow uploads Conan packages, so no JFrog credential is configured.
 
 ## Usage
 
@@ -151,15 +134,9 @@ source), `-PluginPlatform <key>` (defaults to `windows-x86_64`), and
 `-CleanReleaseName` (name the output `PlotJuggler-<Version>-Windows-x64.exe`
 instead of the commit-stamped default — used by release CI on tag builds).
 
-The default whitelist bundles these 27 published plugins:
-`mcap-loader`, `csv-loader`, `parquet-loader`, `ulog-loader`, `mp4-loader`,
-`pointcloud-3d-loader`, `dummy-streamer`, `foxglove-bridge`,
-`plotjuggler-bridge`, `webrtc-client`, `ros-parser`, `protobuf-parser`,
-`json-parser`, `data-tamer-parser`, `toolbox-quaternion`,
-`toolbox-transform-editor`, `toolbox-mosaico`, `arrow-parser`, `toolbox-fft`,
-`toolbox-anomaly-detector`, `toolbox-data-exporter`, `influx-parser`,
-`navmap-parser`, `candump-loader`, `blf-loader`, `mf4-loader`, and `log-widget`
-(every plugin of the browser build, `cmake/PjWasmOfficialPlugins.cmake`).
+The default whitelist is the `$PluginIds` default in `build_windows_installer.ps1`: the published
+plugins the app is expected to ship with, including every plugin of the browser build
+(`cmake/PjWasmOfficialPlugins.cmake`).
 
 ## Portable ZIP
 
@@ -196,8 +173,7 @@ artifacts; version-tag builds attach both to the GitHub Release.
   prompts install without an escalation dialog. Admin-write locations still
   work; the user just picks one.
 - **Replace-existing** — if the target directory already contains a PJ4
-  install, the wizard **asks before** running `maintenancetool purge`. The
-  earlier flow purged silently.
+  install, the wizard **asks before** running `maintenancetool purge`.
 - **Shortcuts** — Start Menu and Desktop link to `PlotJuggler4.exe`.
 
 ## Remote updates (maintenance tool)
@@ -219,7 +195,7 @@ hosts the [apt repository](../deb/README.md#publishing-to-the-apt-repository),
 under the path of the update URL (`windows/` in production). Release CI runs
 both from `windows-release.yml`, gated on the repository variable
 `PJ4_WINDOWS_UPDATE_URL` and using the same R2 secrets as the Linux side.
-Without that variable the installer is built exactly as before and nothing is
+Without that variable the installer carries no update repository and nothing is
 published.
 
 ### Rehearsing on a staging prefix
@@ -246,9 +222,8 @@ installer with the update host blocked, proving an installer carrying
 `<RemoteRepositories>` still installs offline. No Windows machine is needed. The
 two runs share a concurrency group, so start the second only once the first
 has finished. Each rehearsal needs version numbers never published to that
-prefix before: a version is published once (see
-[`docs/update_channels_design.md`](../../docs/update_channels_design.md)), and
-deleting `windows-staging/` from the bucket does not clear what the edge has
+prefix before: archives go up immutable, and the publisher refuses to replace one
+already published with different content; deleting `windows-staging/` from the bucket does not clear what the edge has
 already cached.
 
 The maintenance tool runs the component's `installscript.qs` too, so anything
@@ -258,9 +233,9 @@ the replace-existing-installation prompt) must return early unless
 being updated.
 
 `config.xml` itself stays clean — the block is injected at render time rather
-than templated, so a build without `-UpdateUrl` is byte-identical to one from
-before this existed. An empty `<Url/>` would leave every maintenance tool
-polling nothing on each launch.
+than templated, so a build without `-UpdateUrl` has no `<RemoteRepositories>`
+entry. An empty `<Url/>` would leave every maintenance tool polling nothing on
+each launch.
 
 ### Upload order
 
@@ -270,12 +245,11 @@ last. A tool polling mid-publish then sees an index older than the payload,
 never one promising an archive that has not landed. (The apt publisher follows
 the same rule for the same reason.)
 
-### Three things to know before relying on it
+### Before relying on it
 
 - **The URL is compiled in at install time.** Only machines that installed a
   build already carrying `-UpdateUrl` can ever check for updates — turning
-  this on does nothing for anyone who installed an earlier release. That is an
-  argument for enabling it sooner rather than later.
+  this on does nothing for anyone who installed an earlier release.
 - **An installer installs the newest published version.** With
   `<RemoteRepositories>` set, IFW consults the update repository while
   installing, so running an older installer after a newer release is published
@@ -290,12 +264,12 @@ the same rule for the same reason.)
   certificate of the update host. Authenticode-signing the installer and
   maintenance tool is the usual complement — see the code-signing gap below.
 
-## Known gaps (first version)
+## Known gaps
 
 - **No code signing.** The `.exe` is unsigned, so SmartScreen warns on first
   run ("More info" → "Run anyway").
 - **ROS 2 subscriber.** The ros2-stream build system is Linux-only, so ROS
-  streaming is absent from the Windows installer for this release.
+  streaming is absent from the Windows installer.
 - **Assistant Agent.** `toolbox-assistant-agent` is published for Windows, but
   its backends drive the `claude`/`codex` CLI through POSIX-only code, so it
   is bundled on Linux only (AppImage/.deb) and left out of the whitelist here.

@@ -11,7 +11,7 @@
 // Decode adapters: turn a canonical CompressedPointCloud (Draco / Cloudini) into a
 // canonical PointCloud the existing render path understands. SELF-DESCRIBING formats
 // only — the point layout is recovered from the blob. CPU-heavy; widgets run it off
-// the UI thread. See pj_scene3D/CLAUDE.md "Decoding boundary".
+// the UI thread. See pj_scene3D/CLAUDE.md "Invariants" (the codec carve-out).
 namespace pj::scene3d {
 
 struct PointCloudDecodeLimits {

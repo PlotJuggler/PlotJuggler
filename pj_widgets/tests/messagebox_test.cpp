@@ -25,17 +25,16 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-// Force the button to be laid out so width()/sizeHint() reflect the final,
-// wrapped geometry. show() triggers Polish (label wrapping) then the
-// showEvent() resize; the second processEvents() lets that resize's relayout
-// settle before we measure.
+// Forces the button to be laid out so width() and sizeHint() reflect the final, wrapped geometry: show() triggers
+// Polish (label wrapping) then the showEvent() resize; the second processEvents() lets that relayout settle before
+// measuring.
 void realize(PJ::MessageBox& dlg) {
   dlg.show();
   QCoreApplication::processEvents();
   QCoreApplication::processEvents();
 }
 
-// Vertical gaps (px) between consecutive stacked buttons, ordered top→bottom.
+// Vertical gaps (px) between consecutive stacked buttons, top to bottom.
 QList<int> buttonGaps(PJ::MessageBox& dlg) {
   auto buttons = dlg.findChildren<QPushButton*>(u"pjMessageBoxButton"_s);
   std::sort(buttons.begin(), buttons.end(), [&dlg](QPushButton* a, QPushButton* b) {
@@ -54,9 +53,8 @@ QLabel* bodyLabelOf(PJ::MessageBox& box) {
   return box.findChild<QLabel*>(u"pjMessageBoxBody"_s);
 }
 
-// Regression: the styled card breaks heightForWidth propagation, so a verbose
-// question() body (e.g. the destructive dataset-merge confirmation) opened one
-// line tall unless the dialog grows to the wrapped height on first show.
+// The styled card breaks heightForWidth propagation, so a verbose question() body (the destructive dataset-merge
+// confirmation) opened one line tall unless the dialog grows to the wrapped height on first show.
 TEST(MessageBoxTest, MultiLineBodyIsNotClipped) {
   PJ::MessageBox dlg;
   dlg.setTitle(u"Merge datasets"_s);
@@ -158,16 +156,14 @@ TEST(MessageBoxTest, LongLabelWrapsInsteadOfClipping) {
   EXPECT_LE(dlg.width(), dlg.maximumWidth());
   // The long label is broken across lines...
   EXPECT_TRUE(btn->text().contains(QLatin1Char('\n')));
-  // ...so the button no longer demands more width than it is actually given:
-  // its minimum width hint fits within its laid-out width (i.e. not clipped).
+  // The button no longer demands more width than it is given: its minimum width hint fits within its laid-out width
+  // (not clipped).
   EXPECT_LE(btn->minimumSizeHint().width(), btn->width());
 }
 
 TEST(MessageBoxTest, WrapsCorrectlyUnderLargerStyledFont) {
-  // Regression: the wrap budget must be measured with the button's *rendered*
-  // (QSS-applied) font, not the default font. A stylesheet that enlarges the
-  // font reproduces the bug where labels were wrapped with stale metrics and
-  // the lines then overflowed (clipped) at the real, larger font size.
+  // The wrap budget is measured with the button's rendered (QSS-applied) font, not the default font: a stylesheet that
+  // enlarges the font would otherwise wrap labels with stale metrics, and the lines overflow (clip) at the real size.
   const QString prev = qApp->styleSheet();
   qApp->setStyleSheet(u"QWidget { font-size: 16pt; }"_s);
   {
@@ -197,12 +193,10 @@ TEST(MessageBoxTest, WrappedButtonGrowsTaller) {
 }
 
 TEST(MessageBoxTest, ButtonSpacingIsConstantAcrossDialogs) {
-  // A wrapping body used to over-constrain the layout, which then compressed
-  // the gaps between buttons by a variable amount (measured 5–14 px across
-  // dialogs). Every gap must now use Comfortable spacing regardless of button
-  // count or body length. The compression only reproduces under the app's QSS
-  // metrics (10pt font + the button min-height/padding that make the dialog
-  // tall enough to over-constrain), so apply a matching stylesheet here.
+  // A wrapping body must not over-constrain the layout and compress the gaps between buttons by a variable amount
+  // (measured 5-14 px across dialogs): every gap uses Comfortable spacing whatever the button count or body length. The
+  // compression reproduces only under the app's QSS metrics (10pt font plus the button min-height and padding that make
+  // the dialog tall enough to over-constrain), so a matching stylesheet is applied.
   const int kExpectedGap = PJ::theme::space(PJ::theme::Space::Comfortable);
   const QString prev = qApp->styleSheet();
   qApp->setStyleSheet(QStringLiteral(

@@ -41,7 +41,6 @@ PJ::theme::Theme widgetTheme(const QWidget* widget) {
 }
 
 QString toggleButtonQss(PJ::theme::Theme active_theme) {
-  // A button is the Secondary interaction fill per state — no border.
   return QStringLiteral(
              "QPushButton { border: none; border-radius: %1px; padding: %2px %3px; background-color: %4; }"
              "QPushButton:hover { background-color: %5; }"
@@ -88,7 +87,6 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   invert_btn->setStyleSheet(toggleButtonQss(widgetTheme(widget)));
   invert_btn->setIcon(QIcon(QStringLiteral(":/resources/svg/invert.svg")));
   invert_btn->setIconSize(QSize(20, 20));
-  // Match the standard icon-button extent used across the app (icon 20 + padding 4).
   invert_btn->setFixedSize(24, 24);
   invert_btn->setToolTip(tr("Invert colormap"));
   colormap_row_layout->addWidget(invert_btn, 0);
@@ -111,9 +109,7 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   far_spin->setValue(far_m_);
   layout->addRow(tr("Far"), far_spin);
 
-  // On-demand range fit: snap near/far to the current frame's 2nd/98th depth
-  // percentiles. Manual remains the default (continuous auto flickered per frame);
-  // this is a one-shot the user triggers when the default range is unhelpful.
+  // One-shot fit to the current frame's depth percentiles; a continuous auto range flickered frame to frame.
   auto* autofit_btn = new QPushButton(tr("Auto-fit range"), widget);
   autofit_btn->setFocusPolicy(Qt::NoFocus);
   autofit_btn->setToolTip(tr("Set Near/Far from the current frame's depth distribution (2–98%)"));
@@ -157,8 +153,6 @@ std::unique_ptr<MediaSource> DepthImageLayer::createMediaSource(const SceneLayer
     return nullptr;
   }
 
-  // Real depth (e.g. ROS sensor_msgs/Image) is decoded via the topic's parser,
-  // exactly like ImageLayer; only canonical pj_image_v1 producers have no parser.
   const auto binding = session->parserBindingForObjectTopic(topicId());
   std::unique_ptr<DepthPipelineSource> source;
   if (binding.parser != nullptr) {
@@ -168,7 +162,6 @@ std::unique_ptr<MediaSource> DepthImageLayer::createMediaSource(const SceneLayer
   }
   depth_source_ = source.get();
   applyTo(*source);
-  // The decode runs on a worker thread now; repaint when a frame is ready.
   source->setFrameReadyCallback(makeQueuedRepaintCallback());
   return source;
 }
@@ -180,7 +173,7 @@ void DepthImageLayer::onBeforeDetach() {
 void DepthImageLayer::applyTo(DepthPipelineSource& source) const {
   source.setColormap(static_cast<uint8_t>(colormap_));  // core takes an opaque colormap id
   source.setInvert(invert_);
-  source.setRange(near_m_, far_m_);  // manual default; Auto-fit updates near_m_/far_m_, then re-applies here
+  source.setRange(near_m_, far_m_);
   source.setOpacity(opacity_);
 }
 
@@ -193,7 +186,7 @@ void DepthImageLayer::saveOptions(QDomElement& element) const {
 }
 
 bool DepthImageLayer::loadOptions(const QDomElement& element) {
-  // Unknown tokens (including legacy "jet" layouts) restore the default.
+  // Unknown tokens (e.g. "jet") restore the default.
   const Colormap restored_colormap =
       parseColormap(element.attribute(u"colormap"_s, colormapToken(colormap_))).value_or(Colormap::kTurbo);
   const QString invert_text = element.attribute(u"invert"_s, invert_ ? u"true"_s : u"false"_s);
@@ -241,10 +234,7 @@ void DepthImageLayer::applyOptions() {
     return;
   }
   applyTo(*depth_source_);
-  // Colormap/range/invert are GPU uniforms carried on the frame's DepthColorParams
-  // (not baked into the pixels). The setters above invalidate the worker so it
-  // re-emits a frame with the new params; re-apply the current tracker time so that
-  // re-emit happens now instead of on the next tick.
+  // The params travel on the frame: re-applying the tracker time re-emits it with them now.
   if (const auto ts = lastTrackerTimeNs(); ts.has_value()) {
     depth_source_->setTimestamp(*ts);
   }

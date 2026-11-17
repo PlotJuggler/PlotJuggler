@@ -15,8 +15,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel superseded runs on PRs only. Push-to-main runs publish any Conan
-  # binaries built from source to Artifactory for subsequent jobs.
+  # Cancel superseded runs on PRs only. Push-to-main runs save the Conan cache
+  # (binaries built from source included) for subsequent jobs.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -82,7 +82,7 @@ jobs:
 
       - name: Setup MSVC environment
         # Conan's package ID includes the detected compiler settings, so activate
-        # MSVC before detecting the profile or resolving Artifactory binaries.
+        # MSVC before detecting the profile or resolving prebuilt Conan binaries.
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
@@ -166,10 +166,9 @@ jobs:
           key: qt-sdk-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64-v1
 
       - name: Restore canonical main Qt cache
-        # Migration fallback for PR refs: the feature-branch qt-sdk cache is
-        # intentionally not visible to refs/pull/*, while the proven cache
-        # published by current main is. Restoring its original path/key avoids
-        # a 380 MB aqt download now. The next push-to-main will save the same
+        # Fallback for PR refs: the feature-branch qt-sdk cache is not visible to
+        # refs/pull/*, while the cache published by main is. Restoring its original
+        # path/key avoids a 380 MB aqt download. Push-to-main saves the same
         # verified SDK under qt-sdk-* for sharing with windows-release.yml.
         if: steps.qt-sdk-cache.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v5
@@ -306,8 +305,7 @@ jobs:
           # Use Ninja Multi-Config so sccache is actually invoked: CMake's
           # CMAKE_<LANG>_COMPILER_LAUNCHER is honored by the Ninja and
           # Makefile generators only — the Visual Studio (MSBuild) generator
-          # silently ignores it, which is why prior runs showed "Compile
-          # requests: 0" in sccache --show-stats.
+          # silently ignores it ("Compile requests: 0" in sccache --show-stats).
           #
           # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT compiles Release, the
           # configuration built here, without debug information. MSVC has no

@@ -52,8 +52,8 @@ using PJ::sdk::BuiltinObjectType;
 using PJ::sdk::CameraInfo;
 using PJ::sdk::Image;
 
-// Reads only the header of an encoded image and checks its declared size
-// against kSceneLimits, so an over-limit container is refused before inflating.
+// Reads only the header of an encoded image and checks its declared size against kSceneLimits, so an over-limit
+// container is refused before inflating.
 bool encodedImageFits(const uchar* data, std::size_t size, QString* error) {
   if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return false;
@@ -178,8 +178,8 @@ void DepthCloudLayer::setVisible(bool visible) {
   }
   visible_ = visible;
   if (!visible_) {
-    // A hidden layer releases its retained points; re-showing projects once.
-    // Its bounds stay: a hidden layer still counts in the camera's scene bounds.
+    // A hidden layer releases its retained points (re-showing projects once); its bounds stay, as a hidden layer still
+    // counts in the camera's scene bounds.
     const std::optional<AABB> bounds = world_bounds_;
     invalidateSample();
     budget_.reset();
@@ -281,8 +281,6 @@ QWidget* DepthCloudLayer::createConfigWidget(QWidget* parent) {
   form->setContentsMargins(
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
-  // Match the Grid / Transforms section grids in Scene3DConfigPanel: comfortable
-  // label↔field gap, snug row pitch — so the panel keeps one consistent rhythm.
   form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
@@ -339,11 +337,10 @@ std::optional<PJ::sdk::DepthImage> DepthCloudLayer::toDepthView(
     view.width = image.width;
     view.height = image.height;
     view.encoding = image.encoding;
-    // Some transports (Mosaico, serialization_format=image) losslessly PNG/JPEG-wrap
-    // the raw depth buffer as an 8-bit grayscale image of width=stride. Recover the
-    // flat bytes via QImage before aliasing — otherwise the compressed container is
-    // read as raw depth and the cloud is empty/garbage (mirrors the 2D depth path's
-    // recoverContainerRawSamples). A non-container payload aliases the raw bytes.
+    // Some transports (serialization_format=image) losslessly PNG/JPEG-wrap the raw depth buffer as an 8-bit grayscale
+    // image of width=stride. Recover the flat bytes via QImage before aliasing, or the container is read as raw depth
+    // and the cloud is empty/garbage (as in the 2D depth path's recoverContainerRawSamples). A non-container payload
+    // aliases the raw bytes.
     const uchar* d = image.data.data();
     const size_t n = image.data.size();
     const bool is_png = n >= 8 && d[0] == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G' && d[4] == 0x0D &&
@@ -357,9 +354,8 @@ std::optional<PJ::sdk::DepthImage> DepthCloudLayer::toDepthView(
         wrapped.height() > 0) {
       const int h = wrapped.height();
       const size_t wz = static_cast<size_t>(wrapped.width());
-      // Mono16 already IS the flat 2-byte-per-sample buffer; anything else is
-      // collapsed to one luma byte per sample (input is gray-expanded, so luma
-      // == the original byte). Pack scanline-by-scanline (QImage rows are padded).
+      // Mono16 already IS the flat 2-byte-per-sample buffer; anything else is collapsed to one luma byte per sample
+      // (input is gray-expanded, so luma == the original byte). Pack scanline by scanline (QImage rows are padded).
       size_t bytes_per_sample = 2U;
       if (wrapped.format() != QImage::Format_Grayscale16) {
         wrapped = wrapped.convertToFormat(QImage::Format_Grayscale8);
@@ -377,15 +373,12 @@ std::optional<PJ::sdk::DepthImage> DepthCloudLayer::toDepthView(
     return view;
   }
   if (image.encoding == "compressedDepth") {
-    // PNG-decode (the 12-byte ROS header was already stripped by the parser, which
-    // also set compressed_depth_min/max). RealSense depth is 16UC1 (millimetres),
-    // so we read 16-bit grayscale directly. 32FC1 inverse-quantized compressedDepth
-    // is not yet handled (TODO: use compressed_depth_min/max + the quant params).
-    //
-    // Some streams (e.g. RealSense bags) carry a BARE PNG that begins at the IHDR
-    // chunk type, missing the 8-byte signature + the IHDR length field; restore them
-    // so QImage accepts it (mirrors the 2D depth path's toDepthImage). Without this,
-    // QImage rejects the payload and the layer reports "Not a depth image".
+    // PNG-decode (the 12-byte ROS header was stripped by the parser, which also set compressed_depth_min/max).
+    // RealSense depth is 16UC1 (mm), read as 16-bit grayscale; 32FC1 inverse-quantized compressedDepth is not handled
+    // (compressed_depth_min/max and the quant params are unused).
+    // Some streams (e.g. RealSense bags) carry a BARE PNG starting at the IHDR chunk type, without the 8-byte signature
+    // and IHDR length: restore them so QImage accepts it (as the 2D depth path's toDepthImage does), else the layer
+    // reports "Not a depth image".
     static constexpr uchar kPngPrefix[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D};
     const uchar* png_data = image.data.data();
     int png_size = static_cast<int>(image.data.size());
@@ -450,23 +443,19 @@ DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, 
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
 
-  // Fast path: intrinsics for this frame_id are memoized and the CameraInfo that
-  // supplied them is unchanged at the playhead (same sample identity, verified
-  // metadata-only — no parse and no payload resolve). Calibration is latched/
-  // constant, so this skips re-scanning every topic and re-parsing every
-  // CameraInfo on each depth frame.
+  // Fast path: intrinsics for this frame_id are memoized and the CameraInfo that supplied them is unchanged at the
+  // playhead (same sample identity, verified metadata-only). Calibration is latched, so this skips re-scanning every
+  // topic and re-parsing every CameraInfo on each depth frame.
   if (intrinsics_cache_.has_value() && intrinsics_cache_->frame_id == frame_id && intrinsicsCurrentAt(time_ns)) {
     return intrinsics_cache_->intr;
   }
 
   const PJ::DatasetId dataset_id = store.descriptor(topic_id_).dataset_id;
 
-  // frame_id is the authoritative join key between a depth image and its
-  // CameraInfo (matching Foxglove's frame_id rule / Rerun's camera hierarchy) —
-  // never the topic name. An exact frame_id match wins outright. Otherwise we may
-  // fall back to a lone CameraInfo, but ONLY when the choice is unambiguous (a
-  // single camera, or a frame-less image); with multiple cameras and no match we
-  // refuse rather than risk pairing the wrong camera's intrinsics.
+  // frame_id is the authoritative join key between a depth image and its CameraInfo (as in Foxglove's frame_id rule and
+  // Rerun's camera hierarchy), never the topic name. An exact match wins outright; otherwise a lone CameraInfo is used
+  // ONLY when unambiguous (a single camera, or a frame-less image), and with several cameras and no match we refuse
+  // rather than risk pairing the wrong camera's intrinsics.
   std::optional<DepthIntrinsics> lone;  // the sole usable CameraInfo, if exactly one
   PJ::ObjectTopicId lone_topic;         // its topic + sample identity, to memoize the fallback
   SampleId lone_sample;
@@ -476,8 +465,7 @@ DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, 
     if (desc.dataset_id != dataset_id || builtinObjectTypeFor(desc) != BuiltinObjectType::kCameraInfo) {
       continue;
     }
-    // latestAt() yields the CameraInfo sample at-or-before the playhead, which
-    // also covers the common latched/once-published calibration.
+    // latestAt() yields the CameraInfo sample at or before the playhead, which also covers a latched calibration.
     auto resolved = store.latestAt(id, time_ns);
     if (!resolved.has_value()) {
       continue;
@@ -509,7 +497,6 @@ DepthIntrinsics DepthCloudLayer::resolveIntrinsics(const std::string& frame_id, 
     lone_sample = sample;
   }
 
-  // No exact frame_id match. Use a lone CameraInfo only when unambiguous.
   if (valid_count == 1 && lone.has_value()) {
     if (!frame_id.empty()) {
       qCDebug(lcDepthCloudLayer) << "no CameraInfo matches frame" << QString::fromStdString(frame_id)
@@ -531,13 +518,11 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
     return;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  // Sample-memo predicate shared by the metadata-first gate and the post-resolve
-  // re-check: the depth sample under the calibration at the playhead is already
-  // drawn or (QRhi) being projected. The calibration half keeps a CameraInfo-only
-  // update (new K, unchanged depth image) from being swallowed by the depth memo.
-  // A hit becomes what the playhead wants: a projection queued for another
-  // sample is cancelled, and one running for another sample is dropped when it
-  // lands, so a scrub back never ends on the sample it left.
+  // Sample-memo predicate shared by the metadata-first gate and the post-resolve re-check: the depth sample under the
+  // calibration at the playhead is already drawn or (QRhi) being projected. The calibration half keeps a
+  // CameraInfo-only update (new K, same depth image) from being swallowed by the depth memo. A hit becomes what the
+  // playhead wants: a projection queued for another sample is cancelled and one running for another is dropped on
+  // landing, so a scrub back never ends on the sample it left.
   const auto already_current = [this, time_ns](const SampleId& id) {
     if (!intrinsicsCurrentAt(time_ns)) {
       return false;
@@ -604,7 +589,6 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
     return;
   }
   const ProjectionKey key{id, memoCamera()};
-  // Latest wins: while one runs, only the newest request waits behind it.
   wanted_ = key;
   backproject_worker_.request(
       BackprojectRequest{
@@ -636,7 +620,6 @@ void DepthCloudLayer::updateSourceFrame(const std::string& frame_id) {
 }
 
 std::uint64_t DepthCloudLayer::budgetKey(std::uint64_t sample_uid) const {
-  // The depth range decides which pixels become points.
   const std::uint64_t range =
       std::bit_cast<std::uint32_t>(min_depth_m_) | (std::uint64_t{std::bit_cast<std::uint32_t>(max_depth_m_)} << 32U);
   return (sample_uid * 0x9e3779b97f4a7c15ULL) ^ range;
@@ -746,8 +729,8 @@ DepthCloudLayer::BackprojectResult DepthCloudLayer::backproject(const Backprojec
 }
 
 void DepthCloudLayer::onBackprojectFinished(BackprojectResult result) {
-  // A hide, a depth-range edit or a dataset swap invalidated older work; a
-  // projection the tracker moved away from is obsolete.
+  // A hide, a depth-range edit or a dataset swap invalidated older work; a projection the tracker moved away from is
+  // obsolete.
   if (result.key != wanted_) {
     return;
   }

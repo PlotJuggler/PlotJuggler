@@ -6,14 +6,12 @@
 
 namespace PJ::dialog_presenter {
 
-/// Closes one open dialog as a rejection (the user's Cancel). A no-op once that dialog completed,
-/// however late it is called.
+/// Rejects one dialog as the user's Cancel would; a no-op once it completed, however late it is called.
 using DialogCancelFn = std::function<void()>;
 
-/// Told when a dialog is up and when it is gone: called with the functor that closes it once it is
-/// open (before any nested event loop runs), then with an empty functor when it completed. Never
-/// called when no dialog opens. For whoever must be able to withdraw the question (an AI agent's
-/// stopped call): the closer is that dialog's own, so nothing else on screen is ever touched.
+/// Called with the dialog's closer before any nested event loop runs, then with an empty functor once it completed;
+/// never when no dialog opens. For a caller that may withdraw the question (an agent's stopped call): the closer
+/// reaches only that dialog, nothing else on screen.
 using DialogWatch = std::function<void(DialogCancelFn close)>;
 
 }  // namespace PJ::dialog_presenter

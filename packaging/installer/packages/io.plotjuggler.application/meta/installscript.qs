@@ -7,8 +7,8 @@
 //   %LOCALAPPDATA%\PlotJuggler4 unless the user picks another dir. Corporate
 //   locked-down machines that block UAC prompts still install cleanly.
 // - Creates Start Menu + Desktop shortcuts on Windows.
-// - Prompts before purging a previous installation in the same directory
-//   (the earlier PJ3-inherited flow ran maintenancetool purge silently).
+// - Prompts before running maintenancetool purge on a previous installation in the
+//   same directory.
 
 var targetDirectoryPage = null;
 

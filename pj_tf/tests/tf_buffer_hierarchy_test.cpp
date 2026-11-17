@@ -84,8 +84,8 @@ TEST(TfBufferHierarchy, ChildrenAtSameDepthAreAlphabetical) {
 
 TEST(TfBufferHierarchy, MixedCaseSiblingsSortCaseInsensitively) {
   TransformBuffer buf;
-  // Foxglove-style: capital-O frames must interleave with lowercase
-  // siblings, not cluster ahead of them because uppercase < lowercase ASCII.
+  // Capital-O frames interleave with lowercase siblings instead of clustering ahead of them (uppercase < lowercase
+  // in ASCII).
   (void)buf.setTransform(makeStatic("base_link", "Omniwheel_1"));
   (void)buf.setTransform(makeStatic("base_link", "imu_link"));
   (void)buf.setTransform(makeStatic("base_link", "Omniwheel_2"));
@@ -106,10 +106,7 @@ TEST(TfBufferHierarchy, MixedCaseSiblingsSortCaseInsensitively) {
 TEST(TfBufferHierarchy, FlatWalkIsCycleSafe) {
   TransformBuffer buf;
   (void)buf.setTransform(makeStatic("a", "b"));
-  // Attempting to set b->a would throw (parents_ enforces single-parent).
-  // To exercise the visited guard, manually craft via two non-conflicting
-  // edges that form a degenerate self-cycle is not directly possible with
-  // the public API. Instead, verify a deep linear chain terminates.
+  // A deep linear chain; cycles are in ParentCycleStillSurfacesAllFrames.
   (void)buf.setTransform(makeStatic("b", "c"));
   (void)buf.setTransform(makeStatic("c", "d"));
 
@@ -187,7 +184,7 @@ TEST(TfBufferHierarchyJson, DeepChainTerminates) {
   EXPECT_TRUE(json[0]["children"][0]["children"][0]["children"][0]["children"].empty());
 }
 
-// ----------------------- cycle & case-collision regression -----------------------
+// ----------------------- cycles and case collisions -----------------------
 
 // Collect the names emitted by getFrameHierarchy (flat) into a set.
 std::set<std::string> hierarchyNames(TransformBuffer& buf) {
@@ -213,11 +210,8 @@ std::set<std::string> jsonNames(const nlohmann::json& forest) {
   return names;
 }
 
-// A two-node parent cycle (map<->odom) leaves every frame with no reachable root.
-// Building it: publish map->odom (parents_[odom]=map), then odom->map
-// (parents_[map]=odom — accepted, map had no parent yet); plus a child under odom.
-// Before the fix the roots set was empty and the WHOLE tree vanished from the
-// hierarchy. Now cycle members are surfaced at depth 0 so nothing disappears.
+// A two-node parent cycle (map<->odom, accepted because each child is parented once) leaves every frame with no
+// reachable root: its members are surfaced at depth 0, so the whole tree does not vanish.
 TEST(TfBufferHierarchy, ParentCycleStillSurfacesAllFrames) {
   TransformBuffer buf;
   (void)buf.setTransform(makeStatic("map", "odom"));        // parents_[odom] = map
@@ -235,9 +229,8 @@ TEST(TfBufferHierarchy, ParentCycleStillSurfacesAllFrames) {
   EXPECT_EQ(json_names.count("base_link"), 1U);
 }
 
-// Two sibling frames differing only by ASCII case ('Lidar' vs 'lidar', e.g. from
-// two publishers) must BOTH appear. A pure case-insensitive set comparator would
-// collapse them; FrameNameLess tie-breaks case-sensitively so neither is dropped.
+// Sibling frames differing only by ASCII case ('Lidar' vs 'lidar') both appear: FrameNameLess tie-breaks
+// case-sensitively.
 TEST(TfBufferHierarchy, CaseCollidingSiblingsBothAppear) {
   TransformBuffer buf;
   (void)buf.setTransform(makeStatic("base_link", "Lidar"));

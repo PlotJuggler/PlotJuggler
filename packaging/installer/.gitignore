@@ -1,8 +1,7 @@
-# The staging directory now lives under %TEMP% (see build_windows_installer.ps1),
-# so nothing under packages/ should ever appear in a checkout. Kept as a
-# safety net in case a legacy in-tree stage is still around locally.
+# The staging directory lives under %TEMP% (see build_windows_installer.ps1), so
+# nothing under packages/ should appear in a checkout; this ignores an in-tree stage.
 packages/io.plotjuggler.application/data/
 # Output produced by build_windows_installer.ps1 -OutDir <default '.'>.
-# Name is <YYYY.MM.DD>.PlotJuggler-<Version>-Windows-x64.<main-commit>.exe, so the
-# glob is broad enough to catch the date prefix and commit suffix.
+# Name is PlotJuggler-<Version>-Windows-x64[.<short-commit>].exe; the glob also
+# catches a prefix before PlotJuggler-.
 **/*PlotJuggler-*Windows-x64*.exe

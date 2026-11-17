@@ -1,9 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Proves the host-side int64 time rebasing (LuaSisoTransform) and documents the
-// bug it avoids: an absolute-epoch timestamp cast straight to double quantizes
-// to ~256 ns and collapses sub-microsecond dt via catastrophic cancellation.
+// The host-side int64 time rebasing of LuaSisoTransform, against the failure it avoids: an absolute-epoch timestamp
+// cast straight to double quantizes to ~256 ns and collapses a sub-microsecond dt.
 
 #include <gtest/gtest.h>
 

@@ -17,25 +17,18 @@
 
 namespace PJ {
 
-// QLabel variant that re-elides its text whenever its width changes and
-// can also be driven from the outside. Below a configurable minimum the
-// label hides itself so its space is reclaimed by sibling layout items;
-// when its parent re-expands, applyAvailableWidth() (called from
-// whoever drives the row) brings it back. It only ever re-shows what it
-// hid itself: a label that is merely not shown yet (still parentless,
-// or hidden by its owner) is left alone, since showing a parentless
-// widget makes it a top-level window (on Wayland, one whose activation
-// leaves GNOME's launch-busy cursor spinning).
+// QLabel that re-elides its text whenever its width changes and can also be driven from outside. Below a configurable
+// minimum the label hides itself so siblings reclaim its space; when its parent re-expands, applyAvailableWidth()
+// (called by whoever drives the row) brings it back. It only re-shows what it hid itself: a label that is merely not
+// shown yet (parentless, or hidden by its owner) is left alone, because showing a parentless widget makes it a
+// top-level window (on Wayland, one whose activation leaves GNOME's launch-busy cursor spinning).
 //
-// The dual interface (own resizeEvent + applyAvailableWidth) is needed
-// because hidden widgets don't receive resize events: once we go to
-// 0 px we have to be told from the outside to come back.
+// The dual interface (own resizeEvent plus applyAvailableWidth) is needed because hidden widgets receive no resize
+// events: once the label is at 0 px it has to be told from outside to come back.
 //
-// setMaxLineCount(n) switches to an n-line summary: the text word-wraps
-// onto up to n lines and any overflow elides into the last line, so the
-// label never shows a partially clipped line (QLabel has no multi-line
-// elide of its own — its word-wrap happily lays out lines the widget
-// rect then cuts through).
+// setMaxLineCount(n) switches to an n-line summary: the text word-wraps onto up to n lines and any overflow elides into
+// the last line, so the label never shows a partially clipped line (QLabel has no multi-line elide, and its word-wrap
+// lays out lines the widget rect then cuts through).
 class ElidingLabel : public QLabel {
  public:
   explicit ElidingLabel(QWidget* parent = nullptr) : QLabel(parent) {
@@ -45,7 +38,7 @@ class ElidingLabel : public QLabel {
 
   void setFullText(QString text) {
     full_text_ = std::move(text);
-    // Re-elide using current width without waiting for a resize tick.
+    // Re-elides at the current width without waiting for a resize tick.
     applyAvailableWidth(width());
   }
 
@@ -63,18 +56,15 @@ class ElidingLabel : public QLabel {
     applyAvailableWidth(width());
   }
 
-  // Word-wrap onto up to `lines` lines, eliding overflow into the last
-  // one. 1 (the default) is the classic single-line elide. QLabel's own
-  // wordWrap must stay OFF in both modes — the wrapping happens here so
-  // the line budget actually holds.
+  // Word-wraps onto up to `lines` lines, eliding overflow into the last one; 1 (the default) is the classic single-line
+  // elide. QLabel's own wordWrap must stay off in both modes: the wrapping happens here so the line budget holds.
   void setMaxLineCount(int lines) {
     max_line_count_ = std::max(1, lines);
     applyAvailableWidth(width());
   }
 
-  // Externally-driven update: parent passes the budget it has carved
-  // out for the label. This is the path that can RE-SHOW a label the
-  // width threshold hid (which wouldn't otherwise see resize events).
+  // Externally driven update: the parent passes the budget it carved out for the label. This is the path that can
+  // re-show a label the width threshold hid (it receives no resize events).
   void applyAvailableWidth(int width_px) {
     last_width_px_ = width_px;
     if (width_px < hide_below_) {
@@ -96,25 +86,21 @@ class ElidingLabel : public QLabel {
   }
 
  protected:
-  // Layout-driven update: when sibling widgets resize naturally the
-  // label receives a resize event and re-elides without needing the
-  // parent to call applyAvailableWidth.
+  // Layout-driven update: when siblings resize, the label receives a resize event and re-elides without the parent
+  // calling applyAvailableWidth.
   void resizeEvent(QResizeEvent* event) override {
     QLabel::resizeEvent(event);
     applyAvailableWidth(width());
   }
 
-  // Any show, ours or the owner's, ends a threshold hide: a later owner
-  // hide() is the owner's decision and must stick.
+  // Any show, ours or the owner's, ends a threshold hide: a later owner hide() is the owner's decision and must stick.
   void showEvent(QShowEvent* event) override {
     QLabel::showEvent(event);
     hidden_for_width_ = false;
   }
 
-  // A QSS font lands after construction (widget polish), which would
-  // leave text elided with stale metrics; re-elide at the last known
-  // budget — not width(), which may be wider than what an external
-  // driver granted.
+  // A QSS font lands after construction (widget polish) and would leave the text elided with stale metrics: re-elide at
+  // the last known budget, not width(), which may exceed what an external driver granted.
   void changeEvent(QEvent* event) override {
     QLabel::changeEvent(event);
     if (event->type() == QEvent::FontChange || event->type() == QEvent::StyleChange) {
@@ -123,10 +109,9 @@ class ElidingLabel : public QLabel {
   }
 
  private:
-  // Lay out the (whitespace-normalized) text at width_px, keep the first
-  // max_line_count_-1 lines verbatim, and elide everything left over into
-  // the final line. WrapAtWordBoundaryOrAnywhere so an unbreakable token
-  // (a URL) can't overflow the budget.
+  // Lays out the whitespace-normalized text at width_px, keeps the first max_line_count_-1 lines verbatim and elides
+  // the rest into the final line. WrapAtWordBoundaryOrAnywhere, so an unbreakable token (a URL) cannot overflow the
+  // budget.
   [[nodiscard]] QString wrappedElidedText(const QFontMetrics& metrics, int width_px) const {
     const QString text = full_text_.simplified();
     QTextLayout layout(text, font());

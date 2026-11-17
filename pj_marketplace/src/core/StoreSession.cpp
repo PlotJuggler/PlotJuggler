@@ -82,9 +82,8 @@ Expected<StoreSession, StoreRejection> StoreSession::open(const QString& store_r
   if (!lease) {
     return StoreSession(std::move(*layout), nullptr, lease.error());
   }
-  // The legacy ExtensionManager is still the only production session caller in
-  // PR 5, so writer-open must retain its crash-residue sweep independently of
-  // ProfileStore's narrower, lifecycle-aware garbage collection.
+  // Writer-open sweeps crash residue in the extraction root: holding the lease, no other process owns an operation
+  // directory there.
   sweepOperationDirectories(layout->extractionRoot());
   return StoreSession(std::move(*layout), std::make_unique<StoreWriteLease>(std::move(*lease)), std::nullopt);
 }

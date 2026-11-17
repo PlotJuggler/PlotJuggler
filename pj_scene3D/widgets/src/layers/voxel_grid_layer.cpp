@@ -125,9 +125,8 @@ bool VoxelGridLayer::xmlLoadState(const QDomElement& element) {
   if (!settings.has_value()) {
     return false;
   }
-  // active_field_name_ is restored verbatim; if the named field is absent when a
-  // grid arrives, resolveField() falls back to the default and adopts the saved
-  // name later once a grid carrying it appears (late-arrival safe).
+  // active_field_name_ is restored verbatim; if the named field is absent when a grid arrives, resolveField() falls
+  // back to the default and adopts the saved name once a grid carrying it appears (late-arrival safe).
   setActiveField(QString::fromStdString(settings->field));
   uploaded_field_setting_ = kNoFieldSetting;  // force a re-pack on the next render
   setDrawMode(settings->draw_mode);
@@ -145,7 +144,6 @@ bool VoxelGridLayer::attach(const PJ::SceneLayerContext& ctx) {
     qCWarning(lcVoxel) << "attach: session is null";
     return false;
   }
-  // A parser-backed topic, or a parser-less canonical one (resolveObject()).
   if (!scene3d_ctx.session->parserBindingForObjectTopic(topic_id_) &&
       !hasCanonical3DCodec(PJ::sdk::BuiltinObjectType::kVoxelGrid)) {
     qCWarning(lcVoxel) << "attach: no parser or canonical codec for voxel-grid topic" << topic_id_.id;
@@ -156,10 +154,9 @@ bool VoxelGridLayer::attach(const PJ::SceneLayerContext& ctx) {
   disconnect(reload_connection_);
   reload_connection_ = connect(
       ctx_.session, &PJ::SessionManager::datasetAboutToBeReplaced, this, &VoxelGridLayer::onDatasetAboutToBeReplaced);
-  // Streaming-tolerant attach (matches OccupancyGridLayer): the topic may have no
-  // sample yet (layout restore at stream start, catalog drag). bootstrap() only
-  // pre-warms source_frame_ + the default field; updateAt() self-heals later, so a
-  // failure must NOT drop the layer.
+  // Streaming-tolerant attach (as OccupancyGridLayer): the topic may have no sample yet (layout restore at stream
+  // start, catalog drag). bootstrap() only pre-warms source_frame_ and the default field; updateAt() self-heals later,
+  // so a failure must NOT drop the layer.
   if (!bootstrap()) {
     qCWarning(lcVoxel) << "attach: bootstrap deferred for voxel-grid topic" << topic_id_.id
                        << "— render will start once a sample arrives";
@@ -275,11 +272,10 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
     return false;
   }
   PJ::ObjectStore& store = ctx_.session->objectStore();
-  // Fast path, checked metadata-first (latestEntryIdAt — no payload resolve, so
-  // an unchanged grid never pays a cold refetch of an evicted pool seed): the
-  // same grid + same field setting is already packed. No parse, no pack, no
-  // upload — the scrub/replay contract (zero per-voxel CPU work). Shared by the
-  // gate and the post-resolve re-check (a racing insert can change the pick).
+  // Fast path, checked metadata-first (latestEntryIdAt, no payload resolve: an unchanged grid never pays a cold refetch
+  // of an evicted pool seed): the same grid + field setting is already packed, so no parse, pack or upload (the
+  // scrub/replay contract: zero per-voxel CPU work). Shared by the gate and the post-resolve re-check (a racing insert
+  // can change the pick).
   const auto already_uploaded = [this](PJ::SequentialUID uid) {
     return uid == uploaded_uid_ && active_field_name_ == uploaded_field_setting_;
   };
@@ -289,10 +285,9 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
   }
   auto entry = entry_id.has_value() ? store.latestAt(topic_id_, time_ns) : std::nullopt;
   if (!entry.has_value() || entry->payload.bytes.empty()) {
-    // No sample at/before this time (scrubbed before the first sample, or a gap).
-    // Clear the volume AND invalidate the upload memo: otherwise scrubbing back onto
-    // the same store entry would hit the fast-path above, skip the re-pack, and
-    // leave the volume empty — the grid would silently never return.
+    // No sample at or before this time (scrubbed before the first sample, or a gap): clear the volume AND invalidate
+    // the upload memo, or scrubbing back onto the same store entry would hit the fast path, skip the re-pack and leave
+    // the volume empty for good.
     const bool changed = hasVolume() || !dataWarning().isEmpty();
     clearVolume();
     uploaded_uid_ = {};
@@ -303,7 +298,7 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
   if (already_uploaded(entry->sequential_uid)) {
     return false;
   }
-  // Every exit below marks this sample packed, so a bad one is not retried per frame.
+  // Set before validation: a bad grid stays marked packed, so it is not re-packed every frame.
   uploaded_uid_ = entry->sequential_uid;
   uploaded_field_setting_ = active_field_name_;
   const auto fail = [this](QString warning) {
@@ -332,10 +327,8 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
   render_stamp_ = objectStamp(grid->timestamp_ns, entry->payload_stamp_shift);
   populateFields(*grid);
 
-  // Untrusted wire dims: a corrupt grid can declare far more voxels than its
-  // payload backs (see kMaxRenderableVoxels). Packing refuses it, so surface a
-  // layer-row warning and skip the work rather than leave the user staring at an
-  // empty view with no explanation.
+  // Untrusted wire dims: a corrupt grid can declare far more voxels than its payload backs (see kMaxRenderableVoxels).
+  // Packing refuses it, so surface a layer-row warning and skip the work instead of an empty view with no explanation.
   const uint64_t voxels = pj::scene3d::voxelCount(*grid);
   if (voxels > kMaxRenderableVoxels) {
     qCWarning(lcVoxel) << "updateAt: voxel count" << voxels << "exceeds render cap" << kMaxRenderableVoxels
@@ -393,7 +386,6 @@ bool VoxelGridLayer::updateAt(int64_t time_ns) {
 }
 
 void VoxelGridLayer::setFixedFrame(const QString& frame) {
-  // The grid is frame-relative; the renderer places it per-frame.
   fixed_frame_ = frame.toStdString();
   emit repaintRequested();
 }
@@ -409,8 +401,8 @@ void VoxelGridLayer::setVisible(bool visible) {
     return;
   }
   visible_ = visible;
-  // Release the packed volume while hidden; un-hiding re-packs. Its bounds
-  // stay: a hidden layer still counts in the camera's scene bounds.
+  // Release the packed volume while hidden (un-hiding re-packs); its bounds stay, as a hidden layer still counts in the
+  // camera's scene bounds.
   if (!visible_) {
     budget_.reset();
     const AABB bounds = source_bounds_;
@@ -441,7 +433,6 @@ std::uint64_t VoxelGridLayer::renderKey(PJ::Timepoint time) const {
 }
 
 bool VoxelGridLayer::prepareForRender(std::uint64_t remaining_view_voxels) {
-  // The budget_ candidate: the sample at the playhead (settings changes reset the latch).
   const auto candidate = [this] {
     return PJ::latestEntryRenderKey(
         ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_,
@@ -553,13 +544,10 @@ QWidget* VoxelGridLayer::createConfigWidget(QWidget* parent) {
   form->setContentsMargins(
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None),
       PJ::theme::space(PJ::theme::Space::None), PJ::theme::space(PJ::theme::Space::None));
-  // Match the Grid / Transforms section grids in Scene3DConfigPanel: comfortable
-  // label↔field gap, snug row pitch — so the panel keeps one consistent rhythm.
   form->setHorizontalSpacing(PJ::theme::space(PJ::theme::Space::Comfortable));
   form->setVerticalSpacing(PJ::theme::space(PJ::theme::Space::Snug));
   outer->addLayout(form);
 
-  // Field selector — populated from the last decoded grid's fields.
   auto* field_combo = new PJ::ComboBox(container);
   for (const QString& name : available_fields_) {
     field_combo->addItem(name, name);
@@ -618,11 +606,9 @@ QWidget* VoxelGridLayer::createConfigWidget(QWidget* parent) {
   range_hi_spin->setValue(manual_hi_);
   form->addRow(tr("Range max:"), range_hi_spin);
 
-  // The Range min/max fields serve TWO roles: the manual colormap range (when auto
-  // is off) AND the kRange draw-predicate window (always, regardless of auto). So
-  // they stay editable whenever auto-range is off OR the draw mode is "In range" —
-  // otherwise picking "In range" with the default auto-range on would pin the
-  // predicate to a stale [0,1] with no way to set it (the inert range-cull bug).
+  // The Range min/max fields serve TWO roles: the manual colormap range (auto off) AND the kRange draw-predicate window
+  // (always, regardless of auto). They stay editable whenever auto-range is off OR the draw mode is "In range";
+  // otherwise "In range" with the default auto-range on would pin the predicate to a stale [0,1] with no way to set it.
   auto sync_range_enabled = [this, range_lo_spin, range_hi_spin]() {
     const bool enabled = !auto_range_ || draw_mode_ == VoxelDrawMode::kRange;
     range_lo_spin->setEnabled(enabled);

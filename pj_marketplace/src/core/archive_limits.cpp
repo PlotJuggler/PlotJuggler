@@ -63,12 +63,9 @@ std::optional<std::string> admitEntryPath(const std::string_view path, const siz
   if (path.empty()) {
     return "archive entry has an empty path";
   }
-  // A backslash separates directories on Windows and is an ordinary filename
-  // character everywhere else, so one archive lays out two different shapes: on
-  // Linux "sub\\plugin.so" is a single file whose name holds the character, on
-  // Windows it is "plugin.so" inside "sub". Refused rather than normalized —
-  // guessing which one the author meant is how a package ends up installing
-  // correctly on one platform and subtly wrong on the other.
+  // A backslash separates directories on Windows and is an ordinary filename character elsewhere, so one archive would
+  // lay out two shapes ("sub\\plugin.so" is one file on Linux, "plugin.so" inside "sub" on Windows). Refused rather
+  // than normalized: guessing which the author meant installs correctly on one platform and subtly wrong on the other.
   if (path.find('\\') != std::string_view::npos) {
     return "archive entry path uses a backslash separator";
   }

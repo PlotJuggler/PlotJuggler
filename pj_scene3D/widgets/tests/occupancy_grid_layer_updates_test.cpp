@@ -1,14 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Layer-level coverage for OccupancyGridLayer's two-topic '<base>_updates'
-// wiring: the UID-based store-window traversal that feeds
-// OccupancyGridReconstructor is cross-checked against an independent
-// cell-by-cell replay at several scrub targets (forward, backward, across
-// epochs). Also covers the retroactive-ingest invalidate path (an update
-// ingested behind the already-consumed live edge must still appear on the next
-// forward render) and the base-keyframe parse memo (re-rendering an unchanged
-// keyframe must not re-parse it).
+// OccupancyGridLayer's two-topic '<base>_updates' wiring: the UID-based store-window traversal feeding
+// OccupancyGridReconstructor is cross-checked against an independent cell-by-cell replay at several scrub targets
+// (forward, backward, across epochs). Also the retroactive-ingest invalidate path (an update ingested behind the
+// consumed live edge must still appear on the next forward render) and the base-keyframe parse memo (re-rendering an
+// unchanged keyframe must not re-parse it).
 
 #include <gtest/gtest.h>
 
@@ -53,8 +50,7 @@ std::atomic<int> g_update_parser_calls{0};
 //   base:   [width, height, cells...]      cells.size() == width * height
 //   update: [x, y, width, height, cells...]
 
-// Parses the base schema into an sdk::OccupancyGrid whose data Span is anchored
-// to a private copy of the payload (the ObjectRecord must own its bytes).
+// The data Span is anchored to a private copy of the payload (the ObjectRecord must own its bytes).
 PJ::Expected<PJ::sdk::ObjectRecord> emitBaseGrid(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   auto bytes =
       std::make_shared<std::vector<uint8_t>>(payload.bytes.data(), payload.bytes.data() + payload.bytes.size());
@@ -69,8 +65,7 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitBaseGrid(PJ::Timestamp ts, PJ::sdk::Payl
   return PJ::sdk::ObjectRecord{.ts = ts, .object = grid};
 }
 
-// Parses the update schema into an sdk::OccupancyGridUpdate whose data Span is
-// anchored to a private copy of the payload (the ObjectRecord must own its bytes).
+// As emitBaseGrid, for the update schema.
 PJ::Expected<PJ::sdk::ObjectRecord> emitGridUpdate(PJ::Timestamp ts, PJ::sdk::PayloadView payload) {
   auto bytes =
       std::make_shared<std::vector<uint8_t>>(payload.bytes.data(), payload.bytes.data() + payload.bytes.size());
@@ -85,8 +80,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitGridUpdate(PJ::Timestamp ts, PJ::sdk::Pa
   update.anchor = bytes;
   return PJ::sdk::ObjectRecord{.ts = ts, .object = update};
 }
-
-// --- Independent reference replay (mirror of the reconstructor contract) ---
 
 struct RefBase {
   int64_t ts = 0;
@@ -111,10 +104,9 @@ struct RefGrid {
   std::vector<int8_t> cells;
 };
 
-// displayed(t) = latest base with ts <= t, plus every update in (base_ts, t]
-// applied in ascending-ts order (insertion order within equal-ts runs).
-// Equal-ts bases: the LAST pushed wins (>=), matching the store's
-// indexAtOrBefore pick — the store permits duplicate timestamps.
+// displayed(t) = latest base with ts <= t plus every update in (base_ts, t] applied in ascending-ts order (insertion
+// order within equal-ts runs). Equal-ts bases: the LAST pushed wins (>=), matching the store's indexAtOrBefore pick
+// (the store permits duplicate timestamps).
 std::optional<RefGrid> refReplay(const std::vector<RefBase>& bases, std::vector<RefUpdate> updates, int64_t t) {
   const RefBase* base = nullptr;
   for (const auto& candidate : bases) {
@@ -143,7 +135,6 @@ std::optional<RefGrid> refReplay(const std::vector<RefBase>& bases, std::vector<
   return grid;
 }
 
-// Pushes world<-map as a pure +x translation at `stamp_ns`.
 void pushWorldFromMap(pj::tf::TransformBuffer& buffer, int64_t stamp_ns, double x) {
   pj::tf::StampedTransform st;
   st.stamp = pj::tf::TimePoint{std::chrono::nanoseconds(stamp_ns)};
@@ -179,8 +170,6 @@ class OccupancyGridLayerUpdatesTest : public ::testing::Test {
     return session_.objectStore();
   }
 
-  // Pushes a uniformly-filled width x height base keyframe and mirrors it into
-  // the reference timeline.
   void pushBase(int64_t ts, uint32_t width, uint32_t height, uint8_t fill) {
     std::vector<uint8_t> payload{static_cast<uint8_t>(width), static_cast<uint8_t>(height)};
     payload.insert(payload.end(), static_cast<std::size_t>(width) * height, fill);
@@ -188,8 +177,8 @@ class OccupancyGridLayerUpdatesTest : public ::testing::Test {
     ref_bases_.push_back(RefBase{ts, width, height, fill});
   }
 
-  // pushBase via a LAZY counting fetcher (pushLazyCounting), so a test can assert
-  // whether a render actually resolved payload bytes (not just whether it re-parsed).
+  // pushBase via a LAZY counting fetcher, so a test can assert whether a render resolved payload bytes (not just
+  // whether it re-parsed).
   void pushLazyBase(int64_t ts, uint32_t width, uint32_t height, uint8_t fill, std::shared_ptr<int> counter) {
     std::vector<uint8_t> payload{static_cast<uint8_t>(width), static_cast<uint8_t>(height)};
     payload.insert(payload.end(), static_cast<std::size_t>(width) * height, fill);
@@ -197,7 +186,6 @@ class OccupancyGridLayerUpdatesTest : public ::testing::Test {
     ref_bases_.push_back(RefBase{ts, width, height, fill});
   }
 
-  // Pushes a uniformly-filled patch rect and mirrors it into the reference.
   void pushUpdate(int64_t ts, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint8_t value) {
     std::vector<uint8_t> payload{
         static_cast<uint8_t>(x), static_cast<uint8_t>(y), static_cast<uint8_t>(width), static_cast<uint8_t>(height)};
@@ -206,8 +194,6 @@ class OccupancyGridLayerUpdatesTest : public ::testing::Test {
     ref_updates_.push_back(RefUpdate{ts, x, y, width, height, value});
   }
 
-  // Renders the layer at t and asserts its reconstructed grid matches the
-  // independent reference replay cell-by-cell.
   void renderAndExpectRef(pj::scene3d::OccupancyGridLayer& layer, int64_t t) {
     layer.renderAtForTest(t);
     const auto expected = refReplay(ref_bases_, ref_updates_, t);
@@ -227,9 +213,8 @@ class OccupancyGridLayerUpdatesTest : public ::testing::Test {
   std::vector<RefUpdate> ref_updates_;
 };
 
-// M.63: the store-window arithmetic feeding the reconstructor, exercised at the
-// layer boundary across forward steps, equal-ts update runs, backward seeks,
-// and an epoch change — each target cross-checked against the reference replay.
+// The store-window arithmetic feeding the reconstructor, at the layer boundary: forward steps, equal-ts update runs,
+// backward seeks and an epoch change, each target cross-checked against the reference replay.
 TEST_F(OccupancyGridLayerUpdatesTest, ScrubReplayMatchesReference) {
   pushBase(100, 4, 4, 0);
   pushUpdate(110, 1, 1, 2, 2, 50);
@@ -249,8 +234,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, ScrubReplayMatchesReference) {
   renderAndExpectRef(layer, 110);  // backward seek inside the epoch
   renderAndExpectRef(layer, 125);  // forward again from the restored state
 
-  // Epoch change: a second keyframe supersedes the first; updates before it no
-  // longer apply, updates after it do.
+  // Epoch change: a second keyframe supersedes the first; updates before it no longer apply, updates after it do.
   pushBase(300, 4, 4, 10);
   pushUpdate(310, 0, 3, 2, 1, 90);
   renderAndExpectRef(layer, 310);  // new epoch + its patch
@@ -258,11 +242,10 @@ TEST_F(OccupancyGridLayerUpdatesTest, ScrubReplayMatchesReference) {
   renderAndExpectRef(layer, 125);  // backward across epochs, back to base1
 }
 
-// Out-of-order arrival in the updates topic: an update stamped with an OLDER ts
-// but pushed LAST carries the newest SequentialUID. A time-window query
-// (ObjectStore::rangeByTime) must include it by timestamp regardless of UID order.
-// Here a newest-UID entry sits at ts=200 (outside the render window) while the
-// out-of-order ts=150 patch inside the window must still be applied.
+// Out-of-order arrival in the updates topic: an update stamped with an OLDER ts but pushed LAST carries the newest
+// SequentialUID. A time-window query (ObjectStore::rangeByTime) must include it by timestamp regardless of UID order:
+// a newest-UID entry sits at ts=200 (outside the render window) while the out-of-order ts=150 patch inside the window
+// must still be applied.
 TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalUpdateInWindowIsApplied) {
   pushBase(100, 4, 4, 0);
   pushUpdate(110, 0, 0, 1, 1, 50);  // uid1, cell[0]
@@ -274,8 +257,7 @@ TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalUpdateInWindowIsApplied) 
   pj::scene3d::OccupancyGridLayer layer(base_topic_, u"map"_s);
   ASSERT_TRUE(layer.attach(ctx));
 
-  // Window (100, 160] contains ts=110 and ts=150 but NOT ts=200 (whose newest UID
-  // must not pull it into the window).
+  // Window (100, 160] contains ts=110 and ts=150 but NOT ts=200 (whose newest UID must not pull it in).
   renderAndExpectRef(layer, 160);
   EXPECT_EQ(layer.reconstructedGridForTest().cells[5], static_cast<int8_t>(70))
       << "out-of-order in-window update must be applied";
@@ -283,11 +265,10 @@ TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalUpdateInWindowIsApplied) 
       << "ts=200 update must stay outside the (100,160] window";
 }
 
-// Out-of-order arrival at-or-before the window's LOW edge must not cause an
-// in-window update to be skipped. The in-window ts=120 patch is pushed first
-// (small UID); then an out-of-order update stamped 95 (<= lo=100) is pushed last
-// (largest UID). A timestamp-keyed window query (rangeByTime) still returns the
-// ts=120 patch — a UID cursor starting past the ts=95 boundary would have dropped it.
+// Out-of-order arrival at or before the window's LOW edge must not cause an in-window update to be skipped: the
+// in-window ts=120 patch is pushed first (small UID), then an out-of-order update stamped 95 (<= lo=100) last (largest
+// UID). A timestamp-keyed window query (rangeByTime) still returns the ts=120 patch; a UID cursor starting past the
+// ts=95 boundary would have dropped it.
 TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalBelowWindowLowEdgeDoesNotSkipInWindowUpdate) {
   pushBase(100, 4, 4, 0);
   pushUpdate(120, 2, 2, 1, 1, 80);  // uid1: in-window, SMALL UID, cell[10]
@@ -305,10 +286,9 @@ TEST_F(OccupancyGridLayerUpdatesTest, OutOfOrderArrivalBelowWindowLowEdgeDoesNot
       << "in-window update with a UID below the <=lo boundary entry was dropped";
 }
 
-// H.13: the live drive advances the consumed window past the updates topic's
-// ingest; an update that lands later with ts at-or-before the consumed time
-// must still be folded in (via reconstructor invalidate + full rebuild) instead
-// of being skipped forever by the forward (last_t_, t] window.
+// The live drive advances the consumed window past the updates topic's ingest; an update that lands later with ts at or
+// before the consumed time must still be folded in (reconstructor invalidate + full rebuild) instead of being skipped
+// forever by the forward (last_t_, t] window.
 TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveUpdateIsReappliedAfterLiveEdgeOvershoot) {
   pushBase(100, 4, 4, 0);
   pushUpdate(110, 1, 1, 2, 2, 50);
@@ -333,15 +313,11 @@ TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveUpdateIsReappliedAfterLiveEdgeO
   renderAndExpectRef(layer, 220);
 }
 
-// H.13b: the retroactive-ingest cursor must SETTLE, not re-invalidate every frame.
-// H.13 above uses an in-order late update (ts after every retained entry), so its
-// UID matches its timestamp order and the cursor advances normally. Here the late
-// update is ALSO out-of-order in the array (older ts than an already-retained
-// entry), so it lands at an earlier array slot yet carries the newest UID. The
-// post-reconstruct cursor must be the max UID among entries with ts <= t (not
-// latestAt(t)'s UID, which resolves the newest-TIMESTAMP entry and is smaller):
-// otherwise the cursor parks below the late entry and re-detects it — a full
-// rebuild every frame.
+// The retroactive-ingest cursor must SETTLE, not re-invalidate every frame. The previous test's late update is in order
+// (ts after every retained entry); here it is ALSO out of order in the array (older ts than a retained entry): it
+// lands at an earlier slot yet carries the newest UID. The post-reconstruct cursor must be the max UID among entries
+// with ts <= t (not latestAt(t)'s UID, which resolves the newest-TIMESTAMP entry and is smaller); otherwise the cursor
+// parks below the late entry and re-detects it, a full rebuild every frame.
 TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveOutOfOrderUpdateSettlesCursorWithoutReinvalidateLoop) {
   pushBase(100, 4, 4, 0);
   pushUpdate(110, 0, 0, 1, 1, 50);  // uid1
@@ -359,16 +335,14 @@ TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveOutOfOrderUpdateSettlesCursorWi
   // ts=160 (a lower UID), so a latestAt-keyed cursor never advances past ts=150.
   pushUpdate(150, 2, 2, 1, 1, 70);  // uid3 (out-of-order), cell[10]
 
-  // Frame A: the retroactive change is detected once (invalidate) and applied.
   layer.renderAtForTest(200);
   const size_t invalidations_after_detect = layer.retroactiveInvalidateCountForTest();
   EXPECT_EQ(invalidations_after_detect, 1u) << "the retroactive change must be detected exactly once";
   EXPECT_EQ(layer.reconstructedGridForTest().cells[10], static_cast<int8_t>(70))
       << "retroactive out-of-order update must be folded in";
 
-  // Frame B (same time, no new data): the cursor must have advanced past the late
-  // entry, so no further invalidation fires. With a latestAt-keyed cursor the count
-  // keeps rising — a rebuild every frame.
+  // Frame B (same time, no new data): the cursor must have advanced past the late entry, so no further invalidation
+  // fires (with a latestAt-keyed cursor the count keeps rising: a rebuild every frame).
   layer.renderAtForTest(200);
   EXPECT_EQ(layer.retroactiveInvalidateCountForTest(), invalidations_after_detect)
       << "cursor did not settle: the late out-of-order update re-invalidates every frame";
@@ -376,9 +350,8 @@ TEST_F(OccupancyGridLayerUpdatesTest, RetroactiveOutOfOrderUpdateSettlesCursorWi
       << "the folded-in update must survive the settled render";
 }
 
-// M.47: re-rendering while the active base keyframe is unchanged must reuse the
-// memoized parse instead of re-parsing (and deep-copying) the cell payload on
-// every tracker tick.
+// Re-rendering while the active base keyframe is unchanged must reuse the memoized parse instead of re-parsing (and
+// deep-copying) the cell payload on every tracker tick.
 TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeIsNotReparsed) {
   pushBase(100, 4, 4, 0);
   pushUpdate(110, 1, 1, 2, 2, 50);
@@ -397,19 +370,15 @@ TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeIsNotReparsed) {
   EXPECT_EQ(g_base_parser_calls.load(), base_parses_after_first_render)
       << "unchanged base keyframe was re-parsed on a later tick";
 
-  // A new keyframe is a different store entry: exactly one more parse.
   pushBase(300, 4, 4, 10);
   renderAndExpectRef(layer, 300);
   EXPECT_EQ(g_base_parser_calls.load(), base_parses_after_first_render + 1);
 }
 
-// Resolve-before-memo regression: while the active base keyframe is unchanged,
-// renderAt must not even RESOLVE its payload bytes — a resolve is a cold refetch
-// (file read + whole-chunk decompress on the GUI thread) once the
-// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
-// cache would mask a redundant resolve, so it is deliberately reset between
-// renders via an out-of-order push — exactly the streaming condition that made
-// the redundant resolve go cold in production.
+// While the active base keyframe is unchanged, renderAt must not even RESOLVE its payload bytes: a resolve is a cold
+// refetch (file read + whole-chunk decompress on the GUI thread) once the ResidentPayloadPool has evicted the entry's
+// seed. The store's warm latestAt cache would mask a redundant resolve, so it is reset between renders via an
+// out-of-order push (the streaming condition).
 TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeDoesNotResolvePayload) {
   auto fetch_count = std::make_shared<int>(0);
   pushLazyBase(100, 4, 4, 0, fetch_count);
@@ -436,11 +405,9 @@ TEST_F(OccupancyGridLayerUpdatesTest, UnchangedBaseKeyframeDoesNotResolvePayload
   EXPECT_EQ(*old_fetch_count, 0) << "the out-of-order older keyframe must not be resolved at all";
 }
 
-// A replacement base keyframe at the SAME timestamp as the displayed one (the
-// store permits duplicate stamps; indexAtOrBefore picks the last pushed) is a
-// DIFFERENT store entry and must start a new epoch. The reconstructor keys the
-// epoch on the base entry's identity, not its decoded timestamp — keyed on the
-// timestamp alone, the forward path would keep showing the old keyframe's cells.
+// A replacement base keyframe at the SAME timestamp as the displayed one (the store permits duplicate stamps;
+// indexAtOrBefore picks the last pushed) is a DIFFERENT store entry and must start a new epoch: the reconstructor keys
+// the epoch on the base entry's identity, not its decoded timestamp, or the forward path keeps showing the old cells.
 TEST_F(OccupancyGridLayerUpdatesTest, SameTimestampReplacementBaseStartsNewEpoch) {
   pushBase(100, 4, 4, 10);
   pj::scene3d::Scene3DLayerContext ctx;

@@ -7,10 +7,8 @@
 #include <string>
 #include <string_view>
 
-// Public because fs_walk.hpp and sha256.hpp, themselves public headers, build their error text
-// with it, and because pj_runtime (which already links this library) needs the same conversions
-// rather than a second copy. These helpers move to the SDK's pj_base/sdk/platform.hpp in its
-// next release; switch to those then.
+// Public because fs_walk.hpp and sha256.hpp, themselves public headers, build their error text with it, and because
+// pj_runtime (which already links this library) needs the same conversions rather than a second copy.
 //
 // A QString converts losslessly without them: std::filesystem::path(q.toStdU16String()) and
 // QString::fromStdU16String(p.u16string()).

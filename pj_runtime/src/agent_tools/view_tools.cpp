@@ -1,11 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MIT
 //
-// Agent tool executors. Each is a pure function of (args, host views) and
-// returns a ToolResult whose `content` the model reads. Every failure is
-// returned as data (ok=false), never thrown.
-//
-// This file: list_topics, describe_topic, playback, plot_tab, scene_view, report_status.
+// Agent tool executors: each a pure function of (args, host views) returning a ToolResult whose `content` the model
+// reads; every failure is returned as data (ok=false), never thrown. This file: list_topics, describe_topic, playback,
+// plot_tab, scene_view, report_status.
 
 #include <algorithm>
 #include <cstdint>
@@ -27,11 +25,9 @@
 namespace PJ::agent_tools::detail {
 namespace {
 
-// An object topic's time range, in the best axis available: display seconds
-// when a playback view is bound and can convert both ends (matching every
-// other display-time report in this file), else the raw dataset-domain
-// seconds the host reported, flagged so the model never mistakes one axis for
-// the other.
+// An object topic's time range in the best axis available: display seconds when a playback view is bound and converts
+// both ends (as every other display-time report here), else the raw dataset-domain seconds the host reported, flagged
+// so the model never mistakes one axis for the other.
 struct ObjectTimeRange {
   double a = 0.0;
   double b = 0.0;
@@ -85,18 +81,12 @@ ObjectTimeRange objectTimeRange(
   return {static_cast<double>(t_min_ns) * 1e-9, static_cast<double>(t_max_ns) * 1e-9, true};
 }
 
-// --- object topics (catalog snapshot v2) ------------------------------------
-//
-// Object topics (point clouds, scene entities, images…) live beside the
-// scalar catalog in PJ_catalog_snapshot_v2_t. Marker sets are object topics
-// too, but they are drawn, not read — kMarkerObjectTopicPrefix filters them
-// out of everything a model sees (list_topics, describe_topic,
-// report_status), the same way pj_scene overlays already treat them.
+// Object topics (point clouds, scene entities, images...) live beside the scalar catalog in PJ_catalog_snapshot_v2_t.
+// Marker sets are object topics too but are drawn, not read: kMarkerObjectTopicPrefix filters them out of everything a
+// model sees (list_topics, describe_topic, report_status), as the scene overlays treat them.
 
-// Whether an object topic's metadata document names it as derived (produced
-// by an on-demand script, not ingested from a file/stream). Tolerant of a
-// missing or malformed document -- metadata is host-provided, not modeled
-// data, but it still crosses the plugin ABI as an untrusted string.
+// Whether an object topic's metadata document names it as derived (produced by an on-demand script, not ingested).
+// Tolerant of a missing or malformed document: it crosses the plugin ABI as an untrusted string.
 bool metadataHasKey(std::string_view metadata_json, std::string_view key) {
   const json parsed = json::parse(std::string(metadata_json), nullptr, /*allow_exceptions=*/false);
   return !parsed.is_discarded() && parsed.is_object() && parsed.contains(std::string(key));
@@ -127,14 +117,11 @@ const char* fieldKindName(PJ::sdk::FieldKind kind) {
   return "unspecified";
 }
 
-// A field table's own field list is depth 1; a nested struct or a list's
-// struct element goes one level deeper. Capped at kMaxFieldDepth so a
-// describe_topic call on a deeply nested type stays bounded -- a list shows
-// its element shape once at the next depth rather than per element (there is
-// only one shape, the field table is per-TYPE not per-instance), and a buffer
-// field (raw record bytes, e.g. PointCloud::data) carries nothing past its
-// name/kind: the bytes never reach the model, only the native operations that
-// summarize them (see object_ops_catalog.hpp).
+// A field table's own field list is depth 1; a nested struct or a list's struct element goes one level deeper. Capped
+// at kMaxFieldDepth so describe_topic on a deeply nested type stays bounded: a list shows its element shape once at
+// the next depth (the field table is per-TYPE, not per-instance), and a buffer field (raw record bytes, e.g.
+// PointCloud::data) carries nothing past its name/kind: the bytes never reach the model, only the native operations
+// that summarize them (see object_ops_catalog.hpp).
 constexpr int kMaxFieldDepth = 3;
 
 json fieldTableToJson(const PJ::sdk::FieldTableView& table, int depth) {
@@ -174,8 +161,6 @@ json objectTopicCommonJson(
   }
   return out;
 }
-
-// --- executors -------------------------------------------------------------
 
 // Scalar topics matching filter/dataset_filter, capped at `limit`, in
 // list_topics' shape -- {"topic","kind":"scalar","fields"[,"dataset"]} --
@@ -249,12 +234,10 @@ ToolResult describeScalarTopic(
   return ToolResult::success(out.dump());
 }
 
-// Object-topic half of describe_topic: the field table walked recursively
-// (fieldTableToJson) plus the static operations a script may call on it
-// (object_ops_catalog.hpp). A type with no field table (kNone, buffer-only,
-// or not yet described) or an unrecognized builtin_object_type string
-// answers with empty "fields"/"operations" rather than failing -- the topic
-// itself is real, only its detail is unavailable.
+// Object-topic half of describe_topic: the field table walked recursively (fieldTableToJson) plus the static
+// operations a script may call on it (object_ops_catalog.hpp). A type with no field table (kNone, buffer-only, not yet
+// described) or an unrecognized builtin_object_type answers with empty "fields"/"operations" rather than failing: the
+// topic is real, only its detail is unavailable.
 ToolResult describeObjectTopic(
     ToolContext& ctx, std::span<const PJ_data_source_info_t> sources, const PJ_object_topic_info_t& obj) {
   json out = objectTopicCommonJson(ctx, sources, obj);
@@ -273,8 +256,6 @@ ToolResult describeObjectTopic(
   out["operations"] = std::move(op_arr);
   return ToolResult::success(out.dump());
 }
-
-// --- playback / viewport executors ------------------------------------------
 
 constexpr const char* kNoPlayback = "the host did not expose pj.playback.v1 (cannot control playback)";
 
@@ -313,8 +294,6 @@ ToolResult runPlaybackOp(ToolContext& ctx, const char* verb, Op&& op) {
   }
   return ToolResult::success(playbackStateJson(ctx).dump());
 }
-
-// --- the assistant's own plot tabs -------------------------------------------
 
 constexpr const char* kNoPlotTabs = "the host did not expose pj.plot_tabs.v1 (cannot compose plot tabs)";
 
@@ -396,8 +375,6 @@ json tabReadBack(ToolContext& ctx, const std::string& tab) {
   return readBack(ctx, tab, "tab");
 }
 
-// --- the assistant's own scene views -----------------------------------------
-
 // Names of the scene tabs this assistant currently owns, mirroring
 // ownedTabList's role in plotTabTool's errors.
 std::string ownedViewList(ToolContext& ctx) {
@@ -422,10 +399,9 @@ struct SceneTopicOutcome {
 
 ToolResult listTopics(const json& args, ToolContext& ctx) {
   const std::string filter = args.value("filter", std::string{});
-  // Clamped, not just defaulted: this response is re-sent on every remaining
-  // round-trip of the turn, so an unbounded list would be paid for repeatedly.
-  // read_series bounds its payload the same way. The truncation note below
-  // still tells the model how to narrow the search.
+  // Clamped, not just defaulted: this response is re-sent on every remaining round trip of the turn, so an unbounded
+  // list would be paid for repeatedly (read_series bounds its payload the same way). The truncation note below tells
+  // the model how to narrow the search.
   const int limit = std::clamp(args.value("limit", 100), 1, 500);
 
   // Scoping to one dataset is what makes this usable with several loaded: the
@@ -673,11 +649,9 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   }
 
   json out = tabReadBack(ctx, tab);
-  // A call the host accepted is not yet a curve on screen: it may resolve to
-  // nothing and simply leave the tab as it was. So the verdict comes from what
-  // the tab HOLDS, not from what the calls returned — otherwise this reports a
-  // drawing that never happened, which is the one thing the read-back exists to
-  // prevent.
+  // A call the host accepted is not yet a curve on screen: it may resolve to nothing and leave the tab as it was. So
+  // the verdict comes from what the tab HOLDS, not from what the calls returned; otherwise this reports a drawing that
+  // never happened, the one thing the read-back exists to prevent.
   const json& held = out.contains("curves") ? out["curves"] : json::array();
   for (const auto& [topic, field] : accepted) {
     const bool present = std::any_of(held.begin(), held.end(), [&](const json& curve) {

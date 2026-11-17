@@ -68,7 +68,6 @@ std::size_t EntryThumbnailCache::size() const {
 }
 
 void EntryThumbnailCache::buildThread(Timestamp start_ns, Timestamp end_ns) {
-  // Own decoder + own extractor (the build runs concurrently with playback).
   StreamingVideoDecoder decoder;
   decoder.attach(store_, topic_, extractor_);
 
@@ -76,13 +75,10 @@ void EntryThumbnailCache::buildThread(Timestamp start_ns, Timestamp end_ns) {
   const Timestamp lo = (end_ns >= start_ns) ? start_ns : range.first;
   const Timestamp hi = (end_ns >= start_ns) ? end_ns : range.second;
   const int64_t span = std::max<int64_t>(1, hi - lo);
-  // ~1 thumbnail per second, but never more than max_tiles over the whole span
-  // (a long clip just gets a coarser interval instead of more tiles).
+  // One per second, coarser when the span would need more than max_tiles.
   const int64_t interval =
       std::max<int64_t>(kOneSecondNs, span / static_cast<int64_t>(std::max<std::size_t>(1, cfg_.max_tiles)));
 
-  // Single forward decode pass; the decoder surfaces ~1 frame per interval in
-  // ascending PTS order. We encode each and stop at the tile / byte budget.
   bool resolution_checked = false;
   decoder.decodeSampled(interval, [&](const DecodedFrame& f) -> bool {
     if (!running_.load()) {
@@ -90,8 +86,7 @@ void EntryThumbnailCache::buildThread(Timestamp start_ns, Timestamp end_ns) {
     }
     if (!resolution_checked) {
       resolution_checked = true;
-      // Resolution gate: if the source is already <= our cap, the downscale is a
-      // no-op and on-scrub decode is cheap, so a thumbnail track buys nothing.
+      // A source within the cap decodes cheaply on scrub: no thumbnails.
       if (f.width <= cfg_.max_width) {
         return false;
       }
@@ -102,15 +97,14 @@ void EntryThumbnailCache::buildThread(Timestamp start_ns, Timestamp end_ns) {
     }
     std::lock_guard<std::mutex> lock(mutex_);
     if (bytes_ + thumb.jpeg.size() > cfg_.max_bytes) {
-      return false;  // hard ceiling
+      return false;
     }
     bytes_ += thumb.jpeg.size();
     tiles_.push_back({f.pts, std::move(thumb.jpeg), thumb.width, thumb.height});
     return tiles_.size() < cfg_.max_tiles;
   });
 
-  // decodeSampled emits ascending PTS, but sort defensively for lookup()'s
-  // binary search (drain order is not guaranteed).
+  // The drained tail of decodeSampled may be out of order; lookup() binary-searches.
   {
     std::lock_guard<std::mutex> lock(mutex_);
     std::sort(tiles_.begin(), tiles_.end(), [](const Tile& a, const Tile& b) { return a.ts < b.ts; });

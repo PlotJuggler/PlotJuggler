@@ -31,92 +31,50 @@ class ObjectStore;
 class ServiceRegistryBuilder;
 class SourceCaptureService;
 
-// Host-side runner for a Toolbox plugin — the toolbox sibling of
-// DataSourceRuntimeHost. Owns the host implementations of the services a
-// toolbox plugin's bind() consumes and assembles them into a ServiceRegistry:
-//
-//   - ToolboxHostService        the write surface (DatastoreToolboxHost) into
-//                               the session's DataEngine + ObjectStore.
-//   - ToolboxObjectReadHostService  the read surface (DatastoreToolboxObjectReadHost)
-//                               so a toolbox can read back object topics it (or
-//                               another producer) published — e.g. existing markers.
-//   - ToolboxRuntimeHostService diagnostics (report_message) + notify_data_changed.
-//   - SettingsStoreService      persistence over an injected SettingsBackend.
-//
-// App-shell concerns (which catalog to rebuild, where messages surface) are
-// injected as Callbacks, so this class stays Qt-Widgets-free and headless
-// testable. Not movable: the runtime-host vtable stores `this`.
+// Host-side runner for a Toolbox plugin (the toolbox sibling of DataSourceRuntimeHost): builds the ServiceRegistry its
+// bind() consumes: ToolboxHostService (writes into the session's DataEngine and ObjectStore),
+// ToolboxObjectReadHostService (reads object topics back, e.g. existing markers), ToolboxRuntimeHostService
+// (report_message, notify_data_changed) and SettingsStoreService (over an injected SettingsBackend). App concerns
+// arrive as Callbacks, so it stays Widgets-free and headless-testable. Not movable: the runtime-host vtable stores
+// `this`.
 class ToolboxRuntimeHost {
  public:
-  // Callbacks are always invoked on the thread that constructed this host (the
-  // GUI thread) — see marshaller_. Safe to touch Qt models / session state.
+  // Always invoked on the constructing (GUI) thread, see marshaller_.
   struct Callbacks {
-    // Fired after notify_data_changed flushes buffered writes — the host
-    // rebuilds its catalog / reseeds playback here. `ingested_datasets` lists
-    // the toolbox-created datasets that mark a bulk import shaped like a file
-    // load (the cloud connector's fetch): datasets whose parser-ingest context
-    // was created or released since the PREVIOUS notify, plus those whose
-    // context is MID-IMPORT (between progress_start and progress_finish) at
-    // every notify while the import runs. Empty for plain write-API toolboxes.
-    // Hosts use it to FOCUS playback on the imported data: a 10s cloud snippet
-    // must present a 10s timeline, not be unioned into whatever range the
-    // session already had — and a progressive import keeps that focus as it
-    // grows instead of collapsing back to the union on each notify. Ordering
-    // caveat: "no longer mid-import at the terminal notify" assumes the plugin
-    // posts that notify AFTER progress_finish from the same thread (the
-    // documented single-ingest-worker pattern); a notify raced in from a third
-    // thread may still observe the import as active for one round.
+    // After notify_data_changed flushed buffered writes. `ingested_datasets`: the toolbox-created datasets of a bulk
+    // import shaped like a file load, i.e. those whose parser-ingest context was created or released since the
+    // previous notify, plus those mid-import (between progress_start and progress_finish) at every notify. The shell
+    // focuses playback on them (a 10 s snippet presents a 10 s timeline, and keeps that focus while it grows). Empty
+    // for plain write-API toolboxes. A plugin that posts its terminal notify from a third thread, not after
+    // progress_finish on its ingest thread, may see the import reported active for one more round.
     std::function<void(std::vector<DatasetId> ingested_datasets)> on_data_changed;
-    // Fired for each plugin diagnostic — routed to the app's notification UI.
     std::function<void(PJ_toolbox_message_level_t, std::string)> on_message;
-    // Progress surface of a delegated bulk import — fired when the toolbox
-    // calls progress_start / progress_update / progress_finish on the runtime
-    // host returned by create_parser_ingest. `total` is 0 for an indeterminate
-    // import. on_ingest_progress fires only on the ticks that also flushed
-    // pending writes (throttled, ~50 ms), so each invocation means "new rows
-    // just became reader-visible" — a handler can publish incrementally
-    // (plots/playback/TF) without any gating of its own. The heavyweight
-    // catalog rebuild stays on on_data_changed.
-    // `cancellable` is the PLUGIN's own declaration, forwarded verbatim. The
-    // shell needs it to decide whether the row offers a stop affordance at
-    // all; note that stopping this path always keeps (requestStopActiveIngests
-    // has no rollback), so a shell should register the ingest as stop-only.
+    // Progress of a delegated bulk import (progress_start / _update / _finish on the runtime host create_parser_ingest
+    // returned). `total` 0 = indeterminate. on_ingest_progress fires only on ticks that flushed (throttled), so each
+    // call means new rows are reader-visible; the catalog rebuild stays on on_data_changed. `cancellable` is the
+    // plugin's own flag; stopping this path always keeps what arrived (no rollback), so register the ingest stop-only.
     std::function<void(DatasetId dataset, std::string label, uint64_t total, bool cancellable)> on_ingest_started;
     std::function<void(DatasetId dataset, uint64_t current, uint64_t total)> on_ingest_progress;
     std::function<void(DatasetId dataset)> on_ingest_finished;
   };
 
-  // Optional dependencies enabling the parser-ingest tail slots. With a null
-  // catalog the slots fail "not configured" — headless tests and embedders
-  // that load no parser plugins keep working unchanged.
+  // Enables the parser-ingest slots; with a null catalog they fail "not configured".
   struct ParserIngestDeps {
     ExtensionCatalogService* catalog = nullptr;
     std::shared_ptr<ObjectIngestTapRegistry> ingest_taps;
-    // Receives the render-time parser instance for every object topic a
-    // parser binding registers — same contract as FileLoader's registrar
-    // (forward to SessionManager::registerObjectTopicParser). May be invoked
-    // from a toolbox worker thread.
+    // The render-time parser of every object topic a binding registers (forward to
+    // SessionManager::registerObjectTopicParser, as FileLoader does). May run on a toolbox worker thread.
     std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)> register_object_parser;
 
-    // M3 source capture (desktop only; a null service disables it). When set —
-    // together with the bound plugin's stable manifest id, which the capture
-    // uses as the UNSPOOFABLE provider identity — every parser-ingest context
-    // is armed for capture at creation and finalized by its own lifecycle:
-    // release evaluates the publication gate (commit), discard and host
-    // teardown abort the capture, and a host-side stop refuses publication.
-    // A capture never outlives its context, so a re-created context for the
-    // same dataset starts a fresh capture generation.
+    // Source capture (desktop only; null disables it). With the plugin's manifest id as the unspoofable provider
+    // identity, every context is armed at creation: release runs the publication gate, discard and teardown abort, a
+    // host-side stop refuses. A capture never outlives its context, so a re-created context starts a fresh one.
     SourceCaptureService* capture_service = nullptr;
     std::string capture_provider_id;
-    // Fired on the RELEASE caller's thread (a plugin worker) after the capture
-    // decision, and only when the released ingest is record-worthy: a source
-    // record was attached, the terminal was COMPLETED, no veto and no host
-    // stop. `source_identity` is sourceCacheIdentityDigest(provider,
-    // descriptor); `published` reports the cache decision (`refusal_reason`
-    // says why not) and `artifact_path` names the published artifact (native
-    // encoding; empty when publication was refused) so the shell can register
-    // it as the dataset's saveable backing file. The callback owns
-    // marshalling to the GUI thread.
+    // On the release caller's thread (a plugin worker), only for a record-worthy release (record attached, COMPLETED,
+    // no veto, no host stop). `source_identity` is sourceCacheIdentityDigest(provider, descriptor); `artifact_path`
+    // (native encoding, empty when refused) lets the shell register the dataset's backing file. The callback marshals
+    // to the GUI thread itself.
     std::function<void(
         DatasetId dataset, const std::string& provider_id, const std::string& descriptor_json,
         const std::string& source_identity, bool published, const std::string& refusal_reason,
@@ -124,61 +82,39 @@ class ToolboxRuntimeHost {
         on_capture_finalized;
   };
 
-  // The 4-arg overload (no parser-ingest deps) delegates to the 5-arg one —
-  // GCC rejects `ParserIngestDeps{}` as a default argument here because the
-  // nested struct's member initializers aren't usable until the enclosing
-  // class is complete.
+  // Two overloads, not a default argument: GCC rejects `ParserIngestDeps{}` as one, since the nested struct's member
+  // initializers are unusable until the enclosing class is complete.
   ToolboxRuntimeHost(
       DataEngine& engine, ObjectStore& object_store, sdk::SettingsBackend& settings, Callbacks callbacks);
   ToolboxRuntimeHost(
       DataEngine& engine, ObjectStore& object_store, sdk::SettingsBackend& settings, Callbacks callbacks,
       ParserIngestDeps parser_ingest);
-  // Out-of-line: parser_ingests_ holds unique_ptr<DataSourceRuntimeHost>
-  // (incomplete here); also flushes any context the toolbox never released.
+  // Out of line (DataSourceRuntimeHost is incomplete here); flushes any context the toolbox never released.
   ~ToolboxRuntimeHost();
 
   ToolboxRuntimeHost(const ToolboxRuntimeHost&) = delete;
   ToolboxRuntimeHost& operator=(const ToolboxRuntimeHost&) = delete;
 
-  // Registers ToolboxHostService + ToolboxRuntimeHostService + SettingsStoreService
-  // into the builder used to bind the toolbox plugin. Fails (without binding) when
-  // a service the toolbox ABI requires could not be registered; a rejected
-  // SettingsStore / object-read service only warns, since a toolbox runs without
-  // them. Do not bind the plugin on a failed Status: the surface is not the one
-  // this host meant to publish.
+  // Fails, without binding, when a service the toolbox ABI requires was rejected (do not bind the plugin then); a
+  // rejected SettingsStore or object-read service only warns.
   [[nodiscard]] Status registerServices(ServiceRegistryBuilder& registry);
 
-  // True when this host has (ever) created a parser-ingest context for
-  // `dataset_id` — deliberately including finished and released ingests: the
-  // source-promotion service asks AFTER a download completed, and the
-  // per-dataset progress bookkeeping is retained until host teardown (see
-  // ingest_progress_). Thread-safe.
+  // A context was ever created for `dataset_id`, released ones included: source promotion asks after the download
+  // completed. Thread-safe.
   [[nodiscard]] bool hasIngestForDataset(DatasetId dataset_id) const;
 
-  // True while this host owns at least one parser-ingest context created and not
-  // yet released — i.e. the panel driving this host has work in flight. Unlike
-  // hasIngestForDataset(), which stays true after release, this goes false again,
-  // so a panel does not read busy forever after its first import. Thread-safe.
+  // A context created and not yet released (unlike hasIngestForDataset, goes false again). Thread-safe.
   [[nodiscard]] bool hasActiveIngests() const;
 
-  // Flag-only cooperative stop for every live parser-ingest context — the
-  // shell's "stop this import" affordance. Thread-safe. The plugin observes it
-  // through is_stop_requested / progress_update returning false and ends the
-  // import with its own keep-partial semantics: the toolbox ABI has no
-  // host-side rollback, so there is no keep/discard choice on this path.
+  // Flag-only cooperative stop of every live context; the plugin sees it through is_stop_requested / progress_update
+  // returning false. Keeps what arrived: the toolbox ABI has no host-side rollback. Thread-safe.
   void requestStopActiveIngests();
 
-  /// Cooperative stop for ONE dataset's ingest context, leaving every other
-  /// context this host owns running. A toolbox panel commonly imports several
-  /// datasets at once, and a stop expressed on one dataset's row must not end
-  /// its siblings. Returns false when this host has no live context for
-  /// `dataset_id` (already released, or never created). Keep-partial semantics,
-  /// as requestStopActiveIngests: the ABI has no host-side rollback.
+  /// The same for one dataset's context, leaving the siblings of a multi-dataset import running. False when it has no
+  /// live context.
   bool requestStopIngestForDataset(DatasetId dataset_id);
 
-  // Minimum wall-clock between the flush+on_ingest_progress ticks driven by a
-  // plugin's progress_update calls (test seam; production default 50 ms).
-  // Plain int read by the ingest thread: call only BEFORE any ingest begins.
+  // Test seam. A plain int read by the ingest thread: set it before any ingest begins.
   void setFlushThrottleMs(int ms) {
     flush_throttle_ms_ = ms;
   }
@@ -189,10 +125,8 @@ class ToolboxRuntimeHost {
   static bool onCreateParserIngest(
       void* ctx, uint32_t data_source_id, PJ_data_source_runtime_host_t* out_host, PJ_error_t* out_error) noexcept;
   static bool onReleaseParserIngest(void* ctx, uint32_t data_source_id, PJ_error_t* out_error) noexcept;
-  // The rollback twin of release (SDK 0.30 discard_parser_ingest): destroy the
-  // context WITHOUT flushing its writers and report no completed-import marker,
-  // so a vetoed download leaves neither rows nor a focus event behind. Dataset
-  // rollback itself stays with the owning ingest transaction. Idempotent.
+  // The rollback twin of release: destroys the context without flushing and reports no completed import, so a vetoed
+  // download leaves neither rows nor a focus event. Dataset rollback stays with the owning transaction. Idempotent.
   static bool onDiscardParserIngest(void* ctx, uint32_t data_source_id, PJ_error_t* out_error) noexcept;
 
   DatastoreToolboxHost write_host_;
@@ -202,50 +136,27 @@ class ToolboxRuntimeHost {
   DataEngine& engine_;
   ObjectStore& object_store_;
   ParserIngestDeps parser_ingest_deps_;
-  // Guards map consistency among concurrent create/release calls and keeps the
-  // teardown flush from interleaving with an in-flight create/release. It does
-  // NOT make destruction safe against a still-running plugin worker: as with
-  // report_message/notify_data_changed, the plugin must be unbound and its
-  // worker quiesced before this host is destroyed ("valid until ... host
-  // teardown" in toolbox_protocol.h). Concurrent create+release of the SAME id
-  // is protocol-violating plugin behavior and out of contract. Mutable so the
-  // const hasIngestForDataset query can lock it.
+  // Keeps the maps consistent across concurrent create/release and the teardown flush out of them. Not a guard against
+  // a running plugin worker: unbind the plugin and quiesce its worker before destroying this host
+  // (toolbox_protocol.h "valid until ... host teardown"). Concurrent create+release of one id is out of contract.
   mutable std::mutex parser_ingest_mu_;
-  // One delegated-ingest session per toolbox-created dataset, keyed by the
-  // data-source handle id (== DatasetId). Reuses the exact machinery file
-  // loads use — catalog lookup, classifySchema, ObjectStore registration,
-  // render-parser registrar — on a toolbox-created dataset.
+  // Keyed by data-source handle id (== DatasetId): the file-load ingest machinery on a toolbox-created dataset.
   std::unordered_map<uint32_t, std::unique_ptr<DataSourceRuntimeHost>> parser_ingests_;
-  // One armed source capture per live parser-ingest context (see
-  // ParserIngestDeps::capture_service). Same key and lock as parser_ingests_;
-  // a slot never outlives its context (captures are torn down first on every
-  // path, including the destructor's sweep). Opaque here so this header stays
-  // buildable where SourceCaptureService is not (wasm).
+  // One armed capture per live context, same key and lock; torn down before its context on every path. Opaque so
+  // the header builds where SourceCaptureService does not (wasm).
   struct CaptureSlot;
   std::unordered_map<uint32_t, std::unique_ptr<CaptureSlot>> captures_;
-  // Release-path halves of the capture lifecycle, defined in the cpp:
-  // finalizeCapture commits (release), abortCapture discards. Both run on the
-  // caller's thread with `host` still alive and its producers quiesced.
+  // Defined in the cpp: commit on release, abort otherwise. Caller's thread, `host` alive, producers quiesced.
   void finalizeCapture(uint32_t data_source_id, std::unique_ptr<CaptureSlot> slot, DataSourceRuntimeHost& host);
   static void abortCapture(std::unique_ptr<CaptureSlot> slot);
-  // Progress bookkeeping shared with the hooks installed on a context's
-  // DataSourceRuntimeHost. `total` backs on_ingest_progress; `last_flush` is
-  // touched only on the plugin's ingest thread (single progress caller per
-  // context, per the data-source protocol). Map guarded by parser_ingest_mu_;
-  // entries are RETAINED until host teardown — release copies instead of
-  // erasing, and a re-created context REUSES its dataset's entry. Eager
-  // cleanup is deliberately absent: an undelivered terminal must stay
-  // visible to the destructor's sweep, and after delivery a live re-created
-  // context may hold the same entry at idle phase — indistinguishable from a
-  // dead slot, so erasing would untrack it and break the shell's keyed
-  // started/finished pairing. The per-notify scan cost is O(datasets),
-  // which is small.
+  // Shared with the hooks on a context's host. `last_flush` is touched only on the plugin's ingest thread (one progress
+  // caller per context). The map (under parser_ingest_mu_) keeps entries until teardown, and a re-created context
+  // reuses its dataset's entry: an undelivered terminal must stay visible to the destructor's sweep, and a live
+  // re-created context at idle phase is indistinguishable from a dead one, so erasing would break the shell's
+  // started/finished pairing.
   struct IngestProgress {
-    // Packed terminal-delivery word: low 2 bits = phase, high bits = the ARM
-    // GENERATION (bumped by every progress_start). One word, one CAS per
-    // transition, so a STALE queued finish can never consume a NEWER
-    // sequence's terminal — a delivery CASes exactly the word its claim
-    // produced, and any re-arm changed the generation. Transition table:
+    // Terminal-delivery word: low 2 bits phase, high bits the arm generation (bumped by every progress_start). One
+    // CAS per transition, so a stale queued finish never consumes a newer sequence's terminal:
     //   progress_start   (g, *)             -> (g+1, kActive)     CAS-loop RMW
     //   claim            (g, kActive)       -> (g, kFinishQueued) single CAS;
     //     (finish hook /                       losers no-op: a prior claim of
@@ -260,11 +171,9 @@ class ToolboxRuntimeHost {
     //                                          agnostic: live OR queued still
     //                                          owes its finish; queued
     //                                          metacalls die with marshaller_)
-    // Claims never retry across generations (single-shot CAS): the RELEASE
-    // path claims under parser_ingest_mu_ — a re-arm needs the same lock via
-    // create — so it can only take its own context's sequence; the finish
-    // hook claims lock-free, where a lost CAS means already-terminated or
-    // superseded, both correctly no-ops.
+    // Claims never retry across generations: release claims under parser_ingest_mu_ (a re-arm needs it too, through
+    // create), so it takes only its own sequence; the finish hook claims lock-free, where a lost CAS means already
+    // terminated or superseded.
     static constexpr uint64_t kPhaseMask = 0x3;
     static constexpr uint64_t kPhaseIdle = 0x0;
     static constexpr uint64_t kPhaseActive = 0x1;
@@ -275,31 +184,20 @@ class ToolboxRuntimeHost {
     std::chrono::steady_clock::time_point last_flush;
   };
   std::unordered_map<uint32_t, std::shared_ptr<IngestProgress>> ingest_progress_;
-  // Claim this sequence's terminal: single CAS (gen, kActive) ->
-  // (gen, kFinishQueued). Returns the claimed word, or 0 when there is
-  // nothing to claim — no active sequence (progressFinish without a start
-  // stays a documented safe no-op), already claimed, or superseded by a
-  // re-arm.
+  // Single CAS (gen, kActive) -> (gen, kFinishQueued). 0 when there is nothing to claim: no active sequence (a finish
+  // without a start is a safe no-op), already claimed, or re-armed.
   [[nodiscard]] static uint64_t claimIngestFinish(IngestProgress& progress);
-  // Marshal on_ingest_finished for a successful claim. The delivery CASes
-  // exactly `claimed_word` back to (gen, kIdle) and fires only if it wins, so
-  // a stale delivery can never steal a newer sequence's terminal; an
-  // undelivered claim stays kFinishQueued for the destructor's sweep.
+  // Delivery CASes exactly `claimed_word` back to (gen, kIdle) and fires only if it wins; an undelivered claim stays
+  // queued for the destructor's sweep.
   void postIngestFinished(DatasetId dataset_id, const std::shared_ptr<IngestProgress>& progress, uint64_t claimed_word);
-  // See setFlushThrottleMs.
   int flush_throttle_ms_ = 50;
-  // Datasets that received a parser-ingest context since the last
-  // notify_data_changed — drained (on the GUI thread) into the
-  // on_data_changed callback so the host can focus playback on them.
-  // Guarded by parser_ingest_mu_.
+  // Datasets given a context since the last notify_data_changed, drained into on_data_changed. Under
+  // parser_ingest_mu_.
   std::vector<DatasetId> pending_ingest_datasets_;
   PJ_toolbox_runtime_host_vtable_t runtime_vtable_;
   PJ_toolbox_runtime_host_t runtime_;
-  // The toolbox runtime-host vtable advertises report_message/notify_data_changed
-  // as [thread-safe], so a plugin may call them from a worker thread. The
-  // callbacks above touch Qt UI/session state, so the trampolines marshal them to
-  // this QObject's thread (= the constructing/GUI thread) via Qt::AutoConnection:
-  // same-thread calls run synchronously, cross-thread calls are queued.
+  // report_message and notify_data_changed are [thread-safe] in the ABI, while the callbacks touch Qt state: the
+  // trampolines marshal to this object's (GUI) thread with Qt::AutoConnection (same thread runs synchronously).
   QObject marshaller_;
 };
 

@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// DepthCloudLayer integration: a depth-encoded sdk::Image topic + a CameraInfo
-// topic (matched by frame_id) drive a real SessionManager/ObjectStore through the
-// layer; attach() back-projects the first sample into points handed to the render
-// pass. Also pins the encoding gate (isDepthEncoding) and the color-image opt-out.
+// DepthCloudLayer integration: a depth-encoded sdk::Image topic + a CameraInfo topic (matched by frame_id) drive a real
+// SessionManager/ObjectStore through the layer; attach() back-projects the first sample into points handed to the
+// render pass. Also pins the encoding gate (isDepthEncoding) and the colour-image opt-out.
 
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
 
@@ -117,8 +116,8 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitCompressedDepthImage(PJ::Timestamp ts, P
   return PJ::sdk::ObjectRecord{.ts = ts, .object = img};
 }
 
-// A depth image in a chosen frame (function pointers can't capture, so the frame
-// is baked per-emitter). Geometry is identical to emitDepthImage (kDepthsM).
+// A depth image in a chosen frame (function pointers cannot capture, so the frame is baked per emitter); the geometry
+// is identical to emitDepthImage.
 PJ::Expected<PJ::sdk::ObjectRecord> emitDepthImageInFrame(PJ::Timestamp ts, std::string_view frame) {
   PJ::sdk::Image img;
   img.width = 2;
@@ -136,7 +135,6 @@ PJ::Expected<PJ::sdk::ObjectRecord> emitDepthImageNoMatch(PJ::Timestamp ts, PJ::
   return emitDepthImageInFrame(ts, "camX");  // matches none of the registered cameras
 }
 
-// CameraInfo for a named frame with focal length fx=fy=`focal` (cx=cy=0.5, 2x2).
 PJ::Expected<PJ::sdk::ObjectRecord> makeCameraInfo(PJ::Timestamp ts, std::string_view frame, double focal) {
   PJ::sdk::CameraInfo ci;
   ci.frame_id = std::string(frame);
@@ -198,17 +196,14 @@ TEST(DepthCloudLayer, BackProjects32FC1UsingCameraInfoIntrinsics) {
   ASSERT_TRUE(layer.attach(ctx));
   settle(layer);
 
-  // attach() renders the first sample: 4 valid pixels -> 4 back-projected points.
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
   EXPECT_EQ(layer.sourceFrameForTest(), u"cam"_s);
   EXPECT_EQ(layer.renderStamp(), PJ::fromRaw(100)) << "the drawn image's own stamp (TF R6)";
 }
 
-// RealSense compressedDepth arrives as a BARE PNG (no signature). toDepthView must
-// restore the signature before decoding, or QImage rejects it and the layer reports
-// "Not a depth image". Regression for that fringe — without the repair this yields 0
-// points.
+// RealSense compressedDepth arrives as a BARE PNG (no signature): toDepthView must restore the signature before
+// decoding, or QImage rejects it and the layer reports "Not a depth image" (0 points).
 TEST(DepthCloudLayer, BackProjectsBarePngCompressedDepth) {
   // The fixture really is headerless (begins at the IHDR chunk type, no signature).
   const std::vector<uint8_t>& png = barePngDepthBytes();
@@ -242,18 +237,15 @@ TEST(DepthCloudLayer, BackProjectsBarePngCompressedDepth) {
   ASSERT_TRUE(layer.attach(ctx));
   settle(layer);
 
-  // The bare PNG decodes (16UC1 mm) and back-projects to 4 points (== the 32FC1 case).
   EXPECT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
   EXPECT_EQ(layer.sourceFrameForTest(), u"cam"_s);
 }
 
-// Resolve-before-memo regression: when the sample on the GPU is unchanged,
-// renderAt must skip on metadata alone WITHOUT resolving payload bytes — a
-// resolve is a cold refetch (file read + whole-chunk decompress on the GUI
-// thread) once the ResidentPayloadPool has evicted the entry's seed. The store's
-// warm latestAt cache would mask a redundant resolve, so it is deliberately
-// reset between renders via an out-of-order push.
+// When the sample on the GPU is unchanged, renderAt must skip on metadata alone WITHOUT resolving payload bytes: a
+// resolve is a cold refetch (file read + whole-chunk decompress on the GUI thread) once the ResidentPayloadPool has
+// evicted the entry's seed. The store's warm latestAt cache would mask a redundant resolve, so it is reset between
+// renders via an out-of-order push.
 TEST(DepthCloudLayer, UnchangedSampleDoesNotResolvePayload) {
   PJ::SessionManager session;
   PJ::ObjectStore& store = session.objectStore();
@@ -282,8 +274,8 @@ TEST(DepthCloudLayer, UnchangedSampleDoesNotResolvePayload) {
   const int fetches_after_attach = *fetch_count;
   ASSERT_GT(fetches_after_attach, 0);
 
-  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve
-  // issued by the next render now HAS to re-invoke the lazy fetcher.
+  // Bust the warm latestAt cache (an out-of-order insert resets it): any resolve by the next render must re-invoke the
+  // lazy fetcher.
   auto old_fetch_count = std::make_shared<int>(0);
   pushLazyCounting(store, depth, 60, std::vector<uint8_t>{0x01}, old_fetch_count);
 
@@ -329,8 +321,6 @@ TEST(DepthCloudLayer, CameraInfoOnlyUpdateReprojects) {
   ASSERT_TRUE(before.has_value());
   ASSERT_NEAR(before->max.x, 0.02f, 2e-3f);
 
-  // CameraInfo-only update at/before the playhead: a new camera-topic entry
-  // with fx=fy=200, which halves the X/Y spread of the same depth pixels.
   ASSERT_TRUE(store.pushOwned(info, 60, std::vector<uint8_t>{0x02}).has_value());
   layer.renderAtForTest(100);  // depth sample unchanged
   settle(layer);
@@ -350,7 +340,6 @@ TEST(DepthCloudLayer, CachesIntrinsicsAcrossFramesNotReparsedPerFrame) {
 
   const PJ::ObjectTopicId depth = registerTypedTopic(store, "/cam/depth/image", "kImage");
   const PJ::ObjectTopicId info = registerTypedTopic(store, "/cam/depth/camera_info", "kCameraInfo");
-  // CameraInfo latched once before the depth stream; three depth frames follow.
   ASSERT_TRUE(store.pushOwned(info, 50, std::vector<uint8_t>{0x02}).has_value());
   for (PJ::Timestamp ts : {100, 200, 300}) {
     ASSERT_TRUE(store.pushOwned(depth, ts, std::vector<uint8_t>{0x01}).has_value());
@@ -412,7 +401,6 @@ TEST(DepthCloudLayer, PrefersCameraInfoMatchingFrameIdAmongMany) {
   ASSERT_TRUE(layer.attach(ctx));
   settle(layer);
 
-  // frame_id="camB" must select camB's intrinsics (fx=200), never camA's (fx=100).
   EXPECT_EQ(layer.lastPointCountForTest(), 4U);
   const auto bounds = layer.worldBounds();
   ASSERT_TRUE(bounds.has_value());
@@ -452,7 +440,6 @@ TEST(DepthCloudLayer, RefusesIntrinsicsAmongMultipleCamerasWithNoFrameMatch) {
   ASSERT_TRUE(layer.attach(ctx));
   settle(layer);
 
-  // Two cameras, neither frame matches "camX": refuse rather than pair the wrong one.
   EXPECT_EQ(layer.lastPointCountForTest(), 0U);
   EXPECT_EQ(layer.lastPushedStampForTest(), std::nullopt);
 }
@@ -501,7 +488,6 @@ TEST(DepthCloudLayer, ColorImageProducesNoPoints) {
   ASSERT_TRUE(layer.attach(ctx));
   settle(layer);
 
-  // A non-depth encoding produces no geometry and no pushed sample.
   EXPECT_EQ(layer.lastPointCountForTest(), 0U);
   EXPECT_EQ(layer.lastPushedStampForTest(), std::nullopt);
 }

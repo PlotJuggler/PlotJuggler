@@ -31,18 +31,14 @@ class PlotDocker;
 class PlotTabFrame;
 class SessionManager;
 
-// Custom tab strip + QStackedWidget. Each tab is a small QFrame
-// containing the tab name label and a close button; clicking a frame
-// switches the stack to its PlotDocker, double-clicking renames it, and
-// right-clicking a plot tab offers "Duplicate tab" (duplicateTab).
-// Same external API the previous QTabWidget-based version exposed.
-// Besides PlotDocker tabs, a tab can host an arbitrary widget
-// (addWidgetTab) — see that method for the lifecycle contract.
+// Custom tab strip + QStackedWidget. Each tab is a QFrame holding the tab name label and a close button; clicking it
+// shows its PlotDocker, double-clicking renames it, right-clicking a plot tab offers "Duplicate tab" (duplicateTab).
+// Besides PlotDocker tabs, a tab can host an arbitrary widget (addWidgetTab, which has the lifecycle contract).
 class TabbedPlotWidget : public QWidget {
   Q_OBJECT
  public:
-  // Single object-widget factory used by both drop (seed != null) and layout
-  // restore (kind tag, seed == null). See DockWidget::ObjectWidgetFactory.
+  // One object-widget factory for drops (seed != null) and layout restore (kind tag, seed == null); see
+  // DockWidget::ObjectWidgetFactory.
   using ObjectWidgetFactory =
       std::function<IDataWidget*(const QString& kind, const ObjectDropSeed* seed, QWidget* parent)>;
 
@@ -54,86 +50,66 @@ class TabbedPlotWidget : public QWidget {
   PlotDocker* addTab(QString name);
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
-  /// Supply the Custom Widget support to every tab's docks, existing and future.
+  /// Supplies the Custom Widget support to every tab's docks, existing and future.
   void setCustomWidgetSupport(CustomWidgetSupport support);
 
-  // Hosts an arbitrary non-plot widget as a whole tab (a heterogeneous,
-  // VSCode-style tab — e.g. a pinned toolbox panel). Takes ownership of
-  // `content` (reparented into the tab stack) and selects the new tab.
-  // `on_close` runs exactly once when the tab closes (its X button or
-  // closeWidgetTab), BEFORE `content` is deleted, so the owner can tear
-  // down whatever drives the widget. Widget tabs are never serialized and
-  // survive xmlLoadState (plot tabs are rebuilt around them) — persistence
-  // is the owner's concern, including the tab name: the in-place rename
-  // edits only the strip label (read it back via widgetTabName), and is
-  // not undoable. Adding a widget tab is not an undoable change either.
+  // Hosts an arbitrary non-plot widget as a whole tab (a pinned toolbox panel). Takes ownership of `content`
+  // (reparented into the tab stack) and selects the new tab. `on_close` runs exactly once when the tab closes (its X
+  // button or closeWidgetTab), before `content` is deleted, so the owner can tear down whatever drives the widget.
+  // Widget tabs are never serialized and survive xmlLoadState (plot tabs are rebuilt around them): persistence is the
+  // owner's concern, the tab name included (the in-place rename edits only the strip label; read it back via
+  // widgetTabName). Neither the rename nor adding a widget tab is undoable.
   void addWidgetTab(const QString& tab_name, QWidget* content, std::function<void()> on_close);
-  // Selects the tab hosting `content` (added via addWidgetTab). No-op if absent.
+  // Selects the tab hosting `content` (added via addWidgetTab); no-op if absent.
   void focusWidgetTab(QWidget* content);
-  // Closes the tab hosting `content` exactly like its X button: honours any
-  // setWidgetTabPreClose veto, then runs its on_close, removes the tab and
-  // deletes the widget. No-op if absent.
+  // Closes the tab hosting `content` like its X button: honours any setWidgetTabPreClose veto, then runs on_close,
+  // removes the tab and deletes the widget. No-op if absent.
   void closeWidgetTab(QWidget* content);
-  // Removes a widget tab without consulting its close veto or running teardown.
-  // Returns the hidden content with its original size policy; the caller takes
-  // ownership. It stays a child of this widget until the caller reparents it
-  // (into another tab or window) or deletes it — a reparent re-polishes the whole
-  // tree against the app stylesheet, so it must happen once, at the destination.
-  // Returns nullptr if content is not a widget tab.
+  // Removes a widget tab without its close veto or teardown and returns the hidden content with its original size
+  // policy; the caller takes ownership. It stays a child of this widget until the caller reparents or deletes it (a
+  // reparent re-polishes the whole tree against the app stylesheet, so it must happen once, at the destination).
+  // nullptr if content is not a widget tab.
   [[nodiscard]] QWidget* takeWidgetTab(QWidget* content);
-  // Inserts a copy of `source`'s plot tab right after it and selects it: same
-  // layout, curves and styles (via the tab's XML round-trip), named
-  // "<name> (copy)". The copy gets fresh tab/area/plot state ids, so it never
-  // aliases the source in id-keyed lookups (undo restore, pending bindings), and
-  // is an ordinary user tab: history-exempt and plugin-owner metadata are not
-  // copied. Emits undoableChange. Returns nullptr if `source` is not a plot tab
-  // here or its state fails to restore (the half-built copy is then closed).
+  // Inserts a copy of `source`'s plot tab right after it and selects it: same layout, curves and styles (through the
+  // tab's XML round trip), named "<name> (copy)". The copy gets fresh tab, area and plot state ids, so it never aliases
+  // the source in id-keyed lookups (undo restore, pending bindings), and is an ordinary user tab: history-exempt and
+  // plugin-owner metadata are not copied. Emits undoableChange. nullptr if `source` is not a plot tab here or its state
+  // fails to restore (the half-built copy is closed).
   PlotDocker* duplicateTab(PlotDocker* source);
-  // Close a plot tab programmatically. Honours the same path as the tab's
-  // close button, including the last-serializable-tab rule.
+  // Closes a plot tab like the tab's close button, the last-serializable-tab rule included.
   void closeTab(PlotDocker* docker);
-  // Gives a widget tab a veto over its own close: `pre_close` runs BEFORE any
-  // teardown and returning false abandons the close entirely (nothing is run,
-  // removed or deleted), which is how a pinned panel with work in flight asks
-  // the user to confirm first. Optional — a tab without one always closes.
-  // `pre_close` may run a modal event loop, and may itself close this or other
-  // tabs; doing so simply ends the close it was consulted for. Replaces any
-  // previously set callback; no-op if `content` is not a widget tab.
-  // closeWidgetTabForced() bypasses it — use that for shutdown and layout
-  // replacement, which must not be refusable.
+  // Gives a widget tab a veto over its own close: `pre_close` runs before any teardown and returning false abandons the
+  // close entirely (a pinned panel with work in flight asks the user first). Optional: a tab without one always closes.
+  // `pre_close` may run a modal event loop and may close this or other tabs, which just ends the close it was consulted
+  // for. Replaces any previous callback; no-op if `content` is not a widget tab. closeWidgetTabForced() bypasses it,
+  // for shutdown and layout replacement, which must not be refusable.
   void setWidgetTabPreClose(QWidget* content, std::function<bool()> pre_close);
-  // Like closeWidgetTab, but ignores any setWidgetTabPreClose veto.
+  // Like closeWidgetTab, ignoring any setWidgetTabPreClose veto.
   void closeWidgetTabForced(QWidget* content);
-  // Current strip label of the widget tab hosting `content` (empty if
-  // absent) — the sole store of a user rename, so owners persisting the
-  // tab must read it at save time.
+  // Strip label of the widget tab hosting `content` (empty if absent): the only store of a user rename, so an owner
+  // persisting the tab reads it at save time.
   [[nodiscard]] QString widgetTabName(QWidget* content) const;
   // Renames the widget tab hosting `content` (no-op if absent). Not undoable.
   void setWidgetTabName(QWidget* content, const QString& name);
 
-  // Docker-tab enumeration: counts/indexes ONLY PlotDocker tabs, skipping
-  // widget tabs, so `for (i < dockerCount()) dockerAt(i)` never yields null
-  // holes. tabCount() is the total including widget tabs.
+  // Docker-tab enumeration counts and indexes only PlotDocker tabs, so `for (i < dockerCount()) dockerAt(i)` never
+  // yields a null; tabCount() includes widget tabs.
   [[nodiscard]] int dockerCount() const;
   PlotDocker* dockerAt(int index);
   [[nodiscard]] int tabCount() const;
-  // Visits every PlotDocker tab in tab order, in one pass over the tab vector
-  // (dockerCount()/dockerAt() are each a linear scan, so an index loop over
-  // them is quadratic). `operation` must not add or close tabs.
+  // Visits every PlotDocker tab in tab order in one pass (dockerCount() / dockerAt() are each a linear scan, so an
+  // index loop is quadratic). `operation` must not add or close tabs.
   void forEachDocker(const std::function<void(PlotDocker*)>& operation) const;
   // First PlotDocker tab satisfying `predicate`, or nullptr.
   [[nodiscard]] PlotDocker* findDocker(const std::function<bool(PlotDocker*)>& predicate) const;
-  // Selects `docker`'s tab, exactly like clicking its tab frame. No-op if
-  // `docker` is null or hosts no tab here (e.g. a stale pointer).
+  // Selects `docker`'s tab like a click on its frame; no-op if `docker` is null or hosts no tab here (a stale pointer).
   void focusTab(PlotDocker* docker);
-  // Renames `docker` and its tab-strip label, which PlotDocker::setName alone leaves stale.
-  // Pushes no undo step (callers renaming user tabs emit their own). No-op if `docker` hosts no tab here.
+  // Renames `docker` and its tab-strip label (PlotDocker::setName alone leaves the label stale). Pushes no undo step
+  // (callers renaming user tabs emit their own); no-op if `docker` hosts no tab here.
   void renameTab(PlotDocker* docker, const QString& name);
 
-  // Panel-toggle buttons. Created here but relocated by the MainWindow
-  // shell into the title bar (it reparents them after construction).
-  // The shell wires clicked() to show/hide the corresponding outer
-  // panel widget and swaps the filled/outlined glyph.
+  // Panel-toggle buttons: created here, relocated into the title bar by the MainWindow shell, which wires clicked() to
+  // show or hide the outer panel and swaps the filled/outlined glyph.
   [[nodiscard]] QPushButton* leftPanelButton() const {
     return button_left_panel_;
   }
@@ -160,29 +136,24 @@ class TabbedPlotWidget : public QWidget {
     }
   }
 
-  // Serializes/restores plot pages while always preserving widget and ephemeral
-  // pages. Full scope includes history-exempt plot pages; history scope omits
-  // them and preserves their live objects during restore. Restoration emits no
-  // undoableChange.
+  // Serializes and restores plot pages, always preserving widget and ephemeral pages. Full scope includes
+  // history-exempt plot pages; history scope omits them and keeps their live objects through a restore. Restoring emits
+  // no undoableChange.
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc, SnapshotScope scope = SnapshotScope::kFull) const;
   bool xmlLoadState(const QDomElement& tabbed_area, RestoreIntent intent = RestoreIntent::kReplace);
 
  public slots:
   void onStylesheetChanged(QString theme);
-  // Rebinds the tab-strip Chrome metrics — the [+] tab button, the
-  // three panel-toggle buttons, the strip height itself, and every
-  // open tab frame. Connected to MainWindow::chromeMetricsChanged.
-  // layout_spacing is ignored for now — tab frames sit flush with one
-  // another by design, so introducing gaps between them would expose
-  // strips of the tab-bar background.
+  // Rebinds the tab-strip chrome metrics (the [+] button, the three panel-toggle buttons, the strip height, every open
+  // tab frame); connected to MainWindow::chromeMetricsChanged. layout_spacing is ignored: tab frames sit flush, and
+  // gaps would expose strips of the tab-bar background.
   void onChromeMetricsChanged(const ChromeMetrics& metrics);
 
  signals:
   void undoableChange();
   void tabAdded(PlotDocker* docker);
-  // Fires after the active tab changes (user click, programmatic switch,
-  // tab close, or layout restore). docker is the now-active PlotDocker or
-  // nullptr if no tab is active.
+  // Fires after the active tab changes (click, programmatic switch, close, layout restore); `docker` is the active
+  // PlotDocker or nullptr.
   void currentTabChanged(PlotDocker* docker);
 
  private slots:
@@ -195,39 +166,34 @@ class TabbedPlotWidget : public QWidget {
  private:
   struct TabEntry {
     PlotTabFrame* frame = nullptr;
-    // Exactly one of docker / widget is set: docker for plot tabs, widget
-    // (plus its owner-teardown on_close) for hosted widget tabs.
+    // Exactly one of docker / widget is set: docker for plot tabs, widget (plus its owner teardown on_close) for hosted
+    // widget tabs.
     PlotDocker* docker = nullptr;
     QWidget* widget = nullptr;
     std::function<void()> on_close;
-    // Widget tabs only (see setWidgetTabPreClose): consulted first on a
-    // vetoable close, and false there aborts it before anything is torn down.
+    // Widget tabs only (setWidgetTabPreClose): consulted first on a vetoable close; false aborts before any teardown.
     std::function<bool()> pre_close;
-    // The hosted widget's size policy at addWidgetTab time — restored when
-    // its tab is current; hidden widget pages are set to Ignored so they
-    // never inflate the QStackedWidget's union size hint.
+    // The hosted widget's size policy at addWidgetTab time, restored when its tab is current; hidden widget pages are
+    // set to Ignored so they never inflate the QStackedWidget's union size hint.
     QSizePolicy original_policy;
   };
 
   TabEntry* findEntry(PlotTabFrame* frame);
   TabEntry* findEntry(QWidget* content);
-  // The entry hosting `content` as a WIDGET tab (nullptr for absent content
-  // and for docker pages) — the shared predicate behind the widget-tab API.
+  // The entry hosting `content` as a widget tab (nullptr for absent content and docker pages): the predicate behind the
+  // widget-tab API.
   TabEntry* findWidgetEntry(QWidget* content);
   [[nodiscard]] const TabEntry* findWidgetEntry(QWidget* content) const;
-  // Dockers an undo snapshot can reconstruct. Ephemeral and history-exempt
-  // pages are outside history, so closing the last ordinary page creates a
-  // fresh one even when either kind remains live.
+  // Dockers an undo snapshot can reconstruct. Ephemeral and history-exempt pages are outside history, so closing the
+  // last ordinary page creates a fresh one even while either kind remains.
   [[nodiscard]] int historySerializableDockerCount() const;
-  // The one close path for both tab kinds. With honor_veto, a widget tab's
-  // pre_close runs first and can abandon the close; plot tabs have none.
+  // The one close path for both tab kinds; with honor_veto a widget tab's pre_close runs first and can abandon it.
   void closeTab(PlotTabFrame* frame, bool honor_veto);
-  // The stack page a tab entry shows (its docker or hosted widget).
+  // The stack page a tab entry shows.
   static QWidget* contentOf(const TabEntry& entry);
   void updateSelectionStyle();
-  // Keeps hidden widget-tab pages from inflating the stack's union size
-  // hint (Ignored while non-current, original policy restored when
-  // current). Connected to QStackedWidget::currentChanged.
+  // Keeps hidden widget-tab pages from inflating the stack's union size hint (Ignored while not current, original
+  // policy when current). Connected to QStackedWidget::currentChanged.
   void adaptWidgetTabPagePolicies();
   void selectEntry(const TabEntry& entry);
   PlotDocker* createDocker(const QString& tab_name);
@@ -240,10 +206,8 @@ class TabbedPlotWidget : public QWidget {
   QPushButton* button_left_panel_ = nullptr;
   QPushButton* button_bottom_panel_ = nullptr;
   QPushButton* button_right_panel_ = nullptr;
-  // Tab-strip Chrome metrics — defaults match the kTabBar* constants
-  // in the .cpp so first paint is unchanged until the host pushes the
-  // saved Preferences values. layout_spacing is ignored: tab frames sit
-  // flush by design.
+  // Tab-strip chrome metrics; the defaults match the kTabBar* constants in the .cpp so first paint is unchanged until
+  // the host pushes the saved Preferences values. layout_spacing is ignored: tab frames sit flush.
   ChromeMetrics chrome_metrics_{20, 3, 0, 0};
   SessionManager* session_ = nullptr;
   CatalogModel* catalog_ = nullptr;

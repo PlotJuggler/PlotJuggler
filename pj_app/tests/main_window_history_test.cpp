@@ -80,7 +80,7 @@ class MainWindowHistoryTestPeer {
   }
 
   static void beginProgressiveRestore(MainWindow& window, QDomDocument doc) {
-    // kPrompt = the interactive-load policy this scenario always modeled.
+    // kPrompt: the interactive-load policy.
     window.beginProgressiveLayoutRestore(
         std::move(doc), u"/tmp/progressive-test.pj4.xml"_s, MainWindow::MissingCurvePolicy::kPrompt);
   }
@@ -491,7 +491,7 @@ TEST_F(MainWindowHistoryFixture, AutomaticGlobalRebasePreservesAbsolutePlayheadA
   ASSERT_DOUBLE_EQ(playback.currentTime().value, 5.0);
 
   // The shared origin moves from 100 s to 50 s. Preserve the absolute 105 s
-  // playhead while reframing the complete range in the new relative domain.
+  // playhead while reframing the complete range in the moved origin's relative domain.
   ASSERT_NE(addScalarDataset(app_session, "earlier.mcap", "/earlier", 50 * kSecond, 60 * kSecond), 0U);
 
   EXPECT_EQ(session.globalTimeReference(), 50 * kSecond);
@@ -1028,7 +1028,7 @@ PJ::BatchEngine::GeneratorRecipe sensorRule(PJ::DatasetId dataset, bool first_on
 }
 
 // The sequential uid of the set `owner` last published for `output` on `dataset`:
-// a republish or a tombstone mints a new one.
+// a republish or a tombstone mints another.
 std::optional<std::uint64_t> publishUid(
     PJ::AppSession& app, PJ::DatasetId dataset, std::string_view output, std::string_view owner) {
   const PJ::ObjectStore& store = app.sessionManager().objectStore();

@@ -19,8 +19,6 @@ namespace PJ {
 
 namespace {
 
-// The bridge emits DiagnosticLevel cast to int; map it back to the stable
-// wire strings. Unknown values degrade to "info" rather than failing the run.
 [[nodiscard]] QString levelName(int level) {
   switch (static_cast<DiagnosticLevel>(level)) {
     case DiagnosticLevel::kWarning:
@@ -62,13 +60,8 @@ QString DiagnosticDump::outputPath() const {
 }
 
 bool DiagnosticDump::write() {
-  // The bridge re-emits QUEUED, so a diagnostic reported moments before a
-  // quit (the aboutToQuit call context: settle -> QCoreApplication::exit ->
-  // write) is still a posted event here. Deliver the bridge's pending
-  // metacalls first or the tail of the run — typically the very failure the
-  // dump exists to capture — would be lost. Deliberately NARROW: only the
-  // bridge's queued re-emits, never the whole posted-event queue — a
-  // quit-time write must not run unrelated shutdown-time work.
+  // A diagnostic reported just before the quit (often the failure the dump exists for) is still a posted event
+  // on the bridge. Only the bridge's: a quit-time write must not run unrelated shutdown work.
   if (bridge_ != nullptr) {
     QCoreApplication::sendPostedEvents(bridge_, QEvent::MetaCall);
   }
@@ -76,8 +69,7 @@ bool DiagnosticDump::write() {
   if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
     return false;
   }
-  // Versioned envelope, never a bare array: run-level metadata (app version,
-  // exit code, ...) can then be added compatibly without breaking consumers.
+  // An envelope, never a bare array, so run-level metadata can be added compatibly.
   QJsonObject envelope;
   envelope.insert(QStringLiteral("version"), 1);
   envelope.insert(QStringLiteral("records"), records_);

@@ -48,36 +48,32 @@ struct MarkerTargetTopic {
     const MarkerTarget& target, const std::vector<MarkerTopic>& dataset_topics,
     const std::vector<MarkerTopic>& shared_topics);
 
-/// Custom QwtPlotItem that overlays plot markers (regions / events / value bands /
-/// labels), drawn on top of the curves. Each (dataset, marker set) target is a FAMILY of
-/// serialized PlotMarkers object topics in the session ObjectStore — the bare topic
-/// plus one per owning generator (`markerTopicsOf`) — drawn as their union; each
-/// topic is drawn once per paint even when several targets resolve to it (the
-/// all-datasets scope of every dataset on the plot is the same shared topic).
-/// Time anchors (raw int64 ns) are converted to display seconds via the dataset's
-/// display offset; a family on the shared all-datasets home is already stored in
-/// the display frame, so only the uniform global origin applies to it.
+/// QwtPlotItem that overlays plot markers (regions, events, value bands, labels) on top of the curves. Each (dataset,
+/// marker set) target is a family of serialized PlotMarkers object topics in the session ObjectStore (the bare topic
+/// plus one per owning generator, `markerTopicsOf`), drawn as their union; each topic is drawn once per paint even when
+/// several targets resolve to it (every dataset's all-datasets scope is the same shared topic). Raw int64 ns anchors
+/// convert to display seconds through the dataset's display offset; a family on the shared all-datasets home is already
+/// stored in the display frame, so only the uniform global origin applies to it.
 class PlotMarkersItem : public QwtPlotItem {
  public:
   explicit PlotMarkersItem(SessionManager* session);
 
-  /// Provider of the (dataset, marker set) targets to render, set by the owning
-  /// PlotWidget and recomputed from the plot's current curves on each draw.
+  /// Provider of the (dataset, marker set) targets to render, set by the owning PlotWidget and recomputed from the
+  /// plot's current curves on each draw.
   void setTargetsProvider(std::function<std::vector<MarkerTarget>()> provider);
 
   void setSession(SessionManager* session) {
     session_ = session;
   }
 
-  /// A one-line note drawn over the markers in the canvas's top-left corner; empty
-  /// removes it. Returns whether the text changed (the caller replots then).
+  /// A one-line note drawn over the markers in the canvas's top-left corner; empty removes it. Returns whether the text
+  /// changed (the caller then replots).
   bool setStatusNote(const QString& text);
   [[nodiscard]] const QString& statusNote() const noexcept {
     return status_note_;
   }
-  /// Where the note sits in a canvas of `canvas_rect`, empty without a note: the top-left
-  /// corner, or the top-right one when the legend is aligned top-left. The one rect the
-  /// paint and the tooltip hit-test share.
+  /// Where the note sits in a canvas of `canvas_rect` (empty without a note): the top-left corner, or the top-right one
+  /// when the legend is aligned top-left. The rect the paint and the tooltip hit test share.
   [[nodiscard]] QRectF statusNoteRect(const QRectF& canvas_rect) const;
 
   [[nodiscard]] int rtti() const override {
@@ -92,8 +88,7 @@ class PlotMarkersItem : public QwtPlotItem {
       QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect) const;
   void drawStatusNote(QPainter* painter, const QRectF& canvas_rect) const;
 
-  /// Paint one object topic's set (decoded through `decode_cache_`), raw times
-  /// mapped through `offset`.
+  /// Paints one object topic's set (decoded through `decode_cache_`), raw times mapped through `offset`.
   void drawTopic(
       QPainter* painter, const QwtScaleMap& xMap, const QwtScaleMap& yMap, const QRectF& canvasRect,
       const QFontMetrics& fm, const ObjectStore& store, ObjectTopicId topic_id, DisplayOffset offset) const;
@@ -102,11 +97,9 @@ class PlotMarkersItem : public QwtPlotItem {
   std::function<std::vector<MarkerTarget>()> targets_provider_;
   QString status_note_;
 
-  // Decode cache: the deserialized marker set per object-topic. draw() runs on
-  // every replot (up to 60 Hz while streaming) but markers change only when a
-  // producer republishes — which bumps the entry's sequential_uid. Keying on that
-  // uid means a paint re-decodes only on an actual change; otherwise it is a map
-  // lookup. draw() is const, so the cache is mutable.
+  // Decode cache: the deserialized marker set per object topic. draw() runs on every replot (up to 60 Hz while
+  // streaming) but markers change only when a producer republishes, which bumps the entry's sequential_uid; keying on
+  // it means a paint re-decodes only on a real change. draw() is const, so the cache is mutable.
   struct CachedMarkers {
     std::uint64_t uid = 0;  // SequentialUID::value; 0 = empty slot (uids start at 1)
     sdk::PlotMarkers markers;

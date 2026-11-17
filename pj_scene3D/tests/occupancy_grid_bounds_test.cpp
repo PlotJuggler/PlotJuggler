@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Headless tests for the scene-bounds helpers in pj_scene3d_core/camera/camera.h.
-// These back the worldBounds() implementations on the 3D entities (the occupancy
-// grid bound is computed by occupancyGridBounds; the pointcloud accumulates via
-// expandAABB; the dock unions per-entity boxes via unionAABB).
+// Headless tests for the scene-bounds helpers in pj_scene3d_core/camera/camera.h (occupancyGridBounds, expandAABB,
+// unionAABB), which back the 3D entities' worldBounds().
 
 #include <gtest/gtest.h>
 
@@ -39,7 +37,6 @@ TEST(AabbExpand, FromInvalidAccumulatesMinMax) {
   EXPECT_FALSE(box.valid);
   expandAABB(box, glm::vec3{1.0f, 2.0f, 3.0f});
   ASSERT_TRUE(box.valid);
-  // A single point yields a degenerate box.
   EXPECT_EQ(box.min, box.max);
   expandAABB(box, glm::vec3{-1.0f, 5.0f, 0.0f});
   EXPECT_FLOAT_EQ(box.min.x, -1.0f);
@@ -62,7 +59,6 @@ TEST(AabbUnion, InvalidIsIdentity) {
   EXPECT_EQ(right.min, b.min);
   EXPECT_EQ(right.max, b.max);
 
-  // Unioning two invalid boxes stays invalid.
   EXPECT_FALSE(unionAABB(invalid, AABB{}).valid);
 }
 

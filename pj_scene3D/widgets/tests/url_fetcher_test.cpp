@@ -33,7 +33,6 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-// Pump the event loop until `done` returns true or `timeout_ms` elapses.
 bool pumpUntil(const std::function<bool()>& done, int timeout_ms) {
   QElapsedTimer timer;
   timer.start();
@@ -66,8 +65,7 @@ TEST(UrlFetcherTest, LocalFileUrlDeliversBytesAsynchronously) {
     called = true;
     result = std::move(fetched);
   });
-  // The contract: the callback is NEVER invoked synchronously from fetch() —
-  // a caller must be safe kicking a fetch from inside its own load path.
+  // The contract: the callback is NEVER invoked synchronously from fetch() (a caller kicks a fetch from its load path).
   EXPECT_FALSE(called) << "callback ran before fetch() returned";
 
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
@@ -123,11 +121,9 @@ TEST(UrlFetcherTest, UnsupportedSchemeFailsAsynchronously) {
   EXPECT_TRUE(result.error.contains("unsupported URL scheme"_L1)) << result.error.toStdString();
 }
 
-// Regression (Windows): an absolute path like "C:/dir/file.bin" becomes a QUrl
-// whose scheme() is the single-letter drive ("c"), NOT empty — so the fetcher
-// must still treat it as a local file, never reject it as an unsupported scheme.
-// Cross-platform check: point at a missing drive-letter path and assert the
-// failure is a FILE error, not "unsupported URL scheme 'c'".
+// On Windows an absolute path like "C:/dir/file.bin" becomes a QUrl whose scheme() is the single-letter drive ("c"),
+// not empty: the fetcher must still treat it as a local file, never as an unsupported scheme. Cross-platform check: a
+// missing drive-letter path must fail with a FILE error, not "unsupported URL scheme 'c'".
 TEST(UrlFetcherTest, WindowsDriveLetterPathTreatedAsLocalFile) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
@@ -145,15 +141,13 @@ TEST(UrlFetcherTest, WindowsDriveLetterPathTreatedAsLocalFile) {
 // The lifetime guarantee layers rely on: destroying the fetcher while a request
 // is in flight aborts it and the callback never fires.
 TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
-  // A server that accepts the connection but never responds keeps the request
-  // in flight for as long as the test wants.
+  // A server that accepts the connection but never responds keeps the request in flight.
   QTcpServer server;
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
   bool called = false;
   const QUrl url(pj::scene3d::test::silentServerUrl(server, u"never"_s));
   fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; });
 
-  // Let the connection actually establish, then kill the fetcher mid-flight.
   pumpUntil([&server]() { return server.hasPendingConnections(); }, 2000);
   fetcher.reset();
 
@@ -270,9 +264,8 @@ pj::scene3d::FetchResult fetchSync(pj::scene3d::UrlFetcher& fetcher, const QUrl&
 
 }  // namespace
 
-// A FRESH cached entry is reused across UrlFetcher instances (i.e. across
-// sessions) WITHOUT any network: a new fetcher serves the model from disk even
-// after the origin server is gone. This is the "don't re-download the car" win.
+// A FRESH cached entry is reused across UrlFetcher instances (i.e. across sessions) WITHOUT any network: a new fetcher
+// serves the model from disk even after the origin server is gone.
 TEST(UrlFetcherTest, FreshEntryServedCrossSessionWithoutNetwork) {
   clearModelCache();
   const QByteArray body("MESHBYTES");
@@ -357,7 +350,6 @@ TEST(UrlFetcherTest, SizeCappedResponseDoesNotPoisonCache) {
     QTcpSocket* socket = server.nextPendingConnection();
     QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket]() {
       socket->readAll();
-      // Over-cap length declared but cacheable headers: the fetcher aborts.
       socket->write(
           "HTTP/1.1 200 OK\r\nCache-Control: max-age=3600\r\nContent-Length: " + overCapLength() + "\r\n\r\n");
       socket->write(QByteArray(4096, 'x'));

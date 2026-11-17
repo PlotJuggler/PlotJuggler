@@ -17,16 +17,13 @@ namespace PJ::agent_tools {
 struct SeriesStats {
   std::size_t count = 0;
   std::size_t invalid = 0;  // samples whose value is not finite (NaN, ±inf)
-  // True once at least one finite value was seen. min/max/mean/stddev are
-  // computed over finite samples only and stay at their defaults (never NaN)
-  // when this is false.
+  // True once a finite value was seen. min/max/mean/stddev cover finite samples only and keep their defaults (never
+  // NaN) when this is false.
   bool has_values = false;
   double min = 0.0;
   double max = 0.0;
-  // Where the finite min/max first occur, in seconds relative to the first
-  // sample (same axis as max_gap_at_s and bucket `t`). First occurrence: a
-  // later sample tying the extreme does not move it. Only meaningful when
-  // has_values.
+  // Where the finite min/max first occur, in seconds relative to the first sample (same axis as max_gap_at_s and bucket
+  // `t`); a later sample tying the extreme does not move it. Only meaningful when has_values.
   double min_at_s = 0.0;
   double max_at_s = 0.0;
   double mean = 0.0;
@@ -35,11 +32,9 @@ struct SeriesStats {
   std::int64_t t_end_ns = 0;
   double duration_s = 0.0;
   double rate_hz = 0.0;  // (count - 1) / duration_s, 0 when undefined
-  // Largest spacing between consecutive samples, and where the gap starts (in
-  // seconds relative to the first sample, matching the buckets' time axis).
-  // Only defined with two or more samples — see has_gap. This is what makes
-  // "are there gaps in this recording?" answerable: count, mean and rate all
-  // survive a dropout untouched, so without it the question invites a guess.
+  // Largest spacing between consecutive samples and where it starts (seconds relative to the first sample, the buckets'
+  // time axis); defined with two or more samples (see has_gap). It makes "are there gaps in this recording?"
+  // answerable: count, mean and rate all survive a dropout untouched.
   bool has_gap = false;
   double max_gap_s = 0.0;
   double max_gap_at_s = 0.0;
@@ -132,29 +127,24 @@ struct SeriesBucket {
   return s;
 }
 
-// Longest run of consecutive samples holding exactly the same value, plus
-// whether the series never changes at all. Computed on the WHOLE series the
-// caller passes in — the executor must call this on the unsliced ts/vals
-// from readOne, BEFORE any t_start_s/t_end_s window is applied, because
-// "this channel never changes" and "this channel froze for 21s" are claims
-// about the entire recording, not about whatever slice a later window keeps.
+// Longest run of consecutive samples holding exactly the same value, plus whether the series never changes at all.
+// Computed on the WHOLE series the caller passes in: the executor must call this on the unsliced ts/vals from readOne,
+// BEFORE any t_start_s/t_end_s window is applied, because "this channel never changes" and "this channel froze for
+// 21s" are claims about the entire recording, not about whatever slice a later window keeps.
 struct FlatRunSummary {
-  // True only when every sample equals the first. Exact `==`, so a series
-  // containing any non-finite sample can't be constant unless it has just
-  // one sample (nothing to compare it against).
+  // True only when every sample equals the first. Exact `==`, so a series with a non-finite sample is constant only if
+  // it has one sample.
   bool constant = false;
-  // True when the longest flat run covers at least 5% of the series
-  // duration and the series is not `constant` (a constant series already
-  // says everything a flat span would add). Left false — with the span
-  // fields at 0 — for a noisy series, a single-sample series, or one where
-  // every sample shares the same timestamp (zero duration).
+  // True when the longest flat run covers at least 5% of the series duration and the series is not `constant` (a
+  // constant series already says everything a flat span would add). False, with the span fields 0, for a noisy
+  // series, a single-sample series, or one whose samples all share a timestamp (zero duration).
   bool has_flat_span = false;
   double flat_span_s = 0.0;
-  // Where the longest run starts, in seconds relative to the first sample —
-  // same axis as min_at_s/max_at_s/max_gap_at_s.
+  // Where the longest run starts, in seconds relative to the first sample (same axis as min_at_s, max_at_s and
+  // max_gap_at_s).
   double flat_span_at_s = 0.0;
-  // The same instant as an absolute timestamp, for the display-time conversion: a
-  // windowed read's stats start at the window, not at the series' first sample.
+  // The same instant as an absolute timestamp, for the display-time conversion: a windowed read's stats start at the
+  // window, not at the series' first sample.
   std::int64_t flat_span_start_ns = 0;
 };
 
@@ -255,13 +245,10 @@ class FlatRunAccumulator {
   return runs.summary();
 }
 
-// Decimate into at most `max_points` equal-width time buckets, preserving the
-// per-bucket min and max so spikes survive the downsample (a plain stride would
-// alias them away). Buckets with no samples at all are omitted; a bucket whose
-// samples are all non-finite (NaN/inf) is kept with count == 0 and its invalid
-// count set, so a window of bad data is reported rather than silently dropped.
-// When the series already has <= max_points samples, each sample becomes its
-// own bucket.
+// Decimates into at most `max_points` equal-width time buckets, preserving each bucket's min and max so spikes survive
+// (a plain stride would alias them away). Buckets with no samples are omitted; a bucket whose samples are all
+// non-finite is kept with count == 0 and its invalid count set, so a window of bad data is reported, not dropped. A
+// series already at <= max_points samples makes each sample its own bucket.
 [[nodiscard]] inline std::vector<SeriesBucket> bucketize(
     std::span<const std::int64_t> timestamps, std::span<const double> values, std::size_t max_points) {
   std::vector<SeriesBucket> out;
@@ -273,8 +260,8 @@ class FlatRunAccumulator {
   const std::int64_t t1 = timestamps[n - 1];
   const std::int64_t span_ns = t1 - t0;
 
-  // Degenerate time span (all samples share a timestamp) or few enough samples:
-  // emit one bucket per sample, capped at max_points.
+  // Degenerate time span (all samples share a timestamp) or few enough samples: one bucket per sample, capped at
+  // max_points.
   if (span_ns <= 0 || n <= max_points) {
     const std::size_t limit = std::min(n, max_points);
     out.reserve(limit);
@@ -325,9 +312,8 @@ class FlatRunAccumulator {
       bucket.mean = sum / static_cast<double>(bucket.count);
       out.push_back(bucket);
     } else if (bucket.invalid > 0) {
-      // All samples in this window were non-finite: keep the bucket (with its
-      // invalid count) instead of silently dropping the window, but leave
-      // min/max/mean at their defaults rather than emitting NaN.
+      // All samples in this window were non-finite: keep the bucket (with its invalid count) rather than silently drop
+      // the window, with min/max/mean at their defaults, not NaN.
       out.push_back(bucket);
     }
   }

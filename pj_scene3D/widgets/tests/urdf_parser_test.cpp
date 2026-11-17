@@ -31,7 +31,6 @@ std::string readFixture(const std::string& name) {
   return ss.str();
 }
 
-// Find a link by name (helper; links are an unordered vector).
 const RobotLink* findLink(const RobotModel& m, const std::string& name) {
   for (const auto& l : m.links) {
     if (l.name == name) {
@@ -41,7 +40,6 @@ const RobotLink* findLink(const RobotModel& m, const std::string& name) {
   return nullptr;
 }
 
-// Find a joint by name (helper; joints are an unordered vector).
 const RobotJoint* findJoint(const RobotModel& m, const std::string& name) {
   for (const auto& j : m.joints) {
     if (j.name == name) {
@@ -89,7 +87,6 @@ TEST(UrdfParser, PrimitiveGeometriesParsed) {
 
   const RobotLink* base = findLink(*model, "base_link");
   ASSERT_NE(base, nullptr);
-  // visuals[1] is the box primitive.
   ASSERT_TRUE(std::holds_alternative<GeomBox>(base->visuals[1].shape));
   const auto& box = std::get<GeomBox>(base->visuals[1].shape);
   EXPECT_DOUBLE_EQ(box.size.x, 0.3);
@@ -112,11 +109,9 @@ TEST(UrdfParser, NamedMaterialResolvedAndInlineColor) {
 
   const RobotLink* base = findLink(*model, "base_link");
   ASSERT_NE(base, nullptr);
-  // visuals[0]: <material name="Blue"/> resolves to the robot-level color.
   EXPECT_TRUE(base->visuals[0].has_color);
   EXPECT_FLOAT_EQ(base->visuals[0].color.b, 1.0f);
   EXPECT_FLOAT_EQ(base->visuals[0].color.r, 0.0f);
-  // visuals[1]: inline <color rgba="1 0 0 1"/>.
   EXPECT_TRUE(base->visuals[1].has_color);
   EXPECT_FLOAT_EQ(base->visuals[1].color.r, 1.0f);
 }
@@ -137,7 +132,6 @@ TEST(UrdfParser, OriginComposedTranslateThenRotate) {
   const glm::dvec4 x_axis = m * glm::dvec4(1, 0, 0, 0);
   EXPECT_NEAR(x_axis.x, 0.0, 1e-3);
   EXPECT_NEAR(x_axis.y, 1.0, 1e-3);
-  // Translation column is the xyz.
   EXPECT_DOUBLE_EQ(m[3][2], 0.1);
 }
 
@@ -156,7 +150,6 @@ TEST(UrdfParser, BarePathLooksLikePackageResolvesAgainstUrdfDir) {
   const auto& mesh = std::get<GeomMesh>(arm->collisions[0].shape);
   EXPECT_EQ(mesh.filename, "robotiq_arg85_description/meshes/gripper.stl");
   EXPECT_TRUE(mesh.resolved);  // resolved as a bare relative path …
-  // … against urdf_dir, NOT via the package search (which never ran).
   EXPECT_EQ(mesh.resolved_path, urdf_dir + "/robotiq_arg85_description/meshes/gripper.stl");
   // The guard kept this bare path out of the package chain: no package is
   // recorded on the mesh. (demo_description, a real package:// ref, would be.)
@@ -174,7 +167,6 @@ TEST(UrdfParser, PackageRefRecordedUnresolvedWhenNoRoots) {
   ASSERT_NE(base, nullptr);
   const auto& mesh = std::get<GeomMesh>(base->visuals[0].shape);
   EXPECT_FALSE(mesh.resolved);
-  // The unresolved package now travels on the mesh, not a resolver-global tally.
   EXPECT_EQ(mesh.unresolved_package, "demo_description");
   EXPECT_EQ(mesh.issue, MeshResolveIssue::kUnresolvedPackage);
 }
@@ -204,9 +196,7 @@ TEST(UrdfParser, MalformedXmlRejected) {
 }
 
 TEST(UrdfParser, JointsParsedButCreateNoLinks) {
-  // <joint> elements are now recorded in model.joints (used to bridge TF gaps),
-  // but they still contribute no <link> — TF owns kinematics, joints only fill in
-  // edges the data leaves out.
+  // <joint> elements are recorded in model.joints (they bridge TF gaps) but contribute no <link>: TF owns kinematics.
   const std::string xml = R"(<?xml version="1.0"?>
     <robot name="jr">
       <link name="a"/>
@@ -250,7 +240,6 @@ TEST(UrdfParser, OversizedInputRejectedWithSizeInMessage) {
   // Build a string just over the 32 MiB cap by padding with XML comment content.
   // We don't attempt to parse real XML — the check fires before setContent.
   constexpr std::size_t kLimitBytes = 32u * 1024u * 1024u;
-  // Wrap the padding in a minimal valid XML prefix so looksLikeXacro passes.
   const std::string prefix = "<?xml version=\"1.0\"?><robot name=\"x\"><!-- ";
   const std::string suffix = " --><link name=\"a\"/></robot>";
   const std::size_t pad_size = kLimitBytes + 1 - prefix.size() - suffix.size();
@@ -260,7 +249,6 @@ TEST(UrdfParser, OversizedInputRejectedWithSizeInMessage) {
   UrdfPackageResolver resolver;
   auto [model, err] = parseUrdf(xml, &resolver, "", false);
   EXPECT_FALSE(model.has_value());
-  // Error must mention the size so the user understands why it was rejected.
   EXPECT_NE(err.find("MiB"), std::string::npos) << "error was: " << err;
   EXPECT_NE(err.find("32"), std::string::npos) << "error was: " << err;
 }
@@ -297,8 +285,7 @@ TEST(UrdfParser, OptionalStructuralLimitsRejectBeforeGrowingTheModel) {
     EXPECT_NE(err.find(limit_case.expected_error), std::string::npos) << "error was: " << err;
   }
 
-  // The same input still follows the historical native path when no explicit
-  // browser envelope is supplied.
+  // The same input without the explicit browser envelope takes the native path.
   auto [model, err] = parseUrdf(xml, &resolver, "", false);
   ASSERT_TRUE(model.has_value()) << err;
   EXPECT_EQ(model->links.size(), 2u);

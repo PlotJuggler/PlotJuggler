@@ -77,9 +77,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Hash every conanfile.txt under the tree (today the top-level
-          # one; future submodules under PJ4 may add their own) so the
-          # key invalidates when any of them changes.
+          # Hash every conanfile.txt and conan.lock under the tree so the key
+          # invalidates when any of them changes.
           # "luau-fpic": the conan install below builds luau with -fPIC under its own
           # package_id; a new key lets the run save the closure that holds it (the
           # prefix restore still brings back everything else).
@@ -94,10 +93,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ~/.conan2
-          # v2 prefix (July 2026): bumped to invalidate caches carrying the
-          # pre-#30610 assimp/5.4.3 recipe revision (which still pins draco/1.5.6
-          # and clashes with our new draco/1.5.7 pin). Fold this suffix out once
-          # everyone has moved past the transition.
+          # The v2 prefix excludes caches carrying the assimp/5.4.3 recipe revision
+          # that pins draco/1.5.6 (it clashes with our draco/1.5.7 pin); drop the
+          # suffix once no such cache remains.
           key: conan-linux-gcc-release-v2-${{ steps.conan_cache.outputs.hash }}
           # Partial reuse when conanfile.txt changes: an older closure for the
           # same OS/compiler still seeds most packages, so only the changed dep
@@ -108,7 +106,7 @@ jobs:
       - name: Seed Conan source download cache
         # minizip/1.2.13 has a single zlib.net source URL that rejects GitHub
         # runners with HTTP 415. Use the same checksum-verified, repo-hosted
-        # Conan download-cache seed as the proven Windows workflows. This is
+        # Conan download-cache seed as the Windows workflows. This is
         # deliberately configured after restoring ~/.conan2 so a restored
         # global.conf cannot clobber it.
         shell: bash
@@ -169,9 +167,9 @@ jobs:
       - name: Configure ccache
         # Compiler-output cache for our own C++ — complementary to the Conan
         # cache (which holds prebuilt third-party packages, not our objects).
-        # Keep the regular-build namespace disjoint from TSan. The former
-        # `ccache-linux-` catch-all selected the newer ccache-linux-tsan-* entry
-        # and produced 0/810 hits because sanitizer objects are incompatible.
+        # Keep the regular-build namespace disjoint from TSan: a `ccache-linux-`
+        # catch-all selects the newer ccache-linux-tsan-* entry and hits 0/810,
+        # because sanitizer objects are incompatible.
         # Only pushes save (see Save ccache); a pull
         # request restores its head branch's newest cache (there is one when the
         # head is itself a pushed branch, e.g. a release-* merged into main: main's
@@ -189,8 +187,7 @@ jobs:
             ccache-linux-g1-main-
 
       - name: Set ccache limits
-        # 2G, not 500M: the full compiled object set (esp. after the Qt
-        # bump, whose larger headers grew per-TU output) exceeds 500M, so a
+        # 2G, not 500M: the full compiled object set exceeds 500M, so a
         # 500M cap thrashed — ccache evicted this build's own early objects
         # mid-run (observed: 25 cleanups, 39% hit rate), leaving every later
         # build permanently partially-cold. 2G holds the whole warm set.
@@ -207,8 +204,8 @@ jobs:
           ccache -z
 
       - name: Conan install
-        # Match the proven Windows sequencing: resolve/build the dependency
-        # graph, publish it immediately, then compile PlotJuggler. A later app
+        # Same sequencing as the Windows workflows: resolve/build the dependency
+        # graph, save it to the cache immediately, then compile PlotJuggler. A later app
         # compile failure must not discard an otherwise reusable Conan closure.
         id: conan_install
         shell: bash

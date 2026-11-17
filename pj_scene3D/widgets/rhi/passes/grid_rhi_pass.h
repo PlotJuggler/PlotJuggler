@@ -17,20 +17,15 @@
 
 namespace pj::scene3d {
 
-/// The view's prelude family: the ground grid (lines, or filled cells with the
-/// lines drawn analytically in the cell shader, which receive the mesh shadow)
-/// and the TF parent-connection lines. Drawn before
-/// every layer in each scene pass, grid as data (graded) and connections as
-/// annotations (tonemap bypass, annotation alpha blend). The TF triads that
-/// follow the prelude belong to the pose family. The grid is built once per
-/// settings change, at the fixed-frame origin, into a Static buffer; grid.vert and
-/// grid_cell.vert add the origin offset (fixed-frame origin - render origin), so
-/// panning, following and playback upload nothing. Grid positions and the render
-/// origin (the camera focal) are floats, so the shader's float add equals the
-/// double subtraction it replaces bit for bit. The TF connections (a Dynamic
-/// buffer) are camera-relative like every TF placement, rebuilt with the TF
-/// buffer, its revision, the fixed frame, the time or the render origin, and
-/// drawn with a zero offset.
+/// The view's prelude family: the ground grid (lines, or filled cells with the lines drawn analytically in the cell
+/// shader, which receive the mesh shadow) and the TF parent-connection lines. Drawn before every layer in each scene
+/// pass: the grid as data (graded), the connections as annotations (tonemap bypass, annotation alpha blend). The TF
+/// triads that follow the prelude belong to the pose family. The grid is built once per settings change, at the
+/// fixed-frame origin, into a Static buffer; grid.vert and grid_cell.vert add the origin offset (fixed-frame origin -
+/// render origin), so panning, following and playback upload nothing. Grid positions and the render origin (the
+/// camera focal) are floats, so the shader's float add equals the double subtraction it replaces bit for bit. The TF
+/// connections (a Dynamic buffer) are camera-relative like every TF placement, rebuilt with the TF buffer, its
+/// revision, the fixed frame, the time or the render origin, and drawn with a zero offset.
 class GridRhiPass {
  public:
   struct Settings {

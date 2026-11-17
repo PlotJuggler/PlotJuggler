@@ -25,12 +25,9 @@ class Dialog;
 
 namespace PJ {
 
-// Base class for app-styled dialogs: frameless window with a custom
-// title bar (drag-to-move + close button) on top and an empty content
-// area below. Subclasses set their title via setDialogTitle() and
-// populate contentWidget() / contentLayout().
+// Base class of app-styled dialogs: a frameless window with a custom title bar (drag to move, close button) above an
+// empty content area. Subclasses set the title with setDialogTitle() and populate contentWidget() / contentLayout().
 //
-// Pattern:
 //   class FooDialog : public Dialog {
 //    public:
 //     FooDialog(...) : Dialog(parent) {
@@ -47,98 +44,73 @@ class Dialog : public QDialog {
   void setDialogTitle(const QString& title);
   [[nodiscard]] QString dialogTitle() const;
 
-  // Show or hide the title-bar close (✕) button. Hide it for dialogs whose
-  // only sanctioned exits are their own action buttons (e.g. ProgressDialog).
+  // Shows or hides the title-bar close button. Hide it for dialogs whose only sanctioned exits are their own action
+  // buttons (ProgressDialog).
   void setCloseButtonVisible(bool visible);
 
-  // Where a title-bar action goes: Trailing sits left of the ✕ (window-level
-  // actions); Leading sits at the far left, before the title, which then
-  // centres itself between the two groups — the place for a panel's own
-  // controls (a drawer toggle, a settings gear) so they read as part of the
-  // window chrome rather than as a second header inside the content.
+  // Where a title-bar action goes: Trailing sits left of the close button (window-level actions); Leading sits at the
+  // far left, before the title, which then centres itself between the two groups: the place for a panel's own controls
+  // (a drawer toggle, a settings gear), so they read as window chrome and not a second header inside the content.
   enum class TitleBarSlot { Trailing, Leading };
 
-  // Insert a host-supplied action button into the title bar, so a dialog can
-  // carry window-level actions in its one chrome row instead of stacking a
-  // second header inside the content. The dialog reparents the button and
-  // keeps it sized with the chrome (same extent/icon size as the close
-  // button, re-applied on every setChromeMetrics). The caller keeps the
-  // button's signal wiring.
+  // Inserts a host-supplied action button into the title bar, so a dialog carries window-level actions in its one
+  // chrome row. The dialog reparents the button and keeps it sized with the chrome (the close button's extent and icon
+  // size, re-applied on every setChromeMetrics). The caller keeps the button's signal wiring.
   void addTitleBarAction(QAbstractButton* button, TitleBarSlot slot = TitleBarSlot::Trailing);
 
-  // Dock a full-height, draggable column at the LEFT of the whole chrome —
-  // beside the title bar, not under it — via makeSideDrawerSplitter
-  // (QSplitter auto-hides the handle and collapses the column's space
-  // whenever `widget` hides itself). A panel's side drawer goes here so it
-  // reads as its own section of the window, the way a sidebar does. The
-  // dialog reparents `widget`; the caller keeps ownership of its contents and
-  // drives visibility. With a non-empty `settings_key` the column's width is
-  // remembered under it (shared with whatever other presentation of the same
-  // drawer uses the same key, e.g. a tab). Passing nullptr detaches the
-  // current one (without deleting it) and restores dialogBody straight into
-  // rootLayout, exactly as if setSideWidget had never been called.
+  // Docks a full-height, draggable column at the left of the whole chrome, beside the title bar and not under it,
+  // through makeSideDrawerSplitter (QSplitter hides the handle and collapses the column whenever `widget` hides
+  // itself): a panel's side drawer reads as its own section, like a sidebar. The dialog reparents `widget`; the caller
+  // keeps ownership of its contents and drives its visibility. With a non-empty `settings_key` the column's width is
+  // remembered under it, shared with any other presentation of the same drawer that uses the key (a tab). nullptr
+  // detaches the current one without deleting it and puts dialogBody straight back into rootLayout.
   void setSideWidget(QWidget* widget, const QString& settings_key = {});
   [[nodiscard]] QWidget* sideWidget() const;
 
-  // Size the title-bar chrome (height, close-button extent, icon size, padding)
-  // from the app's shared ChromeMetrics, so this dialog's chrome matches the main
-  // window exactly. Called with defaults in the constructor; hosts that know the
-  // live metrics (the dialog host, app) call it again with the current values.
+  // Sizes the title-bar chrome (height, close-button extent, icon size, padding) from the shared ChromeMetrics, so it
+  // matches the main window. The constructor applies the defaults; hosts that know the live metrics call it again.
   void setChromeMetrics(const ChromeMetrics& metrics);
 
-  // The body widget subclasses fill. Already in the chrome's vertical
-  // layout under the title bar.
+  // The body subclasses fill, already in the chrome's vertical layout under the title bar.
   [[nodiscard]] QWidget* contentWidget() const;
   [[nodiscard]] QLayout* contentLayout() const;
 
  protected:
   void mousePressEvent(QMouseEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
-  // On first show, give the content's scroll areas the canonical overlay pill
-  // scrollbars (via attachPillScrollbars) so every app-styled dialog scrolls
-  // with app-styled bars — no per-dialog wiring. First show, not construction,
-  // because subclasses populate contentWidget() in their own constructor body
-  // after Dialog's runs.
+  // On first show the content's scroll areas get the overlay pill scrollbars (attachPillScrollbars), so every
+  // app-styled dialog scrolls with app-styled bars without per-dialog wiring. First show, not construction: subclasses
+  // populate contentWidget() in their own constructor body, after Dialog's.
   void showEvent(QShowEvent* event) override;
 
  private:
   void applyIcons();
-  // Returns the edges (Qt::LeftEdge / RightEdge / TopEdge / BottomEdge,
-  // or a corner combination) the point lies inside the kResizeMargin
-  // band of, or 0 when the point is in the interior.
+  // The edges (Qt::LeftEdge, RightEdge, TopEdge, BottomEdge, or a corner combination) whose kResizeMargin band the
+  // point lies in, or 0 in the interior.
   [[nodiscard]] Qt::Edges edgesAtPoint(const QPoint& pos) const;
-  // Apply one manual-drag step: recompute geometry from the armed edge set
-  // (or move) and the cursor's travel since the press, clamped to the
-  // effective min/max sizes.
+  // Applies one manual-drag step: recomputes the geometry from the armed edge set (or move) and the cursor's travel
+  // since the press, clamped to the effective min and max sizes.
   void applyManualDrag(const QPoint& global_pos);
 
   Ui::Dialog* ui_;
-  // Host-added title-bar action buttons (addTitleBarAction), kept so
-  // setChromeMetrics can re-size them with the rest of the chrome. QPointer:
-  // a caller may delete its button; sizing just skips the dead entry.
+  // Host-added title-bar action buttons (addTitleBarAction), kept so setChromeMetrics can re-size them. QPointer: a
+  // caller may delete its button; sizing skips the dead entry.
   std::vector<QPointer<QAbstractButton>> title_bar_actions_;
-  // Leading buttons sit ahead of a stretch that centres the title; the stretch
-  // is inserted with the first of them, so dialogs without leading actions
-  // keep their left-aligned title.
+  // Leading buttons sit ahead of a stretch that centres the title; it is inserted with the first of them, so dialogs
+  // without leading actions keep a left-aligned title.
   int leading_actions_ = 0;
-  // The docked side column (setSideWidget) and the splitter that holds it
-  // beside dialogBody, so the column is draggable instead of a fixed width.
-  // side_splitter_ is null until the first setSideWidget(widget!=nullptr) —
-  // a dialog that never docks a side widget keeps dialogBody straight in
-  // rootLayout, exactly as before. QPointer: the caller may take its widget
-  // back or delete it.
+  // The docked side column (setSideWidget) and the splitter holding it beside dialogBody, so the column is draggable.
+  // side_splitter_ is null until the first setSideWidget(non-null); a dialog that never docks one keeps dialogBody in
+  // rootLayout. QPointer: the caller may take its widget back or delete it.
   QPointer<QWidget> side_widget_;
   QPointer<QSplitter> side_splitter_;
-  // Last metrics applied, so a button added after setChromeMetrics is sized
-  // consistently at insert time.
+  // The last metrics applied, so a button added after setChromeMetrics is sized consistently at insert.
   ChromeMetrics chrome_metrics_{};
-  // One-shot guard so the first-show pill attach runs once (attach itself is
-  // idempotent, but this avoids re-walking the tree on every show).
+  // Runs the first-show pill attach once (attach is idempotent, but this avoids re-walking the tree on every show).
   bool scroll_pills_attached_ = false;
-  // Manual drag fallback for platforms whose QPA implements neither
-  // startSystemResize nor startSystemMove (Qt-wasm): the edge set being
-  // resized (0 = none), whether a title-bar move drag is active, and the
-  // press-time cursor/geometry the drag is computed against.
+  // Manual drag fallback for platforms whose QPA implements neither startSystemResize nor startSystemMove (Qt-wasm):
+  // the edge set being resized (0: none), whether a title-bar move drag is active, and the press-time cursor and
+  // geometry the drag is computed against.
   Qt::Edges manual_resize_edges_ = {};
   bool manual_move_active_ = false;
   QPoint manual_press_global_;

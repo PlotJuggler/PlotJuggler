@@ -81,8 +81,8 @@ QString currentTransformId(QListWidget* transform_list) {
   return item ? item->data(Qt::UserRole).toString() : QString();
 }
 
-// Builds a panel over a single source descriptor and returns the label its "Source
-// curve" list shows for that source (item 0) — the tests that pin label formatting.
+// Builds a panel over one source descriptor and returns the label its "Source curve" list shows for it (item 0): the
+// tests that pin label formatting.
 QString firstSourceLabel(PJ::SessionManager& session, PJ::CatalogModel& catalog, const PJ::CurveDescriptor& source) {
   PJ::FilterEditorPanel panel(&session, &catalog, {source}, {});
   auto* series_list = panel.findChild<QListWidget*>("series_list");
@@ -96,9 +96,8 @@ QString firstSourceLabel(PJ::SessionManager& session, PJ::CatalogModel& catalog,
 
 }  // namespace
 
-// Apply path: choosing a filter and clicking Apply materializes a real output
-// topic in the datastore AND reports a (source key -> output key) replacement for
-// the host to swap in place. NOTHING extra is materialized before Apply.
+// Apply path: choosing a filter and clicking Apply materializes a real output topic in the datastore and reports a
+// (source key -> output key) replacement for the host to swap in place. Nothing extra is materialized before Apply.
 TEST(FilterEditorPanelTest, ApplyMaterializesOutputAndReportsReplacement) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -139,9 +138,8 @@ TEST(FilterEditorPanelTest, ApplyMaterializesOutputAndReportsReplacement) {
   EXPECT_TRUE(catalog.curveDescriptor(reported[0].second).has_value());
 }
 
-// Bug: configuring several sources one at a time (per-source memory) and clicking
-// Apply must materialize EVERY configured source, not just the currently-selected
-// one. The untouched source stays "No Transform" and is left alone.
+// Configuring several sources one at a time (per-source memory) and clicking Apply materializes every configured
+// source, not just the selected one; the untouched source stays "No Transform" and is left alone.
 TEST(FilterEditorPanelTest, AppliesEverySourceWithItsOwnConfiguredTransform) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -184,8 +182,8 @@ TEST(FilterEditorPanelTest, AppliesEverySourceWithItsOwnConfiguredTransform) {
   EXPECT_EQ(catalog.curves().size(), 5U);  // 3 sources + 2 outputs
 }
 
-// Bug: "Apply to all" stamps the visible transform onto every source's memory, so
-// the subsequent Apply must materialize all of them (not just the selected one).
+// "Apply to all" stamps the visible transform onto every source's memory, so the following Apply materializes all of
+// them.
 TEST(FilterEditorPanelTest, ApplyAfterApplyToAllMaterializesEverySource) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -215,9 +213,8 @@ TEST(FilterEditorPanelTest, ApplyAfterApplyToAllMaterializesEverySource) {
   EXPECT_EQ(catalog.curves().size(), 6U);  // 3 sources + 3 outputs
 }
 
-// Bug: a materialized filter output is a single-column topic whose column is the
-// generic "value" (incremental_engine.cpp). The source list must label it by its topic
-// name (the alias), not the meaningless "value" column.
+// A materialized filter output is a single-column topic whose column is the generic "value" (incremental_engine.cpp):
+// the source list labels it by its topic name (the alias), not the meaningless "value" column.
 TEST(FilterEditorPanelTest, SourceListLabelsValueColumnByTopicName) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -230,8 +227,8 @@ TEST(FilterEditorPanelTest, SourceListLabelsValueColumnByTopicName) {
   EXPECT_EQ(firstSourceLabel(session, catalog, output), u"/angular_velocity/y[Absolute]"_s);
 }
 
-// A real message field is labelled by its FULL "topic/field" path, not just the
-// field: "/twist/twist/linear/x" alone is ambiguous across topics (odom vs cmd_vel).
+// A real message field is labelled by its full "topic/field" path: "/twist/twist/linear/x" alone is ambiguous across
+// topics (odom vs cmd_vel).
 TEST(FilterEditorPanelTest, SourceListPrependsTopicToFieldName) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -244,10 +241,9 @@ TEST(FilterEditorPanelTest, SourceListPrependsTopicToFieldName) {
   EXPECT_EQ(firstSourceLabel(session, catalog, source), u"odom/twist/twist/linear/x"_s);
 }
 
-// Reopening the editor on an already-filtered curve: (A) the source list labels it
-// by its ORIGINAL input series (not the output alias), and (B) selecting "No
-// Transform" keeps Apply enabled and, on Apply, removes the filter — reporting the
-// (output -> input) swap so the host reverts the plot curve.
+// Reopening the editor on an already-filtered curve: (A) the source list labels it by its original input series (not
+// the output alias), and (B) selecting "No Transform" keeps Apply enabled and, on Apply, removes the filter and reports
+// the (output -> input) swap so the host reverts the plot curve.
 TEST(FilterEditorPanelTest, ReopenOnFilterOutputLabelsInputAndRemovesOnNoTransform) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -291,7 +287,7 @@ TEST(FilterEditorPanelTest, ReopenOnFilterOutputLabelsInputAndRemovesOnNoTransfo
   EXPECT_EQ(currentTransformId(transform_list), u"absolute"_s);
   EXPECT_TRUE(apply_btn->isEnabled());
 
-  // (B) Switch to "No Transform" -> Apply stays enabled (was the bug).
+  // (B) Switch to "No Transform": Apply stays enabled.
   selectTransform(transform_list, u"none"_s);
   EXPECT_TRUE(apply_btn->isEnabled());
 
@@ -311,9 +307,8 @@ TEST(FilterEditorPanelTest, ReopenOnFilterOutputLabelsInputAndRemovesOnNoTransfo
   EXPECT_EQ(catalog.curves().size(), 1U);  // output topic gone, only the input remains
 }
 
-// EDIT-mode Update changes the output topic's DATA under existing curve adapters
-// (same key). Without a data-changed notification the plot keeps its cached samples
-// and only refreshes on a zoom; Apply must fire samplesIngested for the output topic
+// An EDIT-mode Update changes the output topic's data under existing curve adapters (same key): without a data-changed
+// notification the plot keeps its cached samples until a zoom, so Apply must fire samplesIngested for the output topic
 // so plots drop their cache and re-read.
 TEST(FilterEditorPanelTest, EditModeUpdateNotifiesOutputTopicForRepaint) {
   PJ::SessionManager session;
@@ -357,9 +352,8 @@ TEST(FilterEditorPanelTest, EditModeUpdateNotifiesOutputTopicForRepaint) {
   EXPECT_TRUE(notified_ids.contains(handle->output_topic_id));
 }
 
-// The preview adopts the display settings the host pushes — mirroring the plot the
-// editor was opened on (grid + curve style + line width), applied plot-level so it
-// matches the real plot faithfully.
+// The preview adopts the display settings the host pushes, mirroring the plot the editor was opened on (grid, curve
+// style, line width), applied plot-level so it matches the real plot.
 TEST(FilterEditorPanelTest, PreviewHonorsPushedDisplaySettings) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -383,10 +377,9 @@ TEST(FilterEditorPanelTest, PreviewHonorsPushedDisplaySettings) {
   EXPECT_EQ(preview->lineWidth(), PJ::LineWidth::kPoints10);
 }
 
-// Regression (Codex I3): a reactive setPreviewDisplay() — the host pushing a new
-// style/width while the panel is open — must NOT wipe the ghost's dashed "before"
-// pen. applyPreviewDisplay() re-pens every curve plot-level, so applyGhostPens() must
-// re-dash the ghost afterwards.
+// A reactive setPreviewDisplay() (the host pushing a new style or width while the panel is open) keeps the ghost's
+// dashed "before" pen: applyPreviewDisplay() re-pens every curve plot-level, so applyGhostPens() must re-dash the ghost
+// afterwards.
 TEST(FilterEditorPanelTest, ReactiveDisplayChangeKeepsGhostDashed) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -430,10 +423,8 @@ TEST(FilterEditorPanelTest, ReactiveDisplayChangeKeepsGhostDashed) {
   EXPECT_EQ(ghostPenStyle(), Qt::DashLine);  // dash survived the plot-level restyle
 }
 
-// Bug: a multi-select edit must PREVIEW every selected series, not just the first
-// one — Apply already updates all of them, so a preview that shows only the primary
-// is misleading. With two sources selected and an active transform, the preview
-// holds two input ghosts + two filtered curves (four total), not a single pair.
+// A multi-select edit previews every selected series, not just the first (Apply updates all of them): with two sources
+// selected and an active transform the preview holds two input ghosts and two filtered curves (four), not a pair.
 TEST(FilterEditorPanelTest, PreviewShowsEverySelectedSource) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -453,8 +444,7 @@ TEST(FilterEditorPanelTest, PreviewShowsEverySelectedSource) {
   selectTransform(transform_list, u"scale"_s);  // active transform
   series_list->selectAll();                     // BOTH sources selected
 
-  // Drive the debounced (150 ms single-shot) preview timer by spinning the event
-  // loop across enough real time for it to fire.
+  // Drive the debounced (150 ms single-shot) preview timer by spinning the event loop across enough real time.
   QElapsedTimer elapsed;
   elapsed.start();
   while (elapsed.elapsed() < 350) {
@@ -464,12 +454,10 @@ TEST(FilterEditorPanelTest, PreviewShowsEverySelectedSource) {
   EXPECT_EQ(preview->curveList().size(), 4U);
 }
 
-// Regression: the filtered preview curve must share the GHOST's display offset — the
-// "Use time offset" (t0) per-dataset shift — and must re-align when the toggle flips the
-// frame. Two bugs this guards: (1) previewFilteredPoints used offsetOf(time_domain),
-// which omits the per-dataset shift the ghost's adapter applies via displayOffset(); and
-// (2) nothing recomputed the filtered curve on displayOffsetChanged, so a toggle stranded
-// it in the old frame. Asserted as: filtered x == ghost x in BOTH t0 states.
+// The filtered preview curve shares the ghost's display offset (the per-dataset "Use time offset" (t0) shift) and
+// re-aligns when the toggle flips the frame. previewFilteredPoints must use displayOffset() as the ghost's adapter does
+// (offsetOf(time_domain) omits the per-dataset shift), and the filtered curve must be recomputed on
+// displayOffsetChanged. Asserted as: filtered x == ghost x in both t0 states.
 TEST(FilterEditorPanelTest, PreviewFilteredCurveSharesGhostOffsetAcrossT0Toggle) {
   PJ::SessionManager session;  // use_time_offset_ defaults to false
   PJ::CatalogModel catalog(&session);
@@ -530,10 +518,9 @@ TEST(FilterEditorPanelTest, PreviewFilteredCurveSharesGhostOffsetAcrossT0Toggle)
   EXPECT_GT(std::abs(filtered_off - filtered_on), 1e-12);  // filtered actually tracked the per-dataset shift
 }
 
-// [j] In a multi-source edit, each source's PREVIEW must use ITS OWN configured filter (matching
-// what Apply materializes), not the currently-visible filter. Configure A->scale (default identity)
-// and B->absolute, then multi-select both: A's filtered preview must show scale(A) (the negative
-// preserved, -3), not absolute(A) (which would flip it to +3, the visible filter).
+// In a multi-source edit each source's preview uses its own configured filter (as Apply materializes), not the
+// visible one. Configure A -> scale (default identity) and B -> absolute, then multi-select both: A's filtered preview
+// shows scale(A) (the negative kept, -3), not absolute(A) (+3, the visible filter).
 TEST(FilterEditorPanelTest, PreviewUsesPerSourceConfigInMultiSelect) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -581,11 +568,9 @@ TEST(FilterEditorPanelTest, PreviewUsesPerSourceConfigInMultiSelect) {
   EXPECT_NEAR(a_first_y, -3.0, 1e-9);  // scale(identity) preserves the negative; absolute would give +3
 }
 
-// Bug (Codex finding 1+2): when the editor is opened on already-filtered curves,
-// Apply must RE-EDIT each existing filter IN PLACE (consistent with the preview,
-// which filters the original input) instead of only updating the single selected
-// recipe or chaining a new filter onto the output. Apply-to-all + Apply must update
-// EVERY filter output, with no new chained topics.
+// When the editor is opened on already-filtered curves, Apply re-edits each existing filter in place (consistent with
+// the preview, which filters the original input), neither updating only the selected recipe nor chaining a new filter
+// onto the output: Apply-to-all + Apply updates every filter output, with no new chained topics.
 TEST(FilterEditorPanelTest, ApplyToAllReEditsEveryFilterOutputInPlace) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -641,9 +626,8 @@ TEST(FilterEditorPanelTest, ApplyToAllReEditsEveryFilterOutputInPlace) {
   EXPECT_EQ(ry->processor_id, "absolute");
 }
 
-// The preview ghost is drawn in the source curve's actual plot colour (passed by the
-// host keyed by the source's catalog key), not a palette fallback. Regression guard
-// for the "preview is always blue" bug (the host had keyed colours by title).
+// The preview ghost is drawn in the source curve's actual plot colour (passed by the host keyed by the source's
+// catalog key), not a palette fallback.
 TEST(FilterEditorPanelTest, PreviewGhostUsesProvidedSourceColor) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -672,8 +656,8 @@ TEST(FilterEditorPanelTest, PreviewGhostUsesProvidedSourceColor) {
   EXPECT_EQ(ghost->pen().color(), wanted);  // the provided colour, not palette blue
 }
 
-// Bug (3-reviewer consensus): removing a filter output set to "No Transform" must
-// NOT early-return and drop the OTHER sources configured in the same Apply.
+// Removing a filter output set to "No Transform" does not return early and drop the other sources configured in the
+// same Apply.
 TEST(FilterEditorPanelTest, RemovalDoesNotDropOtherConfiguredSources) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -741,7 +725,7 @@ TEST(FilterEditorPanelTest, DefaultsToNoTransform) {
   EXPECT_EQ(currentTransformId(transform_list), u"none"_s);
 }
 
-// The alias field is editable (not the disabled field it used to be).
+// The alias field is editable.
 TEST(FilterEditorPanelTest, AliasFieldIsEditable) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -770,8 +754,8 @@ TEST(FilterEditorPanelTest, HasResizablePreviewSplitter) {
   EXPECT_EQ(splitter->count(), 2);  // preview pane + controls pane
 }
 
-// Each source remembers its own transform; switching sources does not bleed one
-// source's transform onto another (it starts at "No Transform").
+// Each source remembers its own transform; switching sources does not carry one onto another (it starts at "No
+// Transform").
 TEST(FilterEditorPanelTest, RemembersTransformPerSource) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -808,13 +792,13 @@ TEST(FilterEditorPanelTest, RemembersTransformPerSource) {
   EXPECT_EQ(currentTransformId(transform_list), u"scale"_s);
 }
 
-// The preview filters the ENTIRE series, not just the first ~2000 samples.
+// The preview filters the entire series, not a capped prefix.
 TEST(FilterEditorPanelTest, PreviewCoversFullSeries) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
   auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
   ASSERT_TRUE(dataset.has_value()) << dataset.error();
-  constexpr int kCount = 2500;  // exceeds the old 2000-sample preview cap
+  constexpr int kCount = 2500;  // a long source: the preview must not truncate it
   const auto source = addSource(session, catalog, *dataset, "/x", kCount);
 
   PJ::FilterEditorPanel panel(&session, &catalog, {source}, {});
@@ -848,8 +832,8 @@ TEST(FilterEditorPanelTest, PreviewCoversFullSeries) {
   EXPECT_EQ(filtered->dataSize(), static_cast<std::size_t>(kCount));  // whole series, not capped
 }
 
-// With No Transform selected, the source is drawn as its plain solid self (not a
-// faded dashed "ghost"), and no filtered curve is shown.
+// With No Transform selected the source is drawn as its plain solid self (not a faded dashed "ghost") and no filtered
+// curve is shown.
 TEST(FilterEditorPanelTest, NoTransformShowsPlainSourceNotGhost) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -888,8 +872,7 @@ TEST(FilterEditorPanelTest, NoTransformShowsPlainSourceNotGhost) {
   }
 }
 
-// The filtered curve's legend label is the alias (output series name), not the
-// generic "filtered".
+// The filtered curve's legend label is the alias (the output series name), not a generic "filtered".
 TEST(FilterEditorPanelTest, FilteredCurveLegendUsesAlias) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -932,8 +915,7 @@ TEST(FilterEditorPanelTest, FilteredCurveLegendUsesAlias) {
   EXPECT_NE(filtered->title().text(), u"filtered"_s);
 }
 
-// "Copy into all others" stamps the visible filter onto every source, so each
-// series then shows (and would apply) that transform.
+// "Copy into all others" stamps the visible filter onto every source, so each series shows (and would apply) it.
 TEST(FilterEditorPanelTest, ApplyToAllStampsTransformOntoEverySource) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -961,9 +943,8 @@ TEST(FilterEditorPanelTest, ApplyToAllStampsTransformOntoEverySource) {
   EXPECT_EQ(currentTransformId(transform_list), u"scale"_s);
 }
 
-// Changing the transform (not just the source) refits the Y range while AutoZoom
-// is on: a Binary Filter on a small-amplitude source outputs values up to 1, and
-// the preview must expand to show them instead of clipping at the source's range.
+// Changing the transform (not just the source) refits the Y range while AutoZoom is on: a Binary Filter on a
+// small-amplitude source outputs values up to 1, and the preview expands to show them instead of clipping.
 TEST(FilterEditorPanelTest, AutoZoomRefitsOnTransformChange) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
@@ -1018,11 +999,9 @@ TEST(FilterEditorPanelTest, AutoZoomRefitsOnTransformChange) {
   EXPECT_GT(preview->maxZoomRect().top(), 0.9);  // refit to include the filtered max (1)
 }
 
-// During streaming, the filtered "after" curve must TRACK newly ingested samples,
-// not freeze at what it showed when the panel opened. The ghost is datastore-backed
-// and refreshes on samplesIngested via PlotWidget's own handler; the filtered curve
-// is a FilteredCurveAdapter that reports the SAME input topic, so the identical
-// handler refreshes it too — no panel-side samplesIngested connection, no timer.
+// During streaming the filtered "after" curve tracks newly ingested samples. The ghost is datastore-backed and
+// refreshes on samplesIngested through PlotWidget's own handler; the filtered curve is a FilteredCurveAdapter reporting
+// the same input topic, so the same handler refreshes it, with no panel-side connection and no timer.
 TEST(FilterEditorPanelTest, PreviewFilteredCurveTracksStreamingIngest) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);

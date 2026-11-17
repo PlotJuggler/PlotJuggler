@@ -23,10 +23,8 @@ using namespace Qt::StringLiterals;
 
 namespace PJ {
 
-// Reaches the private chart-area takeover seam, so the assertions run against
-// the real path a toolbox takes rather than a stand-in that would not reproduce
-// anything. The widgets themselves are found by objectName - the generated
-// ui_MainWindow.h is internal to the shell library.
+// Reaches the private chart-area takeover seam, so the assertions run against the path a toolbox really takes.
+// The widgets are found by objectName: the generated ui_MainWindow.h is internal to the shell library.
 class MainWindowPanelGeometryTestPeer {
  public:
   static void reconnectDock(MainWindow& window, PlotDocker* docker) {
@@ -74,17 +72,15 @@ class ParentChangeCounter : public QObject {
   int* count_;
 };
 
-// The left column's width is the user's setting: they drag the separator to a
-// width that suits their data, and only another drag may change it.
+// The left column's width is the user's setting: only another separator drag may change it.
 constexpr int kUserChosenLeftWidth = 380;
 
 constexpr int kWindowWidth = 1600;
 constexpr int kWindowHeight = 900;
 constexpr int kWiderWindowWidth = 2000;
 
-// Drains posted events and deferred layout passes. The splitter re-lays out on
-// LayoutRequest, so an assertion made before the queue drains can pass against
-// geometry that is about to change.
+// Drains posted events and deferred layout passes: the splitter re-lays out on LayoutRequest, so an assertion made
+// before the queue drains can pass against geometry that is about to change.
 void settle() {
   for (int pass = 0; pass < 5; ++pass) {
     QCoreApplication::sendPostedEvents();
@@ -108,8 +104,7 @@ void settle() {
   return mainSplitter(window).sizes().value(0);
 }
 
-// Puts the window on screen at a known size with the left column at a width the
-// user is taken to have chosen, which is the precondition every case shares.
+// Shows the window at a known size with the left column at the user-chosen width: the precondition every case shares.
 void openAtUserChosenWidth(PJ::MainWindow& window) {
   window.resize(kWindowWidth, kWindowHeight);
   window.show();
@@ -120,8 +115,8 @@ void openAtUserChosenWidth(PJ::MainWindow& window) {
   ASSERT_EQ(leftPanelWidth(window), kUserChosenLeftWidth);
 }
 
-// Growing the window must feed the chart area, not the sidebar: a splitter that
-// shares new width proportionally walks the left panel out to its 600px cap.
+// Growing the window must feed the chart area, not the sidebar: a splitter that shares new width proportionally walks
+// the left panel out to its 600px cap.
 TEST(MainWindowPanelGeometryTest, WideningTheWindowLeavesTheLeftPanelWidthAlone) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -132,8 +127,7 @@ TEST(MainWindowPanelGeometryTest, WideningTheWindowLeavesTheLeftPanelWidthAlone)
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth);
 }
 
-// Collapsing the right side panel hands its width back to the splitter row. All
-// of it belongs to the chart area.
+// Collapsing the right side panel hands all of its width to the chart area.
 TEST(MainWindowPanelGeometryTest, HidingTheRightPanelLeavesTheLeftPanelWidthAlone) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -144,9 +138,8 @@ TEST(MainWindowPanelGeometryTest, HidingTheRightPanelLeavesTheLeftPanelWidthAlon
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth);
 }
 
-// A toolbox takes over the chart area by swapping itself into the chart's
-// splitter slot. Whatever width the incoming panel prefers, the sidebar keeps
-// the width the user gave it - on the way in and on the way back out.
+// A toolbox takes over the chart area through the chart's splitter slot. Whatever width the incoming panel prefers,
+// the sidebar keeps its width, on the way in and on the way out.
 TEST(MainWindowPanelGeometryTest, PresentingAndDismissingAPanelLeavesTheLeftPanelWidthAlone) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -179,9 +172,8 @@ TEST(MainWindowPanelGeometryTest, SettingsActionOpensAndClosesTheSidebar) {
   EXPECT_TRUE(rightPanel(window).isHidden());
 }
 
-// Launching a toolbox while another one is open dismisses the first and
-// presents the second. That round trip puts the chart back into the splitter
-// and takes it out again, and the sidebar must not pick up a slice on the way.
+// Launching a toolbox while another one is open dismisses the first and presents the second; the sidebar must not
+// pick up a slice of width on the way.
 TEST(MainWindowPanelGeometryTest, ReplacingAnOpenPanelLeavesTheLeftPanelWidthAlone) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -199,11 +191,9 @@ TEST(MainWindowPanelGeometryTest, ReplacingAnOpenPanelLeavesTheLeftPanelWidthAlo
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth) << "dismissing the replacement resized the left panel";
 }
 
-// Presenting and dismissing a panel switch pages of the chart slot instead of
-// moving the chart in and out of the window: every reparent re-polishes a whole
-// widget tree against the app stylesheet, which froze a browser page for
-// hundreds of ms on each toolbox close. The dismissed panel is not reparented
-// either, only deleted.
+// Presenting and dismissing a panel switch pages of the chart slot instead of moving the chart in and out of the
+// window: every reparent re-polishes a whole widget tree against the app stylesheet (hundreds of ms in the browser
+// build on each toolbox close). The dismissed panel is not reparented either, only deleted.
 TEST(MainWindowPanelGeometryTest, PresentingAndDismissingAPanelNeverReparentsTheChartOrThePanel) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -232,9 +222,8 @@ TEST(MainWindowPanelGeometryTest, PresentingAndDismissingAPanelNeverReparentsThe
   EXPECT_TRUE(panel.isNull());
 }
 
-// A toolbox moving between presentations is reparented once per move, at its
-// destination (a release leaves its parent alone), and closing its tab deletes
-// it where it is.
+// A toolbox moving between presentations is reparented once per move, at its destination (a release leaves its
+// parent alone), and closing its tab deletes it where it is.
 TEST(MainWindowPanelGeometryTest, ToolboxMovesReparentOnceAndItsTabCloseDeletesInPlace) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -271,10 +260,8 @@ TEST(MainWindowPanelGeometryTest, ToolboxMovesReparentOnceAndItsTabCloseDeletesI
   EXPECT_TRUE(panel.isNull());
 }
 
-// Putting the chart back has to restore its width-absorbing role too, not just
-// its slot. It does so implicitly - a stretch factor is stored on the pane
-// widget's own size policy, so the chart still carries the one it was given at
-// construction - and that implicitness is worth pinning down.
+// Putting the chart back restores its width-absorbing role too, implicitly: the stretch factor lives on the pane
+// widget's own size policy, so the chart still carries the one it was given at construction.
 TEST(MainWindowPanelGeometryTest, WideningAfterDismissingAPanelLeavesTheLeftPanelWidthAlone) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -290,16 +277,12 @@ TEST(MainWindowPanelGeometryTest, WideningAfterDismissingAPanelLeavesTheLeftPane
   EXPECT_EQ(leftPanelWidth(window), kUserChosenLeftWidth);
 }
 
-// A splitter whose panes all sit at stretch 0 shares any width change between
-// them, which is never what a sidebar-plus-content layout wants and is exactly
-// how the left panel started creeping. Rather than mandate specific factors -
-// two panes that should grow together legitimately share one - this asks only
-// that every splitter has made a deliberate choice, so the next one added to
-// the window cannot inherit the same bug by omission.
+// A splitter whose panes all sit at stretch 0 shares any width change between them, which a sidebar-plus-content
+// layout never wants. Specific factors are not mandated (two panes that should grow together legitimately share
+// one); every splitter must declare some stretch, so a new one cannot inherit the creep by omission.
 //
-// Scope: splitters this app declares (plain QSplitter) with something to share.
-// The docking framework's own CDockSplitter subclass sizes itself and is not
-// ours to govern; a lone pane has no one to share with.
+// Scope: splitters this app declares (plain QSplitter) with something to share. The docking framework's own
+// CDockSplitter subclass sizes itself; a lone pane has no one to share with.
 TEST(MainWindowPanelGeometryTest, EverySplitterDeclaresAStretchPreference) {
   PJ::MainWindow window;
   window.resize(kWindowWidth, kWindowHeight);
@@ -325,10 +308,8 @@ TEST(MainWindowPanelGeometryTest, EverySplitterDeclaresAStretchPreference) {
   EXPECT_GT(checked, 0) << "found no splitters to check - the traversal, not the app, is what broke";
 }
 
-// The presented panel takes over the chart's slot, and with it the chart's job
-// of absorbing width changes. A splitter pane is not born with a stretch factor,
-// so an open toolbox is exactly when the sidebar is most likely to start
-// creeping - which is how this reached a user in the first place.
+// The presented panel takes over the chart's slot, and with it the chart's job of absorbing width changes. A splitter
+// pane is not born with a stretch factor, so an open toolbox is when the sidebar is most likely to creep.
 TEST(MainWindowPanelGeometryTest, WideningTheWindowWithAPanelOpenLeavesTheLeftPanelWidthAlone) {
   PJ::MainWindow window;
   openAtUserChosenWidth(window);
@@ -347,7 +328,7 @@ TEST(MainWindowPanelGeometryTest, WideningTheWindowWithAPanelOpenLeavesTheLeftPa
 
 namespace {
 
-// Preserve this suite's settings scope without changing other runner cases.
+// Scopes the settings sandbox to this suite so other cases of the runner keep theirs.
 class SettingsEnvironment : public ::testing::Environment {
  public:
   void SetUp() override {

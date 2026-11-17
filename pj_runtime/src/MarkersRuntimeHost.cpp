@@ -25,9 +25,8 @@ using host_slot::guarded;
 using host_slot::reject;
 constexpr std::string_view kDomain{"pj.data_processors.v1"};
 
-/// Parse the `kind` discriminator; returns false on an unknown kind. Only "markers"
-/// is implemented here ("transform" is routed by a different host); the host rejects
-/// anything else (e.g. a stale plugin still sending the removed "field" kind).
+/// Parses the `kind` discriminator; false on an unknown kind. Only "markers" is implemented here ("transform" is routed
+/// by a different host); anything else is rejected.
 bool parseKind(std::string_view kind, GeneratorKind& out) {
   if (kind == "markers") {
     out = GeneratorKind::kMarkers;

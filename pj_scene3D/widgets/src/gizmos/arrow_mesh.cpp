@@ -26,7 +26,6 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
     vertex_data.insert(vertex_data.end(), {px, py, pz, nx, ny, nz});
   };
 
-  // ---- Cylinder shaft (lateral surface) ----
   // Two rings of `segments` vertices: x=0 (back) and x=shaft_length (front).
   // Per-vertex radial normals -> smooth shading around the cylinder.
   const uint32_t shaft_back = static_cast<uint32_t>(vertex_data.size() / 6);
@@ -51,8 +50,7 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
     index_data.insert(index_data.end(), {a, b, c, a, c, d});
   }
 
-  // ---- Cone base disc (faces -X, sits between shaft and head) ----
-  // Closes off any visible gap when head_radius > shaft_radius.
+  // Cone base disc (faces -X, between shaft and head): closes the gap when head_radius > shaft_radius.
   const uint32_t disc_center = static_cast<uint32_t>(vertex_data.size() / 6);
   push_vertex(shaft_length, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
   for (int i = 0; i < segments; ++i) {
@@ -66,7 +64,6 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
         {disc_center, disc_center + 1U + static_cast<uint32_t>(next), disc_center + 1U + static_cast<uint32_t>(i)});
   }
 
-  // ---- Cone head (lateral surface) ----
   // Normal at a base-ring point: (head_radius, head_length*cos, head_length*sin) / sqrt(R^2 + H^2)
   // (derived from circumferential × axial cross product).
   const float norm_len = std::sqrt(head_radius * head_radius + head_length * head_length);
@@ -88,9 +85,8 @@ ArrowMeshData buildArrowMesh(const ArrowMeshParams& params) {
         index_data.end(), {cone_ring + static_cast<uint32_t>(i), cone_ring + static_cast<uint32_t>(next), cone_tip});
   }
 
-  // ---- Back cap on the shaft (faces -X) ----
-  // Cosmetic — makes the arrow look closed if viewed end-on. Wound CCW
-  // when viewed from -X (outside) so backface culling keeps it visible.
+  // Back cap on the shaft (faces -X): cosmetic, closes the arrow seen end-on. Wound CCW from -X (outside) so backface
+  // culling keeps it visible.
   const uint32_t back_center = static_cast<uint32_t>(vertex_data.size() / 6);
   push_vertex(0.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f);
   for (int i = 0; i < segments; ++i) {

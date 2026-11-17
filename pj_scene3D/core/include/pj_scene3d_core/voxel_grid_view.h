@@ -29,16 +29,12 @@ struct VoxelFieldSelection {
 // Total drawable voxel count (column * row * slice). 0 if any dimension is 0.
 [[nodiscard]] uint64_t voxelCount(const PJ::sdk::VoxelGrid& grid);
 
-// Upper bound on voxelCount() the pack functions will allocate for. The wire
-// dims are untrusted — neither the canonical nor the foxglove VoxelGrid codec
-// cross-checks column*row*slice against data.size() — so a corrupt grid can
-// declare an astronomical count with a tiny payload. packScalarField /
-// packRgbaField refuse a count past this (returning empty) so a hostile grid
-// cannot trigger a multi-GB / throwing allocation on the render thread; the
-// render pass separately refuses grids over GL_MAX_3D_TEXTURE_SIZE / GLsizei.
-// Callers (the layer) also compare against it to surface a user-facing warning.
-// 256 M voxels is 1 GiB as float32 (scalar) or RGBA8 — larger than any grid the
-// single-3D-texture upload path handles (mirrors OccupancyGrid's kMaxGridCells).
+// Upper bound on voxelCount() the pack functions allocate for. The wire dims are untrusted (neither VoxelGrid codec
+// cross-checks column*row*slice against data.size()), so a corrupt grid can declare an astronomical count with a tiny
+// payload: packScalarField / packRgbaField return empty past this, so a hostile grid cannot trigger a multi-GB or
+// throwing allocation on the render thread. The render pass separately refuses grids over GL_MAX_3D_TEXTURE_SIZE /
+// GLsizei; the layer compares against this to warn the user. 256 M voxels is 1 GiB as float32 or RGBA8, above what
+// the single-3D-texture upload path handles (mirrors OccupancyGrid's kMaxGridCells).
 inline constexpr uint64_t kMaxRenderableVoxels = 256ull * 1024 * 1024;
 
 // Byte offset of voxel (cx, ry, sz) within `grid.data`:

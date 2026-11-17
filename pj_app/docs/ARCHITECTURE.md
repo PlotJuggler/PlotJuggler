@@ -1,694 +1,576 @@
-# pj_app Architecture
+# pj_app architecture
 
-How the executable shell is put together. `../CLAUDE.md` holds the rules and
-pitfalls; this document is the subsystem reference. The wiring itself is best
-read from `src/MainWindow.cpp` and `src/main.cpp`; the headers own per-class
-contracts (threading, ownership, call order), so this document describes only
-what spans several classes.
+How the executable shell is put together. `../CLAUDE.md` holds the invariants; this document covers what spans
+several classes. The wiring is read best from `src/MainWindow.cpp` and `src/main.cpp`; per-class contracts are in
+the headers. The derived-data design the shell wires up is
+[`../../docs/derived_objects/ARCHITECTURE.md`](../../docs/derived_objects/ARCHITECTURE.md); the sections below cover
+only the shell's half of it. Measurements behind some choices: [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md).
 
-Derived data (on-demand nodes, series, marker rules, filters and transforms) is
-designed in [`../../docs/derived_objects/ARCHITECTURE.md`](../../docs/derived_objects/ARCHITECTURE.md);
-the sections below cover only the shell's half of it.
+## Threads and teardown
+
+Everything in the shell lives on the GUI thread. Two kinds of worker exist:
+
+- `FileLoader` runs only each import's blocking `start()` on a worker thread; every other plugin call, the fan-out
+  control and the queue run on the GUI thread, and the worker reaches it only through queued calls. Every accepted
+  request ends in exactly one `loadFinished`, delivered through the event loop even when the request resolves inside
+  the enqueuing call. `cancelLoadAsync` is the one entry callable from another thread.
+- `StreamingSourceManager` runs one worker per streaming session. Configuration, `start()` and stop requests run on
+  the GUI thread; once launched, the worker is the only caller of the plugin (`poll()`, then `stop()`). What a layout
+  save needs is captured before the worker starts, so a save never calls into a polling plugin.
+
+`~MainWindow` runs in this order; each step names what breaks if it moves later:
+
+1. `RecordingService::stop()`: its `stopped()` slot touches widgets deleted below.
+2. `StreamingSourceManager::cancelPendingStarts()`: a start waiting on its dialog is withdrawn and its dataset
+   discarded.
+3. Layout-batch observation, then `teardownAllToolboxes()` (every presentation, synchronously): plugin sessions must
+   be gone before the services and widgets they hold.
+4. The MCP server: no plugin is left to restart it, and its jobs point into toolbox services already torn down.
+5. A non-toolbox central panel still presented (marketplace, filter editor), then `PluginPlotTabsController` (it
+   holds the tab strip), then the tab widget.
+6. `CustomWidgetController::clearActiveWidgets()`, right after the Custom Widget docks die (see "Custom Widget
+   panels").
+7. Timeline and curve list unbound from the engine and catalog; `FileLoader` disconnected from the window; then
+   `delete ui_`. The loader is a member destroyed after the body, and its destructor delivers queued terminals
+   synchronously: connected slots would touch deleted widgets.
 
 ## Playback and panel access
 
-The bottom `TimelineWidget` seeks directly on a slider-track click and keeps the
-normal handle-drag interaction. Space toggles Play/Pause for its window, without
-auto-repeat; text editors retain Space for typing through Qt's shortcut-override
-handling. Disabled transport controls remain inactive.
-
-An object dock's context menu offers **Open Settings** when the right sidebar
-is hidden and **Close Settings** when it is visible. The host-supplied visibility
-query runs when the menu opens. `settingsPanelToggleRequested` passes through
-`PlotDocker` to `MainWindow`, which binds the settings page to that dock and toggles
-the right panel through its existing visibility button.
+Space toggles Play/Pause through a non-repeating `QShortcut` on `TimelineWidget`; a text editor keeps Space through
+Qt's shortcut override. An object dock's context menu offers Open/Close Settings; `settingsPanelToggleRequested`
+travels through `PlotDocker` to `MainWindow`, which binds the settings page to that dock and toggles the right panel.
 
 ## Window frame
 
-The main window wears the **system** title bar by default, and `TitleBar` is just
-the toolbar row under it. `Preferences::custom_title_bar` (read once at
-construction, so it applies on the next launch) opts in to a frameless window
-whose `TitleBar` *is* the frame: the only mode that runs the edge-resize filter and
-paints the 1-px border.
-
-The platform rule is `MainWindow::usesCustomFrame()`: WebAssembly is always custom
-(a browser tab has no window manager), macOS is always system, Linux and Windows
-follow the preference. The Preferences toggle is hidden where the choice is not
-offered (`MainWindow::customFrameSelectable()`). `PJ::Dialog` and `MessageBox` keep
-their own chrome either way.
-
-`Theme` requests the matching Qt color scheme on every switch, so a platform-drawn
-title bar follows the app's light/dark on Windows and macOS; a Linux window manager
-keeps its own.
+The window wears the system title bar by default, and `TitleBar` is the toolbar row under it. The
+`custom_title_bar` preference (read at construction, so it applies on the next launch) makes the window frameless
+with `TitleBar` as its frame: only then do the edge-resize filter and the 1-px border run.
+`MainWindow::usesCustomFrame()` is the platform rule: WebAssembly is always custom (a browser tab has no window
+manager), macOS always system, Linux and Windows follow the preference; `customFrameSelectable()` hides the toggle
+where there is no choice. `PJ::Dialog` and `MessageBox` keep their own chrome either way. `Theme` requests the
+matching Qt color scheme on every switch, so a platform-drawn title bar follows light/dark on Windows and macOS; a
+Linux window manager keeps its own.
 
 ## Command-line startup
 
-Desktop startup accepts repeatable `-d` / `--datafile <path>` and positional
-files, plus `-l` / `--layout <path>`. For example:
-`plotjuggler4 -d first.csv -d second.csv -l shared.pj4.xml`.
-`MainWindow::loadAtStartup` waits for the terminal ticket of every explicit
-file before applying the layout. Explicit files override a source-bound
-layout's saved files: the existing generic-layout rewrite removes dataset
-qualifiers so curves bind to the new data. Without explicit files, `--layout`
-replays its saved sources as usual, starting its recorded streams with no
-prompt. Data-only launches keep the normal GUI open.
-
-Attended loads may show loader configuration dialogs; unattended startup
-(`--exit-after-layout`, `--screenshot`, offscreen/minimal) uses `DialogPolicy::kNever`.
-A failed or cancelled explicit file skips the layout and settles it false, so
-`--exit-after-layout` exits unsuccessfully. That flag still requires a layout.
-The batch observes its own tickets, including early failures, and defers the
-final restore through a window-owned timer to avoid restoring during teardown.
-Tests: `MainWindowStartupTest` (real mock file-source DSO).
+Desktop startup takes repeatable `-d` / `--datafile <path>`, positional files and `-l` / `--layout <path>`.
+`MainWindow::loadAtStartup` waits for the terminal ticket of every explicit file before applying the layout. Explicit
+files override a source-bound layout's saved files (the generic-layout rewrite removes dataset qualifiers so curves bind
+to the new data); without them, `--layout` replays its saved sources and starts its recorded streams with no prompt.
+Unattended startup (`--exit-after-layout`, `--screenshot`, the `offscreen`/`minimal` platforms; `isUnattendedRun` in
+`main.cpp`) loads with `DialogPolicy::kNever`. A failed or cancelled explicit file skips the layout and settles it
+false, so `--exit-after-layout` exits unsuccessfully. The final restore is deferred through a window-owned timer so it
+never runs during teardown. `--exit-after-layout` exit codes are a contract for harnesses (`LayoutExitWatch`): 0
+applied, 1 load failed or cancelled, 2 timed out, 64 usage error. With `--screenshot` too, whichever quit fires first
+wins, and only `--exit-after-layout`'s code says whether the layout applied. Tests: `MainWindowStartupTest`.
 
 ## File loading
 
-`FileLoader` runs file loads (one queue, sequential, progressive on a worker
-thread); `LoadInput` carries the display name, backing path, reload identity and
-(in the browser) the storage lease that keeps an upload alive for deferred
-object fetches. `FanoutConfig` extracts a plugin config's `__pj_fanout` entries
-(one plugin instance and one `DatasetId` per entry). `FileLoader` has no
-`MainWindow` dependency (`setFilePicker` is the seam), which is why the loader
-test suites compile it standalone.
+`FileLoader` runs file loads: one sequential queue, each load progressive on a worker. `LoadInput` carries the
+display name, backing path, reload identity and, in the browser, the storage lease that keeps an upload alive for
+deferred object fetches. `FanoutConfig` extracts a plugin config's `__pj_fanout` entries (one plugin instance and
+one `DatasetId` per entry). `FileLoader` does not depend on `MainWindow` (`setFilePicker` is the seam), so the loader
+suites compile it standalone.
+
+**Object ingest policy.** `FileLoader::applyDefaultIngestPolicies` loads object topics as
+`kLazyObjectsEagerScalars` by default: each payload is read once at ingest for its scalar fields (so header-bearing
+topics expose their header and timestamp series), then dropped, so clouds, images and grids are never resident. Video
+frames, scene entities and image annotations are pure lazy; so are robot descriptions in the browser, whose parser has
+no scalar handler. The cost is one extra read per payload at load.
+
+**Fan-out reload.** One dataset cannot be refilled into N, so a fan-out reload tombstones the existing dataset, creates
+fresh ones and erases the tombstoned one only after commit: erasing it first would lose the user's data on a discard or
+an all-failed fan-out. A whole-load stop (strip, shutdown, `cancelLoad`) ends every entry; a whole-load discard also
+drops entries that already completed.
 
 ### Load diagnostics
 
 `MainWindow` wires `FileLoader::setDiagnosticSink` to the bridge sink.
 
-- `data-source-load-failed` (error, source "File Loader") is emitted once per
-  failed load and once per failed fan-out entry, none for the all-failed
-  aggregate, and never for a reject, cancel, discard or shutdown. The browser
-  picker's staging failure is reported too. The same cause may appear under both
-  this id and the plugin's own.
-- `data-source-message` carries the loading plugin's warnings and errors (source =
-  plugin display name, message prefixed with the file or entry name), capped at 20
-  per load (`DataSourceRuntimeHost::kMaxForwardedMessages`); the next message yields
-  one `data-source-message-limit` warning and the rest stay in the log.
-- A missing layout data file is reported before `FileLoader` runs, as
-  `Layout`/`data-source-missing`.
+- `data-source-load-failed` (error, source "File Loader"): once per failed load and once per failed fan-out entry,
+  none for the all-failed aggregate, never for a reject, cancel, discard or shutdown; also the browser picker's
+  staging failure. The same cause may also appear under the plugin's own id.
+- `data-source-message`: the plugin's warnings and errors (source = plugin display name, message prefixed with the
+  file or entry name), capped per load at `DataSourceRuntimeHost::kMaxForwardedMessages`; the next one yields a
+  single `data-source-message-limit` warning and the rest stay in the log.
+- A missing layout data file is reported before `FileLoader` runs, as `Layout`/`data-source-missing`.
 - Streaming sources are not wired to the sink.
 
 ### Reload button
 
-`MainWindow::reloadSource` disables the left panel's Reload button until its
-request resolves. `FileLoader::loadFinished`, the one terminal every accepted
-request reaches (including the exits `fileLoadFailed` stays silent on: a rejected
-config dialog, a queued cancel, shutdown), brings it back through
-`refreshReloadEnabled()`, which follows whether a source is recorded
-(`lastLoadedSource()`; `onFileLoaded` records it first, because `loadFinished` is
-queued). A request the loader refuses outright gets no ticket and no terminal, so
-`reloadSource` refreshes on a `false` return. The guard only stops a double click:
-any request's terminal re-enables the button, and the loader's queue serialises a
+`MainWindow::reloadSource` disables the left panel's Reload button until its request resolves.
+`FileLoader::loadFinished`, the one terminal every accepted request reaches (including the exits `fileLoadFailed`
+stays silent on: a rejected config dialog, a queued cancel, shutdown), brings it back through
+`refreshReloadEnabled()`, which follows whether a source is recorded (`lastLoadedSource()`; `onFileLoaded` records it
+first, because `loadFinished` is queued). A request the loader refuses gets no ticket and no terminal, so
+`reloadSource` refreshes on a `false` return. The guard only stops a double click; the loader's queue serialises a
 second reload anyway. Tests: `ReloadButtonTest`.
 
-### Per-dataset load progress (curve tree)
+### Per-dataset load progress
 
-`wireIngestProgress()` (`IngestProgressWiring.{h,cpp}`) is the single definition of
-the connections between the three pieces below: controller attach, the
-dataset-path resolver, `progressUpdated`/`rowKeyChanged` into the panel, and the
-cancel route back with its token-resolution, staleness and cancellability checks.
-`MainWindow` is its caller, so tests and tooling that wire through it exercise the
-app's real connections instead of a copy.
+`wireIngestProgress()` (`IngestProgressWiring.h`) is the one definition of the connections between
+`SessionManager`, `IngestProgressController` and `CurveTreeView`: controller attach, the dataset-path resolver,
+progress and row-key updates into the panel, and the cancel route back with its token, staleness and cancellability
+checks. Tests and tooling wire through it, so they exercise the app's connections, not a copy.
 
-`IngestProgressController` wires `SessionManager`'s dataset-scoped ingest signals
-(`ingestBegan` / `ingestProgressed` / `ingestEnded`, plus `ingestStopping`) to
-`CurveTreeView`'s plain-typed progress decoration (`setDatasetProgress`). The
-view-facing row key IS the ingest id (`IngestToken::id`), so a click on a row
-resolves back to its ingest by lookup. The controller owns the row label (the
-dataset's name once resolvable and then kept, so a discard that deletes the
-dataset cannot rename the row mid-flight; the producer's progress title is only
-the pre-resolution fallback), the 1-second completion linger, the 3x ~180 ms error
-flash, immediate retirement on cancellation (the user stopped it, and a discard
-has deleted the dataset the row described), ghost-row lifetime (progress-only rows
-for failed or discarded loads whose catalog entries vanished) and an injectable
-timer factory for headless tests (details in `IngestProgressController.h`). Both
-`FileLoader` and `HeadlessDescriptorProviderSession` produce ingest tokens on the
-same channel.
+`IngestProgressController` turns `SessionManager`'s dataset-scoped ingest signals into `CurveTreeView`'s progress
+decoration. The row key is the ingest id (`IngestToken::id`), so a click on a row resolves to its ingest by lookup.
+The controller owns the row label (the dataset's name once resolvable, then kept, so a discard that deletes the
+dataset cannot rename the row mid-flight), the completion linger, the error flash, immediate retirement on cancel,
+and ghost rows for loads whose catalog entries vanished. `FileLoader` and `HeadlessDescriptorProviderSession` produce
+tokens on the same channel.
 
-**Keep or discard.** The row itself carries the choice (the X keeps what arrived,
-the bin discards it), so the shell acts on the `keep_partial` flag directly and
-does **not** prompt: `requestCancel(token, keep_partial)` and nothing else.
-Honouring the flag is the **producer's** job:
+**Keep or discard.** The row carries the choice (X keeps what arrived, the bin discards it), so the shell calls
+`requestCancel(token, keep_partial)` and never prompts. Honouring the flag is the producer's job:
 
-- `FileLoader` latches it into `cancel_mode_` (1 = keep, 2 = discard) for a
-  whole-load stop, or into a slot owned by that fan-out entry's own loop iteration
-  for a row stop, so a row can only ever stop the entry the user aimed at. The
-  whole-load latch never outlives its load: `startNext` clears it before the
-  next request, whichever way the previous one ended.
-- Keep commits this load's partial data (on a reload, the partial refill replaces
-  the prior data).
-- Discard means *as if this load had never run*, so what it leaves behind is
-  whatever preceded it: a first-load discard real-deletes the dataset it created;
-  a reload-discard rolls back to the pre-reload data (refill-guard rollback plus
-  `TransformService::abortReplacingLoad`, which with the ingest tap active is a
-  staging-pointer reset and reads nothing back from the store).
-- Toolbox imports forward the plugin's own `cancellable` declaration and register
-  as `IngestStop::kStopOnly` (their ABI has no rollback), so their rows offer a
-  live X with the bin drawn greyed and inert.
-- `HeadlessDescriptorProviderSession` registers `cancellable=false` on purpose (no
-  UI to stop from).
+- `FileLoader` latches a whole-load stop for the current load only (`startNext` clears it before the next request),
+  and a row stop in a slot owned by that fan-out entry's loop iteration, so a row stops only the entry it shows.
+- Keep commits the partial data (on a reload, the partial refill replaces the prior data).
+- Discard means "as if this load never ran": a first-load discard deletes the dataset it created; a reload discard
+  rolls back to the pre-reload data (refill-guard rollback plus `TransformService::abortReplacingLoad`).
+- Toolbox imports forward the plugin's `cancellable` declaration and register as `IngestStop::kStopOnly` (their ABI
+  has no rollback): a live X, the bin greyed.
+- `HeadlessDescriptorProviderSession` registers `cancellable=false` (there is no UI to stop it from).
 
-The three-button keep/discard/resume prompt exists only on the title-bar strip
-path, whose single stop button cannot express the choice. The strip
-(`IngestProgressWidget`) is wired but kept hidden by a local
-`constexpr kShowTitleBarIngestStrip = false` in `MainWindow`'s constructor.
-Behind it, while `FileLoader` is busy its Stop raises that prompt and calls
-`FileLoader::cancelCurrent`; otherwise Stop routes by the strip's displayed owner: a
-layout-import batch job takes the keep-partial `cancelActiveImportJob()` (that job
-ends cancelled and the batch continues with its next source; never
-`batch->cancel()`, never a faked `ToolboxIngestRef` for a headless job), and
-interactive toolbox imports take the flag-only `stopAllToolboxImports()` with no
-dialog.
+The title-bar strip (`IngestProgressWidget`) is wired but hidden by `kShowTitleBarIngestStrip` in `MainWindow`'s
+constructor. Its single Stop button cannot express keep or discard, so behind the flag it raises a keep/discard/resume
+prompt while `FileLoader` is busy; otherwise it routes by the strip's displayed owner: a layout-import batch job takes
+`cancelActiveImportJob()` (that job ends cancelled, the batch continues), interactive toolbox imports take
+`stopAllToolboxImports()`.
 
 ## Streaming sources
 
-`StreamingSourceManager` owns the live streaming sessions (one `DatasetId` each,
-a worker thread per session writing through the runtime host) and the secondary
-tail buffers used while paused. Those buffers can hold rows of a stream that has
-already ended (they merge at the resume), and the merge moves nothing when one
-topic has no destination: whoever erases a dataset also drops its secondary copy
-(`StreamingSourceManager::removeSecondaryDataset`). An interactive start
-(`startSession`) never waits for the source's dialog: a browser cannot run a
-nested event loop, and one path for every platform lets the desktop tests cover
-what the browser runs. The start is held as pending while its modal dialog is
-open, launches or cleans up when the user answers, and is withdrawn (its dialog
-closed, its dataset discarded) by whatever stops every stream or destroys the
-manager. `TopicDemandController` is thin glue from
-displayed widgets to `TopicDemandTracker`; `PendingDisplayBinder` stages a curve
-or scene layer until its topic materializes. On the first real demand for a
-previewed topic, `TopicDemandController` invalidates the matching XY and
-time-series caches of registered plots synchronously before evicting the preview
-history: bounds calculation inside `curveListChanged` may already have filled
-them, and no paint or event-loop turn may run between invalidation and eviction.
+`StreamingSourceManager` owns the live sessions (one `DatasetId` each) and the secondary tail buffers used while
+paused. Those buffers can hold rows of a stream that already ended (they merge at resume), and a merge moves nothing
+for a topic with no destination: whoever erases a dataset also drops its secondary copy
+(`StreamingSourceManager::removeSecondaryDataset`).
 
-An interactive start creates the session's dataset (in both engines) before the
-plugin's dialog opens, so every start that does not launch (the user cancelling,
-a plugin contract violation, a refused configuration, a failed `start()`)
-destroys the session and then discards that dataset, as `startFromLayout` does;
-an abandoned dataset would otherwise count in the catalog's duplicate-label
-ordinals and suffix the next start's name. The failure is reported through
-`streamError` only after the dataset is gone (a cancel reports nothing), so a
-`streamError` consumer cannot rely on that dataset existing.
+An interactive start (`startSession`) never waits for the source's dialog: a browser cannot run a nested event loop,
+and one path on every platform lets desktop tests cover what the browser runs. The start is pending while its dialog
+is open, launches or cleans up when the user answers, and is withdrawn (dialog closed, dataset discarded) by whatever
+stops every stream or destroys the manager. The session's dataset exists (in both engines) before the dialog opens,
+so every start that does not launch (cancel, a plugin contract violation, a refused configuration, a failed
+`start()`) destroys the session and then discards the dataset, as `startFromLayout` does; an abandoned dataset would
+count in the catalog's duplicate-label ordinals and suffix the next start's name. `streamError` is emitted only after
+the dataset is gone (a cancel reports nothing), so its consumer cannot rely on that dataset existing.
 
-The topic streaming context menu is available for a single selected row of a
-per-topic-pause-capable source. A field row resolves to its owning topic, so
-"Force topic streaming" always affects the whole topic. Multiple selected rows
-(across Datasets and Custom Topics) suppress this menu: Linux can request it on
-right-button press, before a right-drag has started. The selected pair remains
-available for the existing XY right-drag; Ctrl+click keeps its normal selection
-meaning. Dataset-level menus still support multiple selected datasets.
-`CurveListPanelTest` covers the real press/context path, XY payload, single-topic
-toggle and dataset menu.
+**Pause and resume.** While paused, each session writes to the secondary engine and object store. Resume swaps the
+write targets back first (a push already in flight finishes on the secondary, the next lands on the primary; flushing
+first would race new arrivals), then moves the secondary chunks and entries into the primary without copying,
+catches the eager processors and marker rules up on the merged tail, then re-trims each streaming dataset (the
+engine flush does not trim) and announces a live ingest so follow-live views land on the merged edge.
 
-The curve list writes in semi-bold italic what the selected widget displays, and the
-groups above those rows, so a collapsed topic still shows that it holds a displayed
-series. The selected widget is `MainWindow::activeFocusedDock()`, the dock the
-settings panel follows; `CurveListPanel` asks for it lazily on each refresh (it is
-often the first dock of the tab, which changes without a focus event), and
-`onDockFocused` re-schedules the refresh on a focus change or a tab switch.
-`TopicDemandController::displayedKeys(root)` reads the catalog keys from the
-registered widgets of every family inside that dock (plot curves, scene layers and
-config topics, state-transitions rows, Custom Widget wires) and emits
-`displayedSeriesChanged` when they or the catalog change; a scene dock reports its
-config topics through `SceneDockWidget::configTopicsChanged`. The panel coalesces
-refreshes to one per event-loop turn. Pending items (an advertised placeholder
-dropped before its first sample, an unresolved wire) are not marked, nor are scene
-views embedded in a toolbox panel, which are not docks.
+`StreamingSourceManager::onIngestTick` is the GUI half of each poll cycle (`ingestTickForTests` drives it): eager
+processors advance over every topic of the dataset (skipped while paused), then retention trims the engine being
+written, then the marker recompute and the ingest announcement run. A stateful processor must consume every sample
+before retention evicts it, or its output skips rows. See the derived-objects architecture, "Streaming".
 
-`StreamingSourceManager::onIngestTick` is the GUI half of one 50 ms poll cycle
-(`ingestTickForTests` drives it): eager processors advance over every topic of the
-dataset (skipped while paused), then retention trims the engine being written,
-then the marker recompute and the ingest announcement run, also over every topic.
-Order matters: a stateful processor must consume every sample before retention
-evicts it. See `../../docs/derived_objects/ARCHITECTURE.md` section 16.
+`TopicDemandController` is thin glue from displayed widgets to `TopicDemandTracker`; `PendingDisplayBinder` stages a
+curve or scene layer until its topic materializes. On the first real demand for a previewed topic,
+`TopicDemandController` invalidates the matching XY and time-series caches of registered plots before evicting the
+preview history, with no paint or event-loop turn in between: bounds calculation inside `curveListChanged` may have
+filled them already.
+
+The topic streaming context menu needs a single selected row of a source that can pause per topic; a field row
+resolves to its topic. Several selected rows suppress it, because Linux can request the menu on right-button press,
+before an XY right-drag has started. Dataset-level menus accept several datasets. Tests: `CurveListPanelTest`.
+
+The curve list draws in semi-bold italic what the selected widget displays, and the groups above those rows. The
+selected widget is `MainWindow::activeFocusedDock()`, which `CurveListPanel` asks for on each refresh (it is often
+the tab's first dock, which changes without a focus event); `onDockFocused` reschedules the refresh.
+`TopicDemandController::displayedKeys(root)` collects the catalog keys of every widget family inside that dock and
+emits `displayedSeriesChanged` when they or the catalog change; a scene dock reports its config topics through
+`SceneDockWidget::configTopicsChanged`. The panel refreshes at most once per event-loop turn.
 
 ## Session recording
 
-Recording is a runtime capability, so nothing here is gated at build time. The
-`RecordingService` member, its connections and the shutdown `stop()` calls are
-unconditional (`~MainWindow` stops the recording before the widgets its `stopped()` slot touches are destroyed).
-The streaming strip's `buttonStreamingRecord` and `labelStreamingRecordStatus`
-stay hidden until `LeftPanel::setRecordingSupported(...)`, which only `MainWindow`
-calls and only with `RecordingService::isSupported()`. Preferences adds its
-Recording nav row on the same query and hides the page otherwise; a nav row's
-position IS its page index.
+Recording is a runtime capability: the `RecordingService` member, its connections and the shutdown `stop()` are
+unconditional. The streaming strip's record button and status label stay hidden until
+`LeftPanel::setRecordingSupported`, which only `MainWindow` calls, with `RecordingService::isSupported()`. Preferences
+shows its Recording row and page on the same query.
 
-- `StreamingSourceManager::recordingTargets()` is the eligibility seam: it hands
-  back only sessions whose plugin advertises delegated ingest (a direct writer has
-  no raw bytes at the seam) plus the display names it excluded, for the shell to
-  say what will be missing.
-- Each target is keyed by its `DatasetId`, the identity the service addresses that
-  source by afterwards. Display names are display names: they may repeat, because
-  every source writes its own file and `RecordingService` names those files.
-- A target's `attach` reports `false` when the session ended before the tap could
-  be installed, which fails (and rolls back) the whole capture. Taps are attached
-  at start only, so a stream started later is never recorded.
-- One Record press records every eligible source into one batch folder, one file
-  each, so a stream that ends mid-capture must NOT stop the capture: the
-  `streamStopped` handler forwards `RecordingService::onSourceEnded(dataset_id,
-  reason)`, which finalizes that one file and leaves the rest recording. The batch
-  ends with its last live source, or when the user presses Stop.
-- `MainWindow::onRecordingStopped` reports a whole capture rather than a file: the
-  path when a single source recorded, the folder when several did and every
-  outcome is clean, and otherwise the problem count plus up to two failing sources
-  with their reasons (naming `mcap recover` when a file could not be finalized).
-  It appends the capture's dropped count when the write queues had to shed
-  messages (and the count that could not be recorded), since a complete-looking
-  file with holes says nothing about them itself. Per-source detail goes to the
-  log, never into the toast: a toast listing one line per file stops being
-  readable at three sources.
+- `StreamingSourceManager::recordingTargets()` returns only sessions whose plugin advertises delegated ingest (a
+  direct writer has no raw bytes at the seam), plus the display names it left out, for the shell to say what will
+  be missing.
+- A target is keyed by its `DatasetId`, which the service uses to address that source afterwards. Display names may
+  repeat: `RecordingService` names the files.
+- A target's `attach` returns `false` when the session ended before the tap could be installed, which fails and rolls
+  back the whole capture. Taps attach at start only.
+- A stream that ends mid-capture must not stop the capture: the `streamStopped` handler forwards
+  `RecordingService::onSourceEnded(dataset_id, reason)`, which finalizes that one file. The batch ends with its last
+  live source or the user's Stop.
+- `MainWindow::onRecordingStopped` reports the whole capture: the path for a single source, the folder when several
+  recorded cleanly, otherwise the problem count and up to two failing sources (naming `mcap recover` when a file could
+  not be finalized), plus the dropped-message count when the write queues shed messages. Per-source detail goes to the
+  log: a toast with one line per file is unreadable at three sources.
 
-The recording design and the write-queue budget are in
-`../../docs/RECORDING_AND_CACHING.md`; the on-disk contract is `pj_runtime`'s `RecordingFormat.h`.
+Design and write-queue budget: [`../../docs/RECORDING_AND_CACHING.md`](../../docs/RECORDING_AND_CACHING.md); the
+on-disk contract is `pj_runtime`'s `RecordingFormat.h`.
 
 ## Layout files and derived recipes
 
-`LayoutXml` is the self-contained DOM helper for `.pj4.xml` layouts (no
-`MainWindow`, no `Qt::Widgets`; it is compiled straight into
-`pj_app_unit_tests`). `LayoutReplayHints.h` builds the `LoadHints` shared by every
-replay of one layout-recorded source (desktop reload, browser source-bound
-replay, the import batch's cache-hit loads): automated, dialogs prohibited, the
-saved preset authoritative, and its filepath (and its fan-out children's) pointed
-at the path the replay actually loads.
+`LayoutXml` is the DOM helper for `.pj4.xml` layouts (no `MainWindow`, no Qt Widgets; compiled straight into
+`pj_app_unit_tests`). `LayoutReplayHints.h` builds the `LoadHints` shared by every replay of a layout-recorded source
+(desktop reload, browser source-bound replay, the import batch's cache-hit loads): automated, no dialogs, the saved
+preset authoritative, its filepath (and its fan-out children's) pointed at the path the replay loads.
 
-Layout-relative paths: on a file save, `saveLayoutToPath` stores these paths
-relative to the layout folder when the target is at or beneath it
-(`relocatableSubpath`): the `<fileInfo>` filenames, every `*_dataset_path`
-qualifier of a source-bound layout (all widget families, scene and State
-Transitions rows included: `stampDatasetSourcePaths`, then
-`relativizeDatasetSourcePaths`), and, in both bindings, a `<robot_model>`'s URDF
-file and `file://` package roots (Scene3D's `relocateLayoutResources`).
-`loadLayoutFromPath` resolves them against the layout folder before any restore
-(`resolveDatasetSourcePaths`, Scene3D's `resolveLayoutResourceUrls`, which leaves a
-browser's file label alone). Undo snapshots and in-memory captures stay absolute,
-browser layouts never pass through either step, and a generic layout carries no
-dataset qualifier.
+**Schema versions.** The root's `pj4_version` changes only on incompatible changes (the loader skips unknown elements
+and attributes, and a newer layout loads best-effort with a warning); what each version changed is the comment on
+`kLayoutSchemaVersion` in `MainWindow.cpp`. A layout is written as v4, or v5 when it carries stream records, so an
+older build warns about exactly the layouts whose streams it would drop. Offsets from a v3-or-older layout include
+the global reference, and the loader subtracts it.
 
-`__pj_saved_filepath` is transient. It exists only in the config handed to a
-plugin's `loadConfig` on a layout replay of a native file (the fresh load path of
-`rewriteReplayFilepaths` with `SavedFilepath::kRecord`), and never reaches host
-state: the rewrite drops any incoming value before writing its own (so a layout
-that carries the key cannot pass it on), `captureSavedConfig` strips a plugin's
-echo from what the session records, and a `prefer_reuse` hit, which runs no plugin,
-emits its preset through the rewrite with `SavedFilepath::kOmit`.
+**Relative paths.** A file save stores paths relative to the layout folder when the target is at or under it
+(`relocatableSubpath`): `<fileInfo>` filenames, every `*_dataset_path` qualifier of a source-bound layout (all widget
+families: `stampDatasetSourcePaths`, then `relativizeDatasetSourcePaths`) and, in both bindings, a `<robot_model>`'s
+URDF file and `file://` package roots (Scene3D's `relocateLayoutResources`). `loadLayoutFromPath` resolves them
+against the layout folder before any restore (`resolveDatasetSourcePaths`, Scene3D's `resolveLayoutResourceUrls`).
+Undo snapshots and in-memory captures stay absolute; browser layouts skip both steps; a generic layout has no dataset
+qualifier.
 
-The `<data_processors>` block (filters, transforms, marker generators, on-demand
-recipes) is saved and restored by `pj_runtime`'s `DerivedObjects` (see
-`../../pj_runtime/CLAUDE.md`). `MainWindow` saves through `derivedObjects().save(...)`
-and keeps a thin wrapper for the restore: `restoreDataProcessors` =
-`derivedObjects().parse(root, intent)` + `checkDataProcessorDependencies` +
-`applyDataProcessors`, the snapshot carrying its intent. The preflight refuses a
-preview holding an on-demand key the snapshot wants (under either intent) and, under
-`kHistory`, a restore whose removals would strand an exempt dependent. The shell owns
-what is UI: each diagnostic (the parse's and the restore's, in one report) is
-reported by `reportDerived` under source "Layout" (so `layout_issue_capture_` sees
-it), and the Custom Topics panel is re-derived after every restore.
+**`__pj_saved_filepath`** exists only in the config handed to a plugin's `loadConfig` on a layout replay of a native
+file (`rewriteReplayFilepaths` with `SavedFilepath::kRecord`) and never reaches host state: the rewrite drops any
+incoming value first, `captureSavedConfig` strips a plugin's echo, and a `prefer_reuse` hit (no plugin runs) goes
+through the rewrite with `SavedFilepath::kOmit`.
 
-`applyWorkspace` parses once and restores in a fixed order: preflight (read-only,
-before anything mutates) -> per-source display offsets -> processors (filters,
-transforms, marker generators) -> rebind every curve to a catalog key. Offsets move
-before the processor replay so a generator that reads the display frame sees the
-settled offset. The progressive drain's teardown applies an empty snapshot. An undo
-leaves a marker rule it does not change as it is drawn and runs a changed one to
-completion; a layout load creates it with the bounded create.
+**Derived recipes.** The `<data_processors>` block is saved and restored by `pj_runtime`'s `DerivedObjects`.
+`restoreDataProcessors` = `derivedObjects().parse(root, intent)` + `checkDataProcessorDependencies` +
+`applyDataProcessors`. The preflight refuses a preview that holds an on-demand key the snapshot wants and, under
+`kHistory`, a restore whose removals would strand an exempt dependent. The shell owns the UI: every diagnostic is
+reported by `reportDerived` under source "Layout" (so `layout_issue_capture_` sees it), and the Custom Topics panel is
+re-derived after every restore.
+
+**Restore order.** `applyWorkspace` parses once and restores: preflight (read-only, before anything mutates) ->
+per-source display offsets -> processors -> rebind every curve to a catalog key. Offsets come before processors so a
+generator that reads the display frame sees the settled offset. A layout restore replaces the persisted toolboxes
+(every tab and floating window, plus a takeover the layout names; any other takeover stays) synchronously before
+relaunching them, after asking once when one of them is busy.
 
 ### Streaming sources in a layout file
 
-A source-bound desktop save ("Bind to this data source") also writes the live
-streams, through the same `liveStreamRecords` the browser's Save Layout with
-Sources uses: one `<streamInfo>` per session with the configuration it started
-from, its offset and timeline slot, and `pj-stream://<id>` on what is drawn from
-it. The configuration is the plugin's `saveConfig()` JSON, verbatim, so a plugin
-that keeps credentials in it puts them in the file; the save dialog's checkbox
-says so while a stream runs. A session with no configuration (a plugin without
-a dialog, an agent's bare start) is left out: nothing could start it again, so
-what it draws saves unbound.
+A source-bound save (desktop "Bind to this data source", browser "Save Layout with Sources") writes the live streams
+through `liveStreamRecords`: one `<streamInfo>` per session with its starting configuration, offset and timeline slot,
+and `pj-stream://<id>` on what is drawn from it. The configuration is the plugin's `saveConfig()` JSON verbatim, so
+credentials a plugin keeps there land in the file (the save dialog says so while a stream runs). A session with no
+configuration (no dialog, an agent's bare start) is left out, and what it draws saves unbound.
 
-`loadLayoutFromPath` reads the records of a source-bound layout. A record whose
-plugin and configuration template match a running session
-(`StreamingSourceManager::liveSessionFor`) binds to that session, so reopening a
-layout never opens a second connection; of two identical sessions, each record
-takes the one that carries its id. The others join the reload prompt (one
-consolidated question with the files; File → Load Layout only) and start at its
-commit point through `StreamingSourceManager::startFromLayout`, without the
-plugin's dialog; `--layout` starts them without asking, as it reloads files.
-`bindStreamQualifiers` then turns what the layout bound to each record into
-pending intents on that session's dataset, and the streams' Source Timeline
-tracks go through `resolveLayoutTimelineTracks` with the files' (two records
-bound to one running session get one track). The desktop and browser loads
-share this bookkeeping (`LayoutStreamBinding`) and differ only in failure policy:
-the browser's replay is all-or-nothing, the desktop's partial. A stream that cannot start
-(plugin missing, configuration refused, `start()` failed, a deployment variable
-the desktop cannot fill) is named in one `layout-streams-not-started` report,
-and the rest of the layout applies; a layout whose only sources all failed ends
-in the no-data report that lists them. Like reloaded files, streams the load
+`loadLayoutFromPath` reads the records. A record whose plugin and configuration template match a running session
+(`StreamingSourceManager::liveSessionFor`) binds to it, so reopening a layout never opens a second connection; of two
+identical sessions, each record takes the one carrying its id. The others join the reload prompt (File → Load Layout)
+and start at its commit point through `startFromLayout`, without the plugin's dialog; `--layout` starts them without
+asking. `bindStreamQualifiers` turns what the layout bound to each record into pending intents on that session's
+dataset; timeline tracks go through `resolveLayoutTimelineTracks`. Desktop and browser share this bookkeeping
+(`LayoutStreamBinding`) and differ in failure policy: the browser's replay is all-or-nothing, the desktop's partial (a
+stream that cannot start is named in one `layout-streams-not-started` report and the rest applies). Streams the load
 started stay up when the user cancels the apply afterwards.
 
-Frozen restore fixtures live in `tests/fixtures/layouts/` (each directory's
-`README.md` says how its files were written): `release-4.1/` is read by
-`MainWindowRelease41LayoutTest` and `prototype/` (on-demand recipes) by
-`MainWindowPrototypeLayoutTest`. Both restore through the real load paths and save
-back to the same `<data_processors>` block.
+Frozen restore fixtures live in `tests/fixtures/layouts/` (each directory's `README.md` says how its files were
+written); their suites restore through the real load paths and save back to the same `<data_processors>` block.
 
 ## Canonical layout import (cloud sessions)
 
-A `.pj4.xml` layout can embed a durable source descriptor, so opening it
-re-creates an exact cloud session: instantly from a local cache artifact when
-present, otherwise by re-downloading through the MCAP Cloud connector plugin while
-plots grow. The PJ4-side pieces are `LayoutImportBatch`,
-`HeadlessDescriptorProviderSession`, `SourcePromotionHost`, the
-rewrite-then-classify layout load path (`MainWindow` + `LayoutXml`) and the
-growing-import binder (`MainWindow` over `SessionManager`'s ingest signals).
-`LayoutExitWatch` turns the `--exit-after-layout` run into one exit code.
-`ToolboxHostWiring.h` holds the wiring that must stay identical between
-`MainWindow::launchToolbox` and `HeadlessDescriptorProviderSession`, so a provider
-plugin sees the same host in both.
+A `.pj4.xml` layout can embed a durable source descriptor, so opening it re-creates a cloud session: from a local
+cache artifact when present, otherwise by re-downloading through the MCAP Cloud connector plugin while plots grow. The
+PJ4 pieces are `LayoutImportBatch`, `HeadlessDescriptorProviderSession`, `SourcePromotionHost`, the
+rewrite-then-classify layout load path (`MainWindow` + `LayoutXml`) and the growing-import binder (`MainWindow` over
+`SessionManager`'s ingest signals). `LayoutExitWatch` turns an `--exit-after-layout` run into one exit code.
+`ToolboxHostWiring.h` holds the wiring shared by `MainWindow::launchToolbox` and `HeadlessDescriptorProviderSession`,
+so a provider plugin sees the same host in both.
 
-The feature spans three repos, so its as-built reference lives outside this one:
-**`docs/layout-import-architecture.md`** in the `pj-mcap-server` repository
-(cross-repo component map, runtime flows, and the invariant list I-1 to I-16).
-**Read it before changing any of the components above**: several invariants are
-host-side (delivery order, teardown orders, strict in-place promotion, strip
-displayed-owner arbitration) and are not derivable from PJ4 alone. The operations
-guide (what a shared layout embeds, the trust bootstrap, cache purge, the headless
-flow and its diagnostic ids) is `docs/layout-sharing-runbook.md` in that same
-repository.
+A host-cache hit loads as a standard MCAP, whatever plugin the layout recorded. A cache entry another instance is still
+publishing fails that source (`layout-import-cache-contended`, no retry) rather than starting a second download. The
+`prefer_reuse` and fan-out load paths emit no `loadCommitting`, so a hit loaded that way keeps a path-only identity (no
+source record). A headless import's presentation (TF bridging, playback focus, Custom Topics) comes from `MainWindow`'s
+batch-scoped observers (`installLayoutBatchObservers`); the progressive-restore drain settles the rest.
+
+The feature spans three repositories; its reference is `docs/layout-import-architecture.md` in the `pj-mcap-server`
+repository (component map, runtime flows, invariants I-1 to I-16). Several of those invariants are host-side
+(delivery order, teardown orders, strict in-place promotion, strip displayed-owner arbitration) and cannot be derived
+from PJ4 alone: read it before changing the pieces above. Operations (what a shared layout embeds, the trust
+bootstrap, cache purge, the headless flow and its diagnostic ids): `docs/layout-sharing-runbook.md` there.
 
 ## Plugin playback and owned views
 
-`MainWindow` wires `PlaybackControlHost`, `ViewportRuntimeHost` and
-`PlotTabsRuntimeHost` into each toolbox binding. Playback is global and stays in
-`MainWindow`. The owned-tab operations behind the other two live in
-`PluginPlotTabsController` (`src/PluginPlotTabsController.{h,cpp}`, over
-`TabbedPlotWidget` + `CatalogModel` + `ExtensionCatalogService`), which builds each
-plugin's `Callbacks` with the plugin id captured. `MainWindow` only constructs it
-(handing it `makeSeededEmptyObjectDock` as the scene-widget factory and
-`revealOwnedTabOverTakeover` as the created-tab hook, which folds the plugin's own
-takeover panel so the new tab shows) and calls `refreshAvailability()` on catalog
-change and layout load.
+`MainWindow` wires `PlaybackControlHost`, `ViewportRuntimeHost` and `PlotTabsRuntimeHost` into each toolbox binding.
+Playback is global and stays in `MainWindow`. The owned-tab operations live in `PluginPlotTabsController` (over
+`TabbedPlotWidget`, `CatalogModel` and `ExtensionCatalogService`), which builds each plugin's callbacks with the
+plugin id captured. `MainWindow` constructs it (with `makeSeededEmptyObjectDock` as the scene-widget factory and
+`revealOwnedTabOverTakeover` as the created-tab hook, which folds the plugin's takeover panel so the new tab shows)
+and calls `refreshAvailability()` on catalog change and layout load.
 
-- **Scene tabs.** Scene tabs ("3d"/"2d") share the plugin's id namespace; the
-  controller routes each call by the kind of the tab's live widget (`sceneKindOf`)
-  and hands scene tabs to its delegate `PluginSceneViewsController`
-  (`src/PluginSceneViewsController.{h,cpp}`: topic resolution, attach/detach, the
-  read-back JSON). A kind the factory cannot build is refused by name before an
-  existing tab is replaced.
-- **Embedded views.** The same delegate serves the scene views a toolbox panel
-  embeds (`scene_view` frames): `MainWindow::makeEmbeddedViewHost` is the panel's
-  `EmbeddedViewHost`, building seeded scene docks parented to the frame and
-  attaching through the delegate's `attachEmbeddedTopic`; the tracker broadcasts
-  tick those views (`tickEmbeddedViews`) and a catalog change re-attaches what
+- **Scene tabs** ("3d"/"2d") share the plugin's id namespace; the controller routes by the kind of the tab's live
+  widget (`sceneKindOf`) to `PluginSceneViewsController` (topic resolution, attach/detach, read-back JSON). A kind
+  the factory cannot build is refused before an existing tab is replaced.
+- **Embedded views.** The same delegate serves the scene views a toolbox panel embeds:
+  `MainWindow::makeEmbeddedViewHost` builds seeded scene docks parented to the frame and attaches through
+  `attachEmbeddedTopic`; tracker broadcasts tick them (`tickEmbeddedViews`) and a catalog change re-attaches what
   their frames still ask for (`reattachEmbeddedTopics`).
-- **Addressing.** Viewport operations reach only the dockers whose
-  `PlotDocker::ownerPlugin()` is the captured plugin id. Tab `stateId()` is
-  independent of its title and position; duplicate visible titles and renaming do
-  not affect addressing.
-- **Persistence.** Owned tabs persist in full layouts with `owner_plugin`/`tab_id`
-  metadata and remain live across history restores. So do their curves bound to a
-  filter or transform output the snapshot leaves unchanged, because the
-  derived-recipe restore reconciles both by persisted identity (filters by
-  `output_name`, transforms by key) and keeps the unchanged ones live under their
-  `TopicId`s. Everything else (changed entries, and kept ones cascaded out by a
-  replaced input) is re-created in rounds (filters with their inputs re-resolved
-  through a rebuilt catalog, then transforms) until a round creates nothing; apply
-  failures are reported once, after the last round.
-- **Watermark.** The watermark is the owning toolbox's badge (`toolboxBadge`: its
-  manifest `badge`, else its name); a tab whose owner is not in the catalog says so
-  instead.
+- **Addressing.** Viewport operations reach only dockers whose `PlotDocker::ownerPlugin()` is the captured id. A tab's
+  `stateId()` is independent of its title and position.
+- **Persistence.** Owned tabs persist with `owner_plugin`/`tab_id` metadata and stay live across history restores, as
+  do their curves bound to a filter or transform output the snapshot leaves unchanged: the derived-recipe restore
+  reconciles by persisted identity (filters by `output_name`, transforms by key). Changed entries, and kept ones
+  cascaded out by a replaced input, are re-created in rounds (filters, inputs re-resolved through a rebuilt catalog,
+  then transforms) until a round creates nothing; failures are reported once, after the last round.
+- **Watermark.** The owning toolbox's badge (`toolboxBadge`: manifest `badge`, else its name); a tab whose owner is
+  not in the catalog says so.
 
-`displayTimeForSource` validates a live catalog source handle and uses its current
-`SessionManager::displayOffset`. Topic conversion first requires a unique
-`CatalogModel::datasetForTopic` match; an empty topic selects the representative
-dataset. Plugins should prefer the SDK's `toDisplayTimeForSource` when topic names
-repeat. See the SDK's `pj_plugins/docs/toolbox-guide.md` for plugin examples and
-error handling.
+`displayTimeForSource` validates a live catalog source handle and uses its `SessionManager::displayOffset`. Topic
+conversion requires a unique `CatalogModel::datasetForTopic` match; an empty topic selects the representative
+dataset. Plugins should prefer the SDK's `toDisplayTimeForSource` when topic names repeat (the SDK's
+`pj_plugins/docs/toolbox-guide.md`).
 
 ## Toolbox presentation
 
-`ToolboxPresenter` (`src/ToolboxPresenter.{h,cpp}`) is one live toolbox: the
-wrapped panel container (`MainWindow::wrapToolboxPanel`), its `PanelEngine`, the
-plugin session that keeps host services and plugin instance alive, and the
-presentation it currently has: takeover (chart area), tab, or floating
-`PJ::Dialog`. `MainWindow::toolboxes_` is the single registry, one presenter per
-plugin id across every presentation.
+`ToolboxPresenter` is one live toolbox: the wrapped panel container (`MainWindow::wrapToolboxPanel`), its
+`PanelEngine`, the plugin session that keeps host services and the plugin instance alive, and its presentation:
+takeover (chart area), tab or floating `PJ::Dialog`. `MainWindow::toolboxes_` is the single registry, one presenter
+per plugin id across every presentation.
 
-**Launch.** `launchToolbox` builds the session (`buildToolboxPanelSession`; the
-derived-data hosts come from `pj_runtime`'s `DerivedRuntimeHosts`, which
-`HeadlessDescriptorProviderSession` builds too, and the other provider services
-from `ToolboxHostWiring.h`), wraps the panel, registers the presenter and calls
-`moveToDock`/`moveToTab`.
+**Launch.** `launchToolbox` builds the session (`buildToolboxPanelSession`; the derived-data hosts come from
+`pj_runtime`'s `DerivedRuntimeHosts`, which `HeadlessDescriptorProviderSession` builds too, the other provider
+services from `ToolboxHostWiring.h`), wraps the panel, registers the presenter and presents it.
 
-**Relocation.** `moveToDock`/`moveToTab`/`moveToFloating` release the container from
-wherever it is and attach it elsewhere, without teardown: the plugin session,
-drawer, actions and renamed tab title survive, and `Spec::apply_chrome` re-shows the
-banner in the chrome of whichever presentation the container lands in. Every
-presentation keeps three header controls: docked panels offer move-to-tab,
-move-to-floating and close; tabs offer move-to-docked, move-to-floating and close;
-floating windows offer move-to-tab, move-to-docked and close. Generic panels hide
-destinations they do not support.
+**Relocation.** `moveToDock`/`moveToTab`/`moveToFloating` release the container and attach it elsewhere without
+teardown: the session, drawer, actions and renamed tab title survive, and `Spec::apply_chrome` re-shows the banner in
+the new chrome. Each presentation offers the two others plus close; generic panels hide destinations they do not
+support.
 
-**Teardown.** `teardown(kDeferred|kImmediate)` is the one exit, reached only through
-`MainWindow::teardownToolbox`, which extracts the registry entry FIRST so any
-callback landing mid-teardown finds nothing. Tab close, window `finished`, engine
-close requests and banner hooks all look the presenter up by id rather than
-capturing it. `~MainWindow` calls `teardownAllToolboxes()` (every presentation,
-synchronous) before the members die; a layout restore tears down the persisted set
-(tabs + floating, plus a takeover the layout names; any other takeover stays)
-synchronously before relaunching.
+**Teardown.** `ToolboxPresenter::teardown` is the one exit, reached only through `MainWindow::teardownToolbox`, which
+extracts the registry entry first so a callback landing mid-teardown finds nothing. Tab close, window `finished`,
+engine close requests and banner hooks look the presenter up by id rather than capturing it. The session dying with
+the presenter ends the previews that panel's plugin created: `DerivedRuntimeHosts`' destructor passes them to
+`SessionManager::removeEphemerals` after the plugin handle is gone. The headless provider session does the same for
+its own previews, so ending it leaves an open panel's previews of the same plugin alone. Persistent recipes are user
+data and stay.
 
-The session dying with the presenter ends the previews that panel's plugin instance
-created: `DerivedRuntimeHosts`' destructor passes its bridges' previews to
-`SessionManager::removeEphemerals` (ephemeral transforms and marker rules, after the
-plugin handle is gone). The headless provider session does the same for its own, so
-ending it leaves an open panel's previews of the same plugin. Persistent recipes are
-user data and stay.
+**Takeover and close.** Nothing is registered per presentation: the busy-close fold, the fold on ingest start and a
+dismissal's fold resolve the takeover's presenter through the registry (`takeoverToolbox()`), and the banner's close
+is `ToolboxPresenter::requestClose()` (a tab goes through the strip's busy-job confirmation, a floating window through
+the window, a busy takeover folds into a transient tab). Replacing a busy takeover folds it before showing the new
+one. The docked panel is a page of the `centralAreaStack` (`MainWindow.ui`) that holds the chart, so docking never
+fails and the chart never leaves the window.
 
-**Takeover and close.** Nothing is registered per presentation: the busy-close fold,
-the automatic fold on ingest start and a dismissal's fold all resolve the takeover's
-presenter through the registry (`takeoverToolbox()`), and the banner's close button is
-`ToolboxPresenter::requestClose()` (tab close goes through the strip's busy-job
-confirmation, floating through the window, a busy takeover folds into a transient
-tab). Replacing another busy takeover folds that panel before showing the incoming
-one. The docked panel is a page of the `centralAreaStack` (`MainWindow.ui`) that
-holds the chart, so docking never fails and the chart never leaves the window.
-
-**Reparenting.** A move reparents the container once, at its destination
-(`addWidgetTab`, the floating `PJ::Dialog`, the stack). Releasing it from a
-presentation (`releaseCentralPanel`, `ToolboxPresenter::release`,
-`TabbedPlotWidget::takeWidgetTab`) leaves its parent alone, and a teardown deletes
-it in place, because every reparent re-polishes the whole widget tree against the
-app stylesheet (~180 ms for a toolbox panel in a browser). The chart-area helpers
-shared by the banner and the floating title bar live in `src/ToolboxChrome.{h,cpp}`.
+**Reparenting.** A move reparents the container once, at its destination. Releasing it (`releaseCentralPanel`,
+`ToolboxPresenter::release`, `TabbedPlotWidget::takeWidgetTab`) leaves its parent alone, and a teardown deletes it in
+place: every reparent re-polishes the whole tree against the app stylesheet, which is slow in a browser
+([TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md) "Reparenting a toolbox panel re-polishes it"). The chart-area helpers
+shared by the banner and the floating title bar are in `ToolboxChrome.h`.
 
 ## Custom Topics panel
 
-`CurveListPanel`'s bottom tree lists what the session derived: transform outputs and
-one flat row per object output of a persistent on-demand recipe, named by the recipe,
-badged by an owner other than the editor, with its node's state as the glyph and
-tooltip (the lag while computing, a finding's pin on the display axis).
+`CurveListPanel`'s bottom tree lists what the session derived: transform outputs and one row per object output of a
+persistent on-demand recipe, named by the recipe, badged by an owner other than the editor, with its node's state as
+glyph and tooltip.
 
-- **Row set.** `MainWindow::syncCustomTopicsPanel` derives the whole row set
-  (`CurveListPanel::setCustomTopics`) on every install and after a restore or a
-  toolbox write (an announced removal relists the catalog, and the panel prunes the
-  rows). A node's state change or an offset schedules one `refreshCustomTopicsPanel`
-  per event-loop turn, which rebuilds the on-demand rows and reuses the transform
-  rows of the last sync until the catalog changes.
-- **Editing.** The "+", the pencil and Delete belong to the toolbox whose manifest
-  declares `custom_topics_editor`. `deleteCustomTopics` asks `pj_runtime`'s
-  `CustomTopicsPolicy.h` who may delete what, and asks again once a prompt is
-  answered, before removing a recipe (one undo step unless it is history-exempt) or
-  a transform; this shell only words the refusals and runs the prompts.
-- **Series.** A series is one flat row per number column (`id/output`), deleted with
-  its recipe. `SeriesProgressController` (`src/SeriesProgressController.{h,cpp}`, wired
-  by `wireSeriesProgress`) turns `SeriesRunner::State` into a stoppable bar on those
-  rows (`CurveListPanel::setSeriesProgress`), lingering as completed or cancelled,
-  and a row's stop (`seriesStopRequested`) stops the replay keeping its rows.
+- **Row set.** `MainWindow::syncCustomTopicsPanel` derives the whole set (`CurveListPanel::setCustomTopics`) on every
+  install and after a restore or a toolbox write. A node state change or an offset schedules one
+  `refreshCustomTopicsPanel` per event-loop turn, which rebuilds the on-demand rows and reuses the transform rows of
+  the last sync until the catalog changes.
+- **Editing.** "+", the pencil and Delete belong to the toolbox whose manifest declares `custom_topics_editor`.
+  `deleteCustomTopics` asks `pj_runtime`'s `CustomTopicsPolicy.h` who may delete what, and asks again once a prompt is
+  answered (the session may have changed under the prompt); the shell only words the refusals and runs the prompts.
+- **Series.** One row per number column (`id/output`), deleted with its recipe. `SeriesProgressController` (wired by
+  `wireSeriesProgress`) turns `SeriesRunner::State` into a stoppable bar on those rows; a row's stop
+  (`seriesStopRequested`) stops the replay and keeps its rows.
 
-See `../../docs/derived_objects/ARCHITECTURE.md` section 8.
+See the derived-objects architecture, "The on-demand pipeline".
 
 ## Custom Widget panels
 
-`MainWindow::makeSceneDock` builds the `"CustomWidget"` kind (the `<CustomWidget>` layout tag) like the other object docks: wired to the session, the diagnostic sink, the undo debounce and `TopicDemandController::registerCustomWidgetDock`, and handed the time mappers of the `pj.playback.v1` its widget is offered (`setPlaybackTimeMappers`: `displayTimeForTopic` / `displayTimeForSource`, the same two a toolbox session's playback host uses). The object-widget factory is installed whether or not Scene2D/Scene3D are built, because this kind and `state_transitions` do not depend on them. `MainWindow::createCustomWidgetDock(dock, plugin_id, type)` is what the widget picker calls (the dock factory stays in the shell, next to `makeSceneDock`): it builds the dock, binds the plugin widget BEFORE the dock mounts it (so the mount sees the plugin's widget tree), then adopts it. `onObjectFamilyRequested(kCustomWidget)` creates nothing: the widget is chosen first. Object types with no built-in view (`isCustomWidgetObjectType` in `scene_object_classification.h`: not `kNone`, not panel-only, no scene kind, e.g. `kLog`) drag from the curve list like any displayable topic; `DockWidget` offers them to a mounted Custom Widget (`tryAcceptObjectTopic`), and the object-widget factory answers a drop on an empty dock with a toast saying to create the Custom Widget first.
+`MainWindow::makeSceneDock` builds the `"CustomWidget"` kind (the `<CustomWidget>` layout tag) like the other object
+docks: wired to the session, the diagnostic sink, the undo debounce and
+`TopicDemandController::registerCustomWidgetDock`, and given the `pj.playback.v1` time mappers
+(`displayTimeForTopic` / `displayTimeForSource`, the same two a toolbox session's playback host uses). The
+object-widget factory is installed whether or not Scene2D/Scene3D are built, because this kind and
+`state_transitions` do not depend on them. `MainWindow::createCustomWidgetDock(dock, plugin_id, type)`, which the
+picker calls, binds the plugin widget before the dock mounts it (so the mount sees the plugin's widget tree), then
+adopts it. `onObjectFamilyRequested(kCustomWidget)` creates nothing: the widget is chosen first, or an unbound panel
+would be left behind. Object types with no built-in view (`isCustomWidgetObjectType` in
+`scene_object_classification.h`) drag from the curve list like any displayable topic; `DockWidget` offers them to a
+mounted Custom Widget (`tryAcceptObjectTopic`), and a drop on an empty dock gets a toast saying to create the Custom
+Widget first.
 
-Everything else of this family in the shell lives in `CustomWidgetController` (`src/CustomWidgetController.{h,cpp}`, owned by `right_panel_stack_`, built in the `MainWindow` constructor with the other right-panel pages): both pages below, the pending target panel, the `ActiveWidgetsMarker` and the startup review. `MainWindow` calls into it from `onObjectFamilyRequested(kCustomWidget)` (`showPicker`), `onDockFocused` (`pageForFocusedDock`), `makeSceneDock` (`attachDock`), `reviewUncleanShutdown` and `~MainWindow` (`clearActiveWidgets`); the controller calls back through `Hooks` (reveal the side panel, `createCustomWidgetDock`, `onDockFocused`).
+`CustomWidgetController` (owned by `right_panel_stack_`) holds the rest: both right-panel pages, the pending target
+panel, the `ActiveWidgetsMarker` and the startup review. `MainWindow` calls `showPicker`, `pageForFocusedDock`,
+`attachDock`, `reviewUncleanShutdown` and `clearActiveWidgets`; the controller calls back through `Hooks`.
 
-Two pages of the right side panel (`right_panel_stack_`) serve this family, both `.ui` files under `src/ui/`:
+- `CustomWidgetPickerPanel` lists the installed widget types from `ExtensionCatalogService::widgets()`, rebuilt on
+  `catalogChanged` and every time it is shown. A library built against another Qt is listed disabled with its
+  mismatch reason. With nothing installed it offers the Marketplace (hidden on WASM).
+- `CustomWidgetConfigPanel` binds to the focused `CustomWidgetDockWidget`: one row per input with its wires and a
+  chooser listing only the keys `CustomWidgetDockWidget::canBind` accepts ("Choose series" replaces slot 0, "Add
+  series" on a `multiple` input appends at `WidgetBindings::kNewSlot`), then a settings form built from
+  `settingsDeclarations()`. A change edits one key of `settingsJson()` (which holds every declared key with its
+  manifest default) and calls `applySettings()` with the whole object; number edits are debounced. The form is built
+  on bind only, so a dock signal never destroys a control in use; `inputsChanged` / `bindingsChanged` rebuild the
+  inputs once, from the event loop, however many arrive together. A missing widget shows its reason and its stored
+  wires, read-only.
 
-- `CustomWidgetPickerPanel`: the installed widget types, read from `ExtensionCatalogService::widgets()` and rebuilt on `catalogChanged` and every time it is shown. One row per type: the manifest's inline SVG icon tinted with the theme ink (the generic `custom_widget.svg` when there is none), the name, and "from <library>". A library built against another Qt is listed disabled, its mismatch reason as tooltip. The band's filter shows past `kFilterThreshold` rows. With nothing installed the page says so and offers the Marketplace (`onOpenMarketplace`; hidden on WASM).
-- `CustomWidgetConfigPanel`, bound through `CustomWidgetController::pageForFocusedDock` to the focused `CustomWidgetDockWidget` (`bindDock`, like the scene pages): header with the widget and library names; one row per input (label, unit, kind) with its wires (series, pending state, remove) and "Choose series" (a normal input: replaces slot 0) or "Add series" (a `multiple` input: `WidgetBindings::kNewSlot`), which swap the form for a `CurveTreeView` chooser listing only the catalog keys `CustomWidgetDockWidget::canBind` accepts; then the settings form, built by hand from `settingsDeclarations()` (`number` → `DoubleScrubber` with `min`/`max`, `integer` → the same scrubber with no decimals, stored as a JSON integer, `boolean` → `ToggleSwitch`, `text` → `QLineEdit`, `color` → `ColorPickerWidget`, `enum` → `PJ::ComboBox` over `options`; label from `label`, else `key`; value from `settingsJson()`, which already holds every declared key with its manifest `default`). A change edits one key of the current `settingsJson()` and calls `applySettings()` with the whole object, once per change; number edits are debounced (`kSettingsDebounceMs`). The form is built on bind only, so a dock signal never destroys a control in use; the dock's `inputsChanged` / `bindingsChanged` rebuild the inputs (and the header after an input change) once, from the event loop, however many arrive together. A missing widget shows its reason and the wires of its stored layout element, read-only.
+Flow: the placeholder's Custom Widget icon → `showPicker(dock)` keeps the empty dock in a `QPointer` and shows the
+picker, which stays up while that dock has the focus; a pick → `createCustomWidgetDock` and the new panel's config
+page. A dock closed or filled in between is left alone.
 
-Flow: the fifth placeholder icon → `CustomWidgetController::showPicker(dock)` keeps the empty dock in a `QPointer`, opens the right panel if folded and shows the picker; `pageForFocusedDock` keeps the picker up while that empty dock has the focus. A pick → `createCustomWidgetDock` and the config page of the new panel. A dock that was closed or filled in between is left alone.
+**Crash loop breaker (desktop only).** `CustomWidgetController` owns this process's `ActiveWidgetsMarker`
+(`active_widgets.<pid>.json` in the default directory) and hands it to every Custom Widget dock, which records its
+plugin before the first call into it and removes it once the instance is destroyed. `~MainWindow` clears the file
+right after the docks are destroyed, the one seam both a window close and the `--exit-after-layout` / `--screenshot`
+quits pass through. `main.cpp` calls `reviewUncleanShutdown(interactive)` once, after the window is shown and before
+the startup load is queued: it consumes the records of runs whose process is gone (a live instance keeps its own),
+reports one `kWarning` (source `CustomWidget`) naming the widgets, and in an attended run asks Disable / Keep. Disable
+calls `ExtensionManager::setEnabled(id, false)` per plugin and `ExtensionCatalogService::reload()`, so their panels
+restore as placeholders. An unattended run only reports. An unreadable record is a warning and no question.
 
-Crash loop breaker (desktop only): `CustomWidgetController` owns this process's `ActiveWidgetsMarker` (`active_widgets.<pid>.json` in the default directory) and hands it to every Custom Widget dock, which records its plugin before the first call into it and removes it once the instance is destroyed. `~MainWindow` clears the file right after the docks are destroyed (`delete ui_->tabbedPlotWidget`), the one seam both the window close and the `--exit-after-layout` / `--screenshot` quits pass through. `main.cpp` calls `reviewUncleanShutdown(interactive)` once, after the window is shown and BEFORE the `--layout` restore is queued: it consumes the records of runs whose process is no longer alive (another instance still running keeps its own) and, when they name widgets, reports one `kWarning` (source `CustomWidget`) listing them. Interactive runs then ask with `MessageBox::question` (Disable / Keep); Disable calls `ExtensionManager::setEnabled(id, false)` for each plugin and `ExtensionCatalogService::reload()`, which withdraws the now-disabled Widget libraries from the catalog, so their panels restore as placeholders. A run with `--exit-after-layout` or `--screenshot`, or on the `offscreen` / `minimal` platform, is not interactive (`isUnattendedRun` in `main.cpp`; no other startup check covers all four): it only reports and keeps the widgets. An unreadable record is a warning and no question.
-
-Tests: `tests/main_window_custom_widget_test.cpp` (including the record's lifecycle and the startup review: `UncleanShutdownTest` gives each case an application name of its own, because Disable needs the extension store's single-writer lease and writes the persisted disabled list), `tests/custom_widget_panels_test.cpp` (both pages over a bare session, the shell flow, and dark-theme captures saved under `PJ_UI_TEST_DUMP_DIR` when set), and the end-to-end runs of the executable registered from `pj_custom_widgets/tests/E2E.cmake`.
+Tests: `main_window_custom_widget_test.cpp` (`UncleanShutdownTest` gives each case its own application name, because
+Disable needs the extension store's single-writer lease), `custom_widget_panels_test.cpp`, and the executable's
+end-to-end runs registered from `pj_custom_widgets/tests/E2E.cmake`.
 
 ## Browser (WebAssembly) boundary
 
-On WebAssembly the shell owns the browser boundary: `BrowserFileStore` (upload
-staging and identity, bytes behind a lifetime lease in MEMFS), `FileSelectionService`
-(the asynchronous file pickers) and `BrowserPersistence` (the durable-settings bridge). A data-file
-pick (`selectAndStageFile`) opens its own `<input type=file>` and never copies the `File`:
-`BrowserPickedFile` turns its `BrowserFileStore::reserve()`d path into a read-only MEMFS node that reads
-from the `File` on demand (`browser_picked_file.js`), so a pick may exceed the wasm32 address space and costs
-no memory while open; the small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
+On WebAssembly the shell owns the browser boundary: `BrowserFileStore` (upload staging and identity, bytes behind a
+lifetime lease in MEMFS), `FileSelectionService` (asynchronous file pickers) and `BrowserPersistence` (durable
+settings). It lives here, not in a library, because its lifetime and policy are the executable's.
 
-Lazy picks, what they cost and how they fail:
+### Lazy picks
 
-- **Reads.** With pthreads every file syscall runs on the browser main thread, which cannot await, so a read
-  posts a `file.slice()` to a reader Worker (`FileReaderSync` into a shared scratch buffer) and spins until it
-  answers: about 0.1–0.2 ms per round trip. A 1 MiB read-ahead block per node absorbs small sequential reads;
-  a read of 1 MiB or more goes straight through. A Worker the main thread waits on must already be running,
-  so the Workers start at pick time and the pick is reported only once they answer.
-- **Fingerprint.** `content_sha256` is plain SHA-256 (layouts and presets compare against it), and WebCrypto
-  cannot hash incrementally, so a hasher Worker runs an incremental JS SHA-256 at about 100 MB/s. A normal
-  open (`FileLoader::loadFromBrowserPicker`) hashes in the background (`Fingerprint::kInBackground`; the loader
-  keeps the result) and "Save Layout with Sources" reads it then, refusing to save while it is still running; layout
-  replay reselection and `DialogPresenter` picks wait for it (`kBeforeSelection`), because they compare it.
-  A dialog pick is also recorded in `FileLoader` (`rememberBrowserUpload`, by backing path), which is how
-  the save names and fingerprints the side files a plugin configuration holds
-  (`layout_xml::logicalBrowserSideFiles`; format in `docs/WASM_DEPLOYMENT.md`, "Browser-local state").
-- **A file changed on disk after the pick.** The browser then fails every read of it (`NotReadableError`),
-  surfaced as `EIO`. A `pread`-based source gets the error; a `std::istream`-based one takes it for the end of
-  the file. Either way the first failed read of a node raises one `kWarning` diagnostic
-  (`browser-file-read-failed`, `FileLoader`), saying its data may be incomplete, and drops the file's
-  fingerprint, so "Save Layout with Sources" refuses it. A source with lazy object pulls reads its file for the
-  whole session, so this can happen long after the load.
-- **Offsets past 2 GiB.** `long` is 32 bits on wasm32, so a loader that measures or seeks with `ftell` /
-  `fseek` fails on a larger pick; loaders use `ftello` / `fseeko` or `pread` (the MCAP reader does).
-- Not lazy: a drag-and-drop goes through Qt's drop handling, which copies the file into MEMFS, and preset
-  recordings download into MEMFS.
+A data-file pick (`selectAndStageFile`) opens its own `<input type=file>` and never copies the `File`:
+`BrowserPickedFile` turns a `BrowserFileStore::reserve()`d path into a read-only MEMFS node that reads from the `File`
+on demand (`browser_picked_file.js`), so a pick may exceed the wasm32 address space and costs no memory while open.
+Small picks (layouts, robot files) still take Qt's `getOpenFileContent` bytes.
 
-Tests: `tests/wasm/ingress_file_selection.spec.js` (a sparse pick larger than the address space loads with flat
-memory; a file changed after the pick reports the failed read and leaves the next pick working), and the
-`content_sha256` checks of `persistence_layout.spec.js` (the JS hash against Node's).
-`PresetController` downloads through `pj_runtime`'s `fetchBytesWithLimit()` and streams recordings through `BrowserFetch.h` there ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)).
-Browser-only integration is tied to the executable's lifetime and policy, so it lives
-here rather than in a library.
+- **Reads.** With pthreads every file syscall runs on the browser main thread, which cannot await, so a read posts a
+  `file.slice()` to a reader Worker (`FileReaderSync` into a shared buffer) and spins until it answers. A per-node
+  read-ahead block absorbs small sequential reads; larger reads go straight through. A Worker the main thread spins
+  on must already be running, so the Workers start at pick time and the pick is reported only once they answer.
+- **Fingerprint.** `content_sha256` is plain SHA-256 (layouts and presets compare it), and WebCrypto cannot hash
+  incrementally, so a hasher Worker runs an incremental JS SHA-256. A normal open
+  (`FileLoader::loadFromBrowserPicker`) hashes in the background (`Fingerprint::kInBackground`) and "Save Layout with
+  Sources" refuses to save while it runs; layout replay reselection and `DialogPresenter` picks wait for it
+  (`kBeforeSelection`), because they compare it. A dialog pick is recorded in `FileLoader`
+  (`rememberBrowserUpload`, by backing path), which is how the save names and fingerprints the side files a plugin
+  configuration holds (`layout_xml::logicalBrowserSideFiles`; format in
+  [`../../docs/WASM_DEPLOYMENT.md`](../../docs/WASM_DEPLOYMENT.md), "Browser-local state").
+- **A file changed on disk after the pick.** The browser fails every read (`NotReadableError`, surfaced as `EIO`). A
+  `pread`-based source gets the error; a `std::istream`-based one takes it for end of file. The first failed read of
+  a node raises one `browser-file-read-failed` warning (the data may be incomplete) and drops the fingerprint, so
+  "Save Layout with Sources" refuses it. A source with lazy object pulls reads its file all session, so this can
+  happen long after the load.
+- **Offsets past 2 GiB.** `long` is 32 bits on wasm32, so `ftell` / `fseek` fail on a larger pick; loaders use
+  `ftello` / `fseeko` or `pread`.
+- Not lazy: a drag-and-drop goes through Qt's drop handling, which copies into MEMFS; preset recordings download into
+  MEMFS.
+
+Tests: `tests/wasm/ingress_file_selection.spec.js` (a sparse pick larger than the address space; a file changed after
+the pick) and the `content_sha256` checks of `persistence_layout.spec.js` (the JS hash against Node's).
 
 ### Persistence
 
-Native builds keep their normal `QSettings` behavior. WASM redirects ordinary
-`QSettings` callers to page-lifetime MEMFS and lets `BrowserPersistence` alone write
-`WebLocalStorageFormat`. Only its exact, typed preference allowlist and up to five
-bounded, source-free generic layout recipes are durable. File paths, upload
-identities, plugin configuration, credentials and source-bound layouts must never
-enter durable browser storage. If the stored preference envelope is unreadable, it is
-left intact rather than deleted (a newer build may understand it) and none of its
-values are imported into the session. On WebAssembly `main()` constructs
-`BrowserPersistence` after the application identity and before the splash, `Theme`,
-`WidgetTuner`, `MainWindow` or any plugin host, so every settings consumer sees the
-redirect; native builds never construct it.
+Native builds keep plain `QSettings`. WASM redirects ordinary `QSettings` callers to page-lifetime MEMFS and lets
+`BrowserPersistence` alone write `WebLocalStorageFormat`: its typed preference allowlist and a few bounded,
+source-free generic layout recipes. File paths, upload identities, plugin configuration, credentials, source-bound
+layouts and stream records never enter durable storage. An unreadable stored envelope is left intact (a newer build
+may read it) and none of its values are imported. `main()` constructs `BrowserPersistence` after the application
+identity and before the splash, `Theme`, `WidgetTuner`, `MainWindow` or any plugin host, so every settings consumer
+sees the redirect; native builds never construct it.
+
+### Presets
+
+The preset UI is browser-only, but the replay path builds on the desktop too, for tests. `PresetController`
+discovers `presets/index.json` and downloads a preset's files (http(s) only, capped by `kMaxPresetDownloadBytes` and,
+for a recording, `kMaxPresetDataBytes`) through `pj_runtime`'s `fetchBytesWithLimit()`; a browser recording streams
+through `BrowserFetch.h` ([why](../../pj_runtime/docs/TECHNICAL_NOTES.md)). `WelcomePresetsDialog` is a view only.
+
+`MainWindow::loadLayoutFromUrl` runs the upload replay's byte-level path (`loadLayoutFromBytes`: imports, remapping,
+rollback). Each `<fileInfo>` downloads from `layout_xml::resolveFileSourceUrl` into a `BrowserFileStore::reserve()`d
+file and is checked against `content_sha256` and the preset's cumulative cap; Scene3D's `resolveLayoutResourceUrls`
+anchors robot resources at the layout URL. In WASM a redirect leaves the final URL the requested one, so a preset that
+relies on a redirect to another directory resolves its files against the wrong base. Every call ends in exactly one
+`layoutUrlLoadFinished(url, ok, reason)`; each source download reports throttled `layoutUrlLoadProgress(url,
+received, total)` ending at received == total. A success replaces only what the previous successful preset load
+brought (`BrowserLayoutRuntime::preset_data`).
+
+A preset may record streaming sources (`<previouslyLoaded_StreamingSources>`, `pj4_version="5"`, `pj-stream://<id>`
+qualifiers). Its configuration is a template: `${deployment.ws_origin}` expands from the page URL through
+`pj_runtime`'s `expandSourceConfigVariables`, the replay starts it via `StreamingSourceManager::startFromLayout`, and
+a re-save writes it back unexpanded. Only a source-bound save writes stream records, never `xmlSaveState`. Authoring,
+packaging and hosting: [`../../docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
 
 ### Acceptance probes
 
-`tests/wasm_acceptance_probes.inc` is the acceptance-build-only observation and input
-bridge, included behind `PJ_WASM_ENABLE_INGRESS_PROBE` (with the plot readback
-probes, `MainWindow::installWasmPlotAcceptanceProbes()`); it is never part of desktop
-or production WASM behavior. `tests/wasm_scene3d_acceptance_probes.cpp` is its
-Scene3D counterpart, reading the view through `SceneViewTestAccess`. With
-`PJ_WASM_WITH_PYTHON` it also includes `tests/wasm_python_probe.inc` (the on-demand
-Python checks that the repo-root `tests/wasm/python.spec.js` asserts) and compiles
-`tests/wasm_python_stdlib_probe.cpp`, which walks what a strict script can reach and
-imports it from the stdlib zip.
+`tests/wasm_acceptance_probes.inc` is the acceptance-build-only observation and input bridge, included behind
+`PJ_WASM_ENABLE_INGRESS_PROBE` (with the plot readback probes, `MainWindow::installWasmPlotAcceptanceProbes()`); it is
+never part of desktop or production WASM behavior. `tests/wasm_scene3d_acceptance_probes.cpp` is its Scene3D
+counterpart. With `PJ_WASM_WITH_PYTHON` it also includes `tests/wasm_python_probe.inc` (asserted by the repo-root
+`tests/wasm/python.spec.js`) and compiles `tests/wasm_python_stdlib_probe.cpp`.
 
 ## MCP server
 
-AI agents read and drive a running PlotJuggler over the Model Context Protocol. External agents come in through
-the stdio bridge `--mcp-bridge` with the public token (on by default); toolbox plugins lease a private,
-agent-tools-only endpoint through `pj.mcp_endpoint.v1`. The browser build, which cannot listen, links out to an
-agent's relay instead (`McpBrowserLink`, `?mcp=`), and has neither bridge nor plugin endpoint. The design
-(tool sets, tokens and owners, lifetimes and revocation, discovery, the user-first rules, security, tests) is in
-[`docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md).
+AI agents read and drive a running PlotJuggler over the Model Context Protocol: external agents through the stdio
+bridge `--mcp-bridge` with the public token, toolbox plugins through a private, agent-tools-only endpoint
+(`pj.mcp_endpoint.v1`). The browser build cannot listen; it links out to an agent's relay (`McpBrowserLink`, `?mcp=`)
+and has neither bridge nor plugin endpoint. The design (tool sets, tokens and owners, jobs, lifetimes and revocation,
+discovery, the user-first rules, security, tests) is [`../../docs/MCP_SERVER.md`](../../docs/MCP_SERVER.md).
 
-What lives here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp` (desktop), `McpServer` (with
-`McpEndpointHost`, desktop), `McpBrowserLink`, `McpServerTools.cpp` (the app tools over `MainWindow`'s public "agent control" block). The
-agent tools come from `pj_runtime`'s `pj_agent_tools`. The shell's part of the teardown order:
-`~ToolboxPanelSession` resets `mcp_endpoint` after `handle` and before every service, and `~MainWindow` destroys
-the server right after `teardownAllToolboxes`.
+Here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp` (desktop), `McpServer` (with `McpEndpointHost`,
+desktop), `McpBrowserLink`, `McpServerTools.cpp` (app tools over `MainWindow`'s public "agent control" block),
+`McpUiTools` (`--mcp-ui-tools`), `ui/McpJobsDialog`. The agent tools come from `pj_runtime`'s `pj_agent_tools`. The
+shell's part of the teardown order: `~ToolboxPanelSession` resets `mcp_endpoint` after `handle` and before every
+service, and `~MainWindow` destroys the server right after `teardownAllToolboxes`.
 
 ## Concrete codecs behind runtime interfaces
 
-`pj_runtime` links no Scene2D library, so the shell supplies the concrete codecs the
-runtime reaches only through an interface. `SceneImageDecoder`
-(`src/SceneImageDecoder.h`, over Scene2D) implements `scripting::IImageDecoder`,
-which on-demand scripts decode through; `SceneVideoFrameSource`
-(`src/SceneVideoFrameSource.h`, over Scene2D and FFmpeg) implements
-`scripting::IVideoFrameSource`, which their `frame_at` reads. `MainWindow` hands them
-to `SessionManager::setImageDecoder` and `setVideoFrameSource`.
+`pj_runtime` links no Scene2D library, so the shell supplies the codecs the runtime reaches through interfaces:
+`SceneImageDecoder` (over Scene2D) implements `scripting::IImageDecoder`, which on-demand scripts decode through;
+`SceneVideoFrameSource` (over Scene2D and FFmpeg) implements `scripting::IVideoFrameSource`, which their `frame_at`
+reads. `MainWindow` hands them to `SessionManager::setImageDecoder` and `setVideoFrameSource`.
 
 ## Tests
 
-`pj_app_gui_tests` links `pj_app_shell` and `pj_resources` for GUI scenarios and
-runtime-backed controller and binder tests. `pj_app_unit_tests` compiles the
-Qt-only helpers directly, without the shell's dependency closure.
-`pj_app_media_codec_tests` compiles `SceneImageDecoder` and `SceneVideoFrameSource`
-over `pj_scene2d_core` alone (plain main, run from the source root for the tracked
-video fixture). The first two use `pj_add_test_runner` with the shared GUI main (see
-`cmake/PjTests.cmake`); `gtest_discover_tests` registers each case under its runner's
-name and launches it in a fresh process with a 120-second timeout. That process
-isolation is what keeps `MainWindow`'s process-global widget state from leaking
-between cases, so run these through ctest.
+`pj_app_gui_tests` links `pj_app_shell` and `pj_resources`; `pj_app_unit_tests` compiles the Qt-only helpers
+directly; `pj_app_media_codec_tests` compiles the two codecs over `pj_scene2d_core` alone (run from the source root
+for the tracked video fixture). The first two use `pj_add_test_runner` with the shared GUI main
+(`cmake/PjTests.cmake`): each case runs in a fresh process, which is what keeps `MainWindow`'s process-global widget
+state from leaking between cases, so run them through ctest. `tests/support/gui_test_env.cpp` registers the runner's
+OpenGL-disable environment once; file-local environments check the selected suite before changing process-wide state.
 
-`tests/support/gui_test_env.cpp` registers the shell runner's OpenGL-disable
-environment once. File-local environments preserve custom settings identities and
-slider theme ownership; they check the selected suite before changing process-wide
-state. The shared main owns the only `QApplication`.
+Suites with their own executable and ctest entry, and why:
 
-Suites that keep their own executable and ctest entry, and why:
+- `rhi_dock_lifecycle_test`, `rhi_mixed_dock_test`: `QRhiWidget`s in ADS docks through float/redock, split, tab
+  switch, sibling destruction, floating close and a DPR change, alone and mixed with the real plot, Scene3D and
+  Scene2D widgets. They need a real display (skip on `offscreen`) and register per backend plus a DPR-2 pass
+  (`RHI_BACKENDS DPR2` in `cmake/PjTests.cmake`). Their setup mirrors `main()`'s `AA_DontCreateNativeWidgetSiblings`;
+  see `../../pj_scene3D/docs/TECHNICAL_NOTES.md` "ADS and window-system quirks". The mixed suite's widgets come from
+  `tests/mixed_layout_fixture.h`, which `benchmarks/mixed_layout_benchmark.cpp` (`PJ_BUILD_DEMOS`) also uses.
+- `main_window_layout_exit_test`: its last case leaves an import parked for destructor-time shutdown, so suite order
+  and teardown are part of the test.
+- `main_window_layout_import_*_test` (lifecycle, alive, cancel, binder, e2e): import supersession, cancellation,
+  rollback and binding, each with its own mock-plugin path definition that must not reach other sources; the e2e
+  suite sandboxes HOME/XDG before `QApplication` and skips unless its `MCAP_CLOUD_E2E_*` environment is set.
+- `file_loader_test`, `source_promotion_host_test`, `headless_descriptor_provider_session_test`,
+  `layout_import_batch_test`: per-suite plugin-path definitions over the shared `pj_app_loader_testlib` object library
+  (the loader sources compile once).
+- `mcp_bridge_test` (Linux): runs the built `plotjuggler4 --mcp` offscreen and drives `--mcp-bridge` over stdio in a
+  private HOME/XDG sandbox. The in-process server cases are `McpServerTest` (GUI runner) and the gates
+  `McpHttpParsing`/`McpEnvelope` (unit runner).
+- `splash_meme_pool_test`: compiles `Splashscreen.cpp` standalone with `PJ_MEMES_SOURCE_DIR`.
+- `ExportedSymbolsGuard`: a script test, enabled where `nm` can inspect the executable's exported symbols.
 
-- `rhi_dock_lifecycle_test`: `QRhiWidget`s in ADS docks through float/redock, split,
-  tab switch, sibling destruction, floating-window close and a DPR change, plus the
-  mixed-API negative case. Needs a real display (it skips on `offscreen`) and is
-  registered on every backend of the platform plus `.opengl_dpr2.` (`RHI_BACKENDS
-  DPR2` in `cmake/PjTests.cmake`). Its setup mirrors `main()`'s
-  `AA_DontCreateNativeWidgetSiblings`; see `../../pj_scene3D/docs/TECHNICAL_NOTES.md`
-  section 5 (ADS and window-system quirks).
-- `rhi_mixed_dock_test`: the same matrix with the real widgets in one dock manager (a
-  `PlotWidget`, a Scene3D point cloud, a Scene2D image), each checked for its own
-  content at its pixel size, no QRhi warning, no resource left on a dying QRhi
-  (`QT_RHI_LEAK_CHECK`), and, through the widgets' test-hook lifecycle counters, a
-  re-initialize on every float and redock; the same docks added to a window first
-  shown without a GPU widget (`RhiMixedLateDockFixture`: Qt switches it to QRhi composition
-  without a bootstrap `QRhiWidget`) and a Scene2D dock built in place inside one (`RhiScene2DInPlaceTest`); plus the media viewer's failure state beside them. Registered like
-  `rhi_dock_lifecycle_test`; both share `tests/support/rhi_dock_test_support.h`. Its
-  widgets and data come from `tests/mixed_layout_fixture.h` (`pj_mixed_layout_fixture`,
-  public APIs only), which the `mixed_layout_benchmark` demo (`benchmarks/`,
-  `PJ_BUILD_DEMOS`) also uses.
-- `main_window_layout_exit_test`: the last case leaves an import parked for
-  destructor-time shutdown, so suite ordering and teardown are part of the test.
-- `main_window_layout_import_lifecycle_test`: ordered import supersession,
-  cancellation and rollback scenarios, with its own mock-plugin definition.
-- `main_window_layout_import_alive_test`: preserves the import lifetime through the
-  catalog-empty guard and completion drain.
-- `main_window_layout_import_cancel_test`: preserves mid-import cancellation and
-  restoration of the prior workspace.
-- `main_window_layout_import_binder_test`: its mock-plugin path definition is specific
-  to this suite; it must not propagate to other sources.
-- `main_window_layout_import_e2e_test`: installs a private HOME/XDG sandbox before
-  `QApplication` and uses the live cross-repository E2E harness (every scenario skips
-  unless its `MCAP_CLOUD_E2E_*` environment is present).
-- `file_loader_test`: four plugin-path definitions plus child-process shutdown and
-  teardown probes in `file_loader_shutdown_progress_test.cpp`.
-- `source_promotion_host_test`: only the mock file-source plugin path is defined.
-- `headless_descriptor_provider_session_test`: uses a static fake provider and no
-  plugin-path definitions; also covers provider quiescence on teardown.
-- `layout_import_batch_test`: desktop-only, with both the mock file-source and the
-  runtime host object-parser plugin paths.
-- `mcp_bridge_test` (Linux): runs the built `plotjuggler4 --mcp` offscreen and drives
-  `--mcp-bridge` over stdio under a private HOME/XDG sandbox: both eras, the forwarded
-  tool list, a load and a read, refused envelopes (deep nesting, an over-1 MiB line),
-  token, Origin and owner spoofing. `McpServerTest` (gui runner; the mock file, mock
-  layout stream and dialog-probe plugins) covers in process the held replies, the modal
-  gate, the agent-titled dialogs, the socket cap, export escaping and its row cap, the
-  empty-join refusal, a stop with an evaluation in flight and the Preferences switch;
-  `McpHttpParsing`/`McpEnvelope` (unit runner) the HTTP and JSON-RPC gates.
-- `splash_meme_pool_test` (`SplashMemePoolTest`): compiles `Splashscreen.cpp`
-  standalone with `PJ_MEMES_SOURCE_DIR` and the shipped resources.
+## Known gaps
 
-The loader suites (`file_loader_test`, `source_promotion_host_test`,
-`headless_descriptor_provider_session_test`, `layout_import_batch_test`) share the
-`pj_app_loader_testlib` object library, so the loader sources compile once while each
-binary keeps its own plugin-path definitions. `ExportedSymbolsGuard` is a script test,
-enabled when the platform and `nm` support inspecting the executable's exported
-symbols.
+- The title-bar ingest strip is wired but hidden (`kShowTitleBarIngestStrip`); its keep/discard prompt path is
+  exercised only when the flag is turned on.
+- `StreamingSourceManager` supports several sessions, but the left panel drives one active stream at a time.
+- A stream started after Record is pressed is not recorded (taps attach at capture start).
+- Streaming sources do not report through the load diagnostic sink.
+- A stream's layout record stores the plugin's configuration verbatim, credentials included.
+- The curve list does not mark pending items (an advertised placeholder before its first sample, an unresolved wire)
+  or scene views embedded in a toolbox panel as displayed.
+- Removing curves rebuilds the whole curve tree (`CurveListPanel::onCatalogItemsRemoved`); expansion and scroll are
+  restored, the selection is not.
+- `LeftPanel::restoreSourcesState` sets the streaming source combo and buffer scrubber with signals blocked, so after
+  a layout restore `StreamingSourceManager` still starts the source selected before the restore and keeps the old
+  retention window until the user touches either control (suspected from the code, not reproduced).
+- In-band embedded assets are not routed to Scene3D docks on load.
+- Restoring a layout whose `<pinned_toolboxes>` names a plugin that is missing or fails to bind goes through
+  `launchToolbox`'s error path, which opens a modal `MessageBox::warning` even in an unattended run (suspected from
+  the code, not reproduced).

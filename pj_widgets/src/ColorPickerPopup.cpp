@@ -26,10 +26,6 @@ constexpr auto kPopupMargin = theme::Space::Comfortable;
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// HueSlider
-// ---------------------------------------------------------------------------
-
 HueSlider::HueSlider(QWidget* parent) : QWidget(parent) {
   setFixedHeight(kHueSliderHeight);
   setCursor(Qt::PointingHandCursor);
@@ -97,10 +93,6 @@ void HueSlider::updateFromMouseX(int x) {
   emit hueChanged(hue_);
 }
 
-// ---------------------------------------------------------------------------
-// SVSquare
-// ---------------------------------------------------------------------------
-
 SVSquare::SVSquare(QWidget* parent) : QWidget(parent) {
   setMinimumSize(kSquareSide, kSquareSide);
   setCursor(Qt::CrossCursor);
@@ -136,9 +128,8 @@ void SVSquare::paintEvent(QPaintEvent* /*event*/) {
   const int w = width();
   const int h = height();
 
-  // Standard SV-square composition: pure hue background, white→transparent
-  // saturation gradient (left-to-right), transparent→black value gradient
-  // (top-to-bottom).
+  // Standard SV-square composition: pure hue background, a white-to-transparent saturation gradient (left to right) and
+  // a transparent-to-black value gradient (top to bottom).
   p.fillRect(rect(), QColor::fromHsv(hue_, 255, 255));
 
   QLinearGradient sat(0, 0, w, 0);
@@ -190,10 +181,6 @@ void SVSquare::updateFromMouseXY(int x, int y) {
   emit colorChanged(color());
 }
 
-// ---------------------------------------------------------------------------
-// ColorPickerPopup
-// ---------------------------------------------------------------------------
-
 ColorPickerPopup::ColorPickerPopup(QWidget* parent) : QDialog(parent) {
   setWindowFlags(Qt::Popup);
 
@@ -226,8 +213,8 @@ void ColorPickerPopup::setColor(const QColor& color) {
     return;
   }
   const qreal h = color.hsvHueF();
-  // Achromatic colors (black, white, grays) report hue == -1; preserve the
-  // previous hue so the picker doesn't snap to red on grayscale input.
+  // Achromatic colors (black, white, grays) report hue == -1: the previous hue is kept, so the picker does not snap to
+  // red on grayscale input.
   if (h >= 0) {
     hue_ = qBound(0, static_cast<int>(h * 360.0), 359);
   }

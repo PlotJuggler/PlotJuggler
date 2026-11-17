@@ -10,11 +10,9 @@
 
 namespace PJ {
 
-// QLayout that wraps items horizontally and breaks to a new row when
-// the next item would overflow the available width. Standard
-// implementation from the Qt FlowLayout example; used for tool strips
-// that need to stack vertically when the host column narrows enough
-// that only one item fits per row.
+// QLayout that wraps items horizontally and breaks to a new row when the next item would overflow the available width
+// (the Qt FlowLayout example). Used for tool strips that stack vertically when the host column narrows until one item
+// fits per row.
 class FlowLayout : public QLayout {
  public:
   explicit FlowLayout(QWidget* parent, int margin = -1, int h_spacing = -1, int v_spacing = -1);

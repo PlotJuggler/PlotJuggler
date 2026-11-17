@@ -1,21 +1,20 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// QRhi point-pass behaviour the golden corpus does not pin, rendered through the
-// real Scene3DDockWidget on every backend:
+// QRhi point-pass behaviour the golden corpus does not pin, rendered through the real Scene3DDockWidget on every
+// backend:
 //
-//  - the hexagon fan picks each cube's faces from its own centre (mirrored cubes
-//    cover equal areas) and keeps three distinctly lit faces;
-//  - the whole-cloud cube LOD: sub-pixel clouds become sprites in the cloud's own
-//    colour, near clouds stay fans;
+//  - the hexagon fan picks each cube's faces from its own centre (mirrored cubes cover equal areas) and keeps three
+//    distinctly lit faces;
+//  - the whole-cloud cube LOD: sub-pixel clouds become sprites in the cloud's own colour, near clouds stay fans;
 //  - sphere size follows 1/depth under perspective only;
-//  - faded out-of-range points neither vanish nor occlude in-range points behind
-//    them (the translucent half draws without depth writes), and opacity 0 culls;
+//  - faded out-of-range points neither vanish nor occlude in-range points behind them (the translucent half draws
+//    without depth writes), and opacity 0 culls;
 //  - signed 8-bit extrema keep their sign;
-//  - quads crossing the frustum edge keep their visible part, and a cube whose
-//    centre is off screen still draws what pokes in;
-//  - the pipeline registry the passes register with builds every variant from
-//    the whole description, and reports each failure with its severity.
+//  - quads crossing the frustum edge keep their visible part, and a cube whose centre is off screen still draws what
+//    pokes in;
+//  - the pipeline registry the passes register with builds every variant from the whole description, and reports each
+//    failure with its severity.
 //
 // Needs a real display like the render harness (see scene3d_render_test_support.h).
 
@@ -65,7 +64,6 @@ using DT = PJ::sdk::PointField::Datatype;
 
 constexpr QSize kViewSize{320, 240};
 
-// One dock with point-cloud layers configured through their persisted state.
 class PointScene {
  public:
   PJ::ObjectTopicId add(
@@ -86,7 +84,6 @@ class PointScene {
     return id;
   }
 
-  // Shows the window, presents a warm-up frame, then pins `camera`.
   SceneViewWidget* frame(const pj::scene3d::CameraState& camera, bool ortho = false) {
     PJ::Scene3DDockWidget* dock = fixture_.dock();
     for (int i = 0; i < 20 && dock->sceneView() == nullptr; ++i) {
@@ -156,7 +153,6 @@ QImage grab(SceneViewWidget& view) {
   return image;
 }
 
-// Pixels that differ from the empty scene.
 std::vector<QPoint> covered(const QImage& image, const QImage& empty, int threshold = 30) {
   std::vector<QPoint> out;
   for (int y = 0; y < image.height(); ++y) {
@@ -183,7 +179,6 @@ QColor meanOf(const QImage& image, const std::vector<QPoint>& pixels) {
   return QColor(static_cast<int>(r / n), static_cast<int>(g / n), static_cast<int>(b / n));
 }
 
-// The scene with every layer hidden: the backdrop to diff against.
 QImage emptyScene(PointScene& scene, SceneViewWidget& view) {
   for (const auto& info : scene.dock().layers()) {
     scene.dock().setLayerVisible(info.topic_id, false);
@@ -229,8 +224,7 @@ TEST_F(Scene3dRhiPointTest, FanPicksFacesPerCubeAndShadesThree) {
   EXPECT_NEAR(
       static_cast<double>(left.size()), static_cast<double>(right.size()), 0.02 * static_cast<double>(left.size()))
       << "mirrored cubes cover different areas: faces chosen per draw, not per cube";
-  // Face shades: every face is flat-lit, so three faces are three exact colours,
-  // each covering a good share of the cube (edges and silhouettes are the rest).
+  // Every face is flat-lit: three faces are three exact colours, each covering a good share of the cube.
   std::map<QRgb, int> shades;
   for (const QPoint& p : left) {
     ++shades[image.pixel(p)];
@@ -552,8 +546,6 @@ TEST_F(Scene3dRhiPointTest, FadedCubeInsideAnAxisSlabShowsNoBackFaces) {
 // the cube may draw (its interior is not a surface).
 TEST_F(Scene3dRhiPointTest, CameraInsideACubeDrawsNoInterior) {
   PointScene scene;
-  // A 4 m cube centred 1 m to the left: its +X and +Z faces are in view from
-  // the eye at (0, -1.5, 0).
   scene.add({{-1.0F, 0.0F, 0.0F}}, solid(u"cube"_s, u"size_meters"_s, u"4"_s));
   VIEW_OR_SKIP(view, scene.frame(frontCamera(1.5F, 0.0F)));
   const QImage image = grab(*view);
@@ -561,10 +553,7 @@ TEST_F(Scene3dRhiPointTest, CameraInsideACubeDrawsNoInterior) {
   EXPECT_EQ(covered(image, empty).size(), 0U) << "the cube's interior faces drew";
 }
 
-// ---- The pass against a PointRenderable of its own ----------------------------
-
-// A minimal cloud layer: its bounds are the finite extent of its vertices, as a
-// layer's conversion computes them.
+// A minimal cloud layer: its bounds are the finite extent of its vertices, as a layer's conversion computes them.
 class ScannedCloud : public pj::scene3d::PointRenderable {
  public:
   void set(const std::vector<pj::scene3d::PointVertex>& vertices) {
@@ -724,12 +713,10 @@ class OffscreenRhi {
         .pipelines = &registry_,
         .part = "point pipelines"};
   }
-  // Deletes the pipelines the pass registered, before its release().
+  // Deletes the pipelines the pass registered; call it before the pass's release().
   void releasePipelines() {
     registry_.clear();
   }
-  // One frame of the view's contract: admit, prepare, then an empty pass that
-  // consumes the uploads.
   void frame(pj::scene3d::PointRhiPass& pass) {
     QRhiCommandBuffer* command_buffer = nullptr;
     ASSERT_EQ(rhi_->beginOffscreenFrame(&command_buffer), QRhi::FrameOpSuccess);

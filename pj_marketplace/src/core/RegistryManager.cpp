@@ -42,16 +42,13 @@ void RegistryManager::fetchRegistry(const QUrl& url) {
   QNetworkReply* reply = network_->get(request);
   pending_reply_ = reply;
 
-  // Capture this call's own reply (not the shared member): a stale/aborted reply
-  // must not read or clear whatever pending_reply_ points at by the time its
-  // finished() fires.
+  // Capture this call's own reply, not the shared member: a stale reply must not read or clear whatever pending_reply_
+  // points at when its finished() fires.
   connect(reply, &QNetworkReply::finished, this, [this, reply]() {
     reply->deleteLater();
 
-    // If this is no longer the current request, it was aborted to start a fresh
-    // fetch (e.g. the user clicked Refresh again while one was in flight). That
-    // is a user-initiated cancellation, not a failure — ignore it silently so a
-    // re-fetch never surfaces a spurious "Failed to load registry".
+    // A reply that is no longer current was aborted to start a fresh fetch: ignore it, so a re-fetch does not surface a
+    // spurious failure.
     if (reply != pending_reply_ || reply->error() == QNetworkReply::OperationCanceledError) {
       return;
     }
@@ -92,10 +89,6 @@ Extension RegistryManager::findById(const QString& id) const {
   }
   return {};  // Default-constructed: id is empty, callers must check id.isEmpty()
 }
-
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
 
 bool RegistryManager::parseJson(const QByteArray& data) {
   // Reads a required string field; emits fetchError() and returns nullopt if missing.

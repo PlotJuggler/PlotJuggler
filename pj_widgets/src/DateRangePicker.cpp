@@ -58,20 +58,17 @@ constexpr int kNavChevronPx = 24;
 const QColor kFromHintColor(0x2e, 0xcc, 0x71);  // green
 const QColor kToHintColor(0xe7, 0x4c, 0x3c);    // red
 
-// The app persists its active theme to QSettings("StyleSheet::theme")
-// (Theme.cpp) — the same key the rest of pj_dialog_host (widget_binding.cpp)
-// reads. We key off it because the calendar paints from palette() roles, but
-// the app pins QPalette at Fusion defaults regardless of the active QSS theme,
-// so palette() resolves to Fusion light-grey on both themes. Sourcing colors
-// from theme tokens chosen by this key is the fix.
+// The app persists its active theme to QSettings("StyleSheet::theme") (Theme.cpp), the key the rest of pj_dialog_host
+// (widget_binding.cpp) reads. The calendar paints from palette() roles, but the app pins QPalette at Fusion defaults
+// whatever the active QSS theme, so palette() resolves to Fusion light-grey on both; colors come from theme tokens
+// chosen by this key instead.
 bool pickerThemeIsLight() {
   return appSetting(u"StyleSheet::theme"_s, u"light"_s).toString().contains("light"_L1);
 }
 
-// Theme-token color set for the calendar/overlay. Values mirror the app's QSS
-// tokens (light / dark) so the picker reads correctly on both themes. The
-// semantic accents (weekend red, from-green, to-red, white-on-endpoint) stay
-// hardcoded at their call sites — they are theme-agnostic by design.
+// Theme-token color set of the calendar and overlay; the values mirror the app's QSS tokens (light and dark). The
+// semantic accents (weekend red, from-green, to-red, white-on-endpoint) stay hardcoded at their call sites: they are
+// theme-agnostic by design.
 struct PickerTokens {
   QColor surface;          // calendar body + overlay background
   QColor text;             // month/year title, day numbers
@@ -103,10 +100,9 @@ PickerTokens pickerTokens() {
   return t;
 }
 
-// Recolor a monochrome icon SVG to the active theme's ink. Local copy of
-// widget_binding.cpp::recolorSvgInk (kept local because pj_widgets/SvgUtil.h is
-// not on this module's include path): swaps #3D3D3D<->#E0E0E0 so the icon
-// authored for one theme renders in the other's ink, plus legacy black/white.
+// Recolors a monochrome icon SVG to the active theme's ink: swaps #3D3D3D and #E0E0E0, so an icon authored for one
+// theme renders in the other's ink, plus legacy black and white. Duplicates PJ::recolorSvgInk (SvgUtil.h), which this
+// file does not include.
 void recolorSvgInk(QByteArray& svg_data, bool light_theme) {
   const QByteArray ink = light_theme ? QByteArray("#3D3D3D") : QByteArray("#E0E0E0");
   const QByteArray opposite = light_theme ? QByteArray("#E0E0E0") : QByteArray("#3D3D3D");
@@ -129,10 +125,9 @@ void recolorSvgInk(QByteArray& svg_data, bool light_theme) {
   svg_data.insert(tag_end, " fill=\"" + ink + "\"");
 }
 
-// Rasterize already-prepared SVG bytes into a px-logical QIcon at size*DPR so it
-// stays crisp on HiDPI. Callers own the theming/recoloring of `svg_data`; this is
-// the shared QSvgRenderer + DPR-scaling tail behind both icon paths below (and
-// mirrors widget_binding.cpp's render path).
+// Rasterizes prepared SVG bytes into a px-logical QIcon at size * DPR, crisp on HiDPI. Callers own the theming of
+// `svg_data`; this is the QSvgRenderer and DPR-scaling tail shared by both icon paths below. pj_dialog_host's
+// widget_binding.cpp has its own copy of this tail (pj_widgets cannot depend on it): change both together.
 QIcon rasterizeSvgIcon(const QByteArray& svg_data, int px) {
   QSvgRenderer renderer(svg_data);
   if (!renderer.isValid()) {
@@ -161,13 +156,10 @@ QIcon renderThemedIcon(const QString& resource_path, int px = 16) {
   return rasterizeSvgIcon(svg_data, px);
 }
 
-// Render one of the app's Material chevron SVGs (keyboard_arrow_left/right),
-// recolored to `color`, into a px*DPR QIcon. The source path's own fill is
-// irrelevant — we always load the "_light" variant and swap its #3D3D3D fill for
-// `color` (theme ink for the resting state, the from/to hint colors when active).
-// Cached by (direction, color, px): updateNavButtons() re-applies icons on every
-// hovered-date change, so without the cache each mouse move would re-parse + raster
-// four SVGs.
+// Renders one of the Material chevron SVGs (keyboard_arrow_left or right), recolored to `color`, into a px * DPR QIcon.
+// The "_light" variant is always loaded and its #3D3D3D fill swapped for `color` (theme ink at rest, the from and to
+// hint colors when active). Cached by (direction, color, px): updateNavButtons() re-applies icons on every hovered-date
+// change, so without the cache each mouse move would re-parse and rasterize four SVGs.
 QIcon renderChevronIcon(bool left, const QColor& color, int px) {
   static QHash<QString, QIcon> cache;
   // Key on HexRgb to match the recolor below (color.name() drops alpha), so the
@@ -193,10 +185,6 @@ QIcon renderChevronIcon(bool left, const QColor& color, int px) {
 }
 
 }  // namespace
-
-// ===========================================================================
-// CalendarWidget
-// ===========================================================================
 
 CalendarWidget::CalendarWidget(QWidget* parent)
     : QWidget(parent), year_(QDate::currentDate().year()), month_(QDate::currentDate().month()) {
@@ -278,10 +266,9 @@ void CalendarWidget::paintEvent(QPaintEvent* /*event*/) {
   QPainter p(this);
   p.setRenderHint(QPainter::Antialiasing);
 
-  // Source colors from the active theme's tokens instead of palette() roles:
-  // the app pins QPalette at Fusion defaults regardless of the QSS theme, so
-  // palette() would resolve to Fusion light-grey on both themes. pickerTokens()
-  // picks the right light/dark shades off the persisted "StyleSheet::theme" key.
+  // Colors come from the active theme's tokens, not palette() roles: the app pins QPalette at Fusion defaults whatever
+  // the QSS theme, so palette() would be Fusion light-grey on both. pickerTokens() picks the light or dark shades off
+  // the persisted "StyleSheet::theme" key.
   const PickerTokens tok = pickerTokens();
   p.fillRect(rect(), tok.surface);
 
@@ -289,9 +276,8 @@ void CalendarWidget::paintEvent(QPaintEvent* /*event*/) {
   int cell_w = width() / kCols;
   int fm_h = fontMetrics().height();
 
-  // Day name headers only; the month/year lives in RangeCalendarWidget's header
-  // controls, so this grid is intentionally title-less — do NOT paint an
-  // "MMMM yyyy" title here (it would overdraw the weekday row / calendar).
+  // Day-name headers only: the month and year live in RangeCalendarWidget's header controls, so this grid is
+  // title-less. Do not paint an "MMMM yyyy" title here: it would overdraw the weekday row.
 
   // Day name headers
   p.setFont(font());
@@ -474,10 +460,6 @@ void CalendarWidget::leaveEvent(QEvent* event) {
   }
 }
 
-// ===========================================================================
-// TimePickerWidget
-// ===========================================================================
-
 TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
   // TWO rows ("From time:" / "To time:") so the captions + fields fit the
   // overlay width.
@@ -493,9 +475,8 @@ TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
     cap_font.setWeight(QFont::DemiBold);
     cap->setFont(cap_font);
     date_label = new QLabel("---");
-    // App Blender-style scrubbers (drag / arrows / double-click edit) for the
-    // native input chrome. HEIGHT comes from the app QSS (#PickerOverlay
-    // PJ--ScrubberBase → 26px) so the rows match the dialog's other inputs.
+    // Blender-style scrubbers (drag, arrows, double-click edit) for the native input chrome. The height comes from the
+    // app QSS (#PickerOverlay PJ--ScrubberBase), so the rows match the dialog's other inputs.
     hour = new IntScrubber;
     hour->setRange(0, 23);  // 24-hour clock
     hour->setFixedWidth(56);
@@ -520,9 +501,8 @@ TimePickerWidget::TimePickerWidget(QWidget* parent) : QWidget(parent) {
   to_hour_->setValue(23);  // ... to 23:59
   to_minute_->setValue(59);
 
-  // editingFinished (not valueChanged): it fires when a gesture SETTLES —
-  // drag release, arrow/autorepeat burst end, committed edit — so the range
-  // filter is not re-emitted on every intermediate scrub step.
+  // editingFinished, not valueChanged: it fires when a gesture settles (drag release, end of an arrow autorepeat burst,
+  // committed edit), so the range filter is not re-emitted on every intermediate scrub step.
   auto emit_changed = [this]() { emit timeChanged(); };
   connect(from_hour_, &ScrubberBase::editingFinished, this, emit_changed);
   connect(from_minute_, &ScrubberBase::editingFinished, this, emit_changed);
@@ -545,10 +525,6 @@ QTime TimePickerWidget::fromTime() const {
 QTime TimePickerWidget::toTime() const {
   return QTime(to_hour_->value(), to_minute_->value());
 }
-
-// ===========================================================================
-// RangeCalendarWidget
-// ===========================================================================
 
 namespace {
 // Signed month comparison. Returns 0 for an invalid date.
@@ -583,9 +559,8 @@ RangeCalendarWidget::RangeCalendarWidget(QWidget* parent)
   max_year_ = year_;
   min_year_ = max_year_ - 6;  // widened by setYearSpan / on-demand by setMonth
 
-  // Flat icon buttons carrying the big themed chevrons (28x28 to match the rest
-  // of the chrome's icon buttons); syncHeaderControls() re-inks them per the
-  // direction-hint state.
+  // Flat icon buttons carrying the large themed chevrons (28x28, as the chrome's other icon buttons);
+  // syncHeaderControls() re-inks them by the direction-hint state.
   const QSize btn_size(28, 28);
   const QColor ink = pickerTokens().text;
   auto setup_nav = [&](QPushButton* b, bool left) {
@@ -698,8 +673,8 @@ void RangeCalendarWidget::setExternalRange(const QDate& from, const QDate& to) {
 }
 
 void RangeCalendarWidget::retheme() {
-  // Reset the hint gate: the signature is unchanged on a theme toggle but the
-  // resting INK color is not — without this the skip keeps the old theme's ink.
+  // Resets the hint gate: the signature is unchanged on a theme toggle but the resting ink color is not, and the skip
+  // would keep the old theme's ink.
   last_hint_sig_ = -1;
   syncHeaderControls();  // re-inks the chevrons via renderChevronIcon(pickerTokens().text)
   calendar_->update();
@@ -741,11 +716,10 @@ void RangeCalendarWidget::syncHeaderControls() {
     }
   }
 
-  // Direction hint: color a chevron green/red when clicking it would move
-  // toward the range start/end (currently outside the visible month); resting
-  // state is the theme ink. Skip the setIcon calls when nothing changed —
-  // broadcastState runs on every hover move, and an unconditional setIcon
-  // repaints both buttons per mouse move for no visual difference.
+  // Direction hint: a chevron is colored green or red when clicking it would move toward the range start or end
+  // (currently outside the visible month); the resting state is the theme ink. The setIcon calls are skipped when
+  // nothing changed: broadcastState runs on every hover move, and an unconditional setIcon repaints both buttons per
+  // mouse move for no visual change.
   const QColor ink = pickerTokens().text;
   const int from_cmp = monthCmp(range_from_, year_, month_);
   const int to_cmp = monthCmp(range_to_, year_, month_);
@@ -808,25 +782,19 @@ void RangeCalendarWidget::broadcastState() {
   }
 }
 
-// ===========================================================================
-// DateRangePicker
-// ===========================================================================
-
 DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   auto* main_layout = new QVBoxLayout(this);
   main_layout->setContentsMargins(0, 0, 0, 0);
-  // Match the host column's 2px row spacing: without this the preset-row -> date-row
-  // gap uses Qt's larger default, so the spacing between the preset buttons and the
-  // from/to fields reads bigger than the gaps to the header above / table below.
+  // Matches the host column's 2px row spacing: otherwise the preset-row to date-row gap uses Qt's larger default, so
+  // the spacing between the preset buttons and the from/to fields reads bigger than the gaps above and below.
   main_layout->setSpacing(2);
 
   auto* preset_row = new QHBoxLayout;
   preset_group_ = new QButtonGroup(this);
   preset_group_->setExclusive(true);
 
-  // Fixed-width, left-aligned preset buttons (they used to stretch across the
-  // panel); "Custom" is its own button leading the from/to row below, aligned
-  // under "All", instead of the old shape-shifting All/Custom label.
+  // Fixed-width, left-aligned preset buttons; "Custom" is its own button leading the from/to row below, aligned under
+  // "All".
   constexpr int kPresetButtonWidth = 100;
   auto make_preset = [&](int id, const QString& text) -> QPushButton* {
     auto* btn = new QPushButton(text);
@@ -868,8 +836,7 @@ DateRangePicker::DateRangePicker(QWidget* parent) : QWidget(parent) {
   // 28x28 button with a 24px icon to match the panel's other icon buttons
   // (refresh / search / regex toggles).
   calendar_button_->setFixedSize(28, 28);
-  // Themed "Calendar Month" icon (recolored to the active theme's ink); the
-  // icon stays static — toggleCalendar() no longer swaps a glyph.
+  // Themed "Calendar Month" icon (recolored to the active theme's ink); static, toggleCalendar() does not swap a glyph.
   calendar_button_->setIcon(renderThemedIcon(u":/resources/svg/calendar_month.svg"_s, 24));
   calendar_button_->setIconSize(QSize(24, 24));
   date_row->addWidget(from_edit_, 1);
@@ -904,7 +871,7 @@ void DateRangePicker::setLatestDate(const QDate& date) {
 
 void DateRangePicker::showEvent(QShowEvent* event) {
   QWidget::showEvent(event);
-  // Default the "to" placeholder to today only when no latest hint was pushed.
+  // The "to" placeholder defaults to today only when no latest hint was pushed.
   if (to_edit_->placeholderText().isEmpty()) {
     to_edit_->setPlaceholderText(QDate::currentDate().toString("dd/MM/yyyy"));
   }
@@ -915,9 +882,8 @@ void DateRangePicker::showEvent(QShowEvent* event) {
     // Clicks on the overlay's dead space (captions, margins) must release the
     // focus a time spin box is holding — see CalendarWidget's ClickFocus twin.
     overlay_->setFocusPolicy(Qt::ClickFocus);
-    // Drop shadow so the popup visibly floats over the busy tables beneath it.
-    // It re-renders the overlay per repaint, which is cheap (hover repaints
-    // touch only the calendar grid).
+    // Drop shadow, so the popup visibly floats over the busy tables beneath it. It re-renders the overlay per repaint,
+    // which is cheap (hover repaints touch only the calendar grid).
     auto* shadow = new QGraphicsDropShadowEffect(overlay_);
     shadow->setBlurRadius(24);
     shadow->setOffset(0, 4);
@@ -930,11 +896,9 @@ void DateRangePicker::showEvent(QShowEvent* event) {
     overlay_layout->addWidget(range_calendar_);
     time_picker_ = new TimePickerWidget;
     overlay_layout->addWidget(time_picker_);
-    // Explicit dismiss affordance: an app-consistent X in the overlay's
-    // top-right corner (close-button.svg — the same glyph the app's other
-    // dismissables use). Selections apply live, so it just hides the overlay.
-    // It floats above the layout (positioned in repositionOverlay); the
-    // layout's top margin reserves its strip so nothing collides with it.
+    // Explicit dismiss affordance: a close X (close-button.svg, as the app's other dismissables) in the overlay's
+    // top-right corner. Selections apply live, so it only hides the overlay. It floats above the layout (positioned in
+    // repositionOverlay); the layout's top margin reserves its strip so nothing collides with it.
     overlay_layout->setContentsMargins(9, 26, 9, 9);
     overlay_close_ = new SvgButton(u":/resources/svg/close-button.svg"_s, SvgButton::Size::kDefault, overlay_);
     overlay_close_->setObjectName("PickerCloseX");
@@ -956,13 +920,11 @@ void DateRangePicker::showEvent(QShowEvent* event) {
 }
 
 void DateRangePicker::changeEvent(QEvent* event) {
-  // Re-theme on a live theme toggle. Both StyleChange and PaletteChange are
-  // handled: the app pins QPalette but a theme swap can still arrive as either,
-  // so cover both. The calendars/overlay paint from pickerTokens() (keyed off
-  // the persisted theme), so we re-apply the overlay stylesheet, re-render the
-  // button icon in the new ink, and force a repaint of the overlay subtree
-  // (it lives under window(), not under this widget, so it won't repaint on its
-  // own from a change event delivered here).
+  // Re-themes on a live theme toggle. StyleChange and PaletteChange are both handled: the app pins QPalette, but a
+  // theme swap can still arrive as either. The calendars and overlay paint from pickerTokens() (keyed off the persisted
+  // theme), so the overlay stylesheet is re-applied, the button icon re-rendered in the new ink, and a repaint of the
+  // overlay subtree forced (it lives under window(), not under this widget, so a change event delivered here does not
+  // repaint it).
   if (event->type() == QEvent::StyleChange || event->type() == QEvent::PaletteChange) {
     updateOverlayStyle();
     if (calendar_button_) {
@@ -989,11 +951,9 @@ void DateRangePicker::updateOverlayStyle() {
   if (!overlay_) {
     return;
   }
-  // Drive the overlay popup from the theme tokens so it matches the active QSS
-  // theme (background = dark_background, 1px solid border_default), with
-  // square corners. palette()
-  // can't be used here: the app pins QPalette at Fusion defaults regardless of
-  // theme, so it would resolve to Fusion light-grey on both.
+  // The overlay popup is driven from the theme tokens, so it matches the active QSS theme (background dark_background,
+  // 1px solid border_default), with square corners. palette() cannot be used: the app pins QPalette at Fusion defaults
+  // whatever the theme, so it would be Fusion light-grey on both.
   const PickerTokens tok = pickerTokens();
   overlay_->setStyleSheet(u"QWidget#PickerOverlay { background-color: %1; border: 1px solid %2; }"_s.arg(
       tok.surface.name(), tok.border.name()));
@@ -1019,9 +979,8 @@ void DateRangePicker::repositionOverlay() {
   if (!overlay_ || !calendar_button_) {
     return;
   }
-  // Force a layout pass BEFORE reading sizeHint: on the very first open the
-  // overlay's layout hasn't activated yet, so the hint under-reports and the
-  // grid/time row came up clipped until the next reposition.
+  // A layout pass is forced before reading sizeHint: on the first open the overlay's layout has not activated, so the
+  // hint under-reports and the grid and time row came up clipped until the next reposition.
   if (overlay_->layout()) {
     overlay_->layout()->activate();
   }
@@ -1160,11 +1119,10 @@ void DateRangePicker::onCalendarRangeCommitted(const QDate& from, const QDate& t
 }
 
 void DateRangePicker::onCalendarRangePreview(const QDate& from, const QDate& to) {
-  // Preview updates the from/to FIELDS only. It must NOT emit the filter:
-  // filterChanged reaches the plugin as dateRangeChanged, which invalidates its
-  // sequence view — a full re-filter + table re-delivery of the whole catalog
-  // (24k rows) PER MOUSE MOVE, throttling the hover preview to ~1-2 Hz. The
-  // filter goes out once, on commit (onCalendarRangeCommitted).
+  // Preview updates the from and to fields only; it must not emit the filter. filterChanged reaches the plugin as
+  // dateRangeChanged, which invalidates its sequence view: a full re-filter and table re-delivery of the whole catalog
+  // (24k rows) per mouse move, throttling the hover preview to ~1-2 Hz. The filter goes out once, on commit
+  // (onCalendarRangeCommitted).
   updateFieldsFromPreset(from, to);
 }
 

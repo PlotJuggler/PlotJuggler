@@ -18,9 +18,9 @@
 #include "pj_scripting/object_script.h"
 #include "pj_scripting/video_frame_source.h"
 
-// One run's media state (docs/derived_objects/ARCHITECTURE.md §6): the injected decoder and video source, the image
-// and video inputs the run read, the pixels and frames it decoded, and the pairing of the annotations it makes.
-// Luau-free, so the Luau and Python binders share it. One per run, on the run's thread.
+// One run's media state (docs/derived_objects/ARCHITECTURE.md "Types and bindings"): the injected decoder and video
+// source, the image and video inputs the run read, the pixels and frames it decoded, and the pairing of the
+// annotations it makes. Luau-free, so the Luau and Python binders share it. One per run, on the run's thread.
 
 namespace PJ::scripting {
 

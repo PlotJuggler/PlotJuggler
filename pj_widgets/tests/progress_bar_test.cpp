@@ -11,11 +11,9 @@
 
 namespace {
 
-// The whole reason PJ::ProgressBar exists is to expose a `PJ--ProgressBar`
-// QSS selector. QSS type selectors match on metaObject()->className(), so if
-// Q_OBJECT were ever dropped this would silently fall back to "QProgressBar"
-// and the bespoke style would stop applying. Pin the class name so that
-// regression is a red test, not an unnoticed visual change.
+// PJ::ProgressBar exists to expose a `PJ--ProgressBar` QSS selector. QSS type selectors match on
+// metaObject()->className(), so a dropped Q_OBJECT would silently fall back to "QProgressBar" and the style would stop
+// applying: the class name is pinned.
 TEST(ProgressBarTest, ClassNameDrivesQssSelector) {
   PJ::ProgressBar bar;
   EXPECT_STREQ(bar.metaObject()->className(), "PJ::ProgressBar");

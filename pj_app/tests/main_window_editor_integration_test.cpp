@@ -1,11 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// The Custom Topics editor through MainWindow (the host half of slice 13): the toolbox whose manifest declares the
-// `custom_topics_editor` capability is the editor, the panel's "+" opens it, and the scene view its preview frame asks
-// for is embedded in its panel with the requested topic attached, and a curve-tree drop onto the panel hands the plugin
-// names it can address. The toolbox is a test fixture (custom_topics_editor_fixture.cpp), staged into the extensions
-// directory before the window scans it.
+// The Custom Topics editor through MainWindow: the toolbox whose manifest declares the `custom_topics_editor`
+// capability is the editor, the panel's "+" opens it, its preview frame's scene view is embedded with the requested
+// topic attached, and a curve-tree drop onto the panel hands the plugin names it can address. The toolbox is a test
+// fixture (custom_topics_editor_fixture.cpp), staged into the extensions directory before the window scans it.
 
 #include <gtest/gtest.h>
 
@@ -76,8 +75,8 @@ QToolButton* addCustomButton(PJ::MainWindow& window) {
   return panel != nullptr ? panel->findChild<QToolButton*>(u"buttonAddCustom"_s) : nullptr;
 }
 
-// GAP-45's plugin-visible half: "+" launches the declared editor, and the `scene_view` of its preview frame is a 3D
-// scene embedded in that frame, showing the topic it names.
+// "+" launches the declared editor, and the `scene_view` of its preview frame is a 3D scene embedded in that frame,
+// showing the topic it names.
 TEST(MainWindowEditorIntegrationTest, PlusOpensTheDeclaredEditorAndItsPreviewEmbedsAScene) {
 #ifndef PJ_WITH_SCENE3D
   GTEST_SKIP() << "this build embeds no 3D scene view";

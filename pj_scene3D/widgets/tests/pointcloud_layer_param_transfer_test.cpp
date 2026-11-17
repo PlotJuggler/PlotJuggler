@@ -1,13 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Integration test for the copy/paste/apply-to-family feature: the generic
-// serializeLayerParams/applyLayerParams pair (pj_scene_common) must round-trip
-// EVERY user-tunable parameter between two real PointCloudLayers. This is the
-// exact data path the Scene3DConfigPanel toolbar drives — copy serializes one
-// layer's params, paste/apply-to-family feed that blob into other same-family
-// layers. Verifying with the real layer (not a fake) also pins that
-// PointCloudLayer::xmlSaveState/xmlLoadState cover the whole param set.
+// Copy/paste/apply-to-family: the generic serializeLayerParams/applyLayerParams pair (pj_scene_common) must round-trip
+// EVERY user-tunable parameter between two real PointCloudLayers, the data path the Scene3DConfigPanel toolbar drives
+// (copy serializes one layer's params, paste/apply-to-family feed the blob into other same-family layers). Using the
+// real layer also pins that PointCloudLayer::xmlSaveState/xmlLoadState cover the whole param set.
 
 #include <gtest/gtest.h>
 
@@ -56,7 +53,6 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
   ASSERT_FALSE(xml.isEmpty());
   ASSERT_TRUE(PJ::applyLayerParams(dst, xml));
 
-  // Every user-tunable parameter transferred to the target layer.
   EXPECT_EQ(dst.shape(), src.shape());
   EXPECT_FLOAT_EQ(dst.sizeMeters(), src.sizeMeters());
   // Point size is fractional (the spinbox offers 0.5 steps and gl_PointSize is a
@@ -73,8 +69,6 @@ TEST(PointCloudLayerParamTransfer, SerializeApplyRoundTripsEveryParamBetweenReal
   EXPECT_FLOAT_EQ(dst.manualRangeMin(), src.manualRangeMin());
   EXPECT_FLOAT_EQ(dst.manualRangeMax(), src.manualRangeMax());
 
-  // Strongest check: dst now serializes byte-identically to src — the exact blob
-  // copy/paste and apply-to-family hand around.
   EXPECT_EQ(PJ::serializeLayerParams(dst), xml);
 }
 

@@ -13,11 +13,11 @@
 
 #include "pj_base/builtin/builtin_object.hpp"
 
-// The object half of the Python on-demand binding (docs/derived_objects/ARCHITECTURE.md §6, §14), the twin of
-// object_binder.h over the same native operations: objects as read-only views over their SDK field tables (a list is a
-// lazy sequence read through `list_at`, an int64 field a Python int), the point-cloud, image and decoded-pixel methods,
-// the `pj.scene` / `pj.annotations` / `pj.cloud` / `pj.voxels` builders and `pj.tf`. The surface is
-// python_object_script.h's.
+// The object half of the Python on-demand binding (docs/derived_objects/ARCHITECTURE.md "Types and bindings",
+// "Scripting languages"), the twin of object_binder.h over the same native operations: objects as read-only views over
+// their SDK field tables (a list is a lazy sequence read through `list_at`, an int64 field a Python int), the
+// point-cloud, image and decoded-pixel methods, the `pj.scene` / `pj.annotations` / `pj.cloud` / `pj.voxels` builders
+// and `pj.tf`. The surface is python_object_script.h's.
 //
 // Every operation that walks the data runs without the GIL: it reads only C++ state the call's arguments keep alive.
 // The types are plain CPython types, registered once per process: they have no constructor, take no attribute and

@@ -1,10 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Reproducible CPU benchmark for W14's browser point-cloud hot path. It runs
-// the shared canonical decoder and then assembles the same 20-byte retained
-// vertex shape used by the QRhi layer. No Qt, GL, parser, or file I/O is in the
-// timed region.
+// CPU benchmark of the browser point-cloud hot path: the shared canonical decoder, then assembly of a 20-byte vertex
+// (xyz, scalar, rgba), the benchmark's own retained shape (the layer keeps 12- or 16-byte records). No Qt, GL, parser
+// or file I/O in the timed region.
 
 #include <algorithm>
 #include <chrono>

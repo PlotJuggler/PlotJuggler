@@ -1,10 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Model-path tests for SceneEntitiesLayer (ModelPrimitive / glTF meshes):
-// stateful entity replay (replace-by-id, deletions, lifetime expiry) and the
-// TF × pose × scale draw-call composition. The marker path is covered by
-// marker_geometry_test and the render harness.
+// Model-path tests for SceneEntitiesLayer (ModelPrimitive / glTF meshes): stateful entity replay (replace-by-id,
+// deletions, lifetime expiry) and the TF x pose x scale draw-call composition.
 
 #include <gtest/gtest.h>
 
@@ -45,19 +43,15 @@ namespace {
 
 using namespace pj::scene3d::test;
 
-// Counts parseObject invocations so a test can prove forward playback parses each
-// stored batch O(1) times (incremental) rather than O(history) per frame.
+// Counts parseObject calls: forward playback must parse each stored batch O(1) times.
 std::atomic<int> g_parse_count{0};
 
-// Rebind-test parse counters. vtableWithCreate() requires a non-capturing create
-// function, so the counting parsers reach these via file scope.
+// Rebind-test parse counters: vtableWithCreate() needs a non-capturing create function, so the counting parsers reach
+// them via file scope.
 std::atomic<int> g_first_scene_parser_calls{0};
 std::atomic<int> g_second_scene_parser_calls{0};
 
-// Object-construction body shared by every scene-entities mock parser in this
-// file: deserialize the payload into a SceneEntities batch and wrap it as an
-// ObjectRecord with no per-record timestamp (the store entry timestamp governs).
-// The per-parse counter bump is supplied by CountingObjectParser, not here.
+// Shared by the mock parsers: the store entry timestamp governs, so the record carries none.
 PJ::Expected<PJ::sdk::ObjectRecord> emitSceneEntities(PJ::Timestamp /*ts*/, PJ::sdk::PayloadView payload) {
   auto decoded = PJ::deserializeSceneEntities(payload.bytes.data(), payload.bytes.size());
   if (!decoded.has_value()) {
@@ -143,9 +137,8 @@ void expectMatrixNear(const glm::mat4& actual, const glm::mat4& expected) {
   }
 }
 
-// Point default-constructed QSettings (which the layer's remote-fetch gate
-// reads) at a throwaway INI file under a temp dir, so these tests neither read
-// nor pollute the developer's real settings.
+// Points the default-constructed QSettings (read by the layer's remote-fetch gate) at a throwaway INI file, so tests
+// neither read nor pollute the developer's settings.
 void isolateSettings() {
   static QTemporaryDir settings_dir;
   ASSERT_TRUE(settings_dir.isValid());
@@ -170,13 +163,10 @@ PJ::sdk::SceneEntity makeUrlEntity(std::string id, PJ::Timestamp timestamp, std:
 
 }  // namespace
 
-// Resolve-before-memo regression: an unchanged active batch must skip on
-// metadata alone WITHOUT resolving payload bytes — a resolve is a cold refetch
-// (file read + whole-chunk decompress on the GUI thread) once the
-// ResidentPayloadPool has evicted the entry's seed. The store's warm latestAt
-// cache would mask a redundant resolve, so it is reset via an out-of-order push
-// stamped ABOVE the playhead (below it, the model path's retroactive-ingest
-// guard would legitimately rebuild and re-resolve).
+// An unchanged active batch must skip on metadata alone WITHOUT resolving payload bytes: a resolve is a cold refetch
+// (file read + whole-chunk decompress on the GUI thread) once the ResidentPayloadPool has evicted the entry's seed. The
+// store's warm latestAt cache would mask a redundant resolve, so it is reset via an out-of-order push stamped ABOVE
+// the playhead (below it, the model path's retroactive-ingest guard would legitimately rebuild and re-resolve).
 TEST(SceneEntitiesLayerModelTest, UnchangedActiveBatchDoesNotResolvePayload) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -271,11 +261,9 @@ TEST(SceneEntitiesLayerModelTest, LifetimeDropsEntityAfterExpiry) {
   EXPECT_TRUE(layer.currentEntities().empty());
 }
 
-// The dual-clock regression guard. Under live streaming the ObjectStore entry is
-// host-stamped (tracker clock) while entity.timestamp keeps the sensor epoch; expiry
-// must anchor on the ingest timestamp, not entity.timestamp — otherwise a finite
-// lifetime expires the instant the entity is folded (the bug that hid the streamed car
-// mesh). Pre-fix this failed at the FIRST assert: 1000 + 50 = 1050 < 1'000'040.
+// Dual clocks: under live streaming the store entry is host-stamped (tracker clock) while entity.timestamp keeps the
+// sensor epoch; expiry must anchor on the ingest timestamp, or a finite lifetime expires the instant the entity is
+// folded (1000 + 50 < 1'000'040).
 TEST(SceneEntitiesLayerModelTest, LifetimeAnchorsOnStoreTimeNotEntityTimestamp) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -295,10 +283,8 @@ TEST(SceneEntitiesLayerModelTest, LifetimeAnchorsOnStoreTimeNotEntityTimestamp) 
   EXPECT_TRUE(layer.currentEntities().empty());
 }
 
-// Guards CachedSnapshot::store_ns: a backward scrub rebuilds the entity map by re-folding
-// decoded batches from the cache (no re-parse), and must restore each entity's ingest-time
-// anchor from store_ns. If the anchor were not cached, the re-fold would fall back to a
-// wrong epoch and "keep" (anchored at store_ts 2000 ⇒ expires 2100) would vanish at 2060.
+// CachedSnapshot::store_ns: a backward scrub re-folds decoded batches from the cache (no re-parse) and must restore
+// each entity's ingest-time anchor, or "keep" (anchored at store_ts 2000, expires 2100) would vanish at 2060.
 TEST(SceneEntitiesLayerModelTest, CacheHitReFoldRestoresStoreAnchor) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -326,8 +312,7 @@ TEST(SceneEntitiesLayerModelTest, CacheHitReFoldRestoresStoreAnchor) {
   EXPECT_EQ(layer.currentEntities().count("keep"), 0u);
 }
 
-// lifetime_ns == 0 is the SceneEntity contract's "persist until replaced/deleted"
-// sentinel: the entity must survive arbitrarily far past its anchor.
+// lifetime_ns == 0 is the SceneEntity contract's "persist until replaced/deleted" sentinel.
 TEST(SceneEntitiesLayerModelTest, ZeroLifetimeNeverExpires) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -344,8 +329,8 @@ TEST(SceneEntitiesLayerModelTest, ZeroLifetimeNeverExpires) {
   EXPECT_EQ(layer.currentEntities().count("forever"), 1u);
 }
 
-// A negative lifetime_ns means the entity is already past expiry at its anchor; the
-// overflow-safe branch must drop it for any tracker time at-or-after the anchor.
+// A negative lifetime_ns is already expired at its anchor: the overflow-safe branch drops it for any tracker time at or
+// after the anchor.
 TEST(SceneEntitiesLayerModelTest, NegativeLifetimeExpiresImmediately) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -362,10 +347,8 @@ TEST(SceneEntitiesLayerModelTest, NegativeLifetimeExpiresImmediately) {
   EXPECT_TRUE(layer.currentEntities().empty());
 }
 
-// The fix re-anchored EXPIRY on the ingest timestamp but deliberately left DELETION
-// gating on entity.timestamp (deletions carry sensor-epoch stamps). This pins that
-// asymmetry: a future "make it consistent" refactor that switched the gate to the anchor
-// would wrongly erase "survivor" (anchor 1400 <= 1500) and fail here.
+// Expiry anchors on the ingest timestamp but DELETION gating stays on entity.timestamp (deletions carry sensor-epoch
+// stamps): switching the gate to the anchor would wrongly erase "survivor" (anchor 1400 <= 1500).
 TEST(SceneEntitiesLayerModelTest, MatchingIdDeletionGateUsesEntityTimestampNotAnchor) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -393,9 +376,8 @@ TEST(SceneEntitiesLayerModelTest, MatchingIdDeletionGateUsesEntityTimestampNotAn
   EXPECT_EQ(layer.currentEntities().count("survivor"), 1u);  // entity.ts 1600 > 1500 ⇒ survives (anchor 1400 unused)
 }
 
-// The lockstep invariant under churn: deleting an entity drops its anchor (eraseEntity),
-// and re-adding it writes a FRESH anchor (applySnapshot upsert). A stale anchor (100) would
-// expire "blink" at 1100 and lose it by 5500; the refreshed anchor (5000) keeps it to 6000.
+// Deleting an entity drops its anchor (eraseEntity) and re-adding writes a FRESH one (applySnapshot upsert): a stale
+// anchor (100) would expire "blink" at 1100, the refreshed one (5000) keeps it to 6000.
 TEST(SceneEntitiesLayerModelTest, ReAddAfterDeletionRefreshesAnchor) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -423,11 +405,9 @@ TEST(SceneEntitiesLayerModelTest, ReAddAfterDeletionRefreshesAnchor) {
   EXPECT_TRUE(layer.currentEntities().empty());
 }
 
-// Forward playback folds only newly-appended batches (incremental) instead of
-// re-parsing the whole history every frame. This must produce exactly the same
-// entity state a full rebuild does — across replace-by-id, deletions, and new
-// entities. Layer A steps forward (incremental); layer B overshoots then scrubs
-// back (forcing a genuine full rebuild at the same playhead); the two must match.
+// Forward playback folds only newly appended batches and must produce exactly the entity state a full rebuild does
+// across replace-by-id, deletions and new entities: layer A steps forward, layer B overshoots then scrubs back (a full
+// rebuild at the same playhead).
 TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -450,7 +430,6 @@ TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
     return out;
   };
 
-  // A: forward stepping → each step folds only the freshly-appended batch.
   pj::scene3d::SceneEntitiesLayer incremental_layer(topic_id, u"/scene_entities"_s);
   const auto ctx_a = makeContext(session);
   ASSERT_TRUE(incremental_layer.attach(ctx_a));
@@ -459,7 +438,6 @@ TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
   }
   const auto incremental = snapshot(incremental_layer);
 
-  // B: overshoot to 60, then scrub back to 45 → backward jump forces a full rebuild.
   pj::scene3d::SceneEntitiesLayer full_layer(topic_id, u"/scene_entities"_s);
   const auto ctx_b = makeContext(session);
   ASSERT_TRUE(full_layer.attach(ctx_b));
@@ -468,18 +446,15 @@ TEST(SceneEntitiesLayerModelTest, IncrementalForwardReplayMatchesFullRebuild) {
   const auto full = snapshot(full_layer);
 
   EXPECT_EQ(incremental, full);
-  // Non-tautological: the folded state is the expected one.
   EXPECT_EQ(incremental.count("ped"), 0u) << "matching-id deletion not applied incrementally";
   ASSERT_EQ(incremental.count("car"), 1u);
   EXPECT_EQ(incremental.at("car").second, "new_frame") << "replace-by-id not applied incrementally";
   EXPECT_EQ(incremental.count("truck"), 1u) << "later-appended entity missed incrementally";
 }
 
-// Perf guard: a backward jump must re-fold entities from the decoded-batch cache
-// WITHOUT re-parsing the history (the re-parse of heavy embedded models is what
-// made big backward scrubs hitch). After playing forward to the end (which caches
-// every batch), jumping back must add ~no model parses — only renderAt's single
-// marker decode for the newly-active batch.
+// A backward jump re-folds entities from the decoded-batch cache WITHOUT re-parsing the history (heavy embedded models
+// would hitch big backward scrubs): after playing forward to the end, jumping back adds ~no model parses, only
+// renderAt's single marker decode for the newly active batch.
 TEST(SceneEntitiesLayerModelTest, BackwardJumpRefoldsFromCacheWithoutReparsing) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -500,19 +475,16 @@ TEST(SceneEntitiesLayerModelTest, BackwardJumpRefoldsFromCacheWithoutReparsing) 
   g_parse_count.store(0, std::memory_order_relaxed);
   layer.setTrackerTime(PJ::fromRaw(55));  // big jump back → full rebuild, but all batches are cached
 
-  // Mid-history state is correct (5 entities: e0..e4 at ts 10..50).
   EXPECT_EQ(layer.currentEntities().size(), 5u);
   const int parses = g_parse_count.load(std::memory_order_relaxed);
-  // Cache hits ⇒ the rebuild re-parses nothing; only renderAt decodes the one
-  // newly-active marker batch. Without the cache this would be ~5 model re-parses.
+  // Cache hits: the rebuild re-parses nothing; only renderAt decodes the newly active marker batch (~5 model re-parses
+  // without the cache).
   EXPECT_LE(parses, 2) << "backward jump re-parsed the history instead of using the cache; got " << parses;
 }
 
-// Perf guard: forward playback must parse each stored batch ~once (incremental),
-// not re-parse the whole history every step. With N entries stepped through one by
-// one, the old full-rebuild-per-frame path did ~N*(N+1)/2 parses; the incremental
-// path does ~N. We assert the total stays linear (<= 2N) — a regression to the
-// quadratic behavior (which pegged the CPU on heavy embedded models) would blow well past it.
+// Forward playback must parse each stored batch ~once (incremental), not re-parse the whole history every step:
+// stepping through N entries, a full rebuild per frame costs ~N*(N+1)/2 parses and the incremental path ~N. The total
+// must stay linear (<= 2N).
 TEST(SceneEntitiesLayerModelTest, ForwardPlaybackParsesEachBatchAboutOnce) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -554,10 +526,9 @@ TEST(SceneEntitiesLayerModelTest, ForwardReplayKeepsApplyingAfterRetentionRenumb
   layer.setTrackerTime(PJ::fromRaw(35));
   EXPECT_EQ(layer.currentEntities().count("e30"), 1u);
 
-  // Retention evicts the first store entry, so current deque indices renumber:
-  // uid 2 becomes index 0, uid 3 index 1, uid 4 index 2. The replay cursor must
-  // still notice and apply uid 4 instead of comparing the old index 2 to the new
-  // latest index 2 and skipping it.
+  // Retention evicts the first store entry, so deque indices renumber (uid 2 becomes index 0, ..., uid 4 index 2): the
+  // replay cursor must still apply uid 4 instead of comparing the old index 2 to the new latest index 2 and skipping
+  // it.
   pushSceneEntities(session, topic_id, 40, batchWithEntities({makeEntity("e40", 40)}));
   ASSERT_EQ(session.objectStore().entryCount(topic_id), 3u);
 
@@ -585,14 +556,10 @@ TEST(SceneEntitiesLayerModelTest, SameTimestampAppendStillAdvancesBySequentialUi
       << "same-timestamp append must not be skipped by a time-only replay guard";
 }
 
-// Regression (out-of-order ingest): once the ObjectStore accepts a late snapshot
-// whose timestamp lands BEFORE an already-stored newer one, UID(arrival) order
-// diverges from timestamp order. applyEntriesAfter bounds its replay by
-// `uid <= latestAt(t)->uid`, using the UID as a stand-in for "timestamp <= t" —
-// the exact assumption out-of-order ingest breaks (the same class the occupancy
-// layer fixed via maxUidAtOrBefore/rangeByTime). It has two symptoms, both pinned
-// here: a FUTURE snapshot leaks in, and the out-of-order (older) snapshot is
-// dropped once a newer entry becomes the cursor target.
+// Out-of-order ingest: a late snapshot stamped BEFORE an already-stored newer one makes UID (arrival) order diverge
+// from timestamp order, while applyEntriesAfter bounds its replay by `uid <= latestAt(t)->uid` as a stand-in for
+// "timestamp <= t" (as in the occupancy layer: maxUidAtOrBefore/rangeByTime). Pinned: a FUTURE snapshot must not leak
+// in, and the out-of-order older snapshot must not be dropped once a newer entry becomes the cursor target.
 TEST(SceneEntitiesLayerModelTest, OutOfOrderSnapshotReplayHonorsTimestampNotArrivalUid) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -604,9 +571,9 @@ TEST(SceneEntitiesLayerModelTest, OutOfOrderSnapshotReplayHonorsTimestampNotArri
   pushSceneEntities(session, topic_id, 200, batchWithEntities({makeEntity("c", 200)}));
   ASSERT_EQ(session.objectStore().entryCount(topic_id), 3u);
 
-  // At t=250 the snapshots whose timestamp is <= 250 are {a, c}; b@300 is in the
-  // future and must NOT be shown. Pre-fix: latestAt(250) resolves to c (the OOO
-  // entry, which holds the LARGEST UID), so the walk `uid <= c.uid` also folds b.
+  // At t=250 the snapshots with timestamp <= 250 are {a, c}; b@300 is in the future and must NOT be shown
+  // (latestAt(250) resolves to c, the out-of-order entry with the LARGEST UID, so a `uid <= c.uid` walk would also fold
+  // b).
   {
     pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
     const auto ctx = makeContext(session);
@@ -617,9 +584,8 @@ TEST(SceneEntitiesLayerModelTest, OutOfOrderSnapshotReplayHonorsTimestampNotArri
     EXPECT_EQ(layer.currentEntities().count("b"), 0u) << "future snapshot @300 leaked into the state at t=250";
   }
 
-  // At t=400 all three snapshots (timestamp <= 400) must be present. Pre-fix:
-  // latestAt(400) resolves to b, whose UID is SMALLER than c's, so the walk
-  // `uid <= b.uid` stops before c and the out-of-order @200 snapshot is dropped.
+  // At t=400 all three must be present (latestAt(400) resolves to b, whose UID is SMALLER than c's, so a `uid <= b.uid`
+  // walk would stop before c and drop the out-of-order @200 snapshot).
   {
     pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
     const auto ctx = makeContext(session);
@@ -631,9 +597,8 @@ TEST(SceneEntitiesLayerModelTest, OutOfOrderSnapshotReplayHonorsTimestampNotArri
   }
 }
 
-// UID allocation is process-global, so another topic's pushes leave large gaps in
-// the scene topic's UID sequence. The timestamp-window fold (rangeByTime) must be
-// unaffected by those gaps, and the result identical to the dense-UID case in both
+// UID allocation is process-global: another topic's pushes leave gaps in this topic's UID sequence. The
+// timestamp-window fold (rangeByTime) must be unaffected, with a result identical to the dense-UID case in both
 // directions.
 TEST(SceneEntitiesLayerModelTest, ReplayStepsSparseUidsFromInterleavedTopics) {
   PJ::SessionManager session;
@@ -666,10 +631,9 @@ TEST(SceneEntitiesLayerModelTest, ReplayStepsSparseUidsFromInterleavedTopics) {
   EXPECT_EQ(layer.currentEntities().count("e0"), 1u);
 }
 
-// Scrubbing within one batch's time window keeps the same active marker batch,
-// so renderAt's UID guard skips its per-tick repaint. A lifetime expiry changes
-// the model state anyway and must request its own frame, or the dead entity
-// lingers on screen until some other layer repaints.
+// Scrubbing within one batch's time window keeps the same active marker batch, so renderAt's UID guard skips its
+// per-tick repaint. A lifetime expiry changes the model state anyway and must request its own frame, or the dead
+// entity lingers on screen until some other layer repaints.
 TEST(SceneEntitiesLayerModelTest, LifetimeExpiryWithinSameBatchRequestsRepaint) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -692,14 +656,10 @@ TEST(SceneEntitiesLayerModelTest, LifetimeExpiryWithinSameBatchRequestsRepaint) 
   EXPECT_GT(repaints, 0) << "lifetime expiry did not request a repaint";
 }
 
-// A dataset reload (SessionManager::replaceDataset) swaps the store generation
-// in place and re-attaches layers WITHOUT an intervening detach(). attach()
-// must reset every prior-generation replay/bootstrap artifact: stale
-// time-range / source-frame / replay-cursor state must neither leak out of the
-// layer's accessors nor anchor/skip the new generation's replay. Regression:
-// without the reset, a reload that left the topic empty (streaming reload
-// before the first new message) kept reporting the OLD dataset's time range
-// and source frame.
+// A dataset reload (SessionManager::replaceDataset) swaps the store generation in place and re-attaches layers WITHOUT
+// a detach(). attach() must reset every prior-generation replay/bootstrap artifact: stale time-range, source-frame and
+// replay-cursor state must neither leak out of the accessors nor anchor or skip the new generation's replay (a reload
+// that left the topic empty would keep reporting the OLD dataset's time range and source frame).
 TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsStaleState) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -714,9 +674,8 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   ASSERT_EQ(PJ::toRaw(layer.timeRange().min), 10);
   ASSERT_EQ(layer.sourceFrame(), u"old_frame"_s);
 
-  // Reload: stage the same topic name EMPTY (the new generation's first message
-  // has not arrived yet) and run the real in-place replace. The primary
-  // ObjectTopicId stays stable; the old entries are gone.
+  // Reload: stage the same topic name EMPTY (the new generation's first message has not arrived) and run the real
+  // in-place replace; the ObjectTopicId stays stable, the old entries are gone.
   PJ::DataEngine staged_engine;
   PJ::ObjectStore staged_store;
   auto staged_topic = staged_store.registerTopic(
@@ -731,8 +690,7 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   session.replaceDataset(staged_engine, staged_store, /*staged_id=*/2, /*primary_id=*/1, std::move(staged_parsers));
   ASSERT_EQ(session.objectStore().entryCount(topic_id), 0u);
 
-  // Re-attach without detach (the reload path). Nothing of the previous
-  // generation may survive: empty time range, frames, and entity state.
+  // Re-attach without detach (the reload path): nothing of the previous generation may survive.
   ASSERT_TRUE(layer.attach(ctx));
   const auto empty_range = layer.timeRange();
   EXPECT_GT(empty_range.min, empty_range.max) << "stale time range leaked across re-attach";
@@ -740,8 +698,7 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   EXPECT_TRUE(layer.fallbackFrames().isEmpty()) << "stale fallback frames leaked across re-attach";
   EXPECT_TRUE(layer.currentEntities().empty());
 
-  // The new generation's first message arrives: the layer must rebuild from it
-  // rather than trust any prior-generation cursor.
+  // The new generation's first message arrives: the layer must rebuild from it, not trust a prior-generation cursor.
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("new_car", 10, "new_frame")}));
   layer.setTrackerTime(PJ::fromRaw(15));
   EXPECT_EQ(layer.currentEntities().count("new_car"), 1u) << "new-generation entry skipped after re-attach";
@@ -749,36 +706,28 @@ TEST(SceneEntitiesLayerModelTest, DetachlessReattachAfterDatasetReplaceResetsSta
   EXPECT_EQ(layer.sourceFrame(), u"new_frame"_s);
 }
 
-// Regression (L.23): attach() must seed the initial decode when the topic's
-// first sample sits at store timestamp 0 (ROS sim time commonly starts at t=0).
-// The old `ts_first_ != 0` sentinel conflated "no data" with a legitimate t=0
-// first sample, so the model state was never built at attach and the entity was
-// invisible until the next scrub. Presence is now tracked via std::optional, so
-// a t=0 first sample is seeded just like any other.
+// attach() must seed the initial decode when the topic's first sample sits at store timestamp 0 (ROS sim time commonly
+// starts at t=0): "no data" is tracked by std::optional, not a `ts_first_ != 0` sentinel, so a t=0 first sample is
+// seeded like any other.
 TEST(SceneEntitiesLayerModelTest, AttachSeedsFirstSampleAtTimestampZero) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id);
-  // Store timestamp 0 — the first (and only) sample lands exactly at the epoch.
   pushSceneEntities(session, topic_id, 0, batchWithEntities({makeEntity("sim_car", 0, "base_link")}));
 
   pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
   const auto ctx = makeContext(session);
   ASSERT_TRUE(layer.attach(ctx));
 
-  // No setTrackerTime() yet: attach() alone must have built the model state at
-  // t=0, so the entity is present immediately.
+  // No setTrackerTime() yet: attach() alone must have built the model state at t=0.
   ASSERT_EQ(layer.currentEntities().count("sim_car"), 1u)
       << "attach() skipped the t=0 first sample (0 treated as a 'no data' sentinel)";
   EXPECT_EQ(layer.sourceFrame(), u"base_link"_s);
 }
 
-// Regression: a finished async ModelPrimitive mesh load must itself request the
-// repaint that consumes it (QFutureWatcher -> pollMeshLoads). The app paints
-// strictly on demand, so before the fix the result was only drained inside
-// render() and the placeholder cube lingered until the user scrubbed. After
-// attach() kicks the load, only the event loop is pumped here — no render() or
-// setTrackerTime() — and repaintRequested must still fire.
+// A finished async ModelPrimitive mesh load must itself request the repaint that consumes it (QFutureWatcher ->
+// pollMeshLoads): the app paints strictly on demand, so a result drained only inside render() would leave the
+// placeholder cube until the user scrubbed. Only the event loop is pumped after attach() kicks the load.
 TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -827,8 +776,8 @@ TEST(SceneEntitiesLayerModelTest, RapidModelReplacementStaysWithinImportBound) {
       << "superseded imports never settled";
 }
 
-// The layer hands the view a FRAME-LOCAL draw (frame_id + pose ×
-// scale); the view applies TF. Applying TF here too would double-transform.
+// The layer hands the view a FRAME-LOCAL draw (frame_id + pose x scale); the view applies TF, so applying it here too
+// would double-transform.
 TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
@@ -866,12 +815,10 @@ TEST(SceneEntitiesLayerModelTest, ModelDrawCallIsFrameLocalPoseAndScale) {
   EXPECT_NEAR(draws.front().override_color.a, 102.0f / 255.0f, 1e-6f);
 }
 
-// H.8: a DATA-SUPPLIED http(s) model URL must not be fetched without the
-// explicit opt-in (QSettings pj_scene3d/allow_remote_model_fetch, default off):
-// opening a crafted dataset is an SSRF / beacon vector. The block must be
-// recorded once (no per-tick re-check), surfaced through remoteFetchNotice(),
-// and produce zero network egress — proven by a local listener that would see
-// any connection attempt.
+// A DATA-SUPPLIED http(s) model URL must not be fetched when the opt-in is off (QSettings
+// pj_scene3d/allow_remote_model_fetch = false; the default is on): a crafted dataset would be an SSRF / beacon vector.
+// The block is recorded once (no per-tick re-check), surfaced through remoteFetchNotice(), and produces zero network
+// egress, proven by a local listener that would see any connection attempt.
 TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
   isolateSettings();
   QSettings settings;
@@ -903,7 +850,6 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
   EXPECT_TRUE(layer.remoteFetchNotice().contains("allow_remote_model_fetch"_L1));
   EXPECT_EQ(notice_from_signal, layer.remoteFetchNotice()) << "notice signal did not track the accessor";
 
-  // Pump: even an asynchronous fetch would have to open a socket toward us.
   QElapsedTimer timer;
   timer.start();
   while (timer.elapsed() < 300) {
@@ -912,10 +858,9 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsBlockedWithoutOptIn) {
   EXPECT_EQ(connections, 0) << "blocked model URL still produced network egress";
 }
 
-// Counterpart of the consent gate: LOCAL model URLs (file:// or bare paths) are
-// disk reads, not network egress, so they keep working with the opt-in off —
-// now asynchronously (fetch + import resolve through the event loop and request
-// their own repaint, never blocking attach()/render()).
+// LOCAL model URLs (file:// or bare paths) are disk reads, not network egress, so they keep working with the opt-in
+// off, asynchronously: fetch and import resolve through the event loop and request their own repaint, never blocking
+// attach()/render().
 TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
   isolateSettings();
   QSettings settings;
@@ -948,12 +893,10 @@ TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
       << "local file URL tripped the remote gate: " << layer.remoteFetchNotice().toStdString();
 }
 
-// A local-file fetch's completion is queued at fetch() time. Superseding its
-// model aborts the fetcher, and destroying the layer before the event loop runs
-// must take that queued completion with it: the callback captures the layer.
-// The steps run without pumping events in between; an application event filter
-// then reports any delivery that still reaches a fetcher (under ASan, the
-// delivery itself is the use-after-free).
+// A local-file fetch's completion is queued at fetch() time. Superseding its model aborts the fetcher, and destroying
+// the layer before the event loop runs must take that queued completion with it (the callback captures the layer).
+// The steps run without pumping events in between; an application event filter then reports any delivery that still
+// reaches a fetcher (under ASan, the delivery itself is the use-after-free).
 TEST(SceneEntitiesLayerModelTest, AbortedFetchCompletionDiesWithTheLayer) {
   isolateSettings();
   PJ::SessionManager session;
@@ -990,12 +933,10 @@ TEST(SceneEntitiesLayerModelTest, AbortedFetchCompletionDiesWithTheLayer) {
   EXPECT_EQ(deliveries.count, 0) << "an aborted fetcher outlived its layer and delivered its completion";
 }
 
-// A URL record exists BEFORE its bytes do (pending fetch, future default-
-// invalid). pollMeshLoads — driven here by a sibling embedded-data record's
-// completion watcher — must skip the pending record instead of calling
-// result() on an invalid future (which would crash). The remote URL points at
-// a never-responding local server, so the record is guaranteed still pending
-// when the embedded record drains.
+// A URL record exists BEFORE its bytes do (pending fetch, default-constructed invalid future). pollMeshLoads, driven
+// here by a sibling embedded-data record's completion watcher, must skip the pending record instead of calling result()
+// on an invalid future (a crash). The remote URL points at a never-responding local server, so the record is still
+// pending when the embedded record drains.
 TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
   isolateSettings();
   QSettings settings;
@@ -1020,8 +961,6 @@ TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
   int repaints = 0;
   QObject::connect(&layer, &pj::scene3d::SceneEntitiesLayer::repaintRequested, [&repaints] { ++repaints; });
 
-  // The embedded record's watcher fires pollMeshLoads while the URL record is
-  // still future-less; surviving that poll (and emitting the repaint) is the test.
   QElapsedTimer timer;
   timer.start();
   while (repaints == 0 && timer.elapsed() < 5000) {
@@ -1034,9 +973,8 @@ TEST(SceneEntitiesLayerModelTest, PendingUrlFetchRecordIsSkippedByPoll) {
   settings.sync();
 }
 
-// Default policy is ON: a data-supplied http(s) model URL is fetched without any
-// opt-in (the consent gate is now opt-OUT). Proven by a local listener that sees
-// the connection attempt, and by the notice NOT reporting a policy block.
+// The default policy is ON: a data-supplied http(s) model URL is fetched without an opt-in. Proven by a local listener
+// that sees the connection attempt, and by the notice NOT reporting a policy block.
 TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
   isolateSettings();
   QSettings settings;
@@ -1070,16 +1008,14 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
   EXPECT_GT(connections, 0) << "default policy should attempt the remote model fetch";
 }
 
-// A failed remote fetch reports the offending URL and the underlying error in
-// the notice (the config-widget status surface) — not a bare "see the log" count.
+// A failed remote fetch reports the offending URL and the underlying error in the notice, not a bare count.
 TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) {
   isolateSettings();
   QSettings settings;
   settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, true);
   settings.sync();
 
-  // Bind then release a port so the connection is refused immediately (fast,
-  // deterministic — no 15 s transfer-timeout wait).
+  // Bind then release a port: the connection is refused at once (no 15 s transfer-timeout wait).
   quint16 port = 0;
   {
     QTcpServer probe;
@@ -1117,9 +1053,8 @@ TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) 
   settings.sync();
 }
 
-// A model whose bytes load but fail to PARSE (assimp rejects them) must also
-// surface — today the notice ignores parse failures, leaving a silent grey cube.
-// makeEntity embeds a 4-byte "glTF" stub that is not a valid GLB.
+// A model whose bytes load but fail to PARSE (assimp rejects them) must also surface in the notice, not leave a silent
+// grey cube. makeEntity embeds a 4-byte "glTF" stub that is not a valid GLB.
 TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
   isolateSettings();
   PJ::SessionManager session;
@@ -1139,9 +1074,8 @@ TEST(SceneEntitiesLayerModelTest, EmbeddedModelParseFailureSurfacesInNotice) {
   EXPECT_TRUE(layer.remoteFetchNotice().contains("Failed to load model"_L1)) << layer.remoteFetchNotice().toStdString();
 }
 
-// Deleting the entity that owns a failed model clears its load notice: the
-// mesh-load record is pruned with the entity, so a stale "Failed to fetch" line
-// (and the row warning it drives) does not linger after the marker is gone.
+// Deleting the entity that owns a failed model prunes its mesh-load record, so the stale "Failed to fetch" line (and
+// the row warning it drives) does not linger.
 TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   isolateSettings();
   QSettings settings;
@@ -1185,11 +1119,9 @@ TEST(SceneEntitiesLayerModelTest, DeletingEntityClearsItsModelLoadNotice) {
   settings.sync();
 }
 
-// Contract pin (sibling of RobotModelLayerTest.ReloadSwapsParserWithoutTouchingStaleOne):
-// SceneEntitiesLayer already resolves the parser binding per use (renderAt /
-// rebuildModelStateAt fetch parserBindingForObjectTopic), so a same-file reload
-// that re-registers the topic's parser slot must transparently rebind. This
-// passes today and gates against a regression to a cached raw pointer.
+// Contract pin (sibling of RobotModelLayerTest.ReloadSwapsParserWithoutTouchingStaleOne): SceneEntitiesLayer resolves
+// the parser binding per use (renderAt / rebuildModelStateAt), so a same-file reload that re-registers the topic's
+// parser slot must transparently rebind; gates against a regression to a cached raw pointer.
 TEST(SceneEntitiesLayerModelTest, ReloadSwapsParserWithoutTouchingStaleOne) {
   g_first_scene_parser_calls.store(0, std::memory_order_relaxed);
   g_second_scene_parser_calls.store(0, std::memory_order_relaxed);
@@ -1210,13 +1142,12 @@ TEST(SceneEntitiesLayerModelTest, ReloadSwapsParserWithoutTouchingStaleOne) {
   ASSERT_EQ(layer.currentEntities().count("car"), 1u);
   EXPECT_GE(g_first_scene_parser_calls.load(std::memory_order_relaxed), 1);
 
-  // Keep the first parser's memory readable so a stale-pointer regression would
-  // be a deterministic wrong-parser hit rather than UB.
+  // Keep the first parser's memory readable so a stale-pointer regression is a deterministic wrong-parser hit, not UB.
   const auto stale_guard = session.parserKeepaliveForObjectTopic(topic_id);
   ASSERT_NE(stale_guard, nullptr);
 
-  // Reload: re-register the topic's parser under its stable id and push a new
-  // sample. The next tracker tick must decode through the new parser.
+  // Reload: re-register the topic's parser under its stable id and push a new sample; the next tick must decode through
+  // the new parser.
   session.registerObjectTopicParser(topic_id, makeBoundHandle("scene_entities", []() noexcept -> void* {
                                       return new CountingObjectParser(
                                           "scene_entities", PJ::sdk::BuiltinObjectType::kSceneEntities,
@@ -1234,25 +1165,19 @@ TEST(SceneEntitiesLayerModelTest, ReloadSwapsParserWithoutTouchingStaleOne) {
   EXPECT_EQ(layer.currentEntities().count("truck"), 1u);
 }
 
-// Regression (H.7): a single batch containing a kAll deletion PLUS replacement
-// entities at the same timestamp must leave those entities present. The SDK
-// contract says deletions remove PRIOR entities; Foxglove uses this pattern
-// ("DELETEALL then ADD in one message") as the canonical scene republish.
-// Before the fix, applySnapshot() upserted entities first so the kAll deletion
-// (deletion.timestamp == entity.timestamp → `<=` matches) erased the just-added
-// entities, leaving the model path with nothing to draw.
+// A single batch with a kAll deletion PLUS replacement entities at the same timestamp must leave those entities
+// present. The SDK contract says deletions remove PRIOR entities, and Foxglove uses "DELETEALL then ADD in one message"
+// as the canonical republish; upserting first would let the kAll deletion (deletion.timestamp == entity.timestamp, `<=`
+// matches) erase the just-added entities.
 TEST(SceneEntitiesLayerModelTest, DeleteAllPlusEntitiesInSameBatchLeavesEntitiesPresent) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id);
 
-  // Batch 0: two prior-generation entities at t=10.
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("prior_a", 10), makeEntity("prior_b", 10)}));
 
-  // Batch 1 at t=20: kAll deletion (ts=20) + two replacement entities (ts=20).
-  // All timestamps are identical — this is the canonical DELETEALL+re-add
-  // republish pattern that the `deletion.timestamp <= entity.timestamp` gate
-  // was incorrectly matching after the old upsert-first order.
+  // Batch 1 at t=20: kAll deletion (ts=20) + two replacement entities (ts=20), the canonical DELETEALL+re-add
+  // republish.
   PJ::sdk::SceneEntityDeletion kall;
   kall.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
   kall.timestamp_ns = 20;
@@ -1267,7 +1192,6 @@ TEST(SceneEntitiesLayerModelTest, DeleteAllPlusEntitiesInSameBatchLeavesEntities
   ASSERT_TRUE(layer.attach(ctx));
   layer.setTrackerTime(PJ::fromRaw(25));
 
-  // Prior entities must be gone; replacement entities must survive.
   EXPECT_EQ(layer.currentEntities().count("prior_a"), 0u) << "prior entity leaked past kAll deletion";
   EXPECT_EQ(layer.currentEntities().count("prior_b"), 0u) << "prior entity leaked past kAll deletion";
   EXPECT_EQ(layer.currentEntities().count("new_a"), 1u) << "same-batch replacement entity was deleted";
@@ -1275,18 +1199,14 @@ TEST(SceneEntitiesLayerModelTest, DeleteAllPlusEntitiesInSameBatchLeavesEntities
   EXPECT_EQ(layer.currentEntities().size(), 2u);
 }
 
-// Regression (H.7) second pin: a kAll deletion in batch N+1 must still erase
-// batch N's entities (verifies the reorder did not break ordinary cross-batch
-// deletion, which was already correct before the fix).
+// A kAll deletion in batch N+1 must still erase batch N's entities (ordinary cross-batch deletion).
 TEST(SceneEntitiesLayerModelTest, CrossBatchDeleteAllErasesOlderBatchEntities) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id);
 
-  // Batch 0 at t=10: two entities.
   pushSceneEntities(session, topic_id, 10, batchWithEntities({makeEntity("e0", 10), makeEntity("e1", 10)}));
 
-  // Batch 1 at t=20: kAll deletion only (no replacement entities).
   PJ::sdk::SceneEntityDeletion kall;
   kall.type = PJ::sdk::SceneEntityDeletion::Type::kAll;
   kall.timestamp_ns = 20;
@@ -1300,17 +1220,16 @@ TEST(SceneEntitiesLayerModelTest, CrossBatchDeleteAllErasesOlderBatchEntities) {
   EXPECT_TRUE(layer.currentEntities().empty()) << "kAll deletion in a subsequent batch did not erase earlier entities";
 }
 
-// The shared main supplies the event loop for QFutureWatcher/UrlFetcher, and the
-// QCoreApplication must die BEFORE exit handlers run — QtNetwork (loaded by the
-// layer's UrlFetcher) registers global cleanup that a function-local-static app
+// The shared main supplies the event loop for QFutureWatcher/UrlFetcher, and the QCoreApplication must die BEFORE exit
+// handlers run: QtNetwork (loaded by the layer's UrlFetcher) registers global cleanup that a function-local-static app
 // would outlive, crashing at exit (pj_marketplace's download_manager_test pattern).
 namespace {
 
 class SceneEntitiesModelEnvironment : public ::testing::Environment {
  public:
   void SetUp() override {
-    // The layer's UrlFetcher builds a QNetworkDiskCache; point it at a throwaway dir
-    // (auto-removed at exit) so these tests never write into the real ~/.local/share.
+    // The layer's UrlFetcher builds a QNetworkDiskCache: point it at a throwaway dir (auto-removed at exit) so tests
+    // never write into the real ~/.local/share.
     static QTemporaryDir model_cache_dir;
     qputenv("PJ_MODEL_CACHE_DIR", (model_cache_dir.path() + u"/models"_s).toUtf8());
   }

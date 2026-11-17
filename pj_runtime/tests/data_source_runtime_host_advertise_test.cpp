@@ -1,25 +1,17 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// M5 host wiring: DataSourceRuntimeHost::notify_available_topics.
+// DataSourceRuntimeHost::notify_available_topics, the two load-bearing contracts of the advertise path:
+//   (a) the vtable slot can be invoked from a non-GUI thread with no crash, and on_available_topics fires on that same
+//       (calling) thread: the host does no marshaling itself (per data_source_protocol.h the plugin calls this on its
+//       own poll/stream thread), so the callback must marshal (as on_progress_* do); the test pins "runs on the
+//       caller's thread" as the contract a StreamingSourceManager-style consumer must marshal away from.
+//   (b) a-priori classification: with no parser registered for the advertised encoding (an empty
+//       ExtensionCatalogService), classifyAvailableTopic falls back to matching the type name against the
+//       FrameTransforms/CameraInfo infra schemas, and kNone otherwise.
 //
-// Covers the two load-bearing contracts of the advertise path:
-//   (a) the vtable slot can be invoked from a non-GUI thread with no crash, and
-//       on_available_topics fires on THAT SAME (calling) thread — the host does
-//       no marshaling itself; per data_source_protocol.h the plugin calls this on
-//       its own poll/stream thread, and the doc on DataSourceRuntimeHost's
-//       on_available_topics member requires the CALLBACK to marshal (mirroring
-//       on_progress_*), so this test pins "runs on the caller's thread" as the
-//       contract a StreamingSourceManager-style consumer must marshal away from.
-//   (b) a-priori classification: with NO parser registered for the advertised
-//       encoding (an empty ExtensionCatalogService — constructing a real parser
-//       catalog is unnecessary here), classifyAvailableTopic falls back to
-//       matching the type name against the FrameTransforms/CameraInfo infra
-//       schemas, and kNone otherwise.
-//
-// Does NOT cover: classification via a REAL MessageParser plugin's
-// classify_schema (that path is exercised implicitly by cbEnsureParserBinding's
-// existing tests, which share the same bindSchema-then-classify sequence).
+// Classification via a real MessageParser plugin's classify_schema is not covered here (cbEnsureParserBinding's tests
+// exercise it through the same bindSchema-then-classify sequence).
 
 #include <gtest/gtest.h>
 

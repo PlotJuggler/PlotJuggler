@@ -1,12 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// SourceCacheStore behavior, keyed to the #275 harvest rules the host cache
-// must reproduce: pin-then-validate lookups whose contended case is a miss
-// with a retry hint, eviction that never touches a pinned artifact and
-// reports over-target instead of forcing, quarantine that turns a failing
-// entry into a plain miss, and publish recovery that never hands back an
-// unpinned path.
+// SourceCacheStore: pin-then-validate lookups (a contended identity is a miss with a retry hint),
+// eviction that skips pinned artifacts and reports over-target instead of forcing, quarantine that
+// turns a failing entry into a plain miss, and publish recovery that never returns an unpinned path.
 
 #include <gtest/gtest.h>
 
@@ -52,7 +49,7 @@ void writeFakeMcap(const fs::path& file, std::size_t padding_bytes = 64) {
   out.write(reinterpret_cast<const char*>(kMagic.data()), kMagic.size());
 }
 
-// Magic at both ends around junk — the probes C-2 requires rejected.
+// Magic at both ends around junk: the validator must reject it.
 void writeMagicSandwich(const fs::path& file, std::size_t junk_bytes) {
   std::ofstream out(file, std::ios::binary | std::ios::trunc);
   out.write(reinterpret_cast<const char*>(kMagic.data()), kMagic.size());
@@ -105,7 +102,6 @@ TEST_F(SourceCacheStoreTest, PublishRoundTripsToAPinnedHit) {
   ASSERT_TRUE(hit.has_value());
   EXPECT_EQ(hit->path, published);
   EXPECT_TRUE(hit->pin.held());
-  // Opaque provider identities must not collide across providers.
   EXPECT_FALSE(store.lookup("mcapcloud:v1:sha256/128:00ff").has_value());
 }
 
@@ -144,9 +140,8 @@ TEST_F(SourceCacheStoreTest, CorruptFooterIsAMissAndTheFileIsKept) {
   EXPECT_TRUE(fs::exists(artifact)) << "a rejected artifact is left for the next publish to rename over";
 }
 
-// Harvest rule 2: a contended identity is a MISS with a retry hint — never an
-// error, never an unpinned hit. MissKind classifies on EVIDENCE of an active
-// publisher (a fresh partial), not on the hint.
+// A contended identity is a miss with a retry hint, never an error or an unpinned hit. kContended needs
+// evidence of an active publisher (a fresh partial), not the hint.
 TEST_F(SourceCacheStoreTest, ContendedLookupIsAMissWithARetryHint) {
   SourceCacheStore store(root_);
   const std::string identity = "id-contended";
@@ -166,14 +161,12 @@ TEST_F(SourceCacheStoreTest, ContendedLookupIsAMissWithARetryHint) {
 
   EXPECT_TRUE(other.lookup(identity).has_value()) << "released lock makes the next lookup a hit";
 
-  // Every other miss is kAbsent: the provider fallback is the right answer.
   EXPECT_FALSE(other.lookup("id-not-there", &reason, &kind).has_value());
   EXPECT_EQ(kind, SourceCacheStore::MissKind::kAbsent);
 }
 
-// F1: contention during a FIRST publication — no artifact exists yet, so the
-// SDK reports a plain "no artifact" miss without any retry hint. The fresh
-// partial is the evidence that must classify it kContended.
+// A first publication in flight has no artifact yet, so the SDK reports a plain miss without a retry
+// hint; the fresh partial is what classifies it kContended.
 TEST_F(SourceCacheStoreTest, FirstPublicationContentionIsDetectedByItsFreshPartial) {
   SourceCacheStore store(root_);
   const std::string identity = "id-first-publish";
@@ -190,10 +183,8 @@ TEST_F(SourceCacheStoreTest, FirstPublicationContentionIsDetectedByItsFreshParti
   txn->abort();
 }
 
-// F2: a held/unopenable lock WITHOUT a fresh partial is NOT contention — the
-// SDK decorates every shared-lock failure with the retry hint (a read-only
-// lock file included), and refusing there would tell the user to wait
-// forever. kAbsent keeps the safe provider fallback.
+// A held or unopenable lock without a fresh partial is not contention: the SDK adds the retry hint to
+// every shared-lock failure, so trusting it would tell the user to wait forever.
 TEST_F(SourceCacheStoreTest, LockFailureWithoutAPartialIsAnAbsentMiss) {
   SourceCacheStore store(root_);
   const std::string identity = "id-locked-no-partial";
@@ -227,8 +218,7 @@ TEST_F(SourceCacheStoreTest, LockFailureWithoutAPartialIsAnAbsentMiss) {
   fs::permissions(lock, fs::perms::owner_read | fs::perms::owner_write);
 }
 
-// F1/F2: a crashed writer's STALE partial (mtime beyond the freshness
-// window) must not become permanent false contention.
+// A crashed writer's stale partial (mtime past the freshness window) is not contention.
 TEST_F(SourceCacheStoreTest, StalePartialDoesNotClassifyAsContended) {
   SourceCacheStore store(root_);
   const std::string identity = "id-stale-partial";
@@ -245,14 +235,13 @@ TEST_F(SourceCacheStoreTest, StalePartialDoesNotClassifyAsContended) {
   txn->abort();
 }
 
-// Harvest rule 1: a pinned artifact survives eviction even when it is the
-// oldest; rule 9: over-target is reported, never forced.
+// A pinned artifact survives eviction even when it is the oldest; over-target is reported, never forced.
 TEST_F(SourceCacheStoreTest, EvictionSkipsPinnedAndReportsOverTarget) {
   SourceCacheStore store(root_, /*budget_bytes=*/1);  // everything is over budget
   const std::string pinned_id = "id-pinned";
   const std::string loose_id = "id-loose";
   publishArtifact(store, pinned_id, 4096);
-  // Ensure distinct LRU stamps so the pinned artifact is the OLDER one.
+  // The sleep separates the two LRU stamps so the pinned artifact is the older one.
   std::this_thread::sleep_for(std::chrono::milliseconds(1100));
   const fs::path loose_path = publishArtifact(store, loose_id, 4096);
 
@@ -271,8 +260,7 @@ TEST_F(SourceCacheStoreTest, EvictionSkipsPinnedAndReportsOverTarget) {
   EXPECT_FALSE(fs::exists(store.pathFor(pinned_id)));
 }
 
-// Harvest rule 4: quarantine evicts the entry (and its LRU stamp) so the
-// next lookup is a plain miss; republish heals it.
+// Quarantine evicts the entry and its LRU stamp, so the next lookup is a plain miss and a republish heals it.
 TEST_F(SourceCacheStoreTest, QuarantineMakesTheNextLookupAMissAndRepublishHeals) {
   SourceCacheStore store(root_);
   const std::string identity = "id-heal";
@@ -310,10 +298,8 @@ TEST_F(SourceCacheStoreTest, QuarantineOfAnAbsentArtifactIsIdempotent) {
   EXPECT_TRUE(store.quarantine("id-never-published"));
 }
 
-// publish()'s retryable-commit branch is exactly "one lookup"; the race that
-// triggers it needs an SDK seam to force deterministically, so the recovery
-// STEP is pinned here on the state that branch sees: artifact published,
-// caller unpinned.
+// publish()'s retryable-commit branch is one lookup. Forcing the race needs an SDK seam, so the test
+// pins that step on the state the branch sees: artifact published, caller unpinned.
 TEST_F(SourceCacheStoreTest, RecoveryLookupAfterAPublishedArtifactReturnsAHeldPin) {
   SourceCacheStore store(root_);
   const std::string identity = "id-recovery";
@@ -334,8 +320,7 @@ TEST_F(SourceCacheStoreTest, EmptyIdentityIsRejectedEverywhere) {
   EXPECT_FALSE(store.quarantine("", &reason));
 }
 
-// A hostile identity cannot escape the cache root: the host digests the
-// identity string, so the filename is always <hex>.mcap directly under root.
+// The host digests the identity string, so a hostile identity yields <hex>.mcap directly under the root.
 TEST_F(SourceCacheStoreTest, HostileIdentityStaysInsideTheRoot) {
   SourceCacheStore store(root_);
   const fs::path path = store.pathFor("../../etc/passwd");
@@ -343,8 +328,8 @@ TEST_F(SourceCacheStoreTest, HostileIdentityStaysInsideTheRoot) {
   EXPECT_EQ(path.parent_path(), root_);
 }
 
-// T8 (acceptance row 9): the Preferences settings — capture_enabled included —
-// round-trip through QSettings, and hand-edited values are clamped on load.
+// The Preferences settings (capture_enabled included) round-trip through QSettings;
+// hand-edited values are clamped on load.
 class SourceCacheStoreSettingsTest : public ::testing::Test {
  protected:
   PJ::test::IsolatedQtSettings settings_{u"PlotJugglerSourceCacheStoreTest"_s, u"SourceCacheStoreTest"_s};
@@ -379,7 +364,6 @@ TEST_F(SourceCacheStoreSettingsTest, LoadedSettingsAreClampedAndDefaultToCapture
     raw.setValue(u"Preferences::source_cache_budget_gb"_s, 0);
   }
   EXPECT_EQ(SourceCacheStore::loadSettings().budget_gb, 1);
-  // An absent capture key means "capture on" (the shipped default).
   {
     QSettings raw;
     raw.remove(u"Preferences::source_cache_capture_enabled"_s);

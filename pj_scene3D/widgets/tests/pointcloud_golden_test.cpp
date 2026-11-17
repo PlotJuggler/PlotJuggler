@@ -1,29 +1,23 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Rendering regression corpus: small deterministic scenes rendered through the
-// real Scene3DDockWidget and compared against golden PNGs (fixtures/golden/pointcloud/,
-// see its README): point clouds, plus a scene corpus (`scene_*`) for the ground grid in both themes and styles,
-// SceneEntities markers and a URDF robot.
+// Rendering regression corpus: small deterministic scenes rendered through the real Scene3DDockWidget and compared
+// against golden PNGs (fixtures/golden/pointcloud/, see its README): point clouds, plus a scene corpus (`scene_*`) for
+// the ground grid in both themes and styles, SceneEntities markers and a URDF robot.
 //
-// It drives only the dock's public API: canonical PointCloud blobs in the
-// ObjectStore, addTopic, the layer's <pointcloud> XML payload, onTrackerTime,
-// sceneView()->camera() and grabPresentedFrame() (and, for the scene corpus,
-// SceneEntities blobs, local URDF files and the view's grid setters), and holds
-// the view to the goldens on each backend (PJ_GRAPHICS_API=opengl|vulkan|d3d11|metal).
+// It drives only the dock's public API (canonical PointCloud blobs in the ObjectStore, addTopic, the layer's
+// <pointcloud> XML payload, onTrackerTime, sceneView()->camera(), grabPresentedFrame(); for the scene corpus also
+// SceneEntities blobs, local URDF files and the view's grid setters) and holds the view to the goldens on each backend
+// (PJ_GRAPHICS_API=opengl|vulkan|d3d11|metal).
 //
-// PJ_UPDATE_POINTCLOUD_GOLDENS=1 writes the goldens instead of comparing, and only
-// from the pinned writer, QRhi OpenGL on Mesa llvmpipe (any other backend or
-// driver fails the case), recording its device in writer.txt: that stack must
+// PJ_UPDATE_POINTCLOUD_GOLDENS=1 writes the goldens instead of comparing, and only from the pinned writer, QRhi OpenGL
+// on Mesa llvmpipe (any other backend or driver fails the case), recording its device in writer.txt: that stack must
 // then match them exactly, every other one within tolerances. PJ_POINTCLOUD_GOLDEN_DIR overrides the golden directory
-// for both, so a regeneration can land in a scratch copy for review. Failing cases
-// write <case>_actual.png / <case>_diff.png into
-// PJ_POINTCLOUD_GOLDEN_OUT (default: the working directory);
-// PJ_POINTCLOUD_GOLDEN_DUMP_ALL=1 writes them for passing cases too, for
-// pixel-exact before/after comparisons of a renderer refactor.
+// for both (a regeneration can land in a scratch copy). Failing cases write <case>_actual.png / <case>_diff.png into
+// PJ_POINTCLOUD_GOLDEN_OUT (default: the working directory); PJ_POINTCLOUD_GOLDEN_DUMP_ALL=1 writes them for passing
+// cases too, for pixel-exact before/after comparisons of a renderer refactor.
 //
-// Needs a real windowing platform (xcb under xvfb in CI); skips through
-// PJ_SKIP_WITHOUT_GPU otherwise.
+// Needs a real windowing platform (xcb under xvfb in CI); skips through PJ_SKIP_WITHOUT_GPU otherwise.
 
 #include <gtest/gtest.h>
 #include <rhi/qrhi.h>
@@ -71,8 +65,7 @@ using pj::scene3d::test::maxChannelDelta;
   return true;
 }();
 
-// Light theme: the backdrop and anything theme-derived follow the application
-// palette's Window lightness.
+// Light theme: the backdrop and anything theme-derived follow the application palette's Window lightness.
 void setWindowColour(const QColor& colour) {
   QPalette pal = QApplication::palette();
   pal.setColor(QPalette::Window, colour);
@@ -86,19 +79,15 @@ struct LightPalette : ::testing::Environment {
 };
 [[maybe_unused]] const auto* const kLightPalette = ::testing::AddGlobalTestEnvironment(new LightPalette);
 
-// The view draws the 80x80 corner axis gizmo (bottom-right); it is part
-// of every comparison.
+// The view draws the 80x80 corner axis gizmo (bottom-right); it is part of every comparison.
 constexpr int kViewSize = 256;
-
-// ---- Cloud construction --------------------------------------------------
 
 struct CloudSpec {
   std::vector<glm::vec3> positions;
   std::vector<ExtraField> fields;
 };
 
-// nx*ny lattice centred on the origin, `spacing` apart, height z(u, v) with
-// u, v in [0, 1].
+// nx*ny lattice centred on the origin, `spacing` apart, height z(u, v) with u, v in [0, 1].
 std::vector<glm::vec3> lattice(int nx, int ny, float spacing, const std::function<float(float, float)>& z) {
   std::vector<glm::vec3> out;
   out.reserve(static_cast<std::size_t>(nx) * static_cast<std::size_t>(ny));
@@ -122,8 +111,7 @@ float wave(float u, float v) {
   return 0.15f * std::sin(6.0f * u) * std::cos(4.0f * v);
 }
 
-// A field whose value follows the lattice x coordinate: point i of an nx-wide
-// lattice gets lo + (hi - lo) * column / (nx - 1).
+// A field ramping along the lattice x: point i of an nx-wide lattice gets lo + (hi - lo) * column / (nx - 1).
 template <typename T>
 ExtraField rampField(std::string name, DT datatype, int nx, double lo, double hi) {
   return {std::move(name), datatype, [nx, lo, hi](std::size_t i, uint8_t* dst) {
@@ -140,8 +128,7 @@ ExtraField floatRamp(std::string name, int nx) {
           }};
 }
 
-// Per-point colour bytes derived from the lattice position (R from column, G
-// from row, B fixed).
+// Per-point colour bytes from the lattice position (R from column, G from row, B fixed).
 std::array<uint8_t, 4> latticeColor(std::size_t i, int nx, int ny) {
   const auto col = static_cast<double>(i % static_cast<std::size_t>(nx)) / (nx - 1);
   const auto row = static_cast<double>(i / static_cast<std::size_t>(nx)) / (ny - 1);
@@ -160,8 +147,6 @@ ExtraField channel(std::string name, int index, int nx, int ny) {
             *dst = latticeColor(i, nx, ny)[static_cast<std::size_t>(index)];
           }};
 }
-
-// ---- Corpus --------------------------------------------------------------
 
 using Attrs = std::map<QString, QString>;
 
@@ -233,7 +218,6 @@ std::vector<Scene> corpus() {
   const auto big_lattice = [] { return CloudSpec{lattice(8, 8, 0.25f, wave), {}}; };
   const auto dense_lattice = [] { return CloudSpec{lattice(120, 120, 0.016f, wave), {}}; };
 
-  // Shapes, large and sub-pixel.
   scenes.push_back(
       {"shape_points_large",
        {{big_lattice, with(solid(u"point"_s, u"#d02020"_s), {{u"size_pixels"_s, u"12"_s}})}},
@@ -264,7 +248,6 @@ std::vector<Scene> corpus() {
        {{dense_lattice, with(solid(u"cube"_s, u"#20a040"_s), {{u"size_meters"_s, u"0.003"_s}})}},
        cam});
 
-  // Direct colour.
   constexpr int kColorGrid = 16;
   const auto color_lattice = lattice(kColorGrid, kColorGrid, 0.12f, flat);
   const Attrs rgb_points = {
@@ -296,7 +279,6 @@ std::vector<Scene> corpus() {
          with(rgb_points, {{u"shape"_s, u"cube"_s}, {u"size_meters"_s, u"0.1"_s}})}},
        cam});
 
-  // Scalar field through each colormap.
   for (const QString& colormap : {u"turbo"_s, u"viridis"_s, u"plasma"_s, u"grayscale"_s}) {
     scenes.push_back(
         {"field_" + colormap.toStdString(),
@@ -348,7 +330,6 @@ std::vector<Scene> corpus() {
              {{u"outside_range_opacity"_s, u"0.25"_s}, {u"size_meters"_s, u"0.07"_s}})}},
        cam});
 
-  // Non-float scalar fields (zero-copy integer attributes), auto range, turbo.
   const auto int_scene = [&](const std::string& type, ExtraField extra) {
     scenes.push_back(
         {"field_" + type,
@@ -363,7 +344,6 @@ std::vector<Scene> corpus() {
   int_scene("int32", rampField<int32_t>("intensity", DT::kInt32, kFieldGrid, -2000000, 2000000));
   int_scene("uint32", rampField<uint32_t>("intensity", DT::kUint32, kFieldGrid, 0, 4000000));
 
-  // Depth: two clouds crossing each other.
   scenes.push_back(
       {"depth_two_clouds",
        {{[] { return CloudSpec{lattice(12, 12, 0.16f, flat), {}}; },
@@ -372,9 +352,8 @@ std::vector<Scene> corpus() {
          with(solid(u"sphere"_s, u"#2040e0"_s), {{u"size_meters"_s, u"0.12"_s}})}},
        cam});
 
-  // Large cloud: a million 2 px points overlapping many to a pixel, so which one
-  // wins each pixel is the driver's rasterization order. Coverage, mean colour
-  // and the coarse spatial checks.
+  // Large cloud: a million 2 px points overlapping many to a pixel, so which one wins each pixel is the driver's
+  // rasterization order. Coverage, mean colour and the coarse spatial checks.
   scenes.push_back(
       {"large_1m_points",
        {{[] { return CloudSpec{lattice(1000, 1000, 0.002f, wave), {}}; },
@@ -384,71 +363,49 @@ std::vector<Scene> corpus() {
   return scenes;
 }
 
-// ---- Comparison ----------------------------------------------------------
-
-// Calibrated llvmpipe (goldens) vs an NVIDIA GPU: every differing pixel sits on
-// a silhouette (different MSAA sample patterns and sub-pixel point rounding),
-// never inside a surface. Worst case: 1.8% of pixels off by > 16 (2 cm spheres),
-// coverage within 1.3%. The bounds leave ~1.7x headroom; a colormap, shading or
-// size regression moves far more pixels than that.
+// Tolerances calibrated llvmpipe (goldens) vs other drivers: every differing pixel sits on a silhouette (different
+// MSAA sample patterns, sub-pixel point rounding), never inside a surface; a colormap, shading or size regression
+// moves far more pixels than the bounds allow.
 //
-// A pixel counts as differing only when no golden pixel in its 3x3
-// neighbourhood is within `channel` of it: edge and sub-pixel coverage that
-// moved by less than a pixel is rasterization, not rendering. It matters for the
-// backends whose framebuffer is y-down (Vulkan on lavapipe, D3D11, Metal)
-// where llvmpipe's GL target is y-up: the same 4x MSAA pattern lands mirrored on
-// the scene, so diagonal silhouettes, cube edge bands and 1 px points resolve
-// differently (up to 8% of pixels per-pixel on lavapipe, at most 2% with this
-// rule), while every surface interior is identical. The plain per-pixel
-// fraction is bounded separately (max_plain_diff_frac).
+// A pixel counts as differing only when no golden pixel in its 3x3 neighbourhood is within `channel` of it: edge and
+// sub-pixel coverage that moved by less than a pixel is rasterization, not rendering. It matters for the y-down
+// backends (Vulkan on lavapipe, D3D11, Metal) where llvmpipe's GL target is y-up: the same 4x MSAA pattern lands
+// mirrored on the scene, so diagonal silhouettes, cube edge bands and 1 px points resolve differently, while every
+// surface interior is identical. The plain per-pixel fraction is bounded separately (max_plain_diff_frac).
 
 struct Tolerance {
   int channel = 16;             // per-channel |delta| a pixel may differ by before it counts
   double max_diff_frac = 0.03;  // allowed fraction of differing pixels
-  // Ceiling on the plain per-pixel fraction, so the neighbourhood
-  // rule cannot hide a gross regression (a one-pixel shift of the whole scene,
-  // say): max(3 x the limit above, 0.10). The worst legitimate value measured is
-  // 0.08 (Vulkan on lavapipe, `shape_cubes_subpixel`).
+  // Ceiling on the plain per-pixel fraction, so the neighbourhood rule cannot hide a gross regression (a one-pixel
+  // shift of the whole scene): max(3 x the limit above, 0.10). The worst legitimate value measured is ~0.08 (Vulkan on
+  // lavapipe).
   double max_plain_diff_frac = std::max(3.0 * 0.03, 0.10);
   double coverage = 0.05;  // allowed relative change in non-background pixel count
-  // Allowed per-channel change in the mean colour of covered pixels. Drivers move
-  // it by <= 9 (tiny spheres under NVIDIA MSAA); a swapped colormap, shape or
-  // colour mode moves it by 17-229.
+  // Allowed per-channel change in the mean colour of covered pixels. Drivers move it by <= 9 (tiny spheres under NVIDIA
+  // MSAA); a swapped colormap, shape or colour mode moves it by 17-229.
   int mean_color = 12;
-  // The differing fraction of the foreground (non-background in the golden or
-  // the actual image), so a small cloud cannot hide behind the frame's empty
-  // pixels: the frame-relative limit above lets a scene whose foreground is 10%
-  // of the frame differ on 30% of it. It targets colour inside surfaces, so it
-  // uses the 3x3 neighbourhood rule: sphere impostor
-  // silhouettes move by a pixel between Mesa releases (13-17% of the foreground
-  // per pixel on CI's Mesa 23 vs the Mesa 26 goldens, <= 3% with the rule), and
-  // silhouettes are what the frame-relative checks above bound. Worst legitimate
-  // value 0.086 (`field_viridis_cubes` on Vulkan/lavapipe). A 5% shift of a
-  // colormap range fails it (0.21-0.27) while every frame-relative check still passes.
+  // The differing fraction of the foreground (non-background in the golden or the actual image), so a small cloud
+  // cannot hide behind the frame's empty pixels. It targets colour inside surfaces, so it uses the 3x3 neighbourhood
+  // rule: sphere impostor silhouettes move by a pixel between Mesa releases (13-17% of the foreground per pixel on CI's
+  // Mesa 23 vs the Mesa 26 goldens, <= 3% with the rule). The worst legitimate value is 0.082 on Vulkan/lavapipe
+  // (`field_viridis_cubes`); a 5% shift of a colormap range gives 0.21-0.27 and passes every frame-relative check.
   double max_fg_diff_frac = 0.12;
-  // Pixels farther than `background_margin` from the golden's foreground that are
-  // not background: stray geometry. An absolute count, not a fraction; 0 on
-  // every scene measured.
+  // Pixels farther than `background_margin` from the golden's foreground that are not background: stray geometry. An
+  // absolute count; 0 on every scene measured.
   int max_background_strays = 4;
-  // Distance (pixels) from the golden's foreground within which the background
-  // check leaves a pixel alone: silhouettes and MSAA edges move by less. The
-  // coverage modes widen it (kCoarseBackgroundMargin).
+  // Distance (pixels) from the golden's foreground within which the background check leaves a pixel alone (silhouettes
+  // and MSAA edges move by less). The coverage modes widen it (kCoarseBackgroundMargin).
   int background_margin = 2;
-  // The coverage modes' coarse spatial checks, which the per-pixel ones of the
-  // full mode subsume. Tile coverage: sum over kTile x kTile tiles of
-  // |actual - golden| covered pixels, over the golden's covered pixels. A uniform
-  // rasterization change moves it by about |coverage - 1|, so the bound is
-  // `coverage` plus this slack; measured <= 0.053 (line grids on lavapipe).
+  // The coverage modes' coarse spatial checks, which the full mode's per-pixel ones subsume. Tile coverage: sum over
+  // kTile x kTile tiles of |actual - golden| covered pixels, over the golden's covered pixels. A uniform rasterization
+  // change moves it by about |coverage - 1|, so the bound is `coverage` plus this slack.
   double tile_coverage_slack = 0.10;
-  // Tile colour: the golden-coverage-weighted mean, over tiles both images cover,
-  // of the tile's max per-channel |mean(actual) - mean(golden)|. Catches a
-  // colormap reversed in place, which keeps coverage and the frame's mean colour.
-  // Measured <= 6 on the coverage-colour scenes, 10 on the tiny spheres.
+  // Tile colour: the golden-coverage-weighted mean, over tiles both images cover, of the tile's max per-channel
+  // |mean(actual) - mean(golden)|. Catches a colormap reversed in place, which keeps coverage and the mean colour.
   int max_tile_colour = 20;
-  // Distance (pixels) between the covered pixels' centroids. Clouds measure
-  // <= 0.4 on every Mesa backend (llvmpipe, lavapipe, Iris GL and Vulkan).
+  // Distance (pixels) between the covered pixels' centroids.
   double max_centroid_shift = 2.0;
-  // Largest move (pixels) of an edge of the covered pixels' bounding box; <= 1 measured.
+  // Largest move (pixels) of an edge of the covered pixels' bounding box.
   int max_bbox_shift = 4;
 };
 
@@ -503,8 +460,6 @@ Stats compare(const QImage& actual, const QImage& golden, const Tolerance& tol) 
     sum[1] += qGreen(pixel);
     sum[2] += qBlue(pixel);
   };
-  // Per image (0 golden, 1 actual): covered pixels and their colour sums per
-  // tile, and the covered pixels' coordinate sums and bounding box.
   const int tiles_x = (golden.width() + kTile - 1) / kTile;
   const int tiles_y = (golden.height() + kTile - 1) / kTile;
   const auto tile_count = static_cast<std::size_t>(tiles_x) * static_cast<std::size_t>(tiles_y);
@@ -654,7 +609,6 @@ QString goldenPath(const std::string& name) {
   return goldenDir() + u'/' + QString::fromStdString(name) + u".png"_s;
 }
 
-// The file naming the device that wrote the goldens.
 QString writerRecordPath() {
   return goldenDir() + u"/writer.txt"_s;
 }
@@ -666,29 +620,24 @@ QString outPath(const std::string& name, const char* suffix) {
   return base + u'/' + QString::fromStdString(name) + QString::fromLatin1(suffix);
 }
 
-// ---- Rendering -----------------------------------------------------------
-
 // Keeps gtest from hex-dumping the whole Scene in failure messages.
 [[maybe_unused]] void PrintTo(const Scene& scene, std::ostream* os) {
   *os << scene.name;
 }
 
-// A shown 256x256 view on its own fixture, ready for a scene.
 class GoldenView {
  public:
   GoldenView() : dock_(*fixture_.dock()) {
     dock_.setTransformService(&fixture_.transforms());
-    // The view is created by a queued call; pin its size before the first show so
-    // the window manager never has to resize a mapped window. The dock itself
-    // has a larger minimum width (its overlay controls).
+    // The view is created by a queued call: pin its size before the first show so the window manager never has to
+    // resize a mapped window. The dock itself has a larger minimum width (its overlay controls).
     for (int i = 0; i < 20 && dock_.sceneView() == nullptr; ++i) {
       QApplication::processEvents();
     }
     view_ = dock_.sceneView();
   }
 
-  // Shows the view with grid, axes and TF lines off. False (with a failure or a
-  // skip recorded) when it cannot render.
+  // Shows the view with grid, axes and TF lines off. False (with a failure or skip recorded) when it cannot render.
   [[nodiscard]] bool show() {
     if (view_ == nullptr) {
       ADD_FAILURE() << "no scene view";
@@ -708,7 +657,6 @@ class GoldenView {
     return skip_reason_;
   }
 
-  // Warm-up frames land the decodes and uploads; then pin the camera and grab.
   QImage render(const pj::scene3d::CameraState& camera) {
     for (int i = 0; i < 3; ++i) {
       pj::scene3d::test::grab(*view_);
@@ -742,9 +690,8 @@ class GoldenView {
     return;                                            \
   }
 
-// The defaults, widened on D3D11 for scenes with 1 px lines (grid, marker edges,
-// line strips): WARP rasterizes them wider than Mesa (fills match). OpenGL, Vulkan and
-// Metal stay within the defaults.
+// The defaults, widened on D3D11 for scenes with 1 px lines (grid, marker edges, line strips): WARP rasterizes them
+// wider than Mesa (fills match). OpenGL, Vulkan and Metal stay within the defaults.
 Tolerance lineSceneTolerance() {
   Tolerance tol;
 #ifdef Q_OS_WIN
@@ -754,9 +701,8 @@ Tolerance lineSceneTolerance() {
   return tol;
 }
 
-// Why `view` may not write goldens (empty when it may): the references come from
-// one pinned software renderer, QRhi OpenGL on Mesa llvmpipe, never from a
-// hardware driver or another backend, whose rasterization the tolerances absorb
+// Why `view` may not write goldens (empty when it may): the references come from one pinned software renderer, QRhi
+// OpenGL on Mesa llvmpipe, never from a hardware driver or another backend, whose rasterization the tolerances absorb
 // only on the comparison side.
 std::string goldenWriterRefusal(const QRhiWidget& view) {
   const QRhi* rhi = pj_bench::rhiOf(view);
@@ -772,18 +718,16 @@ std::string goldenWriterRefusal(const QRhiWidget& view) {
          "' (PJ_GRAPHICS_API=opengl LIBGL_ALWAYS_SOFTWARE=1 and Mesa's EGL/GLX vendor, see the golden README)";
 }
 
-// The writer on the very stack that wrote the goldens (its device string, which
-// names llvmpipe's LLVM version and vector width, matches writer.txt): it
-// reproduces them bit for bit, so no tolerance applies there.
+// The writer on the very stack that wrote the goldens (its device string, naming llvmpipe's LLVM version and vector
+// width, matches writer.txt): it reproduces them bit for bit, so no tolerance applies there.
 bool isGoldenWriterStack(const QRhiWidget& view) {
   QFile record(writerRecordPath());
   return goldenWriterRefusal(view).empty() && record.open(QIODevice::ReadOnly) &&
          record.readAll().trimmed() == pj_bench::rhiOf(view)->driverInfo().deviceName;
 }
 
-// Renders `view` from `camera` and compares the frame with the golden: exactly
-// on the writer's own stack, else under the scene's checks and tolerances. Or
-// writes it as the golden (PJ_UPDATE_POINTCLOUD_GOLDENS=1, pinned writer only).
+// Renders `view` from `camera` and compares the frame with the golden: exactly on the writer's own stack, else under
+// the scene's checks and tolerances. Or writes it as the golden (PJ_UPDATE_POINTCLOUD_GOLDENS=1, pinned writer only).
 void expectMatchesGolden(
     const std::string& name, GoldenView& view, const pj::scene3d::CameraState& camera, Scene::Check check,
     const Tolerance& scene_tol = {}) {
@@ -852,8 +796,6 @@ void expectMatchesGolden(
   }
 }
 
-// ---- Comparator self-test ------------------------------------------------
-
 // A synthetic "render": on white, a lattice of 2 px dots whose colour ramps
 // with x (reversed with `reversed`), offset by `dx`, plus a solid 20 px blob
 // at (blob_x, blob_y). No GPU: it pins what the coverage modes can see.
@@ -894,8 +836,6 @@ TEST(GoldenComparator, CoverageModesRejectMovedForeground) {
     EXPECT_TRUE(verdict(golden).ok());
     EXPECT_TRUE(verdict(syntheticFrame(1, 31, 200)).ok()) << "a one-pixel jitter";
 
-    // Every case below keeps the pixel count and the mean colour, which is all
-    // the coverage modes compared before; only the spatial checks catch them.
     for (const auto& [what, actual] : {
              std::pair{"lattice and blob translated by 12 px", syntheticFrame(12, 42, 200)},
              std::pair{"blob moved across the frame", syntheticFrame(0, 200, 30)},
@@ -947,8 +887,6 @@ INSTANTIATE_TEST_SUITE_P(
     Corpus, PointCloudGolden, ::testing::ValuesIn(corpus()),
     [](const ::testing::TestParamInfo<Scene>& param_info) { return param_info.param.name; });
 
-// ---- Scene corpus --------------------------------------------------------
-
 // The camera of the scene corpus: lower than the clouds' so the far grid edge
 // stays below the top-left corner, which every comparison takes as background.
 pj::scene3d::CameraState sceneCamera() {
@@ -958,7 +896,6 @@ pj::scene3d::CameraState sceneCamera() {
   return cam;
 }
 
-// Restores the light palette when a dark-theme scene ends.
 struct DarkTheme {
   DarkTheme() {
     setWindowColour(QColor(32, 32, 32));
@@ -983,12 +920,10 @@ class GridGolden : public ::testing::TestWithParam<GridScene> {};
   *os << scene.name;
 }
 
-// The ground grid alone (default 10 m, 10 divisions, 5 for the odd case: its
-// cells start half a cell off the origin), its colours from the theme. The line
-// grid is all 1 px edges,
-// which a y-down backend's mirrored MSAA pattern resolves differently (up to 18%
-// of its foreground on lavapipe), so it checks coverage, mean colour and the
-// coarse spatial checks.
+// The ground grid alone (default 10 m, 10 divisions, 5 for the odd case: its cells start half a cell off the origin),
+// its colours from the theme. The line grid is all 1 px edges, which a y-down backend's mirrored MSAA pattern resolves
+// differently (up to 18% of its foreground on lavapipe), so it checks coverage, mean colour and the coarse spatial
+// checks.
 TEST_P(GridGolden, MatchesGolden) {
   const GridScene& scene = GetParam();
   PJ_SKIP_ON_HEADLESS_QPA();
@@ -1097,7 +1032,6 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(MarkerScene{"scene_markers_default", nullptr}, MarkerScene{"scene_markers_opaque", "1"}),
     [](const ::testing::TestParamInfo<MarkerScene>& param_info) { return param_info.param.name; });
 
-// A 1 m ASCII STL cube centred on its origin.
 QByteArray stlCube() {
   QByteArray stl = "solid cube\n";
   const auto facet = [&stl](const glm::vec3& normal, const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {

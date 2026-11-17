@@ -8,12 +8,10 @@
 
 namespace pj::scene3d {
 
-// Square shadow-map resolution in texels. Sized independently of the scene FBO and
-// its render_scale supersampling — the shadow map is a separate target, so doubling
-// scene supersampling must not quadruple shadow-map memory. 2048 gives ~mm texels on
-// a single-robot scene; larger scenes trade sharpness for coverage (resolution
-// remains an open tuning decision). The light frustum is fit at this resolution so
-// the texel-snap in fitDirectionalShadowCamera matches the actual map.
+// Square shadow-map resolution in texels. Sized independently of the scene FBO and its render_scale supersampling:
+// the shadow map is a separate target, so doubling scene supersampling must not quadruple its memory. 2048 gives ~mm
+// texels on a single-robot scene; larger scenes trade sharpness for coverage. The light frustum is fit at this
+// resolution so the texel snap in fitDirectionalShadowCamera matches the actual map.
 inline constexpr int kShadowMapSize = 2048;
 
 // Result of fitting an orthographic shadow camera to a directional light.
@@ -34,32 +32,26 @@ struct ShadowCameraFit {
   bool valid{false};
 };
 
-// Fit an orthographic directional-light shadow camera that tightly covers `bounds`
-// (the union of mesh-caster AABBs, in the world / fixed frame).
+// Fits an orthographic directional-light shadow camera tightly covering `bounds` (the union of mesh-caster AABBs, in
+// the world / fixed frame).
 //
-// `to_light_dir` is the world-space direction TO the light (Z-up); it need not be
-// normalized (the existing key light is `MeshShadingParams::key_light_dir`).
-// `shadow_map_size` is the square shadow-map resolution in texels; it drives the
-// texel-snapping that keeps the shadow edge from crawling as the scene moves.
+// `to_light_dir` is the world-space direction TO the light (Z-up), need not be normalized. `shadow_map_size` is the
+// square shadow-map resolution in texels; it drives the texel snapping that keeps the shadow edge from crawling as
+// the scene moves.
 //
-// The fit uses the AABB's bounding SPHERE for the ortho extents (rotation-invariant,
-// so the covered area — and thus the shadow resolution — does not pulse as the
-// camera or the scene rotates), pads the extents by a few texels to absorb the
-// snap, and texel-snaps the frustom so a given world point always projects to the
-// same texel until it moves a full texel.
+// The ortho extents come from the AABB's bounding SPHERE (rotation-invariant, so the covered area and shadow
+// resolution do not pulse as the camera or scene rotates), padded by a few texels to absorb the snap; the frustum is
+// texel-snapped so a world point projects to the same texel until it moves a full texel.
 //
-// Returns `valid == false` for invalid/degenerate bounds or a zero light direction.
+// `valid == false` for invalid/degenerate bounds or a zero light direction.
 [[nodiscard]] ShadowCameraFit fitDirectionalShadowCamera(
     const AABB& bounds, const glm::vec3& to_light_dir, int shadow_map_size);
 
-// Extend `bounds` to also enclose where its contents' shadows land on the plane
-// z == ground_z, under a directional light pointing toward `to_light_dir` (Z-up). Each
-// of the 8 corners is marched along -to_light_dir down to the ground plane and unioned
-// in, so a shadow frustum fit to the result covers both the casters AND the receiving
-// floor (the floor is a receiver but never a caster, so it is otherwise absent from
-// caster bounds — and the cast shadow falls outside a caster-only frustum). Returns
-// `bounds` unchanged when it is invalid or the light is horizontal/below
-// (`to_light_dir.z <= 0`); corners already at/below the plane contribute nothing.
+// Extends `bounds` to enclose where its contents' shadows land on the plane z == ground_z, for a directional light
+// toward `to_light_dir` (Z-up): each of the 8 corners is marched along -to_light_dir to the ground plane and unioned
+// in. The floor receives but never casts, so a caster-only frustum would miss the shadow falling on it. Unchanged when
+// `bounds` is invalid or the light is horizontal/below (`to_light_dir.z <= 0`); corners at or below the plane add
+// nothing.
 [[nodiscard]] inline AABB extendAabbToGroundShadow(const AABB& bounds, const glm::vec3& to_light_dir, float ground_z) {
   if (!bounds.valid || to_light_dir.z <= 1e-3f) {
     return bounds;

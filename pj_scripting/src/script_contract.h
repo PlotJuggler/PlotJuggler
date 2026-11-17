@@ -64,8 +64,7 @@ inline constexpr std::size_t kMaxReasonBytes = 1024;
 /// A memory limit ended the run: its own cap (`vmLimitMessage`) or the native budget.
 [[nodiscard]] bool isOverBudget(std::string_view message);
 
-/// Object types an output can declare: those with a field table, except the ones whose publication no slice has
-/// designed yet (a video frame; frame transforms, which the TF ingest tap would read).
+/// Object types an output can declare: those with a field table, except a video frame and frame transforms.
 [[nodiscard]] bool producible(sdk::BuiltinObjectType type);
 
 /// `params_json` (empty means `{}`) as a JSON object at most `kMaxParamsDepth` levels deep, or why the run is refused.

@@ -3,13 +3,18 @@
 A **semantic** styling framework: every color, size, and state is defined by *what
 a thing is*, *what it does*, and *its current state* — never by a raw literal at
 the call site. This indirection lets us re-theme the app by editing the token
-values here without touching the semantics that reference them.
+values without touching the semantics that reference them.
+
+The ground truth is the token block (`PALETTE START` to `PALETTE END`) of
+`resources/stylesheet_{dark,light}.qss`; `pj_widgets/include/pj_widgets/FrameworkTokens.h` is a typed reader
+over it and holds no values. The tables below state the current design intent. The unit of the framework is a
+**role** with coupled facets (a fill, the ink legible on it per state, an outline), not a single color; an
+extension grows `Surface` or `Variant` into such a bundle instead of adding a parallel flat color list.
 
 The framework has two axes:
 
-- **Surfaces** — the background roles a region can play (§ Surfaces).
-- **Interactions** — the per-state color ramp an interactive element walks through
-  (§ Interactions).
+- **Surfaces** — the background roles a region can play (Surfaces below).
+- **Interactions** — the per-state color ramp an interactive element walks through (Interactions below).
 
 Every color is given for both the **Dark** and **Light** themes.
 
@@ -111,7 +116,7 @@ special sliders such as the timeline and playback controls.
 ### Surface variants
 
 Interactable frames and buttons (elevated surfaces) split into these variants.
-Each variant's per-state colors are defined in § Interactions.
+Each variant's per-state colors are defined under Interactions.
 
 Named by *visual emphasis*, not by semantic state (we rarely mean a literal
 error/warning):
@@ -194,9 +199,8 @@ body-text ink:
 - **Light:** `#333333`
 
 On-fill ink is near-black `#111111` / near-white `#F0F0F0` chosen per cell for
-≥4.5:1 contrast; a few pre-migration mid-grey fills fall back to absolute
-`#000`/`#FFF` and are flagged for retuning in
-[`ui_framework_roadmap.md`](./ui_framework_roadmap.md).
+≥4.5:1 contrast; a cell those cannot reach (for example Neutral Hovered in the dark theme) uses absolute
+`#000`/`#FFF`.
 
 ## Icons
 
@@ -243,13 +247,26 @@ stop:1 ${gradient_accent_end})`.
 
 Geometry, typography, and motion are semantic roles too (theme-agnostic; stored in
 the same palette). Accessors: `space()` (None/Tight/Snug/Comfortable/Section =
-0/2/4/8/16), `metric()` (the chrome/input heights — promoting the previously-dead
-`chrome_*` tokens to role names), `radius()` (Square/Input/Card/Pill), `stroke()`
+0/2/4/8/16), `metric()` (the input min and outer heights), `radius()` (Square/Input/Card/Pill), `stroke()`
 (Hairline/Emphasis), `duration()` (Fast/Base/Slow/RevealHold = 140/180/300/1200
 ms), and `type()` → `{size, weight, family}` for Caption/Body/Title/Heading.
-Family is a `sans-serif` placeholder until a specific app face is chosen.
+The values are the `space_*`, `radius_*`, `stroke_*`, `motion_*` and `type_*` keys of the palette; the family
+is `sans-serif`.
 
 ---
 
-_Planned framework extensions and the full list of missing token types live in
-[`ui_framework_roadmap.md`](./ui_framework_roadmap.md)._
+## Scope
+
+Categorical **data-series palettes** (curve colors, colormaps, the `SourceTimeline` qualitative palettes, 3D
+materials) are data colors, not chrome, and are not part of this framework.
+
+## Known gaps
+
+- `Checked` and `Pressed` hold identical values in every variant, so the ramp cannot tell a persistent selection from
+  a transient press.
+- The state ramp has no `Selected` (distinct from `Checked`), `Active/Current` (current tab, live playhead) or
+  `ReadOnly` state.
+- Link, placeholder and caret ink are not themed: the toast's `<a href>` uses Qt's default `QPalette::Link`, and
+  fields set placeholder colors unthemed (reasoning from a review of the widgets, not re-checked).
+- The `chrome_*` palette keys (bar height, button size, icon size, spacing, border width) are not referenced by any
+  stylesheet rule or by C++; chrome heights come from `ChromeMetrics` (`pj_widgets/CLAUDE.md`).

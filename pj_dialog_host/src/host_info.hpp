@@ -13,11 +13,10 @@
 
 namespace PJ::detail {
 
-/// Tells a freshly constructed dialog what this host is (SDK and application version) and
-/// which protocol features it supports (`capabilities`, PJ_DIALOG_HOST_* bits). Called once,
-/// from the engine's constructor, before its first ui_content()/widget_data(). A dialog that
-/// predates `set_host_info` (Unsupported) or rejects it keeps reading "no host info", which is
-/// not an error.
+/// Tells a freshly constructed dialog the SDK and application versions and the protocol features the host supports
+/// (`capabilities`, PJ_DIALOG_HOST_* bits). Called once from the engine's constructor, before the first
+/// ui_content() / widget_data(). A dialog that predates `set_host_info` or rejects it keeps reading "no host
+/// info": not an error.
 inline void announceHostInfo(DialogHandle& handle, uint64_t capabilities) {
   const std::string_view sdk_version = sdkVersion();
   const std::string app_version = QCoreApplication::applicationVersion().toStdString();

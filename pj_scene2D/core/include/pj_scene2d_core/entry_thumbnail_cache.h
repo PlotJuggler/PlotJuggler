@@ -18,37 +18,23 @@
 
 namespace PJ {
 
-/// Background builder + cache of HD-JPEG scrub thumbnails for an ObjectStore
-/// VideoFrame topic. On its own thread it runs a single forward decode pass and
-/// surfaces ~1 frame per adaptive interval (total bounded by a tile budget),
-/// encodes each to a small JPEG (cap 1280), and serves the nearest-at-or-before
-/// tile on lookup() — giving a scrub drag instant feedback while the real GOP
-/// decode settles the exact frame. The pass decodes every frame (codec state is
-/// sequential) but pays the HW-download + downscale only on the surfaced ones —
-/// see StreamingVideoDecoder::decodeSampled.
+/// Scrub thumbnails of a VideoFrame topic: a build thread samples about one frame per adaptive interval
+/// (StreamingVideoDecoder::decodeSampled, bounded by the tile budget) into small JPEGs; lookup() serves the one at or
+/// before a time while the real decode settles. Only bounded topics build one (StreamingVideoSource); prune() and
+/// the build window are not used by any caller.
 ///
-/// Window-parameterized + prune-capable so the SAME builder serves a bounded
-/// file (build once over the whole timeline) or, later, a paused-stream retained
-/// window (build over [start,end], prune() as frames evict). Today only the file
-/// path is wired.
-///
-/// Threading: buildAsync() spawns one worker; lookup()/prune()/size() are safe
-/// concurrently with it. The dtor stops+joins. The supplied extractor is used
-/// ONLY on the build thread — give the cache its OWN extractor (its keepalive
-/// slot is single-threaded; do not share the playback decoder's). See
-/// makeVideoFrameNalExtractor.
+/// lookup()/prune()/size() are safe during a build; the destructor joins. The extractor runs only on the build thread
+/// and must not be shared with another decoder (its keepalive slot is single-threaded).
 class EntryThumbnailCache {
  public:
   struct Config {
-    int max_width = kThumbnailMaxWidth;         ///< downscale cap (px); source <= this -> skip (no benefit)
-    int quality = kThumbnailJpegQuality;        ///< JPEG quality
-    std::size_t max_tiles = 80;                 ///< total thumbnail budget (drives the adaptive interval)
-    std::size_t max_bytes = 48u * 1024 * 1024;  ///< hard JPEG cache ceiling
+    int max_width = kThumbnailMaxWidth;  ///< a source no wider than this builds no cache
+    int quality = kThumbnailJpegQuality;
+    std::size_t max_tiles = 80;  ///< sets the sampling interval
+    std::size_t max_bytes = 48u * 1024 * 1024;
   };
 
-  /// Convenience form with the default Config (used by the file path).
   EntryThumbnailCache(ObjectStore* store, ObjectTopicId topic, StreamingVideoDecoder::NalExtractor extractor);
-  /// Construct with an explicit Config.
   EntryThumbnailCache(
       ObjectStore* store, ObjectTopicId topic, StreamingVideoDecoder::NalExtractor extractor, Config cfg);
   ~EntryThumbnailCache();
@@ -58,19 +44,16 @@ class EntryThumbnailCache {
   EntryThumbnailCache(EntryThumbnailCache&&) = delete;
   EntryThumbnailCache& operator=(EntryThumbnailCache&&) = delete;
 
-  /// Kick off a background build over [start_ns, end_ns]. If end_ns < start_ns
-  /// (the default), uses the topic's full current keyframe span. Cancels any
-  /// prior build. Returns immediately.
+  /// Builds over [start_ns, end_ns], or the whole topic when end_ns < start_ns. Stops a running build first.
   void buildAsync(Timestamp start_ns = 0, Timestamp end_ns = -1);
 
-  /// Stop + join the build thread (idempotent).
+  /// Idempotent.
   void stop();
 
-  /// Nearest thumbnail at-or-before ts_ns, decompressed to a YUV420P frame.
-  /// nullopt if the cache is empty or ts precedes the first tile.
+  /// The thumbnail at or before ts_ns as YUV420P; nullopt before the first tile.
   [[nodiscard]] std::optional<DecodedFrame> lookup(Timestamp ts_ns) const;
 
-  /// Drop tiles with timestamp < before_ns (streaming eviction). No-op for files.
+  /// Drops tiles before before_ns.
   void prune(Timestamp before_ns);
 
   [[nodiscard]] std::size_t size() const;
@@ -90,8 +73,8 @@ class EntryThumbnailCache {
   StreamingVideoDecoder::NalExtractor extractor_;
   Config cfg_;
 
-  mutable std::mutex mutex_;  // guards tiles_ + bytes_
-  std::vector<Tile> tiles_;   // sorted ascending by ts
+  mutable std::mutex mutex_;  // guards tiles_ and bytes_
+  std::vector<Tile> tiles_;   // ascending ts
   std::size_t bytes_ = 0;
 
   std::atomic<bool> running_{false};

@@ -78,15 +78,13 @@ std::optional<QPointF> PointSeriesXY::sampleFromTime(double display_time_sec) co
     return std::nullopt;
   }
 
-  // The tracker speaks display seconds; pairs_ carries raw timestamps. Map back
-  // through the Y source's offset (X and Y share a time base) so the search key
-  // is in the same domain as the chunk timestamps compared below.
+  // The tracker speaks display seconds and pairs_ carries raw timestamps: map back through the Y source's offset (X and
+  // Y share a time base) so the key is in the chunks' domain.
   const DisplayOffset offset = session_->displayOffset(y_source_.dataset_id);
   const Timestamp raw_time = displaySecondsToRaw(fromAxisDouble(display_time_sec), offset);
 
-  // pairs_ is time-ordered; find the last pair at-or-before raw_time (matching
-  // the time-series tracker's sampleAtOrBeforeTime semantics — the marker holds
-  // the most recent sample, it does not interpolate).
+  // pairs_ is time-ordered: the last pair at or before raw_time, as the time-series tracker does (the marker holds the
+  // latest sample, it does not interpolate).
   const auto after = std::upper_bound(pairs_.begin(), pairs_.end(), raw_time, [](Timestamp time, const PairSlot& slot) {
     return time < slot.y_chunk->readTimestamp(slot.y_row);
   });
@@ -150,10 +148,9 @@ void PointSeriesXY::ensureAlignmentIndex() const {
     return;
   }
 
-  // Hold the engine lock across the whole build: buildSameTopicIndex / *Different /
-  // rowsFor read chunk deques via the raw getTopicStorage accessor, so the deques
-  // must stay stable. The raw TopicChunk* cached into pairs_ OUTLIVES this lock; it
-  // stays valid via the drop-cache-before-mutate drain that clear/reload/evict honor.
+  // Hold the engine lock across the build: the index builders read chunk deques through the raw getTopicStorage
+  // accessor, which must stay stable. The TopicChunk* cached into pairs_ outlives this lock and stays valid through the
+  // drop-cache-before-mutate drain that clear, reload and eviction honor.
   const auto lock = session_->dataEngine().lockEngine();
 
   if (x_source_.topic_id == y_source_.topic_id) {
