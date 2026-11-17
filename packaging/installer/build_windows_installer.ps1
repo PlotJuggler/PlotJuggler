@@ -519,9 +519,14 @@ if ($pluginDlls.Count -gt 0) {
     $validationArgs += "$id=$($resolvedPluginVersions[$id])"
   }
   Info "validating $($PluginIds.Count) whitelisted plugin(s) with the staged app ..."
-  & $stagedExe @validationArgs
-  if ($LASTEXITCODE -ne 0) {
-    Die "staged plugin validation failed (exit $LASTEXITCODE)"
+  # PlotJuggler4.exe is a GUI-subsystem binary: run bare, its report reaches no log. Piping hands it
+  # real stdout/stderr handles; 'Continue' keeps its stderr lines from stopping the script.
+  $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  & $stagedExe @validationArgs 2>&1 | ForEach-Object { Write-Host "$_" }
+  $validationExit = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
+  if ($validationExit -ne 0) {
+    Die "staged plugin validation failed (exit $validationExit)"
   }
 }
 
