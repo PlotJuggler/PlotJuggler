@@ -301,17 +301,16 @@ collect_plugins_registry() {
 
   local id url checksum want got zip dest
   for id in "${BUNDLE_IDS[@]}"; do
-    # Resolve this extension's url + checksum for our platform from the registry.
+    # Resolve this extension's url + checksum for our platform from the registry. The registry
+    # keeps older releases of an id for older hosts, so take the newest one that ships our platform.
     read -r url checksum < <(python3 - "${registry_json}" "${id}" "${PLATFORM}" <<'PY'
 import json, sys
 reg, want_id, plat = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.load(open(reg))
-for ext in data.get("extensions", []):
-    if ext.get("id") == want_id:
-        p = ext.get("platforms", {}).get(plat)
-        if p:
-            print(p.get("url", ""), p.get("checksum", ""))
-        break
+found = [e for e in data.get("extensions", []) if e.get("id") == want_id and plat in e.get("platforms", {})]
+if found:
+    p = max(found, key=lambda e: tuple(int(x) for x in e["version"].split(".")))["platforms"][plat]
+    print(p.get("url", ""), p.get("checksum", ""))
 PY
 )
     [[ -n "${url}" ]] || { echo "ERROR: registry has no '${id}' for ${PLATFORM}"; exit 1; }
