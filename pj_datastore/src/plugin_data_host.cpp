@@ -2520,6 +2520,10 @@ void setIngestWarningHandler(IngestWarningHandler handler) noexcept {
   g_ingest_warning_handler.store(handler, std::memory_order_release);
 }
 
+std::string normalizeTopicName(std::string_view name) {
+  return needsSlashNormalization(name) ? normalizeSlashes(name) : std::string(name);
+}
+
 DatastoreToolboxHost::DatastoreToolboxHost(DataEngine& engine, ObjectStore& object_store)
     : state_(std::make_unique<DatastoreToolboxHostState>(engine, object_store)) {}
 DatastoreToolboxHost::~DatastoreToolboxHost() = default;
