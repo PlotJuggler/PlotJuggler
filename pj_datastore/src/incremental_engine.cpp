@@ -1106,15 +1106,18 @@ static bool nodeInputRegressed(DataEngine& engine, const DerivedNode& node) {
     }
     return false;
   }
-  for (PJ::TopicId in_tid : node.mimo_input_topic_ids) {
-    const TopicStorage* in_storage = engine.getTopicStorage(in_tid);
+  for (std::size_t i = 0; i < node.mimo_input_topic_ids.size(); ++i) {
+    const TopicStorage* in_storage = engine.getTopicStorage(node.mimo_input_topic_ids[i]);
     if (in_storage == nullptr) {
       continue;
     }
+    // Each input against its own newest consumed id, as in nodeHasNothingNew: a chunk
+    // sealed before another input's can be committed after it.
+    const PJ::ChunkId consumed_through = i < node.mimo_input_chunk_ids.size() ? node.mimo_input_chunk_ids[i] : 0;
     for (const TopicChunk& chunk : in_storage->sealedChunks()) {
       // <= : the MIMO gather skips rows at the watermark timestamp, so a late
       // row exactly at it would otherwise be lost.
-      if (chunk.id > node.mimo_last_chunk_id && chunk.stats.row_count > 0 && chunk.stats.t_min <= node.mimo_last_ts) {
+      if (chunk.id > consumed_through && chunk.stats.row_count > 0 && chunk.stats.t_min <= node.mimo_last_ts) {
         return true;
       }
     }

@@ -172,7 +172,9 @@ the node is added.
   newer than the newest it consumed; a MIMO node gathers the rows after its last joined timestamp. A dirty node with no
   input chunk newer than its watermarks returns at once, in time linear in its inputs, and leaves its downstream alone,
   so a streaming tick that dirties every node costs little for idle ones.
-- **Late input.** An unread chunk that lands at or before the node's last fed timestamp makes the node recompute.
+- **Late input.** An unread chunk that lands at or before the node's last fed timestamp makes the node recompute. A
+  MIMO node tracks the newest chunk id it consumed per input, because a chunk sealed before another input's can be
+  committed after it.
 - **Recompute is transactional.** The node's current output is set aside, not cleared, and the graph below it is
   replayed. A successful replay drops the old output; an error or an exception restores it, so a failed recompute never
   leaves an output emptier than before. A node whose replay failed is fully recomputed on its next run, because its
@@ -292,5 +294,3 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
   time-ordered chunks and are wrong when chunks overlap. The plots use them only to size buffers.
 - A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
 - Rows a worker call stages in a write core after `setTarget()` flushed it are dropped with that core.
-- A MIMO node's late-input check compares every input with the newest chunk id across all inputs, so a late chunk
-  committed with a lower id than another input's newest is not replayed, and its joined rows are skipped.
