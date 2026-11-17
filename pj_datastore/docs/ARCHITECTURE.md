@@ -172,7 +172,9 @@ the node is added.
   newer than the newest it consumed; a MIMO node gathers the rows after its last joined timestamp. A dirty node with no
   input chunk newer than its watermarks returns at once, in time linear in its inputs, and leaves its downstream alone,
   so a streaming tick that dirties every node costs little for idle ones.
-- **Late input.** An unread chunk that lands at or before the node's last fed timestamp makes the node recompute.
+- **Late input.** An unread chunk that lands at or before the node's last fed timestamp makes the node recompute. A
+  MIMO node tracks the newest chunk id it consumed per input, because a chunk sealed before another input's can be
+  committed after it.
 - **Recompute is transactional.** The node's current output is set aside, not cleared, and the graph below it is
   replayed. A successful replay drops the old output; an error or an exception restores it, so a failed recompute never
   leaves an output emptier than before. A node whose replay failed is fully recomputed on its next run, because its
@@ -180,10 +182,9 @@ the node is added.
   bindings does the same. A failed node runs again only when new input arrives.
 - **Retention gaps.** A node has a gap when retention dropped, or cut into, an input chunk newer than the newest chunk
   the node consumed. Detection compares chunk ids, not timestamps, because feed timestamps advance only on non-null
-  rows and exact joins, so an all-null or sparse input would look permanently behind. A MIMO node compares against the
-  newest chunk across all its inputs, so a newer chunk on one input can hide an eviction on another: a gap can be
-  missed, never invented. The node then replays what is retained and records the gap (a bounded recent list,
-  `gaps()`); `pj_runtime` shows it in the transform's configuration.
+  rows and exact joins, so an all-null or sparse input would look permanently behind. A MIMO node compares each input
+  with the newest chunk it consumed from that input. The node then replays what is retained and records the gap (a
+  bounded recent list, `gaps()`); `pj_runtime` shows it in the transform's configuration.
 - **Time-sliced replay.** `materializeStep()` advances one node for about a given wall-time budget and commits what it
   produced. A node left part-way is deferred: the scheduling passes skip it until a step finishes it or a remove,
   replace, recompute or failure ends the replay. A SISO node over time-ordered input resumes mid-chunk and produces the
@@ -292,5 +293,3 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
   time-ordered chunks and are wrong when chunks overlap. The plots use them only to size buffers.
 - A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
 - Rows a worker call stages in a write core after `setTarget()` flushed it are dropped with that core.
-- A MIMO node's late-input check compares every input with the newest chunk id across all inputs, so a late chunk
-  committed with a lower id than another input's newest is not replayed, and its joined rows are skipped.

@@ -254,9 +254,8 @@ struct DerivedNode {
   // A not-yet-processed input chunk at or before these watermarks forces a reset and full replay: transforms need
   // ascending timestamps.
   PJ::Timestamp siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();  // SISO: last input ts fed
-  PJ::ChunkId mimo_last_chunk_id = 0;                                      // MIMO: last input chunk considered
-  // MIMO: newest chunk id seen on each input (parallel to mimo_input_topic_ids; empty = none yet). mimo_last_chunk_id
-  // is their maximum, so a chunk numbered below it can still be new to its input.
+  // MIMO: newest chunk id seen on each input (parallel to mimo_input_topic_ids; empty = never run). Ids come from one
+  // global counter, so each input is compared with its own: a chunk numbered below another input's can be new.
   std::vector<PJ::ChunkId> mimo_input_chunk_ids;
   // SISO: a chunk a time-sliced step stopped inside (0 = none), and its first unfed row; the per-chunk path resumes
   // there. A node with one is deferred: materializeStep()'s until its replay catches up, and the scheduling passes
@@ -900,7 +899,6 @@ static PJ::Status runMimoIncremental(IncrementalEngineImpl& /*impl*/, DataEngine
     for (std::size_t i = 0; i < num_inputs; ++i) {
       if (const TopicStorage* storage = engine.getTopicStorage(node.mimo_input_topic_ids[i])) {
         node.mimo_input_chunk_ids[i] = std::max(node.mimo_input_chunk_ids[i], newestChunkId(*storage));
-        node.mimo_last_chunk_id = std::max(node.mimo_last_chunk_id, node.mimo_input_chunk_ids[i]);
       }
     }
     return PJ::unexpected(node.mimo_op->error());
@@ -914,7 +912,6 @@ static PJ::Status runMimoIncremental(IncrementalEngineImpl& /*impl*/, DataEngine
   };
   std::vector<std::vector<SampleLoc>> per_topic(num_inputs);
 
-  PJ::ChunkId max_chunk_seen = node.mimo_last_chunk_id;
   std::vector<PJ::ChunkId> input_chunk_ids = node.mimo_input_chunk_ids;
   input_chunk_ids.resize(num_inputs, 0);
   for (std::size_t i = 0; i < num_inputs; ++i) {
@@ -944,11 +941,9 @@ static PJ::Status runMimoIncremental(IncrementalEngineImpl& /*impl*/, DataEngine
         per_topic[i].push_back({ts, &chunk, r});
       }
     }
-    max_chunk_seen = std::max(max_chunk_seen, input_chunk_ids[i]);
   }
-  // Every committed chunk was considered; the regression check compares against this. Updated even without a join, so
-  // a fruitless chunk is not flagged again.
-  node.mimo_last_chunk_id = max_chunk_seen;
+  // Every committed chunk was considered; the regression, idle and gap checks compare against these. Updated even
+  // without a join, so a fruitless chunk is not flagged again.
   node.mimo_input_chunk_ids = std::move(input_chunk_ids);
   for (std::size_t i = 0; i < num_inputs; ++i) {
     // If any topic has no new data, no new join is possible.
@@ -1106,15 +1101,18 @@ static bool nodeInputRegressed(DataEngine& engine, const DerivedNode& node) {
     }
     return false;
   }
-  for (PJ::TopicId in_tid : node.mimo_input_topic_ids) {
-    const TopicStorage* in_storage = engine.getTopicStorage(in_tid);
+  for (std::size_t i = 0; i < node.mimo_input_topic_ids.size(); ++i) {
+    const TopicStorage* in_storage = engine.getTopicStorage(node.mimo_input_topic_ids[i]);
     if (in_storage == nullptr) {
       continue;
     }
+    // Each input against its own newest consumed id, as in nodeHasNothingNew: a chunk
+    // sealed before another input's can be committed after it.
+    const PJ::ChunkId consumed_through = i < node.mimo_input_chunk_ids.size() ? node.mimo_input_chunk_ids[i] : 0;
     for (const TopicChunk& chunk : in_storage->sealedChunks()) {
       // <= : the MIMO gather skips rows at the watermark timestamp, so a late
       // row exactly at it would otherwise be lost.
-      if (chunk.id > node.mimo_last_chunk_id && chunk.stats.row_count > 0 && chunk.stats.t_min <= node.mimo_last_ts) {
+      if (chunk.id > consumed_through && chunk.stats.row_count > 0 && chunk.stats.t_min <= node.mimo_last_ts) {
         return true;
       }
     }
@@ -1145,21 +1143,23 @@ static bool retentionTookUnfedRows(const TopicStorage& storage, const DerivedNod
 // stopped inside its first chunk; a node stopped inside a chunk lost something only when retention took that chunk's
 // unfed rows. `from` is the node's feed watermark (Timestamp min when it fed nothing); `to` is the lagging input's
 // first retained timestamp (MIMO: the latest across them).
-//
-// The MIMO watermark is the largest chunk id across all inputs, and ids come from one global counter, so a newer chunk
-// on one input can mask an eviction on another: a gap may be missed, never invented.
+// Each MIMO input is compared with its own consumed id: ids come from one global counter, so another input's newer
+// chunk says nothing about this one.
 static std::optional<IncrementalEngine::Gap> findRetentionGap(DataEngine& engine, const DerivedNode& node) {
-  const PJ::ChunkId consumed_through = node.is_mimo ? node.mimo_last_chunk_id : node.last_processed_chunk_id;
   const bool mid_chunk = isDeferred(node);
-  if (consumed_through == 0 && !mid_chunk) {
+  const bool never_run = node.is_mimo ? node.mimo_input_chunk_ids.empty() : node.last_processed_chunk_id == 0;
+  if (never_run && !mid_chunk) {
     return std::nullopt;
   }
   std::optional<PJ::Timestamp> first_retained;
-  for (const PJ::TopicId in_tid : node.all_input_topic_ids) {
-    const TopicStorage* in_storage = engine.getTopicStorage(in_tid);
+  for (std::size_t i = 0; i < node.all_input_topic_ids.size(); ++i) {
+    const TopicStorage* in_storage = engine.getTopicStorage(node.all_input_topic_ids[i]);
     if (in_storage == nullptr) {
       continue;
     }
+    const PJ::ChunkId consumed_through = !node.is_mimo                          ? node.last_processed_chunk_id
+                                         : i < node.mimo_input_chunk_ids.size() ? node.mimo_input_chunk_ids[i]
+                                                                                : 0;
     const PJ::ChunkId evicted_through = in_storage->evictedThroughChunkId();
     if (evicted_through <= consumed_through ||
         (mid_chunk && evicted_through == node.resume_chunk_id && !retentionTookUnfedRows(*in_storage, node))) {
@@ -1365,7 +1365,6 @@ static PJ::Status recomputeNodeSelfOnly(IncrementalEngineImpl& impl, DataEngine&
   node.siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   if (node.is_mimo) {
     node.mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();
-    node.mimo_last_chunk_id = 0;
     node.mimo_input_chunk_ids.clear();
   }
 
@@ -1709,7 +1708,6 @@ PJ::Status IncrementalEngine::restoreInputBindingState(PJ::NodeId node_id, const
   binding_node.resume_row = 0;
   binding_node.siso_last_ts = std::numeric_limits<PJ::Timestamp>::min();
   binding_node.mimo_last_ts = std::numeric_limits<PJ::Timestamp>::min();
-  binding_node.mimo_last_chunk_id = 0;
   binding_node.mimo_input_chunk_ids.clear();
   return PJ::okStatus();
 }

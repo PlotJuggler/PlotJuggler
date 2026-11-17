@@ -1836,6 +1836,68 @@ TEST(MimoTransformTest, MimoLateInputCommitTriggersFullRecompute) {
   }
 }
 
+// A chunk takes its id when it is sealed, and a writer can hold a sealed chunk before it
+// commits it. A late chunk can therefore reach one input after another input's newer
+// chunk was consumed, and must still replay the node.
+TEST(MimoTransformTest, MimoLateChunkWithAnOlderIdTriggersFullRecompute) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 5);
+  PJ::NodeId node = *derived.addMimoTransform({t1, t2}, {"sum_out"}, ds, std::make_unique<SumMimoTransform>());
+  notify(derived, {t1, t2});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  DataWriter held = engine.createWriter();
+  ASSERT_TRUE(held.beginRow(t1, 2'500'000'000LL).has_value());
+  held.set(t1, 0, 10.0);
+  ASSERT_TRUE(held.finishRow(t1).has_value());
+  auto sealed_first = held.flushAll();
+  appendRow(engine, t2, 2'500'000'000LL, 20.0);
+  notify(derived, {t2});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  engine.commitChunks(std::move(sealed_first));
+  notify(derived, {t1});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto rows = collectRowsCol(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), 6u);
+  EXPECT_EQ(rows[3].first, 2'500'000'000LL);
+  EXPECT_NEAR(rows[3].second, 30.0, 1e-6);
+}
+
+// Retention evicts a chunk one input sealed before another input's consumed chunk: the node never read it, so it
+// records a gap, though the evicted id is below the newest id the node consumed across its inputs.
+TEST(MimoTransformTest, MimoEvictionOfAnOlderIdUnreadChunkRecordsAGap) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId t1 = makeLinearTopic(engine, ds, 1.0, 5);  // t = 0..4 s
+  PJ::TopicId t2 = makeLinearTopic(engine, ds, 2.0, 5);
+  PJ::NodeId node = *derived.addMimoTransform({t1, t2}, {"sum_out"}, ds, std::make_unique<SumMimoTransform>());
+  notify(derived, {t1, t2});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  DataWriter held = engine.createWriter();
+  ASSERT_TRUE(held.beginRow(t1, 5'000'000'000LL).has_value());
+  held.set(t1, 0, 5.0);
+  ASSERT_TRUE(held.finishRow(t1).has_value());
+  auto sealed_first = held.flushAll();
+  appendLinearRows(engine, t2, 2.0, 5, /*start_i=*/5);  // t = 5..9 s, a newer id the node consumes
+  notify(derived, {t2});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  engine.commitChunks(std::move(sealed_first));  // t1's 5 s row, never read by the node
+  appendLinearRows(engine, t1, 1.0, 10, /*start_i=*/20);
+  appendLinearRows(engine, t2, 2.0, 10, /*start_i=*/20);
+  notify(derived, {t1, t2});
+  engine.enforceRetention(9'000'000'000LL, ds);  // keeps 20..29 s on both inputs
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  EXPECT_EQ(derived.gaps(node).size(), 1u);
+}
+
 // A MIMO input whose column appears mid-stream: the early chunk has one column and the node reads column 1, so the
 // old chunk's rows must be skipped, not read out of bounds (AddressSanitizer reports such a read).
 TEST(MimoTransformTest, MidStreamColumn_OldChunkNotOutOfBounds) {
