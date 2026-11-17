@@ -52,16 +52,14 @@ TEST(ToolboxObjectReadHostTest, ObjectBytesDestructorReleasesExactlyOnce) {
   const std::vector<uint8_t> payload{0xAA, 0xBB};
   ASSERT_TRUE(f.writer.pushOwned(topic, 1, payload).has_value());
 
-  // Scope the ObjectBytes holder; destructor must release without leaks.
+  // Scope the ObjectBytes holder; its destructor releases the bytes.
   {
     auto bytes = f.reader.readLatestAt(topic, 1);
     ASSERT_TRUE(bytes.has_value());
     EXPECT_FALSE(bytes->empty());
-    // Holder goes out of scope here — vtable->release_bytes runs exactly
-    // once. ASAN would flag double-free or leak.
+    // release_bytes runs exactly once here; ASan flags a double free or leak.
   }
 
-  // Subsequent reads still work (store state unaffected).
   auto again = f.reader.readLatestAt(topic, 1);
   ASSERT_TRUE(again.has_value());
   EXPECT_EQ(again->view().size(), payload.size());
@@ -76,7 +74,6 @@ TEST(ToolboxObjectReadHostTest, OwningHandleSurvivesStoreMutation) {
   auto bytes = f.reader.readLatestAt(topic, 100);
   ASSERT_TRUE(bytes.has_value());
 
-  // Mutate the store: push a new entry, evict the first one.
   const std::vector<uint8_t> replacement{0xFF};
   ASSERT_TRUE(f.writer.pushOwned(topic, 200, replacement).has_value());
   f.store.evictBefore(ObjectTopicId{topic.id}, 150);
@@ -163,7 +160,6 @@ TEST(ToolboxObjectReadHostTest, HandleSurvivesAcrossThreads) {
       ASSERT_EQ(view[i], payload[i]);
     }
   });
-  // Meanwhile the main thread can still push new entries and evict.
   const std::vector<uint8_t> other{0x00};
   ASSERT_TRUE(f.writer.pushOwned(topic, 2, other).has_value());
   f.store.evictBefore(ObjectTopicId{topic.id}, 2);

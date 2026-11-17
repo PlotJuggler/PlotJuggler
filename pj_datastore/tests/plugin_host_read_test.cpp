@@ -157,10 +157,6 @@ TEST(PluginDataHostReadTest, ReadSeriesRejectsUnknownField) {
   EXPECT_FALSE(result.has_value());
 }
 
-// ---------------------------------------------------------------------------
-// Catalog edge cases
-// ---------------------------------------------------------------------------
-
 TEST(PluginDataHostReadTest, EmptyCatalogSnapshotReturnsZeroCounts) {
   Fixture f;
   auto snapshot_or = f.toolbox.catalogSnapshot();
@@ -210,10 +206,6 @@ TEST(PluginDataHostReadTest, ReadSeriesRejectsUnknownTopic) {
   const auto result = f.toolbox.readSeries(bad_field);
   EXPECT_FALSE(result.has_value());
 }
-
-// ---------------------------------------------------------------------------
-// Type-specific reads
-// ---------------------------------------------------------------------------
 
 TEST(PluginDataHostReadTest, ReadSeriesFloat32RoundTrip) {
   Fixture f;
@@ -339,10 +331,6 @@ TEST(PluginDataHostReadTest, ReadSeriesStringWithNulls) {
   EXPECT_EQ(series.raw().values.as_string.byte_count, 5U);
 }
 
-// ---------------------------------------------------------------------------
-// Boundary conditions
-// ---------------------------------------------------------------------------
-
 TEST(PluginDataHostReadTest, ReadSeriesEmptyField) {
   Fixture f;
   const auto source = *f.toolbox.createDataSource("src");
@@ -385,16 +373,11 @@ TEST(PluginDataHostReadTest, ReadSeriesMultiChunkFloat64) {
   EXPECT_DOUBLE_EQ(series.raw().values.as_float64[550], 550.0 * 0.1);
 }
 
-// ---------------------------------------------------------------------------
-// SDK RAII tests
-// ---------------------------------------------------------------------------
-
 TEST(PluginDataHostReadTest, CatalogSnapshotDefaultConstructorIsEmpty) {
   CatalogSnapshot snapshot;
   EXPECT_EQ(snapshot.dataSources().size(), 0U);
   EXPECT_EQ(snapshot.topics().size(), 0U);
   EXPECT_EQ(snapshot.fields().size(), 0U);
-  // Destructor runs safely — no crash.
 }
 
 TEST(PluginDataHostReadTest, CatalogSnapshotMoveTransfersOwnership) {
@@ -407,12 +390,10 @@ TEST(PluginDataHostReadTest, CatalogSnapshotMoveTransfersOwnership) {
   auto original = std::move(original_or.value());
   ASSERT_GT(original.dataSources().size(), 0U);
 
-  // Move-construct.
   CatalogSnapshot moved(std::move(original));
   EXPECT_GT(moved.dataSources().size(), 0U);
   EXPECT_EQ(original.dataSources().size(), 0U);  // NOLINT(bugprone-use-after-move)
 
-  // Move-assign.
   CatalogSnapshot assigned;
   assigned = std::move(moved);
   EXPECT_GT(assigned.dataSources().size(), 0U);
@@ -435,13 +416,11 @@ TEST(PluginDataHostReadTest, MaterializedSeriesMoveTransfersOwnership) {
   ASSERT_EQ(original.timestamps().size(), 1U);
   ASSERT_EQ(original.type(), PrimitiveType::kFloat64);
 
-  // Move-construct.
   MaterializedSeries moved(std::move(original));
   EXPECT_EQ(moved.type(), PrimitiveType::kFloat64);
   EXPECT_EQ(moved.timestamps().size(), 1U);
   EXPECT_EQ(original.timestamps().size(), 0U);  // NOLINT(bugprone-use-after-move)
 
-  // Move-assign.
   MaterializedSeries assigned;
   assigned = std::move(moved);
   EXPECT_EQ(assigned.type(), PrimitiveType::kFloat64);

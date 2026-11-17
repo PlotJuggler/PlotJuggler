@@ -187,9 +187,6 @@ TEST(PluginDataHostCatalogV2Test, SameNameOnTwoDatasetsIsTwoRowsSortedByDataset)
   EXPECT_EQ(toStringView(topics[2].name), "points");
 }
 
-// builtin_object_type is a PJ::sdk::name() value or "": a type this SDK does not know,
-// kNone, a non-string type and metadata that is not a JSON object all give "", and the
-// metadata itself is passed through as it is.
 TEST(PluginDataHostCatalogV2Test, AMergedAwayDatasetCarriesNoTopics) {
   Fixture f;
   const auto anchor = *f.toolbox.createDataSource("log_0.mcap");
@@ -205,6 +202,9 @@ TEST(PluginDataHostCatalogV2Test, AMergedAwayDatasetCarriesNoTopics) {
   EXPECT_EQ(snapshot->topics()[0].source.id, anchor.id);
 }
 
+// builtin_object_type is a PJ::sdk::name() value or "": a type this SDK does not know,
+// kNone, a non-string type and metadata that is not a JSON object all give "", and the
+// metadata itself is passed through as it is.
 TEST(PluginDataHostCatalogV2Test, TypeIsACanonicalNameOrEmpty) {
   Fixture f;
   const auto source = *f.toolbox.createDataSource("s");

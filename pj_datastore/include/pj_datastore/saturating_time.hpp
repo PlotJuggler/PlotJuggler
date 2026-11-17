@@ -2,10 +2,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Timestamp arithmetic that clamps at the int64 limits instead of overflowing
-// (signed overflow is UB). Timestamps near the limits are not meaningful, but
-// merge shifts and retention windows must not turn them into UB or wrap them
-// around to the other end of the timeline.
+// Timestamp arithmetic that clamps at the int64 limits: signed overflow is UB, and a wrapped shift or retention window
+// would land at the other end of the timeline.
 
 #include <limits>
 

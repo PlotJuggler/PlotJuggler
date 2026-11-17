@@ -28,43 +28,31 @@
 namespace PJ::arrow_import {
 namespace {
 
-// ---------------------------------------------------------------------------
-// Helper: serialize an ArrowArrayStream to IPC bytes using nanoarrow
-// ---------------------------------------------------------------------------
-
 // Build an IPC byte buffer from a schema + array. The array must be a struct
 // array whose children are the column arrays.
 std::vector<uint8_t> serializeToIpc(ArrowSchema* schema, ArrowArray* array) {
-  // Create output buffer
   ArrowBuffer out_buf;
   ArrowBufferInit(&out_buf);
 
-  // Create output stream backed by buffer
   ArrowIpcOutputStream out_stream;
   EXPECT_EQ(ArrowIpcOutputStreamInitBuffer(&out_stream, &out_buf), NANOARROW_OK);
 
-  // Create writer
   ArrowIpcWriter writer;
   EXPECT_EQ(ArrowIpcWriterInit(&writer, &out_stream), NANOARROW_OK);
 
-  // Write schema
   ArrowError error;
   EXPECT_EQ(ArrowIpcWriterWriteSchema(&writer, schema, &error), NANOARROW_OK) << error.message;
 
-  // Create array view from schema for writing
   nanoarrow::UniqueArrayView view;
   EXPECT_EQ(ArrowArrayViewInitFromSchema(view.get(), schema, nullptr), NANOARROW_OK);
   EXPECT_EQ(ArrowArrayViewSetArray(view.get(), array, nullptr), NANOARROW_OK);
 
-  // Write array as a record batch
   EXPECT_EQ(ArrowIpcWriterWriteArrayView(&writer, view.get(), &error), NANOARROW_OK) << error.message;
 
-  // Write end-of-stream marker
   EXPECT_EQ(ArrowIpcWriterWriteArrayView(&writer, nullptr, &error), NANOARROW_OK);
 
   ArrowIpcWriterReset(&writer);
 
-  // Copy bytes out
   std::vector<uint8_t> result(static_cast<std::size_t>(out_buf.size_bytes));
   std::memcpy(result.data(), out_buf.data, result.size());
   ArrowBufferReset(&out_buf);
@@ -72,7 +60,6 @@ std::vector<uint8_t> serializeToIpc(ArrowSchema* schema, ArrowArray* array) {
   return result;
 }
 
-// Serialize multiple batches into a single IPC stream
 std::vector<uint8_t> serializeBatchesToIpc(ArrowSchema* schema, std::vector<ArrowArray*> batches) {
   ArrowBuffer out_buf;
   ArrowBufferInit(&out_buf);
@@ -102,10 +89,6 @@ std::vector<uint8_t> serializeBatchesToIpc(ArrowSchema* schema, std::vector<Arro
 
   return result;
 }
-
-// ===========================================================================
-// Test: schema_from_ipc — mixed supported/unsupported types
-// ===========================================================================
 
 TEST(ArrowImportTest, SchemaFromIpc) {
   // Build schema: float32 "x", float64 "y", utf8 "name", list<int32> (skip)
@@ -163,10 +146,6 @@ TEST(ArrowImportTest, SchemaFromIpc) {
   EXPECT_EQ(type_tree->children.size(), 3u);
 }
 
-// ===========================================================================
-// Test: import float32 columns via IPC
-// ===========================================================================
-
 TEST(ArrowImportTest, ImportFloat32) {
   DataEngine engine;
   auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -174,7 +153,6 @@ TEST(ArrowImportTest, ImportFloat32) {
 
   DataWriter writer = engine.createWriter();
 
-  // Build schema: struct { float32 "x", float32 "y" }
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
@@ -187,7 +165,6 @@ TEST(ArrowImportTest, ImportFloat32) {
   ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_FLOAT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "y"), NANOARROW_OK);
 
-  // Build array with 100 rows
   constexpr int64_t kN = 100;
   nanoarrow::UniqueArray array;
   ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
@@ -211,7 +188,6 @@ TEST(ArrowImportTest, ImportFloat32) {
 
   auto ipc_bytes = serializeToIpc(schema.get(), array.get());
 
-  // Parse schema and register
   auto [type_tree, mappings] = *schemaFromIpc(PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()));
   auto schema_id = *writer.registerSchema("test_schema", type_tree);
 
@@ -220,7 +196,6 @@ TEST(ArrowImportTest, ImportFloat32) {
   desc.schema_id = schema_id;
   auto topic_id = *writer.registerTopic(*ds_or, desc);
 
-  // Import
   auto status =
       importIpcStream(writer, topic_id, PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()), mappings);
   ASSERT_TRUE(status.has_value()) << status.error();
@@ -228,7 +203,6 @@ TEST(ArrowImportTest, ImportFloat32) {
   auto flushed = writer.flushAll();
   engine.commitChunks(std::move(flushed));
 
-  // Verify round-trip
   DataReader reader = engine.createReader();
   std::size_t count = 0;
   auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = kN - 1});
@@ -241,10 +215,6 @@ TEST(ArrowImportTest, ImportFloat32) {
   EXPECT_EQ(count, static_cast<std::size_t>(kN));
 }
 
-// ===========================================================================
-// Test: import with explicit timestamp column
-// ===========================================================================
-
 TEST(ArrowImportTest, ImportWithTimestampColumn) {
   DataEngine engine;
   auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -252,7 +222,6 @@ TEST(ArrowImportTest, ImportWithTimestampColumn) {
 
   DataWriter writer = engine.createWriter();
 
-  // Build schema: struct { int64 "timestamp", float64 "value" }
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
@@ -295,14 +264,12 @@ TEST(ArrowImportTest, ImportWithTimestampColumn) {
   desc.schema_id = sid;
   auto tid = *writer.registerTopic(*ds_or, desc);
 
-  // Import with timestamp_column=0
   auto status = importIpcStream(writer, tid, PJ::Span<const uint8_t>(ipc_bytes.data(), ipc_bytes.size()), mappings, 0);
   ASSERT_TRUE(status.has_value()) << status.error();
 
   auto flushed = writer.flushAll();
   engine.commitChunks(std::move(flushed));
 
-  // Verify timestamps
   DataReader reader = engine.createReader();
   auto latest_or = reader.latestAt(QueryPoint{.topic_id = tid, .t = 25000});
   ASSERT_TRUE(latest_or.has_value()) << latest_or.error();
@@ -325,7 +292,6 @@ void expectTimestampColumnRescalesToNanos(const TimestampImportCase& test_case) 
 
   DataWriter writer = engine.createWriter();
 
-  // Build schema: struct { timestamp[unit] "ts", float64 "value" }
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
@@ -369,8 +335,7 @@ void expectTimestampColumnRescalesToNanos(const TimestampImportCase& test_case) 
   ASSERT_TRUE(status.has_value()) << status.error();
   engine.commitChunks(writer.flushAll());
 
-  // 5 seconds in the Arrow unit must land at 5e9 ns, not at the raw tick count
-  // (the old unit-blind behavior).
+  // 5 seconds in the Arrow unit must land at 5e9 ns, not at the raw tick count.
   DataReader reader = engine.createReader();
   auto latest_or = reader.latestAt(QueryPoint{.topic_id = tid, .t = 5'000'000'000LL});
   ASSERT_TRUE(latest_or.has_value()) << latest_or.error();
@@ -378,10 +343,6 @@ void expectTimestampColumnRescalesToNanos(const TimestampImportCase& test_case) 
   EXPECT_EQ((*latest_or)->timestamp, 5'000'000'000LL);
   EXPECT_DOUBLE_EQ((*latest_or)->values[0], 4.0);
 }
-
-// ===========================================================================
-// Test: TIMESTAMP units are rescaled to nanoseconds (bug 2)
-// ===========================================================================
 
 TEST(ArrowImportTest, ImportTimestampColumnRescalesUnitsToNanos) {
   const std::vector<TimestampImportCase> cases = {
@@ -447,10 +408,6 @@ TEST(ArrowImportTest, ImportTimestampColumnRejectsUnitScalingOverflow) {
   EXPECT_NE(status.error().find("cannot be represented as int64 nanoseconds"), std::string::npos);
 }
 
-// ===========================================================================
-// Test: import string columns
-// ===========================================================================
-
 TEST(ArrowImportTest, ImportStrings) {
   DataEngine engine;
   auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -458,7 +415,6 @@ TEST(ArrowImportTest, ImportStrings) {
 
   DataWriter writer = engine.createWriter();
 
-  // Build schema: struct { utf8 "name" }
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 1), NANOARROW_OK);
@@ -502,7 +458,6 @@ TEST(ArrowImportTest, ImportStrings) {
   auto flushed = writer.flushAll();
   engine.commitChunks(std::move(flushed));
 
-  // Verify strings
   DataReader reader = engine.createReader();
   std::vector<std::string> read_strings;
   auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = tid, .t_min = 0, .t_max = 10});
@@ -514,10 +469,6 @@ TEST(ArrowImportTest, ImportStrings) {
   EXPECT_EQ(read_strings[2], "charlie");
 }
 
-// ===========================================================================
-// Test: narrow integer widening (int8 → int64)
-// ===========================================================================
-
 TEST(ArrowImportTest, ImportNarrowIntegerWidening) {
   DataEngine engine;
   auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -525,7 +476,6 @@ TEST(ArrowImportTest, ImportNarrowIntegerWidening) {
 
   DataWriter writer = engine.createWriter();
 
-  // Build schema: struct { int8 "val" }
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 1), NANOARROW_OK);
@@ -573,10 +523,6 @@ TEST(ArrowImportTest, ImportNarrowIntegerWidening) {
   EXPECT_DOUBLE_EQ(values[2], 127.0);
 }
 
-// ===========================================================================
-// Test: large dataset (500+ rows, multiple chunks)
-// ===========================================================================
-
 TEST(ArrowImportTest, ImportLargeDataset) {
   DataEngine engine;
   auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -584,7 +530,6 @@ TEST(ArrowImportTest, ImportLargeDataset) {
 
   DataWriter writer = engine.createWriter();
 
-  // Build schema: struct { float64 "value" }
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 1), NANOARROW_OK);
@@ -629,10 +574,6 @@ TEST(ArrowImportTest, ImportLargeDataset) {
   EXPECT_EQ(count, static_cast<std::size_t>(kN));
 }
 
-// ===========================================================================
-// Test: import with nulls
-// ===========================================================================
-
 TEST(ArrowImportTest, ImportWithNulls) {
   DataEngine engine;
   auto ds_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -640,7 +581,6 @@ TEST(ArrowImportTest, ImportWithNulls) {
 
   DataWriter writer = engine.createWriter();
 
-  // Build schema: struct { float32 "val" }
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 1), NANOARROW_OK);
@@ -702,10 +642,6 @@ TEST(ArrowImportTest, ImportWithNulls) {
   });
   EXPECT_EQ(row, 4u);
 }
-
-// ===========================================================================
-// Streams: LARGE_STRING offsets, synthetic timestamps across batches
-// ===========================================================================
 
 // One-column (plus nothing else) schema of `type` named `name`.
 nanoarrow::UniqueSchema makeOneColumnSchema(ArrowType type, const char* name) {

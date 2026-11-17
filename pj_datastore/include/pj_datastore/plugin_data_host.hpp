@@ -2,9 +2,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Host-side bridges that translate pj_plugins C-ABI write/read calls into
-// DataWriter / DataEngine / ObjectStore operations. raw() yields the C vtable;
-// flushPending() seals+commits. See docs/OBJECT_STORE_DESIGN.md (ABI bridge).
+// Host side of the pj_plugins C-ABI data surfaces: each class turns one surface's calls into DataWriter, DataEngine
+// or ObjectStore operations. raw() is the vtable handed to the plugin; flushPending() seals and commits. Design:
+// docs/ARCHITECTURE.md "Plugin host bridges".
 
 #include <functional>
 #include <limits>
@@ -27,18 +27,14 @@ struct DatastoreParserObjectWriteHostState;
 struct DatastoreToolboxHostState;
 struct DatastoreToolboxObjectReadHostState;
 
-/// Receives ingest diagnostics that do not fail the write: today, a field value
-/// stored as null because it does not fit its column's type exactly (e.g. 1.5
-/// into an int64 column). Reported once per field per write host.
+/// Ingest problems that do not fail the write: today, a value stored as null because it does not fit its column's
+/// type exactly (1.5 into an int64 column). Reported once per field per write host.
 using IngestWarningHandler = void (*)(std::string_view message);
 
-/// Install the process-wide IngestWarningHandler (nullptr, the default, discards).
-/// Safe to call while ingest threads run.
+/// Process-wide; nullptr (the default) discards. Safe while ingest threads run.
 void setIngestWarningHandler(IngestWarningHandler handler) noexcept;
 
-/// Bridges the `pj.source_write` C ABI onto DataWriter for a DataSource session.
-/// Owns a pimpl state; flushPending() seals+commits accumulated scalar rows.
-/// setTarget() supports the streaming two-engine pause/resume swap.
+/// `pj.source_write` for one DataSource session.
 class DatastoreSourceWriteHost {
  public:
   DatastoreSourceWriteHost(DataEngine& engine, PJ_data_source_handle_t source);
@@ -52,29 +48,20 @@ class DatastoreSourceWriteHost {
   [[nodiscard]] PJ_source_write_host_t raw() noexcept;
   void flushPending();
 
-  // Atomically swap the destination DataEngine. Mirrors the parser write
-  // host's setTarget: the streaming two-engine flow routes source-level
-  // scalar pushes to a secondary DataEngine during pause and back to the
-  // primary on resume. Pending rows are flushed to the current engine
-  // before the switch. Does not take ownership.
+  // Flushes pending rows into the current engine, then routes later writes to `target` (the streaming pause/resume
+  // swap). Not owning.
   void setTarget(DataEngine* target);
 
-  // Wire the secondary DataEngine for the streaming two-engine lockstep.
-  // Every ensureTopic/ensureField — including the lazy column auto-create
-  // inside append* — replays on the secondary using DataEngine::createTopic
-  // and DataEngine::createTopicField with the SAME id, so a setTarget swap
-  // never lands on an engine missing the topic/field a cached plugin handle
-  // refers to. Pass nullptr to disable mirroring. Does not take ownership.
+  // Every topic and field this host creates (including the columns append* creates on the fly) is also created on
+  // `secondary` with the same id, so after a setTarget() swap a plugin's cached handles still resolve. nullptr stops
+  // mirroring. Not owning.
   void setSecondaryEngine(DataEngine* secondary);
 
  private:
   std::unique_ptr<DatastoreSourceWriteHostState> state_;
 };
 
-/// Host-side implementation of the scalar-peer object-write surface exposed
-/// as `pj.source_object_write.v1`. Bridges the C ABI onto
-/// `pj_datastore::ObjectStore`. One instance per DataSource session; the
-/// `DatasetId` scopes newly-registered topics to the enclosing dataset.
+/// `pj.source_object_write.v1` for one DataSource session; new topics go under `dataset_id`.
 class DatastoreSourceObjectWriteHost {
  public:
   DatastoreSourceObjectWriteHost(ObjectStore& store, DatasetId dataset_id);
@@ -87,20 +74,15 @@ class DatastoreSourceObjectWriteHost {
 
   [[nodiscard]] PJ_object_write_host_t raw() noexcept;
 
-  // Atomically swap the destination store. Used by the streaming two-store
-  // flow to route pushes to a secondary ObjectStore during pause and back to
-  // the primary on resume. Must point to a live store; the host does not
-  // take ownership and the caller must keep the target alive for as long as
-  // the host can receive pushes against it.
+  // Routes later pushes to `target` (the streaming pause/resume swap). Not owning: keep it alive while the host can
+  // still receive pushes.
   void setTarget(ObjectStore* target) noexcept;
 
  private:
   std::unique_ptr<DatastoreSourceObjectWriteHostState> state_;
 };
 
-/// Bridges the `pj.parser_write` C ABI onto DataWriter, bound to one host-chosen
-/// topic (parsers never name topics). flushPending() seals+commits; setTarget()
-/// is the streaming two-engine swap (bound topic must exist on the target).
+/// `pj.parser_write`, bound to one host-chosen topic (parsers never name topics).
 class DatastoreParserWriteHost {
  public:
   DatastoreParserWriteHost(DataEngine& engine, PJ_topic_handle_t topic);
@@ -114,29 +96,20 @@ class DatastoreParserWriteHost {
   [[nodiscard]] PJ_parser_write_host_t raw() noexcept;
   void flushPending();
 
-  // Atomically swap the destination DataEngine. Mirrors the object write
-  // host's setTarget: the streaming two-store flow routes scalar pushes to a
-  // secondary DataEngine during pause and back to the primary on resume.
-  // Pending rows are flushed to the current engine before the switch; the
-  // bound topic must exist in `target` with the same TopicId (the streaming
-  // manager registers it lockstep on both engines). Does not take ownership.
+  // As DatastoreSourceWriteHost::setTarget(); the bound topic must exist in `target` with the same TopicId (the
+  // streaming manager registers it on both engines).
   void setTarget(DataEngine* target);
 
-  // Wire the secondary DataEngine for streaming two-engine lockstep — see
-  // DatastoreSourceWriteHost::setSecondaryEngine. Closes the latent
-  // FieldHandle-stale bug for parser plugins that cache handles across
-  // messages (parser_protobuf et al.) on pause/resume.
+  // As DatastoreSourceWriteHost::setSecondaryEngine(): parsers that cache FieldHandles across messages keep
+  // working across pause/resume.
   void setSecondaryEngine(DataEngine* secondary);
 
  private:
   std::unique_ptr<DatastoreParserWriteHostState> state_;
 };
 
-/// Host-side implementation of the toolbox object-read surface exposed as
-/// `pj.toolbox_object_read.v1`. Bridges the C ABI onto
-/// `pj_datastore::ObjectStore`, allocating an owning handle per successful
-/// `read_latest_at`. The handle keeps bytes alive independent of the
-/// store's internal state, matching the `shared_ptr` model.
+/// `pj.toolbox_object_read.v1`. Each successful `read_latest_at` gets its own owning handle, so the bytes outlive any
+/// later change to the store.
 class DatastoreToolboxObjectReadHost {
  public:
   explicit DatastoreToolboxObjectReadHost(ObjectStore& store);
@@ -153,12 +126,8 @@ class DatastoreToolboxObjectReadHost {
   std::unique_ptr<DatastoreToolboxObjectReadHostState> state_;
 };
 
-/// Host-side implementation of the parser-scoped object write surface
-/// exposed as `pj.parser_object_write.v1`. The target ObjectTopic is bound
-/// at construction time (matching the scalar `DatastoreParserWriteHost`
-/// pattern); the parser never names topics.
-///
-/// @param topic_id the raw `ObjectTopicId::id` of the bound topic.
+/// `pj.parser_object_write.v1`, bound at construction to one object topic (`topic_id` is its raw
+/// ObjectTopicId::id); parsers never name topics.
 class DatastoreParserObjectWriteHost {
  public:
   DatastoreParserObjectWriteHost(ObjectStore& store, uint32_t topic_id);
@@ -171,33 +140,23 @@ class DatastoreParserObjectWriteHost {
 
   [[nodiscard]] PJ_parser_object_write_host_t raw() noexcept;
 
-  // Atomically swap the destination store. Used by the streaming two-store
-  // flow to route pushes to a secondary ObjectStore during pause and back to
-  // the primary on resume. The bound topic id must exist in `target` (the
-  // streaming manager ensures this via lockstep registerTopic on both
-  // stores). The host does not take ownership of the target.
+  // Routes later pushes to `target` (the streaming pause/resume swap); the bound topic must exist there (the
+  // streaming manager registers it on both stores). Not owning.
   void setTarget(ObjectStore* target) noexcept;
 
  private:
   std::unique_ptr<DatastoreParserObjectWriteHostState> state_;
 };
 
-/// Bridges the toolbox C ABI onto both a DataEngine (scalar/Arrow columns) and an
-/// ObjectStore (media blobs); a toolbox plugin writes into either via one host
-/// fat pointer. raw() yields the vtable; flushPending() seals+commits.
+/// The toolbox C ABI over both stores: scalar and Arrow columns into the DataEngine, media payloads into the
+/// ObjectStore, through one host pointer.
 class DatastoreToolboxHost {
  public:
-  /// Construct with both an engine (scalar/Arrow column writes) and an
-  /// object store (canonical media payloads — images, point clouds,
-  /// annotations). The two are independent storage backends; toolbox
-  /// plugins write into one or both via the same host fat pointer.
-  ///
-  /// raw()'s vtable also serves `acquire_catalog_snapshot_v2`: v1's scalar catalog plus
-  /// every object topic, with its dataset as `source`, the canonical `PJ::sdk::name()` of
-  /// its `builtin_object_type` ("" when unknown), its whole metadata, and the entry count
-  /// and raw time range it retains now (a derived topic's are its ring's). The scalar half
-  /// is read under the engine lock and the object half after it is released, since the
-  /// two locks never nest; the halves are therefore not atomic.
+  /// raw()'s vtable also serves `acquire_catalog_snapshot_v2`: v1's scalar catalog plus every object topic, with its
+  /// dataset as `source`, the canonical `PJ::sdk::name()` of its `builtin_object_type` ("" when unknown), its whole
+  /// metadata, and the entry count and raw time range it retains now (a derived topic's are its ring's). The scalar
+  /// half is read under the engine lock and the object half after it is released, since the two locks never nest;
+  /// the two halves are therefore not one atomic snapshot.
   DatastoreToolboxHost(DataEngine& engine, ObjectStore& object_store);
   ~DatastoreToolboxHost();
 
@@ -213,27 +172,24 @@ class DatastoreToolboxHost {
   std::unique_ptr<DatastoreToolboxHostState> state_;
 };
 
-/// The toolbox `read_series_arrow` read of `field`, limited to the samples stamped in [first, last] (raw ns) plus the
-/// last one before `first`, whose value holds at the window's start (none when the series starts inside the window,
-/// or when that sample is below the retention floor). [numeric_limits min, max] reads the whole series, which is what
-/// `read_series_arrow` does. Only the chunks the window touches are decoded, so the cost follows the window, not the
-/// series. Same layout and ownership as `read_series_arrow`: a struct of ["timestamp" int64, <field path> typed],
-/// both structs released by the caller. Finishes a derived series' pending replay first
-/// (DataEngine::awaitCompleteSeries), which only completes it for a caller on the GUI thread.
+/// `read_series_arrow` limited to the samples stamped in [first, last] (raw ns), plus the last one before `first`,
+/// whose value holds at the window's start (none when the series starts inside the window or that sample is below
+/// the retention floor). [min, max] reads the whole series. Decodes only the chunks the window touches. Same layout
+/// and ownership as `read_series_arrow`: a struct of ["timestamp" int64, <field path>], both structs released by
+/// the caller. Finishes a derived series' pending replay first (DataEngine::awaitCompleteSeries(), effective only
+/// for a GUI-thread caller).
 [[nodiscard]] Status readSeriesArrowWindow(
     const DataEngine& engine, PJ_field_handle_t field, Timestamp first, Timestamp last, struct ArrowSchema* out_schema,
     struct ArrowArray* out_array);
 
-/// Consecutive samples of a series, stamped `timestamps`: `values` holds each one's value as a double, NaN at a
-/// null, or a single value every one of them holds.
+/// Consecutive samples: `values` holds one double per sample (NaN at a null), or a single value they all share.
 using SampleBlockCallback = std::function<void(Span<const Timestamp> timestamps, Span<const double> values)>;
 
-/// Walks the numeric series of `field` (the samples `read_series_arrow` returns) stamped at or after `first`, in time
-/// order, a block of one chunk at a time, without building an Arrow array: the cheap pass for a whole-series fact a
-/// windowed read still owes, and for a caller that only wants what came after a sample it has seen. A
-/// constant-encoded chunk is one block of a single value. A non-numeric field has no blocks. Same derived-series wait
-/// as readSeriesArrowWindow; `on_block` runs under the engine lock, must not call the engine, and sees spans valid
-/// only during the call.
+/// The samples `read_series_arrow` returns for `field`, stamped at or after `first`, in time order, one chunk per
+/// block and without building an Arrow array: the cheap pass for whole-series facts. A constant-encoded chunk is one
+/// block of a single value; a non-numeric field has none. Waits for a derived series as readSeriesArrowWindow()
+/// does. `on_block` runs under the engine lock, must not call the engine, and its spans are valid only during the
+/// call.
 [[nodiscard]] Status scanSeriesValues(
     const DataEngine& engine, PJ_field_handle_t field, const SampleBlockCallback& on_block,
     Timestamp first = std::numeric_limits<Timestamp>::min());

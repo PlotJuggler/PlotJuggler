@@ -54,10 +54,6 @@ std::vector<Timestamp> walkUids(const ObjectStore& store, ObjectTopicId id) {
   return out;
 }
 
-// =========================================================================
-// Registration
-// =========================================================================
-
 TEST(ObjectStoreTest, RegisterAndDescriptor) {
   ObjectStore store;
   auto id = registerTestTopic(store, "cam/image");
@@ -177,10 +173,6 @@ TEST(ObjectStoreTest, ForEachTopicVisitsOneDatasetInRegistrationOrder) {
   EXPECT_FALSE(visited);
 }
 
-// =========================================================================
-// Push + basic queries
-// =========================================================================
-
 TEST(ObjectStoreTest, PushOwnedAndEntryCount) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -226,10 +218,6 @@ TEST(ObjectStoreTest, UnknownTopicQueries) {
   EXPECT_FALSE(result.has_value());
 }
 
-// =========================================================================
-// latestAt semantics
-// =========================================================================
-
 TEST(ObjectStoreTest, LatestAtExact) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -272,14 +260,9 @@ TEST(ObjectStoreTest, LatestAtAfterLast) {
   EXPECT_EQ(r->timestamp, 200);
 }
 
-// =========================================================================
-// latestAt warm cache (per-topic memo)
-// =========================================================================
-
-// A ~60 Hz renderer calls latestAt every frame, but object topics publish far
-// slower, so consecutive calls usually land on the SAME sample. The warm cache
-// must serve those repeats WITHOUT re-invoking the (possibly decompressing) lazy
-// fetcher — that redundant per-frame fetch is what the profiler flagged.
+// A ~60 Hz renderer calls latestAt every frame while object topics publish far slower, so consecutive calls
+// usually land on the same sample. The warm cache must serve those repeats without re-invoking the (possibly
+// decompressing) lazy fetcher.
 TEST(ObjectStoreTest, LatestAtMemoizesRepeatedSample) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -376,8 +359,8 @@ TEST(ObjectStoreTest, FailedLazyFetchIsFlaggedAndNotMemoized) {
 
 // drainNewSince forwards fetch_failed to cursor consumers: the failed entry
 // appears in the drained batch (present, empty payload, flagged) and the
-// cursor advances past it — the loss is permanent, so it must be REPORTED by
-// the consumer, never revisited. Healthy neighbours are unaffected.
+// cursor advances past it — the loss is permanent, so the consumer reports it
+// and the cursor does not revisit it. Healthy neighbours are unaffected.
 TEST(ObjectStoreTest, DrainNewSinceForwardsFetchFailure) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -418,10 +401,6 @@ TEST(ObjectStoreTest, LatestAtCacheReleasesEvictedEntry) {
   store.evictBefore(id, 150);  // evicts @100 — the cached entry
   EXPECT_TRUE(probe.expired()) << "evicting the cached entry must release its warm copy";
 }
-
-// =========================================================================
-// latestEntryIdAt (metadata-only identity of the active latest sample)
-// =========================================================================
 
 // latestEntryIdAt names exactly the entry latestAt would resolve, without ever
 // invoking the lazy fetcher — the identity a sampling layer compares against
@@ -497,10 +476,6 @@ TEST(ObjectStoreTest, LatestEntryIdAtEmptyCases) {
   store.pushOwned(id, 100, makePayload(4));
   EXPECT_FALSE(store.latestEntryIdAt(id, 50).has_value()) << "before the first entry";
 }
-
-// =========================================================================
-// at(index)
-// =========================================================================
 
 TEST(ObjectStoreTest, AtValidIndex) {
   ObjectStore store;
@@ -643,10 +618,9 @@ TEST(ObjectStoreTest, ArrivalCursorStepsSparseTopicSequence) {
   EXPECT_EQ(post[0].timestamp, 300);
 }
 
-// Regression for the out-of-order-push fix: keeping entries timestamp-sorted must
-// NOT break the SequentialUID cursor. at(uid) / drainNewSince are the streaming
-// ingest path used by TransformService; they require every retained entry to stay
-// reachable by UID and drained exactly once, regardless of arrival order.
+// Keeping entries timestamp-sorted must not break the SequentialUID cursor. at(uid) / drainNewSince are the
+// streaming ingest path used by TransformService; they require every retained entry to stay reachable by UID and
+// drained exactly once, regardless of arrival order.
 TEST(ObjectStoreTest, OutOfOrderPushRemainsReachableByUidCursor) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -691,10 +665,6 @@ TEST(ObjectStoreTest, ArrivalCursorVisitsOutOfOrderEntryLast) {
   ASSERT_FALSE(drained.empty());
   EXPECT_EQ(drained.back().timestamp, 150);
 }
-
-// =========================================================================
-// rangeByTime — half-open (lo, hi] time-window snapshot
-// =========================================================================
 
 // A time window must include an out-of-order entry regardless of its UID
 // position — the exact case a UID-cursor walk would skip.
@@ -897,10 +867,6 @@ TEST(ObjectStoreTest, EqualTimestampArrivalOrderPreservedByUidCursor) {
   EXPECT_EQ(drained[1].payload.bytes[0], 0xB2);
 }
 
-// =========================================================================
-// indexAt
-// =========================================================================
-
 TEST(ObjectStoreTest, IndexAtExact) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -930,10 +896,6 @@ TEST(ObjectStoreTest, IndexAtBeforeFirst) {
   store.pushOwned(id, 100, makePayload(4));
   EXPECT_FALSE(store.indexAt(id, 50).has_value());
 }
-
-// =========================================================================
-// EntryTimestampsView
-// =========================================================================
 
 TEST(ObjectStoreTest, EntryTimestampsView) {
   ObjectStore store;
@@ -988,8 +950,7 @@ TEST(ObjectStoreTest, RemoveTopicWaitsForOutstandingTimestampsView) {
   // An EntryTimestampsView holds the series read lock plus a raw pointer into the
   // timestamp vector. removeTopic destroys the series (mutex + vector); if it does
   // not first drain outstanding readers it frees memory the view still references
-  // (use-after-free) and destroys a still-locked mutex (UB). The observable
-  // contract of the fix: removeTopic must not complete while a view is alive.
+  // (use-after-free) and destroys a still-locked mutex (UB). removeTopic must not complete while a view is alive.
   std::atomic<bool> remove_done{false};
   std::thread remover;
   {
@@ -1001,8 +962,8 @@ TEST(ObjectStoreTest, RemoveTopicWaitsForOutstandingTimestampsView) {
       remove_done.store(true, std::memory_order_release);
     });
 
-    // The remover must block until the view is released. A too-early completion
-    // (the bug) happens in microseconds, so a short wait reliably catches it.
+    // The remover must block until the view is released; a premature completion would take microseconds, so a
+    // short wait reliably catches it.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     EXPECT_FALSE(remove_done.load(std::memory_order_acquire))
         << "removeTopic completed while an EntryTimestampsView was still alive (UAF window)";
@@ -1013,10 +974,6 @@ TEST(ObjectStoreTest, RemoveTopicWaitsForOutstandingTimestampsView) {
   EXPECT_TRUE(remove_done.load(std::memory_order_acquire));
   EXPECT_EQ(store.entryCount(id), 0u);
 }
-
-// =========================================================================
-// pushLazy
-// =========================================================================
 
 TEST(ObjectStoreTest, PushLazyResolves) {
   ObjectStore store;
@@ -1035,9 +992,8 @@ TEST(ObjectStoreTest, PushLazyResolves) {
   EXPECT_EQ(r->payload.bytes[0], 0xDE);
 }
 
-// Regression: anchor type-erasure must survive resolveEntry. The anchor here
-// is a shared_ptr<TestBuffer> (not vector); a prior static_pointer_cast to
-// vector would UB.
+// Anchor type erasure survives resolveEntry: the anchor here is a shared_ptr<TestBuffer> (not a vector), so a
+// static_pointer_cast to vector would be UB.
 TEST(ObjectStoreTest, PushLazyPreservesAnchorType) {
   struct TestBuffer {
     std::array<uint8_t, 4> bytes{0x11, 0x22, 0x33, 0x44};
@@ -1063,8 +1019,8 @@ TEST(ObjectStoreTest, PushLazyPreservesAnchorType) {
   EXPECT_FALSE(weak_buffer.expired());  // anchor still holds the buffer alive
 }
 
-// Regression: the producer's Span is a sub-range of the anchor's storage.
-// resolveEntry must propagate it verbatim — not the anchor's full extent.
+// The producer's Span is a sub-range of the anchor's storage; resolveEntry must propagate it verbatim, not the
+// anchor's full extent.
 TEST(ObjectStoreTest, PushLazyHonorsSpanSubview) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -1089,14 +1045,8 @@ TEST(ObjectStoreTest, PushLazyHonorsSpanSubview) {
   EXPECT_EQ(r->payload.bytes[9], 29);
 }
 
-// =========================================================================
-// Out-of-order ingest is lossless
-// =========================================================================
-// Real object streams legitimately regress in time — notably multi-publisher
-// /tf, whose per-message publish timestamps interleave. Like the scalar engine
-// (whose appends accept timestamp regressions), ObjectStore must keep, not drop,
-// an out-of-order push. It inserts it at the sorted position so entry_timestamps
-// stays ordered for at-or-before lookup.
+// Object streams regress in time (multi-publisher /tf publish timestamps interleave): an out-of-order push is
+// kept, inserted at its sorted position so entry_timestamps stays ordered for at-or-before lookup.
 
 TEST(ObjectStoreTest, OutOfOrderPushAcceptedLossless) {
   ObjectStore store;
@@ -1166,10 +1116,6 @@ TEST(ObjectStoreTest, DuplicateTimestampResolvesLastArrival) {
   EXPECT_EQ(by_uid->payload.bytes[0], 0x22) << "maxUidAtOrBefore must resolve the last-arrival (max) UID";
 }
 
-// =========================================================================
-// Owning handle survives eviction
-// =========================================================================
-
 TEST(ObjectStoreTest, HandleSurvivesEviction) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -1187,10 +1133,6 @@ TEST(ObjectStoreTest, HandleSurvivesEviction) {
   EXPECT_EQ(handle->payload.bytes[0], 0xAA);
 }
 
-// =========================================================================
-// evictBefore
-// =========================================================================
-
 TEST(ObjectStoreTest, EvictBefore) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -1205,10 +1147,6 @@ TEST(ObjectStoreTest, EvictBefore) {
   EXPECT_EQ(t_min, 500);
   EXPECT_EQ(t_max, 900);
 }
-
-// =========================================================================
-// removeTopic / clear
-// =========================================================================
 
 TEST(ObjectStoreTest, RemoveTopic) {
   ObjectStore store;
@@ -1227,10 +1165,6 @@ TEST(ObjectStoreTest, Clear) {
   store.clear();
   EXPECT_TRUE(store.listTopics().empty());
 }
-
-// =========================================================================
-// Retention budget
-// =========================================================================
 
 TEST(ObjectStoreTest, TimeWindowRetention) {
   ObjectStore store;
@@ -1455,10 +1389,6 @@ TEST(ObjectStoreTest, LazyFetcherNotPinnedAcrossReads) {
   EXPECT_EQ(fetch_count, 2);
 }
 
-// =========================================================================
-// Concurrency (basic smoke test — M2 will add thorough tests)
-// =========================================================================
-
 TEST(ObjectStoreTest, ConcurrentReadWriteSmoke) {
   ObjectStore store;
   auto id = registerTestTopic(store);
@@ -1481,10 +1411,6 @@ TEST(ObjectStoreTest, ConcurrentReadWriteSmoke) {
   reader.join();
   EXPECT_EQ(store.entryCount(id), static_cast<size_t>(kPushCount));
 }
-
-// =========================================================================
-// Cross-store flush (flushTo)
-// =========================================================================
 
 namespace {
 
@@ -1770,10 +1696,7 @@ TEST(ObjectStoreFlushTest, UidWalkAfterAppendingFlushVisitsAllEntriesInOrder) {
   EXPECT_EQ(walked, (std::vector<Timestamp>{10, 20, 30, 40, 50}));
 }
 
-// =========================================================================
-// replaceDatasetFrom: in-place object-data replace keeping ObjectTopicId stable
-// (the object-store half of reload).
-// =========================================================================
+// replaceDatasetFrom: in-place object-data replace keeping ObjectTopicId stable (the object-store half of reload).
 
 TEST(ObjectStoreReplaceTest, EntryMoveAndIdPreservation) {
   ObjectStore primary;
@@ -1864,10 +1787,6 @@ TEST(ObjectStoreReplaceTest, AddedTopic) {
   EXPECT_EQ(primary.findTopic(1, "cam/image")->id, img->id) << "existing topic id preserved";
 }
 
-// =========================================================================
-// series_index_ invariants (M.45 regression)
-// =========================================================================
-
 // Register 3 topics, push entries, remove the middle topic, re-register a
 // topic with the same name as the removed one, and verify that all surviving
 // topics resolve correctly and the removed id returns empty/nullopt.
@@ -1946,11 +1865,10 @@ TEST(ObjectStoreIndexTest, ClearThenReregister) {
   EXPECT_EQ(store.findTopic(1, "topic/x")->id, id_new->id);
 }
 
-// Regression: a slow lazy resolve must NOT hold the series lock — a concurrent
-// push to the same series has to complete while the resolve is in flight.
-// Pre-fix this deadlocks: the resolve held the shared series lock, the push
-// blocked on the exclusive lock, and the resolve waited for the push forever
-// (bounded here by wait_for so a regression fails instead of hanging the suite).
+// A slow lazy resolve must not hold the series lock: a concurrent push to the same series has to complete while
+// the resolve is in flight. Holding it deadlocks: the resolve holds the shared series lock, the push blocks on the
+// exclusive lock, and the resolve waits for the push forever (bounded here by wait_for so a failure surfaces
+// instead of hanging the suite).
 TEST(ObjectStoreLockScopeTest, SlowResolveDoesNotBlockSameSeriesPush) {
   ObjectStore store;
   const auto id = registerTestTopic(store);
@@ -1980,10 +1898,6 @@ TEST(ObjectStoreLockScopeTest, SlowResolveDoesNotBlockSameSeriesPush) {
   resolver.join();
   EXPECT_EQ(store.entryCount(id), 2U);
 }
-
-// =========================================================================
-// Review fixes (objectstore correctness review)
-// =========================================================================
 
 TEST(ObjectStoreReviewTest, LazyResidentBytesCountAgainstTheMemoryBudget) {
   // Streaming's kEager entries are lazy closures that pin their payload; they must
@@ -2238,10 +2152,6 @@ TEST(ObjectStoreReviewTest, AnEntryShiftedWhileItResolvesIsNotMemoized) {
   EXPECT_EQ(after->timestamp, 150);
 }
 
-// =========================================================================
-// Bundle publication
-// =========================================================================
-
 uint8_t firstByteAt(const ObjectStore& store, ObjectTopicId id, Timestamp timestamp) {
   const auto resolved = store.latestAt(id, timestamp);
   EXPECT_TRUE(resolved.has_value());
@@ -2298,7 +2208,7 @@ TEST(ObjectStoreBundleTest, TheTopicRetentionBudgetApplies) {
   EXPECT_EQ(store.memoryUsage(a), 1u);
 }
 
-// MAT-05 / STO-03: a rejected bundle leaves every previous entry and byte count exactly
+// A rejected bundle leaves every previous entry and byte count exactly
 // as it was, whichever write fails and whatever the writes before it selected.
 TEST(ObjectStoreBundleTest, AFailedBundleLeavesEveryPriorEntryUntouched) {
   ObjectStore store;
@@ -2502,7 +2412,7 @@ TEST(ObjectStoreBundleTest, ConcurrentReadersNeverSeeAnAppendedBundleHalfApplied
   EXPECT_EQ(store.timeRange(a).second, kBundles);
 }
 
-// ---- entry identity for a cursor that rescans nothing: indexOf, contentIdentity (MED-25, STO-02) ---------------
+// Entry identity for a cursor that rescans nothing: indexOf, contentIdentity.
 
 // Equal stamps never alias: an entry's position is found by its UID, wherever retention or a late insert moved it.
 TEST(ObjectStoreTest, IndexOfResolvesDuplicateStamps) {

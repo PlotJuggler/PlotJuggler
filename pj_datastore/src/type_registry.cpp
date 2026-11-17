@@ -15,11 +15,6 @@
 namespace PJ {
 namespace {
 
-// Flatten a type tree into leaf paths paired with their PrimitiveType.
-// For primitives: uses primitive_type directly.
-// For enums: uses the underlying primitive_type.
-// For arrays: uses the element_type's primitive_type (if primitive/enum).
-// For structs: recurses into children.
 void flattenLeafTypesImpl(
     const PJ::TypeTreeNode& node, std::string_view prefix,
     std::vector<std::pair<std::string, PJ::PrimitiveType>>& out) {
@@ -37,7 +32,7 @@ void flattenLeafTypesImpl(
       }
       return;
     case PJ::TypeKind::kArray:
-      // Treat the array itself as a leaf node with its element's type
+      // An array is one leaf typed by its element; an array of structs adds no leaf.
       if (node.element_type && node.element_type->primitive_type.has_value()) {
         out.emplace_back(std::move(current_path), *node.element_type->primitive_type);
       }
@@ -50,8 +45,7 @@ void flattenLeafTypesImpl(
   }
 }
 
-// Flatten starting from root, skipping the root struct name (same convention
-// as flatten_field_paths).
+// Skips the root struct name, as flattenFieldPaths() does.
 std::vector<std::pair<std::string, PJ::PrimitiveType>> flattenLeafTypes(const PJ::TypeTreeNode& root) {
   std::vector<std::pair<std::string, PJ::PrimitiveType>> result;
   if (root.kind != PJ::TypeKind::kStruct) {
@@ -134,14 +128,12 @@ PJ::Status TypeRegistry::evolveSchema(PJ::SchemaId id, std::shared_ptr<PJ::TypeT
   auto old_leaves = flattenLeafTypes(*old_tree);
   auto new_leaves = flattenLeafTypes(*updated_tree);
 
-  // Build a map from path -> PrimitiveType for the new tree
   tsl::robin_map<std::string, PJ::PrimitiveType> new_leaf_map;
   new_leaf_map.reserve(new_leaves.size());
   for (auto& [path, ptype] : new_leaves) {
     new_leaf_map.emplace(std::move(path), ptype);
   }
 
-  // Every old leaf must exist in the new tree with the same type
   for (const auto& [old_path, old_type] : old_leaves) {
     auto new_it = new_leaf_map.find(old_path);
     if (new_it == new_leaf_map.end()) {
@@ -152,7 +144,6 @@ PJ::Status TypeRegistry::evolveSchema(PJ::SchemaId id, std::shared_ptr<PJ::TypeT
     }
   }
 
-  // Validation passed — replace with updated tree
   it.value() = std::move(updated_tree);
   return PJ::okStatus();
 }

@@ -3,15 +3,9 @@
 
 /**
  * @file arrow_stream_round_trip_test.cpp
- * @brief End-to-end round trip through the v4 Arrow C Data Interface path.
- *
- * Writes known small time series into the datastore via
- * DatastoreSourceWriteHost::append_arrow_stream and
- * DatastoreParserWriteHost::append_arrow_stream (the v4 ABI slots), then
- * reads them back via DatastoreToolboxHost::read_series_arrow.
- *
- * This exercises the Phase 1b host-side implementation without going through
- * a dlopen'd plugin — all ABI calls are made directly on the C vtable.
+ * @brief Round trip through the Arrow C Data Interface path: known small time series written via
+ * DatastoreSourceWriteHost::append_arrow_stream and DatastoreParserWriteHost::append_arrow_stream, read back via
+ * DatastoreToolboxHost::read_series_arrow. All ABI calls go directly on the C vtable, without a dlopen'd plugin.
  */
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
@@ -44,9 +38,7 @@
 namespace PJ {
 namespace {
 
-// ---------------------------------------------------------------------------
 // Build a one-batch ArrowArrayStream with columns {timestamp: int64, value: double}
-// ---------------------------------------------------------------------------
 
 struct BuiltStream {
   nanoarrow::UniqueSchema schema;
@@ -131,23 +123,17 @@ void initOneBatchStream(ArrowArrayStream* out_stream, BuiltStream built) {
   out_stream->private_data = state;
 }
 
-// ---------------------------------------------------------------------------
-// Round-trip test
-// ---------------------------------------------------------------------------
-
 // Writes `values` (at timestamps 1000, 2000, ...) through append_arrow_stream,
 // reads them back through read_series_arrow, and checks the round trip. Reports
 // the encoding of the stored value column.
 void roundTripThroughArrow(
     const std::vector<double>& values, EncodingType* stored_encoding, ArrowType value_type = NANOARROW_TYPE_DOUBLE) {
-  // Set up engine + dataset.
   DataEngine engine;
   auto td_id = engine.createTimeDomain("test_td");
   ASSERT_TRUE(td_id.has_value()) << td_id.error();
   auto ds_id = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = *td_id});
   ASSERT_TRUE(ds_id.has_value()) << ds_id.error();
 
-  // Write host bound to that dataset.
   DatastoreSourceWriteHost write_host(engine, PJ_data_source_handle_t{static_cast<uint32_t>(*ds_id)});
   auto write_vtable = write_host.raw();
 
@@ -157,7 +143,6 @@ void roundTripThroughArrow(
   PJ_string_view_t topic_name{"metric", 6};
   ASSERT_TRUE(write_vtable.vtable->ensure_topic(write_vtable.ctx, topic_name, &topic, &err)) << err.message;
 
-  // Build a stream with {timestamp, value} and feed it through append_arrow_stream.
   std::vector<int64_t> timestamps;
   for (std::size_t i = 0; i < values.size(); ++i) {
     timestamps.push_back(static_cast<int64_t>(i + 1) * 1000);
@@ -188,7 +173,6 @@ void roundTripThroughArrow(
     }
   }
 
-  // Catalog snapshot — look up the field handle for "value".
   ObjectStore object_store;
   DatastoreToolboxHost tb_host(engine, object_store);
   auto tb_vtable = tb_host.raw();
@@ -209,7 +193,6 @@ void roundTripThroughArrow(
   snapshot.release(snapshot.release_ctx);
   ASSERT_TRUE(value_found) << "field 'value' missing from catalog";
 
-  // Read it back via read_series_arrow.
   ArrowSchema out_schema{};
   ArrowArray out_array{};
   ASSERT_TRUE(tb_vtable.vtable->read_series_arrow(tb_vtable.ctx, value_field, &out_schema, &out_array, &err))
@@ -224,11 +207,9 @@ void roundTripThroughArrow(
   EXPECT_EQ(std::string(out_schema.children[0]->format), "l");  // int64
   EXPECT_EQ(std::string(out_schema.children[1]->format), value_type == NANOARROW_TYPE_FLOAT ? "f" : "g");
 
-  // Array layout matches.
   ASSERT_EQ(out_array.length, static_cast<int64_t>(timestamps.size()));
   ASSERT_EQ(out_array.n_children, 2);
 
-  // Walk via ArrowArrayView to extract the values.
   nanoarrow::UniqueArrayView view;
   ArrowError vf_err;
   ASSERT_EQ(ArrowArrayViewInitFromSchema(view.get(), &out_schema, &vf_err), NANOARROW_OK) << vf_err.message;
@@ -460,10 +441,6 @@ TEST(ArrowStreamRoundTripTest, ReadSeriesArrowMergesChunksCommittedOutOfOrder) {
     ASSERT_DOUBLE_EQ(values[row], double(row) * 0.1);
   }
 }
-
-// ---------------------------------------------------------------------------
-// readSeriesArrowWindow
-// ---------------------------------------------------------------------------
 
 constexpr Timestamp kEver = std::numeric_limits<Timestamp>::min();
 constexpr Timestamp kNever = std::numeric_limits<Timestamp>::max();

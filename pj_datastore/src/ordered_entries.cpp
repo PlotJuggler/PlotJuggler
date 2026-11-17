@@ -51,12 +51,9 @@ std::optional<size_t> OrderedEntries::indexAtOrBefore(Timestamp t) const {
 std::vector<OrderedEntries::TimeRangeEntry> OrderedEntries::rangeByTime(Timestamp lo, Timestamp hi) const {
   std::vector<TimeRangeEntry> out;
   if (hi <= lo) {
-    return out;  // empty window (also rejects a reversed lo/hi)
+    return out;
   }
-  // entry_timestamps_ is ascending and index-aligned with entries_, so (lo, hi]
-  // maps to the half-open index range [upper_bound(lo), upper_bound(hi)) and the
-  // walk yields ascending-timestamp order with equal-timestamp arrival order
-  // preserved (out-of-order inserts land after equals via upper_bound).
+  // Timestamp order, equal stamps in arrival order.
   const auto first = std::upper_bound(entry_timestamps_.begin(), entry_timestamps_.end(), lo);
   const auto last = std::upper_bound(entry_timestamps_.begin(), entry_timestamps_.end(), hi);
   out.reserve(static_cast<size_t>(last - first));
@@ -88,7 +85,7 @@ SequentialUID OrderedEntries::firstUid() const {
   if (uid_order_.empty()) {
     return {};
   }
-  return entries_[uid_order_.front()].sequential_uid;  // smallest RETAINED uid
+  return entries_[uid_order_.front()].sequential_uid;  // not necessarily entries_.front()'s
 }
 
 SequentialUID OrderedEntries::nextUidAfter(SequentialUID after) const {
@@ -103,7 +100,7 @@ SequentialUID OrderedEntries::nextUidAfter(SequentialUID after) const {
 
 SequentialUID OrderedEntries::maxUidAtOrBefore(Timestamp t) const {
   const auto end = std::upper_bound(entry_timestamps_.begin(), entry_timestamps_.end(), t);
-  SequentialUID max_uid;  // invalid (0) when the prefix is empty
+  SequentialUID max_uid;  // stays invalid when the prefix is empty
   for (auto it = entry_timestamps_.begin(); it != end; ++it) {
     const auto idx = static_cast<size_t>(it - entry_timestamps_.begin());
     if (max_uid < entries_[idx].sequential_uid) {
@@ -137,15 +134,13 @@ OrderedEntries::PushOrder OrderedEntries::push(ObjectEntry&& entry) {
 
 OrderedEntries::PushOrder OrderedEntries::indexBack() {
   const Timestamp timestamp = entries_.back().timestamp;
-  // uid_order positions index `entries_` as uint32_t. A series this large is far
-  // beyond any real retained window; assert rather than silently narrow.
+  // uid_order_ holds positions as uint32_t.
   assert(entries_.size() < UINT32_MAX);
-  // In-order fast path (the overwhelming common case): amortized O(1) append.
   if (entry_timestamps_.empty() || timestamp >= entry_timestamps_.back()) {
     changed(false);  // lands after every entry, an equal stamp's too: a UID cursor finds it
     entry_timestamps_.push_back(timestamp);
-    // Newest (max) UID appended at the array tail => also the UID-order tail. O(1)
-    // tail check only (the full O(n) checker would make debug ingest O(n^2)).
+    // The newest UID is also the UID-order tail. Only the tail is checked: checkInvariant() here would make debug
+    // ingest O(n^2).
     uid_order_.push_back(static_cast<uint32_t>(entries_.size() - 1));
     assert(
         uid_order_.size() == entries_.size() &&
@@ -153,18 +148,12 @@ OrderedEntries::PushOrder OrderedEntries::indexBack() {
          entries_[uid_order_[uid_order_.size() - 2]].sequential_uid < entries_[uid_order_.back()].sequential_uid));
     return PushOrder::kInOrderAppend;
   }
-  // Out-of-order: move it to the sorted position so entry_timestamps stays ordered
-  // (latestAt/indexAt/timestamps() all rely on it). upper_bound puts the new entry
-  // AFTER any equal timestamps, preserving arrival order among equals. O(n) shift,
-  // but regressions are rare (e.g. multi-publisher /tf whose publish stamps
-  // interleave ~1%); the in-order path is untouched.
+  // Out of order: an O(n) sorted insert, after any equal stamps so equals stay in arrival order.
   const auto pos = std::upper_bound(entry_timestamps_.begin(), entry_timestamps_.end(), timestamp);
   const auto idx = pos - entry_timestamps_.begin();
   entry_timestamps_.insert(pos, timestamp);
   std::rotate(entries_.begin() + idx, entries_.end() - 1, entries_.end());
-  // Every existing position at or past `idx` shifted up by one; then the new slot
-  // (which carries the max UID by precondition) lands at the UID-order tail.
-  // Shift-then-push so the freshly appended slot is not itself incremented.
+  // Shift before the push, so the new slot (newest UID, hence the UID-order tail) is not incremented.
   for (auto& p : uid_order_) {
     if (p >= idx) {
       ++p;
@@ -189,7 +178,6 @@ void OrderedEntries::evictFront(size_t count, std::vector<ObjectEntry>& removed)
   std::move(entries_.begin(), end, std::back_inserter(removed));
   entries_.erase(entries_.begin(), end);
   entry_timestamps_.erase(entry_timestamps_.begin(), entry_timestamps_.begin() + static_cast<std::ptrdiff_t>(count));
-  // Positions below `count` are gone; the rest slide down by `count`, keeping their UID order.
   const auto first = static_cast<uint32_t>(count);
   size_t next = 0;
   for (const uint32_t position : uid_order_) {
@@ -236,8 +224,7 @@ OrderedEntries::PushOrder OrderedEntries::removeAndPush(
     return push(std::move(entry));
   }
   removed.reserve(removed.size() + plan.count);
-  // The new entry takes a slot the removal freed, so the deque does not grow and nothing
-  // below allocates: the vectors had room for the entries removed.
+  // The entry takes a freed slot and the vectors keep the removed entries' capacity, so nothing below allocates.
   const auto kept = static_cast<std::ptrdiff_t>(compact(plan, removed));
   entries_[static_cast<size_t>(kept)] = std::move(entry);
   entries_.erase(entries_.begin() + kept + 1, entries_.end());
@@ -248,9 +235,8 @@ size_t OrderedEntries::compact(const Removal& plan, std::vector<ObjectEntry>& re
   assert(plan.new_position.size() == entries_.size());
   assert(removed.capacity() - removed.size() >= plan.count);
   changed(true);
-  // ponytail: survivors always shift toward the front, so the sliding window's front
-  // removal moves every entry (~7 ns per entry with the predicate). Upgrade: erase a
-  // contiguous run with deque::erase, which moves the shorter side.
+  // ponytail: survivors always shift toward the front, so a sliding window's front removal moves every entry.
+  // Upgrade: erase a contiguous run with deque::erase, which moves the shorter side.
   auto entry = entries_.begin();
   auto kept_entry = entries_.begin();
   const size_t kept = plan.new_position.size() - plan.count;
@@ -267,8 +253,7 @@ size_t OrderedEntries::compact(const Removal& plan, std::vector<ObjectEntry>& re
     ++kept_entry;
   }
   entry_timestamps_.resize(kept);
-  // A removal never reorders the survivors' UIDs, so uid_order keeps its order and only
-  // renumbers the positions: no sort.
+  // Survivors keep their UID order, so only positions are renumbered.
   size_t next = 0;
   for (const uint32_t position : uid_order_) {
     if (plan.new_position[position] != Removal::kRemoved) {
@@ -294,9 +279,7 @@ bool OrderedEntries::shift(Timestamp delta) {
   for (size_t i = 0; i < entries_.size(); ++i) {
     entries_[i].timestamp = saturatingAdd(entries_[i].timestamp, delta);
     entry_timestamps_[i] = entries_[i].timestamp;
-    // Slide the store clock AND remember the slide for payload-embedded stamps:
-    // the payload bytes (a serialized canonical object or a wire message) are not
-    // rewritten, so a consumer reading their inner timestamps must add this delta.
+    // The payload bytes are not rewritten: a consumer of their embedded stamps adds payload_stamp_shift.
     entries_[i].payload_stamp_shift = saturatingAdd(entries_[i].payload_stamp_shift, delta);
   }
   return true;
@@ -307,7 +290,7 @@ void OrderedEntries::reuidAll() {
   for (ObjectEntry& entry : entries_) {
     entry.sequential_uid = SequentialUID::getNext();
   }
-  // Whole array re-UID'd in array order => UID order == array order == identity.
+  // Fresh UIDs in array order: the UID order is the identity.
   uid_order_.resize(entries_.size());
   std::iota(uid_order_.begin(), uid_order_.end(), 0u);
 }
@@ -328,9 +311,8 @@ void OrderedEntries::appendReuidFrom(OrderedEntries& src) {
     entries_.push_back(std::move(entry));
   }
   entry_timestamps_.insert(entry_timestamps_.end(), src.entry_timestamps_.begin(), src.entry_timestamps_.end());
-  // Combined entries: our pre-existing prefix may be non-identity (an earlier
-  // out-of-order insert); the moved entries carry fresh max UIDs. Rebuild rather
-  // than iota so our pre-existing UIDs stay stable (consumer cursors hold them).
+  // Rebuilt rather than re-UIDed: consumer cursors hold the existing UIDs, whose order an out-of-order insert may
+  // have made non-identity.
   rebuildUidOrder();
   changed(true);
   src.clear();
@@ -339,7 +321,6 @@ void OrderedEntries::appendReuidFrom(OrderedEntries& src) {
 void OrderedEntries::adoptReuidFrom(OrderedEntries& src) {
   entries_ = std::move(src.entries_);
   entry_timestamps_ = std::move(src.entry_timestamps_);
-  // The moved entries are timestamp-sorted, so UID order == array order: identity.
   reuidAll();
   src.clear();
 }

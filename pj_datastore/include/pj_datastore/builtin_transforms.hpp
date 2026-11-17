@@ -2,19 +2,15 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Built-in ISISOTransform implementations registerable with IncrementalEngine.
-// See incremental_engine.hpp for the sequential calculate()/reset() contract.
+// Built-in ISISOTransform implementations; the calculate()/reset() contract is in incremental_engine.hpp.
 
 #include "pj_base/types.hpp"
 #include "pj_datastore/incremental_engine.hpp"
 
 namespace PJ {
 
-// ---------------------------------------------------------------------------
-// DerivativeTransform
-// ---------------------------------------------------------------------------
-// Numerical derivative: d(value)/d(t) in units/second.
-// Skips the first row (no previous sample). Assumes float64 input/output.
+/// d(value)/dt in units per second, as float64. The first row is suppressed (no previous sample); a timestamp that
+/// does not advance gives 0.
 class DerivativeTransform : public ISISOTransform {
   PJ::Timestamp prev_time_ = 0;
   double prev_value_ = 0.0;

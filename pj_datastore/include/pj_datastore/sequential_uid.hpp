@@ -7,14 +7,11 @@
 
 namespace PJ {
 
-/// Stable entry identity. Value 0 is reserved as the invalid/default sentinel;
-/// real entries start at 1 and are monotonically increasing. Unlike a deque
-/// index, a SequentialUID is not reused when retention evicts old entries.
+/// Stable entry identity: 0 is the invalid sentinel, real ids start at 1 and increase. Unlike a deque index, an id is
+/// not reused when retention evicts old entries.
 ///
-/// Allocation is process-global across all topics, so consecutive entries of
-/// one topic are NOT consecutive integers — never iterate a topic by
-/// incrementing values; a streaming consumer drains them with
-/// ObjectStore::drainNewSince() instead.
+/// Ids come from one process-wide counter, so consecutive entries of a topic are not consecutive integers: do not
+/// iterate a topic by incrementing; ObjectStore::drainNewSince() drains by cursor.
 struct SequentialUID {
   static constexpr uint64_t kInvalidValue = 0;
   static constexpr uint64_t kFirstValidValue = 1;
@@ -25,7 +22,7 @@ struct SequentialUID {
     return value != kInvalidValue;
   }
 
-  /// Thread-safe process-wide UID creation.
+  /// Thread-safe.
   [[nodiscard]] static SequentialUID getNext() noexcept;
 
   friend auto operator<=>(SequentialUID, SequentialUID) = default;

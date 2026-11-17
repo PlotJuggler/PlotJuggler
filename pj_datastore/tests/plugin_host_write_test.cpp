@@ -326,11 +326,9 @@ TEST(PluginDataHostWriteTest, AppendRecordSparseFieldsProduceNullsForMissingColu
 
   auto series_b = std::move(*f.toolbox.readSeries(field_b));
   ASSERT_EQ(series_b.timestamps().size(), 1U);
-  // Validity bit for row 0 should be cleared (null).
   ASSERT_GE(series_b.validityBits().size(), 1U);
   EXPECT_EQ(series_b.validityBits()[0] & 0x01, 0) << "Expected null for missing field b";
 
-  // Field "a" should have valid data.
   auto series_a = std::move(*f.toolbox.readSeries(field_a));
   ASSERT_EQ(series_a.timestamps().size(), 1U);
   EXPECT_DOUBLE_EQ(series_a.raw().values.as_float64[0], 3.14);
@@ -469,7 +467,6 @@ TEST(PluginDataHostWriteTest, ArrowIpcFloat64RoundTrip) {
   SourceWriteHostView writer(source_impl.raw());
   const auto topic = *writer.ensureTopic("data");
 
-  // Build a struct schema: {_timestamp: INT64, value: DOUBLE}
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
@@ -480,7 +477,6 @@ TEST(PluginDataHostWriteTest, ArrowIpcFloat64RoundTrip) {
   ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "value"), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_DOUBLE), NANOARROW_OK);
 
-  // Append 3 rows: {100,1.5}, {200,2.5}, {300,3.5}
   nanoarrow::UniqueArray array;
   ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
@@ -497,7 +493,6 @@ TEST(PluginDataHostWriteTest, ArrowIpcFloat64RoundTrip) {
   ASSERT_TRUE(writer.appendArrowIpc(topic, Span<const uint8_t>(ipc.data(), ipc.size())).has_value());
   source_impl.flushPending();
 
-  // Find the "value" field handle via catalog snapshot.
   auto snapshot = std::move(*f.toolbox.catalogSnapshot());
   FieldHandle value_field{};
   bool found = false;
@@ -527,7 +522,6 @@ TEST(PluginDataHostWriteTest, ArrowIpcCustomTimestampColumnName) {
   SourceWriteHostView writer(source_impl.raw());
   const auto topic = *writer.ensureTopic("custom_ts");
 
-  // Build a struct schema: {ts: INT64, val: FLOAT}
   nanoarrow::UniqueSchema schema;
   ASSERT_EQ(ArrowSchemaInitFromType(schema.get(), NANOARROW_TYPE_STRUCT), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaAllocateChildren(schema.get(), 2), NANOARROW_OK);
@@ -538,7 +532,6 @@ TEST(PluginDataHostWriteTest, ArrowIpcCustomTimestampColumnName) {
   ASSERT_EQ(ArrowSchemaSetName(schema->children[1], "val"), NANOARROW_OK);
   ASSERT_EQ(ArrowSchemaSetType(schema->children[1], NANOARROW_TYPE_FLOAT), NANOARROW_OK);
 
-  // Append 2 rows.
   nanoarrow::UniqueArray array;
   ASSERT_EQ(ArrowArrayInitFromSchema(array.get(), schema.get(), nullptr), NANOARROW_OK);
   ASSERT_EQ(ArrowArrayStartAppending(array.get()), NANOARROW_OK);
@@ -554,7 +547,6 @@ TEST(PluginDataHostWriteTest, ArrowIpcCustomTimestampColumnName) {
   ASSERT_TRUE(writer.appendArrowIpc(topic, Span<const uint8_t>(ipc.data(), ipc.size()), "ts").has_value());
   source_impl.flushPending();
 
-  // Find the "val" field handle via catalog snapshot.
   auto snapshot = std::move(*f.toolbox.catalogSnapshot());
   FieldHandle val_field{};
   bool found = false;
@@ -604,10 +596,6 @@ TEST(PluginDataHostWriteTest, ArrowIpcRejectsMissingTimestampColumn) {
   EXPECT_FALSE(status.has_value()) << "Expected error when timestamp column is missing";
 }
 
-// ---------------------------------------------------------------------------
-// Late column addition (schema evolution)
-// ---------------------------------------------------------------------------
-
 TEST(PluginDataHostWriteTest, LateColumnAddition) {
   Fixture f;
   const auto source = *f.toolbox.createDataSource("sensor");
@@ -616,7 +604,6 @@ TEST(PluginDataHostWriteTest, LateColumnAddition) {
   SourceWriteHostView writer(source_impl.raw());
   const auto topic = *writer.ensureTopic("json");
 
-  // Row 1: only field "x"
   const std::vector<NamedFieldValue> row1 = {{.name = "x", .value = 1.0}};
   ASSERT_TRUE(writer.appendRecord(topic, 10, row1).has_value());
 
@@ -628,7 +615,6 @@ TEST(PluginDataHostWriteTest, LateColumnAddition) {
   ASSERT_TRUE(writer.appendRecord(topic, 20, row2).has_value());
   source_impl.flushPending();
 
-  // Find field handles via catalog
   auto snapshot = std::move(*f.toolbox.catalogSnapshot());
   FieldHandle x_field{}, y_field{};
   for (const auto& fi : snapshot.fields()) {
@@ -641,13 +627,11 @@ TEST(PluginDataHostWriteTest, LateColumnAddition) {
     }
   }
 
-  // x should have 2 rows across 2 chunks
   auto x_series = std::move(*f.toolbox.readSeries(x_field));
   ASSERT_EQ(x_series.timestamps().size(), 2U);
   EXPECT_DOUBLE_EQ(x_series.raw().values.as_float64[0], 1.0);
   EXPECT_DOUBLE_EQ(x_series.raw().values.as_float64[1], 2.0);
 
-  // y should have 1 row (only in chunk 2)
   auto y_series = std::move(*f.toolbox.readSeries(y_field));
   ASSERT_EQ(y_series.timestamps().size(), 1U);
   EXPECT_EQ(y_series.timestamps()[0], 20);
@@ -670,7 +654,6 @@ TEST(PluginDataHostWriteTest, UntypedNullForUnknownFieldIsSkipped) {
   ASSERT_TRUE(writer.appendRecord(topic, 10, row).has_value());
   source_impl.flushPending();
 
-  // Only field "x" should exist
   auto snapshot = std::move(*f.toolbox.catalogSnapshot());
   int field_count = 0;
   for (const auto& fi : snapshot.fields()) {
@@ -697,7 +680,6 @@ TEST(PluginDataHostWriteTest, TypedNullForUnknownFieldCreatesColumn) {
   ASSERT_TRUE(writer.appendRecord(topic, 10, row).has_value());
   source_impl.flushPending();
 
-  // Both fields should exist
   auto snapshot = std::move(*f.toolbox.catalogSnapshot());
   FieldHandle x_field{}, y_field{};
   int field_count = 0;
@@ -713,7 +695,6 @@ TEST(PluginDataHostWriteTest, TypedNullForUnknownFieldCreatesColumn) {
   }
   EXPECT_EQ(field_count, 2);
 
-  // y should have 1 row with null value
   auto y_series = std::move(*f.toolbox.readSeries(y_field));
   ASSERT_EQ(y_series.timestamps().size(), 1U);
   ASSERT_GE(y_series.validityBits().size(), 1U);
@@ -728,7 +709,6 @@ TEST(PluginDataHostWriteTest, VariableLengthArraySimulation) {
   SourceWriteHostView writer(source_impl.raw());
   const auto topic = *writer.ensureTopic("varlen");
 
-  // Row 1: 2-element array
   const std::vector<NamedFieldValue> row1 = {
       {.name = "data[0]", .value = 10.0},
       {.name = "data[1]", .value = 20.0},
@@ -745,7 +725,6 @@ TEST(PluginDataHostWriteTest, VariableLengthArraySimulation) {
   ASSERT_TRUE(writer.appendRecord(topic, 200, row2).has_value());
   source_impl.flushPending();
 
-  // Find field handles
   auto snapshot = std::move(*f.toolbox.catalogSnapshot());
   FieldHandle d0{}, d2{};
   for (const auto& fi : snapshot.fields()) {
@@ -758,13 +737,11 @@ TEST(PluginDataHostWriteTest, VariableLengthArraySimulation) {
     }
   }
 
-  // data[0] should have 2 rows across 2 chunks
   auto s0 = std::move(*f.toolbox.readSeries(d0));
   ASSERT_EQ(s0.timestamps().size(), 2U);
   EXPECT_DOUBLE_EQ(s0.raw().values.as_float64[0], 10.0);
   EXPECT_DOUBLE_EQ(s0.raw().values.as_float64[1], 11.0);
 
-  // data[2] should have 1 row (only in chunk 2)
   auto s2 = std::move(*f.toolbox.readSeries(d2));
   ASSERT_EQ(s2.timestamps().size(), 1U);
   EXPECT_EQ(s2.timestamps()[0], 200);

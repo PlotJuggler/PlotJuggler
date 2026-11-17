@@ -24,8 +24,7 @@
 namespace PJ::proc {
 namespace {
 
-// Minimal DataProcessor stand-ins — the C++ builtins were retired (M9); the
-// adapter is exercised with these instead of a real filter.
+// Minimal DataProcessor stand-ins for the adapter.
 struct PassThrough : DataProcessor {
   [[nodiscard]] const char* id() const override {
     return "passthrough";
@@ -86,8 +85,6 @@ std::vector<double> readValues(PJ::DataEngine& engine, PJ::TopicId tid) {
   return out;
 }
 
-// The keystone: a DataProcessor, wrapped by the adapter, installed as a real
-// IncrementalEngine node, materializes a correct filtered output topic.
 TEST(ProcessorSisoAdapterTest, AbsoluteRunsThroughEngineAndMaterializesOutput) {
   PJ::DataEngine engine;
   PJ::IncrementalEngine derived(engine);
@@ -110,8 +107,6 @@ TEST(ProcessorSisoAdapterTest, AbsoluteRunsThroughEngineAndMaterializesOutput) {
   EXPECT_DOUBLE_EQ(vals[2], 3.0);
 }
 
-// A suppressing processor (None always emits, but exercise the per-sample bridge
-// for timestamp + value pass-through) keeps timestamp and value through the adapter.
 TEST(ProcessorSisoAdapterTest, BridgesTimestampAndValuePerSample) {
   auto processor = std::make_shared<PassThrough>();
   const long before = processor.use_count();

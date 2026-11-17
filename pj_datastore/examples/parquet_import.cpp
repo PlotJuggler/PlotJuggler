@@ -102,7 +102,6 @@ std::vector<ColumnMemory> measure_memory(
     const std::shared_ptr<arrow::Table>& table) {
   std::vector<ColumnMemory> result(num_columns);
 
-  // Count encoding occurrences per column to determine dominant encoding
   constexpr int kNumEncodings = 5;
   std::vector<std::vector<uint32_t>> enc_counts(num_columns, std::vector<uint32_t>(kNumEncodings, 0));
 
@@ -116,7 +115,6 @@ std::vector<ColumnMemory> measure_memory(
     }
   }
 
-  // Determine dominant encoding per column
   for (std::size_t col = 0; col < num_columns; ++col) {
     uint32_t max_count = 0;
     for (int enc = 0; enc < kNumEncodings; ++enc) {
@@ -127,8 +125,7 @@ std::vector<ColumnMemory> measure_memory(
     }
   }
 
-  // Theoretical bytes: arrow type byte width * total_rows, or actual string
-  // length for string columns
+  // Theoretical bytes: the uncompressed size, Arrow byte width × rows (string bytes for strings, a byte per bool).
   auto total_rows = static_cast<std::size_t>(table->num_rows());
   for (std::size_t col = 0; col < num_columns; ++col) {
     const auto& mapping = mappings[col];
@@ -136,7 +133,6 @@ std::vector<ColumnMemory> measure_memory(
     auto arrow_type = arrow_col->type();
 
     if (arrow_type->id() == arrow::Type::STRING || arrow_type->id() == arrow::Type::LARGE_STRING) {
-      // Sum actual string data length across all chunks
       std::size_t string_bytes = 0;
       for (int i = 0; i < arrow_col->num_chunks(); ++i) {
         if (arrow_type->id() == arrow::Type::STRING) {
@@ -149,7 +145,6 @@ std::vector<ColumnMemory> measure_memory(
       }
       result[col].theoretical_bytes = string_bytes;
     } else if (arrow_type->id() == arrow::Type::BOOL) {
-      // 1 byte per bool uncompressed
       result[col].theoretical_bytes = total_rows;
     } else {
       auto byte_width = static_cast<std::size_t>(arrow_type->byte_width());
@@ -165,7 +160,6 @@ std::vector<ColumnMemory> measure_memory(
 void print_report(
     const std::vector<ColumnMapping>& mappings, const std::vector<ColumnMemory>& memory,
     const std::shared_ptr<arrow::Table>& table, double ingest_seconds) {
-  // Column widths
   constexpr int kNameW = 24;
   constexpr int kTypeW = 12;
   constexpr int kEncW = 14;
@@ -178,7 +172,6 @@ void print_report(
   std::cout << "Columns: " << mappings.size() << "\n";
   std::cout << "Ingest:  " << std::fixed << std::setprecision(3) << ingest_seconds << " s\n\n";
 
-  // Header
   std::cout << std::left << std::setw(kNameW) << "Column" << std::setw(kTypeW) << "Arrow Type" << std::setw(kEncW)
             << "PJ Encoding" << std::right << std::setw(kBytesW) << "Actual" << std::setw(kBytesW) << "Theoretical"
             << std::setw(kRatioW) << "Ratio"
@@ -306,7 +299,6 @@ int main(int argc, char* argv[]) {
   }
   auto& [type_tree, arrow_mappings] = *schema_result;
 
-  // Build local ColumnMapping for the report
   std::vector<ColumnMapping> mappings;
   mappings.reserve(arrow_mappings.size());
   for (const auto& am : arrow_mappings) {
@@ -369,7 +361,6 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  // Flush and commit
   auto flushed = writer.flushAll();
   engine.commitChunks(std::move(flushed));
 

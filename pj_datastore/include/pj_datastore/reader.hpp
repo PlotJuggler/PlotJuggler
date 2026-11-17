@@ -17,54 +17,40 @@ namespace PJ {
 
 class DataEngine;
 
-/// Read-only facade over committed DataEngine storage.
-/// Provides listing, metadata, type-tree lookup, range queries,
-/// and latest-at point queries.
+/// Read access to a DataEngine. Each call takes the engine lock; the RangeCursor and SeriesReader it returns keep it
+/// until they are destroyed, so do not hold one across work that needs the engine from another thread.
 class DataReader {
  public:
-  /// Create a read-only facade bound to `engine`.
   explicit DataReader(const DataEngine& engine);
 
-  /// List all dataset ids known by the engine.
   [[nodiscard]] std::vector<PJ::DatasetId> listDatasets() const;
 
-  /// List topic ids for one dataset.
   [[nodiscard]] std::vector<PJ::TopicId> listTopics(PJ::DatasetId dataset_id) const;
 
-  /// Lookup schema tree for a topic (nullptr if unknown).
+  /// nullptr if unknown. Returned past the lock: safe because the registry never erases a schema, and only
+  /// TypeRegistry::evolveSchema() (no production caller) replaces a tree.
   [[nodiscard]] const PJ::TypeTreeNode* getTypeTree(PJ::TopicId topic_id) const;
 
-  /// Return topic metadata if topic exists.
   [[nodiscard]] std::optional<TopicMetadata> getMetadata(PJ::TopicId topic_id) const;
 
-  /// Registered schema name of a topic (e.g. "sensor_msgs/msg/Imu"); nullopt when
-  /// the topic is unknown or was created without a named schema (schema_id 0).
+  /// e.g. "sensor_msgs/msg/Imu"; nullopt for an unknown or schema-less topic.
   [[nodiscard]] std::optional<std::string> getSchemaName(PJ::TopicId topic_id) const;
 
-  /// Create range cursor over [t_min, t_max].
   [[nodiscard]] PJ::Expected<RangeCursor> rangeQuery(const QueryRange& range) const;
 
-  /// Return the latest scalar sample at or before query time; nullopt payload if
-  /// no row exists. The value is materialized (read out under the engine lock)
-  /// into a MaterializedSample, so no raw TopicChunk* escapes — `value` is the
-  /// topic's scalar column (index 0).
+  /// The row at or before `point.t`, every column read out under the lock (see MaterializedSample).
   [[nodiscard]] PJ::Expected<std::optional<MaterializedSample>> latestAt(const QueryPoint& point) const;
 
-  /// Latest string value at or before query time for column `column_index`
-  /// (zero-order hold), its row's time and its row, copied into a std::string
-  /// under the engine lock so no chunk-internal dictionary memory escapes. nullopt
-  /// payload when no row exists at or before `point.t`, the column index is out of
-  /// range, or the column is not a string column. A null cell in the latest row is
-  /// a sample whose `value` is nullopt, without a walk back to an older row.
+  /// Zero-order hold on a string column, copied out under the lock. nullopt for no row at or before `point.t`, a
+  /// column out of range or not a string column. A null cell in the latest row is a sample with a null `value`; it
+  /// does not walk back to an older row.
   [[nodiscard]] PJ::Expected<std::optional<StringSample>> latestStringAt(
       const QueryPoint& point, std::size_t column_index) const;
 
-  /// Logical type of column `column_index` of `topic_id`, from the schema while no row is stored yet. nullopt when
-  /// the topic or the column does not exist.
+  /// Comes from the schema while no row is stored yet. nullopt if the topic or the column does not exist.
   [[nodiscard]] std::optional<PJ::PrimitiveType> columnType(PJ::TopicId topic_id, std::size_t column_index) const;
 
-  /// Create a series view over one numeric/bool topic column. The returned
-  /// reader exposes only value-bearing samples; null rows are skipped.
+  /// A numeric or bool column; null rows are not samples.
   [[nodiscard]] PJ::Expected<SeriesReader> series(PJ::TopicId topic_id, std::size_t column_index) const;
 
  private:

@@ -1,11 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Phase 3 — verify that a parser can resolve both the scalar and
-// object write hosts from the service registry and write to each from
-// a single parse() call. Exercises the service-registry composition
-// path without the host-side delegated-ingest wiring (that lives in
-// pj_plugins and lands with the MCAP port).
+// A parser resolves both the scalar and the object write host from the service registry and writes to
+// each from a single parse() call.
 
 #include <gtest/gtest.h>
 
@@ -45,13 +42,12 @@ class MediaParser : public MessageParserPluginBase {
     std::memcpy(&seq, payload.data(), sizeof(uint64_t));
     Span<const uint8_t> body(payload.data() + sizeof(uint64_t), payload.size() - sizeof(uint64_t));
 
-    // 1. Scalar side — always required.
     const std::vector<sdk::NamedFieldValue> fields = {{.name = "seq", .value = static_cast<uint64_t>(seq)}};
     if (auto s = writeHost().appendRecord(timestamp_ns, fields); !s) {
       return s;
     }
 
-    // 2. Object side — only if the host registered it.
+    // Object side: only if the host registered it.
     if (auto* obj = objectWriteHost()) {
       if (auto s = obj->pushOwned(timestamp_ns, body); !s) {
         return s;
@@ -61,8 +57,7 @@ class MediaParser : public MessageParserPluginBase {
   }
 };
 
-// Minimal implementation of PJ_service_registry_vtable_t for tests.
-// Stores a static map of service name -> PJ_service_t fat pointer.
+// Minimal PJ_service_registry_vtable_t for tests: a map of service name -> PJ_service_t.
 struct MockRegistryState {
   std::unordered_map<std::string, PJ_service_t> services;
 };
@@ -91,26 +86,22 @@ bool mockGetService(
 }
 
 TEST(ParserObjectWriteHostTest, ParserWritesToBothHostsFromOneParse) {
-  // Host setup: one scalar topic + one object topic.
   DataEngine engine;
   auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
   ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
   PJ_data_source_handle_t source_handle{static_cast<uint32_t>(*dataset_or)};
 
-  // Scalar: ensure topic + DatastoreParserWriteHost bound to it.
   DatastoreSourceWriteHost scalar_impl(engine, source_handle);
   auto scalar_view = sdk::SourceWriteHostView{scalar_impl.raw()};
   const auto topic = *scalar_view.ensureTopic("media_topic");
   DatastoreParserWriteHost parser_write_impl(engine, topic);
 
-  // Object: register topic in ObjectStore; bind DatastoreParserObjectWriteHost.
   ObjectStore store;
   DatastoreSourceObjectWriteHost obj_source(store, *dataset_or);
   const auto obj_topic =
       *sdk::SourceObjectWriteHostView{obj_source.raw()}.registerTopic("media_topic", R"({"media_class":"image"})");
   DatastoreParserObjectWriteHost parser_obj_impl(store, obj_topic.id);
 
-  // Build the registry with both services.
   MockRegistryState registry_state;
   const auto scalar_raw = parser_write_impl.raw();
   const auto obj_raw = parser_obj_impl.raw();
@@ -124,7 +115,6 @@ TEST(ParserObjectWriteHostTest, ParserWritesToBothHostsFromOneParse) {
   };
   const PJ_service_registry_t registry_raw{&registry_state, &registry_vtable};
 
-  // Bind the parser through the SDK.
   MediaParser parser;
   ASSERT_TRUE(parser.bind(sdk::ServiceRegistry{registry_raw}).has_value());
 
@@ -138,7 +128,6 @@ TEST(ParserObjectWriteHostTest, ParserWritesToBothHostsFromOneParse) {
 
   ASSERT_TRUE(parser.parse(100, Span<const uint8_t>(payload.data(), payload.size())).has_value());
 
-  // Object-store side: bytes landed.
   auto resolved = store.latestAt(ObjectTopicId{obj_topic.id}, 100);
   ASSERT_TRUE(resolved.has_value());
   ASSERT_NE(resolved->payload.anchor, nullptr);
@@ -146,9 +135,7 @@ TEST(ParserObjectWriteHostTest, ParserWritesToBothHostsFromOneParse) {
   EXPECT_TRUE(
       std::equal(resolved->payload.bytes.begin(), resolved->payload.bytes.end(), expected.begin(), expected.end()));
 
-  // (Scalar side requires flushing + a read path; Phase-3 scope is proving
-  // both hosts were resolved and invoked. Scalar writes go into DataEngine
-  // and are covered by plugin_host_write_test's existing scalar tests.)
+  // The scalar side is not read back here: the test proves both hosts were resolved and invoked.
 }
 
 TEST(ParserObjectWriteHostTest, ParserFallsBackToScalarOnlyWhenObjectServiceAbsent) {
@@ -165,7 +152,6 @@ TEST(ParserObjectWriteHostTest, ParserFallsBackToScalarOnlyWhenObjectServiceAbse
   MockRegistryState registry_state;
   const auto scalar_raw = parser_write_impl.raw();
   registry_state.services[ParserWriteHostService::kName] = PJ_service_t{scalar_raw.ctx, scalar_raw.vtable};
-  // Note: no ParserObjectWriteHostService registered.
 
   static const PJ_service_registry_vtable_t registry_vtable = {
       PJ_PLUGIN_DATA_API_VERSION,
@@ -177,8 +163,7 @@ TEST(ParserObjectWriteHostTest, ParserFallsBackToScalarOnlyWhenObjectServiceAbse
   MediaParser parser;
   ASSERT_TRUE(parser.bind(sdk::ServiceRegistry{registry_raw}).has_value());
 
-  // The parser's view into the object host is empty — it's the scalar-only
-  // path. parse() should take the non-media branch and still succeed.
+  // The parser's object host view is empty: parse() takes the non-media branch and still succeeds.
   std::vector<uint8_t> payload(sizeof(uint64_t));
   uint64_t seq = 1;
   std::memcpy(payload.data(), &seq, sizeof(uint64_t));

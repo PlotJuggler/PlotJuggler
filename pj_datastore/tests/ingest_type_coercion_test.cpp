@@ -4,7 +4,7 @@
 // A field whose value type drifts across records (JSON sign flips, 1 vs 1.5,
 // ...) keeps the column type it was created with: values that convert exactly
 // are stored converted, the rest become null for that field only — the other
-// fields of the record still land. PlotJuggler#1427.
+// fields of the record still land.
 
 #include <gtest/gtest.h>
 

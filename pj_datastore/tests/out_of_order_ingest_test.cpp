@@ -1,14 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Lossless out-of-order ingest. Real recordings interleave publishers whose
-// embedded timestamps disagree (e.g. amcl future-dating /tf by seconds while
-// odom stamps "now"), so arrival order is NOT timestamp order. The engine
-// must retain every row regardless of timestamp regressions and answer
-// queries in timestamp order. Contract: each sealed chunk is internally
-// sorted (stable for duplicate timestamps); sealed chunks of one topic may
-// overlap in time; queries (rangeQuery / latestAt / metadata extrema) stay
-// correct over overlapping chunks.
+// Lossless out-of-order ingest: arrival order is not timestamp order (publishers' embedded timestamps
+// disagree), and the engine retains every row regardless of timestamp regressions. Each sealed chunk is
+// internally sorted (stable for duplicate timestamps); sealed chunks of one topic may overlap in time;
+// queries (rangeQuery / latestAt / metadata extrema) stay correct over overlapping chunks.
 
 #include <gtest/gtest.h>
 
@@ -85,7 +81,7 @@ TEST(OutOfOrderIngestTest, AppendScalarToleratesOutOfOrder) {
 }
 
 TEST(OutOfOrderIngestTest, RowAppendAcceptsInterleavedPublisherTimestamps) {
-  // amcl-shaped: publisher A stamps "now", publisher B future-dates by 9.9 s.
+  // Publisher A stamps "now", publisher B future-dates by 9.9 s.
   // Interleaved arrival makes every other row a timestamp regression.
   constexpr Timestamp kSkew = 9'900'000'000;
   constexpr std::size_t kPerPublisher = 300;

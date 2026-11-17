@@ -1,12 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Focused unit tests for the OrderedEntries value type: they exercise the
-// ordering invariants (timestamp-ascending storage + a uid_order side index that
-// is a strictly-ascending-by-UID permutation) DIRECTLY through the encapsulated
-// API, across in-order and out-of-order pushes, eviction, re-UID, rebuild, shift,
-// and the cross-series bulk ops. The ObjectStore black-box tests cover the same
-// behavior end to end; these pin the invariant at the value-type boundary.
+// OrderedEntries value type, through its own API: entries are stored timestamp-ascending, with a uid_order side
+// index that is a strictly-ascending-by-UID permutation of them.
 
 #include "pj_datastore/ordered_entries.hpp"
 
@@ -23,8 +19,7 @@
 namespace PJ {
 namespace {
 
-// Build an entry at `ts` with a freshly minted (globally increasing) UID, exactly
-// as ObjectStore's push paths do. The payload is left default (irrelevant here).
+// Builds an entry at `ts` with a freshly minted (globally increasing) UID, as ObjectStore's push paths do.
 ObjectEntry makeEntry(Timestamp ts, SequentialUID* out_uid = nullptr) {
   ObjectEntry entry;
   entry.timestamp = ts;

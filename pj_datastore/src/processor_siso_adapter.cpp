@@ -17,7 +17,7 @@ void ProcessorSisoAdapter::reset() {
 
 PJ::StorageKind ProcessorSisoAdapter::outputKind(PJ::StorageKind input_kind) const {
   const PJ::StorageKind in[1] = {input_kind};
-  // DataProcessor::outputKinds returns one kind per output; SISO has exactly one.
+  // A SISO processor has exactly one output.
   return processor_->outputKinds(in).front();
 }
 
@@ -25,7 +25,7 @@ bool ProcessorSisoAdapter::calculate(
     PJ::Timestamp time, const PJ::VarValue& input, PJ::Timestamp& out_time, PJ::VarValue& out_value) {
   std::optional<Sample> out = processor_->calculateNextPoint(Sample::scalar(time, input));
   if (!out) {
-    return false;  // suppressed row (e.g. first sample of derivative/integral)
+    return false;
   }
   out_time = out->raw_ts_ns;
   out_value = std::move(out->value());

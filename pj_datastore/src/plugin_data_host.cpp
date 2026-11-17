@@ -58,18 +58,13 @@ using FieldHandle = PJ_field_handle_t;
   return std::string_view(view.data == nullptr ? "" : view.data, view.size);
 }
 
-// Collapse runs of '/' into a single '/' in a topic/field name. Plugin-supplied names
-// are opaque, but an empty '/'-segment ("//") carries no meaning in the curve
-// hierarchy, so we normalize it here — the one boundary every DataSource/Parser name
-// crosses to become a datastore key — so the stored key, the UI catalog (which reads
-// the descriptor name) and the by-name transform resolver all agree on a single slash.
-// Common case (no "//") allocates nothing: callers guard on `needsSlashNormalization`.
+// The write hosts collapse "//" to "/" in topic and field names, so the stored key, the catalog and the by-name
+// transform resolver agree. Callers check needsSlashNormalization() first, so the common name allocates nothing.
 [[nodiscard]] bool needsSlashNormalization(std::string_view name) {
   return name.find("//") != std::string_view::npos;
 }
 
-// A field also needs work if it starts with '/' (a leading slash would double up at
-// the "topic/field" junction), not just when it has internal "//".
+// A field's leading '/' would double up at the "topic/field" junction.
 [[nodiscard]] bool needsFieldNormalization(std::string_view name) {
   return needsSlashNormalization(name) || (!name.empty() && name.front() == '/');
 }
@@ -464,8 +459,7 @@ template <typename T>
   return rc == NANOARROW_OK && ArrowArrayFinishElement(array) == NANOARROW_OK;
 }
 
-/// appendRow over rows [begin, end) of a numeric column without nulls, as one block. Measured on a 7.2M-sample
-/// float64 series, the row-by-row append costs ~36 ns a sample; whole-series toolbox reads go through here.
+/// appendRow() over rows [begin, end) of a numeric column without nulls, as one block, for whole-series toolbox reads.
 template <typename T>
 [[nodiscard]] bool appendNumericRun(
     ArrowArray* array, const TopicChunk& chunk, std::size_t col, std::size_t begin, std::size_t end) {
@@ -589,7 +583,7 @@ Status readSeriesArrowWindow(
     return unexpected(std::string("readSeriesArrow: ArrowArrayStartAppending failed"));
   }
 
-  // Rows below the topic's retention floor are logically evicted: a reader must not see them (the retention contract).
+  // Rows under the retention floor are evicted: a reader must not see them.
   const auto& chunks = storage->sealedChunks();
   const Timestamp floor = storage->retentionFloor();
   const Timestamp t_min = std::max(first, floor);
@@ -645,14 +639,9 @@ Status scanSeriesValues(
   return okStatus();
 }
 
-// Engine lock(s) for a write-host operation (driven by the worker while the GUI
-// reads). The shared PJ::lockEnginePair (engine.hpp) in this file's vocabulary:
-// with a staging engine (the pause/resume copy) armed it locks BOTH via
-// std::lock so the worker's write-then-replay can't invert order against flushTo
-// (which also std::lock()s both); otherwise a single recursive lock. Recursive so
-// the locked methods underneath — and ensureField() nested in appendRecord() —
-// re-acquire. The parser-binding ingest route locks through the same helper, so
-// the two write paths can never drift out of lock order.
+// Engine locks for a write-host operation (the worker writes while the GUI reads). With a staging engine armed it takes
+// both with std::lock, as flushTo() and the parser-binding route do, so they cannot deadlock. Recursive, so nested
+// calls such as ensureField() in appendRecord() re-acquire.
 [[nodiscard]] inline EngineLockPair lockWriteEngines(DataEngine& live, DataEngine* staging) {
   return lockEnginePair(live, staging);
 }
@@ -662,14 +651,9 @@ struct WriteCore {
 
   DataEngine& engine;
   DataWriter writer;
-  // Optional secondary engine for the streaming pause/resume two-engine
-  // lockstep. When non-null, every ensureTopic/ensureField that lands a new
-  // id in `engine_` is mirrored into `*secondary_engine_` with the SAME id —
-  // so a cached plugin TopicHandle/FieldHandle still resolves after the host
-  // swaps which engine is the active write target. Mirroring happens inside
-  // ensureTopic/ensureField so it covers both the explicit C-ABI register
-  // paths AND the lazy "first-write creates the column" paths inside
-  // appendRecord / appendBoundRecord / appendArrowStream.
+  // The pause/resume staging engine, or null. Every topic and field ensureTopic() and ensureField() land is created
+  // there with the same id (appendRecord() and appendArrowStream() create columns through ensureField() too), so a
+  // plugin's cached handles still resolve after setTarget() swaps engines.
   DataEngine* secondary_engine = nullptr;
   std::string last_error;
 
@@ -699,10 +683,7 @@ struct WriteCore {
     }
   };
 
-  // Borrowed lookup key: lets the per-record hot path probe field_cache without
-  // heap-allocating a std::string for the field name on every (cache-hit) field
-  // — the dominant temporary-allocation source during ingest. Heterogeneous
-  // lookup is enabled by the is_transparent hash/equal below.
+  // Borrowed key: the per-record hot path probes field_cache without allocating a std::string per field.
   struct TopicFieldKeyView {
     TopicId topic_id;
     std::string_view field_name;
@@ -718,8 +699,7 @@ struct WriteCore {
     }
 
    private:
-    // Hash the name as a string_view in BOTH overloads so an owning key and a
-    // borrowed view with equal content always hash identically.
+    // Both overloads hash the name as a string_view, so an owning key and an equal view hash alike.
     static std::size_t hash(TopicId topic_id, std::string_view field_name) noexcept {
       std::size_t h1 = std::hash<TopicId>{}(topic_id);
       std::size_t h2 = std::hash<std::string_view>{}(field_name);
@@ -727,9 +707,6 @@ struct WriteCore {
     }
   };
 
-  // Transparent equality covering owning/view in either position, so
-  // robin_map::find can accept a borrowed TopicFieldKeyView. (std::string ==
-  // std::string_view compares by content.)
   struct TopicFieldKeyEq {
     using is_transparent = void;
     template <typename A, typename B>
@@ -747,9 +724,8 @@ struct WriteCore {
     }
   };
 
-  // Probed per field per appended record. std::hash of an integer is the
-  // identity and robin_map masks the low bits, so small topic/field ids must be
-  // mixed: xor-combining them left ~2k distinct hashes for ~200k fields.
+  // Probed per field per appended record. std::hash of an integer is the identity (libstdc++, libc++) and robin_map
+  // masks the low bits, so the small topic and field ids are mixed first.
   struct TopicFieldIdKeyHash {
     std::size_t operator()(const TopicFieldIdKey& key) const noexcept {
       uint64_t mixed = (static_cast<uint64_t>(key.topic_id) << 32) | key.field_id;
@@ -775,17 +751,14 @@ struct WriteCore {
 
   [[nodiscard]] bool createDataSource(std::string_view name, DataSourceHandle* out_source) {
     auto engine_locks = lockWriteEngines(engine, secondary_engine);
-    // Each plugin-created source gets its OWN time domain, exactly as the app's
-    // own file/stream loaders do. The per-source display offset lives on the
-    // domain, so a dataset left on the default domain (id 0) can never carry
-    // one — its Source Timeline bar would draw but refuse every drag.
+    // Each source gets its own time domain, which holds its display offset; the default domain (id 0) cannot carry
+    // one.
     auto td_or = engine.createTimeDomain(std::string(name));
     if (!td_or.has_value()) {
       setError(td_or.error());
       return false;
     }
-    // Same-id mirror per the two-engine lockstep invariant above, done before
-    // the dataset exists so a failed mirror leaves nothing half-created.
+    // Mirrored before the dataset exists, so a failed mirror creates no dataset.
     if (secondary_engine != nullptr) {
       auto mirror_or = secondary_engine->createTimeDomain(std::string(name), *td_or);
       if (!mirror_or.has_value()) {
@@ -803,16 +776,13 @@ struct WriteCore {
     return true;
   }
 
-  // Idempotent re-mirror of a topic onto the secondary engine. Called on
-  // every successful ensureTopic path (including cache hits) so a previously
-  // failed mirror is retried instead of leaving the engines diverged forever
-  // behind the cache.
+  // Runs on every successful ensureTopic() path, cache hits included, so a failed mirror is retried.
   [[nodiscard]] bool mirrorTopicToSecondary(DatasetId dataset_id, TopicId topic_id, std::string_view topic_name) {
     if (secondary_engine == nullptr) {
       return true;
     }
     if (secondary_engine->getTopicStorage(topic_id) != nullptr) {
-      return true;  // already mirrored (most common case)
+      return true;  // already mirrored
     }
     TopicDescriptor desc;
     desc.name = std::string(topic_name);
@@ -826,8 +796,6 @@ struct WriteCore {
   }
 
   [[nodiscard]] bool ensureTopic(DataSourceHandle source, std::string_view topic_name, TopicHandle* out_topic) {
-    // Normalize "//" → "/" once, at the ingest boundary, so the stored topic name,
-    // the catalog and the by-name transform resolver all key off the same string.
     std::string topic_name_normalized;
     if (needsSlashNormalization(topic_name)) {
       topic_name_normalized = normalizeSlashes(topic_name);
@@ -842,8 +810,6 @@ struct WriteCore {
 
     DatasetTopicKey key{.dataset_id = source.id, .topic_name = std::string(topic_name)};
     if (auto it = topic_cache.find(key); it != topic_cache.end()) {
-      // Cache hit — but the secondary may still be missing this topic if a
-      // prior mirror failed; retry. No-op if already mirrored.
       if (!mirrorTopicToSecondary(source.id, it->second.id, topic_name)) {
         return false;
       }
@@ -857,7 +823,6 @@ struct WriteCore {
     for (TopicId tid : topic_ids) {
       const auto* storage = engine.getTopicStorage(tid);
       if (storage != nullptr && storage->descriptor().name == topic_name) {
-        // Found in primary — same retry semantics on the secondary.
         if (!mirrorTopicToSecondary(source.id, tid, topic_name)) {
           return false;
         }
@@ -877,10 +842,6 @@ struct WriteCore {
       return false;
     }
 
-    // Lockstep mirror to the secondary engine (streaming two-engine model).
-    // Forces the same TopicId on both sides so a later setTarget(secondary)
-    // swap finds the topic that the plugin's cached TopicHandle refers to.
-    // See DataEngine::createTopicField for the field-level counterpart.
     if (!mirrorTopicToSecondary(source.id, *tid_or, topic_name)) {
       return false;
     }
@@ -911,18 +872,14 @@ struct WriteCore {
     return true;
   }
 
-  // With `out_column_type` null (the explicit C-ABI register path) a type
-  // mismatch against an existing column is an error. Non-null (appendRecord's
-  // lazy path) the existing column is returned with its type instead, and the
-  // caller converts the value (coerceExact).
+  // With `out_column_type` null (the C-ABI register path) a type mismatch with an existing column is an error;
+  // otherwise (appendRecord()'s lazy path) the existing column and its type come back, and the caller converts the
+  // value.
   [[nodiscard]] bool ensureField(
       TopicHandle topic, std::string_view field_name, PJ_primitive_type_t abi_type, FieldHandle* out_field,
       PrimitiveType* out_column_type = nullptr) {
-    // Normalize the field name on every entry point (direct ensureField and the lazy
-    // auto-create inside appendRecord). A field path is relative to its topic, so two
-    // things get fixed: internal runs "//" collapse to "/", and a leading '/' (e.g. a
-    // CSV column header "/robot/pose/x") is dropped — otherwise the UI, which joins
-    // topic + '/' + field, would render "topic//robot/pose/x".
+    // A field path is relative to its topic: a leading '/' (a CSV header such as "/robot/pose/x") is dropped, or the
+    // joined "topic/field" name would double the slash.
     std::string field_name_normalized;
     if (needsFieldNormalization(field_name)) {
       field_name_normalized = normalizeSlashes(field_name);
@@ -945,9 +902,6 @@ struct WriteCore {
     }
     const PrimitiveType type = *type_or;
 
-    // Borrowed probe: no std::string is allocated on the common cache-hit path
-    // (every field after a topic's first record). The owning key is built only
-    // when a new field is inserted below.
     if (auto it = field_cache.find(TopicFieldKeyView{.topic_id = topic.id, .field_name = field_name});
         it != field_cache.end()) {
       PrimitiveType existing{};
@@ -958,10 +912,8 @@ struct WriteCore {
         setError(fmt::format("field '{}' already exists with a different type", field_name));
         return false;
       }
-      // Idempotent re-mirror on cache hit — if a previous mirror failed, this
-      // re-attempts it. createTopicField returns the existing FieldId when
-      // (name, type) already matches in the secondary, so it's a cheap no-op
-      // in the steady state.
+      // Re-mirrored on a cache hit, so a failed mirror is retried; createTopicField() returns the existing FieldId when
+      // name and type match.
       if (secondary_engine != nullptr) {
         auto mirror_or =
             secondary_engine->createTopicField(topic.id, field_name, existing, std::optional<FieldId>{it->second.id});
@@ -978,9 +930,8 @@ struct WriteCore {
       return true;
     }
 
-    // Cache miss on a column that may already exist with another type: a fresh
-    // core after a setTarget swap, or a column another writer created. Adopt its
-    // type so ensureColumn resolves it instead of rejecting the mismatch.
+    // On a cache miss the column may exist with another type (a fresh core after a setTarget() swap, or another
+    // writer's column): adopt its type, so ensureColumn() resolves it rather than rejecting the mismatch.
     PrimitiveType column_type = type;
     if (out_column_type != nullptr) {
       const auto& columns = storage->columnDescriptors();
@@ -995,17 +946,7 @@ struct WriteCore {
       return false;
     }
 
-    // Lockstep mirror to the secondary engine (streaming two-engine model).
-    // Forces the same FieldId via DataEngine::createTopicField so that a
-    // cached FieldHandle resolves identically on either engine after a
-    // setTarget swap. Runs from EVERY path that lands here — explicit C-ABI
-    // ensureField AND the lazy "auto-create column on first non-null write"
-    // path inside appendRecord/appendBoundRecord/appendArrowStream — because
-    // they all funnel through this method.
-    //
-    // requested_id is wrapped in std::optional so FieldId 0 (the first field
-    // of any topic) is forced, not auto-assigned. A naive `FieldId == 0`
-    // sentinel would silently mis-assign the first field of every topic.
+    // The requested id is an optional because FieldId 0, a topic's first field, must be forced too.
     if (secondary_engine != nullptr) {
       auto mirror_or =
           secondary_engine->createTopicField(topic.id, field_name, column_type, std::optional<FieldId>{*field_id_or});
@@ -1025,9 +966,8 @@ struct WriteCore {
     return true;
   }
 
-  // A value of the wrong type for its column: returns it converted when that is
-  // exact, else nullopt after reporting the field (once) — the caller stores
-  // null for that field and keeps the rest of the record.
+  // A value of the wrong type for its column: converted when that is exact, else nullopt after reporting the field
+  // once; the caller stores null for that field and keeps the rest of the record.
   [[nodiscard]] std::optional<PJ_scalar_value_t> convertForColumn(
       TopicId topic_id, FieldId field_id, const PJ_scalar_value_t& value, PrimitiveType column_type) {
     auto converted = coerceExact(value, column_type);
@@ -1114,9 +1054,8 @@ struct WriteCore {
     };
     std::vector<ResolvedField> resolved;
     resolved.reserve(field_count);
-    // Backing store for names that needed "//" → "/" normalization; a deque keeps
-    // element addresses stable so the string_views below (and in seen_names) stay
-    // valid for the whole record. Untouched on the common (no-"//") path.
+    // Normalized names: a deque keeps their addresses stable, so the string_views into it (seen_names too) stay valid
+    // for the whole record.
     std::deque<std::string> normalized_names;
     for (std::size_t i = 0; i < field_count; ++i) {
       const auto& field = fields[i];
@@ -1134,13 +1073,10 @@ struct WriteCore {
         return false;
       }
       if (field.is_null) {
-        // Null values: look up existing field by name (borrowed probe, no alloc).
         auto it = field_cache.find(TopicFieldKeyView{.topic_id = topic.id, .field_name = name});
         if (it == field_cache.end()) {
-          // Field has never been seen. Check if this is a typed null (the ABI
-          // carries value.type even when is_null is true). A valid type lets
-          // us create the column now; an untyped null (kNull) is silently
-          // skipped — the column will be created when a non-null value arrives.
+          // A typed null (the ABI keeps value.type when is_null is set) creates the column now; an untyped one
+          // (PJ_PRIMITIVE_TYPE_UNSPECIFIED) is skipped until a value arrives.
           auto type_or = fromAbiType(field.value.type);
           if (type_or.has_value()) {
             FieldHandle handle{};
@@ -1261,12 +1197,7 @@ struct WriteCore {
     return true;
   }
 
-  /// Ingest a whole Arrow C Data Interface stream into a topic.
-  ///
-  /// Ownership contract: callers pass a producer-owned @p stream. The caller
-  /// decides whether to release after this call — this method does NOT
-  /// call stream->release. That lets the outermost ABI trampoline enforce
-  /// the "success releases, failure retains" rule uniformly.
+  /// Does not release `stream`: the ABI trampoline releases it on success only.
   [[nodiscard]] bool appendArrowStream(
       TopicHandle topic, struct ArrowArrayStream* stream, PJ_string_view_t timestamp_column) {
     auto engine_locks = lockWriteEngines(engine, secondary_engine);
@@ -1367,10 +1298,9 @@ PJ_string_view_t storeString(CatalogSnapshotState& state, std::string_view value
   return sdk::name(*type);
 }
 
-// v2 only: every object topic of every dataset, derived and marker topics included, sorted
-// by (dataset, name). Called with the engine lock released, since the engine lock and the
-// ObjectStore lock never nest. The strings are copied under the store's shared lock; each
-// type is read from the copied metadata after it.
+// v2 only: every object topic of every dataset, derived and marker topics included, sorted by (dataset, name). Called
+// with the engine lock released: the engine and ObjectStore locks never nest. The strings are copied under the store's
+// shared lock, and each type is read from the copy afterwards.
 void fillObjectTopics(CatalogSnapshotState* state, const ObjectStore& object_store) {
   object_store.forEachTopicRetained(
       [state](ObjectTopicId id, const ObjectTopicDescriptor& desc, const ObjectStore::RetainedRange& retained) {
@@ -1407,8 +1337,8 @@ struct ToolboxCore {
   WriteCore write;
   DataEngine& engine;
 
-  // The scalar half of the catalog (data sources / topics / fields), shared by v1 and
-  // v2. Caller holds engine.lockEngine(): every read here is a live view into engine state.
+  // The scalar half of the catalog, shared by v1 and v2. The caller holds lockEngine(): every read is a live view into
+  // engine state.
   void fillScalarCatalog(CatalogSnapshotState* state) {
     auto dataset_ids = engine.listDatasets();
     std::sort(dataset_ids.begin(), dataset_ids.end());
@@ -1521,15 +1451,8 @@ struct ToolboxCore {
   }
 };
 
-// Minimal atomic shared_ptr cell exposing only the load()/store() surface the
-// write hosts need. std::atomic<std::shared_ptr<T>> (C++20) is provided by
-// libstdc++ only since GCC 12; the build baseline (CI) is GCC 11, where the
-// primary std::atomic<T> template is selected instead and fails its
-// "trivially copyable" static_assert. A mutex gives a happens-before guarantee
-// at least as strong as the acquire/release ordering the callers request, so
-// this is a faithful drop-in. Non-copyable / non-movable like std::atomic — the
-// enclosing *State structs only ever move via the owning unique_ptr, never the
-// State itself, so this matches their requirements exactly.
+// A mutex-backed std::atomic<std::shared_ptr<T>>, which libstdc++ ships only from GCC 12 (CI builds with GCC 11). Like
+// std::atomic, neither copyable nor movable.
 template <typename T>
 class AtomicSharedPtr {
  public:
@@ -1553,20 +1476,11 @@ class AtomicSharedPtr {
 struct DatastoreSourceWriteHostState {
   DatastoreSourceWriteHostState(DataEngine& engine, DataSourceHandle source_handle)
       : core(std::make_shared<WriteCore>(engine)), source(source_handle), primary_engine(&engine) {}
-  // AtomicSharedPtr, not a plain unique_ptr, because the streaming pause/resume
-  // setTarget() swap reconstructs the WriteCore on the GUI thread while the ingest
-  // worker may still be dereferencing the previous one on its own thread. The
-  // worker loads a strong reference for the duration of each call (so the old core
-  // cannot be destroyed under it), and setTarget builds the replacement fully then
-  // publishes it with release ordering. Mirrors the object-store host's
-  // std::atomic<ObjectStore*>; WriteCore holds DataEngine by reference and is not
-  // reseatable, hence the swap rather than an in-place rebind.
+  // setTarget() replaces the core on the GUI thread while the ingest worker may be inside the old one: each worker call
+  // holds a strong reference, so the old core lives until the call returns.
   AtomicSharedPtr<WriteCore> core;
   DataSourceHandle source;
-  // Streaming two-engine lockstep: remember the primary + secondary engines
-  // so setTarget can re-wire the new WriteCore's secondary_engine_ pointer to
-  // the OTHER engine, keeping mirrors symmetric. Both are raw pointers, not
-  // owning; the streaming manager outlives the host.
+  // Not owned (the streaming manager outlives the host). setTarget() points the new core's mirror at the other one.
   DataEngine* primary_engine = nullptr;
   DataEngine* secondary_engine = nullptr;
 };
@@ -1574,15 +1488,10 @@ struct DatastoreSourceWriteHostState {
 struct DatastoreParserWriteHostState {
   DatastoreParserWriteHostState(DataEngine& engine, TopicHandle topic_handle)
       : core(std::make_shared<WriteCore>(engine)), topic(topic_handle), primary_engine(&engine) {}
-  // AtomicSharedPtr — see DatastoreSourceWriteHostState::core. The setTarget()
-  // swap publishes a fresh WriteCore while the parser worker may still be inside
-  // the previous one; the worker pins it with a strong reference per call, so the
-  // swap can never free a core out from under an in-flight append.
+  // As DatastoreSourceWriteHostState::core.
   AtomicSharedPtr<WriteCore> core;
   TopicHandle topic;
-  // Streaming two-engine lockstep — see DatastoreSourceWriteHostState. Closes
-  // the latent FieldHandle-stale bug for parser plugins that cache handles
-  // (parser_protobuf et al.) on pause/resume.
+  // As in DatastoreSourceWriteHostState: parsers cache FieldHandles across pause/resume.
   DataEngine* primary_engine = nullptr;
   DataEngine* secondary_engine = nullptr;
 };
@@ -1590,9 +1499,6 @@ struct DatastoreParserWriteHostState {
 struct DatastoreToolboxHostState {
   DatastoreToolboxHostState(DataEngine& engine, ObjectStore& store) : core(engine), object_store(store) {}
   ToolboxCore core;
-  // Toolbox plugins share the session's object store; the host holds a
-  // reference so register_object_topic + push_owned_object can forward
-  // without going back through the engine.
   ObjectStore& object_store;
   std::string object_last_error;
 
@@ -1603,11 +1509,7 @@ struct DatastoreToolboxHostState {
 
 struct DatastoreSourceObjectWriteHostState {
   DatastoreSourceObjectWriteHostState(ObjectStore& s, DatasetId dataset) : target(&s), dataset_id(dataset) {}
-  // Atomic pointer rather than reference: the streaming two-store flow
-  // retargets the host between the primary and secondary ObjectStore on each
-  // pause/resume transition. Plain reference would not be reassignable. The
-  // atomic guarantees the worker thread sees a fully-published swap from the
-  // manager thread without locking on the hot push path.
+  // Atomic: pause/resume retargets the host between the primary and the secondary ObjectStore while the worker pushes.
   std::atomic<ObjectStore*> target;
   DatasetId dataset_id;
   std::string last_error;
@@ -1621,9 +1523,7 @@ struct DatastoreToolboxObjectReadHostState {
   explicit DatastoreToolboxObjectReadHostState(ObjectStore& s) : store(s) {}
   ObjectStore& store;
   std::string last_error;
-  // Backing storage for the const char* returned by toolboxObjectTopicMetadata:
-  // ObjectStore::descriptor() now returns by value, so the pointer must outlive the
-  // call. Valid until the next toolboxObjectTopicMetadata() on this host.
+  // Backs the const char* toolboxObjectTopicMetadata() returns: valid until the next call on this host.
   std::string last_metadata;
 
   void setError(std::string msg) {
@@ -1633,7 +1533,7 @@ struct DatastoreToolboxObjectReadHostState {
 
 struct DatastoreParserObjectWriteHostState {
   DatastoreParserObjectWriteHostState(ObjectStore& s, ObjectTopicId topic) : target(&s), bound_topic(topic) {}
-  // Atomic pointer rather than reference: see DatastoreSourceObjectWriteHostState.
+  // Atomic: see DatastoreSourceObjectWriteHostState.
   std::atomic<ObjectStore*> target;
   ObjectTopicId bound_topic;
   std::string last_error;
@@ -1662,8 +1562,7 @@ bool guardHostCallback(PJ_error_t* out_error, Fn&& fn) noexcept {
 bool sourceEnsureTopic(void* ctx, PJ_string_view_t topic_name, TopicHandle* out_topic, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    // Pin the current WriteCore for the whole call so a concurrent setTarget()
-    // swap can't destroy it under us (and so the op + its error read the SAME core).
+    // Pinned for the whole call: a concurrent setTarget() cannot destroy it, and the op and its error read one core.
     auto core = impl->core.load(std::memory_order_acquire);
     if (!core->ensureTopic(impl->source, toStringView(topic_name), out_topic)) {
       propagateError(out_error, core->lastError());
@@ -1722,11 +1621,11 @@ bool sourceAppendArrowStream(
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
     auto core = impl->core.load(std::memory_order_acquire);
     if (!core->appendArrowStream(topic, stream, timestamp_column)) {
-      // Failure: plugin retains ownership of the stream; we do NOT release.
+      // On failure the plugin keeps the stream.
       propagateError(out_error, core->lastError());
       return false;
     }
-    // Success: host now owns the stream — release it.
+    // On success the host owns it.
     if (stream != nullptr && stream->release != nullptr) {
       stream->release(stream);
     }
@@ -1916,11 +1815,7 @@ bool toolboxRegisterObjectTopic(
     propagateError(out_error, "out_handle must not be null");
     return false;
   }
-  // Validate the source handle against the engine — same check used by scalar
-  // ensureTopic so the toolbox can't register a topic against a dataset that
-  // doesn't exist. Scope the engine lock to JUST this read — do NOT hold it
-  // across object_store.registerTopic below: the engine and ObjectStore locks
-  // must never nest (see pj_datastore/CLAUDE.md).
+  // The engine lock covers this lookup only: the engine and ObjectStore locks never nest.
   {
     auto lock = impl->core.engine.lockEngine();
     if (impl->core.engine.getDataset(source.id) == nullptr) {
@@ -1964,8 +1859,7 @@ bool toolboxRegisterObjectTopicOnDataset(
   }
   bool dataset_exists = false;
   {
-    // getDataset() is a raw accessor: hold the engine lock for the lookup only —
-    // never across the ObjectStore calls below (the two locks must not nest).
+    // The engine lock covers this lookup only, as above.
     const auto lock = impl->core.engine.lockEngine();
     dataset_exists = impl->core.engine.getDataset(dataset_id) != nullptr;
   }
@@ -1976,8 +1870,7 @@ bool toolboxRegisterObjectTopicOnDataset(
   }
   try {
     const std::string name(toStringView(topic_name));
-    // Idempotent: a producer that republishes its whole marker set re-resolves
-    // the same topic handle on every push instead of failing on "already exists".
+    // Idempotent: a producer that republishes its marker set gets the same topic handle back.
     if (const auto existing = impl->object_store.findTopic(dataset_id, name)) {
       out_handle->id = existing->id;
       impl->object_last_error.clear();
@@ -2007,9 +1900,8 @@ bool toolboxRegisterObjectTopicOnDataset(
   }
 }
 
-// Bound a topic's retention to its last `max_entries` snapshots (0 = unlimited).
-// A producer that republishes a whole set at a sentinel timestamp sets 1 so
-// superseded snapshots are evicted instead of accumulating across re-pushes.
+// Keeps a topic's last `max_entries` entries (0 = unlimited). A producer that republishes a whole set at a sentinel
+// timestamp sets 1, so superseded sets are evicted.
 bool toolboxSetObjectTopicRetention(
     void* ctx, PJ_object_topic_handle_t topic, uint64_t max_entries, PJ_error_t* out_error) noexcept {
   auto* impl = static_cast<DatastoreToolboxHostState*>(ctx);
@@ -2063,10 +1955,8 @@ bool toolboxPushOwnedObject(
   }
 }
 
-/// RAII holder for the plugin-owned `fetch_ctx` passed to push_lazy. Stores
-/// the destroy callback pointer and the ctx value; destroys both on drop.
-/// Wrapped in a shared_ptr so the lambda that ObjectStore stores remains
-/// copyable (std::function requires copyable targets).
+/// Owns the plugin's `fetch_ctx` and destroys it once, when the last copy of the store's closure goes. Shared, because
+/// std::function needs a copyable target.
 class PluginFetchCtx {
  public:
   PluginFetchCtx(PJ_lazy_fetch_fn_t fetch_fn, void* fetch_ctx, void (*destroy_fn)(void*)) noexcept
@@ -2083,24 +1973,19 @@ class PluginFetchCtx {
   PluginFetchCtx(PluginFetchCtx&&) = delete;
   PluginFetchCtx& operator=(PluginFetchCtx&&) = delete;
 
-  // Hand fetch_ctx back to the plugin without destroying it (a rejected push:
-  // see pushPluginLazy). Only valid while this holder is the sole reference.
+  // Hands fetch_ctx back to the plugin (a rejected push). Valid only while this holder is the sole reference.
   void disarm() noexcept {
     destroy_fn_ = nullptr;
   }
 
-  // nullopt = the plugin reported failure (or promised bytes it did not hand
-  // over): the LazyCallback contract's fetch-failed signal. An engaged empty
-  // vector is a payload the plugin legitimately produced with zero bytes —
-  // ok with size 0 (data null or not; an empty container's data() may be null).
+  // nullopt when the plugin reports failure or promises bytes it does not hand over (fetch failed); an empty vector is
+  // a legitimately empty payload.
   [[nodiscard]] std::optional<std::vector<uint8_t>> invoke() const {
     if (fetch_fn_ == nullptr) {
       return std::nullopt;
     }
-    // The ABI keeps the returned buffer valid only until the NEXT call on this
-    // fetch_ctx (the SDK's LazyBox reuses one vector), and the store resolves
-    // with no lock held, so two readers of one entry would otherwise race: hold
-    // the lock across the fetch AND the copy.
+    // The ABI keeps the buffer valid only until the next call on this fetch_ctx (the SDK's LazyBox reuses one vector),
+    // and the store resolves with no lock held: the lock covers the fetch and the copy, or two readers race.
     const std::lock_guard lock(mutex_);
     const uint8_t* data = nullptr;
     uint64_t size = 0;  // matches PJ_lazy_fetch_fn_t out_size (uint64_t*)
@@ -2123,23 +2008,17 @@ class PluginFetchCtx {
   mutable std::mutex mutex_;
 };
 
-// Shared body of the source and parser push_lazy trampolines. fetch_ctx_destroy
-// runs only for an entry the store ACCEPTED (when it is evicted/removed): on
-// failure the plugin keeps ownership, because the SDK's pushLazy wrappers delete
-// their box when push_lazy returns false — destroying it here as well would
-// double-free it.
+// Shared body of the source and parser push_lazy trampolines. fetch_ctx_destroy runs only for an entry the store
+// accepted, when it is removed: on a rejected push the plugin keeps fetch_ctx, since the SDK's pushLazy wrappers delete
+// their box when push_lazy returns false, and destroying it here too would double-free it.
 Status pushPluginLazy(
     ObjectStore& store, ObjectTopicId topic, int64_t timestamp_ns, PJ_lazy_fetch_fn_t fetch_fn, void* fetch_ctx,
     void (*fetch_ctx_destroy)(void*)) {
-  // shared_ptr keeps the ctx holder alive as long as ObjectStore keeps the lambda
-  // (std::function needs a copyable target); its destructor runs destroy once.
   auto holder = std::make_shared<PluginFetchCtx>(fetch_fn, fetch_ctx, fetch_ctx_destroy);
-  // Plugins return raw bytes via the C ABI; wrap them as a PayloadView whose
-  // anchor is a shared_ptr<const vector<uint8_t>>, per the pushLazy contract.
   auto closure = [holder]() -> std::optional<sdk::PayloadView> {
     auto bytes = holder->invoke();
     if (!bytes.has_value()) {
-      return std::nullopt;  // plugin fetch failed -> entry resolves as fetch_failed
+      return std::nullopt;  // resolves as fetch_failed
     }
     return sdk::makePayloadView(std::move(*bytes));
   };
@@ -2169,9 +2048,8 @@ bool sourceObjectRegisterTopic(
     desc.dataset_id = impl->dataset_id;
     desc.topic_name = std::string(toStringView(topic_name));
     desc.metadata_json = std::string(toStringView(metadata_json));
-    // Find-or-register: a replace-refill re-registers the topics the eager
-    // ingest created; same-metadata reuse keeps the ObjectTopicId (and every
-    // curve bound to it) alive, while a metadata mismatch still fails loudly.
+    // Find-or-register: a reload's refill re-registers the topics the first ingest created and keeps their
+    // ObjectTopicIds; a metadata mismatch fails.
     auto result = target->findOrRegisterTopic(desc);
     if (!result) {
       impl->setError(result.error());
@@ -2234,8 +2112,6 @@ bool sourceObjectPushLazy(
     propagateError(out_error, "fetch_fn must not be null");  // fetch_ctx stays the plugin's
     return false;
   }
-  // Target pointer comes from the atomic swap layer (so writes follow the
-  // current target store, not a captured-at-construction one).
   auto* target = impl->target.load(std::memory_order_acquire);
   try {
     auto result =
@@ -2268,7 +2144,7 @@ void sourceObjectSetRetentionBudget(
     budget.max_memory_bytes = max_memory_bytes;
     target->setRetentionBudget(ObjectTopicId{topic.id}, budget);
   } catch (...) {
-    // Infallible by contract — swallow any exception from the store.
+    // void in the ABI: nothing to report, and no exception may cross it.
   }
 }
 
@@ -2276,9 +2152,8 @@ void sourceObjectSetRetentionBudget(
 // Toolbox object read host trampolines
 // ---------------------------------------------------------------------------
 
-// PJ_object_bytes_handle_t is a heap-allocated sdk::PayloadView: its anchor
-// keeps the buffer alive until the plugin calls release_bytes. No wrapper
-// struct needed — PayloadView already carries the Span + anchor.
+// PJ_object_bytes_handle_t is a heap-allocated sdk::PayloadView: its anchor keeps the buffer alive until the plugin
+// calls release_bytes.
 PJ_object_topic_handle_t toolboxObjectLookupTopic(void* ctx, PJ_string_view_t topic_name) noexcept {
   auto* impl = static_cast<DatastoreToolboxObjectReadHostState*>(ctx);
   try {
@@ -2294,8 +2169,7 @@ PJ_object_topic_handle_t toolboxObjectLookupTopic(void* ctx, PJ_string_view_t to
   return PJ_object_topic_handle_t{0};
 }
 
-// Dataset-scoped lookup: object-topic identity is (dataset, name), so this
-// resolves the topic owned by `dataset_id` rather than the first name match.
+// Object-topic identity is (dataset, name): this resolves the topic of `dataset_id`, not the first name match.
 PJ_object_topic_handle_t toolboxObjectLookupTopicOnDataset(
     void* ctx, uint32_t dataset_id, PJ_string_view_t topic_name) noexcept {
   auto* impl = static_cast<DatastoreToolboxObjectReadHostState*>(ctx);
@@ -2321,8 +2195,6 @@ bool toolboxObjectListTopics(
     const auto ids = impl->store.listTopics();
     *out_count = ids.size();
     if (out_buffer != nullptr) {
-      // buffer_capacity is uint64_t (ABI); ids.size() is size_t. Compare in
-      // uint64_t, then index with size_t (n <= ids.size(), so it fits).
       const std::size_t n = static_cast<std::size_t>(std::min<uint64_t>(buffer_capacity, ids.size()));
       for (std::size_t i = 0; i < n; ++i) {
         out_buffer[i] = PJ_object_topic_handle_t{ids[i].id};
@@ -2343,9 +2215,6 @@ bool toolboxObjectListTopics(
 const char* toolboxObjectTopicMetadata(void* ctx, PJ_object_topic_handle_t topic) noexcept {
   auto* impl = static_cast<DatastoreToolboxObjectReadHostState*>(ctx);
   try {
-    // descriptor() returns a copy; stash it on the host so the returned pointer
-    // outlives this call (stable until the next call on this host) rather than
-    // dangling into a destroyed temporary.
     impl->last_metadata = impl->store.descriptor(ObjectTopicId{topic.id}).metadata_json;
     return impl->last_metadata.c_str();
   } catch (...) {
@@ -2583,26 +2452,18 @@ void DatastoreSourceWriteHost::flushPending() {
 }
 
 void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
-  // Seal + commit any open chunk to the current engine so no rows are lost,
-  // then rebind to the new engine with a fresh WriteCore (its writer and
-  // per-engine caches must not carry over). Re-wire the new WriteCore's
-  // secondary_engine_ pointer to whichever engine is NOT the target so any
-  // new topic/field created while pointed at `target` mirrors back to the
-  // other side — both engines keep their TopicId/FieldId assignments in
-  // lockstep regardless of which one is currently active.
+  // Commits the open chunks to the current engine, then binds a fresh WriteCore (writer and caches are per engine)
+  // that mirrors to the other engine, so both keep the same TopicIds and FieldIds.
   state_->core.load(std::memory_order_acquire)->flushPending();
-  // Build + fully wire the replacement BEFORE publishing it, so the ingest worker
-  // only ever observes a complete WriteCore. The atomic store (release) hands it
-  // off; a worker still inside the old core keeps it alive via its own strong
-  // reference until that call returns (in-flight appends finish on the old target,
-  // matching the object-store path's accepted semantics).
+  // Fully wired before it is published, so the worker never sees a partial core. A worker call that loaded the old
+  // core keeps it alive until it returns.
   auto next = std::make_shared<WriteCore>(*target);
   if (target == state_->primary_engine) {
     next->secondary_engine = state_->secondary_engine;
   } else if (target == state_->secondary_engine) {
     next->secondary_engine = state_->primary_engine;
   } else {
-    // Unknown target (e.g. an in-place dataset replace) — no mirror.
+    // Unknown target (an in-place dataset replace): no mirror.
     next->secondary_engine = nullptr;
     state_->primary_engine = target;
   }
@@ -2610,16 +2471,10 @@ void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
 }
 
 void DatastoreSourceWriteHost::setSecondaryEngine(DataEngine* secondary) {
-  // Wire the secondary engine for streaming pause/resume lockstep. Mirroring
-  // is bidirectional: the active WriteCore mirrors to whichever engine is
-  // the other one. Called once by the streaming runtime host right after
-  // construction; passing nullptr disables mirroring.
+  // Call once, before any ingest worker runs: the live core's mirror changes in place, unsynchronized. The active core
+  // mirrors to whichever engine it does not write; nullptr disables mirroring.
   state_->secondary_engine = secondary;
-  // Called once right after construction, before any ingest worker runs, so
-  // mutating the live core's mirror target in place is safe (no concurrent reader
-  // yet); load() merely unwraps the atomic.
   if (auto core = state_->core.load(std::memory_order_acquire)) {
-    // Whichever direction we're currently pointed at, mirror to the other.
     core->secondary_engine = (&core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
   }
 }
@@ -2639,15 +2494,8 @@ void DatastoreParserWriteHost::flushPending() {
 }
 
 void DatastoreParserWriteHost::setTarget(DataEngine* target) {
-  // Seal + commit any open chunk to the current engine so no rows are lost,
-  // then rebind to the new engine with a fresh WriteCore. The bound topic is
-  // expected to already exist in `target` with the same TopicId. Re-wires
-  // the new WriteCore's secondary_engine_ pointer to the OTHER engine for
-  // bidirectional lockstep mirroring (parsers that cache FieldHandle — e.g.
-  // parser_protobuf — would otherwise see stale ids after pause/resume).
+  // As DatastoreSourceWriteHost::setTarget(). The bound topic must already exist in `target` with the same TopicId.
   state_->core.load(std::memory_order_acquire)->flushPending();
-  // Build + fully wire the replacement before publishing it atomically — see
-  // DatastoreSourceWriteHost::setTarget for the swap-safety rationale.
   auto next = std::make_shared<WriteCore>(*target);
   if (target == state_->primary_engine) {
     next->secondary_engine = state_->secondary_engine;
@@ -2661,9 +2509,8 @@ void DatastoreParserWriteHost::setTarget(DataEngine* target) {
 }
 
 void DatastoreParserWriteHost::setSecondaryEngine(DataEngine* secondary) {
-  // See DatastoreSourceWriteHost::setSecondaryEngine — same semantics.
+  // As DatastoreSourceWriteHost::setSecondaryEngine().
   state_->secondary_engine = secondary;
-  // Construction-time only (no concurrent reader yet) — see the source host.
   if (auto core = state_->core.load(std::memory_order_acquire)) {
     core->secondary_engine = (&core->engine == state_->primary_engine) ? secondary : state_->primary_engine;
   }

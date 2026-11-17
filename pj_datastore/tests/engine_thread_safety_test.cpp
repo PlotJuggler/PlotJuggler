@@ -1,13 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Targeted DataEngine race tests beyond the headline commit/read repro
-// (engine_concurrency_test.cpp). Each exercises one hazard the engine lock must
-// close; before the lock they race/segfault (TSan flags them), after they pass.
-// Run under ctest (the CMake registration sets a per-test TIMEOUT) so a deadlock
-// fails loudly. The tests at the bottom drive the REAL worker write path (the
-// C-ABI write host), not the locked commitChunks() the older tests use — the path
-// C1 had to lock.
+// Targeted DataEngine race tests beyond the headline commit/read test (engine_concurrency_test.cpp). Each
+// exercises one hazard the engine lock must close; TSan flags the unlocked version. Run under ctest (the CMake
+// registration sets a per-test TIMEOUT) so a deadlock fails loudly. The tests at the bottom drive the real worker
+// write path (the C-ABI write host), not the locked commitChunks() the older tests use.
 
 #include <gtest/gtest.h>
 
@@ -73,10 +70,8 @@ std::size_t readAll(DataReader& reader, TopicId topic) {
   return rows;
 }
 
-// A worker continuously REGISTERS new topics (each createTopic emplace can
-// rehash the by-value robin_map, move-constructing every TopicStorage) while a
-// reader iterates a DIFFERENT, already-populated topic. Pre-lock the rehash
-// dangles the reader's cached storage pointer -> UB/crash.
+// A worker continuously registers new topics (each createTopic can rehash the topic map) while a reader iterates a
+// different, already-populated topic. Without the engine lock the reader's lookups race the rehash.
 TEST(EngineThreadSafety, CreateTopicRehashDuringForeignTopicRead) {
   DataEngine engine;
   auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "rehash", .time_domain_id = 0});
@@ -106,10 +101,9 @@ TEST(EngineThreadSafety, CreateTopicRehashDuringForeignTopicRead) {
   EXPECT_EQ(reads.load(), 20000);
 }
 
-// Hold a single RangeCursor and walk it element-by-element while another thread
-// appends to the same topic. Pre-lock, push_back mutates the deque the cursor
-// is indexing -> data race. Post-lock, the cursor's adopted shared lock blocks
-// the append for the walk's duration.
+// Hold a single RangeCursor and walk it element by element while another thread appends to the same topic. The
+// cursor's adopted engine lock blocks the append for the walk's duration; without it push_back mutates the deque
+// the cursor is indexing.
 TEST(EngineThreadSafety, RangeCursorHeldAcrossConcurrentAppend) {
   DataEngine engine;
   auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "held", .time_domain_id = 0});
@@ -121,12 +115,10 @@ TEST(EngineThreadSafety, RangeCursorHeldAcrossConcurrentAppend) {
   // walk has run, then let it flood the remaining (bounded) batches — so walks
   // 2..N are guaranteed to overlap a live appender regardless of scheduling.
   std::latch first_walk_done{1};
-  // Bound the writer's output. The original `while (!stop)` writer appended
-  // without limit while the reader walked the FULL range 200x, so each walk was
-  // O(rows-so-far) with rows climbing the whole time — a positive-feedback
-  // blowup that ran this one subtest to ~18s on a contended single core (a
-  // 90s-TIMEOUT risk under `ctest -j`). A few hundred batches still keep the
-  // writer appending across the reader's walks, which is all this race needs.
+  // Bound the writer's output: an unbounded writer appends while the reader walks the full range, each walk
+  // costing O(rows-so-far), a positive-feedback growth that takes ~18 s on a contended single core (a TIMEOUT
+  // risk under `ctest -j`). A few hundred batches still keep the writer appending across the reader's walks,
+  // which is all this race needs.
   constexpr int kWriterBatches = 256;
   std::thread writer([&]() {
     DataWriter w = engine.createWriter();
@@ -162,10 +154,8 @@ TEST(EngineThreadSafety, RangeCursorHeldAcrossConcurrentAppend) {
   EXPECT_GT(total, 0u);
 }
 
-// enforceRetention() -> evictBefore() ERASES old chunks (topic_storage.cpp:37),
-// freeing chunk memory. A reader iterating those chunks concurrently is a UAF
-// identical to the original bug. A writer advances timeMax so eviction always
-// has something to free.
+// enforceRetention() -> evictBefore() erases old chunks, freeing chunk memory. A reader iterating those chunks
+// concurrently is a use-after-free. A writer advances timeMax so eviction always has something to free.
 TEST(EngineThreadSafety, EvictWithOpenCursorSerializes) {
   DataEngine engine;
   auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "evict", .time_domain_id = 0});
@@ -244,15 +234,11 @@ TEST(EngineThreadSafety, RetireTopicSerializesWithReader) {
   EXPECT_EQ(reads.load(), 40000);
 }
 
-// === C1: the REAL worker write path (C-ABI write host) vs GUI reads ===========
-// Unlike the tests above (which write via the locked commitChunks()), production
-// ingest drives the write host (WriteCore -> DataWriter), which mutates live
-// TopicStorage through the unlocked getTopicStorage() — pre-C1 it raced GUI reads.
-
-// R1 — worker drives the write host (ensureTopic + mid-stream ensureField, +
-// appendBoundRecord) while the GUI reads the same topic. The layout is NOT
-// pre-frozen: the worker grows it during the window — the production race that
-// CatalogModel/series() reads of column_descriptors_ hit.
+// The real worker write path (C-ABI write host) vs GUI reads. Unlike the tests above (which write via the locked
+// commitChunks()), production ingest drives the write host (WriteCore -> DataWriter), which takes the engine lock
+// itself around its writes to live TopicStorage. Here the worker drives ensureTopic + mid-stream ensureField +
+// appendBoundRecord while the GUI reads the same topic. The column layout is not pre-frozen: the worker grows it
+// during the window, as production ingest does while catalog and series reads copy the column descriptors.
 TEST(EngineThreadSafety, WorkerWriteHostConcurrentWithReaderNoRace) {
   using namespace PJ::sdk;
   DataEngine engine;
@@ -270,13 +256,11 @@ TEST(EngineThreadSafety, WorkerWriteHostConcurrentWithReaderNoRace) {
   constexpr int kFieldEvery = 200;  // add a column every Nth record (un-frozen layout)
   std::atomic<bool> worker_done{false};
   std::atomic<int> extra_fields{0};  // columns the worker actually added mid-stream
-  // The worker blocks on this after its first flush until the reader has done
-  // one overlapping pass — without it, a scheduler that runs the worker to
-  // completion before the reader's first turn (reliably so when both threads
-  // share a core: CI under `ctest -j`, a single-vCPU runner, or `taskset -c 0`)
-  // leaves reads == 0 and false-fails the EXPECT_GT below on correct code. The
-  // worker holds no engine lock while waiting, so a correct reader always makes
-  // progress; a real deadlock instead trips the 90s ctest TIMEOUT.
+  // The worker blocks on this after its first flush until the reader has done one overlapping pass: a scheduler
+  // that runs the worker to completion before the reader's first turn (reliably when both threads share a core:
+  // ctest -j, a single-vCPU runner, taskset -c 0) leaves reads == 0 and fails the EXPECT_GT below on correct
+  // code. The worker holds no engine lock while waiting, so a correct reader always makes progress; a real
+  // deadlock trips the 90s ctest TIMEOUT.
   std::latch first_read_done{1};
 
   std::thread worker([&]() {
@@ -305,11 +289,10 @@ TEST(EngineThreadSafety, WorkerWriteHostConcurrentWithReaderNoRace) {
     worker_done.store(true, std::memory_order_release);
   });
 
-  // Bound the reader pass count so the test runtime is deterministic rather than
-  // fairness-dependent: an unbounded `while (!worker_done)` reader is O(passes*N)
-  // with `passes` set by lock fairness, which on a contended single core walked
-  // this binary into multi-second runs (a 90s-TIMEOUT risk under `ctest -j`). The
-  // race fires regardless of pass count; the cap only ever catches a true hang.
+  // Bound the reader pass count so the runtime is deterministic: an unbounded `while (!worker_done)` reader costs
+  // O(passes*N) with `passes` set by lock fairness, which on a contended single core ran this binary for multiple
+  // seconds (a TIMEOUT risk under `ctest -j`). The race fires regardless of pass count; the cap only ever
+  // catches a true hang.
   std::atomic<int> reads{0};
   constexpr int kMaxReaderPasses = 2000;
   std::thread reader([&]() {
@@ -436,10 +419,8 @@ TEST(EngineThreadSafety, TypeRegistryRegisterDuringWorkerWriteNoRace) {
   SUCCEED();  // no TSan race on the TypeRegistry / topics maps
 }
 
-// Nested reads under a held cursor are legal under the recursive mutex: hold a
-// RangeCursor (which adopts the lock) and do more reads on the same thread. A
-// non-recursive mutex would self-deadlock here (caught by the ctest timeout) —
-// pins the recursive choice against a "simplify to plain std::mutex" refactor.
+// Nested reads under a held cursor: hold a RangeCursor (which adopts the engine lock) and read again on the same
+// thread. With a non-recursive mutex this deadlocks, and the ctest timeout catches it.
 TEST(EngineThreadSafety, NestedReadsUnderHeldCursorRecursiveOk) {
   DataEngine engine;
   auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "nested", .time_domain_id = 0});
@@ -454,28 +435,22 @@ TEST(EngineThreadSafety, NestedReadsUnderHeldCursorRecursiveOk) {
   auto series = r.series(topic, 0);
   ASSERT_TRUE(series.has_value());
   (void)series->bounds();
-  // The held cursor is still valid + walkable after the nested reads.
   std::size_t rows = 0;
   cursor->forEach([&rows](const SampleRow&) { ++rows; });
   EXPECT_EQ(rows, 128u);
 }
 
-// Pause/resume WriteCore-swap race guard. A worker thread drives the C-ABI source
-// write host (each call loads state_->core and dereferences the WriteCore) while
-// the manager thread calls setTarget() in a loop — which publishes a freshly built
-// WriteCore and drops the previous one. Before the fix this was a data race + heap
-// use-after-free on the WriteCore: the swap reassigned a plain unique_ptr and
-// destroyed the core the worker was still inside, and the engine lock did NOT cover
-// it (both racers touch the WriteCore object, not engine state). After the fix
-// state_->core is an atomic shared_ptr (AtomicSharedPtr<WriteCore> — a portable
-// stand-in for std::atomic<std::shared_ptr<WriteCore>>, which libstdc++ provides
-// only since GCC 12), so the worker pins the core for the whole call and the swap
-// can never free it underneath (matching the object-store host's std::atomic<ObjectStore*>).
+// Pause/resume WriteCore-swap race guard. A worker thread drives the C-ABI source write host (each call loads
+// state_->core and dereferences the WriteCore) while the manager thread calls setTarget() in a loop, which
+// publishes a freshly built WriteCore and drops the previous one. The engine lock does not cover this (both
+// racers touch the WriteCore object, not engine state): state_->core is an atomic shared_ptr
+// (AtomicSharedPtr<WriteCore>, a portable stand-in for std::atomic<std::shared_ptr<WriteCore>>, which libstdc++
+// provides only since GCC 12), so the worker pins the core for the whole call and the swap can never free it
+// underneath (as the object-store host's std::atomic<ObjectStore*> does).
 //
-// This is a TSan-only regression guard: its real pass criterion is "ThreadSanitizer
-// reports nothing", so it skips itself when not built with -fsanitize=thread (a
-// plain build would just spin the stress loop for no signal). Run under ctest,
-// which sets a per-test TIMEOUT so a regression that deadlocks fails loudly.
+// The pass criterion is "ThreadSanitizer reports nothing", so the test skips itself when not built with
+// -fsanitize=thread (a plain build would spin the stress loop for no signal). Run under ctest, which sets a
+// per-test TIMEOUT so a deadlock fails loudly.
 TEST(EngineThreadSafety, SetTargetSwapVsWorkerEnsureTopicRace) {
 #ifndef PJ_TSAN_BUILD
   GTEST_SKIP() << "WriteCore-swap race guard is only meaningful under ThreadSanitizer "
@@ -514,10 +489,9 @@ TEST(EngineThreadSafety, SetTargetSwapVsWorkerEnsureTopicRace) {
   ASSERT_TRUE(final_topic.has_value()) << final_topic.error();
 }
 
-// The GUI merges two loaded datasets while a streaming worker keeps committing
-// into (and creating topics in) another dataset of the same engine. mergeDatasets
-// reads and rewrites topic storage; before it took the engine lock it raced the
-// worker's commits and the topic-map rehash (TSan flags it).
+// The GUI merges two loaded datasets while a streaming worker keeps committing into (and creating topics in)
+// another dataset of the same engine. mergeDatasets reads and rewrites topic storage and takes the engine lock
+// itself (TSan flags it otherwise: it would race the worker's commits and the topic-map rehash).
 TEST(EngineThreadSafety, MergeDatasetsSerializesWithWorkerCommits) {
   DataEngine engine;
   const DatasetId anchor = *engine.createDataset(DatasetDescriptor{.source_name = "anchor", .time_domain_id = 0});

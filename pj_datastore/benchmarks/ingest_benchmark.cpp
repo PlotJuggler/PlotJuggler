@@ -34,7 +34,6 @@ ColumnDescriptor makeDescriptor(PrimitiveType type, std::string path) {
   return ColumnDescriptor{/*field_id=*/0, type, std::move(path)};
 }
 
-// Pre-generate test data arrays (allocated once, reused across iterations).
 struct TestData {
   std::vector<Timestamp> timestamps;
   std::vector<float> floats;
@@ -199,13 +198,12 @@ BENCHMARK(BM_Builder_RowAtATime_MultiCol);
 BENCHMARK(BM_Builder_Bulk_MultiCol);
 
 // ===========================================================================
-// DataWriter: row-at-a-time vs appendColumns (end-to-end through engine)
+// DataWriter: row-at-a-time vs appendColumns (engine setup to flush, no commit)
 // ===========================================================================
 
 void BM_Writer_RowAtATime_Float32(benchmark::State& state) {
   const auto& data = getTestData();
 
-  // Build type tree once outside the loop (structure is cheap, reusable)
   auto value_field = makePrimitive("value", PrimitiveType::kFloat32);
   auto root = makeStruct("data", {value_field});
 
@@ -263,9 +261,8 @@ BENCHMARK(BM_Writer_AppendColumns_Float32);
 // Plugin source write host: bound rows across many topics
 // ===========================================================================
 
-// The shape of a large flight log (e.g. ULog: ~1k topics x tens of fields): the
-// host resolves every field of every record in a map keyed by (topic, field),
-// so this is sensitive to how well that key hashes at realistic cardinality.
+// A large flight log's shape (about 1k topics of tens of fields). The host resolves every field of every record in a
+// map keyed by (topic, field), so this measures how that key hashes at a realistic cardinality.
 void BM_SourceHost_BoundAppend_ManyTopics(benchmark::State& state) {
   constexpr int kTopics = 1000;
   constexpr int kFields = 50;

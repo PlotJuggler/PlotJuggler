@@ -1,40 +1,56 @@
-# pj_datastore — columnar time-series storage engine
+# pj_datastore
 
-Level-0 foundation library — a **top-level PJ4 module** (app-internal, not part of the `plotjuggler_sdk` package, because plugins reach it only through the `pj_base` C ABI, never by linking it). Owns the in-memory columnar store that every plugin writes to and every consumer reads from: datasets/topics/chunks/columns, adaptive per-column encoding, schema evolution, derived-series DAG (`IncrementalEngine`), the opaque-blob `ObjectStore`, and the host-side C-ABI bridges that translate `pj_plugins` calls into engine operations. It also owns the **data-processor execution substrate** — the `PJ::proc::DataProcessor` base and `ProcessorSisoAdapter` that runs a processor as a `IncrementalEngine` node (next to the `ISISOTransform` interface it adapts to). That base is deliberately Qt-free *and* script-engine-free, so `pj_scripting` layers Luau filter classes on top of it without this module ever knowing about Luau. Pure C++20 (fmt, tsl::robin_map, nanoarrow, nlohmann_json for the marker metadata); **no Qt, no `pj_plugins` dependency** — `pj_datastore → pj_base` only (`pj_base` comes from the `plotjuggler_sdk` Conan package). It does NOT decode media, choose renderers, own UI/time-display policy, or know about plugin discovery (that is `pj_plugins`). Timestamps are absolute int64 nanoseconds; do not subtract a display base here. Licensed **MPL-2.0** (see `LICENSE`); each source file carries its SPDX header.
+The in-memory store every source writes to and every view reads from: `DataEngine` (columnar scalar time series),
+`ObjectStore` (timestamped opaque payloads), `IncrementalEngine` (derived series), the host side of the plugin data
+C ABI, and the `PJ::proc` data-processor substrate that `pj_scripting` builds filters on. Pure C++20; links
+`plotjuggler_sdk::base` plus fmt, tsl::robin_map, nanoarrow and nlohmann_json, never Qt or `pj_plugins`. Plugins reach
+it only through the C ABI. Timestamps are absolute int64 nanoseconds. How it works:
+[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
-## Layout
-- `include/pj_datastore/` — public headers (engine/writer/reader/query/chunk, `object_store` (+ its internal `ordered_entries` value type, + `resident_payload_pool` — the byte-bounded FIFO window behind `pushLazyWithSeed`), `sequential_uid` (`SequentialUID`: a stable entry identity, allocated process-wide and never reused after eviction), `merge_result` / `replace_result` (the outcomes of `DataEngine::mergeDatasets` / `replaceDatasetFrom`, in anchor / primary topic ids), `saturating_time` (`saturatingAdd`/`saturatingSub`: Timestamp arithmetic that clamps at the int64 limits), `marker_topic_metadata` (the metadata a plot-markers topic is identified by, and the stamp `ObjectStore` gives a legacy `__markers__/<key>` write on registration), `incremental_engine` + `builtin_transforms`, `plugin_data_host`, `colormap_registry`, `arrow_import`, low-level buffer/column_buffer/encoding/topic_storage/type_registry, plus the data-processor substrate `data_processor`/`sample`/`processor_siso_adapter`/`processor_detail` — namespace `PJ::proc`).
-- `src/` — implementations, one `.cpp` per header.
-- `tests/` — GTest suites grouped by layer (see `CMakeLists.txt` for the live set). `plugin_host_write_test.cpp` and `plugin_host_read_test.cpp` exercise the removed v3 ABI and are not built.
-- `benchmarks/` — `read_benchmark`, `ingest_benchmark`, `concurrency_benchmark` (writer commit against a GUI reader walk under the engine lock; prints numbers, not a unit test).
-- `examples/` — `parquet_import` (gated by `PJ_BUILD_PARQUET_IMPORT_EXAMPLE`).
-- `docs/` — see table below.
+## Invariants
 
-Tests are grouped into the `pj_datastore_tests` gtest runner, registered with
-`gtest_discover_tests`: ctest names are `<runner>.<Suite>.<Case>`, with one process
-per case. `chunk_test` stays separate for death tests; `engine_concurrency_test`
-and `engine_thread_safety_test` keep their separate executable names for the
-ThreadSanitizer entry points in `build.sh` and CI, with their 90-second timeouts.
+- Every `DataEngine` access holds `lockEngine()`. `getTopicStorage()` and `typeRegistry()` do not lock: hold the lock
+  while using what they return, or a worker commit races the read.
+- Freeing or moving chunks (retention, clear, retire, detach, `flushTo()`, `replaceDatasetFrom()`, `mergeDatasets()`,
+  `removeDataset()`) happens on the GUI thread after consumers drop cached `TopicChunk*`, or those pointers dangle.
+- Two engines are locked together with `lockEnginePair()`; locking one, then the other deadlocks against `flushTo()`.
+- The engine lock and the `ObjectStore` locks never nest. Store predicates, visitors and holders of an
+  `EntryTimestampsView` never call the store. Both deadlock.
+- Curves are keyed by (topic id, column index): reload and merge keep both, or saved layouts lose their curves.
+- Columns can appear mid-stream, so earlier chunks have fewer: bounds-check `col_index < chunk->columns.size()`.
+- `readNumericAsDouble()` returns 0.0 at a null: check `isNull()` or use `readColumnAsDoubles()` (NaN at nulls).
+  `readString()` views chunk memory.
+- Transforms see input in ascending time order; whatever breaks that order must reset and replay the node, or derived
+  values are wrong.
+- No exception crosses the plugin ABI.
 
-## Gotchas
-- **`readNumericAsDouble()` does not null-check** — returns 0.0 at nulls. Use `isNull()` first, or batch via `readColumnAsDoubles()` which writes NaN at nulls. See `docs/USER_GUIDE.md §5`.
-- **Columns can appear mid-stream**: a new field after rows exist seals the current chunk; earlier chunks have fewer columns. Always bounds-check `col_index < chunk->columns.size()`. See `docs/USER_GUIDE.md §6` / `docs/REQUIREMENTS.md §4.5`.
-- **`readString()` returns a `string_view` into chunk dictionary memory** — must not outlive the chunk.
-- **Transforms have a strict sequential contract**: `calculate()` is called in ascending timestamp order; state persists across chunks and is cleared only by `reset()` before a batch recompute. A late (out-of-order) input commit therefore resets + fully replays the node, and so does input that retention evicted before the node consumed it (recorded as a gap, `IncrementalEngine::gaps()`, last 16; detected from `TopicStorage::evictedThroughChunkId()`, which `flushTo` carries over from a paused stream's trimmed tail along with its retention floor). See `include/pj_datastore/incremental_engine.hpp`.
-- **Out-of-order ingest is lossless**: appends accept timestamp regressions; rows sort per chunk at seal, and sealed chunks of a topic may overlap in time. Row cursors (`forEach`, `SeriesCursor`) merge to global timestamp order; `forEachChunk` bulk runs arrive in commit order and may overlap. See `docs/ARCHITECTURE.md` §5. (`DataEngine::flushTo` / `ObjectStore::flushTo` still enforce monotonicity at the streaming swap boundary — tracked follow-up.)
-- **`DataEngine` is mutex-guarded** (one `std::recursive_mutex`): a worker thread ingests while the GUI reads. EVERY engine client holds the lock via `lockEngine()` — `DataReader` cursors adopt it for their whole (lazy) lifetime; the C-ABI write host (`WriteCore`/`DataWriter`) takes it at each write-host call (the worker write path); `IncrementalEngine` recompute + `addSisoTransform`/`addMimoTransform` take it across their read-modify-write. The raw `getTopicStorage()` accessor does **NOT** lock; a caller must hold `lockEngine()` for the returned pointer's lifetime. The mutex is **recursive** so the same thread may nest (a held cursor + another read; a compound mutator calling another) without deadlocking. `commitChunks` (append) is safe under the lock; chunk-freeing mutations (`clearDatasetChunks`/`retireTopic`/`flushTo`/`replaceDatasetFrom`/`enforceRetention`) are GUI-thread-only and require dropping cached `TopicChunk*` first. When mirroring to the pause/resume **staging** engine, the write host locks BOTH engines in one `std::lock` (`lockEngineDeferred()` ×2) — never hold one engine's lock while plain-locking the other, or it ABBA-deadlocks against `flushTo` (which also `std::lock`s both). The pause/resume `setTarget`/`WriteCore` swap is **not** covered by the engine lock (both racers touch the `WriteCore` object / `state_->core`, not engine state); it is made safe separately by holding `state_->core` as an atomic shared_ptr (`AtomicSharedPtr<WriteCore>`, a mutex-backed stand-in for `std::atomic<std::shared_ptr<WriteCore>>` since libstdc++ only ships that specialization from GCC 12 and the CI baseline is GCC 11) — each worker callback `load()`s a strong reference that pins the core for the call, so the GUI swap can never free it underneath (TSan-guarded by `engine_thread_safety_test`'s `SetTargetSwapVsWorkerEnsureTopicRace`).
-- **`ObjectStore` is independent storage** alongside `DataEngine`, with its own mutex-per-series threading and lazy/owned payloads — it is NOT covered by `ARCHITECTURE.md`; read `docs/OBJECT_STORE_DESIGN.md`. The two stores' locks are independent and must never nest. `pushOwnedBundle` publishes one entry to each of several topics as one transaction (contract in `object_store.hpp`; no size ceiling, nothing is refused) and returns the UID it created for each write; with `append = false` and a `drop` predicate it removes entries anywhere in a topic. Predicates run under the store's locks and must never call the store.
-- **`DataEngine::mergeDatasets` is a destructive dataset union** (OR): folds N source datasets into an anchor, each shifted by a caller-supplied raw timestamp delta, **merge-sorting into time-ordered, non-overlapping chunks**. The sort is mandatory: the random-access `SeriesReader` path (`sampleAt`/`indexAt*`) that plots use assumes ascending non-overlapping chunks (only the heap-merging cursors tolerate overlap). Topics/columns union by name (additive; a shared field with a conflicting type is skipped + reported); the anchor keeps its `TopicId`s **and its advertised column order/indices** (seeded from the anchor topic's `columnDescriptors()` even when that topic is empty) so curve keys — `(topic_id, column_index)` — survive; sources are emptied (not dropped). Inputs are validated up front (unknown/duplicate/self source → `unexpected`, nothing mutated); only that validation is atomic. Offset-agnostic (raw shifts in). `ObjectStore` has its own destructive companion merge (`ObjectStore::mergeDatasets`) that the host calls alongside the scalar merge: shared object topic names fuse by shifted timestamp, and source-only object topics reparent under the anchor. Because the merge shifts each entry's store timestamp but never rewrites payload bytes, every shifted entry also records the delta in `ObjectEntry::payload_stamp_shift` so a consumer keying off payload-embedded stamps (e.g. the 3D TF buffer) can land them on the shifted clock (see `docs/OBJECT_STORE_DESIGN.md` → Dataset Merge). See `merge_result.hpp` / `engine.hpp` / `object_store.hpp`.
+## Key headers (`include/pj_datastore/`)
 
-## Read deeper
-| For | Read |
-|---|---|
-| What it must do / data model / schema-evolution contract | `docs/REQUIREMENTS.md` |
-| How the scalar engine works (domain model, layers, encoding, IncrementalEngine, data flow) | `docs/ARCHITECTURE.md` |
-| Plugin-author write/read patterns, ValueRef, pitfalls | `docs/USER_GUIDE.md` |
-| Opaque timestamped blob storage (lazy/owned, retention, ABI bridge) | `docs/OBJECT_STORE_DESIGN.md` |
-| Engine entry point + commit/flush cycle | `include/pj_datastore/engine.hpp` |
-| Write / read facades | `include/pj_datastore/writer.hpp`, `reader.hpp` |
-| Series / range / latest-at queries | `include/pj_datastore/query.hpp` |
-| Transform interfaces + built-ins | `include/pj_datastore/incremental_engine.hpp`, `builtin_transforms.hpp` |
-| C-ABI host bridges (source/parser/toolbox, object surfaces, catalog snapshot v2), the windowed series read and value scan the MCP tools use | `include/pj_datastore/plugin_data_host.hpp` (the `DatastoreToolboxHost` comment owns the v2 rules), `docs/OBJECT_STORE_DESIGN.md` |
+- `engine.hpp`: `DataEngine`: datasets, topics, commit, retention, reload, merge, pause/resume flush, the lock.
+- `writer.hpp`: `DataWriter`, rows and column batches into chunk builders.
+- `reader.hpp`, `query.hpp`: `DataReader`; row cursors, series views, latest-at.
+- `chunk.hpp`, `topic_storage.hpp`, `encoding.hpp`, `column_buffer.hpp`, `buffer.hpp`, `type_registry.hpp`: storage.
+- `object_store.hpp`, `ordered_entries.hpp`, `sequential_uid.hpp`, `resident_payload_pool.hpp`: `ObjectStore`.
+- `incremental_engine.hpp`, `builtin_transforms.hpp`: the derived-series graph and the built-in transforms.
+- `plugin_data_host.hpp`: the C-ABI host bridges; the windowed series read and value scan the MCP tools use.
+- `arrow_import.hpp`: Arrow IPC and C streams into a `DataWriter`.
+- `merge_result.hpp`, `replace_result.hpp`: what a merge and a reload report.
+- `marker_topic_metadata.hpp`: the metadata that marks a plot-markers topic.
+- `saturating_time.hpp`: `Timestamp` arithmetic that clamps at the int64 limits.
+- `colormap_registry.hpp`: a registry of named colormap callbacks that no code uses.
+- `data_processor.hpp`, `sample.hpp`, `processor_siso_adapter.hpp`, `processor_detail.hpp`: `PJ::proc`.
+
+## Tests
+
+`./test.sh -R '^pj_datastore_tests\.'` runs the main runner (one process per case). Separate executables:
+`chunk_test` (death tests), and `engine_concurrency_test` and `engine_thread_safety_test`, the ThreadSanitizer entry
+points of `build.sh` and CI (90 s timeout). `plugin_host_write_test.cpp` and `plugin_host_read_test.cpp` are not
+built: they exercise a read/write ABI the SDK no longer has. `benchmarks/` prints numbers (read, ingest, writer
+against a GUI reader); `examples/parquet_import` builds with `PJ_BUILD_PARQUET_IMPORT_EXAMPLE`.
+
+## Docs
+
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): data model, ingest, storage, reads, threading, pause/resume,
+  reload and merge, derived series, ObjectStore, host bridges, processors, known gaps.
+- [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): measurements and the alternatives tried or considered.
+- [docs/USER_GUIDE.md](./docs/USER_GUIDE.md): plugin-facing write and read patterns.

@@ -14,9 +14,7 @@
 
 namespace {
 
-// Approximate encoded bytes of one sealed chunk: timestamp buffer + every
-// column's encoded payload + validity bitmaps. Walked ONCE per chunk (memoized
-// into ChunkStats::encoded_byte_size at append) — never on the metadata path.
+// Memoized into ChunkStats::encoded_byte_size at append, so the metadata path never walks a chunk.
 uint64_t encodedChunkByteSize(const PJ::TopicChunk& chunk) {
   uint64_t bytes = chunk.timestamps.size() * sizeof(PJ::Timestamp);
   for (const auto& col : chunk.columns) {
@@ -54,23 +52,19 @@ TopicStorage::TopicStorage(TopicId topic_id, TopicDescriptor descriptor)
     : topic_id_(topic_id), descriptor_(std::move(descriptor)) {}
 
 PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
-  // Chunks are stored in commit order. Each chunk is internally sorted, but
-  // out-of-order ingest means a chunk's time range may overlap earlier ones —
-  // queries merge across overlapping chunks instead of assuming disjoint
-  // ranges, so nothing is rejected (rejecting silently lost late data).
+  // Commit order: after out-of-order ingest a chunk may overlap earlier ones. Nothing is rejected; queries merge
+  // across overlapping chunks.
   if (chunk.stats.encoded_byte_size == 0) {
     chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
   }
 
-  // Only a strictly in-order append (every new row after every existing
-  // sample) leaves the series generation unchanged — incremental consumers
-  // absorb those; any overlap forces their caches to rebuild.
+  // Only a chunk strictly after every existing sample keeps the series generation: incremental consumers absorb it,
+  // any overlap makes their caches rebuild.
   if (!sealed_chunks_.empty() && chunk.stats.t_min <= timeMax()) {
     ++series_generation_;
   }
 
-  // The append fast path folds the new chunk into the cached aggregate in
-  // O(1); extrema only widen, so no rescan is ever needed here.
+  // An append only widens the extrema, so the cached aggregate absorbs it without a rescan.
   if (chunk_agg_valid_) {
     chunk_agg_t_min_ = std::min(chunk_agg_t_min_, chunk.stats.t_min);
     chunk_agg_t_max_ = std::max(chunk_agg_t_max_, chunk.stats.t_max);
@@ -86,8 +80,7 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
 }
 
 void TopicStorage::evictBefore(Timestamp t_keep_min) {
-  // Chunks are commit-ordered: evict the contiguous prefix whose chunks are
-  // entirely older than t_keep_min.
+  // Chunks are in commit order, not time order: only the leading run entirely older than t_keep_min goes.
   size_t end_to_remove = 0;
   while (end_to_remove < sealed_chunks_.size() && sealed_chunks_[end_to_remove].stats.t_max < t_keep_min) {
     evicted_through_chunk_id_ = std::max(evicted_through_chunk_id_, sealed_chunks_[end_to_remove].id);
@@ -95,30 +88,24 @@ void TopicStorage::evictBefore(Timestamp t_keep_min) {
   }
 
   if (end_to_remove > 0) {
-    // Retention evicts often while streaming: subtract the dropped chunks from the
-    // whole-number counts instead of forcing a full rebuild.
+    // Retention runs often while streaming: subtract instead of rebuilding.
     if (whole_agg_valid_) {
       for (std::size_t k = 0; k < end_to_remove; ++k) {
         foldWholeNumbers(sealed_chunks_[k], -1);
       }
     }
     sealed_chunks_.erase(sealed_chunks_.begin(), sealed_chunks_.begin() + static_cast<std::ptrdiff_t>(end_to_remove));
-    chunk_agg_valid_ = false;  // the time/size aggregate rebuilds lazily
+    chunk_agg_valid_ = false;
   }
 
-  // The chunk now at the front may straddle the cutoff: its sub-cutoff rows are as lost to
-  // a consumer that has not read it as a dropped chunk's are.
+  // A front chunk straddling the cutoff counts as evicted: its sub-cutoff rows are lost to a consumer that has not
+  // read it.
   if (!sealed_chunks_.empty() && sealed_chunks_.front().stats.t_min < t_keep_min) {
     evicted_through_chunk_id_ = std::max(evicted_through_chunk_id_, sealed_chunks_.front().id);
   }
 
-  // Raise the logical retention floor to the requested cutoff. Whole-chunk
-  // eviction above can only drop chunks entirely older than t_keep_min; a chunk
-  // straddling the cutoff stays, but the floor makes its sub-cutoff rows
-  // invisible to every read path (timeMin/metadata clamp; readers clamp their
-  // lower bound). The floor only rises, so a smaller later cutoff is a no-op.
-  // The aggregate stores RAW extrema and the clamp happens at read time, so a
-  // floor-only change needs no invalidation.
+  // Read paths clamp their lower bound to the floor, which hides a straddling chunk's sub-cutoff rows; it only rises.
+  // The aggregate keeps raw extrema and is clamped at read time, so a floor change needs no invalidation.
   retention_floor_ = std::max(retention_floor_, t_keep_min);
 }
 
@@ -126,15 +113,14 @@ void TopicStorage::clearChunks() noexcept {
   sealed_chunks_.clear();
   invalidateChunkAggregate();
   ++series_generation_;
-  // A full replace/reload retains no data, so it must carry no stale floor.
+  // A stale floor would hide refilled rows below it.
   retention_floor_ = kNoRetentionFloor;
   evicted_through_chunk_id_ = 0;
 }
 
 TopicStorage::DetachedState TopicStorage::detachChunks() {
   DetachedState detached;
-  // Every allocating copy happens FIRST: if one throws, the chunks are still owned by this
-  // storage and nothing is lost. Only once the snapshot is complete does the deque move out.
+  // Every copy that can throw comes before the deque moves out, so a throw loses no chunks.
   detached.column_descriptors = column_descriptors_;
   detached.array_expansion_counts = array_expansion_counts_;
   detached.retention_floor = retention_floor_;
@@ -144,15 +130,13 @@ TopicStorage::DetachedState TopicStorage::detachChunks() {
   detached.truncated_sample_count = truncated_sample_count_;
 
   detached.chunks = std::move(sealed_chunks_);
-  // A moved-from deque is valid but unspecified: normalize through clearChunks(), which also
-  // drops the stale aggregate and the retention floor exactly like a plain clear would.
+  // A moved-from deque is unspecified; clearChunks() also resets the aggregate and the floor.
   clearChunks();
   return detached;
 }
 
 void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
-  // noexcept holds because every member below is move-assigned (no allocation) — the
-  // asserts pin that for the container members, whose move-assign is only conditionally
+  // noexcept rests on move-assignment only; the asserts pin it for containers whose move-assign is conditionally
   // noexcept.
   static_assert(std::is_nothrow_move_assignable_v<std::deque<TopicChunk>>);
   static_assert(std::is_nothrow_move_assignable_v<std::vector<ColumnDescriptor>>);
@@ -283,8 +267,6 @@ TopicMetadata TopicStorage::metadata() const {
   meta.total_row_count = chunk_agg_row_count_;
   meta.total_byte_size = chunk_agg_byte_size_;
 
-  // Clamp the reported minimum up to the retention floor: a straddling chunk's
-  // sub-floor rows are logically evicted, so the catalog/axis must not see them.
   meta.time_range_min = std::max(meta.time_range_min, retention_floor_);
 
   return meta;
@@ -307,8 +289,6 @@ Timestamp TopicStorage::timeMin() const noexcept {
     return 0;
   }
   ensureChunkAggregate();
-  // Clamp up to the retention floor: rows below it are logically evicted even
-  // when a straddling chunk still physically holds them.
   return std::max(chunk_agg_t_min_, retention_floor_);
 }
 

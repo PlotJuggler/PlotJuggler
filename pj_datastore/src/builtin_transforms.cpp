@@ -5,10 +5,6 @@
 
 namespace PJ {
 
-// ---------------------------------------------------------------------------
-// DerivativeTransform
-// ---------------------------------------------------------------------------
-
 void DerivativeTransform::reset() {
   has_prev_ = false;
   prev_value_ = 0.0;
@@ -21,8 +17,6 @@ StorageKind DerivativeTransform::outputKind(StorageKind /*input_kind*/) const {
 
 bool DerivativeTransform::calculate(
     PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) {
-  // Input is decoded as VarValue{double} because outputKind() → kFloat64 and
-  // the engine widens all numeric inputs to double for float64 output columns.
   double v = std::visit(
       [](const auto& val) -> double {
         using T = std::decay_t<decltype(val)>;
@@ -38,7 +32,7 @@ bool DerivativeTransform::calculate(
     prev_time_ = time;
     prev_value_ = v;
     has_prev_ = true;
-    return false;  // suppress first row — no previous sample
+    return false;
   }
 
   double dt = static_cast<double>(time - prev_time_) * 1e-9;  // ns → seconds

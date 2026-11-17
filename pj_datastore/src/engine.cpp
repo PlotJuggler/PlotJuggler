@@ -33,23 +33,15 @@ struct DataEngine::Impl {
   PJ::TopicId next_topic_id = 1;
   PJ::TimeDomainId next_time_domain_id = 1;
   tsl::robin_map<PJ::DatasetId, PJ::DatasetInfo> datasets;
-  // unique_ptr so a rehash on insert (createTopic) moves only 8-byte pointers,
-  // never a TopicStorage or its sealed_chunks_ deque — addresses stay stable for
-  // the engine's lifetime (topics are never erased, only retired). This is what
-  // lets a worker-thread append be safe for a GUI-cached TopicChunk* with the
-  // engine lock alone (no drain). See docs/plans/datastore-thread-safety.md (D3).
+  // unique_ptr keeps each TopicStorage at a stable address across rehashes; with topics erased only by
+  // removeDataset(), that is what lets a worker append under the engine lock without invalidating a GUI-cached
+  // TopicChunk*.
   tsl::robin_map<PJ::TopicId, std::unique_ptr<TopicStorage>> topics;
   tsl::robin_map<PJ::TimeDomainId, PJ::TimeDomain> time_domains;
-  // Topics retired by replaceDatasetFrom(): their storage is kept (so any
-  // cached reader pointer dereferences an empty deque, not freed memory) but
-  // they are hidden from listTopics so the catalog drops them.
+  // Hidden from listTopics(); their storage stays so a cached reader sees an empty deque, not freed memory.
   std::unordered_set<PJ::TopicId> retired_topic_ids;
 
-  // Guards every field above. One recursive exclusive lock for all engine clients
-  // (worker ingest + GUI reads/recompute); DataReader cursors hold it for their
-  // lifetime. Recursive so the same thread may nest acquisitions (a held cursor +
-  // another read, a compound mutator calling another). mutable so a const reader
-  // can lock. See engine.hpp lockEngine() for the full contract.
+  // Guards every field above; contract on DataEngine::lockEngine().
   mutable std::recursive_mutex mutex_;
 };
 
@@ -82,7 +74,6 @@ Expected<DatasetId> DataEngine::createDataset(DatasetDescriptor descriptor, Data
     }
   }
 
-  // Verify time domain exists if specified
   if (descriptor.time_domain_id != 0) {
     auto it = impl_->time_domains.find(descriptor.time_domain_id);
     if (it == impl_->time_domains.end()) {
@@ -131,7 +122,7 @@ Expected<TopicId> DataEngine::createTopicLocked(
     return PJ::unexpected(fmt::format("Dataset {} not found", dataset_id));
   }
 
-  // Validate schema_id if non-zero (zero means inline columns, e.g. scalar series)
+  // schema_id 0 means inline columns (scalar series).
   if (descriptor.schema_id != 0) {
     if (impl_->type_registry.lookup(descriptor.schema_id) == nullptr) {
       return PJ::unexpected(fmt::format("Schema {} not found", descriptor.schema_id));
@@ -151,7 +142,7 @@ Expected<TopicId> DataEngine::createTopicLocked(
   }
   descriptor.dataset_id = dataset_id;
   impl_->topics.emplace(id, std::make_unique<TopicStorage>(id, std::move(descriptor)));
-  it.value().topic_ids.push_back(id);  // `it` is the datasets iterator (DatasetInfo)
+  it.value().topic_ids.push_back(id);
   return id;
 }
 
@@ -164,9 +155,7 @@ Expected<FieldId> DataEngine::createTopicField(
   }
   TopicStorage& storage = *topic_it.value();
 
-  // Idempotent re-mirror: if a column with this name already exists with the
-  // same type, return its id. With a non-matching type, fail loudly — the
-  // caller is racing two registrations with different shapes.
+  // A different type for an existing name means two registrations disagree on the shape.
   const auto& cols = storage.columnDescriptors();
   for (const auto& col : cols) {
     if (col.field_path == field_name) {
@@ -184,9 +173,7 @@ Expected<FieldId> DataEngine::createTopicField(
     }
   }
 
-  // FieldIds are dense starting at 0. The next id is cols.size(). A forced
-  // requested_id of 0 is a legitimate value (first field of the topic), which
-  // is exactly why the sentinel for "auto" is std::nullopt, not 0.
+  // A forced id of 0 is legitimate (the first field), hence std::nullopt rather than 0 for "auto".
   const FieldId next_id = static_cast<FieldId>(cols.size());
   if (requested_id.has_value() && *requested_id != next_id) {
     return PJ::unexpected(
@@ -292,20 +279,16 @@ std::vector<TopicId> DataEngine::commitChunksLocked(
     if (storage != nullptr) {
       auto status = storage->appendSealedChunk(std::move(chunk));
       if (!status.has_value()) {
-        continue;  // append failed; do not mark topic as changed (out-of-order
-                   // chunks are NOT failures: appendSealedChunk accepts overlap)
+        continue;  // overlapping chunks are accepted; only a real append failure lands here
       }
-      // A topic that receives real data is no longer "absent": un-retire it so a
-      // recomputed filter output (retired by a reload's replaceDatasetFrom) reappears in
-      // listTopics()/the catalog once its fresh chunks land. Mirrors the un-retire-on-
-      // readopt at replaceDatasetFrom.
+      // A recomputed filter output retired by a reload reappears once fresh chunks land.
       impl_->retired_topic_ids.erase(topic_id);
       if (changed.empty() || changed.back() != topic_id) {
         changed.push_back(topic_id);
       }
     }
   }
-  // Deduplicate (flushAll() may emit multiple chunks for one topic).
+  // flushAll() may emit several chunks for one topic.
   std::sort(changed.begin(), changed.end());
   changed.erase(std::unique(changed.begin(), changed.end()), changed.end());
   return changed;
@@ -372,54 +355,31 @@ void DataEngine::clearTopicHistory(TopicId topic_id) {
 
 void DataEngine::retireTopic(TopicId topic_id) {
   std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
-  // Mirror replaceDatasetFrom's retire: exclude the id from listTopics (the catalog
-  // drops it on the next rebuild) but keep its TopicStorage object so a cached reader
-  // pointer dereferences an empty deque, never freed memory.
   auto it = impl_->topics.find(topic_id);
   if (it == impl_->topics.end()) {
-    return;  // unknown id — nothing to retire
+    return;
   }
-  // Reclaim the materialized chunks now. A re-applied filter mints a fresh TopicId, so a
-  // retired derived output's storage can never be reused — keeping its series resident
-  // would leak across undo/redo + layout-load cycles. The TopicStorage object stays (only
-  // the deque is emptied); adapters re-create a fresh reader per access, so no live
-  // TopicChunk* survives the clear (the same precondition replaceDatasetFrom relies on).
+  // Safe to free: adapters create a fresh reader per access, so no TopicChunk* survives.
   it.value()->clearChunks();
   impl_->retired_topic_ids.insert(topic_id);
 }
 
 void DataEngine::removeDataset(DatasetId dataset_id) {
-  // Hold the engine lock for the whole erase, like every other mutator — a worker may
-  // be ingesting a different dataset concurrently (GUI-thread caller; recursive_mutex).
+  // A worker may be ingesting another dataset meanwhile.
   auto lock = lockEngine();
   auto ds_it = impl_->datasets.find(dataset_id);
   if (ds_it == impl_->datasets.end()) {
-    return;  // unknown id — nothing to remove
+    return;
   }
-  // REAL delete (vs retireTopic's hide-but-keep): free every topic's TopicStorage.
-  // PRECONDITION: the caller invalidated all readers/adapters bound to this dataset
-  // first (same contract as replaceDatasetFrom) — erasing frees the memory a cached
-  // reader / TopicChunk* would otherwise dereference.
   for (const TopicId tid : ds_it->second.topic_ids) {
     impl_->topics.erase(tid);
-    impl_->retired_topic_ids.erase(tid);  // drop retire bookkeeping for the now-gone topic
+    impl_->retired_topic_ids.erase(tid);
   }
   impl_->datasets.erase(ds_it);
-  // next_*_id are NOT rewound: strictly-incrementing ids guarantee a later dataset /
-  // topic never aliases an erased one. time_domains are left intact (shared + cheap).
+  // next_*_id are not rewound, so a later dataset or topic never aliases an erased one.
 }
 
 void DataEngine::clearDatasetChunks(DatasetId dataset_id) {
-  // Like retireTopic, reclaim each topic's materialized chunks — but WITHOUT
-  // adding the ids to retired_topic_ids, so they stay in listTopics() and a refill
-  // writes back into them. For each live topic, clearChunks() empties the deque and
-  // resets the eviction floor + cached min/max + row count, so a DataReader reports
-  // an empty range immediately. Unknown dataset_id -> no-op; clearing an empty topic
-  // is a no-op (idempotent).
-  //
-  // clearChunks() FREES the deque, so hold the engine lock across the whole sweep
-  // (chunk-freeing mutation: GUI-thread-only, callers drop cached TopicChunk* first
-  // — same contract as retireTopic/enforceRetention).
   auto lock = lockEngine();
   for (const TopicId topic_id : listTopicsLocked(dataset_id)) {
     if (TopicStorage* storage = getTopicStorage(topic_id)) {
@@ -434,7 +394,7 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
   snapshot.dataset_id = dataset_id;
   snapshot.prior_topic_ids = listTopicsLocked(dataset_id);
   if (snapshot.prior_topic_ids.empty()) {
-    return snapshot;  // unknown / empty dataset: `valid` stays false
+    return snapshot;  // `valid` stays false
   }
   for (const TopicId topic_id : snapshot.prior_topic_ids) {
     TopicStorage* storage = getTopicStorage(topic_id);
@@ -442,8 +402,6 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
       continue;
     }
     DatasetChunkSnapshot::TopicSnapshot topic_snapshot;
-    // O(1): steal the chunk deque (column buffers/value arrays are pointer moves);
-    // copy the small metadata the refill can mutate so reattach restores it exactly.
     topic_snapshot.chunks = std::move(storage->sealed_chunks_);
     topic_snapshot.column_descriptors = storage->column_descriptors_;
     topic_snapshot.retention_floor = storage->retention_floor_;
@@ -451,9 +409,7 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
     topic_snapshot.max_observed_array_length = storage->max_observed_array_length_;
     topic_snapshot.truncated_sample_count = storage->truncated_sample_count_;
     topic_snapshot.array_expansion_counts = storage->array_expansion_counts_;
-    // Normalize the now-empty storage exactly like clearDatasetChunks (clears the
-    // moved-from deque + resets the floor); the column layout + ratchet stats stay
-    // in place, matching clearDatasetChunks so a refill rebinds the same topics.
+    // Leaves the storage as clearDatasetChunks() would: columns and ratchet stats stay, so a refill rebinds.
     storage->clearChunks();
     snapshot.topics.emplace(topic_id, std::move(topic_snapshot));
   }
@@ -467,24 +423,19 @@ void DataEngine::reattachDatasetChunks(DatasetId dataset_id, DatasetChunkSnapsho
     return;
   }
   const std::unordered_set<TopicId> prior(snapshot.prior_topic_ids.begin(), snapshot.prior_topic_ids.end());
-  // Reconcile the current topic set against the prior one: a topic the failed
-  // refill added (not in `prior`) is retired; a prior topic's partial-refill
-  // chunks are dropped before its prior data is moved back below. listTopicsLocked
-  // returns a snapshot vector, so retiring mid-loop is safe.
+  // listTopicsLocked() returns a copy, so retiring inside the loop is safe.
   for (const TopicId topic_id : listTopicsLocked(dataset_id)) {
     if (prior.find(topic_id) == prior.end()) {
-      retireTopic(topic_id);  // clears its chunks + excludes the id from listTopics
+      retireTopic(topic_id);
     } else if (TopicStorage* storage = getTopicStorage(topic_id)) {
       storage->clearChunks();
     }
   }
-  // Move the prior data + refill-mutable metadata back into the stable ids. Direct
-  // member assignment (not the public ratchet setters) so a smaller prior value is
-  // truly restored.
+  // Direct assignment, not the ratchet setters, so a smaller prior value is restored.
   for (auto& [topic_id, topic_snapshot] : snapshot.topics) {
     TopicStorage* storage = getTopicStorage(topic_id);
     if (storage == nullptr) {
-      continue;  // defensive: a prior topic vanished (should not happen)
+      continue;
     }
     storage->sealed_chunks_ = std::move(topic_snapshot.chunks);
     storage->invalidateChunkAggregate();
@@ -502,15 +453,11 @@ Status DataEngine::flushTo(DataEngine& dst) {
   if (&dst == this) {
     return PJ::unexpected("flushTo: source and destination are the same engine");
   }
-  // Lock both engines for the whole operation; std::lock's deadlock-avoidance
-  // algorithm makes the acquisition order irrelevant (no ABBA).
   std::unique_lock<std::recursive_mutex> lock_this(impl_->mutex_, std::defer_lock);
   std::unique_lock<std::recursive_mutex> lock_dst(dst.impl_->mutex_, std::defer_lock);
   std::lock(lock_this, lock_dst);
 
-  // Phase 1: validate. Walk every src topic with sealed chunks and look up
-  // the matching dst topic by descriptor (dataset_id + name). Verify
-  // monotonicity against dst's current time_max. No mutation yet.
+  // Validate everything before moving anything.
   struct Step {
     TopicStorage* src;
     TopicStorage* dst;
@@ -537,20 +484,13 @@ Status DataEngine::flushTo(DataEngine& dst) {
           "flushTo: destination has no topic '" + src_storage.descriptor().name + "' for dataset " +
           std::to_string(src_storage.descriptor().dataset_id));
     }
-    // The source's timeMin() is its first VISIBLE row: a paused stream trims its
-    // staging engine, and rows under that floor are not flushed into view (the
-    // floor travels with the chunks, see adoptChunksFrom).
+    // timeMin() is the first visible row: rows under a paused stream's retention floor stay hidden after the move.
     if (!dst_storage->empty() && src_storage.timeMin() < dst_storage->timeMax()) {
       return PJ::unexpected("flushTo: monotonicity violation for topic '" + src_storage.descriptor().name + "'");
     }
     plan.push_back({&src_storage, dst_storage});
   }
 
-  // Phase 2: execute. adoptChunksFrom moves sealed_chunks_ directly between
-  // TopicStorage instances (no column/value copy); the chunks' stats ride along
-  // by value, so dst's time_min/time_max reflect the new state immediately. The
-  // topic-id rewrite is a no-op here because flushTo's mirrored dst shares the
-  // source's TopicId.
   for (auto& step : plan) {
     adoptChunksFrom(*step.dst, *step.src);
   }
@@ -559,11 +499,8 @@ Status DataEngine::flushTo(DataEngine& dst) {
 }
 
 void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
-  // friend access: drain src's deque into dst, re-stamping each chunk's topic_id
-  // to dst's id (a no-op when the two storages already share one, e.g. flushTo).
-  // Appends — callers that need replace semantics clear dst first.
   std::deque<TopicChunk> drained = std::move(src.sealed_chunks_);
-  src.sealed_chunks_.clear();  // post-move state: deque is valid but empty.
+  src.sealed_chunks_.clear();
   src.invalidateChunkAggregate();
   const TopicId dst_id = dst.topicId();
   for (auto& chunk : drained) {
@@ -571,17 +508,14 @@ void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
     dst.sealed_chunks_.push_back(std::move(chunk));
   }
   dst.invalidateChunkAggregate();
-  // What src's retention hid or dropped stays hidden and dropped: its floor keeps a
-  // straddling chunk's sub-floor rows invisible, and its evicted-through id lets a
-  // consumer that never saw the dropped rows notice. src is left as an empty,
-  // never-trimmed storage.
+  // src's floor keeps a straddling chunk's sub-floor rows hidden; its evicted-through id lets a consumer that never
+  // saw the dropped rows notice the gap.
   dst.retention_floor_ = std::max(dst.retention_floor_, src.retention_floor_);
   dst.evicted_through_chunk_id_ = std::max(dst.evicted_through_chunk_id_, src.evicted_through_chunk_id_);
   src.retention_floor_ = kNoRetentionFloor;
   src.evicted_through_chunk_id_ = 0;
-  // Both sides changed content outside appendSealedChunk's in-order test (the
-  // flushTo boundary even permits an equal timestamp), so incremental sample
-  // caches on either storage must rebuild.
+  // Both sides changed outside appendSealedChunk() (the flushTo boundary even allows an equal timestamp), so
+  // incremental sample caches on either must rebuild.
   ++src.series_generation_;
   ++dst.series_generation_;
 }
@@ -591,11 +525,8 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
   if (&staged == this) {
     return PJ::unexpected("replaceDatasetFrom: staged and primary are the same engine");
   }
-  // Lock BOTH engines for the whole operation in one std::lock — never hold one
-  // and then plain-lock the other, or it ABBA-deadlocks against a worker write
-  // host mirroring to its staging engine. Internal calls below use the *Locked
-  // variants (createTopicLocked / listTopicsLocked) to avoid a redundant re-lock
-  // (the recursive mutex would tolerate it; this just skips the churn).
+  // One std::lock for both: holding one and plain-locking the other deadlocks against the write host mirroring to
+  // its staging engine.
   std::unique_lock<std::recursive_mutex> lock_this(impl_->mutex_, std::defer_lock);
   std::unique_lock<std::recursive_mutex> lock_staged(staged.impl_->mutex_, std::defer_lock);
   std::lock(lock_this, lock_staged);
@@ -608,8 +539,7 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     return PJ::unexpected(fmt::format("replaceDatasetFrom: staged dataset {} not found", staged_id));
   }
 
-  // Snapshot primary topic name -> primary TopicId (includes ids retired by a
-  // previous replace, so a topic that comes back re-binds to its stable id).
+  // Includes ids retired by an earlier replace, so a topic that comes back gets its old id.
   std::unordered_map<std::string, TopicId> primary_by_name;
   for (const TopicId tid : primary_it->second.topic_ids) {
     if (const auto* storage = getTopicStorage(tid)) {
@@ -620,7 +550,6 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
   DatasetReplaceResult result;
   std::unordered_set<std::string> staged_names;
 
-  // Adopt every staged topic into the primary dataset, by name.
   for (const TopicId staged_tid : staged.listTopicsLocked(staged_id)) {
     TopicStorage* staged_storage = staged.getTopicStorage(staged_tid);
     if (staged_storage == nullptr) {
@@ -632,9 +561,8 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     const auto match = primary_by_name.find(name);
     TopicId primary_tid = 0;
     if (match == primary_by_name.end()) {
-      // Schema-less by design: post-replace reads resolve columns from the moved
-      // chunks' own descriptors (and the copied inline layout below), so a new
-      // topic needs no registry schema (which would not exist in this engine).
+      // Schema-less: reads resolve columns from the moved chunks and the copied layout; the staged schema is not
+      // registered in this engine.
       TopicDescriptor desc = staged_storage->descriptor();
       desc.dataset_id = primary_id;
       desc.schema_id = 0;
@@ -646,22 +574,16 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
       result.added_topics.push_back(primary_tid);
     } else {
       primary_tid = match->second;
-      impl_->retired_topic_ids.erase(primary_tid);  // un-retire if it had vanished
+      impl_->retired_topic_ids.erase(primary_tid);
       result.replaced_topics.push_back(primary_tid);
     }
 
-    // Fetch the primary storage now the topic is guaranteed to exist. With
-    // unique_ptr<TopicStorage>, a createTopic rehash moves only pointers, so this
-    // address stays valid for the rest of the function.
     TopicStorage* primary_storage = getTopicStorage(primary_tid);
     primary_storage->clearChunks();
-    // Adopt the staged topic's inline layout (move, not copy — the staged engine
-    // is discarded next) then re-stamp + move its chunks onto the primary id.
     primary_storage->setColumnDescriptors(std::move(staged_storage->column_descriptors_));
     adoptChunksFrom(*primary_storage, *staged_storage);
   }
 
-  // Retire primary topics the new data no longer provides.
   for (const auto& [name, primary_tid] : primary_by_name) {
     if (staged_names.count(name) == 0 && impl_->retired_topic_ids.count(primary_tid) == 0) {
       if (auto* storage = getTopicStorage(primary_tid)) {
@@ -718,15 +640,10 @@ std::vector<TopicId> DataEngine::listTopicsLocked(DatasetId dataset_id) const {
 
 Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     DatasetId anchor_id, const std::vector<DatasetMergeSource>& sources) {
-  // Held for the whole merge: it reads and rewrites topic storage that a
-  // streaming worker may be committing to (recursive, so the locked helpers
-  // called below re-acquire it).
+  // A streaming worker may be committing to these topics.
   auto lock = lockEngine();
-  // Atomicity: this up-front validation block holds ALL caller/data-driven
-  // failure modes (unknown anchor/source, source==anchor, duplicate source), so
-  // every reachable error returns here with nothing mutated. The error returns
-  // inside the per-name build below guard only unreachable internal invariants;
-  // were one to fire it could leave a partial merge — they are not expected to.
+  // Every reachable error is caught here, before anything changes. The error returns further down guard internal
+  // invariants only; one firing would leave a partial merge.
   if (getDataset(anchor_id) == nullptr) {
     return PJ::unexpected(fmt::format("mergeDatasets: anchor dataset {} not found", anchor_id));
   }
@@ -738,8 +655,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     if (getDataset(src.dataset_id) == nullptr) {
       return PJ::unexpected(fmt::format("mergeDatasets: source dataset {} not found", src.dataset_id));
     }
-    // A repeated source id would fold its samples twice (once per shift). Reject
-    // it at the boundary rather than trusting callers to de-dup the selection.
+    // A repeated source would fold its samples twice.
     if (!seen_sources.insert(src.dataset_id).second) {
       return PJ::unexpected(fmt::format("mergeDatasets: source dataset {} listed more than once", src.dataset_id));
     }
@@ -747,8 +663,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
 
   DatasetMergeReport report;
 
-  // Anchor topic name -> id for EVERY anchor topic (even empty), so a shared name
-  // folds into the anchor's existing topic and keeps its id (curve keys survive).
+  // Every anchor topic, empty ones included, so a shared name keeps the anchor's id.
   std::unordered_map<std::string, TopicId> anchor_topic_by_name;
   for (const TopicId tid : listTopics(anchor_id)) {
     if (const TopicStorage* st = getTopicStorage(tid)) {
@@ -756,8 +671,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     }
   }
 
-  // Topic names that have data to fold, in anchor-first then source order. The
-  // anchor's contributor (if any) sorts first so it seeds the union column order.
+  // Anchor first, so its columns seed the union order.
   struct Contributor {
     DatasetId dataset_id;
     TopicId topic_id;
@@ -768,7 +682,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
   auto add_data_topic = [&](DatasetId ds, TopicId tid, Timestamp shift) {
     const TopicStorage* st = getTopicStorage(tid);
     if (st == nullptr || st->empty()) {
-      return;  // an empty topic contributes no rows
+      return;
     }
     auto [it, inserted] = contributors_by_name.try_emplace(st->descriptor().name);
     if (inserted) {
@@ -789,20 +703,13 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
   for (const std::string& name : ordered_names) {
     const std::vector<Contributor> all = contributors_by_name[name];
 
-    // Build the union column layout (by field_path) and keep only type-compatible
-    // contributors. The anchor is processed first so its columns keep indices
-    // 0..N (curve stability); a later contributor that disagrees on a shared
-    // field's storage kind is skipped wholesale (its rows are not folded).
+    // Union of columns by field_path; a contributor whose storage kind conflicts on a shared field is skipped whole.
     std::vector<ColumnDescriptor> union_cols;
     std::unordered_map<std::string, std::size_t> union_index;
     std::vector<Contributor> kept;
     bool has_source = false;
-    // Seed the union from the anchor topic's ADVERTISED column layout (even when
-    // it has no data) so the anchor's column order/indices win: curve keys are
-    // (topic_id, column_index) and reads index by descriptor position, so an
-    // existing anchor topic's indices must survive the merge. add_data_topic
-    // skips empty topics, so without this an empty-but-schema'd anchor topic that
-    // a source fills would silently adopt the source's column order.
+    // Seeded from the anchor's advertised columns even when it has no rows: curve keys are (topic_id, column_index),
+    // and an empty anchor topic would otherwise take a source's column order.
     if (const auto anchor_it = anchor_topic_by_name.find(name); anchor_it != anchor_topic_by_name.end()) {
       if (const TopicStorage* anchor_st = getTopicStorage(anchor_it->second)) {
         for (const ColumnDescriptor& col : anchor_st->columnDescriptors()) {
@@ -818,7 +725,6 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       if (st == nullptr) {
         continue;
       }
-      // This contributor's (field_path, logical_type), first occurrence wins.
       std::vector<std::pair<std::string, PrimitiveType>> local;
       std::unordered_set<std::string> seen_local;
       for (const TopicChunk& chunk : st->sealedChunks()) {
@@ -852,15 +758,11 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       has_source = has_source || c.dataset_id != anchor_id;
     }
 
-    // Nothing new folds into the anchor for this name (anchor-only, or every
-    // source was skipped) → leave the anchor's topic untouched.
+    // Anchor-only, or every source skipped: leave the anchor's topic alone.
     if (!has_source || union_cols.empty()) {
       continue;
     }
 
-    // Destination topic: the anchor's existing topic for this name, else a fresh
-    // one. createTopic may rehash impl_->topics, so it must happen BEFORE any
-    // TopicStorage pointer below is fetched.
     TopicId dest_tid = 0;
     bool dest_is_new = false;
     if (const auto anchor_it = anchor_topic_by_name.find(name); anchor_it != anchor_topic_by_name.end()) {
@@ -872,25 +774,19 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       desc.dataset_id = anchor_id;
       auto created = createTopic(anchor_id, std::move(desc));
       if (!created.has_value()) {
-        // Unreachable in practice: createTopic only fails on a missing dataset
-        // (anchor validated above), a non-zero schema lookup (schema_id is 0), or
-        // a requested-id collision (requested_id is 0). Guarded defensively; if it
-        // ever fired mid-loop the merge would be left partial (see the validation
-        // note above — only the up-front checks are truly atomic).
+        // Unreachable: the anchor exists, schema_id and requested_id are 0.
         return PJ::unexpected("mergeDatasets: createTopic failed for '" + name + "': " + created.error());
       }
       dest_tid = *created;
       dest_is_new = true;
     }
 
-    // Gather every kept contributor's rows as (shifted_ts, chunk, row, colmap),
-    // then stable-sort by shifted timestamp (ties keep contributor order, so
-    // duplicate-timestamp samples from both datasets all survive).
+    // Stable sort: equal timestamps keep contributor order and all survive.
     struct RowRef {
       Timestamp ts;
       const TopicChunk* chunk;
       std::size_t row;
-      const std::vector<int>* colmap;  // local column index -> union column index (-1 = drop)
+      const std::vector<int>* colmap;  // chunk column -> union column, -1 to drop
     };
     std::deque<std::vector<int>> colmap_pool;  // stable addresses for RowRef::colmap
     std::vector<RowRef> rows;
@@ -911,8 +807,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
         }
         colmap_pool.push_back(std::move(colmap));
         const std::vector<int>* colmap_ptr = &colmap_pool.back();
-        // Rows below the contributor's retention floor are logically evicted: the
-        // rebuilt destination (clearChunks resets its floor) must not revive them.
+        // Rows under the contributor's floor are evicted; the rebuilt topic has no floor, so drop them here.
         const Timestamp floor = st->retentionFloor();
         for (std::size_t r = 0; r < chunk.stats.row_count; ++r) {
           const Timestamp ts = chunk.readTimestamp(r);
@@ -924,9 +819,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     }
     std::stable_sort(rows.begin(), rows.end(), [](const RowRef& a, const RowRef& b) { return a.ts < b.ts; });
 
-    // Rebuild the destination topic's chunks from the sorted rows. Built into a
-    // local vector first so the (still-intact) source chunks the rows point at
-    // stay valid; the destination is cleared only after the build completes.
+    // Build into a local vector: the rows point into chunks the destination clear would free.
     uint32_t max_chunk_rows = 1024;
     if (const TopicStorage* dest_st = getTopicStorage(dest_tid)) {
       max_chunk_rows = dest_st->descriptor().max_chunk_rows;
@@ -939,7 +832,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       const std::vector<int>& colmap = *rr.colmap;
       for (std::size_t lc = 0; lc < colmap.size(); ++lc) {
         if (colmap[lc] < 0 || chunk.isNull(lc, rr.row)) {
-          continue;  // finishRow() auto-nulls columns this contributor lacks
+          continue;  // finishRow() nulls the columns not set
         }
         const auto uc = static_cast<std::size_t>(colmap[lc]);
         switch (storageKindOf(union_cols[uc].logical_type)) {
@@ -978,9 +871,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
 
     TopicStorage* dest = getTopicStorage(dest_tid);
     if (dest == nullptr) {
-      // Unreachable: dest_tid was just resolved or created above and the build
-      // phase only reads sources / writes locals — nothing retires a topic.
-      // Defensive guard (see the atomicity note on the up-front validation).
+      // Unreachable: nothing above retires a topic.
       return PJ::unexpected(fmt::format("mergeDatasets: destination topic {} vanished", dest_tid));
     }
     dest->clearChunks();

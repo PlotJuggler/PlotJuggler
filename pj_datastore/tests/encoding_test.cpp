@@ -18,10 +18,7 @@ namespace {
 
 using PJ::Span;
 
-// ==========================================================================
-// Helper: build offsets + values buffers from a vector of strings, mimicking
-// what TypedColumnBuffer would produce for a string column.
-// ==========================================================================
+// Builds offsets + values buffers from strings, as TypedColumnBuffer produces for a string column.
 struct StringColumnData {
   std::vector<uint8_t> offsets;
   std::vector<uint8_t> values;
@@ -30,7 +27,6 @@ struct StringColumnData {
 StringColumnData makeStringColumn(const std::vector<std::string>& strings) {
   StringColumnData col;
 
-  // offsets: (strings.size() + 1) uint32_t entries
   col.offsets.resize((strings.size() + 1) * sizeof(uint32_t));
   uint32_t running = 0;
   for (std::size_t i = 0; i < strings.size(); ++i) {
@@ -39,7 +35,6 @@ StringColumnData makeStringColumn(const std::vector<std::string>& strings) {
   }
   std::memcpy(col.offsets.data() + strings.size() * sizeof(uint32_t), &running, sizeof(uint32_t));
 
-  // values: concatenated string bytes
   col.values.reserve(running);
   for (const auto& s : strings) {
     col.values.insert(col.values.end(), s.begin(), s.end());
@@ -47,10 +42,6 @@ StringColumnData makeStringColumn(const std::vector<std::string>& strings) {
 
   return col;
 }
-
-// ==========================================================================
-// Dictionary encoding tests
-// ==========================================================================
 
 TEST(DictionaryEncoding, RepeatedStrings) {
   auto col = makeStringColumn({"base", "world", "base", "base"});
@@ -89,10 +80,6 @@ TEST(DictionaryEncoding, LookupCorrectness) {
     EXPECT_EQ(dictionaryLookup(encoded, i), strings[i]) << "mismatch at row " << i;
   }
 }
-
-// ==========================================================================
-// Packed bools tests
-// ==========================================================================
 
 TEST(PackedBools, SixteenValues) {
   //                    0  1  2  3  4  5  6  7   8  9  10 11 12 13 14 15
@@ -143,10 +130,6 @@ TEST(PackedBools, Empty) {
   EXPECT_TRUE(packed.bits.empty());
 }
 
-// ==========================================================================
-// Constant encoding tests
-// ==========================================================================
-
 TEST(ConstantEncoding, Float64) {
   constexpr std::size_t kCount = 100;
   std::vector<uint8_t> buf(kCount * sizeof(double));
@@ -178,10 +161,6 @@ TEST(ConstantEncoding, Int32) {
   EXPECT_DOUBLE_EQ(constantDecodeAsDouble(enc), -42.0);
 }
 
-// ==========================================================================
-// Frame of Reference encoding tests
-// ==========================================================================
-
 TEST(FOREncoding, NarrowRange_Int32) {
   // Values [1000..1100]: range=100, fits in uint8
   constexpr std::size_t kCount = 101;
@@ -197,7 +176,6 @@ TEST(FOREncoding, NarrowRange_Int32) {
   EXPECT_EQ(enc.count, kCount);
   EXPECT_EQ(enc.offsets.size(), kCount * 1);  // 1 byte per offset
 
-  // Verify round-trip all values
   for (std::size_t i = 0; i < kCount; ++i) {
     EXPECT_DOUBLE_EQ(forDecodeOneAsDouble(enc, i), 1000.0 + static_cast<double>(i)) << "row " << i;
   }
@@ -256,17 +234,12 @@ TEST(FOREncoding, BulkDecode) {
     EXPECT_DOUBLE_EQ(out[i], 500.0 + static_cast<double>(i)) << "row " << i;
   }
 
-  // Decode a sub-range
   std::vector<double> sub(10);
   forDecodeRangeAsDoubles(enc, sub, 20);
   for (std::size_t i = 0; i < 10; ++i) {
     EXPECT_DOUBLE_EQ(sub[i], 520.0 + static_cast<double>(i)) << "sub " << i;
   }
 }
-
-// ==========================================================================
-// Dictionary encoding with narrowed indices
-// ==========================================================================
 
 TEST(DictionaryEncoding, NarrowIndices) {
   // 4 unique strings, 1000 rows → indices should be uint8 (1 byte each)
@@ -294,10 +267,8 @@ TEST(DictionaryEncoding, NarrowIndices) {
 
   EXPECT_EQ(encoded.dictionary.size(), 4u);
   EXPECT_EQ(encoded.index_bytes, 1);
-  // Indices buffer should be 1000 bytes (uint8), not 4000 (uint32)
   EXPECT_EQ(encoded.indices.size(), 1000u);
 
-  // Verify lookups
   for (std::size_t i = 0; i < 1000; ++i) {
     EXPECT_EQ(dictionaryLookup(encoded, i), data[i]) << "row " << i;
   }
@@ -311,7 +282,6 @@ TEST(DictionaryEncoding, MediumIndices) {
     dict_values.push_back("str_" + std::to_string(i));
   }
 
-  // Build data with 600 rows cycling through all 300
   std::vector<std::string> data;
   data.reserve(600);
   for (int i = 0; i < 600; ++i) {
@@ -323,17 +293,12 @@ TEST(DictionaryEncoding, MediumIndices) {
 
   EXPECT_EQ(encoded.dictionary.size(), 300u);
   EXPECT_EQ(encoded.index_bytes, 2);
-  // Indices buffer should be 600*2 = 1200 bytes
   EXPECT_EQ(encoded.indices.size(), 1200u);
 
   for (std::size_t i = 0; i < 600; ++i) {
     EXPECT_EQ(dictionaryLookup(encoded, i), data[i]) << "row " << i;
   }
 }
-
-// ==========================================================================
-// Byte-width helper tests
-// ==========================================================================
 
 TEST(ByteWidthHelpers, IndexBytesFor) {
   EXPECT_EQ(indexBytesFor(1), 1);

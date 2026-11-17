@@ -1,20 +1,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Contention probe for the DataEngine lock.
-//
-// Worst case: a streaming/file WORKER commits at the ~50ms FileLoader cadence (and
-// occasionally createTopic → rehash) while a GUI READER does the full-range forEach
-// walk at ~60Hz (the DatastoreCurveAdapter sample_index_ rebuild, O(N) over a
-// growing series). The lock is one exclusive recursive_mutex, so a held read blocks
-// the writer for its duration — does that hold it back enough to matter?
-//
-// Reports writer commit-call + reader walk latency. Healthy: the writer's max
-// commit-wait stays well under a frame budget. If held back, the incremental
-// O(deltaN) sample_index_ rebuild is justified; else it's a deferrable follow-up.
-//
-// Measurement tool, not a unit test: prints numbers, always exits 0.
-// Run: ./build/pj_datastore/concurrency_benchmark [duration_ms]
+// Contention probe for the DataEngine lock: a worker commits at the FileLoader flush cadence and now and then creates
+// a topic, while a GUI reader walks every series in full at about 60 Hz. The lock is exclusive, so a walk blocks the
+// writer for its duration. Prints the writer's commit-call and the reader's walk latencies; always exits 0.
+// Run: ./build/pj_datastore/concurrency_benchmark [duration_ms] [preseed_rows_per_topic]
 
 #include <algorithm>
 #include <atomic>
@@ -84,9 +74,8 @@ struct Stats {
 
 int main(int argc, char** argv) {
   const int duration_ms = argc > 1 ? std::atoi(argv[1]) : 3000;
-  // Pre-seed rows PER TOPIC before the threads start, so the reader's full-range
-  // walk is O(large) from the outset — the multi-GB-load worst case the council
-  // flagged (a small run-built series doesn't stress the long-shared-hold path).
+  // Rows per topic seeded before the threads start, so the reader's walks are long from the outset, as after a
+  // multi-GB load.
   const long preseed_per_topic = argc > 2 ? std::atol(argv[2]) : 0;
   constexpr int kInitialTopics = 8;
   constexpr int kWriterCadenceMs = 50;  // FileLoader flush throttle
@@ -125,9 +114,7 @@ int main(int argc, char** argv) {
   std::atomic<long> commits{0};
   std::atomic<long> extra_topics{0};
 
-  // WRITER: commit a batch to every topic at the ~50ms cadence; every ~10 ticks
-  // also createTopic (rehash). Measures the wall-time of each commitChunks call
-  // (= lock-wait + work) — the number that reveals starvation by the readers.
+  // A commitChunks() call's wall time includes the lock wait, so it shows the writer's starvation.
   std::thread writer([&]() {
     DataWriter w = engine.createWriter();
     int tick = 0;
@@ -141,7 +128,7 @@ int main(int argc, char** argv) {
         }
       }
       const auto commit_start = Clock::now();
-      engine.commitChunks(w.flushAll());  // <-- includes unique-lock wait
+      engine.commitChunks(w.flushAll());  // includes the lock wait
       commit_stats.add(msSince(commit_start));
       commits.fetch_add(1, std::memory_order_relaxed);
 
@@ -152,7 +139,6 @@ int main(int argc, char** argv) {
           extra_topics.fetch_add(1, std::memory_order_relaxed);
         }
       }
-      // Pace to the cadence (subtract the work already done this tick).
       const double elapsed = msSince(tick_start);
       if (elapsed < kWriterCadenceMs) {
         std::this_thread::sleep_for(std::chrono::milliseconds(kWriterCadenceMs - static_cast<int>(elapsed)));
@@ -160,9 +146,7 @@ int main(int argc, char** argv) {
     }
   });
 
-  // READER: full-range forEach over EVERY topic, flat out (~as fast as a 60Hz
-  // paint loop would dirty-rebuild). Each walk is O(total rows so far) and holds
-  // the engine lock for its duration — the pattern that can hold back the writer.
+  // Each cursor holds the engine lock while it lives, so a long walk holds back the writer.
   std::thread reader([&]() {
     DataReader r = engine.createReader();
     while (!stop.load(std::memory_order_relaxed)) {

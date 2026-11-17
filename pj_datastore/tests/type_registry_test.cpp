@@ -15,7 +15,6 @@
 namespace PJ {
 namespace {
 
-// Helper: build a simple struct with two float64 fields (x, y)
 std::shared_ptr<TypeTreeNode> makePointSchema() {
   return makeStruct(
       "Point", {
@@ -24,7 +23,6 @@ std::shared_ptr<TypeTreeNode> makePointSchema() {
                });
 }
 
-// Helper: build a struct with three float64 fields (x, y, z)
 std::shared_ptr<TypeTreeNode> makePoint3dSchema() {
   return makeStruct(
       "Point3D", {
@@ -42,7 +40,6 @@ TEST(TypeRegistryTest, SchemaNameIsTheInverseOfFindByName) {
   EXPECT_FALSE(registry.schemaName(*id + 1).has_value());
 }
 
-// 1. Register a schema, lookup by ID: returns correct tree
 TEST(TypeRegistryTest, RegisterAndLookupById) {
   TypeRegistry registry;
   auto tree = makePointSchema();
@@ -59,7 +56,6 @@ TEST(TypeRegistryTest, RegisterAndLookupById) {
   EXPECT_EQ(looked_up->children.size(), 2);
 }
 
-// 2. Register a schema, find by name: returns correct ID
 TEST(TypeRegistryTest, RegisterAndFindByName) {
   TypeRegistry registry;
   auto tree = makePointSchema();
@@ -72,7 +68,6 @@ TEST(TypeRegistryTest, RegisterAndFindByName) {
   EXPECT_EQ(*found, *result);
 }
 
-// 3. Register duplicate name: returns AlreadyExistsError
 TEST(TypeRegistryTest, RegisterDuplicateNameFails) {
   TypeRegistry registry;
 
@@ -83,14 +78,12 @@ TEST(TypeRegistryTest, RegisterDuplicateNameFails) {
   ASSERT_FALSE(result2.has_value());
 }
 
-// 4. register_or_get with new name: registers and returns ID
 TEST(TypeRegistryTest, RegisterOrGetNewName) {
   TypeRegistry registry;
 
   auto result = registry.registerOrGet("Point", makePointSchema());
   ASSERT_TRUE(result.has_value()) << result.error();
 
-  // Verify it was actually registered
   auto found = registry.findByName("Point");
   ASSERT_TRUE(found.has_value());
   EXPECT_EQ(*found, *result);
@@ -100,7 +93,6 @@ TEST(TypeRegistryTest, RegisterOrGetNewName) {
   EXPECT_EQ(looked_up->name, "Point");
 }
 
-// 5. register_or_get with existing name: returns existing ID
 TEST(TypeRegistryTest, RegisterOrGetExistingName) {
   TypeRegistry registry;
 
@@ -118,20 +110,17 @@ TEST(TypeRegistryTest, RegisterOrGetExistingName) {
   EXPECT_EQ(looked_up->children.size(), 2);
 }
 
-// 6. lookup with unknown ID: returns nullptr
 TEST(TypeRegistryTest, LookupUnknownIdReturnsNullptr) {
   TypeRegistry registry;
   EXPECT_EQ(registry.lookup(999), nullptr);
 }
 
-// 7. find_by_name with unknown name: returns nullopt
 TEST(TypeRegistryTest, FindByNameUnknownReturnsNullopt) {
   TypeRegistry registry;
   auto found = registry.findByName("NonExistent");
   EXPECT_FALSE(found.has_value());
 }
 
-// 8. evolve_schema with additive change: succeeds, lookup returns new tree
 TEST(TypeRegistryTest, EvolveSchemaAdditiveChange) {
   TypeRegistry registry;
 
@@ -140,46 +129,39 @@ TEST(TypeRegistryTest, EvolveSchemaAdditiveChange) {
   ASSERT_TRUE(result.has_value()) << result.error();
   SchemaId id = *result;
 
-  // Evolve: add a z field
   auto evolved = makePoint3dSchema();
   auto* evolved_ptr = evolved.get();
   PJ::Status status = registry.evolveSchema(id, evolved);
   ASSERT_TRUE(status.has_value()) << status.error();
 
-  // lookup should now return the evolved tree
   const TypeTreeNode* looked_up = registry.lookup(id);
   ASSERT_NE(looked_up, nullptr);
   EXPECT_EQ(looked_up, evolved_ptr);
   EXPECT_EQ(looked_up->children.size(), 3);
 }
 
-// 9. evolve_schema with removed field: returns InvalidArgumentError
 TEST(TypeRegistryTest, EvolveSchemaRemovedFieldFails) {
   TypeRegistry registry;
 
-  // Start with 3 fields
   auto original = makePoint3dSchema();
   auto result = registry.registerSchema("Point3D", original);
   ASSERT_TRUE(result.has_value()) << result.error();
 
-  // Try to evolve to 2 fields (removing z)
   auto reduced = makePointSchema();
   PJ::Status status = registry.evolveSchema(*result, reduced);
   ASSERT_FALSE(status.has_value());
 }
 
-// 10. evolve_schema with type change on existing field: returns InvalidArgumentError
 TEST(TypeRegistryTest, EvolveSchemaTypeChangeFails) {
   TypeRegistry registry;
 
-  auto original = makePointSchema();  // x: float64, y: float64
+  auto original = makePointSchema();
   auto result = registry.registerSchema("Point", original);
   ASSERT_TRUE(result.has_value()) << result.error();
 
-  // Try to evolve: change x from float64 to int32
   auto changed = makeStruct(
       "Point", {
-                   makePrimitive("x", PrimitiveType::kInt32),  // type changed!
+                   makePrimitive("x", PrimitiveType::kInt32),
                    makePrimitive("y", PrimitiveType::kFloat64),
                    makePrimitive("z", PrimitiveType::kFloat64),
                });
@@ -187,7 +169,6 @@ TEST(TypeRegistryTest, EvolveSchemaTypeChangeFails) {
   ASSERT_FALSE(status.has_value());
 }
 
-// 11. evolve_schema with unknown ID: returns NotFoundError
 TEST(TypeRegistryTest, EvolveSchemaUnknownIdFails) {
   TypeRegistry registry;
 
@@ -195,7 +176,6 @@ TEST(TypeRegistryTest, EvolveSchemaUnknownIdFails) {
   ASSERT_FALSE(status.has_value());
 }
 
-// 12. Multiple schemas: register 3, verify each has unique ID and correct tree
 TEST(TypeRegistryTest, MultipleSchemas) {
   TypeRegistry registry;
 
@@ -225,17 +205,14 @@ TEST(TypeRegistryTest, MultipleSchemas) {
   ASSERT_TRUE(id_b.has_value()) << id_b.error();
   ASSERT_TRUE(id_c.has_value()) << id_c.error();
 
-  // All IDs are unique
   EXPECT_NE(*id_a, *id_b);
   EXPECT_NE(*id_a, *id_c);
   EXPECT_NE(*id_b, *id_c);
 
-  // Each lookup returns the correct tree
   EXPECT_EQ(registry.lookup(*id_a), raw_a);
   EXPECT_EQ(registry.lookup(*id_b), raw_b);
   EXPECT_EQ(registry.lookup(*id_c), raw_c);
 
-  // find_by_name works for all
   auto found_a = registry.findByName("Temperature");
   auto found_b = registry.findByName("Point");
   auto found_c = registry.findByName("Pose");

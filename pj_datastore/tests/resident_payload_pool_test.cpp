@@ -38,8 +38,6 @@ LazyCallback countingFallback(std::shared_ptr<std::atomic<int>> calls, size_t si
   };
 }
 
-// --- Pool unit tests ---
-
 TEST(ResidentPayloadPoolTest, AdmitServesAndAccountsBytes) {
   ResidentPayloadPool pool(1024);
   auto slot = pool.admit(makePayload(100, 0xAB));
@@ -56,10 +54,7 @@ TEST(ResidentPayloadPoolTest, AdmitServesAndAccountsBytes) {
   EXPECT_EQ(stats.resident_hits, 1U);
 }
 
-// The reservation exists so a few huge payloads cannot evict a numerous tiny
-// topic. MEASURED motivation: 598 point clouds filled a 256 MB budget and
-// evicted 19,817 of 29,360 admissions, so a third of the GUI's TF reads missed
-// the pool and paid a file re-read + chunk decompress each.
+// A few huge payloads cannot evict a numerous tiny topic.
 TEST(ResidentPayloadPoolTest, LargePayloadsCannotEvictTheSmallClass) {
   // 8 MiB pool -> 1 MiB reserved for payloads <= 64 KiB.
   ResidentPayloadPool pool(8 * 1024 * 1024);
@@ -72,7 +67,6 @@ TEST(ResidentPayloadPoolTest, LargePayloadsCannotEvictTheSmallClass) {
     ASSERT_NE(small.back(), nullptr);
   }
 
-  // Now churn far more than the whole budget through the large class.
   for (int i = 0; i < 32; ++i) {
     ASSERT_NE(pool.admit(makePayload(1024 * 1024, 0xAA)), nullptr);
   }
@@ -179,7 +173,6 @@ TEST(ResidentPayloadPoolTest, SlotDestructionRetiresAccounting) {
   // Slot died with its (hypothetical) entry -> bytes fully retired.
   EXPECT_EQ(pool.stats().resident_bytes, 0U);
 
-  // The freed budget is available again.
   auto slot = pool.admit(makePayload(1024, 2));
   ASSERT_NE(slot, nullptr);
   EXPECT_EQ(pool.stats().evicted, 0U);
@@ -215,14 +208,11 @@ TEST(ResidentPayloadPoolTest, ConcurrentLoadVersusEvictionIsSafe) {
       }
     }
   });
-  // Evict by admitting a displacing payload, then stop the reader.
   auto displacing = pool.admit(makePayload(100, 8));
   stop.store(true);
   reader.join();
   EXPECT_EQ(slot->load(), std::nullopt);
 }
-
-// --- ObjectStore integration ---
 
 class ObjectStoreSeedTest : public ::testing::Test {
  protected:
