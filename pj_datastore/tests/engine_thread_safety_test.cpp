@@ -489,6 +489,46 @@ TEST(EngineThreadSafety, SetTargetSwapVsWorkerEnsureTopicRace) {
   ASSERT_TRUE(final_topic.has_value()) << final_topic.error();
 }
 
+// setTarget() flushes the old write core and publishes a new one while the worker may hold the old core and be waiting
+// for the engine lock that flush holds. Every row the worker appends must reach one of the two engines.
+TEST(EngineThreadSafety, SetTargetSwapKeepsEveryAppendedRow) {
+  using namespace PJ::sdk;
+  DataEngine live;
+  DataEngine staging;
+  ObjectStore store;
+  DatastoreToolboxHost toolbox_impl{live, store};
+  ToolboxHostView toolbox{toolbox_impl.raw()};
+  const auto source = *toolbox.createDataSource("sensor");
+  ASSERT_TRUE(staging.createDataset(DatasetDescriptor{.source_name = "sensor"}, source.id).has_value());
+
+  DatastoreSourceWriteHost host(live, source);
+  host.setSecondaryEngine(&staging);
+  SourceWriteHostView writer(host.raw());
+  const auto topic = *writer.ensureTopic("imu");
+  const auto field = *writer.ensureField(topic, "ax", PrimitiveType::kFloat64);
+
+  constexpr int kRows = 100'000;
+  std::atomic<bool> done{false};
+  std::thread worker([&]() {
+    for (int i = 0; i < kRows; ++i) {
+      (void)writer.appendBoundRecord(topic, i, {{.field = field, .value = 1.0}});
+    }
+    done.store(true, std::memory_order_release);
+  });
+  for (int i = 0; !done.load(std::memory_order_acquire); ++i) {
+    host.setTarget(i % 2 == 0 ? &staging : &live);
+  }
+  worker.join();
+  host.flushPending();
+
+  const auto rows = [&topic](const DataEngine& engine) {
+    const auto lock = engine.lockEngine();
+    const TopicStorage* storage = engine.getTopicStorage(topic.id);
+    return storage == nullptr ? uint64_t{0} : storage->metadata().total_row_count;
+  };
+  EXPECT_EQ(rows(live) + rows(staging), static_cast<uint64_t>(kRows));
+}
+
 // The GUI merges two loaded datasets while a streaming worker keeps committing into (and creating topics in)
 // another dataset of the same engine. mergeDatasets reads and rewrites topic storage and takes the engine lock
 // itself (TSan flags it otherwise: it would race the worker's commits and the topic-map rehash).

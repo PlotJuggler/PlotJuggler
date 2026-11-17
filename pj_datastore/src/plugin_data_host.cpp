@@ -1476,8 +1476,9 @@ class AtomicSharedPtr {
 struct DatastoreSourceWriteHostState {
   DatastoreSourceWriteHostState(DataEngine& engine, DataSourceHandle source_handle)
       : core(std::make_shared<WriteCore>(engine)), source(source_handle), primary_engine(&engine) {}
-  // setTarget() replaces the core on the GUI thread while the ingest worker may be inside the old one: each worker call
-  // holds a strong reference, so the old core lives until the call returns.
+  // setTarget() replaces the core on the GUI thread while the ingest worker may be inside the old one. Load it through
+  // pinCore(): the strong reference keeps the old core alive until the call returns, and the engine locks keep the
+  // swap from flushing the old core while the call stages rows in it.
   AtomicSharedPtr<WriteCore> core;
   DataSourceHandle source;
   // Not owned (the streaming manager outlives the host). setTarget() points the new core's mirror at the other one.
@@ -1495,6 +1496,26 @@ struct DatastoreParserWriteHostState {
   DataEngine* primary_engine = nullptr;
   DataEngine* secondary_engine = nullptr;
 };
+
+// A write core and its engine locks, held for one write-host call.
+struct PinnedCore {
+  std::shared_ptr<WriteCore> core;
+  EngineLockPair engine_locks;
+};
+
+// Loads the current core and locks its engines, retrying if setTarget() published another one meanwhile. setTarget()
+// flushes the old core and publishes the new one under the same locks, so a row staged under the pin is either
+// committed by that flush or written through the new core.
+template <typename HostState>
+[[nodiscard]] PinnedCore pinCore(const HostState& state) {
+  for (;;) {
+    auto core = state.core.load(std::memory_order_acquire);
+    auto engine_locks = lockWriteEngines(core->engine, core->secondary_engine);
+    if (state.core.load(std::memory_order_acquire) == core) {
+      return {std::move(core), std::move(engine_locks)};
+    }
+  }
+}
 
 struct DatastoreToolboxHostState {
   DatastoreToolboxHostState(DataEngine& engine, ObjectStore& store) : core(engine), object_store(store) {}
@@ -1562,8 +1583,8 @@ bool guardHostCallback(PJ_error_t* out_error, Fn&& fn) noexcept {
 bool sourceEnsureTopic(void* ctx, PJ_string_view_t topic_name, TopicHandle* out_topic, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    // Pinned for the whole call: a concurrent setTarget() cannot destroy it, and the op and its error read one core.
-    auto core = impl->core.load(std::memory_order_acquire);
+    // The op and its error read one core.
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->ensureTopic(impl->source, toStringView(topic_name), out_topic)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -1577,7 +1598,7 @@ bool sourceEnsureField(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->ensureField(topic, toStringView(field_name), type, out_field)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -1591,7 +1612,7 @@ bool sourceAppendRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->appendRecord(topic, timestamp, fields, field_count)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -1605,7 +1626,7 @@ bool sourceAppendBoundRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->appendBoundRecord(topic, timestamp, fields, field_count)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -1619,7 +1640,7 @@ bool sourceAppendArrowStream(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->appendArrowStream(topic, stream, timestamp_column)) {
       // On failure the plugin keeps the stream.
       propagateError(out_error, core->lastError());
@@ -1638,7 +1659,7 @@ bool parserEnsureField(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->ensureField(impl->topic, toStringView(field_name), type, out_field)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -1652,7 +1673,7 @@ bool parserAppendRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->appendRecord(impl->topic, timestamp, fields, field_count)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -1666,7 +1687,7 @@ bool parserAppendBoundRecord(
     PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->appendBoundRecord(impl->topic, timestamp, fields, field_count)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -1679,7 +1700,7 @@ bool parserAppendArrowStream(
     void* ctx, struct ArrowArrayStream* stream, PJ_string_view_t timestamp_column, PJ_error_t* out_error) noexcept {
   return guardHostCallback(out_error, [&] {
     auto* impl = static_cast<DatastoreParserWriteHostState*>(ctx);
-    auto core = impl->core.load(std::memory_order_acquire);
+    auto [core, engine_locks] = pinCore(*impl);
     if (!core->appendArrowStream(impl->topic, stream, timestamp_column)) {
       propagateError(out_error, core->lastError());
       return false;
@@ -2453,8 +2474,10 @@ void DatastoreSourceWriteHost::flushPending() {
 
 void DatastoreSourceWriteHost::setTarget(DataEngine* target) {
   // Commits the open chunks to the current engine, then binds a fresh WriteCore (writer and caches are per engine)
-  // that mirrors to the other engine, so both keep the same TopicIds and FieldIds.
-  state_->core.load(std::memory_order_acquire)->flushPending();
+  // that mirrors to the other engine, so both keep the same TopicIds and FieldIds. Both under the old core's engine
+  // locks, which every worker call holds (pinCore()), so no row reaches the old core after its flush.
+  const auto pinned = pinCore(*state_);
+  pinned.core->flushPending();
   // Fully wired before it is published, so the worker never sees a partial core. A worker call that loaded the old
   // core keeps it alive until it returns.
   auto next = std::make_shared<WriteCore>(*target);
@@ -2495,7 +2518,8 @@ void DatastoreParserWriteHost::flushPending() {
 
 void DatastoreParserWriteHost::setTarget(DataEngine* target) {
   // As DatastoreSourceWriteHost::setTarget(). The bound topic must already exist in `target` with the same TopicId.
-  state_->core.load(std::memory_order_acquire)->flushPending();
+  const auto pinned = pinCore(*state_);
+  pinned.core->flushPending();
   auto next = std::make_shared<WriteCore>(*target);
   if (target == state_->primary_engine) {
     next->secondary_engine = state_->secondary_engine;

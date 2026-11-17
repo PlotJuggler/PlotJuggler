@@ -105,11 +105,12 @@ frees chunks) and the ingest worker threads (the plugin write hosts).
   plain-locking the other can deadlock against `flushTo()`.
 - **The engine lock and the ObjectStore locks never nest.** The toolbox catalog reads the two stores one after the
   other.
-- **The write-target swap is outside the engine lock.** `setTarget()` on a write host replaces its write core on the GUI
-  thread while the worker may be inside the old one; the race is on the core object, not on engine state. The core is
-  held in an atomic shared pointer: each worker call takes a strong reference for its duration, so the swap never frees
-  a core in use (`engine_thread_safety_test` covers it under ThreadSanitizer). Rows an in-flight call stages in the old
-  core after `setTarget()` flushed it are not committed (see "Known gaps").
+- **The write-target swap runs under the engine locks.** `setTarget()` on a scalar write host replaces its write core
+  on the GUI thread while the worker may be inside the old one. The core is held in an atomic shared pointer: each
+  worker call takes a strong reference and the core's engine locks, then checks that the core is still current, and
+  retries with the new one if not. `setTarget()` flushes the old core and publishes the new one under the same locks,
+  so the swap never frees a core in use and every row a call stages is either committed by that flush or written
+  through the new core (`engine_thread_safety_test`).
 
 ## Streaming pause and resume
 
@@ -293,4 +294,3 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
 - `SeriesReader`'s index-based lookups (`sampleAt()`, `indexAtOrBeforeTime()`, `indexAtOrAfterTime()`) assume
   time-ordered chunks and are wrong when chunks overlap. The plots use them only to size buffers.
 - A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
-- Rows a worker call stages in a write core after `setTarget()` flushed it are dropped with that core.
