@@ -103,6 +103,13 @@ bool ProtobufParser::parseMessage(const MessageRef serialized_msg, double& times
         continue;
       }
 
+      // Skip unset singular fields that track presence so missing data is not plotted as
+      // default values.
+      if (!field->is_repeated() && field->has_presence() && !reflection->HasField(msg, field))
+      {
+        continue;
+      }
+
       unsigned count = 1;
       bool repeated = false;
       if (field->is_repeated())
