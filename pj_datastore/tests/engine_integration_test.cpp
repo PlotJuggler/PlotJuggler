@@ -1632,6 +1632,39 @@ TEST(EngineIntegrationTest, ColumnTypeSeesAColumnAddedAfterRowsAreStored) {
   EXPECT_EQ(reader.columnType(topic, *label + 1), std::nullopt) << "just past the added column";
 }
 
+// Two writers add columns to one schemaless topic in turn (a source host and a parser binding share a topic): each
+// must see the columns the other added, or two fields get the same id.
+TEST(EngineIntegrationTest, TwoWritersAddingColumnsToOneTopicGetDistinctIds) {
+  DataEngine engine;
+  auto dataset_or = engine.createDataset(DatasetDescriptor{.source_name = "shared", .time_domain_id = 0});
+  ASSERT_TRUE(dataset_or.has_value()) << dataset_or.error();
+  DataWriter a = engine.createWriter();
+  DataWriter b = engine.createWriter();
+  TopicDescriptor td;
+  td.name = "/shared";
+  td.schema_id = 0;
+  auto topic_or = a.registerTopic(*dataset_or, td);
+  ASSERT_TRUE(topic_or.has_value()) << topic_or.error();
+  const TopicId topic = *topic_or;
+
+  const auto x = a.ensureColumn(topic, "x", PrimitiveType::kFloat64);
+  ASSERT_TRUE(x.has_value()) << x.error();
+  const auto y = b.ensureColumn(topic, "y", PrimitiveType::kFloat64);
+  ASSERT_TRUE(y.has_value()) << y.error();
+  const auto z = a.ensureColumn(topic, "z", PrimitiveType::kFloat64);
+  ASSERT_TRUE(z.has_value()) << z.error();
+  EXPECT_EQ(*x, FieldId{0});
+  EXPECT_EQ(*y, FieldId{1});
+  EXPECT_EQ(*z, FieldId{2});
+
+  const auto lock = engine.lockEngine();
+  const auto& layout = engine.getTopicStorage(topic)->columnDescriptors();
+  ASSERT_EQ(layout.size(), 3u);
+  EXPECT_EQ(layout[0].field_path, "x");
+  EXPECT_EQ(layout[1].field_path, "y");
+  EXPECT_EQ(layout[2].field_path, "z");
+}
+
 // latestStringAt must distinguish a NULL latest cell from a real value (so the
 // Value column shows "-" not a fabricated string) and must refuse a non-string
 // column (readString is UB on numeric storage).

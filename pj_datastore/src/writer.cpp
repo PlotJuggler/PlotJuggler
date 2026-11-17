@@ -655,14 +655,15 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
 
 void DataWriter::ensureColsLoaded(TopicId topic_id, const TopicStorage& storage) {
   auto& cols = impl_->topic_columns[topic_id];
-  if (!cols.empty()) {
+  // The stored layout wins: it includes the columns expandArray() and ensureColumn() added, which a schema rebuild
+  // would miss. Every writer on the topic grows it, so a longer one than this cache means another writer added
+  // columns; without taking it, this writer's next column would reuse one of their ids.
+  const auto& stored = storage.columnDescriptors();
+  if (stored.size() > cols.size()) {
+    cols = stored;
     return;
   }
-  // The stored layout wins: it includes the columns expandArray() and ensureColumn() added, which a schema rebuild
-  // would miss.
-  const auto& stored = storage.columnDescriptors();
-  if (!stored.empty()) {
-    cols = stored;
+  if (!cols.empty()) {
     return;
   }
   const auto* type_tree = impl_->engine.typeRegistry().lookup(storage.descriptor().schema_id);
