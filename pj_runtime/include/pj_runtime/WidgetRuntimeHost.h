@@ -25,7 +25,8 @@ class ServiceRegistryBuilder;
 /// `query_history(input, slot, from, to, max)` into a read of that wire and hands each sample to the
 /// plugin's sink, in ascending time, converted to `PJ_widget_value_t` on the display time axis, and
 /// reports how many samples the range held before the cap (`out_total`).
-/// `inputs_changed` and `report_message` are forwarded to the callbacks given at construction.
+/// `inputs_changed`, `config_changed` and `report_message` are forwarded to the callbacks given at
+/// construction.
 ///
 /// The C-ABI skeleton (null context, exceptions at the noexcept boundary) is WidgetHostBridge's; this
 /// class only supplies the three behaviours. Every call is main-thread, like the rest of the widget
@@ -48,6 +49,10 @@ class WidgetRuntimeHost {
     /// The widget's inputs() changed; the dock re-reads inputs() and reconciles by name. Never
     /// delivered from inside on_update by contract, but the dock still defers it.
     std::function<void()> inputs_changed;
+    /// The user changed state the widget persists through save_config (a filter, a splitter) in the
+    /// widget's own UI. The host must not call save_config from inside this callback: it snapshots
+    /// later, from the event loop. Unset: ignored.
+    std::function<void()> config_changed;
     /// A diagnostic from the widget, for the host's message list.
     std::function<void(WidgetMessageLevel level, std::string_view message)> report_message;
   };

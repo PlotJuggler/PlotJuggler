@@ -23,6 +23,7 @@
 #include <QString>
 #include <QStringList>
 #include <QToolButton>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <utility>
@@ -173,6 +174,13 @@ class MainWindowLayoutImportTestPeer {
   }
   static void saveLayoutToPath(MainWindow& window, const QString& path, bool include_data_source) {
     window.saveLayoutToPath(path, include_data_source);
+  }
+  /// The undo history: how many states it holds, and Ctrl+Z.
+  [[nodiscard]] static std::size_t undoSize(const MainWindow& window) {
+    return window.undo_states_.size();
+  }
+  static void undo(MainWindow& window) {
+    window.onUndo();
   }
 
   // --- D9 scaffolding: the takeover-fold and pinned-panel seams (the same

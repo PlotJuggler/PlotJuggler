@@ -94,6 +94,9 @@ struct PluginStats {
   bool values_changed_under_call = false;    ///< the host's value span changed while onUpdate ran
   bool offered_playback = false;             ///< bind found pj.playback.v1
   sdk::PlaybackHostView playback;            ///< the live instance's pj.playback.v1; invalid once it is destroyed
+  /// The user edits the live instance's own state (the JSON its save_config returns) in its UI, and the
+  /// widget reports it with notify_config_changed. Empty once the instance is destroyed.
+  std::function<void(std::string)> edit_in_widget;
 };
 inline PluginStats g;
 
@@ -121,6 +124,7 @@ class TestPlugin : public WidgetPluginBase {
   ~TestPlugin() override {
     ++g.destroyed;
     g.playback = {};
+    g.edit_in_widget = nullptr;
     if (label_ != nullptr) {
       // The host must have taken the widget out of the tree before this runs.
       if (label_->parent() != nullptr) {
@@ -137,6 +141,10 @@ class TestPlugin : public WidgetPluginBase {
       const auto playback = services.get<sdk::PlaybackHostService>();
       g.offered_playback = playback.has_value();
       g.playback = playback.value_or(sdk::PlaybackHostView{});
+      g.edit_in_widget = [this](std::string state) {
+        config_ = std::move(state);
+        widgetHost().notifyConfigChanged();
+      };
     }
     return bound;
   }

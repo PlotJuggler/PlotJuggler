@@ -142,6 +142,7 @@ WidgetRuntimeHost::WidgetRuntimeHost(
     return history(query, sink);
   };
   bridge_.inputs_changed = std::move(callbacks.inputs_changed);
+  bridge_.config_changed = std::move(callbacks.config_changed);
   bridge_.report_message = std::move(callbacks.report_message);
 }
 
