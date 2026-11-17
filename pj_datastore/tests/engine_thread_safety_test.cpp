@@ -442,11 +442,10 @@ TEST(EngineThreadSafety, NestedReadsUnderHeldCursorRecursiveOk) {
 
 // Pause/resume WriteCore-swap race guard. A worker thread drives the C-ABI source write host (each call loads
 // state_->core and dereferences the WriteCore) while the manager thread calls setTarget() in a loop, which
-// publishes a freshly built WriteCore and drops the previous one. The engine lock does not cover this (both
-// racers touch the WriteCore object, not engine state): state_->core is an atomic shared_ptr
+// publishes a freshly built WriteCore and drops the previous one. state_->core is an atomic shared_ptr
 // (AtomicSharedPtr<WriteCore>, a portable stand-in for std::atomic<std::shared_ptr<WriteCore>>, which libstdc++
-// provides only since GCC 12), so the worker pins the core for the whole call and the swap can never free it
-// underneath (as the object-store host's std::atomic<ObjectStore*> does).
+// provides only since GCC 12): the strong reference keeps the old core alive between pinCore()'s load and its engine
+// locks, after which the swap is serialized with the call.
 //
 // The pass criterion is "ThreadSanitizer reports nothing", so the test skips itself when not built with
 // -fsanitize=thread (a plain build would spin the stress loop for no signal). Run under ctest, which sets a
@@ -511,12 +510,14 @@ TEST(EngineThreadSafety, SetTargetSwapKeepsEveryAppendedRow) {
   std::atomic<bool> done{false};
   std::thread worker([&]() {
     for (int i = 0; i < kRows; ++i) {
-      (void)writer.appendBoundRecord(topic, i, {{.field = field, .value = 1.0}});
+      EXPECT_TRUE(writer.appendBoundRecord(topic, i, {{.field = field, .value = 1.0}}).has_value());
     }
     done.store(true, std::memory_order_release);
   });
+  // Yielding between swaps lets the worker win the engine locks; a bare loop can starve it under ThreadSanitizer.
   for (int i = 0; !done.load(std::memory_order_acquire); ++i) {
     host.setTarget(i % 2 == 0 ? &staging : &live);
+    std::this_thread::yield();
   }
   worker.join();
   host.flushPending();

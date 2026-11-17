@@ -106,7 +106,7 @@ frees chunks) and the ingest worker threads (the plugin write hosts).
 - **The engine lock and the ObjectStore locks never nest.** The toolbox catalog reads the two stores one after the
   other.
 - **The write-target swap runs under the engine locks.** `setTarget()` on a scalar write host replaces its write core
-  on the GUI thread while the worker may be inside the old one. The core is held in an atomic shared pointer: each
+  (on the GUI thread for a pause or resume) while the worker may be inside the old one. The core is held in an atomic shared pointer: each
   worker call takes a strong reference and the core's engine locks, then checks that the core is still current, and
   retries with the new one if not. `setTarget()` flushes the old core and publishes the new one under the same locks,
   so the swap never frees a core in use and every row a call stages is either committed by that flush or written
