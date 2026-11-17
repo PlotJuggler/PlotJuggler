@@ -184,11 +184,12 @@ if [[ "${BUNDLE_PLUGINS}" == 1 ]]; then
     read -r url checksum < <(python3 - "${registry_json}" "${id}" "${PLATFORM}" <<'PY'
 import json, sys
 reg, want_id, plat = sys.argv[1:4]
-for ext in json.load(open(reg)).get("extensions", []):
-    if ext.get("id") == want_id:
-        p = ext.get("platforms", {}).get(plat) or {}
-        print(p.get("url", ""), p.get("checksum", ""))
-        break
+# The registry keeps older releases of an id for older hosts: take the newest that ships plat.
+found = [e for e in json.load(open(reg)).get("extensions", [])
+         if e.get("id") == want_id and plat in e.get("platforms", {})]
+if found:
+    p = max(found, key=lambda e: tuple(int(x) for x in e["version"].split(".")))["platforms"][plat]
+    print(p.get("url", ""), p.get("checksum", ""))
 PY
     ) || true
     [[ -n "${url:-}" ]] || die "the registry has no '${id}' for ${PLATFORM}"
