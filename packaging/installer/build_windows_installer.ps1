@@ -314,17 +314,21 @@ function Download-RegistryPlugins {
     if ($seen.ContainsKey($id)) { Die "duplicate plugin registry id '$id'" }
     $seen[$id] = $true
 
-    $registryMatches = @($registry.extensions | Where-Object { $_.id -eq $id })
-    if ($registryMatches.Count -ne 1) {
-      Die "plugin registry must contain exactly one '$id' entry (found $($registryMatches.Count))"
-    }
-    $extension = $registryMatches[0]
-    $extensionVersion = [string]$extension.version
-    if (-not $extensionVersion) { Die "plugin '$id' has an empty registry version" }
-    $platformProperty = $extension.platforms.PSObject.Properties[$PluginPlatform]
-    if (-not $platformProperty) {
+    # The registry keeps older releases of an id for older hosts: take the newest that ships our platform.
+    $registryMatches = @($registry.extensions | Where-Object {
+        $_.id -eq $id -and $_.platforms -and $_.platforms.PSObject.Properties[$PluginPlatform]
+      })
+    if ($registryMatches.Count -eq 0) {
       Die "plugin '$id' has no '$PluginPlatform' artifact in the registry"
     }
+    foreach ($match in $registryMatches) {
+      if (-not [string]$match.version) { Die "plugin '$id' has an empty registry version" }
+    }
+    $extension = $registryMatches |
+      Sort-Object { Convert-Semver ([string]$_.version) "plugin '$id' registry version" } -Descending |
+      Select-Object -First 1
+    $extensionVersion = [string]$extension.version
+    $platformProperty = $extension.platforms.PSObject.Properties[$PluginPlatform]
     $artifact = $platformProperty.Value
     $url = [string]$artifact.url
     $checksum = [string]$artifact.checksum
@@ -515,9 +519,14 @@ if ($pluginDlls.Count -gt 0) {
     $validationArgs += "$id=$($resolvedPluginVersions[$id])"
   }
   Info "validating $($PluginIds.Count) whitelisted plugin(s) with the staged app ..."
-  & $stagedExe @validationArgs
-  if ($LASTEXITCODE -ne 0) {
-    Die "staged plugin validation failed (exit $LASTEXITCODE)"
+  # PlotJuggler4.exe is a GUI-subsystem binary: run bare, its report reaches no log. Piping hands it
+  # real stdout/stderr handles; 'Continue' keeps its stderr lines from stopping the script.
+  $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+  & $stagedExe @validationArgs 2>&1 | ForEach-Object { Write-Host "$_" }
+  $validationExit = $LASTEXITCODE
+  $ErrorActionPreference = $prevEAP
+  if ($validationExit -ne 0) {
+    Die "staged plugin validation failed (exit $validationExit)"
   }
 }
 
