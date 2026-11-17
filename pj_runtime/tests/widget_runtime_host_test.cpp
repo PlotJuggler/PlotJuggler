@@ -87,6 +87,7 @@ class WidgetRuntimeHostTest : public ::testing::Test {
         },
         WidgetRuntimeHost::Callbacks{
             .inputs_changed = [this] { ++inputs_changed_; },
+            .config_changed = [this] { ++config_changed_; },
             .report_message = [this](
                                   WidgetMessageLevel level,
                                   std::string_view message) { messages_.emplace_back(level, std::string(message)); }},
@@ -128,6 +129,7 @@ class WidgetRuntimeHostTest : public ::testing::Test {
   DatasetId dataset_ = 0;
   std::vector<WireTarget> wires_;
   int inputs_changed_ = 0;
+  int config_changed_ = 0;
   std::vector<std::pair<WidgetMessageLevel, std::string>> messages_;
 };
 
@@ -558,10 +560,12 @@ TEST_F(WidgetRuntimeHostTest, ANumberTimeBoundsTheRangeAtItsOwnSampleAtEpochTime
   }
 }
 
-TEST_F(WidgetRuntimeHostTest, InputsChangedAndMessagesReachTheCallbacks) {
+TEST_F(WidgetRuntimeHostTest, InputsChangedConfigChangedAndMessagesReachTheCallbacks) {
   const PJ_widget_host_t host = host_->raw();
   host.vtable->notify_inputs_changed(host.ctx);
   EXPECT_EQ(inputs_changed_, 1);
+  host.vtable->notify_config_changed(host.ctx);
+  EXPECT_EQ(config_changed_, 1);
   const char text[] = "hello";
   host.vtable->report_widget_message(host.ctx, PJ_WIDGET_MESSAGE_WARNING, PJ_string_view_t{text, 5});
   ASSERT_EQ(messages_.size(), 1U);

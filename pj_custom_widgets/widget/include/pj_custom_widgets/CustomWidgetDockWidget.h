@@ -165,8 +165,9 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   void bindingsChanged();
   /// The widget's input list changed (after load_config or inputs_changed).
   void inputsChanged();
-  /// Persisted state changed through a user gesture or a reconciliation that dropped wires; the
-  /// shell debounces it into an undo snapshot.
+  /// Persisted state changed through a user gesture (in the side panel, or in the widget's own UI as
+  /// the plugin reports with notify_config_changed) or a reconciliation that dropped wires; the shell
+  /// debounces it into an undo snapshot.
   void workspaceChanged();
 
  private:
@@ -211,6 +212,10 @@ class CustomWidgetDockWidget : public QWidget, public IDataWidget {
   std::optional<std::vector<WidgetInput>> readInputs();
   void reconcileInputs();
   void onInputsChangedFromPlugin();
+  /// The widget's own state changed in its UI (notify_config_changed): a workspace change. Dropped when it
+  /// arrives from inside one of the plugin's own calls: what load_config or on_update brings is the host's
+  /// doing, and reporting it would turn an undo into a new step.
+  void onConfigChangedFromPlugin();
   /// Runs `task` once from the event loop, however many times it is asked before it ran: `scheduled`
   /// is the latch. Used for what must not run inside a call into the plugin.
   template <typename Task>

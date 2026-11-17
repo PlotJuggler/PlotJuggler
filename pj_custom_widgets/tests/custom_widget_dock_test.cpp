@@ -829,6 +829,36 @@ TEST_F(CustomWidgetDockTest, InputsChangedFromInsideOnUpdateIsDeferred) {
   EXPECT_EQ(dock->inputs()[2].name, "grown");
 }
 
+TEST_F(CustomWidgetDockTest, AnEditInsideTheWidgetIsAWorkspaceChange) {
+  auto dock = makeBound();
+  ASSERT_TRUE(g.edit_in_widget);
+  int workspace_changed = 0;
+  const int loads_before = g.load_configs;
+  QObject::connect(dock.get(), &CustomWidgetDockWidget::workspaceChanged, [&] { ++workspace_changed; });
+
+  g.edit_in_widget(R"({"filter":"warn"})");
+  EXPECT_EQ(workspace_changed, 1);
+  EXPECT_EQ(g.load_configs, loads_before) << "the host hands nothing back to the widget";
+  EXPECT_EQ(parseJson(dock->settingsJson().toStdString()).value(u"filter"_s).toString(), u"warn"_s)
+      << "what the next snapshot reads";
+}
+
+TEST_F(CustomWidgetDockTest, AReportFromInsideAPluginCallIsDropped) {
+  auto dock = makeBound();
+  ASSERT_TRUE(dock->setBinding(u"value"_s, 0, number_));
+  int workspace_changed = 0;
+  QObject::connect(dock.get(), &CustomWidgetDockWidget::workspaceChanged, [&] { ++workspace_changed; });
+  int reports = 0;
+  g.on_update = [&]() {
+    ++reports;
+    g.edit_in_widget(R"({"filter":"warn"})");
+  };
+  dock->onTrackerTime(2.0);
+  g.on_update = nullptr;
+  ASSERT_EQ(reports, 1);
+  EXPECT_EQ(workspace_changed, 0) << "an undo replaying the panel must not become a new step";
+}
+
 TEST_F(CustomWidgetDockTest, AFreshPanelReceivesEveryDeclaredSettingWithItsDefault) {
   auto dock = makeBound();
   EXPECT_EQ(g.load_configs, 1) << "the defaults are the widget's first configuration";

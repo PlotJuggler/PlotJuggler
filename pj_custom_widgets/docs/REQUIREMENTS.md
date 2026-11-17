@@ -25,6 +25,7 @@ What the module must do. How it is built is in [../CLAUDE.md](../CLAUDE.md).
 ## Settings
 
 - R11. The host keeps the full settings JSON of the panel, sends it whole to `load_config` on every change and on restore, and saves it in the layout. What `load_config` receives holds every key the widget type declares in its manifest `settings`, with the manifest `default` for a key the user never set, then the user's values, then the widget's own `save_config` state (a colliding state key wins); a new panel therefore starts with the full defaults. A rejection by the widget does not discard what was stored.
+- R11a. A change the user makes to the widget's own state in its UI (a filter, a splitter), which the widget reports with `notify_config_changed` (SDK 1.1), is a change of the workspace like an edit in the side panel: one undo step. The host reads `save_config` for it later, from the event loop, never inside the call; an undo restores the panel with the earlier state.
 
 ## Persistence
 

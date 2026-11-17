@@ -348,6 +348,7 @@ bool CustomWidgetDockWidget::bindWidget(const QString& plugin_id, const QString&
       },
       WidgetRuntimeHost::Callbacks{
           .inputs_changed = [this]() { onInputsChangedFromPlugin(); },
+          .config_changed = [this]() { onConfigChangedFromPlugin(); },
           .report_message =
               [this](WidgetMessageLevel level, std::string_view message) {
                 reportMessage(
@@ -529,6 +530,15 @@ void CustomWidgetDockWidget::onInputsChangedFromPlugin() {
   // The widget announced it from inside one of its own calls (on_update, load_config, ...): the
   // list must not change under that call, so reconcile once it returned.
   deferOnce(reconcile_scheduled_, [this]() { reconcileInputs(); });
+}
+
+void CustomWidgetDockWidget::onConfigChangedFromPlugin() {
+  if (plugin_call_depth_ > 0) {
+    return;
+  }
+  // The shell debounces workspaceChanged, so save_config runs from the event loop, never inside this
+  // callback.
+  emit workspaceChanged();
 }
 
 void CustomWidgetDockWidget::requestUpdate() {
