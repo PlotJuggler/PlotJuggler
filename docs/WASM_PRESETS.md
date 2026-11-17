@@ -179,13 +179,15 @@ forwards `/bridge` on its own HTTPS origin, so `{"url":"${deployment.ws_origin}/
 works on every robot.
 
 In the browser build, **File → Save Layout with sources** writes one record per
-running stream (the desktop save writes none), with the template it started
+running stream, with the template it started
 from (an interactively started stream gets the configuration its dialog
 produced, under the id `stream`), its Source Timeline offset and slot, and
 `pj-stream://<id>` on everything drawn from it. The plain
 **Save Layout**, browser storage and undo/redo never contain stream records, and
-undo/redo never starts a stream. On the desktop, only a layout opened by URL
-starts its streams; a layout file opened from disk warns and ignores them.
+undo/redo never starts a stream. The desktop writes the same records when
+**Save Layout** keeps "Bind to this data source" checked, and starts them when it
+opens the file: see `pj_app/docs/ARCHITECTURE.md` "Streaming sources in a layout
+file".
 
 ## Packaging
 

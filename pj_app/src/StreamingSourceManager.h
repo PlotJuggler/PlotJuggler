@@ -4,6 +4,7 @@
 
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <functional>
@@ -108,6 +109,19 @@ class StreamingSourceManager : public QObject {
   // The id layoutSources() gives the session streaming into `dataset_id`; empty
   // when no session does. GUI thread only.
   [[nodiscard]] QString layoutSourceId(DatasetId dataset_id) const;
+
+  // Each live session's dataset and the record id layoutSources() gives it, in start
+  // order. GUI thread only.
+  [[nodiscard]] std::vector<std::pair<DatasetId, QString>> layoutIds() const;
+
+  // The live session `source` would start again: the plugin startFromLayout would resolve
+  // for it, and the same configuration template, byte for byte. A layout
+  // opened while its stream already runs binds to that session instead of opening a second
+  // connection. Skips the sessions in `taken` (bound to another record of the same layout)
+  // and, of the rest, prefers the one whose record id is `source.id`, so two identical
+  // streams keep their own views. 0 when none matches. GUI thread only.
+  [[nodiscard]] DatasetId liveSessionFor(
+      const layout_xml::StreamingSourceRef& source, const QSet<DatasetId>& taken = {}) const;
 
   // Requests cooperative stop for one session and joins its worker before
   // returning. Used before real-deleting a dataset so no writer can race the
@@ -285,9 +299,6 @@ class StreamingSourceManager : public QObject {
   // Removes a dataset whose session never launched (or is gone) from both
   // engines, the object stores and the catalog.
   void discardDataset(DatasetId dataset_id);
-
-  // Each live session's record id (see layoutSources), in start order.
-  [[nodiscard]] std::vector<std::pair<DatasetId, QString>> layoutIds() const;
 
   // Pushes `active_topics` through the "pj.topic_subscription.v1" extension
   // (DataSourceHandle::setActiveTopics), gated on kCapabilityPerTopicPause —

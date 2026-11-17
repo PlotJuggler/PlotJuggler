@@ -50,7 +50,8 @@ files, plus `-l` / `--layout <path>`. For example:
 file before applying the layout. Explicit files override a source-bound
 layout's saved files: the existing generic-layout rewrite removes dataset
 qualifiers so curves bind to the new data. Without explicit files, `--layout`
-replays its saved sources as usual. Data-only launches keep the normal GUI open.
+replays its saved sources as usual, starting its recorded streams with no
+prompt. Data-only launches keep the normal GUI open.
 
 Attended loads may show loader configuration dialogs; unattended startup
 (`--exit-after-layout`, `--screenshot`, offscreen/minimal) uses `DialogPolicy::kNever`.
@@ -310,6 +311,38 @@ before the processor replay so a generator that reads the display frame sees the
 settled offset. The progressive drain's teardown applies an empty snapshot. An undo
 leaves a marker rule it does not change as it is drawn and runs a changed one to
 completion; a layout load creates it with the bounded create.
+
+### Streaming sources in a layout file
+
+A source-bound desktop save ("Bind to this data source") also writes the live
+streams, through the same `liveStreamRecords` the browser's Save Layout with
+Sources uses: one `<streamInfo>` per session with the configuration it started
+from, its offset and timeline slot, and `pj-stream://<id>` on what is drawn from
+it. The configuration is the plugin's `saveConfig()` JSON, verbatim, so a plugin
+that keeps credentials in it puts them in the file; the save dialog's checkbox
+says so while a stream runs. A session with no configuration (a plugin without
+a dialog, an agent's bare start) is left out: nothing could start it again, so
+what it draws saves unbound.
+
+`loadLayoutFromPath` reads the records of a source-bound layout. A record whose
+plugin and configuration template match a running session
+(`StreamingSourceManager::liveSessionFor`) binds to that session, so reopening a
+layout never opens a second connection; of two identical sessions, each record
+takes the one that carries its id. The others join the reload prompt (one
+consolidated question with the files; File → Load Layout only) and start at its
+commit point through `StreamingSourceManager::startFromLayout`, without the
+plugin's dialog; `--layout` starts them without asking, as it reloads files.
+`bindStreamQualifiers` then turns what the layout bound to each record into
+pending intents on that session's dataset, and the streams' Source Timeline
+tracks go through `resolveLayoutTimelineTracks` with the files' (two records
+bound to one running session get one track). The desktop and browser loads
+share this bookkeeping (`LayoutStreamBinding`) and differ only in failure policy:
+the browser's replay is all-or-nothing, the desktop's partial. A stream that cannot start
+(plugin missing, configuration refused, `start()` failed, a deployment variable
+the desktop cannot fill) is named in one `layout-streams-not-started` report,
+and the rest of the layout applies; a layout whose only sources all failed ends
+in the no-data report that lists them. Like reloaded files, streams the load
+started stay up when the user cancels the apply afterwards.
 
 Frozen restore fixtures live in `tests/fixtures/layouts/` (each directory's
 `README.md` says how its files were written): `release-4.1/` is read by
