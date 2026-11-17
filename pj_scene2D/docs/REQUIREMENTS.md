@@ -9,7 +9,7 @@ GPU-accelerated display of media synchronized with the global timeline.
 
 pj_scene2D does not own storage. Raw compressed bytes live in
 `pj_datastore::ObjectStore`, a peer class to the columnar `DataEngine`
-(see `pj_datastore/docs/OBJECT_STORE_DESIGN.md`). pj_scene2D is a read-only
+(see `pj_datastore/docs/ARCHITECTURE.md` "ObjectStore"). pj_scene2D is a read-only
 consumer of the ObjectStore: it reads raw bytes, decodes them, and renders
 pixels. Decoded data is never written back to storage. Any caching of
 decoded frames inside pj_scene2D is an implementation detail of the decoder
@@ -21,12 +21,9 @@ by pj_scene2D.
 
 ## Prerequisites
 
-pj_scene2D depends on ObjectStore extensions that are now committed in
-`OBJECT_STORE_DESIGN.md` (§3.4 concurrent readers, §3.5 automatic
-retention, §4 owning handles + `EntryTimestampsView` + `RetentionBudget`,
-§5 `indexAt` + `entryTimestamps` + `setRetentionBudget`, §6
-`PJ_object_write_host_vtable_t`). Those extensions were driven by the
-requirements below and are now consistent across both documents.
+pj_scene2D relies on the ObjectStore's concurrent readers, automatic
+retention, owning handles and timestamp views
+(`pj_datastore/docs/ARCHITECTURE.md` "ObjectStore").
 
 **The two prerequisites originally listed here have both been resolved**,
 though in shapes that differ from what this document first proposed:
@@ -49,8 +46,7 @@ though in shapes that differ from what this document first proposed:
   requires.
 
 **Note on keyframe tracking**: pj_scene2D does NOT ask ObjectStore to
-know anything about keyframes. Per `OBJECT_STORE_DESIGN.md §3.6`,
-entries are stateless and codec-agnostic, and stateful decoding is
+know anything about keyframes. ObjectStore entries are stateless and codec-agnostic, and stateful decoding is
 explicitly a viewer concern. Video keyframe indexing is owned by
 `pj_scene2d_core` — see §4.2 and §4.6.
 

@@ -5,7 +5,6 @@ pj_scene2D does; this document defines HOW it is built. Read `REQUIREMENTS.md`
 first — this document assumes familiarity with every section.
 
 Cross-references to REQUIREMENTS.md use `§R` notation (e.g., `§R4.3`).
-Cross-references to `OBJECT_STORE_DESIGN.md` use `§OS` notation (e.g., `§OS3.4`).
 
 ---
 
@@ -1034,7 +1033,7 @@ pushing.
 
 | Lock | Type | Protects | Held by |
 |------|------|----------|---------|
-| `ObjectSeries::mutex` (§OS3.4) | `shared_mutex` | Per-topic entry storage | Shared: image/video/depth workers via `latestAt`/`at`/`indexAt`, and the Qt main thread for the synchronous scene `latestAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
+| `ObjectSeries::mutex` | `shared_mutex` | Per-topic entry storage | Shared: image/video/depth workers via `latestAt`/`at`/`indexAt`, and the Qt main thread for the synchronous scene `latestAt`. Exclusive: poll thread via `pushOwned`/`pushLazy`/eviction |
 | `AsyncFrameWorker::request_mutex_` (one per worker-backed source) | `mutex` | Latest target timestamp, request-present + force-redecode flags, condition-variable predicate; with cancellation enabled (video) also the active cancel token | Main: `setTimestamp()` posts/coalesces requests. Worker: waits, takes one request, clears the flag. Not held during ObjectStore lookup or decode |
 | `AsyncFrameWorker::result_mutex_` (one per worker-backed source) | `mutex` | Latest decoded-frame mailbox | Worker: deposit latest frame. Main: `takeFrame()`. Never held while ObjectStore or decoder locks are held |
 | `AsyncFrameWorker::callback_mutex_` (one per worker-backed source) | `mutex` | The optional frame-ready callback slot | Main/layer: `setFrameReadyCallback()`. Worker: copies the callback under the lock, invokes it after release |
@@ -1116,7 +1115,7 @@ logging, or surfacing an error condition.
 ### 10.6 EntryTimestampsView and extended locks
 
 `ObjectStore::entryTimestamps()` returns an `EntryTimestampsView` that
-holds a `shared_lock` for its lifetime (§OS4). pj_scene2D's
+holds a `shared_lock` for its lifetime (`pj_datastore/docs/ARCHITECTURE.md` "ObjectStore"). pj_scene2D's
 `StreamingVideoDecoder` may use it during seek planning (batch timestamp
 access). The lock is shared (readers-only), so it does not block other
 decoders, but it blocks the push thread for the view's lifetime.
@@ -1151,14 +1150,14 @@ bugs that were already proven unfixable by patching.
 
 4. **ObjectStore handles are owning.** A decoder can hold a byte handle
    while the store pushes and evicts. No use-after-free is possible.
-   (Guarantee: §OS3.4, §OS4)
+   (Guarantee: `pj_datastore/docs/ARCHITECTURE.md` "ObjectStore")
 
 5. **Live and scrub are mutually exclusive.** During scrub, the buffer
    is frozen — no pushes, no eviction. Seek sequences (keyframe →
    decode forward) cannot race with eviction. (Requirement: §R4.3)
 
 6. **Keyframe tracking is pj_scene2D's concern, not ObjectStore's.**
-   ObjectStore is codec-agnostic (§OS3.6). The index lives inside the
+   ObjectStore is codec-agnostic. The index lives inside the
    decoder (`StreamingVideoDecoder`'s inline keyframe vector, §6).
    (Decision: §R4.2, §R4.4)
 
