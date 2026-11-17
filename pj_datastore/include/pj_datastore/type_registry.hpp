@@ -12,10 +12,9 @@
 
 namespace PJ {
 
-/// Engine-wide schema registry: assigns SchemaId to named TypeTreeNode trees,
-/// shared across topics. registerOrGet() supports late discovery (return existing
-/// id by name); evolveSchema() permits additive-only changes (no field removal or
-/// type change).
+/// Engine-wide schema registry, shared across topics: assigns a SchemaId to each named TypeTreeNode tree. No locking:
+/// hold DataEngine::lockEngine() across every use, and do not keep the TypeTreeNode* from lookup() past it
+/// (evolveSchema() replaces the tree).
 class TypeRegistry {
  public:
   TypeRegistry();
@@ -26,28 +25,23 @@ class TypeRegistry {
   TypeRegistry(const TypeRegistry&) = delete;
   TypeRegistry& operator=(const TypeRegistry&) = delete;
 
-  // Register a known schema (from Protobuf, ROS, etc.)
-  // Fails if schema_name already exists.
+  /// Fails if `schema_name` is already registered.
   [[nodiscard]] PJ::Expected<PJ::SchemaId> registerSchema(
       std::string schema_name, std::shared_ptr<PJ::TypeTreeNode> type_tree);
 
-  // Late discovery: register from first message (JSON, etc.)
-  // Returns existing schema ID if name already registered.
+  /// Returns the id of an already registered `schema_name`, ignoring `type_tree`.
   [[nodiscard]] PJ::Expected<PJ::SchemaId> registerOrGet(
       std::string schema_name, std::shared_ptr<PJ::TypeTreeNode> type_tree);
 
-  // Lookup by ID — returns nullptr if not found
   [[nodiscard]] const PJ::TypeTreeNode* lookup(PJ::SchemaId id) const;
 
-  // Lookup by name — returns nullopt if not found
   [[nodiscard]] std::optional<PJ::SchemaId> findByName(std::string_view name) const;
 
-  // Registered name for `id` (the inverse of findByName) — nullopt if not found.
-  // Linear in the number of schemas; meant for UI/diagnostic lookups, not hot paths.
+  /// Linear in the number of schemas: for UI and diagnostics, not hot paths.
   [[nodiscard]] std::optional<std::string> schemaName(PJ::SchemaId id) const;
 
-  // Schema evolution: add fields to existing schema (additive only).
-  // Fails if: ID not found, existing fields changed type, fields removed.
+  /// Replaces the tree when it keeps every existing leaf path with its type (an array counts as one leaf); added
+  /// fields are accepted. Fails for an unknown id, a removed leaf or a changed type.
   [[nodiscard]] PJ::Status evolveSchema(PJ::SchemaId id, std::shared_ptr<PJ::TypeTreeNode> updated_tree);
 
  private:

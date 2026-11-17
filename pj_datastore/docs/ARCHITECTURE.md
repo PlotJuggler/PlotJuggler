@@ -1,360 +1,296 @@
-# pj_datastore Architecture
+# pj_datastore architecture
 
-> **Scope:** this document covers the **scalar `DataEngine` path** — the columnar
-> store, encoding, queries, and `IncrementalEngine`. The library also compiles three
-> first-class components documented elsewhere or summarized below: the opaque-blob
-> **`ObjectStore`** (its own doc, [`OBJECT_STORE_DESIGN.md`](./OBJECT_STORE_DESIGN.md)),
-> the **`ColorMapRegistry`** + its C-ABI host (§3 *Color Map Layer*), and the
-> **streaming two-engine `flushTo`/`setTarget`** swap (§3 *Plugin Host Layer*).
+How the module works today. Per-method contracts live in the headers; measurements and tried alternatives live in
+[TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md); the plugin-facing write and read patterns are in
+[USER_GUIDE.md](./USER_GUIDE.md).
 
-## 1. Module Structure
+The module holds five pieces: `DataEngine`, the columnar store for scalar time series; `ObjectStore`, timestamped
+opaque payloads next to it; `IncrementalEngine`, the derived-series graph over the engine; the host side of the plugin
+C ABI (`plugin_data_host.hpp`); and the `PJ::proc` data-processor substrate. It is pure C++20 and links only `pj_base`
+from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time display.
 
-Two libraries with a strict dependency direction:
+## Data model
 
-- **pj_base** (from the `plotjuggler_sdk` Conan package): Vocabulary types and SDK headers with zero external dependencies. Defines:
-  - `Timestamp` (`int64_t`, nanoseconds since Unix epoch)
-  - `Range<T>` inclusive min/max pairs
-  - Identity types: `DatasetId`, `TopicId`, `FieldId`, `SchemaId`, `TimeDomainId` (all `uint32_t`), `ChunkId` (`uint64_t`), `NodeId` (`uint32_t`)
-  - `PrimitiveType` enum (12 variants: kFloat32..kUint64, kBool, kString)
-  - `NumericType`, `NumericValue` (variant of all numeric scalars)
-  - `TypeTreeNode` (recursive schema tree: primitive, struct, array, enum nodes)
-  - `Span<T>` (alias for `std::span`), `BitSpan` (bit-level view with offset)
-  - `Expected<T>` / `Status` for fallible operations, `PJ_ASSERT` for invariants
+- **Dataset → topic → chunk → column.** A dataset is one source (a file, a live connection) bound to a time domain. A
+  topic is one stream: typed columns sharing one timestamp column. A topic either has a schema (a type tree registered
+  in the `TypeRegistry`) or is schemaless and gets columns as they appear.
+- **Timestamps** are absolute int64 nanoseconds. Nothing in this module subtracts a display base.
+- **Types.** Each logical `PrimitiveType` maps to a storage kind (narrow integers are widened); 64-bit integers are
+  never stored as double.
+- **Columns are append-only.** Field ids are dense from 0 and never change once given, so adding a column never
+  invalidates a `FieldId` or a column index. The app keys curves by (topic id, column index); reload and merge keep
+  both (see "Reload, merge and removal").
+- **Chunks** are immutable once sealed. Chunk ids come from one process-wide counter at seal, so a chunk sealed later
+  has a larger id; derived-series watermarks and gap detection rely on that. A writer holds sealed chunks until it
+  flushes, so chunks from different writers can be committed out of id order.
 
-- **pj_datastore** (`pj_datastore/`): Engine implementation. External dependencies: fmt, tsl::robin_map, nanoarrow (Arrow IPC import).
+## Ingest and schema evolution
 
-Dependency: `pj_datastore` -> `pj_base`. No reverse dependency. `pj_plugins` depends on `pj_base` only, never on `pj_datastore`.
+A plugin's write call reaches a write host ("Plugin host bridges"), which drives a `DataWriter`. The writer accumulates
+rows in one chunk builder per topic, seals full builders, and hands the sealed chunks to `DataEngine::commitChunks()`.
+Only then do readers see them. `commitChunks()` returns the topics that changed, which is what
+`IncrementalEngine::onSourceCommitted()` takes.
 
-## 2. Domain Model
+- Rows arrive one at a time (columns not set become null) or as column batches; Arrow C streams go through
+  `arrow_import` into the batch path. The two forms must not mix within a row.
+- **Columns appear at any time.** This is the normal case: variable-length sequences flatten to `data[0]`, `data[1]`,
+  … and grow with the message, and dynamic-schema formats (JSON) add keys per message. A new column seals the pending
+  builder, so earlier chunks have fewer columns: readers bounds-check the column index and treat a missing column as
+  null. A variable-length array grows its element columns up to the topic's expansion limit; past it the extra
+  elements are dropped and counted.
+- **A column keeps its first type.** The write host stores a value of another type when the conversion is exact;
+  otherwise that field is null for the row, the rest of the row is written, and the field is reported once through the
+  ingest-warning handler. Registering an existing field with another type is an error.
+- **Out-of-order timestamps are kept.** Rows are stable-sorted within a chunk at seal, so every sealed chunk is
+  ascending, but a topic's chunks can overlap in time; the reads merge them ("Reading").
+- Pre-registering fields is optional. It enables the bound-record write path and avoids sealing mid-stream.
 
-Hierarchy: **Dataset -> Topic -> Chunk -> Column**
+## Storage, encoding and retention
 
-- **Dataset** (`DatasetInfo`): Identity (`DatasetId`), `source_name` string, bound `TimeDomain`. Represents one data source (file, live connection).
+Each topic's `TopicStorage` holds its committed chunks in commit order, its column layout and its array-expansion
+state. The engine owns each `TopicStorage` through a `unique_ptr`, so its address never changes while the topic
+exists.
 
-- **Topic** (`TopicDescriptor` + `TopicStorage`): Named data stream within a dataset. Key fields: `schema_id` (0 = schemaless), `max_chunk_rows` (default 1024), `array_expansion_limit` (default 64). `TopicStorage` owns the committed chunk deque and column descriptors for schemaless topics.
+**Encoding** is chosen per column at seal from the builder's statistics: constant when every value is equal,
+frame-of-reference for signed integer columns and for float columns that hold only whole numbers, when the offsets fit
+in fewer bytes than the values (decoding reproduces those floats exactly), dictionary for strings, packed bits for
+bools, raw otherwise. A column has a validity bitmap (Arrow layout, LSB first) only when it holds a null.
 
-- **Schema** (`TypeRegistry` + `TypeTreeNode`): Tree of named typed nodes. `TypeRegistry` assigns `SchemaId` values, supports lookup by id/name, and additive-only evolution via `evolveSchema()`. Schemas are shared across topics.
+**Nulls on read.** The per-cell accessors do not check: `readNumericAsDouble()` returns 0.0 at a null. The batch
+`readColumnAsDoubles()` writes NaN, and series views skip null rows.
 
-- **Chunk** (`TopicChunk`): Sealed, immutable storage unit produced by `TopicChunkBuilder::seal()`. Contains: `ChunkId` (monotonic atomic counter), timestamps vector, columns vector (each holding `EncodedData` + optional `BitVector` validity bitmap + `shared_ptr<ColumnDescriptor>`), and `ChunkStats` (t_min, t_max, row_count, per-column `ColumnStats`).
+**Retention** runs only when called. The streaming manager trims its own dataset with `enforceRetention()`; nothing
+trims a file dataset. Retention drops the chunks at the front of a topic whose newest row is older than the topic's
+newest row minus the window, and raises the topic's retention floor: rows under the floor that sit in a chunk straddling
+it stay in memory, but no read shows them. `evictTopicHistory()` raises the floor past everything the topic holds now.
+Each topic also records the newest chunk id that retention dropped or cut into, which is how a derived node detects
+input it never saw ("Derived series (IncrementalEngine)").
 
-- **Column** (`TopicChunk::Column`): The physical unit. `EncodedData` is a variant of 5 encoding types (see section 5). `ColumnDescriptor` carries field_id, logical_type, and fully-qualified field_path (e.g. `"pose.position.x"`).
+## Reading
 
-## 3. Layer Architecture
+`DataReader` is the read facade. The cursors it returns keep the engine lock for their whole life ("Threading and
+locks").
 
-### Logical Layer
+- **Rows.** `rangeQuery()` gives a `RangeCursor`. Its `forEach()` yields rows in timestamp order across overlapping
+  chunks (a heap merge whose step costs O(1) while chunks do not overlap). Its `forEachChunk()` yields each chunk's
+  sorted run in commit order, so under overlap the runs interleave in time.
+- **Latest at.** `latestAt()` returns the newest row at or before `t`; on a timestamp tie the later-committed chunk
+  wins. The values are copied out under the lock, so no chunk pointer escapes.
+- **Series.** `series(topic, column)` gives a `SeriesReader` over one numeric or bool column, as the samples that hold a
+  value: null rows and chunks without the column are skipped. The time-based calls merge across overlapping chunks.
+  The index-based ones do not (see "Known gaps").
+- A topic's time range is computed over all its chunks, never read from the first and last chunk.
+- **Whole-series snapshots** (the toolbox `read_series_arrow`, its windowed variant and the value scan, which the
+  exporters and the MCP tools use) first call `DataEngine::awaitCompleteSeries()`, so a derived series still being
+  replayed is finished before it is read. Plots read without that barrier.
 
-**`DataEngine`** — Central owner of all state. Stores datasets, topics (as `TopicStorage`), time domains, and the global `TypeRegistry`, all in hash map containers (tsl::robin_map internally, std::unordered_map in headers). Provides:
-- `createDataset()`, `createTopic()`, `createTimeDomain()` with monotonic ID allocation or explicit caller-requested IDs
-- `commitChunks()` — appends sealed chunks to `TopicStorage`, returns deduplicated list of changed `TopicId`s
-- `enforceRetention()` — evicts old chunks across all topics
-- `evictTopicHistory()` — raises ONE topic's virtual retention floor past everything currently stored (rows vanish from all read paths; the topic, ids, and column layout stay registered). Data-relative on purpose — stream timestamps are recording time, so a wall-clock cutoff could hide future samples. Used by the app to disown a demand-subscription field-discovery preview's fake-interest samples
-- Factory methods `createWriter()` and `createReader()`
+## Threading and locks
 
-**`TypeRegistry`** — `registerSchema()` assigns a new `SchemaId`. `registerOrGet()` returns an existing ID if the name matches (for late-discovery schemas). `evolveSchema()` validates additive-only changes (no field removal or type change).
+The engine starts no threads. Its clients are the GUI thread (plots, catalog, derived recompute, every operation that
+frees chunks) and the ingest worker threads (the plugin write hosts).
 
-### Storage Layer
+- **One recursive mutex per engine, held for every access**, read or write, on any thread, through `lockEngine()`. The
+  raw `getTopicStorage()` and `typeRegistry()` do not lock: the caller holds the lock for as long as it uses what they
+  return. `TopicStorage` and `TypeRegistry` have no locks of their own.
+- **Cursors keep the lock.** `DataReader` moves the lock into the `RangeCursor` or `SeriesReader` it returns, because
+  they read chunks lazily; a `SeriesCursor` relies on its parent's.
+- **Recursive**, so a thread may lock again: a held cursor that reads more, one mutator calling another, a write host's
+  append creating a field. Mutating from inside a `forEach` callback is still unsafe.
+- **Appends never move anything.** `commitChunks()` only appends, so a worker commit leaves every GUI cursor and cached
+  `TopicChunk*` valid. Everything that frees or moves chunks (retention, clearing, retiring, detach and reattach,
+  `flushTo()`, `replaceDatasetFrom()`, `mergeDatasets()`, `removeDataset()`) runs on the GUI thread, after the
+  consumers bound to that data dropped their cached chunk pointers.
+- **Two engines are locked together.** While a stream is paused a second engine exists ("Streaming pause and resume").
+  Code that holds both locks takes them in one `std::lock()` (`lockEnginePair()`); holding one engine's lock while
+  plain-locking the other can deadlock against `flushTo()`.
+- **The engine lock and the ObjectStore locks never nest.** The toolbox catalog reads the two stores one after the
+  other.
+- **The write-target swap is outside the engine lock.** `setTarget()` on a write host replaces its write core on the GUI
+  thread while the worker may be inside the old one; the race is on the core object, not on engine state. The core is
+  held in an atomic shared pointer: each worker call takes a strong reference for its duration, so the swap never frees
+  a core in use (`engine_thread_safety_test` covers it under ThreadSanitizer). Rows an in-flight call stages in the old
+  core after `setTarget()` flushed it are not committed (see "Known gaps").
 
-**`TopicChunkBuilder`** — Mutable builder that accumulates rows for one topic. Two append paths:
-- *Row-at-a-time*: `beginRow(timestamp)` -> `set<T>(col, value)` / `setNull(col)` -> `finishRow()`. `finishRow()` pads unset columns with null.
-- *Bulk*: `appendTimestamps(span)` -> `appendColumn<T>(col, span)` per column -> `appendColumnValidity(col, bitspan)` -> `finishBulkAppend()` (computes stats).
+## Streaming pause and resume
 
-Tracks per-column `ColumnStats` incrementally (min, max, null_count, is_constant, run_count); `seal()` adds `all_integral` for float columns (every non-null value a whole number). `TopicStorage::wholeNumbersOnly(field)` ANDs that flag over the retained chunks (incremental on append, rebuilt lazily after clear/evict/restore/moves) and `wholeNumbersSignature()` changes whenever an answer does — the catalog uses both to offer whole-number float columns as discrete state series. `seal()` encodes columns, assigns a monotonic `ChunkId` via `std::atomic<ChunkId>`, and produces an immutable `TopicChunk`.
+While a stream is paused the GUI keeps showing the primary engine and store, and ingest continues into a staging
+`DataEngine` and `ObjectStore` owned by the streaming manager in `pj_app`. The write hosts switch between them with
+`setTarget()`.
 
-**`TopicStorage`** — Per-topic container of committed chunks in a `std::deque<TopicChunk>`. `appendSealedChunk()` appends in commit order without rejecting any chunk — out-of-order ingest means chunk time ranges may overlap, so queries merge across them (see §5). `evictBefore()` removes the contiguous prefix of chunks whose `t_max < threshold` and raises a per-topic retention floor. Also stores column descriptors for schemaless (schema_id == 0) topics and per-field array expansion counts.
+- **Ids stay in lockstep.** A write host given the other engine (`setSecondaryEngine()`) creates every topic and field
+  on both, with the same ids, so a plugin that cached a topic or field handle keeps writing to the right column after
+  a swap. Mirroring names the dataset by id, so the streaming manager creates the dataset on both engines with the
+  same id. Object topics are registered on both stores with the same id.
+- **Resume** swaps the targets back first, so a push already in flight finishes on the staging side, then moves the
+  staged data into the primary with `flushTo()`: zero-copy, topics matched by (dataset, name). Each `flushTo()` checks
+  everything before it moves anything, so a failure changes neither side. The paused tail's retention floor and
+  evicted-through chunk id move with it: a pause longer than the window ends as one gap for a derived node that had not
+  seen the trimmed rows. `ObjectStore::flushTo()` gives the moved entries fresh UIDs and applies the destination's
+  retention; the scalar side is re-trimmed by the caller.
+- Both `flushTo()`s require each moved topic to start at or after the destination's newest timestamp (see "Known
+  gaps").
 
-**`TypedColumnBuffer`** — In-memory typed column buffer used internally by the builder. One buffer per column. Supports per-type single-row append (`appendFloat64`, `appendInt64`, etc.) and bulk append (`appendFloat64Bulk`, etc.). String storage uses a separate offsets buffer (`RawBuffer`) with Arrow-compatible uint32 offset layout. Validity bitmap (`BitVector`) is lazily initialized -- only allocated when the first null is appended.
+## Reload, merge and removal
 
-**`RawBuffer`** — Growable byte vector wrapping `std::vector<uint8_t>`. Used for column value storage and encoded payloads.
+These operations free or move data, so they run on the GUI thread after every reader bound to the dataset has been
+invalidated (consumers drop their cached chunk pointers on `datasetAboutToBeReplaced`), with no event loop run in
+between.
 
-**`BitVector`** — Owning packed validity bitmap with Arrow-compatible LSB-first layout. Supports `initValid()`, `setNull()`, `isValid()`, `countNulls()`, and bulk `assignBytes()`.
+- **Reload.** The file is ingested again into a staging engine and store; `replaceDatasetFrom()` then moves that data
+  into the primary dataset, matching topics by name. Dataset and topic ids, and the curve keys built on them, stay.
+  Staged-only topics are created; primary-only topics are retired (scalar) or removed (objects); matched object topics
+  take the reloaded metadata.
+- **Refill in place.** `clearDatasetChunks()` and `ObjectStore::clearDataset()` empty a dataset but keep its topic ids.
+  The detach and reattach pairs do the same transactionally: the data moves into a snapshot and goes back if the
+  refill fails, and topics the failed refill added are retired or removed.
+- **Merge.** `DataEngine::mergeDatasets()` and `ObjectStore::mergeDatasets()` fold source datasets into an anchor, each
+  shifted by a raw delta the caller supplies; `pj_runtime` computes the deltas and owns the type-conflict policy.
+  Scalar topics unite by name and columns by field path; the anchor keeps its ids and column indices, a conflicting
+  field type is skipped and reported, and the rebuilt chunks are ascending and non-overlapping. Object topics with a
+  shared name fuse by shifted timestamp with fresh UIDs; source-only ones move under the anchor and keep their id.
+  Sources end empty but registered.
+- **Merged payload stamps.** A merge moves each entry's store timestamp but never rewrites its payload, so it records
+  the delta in the entry's `payload_stamp_shift`. A consumer that reads timestamps embedded in a payload (the TF
+  buffer, the scene layers, the marker and script engines) adds it; a consumer of the store timestamp ignores it.
+- **Removal.** `removeDataset()` erases the dataset and its topics; ids are never reused. `retireTopic()` frees a
+  topic's chunks and hides it but keeps the `TopicStorage`, so a cached reader sees an empty topic rather than freed
+  memory. `clearTopicHistory()` frees the chunks and resets the floor, for a replay that writes the same timestamps
+  again.
 
-### Writer Layer
+## Derived series (IncrementalEngine)
 
-**`DataWriter`** — High-level write facade bound to a `DataEngine`. Manages one `TopicChunkBuilder` and a pending chunk list per topic. Key operations:
-- `registerTopic()` / `registerScalarSeries()` — topic creation
-- `ensureColumn()` — dynamic column addition for schemaless topics. Rejects if a row is in progress (for new columns only). Seals any pending builder before modifying column layout.
-- `expandArray()` — variable-length array expansion. Seals current builder, adds new `ColumnDescriptor`s, updates `TopicStorage`. Clamps to `array_expansion_limit`.
-- `appendColumns()` — bulk ingest with auto-chunking: splits batches that exceed `max_chunk_rows`, calling `appendTimestamps` / `appendColumn` / `finishBulkAppend` / `autoSeal` per sub-batch.
-- `flush()` / `flushAll()` — seals remaining builders and returns `vector<pair<TopicId, TopicChunk>>` for `commitChunks()`.
-- `autoSeal()` — called when builder is full (`rowCount >= max_chunk_rows`). Seals builder, moves chunk to the writer's pending list.
+`IncrementalEngine` runs a graph of transforms over engine topics and writes their outputs as engine topics. A SISO
+node maps one single-column input to one output; a MIMO node maps N single-column inputs to M outputs and fires only
+where every input has a sample at exactly the same timestamp. Nodes run in topological order; a cycle is refused when
+the node is added.
 
-### Reader Layer
+- **Sequential contract.** A transform sees its input in ascending timestamp order, its state carries across chunks,
+  and only `reset()` clears it. Anything that would break the order (late input, input lost to retention, a failed
+  replay) therefore resets the node and replays its retained input in time order, never an incremental step.
+- **Scheduling.** `onSourceCommitted()` marks the nodes that read the changed topics dirty; `scheduleAll()` runs the
+  dirty ones, `scheduleActive()` only the given nodes and what they depend on. A SISO node reads the input chunks
+  newer than the newest it consumed; a MIMO node gathers the rows after its last joined timestamp. A dirty node with no
+  input chunk newer than its watermarks returns at once, in time linear in its inputs, and leaves its downstream alone,
+  so a streaming tick that dirties every node costs little for idle ones.
+- **Late input.** An unread chunk that lands at or before the node's last fed timestamp makes the node recompute.
+- **Recompute is transactional.** The node's current output is set aside, not cleared, and the graph below it is
+  replayed. A successful replay drops the old output; an error or an exception restores it, so a failed recompute never
+  leaves an output emptier than before. A node whose replay failed is fully recomputed on its next run, because its
+  watermarks no longer describe its output and an incremental step would duplicate rows; restoring saved input
+  bindings does the same. A failed node runs again only when new input arrives.
+- **Retention gaps.** A node has a gap when retention dropped, or cut into, an input chunk newer than the newest chunk
+  the node consumed. Detection compares chunk ids, not timestamps, because feed timestamps advance only on non-null
+  rows and exact joins, so an all-null or sparse input would look permanently behind. A MIMO node compares against the
+  newest chunk across all its inputs, so a newer chunk on one input can hide an eviction on another: a gap can be
+  missed, never invented. The node then replays what is retained and records the gap (a bounded recent list,
+  `gaps()`); `pj_runtime` shows it in the transform's configuration.
+- **Time-sliced replay.** `materializeStep()` advances one node for about a given wall-time budget and commits what it
+  produced. A node left part-way is deferred: the scheduling passes skip it until a step finishes it or a remove,
+  replace, recompute or failure ends the replay. A SISO node over time-ordered input resumes mid-chunk and produces the
+  same output as an uninterrupted replay; MIMO nodes and overlapping input finish in one step. Whole-series snapshot
+  reads wait for an unfinished replay through the engine's complete-read barrier, which `pj_runtime` installs.
+- **Replacing and reloading.** A node's operator can be swapped in place, keeping its topology and output topic ids;
+  the downstream graph is replayed and the old operator restored on failure. The input bindings can be saved, checked
+  against the reloaded schemas and restored, so a reload keeps node and output ids.
 
-**`DataReader`** — Read-only facade over committed `DataEngine` storage. Provides `listDatasets()`, `listTopics()`, `getTypeTree()`, `getMetadata()`, `rangeQuery()`, `latestAt()`, `columnType(topic_id, column_index)` (the schema's logical type, before any row is stored), and `series(topic_id, column_index)`.
+## ObjectStore
 
-### Query Layer
+`ObjectStore` keeps timestamped opaque payloads (images, point clouds, annotations, serialized canonical objects) per
+topic, to be selected by time and never expanded into columns. It does not decode payloads or read topic metadata: the
+metadata JSON is kept verbatim. The one exception: registering a legacy `__markers__/<key>` name stamps the plot-marker
+metadata on it.
 
-**`RangeCursor`** — Iterates rows in `[t_min, t_max]` across the chunk deque. Chunk time ranges may overlap (out-of-order ingest), so the constructor seeds one frontier per intersecting chunk into a min-heap on (timestamp, chunk index). Supports:
-- `forEach(callback)` — per-row iteration via `SampleRow` (timestamp + chunk pointer + row index), in globally ascending timestamp order even across overlapping chunks; the heap advance is O(1) while chunks don't actually overlap
-- `forEachChunk(callback)` — bulk iteration via `ChunkRowRange` (chunk pointer + row start/end); runs are per-chunk sorted but delivered in commit order, so under overlap they may interleave in time — bulk consumers tolerate that or use `forEach`
+**Entries** are kept in non-decreasing timestamp order. An out-of-order push is inserted at its sorted position; equal
+timestamps keep arrival order.
 
-**`latestAt(chunks, t)`** — Scans candidate chunks (per-chunk binary search) for the most recent row at or before `t`; later-committed chunks win timestamp ties. Returns `optional<SampleRow>`.
+**Identity.** Each entry gets a `SequentialUID` from a process-wide counter, minted under the topic's write lock, so
+UIDs rise strictly within a topic, are sparse (the counter is shared by all topics), are never reused and survive
+eviction. UID order is arrival order, which an out-of-order insert separates from timestamp order; `OrderedEntries`
+keeps the entries, their timestamps and a UID-order permutation in step. `flushTo()`, `replaceDatasetFrom()` and the
+merge give the entries they move fresh UIDs, so a cursor below `firstSequentialUID()` detects with one comparison that
+it missed evicted entries or that the dataset was replaced.
 
-Both are free functions operating on `const std::deque<TopicChunk>&`.
+**Which read for which consumer:**
 
-**`SeriesReader`** — Views one numeric/bool topic column as a virtual vector of `(timestamp, value)` samples. It is bound to a topic and column when created through `DataReader::series()`. Null physical rows and chunks where the column does not exist are skipped by definition. Provides:
-- `size()` / `empty()` — sample count, not physical row count
-- `sampleAt(index)` — lookup by virtual series index
-- `sampleAtOrBeforeTime(t)` / `sampleAtOrAfterTime(t)` — lookup by timestamp over value-bearing samples
-- `samples(Range<Timestamp>)` — cursor over samples in an inclusive time range
-- `bounds()` / `bounds(Range<Timestamp>)` — valid time and value ranges for the series
-
-**`SeriesCursor`** — Iterates value-bearing samples in `[time.min, time.max]` across chunks. It returns `SeriesSample` values with timestamp, double value, chunk pointer, and physical row index for low-level consumers that need provenance.
-
-### Encoding Layer
-
-Seven `StorageKind` values map logical `PrimitiveType` to physical storage:
-
-| StorageKind | Source PrimitiveTypes |
+| Consumer | Read |
 |---|---|
-| kFloat32 | kFloat32 |
-| kFloat64 | kFloat64 |
-| kInt32 | kInt32 |
-| kInt64 | kInt8, kInt16, kInt64 |
-| kUint64 | kUint8, kUint16, kUint32, kUint64 |
-| kBool | kBool |
-| kString | kString |
+| The state at time `t` (a renderer every frame) | `latestAt()`, warm-cached; `latestEntryIdAt()` to skip an unchanged sample without fetching |
+| Every entry exactly once, late arrivals included (the TF buffer) | `drainNewSince()` with a UID cursor |
+| A time window | `rangeByTime()`, then `at(uid)` per entry; a UID walk would skip an out-of-order entry |
+| A time-window cursor's high-water mark | `maxUidAtOrBefore()`, not `latestAt()`'s UID |
+| "Did anything arrive behind what I evaluated?" | `oldestArrivalAfter()` |
+| "Did the topic change?" | `contentIdentity()` |
 
-Five `EncodingType` values, selected at seal time per column:
+**Payloads.** An owned payload is a shared buffer charged to the topic's memory budget. A lazy payload is a closure the
+store runs on read, returning bytes plus an anchor that keeps them alive; the producer anchors on whatever already owns
+them (a decompressed chunk, an mmap), so a read copies nothing. A lazy push can carry a seed, bytes the host already
+holds: the shared `ResidentPayloadPool` keeps them, byte-bounded, and reads use them until the pool evicts them, after
+which the entry fetches like any lazy entry. The pool charges a seed's payload size, but a seed anchored on a larger
+allocation (the decompressed chunk it came from) keeps all of it alive, so the budget bounds payload bytes, not memory.
+A resolved entry's bytes stay valid while its anchor is held, whatever the
+store does next. A failed fetch is reported as such, not as an empty payload.
 
-| EncodingType | When used | Representation |
-|---|---|---|
-| kRaw (`RawBuffer`) | Default for uint64, and for floats with fractional/special values, when not constant | Typed byte buffer |
-| kConstant (`ConstantEncoded`) | All non-null values equal (`is_constant && rowCount > 0`) | 8-byte value + count |
-| kFrameOfReference (`FrameOfReferenceEncoded`) | kInt32/kInt64, and float32/float64 chunks holding only whole numbers, when the range fits in fewer bytes | int64 reference + packed uint8/16/32 offsets |
-| kDictionary (`DictionaryEncoded`) | Always for kString | Unique string list + narrowed uint8/16/32 indices |
-| kPackedBool (`PackedBools`) | kBool when not constant | 1 bit per value, LSB first |
+**Warm cache.** Only `latestAt()` uses it: one resolved entry per topic, keyed by UID, so a renderer asking for the same
+sample every frame does not fetch again. It is dropped when that entry is evicted, when an out-of-order push may change
+what an at-or-before lookup finds, and when the topic is flushed, replaced, emptied or detached (a detach snapshot does
+not keep it). Failed or empty resolves and pool hits are not cached. For a lazy topic it keeps at most one payload
+resident.
 
-`EncodedData = std::variant<RawBuffer, ConstantEncoded, FrameOfReferenceEncoded, DictionaryEncoded, PackedBools>`
+**Retention** is per topic: a time window behind the newest entry, a memory cap and an entry cap, each off at 0. It
+runs after every insert and after `flushTo()` and the merge. Explicit eviction trims the oldest entries; removing
+entries anywhere is a bundle that only drops. Each limit counts what expires, then evicts it in one pass.
 
-Encoding selection in `TopicChunkBuilder::seal()`:
-1. **Strings**: always dictionary encoded via `dictionaryEncodeStrings()`.
-2. **Bools**: constant if `is_constant`, otherwise packed bits via `packBools()`.
-3. **Signed integers** (kInt32/kInt64): recomputes exact int64 min/max from raw buffer (avoids double-precision loss). Constant if all equal, frame-of-reference if `offsetBytesFor(range) < storageKindSize(kind)`, otherwise raw.
-4. **Float32/float64**: constant if `is_constant`; otherwise, if every value is a whole number (finite, not `-0.0`, inside the int64 range), frame-of-reference over the int64 values when `offsetBytesFor(range) < storageKindSize(kind)`; otherwise raw. The column keeps its declared float type, and FOR decoding (`reference + offset`) reproduces the original floats exactly — a whole float is an exact integer at any magnitude.
-5. **Uint64**: constant if `is_constant`, otherwise raw.
+**Bundles.** `pushOwnedBundle()` publishes one entry to each of several topics as one transaction, optionally dropping
+entries first. The derived-object result rings in `pj_runtime` use it to keep a node's outputs consistent; they evict,
+never reject.
 
-### Derived Layer
+**Threading.** One shared mutex for the store, then one per topic, always in that order; several topics lock in
+ascending id order. Registration, removal, `clear()` and bundles take the store lock exclusively, so a bundle blocks
+every reader and writer while it runs. Reads copy the entry under the topic's shared lock and resolve it with no lock
+held, so a slow fetch blocks no writer; `latestAt()` re-locks only to store the cache entry, after checking it is still
+retained. Nothing is destroyed under a store lock: dropping an entry can run plugin code (a context destructor, an
+anchor release, a library unload) that calls back into the store, so each mutator collects what it unlinks and destroys
+it after releasing the locks. The pool has its own mutex and releases anchors outside it. `drainNewSince()` waits for
+the topic's lock, which a writer holds exclusively through an out-of-order insert (cost in TECHNICAL_NOTES.md
+"Out-of-order ingest"), so keep it off latency-critical threads.
 
-**`IncrementalEngine`** — Manages a transform DAG. Uses pimpl (`IncrementalEngineImpl`). Key operations:
+## Plugin host bridges
 
-- `addSisoTransform()` — registers a single-input/single-output node. Input must be a single-column topic. Creates an output scalar topic. Returns `NodeId`.
-- `addMimoTransform()` — registers a multi-input/multi-output node. All inputs must be single-column. Creates N output topics.
-- `topologicalOrder()` — Kahn's algorithm. Cycle detection via DFS at registration time.
-- `onSourceCommitted(changed_topics)` — marks directly dependent nodes dirty.
-- `scheduleAll()` — processes all dirty nodes in topological order (incremental path).
-- `scheduleActive(active_nodes)` — processes only specified nodes and their transitive upstream dependencies.
-- `materializeStep(node_id, budget)` — time-sliced catch-up: advances one node over its unprocessed input for about `budget` of wall time, commits the rows, and returns whether it caught up. It shares the per-node step (`runNodeLocked`) with the scheduling passes. A node a step leaves behind is *deferred* — it has a `resume_chunk_id`/`resume_row` inside a chunk; `deferredNodes()` lists them in creation order, and the scheduling passes skip them until a step (or a remove/replace/recompute, or a failure) ends the replay. SISO over time-ordered input resumes mid-chunk; per-chunk feeding then equals the merge cursor's order, so the output matches the synchronous replay. MIMO nodes, overlapping input and nodes flagged `needs_full_recompute` finish in one step. `nodeError(node_id)` is the error of the node's last run by any pass, step or recompute (empty once one succeeds). A whole-series snapshot reader (the toolbox `read_series_arrow` bridge and its windowed variant and value scan `readSeriesArrowWindow` / `scanSeriesValues`, the shell's marker-generator resolver) first calls `DataEngine::awaitCompleteSeries(topic)`, a main-thread barrier the owner of the replays installs (`setCompleteReadBarrier`) to finish a replay still growing that topic.
-- `recomputeBatch(node_id)` — resets the transform and replays the node plus its downstream graph. Per node, the current output is detached aside (not cleared) before replay; a successful replay discards the detached data, while any other exit — an error Status *or* an exception out of the transform — restores it from an RAII guard. A failed recompute (including a sticky-failing processor) therefore never leaves a node's output emptier than it was going in.
-- `recomputeBatch(root_node_ids)` — performs one topological replay over the union of several roots' downstream graphs, so a converging node runs once against one generation of its inputs.
-- `inputBindingState()` / `resolvedInputBindingState()` / `restoreInputBindingState()` — capture, validate against the current input schemas, and restore input-column metadata for a host-managed reload transaction without reminting node or output topic ids.
-- `replaceSisoTransform()` / `replaceMimoTransform()` — exchange only a node's operator while preserving topology and topic ids. They transactionally replay the downstream graph and restore the old operator and graph on failure.
+Plugins never link this module. They reach it through the C-ABI tables in the SDK's `pj_base/plugin_data_api.h`
+(C++ views in `pj_base/sdk/plugin_data_api.hpp`), served by the host classes in `plugin_data_host.hpp`: source write,
+parser write (bound to one topic the host chose), toolbox (scalar reads and writes, object writes, the catalog), source
+and parser object write, and toolbox object read.
 
-**`ISISOTransform`** — Point-at-a-time interface. `calculate(time, input, &out_time, &out_value) -> bool`. Called in strictly ascending timestamp order. State persists across chunk boundaries. `reset()` clears state for batch recompute. `outputKind()` declares output `StorageKind` (default kFloat64).
+- Each host turns ABI calls into `DataWriter`, `DataEngine` and `ObjectStore` operations. The host seals and commits
+  (`flushPending()`); plugins never do.
+- An exception must not cross the ABI: entry points catch it and return an error status.
+- The write hosts collapse repeated slashes in topic and field names (and drop a field's leading slash); parser-binding
+  and object topic names are not normalized.
+- The write hosts take the engine lock on every call, both engines when mirroring.
+- Registering an object topic whose (dataset, name) exists with identical metadata reuses it, so a refill keeps the id
+  and the curves bound to it; different metadata is an error.
+- The store owns a lazy push's `fetch_ctx` only once the push succeeds, and then destroys it exactly once, when the
+  entry is dropped; a rejected push leaves it with the plugin. Calls into one context are serialized, because the ABI
+  keeps the returned buffer valid only until the next call.
+- A toolbox object read returns an owning handle per entry, valid until the plugin releases it even if the store drops
+  the entry.
 
-**`IMIMOTransform`** — N inputs -> M outputs. `calculate(time, inputs_span, &out_time, &outputs_vec) -> bool`. Exact-timestamp inner join: only called when ALL input topics have a sample at the same timestamp. `outputKinds(input_kinds)` declares one `StorageKind` per output topic.
+## Data processors
 
-**`VarValue = std::variant<int64_t, uint64_t, double, std::string>`** — Universal value type for transform I/O. Mapping: float32/float64 -> double, int8..int64/bool -> int64_t, uint64 -> uint64_t, string -> std::string.
+`PJ::proc::DataProcessor` is the sample-in, sample-out processor interface (reset, per-sample and batch evaluation,
+output kinds, saved parameters, failure state). It stays free of Qt and of any script engine, so `pj_scripting` builds
+the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/docs/FILTER_CLASS.md)) and
+`pj_runtime`'s `DataProcessorService` instantiates processors. `ProcessorSisoAdapter` runs one as a SISO node of the
+`IncrementalEngine`, so processors get the scheduling, recompute and gap behavior above.
 
-Incremental scheduling: each node tracks a `last_processed_chunk_id` watermark. `scheduleAll()` iterates only chunks with id > watermark, reads each row, calls `calculate()`, writes output via `beginRow`/`set`/`finishRow`, then flushes and commits.
+## Known gaps
 
-Idle nodes cost nothing: a streaming tick marks every node dirty, so before reading anything a run asks whether the node's inputs hold a chunk numbered above its watermark (evicted ones included, so a retention gap is still seen). If none does it returns at once, in time linear in the number of inputs rather than in the retained chunks, and leaves its downstream alone. Chunk ids come from one process-wide counter and input becomes new to a node only as a committed chunk (an append, a late write, a refilled topic), so a new chunk is always above the watermark. A MIMO node keeps one newest-id per input (`mimo_input_chunk_ids`) and compares each input with its own, because its node-wide `mimo_last_chunk_id` is the maximum across inputs and a chunk sealed earlier than another input's can be committed after it. A node with `needs_full_recompute`, an unfinished time-sliced replay or an unreported error is never skipped.
-
-Rolled-back nodes never go incremental: a recompute rewinds the watermarks before replaying, so a replay that fails (and rolls the output back) leaves watermarks that no longer describe the retained rows. Because the incremental path APPENDS, running it then would replay history on top of the restored rows and double them. Such a node carries `needs_full_recompute` until a replay succeeds, and both scheduling passes route it through the full detach-replay recompute, which rewrites the output wholesale. `restoreInputBindingState()` sets the same flag for the same reason (it rewinds watermarks without touching the output). Note the flag is *not* what schedules the node — a processed node is always left non-dirty, failure included, so a permanently failing processor still runs only when new input re-dirties it.
-
-Out-of-order input: transforms have a strict ascending-timestamp contract, so before running a node the scheduler checks whether any not-yet-processed input chunk lands at or before the node's timestamp watermarks (`siso_last_ts` for SISO; `mimo_last_chunk_id` + `mimo_last_ts` for MIMO). Such late input triggers `recomputeBatch` — reset transform state, detach outputs aside, fully replay over the time-merged input (the SISO replay feeds rows through the `RangeCursor` heap merge), restoring the detached output on failure — instead of incremental work.
-
-Retention gaps: when retention evicts input chunks a node never consumed, the node resets and replays what is still retained (the same path as out-of-order input) and records the gap `[feed watermark, first retained timestamp)` (`IncrementalEngine::gaps()`, the last 16; the watermark is `Timestamp::min` for a node that had fed nothing). The event is detected where it happens: `TopicStorage::evictBefore` records the highest chunk id it dropped, or cut rows from by raising the retention floor into a straddling chunk (`evictedThroughChunkId()`), and a node has a gap iff that id exceeds its chunk watermark (`last_processed_chunk_id` for SISO, `mimo_last_chunk_id` for MIMO, the largest chunk id seen across all inputs, so a newer chunk on one input can mask an eviction on another: a gap may be missed, never invented). Timestamps are not compared: the feed watermarks move only on a non-null row (SISO) or an exact-timestamp join (MIMO), so a node over an all-null column, an input with no rows or sparse inputs would otherwise look permanently behind. A never-run node (watermark 0) has nothing to fall behind, unless a time-sliced step already stopped inside its first chunk, and a replay raises the watermark past the evicted ids so a fully evicted input is one gap, not one per pass. A node stopped inside a chunk (its resume cursor) has consumed that chunk only up to its resume row: the chunk dropped, or the floor reaching the first unfed row, is a gap, while a floor cutting only the fed prefix is not. A failed node consumes nothing, but chunks arriving for it count as consumed (as a failed single-input node's already did), so retention passing its frozen watermark is no gap. The check runs only when neither `needs_full_recompute` nor a regression already forces the replay, since those reset the very watermark the gap reports. A node over a file dataset never gaps: nothing evicts a file topic. `DataEngine::flushTo` (the resume of a paused stream) hands the paused tail's retention floor and evicted-through id to the primary topic (`max` of both, the tail left with none): a pause longer than the window ends as one gap for a node that had not seen the trimmed rows, which then replays the retained window, and a straddling chunk's sub-floor rows stay hidden. `DataProcessorService::transformRecipeJson` exposes the list as `gaps` in a transform's config (`from_ns` is null for a node that had fed nothing).
-
-### Color Map Layer
-
-**`ColorMapRegistry`** (`colormap_registry.hpp`) — Registry of named colormap callbacks. A plugin registers one or more named `ColorMapEvalFn`s (scalar -> CSS color / `#rrggbb`) via `registerMap()` and selects an active one with `setActive()`; consumers (chart renderers, exporters) evaluate the active map per data point via `evaluate()`. The registry holds raw callback pointers + user contexts and does not own the plugin that supplied them.
-
-### Plugin Host Layer
-
-**`DatastoreSourceWriteHost`** / **`DatastoreParserWriteHost`** / **`DatastoreToolboxHost`** — Bridge between the C ABI scalar-write protocol (`PJ_source_write_host_t`, etc.) and the C++ `DataWriter`/`DataEngine`. Each wraps a pimpl state struct. Provides `raw()` to get the C function-pointer table and `flushPending()` to seal/commit accumulated data.
-
-The host translates C ABI calls (ensureTopic, ensureField, appendRecord) into `DataWriter` operations (registerTopic/ensureColumn, beginRow/set/finishRow).
-
-**Object hosts** — `DatastoreSourceObjectWriteHost`, `DatastoreParserObjectWriteHost`, and `DatastoreToolboxObjectReadHost` are the `ObjectStore` peers of the scalar hosts (surfaces `pj.source_object_write` / `pj.parser_object_write` / `pj.toolbox_object_read`). They bridge the C ABI onto an `ObjectStore` rather than a `DataEngine`; see [`OBJECT_STORE_DESIGN.md`](./OBJECT_STORE_DESIGN.md) for their write/read contracts.
-
-**Streaming two-engine swap** — During paused streaming the host can route pushes to a *secondary* engine/store and swap back on resume. `DataEngine::flushTo(dst)` zero-copy-moves committed chunks from the secondary into the primary (topics matched by descriptor, per-topic monotonicity enforced); `DatastoreSourceWriteHost::setTarget()` / `DatastoreParserWriteHost::setTarget()` (and the object hosts' `setTarget()`) flush pending rows then atomically retarget the destination.
-
-For the swap to be transparent to plugins that **cache** `TopicHandle`/`FieldHandle` (e.g. `data_stream_dummy` caches in `onStart()`; `parser_protobuf` caches on first message), both engines must assign the *same* `TopicId` **and** `FieldId` to a given `(topic, field)` — otherwise the cached id resolves to nothing on the post-swap target. The write hosts keep this lockstep themselves once the streaming manager wires a secondary via `setSecondaryEngine()`: every `ensureTopic`/`ensureField` — including the lazy column auto-create inside `append*` — is mirrored onto the secondary via `DataEngine::createTopic(requested_id)` and its field-level counterpart `DataEngine::createTopicField(requested_id)`, forcing matching ids (the latter takes a `std::optional<FieldId>` so a forced id 0, the first field of any topic, is not confused with "auto-assign"). Mirroring is bidirectional, so a cached handle resolves on whichever engine is the active target. `ObjectStore::flushTo()` provides the matching blob-side move; bound `ObjectTopicId`s stay valid because each `registerTopic` is likewise mirrored at registration time.
-
-### Import Adapter
-
-**Arrow IPC** (`PJ::arrow_import` namespace):
-- `schemaFromIpc()` — parses Arrow schema from IPC stream bytes via nanoarrow. Maps Arrow fields to `ArrowColumnMapping` (arrow column index -> PJ column index + PrimitiveType). Unsupported Arrow types are skipped.
-- `importIpcStream()` — reads record batches, appends via `DataWriter::appendColumns()` with validity bitmaps.
-
-## 4. Data Flow
-
-### Row-at-a-time Ingest (via plugin host)
-
-1. Plugin calls `writeHost.ensureTopic(name)` -> host creates topic via `DataWriter::registerTopic()`
-2. Plugin calls `writeHost.ensureField(topic, name, type)` -> host calls `DataWriter::ensureColumn()`
-3. Plugin calls `writeHost.appendRecord(topic, timestamp, fields)` -> host calls `DataWriter::beginRow()`, `set()` per field, `finishRow()`
-4. `finishRow()` pads unset columns with null, updates per-column stats
-5. If builder is full (`rowCount >= max_chunk_rows`): `autoSeal()` seals builder, moves `TopicChunk` to the writer's pending list
-6. Host calls `flushPending()` -> `DataWriter::flushAll()` seals remaining builders -> `DataEngine::commitChunks()` appends to `TopicStorage`
-7. Chunks are now visible to readers and incremental engine
-
-### Bulk Ingest
-
-1. `DataWriter::appendColumns(topic_id, timestamps, column_data_array)`
-2. Auto-chunks: splits batch into sub-batches fitting builder's `remainingCapacity()`
-3. For each sub-batch: `appendTimestamps()`, `appendColumn<T>()` per column, `finishBulkAppend()` (computes stats), `autoSeal()` if full
-4. Flush + commit same as row-at-a-time
-
-### Series Query
-
-1. `DataReader::series(topic_id, column_index)` validates the topic, column bounds, and numeric/bool value type
-2. The returned `SeriesReader` treats the column as a field-level time series
-3. Null physical rows are skipped; every `SeriesSample` has a value
-4. Time lookups return valid series samples and virtual series indices
-5. `bounds()` returns min/max over value-bearing samples only
-
-### Row Query
-
-1. `DataReader::rangeQuery(QueryRange{topic_id, t_min, t_max})` -> `RangeCursor`
-2. Cursor binary-searches the chunk deque for start position
-3. `forEach` callback receives `SampleRow` (chunk pointer + row index)
-4. Caller reads values via `chunk->readNumericAsDouble(col, row)`, `readString()`, `readBool()`, `isNull()`, or batch via `readColumnAsDoubles()`
-
-### Derived Scheduling
-
-1. `engine.commitChunks()` returns changed topic IDs
-2. Caller invokes `incrementalEngine.onSourceCommitted(changed_topics)` -> marks dependent nodes dirty
-3. `incrementalEngine.scheduleAll()` processes dirty nodes in topological order
-4. For each dirty SISO node: iterate new input chunks (id > `last_processed_chunk_id`), read each row, call `transform.calculate()`, write output via `beginRow`/`set`/`finishRow`, flush + commit
-5. For each dirty MIMO node: iterate primary input's new chunks, for each timestamp check all other inputs via `latestAt()`, call `transform.calculate()` only when all inputs have matching timestamps
-
-## 5. Key Invariants
-
-- **Dense field IDs**: Field IDs within a topic are always 0, 1, 2, ... with no gaps.
-- **Per-chunk sorted timestamps**: rows may arrive out of order (`beginRow()` / `appendTimestamps()` accept regressions — rejecting them silently lost multi-publisher data); `seal()` stable-sorts rows, so every sealed chunk is internally non-decreasing and duplicate timestamps keep arrival order.
-- **ensureColumn guards**: Rejects new columns after a row is in progress. Invalidates stale 0-row builders when adding columns.
-- **expandArray seals first**: `expandArray()` seals the current builder before modifying column layout, preventing mid-chunk schema changes.
-- **Chunks may overlap in time**: `TopicStorage::appendSealedChunk()` accepts any chunk (deque stays commit-ordered). Queries merge across overlapping chunks; topic time extrema are scanned, never taken from the front/back chunks.
-- **Lazy validity bitmaps**: `TypedColumnBuffer` only allocates a `BitVector` on first `appendNull()`. Sealed chunks include validity only when `hasNulls()` is true.
-- **NaN for nulls**: `readColumnAsDoubles()` writes `NaN` at null positions, preventing confusion between null and zero.
-- **ChunkId monotonicity**: `TopicChunkBuilder` uses a `static atomic<ChunkId>` counter starting at 1. `kInvalidChunkId` (0) is the sentinel for "no chunk seen yet".
-
-## 6. Threading Model
-
-`DataEngine` is guarded by one `std::recursive_mutex` (`Impl::mutex_`). The store
-has exactly one reader thread (the Qt GUI: plot/catalog reads + `IncrementalEngine`
-recompute) and one-or-more ingest worker threads, so an exclusive lock is
-equivalent to a reader-writer lock here and simpler.
-The derived engines' pool workers (`BatchEngine`, `OnDemandService`) keep the one-reader-thread rule by never
-touching the `DataEngine`: they work only on copies the GUI thread staged before the run
-(`docs/derived_objects/ARCHITECTURE.md` §11). EVERY engine access — read or
-write, on any thread — holds the lock via `lockEngine()`. `DataWriter` accumulates
-in-memory and is not itself shared; the chunk-id counter of `TopicChunkBuilder` remains a
-`std::atomic`.
-
-The mutex is **recursive** so the same thread may re-acquire it without
-deadlocking: a held `RangeCursor`/`SeriesReader` whose consumer makes another read,
-a compound mutator that calls another, or the write host's `appendRecord` →
-`ensureField`. The one thing recursion does NOT make safe: calling a *mutator* from
-inside a cursor `forEach` callback — that mutates the deque mid-iteration; don't.
-
-Coordinated mechanisms:
-
-1. **Stable addresses.** `topics` is `robin_map<TopicId, unique_ptr<TopicStorage>>`,
-   so a `createTopic` rehash moves only pointers — a `TopicStorage` (and its
-   `sealed_chunks_` deque) keeps its address for the engine's lifetime (topics are
-   never erased, only retired). A cached `TopicChunk*` survives a concurrent
-   `createTopic`.
-2. **Cursors adopt the lock.** `DataReader::rangeQuery`/`series` take the lock
-   *before* the `getTopicStorage` lookup (rehash protection) and **move it into**
-   the returned `RangeCursor`/`SeriesReader`, which hold it for their whole (lazy
-   `forEach`) lifetime. `SeriesCursor` borrows its parent's lock. `latestAt`
-   materializes the row's values under the lock (no escaping `TopicChunk*`). The raw
-   `getTopicStorage()` accessor does **not** lock — a caller must hold `lockEngine()`
-   for the returned pointer's lifetime.
-3. **The worker write path holds the lock.** The C-ABI write host (`WriteCore` /
-   `DataWriter`, driven on the ingest worker) is a full engine client: each
-   write-host method (`ensureTopic`/`ensureField`/`appendRecord`/`appendBoundRecord`/
-   `appendArrowStream`/`createDataSource`, and `flushPending`) takes `lockEngine()`
-   at entry, so its `getTopicStorage` reads and its `setColumnDescriptors` /
-   builder mutations serialize against GUI reads. (`TopicStorage` has no internal
-   lock; the engine lock is its mutual exclusion.) `TypeRegistry` likewise has no
-   internal lock and is covered by the engine lock — every `lookup`/`registerOrGet`
-   site (`IncrementalEngine::addSisoTransform`/`addMimoTransform`, the write host, the
-   reader) holds `lockEngine()`. The GUI bypass readers
-   `CatalogModel::rebuildFromDatastore` / `PointSeriesXY` take it too.
-4. **Append vs. free/move asymmetry.** `commitChunks` only `push_back`s, so a
-   worker append never invalidates a live cursor or cached pointer.
-   `clearDatasetChunks`/`retireTopic`/`flushTo`/`replaceDatasetFrom`/
-   `enforceRetention` (eviction `erase`s chunks) free or move chunk memory — these
-   stay GUI-thread-only and a consumer must drop cached `TopicChunk*` (the
-   drop-before-mutate drain) before they run.
-5. **Two-engine (staging) lock order.** During pause/resume the write host mirrors
-   topic/field structure to a **staging** `DataEngine`, and `flushTo`/
-   `replaceDatasetFrom` move chunks between the two. Code touching both mutexes
-   acquires them in ONE `std::lock` (the write host via `lockEngineDeferred()` ×2;
-   `flushTo`/`replaceDatasetFrom` already do). Never hold one engine's lock while
-   plain-locking the other — that ABBA-deadlocks against `flushTo`.
-
-Public compound mutators keep a locking wrapper + a private `*Locked` worker (e.g.
-`createTopic`/`createTopicLocked`, `commitChunks`/`commitChunksLocked`) so an
-internal call reuses the primitive without a redundant re-lock; with the recursive
-mutex this is an efficiency detail, not a deadlock guard.
-
-| Operation | Thread | Lock |
-|---|---|---|
-| `commitChunks` (append) | worker | `lockEngine()`; never frees/moves chunks → no drain |
-| write host `ensureTopic`/`ensureField`/`append*`/`flushPending` | worker | `lockEngine()` per call (dual `std::lock` with staging when mirroring) |
-| `createTopic`/`createTopicField` | worker + GUI | `lockEngine()` (rehash; addresses stay stable) |
-| read cursors (`rangeQuery`/`series`/`forEach`) | GUI | `lockEngine()`, held for the view's lifetime |
-| `latestAt` | GUI | `lockEngine()`; value materialized before release |
-| `getTopicStorage` (raw ptr) | any | none — caller must hold `lockEngine()` for the pointer's lifetime |
-| `clearDatasetChunks`/`retireTopic`/`flushTo`/`replaceDatasetFrom`/`enforceRetention` | GUI only | `lockEngine()` + drop-cached-pointers drain first |
-| `IncrementalEngine` recompute / `addSisoTransform`/`addMimoTransform` | GUI | `lockEngine()` across the read-modify-write |
-
-The `ObjectStore` half has its own independent `std::shared_mutex` (see
-`docs/OBJECT_STORE_DESIGN.md`); the two stores' locks are independent and must
-never nest. Plugin sources that receive data on network threads still queue
-internally and process in `onPoll()`.
-
-**Pause/resume `WriteCore` swap (host-side, outside the engine lock).** On pause,
-`DatastoreSourceWriteHost::setTarget` / `DatastoreParserWriteHost::setTarget`
-rebuild the host's `WriteCore` on the GUI thread while the ingest worker may still
-be inside the old one — a data race + use-after-free on the `WriteCore` object /
-`state_->core`, not on engine state, so `lockEngine()` cannot cover it (both racers
-touch the same `WriteCore`). It is made safe by holding `state_->core` as an atomic
-shared_ptr — `AtomicSharedPtr<WriteCore>`, a small mutex-backed stand-in for
-`std::atomic<std::shared_ptr<WriteCore>>` (libstdc++ ships that specialization only
-from GCC 12, and the build/CI baseline is GCC 11): each worker callback `load()`s a strong
-reference that pins the core for the call's duration, and `setTarget` builds the
-replacement fully, then publishes it with a release `store()`. An in-flight append
-finishes on the old core (kept alive by the worker's reference) — the same accepted
-semantics as the object-store host's `std::atomic<ObjectStore*>`. Regression-guarded
-by `engine_thread_safety_test`'s `SetTargetSwapVsWorkerEnsureTopicRace` under
-ThreadSanitizer (`./build.sh --tsan`, and the Linux CI `tsan` job).
-
-## 7. Testing
-
-The tests in `tests/` are built into these runners (the authoritative live set is in `CMakeLists.txt`):
-
-- `pj_datastore_tests`: one gtest runner for the whole module, registered with `gtest_discover_tests`, so ctest
-  names are `<runner>.<Suite>.<Case>` and each case runs in its own process. Filter one suite with
-  `./test.sh -R '^pj_datastore_tests\.ObjectStoreTest\.'`.
-- `chunk_test`: a separate executable, because it holds death tests.
-- `engine_concurrency_test`, `engine_thread_safety_test`: separate executables with a 90-second timeout; they are the
-  ThreadSanitizer entry points used by `build.sh` and CI.
-
-Sanitizer self-tests (`sanitizer_selftest` and the MSan and TSan variants) are registered only in their lane.
-
-The suites are grouped by layer: buffers and encoding, schema evolution and topic storage, queries and series
-readers, the engine round-trip and out-of-order ingest, `IncrementalEngine` and the data-processor substrate,
-`ObjectStore` (owned and lazy payloads, retention, bundles, merge), the plugin host bridges, and the Arrow import
-and round-trip.
-
-`plugin_host_write_test.cpp` and `plugin_host_read_test.cpp` exercise the removed v3 write and read ABI. They are not
-built (commented out in `CMakeLists.txt`) and have not been rewritten against the v4 Arrow-stream path
-(`read_series_arrow`); `arrow_stream_round_trip_test` covers that path.
-
-Build and run from the PJ4 repo root: `./build.sh`, then `./test.sh -R '^pj_datastore_tests\.'` (the separate executables run by their own names, e.g. `-R chunk_test`).
+- A stream resume fails as a whole when any topic's first paused row is older than the primary's newest timestamp,
+  which out-of-order ingest or a commit landing between the target swap and the flush can cause; the paused data stays
+  in the staging engine and store, and every later resume fails the same way.
+- `SeriesReader`'s index-based lookups (`sampleAt()`, `indexAtOrBeforeTime()`, `indexAtOrAfterTime()`) assume
+  time-ordered chunks and are wrong when chunks overlap. The plots use them only to size buffers.
+- A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
+- Rows a worker call stages in a write core after `setTarget()` flushed it are dropped with that core.
+- A MIMO node's late-input check compares every input with the newest chunk id across all inputs, so a late chunk
+  committed with a lower id than another input's newest is not replayed, and its joined rows are skipped.

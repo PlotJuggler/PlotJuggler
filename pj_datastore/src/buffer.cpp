@@ -8,10 +8,6 @@
 
 namespace PJ {
 
-// ---------------------------------------------------------------------------
-// RawBuffer
-// ---------------------------------------------------------------------------
-
 RawBuffer::RawBuffer(std::size_t initial_capacity) {
   data_.reserve(initial_capacity);
 }
@@ -53,10 +49,6 @@ bool RawBuffer::empty() const noexcept {
   return data_.empty();
 }
 
-// ---------------------------------------------------------------------------
-// BitVector
-// ---------------------------------------------------------------------------
-
 void BitVector::initValid(std::size_t num_bits) {
   bit_count_ = num_bits;
   bytes_.resize(bytesForBits(num_bits));
@@ -93,13 +85,11 @@ std::size_t BitVector::countNulls(std::size_t num_bits) const {
 
   std::size_t total_set_bits = 0;
 
-  // Process full bytes
   const std::size_t full_bytes = num_bits / 8;
   for (std::size_t i = 0; i < full_bytes; ++i) {
     total_set_bits += static_cast<std::size_t>(std::popcount(ptr[i]));
   }
 
-  // Process remaining bits in the last partial byte (if any)
   const std::size_t remaining_bits = num_bits % 8;
   if (remaining_bits > 0 && num_bytes > 0) {
     const uint8_t mask = static_cast<uint8_t>((1u << remaining_bits) - 1u);

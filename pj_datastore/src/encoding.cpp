@@ -13,7 +13,6 @@ using PJ::Span;
 
 namespace {
 
-// Write an index in the given byte width
 void writeIndex(RawBuffer& buf, uint32_t index, uint8_t bytes) {
   switch (bytes) {
     case 1: {
@@ -33,7 +32,6 @@ void writeIndex(RawBuffer& buf, uint32_t index, uint8_t bytes) {
   }
 }
 
-// Read an index at the given byte width
 [[nodiscard]] uint32_t readIndex(const uint8_t* data, std::size_t row, uint8_t bytes) {
   switch (bytes) {
     case 1: {
@@ -168,7 +166,6 @@ uint64_t constantDecodeAsUint64(const ConstantEncoded& enc) {
 
 // ---------------------------------------------------------------------------
 // Frame of Reference encoding
-// Data must be int64_t values.
 // ---------------------------------------------------------------------------
 
 FrameOfReferenceEncoded forEncode(
@@ -300,7 +297,6 @@ DictionaryEncoded dictionaryEncodeStrings(
     return result;
   }
 
-  // First pass: build dictionary to determine size
   tsl::robin_map<std::string, uint32_t> lookup;
   std::vector<uint32_t> temp_indices;
   temp_indices.reserve(row_count);
@@ -327,7 +323,6 @@ DictionaryEncoded dictionaryEncodeStrings(
     temp_indices.push_back(index);
   }
 
-  // Determine narrowed index width
   result.index_bytes = indexBytesFor(result.dictionary.size());
   result.indices.reserve(row_count * result.index_bytes);
 

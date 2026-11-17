@@ -14,10 +14,6 @@ using namespace PJ;
 
 namespace {
 
-// ─────────────────────────────────────────────────────────────────
-// Task 1: flatten_columns_impl for fixed-size and variable arrays
-// ─────────────────────────────────────────────────────────────────
-
 TEST(ArrayExpansionTest, FixedSizeArray_Primitive_ProducesNColumns) {
   // Schema: struct msg { float32[3] accel }
   // Expected: 3 columns named accel[0], accel[1], accel[2]
@@ -98,7 +94,6 @@ TEST(ArrayExpansionTest, VarLenArray_InitiallyZeroColumns) {
 
 TEST(ArrayExpansionTest, FixedSizeArray_WriteAndRead) {
   // Schema: struct msg { float32[3] accel }
-  // Write 4 rows. Read back all values via range_query.
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
   DataWriter writer = engine.createWriter();
@@ -133,10 +128,6 @@ TEST(ArrayExpansionTest, FixedSizeArray_WriteAndRead) {
   EXPECT_EQ(count, 4u);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Task 2: DataWriter::expand_array
-// ─────────────────────────────────────────────────────────────────
-
 TEST(ArrayExpansionTest, VarLenArray_ExpandArray_AddsColumns) {
   // expandArray("data", 3) on a float64[] topic → 3 columns: data[0], data[1], data[2]
   DataEngine engine;
@@ -152,15 +143,12 @@ TEST(ArrayExpansionTest, VarLenArray_ExpandArray_AddsColumns) {
   desc.schema_id = sid;
   auto topic_id = *writer.registerTopic(ds, desc);
 
-  // Initially 0 columns
   EXPECT_EQ(writer.bindTopicWriter(topic_id)->field_ids.size(), 0u);
 
-  // Expand to 3
   auto result = writer.expandArray(topic_id, "data", 3u);
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(*result, 3u);
 
-  // Now 3 columns
   auto handle = *writer.bindTopicWriter(topic_id);
   ASSERT_EQ(handle.field_ids.size(), 3u);
   EXPECT_EQ(*writer.resolveField(topic_id, "data[0]"), 0u);
@@ -193,7 +181,6 @@ TEST(ArrayExpansionTest, VarLenArray_ExpandIsIdempotent_ShrinkIsNoop) {
 }
 
 TEST(ArrayExpansionTest, VarLenArray_WriteAndRead_BasicValues) {
-  // expand(3), write 4 rows with all 3 elements, read back values
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
   DataWriter writer = engine.createWriter();
@@ -252,10 +239,6 @@ TEST(ArrayExpansionTest, VarLenArray_ExpandNonArrayField_ReturnsError) {
   auto result = writer.expandArray(topic_id, "value", 3u);
   EXPECT_FALSE(result.has_value());
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Task 3: array_expansion_limit and metadata tracking
-// ─────────────────────────────────────────────────────────────────
 
 TEST(ArrayExpansionTest, ExpansionLimit_ClampsColumns) {
   // array_expansion_limit = 4; expand to 10 → actual = 4
@@ -368,10 +351,6 @@ TEST(ArrayExpansionTest, Metadata_ExposedViaTopicMetadata) {
   EXPECT_EQ(meta->truncated_sample_count, 1u);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Task 4: Cross-chunk expansion and null auto-fill
-// ─────────────────────────────────────────────────────────────────
-
 TEST(ArrayExpansionTest, CrossChunkExpansion_OldChunksHaveFewerColumns) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
@@ -386,7 +365,7 @@ TEST(ArrayExpansionTest, CrossChunkExpansion_OldChunksHaveFewerColumns) {
   desc.max_chunk_rows = 8;
   auto topic_id = *writer.registerTopic(ds, desc);
 
-  // Phase 1: expand to 2, write 10 rows (8 auto-sealed + 2 in builder)
+  // Expand to 2, write 10 rows (8 auto-sealed + 2 in builder)
   ASSERT_TRUE(writer.expandArray(topic_id, "data", 2u).has_value());
   for (int i = 0; i < 10; ++i) {
     ASSERT_TRUE(writer.beginRow(topic_id, PJ::Timestamp(i) * 1000).has_value());
@@ -395,10 +374,9 @@ TEST(ArrayExpansionTest, CrossChunkExpansion_OldChunksHaveFewerColumns) {
     ASSERT_TRUE(writer.finishRow(topic_id).has_value());
   }
 
-  // Phase 2: expand to 4 — seals the in-progress builder (rows 8–9), creates new 4-column layout
+  // Expand to 4: seals the in-progress builder (rows 8–9) and creates the new 4-column layout
   ASSERT_TRUE(writer.expandArray(topic_id, "data", 4u).has_value());
 
-  // Write 5 more rows with all 4 elements
   for (int i = 10; i < 15; ++i) {
     ASSERT_TRUE(writer.beginRow(topic_id, PJ::Timestamp(i) * 1000).has_value());
     writer.set(topic_id, 0, i * 1.0);
@@ -409,7 +387,6 @@ TEST(ArrayExpansionTest, CrossChunkExpansion_OldChunksHaveFewerColumns) {
   }
   engine.commitChunks(writer.flushAll());
 
-  // Verify chunk column counts
   const TopicStorage* storage = engine.getTopicStorage(topic_id);
   ASSERT_NE(storage, nullptr);
   for (const auto& chunk : storage->sealedChunks()) {
@@ -420,7 +397,6 @@ TEST(ArrayExpansionTest, CrossChunkExpansion_OldChunksHaveFewerColumns) {
     }
   }
 
-  // Range query: all 15 rows accessible
   DataReader reader = engine.createReader();
   auto cursor = *reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = 15000});
   std::size_t count = 0;
@@ -458,7 +434,6 @@ TEST(ArrayExpansionTest, UnsetElementsAutoNullFilled) {
   ASSERT_TRUE(writer.beginRow(topic_id, 1000).has_value());
   writer.set(topic_id, 0, 1.0);
   writer.set(topic_id, 1, 2.0);
-  // col 2 and col 3 intentionally not set
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
   engine.commitChunks(writer.flushAll());
 
@@ -496,10 +471,8 @@ TEST(ArrayExpansionTest, VarLenStructArray_ExpandAndWrite) {
   desc.schema_id = sid;
   auto topic_id = *writer.registerTopic(ds, desc);
 
-  // Initially 0 columns
   EXPECT_EQ(writer.bindTopicWriter(topic_id)->field_ids.size(), 0u);
 
-  // Expand to 2 Pose elements → 4 columns
   auto result = writer.expandArray(topic_id, "poses", 2u);
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(*result, 2u);
@@ -511,7 +484,6 @@ TEST(ArrayExpansionTest, VarLenStructArray_ExpandAndWrite) {
   EXPECT_EQ(*writer.resolveField(topic_id, "poses[1].x"), 2u);
   EXPECT_EQ(*writer.resolveField(topic_id, "poses[1].y"), 3u);
 
-  // Write and read back
   ASSERT_TRUE(writer.beginRow(topic_id, 1000).has_value());
   writer.set(topic_id, 0, 1.0f);
   writer.set(topic_id, 1, 2.0f);
@@ -533,26 +505,12 @@ TEST(ArrayExpansionTest, VarLenStructArray_ExpandAndWrite) {
   EXPECT_TRUE(visited);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Bug 1: Second DataWriter for a typed variable-length array topic
-// ignores the expanded layout stored in TopicStorage.
-//
-// Root cause: get_or_create_builder checks `type_tree != nullptr` first.
-// For typed topics (schema_id != 0), it always rebuilds from the type tree
-// via buildColumnDescriptors(), which yields 0 columns for variable-length
-// arrays. The `else` branch that reads storage->columnDescriptors() is
-// only reachable when schema_id == 0, so the expanded layout persisted by
-// Writer A via setColumnDescriptors() is silently ignored by Writer B.
-// ─────────────────────────────────────────────────────────────────
-
+// A second DataWriter for a typed variable-length array topic sees the expanded layout stored in TopicStorage
+// (rebuilding from the type tree would yield 0 columns for variable-length arrays).
 TEST(ArrayExpansionTest, SecondWriter_PicksUpExpandedLayout) {
-  // Writer A expands data[] to 3 elements and writes one row.
-  // Writer B is created fresh for the same engine/topic.
-  // Writer B must see 3 columns — not 0.
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
 
-  // Writer A: register schema + topic, expand and write
   DataWriter writer_a = engine.createWriter();
   auto data_arr = PJ::makeArray("data", PJ::makePrimitive("", PJ::PrimitiveType::kFloat64), std::nullopt);
   auto root = PJ::makeStruct("msg", {data_arr});
@@ -578,38 +536,18 @@ TEST(ArrayExpansionTest, SecondWriter_PicksUpExpandedLayout) {
   // It must see the 3-column layout that Writer A established.
   DataWriter writer_b = engine.createWriter();
 
-  // Verify column count via bind_topic_writer
   auto handle = writer_b.bindTopicWriter(topic_id);
   ASSERT_TRUE(handle.has_value()) << handle.error();
-  // BUG: This will be 0 instead of 3 before the fix.
   EXPECT_EQ(handle->field_ids.size(), 3u) << "Writer B must inherit the 3-column layout expanded by Writer A";
 
-  // Also verify field resolution works correctly
   EXPECT_EQ(*writer_b.resolveField(topic_id, "data[0]"), 0u);
   EXPECT_EQ(*writer_b.resolveField(topic_id, "data[1]"), 1u);
   EXPECT_EQ(*writer_b.resolveField(topic_id, "data[2]"), 2u);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Bug 2: expandArray() called while a row is in progress (between
-// begin_row and finish_row) originally silently discarded the
-// in-progress row.
-//
-// Root cause: expand_array checked `builder.rowCount() > 0` before
-// sealing. rowCount() counts only *completed* rows (incremented in
-// finish_row). An active row started with beginRow() but not yet
-// finished had rowCount() == 0, so the builder was erased without
-// sealing. The incomplete row was permanently lost with no error.
-//
-// Fixed behavior: expand_array now returns an error when called with
-// a row in progress, and the previously completed rows remain intact
-// in the pending chunks.
-// ─────────────────────────────────────────────────────────────────
-
+// expandArray() while a row is in progress (between beginRow and finishRow) returns an error and leaves the
+// previously completed rows intact in the pending chunks; it must not silently discard the in-progress row.
 TEST(ArrayExpansionTest, ExpandArray_WhileRowInProgress_ReturnsError) {
-  // Write two complete rows, begin a third row, then call expand_array.
-  // The expand_array call must fail with an error (row in progress).
-  // The two previously completed rows must still be accessible after flush.
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
   DataWriter writer = engine.createWriter();
@@ -623,17 +561,14 @@ TEST(ArrayExpansionTest, ExpandArray_WhileRowInProgress_ReturnsError) {
   desc.schema_id = sid;
   auto topic_id = *writer.registerTopic(ds, desc);
 
-  // First expand so we have 2 columns to write.
   auto init_expand = writer.expandArray(topic_id, "data", 2u);
   ASSERT_TRUE(init_expand.has_value()) << init_expand.error();
 
-  // Row 1 (completed)
   ASSERT_TRUE(writer.beginRow(topic_id, 1000).has_value());
   writer.set(topic_id, 0, 1.0);
   writer.set(topic_id, 1, 2.0);
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
 
-  // Row 2 (completed)
   ASSERT_TRUE(writer.beginRow(topic_id, 2000).has_value());
   writer.set(topic_id, 0, 3.0);
   writer.set(topic_id, 1, 4.0);
@@ -648,7 +583,6 @@ TEST(ArrayExpansionTest, ExpandArray_WhileRowInProgress_ReturnsError) {
   EXPECT_FALSE(expand_result.has_value())
       << "expand_array must fail when a row is in progress; got success unexpectedly";
 
-  // Finish the in-progress row, then flush
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
   engine.commitChunks(writer.flushAll());
 
@@ -660,23 +594,13 @@ TEST(ArrayExpansionTest, ExpandArray_WhileRowInProgress_ReturnsError) {
   EXPECT_EQ(count, 3u) << "All 3 rows must survive; the failed expand must not corrupt the builder";
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Bug 3: Cross-writer re-expansion of the same array field can
-// duplicate existing indices.
-//
-// Root cause: expandArray() tracks current expansion in
-// DataWriter::expanded_arrays_, which is per-writer state. A fresh
-// DataWriter sees the persisted expanded columns via TopicStorage, but
-// its expanded_arrays_ entry starts at 0. Expanding "data" from 3 to 5
-// can incorrectly append data[0], data[1], data[2] again, producing
-// 8 columns instead of 5.
-// ─────────────────────────────────────────────────────────────────
-
+// Re-expanding an array field from a fresh DataWriter must not duplicate existing indices: the per-writer
+// expansion state starts at 0 while the persisted columns already exist, so expanding "data" from 3 to 5 yields
+// data[0..4], not 8 columns.
 TEST(ArrayExpansionTest, SecondWriter_ReExpandSameField_DoesNotDuplicateColumns) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
 
-  // Writer A creates topic and expands data[] to 3.
   DataWriter writer_a = engine.createWriter();
   auto data_arr = PJ::makeArray("data", PJ::makePrimitive("", PJ::PrimitiveType::kFloat64), std::nullopt);
   auto root = PJ::makeStruct("msg", {data_arr});
@@ -691,7 +615,6 @@ TEST(ArrayExpansionTest, SecondWriter_ReExpandSameField_DoesNotDuplicateColumns)
   ASSERT_TRUE(r1.has_value()) << r1.error();
   ASSERT_EQ(*r1, 3u);
 
-  // Writer B starts fresh, then expands the same field to 5.
   DataWriter writer_b = engine.createWriter();
   auto before = writer_b.bindTopicWriter(topic_id);
   ASSERT_TRUE(before.has_value()) << before.error();
@@ -701,7 +624,6 @@ TEST(ArrayExpansionTest, SecondWriter_ReExpandSameField_DoesNotDuplicateColumns)
   ASSERT_TRUE(r2.has_value()) << r2.error();
   EXPECT_EQ(*r2, 5u);
 
-  // Expected layout is exactly data[0..4] => 5 columns total.
   auto after = writer_b.bindTopicWriter(topic_id);
   ASSERT_TRUE(after.has_value()) << after.error();
   EXPECT_EQ(after->field_ids.size(), 5u)
@@ -713,17 +635,8 @@ TEST(ArrayExpansionTest, SecondWriter_ReExpandSameField_DoesNotDuplicateColumns)
   EXPECT_EQ(*writer_b.resolveField(topic_id, "data[4]"), 4u);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Correctness lock-in: mixed-schema topic (scalar + variable-length
-// array) — verify column ordering and field IDs after expansion.
-//
-// This was not tested in the original suite. It verifies that when a
-// schema has pre-existing scalar columns, expand_array appends the new
-// array element columns at the correct positions with the correct
-// FieldIds, and that the scalar column is still readable after the
-// layout change.
-// ─────────────────────────────────────────────────────────────────
-
+// Mixed-schema topic (scalar + variable-length array): expandArray appends the element columns after the
+// existing scalar columns with the correct FieldIds, and the scalar column stays readable.
 TEST(ArrayExpansionTest, MixedSchema_ScalarPlusVarLenArray_CorrectColumnOrder) {
   // Schema: struct msg { float64 timestamp_sec; float64[] values }
   // After expandArray("values", 3):
@@ -745,27 +658,22 @@ TEST(ArrayExpansionTest, MixedSchema_ScalarPlusVarLenArray_CorrectColumnOrder) {
   desc.schema_id = sid;
   auto topic_id = *writer.registerTopic(ds, desc);
 
-  // Before expansion: 1 scalar column only
   auto handle_before = *writer.bindTopicWriter(topic_id);
   ASSERT_EQ(handle_before.field_ids.size(), 1u);
   EXPECT_EQ(*writer.resolveField(topic_id, "timestamp_sec"), 0u);
 
-  // Expand values[] to 3 elements
   auto result = writer.expandArray(topic_id, "values", 3u);
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_EQ(*result, 3u);
 
-  // Now 4 columns in total
   auto handle_after = *writer.bindTopicWriter(topic_id);
   ASSERT_EQ(handle_after.field_ids.size(), 4u);
 
-  // Verify field path resolution
   EXPECT_EQ(*writer.resolveField(topic_id, "timestamp_sec"), 0u);
   EXPECT_EQ(*writer.resolveField(topic_id, "values[0]"), 1u);
   EXPECT_EQ(*writer.resolveField(topic_id, "values[1]"), 2u);
   EXPECT_EQ(*writer.resolveField(topic_id, "values[2]"), 3u);
 
-  // Write and read back to confirm data integrity
   ASSERT_TRUE(writer.beginRow(topic_id, 1000).has_value());
   writer.set(topic_id, 0, 100.0);  // timestamp_sec
   writer.set(topic_id, 1, 1.0);    // values[0]
@@ -787,15 +695,8 @@ TEST(ArrayExpansionTest, MixedSchema_ScalarPlusVarLenArray_CorrectColumnOrder) {
   EXPECT_TRUE(visited);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Correctness lock-in: two independent expansions of different fields
-// on the same topic.
-//
-// Ensures that expand_array for a second distinct field appends
-// correctly after the columns of the first expansion, producing the
-// right field_id sequence and readable data.
-// ─────────────────────────────────────────────────────────────────
-
+// Two independent expansions of different fields on the same topic: the second appends after the first's
+// columns, with the right field_id sequence and readable data.
 TEST(ArrayExpansionTest, TwoDistinctArrayFields_ExpandBoth_CorrectLayout) {
   // Schema: struct msg { float64[] positions; float64[] velocities }
   // Expand positions to 2, then velocities to 3.
@@ -816,29 +717,24 @@ TEST(ArrayExpansionTest, TwoDistinctArrayFields_ExpandBoth_CorrectLayout) {
   desc.schema_id = sid;
   auto topic_id = *writer.registerTopic(ds, desc);
 
-  // Initially 0 columns
   EXPECT_EQ(writer.bindTopicWriter(topic_id)->field_ids.size(), 0u);
 
-  // Expand positions to 2
   auto r1 = writer.expandArray(topic_id, "positions", 2u);
   ASSERT_TRUE(r1.has_value()) << r1.error();
   EXPECT_EQ(*r1, 2u);
   EXPECT_EQ(writer.bindTopicWriter(topic_id)->field_ids.size(), 2u);
 
-  // Expand velocities to 3
   auto r2 = writer.expandArray(topic_id, "velocities", 3u);
   ASSERT_TRUE(r2.has_value()) << r2.error();
   EXPECT_EQ(*r2, 3u);
   EXPECT_EQ(writer.bindTopicWriter(topic_id)->field_ids.size(), 5u);
 
-  // Verify field ordering
   EXPECT_EQ(*writer.resolveField(topic_id, "positions[0]"), 0u);
   EXPECT_EQ(*writer.resolveField(topic_id, "positions[1]"), 1u);
   EXPECT_EQ(*writer.resolveField(topic_id, "velocities[0]"), 2u);
   EXPECT_EQ(*writer.resolveField(topic_id, "velocities[1]"), 3u);
   EXPECT_EQ(*writer.resolveField(topic_id, "velocities[2]"), 4u);
 
-  // Write a row and read it back to confirm no data corruption
   ASSERT_TRUE(writer.beginRow(topic_id, 1000).has_value());
   writer.set(topic_id, 0, 1.0);
   writer.set(topic_id, 1, 2.0);
@@ -861,10 +757,6 @@ TEST(ArrayExpansionTest, TwoDistinctArrayFields_ExpandBoth_CorrectLayout) {
   });
   EXPECT_TRUE(visited);
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Group A: schemaless ensure_column
-// ─────────────────────────────────────────────────────────────────
 
 TEST(ArrayExpansionTest, Schemaless_EnsureColumn_AddsColumn) {
   DataEngine engine;
@@ -1002,10 +894,6 @@ TEST(ArrayExpansionTest, Schemaless_EnsureColumn_WhileRowInProgress_ReturnsError
   EXPECT_TRUE(result2.has_value()) << "ensure_column should auto-seal and succeed after rows";
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Group B: schemaless expand_array
-// ─────────────────────────────────────────────────────────────────
-
 TEST(ArrayExpansionTest, Schemaless_ExpandArray_AddsColumns) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
@@ -1105,10 +993,6 @@ TEST(ArrayExpansionTest, Schemaless_ExpandArray_DefaultType_IsFloat64) {
   EXPECT_EQ(cols[1].logical_type, PJ::PrimitiveType::kFloat64);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Group C: mixed usage
-// ─────────────────────────────────────────────────────────────────
-
 TEST(ArrayExpansionTest, Mixed_EnsureColumnThenExpandArray_NoConflict) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
@@ -1164,12 +1048,7 @@ TEST(ArrayExpansionTest, Mixed_ExpandArrayThenEnsureColumn_NoConflict) {
   EXPECT_EQ(handle.field_ids.size(), 3u);  // data[0], data[1], extra
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Group C2: regression tests for review findings
-// ─────────────────────────────────────────────────────────────────
-
-// Review finding 1: typed expand_array duplicated element columns when
-// ensure_column had already added an array-indexed path.
+// A typed expandArray must not duplicate element columns that ensureColumn already added for an array-indexed path.
 TEST(ArrayExpansionTest, Typed_EnsureColumnThenExpandArray_NoDuplicateColumns) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
@@ -1201,8 +1080,7 @@ TEST(ArrayExpansionTest, Typed_EnsureColumnThenExpandArray_NoDuplicateColumns) {
   EXPECT_EQ(*writer.resolveField(topic_id, "data[2]"), 2u);
 }
 
-// Review finding 2: ensure_column must return error when the path already exists
-// with a different type instead of silently accepting the mismatch.
+// ensureColumn returns an error when the path already exists with a different type.
 TEST(ArrayExpansionTest, EnsureColumn_TypeMismatch_ReturnsError) {
   DataEngine engine;
   DatasetId ds = *engine.createDataset(PJ::DatasetDescriptor{.source_name = "t"});
@@ -1213,7 +1091,6 @@ TEST(ArrayExpansionTest, EnsureColumn_TypeMismatch_ReturnsError) {
   desc.schema_id = 0;
   auto topic_id = *writer.registerTopic(ds, desc);
 
-  // Register as float64
   auto fid = writer.ensureColumn(topic_id, "value", PJ::PrimitiveType::kFloat64);
   ASSERT_TRUE(fid.has_value());
   EXPECT_EQ(*fid, 0u);
@@ -1227,10 +1104,6 @@ TEST(ArrayExpansionTest, EnsureColumn_TypeMismatch_ReturnsError) {
   ASSERT_TRUE(same_type.has_value());
   EXPECT_EQ(*same_type, 0u);  // same field id
 }
-
-// ─────────────────────────────────────────────────────────────────
-// Group D: typed topic with ensure_column
-// ─────────────────────────────────────────────────────────────────
 
 TEST(ArrayExpansionTest, Typed_EnsureColumn_AddsColumnOutsideSchema) {
   DataEngine engine;

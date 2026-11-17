@@ -49,8 +49,7 @@ TEST(MarkerTopicMetadataTest, OnlyACompleteMarkerDescriptionIsReadBack) {
   EXPECT_TRUE(markerTopicInfo(R"({"pj_derived":"markers","pj_marker_scope":"dataset"})").has_value());
 }
 
-// GAP-43: a plugin's direct write to a 0.35 marker name is described on registration,
-// the one place the name is read.
+// A plugin's direct write to a 0.35 marker name is described on registration, the one place the name is read.
 TEST(MarkerTopicMetadataTest, LegacyMarkerNameIsStampedAtRegistration) {
   ObjectStore store;
   const ObjectTopicId series = registerTopic(store, "__markers__//imu/x", "{}");

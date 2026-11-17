@@ -30,7 +30,6 @@ DatasetId makeDataset(DataEngine& engine, const std::string& name) {
   return *id;
 }
 
-// Single-column float64 scalar topic. Returns the topic id.
 TopicId writeScalar(
     DataEngine& engine, DatasetId ds, const std::string& name, const std::vector<Timestamp>& ts,
     const std::vector<double>& vals) {
@@ -44,8 +43,7 @@ TopicId writeScalar(
   return handle->topic_id;
 }
 
-// Multi-column schemaless topic. `columns` spans must reference vectors that
-// outlive this call. Returns the topic id.
+// Multi-column schemaless topic. `columns` spans must reference vectors that outlive this call.
 TopicId writeTyped(
     DataEngine& engine, DatasetId ds, const std::string& name,
     const std::vector<std::pair<std::string, PrimitiveType>>& fields, const std::vector<Timestamp>& ts,
@@ -97,8 +95,6 @@ bool datasetEmpty(const DataEngine& engine, DatasetId ds) {
   }
   return true;
 }
-
-// --- Tests --------------------------------------------------------------------
 
 TEST(MergeTest, NonOverlapSameSchemaConcatenates) {
   DataEngine engine;

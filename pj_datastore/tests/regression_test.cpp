@@ -1,13 +1,6 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Regression tests for bugs found during code review.
-//
-// Each test FAILS against the current (buggy) code and PASSES once the
-// corresponding fix is applied. Build from the PJ4 repo root (./build.sh), then:
-//   ctest --test-dir build -R 'pj_datastore_tests\.RegressionTest\.'
-// Bug #2 needs ASAN: a Debug build configured with -DPJ_ENABLE_SANITIZERS=ON.
-
 #include <gtest/gtest.h>
 
 #include <utility>
@@ -23,11 +16,6 @@
 namespace PJ {
 namespace {
 
-// ---------------------------------------------------------------------------
-// Helper: build and seal a test chunk with given time range.
-// Reuses the same pattern as topic_storage_test.cpp::make_test_chunk.
-// ---------------------------------------------------------------------------
-
 TopicChunk makeChunkWithRange(TopicId tid, Timestamp t_start, Timestamp t_end, uint32_t num_rows) {
   std::vector<ColumnDescriptor> cols = {{0, PrimitiveType::kFloat32, "v"}};
   TopicChunkBuilder b(tid, /*schema_id=*/1, cols, num_rows);
@@ -40,17 +28,8 @@ TopicChunk makeChunkWithRange(TopicId tid, Timestamp t_start, Timestamp t_end, u
   return b.seal();
 }
 
-// ===========================================================================
-// Bug #1 — flush() with an in-progress row corrupts chunk stats
-//
-// writer.cpp:512  flush() checks rowCount() > 0 but not isRowInProgress().
-// chunk.cpp:77-78 beginRow() immediately updates stats_.t_min / stats_.t_max.
-//
-// When flush() is called after beginRow(200) but before finishRow(), the
-// sealed chunk has stats_.t_max = 200 even though only the row at t = 100
-// was ever committed to timestamps_.
-// ===========================================================================
-
+// flush() seals only committed rows: a row begun but not finished must not leak its timestamp into the sealed
+// chunk's stats (t_min / t_max).
 TEST(RegressionTest, Bug1_FlushWithRowInProgress_CorruptsChunkStats) {
   DataEngine engine;
   auto ds = *engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -69,34 +48,19 @@ TEST(RegressionTest, Bug1_FlushWithRowInProgress_CorruptsChunkStats) {
   ASSERT_TRUE(writer.beginRow(tid, 200).has_value());
   writer.set(tid, 0, 2.0);
 
-  // flush() should only seal the one committed row.
   auto chunks = writer.flush(tid);
 
   ASSERT_EQ(chunks.size(), 1u);
   EXPECT_EQ(chunks[0].stats.row_count, 1u);
-  // BUG: currently returns 200 — the in-progress row's timestamp leaked into stats_.
+  // The in-progress row's timestamp (200) must not leak into the stats.
   EXPECT_EQ(chunks[0].stats.t_max, 100);
   EXPECT_EQ(chunks[0].timestamps.size(), 1u);
 }
 
-// ===========================================================================
-// Bug #2 — finishBulkAppend() underflows when a column has fewer rows
-//          than bulk_pending_rows_
-//
-// chunk.cpp:249
-//   const std::size_t first_row = columns_[col].rowCount() - count;
-//
-// If the caller appends N timestamps but only N-1 values to a column,
-// rowCount() - count wraps to SIZE_MAX. The statistics loop then reads
-// buf[SIZE_MAX], which ASAN catches as an out-of-bounds access.
-//
-// The test uses EXPECT_DEATH; it passes both before the fix (ASAN OOB) and
-// after the fix (PJ_ASSERT). Its purpose is to document that this scenario
-// must always fail rather than silently corrupting stats.
-// ===========================================================================
-
+// finishBulkAppend() must fail loudly when a column holds fewer rows than the pending timestamps (N timestamps,
+// N-1 values): otherwise the unsigned row-count subtraction wraps and the statistics loop reads out of bounds.
 TEST(RegressionTest, Bug2_FinishBulkAppend_ColumnRowCountMismatch_TriggersUB) {
-  // Declare test data outside the EXPECT_DEATH block: the C preprocessor does
+  // Declare test data outside the EXPECT_THROW block: the C preprocessor does
   // not track {} when splitting macro arguments, so vector-initializer commas
   // inside the block would be misinterpreted as extra macro arguments.
   std::vector<ColumnDescriptor> cols = {{1, PrimitiveType::kFloat32, "x"}};
@@ -122,21 +86,12 @@ TEST(RegressionTest, Bug2_FinishBulkAppend_ColumnRowCountMismatch_TriggersUB) {
       },
       std::exception);
 #else
-  // Release: NDEBUG disables assert(), so the check cannot be observed at
-  // this build level.  Debug builds provide the authoritative verification.
+  // Release: NDEBUG disables assert(), so the check cannot be observed.
   GTEST_SKIP() << "Bug #2 assertion not verifiable in Release (NDEBUG disables assert())";
 #endif
 }
 
-// ===========================================================================
-// Bug #3 (recontracted) — out-of-order chunks are retained and reported
-//
-// Historically appendSealedChunk rejected out-of-order chunks and commitChunks
-// still reported the topic as changed (spurious derived recomputes on dropped
-// data). Under lossless out-of-order ingest the chunk is retained, so the
-// topic IS changed and must be reported.
-// ===========================================================================
-
+// An out-of-order chunk is retained, so commitChunks reports its topic as changed.
 TEST(RegressionTest, Bug3_CommitChunks_OutOfOrderChunkRetainedAndReported) {
   DataEngine engine;
   auto ds = *engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -166,15 +121,9 @@ TEST(RegressionTest, Bug3_CommitChunks_OutOfOrderChunkRetainedAndReported) {
   EXPECT_EQ(storage->timeMax(), 200);
 }
 
-// ===========================================================================
-// Bug #4 (recontracted) — queries stay correct over overlapping chunks
-//
-// Chunk ranges may overlap after out-of-order ingest. latestAt() and
-// RangeCursor no longer assume disjoint, time-ordered chunks: latestAt scans
-// candidate chunks (later-committed wins timestamp ties) and the row cursor
-// merges chunks into one globally time-ordered stream.
-// ===========================================================================
-
+// Chunk time ranges may overlap after out-of-order ingest: latestAt() scans candidate chunks (the
+// later-committed chunk wins timestamp ties) and the row cursor merges chunks into one globally time-ordered
+// stream.
 TEST(RegressionTest, Bug4_QueriesStayCorrectOverOverlappingChunks) {
   TopicDescriptor desc;
   desc.name = "t";

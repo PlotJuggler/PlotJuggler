@@ -17,17 +17,9 @@
 namespace PJ {
 namespace {
 
-// ---------------------------------------------------------------------------
-// Helper: create a vector of ColumnDescriptors
-// ---------------------------------------------------------------------------
-
 ColumnDescriptor makeCol(FieldId id, PrimitiveType type, std::string path) {
   return ColumnDescriptor{id, type, std::move(path)};
 }
-
-// ===========================================================================
-// Test 1: Build and seal float32 chunk
-// ===========================================================================
 
 TEST(ChunkTest, BuildAndSealFloat32Chunk) {
   std::vector<ColumnDescriptor> cols = {
@@ -37,7 +29,6 @@ TEST(ChunkTest, BuildAndSealFloat32Chunk) {
   };
   TopicChunkBuilder builder(/*topic_id=*/10, /*schema_id=*/1, std::move(cols), /*max_rows=*/100);
 
-  // Add 5 rows
   for (uint32_t i = 0; i < 5; ++i) {
     Timestamp ts = 1000 + static_cast<Timestamp>(i) * 100;
     builder.beginRow(ts);
@@ -79,10 +70,6 @@ TEST(ChunkTest, BuildAndSealFloat32Chunk) {
   }
 }
 
-// ===========================================================================
-// Test 2: Read back sealed values
-// ===========================================================================
-
 TEST(ChunkTest, ReadBackSealedValues) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat32, "x"),
@@ -106,17 +93,14 @@ TEST(ChunkTest, ReadBackSealedValues) {
 
   TopicChunk chunk = builder.seal();
 
-  // Read back timestamps
   for (std::size_t i = 0; i < 5; ++i) {
     EXPECT_EQ(chunk.readTimestamp(i), timestamps[i]) << "row " << i;
   }
 
-  // Read back float32 column as double
   for (std::size_t i = 0; i < 5; ++i) {
     EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(0, i)), x_vals[i]) << "row " << i;
   }
 
-  // Read back float64 column
   for (std::size_t i = 0; i < 5; ++i) {
     EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(1, i), y_vals[i]) << "row " << i;
   }
@@ -126,10 +110,6 @@ TEST(ChunkTest, ReadBackSealedValues) {
     EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(2, i), static_cast<double>(z_vals[i])) << "row " << i;
   }
 }
-
-// ===========================================================================
-// Test 3: is_full
-// ===========================================================================
 
 TEST(ChunkTest, IsFull) {
   std::vector<ColumnDescriptor> cols = {
@@ -149,10 +129,6 @@ TEST(ChunkTest, IsFull) {
   EXPECT_TRUE(builder.isFull());
   EXPECT_EQ(builder.rowCount(), 3U);
 }
-
-// ===========================================================================
-// Test 4: String column
-// ===========================================================================
 
 TEST(ChunkTest, StringColumn) {
   std::vector<ColumnDescriptor> cols = {
@@ -174,15 +150,10 @@ TEST(ChunkTest, StringColumn) {
   // 2 unique strings: "hello" and "world"
   EXPECT_EQ(dict.dictionary.size(), 2U);
 
-  // Read back all strings
   for (std::size_t i = 0; i < 4; ++i) {
     EXPECT_EQ(chunk.readString(0, i), strings[i]) << "row " << i;
   }
 }
-
-// ===========================================================================
-// Test 5: Bool column
-// ===========================================================================
 
 TEST(ChunkTest, BoolColumn) {
   std::vector<ColumnDescriptor> cols = {
@@ -205,10 +176,6 @@ TEST(ChunkTest, BoolColumn) {
     EXPECT_EQ(chunk.readBool(0, i), bools[i]) << "row " << i;
   }
 }
-
-// ===========================================================================
-// Test 6: Null handling
-// ===========================================================================
 
 TEST(ChunkTest, NullHandling) {
   std::vector<ColumnDescriptor> cols = {
@@ -248,15 +215,10 @@ TEST(ChunkTest, NullHandling) {
   EXPECT_TRUE(chunk.isNull(0, 3));
   EXPECT_FALSE(chunk.isNull(0, 4));
 
-  // Non-null values should read back correctly
   EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, 0), 10.0);
   EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, 2), 30.0);
   EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, 4), 50.0);
 }
-
-// ===========================================================================
-// Test 7: Mixed types
-// ===========================================================================
 
 TEST(ChunkTest, MixedTypes) {
   std::vector<ColumnDescriptor> cols = {
@@ -286,12 +248,10 @@ TEST(ChunkTest, MixedTypes) {
 
   TopicChunk chunk = builder.seal();
 
-  // Check encodings
   EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kRaw);
   EXPECT_EQ(chunk.columnEncoding(1), EncodingType::kDictionary);
   EXPECT_EQ(chunk.columnEncoding(2), EncodingType::kPackedBool);
 
-  // Read back all values
   EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(0, 0)), 1.5F);
   EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(0, 1)), 2.5F);
   EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(0, 2)), 3.5F);
@@ -304,15 +264,10 @@ TEST(ChunkTest, MixedTypes) {
   EXPECT_FALSE(chunk.readBool(2, 1));
   EXPECT_TRUE(chunk.readBool(2, 2));
 
-  // Timestamps
   EXPECT_EQ(chunk.readTimestamp(0), 1000);
   EXPECT_EQ(chunk.readTimestamp(1), 2000);
   EXPECT_EQ(chunk.readTimestamp(2), 3000);
 }
-
-// ===========================================================================
-// Test 8: Column stats (min/max, is_constant, run_count)
-// ===========================================================================
 
 TEST(ChunkTest, ColumnStatsNumeric) {
   std::vector<ColumnDescriptor> cols = {
@@ -333,23 +288,17 @@ TEST(ChunkTest, ColumnStatsNumeric) {
 
   const auto& stats = builder.stats();
 
-  // Varying column
   EXPECT_DOUBLE_EQ(*stats.column_stats[0].min_value, -5.0);
   EXPECT_DOUBLE_EQ(*stats.column_stats[0].max_value, 10.0);
   EXPECT_FALSE(stats.column_stats[0].is_constant);
   // run_count: -5->0 (change), 0->10 (change), 10->3 (change), 3->10 (change) = 1 + 4 = 5
   EXPECT_EQ(stats.column_stats[0].run_count, 5U);
 
-  // Constant column
   EXPECT_DOUBLE_EQ(*stats.column_stats[1].min_value, 42.0);
   EXPECT_DOUBLE_EQ(*stats.column_stats[1].max_value, 42.0);
   EXPECT_TRUE(stats.column_stats[1].is_constant);
   EXPECT_EQ(stats.column_stats[1].run_count, 1U);
 }
-
-// ===========================================================================
-// Test: Unique chunk IDs
-// ===========================================================================
 
 TEST(ChunkTest, UniqueChunkIds) {
   std::vector<ColumnDescriptor> cols = {
@@ -372,10 +321,6 @@ TEST(ChunkTest, UniqueChunkIds) {
   EXPECT_NE(c1.id, kInvalidChunkId);
   EXPECT_NE(c2.id, kInvalidChunkId);
 }
-
-// ===========================================================================
-// Test: Integer types round-trip
-// ===========================================================================
 
 TEST(ChunkTest, IntegerTypesRoundTrip) {
   // int8/int16 logical types widen to int64 storage; int32 has its own storage;
@@ -413,10 +358,6 @@ TEST(ChunkTest, IntegerTypesRoundTrip) {
   EXPECT_NEAR(chunk.readNumericAsDouble(7, 0), 1.8e19, 1e4);
 }
 
-// ===========================================================================
-// Test: No nulls means is_null always returns false
-// ===========================================================================
-
 TEST(ChunkTest, NoNullsIsNullReturnsFalse) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat32, "val"),
@@ -435,10 +376,6 @@ TEST(ChunkTest, NoNullsIsNullReturnsFalse) {
     EXPECT_FALSE(chunk.isNull(0, i)) << "row " << i;
   }
 }
-
-// ===========================================================================
-// Test: String column is_constant and run_count
-// ===========================================================================
 
 TEST(ChunkTest, StringColumnStats) {
   std::vector<ColumnDescriptor> cols = {
@@ -461,10 +398,6 @@ TEST(ChunkTest, StringColumnStats) {
   EXPECT_FALSE(stats.column_stats[0].max_value.has_value());
 }
 
-// ===========================================================================
-// Test: Empty chunk (0 rows)
-// ===========================================================================
-
 TEST(ChunkTest, EmptyChunk) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat32, "val"),
@@ -478,10 +411,6 @@ TEST(ChunkTest, EmptyChunk) {
   EXPECT_EQ(chunk.stats.row_count, 0U);
   EXPECT_TRUE(chunk.timestamps.empty());
 }
-
-// ===========================================================================
-// Test: Bulk read column as doubles (float32)
-// ===========================================================================
 
 TEST(ChunkTest, BulkReadFloat32) {
   std::vector<ColumnDescriptor> cols = {
@@ -498,7 +427,6 @@ TEST(ChunkTest, BulkReadFloat32) {
 
   TopicChunk chunk = builder.seal();
 
-  // Read all rows
   std::vector<double> out(kRows);
   chunk.readColumnAsDoubles(0, Span<double>(out), 0);
   for (int i = 0; i < kRows; ++i) {
@@ -513,10 +441,6 @@ TEST(ChunkTest, BulkReadFloat32) {
         << "sub row " << i;
   }
 }
-
-// ===========================================================================
-// Test: Bulk read column as doubles (int64)
-// ===========================================================================
 
 TEST(ChunkTest, BulkReadInt64) {
   std::vector<ColumnDescriptor> cols = {
@@ -540,10 +464,6 @@ TEST(ChunkTest, BulkReadInt64) {
     EXPECT_DOUBLE_EQ(out[static_cast<std::size_t>(i)], static_cast<double>(values[i])) << "row " << i;
   }
 }
-
-// ===========================================================================
-// Test: Bulk read bool/string columns returns NaN
-// ===========================================================================
 
 TEST(ChunkTest, BulkReadBoolStringReturnsNaN) {
   std::vector<ColumnDescriptor> cols = {
@@ -575,10 +495,6 @@ TEST(ChunkTest, BulkReadBoolStringReturnsNaN) {
   EXPECT_TRUE(std::isnan(out[1]));
 }
 
-// ===========================================================================
-// Test: Bulk read zero rows (boundary)
-// ===========================================================================
-
 TEST(ChunkTest, BulkReadZeroRows) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat64, "x"),
@@ -597,10 +513,6 @@ TEST(ChunkTest, BulkReadZeroRows) {
   EXPECT_DOUBLE_EQ(dummy, 0.0);  // untouched
 }
 
-// ===========================================================================
-// NEW: Constant int column gets constant encoding
-// ===========================================================================
-
 TEST(ChunkTest, ConstantIntColumnGetsConstantEncoding) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kInt32, "const_val"),
@@ -617,22 +529,16 @@ TEST(ChunkTest, ConstantIntColumnGetsConstantEncoding) {
 
   EXPECT_EQ(chunk.columnEncoding(0), EncodingType::kConstant);
 
-  // Read back every row
   for (std::size_t i = 0; i < 100; ++i) {
     EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, i), 42.0) << "row " << i;
   }
 
-  // Bulk read
   std::vector<double> out(100);
   chunk.readColumnAsDoubles(0, Span<double>(out), 0);
   for (std::size_t i = 0; i < 100; ++i) {
     EXPECT_DOUBLE_EQ(out[i], 42.0) << "bulk row " << i;
   }
 }
-
-// ===========================================================================
-// NEW: Constant float column gets constant encoding
-// ===========================================================================
 
 TEST(ChunkTest, ConstantFloatColumnGetsConstantEncoding) {
   std::vector<ColumnDescriptor> cols = {
@@ -655,10 +561,6 @@ TEST(ChunkTest, ConstantFloatColumnGetsConstantEncoding) {
   }
 }
 
-// ===========================================================================
-// NEW: Narrow range int column gets FOR encoding
-// ===========================================================================
-
 TEST(ChunkTest, NarrowRangeIntColumnGetsFOR) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kInt32, "narrow"),
@@ -679,22 +581,16 @@ TEST(ChunkTest, NarrowRangeIntColumnGetsFOR) {
   EXPECT_EQ(for_enc.offset_bytes, 1);
   EXPECT_EQ(for_enc.reference, 1000);
 
-  // Per-row read
   for (std::size_t i = 0; i < 101; ++i) {
     EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, i), 1000.0 + static_cast<double>(i)) << "row " << i;
   }
 
-  // Bulk read
   std::vector<double> out(101);
   chunk.readColumnAsDoubles(0, Span<double>(out), 0);
   for (std::size_t i = 0; i < 101; ++i) {
     EXPECT_DOUBLE_EQ(out[i], 1000.0 + static_cast<double>(i)) << "bulk row " << i;
   }
 }
-
-// ===========================================================================
-// NEW: Wide range int column stays raw
-// ===========================================================================
 
 TEST(ChunkTest, WideRangeIntColumnStaysRaw) {
   std::vector<ColumnDescriptor> cols = {
@@ -719,10 +615,7 @@ TEST(ChunkTest, WideRangeIntColumnStaysRaw) {
   EXPECT_DOUBLE_EQ(chunk.readNumericAsDouble(0, 1), 2000000000.0);
 }
 
-// ===========================================================================
-// NEW: Float column with fractional values stays raw (never gets FOR)
-// ===========================================================================
-
+// A float column with fractional values stays raw (never gets FOR)
 TEST(ChunkTest, FractionalFloatColumnStaysRaw) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat32, "f32"),
@@ -730,7 +623,6 @@ TEST(ChunkTest, FractionalFloatColumnStaysRaw) {
   };
   TopicChunkBuilder builder(/*topic_id=*/204, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
 
-  // Varying float values
   for (int i = 0; i < 10; ++i) {
     builder.beginRow(static_cast<Timestamp>(i));
     builder.set(0, static_cast<float>(i) * 0.1F);
@@ -744,10 +636,7 @@ TEST(ChunkTest, FractionalFloatColumnStaysRaw) {
   EXPECT_EQ(chunk.columnEncoding(1), EncodingType::kRaw);
 }
 
-// ===========================================================================
 // Float columns whose chunk values are all whole numbers get FOR
-// ===========================================================================
-
 TEST(ChunkTest, IntegralFloat64ChunkGetsFOR) {
   std::vector<ColumnDescriptor> cols = {makeCol(1, PrimitiveType::kFloat64, "current_mA")};
   TopicChunkBuilder builder(/*topic_id=*/205, /*schema_id=*/1, std::move(cols), /*max_rows=*/1000);
@@ -937,10 +826,6 @@ TEST(ChunkTest, FloatChunkWithNonIntegralOrSpecialValueStaysRaw) {
   }
 }
 
-// ===========================================================================
-// NEW: Constant bool column gets constant encoding
-// ===========================================================================
-
 TEST(ChunkTest, ConstantBoolGetsConstantEncoding) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kBool, "always_true"),
@@ -961,10 +846,6 @@ TEST(ChunkTest, ConstantBoolGetsConstantEncoding) {
     EXPECT_TRUE(chunk.readBool(0, i)) << "row " << i;
   }
 }
-
-// ===========================================================================
-// Bulk append: basic float32
-// ===========================================================================
 
 TEST(ChunkTest, BulkAppendFloat32) {
   std::vector<ColumnDescriptor> cols = {
@@ -995,17 +876,12 @@ TEST(ChunkTest, BulkAppendFloat32) {
   EXPECT_EQ(chunk.stats.t_min, 0);
   EXPECT_EQ(chunk.stats.t_max, 990);
 
-  // Verify round-trip
   for (std::size_t i = 0; i < kN; ++i) {
     EXPECT_EQ(chunk.readTimestamp(i), static_cast<Timestamp>(i) * 10);
     EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(0, i)), x_vals[i]);
     EXPECT_FLOAT_EQ(static_cast<float>(chunk.readNumericAsDouble(1, i)), y_vals[i]);
   }
 }
-
-// ===========================================================================
-// Bulk append: stats are correct
-// ===========================================================================
 
 TEST(ChunkTest, BulkAppendStats) {
   std::vector<ColumnDescriptor> cols = {
@@ -1026,10 +902,6 @@ TEST(ChunkTest, BulkAppendStats) {
   EXPECT_FALSE(cs.is_constant);
   EXPECT_GT(cs.run_count, 1U);
 }
-
-// ===========================================================================
-// Bulk append: constant column
-// ===========================================================================
 
 TEST(ChunkTest, BulkAppendConstantColumn) {
   std::vector<ColumnDescriptor> cols = {
@@ -1060,10 +932,6 @@ TEST(ChunkTest, BulkAppendConstantColumn) {
   }
 }
 
-// ===========================================================================
-// Bulk append: string column
-// ===========================================================================
-
 TEST(ChunkTest, BulkAppendStrings) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kString, "name"),
@@ -1086,10 +954,6 @@ TEST(ChunkTest, BulkAppendStrings) {
   EXPECT_EQ(chunk.readString(0, 2), "Charlie");
 }
 
-// ===========================================================================
-// Bulk append: remaining_capacity
-// ===========================================================================
-
 TEST(ChunkTest, BulkRemainingCapacity) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat32, "x"),
@@ -1106,10 +970,6 @@ TEST(ChunkTest, BulkRemainingCapacity) {
 
   EXPECT_EQ(builder.remainingCapacity(), 97U);
 }
-
-// ===========================================================================
-// Bulk append: with validity bitmap
-// ===========================================================================
 
 TEST(ChunkTest, BulkAppendWithValidity) {
   std::vector<ColumnDescriptor> cols = {
@@ -1134,10 +994,6 @@ TEST(ChunkTest, BulkAppendWithValidity) {
   EXPECT_TRUE(chunk.isNull(0, 3));
   EXPECT_EQ(chunk.stats.column_stats[0].null_count, 2U);
 }
-
-// ===========================================================================
-// Bulk append: mixed types
-// ===========================================================================
 
 TEST(ChunkTest, BulkAppendMixedTypes) {
   std::vector<ColumnDescriptor> cols = {
@@ -1167,10 +1023,7 @@ TEST(ChunkTest, BulkAppendMixedTypes) {
   EXPECT_TRUE(chunk.readBool(2, 2));
 }
 
-// ===========================================================================
-// BUG-3: readNumericAsInt64 precision loss through double for constant/FOR
-// ===========================================================================
-
+// readNumericAsInt64 stays exact beyond 2^53 for constant and FOR encodings.
 TEST(ChunkTest, ReadInt64PrecisionConstant) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kInt64, "big"),
@@ -1220,10 +1073,7 @@ TEST(ChunkTest, ReadInt64PrecisionFOR) {
   }
 }
 
-// ===========================================================================
-// BUG-4: readNumericAsUint64 precision loss through double for constant/FOR
-// ===========================================================================
-
+// readNumericAsUint64 stays exact beyond 2^53 for constant and FOR encodings.
 TEST(ChunkTest, ReadUint64PrecisionConstant) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kUint64, "big_u"),
@@ -1246,11 +1096,7 @@ TEST(ChunkTest, ReadUint64PrecisionConstant) {
   }
 }
 
-// ===========================================================================
-// BUG-1: Stats tracking loses int64 precision via double cast
-// BUG-2: FOR reference computed from lossy double min/max
-// ===========================================================================
-
+// int64 stats and the FOR reference are not computed through a lossy double cast.
 TEST(ChunkTest, Int64StatsPreservePrecision) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kInt64, "precise"),
@@ -1278,15 +1124,11 @@ TEST(ChunkTest, Int64StatsPreservePrecision) {
   // The column must NOT be constant-encoded since kA != kB
   EXPECT_NE(chunk.columnEncoding(0), EncodingType::kConstant);
 
-  // Values must round-trip exactly
   EXPECT_EQ(chunk.readNumericAsInt64(0, 0), kA);
   EXPECT_EQ(chunk.readNumericAsInt64(0, 1), kB);
 }
 
-// ===========================================================================
-// BUG-8: FOR encode offset truncation (offset_bytes default case)
-// ===========================================================================
-
+// A FOR range that needs 4-byte offsets encodes without truncating them.
 TEST(ChunkTest, FOREncodeLargeRange) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kInt64, "wide_for"),
@@ -1317,11 +1159,7 @@ TEST(ChunkTest, FOREncodeLargeRange) {
   EXPECT_EQ(chunk.readNumericAsInt64(0, 2), kMax / 2);
 }
 
-// ===========================================================================
-// Death tests: debug asserts catch misuse
-// Active in debug builds (assert) or when PJ_ASSERT_THROWS is defined.
-// ===========================================================================
-
+// Death tests: debug asserts catch misuse; active in debug builds (assert) or when PJ_ASSERT_THROWS is defined.
 #if !defined(NDEBUG) || defined(PJ_ASSERT_THROWS)
 
 #ifdef PJ_ASSERT_THROWS
@@ -1383,10 +1221,7 @@ TEST(ChunkDeathTest, OutOfOrderTimestampAsserts) {
 
 #endif  // !defined(NDEBUG) || defined(PJ_ASSERT_THROWS)
 
-// ===========================================================================
-// ColumnStats::all_integral — whole-number detection, independent of encoding
-// ===========================================================================
-
+// ColumnStats::all_integral: whole-number detection, independent of encoding
 TEST(ChunkTest, AllIntegralFlagTracksWholeNumbersNotEncoding) {
   struct Case {
     const char* name;
@@ -1439,10 +1274,7 @@ TEST(ChunkTest, AllIntegralIgnoresNullSlots) {
   EXPECT_EQ(chunk.readNumericAsDouble(0, 2), 4.0);
 }
 
-// ===========================================================================
-// Constant encoding stores the first NON-NULL value, bit for bit
-// ===========================================================================
-
+// Constant encoding stores the first non-null value, bit for bit
 TEST(ChunkTest, BulkConstantColumnWithLeadingNullKeepsItsValue) {
   std::vector<ColumnDescriptor> cols = {
       makeCol(1, PrimitiveType::kFloat64, "f"),

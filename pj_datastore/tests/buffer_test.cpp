@@ -10,11 +10,6 @@
 
 namespace PJ {
 namespace {
-
-// ===========================================================================
-// RawBuffer tests
-// ===========================================================================
-
 TEST(RawBufferTest, DefaultConstructEmpty) {
   RawBuffer buf;
   EXPECT_TRUE(buf.empty());
@@ -81,10 +76,6 @@ TEST(RawBufferTest, Reserve) {
   EXPECT_TRUE(buf.empty());
 }
 
-// ===========================================================================
-// BitVector tests
-// ===========================================================================
-
 TEST(BitVectorTest, BytesForBits) {
   EXPECT_EQ(BitVector::bytesForBits(0), 0u);
   EXPECT_EQ(BitVector::bytesForBits(1), 1u);
@@ -112,7 +103,6 @@ TEST(BitVectorTest, SetNull) {
   bits.setNull(5);
   EXPECT_FALSE(bits.isValid(5));
 
-  // All other bits should remain valid.
   for (std::size_t i = 0; i < 16; ++i) {
     if (i == 5) {
       continue;
@@ -154,7 +144,6 @@ TEST(BitVectorTest, ByteBoundary) {
   EXPECT_FALSE(bits.isValid(7));
   EXPECT_FALSE(bits.isValid(8));
 
-  // Neighbours should be unaffected.
   EXPECT_TRUE(bits.isValid(6));
   EXPECT_TRUE(bits.isValid(9));
 }

@@ -64,7 +64,7 @@ void TypedColumnBuffer::ensureValidityInitialized() {
   if (validity_initialized_) {
     return;
   }
-  // Initialize bitmap with all existing rows marked valid.
+  // Rows appended before the first null are all valid.
   validity_.initValid(row_count_);
   validity_initialized_ = true;
 }
@@ -77,7 +77,6 @@ template <typename T>
 void TypedColumnBuffer::appendFixed(T value) {
   values_.append(&value, sizeof(T));
   if (validity_initialized_) {
-    // Ensure bitmap has room for this row, then mark valid.
     validity_.ensureSize(row_count_ + 1);
     validity_.setValid(row_count_);
   }
@@ -92,7 +91,7 @@ T TypedColumnBuffer::readFixed(std::size_t row) const {
 }
 
 // ---------------------------------------------------------------------------
-// Typed append functions (6 storage types)
+// Typed append functions
 // ---------------------------------------------------------------------------
 
 void TypedColumnBuffer::appendFloat32(float value) {
@@ -128,20 +127,16 @@ void TypedColumnBuffer::appendBool(bool value) {
 
 void TypedColumnBuffer::appendString(std::string_view value) {
   assert(storageKindOf(descriptor_.logical_type) == StorageKind::kString);
-  // Write the initial offset (0) on first row.
   if (row_count_ == 0) {
     const uint32_t zero = 0;
     offsets_.append(&zero, sizeof(zero));
   }
 
-  // Append string bytes to value buffer.
   values_.append(value.data(), value.size());
 
-  // Append new end offset.
   const auto end_offset = static_cast<uint32_t>(values_.size());
   offsets_.append(&end_offset, sizeof(end_offset));
 
-  // Update validity if initialized.
   if (validity_initialized_) {
     validity_.ensureSize(row_count_ + 1);
     validity_.setValid(row_count_);
@@ -153,24 +148,20 @@ void TypedColumnBuffer::appendString(std::string_view value) {
 void TypedColumnBuffer::appendNull() {
   ensureValidityInitialized();
 
-  // Ensure bitmap has room for this row.
   validity_.ensureSize(row_count_ + 1);
   validity_.setNull(row_count_);
 
-  // Append zero bytes for the value slot.
+  // A null still takes a value slot, so values stay row-aligned.
   const StorageKind kind = storageKindOf(descriptor_.logical_type);
   if (kind == StorageKind::kString) {
-    // For strings: write the initial offset if this is the first row.
     if (row_count_ == 0) {
       const uint32_t zero = 0;
       offsets_.append(&zero, sizeof(zero));
     }
-    // Duplicate the current end offset (no new string data).
     const auto current_offset = static_cast<uint32_t>(values_.size());
     offsets_.append(&current_offset, sizeof(current_offset));
   } else {
     const std::size_t type_size = storageKindSize(kind);
-    // Append type_size zero bytes.
     const uint64_t zero = 0;  // 8 bytes, enough for any fixed type
     values_.append(&zero, type_size);
   }
@@ -202,7 +193,7 @@ void TypedColumnBuffer::appendFixedBulk(Span<const T> data) {
 }
 
 // ---------------------------------------------------------------------------
-// Typed bulk append functions (7 storage types)
+// Typed bulk append functions
 // ---------------------------------------------------------------------------
 
 void TypedColumnBuffer::appendFloat32Bulk(Span<const float> data) {
@@ -232,7 +223,7 @@ void TypedColumnBuffer::appendUint64Bulk(Span<const uint64_t> data) {
 
 void TypedColumnBuffer::appendBoolBulk(Span<const uint8_t> data) {
   assert(storageKindOf(descriptor_.logical_type) == StorageKind::kBool);
-  // Bool stored as uint8_t per element (1 byte per bool, not packed)
+  // One byte per bool, unpacked.
   appendFixedBulk(data);
 }
 
@@ -246,28 +237,25 @@ void TypedColumnBuffer::appendStringsBulk(Span<const uint32_t> offsets, Span<con
     return;
   }
 
-  // Write the initial offset (0) on first row if buffer is empty
   const uint32_t base_data_offset = static_cast<uint32_t>(values_.size());
   if (row_count_ == 0) {
     const uint32_t zero = 0;
     offsets_.append(&zero, sizeof(zero));
   }
 
-  // Append all string data at once
   const uint32_t total_string_bytes = offsets[count] - offsets[0];
   assert(offsets[0] <= static_cast<uint32_t>(data.size()));
   assert(offsets[count] <= static_cast<uint32_t>(data.size()));
   values_.reserve(values_.size() + total_string_bytes);
   values_.append(data.data() + offsets[0], total_string_bytes);
 
-  // Append adjusted offsets (rebase to our value buffer position)
+  // Rebase the offsets onto this buffer.
   const uint32_t src_base = offsets[0];
   for (std::size_t i = 1; i <= count; ++i) {
     const uint32_t adjusted = base_data_offset + (offsets[i] - src_base);
     offsets_.append(&adjusted, sizeof(adjusted));
   }
 
-  // Update validity if initialized
   if (validity_initialized_) {
     const std::size_t new_total = row_count_ + count;
     validity_.ensureSize(new_total);
@@ -286,9 +274,7 @@ void TypedColumnBuffer::appendValidityBulk(BitSpan validity) {
   }
   ensureValidityInitialized();
 
-  // The validity bitmap covers the last `count` rows that were just appended.
-  // row_count_ already includes them, so the range is
-  // [row_count_ - count, row_count_).
+  // Called after the values: covers the last `count` rows, already counted in row_count_.
   const std::size_t start_row = row_count_ - count;
   validity_.ensureSize(row_count_);
 
@@ -304,7 +290,7 @@ void TypedColumnBuffer::appendValidityBulk(BitSpan validity) {
 }
 
 // ---------------------------------------------------------------------------
-// Typed read functions (6 storage types)
+// Typed read functions
 // ---------------------------------------------------------------------------
 
 float TypedColumnBuffer::readFloat32(std::size_t row) const {
@@ -345,10 +331,6 @@ bool TypedColumnBuffer::isNull(std::size_t row) const {
   }
   return !validity_.isValid(row);
 }
-
-// ---------------------------------------------------------------------------
-// read_as_double
-// ---------------------------------------------------------------------------
 
 double TypedColumnBuffer::readAsDouble(std::size_t row) const {
   switch (storageKindOf(descriptor_.logical_type)) {

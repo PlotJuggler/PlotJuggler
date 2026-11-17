@@ -19,56 +19,43 @@
 
 namespace PJ::arrow_import {
 
-/// Describes how an Arrow column maps to a PJ topic column.
+/// How one Arrow column maps to a topic column.
 struct ArrowColumnMapping {
-  /// Source column index in Arrow batch/table schema.
   int arrow_column_index;
-  /// Destination column index in PJ flattened schema.
   std::size_t pj_column_index;
-  /// Target primitive type used by PJ storage.
   PrimitiveType pj_type;
-  /// Source field name.
   std::string field_name;
 };
 
-/// Parse schema from Arrow IPC stream bytes (reads first message).
-/// Returns a TypeTreeNode and column mappings for supported types.
-/// Unsupported Arrow types are skipped.
+/// Reads the first message only. Columns of unsupported Arrow types are left out of the mappings; fails when none
+/// remain.
 [[nodiscard]] PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColumnMapping>>> schemaFromIpc(
     PJ::Span<const uint8_t> ipc_stream);
 
-/// Import all record batches from Arrow IPC stream bytes into a DataWriter topic.
+/// Imports every record batch of the IPC stream into a DataWriter topic.
 ///
-/// timestamp_column: which Arrow column contains timestamps (as int64).
-///   If -1, row indices (0, 1, 2, ...) are used as timestamps.
+/// `timestamp_column` indexes the Arrow schema: an int64, uint64 or int32 column taken as nanoseconds, or a TIMESTAMP
+/// column scaled from its unit to nanoseconds (a value that overflows int64 nanoseconds is an error). -1 uses row
+/// indices 0, 1, 2, ...; a column of any other type falls back to row indices as well.
 [[nodiscard]] PJ::Status importIpcStream(
     DataWriter& writer, TopicId topic_id, PJ::Span<const uint8_t> ipc_stream,
     const std::vector<ArrowColumnMapping>& mappings, int timestamp_column = -1);
 
-/// Import all record batches from a live Arrow C Data Interface stream.
-/// This is the v4 in-memory path — no IPC parse, plugin hands the stream.
+/// Imports every record batch of a live Arrow C Data Interface stream; `mappings` and `timestamp_column` are as for
+/// importIpcStream() and refer to the stream's schema.
 ///
-/// Ownership: on success, the caller retains responsibility for releasing
-/// @p stream (the importer does NOT call stream->release). This lets the
-/// caller enforce the ownership contract on the ABI boundary: host-side
-/// code that got the stream from a plugin releases on success, retains on
-/// failure, all at the outermost ABI frame.
-///
-/// The mappings vector must match the stream's schema (same columns in
-/// the same order). @p timestamp_column is an index into the stream's
-/// schema, or -1 for synthetic sequential timestamps.
+/// Never calls stream->release, on success or failure: the caller decides. The host's ABI wrapper releases on success
+/// and keeps the stream on failure.
 [[nodiscard]] PJ::Status importArrowStream(
     DataWriter& writer, TopicId topic_id, struct ::ArrowArrayStream* stream,
     const std::vector<ArrowColumnMapping>& mappings, int timestamp_column = -1);
 
-/// Parse schema from a live Arrow C Data Interface stream (reads schema only;
-/// does not consume batches). Caller retains ownership of @p stream.
+/// Reads the schema only, consuming no batches; the caller keeps ownership of `stream`.
 [[nodiscard]] PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColumnMapping>>>
 schemaFromArrowStream(struct ::ArrowArrayStream* stream);
 
-/// Index of the top-level field named @p name in the stream's schema, or -1.
-/// Covers every Arrow type — including a native TIMESTAMP column, which the
-/// value-column mappings of schemaFromArrowStream() leave out.
+/// Index of the top-level field named `name`, or -1. Unlike the mappings, it finds columns of any Arrow type,
+/// including a TIMESTAMP column.
 [[nodiscard]] int columnIndexByName(struct ::ArrowArrayStream* stream, std::string_view name);
 
 }  // namespace PJ::arrow_import

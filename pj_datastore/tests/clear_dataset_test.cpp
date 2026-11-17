@@ -123,8 +123,6 @@ TEST(ClearDatasetChunksTest, IdempotentAndUnknownIdNoop) {
   EXPECT_NO_THROW(engine.clearDatasetChunks(999999));  // unknown id: no-op, no throw
 }
 
-// --- ObjectStore side ---
-
 ObjectTopicId registerObjectTopic(ObjectStore& store, DatasetId dataset_id, const std::string& name) {
   auto id = store.registerTopic({.dataset_id = dataset_id, .topic_name = name, .metadata_json = "{}"});
   EXPECT_TRUE(id.has_value());
@@ -182,10 +180,9 @@ TEST(ClearObjectDatasetTest, OtherDatasetUntouchedAndIdempotentNoop) {
   EXPECT_EQ(store.entryCount(keep), 5u);
 }
 
-// --- DataEngine detach/reattach: the transactional variant of clearDatasetChunks
-//     used by RefillGuard. detach MOVES the prior data aside (O(1)) instead of
-//     freeing it; reattach restores the EXACT prior state (data, floor, ratchet
-//     stats) and retires any topic a failed refill added. ---
+// DataEngine detach/reattach: the transactional variant of clearDatasetChunks, used by RefillGuard. detach
+// moves the prior data aside instead of freeing it; reattach restores the exact prior state (data, floor,
+// ratchet stats) and retires any topic a failed refill added.
 
 TEST(DatasetChunkSnapshotTest, DetachLeavesTopicsEmptyButListed) {
   DataEngine engine;
@@ -358,10 +355,9 @@ TEST(DatasetChunkSnapshotTest, DetachUnknownDatasetIsInvalidNoThrow) {
   EXPECT_NO_THROW(engine.reattachDatasetChunks(999999, DataEngine::DatasetChunkSnapshot{}));
 }
 
-// --- ObjectStore detach/reattach: the object-store half of the transaction.
-//     Same clear-in-place discipline as clearDataset (store_mutex_ exclusive,
-//     drain readers, clear in place keeping the ObjectTopicId) but MOVES the
-//     entries aside for restore. ---
+// ObjectStore detach/reattach: the object-store half of the transaction. Same clear-in-place discipline as
+// clearDataset (store_mutex_ exclusive, drain readers, clear in place keeping the ObjectTopicId) but the
+// entries are moved aside for restore.
 
 TEST(ObjectDatasetSnapshotTest, DetachLeavesSeriesEmptyRegistered) {
   ObjectStore store;
@@ -443,7 +439,6 @@ TEST(ObjectDatasetSnapshotTest, ReattachPreservesUidCursorAfterOutOfOrder) {
     ASSERT_TRUE(store.pushOwned(a, ts, std::vector<uint8_t>(4, 0xAB)).has_value());
   }
 
-  // Capture the pre-detach walk (arrival order, via drainNewSince).
   auto walk = [&store, a]() {
     std::vector<Timestamp> out;
     SequentialUID cursor{};

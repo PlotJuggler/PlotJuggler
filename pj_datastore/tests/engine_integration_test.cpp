@@ -29,24 +29,13 @@
 namespace PJ {
 namespace {
 
-// ===========================================================================
-// Test 1: End-to-end scalar write + read
-//
-// Creates an engine, registers a float64 scalar series, appends 5000 values
-// (spanning multiple chunks at default max_chunk_rows=1024), flushes,
-// commits, then verifies range_query returns all 5000 rows and latest_at
-// returns the correct value at the midpoint.
-// ===========================================================================
-
 TEST(EngineIntegrationTest, EndToEndScalarWriteRead) {
   DataEngine engine;
 
-  // Create dataset with default time domain id=0
   auto dataset_id_or = engine.createDataset(DatasetDescriptor{.source_name = "test_source", .time_domain_id = 0});
   ASSERT_TRUE(dataset_id_or.has_value()) << dataset_id_or.error();
   DatasetId dataset_id = *dataset_id_or;
 
-  // Create writer, register scalar series (float64)
   DataWriter writer = engine.createWriter();
   auto handle_or = writer.registerScalarSeries(dataset_id, "temperature", NumericType::kFloat64);
   ASSERT_TRUE(handle_or.has_value()) << handle_or.error();
@@ -61,12 +50,10 @@ TEST(EngineIntegrationTest, EndToEndScalarWriteRead) {
     writer.appendScalar(handle, ts, value);
   }
 
-  // Flush all pending chunks and commit to engine
   auto flushed = writer.flushAll();
   EXPECT_FALSE(flushed.empty());
   engine.commitChunks(std::move(flushed));
 
-  // Verify via reader: range_query full range
   DataReader reader = engine.createReader();
 
   std::size_t count = 0;
@@ -95,7 +82,6 @@ TEST(EngineIntegrationTest, EndToEndScalarWriteRead) {
   double midpoint_value = latest->values[0];
   EXPECT_DOUBLE_EQ(midpoint_value, 1250.0);
 
-  // Also verify metadata
   auto metadata_opt = reader.getMetadata(handle.topic_id);
   ASSERT_TRUE(metadata_opt.has_value());
   EXPECT_EQ(metadata_opt->total_row_count, kRowCount);
@@ -103,31 +89,19 @@ TEST(EngineIntegrationTest, EndToEndScalarWriteRead) {
   EXPECT_EQ(metadata_opt->time_range_max, static_cast<Timestamp>(kRowCount - 1) * 1000);
 }
 
-// ===========================================================================
-// Test 2: End-to-end structured write + read
-//
-// Registers a schema for a robot_pose struct (float32 x, y, z + string
-// frame_name), creates a topic bound to that schema, writes 200 rows,
-// flushes, commits, then verifies field values round-trip via range_query
-// and checks that the string column uses dictionary encoding.
-// ===========================================================================
-
 TEST(EngineIntegrationTest, EndToEndStructuredWriteRead) {
   DataEngine engine;
 
-  // Build type tree: struct robot_pose { float32 x, y, z; string frame_name }
   auto x = makePrimitive("x", PrimitiveType::kFloat32);
   auto y = makePrimitive("y", PrimitiveType::kFloat32);
   auto z = makePrimitive("z", PrimitiveType::kFloat32);
   auto frame = makePrimitive("frame_name", PrimitiveType::kString);
   auto robot_pose = makeStruct("robot_pose", {x, y, z, frame});
 
-  // Create dataset
   auto dataset_id_or = engine.createDataset(DatasetDescriptor{.source_name = "robot", .time_domain_id = 0});
   ASSERT_TRUE(dataset_id_or.has_value()) << dataset_id_or.error();
   DatasetId dataset_id = *dataset_id_or;
 
-  // Register schema and create topic via writer
   DataWriter writer = engine.createWriter();
   auto schema_id_or = writer.registerSchema("robot_pose", robot_pose);
   ASSERT_TRUE(schema_id_or.has_value()) << schema_id_or.error();
@@ -140,7 +114,6 @@ TEST(EngineIntegrationTest, EndToEndStructuredWriteRead) {
   ASSERT_TRUE(topic_id_or.has_value()) << topic_id_or.error();
   TopicId topic_id = *topic_id_or;
 
-  // Bind to get field IDs (column indices)
   auto write_handle_or = writer.bindTopicWriter(topic_id);
   ASSERT_TRUE(write_handle_or.has_value()) << write_handle_or.error();
   TopicWriteHandle write_handle = *write_handle_or;
@@ -154,26 +127,21 @@ TEST(EngineIntegrationTest, EndToEndStructuredWriteRead) {
     writer.set(topic_id, 0, static_cast<float>(i) * 1.0F);
     writer.set(topic_id, 1, static_cast<float>(i) * 2.0F);
     writer.set(topic_id, 2, static_cast<float>(i) * 3.0F);
-    // Alternate frame name for variety
     std::string_view frame_name = (i % 2 == 0) ? "base_link" : "odom";
     writer.set(topic_id, 3, frame_name);
     ASSERT_TRUE(writer.finishRow(topic_id).has_value());
   }
 
-  // Flush + commit
   auto flushed = writer.flushAll();
   EXPECT_FALSE(flushed.empty());
   engine.commitChunks(std::move(flushed));
 
-  // Read back via reader
   DataReader reader = engine.createReader();
 
-  // Range query: verify total count
   std::size_t count = 0;
   auto cursor_or = reader.rangeQuery(
       QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = static_cast<Timestamp>(kRows - 1) * 1000000});
   ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
-  // Collect first and last rows for verification
   SampleRow first_row{};
   SampleRow last_row{};
   cursor_or->forEach([&count, &first_row, &last_row](const SampleRow& row) {
@@ -199,7 +167,6 @@ TEST(EngineIntegrationTest, EndToEndStructuredWriteRead) {
   EXPECT_FLOAT_EQ(static_cast<float>(last_row.chunk->readNumericAsDouble(2, last_row.row_index)), 597.0F);
   EXPECT_EQ(last_row.chunk->readString(3, last_row.row_index), "odom");
 
-  // Verify dictionary encoding on the string column (col 3) in sealed chunks
   const TopicStorage* storage = engine.getTopicStorage(topic_id);
   ASSERT_NE(storage, nullptr);
   for (const auto& chunk : storage->sealedChunks()) {
@@ -210,21 +177,12 @@ TEST(EngineIntegrationTest, EndToEndStructuredWriteRead) {
     EXPECT_LE(dict.dictionary.size(), 2U);
   }
 
-  // Verify type tree is retrievable via reader
   const TypeTreeNode* tree = reader.getTypeTree(topic_id);
   ASSERT_NE(tree, nullptr);
   EXPECT_EQ(tree->name, "robot_pose");
   EXPECT_EQ(tree->kind, TypeKind::kStruct);
   EXPECT_EQ(tree->children.size(), 4U);
 }
-
-// ===========================================================================
-// Test 3: Retention eviction
-//
-// Writes data spanning a timestamp range, commits, then enforces retention
-// to evict old chunks. Verifies that old data is gone and recent data
-// remains intact.
-// ===========================================================================
 
 TEST(EngineIntegrationTest, RetentionEviction) {
   DataEngine engine;
@@ -236,7 +194,6 @@ TEST(EngineIntegrationTest, RetentionEviction) {
   DataWriter writer = engine.createWriter();
 
   // Use small max_chunk_rows to force many chunks for fine-grained eviction
-  // We use scalar API but with a custom topic for control over chunk size
   auto x_tree = makePrimitive("value", PrimitiveType::kFloat64);
   auto schema_id_or = writer.registerSchema("scalar_retention", x_tree);
   ASSERT_TRUE(schema_id_or.has_value()) << schema_id_or.error();
@@ -253,8 +210,7 @@ TEST(EngineIntegrationTest, RetentionEviction) {
   auto write_handle_or = writer.bindTopicWriter(topic_id);
   ASSERT_TRUE(write_handle_or.has_value()) << write_handle_or.error();
 
-  // Write 3000 rows: timestamps 0 to 9999 (spacing ~3.333)
-  // Simplify: timestamps from 0 to 2999, one per integer timestamp
+  // 3000 rows, one per integer timestamp: 0 to 2999
   constexpr std::size_t kRowCount = 3000;
   for (std::size_t i = 0; i < kRowCount; ++i) {
     Timestamp ts = static_cast<Timestamp>(i);
@@ -266,7 +222,6 @@ TEST(EngineIntegrationTest, RetentionEviction) {
   auto flushed = writer.flushAll();
   engine.commitChunks(std::move(flushed));
 
-  // Verify all data present
   DataReader reader = engine.createReader();
   {
     std::size_t count = 0;
@@ -295,10 +250,7 @@ TEST(EngineIntegrationTest, RetentionEviction) {
     auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = 999});
     ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
     cursor_or->forEach([&count](const SampleRow&) { ++count; });
-    // Old chunks (t_max < 1499) are fully evicted.
-    // Chunks with rows in [0, 999] and t_max < 1499 are gone.
-    // At chunk size 100: chunks [0..99], [100..199], ..., [900..999] all have
-    // t_max < 1499, so they should be evicted.
+    // Chunks [0..99], [100..199], ..., [900..999] all have t_max < 1499, so they are fully evicted.
     EXPECT_EQ(count, 0U) << "Old data should be fully evicted";
   }
 
@@ -360,21 +312,11 @@ TEST(EngineRetention, ScopedRetentionDoesNotEvictOtherDatasets) {
   ASSERT_GT(count(topic_file, 0, 999), 0U);
   ASSERT_GT(count(topic_stream, 0, 999), 0U);
 
-  // Trim ONLY the streaming dataset.
   engine.enforceRetention(1500, ds_stream);
 
   EXPECT_EQ(count(topic_stream, 0, 999), 0U) << "streaming dataset's old data should be evicted";
   EXPECT_GT(count(topic_file, 0, 999), 0U) << "file dataset's history must survive scoped streaming retention";
 }
-
-// ===========================================================================
-// Test 4: Schema evolution
-//
-// Registers a topic with schema v1 (x, y, z as float32), writes 100 rows,
-// evolves the schema to v2 (adds w as float32), writes 100 more rows with
-// the new column, then verifies that old rows have 3 columns and new rows
-// have 4 columns accessible.
-// ===========================================================================
 
 TEST(EngineIntegrationTest, SchemaEvolution) {
   DataEngine engine;
@@ -383,7 +325,6 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
   ASSERT_TRUE(dataset_id_or.has_value()) << dataset_id_or.error();
   DatasetId dataset_id = *dataset_id_or;
 
-  // Schema v1: struct { float32 x, y, z }
   auto x = makePrimitive("x", PrimitiveType::kFloat32);
   auto y = makePrimitive("y", PrimitiveType::kFloat32);
   auto z = makePrimitive("z", PrimitiveType::kFloat32);
@@ -406,7 +347,6 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
   ASSERT_TRUE(wh_or.has_value()) << wh_or.error();
   EXPECT_EQ(wh_or->field_ids.size(), 3U);
 
-  // Write 100 rows with v1 schema (3 columns)
   for (std::size_t i = 0; i < 100; ++i) {
     Timestamp ts = static_cast<Timestamp>(i) * 1000;
     ASSERT_TRUE(writer.beginRow(topic_id, ts).has_value());
@@ -416,12 +356,10 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
     ASSERT_TRUE(writer.finishRow(topic_id).has_value());
   }
 
-  // Flush v1 data and commit
   auto flushed_v1 = writer.flushAll();
   EXPECT_FALSE(flushed_v1.empty());
   engine.commitChunks(std::move(flushed_v1));
 
-  // Evolve schema: add float32 w
   auto w = makePrimitive("w", PrimitiveType::kFloat32);
   auto schema_v2 = makeStruct("pose", {x, y, z, w});
   auto evolve_status = engine.typeRegistry().evolveSchema(schema_id, schema_v2);
@@ -433,7 +371,6 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
   ASSERT_TRUE(wh2_or.has_value()) << wh2_or.error();
   EXPECT_EQ(wh2_or->field_ids.size(), 4U);
 
-  // Write 100 more rows with v2 schema (4 columns)
   for (std::size_t i = 0; i < 100; ++i) {
     Timestamp ts = static_cast<Timestamp>(100 + i) * 1000;
     ASSERT_TRUE(writer2.beginRow(topic_id, ts).has_value());
@@ -448,7 +385,6 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
   EXPECT_FALSE(flushed_v2.empty());
   engine.commitChunks(std::move(flushed_v2));
 
-  // Read back data spanning both versions
   DataReader reader = engine.createReader();
 
   // Query old rows [0, 99000]: should return 100 rows with 3 columns
@@ -458,10 +394,8 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
     ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
     cursor_or->forEach([&count](const SampleRow& row) {
       ASSERT_NE(row.chunk, nullptr);
-      // Old chunks should have 3 column descriptors
       EXPECT_EQ(row.chunk->columns.size(), 3U);
       if (count == 0) {
-        // Verify first old row: x=0, y=0, z=0
         EXPECT_FLOAT_EQ(static_cast<float>(row.chunk->readNumericAsDouble(0, row.row_index)), 0.0F);
         EXPECT_FLOAT_EQ(static_cast<float>(row.chunk->readNumericAsDouble(1, row.row_index)), 0.0F);
         EXPECT_FLOAT_EQ(static_cast<float>(row.chunk->readNumericAsDouble(2, row.row_index)), 0.0F);
@@ -478,7 +412,6 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
     ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
     cursor_or->forEach([&count](const SampleRow& row) {
       ASSERT_NE(row.chunk, nullptr);
-      // New chunks should have 4 column descriptors
       EXPECT_EQ(row.chunk->columns.size(), 4U);
       if (count == 0) {
         // Verify first new row (i=100): x=100, y=200, z=300, w=400
@@ -492,7 +425,6 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
     EXPECT_EQ(count, 100U);
   }
 
-  // Verify full range returns all 200 rows
   {
     std::size_t count = 0;
     auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = 199000});
@@ -502,19 +434,9 @@ TEST(EngineIntegrationTest, SchemaEvolution) {
   }
 }
 
-// ===========================================================================
-// Test 5: Time domain offset
-//
-// Creates 2 time domains with different names and display_offsets, creates
-// datasets bound to each, and verifies the offsets are stored and
-// retrievable. Also verifies the display_time = raw_time - offset
-// relationship.
-// ===========================================================================
-
 TEST(EngineIntegrationTest, TimeDomainOffset) {
   DataEngine engine;
 
-  // Create two time domains
   auto td1_or = engine.createTimeDomain("ros_time");
   ASSERT_TRUE(td1_or.has_value()) << td1_or.error();
   TimeDomainId td1_id = *td1_or;
@@ -523,16 +445,13 @@ TEST(EngineIntegrationTest, TimeDomainOffset) {
   ASSERT_TRUE(td2_or.has_value()) << td2_or.error();
   TimeDomainId td2_id = *td2_or;
 
-  // Verify they have distinct IDs
   EXPECT_NE(td1_id, td2_id);
 
-  // Set display offsets
   constexpr Timestamp kOffset1 = 1000000000;  // 1 second
   constexpr Timestamp kOffset2 = 5000000000;  // 5 seconds
   engine.setDisplayOffset(td1_id, kOffset1);
   engine.setDisplayOffset(td2_id, kOffset2);
 
-  // Verify offsets stored and retrievable
   const TimeDomain* td1 = engine.getTimeDomain(td1_id);
   ASSERT_NE(td1, nullptr);
   EXPECT_EQ(td1->name, "ros_time");
@@ -543,7 +462,6 @@ TEST(EngineIntegrationTest, TimeDomainOffset) {
   EXPECT_EQ(td2->name, "sim_time");
   EXPECT_EQ(td2->display_offset, kOffset2);
 
-  // Create datasets bound to each time domain
   auto ds1_or = engine.createDataset(DatasetDescriptor{.source_name = "robot1", .time_domain_id = td1_id});
   ASSERT_TRUE(ds1_or.has_value()) << ds1_or.error();
   DatasetId ds1_id = *ds1_or;
@@ -552,7 +470,6 @@ TEST(EngineIntegrationTest, TimeDomainOffset) {
   ASSERT_TRUE(ds2_or.has_value()) << ds2_or.error();
   DatasetId ds2_id = *ds2_or;
 
-  // Verify datasets have the correct time domains
   const DatasetInfo* ds1 = engine.getDataset(ds1_id);
   ASSERT_NE(ds1, nullptr);
   EXPECT_EQ(ds1->time_domain.id, td1_id);
@@ -565,7 +482,7 @@ TEST(EngineIntegrationTest, TimeDomainOffset) {
   EXPECT_EQ(ds2->time_domain.name, "sim_time");
   EXPECT_EQ(ds2->time_domain.display_offset, kOffset2);
 
-  // Verify display_time = raw_time - offset relationship
+  // display_time = raw_time - offset
   constexpr Timestamp kRawTime = 10000000000;  // 10 seconds
   Timestamp display_time_1 = kRawTime - td1->display_offset;
   Timestamp display_time_2 = kRawTime - td2->display_offset;
@@ -573,7 +490,6 @@ TEST(EngineIntegrationTest, TimeDomainOffset) {
   EXPECT_EQ(display_time_1, 9000000000);  // 10s - 1s = 9s
   EXPECT_EQ(display_time_2, 5000000000);  // 10s - 5s = 5s
 
-  // Verify that updating offset is reflected immediately
   constexpr Timestamp kNewOffset1 = 2000000000;  // 2 seconds
   engine.setDisplayOffset(td1_id, kNewOffset1);
 
@@ -584,25 +500,16 @@ TEST(EngineIntegrationTest, TimeDomainOffset) {
   Timestamp display_time_1_updated = kRawTime - td1_updated->display_offset;
   EXPECT_EQ(display_time_1_updated, 8000000000);  // 10s - 2s = 8s
 
-  // Verify listing datasets shows both
   auto datasets = engine.listDatasets();
   EXPECT_EQ(datasets.size(), 2U);
 
-  // Verify non-existent time domain returns nullptr
   EXPECT_EQ(engine.getTimeDomain(999), nullptr);
 
-  // Verify creating dataset with non-existent time domain fails
   auto bad_ds = engine.createDataset(DatasetDescriptor{.source_name = "bad", .time_domain_id = 999});
   EXPECT_FALSE(bad_ds.has_value());
 }
 
-// ===========================================================================
-// Test 6: create_topic rejects non-existent schema_id
-//
-// Before fix: create_topic accepted any schema_id, leading to empty columns
-// and UB when setting values on the non-existent columns.
-// ===========================================================================
-
+// createTopic rejects a non-existent schema_id: accepting it would leave the topic with no columns to set values on.
 TEST(EngineIntegrationTest, CreateTopicRejectsInvalidSchemaId) {
   DataEngine engine;
 
@@ -625,13 +532,7 @@ TEST(EngineIntegrationTest, CreateTopicRejectsInvalidSchemaId) {
   EXPECT_TRUE(scalar_result.has_value()) << scalar_result.error();
 }
 
-// ===========================================================================
-// Test 7: begin_row rejects non-existent topic_id
-//
-// Before fix: begin_row called get_or_create_builder which hit an assert
-// (UB in Release builds) when the topic didn't exist.
-// ===========================================================================
-
+// beginRow rejects a non-existent topic_id: the builder lookup would assert (UB in Release builds) on a missing topic.
 TEST(EngineIntegrationTest, BeginRowRejectsInvalidTopicId) {
   DataEngine engine;
 
@@ -643,13 +544,8 @@ TEST(EngineIntegrationTest, BeginRowRejectsInvalidTopicId) {
   EXPECT_FALSE(status.has_value());
 }
 
-// ===========================================================================
-// Test 8: Partial row auto-fills missing columns with null
-//
-// Before fix: finish_row incremented row_count but left column buffers
-// with divergent lengths, causing later reads to go out-of-bounds.
-// ===========================================================================
-
+// A partial row auto-fills its missing columns with null; otherwise the column buffers keep divergent lengths and
+// later reads go out of bounds.
 TEST(EngineIntegrationTest, PartialRowAutoFillsNulls) {
   DataEngine engine;
 
@@ -657,7 +553,6 @@ TEST(EngineIntegrationTest, PartialRowAutoFillsNulls) {
   ASSERT_TRUE(dataset_id_or.has_value()) << dataset_id_or.error();
   DatasetId dataset_id = *dataset_id_or;
 
-  // Create a 3-column schema: float32 x, y, z
   auto x = makePrimitive("x", PrimitiveType::kFloat32);
   auto y = makePrimitive("y", PrimitiveType::kFloat32);
   auto z = makePrimitive("z", PrimitiveType::kFloat32);
@@ -682,7 +577,6 @@ TEST(EngineIntegrationTest, PartialRowAutoFillsNulls) {
   writer.set(topic_id, 0, 1.0F);
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
 
-  // Row 2: set all 3 columns (no nulls)
   ASSERT_TRUE(writer.beginRow(topic_id, 2000).has_value());
   writer.set(topic_id, 0, 2.0F);
   writer.set(topic_id, 1, 3.0F);
@@ -693,7 +587,6 @@ TEST(EngineIntegrationTest, PartialRowAutoFillsNulls) {
   ASSERT_FALSE(flushed.empty());
   engine.commitChunks(std::move(flushed));
 
-  // Read back and verify
   DataReader reader = engine.createReader();
   auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = topic_id, .t_min = 0, .t_max = 3000});
   ASSERT_TRUE(cursor_or.has_value()) << cursor_or.error();
@@ -720,13 +613,7 @@ TEST(EngineIntegrationTest, PartialRowAutoFillsNulls) {
   EXPECT_EQ(count, 2U);
 }
 
-// ===========================================================================
-// Test 9: Retention works with negative timestamps
-//
-// Before fix: enforce_retention checked `t_max > 0` to skip empty topics,
-// which also skipped topics with legitimate non-positive timestamps.
-// ===========================================================================
-
+// enforceRetention applies to topics with non-positive timestamps: only empty topics are skipped.
 TEST(EngineIntegrationTest, RetentionWorksWithNegativeTimestamps) {
   DataEngine engine;
 
@@ -739,10 +626,7 @@ TEST(EngineIntegrationTest, RetentionWorksWithNegativeTimestamps) {
   ASSERT_TRUE(handle_or.has_value()) << handle_or.error();
   ScalarSeriesHandle handle = *handle_or;
 
-  // Write data with negative timestamps: -1000, -900, ..., -100, 0
-  // Use small chunk size topic instead of scalar API to control chunk size
-  // Actually, scalar API uses default chunk size 1024, which means all 11
-  // values fit in one chunk. That's fine for testing retention logic.
+  // Negative timestamps -1000, -900, ..., -100, 0 through the scalar API: all 11 values fit in one default-size chunk.
   for (int i = -1000; i <= 0; i += 100) {
     writer.appendScalar(handle, static_cast<Timestamp>(i), static_cast<double>(i));
   }
@@ -756,12 +640,10 @@ TEST(EngineIntegrationTest, RetentionWorksWithNegativeTimestamps) {
   EXPECT_FALSE(storage->empty());
   EXPECT_EQ(storage->timeMax(), 0);
 
-  // Enforce retention with window 500: evictBefore(0 - 500 = -500). The single
-  // chunk spans [-1000, 0], so t_max=0 >= -500 → it is not whole-chunk evicted;
-  // it straddles the cutoff. Retention still applies LOGICALLY via the floor:
-  // rows older than -500 become invisible. (Regression guard: the signed
-  // negative cutoff must work — the "no floor" sentinel is Timestamp::min, not 0,
-  // so an un-evicted topic with negative stamps would otherwise clamp to 0.)
+  // Retention window 500: evictBefore(0 - 500 = -500). The single chunk spans [-1000, 0], so t_max=0 >= -500 and it
+  // is not whole-chunk evicted; it straddles the cutoff. Retention still applies logically via the floor: rows older
+  // than -500 become invisible. The "no floor" sentinel is Timestamp::min, not 0, so a negative cutoff works and an
+  // un-evicted topic with negative stamps is not clamped to 0.
   engine.enforceRetention(500);
 
   // The straddling chunk is physically retained, but the floor is the cutoff.
@@ -779,14 +661,8 @@ TEST(EngineIntegrationTest, RetentionWorksWithNegativeTimestamps) {
   EXPECT_EQ(count, 6U);
 }
 
-// ===========================================================================
-// Retention floor hides a straddling chunk's sub-floor rows from EVERY read
-// path. This is the datastore-level reproduction of the streaming derived/
-// filter overshoot: one big chunk spans the whole tail, retention cuts inside
-// it, the chunk stays physically retained, but no client read may see its
-// pre-cutoff rows.
-// ===========================================================================
-
+// Retention floor hides a straddling chunk's sub-floor rows from every read path: one big chunk spans the whole tail,
+// retention cuts inside it, the chunk stays physically retained, but no client read may see its pre-cutoff rows.
 TEST(EngineIntegrationTest, RetentionFloorHidesStraddlingRowsFromAllReads) {
   DataEngine engine;
   auto dataset_id_or = engine.createDataset(DatasetDescriptor{.source_name = "test", .time_domain_id = 0});
@@ -863,30 +739,19 @@ TEST(EngineIntegrationTest, RetentionFloorHidesStraddlingRowsFromAllReads) {
   EXPECT_EQ(above->value().timestamp, 350);
 }
 
-// ===========================================================================
-// Test 10: range_query / latest_at return NotFound for non-existent topics
-//
-// Before fix: these returned empty results indistinguishable from
-// "topic exists but has no data."
-// ===========================================================================
-
+// rangeQuery / latestAt return NotFound for a non-existent topic, distinguishable from an existing topic with no
+// data.
 TEST(EngineIntegrationTest, QueryReturnsErrorForMissingTopic) {
   DataEngine engine;
 
   DataReader reader = engine.createReader();
 
-  // range_query with non-existent topic
   auto cursor_or = reader.rangeQuery(QueryRange{.topic_id = 999, .t_min = 0, .t_max = 1000});
   EXPECT_FALSE(cursor_or.has_value());
 
-  // latest_at with non-existent topic
   auto latest_or = reader.latestAt(QueryPoint{.topic_id = 999, .t = 500});
   EXPECT_FALSE(latest_or.has_value());
 }
-
-// ===========================================================================
-// Test 11: begin_row accepts out-of-order timestamps (lossless ingest)
-// ===========================================================================
 
 TEST(EngineIntegrationTest, BeginRowAcceptsOutOfOrderTimestamp) {
   DataEngine engine;
@@ -900,7 +765,6 @@ TEST(EngineIntegrationTest, BeginRowAcceptsOutOfOrderTimestamp) {
   ASSERT_TRUE(handle_or.has_value()) << handle_or.error();
   TopicId topic_id = handle_or->topic_id;
 
-  // First row at t=200 succeeds
   ASSERT_TRUE(writer.beginRow(topic_id, 200).has_value());
   writer.set(topic_id, 0, 1.0);
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
@@ -921,10 +785,6 @@ TEST(EngineIntegrationTest, BeginRowAcceptsOutOfOrderTimestamp) {
   EXPECT_EQ(timestamps, (std::vector<Timestamp>{100, 200}));
 }
 
-// ===========================================================================
-// Test 12: Equal timestamps are allowed (non-decreasing)
-// ===========================================================================
-
 TEST(EngineIntegrationTest, EqualTimestampsAllowed) {
   DataEngine engine;
 
@@ -937,7 +797,6 @@ TEST(EngineIntegrationTest, EqualTimestampsAllowed) {
   ASSERT_TRUE(handle_or.has_value()) << handle_or.error();
   TopicId topic_id = handle_or->topic_id;
 
-  // Two rows at t=100 should both succeed
   ASSERT_TRUE(writer.beginRow(topic_id, 100).has_value());
   writer.set(topic_id, 0, 1.0);
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
@@ -946,7 +805,6 @@ TEST(EngineIntegrationTest, EqualTimestampsAllowed) {
   writer.set(topic_id, 0, 2.0);
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
 
-  // Third row at higher timestamp also succeeds
   ASSERT_TRUE(writer.beginRow(topic_id, 200).has_value());
   writer.set(topic_id, 0, 3.0);
   ASSERT_TRUE(writer.finishRow(topic_id).has_value());
@@ -962,10 +820,6 @@ TEST(EngineIntegrationTest, EqualTimestampsAllowed) {
   EXPECT_EQ(count, 3U);
 }
 
-// ===========================================================================
-// Test 13: Bulk append_columns spanning multiple chunks
-// ===========================================================================
-
 TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   DataEngine engine;
 
@@ -973,7 +827,6 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   ASSERT_TRUE(dataset_id_or.has_value()) << dataset_id_or.error();
   DatasetId dataset_id = *dataset_id_or;
 
-  // Create a 3-column schema: float32 x, y, z
   auto x = makePrimitive("x", PrimitiveType::kFloat32);
   auto y = makePrimitive("y", PrimitiveType::kFloat32);
   auto z = makePrimitive("z", PrimitiveType::kFloat32);
@@ -991,7 +844,6 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   ASSERT_TRUE(topic_id_or.has_value()) << topic_id_or.error();
   TopicId topic_id = *topic_id_or;
 
-  // Prepare 1000 rows of bulk data
   constexpr std::size_t kN = 1000;
   std::vector<Timestamp> timestamps(kN);
   std::vector<float> x_vals(kN), y_vals(kN), z_vals(kN);
@@ -1019,7 +871,6 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   ASSERT_NE(storage, nullptr);
   EXPECT_GE(storage->sealedChunks().size(), 3U);
 
-  // Verify round-trip via range_query
   DataReader reader = engine.createReader();
   std::size_t count = 0;
   auto cursor_or =
@@ -1031,7 +882,6 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   });
   EXPECT_EQ(count, kN);
 
-  // Spot-check specific values via latest_at
   auto latest_or = reader.latestAt(QueryPoint{.topic_id = topic_id, .t = 500 * 1000});
   ASSERT_TRUE(latest_or.has_value()) << latest_or.error();
   ASSERT_TRUE(latest_or->has_value());
@@ -1039,10 +889,6 @@ TEST(EngineIntegrationTest, BulkAppendColumnsMultiChunk) {
   EXPECT_FLOAT_EQ(static_cast<float>((*latest_or)->values[0]), 500.0F * 0.1F);
   EXPECT_FLOAT_EQ(static_cast<float>((*latest_or)->values[1]), 500.0F * 0.2F);
 }
-
-// ===========================================================================
-// Test 14: Bulk append error handling
-// ===========================================================================
 
 TEST(EngineIntegrationTest, BulkAppendErrorHandling) {
   DataEngine engine;
@@ -1083,10 +929,6 @@ TEST(EngineIntegrationTest, BulkAppendErrorHandling) {
   }
 }
 
-// ===========================================================================
-// Test 15: Bulk append empty is a no-op
-// ===========================================================================
-
 TEST(EngineIntegrationTest, BulkAppendEmpty) {
   DataEngine engine;
 
@@ -1110,14 +952,12 @@ TEST(EngineIntegrationTest, BulkAppendEmpty) {
   EXPECT_TRUE(flushed.empty());
 }
 
-// =========================================================================
-// Cross-engine flush (flushTo) — zero-copy chunk transfer
-// =========================================================================
+// flushTo: zero-copy chunk transfer between engines
 
 namespace {
 
-// Builds two engines with the same topic registered (lockstep pattern used by
-// pj4's StreamingSourceManager dual-buffer) and writes `row_count` rows to src.
+// Builds two engines with the same topic registered (the lockstep pattern of StreamingSourceManager's dual buffer)
+// and writes `row_count` rows to src.
 struct FlushFixture {
   DataEngine src;
   DataEngine dst;
@@ -1170,7 +1010,6 @@ TEST(DataEngineFlushTest, MovesAllChunksFromSrcToDst) {
   EXPECT_EQ(src_storage->sealedChunks().size(), 0U);
   EXPECT_EQ(dst_storage->sealedChunks().size(), pre_src_chunks);
 
-  // The destination can read the data via the standard reader interface.
   DataReader reader = f.dst.createReader();
   std::size_t count = 0;
   auto cursor = reader.rangeQuery(
@@ -1277,11 +1116,8 @@ TEST(DataEngineFlushTest, PreservesTopicRegistrationOnSrc) {
   EXPECT_FALSE(src_storage->empty());
 }
 
-// ===========================================================================
-// replaceDatasetFrom: in-place data replace that keeps DatasetId/TopicId stable
-// (the engine half of reload). Match-by-name; staged chunks adopt the primary
-// topic id; added/retired topics handled.
-// ===========================================================================
+// replaceDatasetFrom: in-place data replace that keeps DatasetId/TopicId stable (the engine half of reload). Matches
+// topics by name; staged chunks adopt the primary topic id; added and retired topics are handled.
 
 TopicId replaceWriteScalar(DataEngine& engine, DatasetId ds, const std::string& name, double base, int count) {
   DataWriter writer = engine.createWriter();
@@ -1405,11 +1241,8 @@ TEST(EngineReplaceTest, IdStabilityReaderSeesNewData) {
   EXPECT_DOUBLE_EQ(firstValue(primary, a), 50.0);
 }
 
-// ===========================================================================
-// Explicit id creation: streaming mirrors a primary-only engine/store into a
-// secondary one. The primary can drift first when ordinary file loads create
-// time domains, datasets, or topics that never exist in the secondary.
-// ===========================================================================
+// Explicit id creation: streaming mirrors a primary-only engine/store into a secondary one. The primary can drift
+// first when ordinary file loads create time domains, datasets, or topics that never exist in the secondary.
 
 TEST(DataEngineExplicitIdTest, TimeDomainCanMirrorPrimaryIdAfterCounterDrift) {
   DataEngine primary;
@@ -1565,7 +1398,7 @@ void writeRow(DataEngine& engine, TopicId topic, Timestamp t, const std::vector<
 
 }  // namespace
 
-// A column group topic (an on-demand series, ARCHITECTURE §15): one float64 column per name, each readable as a series;
+// A column group topic (an on-demand series): one float64 column per name, each readable as a series;
 // a second topic of the same columns reuses the registered schema.
 TEST(EngineIntegrationTest, ColumnGroupTopicHasOneSeriesPerColumn) {
   DataEngine engine;
@@ -1856,15 +1689,9 @@ TEST(EngineIntegrationTest, LatestStringAtIsNullAware) {
   EXPECT_FALSE(s_on_numeric->has_value());
 }
 
-// ===========================================================================
-// TopicMetadata aggregate coherence
-//
-// metadata() serves from a cached aggregate: merged incrementally on append,
-// rebuilt lazily after destructive mutations (evict/clear/friend moves). The
-// oracle: a detach+reattach roundtrip forces a from-scratch rebuild, so its
-// result must equal the incrementally-built one bit for bit — any divergence
-// between the two maintenance paths fails here.
-// ===========================================================================
+// TopicMetadata aggregate coherence: metadata() serves from a cached aggregate, merged incrementally on append and
+// rebuilt lazily after destructive mutations (evict/clear/friend moves). Oracle: a detach+reattach roundtrip forces a
+// from-scratch rebuild, whose result must equal the incrementally built one bit for bit.
 
 TEST(EngineIntegrationTest, TopicMetadataAggregateCoherence) {
   DataEngine engine;

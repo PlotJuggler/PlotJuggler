@@ -19,13 +19,9 @@ namespace PJ {
 
 namespace {
 
-// Whole-number detection and frame-of-reference for one non-constant float
-// column. Sets `all_integral` (every non-null value passes
-// encoding::isWholeInt64) and returns the FOR encoding when, in addition, no
-// value is -0.0 (FOR would drop its sign) and the offsets are narrower than the
-// float; nullopt otherwise. The detection pass does not allocate, so rejecting a
-// fractional column costs one early-exit scan. A whole float is an exact
-// integer, so decoding reference + offset reproduces it bit for bit.
+// For a non-constant float column: sets `all_integral` when every non-null value passes encoding::isWholeInt64, and
+// returns a FOR encoding when, besides, no value is -0.0 (FOR drops its sign) and the offsets are narrower than the
+// float. A whole float is an exact integer, so decoding reproduces it bit for bit.
 template <typename Float>
 std::optional<encoding::FrameOfReferenceEncoded> encodeWholeFloats(const TypedColumnBuffer& col, bool& all_integral) {
   const uint8_t* data = col.valueBuffer().data();
@@ -67,13 +63,9 @@ std::optional<encoding::FrameOfReferenceEncoded> encodeWholeFloats(const TypedCo
       StorageKind::kInt64, values.size(), min, max);
 }
 
-// The bytes a constant-encoded column repeats: the FIRST NON-NULL row's value.
-// Row 0 can be a null slot (bulk appends, or a null sorted to the front at
-// seal), whose payload is not a value. An all-null column returns row 0. The
-// non-null values must also be bit-identical: ColumnStats::is_constant compares
-// doubles, so it accepts +0.0 next to -0.0 and distinct uint64 values above
-// 2^53 that round to the same double — nullopt then, and the column is not
-// constant-encoded.
+// The first non-null row's bytes (row 0 can be a null slot); row 0's for an all-null column. nullopt unless the
+// non-null values are bit-identical: ColumnStats::is_constant compares doubles, so it accepts +0.0 beside -0.0, and
+// distinct uint64 values above 2^53 that round to the same double.
 std::optional<Span<const uint8_t>> constantValueBytes(const TypedColumnBuffer& col, StorageKind kind) {
   const std::size_t esize = storageKindSize(kind);
   const uint8_t* data = col.valueBuffer().data();
@@ -93,8 +85,6 @@ std::optional<Span<const uint8_t>> constantValueBytes(const TypedColumnBuffer& c
   return Span<const uint8_t>(value, esize);
 }
 
-// Dispatch a callable with the correct numeric type tag.
-// Returns true if kind is numeric (kFloat32..kUint64), false for kBool/kString.
 template <typename F>
 bool dispatchNumericKind(StorageKind kind, F&& fn) {
   switch (kind) {
@@ -118,7 +108,6 @@ bool dispatchNumericKind(StorageKind kind, F&& fn) {
   }
 }
 
-// Read a raw numeric value from a buffer, dispatching on StorageKind.
 template <typename R>
 [[nodiscard]] R readRawAs(const RawBuffer& buf, StorageKind kind, std::size_t row) {
   const std::size_t elem_size = storageKindSize(kind);
@@ -142,10 +131,6 @@ overloaded(Ts...) -> overloaded<Ts...>;
 
 }  // namespace
 
-// ===========================================================================
-// TopicChunkBuilder
-// ===========================================================================
-
 TopicChunkBuilder::TopicChunkBuilder(
     TopicId topic_id, SchemaId schema_id, std::vector<ColumnDescriptor> columns, uint32_t max_rows)
     : topic_id_(topic_id), schema_id_(schema_id), max_rows_(max_rows), column_descriptors_(std::move(columns)) {
@@ -159,16 +144,11 @@ TopicChunkBuilder::TopicChunkBuilder(
 
 void TopicChunkBuilder::beginRow(Timestamp timestamp) {
   PJ_ASSERT(!row_in_progress_, "begin_row called while row already in progress");
-  // Out-of-order timestamps are accepted: multi-publisher topics interleave
-  // regressing stamps. Rows are stable-sorted at seal().
+  // Out-of-order stamps (multi-publisher topics) are accepted; seal() stable-sorts the rows.
   row_in_progress_ = true;
   current_timestamp_ = timestamp;
   last_timestamp_ = timestamp;
 }
-
-// ---------------------------------------------------------------------------
-// set<T> — templatized value setters
-// ---------------------------------------------------------------------------
 
 template <>
 void TopicChunkBuilder::set<float>(std::size_t col_index, float value) {
@@ -274,8 +254,7 @@ void TopicChunkBuilder::appendTimestamps(Span<const Timestamp> timestamps) {
   timestamps_.reserve(timestamps_.size() + count);
   timestamps_.insert(timestamps_.end(), timestamps.begin(), timestamps.end());
 
-  // The batch may be unsorted (out-of-order ingest): take true extrema, not
-  // the endpoints. Rows are stable-sorted at seal().
+  // The batch may be unsorted: true extrema, not the endpoints.
   const auto [min_it, max_it] = std::minmax_element(timestamps.begin(), timestamps.end());
   stats_.t_min = std::min(stats_.t_min, *min_it);
   stats_.t_max = std::max(stats_.t_max, *max_it);
@@ -341,9 +320,8 @@ void TopicChunkBuilder::finishBulkAppend() {
   const std::size_t expected_rows = static_cast<std::size_t>(stats_.row_count) + count;
 
   for (std::size_t col = 0; col < columns_.size(); ++col) {
-    // A batch may omit columns (an Arrow stream carrying a subset of the topic's
-    // fields): pad them with nulls, as finishRow() does for unset columns. The
-    // stats pass below counts the padded slots as nulls.
+    // A batch may omit columns (an Arrow stream with a subset of the fields): pad them with nulls, as finishRow()
+    // does.
     while (columns_[col].rowCount() < expected_rows) {
       columns_[col].appendNull();
     }
@@ -539,11 +517,9 @@ void TopicChunkBuilder::updateColumnStats(std::size_t col_index, double value) {
 // seal
 // ---------------------------------------------------------------------------
 
-// Rows arrive in commit order, which under multi-publisher recordings is not
-// timestamp order. Seal sorted chunks so per-chunk binary searches and cursor
-// merging stay valid; stable, so duplicate timestamps keep arrival order.
-// Column stats are order-invariant (min/max/null_count) and encodings are
-// derived from the buffers during seal, so only the buffers are permuted.
+// Per-chunk binary searches and cursor merges need sorted chunks; stable, so equal timestamps keep arrival order.
+// Only the buffers are permuted: min, max, null count and constancy do not depend on row order, and the encodings
+// are derived from the buffers during seal.
 void TopicChunkBuilder::sortRowsByTimestamp() {
   PJ_ASSERT(!row_in_progress_, "seal called while row in progress");
   if (std::is_sorted(timestamps_.begin(), timestamps_.end())) {
@@ -637,8 +613,7 @@ TopicChunk TopicChunkBuilder::seal() {
       }
       case StorageKind::kInt32:
       case StorageKind::kInt64: {
-        // Compute exact integer min/max from the raw column buffer to avoid
-        // precision loss from the double-based stats (BUG-1/2).
+        // Exact integer min/max from the raw buffer: the double-based stats lose precision above 2^53.
         const std::size_t row_count = col.rowCount();
         const uint8_t* buf_data = col.valueBuffer().data();
         const std::size_t esize = storageKindSize(kind);
@@ -670,8 +645,7 @@ TopicChunk TopicChunkBuilder::seal() {
           chunk.columns[i].data =
               encoding::constantEncode(Span<const uint8_t>(buf_data, col.valueBuffer().size()), kind, row_count);
         } else if (row_count > 0) {
-          // Unsigned subtraction: exact_max - exact_min overflows int64 for spans
-          // like [INT64_MIN, 0].
+          // Unsigned: exact_max - exact_min overflows int64 for spans like [INT64_MIN, 0].
           const uint64_t range = static_cast<uint64_t>(exact_max) - static_cast<uint64_t>(exact_min);
           const uint8_t ob = encoding::offsetBytesFor(range);
 
@@ -704,10 +678,8 @@ TopicChunk TopicChunkBuilder::seal() {
             break;
           }
         }
-        // Float chunks holding only whole numbers (e.g. JSON integers parsed as
-        // double) are flagged all_integral and, when that narrows them, stored
-        // frame-of-reference like an integer column. The declared type is
-        // unchanged and reads decode back to the same floats.
+        // Whole-number floats (JSON integers parsed as double) are flagged all_integral and stored frame-of-reference
+        // when that is narrower; the declared type stays and reads decode the same floats.
         if (is_float) {
           bool all_integral = false;
           auto encoded = kind == StorageKind::kFloat64 ? encodeWholeFloats<double>(col, all_integral)
@@ -736,10 +708,6 @@ TopicChunk TopicChunkBuilder::seal() {
 
   return chunk;
 }
-
-// ===========================================================================
-// TopicChunk decode helpers
-// ===========================================================================
 
 EncodingType TopicChunk::columnEncoding(std::size_t index) const {
   return std::visit(
@@ -860,8 +828,7 @@ void TopicChunk::readColumnAsDoubles(std::size_t col_index, Span<double> out, st
       },
       col.data);
 
-  // Replace values at null positions with NaN so consumers don't confuse
-  // null (no data) with actual zero values.
+  // Nulls read as NaN, not as the zero their slot holds.
   if (col.validity_bitmap.has_value()) {
     const auto& bm = *col.validity_bitmap;
     for (std::size_t i = 0; i < count; ++i) {

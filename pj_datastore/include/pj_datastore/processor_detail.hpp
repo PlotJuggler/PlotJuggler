@@ -12,8 +12,8 @@
 
 namespace PJ::proc::detail {
 
-/// A passthrough or magnitude preserves the input column type; with no declared
-/// input kind (a topic registered before any data), fall back to kFloat64.
+/// Output kind of a processor that preserves its input kind; kFloat64 when no input kind is declared (a topic
+/// registered before any data).
 inline std::vector<PJ::StorageKind> mirrorInputKind(PJ::Span<const PJ::StorageKind> in) {
   if (in.empty()) {
     return {PJ::StorageKind::kFloat64};
@@ -21,9 +21,7 @@ inline std::vector<PJ::StorageKind> mirrorInputKind(PJ::Span<const PJ::StorageKi
   return {in[0]};
 }
 
-/// Coerce a VarValue's numeric arm to double for filter math (double/int64/uint64
-/// widen; string is not numeric → 0.0). The shared input-reading path so every
-/// builtin treats its channel value identically.
+/// int64 and uint64 widen to double; a string is 0.0.
 inline double toDouble(const PJ::VarValue& v) {
   return std::visit(
       [](auto&& arg) -> double {

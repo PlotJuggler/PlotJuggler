@@ -9,17 +9,9 @@
 
 namespace PJ::proc {
 
-/// Adapts a host-internal `DataProcessor` to the engine's `ISISOTransform`, so a
-/// processor can be installed as a `IncrementalEngine` node
-/// (`IncrementalEngine::addSisoTransform`) and run EAGERLY at commit time. Bridges
-/// the two per-sample forms: the engine's `(Timestamp, VarValue)` out-param style
-/// and the processor's `Sample` value style.
-///
-/// Holds a `shared_ptr` to the processor so the host (the forthcoming
-/// `DataProcessorService` / `ProcessorRuntime`) can keep its own handle — for
-/// preview, reconfigure, or teardown — while the engine owns this adapter. The
-/// processor lives as long as either side holds a reference; dropping the node
-/// (`removeNode`) and the host handle frees it.
+/// Adapts a `DataProcessor` to the engine's `ISISOTransform`, so it can be installed as an `IncrementalEngine` node
+/// (`addSisoTransform`) and run at commit time. The processor is shared: the host keeps its own handle (for preview and
+/// reconfiguration) while the engine owns the adapter, and it lives until both are dropped.
 class ProcessorSisoAdapter : public PJ::ISISOTransform {
  public:
   explicit ProcessorSisoAdapter(std::shared_ptr<DataProcessor> processor);
@@ -28,8 +20,7 @@ class ProcessorSisoAdapter : public PJ::ISISOTransform {
   [[nodiscard]] PJ::StorageKind outputKind(PJ::StorageKind input_kind) const override;
   bool calculate(
       PJ::Timestamp time, const PJ::VarValue& input, PJ::Timestamp& out_time, PJ::VarValue& out_value) override;
-  // Forward the processor's sticky failure so the engine can distinguish a failed
-  // sample from a legitimately-suppressed row (the core of the silent-failure fix).
+  // Forwards the processor's sticky failure, so the engine tells a failed sample from a suppressed row.
   [[nodiscard]] bool failed() const override {
     return processor_->failed();
   }

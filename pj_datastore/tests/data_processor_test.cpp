@@ -12,9 +12,7 @@
 namespace PJ::proc {
 namespace {
 
-// Minimal stand-in to exercise the DataProcessor base batch helpers. The C++
-// builtins that used to serve as the concrete subclass were retired in M9; the
-// filters' behavior now lives in pj_scripting's Luau golden tests.
+// Minimal stand-in to exercise the DataProcessor base batch helpers.
 struct PassThrough : DataProcessor {
   [[nodiscard]] const char* id() const override {
     return "passthrough";
@@ -48,7 +46,7 @@ TEST(DataProcessorTest, ApplyBatchRunsEverySample) {
 TEST(DataProcessorTest, AppendTailAppendsToExistingOutput) {
   PassThrough proc;
   std::vector<Sample> out;
-  out.push_back(Sample::scalar(0, PJ::VarValue{99.0}));  // pre-existing content is preserved
+  out.push_back(Sample::scalar(0, PJ::VarValue{99.0}));
   std::vector<Sample> tail;
   tail.push_back(Sample::scalar(1, PJ::VarValue{1.0}));
   proc.appendTail(tail, out);

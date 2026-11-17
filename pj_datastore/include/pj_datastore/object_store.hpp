@@ -2,9 +2,6 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// ObjectStore: timestamped opaque byte payloads stored beside the columnar
-// DataEngine, selectable by time. See docs/OBJECT_STORE_DESIGN.md.
-
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -43,91 +40,69 @@ struct ObjectTopicId {
   }
 };
 
-/// Identity for an object topic: dataset scope + name (unique per dataset) plus
-/// opaque metadata_json retained verbatim for callers that interpret bytes. The one
-/// exception: a direct write to a 0.35 marker name is stamped on registration
-/// (`stampLegacyMarkerMetadata`).
+/// `topic_name` is unique within its dataset. The store keeps `metadata_json` verbatim and never reads it, except
+/// that registering a legacy `__markers__/<key>` name stamps marker metadata (`stampLegacyMarkerMetadata`).
 struct ObjectTopicDescriptor {
   DatasetId dataset_id = 0;
   std::string topic_name;
   std::string metadata_json;
 };
 
-/// One topic's share of an atomic bundle publication (`ObjectStore::pushOwnedBundle`).
+/// One topic's part of ObjectStore::pushOwnedBundle().
 struct OwnedObjectWrite {
   ObjectTopicId topic;
   Timestamp timestamp = 0;
   std::vector<uint8_t> payload;
-  /// Selects the topic's existing entries to remove before the append (the window trim).
-  /// Runs under the store lock: it must not call the ObjectStore (evict before or after
-  /// a bundle, never inside it). An exception rejects the bundle.
+  /// Selects existing entries to remove before the append. Runs under the store lock, so calling the ObjectStore
+  /// from it deadlocks; an exception rejects the bundle.
   EntryPredicate drop;
-  /// False only prunes: `drop` runs, nothing is appended, and the surviving entries keep
-  /// their UIDs.
+  /// False only prunes: `drop` runs, nothing is appended, and the surviving entries keep their UIDs.
   bool append = true;
 };
 
-/// Outcome of ObjectStore::replaceDatasetFrom() — the object-side parallel of
-/// DatasetReplaceResult. The remapped pairs let the caller re-register object
-/// parsers under the stable primary ObjectTopicId after the swap.
+/// Outcome of ObjectStore::replaceDatasetFrom().
 struct ObjectDatasetReplaceResult {
-  /// (staged ObjectTopicId, primary ObjectTopicId) for every adopted topic
-  /// (both matched and newly added), so a parser keyed by the staged id can be
-  /// re-registered under the primary id. A newly added topic is simply one whose
-  /// primary id did not exist before — callers needing only the remap use this.
+  /// (staged id, primary id) for every adopted topic, matched or new: re-register a parser keyed by the staged id
+  /// under the primary id.
   std::vector<std::pair<ObjectTopicId, ObjectTopicId>> remapped;
-  /// Primary object topics removed (no staged match).
+  /// Primary topics with no staged match, removed.
   std::vector<ObjectTopicId> removed_topics;
 };
 
-/// Outcome of ObjectStore::mergeDatasets() — the object-side parallel of
-/// DatasetMergeReport. Object merge is mechanical: no canonical-type validation.
+/// Outcome of ObjectStore::mergeDatasets().
 struct ObjectDatasetMergeReport {
   /// (source ObjectTopicId, anchor ObjectTopicId) for every shared-name fold.
   std::vector<std::pair<ObjectTopicId, ObjectTopicId>> remapped;
-  /// Source-only topics reparented under the anchor dataset (kept their ObjectTopicId).
+  /// Source-only topics reparented under the anchor dataset (they keep their ObjectTopicId).
   std::vector<ObjectTopicId> added_topics;
-  /// Source datasets whose object topics were emptied. Datasets stay registered.
+  /// Source datasets whose object topics were emptied; the datasets stay registered.
   std::vector<DatasetId> consumed_datasets;
 };
-
-// SharedBuffer / LazyCallback / ObjectEntry live in ordered_entries.hpp (the
-// OrderedEntries value type owns the entry deque), included above.
 
 struct ResolvedObjectEntry {
   Timestamp timestamp = 0;
   SequentialUID sequential_uid;
-  // Carried through from ObjectEntry — see its doc-comment. A consumer that reads
-  // timestamps embedded in `payload` adds this to reconcile a time-shifted merge.
+  /// Add to timestamps embedded in `payload` to put them on the store clock after a time-shifted merge (see
+  /// ObjectEntry).
   Timestamp payload_stamp_shift = 0;
-  // Non-owning Span over the bytes plus an opaque anchor (any shared_ptr<T>).
-  // Consumers read `payload.bytes`; retain `payload.anchor` to keep the bytes
-  // alive past the resolve call. resolveEntry never casts the anchor.
+  /// `bytes` stay valid while `anchor` is held, whatever the store does afterwards.
   sdk::PayloadView payload;
-  // True when this entry's lazy fetch FAILED (payload left empty): the source
-  // could not re-produce the bytes (file truncated, replaced, or corrupt).
-  // Distinct from a legitimately empty payload. Cursor-style consumers use this
-  // to count and report data loss instead of silently skipping the entry; the
-  // loss is permanent (re-reading a corrupt region cannot succeed), so cursors
-  // still advance past the entry.
+  /// The lazy fetch failed (source truncated, replaced or corrupt) and `payload` is empty; not the same as an empty
+  /// payload. The loss is permanent, so cursors count it and move past the entry.
   bool fetch_failed = false;
 };
 
+/// Per-topic retention, applied after every insert. Each limit is off at 0.
 struct RetentionBudget {
   int64_t time_window_ns = 0;
   size_t max_memory_bytes = 0;
-  // Keep at most this many of the most recent entries (0 = unlimited). Lets a
-  // producer that republishes one snapshot per topic (e.g. plot markers, pushed
-  // at a sentinel timestamp) cap accumulation at 1 instead of growing per push.
+  /// Keep at most this many newest entries.
   size_t max_entries = 0;
 };
 
-/// Read view over a topic's entry timestamps that holds the series read lock for
-/// its lifetime; keep it short-lived to avoid blocking writers. Never call into the
-/// ObjectStore while holding one: every store method takes the store lock first and
-/// the series lock second, so a view held across a store call inverts that order and
-/// can deadlock against a writer. Take several views together with the overload of
-/// entryTimestamps that accepts a list of topics.
+/// Holds the series read lock while alive: keep it short, writers wait. Calling the ObjectStore while holding one
+/// can deadlock (store methods lock the store, then the series; the view inverts that order). For several topics,
+/// use the list overload of ObjectStore::entryTimestamps().
 class EntryTimestampsView {
  public:
   EntryTimestampsView() = default;
@@ -155,12 +130,9 @@ class EntryTimestampsView {
   const std::vector<Timestamp>* timestamps_ = nullptr;
 };
 
-/// Timestamped opaque-blob store living alongside DataEngine: payloads selected
-/// by time but never expanded into scalar columns (images, point clouds,
-/// annotations). Owned (`pushOwned`) or lazy (`pushLazy`) entries, per-topic
-/// retention, at-or-before lookup. Thread-safe: one shared_mutex per series +
-/// one global lock for registration. Does NOT decode payloads or own renderer/
-/// UI policy. See docs/OBJECT_STORE_DESIGN.md.
+/// Timestamped opaque payloads (images, point clouds, annotations) selected by time and never expanded into columns.
+/// Thread-safe: a store-wide shared mutex, then one per topic. Locking and lifetime rules: docs/ARCHITECTURE.md,
+/// "ObjectStore".
 class ObjectStore {
  public:
   ObjectStore() = default;
@@ -173,50 +145,35 @@ class ObjectStore {
 
   // --- Registration ---
 
-  // Set `requested_id` non-zero to register with that exact id; otherwise the
-  // next id is auto-assigned.
+  /// A non-zero `requested_id` forces that id (keeps two stores' ids in lockstep); otherwise it is auto-assigned.
   Expected<ObjectTopicId> registerTopic(ObjectTopicDescriptor descriptor, ObjectTopicId requested_id = {});
 
-  /// Atomic find-or-register for the refill contract: an existing topic with
-  /// the same (dataset, name) AND byte-identical metadata_json is reused (its
-  /// id — and every curve bound to it — survives a replace-refill); a
-  /// same-name topic with DIFFERENT metadata is rejected loudly, preserving
-  /// the collision alarm registerTopic gives. One lock: two racing callers
-  /// converge on one topic instead of the loser erroring.
+  /// Reuses an existing (dataset, name) topic whose metadata_json is byte-identical, so its id and the curves bound
+  /// to it survive a refill; different metadata is an error, as in registerTopic(). Atomic: racing callers get the
+  /// same topic.
   Expected<ObjectTopicId> findOrRegisterTopic(ObjectTopicDescriptor descriptor);
 
-  // Resolve a topic id by (dataset_id, topic_name) without registering. Returns
-  // nullopt if no topic with that key exists. Used by hosts that need to bind a
-  // parser-side write surface to a topic the source already registered.
   std::optional<ObjectTopicId> findTopic(DatasetId dataset_id, std::string_view topic_name) const;
-  // Whether `id` is still the topic `topic_name` of `dataset_id`: an O(1) check, by the id index, of an id a caller
-  // remembered from findTopic. A removed topic, a merge's reparenting, and an id clear() reissued to another
-  // topic fail it, since the dataset and the name must match too.
+  /// O(1) check that a remembered id still names this (dataset, topic): false after removal, a merge's reparenting,
+  /// or clear() reissuing the id.
   [[nodiscard]] bool isTopic(ObjectTopicId id, DatasetId dataset_id, std::string_view topic_name) const;
 
-  // Returns a COPY (not a reference): the descriptor lives in lock-protected
-  // series storage that removeTopic/clear/replaceDatasetFrom can destroy, so a
-  // reference would dangle once the caller drops the (internal) lock.
+  /// By value: a reference would dangle once removeTopic/clear/replaceDatasetFrom destroys the series.
   ObjectTopicDescriptor descriptor(ObjectTopicId id) const;
 
   std::vector<ObjectTopicId> listTopics() const;
   std::vector<ObjectTopicId> listTopics(DatasetId dataset_id) const;
-  /// Calls `visit` for each topic of `dataset_id`, in registration order, under the
-  /// store's shared lock and on the descriptor in place (no copies), so `visit` must
-  /// be cheap and must not call back into this store. For callers that scan a
-  /// dataset's descriptors on every paint.
+  /// Visits the topics of `dataset_id` in registration order under the store's shared lock: `visit` must be cheap
+  /// and must not call the store (deadlock).
   void forEachTopic(
       DatasetId dataset_id, const std::function<void(ObjectTopicId, const ObjectTopicDescriptor&)>& visit) const;
-  /// What one topic physically retains now: count and [first, last] store timestamp,
-  /// read together under its series lock (0/0 when empty).
+  /// Entry count and [first, last] timestamp, read under one series lock (zeros when empty).
   struct RetainedRange {
     size_t entry_count = 0;
     Timestamp first = 0;
     Timestamp last = 0;
   };
-  /// Calls `visit` for every topic of every dataset, in registration order, with what it
-  /// retains. Same rules as forEachTopic(dataset_id, visit): the store's shared lock is
-  /// held throughout, so `visit` must be cheap and must not call back into this store.
+  /// forEachTopic() over every dataset, with each topic's RetainedRange; same locking rules.
   void forEachTopicRetained(
       const std::function<void(ObjectTopicId, const ObjectTopicDescriptor&, const RetainedRange&)>& visit) const;
 
@@ -224,34 +181,23 @@ class ObjectStore {
 
   Status pushOwned(ObjectTopicId id, Timestamp timestamp, std::vector<uint8_t> payload);
 
-  /// Publishes one entry to each of several distinct topics as one transaction, in two
-  /// phases under the exclusive store lock. The first checks every write and runs every
-  /// `drop`: an unknown or repeated topic, or an exception from a `drop` or from an
-  /// allocation, returns an error with every entry and byte count as it was. The second
-  /// changes the topics in place, each topic applied whole or not at all; an allocation
-  /// failure there throws, as in `pushOwned`, and can leave the bundle applied to some
-  /// of its topics. Every append goes through the topic's retention budget as
-  /// `pushOwned` would. Returns the UID of the entry each write created, in write order
-  /// (invalid for a write that only prunes).
+  /// Publishes one entry to each of several distinct topics as one transaction, under the exclusive store lock.
+  /// Phase one validates every write and runs every `drop`: an unknown or repeated topic, or an exception from a
+  /// `drop` or an allocation, returns an error with nothing changed. Phase two applies each topic whole; an
+  /// allocation failure there throws (as in pushOwned) and can leave some topics applied. Appends go through each
+  /// topic's retention budget. Returns the UID each write created, in write order (invalid for a prune-only write).
   ///
-  /// One read call never sees half a bundle, but separate calls may span two
-  /// publications: a reader of several topics sees them at different moments.
+  /// One read call never sees half a bundle; separate calls on several topics may straddle two publications.
   [[nodiscard]] Expected<std::vector<SequentialUID>> pushOwnedBundle(std::vector<OwnedObjectWrite> writes);
 
-  // Fetcher runs on every read; the store retains the anchor via PayloadView
-  // and never copies. The closure can return a view over bytes the producer
-  // already owns (chunk cache, mmap, hand-off between stores).
-  // `resident_bytes`: what the closure itself pins (a captured payload), charged
-  // to the series' memory budget; 0 when it re-reads its bytes on demand.
+  /// `fetch` runs on every read except latestAt()'s warm-cache hits; its view is returned uncopied.
+  /// `resident_bytes`: what the closure itself pins, charged to the topic's memory budget (0 when it re-reads on
+  /// demand).
   Status pushLazy(ObjectTopicId id, Timestamp timestamp, LazyCallback fetch, size_t resident_bytes = 0);
 
-  // pushLazy plus an ingest-time seed: `seed` (bytes the pushing host already
-  // holds — the producer's synchronous "hot path") is admitted to the store's
-  // ResidentPayloadPool so reads serve it with NO fetch until the pool's byte
-  // budget evicts it; after that the entry behaves exactly like pushLazy(fetch).
-  // Degrades to plain pushLazy when no pool is configured, the seed is empty,
-  // or the pool rejects it (zero capacity / larger than the whole budget).
-  // `fetch` must re-produce bytes identical to `seed`.
+  /// pushLazy() plus `seed`, bytes the host already holds: reads serve them without a fetch until the
+  /// ResidentPayloadPool evicts them, then the entry behaves as pushLazy(). Plain pushLazy() when there is no pool,
+  /// the seed is empty or the pool rejects it. `fetch` must reproduce `seed` byte for byte.
   Status pushLazyWithSeed(ObjectTopicId id, Timestamp timestamp, sdk::PayloadView seed, LazyCallback fetch);
 
   // --- Read ---
@@ -259,74 +205,40 @@ class ObjectStore {
   std::optional<ResolvedObjectEntry> latestAt(ObjectTopicId id, Timestamp timestamp) const;
 
   std::optional<ResolvedObjectEntry> at(ObjectTopicId id, size_t index) const;
-  // Resolve by stable SequentialUID. Returns nullopt when the entry was evicted
-  // or the UID is invalid / from another topic generation.
+  /// nullopt once evicted, or for a UID of another topic or generation.
   std::optional<ResolvedObjectEntry> at(ObjectTopicId id, SequentialUID sequential_uid) const;
 
   std::optional<size_t> indexAt(ObjectTopicId id, Timestamp timestamp) const;
-  /// The timestamp-order position of the entry `uid`, which equal stamps do not alias; nullopt when it is gone or the
-  /// topic is unknown. Decode-free.
+  /// Timestamp-order position of `uid`, unambiguous under equal stamps. Decode-free.
   [[nodiscard]] std::optional<size_t> indexOf(ObjectTopicId id, SequentialUID uid) const;
-  /// The topic's entry revisions (`OrderedEntries::ContentIdentity`); zero for an unknown topic. Decode-free.
+  /// See OrderedEntries::ContentIdentity; zero for an unknown topic. Decode-free.
   [[nodiscard]] OrderedEntries::ContentIdentity contentIdentity(ObjectTopicId id) const;
-  // First retained entry UID for this topic, or invalid when the topic is empty
-  // or unknown. Useful for detecting retention gaps in replay cursors.
+  /// Smallest retained UID (not necessarily the front entry's): a cursor below it missed evicted or replaced
+  /// entries. Invalid when the topic is empty or unknown.
   SequentialUID firstSequentialUID(ObjectTopicId id) const;
-  // Streaming-ingest cursor: returns every entry with sequential_uid > `cursor`, in
-  // ASCENDING UID (arrival) order with each payload resolved, then advances `cursor`
-  // to the last one seen. This is the only arrival-order read primitive — for a
-  // consumer that must ingest each new entry exactly once into an order-independent
-  // sink (e.g. the TF buffer), catching late/out-of-order arrivals a time window
-  // would miss. Eviction-safe: the batch is snapshotted under ONE brief pass of the
-  // locks, so retention cannot drop an entry out from under the walk; the payloads
-  // are then resolved with NO lock held, so a slow lazy fetch stalls neither this
-  // series' writers nor readers of unrelated topics.
-  // For "state at time t" use rangeByTime()/latestAt() — never a UID as a time bound.
+  /// Every entry with UID > `cursor`, in arrival order with payloads resolved; advances `cursor`. The only
+  /// arrival-order read: for sinks that must see each entry once, late arrivals included (the TF buffer). Snapshots
+  /// under one brief lock pass and resolves with no lock held. For the state at a time use rangeByTime() or
+  /// latestAt(); a UID is not a time bound.
   std::vector<ResolvedObjectEntry> drainNewSince(ObjectTopicId id, SequentialUID& cursor) const;
 
-  // The largest sequential_uid among entries with timestamp <= t, or the invalid
-  // UID when none exists. Unlike `latestAt(t)->sequential_uid` — the newest-
-  // TIMESTAMP entry, whose UID an out-of-order insert (old ts, newest UID) can
-  // leave below a retained entry's — this is the true high-water arrival UID of
-  // everything at-or-before t. A time-window replay cursor advances to it so a
-  // late out-of-order entry is not re-detected every step. O(count with ts <= t).
+  /// Largest UID among entries with timestamp <= t (invalid if none). Differs from latestAt(t)'s UID after an
+  /// out-of-order insert; a time-window cursor advances to this one, or it re-detects a late entry every step.
+  /// O(entries with timestamp <= t).
   SequentialUID maxUidAtOrBefore(ObjectTopicId id, Timestamp t) const;
-  // The oldest timestamp among the retained entries that arrived after `after` (sequential_uid > after), or nullopt
-  // when none (or the topic is unknown): a consumer that evaluated everything up to some time, as the store held it
-  // at `after`, finds an out-of-order or same-stamp arrival at or before that time. Decode-free;
-  // O(log n + those entries), so a cursor with nothing new costs one binary search.
+  /// Oldest timestamp among entries with UID > `after` (nullopt if none): how a consumer that evaluated up to some
+  /// time finds out-of-order or same-stamp arrivals behind it. Decode-free, O(log n + those entries).
   std::optional<Timestamp> oldestArrivalAfter(ObjectTopicId id, SequentialUID after) const;
 
-  // One entry's stable identity plus its store timestamp, as returned by
-  // rangeByTime() and latestEntryIdAt(). Decode-free — resolve the payload later
-  // via at(uid). Owned by OrderedEntries; aliased here for the public API.
   using TimeRangeEntry = OrderedEntries::TimeRangeEntry;
 
-  // Identity of the entry latestAt(id, timestamp) would resolve — its
-  // {sequential_uid, timestamp} — WITHOUT resolving the payload. Metadata-only
-  // (shared locks + binary search); never invokes a lazy fetch, so a sampling
-  // consumer can compare it against a memoized sample identity before paying
-  // latestAt()'s resolve (a cold refetch once a pool seed is evicted). Not the
-  // same as maxUidAtOrBefore(): under out-of-order inserts the latest-by-time
-  // entry's UID can differ from the max arrival UID at-or-before t. nullopt when
-  // no entry exists at or before `timestamp`.
-  //
-  // NOT atomic with a later resolve: between this call and a subsequent
-  // latestAt()/at(), a concurrent insert or eviction can change which entry is
-  // latest at `timestamp`. A consumer that skips work when this identity matches
-  // a memo MUST re-check the resolved entry's sequential_uid after the resolve,
-  // or it may act on a different entry than the one it gated on.
+  /// Identity of the entry latestAt() would resolve, without fetching its payload. Not atomic with a later resolve:
+  /// a consumer that skips work when this matches a memo must re-check the resolved entry's UID.
   std::optional<TimeRangeEntry> latestEntryIdAt(ObjectTopicId id, Timestamp timestamp) const;
 
-  // Snapshot of the entries with lo < timestamp <= hi, as (uid, timestamp) pairs
-  // in ASCENDING timestamp order. This is the correct primitive for a time-window
-  // consumer (e.g. incremental occupancy-grid updates): it must NOT walk the
-  // arrival-order UID cursor, because an out-of-order entry (older timestamp,
-  // newest UID) can sit at any UID position. rangeByTime itself resolves no
-  // payload under the store lock; the caller resolves each entry afterwards with
-  // at(uid) — one at a time under at()'s own brief lock — getting nullopt for any
-  // evicted in between. Empty when hi <= lo, or the topic is unknown/empty, or the
-  // window holds nothing. O(log n + window).
+  /// Entries with lo < timestamp <= hi, in timestamp order and unresolved; resolve each with at(uid), which returns
+  /// nullopt for one evicted since. Use this, not the UID cursor, for a time window: an out-of-order entry can sit at
+  /// any UID position. O(log n + window).
   std::vector<TimeRangeEntry> rangeByTime(ObjectTopicId id, Timestamp lo, Timestamp hi) const;
 
   size_t entryCount(ObjectTopicId id) const;
@@ -335,9 +247,8 @@ class ObjectStore {
 
   EntryTimestampsView entryTimestamps(ObjectTopicId id) const;
 
-  /// Views over several topics, all locked at once under one store-lock pass, so their
-  /// stamps are mutually consistent. One view per distinct known topic, in ascending id
-  /// order (the order every caller locks series in); unknown topics are left out.
+  /// Mutually consistent views of several topics, locked in ascending id order (the order every caller locks series
+  /// in); unknown topics are skipped.
   std::vector<EntryTimestampsView> entryTimestamps(std::vector<ObjectTopicId> ids) const;
 
   // --- Retention ---
@@ -346,12 +257,8 @@ class ObjectStore {
   RetentionBudget retentionBudget(ObjectTopicId id) const;
   size_t memoryUsage(ObjectTopicId id) const;
 
-  // Pool consulted by pushLazyWithSeed. Set once during wiring, BEFORE any
-  // pushes (plain member, not synchronized against concurrent pushes). Share
-  // one pool app-wide so every store's seeds compete for a single byte budget;
-  // seeded entries moved between stores (flushTo / replaceDatasetFrom) keep
-  // their slots regardless of the destination's pool. Null (default) disables
-  // seeding. Seeded bytes are pool-accounted and NOT included in memoryUsage().
+  /// Set once, before any push (unsynchronized). Null disables seeding. Seeded bytes count against the pool, not
+  /// memoryUsage(); entries moved to another store keep their slots.
   void setResidentPayloadPool(std::shared_ptr<ResidentPayloadPool> pool);
 
   // --- Explicit eviction ---
@@ -361,41 +268,23 @@ class ObjectStore {
 
   // --- Cross-store flush ---
 
-  // Move every entry into `dst`, leaving this store empty (registrations kept).
-  // Topics are matched by descriptor (dataset_id + topic_name); both stores
-  // must share descriptors. Monotonicity is enforced per series: the earliest
-  // moved timestamp must be >= the destination's last. Any validation failure
-  // returns an error and mutates neither store.
-  //
-  // Zero-copy: each ObjectEntry is moved by value, so the variant's shared_ptr
-  // or closure transfers as a pointer move — bytes are never copied. Lazy
-  // entries keep their semantics; their closure re-runs only on a dst read.
-  // Afterward, dst's retention budget is applied to each touched series.
+  /// Moves every entry into `dst` (registrations stay), matching topics by (dataset, name). Each moved series must
+  /// start at or after dst's last timestamp; a validation failure changes neither store. Zero-copy; dst's retention
+  /// applies afterwards.
   Status flushTo(ObjectStore& dst);
 
-  // In-place REPLACE of object dataset `primary_id` with the topics ingested
-  // into `staged` dataset `staged_id` — the object-store half of reload. Topics
-  // are matched by name. Matched topics keep their primary ObjectTopicId and have
-  // their entries replaced; staged-only topics are registered under `primary_id`;
-  // primary-only topics are removed. Returns the staged->primary id map so the
-  // caller re-registers parsers under the stable ids. Either fully applies or
-  // (on a validation error) mutates neither store.
+  /// Replaces object dataset `primary_id` with what was ingested into `staged`'s `staged_id` (the reload path),
+  /// matching topics by name: matched topics keep their primary id, staged-only ones are registered, primary-only ones
+  /// removed. A validation error changes neither store.
   [[nodiscard]] Expected<ObjectDatasetReplaceResult> replaceDatasetFrom(
       ObjectStore& staged, DatasetId staged_id, DatasetId primary_id);
 
-  /// Destructively fold each source dataset's object topics into `anchor_id`.
-  /// Topics match by name: shared names are time-shifted by `raw_shift_ns`,
-  /// interleaved in ascending timestamp order, and re-UID'd under the anchor's
-  /// ObjectTopicId; source-only topics are reparented to the anchor while keeping
-  /// their ObjectTopicId. Purely mechanical: canonical-type conflict detection is
-  /// handled by pj_runtime. Validates self/duplicate sources up front; a source
-  /// with no object topics is a no-op. GUI-thread only.
+  /// Folds each source dataset into `anchor_id`: shared topic names are shifted by `raw_shift_ns`, interleaved by
+  /// timestamp and re-UID'd under the anchor's id; source-only topics are reparented and keep their id. Mechanical:
+  /// canonical-type conflicts are pj_runtime's job. Self or duplicate sources are rejected first. GUI thread only.
   ///
-  /// `exclude` (optional) opts a topic out of the generic fold entirely — it is
-  /// neither folded nor reparented, left untouched on its dataset. The store stays
-  /// domain-neutral: the caller supplies the policy. Used for single-entry,
-  /// supersede-style topics (plot markers) whose owner merges them set-aware,
-  /// where the generic interleave+retention fold would drop all but one entry.
+  /// `exclude` leaves a topic untouched on its dataset; the caller supplies the policy (single-entry topics such as
+  /// plot markers, which their owner merges itself).
   [[nodiscard]] Expected<ObjectDatasetMergeReport> mergeDatasets(
       DatasetId anchor_id, const std::vector<DatasetMergeSource>& sources,
       const std::function<bool(const ObjectTopicDescriptor&)>& exclude = {});
@@ -404,20 +293,12 @@ class ObjectStore {
 
   void removeTopic(ObjectTopicId id);
 
-  /// Remove all entries from every series under `dataset_id`, keeping each
-  /// topic registered with the SAME ObjectTopicId (clear-in-place — never
-  /// removeTopic+re-register, which would risk ObjectTopicId drift). Other
-  /// datasets are untouched. Idempotent; a no-op for an unknown `dataset_id`.
+  /// Empties every topic of `dataset_id` in place, keeping their ids (re-registering would mint new ones).
+  /// Idempotent.
   void clearDataset(DatasetId dataset_id);
 
-  /// Side snapshot of one dataset's object series, produced by `detachDataset()`.
-  /// Holds the MOVED-OUT entries + timestamps + retention budget + memory
-  /// accounting (keyed by ObjectTopicId.id); series stay registered + empty.
-  /// `prior_object_topic_ids` is the registered set at detach time so reattach
-  /// can remove any topic a failed refill added. The uid_order side index is NOT
-  /// snapshotted (it is derivable — reattach rebuilds it). The warm latestAt cache
-  /// is NOT snapshotted (reset on detach, re-seeded lazily after reattach).
-  /// `valid == false` means nothing was detached.
+  /// The entries detachDataset() moved out, per topic. `prior_object_topic_ids` lets reattachDataset() remove topics
+  /// a failed refill added. `valid == false`: nothing was detached.
   struct ObjectDatasetSnapshot {
     struct SeriesSnapshot {
       std::deque<ObjectEntry> entries;
@@ -431,20 +312,11 @@ class ObjectStore {
     bool valid = false;
   };
 
-  /// Transactional variant of `clearDataset()`: instead of dropping each series'
-  /// entries, MOVE them (plus timestamps/budget/memory) into the returned snapshot;
-  /// series stay registered + empty. Same drain-then-mutate discipline as
-  /// `clearDataset` (store_mutex_ exclusive, `drainSeriesReaders` before touching a
-  /// series). GUI-thread only. Unknown dataset -> `valid == false`.
+  /// clearDataset() that moves the entries into the returned snapshot instead of dropping them. GUI thread only.
   [[nodiscard]] ObjectDatasetSnapshot detachDataset(DatasetId dataset_id);
 
-  /// Inverse of `detachDataset()`. For each series currently registered under
-  /// `dataset_id`: one NOT in `snapshot.prior_object_topic_ids` was registered by a
-  /// failed refill and is removed; a prior series is cleared. Then each snapshot
-  /// series' entries/budget/memory are moved back into its (still-registered) series
-  /// and the warm cache reset. store_mutex_ exclusive; consumes the snapshot. No-op
-  /// when `!snapshot.valid`. Tolerates an already-clean state (added topics already
-  /// removed by the caller).
+  /// Undoes detachDataset(): removes topics registered since, empties the prior ones and moves the snapshot back.
+  /// No-op for an invalid snapshot.
   void reattachDataset(DatasetId dataset_id, ObjectDatasetSnapshot&& snapshot);
 
   void clear();
@@ -452,31 +324,20 @@ class ObjectStore {
  private:
   struct ObjectSeries {
     ObjectTopicDescriptor descriptor;
-    // The ordered-entry triple (entries + ascending timestamps + uid_order),
-    // encapsulated so its ordering invariants are enforced by construction and no
-    // mutation site can desync the three arrays by hand.
     OrderedEntries ordered;
     RetentionBudget budget;
     size_t memory_bytes = 0;
     mutable std::shared_mutex mutex;
 
-    // Warm cache for latestAt: the most-recently-resolved entry, keyed by its
-    // sequential_uid. A ~60 Hz reader that keeps landing on the same sample
-    // (a topic publishing slower than the render rate) is served from here
-    // instead of re-invoking a lazy fetcher that may decompress/read a file.
-    // Holds at most ONE materialized payload per topic — reset when that entry
-    // is evicted or the series is replaced. `cache_mutex` is separate from
-    // `mutex` (which latestAt holds only shared) and is never held across a
-    // resolve, so a slow decode can't block other readers of this series.
+    // latestAt()'s one-entry warm cache. cache_mutex is never held across a resolve, so a slow fetch blocks no
+    // reader of this series.
     mutable std::mutex cache_mutex;
     mutable std::optional<ResolvedObjectEntry> cached_latest;
   };
 
-  // Everything a mutation unlinks under the store/series locks: dropped entries,
-  // displaced warm-cache values and erased series. Dropping a payload can run
-  // plugin code (a C-ABI fetch_ctx_destroy, a payload anchor's release, a
-  // library unload) that may call back into this store, so every mutator
-  // declares one BEFORE taking its locks: it is destroyed after they release.
+  // What a mutation unlinks under the locks. Destroying an entry can run plugin code (fetch_ctx_destroy, an anchor
+  // release, a library unload) that calls back into the store, so every mutator declares one before its locks and
+  // it is destroyed after they release.
   struct Graveyard {
     std::vector<ObjectEntry> entries;
     std::vector<ResolvedObjectEntry> cached;
@@ -486,70 +347,46 @@ class ObjectStore {
   ObjectSeries* findSeries(ObjectTopicId id);
   const ObjectSeries* findSeries(ObjectTopicId id) const;
 
-  // Shared body of pushLazy / pushLazyWithSeed once the payload variant is
-  // decided (plain closure vs slot + fallback).
   Status pushLazyEntry(ObjectTopicId id, Timestamp timestamp, ObjectEntryPayload payload);
 
-  // Erase a topic from topics_. Caller must already hold store_mutex_ (used by
-  // removeTopic under its own lock and by replaceDatasetFrom under the dual lock).
+  // Caller holds store_mutex_ exclusively.
   void eraseTopicLocked(ObjectTopicId id, Graveyard& graveyard);
 
-  // Wait out any in-flight shared readers (e.g. an EntryTimestampsView, which
-  // holds only the series lock — not store_mutex_) before `series` storage is
-  // destroyed or its timestamp vector reallocated. Caller MUST hold store_mutex_
-  // exclusively, so no new reader can find the series; taking the series lock
-  // exclusively then blocks until the outstanding readers release. Without this,
-  // destroying a still-locked series mutex is UB and the view's pointer dangles.
+  // Waits out shared readers (an EntryTimestampsView holds only the series lock) before the series is destroyed or
+  // its timestamps reallocated: destroying a locked mutex is UB and the view's pointer would dangle. Caller holds
+  // store_mutex_ exclusively, so no new reader can find the series.
   static void drainSeriesReaders(ObjectSeries& series);
 
-  // Empty one series' entries/timestamps/uid_order (via OrderedEntries::clear) and
-  // reset its memory accounting + warm cache. Caller MUST hold store_mutex_
-  // exclusively AND must have already drained the series' readers
-  // (drainSeriesReaders) so no EntryTimestampsView dangles into the timestamp
-  // vector being cleared.
+  // Caller holds store_mutex_ exclusively and has drained the series' readers.
   static void clearEntriesLocked(ObjectSeries& series, Graveyard& graveyard);
 
-  // Reset the warm cache, moving any held value into `graveyard`.
   static void dropCache(const ObjectSeries& series, Graveyard& graveyard);
 
-  // Resolve an entry SNAPSHOT (a cheap copy of the payload variant — refcount
-  // bumps only) taken under the series lock; called with that lock RELEASED so
-  // a slow lazy fetch never blocks same-series writers. `served_from_resident`
-  // (optional) reports a seeded-slot hit, letting latestAt skip warm-cache
-  // population — a resident hit is already cheap and caching it would create a
-  // second anchor owner outside the pool's budget.
+  // Takes an entry copied under the series lock and runs with that lock released, so a slow fetch never blocks
+  // writers. `served_from_resident` reports a pool hit, which latestAt does not cache: that would hold a second
+  // anchor outside the pool's budget.
   static ResolvedObjectEntry resolveEntry(const ObjectEntry& entry, bool* served_from_resident = nullptr);
 
-  // Mints `entry`'s UID and inserts it (first applying `removal`, when given, in the same
-  // step), charges its bytes and applies the retention budget; returns the UID. The
-  // caller holds the series exclusively (its lock, or the store lock exclusively):
-  // OrderedEntries::push requires the pushed UID to be the series max, which two pushers
-  // minting outside the lock could interleave. If the insertion throws, `entry` is still
-  // the caller's, so declare it before the locks: a lazy entry's cleanup may call the store.
+  // Mints the UID and inserts `entry` (applying `removal` first), charges its bytes and applies retention. The caller
+  // holds the series exclusively: OrderedEntries::push needs the new UID to be the series maximum. If insertion
+  // throws, `entry` is still the caller's, so declare it before the locks (a lazy entry's cleanup may call the store).
   SequentialUID insertLocked(
       ObjectSeries& series, ObjectEntry&& entry, Graveyard& graveyard,
       const OrderedEntries::Removal* removal = nullptr);
-  // Settles the entries a removal moved into graveyard.entries from index `first`: their
-  // charged bytes leave the series' total, and the warm cache goes if it holds one.
-  // Allocates nothing when graveyard.cached has room for one more (a caller that may
-  // displace the cache reserves it before unlinking).
+  // Removes the bytes of graveyard.entries[first..] from the series total and drops the warm cache if it holds one
+  // of them. Allocation-free when graveyard.cached has room for one more.
   static void accountRemoved(ObjectSeries& series, Graveyard& graveyard, size_t first);
-  // Drop the oldest `count` entries (count <= size) in one pass, with their accounting
-  // (accountRemoved). Takes their graveyard room first, so an allocation failure leaves the
+  // Drops the oldest `count` entries in one pass. Reserves graveyard room first, so an allocation failure leaves the
   // series whole.
   void evictFront(ObjectSeries& series, size_t count, Graveyard& graveyard);
   void applyRetention(ObjectSeries& series, Timestamp newest_ts, Graveyard& graveyard);
 
-  // See setResidentPayloadPool. Read without synchronization on the push path;
-  // wiring must complete before ingest starts.
+  // Unsynchronized: see setResidentPayloadPool().
   std::shared_ptr<ResidentPayloadPool> resident_pool_;
 
   mutable std::shared_mutex store_mutex_;
-  // topics_ is the ordered source of truth: listTopics/replaceDatasetFrom/flushTo
-  // iterate it in registration order. series_index_ is an acceleration map from
-  // topic id to ObjectSeries*. ObjectSeries are heap-owned by unique_ptr so
-  // their addresses are stable across topics_ reallocs. Must only be touched
-  // under store_mutex_ held exclusively; kept in exact sync with topics_.
+  // topics_ holds registration order; series_index_ maps ids to the same series. Heap-owned series keep stable
+  // addresses. Write both only under store_mutex_ held exclusively.
   std::vector<std::pair<ObjectTopicId, std::unique_ptr<ObjectSeries>>> topics_;
   std::unordered_map<uint32_t, ObjectSeries*> series_index_;
   uint32_t next_id_ = 1;

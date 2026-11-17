@@ -1,13 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Dataset-creation contract of the plugin C-ABI write bridge.
-//
-// A plugin-created source must be as capable as one the app's own file/stream
-// loaders create. The load-bearing part is the time domain: the per-source
-// display offset is stored ON the domain, so a dataset left on the default
-// domain (id 0) can never carry one — the Source Timeline would draw it a bar
-// and then reject every drag.
+// Dataset-creation contract of the plugin C-ABI write bridge. The per-source display offset is stored on the
+// time domain, so a plugin-created dataset left on the default domain (id 0) cannot carry one.
 
 #include <gtest/gtest.h>
 
@@ -42,7 +37,6 @@ TEST(PluginHostDatasetTest, CreateDataSourceGivesEachSourceItsOwnTimeDomain) {
 
   EXPECT_NE(dataset_a->time_domain.id, 0U) << "plugin source landed on the default domain";
   EXPECT_NE(dataset_b->time_domain.id, 0U) << "plugin source landed on the default domain";
-  // Per-source, not shared: a shared domain would drag every source at once.
   EXPECT_NE(dataset_a->time_domain.id, dataset_b->time_domain.id);
 }
 
@@ -72,7 +66,6 @@ TEST(PluginHostDatasetTest, PluginCreatedDatasetAcceptsADisplayOffset) {
   EXPECT_EQ(domain->display_offset, 1'500'000'000LL);
 }
 
-// Offsetting one plugin source must leave its siblings where they are.
 TEST(PluginHostDatasetTest, DisplayOffsetIsIndependentPerSource) {
   Fixture f;
   const auto source_a = *f.toolbox.createDataSource("alpha");

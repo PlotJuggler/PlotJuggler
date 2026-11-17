@@ -29,10 +29,7 @@
 namespace PJ::arrow_import {
 namespace {
 
-// ---------------------------------------------------------------------------
-// Non-owning IPC input stream from PJ::Span<const uint8_t>
-// ---------------------------------------------------------------------------
-
+// Reads the span in place: its bytes must outlive the stream.
 struct SpanInputStreamData {
   const uint8_t* data;
   int64_t size;
@@ -63,10 +60,6 @@ void initSpanInputStream(ArrowIpcInputStream* stream, PJ::Span<const uint8_t> sp
   stream->release = spanInputStreamRelease;
   stream->private_data = new SpanInputStreamData{span.data(), static_cast<int64_t>(span.size()), 0};
 }
-
-// ---------------------------------------------------------------------------
-// nanoarrow ArrowType → PrimitiveType
-// ---------------------------------------------------------------------------
 
 std::optional<PrimitiveType> nanoarrowTypeToPrimitive(ArrowType type) {
   switch (type) {
@@ -100,10 +93,6 @@ std::optional<PrimitiveType> nanoarrowTypeToPrimitive(ArrowType type) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers: extract raw data from nanoarrow ArrowArrayView children
-// ---------------------------------------------------------------------------
-
 struct ColumnDataWithBuffer {
   ColumnData col_data;
   std::vector<int64_t> int64_buf;
@@ -117,7 +106,6 @@ PJ::Expected<ColumnDataWithBuffer> makeColumnDataNanoarrow(
   const auto sk = storageKindOf(mapping.pj_type);
   const auto n = static_cast<std::size_t>(length);
 
-  // Validity bitmap
   BitSpan validity_view;
   if (child->null_count > 0 && child->buffer_views[0].data.as_uint8 != nullptr) {
     const std::size_t validity_offset = static_cast<std::size_t>(child->offset);
@@ -193,12 +181,11 @@ PJ::Expected<ColumnDataWithBuffer> makeColumnDataNanoarrow(
       break;
     }
     case StorageKind::kBool: {
-      // Arrow stores bools as packed bits; we need unpacked uint8_t.
+      // Arrow packs bools into bits; PJ stores one byte per bool.
       std::vector<uint8_t> bool_buf(n);
       for (int64_t i = 0; i < length; ++i) {
         bool_buf[static_cast<std::size_t>(i)] = ArrowArrayViewGetIntUnsafe(child, i) != 0 ? uint8_t{1} : uint8_t{0};
       }
-      // Store in uint64_buf as raw bytes
       result.uint64_buf.resize((n + sizeof(uint64_t) - 1) / sizeof(uint64_t));
       std::memcpy(result.uint64_buf.data(), bool_buf.data(), n);
       result.col_data = ColumnData::boolean(
@@ -238,10 +225,6 @@ PJ::Expected<ColumnDataWithBuffer> makeColumnDataNanoarrow(
   return result;
 }
 
-/// Scale extracted integer ticks in place to nanoseconds for an Arrow TIMESTAMP
-/// unit. Plain integer timestamp columns pass NANOARROW_TIME_UNIT_NANO (identity),
-/// so existing int64-ns data is untouched. ns-per-tick is derived from std::chrono
-/// so the factors can't drift.
 [[nodiscard]] const char* timeUnitName(ArrowTimeUnit unit) noexcept {
   switch (unit) {
     case NANOARROW_TIME_UNIT_SECOND:
@@ -282,7 +265,7 @@ PJ::Expected<ColumnDataWithBuffer> makeColumnDataNanoarrow(
       ns_per_tick = std::chrono::nanoseconds{std::chrono::microseconds{1}}.count();
       break;
     case NANOARROW_TIME_UNIT_NANO:
-      return okStatus();  // already nanoseconds
+      return okStatus();
   }
   for (Timestamp& v : values) {
     if (multiplyWouldOverflow(v, ns_per_tick)) {
@@ -295,9 +278,8 @@ PJ::Expected<ColumnDataWithBuffer> makeColumnDataNanoarrow(
   return okStatus();
 }
 
-/// Extract timestamps (as int64 ns) from an ArrowArrayView child column. @p unit
-/// is the column's Arrow time unit (s/ms/us/ns) when it is a TIMESTAMP; raw
-/// integer columns pass NANOARROW_TIME_UNIT_NANO and are taken as ns verbatim.
+/// `unit` is a TIMESTAMP column's unit; a plain integer column passes NANOARROW_TIME_UNIT_NANO and is taken as
+/// nanoseconds.
 Expected<std::vector<Timestamp>> extractTimestampsNanoarrow(
     const ArrowArrayView* view, int64_t length, ArrowTimeUnit unit) {
   const auto n = static_cast<std::size_t>(length);
@@ -315,7 +297,7 @@ Expected<std::vector<Timestamp>> extractTimestampsNanoarrow(
       result[static_cast<std::size_t>(i)] = static_cast<Timestamp>(raw[i]);
     }
   } else {
-    // Unsupported storage: synthesize row indices (not a real time → no scaling).
+    // Unsupported storage: this batch's row indices, unscaled.
     for (int64_t i = 0; i < length; ++i) {
       result[static_cast<std::size_t>(i)] = i;
     }
@@ -329,8 +311,7 @@ Expected<std::vector<Timestamp>> extractTimestampsNanoarrow(
   return result;
 }
 
-// Row indices [first, first + length) as timestamps, for streams without a
-// timestamp column. `first` carries over between batches so indices stay unique.
+// For streams without a timestamp column; `first` carries over between batches so indices stay unique.
 std::vector<Timestamp> generateSequentialTimestamps(int64_t first, int64_t length) {
   const auto n = static_cast<std::size_t>(length);
   std::vector<Timestamp> result(n);
@@ -342,14 +323,8 @@ std::vector<Timestamp> generateSequentialTimestamps(int64_t first, int64_t lengt
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// schema_from_ipc
-// ---------------------------------------------------------------------------
-
 namespace {
 
-// Derive column mappings + type tree from an already-populated nanoarrow
-// schema. Shared between schemaFromIpc and schemaFromArrowStream.
 PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColumnMapping>>> mappingsFromSchema(
     const ArrowSchema* schema) {
   std::vector<ArrowColumnMapping> mappings;
@@ -360,12 +335,12 @@ PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColum
     ArrowError error;
     const int rc = ArrowSchemaViewInit(&view, schema->children[i], &error);
     if (rc != NANOARROW_OK) {
-      continue;  // skip unrecognized types
+      continue;
     }
 
     auto pj_type = nanoarrowTypeToPrimitive(view.type);
     if (!pj_type.has_value()) {
-      continue;  // skip unsupported types
+      continue;
     }
 
     ArrowColumnMapping m;
@@ -386,10 +361,7 @@ PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColum
   return std::make_pair(std::move(type_tree), std::move(mappings));
 }
 
-// Pull record batches from an ArrowArrayStream* and feed them into the
-// writer. The stream's schema must already be known (caller passes it in).
-// Ownership: the caller retains ownership of @p stream; this helper does
-// NOT call stream->release.
+// Does not release `stream`: the caller owns it.
 PJ::Status ingestBatchesFromStream(
     DataWriter& writer, TopicId topic_id, ArrowArrayStream* stream, const ArrowSchema* schema,
     const std::vector<ArrowColumnMapping>& mappings, int timestamp_column) {
@@ -399,9 +371,6 @@ PJ::Status ingestBatchesFromStream(
     return PJ::unexpected("Failed to initialize ArrowArrayView from schema");
   }
 
-  // Resolve the timestamp column's Arrow time unit once. A plain integer column
-  // (or none) defaults to nanoseconds, preserving raw int64-ns timestamps; a
-  // TIMESTAMP column carries its s/ms/us/ns unit, which extract_timestamps scales.
   ArrowTimeUnit timestamp_unit = NANOARROW_TIME_UNIT_NANO;
   if (timestamp_column >= 0 && timestamp_column < schema->n_children) {
     ArrowSchemaView ts_view;
@@ -412,7 +381,7 @@ PJ::Status ingestBatchesFromStream(
     }
   }
 
-  int64_t synthetic_first_row = 0;  // next row index when the stream has no timestamp column
+  int64_t synthetic_first_row = 0;
   nanoarrow::UniqueArray batch;
   while (true) {
     batch.reset();
@@ -481,10 +450,6 @@ PJ::Status ingestBatchesFromStream(
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// schemaFromIpc
-// ---------------------------------------------------------------------------
-
 PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColumnMapping>>> schemaFromIpc(
     PJ::Span<const uint8_t> ipc_stream) {
   ArrowIpcInputStream input;
@@ -505,10 +470,6 @@ PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColum
   return mappingsFromSchema(schema.get());
 }
 
-// ---------------------------------------------------------------------------
-// columnIndexByName
-// ---------------------------------------------------------------------------
-
 int columnIndexByName(ArrowArrayStream* stream, std::string_view name) {
   if (stream == nullptr || stream->get_schema == nullptr || name.empty()) {
     return -1;
@@ -525,10 +486,6 @@ int columnIndexByName(ArrowArrayStream* stream, std::string_view name) {
   return -1;
 }
 
-// ---------------------------------------------------------------------------
-// schemaFromArrowStream
-// ---------------------------------------------------------------------------
-
 PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColumnMapping>>> schemaFromArrowStream(
     ArrowArrayStream* stream) {
   if (stream == nullptr || stream->get_schema == nullptr) {
@@ -544,10 +501,6 @@ PJ::Expected<std::pair<std::shared_ptr<PJ::TypeTreeNode>, std::vector<ArrowColum
 
   return mappingsFromSchema(schema.get());
 }
-
-// ---------------------------------------------------------------------------
-// importIpcStream
-// ---------------------------------------------------------------------------
 
 PJ::Status importIpcStream(
     DataWriter& writer, TopicId topic_id, PJ::Span<const uint8_t> ipc_stream,
@@ -569,10 +522,6 @@ PJ::Status importIpcStream(
 
   return ingestBatchesFromStream(writer, topic_id, stream.get(), schema.get(), mappings, timestamp_column);
 }
-
-// ---------------------------------------------------------------------------
-// importArrowStream  (v4 Arrow C Data Interface path)
-// ---------------------------------------------------------------------------
 
 PJ::Status importArrowStream(
     DataWriter& writer, TopicId topic_id, ArrowArrayStream* stream, const std::vector<ArrowColumnMapping>& mappings,

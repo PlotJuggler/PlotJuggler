@@ -321,7 +321,6 @@ TEST(SeriesReaderOverlapTest, TimeSampleQueriesMergeAcrossOutOfOrderChunks) {
   ASSERT_TRUE(after_mid.has_value());
   EXPECT_EQ(after_mid->timestamp, 150);
 
-  // Strict variants exclude the boundary sample itself.
   const auto strict_before = series.sampleBeforeTime(100);
   ASSERT_TRUE(strict_before.has_value());
   EXPECT_EQ(strict_before->timestamp, 75);

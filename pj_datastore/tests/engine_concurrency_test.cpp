@@ -1,16 +1,11 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Reproduces the worker-write vs GUI-read data race that progressive file
-// loading exposed: a worker thread commits chunks (sealed_chunks_.push_back)
-// while a reader thread iterates the same deque via getMetadata()/rangeQuery().
-// Without engine synchronization this is a std::deque data race (UB) and
-// segfaults under load. With the engine's reader-writer lock it must run to
-// completion with consistent results.
-//
-// This is the GREEN GATE for the DataEngine thread-safety work: before the lock
-// lands it SEGFAULTS (exit 139) under the concurrent commit/read; after it must
-// run to completion with a consistent final row count.
+// Worker-write vs GUI-read race that progressive file loading exposes: a worker thread commits chunks (a
+// push_back on the topic's sealed-chunk deque) while a reader thread iterates the same deque via
+// getMetadata()/rangeQuery(). Without engine synchronization this is a std::deque data race; with the engine
+// lock it must run to completion with a consistent final row count. A lock-order deadlock instead hangs both
+// threads and trips the 90 s ctest TIMEOUT.
 
 #include <gtest/gtest.h>
 
@@ -40,31 +35,23 @@ TEST(EngineConcurrencyTest, ConcurrentCommitAndReadDoesNotRace) {
   ASSERT_TRUE(handle.has_value()) << handle.error();
   const TopicId topic = handle->topic_id;
 
-  // Bound BOTH the fill and the reader passes so runtime is deterministic, not
-  // fairness-dependent: each full-range read serializes against the writer, so an
-  // unbounded reader is O(passes * N) where `passes` depends on lock fairness —
-  // which once blew a CORRECT build past the ctest TIMEOUT (~100s, a false
-  // "deadlock"). The race (writer push_back vs a reader iterating the deque) fires
-  // regardless of size, so the cap now only ever catches a true hang.
+  // Both the fill and the reader passes are bounded: each full-range read serializes against the writer, so an
+  // unbounded reader costs O(passes * N) with `passes` set by lock fairness, which can exceed the ctest TIMEOUT
+  // on correct code. The race fires regardless of size, so the caps only ever catch a true hang.
   constexpr int kBatches = 50;  // 3.2k samples
   constexpr int kSamplesPerBatch = 64;
   constexpr int kMaxReaderPasses = 1000;  // bounds the O(passes*N) reader walk
   std::atomic<bool> writer_done{false};
   std::atomic<int> completed_reads{0};
-  // The writer blocks on this after its FIRST commit until the reader has
-  // completed one pass, making the commit/read overlap deterministic instead of
-  // scheduler-dependent: when both threads share a core (CI under `ctest -j`, a
-  // single-vCPU runner, or `taskset -c 0`) the scheduler will otherwise run the
-  // tiny writer to completion before the reader's first turn, leaving
-  // completed_reads == 0 and false-failing the EXPECT_GT below on correct code.
+  // The writer blocks on this after its first commit until the reader has completed one pass, so the
+  // commit/read overlap is deterministic: when both threads share a core (ctest -j, a single-vCPU runner,
+  // taskset -c 0) the scheduler would otherwise run the tiny writer to completion first, leaving
+  // completed_reads == 0 and failing the EXPECT_GT below on correct code.
   std::latch first_read_done{1};
 
-  // Writer: commit `kBatches` chunks back-to-back (each commit push_backs a chunk).
-  // After the first commit it waits for one reader pass (see `first_read_done`),
-  // so batches 1..N-1 are guaranteed to overlap a live reader. The writer holds
-  // NO engine lock while waiting, so a correct reader always makes progress; a
-  // real lock-order deadlock instead hangs both threads and trips the 90s ctest
-  // TIMEOUT — the loud-failure contract this test is registered with.
+  // Writer: commits kBatches chunks back-to-back; after the first commit it waits for one reader pass (see
+  // `first_read_done`), so the remaining batches overlap a live reader. It holds no engine lock while waiting,
+  // so a correct reader always makes progress.
   std::thread writer([&]() {
     DataWriter w = engine.createWriter();
     const ScalarSeriesHandle wh{topic, 0};
@@ -84,12 +71,10 @@ TEST(EngineConcurrencyTest, ConcurrentCommitAndReadDoesNotRace) {
     writer_done.store(true, std::memory_order_release);
   });
 
-  // Reader: read metadata + iterate the full range for up to kMaxReaderPasses
-  // passes while the writer fills (heavy overlap either way), mirroring the GUI's
-  // catalog rebuild + plot reads during a load. Each read holds the engine lock
-  // for its whole forEach, so it can never observe a deque torn mid-push_back. The
-  // cap bounds runtime; if the reader caps out first, the writer finishes the
-  // remaining batches uncontended.
+  // Reader: reads metadata + iterates the full range for up to kMaxReaderPasses passes while the writer fills,
+  // mirroring the GUI's catalog rebuild + plot reads during a load. Each read holds the engine lock for its
+  // whole forEach, so it never observes a deque torn mid-push_back. If the reader caps out first, the writer
+  // finishes the remaining batches uncontended.
   std::thread reader([&]() {
     DataReader r = engine.createReader();
     for (int i = 0; i < kMaxReaderPasses && !writer_done.load(std::memory_order_acquire); ++i) {

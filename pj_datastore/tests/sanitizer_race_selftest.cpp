@@ -28,7 +28,6 @@ int main() {
   std::atomic<bool> start{false};
   std::thread first(PJ::WriteRacyValue, &value, &start);
   std::thread second(PJ::WriteRacyValue, &value, &start);
-  // The gate encourages overlap without establishing an order between the racy stores.
   start.store(true, std::memory_order_release);
   first.join();
   second.join();

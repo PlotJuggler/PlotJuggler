@@ -90,9 +90,8 @@ TEST(ObjectMergeTest, ReassignsAscendingUIDs) {
   EXPECT_TRUE(store.at(a, first->sequential_uid).has_value());
 }
 
-// After the merge's reuidSeriesLocked, uid_order is the identity permutation, so a
-// drainNewSince walk visits every merged entry once in ascending UID (and, since the
-// merge time-sorts, ascending timestamp) order.
+// After a merge, uid_order is the identity permutation, so a drainNewSince walk visits every entry once in
+// ascending UID order (= ascending timestamp, since the merge time-sorts).
 TEST(ObjectMergeTest, UidWalkAfterMergeVisitsEveryEntryAscending) {
   ObjectStore store;
   const auto a = registerTopic(store, 1, "/img");

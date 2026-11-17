@@ -1,14 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Streaming pause/resume two-engine lockstep mirror.
-//
-// Regression tests for the data_stream_dummy "stream dies on first pause/
-// resume" bug and the latent FieldHandle-stale bug in the parser path. Both
-// share the same root cause: the secondary DataEngine must hold the same
-// (TopicId, FieldId) for the same (topic, field) pairs as the primary so a
-// plugin's cached handles keep resolving after setTarget swaps which engine
-// is the active write target.
+// Streaming pause/resume two-engine lockstep mirror: the secondary DataEngine holds the same (TopicId, FieldId)
+// for the same (topic, field) pairs as the primary, so a plugin's cached handles keep resolving after
+// setTarget swaps which engine is the active write target.
 
 #include <gtest/gtest.h>
 
@@ -36,9 +31,6 @@ struct TwoEngineFixture {
   DatastoreToolboxHost toolbox_impl{primary, primary_store};
   ToolboxHostView toolbox{toolbox_impl.raw()};
 
-  // Create a data source on primary, then lockstep-mirror the same dataset id
-  // onto the secondary so topic mirroring (which addresses the dataset by id)
-  // can hit it. Returns the source handle for the test to use.
   DataSourceHandle bootstrapSourceWithLockstepDataset(std::string_view name) {
     const auto source = *toolbox.createDataSource(name);
     auto mirror = secondary.createDataset(DatasetDescriptor{.source_name = std::string(name)}, source.id);
@@ -47,10 +39,8 @@ struct TwoEngineFixture {
   }
 };
 
-// 1) The invariant the bug fix is built for: a TopicHandle/FieldHandle cached
-//    on primary keeps working after setTarget(secondary) and back. Without
-//    mirroring at ensureTopic/ensureField, the secondary engine would have no
-//    matching id and the first post-swap write would fail.
+// A TopicHandle/FieldHandle cached on primary keeps working after setTarget(secondary) and back. Without
+// mirroring at ensureTopic/ensureField the secondary has no matching id and the first post-swap write fails.
 TEST(StreamingMirrorTest, CachedFieldHandleResolvesAcrossSetTargetSwap) {
   TwoEngineFixture f;
   const auto source = f.bootstrapSourceWithLockstepDataset("sensor");
@@ -59,8 +49,7 @@ TEST(StreamingMirrorTest, CachedFieldHandleResolvesAcrossSetTargetSwap) {
   source_impl.setSecondaryEngine(&f.secondary);
   SourceWriteHostView writer(source_impl.raw());
 
-  // Initial setup on primary — plugin caches the handles, just like
-  // data_stream_dummy::onStart does.
+  // The plugin caches these handles on primary.
   const auto topic = *writer.ensureTopic("imu");
   const auto field_ax = *writer.ensureField(topic, "ax", PrimitiveType::kFloat32);
   const auto field_ay = *writer.ensureField(topic, "ay", PrimitiveType::kFloat32);
@@ -69,8 +58,7 @@ TEST(StreamingMirrorTest, CachedFieldHandleResolvesAcrossSetTargetSwap) {
   ASSERT_NE(f.primary.getTopicStorage(topic.id), nullptr);
   ASSERT_NE(f.secondary.getTopicStorage(topic.id), nullptr);
   // FieldId 0 is a valid auto-assigned id (the first field of any topic). A
-  // naive `requested_id == 0` "auto" sentinel would have mis-assigned the
-  // first mirrored field. This assertion would have caught that bug.
+  // naive `requested_id == 0` "auto" sentinel would mis-assign the first mirrored field.
   EXPECT_EQ(field_ax.id, 0U);
   EXPECT_EQ(field_ay.id, 1U);
 
@@ -81,8 +69,7 @@ TEST(StreamingMirrorTest, CachedFieldHandleResolvesAcrossSetTargetSwap) {
   // Swap target to secondary (mimics StreamingSourceManager::onPauseToggled).
   source_impl.setTarget(&f.secondary);
 
-  // Write through the SAME cached handles — must resolve on the secondary.
-  // This is the exact step that broke before the lockstep mirror.
+  // Write through the same cached handles: they must resolve on the secondary.
   const std::vector<BoundFieldValue> secondary_fields = {
       {.field = field_ax, .value = 2.0F},
       {.field = field_ay, .value = 3.0F},
@@ -96,7 +83,6 @@ TEST(StreamingMirrorTest, CachedFieldHandleResolvesAcrossSetTargetSwap) {
   ASSERT_TRUE(writer.appendBoundRecord(topic, 30, secondary_fields).has_value());
   source_impl.flushPending();
 
-  // Verify column ids stayed in lockstep on the secondary.
   const auto* sec_storage = f.secondary.getTopicStorage(topic.id);
   ASSERT_NE(sec_storage, nullptr);
   const auto& sec_cols = sec_storage->columnDescriptors();
@@ -107,11 +93,9 @@ TEST(StreamingMirrorTest, CachedFieldHandleResolvesAcrossSetTargetSwap) {
   EXPECT_EQ(sec_cols[1].field_id, 1U);
 }
 
-// 2) Cache-hit retry path: if setSecondaryEngine is wired AFTER the WriteCore
-//    cache has been populated, subsequent ensureTopic/ensureField calls must
-//    still mirror. Covers the case where an earlier mirror failed (or the
-//    secondary was wired late) and a cache-hit would otherwise short-circuit
-//    the retry forever.
+// Cache-hit retry path: if setSecondaryEngine is wired after the WriteCore cache has been populated,
+// subsequent ensureTopic/ensureField calls must still mirror; otherwise a cache hit short-circuits the retry
+// forever (an earlier mirror failed, or the secondary was wired late).
 TEST(StreamingMirrorTest, SecondaryEngineWiredAfterFirstEnsureStillMirrors) {
   TwoEngineFixture f;
   const auto source = f.bootstrapSourceWithLockstepDataset("sensor");
@@ -141,8 +125,7 @@ TEST(StreamingMirrorTest, SecondaryEngineWiredAfterFirstEnsureStillMirrors) {
   EXPECT_EQ(sec_storage->columnDescriptors()[0].field_id, field.id);
 }
 
-// 3) Direct unit test of DataEngine::createTopicField — covers the optional
-//    sentinel, idempotency, type mismatch, and non-dense id rejection.
+// DataEngine::createTopicField directly: optional id sentinel, idempotency, type mismatch, non-dense id rejection.
 TEST(StreamingMirrorTest, CreateTopicFieldOptionalSentinelHandlesIdZero) {
   DataEngine engine;
   ObjectStore object_store;

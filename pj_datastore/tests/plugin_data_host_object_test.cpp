@@ -37,7 +37,6 @@ TEST(PluginDataHostObjectTest, RegisterTopicReturnsUsableHandle) {
   ASSERT_TRUE(handle.has_value()) << handle.error();
   EXPECT_NE(handle->id, 0U);
 
-  // Metadata round-trips through the store.
   const auto topics = f.store.listTopics(kDatasetId);
   ASSERT_EQ(topics.size(), 1U);
   const auto& desc = f.store.descriptor(topics[0]);
@@ -131,7 +130,6 @@ TEST(PluginDataHostObjectTest, PushLazyRetainsClosureUntilEviction) {
   auto status = f.host.pushLazy(topic, 42, closure);
   ASSERT_TRUE(status.has_value()) << status.error();
 
-  // First read invokes the fetch closure and returns its bytes.
   auto first = f.store.latestAt(ObjectTopicId{topic.id}, 42);
   ASSERT_TRUE(first.has_value());
   ASSERT_NE(first->payload.anchor, nullptr);
@@ -140,35 +138,25 @@ TEST(PluginDataHostObjectTest, PushLazyRetainsClosureUntilEviction) {
           first->payload.bytes.begin(), first->payload.bytes.end(), shared->payload.begin(), shared->payload.end()));
   EXPECT_EQ(shared->fetch_calls.load(), 1);
 
-  // A second read of the SAME sample is served from latestAt's warm cache, so the
-  // closure is NOT re-invoked. It remains retained (alive) for a later cache miss —
-  // the eviction checks below confirm it is only released when the entry is evicted.
+  // A second read of the same sample is served from latestAt's warm cache, so the closure is not re-invoked;
+  // it stays retained until the entry is evicted.
   auto second = f.store.latestAt(ObjectTopicId{topic.id}, 42);
   ASSERT_TRUE(second.has_value());
   EXPECT_EQ(shared->fetch_calls.load(), 1);
 
-  // Destroy has not been invoked yet — the entry is still alive.
-  // (The test's `shared` is one ref; the closure captured in the store is
-  // another; a temporary held by the ObjectStore's fetch wrapper is a
-  // third. Refcount is implementation-detail — assert the visible effect.)
-  // SharedState has NOT been destroyed, so destroy_calls is still 0.
+  // The entry is still alive, so destroy has not run. Refcounts are an implementation detail; assert the visible
+  // effect.
   EXPECT_EQ(shared->destroy_calls.load(), 0);
 
-  // Evict: store drops the entry, which drops the std::function, which drops
-  // the plugin's shared holder, which runs fetch_ctx_destroy. This test
-  // can't directly observe fetch_ctx_destroy because the SDK's LazyBox
-  // destroy just `delete`s its box; but by construction `closure` owns
-  // only `shared`, and when the store drops its copy of closure, only our
-  // local `closure` variable + our local `shared` remain. We can still
-  // verify that the closure is gone from the store by observing
-  // `entryCount` drop to zero.
+  // Evict: the store drops the entry and its fetch closure. The SDK's LazyBox destroy just `delete`s its box, so
+  // fetch_ctx_destroy is not directly observable here; the closure being gone from the store shows as `entryCount`
+  // dropping to zero.
   f.store.evictBefore(ObjectTopicId{topic.id}, 100);
   EXPECT_EQ(f.store.entryCount(ObjectTopicId{topic.id}), 0U);
 }
 
 TEST(PluginDataHostObjectTest, PushLazyDestroyCallbackRunsExactlyOnceOnEviction) {
-  // Integration test using the raw C ABI — explicitly verifies the destroy
-  // callback fires exactly once when the entry is evicted from the store.
+  // Integration test using the raw C ABI: the destroy callback fires exactly once when the entry is evicted.
   Fixture f;
   const auto topic = *f.host.registerTopic("pointclouds", R"({"media_class":"pointcloud"})");
 
@@ -223,9 +211,8 @@ TEST(PluginDataHostObjectTest, PushLazyWithNullFetchFnFails) {
 }
 
 TEST(PluginDataHostObjectTest, RejectedPushLazyLeavesFetchCtxToThePlugin) {
-  // The store rejects an unknown topic. The ctx must come back undestroyed:
-  // the SDK's pushLazy wrapper deletes its box on `false`, so a host-side
-  // destroy as well was a double free.
+  // The store rejects an unknown topic. The ctx must come back undestroyed: the SDK's pushLazy wrapper deletes
+  // its box on `false`, so a host-side destroy as well would be a double free.
   Fixture f;
   const auto raw = f.host.raw();
   PJ_error_t err{};
@@ -337,10 +324,6 @@ TEST(PluginDataHostObjectTest, ViewReportsNotBoundWhenRawIsEmpty) {
   EXPECT_FALSE(status.has_value());
 }
 
-// ===========================================================================
-// setTarget — streaming two-store flow
-// ===========================================================================
-
 TEST(PluginDataHostObjectTest, SetTargetRedirectsRegisterAndPushToSecondary) {
   // Simulates the streaming pause/resume routing: the manager flips the host
   // between a primary and a secondary store. After setTarget(secondary) the
@@ -351,21 +334,18 @@ TEST(PluginDataHostObjectTest, SetTargetRedirectsRegisterAndPushToSecondary) {
   DatastoreSourceObjectWriteHost host_impl{primary, kDatasetId};
   SourceObjectWriteHostView host{host_impl.raw()};
 
-  // Lockstep registration on both stores BEFORE the swap, so the topic id
-  // is the same on each side (auto-counter ticks identically). This matches
-  // the manager wiring described in the two-store plan.
+  // Lockstep registration on both stores before the swap, so the topic id is the same on each side
+  // (auto-counter ticks identically).
   const auto primary_topic = *host.registerTopic("cam", "{}");
   host_impl.setTarget(&secondary);
   const auto secondary_topic = *host.registerTopic("cam", "{}");
   EXPECT_EQ(primary_topic.id, secondary_topic.id);
 
-  // A push now must land in secondary, not primary.
   const std::vector<uint8_t> payload_a{0x01, 0x02};
   ASSERT_TRUE(host.pushOwned(secondary_topic, 1000, payload_a).has_value());
   EXPECT_EQ(primary.entryCount(ObjectTopicId{primary_topic.id}), 0U);
   EXPECT_EQ(secondary.entryCount(ObjectTopicId{secondary_topic.id}), 1U);
 
-  // Flip back: subsequent pushes return to primary.
   host_impl.setTarget(&primary);
   const std::vector<uint8_t> payload_b{0x03};
   ASSERT_TRUE(host.pushOwned(primary_topic, 2000, payload_b).has_value());
@@ -374,10 +354,9 @@ TEST(PluginDataHostObjectTest, SetTargetRedirectsRegisterAndPushToSecondary) {
 }
 
 TEST(PluginDataHostObjectTest, ParserSetTargetRedirectsPushToSecondary) {
-  // Same test as above but for the parser-scoped host, which is the one the
-  // streaming worker actually drives (parser-bound topic id captured at
-  // bind() — invariant under the swap because the manager has registered
-  // the topic in both stores via lockstep registerTopic).
+  // Same as above for the parser-scoped host, which the streaming worker drives (the parser-bound topic id is
+  // captured at bind() and is invariant under the swap because the topic is registered in both stores in
+  // lockstep).
   ObjectStore primary;
   ObjectStore secondary;
   // Pre-register on both stores in lockstep. Both auto-assign the same id.
@@ -394,18 +373,15 @@ TEST(PluginDataHostObjectTest, ParserSetTargetRedirectsPushToSecondary) {
   const std::vector<uint8_t> payload_b{0x02};
   const std::vector<uint8_t> payload_c{0x03};
 
-  // Push before swap goes to primary.
   ASSERT_TRUE(host.pushOwned(1000, payload_a).has_value());
   EXPECT_EQ(primary.entryCount(primary_topic), 1U);
   EXPECT_EQ(secondary.entryCount(secondary_topic), 0U);
 
-  // Swap and push: now lands in secondary, primary untouched.
   host_impl.setTarget(&secondary);
   ASSERT_TRUE(host.pushOwned(2000, payload_b).has_value());
   EXPECT_EQ(primary.entryCount(primary_topic), 1U);
   EXPECT_EQ(secondary.entryCount(secondary_topic), 1U);
 
-  // Swap back: resumes pushing into primary.
   host_impl.setTarget(&primary);
   ASSERT_TRUE(host.pushOwned(3000, payload_c).has_value());
   EXPECT_EQ(primary.entryCount(primary_topic), 2U);
@@ -439,7 +415,6 @@ TEST(PluginDataHostObjectTest, ToolboxRegistersObjectTopicOnExistingDatasetIdemp
   ASSERT_TRUE(resolved.has_value());
   EXPECT_EQ(resolved->payload.bytes.size(), payload.size());
 
-  // An unknown dataset is rejected.
   EXPECT_FALSE(toolbox.registerObjectTopicOnDataset(DatasetId{999999}, "x", "{}").has_value());
 }
 

@@ -82,7 +82,7 @@ std::deque<std::pair<Timestamp, T>> buildDequeData(F value_fn) {
   return data;
 }
 
-// Helper to compute encoded bytes for a chunk column, accounting for new encodings
+// A column's encoded bytes per row.
 double encodedBytesPerRow(const TopicChunk& chunk, std::size_t col) {
   switch (chunk.columnEncoding(col)) {
     case EncodingType::kConstant: {
@@ -278,7 +278,7 @@ BENCHMARK(BM_Chunk_BulkReadInt64);
 // ===========================================================================
 
 void BM_Chunk_ReadInt64_FOR(benchmark::State& state) {
-  // int64 values mod 100 → range [0,99], FOR uses 1 byte offsets
+  // Values 0..99, so frame-of-reference with 1-byte offsets.
   static TopicChunk chunk = buildTypedChunk(PrimitiveType::kInt64, [](TopicChunkBuilder& b, std::size_t col, int i) {
     b.set(col, static_cast<int64_t>(i % 100));
   });
@@ -297,7 +297,6 @@ void BM_Chunk_ReadInt64_FOR(benchmark::State& state) {
 }
 
 void BM_Chunk_BulkReadInt64_FOR(benchmark::State& state) {
-  // Same FOR-compressed int64 column, bulk read
   static TopicChunk chunk = buildTypedChunk(PrimitiveType::kInt64, [](TopicChunkBuilder& b, std::size_t col, int i) {
     b.set(col, static_cast<int64_t>(i % 100));
   });
@@ -314,7 +313,6 @@ void BM_Chunk_BulkReadInt64_FOR(benchmark::State& state) {
 }
 
 void BM_Chunk_ReadInt32_Constant(benchmark::State& state) {
-  // Constant int32 column
   static TopicChunk chunk =
       buildTypedChunk(PrimitiveType::kInt32, [](TopicChunkBuilder& b, std::size_t col, int /*i*/) { b.set(col, 42); });
 
@@ -332,7 +330,6 @@ void BM_Chunk_ReadInt32_Constant(benchmark::State& state) {
 }
 
 void BM_Chunk_BulkReadInt32_Constant(benchmark::State& state) {
-  // Same constant column, bulk read
   static TopicChunk chunk =
       buildTypedChunk(PrimitiveType::kInt32, [](TopicChunkBuilder& b, std::size_t col, int /*i*/) { b.set(col, 42); });
 
@@ -510,9 +507,8 @@ void BM_Deque_ReadString(benchmark::State& state) {
 }
 
 // ---------------------------------------------------------------------------
-// TopicStorage::metadata() — the progressive-load hot call: the app reads it
-// for every visible topic on every ingest tick, so its cost across a growing
-// chunk deque is what this measures. Parameter = retained chunk count.
+// TopicStorage::metadata() over a growing chunk deque; the app calls it per topic on ingest ticks. Parameter: the
+// retained chunk count.
 // ---------------------------------------------------------------------------
 
 void BM_TopicMetadata(benchmark::State& state) {

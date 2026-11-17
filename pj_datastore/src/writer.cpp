@@ -26,10 +26,6 @@
 
 namespace PJ {
 
-// ---------------------------------------------------------------------------
-// Impl definition
-// ---------------------------------------------------------------------------
-
 struct DataWriter::Impl {
   explicit Impl(DataEngine& eng) : engine(eng) {}
   DataEngine& engine;
@@ -37,10 +33,6 @@ struct DataWriter::Impl {
   tsl::robin_map<PJ::TopicId, std::vector<TopicChunk>> pending_chunks;
   tsl::robin_map<PJ::TopicId, std::vector<ColumnDescriptor>> topic_columns;
 };
-
-// ---------------------------------------------------------------------------
-// ColumnData methods
-// ---------------------------------------------------------------------------
 
 namespace {
 
@@ -72,7 +64,6 @@ StorageKind ColumnData::kind() const {
 
 namespace {
 
-/// Map NumericType to PrimitiveType (same enum values, different enum types).
 constexpr PrimitiveType numericToPrimitive(NumericType nt) noexcept {
   switch (nt) {
     case NumericType::kFloat32:
@@ -99,12 +90,9 @@ constexpr PrimitiveType numericToPrimitive(NumericType nt) noexcept {
   return PrimitiveType::kFloat64;  // unreachable
 }
 
-// Forward declarations — flatten_columns_impl and flatten_array_element_impl are mutually recursive.
 void flattenColumnsImpl(
     const TypeTreeNode& node, std::string_view prefix, FieldId& next_field_id, std::vector<ColumnDescriptor>& out);
 
-// Expand one array element (at path `element_path`, e.g., "poses[0]") into ColumnDescriptors.
-// Handles: struct element (recurse into children), primitive/enum element (single column).
 void flattenArrayElementImpl(
     const TypeTreeNode& element_type, std::string_view element_path, FieldId& next_field_id,
     std::vector<ColumnDescriptor>& out) {
@@ -121,8 +109,6 @@ void flattenArrayElementImpl(
   }
 }
 
-/// Recursively flatten a type tree into ColumnDescriptors, collecting both
-/// field paths and PrimitiveTypes for each leaf node.
 void flattenColumnsImpl(
     const TypeTreeNode& node, std::string_view prefix, FieldId& next_field_id, std::vector<ColumnDescriptor>& out) {
   std::string current_path = prefix.empty() ? node.name : fmt::format("{}.{}", prefix, node.name);
@@ -136,17 +122,15 @@ void flattenColumnsImpl(
 
   if (node.kind == TypeKind::kArray) {
     if (node.fixed_array_size.has_value()) {
-      // Fixed-size: expand all elements now at schema registration time
       for (uint32_t i = 0; i < *node.fixed_array_size; ++i) {
         std::string elem_path = fmt::format("{}[{}]", current_path, i);
         flattenArrayElementImpl(*node.element_type, elem_path, next_field_id, out);
       }
     }
-    // Variable-length: 0 columns initially — caller uses expandArray() to grow dynamically
+    // A variable-length array gets its columns from expandArray().
     return;
   }
 
-  // Leaf node (primitive or enum) -- produce a column descriptor
   ColumnDescriptor desc;
   desc.field_id = next_field_id++;
   desc.field_path = std::move(current_path);
@@ -154,9 +138,7 @@ void flattenColumnsImpl(
   out.push_back(std::move(desc));
 }
 
-// Find a TypeTreeNode child by dotted path relative to root's children.
-// E.g., find_child_at_path(root, "body.poses") returns the "poses" node inside "body".
-// Returns nullptr if any segment is not found or path passes through a non-struct.
+// `path` is dotted and excludes the root's name, e.g. "body.poses".
 const TypeTreeNode* findChildAtPath(const TypeTreeNode& root, std::string_view path) {
   std::string_view remaining = path;
   const TypeTreeNode* cur = &root;
@@ -220,9 +202,8 @@ Expected<TopicWriteHandle> DataWriter::bindTopicWriter(TopicId topic_id) {
     return PJ::unexpected(fmt::format("Topic {} not found", topic_id));
   }
 
-  // Ensure column descriptors are cached
   auto& builder = getOrCreateBuilder(topic_id);
-  (void)builder;  // we just need the side effect of caching columns
+  (void)builder;  // only its side effect: the columns get cached
 
   const auto& columns = impl_->topic_columns.at(topic_id);
   TopicWriteHandle handle;
@@ -239,7 +220,7 @@ Expected<TopicWriteHandle> DataWriter::bindTopicWriter(TopicId topic_id) {
 // ---------------------------------------------------------------------------
 
 Expected<FieldId> DataWriter::resolveField(TopicId topic_id, std::string_view field_path) {
-  // Ensure columns are cached by getting or creating the builder
+  // Creating the builder caches the columns.
   auto& builder = getOrCreateBuilder(topic_id);
   (void)builder;
 
@@ -266,8 +247,6 @@ PJ::Status DataWriter::beginRow(TopicId topic_id, Timestamp t) {
     return PJ::unexpected(fmt::format("Topic {} not found", topic_id));
   }
   auto& builder = getOrCreateBuilder(topic_id);
-  // Out-of-order timestamps are accepted (multi-publisher topics interleave
-  // regressing stamps); the builder sorts rows at seal.
   builder.beginRow(t);
   return PJ::okStatus();
 }
@@ -284,10 +263,6 @@ PJ::Status DataWriter::finishRow(PJ::TopicId topic_id) {
   }
   return PJ::okStatus();
 }
-
-// ---------------------------------------------------------------------------
-// Set values — templatized
-// ---------------------------------------------------------------------------
 
 template <typename T>
 void DataWriter::set(TopicId topic_id, std::size_t col_index, T value) {
@@ -336,7 +311,6 @@ void appendSingleColumnToBuilder(
       },
       col.data);
 
-  // Apply validity bitmap if present
   if (!col.validity.empty()) {
     builder.appendColumnValidity(col.col_index, col.validity.subspan(offset, batch_size));
   }
@@ -351,7 +325,6 @@ PJ::Status DataWriter::appendColumns(
     return PJ::unexpected(fmt::format("Topic {} not found", topic_id));
   }
 
-  // Validate all column row counts match timestamp count
   for (const auto& col : columns) {
     const std::size_t n = col.rowCount();
     if (n != timestamps.size()) {
@@ -403,7 +376,6 @@ PJ::Status DataWriter::appendColumns(
 
 Expected<ScalarSeriesHandle> DataWriter::registerScalarSeries(
     DatasetId dataset_id, std::string_view topic_name, NumericType value_type) {
-  // Create a topic descriptor for a scalar series (schema_id = 0)
   TopicDescriptor desc;
   desc.name = std::string(topic_name);
   desc.schema_id = 0;
@@ -414,7 +386,6 @@ Expected<ScalarSeriesHandle> DataWriter::registerScalarSeries(
   }
   TopicId topic_id = *topic_id_or;
 
-  // Build a single column descriptor for the "value" field
   ColumnDescriptor col_desc;
   col_desc.field_id = 0;
   col_desc.logical_type = numericToPrimitive(value_type);
@@ -424,8 +395,7 @@ Expected<ScalarSeriesHandle> DataWriter::registerScalarSeries(
   columns.push_back(std::move(col_desc));
   impl_->topic_columns[topic_id] = columns;
 
-  // Persist the column layout in TopicStorage so fresh writers and the derived
-  // engine can resolve it without requiring a committed (sealed) chunk.
+  // Stored on the topic so other writers and the derived engine resolve it before any chunk is committed.
   if (auto* storage = impl_->engine.getTopicStorage(topic_id)) {
     storage->setColumnDescriptors(std::move(columns));
   }
@@ -472,14 +442,12 @@ void DataWriter::appendScalar(const ScalarSeriesHandle& handle, Timestamp t, Num
 std::vector<TopicChunk> DataWriter::flush(TopicId topic_id) {
   std::vector<TopicChunk> result;
 
-  // Collect any pending (auto-sealed) chunks
   auto pending_it = impl_->pending_chunks.find(topic_id);
   if (pending_it != impl_->pending_chunks.end()) {
     result = std::move(pending_it.value());
     impl_->pending_chunks.erase(pending_it);
   }
 
-  // Seal the current builder if it has rows
   auto builder_it = impl_->builders.find(topic_id);
   if (builder_it != impl_->builders.end() && builder_it->second.rowCount() > 0) {
     result.push_back(builder_it.value().seal());
@@ -492,7 +460,6 @@ std::vector<TopicChunk> DataWriter::flush(TopicId topic_id) {
 std::vector<std::pair<TopicId, TopicChunk>> DataWriter::flushAll() {
   std::vector<std::pair<TopicId, TopicChunk>> result;
 
-  // Collect all pending chunks
   for (auto it = impl_->pending_chunks.begin(); it != impl_->pending_chunks.end(); ++it) {
     for (auto& chunk : it.value()) {
       result.emplace_back(it->first, std::move(chunk));
@@ -500,8 +467,7 @@ std::vector<std::pair<TopicId, TopicChunk>> DataWriter::flushAll() {
   }
   impl_->pending_chunks.clear();
 
-  // Seal all non-empty builders
-  // Collect topic IDs first to avoid modifying map during iteration
+  // Ids first: erasing while iterating would invalidate the iterator.
   std::vector<TopicId> builder_ids;
   builder_ids.reserve(impl_->builders.size());
   for (auto it = impl_->builders.begin(); it != impl_->builders.end(); ++it) {
@@ -533,8 +499,6 @@ Expected<FieldId> DataWriter::ensureColumn(TopicId topic_id, std::string_view fi
   ensureColsLoaded(topic_id, *storage);
   auto& cols = impl_->topic_columns[topic_id];
 
-  // No-op: column already exists — return existing field id.
-  // Type mismatch is an error: caller must not re-register with a different type.
   for (const auto& col : cols) {
     if (col.field_path == field_path) {
       if (col.logical_type != type) {
@@ -545,7 +509,6 @@ Expected<FieldId> DataWriter::ensureColumn(TopicId topic_id, std::string_view fi
     }
   }
 
-  // Guard: no row in progress
   auto builder_it = impl_->builders.find(topic_id);
   if (builder_it != impl_->builders.end() && builder_it->second.isRowInProgress()) {
     return PJ::unexpected(
@@ -553,10 +516,10 @@ Expected<FieldId> DataWriter::ensureColumn(TopicId topic_id, std::string_view fi
             "ensure_column: topic {} has a row in progress; call finishRow() before adding new columns", topic_id));
   }
 
-  // Seal the current builder (if any) before changing the column layout.
+  // A chunk has one column layout: seal before changing it.
   sealBeforeLayoutChange(topic_id);
 
-  // Append new column (field ids are always dense starting at 0 — assert the invariant)
+  // Field ids are dense from 0, so the next id is the column count.
   PJ_ASSERT(
       cols.empty() || cols.back().field_id == static_cast<FieldId>(cols.size() - 1),
       "ensure_column: field_id invariant broken — non-dense column ids detected");
@@ -577,29 +540,25 @@ Expected<FieldId> DataWriter::ensureColumn(TopicId topic_id, std::string_view fi
 
 PJ::Expected<uint32_t> DataWriter::expandArray(
     PJ::TopicId topic_id, std::string_view array_field_path, uint32_t new_length, PJ::PrimitiveType element_type) {
-  // Validate topic exists
   TopicStorage* storage = impl_->engine.getTopicStorage(topic_id);
   if (!storage) {
     return PJ::unexpected(fmt::format("expand_array: topic {} not found", topic_id));
   }
 
-  // Track the largest observed array length for metadata
   storage->updateMaxObservedArrayLength(new_length);
 
-  // Read authoritative expansion count from TopicStorage — shared across all DataWriter instances.
+  // The count lives on the topic, shared by every DataWriter.
   std::string path_key(array_field_path);
   const uint32_t current = storage->arrayExpansionCount(path_key);
 
-  // Fast no-op
   if (new_length <= current) {
     return current;
   }
 
-  // Get type tree — may be null for schemaless topics (schema_id == 0).
   SchemaId schema_id = storage->descriptor().schema_id;
   const TypeTreeNode* type_tree = impl_->engine.typeRegistry().lookup(schema_id);
 
-  // Typed topics: validate the array field against the schema before touching any state.
+  // Typed topics: validate the field against the schema before changing the layout.
   const TypeTreeNode* array_node = nullptr;
   if (type_tree) {
     array_node = findChildAtPath(*type_tree, array_field_path);
@@ -615,7 +574,6 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
     }
   }
 
-  // Apply expansion limit (clamp and record truncation) — common to both paths.
   uint32_t limit = storage->descriptor().array_expansion_limit;
   uint32_t actual = std::min(new_length, limit);
   if (new_length > limit) {
@@ -625,7 +583,6 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
     return current;
   }
 
-  // Reject expansion if a row is currently in progress (between begin_row and finish_row).
   auto builder_it = impl_->builders.find(topic_id);
   if (builder_it != impl_->builders.end() && builder_it->second.isRowInProgress()) {
     return PJ::unexpected(
@@ -635,22 +592,20 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
             topic_id));
   }
 
-  // Seal and stage the current builder (if any) before changing the column layout.
   sealBeforeLayoutChange(topic_id);
 
-  // Load current column descriptor list for this topic.
   ensureColsLoaded(topic_id, *storage);
   auto& cols = impl_->topic_columns[topic_id];
 
   if (!type_tree) {
-    // Schemaless path: any field path is accepted; use element_type for new columns.
+    // Schemaless: any path is accepted, typed by element_type.
     PJ_ASSERT(
         cols.empty() || cols.back().field_id == static_cast<FieldId>(cols.size() - 1),
         "expand_array: field_id invariant broken — non-dense column ids detected");
     FieldId next_field_id = static_cast<FieldId>(cols.size());
     for (uint32_t i = current; i < actual; ++i) {
       std::string elem_path = fmt::format("{}[{}]", array_field_path, i);
-      // Idempotent: skip if already present (e.g. added via ensure_column)
+      // May already exist, added by ensureColumn().
       bool already_exists = false;
       for (const auto& col : cols) {
         if (col.field_path == elem_path) {
@@ -667,16 +622,14 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
       }
     }
   } else {
-    // Typed path: generate columns from the schema element type.
-    // Use a per-index existence check (same as schemaless) so that columns
-    // manually added via ensure_column are not duplicated.
+    // Typed: columns from the schema's element type, skipping ones ensureColumn() already added.
     PJ_ASSERT(
         cols.empty() || cols.back().field_id == static_cast<FieldId>(cols.size() - 1),
         "expand_array: field_id invariant broken — non-dense column ids detected");
     FieldId next_field_id = static_cast<FieldId>(cols.size());
     for (uint32_t i = current; i < actual; ++i) {
       std::string elem_prefix = fmt::format("{}[{}]", array_field_path, i);
-      // Check for both exact match (primitive element) and prefix match (struct element fields).
+      // Exact match for a primitive element, prefix match for a struct element's fields.
       bool already_exists = false;
       for (const auto& col : cols) {
         if (col.field_path == elem_prefix || col.field_path.starts_with(elem_prefix + ".")) {
@@ -690,7 +643,6 @@ PJ::Expected<uint32_t> DataWriter::expandArray(
     }
   }
 
-  // Persist updated layout and expansion count in TopicStorage
   storage->setColumnDescriptors(cols);
   storage->setArrayExpansionCount(path_key, actual);
 
@@ -706,10 +658,8 @@ void DataWriter::ensureColsLoaded(TopicId topic_id, const TopicStorage& storage)
   if (!cols.empty()) {
     return;
   }
-  // Always prefer the layout persisted in TopicStorage when it is non-empty.
-  // expandArray() / ensureColumn() call storage->setColumnDescriptors() to record the
-  // current (potentially grown) column layout. A second DataWriter created
-  // after an expansion must see the expanded layout, not a stale rebuild.
+  // The stored layout wins: it includes the columns expandArray() and ensureColumn() added, which a schema rebuild
+  // would miss.
   const auto& stored = storage.columnDescriptors();
   if (!stored.empty()) {
     cols = stored;
@@ -720,7 +670,6 @@ void DataWriter::ensureColsLoaded(TopicId topic_id, const TopicStorage& storage)
     cols = buildColumnDescriptors(*type_tree);
     return;
   }
-  // schema_id==0 with no stored layout: fall back to first committed chunk.
   const auto& chunks = storage.sealedChunks();
   if (!chunks.empty()) {
     cols.reserve(chunks[0].columns.size());
@@ -728,7 +677,7 @@ void DataWriter::ensureColsLoaded(TopicId topic_id, const TopicStorage& storage)
       cols.push_back(*col.descriptor);
     }
   }
-  // else: stays empty — valid for brand-new schemaless topic
+  // A new schemaless topic starts with no columns.
 }
 
 TopicChunkBuilder& DataWriter::getOrCreateBuilder(TopicId topic_id) {

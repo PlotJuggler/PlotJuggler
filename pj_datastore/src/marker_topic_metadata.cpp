@@ -46,9 +46,8 @@ std::optional<std::string> stringField(const nlohmann::json& object, std::string
   return field->get<std::string>();
 }
 
-// The parsed metadata when its `pj_derived` is the string `kind`. Scans of every object
-// topic reach here (catalog rebuilds, each plot paint): the overwhelming majority are
-// not derived and are rejected without parsing.
+// Every object topic passes here on catalog rebuilds and plot paints; the substring check rejects most of them
+// without parsing.
 std::optional<nlohmann::json> derivedMetadataOfKind(std::string_view metadata_json, std::string_view kind) {
   if (metadata_json.find(kDerivedMetadataKey) == std::string_view::npos) {
     return std::nullopt;

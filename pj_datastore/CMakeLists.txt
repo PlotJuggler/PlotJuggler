@@ -1,14 +1,6 @@
 # ---------------------------------------------------------------------------
 # pj_datastore — columnar storage engine for the PlotJuggler application.
-#
-# Depends on pj_base + fmt (both provided by the plotjuggler_sdk SDK submodule,
-# which the root CMakeLists adds BEFORE this module so their targets exist) plus
-# tsl::robin_map + nanoarrow (cmake/PjNanoarrow.cmake).
-#
-# This module was previously part of the plotjuggler_sdk submodule. The
-# external-dependency detection below (tsl-robin-map / benchmark / nanoarrow /
-# nanoarrow_ipc) was relocated here from that submodule's root CMakeLists when
-# the engine moved into the application repo.
+# The root CMakeLists provides the plotjuggler_sdk and fmt targets before it adds this module.
 # ---------------------------------------------------------------------------
 
 option(
@@ -19,15 +11,13 @@ option(
 
 find_package(tsl-robin-map REQUIRED)
 find_package(nlohmann_json REQUIRED)  # marker_topic_metadata.cpp
-# Google Benchmark is skipped in the MemorySanitizer lane. That lane builds four
-# named test executables and no benchmarks, so requiring the package would mean
-# instrumenting a library nothing in the lane links — and google-benchmark's own
-# regex-backend detection fails to configure against an instrumented libc++.
+# Google Benchmark is skipped in the MemorySanitizer lane, which builds no benchmarks: requiring it would mean
+# instrumenting a library nothing there links, and its regex-backend detection fails against an instrumented libc++.
 if(PJ_BUILD_TESTS AND NOT PJ_ENABLE_MSAN)
   find_package(benchmark CONFIG REQUIRED)
 endif()
 
-# nanoarrow::nanoarrow + nanoarrow::nanoarrow_ipc: an installed 0.9.0, else the pinned source.
+# nanoarrow::nanoarrow + nanoarrow::nanoarrow_ipc: an installed package, else the pinned source.
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/PjNanoarrow.cmake)
 
 # ---------------------------------------------------------------------------
@@ -55,9 +45,7 @@ add_library(pj_datastore STATIC
   src/object_store.cpp
   src/marker_topic_metadata.cpp
   src/resident_payload_pool.cpp
-  # Data-processor execution substrate (the DataProcessor base + ProcessorSisoAdapter
-  # that runs a processor as an IncrementalEngine node — moved here from the retired pj_proc
-  # module; lives WITH the ISISOTransform interface it adapts to).
+  # PJ::proc, next to the ISISOTransform interface ProcessorSisoAdapter implements.
   src/data_processor.cpp
   src/processor_siso_adapter.cpp
 )
@@ -121,24 +109,20 @@ if(PJ_BUILD_TESTS)
     tests/sample_test.cpp
     tests/data_processor_test.cpp
     tests/processor_siso_adapter_test.cpp
-    # tests/plugin_host_read_test.cpp  # disabled until Phase 1b lands
-    #   (exercises v3 toolbox read path; rewrite for read_series_arrow)
+    # Not built: tests/plugin_host_read_test.cpp and tests/plugin_host_write_test.cpp target an ABI the SDK no
+    # longer has.
 
     # plugin_parser_object_write_test uses MessageParserPluginBase, so it needs
     # the plugin SDK for message_parser_plugin_base.hpp and builtin object types.
     tests/plugin_parser_object_write_test.cpp
 
-    # Arrow import test (needs nanoarrow explicitly for building test IPC data)
+    # Builds its IPC input with nanoarrow, linked below.
     tests/arrow_import_test.cpp
 
-    # v4 Arrow C Data Interface round-trip test (Phase 1b).
     tests/arrow_stream_round_trip_test.cpp
   )
 
-  # Share the dependency closure while ctest still runs each case in its own process.
-  # no WARNINGS: 29 of 29 merged tests never compiled with -Werror
-  # plain: not one of this module's test sources references Qt, and
-  # pj_datastore links none either. See cmake/PjTests.cmake.
+  # No WARNINGS: these tests have never been built with -Werror. MAIN plain: no test here uses Qt.
   pj_add_test_runner(pj_datastore_tests
     MAIN plain
     SOURCES ${PJ_DATASTORE_TESTS}
@@ -161,10 +145,8 @@ if(PJ_BUILD_TESTS)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
 
-  # The concurrency / thread-safety tests must fail LOUDLY on a deadlock rather
-  # than hang the whole ctest run — a lock-ordering regression (e.g. an ABBA in
-  # the write-host secondary mirror) is exactly the bug class they guard. This is
-  # the per-test floor; CI also passes a global --timeout.
+  # A deadlock must fail these tests, not hang ctest: lock-ordering regressions are what they guard. CI also passes a
+  # global --timeout.
   set_tests_properties(engine_concurrency_test engine_thread_safety_test
     PROPERTIES TIMEOUT 90)
 
@@ -185,8 +167,7 @@ if(PJ_BUILD_TESTS)
     add_test(NAME sanitizer_msan_selftest COMMAND sanitizer_msan_selftest)
     # PASS only on the MSan report itself. WILL_FAIL would also accept a loader
     # error or a runtime startup abort that never reached the deliberate read,
-    # and a lane that cannot detect that read proves nothing about the 487
-    # tests that pass beside it.
+    # and a lane that cannot detect that read proves nothing about the tests that pass beside it.
     set_tests_properties(sanitizer_msan_selftest PROPERTIES
       PASS_REGULAR_EXPRESSION "MemorySanitizer: use-of-uninitialized-value"
       ENVIRONMENT "MSAN_OPTIONS=halt_on_error=1:exitcode=77:abort_on_error=0"
@@ -232,9 +213,7 @@ if(PJ_BUILD_TESTS)
     target_link_libraries(ingest_benchmark PRIVATE pj_datastore benchmark::benchmark)
   endif()
 
-  # Threaded contention probe for the reader-writer lock (plain main(), not the
-  # google-benchmark micro-loop model — contention is duration-based). Threads
-  # for the writer/reader; no benchmark::benchmark dependency.
+  # Contention probe for the engine lock: plain main(), since contention is measured over time, not in a micro-loop.
   find_package(Threads REQUIRED)
   add_executable(concurrency_benchmark benchmarks/concurrency_benchmark.cpp)
   target_link_libraries(concurrency_benchmark PRIVATE pj_datastore Threads::Threads)

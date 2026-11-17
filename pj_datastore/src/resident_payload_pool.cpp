@@ -12,28 +12,18 @@ namespace PJ {
 
 namespace detail {
 
-// Shared between the pool facade and every slot it minted, so accounting stays
-// correct regardless of which of the two dies first. Holds only weak slot
-// references: a slot destroyed with its entry retires itself through here.
-// Payloads at or below this are the "small" class and are evicted only by other
-// small payloads. Without the split, a handful of large payloads evict thousands
-// of small ones: MEASURED on a 373 MB mcap, 598 PointCloud2 messages filled the
-// whole 256 MB budget and evicted 19,817 of 29,360 admissions, so 32% of the
-// GUI's TF reads missed and fell back to the lazy path — a file re-read plus a
-// whole-chunk decompress each, ~2.7 ms of GUI-thread CPU per message. The two
-// classes differ by ~3 orders of magnitude in size (a TF message is ~200 B, a
-// point cloud ~500 KB), so one FIFO over one budget cannot serve both.
+// Payloads at or below this form the small class, evicted only by other small payloads: in one FIFO, a few large
+// payloads evict thousands of small ones (docs/TECHNICAL_NOTES.md "ObjectStore costs").
 constexpr size_t kSmallPayloadBytes = 64 * 1024;
 
-// Share of the budget reserved for the small class. Small payloads are numerous
-// but tiny — 28,761 TF messages total under 6 MB — so a modest reservation holds
-// an entire topic's history while leaving the bulk of the budget to large
-// payloads, whose working set is what the budget was sized for.
+// Share of the budget reserved for the small class.
 constexpr size_t kSmallClassShareDenominator = 8;
 
+// Shared by the pool and every slot it minted, so the accounting survives whichever dies first. Holds only weak slot
+// references: a slot destroyed with its entry retires its charge through here.
 struct ResidentPoolState {
-  size_t capacity_bytes = 0;        // immutable after construction
-  size_t small_capacity_bytes = 0;  // reserved subset of capacity_bytes
+  size_t capacity_bytes = 0;        // immutable, so read without the mutex
+  size_t small_capacity_bytes = 0;  // part of capacity_bytes; immutable
 
   std::mutex mutex;
   std::deque<std::weak_ptr<ResidentSlot>> fifo;
@@ -50,17 +40,12 @@ struct ResidentPoolState {
   explicit ResidentPoolState(size_t capacity)
       : capacity_bytes(capacity), small_capacity_bytes(capacity / kSmallClassShareDenominator) {}
 
-  /// Whether `bytes` belongs to the reserved small class. A payload larger than
-  /// the small class's ENTIRE capacity cannot be small — it could never fit,
-  /// and calling it small would make every admission evict the whole class and
-  /// still not fit. That also keeps a pool too small to be worth splitting
-  /// behaving exactly as a single-class pool.
+  /// Capped by the small class's capacity: a larger payload could never fit it.
   [[nodiscard]] bool isSmall(size_t bytes) const {
     return bytes <= std::min(kSmallPayloadBytes, small_capacity_bytes);
   }
 
-  // Subtract a retiring slot's charge. Called from ~ResidentSlot on arbitrary
-  // threads (never while the pool mutex is held — see the destructor).
+  // Called from ~ResidentSlot on any thread, never with the pool mutex held (see the destructor).
   void subtract(size_t bytes) {
     std::lock_guard lock(mutex);
     resident_bytes -= bytes;
@@ -72,18 +57,15 @@ struct ResidentPoolState {
 
 }  // namespace detail
 
-// --- ResidentSlot ---
-
 ResidentSlot::ResidentSlot(
     std::shared_ptr<detail::ResidentPoolState> state, sdk::PayloadView payload, size_t charged_bytes)
     : payload_(std::move(payload)), state_(std::move(state)), charged_bytes_(charged_bytes) {}
 
 ResidentSlot::~ResidentSlot() {
-  // Pool eviction paths hold a strong reference while they take(), so this
-  // destructor never races them; a still-present payload here means the entry
-  // died first. The payload (and its anchor) is released in this scope, on the
-  // destroying thread, with no pool lock held — take() and subtract() acquire
-  // and release their locks sequentially, never together.
+  // Every pool path take()s the payload before dropping its strong reference, so a payload still here means the
+  // entry died first. The payload and its anchor are released on this thread with no pool lock held. Eviction take()s
+  // under the pool lock, so the lock order is pool, then slot: take() must release the slot lock before subtract()
+  // takes the pool lock, or the two deadlock.
   if (auto taken = take()) {
     state_->subtract(charged_bytes_);
   }
@@ -108,8 +90,6 @@ std::optional<sdk::PayloadView> ResidentSlot::take() {
   return taken;
 }
 
-// --- ResidentPayloadPool ---
-
 ResidentPayloadPool::ResidentPayloadPool(size_t capacity_bytes)
     : state_(std::make_shared<detail::ResidentPoolState>(capacity_bytes)) {}
 
@@ -121,38 +101,28 @@ std::shared_ptr<ResidentSlot> ResidentPayloadPool::admit(sdk::PayloadView payloa
     return nullptr;
   }
   if (bytes > state_->capacity_bytes) {
-    // Never evict useful residents for a payload that cannot fit regardless.
+    // Rejected before evicting anything: it could never fit.
     state_->rejected_oversize.fetch_add(1, std::memory_order_relaxed);
     return nullptr;
   }
 
-  // Plain new: the minting constructor is private to this friend, so
-  // make_shared cannot reach it.
+  // Plain new: make_shared cannot reach the private constructor.
   auto slot = std::shared_ptr<ResidentSlot>(new ResidentSlot(state_, std::move(payload), bytes));
 
-  // Take FIFO victims' payloads and subtract their charges inside the pool
-  // critical section (the cap is hard, never transiently over-reported), but
-  // destroy them — running the anchors' plugin release code — only after the
-  // lock drops. take() may return nullopt only for a slot another pool path
-  // already emptied; its charge was subtracted then.
+  // Victims' charges are subtracted under the pool lock (the cap is hard), but their payloads are destroyed after it
+  // drops: the anchors run plugin release code.
   const bool is_small = state_->isSmall(bytes);
   std::vector<sdk::PayloadView> released;
   {
     std::lock_guard lock(state_->mutex);
-    // Evict within the payload's OWN class only. A large payload may never take
-    // a small one's reservation, which is the whole point: otherwise a few
-    // hundred multi-hundred-KB payloads roll the entire budget and a numerous,
-    // tiny topic is never resident when its reader arrives.
+    // Evict within the payload's own class only, so large payloads never take the small reservation.
     auto& fifo = is_small ? state_->small_fifo : state_->fifo;
     const size_t class_capacity =
         is_small ? state_->small_capacity_bytes : (state_->capacity_bytes - state_->small_capacity_bytes);
-    // small_resident_bytes is a SUBSET of resident_bytes, so the large class's
-    // own usage is the difference — comparing the total against the large
-    // capacity would charge large payloads for the small reservation twice.
+    // small_resident_bytes is part of resident_bytes: the large class uses the difference.
     auto class_bytes = [this, is_small]() -> size_t {
       return is_small ? state_->small_resident_bytes : (state_->resident_bytes - state_->small_resident_bytes);
     };
-    // Evict the oldest resident of `victims` (the small or the large FIFO).
     auto evict_front = [this, &released](std::deque<std::weak_ptr<ResidentSlot>>& victims, bool small_victims) {
       auto victim = victims.front().lock();
       victims.pop_front();
@@ -160,8 +130,6 @@ std::shared_ptr<ResidentSlot> ResidentPayloadPool::admit(sdk::PayloadView payloa
         return;  // slot already died with its entry and retired itself
       }
       if (auto taken = victim->take()) {
-        // Both counters are charged for a small payload (small_resident_bytes is
-        // a subset of resident_bytes), so both must be credited back.
         state_->resident_bytes -= victim->charged_bytes_;
         if (small_victims) {
           state_->small_resident_bytes -= victim->charged_bytes_;
@@ -170,11 +138,9 @@ std::shared_ptr<ResidentSlot> ResidentPayloadPool::admit(sdk::PayloadView payloa
         released.push_back(std::move(*taken));
       }
     };
-    // The total budget is hard. A large payload may borrow the unused small
-    // reservation (a single payload bigger than the large class), but never
-    // evicts small residents: reject it up front — before evicting anything — if
-    // it cannot fit beside them. The slot's payload is handed back through
-    // `released`, so its destructor has no charge to retire.
+    // The total budget is hard. A large payload may borrow unused small reservation but never evicts small residents,
+    // so one that cannot fit beside them is rejected before anything is evicted. Its payload leaves through
+    // `released`, so the slot's destructor has no charge to retire.
     if (!is_small && state_->small_resident_bytes + bytes > state_->capacity_bytes) {
       if (auto taken = slot->take()) {
         released.push_back(std::move(*taken));
@@ -185,8 +151,7 @@ std::shared_ptr<ResidentSlot> ResidentPayloadPool::admit(sdk::PayloadView payloa
       while (class_bytes() + bytes > class_capacity && !fifo.empty()) {
         evict_front(fifo, is_small);
       }
-      // A small payload's reservation is guaranteed: reclaim space a large
-      // payload borrowed from it.
+      // A small payload's reservation is guaranteed: reclaim space a large payload borrowed from it.
       while (is_small && state_->resident_bytes + bytes > state_->capacity_bytes && !state_->fifo.empty()) {
         evict_front(state_->fifo, /*small_victims=*/false);
       }
@@ -199,8 +164,7 @@ std::shared_ptr<ResidentSlot> ResidentPayloadPool::admit(sdk::PayloadView payloa
       fifo.push_back(slot);
     }
   }
-  // `released` drops here — anchors run outside the pool mutex. A rejected
-  // admission returns nullptr (its payload is in `released`).
+  // `released` drops here, outside the pool mutex. A rejected admission returns nullptr.
   return slot;
 }
 
@@ -208,8 +172,6 @@ void ResidentPayloadPool::trim() {
   std::vector<sdk::PayloadView> released;
   {
     std::lock_guard lock(state_->mutex);
-    // BOTH classes: trim means "release everything", and the small class is a
-    // separate FIFO that the large-class walk cannot see.
     for (auto* fifo : {&state_->fifo, &state_->small_fifo}) {
       const bool is_small = fifo == &state_->small_fifo;
       for (auto& weak : *fifo) {
