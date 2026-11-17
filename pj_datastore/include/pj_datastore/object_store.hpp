@@ -268,9 +268,10 @@ class ObjectStore {
 
   // --- Cross-store flush ---
 
-  /// Moves every entry into `dst` (registrations stay), matching topics by (dataset, name). Each moved series must
-  /// start at or after dst's last timestamp; a validation failure changes neither store. Zero-copy; dst's retention
-  /// applies afterwards.
+  /// Moves every entry into `dst` (registrations stay), matching topics by (dataset, name); a validation failure
+  /// changes neither store. Entries older than dst's newest merge into timestamp order, as an out-of-order push does;
+  /// dst's entries keep their UIDs and the moved ones get fresh, newer ones. Zero-copy; dst's retention applies
+  /// afterwards.
   Status flushTo(ObjectStore& dst);
 
   /// Replaces object dataset `primary_id` with what was ingested into `staged`'s `staged_id` (the reload path),

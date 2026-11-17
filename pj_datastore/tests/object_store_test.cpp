@@ -1497,20 +1497,44 @@ TEST(ObjectStoreFlushTest, AppendsToExistingDstEntries) {
   EXPECT_EQ(dst.at(dst_id, uid3)->timestamp, 300);
 }
 
-TEST(ObjectStoreFlushTest, RejectsMonotonicityViolation) {
+// A paused stream can receive an entry stamped before the newest live one (a topic
+// with several publishers interleaves their stamps), and a live entry can reach dst
+// between the resume swap and the flush. The flush keeps every entry, of that topic and of every other, in time
+// order; dst's entries keep their UIDs and the moved ones get newer UIDs.
+TEST(ObjectStoreFlushTest, LateEntriesMergeIntoTimeOrderOnEveryTopic) {
   ObjectStore src, dst;
   auto src_id = registerSameDescriptor(src);
   auto dst_id = registerSameDescriptor(dst);
+  auto src_other = registerSameDescriptor(src, 1, "other/topic");
+  auto dst_other = registerSameDescriptor(dst, 1, "other/topic");
 
-  dst.pushOwned(dst_id, 200, makePayload(4));
-  src.pushOwned(src_id, 100, makePayload(4));  // earlier than dst's last
+  dst.pushOwned(dst_id, 100, makePayload(4, 0x10));
+  dst.pushOwned(dst_id, 200, makePayload(4, 0x20));
+  dst.pushOwned(dst_id, 400, makePayload(4, 0x40));  // live, after the swap
+  dst.pushOwned(dst_other, 100, makePayload(4));
+  const SequentialUID uid100 = dst.latestAt(dst_id, 100)->sequential_uid;
+  const SequentialUID uid200 = dst.latestAt(dst_id, 200)->sequential_uid;
+  const SequentialUID uid400 = dst.latestAt(dst_id, 400)->sequential_uid;
+  src.pushOwned(src_id, 150, makePayload(4, 0x15));  // late: older than dst's newest
+  src.pushOwned(src_id, 300, makePayload(4, 0x30));
+  src.pushOwned(src_other, 200, makePayload(4));
 
   auto result = src.flushTo(dst);
-  EXPECT_FALSE(result.has_value());
+  ASSERT_TRUE(result.has_value()) << result.error();
 
-  // Neither store is mutated on failure.
-  EXPECT_EQ(src.entryCount(src_id), 1u);
-  EXPECT_EQ(dst.entryCount(dst_id), 1u);
+  std::vector<Timestamp> by_index;
+  for (size_t i = 0; i < dst.entryCount(dst_id); ++i) {
+    by_index.push_back(dst.at(dst_id, i)->timestamp);
+  }
+  EXPECT_EQ(by_index, (std::vector<Timestamp>{100, 150, 200, 300, 400}));
+  EXPECT_EQ(dst.at(dst_id, 1)->payload.bytes[0], 0x15);
+  EXPECT_EQ(dst.at(dst_id, uid100)->timestamp, 100);
+  EXPECT_EQ(dst.at(dst_id, uid200)->timestamp, 200);
+  EXPECT_EQ(dst.at(dst_id, uid400)->timestamp, 400);
+  EXPECT_EQ(walkUids(dst, dst_id), (std::vector<Timestamp>{100, 200, 400, 150, 300}));
+  EXPECT_EQ(dst.entryCount(dst_other), 2u);
+  EXPECT_EQ(src.entryCount(src_id), 0u);
+  EXPECT_EQ(src.entryCount(src_other), 0u);
 }
 
 TEST(ObjectStoreFlushTest, RejectsUnknownTopicInDst) {
@@ -1679,7 +1703,7 @@ TEST(ObjectStoreFlushTest, UidWalkAfterAppendingFlushVisitsAllEntriesInOrder) {
   const SequentialUID uid10 = dst.latestAt(dst_id, 10)->sequential_uid;
   const SequentialUID uid20 = dst.latestAt(dst_id, 20)->sequential_uid;
   const SequentialUID uid30 = dst.latestAt(dst_id, 30)->sequential_uid;
-  // src timestamps must respect monotonicity (>= dst.back() == 30).
+  // src entries all after dst.back() == 30: the in-order append path.
   src.pushOwned(src_id, 40, makePayload(4));
   src.pushOwned(src_id, 50, makePayload(4));
   ASSERT_TRUE(src.flushTo(dst).has_value());

@@ -9,6 +9,8 @@
 //   "value":<number>  the value of every sample (default 1)
 //   "gate_file":"<path>"  publish nothing until that file exists (default: no gate)
 //   "end_file":"<path>"   end the stream, as its source closing would, once that file exists
+//   "late_file":"<path>"  once that file exists, one poll also writes a sample stamped
+//                         kStampBase, before every other sample (a late arrival)
 //   "reject":true     loadConfig() refuses the configuration
 //   "fail_start":true start() fails
 // Each loadConfig/start/stop appends one line ("load <config>", "start",
@@ -29,6 +31,9 @@
 #include <string_view>
 
 namespace {
+
+// Sample N of a stream is stamped kStampBase + N ms (N from 1).
+constexpr int64_t kStampBase = 1'000'000'000LL;
 
 constexpr const char* kDialogManifestJson = R"({
   "id": "mock-layout-stream-dialog",
@@ -138,6 +143,7 @@ class MockLayoutStream : public PJ::StreamSourceBase {
     value_ = numberValue(config_, "value", 1.0);
     gate_file_ = stringValue(config_, "gate_file", "");
     end_file_ = stringValue(config_, "end_file", "");
+    late_file_ = stringValue(config_, "late_file", "");
     return PJ::okStatus();
   }
 
@@ -157,8 +163,12 @@ class MockLayoutStream : public PJ::StreamSourceBase {
       }
       topic_ = *topic;
     }
-    const PJ::Timestamp stamp{1'000'000'000LL + static_cast<int64_t>(polls_) * 1'000'000LL};
+    const PJ::Timestamp stamp{kStampBase + static_cast<int64_t>(polls_) * 1'000'000LL};
     auto status = writeHost().appendRecord(*topic_, stamp, {{.name = "value", .value = value_}});
+    if (status && !late_sent_ && !late_file_.empty() && std::ifstream(late_file_).good()) {
+      late_sent_ = true;
+      status = writeHost().appendRecord(*topic_, PJ::Timestamp{kStampBase}, {{.name = "value", .value = value_}});
+    }
     return status ? PJ::okStatus() : PJ::unexpected(status.error());
   }
 
@@ -173,6 +183,8 @@ class MockLayoutStream : public PJ::StreamSourceBase {
   double value_ = 1.0;
   std::string gate_file_;
   std::string end_file_;
+  std::string late_file_;
+  bool late_sent_ = false;
   int polls_ = 0;
   std::optional<PJ::sdk::TopicHandle> topic_;
 };

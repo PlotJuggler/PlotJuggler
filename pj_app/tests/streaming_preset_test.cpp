@@ -552,6 +552,60 @@ TEST_F(StreamingPresetTest, RemovingADatasetDropsThePausedRowsOfItsEndedStream) 
   EXPECT_TRUE(merged.has_value()) << merged.error();
 }
 
+// A sample stamped before the newest live one (a late arrival) can reach a paused stream.
+// The resume still merges every paused row into the live engine, and so does the next one.
+TEST_F(StreamingPresetTest, ResumeMergesPausedRowsThatArriveLate) {
+  const QString late_file = probe_dir_.filePath(u"late"_s);
+  ASSERT_EQ(
+      loadPreset(
+          u"late"_s, streamLayout(
+                         {{u"plot1"_s, streamCurve(u"robot/data"_s, u"robot"_s)}},
+                         {{u"robot"_s, uR"({"topic":"robot/data","late_file":"%1"})"_s.arg(late_file)}})),
+      u"ok"_s);
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  const PJ::DatasetId dataset = streamSessions().value(u"robot"_s);
+  ASSERT_NE(dataset, 0U);
+  PJ::DataEngine& live = sessionManager().dataEngine();
+  PJ::DataEngine& paused = streams.secondaryEngineForTests();
+  const auto rows = [dataset](PJ::DataEngine& engine) {
+    PJ::DataReader reader(engine);
+    uint64_t count = 0;
+    for (const PJ::TopicId topic : engine.listTopics(dataset)) {
+      const auto meta = reader.getMetadata(topic);
+      count += meta.has_value() ? meta->total_row_count : 0;
+    }
+    return count;
+  };
+  const auto has_late_row = [dataset](PJ::DataEngine& engine) {
+    constexpr PJ::Timestamp kLateStamp = 1'000'000'000;  // the mock stream's kStampBase
+    PJ::DataReader reader(engine);
+    for (const PJ::TopicId topic : engine.listTopics(dataset)) {
+      const auto row = reader.latestAt(PJ::QueryPoint{.topic_id = topic, .t = kLateStamp});
+      if (row.has_value() && row->has_value()) {
+        return true;
+      }
+    }
+    return false;
+  };
+  ASSERT_TRUE(pumpUntil([&] { return rows(live) > 0; }));
+
+  streams.onPauseToggled(true);
+  {
+    QFile late(late_file);
+    ASSERT_TRUE(late.open(QIODevice::WriteOnly));
+  }
+  ASSERT_TRUE(pumpUntil([&] { return has_late_row(paused) && rows(paused) > 1; }));
+  streams.onPauseToggled(false);
+  EXPECT_EQ(rows(paused), 0U) << "the paused rows did not reach the live engine";
+  EXPECT_TRUE(has_late_row(live));
+
+  streams.onPauseToggled(true);
+  const uint64_t left_behind = rows(paused);
+  ASSERT_TRUE(pumpUntil([&] { return rows(paused) > left_behind; }));
+  streams.onPauseToggled(false);
+  EXPECT_EQ(rows(paused), 0U) << "the next resume did not reach the live engine either";
+}
+
 // Topics that arrive after the layout applied bind to the stream their curve
 // names, never to another stream that publishes the same topic first.
 TEST_F(StreamingPresetTest, LateTopicsBindToCorrectSource) {

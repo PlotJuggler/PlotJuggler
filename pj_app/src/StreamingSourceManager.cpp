@@ -286,7 +286,8 @@ void StreamingSourceManager::onPauseToggled(bool paused) {
     return;
   }
   // Resume. Swap targets BEFORE flushing so any push already in flight finishes on the secondary and the next one
-  // goes to the primary; otherwise the flush races new arrivals.
+  // goes to the primary; otherwise the flush races new arrivals. A push that reaches the primary before
+  // the flush is fine: the paused rows still land.
   for (auto& [_id, sess] : sessions_) {
     applyWriteTargetsForCurrentPauseState(*sess->runtime_host);
   }

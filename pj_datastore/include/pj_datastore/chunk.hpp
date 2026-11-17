@@ -151,6 +151,13 @@ class TopicChunkBuilder {
   /// Sorts the rows by timestamp (stable), picks the encodings and assigns the next ChunkId.
   [[nodiscard]] TopicChunk seal();
 
+  /// An id above every chunk id handed out so far, from the counter seal() draws
+  /// on: for a sealed chunk that must read as committed after all of them (the
+  /// IncrementalEngine reads a topic's chunk ids as its commit order).
+  [[nodiscard]] static ChunkId nextChunkId() noexcept {
+    return next_chunk_id++;
+  }
+
  private:
   TopicId topic_id_;
   SchemaId schema_id_;

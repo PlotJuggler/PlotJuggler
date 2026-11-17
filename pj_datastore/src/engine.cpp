@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <deque>
+#include <iterator>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -449,6 +451,142 @@ void DataEngine::reattachDatasetChunks(DatasetId dataset_id, DatasetChunkSnapsho
   snapshot.valid = false;
 }
 
+namespace {
+
+// Row `row` of `chunk`, at `ts`; chunk column c lands in output column (*colmap)[c],
+// dropped when negative. `colmap` covers every column of `chunk`.
+struct RowRef {
+  Timestamp ts;
+  const TopicChunk* chunk;
+  std::size_t row;
+  const std::vector<int>* colmap;
+};
+
+// Re-encodes `rows`, in their order, into chunks of at most `max_rows` rows with the
+// columns of `layout`, each cell stored as its output column's kind. A null cell, or a
+// column the row's chunk lacks, stays null.
+std::vector<TopicChunk> sealRows(
+    const std::vector<RowRef>& rows, TopicId topic_id, SchemaId schema_id, const std::vector<ColumnDescriptor>& layout,
+    uint32_t max_rows) {
+  std::vector<TopicChunk> sealed;
+  TopicChunkBuilder builder(topic_id, schema_id, layout, max_rows);
+  for (const RowRef& ref : rows) {
+    builder.beginRow(ref.ts);
+    const TopicChunk& chunk = *ref.chunk;
+    for (std::size_t lc = 0; lc < chunk.columns.size(); ++lc) {
+      const int mapped = (*ref.colmap)[lc];
+      if (mapped < 0 || chunk.isNull(lc, ref.row)) {
+        continue;  // finishRow() auto-nulls the columns left unset
+      }
+      const auto uc = static_cast<std::size_t>(mapped);
+      switch (storageKindOf(layout[uc].logical_type)) {
+        case StorageKind::kFloat32:
+          builder.set<float>(uc, static_cast<float>(chunk.readNumericAsDouble(lc, ref.row)));
+          break;
+        case StorageKind::kFloat64:
+          builder.set<double>(uc, chunk.readNumericAsDouble(lc, ref.row));
+          break;
+        case StorageKind::kInt32:
+          builder.set<int32_t>(uc, static_cast<int32_t>(chunk.readNumericAsInt64(lc, ref.row)));
+          break;
+        case StorageKind::kInt64:
+          builder.set<int64_t>(uc, chunk.readNumericAsInt64(lc, ref.row));
+          break;
+        case StorageKind::kUint64:
+          builder.set<uint64_t>(uc, chunk.readNumericAsUint64(lc, ref.row));
+          break;
+        case StorageKind::kBool:
+          builder.set<bool>(uc, chunk.readBool(lc, ref.row));
+          break;
+        case StorageKind::kString:
+          builder.set<std::string_view>(uc, chunk.readString(lc, ref.row));
+          break;
+      }
+    }
+    builder.finishRow();
+    if (builder.isFull()) {
+      sealed.push_back(builder.seal());
+      builder = TopicChunkBuilder(topic_id, schema_id, layout, max_rows);
+    }
+  }
+  if (builder.rowCount() > 0) {
+    sealed.push_back(builder.seal());
+  }
+  return sealed;
+}
+
+// One topic's `resident` and `incoming` chunks, whose rows interleave between
+// `incoming_oldest` and `resident_newest`, as one run in time order. Only the chunks
+// reaching into that window move: sorted by start, and those whose ranges overlap are
+// re-encoded together without the rows below `floor` (hidden anyway). Every other chunk
+// keeps its encoding. Each chunk from the first whose id does not ascend gets a fresh id:
+// the IncrementalEngine reads a topic's chunk ids as its commit order.
+std::deque<TopicChunk> mergeRuns(
+    std::deque<TopicChunk> resident, std::deque<TopicChunk> incoming, Timestamp incoming_oldest,
+    Timestamp resident_newest, Timestamp floor, uint32_t max_rows) {
+  std::deque<TopicChunk> ordered;
+  std::deque<TopicChunk> window;
+  for (TopicChunk& chunk : resident) {
+    (chunk.stats.t_max <= incoming_oldest ? ordered : window).push_back(std::move(chunk));
+  }
+  std::deque<TopicChunk> after;
+  for (TopicChunk& chunk : incoming) {
+    (chunk.stats.t_min >= resident_newest ? after : window).push_back(std::move(chunk));
+  }
+  std::stable_sort(window.begin(), window.end(), [](const TopicChunk& a, const TopicChunk& b) {
+    return a.stats.t_min < b.stats.t_min;
+  });
+
+  std::size_t first = 0;
+  while (first < window.size()) {
+    std::size_t end = first + 1;
+    Timestamp reach = window[first].stats.t_max;
+    while (end < window.size() && window[end].stats.t_min < reach) {
+      reach = std::max(reach, window[end].stats.t_max);
+      ++end;
+    }
+    if (end - first == 1) {
+      ordered.push_back(std::move(window[first]));
+    } else {
+      // Field ids are append-only with a fixed type, so the widest chunk's columns
+      // describe every other chunk's by index.
+      const TopicChunk& widest = *std::max_element(
+          window.begin() + static_cast<std::ptrdiff_t>(first), window.begin() + static_cast<std::ptrdiff_t>(end),
+          [](const TopicChunk& a, const TopicChunk& b) { return a.columns.size() < b.columns.size(); });
+      std::vector<ColumnDescriptor> layout;
+      for (const auto& column : widest.columns) {
+        layout.push_back(*column.descriptor);
+      }
+      std::vector<int> same_index(layout.size());
+      std::iota(same_index.begin(), same_index.end(), 0);
+      std::vector<RowRef> rows;
+      for (std::size_t k = first; k < end; ++k) {
+        const TopicChunk& chunk = window[k];
+        for (std::size_t row = 0; row < chunk.stats.row_count; ++row) {
+          if (const Timestamp ts = chunk.readTimestamp(row); ts >= floor) {
+            rows.push_back(RowRef{ts, &chunk, row, &same_index});
+          }
+        }
+      }
+      std::stable_sort(rows.begin(), rows.end(), [](const RowRef& a, const RowRef& b) { return a.ts < b.ts; });
+      for (TopicChunk& chunk : sealRows(rows, widest.topic_id, widest.schema_version, layout, max_rows)) {
+        ordered.push_back(std::move(chunk));
+      }
+    }
+    first = end;
+  }
+  std::move(after.begin(), after.end(), std::back_inserter(ordered));
+
+  for (std::size_t i = 1; i < ordered.size(); ++i) {
+    if (ordered[i].id <= ordered[i - 1].id) {
+      ordered[i].id = TopicChunkBuilder::nextChunkId();
+    }
+  }
+  return ordered;
+}
+
+}  // namespace
+
 Status DataEngine::flushTo(DataEngine& dst) {
   if (&dst == this) {
     return PJ::unexpected("flushTo: source and destination are the same engine");
@@ -484,10 +622,6 @@ Status DataEngine::flushTo(DataEngine& dst) {
           "flushTo: destination has no topic '" + src_storage.descriptor().name + "' for dataset " +
           std::to_string(src_storage.descriptor().dataset_id));
     }
-    // timeMin() is the first visible row: rows under a paused stream's retention floor stay hidden after the move.
-    if (!dst_storage->empty() && src_storage.timeMin() < dst_storage->timeMax()) {
-      return PJ::unexpected("flushTo: monotonicity violation for topic '" + src_storage.descriptor().name + "'");
-    }
     plan.push_back({&src_storage, dst_storage});
   }
 
@@ -499,23 +633,37 @@ Status DataEngine::flushTo(DataEngine& dst) {
 }
 
 void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
-  std::deque<TopicChunk> drained = std::move(src.sealed_chunks_);
+  // src's timeMin() is its first visible row, so rows under its retention floor never count as interleaved.
+  const bool interleaved = !dst.empty() && !src.empty() && src.timeMin() < dst.timeMax();
+  const Timestamp incoming_oldest = src.timeMin();
+  const Timestamp resident_newest = dst.timeMax();
+  std::deque<TopicChunk> moved = std::move(src.sealed_chunks_);
   src.sealed_chunks_.clear();
   src.invalidateChunkAggregate();
   const TopicId dst_id = dst.topicId();
-  for (auto& chunk : drained) {
+  for (auto& chunk : moved) {
     chunk.topic_id = dst_id;
-    dst.sealed_chunks_.push_back(std::move(chunk));
   }
-  dst.invalidateChunkAggregate();
   // src's floor keeps a straddling chunk's sub-floor rows hidden; its evicted-through id lets a consumer that never
   // saw the dropped rows notice the gap.
   dst.retention_floor_ = std::max(dst.retention_floor_, src.retention_floor_);
   dst.evicted_through_chunk_id_ = std::max(dst.evicted_through_chunk_id_, src.evicted_through_chunk_id_);
   src.retention_floor_ = kNoRetentionFloor;
   src.evicted_through_chunk_id_ = 0;
-  // Both sides changed outside appendSealedChunk() (the flushTo boundary even allows an equal timestamp), so
-  // incremental sample caches on either must rebuild.
+  // Readers that walk chunks in deque order (XY plots, SeriesReader's index lookups) need time order, so interleaved
+  // runs are merged rather than left to overlap.
+  if (interleaved) {
+    moved = mergeRuns(
+        std::exchange(dst.sealed_chunks_, {}), std::move(moved), incoming_oldest, resident_newest, dst.retention_floor_,
+        dst.descriptor().max_chunk_rows);
+    dst.invalidateChunkAggregate();
+  }
+  // appendSealedChunk() memoizes a re-encoded chunk's size and keeps dst's aggregates current.
+  for (TopicChunk& chunk : moved) {
+    (void)dst.appendSealedChunk(std::move(chunk));
+  }
+  // Both sides changed outside appendSealedChunk()'s in-order path, so incremental sample caches on either must
+  // rebuild.
   ++src.series_generation_;
   ++dst.series_generation_;
 }
@@ -782,12 +930,6 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     }
 
     // Stable sort: equal timestamps keep contributor order and all survive.
-    struct RowRef {
-      Timestamp ts;
-      const TopicChunk* chunk;
-      std::size_t row;
-      const std::vector<int>* colmap;  // chunk column -> union column, -1 to drop
-    };
     std::deque<std::vector<int>> colmap_pool;  // stable addresses for RowRef::colmap
     std::vector<RowRef> rows;
     for (const Contributor& c : kept) {
@@ -824,50 +966,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     if (const TopicStorage* dest_st = getTopicStorage(dest_tid)) {
       max_chunk_rows = dest_st->descriptor().max_chunk_rows;
     }
-    std::vector<TopicChunk> built;
-    TopicChunkBuilder builder(dest_tid, /*schema_id=*/0, union_cols, max_chunk_rows);
-    for (const RowRef& rr : rows) {
-      builder.beginRow(rr.ts);
-      const TopicChunk& chunk = *rr.chunk;
-      const std::vector<int>& colmap = *rr.colmap;
-      for (std::size_t lc = 0; lc < colmap.size(); ++lc) {
-        if (colmap[lc] < 0 || chunk.isNull(lc, rr.row)) {
-          continue;  // finishRow() nulls the columns not set
-        }
-        const auto uc = static_cast<std::size_t>(colmap[lc]);
-        switch (storageKindOf(union_cols[uc].logical_type)) {
-          case StorageKind::kFloat32:
-            builder.set<float>(uc, static_cast<float>(chunk.readNumericAsDouble(lc, rr.row)));
-            break;
-          case StorageKind::kFloat64:
-            builder.set<double>(uc, chunk.readNumericAsDouble(lc, rr.row));
-            break;
-          case StorageKind::kInt32:
-            builder.set<int32_t>(uc, static_cast<int32_t>(chunk.readNumericAsInt64(lc, rr.row)));
-            break;
-          case StorageKind::kInt64:
-            builder.set<int64_t>(uc, chunk.readNumericAsInt64(lc, rr.row));
-            break;
-          case StorageKind::kUint64:
-            builder.set<uint64_t>(uc, chunk.readNumericAsUint64(lc, rr.row));
-            break;
-          case StorageKind::kBool:
-            builder.set<bool>(uc, chunk.readBool(lc, rr.row));
-            break;
-          case StorageKind::kString:
-            builder.set<std::string_view>(uc, chunk.readString(lc, rr.row));
-            break;
-        }
-      }
-      builder.finishRow();
-      if (builder.isFull()) {
-        built.push_back(builder.seal());
-        builder = TopicChunkBuilder(dest_tid, /*schema_id=*/0, union_cols, max_chunk_rows);
-      }
-    }
-    if (builder.rowCount() > 0) {
-      built.push_back(builder.seal());
-    }
+    std::vector<TopicChunk> built = sealRows(rows, dest_tid, /*schema_id=*/0, union_cols, max_chunk_rows);
 
     TopicStorage* dest = getTopicStorage(dest_tid);
     if (dest == nullptr) {

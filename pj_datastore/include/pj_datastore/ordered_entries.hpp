@@ -190,7 +190,8 @@ class OrderedEntries {
 
   // --- Bulk cross-series ops (move entries between instances) ---
 
-  // flushTo(): appends `src` with fresh UIDs (this object's UIDs stay) and empties it.
+  // flushTo(): adds `src` with fresh UIDs in timestamp order (a moved entry lands after equal stamps, as push() does;
+  // this object's UIDs stay) and empties it.
   void appendReuidFrom(OrderedEntries& src);
   // replaceDatasetFrom(): takes `src`'s entries with fresh UIDs and empties it.
   void adoptReuidFrom(OrderedEntries& src);
