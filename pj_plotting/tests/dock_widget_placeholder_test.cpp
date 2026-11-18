@@ -1917,6 +1917,89 @@ TEST(NewPlotTrackerConfig, ValueTrackerShowsValueBoxWhenCurveAdded) {
   EXPECT_TRUE(plot.trackerValueBoxVisible());
 }
 
+// ---------- The tracker follows the curve list and the view ----------------
+//
+// The tracker samples its curves and decides what it shows only when it is positioned. A curve removed, or a zoom that
+// brings the tracker's samples back into view, must update it at once, not on the next seek.
+
+namespace {
+// Samples 0..10 s, one per second, so a tracker can sit inside or outside a zoomed window.
+PJ::TopicId addRampTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name) {
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle_or = writer.registerScalarSeries(dataset_id, topic_name, PJ::NumericType::kFloat64);
+  EXPECT_TRUE(handle_or.has_value()) << handle_or.error();
+  if (!handle_or.has_value()) {
+    return 0;
+  }
+  for (int k = 0; k <= 10; ++k) {
+    writer.appendScalar(*handle_or, static_cast<PJ::Timestamp>(k) * 1'000'000'000, static_cast<double>(k));
+  }
+  EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  return handle_or->topic_id;
+}
+}  // namespace
+
+TEST(PlotTrackerRefresh, RemovedCurveLeavesTheValueBoxAtOnce) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString kept = keyForTopic(catalog, addRampTopic(session, *dataset, "/kept"));
+  const QString removed = keyForTopic(catalog, addRampTopic(session, *dataset, "/removed"));
+  ASSERT_FALSE(kept.isEmpty());
+  ASSERT_FALSE(removed.isEmpty());
+
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.setTrackerParameter(PJ::CurveTracker::kValueName);
+  ASSERT_NE(plot.addCurve(kept), nullptr);
+  ASSERT_NE(plot.addCurve(removed), nullptr);
+  plot.zoomOut(false);
+  plot.setTrackerPosition(plot.maxZoomRect().center().x());
+  // The box names curves by title, not by catalog key.
+  ASSERT_TRUE(plot.trackerValueBoxText().contains(u"removed/value"_s)) << plot.trackerValueBoxText().toStdString();
+
+  plot.removeCurve(removed);
+  plot.replot();  // every caller that removes a curve replots
+  EXPECT_FALSE(plot.trackerValueBoxText().contains(u"removed/value"_s)) << plot.trackerValueBoxText().toStdString();
+  EXPECT_TRUE(plot.trackerValueBoxText().contains(u"kept/value"_s));
+}
+
+TEST(PlotTrackerRefresh, ZoomingBackOverTheTrackerShowsItsValueBox) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString key = keyForTopic(catalog, addRampTopic(session, *dataset, "/ramp"));
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.setTrackerParameter(PJ::CurveTracker::kValue);
+  ASSERT_NE(plot.addCurve(key), nullptr);
+  plot.zoomOut(false);
+  const QRectF full = plot.maxZoomRect();
+  ASSERT_GT(full.width(), 5.0);
+
+  // The tracker at the first sample, while the view shows only the second half: no sample of it is in view.
+  QRectF second_half = full;
+  second_half.setLeft(full.center().x());
+  plot.setZoomRectangle(second_half, false);
+  plot.replot();
+  plot.setTrackerPosition(full.left());
+  ASSERT_FALSE(plot.trackerValueBoxVisible());
+
+  plot.setZoomRectangle(full, false);
+  plot.replot();
+  EXPECT_TRUE(plot.trackerValueBoxVisible());
+  // The value at the tracker's time (the ramp is 0 at its first sample), not one from the previous window's edge: Qwt
+  // announces the new axis scale before it hands the curves their new window.
+  EXPECT_TRUE(plot.trackerValueBoxText().contains(u">0.000</font>"_s)) << plot.trackerValueBoxText().toStdString();
+
+  // And the reverse: zooming away from the tracker hides the box it showed.
+  plot.setZoomRectangle(second_half, false);
+  plot.replot();
+  EXPECT_FALSE(plot.trackerValueBoxVisible());
+}
+
 // --- Object-classified placeholder drops (demand-driven streaming) ---
 //
 // An advertised topic classified as an object (kPointCloud) has no storage id yet: data flows only once the drop

@@ -39,6 +39,8 @@ class CurveTracker : public QObject {
   [[nodiscard]] bool valueBoxVisible() const noexcept {
     return text_marker_ != nullptr && text_marker_->isVisible();
   }
+  // The value box's HTML, one line per curve sampled at the last position (also kept while the box is hidden).
+  [[nodiscard]] QString valueBoxText() const;
 
  public slots:
   void setPosition(const QPointF& pos);

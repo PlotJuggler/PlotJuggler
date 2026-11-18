@@ -210,6 +210,12 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
   connect(
       qwtPlot()->axisWidget(QwtPlot::xBottom), &QwtScaleWidget::scaleDivChanged, this,
       &PlotWidget::visibleXRangeChanged);
+  // A tracker hides the samples outside the view only when it is positioned: re-sample after every axis change, or a
+  // zoom back over the tracker leaves its box hidden until the next seek. Not here: the curves still serve the
+  // previous window when the signal fires (see beforeCanvasReplot).
+  for (const QwtAxisId axis : {QwtAxisId(QwtPlot::xBottom), QwtAxisId(QwtPlot::yLeft)}) {
+    connect(qwtPlot()->axisWidget(axis), &QwtScaleWidget::scaleDivChanged, this, [this]() { trackers_stale_ = true; });
+  }
   gesture_undo_debounce_.setSingleShot(true);
   gesture_undo_debounce_.setInterval(kGestureUndoDebounceMs);
   connect(&gesture_undo_debounce_, &QTimer::timeout, this, [this]() {
@@ -228,6 +234,9 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     pruneHiddenMarkerScopes();
     (void)refreshMarkerScopeRowSet();  // curveListChanged itself is the rebuild trigger
     emit markerTargetsChanged();
+    // A removed curve's row and dot leave the tracker at the next replot, not the next seek. Not now: a curve just
+    // added has no window yet, and sampling it would copy its whole series.
+    trackers_stale_ = true;
   });
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
   connect(this, &PlotWidgetBase::dragLeaveSignal, this, &PlotWidget::onDragLeaveEvent);
@@ -596,6 +605,26 @@ CurveTracker::Parameter PlotWidget::trackerParameter() const noexcept {
 
 bool PlotWidget::trackerValueBoxVisible() const noexcept {
   return tracker_ != nullptr && tracker_->valueBoxVisible();
+}
+
+void PlotWidget::beforeCanvasReplot() {
+  if (trackers_stale_) {
+    trackers_stale_ = false;
+    redrawTrackers();
+  }
+}
+
+void PlotWidget::redrawTrackers() {
+  if (tracker_ != nullptr) {
+    tracker_->redraw();
+  }
+  if (reference_tracker_ != nullptr) {
+    reference_tracker_->redraw();
+  }
+}
+
+QString PlotWidget::trackerValueBoxText() const {
+  return tracker_ != nullptr ? tracker_->valueBoxText() : QString();
 }
 
 void PlotWidget::setShowPoints(bool show) {
@@ -2267,12 +2296,7 @@ void PlotWidget::reconnectDataSignals() {
     // against the old data and view rect: re-sample them at their positions against the re-fit curves.
     // Order-independent with the app's reference re-projection: whichever of {reposition, this redraw} runs last
     // re-samples against re-fit data, so the blue line keeps its dots across the toggle.
-    if (tracker_ != nullptr) {
-      tracker_->redraw();
-    }
-    if (reference_tracker_ != nullptr) {
-      reference_tracker_->redraw();
-    }
+    redrawTrackers();
     replot();
   });
 
