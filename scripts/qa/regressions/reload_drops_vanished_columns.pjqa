@@ -1,0 +1,14 @@
+# Reloading a file whose new parse has fewer columns drops the vanished ones: the signals CSV loaded with the row
+# number as X has 7 fields (time is a series); reloaded with `time` as the X axis it has 6, and no all-null
+# `data/time` field stays behind.
+# app: -d tests/wasm/fixtures/signals/data.csv
+# needs: plugins
+until list_topics {} "fields":7
+open_file {"path":"$CHECKOUT/tests/wasm/fixtures/signals/data.csv","config":{"time_mode":"column","time_column_index":0,"column_history":["time"],"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
+until list_topics {} "fields":6
+describe_topic {"topic":"data"}
+absent "data/time"
+# The Datasets tree, expanded, lists the six series and no `time` row.
+ui_key {"name":"treeView","keys":"*","wait_ms":500}
+until ui_tree {} row "chirp"
+absent row "time"

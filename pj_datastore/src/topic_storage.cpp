@@ -82,6 +82,7 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
     foldWholeNumbers(chunk, +1);
   }
 
+  unretireColumnsWithValues(chunk);
   sealed_chunks_.push_back(std::move(chunk));
   return PJ::okStatus();
 }
@@ -123,6 +124,7 @@ void TopicStorage::clearChunks() noexcept {
   // A stale floor would hide refilled rows below it.
   retention_floor_ = kNoRetentionFloor;
   evicted_through_chunk_id_ = 0;
+  retired_columns_.clear();
 }
 
 TopicStorage::DetachedState TopicStorage::detachChunks() {
@@ -130,6 +132,7 @@ TopicStorage::DetachedState TopicStorage::detachChunks() {
   // Every copy that can throw comes before the deque moves out, so a throw loses no chunks.
   detached.column_descriptors = column_descriptors_;
   detached.array_expansion_counts = array_expansion_counts_;
+  detached.retired_columns = retired_columns_;
   detached.retention_floor = retention_floor_;
   detached.evicted_through_chunk_id = evicted_through_chunk_id_;
   detached.schema_id = descriptor_.schema_id;
@@ -148,6 +151,7 @@ void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
   static_assert(std::is_nothrow_move_assignable_v<std::deque<TopicChunk>>);
   static_assert(std::is_nothrow_move_assignable_v<std::vector<ColumnDescriptor>>);
   static_assert(std::is_nothrow_move_assignable_v<std::unordered_map<std::string, uint32_t>>);
+  static_assert(std::is_nothrow_move_assignable_v<std::unordered_set<FieldId>>);
 
   sealed_chunks_ = std::move(detached.chunks);
   invalidateChunkAggregate();
@@ -159,6 +163,7 @@ void TopicStorage::restoreChunks(DetachedState&& detached) noexcept {
   max_observed_array_length_ = detached.max_observed_array_length;
   truncated_sample_count_ = detached.truncated_sample_count;
   array_expansion_counts_ = std::move(detached.array_expansion_counts);
+  retired_columns_ = std::move(detached.retired_columns);
 }
 
 void TopicStorage::ensureChunkAggregate() const noexcept {
@@ -248,6 +253,25 @@ void TopicStorage::setColumnDescriptors(std::vector<ColumnDescriptor> descs) noe
 
 const std::vector<ColumnDescriptor>& TopicStorage::columnDescriptors() const noexcept {
   return column_descriptors_;
+}
+
+void TopicStorage::retireValuelessColumns() {
+  retired_columns_.clear();
+  for (const ColumnDescriptor& column : column_descriptors_) {
+    retired_columns_.insert(column.field_id);
+  }
+  for (const TopicChunk& chunk : sealed_chunks_) {
+    unretireColumnsWithValues(chunk);
+  }
+}
+
+void TopicStorage::unretireColumnsWithValues(const TopicChunk& chunk) {
+  for (std::size_t c = 0; c < chunk.columns.size() && !retired_columns_.empty(); ++c) {
+    if (chunk.columns[c].descriptor != nullptr && c < chunk.stats.column_stats.size() &&
+        chunk.stats.column_stats[c].null_count < chunk.stats.row_count) {
+      retired_columns_.erase(chunk.columns[c].descriptor->field_id);
+    }
+  }
 }
 
 const std::deque<TopicChunk>& TopicStorage::sealedChunks() const noexcept {

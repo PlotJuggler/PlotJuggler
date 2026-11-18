@@ -826,6 +826,9 @@ std::uint64_t CatalogModel::catalogFingerprint() const {
           if (const TopicStorage* storage = engine.getTopicStorage(topic_id); storage != nullptr) {
             columns = storage->columnDescriptors().size();
             whole_numbers = storage->wholeNumbersSignature();
+            for (const FieldId field_id : storage->retiredColumns()) {
+              fp += mix(11, (static_cast<std::uint64_t>(topic_id) << 20) ^ field_id);
+            }
           }
           fp += mix(2, (static_cast<std::uint64_t>(topic_id) << 20) ^ columns);
           // A float field gaining its first chunk, or its first fractional value,
@@ -967,6 +970,7 @@ void CatalogModel::rebuildNow() {
       // worker commit / createTopicField cannot then race the descriptor read.
       std::vector<ColumnDescriptor> columns;
       std::vector<bool> whole_numbers_only;
+      std::vector<bool> retired;
       {
         const auto lock = engine.lockEngine();
         const TopicStorage* storage = engine.getTopicStorage(topic_id);
@@ -975,7 +979,9 @@ void CatalogModel::rebuildNow() {
         }
         columns = topicColumns(*storage, type_tree);
         whole_numbers_only.reserve(columns.size());
+        retired.reserve(columns.size());
         for (const ColumnDescriptor& column : columns) {
+          retired.push_back(storage->isColumnRetired(column.field_id));
           const StorageKind kind = storageKindOf(column.logical_type);
           const bool is_float = kind == StorageKind::kFloat32 || kind == StorageKind::kFloat64;
           whole_numbers_only.push_back(is_float && storage->wholeNumbersOnly(column.field_id).value_or(false));
@@ -985,7 +991,8 @@ void CatalogModel::rebuildNow() {
         const ColumnDescriptor& column = columns[column_index];
         // Surface every column in a consumer family (plottable curves and/or
         // discrete state series); only kUnspecified stays out.
-        if (!isPlottablePrimitive(column.logical_type) && !isDiscretePrimitive(column.logical_type)) {
+        if (retired[column_index] ||
+            (!isPlottablePrimitive(column.logical_type) && !isDiscretePrimitive(column.logical_type))) {
           continue;
         }
 

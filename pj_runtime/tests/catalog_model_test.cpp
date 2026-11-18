@@ -17,9 +17,11 @@
 #include "on_demand_test_utils.h"
 #include "pj_base/builtin/plot_markers.hpp"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/plugin_data_host.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/MarkerTopics.h"
@@ -1069,6 +1071,82 @@ TEST(CatalogModelReloadTest, ObjectReplaceKeepsObjectTopicKey) {
 
   EXPECT_EQ(object_key(catalog.items()), key_before) << "object topic key (ObjectTopicId) must be stable across reload";
   EXPECT_EQ(removed_emissions, 0);
+}
+
+// A reload whose file lost a column (a CSV reparsed with that column as the time axis) refills the topic in place: the
+// column the refill no longer writes leaves the curve list and the plugin catalog, the others keep their keys.
+TEST(CatalogModelReloadTest, RefillDropsColumnTheReloadNoLongerWrites) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "data.csv"});
+  ASSERT_TRUE(dataset.has_value());
+
+  PJ::TopicId topic = 0;
+  {
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    auto registered = writer.registerTopic(*dataset, PJ::TopicDescriptor{.name = "data"});
+    ASSERT_TRUE(registered.has_value()) << registered.error();
+    topic = *registered;
+    for (const char* field : {"time", "a", "b"}) {
+      ASSERT_TRUE(writer.ensureColumn(topic, field, PJ::PrimitiveType::kFloat64).has_value());
+    }
+    for (int row = 0; row < 3; ++row) {
+      ASSERT_TRUE(writer.beginRow(topic, 100 + row).has_value());
+      writer.set(topic, 0, 0.5 * row);
+      writer.set(topic, 1, 1.5 * row);
+      writer.set(topic, 2, 2.5 * row);
+      ASSERT_TRUE(writer.finishRow(topic).has_value());
+    }
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  }
+  catalog.rebuildFromDatastore();
+  const auto key_of = [&catalog](const QString& field) -> QString {
+    for (const auto& curve : catalog.curves()) {
+      if (curve.field_path == field) {
+        return curve.name;
+      }
+    }
+    return {};
+  };
+  ASSERT_EQ(catalog.curves().size(), 3U);
+  const QString key_time = key_of(u"time"_s);
+  const QString key_a = key_of(u"a"_s);
+  const QString key_b = key_of(u"b"_s);
+
+  QStringList removed;
+  QObject::connect(&catalog, &PJ::CatalogModel::itemsRemoved, &catalog, [&removed](const QStringList& keys) {
+    removed.append(keys);
+  });
+  {
+    PJ::RefillGuard guard = session.beginRefill(*dataset);
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    const auto a = writer.ensureColumn(topic, "a", PJ::PrimitiveType::kFloat64);
+    const auto b = writer.ensureColumn(topic, "b", PJ::PrimitiveType::kFloat64);
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    for (int row = 0; row < 3; ++row) {
+      ASSERT_TRUE(writer.beginRow(topic, 200 + row).has_value());
+      writer.set(topic, *a, 1.0);
+      writer.set(topic, *b, 2.0);
+      ASSERT_TRUE(writer.finishRow(topic).has_value());
+    }
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+  catalog.rebuildIfChanged();
+
+  EXPECT_EQ(catalog.curves().size(), 2U) << "the column the reload no longer writes leaves the curve list";
+  EXPECT_TRUE(key_of(u"time"_s).isEmpty());
+  EXPECT_EQ(key_of(u"a"_s), key_a) << "a refilled column keeps its curve key";
+  EXPECT_EQ(key_of(u"b"_s), key_b);
+  EXPECT_TRUE(removed.contains(key_time)) << "plots on the vanished column hear it go";
+
+  PJ::DatastoreToolboxHost toolbox_host(session.dataEngine(), session.objectStore());
+  PJ::sdk::ToolboxHostView toolbox(toolbox_host.raw());
+  auto snapshot = toolbox.catalogSnapshot();
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error();
+  ASSERT_EQ(snapshot->topics().size(), 1U);
+  EXPECT_EQ(snapshot->topics()[0].field_count, 2U) << "plugins and agents no longer list the vanished field";
 }
 
 // samplesIngested is gated on a content fingerprint (rebuildIfChanged) so row-only ingest batches skip the full

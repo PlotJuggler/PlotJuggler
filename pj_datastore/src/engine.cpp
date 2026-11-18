@@ -409,6 +409,7 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
     topic_snapshot.max_observed_array_length = storage->max_observed_array_length_;
     topic_snapshot.truncated_sample_count = storage->truncated_sample_count_;
     topic_snapshot.array_expansion_counts = storage->array_expansion_counts_;
+    topic_snapshot.retired_columns = storage->retired_columns_;
     // Leaves the storage as clearDatasetChunks() would: columns and ratchet stats stay, so a refill rebinds.
     storage->clearChunks();
     snapshot.topics.emplace(topic_id, std::move(topic_snapshot));
@@ -445,6 +446,7 @@ void DataEngine::reattachDatasetChunks(DatasetId dataset_id, DatasetChunkSnapsho
     storage->max_observed_array_length_ = topic_snapshot.max_observed_array_length;
     storage->truncated_sample_count_ = topic_snapshot.truncated_sample_count;
     storage->array_expansion_counts_ = std::move(topic_snapshot.array_expansion_counts);
+    storage->retired_columns_ = std::move(topic_snapshot.retired_columns);
   }
   snapshot.valid = false;
 }

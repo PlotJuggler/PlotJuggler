@@ -624,7 +624,8 @@ std::vector<std::string> inputFieldPaths(const DataEngine& engine, const TopicSt
   if (!storage.columnDescriptors().empty()) {
     paths.reserve(storage.columnDescriptors().size());
     for (const auto& column : storage.columnDescriptors()) {
-      paths.push_back(column.field_path);
+      // Empty for a retired column, so a path lookup finds no field there; the position keeps the index alignment.
+      paths.push_back(storage.isColumnRetired(column.field_id) ? std::string{} : column.field_path);
     }
     return paths;
   }
