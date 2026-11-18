@@ -118,4 +118,18 @@ TEST(PlaybackEngineTest, RateIsClampedToTheSharedRange) {
   EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.5);
 }
 
+// The speed scrubber shows one decimal and commits what it shows, so the engine plays at a multiple of its step.
+TEST(PlaybackEngineTest, RateIsRoundedToTheScrubberStep) {
+  PJ::PlaybackEngine engine;
+
+  engine.setPlaybackRate(0.25);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);
+
+  engine.setPlaybackRate(2.34);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.3);
+
+  engine.setPlaybackRate(0.04);  // rounds to 0, then clamps up to the minimum
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMinPlaybackRate);
+}
+
 }  // namespace

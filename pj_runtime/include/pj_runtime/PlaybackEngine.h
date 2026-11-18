@@ -67,7 +67,9 @@ class PlaybackEngine : public QObject {
   void setRange(DisplayRange range);
   void setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t);
   void setCurrentTime(DisplaySeconds t);
-  /// Clamped to [kMinPlaybackRate, kMaxPlaybackRate]; read playbackRate() for the applied value.
+  /// Non-finite rates are ignored.
+  /// The rate is snapped (snapPlaybackRate) to what the speed scrubber can show; read playbackRate() for the applied
+  /// value.
   void setPlaybackRate(double rate);
   void setStep(double step);
   void setLooping(bool looping);

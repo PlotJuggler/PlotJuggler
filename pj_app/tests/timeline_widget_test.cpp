@@ -109,11 +109,19 @@ TEST(TimelineWidgetTest, SpeedScrubberShowsTheRateTheEnginePlaysAt) {
   ASSERT_NE(rate, nullptr);
   EXPECT_DOUBLE_EQ(rate->minimum(), kMinPlaybackRate);
   EXPECT_DOUBLE_EQ(rate->maximum(), kMaxPlaybackRate);
+  EXPECT_DOUBLE_EQ(rate->singleStep(), kPlaybackRateStep);
+  EXPECT_EQ(rate->decimals(), 1);  // the digits of kPlaybackRateStep
 
   for (const double requested : {kMaxPlaybackRate * 2.0, kMinPlaybackRate / 2.0, 3.0}) {
     engine.setPlaybackRate(requested);
     EXPECT_DOUBLE_EQ(rate->value(), engine.playbackRate()) << "requested " << requested;
   }
+
+  // The scrubber shows one decimal: a rate in between is rounded by the engine, so the display and a Return in the
+  // editor agree with what plays.
+  engine.setPlaybackRate(0.25);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);
+  EXPECT_DOUBLE_EQ(rate->value(), 0.3);
 }
 
 }  // namespace

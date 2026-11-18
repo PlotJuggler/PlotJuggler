@@ -34,6 +34,8 @@ namespace PJ {
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::TimelineWidget) {
   ui_->setupUi(this);
   ui_->playbackRate->setRange(kMinPlaybackRate, kMaxPlaybackRate);
+  ui_->playbackRate->setSingleStep(kPlaybackRateStep);
+  ui_->playbackRate->setDecimals(static_cast<int>(std::lround(-std::log10(kPlaybackRateStep))));
 
   applyIcons(currentTheme());
 

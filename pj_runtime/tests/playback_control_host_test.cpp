@@ -77,14 +77,14 @@ TEST(PlaybackControlHostTest, RateForwardsAndRejectsBadValues) {
   PJ::PlaybackControlHost host(engine, {});
   PJ::sdk::PlaybackHostView view(host.raw());
 
-  ASSERT_TRUE(view.setPlaybackRate(0.25));
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.25);
+  ASSERT_TRUE(view.setPlaybackRate(0.3));
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);
 
   EXPECT_FALSE(view.setPlaybackRate(0.0));
   EXPECT_FALSE(view.setPlaybackRate(-2.0));
   EXPECT_FALSE(view.setPlaybackRate(std::numeric_limits<double>::infinity()));
   EXPECT_FALSE(view.setPlaybackRate(std::numeric_limits<double>::quiet_NaN()));
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.25);  // untouched by the rejects
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);  // untouched by the rejects
 
   // The engine's range clamps finite multipliers outside what the speed scrubber can show.
   ASSERT_TRUE(view.setPlaybackRate(1e9));

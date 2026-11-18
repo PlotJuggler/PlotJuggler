@@ -78,7 +78,10 @@ void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
 }
 
 void PlaybackEngine::setPlaybackRate(double rate) {
-  rate = std::clamp(rate, kMinPlaybackRate, kMaxPlaybackRate);
+  if (!std::isfinite(rate)) {
+    return;
+  }
+  rate = snapPlaybackRate(rate);
   if (rate_ == rate) {
     return;
   }
