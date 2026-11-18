@@ -63,15 +63,17 @@ inline constexpr std::size_t kMaxMarkerOutputBytes = std::size_t{16} << 20;
 ///   createBandMarker(low, high, opts?) -- a shaded value band [low, high]
 ///   bandPower(series, fLo, fHi)       -- summed FFT power in [fLo,fHi] Hz, DC-removed
 ///   GetSeriesNames()                  -- list of available series names
-///   colorRegions(series, mapping)     -- shade the background by value: `series` is a name or series(...); `mapping`
-///                                        is a table value -> color or a function v -> color | {color=, label=, ...}
-///                                        | nil (no region). Consecutive equal results merge into one region; the
-///                                        last one ends at the last sample.
-///   ranges({min, max, color}, ...)    -- a mapping for colorRegions. Ranges may overlap: v takes the first listed
-///                                        range with min <= v < max; none -> no region. `inf` is math.huge.
-///   lessThan(limit, color) / greaterThan(limit, color) -- mappings for colorRegions: `color` where v < limit
-///                                        (v > limit), no region elsewhere. In ranges and these, `color` may also be
-///                                        a {color=, label=, ...} table.
+///   when(series, condition?)          -- `series` is a name or series(...); `condition` is above(x), below(x),
+///                                        between(a, b), outside(a, b), equals(x), isTrue(), changes() or a function
+///                                        (v, t, prev, prev_t) -> boolean. Its actions scan the series once:
+///     :backgroundColor(color?, opts?)  -- a region per stretch where the condition holds (no color: the severity
+///                                        color). Without a condition, `color` is a table value -> color or a
+///                                        function (v, t) -> color | opts | nil, and a region spans each run of equal
+///                                        results; the last region ends at the last sample. opts.minDuration (s)
+///                                        drops shorter regions.
+///     :event(opts?) / :verticalLine(opts?) -- a point / line where the condition starts to hold (each sample with
+///                                        opts.every; each change for changes()); opts.minGap (s) skips a mark closer
+///                                        to the previous one; opts.label may be a function (v, prev) -> string.
 /// `opts` is an optional table: {label, color, severity, status, category, description}. A color is a string accepted
 /// by parseMarkerColor; anything else fails the run. Native marker storage (the markers and their strings) is capped by
 /// `max_output_bytes`, apart from the VM's memory cap; a script past it fails the run. A success sets `output_bytes`,

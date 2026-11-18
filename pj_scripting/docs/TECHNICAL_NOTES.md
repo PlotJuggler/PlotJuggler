@@ -81,18 +81,18 @@ allocation-cap overhead) are in `docs/derived_objects/ARCHITECTURE.md` "Referenc
   | Rule | Samples | Time |
   |---|---|---|
   | hand-written `startMarker`/`closeMarker` loop over `s:at(i)` | ~10M | 1.4 s |
-  | `colorRegions` + value table | ~10M | 0.45 s |
-  | `colorRegions` + function returning an opts table | ~4M | 0.45 s |
-  | `colorRegions` + `ranges` (three ranges) | ~4M | 0.4 s |
+  | `when(s):backgroundColor({...})` (value table) | ~10M | 0.5 s |
+  | `when(s, above(x)):backgroundColor(...)` (any built-in condition) | ~10M | 0.5 s |
+  | `when(s):backgroundColor(fn)`, `fn` returning an opts table | ~4M | 0.5 s |
 
 - **What the code does about it:** the prelude reads samples through a native returning `t, v` (`s:at` builds a table
-  per sample, about 80% of a scan's time), indexes a table mapping inline, compares plain results with `==`, and
-  compares opts tables field by field without a loop. A first version (a key string per sample, `s:at`, a closure
-  around table mappings) reached 2.4M to 3.6M samples.
+  per sample, about 80% of a scan's time), tests built-in conditions and indexes value tables inline in one loop,
+  calls the action only where the result changes, and compares opts tables field by field without a loop. A version
+  that called a closure per sample for the condition and another for the action reached 2.2M to 3.3M samples.
 - **Conditions:** desktop x86_64, `-O2`, Luau as pinned in `conanfile.txt`, measured with a scratch program over
   `pj_scripting_core`. Re-test if the fuel accounting or the Luau pin changes, or if long recordings hit "script
-  exceeded its instruction budget" in a `colorRegions` rule; a native scan loop would lift the limit to the mapping's
-  own cost.
+  exceeded its instruction budget" in a `when` rule; a native scan loop would lift the limit to the condition
+  function's own cost.
 
 ## Native point-cloud operations
 

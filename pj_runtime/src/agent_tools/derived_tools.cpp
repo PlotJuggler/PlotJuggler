@@ -1099,35 +1099,17 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
         "\"line\" (one vertical line per matching sample)");
   }
 
-  const std::string opts = "{label=\"" + label + "\", severity=\"warning\"}";
-  std::string rule = "local s = series(\"" + luaStringEscape(series) + "\")\n";
+  // The rule an agent would write itself, so a later raw rule can follow it: above/below for the strict comparisons,
+  // a condition function for the others.
+  const std::string condition = comparison == ">" ? "above(" + threshold_lit + ")"
+                                : comparison == "<"
+                                    ? "below(" + threshold_lit + ")"
+                                    : "function(v) return v " + comparison + " " + threshold_lit + " end";
+  std::string rule = "when(\"" + luaStringEscape(series) + "\", " + condition + ")";
   if (style == "region") {
-    // One region per contiguous stretch of matching samples: open on the first
-    // matching sample, close on the first non-matching one (or at series end).
-    rule += "local open = false\n";
-    rule += "local last_t = nil\n";
-    rule += "for i = 0, s:size() - 1 do\n";
-    rule += "  local p = s:at(i)\n";
-    rule += "  last_t = p.t\n";
-    rule += "  local hit = p.v " + comparison + " " + threshold_lit + "\n";
-    rule += "  if hit and not open then\n";
-    rule += "    startMarker(p.t)\n";
-    rule += "    open = true\n";
-    rule += "  elseif open and not hit then\n";
-    rule += "    closeMarker(p.t, " + opts + ")\n";
-    rule += "    open = false\n";
-    rule += "  end\n";
-    rule += "end\n";
-    rule += "if open and last_t then\n";
-    rule += "  closeMarker(last_t, " + opts + ")\n";
-    rule += "end\n";
+    rule += ":backgroundColor(nil, {label=\"" + label + "\", severity=\"warning\"})\n";
   } else {
-    rule += "for i = 0, s:size() - 1 do\n";
-    rule += "  local p = s:at(i)\n";
-    rule += "  if p.v " + comparison + " " + threshold_lit + " then\n";
-    rule += "    createVerticalMarker(p.t, " + opts + ")\n";
-    rule += "  end\n";
-    rule += "end\n";
+    rule += ":verticalLine({label=\"" + label + "\", severity=\"warning\", every=true})\n";
   }
 
   // The output marker topic addresses where the set renders: a persistent

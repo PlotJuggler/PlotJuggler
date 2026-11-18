@@ -1220,16 +1220,19 @@ TEST(ToolRegistry, CreateMarkersBuildsThresholdRule) {
   auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(dp.last_kind, "markers");
-  // Default style is "region": one shaded band per exceedance stretch.
-  EXPECT_NE(dp.last_script.find("startMarker"), std::string::npos);
-  EXPECT_NE(dp.last_script.find("closeMarker"), std::string::npos);
-  EXPECT_NE(dp.last_script.find("> 2.5"), std::string::npos);
+  // Default style is "region": one shaded band per exceedance stretch, written as the when() rule an agent would write.
+  EXPECT_EQ(
+      dp.last_script,
+      "when(\"/imu/x\", above(2.5)):backgroundColor(nil, {label=\"exceeds 2.5\", severity=\"warning\"})\n");
 
-  // style="line" keeps the per-sample vertical markers.
+  // style="line" keeps the per-sample vertical markers; a non-strict comparison is a condition function.
   r = reg.execute(
-      "create_markers", {{"series", "/imu/x"}, {"comparison", ">"}, {"threshold", 2.5}, {"style", "line"}}, ctx);
+      "create_markers", {{"series", "/imu/x"}, {"comparison", ">="}, {"threshold", 2.5}, {"style", "line"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
-  EXPECT_NE(dp.last_script.find("createVerticalMarker"), std::string::npos);
+  EXPECT_EQ(
+      dp.last_script,
+      "when(\"/imu/x\", function(v) return v >= 2.5 end):verticalLine({label=\"exceeds 2.5\", "
+      "severity=\"warning\", every=true})\n");
 }
 
 TEST(ToolRegistry, CreateMarkersRawRulePassesThroughVerbatim) {
@@ -2305,7 +2308,7 @@ TEST(ToolRegistry, QualifiedCreateOnAUniqueNameHandsTheHostItsBareForm) {
   auto r = reg.execute(
       "create_markers", {{"series", "run_friday.mcap:/speed/value"}, {"comparison", ">"}, {"threshold", 1.0}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
-  EXPECT_NE(dp.last_script.find("series(\"/speed/value\")"), std::string::npos) << dp.last_script;
+  EXPECT_NE(dp.last_script.find("when(\"/speed/value\""), std::string::npos) << dp.last_script;
   EXPECT_EQ(json::parse(r.content)["created_markers_on"], "run_friday.mcap:/speed/value");
 }
 

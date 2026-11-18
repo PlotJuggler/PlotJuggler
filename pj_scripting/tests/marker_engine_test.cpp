@@ -258,13 +258,13 @@ void expectRegion(const PJ::sdk::PlotMarker& m, double t0, double t1, PJ::sdk::C
   EXPECT_EQ(m.color, color);
 }
 
-// A table mapping: one region per run of equal values, a value missing from the table draws nothing, and the last run
-// ends at the last sample.
-TEST(MarkerEngine, ColorRegionsTableMergesRunsAndSkipsUnmapped) {
+// Without a condition, a table maps values to colors: one region per run of equal values, an unmapped value draws
+// nothing, and the last run ends at the last sample.
+TEST(MarkerEngine, WhenBackgroundColorTableMergesRunsAndSkipsUnmapped) {
   const SeriesView sv = modeSeries();
   std::string err;
-  const auto markers =
-      runMarkerScript(R"(colorRegions("mode", { [1] = "green", [2] = "#ff0000" }))", oneSeries("mode", sv), &err);
+  const auto markers = runMarkerScript(
+      R"(when("mode"):backgroundColor({ [1] = "green", [2] = "#ff0000" }))", oneSeries("mode", sv), &err);
   ASSERT_TRUE(err.empty()) << err;
   // The final run is a single sample at the last timestamp: zero width, so nothing.
   ASSERT_EQ(markers.size(), 2u);
@@ -273,12 +273,19 @@ TEST(MarkerEngine, ColorRegionsTableMergesRunsAndSkipsUnmapped) {
   EXPECT_EQ(markers[1].severity, PJ::sdk::MarkerSeverity::kInfo);
 }
 
-// A function mapping returning option tables: equal tables built per sample still merge, and their label lands.
-TEST(MarkerEngine, ColorRegionsFunctionReturnsOptions) {
+// A color function returning option tables: equal tables built per sample still merge, and their label lands.
+TEST(MarkerEngine, WhenBackgroundColorFunctionReturnsOptions) {
   const SeriesView sv = modeSeries();
   std::string err;
   const auto markers = runMarkerScript(
-      R"(colorRegions(series("mode"), function(v) if v >= 1 then return { color = "Orange", label = "on" } end end))",
+      R"(
+    local function modeColor(v)
+      if v >= 1 then
+        return { color = "Orange", label = "on" }
+      end
+    end
+    when(series("mode")):backgroundColor(modeColor)
+  )",
       oneSeries("mode", sv), &err);
   ASSERT_TRUE(err.empty()) << err;
   ASSERT_EQ(markers.size(), 1u);
@@ -286,85 +293,13 @@ TEST(MarkerEngine, ColorRegionsFunctionReturnsOptions) {
   EXPECT_EQ(markers[0].label, "on");
 }
 
-TEST(MarkerEngine, RangesPicksTheFirstMatchingRange) {
-  SeriesView sv;
-  sv.timestamps = {0, 1 * kSec, 2 * kSec, 3 * kSec, 4 * kSec};
-  sv.values = {-5.0, 0.5, 1.5, 9.0, 9.0};
-  std::string err;
-  const auto markers = runMarkerScript(
-      R"(colorRegions("speed", ranges({-inf, 0, "gray"}, {0, 1, "green"}, {2, inf, "red"})))", oneSeries("speed", sv),
-      &err);
-  ASSERT_TRUE(err.empty()) << err;
-  ASSERT_EQ(markers.size(), 3u);  // 1.5 is in no range: a gap
-  expectRegion(markers[0], 0, 1 * kSec, rgb(128, 128, 128));
-  expectRegion(markers[1], 1 * kSec, 2 * kSec, rgb(0, 128, 0));
-  expectRegion(markers[2], 3 * kSec, 4 * kSec, rgb(255, 0, 0));
-}
-
-// Overlapping ranges: the first listed one that contains the value wins.
-TEST(MarkerEngine, RangesOverlapFirstListedWins) {
-  const SeriesView sv = modeSeries();  // 0 0 1 1 2 2 1
-  std::string err;
-  const auto markers = runMarkerScript(
-      R"(colorRegions("mode", ranges({1, inf, "red"}, {-inf, inf, "gray"})))", oneSeries("mode", sv), &err);
-  ASSERT_TRUE(err.empty()) << err;
-  ASSERT_EQ(markers.size(), 2u);
-  expectRegion(markers[0], 0, 2 * kSec, rgb(128, 128, 128));
-  expectRegion(markers[1], 2 * kSec, 6 * kSec, rgb(255, 0, 0));
-}
-
-// Strict thresholds: a sample equal to the limit is in neither.
-TEST(MarkerEngine, LessThanAndGreaterThan) {
-  const SeriesView sv = modeSeries();  // 0 0 1 1 2 2 1
-  std::string err;
-  const auto markers = runMarkerScript(
-      "colorRegions('mode', lessThan(1, 'blue'))\ncolorRegions('mode', greaterThan(1, 'red'))\n", oneSeries("mode", sv),
-      &err);
-  ASSERT_TRUE(err.empty()) << err;
-  ASSERT_EQ(markers.size(), 2u);
-  expectRegion(markers[0], 0, 2 * kSec, rgb(0, 0, 255));
-  expectRegion(markers[1], 4 * kSec, 6 * kSec, rgb(255, 0, 0));
-
-  const auto labelled = runMarkerScript(
-      "colorRegions('mode', greaterThan(0, { color = 'red', label = 'ON' }))", oneSeries("mode", sv), &err);
-  ASSERT_TRUE(err.empty()) << err;
-  ASSERT_EQ(labelled.size(), 1u);
-  expectRegion(labelled[0], 2 * kSec, 6 * kSec, rgb(255, 0, 0));
-  EXPECT_EQ(labelled[0].label, "ON");
-}
-
-// Each bad call fails the run with its own message, not a later generic Luau error.
-TEST(MarkerEngine, ColorRegionsAndRangesRejectBadArguments) {
-  const SeriesView sv = modeSeries();
-  const std::pair<const char*, const char*> cases[] = {
-      {R"(colorRegions("missing", {}))", "no series named 'missing'"},
-      {R"(colorRegions("mode", 3))", "the mapping must be"},
-      {R"(colorRegions({}, { [0] = "red" }))", "the first argument must be"},
-      {R"(colorRegions("mode", ranges({1, 0, "red"})))", "argument 1 has min >= max"},
-      {R"(colorRegions("mode", ranges({0, 1})))", "argument 1 must be {min, max, color}"},
-      {R"(colorRegions("mode", ranges({0, 1, "red"}, nil, {1, 2, "blue"})))", "argument 2 must be"},
-      {R"(colorRegions("mode", { [0] = "notacolor" }))", "unknown color 'notacolor'"},
-      {R"(colorRegions("mode", { [0] = "transparent" }))", "unknown color 'transparent'"},
-      {R"(colorRegions("mode", function(v) return v > 0 end))", "color must be a string"},
-      {R"(createVerticalMarker(0, { color = { 1, 0, 0 } }))", "color must be a string"},
-      {R"(colorRegions("mode", lessThan("1", "red")))", "limit must be a number"},
-      {R"(colorRegions("mode", greaterThan(1)))", "limit must be a number"},
-  };
-  for (const auto& [script, message] : cases) {
-    std::string err;
-    EXPECT_TRUE(runMarkerScript(script, oneSeries("mode", sv), &err).empty()) << script;
-    EXPECT_NE(err.find(message), std::string::npos) << script << " -> " << err;
-    EXPECT_EQ(err.find("prelude"), std::string::npos) << "error names the hidden prelude: " << err;
-  }
-}
-
-// A mapping that mutates and returns one shared table: each region keeps the options of its own run.
-TEST(MarkerEngine, ColorRegionsSnapshotsAReusedResultTable) {
+// A color function that mutates and returns one shared table: each region keeps the options of its own run.
+TEST(MarkerEngine, WhenBackgroundColorSnapshotsAReusedResultTable) {
   const SeriesView sv = modeSeries();  // 0 0 1 1 2 2 1
   std::string err;
   const auto markers = runMarkerScript(
       "local t = {}\n"
-      "colorRegions('mode', function(v) t.color = (v == 1) and 'red' or 'blue'; return t end)\n",
+      "when('mode'):backgroundColor(function(v) t.color = (v == 1) and 'red' or 'blue'; return t end)\n",
       oneSeries("mode", sv), &err);
   ASSERT_TRUE(err.empty()) << err;
   ASSERT_EQ(markers.size(), 3u);
@@ -373,18 +308,115 @@ TEST(MarkerEngine, ColorRegionsSnapshotsAReusedResultTable) {
   expectRegion(markers[2], 4 * kSec, 6 * kSec, rgb(0, 0, 255));
 }
 
-// A sample at +inf falls in a range whose max is inf, as -inf falls in one whose min is -inf.
-TEST(MarkerEngine, RangesIncludeInfiniteEnds) {
+// Level conditions: below and above are strict, between and outside include their limits' complement correctly, and
+// one region spans each stretch where the condition holds.
+TEST(MarkerEngine, WhenConditionsShadeWhileTheyHold) {
   SeriesView sv;
-  sv.timestamps = {0, 1 * kSec, 2 * kSec};
-  sv.values = {-INFINITY, INFINITY, INFINITY};
+  sv.timestamps = {0, 1 * kSec, 2 * kSec, 3 * kSec, 4 * kSec, 5 * kSec};
+  sv.values = {0.5, 1.0, 1.5, 2.0, 2.5, 2.5};
   std::string err;
-  const auto markers =
-      runMarkerScript(R"(colorRegions("v", ranges({-inf, 0, "blue"}, {0, inf, "red"})))", oneSeries("v", sv), &err);
+  const auto markers = runMarkerScript(
+      R"(
+    when("v", below(1.0)):backgroundColor("green")
+    when("v", between(1.0, 2.0)):backgroundColor("yellow", { label = "mid" })
+    when("v", above(2.0)):backgroundColor("red")
+    when("v", outside(1.0, 2.0)):backgroundColor("blue")
+  )",
+      oneSeries("v", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 5u);
+  expectRegion(markers[0], 0, 1 * kSec, rgb(0, 128, 0));
+  expectRegion(markers[1], 1 * kSec, 4 * kSec, rgb(255, 255, 0));
+  EXPECT_EQ(markers[1].label, "mid");
+  expectRegion(markers[2], 4 * kSec, 5 * kSec, rgb(255, 0, 0));
+  expectRegion(markers[3], 0, 1 * kSec, rgb(0, 0, 255));
+  expectRegion(markers[4], 4 * kSec, 5 * kSec, rgb(0, 0, 255));
+}
+
+// minDuration drops a stretch shorter than it; a condition function sees (v, t, prev, prev_t) and may read another
+// series at t; no color draws the severity color (alpha 0).
+TEST(MarkerEngine, WhenMinDurationAndConditionFunctions) {
+  SeriesView flag;
+  flag.timestamps = {0, 1 * kSec, 2 * kSec, 3 * kSec, 4 * kSec, 7 * kSec, 8 * kSec};
+  flag.values = {0, 1, 0, 0, 1, 1, 0};  // raised 1 s, then 4 s
+  SeriesProvider p;
+  p.names = {"flag"};
+  p.get = [&](const std::string& n) -> const SeriesView* { return n == "flag" ? &flag : nullptr; };
+  std::string err;
+  const auto markers = runMarkerScript(
+      R"(
+    when("flag", isTrue()):backgroundColor("red", { minDuration = 2 })
+    local other = series("flag")
+    when("flag", function(v, t, prev, prev_t)
+      return prev ~= nil and t - prev_t > 2e9 and other:atTime(t) == 1
+    end):backgroundColor(nil, { severity = "error" })
+  )",
+      p, &err);
   ASSERT_TRUE(err.empty()) << err;
   ASSERT_EQ(markers.size(), 2u);
-  expectRegion(markers[0], 0, 1 * kSec, rgb(0, 0, 255));
-  expectRegion(markers[1], 1 * kSec, 2 * kSec, rgb(255, 0, 0));
+  expectRegion(markers[0], 4 * kSec, 8 * kSec, rgb(255, 0, 0));
+  expectRegion(markers[1], 7 * kSec, 8 * kSec, PJ::sdk::ColorRGBA{0, 0, 0, 0});
+  EXPECT_EQ(markers[1].severity, PJ::sdk::MarkerSeverity::kError);
+}
+
+// event and verticalLine fire once where the condition starts to hold (every sample with `every`), minGap skips a
+// mark too close to the previous one, changes() fires at every change with a label built from (v, prev).
+TEST(MarkerEngine, WhenEventsFireOncePerStretch) {
+  const SeriesView sv = modeSeries();  // 0 0 1 1 2 2 1 at 0..6 s
+  std::string err;
+  const auto markers = runMarkerScript(
+      R"(
+    when("mode", above(0)):event({ label = "up" })
+    when("mode", above(0)):verticalLine({ every = true })
+    when("mode", changes()):verticalLine({ label = function(v, prev) return prev .. ">" .. v end })
+    when("mode", changes()):event({ minGap = 3 })
+  )",
+      oneSeries("mode", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 1u + 5u + 3u + 2u);
+  // above(0) holds from 2 s to the end: one event.
+  EXPECT_EQ(markers[0].kind, PJ::sdk::MarkerKind::kEvent);
+  EXPECT_TRUE(markers[0].has_value);
+  EXPECT_EQ(markers[0].t_start, static_cast<PJ::Timestamp>(2 * kSec));
+  EXPECT_EQ(markers[0].label, "up");
+  // every = true: a line at each of the five samples where it holds.
+  EXPECT_EQ(markers[1].t_start, static_cast<PJ::Timestamp>(2 * kSec));
+  EXPECT_FALSE(markers[1].has_value);
+  EXPECT_EQ(markers[5].t_start, static_cast<PJ::Timestamp>(6 * kSec));
+  // changes at 2, 4, 6 s.
+  EXPECT_EQ(markers[6].label, "0>1");
+  EXPECT_EQ(markers[7].label, "1>2");
+  EXPECT_EQ(markers[8].label, "2>1");
+  EXPECT_EQ(markers[8].t_start, static_cast<PJ::Timestamp>(6 * kSec));
+  // minGap = 3 s: 2 s fires, 4 s is skipped, 6 s fires.
+  EXPECT_EQ(markers[9].t_start, static_cast<PJ::Timestamp>(2 * kSec));
+  EXPECT_EQ(markers[10].t_start, static_cast<PJ::Timestamp>(6 * kSec));
+}
+
+// Each bad call fails the run with its own message, not a later generic Luau error.
+TEST(MarkerEngine, WhenRejectsBadArguments) {
+  const SeriesView sv = modeSeries();
+  const std::pair<const char*, const char*> cases[] = {
+      {R"(when("missing", above(1)):event())", "no series named 'missing'"},
+      {R"(when({}, above(1)):event())", "the first argument must be"},
+      {R"(when("mode", 3):event())", "the condition must be"},
+      {R"(when("mode", { test = function() return true end }):event())", "the condition must be"},
+      {R"(when("mode", above("1")):event())", "the limit must be a number"},
+      {R"(when("mode"):event())", "event needs a condition"},
+      {R"(when("mode", changes()):backgroundColor("red"))", "changes() marks moments"},
+      {R"(when("mode", above(0)):backgroundColor({ "red" }))", "the color is a string"},
+      {R"(when("mode"):backgroundColor("red"))", "without a condition, pass a table"},
+      {R"(when("mode", above(0)):backgroundColor("red", { minDuration = "1" }))", "minDuration must be a number"},
+      {R"(when("mode"):backgroundColor({ [0] = "notacolor" }))", "unknown color 'notacolor'"},
+      {R"(when("mode"):backgroundColor({ [0] = "transparent" }))", "unknown color 'transparent'"},
+      {R"(when("mode"):backgroundColor(function(v) return v > 0 end))", "color must be a string"},
+      {R"(createVerticalMarker(0, { color = { 1, 0, 0 } }))", "color must be a string"},
+  };
+  for (const auto& [script, message] : cases) {
+    std::string err;
+    EXPECT_TRUE(runMarkerScript(script, oneSeries("mode", sv), &err).empty()) << script;
+    EXPECT_NE(err.find(message), std::string::npos) << script << " -> " << err;
+  }
 }
 
 // A closeMarker that fails (caught by the rule) leaves the region open for the next closeMarker.
@@ -397,12 +429,12 @@ TEST(MarkerEngine, AFailedCloseMarkerKeepsTheRegionOpen) {
   EXPECT_EQ(markers[0].t_start, static_cast<PJ::Timestamp>(1 * kSec));
 }
 
-// colorRegions leaves a region the rule opened with startMarker alone.
-TEST(MarkerEngine, ColorRegionsDoesNotCloseTheRulesOpenRegion) {
+// when(...):backgroundColor leaves a region the rule opened with startMarker alone.
+TEST(MarkerEngine, WhenDoesNotCloseTheRulesOpenRegion) {
   const SeriesView sv = modeSeries();
   std::string err;
   const auto markers = runMarkerScript(
-      "startMarker(0)\ncolorRegions('mode', { [2] = 'red' })\ncloseMarker(1e9, { label = 'mine' })\n",
+      "startMarker(0)\nwhen('mode', equals(2)):backgroundColor('red')\ncloseMarker(1e9, { label = 'mine' })\n",
       oneSeries("mode", sv), &err);
   ASSERT_TRUE(err.empty()) << err;
   ASSERT_EQ(markers.size(), 2u);
