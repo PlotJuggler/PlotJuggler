@@ -282,7 +282,7 @@ TEST(MarkersRuntimeHostTest, ScopeAllPublishesAcrossDatasets) {
   EXPECT_TRUE(markerFamily(store, 2, PJ::kAllDatasetsMarkerTopic).empty());
 }
 
-// The Anomaly Detector submits a Dataset-scope and a Global-scope rule with the same output key ("__global__") and
+// The Marker Editor submits a Dataset-scope and a Global-scope rule with the same output key ("__global__") and
 // only the id and the scope hint to tell them apart. Both must survive as separate generators and publish to separate
 // topics; a collision would leave one of the two rules silently unpublished.
 TEST(MarkersRuntimeHostTest, DatasetAndGlobalScopeRulesCoexistOverTheAbi) {
@@ -342,7 +342,7 @@ TEST(MarkersRuntimeHostTest, PreviewViaEphemeralFlagPublishesAndIsEphemeral) {
   EXPECT_TRUE(markerFamily(store, kDataset, topics->front()).empty());
 }
 
-// The Anomaly Detector submits its Dataset-scope id ("rule/__global__") on whatever
+// The Marker Editor submits its Dataset-scope id ("rule/__global__") on whatever
 // dataset is active when the user (re)runs it — the SAME plugin-local id, over and
 // over, on different datasets as the active one changes. This must produce one
 // binding PER dataset (one id, several bindings), not the second overwriting the

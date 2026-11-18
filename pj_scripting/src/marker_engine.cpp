@@ -16,10 +16,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <new>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "lua.h"
@@ -63,6 +65,64 @@ double SeriesView::atTime(double t) const {
 
 namespace {
 
+struct NamedColor {
+  std::string_view name;
+  std::uint8_t r, g, b, a;
+};
+
+constexpr NamedColor kNamedColors[] = {
+#include "marker_color_names.inc"
+};
+
+}  // namespace
+
+std::optional<PJ::sdk::ColorRGBA> parseMarkerColor(std::string_view text) {
+  if (!text.empty() && text[0] == '#') {
+    const auto hx = [](char c) -> int {
+      if (c >= '0' && c <= '9') {
+        return c - '0';
+      }
+      if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+      }
+      if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+      }
+      return -1;
+    };
+    const std::string_view digits = text.substr(1);
+    if (digits.size() != 3 && digits.size() != 6) {
+      return std::nullopt;
+    }
+    int v[6];
+    for (std::size_t i = 0; i < digits.size(); ++i) {
+      v[i] = hx(digits[i]);
+      if (v[i] < 0) {
+        return std::nullopt;
+      }
+    }
+    const auto channel = [&](std::size_t i) {
+      return static_cast<std::uint8_t>(digits.size() == 3 ? v[i] * 17 : v[2 * i] * 16 + v[2 * i + 1]);
+    };
+    return PJ::sdk::ColorRGBA{channel(0), channel(1), channel(2), 255};
+  }
+  // Spaces dropped, as QColor does ("light blue"); ASCII fold, since std::tolower follows the C locale (a Turkish one
+  // maps 'I' to a dotless i).
+  std::string lower;
+  for (const char c : text) {
+    if (c != ' ' && c != '\t') {
+      lower.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
+    }
+  }
+  const auto* it = std::ranges::lower_bound(kNamedColors, std::string_view(lower), {}, &NamedColor::name);
+  if (it == std::end(kNamedColors) || it->name != lower) {
+    return std::nullopt;
+  }
+  return PJ::sdk::ColorRGBA{it->r, it->g, it->b, it->a};
+}
+
+namespace {
+
 using namespace detail;
 
 struct RunContext {
@@ -88,34 +148,6 @@ void appendMarker(lua_State* L, RunContext* ctx, PJ::sdk::PlotMarker&& marker) {
   }
   ctx->output_bytes += bytes;
   ctx->emitted.push_back(std::move(marker));
-}
-
-std::optional<PJ::sdk::ColorRGBA> parseHexColor(const std::string& hex) {
-  if (hex.size() != 7 || hex[0] != '#') {
-    return std::nullopt;
-  }
-  auto hx = [](char c) -> int {
-    if (c >= '0' && c <= '9') {
-      return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-      return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-      return c - 'A' + 10;
-    }
-    return -1;
-  };
-  int v[6];
-  for (int i = 0; i < 6; ++i) {
-    v[i] = hx(hex[i + 1]);
-    if (v[i] < 0) {
-      return std::nullopt;
-    }
-  }
-  return PJ::sdk::ColorRGBA{
-      static_cast<std::uint8_t>(v[0] * 16 + v[1]), static_cast<std::uint8_t>(v[2] * 16 + v[3]),
-      static_cast<std::uint8_t>(v[4] * 16 + v[5]), 255};
 }
 
 PJ::sdk::MarkerSeverity parseSeverity(const std::string& s) {
@@ -156,6 +188,7 @@ void applyOpts(lua_State* L, int opts_idx, PJ::sdk::PlotMarker& m) {
   if (!lua_istable(L, opts_idx)) {
     return;
   }
+  // The prelude's same() compares exactly these keys: keep the two in step.
   if (auto v = optString(L, opts_idx, "label")) {
     m.label = *v;
   }
@@ -165,10 +198,19 @@ void applyOpts(lua_State* L, int opts_idx, PJ::sdk::PlotMarker& m) {
   if (auto v = optString(L, opts_idx, "category")) {
     m.category = *v;
   }
+  lua_getfield(L, opts_idx, "color");
+  const int color_type = lua_type(L, -1);
+  lua_pop(L, 1);
+  if (color_type != LUA_TNIL && color_type != LUA_TSTRING) {
+    luaL_error(
+        L, "color must be a string (\"#rrggbb\", \"#rgb\" or a Qt color name), not a %s", lua_typename(L, color_type));
+  }
   if (auto v = optString(L, opts_idx, "color")) {
-    if (auto rgba = parseHexColor(*v)) {
-      m.color = *rgba;
+    const auto rgba = parseMarkerColor(*v);
+    if (!rgba) {
+      luaL_error(L, "unknown color '%s' (use \"#rrggbb\", \"#rgb\" or a Qt color name)", v->c_str());
     }
+    m.color = *rgba;
   }
   if (auto v = optString(L, opts_idx, "severity")) {
     m.severity = parseSeverity(*v);
@@ -274,24 +316,316 @@ int l_startMarker(lua_State* L) {
   return 0;
 }
 
-int l_closeMarker(lua_State* L) {
-  RunContext* ctx = ctxFromUpvalue(L);
-  if (!ctx->open_region) {
-    return 0;
-  }
-  const auto a = *ctx->open_region;
-  const auto b = finiteToNs(L, lua_tonumber(L, 1));
+void emitRegion(lua_State* L, RunContext* ctx, std::int64_t a, std::int64_t b, int opts_idx) {
   PJ::sdk::PlotMarker m;
   m.kind = PJ::sdk::MarkerKind::kRegion;
   m.t_start = std::min(a, b);
   m.t_end = std::max(a, b);
   m.severity = PJ::sdk::MarkerSeverity::kWarning;
   m.category = "anomaly";
-  applyOpts(L, 2, m);
+  applyOpts(L, opts_idx, m);
   appendMarker(L, ctx, std::move(m));
+}
+
+int l_closeMarker(lua_State* L) {
+  RunContext* ctx = ctxFromUpvalue(L);
+  if (!ctx->open_region) {
+    return 0;
+  }
+  // Reset only after the region is emitted: a closeMarker that raises (caught by a pcall) leaves the region open.
+  emitRegion(L, ctx, *ctx->open_region, finiteToNs(L, lua_tonumber(L, 1)), 2);
   ctx->open_region.reset();
   return 0;
 }
+
+// (t_start, t_end, opts): a whole region in one call, for the prelude's backgroundColor. It leaves the rule's own
+// startMarker/closeMarker region alone, so the two can interleave.
+int l_region(lua_State* L) {
+  emitRegion(L, ctxFromUpvalue(L), finiteToNs(L, lua_tonumber(L, 1)), finiteToNs(L, lua_tonumber(L, 2)), 3);
+  return 0;
+}
+
+// (series, i) -> t, v for the prelude's scan: s:at(i) without its per-sample table, the bulk of a scan's time.
+int l_sample(lua_State* L) {
+  const SeriesView* sv = viewFromArg(L, 1);
+  const auto p = (sv != nullptr) ? sv->at(static_cast<std::size_t>(lua_tointeger(L, 2))) : std::nullopt;
+  if (!p) {
+    return 0;
+  }
+  lua_pushnumber(L, p->t);
+  lua_pushnumber(L, p->v);
+  return 2;
+}
+
+// Rule helpers written in Luau over the primitives above, run before luaL_sandbox so its globals freeze with the rest.
+// The chunk receives l_region and l_sample as its arguments, so no rule can reach them. Every Luau call and loop
+// iteration per sample costs the rule's fuel: a scan keeps both to what a hand-written loop pays.
+constexpr const char* kPrelude = R"LUAU(
+local region, sample = ...
+local createPoint, createLine = createPointMarker, createVerticalMarker
+
+-- Two results draw the same region when equal, or when both are tables with the same opts (a color function may
+-- build a new table per sample). The fields are the ones applyOpts reads, compared without a loop: every loop
+-- iteration costs the rule's fuel on every sample.
+local function same(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then
+    return a == b
+  end
+  return a.color == b.color and a.label == b.label and a.severity == b.severity and a.status == b.status
+    and a.category == b.category and a.description == b.description
+end
+
+-- A region's options: `base` (the action's opts) overlaid with one result, a color string or an opts table.
+local function regionOpts(base, r)
+  local o = { severity = "info" }
+  for k, v in base do
+    o[k] = v
+  end
+  if type(r) == "table" then
+    for k, v in r do
+      o[k] = v
+    end
+  else
+    o.color = r
+  end
+  return o
+end
+
+-- The run's own copy of a table result, so a color function that mutates and returns one shared table still splits
+-- runs where its fields change.
+local function snapshot(r)
+  if type(r) ~= "table" then
+    return r
+  end
+  return { color = r.color, label = r.label, severity = r.severity, status = r.status, category = r.category,
+    description = r.description }
+end
+
+local function seconds(opts, key)
+  local x = opts[key]
+  if x ~= nil and (type(x) ~= "number" or not (x >= 0)) then
+    error(key .. " must be a number of seconds", 3)
+  end
+  return (x or 0) * 1e9
+end
+
+-- A condition holds but no color was given: the region takes its severity color. A private value, so a color
+-- function's own result (true, say) is never mistaken for it.
+local NoColor = {}
+
+-- `when(...).action()` instead of `:action()` passes the first argument as self.
+local function checkSelf(self, name)
+  if type(self) ~= "table" or self.s == nil then
+    error("call " .. name .. " with ':', as in when(...):" .. name .. "(...)", 3)
+  end
+end
+
+-- A condition is data: a kind plus its limits, tested inline in scan's loop, so a built-in condition costs no call
+-- per sample; FN is a rule's own function. CHANGES marks moments, every other kind holds over stretches.
+local Condition = {}
+local ABOVE, BELOW, BETWEEN, OUTSIDE, EQUALS, ISTRUE, CHANGES, FN = 1, 2, 3, 4, 5, 6, 7, 8
+
+local function condition(kind, a, b, test)
+  return { [Condition] = true, kind = kind, a = a, b = b, test = test }
+end
+
+local function number(fn, x)
+  if type(x) ~= "number" then
+    error(fn .. ": the limit must be a number", 3)
+  end
+end
+
+function above(x)
+  number("above", x)
+  return condition(ABOVE, x)
+end
+
+function below(x)
+  number("below", x)
+  return condition(BELOW, x)
+end
+
+local function limits(fn, lo, hi)
+  number(fn, lo)
+  number(fn, hi)
+  if lo > hi then
+    error(fn .. ": the low limit is above the high limit", 3)
+  end
+end
+
+function between(lo, hi)
+  limits("between", lo, hi)
+  return condition(BETWEEN, lo, hi)
+end
+
+function outside(lo, hi)
+  limits("outside", lo, hi)
+  return condition(OUTSIDE, lo, hi)
+end
+
+function equals(x)
+  number("equals", x)
+  return condition(EQUALS, x)
+end
+
+function isTrue()
+  return condition(ISTRUE)
+end
+
+function changes()
+  return condition(CHANGES)
+end
+
+-- Scans the series once. Each sample's result r is the condition's boolean, or with no condition the color mapping's
+-- result (nil for none). `change(t, v, prev, r)` runs at the first sample, wherever r changes, and at every sample
+-- where r holds when `every` is set or the condition is changes(). Per sample this pays the loop, the sample read
+-- and only what the mapping or a condition function itself costs. Returns the last sample's t.
+local function scan(self, mapping, every, change)
+  local s, cond = self.s, self.cond
+  local kind, a, b, test = 0, nil, nil, nil
+  if cond ~= nil then
+    kind, a, b, test = cond.kind, cond.a, cond.b, cond.test
+  end
+  every = every or kind == CHANGES
+  local is_table = type(mapping) == "table"
+  local cur, prev, prev_t, t = nil, nil, nil, nil
+  for i = 0, s:size() - 1 do
+    local v
+    t, v = sample(s, i)
+    local r
+    if kind == 0 then
+      r = (if is_table then mapping[v] else mapping(v, t)) or nil
+    elseif kind == ABOVE then
+      r = v > a
+    elseif kind == BELOW then
+      r = v < a
+    elseif kind == BETWEEN then
+      r = v >= a and v <= b
+    elseif kind == OUTSIDE then
+      r = v < a or v > b
+    elseif kind == EQUALS then
+      r = v == a
+    elseif kind == ISTRUE then
+      r = v ~= 0
+    elseif kind == CHANGES then
+      -- NaN ~= NaN: a run of NaN samples is not a run of changes.
+      r = prev ~= nil and v ~= prev and (v == v or prev == prev)
+    else
+      r = test(v, t, prev, prev_t) and true or false
+    end
+    if (r ~= cur and not same(r, cur)) or (every and r) then
+      cur = snapshot(r)
+      change(t, v, prev, cur)
+    end
+    prev, prev_t = v, t
+  end
+  return t
+end
+
+-- :backgroundColor(color, opts?) shades while the condition holds; without a condition, `color` is a table
+-- value -> color or a function (v, t) -> color | {color=, label=, ...} | nil, and a region spans each run of equal
+-- results. opts.minDuration (s) drops shorter regions.
+local function backgroundColor(self, color, opts)
+  checkSelf(self, "backgroundColor")
+  opts = opts or {}
+  if type(opts) ~= "table" then
+    error("backgroundColor: opts must be a table", 2)
+  end
+  local min_ns = seconds(opts, "minDuration")
+  local base = {}
+  for k, v in opts do
+    if k ~= "minDuration" then
+      base[k] = v
+    end
+  end
+  local mapping, on
+  if self.cond ~= nil then
+    if self.cond.kind == CHANGES then
+      error("backgroundColor needs a condition that holds over time; changes() marks moments", 2)
+    end
+    if type(color) ~= "string" and color ~= nil then
+      error("backgroundColor: with a condition, the color is a string", 2)
+    end
+    on = color or base.color or NoColor
+  elseif type(color) == "table" or type(color) == "function" then
+    mapping = color
+  else
+    error("backgroundColor: without a condition, pass a table (value -> color) or a function (v, t) -> color", 2)
+  end
+  local start, open = 0, nil
+  local function flush(t_end)
+    if open ~= nil and t_end > start and t_end - start >= min_ns then
+      region(start, t_end, open)
+    end
+  end
+  local last_t = scan(self, mapping, false, function(t, v, prev, r)
+    flush(t)
+    if r == true and on ~= nil then
+      r = on
+    end
+    open, start = (if r == nil or r == false then nil else regionOpts(base, if r == NoColor then nil else r)), t
+  end)
+  if last_t ~= nil then
+    flush(last_t)
+  end
+end
+
+-- :event(opts?) / :verticalLine(opts?) mark the sample where the condition starts to hold (every sample with
+-- opts.every); opts.minGap (s) skips a mark closer than that to the previous one; opts.label may be a function
+-- (v, prev) -> string.
+local function marks(name, emit)
+  return function(self, opts)
+    checkSelf(self, name)
+    opts = opts or {}
+    if type(opts) ~= "table" then
+      error(name .. ": opts must be a table", 2)
+    end
+    if self.cond == nil then
+      error(name .. " needs a condition: when(series, condition):" .. name .. "()", 2)
+    end
+    local gap_ns, label = seconds(opts, "minGap"), opts.label
+    local o = {}
+    for k, v in opts do
+      if k ~= "minGap" and k ~= "every" then
+        o[k] = v
+      end
+    end
+    local last = nil
+    scan(self, nil, opts.every, function(t, v, prev, hit)
+      if hit and (last == nil or t - last >= gap_ns) then
+        if type(label) == "function" then
+          o.label = label(v, prev)
+        end
+        emit(t, v, o)
+        last = t
+      end
+    end)
+  end
+end
+
+local event = marks("event", function(t, v, o) createPoint(t, v, o) end)
+local verticalLine = marks("verticalLine", function(t, v, o) createLine(t, o) end)
+
+-- when(series, condition?): `series` is a name or series(...); `condition` one of above/below/between/outside/
+-- equals/isTrue/changes or a function (v, t, prev, prev_t) -> boolean.
+function when(source, cond)
+  local s = source
+  if type(source) == "string" then
+    s = series(source)
+    if s == nil then
+      error("when: no series named '" .. source .. "'", 2)
+    end
+  elseif type(source) ~= "table" or source.__sv == nil then
+    error("when: the first argument must be a series name or series(...)", 2)
+  end
+  if type(cond) == "function" then
+    cond = condition(FN, nil, nil, cond)
+  elseif cond ~= nil and (type(cond) ~= "table" or not cond[Condition]) then
+    error("when: the condition must be above(x), below(x), ... or a function (v, t, prev, prev_t)", 2)
+  end
+  return { s = s, cond = cond, backgroundColor = backgroundColor, event = event, verticalLine = verticalLine }
+end
+)LUAU";
 
 // The three marker shapes shared by `createMarker` and the explicit shortcuts, so both emit identical markers.
 // `opts_idx` is the stack slot of the opts table: arg 3 for createMarker, arg 2 for the shortcuts.
@@ -460,6 +794,53 @@ void bindGlobal(lua_State* L, RunContext* ctx, const char* name, lua_CFunction f
   lua_setglobal(L, name);
 }
 
+// Bytecode for `source`, empty only when luau_compile cannot allocate: a syntax error is encoded in the bytecode and
+// raised by luau_load.
+std::string compileChunk(std::string_view source) {
+  lua_CompileOptions opts = {};
+  opts.optimizationLevel = 1;
+  opts.debugLevel = 1;  // line info for error messages
+  std::size_t size = 0;
+  char* bc = luau_compile(source.data(), source.size(), &opts, &size);
+  std::string out = (bc != nullptr) ? std::string(bc, size) : std::string();
+  std::free(bc);
+  return out;
+}
+
+// Pushes the chunk's function. False sets `*error` (when non-null).
+bool loadChunk(lua_State* L, const std::string& bytecode, const char* chunkname, std::string* error) {
+  if (bytecode.empty()) {
+    if (error != nullptr) {
+      *error = "luau_compile failed";
+    }
+    return false;
+  }
+  if (luau_load(L, chunkname, bytecode.data(), bytecode.size(), 0) != 0) {
+    if (error != nullptr) {
+      *error = lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool runPrelude(lua_State* L, RunContext* ctx, std::string* error) {
+  static const std::string bytecode = compileChunk(kPrelude);
+  if (!loadChunk(L, bytecode, "=when", error)) {
+    return false;
+  }
+  lua_pushlightuserdata(L, ctx);
+  lua_pushcclosure(L, l_region, "region", 1);
+  lua_pushcfunction(L, l_sample, "sample");
+  if (lua_pcall(L, 2, 0, 0) != 0) {
+    if (error != nullptr) {
+      *error = std::string("marker prelude failed: ") + (lua_isstring(L, -1) ? lua_tostring(L, -1) : "?");
+    }
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 std::vector<PJ::sdk::PlotMarker> runMarkerScript(
@@ -507,6 +888,10 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
   bindGlobal(L, &ctx, "createPointMarker", l_createPointMarker);
   bindGlobal(L, &ctx, "createBandMarker", l_createBandMarker);
   bindGlobal(L, &ctx, "bandPower", l_bandPower);
+  if (!runPrelude(L, &ctx, error)) {
+    lua_close(L);
+    return {};
+  }
   luaL_sandbox(L);
 
   lua_callbacks(L)->userdata = &budget;
@@ -515,24 +900,7 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
   // One run scans a whole series, so it gets the module-evaluation fuel, not a per-sample calculate's.
   budget.fuel = static_cast<std::int64_t>(limits.setup_fuel);
 
-  size_t bc_size = 0;
-  lua_CompileOptions opts = {};
-  opts.optimizationLevel = 1;
-  opts.debugLevel = 1;  // line info for error messages
-  char* bc = luau_compile(code.c_str(), code.size(), &opts, &bc_size);
-  if (bc == nullptr) {
-    if (error != nullptr) {
-      *error = "luau_compile failed";
-    }
-    lua_close(L);
-    return {};
-  }
-  const int load_status = luau_load(L, "=rule", bc, bc_size, 0);
-  std::free(bc);
-  if (load_status != 0) {
-    if (error != nullptr) {
-      *error = lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed";
-    }
+  if (!loadChunk(L, compileChunk(code), "=rule", error)) {
     lua_close(L);
     return {};
   }
@@ -580,24 +948,7 @@ bool validateScript(const std::string& code, std::string* error) {
     }
     return false;
   }
-  size_t bc_size = 0;
-  lua_CompileOptions opts = {};
-  opts.optimizationLevel = 1;
-  opts.debugLevel = 1;
-  char* bc = luau_compile(code.c_str(), code.size(), &opts, &bc_size);
-  if (bc == nullptr) {
-    if (error != nullptr) {
-      *error = "luau_compile failed";
-    }
-    lua_close(L);
-    return false;
-  }
-  const int load_status = luau_load(L, "=rule", bc, bc_size, 0);
-  std::free(bc);
-  const bool ok = (load_status == 0);
-  if (!ok && error != nullptr) {
-    *error = lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed";
-  }
+  const bool ok = loadChunk(L, compileChunk(code), "=rule", error);
   lua_close(L);
   return ok;
 }
