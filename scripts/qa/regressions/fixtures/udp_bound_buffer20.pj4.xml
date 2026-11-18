@@ -18,7 +18,7 @@
   <data_processors/>
   <previouslyLoaded_StreamingSources>
     <streamInfo id="stream-2" source_name="UDP Server">
-      <plugin ID="UDP Server" manifest_id="udp-server"><![CDATA[{"_parser_config":"{\"array_policy\":\"clamp\",\"clamp_large_arrays\":true,\"discard_large_arrays\":false,\"label_keyed_arrays\":false,\"max_array_size\":500,\"timestamp_field_name\":\"timestamp\",\"use_embedded_timestamp\":false}","address":"127.0.0.1","default_encoding":"json","port":9870}]]></plugin>
+      <plugin ID="UDP Server" manifest_id="udp-server"><![CDATA[{"_parser_config":"{\"array_policy\":\"clamp\",\"clamp_large_arrays\":true,\"discard_large_arrays\":false,\"label_keyed_arrays\":false,\"max_array_size\":500,\"timestamp_field_name\":\"timestamp\",\"use_embedded_timestamp\":false}","address":"127.0.0.1","default_encoding":"json","port":19870}]]></plugin>
       <dataset display_offset_ns="0" timeline_order="1"/>
     </streamInfo>
   </previouslyLoaded_StreamingSources>

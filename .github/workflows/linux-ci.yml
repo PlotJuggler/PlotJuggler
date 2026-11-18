@@ -363,20 +363,28 @@ jobs:
 
       - name: QA regression scripts
         # The bugs exploratory QA found, replayed through the MCP UI tools on an offscreen app
-        # (scripts/qa/regressions). The signals fixture loads through a released CSV loader. A failed
-        # script keeps its instance's home (app.log, screenshots) under TMPDIR, uploaded below.
+        # (scripts/qa/regressions). The fixtures load through released plugins: the CSV loader for the signals
+        # fixture, Dummy Streamer and UDP Server for the streaming scripts. A failed script keeps its instance's
+        # home (app.log, screenshots) under TMPDIR, uploaded below.
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
           CSV_LOADER_TAG: data_load_csv/v1.0.10
+          DUMMY_STREAMER_TAG: data_stream_dummy/v1.0.1
+          UDP_SERVER_TAG: data_stream_udp/v0.9.2
           TMPDIR: ${{ runner.temp }}/pjqa
         run: |
           mkdir -p "${TMPDIR}"
           plugins="${RUNNER_TEMP}/pjqa-plugins"
           gh release download "${CSV_LOADER_TAG}" -R PlotJuggler/pj-official-plugins \
             -p 'csv-loader-*-linux-x86_64.zip' -D "${plugins}"
-          unzip -q "${plugins}"/*.zip -d "${plugins}"
-          python3 scripts/qa/pjqa.py regress --plugin-dir "${plugins}/csv-loader"
+          gh release download "${DUMMY_STREAMER_TAG}" -R PlotJuggler/pj-official-plugins \
+            -p 'dummy-streamer-*-linux-x86_64.zip' -D "${plugins}"
+          gh release download "${UDP_SERVER_TAG}" -R PlotJuggler/pj-official-plugins \
+            -p 'udp-server-*-linux-x86_64.zip' -D "${plugins}"
+          # One archive per call: `unzip a.zip b.zip` reads b.zip as a member name of a.zip.
+          for z in "${plugins}"/*.zip; do unzip -q "$z" -d "${plugins}"; done
+          python3 scripts/qa/pjqa.py regress --plugin-dir "${plugins}"
 
       - name: Upload failed QA regression homes
         if: failure()
