@@ -15,6 +15,7 @@
 #include <QMouseEvent>
 #include <QPointer>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStackedWidget>
@@ -376,6 +377,14 @@ PlotDocker* TabbedPlotWidget::findDocker(const std::function<bool(PlotDocker*)>&
 
 PlotDocker* TabbedPlotWidget::addTab(QString tab_name) {
   if (tab_name.isEmpty()) {
+    // Past every open tab's suffix too: a restore (undo, layout load) or a rename brings names the count never gave.
+    static const QRegularExpression default_name(u"^tab(\\d+)$"_s);
+    for (const TabEntry& entry : tabs_) {
+      if (const auto match = default_name.match(entry.docker != nullptr ? entry.docker->name() : QString{});
+          match.hasMatch()) {
+        tab_suffix_count_ = std::max(tab_suffix_count_, match.captured(1).toInt());
+      }
+    }
     tab_name = QString("tab%1").arg(++tab_suffix_count_);
   }
   PlotDocker* docker = createDocker(tab_name);
@@ -885,7 +894,9 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
     }
   }
   tabs_.clear();
-  tab_suffix_count_ = 0;
+  if (intent == RestoreIntent::kReplace) {
+    tab_suffix_count_ = 0;  // a layout load starts a new document; an undo keeps counting, so it reuses no name
+  }
   const auto take_reusable = [&reusable_tabs](const QString& id) -> std::optional<TabEntry> {
     if (id.isEmpty()) {
       return std::nullopt;
