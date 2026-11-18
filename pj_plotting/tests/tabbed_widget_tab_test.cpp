@@ -197,6 +197,39 @@ QStringList stripLabels(const PJ::TabbedPlotWidget& tabbed) {
   return labels;
 }
 
+// A new tab's default name is never one an open tab already shows, also after a restore brought the names back
+// (an undo, a layout load) and after a rename; a closed tab's name is not handed out again either.
+TEST(TabbedWidgetTab, DefaultTabNameIsNeverAnOpenTabsName) {
+  PJ::TabbedPlotWidget tabbed;  // starts with tab1
+  tabbed.addTab({})->setStateId(u"tab-second"_s);
+  QDomDocument doc;
+  const QDomElement saved = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kHistory));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_EQ(stripLabels(tabbed), QStringList({u"tab1"_s, u"tab2"_s}));
+
+  EXPECT_EQ(tabbed.addTab({})->name(), u"tab3"_s) << stripLabels(tabbed).join(u',').toStdString();
+  tabbed.renameTab(tabbed.addTab({}), u"tab7"_s);
+  PJ::PlotDocker* after_rename = tabbed.addTab({});
+  EXPECT_EQ(after_rename->name(), u"tab8"_s);
+  tabbed.closeTab(after_rename);
+  EXPECT_EQ(tabbed.addTab({})->name(), u"tab9"_s) << "a closed tab's name comes back only with an undo";
+}
+
+// A layout load starts the numbering again from what it opened: the default tab it replaces uses up no name.
+TEST(TabbedWidgetTab, LayoutLoadRestartsTheDefaultTabNames) {
+  PJ::TabbedPlotWidget tabbed;  // starts with tab1
+  tabbed.renameTab(tabbed.dockerAt(0), u"Signals"_s);
+  QDomDocument doc;
+  const QDomElement layout = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kFull);
+  tabbed.addTab({});
+  tabbed.addTab({});
+  ASSERT_TRUE(tabbed.xmlLoadState(layout, PJ::RestoreIntent::kReplace));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_EQ(stripLabels(tabbed), QStringList({u"Signals"_s}));
+  EXPECT_EQ(tabbed.addTab({})->name(), u"tab1"_s);
+}
+
 TEST(TabbedWidgetTab, RenameTabUpdatesDockerAndStripLabel) {
   PJ::TabbedPlotWidget tabbed;
   PJ::PlotDocker* docker = tabbed.addTab(u"Before"_s);

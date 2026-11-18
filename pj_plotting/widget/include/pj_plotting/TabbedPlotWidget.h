@@ -47,6 +47,7 @@ class TabbedPlotWidget : public QWidget {
   ~TabbedPlotWidget() override;
 
   PlotDocker* currentTab();
+  /// An empty `name` gets `tab<N>`, N past every open tab's and every one handed out since the last layout load.
   PlotDocker* addTab(QString name);
   void setDataServices(SessionManager* session, CatalogModel* catalog);
   void setObjectWidgetFactory(ObjectWidgetFactory factory);
@@ -215,6 +216,8 @@ class TabbedPlotWidget : public QWidget {
   CustomWidgetSupport custom_widget_support_;
   QString name_;
   QString state_id_;
+  /// The highest `tab<N>` suffix addTab has given or seen open. Lowered only by a layout load, so within one layout a
+  /// closed tab's name is not handed out again.
   int tab_suffix_count_ = 0;
   // True while xmlLoadState / duplicateTab rebuild dockers: their undoableChange is not forwarded.
   bool restoring_state_ = false;
