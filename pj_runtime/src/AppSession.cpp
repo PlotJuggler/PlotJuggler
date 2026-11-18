@@ -150,6 +150,7 @@ AppSession::AppSession(QString extensions_dir, DiagnosticSink sink, StaticPlugin
       }
     }
   });
+  QObject::connect(session_manager_.get(), &SessionManager::refillClosed, this, [this] { recomputeRange(); });
   // An offset change at a parked playhead moves the raw time the demanded recipes are requested at.
   QObject::connect(
       session_manager_.get(), qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this,
@@ -337,6 +338,15 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
     new_min = new_min ? std::min(*new_min, ds_min) : ds_min;
     new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
   });
+  // A reloading dataset is empty until its refill closes: without its held extent the range would shrink to the other
+  // datasets and clamp the playhead there for good. refillClosed recomputes without it.
+  for (const auto& [dataset_id, raw] : session_manager_->refillHeldRawBounds()) {
+    const DisplayOffset offset = session_manager_->displayOffset(dataset_id);
+    const DisplaySeconds ds_min = rawToDisplaySecondsAtOrAfter(raw.first, offset);
+    const DisplaySeconds ds_max = rawToDisplaySecondsAtOrAfter(raw.second, offset);
+    new_min = new_min ? std::min(*new_min, ds_min) : ds_min;
+    new_max = new_max ? std::max(*new_max, ds_max) : ds_max;
+  }
   if (!new_min) {
     // Static references alone have no transport. Otherwise keep the range across a transient empty while a replacing
     // reload detaches its chunks, so playback does not pause or flicker mid-load.
@@ -349,12 +359,6 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
       resetPlaybackToEmpty();
     }
     return std::nullopt;
-  }
-  if (session_manager_->refillOpen()) {
-    // The reloading dataset is empty until its refill commits: a range shrunk to the other datasets would clamp the
-    // playhead there for good. The seed after the commit shrinks it if the reload did.
-    new_min = std::min(*new_min, playback_engine_->rangeMin());
-    new_max = std::max(*new_max, playback_engine_->rangeMax());
   }
   playback_engine_->setRange(DisplayRange{*new_min, *new_max});
   return new_min;

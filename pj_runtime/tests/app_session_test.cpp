@@ -1090,13 +1090,52 @@ TEST(AppSessionTest, RecomputeRangeMovesRangeButNeverCurrentTime) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 4.0);  // unchanged: no snap
 }
 
+namespace {
+
+constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+
+void removeDatasetEverywhere(PJ::AppSession& session, PJ::DatasetId dataset_id) {
+  ASSERT_TRUE(session.catalogModel().removeDataset(dataset_id));
+  session.sessionManager().removeDataset(dataset_id);
+  session.catalogModel().rebuildFromDatastore();
+}
+
+}  // namespace
+
 // A replacing reload empties its dataset until the refill lands; the range recomputed meanwhile (every ingest notify
 // does) must not shrink to the other datasets' extent, or the playhead is clamped there and stays after the refill.
 TEST(AppSessionTest, RefillKeepsPlayheadInsideAnotherDatasetsShorterRange) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   PJ::AppSession session(dir.path());
-  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+
+  makeShiftedDataset(session, "short", 0, "/s", {0, 2 * kSecond});
+  const PJ::DatasetId reloaded = makeShiftedDataset(session, "long", 0, "/s", {0, 1000 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{500.0});
+
+  {
+    PJ::RefillGuard refill = session.sessionManager().beginRefill(reloaded);
+    EXPECT_TRUE(session.sessionManager().refillOpen(reloaded));
+    session.recomputeRange();
+    EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0);
+    EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
+    addScalarSamples(session, reloaded, "/s", {0, 1000 * kSecond});
+    refill.commit();
+  }
+  EXPECT_FALSE(session.sessionManager().refillOpen(reloaded));
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
+}
+
+// The held extent ends at the commit, which recomputes the range itself: a reload into a shorter file shrinks the
+// range and clamps the playhead.
+TEST(AppSessionTest, RefillCommitShrinksToAShorterReload) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
 
   makeShiftedDataset(session, "short", 0, "/s", {0, 2 * kSecond});
   const PJ::DatasetId reloaded = makeShiftedDataset(session, "long", 0, "/s", {0, 1000 * kSecond});
@@ -1107,14 +1146,104 @@ TEST(AppSessionTest, RefillKeepsPlayheadInsideAnotherDatasetsShorterRange) {
   {
     PJ::RefillGuard refill = session.sessionManager().beginRefill(reloaded);
     session.recomputeRange();
-    EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0);
-    EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
-    addScalarSamples(session, reloaded, "/s", {0, 1000 * kSecond});
+    addScalarSamples(session, reloaded, "/s", {0, 300 * kSecond});
     refill.commit();
   }
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 300.0) << "the commit recomputes the range";
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 300.0);
   ASSERT_TRUE(session.seedPlaybackFromSession());
-  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0);
-  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 300.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 300.0);
+}
+
+// A rollback closes the refill and recomputes the range itself: an object-only dataset's rollback notifies no scalar
+// topic, so no ingest notify would.
+TEST(AppSessionTest, RefillRollbackClosesTheRefillAndRecomputesTheRange) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  makeShiftedDataset(session, "short", 0, "/s", {0, 2 * kSecond});
+  const PJ::DatasetId reloaded = makeShiftedDataset(session, "long", 0, "/s", {0, 1000 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{500.0});
+
+  {
+    PJ::RefillGuard refill = session.sessionManager().beginRefill(reloaded);
+    session.recomputeRange();
+    addScalarSamples(session, reloaded, "/s", {0, 100 * kSecond});
+    session.playbackEngine().setRange(PJ::displayRange(0.0, 5.0));  // a range nothing recomputed since
+  }
+  EXPECT_FALSE(session.sessionManager().refillOpen(reloaded));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0) << "the rollback recomputes the range";
+
+  removeDatasetEverywhere(session, reloaded);
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 2.0);
+}
+
+// Only the refilled dataset's own extent is held: another dataset removed during the refill stops counting.
+TEST(AppSessionTest, RefillDoesNotHoldARemovedDatasetsExtent) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId reloaded = makeShiftedDataset(session, "short", 0, "/s", {0, 2 * kSecond});
+  const PJ::DatasetId removed = makeShiftedDataset(session, "long", 0, "/s", {0, 1000 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{1.0});
+
+  PJ::RefillGuard refill = session.sessionManager().beginRefill(reloaded);
+  removeDatasetEverywhere(session, removed);
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 2.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 1.0);
+  addScalarSamples(session, reloaded, "/s", {0, 2 * kSecond});
+  refill.commit();
+}
+
+// With "Use time offset" on, emptying the earliest dataset must not move the time origin to another dataset's start:
+// the shell shifts the playhead by every origin move (MainWindow's displayOffsetChanged handler, mirrored here).
+TEST(AppSessionTest, RefillKeepsTheTimeOriginAndThePlayhead) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::SessionManager& manager = session.sessionManager();
+  PJ::PlaybackEngine& engine = session.playbackEngine();
+  manager.setUseTimeOffset(true);
+  constexpr PJ::Timestamp kEpoch = 1'700'000'000LL * kSecond;
+
+  const PJ::DatasetId reloaded = makeShiftedDataset(session, "long", 0, "/s", {kEpoch, kEpoch + 1000 * kSecond});
+  makeShiftedDataset(session, "late", 0, "/s", {kEpoch + 900 * kSecond, kEpoch + 902 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  ASSERT_EQ(manager.globalTimeReference(), kEpoch);
+  engine.setCurrentTime(PJ::DisplaySeconds{500.0});
+
+  PJ::Timestamp last_reference = manager.globalTimeReference();
+  QObject::connect(&manager, qOverload<>(&PJ::SessionManager::displayOffsetChanged), &session, [&] {
+    const PJ::Timestamp reference = manager.globalTimeReference();
+    const PJ::DisplaySeconds old_time = engine.currentTime();
+    const double frame_delta = PJ::timestampDifferenceSeconds(last_reference, reference);
+    last_reference = reference;
+    session.recomputeRange();
+    engine.setCurrentTime(PJ::DisplaySeconds{old_time.value + frame_delta});
+  });
+
+  {
+    PJ::RefillGuard refill = manager.beginRefill(reloaded);
+    EXPECT_EQ(manager.globalTimeReference(), kEpoch);
+    session.recomputeRange();
+    EXPECT_DOUBLE_EQ(engine.currentTime().value, 500.0);
+    addScalarSamples(session, reloaded, "/s", {kEpoch, kEpoch + 1000 * kSecond});
+    refill.commit();
+  }
+  manager.refreshDatasetTimeReference(reloaded);  // FileLoader's commit seam
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_EQ(manager.globalTimeReference(), kEpoch);
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 500.0);
 }
 
 // Automatic marker runs follow demand: a generator on a demand-capable streaming

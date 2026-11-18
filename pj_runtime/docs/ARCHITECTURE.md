@@ -48,9 +48,14 @@ does not link it.
   When no visible data remains it collapses the transport with `resetPlaybackToEmpty()`
   (pause, `[0,0]` range, cursor 0), the same reset the `CatalogModel::cleared()` hook runs
   on a full wipe: this is what stops playback when the last dataset is removed. While a
-  replacing reload's `RefillGuard` is open (`SessionManager::refillOpen()`) the range only
-  grows: the emptied dataset would otherwise shrink it to the other datasets' extent and
-  clamp the playhead there; the seed after the commit applies any real shrink. Both scans
+  replacing reload's `RefillGuard` is open, the emptied dataset counts with the raw extent
+  it had when the refill began (`SessionManager::refillHeldRawBounds()`; dropped if the
+  dataset is removed), and its earliest-sample pin is held so the time origin does not
+  move: otherwise the range shrinks to the other datasets and the playhead is clamped
+  there, or the origin jumps and the shell shifts the playhead with it. Commit and
+  rollback emit `refillClosed`, on which `AppSession` recomputes the range (a rollback
+  restoring only object topics notifies no ingest), after re-pinning the origin from the
+  data left. Both scans
   share the private `forEachVisibleRawRange`, so the visibility and dedup rules live in one
   place. The playback range skips host-published topics (`isOffClockTopic`).
   Zero-time reference geometry is also outside the clock: a dataset containing a point

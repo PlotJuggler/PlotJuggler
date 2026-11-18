@@ -824,7 +824,7 @@ std::unordered_set<DatasetId> SessionManager::refreshDatasetMinTimestampsForTopi
   for (const DatasetId dataset_id : dataset_ids) {
     if (const auto bounds = datasetRawBounds(dataset_id); bounds.has_value()) {
       (void)rememberDatasetMinTimestamp(dataset_id, bounds->first);
-    } else {
+    } else if (!refillOpen(dataset_id)) {  // a refilling dataset keeps its pin until the commit re-evaluates it
       invalidateDatasetMinTimestamp(dataset_id);
     }
   }
@@ -1117,6 +1117,41 @@ void SessionManager::notifyDatasetAboutToBeReplaced(DatasetId dataset_id) {
   emit datasetAboutToBeReplaced(dataset_id);
 }
 
+void SessionManager::openRefill(DatasetId dataset_id) {
+  OpenRefill& open = open_refills_[dataset_id];
+  if (open.guards++ == 0) {
+    open.held_raw_bounds = datasetRawBounds(dataset_id);
+    (void)datasetMinTimestamp(dataset_id);  // pin it while the data is still there
+  }
+  emit datasetAboutToBeReplaced(dataset_id);
+}
+
+void SessionManager::closeRefill(DatasetId dataset_id) {
+  const auto it = open_refills_.find(dataset_id);
+  if (it == open_refills_.end() || --it->second.guards > 0) {
+    return;
+  }
+  open_refills_.erase(it);
+  // The held pin described the prior data: re-pin from what the refill or the rollback left.
+  invalidateDatasetMinTimestamp(dataset_id);
+  notifyGlobalTimeReferenceIfChanged();
+  emit refillClosed(dataset_id);
+}
+
+bool SessionManager::refillOpen(DatasetId dataset_id) const {
+  return open_refills_.contains(dataset_id);
+}
+
+std::vector<std::pair<DatasetId, std::pair<Timestamp, Timestamp>>> SessionManager::refillHeldRawBounds() const {
+  std::vector<std::pair<DatasetId, std::pair<Timestamp, Timestamp>>> held;
+  for (const auto& [dataset_id, open] : open_refills_) {
+    if (open.held_raw_bounds) {
+      held.emplace_back(dataset_id, *open.held_raw_bounds);
+    }
+  }
+  return held;
+}
+
 RefillGuard SessionManager::beginRefill(DatasetId dataset_id) {
   return RefillGuard(*this, dataset_id);  // guaranteed copy elision (move-only)
 }
@@ -1126,7 +1161,6 @@ RefillGuard SessionManager::beginRefill(DatasetId dataset_id) {
 RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : session_(&session), dataset_id_(dataset_id) {
   // GUI thread, no event loop, as replaceDataset.
   Q_ASSERT(session.thread() == QThread::currentThread());
-  ++session.open_refills_;
 
   // Prior ids, taken before detaching: scalars for the empty-state notify, object ids so a rollback tells which object
   // topics a failed refill added.
@@ -1149,7 +1183,7 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   //     served from detached or partial data until commit or rollback.
   session.suspendOnDemand(dataset_id);
   // (1) Adapters drop cached TopicChunk* before any deque moves.
-  session.notifyDatasetAboutToBeReplaced(dataset_id);
+  session.openRefill(dataset_id);
   // (2) Detach, not free, keeping the ids registered for the refill.
   scalar_snapshot_ = session.dataEngine().detachDatasetChunks(dataset_id);
   object_snapshot_ = session.objectStore().detachDataset(dataset_id);
@@ -1211,11 +1245,11 @@ void RefillGuard::commit() {
   // The content now comes from another source, so the old provenance is stale (a promoted cloud dataset refilled from
   // a local file must not keep the cloud descriptor). A rollback never reaches commit and keeps it.
   if (session_ != nullptr) {
-    --session_->open_refills_;
     session_->detachSourceRecord(dataset_id_);
     // The new load's document, if any, is published at its own commit seam.
     session_->clearDatasetMetadata(dataset_id_);
     session_->resumeOnDemandLater(dataset_id_);
+    session_->closeRefill(dataset_id_);
   }
 }
 
@@ -1385,7 +1419,7 @@ void RefillGuard::rollback() {
     qCWarning(lcSession).noquote() << "RefillGuard rollback processor replay failed:"
                                    << QString::fromStdString(replayed.error());
   }
-  --session_->open_refills_;  // before the notify, so the range recompute it triggers sees the restored data as final
+  session_->closeRefill(dataset_id_);
   const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
   session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
   session_->resumeOnDemandLater(dataset_id_);  // the rollback's hold
@@ -1698,6 +1732,9 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
 
 void SessionManager::removeDataset(DatasetId dataset_id) {
   data_engine_.removeDataset(dataset_id);
+  if (const auto refill = open_refills_.find(dataset_id); refill != open_refills_.end()) {
+    refill->second.held_raw_bounds.reset();
+  }
   dataset_source_paths_.erase(dataset_id);
   // A removed dataset's record must not resolve a future query (a reminted id could collide).
   dataset_source_records_.erase(dataset_id);
