@@ -314,6 +314,19 @@ jobs:
           QT_QPA_PLATFORM=xcb xvfb-run -a ctest --test-dir build --output-on-failure --timeout 120 -L qrhi || status=1
           exit "${status}"
 
+      - name: QA regression scripts
+        # The bugs exploratory QA found, replayed through the MCP UI tools on an offscreen app
+        # (scripts/qa/regressions). The signals fixture loads through a released CSV loader.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CSV_LOADER_TAG: data_load_csv/v1.0.10
+        run: |
+          plugins="${RUNNER_TEMP}/pjqa-plugins"
+          gh release download "${CSV_LOADER_TAG}" -R PlotJuggler/pj-official-plugins \
+            -p 'csv-loader-*-linux-x86_64.zip' -D "${plugins}"
+          unzip -q "${plugins}"/*.zip -d "${plugins}"
+          python3 scripts/qa/pjqa.py regress --plugin-dir "${plugins}/csv-loader"
+
       - name: Test the QRhi renderer at the OpenGL floor (3.3 core)
         # Every pack's lowest desktop GLSL is 330, and Qt's GL backend never picks
         # a GLSL above the context's: Mesa capped to OpenGL 3.3 runs the render
