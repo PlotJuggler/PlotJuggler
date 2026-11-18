@@ -154,6 +154,12 @@ so every start that does not launch (cancel, a plugin contract violation, a refu
 count in the catalog's duplicate-label ordinals and suffix the next start's name. `streamError` is emitted only after
 the dataset is gone (a cancel reports nothing), so its consumer cannot rely on that dataset existing.
 
+**Source and buffer selection.** `StreamingSourceManager` learns the selected source and the retention window only
+from `LeftPanel::streamingSourceChanged` and `streamingBufferChanged`. A panel method that sets the combo or the
+scrubber with signals blocked (`setStreamingSources`, `restoreSourcesState`, blocked so QSettings is not written)
+emits them itself; otherwise Start launches a source other than the one the combo shows, and retention keeps a window
+other than the one the scrubber shows.
+
 **Pause and resume.** While paused, each session writes to the secondary engine and object store. Resume swaps the
 write targets back first (a push already in flight finishes on the secondary, the next lands on the primary; flushing
 first would race new arrivals), then moves the secondary chunks and entries into the primary without copying,
@@ -567,9 +573,6 @@ Suites with their own executable and ctest entry, and why:
   or scene views embedded in a toolbox panel as displayed.
 - Removing curves rebuilds the whole curve tree (`CurveListPanel::onCatalogItemsRemoved`); expansion and scroll are
   restored, the selection is not.
-- `LeftPanel::restoreSourcesState` sets the streaming source combo and buffer scrubber with signals blocked, so after
-  a layout restore `StreamingSourceManager` still starts the source selected before the restore and keeps the old
-  retention window until the user touches either control (suspected from the code, not reproduced).
 - In-band embedded assets are not routed to Scene3D docks on load.
 - Restoring a layout whose `<pinned_toolboxes>` names a plugin that is missing or fails to bind goes through
   `launchToolbox`'s error path, which opens a modal `MessageBox::warning` even in an unattended run (suspected from

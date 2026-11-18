@@ -199,7 +199,8 @@ LeftPanel::LeftPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::LeftPanel) 
   // The label's width is known only after layout: re-elide whenever it moves.
   ui_->labelStreamingRecordStatus->installEventFilter(this);
   applyRecordingStatusMinimumWidth();
-  // Only a user's pick reaches here: setStreamingSources() and restoreSourcesState() block the signal.
+  // Only a user's pick reaches here: setStreamingSources() and restoreSourcesState() block the signal and emit
+  // streamingSourceChanged themselves.
   connect(ui_->comboStreaming, &QComboBox::currentTextChanged, this, [this](const QString& source) {
     QSettings().setValue(kStreamingSourceKey, source);
     emit streamingSourceChanged(source);
@@ -379,24 +380,31 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
     }
   }
 
-  // A source that is not installed is skipped. Blocked, so QSettings is not written and no streamingSourceChanged
-  // is emitted.
+  // Blocked so QSettings is not written; the signals are emitted by hand because StreamingSourceManager learns the
+  // selection only from them, and Start would otherwise launch the source picked before the restore. A source that is
+  // not installed is skipped.
   if (element.hasAttribute(u"streaming_source"_s)) {
     const QString src = element.attribute(u"streaming_source"_s);
     const int idx = ui_->comboStreaming->findText(src);
     if (idx >= 0) {
-      const QSignalBlocker blocker(ui_->comboStreaming);
-      ui_->comboStreaming->setCurrentIndex(idx);
+      {
+        const QSignalBlocker blocker(ui_->comboStreaming);
+        ui_->comboStreaming->setCurrentIndex(idx);
+      }
+      emit streamingSourceChanged(ui_->comboStreaming->currentText());
     }
   }
 
-  // setValue does not emit editingFinished, so this neither writes QSettings nor emits streamingBufferChanged.
+  // setValue does not emit editingFinished, which is what writes QSettings.
   if (element.hasAttribute(u"streaming_buffer"_s)) {
     bool ok = false;
     const int seconds = element.attribute(u"streaming_buffer"_s).toInt(&ok);
     if (ok) {
-      const QSignalBlocker blocker(ui_->streamingSpinBox);
-      ui_->streamingSpinBox->setValue(seconds);
+      {
+        const QSignalBlocker blocker(ui_->streamingSpinBox);
+        ui_->streamingSpinBox->setValue(seconds);
+      }
+      emit streamingBufferChanged(ui_->streamingSpinBox->value());
     }
   }
 }

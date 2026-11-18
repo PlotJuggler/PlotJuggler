@@ -66,8 +66,9 @@ class LeftPanel : public QWidget {
   // visibility is in chrome_state, not here.
   [[nodiscard]] QDomElement saveSourcesState(QDomDocument& doc) const;
 
-  // Applies each attribute on its own; missing or unknown values are ignored. Never writes QSettings: a layout
-  // must not change the user's defaults.
+  // Applies each attribute on its own; missing or unknown values are ignored. Emits streamingSourceChanged and
+  // streamingBufferChanged for what it applies, so the streaming manager follows the restored controls. Never writes
+  // QSettings: a layout must not change the user's defaults.
   void restoreSourcesState(const QDomElement& element);
 
  public:
