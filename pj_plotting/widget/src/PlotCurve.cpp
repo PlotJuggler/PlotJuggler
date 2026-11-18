@@ -7,6 +7,7 @@
 #include <qwt_text.h>
 
 #include <QPainter>
+#include <cmath>
 
 namespace PJ {
 
@@ -45,6 +46,28 @@ QList<QwtLegendData> PlotCurve::legendData() const {
 }
 
 void PlotCurve::drawCurve(
+    QPainter* painter, int style, const QwtScaleMap& x_map, const QwtScaleMap& y_map, const QRectF& canvas_rect,
+    int from, int to) const {
+  // ponytail: one Qwt draw call per finite run, so a series alternating finite and NaN samples costs a call per sample;
+  // batch the runs into one path if such data shows up on the raster canvas.
+  int run_begin = -1;
+  for (int index = from; index <= to; ++index) {
+    const QPointF point = sample(static_cast<size_t>(index));
+    if (std::isfinite(point.x()) && std::isfinite(point.y())) {
+      if (run_begin < 0) {
+        run_begin = index;
+      }
+    } else if (run_begin >= 0) {
+      drawFiniteRun(painter, style, x_map, y_map, canvas_rect, run_begin, index - 1);
+      run_begin = -1;
+    }
+  }
+  if (run_begin >= 0) {
+    drawFiniteRun(painter, style, x_map, y_map, canvas_rect, run_begin, to);
+  }
+}
+
+void PlotCurve::drawFiniteRun(
     QPainter* painter, int style, const QwtScaleMap& x_map, const QwtScaleMap& y_map, const QRectF& canvas_rect,
     int from, int to) const {
   QwtPlotCurve::drawCurve(painter, style, x_map, y_map, canvas_rect, from, to);

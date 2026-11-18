@@ -8,6 +8,8 @@ namespace PJ {
 /// QwtPlotCurve with an optional dots pass over the Lines style, so "Lines and Dots" needs no Qwt patch. drawCurve()
 /// paints it only on the QPainter canvases (the raster QwtPlotCanvas: GPU canvas disabled, or the fallback after a GPU
 /// failure); PlotRhiCanvas never calls drawCurve(): it reads dotWidth() and builds the same square dots as geometry.
+/// drawCurve() also leaves a gap at NaN and infinite samples, as PlotRhiCanvas does, where Qwt would draw a line to
+/// the canvas edge.
 class PlotCurve : public QwtPlotCurve {
  public:
   explicit PlotCurve(const QString& title);
@@ -28,6 +30,11 @@ class PlotCurve : public QwtPlotCurve {
       int from, int to) const override;
 
  private:
+  // One run of finite samples, [from, to].
+  void drawFiniteRun(
+      QPainter* painter, int style, const QwtScaleMap& x_map, const QwtScaleMap& y_map, const QRectF& canvas_rect,
+      int from, int to) const;
+
   double dot_width_ = 0.0;
   QString legend_suffix_;
 };
