@@ -1360,13 +1360,20 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       });
   connect(
       streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
-      [this](DatasetId id, const QString& reason) {
+      [this, snap_streaming_playback_to_live_edge](DatasetId id, const QString& reason) {
         session_->sessionManager().notifyStreamEnded(id);
         if (active_streaming_dataset_id_ == id) {
-          active_streaming_dataset_id_ = 0;
-          session_->setActiveStreamingDataset(0);
+          // As a start does, the newest live stream is followed; live-follow ends only with the last stream.
+          const auto live = streaming_manager_->layoutIds();
+          const DatasetId next = live.empty() ? 0 : live.back().first;
+          active_streaming_dataset_id_ = next;
+          session_->setActiveStreamingDataset(next);
           streaming_playback_seeded_ = false;
-          session_->playbackEngine().setHoldAtRangeMax(false);
+          if (next == 0) {
+            session_->playbackEngine().setHoldAtRangeMax(false);
+          } else if (session_->playbackEngine().isPlaying()) {
+            (void)snap_streaming_playback_to_live_edge();
+          }
           refreshStreamingSeekLock();
         }
         // Finalizes only that source's file; the capture ends with its last live source. Taps attach at start()

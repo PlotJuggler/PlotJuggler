@@ -554,6 +554,38 @@ TEST_F(StreamingPresetTest, RemovingADatasetDropsThePausedRowsOfItsEndedStream) 
   EXPECT_TRUE(merged.has_value()) << merged.error();
 }
 
+// The newest stream is the one followed live. When it stops while an older one still runs,
+// the older one is followed: playback keeps playing and the cursor keeps up with its tip.
+TEST_F(StreamingPresetTest, StoppingTheFollowedStreamFollowsAnotherOneStillRunning) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  const auto start = [&](const QString& id) {
+    PJ::layout_xml::StreamingSourceRef source;
+    source.id = id;
+    source.plugin_id = QString::fromLatin1(kPluginId);
+    source.plugin_config_json = uR"({"topic":"%1/data"})"_s.arg(id);
+    QString error;
+    const PJ::DatasetId dataset = streams.startFromLayout(source, source.plugin_config_json, error);
+    EXPECT_NE(dataset, 0U) << error.toStdString();
+    return dataset;
+  };
+  const PJ::DatasetId older = start(u"older"_s);
+  const PJ::DatasetId newer = start(u"newer"_s);
+  ASSERT_NE(older, 0U);
+  ASSERT_NE(newer, 0U);
+  ASSERT_EQ(PresetTestPeer::followedStream(*window_), newer);
+  PJ::PlaybackEngine& playback = PresetTestPeer::session(*window_).playbackEngine();
+  ASSERT_TRUE(playback.isPlaying());
+
+  ASSERT_TRUE(streams.stopDatasetAndWait(newer, u"test"_s));
+  EXPECT_EQ(PresetTestPeer::followedStream(*window_), older);
+  // The cursor moves on with the older stream's next samples.
+  const auto range = sessionManager().datasetDisplayRange(older);
+  ASSERT_TRUE(range.has_value());
+  const double tip_at_stop = range->max.value;
+  EXPECT_TRUE(pumpUntil([&] { return playback.currentTime().value > tip_at_stop; }));
+  EXPECT_TRUE(playback.isPlaying());
+}
+
 // A sample stamped before the newest live one (a late arrival) can reach a paused stream.
 // The resume still merges every paused row into the live engine, and so does the next one.
 TEST_F(StreamingPresetTest, ResumeMergesPausedRowsThatArriveLate) {
