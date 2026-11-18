@@ -492,7 +492,9 @@ class SessionManager : public QObject {
 
   // Removes the dataset's scalar storage from the engine and invalidates its time-origin caches, so
   // globalTimeReference() re-bases to the survivors. Use it, not dataEngine().removeDataset(), which leaves the
-  // memoized origin stale. Tear down readers and catalog items and evict the dataset's objects first.
+  // memoized origin stale. Also removes every filter and transform reading the dataset, cascading, without asking:
+  // a shell that wants the user's consent asks before calling. Tear down readers and catalog items and evict the
+  // dataset's objects first.
   void removeDataset(DatasetId dataset_id);
 
   // Recomputes `dataset_id`'s earliest-sample pin from its current data and emits the global reframe if the origin

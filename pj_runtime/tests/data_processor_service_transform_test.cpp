@@ -395,6 +395,28 @@ TEST(DataProcessorTransformTest, RemovingTransformCascadesDownstreamFilter) {
   EXPECT_FALSE(fx.listed(child->output_topic_id));
 }
 
+// "Remove all Datasets" reaches SessionManager::removeDataset without the shell's cascade prompt: the processors
+// reading the dataset must go with it, or the bridge's `list` keeps them and their names stay taken.
+TEST(DataProcessorTransformTest, RemovingTheInputDatasetRemovesItsProcessors) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(std::move(catalogue));
+  ASSERT_TRUE(fx.service.applyFilter(parent->output_topic_ids.front(), fx.ds, "scale", "final").has_value());
+
+  fx.session.removeDataset(fx.ds);
+  EXPECT_TRUE(fx.service.transformIdsForPlugin("pluginA").empty());
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+  EXPECT_TRUE(fx.service.recipes().empty());
+
+  fx.seed("speed", {3.0});
+  const auto again = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  EXPECT_TRUE(again.has_value()) << again.error();
+}
+
 TEST(DataProcessorTransformTest, RemoveRetiresTopic) {
   Fixture fx;
   fx.seed("speed", {1.0});

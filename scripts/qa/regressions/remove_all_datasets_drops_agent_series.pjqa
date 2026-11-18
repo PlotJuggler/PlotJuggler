@@ -1,0 +1,21 @@
+# "Remove all Datasets" removes the derived series an agent built on the data: list_created no longer lists it,
+# and its name is free again (with no data left the create still fails, but on the missing input, not the name).
+# The datasets menu (kebab) is opened with the mouse and its last item, "Remove all Datasets", reached with the
+# keyboard.
+# app: -d tests/wasm/fixtures/signals/data.csv
+# needs: plugins
+until get_status {} "name":"data.csv"
+create_derived_series {"name":"dbl","inputs":["data/sine"],"expression":"value*2"}
+expect "series":"dbl/value"
+ui_click {"name":"buttonDatasetsMenu"}
+ui_key {"keys":"Down"}
+ui_key {"keys":"Down"}
+ui_key {"keys":"Down"}
+ui_key {"keys":"Space","wait_ms":800}
+until get_status {} "datasets":[]
+list_topics {}
+absent dbl
+list_created {}
+absent dbl
+refuse create_derived_series {"name":"dbl","inputs":["data/sine"],"expression":"value*2"}
+absent already exists

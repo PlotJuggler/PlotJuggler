@@ -1694,6 +1694,11 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
 }
 
 void SessionManager::removeDataset(DatasetId dataset_id) {
+  // Before the erase: an eager node must not outlive its input storage.
+  if (const Status removed = processor_service_->removeProcessorsDependingOn(data_engine_.listTopics(dataset_id));
+      !removed.has_value()) {
+    qCWarning(lcSession).noquote() << "removeDataset: dependent processors:" << QString::fromStdString(removed.error());
+  }
   data_engine_.removeDataset(dataset_id);
   dataset_source_paths_.erase(dataset_id);
   // A removed dataset's record must not resolve a future query (a reminted id could collide).

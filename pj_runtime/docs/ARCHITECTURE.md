@@ -96,8 +96,12 @@ does not link it.
   the `DataEngine` and invalidates the time-origin caches, so `globalTimeReference()`
   re-bases to the survivors; when the origin actually moves it emits
   `displayOffsetChanged()` so surviving curve adapters drop stale offsets and re-fit. It
-  also drops the dataset's source-path, source-record and loader-metadata entries and runs
-  `BatchEngine::clearGeneratorsForDataset`. Calling `dataEngine().removeDataset` directly
+  also drops the dataset's source-path, source-record and loader-metadata entries, runs
+  `BatchEngine::clearGeneratorsForDataset`, and removes the filters and transforms reading the
+  dataset (`DataProcessorService::removeProcessorsDependingOn`, before the storage goes), so
+  the `pj.data_processors.v1` `list` and a re-created name agree with the emptied catalog.
+  The shell's single-dataset removal asks about those dependents first; "Remove all
+  Datasets" does not ask. Calling `dataEngine().removeDataset` directly
   leaves the memoized earliest-sample origin stale.
 - **Dataset identity registry.** `DatasetId` → normalized full path
   (`setDatasetSourcePath` / `datasetSourcePath`, written by `pj_app`'s `FileLoader`;
