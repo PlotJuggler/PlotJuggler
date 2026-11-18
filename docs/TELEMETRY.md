@@ -125,6 +125,16 @@ that, "which plugins are used" is `daily_plugin` (volume) and
 `monthly_uniques` (reach), and "installed but unused" is `daily_installed`
 against `daily_plugin`. No identifier outlives the month it counts.
 
+### Testing the usage report
+
+`PJ_USAGE_REPORT_URL` points the upload at another collector, such as the
+telemetry Worker under `wrangler dev --local`. The other gates still apply, so
+the build needs a reporting stamp (`PJ_INSTALLATION=qa-local ./build.sh`), the
+environment must not set `CI` or `PJ_DISABLE_TELEMETRY` (`scripts/qa/pjqa.py`
+sets the latter), and only a finished UTC day is uploaded: count something,
+quit with Ctrl+Q (counters are saved on a clean exit and every 5 minutes),
+rename the day in `usage_counters.json` to yesterday, and start again.
+
 ## Opting out
 
 Preferences → Appearance → **Anonymous usage statistics** (off = the ping is

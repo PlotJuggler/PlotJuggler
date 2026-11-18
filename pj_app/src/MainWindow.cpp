@@ -3584,6 +3584,10 @@ void MainWindow::startUsageReporting(const QString& installation) {
   usage_flush_timer_->start();
 
   usage_reporter_ = new UsageReporter(counters, this);
+  // A developer's own collector, e.g. a local `wrangler dev` (docs/TELEMETRY.md, "Testing the usage report").
+  if (const QString url = qEnvironmentVariable("PJ_USAGE_REPORT_URL"); !url.isEmpty()) {
+    usage_reporter_->setEndpointUrl(QUrl(url));
+  }
   if (counters.completedDays().empty()) {
     return;  // nothing to upload this launch: skip the registry fetch too
   }
