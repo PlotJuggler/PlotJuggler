@@ -510,6 +510,7 @@ bool PluginRuntimeCatalog::registerStaticDataSource(
         for (const auto& ext : descriptor.file_extensions) {
           loaded.file_extensions.push_back(normalizeExtension(ext));
         }
+        loaded.per_file_config_keys = descriptor.per_file_config_keys;
         return true;
       },
       [dialog_vtable](const PJ_data_source_vtable_t* source_vtable) {
@@ -672,6 +673,7 @@ bool PluginRuntimeCatalog::loadAndRegisterDataSource(const PluginDescriptor& des
   for (const auto& ext : descriptor.file_extensions) {
     loaded.file_extensions.push_back(normalizeExtension(ext));
   }
+  loaded.per_file_config_keys = descriptor.per_file_config_keys;
 
   report(DiagnosticLevel::kInfo, loaded.id, "Loaded DataSource " + loaded.name + " from " + loaded.path);
   data_sources_.push_back(std::move(loaded));

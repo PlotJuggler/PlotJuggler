@@ -12,8 +12,6 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QHash>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QLoggingCategory>
 #include <QPlainTextEdit>
@@ -466,19 +464,33 @@ void probeColdObjectFetch(ObjectStore& object_store, DatasetId dataset_id) {
 }
 #endif
 
-// The saved config (the previous load's dialog state) with `filepath` set; an unparsable one counts as empty.
-std::string buildLoadConfig(std::string_view saved_config, const QString& path) {
-  QJsonObject obj;
-  if (!saved_config.empty()) {
-    const QByteArray bytes(saved_config.data(), static_cast<qsizetype>(saved_config.size()));
-    const QJsonDocument doc = QJsonDocument::fromJson(bytes);
-    if (doc.isObject()) {
-      obj = doc.object();
+// The saved config (the previous load's dialog state) with `filepath` set; an unparsable one counts as empty. Unless
+// the saved `filepath` names the same file, the members the plugin's manifest declares per file (JSON Pointers) are
+// removed: they were chosen for another file, or for one the config does not name.
+std::string buildLoadConfig(
+    std::string_view saved_config, const QString& path, const std::vector<std::string>& per_file_config_keys) {
+  nlohmann::json obj = nlohmann::json::parse(saved_config, nullptr, false);
+  if (!obj.is_object()) {
+    obj = nlohmann::json::object();
+  }
+  const auto saved_path = obj.find("filepath");
+  const bool same_file =
+      saved_path != obj.end() && saved_path->is_string() &&
+      QDir::cleanPath(QString::fromStdString(saved_path->get<std::string>())) == QDir::cleanPath(path);
+  if (!same_file) {
+    for (const std::string& key : per_file_config_keys) {
+      try {
+        const nlohmann::json::json_pointer pointer(key);
+        if (obj.contains(pointer) && obj[pointer.parent_pointer()].is_object()) {
+          obj[pointer.parent_pointer()].erase(pointer.back());
+        }
+      } catch (const nlohmann::json::exception&) {
+        // A path through an array with a non-index segment addresses nothing.
+      }
     }
   }
-  obj.insert(u"filepath"_s, path);
-  const QByteArray out = QJsonDocument(obj).toJson(QJsonDocument::Compact);
-  return std::string(out.constData(), static_cast<std::size_t>(out.size()));
+  obj["filepath"] = path.toStdString();
+  return obj.dump();
 }
 
 QString pluginConfigKey(const std::string& plugin_id) {
@@ -1193,6 +1205,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   const std::shared_ptr<void> source_library_owner = handle.libraryOwner();
   const std::string source_id = source->id;
   const std::string source_plugin_name = source->name;
+  const std::vector<std::string> per_file_config_keys = source->per_file_config_keys;
 
   // The DataSource protocol resolves host services in bind(), so the dataset must exist before bind().
   DataEngine& engine = session_.dataEngine();
@@ -1368,7 +1381,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       }
     }
     if (!skip_dialog) {
-      config = buildLoadConfig(saved_config, input.backing_path);
+      config = buildLoadConfig(saved_config, input.backing_path, per_file_config_keys);
       if (auto status = handle.loadConfig(config); !status) {
         (void)fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
         co_return;

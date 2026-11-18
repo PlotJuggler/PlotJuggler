@@ -4273,6 +4273,80 @@ TEST_F(FileLoaderTest, BrowserReplayRewritesWithoutRecordingTheReplacedPath) {
   EXPECT_FALSE(received.contains(u"__pj_saved_filepath"_s));
 }
 
+// The dialog pre-fill reuses the last config saved for the plugin; the members its manifest declares in
+// `per_file_config_keys` (the echo source: "/per_file") describe the file they were chosen for.
+class PerFileConfigKeysTest : public FileLoaderTest {
+ protected:
+  // What the plugin's dialog saved on its last accepted load.
+  static void saveLastConfig(const QString& filepath) {
+    QSettings().setValue(
+        u"PluginConfig/Filepath Echo Source"_s,
+        pj_app_test::compactJson({{u"filepath"_s, filepath}, {u"per_file"_s, 3}, {u"keep"_s, 1}}));
+  }
+
+  // The config the plugin received for the interactive load of `path`.
+  [[nodiscard]] QJsonObject preFillFor(const QString& path) {
+    pj_app_test::resetFilepathEcho();
+    QString reason;
+    EXPECT_TRUE(pj_app_test::loadAndWait(*loader_, path, PJ::LoadHints{}, nullptr, &reason)) << reason.toStdString();
+    const auto probe = pj_app_test::filepathEchoProbe();
+    return probe.configs.empty() ? QJsonObject{} : pj_app_test::parseJsonObject(probe.configs.front());
+  }
+};
+
+TEST_F(PerFileConfigKeysTest, PreFillForAnotherFileDropsTheDeclaredKeys) {
+  installEcho();
+  const QString first = pj_app_test::writeEchoFile(root_ + u"/a/run.echo"_s, {u"1"_s});
+  const QString second = pj_app_test::writeEchoFile(root_ + u"/b/run.echo"_s, {u"2"_s});
+  saveLastConfig(first);
+
+  const QJsonObject received = preFillFor(second);
+  EXPECT_EQ(received.value(u"filepath"_s).toString(), second);
+  EXPECT_FALSE(received.contains(u"per_file"_s)) << "an option chosen for another file must not reach this one";
+  EXPECT_EQ(received.value(u"keep"_s).toInt(), 1) << "undeclared options still carry over";
+}
+
+TEST_F(PerFileConfigKeysTest, PreFillForTheSameFileKeepsTheDeclaredKeys) {
+  installEcho();
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/a/run.echo"_s, {u"1"_s});
+  saveLastConfig(root_ + u"/a/../a/run.echo"_s);  // the same file, spelled differently
+
+  const QJsonObject received = preFillFor(path);
+  EXPECT_EQ(received.value(u"per_file"_s).toInt(), 3);
+  EXPECT_EQ(received.value(u"keep"_s).toInt(), 1);
+}
+
+TEST_F(PerFileConfigKeysTest, PreFillWithoutASavedFilepathDropsTheDeclaredKeys) {
+  installEcho();
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/a/run.echo"_s, {u"1"_s});
+  QSettings().setValue(
+      u"PluginConfig/Filepath Echo Source"_s, pj_app_test::compactJson({{u"per_file"_s, 3}, {u"keep"_s, 1}}));
+
+  const QJsonObject received = preFillFor(path);
+  EXPECT_FALSE(received.contains(u"per_file"_s)) << "a config that names no file cannot be known to match this one";
+  EXPECT_EQ(received.value(u"keep"_s).toInt(), 1);
+}
+
+// Layout replay applies the layout's own config for the file it recorded, even when that file moved.
+TEST_F(PerFileConfigKeysTest, MovedFileLayoutReplayKeepsTheDeclaredKeys) {
+  installEcho();
+  const QString old_path = root_ + u"/old/run.echo"_s;
+  const QString path = pj_app_test::writeEchoFile(root_ + u"/new/run.echo"_s, {u"1"_s});
+  saveLastConfig(root_ + u"/elsewhere/other.echo"_s);
+
+  QString reason;
+  ASSERT_TRUE(
+      pj_app_test::loadAndWait(
+          *loader_, path, replayHints(pj_app_test::compactJson({{u"filepath"_s, old_path}, {u"per_file"_s, 5}})),
+          nullptr, &reason))
+      << reason.toStdString();
+  const auto probe = pj_app_test::filepathEchoProbe();
+  ASSERT_EQ(probe.configs.size(), 1u);
+  const QJsonObject received = pj_app_test::parseJsonObject(probe.configs.front());
+  EXPECT_EQ(received.value(u"__pj_saved_filepath"_s).toString(), old_path);
+  EXPECT_EQ(received.value(u"per_file"_s).toInt(), 5);
+}
+
 // A drop from a file manager can mix files with folders and links; only the
 // local files load.
 TEST(FileLoaderDrop, DroppedFilePathsKeepsOnlyLocalFiles) {

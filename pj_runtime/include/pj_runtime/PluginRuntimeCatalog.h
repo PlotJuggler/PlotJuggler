@@ -48,6 +48,9 @@ struct RuntimeDataSourcePlugin {
   std::string id;
   std::string version;
   std::vector<std::string> file_extensions;
+  /// The manifest's `per_file_config_keys` (JSON Pointers): dropped from the saved config when it pre-fills the dialog
+  /// for a different file.
+  std::vector<std::string> per_file_config_keys;
   uint64_t capabilities = 0;
   std::filesystem::file_time_type loaded_mtime;
 };

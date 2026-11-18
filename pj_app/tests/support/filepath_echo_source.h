@@ -135,7 +135,7 @@ class FilepathEchoSource final : public PJ::FileSourceBase {
         }
       },
       R"({"id":"filepath-echo-source","name":"Filepath Echo Source","version":"1.0.0",)"
-      R"("file_extensions":[".echo"]})");
+      R"("file_extensions":[".echo"],"per_file_config_keys":["/per_file"]})");
   return vtable;
 }
 

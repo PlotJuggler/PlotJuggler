@@ -1,0 +1,24 @@
+# The time column picked in the CSV dialog for one file is not pre-selected for the next file: it is an index into
+# the first file's header, so on another file it would pick whatever column sits there. Needs the CSV plugin at
+# 1.0.11 or later (it declares per_file_config_keys) and a host built against plotjuggler_sdk 1.2.0 or later.
+# app:
+# needs: plugins
+open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/time_second.csv","ask_user":true}
+until ui_tree {} listWidgetSeries
+# Time Axis: "Number of Rows" -> "Selected Column", then the second row, "t"
+ui_key {"keys":"Down","wait_ms":300}
+ui_click {"name":"listWidgetSeries","x":30,"y":32}
+ui_tree {}
+expect row "t" (selected)
+ui_key {"keys":"Return","wait_ms":500}
+until describe_topic {"topic":"time_second"} "field":"x"
+absent "field":"t"
+open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/three_columns.csv","ask_user":true}
+until ui_tree {} listWidgetSeries
+expect "Number of Rows"
+absent (selected)
+ui_key {"keys":"Return","wait_ms":500}
+# with the first file's index carried over, "q" would become the time axis and the rows would reorder by it
+until describe_topic {"topic":"three_columns"} "field":"q"
+expect "field":"p"
+expect "field":"r"

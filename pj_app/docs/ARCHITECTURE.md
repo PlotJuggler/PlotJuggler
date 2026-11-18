@@ -72,6 +72,15 @@ deferred object fetches. `FanoutConfig` extracts a plugin config's `__pj_fanout`
 one `DatasetId` per entry). `FileLoader` does not depend on `MainWindow` (`setFilePicker` is the seam), so the loader
 suites compile it standalone.
 
+**Dialog pre-fill.** An interactive load hands the plugin the config its dialog saved last (`PluginConfig/<plugin
+name>` in `QSettings`) with `filepath` set to the new file (`buildLoadConfig`, the only pre-fill; desktop and browser
+alike). Unless the saved `filepath` names the same file after `QDir::cleanPath`, it first drops the members the
+plugin's manifest lists in `per_file_config_keys` (JSON Pointers, from the SDK's `PluginDescriptor`): a time column
+picked by index from one file's header, or a mode forced for one file's data, would otherwise apply silently to the
+next. A config without a `filepath` counts as another file. Presets (layout replay, Reload, an agent's config) never
+pass through the pre-fill, so a layout replaying a moved file keeps them. The policy is generic: the plugin says which
+members, the host never names them.
+
 **Object ingest policy.** `FileLoader::applyDefaultIngestPolicies` loads object topics as
 `kLazyObjectsEagerScalars` by default: each payload is read once at ingest for its scalar fields (so header-bearing
 topics expose their header and timestamp series), then dropped, so clouds, images and grids are never resident. Video
@@ -563,6 +572,8 @@ Suites with their own executable and ctest entry, and why:
 - A stream started after Record is pressed is not recorded (taps attach at capture start).
 - Streaming sources do not report through the load diagnostic sink.
 - A stream's layout record stores the plugin's configuration verbatim, credentials included.
+- In the browser every upload is staged under a fresh path, so reopening the same file still drops its
+  `per_file_config_keys` from the dialog pre-fill.
 - The curve list does not mark pending items (an advertised placeholder before its first sample, an unresolved wire)
   or scene views embedded in a toolbox panel as displayed.
 - Removing curves rebuilds the whole curve tree (`CurveListPanel::onCatalogItemsRemoved`); expansion and scroll are
