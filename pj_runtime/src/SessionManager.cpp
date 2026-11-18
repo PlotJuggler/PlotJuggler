@@ -832,8 +832,11 @@ std::unordered_set<DatasetId> SessionManager::refreshDatasetMinTimestampsForTopi
 }
 
 void SessionManager::invalidateDatasetMinTimestamp(DatasetId dataset_id) const {
-  dataset_min_cache_.erase(dataset_id);
   global_min_cache_.reset();
+  if (refillOpen(dataset_id)) {
+    return;
+  }
+  dataset_min_cache_.erase(dataset_id);
 }
 
 void SessionManager::setUseTimeOffset(bool use) {
@@ -1117,6 +1120,37 @@ void SessionManager::notifyDatasetAboutToBeReplaced(DatasetId dataset_id) {
   emit datasetAboutToBeReplaced(dataset_id);
 }
 
+void SessionManager::announceRefill(DatasetId dataset_id) {
+  // Emptied, a static reference no longer reads as one, and its pin would drag the origin to 0.
+  if (isStaticReferenceDataset(dataset_id)) {
+    invalidateDatasetMinTimestamp(dataset_id);
+  } else {
+    (void)datasetMinTimestamp(dataset_id);  // pins it while the data is still there
+  }
+  emit refillStarting(dataset_id);
+  emit datasetAboutToBeReplaced(dataset_id);
+}
+
+void SessionManager::openRefill(DatasetId dataset_id) {
+  ++open_refills_[dataset_id];
+}
+
+void SessionManager::closeRefill(DatasetId dataset_id) {
+  const auto it = open_refills_.find(dataset_id);
+  if (it == open_refills_.end() || --it->second > 0) {
+    return;
+  }
+  open_refills_.erase(it);
+  // The held pin described the prior data: re-pin from what the refill or the rollback left.
+  invalidateDatasetMinTimestamp(dataset_id);
+  notifyGlobalTimeReferenceIfChanged();
+  emit refillClosed(dataset_id);
+}
+
+bool SessionManager::refillOpen(DatasetId dataset_id) const {
+  return open_refills_.contains(dataset_id);
+}
+
 RefillGuard SessionManager::beginRefill(DatasetId dataset_id) {
   return RefillGuard(*this, dataset_id);  // guaranteed copy elision (move-only)
 }
@@ -1148,10 +1182,12 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   //     served from detached or partial data until commit or rollback.
   session.suspendOnDemand(dataset_id);
   // (1) Adapters drop cached TopicChunk* before any deque moves.
-  session.notifyDatasetAboutToBeReplaced(dataset_id);
+  session.announceRefill(dataset_id);
   // (2) Detach, not free, keeping the ids registered for the refill.
   scalar_snapshot_ = session.dataEngine().detachDatasetChunks(dataset_id);
   object_snapshot_ = session.objectStore().detachDataset(dataset_id);
+  // Before (3), whose pin refresh must find the refill open.
+  session.openRefill(dataset_id);
   // (3) The UI shows the dataset empty.
   session.notifyIngest(QVector<TopicId>(scalar_topics.begin(), scalar_topics.end()), /*live=*/false);
 }
@@ -1214,6 +1250,7 @@ void RefillGuard::commit() {
     // The new load's document, if any, is published at its own commit seam.
     session_->clearDatasetMetadata(dataset_id_);
     session_->resumeOnDemandLater(dataset_id_);
+    session_->closeRefill(dataset_id_);
   }
 }
 
@@ -1389,6 +1426,7 @@ void RefillGuard::rollback() {
     qCWarning(lcSession).noquote() << "RefillGuard rollback processor replay failed:"
                                    << QString::fromStdString(replayed.error());
   }
+  session_->closeRefill(dataset_id_);
   const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
   session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
   session_->resumeOnDemandLater(dataset_id_);  // the rollback's hold
