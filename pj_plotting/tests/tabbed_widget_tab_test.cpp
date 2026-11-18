@@ -407,6 +407,25 @@ TEST(TabbedWidgetTab, HistoryRestoreKeepsTheTabTheUserIsOn) {
   EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-two"_s) << "a layout load selects the saved tab";
 }
 
+TEST(TabbedWidgetTab, HistoryRestoreKeepsACurrentWidgetTab) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* plot_tab = tabbed.addTab(u"plots"_s);
+  plot_tab->setStateId(u"tab-plots"_s);
+  tabbed.focusTab(plot_tab);
+  QDomDocument doc;
+  const QDomElement saved = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);
+
+  auto* panel = new QWidget;
+  QPointer<QWidget> panel_guard(panel);
+  tabbed.addWidgetTab(u"toolbox"_s, panel, [] {});
+  ASSERT_EQ(tabbed.currentTab(), nullptr) << "the widget tab is current";
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kHistory));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_FALSE(panel_guard.isNull());
+  EXPECT_EQ(tabbed.currentTab(), nullptr) << "the undo switched away from the widget tab";
+  EXPECT_TRUE(panel_guard->isVisibleTo(&tabbed));
+}
+
 TEST(TabbedWidgetTab, HistoryRestoreThatRemovesTheCurrentTabSelectsTheSavedOne) {
   PJ::TabbedPlotWidget tabbed;
   PJ::PlotDocker* first = tabbed.addTab(u"one"_s);
