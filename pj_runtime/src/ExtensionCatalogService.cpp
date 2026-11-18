@@ -673,6 +673,25 @@ const std::vector<LoadedWidget>& ExtensionCatalogService::widgets() const {
   return plugin_catalog_->widgets();
 }
 
+std::set<std::string> ExtensionCatalogService::shippedPluginIds() const {
+  std::set<std::string> ids;
+  for (const auto& [id, info] : bundled_plugin_versions_) {
+    ids.insert(id);
+  }
+  const auto add_static = [this, &ids](const auto& plugins) {
+    for (const auto& plugin : plugins) {
+      if (plugin_catalog_->isStaticallyRegisteredId(plugin.id)) {
+        ids.insert(plugin.id);
+      }
+    }
+  };
+  add_static(dataSources());
+  add_static(messageParsers());
+  add_static(toolboxes());
+  add_static(widgets());
+  return ids;
+}
+
 std::vector<const LoadedDataSource*> ExtensionCatalogService::fileImportSources() const {
   const auto& catalog = *plugin_catalog_;
   return catalog.fileImportSources();

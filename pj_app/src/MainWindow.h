@@ -269,6 +269,15 @@ class MainWindow : public QMainWindow {
   // is the caller's.
   void sendTelemetryPing(const QString& installation);
 
+#ifndef PJ_TARGET_WASM
+  // The anonymous daily usage report (docs/TELEMETRY.md). Call once at startup. Points usageCounters() at its storage
+  // file in every run, so an opt-out deletes what an earlier run stored. With the preference on, `may_report` (no
+  // automation) and a reporting installation: enables the counters, keeps the installed-plugin inventory current,
+  // flushes periodically (~MainWindow flushes the rest) and uploads the finished days once the public registry is
+  // known (its ids, with the shipped ones, are the plugins a report may name; a failed fetch keeps the days).
+  void startUsageReporting(const QString& installation, bool may_report);
+#endif
+
   // The PJ_INSTALLATION build stamp: decides where checkForUpdates() looks and how the toast offers an update.
   void setInstallation(const QString& installation);
 
@@ -310,6 +319,10 @@ class MainWindow : public QMainWindow {
 
   // Preferences key (bool): the platform's file picker (FileDialog::setUseSystemDialog).
   static constexpr QLatin1StringView kSystemFileDialogKey{"Preferences::system_file_dialog"};
+
+  // Preferences key (bool, default on): the anonymous daily usage report. Turning it off deletes what was counted at
+  // once; turning it on applies from the next launch.
+  static constexpr QLatin1StringView kUsageStatsKey{"Preferences::send_usage_stats"};
 
   // Preferences key (bool): wall-clock time labels in UTC instead of the system time zone.
   static constexpr QLatin1StringView kClockUtcKey{"Preferences::clock_utc"};

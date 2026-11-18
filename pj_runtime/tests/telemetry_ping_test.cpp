@@ -10,6 +10,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDeadlineTimer>
 #include <QEventLoop>
 #include <QJsonDocument>
@@ -69,8 +70,10 @@ TEST(TelemetryPingTest, UserIdIsStableSaltedSha256Hex) {
   EXPECT_TRUE(hex64.match(first).hasMatch()) << first.toStdString();
   const QByteArray raw_machine_id = QSysInfo::machineUniqueId();
   if (!raw_machine_id.isEmpty()) {
-    EXPECT_NE(first.toLatin1(), raw_machine_id);
-    EXPECT_NE(first.toLatin1(), raw_machine_id.toHex());
+    // The formula is part of the contract: changing it re-counts every machine as a new user.
+    EXPECT_EQ(
+        first.toLatin1(),
+        QCryptographicHash::hash(raw_machine_id + "|plotjuggler4-telemetry-v1", QCryptographicHash::Sha256).toHex());
   }
 }
 

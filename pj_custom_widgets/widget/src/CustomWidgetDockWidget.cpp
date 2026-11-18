@@ -21,6 +21,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/UsageCounters.h"
 #include "pj_runtime/XmlCdata.h"
 #include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/MessageBox.h"
@@ -399,6 +400,7 @@ bool CustomWidgetDockWidget::bindWidget(const QString& plugin_id, const QString&
   }
   plugin_widget_ = static_cast<QWidget*>(**raw);
   layout_->addWidget(plugin_widget_);
+  usageCounters().countPlugin(PluginUse::kWidgetCreate, plugin->id);
   return true;
 }
 

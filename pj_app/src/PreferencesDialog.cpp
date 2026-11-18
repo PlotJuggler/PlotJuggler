@@ -41,6 +41,7 @@
 #include "pj_runtime/RecordingService.h"
 #ifndef __EMSCRIPTEN__
 #include "pj_runtime/SourceCacheStore.h"
+#include "pj_runtime/UsageCounters.h"
 #endif
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/DualOptionsWidget.h"
@@ -226,6 +227,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->telemetryToggle->setChecked(
         settings.value(u"Preferences::send_anonymous_stats"_s, true).toBool(),
         /*animate=*/false);
+    ui_->usageStatsToggle->setChecked(settings.value(MainWindow::kUsageStatsKey, true).toBool(), /*animate=*/false);
     ui_->splashMode->setSelectedIndex(
         settings.value(kSplashModeKey, kSplashModeMemes).toString() == kSplashModeSerious ? 1 : 0);
     if (!MainWindow::customFrameSelectable()) {
@@ -250,6 +252,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->checkUpdatesToggle->hide();
     ui_->labelTelemetry->hide();
     ui_->telemetryToggle->hide();
+    ui_->labelUsageStats->hide();
+    ui_->usageStatsToggle->hide();
     // The browser has no raster canvas: plots always render through WebGL.
     ui_->labelOpenGL->hide();
     ui_->openglToggle->hide();
@@ -500,6 +504,10 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     FileDialog::setUseSystemDialog(ui_->systemFileDialogToggle->isChecked());
     settings.setValue(u"Preferences::check_updates_on_startup"_s, ui_->checkUpdatesToggle->isChecked());
     settings.setValue(u"Preferences::send_anonymous_stats"_s, ui_->telemetryToggle->isChecked());
+    settings.setValue(MainWindow::kUsageStatsKey, ui_->usageStatsToggle->isChecked());
+    if (!ui_->usageStatsToggle->isChecked()) {
+      usageCounters().setEnabled(false);  // an opt-out also deletes what was counted before it
+    }
     settings.setValue(u"Preferences::curve_color_global"_s, ui_->curveColorMode->selectedIndex() == 0);
     settings.setValue(kSplashModeKey, ui_->splashMode->selectedIndex() == 1 ? kSplashModeSerious : kSplashModeMemes);
     settings.setValue(u"Preferences::auto_zoom_plots"_s, ui_->autoZoomToggle->isChecked());

@@ -10,8 +10,9 @@
 // the telemetry Worker; STATS_HOST, the host that is the telemetry Worker for every path.
 //
 // The telemetry Worker stays reachable two ways: STATS_HOST forwards every request to it (its
-// dashboard), and `/telemetry` on any host does, because installed desktop releases post their
-// launch ping to https://app.plotjuggler.io/telemetry.
+// dashboard), and `/telemetry` (and every path under it) on any host does, because installed
+// desktop releases post their launch ping to https://app.plotjuggler.io/telemetry and their daily
+// usage reports to https://app.plotjuggler.io/telemetry/v2/usage.
 
 import {
   CACHE_CONTROL, ISOLATION_HEADERS, conditionalMatch, decodedPathname, manifestFile, responseHeaders,
@@ -61,7 +62,7 @@ async function sourceOffer(request, env, logicalPath) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.hostname === env.STATS_HOST || url.pathname === '/telemetry') {
+    if (url.hostname === env.STATS_HOST || url.pathname === '/telemetry' || url.pathname.startsWith('/telemetry/')) {
       return env.TELEMETRY.fetch(request);
     }
     if (!['GET', 'HEAD'].includes(request.method)) {

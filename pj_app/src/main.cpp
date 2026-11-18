@@ -683,12 +683,13 @@ int main(int argc, char* argv[]) {
   // docs/TELEMETRY.md. Skipped under automation: CI runners have ephemeral machine ids, so every run would count
   // as a new user (`CI` covers most CI systems, PJ_DISABLE_TELEMETRY other harnesses). These gates cover a packaged
   // build; TelemetryPing itself refuses an unpackaged one.
-  const bool automated_environment =
-      qEnvironmentVariableIsSet("CI") || qEnvironmentVariableIsSet("PJ_DISABLE_TELEMETRY");
-  if (!parser.isSet(screenshot_option) && !automated_environment &&
-      QSettings().value(u"Preferences::send_anonymous_stats"_s, true).toBool()) {
+  const bool automated = parser.isSet(screenshot_option) || qEnvironmentVariableIsSet("CI") ||
+                         qEnvironmentVariableIsSet("PJ_DISABLE_TELEMETRY");
+  if (!automated && QSettings().value(u"Preferences::send_anonymous_stats"_s, true).toBool()) {
     QTimer::singleShot(0, &window, [&window]() { window.sendTelemetryPing(QStringLiteral(PJ_INSTALLATION_STRING)); });
   }
+  // The daily usage report has its own opt-out (read by startUsageReporting) and the same automation gates.
+  window.startUsageReporting(QStringLiteral(PJ_INSTALLATION_STRING), /*may_report=*/!automated);
 #endif
 
   // Exits non-zero when nothing usable was captured (no view, a null or single-colour

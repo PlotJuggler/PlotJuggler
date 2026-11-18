@@ -222,6 +222,9 @@ class PluginRuntimeCatalog {
   // Lists parser encodings as a JSON string array.
   [[nodiscard]] std::string listAvailableEncodings() const;
 
+  // True for a plugin compiled into this build (registered without a library file).
+  [[nodiscard]] bool isStaticallyRegisteredId(const std::string& id) const;
+
  private:
   // Scans every entry in plugin_dirs_ and returns the loadable descriptors de-duplicated by manifest id, choosing each
   // id's winner by static-registration tier, then authoritative tier, then compatibility, then version, then
@@ -244,8 +247,6 @@ class PluginRuntimeCatalog {
   // when the build is compatible, cross-checks the declared qt_modules against
   // the modules PlotJuggler ships. Reports the diagnostics.
   void admitWidgetBuild(RuntimeWidgetPlugin& loaded, const PluginDescriptor& descriptor) const;
-
-  [[nodiscard]] bool isStaticallyRegisteredId(const std::string& id) const;
 
   // Commits a validated static registration's id claim: rejects id (with an
   // error diagnostic) when another static registration holds it, otherwise

@@ -26,6 +26,7 @@
 #include "pj_runtime/ObjectIngestTap.h"
 #include "pj_runtime/ServiceRegistration.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/UsageCounters.h"
 #include "pj_runtime/detail/payload_anchor.h"
 using namespace Qt::StringLiterals;
 
@@ -604,6 +605,11 @@ bool DataSourceRuntimeHost::cbEnsureParserBinding(
     if (!selection.scalar.has_value()) {
       // No prefix: the plugin re-reports this through its 224-byte PJ_error_t, and the routing service logged it all.
       return self->fail(out_error, selection.scalar_failure.c_str());
+    }
+    // One decode per bound topic for each plugin that decodes it; a reused binding returned above.
+    usageCounters().countPlugin(PluginUse::kParserBind, selection.scalar->provider_id);
+    if (selection.object.has_value() && selection.object->provider_id != selection.scalar->provider_id) {
+      usageCounters().countPlugin(PluginUse::kParserBind, selection.object->provider_id);
     }
     auto parser = std::make_unique<MessageParserHandle>(std::move(selection.scalar->parser));
 

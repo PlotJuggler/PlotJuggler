@@ -22,7 +22,7 @@ documentation rules.
 | [`BUILDING.md`](./BUILDING.md) | Prerequisites, Linux and Windows builds, tests, build internals, versions, portability, third-party dependencies. Packaging formats: [`packaging/README.md`](../packaging/README.md). |
 | [`SANITIZERS.md`](./SANITIZERS.md) | The `none` / `asan` / `tsan` / `msan` lanes: selectors, build trees, coverage, runtime defaults and the suppression policy. |
 | [`QT_NOTES.md`](./QT_NOTES.md) | The pinned Qt (`PJ_QT_VERSION` in [`versions.env`](../versions.env)) and what changed since 6.8: new APIs, deprecations, build floors. Read before using an unfamiliar Qt API. |
-| [`TELEMETRY.md`](./TELEMETRY.md) | The anonymous launch ping: the exact field list (enforced by `telemetry_ping_test`), opt-out and guards. Update together with any payload change. |
+| [`TELEMETRY.md`](./TELEMETRY.md) | The anonymous launch ping and the daily usage report: the exact field lists (enforced by `telemetry_ping_test` and `usage_reporter_test`), opt-outs, guards and the server contract. Update together with any payload change. |
 | [`WASM_DEPLOYMENT.md`](./WASM_DEPLOYMENT.md) | The browser build: build and packaging, built-in plugins, notices and source offer, browser Python, the HTTP contract, browser-local state, presets, local serving and test fixtures. |
 | [`WASM_PRESETS.md`](./WASM_PRESETS.md) | Browser presets: the layout contract, streaming sources, authoring, `package_wasm.mjs --presets` and what it refuses, tests, hosting. |
 | [`WASM_HOSTING.md`](./WASM_HOSTING.md) | Serving the browser app from a robot over HTTPS with Caddy ([`wasm/Caddyfile`](./wasm/Caddyfile)), which also proxies the PlotJuggler Bridge at `/bridge`. |

@@ -40,7 +40,9 @@ derived-data design (on-demand, batch and series engines, scheduling, TF) is in
   and in `reload()` alike; the reverse order deadlocks a poll-thread resolution against a GUI reload.
 - **File-format and privacy contracts**: renaming anything in `RecordingFormat.h` is a recording file-format break (the
   MCAP replay path reads it); extending the telemetry payload means updating `telemetry_ping_test`'s allowed-key set and
-  [docs/TELEMETRY.md](../docs/TELEMETRY.md) together.
+  [docs/TELEMETRY.md](../docs/TELEMETRY.md) together. The same holds for the usage report (`usage_reporter_test`); a
+  new `UsageFeature` needs its wire key and a TELEMETRY.md row, and a plugin id reaches a report only through the public
+  set the shell passes to `UsageReporter`.
 
 ## Public headers
 
@@ -72,6 +74,9 @@ Session, catalog and time:
 - `HttpGet.h`, `HttpUrl.h`, `UpdateChecker.h`, `UpdateVersion.h`, `TelemetryPing.h`: one-shot HTTP
   (`fetchBytesWithLimit()` is the size-capped GET for untrusted bodies, desktop and browser), the http(s) URL gate, the
   per-channel update check, version math, the anonymous launch ping.
+- `UsageCounters.h`, `UsageReporter.h`: the daily usage report: per-UTC-day counters behind the process-wide
+  `usageCounters()` (thread-safe, a no-op until enabled; disabling deletes the stored file) and their upload (private
+  plugin ids folded into `_private`).
 - `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend ([why](./docs/TECHNICAL_NOTES.md)); a
   pinned download is kept in Cache Storage across visits.
 - `PresetCatalog.h`: a deployment's browser `presets/index.json` and the download caps of its files.
