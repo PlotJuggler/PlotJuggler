@@ -851,6 +851,10 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   }
 
   const SnapshotScope scope = intent == RestoreIntent::kHistory ? SnapshotScope::kHistory : SnapshotScope::kFull;
+  // Selecting a tab is not an undo step, so a snapshot's saved index is the tab shown when it was taken: an undo or
+  // redo keeps the tab the user is on, if it survives the restore.
+  const PlotDocker* shown = intent == RestoreIntent::kHistory ? currentTab() : nullptr;
+  const QString shown_id = shown != nullptr ? shown->stateId() : QString();
 
   QVector<QDomElement> target_tabs;
   for (QDomElement tab = tabbed_area.firstChildElement(u"Tab"_s); !tab.isNull();
@@ -942,7 +946,12 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   // tabs).
   const int max_index = static_cast<int>(target_tabs.size()) - 1;
   const int current_index = std::clamp(requested_index, 0, std::max(0, max_index));
-  if (PlotDocker* docker = dockerAt(current_index)) {
+  PlotDocker* docker =
+      shown_id.isEmpty() ? nullptr : findDocker([&](PlotDocker* tab) { return tab->stateId() == shown_id; });
+  if (docker == nullptr) {
+    docker = dockerAt(current_index);
+  }
+  if (docker != nullptr) {
     stack_->setCurrentWidget(docker);
     updateSelectionStyle();
     emit currentTabChanged(docker);

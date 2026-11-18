@@ -381,6 +381,51 @@ TEST(TabbedWidgetTab, HistoryRestorePreservesExactExemptPageAndSkipsPersistedCop
   EXPECT_EQ(owned_count, 1);
 }
 
+// Selecting a tab is not an undo step, so a snapshot's current tab is the one shown when it was taken. An undo or
+// redo keeps the tab the user is on when it still exists; a layout load, or an undo that removes that tab, selects
+// the saved one.
+TEST(TabbedWidgetTab, HistoryRestoreKeepsTheTabTheUserIsOn) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* first = tabbed.addTab(u"one"_s);
+  first->setStateId(u"tab-one"_s);
+  PJ::PlotDocker* second = tabbed.addTab(u"two"_s);
+  second->setStateId(u"tab-two"_s);
+  tabbed.focusTab(second);
+  ASSERT_EQ(tabbed.currentTab(), second);
+  QDomDocument doc;
+  const QDomElement saved = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);
+
+  tabbed.focusTab(first);
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kHistory));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_NE(tabbed.currentTab(), nullptr);
+  EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-one"_s);
+
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kReplace));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_NE(tabbed.currentTab(), nullptr);
+  EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-two"_s) << "a layout load selects the saved tab";
+}
+
+TEST(TabbedWidgetTab, HistoryRestoreThatRemovesTheCurrentTabSelectsTheSavedOne) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* first = tabbed.addTab(u"one"_s);
+  first->setStateId(u"tab-one"_s);
+  PJ::PlotDocker* second = tabbed.addTab(u"two"_s);
+  second->setStateId(u"tab-two"_s);
+  tabbed.focusTab(second);
+  QDomDocument doc;
+  const QDomElement saved = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);
+
+  PJ::PlotDocker* added = tabbed.addTab(u"three"_s);
+  added->setStateId(u"tab-three"_s);
+  tabbed.focusTab(added);
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kHistory));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_NE(tabbed.currentTab(), nullptr);
+  EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-two"_s);
+}
+
 TEST(TabbedWidgetTab, ClosingLastOrdinaryTabCreatesOneWhenExemptTabRemains) {
   PJ::TabbedPlotWidget tabbed;
   PJ::PlotDocker* ordinary = tabbed.dockerAt(0);
