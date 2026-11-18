@@ -7,6 +7,9 @@
   pjqa.py call TOOL ['{"json": "args"}']     prints the result text; exit 1 when the tool failed
   pjqa.py run SCRIPT                         replays a script (see below); exit 1 on the first failure
   pjqa.py stop
+  pjqa.py regress [--plugin-dir DIR] [SCRIPT_OR_DIR...]
+                                             each script in a fresh instance (default: scripts/qa/regressions/);
+                                             a summary, exit 1 when any failed
 
 --home (or $PJQA_HOME) selects the instance; give every command the same one.
 
@@ -19,8 +22,12 @@ printed URL (with Playwright). The browser build has the data tools, not the UI 
 the browser's own input. open_file takes a local path, which the relay serves to the page.
 
 A script has one step per line: `TOOL {json args}`, `expect TEXT` (the previous result must contain
-TEXT), `refuse TOOL {json}` (the call must fail), or a `#` comment. Name widgets by objectName there,
-since refs change from one run to the next.
+TEXT), `absent TEXT` (it must not), `refuse TOOL {json}` (the call must fail), or a `#` comment. Name
+widgets by objectName there, since refs change from one run to the next.
+
+For `regress`, a script names how its instance starts in header comments: `# app: ARGS` (the app
+arguments, paths relative to the checkout) and `# needs: plugins` when it loads data through a plugin
+(skipped without --plugin-dir). A failed script keeps its instance's home (app.log, screenshots).
 """
 
 import argparse
@@ -29,6 +36,7 @@ import json
 import os
 import secrets
 import shlex
+import shutil
 import signal
 import socket
 import stat
@@ -339,16 +347,18 @@ def call(args):
     sys.exit(1 if failed else 0)
 
 
-def run(args):
-    state = state_of(args)
+def replay(state, script):
+    """Runs the script's steps against the instance; returns whether every step held."""
     last = ""
-    for number, line in enumerate(Path(args.script).read_text().splitlines(), 1):
+    for number, line in enumerate(Path(script).read_text().splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         word, _, rest = line.partition(" ")
         if word == "expect":
             ok = rest in last
+        elif word == "absent":
+            ok = rest not in last
         else:
             refuse = word == "refuse"
             tool, _, raw = (rest if refuse else line).partition(" ")
@@ -357,8 +367,58 @@ def run(args):
         print(f"{'ok  ' if ok else 'FAIL'} {number}: {line}")
         if not ok:
             print(last)
-            sys.exit(1)
+            return False
+    return True
+
+
+def run(args):
+    if not replay(state_of(args), args.script):
+        sys.exit(1)
     print("pjqa: script passed")
+
+
+def header(script, key):
+    """The value of a `# key: value` header comment, or None."""
+    for line in Path(script).read_text().splitlines():
+        if line.startswith(f"# {key}:"):
+            return line.partition(":")[2].strip()
+    return None
+
+
+def regress(args):
+    scripts = []
+    for target in args.targets or [ROOT / "scripts/qa/regressions"]:
+        target = Path(target)
+        scripts += sorted(target.glob("*.pjqa")) if target.is_dir() else [target]
+    if not scripts:
+        sys.exit("pjqa: no scripts to run")
+    os.chdir(ROOT)  # `# app:` paths are relative to the checkout
+    results = []
+    for script in scripts:
+        if header(script, "needs") == "plugins" and not args.plugin_dir:
+            results.append((script, "SKIP", "needs --plugin-dir"))
+            continue
+        home = Path(tempfile.mkdtemp(prefix=f"pjqa-{script.stem}-"))
+        instance = argparse.Namespace(
+            home=str(home), browser=None, xvfb=False, plugin_dir=args.plugin_dir,
+            app_args=shlex.split(header(script, "app") or ""))
+        print(f"== {script.name}")
+        try:
+            start(instance)
+            passed = replay(state_of(instance), script)
+        except SystemExit as error:  # start() reports a failed launch this way
+            print(error)
+            passed = False
+        finally:
+            stop(instance)
+        if passed:
+            shutil.rmtree(home, ignore_errors=True)
+        results.append((script, "PASS" if passed else "FAIL", "" if passed else f"kept {home}"))
+    print()
+    for script, verdict, note in results:
+        print(f"{verdict}  {script.name}  {note}".rstrip())
+    if any(verdict == "FAIL" for _, verdict, _ in results):
+        sys.exit(1)
 
 
 def stop(args):
@@ -408,6 +468,10 @@ def main():
     p.add_argument("script")
     p.set_defaults(func=run)
     commands.add_parser("stop").set_defaults(func=stop)
+    p = commands.add_parser("regress")
+    p.add_argument("--plugin-dir", help="a folder of built plugins, for scripts marked `# needs: plugins`")
+    p.add_argument("targets", nargs="*", help="scripts or folders of scripts (default: scripts/qa/regressions)")
+    p.set_defaults(func=regress)
     p = commands.add_parser("relay", help=argparse.SUPPRESS)  # started by `start --browser`
     p.add_argument("port", type=int)
     p.set_defaults(func=relay)
