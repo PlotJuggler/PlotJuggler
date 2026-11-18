@@ -45,7 +45,7 @@ QImage renderWithMiddleSample(double middle, int style) {
   return qGray(image.pixel(x, y)) < 128;
 }
 
-// Rows away from the y = 0 line hold no ink, and both finite runs are drawn.
+// Rows away from the y = 0 line hold no ink, both finite runs are drawn, and nothing joins them.
 void expectGapOnly(const QImage& image) {
   int stray = 0;
   for (int y = 0; y < kSize; ++y) {
@@ -59,6 +59,7 @@ void expectGapOnly(const QImage& image) {
   EXPECT_EQ(stray, 0) << "a non-finite sample was drawn as a line off the curve";
   EXPECT_TRUE(dark(image, 12, kSize / 2)) << "the finite run before the gap is missing";
   EXPECT_TRUE(dark(image, 88, kSize / 2)) << "the finite run after the gap is missing";
+  EXPECT_FALSE(dark(image, kSize / 2, kSize / 2)) << "the runs were bridged over the non-finite sample";
 }
 
 }  // namespace
