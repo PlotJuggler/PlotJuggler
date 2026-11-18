@@ -94,6 +94,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/OnDemandService.h
     include/pj_runtime/PlaybackControlHost.h
     include/pj_runtime/PlaybackEngine.h
+    include/pj_runtime/PlaybackRate.h
     include/pj_runtime/ParserRoutingService.h
     include/pj_runtime/PlotTabsRuntimeHost.h
     include/pj_runtime/QSettingsBackend.h

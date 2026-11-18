@@ -64,7 +64,8 @@ Session, catalog and time:
 - `Time.h`: display-axis time vocabulary (`DisplayOffset`, `DisplaySeconds`, `DisplayRange`) over the SDK's absolute
   `pj_base/time.hpp`.
 - `PlaybackEngine.h`: time cursor and transport; `currentTimeChanged(double)` stays `double` (fleet-wide moc/vtable
-  contract).
+  contract). `PlaybackRate.h` (Qt-free) is the one speed range: the engine clamps to it, the speed scrubber takes its
+  bounds from it and the MCP `playback` tool clamps to it.
 - `HistoryScope.h`: `SnapshotScope` / `RestoreIntent`, what a capture includes and what a restore may touch.
 - `IDataWidget.h`, `IObjectViewer.h`: the contracts data widgets and object-store viewers implement for the shell.
   `IDataWidget::aboutToBeDiscarded()` runs once before the dock schedules a widget for deletion, so one that owns

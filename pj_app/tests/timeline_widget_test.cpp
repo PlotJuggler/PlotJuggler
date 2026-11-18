@@ -8,6 +8,7 @@
 #include <cmath>
 
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/PlaybackRate.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/RealSlider.h"
 #include "ui/TimelineWidget.h"
@@ -95,6 +96,24 @@ TEST(TimelineWidgetTest, StepControlsArrowKeysBeforeDataAndAfterRangeChanges) {
   step->setValue(10);
   QTest::keyClick(slider, Qt::Key_Right);
   ASSERT_TRUE(QTest::qWaitFor([&] { return toAxisDouble(engine.currentTime()) == 1e-9; }, 1000));
+}
+
+// The speed scrubber shows the rate the engine plays at: a rate asked for from outside the scrubber (the MCP tool, a
+// plugin) is clamped by the engine to the range the scrubber covers, instead of the scrubber showing its own maximum
+// while the engine plays faster.
+TEST(TimelineWidgetTest, SpeedScrubberShowsTheRateTheEnginePlaysAt) {
+  PlaybackEngine engine;
+  TimelineWidget widget;
+  widget.setPlaybackEngine(&engine);
+  auto* rate = widget.findChild<DoubleScrubber*>("playbackRate");
+  ASSERT_NE(rate, nullptr);
+  EXPECT_DOUBLE_EQ(rate->minimum(), kMinPlaybackRate);
+  EXPECT_DOUBLE_EQ(rate->maximum(), kMaxPlaybackRate);
+
+  for (const double requested : {kMaxPlaybackRate * 2.0, kMinPlaybackRate / 2.0, 3.0}) {
+    engine.setPlaybackRate(requested);
+    EXPECT_DOUBLE_EQ(rate->value(), engine.playbackRate()) << "requested " << requested;
+  }
 }
 
 }  // namespace

@@ -1,0 +1,12 @@
+# The playback tool's rate is clamped to the range of the speed scrubber (0.1..10), and the echoed state reports the
+# rate that was applied. The tool used to take 0.05..20, so the scrubber showed 10.0 (or 0.1) while the engine played
+# at 20x (or 0.05x).
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
+playback {"action":"rate","rate":20}
+expect "rate":10.0
+playback {"action":"rate","rate":0.05}
+expect "rate":0.1
+playback {"action":"rate","rate":2.5}
+expect "rate":2.5

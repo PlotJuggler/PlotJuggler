@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 
+#include "pj_runtime/PlaybackRate.h"
 #include "tools_internal.hpp"
 
 namespace PJ::agent_tools {
@@ -252,11 +253,12 @@ ToolRegistry::ToolRegistry() {
   add(
       {"playback",
        "Drive the transport: the time cursor, shared by every plot. action: 'state' (read it), "
-       "'play', 'pause', 'seek' (to 'time_s'), 'rate' (to 'rate'; 1.0 = real time, clamped to "
-       "[0.05, 20]). Every call returns the whole state - playing, current_time_s, range "
-       "{min_s, max_s}, rate - so a clamped seek shows where the cursor actually landed. Times are "
-       "DISPLAY-AXIS SECONDS, the numbers on the plot X axes: a feature found in read_series "
-       "buckets sits at stats.t_start_display_s + bucket.t.",
+       "'play', 'pause', 'seek' (to 'time_s'), 'rate' (to 'rate'; 1.0 = real time, clamped to [" +
+           json(kMinPlaybackRate).dump() + ", " + json(kMaxPlaybackRate).dump() +
+           "]). Every call returns the whole state - playing, current_time_s, range "
+           "{min_s, max_s}, rate - so a clamped seek shows where the cursor actually landed. Times are "
+           "DISPLAY-AXIS SECONDS, the numbers on the plot X axes: a feature found in read_series "
+           "buckets sits at stats.t_start_display_s + bucket.t.",
        {{"type", "object"},
         {"properties",
          {{"action", {{"type", "string"}, {"enum", json::array({"state", "play", "pause", "seek", "rate"})}}},

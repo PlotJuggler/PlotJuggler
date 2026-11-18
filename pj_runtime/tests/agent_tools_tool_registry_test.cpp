@@ -30,6 +30,7 @@
 #include "fake_object_read_host.hpp"
 #include "fake_playback_viewport_hosts.hpp"
 #include "fake_plot_tabs_host.hpp"
+#include "pj_runtime/PlaybackRate.h"
 #include "pj_runtime/agent_tools/object_ops_catalog.hpp"
 #include "pj_runtime/agent_tools/tool_registry.hpp"
 #include "recording_dp_host.hpp"
@@ -2542,9 +2543,9 @@ TEST(ToolRegistry, SetPlaybackRateClampsPluginSide) {
   ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 0.25}}, ctx).ok);
   EXPECT_DOUBLE_EQ(pb.last_rate, 0.25);
   ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 10000.0}}, ctx).ok);
-  EXPECT_DOUBLE_EQ(pb.last_rate, 20.0);  // clamped high
+  EXPECT_DOUBLE_EQ(pb.last_rate, PJ::kMaxPlaybackRate);  // clamped high, to the engine's range
   ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 0.0}}, ctx).ok);
-  EXPECT_DOUBLE_EQ(pb.last_rate, 0.05);  // clamped low (never 0 -> host reject loop)
+  EXPECT_DOUBLE_EQ(pb.last_rate, PJ::kMinPlaybackRate);  // clamped low (never 0 -> host reject loop)
 }
 
 TEST(ToolRegistry, PlaybackToolsDegradeWithoutHost) {

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/PlaybackRate.h"
 
 namespace {
 
@@ -100,6 +101,21 @@ TEST(PlaybackEngineTest, PlayFromMiddleDoesNotRewind) {
   engine.play();
 
   EXPECT_DOUBLE_EQ(engine.currentTime().value, 4.0) << "play() mid-range must not move the cursor";
+}
+
+// Whatever asks for a rate (the scrubber, a plugin, the MCP tool), the engine plays at one inside the range the speed
+// scrubber can show, so the two never disagree.
+TEST(PlaybackEngineTest, RateIsClampedToTheSharedRange) {
+  PJ::PlaybackEngine engine;
+
+  engine.setPlaybackRate(PJ::kMaxPlaybackRate * 2.0);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMaxPlaybackRate);
+
+  engine.setPlaybackRate(PJ::kMinPlaybackRate / 2.0);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMinPlaybackRate);
+
+  engine.setPlaybackRate(2.5);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.5);
 }
 
 }  // namespace

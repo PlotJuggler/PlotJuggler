@@ -78,6 +78,7 @@ void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
 }
 
 void PlaybackEngine::setPlaybackRate(double rate) {
+  rate = std::clamp(rate, kMinPlaybackRate, kMaxPlaybackRate);
   if (rate_ == rate) {
     return;
   }

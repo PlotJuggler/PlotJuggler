@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <memory>
 
+#include "pj_runtime/PlaybackRate.h"
 #include "pj_runtime/Time.h"
 
 namespace PJ {
@@ -66,6 +67,7 @@ class PlaybackEngine : public QObject {
   void setRange(DisplayRange range);
   void setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t);
   void setCurrentTime(DisplaySeconds t);
+  /// Clamped to [kMinPlaybackRate, kMaxPlaybackRate]; read playbackRate() for the applied value.
   void setPlaybackRate(double rate);
   void setStep(double step);
   void setLooping(bool looping);

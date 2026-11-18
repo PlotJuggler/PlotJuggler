@@ -23,6 +23,7 @@
 #include <cstdint>
 
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/PlaybackRate.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/RealSlider.h"
 #include "pj_widgets/SvgUtil.h"
@@ -32,6 +33,7 @@ namespace PJ {
 
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent), ui_(new Ui::TimelineWidget) {
   ui_->setupUi(this);
+  ui_->playbackRate->setRange(kMinPlaybackRate, kMaxPlaybackRate);
 
   applyIcons(currentTheme());
 

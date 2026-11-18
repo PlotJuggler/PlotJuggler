@@ -16,6 +16,7 @@
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_runtime/PlaybackControlHost.h"
 #include "pj_runtime/PlaybackEngine.h"
+#include "pj_runtime/PlaybackRate.h"
 
 namespace {
 
@@ -85,9 +86,11 @@ TEST(PlaybackControlHostTest, RateForwardsAndRejectsBadValues) {
   EXPECT_FALSE(view.setPlaybackRate(std::numeric_limits<double>::quiet_NaN()));
   EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.25);  // untouched by the rejects
 
-  // Host policy clamps absurd-but-finite multipliers.
+  // The engine's range clamps finite multipliers outside what the speed scrubber can show.
   ASSERT_TRUE(view.setPlaybackRate(1e9));
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), 1000.0);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMaxPlaybackRate);
+  ASSERT_TRUE(view.setPlaybackRate(1e-9));
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMinPlaybackRate);
 }
 
 TEST(PlaybackControlHostTest, StateMatchesEngine) {
