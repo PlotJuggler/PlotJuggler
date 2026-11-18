@@ -565,8 +565,10 @@ UiDriver::Target UiDriver::resolve(const json& args) const {
       if (top->objectName() == object_name) {
         found.push_back(top);
       }
+      // A popup or child dialog is also a QObject child of its owner: count each widget under its own
+      // window only, as ui_tree does, so it is found once and its window's modal block applies.
       for (QWidget* w : top->findChildren<QWidget*>(object_name)) {
-        if (w->isVisible()) {
+        if (w->isVisible() && w->window() == top) {
           found.push_back(w);
         }
       }

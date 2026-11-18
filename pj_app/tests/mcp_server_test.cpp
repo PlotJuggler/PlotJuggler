@@ -16,6 +16,7 @@
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPointer>
 #include <QPushButton>
 #include <QRectF>
@@ -26,6 +27,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QWidgetAction>
 #include <QtEndian>
 #include <algorithm>
 #include <array>
@@ -544,6 +546,49 @@ TEST_F(McpServerTest, UiToolsClickTheUsersDialogOnlyWhenTheRunAskedForThem) {
   EXPECT_NE(clicked.first.find("\"OK\""), std::string::npos) << clicked.first;
   EXPECT_TRUE(closed_by_click);
   EXPECT_TRUE(result(call("ui_click", {{"ref", "w999999"}})).second);
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
+// A popup is a top-level window and also a child of the widget that owns it: a name in it still names one widget.
+TEST_F(McpServerTest, UiToolsFindAWidgetInAnOpenPopupByName) {
+  PJ::mcp::setUiToolsEnabled(true);
+  window_->show();
+  QMenu menu(window_.get());
+  menu.setObjectName(QStringLiteral("uiToolsPopup"));
+  const auto add_button = [&menu](const QString& name) {
+    auto* button = new QPushButton(QStringLiteral("Pick"), &menu);
+    button->setObjectName(name);
+    auto* action = new QWidgetAction(&menu);
+    action->setDefaultWidget(button);
+    menu.addAction(action);
+    return button;
+  };
+  int picked = 0;
+  QObject::connect(add_button(QStringLiteral("uiToolsPopupPick")), &QPushButton::clicked, [&] { ++picked; });
+  menu.popup(window_->mapToGlobal(QPoint(20, 20)));
+  ASSERT_TRUE(pumpUntil([&] { return QApplication::activePopupWidget() == &menu; }));
+
+  // A QWidgetAction's button leaves the menu open: both clicks land on it, by its own name and by the menu's.
+  const auto [by_name, by_name_error] = result(call("ui_click", {{"name", "uiToolsPopupPick"}}));
+  EXPECT_FALSE(by_name_error) << by_name;
+  EXPECT_TRUE(pumpUntil([&] { return picked == 1; })) << by_name;
+  const auto [by_menu, by_menu_error] = result(call("ui_click", {{"name", "uiToolsPopup"}}));
+  EXPECT_FALSE(by_menu_error) << by_menu;
+  EXPECT_TRUE(pumpUntil([&] { return picked == 2; })) << by_menu;
+
+  const auto [tree, tree_error] = result(call("ui_tree", json::object()));
+  ASSERT_FALSE(tree_error) << tree;
+  const std::string listed = "#uiToolsPopup (popup)";
+  EXPECT_NE(tree.find(listed), std::string::npos) << tree;
+  EXPECT_EQ(tree.find(listed, tree.find(listed) + 1), std::string::npos) << tree;
+
+  // Two different visible widgets with one name are still refused.
+  QPushButton* twin = add_button(QStringLiteral("uiToolsPopupPick"));
+  ASSERT_TRUE(pumpUntil([&] { return twin->isVisible(); }));
+  const auto [twins, twins_error] = result(call("ui_click", {{"name", "uiToolsPopupPick"}}));
+  EXPECT_TRUE(twins_error) << twins;
+  EXPECT_NE(twins.find("2 visible widgets"), std::string::npos) << twins;
+  menu.hide();
   PJ::mcp::setUiToolsEnabled(false);
 }
 
