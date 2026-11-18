@@ -63,10 +63,12 @@ class PlaybackEngine : public QObject {
       double next, double range_min, double range_max, bool hold_at_max, bool looping, bool* reached_end);
 
  public slots:
+  /// `setRange`, `setRangeAndCurrentTime` and `setCurrentTime` ignore a non-finite range or time: NaN survives every
+  /// clamp, so the cursor would stay NaN.
   void setRange(DisplayRange range);
   void setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t);
   void setCurrentTime(DisplaySeconds t);
-  /// A non-finite rate is ignored: the next tick would make the cursor time NaN and playback would never end.
+  /// Non-finite rates are ignored.
   void setPlaybackRate(double rate);
   void setStep(double step);
   void setLooping(bool looping);

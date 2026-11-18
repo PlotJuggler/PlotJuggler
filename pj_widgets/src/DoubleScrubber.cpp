@@ -20,7 +20,7 @@ void DoubleScrubber::setValue(double v) {
     return;
   }
   const double clamped = clamp(v);
-  if (clamped == value_) {
+  if (!std::isfinite(clamped) || clamped == value_) {
     return;
   }
   value_ = clamped;
