@@ -1670,7 +1670,8 @@ TEST(AppSessionDatasetLabelTest, EverySurfaceShowsAndAcceptsTheSameLabel) {
   const PJ::DatasetId pretty_b = loadDataset(session, "info.json");
   session.catalogModel().setDatasetDisplayName(pretty_a, u"lerobot/pusht"_s);
   session.catalogModel().setDatasetDisplayName(pretty_b, u"lerobot/pusht"_s);
-  // A merge relabels its anchor; the consumed dataset keeps its label, so loading its file again takes " (2)".
+  // A merge relabels its anchor; the consumed dataset keeps its label, so a new dataset of its name takes " (2)" (the
+  // loader opens the consumed file again as a new dataset: FileLoaderTest.ReopeningAMergedAwayFileLoadsANewDataset).
   const PJ::DatasetId anchor = loadDataset(session, "m.csv");
   const PJ::DatasetId consumed = loadDataset(session, "n.csv");
   ASSERT_EQ(session.mergeDatasets({anchor, consumed}), anchor);
@@ -1695,6 +1696,22 @@ TEST(AppSessionDatasetLabelTest, EverySurfaceShowsAndAcceptsTheSameLabel) {
   for (const PJ_data_source_info_t& source : snapshot->dataSources()) {
     EXPECT_NE(source.handle.id, consumed) << PJ::sdk::toStringView(source.name);
   }
+  // Its label still addresses its data, now on the anchor, in every resolver (they share DataEngine::datasetByLabel).
+  EXPECT_EQ(session.catalogModel().datasetByLabel(u"n.csv"_s), std::optional<PJ::DatasetId>(anchor));
+  const std::vector<PJ::CatalogItem> items = session.catalogModel().items();
+  const auto merged_scalar = std::find_if(items.begin(), items.end(), [anchor](const PJ::CatalogItem& item) {
+    return item.dataset_id == anchor && PJ::asScalarField(item) != nullptr;
+  });
+  ASSERT_NE(merged_scalar, items.end());
+  std::vector<std::string> merged_inputs = {PJ::sdk::qualifiedSeriesName(
+      "n.csv",
+      PJ::sdk::markerSeriesKey(
+          merged_scalar->topic_name.toStdString(), PJ::asScalarField(*merged_scalar)->field_path.toStdString()))};
+  std::vector<std::string> no_outputs;
+  const PJ::Expected<PJ::DatasetId> merged_bound =
+      PJ::resolveMarkerDataset(merged_inputs, no_outputs, items, session.sessionManager().dataEngine());
+  ASSERT_TRUE(merged_bound.has_value()) << merged_bound.error();
+  EXPECT_EQ(*merged_bound, anchor);
 
   // Removing the older copy renames nothing, and its label addresses nothing until a new dataset takes it.
   session.sessionManager().removeDataset(dup_a);

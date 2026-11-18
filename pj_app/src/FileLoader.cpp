@@ -1223,12 +1223,14 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     //    basename, so only its path finds it; fan-out children share one file and must not be refilled singly.
     // 2. Engine basename, gated on path identity when a path is tracked; untracked datasets (streaming, tests)
     //    match by basename alone.
+    // A merged-away dataset is never a match: its label names the anchor's data, and the plugin snapshot does not
+    // list it, so a refill there would be invisible to plugins and agents.
     DatasetId sole_path_match = 0;
     bool path_match_ambiguous = false;
     DatasetId basename_match = 0;
     for (const auto existing_id : engine.listDatasets()) {
       const DatasetInfo* info = engine.getDataset(existing_id);
-      if (info == nullptr) {
+      if (info == nullptr || engine.isMergedAway(existing_id)) {
         continue;
       }
       const QString tracked_path = session_.datasetSourcePath(existing_id);

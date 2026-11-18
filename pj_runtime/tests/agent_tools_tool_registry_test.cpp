@@ -254,6 +254,37 @@ TEST(ToolRegistry, ListTopicsFiltersByTheOnlyDatasetsLabel) {
   EXPECT_EQ(json::parse(reg.execute("list_topics", {{"dataset", "clouds.mcap"}}, ctx).content)["count"], 1);
 }
 
+// A filter that is a dataset's whole label keeps that dataset only, though another label contains it; a partial one
+// still matches every label containing it.
+TEST(ToolRegistry, ListTopicsPrefersTheExactDatasetLabel) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("data.csv", {"/imu"});
+  host.addDataset("data.csv (2)", {"/speed"});
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  const auto topics_for = [&](const std::string& dataset) {
+    const auto r = reg.execute("list_topics", {{"dataset", dataset}}, ctx);
+    EXPECT_TRUE(r.ok) << r.content;
+    const json listed = json::parse(r.content);
+    std::vector<std::string> names;
+    for (const auto& entry : listed["topics"]) {
+      names.push_back(entry["topic"].get<std::string>());
+    }
+    return names;
+  };
+  EXPECT_EQ(topics_for("data.csv"), (std::vector<std::string>{"/imu"}));
+  EXPECT_EQ(topics_for("data.csv (2)"), (std::vector<std::string>{"/speed"}));
+  EXPECT_EQ(topics_for("data"), (std::vector<std::string>{"/imu", "/speed"}));
+
+  FakeCatalogHost objects;
+  objects.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "clouds.mcap");
+  objects.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "clouds.mcap (2)");
+  ctx.host = PJ::sdk::ToolboxHostView(objects.makeHost());
+  EXPECT_EQ(json::parse(reg.execute("list_topics", {{"dataset", "clouds.mcap"}}, ctx).content)["count"], 1);
+  EXPECT_EQ(json::parse(reg.execute("list_topics", {{"dataset", "clouds"}}, ctx).content)["count"], 2);
+}
+
 // A scalar topic on two datasets: "dataset:name" describes that dataset's topic, and its field paths keep the
 // qualifier, so read_series takes them as they are.
 TEST(ToolRegistry, DescribeScalarTopicHonoursTheDatasetQualifier) {

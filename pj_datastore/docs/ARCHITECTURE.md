@@ -16,10 +16,13 @@ from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time
   in the `TypeRegistry`) or is schemaless and gets columns as they appear.
 - **Labels.** Each dataset carries a label (`DataEngine::datasetLabel`) beside the SDK's `DatasetInfo`: its source
   name (`/` read as `_`, `Dataset` when empty) or a display name (`setDatasetLabel`), with the lowest free ` (N)` when
-  another dataset holds it. Assigned at creation and held until `removeDataset()` (a merge source keeps its own but is listed nowhere: `isMergedAway()`), so
-  another dataset coming or going never renames one, and a freed label names a later dataset, never a survivor. The
-  app's tree, the plugin catalog snapshot and every `label:topic/field` qualifier read it; the staging mirror is given
-  the primary's label at creation. A label is a session name: layouts persist the id and `source_name`.
+  another dataset holds it. Assigned at creation and held until `removeDataset()`, so another dataset coming or going
+  never renames one, and a freed label names a later dataset, never a survivor; a relabel from the base the label was
+  made from (a reload naming the dataset after its file again) keeps it. A merge source keeps its label but is listed
+  nowhere (`isMergedAway()`), and `datasetByLabel()` maps that label to the anchor holding its data. The app's tree,
+  the plugin catalog snapshot and every `label:topic/field` qualifier read it. Only the primary engine's labels are
+  read: a staging or streaming mirror labels its datasets on its own. A label is a session name: layouts persist the
+  id and `source_name`.
 - **Timestamps** are absolute int64 nanoseconds. Nothing in this module subtracts a display base.
 - **Types.** Each logical `PrimitiveType` maps to a storage kind (narrow integers are widened); 64-bit integers are
   never stored as double.

@@ -69,7 +69,9 @@ does not link it.
   the anchor (leftmost on the display axis) keeps its clock and ids, the others are
   shifted into it by their relative display offset and removed from the catalog, scalar
   topics union by name, object topics fuse by name, and the anchor is relabelled
-  `<label>_merged` (`setDatasetDisplayName`, an engine relabel). The consumed datasets keep their labels but are listed nowhere (`DataEngine::isMergedAway`). `objectMergeConflicts(selected)` is the builtin-object-type preflight (it also
+  `<label>_merged` (`setDatasetDisplayName`, an engine relabel). The consumed datasets keep their labels, which now
+  address the anchor, but are listed nowhere (`DataEngine::isMergedAway`) and are never a load's target: `FileLoader`
+  opens a consumed file again as a new dataset. `objectMergeConflicts(selected)` is the builtin-object-type preflight (it also
   reports same-named marker topics whose scope, target or owner differ); a successful merge
   emits `datasetsMerged(anchor, consumed)`.
 - **On-demand wiring** (derived_objects "The on-demand pipeline", "Streaming"): requests every demanded recipe at the
@@ -531,7 +533,8 @@ does not link it.
 A qualifier is the dataset's label (`DataEngine::datasetLabel`: unique, assigned at creation, held until the dataset
 is removed), the same string the tree, the plugin catalog snapshot and `get_status` show. Every host resolver splits
 against `DataEngine::datasetLabels()` with the SDK's `sdk::splitDatasetQualifier` (the longest label wins) and looks the
-dataset up with `DataEngine::datasetByLabel`; a stale label resolves nowhere, never to another dataset. Colons in both
+dataset up with `DataEngine::datasetByLabel`; a stale label resolves nowhere, never to another dataset, and a merged-away
+dataset's label resolves to the anchor holding its data, for every resolver alike. Colons in both
 parts can prevent round-tripping, and a label is a session name, so it is not a persistent identity. `resolveMarkerDataset` normalizes qualified keys to bare form, refuses a bare
 input found in several datasets (suggesting the qualified forms), and rejects inputs absent
 from the chosen dataset; `MarkersRuntimeHost` runs it only for single-dataset generators
@@ -547,8 +550,7 @@ ambiguous across datasets, then as `label:bare`; a generator input declared qual
 ambiguous, is echoed under the bound dataset's current label when that form resolves back to it.
 On-demand recipes keep the qualified name as the script's alias; the session's resolver strips
 it for a topic, its qualifier splitter for another node's output (`RecipeGraph::QualifierSplitter`,
-derived_objects "The on-demand pipeline"). A dataset merged
-away stays registered with its label, so that label keeps qualifying inputs, which bind on the anchor. A
+derived_objects "The on-demand pipeline"). An unqualified input binds on any dataset not merged away. A
 qualified input saved in a layout also records what it read (`topic`, or `upstream` for another
 node's output), so a generic layout binds on another recording while the name stays the alias.
 

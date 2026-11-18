@@ -369,11 +369,10 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
   const DatasetId dataset_id = static_cast<DatasetId>(*dataset_or);
   const PJ_data_source_handle_t source_handle{static_cast<uint32_t>(dataset_id)};
 
-  // Same id and label on the secondary: the id forced for the same reason as the time domain, the label passed so the
-  // mirror never derives its own. DataSourceRuntimeHost mirrors the topics under it (cbEnsureParserBinding).
+  // Same id on the secondary, forced for the same reason as the time domain; DataSourceRuntimeHost mirrors the
+  // topics under it (cbEnsureParserBinding).
   auto mirrored_dataset = secondary_data_engine_->createDataset(
-      DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id}, dataset_id,
-      engine.datasetLabel(dataset_id));
+      DatasetDescriptor{.source_name = display_name.toStdString(), .time_domain_id = td_id}, dataset_id);
   if (!mirrored_dataset.has_value()) {
     error = tr("secondary createDataset failed: %1").arg(QString::fromStdString(mirrored_dataset.error()));
     discardDataset(dataset_id);

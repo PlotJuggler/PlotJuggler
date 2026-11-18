@@ -1873,8 +1873,8 @@ TEST(EngineIntegrationTest, TopicMetadataAggregateCoherence) {
 
 // --- Dataset labels ---
 
-DatasetId mustCreate(DataEngine& engine, std::string source, DatasetId requested_id = 0, std::string_view label = {}) {
-  auto created = engine.createDataset(DatasetDescriptor{.source_name = std::move(source)}, requested_id, label);
+DatasetId mustCreate(DataEngine& engine, std::string source) {
+  auto created = engine.createDataset(DatasetDescriptor{.source_name = std::move(source)});
   EXPECT_TRUE(created.has_value());
   return created.has_value() ? *created : 0;
 }
@@ -1925,18 +1925,26 @@ TEST(DatasetLabelTest, NormalizedBasesAndRelabels) {
   EXPECT_EQ(engine.setDatasetLabel(999, "x"), "");
 }
 
-// The staging mirror takes the primary's label explicitly, whatever it already holds.
-TEST(DatasetLabelTest, MirrorTakesTheLabelItIsGiven) {
-  DataEngine primary;
-  DataEngine mirror;
-  (void)mustCreate(primary, "s");
-  const DatasetId id = mustCreate(primary, "s");
-  ASSERT_EQ(primary.datasetLabel(id), "s (2)");
-  EXPECT_EQ(mustCreate(mirror, "s", id, primary.datasetLabel(id)), id);
-  EXPECT_EQ(mirror.datasetLabel(id), "s (2)");
+// A relabel from the base the dataset already has (a reload naming it after its file again) keeps its label: the
+// suffix it took stays, even when the bare name, or a lower suffix, has been freed since.
+TEST(DatasetLabelTest, RelabelFromTheSameBaseKeepsTheLabel) {
+  DataEngine engine;
+  const DatasetId older = mustCreate(engine, "data.csv");
+  const DatasetId newer = mustCreate(engine, "data.csv");
+  engine.removeDataset(older);
+  EXPECT_EQ(engine.setDatasetLabel(newer, "data.csv"), "data.csv (2)");
+
+  const DatasetId x = mustCreate(engine, "x");
+  const DatasetId x2 = mustCreate(engine, "x");
+  const DatasetId x3 = mustCreate(engine, "x");
+  engine.removeDataset(x2);
+  EXPECT_EQ(engine.setDatasetLabel(x3, "x"), "x (3)") << "a removed dataset's label never names a survivor";
+  EXPECT_EQ(engine.setDatasetLabel(x3, ""), "x (3)") << "the source name is the same base";
+  EXPECT_EQ(engine.datasetLabel(x), "x");
 }
 
-// A merge source keeps its label (so a name that addressed it never moves to a later dataset).
+// A merge source keeps its label (so a name that addressed it never moves to a later dataset), and the label addresses
+// the anchor now holding its data, through later merges, until that anchor is removed.
 TEST(DatasetLabelTest, MergeSourcesKeepTheirLabels) {
   DataEngine engine;
   const DatasetId anchor = mustCreate(engine, "a");
@@ -1945,7 +1953,16 @@ TEST(DatasetLabelTest, MergeSourcesKeepTheirLabels) {
   EXPECT_EQ(engine.datasetLabel(source), "b");
   EXPECT_TRUE(engine.isMergedAway(source));
   EXPECT_FALSE(engine.isMergedAway(anchor));
+  EXPECT_EQ(engine.datasetByLabel("b"), std::optional<DatasetId>(anchor)) << "the label addresses the data's holder";
   EXPECT_EQ(engine.datasetLabel(mustCreate(engine, "b")), "b (2)");
+
+  const DatasetId outer = mustCreate(engine, "c");
+  ASSERT_TRUE(engine.mergeDatasets(outer, {DatasetMergeSource{.dataset_id = anchor}}).has_value());
+  EXPECT_EQ(engine.datasetByLabel("b"), std::optional<DatasetId>(outer));
+  EXPECT_EQ(engine.datasetByLabel("a"), std::optional<DatasetId>(outer));
+  engine.removeDataset(outer);
+  EXPECT_FALSE(engine.datasetByLabel("b").has_value()) << "nothing holds its data any more";
+
   engine.removeDataset(source);
   EXPECT_FALSE(engine.isMergedAway(source));
 }

@@ -273,8 +273,6 @@ struct CatalogModel::Impl {
   // by the DatasetId the curve belonged to, so a reload (new DatasetId)
   // re-introduces the name.
   tsl::robin_map<DatasetId, NameSet> removed_names_per_dataset;
-  // Plugin-provided tree-root labels, keyed by stable DatasetId so
-  // they survive rebuilds and clearAll/restoreDataset. Never holds empty values.
 
   // Advertised (available-but-unsubscribed) topics per dataset: topic name →
   // a-priori classification. Merged into the catalog by rebuildNow as data-less
