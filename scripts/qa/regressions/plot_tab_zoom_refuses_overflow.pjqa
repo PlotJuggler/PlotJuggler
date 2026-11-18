@@ -1,12 +1,13 @@
-# plot_tab zoom to a range whose width overflows a double (+-1.7e308) is refused; the X axis keeps its window instead
-# of collapsing to 0..0 (Qwt cannot divide such a scale).
+# plot_tab zoom to a range whose width overflows a double (+-1.7e308) is refused; the X axis keeps the window the last
+# valid zoom set instead of collapsing to 0..0 (Qwt cannot divide such a scale).
 # app: -d tests/wasm/fixtures/signals/data.csv
 # needs: plugins
 until list_topics {} "data"
 plot_tab {"action":"create","tab":"a","title":"Agent"}
 plot_tab {"action":"add","tab":"a","curves":["data/sine"]}
+plot_tab {"action":"zoom","tab":"a","start_s":100,"end_s":200}
 refuse plot_tab {"action":"zoom","tab":"a","start_s":-1.7e308,"end_s":1.7e308}
 # the axis is laid out on a later replot: give it a second
 ui_key {"keys":"Shift","wait_ms":1500}
 ui_plot {}
-absent "x":["0.000","0.000"]
+expect "x":["100.000","200.000"]

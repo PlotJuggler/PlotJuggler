@@ -2762,8 +2762,9 @@ TEST_F(McpEndpointTest, PlotTabZoomFramesOnlyTheNamedTab) {
   EXPECT_NE(refused.find("a, b"), std::string::npos) << refused;
 }
 
-// A zoom range Qwt cannot divide (a width that overflows, a bound that is not finite) is refused and the plot keeps
-// its window; a wide but drawable range, such as epoch seconds, still applies.
+// A zoom range the axis cannot hold is refused and the plot keeps its window: a width that overflows Qwt's scale
+// division, bounds beyond what the nanosecond time base can hold, a range so narrow the axis collapses. A range of
+// epoch seconds still applies.
 TEST_F(McpEndpointTest, PlotTabZoomRefusesARangeThatCannotBeDrawn) {
   openPublic();
   ASSERT_NE(loadMock(), 0);
@@ -2779,13 +2780,18 @@ TEST_F(McpEndpointTest, PlotTabZoomRefusesARangeThatCannotBeDrawn) {
   ASSERT_NE(plot, nullptr);
   const QRectF before = plot->currentBoundingRect();
 
-  const auto [refused, refused_error] =
-      result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", -1.7e308}, {"end_s", 1.7e308}}));
-  EXPECT_TRUE(refused_error) << refused;
-  EXPECT_NE(refused.find("finite"), std::string::npos) << refused;
-  EXPECT_EQ(plot->currentBoundingRect(), before);
+  for (const auto& [start, end] :
+       {std::pair{-1.7e308, 1.7e308}, std::pair{0.0, 1e10}, std::pair{-1.7976931348623157e308, 1e291},
+        std::pair{0.0, 5e-324}}) {
+    const auto [refused, refused_error] =
+        result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", start}, {"end_s", end}}));
+    EXPECT_TRUE(refused_error) << start << ".." << end << ": " << refused;
+    EXPECT_NE(refused.find("zoom range"), std::string::npos) << refused;
+    EXPECT_EQ(plot->currentBoundingRect(), before) << start << ".." << end;
+  }
 
-  // The tool's JSON cannot carry these; a plugin's viewport call can.
+  // The viewport service refuses non-finite values before they get here and the tool's JSON cannot carry them, so this
+  // only guards the controller.
   const double inf = std::numeric_limits<double>::infinity();
   const double nan = std::numeric_limits<double>::quiet_NaN();
   for (const auto& [t0, t1] : {std::pair{0.0, inf}, std::pair{-inf, 0.0}, std::pair{nan, 1.0}, std::pair{0.0, nan}}) {

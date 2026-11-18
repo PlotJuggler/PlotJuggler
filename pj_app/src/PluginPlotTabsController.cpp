@@ -29,6 +29,12 @@ QString ownedTabKey(const QString& plugin_id, const QString& tab_id) {
   return plugin_id + u"/"_s + tab_id;
 }
 
+// 2^62 ns: a display edge plus an epoch offset of this size stays inside int64 ns (`displaySecondsToRaw` rounds to
+// nanoseconds, undefined beyond it), and a wider axis overflows Qwt's scale division, which leaves it at 0..0.
+constexpr double kMaxAxisSeconds = 4.6e9;
+// A narrower window collapses the axis.
+constexpr double kMinAxisSpanSeconds = 1e-9;
+
 /// The ABI error for a tab id the calling plugin does not own (or that does not exist).
 Unexpected<std::string> noOwnedTabError(const QString& tab_id) {
   return unexpected("no tab '" + tab_id.toStdString() + "' belonging to this plugin");
@@ -122,10 +128,9 @@ void PluginPlotTabsController::forEachPlotOwnedBy(
 
 Status PluginPlotTabsController::zoomToTimeRange(
     const QString& plugin_id, double t0_s, double t1_s, const QString& tab_id) {
-  // Qwt cannot divide a scale whose width overflows (-1.7e308..1.7e308): the axis collapses to 0..0. A non-finite
-  // bound makes the width non-finite too.
-  if (!std::isfinite(t1_s - t0_s)) {
-    return unexpected("the zoom range must be finite and narrow enough to draw (its width overflows a double)");
+  // NaN fails every comparison, so it is refused too.
+  if (!(std::abs(t0_s) <= kMaxAxisSeconds && std::abs(t1_s) <= kMaxAxisSeconds && t1_s - t0_s >= kMinAxisSpanSeconds)) {
+    return unexpected("the zoom range must lie within +-4.6e9 s and be at least 1 ns wide");
   }
   // An explicit command sets every plot itself, so there is no link feedback to propagate.
   int owned = 0;
