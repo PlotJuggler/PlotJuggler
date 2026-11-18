@@ -47,7 +47,10 @@ does not link it.
   display-min, which `seedPlaybackFromSession()` reuses for the first-load playhead snap.
   When no visible data remains it collapses the transport with `resetPlaybackToEmpty()`
   (pause, `[0,0]` range, cursor 0), the same reset the `CatalogModel::cleared()` hook runs
-  on a full wipe: this is what stops playback when the last dataset is removed. Both scans
+  on a full wipe: this is what stops playback when the last dataset is removed. While a
+  replacing reload's `RefillGuard` is open (`SessionManager::refillOpen()`) the range only
+  grows: the emptied dataset would otherwise shrink it to the other datasets' extent and
+  clamp the playhead there; the seed after the commit applies any real shrink. Both scans
   share the private `forEachVisibleRawRange`, so the visibility and dedup rules live in one
   place. The playback range skips host-published topics (`isOffClockTopic`).
   Zero-time reference geometry is also outside the clock: a dataset containing a point

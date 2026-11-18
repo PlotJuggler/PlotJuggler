@@ -1126,6 +1126,7 @@ RefillGuard SessionManager::beginRefill(DatasetId dataset_id) {
 RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : session_(&session), dataset_id_(dataset_id) {
   // GUI thread, no event loop, as replaceDataset.
   Q_ASSERT(session.thread() == QThread::currentThread());
+  ++session.open_refills_;
 
   // Prior ids, taken before detaching: scalars for the empty-state notify, object ids so a rollback tells which object
   // topics a failed refill added.
@@ -1210,6 +1211,7 @@ void RefillGuard::commit() {
   // The content now comes from another source, so the old provenance is stale (a promoted cloud dataset refilled from
   // a local file must not keep the cloud descriptor). A rollback never reaches commit and keeps it.
   if (session_ != nullptr) {
+    --session_->open_refills_;
     session_->detachSourceRecord(dataset_id_);
     // The new load's document, if any, is published at its own commit seam.
     session_->clearDatasetMetadata(dataset_id_);
@@ -1383,6 +1385,7 @@ void RefillGuard::rollback() {
     qCWarning(lcSession).noquote() << "RefillGuard rollback processor replay failed:"
                                    << QString::fromStdString(replayed.error());
   }
+  --session_->open_refills_;  // before the notify, so the range recompute it triggers sees the restored data as final
   const std::vector<TopicId> current = session_->dataEngine().listTopics(dataset_id_);
   session_->notifyIngest(QVector<TopicId>(current.begin(), current.end()), /*live=*/false);
   session_->resumeOnDemandLater(dataset_id_);  // the rollback's hold

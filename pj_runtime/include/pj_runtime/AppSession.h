@@ -113,7 +113,8 @@ class AppSession : public QObject {
   // (call throttled); never touches currentTime or the first-seed snap. Returns the union's display-min (what
   // seedPlaybackFromSession snaps the first-load playhead to). Returns nullopt when no topic has time-bearing data,
   // and then collapses the transport to the empty state (resetPlaybackToEmpty) ONLY if the catalog is genuinely empty:
-  // a transient mid-reload (topics visible, chunks momentarily detached) leaves the range untouched.
+  // a transient mid-reload (topics visible, chunks momentarily detached) leaves the range untouched. While a refill is
+  // open (SessionManager::refillOpen) the range only grows, so the playhead is not clamped to the other datasets.
   std::optional<PJ::DisplaySeconds> recomputeRange();
 
   // Sets the active live-stream dataset (0 = none). While set AND playing, recomputeRange() scopes the range to this

@@ -413,6 +413,10 @@ class SessionManager : public QObject {
   // 1 before 2, or cached chunk pointers dangle. The caller commit()s the guard on success (or to keep a partial
   // load); otherwise its destructor rolls back to the exact prior data.
   [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
+  /// True between beginRefill and the guard's commit or rollback: a dataset is empty only for the reload's duration.
+  [[nodiscard]] bool refillOpen() const noexcept {
+    return open_refills_ > 0;
+  }
 
   /// Marks stale the marker rules whose inputs are among `changed` (file commit, streaming tick); the batch engine
   /// re-runs them on the pool behind its brake. A topic whose stamp (newest timestamp, row count, retention floor,
@@ -714,6 +718,7 @@ class SessionManager : public QObject {
   // At most one live ingest per dataset, carrying the id of the token that owns it; a call from a superseded run is a
   // lookup miss.
   std::unordered_map<DatasetId, ActiveIngestEntry> active_ingests_;
+  int open_refills_ = 0;  // RefillGuards not yet committed or rolled back
   // Never 0.
   IngestId next_ingest_id_ = 1;
   std::vector<LoadedSource> loaded_sources_;

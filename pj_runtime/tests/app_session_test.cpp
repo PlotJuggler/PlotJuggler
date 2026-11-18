@@ -1090,6 +1090,33 @@ TEST(AppSessionTest, RecomputeRangeMovesRangeButNeverCurrentTime) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 4.0);  // unchanged: no snap
 }
 
+// A replacing reload empties its dataset until the refill lands; the range recomputed meanwhile (every ingest notify
+// does) must not shrink to the other datasets' extent, or the playhead is clamped there and stays after the refill.
+TEST(AppSessionTest, RefillKeepsPlayheadInsideAnotherDatasetsShorterRange) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+
+  makeShiftedDataset(session, "short", 0, "/s", {0, 2 * kSecond});
+  const PJ::DatasetId reloaded = makeShiftedDataset(session, "long", 0, "/s", {0, 1000 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{500.0});
+
+  {
+    PJ::RefillGuard refill = session.sessionManager().beginRefill(reloaded);
+    session.recomputeRange();
+    EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0);
+    EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
+    addScalarSamples(session, reloaded, "/s", {0, 1000 * kSecond});
+    refill.commit();
+  }
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
+}
+
 // Automatic marker runs follow demand: a generator on a demand-capable streaming
 // dataset stays stale while nothing displays that dataset, and runs as soon as a
 // display reference arrives, with no further ingest.

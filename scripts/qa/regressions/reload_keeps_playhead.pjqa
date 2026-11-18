@@ -1,0 +1,9 @@
+# Reloading a dataset keeps the playhead when another, shorter dataset is loaded: it jumped to the end of the other
+# dataset's range (a single loaded dataset kept it).
+# app: -d tests/wasm/fixtures/signals/data.csv -d scripts/qa/regressions/fixtures/short_range.csv
+# needs: plugins
+until get_status {} "name":"short_range.csv"
+playback {"action":"seek","time_s":10}
+expect "current_time_s":10
+reload_file {"dataset":"data.csv"}
+until playback {"action":"state"} "current_time_s":10

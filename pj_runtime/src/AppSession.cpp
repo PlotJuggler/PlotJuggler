@@ -350,6 +350,12 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
     }
     return std::nullopt;
   }
+  if (session_manager_->refillOpen()) {
+    // The reloading dataset is empty until its refill commits: a range shrunk to the other datasets would clamp the
+    // playhead there for good. The seed after the commit shrinks it if the reload did.
+    new_min = std::min(*new_min, playback_engine_->rangeMin());
+    new_max = std::max(*new_max, playback_engine_->rangeMax());
+  }
   playback_engine_->setRange(DisplayRange{*new_min, *new_max});
   return new_min;
 }
