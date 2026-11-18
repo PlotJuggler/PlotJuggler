@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -2759,6 +2760,45 @@ TEST_F(McpEndpointTest, PlotTabZoomFramesOnlyTheNamedTab) {
   const auto [refused, refused_error] = result(call("plot_tab", {{"action", "zoom"}, {"tab", "c"}}));
   EXPECT_TRUE(refused_error);
   EXPECT_NE(refused.find("a, b"), std::string::npos) << refused;
+}
+
+// A zoom range Qwt cannot divide (a width that overflows, a bound that is not finite) is refused and the plot keeps
+// its window; a wide but drawable range, such as epoch seconds, still applies.
+TEST_F(McpEndpointTest, PlotTabZoomRefusesARangeThatCannotBeDrawn) {
+  openPublic();
+  ASSERT_NE(loadMock(), 0);
+  for (const json& args :
+       {json{{"action", "create"}, {"tab", "a"}},
+        json{{"action", "add"}, {"tab", "a"}, {"curves", {"mock/file_data/value"}}}}) {
+    const auto [text, error] = result(call("plot_tab", args));
+    ASSERT_FALSE(error) << text;
+  }
+  PJ::PlotDocker* docker = window_->pluginPlotTabs().ownedTab(u"agent-test"_s, u"a"_s);
+  ASSERT_NE(docker, nullptr);
+  PJ::PlotWidget* plot = docker->plotAt(0)->plotWidget();
+  ASSERT_NE(plot, nullptr);
+  const QRectF before = plot->currentBoundingRect();
+
+  const auto [refused, refused_error] =
+      result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", -1.7e308}, {"end_s", 1.7e308}}));
+  EXPECT_TRUE(refused_error) << refused;
+  EXPECT_NE(refused.find("finite"), std::string::npos) << refused;
+  EXPECT_EQ(plot->currentBoundingRect(), before);
+
+  // The tool's JSON cannot carry these; a plugin's viewport call can.
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const auto& [t0, t1] : {std::pair{0.0, inf}, std::pair{-inf, 0.0}, std::pair{nan, 1.0}, std::pair{0.0, nan}}) {
+    EXPECT_FALSE(window_->pluginPlotTabs().zoomToTimeRange(u"agent-test"_s, t0, t1, u"a"_s).has_value())
+        << t0 << ".." << t1;
+    EXPECT_EQ(plot->currentBoundingRect(), before);
+  }
+
+  const auto [applied, applied_error] =
+      result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", 1.7e9}, {"end_s", 1.7e9 + 60.0}}));
+  ASSERT_FALSE(applied_error) << applied;
+  EXPECT_NEAR(plot->currentBoundingRect().left(), 1.7e9, 1e-3);
+  EXPECT_NEAR(plot->currentBoundingRect().right(), 1.7e9 + 60.0, 1e-3);
 }
 
 TEST_F(McpEndpointTest, TearingDownTheSessionRevokesAndDropsItsEvaluation) {

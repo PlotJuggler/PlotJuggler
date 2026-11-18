@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <cmath>
 #include <memory>
 #include <optional>
 
@@ -121,6 +122,11 @@ void PluginPlotTabsController::forEachPlotOwnedBy(
 
 Status PluginPlotTabsController::zoomToTimeRange(
     const QString& plugin_id, double t0_s, double t1_s, const QString& tab_id) {
+  // Qwt cannot divide a scale whose width overflows (-1.7e308..1.7e308): the axis collapses to 0..0. A non-finite
+  // bound makes the width non-finite too.
+  if (!std::isfinite(t1_s - t0_s)) {
+    return unexpected("the zoom range must be finite and narrow enough to draw (its width overflows a double)");
+  }
   // An explicit command sets every plot itself, so there is no link feedback to propagate.
   int owned = 0;
   int zoomed = 0;
