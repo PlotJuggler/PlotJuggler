@@ -66,6 +66,7 @@ class PlaybackEngine : public QObject {
   void setRange(DisplayRange range);
   void setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t);
   void setCurrentTime(DisplaySeconds t);
+  /// A non-finite rate is ignored: the next tick would make the cursor time NaN and playback would never end.
   void setPlaybackRate(double rate);
   void setStep(double step);
   void setLooping(bool looping);

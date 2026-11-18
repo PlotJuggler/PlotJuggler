@@ -1,0 +1,27 @@
+# Typing "nan" in the speed scrubber is refused like any bad text: the rate stays (2.0 here, typed first to show
+# the editor takes input), and playback still moves the time cursor to a number. The rate used to become NaN, so the
+# readout, the tracker and the playback state lost the time.
+# The X axis is the row number (0..1000): the CSV loader takes no dialog with `-d`.
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
+playback {"action":"seek","time_s":100}
+ui_click {"name":"playbackRate"}
+ui_key {"keys":"Ctrl+A"}
+ui_type {"text":"2\n"}
+playback {"action":"state"}
+expect "rate":2.0
+ui_click {"name":"playbackRate"}
+ui_key {"keys":"Ctrl+A"}
+ui_type {"text":"nan\n"}
+playback {"action":"state"}
+expect "rate":2.0
+ui_click {"name":"buttonPlay","wait_ms":600}
+playback {"action":"state"}
+absent "current_time_s":null
+expect "rate":2.0
+ui_tree {}
+absent #displayTime "nan"
+ui_plot {"title":"Periodic"}
+absent time : nan
+ui_click {"name":"buttonPlay"}

@@ -3,6 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QMetaObject>
+#include <QSignalSpy>
+#include <cmath>
+#include <limits>
 #include <vector>
 
 #include "pj_runtime/PlaybackEngine.h"
@@ -100,6 +104,35 @@ TEST(PlaybackEngineTest, PlayFromMiddleDoesNotRewind) {
   engine.play();
 
   EXPECT_DOUBLE_EQ(engine.currentTime().value, 4.0) << "play() mid-range must not move the cursor";
+}
+
+// A non-finite rate (typed "nan" into the speed scrubber) must not be stored: next tick would turn the cursor into NaN
+// and playback would run forever with no time.
+TEST(PlaybackEngineTest, NonFiniteRateIsIgnored) {
+  PJ::PlaybackEngine engine;
+  engine.setPlaybackRate(2.0);
+  QSignalSpy rate_spy(&engine, &PJ::PlaybackEngine::playbackRateChanged);
+
+  for (const double v :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()}) {
+    engine.setPlaybackRate(v);
+    EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.0);
+  }
+  EXPECT_EQ(rate_spy.count(), 0);
+}
+
+TEST(PlaybackEngineTest, TickAfterNonFiniteRateKeepsTimeFinite) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 10.0));
+  engine.setCurrentTime(PJ::displaySeconds(3.0));
+  engine.setPlaybackRate(std::numeric_limits<double>::quiet_NaN());
+
+  engine.play();
+  QMetaObject::invokeMethod(&engine, "onTick", Qt::DirectConnection);
+  engine.pause();
+
+  EXPECT_TRUE(std::isfinite(engine.currentTime().value));
 }
 
 }  // namespace

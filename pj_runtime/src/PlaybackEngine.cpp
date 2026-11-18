@@ -78,7 +78,7 @@ void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
 }
 
 void PlaybackEngine::setPlaybackRate(double rate) {
-  if (rate_ == rate) {
+  if (!std::isfinite(rate) || rate_ == rate) {
     return;
   }
   rate_ = rate;
