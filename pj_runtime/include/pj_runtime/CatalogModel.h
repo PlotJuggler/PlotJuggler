@@ -212,10 +212,10 @@ class CatalogModel : public QObject {
   /// call to pin that it did not walk it.
   [[nodiscard]] std::size_t wholeCatalogWalks() const noexcept;
   /// The object-topic items named `topic_name`, in `items()` order: one per dataset that
-  /// has it. A non-empty `dataset_source` keeps only the dataset with that source NAME.
+  /// has it. A non-empty `dataset_label` keeps only the dataset so labelled (datasetByLabel), none for an unknown one.
   /// Walks the catalog in place, without the copy and sort of `items()`.
   [[nodiscard]] std::vector<CatalogItem> objectTopicsNamed(
-      const QString& topic_name, const QString& dataset_source) const;
+      const QString& topic_name, const QString& dataset_label) const;
 
   /// The object-topic item of `topic_id`, or nullopt when the catalog has none.
   /// Walks the catalog in place, without the copy and sort of `items()`.
@@ -239,8 +239,8 @@ class CatalogModel : public QObject {
   [[nodiscard]] std::optional<CatalogItem> itemDescriptor(const QString& key) const;
   /// The name a plugin addresses the item `key` by (a curve-tree drop onto a plugin panel): a scalar field's
   /// `sdk::markerSeriesKey` (strings included; the plugin decides what it can read), a paused topic's name, or an
-  /// object topic's name, source-qualified when another dataset has that topic too. nullopt for an unknown key. GUI
-  /// thread only.
+  /// object topic's name, qualified by its dataset label when another dataset has that topic too. nullopt for an
+  /// unknown key. GUI thread only.
   [[nodiscard]] std::optional<std::string> pluginDropName(const QString& key) const;
   /// The key under which `dataset` lists the object topic `topic`, or nullopt when the catalog does not list it. A
   /// hash lookup: how a caller holding topic ids finds their rows without walking `items()`.
@@ -274,13 +274,18 @@ class CatalogModel : public QObject {
   [[nodiscard]] std::optional<CurveDescriptor> curveDescriptor(
       const QString& key, SeriesCapability capability = SeriesCapability::kPlottable) const;
 
-  // (id, display name), dataset id ascending.
+  // (id, label), dataset id ascending: the datasets the tree lists (those with items).
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> datasets() const;
   [[nodiscard]] std::vector<DatasetId> datasetIds() const;
 
-  // The datastore's raw DatasetInfo::source_name: no display override, no "name (2)" ordinal. Layout identity
+  // The datastore's raw DatasetInfo::source_name: no display name, no "name (2)" ordinal. Layout identity
   // resolution falls back to it when a saved DatasetId was reminted.
   [[nodiscard]] std::optional<QString> datasetSourceName(DatasetId dataset_id) const;
+  /// The dataset's label (DataEngine::datasetLabel): the name the tree, the plugin catalog snapshot and every
+  /// "label:topic/field" qualifier use. A session name for replies a caller may send back, never for persistence.
+  [[nodiscard]] std::optional<QString> datasetLabel(DatasetId dataset_id) const;
+  /// The dataset labelled `label` (DataEngine::datasetByLabel).
+  [[nodiscard]] std::optional<DatasetId> datasetByLabel(const QString& label) const;
 
   // Resolves a saved curve identity (topic+field, optionally an exact DatasetId, a raw source label, a full path) to
   // the live key, never guessing by load order. The one resolver for layout/undo restore (PendingDisplayBinder) and
@@ -329,9 +334,10 @@ class CatalogModel : public QObject {
   // Restores one dataset hidden by removeDataset().
   void restoreDataset(DatasetId dataset_id);
 
-  // Replaces a dataset's tree-root label (a DataSource names its dataset instead of the file's basename). Keyed by
-  // DatasetId, so it survives rebuilds and clearAll/restoreDataset; normalized ('/'→'_') and disambiguated like any
-  // label. Empty clears it. DatasetInfo is untouched, so dataset reuse (by source_name) is unaffected.
+  // Relabels the dataset (DataEngine::setDatasetLabel): a DataSource names its dataset instead of the file's basename,
+  // a merge names its anchor. Made unique like any label; empty returns to the source name. The label lives in the
+  // engine, so it survives rebuilds, tombstones and restores. DatasetInfo::source_name is untouched, so dataset reuse
+  // (by source_name) is unaffected.
   void setDatasetDisplayName(DatasetId dataset_id, const QString& display_name);
 
   // The complete advertised set of a streaming dataset: each topic is a data-less paused placeholder unless a real
@@ -368,7 +374,7 @@ class CatalogModel : public QObject {
   // The rebuild body; rebuildFromDatastore() also refreshes the fingerprint, so the gate stays in sync.
   void rebuildNow();
 
-  // Engine structure (datasets, topics, column counts, retired columns, object topics) plus tombstones and overrides:
+  // Engine structure (datasets, topics, column counts, retired columns, object topics, dataset labels) plus tombstones:
   // equal fingerprints mean an identical rebuild.
   [[nodiscard]] std::uint64_t catalogFingerprint() const;
 

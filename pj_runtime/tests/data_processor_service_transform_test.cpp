@@ -753,7 +753,8 @@ TEST(DataProcessorTransformTest, DatasetQualifiedUpsertWorksWithStreamStyleSourc
   EXPECT_EQ(rec->input_topic_ids, (std::vector<TopicId>{duplicate->topic_id}));
 }
 
-TEST(DataProcessorTransformTest, DatasetQualifiedUpsertRejectsADuplicatedSourceName) {
+// A source loaded twice is addressed by the catalog's labels: "s" is the older copy, "s (2)" the newer.
+TEST(DataProcessorTransformTest, DatasetQualifiedUpsertPicksACopyOfADuplicatedSourceByLabel) {
   Fixture fx;
   fx.seed("speed", {1.0});  // source "s"
   const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
@@ -762,9 +763,12 @@ TEST(DataProcessorTransformTest, DatasetQualifiedUpsertRejectsADuplicatedSourceN
   writer.appendScalar(*duplicate, 0, 9.0);
   fx.engine.commitChunks(writer.flushAll());
 
-  const auto rec = fx.service.upsertTransform("pluginA", "negate", {"s:speed"}, {"out"}, kNegate, "{}");
-  ASSERT_FALSE(rec.has_value());
-  EXPECT_NE(rec.error().find("ambiguous"), std::string::npos) << rec.error();
+  const auto older = fx.service.upsertTransform("pluginA", "negate", {"s:speed"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(older.has_value()) << older.error();
+  EXPECT_EQ(older->input_topic_ids, (std::vector<TopicId>{fx.input}));
+  const auto newer = fx.service.upsertTransform("pluginB", "negate", {"s (2):speed"}, {"out2"}, kNegate, "{}");
+  ASSERT_TRUE(newer.has_value()) << newer.error();
+  EXPECT_EQ(newer->input_topic_ids, (std::vector<TopicId>{duplicate->topic_id}));
 }
 
 // A ':' whose prefix is no loaded source stays part of the name; the error
@@ -855,15 +859,19 @@ TEST(DataProcessorTransformTest, ConfigReadBackKeepsBareWhenALongerSourcePrefixS
   EXPECT_EQ(configInputs(fx.service, "pluginA/negate"), (std::vector<std::string>{"b:x"}));
 }
 
-// A source loaded twice cannot be addressed by name: read-back must not emit
-// "s:speed", which the resolver rejects as ambiguous.
-TEST(DataProcessorTransformTest, ConfigReadBackKeepsBareWhenTheSourceIsLoadedTwice) {
+// A source loaded twice: read-back qualifies the input with the label of the copy the
+// transform reads ("s" for the older, "s (2)" for the newer), which resubmits to it.
+TEST(DataProcessorTransformTest, ConfigReadBackNamesTheCopyWhenTheSourceIsLoadedTwice) {
   Fixture fx;
   fx.seed("speed", {3.0});  // source "s"
   ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegate, "{}").has_value());
   const DatasetId second = *fx.engine.createDataset(DatasetDescriptor{.source_name = "s", .time_domain_id = 0});
   (void)addSeries(fx.engine, second, "speed", 8.0);
-  EXPECT_EQ(configInputs(fx.service, "pluginA/negate"), (std::vector<std::string>{"speed"}));
+  const std::vector<std::string> inputs = configInputs(fx.service, "pluginA/negate");
+  EXPECT_EQ(inputs, (std::vector<std::string>{"s:speed"}));
+  const auto resubmitted = fx.service.upsertTransform("pluginB", "negate", inputs, {"out2"}, kNegate, "{}");
+  ASSERT_TRUE(resubmitted.has_value()) << resubmitted.error();
+  EXPECT_EQ(resubmitted->input_topic_ids, std::vector<TopicId>{fx.input});
 }
 
 // A bare cross-dataset transform (x in a, y in b) is accepted; its read-back must

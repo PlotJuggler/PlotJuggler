@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "pj_base/builtin/plot_markers.hpp"
+#include "pj_datastore/engine.hpp"
 
 namespace PJ {
 
@@ -23,36 +24,10 @@ const ScalarFieldPayload* markerSeriesField(const CatalogItem& item, const std::
   return scalar;
 }
 
-UniqueDatasetLookup uniqueDatasetForSource(
-    std::string_view source, const std::vector<DatasetId>& datasets,
-    const std::function<std::optional<std::string>(DatasetId)>& source_name_of) {
-  UniqueDatasetLookup found;
-  if (source.empty() || !source_name_of) {
-    return found;
-  }
-  for (const DatasetId ds : datasets) {
-    const std::optional<std::string> name = source_name_of(ds);
-    if (!name.has_value() || *name != source) {
-      continue;
-    }
-    if (found.id.has_value()) {
-      return UniqueDatasetLookup{.id = std::nullopt, .ambiguous = true};
-    }
-    found.id = ds;
-  }
-  return found;
-}
-
 Expected<DatasetId> resolveMarkerDataset(
     std::vector<std::string>& inputs, std::vector<std::string>& outputs, const std::vector<CatalogItem>& items,
-    const std::vector<DatasetId>& datasets,
-    const std::function<std::optional<std::string>(DatasetId)>& source_name_of) {
-  std::vector<std::string> source_names;
-  source_names.reserve(datasets.size());
-  for (const DatasetId ds : datasets) {
-    const std::optional<std::string> src = source_name_of ? source_name_of(ds) : std::nullopt;
-    source_names.push_back(src.value_or(std::string{}));
-  }
+    const DataEngine& engine) {
+  const std::vector<std::string> labels = engine.datasetLabels();
 
   std::optional<DatasetId> chosen;
   const auto choose = [&](DatasetId ds, const std::string& key) -> std::optional<std::string> {
@@ -66,29 +41,21 @@ Expected<DatasetId> resolveMarkerDataset(
   // Pass 1: qualified keys decide the dataset, and are normalized in place.
   for (std::vector<std::string>* keys : {&inputs, &outputs}) {
     for (std::string& key : *keys) {
-      const DatasetQualifierSplit split = splitDatasetQualifier(key, source_names);
+      const DatasetQualifierSplit split = splitDatasetQualifier(key, labels);
       if (!split.qualified) {
         continue;
       }
-      const UniqueDatasetLookup target = uniqueDatasetForSource(split.dataset_source, datasets, source_name_of);
-      if (target.ambiguous) {
-        return unexpected("dataset source is ambiguous (loaded more than once): " + split.dataset_source);
+      const std::optional<DatasetId> target = engine.datasetByLabel(split.dataset_source);
+      if (!target.has_value()) {
+        return unexpected("unknown dataset label: " + split.dataset_source);
       }
       const std::string original = std::move(key);
       key = split.bare;
-      if (auto err = choose(*target.id, original)) {
+      if (auto err = choose(*target, original)) {
         return unexpected(std::move(*err));
       }
     }
   }
-  const auto source_of = [&](DatasetId ds) -> std::string {
-    for (std::size_t i = 0; i < datasets.size(); ++i) {
-      if (datasets[i] == ds) {
-        return source_names[i];
-      }
-    }
-    return {};
-  };
   const auto exists_in = [&](DatasetId ds, const std::string& key) {
     return std::any_of(items.begin(), items.end(), [&](const CatalogItem& item) {
       return item.dataset_id == ds && markerSeriesField(item, key) != nullptr;
@@ -118,12 +85,10 @@ Expected<DatasetId> resolveMarkerDataset(
         if (markerSeriesField(item, key) == nullptr) {
           continue;
         }
-        const std::string src = source_of(item.dataset_id);
-        const std::string qualified = sdk::qualifiedSeriesName(src, key);
-        // A source loaded twice, or one shadowed by a longer loaded prefix, cannot be
-        // addressed by name at all.
-        if (uniqueDatasetForSource(src, datasets, source_name_of).id != item.dataset_id ||
-            splitDatasetQualifier(qualified, source_names).dataset_source != src ||
+        const std::string label = engine.datasetLabel(item.dataset_id);
+        const std::string qualified = sdk::qualifiedSeriesName(label, key);
+        // A label shadowed by a longer loaded prefix cannot be addressed at all.
+        if (label.empty() || splitDatasetQualifier(qualified, labels).dataset_source != label ||
             std::find(candidates.begin(), candidates.end(), qualified) != candidates.end()) {
           continue;
         }
@@ -131,7 +96,7 @@ Expected<DatasetId> resolveMarkerDataset(
       }
       std::string msg = "input '" + key + "' exists in several datasets";
       if (candidates.empty()) {
-        msg += " and none of them can be addressed unambiguously by source name";
+        msg += " and none of them can be addressed by dataset label";
       } else {
         msg += "; qualify it as ";
         for (std::size_t i = 0; i < candidates.size(); ++i) {
@@ -156,7 +121,7 @@ Expected<DatasetId> resolveMarkerDataset(
       return unexpected("empty input name (a dataset qualifier needs a series after the ':')");
     }
     if (!exists_in(*chosen, key)) {
-      return unexpected("input '" + key + "' does not exist in dataset '" + source_of(*chosen) + "'");
+      return unexpected("input '" + key + "' does not exist in dataset '" + engine.datasetLabel(*chosen) + "'");
     }
   }
   return *chosen;

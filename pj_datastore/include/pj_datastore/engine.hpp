@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -44,14 +45,41 @@ class DataEngine {
 
   // Dataset management
   /// A non-zero `requested_id` forces that id (keeps two engines' ids in lockstep); otherwise it is auto-assigned.
+  /// `label` is the base of the dataset's label (datasetLabel()); empty means the source name. The staging mirror
+  /// passes the primary's label, so both engines name the dataset alike.
   [[nodiscard]] PJ::Expected<PJ::DatasetId> createDataset(
-      PJ::DatasetDescriptor descriptor, PJ::DatasetId requested_id = 0);
+      PJ::DatasetDescriptor descriptor, PJ::DatasetId requested_id = 0, std::string_view label = {});
 
   /// nullptr if missing.
   [[nodiscard]] const PJ::DatasetInfo* getDataset(PJ::DatasetId id) const;
 
-  /// Erases the dataset and frees all its topics (unlike retireTopic(), which keeps the storage). Auto-assigned ids
-  /// are never reused, so a later load gets fresh ids. Time domains stay (they may be shared). Invalidate every
+  /// The one name of a dataset every surface shows and accepts: the catalog tree, the plugin catalog snapshot
+  /// (`PJ_data_source_info_t.name`) and every "label:topic/field" qualifier the host resolves. It is the base ('/'
+  /// read as '_', "Dataset" when empty), or the base plus the lowest free " (N)", N >= 2, when another dataset holds
+  /// the base, so it is unique in this engine. Assigned at createDataset() and held, merged away or not, until
+  /// removeDataset(): another dataset coming or going never renames it, and a removed dataset's label later names a
+  /// new dataset, never a survivor. Empty for an unknown id. It is a session name, not a persistent identity: layouts
+  /// keep the dataset id and the raw `source_name`. Locks.
+  [[nodiscard]] std::string datasetLabel(PJ::DatasetId id) const;
+
+  /// The dataset labelled `label`; nullopt for an empty or unknown label. Locks.
+  [[nodiscard]] std::optional<PJ::DatasetId> datasetByLabel(std::string_view label) const;
+
+  /// Every dataset's label: the vocabulary a "label:topic/field" qualifier is split against. Locks.
+  [[nodiscard]] std::vector<std::string> datasetLabels() const;
+
+  /// Relabels the dataset from `base` (empty: its source name) by the createDataset() rule, its own label not counting
+  /// as taken. A display name (a plugin's, a merge's) is such a relabel. Returns the new label, empty for an unknown
+  /// id. Locks.
+  std::string setDatasetLabel(PJ::DatasetId id, std::string_view base);
+
+  /// True for a source a mergeDatasets() consumed: registered with no topics, still holding its label (so no other
+  /// dataset is renamed and no later one takes it), and listed by no surface (the plugin catalog snapshot skips it,
+  /// the app's tree drops it). Locks.
+  [[nodiscard]] bool isMergedAway(PJ::DatasetId id) const;
+
+  /// Erases the dataset, its label and all its topics (unlike retireTopic(), which keeps the storage). Auto-assigned
+  /// ids are never reused, so a later load gets fresh ids. Time domains stay (they may be shared). Invalidate every
   /// reader bound to the dataset first: a cached TopicChunk* would dangle. Idempotent.
   void removeDataset(PJ::DatasetId id);
 

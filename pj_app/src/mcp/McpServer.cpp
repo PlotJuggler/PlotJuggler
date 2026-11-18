@@ -607,10 +607,6 @@ std::string McpServer::loadedSummary(const Caller& caller) {
         line.begin(), line.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; }, ' ');
     return line;
   };
-  std::map<std::string_view, int> name_uses;
-  for (const PJ_data_source_info_t& source : catalog->dataSources()) {
-    ++name_uses[PJ::sdk::toStringView(source.name)];
-  }
 
   const SessionManager& manager = window_.appSession().sessionManager();
   std::string out =
@@ -624,9 +620,8 @@ std::string McpServer::loadedSummary(const Caller& caller) {
     return !more;
   };
   for (const PJ_data_source_info_t& source : catalog->dataSources()) {
-    // The source name, as the tools' "dataset:" qualifier takes it (the display name may carry a user's label).
+    // The dataset name, as the tools' "dataset:" qualifier takes it (the display name may carry a user's label).
     const std::string dataset = one_line(PJ::sdk::toStringView(source.name));
-    const bool shared = name_uses[PJ::sdk::toStringView(source.name)] > 1;
     out += "\n- " + dataset;
     if (const auto range = manager.datasetDisplayRange(source.handle.id)) {
       out += QStringLiteral(": %1 to %2 (%3 s)")
@@ -634,9 +629,6 @@ std::string McpServer::loadedSummary(const Caller& caller) {
                  .arg(range->max.value, 0, 'f', 3)
                  .arg(range->max.value - range->min.value, 0, 'f', 1)
                  .toStdString();
-    }
-    if (shared) {
-      out += " (another loaded dataset has this name, so a dataset: prefix cannot pick it)";
     }
     const std::size_t topic_end = std::min<std::size_t>(source.first_topic + source.topic_count, topics.size());
     for (std::size_t ti = source.first_topic; ti < topic_end && room(); ++ti, ++listed) {
@@ -655,7 +647,7 @@ std::string McpServer::loadedSummary(const Caller& caller) {
       if (numeric.size() > kSummaryFields) {
         out += ", ...";
       }
-      if (example.empty() && !numeric.empty() && !shared) {
+      if (example.empty() && !numeric.empty()) {
         example = agent_tools::qualifyWithDataset(dataset, agent_tools::joinSeriesPath(name, numeric.front()));
       }
     }

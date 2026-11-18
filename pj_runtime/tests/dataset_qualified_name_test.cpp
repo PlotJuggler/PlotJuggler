@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 //
-// The dataset-qualified name contract: "dataset_source:topic/field" — the form
-// SeriesPath::display() prints — accepted back as an input key. Split against
-// KNOWN source names (never parsed blindly at ':'), and the marker dataset
+// The dataset-qualified name contract: "label:topic/field", the dataset label
+// (DataEngine::datasetLabel) the catalog shows, accepted back as an input key. Split
+// against KNOWN labels (never parsed blindly at ':'), and the marker dataset
 // binding built on top of it: qualified keys decide and are normalized to bare
 // form; an unqualified key duplicated across datasets is refused with the
 // qualified candidates instead of landing on the first-loaded dataset.
 #include <gtest/gtest.h>
 
-#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "pj_base/builtin/plot_markers.hpp"
+#include "pj_datastore/engine.hpp"
 #include "pj_runtime/DatasetQualifiedName.h"
 
 namespace {
@@ -35,11 +35,13 @@ CatalogItem scalarItem(DatasetId ds, const char* topic, const char* field) {
   return item;
 }
 
-std::function<std::optional<std::string>(DatasetId)> namesOf(std::map<DatasetId, std::string> names) {
-  return [names = std::move(names)](DatasetId id) -> std::optional<std::string> {
-    const auto it = names.find(id);
-    return it == names.end() ? std::nullopt : std::optional<std::string>(it->second);
-  };
+// An engine holding one dataset per source, ids 1, 2, ... in order.
+PJ::DataEngine engineWith(const std::vector<std::string>& sources) {
+  PJ::DataEngine engine;
+  for (const std::string& source : sources) {
+    EXPECT_TRUE(engine.createDataset(PJ::DatasetDescriptor{.source_name = source}).has_value());
+  }
+  return engine;
 }
 
 TEST(SplitDatasetQualifier, MatchesOnlyKnownSourceNames) {
@@ -77,7 +79,7 @@ TEST(ResolveMarkerDataset, QualifiedKeyPicksItsDatasetAndIsStripped) {
   std::vector<std::string> inputs = {"b:" + key};
   std::vector<std::string> outputs = {"b:" + key};
 
-  const auto ds = resolveMarkerDataset(inputs, outputs, items, {1, 2}, namesOf({{1, "a"}, {2, "b"}}));
+  const auto ds = resolveMarkerDataset(inputs, outputs, items, engineWith({"a", "b"}));
   ASSERT_TRUE(ds.has_value()) << ds.error();
   EXPECT_EQ(*ds, 2u);
   // The marker engine and markerSeriesKey never see the qualifier.
@@ -91,7 +93,7 @@ TEST(ResolveMarkerDataset, UnqualifiedUniqueKeyResolves) {
   std::vector<std::string> inputs = {key};
   std::vector<std::string> outputs = {key};
 
-  const auto ds = resolveMarkerDataset(inputs, outputs, items, {1, 2}, namesOf({{1, "a"}, {2, "b"}}));
+  const auto ds = resolveMarkerDataset(inputs, outputs, items, engineWith({"a", "b"}));
   ASSERT_TRUE(ds.has_value()) << ds.error();
   EXPECT_EQ(*ds, 2u);
 }
@@ -104,7 +106,7 @@ TEST(ResolveMarkerDataset, DuplicatedBareKeyIsRefusedWithQualifiedCandidates) {
   std::vector<std::string> inputs = {key};
   std::vector<std::string> outputs = {key};
 
-  const auto ds = resolveMarkerDataset(inputs, outputs, items, {1, 2}, namesOf({{1, "a"}, {2, "b"}}));
+  const auto ds = resolveMarkerDataset(inputs, outputs, items, engineWith({"a", "b"}));
   ASSERT_FALSE(ds.has_value());
   EXPECT_NE(ds.error().find("'a:" + key + "'"), std::string::npos) << ds.error();
   EXPECT_NE(ds.error().find("'b:" + key + "'"), std::string::npos) << ds.error();
@@ -117,37 +119,67 @@ TEST(ResolveMarkerDataset, KeysSpanningTwoDatasetsAreRefused) {
   std::vector<std::string> inputs = {"a:" + key1, "b:" + key2};
   std::vector<std::string> outputs = {};
 
-  const auto ds = resolveMarkerDataset(inputs, outputs, items, {1, 2}, namesOf({{1, "a"}, {2, "b"}}));
+  const auto ds = resolveMarkerDataset(inputs, outputs, items, engineWith({"a", "b"}));
   ASSERT_FALSE(ds.has_value());
   EXPECT_NE(ds.error().find("share one dataset"), std::string::npos) << ds.error();
 }
 
-TEST(ResolveMarkerDataset, DuplicatedSourceNameIsRefused) {
+// Two files named data.csv (or two streams of one plugin): each copy is addressable by its label, and the newer copy
+// keeps "data.csv (2)" once the older is removed; the stale "data.csv" then addresses nothing.
+TEST(ResolveMarkerDataset, LabelOfADuplicatedSourceOutlivesTheOlderCopy) {
+  const std::string key = PJ::sdk::markerSeriesKey("/speed", "value");
+  PJ::DataEngine engine = engineWith({"data.csv", "data.csv"});
+  engine.removeDataset(1);
+  const std::vector<CatalogItem> items = {scalarItem(2, "/speed", "value")};
+  std::vector<std::string> outputs;
+
+  std::vector<std::string> newer = {"data.csv (2):" + key};
+  const auto ds = resolveMarkerDataset(newer, outputs, items, engine);
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  EXPECT_EQ(*ds, 2u);
+
+  std::vector<std::string> stale = {"data.csv:" + key};
+  EXPECT_FALSE(resolveMarkerDataset(stale, outputs, items, engine).has_value()) << "a stale label never retargets";
+}
+
+TEST(ResolveMarkerDataset, CatalogLabelOfADuplicatedSourceIsAccepted) {
   const std::string key = PJ::sdk::markerSeriesKey("/speed", "value");
   const std::vector<CatalogItem> items = {scalarItem(1, "/speed", "value"), scalarItem(2, "/speed", "value")};
-  std::vector<std::string> inputs = {"same:" + key};
+  std::vector<std::string> inputs = {"same (2):" + key};
   std::vector<std::string> outputs = {};
 
-  const auto ds = resolveMarkerDataset(inputs, outputs, items, {1, 2}, namesOf({{1, "same"}, {2, "same"}}));
-  ASSERT_FALSE(ds.has_value());
-  EXPECT_NE(ds.error().find("ambiguous"), std::string::npos) << ds.error();
+  const auto ds = resolveMarkerDataset(inputs, outputs, items, engineWith({"same", "same"}));
+  ASSERT_TRUE(ds.has_value()) << ds.error();
+  EXPECT_EQ(*ds, 2u);
+  EXPECT_EQ(inputs.front(), key);
+
+  std::vector<std::string> older = {"same:" + key};
+  const auto first = resolveMarkerDataset(older, outputs, items, engineWith({"same", "same"}));
+  ASSERT_TRUE(first.has_value()) << first.error();
+  EXPECT_EQ(*first, 1u);
+
+  std::vector<std::string> bare = {key};
+  const auto refused = resolveMarkerDataset(bare, outputs, items, engineWith({"same", "same"}));
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_NE(refused.error().find("'same:" + key + "'"), std::string::npos) << refused.error();
+  EXPECT_NE(refused.error().find("'same (2):" + key + "'"), std::string::npos) << refused.error();
 }
 
 TEST(ResolveMarkerDataset, NoMatchingInputIsAnError) {
   std::vector<std::string> inputs = {"/nope/value"};
   std::vector<std::string> outputs = {};
-  const auto ds = resolveMarkerDataset(inputs, outputs, {}, {1}, namesOf({{1, "a"}}));
+  const auto ds = resolveMarkerDataset(inputs, outputs, {}, engineWith({"a"}));
   EXPECT_FALSE(ds.has_value());
 }
 
 TEST(ResolveMarkerDataset, UnmatchedPrefixRequiresTheWholeBareName) {
-  const auto names = namesOf({{1, "loaded"}});
+  const PJ::DataEngine names = engineWith({"loaded"});
   std::vector<std::string> inputs = {"missing:/speed/value"};
   std::vector<std::string> outputs;
-  EXPECT_FALSE(resolveMarkerDataset(inputs, outputs, {scalarItem(1, "/speed", "value")}, {1}, names));
+  EXPECT_FALSE(resolveMarkerDataset(inputs, outputs, {scalarItem(1, "/speed", "value")}, names));
   EXPECT_EQ(inputs.front(), "missing:/speed/value");
 
-  const auto result = resolveMarkerDataset(inputs, outputs, {scalarItem(1, "missing:/speed", "value")}, {1}, names);
+  const auto result = resolveMarkerDataset(inputs, outputs, {scalarItem(1, "missing:/speed", "value")}, names);
   ASSERT_TRUE(result);
   EXPECT_EQ(*result, 1u);
   EXPECT_EQ(inputs.front(), "missing:/speed/value");
@@ -157,7 +189,7 @@ TEST(ResolveMarkerDataset, LongestSourcePrefixDecidesEvenWhenTheShorterFormExist
   std::vector<std::string> inputs = {"a:b:/t/value"};
   std::vector<std::string> outputs;
   const std::vector<CatalogItem> items = {scalarItem(1, "b:/t", "value"), scalarItem(2, "/t", "value")};
-  const auto result = resolveMarkerDataset(inputs, outputs, items, {1, 2}, namesOf({{1, "a"}, {2, "a:b"}}));
+  const auto result = resolveMarkerDataset(inputs, outputs, items, engineWith({"a", "a:b"}));
   ASSERT_TRUE(result);
   EXPECT_EQ(*result, 2u);
   EXPECT_EQ(inputs.front(), "/t/value");
@@ -166,15 +198,15 @@ TEST(ResolveMarkerDataset, LongestSourcePrefixDecidesEvenWhenTheShorterFormExist
 // A recognized qualifier must not return as soon as it selects a dataset: "a:/missing/value" and the empty bare "a:"
 // need a series check too.
 TEST(ResolveMarkerDataset, QualifiedInputMustExistInItsDataset) {
-  const auto names = namesOf({{1, "a"}});
+  const PJ::DataEngine names = engineWith({"a"});
   const std::vector<CatalogItem> items = {scalarItem(1, "/speed", "value")};
   std::vector<std::string> outputs;
 
   std::vector<std::string> missing = {"a:/missing/value"};
-  EXPECT_FALSE(resolveMarkerDataset(missing, outputs, items, {1}, names).has_value());
+  EXPECT_FALSE(resolveMarkerDataset(missing, outputs, items, names).has_value());
 
   std::vector<std::string> empty = {"a:"};
-  EXPECT_FALSE(resolveMarkerDataset(empty, outputs, items, {1}, names).has_value());
+  EXPECT_FALSE(resolveMarkerDataset(empty, outputs, items, names).has_value());
 }
 
 }  // namespace

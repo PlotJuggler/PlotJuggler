@@ -1871,5 +1871,84 @@ TEST(EngineIntegrationTest, TopicMetadataAggregateCoherence) {
   EXPECT_EQ(evicted->time_range_max, replaced->time_range_max);
 }
 
+// --- Dataset labels ---
+
+DatasetId mustCreate(DataEngine& engine, std::string source, DatasetId requested_id = 0, std::string_view label = {}) {
+  auto created = engine.createDataset(DatasetDescriptor{.source_name = std::move(source)}, requested_id, label);
+  EXPECT_TRUE(created.has_value());
+  return created.has_value() ? *created : 0;
+}
+
+// Same-named sources get distinct labels, and a source literally named like a suffixed label never collides.
+TEST(DatasetLabelTest, SameNamedSourcesGetDistinctLabels) {
+  DataEngine engine;
+  const DatasetId x1 = mustCreate(engine, "x");
+  const DatasetId x2 = mustCreate(engine, "x");
+  const DatasetId literal = mustCreate(engine, "x (2)");
+  EXPECT_EQ(engine.datasetLabel(x1), "x");
+  EXPECT_EQ(engine.datasetLabel(x2), "x (2)");
+  EXPECT_EQ(engine.datasetLabel(literal), "x (2) (2)");
+  EXPECT_EQ(engine.datasetByLabel("x (2)"), std::optional<DatasetId>(x2));
+  EXPECT_EQ(engine.datasetByLabel("x (2) (2)"), std::optional<DatasetId>(literal));
+  EXPECT_FALSE(engine.datasetByLabel("").has_value());
+  EXPECT_EQ(engine.datasetLabel(999), "");
+}
+
+// A label is held until its dataset is removed: the survivor keeps "(2)", a stale label resolves nowhere, and the next
+// copy takes the lowest free name.
+TEST(DatasetLabelTest, LabelsAreStableAcrossRemovals) {
+  DataEngine engine;
+  const DatasetId older = mustCreate(engine, "data.csv");
+  const DatasetId newer = mustCreate(engine, "data.csv");
+  engine.removeDataset(older);
+  EXPECT_EQ(engine.datasetLabel(newer), "data.csv (2)");
+  EXPECT_FALSE(engine.datasetByLabel("data.csv").has_value()) << "a stale label never retargets";
+  const DatasetId third = mustCreate(engine, "data.csv");
+  EXPECT_EQ(engine.datasetLabel(third), "data.csv");
+  const DatasetId fourth = mustCreate(engine, "data.csv");
+  EXPECT_EQ(engine.datasetLabel(fourth), "data.csv (3)");
+}
+
+// '/' reads as '_' (the tree's form), an empty source is "Dataset", and a relabel follows the same uniqueness rule.
+TEST(DatasetLabelTest, NormalizedBasesAndRelabels) {
+  DataEngine engine;
+  const DatasetId slashed = mustCreate(engine, "logs/drive.mcap");
+  const DatasetId empty = mustCreate(engine, "");
+  const DatasetId other = mustCreate(engine, "other");
+  EXPECT_EQ(engine.datasetLabel(slashed), "logs_drive.mcap");
+  EXPECT_EQ(engine.datasetLabel(empty), "Dataset");
+  EXPECT_EQ(engine.getDataset(slashed)->source_name, "logs/drive.mcap") << "the source name stays raw";
+
+  EXPECT_EQ(engine.setDatasetLabel(other, "logs/drive.mcap"), "logs_drive.mcap (2)");
+  EXPECT_EQ(engine.setDatasetLabel(slashed, "logs/drive.mcap"), "logs_drive.mcap") << "relabeling to itself is a no-op";
+  EXPECT_EQ(engine.setDatasetLabel(other, ""), "other") << "an empty base is the source name";
+  EXPECT_EQ(engine.setDatasetLabel(999, "x"), "");
+}
+
+// The staging mirror takes the primary's label explicitly, whatever it already holds.
+TEST(DatasetLabelTest, MirrorTakesTheLabelItIsGiven) {
+  DataEngine primary;
+  DataEngine mirror;
+  (void)mustCreate(primary, "s");
+  const DatasetId id = mustCreate(primary, "s");
+  ASSERT_EQ(primary.datasetLabel(id), "s (2)");
+  EXPECT_EQ(mustCreate(mirror, "s", id, primary.datasetLabel(id)), id);
+  EXPECT_EQ(mirror.datasetLabel(id), "s (2)");
+}
+
+// A merge source keeps its label (so a name that addressed it never moves to a later dataset).
+TEST(DatasetLabelTest, MergeSourcesKeepTheirLabels) {
+  DataEngine engine;
+  const DatasetId anchor = mustCreate(engine, "a");
+  const DatasetId source = mustCreate(engine, "b");
+  ASSERT_TRUE(engine.mergeDatasets(anchor, {DatasetMergeSource{.dataset_id = source}}).has_value());
+  EXPECT_EQ(engine.datasetLabel(source), "b");
+  EXPECT_TRUE(engine.isMergedAway(source));
+  EXPECT_FALSE(engine.isMergedAway(anchor));
+  EXPECT_EQ(engine.datasetLabel(mustCreate(engine, "b")), "b (2)");
+  engine.removeDataset(source);
+  EXPECT_FALSE(engine.isMergedAway(source));
+}
+
 }  // namespace
 }  // namespace PJ

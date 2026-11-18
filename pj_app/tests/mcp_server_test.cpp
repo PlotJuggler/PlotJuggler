@@ -863,7 +863,7 @@ TEST_F(McpServerTest, InitializeSaysWhatIsLoaded) {
   const json discover = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "server/discover"}, {"params", json::object()}};
   EXPECT_EQ(rpcAs(token_, discover).body["result"].value("instructions", ""), loaded);
 
-  // Two files of one name: each dataset lists its own topics once, and the shared name is flagged.
+  // Two files of one name: each dataset lists its own topics once, under the labels the Datasets tree shows.
   QTemporaryDir other;
   ASSERT_TRUE(other.isValid());
   const auto [opened, open_error] =
@@ -879,7 +879,8 @@ TEST_F(McpServerTest, InitializeSaysWhatIsLoaded) {
   };
   EXPECT_EQ(count("\n- a.mock"), 2U) << twice;
   EXPECT_EQ(count("mock/file_data: 1 numeric fields"), 2U) << twice;
-  EXPECT_EQ(count("another loaded dataset has this name"), 2U) << twice;
+  EXPECT_EQ(count("\n- a.mock:"), 1U) << twice;
+  EXPECT_EQ(count("\n- a.mock (2):"), 1U) << twice;
 }
 
 TEST_F(McpServerTest, ExportQuotesHeadersAndRefusesTooManyRows) {

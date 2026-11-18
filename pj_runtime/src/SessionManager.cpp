@@ -58,8 +58,8 @@ Q_LOGGING_CATEGORY(lcCancel, "pj.runtime.ingest.cancel", QtWarningMsg)
 // How long a producer may take to honour a stop before we say so.
 constexpr int kStopWatchdogMs = 2000;
 
-/// An on-demand input split at the loaded source it starts with, and the datasets it can bind on: those loaded from
-/// that source, or every dataset when unqualified, a dataset merged away counting as its anchor.
+/// An on-demand input split at the dataset label it starts with, and the datasets it can bind on: the one so labelled,
+/// or every dataset when unqualified, a dataset merged away counting as its anchor (it keeps its label).
 struct LoadedQualifierSplit {
   sdk::DatasetQualifierSplit split;
   std::vector<DatasetId> datasets;
@@ -67,20 +67,16 @@ struct LoadedQualifierSplit {
 
 LoadedQualifierSplit splitAgainstLoaded(
     const DataEngine& engine, const std::unordered_map<DatasetId, DatasetId>& merged_into, std::string_view input) {
-  const auto datasets = engine.listDatasets();
-  std::vector<std::string> sources;
-  for (const DatasetId dataset : datasets) {
-    const DatasetInfo* info = engine.getDataset(dataset);
-    sources.push_back(info != nullptr ? info->source_name : std::string{});
-  }
   LoadedQualifierSplit loaded;
-  loaded.split = sdk::splitDatasetQualifier(input, sources);
-  for (size_t index = 0; index < datasets.size(); ++index) {
-    if (loaded.split.qualified && sources[index] != loaded.split.dataset_source) {
-      continue;
-    }
-    const auto merged = merged_into.find(datasets[index]);
-    const DatasetId bound = merged != merged_into.end() ? merged->second : datasets[index];
+  loaded.split = sdk::splitDatasetQualifier(input, engine.datasetLabels());
+  std::vector<DatasetId> candidates = engine.listDatasets();
+  if (loaded.split.qualified) {
+    const std::optional<DatasetId> named = engine.datasetByLabel(loaded.split.dataset_source);
+    candidates = named.has_value() ? std::vector<DatasetId>{*named} : std::vector<DatasetId>{};
+  }
+  for (const DatasetId dataset : candidates) {
+    const auto merged = merged_into.find(dataset);
+    const DatasetId bound = merged != merged_into.end() ? merged->second : dataset;
     if (std::ranges::find(loaded.datasets, bound) == loaded.datasets.end()) {
       loaded.datasets.push_back(bound);
     }
@@ -144,7 +140,7 @@ SessionManager::SessionManager(QObject* parent)
   batch_engine_->setInFlightBudget(in_flight_budget_.get());
 
   OnDemandService::Services on_demand;
-  // An input names an object topic or a scalar series of a dataset, maybe behind its "source:" qualifier. Never an
+  // An input names an object topic or a scalar series of a dataset, maybe behind its "label:" qualifier. Never an
   // on-demand output: the graph binds those itself.
   on_demand.resolver = [this](std::string_view input) {
     const auto [split, datasets] = splitAgainstLoaded(data_engine_, merged_into_, input);

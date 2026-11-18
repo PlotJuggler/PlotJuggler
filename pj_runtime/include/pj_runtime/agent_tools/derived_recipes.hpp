@@ -60,7 +60,7 @@ using TopicDatasetMap = std::map<std::uint32_t, std::string>;
 [[nodiscard]] std::string qualifyWithDataset(const std::string& dataset, const std::string& name);
 
 // A curve or topic path's dataset-qualifier prefix and the topic index range it narrows the
-// search to. The qualifier is matched against the KNOWN source names (longest match wins).
+// search to. The qualifier is matched against the KNOWN dataset names (longest match wins).
 struct QualifierMatch {
   std::string bare;
   std::uint32_t topic_lo = 0;
@@ -88,7 +88,7 @@ struct ResolvedSeries {
   std::string topic;
   std::string path;
   std::string host_path;
-  // Source name of the dataset this resolved to, empty when only one dataset is loaded.
+  // Name of the dataset this resolved to (the snapshot's), empty when only one dataset is loaded.
   std::string dataset;
 };
 

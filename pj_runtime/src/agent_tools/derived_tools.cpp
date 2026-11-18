@@ -122,7 +122,7 @@ std::optional<std::string> hostCreateBlocker(const PJ::sdk::CatalogSnapshot& cat
 }
 
 // The name a transform input reaches the host by: the bare path, or the
-// dataset-qualified one ("dataset_source:topic/field", which the host resolves
+// dataset-qualified one ("label:topic/field", which the host resolves
 // in that dataset) when several datasets share the bare path.
 std::string transformInputPath(const PJ::sdk::CatalogSnapshot& catalog, const ResolvedSeries& resolved) {
   return resolveSeriesPath(catalog, resolved.host_path).ambiguous ? resolved.path : resolved.host_path;

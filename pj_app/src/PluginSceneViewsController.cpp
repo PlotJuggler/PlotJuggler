@@ -47,7 +47,7 @@ QString typeName(sdk::BuiltinObjectType type) {
   return QString::fromUtf8(sdk::name(type));
 }
 
-/// Resolves `topic`, qualified by `dataset_source` (the source NAME as
+/// Resolves `topic`, qualified by `dataset_source` (the dataset label, as
 /// `PJ_data_source_info_t` reports it), to the catalog's object topic. An empty
 /// `dataset_source` requires the topic to be unique across loaded datasets; an
 /// ambiguous one is refused with the qualified candidates.
@@ -60,7 +60,7 @@ Expected<ObjectTopicPayload> resolveObjectTopic(
   if (matches.size() > 1) {
     QStringList qualified;
     for (const CatalogItem& item : matches) {
-      qualified << (catalog.datasetSourceName(item.dataset_id).value_or(QString()) + u":"_s + topic);
+      qualified << (catalog.datasetLabel(item.dataset_id).value_or(QString()) + u":"_s + topic);
     }
     return unexpected(
         ("topic '" + topic + "' is ambiguous across datasets; name one with dataset_source: " + qualified.join(u", "_s))
@@ -133,7 +133,7 @@ Expected<std::string> PluginSceneViewsController::viewConfig(PlotDocker* docker)
         }
         nlohmann::json entry;
         entry["topic"] = descriptor.topic_name;
-        entry["dataset"] = catalog_.datasetSourceName(descriptor.dataset_id).value_or(QString()).toStdString();
+        entry["dataset"] = catalog_.datasetLabel(descriptor.dataset_id).value_or(QString()).toStdString();
         entry["type"] = std::string(sdk::name(info.object_type));
         entry["visible"] = info.visible;
         topics.push_back(std::move(entry));

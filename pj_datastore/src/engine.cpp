@@ -11,6 +11,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -40,6 +41,10 @@ struct DataEngine::Impl {
   tsl::robin_map<PJ::TimeDomainId, PJ::TimeDomain> time_domains;
   // Hidden from listTopics(); their storage stays so a cached reader sees an empty deque, not freed memory.
   std::unordered_set<PJ::TopicId> retired_topic_ids;
+  // DatasetInfo is an SDK struct, so the labels live beside it; see DataEngine::datasetLabel().
+  tsl::robin_map<PJ::DatasetId, std::string> labels;
+  // Sources a mergeDatasets() consumed; see DataEngine::isMergedAway().
+  std::unordered_set<PJ::DatasetId> merged_away;
 
   // Guards every field above; contract on DataEngine::lockEngine().
   mutable std::recursive_mutex mutex_;
@@ -65,7 +70,34 @@ std::unique_lock<std::recursive_mutex> DataEngine::lockEngineDeferred() const {
 // Dataset management
 // ---------------------------------------------------------------------------
 
-Expected<DatasetId> DataEngine::createDataset(DatasetDescriptor descriptor, DatasetId requested_id) {
+namespace {
+
+// The datasetLabel() rule; `self` is the dataset being labelled, whose current label does not count as taken.
+std::string uniqueLabel(
+    const tsl::robin_map<DatasetId, std::string>& labels, std::string_view base, std::string_view source_name,
+    DatasetId self) {
+  std::string label(base.empty() ? source_name : base);
+  std::replace(label.begin(), label.end(), '/', '_');
+  if (label.empty()) {
+    label = "Dataset";
+  }
+  const auto taken = [&](const std::string& candidate) {
+    return std::any_of(labels.begin(), labels.end(), [&](const auto& entry) {
+      return entry.first != self && entry.second == candidate;
+    });
+  };
+  // ponytail: linear scans over the loaded datasets (a handful); index by label if sessions reach thousands.
+  std::string candidate = label;
+  for (int ordinal = 2; taken(candidate); ++ordinal) {
+    candidate = fmt::format("{} ({})", label, ordinal);
+  }
+  return candidate;
+}
+
+}  // namespace
+
+Expected<DatasetId> DataEngine::createDataset(
+    DatasetDescriptor descriptor, DatasetId requested_id, std::string_view label) {
   std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
   DatasetId id = requested_id != 0 ? requested_id : impl_->next_dataset_id;
   if (requested_id != 0) {
@@ -94,8 +126,51 @@ Expected<DatasetId> DataEngine::createDataset(DatasetDescriptor descriptor, Data
   if (descriptor.time_domain_id != 0) {
     info.time_domain = impl_->time_domains.at(descriptor.time_domain_id);
   }
+  impl_->labels.insert_or_assign(id, uniqueLabel(impl_->labels, label, info.source_name, id));
   impl_->datasets.emplace(id, std::move(info));
   return id;
+}
+
+std::string DataEngine::datasetLabel(DatasetId id) const {
+  const auto lock = lockEngine();
+  const auto it = impl_->labels.find(id);
+  return it != impl_->labels.end() ? it->second : std::string{};
+}
+
+std::optional<DatasetId> DataEngine::datasetByLabel(std::string_view label) const {
+  const auto lock = lockEngine();
+  for (const auto& [id, held] : impl_->labels) {
+    if (!label.empty() && held == label) {
+      return id;
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string> DataEngine::datasetLabels() const {
+  const auto lock = lockEngine();
+  std::vector<std::string> labels;
+  labels.reserve(impl_->labels.size());
+  for (const auto& [id, label] : impl_->labels) {
+    labels.push_back(label);
+  }
+  return labels;
+}
+
+std::string DataEngine::setDatasetLabel(DatasetId id, std::string_view base) {
+  const auto lock = lockEngine();
+  const auto dataset = impl_->datasets.find(id);
+  if (dataset == impl_->datasets.end()) {
+    return {};
+  }
+  std::string label = uniqueLabel(impl_->labels, base, dataset->second.source_name, id);
+  impl_->labels.insert_or_assign(id, label);
+  return label;
+}
+
+bool DataEngine::isMergedAway(DatasetId id) const {
+  const auto lock = lockEngine();
+  return impl_->merged_away.contains(id);
 }
 
 const DatasetInfo* DataEngine::getDataset(DatasetId id) const {
@@ -376,6 +451,8 @@ void DataEngine::removeDataset(DatasetId dataset_id) {
     impl_->retired_topic_ids.erase(tid);
   }
   impl_->datasets.erase(ds_it);
+  impl_->labels.erase(dataset_id);
+  impl_->merged_away.erase(dataset_id);
   // next_*_id are not rewound, so a later dataset or topic never aliases an erased one.
 }
 
@@ -889,6 +966,7 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
     for (const TopicId tid : listTopics(src.dataset_id)) {
       retireTopic(tid);
     }
+    impl_->merged_away.insert(src.dataset_id);
     report.consumed_datasets.push_back(src.dataset_id);
   }
 

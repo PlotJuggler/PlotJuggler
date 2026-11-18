@@ -36,19 +36,20 @@ class MarkersRuntimeHost {
  public:
   /// `plugin_id` namespaces submitted ids. `active_dataset` supplies the dataset a newly submitted generator targets,
   /// given its declared input and output series keys: host policy (the wire carries no dataset field). A key MAY carry
-  /// the host's "dataset_source:topic/field" qualifier, which the callback consumes: it picks the dataset and rewrites
+  /// the host's "label:topic/field" qualifier, which the callback consumes: it picks the dataset and rewrites
   /// the key to its bare form in place, while the recipe keeps the declared spelling so the script still reads it by
   /// that name. An error return fails the create with that message. A {"scope":"all"} generator does not consult
-  /// `active_dataset`: its keys are literal in every dataset, so a key whose prefix names a loaded source (per
-  /// `source_name_of` over the service's dataset lister) is rejected as a contradiction. `source_name_of` (dataset ->
-  /// raw source name) also lets the config read-back qualify an input whose bare name became ambiguous, when the
-  /// qualified form resolves back to the bound dataset; without it inputs echo as declared. Both `service` and whatever
+  /// `active_dataset`: its keys are literal in every dataset, so a key whose prefix is a loaded dataset's label (per
+  /// `label_of` over the service's dataset lister) is rejected as a contradiction. `label_of` (dataset -> its label,
+  /// DataEngine::datasetLabel) also lets the config read-back qualify an input that was declared qualified or whose
+  /// bare name became ambiguous, with the dataset's current label, when that form resolves back to the bound dataset;
+  /// without it inputs echo as declared. Both `service` and whatever
   /// the callbacks read must outlive this.
   MarkersRuntimeHost(
       BatchEngine& service, std::string plugin_id,
       std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>
           active_dataset,
-      std::function<std::optional<std::string>(DatasetId)> source_name_of = {});
+      std::function<std::optional<std::string>(DatasetId)> label_of = {});
 
   MarkersRuntimeHost(const MarkersRuntimeHost&) = delete;
   MarkersRuntimeHost& operator=(const MarkersRuntimeHost&) = delete;
@@ -107,15 +108,14 @@ class MarkersRuntimeHost {
 
   /// Namespaced storage key for a plugin-local id: `BatchEngine::ownerPrefix(plugin_id_) + local`.
   [[nodiscard]] std::string makeKey(std::string_view local_id) const;
-  /// Raw source names of the service's loaded datasets (the qualifier vocabulary);
-  /// empty without `source_name_of`.
-  [[nodiscard]] std::vector<std::string> loadedSourceNames() const;
+  /// The loaded datasets' labels, the qualifier vocabulary; empty without `label_of`.
+  [[nodiscard]] std::vector<std::string> loadedLabels() const;
 
   BatchEngine& service_;
   std::string plugin_id_;
   std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>
       active_dataset_;
-  std::function<std::optional<std::string>(DatasetId)> source_name_of_;
+  std::function<std::optional<std::string>(DatasetId)> label_of_;
   PJ_data_processors_host_vtable_t vtable_;
   PJ_data_processors_host_t data_processors_;
   std::vector<std::string> list_storage_;           ///< backs onList's borrowed views until the next call

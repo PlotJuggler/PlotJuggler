@@ -54,7 +54,7 @@ struct SeriesRead {
   std::string error;
   std::string path;     // the resolved path, which may differ from what was asked
   std::string topic;    // the owning topic — the key display-time conversion wants
-  std::string dataset;  // source name; empty when at most one dataset is loaded
+  std::string dataset;  // dataset name; empty when at most one dataset is loaded
   std::vector<std::int64_t> ts;
   std::vector<double> vals;
   // Present only when a t_start_s/t_end_s window was requested and applied; echoed on the entry so a later turn knows

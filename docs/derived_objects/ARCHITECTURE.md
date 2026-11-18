@@ -156,7 +156,7 @@ The contract is part of the pinned SDK; the host serves it through the on-demand
 - **WINDOW and INSTANT** are mutually exclusive.
 - **An optional typed dataset id on the v2 request.** Empty means a unique name, or an error. A plugin copies the id
   from catalog v2; layouts map dataset ids on load (`SessionManager::resolveDatasetIdentity`). The per-input
-  `source:topic` qualifier stays.
+  `label:topic` qualifier (`DataEngine::datasetLabel`) stays.
 
 ## Types and bindings
 
@@ -223,7 +223,7 @@ not Qt signals. Restore lives in `DerivedObjects` ("Life cycle of recipes and re
 The session owns it. `SessionManager` builds it over its pool and budget and wires the resolver (an object topic by
 name in each dataset, with the builtin type from its metadata; a scalar series, a number or a string, through
 `CatalogModel::findScalarForMarkerKey`, which `AppSession` injects and the catalog memoizes until its items change; a
-`source:` qualifier stripped; never an on-demand output, which the graph binds itself), the qualifier splitter (how
+`label:` qualifier stripped; never an on-demand output, which the graph binds itself), the qualifier splitter (how
 the graph reads a qualified upstream output: `RecipeGraph::QualifierSplitter`), the parser lookup, the dataset epochs
 and the TF providers (one snapshot per `kTfSnapshotPeriod` while a dataset ingests). It turns the callbacks into its
 signals (`derivedEntriesPublished`, `derivedStateChanged`, `onDemandRecipeInstalled`, `objectTopicsChanged`).

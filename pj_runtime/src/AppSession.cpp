@@ -517,15 +517,8 @@ DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
   }
 
   // Catalog: relabel the anchor "<name>_merged" and drop the consumed pieces.
-  QString anchor_label;
-  for (const auto& [id, label] : catalog_model_->datasets()) {
-    if (id == plan->anchor) {
-      anchor_label = label;
-      break;
-    }
-  }
-  if (!anchor_label.isEmpty()) {
-    catalog_model_->setDatasetDisplayName(plan->anchor, anchor_label + u"_merged"_s);
+  if (const std::optional<QString> anchor_label = catalog_model_->datasetLabel(plan->anchor)) {
+    catalog_model_->setDatasetDisplayName(plan->anchor, *anchor_label + u"_merged"_s);
   }
   for (const auto& source : plan->sources) {
     catalog_model_->removeDataset(source.dataset_id);

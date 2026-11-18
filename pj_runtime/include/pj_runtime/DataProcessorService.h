@@ -382,10 +382,8 @@ class DataProcessorService {
   /// repeat inside one dataset: a whole-topic name matching twice is ambiguous, with no shorter `topic/field` reading.
   [[nodiscard]] std::optional<ResolvedInput> resolveInputField(
       const std::string& name, std::optional<DatasetId> only_dataset = std::nullopt, bool* ambiguous = nullptr) const;
-  /// The qualifier form; nullopt when unknown.
-  [[nodiscard]] std::optional<std::string> datasetSourceName(DatasetId dataset_id) const;
   /// The spelling the config read-back echoes: bare, unless the bare name is ambiguous across datasets and
-  /// "source:bare" resolves back to the binding's dataset.
+  /// "label:bare" (DataEngine::datasetLabel of the binding's dataset) is not shadowed by a longer label.
   [[nodiscard]] std::string readBackInputName(const std::string& bare, const TransformInputBinding& binding) const;
   [[nodiscard]] Expected<ResolvedInput> resolveInputBinding(const TransformInputBinding& binding) const;
 
