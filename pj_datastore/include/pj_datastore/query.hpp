@@ -213,6 +213,8 @@ class SeriesReader {
     series_generation_ = generation;
   }
 
+  /// Reads each chunk wholly inside the window from its statistics; only edge chunks, and chunks with nulls or
+  /// non-finite values, are scanned row by row.
   [[nodiscard]] std::optional<SeriesBounds> bounds() const;
 
   /// Both ends inclusive.

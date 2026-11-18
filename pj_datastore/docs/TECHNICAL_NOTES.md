@@ -13,6 +13,20 @@ it worth looking again. How the code works is in [ARCHITECTURE.md](./ARCHITECTUR
   `std::atomic<std::shared_ptr<T>>` only from GCC 12, and the build and CI baseline was GCC 11. Re-test when
   every supported toolchain is GCC 12 or newer: the standard type can replace the stand-in.
 
+## Series bounds
+
+- **Measured (2026-11-18, i7-13700H, offscreen, `UndoRedoLatencyBenchmark` in `pj_app`'s history tests,
+  `PJ_BENCH=1`):** `SeriesReader::bounds` walked every sample through the merging cursor, about 40 ns each. A plot
+  recomputes its zoom limits from it on every curve change, so it was 69% of an undo of 16 plots of 5 curves of 100k
+  samples (1.74 s).
+- **What the code does:** order does not matter for a min and max, so `bounds` skips the cursor; a chunk wholly inside
+  the window answers from its `ColumnStats`, any other is scanned. The same undo takes 0.46 s.
+  `SeriesReaderBounds.MatchesAFullScan` pins the result against the full scan.
+- **Why some chunks are still scanned:** the statistics keep infinities, a NaN first value poisons them (the scalar
+  path's first comparison), an all-NaN chunk leaves min > max, and `t_min`/`t_max` count null rows.
+- **Re-test:** when the builder's statistics change (excluding non-finite values would let every whole chunk skip the
+  scan).
+
 ## Out-of-order ingest
 
 - **Observed:** ROS recordings interleave publishers whose message stamps disagree; on `/tf` about 1% of messages
