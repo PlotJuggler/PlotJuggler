@@ -1150,6 +1150,7 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
   if (loaded_curve != nullptr) {
     const QString visible_attr = curve_element.attribute(u"visible"_s, u"true"_s);
     loaded_curve->curve->setVisible(visible_attr == "true"_L1);
+    trackers_stale_ = true;  // a kept curve's colour or visibility may have changed; the caller replots
     const QString markers_attr = curve_element.attribute(u"markers_visible"_s, u"true"_s);
     loaded_curve->show_markers = (markers_attr == "true"_L1);
   }
@@ -1231,6 +1232,7 @@ void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color)
       registry->setColor(info->source_name, new_color.name());
     }
     emit curveColorChanged(info->source_name, new_color);
+    trackers_stale_ = true;
     replot();
   }
 }
@@ -1260,12 +1262,14 @@ void PlotWidget::setCurveStyle(const QString& curve_name, CurveStyle style) {
 }
 
 void PlotWidget::setCurveVisible(const QString& curve_name, bool visible) {
-  CurveInfo* info = curveFromTitle(curve_name);
-  if (info == nullptr || info->curve == nullptr) {
+  const CurveInfo* info = curveFromTitle(curve_name);
+  if (info == nullptr || info->curve == nullptr || info->curve->isVisible() == visible) {
     return;
   }
-  info->curve->setVisible(visible);
-  replot();
+  const QString source_name = info->source_name;
+  trackers_stale_ = true;
+  PlotWidgetBase::setCurveVisible(curve_name, visible);
+  emit curveVisibilityChanged(source_name, visible);
   emit undoableChange();
 }
 

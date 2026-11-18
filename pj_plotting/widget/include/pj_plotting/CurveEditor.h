@@ -105,6 +105,8 @@ class CurveEditor : public QWidget {
   void onSwatchClicked(const QString& curve_name, QPushButton* swatch);
   void onPickerColorChanged(QColor color);
   void onCurveColorChanged(const QString& curve_name, QColor color);
+  // Re-checks the eye of `curve_name`'s row without a rebuild.
+  void onCurveVisibilityChanged(const QString& curve_name, bool visible);
   void onVisibilityToggled(const QString& curve_name, bool visible);
   void onMarkersToggled(const QString& curve_name, bool show);
   void clearActivePicker();
@@ -123,6 +125,7 @@ class CurveEditor : public QWidget {
   int row_height_ = 20;
   QMetaObject::Connection curve_list_connection_;
   QMetaObject::Connection curve_color_connection_;
+  QMetaObject::Connection curve_visibility_connection_;
   QMetaObject::Connection marker_scopes_connection_;
   QMetaObject::Connection marker_visibility_connection_;
   QMetaObject::Connection plot_destroyed_connection_;

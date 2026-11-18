@@ -416,6 +416,15 @@ void PlotWidgetBase::removeCurve(const QString& title) {
   emit curveListChanged();
 }
 
+void PlotWidgetBase::setCurveVisible(const QString& curve_name, bool visible) {
+  CurveInfo* info = curveFromTitle(curve_name);
+  if (info == nullptr || info->curve == nullptr) {
+    return;
+  }
+  info->curve->setVisible(visible);
+  replot();
+}
+
 const std::list<PlotWidgetBase::CurveInfo>& PlotWidgetBase::curveList() const noexcept {
   return plot_->curve_list;
 }
@@ -963,8 +972,7 @@ bool PlotWidgetBase::eventFilter(QObject* obj, QEvent* event) {
       }
       for (auto& info : curveList()) {
         if (clicked_item == info.curve) {
-          info.curve->setVisible(!info.curve->isVisible());
-          replot();
+          setCurveVisible(info.source_name, !info.curve->isVisible());
           return true;
         }
       }

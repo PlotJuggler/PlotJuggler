@@ -93,6 +93,24 @@ markers" (`PJ::kAllDatasetsMarkerTopic`, `__all__`), each shown only when its to
   by `pj_app`'s `PendingDisplayBinder::flush` for each plot it bound curves on, moves it into the hidden set under the
   possibly reminted live id; ambiguous entries stay pending.
 
+## Curve visibility, colour and the tracker
+
+A curve is shown or hidden through one function, `PlotWidgetBase::setCurveVisible` (virtual), whatever the trigger: the
+curve editor's eye or a legend click (`PlotWidgetBase::eventFilter`). `PlotWidget`'s override adds what depends on the
+visible set: it marks the trackers stale, emits `curveVisibilityChanged(source_name, visible)` (the curve editor
+re-checks that row's eye, as `curveColorChanged` does for the swatch) and emits `undoableChange`. A call that changes
+nothing is a no-op with no undo step, which also stops the editor's eye, re-checked by the signal, from calling back
+into the plot. Calling `QwtPlotCurve::setVisible` directly leaves the tracker's value box, the editor and the undo
+history out of date. `onChangeCurveColor` likewise marks the trackers stale and emits `curveColorChanged`; its caller
+(the editor's picker) emits the undo step.
+
+- **Trackers re-sample only when `trackers_stale_` is set** (curve-list and axis changes, a visibility or colour change,
+  a layout restore), at the next replot (`beforeCanvasReplot`), not at once: a curve just added has no window yet and
+  sampling it would copy its whole series. A path that changes what a tracker reads (a curve's visibility or pen) must
+  set the flag before it replots.
+- **A layout restore** sets the pens and visibility of the curves it keeps directly (`applyCurveElement`): no per-curve
+  replot, signal or undo step. It marks the trackers stale; the shell refreshes a bound curve editor on re-bind.
+
 ## Viewport persistence and the display offset
 
 A time axis is saved in absolute seconds, never in the display-relative seconds the Qwt axis speaks (display = absolute

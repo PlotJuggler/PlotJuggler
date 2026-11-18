@@ -321,6 +321,9 @@ void CurveEditor::setPlot(PlotWidget* plot) {
   if (curve_color_connection_) {
     QObject::disconnect(curve_color_connection_);
   }
+  if (curve_visibility_connection_) {
+    QObject::disconnect(curve_visibility_connection_);
+  }
   if (marker_scopes_connection_) {
     QObject::disconnect(marker_scopes_connection_);
   }
@@ -343,6 +346,8 @@ void CurveEditor::setPlot(PlotWidget* plot) {
   if (plot_ != nullptr) {
     curve_list_connection_ = connect(plot_, &PlotWidgetBase::curveListChanged, this, &CurveEditor::refresh);
     curve_color_connection_ = connect(plot_, &PlotWidget::curveColorChanged, this, &CurveEditor::onCurveColorChanged);
+    curve_visibility_connection_ =
+        connect(plot_, &PlotWidget::curveVisibilityChanged, this, &CurveEditor::onCurveVisibilityChanged);
     marker_scopes_connection_ = connect(plot_, &PlotWidget::datasetMarkerScopesChanged, this, &CurveEditor::refresh);
     marker_visibility_connection_ =
         connect(plot_, &PlotWidget::markerScopeVisibilityChanged, this, &CurveEditor::onMarkerScopeVisibilityChanged);
@@ -368,6 +373,7 @@ void CurveEditor::setStateTransitions(StateTransitionsController* controller) {
     if (plot_ != nullptr) {
       QObject::disconnect(curve_list_connection_);
       QObject::disconnect(curve_color_connection_);
+      QObject::disconnect(curve_visibility_connection_);
       QObject::disconnect(marker_scopes_connection_);
       QObject::disconnect(marker_visibility_connection_);
       QObject::disconnect(plot_destroyed_connection_);
@@ -639,6 +645,21 @@ void CurveEditor::onCurveColorChanged(const QString& curve_name, QColor color) {
     if (auto* color_button = dynamic_cast<CurveColorButton*>(button)) {
       color_button->setColor(color);
     }
+  }
+}
+
+void CurveEditor::onCurveVisibilityChanged(const QString& curve_name, bool visible) {
+  for (int i = 0; i < ui_->listWidget->count(); ++i) {
+    QListWidgetItem* item = ui_->listWidget->item(i);
+    if (item->data(kCurveNameRole).toString() != curve_name) {
+      continue;
+    }
+    const QWidget* row = ui_->listWidget->itemWidget(item);
+    if (auto* eye = row != nullptr ? row->findChild<QToolButton*>(u"curveVisibilityToggle"_s) : nullptr) {
+      // setChecked re-enters setCurveVisible with the same value: a no-op.
+      eye->setChecked(visible);
+    }
+    return;
   }
 }
 

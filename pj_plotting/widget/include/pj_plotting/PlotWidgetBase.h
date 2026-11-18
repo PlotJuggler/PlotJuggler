@@ -58,6 +58,10 @@ class PlotWidgetBase : public QWidget {
       const QString& name, QwtSeriesData<QPointF>* series, QColor color = Qt::transparent,
       const QString& display_name = {});
   virtual void removeCurve(const QString& title);
+  // Shows or hides the curve `curve_name` names (title or source_name, as curveFromTitle) and replots. The one path of
+  // every visibility change, the legend click included: PlotWidget extends it with what depends on the visible set
+  // (trackers, undo, curve editor).
+  virtual void setCurveVisible(const QString& curve_name, bool visible);
 
   [[nodiscard]] const std::list<CurveInfo>& curveList() const noexcept;
   [[nodiscard]] std::list<CurveInfo>& curveList() noexcept;
