@@ -14,7 +14,10 @@
 #include <QTest>
 #include <Qt>
 #include <QtGlobal>
+#include <cmath>
+#include <limits>
 
+#include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/IntScrubber.h"
 #include "pj_widgets/ScrubberBase.h"
 using namespace Qt::StringLiterals;
@@ -222,4 +225,80 @@ TEST(ScrubberBase, EditorExitFocusGoesBackToScrubberOnlyForKeyboardExits) {
   sibling.setFocus();
   EXPECT_FALSE(scrubber.findChild<QLineEdit*>()->isVisible());
   EXPECT_EQ(QApplication::focusWidget(), &sibling);
+}
+
+// "nan" and "inf" parse as doubles, but a scrubber holding one poisons whatever it drives (the speed scrubber made the
+// playback time NaN). A typed non-finite value is refused like "abc": the value stays, nothing is emitted.
+TEST(ScrubberBase, DoubleScrubberRejectsTypedNonFiniteText) {
+  PJ::DoubleScrubber scrubber;
+  scrubber.setRange(0.1, 10.0);
+  scrubber.setValue(2.5);
+  scrubber.resize(kWidth, kHeight);
+  QSignalSpy changed_spy(&scrubber, &PJ::DoubleScrubber::valueChanged);
+  QSignalSpy finished_spy(&scrubber, &PJ::ScrubberBase::editingFinished);
+
+  for (const QString& text : {u"nan"_s, u"NaN"_s, u"inf"_s, u"-inf"_s, u"abc"_s}) {
+    const QPointF body_local(40, kHeight / 2);
+    sendMouse(&scrubber, QEvent::MouseButtonPress, body_local, QPointF(100, 100), Qt::LeftButton, Qt::LeftButton);
+    sendMouse(&scrubber, QEvent::MouseButtonRelease, body_local, QPointF(100, 100), Qt::LeftButton, Qt::NoButton);
+    auto* editor = scrubber.findChild<QLineEdit*>();
+    ASSERT_NE(editor, nullptr);
+    editor->setText(text);
+    QTest::keyClick(editor, Qt::Key_Return);
+
+    EXPECT_DOUBLE_EQ(scrubber.value(), 2.5) << text.toStdString();
+  }
+  EXPECT_EQ(changed_spy.count(), 0);
+  EXPECT_EQ(finished_spy.count(), 0);
+
+  // The refusals must not have broken the editor: a finite value still commits.
+  const QPointF body_local(40, kHeight / 2);
+  sendMouse(&scrubber, QEvent::MouseButtonPress, body_local, QPointF(100, 100), Qt::LeftButton, Qt::LeftButton);
+  sendMouse(&scrubber, QEvent::MouseButtonRelease, body_local, QPointF(100, 100), Qt::LeftButton, Qt::NoButton);
+  auto* editor = scrubber.findChild<QLineEdit*>();
+  ASSERT_NE(editor, nullptr);
+  editor->setText(u"4.5"_s);
+  QTest::keyClick(editor, Qt::Key_Return);
+  EXPECT_DOUBLE_EQ(scrubber.value(), 4.5);
+  EXPECT_EQ(changed_spy.count(), 1);
+  EXPECT_EQ(finished_spy.count(), 1);
+}
+
+TEST(ScrubberBase, DoubleScrubberSetValueIgnoresNonFinite) {
+  PJ::DoubleScrubber scrubber;
+  scrubber.setRange(0.1, 10.0);
+  scrubber.setValue(2.5);
+  QSignalSpy changed_spy(&scrubber, &PJ::DoubleScrubber::valueChanged);
+
+  for (const double v :
+       {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity()}) {
+    scrubber.setValue(v);
+    EXPECT_DOUBLE_EQ(scrubber.value(), 2.5);
+  }
+  EXPECT_EQ(changed_spy.count(), 0);
+
+  scrubber.setValue(4.0);  // a finite value still goes through
+  EXPECT_DOUBLE_EQ(scrubber.value(), 4.0);
+  EXPECT_EQ(changed_spy.count(), 1);
+}
+
+// A non-finite bound would clamp the value to infinity: the value must stay the finite one it had.
+TEST(ScrubberBase, DoubleScrubberValueStaysFiniteWhenABoundIsNot) {
+  PJ::DoubleScrubber scrubber;
+  const double inf = std::numeric_limits<double>::infinity();
+  const auto reset = [&]() {
+    scrubber.setRange(0.1, 10.0);
+    scrubber.setValue(2.5);
+  };
+
+  reset();
+  scrubber.setMinimum(inf);
+  EXPECT_TRUE(std::isfinite(scrubber.value()));
+  reset();
+  scrubber.setMaximum(-inf);
+  EXPECT_TRUE(std::isfinite(scrubber.value()));
+  reset();
+  scrubber.setRange(inf, inf);
+  EXPECT_TRUE(std::isfinite(scrubber.value()));
 }

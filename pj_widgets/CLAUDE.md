@@ -58,7 +58,7 @@ Inputs and small controls:
 | `ToggleSwitch.h` | Sliding switch replacing `QCheckBox`; optional inline label. |
 | `CheckButton.h` | Checkable pill toggle with an inline label; colours are QSS `qproperty-*`. |
 | `ColorPickerPopup.h`, `ColorPickerWidget.h` | Colour popup and the one swatch control (never hand-roll per-layer swatches). `colorChanged()` fires on user picks only; `setColor()` is silent. |
-| `IntScrubber.h`, `DoubleScrubber.h`, `ScrubberBase.h` | Drag-to-scrub numeric inputs; spin-box API, promote in `.ui`. |
+| `IntScrubber.h`, `DoubleScrubber.h`, `ScrubberBase.h` | Drag-to-scrub numeric inputs; spin-box API, promote in `.ui`. `DoubleScrubber` never holds NaN or infinity: it ignores them and refuses typed `nan`/`inf`. |
 | `RangeSlider.h`, `RealSlider.h` | Two-handle range slider (plugin `.ui` by class name); floating-point `QSlider` with click-to-seek and handle dragging. |
 | `DualOptionsWidget.h` | Segmented control replacing an exclusive `QRadioButton` group; colours via `qproperty-*` QSS. |
 | `MarkerTimeline.h` | Editable Region/Event mark strip; a dumb editor, the owner supplies marks and placement policy. |

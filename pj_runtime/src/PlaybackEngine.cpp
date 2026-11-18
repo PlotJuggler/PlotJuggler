@@ -14,6 +14,10 @@ namespace {
 // every consumer at once, capped at the origin rather than throttled per widget. Playback speed is unaffected: onTick
 // derives the cursor from elapsed wall-clock, not tick count.
 constexpr int kTickIntervalMs = 33;  // ~30 Hz
+
+bool isFinite(DisplayRange range) {
+  return std::isfinite(range.min.value) && std::isfinite(range.max.value);
+}
 }  // namespace
 
 PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
@@ -24,6 +28,9 @@ PlaybackEngine::PlaybackEngine(QObject* parent) : QObject(parent) {
 PlaybackEngine::~PlaybackEngine() = default;
 
 void PlaybackEngine::setRange(DisplayRange range) {
+  if (!isFinite(range)) {
+    return;
+  }
   applyRange(range);
 
   const double clamped = clampedTime(current_time_);
@@ -34,6 +41,9 @@ void PlaybackEngine::setRange(DisplayRange range) {
 }
 
 void PlaybackEngine::setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t) {
+  if (!isFinite(range) || !std::isfinite(t.value)) {
+    return;
+  }
   double min = range.min.value;
   double max = range.max.value;
   if (max < min) {
@@ -69,6 +79,9 @@ void PlaybackEngine::applyRange(DisplayRange range) {
 }
 
 void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
+  if (!std::isfinite(t.value)) {
+    return;
+  }
   const double clamped = clampedTime(t.value);
   if (clamped == current_time_) {
     return;
@@ -78,6 +91,9 @@ void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
 }
 
 void PlaybackEngine::setPlaybackRate(double rate) {
+  if (!std::isfinite(rate)) {
+    return;
+  }
   if (rate_ == rate) {
     return;
   }
@@ -115,7 +131,7 @@ double PlaybackEngine::clampTickTime(
   if (next > range_max) {
     if (looping) {
       const double span = range_max - range_min;
-      return span > 0.0 ? range_min + std::fmod(next - range_min, span) : range_min;
+      return span > 0.0 && std::isfinite(next) ? range_min + std::fmod(next - range_min, span) : range_min;
     }
     if (reached_end != nullptr) {
       *reached_end = true;  // hit the end with no repeat: the caller pauses

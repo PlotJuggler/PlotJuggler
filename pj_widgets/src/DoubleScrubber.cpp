@@ -4,6 +4,7 @@
 #include "pj_widgets/DoubleScrubber.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 namespace PJ {
@@ -15,8 +16,11 @@ double DoubleScrubber::clamp(double v) const {
 }
 
 void DoubleScrubber::setValue(double v) {
+  if (!std::isfinite(v)) {
+    return;
+  }
   const double clamped = clamp(v);
-  if (clamped == value_) {
+  if (!std::isfinite(clamped) || clamped == value_) {
     return;
   }
   value_ = clamped;
@@ -84,7 +88,7 @@ bool DoubleScrubber::commitText(const QString& text) {
   }
   bool ok = false;
   const double parsed = stripped.trimmed().toDouble(&ok);
-  if (!ok) {
+  if (!ok || !std::isfinite(parsed)) {
     return false;
   }
   setValue(parsed);
