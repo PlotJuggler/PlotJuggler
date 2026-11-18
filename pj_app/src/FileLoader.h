@@ -306,8 +306,12 @@ class FileLoader : public QObject {
 
   // Erases a dataset an abandoned load created: TF first (invalidateDataset walks listTopics, which eviction
   // empties), then objects and the catalog item (no tombstone), then SessionManager::removeDataset, never the engine
-  // directly, so the time origin is re-evaluated. remove_from_catalog=false for a dataset already tombstoned.
-  void removeCreatedDataset(DatasetId dataset_id, bool evict_objects = true, bool remove_from_catalog = true);
+  // directly, so the time origin is re-evaluated. remove_from_catalog=false for a dataset already tombstoned;
+  // remove_dependent_processors=false keeps the processors reading it for a restore that rebinds them. Rebuilds the
+  // catalog when a removed processor's output lived in another dataset.
+  void removeCreatedDataset(
+      DatasetId dataset_id, bool evict_objects = true, bool remove_from_catalog = true,
+      bool remove_dependent_processors = true);
 
   // GUI thread: publishes the committed rows and TF, and advances the progress signals. `dataset_id` is the load's,
   // never the token's: a producer may tick without a start (the C ABI forwards the two independently), leaving the

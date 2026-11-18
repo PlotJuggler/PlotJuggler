@@ -264,7 +264,8 @@ class DataProcessorService {
   /// `input_topics`, parents first.
   [[nodiscard]] std::vector<TopicId> dependentProcessorOutputs(const std::vector<TopicId>& input_topics) const;
 
-  /// Leaf-first, so no recipe stays attached to a retired topic.
+  /// Leaf-first, so no recipe stays attached to a retired topic. A failed removal does not stop the others; the
+  /// first error is returned.
   [[nodiscard]] Status removeProcessorsDependingOn(const std::vector<TopicId>& input_topics);
 
   /// The processor nodes a history restore would remove (filters outside `keep_filter_outputs`, non-exempt transforms
