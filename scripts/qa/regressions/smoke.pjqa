@@ -1,10 +1,8 @@
 # Smoke run over the signals fixture: playback, a toolbar toggle, a refusal. Leaves the app as it found it.
 # app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
 # needs: plugins
-get_status {}
-expect "name":"data.csv"
-ui_tree {}
-expect "Periodic"
+until get_status {} "name":"data.csv"
+until ui_tree {} "Periodic"
 ui_click {"name":"buttonPlay","wait_ms":500}
 get_status {}
 expect "playing":true

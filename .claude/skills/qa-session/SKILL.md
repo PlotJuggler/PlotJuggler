@@ -133,6 +133,8 @@ get_status {}
 expect "playing":true
 # ... and not this one
 absent "playing":false
+# repeat a call until its result holds this text (at most 30 s): a load, a layout, a debounced undo
+until ui_plot {"title":"Periodic"} "time : 400.000"
 ```
 
 A `#` starts a comment only at the beginning of a line.
@@ -159,6 +161,9 @@ scripts/qa/pjqa.py regress scripts/qa/regressions/smoke.pjqa
 - Without `--plugin-dir`, scripts marked `# needs: plugins` are skipped. The CSV loader of a release is enough for
   the signals fixture: `gh release download data_load_csv/v<version> -R PlotJuggler/pj-official-plugins` and unzip.
 - A failed script keeps its instance's home (`app.log`, screenshots); the table prints its path.
+- `pjqa.py start` returns before a `-d` / `-l` load finishes: open with an `until` on the state the script needs.
+  Use `until`, not `expect`, after anything the app finishes later (a seek reaches the tracker within ~33 ms, an
+  undo after its debounce).
 - Small fixtures of its own go in `scripts/qa/regressions/fixtures/`.
 - Run the suite before handing back a change that touches what a script covers, and after each QA session.
 

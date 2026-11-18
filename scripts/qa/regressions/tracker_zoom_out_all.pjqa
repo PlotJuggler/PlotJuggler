@@ -1,21 +1,19 @@
 # The tracker's value box follows the zoom: hidden while its time is out of view, back with the values at that
-# time after Zoom Out All, gone again on undo. Periodic is the lower plot of the signals layout.
+# time after Zoom Out All, gone again on undo. Periodic is the lower plot of the signals layout. Loaded with `-d`,
+# the CSV loader takes no dialog, so the X axis is the row number (0..1000), not the file's time column.
 # app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
 # needs: plugins
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
 playback {"action":"seek","time_s":400}
-ui_plot {"title":"Periodic"}
-expect "tracker":["time : 400.000","1.000","1.000","0.000"]
-# a box zoom over about 50..190 s, which leaves t=400 out
+until ui_plot {"title":"Periodic"} "tracker":["time : 400.000","1.000","1.000","0.000"]
+# a box zoom over about rows 50..190, which leaves 400 out
 ui_drag {"name":"tabbedPlotWidget","from":[100,520],"to":[250,700],"wait_ms":600}
 ui_plot {"title":"Periodic"}
 expect "tracker":[]
 absent "x":["0.000","1000.000"]
 ui_click {"name":"buttonZoomOut","wait_ms":400}
-ui_plot {"title":"Periodic"}
-expect "tracker":["time : 400.000","1.000","1.000","0.000"],"x":["0.000","1000.000"]
+until ui_plot {"title":"Periodic"} "tracker":["time : 400.000","1.000","1.000","0.000"],"x":["0.000","1000.000"]
 ui_key {"keys":"Ctrl+Z","wait_ms":700}
-ui_plot {"title":"Periodic"}
-expect "tracker":[]
+until ui_plot {"title":"Periodic"} "tracker":[]
 ui_key {"keys":"Ctrl+Shift+Z","wait_ms":700}
-ui_plot {"title":"Periodic"}
-expect "tracker":["time : 400.000","1.000","1.000","0.000"],"x":["0.000","1000.000"]
+until ui_plot {"title":"Periodic"} "tracker":["time : 400.000","1.000","1.000","0.000"],"x":["0.000","1000.000"]

@@ -439,8 +439,9 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   `CLAUDE.md`) and so suits a repro script; a name several visible widgets share (outside the windows a modal dialog
   blocks) is refused rather than resolved to whichever a search finds first.
 - `ui_plot` reads what the canvas paints and `ui_tree` cannot show: per visible plot its dock title, X and Y ranges,
-  curves, and the tracker's value box as the user reads it (rows, empty when hidden). Numbers are fixed at three
-  decimals so a script can `expect` their exact text. Read-only, no settle time.
+  curves, and the tracker's value box as the user reads it (rows, empty when hidden). Ranges are fixed at three
+  decimals so a script can `expect` their exact text; the value rows follow the precision preference (3 by default,
+  as in a fresh `pjqa` home). Read-only, no settle time.
 - Input goes through `QWindowSystemInterface`, the path a real mouse and keyboard take, so popups, implicit grabs,
   focus on click, shortcuts and double-click synthesis behave as for a user. Points are scaled to native pixels, as a
   platform plugin reports them. It is queued (`AsynchronousDelivery`), and what has no queued form (the wheel,

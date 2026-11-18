@@ -2,15 +2,15 @@
 # Tab bar, left to right: Signals (x 0..80), "+" (x 80..111); offscreen geometry is fixed.
 # app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
 # needs: plugins
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
 ui_click {"name":"plotTabsInner","x":95,"y":15,"wait_ms":500}
 ui_tree {}
+expect "Signals"
 expect "tab1"
 ui_click {"name":"plotTabsInner","x":40,"y":15,"wait_ms":500}
-ui_plot {"title":"Periodic"}
-expect "x":["0.000","1000.000"]
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
 ui_drag {"name":"tabbedPlotWidget","from":[100,520],"to":[250,700],"wait_ms":600}
 ui_plot {"title":"Periodic"}
 absent "x":["0.000","1000.000"]
 ui_key {"keys":"Ctrl+Z","wait_ms":700}
-ui_plot {"title":"Periodic"}
-expect "x":["0.000","1000.000"]
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]

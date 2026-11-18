@@ -22,8 +22,10 @@ printed URL (with Playwright). The browser build has the data tools, not the UI 
 the browser's own input. open_file takes a local path, which the relay serves to the page.
 
 A script has one step per line: `TOOL {json args}`, `expect TEXT` (the previous result must contain
-TEXT), `absent TEXT` (it must not), `refuse TOOL {json}` (the call must fail), or a `#` comment. Name
-widgets by objectName there, since refs change from one run to the next.
+TEXT), `absent TEXT` (it must not), `refuse TOOL {json}` (the call must fail), `until TOOL {json} TEXT`
+(repeat the call until it succeeds with TEXT in its result, at most UNTIL_S seconds: for what the app does
+after a call returns, such as a load at startup), or a `#` comment. Name widgets by objectName there, since
+refs change from one run to the next.
 
 For `regress`, a script names how its instance starts in header comments: `# app: ARGS` (the app
 arguments, paths relative to the checkout) and `# needs: plugins` when it loads data through a plugin
@@ -54,6 +56,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_HOME = Path(tempfile.gettempdir()) / f"pjqa-{os.getuid()}"
 STATE = "pjqa.json"
+UNTIL_S = 30
 
 
 def home_dir(args):
@@ -359,6 +362,17 @@ def replay(state, script):
             ok = rest in last
         elif word == "absent":
             ok = rest not in last
+        elif word == "until":
+            tool, _, raw = rest.partition(" ")
+            arguments, end = json.JSONDecoder().raw_decode(raw.strip())
+            text = raw.strip()[end:].strip()
+            deadline = time.time() + UNTIL_S
+            while True:
+                last, failed = call_tool(state, tool, arguments)
+                ok = not failed and text in last
+                if ok or time.time() > deadline:
+                    break
+                time.sleep(0.2)
         else:
             refuse = word == "refuse"
             tool, _, raw = (rest if refuse else line).partition(" ")
@@ -388,26 +402,27 @@ def header(script, key):
 def regress(args):
     scripts = []
     for target in args.targets or [ROOT / "scripts/qa/regressions"]:
-        target = Path(target)
+        target = Path(target).resolve()
         scripts += sorted(target.glob("*.pjqa")) if target.is_dir() else [target]
     if not scripts:
         sys.exit("pjqa: no scripts to run")
+    plugin_dir = str(Path(args.plugin_dir).resolve()) if args.plugin_dir else None
     os.chdir(ROOT)  # `# app:` paths are relative to the checkout
     results = []
     for script in scripts:
-        if header(script, "needs") == "plugins" and not args.plugin_dir:
-            results.append((script, "SKIP", "needs --plugin-dir"))
-            continue
         home = Path(tempfile.mkdtemp(prefix=f"pjqa-{script.stem}-"))
-        instance = argparse.Namespace(
-            home=str(home), browser=None, xvfb=False, plugin_dir=args.plugin_dir,
-            app_args=shlex.split(header(script, "app") or ""))
+        instance = argparse.Namespace(home=str(home), browser=None, xvfb=False, plugin_dir=plugin_dir, app_args=[])
         print(f"== {script.name}")
         try:
+            if header(script, "needs") == "plugins" and not plugin_dir:
+                shutil.rmtree(home, ignore_errors=True)
+                results.append((script, "SKIP", "needs --plugin-dir"))
+                continue
+            instance.app_args = shlex.split(header(script, "app") or "")
             start(instance)
             passed = replay(state_of(instance), script)
-        except SystemExit as error:  # start() reports a failed launch this way
-            print(error)
+        except (SystemExit, Exception) as error:  # a failed launch, a crashed app, a bad script: this script fails
+            print(f"pjqa: {error!r}")
             passed = False
         finally:
             stop(instance)
