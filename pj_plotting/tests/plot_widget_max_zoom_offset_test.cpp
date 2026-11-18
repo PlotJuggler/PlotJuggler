@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDomDocument>
 #include <QRectF>
 #include <QtGlobal>
 #include <string_view>
@@ -23,6 +24,8 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -108,4 +111,31 @@ TEST(PlotWidgetMaxZoomOffset, MaxZoomRectTracksPerDatasetOffsetChange) {
   fixture.session.setDisplayOffset(fixture.dataset_b, PJ::DisplayOffset{PJ::Duration{-kGapNs}});
   EXPECT_NEAR(fixture.plot.maxZoomRect().right(), 200.0 + 1.0, 1e-6)
       << "max zoom-out extent must grow to include the moved curve";
+}
+
+// A layout restore computes the max zoom area once, after the last curve; it must still cover every curve, while the
+// view frames the saved range.
+TEST(PlotWidgetMaxZoomOffset, LayoutRestoreCoversEveryCurveAndKeepsTheSavedRange) {
+  TwoDatasetFixture fixture;
+  fixture.session.setUseTimeOffset(true);
+  QString curves;
+  for (const auto& info : fixture.plot.curveList()) {
+    curves += u"<curve name=\"%1\" color=\"#1f77b4\" visible=\"true\"/>"_s.arg(info.source_name);
+  }
+  QDomDocument doc;
+  ASSERT_TRUE(
+      static_cast<bool>(doc.setContent(
+          u"<plot mode=\"TimeSeries\" style=\"Lines\"><range bottom=\"0\" top=\"3\" left=\"0\" right=\"1\" "
+          u"left_ns=\"%1\" right_ns=\"%2\" x_basis=\"absolute\"/>%3</plot>"_s.arg(kT0Ns)
+              .arg(kT0Ns + kOneSecondNs)
+              .arg(curves))));
+
+  PJ::PlotWidget restored{&fixture.session, &fixture.catalog};
+  ASSERT_TRUE(restored.xmlLoadState(doc.documentElement(), /*autozoom=*/true));
+
+  ASSERT_EQ(restored.curveList().size(), 2U);
+  EXPECT_NEAR(restored.maxZoomRect().left(), 0.0, 1e-6);
+  EXPECT_NEAR(restored.maxZoomRect().right(), 100.0 + 1.0, 1e-6);
+  EXPECT_NEAR(restored.currentBoundingRect().left(), 0.0, 1e-6);
+  EXPECT_NEAR(restored.currentBoundingRect().right(), 1.0, 1e-6);
 }

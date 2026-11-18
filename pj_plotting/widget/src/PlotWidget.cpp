@@ -221,7 +221,9 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     if (curveList().empty()) {
       pending_fit_ = PendingFit::kNone;
     }
-    updateMaximumZoomArea();
+    if (!restoring_curves_) {
+      updateMaximumZoomArea();
+    }
     autoZoomPlotVertically();
     pruneHiddenMarkerScopes();
     (void)refreshMarkerScopeRowSet();  // curveListChanged itself is the rebuild trigger
@@ -307,7 +309,6 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   if (tracker_ != nullptr) {
     tracker_->setEnabled(tracker_enabled_);
   }
-  updateMaximumZoomArea();
   replot();
   return info;
 }
@@ -388,8 +389,8 @@ PlotWidget::CurveInfo* PlotWidget::addCurveXY(
   // stale deltas without a blue line.
   setReferenceLine(std::nullopt);
   // Style and width are plot-level: addCurve() above applied the plot's current ones. XY plots are not forced to Dots;
-  // they inherit the plot-level style, which the Curve Style toolbar controls.
-  updateMaximumZoomArea();
+  // they inherit the plot-level style, which the Curve Style toolbar controls. The curveListChanged handler has
+  // already recomputed the max zoom area.
   // Reveal the ride-along marker at the current cursor at once, not on the next seek or tick (setTrackerPosition
   // replots).
   setTrackerPosition(last_tracker_time_sec_);
@@ -949,14 +950,18 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
       remove_titles.push_back(info.curve->title().text());
     }
   }
-  for (const QString& title : remove_titles) {
-    removeCurve(title);
+  {
+    // Each recompute reads every sample of every curve: once per plot, not once per curve change.
+    const QScopedValueRollback defer(restoring_curves_, true);
+    for (const QString& title : remove_titles) {
+      removeCurve(title);
+    }
+    for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
+         curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
+      applyCurveElement(curve_element);
+    }
   }
-
-  for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
-       curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
-    applyCurveElement(curve_element);
-  }
+  updateMaximumZoomArea();
 
   loadHiddenMarkerScopes(plot_element);
 

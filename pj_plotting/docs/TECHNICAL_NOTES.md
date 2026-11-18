@@ -14,6 +14,16 @@ canvas performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performa
   order is absorbed in place.
 - **Re-test:** when the adapter's read path or the engine's per-sample cost changes.
 
+## Max zoom area on a layout restore
+
+- **Measured (2026-11-18, i7-13700H, offscreen, `UndoRedoLatencyBenchmark` in `pj_app`'s history tests, `PJ_BENCH=1`):**
+  `updateMaximumZoomArea` reads every sample of every curve (`SeriesReader::bounds`). Recomputed on every curve change,
+  a restored plot of n curves read about n(n+1) series: an undo of 16 plots of 5 curves of 100k samples took 1.74 s,
+  69% of it in this recompute.
+- **What the code does:** `PlotWidget::xmlLoadState` swaps the curve set with the `curveListChanged` recompute
+  suspended, then recomputes once: 0.83 s for the same undo.
+- **Re-test:** when `bounds` stops reading every sample, or `addCurve` gains another caller that adds curves in bulk.
+
 ## Canvas vertex budgets
 
 - **Reasoning, not measured:** 1,000,000 vertices at 16 B (about 16 MB, plus at most three 4 B indices per vertex) is a
