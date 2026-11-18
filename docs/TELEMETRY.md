@@ -117,24 +117,10 @@ client treats any 2xx as "accepted, forget these days", so the Worker must:
   counts; refuse a `day` more than 8 days old or in the future.
 - **Store aggregates, not reports**, and no IP address.
 
-A schema for Cloudflare D1 that does this, with daily rows upserted per report
-(`reports` = machine-days, `uses` = summed counts):
-
-```sql
-CREATE TABLE seen_reports (report_id TEXT PRIMARY KEY, received_day TEXT NOT NULL);  -- purge after 14 days
-CREATE TABLE daily_feature (day TEXT, version TEXT, os TEXT, feature TEXT,
-  reports INTEGER NOT NULL, uses INTEGER NOT NULL, PRIMARY KEY (day, version, os, feature));
-CREATE TABLE daily_plugin (day TEXT, kind TEXT, action TEXT, plugin_id TEXT, os TEXT,
-  reports INTEGER NOT NULL, uses INTEGER NOT NULL, PRIMARY KEY (day, kind, action, plugin_id, os));
-CREATE TABLE daily_installed (day TEXT, kind TEXT, plugin_id TEXT, plugin_version TEXT,
-  machines INTEGER NOT NULL, PRIMARY KEY (day, kind, plugin_id, plugin_version));
--- Distinct machines per month: rows live only until the month is rolled up (a scheduled
--- job early the next month fills monthly_uniques, then deletes the month's presence rows).
-CREATE TABLE month_presence (month TEXT, subject TEXT, period_id TEXT, PRIMARY KEY (month, subject, period_id));
-CREATE TABLE monthly_uniques (month TEXT, subject TEXT, machines INTEGER NOT NULL, PRIMARY KEY (month, subject));
-```
-
-`subject` is `feature:<key>`, `plugin:<kind>:<id>` or `installed:<id>`. With
+The Worker implements this in `src/usage.js`, with its tables in `usage_schema.sql`: daily rows
+upserted per report (`reports` = machine-days, `uses` = summed counts), and the month-scoped `period_id`
+kept only until a daily job rolls the month into distinct-machine counts, once no accepted report can still
+fall in it. A monthly count's `subject` is `feature:<key>`, `plugin:<kind>:<id>` or `installed:<id>`. With
 that, "which plugins are used" is `daily_plugin` (volume) and
 `monthly_uniques` (reach), and "installed but unused" is `daily_installed`
 against `daily_plugin`. No identifier outlives the month it counts.
