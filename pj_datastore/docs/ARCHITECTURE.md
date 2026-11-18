@@ -147,7 +147,14 @@ between.
   take the reloaded metadata.
 - **Refill in place.** `clearDatasetChunks()` and `ObjectStore::clearDataset()` empty a dataset but keep its topic ids.
   The detach and reattach pairs do the same transactionally: the data moves into a snapshot and goes back if the
-  refill fails, and topics the failed refill added are retired or removed.
+  refill fails, and topics the failed refill added are retired or removed. The refill keeps each topic's column layout
+  (field ids are dense positions that curve keys address), so a column the new file lacks comes back all-null;
+  `TopicStorage::retireValuelessColumns()` (run by the runtime's prune after a complete refill) retires it. A retired
+  column keeps its field id and stays stored as nulls; the listings (curve list, plugin catalog, name resolution of
+  new processor inputs, the undo data universe) skip it, while an existing processor binding to it holds, as one to a
+  retired topic does. Clearing, detaching and merging keep the retired set and a reattach restores it, so the column
+  stays hidden through later refills; only a committed chunk with a value in the column un-retires it. A file whose
+  column is entirely null is therefore hidden after a reload, though a fresh load lists it.
 - **Merge.** `DataEngine::mergeDatasets()` and `ObjectStore::mergeDatasets()` fold source datasets into an anchor, each
   shifted by a raw delta the caller supplies; `pj_runtime` computes the deltas and owns the type-conflict policy.
   Scalar topics unite by name and columns by field path; the anchor keeps its ids and column indices, a conflicting

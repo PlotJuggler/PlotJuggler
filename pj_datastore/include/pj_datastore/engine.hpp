@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "pj_base/dataset.hpp"
@@ -146,6 +147,7 @@ class DataEngine {
       uint32_t max_observed_array_length = 0;
       uint32_t truncated_sample_count = 0;
       std::unordered_map<std::string, uint32_t> array_expansion_counts;
+      std::unordered_set<PJ::FieldId> retired_columns;
     };
     PJ::DatasetId dataset_id = 0;
     std::vector<PJ::TopicId> prior_topic_ids;

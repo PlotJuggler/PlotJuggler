@@ -553,5 +553,41 @@ TEST(TopicStorageTest, AllNullChunkDoesNotCountAsWholeNumbers) {
   EXPECT_EQ(storage.wholeNumbersOnly(7), std::nullopt);
 }
 
+// A refill that no longer writes a column pads it with nulls; retiring it hides it from listings while its field id
+// (and so every other column's) stays.
+TEST(TopicStorageTest, RetireValuelessColumnsKeepsLayoutAndUnretiresOnValue) {
+  const std::vector<ColumnDescriptor> cols = {
+      {0, PrimitiveType::kFloat64, "time"}, {1, PrimitiveType::kFloat64, "a"}, {2, PrimitiveType::kFloat64, "b"}};
+  const auto chunk_with = [&cols](bool time_has_value) {
+    TopicChunkBuilder builder(/*topic_id=*/1, /*schema_id=*/0, cols, /*max_rows=*/1000);
+    builder.beginRow(100);
+    if (time_has_value) {
+      builder.set(0, 1.0);
+    }
+    builder.set(1, 2.0);
+    builder.finishRow();
+    return builder.seal();
+  };
+  TopicStorage storage(/*topic_id=*/1, TopicDescriptor{.name = "data"});
+  storage.setColumnDescriptors(cols);
+  ASSERT_TRUE(storage.appendSealedChunk(chunk_with(false)).has_value());
+
+  storage.retireValuelessColumns();
+  EXPECT_TRUE(storage.isColumnRetired(0));
+  EXPECT_FALSE(storage.isColumnRetired(1));
+  EXPECT_TRUE(storage.isColumnRetired(2)) << "a column null in every row holds no value";
+  EXPECT_EQ(storage.columnDescriptors().size(), 3U) << "field ids stay dense positions";
+
+  storage.clearChunks();
+  EXPECT_TRUE(storage.isColumnRetired(0)) << "emptying the topic for a refill keeps the column hidden";
+
+  TopicStorage::DetachedState detached = storage.detachChunks();
+  ASSERT_TRUE(storage.appendSealedChunk(chunk_with(true)).has_value());
+  EXPECT_FALSE(storage.isColumnRetired(0)) << "a value lands: the column is back";
+  EXPECT_TRUE(storage.isColumnRetired(2));
+  storage.restoreChunks(std::move(detached));
+  EXPECT_TRUE(storage.isColumnRetired(0)) << "a restore brings the prior retirement back";
+}
+
 }  // namespace
 }  // namespace PJ

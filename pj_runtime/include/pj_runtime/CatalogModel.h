@@ -368,8 +368,8 @@ class CatalogModel : public QObject {
   // The rebuild body; rebuildFromDatastore() also refreshes the fingerprint, so the gate stays in sync.
   void rebuildNow();
 
-  // Engine structure (datasets, topics, column counts, object topics) plus tombstones and overrides: equal
-  // fingerprints mean an identical rebuild.
+  // Engine structure (datasets, topics, column counts, retired columns, object topics) plus tombstones and overrides:
+  // equal fingerprints mean an identical rebuild.
   [[nodiscard]] std::uint64_t catalogFingerprint() const;
 
   struct Impl;

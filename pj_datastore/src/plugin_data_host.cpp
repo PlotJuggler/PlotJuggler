@@ -1361,6 +1361,9 @@ struct ToolboxCore {
         const uint32_t first_field = static_cast<uint32_t>(state->fields.size());
         const auto columns = effectiveColumns(engine, *storage);
         for (const auto& col : columns) {
+          if (storage->isColumnRetired(col.field_id)) {
+            continue;
+          }
           state->fields.push_back(
               PJ_field_info_t{
                   .handle = FieldHandle{.topic = TopicHandle{.id = tid}, .id = col.field_id},

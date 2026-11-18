@@ -745,7 +745,8 @@ class RefillGuard {
   /// the destructor's rollback.
   [[nodiscard]] Status recomputeProcessors();
   /// Retires prior topics the reloaded file no longer has: a prior topic still empty after the refill (every prior
-  /// topic was emptied; the refill writes back only those present), including one declared with zero rows. Call only
+  /// topic was emptied; the refill writes back only those present), including one declared with zero rows. In a
+  /// refilled topic it retires the columns left without a value (TopicStorage::retireValuelessColumns). Call only
   /// after a complete refill (on a partial load an unreached topic has not vanished) and before commit(), which frees
   /// the snapshots this reads.
   void pruneVanishedTopics();

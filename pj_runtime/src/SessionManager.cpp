@@ -295,7 +295,7 @@ std::optional<std::pair<TopicId, std::size_t>> SessionManager::scalarInput(
     for (const TopicId topic : data_engine_.listTopics(dataset)) {
       const TopicStorage* storage = data_engine_.getTopicStorage(topic);
       if (storage != nullptr && storage->descriptor().name == name) {
-        return std::pair<TopicId, std::size_t>{topic, 0};
+        return std::pair<TopicId, std::size_t>{topic, storage->firstLiveColumn()};
       }
     }
   }
@@ -1310,9 +1310,15 @@ void RefillGuard::pruneVanishedTopics() {
       if (processor_output_topic_ids_.count(topic_id) != 0) {
         continue;
       }
-      const TopicStorage* storage = session_->dataEngine().getTopicStorage(topic_id);
-      if (storage != nullptr && storage->empty()) {
+      TopicStorage* storage = session_->dataEngine().getTopicStorage(topic_id);
+      if (storage == nullptr) {
+        continue;
+      }
+      if (storage->empty()) {
         vanished_scalar.push_back(topic_id);
+      } else {
+        // The refill kept the prior layout and padded the columns it no longer writes with nulls.
+        storage->retireValuelessColumns();
       }
     }
   }

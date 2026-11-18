@@ -409,6 +409,7 @@ DataEngine::DatasetChunkSnapshot DataEngine::detachDatasetChunks(DatasetId datas
     topic_snapshot.max_observed_array_length = storage->max_observed_array_length_;
     topic_snapshot.truncated_sample_count = storage->truncated_sample_count_;
     topic_snapshot.array_expansion_counts = storage->array_expansion_counts_;
+    topic_snapshot.retired_columns = storage->retired_columns_;
     // Leaves the storage as clearDatasetChunks() would: columns and ratchet stats stay, so a refill rebinds.
     storage->clearChunks();
     snapshot.topics.emplace(topic_id, std::move(topic_snapshot));
@@ -445,6 +446,7 @@ void DataEngine::reattachDatasetChunks(DatasetId dataset_id, DatasetChunkSnapsho
     storage->max_observed_array_length_ = topic_snapshot.max_observed_array_length;
     storage->truncated_sample_count_ = topic_snapshot.truncated_sample_count;
     storage->array_expansion_counts_ = std::move(topic_snapshot.array_expansion_counts);
+    storage->retired_columns_ = std::move(topic_snapshot.retired_columns);
   }
   snapshot.valid = false;
 }
@@ -576,6 +578,7 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     TopicStorage* primary_storage = getTopicStorage(primary_tid);
     primary_storage->clearChunks();
     primary_storage->setColumnDescriptors(std::move(staged_storage->column_descriptors_));
+    primary_storage->retired_columns_ = std::move(staged_storage->retired_columns_);  // ids of the staged layout
     adoptChunksFrom(*primary_storage, *staged_storage);
   }
 
@@ -724,7 +727,9 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       std::unordered_set<std::string> seen_local;
       for (const TopicChunk& chunk : st->sealedChunks()) {
         for (const auto& col : chunk.columns) {
-          if (col.descriptor && seen_local.insert(col.descriptor->field_path).second) {
+          // A retired column holds no value: neither a field of the union nor a type conflict.
+          if (col.descriptor && !st->isColumnRetired(col.descriptor->field_id) &&
+              seen_local.insert(col.descriptor->field_path).second) {
             local.emplace_back(col.descriptor->field_path, col.descriptor->logical_type);
           }
         }

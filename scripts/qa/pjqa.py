@@ -29,7 +29,8 @@ refs change from one run to the next.
 
 For `regress`, a script names how its instance starts in header comments: `# app: ARGS` (the app
 arguments, paths relative to the checkout) and `# needs: plugins` when it loads data through a plugin
-(skipped without --plugin-dir). A failed script keeps its instance's home (app.log, screenshots).
+(skipped without --plugin-dir). In a step, `$CHECKOUT` stands for the checkout's absolute path (open_file
+takes only absolute paths). A failed script keeps its instance's home (app.log, screenshots).
 """
 
 import argparse
@@ -354,7 +355,7 @@ def replay(state, script):
     """Runs the script's steps against the instance; returns whether every step held."""
     last = ""
     for number, line in enumerate(Path(script).read_text().splitlines(), 1):
-        line = line.strip()
+        line = line.strip().replace("$CHECKOUT", json.dumps(str(ROOT))[1:-1])  # tools that take only absolute paths
         if not line or line.startswith("#"):
             continue
         word, _, rest = line.partition(" ")

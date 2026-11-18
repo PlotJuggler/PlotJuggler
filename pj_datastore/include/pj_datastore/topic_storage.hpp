@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "pj_base/expected.hpp"
 #include "pj_base/types.hpp"
@@ -64,7 +65,8 @@ class TopicStorage {
   /// the floor stay in memory but are hidden).
   void evictBefore(Timestamp t_keep_min);
 
-  /// Also resets the retention floor and evictedThroughChunkId().
+  /// Also resets the retention floor and evictedThroughChunkId(). Retired columns stay retired: a refill that empties
+  /// the topic must not bring a column a reload lost back, and a value landing un-retires it anyway.
   void clearChunks() noexcept;
 
   /// What detachChunks() takes out: the chunks plus every field clearChunks() leaves alone, so restoreChunks() puts
@@ -78,6 +80,7 @@ class TopicStorage {
     uint32_t max_observed_array_length = 0;
     uint32_t truncated_sample_count = 0;
     std::unordered_map<std::string, uint32_t> array_expansion_counts;
+    std::unordered_set<FieldId> retired_columns;
   };
 
   /// Takes the chunks and metadata out, leaving the storage as clearChunks() would, so restoreChunks() can undo a
@@ -97,6 +100,24 @@ class TopicStorage {
   void setColumnDescriptors(std::vector<ColumnDescriptor> descs) noexcept;
 
   [[nodiscard]] const std::vector<ColumnDescriptor>& columnDescriptors() const noexcept;
+
+  /// Retires every stored column no retained chunk holds a value of: a refill that no longer writes a column leaves it
+  /// all-null. The column stays in columnDescriptors() (field ids are dense positions, and curve keys and writers
+  /// address columns by them), so listings skip it through isColumnRetired(). A chunk holding a value of a retired
+  /// column un-retires it.
+  void retireValuelessColumns();
+
+  [[nodiscard]] bool isColumnRetired(FieldId field_id) const noexcept {
+    return retired_columns_.count(field_id) != 0;
+  }
+
+  [[nodiscard]] const std::unordered_set<FieldId>& retiredColumns() const noexcept {
+    return retired_columns_;
+  }
+
+  /// The position of the first stored column not retired: the column a whole-topic name stands for. 0 when no
+  /// column is stored or every one is retired.
+  [[nodiscard]] std::size_t firstLiveColumn() const noexcept;
 
   /// O(1) on append and rebuilt from per-chunk stats after other changes, never from column data: progressive loads
   /// call it per topic on every ingest tick.
@@ -166,6 +187,7 @@ class TopicStorage {
   void ensureWholeNumberAggregate() const;
   // direction: +1 adds the chunk's float columns, -1 removes them.
   void foldWholeNumbers(const TopicChunk& chunk, int direction) const;
+  void unretireColumnsWithValues(const TopicChunk& chunk);
 
   TopicId topic_id_;
   TopicDescriptor descriptor_;
@@ -187,6 +209,7 @@ class TopicStorage {
   mutable uint64_t whole_agg_signature_ = 0;
 
   std::vector<ColumnDescriptor> column_descriptors_;  // schema-less topics only
+  std::unordered_set<FieldId> retired_columns_;
   uint32_t max_observed_array_length_ = 0;
   uint32_t truncated_sample_count_ = 0;
   uint64_t series_generation_ = 0;
