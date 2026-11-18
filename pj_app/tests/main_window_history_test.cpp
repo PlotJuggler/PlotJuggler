@@ -892,6 +892,81 @@ TEST_F(MainWindowHistoryFixture, UndoKeepsThePlotOfAnUntouchedTab) {
   EXPECT_EQ(reports, 1);
 }
 
+// The toolbar's Dots toggle restyles the plots when pressed; a restore (layout load, progressive load, undo, redo)
+// keeps each plot's saved style, whichever way the toggle stands.
+TEST_F(MainWindowHistoryFixture, RestoreKeepsEachPlotsStyleWhateverTheDotsToggle) {
+  PJ::MainWindow& window = mainWindow();
+  auto* dots = window.findChild<QToolButton*>(u"buttonDots"_s);
+  ASSERT_NE(dots, nullptr);
+  dots->setChecked(false);
+  QDomDocument doc;
+  ASSERT_TRUE(
+      static_cast<bool>(doc.setContent(
+          u"<root binding=\"generic\" format=\"PlotJuggler\" pj4_version=\"4\">"
+          u"<tabbed_widget id=\"\" name=\"main\" parent=\"main_window\">"
+          u"<Tab containers=\"1\" id=\"tab-style\" tab_name=\"style\"><Container><DockSplitter count=\"2\" "
+          u"orientation=\"-\" sizes=\"0.5;0.5\">"
+          u"<DockArea id=\"area-dots\" name=\"...\"><plot id=\"plot-dots\" mode=\"TimeSeries\" "
+          u"style=\"LinesAndDots\"/></DockArea>"
+          u"<DockArea id=\"area-lines\" name=\"...\"><plot id=\"plot-lines\" mode=\"TimeSeries\" "
+          u"style=\"Lines\"/></DockArea>"
+          u"</DockSplitter></Container></Tab><currentTabIndex index=\"0\"/></tabbed_widget></root>"_s)));
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  const auto style_of = [tabbed](int index) {
+    PJ::PlotDocker* docker = tabbed->currentTab();
+    const bool present =
+        docker != nullptr && docker->plotCount() > index && docker->plotAt(index)->plotWidget() != nullptr;
+    EXPECT_TRUE(present);
+    return present ? docker->plotAt(index)->plotWidget()->defaultCurveStyle() : PJ::PlotWidgetBase::kSteps;
+  };
+  const auto restore = [&window, &doc]() {
+    QDomDocument copy = doc.cloneNode(true).toDocument();
+    ASSERT_TRUE(PJ::MainWindowHistoryTestPeer::restoreLayout(window, copy));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  };
+
+  restore();
+  EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLinesAndDots) << "a layout load with Dots off";
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines);
+
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  tabbed->currentTab()->plotAt(1)->plotWidget()->setTrackerEnabled(false);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLinesAndDots) << "an undo with Dots off";
+  PJ::MainWindowHistoryTestPeer::redo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLinesAndDots) << "a redo with Dots off";
+
+  dots->setChecked(true);
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLinesAndDots) << "pressing Dots restyles a Lines plot";
+  restore();
+  EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLinesAndDots);
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "a layout load with Dots on";
+
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  tabbed->currentTab()->plotAt(0)->plotWidget()->setTrackerEnabled(false);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "an undo with Dots on";
+  PJ::MainWindowHistoryTestPeer::redo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "a redo with Dots on";
+
+  PJ::MainWindowHistoryTestPeer::beginProgressiveRestore(window, doc.cloneNode(true).toDocument());
+  PJ::MainWindowHistoryTestPeer::drainProgressiveRestore(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_FALSE(PJ::MainWindowHistoryTestPeer::progressiveRestoreInFlight(window));
+  EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLinesAndDots) << "a progressive layout load with Dots on";
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "a progressive layout load with Dots on";
+
+  dots->setChecked(false);
+  EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLines) << "pressing Dots off restyles a Lines and Dots plot";
+}
+
 // A reused plot comes back exactly as saved: curve order, and the curve editor bound to it shows the restored rows.
 TEST_F(MainWindowHistoryFixture, UndoOnAReusedPlotRestoresCurveOrderAndTheEditorRows) {
   PJ::MainWindow& window = mainWindow();
