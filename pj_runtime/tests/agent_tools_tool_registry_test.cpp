@@ -234,6 +234,26 @@ TEST(ToolRegistry, DescribeObjectTopicHonoursTheDatasetQualifierAndReportsAmbigu
   EXPECT_EQ(json::parse(a.content)["type"], "kPointCloud");
 }
 
+// The dataset filter matches the dataset's label even when one dataset is loaded and the entries omit it.
+TEST(ToolRegistry, ListTopicsFiltersByTheOnlyDatasetsLabel) {
+  ToolRegistry reg;
+  FakeMultiDatasetHost host;
+  host.addDataset("data.csv", {"/imu", "/speed"});
+  ToolContext ctx;
+  ctx.host = PJ::sdk::ToolboxHostView(host.makeHost());
+  for (const std::string filter : {"data.csv", "data"}) {
+    const auto r = reg.execute("list_topics", {{"dataset", filter}}, ctx);
+    ASSERT_TRUE(r.ok) << r.content;
+    EXPECT_EQ(json::parse(r.content)["count"], 2) << filter << ": " << r.content;
+  }
+  EXPECT_EQ(json::parse(reg.execute("list_topics", {{"dataset", "other"}}, ctx).content)["count"], 0);
+
+  FakeCatalogHost objects;
+  objects.addObjectTopic("/cloud", "kPointCloud", 2, 0, kSec, "{}", "clouds.mcap");
+  ctx.host = PJ::sdk::ToolboxHostView(objects.makeHost());
+  EXPECT_EQ(json::parse(reg.execute("list_topics", {{"dataset", "clouds.mcap"}}, ctx).content)["count"], 1);
+}
+
 // A scalar topic on two datasets: "dataset:name" describes that dataset's topic, and its field paths keep the
 // qualifier, so read_series takes them as they are.
 TEST(ToolRegistry, DescribeScalarTopicHonoursTheDatasetQualifier) {

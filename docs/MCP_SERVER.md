@@ -87,7 +87,8 @@ display name a plugin or a merge sets, with the lowest free ` (N)` added when an
 named `data.csv`, or two streams of one plugin, are `data.csv` and `data.csv (2)`. A label is assigned once and held
 until its dataset is removed, so closing the older copy leaves `data.csv (2)` as it is, and the freed `data.csv` names
 the next copy loaded, never a survivor. A dataset merged away keeps its label (no later copy takes it) but is listed nowhere, neither in the tree nor in the snapshot. Labels are session names: layouts and
-saved recipes keep the dataset id and the raw source name. An agent's removal (`remove_derived_series`,
+saved recipes keep the dataset id and the raw source name. A tool entry prints its `dataset` only when several datasets are loaded (a lone dataset's paths
+need no qualifier), but `list_topics`' `dataset` filter matches the label either way. An agent's removal (`remove_derived_series`,
 `remove_script_series`) goes through `DataProcessorService::removeOwnTransform`: when the cascade would also delete a
 series another owner built on it (the user's included), it is refused, naming each one and its owner. The user's own
 deletes ask first and keep cascading. `plot_tab`'s zoom frames only the tab it names: `pj.viewport.v1` frames all of a

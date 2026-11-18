@@ -22,9 +22,12 @@ plot_tab {"action":"add","tab":"t","curves":["data.csv:data/cosine"]}
 expect {"dataset":"data.csv","field":"cosine","topic":"data"}
 absent refused
 # Labels are stable: closing the older copy leaves "data.csv (2)" as it is, and the freed "data.csv" names nothing.
+# With one dataset left the entries omit their dataset, but the list_topics filter still matches its label.
 unload_file {"dataset":"data.csv"}
-until list_topics {} "dataset":"data.csv (2)"
-absent "dataset":"data.csv"
+until list_topics {"dataset":"data.csv (2)"} "count":1,
+get_status {}
+expect "name":"data.csv (2)"
+absent "name":"data.csv"
 read_series {"paths":["data.csv (2):data/sine"]}
 expect "count":20,
 refuse read_series {"paths":["data.csv:data/sine"]}

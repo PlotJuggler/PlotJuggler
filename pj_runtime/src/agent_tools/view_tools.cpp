@@ -16,6 +16,7 @@
 #include <pj_base/sdk/object_topic_metadata.hpp>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -167,21 +168,30 @@ json objectTopicCommonJson(
 // list_topics' shape -- {"topic","kind":"scalar","fields"[,"dataset"]} --
 // appended to `out_topics`. `matched`/`shown` accumulate so a caller merging
 // this with object topics (listTopics) gets one combined count of both kinds.
+// The dataset filter matches the dataset's label, which an entry shows only when several datasets are loaded.
 void listScalarTopics(
-    std::span<const PJ_topic_info_t> topics, const std::map<std::uint32_t, std::string>& topic_dataset,
-    const std::string& filter, const std::string& dataset_filter, int limit, json& out_topics, int& matched,
-    int& shown) {
+    std::span<const PJ_topic_info_t> topics, std::span<const PJ_data_source_info_t> sources, const std::string& filter,
+    const std::string& dataset_filter, int limit, json& out_topics, int& matched, int& shown) {
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(sources);
+  const auto label_of = [&](std::uint32_t ti) -> std::string_view {
+    for (const auto& src : sources) {
+      if (ti >= src.first_topic && ti - src.first_topic < src.topic_count) {
+        return PJ::sdk::toStringView(src.name);
+      }
+    }
+    return {};
+  };
   for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
     const auto& topic = topics[ti];
     const std::string name(PJ::sdk::toStringView(topic.name));
     if (!filter.empty() && name.find(filter) == std::string::npos) {
       continue;
     }
-    const auto ds = topic_dataset.find(ti);
-    const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
-    if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+    if (!dataset_filter.empty() && label_of(ti).find(dataset_filter) == std::string_view::npos) {
       continue;
     }
+    const auto ds = topic_dataset.find(ti);
+    const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
     ++matched;
     if (shown < limit) {
       json entry = {{"topic", name}, {"kind", "scalar"}, {"fields", topic.field_count}};
@@ -416,8 +426,7 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
   auto v2 = ctx.host.catalogSnapshotV2();
   bool objects_listed = false;
   if (v2) {
-    listScalarTopics(
-        v2->topics(), datasetByTopicIndex(v2->dataSources()), filter, dataset_filter, limit, topics, matched, shown);
+    listScalarTopics(v2->topics(), v2->dataSources(), filter, dataset_filter, limit, topics, matched, shown);
     for (const auto& obj : v2->objectTopics()) {
       const std::string name(PJ::sdk::toStringView(obj.name));
       if (isMarkerObjectTopic(name)) {
@@ -444,9 +453,7 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
     if (!catalog) {
       return ToolResult::failure("catalog unavailable: " + catalog.error());
     }
-    listScalarTopics(
-        catalog->topics(), datasetByTopicIndex(catalog->dataSources()), filter, dataset_filter, limit, topics, matched,
-        shown);
+    listScalarTopics(catalog->topics(), catalog->dataSources(), filter, dataset_filter, limit, topics, matched, shown);
   }
 
   json out = {{"count", matched}, {"shown", shown}, {"topics", topics}};
