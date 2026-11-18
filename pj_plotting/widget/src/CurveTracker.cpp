@@ -254,6 +254,10 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   previous_tracker_point_ = tracker_position;
 }
 
+QString CurveTracker::valueBoxText() const {
+  return text_marker_ != nullptr ? text_marker_->label().text() : QString();
+}
+
 void CurveTracker::setReferencePosition(std::optional<QPointF> reference_pos) {
   reference_pos_ = reference_pos;
   redraw();

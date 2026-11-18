@@ -158,6 +158,9 @@ class PlotWidgetBase : public QWidget {
   void legendSizeChanged(int new_size);
 
  protected:
+  // Runs inside every replot, after the curves hold the window of the new axis scales and before the canvas paints:
+  // the place to re-sample overlays that read the curves.
+  virtual void beforeCanvasReplot() {}
   class QwtPlotPimpl;
 
   void setStyle(QwtPlotCurve* curve, CurveStyle style);

@@ -118,6 +118,7 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] CurveTracker::Parameter trackerParameter() const noexcept;
   // Whether the playback tracker's floating value box is visible (always hidden in line-only mode).
   [[nodiscard]] bool trackerValueBoxVisible() const noexcept;
+  [[nodiscard]] QString trackerValueBoxText() const;
   // Sets, or clears with nullopt, a blue reference line; while set, the red playback tracker shows values as deltas
   // from this X. No-op on XY plots.
   void setReferenceLine(std::optional<double> reference_x_sec);
@@ -259,6 +260,9 @@ class PlotWidget : public PlotWidgetBase {
   void onDropEvent(QDropEvent* event);
 
  private:
+  // Re-samples both trackers at their current positions against the current curves and view.
+  void redrawTrackers();
+  void beforeCanvasReplot() override;
   // Vertical-only auto-fit when a curve is added or removed, gated by Preferences::auto_zoom_plots: rescales Y to the
   // data over the current X window; the shared time axis (and sibling plots) is never touched. No-op during layout
   // restore (the saved range wins), when empty and for XY plots (no shared time axis).
@@ -357,6 +361,8 @@ class PlotWidget : public PlotWidgetBase {
   // True while xmlLoadState swaps the curve set: the curveListChanged handler leaves the max zoom area to the single
   // recompute that follows.
   bool restoring_curves_ = false;
+  // An axis scale changed since the trackers last sampled the curves.
+  bool trackers_stale_ = false;
   // A zoomOut that found no curve data (an on-demand series computes only once shown) stays armed and re-runs on every
   // non-live ingest, so a series computed in chunks stays framed whole until the user frames the view. An external X
   // window (zoom link) narrows it to Y. Never armed when data existed at fit time.
