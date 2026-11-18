@@ -144,7 +144,10 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
   matches and, inside it, into the plot whose id matches (else the next unused one), so an undo or reload keeps the
   plots it does not change: a curve already present keeps its adapter and sample window. Only object docks (scenes,
   strips, custom widgets) and the dock frames are always rebuilt. Because widgets survive a restore, the shell's
-  per-plot and per-tab wiring must stay idempotent (`Qt::UniqueConnection`, no lambda connections).
+  per-plot and per-tab wiring must stay idempotent (`Qt::UniqueConnection`, no lambda connections), and a reused object
+  must drop what a new one would not have: the page's focused dock (it points at a removed dock), armed undo debounces,
+  a curve order that differs from the saved one (the plot then rebuilds its curves). A bound curve editor is refreshed
+  on re-bind, since the restore changes colour and visibility without a curve-list signal.
 
 ## PlotRhiCanvas
 

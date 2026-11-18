@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <gtest/gtest.h>
+#include <qwt_plot_curve.h>
 
 #include <QApplication>
 #include <QDomDocument>
@@ -45,6 +46,7 @@
 #include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
+#include "pj_plotting/CurveEditor.h"
 #include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
@@ -832,13 +834,8 @@ TEST_F(MainWindowHistoryFixture, UndoAndRedoCountAScenePanelOncePerSession) {
   counters.setEnabled(false);
 }
 
-// PJ_BENCH=1: how long one undo and one redo block the GUI thread on a heavy workspace. Every history restore
-// rebuilds every non-exempt dock from the saved XML, so the cost grows with the workspace. Reports the median of
-// kRounds undo and redo calls for: one plot; 16 plots of 5 curves over 100k-sample series; the same plus two Scene3D
-// docks each showing a 1M-point cloud. "settled" adds the event-loop turns the restore queues (deferred
-// rebinds, layout passes; rendering only where the platform renders).
-// An undo rebuilds only what the restored state changes: a tab the edit did not touch keeps its plot widget (and with
-// it the curves' sample caches), while the edited tab returns to its saved state.
+// An undo restores into the live plots whose ids match: a tab the edit did not touch keeps its plot widget (and with it
+// the curves' sample caches), while the edited tab returns to its saved state.
 TEST_F(MainWindowHistoryFixture, UndoKeepsThePlotOfAnUntouchedTab) {
   PJ::MainWindow& window = mainWindow();
   QDomDocument doc;
@@ -895,6 +892,82 @@ TEST_F(MainWindowHistoryFixture, UndoKeepsThePlotOfAnUntouchedTab) {
   EXPECT_EQ(reports, 1);
 }
 
+// A reused plot comes back exactly as saved: curve order, and the curve editor bound to it shows the restored rows.
+TEST_F(MainWindowHistoryFixture, UndoOnAReusedPlotRestoresCurveOrderAndTheEditorRows) {
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "order");
+  ASSERT_NE(dataset, 0U);
+  QStringList keys;
+  for (const char* topic : {"/a", "/b", "/c"}) {
+    const PJ::TopicId id = pj_test::addScalarTopic(app, dataset, topic);
+    ASSERT_NE(id, 0U);
+    keys << catalogKeyForTopic(app.catalogModel(), id);
+  }
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  for (const QString& key : keys) {
+    ASSERT_NE(plot->addCurve(key), nullptr);
+  }
+  auto* editor = window.findChild<PJ::CurveEditor*>();
+  ASSERT_NE(editor, nullptr);
+  editor->setPlot(plot);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+
+  plot->curveFromTitle(keys[1])->curve->setVisible(false);
+  plot->removeCurve(keys[0]);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  QCoreApplication::processEvents();
+
+  PJ::PlotWidget* restored = ensureCurrentPlot(window);
+  ASSERT_NE(restored, nullptr);
+  QStringList order;
+  for (const auto& info : restored->curveList()) {
+    order << info.source_name;
+  }
+  EXPECT_EQ(order, keys);
+  ASSERT_EQ(editor->plot(), restored);
+  const auto toggles = editor->findChildren<QToolButton*>(u"curveVisibilityToggle"_s);
+  ASSERT_EQ(toggles.size(), 3);
+  for (const QToolButton* toggle : toggles) {
+    EXPECT_TRUE(toggle->isChecked()) << "an editor row kept the undone visibility";
+  }
+}
+
+// A dock the user focused is replaced by the restore: the curve editor must follow the plot, not the removed dock.
+TEST_F(MainWindowHistoryFixture, UndoKeepsTheFocusedPlotBoundToTheCurveEditor) {
+  PJ::MainWindow& window = mainWindow();
+  window.show();
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  PJ::PlotDocker* docker = tabbed->currentTab();
+  ASSERT_NE(docker, nullptr);
+  docker->focusDock(docker->plotAt(0));
+  QCoreApplication::processEvents();
+  auto* editor = window.findChild<PJ::CurveEditor*>();
+  ASSERT_NE(editor, nullptr);
+  ASSERT_EQ(editor->plot(), plot);
+
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  plot->setTrackerEnabled(!plot->trackerEnabled());
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  QCoreApplication::processEvents();
+
+  EXPECT_NE(editor->plot(), nullptr) << "the editor was bound to the removed dock";
+  EXPECT_EQ(editor->plot(), ensureCurrentPlot(window));
+}
+
+// PJ_BENCH=1: how long one undo and one redo block the GUI thread on a heavy workspace. Every history restore
+// re-applies every non-exempt dock from the saved XML, so the cost grows with the workspace. Reports the median of
+// kRounds undo and redo calls for: one plot; 16 plots of 5 curves over 100k-sample series; the same plus two Scene3D
+// docks each showing a 1M-point cloud. "settled" adds the event-loop turns the restore queues (deferred
+// rebinds, layout passes; rendering only where the platform renders).
 TEST_F(MainWindowHistoryFixture, UndoRedoLatencyBenchmark) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";

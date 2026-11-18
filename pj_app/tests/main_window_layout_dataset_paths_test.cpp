@@ -1140,7 +1140,7 @@ void LayoutDatasetPathsTest::checkBundledUrdfFollowsLayout(bool include_data_sou
 
   Peer::loadLayout(window, moved_layout);
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-  ASSERT_EQ(robotLayers().size(), 2U) << "the scene dock must be rebuilt from the moved layout, not kept";
+  ASSERT_EQ(robotLayers().size(), 2U);
 
   std::map<std::string, QString> source_by_link;
   for (auto* robot : robotLayers()) {

@@ -8692,11 +8692,16 @@ void MainWindow::updateUndoRedoActions() {
 
 void MainWindow::bindEditorToPlot(PlotWidget* plot) {
   if (curve_editor_ != nullptr) {
-    curve_editor_->setPlot(plot);
+    // A restore keeps a plot and re-binds it: setPlot ignores the plot it already holds, so refresh the rows, which the
+    // restore may have changed without a curve-list signal (colour, visibility, markers).
+    if (plot != nullptr && curve_editor_->plot() == plot) {
+      curve_editor_->refresh();
+    } else {
+      curve_editor_->setPlot(plot);
+    }
   }
   const bool enable = plot != nullptr;
-  // The group ids are the LineWidth index and the CurveStyle value. An in-place state swap on the bound plot
-  // (xmlLoadState, paste) does not resync, since the bound plot does not change.
+  // The group ids are the LineWidth index and the CurveStyle value; every bind resyncs them.
   if (width_button_group_ != nullptr) {
     for (auto* btn : width_button_group_->buttons()) {
       btn->setEnabled(enable);

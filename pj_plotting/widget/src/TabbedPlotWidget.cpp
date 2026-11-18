@@ -918,21 +918,21 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
     PlotDocker* docker = nullptr;
     if (std::optional<TabEntry> reused = take_reusable(tab_element.attribute(u"id"_s)); reused.has_value()) {
       docker = reused->docker;
-      reused->frame->setName(tab_name);
       tabs_bar_layout_->insertWidget(static_cast<int>(tabs_.size()), reused->frame, 0, Qt::AlignVCenter);
       tabs_.push_back(std::move(*reused));
     } else {
       docker = addTab(tab_name);
       docker->setStateId(tab_element.attribute(u"id"_s));
     }
-    docker->setName(tab_name);
-    docker->setHistoryExempt(tab_element.attribute(u"history_exempt"_s) == u"1"_s);
-    docker->setOwnerMetadata(tab_element.attribute(u"owner_plugin"_s), tab_element.attribute(u"tab_id"_s));
+    // PlotDocker::xmlLoadState validates before it changes anything: a rejected tab leaves a reused page as it was.
     if (!docker->xmlLoadState(tab_element)) {
       finish_tab_strip();
       restoring_state_ = false;
       return false;
     }
+    renameTab(docker, tab_name);
+    docker->setHistoryExempt(tab_element.attribute(u"history_exempt"_s) == u"1"_s);
+    docker->setOwnerMetadata(tab_element.attribute(u"owner_plugin"_s), tab_element.attribute(u"tab_id"_s));
   }
   finish_tab_strip();
 
