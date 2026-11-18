@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <numbers>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -254,9 +255,7 @@ void expectRegion(const PJ::sdk::PlotMarker& m, double t0, double t1, PJ::sdk::C
   EXPECT_EQ(m.kind, PJ::sdk::MarkerKind::kRegion);
   EXPECT_EQ(m.t_start, static_cast<PJ::Timestamp>(t0));
   EXPECT_EQ(m.t_end, static_cast<PJ::Timestamp>(t1));
-  EXPECT_EQ(m.color.r, color.r);
-  EXPECT_EQ(m.color.g, color.g);
-  EXPECT_EQ(m.color.b, color.b);
+  EXPECT_EQ(m.color, color);
 }
 
 // A table mapping: one region per run of equal values, a value missing from the table draws nothing, and the last run
@@ -334,21 +333,68 @@ TEST(MarkerEngine, LessThanAndGreaterThan) {
   EXPECT_EQ(labelled[0].label, "ON");
 }
 
+// Each bad call fails the run with its own message, not a later generic Luau error.
 TEST(MarkerEngine, ColorRegionsAndRangesRejectBadArguments) {
   const SeriesView sv = modeSeries();
-  for (const char* script : {
-           R"(colorRegions("missing", {}))",
-           R"(colorRegions("mode", 3))",
-           R"(colorRegions("mode", ranges({1, 0, "red"})))",
-           R"(colorRegions("mode", ranges({0, 1})))",
-           R"(colorRegions("mode", { [0] = "notacolor" }))",
-           R"(colorRegions("mode", lessThan("1", "red")))",
-           R"(colorRegions("mode", greaterThan(1)))",
-       }) {
+  const std::pair<const char*, const char*> cases[] = {
+      {R"(colorRegions("missing", {}))", "no series named 'missing'"},
+      {R"(colorRegions("mode", 3))", "the mapping must be"},
+      {R"(colorRegions({}, { [0] = "red" }))", "the first argument must be"},
+      {R"(colorRegions("mode", ranges({1, 0, "red"})))", "argument 1 has min >= max"},
+      {R"(colorRegions("mode", ranges({0, 1})))", "argument 1 must be {min, max, color}"},
+      {R"(colorRegions("mode", ranges({0, 1, "red"}, nil, {1, 2, "blue"})))", "argument 2 must be"},
+      {R"(colorRegions("mode", { [0] = "notacolor" }))", "unknown color 'notacolor'"},
+      {R"(colorRegions("mode", { [0] = "transparent" }))", "unknown color 'transparent'"},
+      {R"(colorRegions("mode", function(v) return v > 0 end))", "color must be a string"},
+      {R"(createVerticalMarker(0, { color = { 1, 0, 0 } }))", "color must be a string"},
+      {R"(colorRegions("mode", lessThan("1", "red")))", "limit must be a number"},
+      {R"(colorRegions("mode", greaterThan(1)))", "limit must be a number"},
+  };
+  for (const auto& [script, message] : cases) {
     std::string err;
     EXPECT_TRUE(runMarkerScript(script, oneSeries("mode", sv), &err).empty()) << script;
-    EXPECT_FALSE(err.empty()) << script;
+    EXPECT_NE(err.find(message), std::string::npos) << script << " -> " << err;
+    EXPECT_EQ(err.find("prelude"), std::string::npos) << "error names the hidden prelude: " << err;
   }
+}
+
+// A mapping that mutates and returns one shared table: each region keeps the options of its own run.
+TEST(MarkerEngine, ColorRegionsSnapshotsAReusedResultTable) {
+  const SeriesView sv = modeSeries();  // 0 0 1 1 2 2 1
+  std::string err;
+  const auto markers = runMarkerScript(
+      "local t = {}\n"
+      "colorRegions('mode', function(v) t.color = (v == 1) and 'red' or 'blue'; return t end)\n",
+      oneSeries("mode", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 3u);
+  expectRegion(markers[0], 0, 2 * kSec, rgb(0, 0, 255));
+  expectRegion(markers[1], 2 * kSec, 4 * kSec, rgb(255, 0, 0));
+  expectRegion(markers[2], 4 * kSec, 6 * kSec, rgb(0, 0, 255));
+}
+
+// A sample at +inf falls in a range whose max is inf, as -inf falls in one whose min is -inf.
+TEST(MarkerEngine, RangesIncludeInfiniteEnds) {
+  SeriesView sv;
+  sv.timestamps = {0, 1 * kSec, 2 * kSec};
+  sv.values = {-INFINITY, INFINITY, INFINITY};
+  std::string err;
+  const auto markers =
+      runMarkerScript(R"(colorRegions("v", ranges({-inf, 0, "blue"}, {0, inf, "red"})))", oneSeries("v", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 2u);
+  expectRegion(markers[0], 0, 1 * kSec, rgb(0, 0, 255));
+  expectRegion(markers[1], 1 * kSec, 2 * kSec, rgb(255, 0, 0));
+}
+
+// A closeMarker that fails (caught by the rule) leaves the region open for the next closeMarker.
+TEST(MarkerEngine, AFailedCloseMarkerKeepsTheRegionOpen) {
+  std::string err;
+  const auto markers =
+      runMarkerScript("startMarker(1e9)\npcall(closeMarker, 0/0)\ncloseMarker(3e9)\n", SeriesProvider{}, &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 1u);
+  EXPECT_EQ(markers[0].t_start, static_cast<PJ::Timestamp>(1 * kSec));
 }
 
 // colorRegions leaves a region the rule opened with startMarker alone.
@@ -372,7 +418,10 @@ TEST(MarkerEngine, ParseMarkerColor) {
   EXPECT_EQ(parseMarkerColor("#f80")->g, 0x88);
   ASSERT_TRUE(parseMarkerColor("SteelBlue"));
   EXPECT_EQ(parseMarkerColor("SteelBlue")->g, 130);
-  EXPECT_EQ(parseMarkerColor("transparent")->a, 0);
+  ASSERT_TRUE(parseMarkerColor("Light Blue"));  // Qt ignores spaces in names
+  EXPECT_EQ(parseMarkerColor("Light Blue")->b, 230);
+  // Alpha 0 is PlotMarker's "use the severity color", so Qt's "transparent" would paint the default color.
+  EXPECT_FALSE(parseMarkerColor("transparent"));
   EXPECT_FALSE(parseMarkerColor(""));
   EXPECT_FALSE(parseMarkerColor("#12345"));
   EXPECT_FALSE(parseMarkerColor("#gg0000"));

@@ -70,8 +70,11 @@ output is capped by `max_output_bytes` apart from the VM cap, and `cancelled` is
 interrupt, so a loop that calls nothing native is still stoppable.
 
 The rule helpers `colorRegions`, `ranges`, `lessThan` and `greaterThan` are Luau (`kPrelude` in `marker_engine.cpp`),
-run after the natives are bound and before `luaL_sandbox`, so they freeze with the other globals. `colorRegions` emits
-through a private native that leaves the rule's own `startMarker` region open. Color names are a copy of Qt's table
+run after the natives are bound and before `luaL_sandbox`, so they freeze with the other globals. The prelude
+chunk receives two natives as arguments, so rules never see them: a one-call region emitter that leaves the rule's
+own `startMarker` region open, and a `t, v` sample read without `s:at`'s per-sample table, which was most of a
+scan's time. Every Luau call and loop iteration costs the rule's fuel (`BudgetLimits::setup_fuel`), so the
+`colorRegions` loop keeps its per-sample calls to what the mapping itself needs (TECHNICAL_NOTES "Marker rule fuel"). Color names are a copy of Qt's table
 (`src/marker_color_names.inc`), since `pj_scripting_core` cannot link Qt; `pj_plotting`'s `MarkerColorNames.MatchQt`
 fails when the pinned Qt's table drifts from it. To regenerate it, print `QColor::colorNames()` with their RGBA,
 sorted by name.

@@ -14,7 +14,14 @@
 TEST(MarkerColorNames, MatchQt) {
   const QStringList names = QColor::colorNames();
   ASSERT_FALSE(names.isEmpty());
+  // The table was generated from these 148 names, less "transparent" (alpha 0 is a marker's "use the severity
+  // color"). A Qt that adds or drops a name fails here: regenerate the table.
+  EXPECT_EQ(names.size(), 148);
   for (const QString& name : names) {
+    if (name == QLatin1String("transparent")) {
+      EXPECT_FALSE(PJ::scripting::parseMarkerColor("transparent").has_value());
+      continue;
+    }
     const QColor qt = QColor::fromString(name);
     const auto ours = PJ::scripting::parseMarkerColor(name.toUpper().toStdString());
     ASSERT_TRUE(ours.has_value()) << name.toStdString();

@@ -72,6 +72,28 @@ allocation-cap overhead) are in `docs/derived_objects/ARCHITECTURE.md` "Referenc
   pj-official-plugins, so a rule matches the plugin.
 - **Precision:** the FFT runs in float32, about 1e-7 relative accuracy. Re-test if a rule needs more.
 
+## Marker rule fuel
+
+- **Observed:** a marker rule's fuel (`BudgetLimits::setup_fuel`, default 20M) is spent at every Luau call and loop
+  back-edge, so the longest series a rule can scan depends on its per-sample calls. Largest series under the default
+  budget (one series, values switching every 1000 samples), and the time at that size:
+
+  | Rule | Samples | Time |
+  |---|---|---|
+  | hand-written `startMarker`/`closeMarker` loop over `s:at(i)` | ~10M | 1.4 s |
+  | `colorRegions` + value table | ~10M | 0.45 s |
+  | `colorRegions` + function returning an opts table | ~4M | 0.45 s |
+  | `colorRegions` + `ranges` (three ranges) | ~4M | 0.4 s |
+
+- **What the code does about it:** the prelude reads samples through a native returning `t, v` (`s:at` builds a table
+  per sample, about 80% of a scan's time), indexes a table mapping inline, compares plain results with `==`, and
+  compares opts tables field by field without a loop. A first version (a key string per sample, `s:at`, a closure
+  around table mappings) reached 2.4M to 3.6M samples.
+- **Conditions:** desktop x86_64, `-O2`, Luau as pinned in `conanfile.txt`, measured with a scratch program over
+  `pj_scripting_core`. Re-test if the fuel accounting or the Luau pin changes, or if long recordings hit "script
+  exceeded its instruction budget" in a `colorRegions` rule; a native scan loop would lift the limit to the mapping's
+  own cost.
+
 ## Native point-cloud operations
 
 - **Compaction visits set bits only.** A per-record bit test mispredicts on a real scan and cost twice the predicate

@@ -11,12 +11,10 @@
 #include <pocketfft_hdronly.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -108,12 +106,15 @@ std::optional<PJ::sdk::ColorRGBA> parseMarkerColor(std::string_view text) {
     };
     return PJ::sdk::ColorRGBA{channel(0), channel(1), channel(2), 255};
   }
-  std::string lower(text);
-  std::transform(
-      lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  const auto it = std::lower_bound(
-      std::begin(kNamedColors), std::end(kNamedColors), lower,
-      [](const NamedColor& entry, const std::string& key) { return entry.name < key; });
+  // Spaces dropped, as QColor does ("light blue"); ASCII fold, since std::tolower follows the C locale (a Turkish one
+  // maps 'I' to a dotless i).
+  std::string lower;
+  for (const char c : text) {
+    if (c != ' ' && c != '\t') {
+      lower.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c);
+    }
+  }
+  const auto* it = std::ranges::lower_bound(kNamedColors, std::string_view(lower), {}, &NamedColor::name);
   if (it == std::end(kNamedColors) || it->name != lower) {
     return std::nullopt;
   }
@@ -187,6 +188,7 @@ void applyOpts(lua_State* L, int opts_idx, PJ::sdk::PlotMarker& m) {
   if (!lua_istable(L, opts_idx)) {
     return;
   }
+  // The prelude's same() compares exactly these keys: keep the two in step.
   if (auto v = optString(L, opts_idx, "label")) {
     m.label = *v;
   }
@@ -195,6 +197,13 @@ void applyOpts(lua_State* L, int opts_idx, PJ::sdk::PlotMarker& m) {
   }
   if (auto v = optString(L, opts_idx, "category")) {
     m.category = *v;
+  }
+  lua_getfield(L, opts_idx, "color");
+  const int color_type = lua_type(L, -1);
+  lua_pop(L, 1);
+  if (color_type != LUA_TNIL && color_type != LUA_TSTRING) {
+    luaL_error(
+        L, "color must be a string (\"#rrggbb\", \"#rgb\" or a Qt color name), not a %s", lua_typename(L, color_type));
   }
   if (auto v = optString(L, opts_idx, "color")) {
     const auto rgba = parseMarkerColor(*v);
@@ -323,9 +332,9 @@ int l_closeMarker(lua_State* L) {
   if (!ctx->open_region) {
     return 0;
   }
-  const auto a = *ctx->open_region;
+  // Reset only after the region is emitted: a closeMarker that raises (caught by a pcall) leaves the region open.
+  emitRegion(L, ctx, *ctx->open_region, finiteToNs(L, lua_tonumber(L, 1)), 2);
   ctx->open_region.reset();
-  emitRegion(L, ctx, a, finiteToNs(L, lua_tonumber(L, 1)), 2);
   return 0;
 }
 
@@ -336,11 +345,43 @@ int l_region(lua_State* L) {
   return 0;
 }
 
-// Rule helpers written in Luau over the primitives above. Run before luaL_sandbox, so its globals freeze with the rest;
-// it takes the internal __region native into a local and clears the global.
+// (series, i) -> t, v for the prelude's scan: s:at(i) without its per-sample table, the bulk of a scan's time.
+int l_sample(lua_State* L) {
+  const SeriesView* sv = viewFromArg(L, 1);
+  const auto p = (sv != nullptr) ? sv->at(static_cast<std::size_t>(lua_tointeger(L, 2))) : std::nullopt;
+  if (!p) {
+    return 0;
+  }
+  lua_pushnumber(L, p->t);
+  lua_pushnumber(L, p->v);
+  return 2;
+}
+
+// Rule helpers written in Luau over the primitives above, run before luaL_sandbox so its globals freeze with the rest.
+// The chunk receives l_region and l_sample as its arguments, so no rule can reach them. Every Luau call and loop
+// iteration per sample costs the rule's fuel: the colorRegions loop keeps both to what a hand-written loop pays.
 constexpr const char* kPrelude = R"LUAU(
-local region = __region
-__region = nil
+local region, sample = ...
+
+-- Two mapping results draw the same region when equal, or when both are tables with the same opts (a mapping may
+-- build a new table per sample). The fields are the ones applyOpts reads: compared without a loop, since every loop
+-- iteration costs the rule's fuel on every sample.
+local function same(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then
+    return a == b
+  end
+  return a.color == b.color and a.label == b.label and a.severity == b.severity and a.status == b.status
+    and a.category == b.category and a.description == b.description
+end
+
+-- The run's own copy of a table result, so a mapping that mutates and returns one shared table cannot recolor it.
+local function snapshot(r)
+  if type(r) ~= "table" then
+    return r
+  end
+  return { color = r.color, label = r.label, severity = r.severity, status = r.status, category = r.category,
+    description = r.description }
+end
 
 local function regionOpts(r)
   local opts = { severity = "info", category = "color" }
@@ -354,21 +395,14 @@ local function regionOpts(r)
   return opts
 end
 
--- Results that draw the same region compare equal, even when the mapping builds a new table per sample.
-local function regionKey(r)
-  if type(r) ~= "table" then
-    return tostring(r)
-  end
-  return table.concat({ tostring(r.color), tostring(r.label), tostring(r.severity), tostring(r.category),
-    tostring(r.status), tostring(r.description) }, "\0")
-end
-
 inf = math.huge
 
--- ranges({min, max, color}, ...): a value takes the color of the first range with min <= v < max, else none.
+-- ranges({min, max, color}, ...): a value takes the color of the first range with min <= v < max (v <= inf when max
+-- is inf), else none.
 function ranges(...)
-  local list = { ... }
-  for i, r in list do
+  local list = table.pack(...)
+  for i = 1, list.n do
+    local r = list[i]
     if type(r) ~= "table" or type(r[1]) ~= "number" or type(r[2]) ~= "number" or r[3] == nil then
       error("ranges: argument " .. i .. " must be {min, max, color}", 2)
     end
@@ -377,8 +411,9 @@ function ranges(...)
     end
   end
   return function(v)
-    for _, r in list do
-      if v >= r[1] and v < r[2] then
+    for i = 1, list.n do
+      local r = list[i]
+      if v >= r[1] and (v < r[2] or r[2] == math.huge) then
         return r[3]
       end
     end
@@ -386,24 +421,28 @@ function ranges(...)
   end
 end
 
-local function threshold(name, limit, color, below)
+local function checkThreshold(name, limit, color)
   if type(limit) ~= "number" or color == nil then
     error(name .. "(limit, color): limit must be a number and color given", 3)
-  end
-  return function(v)
-    if (below and v < limit) or (not below and v > limit) then
-      return color
-    end
-    return nil
   end
 end
 
 function lessThan(limit, color)
-  return threshold("lessThan", limit, color, true)
+  checkThreshold("lessThan", limit, color)
+  return function(v)
+    if v < limit then
+      return color
+    end
+  end
 end
 
 function greaterThan(limit, color)
-  return threshold("greaterThan", limit, color, false)
+  checkThreshold("greaterThan", limit, color)
+  return function(v)
+    if v > limit then
+      return color
+    end
+  end
 end
 
 function colorRegions(source, mapping)
@@ -413,38 +452,30 @@ function colorRegions(source, mapping)
     if s == nil then
       error("colorRegions: no series named '" .. source .. "'", 2)
     end
-  elseif type(source) ~= "table" then
+  elseif type(source) ~= "table" or source.__sv == nil then
     error("colorRegions: the first argument must be a series name or series(...)", 2)
   end
-  local lookup = mapping
-  if type(mapping) == "table" then
-    lookup = function(v)
-      return mapping[v]
-    end
-  elseif type(mapping) ~= "function" then
+  local is_table = type(mapping) == "table"
+  if not is_table and type(mapping) ~= "function" then
     error("colorRegions: the mapping must be a table (value -> color) or a function (v -> color)", 2)
   end
-  local cur, cur_key, cur_start = nil, nil, 0
-  local function flush(t)
-    if cur ~= nil and t > cur_start then
-      region(cur_start, t, regionOpts(cur))
+  local cur, cur_start, t = nil, 0, nil
+  local function flush(t_end)
+    if cur ~= nil and t_end > cur_start then
+      region(cur_start, t_end, regionOpts(cur))
     end
   end
-  local n = s:size()
-  for i = 0, n - 1 do
-    local p = s:at(i)
-    local r = lookup(p.v)
-    if r == false then
-      r = nil
-    end
-    local key = if r == nil then nil else regionKey(r)
-    if key ~= cur_key then
-      flush(p.t)
-      cur, cur_key, cur_start = r, key, p.t
+  for i = 0, s:size() - 1 do
+    local v
+    t, v = sample(s, i)
+    local r = (if is_table then mapping[v] else mapping(v)) or nil
+    if r ~= cur and not same(r, cur) then
+      flush(t)
+      cur, cur_start = snapshot(r), t
     end
   end
-  if n > 0 then
-    flush(s:at(n - 1).t)
+  if t ~= nil then
+    flush(t)
   end
 end
 )LUAU";
@@ -616,18 +647,47 @@ void bindGlobal(lua_State* L, RunContext* ctx, const char* name, lua_CFunction f
   lua_setglobal(L, name);
 }
 
-bool runPrelude(lua_State* L, std::string* error) {
-  std::size_t bc_size = 0;
+// Bytecode for `source`, empty only when luau_compile cannot allocate: a syntax error is encoded in the bytecode and
+// raised by luau_load.
+std::string compileChunk(std::string_view source) {
   lua_CompileOptions opts = {};
   opts.optimizationLevel = 1;
-  opts.debugLevel = 1;
-  char* bc = luau_compile(kPrelude, std::strlen(kPrelude), &opts, &bc_size);
-  const int load_status = (bc != nullptr) ? luau_load(L, "=prelude", bc, bc_size, 0) : 1;
+  opts.debugLevel = 1;  // line info for error messages
+  std::size_t size = 0;
+  char* bc = luau_compile(source.data(), source.size(), &opts, &size);
+  std::string out = (bc != nullptr) ? std::string(bc, size) : std::string();
   std::free(bc);
-  if (load_status != 0 || lua_pcall(L, 0, 0, 0) != 0) {
+  return out;
+}
+
+// Pushes the chunk's function. False sets `*error` (when non-null).
+bool loadChunk(lua_State* L, const std::string& bytecode, const char* chunkname, std::string* error) {
+  if (bytecode.empty()) {
     if (error != nullptr) {
-      *error =
-          std::string("marker prelude failed: ") + (lua_isstring(L, -1) ? lua_tostring(L, -1) : "no compiler output");
+      *error = "luau_compile failed";
+    }
+    return false;
+  }
+  if (luau_load(L, chunkname, bytecode.data(), bytecode.size(), 0) != 0) {
+    if (error != nullptr) {
+      *error = lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool runPrelude(lua_State* L, RunContext* ctx, std::string* error) {
+  static const std::string bytecode = compileChunk(kPrelude);
+  if (!loadChunk(L, bytecode, "=colorRegions", error)) {
+    return false;
+  }
+  lua_pushlightuserdata(L, ctx);
+  lua_pushcclosure(L, l_region, "region", 1);
+  lua_pushcfunction(L, l_sample, "sample");
+  if (lua_pcall(L, 2, 0, 0) != 0) {
+    if (error != nullptr) {
+      *error = std::string("marker prelude failed: ") + (lua_isstring(L, -1) ? lua_tostring(L, -1) : "?");
     }
     return false;
   }
@@ -681,8 +741,7 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
   bindGlobal(L, &ctx, "createPointMarker", l_createPointMarker);
   bindGlobal(L, &ctx, "createBandMarker", l_createBandMarker);
   bindGlobal(L, &ctx, "bandPower", l_bandPower);
-  bindGlobal(L, &ctx, "__region", l_region);
-  if (!runPrelude(L, error)) {
+  if (!runPrelude(L, &ctx, error)) {
     lua_close(L);
     return {};
   }
@@ -694,24 +753,7 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
   // One run scans a whole series, so it gets the module-evaluation fuel, not a per-sample calculate's.
   budget.fuel = static_cast<std::int64_t>(limits.setup_fuel);
 
-  size_t bc_size = 0;
-  lua_CompileOptions opts = {};
-  opts.optimizationLevel = 1;
-  opts.debugLevel = 1;  // line info for error messages
-  char* bc = luau_compile(code.c_str(), code.size(), &opts, &bc_size);
-  if (bc == nullptr) {
-    if (error != nullptr) {
-      *error = "luau_compile failed";
-    }
-    lua_close(L);
-    return {};
-  }
-  const int load_status = luau_load(L, "=rule", bc, bc_size, 0);
-  std::free(bc);
-  if (load_status != 0) {
-    if (error != nullptr) {
-      *error = lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed";
-    }
+  if (!loadChunk(L, compileChunk(code), "=rule", error)) {
     lua_close(L);
     return {};
   }
@@ -759,24 +801,7 @@ bool validateScript(const std::string& code, std::string* error) {
     }
     return false;
   }
-  size_t bc_size = 0;
-  lua_CompileOptions opts = {};
-  opts.optimizationLevel = 1;
-  opts.debugLevel = 1;
-  char* bc = luau_compile(code.c_str(), code.size(), &opts, &bc_size);
-  if (bc == nullptr) {
-    if (error != nullptr) {
-      *error = "luau_compile failed";
-    }
-    lua_close(L);
-    return false;
-  }
-  const int load_status = luau_load(L, "=rule", bc, bc_size, 0);
-  std::free(bc);
-  const bool ok = (load_status == 0);
-  if (!ok && error != nullptr) {
-    *error = lua_isstring(L, -1) ? lua_tostring(L, -1) : "luau_load failed";
-  }
+  const bool ok = loadChunk(L, compileChunk(code), "=rule", error);
   lua_close(L);
   return ok;
 }

@@ -1,7 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// Qt's named colors (QColor::colorNames(), the SVG keyword set) with their RGBA, sorted by name for a binary search.
+// Qt's named colors (QColor::colorNames(), the SVG keyword set) with their RGBA, sorted by name for a binary search,
+// less "transparent": alpha 0 is PlotMarker's "use the severity color".
 // The engine cannot link Qt (the headless runner links pj_scripting_core alone), so the table is a copy; the
 // pj_plotting test MarkerColorNames.MatchQt checks every Qt name still resolves to the RGBA Qt gives it.
 // clang-format off
@@ -145,7 +146,6 @@
     {"teal", 0x00, 0x80, 0x80, 0xff},
     {"thistle", 0xd8, 0xbf, 0xd8, 0xff},
     {"tomato", 0xff, 0x63, 0x47, 0xff},
-    {"transparent", 0x00, 0x00, 0x00, 0x00},
     {"turquoise", 0x40, 0xe0, 0xd0, 0xff},
     {"violet", 0xee, 0x82, 0xee, 0xff},
     {"wheat", 0xf5, 0xde, 0xb3, 0xff},
