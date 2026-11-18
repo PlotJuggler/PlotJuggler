@@ -1,0 +1,11 @@
+# A layout's streaming buffer (left_panel_state streaming_buffer="20") shows in streamingSpinBox, so a stream keeps
+# 20 s, not the 5 s default. Needs the Dummy Streamer and UDP Server plugins next to the CSV loader.
+# app: -l scripts/qa/regressions/fixtures/udp_bound_buffer20.pj4.xml
+# needs: plugins
+until ui_tree {} comboStreaming "UDP Server"
+ui_click {"name":"streamingSpinBox","double":true,"wait_ms":300}
+ui_tree {}
+expect "20 sec"
+ui_key {"keys":"Escape"}
+start_stream {"source":"Dummy Streamer"}
+until read_series {"paths":"dummy/sawtooth/value"} "duration_s":9.
