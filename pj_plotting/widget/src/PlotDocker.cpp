@@ -347,8 +347,8 @@ void applySplitterSizes(const LayoutNode& node, const QVector<DockWidget*>& widg
   }
 
   // Express the saved ratios as large relative weights, not scaled by the widgets' current pixel sizes: during layout
-  // restore the docker is not laid out at its final size (TabbedPlotWidget builds a new PlotDocker per tab and restores
-  // into it before it is shown), so widget->width()/height() report placeholder geometry that distorts the proportions
+  // restore the docker is not laid out at its final size (a new page is restored into before it is shown, a reused one
+  // while hidden), so widget->width()/height() report placeholder geometry that distorts the proportions
   // (and the splitter later "grows" to fit, pulling the split toward 50/50). QSplitter::setSizes stores relative
   // weights: on first layout the splitter shrinks these oversized hints to fit, distributing space proportionally, so a
   // large common scale reproduces the saved ratios whenever the dock area becomes visible.
@@ -773,6 +773,13 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
   }
 
   RestorePlotPool pool(old_docks, session_, catalog_, this);
+  // The focus bookkeeping would outlive the docks removed below (deleted later, and their removal does not refocus
+  // during a restore): the right panel would bind a dock with no plot. Fall back to the first dock, as a new page does.
+  focused_dock_ = nullptr;
+  previous_dock_ = nullptr;
+  focus_overlay_->setFocusedArea(nullptr);
+  // A gesture armed before the restore must not publish the restored state as a new undo step.
+  splitter_undo_debounce_.stop();
   for (DockWidget* dock : old_docks) {
     removeDockWidget(dock);
     dock->deleteLater();

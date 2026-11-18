@@ -140,7 +140,14 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
   its XML with fresh state ids, so the copy never aliases the source in id-keyed lookups.
 - **Layout restore** parses and validates the whole structural tree before changing the live docker, restores splitter
   ratios as large relative weights (the docker is not laid out at its final size yet, so pixel scaling would distort the
-  split), and emits no undo step for its intermediate states.
+  split), and emits no undo step for its intermediate states. It restores into the live plot page whose tab id
+  matches and, inside it, into the plot whose id matches (else the next unused one), so an undo or reload keeps the
+  plots it does not change: a curve already present keeps its adapter and sample window. Only object docks (scenes,
+  strips, custom widgets) and the dock frames are always rebuilt. Because widgets survive a restore, the shell's
+  per-plot and per-tab wiring must stay idempotent (`Qt::UniqueConnection`, no lambda connections), and a reused object
+  must drop what a new one would not have: the page's focused dock (it points at a removed dock), armed undo debounces,
+  a curve order that differs from the saved one (the plot then rebuilds its curves). A bound curve editor is refreshed
+  on re-bind, since the restore changes colour and visibility without a curve-list signal.
 
 ## PlotRhiCanvas
 

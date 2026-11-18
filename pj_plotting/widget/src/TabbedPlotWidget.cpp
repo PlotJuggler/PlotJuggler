@@ -22,6 +22,7 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 #include "pj_plotting/PlotDocker.h"
@@ -865,26 +866,46 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
 
   restoring_state_ = true;
 
-  // Lift pages outside this restore's authority out of the tab strip, rebuild the target plot pages, then reattach the
-  // preserved live objects.
+  // Lift pages outside this restore's authority out of the tab strip, restore the target plot pages, then reattach the
+  // preserved live objects. A target tab whose id matches a live plot page restores into that page, so its PlotDocker
+  // can hand its plots back by id and an unchanged plot keeps its curves and their sample caches; the pages no target
+  // claims are deleted.
   std::vector<TabEntry> preserved_tabs;
+  std::vector<TabEntry> reusable_tabs;
   for (TabEntry& entry : tabs_) {
-    if (entry.docker == nullptr || !entry.docker->isSerializable(scope)) {
-      tabs_bar_layout_->removeWidget(entry.frame);
-      preserved_tabs.push_back(std::move(entry));
-      continue;
-    }
-    stack_->removeWidget(entry.docker);
-    entry.docker->deleteLater();
     tabs_bar_layout_->removeWidget(entry.frame);
-    entry.frame->deleteLater();
+    if (entry.docker == nullptr || !entry.docker->isSerializable(scope)) {
+      preserved_tabs.push_back(std::move(entry));
+    } else {
+      reusable_tabs.push_back(std::move(entry));
+    }
   }
   tabs_.clear();
   tab_suffix_count_ = 0;
+  const auto take_reusable = [&reusable_tabs](const QString& id) -> std::optional<TabEntry> {
+    if (id.isEmpty()) {
+      return std::nullopt;
+    }
+    const auto it = std::find_if(reusable_tabs.begin(), reusable_tabs.end(), [&id](const TabEntry& entry) {
+      return entry.docker->stateId() == id;
+    });
+    if (it == reusable_tabs.end()) {
+      return std::nullopt;
+    }
+    TabEntry entry = std::move(*it);
+    reusable_tabs.erase(it);
+    return entry;
+  };
 
-  // Runs on every exit below (success or failed docker load) so the preserved tabs are never orphaned outside tabs_
-  // (their stack pages were never removed).
-  const auto reattach_preserved_tabs = [this, &preserved_tabs]() {
+  // Runs on every exit below (success or failed docker load): deletes the pages no target claimed, and reattaches the
+  // preserved tabs so they are never orphaned outside tabs_ (their stack pages were never removed).
+  const auto finish_tab_strip = [this, &preserved_tabs, &reusable_tabs]() {
+    for (TabEntry& entry : reusable_tabs) {
+      stack_->removeWidget(entry.docker);
+      entry.docker->deleteLater();
+      entry.frame->deleteLater();
+    }
+    reusable_tabs.clear();
     for (TabEntry& entry : preserved_tabs) {
       tabs_bar_layout_->insertWidget(static_cast<int>(tabs_.size()), entry.frame, 0, Qt::AlignVCenter);
       tabs_.push_back(std::move(entry));
@@ -894,18 +915,26 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   for (qsizetype target_index = 0; target_index < target_tabs.size(); ++target_index) {
     const QDomElement tab_element = target_tabs.at(target_index);
     const QString tab_name = tab_element.attribute(u"tab_name"_s, u"tab%1"_s.arg(target_index + 1));
-    PlotDocker* docker = addTab(tab_name);
-    docker->setStateId(tab_element.attribute(u"id"_s));
-    docker->setName(tab_name);
-    docker->setHistoryExempt(tab_element.attribute(u"history_exempt"_s) == u"1"_s);
-    docker->setOwnerMetadata(tab_element.attribute(u"owner_plugin"_s), tab_element.attribute(u"tab_id"_s));
+    PlotDocker* docker = nullptr;
+    if (std::optional<TabEntry> reused = take_reusable(tab_element.attribute(u"id"_s)); reused.has_value()) {
+      docker = reused->docker;
+      tabs_bar_layout_->insertWidget(static_cast<int>(tabs_.size()), reused->frame, 0, Qt::AlignVCenter);
+      tabs_.push_back(std::move(*reused));
+    } else {
+      docker = addTab(tab_name);
+      docker->setStateId(tab_element.attribute(u"id"_s));
+    }
+    // PlotDocker::xmlLoadState validates before it changes anything: a rejected tab leaves a reused page as it was.
     if (!docker->xmlLoadState(tab_element)) {
-      reattach_preserved_tabs();
+      finish_tab_strip();
       restoring_state_ = false;
       return false;
     }
+    renameTab(docker, tab_name);
+    docker->setHistoryExempt(tab_element.attribute(u"history_exempt"_s) == u"1"_s);
+    docker->setOwnerMetadata(tab_element.attribute(u"owner_plugin"_s), tab_element.attribute(u"tab_id"_s));
   }
-  reattach_preserved_tabs();
+  finish_tab_strip();
 
   const int requested_index = tabbed_area.firstChildElement(u"currentTabIndex"_s).attribute(u"index"_s, u"0"_s).toInt();
   // The saved index counts rebuilt (serialized) docker tabs only; after the rebuild those occupy the leading slots, so

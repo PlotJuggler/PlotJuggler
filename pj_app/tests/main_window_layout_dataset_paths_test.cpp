@@ -1138,10 +1138,9 @@ void LayoutDatasetPathsTest::checkBundledUrdfFollowsLayout(bool include_data_sou
   const QString moved_layout = folders.moved + u"/layout.pj4.xml"_s;
   ASSERT_TRUE(QFile::copy(saved_layout, moved_layout));
 
-  QPointer<PJ::PlotDocker> old(docker);
   Peer::loadLayout(window, moved_layout);
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-  ASSERT_TRUE(old.isNull());
+  ASSERT_EQ(robotLayers().size(), 2U);
 
   std::map<std::string, QString> source_by_link;
   for (auto* robot : robotLayers()) {

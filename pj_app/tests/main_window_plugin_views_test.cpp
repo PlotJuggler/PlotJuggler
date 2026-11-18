@@ -1173,9 +1173,11 @@ class MainWindowPluginViewsTestPeer {
     const QString saved_xml = QString::fromUtf8(saved.toByteArray());
     EXPECT_TRUE(saved_xml.contains(u"owner_plugin=\"plugin-a\""_s));
     EXPECT_TRUE(saved_xml.contains(u"tab_id=\"run-b\""_s));
+    // The restore reuses the page with the same id: change the content it must bring back.
+    second_dock->plotWidget()->setStateId(u"changed-after-save"_s);
     ASSERT_TRUE(window.xmlLoadState(saved, MainWindow::RestoreIntent::kReplace));
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-    EXPECT_TRUE(before_restore.isNull());
+    EXPECT_EQ(pluginTabs(window).ownedTab(owner, u"run-b"_s), before_restore.data());
 
     second = pluginTabs(window).ownedTab(owner, u"run-b"_s);
     foreign = pluginTabs(window).ownedTab(other, u"run-a"_s);

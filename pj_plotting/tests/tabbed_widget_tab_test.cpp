@@ -335,9 +335,12 @@ TEST(TabbedWidgetTab, HistoryExemptTabRoundTripsThroughFullLayout) {
   EXPECT_EQ(owned_element.attribute(u"owner_plugin"_s), u"assistant"_s);
   EXPECT_EQ(owned_element.attribute(u"tab_id"_s), u"run"_s);
 
+  // The restore reuses the page with the same id: change what it must bring back.
+  owned->setHistoryExempt(false);
+  owned->setOwnerMetadata(u"other"_s, u"other-run"_s);
   ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kReplace));
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-  EXPECT_TRUE(original.isNull());
+  EXPECT_EQ(tabbed.currentTab(), original.data());
   PJ::PlotDocker* restored = tabbed.currentTab();
   ASSERT_NE(restored, nullptr);
   EXPECT_EQ(restored->stateId(), u"assistant/run"_s);
@@ -510,6 +513,28 @@ TEST(TabbedPlotDuplicate, IgnoresWidgetTabsAndForeignDockers) {
   EXPECT_EQ(tabbed.duplicateTab(&foreign), nullptr);
   EXPECT_EQ(tabbed.duplicateTab(nullptr), nullptr);
   EXPECT_EQ(tabbed.dockerCount(), 1);
+}
+
+// A tab whose content fails to load must not leave the live page it would have reused renamed or re-owned.
+TEST(TabbedWidgetTab, FailedTabLoadKeepsTheReusedPageMetadata) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* page = tabbed.currentTab();
+  ASSERT_NE(page, nullptr);
+  page->setStateId(u"page"_s);
+  tabbed.renameTab(page, u"live"_s);
+
+  QDomDocument doc;
+  ASSERT_TRUE(
+      static_cast<bool>(doc.setContent(
+          u"<tabbed_widget id=\"\" name=\"main\"><Tab id=\"page\" tab_name=\"rejected\" owner_plugin=\"x\" "
+          u"tab_id=\"y\">"
+          u"<NotAContainer/></Tab><currentTabIndex index=\"0\"/></tabbed_widget>"_s)));
+  EXPECT_FALSE(tabbed.xmlLoadState(doc.documentElement(), PJ::RestoreIntent::kReplace));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+  ASSERT_EQ(tabbed.dockerAt(0), page);
+  EXPECT_EQ(page->name(), u"live"_s);
+  EXPECT_TRUE(page->ownerPlugin().isEmpty());
 }
 
 }  // namespace

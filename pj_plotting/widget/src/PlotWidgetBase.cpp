@@ -810,7 +810,9 @@ QwtPlot* PlotWidgetBase::qwtPlot() {
 }
 
 void PlotWidgetBase::installHoverFilter(QObject* filter) {
-  if (filter == nullptr || plot_ == nullptr) {
+  // A restore re-announces a reused plot to its docker: install once.
+  if (filter == nullptr || plot_ == nullptr ||
+      std::find(hover_filters_.begin(), hover_filters_.end(), filter) != hover_filters_.end()) {
     return;
   }
   hover_filters_.emplace_back(filter);

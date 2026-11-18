@@ -3840,7 +3840,7 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::onFirstObjectTopicAdded, Qt::UniqueConnection);
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
-  connect(docker, &PlotDocker::topicRefused, this, [this](const QString& reason) { showToast(reason); });
+  connect(docker, &PlotDocker::topicRefused, this, &MainWindow::onTopicRefused, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       onPlotAdded(dock->plotWidget());
@@ -3864,9 +3864,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   connect(
       plot, &PlotWidget::pendingCurveIntentsChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild,
       Qt::UniqueConnection);
-  connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
-    emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
-  });
+  connect(plot, &PlotWidget::statusMessageRequested, this, &MainWindow::onPlotStatusMessage, Qt::UniqueConnection);
   // Idempotent: layout load and undo re-run onPlotAdded for live plots.
   topic_demand_controller_->registerPlot(plot);
   plot->setTrackerPosition(toAxisDouble(session_->playbackEngine().currentTime()));
@@ -3877,6 +3875,14 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
     bindEditorToPlot(plot);
   }
+}
+
+void MainWindow::onPlotStatusMessage(const QString& message) {
+  emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
+}
+
+void MainWindow::onTopicRefused(const QString& reason) {
+  showToast(reason);
 }
 
 void MainWindow::onPlotMarkerTargetsChanged() {
@@ -8686,11 +8692,16 @@ void MainWindow::updateUndoRedoActions() {
 
 void MainWindow::bindEditorToPlot(PlotWidget* plot) {
   if (curve_editor_ != nullptr) {
-    curve_editor_->setPlot(plot);
+    // A restore keeps a plot and re-binds it: setPlot ignores the plot it already holds, so refresh the rows, which the
+    // restore may have changed without a curve-list signal (colour, visibility, markers).
+    if (plot != nullptr && curve_editor_->plot() == plot) {
+      curve_editor_->refresh();
+    } else {
+      curve_editor_->setPlot(plot);
+    }
   }
   const bool enable = plot != nullptr;
-  // The group ids are the LineWidth index and the CurveStyle value. An in-place state swap on the bound plot
-  // (xmlLoadState, paste) does not resync, since the bound plot does not change.
+  // The group ids are the LineWidth index and the CurveStyle value; every bind resyncs them.
   if (width_button_group_ != nullptr) {
     for (auto* btn : width_button_group_->buttons()) {
       btn->setEnabled(enable);

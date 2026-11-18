@@ -919,25 +919,30 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
 
   const bool was_loading_state = loading_state_;
   loading_state_ = true;
+  // A wheel or pan armed just before the restore must not publish the restored state as a new undo step.
+  gesture_undo_debounce_.stop();
   const bool intents_changing = !pending_curve_intents_.empty() || !parsed_pending_curves.empty();
   pending_curve_intents_ = std::move(parsed_pending_curves);
   if (intents_changing) {
     emit pendingCurveIntentsChanged();
   }
 
-  std::set<QString> desired_keys;
+  std::vector<QString> desired_order;
   for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
        curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
     if (isXYPlot() && curve_element.hasAttribute(u"curve_x"_s) && curve_element.hasAttribute(u"curve_y"_s)) {
-      desired_keys.insert(curveKey(
+      desired_order.push_back(curveKey(
           curve_element.attribute(u"name"_s), curve_element.attribute(u"curve_x"_s),
           curve_element.attribute(u"curve_y"_s)));
     } else {
-      desired_keys.insert(curveKey(curve_element.attribute(u"name"_s)));
+      desired_order.push_back(curveKey(curve_element.attribute(u"name"_s)));
     }
   }
+  const std::set<QString> desired_keys(desired_order.begin(), desired_order.end());
 
   QStringList remove_titles;
+  QStringList kept_titles;
+  std::vector<QString> kept_keys;
   for (const CurveInfo& info : curveList()) {
     if (info.curve == nullptr) {
       continue;
@@ -948,7 +953,16 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     }
     if (desired_keys.find(existing_key) == desired_keys.end()) {
       remove_titles.push_back(info.curve->title().text());
+    } else {
+      kept_titles.push_back(info.curve->title().text());
+      kept_keys.push_back(existing_key);
     }
+  }
+  // Missing curves are appended after the kept ones, so the saved order (legend, editor rows, draw order) holds only
+  // when the kept curves are its leading entries; otherwise rebuild this plot's curves from the XML.
+  if (kept_keys.size() > desired_order.size() ||
+      !std::equal(kept_keys.begin(), kept_keys.end(), desired_order.begin())) {
+    remove_titles += kept_titles;
   }
   {
     // Each recompute reads every sample of every curve: once per plot, not once per curve change.
