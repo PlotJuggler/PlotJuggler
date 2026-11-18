@@ -244,10 +244,6 @@ RecordingTargets StreamingSourceManager::recordingTargets() {
   return result;
 }
 
-void StreamingSourceManager::onSourceChanged(const QString& plugin_id) {
-  selected_plugin_ = plugin_id;
-}
-
 void StreamingSourceManager::onBufferChanged(int seconds) {
   // Every session's next onIngestTick applies the new window to its stores; consumers with their own history
   // (the 3D TF buffer) hear it through retentionWindowChanged.
@@ -258,13 +254,13 @@ void StreamingSourceManager::onBufferChanged(int seconds) {
   }
 }
 
-void StreamingSourceManager::onStartRequested() {
-  if (selected_plugin_.isEmpty()) {
+void StreamingSourceManager::onStartRequested(const QString& plugin_id) {
+  if (plugin_id.isEmpty()) {
     qCWarning(lcStream) << "Start requested but no stream source selected.";
     emit setupError(tr("No stream source selected."));
     return;
   }
-  startSession(selected_plugin_);
+  startSession(plugin_id);
 }
 
 void StreamingSourceManager::applyWriteTargetsForCurrentPauseState(DataSourceRuntimeHost& host) {

@@ -833,6 +833,18 @@ TEST_F(DesktopStreamLayoutTest, StreamLayoutBufferAppliesWhenNothingRuns) {
   EXPECT_EQ(bufferSpinBox()->value(), 20);
 }
 
+// The stream a layout starts itself is not a running stream to protect: with nothing streaming before the load, a
+// buffer smaller than the user's still applies.
+TEST_F(DesktopStreamLayoutTest, StreamLayoutBufferBelowTheUserDefaultApplies) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  setUserBuffer(60);
+  ASSERT_TRUE(openLayoutFile(withStreamingBuffer(robotLayout(), 20)));
+  ASSERT_TRUE(pumpUntil([this] { return PresetTestPeer::curveKeys(*window_).size() == 1; }));
+  ASSERT_EQ(streamSessions().keys(), QStringList{u"robot"_s});
+  EXPECT_EQ(streams.retentionSeconds(), 20);
+  EXPECT_EQ(bufferSpinBox()->value(), 20);
+}
+
 // A layout without stream records leaves the buffer alone, even when it carries the attribute.
 TEST_F(DesktopStreamLayoutTest, FileOnlyLayoutLeavesTheBufferAlone) {
   PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);

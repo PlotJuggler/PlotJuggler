@@ -26,14 +26,6 @@ class LeftPanel : public QWidget {
   explicit LeftPanel(QWidget* parent = nullptr);
   ~LeftPanel() override;
 
-  // What only MainWindow knows about a layout load, for the streaming buffer rule of restoreSourcesState.
-  struct StreamingRestore {
-    // The layout records streaming sources (<previouslyLoaded_StreamingSources>).
-    bool stream_bound = false;
-    // Set while a stream session runs: the window it uses, in seconds.
-    std::optional<int> live_retention_s;
-  };
-
  signals:
   void loadDataRequested();
   void reloadDataRequested();
@@ -42,14 +34,13 @@ class LeftPanel : public QWidget {
   void recentFileSelected(QString path);
   void recentLayoutSelected(QString path);
   void clearRecentLayoutsRequested();
-  // A one-shot Start: the panel has no Stop.
-  void streamingStartRequested();
+  // A one-shot Start of the source the combo shows: the panel has no Stop.
+  void streamingStartRequested(QString source);
   // Pause/resume of every stream session (StreamingSourceManager::onPauseToggled).
   void streamingPauseToggled(bool paused);
   // Record/Stop of every active stream. The panel never decides the button's state: MainWindow drives
   // RecordingService and reflects the outcome through setRecordingActive().
   void streamingRecordToggled(bool record);
-  void streamingSourceChanged(QString source);
   // Seconds. From the user, once they finish adjusting the scrubber (not on every drag tick), after QSettings is
   // written; from restoreSourcesState, without writing it.
   void streamingBufferChanged(int seconds);
@@ -77,12 +68,11 @@ class LeftPanel : public QWidget {
   // window belongs to the streams the layout restarts.
   [[nodiscard]] QDomElement saveSourcesState(QDomDocument& doc, bool stream_bound) const;
 
-  // Applies each attribute on its own; missing or unknown values are ignored. Emits streamingSourceChanged and
-  // streamingBufferChanged for what it applies, so the streaming manager follows the restored controls. Never writes
-  // QSettings: a layout must not change the user's defaults. The buffer applies only from a stream-bound layout, and
-  // never shrinks a running stream's window: with `live_retention_s` set, the larger of the two applies, so the
-  // scrubber shows the window in use.
-  void restoreSourcesState(const QDomElement& element, const StreamingRestore& streams);
+  // Applies the tab and the streaming source; missing or unknown values are ignored. The layout's streaming_buffer
+  // is not read here: MainWindow decides it (ARCHITECTURE "Source and buffer selection") and passes
+  // `streaming_buffer_s`, which the scrubber shows and streamingBufferChanged carries to the running streams. Never
+  // writes QSettings: a layout must not change the user's defaults.
+  void restoreSourcesState(const QDomElement& element, std::optional<int> streaming_buffer_s);
 
  public:
   // Lists the toolboxes whose manifest `tags` contain "cloud"; keeps the selection by plugin id; no entry disables

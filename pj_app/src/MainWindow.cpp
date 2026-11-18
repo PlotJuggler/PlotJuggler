@@ -1295,9 +1295,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     flushPendingCurveBindings(items);
   });
   connect(
-      ui_->leftPanel, &LeftPanel::streamingSourceChanged, streaming_manager_.get(),
-      &StreamingSourceManager::onSourceChanged);
-  connect(
       ui_->leftPanel, &LeftPanel::streamingBufferChanged, streaming_manager_.get(),
       &StreamingSourceManager::onBufferChanged);
   connect(
@@ -1425,7 +1422,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         session_->recomputeRange();
       });
 
-  // After the manager is wired, so the first streamingSourceChanged reaches it.
   refreshStreamingCombo();
   connect(
       &session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this,
@@ -4996,6 +4992,7 @@ void MainWindow::onRebuildToolboxMenu() {
 }
 
 void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity, bool use_current_data) {
+  snapshotStreamWindowAtLayoutOpen();
   const bool interactive = interactivity == LayoutLoadInteractivity::kInteractive;
   // Governs every failure surface of this load, entry failures included: an automated (--layout) run must never
   // open a modal.
@@ -5309,6 +5306,7 @@ void MainWindow::loadLayoutFromBytes(const QByteArray& bytes, const QString& bro
 
 MainWindow::BrowserLayoutLoadResult MainWindow::loadBrowserParsedLayout(
     QDomDocument doc, const QString& browser_name, const QUrl& layout_url) {
+  snapshotStreamWindowAtLayoutOpen();
   const QDomElement root = doc.documentElement();
   bool version_ok = false;
   const int version = root.attribute(u"pj4_version"_s, u"0"_s).toInt(&version_ok);
@@ -6979,12 +6977,21 @@ void MainWindow::commitRestoredLayout(const QDomDocument& doc, MissingCurvePolic
   resetUndoHistory();
 }
 
+void MainWindow::snapshotStreamWindowAtLayoutOpen() {
+  stream_window_at_layout_open_s_ = streaming_manager_->hasActiveSession()
+                                        ? std::optional<int>(streaming_manager_->retentionSeconds())
+                                        : std::nullopt;
+}
+
 void MainWindow::restoreLeftPanelState(const QDomDocument& doc) {
-  LeftPanel::StreamingRestore streams{.stream_bound = recordsStreams(doc), .live_retention_s = std::nullopt};
-  if (streaming_manager_->hasActiveSession()) {
-    streams.live_retention_s = streaming_manager_->retentionSeconds();
+  const QDomElement state = doc.documentElement().firstChildElement(u"left_panel_state"_s);
+  std::optional<int> buffer_s;
+  bool ok = false;
+  const int seconds = state.attribute(u"streaming_buffer"_s).toInt(&ok);
+  if (ok && recordsStreams(doc)) {
+    buffer_s = std::max(seconds, stream_window_at_layout_open_s_.value_or(seconds));
   }
-  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(u"left_panel_state"_s), streams);
+  ui_->leftPanel->restoreSourcesState(state, buffer_s);
 }
 
 bool MainWindow::layoutImportBatchActive() const {

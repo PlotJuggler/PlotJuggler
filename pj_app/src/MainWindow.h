@@ -807,7 +807,10 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] BrowserLayoutLoadResult loadBrowserParsedLayout(
       QDomDocument doc, const QString& browser_name, const QUrl& layout_url);
   void restoreBrowserChromeAndPanels(const QDomDocument& doc, const QString& browser_name);
-  // <left_panel_state>, told whether `doc` records streams and what window a running stream uses.
+  // Called first by every layout open, before the layout starts its own streams: those must not count as running.
+  void snapshotStreamWindowAtLayoutOpen();
+  // <left_panel_state>. A stream-bound `doc` brings its streaming buffer, which never shrinks the window of a stream
+  // that ran before the open (stream_window_at_layout_open_s_); any other layout leaves the buffer alone.
   void restoreLeftPanelState(const QDomDocument& doc);
   void beginBrowserSourceReplay(
       QDomDocument doc, const QString& browser_name, QList<layout_xml::DataSourceRef> sources, const QUrl& layout_url);
@@ -1328,6 +1331,9 @@ class MainWindow : public QMainWindow {
 #endif
   std::unique_ptr<FileLoader> file_loader_;
   std::unique_ptr<StreamingSourceManager> streaming_manager_;
+  // The retention window, in seconds, of the streams running when the current layout open began; empty when none ran.
+  // Only those streams are protected from a smaller layout buffer at the commit.
+  std::optional<int> stream_window_at_layout_open_s_;
   // Declared after streaming_manager_, so the runtime hosts holding its taps outlive it; closeEvent and
   // ~MainWindow still stop() it explicitly before any widget or host is gone. Created even where isSupported()
   // is false: only the UI affordances go away there.

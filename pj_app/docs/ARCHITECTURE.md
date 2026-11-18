@@ -154,20 +154,21 @@ so every start that does not launch (cancel, a plugin contract violation, a refu
 count in the catalog's duplicate-label ordinals and suffix the next start's name. `streamError` is emitted only after
 the dataset is gone (a cancel reports nothing), so its consumer cannot rely on that dataset existing.
 
-**Source and buffer selection.** `StreamingSourceManager` reads the retention window from QSettings once, at
-construction; after that it learns the selected source and the window only from `LeftPanel::streamingSourceChanged`
-and `streamingBufferChanged`. A panel method that sets the combo or the scrubber with signals blocked
-(`setStreamingSources`, `restoreSourcesState`, blocked so QSettings is not written) emits them itself; otherwise
-Start launches a source other than the one the combo shows, and retention keeps a window other than the one the
-scrubber shows.
+**Source and buffer selection.** The manager keeps no copy of the selected source: Start carries the combo's text
+(`LeftPanel::streamingStartRequested`), so whatever set the combo (a user, a repopulation, a layout), Start starts
+what it shows. Only a user's pick (`QComboBox::textActivated`) becomes the remembered default. The retention window
+is a copy: `StreamingSourceManager` reads it from QSettings once, at construction, then only from
+`LeftPanel::streamingBufferChanged`, which a restore emits by hand, because running sessions must hear the new
+window.
 
 A layout's `<left_panel_state streaming_buffer>` belongs to the streams it restarts: it is saved only into a
 stream-bound layout (one with `<previouslyLoaded_StreamingSources>` records), and a load ignores it in any other
-layout, older files that carry it included. On load it never shrinks a running stream's window: it applies when it
-is wider, or when no session runs; otherwise the running streams keep theirs and the scrubber shows it.
-`MainWindow::restoreLeftPanelState` supplies what the panel cannot know (stream-bound, the live window), and runs at
-`commitRestoredLayout`, so a progressive restore that aborts changes neither the streams nor the panel. Streams the
-layout starts itself run with the previous window until that commit.
+layout, older files that carry it included. It never shrinks a stream that ran before the open: such a stream keeps
+a wider window and the scrubber shows it. The streams the layout starts itself do not count, so whether a stream ran,
+and its window, is taken when the open begins (`snapshotStreamWindowAtLayoutOpen`), before they start; otherwise a
+buffer smaller than the user's default would never apply. `MainWindow::restoreLeftPanelState` decides the buffer and
+runs at `commitRestoredLayout`, so a progressive restore that aborts changes neither the streams nor the panel.
+Streams the layout starts itself run with the previous window until that commit.
 
 **Pause and resume.** While paused, each session writes to the secondary engine and object store. Resume swaps the
 write targets back first (a push already in flight finishes on the secondary, the next lands on the primary; flushing
