@@ -1,0 +1,13 @@
+# A float precision set in Preferences reaches the tracker's value box as soon as OK closes the dialog, without a
+# seek. The File menu popup shares its objectName (PJMenu) with a second widget, so it cannot be clicked by name: a
+# click on the menu bar opens it and Up,Up,Return reaches "Preferences...". Periodic is the lower plot.
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Periodic"} "tracker":["time : 0.000","1.000","1.000","0.000"]
+ui_click {"name":"menuBar","x":22,"y":15}
+ui_key {"keys":"Up,Up,Return","wait_ms":600}
+ui_click {"name":"scrubberFloatPrecision"}
+ui_type {"text":"5\n","wait_ms":300}
+ui_click {"name":"buttonOk","wait_ms":800}
+ui_plot {"title":"Periodic"}
+expect "tracker":["time : 0.00000","1.00000","1.00000","0.00000"]

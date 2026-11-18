@@ -149,6 +149,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowLayoutImportTestPeer;
   friend class MainWindowMarkerGeneratorTestPeer;
   friend class MainWindowMarkerStatusTestPeer;
+  friend class MainWindowValuePrecisionTestPeer;
   friend class MainWindowLayoutDatasetPathsTestPeer;
   friend class MainWindowReloadButtonTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
@@ -623,7 +624,8 @@ class MainWindow : public QMainWindow {
 
   // Pushes the Plotting page's derived-markers mode and reload rate to the batch engine.
   void applyDerivedBatchPreferences();
-  // On OK: applyDerivedBatchPreferences and applyTimeLabelFormat.
+  // On OK: applyDerivedBatchPreferences, applyTimeLabelFormat, and a precision change re-seeds both tracker lines and
+  // the Value column at the current times, the only places the text is formatted.
   void bindPlottingPreferences(PreferencesDialog& dialog);
 
   // PlotWidget::setMarkerStatus on BatchEngine::runningChanged. "Computing" shows only after a rule has run for

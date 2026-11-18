@@ -43,6 +43,9 @@ class PreferencesDialog : public Dialog {
   void derivedBatchSettingsChanged();
   // Emitted on OK after MainWindow::kClockUtcKey is written.
   void timeLabelSettingsChanged();
+  // Emitted on OK after a changed kPrecisionSettingsKey is written: readers format values only when their time
+  // moves, so the receiver must re-seed them.
+  void valuePrecisionChanged();
 
  private:
   // Syntax, then reachability (async GET; existence for file://; skipped while offline). Advisory only: a
