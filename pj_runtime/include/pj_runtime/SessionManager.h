@@ -414,11 +414,9 @@ class SessionManager : public QObject {
   // load); otherwise its destructor rolls back to the exact prior data.
   [[nodiscard]] RefillGuard beginRefill(PJ::DatasetId dataset_id);
   /// True from beginRefill until the dataset's guard commits or rolls back. Meanwhile the dataset's earliest-sample pin
-  /// is held, so emptying it does not move the time origin ("Use time offset"); the close re-pins from the data left.
+  /// is held (a static reference's is dropped instead), so emptying it does not move the time origin ("Use time
+  /// offset"); the close re-pins from the data left.
   [[nodiscard]] bool refillOpen(DatasetId dataset_id) const;
-  /// Raw [min,max] each refilling dataset had when its refill emptied it, for the playback range to keep until the
-  /// refill closes. A dataset that had no time-bearing data, or was removed since, has none.
-  [[nodiscard]] std::vector<std::pair<DatasetId, std::pair<Timestamp, Timestamp>>> refillHeldRawBounds() const;
 
   /// Marks stale the marker rules whose inputs are among `changed` (file commit, streaming tick); the batch engine
   /// re-runs them on the pool behind its brake. A topic whose stamp (newest timestamp, row count, retention floor,
@@ -520,8 +518,11 @@ class SessionManager : public QObject {
   // synchronously; the DatasetId and TopicIds stay valid.
   void datasetAboutToBeReplaced(PJ::DatasetId dataset_id);
 
-  // The dataset's refill committed or rolled back, so its held extent is gone: the playback range is recomputed on it
-  // (a rollback that restores only object topics notifies no ingest).
+  // A refill of the dataset begins: emitted before datasetAboutToBeReplaced, while the dataset still holds its prior
+  // data and before refillOpen turns true. A listener reads now what it must keep for the refill's duration.
+  void refillStarting(PJ::DatasetId dataset_id);
+  // The dataset's refill committed or rolled back, after the time origin was re-pinned from the data left. The
+  // playback range is recomputed on it: a rollback that restores only object topics notifies no ingest.
   void refillClosed(PJ::DatasetId dataset_id);
 
   // Plot markers changed. No payload (an all-datasets rule touches every dataset): listeners re-derive their rows
@@ -563,8 +564,11 @@ class SessionManager : public QObject {
   friend class RefillGuard;
   // A Qt signal is emitted only from the object's own members.
   void notifyDatasetAboutToBeReplaced(PJ::DatasetId dataset_id);
-  // RefillGuard's begin and end: openRefill holds the dataset's extent and time-origin pin and emits
-  // datasetAboutToBeReplaced; closeRefill drops them when the dataset's last guard ends and emits refillClosed.
+  // RefillGuard's steps, in order. announceRefill, before the detach, pins the dataset's earliest sample (drops a
+  // static reference's) and emits refillStarting and datasetAboutToBeReplaced. openRefill, after every step that can
+  // throw, counts the guard, so a constructor that throws leaves no refill open. closeRefill, when the dataset's last
+  // guard ends, re-pins the origin and emits refillClosed.
+  void announceRefill(PJ::DatasetId dataset_id);
   void openRefill(PJ::DatasetId dataset_id);
   void closeRefill(PJ::DatasetId dataset_id);
 
@@ -581,6 +585,7 @@ class SessionManager : public QObject {
   [[nodiscard]] Timestamp rememberDatasetMinTimestamp(DatasetId dataset_id, Timestamp observed_min) const;
   /// Returns the datasets of `ids`.
   std::unordered_set<DatasetId> refreshDatasetMinTimestampsForTopics(const QVector<TopicId>& ids) const;
+  // Keeps the pin of a dataset whose refill is open (closeRefill re-pins it), resetting only the global memo.
   void invalidateDatasetMinTimestamp(DatasetId dataset_id) const;
   // Emits the no-arg displayOffsetChanged exactly when the global reference moved since the last emission.
   void notifyGlobalTimeReferenceIfChanged();
@@ -728,11 +733,8 @@ class SessionManager : public QObject {
   // At most one live ingest per dataset, carrying the id of the token that owns it; a call from a superseded run is a
   // lookup miss.
   std::unordered_map<DatasetId, ActiveIngestEntry> active_ingests_;
-  struct OpenRefill {
-    int guards = 0;  // a replacing guard is built before the one it replaces rolls back
-    std::optional<std::pair<Timestamp, Timestamp>> held_raw_bounds;
-  };
-  std::unordered_map<DatasetId, OpenRefill> open_refills_;
+  // Open RefillGuards per dataset: a replacing guard is built before the one it replaces rolls back.
+  std::unordered_map<DatasetId, int> open_refills_;
   // Never 0.
   IngestId next_ingest_id_ = 1;
   std::vector<LoadedSource> loaded_sources_;

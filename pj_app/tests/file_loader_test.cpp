@@ -480,6 +480,7 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
     first_value_ = object.value(u"first_value"_s).toDouble(10.0);
     rows_ = object.value(u"rows"_s).toInt(3);
     park_ = object.value(u"park"_s).toBool(false);
+    extra_rows_ = object.value(u"extra_rows"_s).toInt(0);
     return PJ::okStatus();
   }
 
@@ -516,6 +517,20 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
       }
       if (!runtimeHost().progressUpdate(static_cast<uint64_t>(index))) {
         return fail("cancelled via progress");
+      }
+    }
+
+    if (extra_rows_ > 0) {
+      auto extra = writeHost().ensureTopic("reload_probe/extra");
+      if (!extra) {
+        return fail(extra.error());
+      }
+      for (int index = 1; index <= extra_rows_; ++index) {
+        if (auto status = writeHost().appendRecord(
+                *extra, PJ::Timestamp{static_cast<int64_t>(index) * 100}, {{.name = "value", .value = 1.0}});
+            !status) {
+          return fail(status.error());
+        }
       }
     }
 
@@ -556,6 +571,7 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
   double first_value_ = 10.0;
   int rows_ = 3;
   bool park_ = false;
+  int extra_rows_ = 0;  // rows of a second topic, "reload_probe/extra", at the same stamps
   PJ::DataSourceState state_ = PJ::DataSourceState::kIdle;
 };
 
@@ -1251,6 +1267,22 @@ TEST_F(FileLoaderTest, ReloadWithMultipleDatasetsLeavesOthersIntact) {
   EXPECT_EQ(singleTopicRowCount(dataset_a), 3) << "reloading b must not touch dataset a";
   EXPECT_EQ(singleTopicRowCount(dataset_b), 3) << "dataset b must be replaced in place";
   EXPECT_EQ(catalog().items().size(), 2u) << "curve tree must keep both datasets' curves";
+}
+
+// The refill's commit recomputes the playback range, and the write host notifies nothing: the catalog must already
+// show a topic the reload added, or the recompute clamps the playhead to the shortened topic.
+TEST_F(FileLoaderTest, ReloadThatAddsALongerTopicKeepsThePlayhead) {
+  ASSERT_TRUE(installReloadProbe());
+  const QString path = makeMockFile(u"grows.reloadprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"rows":10})"_s)));
+  ASSERT_TRUE(app_session_->seedPlaybackFromSession());
+  PJ::PlaybackEngine& engine = app_session_->playbackEngine();
+  engine.setCurrentTime(PJ::DisplaySeconds{500.0e-9});
+
+  ASSERT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"rows":3,"extra_rows":10})"_s)));
+  ASSERT_TRUE(app_session_->seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.rangeMax().value, 1000.0e-9);
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 500.0e-9);
 }
 
 // Two files that share a basename but live in different directories (e.g. run1/log.mcap and run2/log.mcap, common

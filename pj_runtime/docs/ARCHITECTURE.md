@@ -48,14 +48,16 @@ does not link it.
   When no visible data remains it collapses the transport with `resetPlaybackToEmpty()`
   (pause, `[0,0]` range, cursor 0), the same reset the `CatalogModel::cleared()` hook runs
   on a full wipe: this is what stops playback when the last dataset is removed. While a
-  replacing reload's `RefillGuard` is open, the emptied dataset counts with the raw extent
-  it had when the refill began (`SessionManager::refillHeldRawBounds()`; dropped if the
-  dataset is removed), and its earliest-sample pin is held so the time origin does not
-  move: otherwise the range shrinks to the other datasets and the playhead is clamped
-  there, or the origin jumps and the shell shifts the playhead with it. Commit and
-  rollback emit `refillClosed`, on which `AppSession` recomputes the range (a rollback
-  restoring only object topics notifies no ingest), after re-pinning the origin from the
-  data left. Both scans
+  replacing reload's `RefillGuard` is open, the emptied dataset counts with the visible
+  extent it had when the refill began (`datasetRawTimeRange`, captured on
+  `SessionManager::refillStarting`; dropped once the catalog no longer shows the dataset),
+  and its earliest-sample pin is held so the time origin does not move (a static
+  reference's pin is dropped instead, as it never sets the origin). Otherwise the range
+  shrinks to the other datasets and the playhead is clamped there, or the origin jumps and
+  the shell shifts the playhead with it. Commit and rollback re-pin the origin from the data
+  left and emit `refillClosed`, on which `AppSession` recomputes the range (a rollback
+  restoring only object topics notifies no ingest); `FileLoader` rebuilds the catalog before
+  the commit, since its write host notifies nothing. Both scans
   share the private `forEachVisibleRawRange`, so the visibility and dedup rules live in one
   place. The playback range skips host-published topics (`isOffClockTopic`).
   Zero-time reference geometry is also outside the clock: a dataset containing a point

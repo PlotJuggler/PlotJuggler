@@ -824,7 +824,7 @@ std::unordered_set<DatasetId> SessionManager::refreshDatasetMinTimestampsForTopi
   for (const DatasetId dataset_id : dataset_ids) {
     if (const auto bounds = datasetRawBounds(dataset_id); bounds.has_value()) {
       (void)rememberDatasetMinTimestamp(dataset_id, bounds->first);
-    } else if (!refillOpen(dataset_id)) {  // a refilling dataset keeps its pin until the commit re-evaluates it
+    } else {
       invalidateDatasetMinTimestamp(dataset_id);
     }
   }
@@ -832,8 +832,11 @@ std::unordered_set<DatasetId> SessionManager::refreshDatasetMinTimestampsForTopi
 }
 
 void SessionManager::invalidateDatasetMinTimestamp(DatasetId dataset_id) const {
-  dataset_min_cache_.erase(dataset_id);
   global_min_cache_.reset();
+  if (refillOpen(dataset_id)) {
+    return;
+  }
+  dataset_min_cache_.erase(dataset_id);
 }
 
 void SessionManager::setUseTimeOffset(bool use) {
@@ -1117,18 +1120,24 @@ void SessionManager::notifyDatasetAboutToBeReplaced(DatasetId dataset_id) {
   emit datasetAboutToBeReplaced(dataset_id);
 }
 
-void SessionManager::openRefill(DatasetId dataset_id) {
-  OpenRefill& open = open_refills_[dataset_id];
-  if (open.guards++ == 0) {
-    open.held_raw_bounds = datasetRawBounds(dataset_id);
-    (void)datasetMinTimestamp(dataset_id);  // pin it while the data is still there
+void SessionManager::announceRefill(DatasetId dataset_id) {
+  // Emptied, a static reference no longer reads as one, and its pin would drag the origin to 0.
+  if (isStaticReferenceDataset(dataset_id)) {
+    invalidateDatasetMinTimestamp(dataset_id);
+  } else {
+    (void)datasetMinTimestamp(dataset_id);  // pins it while the data is still there
   }
+  emit refillStarting(dataset_id);
   emit datasetAboutToBeReplaced(dataset_id);
+}
+
+void SessionManager::openRefill(DatasetId dataset_id) {
+  ++open_refills_[dataset_id];
 }
 
 void SessionManager::closeRefill(DatasetId dataset_id) {
   const auto it = open_refills_.find(dataset_id);
-  if (it == open_refills_.end() || --it->second.guards > 0) {
+  if (it == open_refills_.end() || --it->second > 0) {
     return;
   }
   open_refills_.erase(it);
@@ -1140,16 +1149,6 @@ void SessionManager::closeRefill(DatasetId dataset_id) {
 
 bool SessionManager::refillOpen(DatasetId dataset_id) const {
   return open_refills_.contains(dataset_id);
-}
-
-std::vector<std::pair<DatasetId, std::pair<Timestamp, Timestamp>>> SessionManager::refillHeldRawBounds() const {
-  std::vector<std::pair<DatasetId, std::pair<Timestamp, Timestamp>>> held;
-  for (const auto& [dataset_id, open] : open_refills_) {
-    if (open.held_raw_bounds) {
-      held.emplace_back(dataset_id, *open.held_raw_bounds);
-    }
-  }
-  return held;
 }
 
 RefillGuard SessionManager::beginRefill(DatasetId dataset_id) {
@@ -1183,10 +1182,12 @@ RefillGuard::RefillGuard(SessionManager& session, DatasetId dataset_id) : sessio
   //     served from detached or partial data until commit or rollback.
   session.suspendOnDemand(dataset_id);
   // (1) Adapters drop cached TopicChunk* before any deque moves.
-  session.openRefill(dataset_id);
+  session.announceRefill(dataset_id);
   // (2) Detach, not free, keeping the ids registered for the refill.
   scalar_snapshot_ = session.dataEngine().detachDatasetChunks(dataset_id);
   object_snapshot_ = session.objectStore().detachDataset(dataset_id);
+  // Before (3), whose pin refresh must find the refill open.
+  session.openRefill(dataset_id);
   // (3) The UI shows the dataset empty.
   session.notifyIngest(QVector<TopicId>(scalar_topics.begin(), scalar_topics.end()), /*live=*/false);
 }
@@ -1732,9 +1733,6 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
 
 void SessionManager::removeDataset(DatasetId dataset_id) {
   data_engine_.removeDataset(dataset_id);
-  if (const auto refill = open_refills_.find(dataset_id); refill != open_refills_.end()) {
-    refill->second.held_raw_bounds.reset();
-  }
   dataset_source_paths_.erase(dataset_id);
   // A removed dataset's record must not resolve a future query (a reminted id could collide).
   dataset_source_records_.erase(dataset_id);

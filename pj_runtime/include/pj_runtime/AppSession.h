@@ -10,6 +10,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -114,8 +115,8 @@ class AppSession : public QObject {
   // seedPlaybackFromSession snaps the first-load playhead to). Returns nullopt when no topic has time-bearing data,
   // and then collapses the transport to the empty state (resetPlaybackToEmpty) ONLY if the catalog is genuinely empty:
   // a transient mid-reload (topics visible, chunks momentarily detached) leaves the range untouched. A dataset under
-  // refill counts with the extent it had when the refill began (SessionManager::refillHeldRawBounds), so the playhead
-  // is not clamped to the other datasets; SessionManager::refillClosed triggers the recompute without it.
+  // refill that the catalog still shows counts with the visible extent it had when the refill began, so the playhead
+  // is not clamped to the other datasets; SessionManager::refillClosed drops it and recomputes.
   std::optional<PJ::DisplaySeconds> recomputeRange();
 
   // Sets the active live-stream dataset (0 = none). While set AND playing, recomputeRange() scopes the range to this
@@ -173,6 +174,8 @@ class AppSession : public QObject {
 
   // 0 = none; see setActiveStreamingDataset.
   PJ::DatasetId active_streaming_dataset_id_ = 0;
+  // datasetRawTimeRange of each dataset when its refill began; counted by recomputeRange while the refill is open.
+  std::unordered_map<PJ::DatasetId, PJ::Range<PJ::Timestamp>> refill_held_raw_ranges_;
   // The datasets whose derived-input tier holds topics (demandOnDemandRawInputs).
   std::set<PJ::DatasetId> raw_input_datasets_;
 

@@ -2127,6 +2127,9 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
         if (cancel == 0) {
           ctx_->refill_guard->pruneVanishedTopics();
         }
+        // The write host notifies nothing, and the commit recomputes the playback range from the catalog: show the
+        // topics the reload added first, or the range misses them and clamps the playhead.
+        catalog_.rebuildFromDatastore();
         // Before finishLoadOnGui(), which resets ctx_: an uncommitted guard would roll back over the new data.
         ctx_->refill_guard->commit();
       }
