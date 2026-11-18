@@ -437,7 +437,8 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   widget. A row ref holds a `QPersistentModelIndex` until the next `ui_tree`; a tab ref holds its index and text, and
   reads as stale once another tab sits there. The other tools also take a widget's `objectName`, which is stable (root
   `CLAUDE.md`) and so suits a repro script; a name several visible widgets share (outside the windows a modal dialog
-  blocks) is refused rather than resolved to whichever a search finds first.
+  blocks) is refused rather than resolved to whichever a search finds first. A popup or child dialog is a window and
+  also a child of its owner: the name search counts it once, so a name in an open popup is not ambiguous.
 - `ui_plot` reads what the canvas paints and `ui_tree` cannot show: per visible plot its dock title, X and Y ranges,
   curves, and the tracker's value box as the user reads it (rows, empty when hidden). Ranges are fixed at three
   decimals so a script can `expect` their exact text; the value rows follow the precision preference (3 by default,

@@ -1,0 +1,11 @@
+# A popup is targeted by name: it is a window and also a child of its owner, and was counted twice.
+# The Datasets menu's top-left pixel is its "Show Values" checkbox.
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until get_status {} "name":"data.csv"
+until ui_tree {} "Periodic"
+ui_click {"name":"buttonDatasetsMenu","wait_ms":300}
+ui_tree {}
+expect QMenu#PJMenu (popup)
+ui_click {"name":"PJMenu","x":1,"y":1}
+expect the press landed on QCheckBox "Show Values"
