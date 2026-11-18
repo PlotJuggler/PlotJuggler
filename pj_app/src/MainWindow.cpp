@@ -4066,7 +4066,9 @@ void MainWindow::applyGlobalToggles(PlotWidget* plot) {
   }
   plot->setShowPoints(show_points_);
   plot->setGridVisible(activate_grid_);
-  applyDots(plot);
+  if (!applying_state_) {
+    applyDots(plot);
+  }
   plot->setReferenceLine(referenceDisplaySeconds());
   plot->setKeepRatioXY(keep_ratio_);
   applyLegendStatus(plot);
@@ -8621,7 +8623,7 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document, RestoreIntent 
   wireExistingPlots();
 
   // The global toggles are QSettings preferences, not in the document (xmlSaveState): restored plots adopt the
-  // current ones.
+  // current ones, except Dots, whose effect is the plot's saved style.
   forEachPlot([this](PlotWidget* plot) { applyGlobalToggles(plot); });
   applyShowPointsTo2DWidgets();
   return true;

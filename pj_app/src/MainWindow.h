@@ -652,7 +652,8 @@ class MainWindow : public QMainWindow {
   // Persists `position` (kHidden hides), updates the legend button and applies to every plot.
   void setLegendStatus(LegendStatus position);
 
-  // The global toolbar toggles, for a new plot.
+  // The global toolbar toggles, for a new plot. Dots is skipped while applying_state_: a restored plot keeps the
+  // style it was saved with.
   void applyGlobalToggles(PlotWidget* plot);
   void applyShowPointsToDock(DockWidget* dock);
   void applyShowPointsTo2DWidgets();
