@@ -1340,6 +1340,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // must be enough). Playing is following live: the engine holds at rangeMax between ingests instead of pausing;
   // pause unlocks scrubbing within the retained window, play snaps back to the newest sample.
   connect(streaming_manager_.get(), &StreamingSourceManager::streamStarted, this, [this](DatasetId id) {
+    streams_in_launch_order_.push_back(id);
     active_streaming_dataset_id_ = id;
     session_->setActiveStreamingDataset(id);  // scope recomputeRange to the live tip while playing
     streaming_playback_seeded_ = false;
@@ -1360,13 +1361,25 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       });
   connect(
       streaming_manager_.get(), &StreamingSourceManager::streamStopped, this,
-      [this](DatasetId id, const QString& reason) {
+      [this, snap_streaming_playback_to_live_edge](DatasetId id, const QString& reason) {
         session_->sessionManager().notifyStreamEnded(id);
+        std::erase(streams_in_launch_order_, id);
         if (active_streaming_dataset_id_ == id) {
-          active_streaming_dataset_id_ = 0;
-          session_->setActiveStreamingDataset(0);
+          // The last stream launched that has a live edge takes over, as a start would have handed it; with none,
+          // live-follow ends, since following a stream with no data would hold a frozen cursor.
+          const auto has_data = [this](DatasetId stream) {
+            return session_->sessionManager().datasetDisplayRange(stream).has_value();
+          };
+          const auto found = std::find_if(streams_in_launch_order_.rbegin(), streams_in_launch_order_.rend(), has_data);
+          const DatasetId next = found == streams_in_launch_order_.rend() ? 0 : *found;
+          active_streaming_dataset_id_ = next;
+          session_->setActiveStreamingDataset(next);
           streaming_playback_seeded_ = false;
-          session_->playbackEngine().setHoldAtRangeMax(false);
+          if (next == 0) {
+            session_->playbackEngine().setHoldAtRangeMax(false);
+          } else if (session_->playbackEngine().isPlaying()) {
+            (void)snap_streaming_playback_to_live_edge();
+          }
           refreshStreamingSeekLock();
         }
         // Finalizes only that source's file; the capture ends with its last live source. Taps attach at start()
@@ -6210,8 +6223,8 @@ void MainWindow::rollbackBrowserReplayImports() {
   }
   const std::optional<BrowserLayoutRuntime::Transport> transport = replay.transport_before_streams;
   PlaybackEngine& engine = session_->playbackEngine();
-  // Removing the replay's streams unfollowed whichever had become the followed
-  // one; follow the previous stream again first, so the range below is its window.
+  // Removing the replay's streams handed live-follow to another stream, or ended it; follow the previous stream
+  // again first, so the range below is its window.
   if (transport.has_value() && transport->followed_stream != 0 &&
       !streaming_manager_->layoutSourceId(transport->followed_stream).isEmpty()) {
     active_streaming_dataset_id_ = transport->followed_stream;

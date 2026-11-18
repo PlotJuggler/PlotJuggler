@@ -81,7 +81,8 @@ class StreamingSourceManager : public QObject {
   [[nodiscard]] DatasetId startFromLayout(
       const layout_xml::StreamingSourceRef& source, const QString& expanded_config, QString& error);
 
-  // One record per live session, in start order, as a source-bound save writes it: the configuration is the
+  // One record per live session, in DatasetId order (not launch order: an interactive start creates its dataset when
+  // its dialog opens), as a source-bound save writes it: the configuration is the
   // template it started from (layout sessions) or the one the dialog produced (interactive ones), with each
   // session's current display offset. Ids are unique: a session keeps its layout id unless an earlier session holds
   // it (then "<id>-2", ...); interactive ones are named "stream". The timeline order is left to the caller. Reads
@@ -92,7 +93,7 @@ class StreamingSourceManager : public QObject {
   // only.
   [[nodiscard]] QString layoutSourceId(DatasetId dataset_id) const;
 
-  // Each live session's dataset and the record id layoutSources() gives it, in start order. GUI thread only.
+  // Each live session's dataset and the record id layoutSources() gives it, in DatasetId order. GUI thread only.
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> layoutIds() const;
 
   // The live session `source` would start again: same resolved plugin and same configuration template, byte for

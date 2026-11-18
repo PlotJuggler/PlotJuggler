@@ -1,0 +1,13 @@
+# Two streams run; stopping the newer one leaves the older one followed live: playback keeps playing and the
+# cursor keeps moving, instead of freezing. Needs the Dummy Streamer plugin.
+# app:
+# needs: plugins
+until get_status {} "stream_sources"
+start_stream {"source":"Dummy Streamer"}
+start_stream {"source":"Dummy Streamer"}
+until get_status {} "name":"[stream] Dummy Streamer (2)"
+get_status {}
+expect "playing":true
+stop_stream {"dataset":"[stream] Dummy Streamer (2)"}
+grows get_status {} current_time
+expect "playing":true

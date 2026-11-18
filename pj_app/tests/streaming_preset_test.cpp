@@ -13,6 +13,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QByteArray>
+#include <QDialog>
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
@@ -552,6 +553,104 @@ TEST_F(StreamingPresetTest, RemovingADatasetDropsThePausedRowsOfItsEndedStream) 
   window_->removeDatasets({dataset});
   const auto merged = paused.flushTo(sessionManager().dataEngine());
   EXPECT_TRUE(merged.has_value()) << merged.error();
+}
+
+namespace {
+
+// Starts the test stream `id` from a layout record, on `topic` and with `extra` added to its configuration.
+PJ::DatasetId startStream(PJ::StreamingSourceManager& streams, const QString& id, const QString& extra = {}) {
+  PJ::layout_xml::StreamingSourceRef source;
+  source.id = id;
+  source.plugin_id = QString::fromLatin1(kPluginId);
+  source.plugin_config_json = uR"({"topic":"%1/data"%2})"_s.arg(id, extra);
+  QString error;
+  const PJ::DatasetId dataset = streams.startFromLayout(source, source.plugin_config_json, error);
+  EXPECT_NE(dataset, 0U) << error.toStdString();
+  return dataset;
+}
+
+}  // namespace
+
+// The newest stream is the one followed live. When it stops while an older one still runs,
+// the older one is followed: playback keeps playing and the cursor jumps to its tip.
+TEST_F(StreamingPresetTest, StoppingTheFollowedStreamFollowsAnotherOneStillRunning) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  const auto tip = [&](PJ::DatasetId dataset) {
+    const auto range = sessionManager().datasetDisplayRange(dataset);
+    return range.has_value() ? range->max.value : 0.0;
+  };
+  const PJ::DatasetId older = startStream(streams, u"older"_s);
+  ASSERT_TRUE(pumpUntil([&] { return sessionManager().datasetDisplayRange(older).has_value(); }));
+  // The newer stream publishes nothing, so while it is followed the transport stays where the older one left it.
+  const PJ::DatasetId newer =
+      startStream(streams, u"newer"_s, uR"(,"gate_file":"%1")"_s.arg(probe_dir_.filePath(u"never"_s)));
+  ASSERT_NE(older, 0U);
+  ASSERT_NE(newer, 0U);
+  ASSERT_EQ(PresetTestPeer::followedStream(*window_), newer);
+  PJ::PlaybackEngine& playback = PresetTestPeer::session(*window_).playbackEngine();
+  ASSERT_TRUE(playback.isPlaying());
+  const double tip_when_newer_started = tip(older);
+  ASSERT_TRUE(pumpUntil([&] { return tip(older) > tip_when_newer_started; }));
+  const double tip_before_stop = tip(older);
+
+  ASSERT_TRUE(streams.stopDatasetAndWait(newer, u"test"_s));
+  EXPECT_EQ(PresetTestPeer::followedStream(*window_), older);
+  EXPECT_EQ(PresetTestPeer::session(*window_).activeStreamingDataset(), older);
+  EXPECT_GE(playback.currentTime().value, tip_before_stop) << "the cursor should land on the older stream's tip";
+  EXPECT_TRUE(pumpUntil([&] { return playback.currentTime().value > tip_before_stop; }));
+  EXPECT_TRUE(playback.isPlaying());
+}
+
+// Live-follow goes back to the stream that launched last, not to the highest dataset id: an
+// interactive start owns its dataset from the moment its dialog opens.
+TEST_F(StreamingPresetTest, StoppingTheFollowedStreamFollowsTheLastOneLaunched) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  qputenv("PJ_LAYOUT_STREAM_DIALOG_CONFIG", R"({"topic":"x/data"})");
+  streams.onSourceChanged(QString::fromLatin1(kPluginId));
+  streams.onStartRequested();
+  ASSERT_TRUE(streams.hasPendingStart());
+  const PJ::DatasetId y = startStream(streams, u"y"_s);
+  ASSERT_NE(y, 0U);
+  QDialog* dialog = nullptr;
+  ASSERT_TRUE(pumpUntil([&] {
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+      if (auto* found = qobject_cast<QDialog*>(widget); found != nullptr && found->isModal() && found->isVisible()) {
+        dialog = found;
+      }
+    }
+    return dialog != nullptr;
+  }));
+  dialog->accept();
+  ASSERT_TRUE(pumpUntil([&] { return !streams.hasPendingStart(); }));
+  qunsetenv("PJ_LAYOUT_STREAM_DIALOG_CONFIG");
+  const PJ::DatasetId x = PresetTestPeer::followedStream(*window_);
+  ASSERT_NE(x, y);
+  ASSERT_LT(x, y) << "the dialog start owns the older dataset";
+  const PJ::DatasetId z = startStream(streams, u"z"_s);
+  ASSERT_EQ(PresetTestPeer::followedStream(*window_), z);
+  ASSERT_TRUE(pumpUntil([&] {
+    return sessionManager().datasetDisplayRange(x).has_value() && sessionManager().datasetDisplayRange(y).has_value();
+  }));
+
+  ASSERT_TRUE(streams.stopDatasetAndWait(z, u"test"_s));
+  EXPECT_EQ(PresetTestPeer::followedStream(*window_), x);
+}
+
+// A running stream that has published nothing has no live edge to follow: live-follow ends,
+// so playback runs to the end of what it shows and pauses, instead of holding a frozen cursor.
+TEST_F(StreamingPresetTest, StoppingTheFollowedStreamSkipsAStreamWithNoData) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  const PJ::DatasetId silent =
+      startStream(streams, u"silent"_s, uR"(,"gate_file":"%1")"_s.arg(probe_dir_.filePath(u"never"_s)));
+  const PJ::DatasetId live = startStream(streams, u"live"_s);
+  ASSERT_NE(silent, 0U);
+  ASSERT_NE(live, 0U);
+  ASSERT_TRUE(pumpUntil([&] { return sessionManager().datasetDisplayRange(live).has_value(); }));
+
+  ASSERT_TRUE(streams.stopDatasetAndWait(live, u"test"_s));
+  EXPECT_EQ(PresetTestPeer::followedStream(*window_), 0U);
+  EXPECT_EQ(PresetTestPeer::session(*window_).activeStreamingDataset(), 0U);
+  EXPECT_TRUE(pumpUntil([&] { return !PresetTestPeer::session(*window_).playbackEngine().isPlaying(); }));
 }
 
 // A sample stamped before the newest live one (a late arrival) can reach a paused stream.
