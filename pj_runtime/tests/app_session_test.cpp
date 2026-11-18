@@ -1161,6 +1161,32 @@ TEST(AppSessionTest, RefillKeepsPlayheadInsideAnotherDatasetsShorterRange) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
 }
 
+// A large single file refills progressively: a progress tick that has landed only the start of the data must not
+// clamp the playhead to it.
+TEST(AppSessionTest, RefillKeepsPlayheadPastAPartialRefillOfTheOnlyDataset) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  const PJ::DatasetId reloaded = makeShiftedDataset(session, "only", 0, "/s", {0, 1000 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{500.0});
+
+  {
+    PJ::RefillGuard refill = session.sessionManager().beginRefill(reloaded);
+    session.recomputeRange();
+    addScalarSamples(session, reloaded, "/s", {0, 50 * kSecond});
+    session.recomputeRange();
+    EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
+    addScalarSamples(session, reloaded, "/s", {1000 * kSecond});
+    refill.commit();
+  }
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 1000.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500.0);
+}
+
 // The held extent ends at the commit, which recomputes the range itself: a reload into a shorter file shrinks the
 // range and clamps the playhead.
 TEST(AppSessionTest, RefillCommitShrinksToAShorterReload) {
