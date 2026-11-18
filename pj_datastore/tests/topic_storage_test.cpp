@@ -44,6 +44,19 @@ TEST(TopicStorageTest, AppendChunks) {
   EXPECT_EQ(storage.sealedChunks().size(), 3U);
 }
 
+// A chunk sealed before the newest one but committed after it reads as newer.
+TEST(TopicStorageTest, ChunkIdsAscendInAppendOrder) {
+  TopicStorage storage(/*topic_id=*/1, TopicDescriptor{.name = "ids"});
+  TopicChunk older = makeTestChunk(1, 3000, 3900, 10);
+  TopicChunk newer = makeTestChunk(1, 1000, 1900, 10);
+  ASSERT_LT(older.id, newer.id);
+
+  ASSERT_TRUE(storage.appendSealedChunk(std::move(newer)).has_value());
+  ASSERT_TRUE(storage.appendSealedChunk(std::move(older)).has_value());
+
+  EXPECT_GT(storage.sealedChunks()[1].id, storage.sealedChunks()[0].id);
+}
+
 TEST(TopicStorageTest, TimeMinMax) {
   TopicDescriptor desc;
   desc.name = "time_range_topic";

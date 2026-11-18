@@ -162,10 +162,10 @@ class DataEngine {
   void reattachDatasetChunks(PJ::DatasetId dataset_id, DatasetChunkSnapshot&& snapshot);
 
   /// Moves every chunk into `dst` (registrations stay), matching topics by (dataset, name); dst must have them, with
-  /// compatible schemas (the staging engine is kept in lockstep). Each source topic's first visible row must not be
-  /// older than dst's timeMax(); any failure changes neither engine. Zero-copy. The source's retention floor and
-  /// evicted-through chunk id carry over, so trimmed rows stay hidden and a consumer that never saw them records
-  /// the gap.
+  /// compatible schemas (the staging engine is kept in lockstep), and a failure changes neither engine. Zero-copy; a
+  /// source row older than dst's newest is kept, as an overlapping chunk. The source's retention floor and
+  /// evicted-through chunk id carry over, so trimmed rows stay hidden and a consumer that never saw them records the
+  /// gap.
   PJ::Status flushTo(DataEngine& dst);
 
   /// Replaces dataset `primary_id`'s data with what was ingested into `staged`'s `staged_id` (the reload path),

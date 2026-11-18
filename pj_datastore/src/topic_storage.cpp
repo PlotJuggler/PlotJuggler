@@ -57,6 +57,13 @@ PJ::Status TopicStorage::appendSealedChunk(TopicChunk chunk) {
   if (chunk.stats.encoded_byte_size == 0) {
     chunk.stats.encoded_byte_size = encodedChunkByteSize(chunk);
   }
+  // Derived nodes skip chunks whose id is at or below what they consumed, so ids must ascend in commit order. A chunk
+  // sealed before one already here (another writer held it, or a flush moved it) gets a fresh id.
+  const ChunkId newest = sealed_chunks_.empty() ? evicted_through_chunk_id_
+                                                : std::max(sealed_chunks_.back().id, evicted_through_chunk_id_);
+  if (chunk.id <= newest) {
+    chunk.id = TopicChunkBuilder::nextChunkId();
+  }
 
   // Only a chunk strictly after every existing sample keeps the series generation: incremental consumers absorb it,
   // any overlap makes their caches rebuild.

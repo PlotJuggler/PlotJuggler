@@ -183,6 +183,13 @@ TEST_F(StreamEngineSwapTest, CachedSourceHandlesResolveAcrossPauseAndResumeSwap)
   // ts 10 + ts 30 on the primary, ts 20 on the secondary.
   EXPECT_EQ(rowCount(primary_engine_, topic.id), 2U);
   EXPECT_EQ(rowCount(secondary_engine_, topic.id), 1U);
+
+  // Resume swaps the target before it flushes, so the live row at 30 reached the primary first; the flush still
+  // brings the paused row over.
+  const auto flushed = secondary_engine_.flushTo(primary_engine_);
+  ASSERT_TRUE(flushed.has_value()) << flushed.error();
+  EXPECT_EQ(rowCount(primary_engine_, topic.id), 3U);
+  EXPECT_EQ(rowCount(secondary_engine_, topic.id), 0U);
 }
 
 // A topic first ensured mid-pause on the source path lands its sample on the secondary and leaves the frozen primary

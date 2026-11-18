@@ -484,10 +484,6 @@ Status DataEngine::flushTo(DataEngine& dst) {
           "flushTo: destination has no topic '" + src_storage.descriptor().name + "' for dataset " +
           std::to_string(src_storage.descriptor().dataset_id));
     }
-    // timeMin() is the first visible row: rows under a paused stream's retention floor stay hidden after the move.
-    if (!dst_storage->empty() && src_storage.timeMin() < dst_storage->timeMax()) {
-      return PJ::unexpected("flushTo: monotonicity violation for topic '" + src_storage.descriptor().name + "'");
-    }
     plan.push_back({&src_storage, dst_storage});
   }
 
@@ -505,17 +501,16 @@ void DataEngine::adoptChunksFrom(TopicStorage& dst, TopicStorage& src) {
   const TopicId dst_id = dst.topicId();
   for (auto& chunk : drained) {
     chunk.topic_id = dst_id;
-    dst.sealed_chunks_.push_back(std::move(chunk));
+    // Rows older than dst's newest are kept as overlapping chunks, as ingest keeps them; the reads merge them.
+    (void)dst.appendSealedChunk(std::move(chunk));
   }
-  dst.invalidateChunkAggregate();
   // src's floor keeps a straddling chunk's sub-floor rows hidden; its evicted-through id lets a consumer that never
   // saw the dropped rows notice the gap.
   dst.retention_floor_ = std::max(dst.retention_floor_, src.retention_floor_);
   dst.evicted_through_chunk_id_ = std::max(dst.evicted_through_chunk_id_, src.evicted_through_chunk_id_);
   src.retention_floor_ = kNoRetentionFloor;
   src.evicted_through_chunk_id_ = 0;
-  // Both sides changed outside appendSealedChunk() (the flushTo boundary even allows an equal timestamp), so
-  // incremental sample caches on either must rebuild.
+  // src changed outside appendSealedChunk(), so its incremental sample caches must rebuild; dst's too, as before.
   ++src.series_generation_;
   ++dst.series_generation_;
 }

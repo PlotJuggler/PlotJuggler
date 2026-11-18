@@ -660,9 +660,6 @@ Status ObjectStore::flushTo(ObjectStore& dst) {
           "flushTo: destination has no topic '" + src_series->descriptor.topic_name + "' for dataset " +
           std::to_string(src_series->descriptor.dataset_id));
     }
-    if (!dst_series->ordered.empty() && src_series->ordered.frontTimestamp() < dst_series->ordered.backTimestamp()) {
-      return unexpected("flushTo: monotonicity violation for topic '" + src_series->descriptor.topic_name + "'");
-    }
     plan.push_back({src_series.get(), dst_series});
   }
 

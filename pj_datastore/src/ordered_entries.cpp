@@ -306,11 +306,23 @@ void OrderedEntries::rebuildUidOrder() {
 // --- Bulk cross-series ops ---
 
 void OrderedEntries::appendReuidFrom(OrderedEntries& src) {
+  const auto resident = static_cast<std::ptrdiff_t>(entries_.size());
+  // Both runs are sorted. Merging from our first entry stamped after the moved run starts puts a moved entry after our
+  // equal stamps, as push() does; without overlap the merge range is empty.
+  const std::ptrdiff_t merge_from =
+      src.empty() ? resident
+                  : std::upper_bound(entry_timestamps_.begin(), entry_timestamps_.end(), src.frontTimestamp()) -
+                        entry_timestamps_.begin();
   for (ObjectEntry& entry : src.entries_) {
     entry.sequential_uid = SequentialUID::getNext();
     entries_.push_back(std::move(entry));
   }
   entry_timestamps_.insert(entry_timestamps_.end(), src.entry_timestamps_.begin(), src.entry_timestamps_.end());
+  std::inplace_merge(
+      entries_.begin() + merge_from, entries_.begin() + resident, entries_.end(),
+      [](const ObjectEntry& a, const ObjectEntry& b) { return a.timestamp < b.timestamp; });
+  std::inplace_merge(
+      entry_timestamps_.begin() + merge_from, entry_timestamps_.begin() + resident, entry_timestamps_.end());
   // Rebuilt rather than re-UIDed: consumer cursors hold the existing UIDs, whose order an out-of-order insert may
   // have made non-identity.
   rebuildUidOrder();

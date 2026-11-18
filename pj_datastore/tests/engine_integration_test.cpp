@@ -989,6 +989,30 @@ void writeScalars(DataEngine& engine, ScalarSeriesHandle handle, Timestamp start
   engine.commitChunks(std::move(flushed));
 }
 
+// Every visible row of `topic`, in the merge cursor's (time) order.
+std::vector<Timestamp> rowTimestamps(DataEngine& engine, TopicId topic) {
+  std::vector<Timestamp> stamps;
+  auto cursor = engine.createReader().rangeQuery(
+      QueryRange{
+          .topic_id = topic,
+          .t_min = std::numeric_limits<Timestamp>::min(),
+          .t_max = std::numeric_limits<Timestamp>::max(),
+      });
+  EXPECT_TRUE(cursor.has_value());
+  if (cursor.has_value()) {
+    cursor->forEach([&stamps](const SampleRow& row) { stamps.push_back(row.timestamp); });
+  }
+  return stamps;
+}
+
+// The IncrementalEngine reads a topic's chunk ids as its commit order.
+bool chunkIdsAscend(const DataEngine& engine, TopicId topic) {
+  const auto& chunks = engine.getTopicStorage(topic)->sealedChunks();
+  return std::adjacent_find(chunks.begin(), chunks.end(), [](const TopicChunk& a, const TopicChunk& b) {
+           return b.id <= a.id;
+         }) == chunks.end();
+}
+
 }  // namespace
 
 TEST(DataEngineFlushTest, MovesAllChunksFromSrcToDst) {
@@ -1051,22 +1075,56 @@ TEST(DataEngineFlushTest, AppendsToExistingDstChunks) {
   EXPECT_EQ(count, 2048U);
 }
 
-TEST(DataEngineFlushTest, RejectsMonotonicityViolation) {
+// A paused stream can receive a row stamped before the newest live row (multi-publisher
+// topics interleave their stamps). The flush keeps it and the rest of the paused rows,
+// of that topic and of every other.
+TEST(DataEngineFlushTest, KeepsALatePausedRowOnEveryTopic) {
   auto f = buildFlushFixture();
-  writeScalars(f.dst, f.dst_handle, /*start=*/static_cast<Timestamp>(1000) * 1000, /*count=*/1024);
-  writeScalars(f.src, f.src_handle, /*start=*/0, /*count=*/1024);  // earlier than dst.
+  DataWriter src_writer = f.src.createWriter();
+  const auto src_other = *src_writer.registerScalarSeries(f.src_dataset, "other/topic", NumericType::kFloat64);
+  DataWriter dst_writer = f.dst.createWriter();
+  const auto dst_other = *dst_writer.registerScalarSeries(f.dst_dataset, "other/topic", NumericType::kFloat64);
 
-  const auto* src_storage = f.src.getTopicStorage(f.src_handle.topic_id);
-  const auto* dst_storage = f.dst.getTopicStorage(f.dst_handle.topic_id);
-  const std::size_t pre_src = src_storage->sealedChunks().size();
-  const std::size_t pre_dst = dst_storage->sealedChunks().size();
+  writeScalars(f.dst, f.dst_handle, /*start=*/0, /*count=*/1024);  // live: 0 .. 1'023'000
+  writeScalars(f.dst, dst_other, /*start=*/0, /*count=*/10);
+  constexpr Timestamp kLate = 1'022'500;    // older than the newest live row
+  for (std::size_t i = 0; i < 2000; ++i) {  // two chunks, the late row in the first
+    src_writer.appendScalar(f.src_handle, 1'024'000 + static_cast<Timestamp>(i) * 1000, 1.0);
+    if (i == 3) {
+      src_writer.appendScalar(f.src_handle, kLate, 2.0);
+    }
+  }
+  f.src.commitChunks(src_writer.flushAll());
+  writeScalars(f.src, src_other, /*start=*/10'000, /*count=*/10);
 
   auto result = f.src.flushTo(f.dst);
-  EXPECT_FALSE(result.has_value());
+  ASSERT_TRUE(result.has_value()) << result.error();
 
-  // Neither engine mutated.
-  EXPECT_EQ(src_storage->sealedChunks().size(), pre_src);
-  EXPECT_EQ(dst_storage->sealedChunks().size(), pre_dst);
+  const auto stamps = rowTimestamps(f.dst, f.dst_handle.topic_id);
+  EXPECT_EQ(stamps.size(), 1024U + 2001U);
+  EXPECT_NE(std::find(stamps.begin(), stamps.end(), kLate), stamps.end());
+  EXPECT_TRUE(chunkIdsAscend(f.dst, f.dst_handle.topic_id));
+  EXPECT_EQ(rowTimestamps(f.dst, dst_other.topic_id).size(), 20U);
+  EXPECT_TRUE(f.src.getTopicStorage(f.src_handle.topic_id)->empty());
+  EXPECT_TRUE(f.src.getTopicStorage(src_other.topic_id)->empty());
+}
+
+// Resume swaps the write target back before it flushes, so a live row sealed after the
+// paused ones can reach dst first. The paused rows still arrive, and ids still ascend.
+TEST(DataEngineFlushTest, PausedRowsFlushBeforeANewerLiveRow) {
+  auto f = buildFlushFixture();
+  writeScalars(f.dst, f.dst_handle, /*start=*/0, /*count=*/1024);          // live before the pause
+  writeScalars(f.src, f.src_handle, /*start=*/1'024'000, /*count=*/1024);  // paused
+  writeScalars(f.dst, f.dst_handle, /*start=*/2'048'000, /*count=*/1);     // live after the swap
+
+  auto result = f.src.flushTo(f.dst);
+  ASSERT_TRUE(result.has_value()) << result.error();
+
+  const auto stamps = rowTimestamps(f.dst, f.dst_handle.topic_id);
+  EXPECT_EQ(stamps.size(), 2049U);
+  EXPECT_EQ(stamps.back(), 2'048'000);
+  EXPECT_TRUE(chunkIdsAscend(f.dst, f.dst_handle.topic_id));
+  EXPECT_TRUE(f.src.getTopicStorage(f.src_handle.topic_id)->empty());
 }
 
 TEST(DataEngineFlushTest, RejectsUnknownTopicInDst) {

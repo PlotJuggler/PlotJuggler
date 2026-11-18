@@ -1744,6 +1744,36 @@ static void appendRow(DataEngine& engine, PJ::TopicId topic_id, PJ::Timestamp ts
   engine.commitChunks(writer.flushAll());
 }
 
+// Chunk ids are drawn at seal, so a writer can commit a chunk after another writer's newer one. The node must still
+// read it: it skips chunks whose id is at or below what it already consumed.
+TEST(IncrementalEngineTest, ChunkSealedBeforeACommittedOneStillReachesTheNode) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId src = makeLinearTopic(engine, ds, 2.0, 5);  // t = 0..4 s
+  PJ::NodeId node = *derived.addSisoTransform(src, "deriv", ds, std::make_unique<DerivativeTransform>());
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  DataWriter held_writer = engine.createWriter();
+  ASSERT_TRUE(held_writer.beginRow(src, 10'000'000'000LL).has_value());
+  held_writer.set(src, 0, 20.0);
+  ASSERT_TRUE(held_writer.finishRow(src).has_value());
+  auto held = held_writer.flushAll();  // sealed: its id is now older than the next chunk's
+
+  appendLinearRows(engine, src, 2.0, 5, /*start_i=*/5);  // t = 5..9 s
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  engine.commitChunks(std::move(held));
+  notify(derived, {src});
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+
+  const auto rows = collectRowsCol(engine, derived.outputTopics(node)[0]);
+  ASSERT_EQ(rows.size(), 10u);
+  EXPECT_EQ(rows.back().first, 10'000'000'000LL);
+}
+
 TEST(IncrementalEngineTest, SisoLateInputCommitTriggersFullRecompute) {
   DataEngine engine;
   IncrementalEngine derived(engine);

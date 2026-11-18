@@ -578,7 +578,7 @@ void TopicChunkBuilder::sortRowsByTimestamp() {
 TopicChunk TopicChunkBuilder::seal() {
   sortRowsByTimestamp();
   TopicChunk chunk;
-  chunk.id = next_chunk_id++;
+  chunk.id = nextChunkId();
   chunk.topic_id = topic_id_;
   chunk.schema_version = schema_id_;
   chunk.stats = stats_;

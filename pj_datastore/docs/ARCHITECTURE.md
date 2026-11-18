@@ -20,9 +20,10 @@ from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time
 - **Columns are append-only.** Field ids are dense from 0 and never change once given, so adding a column never
   invalidates a `FieldId` or a column index. The app keys curves by (topic id, column index); reload and merge keep
   both (see "Reload, merge and removal").
-- **Chunks** are immutable once sealed. Chunk ids come from one process-wide counter at seal, so a chunk sealed later
-  has a larger id; derived-series watermarks and gap detection rely on that. A writer holds sealed chunks until it
-  flushes, so chunks from different writers can be committed out of id order.
+- **Chunks** are immutable once sealed, except for their id. Ids come from one process-wide counter, and within a
+  topic they ascend in commit order: derived-series watermarks and gap detection rely on that. A writer holds sealed
+  chunks until it flushes, so another writer's newer chunk can land first; `TopicStorage::appendSealedChunk()` then
+  gives the late one a fresh id.
 
 ## Ingest and schema evolution
 
@@ -123,13 +124,16 @@ While a stream is paused the GUI keeps showing the primary engine and store, and
   a swap. Mirroring names the dataset by id, so the streaming manager creates the dataset on both engines with the
   same id. Object topics are registered on both stores with the same id.
 - **Resume** swaps the targets back first, so a push already in flight finishes on the staging side, then moves the
-  staged data into the primary with `flushTo()`: zero-copy, topics matched by (dataset, name). Each `flushTo()` checks
-  everything before it moves anything, so a failure changes neither side. The paused tail's retention floor and
+  staged data into the primary with `flushTo()`: zero-copy, topics matched by (dataset, name). Each `flushTo()`
+  checks every topic before it moves anything, so a failure changes neither side. The paused tail's retention floor and
   evicted-through chunk id move with it: a pause longer than the window ends as one gap for a derived node that had not
   seen the trimmed rows. `ObjectStore::flushTo()` gives the moved entries fresh UIDs and applies the destination's
   retention; the scalar side is re-trimmed by the caller.
-- Both `flushTo()`s require each moved topic to start at or after the destination's newest timestamp (see "Known
-  gaps").
+- **Late paused rows are kept.** A paused row can be older than the primary's newest: a late sample, or a live row
+  committed between the target swap and the flush. The scalar side appends the paused chunks as overlapping ones, as
+  out-of-order ingest does, and derived nodes replay their input when they see rows older than they consumed. The
+  object side merges the moved entries into timestamp order, after entries with an equal timestamp, as an
+  out-of-order push does.
 
 ## Reload, merge and removal
 
@@ -288,9 +292,6 @@ the Luau and Python filter classes on it ([FILTER_CLASS.md](../../pj_scripting/d
 
 ## Known gaps
 
-- A stream resume fails as a whole when any topic's first paused row is older than the primary's newest timestamp,
-  which out-of-order ingest or a commit landing between the target swap and the flush can cause; the paused data stays
-  in the staging engine and store, and every later resume fails the same way.
 - `SeriesReader`'s index-based lookups (`sampleAt()`, `indexAtOrBeforeTime()`, `indexAtOrAfterTime()`) assume
   time-ordered chunks and are wrong when chunks overlap. The plots use them only to size buffers.
 - A column added to a topic that has a schema exists only in the physical layout: `getTypeTree()` does not show it.
