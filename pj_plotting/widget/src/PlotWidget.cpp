@@ -1800,7 +1800,7 @@ void PlotWidget::copyWidgetToClipboard() {
   if (plot_element.isNull()) {
     return;
   }
-  stampClipboardCurveKeys(plot_element);
+  stampLiveCurveKeys(plot_element);
   doc.appendChild(plot_element);
   widget_clipboard::setXml(doc.toString(2));
 }
@@ -1845,7 +1845,7 @@ void PlotWidget::stampDatasetPath(QDomElement& element, DatasetId dataset_id, co
   }
 }
 
-void PlotWidget::stampClipboardCurveKeys(QDomElement& plot_element) const {
+void PlotWidget::stampLiveCurveKeys(QDomElement& plot_element) const {
   // Full-path qualifier so a clipboard paste in a later session can validate a reminted id (rebindClipboardCurveKeys).
   // xmlSaveState already stamped dataset_id and dataset_source; the path is the tiebreak for same-basename files.
   QDomElement curve_element = plot_element.firstChildElement(u"curve"_s);
@@ -1878,7 +1878,7 @@ void PlotWidget::rebindClipboardCurveKeys(QDomElement& plot_element) const {
     return;
   }
   // Clipboard XML carries the dataset qualifiers of any snapshot (dataset_id, dataset_source, full dataset_path,
-  // written by xmlSaveState / stampClipboardCurveKeys), and the clipboard outlives undo-history epochs: a pasted id may
+  // written by xmlSaveState / stampLiveCurveKeys), and the clipboard outlives undo-history epochs: a pasted id may
   // be stale or reminted. Three-way result:
   //   value   = resolved concrete key: set it;
   //   empty   = the curve was qualified but resolution failed: clear the concrete key, so a stale opaque key from

@@ -137,7 +137,9 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
 - **Widget tabs and history.** A tab can host an arbitrary widget (`addWidgetTab`): never serialized, kept across
   `xmlLoadState`, with an optional close veto; closing one is not an undo step. History-exempt plot tabs persist in
   layout files but are omitted from undo snapshots, which keep their live page. `duplicateTab` copies a plot tab through
-  its XML with fresh state ids, so the copy never aliases the source in id-keyed lookups.
+  its XML with fresh state ids, so the copy never aliases the source in id-keyed lookups. That XML is restored inside
+  `pj_plotting`, without the shell's `rebindCurveKeys`, so the source plots first stamp their live curve keys into it
+  (`PlotWidget::stampLiveCurveKeys`, as a clipboard copy does); without them every copied plot comes up empty.
 - **Layout restore** parses and validates the whole structural tree before changing the live docker, restores splitter
   ratios as large relative weights (the docker is not laid out at its final size yet, so pixel scaling would distort the
   split), and emits no undo step for its intermediate states. It restores into the live plot page whose tab id

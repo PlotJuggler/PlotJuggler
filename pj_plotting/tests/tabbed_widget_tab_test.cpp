@@ -6,19 +6,26 @@
 // serialization contract (never saved, always survive xmlLoadState).
 
 #include <gtest/gtest.h>
+#include <qwt_plot_curve.h>
 
 #include <QApplication>
+#include <QColor>
 #include <QDomDocument>
 #include <QFrame>
 #include <QLabel>
+#include <QPen>
 #include <QPointer>
 #include <QPushButton>
 #include <QtGlobal>
+#include <string_view>
 
+#include "pj_datastore/writer.hpp"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
+#include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/SessionManager.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -601,6 +608,75 @@ TEST(TabbedPlotDuplicate, CopiesLayoutNextToSourceWithFreshIdsAndOneUndoStep) {
 
   copy->setHistoryExempt(true);  // the only intended difference was the dropped exempt/owner flags
   copy->setOwnerMetadata(u"assistant"_s, u"run"_s);
+  EXPECT_EQ(idFreeXml(*copy), idFreeXml(*source));
+}
+
+// The copy shows the source's curves (time series and XY) in the source's colours, not empty plots.
+TEST(TabbedPlotDuplicate, CopiesCurvesOnCatalogSeries) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog{&session};
+  auto domain = session.dataEngine().createTimeDomain("run");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  auto dataset =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.csv", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  QStringList keys;
+  for (const std::string_view topic : {"/sine", "/cosine"}) {
+    auto handle = writer.registerScalarSeries(*dataset, topic, PJ::NumericType::kFloat64);
+    ASSERT_TRUE(handle.has_value()) << handle.error();
+    writer.appendScalar(*handle, 0, 0.0);
+    writer.appendScalar(*handle, 1'000'000'000, 1.0);
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+    for (const auto& curve : catalog.curves()) {
+      if (const auto descriptor = catalog.curveDescriptor(curve.name);
+          descriptor && descriptor->topic_id == handle->topic_id) {
+        keys.push_back(curve.name);
+      }
+    }
+  }
+  ASSERT_EQ(keys.size(), 2);
+
+  PJ::TabbedPlotWidget tabbed;
+  tabbed.setDataServices(&session, &catalog);
+  PJ::PlotDocker* source = tabbed.dockerAt(0);
+  QDomDocument layout;
+  ASSERT_TRUE(
+      layout.setContent(uR"(
+      <Tab id="src" containers="1"><Container>
+      <DockSplitter orientation="|" count="2" sizes="0.5;0.5">
+      <DockArea id="a" name="ts"><plot id="p" mode="TimeSeries"/></DockArea>
+      <DockArea id="b" name="xy"><plot id="q" mode="XYPlot"/></DockArea>
+      </DockSplitter></Container></Tab>)"_s));
+  ASSERT_TRUE(source->xmlLoadState(layout.documentElement()));
+  PJ::PlotWidget* source_ts = source->plotAt(0)->plotWidget();
+  PJ::PlotWidget* source_xy = source->plotAt(1)->plotWidget();
+  ASSERT_NE(source_ts, nullptr);
+  ASSERT_NE(source_xy, nullptr);
+  ASSERT_NE(source_ts->addCurve(keys[0], QColor(u"#ff0000"_s)), nullptr);
+  ASSERT_NE(source_ts->addCurve(keys[1], QColor(u"#00ff00"_s)), nullptr);
+  ASSERT_NE(source_xy->addCurveXY(keys[1], keys[0], u"phase"_s, QColor(u"#0000ff"_s)), nullptr);
+
+  int undo_steps = 0;
+  QObject::connect(&tabbed, &PJ::TabbedPlotWidget::undoableChange, [&undo_steps]() { ++undo_steps; });
+
+  PJ::PlotDocker* copy = tabbed.duplicateTab(source);
+
+  ASSERT_NE(copy, nullptr);
+  EXPECT_EQ(undo_steps, 1);
+  ASSERT_EQ(copy->plotCount(), 2);
+  for (int index = 0; index < 2; ++index) {
+    const PJ::PlotWidget* from = source->plotAt(index)->plotWidget();
+    const PJ::PlotWidget* to = copy->plotAt(index)->plotWidget();
+    ASSERT_NE(to, nullptr);
+    ASSERT_EQ(to->curveList().size(), from->curveList().size()) << "plot " << index;
+    auto from_it = from->curveList().begin();
+    for (const auto& info : to->curveList()) {
+      EXPECT_EQ(info.source_name, from_it->source_name);
+      EXPECT_EQ(info.curve->pen().color(), from_it->curve->pen().color());
+      ++from_it;
+    }
+  }
   EXPECT_EQ(idFreeXml(*copy), idFreeXml(*source));
 }
 

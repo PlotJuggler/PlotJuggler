@@ -26,7 +26,9 @@
 #include <optional>
 #include <utility>
 
+#include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
+#include "pj_plotting/PlotWidget.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgUtil.h"
 
@@ -474,6 +476,21 @@ PlotDocker* TabbedPlotWidget::duplicateTab(PlotDocker* source) {
   }
   QDomDocument doc;
   QDomElement tab_element = source->xmlSaveState(doc);
+  // The saved curves carry only stable topic/field paths, which the shell resolves on a layout load; the copy binds the
+  // source's live keys instead.
+  for (int index = 0; index < source->plotCount(); ++index) {
+    DockWidget* dock = source->plotAt(index);
+    const PlotWidget* plot = dock != nullptr ? dock->plotWidget() : nullptr;
+    if (plot == nullptr) {
+      continue;
+    }
+    const QDomNodeList plots = tab_element.elementsByTagName(u"plot"_s);
+    for (int node = 0; node < plots.size(); ++node) {
+      if (QDomElement plot_element = plots.at(node).toElement(); plot_element.attribute(u"id"_s) == plot->stateId()) {
+        plot->stampLiveCurveKeys(plot_element);
+      }
+    }
+  }
   // Empty ids make every restored docker, area and plot mint a fresh one.
   for (const QString& attribute : {u"id"_s, u"history_exempt"_s, u"owner_plugin"_s, u"tab_id"_s}) {
     tab_element.removeAttribute(attribute);
