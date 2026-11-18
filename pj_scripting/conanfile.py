@@ -5,7 +5,7 @@ from conan.tools.files import copy
 
 class PjScriptingCoreConan(ConanFile):
     """The Luau scripting engine + whole-series marker analysis, packaged so the
-    standalone official-plugins repo (the GUI Anomaly Detector + the headless
+    standalone official-plugins repo (the GUI Marker Editor + the headless
     anomaly_runner) can link the SAME engine the app uses — one engine, GUI ==
     headless. Depends only on pj_base (via plotjuggler_sdk) + Luau + pocketfft; the
     SISO DataProcessor adapter (which needs pj_datastore) is NOT part of this
@@ -23,6 +23,7 @@ class PjScriptingCoreConan(ConanFile):
         "CMakeLists.txt",
         "src/luau_engine.cpp",
         "src/marker_engine.cpp",
+        "src/marker_color_names.inc",
         "src/luau_sandbox_state.h",
         "include/*",
         "cmake/*",

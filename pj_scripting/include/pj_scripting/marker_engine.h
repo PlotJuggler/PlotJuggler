@@ -14,6 +14,7 @@
 #include <optional>
 #include <pj_base/builtin/plot_markers.hpp>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "pj_scripting/sandbox.h"
@@ -62,7 +63,17 @@ inline constexpr std::size_t kMaxMarkerOutputBytes = std::size_t{16} << 20;
 ///   createBandMarker(low, high, opts?) -- a shaded value band [low, high]
 ///   bandPower(series, fLo, fHi)       -- summed FFT power in [fLo,fHi] Hz, DC-removed
 ///   GetSeriesNames()                  -- list of available series names
-/// `opts` is an optional table: {label, color="#rrggbb", severity, status, category, description}.
+///   colorRegions(series, mapping)     -- shade the background by value: `series` is a name or series(...); `mapping`
+///                                        is a table value -> color or a function v -> color | {color=, label=, ...}
+///                                        | nil (no region). Consecutive equal results merge into one region; the
+///                                        last one ends at the last sample.
+///   ranges({min, max, color}, ...)    -- a mapping for colorRegions. Ranges may overlap: v takes the first listed
+///                                        range with min <= v < max; none -> no region. `inf` is math.huge.
+///   lessThan(limit, color) / greaterThan(limit, color) -- mappings for colorRegions: `color` where v < limit
+///                                        (v > limit), no region elsewhere. In ranges and these, `color` may also be
+///                                        a {color=, label=, ...} table.
+/// `opts` is an optional table: {label, color, severity, status, category, description}. A color is "#rrggbb", "#rgb"
+/// or a Qt color name (case-insensitive); anything else fails the run.
 /// Native marker storage (the markers and their strings) is capped by `max_output_bytes`, apart from the VM's memory
 /// cap; a script past it fails the run. A success sets `output_bytes`, when given, to what the markers count against
 /// it. `cancelled` is polled from the VM's interrupt at every safepoint on the calling thread, so it must be cheap and
@@ -73,6 +84,10 @@ inline constexpr std::size_t kMaxMarkerOutputBytes = std::size_t{16} << 20;
     const std::string& code, const SeriesProvider& provider, std::string* error, BudgetLimits limits = {},
     const std::function<bool()>& cancelled = {}, std::size_t max_output_bytes = kMaxMarkerOutputBytes,
     std::size_t* output_bytes = nullptr);
+
+/// A rule's color: "#rrggbb", "#rgb" or one of Qt's color names (QColor::colorNames(), case-insensitive; "transparent"
+/// has alpha 0). The names are a copy of Qt's table, since this engine cannot link Qt; nullopt for anything else.
+[[nodiscard]] std::optional<PJ::sdk::ColorRGBA> parseMarkerColor(std::string_view text);
 
 /// Compiles and loads the module without running a rule: the syntax gate behind the `validate_data_processor_script`
 /// service slot. False sets `*error` to the compiler or loader message; runtime errors are not caught here.

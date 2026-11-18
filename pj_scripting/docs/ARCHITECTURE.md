@@ -69,6 +69,13 @@ recomputes from the start.
 output is capped by `max_output_bytes` apart from the VM cap, and `cancelled` is polled from the interpreter's
 interrupt, so a loop that calls nothing native is still stoppable.
 
+The rule helpers `colorRegions`, `ranges`, `lessThan` and `greaterThan` are Luau (`kPrelude` in `marker_engine.cpp`),
+run after the natives are bound and before `luaL_sandbox`, so they freeze with the other globals. `colorRegions` emits
+through a private native that leaves the rule's own `startMarker` region open. Color names are a copy of Qt's table
+(`src/marker_color_names.inc`), since `pj_scripting_core` cannot link Qt; `pj_plotting`'s `MarkerColorNames.MatchQt`
+fails when the pinned Qt's table drifts from it. To regenerate it, print `QColor::colorNames()` with their RGBA,
+sorted by name.
+
 ## On-demand object scripts
 
 `on_demand_script.h` routes a recipe's `language` to its compiler and runner so `pj_runtime` holds and runs a script

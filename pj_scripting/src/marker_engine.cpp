@@ -11,15 +11,19 @@
 #include <pocketfft_hdronly.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <new>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "lua.h"
@@ -63,6 +67,61 @@ double SeriesView::atTime(double t) const {
 
 namespace {
 
+struct NamedColor {
+  std::string_view name;
+  std::uint8_t r, g, b, a;
+};
+
+constexpr NamedColor kNamedColors[] = {
+#include "marker_color_names.inc"
+};
+
+}  // namespace
+
+std::optional<PJ::sdk::ColorRGBA> parseMarkerColor(std::string_view text) {
+  if (!text.empty() && text[0] == '#') {
+    const auto hx = [](char c) -> int {
+      if (c >= '0' && c <= '9') {
+        return c - '0';
+      }
+      if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+      }
+      if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+      }
+      return -1;
+    };
+    const std::string_view digits = text.substr(1);
+    if (digits.size() != 3 && digits.size() != 6) {
+      return std::nullopt;
+    }
+    int v[6];
+    for (std::size_t i = 0; i < digits.size(); ++i) {
+      v[i] = hx(digits[i]);
+      if (v[i] < 0) {
+        return std::nullopt;
+      }
+    }
+    const auto channel = [&](std::size_t i) {
+      return static_cast<std::uint8_t>(digits.size() == 3 ? v[i] * 17 : v[2 * i] * 16 + v[2 * i + 1]);
+    };
+    return PJ::sdk::ColorRGBA{channel(0), channel(1), channel(2), 255};
+  }
+  std::string lower(text);
+  std::transform(
+      lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  const auto it = std::lower_bound(
+      std::begin(kNamedColors), std::end(kNamedColors), lower,
+      [](const NamedColor& entry, const std::string& key) { return entry.name < key; });
+  if (it == std::end(kNamedColors) || it->name != lower) {
+    return std::nullopt;
+  }
+  return PJ::sdk::ColorRGBA{it->r, it->g, it->b, it->a};
+}
+
+namespace {
+
 using namespace detail;
 
 struct RunContext {
@@ -88,34 +147,6 @@ void appendMarker(lua_State* L, RunContext* ctx, PJ::sdk::PlotMarker&& marker) {
   }
   ctx->output_bytes += bytes;
   ctx->emitted.push_back(std::move(marker));
-}
-
-std::optional<PJ::sdk::ColorRGBA> parseHexColor(const std::string& hex) {
-  if (hex.size() != 7 || hex[0] != '#') {
-    return std::nullopt;
-  }
-  auto hx = [](char c) -> int {
-    if (c >= '0' && c <= '9') {
-      return c - '0';
-    }
-    if (c >= 'a' && c <= 'f') {
-      return c - 'a' + 10;
-    }
-    if (c >= 'A' && c <= 'F') {
-      return c - 'A' + 10;
-    }
-    return -1;
-  };
-  int v[6];
-  for (int i = 0; i < 6; ++i) {
-    v[i] = hx(hex[i + 1]);
-    if (v[i] < 0) {
-      return std::nullopt;
-    }
-  }
-  return PJ::sdk::ColorRGBA{
-      static_cast<std::uint8_t>(v[0] * 16 + v[1]), static_cast<std::uint8_t>(v[2] * 16 + v[3]),
-      static_cast<std::uint8_t>(v[4] * 16 + v[5]), 255};
 }
 
 PJ::sdk::MarkerSeverity parseSeverity(const std::string& s) {
@@ -166,9 +197,11 @@ void applyOpts(lua_State* L, int opts_idx, PJ::sdk::PlotMarker& m) {
     m.category = *v;
   }
   if (auto v = optString(L, opts_idx, "color")) {
-    if (auto rgba = parseHexColor(*v)) {
-      m.color = *rgba;
+    const auto rgba = parseMarkerColor(*v);
+    if (!rgba) {
+      luaL_error(L, "unknown color '%s' (use \"#rrggbb\", \"#rgb\" or a Qt color name)", v->c_str());
     }
+    m.color = *rgba;
   }
   if (auto v = optString(L, opts_idx, "severity")) {
     m.severity = parseSeverity(*v);
@@ -274,24 +307,147 @@ int l_startMarker(lua_State* L) {
   return 0;
 }
 
-int l_closeMarker(lua_State* L) {
-  RunContext* ctx = ctxFromUpvalue(L);
-  if (!ctx->open_region) {
-    return 0;
-  }
-  const auto a = *ctx->open_region;
-  const auto b = finiteToNs(L, lua_tonumber(L, 1));
+void emitRegion(lua_State* L, RunContext* ctx, std::int64_t a, std::int64_t b, int opts_idx) {
   PJ::sdk::PlotMarker m;
   m.kind = PJ::sdk::MarkerKind::kRegion;
   m.t_start = std::min(a, b);
   m.t_end = std::max(a, b);
   m.severity = PJ::sdk::MarkerSeverity::kWarning;
   m.category = "anomaly";
-  applyOpts(L, 2, m);
+  applyOpts(L, opts_idx, m);
   appendMarker(L, ctx, std::move(m));
+}
+
+int l_closeMarker(lua_State* L) {
+  RunContext* ctx = ctxFromUpvalue(L);
+  if (!ctx->open_region) {
+    return 0;
+  }
+  const auto a = *ctx->open_region;
   ctx->open_region.reset();
+  emitRegion(L, ctx, a, finiteToNs(L, lua_tonumber(L, 1)), 2);
   return 0;
 }
+
+// (t_start, t_end, opts): a whole region in one call, for the prelude's colorRegions. It leaves the rule's own
+// startMarker/closeMarker region alone, so the two can interleave.
+int l_region(lua_State* L) {
+  emitRegion(L, ctxFromUpvalue(L), finiteToNs(L, lua_tonumber(L, 1)), finiteToNs(L, lua_tonumber(L, 2)), 3);
+  return 0;
+}
+
+// Rule helpers written in Luau over the primitives above. Run before luaL_sandbox, so its globals freeze with the rest;
+// it takes the internal __region native into a local and clears the global.
+constexpr const char* kPrelude = R"LUAU(
+local region = __region
+__region = nil
+
+local function regionOpts(r)
+  local opts = { severity = "info", category = "color" }
+  if type(r) == "table" then
+    for k, v in r do
+      opts[k] = v
+    end
+  else
+    opts.color = r
+  end
+  return opts
+end
+
+-- Results that draw the same region compare equal, even when the mapping builds a new table per sample.
+local function regionKey(r)
+  if type(r) ~= "table" then
+    return tostring(r)
+  end
+  return table.concat({ tostring(r.color), tostring(r.label), tostring(r.severity), tostring(r.category),
+    tostring(r.status), tostring(r.description) }, "\0")
+end
+
+inf = math.huge
+
+-- ranges({min, max, color}, ...): a value takes the color of the first range with min <= v < max, else none.
+function ranges(...)
+  local list = { ... }
+  for i, r in list do
+    if type(r) ~= "table" or type(r[1]) ~= "number" or type(r[2]) ~= "number" or r[3] == nil then
+      error("ranges: argument " .. i .. " must be {min, max, color}", 2)
+    end
+    if not (r[1] < r[2]) then
+      error("ranges: argument " .. i .. " has min >= max", 2)
+    end
+  end
+  return function(v)
+    for _, r in list do
+      if v >= r[1] and v < r[2] then
+        return r[3]
+      end
+    end
+    return nil
+  end
+end
+
+local function threshold(name, limit, color, below)
+  if type(limit) ~= "number" or color == nil then
+    error(name .. "(limit, color): limit must be a number and color given", 3)
+  end
+  return function(v)
+    if (below and v < limit) or (not below and v > limit) then
+      return color
+    end
+    return nil
+  end
+end
+
+function lessThan(limit, color)
+  return threshold("lessThan", limit, color, true)
+end
+
+function greaterThan(limit, color)
+  return threshold("greaterThan", limit, color, false)
+end
+
+function colorRegions(source, mapping)
+  local s = source
+  if type(source) == "string" then
+    s = series(source)
+    if s == nil then
+      error("colorRegions: no series named '" .. source .. "'", 2)
+    end
+  elseif type(source) ~= "table" then
+    error("colorRegions: the first argument must be a series name or series(...)", 2)
+  end
+  local lookup = mapping
+  if type(mapping) == "table" then
+    lookup = function(v)
+      return mapping[v]
+    end
+  elseif type(mapping) ~= "function" then
+    error("colorRegions: the mapping must be a table (value -> color) or a function (v -> color)", 2)
+  end
+  local cur, cur_key, cur_start = nil, nil, 0
+  local function flush(t)
+    if cur ~= nil and t > cur_start then
+      region(cur_start, t, regionOpts(cur))
+    end
+  end
+  local n = s:size()
+  for i = 0, n - 1 do
+    local p = s:at(i)
+    local r = lookup(p.v)
+    if r == false then
+      r = nil
+    end
+    local key = if r == nil then nil else regionKey(r)
+    if key ~= cur_key then
+      flush(p.t)
+      cur, cur_key, cur_start = r, key, p.t
+    end
+  end
+  if n > 0 then
+    flush(s:at(n - 1).t)
+  end
+end
+)LUAU";
 
 // The three marker shapes shared by `createMarker` and the explicit shortcuts, so both emit identical markers.
 // `opts_idx` is the stack slot of the opts table: arg 3 for createMarker, arg 2 for the shortcuts.
@@ -460,6 +616,24 @@ void bindGlobal(lua_State* L, RunContext* ctx, const char* name, lua_CFunction f
   lua_setglobal(L, name);
 }
 
+bool runPrelude(lua_State* L, std::string* error) {
+  std::size_t bc_size = 0;
+  lua_CompileOptions opts = {};
+  opts.optimizationLevel = 1;
+  opts.debugLevel = 1;
+  char* bc = luau_compile(kPrelude, std::strlen(kPrelude), &opts, &bc_size);
+  const int load_status = (bc != nullptr) ? luau_load(L, "=prelude", bc, bc_size, 0) : 1;
+  std::free(bc);
+  if (load_status != 0 || lua_pcall(L, 0, 0, 0) != 0) {
+    if (error != nullptr) {
+      *error =
+          std::string("marker prelude failed: ") + (lua_isstring(L, -1) ? lua_tostring(L, -1) : "no compiler output");
+    }
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 std::vector<PJ::sdk::PlotMarker> runMarkerScript(
@@ -507,6 +681,11 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
   bindGlobal(L, &ctx, "createPointMarker", l_createPointMarker);
   bindGlobal(L, &ctx, "createBandMarker", l_createBandMarker);
   bindGlobal(L, &ctx, "bandPower", l_bandPower);
+  bindGlobal(L, &ctx, "__region", l_region);
+  if (!runPrelude(L, error)) {
+    lua_close(L);
+    return {};
+  }
   luaL_sandbox(L);
 
   lua_callbacks(L)->userdata = &budget;

@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -235,6 +236,147 @@ TEST(MarkerEngine, ACancelSwallowedByPcallStillFailsTheRun) {
   EXPECT_NE(err.find("cancelled"), std::string::npos) << err;
   polls = 0;
   EXPECT_TRUE(runMarkerScript(script, SeriesProvider{}, nullptr, {}, once).empty());
+}
+
+// mode: 0 0 1 1 2 2 1 at t = 0..6 s.
+SeriesView modeSeries() {
+  SeriesView sv;
+  sv.timestamps = {0, 1 * kSec, 2 * kSec, 3 * kSec, 4 * kSec, 5 * kSec, 6 * kSec};
+  sv.values = {0, 0, 1, 1, 2, 2, 1};
+  return sv;
+}
+
+PJ::sdk::ColorRGBA rgb(std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+  return {r, g, b, 255};
+}
+
+void expectRegion(const PJ::sdk::PlotMarker& m, double t0, double t1, PJ::sdk::ColorRGBA color) {
+  EXPECT_EQ(m.kind, PJ::sdk::MarkerKind::kRegion);
+  EXPECT_EQ(m.t_start, static_cast<PJ::Timestamp>(t0));
+  EXPECT_EQ(m.t_end, static_cast<PJ::Timestamp>(t1));
+  EXPECT_EQ(m.color.r, color.r);
+  EXPECT_EQ(m.color.g, color.g);
+  EXPECT_EQ(m.color.b, color.b);
+}
+
+// A table mapping: one region per run of equal values, a value missing from the table draws nothing, and the last run
+// ends at the last sample.
+TEST(MarkerEngine, ColorRegionsTableMergesRunsAndSkipsUnmapped) {
+  const SeriesView sv = modeSeries();
+  std::string err;
+  const auto markers =
+      runMarkerScript(R"(colorRegions("mode", { [1] = "green", [2] = "#ff0000" }))", oneSeries("mode", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  // The final run is a single sample at the last timestamp: zero width, so nothing.
+  ASSERT_EQ(markers.size(), 2u);
+  expectRegion(markers[0], 2 * kSec, 4 * kSec, rgb(0, 128, 0));
+  expectRegion(markers[1], 4 * kSec, 6 * kSec, rgb(255, 0, 0));
+  EXPECT_EQ(markers[1].severity, PJ::sdk::MarkerSeverity::kInfo);
+}
+
+// A function mapping returning option tables: equal tables built per sample still merge, and their label lands.
+TEST(MarkerEngine, ColorRegionsFunctionReturnsOptions) {
+  const SeriesView sv = modeSeries();
+  std::string err;
+  const auto markers = runMarkerScript(
+      R"(colorRegions(series("mode"), function(v) if v >= 1 then return { color = "Orange", label = "on" } end end))",
+      oneSeries("mode", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 1u);
+  expectRegion(markers[0], 2 * kSec, 6 * kSec, rgb(255, 165, 0));
+  EXPECT_EQ(markers[0].label, "on");
+}
+
+TEST(MarkerEngine, RangesPicksTheFirstMatchingRange) {
+  SeriesView sv;
+  sv.timestamps = {0, 1 * kSec, 2 * kSec, 3 * kSec, 4 * kSec};
+  sv.values = {-5.0, 0.5, 1.5, 9.0, 9.0};
+  std::string err;
+  const auto markers = runMarkerScript(
+      R"(colorRegions("speed", ranges({-inf, 0, "gray"}, {0, 1, "green"}, {2, inf, "red"})))", oneSeries("speed", sv),
+      &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 3u);  // 1.5 is in no range: a gap
+  expectRegion(markers[0], 0, 1 * kSec, rgb(128, 128, 128));
+  expectRegion(markers[1], 1 * kSec, 2 * kSec, rgb(0, 128, 0));
+  expectRegion(markers[2], 3 * kSec, 4 * kSec, rgb(255, 0, 0));
+}
+
+// Overlapping ranges: the first listed one that contains the value wins.
+TEST(MarkerEngine, RangesOverlapFirstListedWins) {
+  const SeriesView sv = modeSeries();  // 0 0 1 1 2 2 1
+  std::string err;
+  const auto markers = runMarkerScript(
+      R"(colorRegions("mode", ranges({1, inf, "red"}, {-inf, inf, "gray"})))", oneSeries("mode", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 2u);
+  expectRegion(markers[0], 0, 2 * kSec, rgb(128, 128, 128));
+  expectRegion(markers[1], 2 * kSec, 6 * kSec, rgb(255, 0, 0));
+}
+
+// Strict thresholds: a sample equal to the limit is in neither.
+TEST(MarkerEngine, LessThanAndGreaterThan) {
+  const SeriesView sv = modeSeries();  // 0 0 1 1 2 2 1
+  std::string err;
+  const auto markers = runMarkerScript(
+      "colorRegions('mode', lessThan(1, 'blue'))\ncolorRegions('mode', greaterThan(1, 'red'))\n", oneSeries("mode", sv),
+      &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 2u);
+  expectRegion(markers[0], 0, 2 * kSec, rgb(0, 0, 255));
+  expectRegion(markers[1], 4 * kSec, 6 * kSec, rgb(255, 0, 0));
+
+  const auto labelled = runMarkerScript(
+      "colorRegions('mode', greaterThan(0, { color = 'red', label = 'ON' }))", oneSeries("mode", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(labelled.size(), 1u);
+  expectRegion(labelled[0], 2 * kSec, 6 * kSec, rgb(255, 0, 0));
+  EXPECT_EQ(labelled[0].label, "ON");
+}
+
+TEST(MarkerEngine, ColorRegionsAndRangesRejectBadArguments) {
+  const SeriesView sv = modeSeries();
+  for (const char* script : {
+           R"(colorRegions("missing", {}))",
+           R"(colorRegions("mode", 3))",
+           R"(colorRegions("mode", ranges({1, 0, "red"})))",
+           R"(colorRegions("mode", ranges({0, 1})))",
+           R"(colorRegions("mode", { [0] = "notacolor" }))",
+           R"(colorRegions("mode", lessThan("1", "red")))",
+           R"(colorRegions("mode", greaterThan(1)))",
+       }) {
+    std::string err;
+    EXPECT_TRUE(runMarkerScript(script, oneSeries("mode", sv), &err).empty()) << script;
+    EXPECT_FALSE(err.empty()) << script;
+  }
+}
+
+// colorRegions leaves a region the rule opened with startMarker alone.
+TEST(MarkerEngine, ColorRegionsDoesNotCloseTheRulesOpenRegion) {
+  const SeriesView sv = modeSeries();
+  std::string err;
+  const auto markers = runMarkerScript(
+      "startMarker(0)\ncolorRegions('mode', { [2] = 'red' })\ncloseMarker(1e9, { label = 'mine' })\n",
+      oneSeries("mode", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 2u);
+  EXPECT_EQ(markers[1].label, "mine");
+  EXPECT_EQ(markers[1].t_end, static_cast<PJ::Timestamp>(1 * kSec));
+}
+
+TEST(MarkerEngine, ParseMarkerColor) {
+  using PJ::scripting::parseMarkerColor;
+  ASSERT_TRUE(parseMarkerColor("#0a0B0c"));
+  EXPECT_EQ(parseMarkerColor("#0a0B0c")->b, 0x0c);
+  ASSERT_TRUE(parseMarkerColor("#f80"));
+  EXPECT_EQ(parseMarkerColor("#f80")->g, 0x88);
+  ASSERT_TRUE(parseMarkerColor("SteelBlue"));
+  EXPECT_EQ(parseMarkerColor("SteelBlue")->g, 130);
+  EXPECT_EQ(parseMarkerColor("transparent")->a, 0);
+  EXPECT_FALSE(parseMarkerColor(""));
+  EXPECT_FALSE(parseMarkerColor("#12345"));
+  EXPECT_FALSE(parseMarkerColor("#gg0000"));
+  EXPECT_FALSE(parseMarkerColor("reddish"));
 }
 
 }  // namespace
