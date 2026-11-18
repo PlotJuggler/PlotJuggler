@@ -272,6 +272,11 @@ namespace PJ {
 
 namespace {
 
+// A stream-bound layout: it records streaming sources a load restarts (an invalid block records none).
+bool recordsStreams(const QDomDocument& doc) {
+  return !layout_xml::extractStreamingSources(doc, nullptr).isEmpty();
+}
+
 #ifndef PJ_TARGET_WASM
 // pj_runtime links no resources, so FeatureCatalogHost is handed the bytes.
 QByteArray featureCatalogResource() {
@@ -2196,7 +2201,7 @@ QDomDocument MainWindow::browserGenericLayoutDocument() const {
   doc.documentElement().setAttribute(u"binding"_s, u"generic"_s);
   layout_xml::removeDatasetQualifiersForGenericLayout(doc);
   doc.documentElement().appendChild(saveRightPanelState(doc));
-  doc.documentElement().appendChild(ui_->leftPanel->saveSourcesState(doc));
+  doc.documentElement().appendChild(ui_->leftPanel->saveSourcesState(doc, recordsStreams(doc)));
   doc.documentElement().appendChild(ui_->curveListPanel->saveListState(doc));
   doc.documentElement().appendChild(saveChromeState(doc));
   doc.documentElement().appendChild(saveSourceTimelineViewState(doc));
@@ -2429,7 +2434,7 @@ std::optional<QDomDocument> MainWindow::browserSourceLayoutDocument(QString& err
   }
 
   root.appendChild(saveRightPanelState(doc));
-  root.appendChild(ui_->leftPanel->saveSourcesState(doc));
+  root.appendChild(ui_->leftPanel->saveSourcesState(doc, recordsStreams(doc)));
   root.appendChild(ui_->curveListPanel->saveListState(doc));
   root.appendChild(saveChromeState(doc));
   root.appendChild(saveSourceTimelineViewState(doc));
@@ -6513,7 +6518,7 @@ bool MainWindow::applyBrowserRestoredLayout(
 void MainWindow::restoreBrowserChromeAndPanels(const QDomDocument& doc, const QString& browser_name) {
   ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(u"curve_list_state"_s));
   restoreRightPanelState(doc.documentElement().firstChildElement(u"right_panel_state"_s));
-  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(u"left_panel_state"_s));
+  restoreLeftPanelState(doc);
   restoreChromeState(doc.documentElement().firstChildElement(u"chrome_state"_s));
 
   restoreSourceTimelineViewState(doc.documentElement().firstChildElement(u"source_timeline"_s));
@@ -6572,7 +6577,6 @@ void MainWindow::restoreChromeAndPanels(
     const QDomDocument& doc, const QString& path, const LayoutTimelinePlan* resolved_timeline) {
   ui_->curveListPanel->restoreListState(doc.documentElement().firstChildElement(u"curve_list_state"_s));
   restoreRightPanelState(doc.documentElement().firstChildElement(u"right_panel_state"_s));
-  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(u"left_panel_state"_s));
   restoreChromeState(doc.documentElement().firstChildElement(u"chrome_state"_s));
 
   // The synchronous path already resolved its sources and applied the offsets.
@@ -6971,7 +6975,16 @@ void MainWindow::onProgressiveLayoutDrained() {
 void MainWindow::commitRestoredLayout(const QDomDocument& doc, MissingCurvePolicy policy) {
   // A kept busy panel leaves the live pinned toolboxes in place; the baseline resets either way.
   static_cast<void>(restorePinnedToolboxes(doc.documentElement(), policy));
+  restoreLeftPanelState(doc);
   resetUndoHistory();
+}
+
+void MainWindow::restoreLeftPanelState(const QDomDocument& doc) {
+  LeftPanel::StreamingRestore streams{.stream_bound = recordsStreams(doc), .live_retention_s = std::nullopt};
+  if (streaming_manager_->hasActiveSession()) {
+    streams.live_retention_s = streaming_manager_->retentionSeconds();
+  }
+  ui_->leftPanel->restoreSourcesState(doc.documentElement().firstChildElement(u"left_panel_state"_s), streams);
 }
 
 bool MainWindow::layoutImportBatchActive() const {
@@ -7206,7 +7219,7 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
 #endif
   // UI state, saved in both bindings.
   doc.documentElement().appendChild(saveRightPanelState(doc));
-  doc.documentElement().appendChild(ui_->leftPanel->saveSourcesState(doc));
+  doc.documentElement().appendChild(ui_->leftPanel->saveSourcesState(doc, recordsStreams(doc)));
   doc.documentElement().appendChild(ui_->curveListPanel->saveListState(doc));
   doc.documentElement().appendChild(saveChromeState(doc));
   // <data_processors> comes from xmlSaveState(); appending it here would write two copies. Per-source offsets and

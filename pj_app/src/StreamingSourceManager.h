@@ -181,6 +181,12 @@ class StreamingSourceManager : public QObject {
   // fires for each live session at once.
   void onBufferChanged(int seconds);
 
+ public:
+  // Starts from the QSettings buffer; then only onBufferChanged sets it.
+  [[nodiscard]] int retentionSeconds() const {
+    return retention_seconds_;
+  }
+
  signals:
   // GUI thread, once the session is wired and the plugin's start() has returned successfully.
   void streamStarted(DatasetId dataset_id);

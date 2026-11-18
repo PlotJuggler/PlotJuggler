@@ -154,11 +154,20 @@ so every start that does not launch (cancel, a plugin contract violation, a refu
 count in the catalog's duplicate-label ordinals and suffix the next start's name. `streamError` is emitted only after
 the dataset is gone (a cancel reports nothing), so its consumer cannot rely on that dataset existing.
 
-**Source and buffer selection.** `StreamingSourceManager` learns the selected source and the retention window only
-from `LeftPanel::streamingSourceChanged` and `streamingBufferChanged`. A panel method that sets the combo or the
-scrubber with signals blocked (`setStreamingSources`, `restoreSourcesState`, blocked so QSettings is not written)
-emits them itself; otherwise Start launches a source other than the one the combo shows, and retention keeps a window
-other than the one the scrubber shows.
+**Source and buffer selection.** `StreamingSourceManager` reads the retention window from QSettings once, at
+construction; after that it learns the selected source and the window only from `LeftPanel::streamingSourceChanged`
+and `streamingBufferChanged`. A panel method that sets the combo or the scrubber with signals blocked
+(`setStreamingSources`, `restoreSourcesState`, blocked so QSettings is not written) emits them itself; otherwise
+Start launches a source other than the one the combo shows, and retention keeps a window other than the one the
+scrubber shows.
+
+A layout's `<left_panel_state streaming_buffer>` belongs to the streams it restarts: it is saved only into a
+stream-bound layout (one with `<previouslyLoaded_StreamingSources>` records), and a load ignores it in any other
+layout, older files that carry it included. On load it never shrinks a running stream's window: it applies when it
+is wider, or when no session runs; otherwise the running streams keep theirs and the scrubber shows it.
+`MainWindow::restoreLeftPanelState` supplies what the panel cannot know (stream-bound, the live window), and runs at
+`commitRestoredLayout`, so a progressive restore that aborts changes neither the streams nor the panel. Streams the
+layout starts itself run with the previous window until that commit.
 
 **Pause and resume.** While paused, each session writes to the secondary engine and object store. Resume swaps the
 write targets back first (a push already in flight finishes on the secondary, the next lands on the primary; flushing

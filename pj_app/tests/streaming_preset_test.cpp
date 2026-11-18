@@ -48,6 +48,7 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_widgets/IntScrubber.h"
 #include "support/loader_test_support.h"
 #include "support/preset_test_support.h"
 #include "support/route_server.h"
@@ -661,6 +662,24 @@ class DesktopStreamLayoutTest : public StreamingPresetTest {
     return openLayoutPath(path, interactive);
   }
 
+  // `layout` with a <left_panel_state> naming a `seconds` streaming buffer.
+  static QByteArray withStreamingBuffer(QByteArray layout, int seconds) {
+    return layout.replace(
+        "</root>", uR"(<left_panel_state sources_tab="stream" streaming_buffer="%1"/></root>)"_s.arg(seconds).toUtf8());
+  }
+
+  [[nodiscard]] PJ::IntScrubber* bufferSpinBox() const {
+    return window_->findChild<PJ::IntScrubber*>(u"streamingSpinBox"_s);
+  }
+
+  // As the user does: the value counts once editing finishes.
+  void setUserBuffer(int seconds) {
+    PJ::IntScrubber* spin = bufferSpinBox();
+    ASSERT_NE(spin, nullptr);
+    spin->setValue(seconds);
+    emit spin->editingFinished();
+  }
+
   bool openLayoutPath(const QString& path, bool interactive = false) {
     std::optional<bool> settled;
     const auto connection =
@@ -741,6 +760,8 @@ TEST_F(DesktopStreamLayoutTest, SavedStreamLayoutRoundTrips) {
   EXPECT_EQ(records[0].plugin_config_json, config);
   ASSERT_GT(saved.elementsByTagName(u"curve"_s).size(), 0);
   EXPECT_EQ(saved.elementsByTagName(u"curve"_s).at(0).toElement().attribute(u"dataset_path"_s), u"pj-stream://robot"_s);
+  EXPECT_TRUE(saved.documentElement().firstChildElement(u"left_panel_state"_s).hasAttribute(u"streaming_buffer"_s))
+      << "a stream-bound layout records the buffer its streams restart with";
 
   // Still streaming: the layout binds to the running session.
   ASSERT_TRUE(openLayoutPath(saved_path));
@@ -770,6 +791,86 @@ TEST_F(DesktopStreamLayoutTest, GenericSaveRecordsNoStream) {
   const QByteArray bytes = saved_file.readAll();
   EXPECT_FALSE(bytes.contains("streamInfo")) << bytes.toStdString();
   EXPECT_FALSE(bytes.contains("pj-stream://")) << bytes.toStdString();
+  EXPECT_FALSE(bytes.contains("streaming_buffer")) << "only a stream-bound layout saves the buffer";
+}
+
+// A stream-bound layout's buffer never shrinks a running stream: the stream keeps its window and the spin box shows
+// it. A wider buffer applies, even to the stream the layout itself just started.
+TEST_F(DesktopStreamLayoutTest, StreamLayoutBufferNeverShrinksARunningStream) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  ASSERT_TRUE(openLayoutFile(withStreamingBuffer(robotLayout(), 20)));
+  ASSERT_TRUE(pumpUntil([this] { return PresetTestPeer::curveKeys(*window_).size() == 1; }));
+  const PJ::DatasetId robot = streamSessions().value(u"robot"_s);
+  ASSERT_NE(robot, 0U);
+  EXPECT_EQ(streams.retentionSeconds(), 20);
+
+  setUserBuffer(60);
+  ASSERT_EQ(streams.retentionSeconds(), 60);
+  ASSERT_TRUE(openLayoutFile(withStreamingBuffer(robotLayout(), 5)));
+  EXPECT_EQ(streamSessions().value(u"robot"_s), robot) << "the layout binds to the running stream";
+  streams.ingestTickForTests(robot);
+  EXPECT_EQ(streams.retentionSeconds(), 60);
+  EXPECT_EQ(bufferSpinBox()->value(), 60);
+}
+
+// With nothing streaming, a stream-bound layout's buffer applies, smaller or not. The file is loaded first, so the
+// layout applies when its stream is declined.
+TEST_F(DesktopStreamLayoutTest, StreamLayoutBufferAppliesWhenNothingRuns) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  QFile data(probe_dir_.filePath(u"data.mock"_s));
+  ASSERT_TRUE(data.open(QIODevice::WriteOnly) && data.write("data.mock") > 0);
+  data.close();
+  const QList<Plot> plots = {{u"plot_file"_s, fileCurve(u"data.mock"_s)}};
+  ASSERT_TRUE(openLayoutFile(streamLayout(plots, {}, {u"data.mock"_s})));
+  setUserBuffer(60);
+
+  answerNextQuestion(u"Load Layout only"_s);
+  ASSERT_TRUE(openLayoutFile(
+      withStreamingBuffer(streamLayout(plots, {{u"robot"_s, uR"({"topic":"robot/data"})"_s}}, {u"data.mock"_s}), 20),
+      /*interactive=*/true));
+  EXPECT_TRUE(streamSessions().isEmpty());
+  EXPECT_EQ(streams.retentionSeconds(), 20);
+  EXPECT_EQ(bufferSpinBox()->value(), 20);
+}
+
+// A layout without stream records leaves the buffer alone, even when it carries the attribute.
+TEST_F(DesktopStreamLayoutTest, FileOnlyLayoutLeavesTheBufferAlone) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  setUserBuffer(30);
+  QFile data(probe_dir_.filePath(u"data.mock"_s));
+  ASSERT_TRUE(data.open(QIODevice::WriteOnly) && data.write("data.mock") > 0);
+  data.close();
+  ASSERT_TRUE(openLayoutFile(
+      withStreamingBuffer(streamLayout({{u"plot_file"_s, fileCurve(u"data.mock"_s)}}, {}, {u"data.mock"_s}), 20)));
+  EXPECT_EQ(streams.retentionSeconds(), 30);
+  EXPECT_EQ(bufferSpinBox()->value(), 30);
+}
+
+// A progressive restore that aborts (here on a data processor whose input never arrives) applies none of the
+// layout's left panel state: the running stream keeps its window.
+TEST_F(DesktopStreamLayoutTest, AnAbortedRestoreLeavesTheBufferAlone) {
+  PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
+  const int before = streams.retentionSeconds();
+  QFile data(probe_dir_.filePath(u"data.mock"_s));
+  ASSERT_TRUE(data.open(QIODevice::WriteOnly) && data.write("data.mock") > 0);
+  data.close();
+  QByteArray layout = withStreamingBuffer(
+      streamLayout(
+          {{u"plot_file"_s, fileCurve(u"data.mock"_s)}}, {{u"robot"_s, uR"({"topic":"robot/data"})"_s}},
+          {u"data.mock"_s}),
+      before + 40);
+  layout.replace(
+      "</root>",
+      R"(<data_processors><processor input_topic="/missing_processor_input" input_field="value" )"
+      R"(input_dataset_source="missing-processor-source" processor_id="absolute" output_name="missing[Absolute]">)"
+      R"(<![CDATA[{}]]></processor></data_processors></root>)");
+  QSignalSpy buffer_spy(&streams, &PJ::StreamingSourceManager::retentionWindowChanged);
+  EXPECT_FALSE(openLayoutFile(layout));
+  EXPECT_EQ(streams.retentionSeconds(), before);
+  EXPECT_EQ(bufferSpinBox()->value(), before);
+  for (const QList<QVariant>& emitted : buffer_spy) {
+    EXPECT_EQ(emitted.at(1).toLongLong(), static_cast<qint64>(before) * 1'000'000'000LL);
+  }
 }
 
 // A stream started without a configuration cannot be restarted from a file: the save

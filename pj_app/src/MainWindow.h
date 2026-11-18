@@ -807,6 +807,8 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] BrowserLayoutLoadResult loadBrowserParsedLayout(
       QDomDocument doc, const QString& browser_name, const QUrl& layout_url);
   void restoreBrowserChromeAndPanels(const QDomDocument& doc, const QString& browser_name);
+  // <left_panel_state>, told whether `doc` records streams and what window a running stream uses.
+  void restoreLeftPanelState(const QDomDocument& doc);
   void beginBrowserSourceReplay(
       QDomDocument doc, const QString& browser_name, QList<layout_xml::DataSourceRef> sources, const QUrl& layout_url);
   [[nodiscard]] quint64 beginBrowserReplayPickerGeneration();
@@ -1250,7 +1252,8 @@ class MainWindow : public QMainWindow {
   bool restorePinnedToolboxes(const QDomElement& root, MissingCurvePolicy policy);
 
   // The one commit boundary of a layout open, after every abort and rollback path: replaces the pinned toolbox
-  // set and re-baselines undo. Both restore legs end here. restoreChromeAndPanels must not take commit-only
+  // set, restores the left panel (its streaming buffer reaches running streams) and re-baselines undo. Both restore
+  // legs end here. restoreChromeAndPanels must not take commit-only
   // steps: it also runs while the restore can still abort.
   void commitRestoredLayout(const QDomDocument& doc, MissingCurvePolicy policy);
 

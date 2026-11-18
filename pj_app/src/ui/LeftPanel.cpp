@@ -24,6 +24,7 @@
 #include <QStringList>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <initializer_list>
 #include <nlohmann/json.hpp>
 
@@ -347,7 +348,7 @@ bool LeftPanel::eventFilter(QObject* watched, QEvent* event) {
   return QWidget::eventFilter(watched, event);
 }
 
-QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
+QDomElement LeftPanel::saveSourcesState(QDomDocument& doc, bool stream_bound) const {
   QDomElement element = doc.createElement(u"left_panel_state"_s);
 
   if (ui_->tabFile->isChecked()) {
@@ -359,11 +360,13 @@ QDomElement LeftPanel::saveSourcesState(QDomDocument& doc) const {
   }
 
   element.setAttribute(u"streaming_source"_s, ui_->comboStreaming->currentText());
-  element.setAttribute(u"streaming_buffer"_s, QString::number(ui_->streamingSpinBox->value()));
+  if (stream_bound) {
+    element.setAttribute(u"streaming_buffer"_s, QString::number(ui_->streamingSpinBox->value()));
+  }
   return element;
 }
 
-void LeftPanel::restoreSourcesState(const QDomElement& element) {
+void LeftPanel::restoreSourcesState(const QDomElement& element, const StreamingRestore& streams) {
   if (element.isNull() || element.tagName() != "left_panel_state"_L1) {
     return;
   }
@@ -396,10 +399,13 @@ void LeftPanel::restoreSourcesState(const QDomElement& element) {
   }
 
   // setValue does not emit editingFinished, which is what writes QSettings.
-  if (element.hasAttribute(u"streaming_buffer"_s)) {
+  if (streams.stream_bound && element.hasAttribute(u"streaming_buffer"_s)) {
     bool ok = false;
-    const int seconds = element.attribute(u"streaming_buffer"_s).toInt(&ok);
+    int seconds = element.attribute(u"streaming_buffer"_s).toInt(&ok);
     if (ok) {
+      if (streams.live_retention_s.has_value()) {
+        seconds = std::max(seconds, *streams.live_retention_s);
+      }
       {
         const QSignalBlocker blocker(ui_->streamingSpinBox);
         ui_->streamingSpinBox->setValue(seconds);

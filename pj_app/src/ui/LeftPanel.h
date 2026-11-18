@@ -5,6 +5,7 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QWidget>
+#include <optional>
 #include <vector>
 
 #include "pj_runtime/PluginRuntimeCatalog.h"
@@ -25,6 +26,14 @@ class LeftPanel : public QWidget {
   explicit LeftPanel(QWidget* parent = nullptr);
   ~LeftPanel() override;
 
+  // What only MainWindow knows about a layout load, for the streaming buffer rule of restoreSourcesState.
+  struct StreamingRestore {
+    // The layout records streaming sources (<previouslyLoaded_StreamingSources>).
+    bool stream_bound = false;
+    // Set while a stream session runs: the window it uses, in seconds.
+    std::optional<int> live_retention_s;
+  };
+
  signals:
   void loadDataRequested();
   void reloadDataRequested();
@@ -41,7 +50,8 @@ class LeftPanel : public QWidget {
   // RecordingService and reflects the outcome through setRecordingActive().
   void streamingRecordToggled(bool record);
   void streamingSourceChanged(QString source);
-  // Seconds; emitted (and persisted) when the user finishes adjusting the scrubber, not on every drag tick.
+  // Seconds. From the user, once they finish adjusting the scrubber (not on every drag tick), after QSettings is
+  // written; from restoreSourcesState, without writing it.
   void streamingBufferChanged(int seconds);
   // `plugin_id` is the cloud-tagged toolbox's manifest `id`.
   void cloudToolboxRequested(QString plugin_id);
@@ -63,13 +73,16 @@ class LeftPanel : public QWidget {
   void setRecordingStatusText(const QString& text);
 
   // <left_panel_state sources_tab streaming_source streaming_buffer/>, a persisted layout element. The panel's
-  // visibility is in chrome_state, not here.
-  [[nodiscard]] QDomElement saveSourcesState(QDomDocument& doc) const;
+  // visibility is in chrome_state, not here. streaming_buffer is written only for a `stream_bound` layout: the
+  // window belongs to the streams the layout restarts.
+  [[nodiscard]] QDomElement saveSourcesState(QDomDocument& doc, bool stream_bound) const;
 
   // Applies each attribute on its own; missing or unknown values are ignored. Emits streamingSourceChanged and
   // streamingBufferChanged for what it applies, so the streaming manager follows the restored controls. Never writes
-  // QSettings: a layout must not change the user's defaults.
-  void restoreSourcesState(const QDomElement& element);
+  // QSettings: a layout must not change the user's defaults. The buffer applies only from a stream-bound layout, and
+  // never shrinks a running stream's window: with `live_retention_s` set, the larger of the two applies, so the
+  // scrubber shows the window in use.
+  void restoreSourcesState(const QDomElement& element, const StreamingRestore& streams);
 
  public:
   // Lists the toolboxes whose manifest `tags` contain "cloud"; keeps the selection by plugin id; no entry disables
