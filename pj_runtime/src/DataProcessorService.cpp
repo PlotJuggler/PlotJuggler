@@ -1611,14 +1611,15 @@ Status DataProcessorService::removeProcessorsDependingOn(const std::vector<Topic
   // The visitor discovers parents before children (a processor is visited only
   // after one of its inputs joined the affected set), so reverse order removes
   // leaf-first — no dependent ever outlives one of its inputs' producers.
+  Status first_failure = PJ::okStatus();
   for (auto it = dependents.rbegin(); it != dependents.rend(); ++it) {
     Status removed = it->kind == Dependent::Kind::kFilter ? removeFilterOnly(it->filter_node)
                                                           : removeTransformOnly(it->transform_key);
-    if (!removed.has_value()) {
-      return removed;
+    if (!removed.has_value() && first_failure.has_value()) {
+      first_failure = std::move(removed);
     }
   }
-  return PJ::okStatus();
+  return first_failure;
 }
 
 void DataProcessorService::removeEphemerals(const std::unordered_set<std::string>& keys) {

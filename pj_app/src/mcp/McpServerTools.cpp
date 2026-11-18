@@ -717,7 +717,7 @@ void McpServer::unloadFile(const json& args, const Caller& caller, Reply reply) 
   }
   // The reply waits for the user when derived series depend on the dataset: one outcome either way.
   window_.confirmAndRemoveDependentTransforms(
-      window_.appSession().sessionManager().dataEngine().listTopics(id),
+      window_.appSession().sessionManager().datasetTopicIds(id),
       [this, id, reply] {
         window_.removeDatasets({id});
         reply(ok({{"unloaded", id}}));

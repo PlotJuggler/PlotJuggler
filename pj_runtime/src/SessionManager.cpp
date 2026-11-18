@@ -1699,7 +1699,17 @@ void SessionManager::evictDatasetObjects(DatasetId dataset_id) {
   evictObjectTopics(object_store_.listTopics(dataset_id));
 }
 
-void SessionManager::removeDataset(DatasetId dataset_id) {
+bool SessionManager::removeDataset(DatasetId dataset_id, bool remove_dependent_processors) {
+  bool removed_processors = false;
+  if (remove_dependent_processors) {
+    // Before the erase: an eager node must not outlive its input storage.
+    const std::vector<TopicId> topics = datasetTopicIds(dataset_id);
+    removed_processors = !processor_service_->dependentProcessorOutputs(topics).empty();
+    if (const Status removed = processor_service_->removeProcessorsDependingOn(topics); !removed.has_value()) {
+      qCWarning(lcSession).noquote() << "removeDataset: dependent processors:"
+                                     << QString::fromStdString(removed.error());
+    }
+  }
   data_engine_.removeDataset(dataset_id);
   dataset_source_paths_.erase(dataset_id);
   // A removed dataset's record must not resolve a future query (a reminted id could collide).
@@ -1728,6 +1738,13 @@ void SessionManager::removeDataset(DatasetId dataset_id) {
   invalidateDatasetMinTimestamp(dataset_id);
   // A pure origin shift reaches no per-topic signal: emit the global reframe.
   notifyGlobalTimeReferenceIfChanged();
+  return removed_processors;
+}
+
+std::vector<TopicId> SessionManager::datasetTopicIds(DatasetId dataset_id) const {
+  const auto lock = data_engine_.lockEngine();
+  const DatasetInfo* info = data_engine_.getDataset(dataset_id);
+  return info != nullptr ? info->topic_ids : std::vector<TopicId>{};
 }
 
 void SessionManager::refreshDatasetTimeReference(DatasetId dataset_id) {

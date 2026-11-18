@@ -395,6 +395,80 @@ TEST(DataProcessorTransformTest, RemovingTransformCascadesDownstreamFilter) {
   EXPECT_FALSE(fx.listed(child->output_topic_id));
 }
 
+// "Remove all Datasets" reaches SessionManager::removeDataset without the shell's cascade prompt: the processors
+// reading the dataset must go with it, or the bridge's `list` keeps them and their names stay taken.
+TEST(DataProcessorTransformTest, RemovingTheInputDatasetRemovesItsProcessors) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(std::move(catalogue));
+  ASSERT_TRUE(fx.service.applyFilter(parent->output_topic_ids.front(), fx.ds, "scale", "final").has_value());
+
+  fx.session.removeDataset(fx.ds);
+  EXPECT_TRUE(fx.service.transformIdsForPlugin("pluginA").empty());
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+  EXPECT_TRUE(fx.service.recipes().empty());
+
+  fx.seed("speed", {3.0});
+  const auto again = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  EXPECT_TRUE(again.has_value()) << again.error();
+}
+
+// A merge or a reload can retire a topic a processor still reads; listTopics() hides it, the erase does not.
+TEST(DataProcessorTransformTest, RemovingTheDatasetRemovesAProcessorReadingARetiredTopic) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}").has_value());
+  fx.engine.retireTopic(fx.input);
+
+  EXPECT_TRUE(fx.session.removeDataset(fx.ds));
+  EXPECT_TRUE(fx.service.transformRecipes().empty());
+}
+
+// The fan-out reload erases the dataset it replaces before the layout restore rebinds its processors.
+TEST(DataProcessorTransformTest, RemovingTheDatasetCanKeepItsProcessors) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  ASSERT_TRUE(fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}").has_value());
+
+  EXPECT_FALSE(fx.session.removeDataset(fx.ds, /*remove_dependent_processors=*/false));
+  EXPECT_EQ(fx.service.transformRecipes().size(), 1U);
+}
+
+// A leaf that cannot be removed (here its node is already gone from the engine) must not keep its parent: leaf-first,
+// the leaf fails before the parent is reached.
+TEST(DataProcessorTransformTest, RemovingDependentsContinuesPastAFailedRemoval) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto leaf = fx.service.upsertTransform("pluginA", "split", {"mid"}, {"leaf_a", "leaf_b"}, kSplit, "{}");
+  ASSERT_TRUE(leaf.has_value()) << leaf.error();
+  ASSERT_TRUE(fx.service.incrementalEngine().removeNode(leaf->node_id).has_value());
+
+  EXPECT_FALSE(fx.service.removeProcessorsDependingOn({fx.input}).has_value());
+  EXPECT_EQ(fx.service.transformIdsForPlugin("pluginA"), std::vector<std::string>{"split"});
+}
+
+// The output of a transform lives in its first input's dataset, which can outlive the dataset removed.
+TEST(DataProcessorTransformTest, RemovingASecondInputsDatasetRetiresTheOutputInTheSurvivingDataset) {
+  Fixture fx;
+  fx.seed("other", {1.0, 2.0});
+  const DatasetId surviving = fx.ds;
+  fx.seed("speed", {3.0, 4.0});
+  const auto sum = fx.service.upsertTransform("pluginA", "sum", {"other", "speed"}, {"sum"}, kSum, "{}");
+  ASSERT_TRUE(sum.has_value()) << sum.error();
+  ASSERT_EQ(sum->dataset_id, surviving);
+  const TopicId output = sum->output_topic_ids.front();
+
+  EXPECT_TRUE(fx.session.removeDataset(fx.ds));
+  const auto topics = fx.engine.listTopics(surviving);
+  EXPECT_EQ(std::find(topics.begin(), topics.end(), output), topics.end());
+}
+
 TEST(DataProcessorTransformTest, RemoveRetiresTopic) {
   Fixture fx;
   fx.seed("speed", {1.0});

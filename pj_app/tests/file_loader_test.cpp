@@ -48,10 +48,12 @@
 #include "pj_base/sdk/data_source_plugin_base.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_datastore/topic_storage.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plugins/sdk/object_ingest_policy.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
@@ -1406,6 +1408,31 @@ TEST_F(FileLoaderTest, FanoutReloadErasesOldDatasetBeforePreferReuseReload) {
   EXPECT_NE(reloaded, 0u) << "prefer_reuse after fanout reload must ingest a fresh dataset";
   EXPECT_NE(reloaded, old_id) << "the old fanout-replaced DatasetId must not be reused";
   EXPECT_EQ(singleTopicRowCount(reloaded), 3) << "fresh prefer_reuse load must ingest rows";
+}
+
+// The replaced dataset's transforms survive its erase: the shell restores the workspace it captured before the
+// reload onto the fan-out children, and an erase that cascaded first would delete them without a prompt or undo.
+TEST_F(FileLoaderTest, FanoutReloadKeepsTheReplacedDatasetsTransforms) {
+  const QString path = makeMockFile(u"fanout.mock"_s);
+  ASSERT_TRUE(load(path));
+  const PJ::DatasetId old_id = datasetNamed("fanout.mock");
+  ASSERT_NE(old_id, 0u);
+  const auto topics = session().dataEngine().listTopics(old_id);
+  ASSERT_EQ(topics.size(), 1u);
+  const std::string input = session().dataEngine().getTopicStorage(topics.front())->descriptor().name;
+  constexpr const char* kNegate = R"LUAU(-- pj-script: luau
+return { id="negate", name="Negate", output="same",
+  create = function(p) return { calculate = function(t, v) return -v end } end }
+)LUAU";
+  PJ::DataProcessorService& processors = session().dataProcessorService();
+  ASSERT_TRUE(processors.upsertTransform("pluginA", "negate", {input}, {"negated"}, kNegate, "{}").has_value());
+
+  PJ::LoadHints fanout_hints =
+      loadHints(uR"({"__pj_fanout":["{\"display_suffix\":\"left\"}","{\"display_suffix\":\"right\"}"]})"_s);
+  ASSERT_TRUE(loadAndWait(path, fanout_hints));
+
+  ASSERT_FALSE(engineHasDataset(old_id));
+  EXPECT_EQ(processors.transformRecipes().size(), 1u);
 }
 
 // A replacing fan-out tombstones the dataset it is replacing and real-deletes it only once the replacement has

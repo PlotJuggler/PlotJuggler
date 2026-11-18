@@ -96,9 +96,19 @@ does not link it.
   the `DataEngine` and invalidates the time-origin caches, so `globalTimeReference()`
   re-bases to the survivors; when the origin actually moves it emits
   `displayOffsetChanged()` so surviving curve adapters drop stale offsets and re-fit. It
-  also drops the dataset's source-path, source-record and loader-metadata entries and runs
-  `BatchEngine::clearGeneratorsForDataset`. Calling `dataEngine().removeDataset` directly
-  leaves the memoized earliest-sample origin stale.
+  also drops the dataset's source-path, source-record and loader-metadata entries, runs
+  `BatchEngine::clearGeneratorsForDataset`, and removes the filters and transforms reading the
+  dataset (`DataProcessorService::removeProcessorsDependingOn` over `datasetTopicIds`, retired
+  topics included, before the storage goes), so the `pj.data_processors.v1` `list` and a
+  re-created name agree with the emptied catalog. Only the shell's explicit removals (the
+  "Remove dataset" prompt, MCP `unload_file`) ask about those dependents first, counting the
+  same `datasetTopicIds`; "Remove all Datasets", a load's cleanup, a stream discard and a
+  preset or layout-import rollback remove them silently. A removed output can live in a
+  surviving dataset (a transform's output lives in its first input's dataset), so
+  `removeDataset` returns whether it removed any and the caller then calls
+  `CatalogModel::rebuildIfChanged`. A fan-out reload erases the dataset it replaces with the
+  cascade off: the workspace restore that follows rebinds those processors. Calling
+  `dataEngine().removeDataset` directly leaves the memoized earliest-sample origin stale.
 - **Dataset identity registry.** `DatasetId` → normalized full path
   (`setDatasetSourcePath` / `datasetSourcePath`, written by `pj_app`'s `FileLoader`;
   `DatasetInfo::source_name` is only a display label and cannot tell same-basename files

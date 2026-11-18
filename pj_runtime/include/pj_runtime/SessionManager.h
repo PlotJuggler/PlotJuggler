@@ -493,7 +493,16 @@ class SessionManager : public QObject {
   // Removes the dataset's scalar storage from the engine and invalidates its time-origin caches, so
   // globalTimeReference() re-bases to the survivors. Use it, not dataEngine().removeDataset(), which leaves the
   // memoized origin stale. Tear down readers and catalog items and evict the dataset's objects first.
-  void removeDataset(DatasetId dataset_id);
+  //
+  // With `remove_dependent_processors`, every filter and transform reading the dataset goes first, cascading, without
+  // asking; a shell that wants the user's consent asks before calling, counting datasetTopicIds(). True when that
+  // removed one: an output can live in a surviving dataset, so the caller rebuilds the catalog. Without it the
+  // processors stay bound to the erased topics, for a caller that restores them right after (a fan-out reload).
+  bool removeDataset(DatasetId dataset_id, bool remove_dependent_processors = true);
+
+  // Every topic removeDataset() erases, retired ones included: a merge or a reload retires topics a processor may
+  // still read, and listTopics() hides them. Empty for an unknown dataset.
+  [[nodiscard]] std::vector<TopicId> datasetTopicIds(DatasetId dataset_id) const;
 
   // Recomputes `dataset_id`'s earliest-sample pin from its current data and emits the global reframe if the origin
   // moved. FileLoader calls it when a load completes: plugin ingest commits through the C-ABI write host, bypassing

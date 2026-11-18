@@ -3197,7 +3197,9 @@ void MainWindow::removeDatasetData(DatasetId dataset_id) {
 #endif
   session_->sessionManager().evictDatasetObjects(dataset_id);
   session_->catalogModel().removeDataset(dataset_id, /*tombstone=*/false);
-  session_->sessionManager().removeDataset(dataset_id);
+  if (session_->sessionManager().removeDataset(dataset_id)) {
+    session_->catalogModel().rebuildIfChanged();
+  }
   // loadedSources() stays whole for quick reload; appendDataSourceElement's liveness filter keeps the removed
   // source out of a saved layout.
   file_loader_->untrackDataset(dataset_id);
@@ -3234,7 +3236,7 @@ void MainWindow::onRemoveDatasetsRequested(const QList<DatasetId>& dataset_ids) 
         // Cancelling the cascade prompt aborts the whole removal.
         std::vector<TopicId> removed_topics;
         for (const DatasetId dataset_id : dataset_ids) {
-          const std::vector<TopicId> dataset_topics = session_->sessionManager().dataEngine().listTopics(dataset_id);
+          const std::vector<TopicId> dataset_topics = session_->sessionManager().datasetTopicIds(dataset_id);
           removed_topics.insert(removed_topics.end(), dataset_topics.begin(), dataset_topics.end());
         }
         confirmAndRemoveDependentTransforms(removed_topics, [this, dataset_ids]() { removeDatasets(dataset_ids); });

@@ -1856,9 +1856,11 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // below, which restore the dataset being replaced. extractFanout never yields an empty list.
   const bool nothing_to_commit = fanout_loaded_ids.empty();
   if (!nothing_to_commit) {
-    // Past the last rollback point: erase the tombstoned dataset, or a prefer_reuse replay could reattach to it.
+    // Past the last rollback point: erase the tombstoned dataset, or a prefer_reuse replay could reattach to it. Its
+    // processors stay: the shell's workspace restore rebinds them onto the children.
     for (const DatasetId tombstoned_id : tombstoned_for_replace) {
-      removeCreatedDataset(tombstoned_id, /*evict_objects=*/true, /*remove_from_catalog=*/false);
+      removeCreatedDataset(
+          tombstoned_id, /*evict_objects=*/true, /*remove_from_catalog=*/false, /*remove_dependent_processors=*/false);
     }
     tombstoned_for_replace.clear();
     rollback_armed = false;
@@ -2165,7 +2167,8 @@ void FileLoader::publishIngestProgress(DatasetId dataset_id, IngestToken token, 
   emit loadProgress(current_load_ticket_, current, total);
 }
 
-void FileLoader::removeCreatedDataset(DatasetId dataset_id, bool evict_objects, bool remove_from_catalog) {
+void FileLoader::removeCreatedDataset(
+    DatasetId dataset_id, bool evict_objects, bool remove_from_catalog, bool remove_dependent_processors) {
 #ifdef PJ_WITH_SCENE3D
   if (transform_service_ != nullptr) {
     transform_service_->invalidateDataset(dataset_id);
@@ -2177,7 +2180,9 @@ void FileLoader::removeCreatedDataset(DatasetId dataset_id, bool evict_objects, 
   if (remove_from_catalog) {
     catalog_.removeDataset(dataset_id, /*tombstone=*/false);
   }
-  session_.removeDataset(dataset_id);
+  if (session_.removeDataset(dataset_id, remove_dependent_processors)) {
+    catalog_.rebuildIfChanged();
+  }
 }
 
 void FileLoader::failReplacingLoad(DatasetId dataset_id, const QString& path, const QString& reason) {

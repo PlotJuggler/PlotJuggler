@@ -450,7 +450,9 @@ void StreamingSourceManager::discardDataset(DatasetId dataset_id) {
   removeSecondaryDataset(dataset_id);
   session_manager_.evictDatasetObjects(dataset_id);
   catalog_.removeDataset(dataset_id, /*tombstone=*/false);
-  session_manager_.removeDataset(dataset_id);
+  if (session_manager_.removeDataset(dataset_id)) {
+    catalog_.rebuildIfChanged();
+  }
 }
 
 void StreamingSourceManager::startSession(
