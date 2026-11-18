@@ -807,11 +807,12 @@ of the module: its files keep their own SPDX and copyright lines.
   (`Preferences::send_anonymous_stats`). `TelemetryIdentity` (private, `src/`) holds what it
   shares with the usage report: the machine identity, the salted hash, the channel gate.
 - `UsageCounters` / `UsageReporter`: the daily usage report. Call sites count into the
-  process-wide `usageCounters()` (disabled, so a no-op, until the shell enables it); each
-  plugin family is counted at one place: `ExtensionCatalogService::resolveParserRoutes`
-  (the winning parser per bound topic, never a declining probe), the stream launch and file
-  load in `pj_app`, the toolbox launch, and `CustomWidgetDockWidget::bindWidget`. Counting
-  never touches the disk (`flush()` does) and may run on any thread. `UsageReporter` names
+  process-wide `usageCounters()` (disabled, so a no-op, until the shell enables it). A use is
+  counted once, at the one place every path to it goes through, and only after it succeeded
+  (a parser when its binding is created, never a declining probe or a lookup). Each key
+  counts at most once per run and day, so a count is a number of sessions: the panels an
+  undo, redo or reload rebuilds from a workspace document are not new uses. Counting never
+  touches the disk (`flush()` does) and may run on any thread. `UsageReporter` names
   only ids in the public set the shell passes (`shippedPluginIds()` plus the official
   registry, never a user-configured one) and forgets a day only after a 2xx. Its key set is
   pinned by `usage_reporter_test`, together with [docs/TELEMETRY.md](../../docs/TELEMETRY.md).
@@ -832,3 +833,5 @@ of the module: its files keep their own SPDX and copyright lines.
   ends.
 - `wait_for` sees only samples newer than its cursor: a late sample with an older stamp, or one retention drops between
   two looks, is missed.
+- `UsageCounters`: two app instances share `usage_counters.json` and the last writer wins, so one instance's counts
+  for a shared day are lost (an undercount; the server's `report_id` dedup keeps it from double counting).

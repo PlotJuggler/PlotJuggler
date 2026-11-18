@@ -3561,51 +3561,55 @@ void MainWindow::sendTelemetryPing(const QString& installation) {
 }
 
 #ifndef PJ_TARGET_WASM
-void MainWindow::startUsageReporting(const QString& installation) {
-  if (usage_reporter_ != nullptr) {
-    return;
-  }
+void MainWindow::startUsageReporting(const QString& installation, bool may_report) {
   UsageCounters& counters = usageCounters();
   counters.configure(
       QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + u"/usage_counters.json"_s,
       QCoreApplication::applicationVersion());
+  if (!QSettings().value(kUsageStatsKey, true).toBool()) {
+    counters.setEnabled(false);  // deletes a file a concurrent instance wrote back after the opt-out
+    return;
+  }
+  if (!may_report || !UsageReporter::canUpload(installation)) {
+    return;
+  }
   counters.setEnabled(true);
 
-  ExtensionCatalogService& catalog = session_->extensionCatalog();
-  counters.setInstalledPlugins(catalog.installedPluginInventory());
-  connect(&catalog, &ExtensionCatalogService::catalogChanged, this, [this]() {
-    usageCounters().setInstalledPlugins(session_->extensionCatalog().installedPluginInventory());
-  });
+  const auto take_inventory = [this]() {
+    usageCounters().setInstalledPlugins(installedPluginInventory(session_->extensionCatalog()));
+  };
+  take_inventory();
+  connect(&session_->extensionCatalog(), &ExtensionCatalogService::catalogChanged, this, take_inventory);
 
-  // Counting never touches the disk; this bounds what a crash can lose. ~MainWindow flushes the rest.
-  usage_flush_timer_ = new QTimer(this);
-  usage_flush_timer_->setInterval(std::chrono::minutes(5));
-  connect(usage_flush_timer_, &QTimer::timeout, this, []() { usageCounters().flush(); });
-  usage_flush_timer_->start();
+  // Counting never touches the disk; this bounds what a crash can lose.
+  auto* flush_timer = new QTimer(this);
+  connect(flush_timer, &QTimer::timeout, this, []() { usageCounters().flush(); });
+  flush_timer->start(std::chrono::minutes(5));
 
-  usage_reporter_ = new UsageReporter(counters, this);
-  // A developer's own collector, e.g. a local `wrangler dev` (docs/TELEMETRY.md, "Testing the usage report").
-  if (const QString url = qEnvironmentVariable("PJ_USAGE_REPORT_URL"); !url.isEmpty()) {
-    usage_reporter_->setEndpointUrl(QUrl(url));
-  }
   if (counters.completedDays().empty()) {
     return;  // nothing to upload this launch: skip the registry fetch too
+  }
+  auto* reporter = new UsageReporter(counters, this);
+  // A developer's own collector, e.g. a local `wrangler dev` (docs/TELEMETRY.md, "Testing the usage report").
+  if (const QString url = qEnvironmentVariable("PJ_USAGE_REPORT_URL"); !url.isEmpty()) {
+    reporter->setEndpointUrl(QUrl(url));
   }
   // Its own fetch rather than the update scan's: that one is skipped when update checks are off, and
   // it follows the user's registry setting. Only the official registry defines "public": a company's own
   // registry lists exactly the in-house ids a report must never name.
-  usage_registry_ = new RegistryManager(this);
-  connect(usage_registry_, &RegistryManager::fetchFinished, this, [this, installation](bool ok) {
+  auto* registry = new RegistryManager(this);
+  connect(registry, &RegistryManager::fetchFinished, this, [this, registry, reporter, installation](bool ok) {
+    registry->deleteLater();
     if (!ok) {
       return;  // without the public list no plugin could be named: keep the days for the next launch
     }
     std::set<std::string> public_ids = session_->extensionCatalog().shippedPluginIds();
-    for (const Extension& extension : usage_registry_->extensions()) {
+    for (const Extension& extension : registry->extensions()) {
       public_ids.insert(extension.id.toStdString());
     }
-    usage_reporter_->send(installation, public_ids);
+    reporter->send(installation, public_ids);
   });
-  usage_registry_->fetchRegistry(QUrl(defaultRegistryUrl()));
+  registry->fetchRegistry(QUrl(defaultRegistryUrl()));
 }
 #endif
 
@@ -4718,7 +4722,6 @@ void MainWindow::onLoadLayout() {
     return;
   }
   QSettings().setValue(kLastLayoutDirKey, QFileInfo(path).absolutePath());
-  usageCounters().count(UsageFeature::kLayoutLoad);
   loadLayoutFromPath(path, LayoutLoadInteractivity::kInteractive);
 #endif
 }
@@ -4794,7 +4797,6 @@ void MainWindow::onLoadRecentLayout(const QString& path) {
   if (path.isEmpty()) {
     return;
   }
-  usageCounters().count(UsageFeature::kLayoutLoad);
 #ifdef PJ_TARGET_WASM
   BrowserPersistence* persistence = BrowserPersistence::instance();
   const std::optional<BrowserPersistence::LayoutRecipe> recipe =
@@ -4998,6 +5000,9 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
     return;
   }
   file.close();
+  if (interactive) {
+    usageCounters().count(UsageFeature::kLayoutLoad);  // the user's own load: an automated --layout run is not a use
+  }
 #ifdef PJ_WITH_SCENE3D
   // Robot resources may be named relative to the layout file: anchor them
   // before anything restores from the document.

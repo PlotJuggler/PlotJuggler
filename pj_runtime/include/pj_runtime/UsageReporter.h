@@ -31,14 +31,17 @@ class UsageReporter : public QObject {
 
  public:
   explicit UsageReporter(UsageCounters& counters, QObject* parent = nullptr);
-  ~UsageReporter() override;
 
   /// POSTs every completed day in one request. Emits finished(ok) exactly once per call: true on a 2xx
-  /// or when there is nothing to send (no request is made), false on a refused channel, a transfer
-  /// failure, or while an earlier send is still in flight.
+  /// or when there is nothing to send (no request is made), false on a refused channel, a redirect or a
+  /// transfer failure. Call it once per reporter.
   void send(const QString& installation, const std::set<std::string>& public_plugin_ids);
 
-  /// The JSON body send() posts for `days`: also what Preferences shows as "what is sent".
+  /// False for a build whose PJ_INSTALLATION stamp never reports (an unpackaged "source" tree), the gate
+  /// send() applies. The shell checks it first, so such a build neither counts nor fetches the registry.
+  [[nodiscard]] static bool canUpload(const QString& installation);
+
+  /// The JSON body send() posts for `days`.
   [[nodiscard]] static QJsonObject buildBody(
       const std::vector<DayUsage>& days, const QString& installation, const std::set<std::string>& public_plugin_ids);
 
@@ -53,7 +56,6 @@ class UsageReporter : public QObject {
   UsageCounters& counters_;
   QNetworkAccessManager* network_ = nullptr;
   QUrl endpoint_url_;
-  bool in_flight_ = false;
 };
 
 }  // namespace PJ

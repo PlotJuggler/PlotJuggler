@@ -7,11 +7,9 @@
 
 namespace PJ::telemetry {
 
-// The raw per-machine identity both telemetry senders hash (never sent as-is): the OS machine id, or a
-// QSettings-persisted random UUID where Qt cannot read one. Only as durable as that settings backend.
-[[nodiscard]] QByteArray machineIdentity();
-
-// SHA-256 hex of machineIdentity() and `salt`. A distinct salt per purpose keeps the ids unlinkable.
+// SHA-256 hex of the machine identity and `salt`; a distinct salt per purpose keeps the ids unlinkable. The identity
+// is the OS machine id, or a QSettings-persisted random UUID where Qt cannot read one (only as durable as that
+// settings backend), and is never sent as-is.
 [[nodiscard]] QString saltedMachineHash(const QByteArray& salt);
 
 // Whether a build with this PJ_INSTALLATION stamp may report at all: "source" (the CMake default,

@@ -48,8 +48,10 @@ document and that test together.
 
 ## Daily usage report
 
-Counters, never an event stream: the app adds up uses per UTC day on the
-machine and uploads each finished day once, so a report carries no timestamp
+Counters, never an event stream: per UTC day, the app counts the **sessions**
+(app runs) that used each feature or plugin, so ten files opened with one loader
+in one run count once, and so does a panel that undo or redo rebuilds. It
+uploads each finished day once, so a report carries no timestamp
 finer than the day and no order of actions. Days are uploaded at a later launch
 (in one POST to `https://app.plotjuggler.io/telemetry/v2/usage`) and deleted
 locally after the server accepts them. At most 7 finished days are kept: an
@@ -63,8 +65,8 @@ The body is `{"schema": 2, "reports": [...]}`, one report per finished day:
 | `day` | `2026-11-08` | The UTC day counted. |
 | `period_id` | `9a1e…` (SHA-256) | Salted hash of the machine id **and the month**: counts distinct machines per month, changes every month, and uses a salt of its own so it cannot be matched with the launch ping's `user_id`. |
 | `version` / `os` / `arch` / `installation` | `4.1.0` / `windows` / `x86_64` / `windows` | As in the ping; `version` is the release that did the counting. |
-| `features` | `{"layout.load": 2}` | Uses of each counted feature (table below). |
-| `plugins` | `[{"kind": "toolbox", "action": "open", "id": "…", "n": 3}]` | Uses of each plugin (actions below). |
+| `features` | `{"layout.load": 2}` | Sessions that used each counted feature (table below). |
+| `plugins` | `[{"kind": "toolbox", "action": "open", "id": "…", "n": 3}]` | Sessions that used each plugin that way (actions below). |
 | `installed` | `[{"kind": "parser", "id": "…", "v": "1.0.3", "n": 1}]` | The plugins loaded that day, with their version. |
 
 **Which plugins are named.** A plugin's id (and version) is sent only when the
@@ -73,7 +75,9 @@ listed in the official marketplace registry (fetched for that purpose; a
 user-configured registry never counts, since a company's own registry lists
 exactly the in-house ids that must stay private). Every other plugin — from a
 custom folder, `--plugin-dir`, or a local archive — is folded per family into
-the id `_private`, its version dropped. If the registry cannot be fetched,
+the id `_private`, its version dropped. A public id keeps its version only
+when it is purely numeric (`1.4.0`): a fork reusing the id may carry a
+free-text one. If the registry cannot be fetched,
 nothing is sent and the days wait for the next launch.
 
 | Plugin `kind` | `action` | Counted when |
@@ -99,8 +103,10 @@ a row above, and the server's allowlist.
 
 **Locally**, the counters live in `usage_counters.json` in the app data folder
 (`QStandardPaths::AppDataLocation`), raw plugin ids included — the folding
-happens when a report is built. Turning the switch off deletes that file at
-once; turning it on takes effect at the next launch.
+happens when a report is built. An unpackaged or automated run never counts.
+Turning the switch off deletes that file at once (and at every launch while
+it stays off); turning it on takes effect at the next launch. A day is
+forgotten only after the server answers 2xx; a redirect is not followed.
 
 ### Server contract
 
@@ -118,7 +124,7 @@ client treats any 2xx as "accepted, forget these days", so the Worker must:
 - **Store aggregates, not reports**, and no IP address.
 
 The Worker implements this in `src/usage.js`, with its tables in `usage_schema.sql`: daily rows
-upserted per report (`reports` = machine-days, `uses` = summed counts), and the month-scoped `period_id`
+upserted per report (`reports` = machine-days, `uses` = summed session counts), and the month-scoped `period_id`
 kept only until a daily job rolls the month into distinct-machine counts, once no accepted report can still
 fall in it. A monthly count's `subject` is `feature:<key>`, `plugin:<kind>:<id>` or `installed:<id>`. With
 that, "which plugins are used" is `daily_plugin` (volume) and

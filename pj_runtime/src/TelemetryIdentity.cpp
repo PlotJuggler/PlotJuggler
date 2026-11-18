@@ -18,7 +18,6 @@ namespace {
 // automation rather than installs, and they all carry the in-development
 // version, so counting them reports a user base that does not exist.
 constexpr auto kUnpackagedInstallation = "source";
-}  // namespace
 
 QByteArray machineIdentity() {
   QByteArray machine_id = QSysInfo::machineUniqueId();
@@ -34,6 +33,7 @@ QByteArray machineIdentity() {
   }
   return machine_id;
 }
+}  // namespace
 
 QString saltedMachineHash(const QByteArray& salt) {
   const QByteArray salted = machineIdentity() + "|" + salt;

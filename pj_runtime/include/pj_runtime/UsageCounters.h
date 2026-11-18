@@ -8,12 +8,15 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <vector>
 
 namespace PJ {
+
+class ExtensionCatalogService;
 
 /// The closed set of app features whose use is counted. Only these reach a report, so a counter can
 /// never carry free text (a topic, a path). Adding one means a wire key in usageFeatureKey() and a
@@ -26,7 +29,7 @@ enum class UsageFeature {
   kPanelScene2D,    ///< a Scene2D panel was created (by the user or by a layout)
 };
 
-/// One way a plugin gets used; each implies the plugin family (usagePluginKind()).
+/// One way a plugin gets used; each implies the plugin family (pluginUseKey()).
 enum class PluginUse {
   kFileLoad,      ///< a DataSource plugin loaded a file
   kStreamStart,   ///< a DataSource plugin started streaming
@@ -37,16 +40,22 @@ enum class PluginUse {
 
 /// Wire key of a feature ("layout.load", ...), stable across releases: the server allowlists it.
 [[nodiscard]] std::string_view usageFeatureKey(UsageFeature feature);
-/// Plugin family of a use: "data_source", "parser", "toolbox" or "widget".
-[[nodiscard]] std::string_view usagePluginKind(PluginUse use);
-/// Wire action of a use: "file", "stream", "decode", "open" or "create".
-[[nodiscard]] std::string_view usagePluginAction(PluginUse use);
+/// Wire form of a plugin use: its family ("data_source", "parser", "toolbox", "widget") and action ("file",
+/// "stream", "decode", "open", "create"). The server allowlists both.
+struct PluginUseKey {
+  std::string_view kind;
+  std::string_view action;
+};
+[[nodiscard]] PluginUseKey pluginUseKey(PluginUse use);
+
+/// (kind, action, plugin id), as in PluginUseKey.
+using PluginUseRow = std::tuple<std::string, std::string, std::string>;
 
 /// One plugin present in the catalog, for the daily installed inventory.
 struct InstalledPluginRecord {
   std::string id;
   std::string version;
-  std::string kind;  ///< usagePluginKind() vocabulary
+  std::string kind;  ///< PluginUseKey::kind vocabulary
 };
 
 /// Everything counted on one UTC day. Plugin ids are raw here (they never leave the machine in this
@@ -56,12 +65,13 @@ struct DayUsage {
   QString report_id;    ///< random, minted with the day: lets the server drop a retried upload
   QString app_version;  ///< the version that did the counting, which an upgrade before upload must not change
   std::map<std::string, int64_t> features;  ///< usageFeatureKey() -> uses
-  /// (kind, action, plugin id) -> uses
-  std::map<std::tuple<std::string, std::string, std::string>, int64_t> plugin_uses;
+  std::map<PluginUseRow, int64_t> plugin_uses;
   std::vector<InstalledPluginRecord> installed;  ///< the last inventory taken that day
 };
 
-/// Local, per-UTC-day usage counters behind the anonymous usage report (docs/TELEMETRY.md).
+/// Local, per-UTC-day usage counters behind the anonymous usage report (docs/TELEMETRY.md). A count is the number of
+/// sessions (app runs) that used something that day: repeats within a run, and the panels an undo, redo or reload
+/// rebuilds, count once.
 ///
 /// Counting is cheap, thread-safe and never touches the disk (parser binds count from stream
 /// threads); flush() persists. The app counts through the process-wide usageCounters(), which does
@@ -84,7 +94,8 @@ class UsageCounters {
   UsageCounters(const UsageCounters&) = delete;
   UsageCounters& operator=(const UsageCounters&) = delete;
 
-  /// Enabling loads what an earlier run stored; disabling clears memory and deletes the storage file.
+  /// Enabling loads what an earlier run stored; disabling clears memory and deletes the storage file (also when
+  /// the counters were never enabled in this run).
   void setEnabled(bool enabled);
   [[nodiscard]] bool enabled() const;
 
@@ -109,6 +120,8 @@ class UsageCounters {
 
  private:
   DayUsage& todayLocked();
+  /// False when this run already counted `key` today: a day's count is the number of sessions that used it.
+  bool firstUseInSessionLocked(const std::string& key);
   void pruneLocked();
   void loadLocked();
   void saveLocked();
@@ -120,7 +133,14 @@ class UsageCounters {
   bool enabled_ = false;
   bool dirty_ = false;
   std::map<QDate, DayUsage> days_;
+  std::vector<InstalledPluginRecord> installed_;  ///< the last inventory, copied into each new day
+  QDate session_day_;
+  std::set<std::string> session_uses_;  ///< keys this run counted on session_day_ (never persisted)
 };
+
+/// Every plugin the catalog has loaded, as the daily installed inventory (raw ids). Main thread, like the
+/// catalog's family accessors.
+[[nodiscard]] std::vector<InstalledPluginRecord> installedPluginInventory(const ExtensionCatalogService& catalog);
 
 /// The process-wide counters the app counts into; disabled (every call a no-op) until the shell
 /// configures and enables it.

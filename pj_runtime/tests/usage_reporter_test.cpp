@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDeadlineTimer>
 #include <QEventLoop>
 #include <QJsonArray>
@@ -43,7 +44,6 @@ struct Fixture {
     counters.count(UsageFeature::kLayoutLoad);
     counters.countPlugin(PluginUse::kToolboxOpen, "pj.public_toolbox");
     counters.countPlugin(PluginUse::kToolboxOpen, "acme.secret_one");
-    counters.countPlugin(PluginUse::kToolboxOpen, "acme.secret_two");
     counters.countPlugin(PluginUse::kToolboxOpen, "acme.secret_two");
     counters.setInstalledPlugins(
         {{"pj.public_toolbox", "1.0.0", "toolbox"},
@@ -112,7 +112,7 @@ TEST(UsageReporterTest, PostsOnlyDocumentedKeysAndFoldsPrivatePlugins) {
   const QJsonObject folded = findRow(plugins, u"_private"_s);
   EXPECT_EQ(folded.value(u"kind"_s).toString(), u"toolbox"_s);
   EXPECT_EQ(folded.value(u"action"_s).toString(), u"open"_s);
-  EXPECT_EQ(folded.value(u"n"_s).toInt(), 3);
+  EXPECT_EQ(folded.value(u"n"_s).toInt(), 2);  // both private toolboxes, merged into one row
 
   const QJsonArray installed = report.value(u"installed"_s).toArray();
   ASSERT_EQ(installed.size(), 2);
@@ -141,7 +141,25 @@ TEST(UsageReporterTest, PeriodIdIsAMonthScopedHashNotTheMachineId) {
   const QByteArray raw_machine_id = QSysInfo::machineUniqueId();
   if (!raw_machine_id.isEmpty()) {
     EXPECT_NE(november.toLatin1(), raw_machine_id.toHex());
+    // Nor the launch ping's user_id (telemetry_ping_test pins that formula).
+    const QByteArray ping_user_id =
+        QCryptographicHash::hash(raw_machine_id + "|plotjuggler4-telemetry-v1", QCryptographicHash::Sha256).toHex();
+    EXPECT_NE(november.toLatin1(), ping_user_id);
   }
+}
+
+TEST(UsageReporterTest, AFreeTextVersionOfAPublicPluginIsDropped) {
+  PJ::DayUsage day;
+  day.day = {2026, 11, 1};
+  day.installed = {{"pj.public_toolbox", "1.4.0-acme-internal", "toolbox"}, {"pj.other", "2.0.1", "toolbox"}};
+  const QJsonArray installed = UsageReporter::buildBody({day}, u"x"_s, {"pj.public_toolbox", "pj.other"})
+                                   .value(u"reports"_s)
+                                   .toArray()[0]
+                                   .toObject()
+                                   .value(u"installed"_s)
+                                   .toArray();
+  EXPECT_FALSE(findRow(installed, u"pj.public_toolbox"_s).contains(u"v"_s));
+  EXPECT_EQ(findRow(installed, u"pj.other"_s).value(u"v"_s).toString(), u"2.0.1"_s);
 }
 
 TEST(UsageReporterTest, AcceptedUploadForgetsTheDaysAndAFailedOneKeepsThem) {
@@ -154,6 +172,28 @@ TEST(UsageReporterTest, AcceptedUploadForgetsTheDaysAndAFailedOneKeepsThem) {
   postAndCapture(fixture, "200 OK", &ok);
   EXPECT_TRUE(ok);
   EXPECT_TRUE(fixture.counters.completedDays().empty());
+}
+
+TEST(UsageReporterTest, OnlyA2xxAcknowledges) {
+  // A redirect (a moved domain, a redirect rule) never reached the collector: the days stay.
+  Fixture redirected;
+  LocalHttpServer landing;
+  landing.setResponse("200 OK", "{}");
+  LocalHttpServer endpoint;
+  endpoint.setResponse("302 Found\r\nLocation: " + landing.url().toEncoded(), "{}");  // extra header after the status
+  UsageReporter reporter(redirected.counters);
+  reporter.setEndpointUrl(endpoint.url());
+  QSignalSpy finished_spy(&reporter, &UsageReporter::finished);
+  reporter.send(u"test-channel"_s, kPublic);
+  ASSERT_TRUE(waitForSignal(finished_spy));
+  EXPECT_FALSE(finished_spy.takeFirst().at(0).toBool());
+  EXPECT_EQ(redirected.counters.completedDays().size(), 1u);
+
+  bool ok = false;
+  Fixture accepted;
+  postAndCapture(accepted, "202 Accepted", &ok);
+  EXPECT_TRUE(ok);
+  EXPECT_TRUE(accepted.counters.completedDays().empty());
 }
 
 TEST(UsageReporterTest, NothingToSendMakesNoRequest) {
@@ -174,6 +214,8 @@ TEST(UsageReporterTest, NothingToSendMakesNoRequest) {
 }
 
 TEST(UsageReporterTest, UnpackagedBuildsNeverReachTheEndpoint) {
+  EXPECT_FALSE(UsageReporter::canUpload(u"source"_s));
+  EXPECT_TRUE(UsageReporter::canUpload(u"appimage"_s));
   for (const QString& installation : {u"source"_s, u" Source "_s, QString()}) {
     Fixture fixture;
     LocalHttpServer server;

@@ -16,6 +16,8 @@
 #include <limits>
 #include <utility>
 
+#include "pj_runtime/ExtensionCatalogService.h"
+
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -115,35 +117,34 @@ std::string_view usageFeatureKey(UsageFeature feature) {
   return "unknown";
 }
 
-std::string_view usagePluginKind(PluginUse use) {
+PluginUseKey pluginUseKey(PluginUse use) {
   switch (use) {
     case PluginUse::kFileLoad:
+      return {"data_source", "file"};
     case PluginUse::kStreamStart:
-      return "data_source";
+      return {"data_source", "stream"};
     case PluginUse::kParserBind:
-      return "parser";
+      return {"parser", "decode"};
     case PluginUse::kToolboxOpen:
-      return "toolbox";
+      return {"toolbox", "open"};
     case PluginUse::kWidgetCreate:
-      return "widget";
+      return {"widget", "create"};
   }
-  return "unknown";
+  return {"unknown", "unknown"};
 }
 
-std::string_view usagePluginAction(PluginUse use) {
-  switch (use) {
-    case PluginUse::kFileLoad:
-      return "file";
-    case PluginUse::kStreamStart:
-      return "stream";
-    case PluginUse::kParserBind:
-      return "decode";
-    case PluginUse::kToolboxOpen:
-      return "open";
-    case PluginUse::kWidgetCreate:
-      return "create";
-  }
-  return "unknown";
+std::vector<InstalledPluginRecord> installedPluginInventory(const ExtensionCatalogService& catalog) {
+  std::vector<InstalledPluginRecord> inventory;
+  const auto add = [&inventory](const auto& plugins, std::string_view kind) {
+    for (const auto& plugin : plugins) {
+      inventory.push_back({plugin.id, plugin.version, std::string(kind)});
+    }
+  };
+  add(catalog.dataSources(), "data_source");
+  add(catalog.messageParsers(), "parser");
+  add(catalog.toolboxes(), "toolbox");
+  add(catalog.widgets(), "widget");
+  return inventory;
 }
 
 UsageCounters::UsageCounters(QString storage_file, QString app_version, std::function<QDate()> today)
@@ -160,10 +161,15 @@ void UsageCounters::configure(QString storage_file, QString app_version) {
 void UsageCounters::setEnabled(bool enabled) {
   const std::scoped_lock lock(mutex_);
   if (enabled == enabled_) {
+    if (!enabled && !storage_file_.isEmpty()) {
+      QFile::remove(storage_file_);  // an opt-out in a run that never enabled them (CI, --screenshot)
+    }
     return;
   }
   enabled_ = enabled;
   days_.clear();
+  installed_.clear();
+  session_uses_.clear();
   dirty_ = false;
   if (enabled_) {
     loadLocked();
@@ -185,6 +191,7 @@ DayUsage& UsageCounters::todayLocked() {
     day.day = today;
     day.report_id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     day.app_version = app_version_;
+    day.installed = installed_;  // the inventory is taken at startup and on catalog changes, not at midnight
     it = days_.emplace(today, std::move(day)).first;
     pruneLocked();
   }
@@ -193,10 +200,11 @@ DayUsage& UsageCounters::todayLocked() {
 
 void UsageCounters::count(UsageFeature feature) {
   const std::scoped_lock lock(mutex_);
-  if (!enabled_) {
+  std::string key(usageFeatureKey(feature));
+  if (!enabled_ || !firstUseInSessionLocked(key)) {
     return;
   }
-  bump(todayLocked().features[std::string(usageFeatureKey(feature))]);
+  bump(todayLocked().features[std::move(key)]);
   dirty_ = true;
 }
 
@@ -205,12 +213,12 @@ void UsageCounters::countPlugin(PluginUse use, std::string_view plugin_id) {
     return;
   }
   const std::scoped_lock lock(mutex_);
-  if (!enabled_) {
+  const PluginUseKey key = pluginUseKey(use);
+  PluginUseRow row{std::string(key.kind), std::string(key.action), std::string(plugin_id)};
+  if (!enabled_ || !firstUseInSessionLocked(std::get<0>(row) + '|' + std::get<1>(row) + '|' + std::get<2>(row))) {
     return;
   }
   auto& uses = todayLocked().plugin_uses;
-  std::tuple<std::string, std::string, std::string> row{
-      std::string(usagePluginKind(use)), std::string(usagePluginAction(use)), std::string(plugin_id)};
   auto it = uses.find(row);
   if (it == uses.end()) {
     if (uses.size() >= kMaxPluginRowsPerDay) {
@@ -230,8 +238,18 @@ void UsageCounters::setInstalledPlugins(std::vector<InstalledPluginRecord> plugi
   if (plugins.size() > kMaxPluginRowsPerDay) {
     plugins.resize(kMaxPluginRowsPerDay);
   }
-  todayLocked().installed = std::move(plugins);
+  installed_ = std::move(plugins);
+  todayLocked().installed = installed_;
   dirty_ = true;
+}
+
+bool UsageCounters::firstUseInSessionLocked(const std::string& key) {
+  const QDate today = today_();
+  if (today != session_day_) {
+    session_day_ = today;
+    session_uses_.clear();
+  }
+  return session_uses_.insert(key).second;
 }
 
 void UsageCounters::pruneLocked() {
@@ -323,8 +341,8 @@ void UsageCounters::loadLocked() {
 }
 
 void UsageCounters::saveLocked() {
-  dirty_ = false;
   if (storage_file_.isEmpty()) {
+    dirty_ = false;
     return;
   }
   QJsonObject days;
@@ -337,7 +355,7 @@ void UsageCounters::saveLocked() {
     return;
   }
   file.write(QJsonDocument(QJsonObject{{u"v"_s, kStorageVersion}, {u"days"_s, days}}).toJson(QJsonDocument::Compact));
-  file.commit();
+  dirty_ = !file.commit();  // a failed write (full disk, locked file) is retried by the next flush
 }
 
 UsageCounters& usageCounters() {

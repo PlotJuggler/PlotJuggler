@@ -8,6 +8,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QSysInfo>
 #include <chrono>
 #include <map>
@@ -45,7 +46,7 @@ QJsonObject buildReport(const DayUsage& day, const QString& installation, const 
   }
 
   // Folding private ids can merge rows, so re-aggregate.
-  std::map<std::tuple<std::string, std::string, std::string>, int64_t> uses_by_row;
+  std::map<PluginUseRow, int64_t> uses_by_row;
   for (const auto& [row, uses] : day.plugin_uses) {
     const auto& [kind, action, id] = row;
     uses_by_row[{kind, action, named(id)}] += uses;
@@ -61,11 +62,15 @@ QJsonObject buildReport(const DayUsage& day, const QString& installation, const 
             {u"n"_s, static_cast<double>(uses)}});
   }
 
-  // A private plugin's version would identify it as surely as its id, so it is dropped with the id.
+  // A private plugin's version would identify it as surely as its id, so it is dropped with the id. A public id
+  // keeps only a numeric version: a fork's own build may reuse the id with a free-text version.
+  static const QRegularExpression numeric_version(u"^\\d+(\\.\\d+){0,3}$"_s);
   std::map<std::tuple<std::string, std::string, std::string>, int64_t> installed_rows;
   for (const auto& plugin : day.installed) {
     const std::string id = named(plugin.id);
-    installed_rows[{plugin.kind, id, id == kPrivatePluginId ? std::string() : plugin.version}] += 1;
+    const bool keep_version =
+        id != kPrivatePluginId && numeric_version.match(QString::fromStdString(plugin.version)).hasMatch();
+    installed_rows[{plugin.kind, id, keep_version ? plugin.version : std::string()}] += 1;
   }
   QJsonArray installed;
   for (const auto& [row, n] : installed_rows) {
@@ -101,14 +106,16 @@ UsageReporter::UsageReporter(UsageCounters& counters, QObject* parent)
       network_(new QNetworkAccessManager(this)),
       endpoint_url_(QString::fromLatin1(kDefaultEndpointUrl)) {}
 
-UsageReporter::~UsageReporter() = default;
-
 void UsageReporter::setEndpointUrl(const QUrl& url) {
   endpoint_url_ = url;
 }
 
 QUrl UsageReporter::endpointUrl() const {
   return endpoint_url_;
+}
+
+bool UsageReporter::canUpload(const QString& installation) {
+  return telemetry::isReportingInstallation(installation);
 }
 
 QJsonObject UsageReporter::buildBody(
@@ -124,7 +131,7 @@ void UsageReporter::send(const QString& installation, const std::set<std::string
   const auto finish_later = [this](bool ok) {
     QMetaObject::invokeMethod(this, [this, ok]() { emit finished(ok); }, Qt::QueuedConnection);
   };
-  if (in_flight_ || !telemetry::isReportingInstallation(installation)) {
+  if (!canUpload(installation)) {
     finish_later(false);
     return;
   }
@@ -144,16 +151,16 @@ void UsageReporter::send(const QString& installation, const std::set<std::string
   QNetworkRequest request(endpoint_url_);
   request.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
   request.setHeader(QNetworkRequest::UserAgentHeader, u"PlotJuggler"_s);
-  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+  // A followed redirect re-issues the POST as a bodyless GET whose 200 would acknowledge days no collector got.
+  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
 
   const QByteArray body =
       QJsonDocument(buildBody(days, installation, public_plugin_ids)).toJson(QJsonDocument::Compact);
-  in_flight_ = true;
   httpPostWithTimeout(
       *network_, std::move(request), body, std::chrono::milliseconds(kTransferTimeoutMs), this,
       [this, report_ids = std::move(report_ids)](QNetworkReply& reply) {
-        in_flight_ = false;
-        const bool ok = reply.error() == QNetworkReply::NoError;
+        const int status = reply.attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const bool ok = reply.error() == QNetworkReply::NoError && status >= 200 && status < 300;
         if (ok) {
           counters_.acknowledge(report_ids);
         }

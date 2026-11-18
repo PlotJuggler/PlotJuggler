@@ -29,6 +29,7 @@
 #include "pj_marketplace/platform_utils.hpp"
 #include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/UsageCounters.h"
 #include "plugin_test_utils.h"
 
 namespace PJ {
@@ -284,7 +285,7 @@ TEST_F(ExtensionCatalogSeedTest, BundledPluginIsShippedAndInventoried) {
   const auto service = makeDefaultModeService();
 
   EXPECT_EQ(service->shippedPluginIds(), std::set<std::string>{kMockId});
-  const std::vector<InstalledPluginRecord> inventory = service->installedPluginInventory();
+  const std::vector<PJ::InstalledPluginRecord> inventory = PJ::installedPluginInventory(*service);
   ASSERT_EQ(inventory.size(), 1u);
   EXPECT_EQ(inventory[0].id, kMockId);
   EXPECT_EQ(inventory[0].version, "1.0.0");
@@ -299,7 +300,7 @@ TEST_F(ExtensionCatalogSeedTest, InstalledPluginIsNotShipped) {
 
   ASSERT_NE(findMock(*service), nullptr);
   EXPECT_TRUE(service->shippedPluginIds().empty());
-  EXPECT_EQ(service->installedPluginInventory().size(), 1u);
+  EXPECT_EQ(PJ::installedPluginInventory(*service).size(), 1u);
 }
 
 TEST_F(ExtensionCatalogSeedTest, CompiledInPluginIsShipped) {

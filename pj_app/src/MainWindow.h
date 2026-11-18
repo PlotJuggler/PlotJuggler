@@ -127,7 +127,6 @@ class WelcomePresetsDialog;
 class RegistryManager;
 class FeatureCatalogHost;
 class TelemetryPing;
-class UsageReporter;
 class CoalescingTrigger;
 
 // Persisted as int under QSettings "MainWindow.legendStatus": the values are fixed.
@@ -271,11 +270,12 @@ class MainWindow : public QMainWindow {
   void sendTelemetryPing(const QString& installation);
 
 #ifndef PJ_TARGET_WASM
-  // Starts the anonymous daily usage report (docs/TELEMETRY.md): enables usageCounters() on its storage file, keeps
-  // today's installed-plugin inventory current, flushes periodically and on destruction, and uploads the finished
-  // days once the public registry is known (its ids, with the shipped ones, are the plugins a report may name; a
-  // failed registry fetch sends nothing and keeps the days). The consent and automation gates are the caller's.
-  void startUsageReporting(const QString& installation);
+  // The anonymous daily usage report (docs/TELEMETRY.md). Call once at startup. Points usageCounters() at its storage
+  // file in every run, so an opt-out deletes what an earlier run stored. With the preference on, `may_report` (no
+  // automation) and a reporting installation: enables the counters, keeps the installed-plugin inventory current,
+  // flushes periodically (~MainWindow flushes the rest) and uploads the finished days once the public registry is
+  // known (its ids, with the shipped ones, are the plugins a report may name; a failed fetch keeps the days).
+  void startUsageReporting(const QString& installation, bool may_report);
 #endif
 
   // The PJ_INSTALLATION build stamp: decides where checkForUpdates() looks and how the toast offers an update.
@@ -1273,13 +1273,6 @@ class MainWindow : public QMainWindow {
   UpdateChecker* update_checker_ = nullptr;
   QString installation_;
   TelemetryPing* telemetry_ping_ = nullptr;
-#ifndef PJ_TARGET_WASM
-  // The daily usage report (startUsageReporting): the uploader, the public-registry fetch that tells it which plugin
-  // ids it may name, and the periodic flush of the counters.
-  UsageReporter* usage_reporter_ = nullptr;
-  RegistryManager* usage_registry_ = nullptr;
-  QTimer* usage_flush_timer_ = nullptr;
-#endif
   // Rebound on each checkForUpdates(), so each check carries its own interactivity.
   QMetaObject::Connection update_available_conn_;
   QMetaObject::Connection up_to_date_conn_;

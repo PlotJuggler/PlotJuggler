@@ -327,7 +327,6 @@ bool CustomWidgetDockWidget::bindWidget(const QString& plugin_id, const QString&
                      DiagnosticLevel::kWarning);
   }
   handle_.emplace(std::move(**created));
-  usageCounters().countPlugin(PluginUse::kWidgetCreate, plugin->id);
 
   const auto fail = [&](const QString& reason) {
     releasePlugin();
@@ -401,6 +400,7 @@ bool CustomWidgetDockWidget::bindWidget(const QString& plugin_id, const QString&
   }
   plugin_widget_ = static_cast<QWidget*>(**raw);
   layout_->addWidget(plugin_widget_);
+  usageCounters().countPlugin(PluginUse::kWidgetCreate, plugin->id);
   return true;
 }
 
