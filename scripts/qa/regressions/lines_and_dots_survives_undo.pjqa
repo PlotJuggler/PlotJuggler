@@ -1,6 +1,7 @@
 # A plot set to "Lines and Dots" in the Curve Style panel keeps it through an undo of an unrelated step (a zoom),
 # with the toolbar's Dots toggle off. The right panel opens through its title-bar button (third plotTabsPanelButton,
-# x 1537 of the window); the active plot is the one last clicked.
+# x 1537 of the window) and shows the style of the plot last clicked; a restore rebinds it to the first plot, so the
+# same point is clicked again before the last check.
 # app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
 # needs: plugins
 until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
@@ -15,5 +16,6 @@ ui_tree {}
 expect globalStyleLinesAndDots "Lines and Dots" (checked)
 ui_key {"keys":"Ctrl+Z","wait_ms":700}
 until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
+ui_click {"name":"tabbedPlotWidget","x":400,"y":200,"wait_ms":300}
 ui_tree {}
 expect globalStyleLinesAndDots "Lines and Dots" (checked)

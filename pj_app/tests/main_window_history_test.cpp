@@ -892,8 +892,8 @@ TEST_F(MainWindowHistoryFixture, UndoKeepsThePlotOfAnUntouchedTab) {
   EXPECT_EQ(reports, 1);
 }
 
-// The toolbar's Dots toggle restyles the plots when pressed; a restore (layout load, undo) keeps each plot's saved
-// style, whichever way the toggle stands.
+// The toolbar's Dots toggle restyles the plots when pressed; a restore (layout load, progressive load, undo, redo)
+// keeps each plot's saved style, whichever way the toggle stands.
 TEST_F(MainWindowHistoryFixture, RestoreKeepsEachPlotsStyleWhateverTheDotsToggle) {
   PJ::MainWindow& window = mainWindow();
   auto* dots = window.findChild<QToolButton*>(u"buttonDots"_s);
@@ -945,6 +945,23 @@ TEST_F(MainWindowHistoryFixture, RestoreKeepsEachPlotsStyleWhateverTheDotsToggle
   restore();
   EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLinesAndDots);
   EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "a layout load with Dots on";
+
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  tabbed->currentTab()->plotAt(0)->plotWidget()->setTrackerEnabled(false);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "an undo with Dots on";
+  PJ::MainWindowHistoryTestPeer::redo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "a redo with Dots on";
+
+  PJ::MainWindowHistoryTestPeer::beginProgressiveRestore(window, doc.cloneNode(true).toDocument());
+  PJ::MainWindowHistoryTestPeer::drainProgressiveRestore(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_FALSE(PJ::MainWindowHistoryTestPeer::progressiveRestoreInFlight(window));
+  EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLinesAndDots) << "a progressive layout load with Dots on";
+  EXPECT_EQ(style_of(1), PJ::PlotWidgetBase::kLines) << "a progressive layout load with Dots on";
 
   dots->setChecked(false);
   EXPECT_EQ(style_of(0), PJ::PlotWidgetBase::kLines) << "pressing Dots off restyles a Lines and Dots plot";
