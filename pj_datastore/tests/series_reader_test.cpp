@@ -3,16 +3,21 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "pj_base/type_tree.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_datastore/query.hpp"
 #include "pj_datastore/reader.hpp"
+#include "pj_datastore/topic_storage.hpp"
 #include "pj_datastore/writer.hpp"
 
 namespace PJ {
@@ -334,6 +339,97 @@ TEST(SeriesReaderOverlapTest, TimeSampleQueriesMergeAcrossOutOfOrderChunks) {
   // Extremes: nothing strictly before the earliest / after the latest sample.
   EXPECT_FALSE(series.sampleBeforeTime(50).has_value());
   EXPECT_FALSE(series.sampleAfterTime(200).has_value());
+}
+
+// bounds() against a full scan of samples(), over overlapping chunks holding nulls, NaN and infinities (and a chunk
+// whose first value is NaN, which poisons its min/max statistics), for random windows and retention floors.
+TEST(SeriesReaderBounds, MatchesAFullScan) {
+  DataEngine engine;
+  auto dataset = engine.createDataset(DatasetDescriptor{.source_name = "bounds"});
+  ASSERT_TRUE(dataset.has_value());
+  DataWriter writer = engine.createWriter();
+  auto schema = writer.registerSchema(
+      "row",
+      makeStruct("row", {makePrimitive("v", PrimitiveType::kFloat64), makePrimitive("b", PrimitiveType::kBool)}));
+  ASSERT_TRUE(schema.has_value());
+  TopicDescriptor descriptor;
+  descriptor.name = "/t";
+  descriptor.schema_id = *schema;
+  descriptor.max_chunk_rows = 7;
+  auto topic = writer.registerTopic(*dataset, descriptor);
+  ASSERT_TRUE(topic.has_value());
+
+  std::mt19937 rng(7);
+  const double specials[] = {
+      std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+      -std::numeric_limits<double>::infinity()};
+  // Three commits interleave in time, so their chunks overlap.
+  for (int pass = 0; pass < 3; ++pass) {
+    for (int i = 0; i < 200; ++i) {
+      ASSERT_TRUE(writer.beginRow(*topic, static_cast<Timestamp>(i * 3 + pass)).has_value());
+      const int roll = static_cast<int>(rng() % 40);
+      if (pass == 1 && i % 7 == 0) {
+        writer.set(*topic, 0, specials[0]);  // a NaN first value in every chunk of this pass
+      } else if (roll == 0) {
+        writer.setNull(*topic, 0);
+      } else if (roll < 4) {
+        writer.set(*topic, 0, specials[roll - 1]);
+      } else {
+        writer.set(*topic, 0, std::uniform_real_distribution<double>(-100.0, 100.0)(rng));
+      }
+      writer.set(*topic, 1, (rng() & 1U) != 0);
+      ASSERT_TRUE(writer.finishRow(*topic).has_value());
+    }
+    ASSERT_FALSE(engine.commitChunks(writer.flushAll()).empty());
+  }
+
+  const auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(*topic);
+  ASSERT_NE(storage, nullptr);
+  const auto reference = [](const SeriesReader& series, Range<Timestamp> window) {
+    std::optional<SeriesBounds> out;
+    SeriesBounds b;
+    bool any = false;
+    bool finite = false;
+    series.samples(window).forEach([&](const SeriesSample& s) {
+      b.time.min = any ? std::min(b.time.min, s.timestamp) : s.timestamp;
+      b.time.max = any ? std::max(b.time.max, s.timestamp) : s.timestamp;
+      any = true;
+      if (std::isfinite(s.value)) {
+        b.value.min = finite ? std::min(b.value.min, s.value) : s.value;
+        b.value.max = finite ? std::max(b.value.max, s.value) : s.value;
+        finite = true;
+      }
+      ++b.sample_count;
+    });
+    if (any && finite) {
+      out = b;
+    }
+    return out;
+  };
+  for (const std::size_t column : {std::size_t{0}, std::size_t{1}}) {
+    for (int trial = 0; trial < 300; ++trial) {
+      const Timestamp floor = trial % 3 == 0 ? static_cast<Timestamp>(rng() % 600) : kNoRetentionFloor;
+      const SeriesReader series(storage->sealedChunks(), column, floor);
+      auto a = static_cast<Timestamp>(rng() % 620) - 10;
+      auto b = static_cast<Timestamp>(rng() % 620) - 10;
+      const Range<Timestamp> window =
+          trial % 10 == 0
+              ? Range<
+                    Timestamp>{.min = std::numeric_limits<Timestamp>::min(), .max = std::numeric_limits<Timestamp>::max()}
+              : Range<Timestamp>{.min = a, .max = b};
+      const auto expected = reference(series, window);
+      const auto actual = series.bounds(window);
+      ASSERT_EQ(actual.has_value(), expected.has_value()) << "column " << column << " trial " << trial;
+      if (expected.has_value()) {
+        EXPECT_EQ(actual->time.min, expected->time.min) << trial;
+        EXPECT_EQ(actual->time.max, expected->time.max) << trial;
+        EXPECT_EQ(actual->value.min, expected->value.min) << trial;
+        EXPECT_EQ(actual->value.max, expected->value.max) << trial;
+        EXPECT_EQ(actual->sample_count, expected->sample_count) << trial;
+      }
+    }
+  }
 }
 
 }  // namespace

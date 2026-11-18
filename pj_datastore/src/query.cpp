@@ -526,34 +526,59 @@ std::optional<SeriesBounds> SeriesReader::bounds() const {
 }
 
 std::optional<SeriesBounds> SeriesReader::bounds(Range<Timestamp> time_range) const {
-  SeriesBounds result;
-  bool found_time = false;
-  bool found_value = false;
-  auto cursor = samples(time_range);
-  cursor.forEach([&](const SeriesSample& sample) {
-    if (!found_time) {
-      result.time.min = sample.timestamp;
-      result.time.max = sample.timestamp;
-      found_time = true;
-    } else {
-      result.time.min = std::min(result.time.min, sample.timestamp);
-      result.time.max = std::max(result.time.max, sample.timestamp);
+  // Min and max ignore order, so no cursor merge: a chunk wholly inside the window answers from its statistics, any
+  // other chunk is scanned over its rows in the window. The statistics stand in only when they equal that scan: no
+  // nulls (a null row is no sample, and t_min/t_max count it) and a finite min <= max (the statistics keep infinities,
+  // a NaN first value poisons them, and an all-NaN chunk leaves min > max).
+  Range<Timestamp> window = normalized(time_range);
+  window.min = std::max(window.min, retention_floor_);
+  SeriesBounds result{
+      .time = {.min = std::numeric_limits<Timestamp>::max(), .max = std::numeric_limits<Timestamp>::min()},
+      .value = {.min = std::numeric_limits<double>::infinity(), .max = -std::numeric_limits<double>::infinity()},
+  };
+  const auto add_time = [&result](Timestamp t_min, Timestamp t_max) {
+    result.time.min = std::min(result.time.min, t_min);
+    result.time.max = std::max(result.time.max, t_max);
+  };
+  const auto add_value = [&result](double min, double max) {
+    result.value.min = std::min(result.value.min, min);
+    result.value.max = std::max(result.value.max, max);
+  };
+  for (const TopicChunk& chunk : *chunks_) {
+    if (chunk.stats.row_count == 0 || column_index_ >= chunk.columns.size() || chunk.stats.t_max < window.min ||
+        chunk.stats.t_min > window.max) {
+      continue;
     }
-
-    if (std::isfinite(sample.value)) {
-      if (!found_value) {
-        result.value.min = sample.value;
-        result.value.max = sample.value;
-        found_value = true;
-      } else {
-        result.value.min = std::min(result.value.min, sample.value);
-        result.value.max = std::max(result.value.max, sample.value);
+    if (chunk.stats.t_min >= window.min && chunk.stats.t_max <= window.max &&
+        column_index_ < chunk.stats.column_stats.size()) {
+      const ColumnStats& column = chunk.stats.column_stats[column_index_];
+      if (column.null_count == 0 && column.min_value.has_value() && column.max_value.has_value() &&
+          std::isfinite(*column.min_value) && std::isfinite(*column.max_value) &&
+          *column.min_value <= *column.max_value) {
+        add_time(chunk.stats.t_min, chunk.stats.t_max);
+        add_value(*column.min_value, *column.max_value);
+        result.sample_count += chunk.stats.row_count;
+        continue;
       }
     }
-    ++result.sample_count;
-  });
-
-  if (!found_time || !found_value) {
+    const auto ts_begin = chunk.timestamps.begin();
+    const auto ts_end = ts_begin + static_cast<std::ptrdiff_t>(chunk.stats.row_count);
+    const auto first = std::lower_bound(ts_begin, ts_end, window.min);
+    const auto last = std::upper_bound(first, ts_end, window.max);
+    for (auto it = first; it != last; ++it) {
+      const auto row = static_cast<std::size_t>(it - ts_begin);
+      const std::optional<double> value = readSeriesValue(chunk, column_index_, row);
+      if (!value.has_value()) {
+        continue;
+      }
+      add_time(*it, *it);
+      if (std::isfinite(*value)) {
+        add_value(*value, *value);
+      }
+      ++result.sample_count;
+    }
+  }
+  if (result.sample_count == 0 || result.value.min > result.value.max) {
     return std::nullopt;
   }
   return result;
