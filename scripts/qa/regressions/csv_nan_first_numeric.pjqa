@@ -1,0 +1,9 @@
+# A CSV column whose first cell is nan or inf is numeric, not text: the loader types a column by its first
+# non-empty cell. Needs the CSV plugin at 1.0.10 or later.
+# app: -d scripts/qa/regressions/fixtures/nan_first.csv
+# needs: plugins
+until describe_topic {"topic":"nan_first"} "nan_first/txt"
+expect {"field":"nanfirst","path":"nan_first/nanfirst","type":"float64"}
+expect {"field":"empty_then_nan","path":"nan_first/empty_then_nan","type":"float64"}
+expect {"field":"infthenword","path":"nan_first/infthenword","type":"float64"}
+expect {"field":"txt","path":"nan_first/txt","type":"string"}

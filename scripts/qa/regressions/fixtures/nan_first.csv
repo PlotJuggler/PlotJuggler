@@ -1,0 +1,6 @@
+t,txt,nanfirst,numthentext,empty_then_nan,textnan,infthenword
+0,alpha,nan,1.0,,nan,inf
+1,beta,2.0,2.0,nan,hello,3
+2,gamma,3.0,oops,4.0,world,word
+3,delta,4.0,4.0,5.0,nan,5
+4,eps,5.0,5.0,6.0,x,6

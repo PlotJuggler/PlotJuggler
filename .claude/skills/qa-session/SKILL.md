@@ -131,12 +131,41 @@ refuse ui_click {"name":"noSuchWidget"}
 get_status {}
 # the previous result contains this text
 expect "playing":true
+# ... and not this one
+absent "playing":false
+# repeat a call until its result holds this text (at most 30 s): a load, a layout, a debounced undo
+until ui_plot {"title":"Periodic"} "time : 400.000"
 ```
 
 A `#` starts a comment only at the beginning of a line.
 
-Name widgets by objectName in scripts, never by ref (refs change between runs). `scripts/qa/smoke.pjqa` is the
-example, over the signals fixture.
+Name widgets by objectName in scripts, never by ref (refs change between runs). Assert on what the user reads:
+`ui_tree` for widgets, `ui_plot` for a plot's ranges, curves and tracker value box, the data tools for data. A
+screenshot is evidence for a human, not an assertion.
+
+## Regression scripts
+
+`scripts/qa/regressions/*.pjqa` is the suite. Each script starts with its instance's arguments, paths relative to
+the checkout, and is replayed in a fresh instance:
+
+```
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+```
+
+```bash
+scripts/qa/pjqa.py regress --plugin-dir <plugins>       # all of them: a PASS/FAIL/SKIP table, exit 1 on a FAIL
+scripts/qa/pjqa.py regress scripts/qa/regressions/smoke.pjqa
+```
+
+- Without `--plugin-dir`, scripts marked `# needs: plugins` are skipped. The CSV loader of a release is enough for
+  the signals fixture: `gh release download data_load_csv/v<version> -R PlotJuggler/pj-official-plugins` and unzip.
+- A failed script keeps its instance's home (`app.log`, screenshots); the table prints its path.
+- `pjqa.py start` returns before a `-d` / `-l` load finishes: open with an `until` on the state the script needs.
+  Use `until`, not `expect`, after anything the app finishes later (a seek reaches the tracker within ~33 ms, an
+  undo after its debounce).
+- Small fixtures of its own go in `scripts/qa/regressions/fixtures/`.
+- Run the suite before handing back a change that touches what a script covers, and after each QA session.
 
 ## Charters
 
@@ -165,3 +194,5 @@ When asked to do QA or to test with the QA agent, without a narrower charter:
 3. Check every reported **Bug** yourself against the code and its replay before acting on it; drop artifacts.
 4. Report a table: charter, bugs, UX notes, tool limits. Fix each confirmed bug in its own PR, with a test that
    fails before the fix.
+5. Each confirmed bug also leaves a script in `scripts/qa/regressions/` that asserts the user-visible result
+   (`expect` / `absent` on `ui_plot`, `ui_tree` or a data tool) and fails on the build before the fix.

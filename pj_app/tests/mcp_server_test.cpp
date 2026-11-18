@@ -445,6 +445,38 @@ TEST_F(McpServerTest, UnderTheUsersDialogOnlyReadsRun) {
   EXPECT_NE(change_text.find("'Hold on' open"), std::string::npos) << change_text;
 }
 
+// ui_plot reads what the canvas shows, which ui_tree cannot (the canvas is painted): a replay script asserts on it.
+TEST_F(McpServerTest, UiPlotReadsTheVisiblePlots) {
+  PJ::mcp::setUiToolsEnabled(true);
+  window_->show();
+  ASSERT_NE(loadMock(), 0);
+  for (const json& args :
+       {json{{"action", "create"}, {"tab", "mine"}},
+        json{{"action", "add"}, {"tab", "mine"}, {"curves", {"mock/file_data/value"}}},
+        json{{"action", "zoom"}, {"tab", "mine"}, {"start_s", 10.0}, {"end_s", 20.0}}}) {
+    const auto [text, error] = result(call("plot_tab", args));
+    ASSERT_FALSE(error) << text;
+  }
+  QCoreApplication::processEvents();
+  const auto [text, failed] = result(call("ui_plot", json::object()));
+  ASSERT_FALSE(failed) << text;
+  const json plots = json::parse(text, nullptr, false);
+  ASSERT_TRUE(plots.is_array() && !plots.empty()) << text;
+  const json& plot = plots.front();
+  for (const char* key : {"title", "x", "y", "curves", "tracker"}) {
+    EXPECT_TRUE(plot.contains(key)) << key << " in " << text;
+  }
+  EXPECT_EQ(plot["x"], json({"10.000", "20.000"})) << text;
+  ASSERT_EQ(plot["curves"].size(), 1U) << text;
+  EXPECT_TRUE(plot["curves"][0].value("visible", false)) << text;
+
+  const auto [missing, missing_failed] = result(call("ui_plot", {{"title", "no such plot"}}));
+  EXPECT_TRUE(missing_failed) << missing;
+  EXPECT_TRUE(PJ::mcp::isReadOnlyTool("ui_plot"));
+  EXPECT_EQ(PJ::mcp::uiSettleMs("ui_plot", {{"wait_ms", 500}}), 0);
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
 TEST_F(McpServerTest, UiToolsClickTheUsersDialogOnlyWhenTheRunAskedForThem) {
   const auto listed = [this] {
     const Answer answer = rpcAs(token_, {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}}, "test");
