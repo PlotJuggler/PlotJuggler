@@ -1011,6 +1011,42 @@ TEST_F(MainWindowHistoryFixture, UndoOnAReusedPlotRestoresCurveOrderAndTheEditor
   }
 }
 
+// The curve editor follows the copy "Duplicate tab" selects, with rows that show the copied visibility.
+TEST_F(MainWindowHistoryFixture, DuplicateTabBindsTheEditorToTheCopyRows) {
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "dup");
+  ASSERT_NE(dataset, 0U);
+  QStringList keys;
+  for (const char* topic : {"/a", "/b"}) {
+    const PJ::TopicId id = pj_test::addScalarTopic(app, dataset, topic);
+    ASSERT_NE(id, 0U);
+    keys << catalogKeyForTopic(app.catalogModel(), id);
+  }
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  for (const QString& key : keys) {
+    ASSERT_NE(plot->addCurve(key), nullptr);
+  }
+  plot->curveFromTitle(keys[1])->curve->setVisible(false);
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  auto* editor = window.findChild<PJ::CurveEditor*>();
+  ASSERT_NE(editor, nullptr);
+
+  PJ::PlotDocker* copy = tabbed->duplicateTab(tabbed->currentTab());
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  QCoreApplication::processEvents();
+
+  ASSERT_NE(copy, nullptr);
+  ASSERT_EQ(tabbed->currentTab(), copy);
+  ASSERT_EQ(editor->plot(), ensureCurrentPlot(window));
+  const auto toggles = editor->findChildren<QToolButton*>(u"curveVisibilityToggle"_s);
+  ASSERT_EQ(toggles.size(), 2);
+  EXPECT_TRUE(toggles[0]->isChecked());
+  EXPECT_FALSE(toggles[1]->isChecked()) << "the hidden curve's row shows it visible";
+}
+
 // A dock the user focused is replaced by the restore: the curve editor must follow the plot, not the removed dock.
 TEST_F(MainWindowHistoryFixture, UndoKeepsTheFocusedPlotBoundToTheCurveEditor) {
   PJ::MainWindow& window = mainWindow();

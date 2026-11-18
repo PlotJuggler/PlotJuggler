@@ -1,0 +1,14 @@
+# "Duplicate tab" (plot tab context menu, first entry) copies the plots with their curves, not empty plots.
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Periodic"} "data/sine"
+ui_click {"name":"plotTabFrame","button":"right"}
+ui_key {"keys":"Down"}
+ui_key {"keys":"Return","wait_ms":800}
+until ui_tree {} QLabel "Signals (copy)"
+# the copy is the current tab now: its Periodic plot must hold the same three curves
+ui_plot {"title":"Periodic"}
+expect "title":"data/sine"
+expect "title":"data/cosine"
+expect "title":"data/square"
+absent "curves":[]

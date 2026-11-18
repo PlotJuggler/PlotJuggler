@@ -137,6 +137,10 @@ class PlotWidget : public PlotWidgetBase {
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
+  /// Adds this session's opaque curve keys (and dataset paths) to `plot_element`, this plot's xmlSaveState output, so
+  /// xmlLoadState binds its curves without the shell's stable-path rebind: a same-session copy (clipboard, duplicated
+  /// tab).
+  void stampLiveCurveKeys(QDomElement& plot_element) const;
 
   /// Retains one unresolved ordinary <curve pending_intent="true"> element as workspace state until the pending binder
   /// fulfills it.
@@ -287,8 +291,6 @@ class PlotWidget : public PlotWidgetBase {
   // Adds the `<prefix>dataset_path` tiebreak (same-basename files) when the catalog knows a file path: clipboard only,
   // layouts stay path-free.
   void stampDatasetPath(QDomElement& element, DatasetId dataset_id, const QString& prefix = {}) const;
-  // Adds current opaque curve keys + dataset paths to copied XML for same-session paste.
-  void stampClipboardCurveKeys(QDomElement& plot_element) const;
   // Resolves copied stable topic/field paths to this session's curve keys.
   void rebindClipboardCurveKeys(QDomElement& plot_element) const;
   // Opens the Filter Editor scoped to this plot's curves; on Save the filtered curves are added to this plot.
