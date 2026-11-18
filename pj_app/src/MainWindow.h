@@ -632,6 +632,9 @@ class MainWindow : public QMainWindow {
   // The standing marker status, once wireMarkerPlotStatus has run.
   void reportMarkerStatus(PlotWidget* plot);
   void onPlotMarkerTargetsChanged();
+  // Member slots, not lambdas, so a restore that re-wires a reused plot or tab can connect them uniquely.
+  void onPlotStatusMessage(const QString& message);
+  void onTopicRefused(const QString& reason);
   std::function<void(PlotWidget*)> push_marker_status_;
   // PlotWidget::setSeriesStatus to `only`, or every plot when null.
   void pushSeriesStatus(PlotWidget* only);

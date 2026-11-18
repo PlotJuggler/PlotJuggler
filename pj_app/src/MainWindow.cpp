@@ -3840,7 +3840,7 @@ void MainWindow::onPlotTabAdded(PlotDocker* docker) {
   connect(docker, &PlotDocker::firstObjectTopicAdded, this, &MainWindow::onFirstObjectTopicAdded, Qt::UniqueConnection);
   connect(
       docker, &PlotDocker::placeholderTopicDropped, this, &MainWindow::onPlaceholderTopicDropped, Qt::UniqueConnection);
-  connect(docker, &PlotDocker::topicRefused, this, [this](const QString& reason) { showToast(reason); });
+  connect(docker, &PlotDocker::topicRefused, this, &MainWindow::onTopicRefused, Qt::UniqueConnection);
   for (int index = 0; index < docker->plotCount(); ++index) {
     if (DockWidget* dock = docker->plotAt(index)) {
       onPlotAdded(dock->plotWidget());
@@ -3864,9 +3864,7 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   connect(
       plot, &PlotWidget::pendingCurveIntentsChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild,
       Qt::UniqueConnection);
-  connect(plot, &PlotWidget::statusMessageRequested, this, [this](const QString& message) {
-    emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
-  });
+  connect(plot, &PlotWidget::statusMessageRequested, this, &MainWindow::onPlotStatusMessage, Qt::UniqueConnection);
   // Idempotent: layout load and undo re-run onPlotAdded for live plots.
   topic_demand_controller_->registerPlot(plot);
   plot->setTrackerPosition(toAxisDouble(session_->playbackEngine().currentTime()));
@@ -3877,6 +3875,14 @@ void MainWindow::onPlotAdded(PlotWidget* plot) {
   if (curve_editor_ != nullptr && curve_editor_->plot() == nullptr) {
     bindEditorToPlot(plot);
   }
+}
+
+void MainWindow::onPlotStatusMessage(const QString& message) {
+  emitDiagnostic(DiagnosticLevel::kInfo, "Plot", "status", message);
+}
+
+void MainWindow::onTopicRefused(const QString& reason) {
+  showToast(reason);
 }
 
 void MainWindow::onPlotMarkerTargetsChanged() {

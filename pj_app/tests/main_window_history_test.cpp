@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QStandardPaths>
@@ -43,6 +44,7 @@
 #include "pj_base/builtin/point_cloud_codec.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plotting/DockToolbar.h"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
@@ -835,6 +837,64 @@ TEST_F(MainWindowHistoryFixture, UndoAndRedoCountAScenePanelOncePerSession) {
 // kRounds undo and redo calls for: one plot; 16 plots of 5 curves over 100k-sample series; the same plus two Scene3D
 // docks each showing a 1M-point cloud. "settled" adds the event-loop turns the restore queues (deferred
 // rebinds, layout passes; rendering only where the platform renders).
+// An undo rebuilds only what the restored state changes: a tab the edit did not touch keeps its plot widget (and with
+// it the curves' sample caches), while the edited tab returns to its saved state.
+TEST_F(MainWindowHistoryFixture, UndoKeepsThePlotOfAnUntouchedTab) {
+  PJ::MainWindow& window = mainWindow();
+  QDomDocument doc;
+  ASSERT_TRUE(
+      static_cast<bool>(doc.setContent(
+          u"<root binding=\"generic\" format=\"PlotJuggler\" pj4_version=\"4\">"
+          u"<tabbed_widget id=\"\" name=\"main\" parent=\"main_window\">"
+          u"<Tab containers=\"1\" id=\"tab-edited\" tab_name=\"edited\"><Container><DockSplitter count=\"1\" "
+          u"orientation=\"-\" sizes=\"1\"><DockArea id=\"area-edited\" name=\"...\"><plot id=\"plot-edited\" "
+          u"mode=\"TimeSeries\" style=\"Lines\" tracker_enabled=\"true\"/></DockArea></DockSplitter></Container></Tab>"
+          u"<Tab containers=\"1\" id=\"tab-kept\" tab_name=\"kept\"><Container><DockSplitter count=\"1\" "
+          u"orientation=\"-\" sizes=\"1\"><DockArea id=\"area-kept\" name=\"...\"><plot id=\"plot-kept\" "
+          u"mode=\"TimeSeries\" style=\"Lines\"/></DockArea></DockSplitter></Container></Tab>"
+          u"<currentTabIndex index=\"0\"/></tabbed_widget></root>"_s)));
+  ASSERT_TRUE(PJ::MainWindowHistoryTestPeer::restoreLayout(window, doc));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+  auto* tabbed = window.findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s);
+  ASSERT_NE(tabbed, nullptr);
+  ASSERT_EQ(tabbed->dockerCount(), 2);
+  const auto plot_in = [tabbed](int tab) -> PJ::PlotWidget* {
+    PJ::PlotDocker* docker = tabbed->dockerAt(tab);
+    return docker != nullptr && docker->plotCount() > 0 && docker->plotAt(0) != nullptr
+               ? docker->plotAt(0)->plotWidget()
+               : nullptr;
+  };
+  PJ::PlotWidget* edited = plot_in(0);
+  const QPointer<PJ::PlotWidget> kept = plot_in(1);
+  ASSERT_NE(edited, nullptr);
+  ASSERT_NE(kept, nullptr);
+
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  edited->setTrackerEnabled(false);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+
+  ASSERT_NE(plot_in(0), nullptr);
+  EXPECT_TRUE(plot_in(0)->trackerEnabled());
+  EXPECT_FALSE(kept.isNull()) << "the untouched tab's plot was destroyed and rebuilt";
+  EXPECT_EQ(plot_in(1), kept.data());
+
+  // The restore re-wires the reused plot: its status message still reaches the diagnostics once.
+  int reports = 0;
+  const QMetaObject::Connection counter = QObject::connect(
+      window.diagnosticBridge(), &PJ::QtDiagnosticBridge::diagnosticReported, &window,
+      [&reports](int /*level*/, const QString& /*source*/, const QString& id, const QString& message) {
+        reports += id == u"status"_s && message == u"reused"_s ? 1 : 0;
+      });
+  ASSERT_FALSE(kept.isNull());
+  emit kept->statusMessageRequested(u"reused"_s);
+  QCoreApplication::processEvents();
+  QObject::disconnect(counter);
+  EXPECT_EQ(reports, 1);
+}
+
 TEST_F(MainWindowHistoryFixture, UndoRedoLatencyBenchmark) {
   if (!PJ::sdk::getEnv("PJ_BENCH")) {
     GTEST_SKIP() << "set PJ_BENCH=1";

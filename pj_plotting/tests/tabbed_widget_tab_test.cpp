@@ -335,9 +335,12 @@ TEST(TabbedWidgetTab, HistoryExemptTabRoundTripsThroughFullLayout) {
   EXPECT_EQ(owned_element.attribute(u"owner_plugin"_s), u"assistant"_s);
   EXPECT_EQ(owned_element.attribute(u"tab_id"_s), u"run"_s);
 
+  // The restore reuses the page with the same id: change what it must bring back.
+  owned->setHistoryExempt(false);
+  owned->setOwnerMetadata(u"other"_s, u"other-run"_s);
   ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kReplace));
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-  EXPECT_TRUE(original.isNull());
+  EXPECT_EQ(tabbed.currentTab(), original.data());
   PJ::PlotDocker* restored = tabbed.currentTab();
   ASSERT_NE(restored, nullptr);
   EXPECT_EQ(restored->stateId(), u"assistant/run"_s);

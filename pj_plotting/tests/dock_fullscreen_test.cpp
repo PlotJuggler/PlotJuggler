@@ -12,7 +12,6 @@
 
 #include <QApplication>
 #include <QDomDocument>
-#include <QPointer>
 #include <QPushButton>
 #include <algorithm>
 #include <string>
@@ -336,8 +335,8 @@ TEST(DockFullscreenTest, RemovingTheMaximizedDockDropsItsSnapshot) {
       << "a stale snapshot overrode the loaded proportions";
 }
 
-// The reachable undo path: TabbedPlotWidget rebuilds every tab as a new docker, so the maximize dies with the old one;
-// what undo stores and brings back is the whole layout, not the folded one.
+// The reachable undo path: TabbedPlotWidget restores into the tab's docker, which leaves the maximize before it
+// rebuilds its docks; what undo stores and brings back is the whole layout, not the folded one.
 TEST(DockFullscreenTest, HistoryRestoreWhileFullscreenRebuildsTheWholeLayout) {
   PJ::TabbedPlotWidget tabbed;
   PJ::PlotDocker* docker = tabbed.currentTab();
@@ -360,12 +359,10 @@ TEST(DockFullscreenTest, HistoryRestoreWhileFullscreenRebuildsTheWholeLayout) {
   const QDomElement snapshot = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);  // what an undo push stores
   EXPECT_GT(smallestSavedSplitFraction(snapshot), 0.05) << "the undo snapshot stored the folded layout";
 
-  const QPointer<PJ::PlotDocker> old_docker(docker);
   ASSERT_TRUE(tabbed.xmlLoadState(snapshot, PJ::RestoreIntent::kHistory));
   QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   QApplication::processEvents();
 
-  EXPECT_TRUE(old_docker.isNull());
   PJ::PlotDocker* rebuilt = tabbed.currentTab();
   ASSERT_NE(rebuilt, nullptr);
   EXPECT_EQ(rebuilt->fullscreenDock(), nullptr);
