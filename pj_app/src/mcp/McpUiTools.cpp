@@ -558,23 +558,18 @@ UiDriver::Target UiDriver::resolve(const json& args) const {
   if (const std::string name = args.value("name", std::string()); !name.empty()) {
     const QString object_name = QString::fromStdString(name);
     std::vector<QWidget*> found;
-    // A popup or a child dialog is a top-level and also a QObject child of its owner, so the owner's
-    // search reaches it again: each widget counts once.
-    const auto add = [&found](QWidget* w) {
-      if (std::find(found.begin(), found.end(), w) == found.end()) {
-        found.push_back(w);
-      }
-    };
     for (QWidget* top : visibleTopLevels()) {
       if (blockedByModal(top)) {
         continue;  // ui_tree does not list them either, and they could not be acted on
       }
       if (top->objectName() == object_name) {
-        add(top);
+        found.push_back(top);
       }
+      // A popup or child dialog is also a QObject child of its owner: count each widget under its own
+      // window only, as ui_tree does, so it is found once and its window's modal block applies.
       for (QWidget* w : top->findChildren<QWidget*>(object_name)) {
-        if (w->isVisible()) {
-          add(w);
+        if (w->isVisible() && w->window() == top) {
+          found.push_back(w);
         }
       }
     }
