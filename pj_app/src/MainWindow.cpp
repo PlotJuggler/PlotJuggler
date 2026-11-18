@@ -3423,6 +3423,10 @@ void MainWindow::pushSeriesStatus(PlotWidget* only) {
 void MainWindow::bindPlottingPreferences(PreferencesDialog& dialog) {
   connect(&dialog, &PreferencesDialog::derivedBatchSettingsChanged, this, &MainWindow::applyDerivedBatchPreferences);
   connect(&dialog, &PreferencesDialog::timeLabelSettingsChanged, this, &MainWindow::applyTimeLabelFormat);
+  connect(&dialog, &PreferencesDialog::valuePrecisionChanged, this, [this]() {
+    broadcastReferenceLine();
+    broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+  });
 }
 
 void MainWindow::onShowAboutDialog() {

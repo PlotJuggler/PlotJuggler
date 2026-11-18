@@ -577,6 +577,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_marker_status_test.cpp)
 
+    # A precision chosen in Preferences redraws the plots' tracker on OK.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_value_precision_test.cpp)
+
     # Generators and transform inputs carry their dataset like a curve: a
     # layout-relative path in a source-bound layout, nothing in a generic one.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
