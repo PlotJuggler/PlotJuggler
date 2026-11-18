@@ -78,7 +78,8 @@ class PluginPlotTabsController {
 
   /// Sets the X window of every time plot `plugin_id` owns (or only in `tab_id`) to [t0_s, t1_s], display-axis
   /// seconds, keeping Y and ignoring Link-X. Owning no such tab and owning only tabs with nothing to zoom are
-  /// distinct errors: the caller's remedy differs.
+  /// distinct errors: the caller's remedy differs. A range the axis cannot hold (NaN, infinite, beyond the
+  /// nanosecond time base, narrower than a nanosecond) is refused.
   Status zoomToTimeRange(const QString& plugin_id, double t0_s, double t1_s, const QString& tab_id = {});
   /// Reset every plot `plugin_id` owns, or only those in its tab `tab_id` when given, to fit its data.
   Status zoomOut(const QString& plugin_id, const QString& tab_id = {});

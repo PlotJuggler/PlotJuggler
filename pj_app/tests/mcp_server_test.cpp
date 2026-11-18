@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -2759,6 +2760,51 @@ TEST_F(McpEndpointTest, PlotTabZoomFramesOnlyTheNamedTab) {
   const auto [refused, refused_error] = result(call("plot_tab", {{"action", "zoom"}, {"tab", "c"}}));
   EXPECT_TRUE(refused_error);
   EXPECT_NE(refused.find("a, b"), std::string::npos) << refused;
+}
+
+// A zoom range the axis cannot hold is refused and the plot keeps its window: a width that overflows Qwt's scale
+// division, bounds beyond what the nanosecond time base can hold, a range so narrow the axis collapses. A range of
+// epoch seconds still applies.
+TEST_F(McpEndpointTest, PlotTabZoomRefusesARangeThatCannotBeDrawn) {
+  openPublic();
+  ASSERT_NE(loadMock(), 0);
+  for (const json& args :
+       {json{{"action", "create"}, {"tab", "a"}},
+        json{{"action", "add"}, {"tab", "a"}, {"curves", {"mock/file_data/value"}}}}) {
+    const auto [text, error] = result(call("plot_tab", args));
+    ASSERT_FALSE(error) << text;
+  }
+  PJ::PlotDocker* docker = window_->pluginPlotTabs().ownedTab(u"agent-test"_s, u"a"_s);
+  ASSERT_NE(docker, nullptr);
+  PJ::PlotWidget* plot = docker->plotAt(0)->plotWidget();
+  ASSERT_NE(plot, nullptr);
+  const QRectF before = plot->currentBoundingRect();
+
+  for (const auto& [start, end] :
+       {std::pair{-1.7e308, 1.7e308}, std::pair{0.0, 1e10}, std::pair{-1.7976931348623157e308, 1e291},
+        std::pair{0.0, 5e-324}}) {
+    const auto [refused, refused_error] =
+        result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", start}, {"end_s", end}}));
+    EXPECT_TRUE(refused_error) << start << ".." << end << ": " << refused;
+    EXPECT_NE(refused.find("zoom range"), std::string::npos) << refused;
+    EXPECT_EQ(plot->currentBoundingRect(), before) << start << ".." << end;
+  }
+
+  // The viewport service refuses non-finite values before they get here and the tool's JSON cannot carry them, so this
+  // only guards the controller.
+  const double inf = std::numeric_limits<double>::infinity();
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  for (const auto& [t0, t1] : {std::pair{0.0, inf}, std::pair{-inf, 0.0}, std::pair{nan, 1.0}, std::pair{0.0, nan}}) {
+    EXPECT_FALSE(window_->pluginPlotTabs().zoomToTimeRange(u"agent-test"_s, t0, t1, u"a"_s).has_value())
+        << t0 << ".." << t1;
+    EXPECT_EQ(plot->currentBoundingRect(), before);
+  }
+
+  const auto [applied, applied_error] =
+      result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", 1.7e9}, {"end_s", 1.7e9 + 60.0}}));
+  ASSERT_FALSE(applied_error) << applied;
+  EXPECT_NEAR(plot->currentBoundingRect().left(), 1.7e9, 1e-3);
+  EXPECT_NEAR(plot->currentBoundingRect().right(), 1.7e9 + 60.0, 1e-3);
 }
 
 TEST_F(McpEndpointTest, TearingDownTheSessionRevokesAndDropsItsEvaluation) {
