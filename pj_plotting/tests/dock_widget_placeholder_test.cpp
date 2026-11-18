@@ -1959,6 +1959,7 @@ TEST(PlotTrackerRefresh, RemovedCurveLeavesTheValueBoxAtOnce) {
   ASSERT_TRUE(plot.trackerValueBoxText().contains(u"removed/value"_s)) << plot.trackerValueBoxText().toStdString();
 
   plot.removeCurve(removed);
+  plot.replot();  // every caller that removes a curve replots
   EXPECT_FALSE(plot.trackerValueBoxText().contains(u"removed/value"_s)) << plot.trackerValueBoxText().toStdString();
   EXPECT_TRUE(plot.trackerValueBoxText().contains(u"kept/value"_s));
 }

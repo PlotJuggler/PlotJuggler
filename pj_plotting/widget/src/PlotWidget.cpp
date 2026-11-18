@@ -234,7 +234,9 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
     pruneHiddenMarkerScopes();
     (void)refreshMarkerScopeRowSet();  // curveListChanged itself is the rebuild trigger
     emit markerTargetsChanged();
-    redrawTrackers();  // a removed curve's row and dot leave the tracker now, not at the next seek
+    // A removed curve's row and dot leave the tracker at the next replot, not the next seek. Not now: a curve just
+    // added has no window yet, and sampling it would copy its whole series.
+    trackers_stale_ = true;
   });
   connect(this, &PlotWidgetBase::dragEnterSignal, this, &PlotWidget::onDragEnterEvent);
   connect(this, &PlotWidgetBase::dragLeaveSignal, this, &PlotWidget::onDragLeaveEvent);

@@ -361,7 +361,7 @@ class PlotWidget : public PlotWidgetBase {
   // True while xmlLoadState swaps the curve set: the curveListChanged handler leaves the max zoom area to the single
   // recompute that follows.
   bool restoring_curves_ = false;
-  // An axis scale changed since the trackers last sampled the curves.
+  // An axis scale or the curve list changed since the trackers last sampled the curves.
   bool trackers_stale_ = false;
   // A zoomOut that found no curve data (an on-demand series computes only once shown) stays armed and re-runs on every
   // non-live ingest, so a series computed in chunks stays framed whole until the user frames the view. An external X
