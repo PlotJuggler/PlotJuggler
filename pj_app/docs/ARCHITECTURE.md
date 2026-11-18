@@ -145,10 +145,12 @@ paused. Those buffers can hold rows of a stream that already ended (they merge a
 for a topic with no destination: whoever erases a dataset also drops its secondary copy
 (`StreamingSourceManager::removeSecondaryDataset`).
 
-**Followed stream.** While streaming, the timeline follows one stream's live edge (`MainWindow`'s
-`active_streaming_dataset_id_`, scoping `AppSession::setActiveStreamingDataset`): each start hands it to the newest
-stream, and when the followed stream stops, the newest one still running takes over. Live-follow ends only with the
-last stream.
+**Followed stream.** While streaming, the timeline follows one stream's live edge (`MainWindow` scopes it with
+`AppSession::setActiveStreamingDataset`). Each launch hands live-follow to the stream just launched. When the followed
+stream stops, the last-launched stream still running that already has data takes over; launch order, not `DatasetId`
+order, since an interactive start creates its dataset when its dialog opens. With no such stream, live-follow ends:
+playback runs to the end of the range and pauses, because following a stream with no data would hold the cursor
+still while it reads as playing.
 
 An interactive start (`startSession`) never waits for the source's dialog: a browser cannot run a nested event loop,
 and one path on every platform lets desktop tests cover what the browser runs. The start is pending while its dialog

@@ -24,7 +24,9 @@ the browser's own input. open_file takes a local path, which the relay serves to
 A script has one step per line: `TOOL {json args}`, `expect TEXT` (the previous result must contain
 TEXT), `absent TEXT` (it must not), `refuse TOOL {json}` (the call must fail), `until TOOL {json} TEXT`
 (repeat the call until it succeeds with TEXT in its result, at most UNTIL_S seconds: for what the app does
-after a call returns, such as a load at startup), or a `#` comment. Name widgets by objectName there, since
+after a call returns, such as a load at startup), `grows TOOL {json} KEY` (repeat the call until the number
+at the top-level KEY of its JSON result exceeds the first call's, at most UNTIL_S seconds: a cursor that
+moves), or a `#` comment. Name widgets by objectName there, since
 refs change from one run to the next.
 
 For `regress`, a script names how its instance starts in header comments: `# app: ARGS` (the app
@@ -370,6 +372,23 @@ def replay(state, script):
             while True:
                 last, failed = call_tool(state, tool, arguments)
                 ok = not failed and text in last
+                if ok or time.time() > deadline:
+                    break
+                time.sleep(0.2)
+        elif word == "grows":
+            tool, _, raw = rest.partition(" ")
+            arguments, end = json.JSONDecoder().raw_decode(raw.strip())
+            key = raw.strip()[end:].strip()
+            deadline = time.time() + UNTIL_S
+            first = None
+            while True:
+                last, failed = call_tool(state, tool, arguments)
+                try:
+                    value = None if failed else json.loads(last)[key]
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    value = None
+                first = value if first is None else first
+                ok = value is not None and value > first
                 if ok or time.time() > deadline:
                     break
                 time.sleep(0.2)

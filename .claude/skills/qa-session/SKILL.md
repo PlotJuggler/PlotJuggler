@@ -135,6 +135,8 @@ expect "playing":true
 absent "playing":false
 # repeat a call until its result holds this text (at most 30 s): a load, a layout, a debounced undo
 until ui_plot {"title":"Periodic"} "time : 400.000"
+# repeat a call until the number at this top-level key of its JSON result exceeds the first call's (at most 30 s)
+grows get_status {} current_time
 ```
 
 A `#` starts a comment only at the beginning of a line.

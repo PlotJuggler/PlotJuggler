@@ -1348,6 +1348,9 @@ class MainWindow : public QMainWindow {
   int timeline_name_column_width_ = 0;
   // 0 = none. Scopes the playback range to the stream's data, so unrelated file timestamps do not stretch it.
   DatasetId active_streaming_dataset_id_ = 0;
+  // The running streams in launch order, the order live-follow is handed back in when the followed one stops. Not
+  // DatasetId order: an interactive start owns its dataset from the moment its dialog opens.
+  std::vector<DatasetId> streams_in_launch_order_;
   // Set by the first drop of a streaming topic into a view, which seeds the playback range and playhead once per
   // session: subscribing in the source dialog does not move the slider, and a later drop cannot re-snap a
   // paused, scrubbed-back cursor. While set, live ingest follows the live edge until the user pauses.
