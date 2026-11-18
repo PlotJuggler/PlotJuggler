@@ -7,6 +7,8 @@
 #include <pj_base/sdk/plugin_data_api.hpp>
 #include <string>
 
+#include "pj_runtime/PlaybackRate.h"
+
 namespace PJ::testing {
 
 // Fake pj.playback.v1 host: records the last call, serves a settable state,
@@ -40,7 +42,10 @@ struct FakePlaybackHost {
     return true;
   }
   static bool tSetRate(void* ctx, double rate, PJ_error_t*) noexcept {
-    static_cast<FakePlaybackHost*>(ctx)->last_rate = rate;
+    auto* self = static_cast<FakePlaybackHost*>(ctx);
+    self->last_rate = rate;
+    // Mirror the real host: the engine snaps the rate, and the state the reply echoes carries the applied value.
+    self->state.playback_rate = PJ::snapPlaybackRate(rate);
     return true;
   }
   static bool tGetState(void* ctx, PJ_playback_state_t* out_state, PJ_error_t* err) noexcept {

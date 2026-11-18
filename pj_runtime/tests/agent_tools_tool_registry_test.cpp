@@ -30,6 +30,7 @@
 #include "fake_object_read_host.hpp"
 #include "fake_playback_viewport_hosts.hpp"
 #include "fake_plot_tabs_host.hpp"
+#include "pj_runtime/PlaybackRate.h"
 #include "pj_runtime/agent_tools/object_ops_catalog.hpp"
 #include "pj_runtime/agent_tools/tool_registry.hpp"
 #include "recording_dp_host.hpp"
@@ -2539,12 +2540,20 @@ TEST(ToolRegistry, SetPlaybackRateClampsPluginSide) {
   auto ctx = makeCtx(store, nullptr);
   ctx.playback = pb.view();
 
-  ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 0.25}}, ctx).ok);
-  EXPECT_DOUBLE_EQ(pb.last_rate, 0.25);
-  ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 10000.0}}, ctx).ok);
-  EXPECT_DOUBLE_EQ(pb.last_rate, 20.0);  // clamped high
-  ASSERT_TRUE(reg.execute("playback", {{"action", "rate"}, {"rate", 0.0}}, ctx).ok);
-  EXPECT_DOUBLE_EQ(pb.last_rate, 0.05);  // clamped low (never 0 -> host reject loop)
+  // The tool sends the rate the speed scrubber can show, and the reply reports the applied one.
+  const auto applied = [&](double requested) {
+    const auto r = reg.execute("playback", {{"action", "rate"}, {"rate", requested}}, ctx);
+    EXPECT_TRUE(r.ok) << r.content;
+    return json::parse(r.content)["rate"].get<double>();
+  };
+  EXPECT_DOUBLE_EQ(applied(0.3), 0.3);
+  EXPECT_DOUBLE_EQ(pb.last_rate, 0.3);
+  EXPECT_DOUBLE_EQ(applied(0.25), 0.3);  // rounded to the scrubber's step
+  EXPECT_DOUBLE_EQ(pb.last_rate, 0.3);
+  EXPECT_DOUBLE_EQ(applied(10000.0), PJ::kMaxPlaybackRate);  // clamped high, to the engine's range
+  EXPECT_DOUBLE_EQ(pb.last_rate, PJ::kMaxPlaybackRate);
+  EXPECT_DOUBLE_EQ(applied(0.0), PJ::kMinPlaybackRate);  // clamped low (never 0 -> host reject loop)
+  EXPECT_DOUBLE_EQ(pb.last_rate, PJ::kMinPlaybackRate);
 }
 
 TEST(ToolRegistry, PlaybackToolsDegradeWithoutHost) {

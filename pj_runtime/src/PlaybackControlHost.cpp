@@ -3,7 +3,6 @@
 
 #include "pj_runtime/PlaybackControlHost.h"
 
-#include <algorithm>
 #include <cmath>
 #include <string>
 #include <string_view>
@@ -81,11 +80,10 @@ bool PlaybackControlHost::onSetRate(void* ctx, double rate, PJ_error_t* out_erro
     if (!std::isfinite(rate) || rate <= 0.0) {
       return reject(out_error, kDomain, "playback rate must be a finite value > 0");
     }
-    // Host policy bound (the ABI says "the host may clamp"): keep any consumer
-    // from driving the engine at absurd multipliers. Consumers see the applied
-    // value via get_state.
+    // The engine clamps to the speed scrubber's range (the ABI says "the host may clamp"); consumers see the
+    // applied value via get_state.
     const CallScope scope;
-    self.engine_.setPlaybackRate(std::clamp(rate, 0.001, 1000.0));
+    self.engine_.setPlaybackRate(rate);
     return true;
   });
 }

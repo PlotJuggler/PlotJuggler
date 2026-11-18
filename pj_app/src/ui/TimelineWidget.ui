@@ -283,18 +283,6 @@
         <property name="toolTip">
          <string>Rate (speed multiplier)</string>
         </property>
-        <property name="decimals">
-         <number>1</number>
-        </property>
-        <property name="minimum">
-         <double>0.100000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>10.000000000000000</double>
-        </property>
-        <property name="singleStep">
-         <double>0.100000000000000</double>
-        </property>
         <property name="value">
          <double>1.000000000000000</double>
         </property>

@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "pj_runtime/PlaybackRate.h"
 #include "pj_runtime/agent_tools/object_ops_catalog.hpp"
 #include "tools_internal.hpp"
 
@@ -518,9 +519,9 @@ ToolResult playbackTool(const json& args, ToolContext& ctx) {
     if (!args.contains("rate") || !args["rate"].is_number()) {
       return ToolResult::failure("rate requires a numeric 'rate' (> 0; 1.0 = real time)");
     }
-    // Bound the blast radius before the host sees it: a model asking for 0 or
-    // 10000x gets the nearest sane speed instead of an error loop.
-    const double rate = std::clamp(args["rate"].get<double>(), 0.05, 20.0);
+    // The engine's own snap, so the tool's rate is the one the speed scrubber shows; a model asking for 0 or
+    // 10000x gets the nearest speed instead of an error loop. The echoed state carries the applied rate.
+    const double rate = snapPlaybackRate(args["rate"].get<double>());
     return runPlaybackOp(ctx, "rate", [&] { return ctx.playback.setPlaybackRate(rate); });
   }
   return ToolResult::failure("unknown playback action '" + action + "'; use state/play/pause/seek/rate");
