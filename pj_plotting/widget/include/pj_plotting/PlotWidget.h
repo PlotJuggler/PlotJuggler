@@ -354,6 +354,9 @@ class PlotWidget : public PlotWidgetBase {
   double last_tracker_time_sec_ = 0.0;
   bool show_points_ = true;
   bool loading_state_ = false;
+  // True while xmlLoadState swaps the curve set: the curveListChanged handler leaves the max zoom area to the single
+  // recompute that follows.
+  bool restoring_curves_ = false;
   // A zoomOut that found no curve data (an on-demand series computes only once shown) stays armed and re-runs on every
   // non-live ingest, so a series computed in chunks stays framed whole until the user frames the view. An external X
   // window (zoom link) narrows it to Y. Never armed when data existed at fit time.
