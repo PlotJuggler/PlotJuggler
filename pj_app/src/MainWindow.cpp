@@ -2911,6 +2911,10 @@ QSet<QString> MainWindow::captureHistoryDataUniverse() const {
         const auto& columns = storage->columnDescriptors();
         for (std::size_t column = 0; column < columns.size(); ++column) {
           const ColumnDescriptor& column_descriptor = columns[column];
+          // A column a reload lost leaves the universe as a lost topic does, so history plotting it is dropped.
+          if (storage->isColumnRetired(column_descriptor.field_id)) {
+            continue;
+          }
           QStringList column_identity{u"scalar-column"_s};
           column_identity.append(dataset_identity);
           column_identity.append(

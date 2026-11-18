@@ -355,7 +355,7 @@ def replay(state, script):
     """Runs the script's steps against the instance; returns whether every step held."""
     last = ""
     for number, line in enumerate(Path(script).read_text().splitlines(), 1):
-        line = line.strip().replace("$CHECKOUT", str(ROOT))  # tools that take only absolute paths
+        line = line.strip().replace("$CHECKOUT", json.dumps(str(ROOT))[1:-1])  # tools that take only absolute paths
         if not line or line.startswith("#"):
             continue
         word, _, rest = line.partition(" ")

@@ -65,7 +65,8 @@ class TopicStorage {
   /// the floor stay in memory but are hidden).
   void evictBefore(Timestamp t_keep_min);
 
-  /// Also resets the retention floor and evictedThroughChunkId(), and un-retires every column.
+  /// Also resets the retention floor and evictedThroughChunkId(). Retired columns stay retired: a refill that empties
+  /// the topic must not bring a column a reload lost back, and a value landing un-retires it anyway.
   void clearChunks() noexcept;
 
   /// What detachChunks() takes out: the chunks plus every field clearChunks() leaves alone, so restoreChunks() puts
@@ -113,6 +114,10 @@ class TopicStorage {
   [[nodiscard]] const std::unordered_set<FieldId>& retiredColumns() const noexcept {
     return retired_columns_;
   }
+
+  /// The position of the first stored column not retired: the column a whole-topic name stands for. 0 when no
+  /// column is stored or every one is retired.
+  [[nodiscard]] std::size_t firstLiveColumn() const noexcept;
 
   /// O(1) on append and rebuilt from per-chunk stats after other changes, never from column data: progressive loads
   /// call it per topic on every ingest tick.

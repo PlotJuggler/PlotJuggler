@@ -295,7 +295,7 @@ std::optional<std::pair<TopicId, std::size_t>> SessionManager::scalarInput(
     for (const TopicId topic : data_engine_.listTopics(dataset)) {
       const TopicStorage* storage = data_engine_.getTopicStorage(topic);
       if (storage != nullptr && storage->descriptor().name == name) {
-        return std::pair<TopicId, std::size_t>{topic, 0};
+        return std::pair<TopicId, std::size_t>{topic, storage->firstLiveColumn()};
       }
     }
   }

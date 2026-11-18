@@ -1745,5 +1745,50 @@ TEST(DataProcessorTransformTest, ReloadRunsARuleOverTheRecomputedTransformOutput
   EXPECT_EQ(first_value(), 50.0);
 }
 
+// One reload of the seedMultiColumn("data", {"time", "a"}) topic that writes only "a", as a CSV reloaded with "time"
+// as the X axis does: the "time" column is left without a value and retired by the prune.
+void reloadWithoutTime(Fixture& fx) {
+  RefillGuard guard = fx.session.beginRefill(fx.ds);
+  DataWriter writer = fx.engine.createWriter();
+  for (int row = 0; row < 2; ++row) {
+    ASSERT_TRUE(writer.beginRow(fx.input, static_cast<Timestamp>(row) * 1'000'000'000LL).has_value());
+    writer.set<double>(fx.input, 1, 7.0);
+    ASSERT_TRUE(writer.finishRow(fx.input).has_value());
+  }
+  ASSERT_FALSE(fx.engine.commitChunks(writer.flushAll()).empty());
+  ASSERT_TRUE(guard.recomputeProcessors().has_value());
+  guard.pruneVanishedTopics();
+  guard.commit();
+}
+
+// A processor reading a column a reload lost behaves as one whose input topic a reload lost: it stays bound, its output
+// goes empty, and no later reload or rollback replay fails on it.
+TEST(DataProcessorTransformTest, TransformOnAColumnALoadLostStaysBoundAndEmpty) {
+  Fixture fx;
+  fx.seedMultiColumn("data", {"time", "a"}, {{0.0, 0.1}, {1.0, 2.0}});
+  const auto on_time = fx.service.upsertTransform("pluginA", "negate", {"data/time"}, {"neg_time"}, kNegate, "{}");
+  ASSERT_TRUE(on_time.has_value()) << on_time.error();
+  const TopicId output = on_time->output_topic_ids.front();
+  ASSERT_EQ(readValues(fx.engine, output).size(), 2U);
+
+  reloadWithoutTime(fx);
+  EXPECT_TRUE(readValues(fx.engine, output).empty()) << "its input holds no value any more";
+  const auto replay = fx.service.rebindAndRecomputeForReplacedSources({fx.input});
+  EXPECT_TRUE(replay.has_value()) << "a rollback's repair replay: " << replay.error();
+  reloadWithoutTime(fx);
+  EXPECT_TRUE(readValues(fx.engine, output).empty());
+}
+
+// The whole-topic name of a topic whose first column a reload lost resolves to its first column still listed.
+TEST(DataProcessorTransformTest, WholeTopicInputSkipsAColumnALoadLost) {
+  Fixture fx;
+  fx.seedMultiColumn("data", {"time", "a"}, {{0.0, 0.1}, {1.0, 2.0}});
+  reloadWithoutTime(fx);
+
+  const auto whole = fx.service.upsertTransform("pluginA", "negate", {"data"}, {"neg_data"}, kNegate, "{}");
+  ASSERT_TRUE(whole.has_value()) << whole.error();
+  EXPECT_EQ(readValues(fx.engine, whole->output_topic_ids.front()), (std::vector<double>{-7.0, -7.0}));
+}
+
 }  // namespace
 }  // namespace PJ

@@ -394,5 +394,63 @@ TEST(MergeTest, EvictTopicHistoryAtInt64MaxDoesNotOverflow) {
   }
 }
 
+// A "data" topic whose "time" column holds no value in any row, retired as a reload's prune leaves it, beside a
+// valued "a" column.
+TopicId writeWithRetiredTime(DataEngine& engine, DatasetId ds, PrimitiveType time_type, Timestamp t0) {
+  DataWriter w = engine.createWriter();
+  auto tid = w.registerTopic(ds, TopicDescriptor{.name = "data", .schema_id = 0});
+  EXPECT_TRUE(tid.has_value());
+  EXPECT_TRUE(w.ensureColumn(*tid, "time", time_type).has_value());
+  auto a = w.ensureColumn(*tid, "a", PrimitiveType::kFloat64);
+  EXPECT_TRUE(a.has_value());
+  for (Timestamp t = t0; t < t0 + 2; ++t) {
+    EXPECT_TRUE(w.beginRow(*tid, t).has_value());
+    w.set<double>(*tid, *a, 1.5);
+    EXPECT_TRUE(w.finishRow(*tid).has_value());
+  }
+  engine.commitChunks(w.flushAll());
+  auto lock = engine.lockEngine();
+  engine.getTopicStorage(*tid)->retireValuelessColumns();
+  EXPECT_TRUE(engine.getTopicStorage(*tid)->isColumnRetired(0));
+  return *tid;
+}
+
+TEST(MergeDatasets, AnchorRetiredColumnStaysRetired) {
+  DataEngine engine;
+  const DatasetId anchor = makeDataset(engine, "anchor");
+  const DatasetId source = makeDataset(engine, "source");
+  const TopicId data = writeWithRetiredTime(engine, anchor, PrimitiveType::kFloat64, 10);
+  const std::vector<Timestamp> ts{20, 21};
+  const std::vector<double> a{2.5, 3.5};
+  writeTyped(
+      engine, source, "data", {{"a", PrimitiveType::kFloat64}}, ts,
+      {ColumnData::float64(0, Span<const double>(a.data(), a.size()))});
+
+  auto report = engine.mergeDatasets(anchor, {{source, 0}});
+  ASSERT_TRUE(report.has_value()) << report.error();
+  auto lock = engine.lockEngine();
+  EXPECT_TRUE(engine.getTopicStorage(data)->isColumnRetired(0)) << "no contributor gave time a value";
+  EXPECT_FALSE(engine.getTopicStorage(data)->isColumnRetired(1));
+}
+
+TEST(MergeDatasets, SourceRetiredColumnOfAnotherTypeDoesNotSkipTheTopic) {
+  DataEngine engine;
+  const DatasetId anchor = makeDataset(engine, "anchor");
+  const DatasetId source = makeDataset(engine, "source");
+  const std::vector<Timestamp> ts{10, 11};
+  const std::vector<double> time{0.0, 0.1};
+  const std::vector<double> a{2.5, 3.5};
+  const TopicId data = writeTyped(
+      engine, anchor, "data", {{"time", PrimitiveType::kFloat64}, {"a", PrimitiveType::kFloat64}}, ts,
+      {ColumnData::float64(0, Span<const double>(time.data(), time.size())),
+       ColumnData::float64(1, Span<const double>(a.data(), a.size()))});
+  writeWithRetiredTime(engine, source, PrimitiveType::kString, 20);
+
+  auto report = engine.mergeDatasets(anchor, {{source, 0}});
+  ASSERT_TRUE(report.has_value()) << report.error();
+  EXPECT_TRUE(report->skipped_topics.empty()) << "the source's hidden all-null column is not a type conflict";
+  EXPECT_EQ(readColumn(engine, data, 1).size(), 4U);
+}
+
 }  // namespace
 }  // namespace PJ

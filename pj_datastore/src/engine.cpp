@@ -578,6 +578,7 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     TopicStorage* primary_storage = getTopicStorage(primary_tid);
     primary_storage->clearChunks();
     primary_storage->setColumnDescriptors(std::move(staged_storage->column_descriptors_));
+    primary_storage->retired_columns_ = std::move(staged_storage->retired_columns_);  // ids of the staged layout
     adoptChunksFrom(*primary_storage, *staged_storage);
   }
 
@@ -726,7 +727,9 @@ Expected<DatasetMergeReport> DataEngine::mergeDatasets(
       std::unordered_set<std::string> seen_local;
       for (const TopicChunk& chunk : st->sealedChunks()) {
         for (const auto& col : chunk.columns) {
-          if (col.descriptor && seen_local.insert(col.descriptor->field_path).second) {
+          // A retired column holds no value: neither a field of the union nor a type conflict.
+          if (col.descriptor && !st->isColumnRetired(col.descriptor->field_id) &&
+              seen_local.insert(col.descriptor->field_path).second) {
             local.emplace_back(col.descriptor->field_path, col.descriptor->logical_type);
           }
         }

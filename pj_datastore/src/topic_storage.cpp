@@ -124,7 +124,6 @@ void TopicStorage::clearChunks() noexcept {
   // A stale floor would hide refilled rows below it.
   retention_floor_ = kNoRetentionFloor;
   evicted_through_chunk_id_ = 0;
-  retired_columns_.clear();
 }
 
 TopicStorage::DetachedState TopicStorage::detachChunks() {
@@ -263,6 +262,15 @@ void TopicStorage::retireValuelessColumns() {
   for (const TopicChunk& chunk : sealed_chunks_) {
     unretireColumnsWithValues(chunk);
   }
+}
+
+std::size_t TopicStorage::firstLiveColumn() const noexcept {
+  for (std::size_t position = 0; position < column_descriptors_.size(); ++position) {
+    if (!isColumnRetired(column_descriptors_[position].field_id)) {
+      return position;
+    }
+  }
+  return 0;
 }
 
 void TopicStorage::unretireColumnsWithValues(const TopicChunk& chunk) {

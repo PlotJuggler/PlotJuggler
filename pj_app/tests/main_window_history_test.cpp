@@ -45,6 +45,7 @@
 #include "pj_base/builtin/point_cloud_codec.hpp"
 #include "pj_base/sdk/platform.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_datastore/writer.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_plotting/CurveEditor.h"
 #include "pj_plotting/DockToolbar.h"
@@ -583,6 +584,55 @@ TEST_F(MainWindowHistoryFixture, RemintedDatasetCompletionRebaselinesStaleHistor
   PJ::MainWindowHistoryTestPeer::completeFileLoad(window, u"/tmp/reminted-history.mcap"_s);
   EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), 1U);
   EXPECT_EQ(PJ::MainWindowHistoryTestPeer::redoSize(window), 0U);
+  EXPECT_FALSE(PJ::MainWindowHistoryTestPeer::undoEnabled(window));
+}
+
+// A reload that loses a column shrinks the data universe as losing a topic does: the history from before it, which
+// may plot that column, is dropped instead of failing every undo.
+TEST_F(MainWindowHistoryFixture, ReloadThatLosesAColumnRebaselinesHistory) {
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app_session = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::SessionManager& session = app_session.sessionManager();
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+
+  const PJ::DatasetId dataset = pj_test::createDataset(app_session, "lost-column.csv", /*own_time_domain=*/true);
+  ASSERT_NE(dataset, 0U);
+  PJ::TopicId topic = 0;
+  const auto write_rows = [&](bool with_time) {
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    if (topic == 0) {
+      topic = *writer.registerTopic(dataset, PJ::TopicDescriptor{.name = "data"});
+    }
+    const auto time = writer.ensureColumn(topic, "time", PJ::PrimitiveType::kFloat64);
+    const auto a = writer.ensureColumn(topic, "a", PJ::PrimitiveType::kFloat64);
+    ASSERT_TRUE(time.has_value() && a.has_value());
+    for (int row = 0; row < 3; ++row) {
+      ASSERT_TRUE(writer.beginRow(topic, 1'000'000'000LL * row).has_value());
+      if (with_time) {
+        writer.set<double>(topic, *time, 0.5 * row);
+      }
+      writer.set<double>(topic, *a, 1.5 * row);
+      ASSERT_TRUE(writer.finishRow(topic).has_value());
+    }
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  };
+  write_rows(/*with_time=*/true);
+  PJ::MainWindowHistoryTestPeer::completeFileLoad(window, u"/tmp/lost-column.csv"_s);
+
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  plot->setStateId(u"history-before-lost-column"_s);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+  ASSERT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), 2U);
+
+  {
+    PJ::RefillGuard guard = session.beginRefill(dataset);
+    write_rows(/*with_time=*/false);
+    guard.pruneVanishedTopics();
+    guard.commit();
+  }
+  PJ::MainWindowHistoryTestPeer::completeFileLoad(window, u"/tmp/lost-column.csv"_s);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), 1U);
   EXPECT_FALSE(PJ::MainWindowHistoryTestPeer::undoEnabled(window));
 }
 

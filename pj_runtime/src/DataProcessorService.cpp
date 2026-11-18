@@ -624,8 +624,7 @@ std::vector<std::string> inputFieldPaths(const DataEngine& engine, const TopicSt
   if (!storage.columnDescriptors().empty()) {
     paths.reserve(storage.columnDescriptors().size());
     for (const auto& column : storage.columnDescriptors()) {
-      // Empty for a retired column, so a path lookup finds no field there; the position keeps the index alignment.
-      paths.push_back(storage.isColumnRetired(column.field_id) ? std::string{} : column.field_path);
+      paths.push_back(column.field_path);
     }
     return paths;
   }
@@ -706,7 +705,8 @@ std::optional<DataProcessorService::ResolvedInput> DataProcessorService::resolve
   // Exact whole-topic name → the topic's first leaf column.
   bool topic_ambiguous = false;
   if (const auto topic = resolveInputTopic(name, only_dataset, &topic_ambiguous)) {
-    return ResolvedInput{topic->first, topic->second, 0};
+    const TopicStorage* storage = engine_.getTopicStorage(topic->first);
+    return ResolvedInput{topic->first, topic->second, storage != nullptr ? storage->firstLiveColumn() : 0};
   }
   if (topic_ambiguous) {
     if (ambiguous != nullptr) {
@@ -734,7 +734,13 @@ std::optional<DataProcessorService::ResolvedInput> DataProcessorService::resolve
         const std::string wanted = normalizedFieldPath(name.substr(tn.size() + 1));
         const std::vector<std::string> paths = inputFieldPaths(engine_, *storage);
         bool ambiguous_field = false;
-        const std::optional<std::size_t> column = uniqueColumnForFieldPath(paths, wanted, ambiguous_field);
+        std::optional<std::size_t> column = uniqueColumnForFieldPath(paths, wanted, ambiguous_field);
+        // A column a reload lost is not offered to a new binding by name, as a topic a reload lost is not; a live
+        // binding to it keeps it (resolveInputBinding).
+        if (column.has_value() && *column < storage->columnDescriptors().size() &&
+            storage->isColumnRetired(storage->columnDescriptors()[*column].field_id)) {
+          column.reset();
+        }
         if (!column.has_value()) {
           if (ambiguous_field && ambiguous != nullptr) {
             *ambiguous = true;

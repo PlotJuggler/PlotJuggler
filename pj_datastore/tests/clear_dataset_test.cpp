@@ -324,6 +324,44 @@ TEST(DatasetChunkSnapshotTest, ReattachRestoresColumnDescriptors) {
   }
 }
 
+// A column a reload retired stays retired while the next refill runs (the emptied topic still hides it), comes back
+// when the refill gives it a value, and a reattach restores the prior retirement.
+TEST(DatasetChunkSnapshotTest, RetiredColumnsSurviveDetachAndReattach) {
+  DataEngine engine;
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "retired", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  const TopicId topic = *writer.registerTopic(ds, TopicDescriptor{.name = "data", .schema_id = 0});
+  const FieldId time = *writer.ensureColumn(topic, "time", PrimitiveType::kFloat64);
+  const FieldId a = *writer.ensureColumn(topic, "a", PrimitiveType::kFloat64);
+  const auto write_row = [&](Timestamp t, bool with_time) {
+    ASSERT_TRUE(writer.beginRow(topic, t).has_value());
+    if (with_time) {
+      writer.set<double>(topic, time, 0.5);
+    }
+    writer.set<double>(topic, a, 1.5);
+    ASSERT_TRUE(writer.finishRow(topic).has_value());
+    engine.commitChunks(writer.flushAll());
+  };
+  const auto retired = [&]() {
+    auto lock = engine.lockEngine();
+    return engine.getTopicStorage(topic)->isColumnRetired(time);
+  };
+  write_row(1, /*with_time=*/false);
+  {
+    auto lock = engine.lockEngine();
+    engine.getTopicStorage(topic)->retireValuelessColumns();
+  }
+  ASSERT_TRUE(retired());
+
+  DataEngine::DatasetChunkSnapshot snap = engine.detachDatasetChunks(ds);
+  EXPECT_TRUE(retired()) << "the detach keeps the retirement";
+  write_row(2, /*with_time=*/true);
+  EXPECT_FALSE(retired()) << "a value lands: the column is back";
+
+  engine.reattachDatasetChunks(ds, std::move(snap));
+  EXPECT_TRUE(retired()) << "the reattach restores the prior retirement";
+}
+
 TEST(DatasetChunkSnapshotTest, ReattachRetiresTopicsAddedAfterDetach) {
   DataEngine engine;
   std::vector<TopicId> topics;

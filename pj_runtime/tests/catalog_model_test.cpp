@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -1147,6 +1148,107 @@ TEST(CatalogModelReloadTest, RefillDropsColumnTheReloadNoLongerWrites) {
   ASSERT_TRUE(snapshot.has_value()) << snapshot.error();
   ASSERT_EQ(snapshot->topics().size(), 1U);
   EXPECT_EQ(snapshot->topics()[0].field_count, 2U) << "plugins and agents no longer list the vanished field";
+}
+
+// The CSV of RefillDropsColumnTheReloadNoLongerWrites as a reusable shape: a "data" topic whose "time" column a
+// reload stops writing, beside a float column "a" with fractional values.
+struct LostColumnFixture {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog{&session};
+  PJ::DatasetId dataset = 0;
+  PJ::TopicId topic = 0;
+  PJ::PrimitiveType time_type;
+
+  enum class End { kPruneAndCommit, kCommitWithoutPrune, kRollback };
+
+  explicit LostColumnFixture(PJ::PrimitiveType vanishing_type) : time_type(vanishing_type) {
+    dataset = *session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "data.csv"});
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    topic = *writer.registerTopic(dataset, PJ::TopicDescriptor{.name = "data"});
+    EXPECT_TRUE(writer.ensureColumn(topic, "time", vanishing_type).has_value());
+    EXPECT_TRUE(writer.ensureColumn(topic, "a", PJ::PrimitiveType::kFloat64).has_value());
+    writeRows(writer, /*with_time=*/true);
+    catalog.rebuildFromDatastore();
+  }
+
+  void writeRows(PJ::DataWriter& writer, bool with_time) {
+    for (int row = 0; row < 3; ++row) {
+      ASSERT_TRUE(writer.beginRow(topic, 100 + row).has_value());
+      if (with_time && time_type == PJ::PrimitiveType::kInt64) {
+        writer.set<int64_t>(topic, 0, row);
+      } else if (with_time) {
+        writer.set<double>(topic, 0, 0.5 * row);
+      }
+      writer.set<double>(topic, 1, 1.5 + row);
+      ASSERT_TRUE(writer.finishRow(topic).has_value());
+    }
+    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+  }
+
+  // One reload of the file; `during` runs after the detach and again after the refill wrote its rows.
+  void reload(bool with_time, End end, const std::function<void()>& during = {}) {
+    std::optional<PJ::RefillGuard> guard = session.beginRefill(dataset);
+    if (during) {
+      during();
+    }
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    writeRows(writer, with_time);
+    if (during) {
+      during();
+    }
+    if (end == End::kPruneAndCommit) {
+      guard->pruneVanishedTopics();
+    }
+    if (end != End::kRollback) {
+      guard->commit();
+    }
+  }
+
+  [[nodiscard]] bool timeListed() {
+    catalog.rebuildIfChanged();
+    const auto curves = catalog.curves();
+    return std::any_of(
+        curves.begin(), curves.end(), [](const PJ::CurveDescriptor& c) { return c.field_path == u"time"_s; });
+  }
+};
+
+TEST(CatalogModelReloadTest, ColumnLostByAReloadStaysHiddenThroughTheNextReload) {
+  LostColumnFixture fx(PJ::PrimitiveType::kFloat64);
+  fx.reload(/*with_time=*/false, LostColumnFixture::End::kPruneAndCommit);
+  ASSERT_FALSE(fx.timeListed());
+  fx.reload(/*with_time=*/false, LostColumnFixture::End::kPruneAndCommit, [&fx]() {
+    EXPECT_FALSE(fx.timeListed()) << "the refill must not bring the ghost back";
+  });
+  EXPECT_FALSE(fx.timeListed());
+}
+
+TEST(CatalogModelReloadTest, KeptPartialReloadKeepsTheLostColumnHidden) {
+  LostColumnFixture fx(PJ::PrimitiveType::kFloat64);
+  fx.reload(/*with_time=*/false, LostColumnFixture::End::kPruneAndCommit);
+  ASSERT_FALSE(fx.timeListed());
+  fx.reload(/*with_time=*/false, LostColumnFixture::End::kCommitWithoutPrune);
+  EXPECT_FALSE(fx.timeListed()) << "a cancelled load kept as partial does not prune, nor resurrect";
+}
+
+TEST(CatalogModelReloadTest, RolledBackReloadRestoresTheHiddenColumn) {
+  LostColumnFixture fx(PJ::PrimitiveType::kFloat64);
+  fx.reload(/*with_time=*/false, LostColumnFixture::End::kPruneAndCommit);
+  ASSERT_FALSE(fx.timeListed());
+  bool shown_after_write = false;
+  fx.reload(/*with_time=*/true, LostColumnFixture::End::kRollback, [&fx, &shown_after_write]() {
+    shown_after_write = fx.timeListed();
+  });
+  EXPECT_TRUE(shown_after_write) << "the attempted refill gave the column values";
+  EXPECT_FALSE(fx.timeListed()) << "the rollback restores the prior data, column hidden";
+}
+
+// Only the retired-column term of the fingerprint moves: the lost column is not a float (no whole-number signature)
+// and "a" keeps fractional values, so a rebuildIfChanged that ignored retirement would keep the ghost.
+TEST(CatalogModelReloadTest, FingerprintNoticesARetiredNonFloatColumn) {
+  LostColumnFixture fx(PJ::PrimitiveType::kInt64);
+  ASSERT_TRUE(fx.timeListed());
+  fx.reload(/*with_time=*/false, LostColumnFixture::End::kPruneAndCommit);
+  EXPECT_FALSE(fx.timeListed());
 }
 
 // samplesIngested is gated on a content fingerprint (rebuildIfChanged) so row-only ingest batches skip the full

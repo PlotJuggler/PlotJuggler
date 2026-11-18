@@ -578,17 +578,15 @@ TEST(TopicStorageTest, RetireValuelessColumnsKeepsLayoutAndUnretiresOnValue) {
   EXPECT_TRUE(storage.isColumnRetired(2)) << "a column null in every row holds no value";
   EXPECT_EQ(storage.columnDescriptors().size(), 3U) << "field ids stay dense positions";
 
-  TopicStorage::DetachedState detached = storage.detachChunks();
-  EXPECT_TRUE(storage.retiredColumns().empty()) << "an emptied topic has nothing to hide yet";
-  storage.restoreChunks(std::move(detached));
-  EXPECT_TRUE(storage.isColumnRetired(0)) << "a restore brings the prior retirement back";
+  storage.clearChunks();
+  EXPECT_TRUE(storage.isColumnRetired(0)) << "emptying the topic for a refill keeps the column hidden";
 
+  TopicStorage::DetachedState detached = storage.detachChunks();
   ASSERT_TRUE(storage.appendSealedChunk(chunk_with(true)).has_value());
   EXPECT_FALSE(storage.isColumnRetired(0)) << "a value lands: the column is back";
   EXPECT_TRUE(storage.isColumnRetired(2));
-
-  storage.clearChunks();
-  EXPECT_TRUE(storage.retiredColumns().empty());
+  storage.restoreChunks(std::move(detached));
+  EXPECT_TRUE(storage.isColumnRetired(0)) << "a restore brings the prior retirement back";
 }
 
 }  // namespace
