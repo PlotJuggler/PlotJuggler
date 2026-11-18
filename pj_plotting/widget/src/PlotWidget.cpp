@@ -1163,6 +1163,7 @@ void PlotWidget::zoomOut(bool emit_signal) {
   }
 
   pending_fit_ = hasUsableCurveData() ? PendingFit::kNone : PendingFit::kFull;
+  pending_fit_emits_ = emit_signal;
   updateMaximumZoomArea();
   setZoomRectangle(maxZoomRect(), emit_signal);
   replot();
@@ -2246,8 +2247,9 @@ void PlotWidget::reconnectDataSignals() {
           // next chunk widens the frame too.
           if (pending_fit_ == PendingFit::kFull) {
             updateMaximumZoomArea();
-            // Linked peers took this plot's empty or partial window; an XY plot's axes are its own.
-            setZoomRectangle(maxZoomRect(), /*emit_signal=*/!isXYPlot());
+            // Linked peers took this plot's empty or partial window only when the fit that armed this announced it;
+            // an XY plot's axes are its own.
+            setZoomRectangle(maxZoomRect(), /*emit_signal=*/pending_fit_emits_ && !isXYPlot());
             replot();
           } else {
             onZoomOutVerticalTriggered(/*emit_signal=*/false);

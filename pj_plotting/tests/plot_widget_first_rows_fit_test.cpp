@@ -147,10 +147,10 @@ TEST(PlotWidgetFirstRowsFit, GestureThatFramesNothingKeepsTheFit) {
   }
 }
 
-// Linked peers took this plot's empty or partial window, so each fit must reach them.
+// A Zoom Out that announced the plot's empty window to its linked peers must announce the fit too.
 TEST(PlotWidgetFirstRowsFit, FullFitTellsLinkedPeers) {
   FirstRowsFixture fixture;
-  fixture.plot.zoomOut(/*emit_signal=*/false);
+  fixture.plot.zoomOut(/*emit_signal=*/true);
   std::optional<QRectF> announced;
   QObject::connect(
       &fixture.plot, &PJ::PlotWidget::rectChanged, &fixture.plot,
@@ -160,6 +160,23 @@ TEST(PlotWidgetFirstRowsFit, FullFitTellsLinkedPeers) {
 
   ASSERT_TRUE(announced.has_value());
   EXPECT_NEAR(announced->right() - announced->left(), 2.0, 1e-6);
+}
+
+// A fit that announced nothing (a drop, a plugin's or an agent's add) took no window from the linked peers, so the fit
+// the first rows complete must not move them either.
+TEST(PlotWidgetFirstRowsFit, QuietFitStaysQuietWhenRowsArrive) {
+  FirstRowsFixture fixture;
+  fixture.plot.zoomOut(/*emit_signal=*/false);
+  int announced = 0;
+  QObject::connect(&fixture.plot, &PJ::PlotWidget::rectChanged, &fixture.plot, [&announced](PJ::PlotWidget*, QRectF) {
+    ++announced;
+  });
+
+  fixture.commitSamples({0, 2});
+  fixture.commitSamples({10});
+
+  EXPECT_NEAR(fixture.xSpan(), 10.0, 1e-6) << "the plot is still fitted";
+  EXPECT_EQ(announced, 0);
 }
 
 // Filter Apply swaps the only curve for its output, which computes only now.

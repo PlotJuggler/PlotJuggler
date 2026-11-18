@@ -370,6 +370,9 @@ class PlotWidget : public PlotWidgetBase {
   // window (zoom link) narrows it to Y. Never armed when data existed at fit time.
   enum class PendingFit : std::uint8_t { kNone, kFull, kVertical };
   PendingFit pending_fit_ = PendingFit::kNone;
+  // Whether the zoomOut that armed pending_fit_ announced its window (rectChanged); the refit announces only then, so a
+  // quiet fit (a drop, a plugin's or an agent's add) never moves the linked peers later.
+  bool pending_fit_emits_ = false;
   // Trailing-edge coalescer for gesture history snapshots: wheel zoom and pan emit per input event, and serializing the
   // workspace each time is wasteful, so one undoableChange fires when the gesture goes quiet.
   QTimer gesture_undo_debounce_;

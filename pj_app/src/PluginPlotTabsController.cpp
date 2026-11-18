@@ -334,8 +334,8 @@ Status PluginPlotTabsController::addCurve(
   if (plot == nullptr) {
     return unexpected("the tab has no plot to draw in");
   }
-  // The first curve frames the plot to its data, as a drop does: an empty plot's 0..1 window shows none of it. A plot
-  // that already has curves keeps the caller's view. A null return means the title is taken, i.e. already drawn.
+  // The first curve fits the plot to its data: an empty plot's 0..1 window shows none of it. A plot that already has
+  // curves keeps the caller's view. A null return means the title is taken, i.e. already drawn.
   const bool was_empty = plot->isEmpty();
   if (plot->addCurve(*key) != nullptr && was_empty) {
     plot->zoomOut(false);
