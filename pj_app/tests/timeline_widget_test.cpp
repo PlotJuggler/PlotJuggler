@@ -122,6 +122,12 @@ TEST(TimelineWidgetTest, SpeedScrubberShowsTheRateTheEnginePlaysAt) {
   engine.setPlaybackRate(0.25);
   EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);
   EXPECT_DOUBLE_EQ(rate->value(), 0.3);
+
+  // A value typed into the scrubber that snaps to the rate the engine already plays at makes the engine say nothing,
+  // yet the scrubber must not keep showing what was typed.
+  rate->setValue(0.25);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);
+  EXPECT_DOUBLE_EQ(rate->value(), 0.3);
 }
 
 }  // namespace

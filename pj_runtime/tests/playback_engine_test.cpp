@@ -65,6 +65,35 @@ TEST(PlaybackEngineTest, ClampTickTimeHoldAtTipBeatsLoop) {
   EXPECT_DOUBLE_EQ(PJ::PlaybackEngine::clampTickTime(-3.0, 0.0, 10.0, false, false, nullptr), 0.0);
 }
 
+// Whatever asks for a rate (the scrubber, a plugin, the MCP tool), the engine plays at one inside the range the speed
+// scrubber can show, so the two never disagree.
+TEST(PlaybackEngineTest, RateIsClampedToTheSharedRange) {
+  PJ::PlaybackEngine engine;
+
+  engine.setPlaybackRate(PJ::kMaxPlaybackRate * 2.0);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMaxPlaybackRate);
+
+  engine.setPlaybackRate(PJ::kMinPlaybackRate / 2.0);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMinPlaybackRate);
+
+  engine.setPlaybackRate(2.5);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.5);
+}
+
+// The speed scrubber shows one decimal and commits what it shows, so the engine plays at a multiple of its step.
+TEST(PlaybackEngineTest, RateIsRoundedToTheScrubberStep) {
+  PJ::PlaybackEngine engine;
+
+  engine.setPlaybackRate(0.25);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);
+
+  engine.setPlaybackRate(2.34);
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.3);
+
+  engine.setPlaybackRate(0.04);  // rounds to 0, then clamps up to the minimum
+  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMinPlaybackRate);
+}
+
 // Pressing Play with the cursor already at the end of a finite range rewinds to the start and replays instead of a
 // no-op (the first tick would pause again before moving).
 TEST(PlaybackEngineTest, PlayAtEndRewindsToStart) {
@@ -101,35 +130,6 @@ TEST(PlaybackEngineTest, PlayFromMiddleDoesNotRewind) {
   engine.play();
 
   EXPECT_DOUBLE_EQ(engine.currentTime().value, 4.0) << "play() mid-range must not move the cursor";
-}
-
-// Whatever asks for a rate (the scrubber, a plugin, the MCP tool), the engine plays at one inside the range the speed
-// scrubber can show, so the two never disagree.
-TEST(PlaybackEngineTest, RateIsClampedToTheSharedRange) {
-  PJ::PlaybackEngine engine;
-
-  engine.setPlaybackRate(PJ::kMaxPlaybackRate * 2.0);
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMaxPlaybackRate);
-
-  engine.setPlaybackRate(PJ::kMinPlaybackRate / 2.0);
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMinPlaybackRate);
-
-  engine.setPlaybackRate(2.5);
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.5);
-}
-
-// The speed scrubber shows one decimal and commits what it shows, so the engine plays at a multiple of its step.
-TEST(PlaybackEngineTest, RateIsRoundedToTheScrubberStep) {
-  PJ::PlaybackEngine engine;
-
-  engine.setPlaybackRate(0.25);
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), 0.3);
-
-  engine.setPlaybackRate(2.34);
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), 2.3);
-
-  engine.setPlaybackRate(0.04);  // rounds to 0, then clamps up to the minimum
-  EXPECT_DOUBLE_EQ(engine.playbackRate(), PJ::kMinPlaybackRate);
 }
 
 }  // namespace

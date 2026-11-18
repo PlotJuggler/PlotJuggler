@@ -81,11 +81,10 @@ void PlaybackEngine::setPlaybackRate(double rate) {
   if (!std::isfinite(rate)) {
     return;
   }
-  rate = snapPlaybackRate(rate);
   if (rate_ == rate) {
     return;
   }
-  rate_ = rate;
+  rate_ = snapPlaybackRate(rate);
   emit playbackRateChanged(rate_);
 }
 
