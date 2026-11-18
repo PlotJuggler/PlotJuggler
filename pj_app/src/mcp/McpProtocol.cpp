@@ -91,7 +91,7 @@ json jsonResult(const json& payload) {
 bool isReadOnlyTool(const std::string& name) {
   static const std::set<std::string> read_only = {
       "get_status", "about",        "list_instances", "list_topics", "describe_topic", "read_series", "evaluate",
-      "wait_for",   "list_created", "report_status",  "jobs_list",   "job_wait",       "ui_tree"};
+      "wait_for",   "list_created", "report_status",  "jobs_list",   "job_wait",       "ui_tree",     "ui_plot"};
   return read_only.contains(name);
 }
 
@@ -342,6 +342,12 @@ json uiToolEntries() {
           "Return; text after a Return that closes the window goes nowhere, so send it in a second call. At most " +
               std::to_string(kMaxUiTypedChars) + " characters per call.",
           schema(with({{"text", {{"type", "string"}}}}), {"text"})),
+      tool(
+          "ui_plot",
+          "Read what the visible plots show (for QA asserts): per plot its title, X and Y ranges (3 decimals), "
+          "curves with their visibility, and the tracker value box rows as the user reads them (empty when "
+          "hidden). `title` selects one plot.",
+          schema({{"title", {{"type", "string"}}}})),
   });
 }
 
@@ -402,12 +408,13 @@ bool uiToolsEnabled() {
 }
 
 bool isUiTool(const std::string& name) {
-  static const std::set<std::string> ui_tools = {"ui_tree", "ui_click", "ui_drag", "ui_wheel", "ui_key", "ui_type"};
+  static const std::set<std::string> ui_tools = {"ui_tree", "ui_click", "ui_drag", "ui_wheel",
+                                                 "ui_key",  "ui_type",  "ui_plot"};
   return ui_tools.contains(name);
 }
 
 int uiSettleMs(const std::string& name, const json& args) {
-  if (name == "ui_tree") {
+  if (name == "ui_tree" || name == "ui_plot") {
     return 0;
   }
   // Read before the input is queued, so it never throws: a call must not fail after acting.

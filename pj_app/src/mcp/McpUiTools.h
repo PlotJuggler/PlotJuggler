@@ -65,6 +65,9 @@ class UiDriver {
   [[nodiscard]] nlohmann::json wheel(const nlohmann::json& args);
   [[nodiscard]] nlohmann::json key(const nlohmann::json& args);
   [[nodiscard]] nlohmann::json type(const nlohmann::json& args);
+  /// Read-only: each visible plot's title, axis ranges, curves and tracker value box, so a replay script can assert
+  /// what the user would read off the canvas (the canvas is painted, not in ui_tree).
+  [[nodiscard]] nlohmann::json plot(const nlohmann::json& args);
 
   /// The latest ui_tree's refs: `w<ref_base_ + i + 1>` at index i. Each ui_tree starts a new table
   /// and numbering goes on, so an older ref reads as stale, never as another widget.

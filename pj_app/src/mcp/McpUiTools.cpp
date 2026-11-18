@@ -6,6 +6,8 @@
 #include <QtGui/private/qguiapplication_p.h>
 #include <QtGui/private/qhighdpiscaling_p.h>
 #include <qpa/qwindowsysteminterface.h>
+#include <qwt_plot_curve.h>
+#include <qwt_text.h>
 
 #include <QAbstractButton>
 #include <QAbstractItemView>
@@ -42,6 +44,8 @@
 #include <unordered_map>
 
 #include "mcp/McpProtocol.h"
+#include "pj_plotting/DockWidget.h"
+#include "pj_plotting/PlotWidget.h"
 
 using json = nlohmann::json;
 using namespace Qt::StringLiterals;
@@ -292,7 +296,8 @@ std::vector<QWidget*> visibleTopLevels() {
 json UiDriver::call(const std::string& tool, const json& args) {
   static const std::unordered_map<std::string, json (UiDriver::*)(const json&)> tools = {
       {"ui_tree", &UiDriver::tree},   {"ui_click", &UiDriver::click}, {"ui_drag", &UiDriver::drag},
-      {"ui_wheel", &UiDriver::wheel}, {"ui_key", &UiDriver::key},     {"ui_type", &UiDriver::type}};
+      {"ui_wheel", &UiDriver::wheel}, {"ui_key", &UiDriver::key},     {"ui_type", &UiDriver::type},
+      {"ui_plot", &UiDriver::plot}};
   const auto found = tools.find(tool);
   if (found == tools.end()) {
     return textResult("unknown tool " + tool, true);
@@ -797,6 +802,47 @@ json UiDriver::type(const json& args) {
   const std::string into = keysInto(target, top);
   sendKeys(target, top, std::move(strokes));
   return textResult("typed " + std::to_string(text.size()) + " characters into " + into);
+}
+
+json UiDriver::plot(const json& args) {
+  const std::string wanted = args.value("title", std::string());
+  // Fixed decimals, so a script can expect the exact text of a range or a value.
+  const auto fixed = [](double value) { return QString::number(value, 'f', 3).toStdString(); };
+  json plots = json::array();
+  for (QWidget* top : visibleTopLevels()) {
+    for (DockWidget* dock : top->findChildren<DockWidget*>()) {
+      PlotWidget* plot = dock->plotWidget();
+      const std::string title = dock->name().toStdString();
+      if (plot == nullptr || !plot->isVisible() || (!wanted.empty() && title != wanted)) {
+        continue;
+      }
+      const QRectF view = plot->currentBoundingRect();
+      json curves = json::array();
+      for (const PlotWidgetBase::CurveInfo& info : plot->curveList()) {
+        if (info.curve != nullptr) {
+          curves.push_back({{"title", info.curve->title().text().toStdString()}, {"visible", info.curve->isVisible()}});
+        }
+      }
+      // The value box as the user reads it: one row per line, the &nbsp; padding collapsed.
+      json tracker = json::array();
+      if (plot->trackerValueBoxVisible()) {
+        const QString text = QTextDocumentFragment::fromHtml(plot->trackerValueBoxText()).toPlainText();
+        for (const QString& row : text.split(u'\n', Qt::SkipEmptyParts)) {
+          tracker.push_back(row.simplified().toStdString());
+        }
+      }
+      plots.push_back(
+          {{"title", title},
+           {"x", {fixed(std::min(view.left(), view.right())), fixed(std::max(view.left(), view.right()))}},
+           {"y", {fixed(std::min(view.top(), view.bottom())), fixed(std::max(view.top(), view.bottom()))}},
+           {"curves", curves},
+           {"tracker", tracker}});
+    }
+  }
+  if (plots.empty()) {
+    return textResult(wanted.empty() ? "no visible plot" : "no visible plot titled " + wanted, true);
+  }
+  return jsonResult(plots);
 }
 
 }  // namespace PJ::mcp
