@@ -140,6 +140,8 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
   its XML with fresh state ids, so the copy never aliases the source in id-keyed lookups. That XML is restored inside
   `pj_plotting`, without the shell's `rebindCurveKeys`, so the source plots first stamp their live curve keys into it
   (`PlotWidget::stampLiveCurveKeys`, as a clipboard copy does); without them every copied plot comes up empty.
+  `addTab` announces the copy before it is filled, so `currentTabChanged` fires again once it is: listeners such as
+  the shell's curve editor would otherwise keep rows built before the restored visibility and markers.
 - **Layout restore** parses and validates the whole structural tree before changing the live docker, restores splitter
   ratios as large relative weights (the docker is not laid out at its final size yet, so pixel scaling would distort the
   split), and emits no undo step for its intermediate states. It restores into the live plot page whose tab id

@@ -1869,7 +1869,11 @@ void PlotWidget::stampLiveCurveKeys(QDomElement& plot_element) const {
   for (QDomElement marker_scope_element = plot_element.firstChildElement(u"marker_scope"_s);
        !marker_scope_element.isNull();
        marker_scope_element = marker_scope_element.nextSiblingElement(u"marker_scope"_s)) {
-    stampDatasetPath(marker_scope_element, readDatasetIdentity(marker_scope_element).id);
+    // A pending scope's saved id can name a live dataset of another source: its path would never resolve the scope.
+    const SavedDatasetIdentity saved = readDatasetIdentity(marker_scope_element);
+    if (catalog_ != nullptr && catalog_->resolveDatasetIdentity(saved.id, saved.source).id == saved.id) {
+      stampDatasetPath(marker_scope_element, saved.id);
+    }
   }
 }
 

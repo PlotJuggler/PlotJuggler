@@ -17,6 +17,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QtGlobal>
+#include <string>
 #include <string_view>
 
 #include "pj_datastore/writer.hpp"
@@ -611,34 +612,74 @@ TEST(TabbedPlotDuplicate, CopiesLayoutNextToSourceWithFreshIdsAndOneUndoStep) {
   EXPECT_EQ(idFreeXml(*copy), idFreeXml(*source));
 }
 
-// The copy shows the source's curves (time series and XY) in the source's colours, not empty plots.
-TEST(TabbedPlotDuplicate, CopiesCurvesOnCatalogSeries) {
+// A session with data and a tab widget bound to it.
+struct DuplicateFixture {
   PJ::SessionManager session;
   PJ::CatalogModel catalog{&session};
-  auto domain = session.dataEngine().createTimeDomain("run");
-  ASSERT_TRUE(domain.has_value()) << domain.error();
-  auto dataset =
-      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "run.csv", .time_domain_id = *domain});
-  ASSERT_TRUE(dataset.has_value()) << dataset.error();
-  PJ::DataWriter writer = session.dataEngine().createWriter();
-  QStringList keys;
-  for (const std::string_view topic : {"/sine", "/cosine"}) {
-    auto handle = writer.registerScalarSeries(*dataset, topic, PJ::NumericType::kFloat64);
-    ASSERT_TRUE(handle.has_value()) << handle.error();
+  PJ::TabbedPlotWidget tabbed;
+
+  DuplicateFixture() {
+    tabbed.setDataServices(&session, &catalog);
+  }
+
+  // A dataset from `source`, registered as loaded from `path` when that is not empty; 0 on failure.
+  PJ::DatasetId addDataset(const std::string& source, const QString& path = {}) {
+    auto domain = session.dataEngine().createTimeDomain(source);
+    if (!domain.has_value()) {
+      return 0;
+    }
+    auto dataset =
+        session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = source, .time_domain_id = *domain});
+    if (!dataset.has_value()) {
+      return 0;
+    }
+    if (!path.isEmpty()) {
+      session.setDatasetSourcePath(*dataset, path);
+    }
+    return *dataset;
+  }
+
+  // The catalog key of a new two-sample scalar series, empty on failure.
+  QString addSeries(PJ::DatasetId dataset, std::string_view topic) {
+    PJ::DataWriter writer = session.dataEngine().createWriter();
+    auto handle = writer.registerScalarSeries(dataset, topic, PJ::NumericType::kFloat64);
+    if (!handle.has_value()) {
+      return {};
+    }
     writer.appendScalar(*handle, 0, 0.0);
     writer.appendScalar(*handle, 1'000'000'000, 1.0);
-    ASSERT_FALSE(session.commitChunks(writer.flushAll()).empty());
+    if (session.commitChunks(writer.flushAll()).empty()) {
+      return {};
+    }
     for (const auto& curve : catalog.curves()) {
       if (const auto descriptor = catalog.curveDescriptor(curve.name);
           descriptor && descriptor->topic_id == handle->topic_id) {
-        keys.push_back(curve.name);
+        return curve.name;
       }
     }
+    return {};
   }
-  ASSERT_EQ(keys.size(), 2);
+};
 
-  PJ::TabbedPlotWidget tabbed;
-  tabbed.setDataServices(&session, &catalog);
+// The plot's curve keys, comma-joined (a readable gtest failure).
+std::string curveNames(const PJ::PlotWidget& plot) {
+  QStringList names;
+  for (const auto& info : plot.curveList()) {
+    names << info.source_name;
+  }
+  return names.join(u',').toStdString();
+}
+
+// The copy shows the source's curves (time series and XY) in the source's colours, not empty plots.
+TEST(TabbedPlotDuplicate, CopiesCurvesOnCatalogSeries) {
+  DuplicateFixture fixture;
+  PJ::TabbedPlotWidget& tabbed = fixture.tabbed;
+  const PJ::DatasetId dataset = fixture.addDataset("run.csv");
+  ASSERT_NE(dataset, 0U);
+  const QStringList keys{fixture.addSeries(dataset, "/sine"), fixture.addSeries(dataset, "/cosine")};
+  ASSERT_FALSE(keys[0].isEmpty());
+  ASSERT_FALSE(keys[1].isEmpty());
+
   PJ::PlotDocker* source = tabbed.dockerAt(0);
   QDomDocument layout;
   ASSERT_TRUE(
@@ -678,6 +719,64 @@ TEST(TabbedPlotDuplicate, CopiesCurvesOnCatalogSeries) {
     }
   }
   EXPECT_EQ(idFreeXml(*copy), idFreeXml(*source));
+}
+
+// Two plots sharing one id (a hand-edited layout) each keep their own curves in the copy.
+TEST(TabbedPlotDuplicate, PlotsSharingAnIdKeepTheirOwnCurves) {
+  DuplicateFixture fixture;
+  const PJ::DatasetId dataset = fixture.addDataset("run.csv");
+  ASSERT_NE(dataset, 0U);
+  const std::string first = fixture.addSeries(dataset, "/first").toStdString();
+  const std::string second = fixture.addSeries(dataset, "/second").toStdString();
+  ASSERT_FALSE(first.empty());
+  ASSERT_FALSE(second.empty());
+  PJ::PlotDocker* source = fixture.tabbed.dockerAt(0);
+  QDomDocument layout;
+  ASSERT_TRUE(
+      layout.setContent(uR"(
+      <Tab id="src" containers="1"><Container>
+      <DockSplitter orientation="|" count="2" sizes="0.5;0.5">
+      <DockArea id="a" name="one"><plot id="p" mode="TimeSeries"/></DockArea>
+      <DockArea id="b" name="two"><plot id="p" mode="TimeSeries"/></DockArea>
+      </DockSplitter></Container></Tab>)"_s));
+  ASSERT_TRUE(source->xmlLoadState(layout.documentElement()));
+  ASSERT_EQ(source->plotCount(), 2);
+  ASSERT_NE(source->plotAt(0)->plotWidget()->addCurve(QString::fromStdString(first)), nullptr);
+  ASSERT_NE(source->plotAt(1)->plotWidget()->addCurve(QString::fromStdString(second)), nullptr);
+
+  PJ::PlotDocker* copy = fixture.tabbed.duplicateTab(source);
+
+  ASSERT_NE(copy, nullptr);
+  ASSERT_EQ(copy->plotCount(), 2);
+  EXPECT_EQ(curveNames(*copy->plotAt(0)->plotWidget()), first);
+  EXPECT_EQ(curveNames(*copy->plotAt(1)->plotWidget()), second);
+}
+
+// A hidden marker scope still waiting for its dataset, whose saved id now names another source's dataset, must not
+// take that dataset's path in the copy: the path would then never resolve, and a layout save would persist it.
+TEST(TabbedPlotDuplicate, PendingMarkerScopeGetsNoForeignDatasetPath) {
+  DuplicateFixture fixture;
+  const PJ::DatasetId live = fixture.addDataset("a.csv", u"/data/a.csv"_s);
+  ASSERT_NE(live, 0U);
+  ASSERT_NE(fixture.addDataset("b.csv", u"/data/b.csv"_s), 0U);
+  PJ::PlotDocker* source = fixture.tabbed.dockerAt(0);
+  QDomDocument layout;
+  ASSERT_TRUE(
+      layout.setContent(uR"(
+      <Tab id="src" containers="1"><Container>
+      <DockArea id="a" name="one"><plot id="p" mode="TimeSeries">
+      <marker_scope dataset_id="%1" dataset_source="other.csv" scope="dataset" visible="false"/>
+      </plot></DockArea></Container></Tab>)"_s.arg(live)));
+  ASSERT_TRUE(source->xmlLoadState(layout.documentElement()));
+
+  PJ::PlotDocker* copy = fixture.tabbed.duplicateTab(source);
+
+  ASSERT_NE(copy, nullptr);
+  QDomDocument doc;
+  const QDomElement scope = copy->xmlSaveState(doc).elementsByTagName(u"marker_scope"_s).at(0).toElement();
+  ASSERT_FALSE(scope.isNull()) << "the pending scope was dropped";
+  EXPECT_EQ(scope.attribute(u"dataset_source"_s), u"other.csv"_s);
+  EXPECT_FALSE(scope.hasAttribute(u"dataset_path"_s)) << scope.attribute(u"dataset_path"_s).toStdString();
 }
 
 TEST(TabbedPlotDuplicate, IgnoresWidgetTabsAndForeignDockers) {

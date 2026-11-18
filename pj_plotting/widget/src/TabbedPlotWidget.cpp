@@ -484,10 +484,13 @@ PlotDocker* TabbedPlotWidget::duplicateTab(PlotDocker* source) {
     if (plot == nullptr) {
       continue;
     }
+    // Dropping the id at once stamps each element at most once, also when a hand-edited layout repeats a plot id.
     const QDomNodeList plots = tab_element.elementsByTagName(u"plot"_s);
     for (int node = 0; node < plots.size(); ++node) {
       if (QDomElement plot_element = plots.at(node).toElement(); plot_element.attribute(u"id"_s) == plot->stateId()) {
         plot->stampLiveCurveKeys(plot_element);
+        plot_element.removeAttribute(u"id"_s);
+        break;
       }
     }
   }
@@ -516,6 +519,8 @@ PlotDocker* TabbedPlotWidget::duplicateTab(PlotDocker* source) {
   tabs_bar_layout_->removeWidget(tabs_.back().frame);
   tabs_bar_layout_->insertWidget(target_index, tabs_.back().frame, 0, Qt::AlignVCenter);
   std::rotate(tabs_.begin() + target_index, tabs_.end() - 1, tabs_.end());
+  // addTab announced the copy before the restore filled it, so listeners bound to its plots saw no final state.
+  emit currentTabChanged(copy);
   emit undoableChange();
   return copy;
 }
