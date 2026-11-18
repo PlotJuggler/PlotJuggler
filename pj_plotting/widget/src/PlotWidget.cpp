@@ -615,6 +615,9 @@ void PlotWidget::beforeCanvasReplot() {
 }
 
 void PlotWidget::redrawTrackers() {
+  if (isXYPlot()) {
+    updateXYMarkers(last_tracker_time_sec_);
+  }
   if (tracker_ != nullptr) {
     tracker_->redraw();
   }
@@ -1196,29 +1199,34 @@ void PlotWidget::setTrackerPosition(double display_time_sec) {
   last_tracker_time_sec_ = display_time_sec;
   tracker_->setEnabled(tracker_enabled_ && !isXYPlot());
   if (isXYPlot()) {
-    // An XY plot has no time axis, so the vertical-line tracker is meaningless: each curve's marker rides along the
-    // parametric curve, on the (x, y) sample at the current time.
-    for (CurveInfo& info : curveList()) {
-      if (info.marker == nullptr || info.curve == nullptr) {
-        continue;
-      }
-      const auto* series = dynamic_cast<const PointSeriesXY*>(info.curve->data());
-      std::optional<QPointF> point;
-      if (series != nullptr) {
-        point = series->sampleFromTime(display_time_sec);
-      }
-      if (point.has_value() && info.curve->isVisible()) {
-        info.marker->setValue(*point);
-        info.marker->setVisible(true);
-      } else {
-        info.marker->setVisible(false);
-      }
-    }
+    updateXYMarkers(display_time_sec);
     replotOverlays();
     return;
   }
   tracker_->setPosition(QPointF(display_time_sec, 0.0));
   replotOverlays();
+}
+
+void PlotWidget::updateXYMarkers(double display_time_sec) {
+  // An XY plot has no time axis, so the vertical-line tracker is meaningless: each curve's marker rides along the
+  // parametric curve, on the (x, y) sample at the current time.
+  for (CurveInfo& info : curveList()) {
+    if (info.marker == nullptr || info.curve == nullptr) {
+      continue;
+    }
+    syncMarkerColor(info);
+    const auto* series = dynamic_cast<const PointSeriesXY*>(info.curve->data());
+    std::optional<QPointF> point;
+    if (series != nullptr) {
+      point = series->sampleFromTime(display_time_sec);
+    }
+    if (point.has_value() && info.curve->isVisible()) {
+      info.marker->setValue(*point);
+      info.marker->setVisible(true);
+    } else {
+      info.marker->setVisible(false);
+    }
+  }
 }
 
 void PlotWidget::onChangeCurveColor(const QString& curve_name, QColor new_color) {

@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
+#include <qwt_series_data.h>
 #include <qwt_text.h>
 
 #include <QColor>
@@ -206,7 +207,7 @@ TEST(CurveEditorCurveVisibility, EyeClickIsOneUndoStep) {
   EXPECT_FALSE(fixture.boxNames(fixture.toggled)) << fixture.plot->trackerValueBoxText().toStdString();
 }
 
-// A restore that changes only a kept curve's visibility or colour (an undo) refreshes the tracker too.
+// A restore that changes only a kept curve's visibility (an undo) refreshes the tracker too.
 TEST(PlotCurveVisibility, RestoringAHiddenCurveDropsItsTrackerRow) {
   TrackerFixture fixture;
   fixture.plot->setCurveVisible(fixture.toggled, false);
@@ -219,4 +220,21 @@ TEST(PlotCurveVisibility, RestoringAHiddenCurveDropsItsTrackerRow) {
 
   ASSERT_TRUE(fixture.plot->xmlLoadState(hidden_state));
   EXPECT_FALSE(fixture.boxNames(fixture.toggled)) << fixture.plot->trackerValueBoxText().toStdString();
+}
+
+// The legend sends a curve's source_name; it must reach that curve even when an earlier curve's title spells the same.
+TEST(PlotCurveVisibility, SourceNameWinsOverAnEarlierCurvesTitle) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  PJ::PlotWidget plot(&session, &catalog);
+  const auto series = [] { return new QwtPointSeriesData(QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}); };
+  PJ::PlotWidget::CurveInfo* first = plot.addCurve(u"first"_s, series(), Qt::red, u"first"_s);
+  PJ::PlotWidget::CurveInfo* second = plot.addCurve(u"second"_s, series(), Qt::blue, u"second"_s);
+  ASSERT_NE(first, nullptr);
+  ASSERT_NE(second, nullptr);
+  first->curve->setTitle(u"second"_s);
+
+  plot.setCurveVisible(second->source_name, false);
+  EXPECT_TRUE(first->curve->isVisible());
+  EXPECT_FALSE(second->curve->isVisible());
 }

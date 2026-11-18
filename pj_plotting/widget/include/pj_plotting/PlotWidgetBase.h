@@ -58,7 +58,7 @@ class PlotWidgetBase : public QWidget {
       const QString& name, QwtSeriesData<QPointF>* series, QColor color = Qt::transparent,
       const QString& display_name = {});
   virtual void removeCurve(const QString& title);
-  // Shows or hides the curve `curve_name` names (title or source_name, as curveFromTitle) and replots. The one path of
+  // Shows or hides the curve `curve_name` names (source_name or title, as curveFromTitle) and replots. The one path of
   // every visibility change, the legend click included: PlotWidget extends it with what depends on the visible set
   // (trackers, undo, curve editor).
   virtual void setCurveVisible(const QString& curve_name, bool visible);
@@ -69,6 +69,8 @@ class PlotWidgetBase : public QWidget {
   // Keyed by each curve's stable source_name (the catalog key, == CurveDescriptor::name), not its display title, so a
   // caller can match a plotted curve's colour to a descriptor (the Filter Editor matches its sources to plot colours).
   [[nodiscard]] std::map<QString, QColor> curveColors() const;
+  // The curve whose source_name is `title`, else the first whose title is: a source_name outranks another curve's
+  // alias.
   [[nodiscard]] CurveInfo* curveFromTitle(const QString& title);
 
   // The colour at `index` in the built-in 8-colour palette (wraps modulo the palette size), for callers that own a
@@ -172,6 +174,9 @@ class PlotWidgetBase : public QWidget {
   // width separately (per-curve width) can restyle a curve non-destructively.
   void applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style);
   QColor nextColor();
+  // Fills `info`'s ride-along marker with its curve's current colour; no-op if it already has it. The marker is not a
+  // tracker: nothing else follows a recolour, so a pass that shows it calls this.
+  void syncMarkerColor(const CurveInfo& info);
 
   [[nodiscard]] QwtPlot* qwtPlot();
   [[nodiscard]] const QwtPlot* qwtPlot() const;

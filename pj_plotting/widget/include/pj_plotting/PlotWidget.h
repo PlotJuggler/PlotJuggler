@@ -268,8 +268,12 @@ class PlotWidget : public PlotWidgetBase {
   void onDropEvent(QDropEvent* event);
 
  private:
-  // Re-samples both trackers at their current positions against the current curves and view.
+  // Re-samples both trackers at their current positions against the current curves and view; on an XY plot, which has
+  // no tracker line, the markers at the last tracker time.
   void redrawTrackers();
+  // XY plots: puts each curve's marker on its sample at `display_time_sec`, shown only for a visible curve and filled
+  // with the curve's current colour. Does not replot.
+  void updateXYMarkers(double display_time_sec);
   void beforeCanvasReplot() override;
   // Vertical-only auto-fit when a curve is added or removed, gated by Preferences::auto_zoom_plots: rescales Y to the
   // data over the current X window; the shared time axis (and sibling plots) is never touched. No-op during layout
