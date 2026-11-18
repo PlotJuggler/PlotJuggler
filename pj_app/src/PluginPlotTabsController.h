@@ -57,7 +57,8 @@ class PluginPlotTabsController {
   [[nodiscard]] Expected<std::vector<std::string>> listTabIds(const QString& plugin_id) const;
   /// The ABI's JSON, read back from the live plot, never echoed from the request.
   [[nodiscard]] Expected<std::string> tabConfig(const QString& plugin_id, const QString& tab_id) const;
-  /// Drawing a curve already drawn is success, not an error.
+  /// Drawing a curve already drawn is success, not an error. A curve added to an empty plot frames the plot to its
+  /// data, as a drop does; one added to a plot with curves leaves the view alone.
   Status addCurve(
       const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
       const QString& dataset_source);

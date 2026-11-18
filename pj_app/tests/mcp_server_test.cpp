@@ -2613,6 +2613,13 @@ class McpEndpointTest : public McpServerTest {
     return window_->pluginPlotTabs().ownedTab(QString::fromLatin1(owner), QString::fromLatin1(tab));
   }
 
+  /// The first plot of `owner`'s plot tab `tab`, or null.
+  [[nodiscard]] PJ::PlotWidget* plotOf(const char* owner, const char* tab) const {
+    PJ::PlotDocker* docker = window_->pluginPlotTabs().ownedTab(QString::fromLatin1(owner), QString::fromLatin1(tab));
+    PJ::DockWidget* dock = docker == nullptr || docker->plotCount() == 0 ? nullptr : docker->plotAt(0);
+    return dock == nullptr ? nullptr : dock->plotWidget();
+  }
+
   void createTab(const std::string& token, const std::string& tab) const {
     const auto [text, error] = result(callAs(token, "plot_tab", {{"action", "create"}, {"tab", tab}}));
     EXPECT_FALSE(error) << text;
@@ -2805,6 +2812,34 @@ TEST_F(McpEndpointTest, PlotTabZoomRefusesARangeThatCannotBeDrawn) {
   ASSERT_FALSE(applied_error) << applied;
   EXPECT_NEAR(plot->currentBoundingRect().left(), 1.7e9, 1e-3);
   EXPECT_NEAR(plot->currentBoundingRect().right(), 1.7e9 + 60.0, 1e-3);
+}
+
+// The first curve in a plot_tab fits the plot to its data, as a drop on an empty plot does: the empty plot's 0..1
+// window shows none of the data (nothing at all for epoch-time series). A curve added to a plot that has curves leaves
+// the view where the caller put it.
+TEST_F(McpEndpointTest, PlotTabAddFitsAnEmptyPlotAndKeepsAZoomedOne) {
+  openPublic();
+  ASSERT_NE(loadMock(), 0);  // samples 100 ns apart: the data spans far less than the empty plot's 1 s
+  const auto [created, create_error] = result(call("plot_tab", {{"action", "create"}, {"tab", "a"}}));
+  ASSERT_FALSE(create_error) << created;
+  const json add = {{"action", "add"}, {"tab", "a"}, {"curves", {"mock/file_data/value"}}};
+  const auto [added, add_error] = result(call("plot_tab", add));
+  ASSERT_FALSE(add_error) << added;
+  PJ::PlotWidget* plot = plotOf("agent-test", "a");  // the plot is built by the first curve
+  ASSERT_NE(plot, nullptr);
+  const QRectF fitted = plot->currentBoundingRect();
+  EXPECT_GT(fitted.right(), fitted.left());
+  EXPECT_LT(fitted.right() - fitted.left(), 1e-3) << "X is still the empty plot's 0..1";
+  EXPECT_NEAR(fitted.left(), plot->maxZoomRect().left(), 1e-12);
+  EXPECT_NEAR(fitted.right(), plot->maxZoomRect().right(), 1e-12);
+
+  const auto [zoomed, zoom_error] =
+      result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", 10.0}, {"end_s", 20.0}}));
+  ASSERT_FALSE(zoom_error) << zoomed;
+  const auto [again, again_error] = result(call("plot_tab", add));
+  ASSERT_FALSE(again_error) << again;
+  EXPECT_NEAR(plot->currentBoundingRect().left(), 10.0, 1e-9);
+  EXPECT_NEAR(plot->currentBoundingRect().right(), 20.0, 1e-9);
 }
 
 TEST_F(McpEndpointTest, TearingDownTheSessionRevokesAndDropsItsEvaluation) {

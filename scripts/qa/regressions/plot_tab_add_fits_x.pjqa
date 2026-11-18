@@ -1,0 +1,10 @@
+# plot_tab add on an empty tab frames the plot to the data: X spans the file (row numbers 0..1000), not the empty
+# plot's 0..1, which shows nothing of epoch-time data.
+# app: -d tests/wasm/fixtures/signals/data.csv
+# needs: plugins
+until list_topics {} "data"
+plot_tab {"action":"create","tab":"a","title":"Agent"}
+plot_tab {"action":"add","tab":"a","curves":["data/sine"]}
+expect "field":"sine"
+until ui_plot {} "data/sine"
+expect "x":["0.000","1000.000"]
