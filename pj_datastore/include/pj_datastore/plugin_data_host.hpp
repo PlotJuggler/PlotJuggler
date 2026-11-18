@@ -54,7 +54,8 @@ class DatastoreSourceWriteHost {
   void flushPending();
 
   // Flushes pending rows into the current engine, then routes later writes to `target` (the streaming pause/resume
-  // swap). Not owning.
+  // swap). Not owning. Takes both engine locks, so it waits for a worker call in progress (an Arrow import holds them
+  // for the whole stream).
   void setTarget(DataEngine* target);
 
   // Every topic and field this host creates (including the columns append* creates on the fly) is also created on
