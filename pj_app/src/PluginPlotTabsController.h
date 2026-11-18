@@ -82,7 +82,8 @@ class PluginPlotTabsController {
   /// distinct errors: the caller's remedy differs. A range the axis cannot hold (NaN, infinite, beyond the
   /// nanosecond time base, narrower than a nanosecond) is refused.
   Status zoomToTimeRange(const QString& plugin_id, double t0_s, double t1_s, const QString& tab_id = {});
-  /// Reset every plot `plugin_id` owns, or only those in its tab `tab_id` when given, to fit its data.
+  /// Reset every plot `plugin_id` owns, or only those in its tab `tab_id` when given, to fit its data. Like
+  /// `zoomToTimeRange`, it never moves the user's linked plots, not even when the rows arrive later.
   Status zoomOut(const QString& plugin_id, const QString& tab_id = {});
 
   /// Re-stamps every owned tab's watermark (owner name, or "not loaded"). Call after the catalog changes and

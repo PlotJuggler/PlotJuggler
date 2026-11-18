@@ -147,10 +147,10 @@ TEST(PlotWidgetFirstRowsFit, GestureThatFramesNothingKeepsTheFit) {
   }
 }
 
-// A Zoom Out that announced the plot's empty window to its linked peers must announce the fit too.
+// Linked peers took this plot's empty or partial window, so each fit must reach them.
 TEST(PlotWidgetFirstRowsFit, FullFitTellsLinkedPeers) {
   FirstRowsFixture fixture;
-  fixture.plot.zoomOut(/*emit_signal=*/true);
+  fixture.plot.zoomOut(/*emit_signal=*/false);
   std::optional<QRectF> announced;
   QObject::connect(
       &fixture.plot, &PJ::PlotWidget::rectChanged, &fixture.plot,
@@ -162,11 +162,36 @@ TEST(PlotWidgetFirstRowsFit, FullFitTellsLinkedPeers) {
   EXPECT_NEAR(announced->right() - announced->left(), 2.0, 1e-6);
 }
 
-// A fit that announced nothing (a drop, a plugin's or an agent's add) took no window from the linked peers, so the fit
-// the first rows complete must not move them either.
-TEST(PlotWidgetFirstRowsFit, QuietFitStaysQuietWhenRowsArrive) {
+// The user's fits (the toolbar Zoom Out, a drop, a layout restore) that found no rows: the first plot to receive rows
+// pulls its linked peer to its window, which lines linked plots of different datasets up after a load or a stream
+// start.
+TEST(PlotWidgetFirstRowsFit, FirstRowsPullALinkedPeerAfterAUserFit) {
   FirstRowsFixture fixture;
+  auto peer_series = fixture.writer.registerScalarSeries(fixture.dataset_id, "/peer", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(peer_series.has_value()) << peer_series.error();
+  fixture.session.notifyIngest({peer_series->topic_id});
+  PJ::PlotWidget peer(&fixture.session, &fixture.catalog);
+  ASSERT_NE(peer.addCurve(keyForTopic(fixture.catalog, peer_series->topic_id)), nullptr);
+  // MainWindow's linked zoom: a plot's announced window becomes the peer's X window.
+  QObject::connect(&fixture.plot, &PJ::PlotWidget::rectChanged, &peer, [&peer](PJ::PlotWidget*, QRectF rect) {
+    peer.setVisibleXRange(rect.left(), rect.right());
+  });
   fixture.plot.zoomOut(/*emit_signal=*/false);
+  peer.zoomOut(/*emit_signal=*/false);
+
+  fixture.commitSamples({0, 2});
+
+  const QRectF view = fixture.plot.currentBoundingRect();
+  EXPECT_NEAR(peer.currentBoundingRect().left(), view.left(), 1e-6);
+  EXPECT_NEAR(peer.currentBoundingRect().right(), view.right(), 1e-6);
+  EXPECT_NEAR(view.right() - view.left(), 2.0, 1e-6);
+}
+
+// An unlinked fit (an agent's or a plugin's plot) took no window from the linked peers, so the fit the first rows
+// complete must not move them either.
+TEST(PlotWidgetFirstRowsFit, UnlinkedFitStaysQuietWhenRowsArrive) {
+  FirstRowsFixture fixture;
+  fixture.plot.zoomOutUnlinked();
   int announced = 0;
   QObject::connect(&fixture.plot, &PJ::PlotWidget::rectChanged, &fixture.plot, [&announced](PJ::PlotWidget*, QRectF) {
     ++announced;
@@ -177,6 +202,21 @@ TEST(PlotWidgetFirstRowsFit, QuietFitStaysQuietWhenRowsArrive) {
 
   EXPECT_NEAR(fixture.xSpan(), 10.0, 1e-6) << "the plot is still fitted";
   EXPECT_EQ(announced, 0);
+}
+
+// A Zoom Out after an unlinked fit is the user's again: its refit reaches the peers.
+TEST(PlotWidgetFirstRowsFit, ZoomOutAfterAnUnlinkedFitAnnouncesAgain) {
+  FirstRowsFixture fixture;
+  fixture.plot.zoomOutUnlinked();
+  fixture.plot.zoomOut(/*emit_signal=*/false);
+  int announced = 0;
+  QObject::connect(&fixture.plot, &PJ::PlotWidget::rectChanged, &fixture.plot, [&announced](PJ::PlotWidget*, QRectF) {
+    ++announced;
+  });
+
+  fixture.commitSamples({0, 2});
+
+  EXPECT_EQ(announced, 1);
 }
 
 // Filter Apply swaps the only curve for its output, which computes only now.

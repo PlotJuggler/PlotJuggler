@@ -161,7 +161,7 @@ Status PluginPlotTabsController::zoomOut(const QString& plugin_id, const QString
   int owned = 0;
   forEachPlotOwnedBy(plugin_id, tab_id, [&owned](PlotWidget* plot) {
     ++owned;
-    plot->zoomOut(false);
+    plot->zoomOutUnlinked();
   });
   if (owned == 0) {
     return unexpected(
@@ -335,10 +335,11 @@ Status PluginPlotTabsController::addCurve(
     return unexpected("the tab has no plot to draw in");
   }
   // The first curve fits the plot to its data: an empty plot's 0..1 window shows none of it. A plot that already has
-  // curves keeps the caller's view. A null return means the title is taken, i.e. already drawn.
+  // curves keeps the caller's view. A null return means the title is taken, i.e. already drawn. Unlinked, so a series
+  // whose rows arrive later does not move the user's linked plots.
   const bool was_empty = plot->isEmpty();
   if (plot->addCurve(*key) != nullptr && was_empty) {
-    plot->zoomOut(false);
+    plot->zoomOutUnlinked();
   } else {
     plot->replot();
   }
