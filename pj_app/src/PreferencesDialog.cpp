@@ -41,8 +41,8 @@
 #include "pj_runtime/RecordingService.h"
 #ifndef __EMSCRIPTEN__
 #include "pj_runtime/SourceCacheStore.h"
-#include "pj_runtime/UsageCounters.h"
 #endif
+#include "pj_runtime/UsageCounters.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/DualOptionsWidget.h"
 #include "pj_widgets/FileDialog.h"
