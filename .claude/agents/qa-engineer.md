@@ -20,5 +20,7 @@ Rules:
 - Reproduce a finding once more from a fresh `PJQA_HOME` before you report it as a bug.
 
 Finish with a report: the charter, what you covered, then each finding as **Bug**, **UX** or **Tool limit**,
-with steps, expected and actual result, confidence, and the path of its replay script and screenshots. End
+with steps, expected and actual result, confidence, and the path of its replay script and screenshots. A bug's
+replay script follows the skill's "Regression scripts" form (`# app:` header, `expect` / `absent` on what the user
+reads), so it can join `scripts/qa/regressions/` as it is once the bug is fixed. End
 with the number of tool calls you made and anything you could not test.

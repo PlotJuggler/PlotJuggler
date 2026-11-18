@@ -59,7 +59,7 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
 - **Job tools** (`McpServer`, served to every token): `jobs_list`, `job_wait`, `job_kill` (see [Jobs](#jobs)).
 - **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`.
 - **UI tools** (`McpUiTools.cpp`, public token only, and only in a run started with `--mcp-ui-tools`): `ui_tree`,
-  `ui_click`, `ui_drag`, `ui_wheel`, `ui_key`, `ui_type`. See [UI tools](#ui-tools-qa).
+  `ui_click`, `ui_drag`, `ui_wheel`, `ui_key`, `ui_type`, `ui_plot`. See [UI tools](#ui-tools-qa).
 
 `ToolSet::kFull` serves the agent, app and job tools. `ToolSet::kAgentOnly` is used for plugin tokens: `tools/list`
 and the `initialize` instructions leave the app tools out, and calling one gets the unknown-tool error.
@@ -438,6 +438,9 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   reads as stale once another tab sits there. The other tools also take a widget's `objectName`, which is stable (root
   `CLAUDE.md`) and so suits a repro script; a name several visible widgets share (outside the windows a modal dialog
   blocks) is refused rather than resolved to whichever a search finds first.
+- `ui_plot` reads what the canvas paints and `ui_tree` cannot show: per visible plot its dock title, X and Y ranges,
+  curves, and the tracker's value box as the user reads it (rows, empty when hidden). Numbers are fixed at three
+  decimals so a script can `expect` their exact text. Read-only, no settle time.
 - Input goes through `QWindowSystemInterface`, the path a real mouse and keyboard take, so popups, implicit grabs,
   focus on click, shortcuts and double-click synthesis behave as for a user. Points are scaled to native pixels, as a
   platform plugin reports them. It is queued (`AsynchronousDelivery`), and what has no queued form (the wheel,
@@ -447,7 +450,7 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   acted), from a timer, which also fires inside such a dialog's loop. Each call's mouse input is stamped at least a
   double-click interval after the previous call's, so two calls on one spot never make a double-click.
 - They act as the user, so they run under the user's modal dialogs (closing one is often the point):
-  `mcp::runsUnderUsersDialog` says so, and `ui_tree` is one of `mcp::isReadOnlyTool`'s. Their list entries and
+  `mcp::runsUnderUsersDialog` says so, and `ui_tree` and `ui_plot` are among `mcp::isReadOnlyTool`'s. Their list entries and
   that classification live in `McpProtocol`, with the others; `McpUiTools` holds only the driver.
 - Limits: drag-and-drop (`QDrag`: the curve list onto a plot, dock moves) never completes. Offscreen's drag is a
   stub that ignores every drop, and X11's drag loop follows the server's real pointer, which this input never
@@ -461,7 +464,8 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   calls.
 - Running a session: `scripts/qa/pjqa.py` starts an isolated offscreen instance (private HOME, `--mcp-ui-tools`),
   sends it tool calls over HTTP with its discovery token, saves screenshots, and replays scripts of named-widget
-  steps (`scripts/qa/smoke.pjqa`). How an agent explores with it, and what it reports: the `qa-session` skill
+  steps. `pjqa.py regress` replays every script in `scripts/qa/regressions/`, each in a fresh instance started as its
+  `# app:` header says: the bugs QA found, kept as UI-level regressions next to their unit tests. How an agent explores with it, and what it reports: the `qa-session` skill
   (`.claude/skills/qa-session/`) and the `qa-engineer` agent (`.claude/agents/`).
 
 ## The user comes first
