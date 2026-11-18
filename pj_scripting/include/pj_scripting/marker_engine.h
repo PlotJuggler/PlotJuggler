@@ -65,7 +65,8 @@ inline constexpr std::size_t kMaxMarkerOutputBytes = std::size_t{16} << 20;
 ///   GetSeriesNames()                  -- list of available series names
 ///   when(series, condition?)          -- `series` is a name or series(...); `condition` is above(x), below(x),
 ///                                        between(a, b), outside(a, b), equals(x), isTrue(), changes() or a function
-///                                        (v, t, prev, prev_t) -> boolean. Its actions scan the series once:
+///                                        (v, t, prev, prev_t) -> boolean (prev, prev_t nil at the first sample).
+///                                        Its actions scan the series once:
 ///     :backgroundColor(color?, opts?)  -- a region per stretch where the condition holds (no color: the severity
 ///                                        color). Without a condition, `color` is a table value -> color or a
 ///                                        function (v, t) -> color | opts | nil, and a region spans each run of equal

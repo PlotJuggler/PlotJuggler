@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <numbers>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -402,6 +403,12 @@ TEST(MarkerEngine, WhenRejectsBadArguments) {
       {R"(when("mode", 3):event())", "the condition must be"},
       {R"(when("mode", { test = function() return true end }):event())", "the condition must be"},
       {R"(when("mode", above("1")):event())", "the limit must be a number"},
+      {R"(when("mode", equals("1")):event())", "the limit must be a number"},
+      {R"(when("mode", between(5, 1)):event())", "the low limit is above the high limit"},
+      {R"(when("mode", outside(5, 1)):event())", "the low limit is above the high limit"},
+      {R"(when("mode", above(0)).event())", "call event with ':'"},
+      {R"(when("mode", above(0)).backgroundColor("red"))", "call backgroundColor with ':'"},
+      {R"(when("mode", above(0)):event({ minGap = 0/0 }))", "minGap must be a number"},
       {R"(when("mode"):event())", "event needs a condition"},
       {R"(when("mode", changes()):backgroundColor("red"))", "changes() marks moments"},
       {R"(when("mode", above(0)):backgroundColor({ "red" }))", "the color is a string"},
@@ -416,7 +423,59 @@ TEST(MarkerEngine, WhenRejectsBadArguments) {
     std::string err;
     EXPECT_TRUE(runMarkerScript(script, oneSeries("mode", sv), &err).empty()) << script;
     EXPECT_NE(err.find(message), std::string::npos) << script << " -> " << err;
+    // An argument error names the rule's own line, not the prelude's. Colors are checked by the natives where the
+    // prelude emits, so their errors name the prelude.
+    if (std::string_view(message).find("color") == std::string_view::npos) {
+      EXPECT_EQ(err.rfind("rule:1:", 0), 0u) << script << " -> " << err;
+    }
   }
+}
+
+// changes() does not mark every sample of a NaN run (NaN ~= NaN).
+TEST(MarkerEngine, WhenChangesIgnoresNaNRuns) {
+  SeriesView sv;
+  sv.timestamps = {0, 1 * kSec, 2 * kSec, 3 * kSec};
+  sv.values = {0, std::nan(""), std::nan(""), 0};
+  std::string err;
+  const auto markers = runMarkerScript(R"(when("v", changes()):verticalLine())", oneSeries("v", sv), &err);
+  ASSERT_TRUE(err.empty()) << err;
+  ASSERT_EQ(markers.size(), 2u);
+  EXPECT_EQ(markers[0].t_start, static_cast<PJ::Timestamp>(1 * kSec));
+  EXPECT_EQ(markers[1].t_start, static_cast<PJ::Timestamp>(3 * kSec));
+}
+
+// The rules create_markers' template form writes run. A built-in condition costs what a hand-written loop does (the
+// loop and the sample read per sample), where a condition function trips the same budget; each mark costs a few calls
+// more, so the per-sample line style runs under the default budget.
+TEST(MarkerEngine, ThresholdTemplateRulesRunWithinALoopsFuel) {
+  SeriesView sv;
+  for (int i = 0; i < 1000; ++i) {
+    sv.timestamps.push_back(i * 1e6);
+    sv.values.push_back(i % 100 < 50 ? 0.0 : 5.0);
+  }
+  PJ::scripting::BudgetLimits limits;
+  limits.setup_fuel = 3000;
+  const char* rules[] = {
+      R"(when("v", above(2.5)):backgroundColor(nil, {label="exceeds 2.5", severity="warning"}))",
+      R"(when("v", between(2.5, math.huge)):backgroundColor(nil, {label="exceeds 2.5", severity="warning"}))",
+  };
+  for (const char* rule : rules) {
+    std::string err;
+    EXPECT_FALSE(runMarkerScript(rule, oneSeries("v", sv), &err, limits).empty()) << rule;
+    EXPECT_TRUE(err.empty()) << rule << " -> " << err;
+  }
+  std::string err;
+  EXPECT_EQ(
+      runMarkerScript(
+          R"(when("v", between(-math.huge, 2.5)):verticalLine({label="exceeds 2.5", severity="warning", every=true}))",
+          oneSeries("v", sv), &err)
+          .size(),
+      500u);
+  EXPECT_TRUE(err.empty()) << err;
+  EXPECT_TRUE(runMarkerScript(
+                  R"(when("v", function(v) return v >= 2.5 end):backgroundColor())", oneSeries("v", sv), &err, limits)
+                  .empty());
+  EXPECT_NE(err.find("instruction budget"), std::string::npos) << err;
 }
 
 // A closeMarker that fails (caught by the rule) leaves the region open for the next closeMarker.

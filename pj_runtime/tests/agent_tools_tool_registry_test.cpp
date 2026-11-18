@@ -1225,13 +1225,13 @@ TEST(ToolRegistry, CreateMarkersBuildsThresholdRule) {
       dp.last_script,
       "when(\"/imu/x\", above(2.5)):backgroundColor(nil, {label=\"exceeds 2.5\", severity=\"warning\"})\n");
 
-  // style="line" keeps the per-sample vertical markers; a non-strict comparison is a condition function.
+  // style="line" keeps the per-sample vertical markers; a non-strict comparison is an open-ended between().
   r = reg.execute(
       "create_markers", {{"series", "/imu/x"}, {"comparison", ">="}, {"threshold", 2.5}, {"style", "line"}}, ctx);
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(
       dp.last_script,
-      "when(\"/imu/x\", function(v) return v >= 2.5 end):verticalLine({label=\"exceeds 2.5\", "
+      "when(\"/imu/x\", between(2.5, math.huge)):verticalLine({label=\"exceeds 2.5\", "
       "severity=\"warning\", every=true})\n");
 }
 

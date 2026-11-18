@@ -1099,12 +1099,16 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
         "\"line\" (one vertical line per matching sample)");
   }
 
-  // The rule an agent would write itself, so a later raw rule can follow it: above/below for the strict comparisons,
-  // a condition function for the others.
-  const std::string condition = comparison == ">" ? "above(" + threshold_lit + ")"
-                                : comparison == "<"
-                                    ? "below(" + threshold_lit + ")"
-                                    : "function(v) return v " + comparison + " " + threshold_lit + " end";
+  // The rule an agent would write itself, so a later raw rule can follow it. Built-in conditions only: a condition
+  // function costs a call per sample and halves the longest series the fuel budget scans.
+  std::string condition = "between(-math.huge, " + threshold_lit + ")";
+  if (comparison == ">") {
+    condition = "above(" + threshold_lit + ")";
+  } else if (comparison == "<") {
+    condition = "below(" + threshold_lit + ")";
+  } else if (comparison == ">=") {
+    condition = "between(" + threshold_lit + ", math.huge)";
+  }
   std::string rule = "when(\"" + luaStringEscape(series) + "\", " + condition + ")";
   if (style == "region") {
     rule += ":backgroundColor(nil, {label=\"" + label + "\", severity=\"warning\"})\n";

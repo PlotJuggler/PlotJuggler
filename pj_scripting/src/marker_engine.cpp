@@ -403,7 +403,7 @@ end
 
 local function seconds(opts, key)
   local x = opts[key]
-  if x ~= nil and (type(x) ~= "number" or x < 0) then
+  if x ~= nil and (type(x) ~= "number" or not (x >= 0)) then
     error(key .. " must be a number of seconds", 3)
   end
   return (x or 0) * 1e9
@@ -412,6 +412,13 @@ end
 -- A condition holds but no color was given: the region takes its severity color. A private value, so a color
 -- function's own result (true, say) is never mistaken for it.
 local NoColor = {}
+
+-- `when(...).action()` instead of `:action()` passes the first argument as self.
+local function checkSelf(self, name)
+  if type(self) ~= "table" or self.s == nil then
+    error("call " .. name .. " with ':', as in when(...):" .. name .. "(...)", 3)
+  end
+end
 
 -- A condition is data: a kind plus its limits, tested inline in scan's loop, so a built-in condition costs no call
 -- per sample; FN is a rule's own function. CHANGES marks moments, every other kind holds over stretches.
@@ -438,19 +445,26 @@ function below(x)
   return condition(BELOW, x)
 end
 
+local function limits(fn, lo, hi)
+  number(fn, lo)
+  number(fn, hi)
+  if lo > hi then
+    error(fn .. ": the low limit is above the high limit", 3)
+  end
+end
+
 function between(lo, hi)
-  number("between", lo)
-  number("between", hi)
+  limits("between", lo, hi)
   return condition(BETWEEN, lo, hi)
 end
 
 function outside(lo, hi)
-  number("outside", lo)
-  number("outside", hi)
+  limits("outside", lo, hi)
   return condition(OUTSIDE, lo, hi)
 end
 
 function equals(x)
+  number("equals", x)
   return condition(EQUALS, x)
 end
 
@@ -494,7 +508,8 @@ local function scan(self, mapping, every, change)
     elseif kind == ISTRUE then
       r = v ~= 0
     elseif kind == CHANGES then
-      r = prev ~= nil and v ~= prev
+      -- NaN ~= NaN: a run of NaN samples is not a run of changes.
+      r = prev ~= nil and v ~= prev and (v == v or prev == prev)
     else
       r = test(v, t, prev, prev_t) and true or false
     end
@@ -511,6 +526,7 @@ end
 -- value -> color or a function (v, t) -> color | {color=, label=, ...} | nil, and a region spans each run of equal
 -- results. opts.minDuration (s) drops shorter regions.
 local function backgroundColor(self, color, opts)
+  checkSelf(self, "backgroundColor")
   opts = opts or {}
   if type(opts) ~= "table" then
     error("backgroundColor: opts must be a table", 2)
@@ -559,6 +575,7 @@ end
 -- (v, prev) -> string.
 local function marks(name, emit)
   return function(self, opts)
+    checkSelf(self, name)
     opts = opts or {}
     if type(opts) ~= "table" then
       error(name .. ": opts must be a table", 2)
