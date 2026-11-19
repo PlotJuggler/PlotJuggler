@@ -3,8 +3,8 @@
 Pre-commit hook to detect forbidden patterns in source code.
 
 Checks for patterns that should never be committed (e.g., std::getenv, identifiers
-named near/far, which windows.h defines as macros, or path::string(), which narrows through
-the Windows code page).
+named near/far, which windows.h defines as macros, path::string(), which narrows through
+the Windows code page, or QMenu::exec(), which aborts the browser build).
 Exit code: 0 if no violations found, 1 if violations found.
 """
 
@@ -15,9 +15,10 @@ from typing import List, Tuple
 
 CPP_EXTENSIONS = {'.cpp', '.h', '.hpp', '.cxx', '.cc', '.c'}
 
-# Pattern definitions: (regex, message, file_extensions, code_only, skip_tests). A code_only
-# pattern ignores comments and string literals, for words that also occur in prose. A
-# skip_tests pattern does not apply under a tests/ directory.
+# Pattern definitions: (regex, message, file_extensions, code_only, skip_tests, exempt_paths).
+# A code_only pattern ignores comments and string literals, for words that also occur in prose.
+# A skip_tests pattern does not apply under a tests/ directory. A file whose path contains one
+# of the exempt_paths fragments is not checked against the pattern.
 FORBIDDEN_PATTERNS = [
     (
         r'\bstd::getenv\s*\(',
@@ -25,6 +26,7 @@ FORBIDDEN_PATTERNS = [
         CPP_EXTENSIONS,
         False,
         False,
+        (),
     ),
     (
         r'\b(near|far|NEAR|FAR)\b',
@@ -33,6 +35,7 @@ FORBIDDEN_PATTERNS = [
         CPP_EXTENSIONS,
         True,
         False,
+        (),
     ),
     (
         r'\.string\(\)',
@@ -42,6 +45,7 @@ FORBIDDEN_PATTERNS = [
         CPP_EXTENSIONS,
         True,
         True,
+        (),
     ),
     (
         r'(?<![.>])\bpath(?:\s+\w+)?\s*[({][^;]*toStdString\s*\(\)',
@@ -50,6 +54,18 @@ FORBIDDEN_PATTERNS = [
         CPP_EXTENSIONS,
         True,
         True,
+        (),
+    ),
+    (
+        r'(?i:\w*menu\w*)(?:\s*\(\s*\))?\s*(?:\.|->)\s*exec\s*\(|\bQMenu\s*::\s*exec\s*\(|\bQMenu\b[^;]*\)\s*\.\s*exec\s*\(',
+        "QMenu::exec() runs a nested event loop, which the browser (WebAssembly) build cannot "
+        "enter: it aborts the whole application. Heap-allocate the menu, wire each choice "
+        "through a signal handler, and show it with PJ::showOwnedMenu (pj_widgets/OwnedMenu.h); "
+        "the check matches variables named *menu*",
+        CPP_EXTENSIONS,
+        True,
+        False,
+        ('pj_widgets/src/OwnedMenu.cpp', '3rdparty/'),
     ),
 ]
 
@@ -76,10 +92,13 @@ def check_file(filepath: str) -> List[Tuple[int, str, str]]:
 
     # Check if file extension matches any pattern
     in_tests = 'tests' in path.parts
+    posix_path = path.as_posix()
     applicable_patterns = [
         (pattern, message, code_only)
-        for pattern, message, extensions, code_only, skip_tests in FORBIDDEN_PATTERNS
-        if path.suffix in extensions and not (skip_tests and in_tests)
+        for pattern, message, extensions, code_only, skip_tests, exempt_paths in FORBIDDEN_PATTERNS
+        if path.suffix in extensions
+        and not (skip_tests and in_tests)
+        and not any(fragment in posix_path for fragment in exempt_paths)
     ]
 
     if not applicable_patterns:

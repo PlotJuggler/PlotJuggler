@@ -11,7 +11,8 @@ namespace PJ {
 /// Shows a heap-allocated `menu` at `global_pos` and hands it to Qt, which deletes it once it closes. Desktop runs it
 /// modally, so its actions have fired by the time this returns; the browser's Asyncify-free build cannot nest an event
 /// loop and pops it up instead, returning at once. Wire every choice through a signal handler and never read results
-/// back after the call.
+/// back after the call: a handler captures no caller local by reference, since the browser's caller has returned by
+/// the time it fires. The only supported way to show a context menu; `QMenu::exec()` aborts the browser build.
 void showOwnedMenu(QMenu* menu, const QPoint& global_pos);
 
 }  // namespace PJ

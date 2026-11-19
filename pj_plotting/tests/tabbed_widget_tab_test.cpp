@@ -13,9 +13,11 @@
 #include <QDomDocument>
 #include <QFrame>
 #include <QLabel>
+#include <QMenu>
 #include <QPen>
 #include <QPointer>
 #include <QPushButton>
+#include <QTimer>
 #include <QtGlobal>
 #include <string>
 #include <string_view>
@@ -785,6 +787,40 @@ TEST(TabbedPlotDuplicate, IgnoresWidgetTabsAndForeignDockers) {
   EXPECT_EQ(tabbed.duplicateTab(&foreign), nullptr);
   EXPECT_EQ(tabbed.duplicateTab(nullptr), nullptr);
   EXPECT_EQ(tabbed.dockerCount(), 1);
+}
+
+// The tab's right-click menu is one "Duplicate tab" entry. Desktop shows it modally and the browser as a popup, so the
+// choice has to act through the action's signal: nothing may read a result after the menu returns.
+TEST(TabbedPlotDuplicate, TabContextMenuDuplicatesTheTab) {
+  PJ::TabbedPlotWidget tabbed;
+  tabbed.resize(600, 400);
+  tabbed.show();
+  const QList<QFrame*> frames = tabbed.findChildren<QFrame*>(u"plotTabFrame"_s);
+  ASSERT_EQ(frames.size(), 1);
+  PJ::PlotDocker* source = tabbed.dockerAt(0);
+
+  QStringList entries;
+  QTimer choose;
+  choose.setInterval(10);
+  QObject::connect(&choose, &QTimer::timeout, [&]() {
+    auto* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+    if (menu == nullptr) {
+      return;
+    }
+    for (QAction* action : menu->actions()) {
+      entries.push_back(action->text());
+    }
+    menu->actions().value(0)->trigger();
+    menu->close();
+  });
+  choose.start();
+  emit frames.front()->customContextMenuRequested(QPoint(4, 4));
+  choose.stop();
+
+  EXPECT_EQ(entries, QStringList{u"Duplicate tab"_s});
+  ASSERT_EQ(tabbed.dockerCount(), 2);
+  EXPECT_EQ(tabbed.dockerAt(0), source);
+  EXPECT_EQ(tabbed.dockerAt(1), tabbed.currentTab());
 }
 
 // A tab whose content fails to load must not leave the live page it would have reused renamed or re-owned.

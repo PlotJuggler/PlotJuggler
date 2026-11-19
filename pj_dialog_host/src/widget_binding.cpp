@@ -9,6 +9,7 @@
 #include <pj_widgets/HeaderDividerHighlight.h>
 #include <pj_widgets/HeaderResizePolicy.h>
 #include <pj_widgets/MarkerTimeline.h>
+#include <pj_widgets/OwnedMenu.h>
 #include <pj_widgets/RangeSlider.h>
 #include <pj_widgets/SvgUtil.h>
 #include <pj_widgets/ToggleSwitch.h>
@@ -2592,28 +2593,30 @@ void connectWidgetSignals(QWidget* root, WidgetEventCallback callback) {
                 return;  // the selection reply replaced the list: no row to act on
               }
               // Flat QPushButtons in QWidgetActions, the house pattern for a PJMenu
-              // (CurveListPanel::onTreeContextMenu). QWidgetAction buttons do not dismiss the menu on click: it is
-              // closed here and the choice recorded (exec blocks, so capturing by reference is safe).
-              QMenu menu(lw);
-              menu.setObjectName(u"PJMenu"_s);
-              QString chosen_id;
+              // (CurveListPanel::onTreeContextMenu). QWidgetAction buttons do not dismiss the menu on click, so the
+              // handler closes it and acts: the browser's popup returns at once, leaving nothing to read afterwards.
+              auto* menu = new QMenu(lw);
+              menu->setObjectName(u"PJMenu"_s);
               for (const auto& action : actions) {
-                auto* button = new QPushButton(action.label, &menu);
+                auto* button = new QPushButton(action.label, menu);
                 button->setFlat(true);
-                auto* widget_action = new QWidgetAction(&menu);
+                auto* widget_action = new QWidgetAction(menu);
                 widget_action->setDefaultWidget(button);
-                menu.addAction(widget_action);
-                QObject::connect(button, &QPushButton::clicked, &menu, [&menu, &chosen_id, id = action.id]() {
-                  chosen_id = id;
-                  menu.close();
-                });
+                menu->addAction(widget_action);
+                QObject::connect(
+                    button, &QPushButton::clicked, menu, [menu, callback, name, lw, row_index, id = action.id]() {
+                      menu->close();
+                      // The list may have been rebuilt while the menu was open: the row is looked up through its
+                      // persistent index, and a vanished one fires nothing.
+                      QListWidgetItem* row = row_index.isValid() ? lw->itemFromIndex(row_index) : nullptr;
+                      if (row != nullptr) {
+                        callback(
+                            name,
+                            WidgetEventBuilder::itemContextAction(listItemPluginIndex(lw, row), id.toStdString()));
+                      }
+                    });
               }
-              menu.exec(lw->viewport()->mapToGlobal(pos));
-              QListWidgetItem* row = row_index.isValid() ? lw->itemFromIndex(row_index) : nullptr;
-              if (!chosen_id.isEmpty() && row != nullptr) {
-                callback(
-                    name, WidgetEventBuilder::itemContextAction(listItemPluginIndex(lw, row), chosen_id.toStdString()));
-              }
+              PJ::showOwnedMenu(menu, lw->viewport()->mapToGlobal(pos));
             });
       }
       continue;

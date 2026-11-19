@@ -61,6 +61,7 @@
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/MessageBox.h"
+#include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
@@ -1965,18 +1966,9 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
     return;
   }
 
-#ifdef PJ_TARGET_WASM
-  // QMenu::exec() enters a nested event loop, which needs Asyncify in Qt WASM; the production browser build is
-  // Asyncify-free, so the menu is retained until its asynchronous popup closes. Actions and handlers are shared with
-  // desktop.
-  auto* wasm_menu = new QMenu(qwtPlot());
-  wasm_menu->setAttribute(Qt::WA_DeleteOnClose);
-  QMenu& menu = *wasm_menu;
-#else
-  QMenu menu(qwtPlot());
-#endif
-  menu.setObjectName(u"PJMenu"_s);
-  menu.setProperty("categorySeparators", true);
+  auto* menu = new QMenu(qwtPlot());
+  menu->setObjectName(u"PJMenu"_s);
+  menu->setProperty("categorySeparators", true);
   // Refresh icons with the active theme on every popup so the glyphs stay tinted after a theme switch.
   const QString theme = currentTheme();
   action_split_horizontal_->setIcon(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)));
@@ -1989,33 +1981,29 @@ void PlotWidget::canvasContextMenuTriggered(const QPoint& pos) {
   // DataProcessorService) and adds the filtered curve(s) to this plot. Filters are time-series transforms, so the
   // action is hidden on XY plots.
   if (session_ != nullptr && catalog_ != nullptr && !curveList().empty() && !isXYPlot()) {
-    menu.addAction(QIcon(loadSvg(":/resources/svg/function.svg", theme)), tr("Apply Filter..."), this, [this]() {
+    menu->addAction(QIcon(loadSvg(":/resources/svg/function.svg", theme)), tr("Apply Filter..."), this, [this]() {
       launchFilterEditor();
     });
-    addActionCategorySeparator(menu);
+    addActionCategorySeparator(*menu);
   }
 
-  menu.addAction(
+  menu->addAction(
       QIcon(loadSvg(":/resources/svg/copy.svg", theme)), tr("Copy"), this, [this]() { copyWidgetToClipboard(); });
-  QAction* paste_action = menu.addAction(
+  QAction* paste_action = menu->addAction(
       QIcon(loadSvg(":/resources/svg/paste.svg", theme)), tr("Paste"), this, [this]() { pasteWidgetFromClipboard(); });
   paste_action->setEnabled(canPasteWidgetFromClipboard());
-  addActionCategorySeparator(menu);
+  addActionCategorySeparator(*menu);
 
-  menu.addAction(action_split_horizontal_);
-  menu.addAction(action_split_vertical_);
-  addActionCategorySeparator(menu);
-  menu.addAction(action_zoom_out_);
-  menu.addAction(action_zoom_out_horizontal_);
-  menu.addAction(action_zoom_out_vertical_);
-  addActionCategorySeparator(menu);
-  menu.addAction(action_remove_all_curves_);
+  menu->addAction(action_split_horizontal_);
+  menu->addAction(action_split_vertical_);
+  addActionCategorySeparator(*menu);
+  menu->addAction(action_zoom_out_);
+  menu->addAction(action_zoom_out_horizontal_);
+  menu->addAction(action_zoom_out_vertical_);
+  addActionCategorySeparator(*menu);
+  menu->addAction(action_remove_all_curves_);
   action_remove_all_curves_->setEnabled(!curveList().empty());
-#ifdef PJ_TARGET_WASM
-  menu.popup(qwtPlot()->canvas()->mapToGlobal(pos));
-#else
-  menu.exec(qwtPlot()->canvas()->mapToGlobal(pos));
-#endif
+  showOwnedMenu(menu, qwtPlot()->canvas()->mapToGlobal(pos));
 }
 
 void PlotWidget::launchFilterEditor() {
