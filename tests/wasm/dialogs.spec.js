@@ -120,7 +120,7 @@ async function plotTabs(page, consoleMessages) {
   return { count, frames };
 }
 
-test('right-clicking a plot tab shows its menu without aborting, and Duplicate tab adds a tab', async ({ page }) => {
+test('right-clicking a plot tab shows its menu without aborting, and Duplicate tab adds a tab', { tag: '@smoke' }, async ({ page }) => {
   test.setTimeout(60000);
   const errors = [];
   const consoleMessages = [];

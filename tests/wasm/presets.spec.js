@@ -69,7 +69,7 @@ function presetFiles(folder, layout, overrides = {}) {
   return Object.fromEntries(Object.entries(files).filter(([, file]) => file !== undefined));
 }
 
-test('a preset loads its relative sources with no picker, duplicate basenames included', async ({ page }) => {
+test('a preset loads its relative sources with no picker, duplicate basenames included', { tag: '@smoke' }, async ({ page }) => {
   test.setTimeout(180000);
   const errors = [];
   let messages = [];

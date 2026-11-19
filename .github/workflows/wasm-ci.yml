@@ -25,27 +25,17 @@ name: WASM CI
 on:
   workflow_dispatch:
   # Wasm breakage is invisible to the standard PR checks (native CI stays green
-  # when shared code calls a native-only API). Shared-code changes are caught by
-  # the nightly run; PRs run it only when they touch the browser build itself.
-  # Not a required check; ~20-30 min on warm caches. Drafts wait: marking one
-  # ready runs it.
+  # when shared code calls a native-only API, and behaviour changes only the
+  # browser specs pin go unnoticed). Every PR builds the browser app and runs the
+  # @smoke specs; PRs that touch the browser build itself (WASM_PATHS below) and
+  # the nightly run the whole Chromium suite. Not a required check; the build is
+  # ~20 min warm. Drafts wait: marking one ready runs it.
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - '**/wasm/**'
-      - 'tests/wasm/**'
-      - 'cmake/PjWasm*'
-      - 'cmake/wasm_python/**'
-      - 'cmake/wasm_notices/**'
-      # The on-demand Python lane compiles into the browser build.
-      - 'pj_scripting/**'
-      # Packaging, serving and size-gate scripts: this job is their only
-      # consumer, and '**/wasm/**' does not match a file whose name — not
-      # directory — carries the wasm token.
-      - 'scripts/*wasm*'
-      # The sample presets the production and acceptance packages deploy.
-      - 'resources/wasm-presets/**'
-      - '.github/workflows/wasm-ci.yml'
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.claude/**'
   schedule:
     - cron: "0 4 * * *"
 
@@ -434,13 +424,36 @@ jobs:
           done
           curl -fsS -o /dev/null "${PJ_WASM_URL}" || { echo "wasm server failed to start"; exit 1; }
 
+      - name: Choose the suite
+        # A PR that touches the browser build itself runs everything; any other PR the @smoke specs.
+        id: scope
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The paths this job used to be limited to: the browser build, its tests and packaging.
+          WASM_PATHS: '(^|/)wasm/|^tests/wasm/|^cmake/PjWasm|^cmake/wasm_|^pj_scripting/|^scripts/[^/]*wasm|^resources/wasm-presets/|^\.github/workflows/wasm-ci\.yml$'
+        run: |
+          set -euo pipefail
+          full=true
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            files=$(gh pr diff "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --name-only)
+            grep -qE "${WASM_PATHS}" <<<"${files}" || full=false
+          fi
+          echo "full=${full}" >> "${GITHUB_OUTPUT}"
+          echo "Full Chromium suite: ${full}"
+
       - name: Functional browser suite (acceptance package)
         # Three workers (playwright.config.js); the @serial cases run alone below.
+        if: steps.scope.outputs.full == 'true'
         run: npm --prefix tests/wasm run test
 
       - name: Serial cases (acceptance package)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.scope.outputs.full == 'true' }}
         run: npm --prefix tests/wasm run test:serial
+
+      - name: Smoke specs (acceptance package)
+        if: steps.scope.outputs.full != 'true'
+        run: npm --prefix tests/wasm run test:smoke
 
   wasm-firefox:
     # The acceptance package of the wasm job, in Firefox. Firefox has no

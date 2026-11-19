@@ -258,7 +258,7 @@ function latestPlotTextPixels(consoleMessages) {
   return match ? Number(match[1]) : NaN;
 }
 
-test('QRhi WebGL canvas renders an imported scalar curve', async ({ page }) => {
+test('QRhi WebGL canvas renders an imported scalar curve', { tag: '@smoke' }, async ({ page }) => {
   test.setTimeout(90000);
   const errors = [];
   const consoleMessages = [];
@@ -1104,7 +1104,7 @@ test('real rectangle/wheel zoom, Ctrl-drag pan, and reset navigate the QRhi plot
   expect(errors).toEqual([]);
 });
 
-test('Shift-drag seeks playback and moves the QRhi tracker without changing the view', async ({ page }) => {
+test('Shift-drag seeks playback and moves the QRhi tracker without changing the view', { tag: '@smoke' }, async ({ page }) => {
   test.setTimeout(120000);
   const errors = [];
   const consoleMessages = [];
