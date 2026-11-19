@@ -6,6 +6,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_runtime/CatalogModel.h"
@@ -26,7 +27,9 @@ std::function<std::optional<std::string>(DatasetId)> sourceNameOf(CatalogModel& 
 
 }  // namespace
 
-DerivedRuntimeHosts::DerivedRuntimeHosts(SessionManager& session, CatalogModel& catalog, const std::string& plugin_id)
+DerivedRuntimeHosts::DerivedRuntimeHosts(
+    SessionManager& session, CatalogModel& catalog, const std::string& plugin_id,
+    std::function<void()> on_history_change)
     : session_(session),
       source_name_of_(sourceNameOf(catalog)),
       markers_(
@@ -47,7 +50,7 @@ DerivedRuntimeHosts::DerivedRuntimeHosts(SessionManager& session, CatalogModel& 
       transforms_(session.dataProcessorService(), plugin_id),
       on_demand_(
           session.onDemandService(), session.objectStore(), plugin_id, [&catalog] { catalog.rebuildIfChanged(); }),
-      router_(markers_, transforms_, on_demand_) {}
+      router_(markers_, transforms_, on_demand_, std::move(on_history_change)) {}
 
 DerivedRuntimeHosts::~DerivedRuntimeHosts() {
   session_.removeEphemerals(transforms_.previews(), markers_.previews(), on_demand_.previews());

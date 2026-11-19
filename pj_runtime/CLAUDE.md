@@ -122,7 +122,9 @@ Data processors and derived data:
 - `OnDemandService.h` (facade) over `RecipeGraph.h`, `ResultHistory.h`, `InputStager.h`, `NodeScheduler.h`,
   `GridRunner.h`, `SeriesRunner.h`: the on-demand engine.
 - `MarkersRuntimeHost.h`, `DataProcessorsRuntimeHost.h`, `OnDemandRuntimeHost.h`, `DataProcessorsKindRouter.h`,
-  `DerivedRuntimeHosts.h`: the per-plugin `pj.data_processors.v1` bridges, the kind router and their owner.
+  `DerivedRuntimeHosts.h`: the per-plugin `pj.data_processors.v1` bridges, the kind router and their owner; the
+  router reports a plugin's change to a history-owned node (`on_history_change`), which the shell records as an undo
+  step.
 - `DatasetQualifiedName.h`: `dataset_source:topic/field` lookups; not a persistent identity.
 - `DerivedObjects.h`: layout persistence and the one restore of all derived recipes across the engines.
 - `CustomTopicsPolicy.h`: why the Custom Topics editor may not delete a row.

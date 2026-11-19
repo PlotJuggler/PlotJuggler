@@ -1468,6 +1468,9 @@ class MainWindow : public QMainWindow {
   // Trailing edge for scene docks' workspaceChanged: scrubbers emit per drag tick, and each undo push serializes
   // the whole workspace.
   QTimer scene_undo_debounce_;
+  // Trailing edge, from the event loop, for a plugin's change to a history-owned derived node: one undo step per
+  // burst, so an Apply that creates several nodes is undone at once.
+  QTimer plugin_history_step_;
   // A progressive restore's timeline state, applied at the drain once the reloaded datasets' paths are
   // registered. Empty outside a progressive restore.
   QList<layout_xml::DataSourceRef> pending_timeline_sources_;

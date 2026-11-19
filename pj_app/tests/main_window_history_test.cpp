@@ -43,7 +43,11 @@
 #include "dataset_test_helpers.h"
 #include "pj_base/builtin/point_cloud.hpp"
 #include "pj_base/builtin/point_cloud_codec.hpp"
+#include "pj_base/plugin_data_api.h"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_base/sdk/plugin_data_api.hpp"
+#include "pj_base/sdk/service_registry.hpp"
+#include "pj_base/sdk/service_traits.hpp"
 #include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
@@ -83,6 +87,10 @@ class MainWindowHistoryTestPeer {
 
   static void recordDiscreteState(MainWindow& window) {
     window.onUndoableChange(/*force_new_state=*/true);
+  }
+
+  static void setApplyingState(MainWindow& window, bool applying) {
+    window.applying_state_ = applying;
   }
 
   static void resetHistory(MainWindow& window) {
@@ -1630,6 +1638,83 @@ TEST_F(MainWindowHistoryFixture, UndoThatChangesASlowRuleDrawsItsRestoredMarkers
   ASSERT_NE(engine.firstBinding(recipe.id), nullptr);
   EXPECT_EQ(engine.firstBinding(recipe.id)->script, recipe.script) << "the snapshot's rule is installed";
   EXPECT_EQ(pj_test::markerTimes(app, a, output, recipe.id), baseline) << "its markers are drawn when the undo returns";
+}
+
+// A persistent rule a plugin creates through pj.data_processors.v1 (the Marker Editor's Apply) is its own undo step:
+// undoing a later edit keeps it, undoing once more removes it. Its preview and a history-exempt rule are no step.
+TEST_F(MainWindowHistoryFixture, APluginsPersistentRuleIsItsOwnUndoStep) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  PJ::BatchEngine& engine = app.sessionManager().batchEngine();
+  ASSERT_NE(addScalarDataset(app, "a", "/sensor", 100 * kSecond, 110 * kSecond), 0U);
+  app.catalogModel().rebuildFromDatastore();
+  PJ::PlotWidget* plot = ensureCurrentPlot(window);
+  ASSERT_NE(plot, nullptr);
+  plot->setStateId(u"before-apply"_s);
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  const std::shared_ptr<PJ::ToolboxPanelSession> plugin = window.buildAgentSession(u"marker-plugin"_s, u"Markers"_s);
+  ASSERT_NE(plugin, nullptr);
+  const auto service = PJ::sdk::ServiceRegistry(PJ::MainWindow::toolboxSessionServices(*plugin))
+                           .get<PJ::sdk::DataProcessorsHostService>();
+  ASSERT_TRUE(service.has_value());
+  const std::vector<std::string_view> inputs{"/sensor/value"};
+  const std::string script = sensorRule(0).script;
+  const std::size_t before = PJ::MainWindowHistoryTestPeer::undoSize(window);
+
+  ASSERT_TRUE(
+      service->createMarkers("preview", inputs, "", script, "{}", PJ_DATA_PROCESSOR_FLAG_EPHEMERAL).has_value());
+  ASSERT_TRUE(
+      service
+          ->createMarkers(
+              "exempt", inputs, PJ::sdk::kGlobalMarkerTopic, script, "{}", PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT)
+          .has_value());
+  QTest::qWait(50);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), before) << "a preview or an exempt rule is no step";
+  ASSERT_TRUE(service->createMarkers("rule", inputs, PJ::sdk::kGlobalMarkerTopic, script, "{}").has_value());
+  ASSERT_NE(engine.firstBinding("marker-plugin/rule"), nullptr);
+  EXPECT_TRUE(QTest::qWaitFor([&] { return PJ::MainWindowHistoryTestPeer::undoSize(window) == before + 1; }, 1000))
+      << "the create is an undo step";
+  plot->setStateId(u"zoomed"_s);
+  PJ::MainWindowHistoryTestPeer::recordDiscreteState(window);
+
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_NE(engine.firstBinding("marker-plugin/rule"), nullptr) << "undoing the later edit keeps the rule";
+  PJ::MainWindowHistoryTestPeer::undo(window);
+  EXPECT_EQ(engine.firstBinding("marker-plugin/rule"), nullptr) << "undoing the create removes it";
+  EXPECT_NE(engine.firstBinding("marker-plugin/exempt"), nullptr) << "history has no authority over an exempt rule";
+  PJ::MainWindowHistoryTestPeer::redo(window);
+  EXPECT_NE(engine.firstBinding("marker-plugin/rule"), nullptr);
+}
+
+// The creates a plugin makes in one event-loop turn (an Apply writing several rules) are one undo step; one made
+// while a restore applies belongs to that restore and is none.
+TEST_F(MainWindowHistoryFixture, APluginsBurstIsOneUndoStepAndItsCreateDuringARestoreIsNone) {
+  constexpr PJ::Timestamp kSecond = 1'000'000'000LL;
+  PJ::MainWindow& window = mainWindow();
+  PJ::AppSession& app = PJ::MainWindowHistoryTestPeer::appSession(window);
+  ASSERT_NE(addScalarDataset(app, "a", "/sensor", 100 * kSecond, 110 * kSecond), 0U);
+  app.catalogModel().rebuildFromDatastore();
+  PJ::MainWindowHistoryTestPeer::resetHistory(window);
+  const std::shared_ptr<PJ::ToolboxPanelSession> plugin = window.buildAgentSession(u"marker-plugin"_s, u"Markers"_s);
+  ASSERT_NE(plugin, nullptr);
+  const auto service = PJ::sdk::ServiceRegistry(PJ::MainWindow::toolboxSessionServices(*plugin))
+                           .get<PJ::sdk::DataProcessorsHostService>();
+  ASSERT_TRUE(service.has_value());
+  const std::vector<std::string_view> inputs{"/sensor/value"};
+  const std::string script = sensorRule(0).script;
+  const std::size_t before = PJ::MainWindowHistoryTestPeer::undoSize(window);
+
+  ASSERT_TRUE(service->createMarkers("first", inputs, PJ::sdk::kGlobalMarkerTopic, script, "{}").has_value());
+  ASSERT_TRUE(service->createMarkers("second", inputs, PJ::sdk::kGlobalMarkerTopic, script, "{}").has_value());
+  QTest::qWait(50);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), before + 1) << "one burst, one step";
+
+  PJ::MainWindowHistoryTestPeer::setApplyingState(window, true);
+  ASSERT_TRUE(service->createMarkers("restored", inputs, PJ::sdk::kGlobalMarkerTopic, script, "{}").has_value());
+  PJ::MainWindowHistoryTestPeer::setApplyingState(window, false);
+  QTest::qWait(50);
+  EXPECT_EQ(PJ::MainWindowHistoryTestPeer::undoSize(window), before + 1) << "a create inside a restore is no step";
 }
 
 TEST_F(MainWindowHistoryFixture, ProgressiveDrainRestoresOffsetsGlobalMarkersAndHiddenScopeRows) {

@@ -203,5 +203,42 @@ TEST(DataProcessorsKindRouterRealBackendsTest, ListHidesEphemeralRecipesButConfi
   EXPECT_FALSE(view.recipeOf("absent").has_value());
 }
 
+// The history hears of every create and remove of a node it owns, of each kind; never of a preview's or an exempt
+// node's, nor of a refused call.
+TEST(DataProcessorsKindRouterRealBackendsTest, HistoryHearsOfPersistentCreatesAndOfRemoves) {
+  Session fx;
+  int changes = 0;
+  DerivedRuntimeHosts hosts(fx.session, fx.app.catalogModel(), "tool", [&changes] { ++changes; });
+  ServiceRegistryBuilder services;
+  const sdk::DataProcessorsHostView view = bind(hosts, services);
+  createTransformPreview(view, "transform_preview");
+  createMarkerPreview(view, "marker_preview");
+  ASSERT_TRUE(view.createV2(onDemand("probe_preview", PJ_DATA_PROCESSOR_FLAG_EPHEMERAL)).has_value());
+  ASSERT_TRUE(view.createV2(onDemand("exempt", PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT)).has_value());
+  EXPECT_FALSE(view.createV2(onDemand("transform_preview")).has_value()) << "an id of another kind is refused";
+  EXPECT_EQ(changes, 0);
+
+  const std::vector<std::string_view> inputs{"/sensor"};
+  const std::vector<std::string_view> outputs{"out_kept"};
+  ASSERT_TRUE(view.createTransform("kept", inputs, outputs, passThrough("kept"), "{}").has_value());
+  const std::vector<std::string_view> marker_inputs{"/sensor/value"};
+  ASSERT_TRUE(view.createMarkers("kept_rule", marker_inputs, "__global__", kMarkerScript, "{}").has_value());
+  ASSERT_TRUE(view.createV2(onDemand("kept_probe")).has_value());
+  ASSERT_TRUE(
+      view.createMarkers(
+              "exempt_rule", marker_inputs, "__global__", kMarkerScript, "{}", PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT)
+          .has_value());
+  EXPECT_EQ(changes, 3);
+
+  for (const char* id : {"transform_preview", "marker_preview", "probe_preview", "exempt", "exempt_rule"}) {
+    ASSERT_TRUE(view.remove(id).has_value()) << id;
+  }
+  EXPECT_EQ(changes, 3) << "a preview's or an exempt node's remove is no history change";
+  for (const char* id : {"kept", "kept_rule", "kept_probe"}) {
+    ASSERT_TRUE(view.remove(id).has_value()) << id;
+  }
+  EXPECT_EQ(changes, 6);
+}
+
 }  // namespace
 }  // namespace PJ
