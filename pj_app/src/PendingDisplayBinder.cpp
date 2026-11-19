@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "pj_custom_widgets/CustomWidgetDockWidget.h"
-#include "pj_plotting/LogDockWidget.h"
+#include "pj_log/LogDockWidget.h"
 #include "pj_plotting/PlotXml.h"
 #include "pj_runtime/TopicDemandTracker.h"
 using namespace Qt::StringLiterals;

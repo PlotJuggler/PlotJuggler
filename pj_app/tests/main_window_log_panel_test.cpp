@@ -18,14 +18,14 @@
 #include "dataset_test_helpers.h"
 #include "pj_base/builtin/log_codec.hpp"
 #include "pj_datastore/object_store.hpp"
+#include "pj_log/LogDockWidget.h"
+#include "pj_log/LogView.h"
 #include "pj_plotting/DockWidget.h"
-#include "pj_plotting/LogDockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
-#include "pj_widgets/LogView.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
 using namespace Qt::StringLiterals;

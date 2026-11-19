@@ -1,19 +1,19 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-#include "pj_plotting/LogDockWidget.h"
+#include "pj_log/LogDockWidget.h"
 
 #include <QStringList>
 #include <QVBoxLayout>
 #include <algorithm>
 
 #include "pj_base/builtin/log.hpp"
+#include "pj_log/LogView.h"
 #include "pj_runtime/CanonicalObjectPayload.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
-#include "pj_widgets/LogView.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -114,7 +114,12 @@ bool LogDockWidget::addTopic(ObjectTopicId topic_id) {
   }
   const ObjectTopicDescriptor descriptor = objects.descriptor(topic_id);
   Topic& topic = topics_.emplace_back(
-      Topic{.id = topic_id, .dataset = descriptor.dataset_id, .name = QString::fromStdString(descriptor.topic_name)});
+      Topic{
+          .id = topic_id,
+          .dataset = descriptor.dataset_id,
+          .name = QString::fromStdString(descriptor.topic_name),
+          .cursor = {},
+          .identity = {}});
   view_->setTopicLabel(topic_id.id, topic.name);
   loadTopic(topic, /*full=*/true);
   emit topicsChanged();

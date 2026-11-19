@@ -14,12 +14,12 @@
 #include "pj_base/builtin/log_codec.hpp"
 #include "pj_base/dataset.hpp"
 #include "pj_datastore/engine.hpp"
-#include "pj_plotting/LogDockWidget.h"
+#include "pj_log/LogDockWidget.h"
+#include "pj_log/LogView.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
-#include "pj_widgets/LogView.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {

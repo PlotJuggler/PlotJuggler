@@ -144,8 +144,7 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
 
 ## Docks, drops and tabs
 
-- **`DockWidget`** hosts one plot or one object widget (a scene, a Custom Widget, the state-transitions strip, a Log
-  panel) in an
+- **`DockWidget`** hosts one plot or one object widget (a scene, a Custom Widget, the state-transitions strip) in an
   ADS dock; `PlotDocker` owns the ADS manager and the dock tree of one tab; `TabbedPlotWidget` owns the tab strip.
   `pj_plotting` knows no scene families: placeholder icons and drops go to the shell through `objectFamilyRequested`
   and the object-widget factory (one factory for drops, with a seed, and layout restore, with the saved XML tag as the
@@ -155,17 +154,6 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
   refuses object topics. An advertised (not yet subscribed) placeholder topic fabricates no curve:
   `placeholderTopicDropped` reaches the shell, which registers demand and a pending bind. A discrete-only drop on an
   empty tile materializes the state-transitions strip.
-- **Log panel.** `LogDockWidget` shows the `kLog` topics dropped on it in one `LogView`, merged by time (equal times
-  order by topic id). Rows carry display-axis seconds (`rawToDisplaySecondsAtOrAfter` of the entry's store stamp, so a
-  seek to a row reveals it); the detail pane also shows the log's own stamp. Entries landing (dataPublished,
-  ingestEnded, derivedEntriesPublished) bring an update at once, then at most one per `kEntriesLandedIntervalMs`: each
-  topic appends what `drainNewSince` returns after its cursor, or is re-read when its content was rewritten (a late
-  entry, a merge). A display-offset change re-reads every topic. A topic that leaves the store (removed, reparented by
-  a merge) goes back to pending and binds again by identity. The tracker tints the row at or before it; a double click
-  while paused seeks the playback. The shell sets the app-wide `TimeLabelFormat` on every panel. Persistence: the
-  filters, enabled levels, hidden topics and future-rows choice as attributes and children of `<log>`, and one
-  `<topic>` per topic with `dataset_id`, `dataset_source`, `dataset_path` and `topic`; unresolved ones are written back
-  verbatim and retried on catalog and source-path changes.
 - **Fullscreen.** Maximizing a dock hides every other open dock through ADS' `toggleView(false)` (which collapses the
   emptied splitter branches so the survivor reflows; a raw `setVisible(false)` strands it in nested layouts) and
   records exactly the docks it hid, so exiting restores only those. Splitter sizes are captured on entry and written by
@@ -376,5 +364,3 @@ The performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performance
 - `TabbedPlotWidget.cpp` still defines `HorizontalScrollArea`, which the tab strip no longer uses.
 - A curve restored from a layout whose data has not arrived yet does not reserve its saved colour (it waits in
   `PendingDisplayBinder`, which the plot cannot see), so a curve added to that plot meanwhile can take the same colour.
-- The Log panel keeps the rows a retention eviction removed from the store, and holds every row in memory up to
-  `LogStore`'s capacity, dropping the oldest beyond it.

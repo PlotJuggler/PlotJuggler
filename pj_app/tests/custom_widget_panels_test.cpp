@@ -259,17 +259,24 @@ TEST_F(CustomWidgetPagesTest, AnAmpersandInANameShowsLiterally) {
   EXPECT_EQ(menu.actions().first()->text(), u"Speed && Torque (from Speed && Co)"_s);
 }
 
-TEST(SceneObjectClassificationTest, OnlyTopicsACustomWidgetAloneShowsGetABadge) {
+TEST(SceneObjectClassificationTest, BadgesMarkLogsAndTopicsOnlyACustomWidgetShows) {
   for (int value = 0; value <= static_cast<int>(PJ::sdk::BuiltinObjectType::kPlotMarkers); ++value) {
     const auto type = static_cast<PJ::sdk::BuiltinObjectType>(value);
-    const QString icon = PJ::customWidgetObjectIcon(type);
-    EXPECT_EQ(icon.isEmpty(), !PJ::isCustomWidgetObjectType(type)) << value;
+    const QString icon = PJ::objectTypeBadgeIcon(type);
+    if (type == PJ::sdk::BuiltinObjectType::kLog) {
+      EXPECT_EQ(icon, u":/resources/svg/view_list.svg"_s);
+    } else if (PJ::isCustomWidgetObjectType(type)) {
+      EXPECT_EQ(icon, u":/resources/svg/custom_widget.svg"_s) << value;
+    } else {
+      EXPECT_TRUE(icon.isEmpty()) << value;
+    }
     if (!icon.isEmpty()) {
       EXPECT_TRUE(QFile::exists(icon)) << icon.toStdString();
     }
   }
-  EXPECT_EQ(PJ::customWidgetObjectIcon(PJ::sdk::BuiltinObjectType::kLog), u":/resources/svg/view_list.svg"_s);
-  EXPECT_TRUE(PJ::customWidgetObjectIcon(PJ::sdk::BuiltinObjectType::kPointCloud).isEmpty()) << "a 3D topic";
+  EXPECT_TRUE(PJ::isDroppableObjectType(PJ::sdk::BuiltinObjectType::kLog)) << "a Log panel shows it";
+  EXPECT_TRUE(PJ::objectTypeBadgeIcon(PJ::sdk::BuiltinObjectType::kNone).isEmpty());
+  EXPECT_TRUE(PJ::objectTypeBadgeIcon(PJ::sdk::BuiltinObjectType::kPointCloud).isEmpty()) << "a 3D topic";
 }
 
 TEST_F(CustomWidgetPagesTest, ConfigPagePaintsOneControlPerSettingType) {

@@ -34,6 +34,7 @@ PJ4/
 ├── pj_widgets/        # reusable Qt widgets and UI helpers
 ├── pj_plotting/       # Qwt plotting widget family
 ├── pj_custom_widgets/ # Custom Widget panel: a dock hosting a Widget plugin's Qt widget
+├── pj_log/            # Log panel: log topics merged by time in a filterable list
 ├── pj_app/            # main window shell
 ├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample presets
 ├── raster/            # helper/ executable + ipc/ wire contract
@@ -42,10 +43,10 @@ PJ4/
 └── docs/              # cross-cutting designs and guides
 ```
 
-The widget families (`pj_plotting`, `pj_custom_widgets`, `pj_scene2D/widgets` via the `pj_scene2d_widgets` target,
-`pj_scene3D/widgets` via `pj_scene3d_widgets`) never depend on each other. Shared Qt controls live in `pj_widgets`;
-shared runtime state flows through the `IDataWidget` contract in `pj_runtime`. Plots, Scene2D and Scene3D render
-through QRhi (OpenGL, D3D11, Metal, WebGL2; `PJ_GRAPHICS_API` overrides the backend at run time).
+The widget families (`pj_plotting`, `pj_custom_widgets`, `pj_log`, `pj_scene2D/widgets` via the `pj_scene2d_widgets`
+target, `pj_scene3D/widgets` via `pj_scene3d_widgets`) never depend on each other. Shared Qt controls live in
+`pj_widgets`; shared runtime state flows through the `IDataWidget` contract in `pj_runtime`. Plots, Scene2D and Scene3D
+render through QRhi (OpenGL, D3D11, Metal, WebGL2; `PJ_GRAPHICS_API` overrides the backend at run time).
 
 ### Placement rules
 
@@ -75,6 +76,8 @@ boundaries, ask before proceeding and suggest the closest fit.
 - `pj_custom_widgets/`: the Custom Widget panel family: widget-free logic in `core/`, the dock in `widget/`, tests in
   `tests/`. Plugin-created objects are destroyed synchronously: a deferred delete would let the session or the
   event loop reach them after their plugin handle is released.
+- `pj_log/`: the Log panel family: widget-free logic (the row store and filter, Qt-free) in `core/`, the view and the
+  dock in `widget/`, tests in `tests/`.
 - `pj_marketplace/`: extension registry, download, install/manage services and UI.
 - `pj_dialog_host/`: host for plugin-provided dialogs. App dialogs stay in `pj_app`; reusable dialog controls in
   `pj_widgets`.

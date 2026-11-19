@@ -134,7 +134,7 @@
       "name": "Log panel",
       "summary": "Show log messages (for example ROS /rosout) as a list in time order, several topics merged. Filter by level, source, category and text; the message at the playback time is highlighted, later ones are greyed or hidden, and a double click jumps the playback to a message.",
       "entry_point": "Empty plot area: click the Log button, then drag a log topic from the Datasets panel onto it; or drop a log topic straight onto an empty plot area",
-      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizLog; pj_widgets/src/LogView.ui#Filter messages...; pj_plotting/CLAUDE.md#LogDockWidget",
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizLog; pj_log/widget/src/LogView.ui#Filter messages...; pj_log/CLAUDE.md#LogDockWidget",
       "verified": "not checked by hand in the app; pj_app GUI tests cover the button and the drop onto an empty plot area"
     },
     {

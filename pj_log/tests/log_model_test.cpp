@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-#include "pj_widgets/LogModel.h"
+#include "pj_log/LogTableModel.h"
 
 namespace {
 

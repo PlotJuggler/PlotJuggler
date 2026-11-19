@@ -217,6 +217,7 @@ target_link_libraries(pj_app_shell PUBLIC
     pj_widgets
     pj_plotting
     pj_custom_widgets
+    pj_log
     pj_scripting
     pj_scene_common
     $<$<TARGET_EXISTS:pj_scene2d_widgets>:pj_scene2d_widgets>

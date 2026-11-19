@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-#include "pj_widgets/LogView.h"
+#include "pj_log/LogView.h"
 #include "pj_widgets/Search.h"
 
 namespace {

@@ -20,7 +20,6 @@ pj_add_test_runner(pj_plotting_widget_tests
         state_transitions_controller_test.cpp
         # GUI test: dock-widget persistence + drop seeding (QApplication).
         state_transitions_dock_widget_test.cpp
-        log_dock_widget_test.cpp
         dock_widget_placeholder_test.cpp
         dock_widget_context_menu_test.cpp
         dock_widget_discard_test.cpp

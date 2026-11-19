@@ -586,7 +586,7 @@ end-to-end runs registered from `pj_custom_widgets/tests/E2E.cmake`.
 
 ## Log panels
 
-`MainWindow::makeSceneDock` builds the `"log"` kind (`LogDockWidget` from `pj_plotting`, the `<log>` layout tag),
+`MainWindow::makeSceneDock` builds the `"log"` kind (`LogDockWidget` from `pj_log`, the `<log>` layout tag),
 counted as `panel.log`, given the app-wide time format and wired to the undo debounce,
 `TopicDemandController::registerLogDock` and the pending-binding rebuild. `sceneKindForObjectType` routes `kLog` to
 it, so a log topic dropped on an empty area opens a Log panel, and the placeholder's Log button
