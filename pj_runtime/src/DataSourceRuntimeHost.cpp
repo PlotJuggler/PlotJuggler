@@ -341,6 +341,11 @@ std::string DataSourceRuntimeHost::lastReportedProblem() const {
   return last_reported_problem_;
 }
 
+void DataSourceRuntimeHost::forgetReportedProblem() {
+  std::lock_guard lock(stop_failure_mu_);
+  last_reported_problem_.clear();
+}
+
 std::string DataSourceRuntimeHost::lastError() const {
   if (auto failure = stopFailure(); !failure.empty()) {
     return failure;

@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -318,9 +319,12 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
           {{.name = "value", .value = static_cast<double>(index)}});
     };
 
-    if (suffix_ == "cancel") {
-      if (auto status = append(1); !status) {
-        return fail(status.error());
+    // "cancel-empty" parks like "cancel", before writing any row.
+    if (suffix_ == "cancel" || suffix_ == "cancel-empty") {
+      if (suffix_ == "cancel") {
+        if (auto status = append(1); !status) {
+          return fail(status.error());
+        }
       }
       if (!waitForFanoutProbeCancelRelease()) {
         return fail("timed out waiting for the GUI cancellation rendezvous");
@@ -492,6 +496,11 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
     park_ = object.value(u"park"_s).toBool(false);
     extra_rows_ = object.value(u"extra_rows"_s).toInt(0);
     warning_ = object.value(u"warning"_s).toString().toStdString();
+    stop_failure_ = object.value(u"stop_failure"_s).toString().toStdString();
+    object_only_ = object.value(u"object_only"_s).toBool(false);
+    if (const QString config_warning = object.value(u"config_warning"_s).toString(); !config_warning.isEmpty()) {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, config_warning.toStdString());
+    }
     return PJ::okStatus();
   }
 
@@ -511,6 +520,29 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
     }
     if (!warning_.empty()) {
       runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, warning_);
+    }
+    if (!stop_failure_.empty()) {
+      runtimeHost().requestStop(PJ::DataSourceState::kFailed, stop_failure_);
+      return PJ::okStatus();
+    }
+    if (object_only_) {
+      const auto* object_host = objectWriteHost();
+      if (object_host == nullptr) {
+        return fail("no object write host");
+      }
+      auto object_topic = object_host->registerTopic("reload_probe/blob", "{}");
+      if (!object_topic) {
+        return fail(object_topic.error());
+      }
+      const std::vector<std::uint8_t> bytes{1, 2, 3};
+      if (auto status = object_host->pushOwned(
+              *object_topic, PJ::Timestamp{100}, PJ::Span<const std::uint8_t>(bytes.data(), bytes.size()));
+          !status) {
+        return fail(status.error());
+      }
+      runtimeHost().progressFinish();
+      runtimeHost().requestStop(PJ::DataSourceState::kStopped, "import complete");
+      return PJ::okStatus();
     }
     auto topic = writeHost().ensureTopic("reload_probe/value");
     if (!topic) {
@@ -585,8 +617,10 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
   double first_value_ = 10.0;
   int rows_ = 3;
   bool park_ = false;
-  int extra_rows_ = 0;   // rows of a second topic, "reload_probe/extra", at the same stamps
-  std::string warning_;  // reported as a WARNING before any row
+  int extra_rows_ = 0;        // rows of a second topic, "reload_probe/extra", at the same stamps
+  std::string warning_;       // reported as a WARNING before any row
+  std::string stop_failure_;  // a FAILED request_stop, then success with no row
+  bool object_only_ = false;  // one object entry, no scalar topic
   PJ::DataSourceState state_ = PJ::DataSourceState::kIdle;
 };
 
@@ -4439,10 +4473,16 @@ TEST_F(FileLoaderTest, FanoutEntryThatYieldsNoDataFailsAndLeavesNoDataset) {
   const PJ::LoadHints hints =
       fanoutProbeHints(uR"({"__pj_fanout":["{\"display_suffix\":\"empty\"}","{\"display_suffix\":\"after\"}"]})"_s);
   IngestLifecycleRecorder ingest_lifecycle(session());
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
 
   ASSERT_TRUE(loadAndWait(path, hints));
   pj_app_test::flushQueuedEvents(2);
 
+  const auto failed = capture.withId(u"data-source-load-failed"_s);
+  ASSERT_EQ(failed.size(), 1u);
+  EXPECT_TRUE(failed[0].message.contains(u"partial/empty"_s)) << failed[0].message.toStdString();
+  EXPECT_TRUE(failed[0].message.contains(u"loaded no data"_s)) << failed[0].message.toStdString();
   const auto datasets = session().createReader().listDatasets();
   ASSERT_EQ(datasets.size(), 1u) << "the empty entry left a dataset behind";
   const PJ::DatasetInfo* kept = session().dataEngine().getDataset(datasets.front());
@@ -4453,6 +4493,72 @@ TEST_F(FileLoaderTest, FanoutEntryThatYieldsNoDataFailsAndLeavesNoDataset) {
   const auto* ended = ingest_lifecycle.endFor(began->token);
   ASSERT_NE(ended, nullptr);
   EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kFailed);
+}
+
+// A plugin that says why through a FAILED request_stop, then returns success with no row: that is the reason. A
+// warning from loadConfig (before start) is not.
+TEST_F(FileLoaderTest, LoadThatYieldsNoDataGivesThePluginsStopReasonNotAConfigWarning) {
+  ASSERT_TRUE(installReloadProbe());
+  const QString path = makeMockFile(u"why.reloadprobe"_s);
+  QString reason;
+  EXPECT_FALSE(
+      pj_app_test::loadAndWait(
+          *loader_, path,
+          reloadProbeHints(uR"({"rows":0,"config_warning":"stale config hint","stop_failure":"no channel matched"})"_s),
+          nullptr, &reason));
+  EXPECT_TRUE(reason.contains(u"no channel matched"_s)) << reason.toStdString();
+  EXPECT_FALSE(reason.contains(u"stale config hint"_s)) << reason.toStdString();
+}
+
+// An import with object entries and no scalar row holds data: it loads.
+TEST_F(FileLoaderTest, ObjectOnlyImportLoads) {
+  ASSERT_TRUE(installReloadProbe());
+  const QString path = makeMockFile(u"objects.reloadprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"object_only":true})"_s)));
+  const auto datasets = session().createReader().listDatasets();
+  ASSERT_EQ(datasets.size(), 1u);
+  EXPECT_EQ(session().objectStore().listTopics(datasets.front()).size(), 1u);
+}
+
+// Stop and Keep before the first row keeps nothing: a discard, reported as a cancel, with no dataset left.
+TEST_F(FileLoaderTest, StopAndKeepBeforeAnyRowIsADiscard) {
+  ASSERT_TRUE(installReloadProbe());
+  const QString path = makeMockFile(u"stopped.reloadprobe"_s);
+  LoadFinishedRecorder terminals(*loader_);
+  const quint64 ticket = loader_->loadFileTicketed(
+      PJ::LoadInput::fromNativePath(path), nullptr, reloadProbeHints(uR"({"rows":0,"park":true})"_s));
+  ASSERT_NE(ticket, 0u);
+  ASSERT_TRUE(pj_app_test::pumpUntil([] { return reloadProbeParked(); }));
+  loader_->cancelCurrent(/*keep_partial=*/true);
+  ASSERT_TRUE(pj_app_test::pumpUntil([&] { return terminals.countForTicket(ticket) != 0; }));
+
+  EXPECT_EQ(terminals.events.front().outcome, PJ::LoadOutcome::kCancelled);
+  EXPECT_EQ(terminals.events.front().dataset_id, 0u);
+  EXPECT_TRUE(session().createReader().listDatasets().empty());
+}
+
+// After an entry that yielded nothing, Stop and Keep on the next entry before its first row is still the user's stop:
+// a cancel, not an all-entries-failed load.
+TEST_F(FileLoaderTest, FanoutStopAndKeepAfterAnEmptyEntryIsACancel) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"stopped.fanoutprobe"_s);
+  const PJ::LoadHints hints = fanoutProbeHints(
+      uR"({"__pj_fanout":["{\"display_suffix\":\"empty\"}","{\"display_suffix\":\"cancel-empty\"}"]})"_s);
+  LoadFinishedRecorder terminals(*loader_);
+  const auto cancel_connection = QObject::connect(
+      loader_.get(), &PJ::FileLoader::ingestStarted, loader_.get(), [this](const QString& title, int, int, bool) {
+        if (title == u"fanout-probe:cancel-empty"_s) {
+          loader_->cancelCurrent(/*keep_partial=*/true);
+          releaseFanoutProbeCancelEntry();
+        }
+      });
+  (void)loadAndWait(path, hints);
+  QObject::disconnect(cancel_connection);
+  pj_app_test::flushQueuedEvents(2);
+
+  ASSERT_EQ(terminals.events.size(), 1u);
+  EXPECT_EQ(terminals.events.front().outcome, PJ::LoadOutcome::kCancelled);
+  EXPECT_TRUE(session().createReader().listDatasets().empty());
 }
 
 // A drop from a file manager can mix files with folders and links; only the

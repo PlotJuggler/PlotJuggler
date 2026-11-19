@@ -194,9 +194,12 @@ class DataSourceRuntimeHost {
   // written unsynchronized on the stream thread.
   [[nodiscard]] std::string lastError() const;
 
-  // The last WARNING or ERROR text the plugin passed to report_message, empty if none: why an import that succeeded
-  // may still have produced nothing. Any thread.
+  // The last WARNING or ERROR text the plugin passed to report_message since forgetReportedProblem(), empty if none:
+  // why an import that succeeded may still have produced nothing. Any thread.
   [[nodiscard]] std::string lastReportedProblem() const;
+
+  // Call right before start(): a warning from loadConfig or the dialog is not a reason the import found nothing.
+  void forgetReportedProblem();
 
   [[nodiscard]] sdk::ObjectIngestPolicyResolver& policyResolver() noexcept {
     return policy_resolver_;

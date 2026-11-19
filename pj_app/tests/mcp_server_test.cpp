@@ -2488,6 +2488,18 @@ TEST_F(McpServerTest, OpenFileOfAFileThatYieldsNoDataFailsWithTheLoadersReason) 
   EXPECT_TRUE(window_->appSession().sessionManager().dataEngine().listDatasets().empty());
 }
 
+// A load that fails in the loader's synchronous prologue (an idle loader, no plugin for the file) still answers with
+// its reason, not the path.
+TEST_F(McpServerTest, OpenFileThatFailsBeforeTheImportStartsSaysWhy) {
+  QFile file(data_.filePath(u"x.unknownext"_s));
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  file.write("x");
+  file.close();
+  const auto [text, error] = result(call("open_file", {{"path", file.fileName().toStdString()}}));
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("No DataSource plugin handles"), std::string::npos) << text;
+}
+
 /// A toolbox plugin's endpoint, with public access closed unless a case opens it.
 /// A relay as pj_mcp_relay.py serves the browser link (McpBrowserLink), one HTTP request per
 /// connection, answered by the test: what the page asked, and the socket to answer on.

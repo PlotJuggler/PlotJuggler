@@ -808,9 +808,13 @@ std::string captureSavedConfig(DataSourceHandle& handle, const QString& source_n
   return {};
 }
 
-// Why a load that ran to completion is still a failure: it produced no row or entry. `problem` is the last warning or
-// error the plugin reported (DataSourceRuntimeHost::lastReportedProblem), which usually says why.
-QString noDataReason(const QString& source_name, const std::string& problem) {
+// Why a load that ran to completion is still a failure: it produced no row or entry. The plugin's own words, when it
+// gave any: the last warning or error it reported during start(), else the reason of a FAILED request_stop.
+QString noDataReason(const QString& source_name, const DataSourceRuntimeHost& host) {
+  std::string problem = host.lastReportedProblem();
+  if (problem.empty()) {
+    problem = host.stopFailure();
+  }
   const QString reason = FileLoader::tr("Plugin '%1' loaded no data").arg(source_name);
   return problem.empty() ? reason : reason + u": "_s + QString::fromStdString(problem);
 }
@@ -1136,7 +1140,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   const auto fail = [&](const QString& reason) -> bool {
     erase_created_live_dataset();
     rollback_tombstones();
-    emitLoadFinished(ticket, LoadOutcome::kFailed, source_identity, 0);
+    emitLoadFinished(ticket, LoadOutcome::kFailed, source_identity, 0, {}, reason);
     logLoadFailure(source_identity, reason);
     reportLoadWarning(dialog_parent.data(), reason);
     emit fileLoadFailed(source_identity, reason);
@@ -1774,6 +1778,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       // the whole read loop, which would freeze the UI and deadlock the message-box marshal. Every other lifecycle
       // slot stays on the GUI thread (as in runIngestOnWorker).
       Status start_status = okStatus();
+      iter_ingest.forgetReportedProblem();
       active_fanout_ingest_ = &iter_ingest;
       {
         // Also clears it when a shutdown destroys the frame while suspended below.
@@ -1818,7 +1823,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
           fanout_loaded_ids.push_back(iter_dataset_id);
           capture_loader_metadata();
         } else {
-          report_entry_failed(idx, iter_display, noDataReason(source_name, iter_ingest.lastReportedProblem()));
+          report_entry_failed(idx, iter_display, noDataReason(source_name, iter_ingest));
           outcome = EntryOutcome::kFailed;
         }
       }
@@ -1934,9 +1939,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
 
   if (nothing_to_commit) {
     rollback_tombstones();
-    if (whole_load_stop == 2 || failed_labels.isEmpty()) {
-      // The user threw the load away: report a discard, as the single-instance path does. Recording it would
-      // resurrect a source the user removed.
+    if (whole_load_stop != 0 || failed_labels.isEmpty()) {
+      // A user stop, or every entry discarded: report a cancel, as the single-instance path does, never an
+      // all-entries-failed load. Recording it would resurrect a source the user removed.
       emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
       emit fileLoadFailed(source_identity, tr("Import discarded"));
       co_return;
@@ -1945,7 +1950,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     const QString reason = tr("All %1 entries of '%2' failed to load:\n%3")
                                .arg(failed_labels.size())
                                .arg(display_name, failed_labels.join(u"\n"_s));
-    emitLoadFinished(ticket, LoadOutcome::kFailed, source_identity, 0);
+    emitLoadFinished(ticket, LoadOutcome::kFailed, source_identity, 0, {}, reason);
     reportLoadWarning(dialog_parent, reason);
     emit fileLoadFailed(source_identity, reason);
     co_return;
@@ -2061,6 +2066,7 @@ void FileLoader::finishPrologue() {
 
 void FileLoader::runIngestOnWorker(std::uint64_t generation) {
   // Worker thread. The GUI leaves ctx_ alone until onWorkerFinished.
+  ctx_->ingest->forgetReportedProblem();  // a loadConfig or dialog warning is not why the import found nothing
   auto status = ctx_->handle.start();
   ctx_->start_ok = static_cast<bool>(status);
   if (!status) {
@@ -2120,9 +2126,9 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
     }
   } else if (yielded_nothing || (!ctx_->start_ok && cancel == 0)) {
     ingest_outcome = IngestOutcome::kFailed;
-    emitLoadFinished(ticket, LoadOutcome::kFailed, path, 0);
-    const QString reason = yielded_nothing ? noDataReason(source_name, ctx_->ingest->lastReportedProblem())
+    const QString reason = yielded_nothing ? noDataReason(source_name, *ctx_->ingest)
                                            : tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
+    emitLoadFinished(ticket, LoadOutcome::kFailed, path, 0, {}, reason);
     logLoadFailure(path, reason);
     if (!replacing) {
       removeCreatedDataset(dataset_id);
@@ -2140,9 +2146,11 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
       // Derived outputs were detached with the dataset: replay them while a failure can still roll back.
       if (const Status replayed = ctx_->refill_guard->recomputeProcessors(); !replayed.has_value()) {
         ingest_outcome = cancel == 0 ? IngestOutcome::kFailed : IngestOutcome::kCancelled;
-        emitLoadFinished(ticket, cancel == 0 ? LoadOutcome::kFailed : LoadOutcome::kCancelled, path, 0);
         const QString reason = tr("Plugin '%1': derived-series replay failed: %2")
                                    .arg(source_name, QString::fromStdString(replayed.error()));
+        emitLoadFinished(
+            ticket, cancel == 0 ? LoadOutcome::kFailed : LoadOutcome::kCancelled, path, 0, {},
+            cancel == 0 ? reason : QString());
         if (cancel == 0) {
           logLoadFailure(path, reason);
         } else {
@@ -2406,7 +2414,7 @@ void FileLoader::cancelLoadAsync(quint64 ticket, bool keep_partial) {
 
 void FileLoader::emitLoadFinished(
     quint64 ticket, LoadOutcome outcome, const QString& effective_path, DatasetId dataset_id,
-    QVector<DatasetId> produced_dataset_ids) {
+    QVector<DatasetId> produced_dataset_ids, QString reason) {
   if (ticket == current_load_ticket_) {
     if (current_ticket_terminal_) {
       // First wins (e.g. a joinForShutdown re-entered from a fileLoaded slot). A different outcome means an exit
@@ -2422,7 +2430,7 @@ void FileLoader::emitLoadFinished(
     current_ticket_outcome_ = outcome;
   }
   pending_terminals_.push_back(
-      PendingTerminal{ticket, outcome, effective_path, dataset_id, std::move(produced_dataset_ids)});
+      PendingTerminal{ticket, outcome, effective_path, dataset_id, std::move(produced_dataset_ids), std::move(reason)});
   // Queued, so no terminal arrives before loadFileTicketed returns; joinForShutdown flushes synchronously.
   QMetaObject::invokeMethod(this, [this]() { deliverPendingTerminal(); }, Qt::QueuedConnection);
 }
@@ -2433,7 +2441,9 @@ void FileLoader::deliverPendingTerminal() {
   }
   const PendingTerminal terminal = std::move(pending_terminals_.front());
   pending_terminals_.pop_front();
-  emit loadFinished(terminal.ticket, terminal.outcome, terminal.effective_path, terminal.dataset_id, terminal.produced);
+  emit loadFinished(
+      terminal.ticket, terminal.outcome, terminal.effective_path, terminal.dataset_id, terminal.produced,
+      terminal.reason);
 }
 
 void FileLoader::postIngestTerminal(IngestToken token, IngestOutcome outcome) {
