@@ -8,10 +8,14 @@
 #include <gtest/gtest.h>
 #include <qwt_plot_curve.h>
 #include <qwt_plot_marker.h>
+#include <qwt_symbol.h>
 
 #include <QApplication>
+#include <QColor>
+#include <QDomDocument>
 #include <QtGlobal>
 #include <array>
+#include <memory>
 #include <string_view>
 
 #include "pj_datastore/writer.hpp"
@@ -130,4 +134,75 @@ TEST(PlotWidgetXyMarker, TimeSeriesLeavesMarkerHidden) {
 
   plot.setTrackerPosition(2.0);
   EXPECT_FALSE(info->marker->isVisible());
+}
+
+namespace {
+
+// An XY plot of "y vs x" with its tracker (and so the marker) at t = 2 s: the paused state a hide or recolour acts on.
+struct XyMarkerFixture {
+  XyMarkerFixture() : catalog(&session) {
+    auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+    EXPECT_TRUE(dataset.has_value()) << (dataset.has_value() ? "" : dataset.error());
+    key_x = keyForTopic(catalog, addScalarTopic(session, *dataset, "/pos/x", {10.0, 20.0, 30.0}));
+    key_y = keyForTopic(catalog, addScalarTopic(session, *dataset, "/pos/y", {100.0, 200.0, 300.0}));
+    plot = std::make_unique<PJ::PlotWidget>(&session, &catalog);
+    plot->setModeXY(true);
+    info = plot->addCurveXY(key_x, key_y, u"y vs x"_s);
+    EXPECT_NE(info, nullptr);
+    plot->setTrackerPosition(2.0);
+  }
+
+  [[nodiscard]] QColor markerColor() const {
+    return info->marker->symbol()->brush().color();
+  }
+
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog;
+  QString key_x;
+  QString key_y;
+  std::unique_ptr<PJ::PlotWidget> plot;
+  PJ::PlotWidget::CurveInfo* info = nullptr;
+};
+
+}  // namespace
+
+// Hiding or showing an XY curve while the cursor rests (no seek follows) moves its marker with it.
+TEST(PlotWidgetXyMarker, HidingAndShowingAPausedCurveTakesItsMarkerAlong) {
+  XyMarkerFixture fixture;
+  ASSERT_TRUE(fixture.info->marker->isVisible());
+
+  fixture.plot->setCurveVisible(u"y vs x"_s, false);
+  EXPECT_FALSE(fixture.info->marker->isVisible());
+
+  fixture.plot->setCurveVisible(u"y vs x"_s, true);
+  EXPECT_TRUE(fixture.info->marker->isVisible());
+  EXPECT_DOUBLE_EQ(fixture.info->marker->value().x(), 20.0);
+  EXPECT_DOUBLE_EQ(fixture.info->marker->value().y(), 200.0);
+}
+
+// The dot is filled with its curve's colour, also after the curve is recoloured.
+TEST(PlotWidgetXyMarker, RecolouringACurveRecoloursItsMarker) {
+  XyMarkerFixture fixture;
+  const QColor red(Qt::red);
+  ASSERT_NE(fixture.markerColor(), red);
+
+  fixture.plot->onChangeCurveColor(u"y vs x"_s, red);
+  EXPECT_EQ(fixture.markerColor(), red);
+}
+
+// A layout restore (an undo) that flips a kept XY curve's visibility and colour updates its marker too.
+TEST(PlotWidgetXyMarker, RestoringACurvesVisibilityAndColourUpdatesItsMarker) {
+  XyMarkerFixture fixture;
+  const QColor original = fixture.info->curve->pen().color();
+  QDomDocument doc;
+  QDomElement saved = fixture.plot->xmlSaveState(doc);
+  fixture.plot->stampLiveCurveKeys(saved);
+
+  fixture.plot->onChangeCurveColor(u"y vs x"_s, QColor(Qt::red));
+  fixture.plot->setCurveVisible(u"y vs x"_s, false);
+  ASSERT_FALSE(fixture.info->marker->isVisible());
+
+  ASSERT_TRUE(fixture.plot->xmlLoadState(saved));
+  EXPECT_TRUE(fixture.info->marker->isVisible());
+  EXPECT_EQ(fixture.markerColor(), original);
 }

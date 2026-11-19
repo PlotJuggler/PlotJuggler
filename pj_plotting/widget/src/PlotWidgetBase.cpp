@@ -383,19 +383,13 @@ PlotWidgetBase::CurveInfo* PlotWidgetBase::addCurve(
   curve->attach(qwtPlot());
 
   // Per-curve tracker marker: the dot that rides an XY curve at the playback cursor (PlotWidget's XY tracker moves and
-  // shows it). The fill matches the curve so multi-curve XY plots stay legible (all markers show at once; a shared
-  // colour would make them unattributable); hidden until the XY tracker reveals it. The outline uses the data-backdrop
-  // ink so the dot separates from the identically coloured curve underneath.
+  // shows it); hidden until the XY tracker reveals it.
   auto* marker = new QwtPlotMarker;
   marker->attach(qwtPlot());
   marker->setVisible(false);
-  const auto fw_theme = theme::appTheme();
-  const QColor marker_fill = curve->pen().color();
-  marker->setSymbol(new QwtSymbol(
-      QwtSymbol::Ellipse, marker_fill,
-      QPen(theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Default, fw_theme)), QSize(8, 8)));
 
   plot_->curve_list.push_back(CurveInfo{.source_name = name, .curve = curve, .marker = marker});
+  syncMarkerColor(plot_->curve_list.back());
   emit curveListChanged();
   return &plot_->curve_list.back();
 }
@@ -414,6 +408,15 @@ void PlotWidgetBase::removeCurve(const QString& title) {
   delete it->marker;
   plot_->curve_list.erase(it);
   emit curveListChanged();
+}
+
+void PlotWidgetBase::setCurveVisible(const QString& curve_name, bool visible) {
+  CurveInfo* info = curveFromTitle(curve_name);
+  if (info == nullptr || info->curve == nullptr) {
+    return;
+  }
+  info->curve->setVisible(visible);
+  replot();
 }
 
 const std::list<PlotWidgetBase::CurveInfo>& PlotWidgetBase::curveList() const noexcept {
@@ -438,12 +441,32 @@ std::map<QString, QColor> PlotWidgetBase::curveColors() const {
 }
 
 PlotWidgetBase::CurveInfo* PlotWidgetBase::curveFromTitle(const QString& title) {
+  // The source_name is the curve's identity, so it wins over another curve's title spelled the same.
   for (auto& info : plot_->curve_list) {
-    if (info.curve->title().text() == title || info.source_name == title) {
+    if (info.source_name == title) {
+      return &info;
+    }
+  }
+  for (auto& info : plot_->curve_list) {
+    if (info.curve->title().text() == title) {
       return &info;
     }
   }
   return nullptr;
+}
+
+void PlotWidgetBase::syncMarkerColor(const CurveInfo& info) {
+  const QColor fill = info.curve->pen().color();
+  if (const QwtSymbol* symbol = info.marker->symbol(); symbol != nullptr && symbol->brush().color() == fill) {
+    return;
+  }
+  // The fill matches the curve so multi-curve XY plots stay legible (all markers show at once; a shared colour would
+  // make them unattributable). The outline uses the data-backdrop ink so the dot separates from the identically
+  // coloured curve underneath.
+  const auto fw_theme = theme::appTheme();
+  info.marker->setSymbol(new QwtSymbol(
+      QwtSymbol::Ellipse, fill,
+      QPen(theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Default, fw_theme)), QSize(8, 8)));
 }
 
 void PlotWidgetBase::resetZoom() {
@@ -963,8 +986,7 @@ bool PlotWidgetBase::eventFilter(QObject* obj, QEvent* event) {
       }
       for (auto& info : curveList()) {
         if (clicked_item == info.curve) {
-          info.curve->setVisible(!info.curve->isVisible());
-          replot();
+          setCurveVisible(info.source_name, !info.curve->isVisible());
           return true;
         }
       }

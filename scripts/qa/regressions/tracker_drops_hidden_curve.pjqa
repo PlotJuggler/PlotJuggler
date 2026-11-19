@@ -1,0 +1,17 @@
+# Hiding a curve with the curve editor's eye takes its row out of the tracker's value box at once, not at the next
+# seek or zoom. Periodic is the upper plot of the signals layout; at row 400 sine=0, cosine=1, square=1.
+# Window geometry is fixed offscreen: the right panel's toggle is the TitleBar's last button, and the cosine row's eye
+# sits at (203,39) of the curve editor's list.
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
+playback {"action":"seek","time_s":400}
+until ui_plot {"title":"Periodic"} "tracker":["time : 400.000","1.000","1.000","0.000"]
+ui_click {"name":"TitleBar","x":1536,"y":15,"wait_ms":500}
+ui_click {"name":"tabbedPlotWidget","x":700,"y":200,"wait_ms":400}
+ui_tree {}
+expect QLabel#curveNameLabel "data/cosine"
+ui_click {"name":"listWidget","x":203,"y":39,"wait_ms":500}
+ui_plot {"title":"Periodic"}
+expect {"title":"data/cosine","visible":false}
+expect "tracker":["time : 400.000","1.000","0.000"]
