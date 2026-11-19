@@ -424,6 +424,9 @@ int main(int argc, char* argv[]) {
       QStringList{u"d"_s, u"datafile"_s}, u"Load a data file before the layout; repeat for multiple files."_s,
       u"path"_s);
   parser.addOption(datafile_option);
+  const QCommandLineOption no_plugin_dialogs_option(
+      u"no-plugin-dialogs"_s, u"Load startup data files with plugin defaults, skipping configuration dialogs."_s);
+  parser.addOption(no_plugin_dialogs_option);
   parser.addPositionalArgument(u"files"_s, u"Data files to load before the layout."_s, u"[files...]"_s);
 #endif
   const QCommandLineOption autoplay_option(
@@ -626,11 +629,13 @@ int main(int argc, char* argv[]) {
     const QString layout_path = parser.value(layout_option);
 #ifdef PJ_TARGET_WASM
     constexpr bool interactive = false;
+    constexpr bool skip_plugin_dialogs = false;
 #else
     const bool interactive = attended;
+    const bool skip_plugin_dialogs = parser.isSet(no_plugin_dialogs_option);
 #endif
-    QTimer::singleShot(0, &window, [&window, startup_files, layout_path, interactive]() {
-      window.loadAtStartup(startup_files, layout_path, interactive);
+    QTimer::singleShot(0, &window, [&window, startup_files, layout_path, interactive, skip_plugin_dialogs]() {
+      window.loadAtStartup(startup_files, layout_path, interactive, skip_plugin_dialogs);
     });
   }
 

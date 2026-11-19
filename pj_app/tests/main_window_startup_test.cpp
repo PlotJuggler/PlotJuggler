@@ -3,8 +3,11 @@
 
 #include <gtest/gtest.h>
 
+#include <QApplication>
+#include <QDialog>
 #include <QFile>
 #include <QFileInfo>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <memory>
 #include <vector>
@@ -19,14 +22,16 @@ namespace {
 using PJ::PresetTestPeer;
 using pj_app_test::pumpUntil;
 
-// Every ctest case owns one shell and an isolated, real mock DataSource DSO.
+// Every ctest case owns one shell and an isolated directory of test DataSource plugins.
 class MainWindowStartupTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(extensions_.isValid());
     ASSERT_TRUE(data_.isValid());
-    const QString plugin = QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH);
-    ASSERT_TRUE(QFile::copy(plugin, extensions_.filePath(QFileInfo(plugin).fileName())));
+    for (const char* path : {PJ_MOCK_FILE_SOURCE_PLUGIN_PATH, PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH}) {
+      const QString plugin = QString::fromUtf8(path);
+      ASSERT_TRUE(QFile::copy(plugin, extensions_.filePath(QFileInfo(plugin).fileName())));
+    }
     window_ = std::make_unique<PJ::MainWindow>(extensions_.path());
     QObject::connect(window_.get(), &PJ::MainWindow::layoutRestoreSettled, window_.get(), [this](bool ok) {
       settles_.push_back(ok);
@@ -101,6 +106,26 @@ TEST_F(MainWindowStartupTest, DataOnlyLoadsWithoutRestoringALayout) {
   ASSERT_TRUE(pumpUntil([&] { return !PresetTestPeer::session(*window_).catalogModel().isEmpty(); }));
   pj_app_test::flushQueuedEvents();
   EXPECT_TRUE(settles_.empty());
+}
+
+TEST_F(MainWindowStartupTest, AttendedStartupCanSkipPluginConfigDialogs) {
+  const QString first = pj_app_test::makeMockFile(data_, QStringLiteral("first.dlgprobe"));
+  const QString second = pj_app_test::makeMockFile(data_, QStringLiteral("second.dlgprobe"));
+  auto& loader = PresetTestPeer::fileLoader(*window_);
+
+  window_->loadAtStartup({first}, {}, /*interactive=*/true);
+  ASSERT_TRUE(pumpUntil([] { return QApplication::activeModalWidget() != nullptr; }, 5000));
+  auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+  ASSERT_NE(dialog, nullptr);
+  dialog->reject();
+  ASSERT_TRUE(pumpUntil([&] { return !loader.isBusy(); }));
+
+  QSignalSpy loaded(&loader, &PJ::FileLoader::fileLoaded);
+  window_->loadAtStartup({first, second}, {}, /*interactive=*/true, /*skip_plugin_dialogs=*/true);
+  ASSERT_TRUE(pumpUntil([&] { return loaded.size() == 2 || QApplication::activeModalWidget() != nullptr; }));
+  EXPECT_EQ(QApplication::activeModalWidget(), nullptr);
+  EXPECT_EQ(loaded.size(), 2);
+  EXPECT_EQ(PresetTestPeer::session(*window_).catalogModel().datasets().size(), 2u);
 }
 
 }  // namespace

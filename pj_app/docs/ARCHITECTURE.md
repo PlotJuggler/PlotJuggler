@@ -57,8 +57,9 @@ Desktop startup takes repeatable `-d` / `--datafile <path>`, positional files an
 `MainWindow::loadAtStartup` waits for the terminal ticket of every explicit file before applying the layout. Explicit
 files override a source-bound layout's saved files (the generic-layout rewrite removes dataset qualifiers so curves bind
 to the new data); without them, `--layout` replays its saved sources and starts its recorded streams with no prompt.
-Unattended startup (`--exit-after-layout`, `--screenshot`, the `offscreen`/`minimal` platforms; `isUnattendedRun` in
-`main.cpp`) loads with `DialogPolicy::kNever`. A failed or cancelled explicit file skips the layout and settles it
+`--no-plugin-dialogs` loads explicit startup files with plugin defaults and skips the configuration dialogs.
+Unattended startup (`--exit-after-layout`, `--screenshot`, the `offscreen`/`minimal` platforms) also uses
+`DialogPolicy::kNever`. A failed or cancelled explicit file skips the layout and settles it
 false, so `--exit-after-layout` exits unsuccessfully. The final restore is deferred through a window-owned timer so it
 never runs during teardown. `--exit-after-layout` exit codes are a contract for harnesses (`LayoutExitWatch`): 0
 applied, 1 load failed or cancelled, 2 timed out, 64 usage error. With `--screenshot` too, whichever quit fires first

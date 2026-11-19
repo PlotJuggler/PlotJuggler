@@ -195,8 +195,10 @@ class MainWindow : public QMainWindow {
   void loadLayoutAtStartup(const QString& path);
 
   // Loads explicit files, then applies the optional layout against their data. A failed or cancelled file
-  // aborts the layout and settles it false. Only attended file loads may open dialogs; the layout never prompts.
-  void loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive);
+  // aborts the layout and settles it false. Attended loads can skip configuration dialogs while keeping
+  // the plugin message-box handler. The layout never prompts.
+  void loadAtStartup(
+      const QStringList& data_files, const QString& layout_path, bool interactive, bool skip_plugin_dialogs = false);
 
   // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
   // non-interactive run never shows the question.

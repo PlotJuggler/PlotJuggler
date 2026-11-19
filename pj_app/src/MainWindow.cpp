@@ -6421,7 +6421,8 @@ void MainWindow::loadLayoutAtStartup(const QString& path) {
   loadLayoutFromPath(path, LayoutLoadInteractivity::kAutomated);
 }
 
-void MainWindow::loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive) {
+void MainWindow::loadAtStartup(
+    const QStringList& data_files, const QString& layout_path, bool interactive, bool skip_plugin_dialogs) {
   if (data_files.isEmpty()) {
     if (!layout_path.isEmpty()) {
       loadLayoutAtStartup(layout_path);
@@ -6465,7 +6466,7 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
       });
   for (const QString& path : data_files) {
     LoadHints hints;
-    hints.dialog_policy = interactive ? DialogPolicy::kInteractive : DialogPolicy::kNever;
+    hints.dialog_policy = interactive && !skip_plugin_dialogs ? DialogPolicy::kInteractive : DialogPolicy::kNever;
     const auto ticket = file_loader_->loadFileTicketed(
         LoadInput::fromNativePath(QFileInfo(path).absoluteFilePath()), interactive ? this : nullptr, hints);
     if (ticket == 0) {
