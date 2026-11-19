@@ -36,7 +36,7 @@ works: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
   `PJ_widget_value_t`), `SettingsSchema.{h,cpp}` (`parseSettingsSchema`), `WidgetBindings.{h,cpp}` (wires,
   reconciliation, resolution, `<input>` XML).
 - `widget/` (`pj_custom_widgets`): `CustomWidgetDockWidget` (`QWidget` + `IDataWidget`), `MissingWidgetPlaceholder`.
-- Shell side lives in `pj_app`: `CustomWidgetController` (picker and side-panel pages, the active-widgets record),
+- Shell side lives in `pj_app`: `CustomWidgetController` (picker menu and config page, the active-widgets record),
   `PendingDisplayBinder`, `TopicDemandController::registerCustomWidgetDock`, `LayoutXml`.
 
 ## Tests

@@ -58,4 +58,12 @@ bool isCustomWidgetObjectType(sdk::BuiltinObjectType type) {
   return type != sdk::BuiltinObjectType::kNone && !isPanelOnlyObjectType(type) && !isDroppableObjectType(type);
 }
 
+QString customWidgetObjectIcon(sdk::BuiltinObjectType type) {
+  if (!isCustomWidgetObjectType(type)) {
+    return {};
+  }
+  return type == sdk::BuiltinObjectType::kLog ? QStringLiteral(":/resources/svg/view_list.svg")
+                                              : QStringLiteral(":/resources/svg/custom_widget.svg");
+}
+
 }  // namespace PJ

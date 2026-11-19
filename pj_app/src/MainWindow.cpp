@@ -1878,12 +1878,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   custom_widgets_ = new CustomWidgetController(
       *right_panel_stack_, *session_, diagnosticSink(),
       CustomWidgetController::Hooks{
-          .reveal_side_panel =
-              [this]() {
-                if (ui_->localToolbarWidget->isHidden()) {
-                  ui_->tabbedPlotWidget->rightPanelButton()->click();  // the toggle keeps its icon in step
-                }
-              },
           .create_dock = [this](
                              DockWidget* dock, const QString& plugin_id,
                              const QString& type) { createCustomWidgetDock(dock, plugin_id, type); },
@@ -1893,7 +1887,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   custom_widgets_->onStylesheetChanged(theme_->currentTheme());
   connect(this, &MainWindow::stylesheetChanged, custom_widgets_, &CustomWidgetController::onStylesheetChanged);
   connect(this, &MainWindow::chromeMetricsChanged, custom_widgets_, &CustomWidgetController::onChromeMetricsChanged);
-  connect(custom_widgets_, &CustomWidgetController::marketplaceRequested, this, &MainWindow::onOpenMarketplace);
   right_panel_stack_->setCurrentWidget(plot_config_page_);
 
   buildLocalToolbar();
@@ -2099,7 +2092,7 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
       kind = u"state_transitions"_s;
       break;
     case VisualizationKind::kCustomWidget:
-      // Chosen in the picker first: building before the choice would leave an unbound panel behind.
+      // Chosen in the picker menu first: building before the choice would leave an unbound panel behind.
       if (custom_widgets_ != nullptr) {
         custom_widgets_->showPicker(dock);
       }

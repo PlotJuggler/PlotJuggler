@@ -103,6 +103,8 @@ constexpr int kBadgeRole = Qt::UserRole + 17;
 // True on a row whose catalog key is displayed (see setDisplayedKeys) and on every
 // ancestor of such a row, so a collapsed group still shows that it holds one.
 constexpr int kDisplayedRole = Qt::UserRole + 18;
+// The badge resource path of an object topic that is no scene kind. See CurvePath::object_icon.
+constexpr int kObjectIconRole = Qt::UserRole + 19;
 constexpr int kAnimationIntervalMs = 1000 / 30;
 
 QStringList splitPath(const QString& name) {
@@ -250,8 +252,8 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       opt.palette.setColor(QPalette::HighlightedText, accent);
     }
 
-    // A topic row's builtin-family badge (image.svg or cube.svg, set as the item's DecorationRole icon) is painted by
-    // the default control as a left-side decoration before the text; its size is the view's iconSize().
+    // A topic row's badge (image.svg, cube.svg or the path's object_icon, set as the item's DecorationRole icon) is
+    // painted by the default control as a left-side decoration before the text; its size is the view's iconSize().
     const QWidget* widget = opt.widget;
     const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
@@ -347,29 +349,37 @@ QString catalogKeyForItem(const QTreeWidgetItem* item) {
   return item->data(kNameColumn, kObjectTopicRole).toString();
 }
 
-void setTopicIconDecoration(QTreeWidgetItem* item, bool is_image_topic, bool is_3d_object_topic, const QString& theme) {
+/// The badge of an object topic row, or empty for none.
+QString topicIconPath(const QTreeWidgetItem* item) {
+  if (item->data(kNameColumn, kImageTopicRole).toBool()) {
+    return u":/resources/svg/image.svg"_s;
+  }
+  if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
+    return u":/resources/svg/cube.svg"_s;
+  }
+  return item->data(kNameColumn, kObjectIconRole).toString();
+}
+
+void setTopicIconDecoration(QTreeWidgetItem* item, const CurveTreeView::CurvePath& path, const QString& theme) {
   if (item == nullptr) {
     return;
   }
-  item->setData(kNameColumn, kImageTopicRole, is_image_topic);
-  item->setData(kNameColumn, k3dObjectTopicRole, is_3d_object_topic);
-  QIcon icon;
-  if (is_image_topic) {
-    icon = QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme));
-  } else if (is_3d_object_topic) {
-    icon = QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme));
+  item->setData(kNameColumn, kImageTopicRole, path.is_image_topic);
+  item->setData(kNameColumn, k3dObjectTopicRole, path.is_3d_object_topic);
+  // Guarded: most topics have no such badge, and an unconditional write adds a role and a dataChanged per row.
+  if (!path.object_icon.isEmpty() || item->data(kNameColumn, kObjectIconRole).isValid()) {
+    item->setData(kNameColumn, kObjectIconRole, path.object_icon);
   }
-  item->setIcon(kNameColumn, icon);
+  const QString icon_path = topicIconPath(item);
+  item->setIcon(kNameColumn, icon_path.isEmpty() ? QIcon() : QIcon(loadSvg(icon_path, theme)));
 }
 
 void refreshTopicIcons(QTreeWidgetItem* item, const QString& theme) {
   if (item == nullptr) {
     return;
   }
-  if (item->data(kNameColumn, kImageTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/image.svg"_s, theme)));
-  } else if (item->data(kNameColumn, k3dObjectTopicRole).toBool()) {
-    item->setIcon(kNameColumn, QIcon(loadSvg(u":/resources/svg/cube.svg"_s, theme)));
+  if (const QString icon_path = topicIconPath(item); !icon_path.isEmpty()) {
+    item->setIcon(kNameColumn, QIcon(loadSvg(icon_path, theme)));
   }
   for (int i = 0; i < item->childCount(); ++i) {
     refreshTopicIcons(item->child(i), theme);
@@ -678,7 +688,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
       item->setData(kNameColumn, kObjectTopicRole, path.key);
       item->setData(kNameColumn, kCatalogItemRole, path.key);
       applyObjectTopicSelectability(item, path.draggable);
-      setTopicIconDecoration(item, path.is_image_topic, path.is_3d_object_topic, currentTheme());
+      setTopicIconDecoration(item, path, currentTheme());
     }
   } else if (path.selectable) {
     const int last_sep = tree_path.lastIndexOf('/');
@@ -701,7 +711,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
     item->setData(kNameColumn, kObjectTopicRole, path.key);
     item->setData(kNameColumn, kCatalogItemRole, path.key);
     applyObjectTopicSelectability(item, path.draggable);
-    setTopicIconDecoration(item, path.is_image_topic, path.is_3d_object_topic, currentTheme());
+    setTopicIconDecoration(item, path, currentTheme());
   }
   // Guarded: an unconditional write would add a setData/dataChanged per row on
   // every rebuild; the second clause clears a stale tooltip on a reused row.

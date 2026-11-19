@@ -61,7 +61,7 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 
 - `MainWindow.{h,cpp,ui}`, `main.cpp`: the window and its wiring; startup, CLI flags, crash handler.
 - `ui/`: embedded sub-widgets and app dialogs (`LeftPanel`, `CurveListPanel`, `TimelineWidget`, `DiagnosticsDialog`,
-  the Scene2D/Scene3D config panels, the Custom Widget picker and config pages, `McpJobsDialog`).
+  the Scene2D/Scene3D config panels, the Custom Widget picker menu and config page, `McpJobsDialog`).
 - `FileLoader`, `LoadInput.h`, `FanoutConfig`, `DialogPresenter`, `DialogWatch.h`: file loading and plugin dialogs.
 - `IngestProgressController`, `IngestProgressWiring.h`, `SeriesProgressController`: progress rows in the curve tree.
 - `StreamingSourceManager`, `TopicDemandController`, `PendingDisplayBinder`: streaming sessions and topic demand.
@@ -69,7 +69,7 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
   `SourcePromotionHost`, `LayoutExitWatch`: the cloud layout import.
 - `ToolboxPresenter`, `ToolboxChrome`, `ToolboxHostWiring.h`, `PluginPlotTabsController`,
   `PluginSceneViewsController`: toolbox presentation and plugin-owned views.
-- `CustomWidgetController`: the Custom Widget pages and the startup crash review.
+- `CustomWidgetController`: the Custom Widget picker menu, its config page and the startup crash review.
 - `SourceTimelineController`, `DatasetMergeActions`: Source Timeline binding and dataset merge.
 - `BrowserFileStore`, `FileSelectionService`, `BrowserPickedFile` (+ `browser_picked_file.js`), `BrowserPersistence`,
   `PresetController`, `WelcomePresetsDialog`: the WebAssembly boundary and presets.

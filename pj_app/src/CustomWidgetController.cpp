@@ -3,8 +3,11 @@
 
 #include "CustomWidgetController.h"
 
+#include <QCursor>
+#include <QPoint>
 #include <QStackedWidget>
 #include <QStringList>
+#include <QToolButton>
 #include <utility>
 
 #include "pj_custom_widgets/CustomWidgetDockWidget.h"
@@ -16,7 +19,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_widgets/MessageBox.h"
 #include "ui/CustomWidgetConfigPanel.h"
-#include "ui/CustomWidgetPickerPanel.h"
+#include "ui/CustomWidgetPickerMenu.h"
 
 using namespace Qt::StringLiterals;
 
@@ -33,38 +36,30 @@ CustomWidgetController::CustomWidgetController(
 #ifndef PJ_TARGET_WASM
   marker_ = std::make_shared<ActiveWidgetsMarker>(ActiveWidgetsMarker::defaultDirectory());
 #endif
-  picker_ = new CustomWidgetPickerPanel(&pages_);
-  picker_->setCatalog(&session_.extensionCatalog());
-#ifdef PJ_TARGET_WASM
-  picker_->setMarketplaceAvailable(false);
-#endif
-  connect(picker_, &CustomWidgetPickerPanel::widgetChosen, this, &CustomWidgetController::onWidgetChosen);
-  connect(picker_, &CustomWidgetPickerPanel::marketplaceRequested, this, &CustomWidgetController::marketplaceRequested);
+  picker_ = new CustomWidgetPickerMenu(dialog_parent_);
+  connect(picker_, &CustomWidgetPickerMenu::widgetChosen, this, &CustomWidgetController::onWidgetChosen);
   config_page_ = new CustomWidgetConfigPanel(&pages_);
   config_page_->setServices(&session_.catalogModel(), &session_.extensionCatalog());
-  pages_.addWidget(picker_);
   pages_.addWidget(config_page_);
 }
 
 CustomWidgetController::~CustomWidgetController() = default;
 
 void CustomWidgetController::onStylesheetChanged(const QString& theme) {
-  picker_->onStylesheetChanged(theme);
   config_page_->onStylesheetChanged(theme);
 }
 
 void CustomWidgetController::onChromeMetricsChanged(const ChromeMetrics& metrics) {
-  picker_->onChromeMetricsChanged(metrics);
   config_page_->onChromeMetricsChanged(metrics);
 }
 
 void CustomWidgetController::showPicker(DockWidget* dock) {
   target_ = dock;
-  picker_->refresh();
-  if (hooks_.reveal_side_panel) {
-    hooks_.reveal_side_panel();
-  }
-  pages_.setCurrentWidget(picker_);
+  const QToolButton* button = dock->findChild<QToolButton*>(u"buttonVizCustomWidget"_s);
+  const QWidget* anchor_widget = button != nullptr ? static_cast<const QWidget*>(button) : dock;
+  picker_->rebuild(session_.extensionCatalog(), anchor_widget->devicePixelRatioF());
+  const QPoint anchor = button != nullptr ? button->mapToGlobal(QPoint(0, button->height())) : QCursor::pos();
+  picker_->popup(anchor);
 }
 
 void CustomWidgetController::onWidgetChosen(const QString& plugin_id, const QString& type) {
@@ -74,10 +69,6 @@ void CustomWidgetController::onWidgetChosen(const QString& plugin_id, const QStr
     target_ = nullptr;
     return;
   }
-  // The list just clicked holds the keyboard focus. Hiding it with the picker would hand that focus to
-  // another dock, whose page would then show next to this panel's. Move it to the panel first, while
-  // it is still the picker's target, so the picker stays up until the switch below.
-  dock->setFocus(Qt::OtherFocusReason);
   target_ = nullptr;
   if (hooks_.create_dock) {
     hooks_.create_dock(dock, plugin_id, type);
@@ -91,18 +82,11 @@ void CustomWidgetController::onWidgetChosen(const QString& plugin_id, const QStr
 
 QWidget* CustomWidgetController::pageForFocusedDock(DockWidget* dock) {
   CustomWidgetDockWidget* custom = nullptr;
-  QWidget* page = nullptr;
-  if (dock != nullptr && dock->plotWidget() == nullptr) {
-    if (dock->objectWidget() == nullptr) {
-      // An empty panel waiting for its Custom Widget keeps the picker up while it has the focus.
-      page = dock == target_.data() ? picker_ : nullptr;
-    } else {
-      custom = qobject_cast<CustomWidgetDockWidget*>(dock->objectWidget()->widget());
-      page = custom != nullptr ? config_page_ : nullptr;
-    }
+  if (dock != nullptr && dock->plotWidget() == nullptr && dock->objectWidget() != nullptr) {
+    custom = qobject_cast<CustomWidgetDockWidget*>(dock->objectWidget()->widget());
   }
   config_page_->bindDock(custom);
-  return page;
+  return custom != nullptr ? config_page_ : nullptr;
 }
 
 void CustomWidgetController::attachDock(CustomWidgetDockWidget& dock) const {
