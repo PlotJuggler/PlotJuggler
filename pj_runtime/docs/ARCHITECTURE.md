@@ -49,7 +49,10 @@ does not link it.
   is in the catalog. Data replaced without the catalog ever emptying (a browser preset switch
   loads the next preset's files before removing the previous ones; removing the first dataset
   after adding another) therefore starts at the new data's start, while an added dataset, a
-  refill (same `DatasetId`) and a merge (the anchor inherits) keep the playhead.
+  refill (same `DatasetId`), a merge (the anchor inherits) and a followed stream keep the
+  playhead: `setActiveStreamingDataset` adds the stream to a seeded set, because the shell
+  does not re-seed on a removal while it follows a stream. The stream holds the seeding only
+  once it has data.
   When no visible data remains it collapses the transport with `resetPlaybackToEmpty()`
   (pause, `[0,0]` range, cursor 0), the same reset the `CatalogModel::cleared()` hook runs
   on a full wipe: this is what stops playback when the last dataset is removed. While a

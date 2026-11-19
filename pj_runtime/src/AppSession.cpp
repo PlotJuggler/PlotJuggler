@@ -550,8 +550,12 @@ bool AppSession::seedPlaybackFromSession() {
   }
 
   const std::vector<DatasetId> shown = catalog_model_->datasetIds();
-  const bool seed_left =
-      std::any_of(shown.begin(), shown.end(), [this](DatasetId id) { return seeded_datasets_.contains(id); });
+  // A followed stream joins the seed set when it starts, before its first sample: it holds the playhead only once it
+  // has data, so a stream that never received any cannot keep stale seeding alive.
+  const bool seed_left = std::any_of(shown.begin(), shown.end(), [this](DatasetId id) {
+    return seeded_datasets_.contains(id) &&
+           (id != active_streaming_dataset_id_ || session_manager_->datasetDisplayRange(id).has_value());
+  });
   if (!seed_left) {
     playback_engine_->setCurrentTime(*new_min);
     seeded_datasets_.clear();

@@ -10,3 +10,6 @@ playback {"action":"state"}
 expect "current_time_s":100
 unload_file {"dataset":"late_range.csv"}
 until playback {"action":"state"} "current_time_s":0.0,
+expect "range":{"max_s":20.0,"min_s":0.0}
+get_status {}
+expect "name":"data.csv"
