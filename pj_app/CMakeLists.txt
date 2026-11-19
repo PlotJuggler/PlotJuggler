@@ -101,9 +101,8 @@ add_library(pj_app_shell OBJECT
     src/ui/CustomWidgetConfigPanel.cpp
     src/ui/CustomWidgetConfigPanel.h
     src/ui/CustomWidgetConfigPanel.ui
-    src/ui/CustomWidgetPickerPanel.cpp
-    src/ui/CustomWidgetPickerPanel.h
-    src/ui/CustomWidgetPickerPanel.ui
+    src/ui/CustomWidgetPickerMenu.cpp
+    src/ui/CustomWidgetPickerMenu.h
     src/ui/LeftPanel.cpp
     src/ui/LeftPanel.h
     src/ui/LeftPanel.ui

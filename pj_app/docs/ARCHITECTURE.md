@@ -452,13 +452,15 @@ would be left behind. Object types with no built-in view (`isCustomWidgetObjectT
 mounted Custom Widget (`tryAcceptObjectTopic`), and a drop on an empty dock gets a toast saying to create the Custom
 Widget first.
 
-`CustomWidgetController` (owned by `right_panel_stack_`) holds the rest: both right-panel pages, the pending target
-panel, the `ActiveWidgetsMarker` and the startup review. `MainWindow` calls `showPicker`, `pageForFocusedDock`,
-`attachDock`, `reviewUncleanShutdown` and `clearActiveWidgets`; the controller calls back through `Hooks`.
+`CustomWidgetController` (owned by `right_panel_stack_`) holds the rest: the config page in the right panel, the
+picker menu, the pending target panel, the `ActiveWidgetsMarker` and the startup review. `MainWindow` calls
+`showPicker`, `pageForFocusedDock`, `attachDock`, `reviewUncleanShutdown` and `clearActiveWidgets`; the controller
+calls back through `Hooks`.
 
-- `CustomWidgetPickerPanel` lists the installed widget types from `ExtensionCatalogService::widgets()`, rebuilt on
-  `catalogChanged` and every time it is shown. A library built against another Qt is listed disabled with its
-  mismatch reason. With nothing installed it offers the Marketplace (hidden on WASM).
+- `CustomWidgetPickerMenu` is a context menu, popped up under the empty panel's Custom Widget button. It lists the
+  installed widget types from `ExtensionCatalogService::widgets()`, rebuilt every time it opens. A library built
+  against another Qt is listed disabled with its mismatch reason. The button itself is disabled with nothing
+  installed, so the menu never opens empty.
 - `CustomWidgetConfigPanel` binds to the focused `CustomWidgetDockWidget`: one row per input with its wires and a
   chooser listing only the keys `CustomWidgetDockWidget::canBind` accepts ("Choose series" replaces slot 0, "Add
   series" on a `multiple` input appends at `WidgetBindings::kNewSlot`), then a settings form built from
@@ -468,9 +470,9 @@ panel, the `ActiveWidgetsMarker` and the startup review. `MainWindow` calls `sho
   inputs once, from the event loop, however many arrive together. A missing widget shows its reason and its stored
   wires, read-only.
 
-Flow: the placeholder's Custom Widget icon → `showPicker(dock)` keeps the empty dock in a `QPointer` and shows the
-picker, which stays up while that dock has the focus; a pick → `createCustomWidgetDock` and the new panel's config
-page. A dock closed or filled in between is left alone.
+Flow: the placeholder's Custom Widget button → `showPicker(dock)` keeps the empty dock in a `QPointer` and pops the
+menu up under the button; a pick → `createCustomWidgetDock` and the new panel's config page. A dock closed or filled
+in between is left alone.
 
 **Crash loop breaker (desktop only).** `CustomWidgetController` owns this process's `ActiveWidgetsMarker`
 (`active_widgets.<pid>.json` in the default directory) and hands it to every Custom Widget dock, which records its

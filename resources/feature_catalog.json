@@ -126,7 +126,7 @@
       "name": "Custom Widget panels",
       "summary": "Show values in a panel provided by a widget extension, for example a gauge, a numeric indicator or a value table. Each widget declares the series it takes and its settings, which appear in the side panel. Widget extensions are installed from the Marketplace.",
       "entry_point": "Empty plot area: click the Custom Widget button and pick a widget, then drag the series from the Datasets panel onto it",
-      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizCustomWidget; pj_app/src/ui/CustomWidgetPickerPanel.ui#CustomWidgetPickerPanel; pj_custom_widgets/CLAUDE.md#CustomWidgetDockWidget",
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizCustomWidget; pj_app/src/ui/CustomWidgetPickerMenu.cpp#CustomWidgetPickerMenu; pj_custom_widgets/CLAUDE.md#CustomWidgetDockWidget",
       "verified": "not checked by hand in the app; pj_app GUI tests and the headless CustomWidgetE2E runs cover the button, the picker and the restored widget"
     },
     {
