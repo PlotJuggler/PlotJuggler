@@ -855,16 +855,6 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   return plot_element;
 }
 
-std::vector<QColor> PlotWidget::reservedCurveColors() const {
-  std::vector<QColor> colors;
-  for (const QDomDocument& pending_doc : pending_curve_intents_) {
-    if (const QColor color(pending_doc.documentElement().attribute(u"color"_s)); color.isValid()) {
-      colors.push_back(color);
-    }
-  }
-  return colors;
-}
-
 bool PlotWidget::rememberPendingCurveIntent(const QDomElement& curve_element, bool notify) {
   if (!isPendingCurveIntentValid(curve_element, isXYPlot())) {
     return false;

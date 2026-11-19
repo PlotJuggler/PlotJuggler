@@ -71,12 +71,11 @@ Derived series reach this module as ordinary datastore topics through the catalo
   `requestedView()`. Fitting or saving the axes as shown instead zooms out a little on each resize, and a layout
   restored at startup or under another window shape comes back wider.
 - **A new curve takes a palette colour no curve of its plot uses yet; once every colour is in use it takes the
-  least-used one, lowest index first** (`PlotWidgetBase::freePaletteIndex`, read from the curves' pens and the
-  pending curves' saved colours, so restored and user-picked colours count). Both halves are intended: the session
-  counter and `CurveColorRegistry` know only what they handed out and a layout restore sets colours without them, so a
-  plain counter repeats a restored colour; and a fixed slot on exhaustion paints every further curve the same colour,
-  where the least-used rule spreads the repeats evenly. A colour the registry remembers for that curve is honoured as
-  it is.
+  least-used one, lowest index first** (`PlotWidgetBase::freePaletteIndex`, read from the curves' pens, so restored and
+  user-picked colours count). Both halves are intended: the session counter and `CurveColorRegistry` know only what
+  they handed out and a layout restore sets colours without them, so a plain counter repeats a restored colour; and a
+  fixed slot on exhaustion paints every further curve the same colour, where the least-used rule spreads the repeats
+  evenly. A colour the registry remembers for that curve is honoured as it is.
 - **`visibleXRangeChanged`** reports every move of the time axis; `rectChanged` drives the zoom link only.
 - **Object-dock drop hover** consults `IDataWidget::canAcceptObjectTopic` before accepting a catalog drag, so a view's
   payload-dependent refusal shows in the cursor. "Open Settings" / "Close Settings" in an object dock's context menu

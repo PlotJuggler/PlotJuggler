@@ -19,14 +19,13 @@
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
-#include "pj_plotting/PlotXml.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
 using namespace Qt::StringLiterals;
 
 // These tests pin the intended colour rule, a deliberate design and not an accident of the implementation: a new curve
-// takes a palette colour that no curve of its plot uses yet (a layout-restored, user-picked or pending curve counts);
+// takes a palette colour that no curve of its plot uses yet (a layout-restored or user-picked curve counts);
 // once every palette colour is in use it takes the least-used one, lowest index first, so colours repeat evenly instead
 // of all landing on one.
 
@@ -259,28 +258,6 @@ TEST(PlotWidgetCurveColors, ReAddedCurveKeepsItsRememberedColour) {
   const auto* again = plot.addCurve(fixture.keys()[0]);
   ASSERT_NE(again, nullptr);
   EXPECT_EQ(colorOf(again), first);
-}
-
-// A curve still waiting for its data (a layout's pending curve) holds its saved colour: a curve added meanwhile must
-// not take it, or the pending curve comes up in the same colour when its data arrives.
-TEST(PlotWidgetCurveColors, NewCurveSkipsAColourAPendingCurveHolds) {
-  ColorFixture fixture(1);
-  const ColorModeGuard mode(/*global=*/true);
-
-  PJ::PlotWidget plot(&fixture.session(), &fixture.catalog());
-  QDomDocument doc;
-  QDomElement pending = doc.createElement(u"curve"_s);
-  pending.setAttribute(u"topic"_s, u"/later"_s);
-  pending.setAttribute(u"field"_s, u"value"_s);
-  pending.setAttribute(u"color"_s, palette(0).name());
-  PJ::plot_xml::markPendingIntent(pending);
-  doc.appendChild(pending);
-  ASSERT_TRUE(plot.rememberPendingCurveIntent(pending, /*notify=*/false));
-
-  const auto* added = plot.addCurve(fixture.keys()[0]);
-  ASSERT_NE(added, nullptr);
-  EXPECT_NE(colorOf(added), hex(palette(0)));
-  EXPECT_EQ(colorOf(added), hex(palette(1)));
 }
 
 // Every palette colour in use: curves keep rotating through the palette in order, in the session-wide sequence.

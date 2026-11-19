@@ -869,9 +869,6 @@ int PlotWidgetBase::freePaletteIndex(const std::function<int()>& next_index) con
       count(info.curve->pen().color());
     }
   }
-  for (const QColor& color : reservedCurveColors()) {
-    count(color);
-  }
 
   // The first of the equally least-used slots is the lowest index.
   const auto least_used = std::min_element(uses.begin(), uses.end());
