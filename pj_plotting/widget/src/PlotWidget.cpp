@@ -291,9 +291,9 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   }
 
   // Auto-assignment: reuse the curve's remembered colour so it stays consistent across plots; otherwise take the next
-  // colour from the configured sequence, skipping the colours this plot already wears, and remember it. An explicit
-  // (non-transparent) colour, from a layout file for example, is honored as-is. session_ is non-null here (guarded
-  // above).
+  // colour from the configured sequence that this plot does not use yet (freePaletteIndex has the rule, including what
+  // happens once the palette is exhausted) and remember it. An explicit (non-transparent) colour, from a layout file
+  // for example, is honored as-is. session_ is non-null here (guarded above).
   if (color == Qt::transparent) {
     CurveColorRegistry& registry = session_->curveColorRegistry();
     if (const auto remembered = registry.color(name); remembered.has_value()) {
@@ -302,7 +302,7 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
       // New curve: "global" draws from the session-wide registry counter (one continuous sequence across every plot);
       // "per plot" starts at the curve's positional index in this plot, so each plot restarts at colour 0. Either way
       // the colour is remembered by name, so the curve keeps it on re-add and across plots. The counters know nothing
-      // of colours a layout restore or the user put on this plot, hence the skip.
+      // of colours a layout restore or the user put on this plot, which freePaletteIndex reads from the plot.
       QSettings settings;
       const bool global = settings.value(u"Preferences::curve_color_global"_s, true).toBool();
       int per_plot_index = static_cast<int>(curveList().size());
@@ -853,6 +853,16 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   }
 
   return plot_element;
+}
+
+std::vector<QColor> PlotWidget::reservedCurveColors() const {
+  std::vector<QColor> colors;
+  for (const QDomDocument& pending_doc : pending_curve_intents_) {
+    if (const QColor color(pending_doc.documentElement().attribute(u"color"_s)); color.isValid()) {
+      colors.push_back(color);
+    }
+  }
+  return colors;
 }
 
 bool PlotWidget::rememberPendingCurveIntent(const QDomElement& curve_element, bool notify) {

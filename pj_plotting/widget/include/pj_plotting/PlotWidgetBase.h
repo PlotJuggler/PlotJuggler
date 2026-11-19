@@ -179,11 +179,21 @@ class PlotWidgetBase : public QWidget {
   // width separately (per-curve width) can restyle a curve non-destructively.
   void applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style);
   QColor nextColor();
-  // Draws palette indices from `next_index` until one whose colour no curve of this plot wears: the curves' own pens
-  // decide, so a colour restored from a layout or picked by the user counts like an auto-assigned one. When all eight
-  // colours are worn it returns the first index drawn (a repeat is unavoidable). Each draw advances the caller's
-  // counter, so a session-wide counter skips the colours this plot holds.
+  // The palette colour rule for a new curve, deliberately in two halves:
+  //  - while some palette colour is used by no curve of this plot, the new curve takes the next such colour in the
+  //    caller's sequence (`next_index` is drawn until it names one, so a session-wide counter skips the colours this
+  //    plot holds);
+  //  - once every palette colour is in use, colours repeat: it takes the least-used one, the lowest index among ties,
+  //  so
+  //    the repeats spread evenly instead of all landing on one colour. `next_index` is not drawn then.
+  // A colour counts as used when a curve's pen wears it, so one restored from a layout or picked by the user counts
+  // like an auto-assigned one, as does one reservedCurveColors() holds. Colours outside the palette take no slot.
   [[nodiscard]] int freePaletteIndex(const std::function<int()>& next_index) const;
+  // Colours held for curves that are not plotted yet (a layout's pending curves): freePaletteIndex() counts them as in
+  // use, so a curve added meanwhile does not take the colour such a curve comes up in once its data arrives.
+  [[nodiscard]] virtual std::vector<QColor> reservedCurveColors() const {
+    return {};
+  }
   // Fills `info`'s ride-along marker with its curve's current colour; no-op if it already has it. The marker is not a
   // tracker: nothing else follows a recolour, so a pass that shows it calls this.
   void syncMarkerColor(const CurveInfo& info);

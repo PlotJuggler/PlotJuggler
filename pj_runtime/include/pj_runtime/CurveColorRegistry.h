@@ -21,8 +21,8 @@ class CurveColorRegistry {
 
   // Hands out the next palette index (monotonic, shared across all plots) for a
   // brand-new curve that has no remembered color yet: one app-wide counter, so
-  // palette rotation stays consistent between plots. The counter knows nothing of the colours a plot wears: a caller
-  // that finds the index taken draws again (PlotWidgetBase::freePaletteIndex), so the skipped indices are consumed.
+  // palette rotation stays consistent between plots. The counter knows nothing of the colours a plot already uses: a
+  // caller that finds the index taken draws again, so the skipped indices are consumed.
   [[nodiscard]] int nextPaletteIndex();
 
   void clear();

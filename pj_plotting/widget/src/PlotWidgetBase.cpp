@@ -65,8 +65,10 @@ namespace {
   return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(is_light));
 }
 
-const std::array<QColor, 8>& curvePalette() {
-  static const std::array<QColor, 8> k_colors = {
+constexpr std::size_t kPaletteSize = 8;
+
+const std::array<QColor, kPaletteSize>& curvePalette() {
+  static const std::array<QColor, kPaletteSize> k_colors = {
       QColor("#1f77b4"), QColor("#d62728"), QColor("#1ac938"), QColor("#ff7f0e"),
       QColor("#f14cc1"), QColor("#9467bd"), QColor("#17becf"), QColor("#bcbd22"),
   };
@@ -853,21 +855,37 @@ QColor PlotWidgetBase::nextColor() {
 }
 
 int PlotWidgetBase::freePaletteIndex(const std::function<int()>& next_index) const {
-  const auto worn = [this](int index) {
-    const QRgb rgb = colorFromIndex(index).rgb();
-    return std::any_of(plot_->curve_list.begin(), plot_->curve_list.end(), [rgb](const CurveInfo& info) {
-      return info.curve != nullptr && info.curve->pen().color().rgb() == rgb;
-    });
-  };
-  const int first = next_index();
-  int index = first;
-  for (std::size_t tried = 1; worn(index); ++tried) {
-    if (tried == curvePalette().size()) {
-      return first;
+  std::array<int, kPaletteSize> uses{};
+  const auto count = [&uses](const QColor& color) {
+    const auto& palette = curvePalette();
+    const auto slot = std::find_if(
+        palette.begin(), palette.end(), [&color](const QColor& candidate) { return candidate.rgb() == color.rgb(); });
+    if (slot != palette.end()) {
+      ++uses[static_cast<std::size_t>(slot - palette.begin())];
     }
-    index = next_index();
+  };
+  for (const CurveInfo& info : plot_->curve_list) {
+    if (info.curve != nullptr) {
+      count(info.curve->pen().color());
+    }
   }
-  return index;
+  for (const QColor& color : reservedCurveColors()) {
+    count(color);
+  }
+
+  // The first of the equally least-used slots is the lowest index.
+  const auto least_used = std::min_element(uses.begin(), uses.end());
+  const int least_used_index = static_cast<int>(least_used - uses.begin());
+  if (*least_used > 0) {
+    return least_used_index;
+  }
+  for (std::size_t tried = 0; tried < kPaletteSize; ++tried) {
+    const int index = next_index();
+    if (uses[static_cast<std::size_t>(index) % kPaletteSize] == 0) {
+      return index;
+    }
+  }
+  return least_used_index;
 }
 
 QColor PlotWidgetBase::paletteColor(int index) {
