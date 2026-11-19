@@ -342,7 +342,7 @@ std::optional<DisplaySeconds> AppSession::recomputeRange() {
   }
   // Union the bounds in DISPLAY-relative seconds, each item converted with its own dataset's offset, so the axis
   // matches what the plots render (display_time = raw_time - offset). Range only: never currentTime or
-  // playback_seeded_. setRange re-clamps the playhead; an in-range scrub position survives.
+  // seeded_datasets_. setRange re-clamps the playhead; an in-range scrub position survives.
   std::optional<DisplaySeconds> new_min;
   std::optional<DisplaySeconds> new_max;
   forEachVisibleRawRange([&](DatasetId dataset_id, Timestamp raw_min, Timestamp raw_max) {
@@ -389,7 +389,7 @@ void AppSession::resetPlaybackToEmpty() {
   playback_engine_->pause();
   playback_engine_->setHoldAtRangeMax(false);
   playback_engine_->setRangeAndCurrentTime(DisplayRange{DisplaySeconds{0.0}, DisplaySeconds{0.0}}, DisplaySeconds{0.0});
-  playback_seeded_ = false;
+  seeded_datasets_.clear();
 }
 
 std::optional<AppSession::MergePlan> AppSession::planMerge(const std::vector<DatasetId>& selected) const {
@@ -521,6 +521,9 @@ DatasetId AppSession::mergeDatasets(const std::vector<DatasetId>& selected) {
     catalog_model_->setDatasetDisplayName(plan->anchor, *anchor_label + u"_merged"_s);
   }
   for (const auto& source : plan->sources) {
+    if (seeded_datasets_.contains(source.dataset_id)) {
+      seeded_datasets_.insert(plan->anchor);
+    }
     catalog_model_->removeDataset(source.dataset_id);
   }
   catalog_model_->rebuildFromDatastore();
@@ -546,10 +549,13 @@ bool AppSession::seedPlaybackFromSession() {
     return false;
   }
 
-  if (!playback_seeded_) {
-    // First load (or first after the catalog emptied): snap currentTime to the data minimum.
+  const std::vector<DatasetId> shown = catalog_model_->datasetIds();
+  const bool seed_left =
+      std::any_of(shown.begin(), shown.end(), [this](DatasetId id) { return seeded_datasets_.contains(id); });
+  if (!seed_left) {
     playback_engine_->setCurrentTime(*new_min);
-    playback_seeded_ = true;
+    seeded_datasets_.clear();
+    forEachVisibleRawRange([this](DatasetId dataset_id, Timestamp, Timestamp) { seeded_datasets_.insert(dataset_id); });
   }
   return true;
 }
@@ -570,6 +576,7 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
   std::optional<DisplaySeconds> scalar_max;
   std::optional<DisplaySeconds> object_min;
   std::optional<DisplaySeconds> object_max;
+  std::set<DatasetId> bounded;
 
   for (const DatasetId dataset_id : datasets) {
     if (session_manager_->isStaticReferenceDataset(dataset_id)) {
@@ -585,6 +592,7 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
       const DisplaySeconds ds_max = rawToDisplaySecondsAtOrAfter(metadata->time_range_max, offset);
       scalar_min = scalar_min ? std::min(*scalar_min, ds_min) : ds_min;
       scalar_max = scalar_max ? std::max(*scalar_max, ds_max) : ds_max;
+      bounded.insert(dataset_id);
     }
     for (const ObjectTopicId object_topic_id : object_store.listTopics(dataset_id)) {
       if (isOffClockTopic(object_store.descriptor(object_topic_id))) {
@@ -598,6 +606,7 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
       const DisplaySeconds ds_max = rawToDisplaySecondsAtOrAfter(o_max, offset);
       object_min = object_min ? std::min(*object_min, ds_min) : ds_min;
       object_max = object_max ? std::max(*object_max, ds_max) : ds_max;
+      bounded.insert(dataset_id);
     }
   }
 
@@ -611,10 +620,11 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
   // every notify as it grows: the range must follow, but yanking a scrubbed cursor back to the import's start each tick
   // would fight the user.
   const DisplaySeconds cursor = playback_engine_->currentTime();
-  if (!playback_seeded_ || cursor < *t_min || cursor > *t_max) {
+  if (seeded_datasets_.empty() || cursor < *t_min || cursor > *t_max) {
     playback_engine_->setCurrentTime(*t_min);
+    seeded_datasets_.clear();
   }
-  playback_seeded_ = true;
+  seeded_datasets_.insert(bounded.begin(), bounded.end());
   return true;
 }
 

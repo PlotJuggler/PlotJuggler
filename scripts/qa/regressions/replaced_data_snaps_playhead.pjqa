@@ -1,0 +1,12 @@
+# Data replaced one dataset at a time (the next loaded, then the previous removed, as a browser preset switch does)
+# puts the playhead at the new data's start: it stayed on the removed data's time, clamped to the new data's end.
+# A dataset loaded next to the first leaves the playhead where it is.
+# needs: plugins
+open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/late_range.csv","config":{"time_mode":"column","time_column_index":0,"column_history":["time"],"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
+until get_status {} "name":"late_range.csv"
+open_file {"path":"$CHECKOUT/tests/wasm/fixtures/signals/data.csv","config":{"time_mode":"column","time_column_index":0,"column_history":["time"],"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
+until get_status {} "name":"data.csv"
+playback {"action":"state"}
+expect "current_time_s":100
+unload_file {"dataset":"late_range.csv"}
+until playback {"action":"state"} "current_time_s":0.0,

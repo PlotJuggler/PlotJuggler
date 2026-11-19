@@ -44,7 +44,12 @@ does not link it.
   `SourceTimelineController`). `recomputeRange()` updates only the `PlaybackEngine` range
   from the offset-adjusted union of visible topics; it is called throttled on the drag
   path, never resets `currentTime` while data remains, and returns the union's
-  display-min, which `seedPlaybackFromSession()` reuses for the first-load playhead snap.
+  display-min, which `seedPlaybackFromSession()` reuses for the playhead snap. The playhead is
+  seeded on the datasets present when it last snapped; a seed snaps it again once none of them
+  is in the catalog. Data replaced without the catalog ever emptying (a browser preset switch
+  loads the next preset's files before removing the previous ones; removing the first dataset
+  after adding another) therefore starts at the new data's start, while an added dataset, a
+  refill (same `DatasetId`) and a merge (the anchor inherits) keep the playhead.
   When no visible data remains it collapses the transport with `resetPlaybackToEmpty()`
   (pause, `[0,0]` range, cursor 0), the same reset the `CatalogModel::cleared()` hook runs
   on a full wipe: this is what stops playback when the last dataset is removed. While a

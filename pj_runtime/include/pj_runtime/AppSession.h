@@ -94,8 +94,11 @@ class AppSession : public QObject {
   // per dataset): the engine keeps removed/trashed topics' data as append-only tombstones, which must not stretch the
   // timeline. Recomputed from scratch, so the range also shrinks. Rebuild the catalog first (the load/ingest paths do).
   //
-  // The first seed after the session starts (or the catalog empties) also snaps currentTime to the new minimum; later
-  // seeds keep the scrub position (setRange re-clamps it). Returns false when no visible topic has data.
+  // The playhead is seeded on the datasets present when it last snapped to the data minimum. A seed snaps currentTime
+  // to the new minimum again once none of them is in the catalog (the first load, a cleared catalog, or data replaced
+  // dataset by dataset: removed after the next data loaded); otherwise it keeps the scrub position (setRange re-clamps
+  // it). A dataset under refill stays in the catalog, so a reload keeps the playhead. Returns false when no visible
+  // topic has data.
   bool seedPlaybackFromSession();
 
   // FOCUSES playback on specific datasets (a toolbox bulk import, e.g. a cloud fetch): sets the range to THEIR bounds
@@ -188,9 +191,9 @@ class AppSession : public QObject {
   // session-owned plugin handles die before loaded plugin libraries unload.
   std::unique_ptr<ExtensionCatalogService> extension_catalog_;
 
-  // Set by the first successful seedPlaybackFromSession(), cleared by the CatalogModel::cleared() hook; tells a first
-  // load (snap currentTime) from an additional load (keep it).
-  bool playback_seeded_ = false;
+  // The datasets the playhead was seeded on (seedPlaybackFromSession); empty = not seeded. Never grown by an added
+  // dataset, so data replaced without the catalog emptying re-seeds; a merge's anchor inherits its consumed datasets.
+  std::set<PJ::DatasetId> seeded_datasets_;
 };
 
 }  // namespace PJ
