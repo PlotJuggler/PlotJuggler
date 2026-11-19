@@ -31,7 +31,8 @@ families. Links `pj_runtime` and `pj_datastore`. How it works: [docs/ARCHITECTUR
 ## Key headers (`include/pj_scene_common/`)
 
 - `scene_layer.h`: `ISceneLayer`, `SceneLayerContext`, `SceneWarningParts`, `liveTopicTimeRange`,
-  `latestEntryRenderKey` / `kNoSampleRenderKey`, `derivedTopicPresentation`, `topicKey`.
+  `latestEntryRenderKey` / `kNoSampleRenderKey`, `derivedTopicPresentation`, `topicKey`, `uniqueObjectTopic` (binds
+  an unqualified saved reference; ambiguous stays pending).
 - `scene_dock_widget.h`: `SceneDockWidget`, the dock base a family subclasses.
 - `layer_factory.h`: `LayerFactory`, a family's object-type to layer registry.
 - `layer_params.h`: `serializeLayerParams` / `applyLayerParams`, copy and paste of a layer's settings as XML.

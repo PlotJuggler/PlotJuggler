@@ -1,0 +1,18 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="source" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="u-s1" tab_name="Scene">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockArea name="...">
+            <scene3d camera_model="orbit" version="1">
+              <config_topic dataset_source="ros2_occupancy_real.mcap" object_type="kFrameTransforms" topic_name="/tf"/>
+              <layer dataset_source="ros2_occupancy_real.mcap" display_name="/costmap" object_type="kOccupancyGrid" order="0" topic_name="/costmap" visible="true"/>
+            </scene3d>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+</root>

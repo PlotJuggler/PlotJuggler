@@ -1584,7 +1584,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   bool payload_invalid = !payload.isNull() && !payload.nextSiblingElement().isNull();
   if (!payload_invalid && !payload.isNull()) {
     if (auto* robot = dynamic_cast<RobotModelLayer*>(layer); robot != nullptr) {
-      const RobotModelLayer::XmlLoadResult result = robot->xmlLoadStateResult(payload);
+      const RobotModelLayer::XmlLoadResult result = robot->xmlLoadStateResult(payload, representativeDatasetId());
       if (result == RobotModelLayer::XmlLoadResult::kDeferred) {
         if (deferred_topic_name != nullptr) {
           *deferred_topic_name = payload.attribute(u"source_topic_name"_s);
@@ -1621,12 +1621,8 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
   }
   std::optional<ObjectTopicId> topic_id_opt;
   if (!hasDatasetIdentity(el)) {
-    const auto generic =
-        pj::scene3d::resolveUniqueObjectTopic(sessionManager()->objectStore(), topic_name.toStdString(), expected_type);
-    if (generic.ambiguous) {
-      return ElementRestoreResult::kInvalid;
-    }
-    topic_id_opt = generic.topic_id;
+    topic_id_opt = uniqueObjectTopic(
+        sessionManager()->objectStore(), topic_name.toStdString(), expected_type, representativeDatasetId());
   } else {
     bool dataset_ok = false;
     const qulonglong dataset_value = el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
@@ -1692,7 +1688,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreTrailElement(
   if (trail == nullptr) {
     return invalid("trail layer could not be created");
   }
-  const pj::scene3d::TrailLayer::XmlLoadResult result = trail->xmlLoadStateResult(payload);
+  const pj::scene3d::TrailLayer::XmlLoadResult result = trail->xmlLoadStateResult(payload, representativeDatasetId());
   if (result == pj::scene3d::TrailLayer::XmlLoadResult::kDeferred) {
     if (deferred_topic_name != nullptr) {
       *deferred_topic_name = payload.attribute(u"source_topic_name"_s);

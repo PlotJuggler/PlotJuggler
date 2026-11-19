@@ -313,7 +313,7 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     return false;
   }
 
-  if (!layer_el.hasAttribute(u"dataset_id"_s) || !savedDatasetOf(layer_el).has_value()) {
+  if (!savedDatasetOf(layer_el).has_value()) {
     markWorkspaceRestoreFailed();
     return true;
   }
@@ -327,14 +327,20 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  const SavedElementDataset binding = datasetForSavedElement(layer_el);
-  if (binding.refused) {
-    return true;
+  std::optional<ObjectTopicId> topic_id_opt;
+  if (!hasDatasetIdentity(layer_el)) {
+    topic_id_opt = uniqueObjectTopic(
+        session_->objectStore(), topic_name.toStdString(), *object_type_opt, representativeDatasetId());
+  } else {
+    const SavedElementDataset binding = datasetForSavedElement(layer_el);
+    if (binding.refused) {
+      return true;
+    }
+    if (!binding.dataset.has_value()) {
+      return false;
+    }
+    topic_id_opt = session_->objectStore().findTopic(*binding.dataset, topic_name.toStdString());
   }
-  if (!binding.dataset.has_value()) {
-    return false;
-  }
-  const auto topic_id_opt = session_->objectStore().findTopic(*binding.dataset, topic_name.toStdString());
   if (!topic_id_opt.has_value()) {
     return false;
   }
@@ -708,10 +714,6 @@ QDomElement SceneDockWidget::xmlSaveState(QDomDocument& doc) const {
 }
 
 bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
-  return loadSavedState(element, element);
-}
-
-bool SceneDockWidget::loadSavedState(const QDomElement& element, const QDomElement& authored) {
   if (element.isNull() || element.tagName() != xmlTag()) {
     return false;
   }
@@ -737,7 +739,7 @@ bool SceneDockWidget::loadSavedState(const QDomElement& element, const QDomEleme
   resetWorkspaceRestoreStatus();
   clearPendingRestores();
   clearLayers();
-  recordSavedDatasets(authored);
+  recordSavedDatasets(element);
   if (session_ == nullptr) {
     syncViewLayers();
     refreshView();

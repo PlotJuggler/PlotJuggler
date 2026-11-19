@@ -433,7 +433,9 @@ TEST(Scene2DDockWidget, SourceQualifiedLayoutUsesRemintedDatasetInsteadOfGeneric
   EXPECT_NE(restored.layerFor(*reminted_topic), nullptr);
 }
 
-TEST(Scene2DDockWidget, GenericLayoutRejectsAmbiguousCompatibleTopicsWithoutReplacingState) {
+// An ambiguous generic layer is unresolved, not malformed, as an ambiguous plot curve is: it stays pending and the
+// restore succeeds. Once the dock shows a dataset, the ambiguity resolves to that dataset's topic.
+TEST(Scene2DDockWidget, GenericLayoutKeepsAmbiguousTopicPendingUntilTheDockShowsADataset) {
   static const std::string kImageMetadata = R"({"builtin_object_type":"kImage"})";
 
   PJ::SessionManager session;
@@ -441,27 +443,40 @@ TEST(Scene2DDockWidget, GenericLayoutRejectsAmbiguousCompatibleTopicsWithoutRepl
   const auto kept = registerTopic(session, 1, "/camera/kept", kImageMetadata);
   const auto second_match = registerTopic(session, 2, "/camera/image", kImageMetadata);
 
-  PJ::Scene2DDockWidget dock;
-  dock.setSessionManager(&session);
-  ASSERT_TRUE(dock.addTopic(kept, PJ::sdk::BuiltinObjectType::kImage, u"Kept"_s));
-
   QDomDocument doc;
   QDomElement generic = doc.createElement(u"scene2d"_s);
-  QDomElement layer = doc.createElement(u"layer"_s);
-  layer.setAttribute(u"topic_name"_s, u"/camera/image"_s);
-  layer.setAttribute(u"object_type"_s, u"kImage"_s);
-  layer.setAttribute(u"layer_kind"_s, u"image"_s);
-  generic.appendChild(layer);
+  const auto append_layer = [&doc, &generic](const QString& topic) {
+    QDomElement layer = doc.createElement(u"layer"_s);
+    layer.setAttribute(u"topic_name"_s, topic);
+    layer.setAttribute(u"object_type"_s, u"kImage"_s);
+    layer.setAttribute(u"layer_kind"_s, u"image"_s);
+    generic.appendChild(layer);
+  };
+  append_layer(u"/camera/image"_s);
 
-  EXPECT_FALSE(dock.xmlLoadState(generic));
-  EXPECT_NE(dock.layerFor(kept), nullptr);
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.xmlLoadState(generic));
+  dock.finishRestore();
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_EQ(dock.layerFor(first_match), nullptr);
   EXPECT_EQ(dock.layerFor(second_match), nullptr);
+  EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/camera/image"_s});
+
+  append_layer(u"/camera/kept"_s);
+  PJ::Scene2DDockWidget gated;
+  gated.setSessionManager(&session);
+  ASSERT_TRUE(gated.xmlLoadState(generic));
+  gated.finishRestore();
+  EXPECT_FALSE(gated.workspaceRestoreFailed());
+  EXPECT_NE(gated.layerFor(kept), nullptr);
+  EXPECT_NE(gated.layerFor(first_match), nullptr);
+  EXPECT_EQ(gated.layerFor(second_match), nullptr);
+  EXPECT_TRUE(gated.unresolvedBlockingPendingRestores().isEmpty());
 }
 
-// Generic (unqualified) layers get their live dataset written in before the shared restore runs,
-// but the layout never named a dataset for them: they must not join the saved-dataset order and
-// wait behind a qualified layer whose dataset has not loaded.
+// Generic (unqualified) layers name no dataset: they must not join the saved-dataset order and wait behind a
+// qualified layer whose dataset has not loaded.
 TEST(Scene2DDockWidget, GenericLayersAreNotHeldBehindAnUnresolvedQualifiedDataset) {
   static const std::string kImageMetadata = R"({"builtin_object_type":"kImage"})";
 
@@ -904,6 +919,36 @@ TEST(Scene2DDockWidget, XmlPersistsDepthConcreteKindWhenImageTopicHasNoSampleAtR
   const auto target_topic = *target_topic_result;
   ASSERT_EQ(target_session.objectStore().entryCount(target_topic), 0U);
   EXPECT_EQ(restored.retryPendingRestores(QSet<QString>{u"/camera/depth"_s}), 1);
+  EXPECT_EQ(familyFor(restored.layers(), target_topic), u"Depth"_s);
+}
+
+// The generic-layout twin: a layer with no dataset identity keeps its saved kind too.
+TEST(Scene2DDockWidget, GenericXmlPersistsDepthConcreteKindWhenImageTopicHasNoSampleAtRestore) {
+  static const std::string kImageMetadata = R"({"builtin_object_type":"kImage"})";
+  PJ::SessionManager source_session;
+  const auto source_topic = registerTopic(source_session, 12, "/camera/depth");
+  ASSERT_TRUE(source_session.objectStore()
+                  .pushOwned(source_topic, 100, makeImageBytes(2, 2, "16UC1", std::vector<uint8_t>(2 * 2 * 2, 0x10)))
+                  .has_value());
+
+  PJ::Scene2DDockWidget source;
+  source.setSessionManager(&source_session);
+  ASSERT_TRUE(source.addTopic(source_topic, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s));
+
+  QDomDocument doc;
+  const QDomElement saved = source.xmlSaveState(doc);
+  QDomElement layer_element = saved.firstChildElement(u"layer"_s);
+  ASSERT_EQ(layer_element.attribute(u"layer_kind"_s), u"depth"_s);
+  layer_element.removeAttribute(u"dataset_id"_s);
+  layer_element.removeAttribute(u"dataset_source"_s);
+  layer_element.removeAttribute(u"dataset_path"_s);
+
+  PJ::SessionManager target_session;
+  const auto target_topic = registerTopic(target_session, 12, "/camera/depth", kImageMetadata);
+  ASSERT_EQ(target_session.objectStore().entryCount(target_topic), 0U);
+  PJ::Scene2DDockWidget restored;
+  restored.setSessionManager(&target_session);
+  ASSERT_TRUE(restored.xmlLoadState(saved));
   EXPECT_EQ(familyFor(restored.layers(), target_topic), u"Depth"_s);
 }
 

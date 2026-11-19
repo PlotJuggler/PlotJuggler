@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "pj_base/builtin/builtin_object.hpp"
@@ -102,6 +103,14 @@ struct DerivedTopicPresentation {
 
 /// The presentation of `topic_id`; empty when `session` is null or the topic is no on-demand output. GUI thread.
 [[nodiscard]] DerivedTopicPresentation derivedTopicPresentation(SessionManager* session, ObjectTopicId topic_id);
+
+/// The live topic an unqualified (generic-layout) saved reference names: the only topic with this name and builtin
+/// type, else the only one of them in `preferred_dataset` (the dataset the dock shows; 0 = none). nullopt when none or
+/// several match: an ambiguous reference is unresolved, not malformed, so restore code keeps it pending (as plots keep
+/// an ambiguous curve) instead of failing the layout, and never binds an arbitrary dataset.
+[[nodiscard]] std::optional<ObjectTopicId> uniqueObjectTopic(
+    const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type,
+    DatasetId preferred_dataset = 0);
 
 /// Backend-neutral contract for one object topic in a layered scene. A layer is attached before use, updated by the
 /// dock as tracker time and visibility change, and detached before removal or destruction.
