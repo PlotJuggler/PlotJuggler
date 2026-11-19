@@ -1469,6 +1469,35 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_split_horizontal_action
   reportWasmMenuAction(u"Split Horizontally"_s, "split_horizontal");
 }
 
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_duplicate_tab_action() {
+  reportWasmMenuAction(u"Duplicate tab"_s, "duplicate_tab");
+}
+
+/// The plot-tab count and the strip frames' centers (left to right), for the tab context-menu spec.
+extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_plot_tabs() {
+  auto* main_window = wasmTestMainWindow();
+  auto* tabs = main_window != nullptr ? main_window->findChild<PJ::TabbedPlotWidget*>() : nullptr;
+  if (tabs == nullptr) {
+    qWarning("PJ_WASM_PLOT_TABS_FAILED no tab widget");
+    return;
+  }
+  QList<QWidget*> frames;
+  for (QFrame* frame : tabs->findChildren<QFrame*>(u"plotTabFrame"_s)) {
+    if (frame->isVisible()) {
+      frames.push_back(frame);
+    }
+  }
+  std::sort(frames.begin(), frames.end(), [](const QWidget* lhs, const QWidget* rhs) {
+    return lhs->mapToGlobal(QPoint(0, 0)).x() < rhs->mapToGlobal(QPoint(0, 0)).x();
+  });
+  qInfo("PJ_WASM_PLOT_TABS count=%d", tabs->tabCount());
+  for (qsizetype index = 0; index < frames.size(); ++index) {
+    const QPoint center = frames[index]->mapToGlobal(frames[index]->rect().center());
+    qInfo("PJ_WASM_PLOT_TAB_FRAME index=%lld center=%d,%d", static_cast<long long>(index), center.x(), center.y());
+  }
+  qInfo("PJ_WASM_PLOT_TABS_DONE");
+}
+
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_save_layout_action() {
   reportWasmMenuAction(u"Save Layout..."_s, "save_layout");
 }
@@ -1702,6 +1731,8 @@ EM_JS(void, pj_wasm_install_browser_test_probes, (), {
   globalThis.pjWasmReportRemoveAllActionProbe = () => Module._pj_wasm_test_report_remove_all_action();
   globalThis.pjWasmReportZoomOutActionProbe = () => Module._pj_wasm_test_report_zoom_out_action();
   globalThis.pjWasmReportSplitHorizontalActionProbe = () => Module._pj_wasm_test_report_split_horizontal_action();
+  globalThis.pjWasmReportDuplicateTabActionProbe = () => Module._pj_wasm_test_report_duplicate_tab_action();
+  globalThis.pjWasmReportPlotTabsProbe = () => Module._pj_wasm_test_report_plot_tabs();
   globalThis.pjWasmReportSaveLayoutActionProbe = () => Module._pj_wasm_test_report_save_layout_action();
   globalThis.pjWasmReportSaveSourceLayoutActionProbe = () => Module._pj_wasm_test_report_save_source_layout_action();
   globalThis.pjWasmReportApplyFilterActionProbe = () => Module._pj_wasm_test_report_apply_filter_action();

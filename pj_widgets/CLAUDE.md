@@ -42,7 +42,7 @@ Dialogs, chrome and feedback:
 | `ProgressBar.h` | App-styled `QProgressBar` (`PJ--ProgressBar` QSS class). `Q_OBJECT` is mandatory or the selector never matches. |
 | `IngestProgressWidget.h` | Title-bar progress strip; shows or hides only on `setActive()` (timing is owner policy). |
 | `ToastManager.h`, `ToastNotification.h` | Bottom-right toasts over a host widget; forward the host's `resizeEvent` to `updatePosition()`. Message is rich text with external links. |
-| `OwnedMenu.h` | `showOwnedMenu`: self-deleting context menu, modal on desktop and non-blocking in the browser; act through signal handlers, never read results after the call. |
+| `OwnedMenu.h` | `showOwnedMenu`: the one way to show a context menu. Self-deleting, modal on desktop and non-blocking in the browser; act through signal handlers, never read results after the call. |
 | `RecentFilesMenu.h` | Persistent MRU menu; `enabledChanged` is not emitted by the constructor, seed it via `isEmpty()`. |
 | `RenderingWarningLabel.h` | Hidden themed warning label the 2D/3D docks show while their GPU view cannot render. |
 | `AppSettings.h` | `appSettings()` / `appSetting()`: the per-thread default `QSettings` (a constructed one reads from memory, which matters in the browser, where constructing one costs 2-3 ms), and `valuePrecision()`, the app-wide value-text precision. Fix the format and path before the first call (the browser switches the default format at startup). |
@@ -100,6 +100,7 @@ Helpers:
 ## Usage notes
 
 - **`MessageBox::question()` in the browser:** it uses `exec()`, which the Asyncify-free browser build cannot nest, so it returns at once. Any confirmation reachable in the browser uses `questionAsync` (modal on desktop, non-blocking in the browser, so never rely on either ordering). `information` / `warning` / `critical` are non-blocking in the browser.
+- **Every context menu goes through `showOwnedMenu`:** a `QMenu::exec()` on the browser's main thread aborts the whole application (it cannot nest an event loop). Allocate the menu on the heap, connect each action's lambda to members of a surviving object (never `[&]` over the caller's stack, which is gone once the browser call returns), read nothing after the call, then hand it over. `scripts/pre-commit/check-forbidden-patterns.py` refuses `menu.exec(` (a variable named `*menu*`) outside `OwnedMenu.cpp`.
 - **Toast child names are stylesheet selectors:** `toastIcon`, `toastMessage`, `toastCloseButton` appear in the `PJ--ToastNotification` QSS rules; do not rename them.
 
 ## Tests

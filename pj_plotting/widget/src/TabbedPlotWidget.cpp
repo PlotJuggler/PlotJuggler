@@ -30,6 +30,7 @@
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/SvgUtil.h"
 
 using namespace Qt::StringLiterals;
@@ -619,14 +620,14 @@ void TabbedPlotWidget::onTabContextMenuRequested(PlotTabFrame* frame, const QPoi
   if (entry == nullptr || entry->docker == nullptr) {
     return;  // widget tabs have no plot state to copy
   }
-  QMenu menu(this);
+  auto* menu = new QMenu(this);
   QPointer<PlotDocker> docker(entry->docker);
-  connect(menu.addAction(tr("Duplicate tab")), &QAction::triggered, this, [this, docker]() {
+  connect(menu->addAction(tr("Duplicate tab")), &QAction::triggered, this, [this, docker]() {
     if (docker != nullptr) {
       duplicateTab(docker);
     }
   });
-  menu.exec(frame->mapToGlobal(pos));
+  showOwnedMenu(menu, frame->mapToGlobal(pos));
 }
 
 void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {

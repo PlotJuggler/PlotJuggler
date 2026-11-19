@@ -107,6 +107,60 @@ test('dataset removal asks without blocking and honours Cancel and Remove', asyn
   expect(errors).toEqual([]);
 });
 
+// A plot tab's menu is the one context menu a stack-allocated QMenu::exec() used to serve: the browser build cannot
+// nest an event loop, so the right-click aborted the whole application.
+async function plotTabs(page, consoleMessages) {
+  const lines = await probeLines(
+    page, consoleMessages, () => window.pjWasmReportPlotTabsProbe(), 'PJ_WASM_PLOT_TABS_DONE');
+  const count = Number(lines.find(message => message.includes('PJ_WASM_PLOT_TABS count=')).match(/count=(\d+)/)[1]);
+  const frames = lines
+    .map(message => message.match(/PJ_WASM_PLOT_TAB_FRAME index=\d+ center=(-?\d+),(-?\d+)/))
+    .filter(Boolean)
+    .map(match => ({ x: Number(match[1]), y: Number(match[2]) }));
+  return { count, frames };
+}
+
+test('right-clicking a plot tab shows its menu without aborting, and Duplicate tab adds a tab', async ({ page }) => {
+  test.setTimeout(60000);
+  const errors = [];
+  const consoleMessages = [];
+  let crashed = false;
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('console', message => consoleMessages.push(message.text()));
+  page.on('crash', () => { crashed = true; });
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  const screen = await page.locator('#screen').boundingBox();
+  expect(screen).not.toBeNull();
+
+  const initial = await plotTabs(page, consoleMessages);
+  expect(initial.frames.length).toBeGreaterThan(0);
+  expect(initial.count).toBe(initial.frames.length);
+
+  // An aborted application takes the page down with it, so every call after the click can reject.
+  await page.mouse.click(screen.x + initial.frames[0].x, screen.y + initial.frames[0].y, { button: 'right' })
+    .then(() => page.waitForTimeout(300))
+    .catch(() => {});
+  expect(
+    {
+      crashed,
+      aborts: consoleMessages.filter(message => /Aborted|without asyncify|Application exit/.test(message)),
+    },
+    'the right-click aborted the application',
+  ).toEqual({ crashed: false, aborts: [] });
+
+  const lines = await probeLines(
+    page, consoleMessages, () => window.pjWasmReportDuplicateTabActionProbe(), 'PJ_WASM_MENU_ACTION');
+  const action = lines.find(message => message.includes('PJ_WASM_MENU_ACTION name=duplicate_tab'));
+  expect(action, 'the tab context menu does not show "Duplicate tab"').toBeTruthy();
+  const center = action.match(/center=(\d+),(\d+)/);
+  await page.mouse.click(screen.x + Number(center[1]), screen.y + Number(center[2]));
+
+  await expect.poll(async () => (await plotTabs(page, consoleMessages)).count, { timeout: 10000 })
+    .toBe(initial.count + 1);
+  expect(errors).toEqual([]);
+});
+
 test('Preferences opens from the File menu without the Plugins page and closes on OK', async ({ page }) => {
   test.setTimeout(60000);
   const errors = [];

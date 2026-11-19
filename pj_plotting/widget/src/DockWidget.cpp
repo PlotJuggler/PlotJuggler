@@ -38,6 +38,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_widgets/CurveTreeView.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 using namespace Qt::StringLiterals;
@@ -966,46 +967,34 @@ void DockWidget::setConfigurationPanelVisibilityQuery(std::function<bool()> quer
 
 void DockWidget::showObjectContextMenu(const QPoint& global_pos) {
   const QString theme = currentTheme();
-#ifdef PJ_TARGET_WASM
-  // QMenu::exec() needs a nested event loop, which the Asyncify-free browser build cannot enter: retain the popup until
-  // it closes; action wiring is the desktop menu's.
-  auto* wasm_menu = new QMenu(this);
-  wasm_menu->setAttribute(Qt::WA_DeleteOnClose);
-  QMenu& menu = *wasm_menu;
-#else
-  QMenu menu(this);
-#endif
-  menu.setObjectName(u"PJMenu"_s);
-  menu.setProperty("categorySeparators", true);
+  auto* menu = new QMenu(this);
+  menu->setObjectName(u"PJMenu"_s);
+  menu->setProperty("categorySeparators", true);
   const bool settings_open = configuration_panel_visible_ && configuration_panel_visible_();
-  menu.addAction(settings_open ? tr("Close Settings") : tr("Open Settings"), this, [this]() {
+  menu->addAction(settings_open ? tr("Close Settings") : tr("Open Settings"), this, [this]() {
     focusSelf();
     emit settingsPanelToggleRequested(this);
   });
-  addActionCategorySeparator(menu);
-  QAction* copy_action = menu.addAction(
+  addActionCategorySeparator(*menu);
+  QAction* copy_action = menu->addAction(
       QIcon(loadSvg(":/resources/svg/copy.svg", theme)), tr("Copy"), this, [this]() { copyObjectWidgetToClipboard(); });
   copy_action->setEnabled(!objectWidgetClipboardTag().isEmpty());
-  QAction* paste_action = menu.addAction(
+  QAction* paste_action = menu->addAction(
       QIcon(loadSvg(":/resources/svg/paste.svg", theme)), tr("Paste"), this,
       [this]() { pasteObjectWidgetFromClipboard(); });
   paste_action->setEnabled(canPasteObjectWidgetFromClipboard());
-  addActionCategorySeparator(menu);
+  addActionCategorySeparator(*menu);
 
-  menu.addAction(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)), tr("Split Horizontally"), this, [this]() {
+  menu->addAction(QIcon(loadSvg(":/resources/svg/add_column.svg", theme)), tr("Split Horizontally"), this, [this]() {
     splitHorizontal();
   });
-  menu.addAction(QIcon(loadSvg(":/resources/svg/add_row.svg", theme)), tr("Split Vertically"), this, [this]() {
+  menu->addAction(QIcon(loadSvg(":/resources/svg/add_row.svg", theme)), tr("Split Vertically"), this, [this]() {
     splitVertical();
   });
-  addActionCategorySeparator(menu);
-  menu.addAction(
+  addActionCategorySeparator(*menu);
+  menu->addAction(
       QIcon(loadSvg(":/resources/svg/clear.svg", theme)), tr("Clear"), this, [this]() { clearToPlaceholder(); });
-#ifdef PJ_TARGET_WASM
-  menu.popup(global_pos);
-#else
-  menu.exec(global_pos);
-#endif
+  showOwnedMenu(menu, global_pos);
 }
 
 }  // namespace PJ

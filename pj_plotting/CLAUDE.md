@@ -49,6 +49,7 @@ Derived series reach this module as ordinary datastore topics through the catalo
   rendering is CPU-heavy, so do not drop the GPU default without measuring.
 - **Do not make the plot canvas a `WA_NativeWindow` inside Qt-Advanced-Docking:** it was found to break the dock layout
   (not re-verified).
+- **Vendored ADS menus stay unreachable in the browser.** ADS opens its tab, title-bar and auto-hide-tab menus with `QMenu::exec()`, which aborts the browser build. They never open because `PlotDocker`'s `HiddenTitleBar` is forced invisible (the tabs and title-bar menu live inside it; `DockToolbar` forwards mouse events to it, never context-menu events) and auto-hide is never enabled (`CDockManager::AutoHideFeatureEnabled` is off by default, so no `CAutoHideTab` exists). Showing the ADS title bar or enabling auto-hide needs those menus replaced first.
 - **QRhi canvas:** a text resource never survives `releaseResources()` (a GPU reset or context teardown reuses it
   stale); set the viewport after binding each pipeline (Vulkan draws nothing otherwise); `renderFailed()` can fire
   inside `render()`, so a receiver that replaces the canvas connects queued (the swap deletes the canvas under the
