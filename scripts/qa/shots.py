@@ -19,6 +19,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 REPO = "PlotJuggler/PlotJuggler"
 BRANCH = "qa-screenshots"
@@ -35,7 +36,7 @@ def annotate(args):
     try:
         from PIL import Image, ImageDraw, ImageFont
     except ImportError:
-        sys.exit("annotate needs Pillow: pip install pillow")
+        sys.exit('annotate needs Pillow 10.1 or newer: pip install "pillow>=10.1"')
     image = Image.open(args.input).convert("RGB")
     draw = ImageDraw.Draw(image)
     width = max(3, image.width // 400)
@@ -73,31 +74,37 @@ def screenshots_worktree():
     common = Path(subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
                                  check=True, text=True, capture_output=True).stdout.strip())
     worktree = common.parent / ".worktrees" / BRANCH
-    if not worktree.exists():
+    if not (worktree / ".git").exists():  # a linked worktree has a .git file; a stray folder would run git in ours
         subprocess.run(["git", "fetch", "-q", "origin", f"{BRANCH}:{BRANCH}"], check=False)
         subprocess.run(["git", "worktree", "add", "-q", str(worktree), BRANCH], check=True)
     return worktree
 
 
 def publish(args):
-    worktree = screenshots_worktree()
-    git(worktree, "pull", "-q", "--rebase", "origin", BRANCH)
-    target = worktree / args.folder
-    target.mkdir(parents=True, exist_ok=True)
-    markdown = []
+    items = []
     for item in args.images:
         caption, _, source = item.rpartition("=")
-        if not caption:
-            sys.exit(f"expected Caption=path.png, got {item!r}")
-        name = Path(source).name
-        (target / name).write_bytes(Path(source).read_bytes())
-        git(worktree, "add", f"{args.folder}/{name}")
-        url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{args.folder}/{name}"
+        if not caption or not Path(source).is_file():
+            sys.exit(f"expected Caption=path.png with an existing file, got {item!r}")
+        items.append((caption, Path(source)))
+    names = [source.name for _, source in items]
+    if len(set(names)) != len(names):
+        sys.exit(f"two images share a file name: {names}")
+    folder = args.folder.strip("/")
+    worktree = screenshots_worktree()
+    git(worktree, "pull", "-q", "--rebase", "origin", BRANCH)
+    target = worktree / folder
+    target.mkdir(parents=True, exist_ok=True)
+    markdown = []
+    for caption, source in items:
+        (target / source.name).write_bytes(source.read_bytes())
+        git(worktree, "add", f"{folder}/{source.name}")
+        url = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/{quote(folder)}/{quote(source.name)}"
         markdown.append(f"**{caption}**\n\n![{caption}]({url})\n")
-    if git(worktree, "status", "--porcelain", capture=True).strip():
-        subprocess.run(["git", "-C", str(worktree), "commit", "-q", "-m", f"screenshots for {args.folder}"],
+    if subprocess.run(["git", "-C", str(worktree), "diff", "--cached", "--quiet"]).returncode:
+        subprocess.run(["git", "-C", str(worktree), "commit", "-q", "-m", f"screenshots for {folder}"],
                        check=True, env={**os.environ, "PRE_COMMIT_ALLOW_NO_CONFIG": "1"})
-        git(worktree, "push", "-q", "origin", BRANCH)
+    git(worktree, "push", "-q", "origin", BRANCH)  # also retries an earlier run whose push failed
     print("\n".join(markdown))
 
 
