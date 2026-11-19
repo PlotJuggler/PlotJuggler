@@ -93,8 +93,8 @@ are acceptance-build-only browser probes. `benchmarks/` holds the mixed-layout b
 ## Docs
 
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): threads and teardown, startup, file loading and progress, streaming,
-  recording, layouts, cloud import, owned views, toolbox presentation, Custom Topics, Custom Widgets, browser boundary
-  and presets, MCP, tests, known gaps.
+  recording, layouts, cloud import, owned views, toolbox presentation, Custom Topics, Custom Widgets, Log panels,
+  browser boundary and presets, MCP, tests, known gaps.
 - [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): the measurements and incidents behind browser, linking, export
   and packaging choices.
 - Cross-module: [derived objects](../docs/derived_objects/ARCHITECTURE.md),

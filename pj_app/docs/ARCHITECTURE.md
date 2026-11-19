@@ -539,8 +539,8 @@ See the derived-objects architecture, "The on-demand pipeline".
 docks: wired to the session, the diagnostic sink, the undo debounce and
 `TopicDemandController::registerCustomWidgetDock`, and given the `pj.playback.v1` time mappers
 (`displayTimeForTopic` / `displayTimeForSource`, the same two a toolbox session's playback host uses). The
-object-widget factory is installed whether or not Scene2D/Scene3D are built, because this kind and
-`state_transitions` do not depend on them. `MainWindow::createCustomWidgetDock(dock, plugin_id, type)`, which the
+object-widget factory is installed whether or not Scene2D/Scene3D are built, because this kind,
+`state_transitions` and `log` do not depend on them. `MainWindow::createCustomWidgetDock(dock, plugin_id, type)`, which the
 picker calls, binds the plugin widget before the dock mounts it (so the mount sees the plugin's widget tree), then
 adopts it. `onObjectFamilyRequested(kCustomWidget)` creates nothing: the widget is chosen first, or an unbound panel
 would be left behind. Object types with no built-in view (`isCustomWidgetObjectType` in
@@ -583,6 +583,18 @@ restore as placeholders. An unattended run only reports. An unreadable record is
 Tests: `main_window_custom_widget_test.cpp` (`UncleanShutdownTest` gives each case its own application name, because
 Disable needs the extension store's single-writer lease), `custom_widget_panels_test.cpp`, and the executable's
 end-to-end runs registered from `pj_custom_widgets/tests/E2E.cmake`.
+
+## Log panels
+
+`MainWindow::makeSceneDock` builds the `"log"` kind (`LogDockWidget` from `pj_plotting`, the `<log>` layout tag),
+counted as `panel.log`, given the app-wide time format and wired to the undo debounce,
+`TopicDemandController::registerLogDock` and the pending-binding rebuild. `sceneKindForObjectType` routes `kLog` to
+it, so a log topic dropped on an empty area opens a Log panel, and the placeholder's Log button
+(`VisualizationKind::kLog`) creates an empty one. A log dropped on a mounted Log panel merges into it
+(`tryAcceptObjectTopic`). An advertised log placeholder dropped on a Log panel stays pending in it
+(`TopicDemandController::handleLogDockPlaceholderDrop`) while `PendingDisplayBinder::addPendingLogTopic` holds its
+demand; a restored layout's unresolved topics are collected the same way. `applyTimeLabelFormat` reaches every panel
+through `forEachLogPanel`. The curve list badges a log row with the Log glyph (`objectTypeBadgeIcon`).
 
 ## Browser (WebAssembly) boundary
 

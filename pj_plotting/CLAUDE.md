@@ -4,7 +4,8 @@ Qwt-based plotting module: time-series plots, dockers, zoomers, trackers, legend
 panel and the GPU plot canvas (`PlotRhiCanvas`). It also owns the plot-area State Transitions family (not Qwt):
 discrete-series state strips for string, integer and bool fields and for floats holding only whole numbers, through the
 `StateSeriesAdapter` reader in `core/` and the `StateTransitionsController` / `StateTransitionsDockWidget` binding in
-`widget/`, over the reusable `StateTransitionsView` from `pj_widgets`. How the designs that span several classes work:
+`widget/`, over the reusable `StateTransitionsView` from `pj_widgets`, and the Log panel family: `LogDockWidget`, a
+`LogView` from `pj_widgets` over the log topics (`kLog`) dropped on it. How the designs that span several classes work:
 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md). Each header's doc-comment owns its API contract.
 
 ## Layout
@@ -24,7 +25,8 @@ pj_plotting  ──►  pj_plotting_core  ──►  pj_runtime + pj_datastore +
   `PlotMagnifier`, `CurveTracker`, `PlotLegend`, `PlotMarkersItem`, `PlotScaleDraw`, `PlotRhiCanvas` (private
   implementation in `widget/src/PlotRhi*`, shaders in `widget/shaders/`). Docking: `PlotDocker`, `TabbedPlotWidget`,
   `DockWidget`, `DockToolbar`, `PlotFocusOverlay`. Panels: `CurveEditor`, `XYCurveDialog`, `FilterEditorPanel`,
-  `ParameterForm`, `StateTransitionsController`, `StateTransitionsDockWidget`.
+  `ParameterForm`, `StateTransitionsController`, `StateTransitionsDockWidget`, `LogDockWidget` (kind and XML tag
+  `log`).
 - `tests/` (gtest runners and the QRhi render harness), `benchmarks/` (`PJ_BUILD_DEMOS`).
 
 Derived series reach this module as ordinary datastore topics through the catalog
@@ -81,6 +83,9 @@ Derived series reach this module as ordinary datastore topics through the catalo
 - **Object-dock drop hover** consults `IDataWidget::canAcceptObjectTopic` before accepting a catalog drag, so a view's
   payload-dependent refusal shows in the cursor. "Open Settings" / "Close Settings" in an object dock's context menu
   emits `settingsPanelToggleRequested` through `PlotDocker`; the host-supplied visibility query picks the label.
+- **The Log panel decodes each stored entry once:** an update appends what landed after a topic's `drainNewSince`
+  cursor and re-reads a topic only when its `contentIdentity().rewrite` moved or the display offset changed. Reasoning, not
+  measured: re-reading every topic on each landing makes a progressive load quadratic in the log size.
 - **pj_plotting stays agnostic to scene families:** placeholder icons and drops go to the shell through
   `objectFamilyRequested` and the object-widget factory; the shell alone maps families to kinds.
 
