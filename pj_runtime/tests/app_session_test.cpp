@@ -1559,6 +1559,49 @@ TEST(AppSessionTest, StoppedStreamKeepsThePlayheadSeeded) {
   EXPECT_DOUBLE_EQ(engine.currentTime().value, 200.0) << "not moved from the stream's tip to its start";
 }
 
+// A stream-only session is not seeded: the first file loaded after it still snaps the playhead to the data's start.
+TEST(AppSessionTest, StreamOnlySessionStillSnapsOnItsFirstFile) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::PlaybackEngine& engine = session.playbackEngine();
+
+  const PJ::DatasetId stream = makeShiftedDataset(session, "stream", 0, "/live", {100 * kSecond, 200 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  session.setActiveStreamingDataset(stream);
+  session.setActiveStreamingDataset(0);
+  engine.setCurrentTime(PJ::DisplaySeconds{180.0});
+
+  makeShiftedDataset(session, "file", 0, "/s", {50 * kSecond, 60 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 50.0) << "snapped to the union's start";
+}
+
+// A followed stream that has received no data yet (only advertised topics) does not hold the seeding: data replaced
+// under it still starts at the new data.
+TEST(AppSessionTest, FollowedStreamWithoutDataDoesNotHoldTheSeeding) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::PlaybackEngine& engine = session.playbackEngine();
+
+  const PJ::DatasetId file = makeShiftedDataset(session, "file", 0, "/s", {0, 50 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  const PJ::DatasetId stream = makeEmptyShiftedDataset(session, "stream", 0);
+  session.catalogModel().setAdvertisedTopics(stream, {{.topic_name = "/odom"}});
+  session.setActiveStreamingDataset(stream);
+  engine.setCurrentTime(PJ::DisplaySeconds{40.0});
+
+  removeDatasetEverywhere(session, file);
+  makeShiftedDataset(session, "next", 0, "/s", {30 * kSecond, 80 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  session.catalogModel().setAdvertisedTopics(stream, {{.topic_name = "/odom"}});
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 30.0) << "the new data's start, not the old time clamped into it";
+}
+
 // Automatic marker runs follow demand: a generator on a demand-capable streaming
 // dataset stays stale while nothing displays that dataset, and runs as soon as a
 // display reference arrives, with no further ingest.

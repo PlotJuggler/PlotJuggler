@@ -124,8 +124,9 @@ class AppSession : public QObject {
 
   // Sets the active live-stream dataset (0 = none). While set AND playing, recomputeRange() scopes the range to this
   // dataset's tip, so a far-away file dataset cannot widen range_max past the live edge and jolt the tip-pinned cursor.
-  // A followed stream joins the playhead's seeding (live-follow drives the playhead, and the shell does not seed while
-  // following), so removing the data seeded before it does not re-snap; a stream-only session stays unseeded.
+  // A followed stream joins the playhead's seeding (live-follow drives the playhead, and the shell does not re-seed on
+  // a removal while following), so removing the data seeded before it does not re-snap; a stream-only session stays
+  // unseeded.
   void setActiveStreamingDataset(PJ::DatasetId id) {
     active_streaming_dataset_id_ = id;
     if (id != 0 && !seeded_datasets_.empty()) {
