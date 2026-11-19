@@ -9,7 +9,7 @@
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QEvent>
-#include <QHBoxLayout>
+#include <QGridLayout>
 #include <QIcon>
 #include <QMenu>
 #include <QMimeData>
@@ -29,16 +29,17 @@ using namespace Qt::StringLiterals;
 namespace PJ {
 namespace {
 
-/// Side of a family button at its natural size and at the narrowest the row may shrink to.
+/// Side of a family button at its natural size and at the smallest the grid may shrink to.
 constexpr int kButtonSide = 66;
 constexpr int kMinButtonSide = 44;
 /// Icon side inside a kButtonSide button; smaller buttons scale it by the same ratio.
 constexpr int kIconSide = 48;
+/// The family buttons fill a grid this many columns wide, row by row.
+constexpr int kColumns = 3;
 
-/// Width of a row of `count` buttons of `side`, with the layout's spacing and margins.
-int rowWidth(const QLayout* layout, int count, int side) {
-  const QMargins margins = layout->contentsMargins();
-  return count * side + std::max(count - 1, 0) * layout->spacing() + margins.left() + margins.right();
+/// Length of `count` buttons of `side` in a line, with the layout's spacing between them.
+int lineLength(int count, int side, int spacing) {
+  return count * side + std::max(count - 1, 0) * spacing;
 }
 
 QToolButton* makeIconButton(const QString& icon_path, const QString& tooltip, QWidget* parent) {
@@ -101,15 +102,15 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
   action_paste_->setEnabled(false);
   connect(action_paste_, &QAction::triggered, this, [this]() { emit pasteRequested(); });
 
-  auto* layout = new QHBoxLayout(this);
+  auto* layout = new QGridLayout(this);
   layout->setContentsMargins(
       theme::space(theme::Space::None), theme::space(theme::Space::None), theme::space(theme::Space::None),
       theme::space(theme::Space::None));
   layout->setSpacing(theme::space(theme::Space::Comfortable));
-  // The buttons' current fixed size must not become the widget's minimum: minimumSizeHint reports the narrowest row,
-  // and fitButtonsToWidth shrinks the buttons to it.
+  // The buttons' current fixed size must not become the widget's minimum: minimumSizeHint reports the smallest grid,
+  // and fitButtons shrinks the buttons to it.
   layout->setSizeConstraint(QLayout::SetNoConstraint);
-  layout->addStretch(1);
+  layout->setAlignment(Qt::AlignCenter);
   const struct {
     const char* path;
     const char* tooltip;
@@ -133,10 +134,10 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
     button->installEventFilter(this);
     const VisualizationKind kind = spec.kind;
     connect(button, &QToolButton::clicked, this, [this, kind]() { emit visualizationRequested(kind); });
-    layout->addWidget(button);
+    const auto index = static_cast<int>(icon_buttons_.size());
+    layout->addWidget(button, index / kColumns, index % kColumns);
     icon_buttons_.push_back({button, QString::fromLatin1(spec.path)});
   }
-  layout->addStretch(1);
   // Initial paint at whatever theme is currently active. Subsequent
   // changes flow in through onStylesheetChanged.
   onStylesheetChanged(currentTheme());
@@ -196,11 +197,22 @@ void VisualizationPlaceholderWidget::renderIcons() {
   }
 }
 
-void VisualizationPlaceholderWidget::fitButtonsToWidth() {
-  const auto count = static_cast<int>(icon_buttons_.size());
+int VisualizationPlaceholderWidget::columnCount() const {
+  return std::min(static_cast<int>(icon_buttons_.size()), kColumns);
+}
+
+int VisualizationPlaceholderWidget::rowCount() const {
+  return (static_cast<int>(icon_buttons_.size()) + kColumns - 1) / kColumns;
+}
+
+void VisualizationPlaceholderWidget::fitButtons() {
   const QMargins margins = layout()->contentsMargins();
-  const int available = width() - margins.left() - margins.right();
-  const int side = std::clamp((available - (count - 1) * layout()->spacing()) / count, kMinButtonSide, kButtonSide);
+  const int spacing = layout()->spacing();
+  const int columns = columnCount();
+  const int rows = rowCount();
+  const int by_width = (width() - margins.left() - margins.right() - (columns - 1) * spacing) / columns;
+  const int by_height = (height() - margins.top() - margins.bottom() - (rows - 1) * spacing) / rows;
+  const int side = std::clamp(std::min(by_width, by_height), kMinButtonSide, kButtonSide);
   if (icon_buttons_.front().button->width() == side) {
     return;
   }
@@ -212,22 +224,25 @@ void VisualizationPlaceholderWidget::fitButtonsToWidth() {
   renderIcons();
 }
 
-QSize VisualizationPlaceholderWidget::rowSize(int side) const {
+QSize VisualizationPlaceholderWidget::gridSize(int side) const {
   const QMargins margins = layout()->contentsMargins();
-  return {rowWidth(layout(), static_cast<int>(icon_buttons_.size()), side), side + margins.top() + margins.bottom()};
+  const int spacing = layout()->spacing();
+  return {
+      lineLength(columnCount(), side, spacing) + margins.left() + margins.right(),
+      lineLength(rowCount(), side, spacing) + margins.top() + margins.bottom()};
 }
 
 QSize VisualizationPlaceholderWidget::sizeHint() const {
-  return rowSize(kButtonSide);
+  return gridSize(kButtonSide);
 }
 
 QSize VisualizationPlaceholderWidget::minimumSizeHint() const {
-  return rowSize(kMinButtonSide);
+  return gridSize(kMinButtonSide);
 }
 
 void VisualizationPlaceholderWidget::resizeEvent(QResizeEvent* event) {
   QWidget::resizeEvent(event);
-  fitButtonsToWidth();
+  fitButtons();
 }
 
 void VisualizationPlaceholderWidget::paintEvent(QPaintEvent* event) {

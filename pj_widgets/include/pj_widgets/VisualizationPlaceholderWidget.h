@@ -32,8 +32,8 @@ class VisualizationPlaceholderWidget : public QWidget {
   Q_OBJECT
  public:
   explicit VisualizationPlaceholderWidget(QWidget* parent = nullptr);
-  // The icon row at full size, and at its narrowest: the dock's scroll area reads the minimum, so a narrow dock shrinks
-  // the icons instead of scrolling them.
+  // The icon grid (three columns, filled row by row) at full size, and at its smallest: the dock's scroll area reads
+  // the minimum, so a small dock shrinks the icons instead of scrolling them.
   [[nodiscard]] QSize sizeHint() const override;
   [[nodiscard]] QSize minimumSizeHint() const override;
   // Enables Paste when the host sees compatible widget XML in the clipboard.
@@ -79,10 +79,12 @@ class VisualizationPlaceholderWidget : public QWidget {
  private:
   // Renders every family icon for theme_ at its button's current icon size.
   void renderIcons();
-  // Sizes every button so the row stays on one line within width(); no-op when unchanged.
-  void fitButtonsToWidth();
-  // The row's size for buttons of `side` px.
-  [[nodiscard]] QSize rowSize(int side) const;
+  // Sizes every button so the grid fits within width() and height(); no-op when unchanged.
+  void fitButtons();
+  // The grid's size for buttons of `side` px.
+  [[nodiscard]] QSize gridSize(int side) const;
+  [[nodiscard]] int columnCount() const;
+  [[nodiscard]] int rowCount() const;
   void showSplitContextMenu(const QPoint& global_pos);
   void updateSplitActionIcons(const QString& theme);
 
