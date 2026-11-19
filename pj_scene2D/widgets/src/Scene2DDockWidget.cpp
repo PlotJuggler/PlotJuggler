@@ -716,11 +716,8 @@ void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) 
     // Primed before the restore picks the dock's dataset, so every candidate the base restore could bind
     // (uniqueObjectTopic) gets the kind; only the bound one reads it.
     const auto saved_type = sdk::parseBuiltinObjectType(layer_element.attribute(u"object_type"_s).toStdString());
-    const std::string topic_name_utf8 = topic_name.toStdString();
-    for (const ObjectTopicId candidate : store.listTopics()) {
-      const ObjectTopicDescriptor& descriptor = store.descriptor(candidate);
-      if (saved_type.has_value() && descriptor.topic_name == topic_name_utf8 &&
-          objectTypeFromMetadata(descriptor.metadata_json) == *saved_type) {
+    if (saved_type.has_value()) {
+      for (const ObjectTopicId candidate : objectTopicsMatching(store, topic_name.toStdString(), *saved_type)) {
         restore_image_layer_kinds_.insert_or_assign(topicKey(candidate), kind);
       }
     }

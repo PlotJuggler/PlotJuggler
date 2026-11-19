@@ -74,8 +74,8 @@ class PlotWidgetBase : public QWidget {
   // alias.
   [[nodiscard]] CurveInfo* curveFromTitle(const QString& title);
 
-  // The colour at `index` in the built-in 8-colour palette (wraps modulo the palette size), for callers that own a
-  // shared colour counter (a session-wide CurveColorRegistry) and must not depend on this widget's nextColor().
+  // plot_xml::paletteColor, for callers that own a shared colour counter (a session-wide CurveColorRegistry) and must
+  // not depend on this widget's nextColor().
   [[nodiscard]] static QColor paletteColor(int index);
 
   // Session-wide override of the GPU-canvas choice: when true (the --disable-opengl flag in main.cpp), every plot
@@ -179,14 +179,9 @@ class PlotWidgetBase : public QWidget {
   // width separately (per-curve width) can restyle a curve non-destructively.
   void applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style);
   QColor nextColor();
-  // The palette colour rule for a new curve, deliberately in two halves:
-  //  - while some palette colour is used by no curve of this plot, the new curve takes the next such colour in the
-  //    caller's sequence (`next_index` is drawn until it names one, so a session-wide counter skips the colours this
-  //    plot holds);
-  //  - once every palette colour is in use, colours repeat: it takes the least-used one, the lowest index among ties,
-  //    so the repeats spread evenly instead of all landing on one colour. `next_index` is not drawn then.
-  // A colour counts as used when a curve's pen wears it, so one restored from a layout or picked by the user counts
-  // like an auto-assigned one. Colours outside the palette take no slot.
+  // plot_xml::freePaletteIndex over this plot's curves: their own pens decide, so a colour restored from a layout or
+  // picked by the user counts like an auto-assigned one. Each draw advances the caller's counter, so a session-wide
+  // counter skips the colours this plot holds.
   [[nodiscard]] int freePaletteIndex(const std::function<int()>& next_index) const;
   // Fills `info`'s ride-along marker with its curve's current colour; no-op if it already has it. The marker is not a
   // tracker: nothing else follows a recolour, so a pass that shows it calls this.

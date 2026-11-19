@@ -13,6 +13,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QFileInfo>
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
@@ -21,6 +22,9 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <algorithm>
+#include <deque>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,6 +32,7 @@
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
+#include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
@@ -73,11 +78,32 @@ QByteArray genericLayout(bool with_transform) {
       .toUtf8();
 }
 
+// A generic layout made for one run: one tab, one plot, a curve per entry of `curves` ("<topic>" or
+// "<topic>@<source>@<path>" for a qualified one), field "value".
+QByteArray curveLayout(const QStringList& curves) {
+  QString body;
+  for (const QString& curve : curves) {
+    const QStringList parts = curve.split(u'@');
+    body += u"<curve topic=\"%1\" field=\"value\""_s.arg(parts[0]);
+    if (parts.size() == 3) {
+      body += u" dataset_source=\"%1\" dataset_path=\"%2\""_s.arg(parts[1], parts[2]);
+    }
+    body += u"/>"_s;
+  }
+  return (uR"(<root pj4_version="4" binding="generic"><tabbed_widget id="" name="main" parent="main_window">
+<Tab id="t1" tab_name="Plots" containers="1"><Container><DockSplitter count="1" orientation="-" sizes="1">
+<DockArea id="a1" name="p"><plot id="p1" mode="TimeSeries">)"_s +
+          body + u"</plot></DockArea></DockSplitter></Container></Tab></tabbed_widget></root>"_s)
+      .toUtf8();
+}
+
 class LayoutDatasetChoiceTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(extensions_.isValid());
     ASSERT_TRUE(data_.isValid());
+    const QString plugin = QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH);
+    ASSERT_TRUE(QFile::copy(plugin, extensions_.filePath(QFileInfo(plugin).fileName())));
     window_ = std::make_unique<PJ::MainWindow>(extensions_.path());
     QObject::connect(window_.get(), &PJ::MainWindow::layoutRestoreSettled, window_.get(), [this](bool ok) {
       settles_.push_back(ok);
@@ -87,16 +113,21 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
         [this](int, const QString&, const QString& id, const QString& message) {
           diagnostics_.push_back(id + u": "_s + message);
         });
-    run_a_ = addRun("a");
-    run_b_ = addRun("b");
+    auto* timer = new QTimer(window_.get());
+    timer->setInterval(20);
+    QObject::connect(timer, &QTimer::timeout, window_.get(), [this]() { answerModal(); });
+    timer->start();
+    // Two runs recorded a second apart.
+    run_a_ = addRun("a", 100);
+    run_b_ = addRun("b", 1'000'000'100);
   }
 
-  // A dataset "run.csv" at <data>/<folder>/run.csv carrying the "sensor" series; both runs share the file name, so
-  // the session labels them "run.csv" and "run.csv (2)".
-  PJ::DatasetId addRun(const char* folder) {
+  // A dataset "run.csv" at <data>/<folder>/run.csv carrying the "sensor" series from `start_ns`; both runs share the
+  // file name, so the session labels them "run.csv" and "run.csv (2)".
+  PJ::DatasetId addRun(const char* folder, PJ::Timestamp start_ns) {
     PJ::AppSession& app = PresetTestPeer::session(*window_);
     const PJ::DatasetId id = pj_test::createDataset(app, "run.csv", /*own_time_domain=*/true);
-    pj_test::addScalarTopic(app, id, "sensor");
+    pj_test::addScalarTopic(app, id, "sensor", start_ns, start_ns + 100);
     app.sessionManager().setDatasetSourcePath(id, data_.filePath(QString::fromLatin1(folder) + u"/run.csv"_s));
     return id;
   }
@@ -109,46 +140,60 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
     return path;
   }
 
-  // Answers the dataset question once: exactly `rows` checked (OK), or Cancel when `rows` is empty. Every other
-  // modal box is rejected and counted in other_modals_, so a test never hangs on it.
+  // The next dataset question is answered with exactly `rows` checked (OK), or Cancel when `rows` is empty.
   void answerNextQuestion(std::vector<int> rows) {
-    auto* timer = new QTimer(window_.get());
-    timer->setInterval(20);
-    QObject::connect(timer, &QTimer::timeout, window_.get(), [this, rows, answered = false]() mutable {
-      auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-      if (modal == nullptr || modal->property("pjTestSeen").isValid()) {
-        return;
+    answers_.push_back(std::move(rows));
+  }
+
+  // A dataset question takes the next queued answer; every other modal box, and a question nobody queued an answer
+  // for, is rejected and counted in other_modals_, so a test never hangs on it. Answers are queued: a modal the
+  // answer opens runs a nested loop, and the polling timer never fires again inside its own slot.
+  void answerModal() {
+    auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+    if (modal == nullptr || modal->property("pjTestSeen").isValid()) {
+      return;
+    }
+    modal->setProperty("pjTestSeen", true);
+    auto* list = modal->findChild<QListWidget*>(u"listDatasets"_s);
+    if (list == nullptr || answers_.empty()) {
+      ++other_modals_;
+      for (const QLabel* label : modal->findChildren<QLabel*>()) {
+        other_texts_ += label->text();
       }
-      modal->setProperty("pjTestSeen", true);
-      auto* list = modal->findChild<QListWidget*>(u"listDatasets"_s);
-      if (list == nullptr || answered) {
-        ++other_modals_;
-        modal->reject();
-        return;
+      QMetaObject::invokeMethod(modal, &QDialog::reject, Qt::QueuedConnection);
+      return;
+    }
+    const std::vector<int> rows = answers_.front();
+    answers_.pop_front();
+    ++asked_;
+    if (auto* reason = modal->findChild<QLabel*>(u"labelSingleOnly"_s); reason != nullptr && !reason->isHidden()) {
+      single_only_ = reason->text();
+    }
+    offered_.clear();
+    for (int row = 0; row < list->count(); ++row) {
+      offered_.push_back(list->item(row)->text());
+    }
+    if (rows.empty()) {
+      QMetaObject::invokeMethod(modal, &QDialog::reject, Qt::QueuedConnection);
+      return;
+    }
+    for (int row = 0; row < list->count(); ++row) {
+      list->item(row)->setCheckState(
+          std::find(rows.begin(), rows.end(), row) != rows.end() ? Qt::Checked : Qt::Unchecked);
+    }
+    QPushButton* ok = modal->findChild<QDialogButtonBox*>(u"buttonBox"_s)->button(QDialogButtonBox::Ok);
+    QTimer::singleShot(0, ok, [this, ok]() {
+      if (before_answer_) {
+        before_answer_();
       }
-      answered = true;
-      if (auto* reason = modal->findChild<QLabel*>(u"labelSingleOnly"_s); reason != nullptr && !reason->isHidden()) {
-        single_only_ = reason->text();
-      }
-      for (int row = 0; row < list->count(); ++row) {
-        offered_.push_back(list->item(row)->text());
-      }
-      if (rows.empty()) {
-        modal->reject();
-        return;
-      }
-      for (int row = 0; row < list->count(); ++row) {
-        list->item(row)->setCheckState(
-            std::find(rows.begin(), rows.end(), row) != rows.end() ? Qt::Checked : Qt::Unchecked);
-      }
-      modal->findChild<QDialogButtonBox*>(u"buttonBox"_s)->button(QDialogButtonBox::Ok)->click();
+      ok->click();
     });
-    timer->start();
   }
 
   void load(const QByteArray& body, bool interactive) {
+    const std::size_t settled = settles_.size();
     PresetTestPeer::loadLayoutFile(*window_, layoutFile(body), interactive);
-    ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !settles_.empty(); }));
+    ASSERT_TRUE(pj_app_test::pumpUntil([this, settled] { return settles_.size() > settled; }));
   }
 
   QStringList tabNames() {
@@ -160,12 +205,22 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
     return names;
   }
 
-  // "<dataset id>:<colour>" of each curve of plot `state_id`, in plot order; "?" for a curve bound to nothing.
-  QStringList curves(const QString& state_id) {
+  // The first plot of tab `tab`.
+  PJ::PlotWidget* plotOfTab(int tab) {
+    auto* tabs = window_->findChild<PJ::TabbedPlotWidget*>();
+    if (tabs == nullptr || tab >= tabs->dockerCount() || tabs->dockerAt(tab)->plotCount() == 0) {
+      return nullptr;
+    }
+    PJ::DockWidget* dock = tabs->dockerAt(tab)->plotAt(0);
+    return dock != nullptr ? dock->plotWidget() : nullptr;
+  }
+
+  // "<dataset id>:<colour>" of each curve the first plot of tab `tab` shows, in plot order.
+  QStringList curves(int tab = 0) {
     QStringList found;
-    PJ::PlotWidget* plot = PresetTestPeer::plot(*window_, state_id);
+    PJ::PlotWidget* plot = plotOfTab(tab);
     if (plot == nullptr) {
-      return {u"no plot "_s + state_id};
+      return {u"no plot on tab "_s + QString::number(tab)};
     }
     const PJ::CatalogModel& catalog = PresetTestPeer::session(*window_).catalogModel();
     for (const auto& curve : plot->curveList()) {
@@ -174,6 +229,21 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
           (item.has_value() ? QString::number(item->dataset_id) : u"?"_s) + u':' + curve.curve->pen().color().name());
     }
     return found;
+  }
+
+  // Every curve of tab `tab` is bound to `dataset`, and there are `count` of them.
+  void expectAllBoundTo(int tab, PJ::DatasetId dataset, int count) {
+    const QStringList bound = curves(tab);
+    ASSERT_EQ(bound.size(), count) << bound.join(u' ').toStdString();
+    for (const QString& curve : bound) {
+      EXPECT_TRUE(curve.startsWith(QString::number(dataset) + u':')) << curve.toStdString();
+    }
+  }
+
+  // The display time `dataset` starts at.
+  double startOf(PJ::DatasetId dataset) {
+    const auto range = PresetTestPeer::session(*window_).sessionManager().datasetDisplayRange(dataset);
+    return range.has_value() ? range->min.value : std::numeric_limits<double>::quiet_NaN();
   }
 
   QString diagnostic(const QString& id) {
@@ -190,28 +260,32 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
   QTemporaryDir data_;
   std::vector<bool> settles_;
   std::vector<QString> diagnostics_;
-  QStringList offered_;
+  std::deque<std::vector<int>> answers_;
+  QStringList offered_;  ///< the rows of the last question
   QString single_only_;
+  std::function<void()> before_answer_;  ///< runs while the question is open, just before it is answered
+  int asked_ = 0;
   int other_modals_ = 0;
+  QString other_texts_;  ///< the label texts of the other modal boxes
   PJ::DatasetId run_a_ = 0;
   PJ::DatasetId run_b_ = 0;
   std::unique_ptr<PJ::MainWindow> window_;
 };
 
-// Intended: File > Load Layout asks; the one dataset checked is the one every reference names.
+// Intended: File > Load Layout asks; the one dataset checked is the one every reference names, and its time stays
+// where it was (nothing to compare it with).
 TEST_F(LayoutDatasetChoiceTest, OneCheckedDatasetIsTheOneTheLayoutShows) {
+  const double start_a = startOf(run_a_);
+  const double start_b = startOf(run_b_);
   answerNextQuestion({1});
   load(genericLayout(/*with_transform=*/true), /*interactive=*/true);
   EXPECT_EQ(offered_, (QStringList{u"run.csv"_s, u"run.csv (2)"_s}));
   EXPECT_EQ(other_modals_, 0);
   EXPECT_EQ(settles_, std::vector<bool>{true});
   EXPECT_EQ(tabNames(), (QStringList{u"Plots"_s}));
-  const QString b = QString::number(run_b_);
-  const QStringList bound = curves(u"p1"_s);
-  ASSERT_EQ(bound.size(), 3);
-  for (const QString& curve : bound) {
-    EXPECT_TRUE(curve.startsWith(b + u':')) << curve.toStdString();
-  }
+  expectAllBoundTo(0, run_b_, 3);
+  EXPECT_DOUBLE_EQ(startOf(run_a_), start_a);
+  EXPECT_DOUBLE_EQ(startOf(run_b_), start_b);
 }
 
 // Intended: two checked datasets duplicate the tab, one copy per dataset, each copy's curves bound to its own dataset
@@ -224,16 +298,25 @@ TEST_F(LayoutDatasetChoiceTest, TwoCheckedDatasetsDuplicateTheTabsInTheSameColou
   EXPECT_EQ(other_modals_, 0);
   EXPECT_EQ(settles_, std::vector<bool>{true});
   EXPECT_EQ(tabNames(), (QStringList{u"Plots [run.csv]"_s, u"Plots [run.csv (2)]"_s}));
-  const QStringList copy_a = curves(u"p1"_s);
-  const QStringList copy_b = curves(u"p1~2"_s);
-  ASSERT_EQ(copy_a.size(), 2) << copy_a.join(u' ').toStdString();
-  ASSERT_EQ(copy_b.size(), 2) << copy_b.join(u' ').toStdString();
-  for (int index = 0; index < 2; ++index) {
-    EXPECT_TRUE(copy_a[index].startsWith(QString::number(run_a_) + u':')) << copy_a[index].toStdString();
-    EXPECT_TRUE(copy_b[index].startsWith(QString::number(run_b_) + u':')) << copy_b[index].toStdString();
+  expectAllBoundTo(0, run_a_, 2);
+  expectAllBoundTo(1, run_b_, 2);
+  const QStringList copy_a = curves(0);
+  const QStringList copy_b = curves(1);
+  ASSERT_EQ(copy_a.size(), copy_b.size());
+  for (int index = 0; index < copy_a.size(); ++index) {
     EXPECT_EQ(copy_a[index].section(u':', 1), copy_b[index].section(u':', 1)) << "curve " << index;
   }
   EXPECT_EQ(copy_a[0].section(u':', 1), u"#d62728"_s) << "a saved colour is copied as is";
+}
+
+// Intended: the copies are there to compare the runs, so the checked datasets start at the same display time, as
+// the Source Timeline's "Align starts" would place them.
+TEST_F(LayoutDatasetChoiceTest, TwoCheckedDatasetsStartAtTheSameTime) {
+  ASSERT_NE(startOf(run_a_), startOf(run_b_));
+  answerNextQuestion({0, 1});
+  load(genericLayout(/*with_transform=*/false), /*interactive=*/true);
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  EXPECT_DOUBLE_EQ(startOf(run_a_), startOf(run_b_));
 }
 
 // Intended: a layout holding a transform shows one dataset at a time, and the dialog says why: the transform's id is
@@ -245,11 +328,7 @@ TEST_F(LayoutDatasetChoiceTest, ALayoutWithATransformShowsOneDatasetAtATime) {
   EXPECT_EQ(other_modals_, 0);
   EXPECT_EQ(settles_, std::vector<bool>{true});
   EXPECT_EQ(tabNames(), (QStringList{u"Plots"_s}));
-  const QStringList bound = curves(u"p1"_s);
-  ASSERT_EQ(bound.size(), 3);
-  for (const QString& curve : bound) {
-    EXPECT_TRUE(curve.startsWith(QString::number(run_b_) + u':')) << curve.toStdString();
-  }
+  expectAllBoundTo(0, run_b_, 3);
 }
 
 // Intended: Cancel leaves the workspace as it was, like the missing-data prompt's Cancel.
@@ -262,35 +341,110 @@ TEST_F(LayoutDatasetChoiceTest, CancelLeavesTheWorkspaceUnchanged) {
   EXPECT_EQ(PresetTestPeer::liveState(*window_), before);
 }
 
-// Intended: an automated load (--layout, an agent, the QA instance) never asks: it takes the first loaded dataset
-// and one diagnostic names that choice.
+// Intended: datasets removed while the question was open are said so, not taken for a Cancel.
+TEST_F(LayoutDatasetChoiceTest, ChosenDatasetsRemovedMeanwhileAreReported) {
+  answerNextQuestion({0, 1});
+  before_answer_ = [this]() {
+    PJ::SessionManager& sessions = PresetTestPeer::session(*window_).sessionManager();
+    sessions.removeDataset(run_a_);
+    sessions.removeDataset(run_b_);
+  };
+  load(genericLayout(/*with_transform=*/false), /*interactive=*/true);
+  EXPECT_EQ(settles_, std::vector<bool>{false});
+  EXPECT_EQ(other_modals_, 1);
+  EXPECT_TRUE(other_texts_.contains(u"removed"_s)) << other_texts_.toStdString();
+}
+
+// Intended: an automated load (an agent, the QA instance, --layout without a display) never asks: it takes the first
+// loaded dataset and one diagnostic names that choice.
 TEST_F(LayoutDatasetChoiceTest, AnAutomatedLoadTakesTheFirstDatasetAndSaysSo) {
   answerNextQuestion({1});  // a dialog would be answered with the second: the first proves none was shown
   load(genericLayout(/*with_transform=*/true), /*interactive=*/false);
-  EXPECT_TRUE(offered_.isEmpty());
+  EXPECT_EQ(asked_, 0);
   EXPECT_EQ(settles_, std::vector<bool>{true});
   EXPECT_EQ(tabNames(), (QStringList{u"Plots"_s}));
-  for (const QString& curve : curves(u"p1"_s)) {
-    EXPECT_TRUE(curve.startsWith(QString::number(run_a_) + u':')) << curve.toStdString();
-  }
+  expectAllBoundTo(0, run_a_, 3);
   const QString chosen = diagnostic(u"layout-dataset-chosen"_s);
   EXPECT_TRUE(chosen.contains(u"run.csv"_s)) << chosen.toStdString();
+}
+
+// Intended: a startup layout over explicit files (-d ... -l ...) asks like File > Load Layout when someone is at the
+// display; unattended, it takes the first dataset.
+TEST_F(LayoutDatasetChoiceTest, AStartupLayoutAsksWhenSomeoneIsThere) {
+  const QString first = pj_app_test::makeMockFile(data_, u"first.mock"_s);
+  const QString second = pj_app_test::makeMockFile(data_, u"second.mock"_s);
+  answerNextQuestion({1});
+  window_->loadAtStartup({first, second}, layoutFile(curveLayout({u"mock/file_data"_s})), /*interactive=*/true);
+  ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !settles_.empty(); }));
+  EXPECT_EQ(asked_, 1);
+  EXPECT_EQ(offered_.size(), 2);
+  EXPECT_EQ(other_modals_, 0);
+  const QStringList bound = curves(0);
+  ASSERT_EQ(bound.size(), 1);
+  EXPECT_EQ(
+      PresetTestPeer::fileLoader(*window_).sourcePathForDataset(bound.front().section(u':', 0, 0).toUInt()), second);
+}
+
+TEST_F(LayoutDatasetChoiceTest, AnUnattendedStartupLayoutTakesTheFirstDataset) {
+  const QString first = pj_app_test::makeMockFile(data_, u"first.mock"_s);
+  const QString second = pj_app_test::makeMockFile(data_, u"second.mock"_s);
+  answerNextQuestion({1});
+  window_->loadAtStartup({first, second}, layoutFile(curveLayout({u"mock/file_data"_s})), /*interactive=*/false);
+  ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !settles_.empty(); }));
+  EXPECT_EQ(asked_, 0);
+  EXPECT_FALSE(diagnostic(u"layout-dataset-chosen"_s).isEmpty());
 }
 
 // Intended: a layout naming two datasets keeps its own bindings and is not asked about: here neither is loaded, so
 // its curves go the missing-curve way, as any unresolved curve does.
 TEST_F(LayoutDatasetChoiceTest, ALayoutNamingTwoDatasetsIsNotAsked) {
   answerNextQuestion({0});
-  load(
-      QByteArrayLiteral(R"(<root pj4_version="4"><tabbed_widget id="" name="main" parent="main_window">
-<Tab id="t1" tab_name="Compare" containers="1"><Container><DockSplitter count="1" orientation="-" sizes="1">
-<DockArea id="a1" name="p"><plot id="p1" mode="TimeSeries">
-<curve topic="sensor" field="value" dataset_source="x.csv" dataset_path="/nowhere/x.csv"/>
-<curve topic="sensor" field="value" dataset_source="y.csv" dataset_path="/nowhere/y.csv"/>
-</plot></DockArea></DockSplitter></Container></Tab></tabbed_widget></root>)"),
-      /*interactive=*/true);
-  EXPECT_TRUE(offered_.isEmpty());
+  load(curveLayout({u"sensor@x.csv@/nowhere/x.csv"_s, u"sensor@y.csv@/nowhere/y.csv"_s}), /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
   EXPECT_EQ(other_modals_, 1) << "the missing-curve prompt";
+}
+
+// Intended: the entries of one fan-out file share its path and differ by label; a layout naming each entry keeps
+// each curve on its own entry, unasked.
+TEST_F(LayoutDatasetChoiceTest, ALayoutOverFanOutEntriesKeepsEachEntrysCurves) {
+  PJ::AppSession& app = PresetTestPeer::session(*window_);
+  const QString file = data_.filePath(u"log.mcap"_s);
+  std::vector<PJ::DatasetId> entries;
+  for (const char* label : {"log/left", "log/right"}) {
+    entries.push_back(pj_test::createDataset(app, label, /*own_time_domain=*/true));
+    pj_test::addScalarTopic(app, entries.back(), "sensor");
+    app.sessionManager().setDatasetSourcePath(entries.back(), file);
+  }
+  load(curveLayout({u"sensor@log/left@"_s + file, u"sensor@log/right@"_s + file}), /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(other_modals_, 0);
+  const QStringList bound = curves(0);
+  ASSERT_EQ(bound.size(), 2);
+  EXPECT_TRUE(bound[0].startsWith(QString::number(entries[0]) + u':')) << bound[0].toStdString();
+  EXPECT_TRUE(bound[1].startsWith(QString::number(entries[1]) + u':')) << bound[1].toStdString();
+}
+
+// Intended: loading the same layout again asks again. The first load's filter output, now in the chosen dataset, is
+// the layout's own and does not make that dataset fit better.
+TEST_F(LayoutDatasetChoiceTest, LoadingTheLayoutAgainAsksAgain) {
+  answerNextQuestion({0});
+  load(genericLayout(/*with_transform=*/false), /*interactive=*/true);
+  answerNextQuestion({1});
+  load(genericLayout(/*with_transform=*/false), /*interactive=*/true);
+  EXPECT_EQ(asked_, 2);
+  EXPECT_EQ(settles_, (std::vector<bool>{true, true}));
+  expectAllBoundTo(0, run_b_, 2);
+}
+
+// Intended: when one dataset carries more of the layout's topics than any other, it is the one the layout shows,
+// unasked: the topics the others share bind to it too.
+TEST_F(LayoutDatasetChoiceTest, TheBestFittingDatasetTakesTheTopicsItShares) {
+  pj_test::addScalarTopic(PresetTestPeer::session(*window_), run_b_, "extra");
+  load(curveLayout({u"sensor"_s, u"extra"_s}), /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(other_modals_, 0);
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  expectAllBoundTo(0, run_b_, 2);
 }
 
 }  // namespace

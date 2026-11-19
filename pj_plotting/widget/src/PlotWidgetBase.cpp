@@ -41,6 +41,7 @@
 #include "pj_plotting/PlotPanner.h"
 #include "pj_plotting/PlotRhiCanvas.h"
 #include "pj_plotting/PlotScaleDraw.h"
+#include "pj_plotting/PlotXml.h"
 #include "pj_plotting/PlotZoomer.h"
 #include "pj_widgets/FrameworkTokens.h"
 
@@ -63,20 +64,6 @@ namespace {
 [[nodiscard]] QColor dataBackdropForCurrentTheme() {
   const bool is_light = QGuiApplication::palette().color(QPalette::Window).lightness() >= 128;
   return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(is_light));
-}
-
-constexpr std::size_t kPaletteSize = 8;
-
-const std::array<QColor, kPaletteSize>& curvePalette() {
-  static const std::array<QColor, kPaletteSize> k_colors = {
-      QColor("#1f77b4"), QColor("#d62728"), QColor("#1ac938"), QColor("#ff7f0e"),
-      QColor("#f14cc1"), QColor("#9467bd"), QColor("#17becf"), QColor("#bcbd22"),
-  };
-  return k_colors;
-}
-
-[[nodiscard]] QColor colorFromIndex(int index) {
-  return curvePalette()[static_cast<std::size_t>(index) % curvePalette().size()];
 }
 
 // The raster canvas: the non-GPU choice and the replacement for a failed GPU canvas. Its backing store also serves the
@@ -851,42 +838,22 @@ void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
 }
 
 QColor PlotWidgetBase::nextColor() {
-  return colorFromIndex(freePaletteIndex([this] { return next_color_index_++; }));
+  return plot_xml::paletteColor(freePaletteIndex([this] { return next_color_index_++; }));
 }
 
 int PlotWidgetBase::freePaletteIndex(const std::function<int()>& next_index) const {
-  std::array<int, kPaletteSize> uses{};
-  const auto count = [&uses](const QColor& color) {
-    const auto& palette = curvePalette();
-    const auto slot = std::find_if(
-        palette.begin(), palette.end(), [&color](const QColor& candidate) { return candidate.rgb() == color.rgb(); });
-    if (slot != palette.end()) {
-      ++uses[static_cast<std::size_t>(slot - palette.begin())];
-    }
-  };
+  std::vector<QRgb> worn;
+  worn.reserve(plot_->curve_list.size());
   for (const CurveInfo& info : plot_->curve_list) {
     if (info.curve != nullptr) {
-      count(info.curve->pen().color());
+      worn.push_back(info.curve->pen().color().rgb());
     }
   }
-
-  // The first of the equally least-used slots is the lowest index.
-  const auto least_used = std::min_element(uses.begin(), uses.end());
-  const int least_used_index = static_cast<int>(least_used - uses.begin());
-  if (*least_used > 0) {
-    return least_used_index;
-  }
-  for (std::size_t tried = 0; tried < kPaletteSize; ++tried) {
-    const int index = next_index();
-    if (uses[static_cast<std::size_t>(index) % kPaletteSize] == 0) {
-      return index;
-    }
-  }
-  return least_used_index;
+  return plot_xml::freePaletteIndex(next_index, worn);
 }
 
 QColor PlotWidgetBase::paletteColor(int index) {
-  return colorFromIndex(index);
+  return plot_xml::paletteColor(index);
 }
 
 void PlotWidgetBase::setGpuCanvasDisabledOverride(bool disabled) {

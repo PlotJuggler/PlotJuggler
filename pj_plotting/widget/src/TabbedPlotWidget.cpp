@@ -29,6 +29,7 @@
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
+#include "pj_plotting/PlotXml.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/OwnedMenu.h"
 #include "pj_widgets/SvgUtil.h"
@@ -496,15 +497,7 @@ PlotDocker* TabbedPlotWidget::duplicateTab(PlotDocker* source) {
     }
   }
   // Empty ids make every restored docker, area and plot mint a fresh one.
-  for (const QString& attribute : {u"id"_s, u"history_exempt"_s, u"owner_plugin"_s, u"tab_id"_s}) {
-    tab_element.removeAttribute(attribute);
-  }
-  for (const QString& tag : {u"DockArea"_s, u"plot"_s}) {
-    const QDomNodeList nodes = tab_element.elementsByTagName(tag);
-    for (int index = 0; index < nodes.size(); ++index) {
-      nodes.at(index).toElement().removeAttribute(u"id"_s);
-    }
-  }
+  plot_xml::prepareTabCopy(tab_element);
   const auto source_index = static_cast<int>(source_entry - tabs_.data());
   PlotDocker* copy = addTab(tr("%1 (copy)").arg(source->name()));
   restoring_state_ = true;

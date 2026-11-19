@@ -14,6 +14,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_base/time.hpp"
@@ -111,6 +112,16 @@ struct DerivedTopicPresentation {
 [[nodiscard]] std::optional<ObjectTopicId> uniqueObjectTopic(
     const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type,
     DatasetId preferred_dataset = 0);
+
+/// Every live topic with this name and builtin type, in store order: the candidates of uniqueObjectTopic.
+[[nodiscard]] std::vector<ObjectTopicId> objectTopicsMatching(
+    const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type);
+
+/// The live topic a saved object reference names. Without a saved dataset (`qualified` false): uniqueObjectTopic.
+/// With one: `topic_name` in `dataset`, the dataset the qualifier resolved to; nullopt when it resolved to none.
+[[nodiscard]] std::optional<ObjectTopicId> resolveSavedObjectTopic(
+    const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type, bool qualified,
+    std::optional<DatasetId> dataset, DatasetId preferred_dataset);
 
 /// Backend-neutral contract for one object topic in a layered scene. A layer is attached before use, updated by the
 /// dock as tracker time and visibility change, and detached before removal or destruction.

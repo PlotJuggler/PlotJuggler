@@ -327,20 +327,14 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  std::optional<ObjectTopicId> topic_id_opt;
-  if (!hasDatasetIdentity(layer_el)) {
-    topic_id_opt = uniqueObjectTopic(
-        session_->objectStore(), topic_name.toStdString(), *object_type_opt, representativeDatasetId());
-  } else {
-    const SavedElementDataset binding = datasetForSavedElement(layer_el);
-    if (binding.refused) {
-      return true;
-    }
-    if (!binding.dataset.has_value()) {
-      return false;
-    }
-    topic_id_opt = session_->objectStore().findTopic(*binding.dataset, topic_name.toStdString());
+  const bool qualified = hasDatasetIdentity(layer_el);
+  const SavedElementDataset binding = qualified ? datasetForSavedElement(layer_el) : SavedElementDataset{};
+  if (binding.refused) {
+    return true;
   }
+  const std::optional<ObjectTopicId> topic_id_opt = resolveSavedObjectTopic(
+      session_->objectStore(), topic_name.toStdString(), *object_type_opt, qualified, binding.dataset,
+      representativeDatasetId());
   if (!topic_id_opt.has_value()) {
     return false;
   }

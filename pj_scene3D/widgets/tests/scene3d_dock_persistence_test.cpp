@@ -1563,12 +1563,8 @@ TEST(Scene3DDockPersistence, PoseTrailDefersUntilTopicLoadsThenMaterializes) {
   EXPECT_EQ(restored->pastColor().name(), u"#112233"_s);
 }
 
-// A generic pose trail whose topic two datasets carry waits, like the dock's own generic references.
-TEST(Scene3DDockPersistence, GenericPoseTrailStaysPendingWhileAmbiguous) {
-  QDomDocument doc;
-  QDomElement scene = doc.createElement(u"scene3d"_s);
-  scene.setAttribute(u"version"_s, u"1"_s);
-  doc.appendChild(scene);
+// A local trail layer following the unqualified pose topic `topic`.
+void appendPoseTrailLayer(QDomDocument& doc, QDomElement& scene, const QString& topic) {
   QDomElement layer_el = doc.createElement(u"layer"_s);
   layer_el.setAttribute(u"role"_s, u"trail"_s);
   layer_el.setAttribute(u"local"_s, u"true"_s);
@@ -1577,9 +1573,18 @@ TEST(Scene3DDockPersistence, GenericPoseTrailStaysPendingWhileAmbiguous) {
   layer_el.setAttribute(u"order"_s, u"0"_s);
   QDomElement payload = doc.createElement(u"trail"_s);
   payload.setAttribute(u"source_kind"_s, u"pose_topic"_s);
-  payload.setAttribute(u"source_topic_name"_s, u"/odom"_s);
+  payload.setAttribute(u"source_topic_name"_s, topic);
   layer_el.appendChild(payload);
   scene.appendChild(layer_el);
+}
+
+// A generic pose trail whose topic two datasets carry waits, like the dock's own generic references.
+TEST(Scene3DDockPersistence, GenericPoseTrailStaysPendingWhileAmbiguous) {
+  QDomDocument doc;
+  QDomElement scene = doc.createElement(u"scene3d"_s);
+  scene.setAttribute(u"version"_s, u"1"_s);
+  doc.appendChild(scene);
+  appendPoseTrailLayer(doc, scene, u"/odom"_s);
 
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
@@ -1616,17 +1621,7 @@ TEST(Scene3DDockPersistence, GenericPoseTrailBindsTheDocksDatasetWhenAmbiguous) 
   QDomElement scene = doc.createElement(u"scene3d"_s);
   doc.appendChild(scene);
   appendUnqualifiedConfig(doc, scene, u"/tf"_s, u"kFrameTransforms"_s);
-  QDomElement layer_el = doc.createElement(u"layer"_s);
-  layer_el.setAttribute(u"role"_s, u"trail"_s);
-  layer_el.setAttribute(u"local"_s, u"true"_s);
-  layer_el.setAttribute(u"object_type"_s, u"kNone"_s);
-  layer_el.setAttribute(u"visible"_s, u"true"_s);
-  layer_el.setAttribute(u"order"_s, u"0"_s);
-  QDomElement payload = doc.createElement(u"trail"_s);
-  payload.setAttribute(u"source_kind"_s, u"pose_topic"_s);
-  payload.setAttribute(u"source_topic_name"_s, u"/odom"_s);
-  layer_el.appendChild(payload);
-  scene.appendChild(layer_el);
+  appendPoseTrailLayer(doc, scene, u"/odom"_s);
 
   PJ::Scene3DDockWidget dock;
   dock.setSessionManager(&session);

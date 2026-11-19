@@ -191,11 +191,9 @@ class MainWindow : public QMainWindow {
   void installWasmPlotAcceptanceProbes();
 #endif
 
-  // --layout: reloads the layout's data sources without prompting.
-  void loadLayoutAtStartup(const QString& path);
-
-  // Loads explicit files, then applies the optional layout against their data. A failed or cancelled file
-  // aborts the layout and settles it false. Only attended file loads may open dialogs; the layout never prompts.
+  // Loads explicit files, then applies the optional layout against their data (with no files, the layout reloads its
+  // own sources without prompting). A failed or cancelled file aborts the layout and settles it false. Only an
+  // attended (`interactive`) start may open dialogs: the files' own, and the layout's dataset question.
   void loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive);
 
   // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
@@ -783,8 +781,9 @@ class MainWindow : public QMainWindow {
   // restore, LayoutImportBatch included (captured at construction): late continuations run long after the
   // caller's stack, and any startup flag, has unwound.
   enum class LayoutLoadInteractivity {
-    kInteractive,  ///< user-driven (menu / recent list): prompts allowed
-    kAutomated,    ///< --layout CLI: auto-reload, never any dialog
+    kInteractive,      ///< user-driven (menu / recent list): prompts allowed
+    kStartupAttended,  ///< --layout CLI with someone at the display: as kAutomated, but asks which dataset(s) to show
+    kAutomated,        ///< --layout CLI unattended: auto-reload, never any dialog
   };
   // `current_data_files` set: the layout applies to those already-loaded files (startup's explicit `-d` files) as a
   // generic layout, keeping only the dataset qualifiers that name one of them; its saved sources are not replayed.
@@ -794,7 +793,6 @@ class MainWindow : public QMainWindow {
   // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl (which is why they build on the
   // desktop too). Every terminal outcome goes through finishBrowserLayoutLoad, which logs
   // PJ_WASM_LAYOUT_LOAD_OK/FAILED.
-  enum class BrowserLayoutLoadResult { kApplied, kPending, kFailed };
 
   [[nodiscard]] QDomDocument browserGenericLayoutDocument() const;
   [[nodiscard]] std::optional<QDomDocument> browserSourceLayoutDocument(QString& error) const;
@@ -808,8 +806,7 @@ class MainWindow : public QMainWindow {
   // `layout_url` is where the bytes came from (empty for an upload): Scene3D resources and file sources resolve
   // against it, and its sources download instead of being reselected.
   void loadLayoutFromBytes(const QByteArray& bytes, const QString& browser_name, const QUrl& layout_url = {});
-  [[nodiscard]] BrowserLayoutLoadResult loadBrowserParsedLayout(
-      QDomDocument doc, const QString& browser_name, const QUrl& layout_url);
+  void loadBrowserParsedLayout(QDomDocument doc, const QString& browser_name, const QUrl& layout_url);
   void restoreBrowserChromeAndPanels(const QDomDocument& doc, const QString& browser_name);
   // Called first by every layout open, before the layout starts its own streams: those must not count as running.
   void snapshotStreamWindowAtLayoutOpen();
@@ -882,16 +879,23 @@ class MainWindow : public QMainWindow {
   // The synchronous leg: applies a parsed layout to already-loaded data (the progressive leg is
   // beginProgressiveLayoutRestore). `stream_tracks`, the timeline tracks of the streams this load started or
   // bound, join the files' offsets and order; a layout with some applies though their datasets are still empty.
+  // `compared`: the datasets a multi-copy load duplicated the layout for; their starts are aligned before the commit.
   void applyRestoredLayout(
-      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks);
-  // Which loaded dataset(s) a layout aimed at one dataset shows (ARCHITECTURE "One layout over several datasets").
-  // `saved_identities` are the datasets the file named (layout_xml::datasetIdentities) before any load-time rewrite.
-  // `then` receives the layout pinned to the chosen datasets, the layout as it was when there is nothing to choose,
-  // or nullopt when the user cancelled. It runs before this returns, except while the browser's non-blocking
-  // question is open; nothing is applied in between.
+      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks,
+      const std::vector<DatasetId>& compared = {});
+  // What chooseLayoutDatasets hands on.
+  struct ChosenLayout {
+    std::optional<QDomDocument> doc;  ///< nullopt: nothing to apply (cancelled, or `failure`)
+    QString failure;                  ///< why there is no doc, when it was not a Cancel
+    std::vector<DatasetId> compared;  ///< the datasets a multi-copy load shows, for applyRestoredLayout
+  };
+  // Which loaded dataset(s) a layout aimed at one dataset shows (layout_xml::planDatasetChoice). `saved`: see there.
+  // A plan that asks asks only when `can_prompt`, else takes the first dataset and says so in a diagnostic. `then`
+  // runs before this returns, except while the browser's non-blocking question is open; nothing is applied in
+  // between.
   void chooseLayoutDatasets(
-      QDomDocument doc, const QStringList& saved_identities, bool can_prompt, const QString& layout_name,
-      std::function<void(std::optional<QDomDocument>)> then);
+      QDomDocument doc, const std::optional<QList<layout_xml::DatasetIdentity>>& saved, bool can_prompt,
+      const QString& layout_name, std::function<void(ChosenLayout)> then);
   // Starts each stream from its saved configuration, without its plugin's dialog, and adds it to `binding`.
   // Returns one "Stream '<id>': why" line per stream that did not start.
   [[nodiscard]] QStringList startLayoutStreams(
@@ -960,7 +964,8 @@ class MainWindow : public QMainWindow {
   // kExact, then the file sources' timeline state plus `stream_tracks` (the replay's streams, still without
   // data, so an empty catalog is not an error when there are some).
   [[nodiscard]] bool applyBrowserRestoredLayout(
-      QDomDocument doc, const QString& browser_name, const LayoutTimelinePlan& stream_tracks = {});
+      QDomDocument doc, const QString& browser_name, const LayoutTimelinePlan& stream_tracks = {},
+      const std::vector<DatasetId>& compared = {});
   // The replay's last step: applies it, rolls back on a failure or replaces the previous preset's data on a URL
   // load's success, and finishes the load. `apply_failure` is the token if the layout itself does not apply.
   void applyBrowserReplay(QDomDocument apply_doc, const QString& apply_failure);

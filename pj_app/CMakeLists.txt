@@ -595,6 +595,8 @@ if(PJ_BUILD_TESTS)
     # A layout aimed at one dataset over several matching ones: asked, duplicated per dataset, or the first one.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_layout_dataset_choice_test.cpp)
+    set_source_files_properties(tests/main_window_layout_dataset_choice_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
 
     # The Custom Series list is derived from DataProcessorService, not accumulated
     # from plugin announcements — the paths that announce nothing are a layout
