@@ -1,13 +1,15 @@
 # A load that fails answers open_file with the loader's reason, not just the path, lists no dataset and keeps no
-# label: the same file name loaded next is the plain name, not "(2)". The fixture MCAP has a channel and no message,
-# which the MCAP plugin refuses itself; a plugin that succeeds with no data fails the same way (FileLoaderTest
-# "YieldsNoData" cases), since a desktop CI plugin with that shape does not exist.
+# label: the same file name loaded next is the plain name, not "(2)". A file no plugin handles fails before the
+# import starts; a header-only CSV fails in the CSV plugin. A plugin that succeeds with no data fails the same way
+# (FileLoaderTest "YieldsNoData" cases); no CI plugin has that shape.
 # needs: plugins
-refuse open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/no_messages/ros2_occupancy_real.mcap"}
-expect No channels could be bound
+refuse open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/no_rows/notes.unknownext"}
+expect No DataSource plugin handles
+refuse open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/no_rows/run.csv","config":{"time_mode":"column","time_column_index":0,"column_history":["time"],"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
+expect No rows imported
 get_status {}
-absent ros2_occupancy_real
-open_file {"path":"$CHECKOUT/tests/wasm/fixtures/ros2_occupancy_real.mcap"}
+absent run.csv
+open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/compare_runs/run1/run.csv","config":{"time_mode":"column","time_column_index":0,"column_history":["time"],"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
 expect "loaded":true
-until get_status {} "name":"ros2_occupancy_real.mcap"
-absent ros2_occupancy_real.mcap (2)
+until get_status {} "name":"run.csv"
+absent run.csv (2)
