@@ -9,6 +9,7 @@
 #include <QPointer>
 #include <QRectF>
 #include <QWidget>
+#include <functional>
 #include <list>
 #include <map>
 #include <optional>
@@ -178,6 +179,11 @@ class PlotWidgetBase : public QWidget {
   // width separately (per-curve width) can restyle a curve non-destructively.
   void applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style);
   QColor nextColor();
+  // Draws palette indices from `next_index` until one whose colour no curve of this plot wears: the curves' own pens
+  // decide, so a colour restored from a layout or picked by the user counts like an auto-assigned one. When all eight
+  // colours are worn it returns the first index drawn (a repeat is unavoidable). Each draw advances the caller's
+  // counter, so a session-wide counter skips the colours this plot holds.
+  [[nodiscard]] int freePaletteIndex(const std::function<int()>& next_index) const;
   // Fills `info`'s ride-along marker with its curve's current colour; no-op if it already has it. The marker is not a
   // tracker: nothing else follows a recolour, so a pass that shows it calls this.
   void syncMarkerColor(const CurveInfo& info);

@@ -291,21 +291,23 @@ PlotWidget::CurveInfo* PlotWidget::addCurve(const QString& name, QColor color) {
   }
 
   // Auto-assignment: reuse the curve's remembered colour so it stays consistent across plots; otherwise take the next
-  // colour from the shared session-wide palette counter and remember it. An explicit (non-transparent) colour, from a
-  // layout file for example, is honored as-is. session_ is non-null here (guarded above).
+  // colour from the configured sequence, skipping the colours this plot already wears, and remember it. An explicit
+  // (non-transparent) colour, from a layout file for example, is honored as-is. session_ is non-null here (guarded
+  // above).
   if (color == Qt::transparent) {
     CurveColorRegistry& registry = session_->curveColorRegistry();
     if (const auto remembered = registry.color(name); remembered.has_value()) {
       color = QColor(*remembered);
     } else {
-      // New curve: the colour index follows the configured sequence. "global" advances the session-wide registry
-      // counter (one continuous sequence across every plot); "per plot" uses the curve's positional index in this plot,
-      // so each plot restarts at colour 0. Either way the colour is remembered by name, so the curve keeps it on re-add
-      // and across plots.
+      // New curve: "global" draws from the session-wide registry counter (one continuous sequence across every plot);
+      // "per plot" starts at the curve's positional index in this plot, so each plot restarts at colour 0. Either way
+      // the colour is remembered by name, so the curve keeps it on re-add and across plots. The counters know nothing
+      // of colours a layout restore or the user put on this plot, hence the skip.
       QSettings settings;
       const bool global = settings.value(u"Preferences::curve_color_global"_s, true).toBool();
-      const int index = global ? registry.nextPaletteIndex() : static_cast<int>(curveList().size());
-      color = PlotWidgetBase::paletteColor(index);
+      int per_plot_index = static_cast<int>(curveList().size());
+      color = PlotWidgetBase::paletteColor(
+          freePaletteIndex([&] { return global ? registry.nextPaletteIndex() : per_plot_index++; }));
       registry.setColor(name, color.name());
     }
   }

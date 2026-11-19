@@ -65,12 +65,16 @@ namespace {
   return PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::themeFor(is_light));
 }
 
-[[nodiscard]] QColor colorFromIndex(int index) {
+const std::array<QColor, 8>& curvePalette() {
   static const std::array<QColor, 8> k_colors = {
       QColor("#1f77b4"), QColor("#d62728"), QColor("#1ac938"), QColor("#ff7f0e"),
       QColor("#f14cc1"), QColor("#9467bd"), QColor("#17becf"), QColor("#bcbd22"),
   };
-  return k_colors[static_cast<std::size_t>(index) % k_colors.size()];
+  return k_colors;
+}
+
+[[nodiscard]] QColor colorFromIndex(int index) {
+  return curvePalette()[static_cast<std::size_t>(index) % curvePalette().size()];
 }
 
 // The raster canvas: the non-GPU choice and the replacement for a failed GPU canvas. Its backing store also serves the
@@ -845,7 +849,25 @@ void PlotWidgetBase::applyStyleToCurve(QwtPlotCurve* curve, CurveStyle style) {
 }
 
 QColor PlotWidgetBase::nextColor() {
-  return colorFromIndex(next_color_index_++);
+  return colorFromIndex(freePaletteIndex([this] { return next_color_index_++; }));
+}
+
+int PlotWidgetBase::freePaletteIndex(const std::function<int()>& next_index) const {
+  const auto worn = [this](int index) {
+    const QRgb rgb = colorFromIndex(index).rgb();
+    return std::any_of(plot_->curve_list.begin(), plot_->curve_list.end(), [rgb](const CurveInfo& info) {
+      return info.curve != nullptr && info.curve->pen().color().rgb() == rgb;
+    });
+  };
+  const int first = next_index();
+  int index = first;
+  for (std::size_t tried = 1; worn(index); ++tried) {
+    if (tried == curvePalette().size()) {
+      return first;
+    }
+    index = next_index();
+  }
+  return index;
 }
 
 QColor PlotWidgetBase::paletteColor(int index) {
