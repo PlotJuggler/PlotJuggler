@@ -698,9 +698,9 @@ void forEachCustomWidgetInput(QDomDocument& doc, Fn&& fn) {
 // Document order (matchDatasetsToFiles pairs by first appearance); iterative, so a deep layout cannot overflow the
 // stack. Visitors see every widget family's elements: select by exact tagName or touch only attributes you own.
 template <typename Fn>
-void forEachElement(QDomDocument& doc, Fn&& visit) {
+void forEachElementUnder(const QDomElement& root, Fn&& visit) {
   std::vector<QDomElement> pending;
-  pending.push_back(doc.documentElement());
+  pending.push_back(root);
   while (!pending.empty()) {
     QDomElement element = pending.back();
     pending.pop_back();
@@ -709,6 +709,11 @@ void forEachElement(QDomDocument& doc, Fn&& visit) {
       pending.push_back(child);
     }
   }
+}
+
+template <typename Fn>
+void forEachElement(QDomDocument& doc, Fn&& visit) {
+  forEachElementUnder(doc.documentElement(), std::forward<Fn>(visit));
 }
 
 }  // namespace
@@ -876,6 +881,230 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc, const QList<Data
       element.setAttribute(shape.path, match->file);
     }
   });
+}
+
+namespace {
+
+// "", "x_", "y_", "input_" or "source_": the attribute prefix of a qualifier shape.
+QString shapePrefix(const DatasetIdentityAttributes& shape) {
+  return shape.id.chopped(QLatin1StringView("dataset_id").size());
+}
+
+bool isRecipeInput(const QDomElement& element) {
+  const QString parent = element.parentNode().toElement().tagName();
+  return element.tagName() == "input"_L1 && (parent == "transform"_L1 || parent == "on_demand"_L1);
+}
+
+// Whether `element` reads data through `shape`, so a pinned layout gives it that qualifier: it names a topic under the
+// shape's prefix (curves, wires, recipe inputs, filters, scene layers and payloads), or, for the plain shape, it is a
+// dataset-bound <generator>, a <marker_scope> or a recipe <input> (which may name another node's output alone). A local
+// scene layer names no topic and stays local.
+bool readsThrough(const QDomElement& element, const DatasetIdentityAttributes& shape) {
+  const QString prefix = shapePrefix(shape);
+  if (!element.attribute(prefix + u"topic"_s).isEmpty() || !element.attribute(prefix + u"topic_name"_s).isEmpty()) {
+    return true;
+  }
+  if (!prefix.isEmpty()) {
+    return false;
+  }
+  const QString tag = element.tagName();
+  return (tag == "generator"_L1 && element.attribute(u"all_datasets"_s) != "1"_L1) || tag == "marker_scope"_L1 ||
+         isRecipeInput(element);
+}
+
+// Replaces every qualifier under `root` by `pin`, and gives one to every element that reads data without one.
+void pinQualifiers(const QDomElement& root, const DatasetPin& pin) {
+  forEachElementUnder(root, [&pin](QDomElement& element) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      element.removeAttribute(shape.id);
+      element.removeAttribute(shape.source);
+      element.removeAttribute(shape.path);
+      if (!readsThrough(element, shape)) {
+        continue;
+      }
+      if (pin.id != 0) {
+        element.setAttribute(shape.id, QString::number(pin.id));
+      }
+      element.setAttribute(shape.source, pin.source);
+      if (!pin.path.isEmpty()) {
+        element.setAttribute(shape.path, pin.path);
+      }
+    }
+  });
+}
+
+// Gives each <curve> of each <plot> under `root` that has no colour the first palette colour its plot does not
+// already wear, the way a plot picks one for a new curve, so every copy of the plot can carry the same colour.
+void fillCurveColors(const QDomElement& root, const QStringList& palette) {
+  if (palette.isEmpty()) {
+    return;
+  }
+  const QDomNodeList plots = root.elementsByTagName(u"plot"_s);
+  for (int p = 0; p < plots.size(); ++p) {
+    const QDomElement plot = plots.at(p).toElement();
+    QSet<QString> worn;
+    for (QDomElement curve = plot.firstChildElement(u"curve"_s); !curve.isNull();
+         curve = curve.nextSiblingElement(u"curve"_s)) {
+      if (const QString color = curve.attribute(u"color"_s); !color.isEmpty()) {
+        worn.insert(color.toLower());
+      }
+    }
+    qsizetype next = 0;
+    for (QDomElement curve = plot.firstChildElement(u"curve"_s); !curve.isNull();
+         curve = curve.nextSiblingElement(u"curve"_s)) {
+      if (!curve.attribute(u"color"_s).isEmpty()) {
+        continue;
+      }
+      QString chosen = palette[next % palette.size()];
+      for (qsizetype tried = 0; tried < palette.size(); ++tried) {
+        const QString candidate = palette[(next + tried) % palette.size()];
+        if (!worn.contains(candidate)) {
+          chosen = candidate;
+          next += tried;
+          break;
+        }
+      }
+      ++next;
+      curve.setAttribute(u"color"_s, chosen);
+      worn.insert(chosen);
+    }
+  }
+}
+
+// `copy`th copy of a tab's id, area id or plot id: the first copy keeps the saved one.
+void suffixId(QDomElement& element, int copy) {
+  if (const QString id = element.attribute(u"id"_s); copy > 0 && !id.isEmpty()) {
+    element.setAttribute(u"id"_s, u"%1~%2"_s.arg(id).arg(copy + 1));
+  }
+}
+
+}  // namespace
+
+QStringList datasetIdentities(const QDomDocument& doc) {
+  QStringList identities;
+  QSet<QString> path_labels;
+  QStringList labels;
+  QDomDocument walk = doc;  // forEachElement takes a mutable handle; nothing is written
+  forEachElement(walk, [&](QDomElement& element) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      const QString path = element.attribute(shape.path);
+      const QString source = element.attribute(shape.source);
+      if (!path.isEmpty()) {
+        if (!identities.contains(path)) {
+          identities.push_back(path);
+        }
+        if (!source.isEmpty()) {
+          path_labels.insert(source);
+        }
+      } else if (!source.isEmpty() && !labels.contains(source)) {
+        labels.push_back(source);
+      }
+    }
+  });
+  for (const QString& label : labels) {
+    if (!path_labels.contains(label)) {
+      identities.push_back(label);
+    }
+  }
+  return identities;
+}
+
+QSet<QString> referencedTopics(const QDomDocument& doc) {
+  QSet<QString> topics;
+  QDomDocument walk = doc;
+  forEachElement(walk, [&topics](QDomElement& element) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      for (const QString& attribute : {shapePrefix(shape) + u"topic"_s, shapePrefix(shape) + u"topic_name"_s}) {
+        if (const QString topic = element.attribute(attribute); !topic.isEmpty()) {
+          topics.insert(topic);
+        }
+      }
+    }
+  });
+  return topics;
+}
+
+QStringList duplicationBlockers(const QDomDocument& doc) {
+  QStringList blockers;
+  for (const QString& tag : {u"transform"_s, u"on_demand"_s}) {
+    const QDomNodeList recipes = doc.elementsByTagName(tag);
+    for (int index = 0; index < recipes.size(); ++index) {
+      const QDomElement recipe = recipes.at(index).toElement();
+      blockers.push_back(recipe.attribute(u"owner_plugin"_s) + u'/' + recipe.attribute(u"id"_s));
+    }
+  }
+  return blockers;
+}
+
+void pinLayoutToDatasets(QDomDocument& doc, const QList<DatasetPin>& pins, const QStringList& palette) {
+  if (pins.isEmpty()) {
+    return;
+  }
+  // Everything names the first dataset; each further copy is cloned from it and pinned again.
+  pinQualifiers(doc.documentElement(), pins.front());
+  if (pins.size() == 1) {
+    return;
+  }
+  QDomElement processors = doc.documentElement().firstChildElement(u"data_processors"_s);
+  std::vector<QDomElement> recipes;
+  for (QDomElement recipe = processors.firstChildElement(); !recipe.isNull(); recipe = recipe.nextSiblingElement()) {
+    recipes.push_back(recipe);
+  }
+  for (const QDomElement& recipe : recipes) {
+    const bool filter = recipe.tagName() == "processor"_L1;
+    const bool rule = recipe.tagName() == "generator"_L1 && recipe.attribute(u"all_datasets"_s) != "1"_L1;
+    if (!filter && !rule) {
+      continue;
+    }
+    QDomNode after = recipe;
+    for (int copy = 1; copy < pins.size(); ++copy) {
+      QDomElement clone = recipe.cloneNode(true).toElement();
+      pinQualifiers(clone, pins[copy]);
+      // A marker rule id is unique across datasets; a filter's output is unique per dataset and keeps its name.
+      if (rule) {
+        clone.setAttribute(u"id"_s, u"%1 [%2]"_s.arg(clone.attribute(u"id"_s), pins[copy].label));
+      }
+      after = processors.insertAfter(clone, after);
+    }
+  }
+
+  const QDomNodeList areas = doc.elementsByTagName(u"tabbed_widget"_s);
+  for (int area_index = 0; area_index < areas.size(); ++area_index) {
+    QDomElement area = areas.at(area_index).toElement();
+    std::vector<QDomElement> tabs;
+    for (QDomElement tab = area.firstChildElement(u"Tab"_s); !tab.isNull(); tab = tab.nextSiblingElement(u"Tab"_s)) {
+      tabs.push_back(tab);
+    }
+    for (std::size_t index = 0; index < tabs.size(); ++index) {
+      QDomElement tab = tabs[index];
+      fillCurveColors(tab, palette);
+      const QString name = tab.attribute(u"tab_name"_s, u"tab%1"_s.arg(index + 1));
+      QDomNode after = tab;
+      for (int copy = 1; copy < pins.size(); ++copy) {
+        QDomElement clone = tab.cloneNode(true).toElement();
+        pinQualifiers(clone, pins[copy]);
+        // A plugin-owned tab stays one tab: the copies are the user's.
+        for (const QString& attribute : {u"history_exempt"_s, u"owner_plugin"_s, u"tab_id"_s}) {
+          clone.removeAttribute(attribute);
+        }
+        suffixId(clone, copy);
+        for (const QString& tag : {u"DockArea"_s, u"plot"_s}) {
+          const QDomNodeList nodes = clone.elementsByTagName(tag);
+          for (int node = 0; node < nodes.size(); ++node) {
+            QDomElement element = nodes.at(node).toElement();
+            suffixId(element, copy);
+          }
+        }
+        clone.setAttribute(u"tab_name"_s, u"%1 [%2]"_s.arg(name, pins[copy].label));
+        after = area.insertAfter(clone, after);
+      }
+      tab.setAttribute(u"tab_name"_s, u"%1 [%2]"_s.arg(name, pins.front().label));
+    }
+    QDomElement current = area.firstChildElement(u"currentTabIndex"_s);
+    if (!current.isNull()) {
+      current.setAttribute(u"index"_s, current.attribute(u"index"_s, u"0"_s).toInt() * static_cast<int>(pins.size()));
+    }
+  }
 }
 
 namespace {

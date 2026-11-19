@@ -8,6 +8,7 @@
 #include <QDomElement>
 #include <QHash>
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -268,6 +269,36 @@ struct DatasetFileMatch {
 // loader derived from the saved file name follows the new name (the resolver compares labels exactly). Its id is
 // still removed.
 void removeDatasetQualifiersForGenericLayout(QDomDocument& doc, const QList<DatasetFileMatch>& keep = {});
+
+// The distinct datasets the layout's qualifiers name, in document order: each saved path, then each source label no
+// saved path also carries (a path-less alias of a path's dataset is that dataset). Opaque identities count.
+[[nodiscard]] QStringList datasetIdentities(const QDomDocument& doc);
+
+// Every topic the layout's elements name, under any qualifier shape (`topic` / `topic_name` with its prefix).
+[[nodiscard]] QSet<QString> referencedTopics(const QDomDocument& doc);
+
+// A loaded dataset a layout is pinned to: `id`, `source` and `path` become the qualifier, `label` (the session's unique
+// dataset label) names the copy.
+struct DatasetPin {
+  std::uint32_t id = 0;
+  QString source;
+  QString path;  ///< empty for a dataset with no file
+  QString label;
+};
+
+// What stops pinLayoutToDatasets from duplicating the layout across datasets, "<owner>/<id>" each: a transform (its id
+// is also its script's class id, and unique per owner across datasets, so a copy cannot take another) and an on-demand
+// recipe (its script reads its inputs and upstream outputs by name). Empty when the layout can be duplicated.
+[[nodiscard]] QStringList duplicationBlockers(const QDomDocument& doc);
+
+// Pins every element that reads data to `pins.front()`, replacing any qualifier it had and giving one to those
+// without (a generic layout). With several pins, each <Tab> becomes one copy per pin, side by side, named
+// "<tab> [<label>]", and each filter and dataset-bound marker rule one copy per pin, each copy pinned to its dataset.
+// The copies past the first suffix their tab, area and plot ids ("~<n>"), drop a plugin's tab ownership, and append
+// " [<label>]" to a marker rule id (unique across datasets); a filter keeps its output name (unique per dataset). A
+// curve with no saved colour gets one from `palette` first, so every copy shows it in the same colour. Several pins
+// need duplicationBlockers(doc) to be empty.
+void pinLayoutToDatasets(QDomDocument& doc, const QList<DatasetPin>& pins, const QStringList& palette = {});
 
 // DatasetId -> its FileLoader full source path; empty for a non-file or unknown dataset.
 using DatasetPathLookup = std::function<QString(std::uint32_t)>;

@@ -884,6 +884,14 @@ class MainWindow : public QMainWindow {
   // bound, join the files' offsets and order; a layout with some applies though their datasets are still empty.
   void applyRestoredLayout(
       QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks);
+  // Which loaded dataset(s) a layout aimed at one dataset shows (ARCHITECTURE "One layout over several datasets").
+  // `saved_identities` are the datasets the file named (layout_xml::datasetIdentities) before any load-time rewrite.
+  // `then` receives the layout pinned to the chosen datasets, the layout as it was when there is nothing to choose,
+  // or nullopt when the user cancelled. It runs before this returns, except while the browser's non-blocking
+  // question is open; nothing is applied in between.
+  void chooseLayoutDatasets(
+      QDomDocument doc, const QStringList& saved_identities, bool can_prompt, const QString& layout_name,
+      std::function<void(std::optional<QDomDocument>)> then);
   // Starts each stream from its saved configuration, without its plugin's dialog, and adds it to `binding`.
   // Returns one "Stream '<id>': why" line per stream that did not start.
   [[nodiscard]] QStringList startLayoutStreams(
