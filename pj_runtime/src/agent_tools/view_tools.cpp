@@ -628,6 +628,10 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
     return ToolResult::failure("catalog unavailable: " + catalog.error());
   }
   const bool adding = action == "add";
+  // The host frames a plot to its first curve; a batch is framed once more below, so a later curve of the call that
+  // reaches beyond the first is in view too.
+  const json tab_before = adding ? fetchTabConfig(ctx, tab).parsed : json();
+  const bool was_empty = tab_before.is_object() && tab_before.contains("curves") && tab_before["curves"].empty();
   std::vector<std::string> refused;
   std::vector<std::pair<std::string, std::string>> accepted;  // (topic, field) the host took without complaint
   for (const std::string& want : paths) {
@@ -654,16 +658,21 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   // the verdict comes from what the tab HOLDS, not from what the calls returned; otherwise this reports a drawing that
   // never happened, the one thing the read-back exists to prevent.
   const json& held = out.contains("curves") ? out["curves"] : json::array();
+  bool landed = false;
   for (const auto& [topic, field] : accepted) {
     const bool present = std::any_of(held.begin(), held.end(), [&](const json& curve) {
       return curve.value("topic", std::string()) == topic && curve.value("field", std::string()) == field;
     });
     if (present == adding) {
+      landed = landed || adding;
       continue;  // added and there, or removed and gone: what was asked for
     }
     refused.push_back(
         adding ? "'" + topic + "/" + field + "' did not land in the tab"
                : "'" + topic + "/" + field + "' is still drawn");
+  }
+  if (was_empty && landed && ctx.zoom_tab) {
+    static_cast<void>(ctx.zoom_tab(tab, std::nullopt));
   }
   if (!refused.empty()) {
     out["refused"] = refused;

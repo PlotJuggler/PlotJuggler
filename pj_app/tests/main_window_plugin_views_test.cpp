@@ -136,6 +136,44 @@ class MainWindowPluginViewsTestPeer {
     EXPECT_EQ(source->currentBoundingRect(), original);
   }
 
+  // A series an agent adds before it has rows, and the zoom fit after it, fit only the agent's own plot when the rows
+  // arrive: the user's linked plot keeps its window.
+  static void checkAgentFitStaysOffTheZoomLink(MainWindow& window) {
+    auto& app = *window.session_;
+    app.sessionManager().setUseTimeOffset(false);
+    const auto dataset = pj_test::createDataset(app, "agent-fit", true);
+    ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
+    const auto key = app.catalogModel().resolveCurveKey(0, u"agent-fit"_s, {}, u"/signal"_s, u"value"_s);
+    ASSERT_TRUE(key);
+    auto* docker = window.findChild<TabbedPlotWidget*>()->addTab(u"User"_s);
+    auto* user_plot = docker->plotAt(0)->ensurePlotWidget();
+    ASSERT_NE(user_plot->addCurve(*key), nullptr);
+    user_plot->setZoomRectangle(QRectF(2.0, 8.0, 2.0, -10.0), false);
+    const auto original = user_plot->currentBoundingRect();
+    auto* link = window.findChild<QAbstractButton*>(u"buttonLink"_s);
+    ASSERT_NE(link, nullptr);
+    link->setChecked(true);
+
+    DataWriter writer = app.sessionManager().dataEngine().createWriter();
+    const auto later = writer.registerScalarSeries(dataset, "/later", NumericType::kFloat64);
+    ASSERT_TRUE(later.has_value()) << later.error();
+    app.sessionManager().notifyIngest({later->topic_id});
+    const QString owner = u"agent-fit"_s;
+    ASSERT_TRUE(pluginTabs(window).createTab(owner, u"view"_s, u"Agent"_s));
+    ASSERT_TRUE(pluginTabs(window).addCurve(owner, u"view"_s, u"/later"_s, u"value"_s, u"agent-fit"_s));
+    ASSERT_TRUE(pluginTabs(window).zoomOut(owner, u"view"_s));
+    PlotWidget* agent_plot = pluginTabs(window).ownedTab(owner, u"view"_s)->plotAt(0)->plotWidget();
+    ASSERT_NE(agent_plot, nullptr);
+
+    writer.appendScalar(*later, 1'000'000'000, 5.0);
+    writer.appendScalar(*later, 6'000'000'000, 6.0);
+    ASSERT_FALSE(app.sessionManager().commitChunks(writer.flushAll()).empty());
+
+    EXPECT_NEAR(agent_plot->currentBoundingRect().left(), 1.0, 1e-6);
+    EXPECT_NEAR(agent_plot->currentBoundingRect().right(), 6.0, 1e-6);
+    EXPECT_EQ(user_plot->currentBoundingRect(), original);
+  }
+
   /// A plugin's pj.plot_tabs.v1 binding, wired exactly as launchToolbox wires it:
   /// the real runtime bridge over the shell's per-plugin callbacks.
   struct TabsApi {
@@ -1251,6 +1289,10 @@ TEST_F(MainWindowPluginViewsTest, StableTabIdsAndExplicitSourceOffsets) {
 
 TEST_F(MainWindowPluginViewsTest, NewPlotInheritsLinkedTimeRangeWithoutChangingPeers) {
   PJ::MainWindowPluginViewsTestPeer::checkNewPlotLinkedZoom(*window_);
+}
+
+TEST_F(MainWindowPluginViewsTest, AgentFitWhoseRowsArriveLaterLeavesLinkedPlotsAlone) {
+  PJ::MainWindowPluginViewsTestPeer::checkAgentFitStaysOffTheZoomLink(*window_);
 }
 
 // Time-range zoom preserves Y; both zoom operations leave user and other-plugin plots untouched.

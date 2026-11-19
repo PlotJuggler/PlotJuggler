@@ -2854,6 +2854,50 @@ TEST(ToolRegistry, PlotTabZoomFramesOnlyTheNamedOwnTab) {
   EXPECT_EQ(tabs.foreign_mutations, 0);
 }
 
+// An add that fills an empty tab frames it once, after the whole batch, so every curve of the call is in view; an add
+// to a tab that already holds curves leaves the view, and one that lands nothing frames nothing. The frame is the
+// host's per-tab zoom, never the viewport's every-tab one.
+TEST(ToolRegistry, PlotTabAddFramesATabThatWasEmptyOnce) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  store.addTopic("/left");
+  store.addField("/left", "speed", {0, kSec}, {1.0, 2.0});
+  FakePlotTabsHost tabs;
+  tabs.unresolvable.insert("/left");
+  FakeViewportHost vp;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+  ctx.viewport = vp.view();
+  std::vector<std::pair<std::string, std::optional<std::pair<double, double>>>> zooms;
+  ctx.zoom_tab = [&zooms](const std::string& tab, std::optional<std::pair<double, double>> range) {
+    zooms.emplace_back(tab, range);
+    return PJ::okStatus();
+  };
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "a"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "b"}}, ctx).ok);
+
+  EXPECT_FALSE(reg.execute("plot_tab", {{"action", "add"}, {"tab", "a"}, {"curves", "/left/speed"}}, ctx).ok);
+  EXPECT_TRUE(zooms.empty()) << "nothing landed, so there is nothing to frame";
+
+  ASSERT_TRUE(
+      reg.execute("plot_tab", {{"action", "add"}, {"tab", "a"}, {"curves", json::array({"/imu/x", "/imu/y"})}}, ctx)
+          .ok);
+  ASSERT_EQ(zooms.size(), 1U) << "one frame for the batch, not one per curve";
+  EXPECT_EQ(zooms[0].first, "a");
+  EXPECT_FALSE(zooms[0].second.has_value());
+
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "remove"}, {"tab", "a"}, {"curves", "/imu/y"}}, ctx).ok);
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "add"}, {"tab", "a"}, {"curves", "/imu/y"}}, ctx).ok);
+  EXPECT_EQ(zooms.size(), 1U) << "the tab still held a curve: the view stays where the caller put it";
+
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "add"}, {"tab", "b"}, {"curves", "/imu/x"}}, ctx).ok);
+  ASSERT_EQ(zooms.size(), 2U);
+  EXPECT_EQ(zooms[1].first, "b");
+  EXPECT_EQ(vp.zoom_calls, 0);
+  EXPECT_FALSE(vp.reset_called);
+}
+
 TEST(ToolRegistry, PlotTabDegradesWithoutTheService) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;

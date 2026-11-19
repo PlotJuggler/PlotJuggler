@@ -71,6 +71,7 @@
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 #include "pj_widgets/Dialog.h"
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/ToggleSwitch.h"
@@ -2658,6 +2659,13 @@ class McpEndpointTest : public McpServerTest {
     return window_->pluginPlotTabs().ownedTab(QString::fromLatin1(owner), QString::fromLatin1(tab));
   }
 
+  /// The first plot of `owner`'s plot tab `tab`, or null.
+  [[nodiscard]] PJ::PlotWidget* plotOf(const char* owner, const char* tab) const {
+    PJ::PlotDocker* docker = window_->pluginPlotTabs().ownedTab(QString::fromLatin1(owner), QString::fromLatin1(tab));
+    PJ::DockWidget* dock = docker == nullptr || docker->plotCount() == 0 ? nullptr : docker->plotAt(0);
+    return dock == nullptr ? nullptr : dock->plotWidget();
+  }
+
   void createTab(const std::string& token, const std::string& tab) const {
     const auto [text, error] = result(callAs(token, "plot_tab", {{"action", "create"}, {"tab", tab}}));
     EXPECT_FALSE(error) << text;
@@ -2850,6 +2858,68 @@ TEST_F(McpEndpointTest, PlotTabZoomRefusesARangeThatCannotBeDrawn) {
   ASSERT_FALSE(applied_error) << applied;
   EXPECT_NEAR(plot->currentBoundingRect().left(), 1.7e9, 1e-3);
   EXPECT_NEAR(plot->currentBoundingRect().right(), 1.7e9 + 60.0, 1e-3);
+}
+
+// The first curve in a plot_tab frames the plot to its data: the empty plot's 0..1 window shows none of it (nothing at
+// all for epoch-time series). A curve added to a plot that has curves leaves the view where the caller put it.
+TEST_F(McpEndpointTest, PlotTabAddFitsAnEmptyPlotAndKeepsAZoomedOne) {
+  openPublic();
+  ASSERT_NE(loadMock(), 0);  // samples 100 ns apart: the data spans far less than the empty plot's 1 s
+  const auto [created, create_error] = result(call("plot_tab", {{"action", "create"}, {"tab", "a"}}));
+  ASSERT_FALSE(create_error) << created;
+  const auto [added, add_error] =
+      result(call("plot_tab", {{"action", "add"}, {"tab", "a"}, {"curves", {"mock/file_data/value"}}}));
+  ASSERT_FALSE(add_error) << added;
+  PJ::PlotWidget* plot = plotOf("agent-test", "a");  // the plot is built by the first curve
+  ASSERT_NE(plot, nullptr);
+  const QRectF fitted = plot->currentBoundingRect();
+  EXPECT_GT(fitted.right(), fitted.left());
+  EXPECT_LT(fitted.right() - fitted.left(), 1e-3) << "X is still the empty plot's 0..1";
+  EXPECT_NEAR(fitted.left(), plot->maxZoomRect().left(), 1e-12);
+  EXPECT_NEAR(fitted.right(), plot->maxZoomRect().right(), 1e-12);
+
+  const auto [zoomed, zoom_error] =
+      result(call("plot_tab", {{"action", "zoom"}, {"tab", "a"}, {"start_s", 10.0}, {"end_s", 20.0}}));
+  ASSERT_FALSE(zoom_error) << zoomed;
+  const auto [derived, derived_error] = result(call(
+      "create_derived_series",
+      {{"name", "tripled"}, {"inputs", {"mock/file_data/value"}}, {"expression", "value * 3"}}));
+  ASSERT_FALSE(derived_error) << derived;
+  const auto [more, more_error] = result(call(
+      "plot_tab",
+      {{"action", "add"}, {"tab", "a"}, {"curves", {json::parse(derived, nullptr, false).value("series", "")}}}));
+  ASSERT_FALSE(more_error) << more;
+  EXPECT_EQ(plot->curveList().size(), 2U) << "the second curve must have landed for the view to be tested";
+  EXPECT_NEAR(plot->currentBoundingRect().left(), 10.0, 1e-9);
+  EXPECT_NEAR(plot->currentBoundingRect().right(), 20.0, 1e-9);
+}
+
+// One call adding several curves to an empty tab frames all of them, not only the first: here the second dataset is
+// shifted a thousand seconds from the first.
+TEST_F(McpEndpointTest, PlotTabAddFramesEveryCurveOfTheCall) {
+  openPublic();
+  ASSERT_NE(loadMock(), 0);
+  const auto [opened, open_error] =
+      result(call("open_file", {{"path", pj_app_test::makeMockFile(data_, "b.mock").toStdString()}}));
+  ASSERT_FALSE(open_error) << opened;
+  const int second = json::parse(opened, nullptr, false).value("dataset_id", 0);
+  ASSERT_NE(second, 0);
+  window_->appSession().sessionManager().setDisplayOffset(
+      static_cast<PJ::DatasetId>(second), PJ::DisplayOffset{PJ::Duration{-1'000'000'000'000}});
+
+  const auto [created, create_error] = result(call("plot_tab", {{"action", "create"}, {"tab", "a"}}));
+  ASSERT_FALSE(create_error) << created;
+  const auto [added, add_error] = result(call(
+      "plot_tab",
+      {{"action", "add"}, {"tab", "a"}, {"curves", {"a.mock:mock/file_data/value", "b.mock:mock/file_data/value"}}}));
+  ASSERT_FALSE(add_error) << added;
+  PJ::PlotWidget* plot = plotOf("agent-test", "a");
+  ASSERT_NE(plot, nullptr);
+  ASSERT_EQ(plot->curveList().size(), 2U);
+  const QRectF view = plot->currentBoundingRect();
+  EXPECT_GT(view.right() - view.left(), 900.0) << "the view frames only the first curve";
+  EXPECT_NEAR(view.left(), plot->maxZoomRect().left(), 1e-6);
+  EXPECT_NEAR(view.right(), plot->maxZoomRect().right(), 1e-6);
 }
 
 TEST_F(McpEndpointTest, TearingDownTheSessionRevokesAndDropsItsEvaluation) {

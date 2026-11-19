@@ -57,7 +57,8 @@ class PluginPlotTabsController {
   [[nodiscard]] Expected<std::vector<std::string>> listTabIds(const QString& plugin_id) const;
   /// The ABI's JSON, read back from the live plot, never echoed from the request.
   [[nodiscard]] Expected<std::string> tabConfig(const QString& plugin_id, const QString& tab_id) const;
-  /// Drawing a curve already drawn is success, not an error.
+  /// Drawing a curve already drawn is success, not an error. A curve added to an empty plot fits it to its data; one
+  /// added to a plot with curves leaves the view alone.
   Status addCurve(
       const QString& plugin_id, const QString& tab_id, const QString& topic, const QString& field,
       const QString& dataset_source);
@@ -81,7 +82,8 @@ class PluginPlotTabsController {
   /// distinct errors: the caller's remedy differs. A range the axis cannot hold (NaN, infinite, beyond the
   /// nanosecond time base, narrower than a nanosecond) is refused.
   Status zoomToTimeRange(const QString& plugin_id, double t0_s, double t1_s, const QString& tab_id = {});
-  /// Reset every plot `plugin_id` owns, or only those in its tab `tab_id` when given, to fit its data.
+  /// Reset every plot `plugin_id` owns, or only those in its tab `tab_id` when given, to fit its data. Like
+  /// `zoomToTimeRange`, it never moves the user's linked plots, not even when the rows arrive later.
   Status zoomOut(const QString& plugin_id, const QString& tab_id = {});
 
   /// Re-stamps every owned tab's watermark (owner name, or "not loaded"). Call after the catalog changes and

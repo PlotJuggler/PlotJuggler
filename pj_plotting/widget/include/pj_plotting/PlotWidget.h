@@ -179,6 +179,10 @@ class PlotWidget : public PlotWidgetBase {
   // visibility flags. A test seam.
   [[nodiscard]] std::vector<MarkerTarget> markerTargets() const;
 
+  /// `zoomOut(false)` for a fit the zoom link must never hear about, now or when the first rows complete it: an agent's
+  /// or a plugin's plot in its own tab. Any other `zoomOut` call re-arms the announcement.
+  void zoomOutUnlinked();
+
  public slots:
   void zoomOut(bool emit_signal = true);
   void onZoomOutHorizontalTriggered(bool emit_signal = true);
@@ -370,6 +374,9 @@ class PlotWidget : public PlotWidgetBase {
   // window (zoom link) narrows it to Y. Never armed when data existed at fit time.
   enum class PendingFit : std::uint8_t { kNone, kFull, kVertical };
   PendingFit pending_fit_ = PendingFit::kNone;
+  // Set by zoomOutUnlinked: the refit of pending_fit_ stays off the zoom link. Otherwise the refit announces its
+  // window, because linked peers took this plot's empty one and the first plot to receive rows must line them up again.
+  bool pending_fit_unlinked_ = false;
   // Trailing-edge coalescer for gesture history snapshots: wheel zoom and pan emit per input event, and serializing the
   // workspace each time is wasteful, so one undoableChange fires when the gesture goes quiet.
   QTimer gesture_undo_debounce_;

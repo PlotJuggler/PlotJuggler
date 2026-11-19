@@ -230,7 +230,8 @@ does not link it.
 - `PlotTabsRuntimeHost` (`pj.plot_tabs.v1`): `PluginPlotTabsController` enforces ownership
   by stable plugin-scoped id, independent of title or tab order. Duplicate titles are
   allowed; recreating an id replaces its contents (a scene tab of the same kind is only
-  retitled). Each tail slot is in the vtable exactly when its callback is set.
+  retitled). A curve added to an empty plot fits it to its data. Each tail slot is in the vtable exactly
+  when its callback is set.
 - `src/RuntimeHostSlot.h`: `host_slot::guarded<Self>(ctx, out_error, domain, body)` refuses
   a null `ctx` and turns an escaping exception into `PJ_ERROR_CODE_INTERNAL`;
   `reject` / `finish` fill `PJ_ERROR_CODE_REJECTED`. Used by the plot-tabs, viewport,
