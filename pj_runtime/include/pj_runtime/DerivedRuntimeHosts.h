@@ -36,8 +36,12 @@ class DerivedRuntimeHosts {
  public:
   /// A markers create binds to the dataset its input keys name (a qualified key picks
   /// it, an unqualified one found in several datasets is refused with the qualified
-  /// candidates: `resolveMarkerDataset` over `catalog`); `plugin_id` namespaces every id.
-  DerivedRuntimeHosts(SessionManager& session, CatalogModel& catalog, const std::string& plugin_id);
+  /// candidates: `resolveMarkerDataset` over `catalog`); `plugin_id` namespaces every id. `on_history_change` runs,
+  /// inside the plugin's call, when the plugin changed a node the undo history owns (`DataProcessorsKindRouter`):
+  /// a host with an undo history records the step there, else leaves it empty.
+  DerivedRuntimeHosts(
+      SessionManager& session, CatalogModel& catalog, const std::string& plugin_id,
+      std::function<void()> on_history_change = {});
 
   /// Ends the previews this instance's bridges created and still hold, in the three engines
   /// (`SessionManager::removeEphemerals`); one replaced by a persistent recipe or gone

@@ -67,9 +67,12 @@ class DataProcessorsKindRouter {
       PJ_data_processors_host_t markers, PJ_data_processors_host_t transforms, PJ_data_processors_host_t on_demand,
       OwnershipProbes owns);
 
-  /// The production wiring, probing through each bridge's `owns`.
+  /// The production wiring, probing through each bridge's `owns`. `on_history_change` runs after every successful
+  /// create or remove of a node the undo history owns: neither a preview nor history-exempt. A remove reads that from
+  /// the backend before forwarding (`historyOwns`), since a spurious step would clear the user's redo.
   DataProcessorsKindRouter(
-      MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms, OnDemandRuntimeHost& on_demand);
+      MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms, OnDemandRuntimeHost& on_demand,
+      std::function<void()> on_history_change = {});
 
   DataProcessorsKindRouter(const DataProcessorsKindRouter&) = delete;
   DataProcessorsKindRouter& operator=(const DataProcessorsKindRouter&) = delete;
@@ -121,6 +124,14 @@ class DataProcessorsKindRouter {
       void* ctx, uint64_t handle, uint32_t* out_state, PJ_string_view_t* out_json, PJ_error_t* out_error) noexcept;
   static bool onRelease(void* ctx, uint64_t handle, PJ_error_t* out_error) noexcept;
 
+  /// Runs `on_history_change_` when `ok` and `history_owned`; returns `ok`.
+  bool notifyHistory(bool ok, bool history_owned) const;
+  /// Whether a create with `flags` makes a node the undo history owns.
+  static bool createIsHistoryOwned(uint32_t flags);
+  /// Whether the live `id` on `backend` is a node the undo history owns: listed (list hides previews) and not
+  /// `history_exempt` in its config. False without a history callback, and when either read fails.
+  [[nodiscard]] bool historyOwns(const PJ_data_processors_host_t& backend, PJ_string_view_t id) const;
+
   /// The bound backend that serves `kind`, or nullptr (unknown kind, or its backend unbound).
   [[nodiscard]] const PJ_data_processors_host_t* backendFor(PJ_string_view_t kind) const noexcept;
 
@@ -139,6 +150,7 @@ class DataProcessorsKindRouter {
   PJ_data_processors_host_t transforms_;
   PJ_data_processors_host_t on_demand_;
   OwnershipProbes owns_;
+  std::function<void()> on_history_change_;
   PJ_data_processors_host_vtable_t vtable_;
   PJ_data_processors_host_t raw_;
   std::vector<std::string> list_storage_;     ///< owns the union'd ids returned by onList

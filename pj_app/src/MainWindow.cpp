@@ -1510,6 +1510,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   scene_undo_debounce_.setSingleShot(true);
   scene_undo_debounce_.setInterval(kSceneUndoDebounceMs);
   connect(&scene_undo_debounce_, &QTimer::timeout, this, [this]() { onUndoableChange(); });
+  plugin_history_step_.setSingleShot(true);
+  plugin_history_step_.setInterval(0);
+  connect(&plugin_history_step_, &QTimer::timeout, this, [this]() { onUndoableChange(/*force_new_state=*/true); });
 
   connect(
       file_loader_.get(), &FileLoader::sourceReplacementAboutToCommit, this,
@@ -7491,7 +7494,8 @@ void MainWindow::deleteOnDemandRecipe(const std::string& key) {
       return;
     }
     OnDemandService& on_demand = session_->sessionManager().onDemandService();
-    // An ordinary recipe is an undo step, its baseline refreshed first because an install pushes no snapshot.
+    // An ordinary recipe is an undo step, its baseline refreshed first: an install made directly on the service,
+    // not through a plugin's pj.data_processors.v1, pushes no snapshot.
     const bool history_exempt = on_demand.graph().find(key)->recipe.history_exempt;
     if (!history_exempt) {
       hydrateCurrentUndoState(/*refresh_data_universe=*/false);
@@ -9737,8 +9741,14 @@ std::shared_ptr<ToolboxPanelSession> MainWindow::buildToolboxPanelSession(
   }
 
   // pj.data_processors.v1: the host runs and recomputes the transforms and marker rules a toolbox submits.
+  // A persistent node the plugin creates, replaces or removes is its own undo step, as a Transform Editor apply is.
+  // A plugin re-creating its nodes while a restore applies is part of that restore.
   session->derived_hosts = std::make_unique<DerivedRuntimeHosts>(
-      session_->sessionManager(), session_->catalogModel(), plugin_id.toStdString());
+      session_->sessionManager(), session_->catalogModel(), plugin_id.toStdString(), [this] {
+        if (!applying_state_ && !progressive_layout_in_flight_) {
+          plugin_history_step_.start();
+        }
+      });
   if (auto status = session->derived_hosts->registerServices(*session->builder); !status) {
     report_error(
         source, tr("Failed to publish data-processor services for '%1': %2")

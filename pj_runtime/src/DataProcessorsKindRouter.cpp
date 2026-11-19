@@ -7,9 +7,11 @@
 #include <cassert>
 #include <cstddef>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "RuntimeHostSlot.h"
 #include "pj_base/sdk/data_processors_host.hpp"  // sdk::readDataProcessorRequest, sdk::readEvaluationBudget
@@ -87,14 +89,17 @@ bool appendIds(const PJ_data_processors_host_t& backend, std::vector<std::string
 }  // namespace
 
 DataProcessorsKindRouter::DataProcessorsKindRouter(
-    MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms, OnDemandRuntimeHost& on_demand)
+    MarkersRuntimeHost& markers, DataProcessorsRuntimeHost& transforms, OnDemandRuntimeHost& on_demand,
+    std::function<void()> on_history_change)
     : DataProcessorsKindRouter(
           markers.raw(), transforms.raw(), on_demand.raw(),
           OwnershipProbes{
               .transforms = [&transforms](std::string_view id) { return transforms.owns(id); },
               .markers = [&markers](std::string_view id) { return markers.owns(id); },
               .on_demand = [&on_demand](std::string_view id) { return on_demand.owns(id); },
-          }) {}
+          }) {
+  on_history_change_ = std::move(on_history_change);
+}
 
 DataProcessorsKindRouter::DataProcessorsKindRouter(
     PJ_data_processors_host_t markers, PJ_data_processors_host_t transforms, PJ_data_processors_host_t on_demand,
@@ -136,6 +141,35 @@ uint64_t DataProcessorsKindRouter::setNextHandleForTest(uint64_t next) noexcept 
 
 Status DataProcessorsKindRouter::registerServices(ServiceRegistryBuilder& registry) {
   return registerRequiredService<sdk::DataProcessorsHostService>(registry, raw_);
+}
+
+bool DataProcessorsKindRouter::notifyHistory(bool ok, bool history_owned) const {
+  if (ok && history_owned && on_history_change_) {
+    on_history_change_();
+  }
+  return ok;
+}
+
+bool DataProcessorsKindRouter::createIsHistoryOwned(uint32_t flags) {
+  return (flags & (PJ_DATA_PROCESSOR_FLAG_EPHEMERAL | PJ_DATA_PROCESSOR_FLAG_HISTORY_EXEMPT)) == 0;
+}
+
+bool DataProcessorsKindRouter::historyOwns(const PJ_data_processors_host_t& backend, PJ_string_view_t id) const {
+  if (!on_history_change_) {
+    return false;
+  }
+  // Both answers are ABI contracts of every kind: list hides previews, config carries `history_exempt`.
+  std::vector<std::string> listed;
+  PJ_error_t ignored{};
+  if (!appendIds(backend, listed, &ignored) || std::ranges::find(listed, sdk::toStringView(id)) == listed.end()) {
+    return false;
+  }
+  PJ_string_view_t config{};
+  if (!backend.vtable->data_processor_config(backend.ctx, id, &config, &ignored)) {
+    return false;
+  }
+  const nlohmann::json doc = nlohmann::json::parse(sdk::toStringView(config), nullptr, /*allow_exceptions=*/false);
+  return doc.is_object() && !doc.value("history_exempt", false);
 }
 
 const PJ_data_processors_host_t* DataProcessorsKindRouter::backendFor(PJ_string_view_t kind) const noexcept {
@@ -181,9 +215,11 @@ bool DataProcessorsKindRouter::onCreate(
     if (const PJ_data_processors_host_t* owner = self.ownerOf(id); owner != nullptr && owner != backend) {
       return reject(out_error, kDomain, "data processor id already exists with a different kind");
     }
-    return backend->vtable->create_data_processor(
-        backend->ctx, id, kind, language, inputs, input_count, outputs, output_count, script, params_json, flags,
-        out_topics, out_topics_capacity, out_topics_count, out_error);
+    return self.notifyHistory(
+        backend->vtable->create_data_processor(
+            backend->ctx, id, kind, language, inputs, input_count, outputs, output_count, script, params_json, flags,
+            out_topics, out_topics_capacity, out_topics_count, out_error),
+        createIsHistoryOwned(flags));
   });
 }
 
@@ -193,7 +229,8 @@ bool DataProcessorsKindRouter::onRemove(void* ctx, PJ_string_view_t id, PJ_error
     if (owner == nullptr) {
       return reject(out_error, kDomain, "unknown data processor id");
     }
-    return owner->vtable->remove_data_processor(owner->ctx, id, out_error);
+    const bool history_owned = self.historyOwns(*owner, id);
+    return self.notifyHistory(owner->vtable->remove_data_processor(owner->ctx, id, out_error), history_owned);
   });
 }
 
@@ -285,8 +322,10 @@ bool DataProcessorsKindRouter::onCreateV2(
     if (const PJ_data_processors_host_t* owner = self.ownerOf(decoded->id); owner != nullptr && owner != backend) {
       return reject(out_error, kDomain, "data processor id already exists with a different kind");
     }
-    return backend->vtable->create_data_processor_v2(
-        backend->ctx, &*decoded, out_topics, out_topics_capacity, out_topics_count, out_error);
+    return self.notifyHistory(
+        backend->vtable->create_data_processor_v2(
+            backend->ctx, &*decoded, out_topics, out_topics_capacity, out_topics_count, out_error),
+        createIsHistoryOwned(decoded->flags));
   });
 }
 

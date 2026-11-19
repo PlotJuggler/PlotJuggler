@@ -530,6 +530,17 @@ outlive their plugin, also when it is uninstalled. A persistent transform or fil
 
 **History exemption.** Undo and redo have no authority over a history-exempt node.
 
+**A plugin's change is an undo step.** A persistent node is the user's data under the history's authority (the SDK's
+LIFETIME contract), so a plugin that creates, replaces or removes one through `pj.data_processors.v1` makes one undo
+step, as an edit in a host panel does. The step is recorded by the shared router, `DataProcessorsKindRouter`, for
+every kind and every plugin: it reports each such call through `DerivedRuntimeHosts`' `on_history_change`, and
+`MainWindow` turns the calls of one burst into one forced step from the event loop. A preview's or
+an exempt node's create or remove is not reported: before forwarding a remove, the router reads from the backend
+whether the node is listed (list hides previews) and not `history_exempt` in its config, because a spurious step would
+clear the user's redo (an agent's evaluation removes its preview after every run). Without the step, the next undo would restore a snapshot taken before the create and remove
+the node. Calls made while a restore applies belong to that restore. Headless sessions have no history and pass no
+callback.
+
 **On-demand recipes through the dataset life cycle.**
 - Before a reload, a merge (the anchor and every source), an eviction of object topics and a clear, and again when a
   rollback restores the data, `SessionManager::suspendOnDemand` moves the dataset's epoch, drops its nodes' results
