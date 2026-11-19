@@ -359,3 +359,5 @@ The performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performance
 - The raster fallback after a GPU failure waits for a popup or modal window but does not detect a `QDrag::exec` loop
   started from the canvas.
 - `TabbedPlotWidget.cpp` still defines `HorizontalScrollArea`, which the tab strip no longer uses.
+- A curve restored from a layout whose data has not arrived yet does not reserve its saved colour (it waits in
+  `PendingDisplayBinder`, which the plot cannot see), so a curve added to that plot meanwhile can take the same colour.

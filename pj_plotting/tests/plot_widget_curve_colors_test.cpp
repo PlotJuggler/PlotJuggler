@@ -10,8 +10,11 @@
 #include <QSettings>
 #include <QString>
 #include <QStringList>
+#include <map>
 #include <set>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/PlotWidget.h"
@@ -20,6 +23,11 @@
 #include "pj_runtime/CurveDescriptor.h"
 #include "pj_runtime/SessionManager.h"
 using namespace Qt::StringLiterals;
+
+// These tests pin the intended colour rule, a deliberate design and not an accident of the implementation: a new curve
+// takes a palette colour that no curve of its plot uses yet (a layout-restored or user-picked curve counts);
+// once every palette colour is in use it takes the least-used one, lowest index first, so colours repeat evenly instead
+// of all landing on one.
 
 namespace {
 
@@ -30,12 +38,49 @@ QColor palette(int index) {
 }
 
 // "#rrggbb", so a failing comparison prints readable colours.
-QString hex(const QColor& color) {
-  return color.name();
+std::string hex(const QColor& color) {
+  return color.name().toStdString();
 }
 
-QString colorOf(const PJ::PlotWidget::CurveInfo* info) {
-  return info != nullptr && info->curve != nullptr ? hex(info->curve->pen().color()) : QString();
+std::string colorOf(const PJ::PlotWidget::CurveInfo* info) {
+  return info != nullptr && info->curve != nullptr ? hex(info->curve->pen().color()) : std::string();
+}
+
+// The palette is a code constant: measure its period instead of repeating it here.
+int paletteSize() {
+  int size = 1;
+  while (palette(size) != palette(0)) {
+    ++size;
+  }
+  return size;
+}
+
+std::vector<std::string> colorsOf(const PJ::PlotWidget& plot) {
+  std::vector<std::string> colors;
+  for (const auto& info : plot.curveList()) {
+    colors.push_back(colorOf(&info));
+  }
+  return colors;
+}
+
+// Pins the rotation once the palette is exhausted, for a plot holding two laps of curves: the curves after the first
+// lap do not repeat one another, each lap hands the colours out in palette order, and no colour is used more often
+// than the plot has laps.
+void expectEvenRotation(const std::vector<std::string>& colors) {
+  const auto size = static_cast<std::size_t>(paletteSize());
+  ASSERT_EQ(colors.size(), 2 * size);
+  EXPECT_NE(colors[size + 1], colors[size]);  // the first two curves past the palette
+  for (std::size_t i = 0; i < size; ++i) {
+    EXPECT_EQ(colors[i], hex(palette(static_cast<int>(i)))) << "first lap, curve " << i;
+    EXPECT_EQ(colors[size + i], hex(palette(static_cast<int>(i)))) << "second lap, curve " << i;
+  }
+  std::map<std::string, int> uses;
+  for (const std::string& color : colors) {
+    ++uses[color];
+  }
+  for (const auto& [color, count] : uses) {
+    EXPECT_LE(count, 2) << color;
+  }
 }
 
 // Pins "Preferences::curve_color_global" for one test and puts the stored value back afterwards.
@@ -150,8 +195,8 @@ TEST(PlotWidgetCurveColors, NewCurveSkipsAColourTheUserPicked) {
   EXPECT_EQ(colorOf(added), hex(palette(2)));
 }
 
-// "Per plot" colours restart at the first colour of every plot, but never repeat one the plot wears: after a
-// restore with palette(2) and palette(3), the plot's positional index would land on palette(2).
+// "Per plot" colours restart at the first colour of every plot, but skip those the plot already uses: after a restore
+// with palette(2) and palette(3), the plot's positional index would land on palette(2).
 TEST(PlotWidgetCurveColors, PerPlotModeSkipsRestoredColours) {
   ColorFixture fixture(3);
   const ColorModeGuard mode(/*global=*/false);
@@ -179,7 +224,7 @@ TEST(PlotWidgetCurveColors, PerPlotModeAfterARemovalKeepsColoursDistinct) {
 
   const auto* added = plot.addCurve(fixture.keys()[3]);
   ASSERT_NE(added, nullptr);
-  std::set<QString> seen;
+  std::set<std::string> seen;
   for (const auto& info : plot.curveList()) {
     EXPECT_TRUE(seen.insert(colorOf(&info)).second) << info.source_name.toStdString();
   }
@@ -206,7 +251,7 @@ TEST(PlotWidgetCurveColors, ReAddedCurveKeepsItsRememberedColour) {
 
   PJ::PlotWidget plot(&fixture.session(), &fixture.catalog());
   ASSERT_NE(plot.addCurve(fixture.keys()[0]), nullptr);
-  const QString first = colorOf(&plot.curveList().front());
+  const std::string first = colorOf(&plot.curveList().front());
   plot.removeCurve(fixture.keys()[0]);
   ASSERT_NE(plot.addCurve(fixture.keys()[1]), nullptr);
 
@@ -215,20 +260,56 @@ TEST(PlotWidgetCurveColors, ReAddedCurveKeepsItsRememberedColour) {
   EXPECT_EQ(colorOf(again), first);
 }
 
-// With every palette colour on the plot a new curve still gets one (repeating, unavoidably) and the pick terminates.
-TEST(PlotWidgetCurveColors, ExhaustedPaletteStillColoursTheCurve) {
-  ColorFixture fixture(9);
+// Every palette colour in use: curves keep rotating through the palette in order, in the session-wide sequence.
+TEST(PlotWidgetCurveColors, ExhaustedPaletteRotatesEvenlyInGlobalMode) {
+  ColorFixture fixture(2 * paletteSize());
   const ColorModeGuard mode(/*global=*/true);
 
   PJ::PlotWidget plot(&fixture.session(), &fixture.catalog());
-  for (int i = 0; i < 9; ++i) {
-    const auto* info = plot.addCurve(fixture.keys()[i]);
-    ASSERT_NE(info, nullptr) << i;
-    EXPECT_TRUE(QColor(colorOf(info)).isValid()) << i;
+  for (const QString& key : fixture.keys()) {
+    ASSERT_NE(plot.addCurve(key), nullptr);
   }
-  std::set<QString> distinct;
-  for (const auto& info : plot.curveList()) {
-    distinct.insert(colorOf(&info));
+  expectEvenRotation(colorsOf(plot));
+}
+
+TEST(PlotWidgetCurveColors, ExhaustedPaletteRotatesEvenlyInPerPlotMode) {
+  ColorFixture fixture(2 * paletteSize());
+  const ColorModeGuard mode(/*global=*/false);
+
+  PJ::PlotWidget plot(&fixture.session(), &fixture.catalog());
+  for (const QString& key : fixture.keys()) {
+    ASSERT_NE(plot.addCurve(key), nullptr);
   }
-  EXPECT_EQ(distinct.size(), 8U);  // the whole palette, once; the ninth curve repeats
+  expectEvenRotation(colorsOf(plot));
+}
+
+TEST(PlotWidgetCurveColors, ExhaustedPaletteRotatesEvenlyInAnXYPlot) {
+  ColorFixture fixture(2);
+
+  PJ::PlotWidget plot(&fixture.session(), &fixture.catalog());
+  plot.setModeXY(true);
+  for (int i = 0; i < 2 * paletteSize(); ++i) {
+    ASSERT_NE(plot.addCurveXY(fixture.keys()[0], fixture.keys()[1], u"xy%1"_s.arg(i)), nullptr) << i;
+  }
+  expectEvenRotation(colorsOf(plot));
+}
+
+// With palette(5) and palette(6) on the plot twice and every other palette colour once, the added curve takes the
+// lowest of the least-used colours, not the one its position in the plot would give.
+TEST(PlotWidgetCurveColors, ExhaustedPaletteTakesTheLowestOfTheLeastUsedColours) {
+  ASSERT_GE(paletteSize(), 7);
+  ColorFixture fixture(paletteSize() + 3);
+  const ColorModeGuard mode(/*global=*/false);
+
+  PJ::PlotWidget plot(&fixture.session(), &fixture.catalog());
+  int next_key = 0;
+  for (int slot = 0; slot < paletteSize(); ++slot) {
+    ASSERT_NE(plot.addCurve(fixture.keys()[next_key++], palette(slot)), nullptr);
+  }
+  ASSERT_NE(plot.addCurve(fixture.keys()[next_key++], palette(5)), nullptr);
+  ASSERT_NE(plot.addCurve(fixture.keys()[next_key++], palette(6)), nullptr);
+
+  const auto* added = plot.addCurve(fixture.keys()[next_key]);
+  ASSERT_NE(added, nullptr);
+  EXPECT_EQ(colorOf(added), hex(palette(0)));
 }
