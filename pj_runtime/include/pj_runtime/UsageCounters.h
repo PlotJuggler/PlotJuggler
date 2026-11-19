@@ -27,6 +27,7 @@ enum class UsageFeature {
   kRecordingStart,  ///< a session recording started
   kPanelScene3D,    ///< a Scene3D panel was created (by the user or by a layout)
   kPanelScene2D,    ///< a Scene2D panel was created (by the user or by a layout)
+  kPanelLog,        ///< a Log panel was created (by the user or by a layout)
 };
 
 /// One way a plugin gets used; each implies the plugin family (pluginUseKey()).
