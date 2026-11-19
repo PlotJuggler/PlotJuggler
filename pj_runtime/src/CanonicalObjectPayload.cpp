@@ -14,8 +14,7 @@ namespace PJ {
 
 namespace {
 
-// ponytail: only kLog is shifted (what the Log panel and the log widget read); shift other types when a view reads
-// their stamp.
+// ponytail: only kLog is shifted (the Log panel reads its stamp); shift other types when a view reads their stamp.
 bool shiftsStamp(sdk::BuiltinObjectType type, const ResolvedObjectEntry& entry) {
   return type == sdk::BuiltinObjectType::kLog && entry.payload_stamp_shift != 0;
 }

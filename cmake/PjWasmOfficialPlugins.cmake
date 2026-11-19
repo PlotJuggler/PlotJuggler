@@ -24,7 +24,6 @@ set(PJ_WASM_OFFICIAL_PLUGIN_DIRS
     toolbox_quaternion
     toolbox_fft
     toolbox_anomaly_detector
-    widget_log=LOG_WIDGET
     parser_influx
     parser_navmap
     data_load_ulog

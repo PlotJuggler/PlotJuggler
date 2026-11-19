@@ -68,9 +68,7 @@ fi
 
 # Same curated set as the Windows installer ($PluginIds in
 # packaging/installer/build_windows_installer.ps1): ros2-topic-subscriber is
-# Linux-only, and toolbox-assistant-agent (POSIX-only CLI backends) ships on Linux only. log-widget is
-# absent: the registry has no macos-arm64 build of it (Widget plugins build on
-# Linux and Windows only).
+# Linux-only, and toolbox-assistant-agent (POSIX-only CLI backends) ships on Linux only.
 BUNDLE_IDS=(
   csv-loader mcap-loader parquet-loader ulog-loader mp4-loader pointcloud-3d-loader
   dummy-streamer foxglove-bridge plotjuggler-bridge webrtc-client

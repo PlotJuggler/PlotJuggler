@@ -221,7 +221,7 @@ jobs:
       - name: Download budget of the production package
         # Measured 16,125,617 B on 2026-10-21 (Python and the notices included), about
         # 17 MB with the browser MCP server (16,992,912 B on 2026-11-11); the 20,000,000 B
-        # budget leaves room for built-in plugins such as the log widget. Raise it
+        # budget leaves room for more built-in plugins. Raise it
         # deliberately. The Python stdlib zip (python_stdlib.zip, about 0.67 MB) is
         # downloaded on first Python use and not counted.
         run: node scripts/wasm_size_budget.mjs build-wasm-prod/deploy/manifest.json 20000000
