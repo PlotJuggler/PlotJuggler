@@ -89,6 +89,14 @@ the layer's own `xmlSaveState` payload as its child. The dataset id alone is not
 source and path are saved too and `resolveObjectDataset` resolves the identity (the injected resolver, else the
 session's ambiguity-safe ladder; ambiguity resolves to nothing).
 
+An element saved without a dataset identity (a generic layout, or a source-bound one loaded with explicit files,
+which strips the qualifiers) binds by `uniqueObjectTopic`: the one live topic with its name and object type, else the
+one of them in the dataset the dock shows. None or several leave it pending, never failed: ambiguity is unresolved,
+not malformed, as an ambiguous plot curve is, so two loaded files that both carry `/tf` do not fail the layout. A
+pending element is retried at `finishRestore()`, when the dock's other elements have picked its dataset. Both
+families and the 3D trail and robot-model payloads resolve through it, the payloads with the dock's dataset passed
+in; Scene2D primes a saved image/depth kind on every candidate, since it primes before the dock's dataset is known.
+
 `xmlLoadState` validates the child tags and each layer's `visible` and `order` first, so a malformed state is
 rejected before anything is cleared. A layer whose dataset or topic is not loaded yet is kept as detached XML in the dock's pending queue and
 retried by `retryPendingRestores`. A permanently rejected element (malformed dataset id, bad object type, type mismatch, rejected payload)

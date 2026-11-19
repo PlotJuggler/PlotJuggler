@@ -1,0 +1,22 @@
+# Explicit files make the layout generic, and both files carry /tf: the Scene3D's TF reference is ambiguous by name.
+# It must neither fail the layout (the tab was dropped) nor stay unbound: the dock shows the file of its /costmap
+# layer, so /tf binds that file's. Both data files are committed browser fixtures.
+# app: -d tests/wasm/fixtures/ros2_robot_description_real.mcap -d tests/wasm/fixtures/ros2_occupancy_real.mcap -l scripts/qa/regressions/fixtures/scene3d_tf_two_datasets.pj4.xml
+# needs: plugins
+until get_status {} "ros2_occupancy_real.mcap"
+until ui_tree {} PJ::Scene3DDockWidget
+# The occupancy file's TF (map -> grid_frame) is the one bound: its frames are the fixed-frame choices.
+ui_click {"name":"scene3dFixedFrameCombo","wait_ms":500}
+ui_tree {}
+expect row "grid_frame"
+ui_key {"keys":"Escape"}
+# No Layout warning: a pending /tf reads "Warning | Layout | 1 scene layer(s) are not yet bound.". Filtered first,
+# since the list shows only the rows in its viewport.
+ui_click {"name":"buttonNotifications","wait_ms":500}
+ui_click {"name":"searchBox","wait_ms":200}
+ui_type {"text":"Layout","wait_ms":500}
+ui_tree {}
+expect QLineEdit "Layout"
+expect | Info | Layout | Loaded layout
+absent | Warning | Layout |
+ui_key {"keys":"Escape"}

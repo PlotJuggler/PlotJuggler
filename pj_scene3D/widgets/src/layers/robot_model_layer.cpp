@@ -414,7 +414,8 @@ bool RobotModelLayer::validateXml(const QDomElement& element) {
   return parseSettings(element).has_value();
 }
 
-RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomElement& element) {
+RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(
+    const QDomElement& element, PJ::DatasetId preferred_dataset) {
   const std::optional<ParsedSettings> settings = parseSettings(element);
   if (!settings.has_value()) {
     return XmlLoadResult::kInvalid;
@@ -425,18 +426,12 @@ RobotModelLayer::XmlLoadResult RobotModelLayer::xmlLoadStateResult(const QDomEle
     const QString& source = settings->dataset_source;
     const QString& path = settings->dataset_path;
     if (settings->dataset_id == 0 && source.isEmpty() && path.isEmpty()) {
-      const UniqueObjectTopicResolution generic = resolveUniqueObjectTopic(
-          ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kRobotDescription);
-      if (generic.ambiguous) {
-        return XmlLoadResult::kInvalid;
-      }
-      restored_topic = generic.topic_id;
+      restored_topic = PJ::uniqueObjectTopic(
+          ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kRobotDescription,
+          preferred_dataset);
     } else {
       const PJ::DatasetIdentityResolution dataset =
           ctx_.session->resolveDatasetIdentity(settings->dataset_id, source, path);
-      if (dataset.ambiguous) {
-        return XmlLoadResult::kInvalid;
-      }
       if (dataset.id.has_value()) {
         restored_topic = ctx_.session->objectStore().findTopic(*dataset.id, topic_name.toStdString());
       }

@@ -527,6 +527,33 @@ TEST(SceneDockWidgetTest, AmbiguousObjectDatasetIdentityNeverUsesFirstSourceMatc
       << "an ambiguous portable identity must stay unresolved instead of binding the first dataset";
 }
 
+TEST(SceneDockWidgetTest, UniqueObjectTopicBindsTheOnlyMatchElseThePreferredDatasetElseNothing) {
+  PJ::SessionManager session;
+  const auto register_cloud = [&session](PJ::DatasetId dataset, const std::string& topic, const char* type) {
+    return *session.objectStore().registerTopic(
+        PJ::ObjectTopicDescriptor{
+            .dataset_id = dataset,
+            .topic_name = topic,
+            .metadata_json = std::string(R"({"builtin_object_type":")") + type + R"("})",
+        });
+  };
+  const PJ::DatasetId left = *session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "left.mcap"});
+  const PJ::DatasetId right = *session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "right.mcap"});
+  const PJ::ObjectTopicId unique = register_cloud(left, "/unique", "kPointCloud");
+  register_cloud(right, "/unique", "kImage");  // another type is no candidate
+  const PJ::ObjectTopicId left_shared = register_cloud(left, "/shared", "kPointCloud");
+  const PJ::ObjectTopicId right_shared = register_cloud(right, "/shared", "kPointCloud");
+  const PJ::ObjectStore& store = session.objectStore();
+  constexpr auto kCloud = PJ::sdk::BuiltinObjectType::kPointCloud;
+
+  EXPECT_EQ(PJ::uniqueObjectTopic(store, "/unique", kCloud), unique);
+  EXPECT_EQ(PJ::uniqueObjectTopic(store, "/unique", kCloud, right), unique) << "a unique match ignores the preference";
+  EXPECT_EQ(PJ::uniqueObjectTopic(store, "/shared", kCloud, left), left_shared);
+  EXPECT_EQ(PJ::uniqueObjectTopic(store, "/shared", kCloud, right), right_shared);
+  EXPECT_FALSE(PJ::uniqueObjectTopic(store, "/shared", kCloud).has_value());
+  EXPECT_FALSE(PJ::uniqueObjectTopic(store, "/missing", kCloud, left).has_value());
+}
+
 TEST(SceneDockWidgetTest, DeferredLayerReturnsToItsSavedDrawOrder) {
   PJ::SessionManager session;
   const auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});

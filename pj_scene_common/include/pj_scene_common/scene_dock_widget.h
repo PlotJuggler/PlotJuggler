@@ -281,11 +281,6 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// topic name count.
   void recordSavedDatasets(const QDomElement& state);
 
-  /// xmlLoadState of `element`, recording the saved datasets from `authored` instead: the layout as the file wrote
-  /// it, for a family that fills in the identities of unqualified elements first (those name no dataset, so they
-  /// must not join the order).
-  bool loadSavedState(const QDomElement& element, const QDomElement& authored);
-
   /// True when a saved element names its dataset (by id, source or path).
   [[nodiscard]] static bool hasDatasetIdentity(const QDomElement& element);
 
@@ -437,7 +432,8 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Delivers the current playhead to a layer, clamped to that layer's own range, when it is registered and when it
   /// is un-hidden. Without a tracker tick yet the layer gets its first frame; a layer with no range is left alone.
   void seedLayerTrackerTime(ISceneLayer* layer);
-  /// False only when the saved dataset or topic is not available yet: the caller keeps the element pending.
+  /// False only when the saved dataset or topic is not available yet, or an unqualified element is ambiguous
+  /// (uniqueObjectTopic): the caller keeps the element pending.
   [[nodiscard]] bool restoreLayerElement(const QDomElement& layer_el);
 
   /// The combined renderKey() of the visible layers at `time`, plus viewRenderKey(): the repaint-coalescing

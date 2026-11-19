@@ -92,7 +92,8 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] QString sourceFrame() const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
-  [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element);
+  /// `preferred_dataset`: the dataset the dock shows, the tie-break for a generic source topic (uniqueObjectTopic).
+  [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element, PJ::DatasetId preferred_dataset = 0);
   // Session-free structural check of a "robot_model" payload (xmlLoadState also resolves the saved topic identity).
   [[nodiscard]] static bool validateXml(const QDomElement& element);
 

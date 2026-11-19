@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 
+#include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -53,6 +54,31 @@ QString secondsText(double seconds) {
 }
 
 }  // namespace
+
+std::optional<ObjectTopicId> uniqueObjectTopic(
+    const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type,
+    DatasetId preferred_dataset) {
+  std::optional<ObjectTopicId> match;
+  std::optional<ObjectTopicId> preferred_match;
+  int matches = 0;
+  int preferred_matches = 0;
+  for (const ObjectTopicId candidate : store.listTopics()) {
+    const ObjectTopicDescriptor& descriptor = store.descriptor(candidate);
+    if (descriptor.topic_name != topic_name || objectTypeFromMetadata(descriptor.metadata_json) != object_type) {
+      continue;
+    }
+    match = candidate;
+    ++matches;
+    if (preferred_dataset != 0 && descriptor.dataset_id == preferred_dataset) {
+      preferred_match = candidate;
+      ++preferred_matches;
+    }
+  }
+  if (matches == 1) {
+    return match;
+  }
+  return preferred_matches == 1 ? preferred_match : std::nullopt;
+}
 
 DerivedTopicPresentation derivedTopicPresentation(SessionManager* session, ObjectTopicId topic_id) {
   if (session == nullptr) {

@@ -2,9 +2,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
-#include <optional>
-#include <string_view>
-
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_datastore/object_store.hpp"
 
@@ -18,14 +15,5 @@ namespace pj::scene3d {
 /// True when the descriptor marks a snapshot stream (`sdk::kSnapshotMetadataKey` = "true"): every entry is a
 /// complete clear-and-replace snapshot, as each result of a derived SceneEntities topic is.
 [[nodiscard]] bool isSnapshotStream(const PJ::ObjectTopicDescriptor& descriptor);
-
-struct UniqueObjectTopicResolution {
-  std::optional<PJ::ObjectTopicId> topic_id;
-  bool ambiguous = false;
-};
-
-/// Resolves an unqualified topic only when name and type identify one live entry.
-[[nodiscard]] UniqueObjectTopicResolution resolveUniqueObjectTopic(
-    PJ::ObjectStore& store, std::string_view topic_name, PJ::sdk::BuiltinObjectType object_type);
 
 }  // namespace pj::scene3d

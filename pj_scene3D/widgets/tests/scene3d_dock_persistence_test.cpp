@@ -381,7 +381,9 @@ TEST(Scene3DDockPersistence, GenericLayerResolvesUniqueTopicAndType) {
   EXPECT_EQ(dock.boundDatasetIdForTest(), depth.dataset_id);
 }
 
-TEST(Scene3DDockPersistence, GenericLayerRejectsAmbiguousTopicAndType) {
+// An ambiguous generic reference is unresolved, not malformed, as an ambiguous plot curve is: it stays pending and
+// the restore succeeds.
+TEST(Scene3DDockPersistence, GenericLayerStaysPendingWhileAmbiguous) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
   registerDepthDataset(session, "left.dat", "/shared", /*push_sample=*/false);
@@ -395,9 +397,11 @@ TEST(Scene3DDockPersistence, GenericLayerRejectsAmbiguousTopicAndType) {
   PJ::Scene3DDockWidget dock;
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
-  EXPECT_FALSE(dock.xmlLoadState(state));
+  ASSERT_TRUE(dock.xmlLoadState(state));
+  dock.finishRestore();
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.layers().empty());
-  EXPECT_FALSE(dock.hasTransformBufferForTest());
+  EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/shared"_s});
   EXPECT_EQ(dock.boundDatasetIdForTest(), 0U);
 }
 
@@ -422,7 +426,9 @@ TEST(Scene3DDockPersistence, GenericConfigResolvesUniqueTopicAndType) {
   EXPECT_NE(dock.boundDatasetIdForTest(), decoy_depth.dataset_id);
 }
 
-TEST(Scene3DDockPersistence, GenericConfigRejectsAmbiguousTopicAndType) {
+// `-d a.mcap -d b.mcap -l layout` restores a generic layout, and both files carry /tf: the TF reference waits instead
+// of failing the whole layout.
+TEST(Scene3DDockPersistence, GenericConfigStaysPendingWhileAmbiguous) {
   PJ::SessionManager session;
   PJ::TransformService transform_service(session);
   registerTfDataset(session, "left.dat", "/shared_tf");
@@ -436,10 +442,39 @@ TEST(Scene3DDockPersistence, GenericConfigRejectsAmbiguousTopicAndType) {
   PJ::Scene3DDockWidget dock;
   dock.setSessionManager(&session);
   dock.setTransformService(&transform_service);
-  EXPECT_FALSE(dock.xmlLoadState(state));
+  ASSERT_TRUE(dock.xmlLoadState(state));
+  dock.finishRestore();
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
   EXPECT_TRUE(dock.layers().empty());
   EXPECT_FALSE(dock.hasTransformBufferForTest());
-  EXPECT_EQ(dock.boundDatasetIdForTest(), 0U);
+  EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/shared_tf"_s});
+}
+
+// A dock shows one dataset, so a generic reference several datasets carry binds the one in the dock's dataset, even
+// when it precedes the element that picks that dataset.
+TEST(Scene3DDockPersistence, GenericConfigBindsTheDocksDatasetWhenAmbiguous) {
+  PJ::SessionManager session;
+  PJ::TransformService transform_service(session);
+  const DatasetTopic left_tf = registerTfDataset(session, "left.dat", "/tf");
+  registerTfDataset(session, "right.dat", "/tf");
+  registerDepthTopic(session, left_tf.dataset_id, "/depth", /*push_sample=*/false);
+
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"scene3d"_s);
+  appendUnqualifiedConfig(doc, state, u"/tf"_s, u"kFrameTransforms"_s);
+  appendUnqualifiedLayer(doc, state, u"/depth"_s, u"kImage"_s);
+  doc.appendChild(state);
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.xmlLoadState(state));
+  dock.finishRestore();
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_EQ(dock.layers().size(), 1U);
+  EXPECT_TRUE(dock.hasTransformBufferForTest());
+  EXPECT_EQ(dock.boundDatasetIdForTest(), left_tf.dataset_id);
+  EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
 }
 
 // A TF-only dock persists its config topic and re-binds its TF buffer on restore, resolving the topic by dataset
@@ -1526,6 +1561,117 @@ TEST(Scene3DDockPersistence, PoseTrailDefersUntilTopicLoadsThenMaterializes) {
   EXPECT_EQ(restored->source().kind, pj::scene3d::TrailSource::Kind::kPoseTopic);
   EXPECT_EQ(restored->source().topic, pose_topic);
   EXPECT_EQ(restored->pastColor().name(), u"#112233"_s);
+}
+
+// A generic pose trail whose topic two datasets carry waits, like the dock's own generic references.
+TEST(Scene3DDockPersistence, GenericPoseTrailStaysPendingWhileAmbiguous) {
+  QDomDocument doc;
+  QDomElement scene = doc.createElement(u"scene3d"_s);
+  scene.setAttribute(u"version"_s, u"1"_s);
+  doc.appendChild(scene);
+  QDomElement layer_el = doc.createElement(u"layer"_s);
+  layer_el.setAttribute(u"role"_s, u"trail"_s);
+  layer_el.setAttribute(u"local"_s, u"true"_s);
+  layer_el.setAttribute(u"object_type"_s, u"kNone"_s);
+  layer_el.setAttribute(u"visible"_s, u"true"_s);
+  layer_el.setAttribute(u"order"_s, u"0"_s);
+  QDomElement payload = doc.createElement(u"trail"_s);
+  payload.setAttribute(u"source_kind"_s, u"pose_topic"_s);
+  payload.setAttribute(u"source_topic_name"_s, u"/odom"_s);
+  layer_el.appendChild(payload);
+  scene.appendChild(layer_el);
+
+  PJ::SessionManager session;
+  PJ::TransformService transform_service(session);
+  for (const char* source : {"left.dat", "right.dat"}) {
+    auto dataset_or =
+        session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = source, .time_domain_id = 0});
+    ASSERT_TRUE(dataset_or.has_value());
+    registerPoseTopic(session, *dataset_or, "/odom");
+  }
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+
+  ASSERT_TRUE(dock.xmlLoadState(scene));
+  dock.finishRestore();
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_TRUE(dock.layers().empty());
+  EXPECT_EQ(dock.unresolvedBlockingPendingRestores(), QStringList{u"/odom"_s});
+}
+
+// `-d run1 -d run2 -l layout` with both runs carrying the payload's topic: the payload binds the run the dock shows,
+// as the dock's own generic references do.
+TEST(Scene3DDockPersistence, GenericPoseTrailBindsTheDocksDatasetWhenAmbiguous) {
+  PJ::SessionManager session;
+  PJ::TransformService transform_service(session);
+  const DatasetTopic left_tf = registerTfDataset(session, "left.dat", "/tf");
+  const PJ::ObjectTopicId left_odom = registerPoseTopic(session, left_tf.dataset_id, "/odom");
+  auto right_or =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "right.dat", .time_domain_id = 0});
+  ASSERT_TRUE(right_or.has_value());
+  registerPoseTopic(session, *right_or, "/odom");
+
+  QDomDocument doc;
+  QDomElement scene = doc.createElement(u"scene3d"_s);
+  doc.appendChild(scene);
+  appendUnqualifiedConfig(doc, scene, u"/tf"_s, u"kFrameTransforms"_s);
+  QDomElement layer_el = doc.createElement(u"layer"_s);
+  layer_el.setAttribute(u"role"_s, u"trail"_s);
+  layer_el.setAttribute(u"local"_s, u"true"_s);
+  layer_el.setAttribute(u"object_type"_s, u"kNone"_s);
+  layer_el.setAttribute(u"visible"_s, u"true"_s);
+  layer_el.setAttribute(u"order"_s, u"0"_s);
+  QDomElement payload = doc.createElement(u"trail"_s);
+  payload.setAttribute(u"source_kind"_s, u"pose_topic"_s);
+  payload.setAttribute(u"source_topic_name"_s, u"/odom"_s);
+  layer_el.appendChild(payload);
+  scene.appendChild(layer_el);
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.xmlLoadState(scene));
+  dock.finishRestore();
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
+  ASSERT_EQ(dock.layers().size(), 1U);
+  auto* trail = dynamic_cast<pj::scene3d::TrailLayer*>(dock.layerFor(dock.layers().front().topic_id));
+  ASSERT_NE(trail, nullptr);
+  EXPECT_EQ(trail->source().topic, left_odom);
+}
+
+TEST(Scene3DDockPersistence, GenericRobotPayloadBindsTheDocksDatasetWhenAmbiguous) {
+  PJ::SessionManager session;
+  PJ::TransformService transform_service(session);
+  const DatasetTopic left_tf = registerTfDataset(session, "left.dat", "/tf");
+  registerRobotTopic(session, left_tf.dataset_id, "/robot_description");
+  auto right_or =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "right.dat", .time_domain_id = 0});
+  ASSERT_TRUE(right_or.has_value());
+  registerRobotTopic(session, *right_or, "/robot_description");
+
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"scene3d"_s);
+  doc.appendChild(state);
+  appendUnqualifiedConfig(doc, state, u"/tf"_s, u"kFrameTransforms"_s);
+  QDomElement robot_payload =
+      appendLocalRobotTopicLayer(doc, state, left_tf.dataset_id, u"left.dat"_s, u"/robot_description"_s)
+          .firstChildElement();
+  robot_payload.removeAttribute(u"source_dataset_id"_s);
+  robot_payload.removeAttribute(u"source_dataset_source"_s);
+
+  PJ::Scene3DDockWidget dock;
+  dock.setSessionManager(&session);
+  dock.setTransformService(&transform_service);
+  ASSERT_TRUE(dock.xmlLoadState(state));
+  dock.finishRestore();
+  EXPECT_FALSE(dock.workspaceRestoreFailed());
+  EXPECT_TRUE(dock.unresolvedBlockingPendingRestores().isEmpty());
+  ASSERT_EQ(dock.layers().size(), 1U);
+  auto* robot = dynamic_cast<pj::scene3d::RobotModelLayer*>(dock.layerFor(dock.layers().front().topic_id));
+  ASSERT_NE(robot, nullptr);
+  EXPECT_NE(robot->robotModel(), nullptr);
 }
 
 TEST(Scene3DDockPersistence, PoseTrailBuildsPolylineFromDecodedMessages) {

@@ -147,6 +147,11 @@ Name widgets by objectName in scripts, never by ref (refs change between runs). 
 `ui_tree` for widgets, `ui_plot` for a plot's ranges, curves and tracker value box, the data tools for data. A
 screenshot is evidence for a human, not an assertion.
 
+`ui_tree` clips a row to 80 characters, and a list shows only the rows in its viewport: filter before asserting
+`absent` on long or scrolled text. `expect` / `absent` match the text literally, quotes included: `until ui_tree {}
+"Scene3DDockWidget"` never matches `PJ::Scene3DDockWidget`. Check an `absent` once against a state that holds the
+text, or it may pass for the wrong reason.
+
 ## Regression scripts
 
 `scripts/qa/regressions/*.pjqa` is the suite. Each script starts with its instance's arguments, paths relative to
