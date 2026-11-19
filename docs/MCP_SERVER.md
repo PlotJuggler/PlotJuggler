@@ -170,7 +170,8 @@ states: running · waiting_for_user · completed · failed · killed
     (`remove_derived_series` removes it);
   - a load: `FileLoader::cancelLoad(ticket, keep_partial)`. A queued one leaves the queue; an active one stops at
     the producer's next progress callback, keeping the rows loaded so far (`keep_partial`, the default) or removing
-    them. The job ends when `loadFinished` arrives. The first kill decides `keep_partial`. A `reload_file` replaces
+    them. The job ends when `loadFinished` arrives; a failed load's reply carries the reason its `kFailed` terminal
+    carries (a load that yielded no data is one). The first kill decides `keep_partial`. A `reload_file` replaces
     data the user already has, so every stop of it discards (`McpServer::awaitLoad`): the dataset goes back to what
     it held, whatever `keep_partial` said. `McpServer::stillAuthorized` is false once the caller's job was asked to
     stop, so a load killed while it waited never starts;

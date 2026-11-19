@@ -318,6 +318,11 @@ class SessionManager : public QObject {
   /// range conversion for playback goes through here, so no raw range reaches the playback axis offset-blind.
   [[nodiscard]] std::optional<DisplayRange> datasetDisplayRange(DatasetId dataset_id) const;
 
+  /// True when any of the dataset's topics, scalar or object (off-clock ones included), holds a row or an entry. A
+  /// file load that ends without any is a failed load (FileLoader); a streaming dataset starts empty and is never
+  /// asked.
+  [[nodiscard]] bool datasetHoldsData(DatasetId dataset_id) const;
+
   // "Use time offset" switches the displayed frame between absolute epoch seconds (off) and seconds since
   // globalTimeReference() (on). Only the boolean is state.
 

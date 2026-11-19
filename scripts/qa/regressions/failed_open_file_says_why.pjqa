@@ -1,0 +1,15 @@
+# A load that fails answers open_file with the loader's reason, not just the path, lists no dataset and keeps no
+# label: the same file name loaded next is the plain name, not "(2)". A file no plugin handles fails before the
+# import starts; a header-only CSV fails in the CSV plugin. A plugin that succeeds with no data fails the same way
+# (FileLoaderTest "YieldsNoData" cases); no CI plugin has that shape.
+# needs: plugins
+refuse open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/no_rows/notes.unknownext"}
+expect No DataSource plugin handles
+refuse open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/no_rows/run.csv","config":{"time_mode":"column","time_column_index":0,"column_history":["time"],"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
+expect No rows imported
+get_status {}
+absent run.csv
+open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/compare_runs/run1/run.csv","config":{"time_mode":"column","time_column_index":0,"column_history":["time"],"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
+expect "loaded":true
+until get_status {} "name":"run.csv"
+absent run.csv (2)

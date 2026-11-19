@@ -474,7 +474,8 @@ void McpServer::awaitLoad(
   connect(
       &loader, &FileLoader::loadFinished, receiver,
       [receiver, ticket, reply, on_loaded, reload](
-          quint64 settled, LoadOutcome outcome, const QString& reason, DatasetId id, const QVector<DatasetId>&) {
+          quint64 settled, LoadOutcome outcome, const QString& path, DatasetId id, const QVector<DatasetId>&,
+          const QString& reason) {
         if (settled != ticket) {
           return;
         }
@@ -486,7 +487,7 @@ void McpServer::awaitLoad(
         } else if (outcome == LoadOutcome::kCancelled) {
           reply(fail("the load was cancelled (job_kill, or the user closed the dialog or stopped the import)"));
         } else if (outcome != LoadOutcome::kLoaded) {
-          reply(fail("load failed: " + reason.toStdString()));
+          reply(fail("load failed: " + (reason.isEmpty() ? path : reason).toStdString()));
         } else {
           reply(on_loaded(id));
         }

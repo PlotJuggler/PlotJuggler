@@ -13,7 +13,8 @@ Everything in the shell lives on the GUI thread. Two kinds of worker exist:
 - `FileLoader` runs only each import's blocking `start()` on a worker thread; every other plugin call, the fan-out
   control and the queue run on the GUI thread, and the worker reaches it only through queued calls. Every accepted
   request ends in exactly one `loadFinished`, delivered through the event loop even when the request resolves inside
-  the enqueuing call. `cancelLoadAsync` is the one entry callable from another thread.
+  the enqueuing call. A `kFailed` terminal carries the failure's reason: a prologue failure on an idle loader emits
+  `fileLoadFailed` before `loadFileTicketed` returns, so a caller holding a ticket reads the reason from its terminal. `cancelLoadAsync` is the one entry callable from another thread.
 - `StreamingSourceManager` runs one worker per streaming session. Configuration, `start()` and stop requests run on
   the GUI thread; once launched, the worker is the only caller of the plugin (`poll()`, then `stop()`). What a layout
   save needs is captured before the worker starts, so a save never calls into a polling plugin.
@@ -94,6 +95,18 @@ no scalar handler. The cost is one extra read per payload at load.
 fresh ones and erases the tombstoned one only after commit: erasing it first would lose the user's data on a discard or
 an all-failed fan-out. A whole-load stop (strip, shutdown, `cancelLoad`) ends every entry; a whole-load discard also
 drops entries that already completed.
+
+**A load that yields nothing fails.** A plugin can finish its import successfully with no row and no object entry
+(a CAN log without a decoding database, a file with a header only). After the terminal flush `FileLoader` asks
+`SessionManager::datasetHoldsData`; when it is false the load fails like a start failure (`kFailed`,
+`data-source-load-failed`, `fileLoadFailed`). The reason quotes the plugin: the last warning or error it reported
+during `start()` (`DataSourceRuntimeHost::lastReportedProblem`, cleared just before `start()`), else the reason of a
+FAILED `request_stop`. A first load erases its dataset, which frees its label, so the next load of the same file
+gets the plain name; a reload rolls back to the data it was replacing; a fan-out entry fails alone. A stop-and-keep
+that kept nothing is a discard, and a fan-out a user stopped reports a cancel even when an earlier entry failed. A
+layout's data file that yields nothing fails the layout restore, as any load failure does. Every file entry point (open dialog, drop, `-d`, layout replay, MCP
+`open_file`) goes through this one check; streaming sources start empty and never reach it. Tests:
+`FileLoaderTest.*YieldsNoData*`.
 
 ### Load diagnostics
 

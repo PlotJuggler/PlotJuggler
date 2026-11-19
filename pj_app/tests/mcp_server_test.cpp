@@ -2441,6 +2441,65 @@ TEST_F(McpActiveLoadTest, ClosingPublicAccessStopsAnActiveImport) {
   EXPECT_EQ(replies_.size(), 1U) << "the revoked client was handed something after its job id";
 }
 
+/// A file import that succeeds without writing a row, as a CAN log with no DBC to decode it does; it says why.
+class EmptySource final : public PJ::DataSourcePluginBase {
+ public:
+  [[nodiscard]] uint64_t capabilities() const override {
+    return PJ::kCapabilityFiniteImport | PJ::kCapabilityDirectIngest;
+  }
+  [[nodiscard]] std::string saveConfig() const override {
+    return "{}";
+  }
+  PJ::Status loadConfig(std::string_view) override {
+    return PJ::okStatus();
+  }
+  PJ::Status start() override {
+    runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, "nothing will be decoded");
+    runtimeHost().requestStop(PJ::DataSourceState::kStopped, "import complete");
+    return PJ::okStatus();
+  }
+  void stop() override {}
+  [[nodiscard]] PJ::DataSourceState currentState() const override {
+    return PJ::DataSourceState::kStopped;
+  }
+};
+
+TEST_F(McpServerTest, OpenFileOfAFileThatYieldsNoDataFailsWithTheLoadersReason) {
+  // registerStaticDataSource keeps this pointer for the catalog's lifetime.
+  static const PJ_data_source_vtable_t* const vtable = PJ::DataSourcePluginBase::vtableWithCreate(
+      []() noexcept -> void* {
+        try {
+          return new EmptySource();
+        } catch (...) {
+          return nullptr;
+        }
+      },
+      R"({"id":"empty-source","name":"Empty Source","version":"1.0.0","file_extensions":[".nodata"]})");
+  ASSERT_TRUE(window_->appSession().extensionCatalog().pluginCatalog().registerStaticDataSource(vtable));
+  QFile file(data_.filePath(u"log.nodata"_s));
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  file.write("frames");
+  file.close();
+
+  const auto [text, error] = result(call("open_file", {{"path", file.fileName().toStdString()}}));
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("no data"), std::string::npos) << text;
+  EXPECT_NE(text.find("nothing will be decoded"), std::string::npos) << text;
+  EXPECT_TRUE(window_->appSession().sessionManager().dataEngine().listDatasets().empty());
+}
+
+// A load that fails in the loader's synchronous prologue (an idle loader, no plugin for the file) still answers with
+// its reason, not the path.
+TEST_F(McpServerTest, OpenFileThatFailsBeforeTheImportStartsSaysWhy) {
+  QFile file(data_.filePath(u"x.unknownext"_s));
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  file.write("x");
+  file.close();
+  const auto [text, error] = result(call("open_file", {{"path", file.fileName().toStdString()}}));
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("No DataSource plugin handles"), std::string::npos) << text;
+}
+
 /// A toolbox plugin's endpoint, with public access closed unless a case opens it.
 /// A relay as pj_mcp_relay.py serves the browser link (McpBrowserLink), one HTTP request per
 /// connection, answered by the test: what the page asked, and the socket to answer on.

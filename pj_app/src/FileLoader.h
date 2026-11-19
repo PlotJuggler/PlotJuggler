@@ -272,10 +272,11 @@ class FileLoader : public QObject {
 
   // Exactly once per accepted request (see loadFileTicketed). `effective_path` is the source identity fileLoaded /
   // fileLoadFailed report; `produced_dataset_ids` every dataset holding this load's data; `dataset_id` the first of
-  // them, or 0.
+  // them, or 0. `reason` is fileLoadFailed's reason on kFailed, empty otherwise: a caller that enqueued the load
+  // reads it here, since a prologue failure on an idle loader emits fileLoadFailed before loadFileTicketed returns.
   void loadFinished(
       quint64 ticket, LoadOutcome outcome, const QString& effective_path, DatasetId dataset_id,
-      const QVector<DatasetId>& produced_dataset_ids);
+      const QVector<DatasetId>& produced_dataset_ids, const QString& reason);
 
   // Synchronous: the dataset, source path and captured config are installed, the catalog rebuild that publishes the
   // load has not run yet (then fileLoaded, then the queued loadFinished). Lets a promotion service attach source
@@ -324,6 +325,7 @@ class FileLoader : public QObject {
     QString effective_path;
     DatasetId dataset_id;
     QVector<DatasetId> produced;
+    QString reason;
   };
 
   // The only way to resolve a ticket. Every exit calls it before fileLoaded/fileLoadFailed, so a slot re-entering
@@ -331,7 +333,7 @@ class FileLoader : public QObject {
   // Queues the emission.
   void emitLoadFinished(
       quint64 ticket, LoadOutcome outcome, const QString& effective_path, DatasetId dataset_id,
-      QVector<DatasetId> produced_dataset_ids = {});
+      QVector<DatasetId> produced_dataset_ids = {}, QString reason = {});
   void deliverPendingTerminal();
   // Synchronous, FIFO: joinForShutdown only.
   void flushPendingTerminals();

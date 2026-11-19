@@ -194,6 +194,13 @@ class DataSourceRuntimeHost {
   // written unsynchronized on the stream thread.
   [[nodiscard]] std::string lastError() const;
 
+  // The last WARNING or ERROR text the plugin passed to report_message since forgetReportedProblem(), empty if none:
+  // why an import that succeeded may still have produced nothing. Any thread.
+  [[nodiscard]] std::string lastReportedProblem() const;
+
+  // Call right before start(): a warning from loadConfig or the dialog is not a reason the import found nothing.
+  void forgetReportedProblem();
+
   [[nodiscard]] sdk::ObjectIngestPolicyResolver& policyResolver() noexcept {
     return policy_resolver_;
   }
@@ -369,6 +376,8 @@ class DataSourceRuntimeHost {
   // Its own lock: request_stop is thread-safe in the ABI. Off the push path.
   mutable std::mutex stop_failure_mu_;
   std::string stop_failure_;
+  // Guarded by stop_failure_mu_ too: report_message is rare and may come from any plugin thread.
+  std::string last_reported_problem_;
   std::atomic<bool> stop_requested_{false};
   uint32_t next_binding_id_ = 1;
   std::unordered_map<uint32_t, ParserBinding> parser_bindings_;
