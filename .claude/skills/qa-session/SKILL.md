@@ -219,8 +219,9 @@ When asked to do QA or to test with the QA agent, without a narrower charter:
   also needs an SDK release first.
 - **A plugin persists a choice by name or by the file it was made for, never by position.** A column index or a
   selection saved for one file and pre-filled for the next picked the wrong data in three loaders at once.
-- **A plugin fix bumps that plugin's version and CHANGELOG in the same PR.** Otherwise the fix is merged but never
-  released. The release itself needs the user's go-ahead.
+- **A plugin fix adds its CHANGELOG bullets under `## Upcoming`** and leaves the plugin's version alone; the version
+  changes only when the user asks for that plugin's release (pj-official-plugins' `CLAUDE.md`, Release Process). List
+  the plugins with unreleased Upcoming entries in the pass report, so the user can decide what to release.
 - **Every fix PR gets an independent reviewer** (a fresh agent with the PR's goal and diff, `model: opus`), however
   small the fix. In one pass the reviewer found a real defect in the first version of four fixes. Apply the fixes it
   finds that matter, and add the review and anything not applied to the PR body.
