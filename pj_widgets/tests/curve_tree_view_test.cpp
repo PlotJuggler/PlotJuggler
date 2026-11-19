@@ -608,6 +608,30 @@ TEST(CurveTreeViewTest, DragPayloadCarriesEverySelectedObjectTopic) {
   EXPECT_TRUE(catalog_keys.contains("object:b"_L1));
 }
 
+// An object topic with an object_icon (a log) carries that badge like the 2D and 3D topics; a plain topic none.
+TEST(CurveTreeViewTest, ObjectIconBadgesTheTopic) {
+  PJ::CurveTreeView view;
+  view.addCatalogItem(
+      PJ::CurveTreeView::CurvePath{
+          .key = u"object:log"_s,
+          .dataset = u"drive.mcap"_s,
+          .topic = u"/rosout"_s,
+          .field = {},
+          .selectable = false,
+          .object_icon = u":/resources/svg/list.svg"_s,
+      });
+  view.addCatalogItem(calibCurvePath());
+
+  QTreeWidgetItem* dataset = view.topLevelItem(0);
+  ASSERT_NE(dataset, nullptr);
+  QTreeWidgetItem* log = findChild(dataset, u"rosout"_s);
+  QTreeWidgetItem* calib = findChild(findChild(dataset, u"camera"_s), u"camera_info"_s);
+  ASSERT_NE(log, nullptr);
+  ASSERT_NE(calib, nullptr);
+  EXPECT_FALSE(log->icon(0).isNull());
+  EXPECT_TRUE(calib->icon(0).isNull());
+}
+
 // An object topic whose type no view can display (draggable=false, an occupancy-grid update) stays selectable but never
 // starts a drag, shows the caller-supplied "why" tooltip, and is skipped by the drag payload even inside a dragged
 // multi-selection.

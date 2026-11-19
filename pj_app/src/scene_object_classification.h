@@ -30,4 +30,8 @@ namespace PJ {
 // its catalog row starts a drag, and an empty dock answers a drop by saying a Custom Widget shows it.
 [[nodiscard]] bool isCustomWidgetObjectType(sdk::BuiltinObjectType type);
 
+// The curve-list badge of a Custom Widget object type: its own glyph for a log, the Custom Widget glyph for any other;
+// empty when `type` is not a Custom Widget type.
+[[nodiscard]] QString customWidgetObjectIcon(sdk::BuiltinObjectType type);
+
 }  // namespace PJ

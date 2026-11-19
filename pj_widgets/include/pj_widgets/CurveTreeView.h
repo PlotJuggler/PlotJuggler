@@ -46,6 +46,9 @@ class CurveTreeView : public QTreeWidget {
     QString tooltip = {};
     bool is_image_topic = false;
     bool is_3d_object_topic = false;
+    // Resource path of the badge of an object topic that is neither of the two kinds above (e.g. one only a Custom
+    // Widget can show); empty = none. It is no scene kind, so setVisibleCurveKinds files it under Plot.
+    QString object_icon = {};
     // An advertised-but-unsubscribed placeholder (a streaming source's topic with no data yet, no storage id), dimmed
     // by CurveTreeItemDelegate, still selectable and draggable so it can be dropped to register demand (pj_app's
     // TopicDemandController).
