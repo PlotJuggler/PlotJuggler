@@ -69,7 +69,9 @@ does not link it.
   the anchor (leftmost on the display axis) keeps its clock and ids, the others are
   shifted into it by their relative display offset and removed from the catalog, scalar
   topics union by name, object topics fuse by name, and the anchor is relabelled
-  `*_merged`. `objectMergeConflicts(selected)` is the builtin-object-type preflight (it also
+  `<label>_merged` (`setDatasetDisplayName`, an engine relabel). The consumed datasets keep their labels, which now
+  address the anchor, but are listed nowhere (`DataEngine::isMergedAway`) and are never a load's target: `FileLoader`
+  opens a consumed file again as a new dataset. `objectMergeConflicts(selected)` is the builtin-object-type preflight (it also
   reports same-named marker topics whose scope, target or owner differ); a successful merge
   emits `datasetsMerged(anchor, consumed)`.
 - **On-demand wiring** (derived_objects "The on-demand pipeline", "Streaming"): requests every demanded recipe at the
@@ -190,7 +192,7 @@ does not link it.
   `StreamingSourceManager`, which gates every demand-driven affordance (dimming, census
   previews, the force-streaming menu) so file datasets are never shown as pausable.
 - **Identity facade**: `datasetSourceName` (the raw `DatasetInfo::source_name`, not the
-  deduped label), `resolveDatasetIdentity`, `datasetSourcePath`, so widget code needs no
+  label), `datasetLabel` / `datasetByLabel` (the engine's dataset label, the tree root's name), `resolveDatasetIdentity`, `datasetSourcePath`, so widget code needs no
   `FileLoader` dependency. `resolveCurveKey(...)` is the one three-tier curve resolver
   used by layout/undo restore (`PendingDisplayBinder`) and clipboard paste (`PlotWidget`);
   its `SeriesCapability` filters by consumer (`kPlottable` for plot curves, `kDiscrete` for
@@ -528,24 +530,27 @@ does not link it.
 
 ### Dataset-qualified names
 
-`DatasetQualifiedName.h` uses the SDK's `sdk::splitDatasetQualifier`: the longest loaded
-prefix wins; colons in both parts can prevent round-tripping, so it is not a persistent
-identity. `resolveMarkerDataset` normalizes qualified keys to bare form, refuses a bare
+A qualifier is the dataset's label (`DataEngine::datasetLabel`: unique, assigned at creation, held until the dataset
+is removed), the same string the tree, the plugin catalog snapshot and `get_status` show. Every host resolver splits
+against `DataEngine::datasetLabels()` with the SDK's `sdk::splitDatasetQualifier` (the longest label wins) and looks the
+dataset up with `DataEngine::datasetByLabel`; a stale label resolves nowhere, never to another dataset, and a merged-away
+dataset's label resolves to the anchor holding its data, for every resolver alike. Colons in both
+parts can prevent round-tripping, and a label is a session name, so it is not a persistent identity. `resolveMarkerDataset` normalizes qualified keys to bare form, refuses a bare
 input found in several datasets (suggesting the qualified forms), and rejects inputs absent
 from the chosen dataset; `MarkersRuntimeHost` runs it only for single-dataset generators
-(under `{"scope":"all"}` keys are literal and a key whose prefix names a loaded source is
+(under `{"scope":"all"}` keys are literal and a key whose prefix is a loaded label is
 rejected). A stripped qualifier is kept in `GeneratorRecipe::declared_inputs` (persisted
 as `<input declared=…>`) so the script reads `series("src:key")`. A generic layout's
 generator (no dataset) binds on restore to the one loaded dataset whose catalog carries
 every input (`CatalogModel::findScalarForMarkerKey`; a rule with no inputs binds only when
 exactly one dataset is loaded; otherwise a `generator-restore-failed` diagnostic). Transforms
 use the same splitter in `DataProcessorService::installTransform`, which rejects qualifiers
-naming two datasets. Config read-back echoes each input bare unless the bare name is
-ambiguous across datasets and `dataset_source:bare` resolves back to the bound dataset.
+naming two datasets. Config read-back echoes a transform input bare unless the bare name is
+ambiguous across datasets, then as `label:bare`; a generator input declared qualified, or whose bare name became
+ambiguous, is echoed under the bound dataset's current label when that form resolves back to it.
 On-demand recipes keep the qualified name as the script's alias; the session's resolver strips
 it for a topic, its qualifier splitter for another node's output (`RecipeGraph::QualifierSplitter`,
-derived_objects "The on-demand pipeline"). A dataset merged
-away stays registered, so its source keeps qualifying inputs, which bind on the anchor. A
+derived_objects "The on-demand pipeline"). An unqualified input binds on any dataset not merged away. A
 qualified input saved in a layout also records what it read (`topic`, or `upstream` for another
 node's output), so a generic layout binds on another recording while the name stays the alias.
 

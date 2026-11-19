@@ -22,11 +22,15 @@ it only through the C ABI. Timestamps are absolute int64 nanoseconds. How it wor
   `readString()` views chunk memory.
 - Transforms see input in ascending time order; whatever breaks that order must reset and replay the node, or derived
   values are wrong.
+- A dataset's name on every surface (tree, plugin catalog snapshot, `label:topic/field` qualifiers) is
+  `DataEngine::datasetLabel`; deriving one from `source_name` instead makes the surfaces disagree on same-named
+  datasets. Persist the dataset id and `source_name`, never the label.
 - No exception crosses the plugin ABI.
 
 ## Key headers (`include/pj_datastore/`)
 
-- `engine.hpp`: `DataEngine`: datasets, topics, commit, retention, reload, merge, pause/resume flush, the lock.
+- `engine.hpp`: `DataEngine`: datasets and their labels, topics, commit, retention, reload, merge, pause/resume flush,
+  the lock.
 - `writer.hpp`: `DataWriter`, rows and column batches into chunk builders.
 - `reader.hpp`, `query.hpp`: `DataReader`; row cursors, series views, latest-at.
 - `chunk.hpp`, `topic_storage.hpp`, `encoding.hpp`, `column_buffer.hpp`, `buffer.hpp`, `type_registry.hpp`: storage.

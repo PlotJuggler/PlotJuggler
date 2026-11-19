@@ -58,31 +58,26 @@ Q_LOGGING_CATEGORY(lcCancel, "pj.runtime.ingest.cancel", QtWarningMsg)
 // How long a producer may take to honour a stop before we say so.
 constexpr int kStopWatchdogMs = 2000;
 
-/// An on-demand input split at the loaded source it starts with, and the datasets it can bind on: those loaded from
-/// that source, or every dataset when unqualified, a dataset merged away counting as its anchor.
+/// An on-demand input split at the dataset label it starts with, and the datasets it can bind on: the one holding that
+/// label's data (DataEngine::datasetByLabel: a merged-away label means its anchor), or every dataset not merged away
+/// when unqualified.
 struct LoadedQualifierSplit {
   sdk::DatasetQualifierSplit split;
   std::vector<DatasetId> datasets;
 };
 
-LoadedQualifierSplit splitAgainstLoaded(
-    const DataEngine& engine, const std::unordered_map<DatasetId, DatasetId>& merged_into, std::string_view input) {
-  const auto datasets = engine.listDatasets();
-  std::vector<std::string> sources;
-  for (const DatasetId dataset : datasets) {
-    const DatasetInfo* info = engine.getDataset(dataset);
-    sources.push_back(info != nullptr ? info->source_name : std::string{});
-  }
+LoadedQualifierSplit splitAgainstLoaded(const DataEngine& engine, std::string_view input) {
   LoadedQualifierSplit loaded;
-  loaded.split = sdk::splitDatasetQualifier(input, sources);
-  for (size_t index = 0; index < datasets.size(); ++index) {
-    if (loaded.split.qualified && sources[index] != loaded.split.dataset_source) {
-      continue;
+  loaded.split = sdk::splitDatasetQualifier(input, engine.datasetLabels());
+  if (loaded.split.qualified) {
+    if (const std::optional<DatasetId> named = engine.datasetByLabel(loaded.split.dataset_source)) {
+      loaded.datasets.push_back(*named);
     }
-    const auto merged = merged_into.find(datasets[index]);
-    const DatasetId bound = merged != merged_into.end() ? merged->second : datasets[index];
-    if (std::ranges::find(loaded.datasets, bound) == loaded.datasets.end()) {
-      loaded.datasets.push_back(bound);
+    return loaded;
+  }
+  for (const DatasetId dataset : engine.listDatasets()) {
+    if (!engine.isMergedAway(dataset)) {
+      loaded.datasets.push_back(dataset);
     }
   }
   return loaded;
@@ -144,10 +139,10 @@ SessionManager::SessionManager(QObject* parent)
   batch_engine_->setInFlightBudget(in_flight_budget_.get());
 
   OnDemandService::Services on_demand;
-  // An input names an object topic or a scalar series of a dataset, maybe behind its "source:" qualifier. Never an
+  // An input names an object topic or a scalar series of a dataset, maybe behind its "label:" qualifier. Never an
   // on-demand output: the graph binds those itself.
   on_demand.resolver = [this](std::string_view input) {
-    const auto [split, datasets] = splitAgainstLoaded(data_engine_, merged_into_, input);
+    const auto [split, datasets] = splitAgainstLoaded(data_engine_, input);
     std::vector<RecipeGraph::InputCandidate> candidates;
     for (const DatasetId dataset : datasets) {
       if (const std::optional<ObjectTopicId> topic = object_store_.findTopic(dataset, split.bare)) {
@@ -164,7 +159,7 @@ SessionManager::SessionManager(QObject* parent)
   };
   // A qualifier read as the resolver reads it (`RecipeGraph::QualifierSplitter`).
   on_demand.qualifier = [this](std::string_view input) -> std::optional<RecipeGraph::Qualifier> {
-    LoadedQualifierSplit loaded = splitAgainstLoaded(data_engine_, merged_into_, input);
+    LoadedQualifierSplit loaded = splitAgainstLoaded(data_engine_, input);
     if (!loaded.split.qualified) {
       return std::nullopt;
     }
@@ -355,16 +350,6 @@ void SessionManager::rebindOnDemandAfterMerge(
   };
   for (const auto& entry : shift_of) {
     visit(entry.first);
-  }
-  for (const auto& [dataset, shift] : shifts) {
-    if (dataset != anchor) {
-      for (auto& [consumed, bound] : merged_into_) {
-        if (bound == dataset) {
-          bound = anchor;
-        }
-      }
-      merged_into_[dataset] = anchor;
-    }
   }
   for (auto& [recipe, raw_shift] : order) {
     const std::string key = recipe.key();
@@ -1754,9 +1739,6 @@ bool SessionManager::removeDataset(DatasetId dataset_id, bool remove_dependent_p
   dataset_source_records_.erase(dataset_id);
   dataset_metadata_.erase(dataset_id);
   dataset_resources_.erase(dataset_id);
-  std::erase_if(merged_into_, [dataset_id](const auto& entry) {
-    return entry.first == dataset_id || entry.second == dataset_id;
-  });
   // Its rules go too: one naming the dead id would re-register a phantom marker topic at the next recompute.
   if (batch_engine_ && !batch_engine_->clearGeneratorsForDataset(dataset_id).empty()) {
     notifyMarkersChanged();

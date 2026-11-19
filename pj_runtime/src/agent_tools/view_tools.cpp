@@ -16,6 +16,7 @@
 #include <pj_base/sdk/object_topic_metadata.hpp>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -163,14 +164,34 @@ json objectTopicCommonJson(
   return out;
 }
 
+// list_topics' `dataset` argument: a dataset's whole label selects that dataset alone (so "data.csv" never also picks
+// "data.csv (2)"); any other text matches every label containing it.
+struct DatasetFilter {
+  std::string text;
+  bool exact = false;
+
+  DatasetFilter(std::string filter, std::span<const PJ_data_source_info_t> sources) : text(std::move(filter)) {
+    exact = std::any_of(sources.begin(), sources.end(), [this](const PJ_data_source_info_t& source) {
+      return !text.empty() && PJ::sdk::toStringView(source.name) == text;
+    });
+  }
+
+  [[nodiscard]] bool matches(std::string_view label) const {
+    return text.empty() || (exact ? label == text : label.find(text) != std::string_view::npos);
+  }
+};
+
 // Scalar topics matching filter/dataset_filter, capped at `limit`, in
 // list_topics' shape -- {"topic","kind":"scalar","fields"[,"dataset"]} --
 // appended to `out_topics`. `matched`/`shown` accumulate so a caller merging
 // this with object topics (listTopics) gets one combined count of both kinds.
+// The dataset filter matches the dataset's label, which an entry shows only when several datasets are loaded.
 void listScalarTopics(
-    std::span<const PJ_topic_info_t> topics, const std::map<std::uint32_t, std::string>& topic_dataset,
-    const std::string& filter, const std::string& dataset_filter, int limit, json& out_topics, int& matched,
-    int& shown) {
+    std::span<const PJ_topic_info_t> topics, std::span<const PJ_data_source_info_t> sources, const std::string& filter,
+    const DatasetFilter& dataset_filter, int limit, json& out_topics, int& matched, int& shown) {
+  const std::map<std::uint32_t, std::string> topic_dataset = datasetByTopicIndex(sources);
+  // datasetByTopicIndex() leaves a lone dataset out; the filter still matches its label.
+  const std::string_view lone_label = sources.size() == 1 ? PJ::sdk::toStringView(sources.front().name) : "";
   for (std::uint32_t ti = 0; ti < topics.size(); ++ti) {
     const auto& topic = topics[ti];
     const std::string name(PJ::sdk::toStringView(topic.name));
@@ -179,7 +200,7 @@ void listScalarTopics(
     }
     const auto ds = topic_dataset.find(ti);
     const std::string dataset = ds != topic_dataset.end() ? ds->second : std::string{};
-    if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+    if (!dataset_filter.matches(dataset.empty() ? lone_label : dataset)) {
       continue;
     }
     ++matched;
@@ -416,8 +437,8 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
   auto v2 = ctx.host.catalogSnapshotV2();
   bool objects_listed = false;
   if (v2) {
-    listScalarTopics(
-        v2->topics(), datasetByTopicIndex(v2->dataSources()), filter, dataset_filter, limit, topics, matched, shown);
+    const DatasetFilter v2_dataset_filter(dataset_filter, v2->dataSources());
+    listScalarTopics(v2->topics(), v2->dataSources(), filter, v2_dataset_filter, limit, topics, matched, shown);
     for (const auto& obj : v2->objectTopics()) {
       const std::string name(PJ::sdk::toStringView(obj.name));
       if (isMarkerObjectTopic(name)) {
@@ -427,7 +448,7 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
         continue;
       }
       const std::string dataset = objectTopicDatasetName(v2->dataSources(), obj.source);
-      if (!dataset_filter.empty() && dataset.find(dataset_filter) == std::string::npos) {
+      if (!v2_dataset_filter.matches(dataset)) {
         continue;
       }
       ++matched;
@@ -445,8 +466,8 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
       return ToolResult::failure("catalog unavailable: " + catalog.error());
     }
     listScalarTopics(
-        catalog->topics(), datasetByTopicIndex(catalog->dataSources()), filter, dataset_filter, limit, topics, matched,
-        shown);
+        catalog->topics(), catalog->dataSources(), filter, DatasetFilter(dataset_filter, catalog->dataSources()), limit,
+        topics, matched, shown);
   }
 
   json out = {{"count", matched}, {"shown", shown}, {"topics", topics}};
@@ -633,7 +654,10 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   const json tab_before = adding ? fetchTabConfig(ctx, tab).parsed : json();
   const bool was_empty = tab_before.is_object() && tab_before.contains("curves") && tab_before["curves"].empty();
   std::vector<std::string> refused;
-  std::vector<std::pair<std::string, std::string>> accepted;  // (topic, field) the host took without complaint
+  struct Accepted {
+    std::string topic, field, dataset;
+  };
+  std::vector<Accepted> accepted;  // what the host took without complaint
   for (const std::string& want : paths) {
     SeriesLookup lookup = resolveSeriesPath(*catalog, want);
     if (!lookup.resolved) {
@@ -647,7 +671,7 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
     auto status = adding ? ctx.plot_tabs.addCurve(tab, topic, field, lookup.resolved->dataset)
                          : ctx.plot_tabs.removeCurve(tab, topic, field, lookup.resolved->dataset);
     if (status) {
-      accepted.emplace_back(topic, field);
+      accepted.push_back({topic, field, lookup.resolved->dataset});
     } else {
       refused.push_back(status.error());
     }
@@ -659,9 +683,10 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   // never happened, the one thing the read-back exists to prevent.
   const json& held = out.contains("curves") ? out["curves"] : json::array();
   bool landed = false;
-  for (const auto& [topic, field] : accepted) {
+  for (const auto& [topic, field, dataset] : accepted) {
     const bool present = std::any_of(held.begin(), held.end(), [&](const json& curve) {
-      return curve.value("topic", std::string()) == topic && curve.value("field", std::string()) == field;
+      return curve.value("topic", std::string()) == topic && curve.value("field", std::string()) == field &&
+             (dataset.empty() || curve.value("dataset", std::string()) == dataset);
     });
     if (present == adding) {
       landed = landed || adding;

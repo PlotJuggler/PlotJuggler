@@ -83,6 +83,8 @@ std::string qualifyWithDataset(const std::string& dataset, const std::string& na
   return dataset.empty() ? name : dataset + ":" + name;
 }
 
+// Source names are the host's dataset labels, unique in a snapshot (DataEngine::datasetLabel), so the longest match is
+// the one dataset meant.
 QualifierMatch matchDatasetQualifier(
     std::span<const PJ_data_source_info_t> sources, std::size_t topic_count, std::string_view series) {
   const auto topics_size = static_cast<std::uint32_t>(topic_count);
@@ -243,8 +245,9 @@ bool segmentsContain(const std::vector<std::string_view>& have, const std::vecto
 // several the answer is the candidate list, never a guess, since silently picking one would attach a transform to the
 // wrong signal and look like it worked.
 //
-// Datasets: the path may carry the host's qualifier convention "dataset:topic/field", matched against the KNOWN source
-// names (longest match wins) rather than parsed at ':', so a name like "[stream] UDP Server" needs no escaping. An
+// Datasets: the path may carry the host's qualifier convention "dataset:topic/field", matched against the KNOWN dataset
+// names (longest match wins) rather than parsed at ':', so a name like "[stream] UDP Server" needs no escaping. The
+// snapshot names the datasets as the catalog labels them: of a source loaded twice, "<source>" and "<source> (2)". An
 // unqualified path whose exact topic/field exists in SEVERAL datasets is refused as ambiguous: two runs of one robot
 // share every topic name, and taking the first-loaded would read (or install onto) whichever file loaded first. With
 // several sources loaded, every returned path is qualified, so results disclose their dataset and candidates can be
@@ -344,7 +347,8 @@ std::string seriesLookupError(const std::string& series, const SeriesLookup& loo
 
 // The DataSourceHandle a resolved series' dataset qualifies to, for toDisplayTimeForSource, which needs a handle while
 // ResolvedSeries carries only the dataset's NAME (empty when at most one dataset is loaded, see tool_registry.hpp).
-// Matches the name against the catalog's data sources; an empty name with exactly one loaded source is that source.
+// Matches the name against the catalog's data sources (unique labels, so at most one matches); an empty name with
+// exactly one loaded source is that source.
 std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
     const PJ::sdk::CatalogSnapshot& catalog, const std::string& dataset_name) {
   const auto sources = catalog.dataSources();
@@ -363,9 +367,9 @@ std::optional<PJ::sdk::DataSourceHandle> dataSourceHandleFor(
 }
 
 // Resolves one input against the object half of the v2 catalog: an optional "dataset:" qualifier (matched against
-// known source names, longest match wins, as matchDatasetQualifier does for scalar paths) narrows the search; the bare
-// remainder is matched by exact name against objectTopics(), excluding marker topics (drawn, not read). Ambiguous only
-// when an UNQUALIFIED bare name matches object topics on several datasets.
+// known dataset labels, longest match wins, as matchDatasetQualifier does for scalar paths) narrows the search; the
+// bare remainder is matched by exact name against objectTopics(), excluding marker topics (drawn, not read). Ambiguous
+// only when an UNQUALIFIED bare name matches object topics on several datasets.
 ObjectLookup resolveObjectTopic(const PJ::sdk::CatalogSnapshotV2& v2, const std::string& want) {
   ObjectLookup out;
   const auto sources = v2.dataSources();

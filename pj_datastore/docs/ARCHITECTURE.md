@@ -14,6 +14,15 @@ from the SDK, so it knows nothing of Qt, plugins being loaded, rendering or time
 - **Dataset → topic → chunk → column.** A dataset is one source (a file, a live connection) bound to a time domain. A
   topic is one stream: typed columns sharing one timestamp column. A topic either has a schema (a type tree registered
   in the `TypeRegistry`) or is schemaless and gets columns as they appear.
+- **Labels.** Each dataset carries a label (`DataEngine::datasetLabel`) beside the SDK's `DatasetInfo`: its source
+  name (`/` read as `_`, `Dataset` when empty) or a display name (`setDatasetLabel`), with the lowest free ` (N)` when
+  another dataset holds it. Assigned at creation and held until `removeDataset()`, so another dataset coming or going
+  never renames one, and a freed label names a later dataset, never a survivor; a relabel from the base the label was
+  made from (a reload naming the dataset after its file again) keeps it. A merge source keeps its label but is listed
+  nowhere (`isMergedAway()`), and `datasetByLabel()` maps that label to the anchor holding its data. The app's tree,
+  the plugin catalog snapshot and every `label:topic/field` qualifier read it. Only the primary engine's labels are
+  read: a staging or streaming mirror labels its datasets on its own. A label is a session name: layouts persist the
+  id and `source_name`.
 - **Timestamps** are absolute int64 nanoseconds. Nothing in this module subtracts a display base.
 - **Types.** Each logical `PrimitiveType` maps to a storage kind (narrow integers are widened); 64-bit integers are
   never stored as double.
@@ -277,6 +286,8 @@ and parser object write, and toolbox object read.
 - Each host turns ABI calls into `DataWriter`, `DataEngine` and `ObjectStore` operations. The host seals and commits
   (`flushPending()`); plugins never do.
 - An exception must not cross the ABI: entry points catch it and return an error status.
+- The catalog snapshot names each data source by its label, not by the name it was created with: the handle is the
+  identity, `PJ_data_source_info_t.name` a session label unique within one snapshot.
 - The write hosts collapse repeated slashes in topic and field names (and drop a field's leading slash). A parser
   binding names its scalar topic through the same rule (`normalizeTopicName()`), so it reaches the topic the
   direct-write path made; object topic names are not normalized.

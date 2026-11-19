@@ -1,0 +1,33 @@
+# Two loaded files with one name (data.csv from two folders, as two streams of one plugin would be): the agent tools
+# name them by their dataset labels, as the Datasets tree does, "data.csv" and "data.csv (2)", and each name picks its
+# own copy. The fixture copy has 20 rows, the signals file 1001.
+# app: -d tests/wasm/fixtures/signals/data.csv -d scripts/qa/regressions/fixtures/same_name/data.csv
+# needs: plugins
+until get_status {} "name":"data.csv (2)"
+list_topics {}
+expect "dataset":"data.csv"
+expect "dataset":"data.csv (2)"
+refuse describe_topic {"topic":"data"}
+expect 'data.csv:data'
+expect 'data.csv (2):data'
+read_series {"paths":["data.csv (2):data/sine"]}
+expect "count":20,
+read_series {"paths":["data.csv:data/sine"]}
+expect "count":1001,
+plot_tab {"action":"create","tab":"t"}
+plot_tab {"action":"add","tab":"t","curves":["data.csv (2):data/sine"]}
+expect "dataset":"data.csv (2)"
+absent refused
+plot_tab {"action":"add","tab":"t","curves":["data.csv:data/cosine"]}
+expect {"dataset":"data.csv","field":"cosine","topic":"data"}
+absent refused
+# Labels are stable: closing the older copy leaves "data.csv (2)" as it is, and the freed "data.csv" names nothing.
+# With one dataset left the entries omit their dataset, but the list_topics filter still matches its label.
+unload_file {"dataset":"data.csv"}
+until list_topics {"dataset":"data.csv (2)"} "count":1,
+get_status {}
+expect "name":"data.csv (2)"
+absent "name":"data.csv"
+read_series {"paths":["data.csv (2):data/sine"]}
+expect "count":20,
+refuse read_series {"paths":["data.csv:data/sine"]}

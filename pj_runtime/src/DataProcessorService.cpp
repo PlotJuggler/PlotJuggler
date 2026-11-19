@@ -674,28 +674,17 @@ std::optional<std::pair<TopicId, DatasetId>> DataProcessorService::resolveInputT
   return matches.size() == 1 ? std::optional{matches.front()} : std::nullopt;
 }
 
-std::optional<std::string> DataProcessorService::datasetSourceName(DatasetId dataset_id) const {
-  const auto engine_lock = engine_.lockEngine();
-  const DatasetInfo* info = engine_.getDataset(dataset_id);
-  return info != nullptr ? std::optional{info->source_name} : std::nullopt;
-}
-
 std::string DataProcessorService::readBackInputName(
     const std::string& bare, const TransformInputBinding& binding) const {
   bool ambiguous = false;
   if (binding.dataset_source.empty() || resolveInputField(bare, std::nullopt, &ambiguous).has_value() || !ambiguous) {
     return bare;
   }
-  const std::vector<DatasetId> datasets = engine_.listDatasets();
-  const auto source_name_of = [this](DatasetId ds) { return datasetSourceName(ds); };
-  std::vector<std::string> source_names;
-  for (const DatasetId ds : datasets) {
-    source_names.push_back(source_name_of(ds).value_or(std::string{}));
-  }
-  const std::string qualified = sdk::qualifiedSeriesName(binding.dataset_source, bare);
+  // Echoed under the dataset's label, which a caller can send back, unless a longer label shadows that prefix.
+  const std::string label = engine_.datasetLabel(binding.dataset_id);
+  const std::string qualified = sdk::qualifiedSeriesName(label, bare);
   const bool round_trips =
-      splitDatasetQualifier(qualified, source_names).dataset_source == binding.dataset_source &&
-      uniqueDatasetForSource(binding.dataset_source, datasets, source_name_of).id == binding.dataset_id;
+      !label.empty() && splitDatasetQualifier(qualified, engine_.datasetLabels()).dataset_source == label;
   return round_trips ? qualified : bare;
 }
 
@@ -971,16 +960,10 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
   std::vector<std::size_t> input_columns;  // leaf column per input (field-level binding)
   input_topic_ids.reserve(recipe.inputs.size());
   input_columns.reserve(recipe.inputs.size());
-  // Dataset-qualified plugin inputs, "dataset_source:topic/field" — the same
-  // form SeriesPath::display() prints. The SDK splitter gives the longest
-  // loaded prefix precedence; unmatched prefixes remain part of the bare name.
-  const std::vector<DatasetId> datasets = engine_.listDatasets();
-  const auto source_name_of = [this](DatasetId ds) { return datasetSourceName(ds); };
-  std::vector<std::string> source_names;
-  for (const DatasetId ds : datasets) {
-    source_names.push_back(source_name_of(ds).value_or(std::string{}));
-  }
-  std::optional<std::pair<DatasetId, std::string>> qualified_dataset;  // (id, source) the qualifiers agree on
+  // Dataset-qualified plugin inputs, "label:topic/field" (DataEngine::datasetLabel). The SDK splitter gives the
+  // longest loaded label precedence; unmatched prefixes remain part of the bare name.
+  const std::vector<std::string> labels = engine_.datasetLabels();
+  std::optional<std::pair<DatasetId, std::string>> qualified_dataset;  // (id, label) the qualifiers agree on
   for (std::size_t index = 0; index < recipe.inputs.size(); ++index) {
     const std::string in_name = recipe.inputs[index];
     std::optional<ResolvedInput> resolved;
@@ -992,24 +975,19 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
         return PJ::unexpected(exact.error());
       }
       resolved = std::move(*exact);
-    } else if (const DatasetQualifierSplit split = splitDatasetQualifier(in_name, source_names); split.qualified) {
-      const UniqueDatasetLookup target = uniqueDatasetForSource(split.dataset_source, datasets, source_name_of);
-      if (target.ambiguous) {
-        return PJ::unexpected(
-            "pj.data_processors: transform input dataset source is ambiguous (loaded more than once): " +
-            split.dataset_source);
+    } else if (const DatasetQualifierSplit split = splitDatasetQualifier(in_name, labels); split.qualified) {
+      const std::optional<DatasetId> target = engine_.datasetByLabel(split.dataset_source);
+      if (!target.has_value()) {
+        return PJ::unexpected("pj.data_processors: transform input dataset label not found: " + split.dataset_source);
       }
-      if (!target.id.has_value()) {
-        return PJ::unexpected("pj.data_processors: transform input dataset source not found: " + split.dataset_source);
-      }
-      if (qualified_dataset.has_value() && qualified_dataset->first != *target.id) {
+      if (qualified_dataset.has_value() && qualified_dataset->first != *target) {
         return PJ::unexpected(
             "pj.data_processors: transform inputs must agree on one dataset, but they name both '" +
             qualified_dataset->second + "' and '" + split.dataset_source + "'");
       }
-      qualified_dataset.emplace(*target.id, split.dataset_source);
+      qualified_dataset.emplace(*target, split.dataset_source);
       bool ambiguous = false;
-      resolved = resolveInputField(split.bare, target.id, &ambiguous);
+      resolved = resolveInputField(split.bare, target, &ambiguous);
       if (!resolved.has_value()) {
         return PJ::unexpected(
             "pj.data_processors: input topic/field " + std::string(ambiguous ? "is ambiguous" : "not found") +
@@ -1041,7 +1019,7 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
     if (!resolved.has_value()) {
       std::string msg = "pj.data_processors: input topic/field not found: " + in_name;
       if (in_name.find(':') != std::string::npos) {
-        msg += " (if the part before ':' was meant as a dataset qualifier, no loaded dataset has that source name)";
+        msg += " (if the part before ':' was meant as a dataset qualifier, no loaded dataset has that label)";
       }
       return PJ::unexpected(msg);
     }

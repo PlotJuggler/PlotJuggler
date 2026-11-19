@@ -230,10 +230,13 @@ TEST(CatalogModelTest, PluginDropNameQualifiesAnObjectTopicTwoDatasetsShare) {
   EXPECT_EQ(
       catalog.pluginDropName(*catalog.objectTopicKey(run_b, cloud_b)), std::optional<std::string>{"b.mcap:/cloud"});
 
-  // A source loaded twice cannot be addressed by name, so a qualifier would only name the wrong one.
+  // A source loaded twice is qualified by the catalog's labels: the newer copy is "b.mcap (2)".
   const auto [run_c, cloud_c] = registerCloud("b.mcap");
   catalog.rebuildFromDatastore();
-  EXPECT_EQ(catalog.pluginDropName(*catalog.objectTopicKey(run_c, cloud_c)), std::optional<std::string>{"/cloud"});
+  EXPECT_EQ(
+      catalog.pluginDropName(*catalog.objectTopicKey(run_b, cloud_b)), std::optional<std::string>{"b.mcap:/cloud"});
+  EXPECT_EQ(
+      catalog.pluginDropName(*catalog.objectTopicKey(run_c, cloud_c)), std::optional<std::string>{"b.mcap (2):/cloud"});
 }
 
 // A paused topic has no stored data yet, but its name still tells the plugin what was dropped.

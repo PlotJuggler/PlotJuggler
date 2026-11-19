@@ -67,10 +67,10 @@ and the `initialize` instructions leave the app tools out, and calling one gets 
 not read-only (it stops only the agent's own work).
 
 The instructions (`initialize` and `server/discover` both carry them) end with what the caller's token finds loaded
-(`McpServer::loadedSummary`): each dataset by its source name (the tools' `dataset:` qualifier) with its display time
+(`McpServer::loadedSummary`): each dataset by its name (the tools' `dataset:` qualifier) with its display time
 range, its topics and their numeric fields (`isSignalField`, as `read_series` counts them), read from one catalog
 snapshot and capped at 60 topics, 40 fields each and about 6 kB. Names are kept to one line, since they reach the
-agent's system prompt, and a source name two datasets share is flagged (a `dataset:` prefix cannot pick either). Claude
+agent's system prompt. Claude
 Code puts the instructions in its system prompt, so an agent goes straight to the tool that answers instead of spending
 a turn on each discovery call ("Evidence"). It is a picture of when the session connected; `list_topics` and
 `get_status` show later loads. The bridge asks the current instance for its instructions on both calls, and keeps its
@@ -80,7 +80,18 @@ The agent tools run against a `ToolContext` built from a service registry. That 
 toolbox plugin gets (`ToolboxHostView`, `PlotTabsHostView`, `DataProcessorHostView`, `PlaybackHostView`, ...). The
 registry decides whose tabs and derived series the tools see and create. Series names follow `read_series` everywhere
 (`resolveSeriesPath`: unique suffixes, `dataset:topic/field`, near-miss candidates); a transform input whose bare path
-several datasets share reaches the host dataset-qualified. An agent's removal (`remove_derived_series`,
+several datasets share reaches the host dataset-qualified. A dataset's name is its label (`DataEngine::datasetLabel`), one
+string that the Datasets tree, `get_status`, the catalog snapshot the tools read (`PJ_data_source_info_t.name`) and
+every `label:` qualifier the host resolves all share. It is the source name (`/` read as `_`, `Dataset` when empty) or a
+display name a plugin or a merge sets, with the lowest free ` (N)` added when another dataset holds it: two files
+named `data.csv`, or two streams of one plugin, are `data.csv` and `data.csv (2)`. A label is assigned once and held
+until its dataset is removed, so closing the older copy leaves `data.csv (2)` as it is (a reload of it too), and the
+freed `data.csv` names the next copy loaded, never a survivor. A dataset merged away is listed nowhere, neither in the
+tree nor in the snapshot, but keeps its label, which now addresses the anchor holding its data; opening its file again
+loads a new dataset (`b.csv (2)`). Labels are session names: layouts and saved recipes keep the dataset id and the raw
+source name. A tool entry prints its `dataset` only when several datasets are loaded (a lone dataset's paths need no
+qualifier), but `list_topics`' `dataset` filter matches the label either way: a whole label selects that dataset
+alone, any other text every label containing it. An agent's removal (`remove_derived_series`,
 `remove_script_series`) goes through `DataProcessorService::removeOwnTransform`: when the cascade would also delete a
 series another owner built on it (the user's included), it is refused, naming each one and its owner. The user's own
 deletes ask first and keep cascading. `plot_tab`'s zoom frames only the tab it names: `pj.viewport.v1` frames all of a

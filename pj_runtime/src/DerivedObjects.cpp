@@ -79,7 +79,7 @@ std::optional<CurveDescriptor> resolveSavedSeries(const CatalogModel& catalog, c
 
 // The datasets in the catalog that carry every key of `inputs` as a series (all of them for no inputs; a dataset with
 // no catalog item yet is not counted). Keys are read literally: a persisted generator input is a bare key, so a colon
-// in it is part of the name, never a `dataset_source:` qualifier.
+// in it is part of the name, never a `label:` qualifier.
 std::vector<DatasetId> datasetsCarryingInputs(const CatalogModel& catalog, const std::vector<std::string>& inputs) {
   std::vector<DatasetId> carriers;
   for (const DatasetId dataset : catalog.datasetIds()) {

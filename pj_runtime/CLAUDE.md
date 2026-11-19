@@ -125,7 +125,8 @@ Data processors and derived data:
   `DerivedRuntimeHosts.h`: the per-plugin `pj.data_processors.v1` bridges, the kind router and their owner; the
   router reports a plugin's change to a history-owned node (`on_history_change`), which the shell records as an undo
   step.
-- `DatasetQualifiedName.h`: `dataset_source:topic/field` lookups; not a persistent identity.
+- `DatasetQualifiedName.h`: `label:topic/field` lookups (the label is `DataEngine::datasetLabel`); not a persistent
+  identity.
 - `DerivedObjects.h`: layout persistence and the one restore of all derived recipes across the engines.
 - `CustomTopicsPolicy.h`: why the Custom Topics editor may not delete a row.
 

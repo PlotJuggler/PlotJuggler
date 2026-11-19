@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
-#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -11,6 +10,8 @@
 #include "pj_runtime/CatalogModel.h"
 
 namespace PJ {
+
+class DataEngine;
 
 // The SDK owns the catalog-dependent prefix convention; host resolution below
 // validates the resulting dataset and series.
@@ -26,18 +27,6 @@ using sdk::splitDatasetQualifier;
 [[nodiscard]] const ScalarFieldPayload* markerSeriesField(
     const CatalogItem& item, const std::string& key, bool strings_too = false);
 
-/// Which loaded dataset a raw source name addresses.
-struct UniqueDatasetLookup {
-  std::optional<DatasetId> id;  ///< set only when exactly one dataset carries the source name
-  bool ambiguous = false;       ///< the source is loaded more than once — not addressable by name
-};
-
-/// The one dataset among `datasets` whose `source_name_of` is `source` (an empty
-/// source matches nothing). A source loaded twice yields no id and `ambiguous`.
-[[nodiscard]] UniqueDatasetLookup uniqueDatasetForSource(
-    std::string_view source, const std::vector<DatasetId>& datasets,
-    const std::function<std::optional<std::string>(DatasetId)>& source_name_of);
-
 /// Pick the dataset a marker generator binds to, from its declared input (and
 /// output) keys, and normalize dataset-qualified keys to their bare form in
 /// place — the marker engine's `series(key)` and `markerSeriesKey` never see a
@@ -50,10 +39,9 @@ struct UniqueDatasetLookup {
 /// Finally every input must exist in the chosen dataset: an unknown (or empty)
 /// name is an error, never a silently absent series.
 ///
-/// `source_name_of` maps a dataset to its raw source name (CatalogModel's
-/// datasetSourceName) — the disambiguated UI label is NOT valid here.
+/// Qualifiers name datasets by label (DataEngine::datasetLabel), split against `engine`'s labels.
 [[nodiscard]] Expected<DatasetId> resolveMarkerDataset(
     std::vector<std::string>& inputs, std::vector<std::string>& outputs, const std::vector<CatalogItem>& items,
-    const std::vector<DatasetId>& datasets, const std::function<std::optional<std::string>(DatasetId)>& source_name_of);
+    const DataEngine& engine);
 
 }  // namespace PJ

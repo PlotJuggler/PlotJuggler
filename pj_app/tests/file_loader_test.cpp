@@ -1317,6 +1317,71 @@ TEST_F(FileLoaderTest, LayoutReloadOfSameBasenameDifferentDirsRestoresBoth) {
       << "layout reload of two same-basename files must restore two datasets";
 }
 
+// A reload names the dataset after its file again, which must not rename it: two same-basename files are
+// "data.mock" and "data.mock (2)", and once the first is removed, reloading the second keeps "data.mock (2)".
+TEST_F(FileLoaderTest, ReloadKeepsTheLabelOfACopyWhoseTwinWasRemoved) {
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runA"_s));
+  ASSERT_TRUE(QDir(data_dir_.path()).mkpath(u"runB"_s));
+  const QString path_a = makeMockFile(u"runA/data.mock"_s);
+  const QString path_b = makeMockFile(u"runB/data.mock"_s);
+  ASSERT_TRUE(load(path_a));
+  ASSERT_TRUE(load(path_b));
+  PJ::DatasetId id_a = 0;
+  PJ::DatasetId id_b = 0;
+  for (const PJ::DatasetId id : session().createReader().listDatasets()) {
+    (loader_->sourcePathForDataset(id) == path_a ? id_a : id_b) = id;
+  }
+  ASSERT_NE(id_a, 0u);
+  ASSERT_NE(id_b, 0u);
+  ASSERT_EQ(datasetDisplayName(id_b), u"data.mock (2)"_s);
+
+  session().evictDatasetObjects(id_a);
+  catalog().removeDataset(id_a, /*tombstone=*/false);
+  session().removeDataset(id_a);
+  ASSERT_TRUE(load(path_b));
+
+  EXPECT_EQ(singleTopicRowCount(id_b), 3) << "the reload refills the same dataset";
+  EXPECT_EQ(datasetDisplayName(id_b), u"data.mock (2)"_s) << "a label is held until its dataset is removed";
+}
+
+// A merge consumes a dataset but keeps it registered under its file's path and label. Opening that file again loads
+// a new dataset instead of refilling the consumed one, which the plugin snapshot does not list and whose label
+// addresses the anchor.
+TEST_F(FileLoaderTest, ReopeningAMergedAwayFileLoadsANewDataset) {
+  const QString path_a = makeMockFile(u"a.mock"_s);
+  const QString path_b = makeMockFile(u"b.mock"_s);
+  ASSERT_TRUE(load(path_a));
+  ASSERT_TRUE(load(path_b));
+  const PJ::DatasetId id_a = datasetNamed("a.mock");
+  const PJ::DatasetId id_b = datasetNamed("b.mock");
+  ASSERT_NE(id_a, 0u);
+  ASSERT_NE(id_b, 0u);
+  const PJ::DatasetId anchor = app_session_->mergeDatasets({id_a, id_b});
+  ASSERT_NE(anchor, 0u);
+  const PJ::DatasetId consumed = anchor == id_a ? id_b : id_a;
+  const QString consumed_path = anchor == id_a ? path_b : path_a;
+  ASSERT_TRUE(session().dataEngine().isMergedAway(consumed));
+
+  ASSERT_TRUE(load(consumed_path));
+
+  PJ::DatasetId reopened = 0;
+  for (const PJ::DatasetId id : session().createReader().listDatasets()) {
+    if (id != anchor && id != consumed) {
+      reopened = id;
+    }
+    if (!session().createReader().listTopics(id).empty()) {
+      EXPECT_FALSE(datasetDisplayName(id).isEmpty()) << "dataset " << id << " holds topics the tree does not list";
+    }
+  }
+  ASSERT_NE(reopened, 0u) << "the consumed dataset was refilled instead";
+  EXPECT_EQ(singleTopicRowCount(reopened), 3);
+  EXPECT_TRUE(session().dataEngine().isMergedAway(consumed));
+  EXPECT_EQ(
+      datasetDisplayName(reopened),
+      QString::fromStdString(session().dataEngine().getDataset(consumed)->source_name) + u" (2)"_s)
+      << "the consumed dataset still holds the bare name";
+}
+
 // The shell uses the dataset -> file mapping to drop the right loaded-source entry when a dataset is removed.
 TEST_F(FileLoaderTest, SourcePathForDatasetTracksLoadedFileAndUntracks) {
   ASSERT_TRUE(load());

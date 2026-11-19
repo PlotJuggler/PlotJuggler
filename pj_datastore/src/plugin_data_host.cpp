@@ -1345,8 +1345,8 @@ struct ToolboxCore {
     state->data_sources.reserve(dataset_ids.size());
 
     for (DatasetId ds_id : dataset_ids) {
-      const auto* dataset = engine.getDataset(ds_id);
-      if (dataset == nullptr) {
+      // A merged-away source is not a dataset any surface lists.
+      if (engine.getDataset(ds_id) == nullptr || engine.isMergedAway(ds_id)) {
         continue;
       }
 
@@ -1384,7 +1384,7 @@ struct ToolboxCore {
       state->data_sources.push_back(
           PJ_data_source_info_t{
               .handle = DataSourceHandle{.id = ds_id},
-              .name = storeString(*state, dataset->source_name),
+              .name = storeString(*state, engine.datasetLabel(ds_id)),
               .first_topic = first_topic,
               .topic_count = static_cast<uint32_t>(state->topics.size()) - first_topic,
           });

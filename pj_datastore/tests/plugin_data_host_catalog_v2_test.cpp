@@ -75,6 +75,25 @@ TEST(PluginDataHostCatalogV2Test, ObjectTopicsCarryDatasetTypeCountAndRange) {
   EXPECT_EQ(toStringView(snapshot->dataSources()[0].name), "s");
 }
 
+// Two sources with one name (two data.csv from different folders) are reported under their labels
+// (DataEngine::datasetLabel), so a "label:topic/field" qualifier can pick either, and a source literally named like a
+// suffixed label gets a third: every name in the snapshot is unique, so the agent tools' first match is the only one.
+TEST(PluginDataHostCatalogV2Test, SourcesSharingANameGetDistinctNames) {
+  Fixture f;
+  ASSERT_TRUE(f.toolbox.createDataSource("data.csv").has_value());
+  ASSERT_TRUE(f.toolbox.createDataSource("other.csv").has_value());
+  ASSERT_TRUE(f.toolbox.createDataSource("data.csv").has_value());
+  ASSERT_TRUE(f.toolbox.createDataSource("data.csv (2)").has_value());
+
+  auto snapshot = f.toolbox.catalogSnapshotV2();
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error();
+  std::vector<std::string> names;
+  for (const PJ_data_source_info_t& source : snapshot->dataSources()) {
+    names.emplace_back(toStringView(source.name));
+  }
+  EXPECT_EQ(names, (std::vector<std::string>{"data.csv", "other.csv", "data.csv (2)", "data.csv (2) (2)"}));
+}
+
 TEST(PluginDataHostCatalogV2Test, EmptyTopicHasZeroRange) {
   Fixture f;
   const auto source = *f.toolbox.createDataSource("s");

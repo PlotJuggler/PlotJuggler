@@ -93,7 +93,7 @@ class RecipeGraph {
     std::string bare;                 ///< the input without its qualifier
     std::vector<DatasetId> datasets;  ///< every dataset carrying the qualifier's source
   };
-  /// The loaded source name `input` starts with followed by ':' (longest match wins, never a blind split at ':');
+  /// The loaded dataset label `input` starts with followed by ':' (longest match wins, never a blind split at ':');
   /// nullopt when none does. How the graph reads `<source>:<key>/<output>`, the form a dataset-qualified editor
   /// writes, as another node's output: it binds when the qualifier names the producer's dataset, and is refused
   /// otherwise, unless the recipe recorded that producer; naming the recipe's own output so is refused as the bare form

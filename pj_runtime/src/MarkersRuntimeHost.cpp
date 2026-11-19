@@ -40,11 +40,11 @@ MarkersRuntimeHost::MarkersRuntimeHost(
     BatchEngine& service, std::string plugin_id,
     std::function<Expected<DatasetId>(std::vector<std::string>& inputs, std::vector<std::string>& outputs)>
         active_dataset,
-    std::function<std::optional<std::string>(DatasetId)> source_name_of)
+    std::function<std::optional<std::string>(DatasetId)> label_of)
     : service_(service),
       plugin_id_(std::move(plugin_id)),
       active_dataset_(std::move(active_dataset)),
-      source_name_of_(std::move(source_name_of)) {
+      label_of_(std::move(label_of)) {
   vtable_ = PJ_data_processors_host_vtable_t{
       .protocol_version = 1,
       .struct_size = sizeof(PJ_data_processors_host_vtable_t),
@@ -67,15 +67,17 @@ Status MarkersRuntimeHost::registerServices(ServiceRegistryBuilder& registry) {
   return registerRequiredService<sdk::DataProcessorsHostService>(registry, data_processors_);
 }
 
-std::vector<std::string> MarkersRuntimeHost::loadedSourceNames() const {
-  std::vector<std::string> names;
-  if (!source_name_of_) {
-    return names;
+std::vector<std::string> MarkersRuntimeHost::loadedLabels() const {
+  std::vector<std::string> labels;
+  if (!label_of_) {
+    return labels;
   }
   for (const DatasetId dataset : service_.loadedDatasets()) {
-    names.push_back(source_name_of_(dataset).value_or(std::string{}));
+    if (std::optional<std::string> label = label_of_(dataset)) {
+      labels.push_back(std::move(*label));
+    }
   }
-  return names;
+  return labels;
 }
 
 std::string MarkersRuntimeHost::makeKey(std::string_view local_id) const {
@@ -157,19 +159,19 @@ bool MarkersRuntimeHost::create(
     const nlohmann::json params = nlohmann::json::parse(recipe.params_json, nullptr, false);
     recipe.all_datasets = !params.is_discarded() && params.is_object() && params.value("scope", std::string{}) == "all";
   }
-  // A qualifier that names a loaded source contradicts scope=all (it would become
+  // A qualifier that names a loaded dataset contradicts scope=all (it would become
   // a key that resolves nowhere and a silently empty marker set); a colon whose
-  // prefix is no loaded source is just part of the key.
+  // prefix is no loaded dataset label is just part of the key.
   if (recipe.all_datasets) {
-    const std::vector<std::string> source_names = loadedSourceNames();
+    const std::vector<std::string> labels = loadedLabels();
     for (const std::string& input : recipe.inputs) {
-      if (sdk::splitDatasetQualifier(input, source_names).qualified) {
+      if (sdk::splitDatasetQualifier(input, labels).qualified) {
         return reject(out_error, kDomain, "dataset qualifiers cannot be combined with scope=all: '" + input + "'");
       }
     }
   }
   // Pick the target dataset from the declared keys (the wire carries no dataset
-  // field; a key may carry the "dataset_source:topic/field" qualifier, which the
+  // field; a key may carry the "label:topic/field" qualifier, which the
   // callback consumes and strips). A resolution error fails the create — landing
   // a generator on a dataset the caller did not name is worse than refusing.
   if (!recipe.all_datasets && active_dataset_) {
@@ -240,15 +242,14 @@ bool MarkersRuntimeHost::onConfig(
     nlohmann::json json;
     json["kind"] = "markers";
     json["language"] = recipe.language;
-    // Echo each input as declared (the SDK promises a re-editable recipe), qualified
-    // with the bound dataset's source only once the bare name stopped resolving on
-    // its own AND the qualified form resolves back to that dataset — checked by the
-    // very resolver a resubmit would run. Neither round-tripping is the
-    // unrepresentable case: the declared spelling is kept.
-    const std::optional<std::string> source =
-        (recipe.all_datasets || !self.source_name_of_) ? std::nullopt : self.source_name_of_(recipe.dataset_id);
+    // Echo each input so it resubmits (the SDK promises a re-editable recipe). One declared with a qualifier, or whose
+    // bare name stopped resolving on its own, is qualified with the bound dataset's CURRENT label (a relabel such as a
+    // merge's must not leave a stale one), when that form resolves back to the dataset, checked by the very resolver
+    // a resubmit would run. Neither round-tripping is the unrepresentable case: the declared spelling is kept.
+    const std::optional<std::string> label =
+        (recipe.all_datasets || !self.label_of_) ? std::nullopt : self.label_of_(recipe.dataset_id);
     std::vector<std::string> inputs = recipe.declared_inputs.empty() ? recipe.inputs : recipe.declared_inputs;
-    if (source.has_value() && !source->empty() && self.active_dataset_) {
+    if (label.has_value() && self.active_dataset_) {
       const auto resolves_to = [&self](const std::string& name) -> std::optional<DatasetId> {
         std::vector<std::string> probe{name};
         std::vector<std::string> no_outputs;
@@ -256,8 +257,10 @@ bool MarkersRuntimeHost::onConfig(
         return dataset.has_value() ? std::optional{*dataset} : std::nullopt;
       };
       for (std::size_t index = 0; index < inputs.size(); ++index) {
-        const std::string qualified = sdk::qualifiedSeriesName(*source, recipe.inputs[index]);
-        if (!resolves_to(recipe.inputs[index]).has_value() && resolves_to(qualified) == recipe.dataset_id) {
+        const std::string& bare = recipe.inputs[index];
+        const bool declared_qualified = inputs[index] != bare;
+        const std::string qualified = sdk::qualifiedSeriesName(*label, bare);
+        if ((declared_qualified || !resolves_to(bare).has_value()) && resolves_to(qualified) == recipe.dataset_id) {
           inputs[index] = qualified;
         }
       }
