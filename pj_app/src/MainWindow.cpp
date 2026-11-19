@@ -277,6 +277,64 @@ bool recordsStreams(const QDomDocument& doc) {
   return !layout_xml::extractStreamingSources(doc, nullptr).isEmpty();
 }
 
+// The attribute prefix of the dataset a filter or generator entry is bound to: those bind once per dataset, so the
+// dataset is part of what they are. The other kinds are one recipe whatever their inputs read.
+QString boundDatasetPrefix(const QDomElement& entry) {
+  if (entry.tagName() == "processor"_L1) {
+    return u"input_dataset_"_s;
+  }
+  if (entry.tagName() == "generator"_L1) {
+    return u"dataset_"_s;
+  }
+  return {};
+}
+
+// Whether two <data_processors> entries name the same recipe, the bound dataset aside: a filter by its output, the
+// other kinds by owner and id.
+bool sameRecipeName(const QDomElement& a, const QDomElement& b) {
+  return a.tagName() == b.tagName() && a.attribute(u"owner_plugin"_s) == b.attribute(u"owner_plugin"_s) &&
+         a.attribute(u"id"_s) == b.attribute(u"id"_s) && a.attribute(u"output_name"_s) == b.attribute(u"output_name"_s);
+}
+
+// The <output> names of every `tag` entry of `block`.
+QSet<QString> outputNames(const QDomElement& block, const QString& tag) {
+  QSet<QString> names;
+  for (QDomElement entry = block.firstChildElement(tag); !entry.isNull(); entry = entry.nextSiblingElement(tag)) {
+    for (QDomElement out = entry.firstChildElement(u"output"_s); !out.isNull();
+         out = out.nextSiblingElement(u"output"_s)) {
+      names.insert(out.attribute(u"name"_s));
+    }
+  }
+  return names;
+}
+
+// A dataset id names a dataset of one session only: kept past its load, it would make the save stamp the path of
+// whatever dataset holds that id now. A qualifier the saved path or source still identifies just loses its id; one
+// that only the id names was bound to a stream at load (bindStreamQualifiers), and gets back its pj-stream:// identity.
+void keepSessionFreeQualifiers(QDomElement element, const QHash<std::uint32_t, QString>& stream_identity_for_dataset) {
+  const QDomNamedNodeMap attributes = element.attributes();
+  QStringList ids;
+  for (int index = 0; index < attributes.count(); ++index) {
+    const QString name = attributes.item(index).nodeName();
+    if (name == "dataset_id"_L1 || name.endsWith("_dataset_id"_L1)) {
+      ids.push_back(name);
+    }
+  }
+  for (const QString& name : ids) {
+    const QString prefix = name.chopped(2);  // "<prefix>dataset_"
+    if (!element.hasAttribute(prefix + u"path"_s) && !element.hasAttribute(prefix + u"source"_s)) {
+      if (const auto stream = stream_identity_for_dataset.constFind(element.attribute(name).toUInt());
+          stream != stream_identity_for_dataset.cend()) {
+        element.setAttribute(prefix + u"path"_s, stream.value());
+      }
+    }
+    element.removeAttribute(name);
+  }
+  for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    keepSessionFreeQualifiers(child, stream_identity_for_dataset);
+  }
+}
+
 #ifndef PJ_TARGET_WASM
 // pj_runtime links no resources, so FeatureCatalogHost is handed the bytes.
 QByteArray featureCatalogResource() {
@@ -1052,6 +1110,9 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, transform_rows_stale);
   connect(&session_->catalogModel(), &CatalogModel::itemsRemoved, this, transform_rows_stale);
   connect(&session_->catalogModel(), &CatalogModel::cleared, this, transform_rows_stale);
+  // A recipe created after a load replaces the kept entry of its identity for good, even if deleted before a save.
+  connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, &MainWindow::retireReplacedKeptDerived);
+  connect(&session_->sessionManager(), &SessionManager::markersChanged, this, &MainWindow::retireReplacedKeptDerived);
   // A node's state changes on every request, a finding's pin moves on the display axis
   // with the offsets: both only repaint, once per event-loop turn.
   connect(
@@ -1072,6 +1133,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     // Objects go before the catalog changes, so cleared() subscribers see the topics gone. Eviction stays out of
     // clearAll(), which speculative callers use. lastLoadedSource is kept for quick reload. An all_datasets generator
     // is bound to the session, not a dataset: removeDataset() would leave it publishing onto whatever loads next.
+    kept_derived_ = QDomDocument();
     session_->sessionManager().batchEngine().clearAllGenerators();
     session_->sessionManager().clearAllObjects();
 #ifdef PJ_WITH_SCENE3D
@@ -3131,6 +3193,7 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     }
     clearPendingSceneRestores();
     // Same order as the "Remove all Datasets" wipe in the constructor.
+    kept_derived_ = QDomDocument();
     session_->sessionManager().batchEngine().clearAllGenerators();
     session_->sessionManager().clearAllObjects();
 #ifdef PJ_WITH_SCENE3D
@@ -3173,6 +3236,9 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
     }
     session_->sessionManager().evictObjectTopics(trashed_objects);
     model.removeItems(std::vector<QString>(keys.begin(), keys.end()));
+    if (model.items().empty()) {
+      kept_derived_ = QDomDocument();  // nothing left for a kept entry to come back to, as after Remove all
+    }
     if (pending_binder_ != nullptr) {
       static_cast<void>(pending_binder_->flush({}));
     }
@@ -6870,9 +6936,9 @@ void MainWindow::reportLayoutRestoreIssue(MissingCurvePolicy policy, const char*
   }
 }
 
-bool MainWindow::finalizeUnresolvedRestoreState(MissingCurvePolicy policy) {
+bool MainWindow::finalizeUnresolvedRestoreState(MissingCurvePolicy policy, const QStringList& skipped_derived) {
+  QStringList shown;
   if (pending_binder_ != nullptr) {
-    QStringList shown;
     QSet<QString> seen;
     for (const layout_xml::SeriesPath& path : pending_binder_->unresolved()) {
       const QString display = path.display();
@@ -6889,32 +6955,27 @@ bool MainWindow::finalizeUnresolvedRestoreState(MissingCurvePolicy policy) {
         shown.push_back(topic);
       }
     }
-    bool retain_unresolved_intents = false;
-    if (!shown.isEmpty()) {
-      if (policy == MissingCurvePolicy::kRetainAndDiagnose) {
-        // Retained, so a later binding pass resolves them when their data arrives.
-        emitDiagnostic(
-            DiagnosticLevel::kWarning, "Layout", "layout-import-unresolved-curves",
-            tr("%n layout reference(s) could not be bound after the import: %1", nullptr,
-               static_cast<int>(shown.size()))
-                .arg(shown.join(u", "_s)));
-        retain_unresolved_intents = true;
-      } else {
-        switch (promptMissingCurves(shown, layoutImportFailureLines())) {
-          case MissingCurveChoice::kRemove:
-            // Unbound curves are in no widget; blocking scene pends would poison later exact snapshots.
-            forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->clearBlockingPendingRestores(); });
-            break;
-          case MissingCurveChoice::kCancel: {
-            static_cast<void>(abortProgressiveRestore());
-          }
-            return false;
-        }
-      }
+  }
+  const bool retain_unresolved_intents = !shown.isEmpty() && policy == MissingCurvePolicy::kRetainAndDiagnose;
+  if (retain_unresolved_intents) {
+    // Retained, so a later binding pass resolves them when their data arrives.
+    emitDiagnostic(
+        DiagnosticLevel::kWarning, "Layout", "layout-import-unresolved-curves",
+        tr("%n layout reference(s) could not be bound after the import: %1", nullptr, static_cast<int>(shown.size()))
+            .arg(shown.join(u", "_s)));
+  } else if (policy != MissingCurvePolicy::kRetainAndDiagnose && (!shown.isEmpty() || !skipped_derived.isEmpty())) {
+    switch (promptMissingCurves(shown, layoutImportFailureLines(), skipped_derived)) {
+      case MissingCurveChoice::kRemove:
+        // Unbound curves are in no widget; blocking scene pends would poison later exact snapshots.
+        forEachSceneDock([](SceneDockWidget* scene_dock) { scene_dock->clearBlockingPendingRestores(); });
+        break;
+      case MissingCurveChoice::kCancel:
+        static_cast<void>(abortProgressiveRestore());
+        return false;
     }
-    if (!retain_unresolved_intents) {
-      pending_binder_->clear();
-    }
+  }
+  if (pending_binder_ != nullptr && !retain_unresolved_intents) {
+    pending_binder_->clear();
   }
 
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
@@ -6942,13 +7003,21 @@ void MainWindow::onProgressiveLayoutDrained() {
   // Offsets before generators: an all-datasets rule reads every dataset in the display frame. Processors before the
   // binder's last pass, so derived curves resolve to fresh outputs.
   static_cast<void>(applyPendingTimelineState());
-  if (!progressive_layout_doc_.isNull() && !restoreDataProcessors(progressive_layout_doc_.documentElement())) {
+  // Only the preflight refuses here: a derived object that cannot be restored is skipped (applyDataProcessors).
+  QString refusal;
+  QStringList skipped_derived;
+  if (!progressive_layout_doc_.isNull() &&
+      !restoreDataProcessors(
+          progressive_layout_doc_.documentElement(), RestoreIntent::kReplace, &refusal, policy, &skipped_derived)) {
     const bool rolled_back = abortProgressiveRestore();
     reportLayoutRestoreIssue(
-        policy, "processor-restore-failed",
-        rolled_back ? tr("A saved data processor could not be restored; the previous workspace was restored.")
-                    : tr("A saved data processor could not be restored, and the previous workspace could not be fully "
-                         "restored against the reloaded data. The partial layout was kept as the new undo baseline."));
+        policy, "processor-restore-refused",
+        rolled_back
+            ? tr("The layout's derived objects could not be restored: %1 The previous workspace was restored.")
+                  .arg(refusal)
+            : tr("The layout's derived objects could not be restored: %1 The previous workspace could not be fully "
+                 "restored against the reloaded data. The partial layout was kept as the new undo baseline.")
+                  .arg(refusal));
     emit layoutRestoreSettled(false);
     return;
   }
@@ -6972,7 +7041,7 @@ void MainWindow::onProgressiveLayoutDrained() {
     forEachPlot([](PlotWidget* plot) { plot->applySavedViewportOrZoom(/*clear_after=*/true); });
   }
 
-  if (!finalizeUnresolvedRestoreState(policy)) {
+  if (!finalizeUnresolvedRestoreState(policy, skipped_derived)) {
     emit layoutRestoreSettled(false);
     return;  // the user cancelled at the missing-curve prompt
   }
@@ -6987,6 +7056,7 @@ void MainWindow::onProgressiveLayoutDrained() {
 }
 
 void MainWindow::commitRestoredLayout(const QDomDocument& doc, MissingCurvePolicy policy) {
+  kept_derived_ = std::exchange(staged_kept_derived_, QDomDocument());
   // A kept busy panel leaves the live pinned toolboxes in place; the baseline resets either way.
   static_cast<void>(restorePinnedToolboxes(doc.documentElement(), policy));
   restoreLeftPanelState(doc);
@@ -7199,8 +7269,82 @@ std::unique_ptr<LayoutImportBatch> MainWindow::makeLayoutImportBatch(bool intera
       capture_service, interactive, kLayoutImportMaxTransferBytes, std::move(hooks));
 }
 
+void MainWindow::retireReplacedKeptDerived() {
+  QDomElement kept = kept_derived_.documentElement();
+  if (kept.firstChildElement().isNull() || applying_state_ || progressive_layout_in_flight_) {
+    return;  // mid-restore, the live recipes may be rolled back
+  }
+  QDomDocument live_doc;
+  const QDomElement live = derivedObjects().save(live_doc, SnapshotScope::kFull);
+  // A filter or generator binding is the same recipe only on the same dataset: by path when both sides know it (a
+  // live entry may carry only its session id), else by source name when the kept entry names one.
+  const auto bound_dataset = [this](const QDomElement& entry, const QString& prefix) {
+    QString path = entry.attribute(prefix + u"path"_s);
+    bool ok = false;
+    if (const std::uint32_t id = entry.attribute(prefix + u"id"_s).toUInt(&ok); path.isEmpty() && ok) {
+      path = session_->sessionManager().datasetSourcePath(id);
+    }
+    return std::make_pair(path.isEmpty() ? path : QDir::cleanPath(path), entry.attribute(prefix + u"source"_s));
+  };
+  const auto replaces = [&](const QDomElement& live_entry, const QDomElement& kept_entry) {
+    if (!sameRecipeName(live_entry, kept_entry)) {
+      return false;
+    }
+    const QString prefix = boundDatasetPrefix(kept_entry);
+    if (prefix.isEmpty()) {
+      return true;
+    }
+    const auto [kept_path, kept_source] = bound_dataset(kept_entry, prefix);
+    const auto [live_path, live_source] = bound_dataset(live_entry, prefix);
+    if (!kept_path.isEmpty() && !live_path.isEmpty()) {
+      return kept_path == live_path;
+    }
+    return kept_source.isEmpty() || kept_source == live_source;
+  };
+  for (QDomElement entry = kept.firstChildElement(); !entry.isNull();) {
+    const QDomElement next = entry.nextSiblingElement();
+    for (QDomElement live_entry = live.firstChildElement(); !live_entry.isNull();
+         live_entry = live_entry.nextSiblingElement()) {
+      if (replaces(live_entry, entry)) {
+        kept.removeChild(entry);
+        break;
+      }
+    }
+    entry = next;
+  }
+}
+
+void MainWindow::appendKeptDerived(QDomDocument& doc) {
+  retireReplacedKeptDerived();
+  const QDomElement kept = kept_derived_.documentElement();
+  if (kept.firstChildElement().isNull()) {
+    return;
+  }
+  QDomElement block = doc.documentElement().firstChildElement(u"data_processors"_s);
+  if (block.isNull()) {
+    block = doc.createElement(u"data_processors"_s);
+    doc.documentElement().appendChild(block);
+  }
+  // An entry whose output a live recipe now writes would fail the next load ("output topic name already in use").
+  const QSet<QString> transform_outputs = outputNames(block, u"transform"_s);
+  const QSet<QString> on_demand_outputs = outputNames(block, u"on_demand"_s);
+  for (QDomElement entry = kept.firstChildElement(); !entry.isNull(); entry = entry.nextSiblingElement()) {
+    const QSet<QString>& taken = entry.tagName() == "transform"_L1 ? transform_outputs : on_demand_outputs;
+    bool collides = false;
+    for (QDomElement out = entry.firstChildElement(u"output"_s); !out.isNull() && !collides;
+         out = out.nextSiblingElement(u"output"_s)) {
+      collides = taken.contains(out.attribute(u"name"_s));
+    }
+    if (!collides) {
+      block.appendChild(doc.importNode(entry, true));
+    }
+  }
+}
+
 void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source) {
   QDomDocument doc = xmlSaveState();
+  // Before the binding rewrites below, so a kept entry is qualified or relativized like a live one.
+  appendKeptDerived(doc);
   doc.documentElement().setAttribute(u"binding"_s, include_data_source ? u"source"_s : u"generic"_s);
   const QDir layout_dir(QFileInfo(path).absoluteDir());
   if (include_data_source) {
@@ -7272,12 +7416,14 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "saved", tr("Saved layout: %1").arg(QFileInfo(path).fileName()));
 }
 
-bool MainWindow::restoreDataProcessors(const QDomElement& root, RestoreIntent intent, QString* out_reason) {
+bool MainWindow::restoreDataProcessors(
+    const QDomElement& root, RestoreIntent intent, QString* out_reason, MissingCurvePolicy policy,
+    QStringList* skipped) {
   DerivedSnapshot snapshot = derivedObjects().parse(root, intent);
   if (!checkDataProcessorDependencies(snapshot, out_reason)) {
     return false;
   }
-  return applyDataProcessors(std::move(snapshot));
+  return applyDataProcessors(std::move(snapshot), policy, skipped);
 }
 
 DerivedObjects MainWindow::derivedObjects() const {
@@ -7305,12 +7451,46 @@ bool MainWindow::checkDataProcessorDependencies(const DerivedSnapshot& snapshot,
   return false;
 }
 
-bool MainWindow::applyDataProcessors(DerivedSnapshot snapshot) {
+bool MainWindow::applyDataProcessors(DerivedSnapshot snapshot, MissingCurvePolicy policy, QStringList* skipped) {
   const DerivedRestoreReport report = derivedObjects().restore(std::move(snapshot));
   reportDerived(report.diagnostics);
+  // An unattended load keeps what it skipped, exactly those entries, for the next layout save (commitRestoredLayout).
+  staged_kept_derived_ = QDomDocument();
+  if (policy == MissingCurvePolicy::kRetainAndDiagnose && !report.skipped.empty()) {
+    QHash<std::uint32_t, QString> stream_identity_for_dataset;
+    static_cast<void>(liveStreamRecords(stream_identity_for_dataset));
+    QDomElement block = staged_kept_derived_.createElement(u"data_processors"_s);
+    staged_kept_derived_.appendChild(block);
+    for (const QDomElement& entry : report.skipped) {
+      QDomElement copy = staged_kept_derived_.importNode(entry, true).toElement();
+      keepSessionFreeQualifiers(copy, stream_identity_for_dataset);
+      block.appendChild(copy);
+    }
+  }
   // An empty snapshot (a progressive restore's teardown pass) empties the panel.
   syncCustomTopicsPanel();
-  return report.restored_all;
+  if (report.restored_all) {
+    return true;
+  }
+  switch (policy) {
+    case MissingCurvePolicy::kExact:
+      return false;
+    case MissingCurvePolicy::kPrompt:
+      if (skipped != nullptr) {
+        for (const DerivedDiagnostic& diagnostic : report.diagnostics) {
+          skipped->push_back(diagnostic.message);
+        }
+      }
+      break;
+    case MissingCurvePolicy::kRetainAndDiagnose:
+      showToast(
+          tr("A derived series saved in the layout could not be restored and was skipped.") + u"<br>"_s +
+          tr("Details are in the notifications."));
+      break;
+    case MissingCurvePolicy::kSilentDrop:
+      break;
+  }
+  return true;
 }
 
 void MainWindow::syncCustomTopicsPanel() {
@@ -7898,7 +8078,8 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
     return RestoreResult::kFailed;
   }
   // 3. Processors, so derived output topics are in the catalog before the rebind.
-  if (!applyDataProcessors(std::move(processors))) {
+  QStringList skipped_derived;
+  if (!applyDataProcessors(std::move(processors), policy, &skipped_derived)) {
     return RestoreResult::kFailed;
   }
   // 4. Curve rebind.
@@ -7913,13 +8094,13 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
         tr("%n curve(s) have no matching data: %1", nullptr, static_cast<int>(names.size())).arg(names.join(u", "_s)));
     return RestoreResult::kFailed;
   }
-  if (policy == MissingCurvePolicy::kPrompt && !unresolved.isEmpty()) {
+  if (policy == MissingCurvePolicy::kPrompt && (!unresolved.isEmpty() || !skipped_derived.isEmpty())) {
     QStringList shown;
     shown.reserve(unresolved.size());
     for (const layout_xml::SeriesPath& sp : unresolved) {
       shown.push_back(sp.display());
     }
-    switch (promptMissingCurves(shown)) {
+    switch (promptMissingCurves(shown, {}, skipped_derived)) {
       case MissingCurveChoice::kCancel:
         return RestoreResult::kCancelled;
       case MissingCurveChoice::kRemove:
@@ -8578,17 +8759,30 @@ QStringList MainWindow::layoutImportFailureLines() const {
 }
 
 MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(
-    const QStringList& names, const QStringList& import_failures) {
+    const QStringList& names, const QStringList& import_failures, const QStringList& skipped_derived) {
   static constexpr int kMaxShown = 10;
   const int name_count = static_cast<int>(names.size());
-  QString body = tr("The layout references %n curve(s) not present in the current data:", "", name_count);
-  body += u"\n\n"_s;
-  const int shown = std::min(name_count, kMaxShown);
-  for (int i = 0; i < shown; ++i) {
-    body += u"  • "_s + names[i] + u"\n"_s;
+  QString body;
+  if (name_count > 0) {
+    body += tr("The layout references %n curve(s) not present in the current data:", "", name_count);
+    body += u"\n\n"_s;
+    const int shown = std::min(name_count, kMaxShown);
+    for (int i = 0; i < shown; ++i) {
+      body += u"  • "_s + names[i] + u"\n"_s;
+    }
+    if (name_count > kMaxShown) {
+      body += tr("  … and %n more\n", "", name_count - kMaxShown);
+    }
   }
-  if (name_count > kMaxShown) {
-    body += tr("  … and %n more\n", "", name_count - kMaxShown);
+  if (!skipped_derived.isEmpty()) {
+    if (!body.isEmpty()) {
+      body += u"\n"_s;
+    }
+    body += tr("These derived objects of the layout cannot be restored over the current data and are skipped:");
+    body += u"\n\n"_s;
+    for (const QString& line : skipped_derived) {
+      body += u"  • "_s + line + u"\n"_s;
+    }
   }
   if (!import_failures.isEmpty()) {
     body += u"\n"_s;
@@ -8601,11 +8795,14 @@ MainWindow::MissingCurveChoice MainWindow::promptMissingCurves(
   body += u"\n"_s;
   body += tr("Choose how to handle them:");
 
-  // No default button: Remove drops every missing curve from every plot, and an accidental Enter must not trigger it.
+  // No default button: Remove drops every missing curve from every plot (and the skipped derived objects from the
+  // workspace and its next save), and an accidental Enter must not trigger it.
+  const bool curves_only = skipped_derived.isEmpty();
   constexpr int kRemove = 0;
   const int choice = MessageBox::question(
-      this, tr("Missing curves"), body,
-      {{tr("Remove from plots"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}});
+      this, curves_only ? tr("Missing curves") : tr("Missing layout data"), body,
+      {{curves_only ? tr("Remove from plots") : tr("Continue without them"), MessageBox::kDestructiveRole},
+       {tr("Cancel"), MessageBox::kCancelRole}});
   return choice == kRemove ? MissingCurveChoice::kRemove : MissingCurveChoice::kCancel;
 }
 

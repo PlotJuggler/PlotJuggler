@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QDir>
 #include <QDomDocument>
 #include <QFile>
 #include <QJsonArray>
@@ -29,17 +30,22 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QWidget>
+#include <algorithm>
 #include <memory>
 #include <vector>
 
 #include "DiagnosticDump.h"
 #include "dataset_test_helpers.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/SessionManager.h"
 #include "support/layout_import_gui_support.h"
 #include "support/loader_test_support.h"
+#include "ui/CurveListPanel.h"
 
 namespace {
 
+using namespace Qt::StringLiterals;
 using PJ::MainWindowLayoutImportTestPeer;
 using pj_app_test::flushQueuedEvents;
 using pj_app_test::pumpUntil;
@@ -188,6 +194,230 @@ TEST_F(MainWindowLayoutSettleTest, PlainLayoutSettlesTrueOnTheSyncApplyLeg) {
 
   flushQueuedEvents();
   EXPECT_EQ(settles.size(), 1u) << "no late duplicate settlement";
+}
+
+// A layout over data with /cosine and no /sine: one plot of /cosine plus a filter, a transform and an on-demand recipe
+// whose inputs do not resolve.
+QString writeDerivedInputMissingLayout(PJ::AppSession& session, const QString& dir) {
+  const PJ::DatasetId dataset = pj_test::createDataset(session, "nosine.csv", /*own_time_domain=*/true);
+  EXPECT_NE(dataset, 0u);
+  EXPECT_NE(pj_test::addScalarTopic(session, dataset, "/cosine", 1'000, 2'000), 0u);
+  session.catalogModel().rebuildFromDatastore();
+
+  QDomDocument doc = fake::buildGenericCurveLayoutDoc(QStringLiteral("/cosine"));
+  doc.elementsByTagName(QStringLiteral("curve")).at(0).toElement().setAttribute(QStringLiteral("field"), u"value"_s);
+  QDomDocument processors;
+  EXPECT_TRUE(processors.setContent(QStringLiteral(R"(<data_processors>
+  <processor input_topic="/sine" input_field="" processor_id="absolute" output_name="sine[Absolute]"><![CDATA[{}]]></processor>
+  <transform api_version="1" backend="luau" id="sine_x3" owner_plugin="owner">
+    <input name="/sine"/><output name="sine_x3"/><params><![CDATA[{}]]></params>
+    <script><![CDATA[-- pj-script: luau
+return { id="sine_x3", name="sine_x3", output="same",
+  create = function(p) return { calculate = function(t, v) return v * 3 end } end }
+]]></script>
+  </transform>
+  <on_demand owner_plugin="owner" id="crop"><input name="cloud" dataset_path="/elsewhere/other.mcap"/>
+    <output name="cropped" type="kPointCloud"/><script><![CDATA[return {}]]></script></on_demand>
+</data_processors>)")));
+  doc.documentElement().appendChild(doc.importNode(processors.documentElement(), true));
+  const QString layout_path = QDir(dir).filePath(QStringLiteral("derived-input-missing.pj4.xml"));
+  EXPECT_TRUE(fake::writeLayoutFile(layout_path, doc));
+  return layout_path;
+}
+
+QByteArray readFile(const QString& path) {
+  QFile file(path);
+  EXPECT_TRUE(file.open(QIODevice::ReadOnly)) << path.toStdString();
+  return file.readAll();
+}
+
+// Clicks the first button whose label is in `labels` on the next message box, records its body text into `shown` and
+// the label clicked in the timer's "clicked" property.
+void answerNextMessageBox(QTimer& timer, const QStringList& labels, QString& shown) {
+  timer.setInterval(10);
+  QObject::connect(&timer, &QTimer::timeout, &timer, [&timer, labels, &shown]() {
+    QWidget* modal = QApplication::activeModalWidget();
+    if (modal == nullptr || modal->objectName() != QStringLiteral("pjMessageBox")) {
+      return;
+    }
+    if (const auto* body = modal->findChild<QLabel*>(QStringLiteral("pjMessageBoxBody"))) {
+      shown = body->text();
+    }
+    for (auto* button : modal->findChildren<QPushButton*>(QStringLiteral("pjMessageBoxButton"))) {
+      if (labels.contains(button->text())) {
+        timer.stop();
+        timer.setProperty("clicked", button->text());
+        button->click();
+        return;
+      }
+    }
+  });
+  timer.start();
+}
+
+// A layout loaded over data that lacks a derived object's input still applies: the plot restores, and each derived
+// kind (filter, transform, on-demand recipe) whose input does not resolve is skipped and reported, the way a missing
+// curve is, instead of failing the whole layout.
+TEST_F(MainWindowLayoutSettleTest, DerivedObjectWithMissingInputIsSkippedAndThePlotRestores) {
+  const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
+
+  QStringList reports;
+  QObject::connect(
+      window().diagnosticBridge(), &PJ::QtDiagnosticBridge::diagnosticReported, &window(),
+      [&reports](int, const QString&, const QString& id, const QString& message) {
+        reports.push_back(id + u": "_s + message);
+      });
+  QObject scope;
+  std::vector<bool> settles;
+  QObject::connect(
+      &window(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok) { settles.push_back(ok); });
+
+  Peer::loadLayout(window(), layout_path, /*interactive=*/false);
+  flushQueuedEvents();
+
+  const std::string all = reports.join(u"\n").toStdString();
+  ASSERT_EQ(settles.size(), 1u);
+  EXPECT_TRUE(settles.front()) << all;
+  EXPECT_EQ(Peer::totalCurveCount(window()), 1) << "the plot of /cosine restores";
+  const auto reported = [&reports](const QString& prefix) {
+    return std::any_of(reports.begin(), reports.end(), [&prefix](const QString& r) { return r.startsWith(prefix); });
+  };
+  EXPECT_FALSE(reported(u"layout-apply-failed"_s)) << all;
+  EXPECT_TRUE(reported(u"processor-restore-failed: Layout filter on '/sine/' has no matching data"_s)) << all;
+  EXPECT_TRUE(reported(
+      u"transform-restore-failed: Could not restore transform 'owner/sine_x3': "_s
+      u"pj.data_processors: input topic/field not found: /sine"_s))
+      << all;
+  EXPECT_TRUE(reported(u"on-demand-restore-failed: Could not restore on-demand recipe 'owner/crop'"_s)) << all;
+}
+
+constexpr const char* kTimes2 = R"LUAU(-- pj-script: luau
+return { id="sine_x3", name="sine_x3", output="same",
+  create = function(p) return { calculate = function(t, v) return v * 2 end } end }
+)LUAU";
+
+// The layout file a save writes now.
+QByteArray savedLayout(PJ::MainWindow& window, const QString& dir) {
+  const QString saved_path = QDir(dir).filePath(QStringLiteral("saved.pj4.xml"));
+  Peer::saveLayoutToPath(window, saved_path, /*include_data_source=*/false);
+  return readFile(saved_path);
+}
+
+// What an unattended layout load could not restore is written back by the next save, unchanged, so saving over the
+// file never loses a hand-written recipe; the next layout load forgets it.
+TEST_F(MainWindowLayoutSettleTest, SaveKeepsTheDerivedObjectsTheLoadCouldNotRestore) {
+  const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
+  Peer::loadLayout(window(), layout_path, /*interactive=*/false);
+  flushQueuedEvents();
+
+  QByteArray saved = savedLayout(window(), project_dir_->path());
+  EXPECT_TRUE(saved.contains(R"(output_name="sine[Absolute]")")) << saved.toStdString();
+  EXPECT_TRUE(saved.contains(R"(owner_plugin="owner")")) << saved.toStdString();
+  EXPECT_TRUE(saved.contains("v * 3")) << "the script is kept as it was";
+  EXPECT_TRUE(saved.contains(R"(id="crop")")) << saved.toStdString();
+
+  const QString plain_path = project_dir_->filePath(QStringLiteral("plain.pj4.xml"));
+  ASSERT_TRUE(fake::writeLayoutFile(plain_path, fake::buildGenericCurveLayoutDoc(QStringLiteral("/cosine"))));
+  Peer::loadLayout(window(), plain_path, /*interactive=*/false);
+  flushQueuedEvents();
+  saved = savedLayout(window(), project_dir_->path());
+  EXPECT_FALSE(saved.contains(R"(id="crop")")) << saved.toStdString();
+  EXPECT_FALSE(saved.contains("v * 3")) << saved.toStdString();
+}
+
+// A live recipe of a kept entry's identity replaces it for good: deleting the live one before any save does not bring
+// the old entry back.
+TEST_F(MainWindowLayoutSettleTest, ALiveRecipeRetiresTheKeptEntryForGood) {
+  const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
+  Peer::loadLayout(window(), layout_path, /*interactive=*/false);
+  flushQueuedEvents();
+  PJ::DataProcessorService& service = appSession().sessionManager().dataProcessorService();
+  const auto live = service.upsertTransform("owner", "sine_x3", {"/cosine"}, {"sine_x3"}, kTimes2, "{}");
+  ASSERT_TRUE(live.has_value()) << live.error();
+  appSession().catalogModel().rebuildFromDatastore();
+  flushQueuedEvents();
+  ASSERT_TRUE(service.removeTransform("owner/sine_x3"));
+  appSession().catalogModel().rebuildFromDatastore();
+
+  const QByteArray saved = savedLayout(window(), project_dir_->path());
+  EXPECT_EQ(saved.count("<transform "), 0) << saved.toStdString();
+  EXPECT_TRUE(saved.contains(R"(id="crop")")) << "only the replaced entry is retired";
+}
+
+// A kept transform whose output name a live recipe now uses is not written back: the next load would refuse it
+// ("output topic name already in use"), and a browser apply of the file would fail whole.
+TEST_F(MainWindowLayoutSettleTest, AKeptTransformWhoseOutputIsTakenIsNotSaved) {
+  const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
+  Peer::loadLayout(window(), layout_path, /*interactive=*/false);
+  flushQueuedEvents();
+  const auto live = appSession().sessionManager().dataProcessorService().upsertTransform(
+      "other", "sine_x3", {"/cosine"}, {"sine_x3"}, kTimes2, "{}");
+  ASSERT_TRUE(live.has_value()) << live.error();
+  appSession().catalogModel().rebuildFromDatastore();
+
+  const QByteArray saved = savedLayout(window(), project_dir_->path());
+  EXPECT_EQ(saved.count("<transform "), 1) << saved.toStdString();
+  EXPECT_TRUE(saved.contains(R"(owner_plugin="other")")) << saved.toStdString();
+}
+
+// Removing every dataset, through Remove all or by trashing the last catalog row, forgets the kept entries.
+TEST_F(MainWindowLayoutSettleTest, EmptyingTheCatalogForgetsTheKeptEntries) {
+  const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
+  Peer::loadLayout(window(), layout_path, /*interactive=*/false);
+  flushQueuedEvents();
+  ASSERT_TRUE(savedLayout(window(), project_dir_->path()).contains(R"(id="crop")"));
+  QStringList keys;
+  for (const auto& item : appSession().catalogModel().items()) {
+    keys.push_back(item.key);
+  }
+  ASSERT_FALSE(keys.isEmpty());
+
+  emit window().findChild<PJ::CurveListPanel*>(QStringLiteral("curveListPanel")) -> trashRequested(keys, false);
+  flushQueuedEvents();
+  ASSERT_TRUE(appSession().catalogModel().items().empty());
+  const QByteArray saved = savedLayout(window(), project_dir_->path());
+  EXPECT_FALSE(saved.contains(R"(id="crop")")) << saved.toStdString();
+}
+
+// An interactive load lists what it could not restore in the missing-data prompt, with the same Cancel choice as a
+// missing curve; Cancel leaves the previous workspace.
+TEST_F(MainWindowLayoutSettleTest, InteractiveLoadPromptsForTheSkippedDerivedObjects) {
+  const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
+  QObject scope;
+  std::vector<bool> settles;
+  QObject::connect(
+      &window(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok) { settles.push_back(ok); });
+  QString shown;
+  QTimer answer;
+  answerNextMessageBox(answer, {QStringLiteral("Cancel")}, shown);
+
+  Peer::loadLayout(window(), layout_path, /*interactive=*/true);
+  flushQueuedEvents();
+
+  EXPECT_TRUE(shown.contains(QStringLiteral("owner/sine_x3"))) << shown.toStdString();
+  EXPECT_TRUE(shown.contains(QStringLiteral("owner/crop"))) << shown.toStdString();
+  ASSERT_EQ(settles.size(), 1u);
+  EXPECT_FALSE(settles.front());
+  EXPECT_EQ(Peer::totalCurveCount(window()), 0) << "Cancel leaves the previous (empty) workspace";
+}
+
+// Accepting the prompt drops what it listed: the skipped derived objects are not kept, so a save does not write them
+// back. With no curve missing, the prompt does not speak of curves.
+TEST_F(MainWindowLayoutSettleTest, AcceptingThePromptDropsTheSkippedDerivedObjects) {
+  const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
+  QString shown;
+  QTimer answer;
+  answerNextMessageBox(answer, {QStringLiteral("Continue without them"), QStringLiteral("Remove from plots")}, shown);
+
+  Peer::loadLayout(window(), layout_path, /*interactive=*/true);
+  flushQueuedEvents();
+
+  EXPECT_EQ(answer.property("clicked").toString(), QStringLiteral("Continue without them"));
+  EXPECT_FALSE(shown.contains(QStringLiteral("curve"))) << shown.toStdString();
+  EXPECT_EQ(Peer::totalCurveCount(window()), 1);
+  const QByteArray saved = savedLayout(window(), project_dir_->path());
+  EXPECT_FALSE(saved.contains("v * 3")) << saved.toStdString();
+  EXPECT_FALSE(saved.contains(R"(id="crop")")) << saved.toStdString();
 }
 
 // A materialize-import layout settles true only at the progressive drain, after the batch finished and every

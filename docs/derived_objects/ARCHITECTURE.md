@@ -485,8 +485,11 @@ Where the details live:
 - **Restore and layout persistence:** the `DerivedObjects.h` comments (`save`, `parse`, `refusal`, `restore`; the
   `<data_processors>` block and its `<on_demand>` element; generators that name no dataset,
   `WantedGenerator::bind_by_inputs`; history's refusals). Diagnostics come back as data; `MainWindow` reports them and
-  `applyWorkspace` parses once. The layout format is checked against layouts saved by a `release-4.1` build and by the
-  prototype (`pj_app/tests/fixtures/layouts/`).
+  `applyWorkspace` parses once. An entry that cannot be restored never stops the others; whether it fails the whole
+  workspace is the shell's missing-data policy (only an exact restore fails; a layout load skips it, applies the rest
+  and saves the skipped entry back unchanged: `pj_app` ARCHITECTURE "Layout files and derived recipes"). The layout
+  format is checked against layouts saved by a `release-4.1` build and by the prototype
+  (`pj_app/tests/fixtures/layouts/`).
 - **Which generators stay unchanged, and when a marker run is cancelled:** the `BatchEngine.h` class comment and
   `unchangedGeneratorIds`.
 - **Which processor outputs mark marker rules stale:** `DataProcessorService::setOutputsChangedSink` and

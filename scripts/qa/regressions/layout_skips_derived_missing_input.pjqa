@@ -1,0 +1,8 @@
+# A generic layout with a plot of no_sine/cosine and two derived series (one agent-owned, one user-owned) computed
+# from no_sine/sine, loaded over a CSV with no "sine" column: the plot restores and the two derived series are
+# skipped and reported, as missing curves are, instead of the whole layout failing to apply.
+# app: -d scripts/qa/regressions/fixtures/no_sine.csv -l scripts/qa/regressions/fixtures/derived_input_missing.pj4.xml
+# needs: plugins
+until get_status {} "name":"no_sine.csv"
+until ui_plot {} Periodic
+expect no_sine/cosine

@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="generic" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="signals-tab" tab_name="Signals">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockArea id="signals-periodic" name="Periodic">
+            <plot id="signals-plot-1" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <curve color="#d62728" field="cosine" topic="no_sine" visible="true"/>
+            </plot>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+  <data_processors>
+    <transform api_version="1" backend="luau" history_exempt="1" id="sine_x3" owner_plugin="agent-qa">
+      <input column="1" field="sine" name="no_sine/sine" topic="no_sine"/>
+      <output name="sine_x3"/>
+      <params><![CDATA[{}]]></params>
+      <script><![CDATA[-- pj-script: luau
+local T = { id = "sine_x3", name = "sine_x3", output = "double" }
+T.__index = T
+function T.create(_) return setmetatable({}, T) end
+function T:calculate(t, v) return v * 3 end
+return T
+]]></script>
+    </transform>
+    <transform api_version="1" backend="luau" id="sine_x2">
+      <input column="1" field="sine" name="no_sine/sine" topic="no_sine"/>
+      <output name="sine_x2"/>
+      <params><![CDATA[{}]]></params>
+      <script><![CDATA[-- pj-script: luau
+local T = { id = "sine_x2", name = "sine_x2", output = "double" }
+T.__index = T
+function T.create(_) return setmetatable({}, T) end
+function T:calculate(t, v) return v * 2 end
+return T
+]]></script>
+    </transform>
+  </data_processors>
+</root>

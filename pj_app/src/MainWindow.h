@@ -914,7 +914,7 @@ class MainWindow : public QMainWindow {
   // The end-of-drain owner of every unresolved-state decision (binder intents, blocking scene pends), on the same
   // policy applyWorkspace honours: kRetainAndDiagnose keeps the intents and diagnoses, kPrompt prompts. False
   // when the user cancelled (the restore was aborted).
-  [[nodiscard]] bool finalizeUnresolvedRestoreState(MissingCurvePolicy policy);
+  [[nodiscard]] bool finalizeUnresolvedRestoreState(MissingCurvePolicy policy, const QStringList& skipped_derived);
   // A drain-time restore failure: diagnostic under kRetainAndDiagnose, warning dialog otherwise.
   void reportLayoutRestoreIssue(MissingCurvePolicy policy, const char* id, const QString& message);
   // For a restore with materialize-bearing sources; the shell effects (workspace checkpoint, removeDatasetData,
@@ -1020,9 +1020,10 @@ class MainWindow : public QMainWindow {
   enum class MissingCurveChoice { kRemove, kCancel };
 
   // Modal. A long `names` list is truncated. `import_failures` ("path: why" per source the import could not bring
-  // back) tells the user why the curves are missing.
+  // back) tells the user why the curves are missing; `skipped_derived` lists the derived objects the restore skipped.
+  // With any listed, the title and the Remove button speak of the layout's data, not of curves.
   [[nodiscard]] MissingCurveChoice promptMissingCurves(
-      const QStringList& names, const QStringList& import_failures = {});
+      const QStringList& names, const QStringList& import_failures = {}, const QStringList& skipped_derived = {});
   // The active batch's failed sources as "path: why" lines (empty without a batch).
   [[nodiscard]] QStringList layoutImportFailureLines() const;
 
@@ -1067,9 +1068,10 @@ class MainWindow : public QMainWindow {
 
   // Thin wrappers over pj_runtime's DerivedObjects, which owns the <data_processors> persistence. This one is
   // parse + checkDataProcessorDependencies + applyDataProcessors; `out_reason` is cleared on entry and set only
-  // when a `kHistory` restore is refused.
+  // when the preflight refuses.
   [[nodiscard]] bool restoreDataProcessors(
-      const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr);
+      const QDomElement& root, RestoreIntent intent = RestoreIntent::kReplace, QString* out_reason = nullptr,
+      MissingCurvePolicy policy = MissingCurvePolicy::kExact, QStringList* skipped = nullptr);
 
   [[nodiscard]] DerivedObjects derivedObjects() const;
   // Reports each derived-recipe diagnostic as a "Layout" warning.
@@ -1079,7 +1081,12 @@ class MainWindow : public QMainWindow {
   // applyTimelineOffsets, so a refusal never has to undo a moved offset.
   [[nodiscard]] bool checkDataProcessorDependencies(const DerivedSnapshot& snapshot, QString* out_reason = nullptr);
   // Also reports its warnings and re-derives the Custom Topics list. An empty snapshot clears every recipe.
-  [[nodiscard]] bool applyDataProcessors(DerivedSnapshot snapshot);
+  // A derived object that cannot be restored (an input the loaded data lacks, a malformed entry) fails the restore
+  // only under kExact, as an unresolved curve does; under any other policy it is skipped, so the rest of the layout
+  // applies and curves plotting its output go through the missing-curve handling. kPrompt appends the skip messages
+  // to `skipped` for the caller's missing-data prompt; kRetainAndDiagnose shows one toast; kSilentDrop nothing.
+  [[nodiscard]] bool applyDataProcessors(
+      DerivedSnapshot snapshot, MissingCurvePolicy policy = MissingCurvePolicy::kExact, QStringList* skipped = nullptr);
 
   // For a node-state or offset change: reuses the last transform rows unless the catalog changed. Costs per
   // derived row, never per catalog row.
@@ -1258,7 +1265,14 @@ class MainWindow : public QMainWindow {
   // set, restores the left panel (its streaming buffer reaches running streams) and re-baselines undo. Both restore
   // legs end here. restoreChromeAndPanels must not take commit-only
   // steps: it also runs while the restore can still abort.
+  // Also moves staged_kept_derived_ into kept_derived_.
   void commitRestoredLayout(const QDomDocument& doc, MissingCurvePolicy policy);
+  // Drops for good each kept entry a live recipe now stands for (same kind and name, and for a filter or generator
+  // the same dataset). Not mid-restore, which may still roll the live recipes back.
+  void retireReplacedKeptDerived();
+  // Appends the kept entries to `doc`'s <data_processors>, except one whose output a live transform or on-demand
+  // recipe now writes.
+  void appendKeptDerived(QDomDocument& doc);
 
   // An empty, wired object dock of `kind` ("scene3d", "scene2d", "state_transitions", "CustomWidget"); null for
   // an unknown kind.
@@ -1369,6 +1383,13 @@ class MainWindow : public QMainWindow {
   bool plugin_failure_toast_shown_ = false;
   // While non-null, every "Layout" diagnostic is also appended here, so a failed restore can say why.
   QStringList* layout_issue_capture_ = nullptr;
+  // The <data_processors> entries the last unattended layout load (kRetainAndDiagnose) skipped, saved back by
+  // saveLayoutToPath so a save never loses what the load skipped (as pending curves are kept); an interactive load
+  // asked instead, and its Continue drops them. Layout files only: an undo snapshot or a kExact rollback target
+  // carrying them would fail on the same missing input. Replaced by the next layout load, emptied with the catalog.
+  QDomDocument kept_derived_;
+  // What applyDataProcessors skipped in the restore under way, for commitRestoredLayout; a rollback never commits it.
+  QDomDocument staged_kept_derived_;
   std::unique_ptr<Theme> theme_;
   TitleBar* title_bar_ = nullptr;
   // Fixed for the window's lifetime: the native window is created frameless or not.
