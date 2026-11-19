@@ -26,7 +26,7 @@ Each header's doc comment owns that widget's contract (threading, ownership, cal
 
 ## UI convention
 
-Per root CLAUDE.md: **prefer `.ui` files**. `AUTOUIC` is on, search path `src/`. The only `.ui` is `Dialog.ui`; keep new chromed dialogs on the same pattern.
+Per root CLAUDE.md: **prefer `.ui` files**. `AUTOUIC` is on, search path `src/`. `Dialog.ui` and `LogView.ui`; keep new chromed dialogs on the `Dialog.ui` pattern.
 
 ## Inventory
 
@@ -77,6 +77,7 @@ Views and tables:
 | `Scrollbar.h` | Fading pill scrollbar; `attachPillScrollbars` (reserved gutter) is the app-wide default, `kOverlayViewport` only for hosts owning a content-free viewport strip. |
 | `Timeline.h` | Multi-track Source Timeline: `TimelineScene` (Qt-free math) + `Timeline` (view). Runtime-agnostic: the host (`SourceTimelineController` in `pj_app`) converts. |
 | `StateTransitionsView.h` | State Transitions strip: `StateTransitionsScene` (display-free math) + view; runtime-agnostic like `Timeline`. |
+| `LogView.h` + `LogView.ui`, `LogModel.h` | Log list over several topics merged by time: level toggles, source/category/message filters, detail pane, tracker tint, later rows greyed or hidden. Runtime-agnostic: the host decodes into `LogEntry`, sets tracker and `TimeLabelFormat`, answers `seekRequested`. `LogModel.h` holds the store, filter and table model it runs on. |
 | `TailFollowOverlay.h` | "Jump to the latest" HUD button for a tail-following scroll area. |
 | `VisualizationPlaceholderWidget.h`, `VisualizationKind.h` | Empty-dock placeholder with five clickable family icons (Plot, State Transitions, 2D, 3D, Custom Widget) in a grid three columns wide; `VisualizationKind` is the neutral vocabulary the app shell maps to concrete widget kinds. |
 | `RasterStreamView.h`, `RasterFrame.h` | External renderer hosted over shared memory (`raster/ipc/`), and its frame decoder. `RasterStreamView` is not built for WebAssembly. |

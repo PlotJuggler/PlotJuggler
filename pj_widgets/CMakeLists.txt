@@ -31,6 +31,9 @@ add_library(pj_widgets STATIC
     src/IngestProgressWidget.cpp
     src/IntScrubber.cpp
     src/LayerListView.cpp
+    src/LogModel.cpp
+    src/LogView.cpp
+    src/LogView.ui
     src/MarkerTimeline.cpp
     src/MessageBox.cpp
     src/OwnedMenu.cpp
@@ -80,6 +83,8 @@ add_library(pj_widgets STATIC
     include/pj_widgets/IngestProgressWidget.h
     include/pj_widgets/IntScrubber.h
     include/pj_widgets/LayerListView.h
+    include/pj_widgets/LogModel.h
+    include/pj_widgets/LogView.h
     include/pj_widgets/MarkerTimeline.h
     include/pj_widgets/TimeFormat.h
     include/pj_widgets/MessageBox.h
