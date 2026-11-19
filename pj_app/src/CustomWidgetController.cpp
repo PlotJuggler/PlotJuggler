@@ -46,7 +46,6 @@ CustomWidgetController::CustomWidgetController(
 CustomWidgetController::~CustomWidgetController() = default;
 
 void CustomWidgetController::onStylesheetChanged(const QString& theme) {
-  picker_->onStylesheetChanged(theme);
   config_page_->onStylesheetChanged(theme);
 }
 
@@ -56,8 +55,9 @@ void CustomWidgetController::onChromeMetricsChanged(const ChromeMetrics& metrics
 
 void CustomWidgetController::showPicker(DockWidget* dock) {
   target_ = dock;
-  picker_->rebuild(session_.extensionCatalog());
   const QToolButton* button = dock->findChild<QToolButton*>(u"buttonVizCustomWidget"_s);
+  const QWidget* anchor_widget = button != nullptr ? static_cast<const QWidget*>(button) : dock;
+  picker_->rebuild(session_.extensionCatalog(), anchor_widget->devicePixelRatioF());
   const QPoint anchor = button != nullptr ? button->mapToGlobal(QPoint(0, button->height())) : QCursor::pos();
   picker_->popup(anchor);
 }

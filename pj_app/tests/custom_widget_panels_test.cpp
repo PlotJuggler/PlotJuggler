@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -49,6 +50,7 @@
 #include "pj_widgets/ToastNotification.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
+#include "scene_object_classification.h"
 #include "support/gui_test_env.h"
 #include "support/layout_import_gui_support.h"
 #include "support/loader_test_support.h"
@@ -103,6 +105,14 @@ QAction* entryNamed(QMenu* menu, const QString& name) {
     }
   }
   return nullptr;
+}
+
+// A pick as the user makes it: QMenu hides itself (handing the focus back) before it emits triggered.
+void pick(QMenu* menu, const QString& name) {
+  QAction* entry = entryNamed(menu, name);
+  ASSERT_NE(entry, nullptr) << name.toStdString();
+  menu->hide();
+  entry->trigger();
 }
 
 QTreeWidgetItem* treeItemWithKey(QTreeWidget* tree, const QString& key) {
@@ -187,7 +197,17 @@ TEST_F(CustomWidgetPagesTest, PickerListsEveryTypeAndDisablesTheOtherQtLibrary) 
   ASSERT_TRUE(plugins().registerStaticWidget(goodVtable()));
   ASSERT_TRUE(plugins().registerStaticWidget(otherQtVtable()));
   PJ::CustomWidgetPickerMenu menu;
-  menu.rebuild(app_->extensionCatalog());
+  menu.rebuild(app_->extensionCatalog(), 1.0);
+  EXPECT_TRUE(menu.toolTipsVisible()) << "a menu hides its entries' tooltips unless told otherwise";
+  EXPECT_EQ(menu.objectName(), u"PJMenu"_s) << "the app stylesheet styles menus by this name";
+
+  QString reason;
+  for (const PJ::LoadedWidget& library : app_->extensionCatalog().widgets()) {
+    if (!library.qt_compatible) {
+      reason = QString::fromStdString(library.qt_mismatch_reason);
+    }
+  }
+  ASSERT_FALSE(reason.isEmpty());
 
   const QList<QAction*> entries = menu.actions();
   EXPECT_EQ(entries.size(), 4);  // gauge, table, viewer + the other-Qt gauge
@@ -197,7 +217,7 @@ TEST_F(CustomWidgetPagesTest, PickerListsEveryTypeAndDisablesTheOtherQtLibrary) 
     if (!entry->isEnabled()) {
       ++disabled;
       EXPECT_TRUE(entry->text().contains(u"from Other Qt"_s));
-      EXPECT_FALSE(entry->toolTip().isEmpty()) << "the Qt mismatch reason";
+      EXPECT_TRUE(entry->toolTip().contains(reason.toHtmlEscaped())) << entry->toolTip().toStdString();
     }
   }
   EXPECT_EQ(disabled, 1);
@@ -221,10 +241,35 @@ TEST_F(CustomWidgetPagesTest, PickerListsEveryTypeAndDisablesTheOtherQtLibrary) 
 
 TEST_F(CustomWidgetPagesTest, MenuWithNothingInstalledSaysSo) {
   PJ::CustomWidgetPickerMenu menu;
-  menu.rebuild(app_->extensionCatalog());
+  menu.rebuild(app_->extensionCatalog(), 1.0);
   ASSERT_EQ(menu.actions().size(), 1);
   EXPECT_FALSE(menu.actions().first()->isEnabled());
   EXPECT_EQ(menu.actions().first()->text(), u"No custom widgets installed."_s);
+}
+
+TEST_F(CustomWidgetPagesTest, AnAmpersandInANameShowsLiterally) {
+  static constexpr const char* kAmpersandManifest =
+      R"({"id":"amp_widgets","name":"Speed & Co","version":"1.0.0","widgets":[)"
+      R"({"type":"st","name":"Speed & Torque"}]})";
+  ASSERT_TRUE(plugins().registerStaticWidget(vtableWithManifest(kAmpersandManifest)));
+  PJ::CustomWidgetPickerMenu menu;
+  menu.rebuild(app_->extensionCatalog(), 1.0);
+  ASSERT_EQ(menu.actions().size(), 1);
+  // A single '&' in a menu entry marks the next letter as its shortcut and is not drawn.
+  EXPECT_EQ(menu.actions().first()->text(), u"Speed && Torque (from Speed && Co)"_s);
+}
+
+TEST(SceneObjectClassificationTest, OnlyTopicsACustomWidgetAloneShowsGetABadge) {
+  for (int value = 0; value <= static_cast<int>(PJ::sdk::BuiltinObjectType::kPlotMarkers); ++value) {
+    const auto type = static_cast<PJ::sdk::BuiltinObjectType>(value);
+    const QString icon = PJ::customWidgetObjectIcon(type);
+    EXPECT_EQ(icon.isEmpty(), !PJ::isCustomWidgetObjectType(type)) << value;
+    if (!icon.isEmpty()) {
+      EXPECT_TRUE(QFile::exists(icon)) << icon.toStdString();
+    }
+  }
+  EXPECT_EQ(PJ::customWidgetObjectIcon(PJ::sdk::BuiltinObjectType::kLog), u":/resources/svg/view_list.svg"_s);
+  EXPECT_TRUE(PJ::customWidgetObjectIcon(PJ::sdk::BuiltinObjectType::kPointCloud).isEmpty()) << "a 3D topic";
 }
 
 TEST_F(CustomWidgetPagesTest, ConfigPagePaintsOneControlPerSettingType) {
@@ -587,7 +632,7 @@ TEST_F(CustomWidgetShellFlowTest, FifthIconOpensThePickerAndAChoiceBuildsABoundP
 
   QAction* gauge = entryNamed(picker_, u"Gauge"_s);
   ASSERT_NE(gauge, nullptr);
-  gauge->trigger();
+  pick(picker_, u"Gauge"_s);
 
   ASSERT_NE(dock_->objectWidget(), nullptr);
   auto* custom = qobject_cast<PJ::CustomWidgetDockWidget*>(dock_->objectWidget()->widget());
@@ -610,7 +655,7 @@ TEST_F(CustomWidgetShellFlowTest, ThePanelsWidgetGetsThePlaybackServiceWithTheSh
   ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
 
   clickIcon("buttonVizCustomWidget");
-  entryNamed(picker_, u"Gauge"_s)->trigger();
+  pick(picker_, u"Gauge"_s);
   ASSERT_NE(dock_->objectWidget(), nullptr);
   ASSERT_TRUE(g.offered_playback);
   ASSERT_TRUE(g.playback.valid());
@@ -658,7 +703,7 @@ TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockS
       << toasts().join(u" | "_s).toStdString();
 
   clickIcon("buttonVizCustomWidget");
-  entryNamed(picker_, u"Viewer"_s)->trigger();
+  pick(picker_, u"Viewer"_s);
   ASSERT_NE(dock_->objectWidget(), nullptr);
   auto* custom = qobject_cast<PJ::CustomWidgetDockWidget*>(dock_->objectWidget()->widget());
   ASSERT_NE(custom, nullptr);
@@ -692,7 +737,7 @@ TEST_F(CustomWidgetShellFlowTest, ALogDroppedWithAScalarOnACustomWidgetWiresBoth
   ASSERT_FALSE(scalar_key.isEmpty());
 
   clickIcon("buttonVizCustomWidget");
-  entryNamed(picker_, u"Viewer"_s)->trigger();
+  pick(picker_, u"Viewer"_s);
   ASSERT_NE(dock_->objectWidget(), nullptr);
   auto* custom = qobject_cast<PJ::CustomWidgetDockWidget*>(dock_->objectWidget()->widget());
   ASSERT_NE(custom, nullptr);
@@ -770,7 +815,7 @@ TEST_F(CustomWidgetShellFlowTest, AChoiceForAPanelFilledMeanwhileDoesNothing) {
   clickIcon("buttonVizCustomWidget");
   clickIcon("buttonVizPlot");
   ASSERT_NE(dock_->plotWidget(), nullptr);
-  entryNamed(picker_, u"Gauge"_s)->trigger();
+  pick(picker_, u"Gauge"_s);
   EXPECT_EQ(dock_->objectWidget(), nullptr);
   EXPECT_EQ(g.widgets_created, 0);
 }
@@ -789,7 +834,7 @@ TEST_F(CustomWidgetShellFlowTest, AChoiceShowsTheNewPanelsPageAndFocusesIt) {
   docker->focusDock(plot_dock);
 
   clickIcon("buttonVizCustomWidget");
-  entryNamed(picker_, u"Gauge"_s)->trigger();
+  pick(picker_, u"Gauge"_s);
   QApplication::processEvents();
 
   ASSERT_NE(dock_->objectWidget(), nullptr);
@@ -824,9 +869,7 @@ TEST_F(CustomWidgetCaptureTest, PickerAndConfigPage) {
   QWidget* side_panel = stack_->parentWidget();
   ASSERT_TRUE(picker_->isVisible());
 
-  QAction* gauge = entryNamed(picker_, u"Gauge"_s);
-  ASSERT_NE(gauge, nullptr);
-  gauge->trigger();
+  pick(picker_, u"Gauge"_s);
   ASSERT_EQ(stack_->currentWidget(), config_);
   if (side_panel->isHidden()) {  // the menu leaves the side panel as it was
     window_->findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s)->rightPanelButton()->click();

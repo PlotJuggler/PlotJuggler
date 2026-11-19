@@ -18,7 +18,7 @@ or the data store; it declares inputs by name and receives values.
   `MissingWidgetPlaceholder`.
 - Outside the module: `pj_runtime`'s `WidgetRuntimeHost` (the `pj.widget_host.v1` service: history queries, object
   reads), `PlaybackControlHost` (`pj.playback.v1`), `canonicalObjectEncoder` and `ActiveWidgetsMarker`; `pj_app`'s
-  `CustomWidgetController` (the picker and side-panel pages, the marker's owner), `PendingDisplayBinder`,
+  `CustomWidgetController` (the picker menu and config page, the marker's owner), `PendingDisplayBinder`,
   `TopicDemandController::registerCustomWidgetDock`, `LayoutXml`, and `MainWindow::makeSceneDock` /
   `createCustomWidgetDock` (kind `"CustomWidget"`), which construct the dock.
 

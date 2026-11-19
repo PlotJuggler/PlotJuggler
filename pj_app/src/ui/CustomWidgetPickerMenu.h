@@ -20,18 +20,13 @@ class CustomWidgetPickerMenu : public QMenu {
  public:
   explicit CustomWidgetPickerMenu(QWidget* parent = nullptr);
 
-  /// Rebuilds the entries from the catalog's current widget types. Called each time the menu is opened.
-  void rebuild(ExtensionCatalogService& extensions);
-
- public slots:
-  void onStylesheetChanged(QString theme);
+  /// Rebuilds the entries from the catalog's current widget types, their icons rasterized for `dpr` (the screen the
+  /// menu opens on; the menu's own ratio is that of wherever it was shown last). Called each time the menu is opened.
+  void rebuild(ExtensionCatalogService& extensions, qreal dpr);
 
  signals:
   /// The user picked widget `type` of library `plugin_id`.
   void widgetChosen(QString plugin_id, QString type);
-
- private:
-  QString theme_ = QStringLiteral("light");
 };
 
 }  // namespace PJ

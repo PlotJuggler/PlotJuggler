@@ -618,7 +618,7 @@ TEST(CurveTreeViewTest, ObjectIconBadgesTheTopic) {
           .topic = u"/rosout"_s,
           .field = {},
           .selectable = false,
-          .object_icon = u":/resources/svg/list.svg"_s,
+          .object_icon = u":/resources/svg/view_list.svg"_s,
       });
   view.addCatalogItem(calibCurvePath());
 

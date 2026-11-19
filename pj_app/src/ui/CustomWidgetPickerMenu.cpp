@@ -7,6 +7,7 @@
 #include <QIcon>
 #include <QPixmap>
 #include <QStyle>
+#include <QTextDocument>
 #include <algorithm>
 #include <tuple>
 #include <vector>
@@ -34,10 +35,11 @@ QIcon widgetIcon(const QByteArray& svg, const QString& theme, const QSize& size,
 }  // namespace
 
 CustomWidgetPickerMenu::CustomWidgetPickerMenu(QWidget* parent) : QMenu(parent) {
-  setObjectName(QStringLiteral("CustomWidgetPickerMenu"));
+  setObjectName(QStringLiteral("PJMenu"));
+  setToolTipsVisible(true);
 }
 
-void CustomWidgetPickerMenu::rebuild(ExtensionCatalogService& extensions) {
+void CustomWidgetPickerMenu::rebuild(ExtensionCatalogService& extensions, qreal dpr) {
   clear();
 
   struct Row {
@@ -79,23 +81,22 @@ void CustomWidgetPickerMenu::rebuild(ExtensionCatalogService& extensions) {
   }
   const int side = style()->pixelMetric(QStyle::PM_SmallIconSize, nullptr, this);
   const QSize icon_size(side, side);
+  const QString theme = currentTheme();
+  // Manifest text is plain: '&' would mark a shortcut in the entry, and markup would render in the tooltip.
+  const auto plain = [](QString text) { return text.replace(u'&', QStringLiteral("&&")); };
   for (const Row& row : rows) {
-    QAction* action = addAction(tr("%1 (from %2)").arg(row.name, row.plugin_name));
-    action->setIcon(widgetIcon(row.icon, theme_, icon_size, devicePixelRatioF()));
+    QAction* action = addAction(tr("%1 (from %2)").arg(plain(row.name), plain(row.plugin_name)));
+    action->setIcon(widgetIcon(row.icon, theme, icon_size, dpr));
     if (!row.enabled) {
       action->setEnabled(false);
-      action->setToolTip(row.reason.toHtmlEscaped());
+      action->setToolTip(Qt::convertFromPlainText(row.reason, Qt::WhiteSpaceNormal));
       continue;
     }
-    action->setToolTip(tr("%1/%2").arg(row.plugin_id, row.type).toHtmlEscaped());
+    action->setToolTip(Qt::convertFromPlainText(tr("%1/%2").arg(row.plugin_id, row.type), Qt::WhiteSpaceNormal));
     connect(action, &QAction::triggered, this, [this, plugin_id = row.plugin_id, type = row.type]() {
       emit widgetChosen(plugin_id, type);
     });
   }
-}
-
-void CustomWidgetPickerMenu::onStylesheetChanged(QString theme) {
-  theme_ = std::move(theme);
 }
 
 }  // namespace PJ

@@ -69,7 +69,7 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
   `SourcePromotionHost`, `LayoutExitWatch`: the cloud layout import.
 - `ToolboxPresenter`, `ToolboxChrome`, `ToolboxHostWiring.h`, `PluginPlotTabsController`,
   `PluginSceneViewsController`: toolbox presentation and plugin-owned views.
-- `CustomWidgetController`: the Custom Widget pages and the startup crash review.
+- `CustomWidgetController`: the Custom Widget picker menu, its config page and the startup crash review.
 - `SourceTimelineController`, `DatasetMergeActions`: Source Timeline binding and dataset merge.
 - `BrowserFileStore`, `FileSelectionService`, `BrowserPickedFile` (+ `browser_picked_file.js`), `BrowserPersistence`,
   `PresetController`, `WelcomePresetsDialog`: the WebAssembly boundary and presets.

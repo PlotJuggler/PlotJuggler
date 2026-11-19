@@ -252,8 +252,8 @@ class CurveTreeItemDelegate : public QStyledItemDelegate {
       opt.palette.setColor(QPalette::HighlightedText, accent);
     }
 
-    // A topic row's builtin-family badge (image.svg or cube.svg, set as the item's DecorationRole icon) is painted by
-    // the default control as a left-side decoration before the text; its size is the view's iconSize().
+    // A topic row's badge (image.svg, cube.svg or the path's object_icon, set as the item's DecorationRole icon) is
+    // painted by the default control as a left-side decoration before the text; its size is the view's iconSize().
     const QWidget* widget = opt.widget;
     const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
     style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
@@ -366,7 +366,10 @@ void setTopicIconDecoration(QTreeWidgetItem* item, const CurveTreeView::CurvePat
   }
   item->setData(kNameColumn, kImageTopicRole, path.is_image_topic);
   item->setData(kNameColumn, k3dObjectTopicRole, path.is_3d_object_topic);
-  item->setData(kNameColumn, kObjectIconRole, path.object_icon);
+  // Guarded: most topics have no such badge, and an unconditional write adds a role and a dataChanged per row.
+  if (!path.object_icon.isEmpty() || item->data(kNameColumn, kObjectIconRole).isValid()) {
+    item->setData(kNameColumn, kObjectIconRole, path.object_icon);
+  }
   const QString icon_path = topicIconPath(item);
   item->setIcon(kNameColumn, icon_path.isEmpty() ? QIcon() : QIcon(loadSvg(icon_path, theme)));
 }
