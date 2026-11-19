@@ -1512,6 +1512,53 @@ TEST(AppSessionTest, MergeKeepsThePlayheadSeededOnTheAnchor) {
   EXPECT_DOUBLE_EQ(engine.currentTime().value, 5.0);
 }
 
+// The shell does not seed while a stream is followed (live-follow drives the playhead), so the followed stream joins
+// the seeding: removing the file seeded before it, then loading another, keeps the playhead.
+TEST(AppSessionTest, FollowedStreamKeepsThePlayheadSeeded) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::PlaybackEngine& engine = session.playbackEngine();
+
+  const PJ::DatasetId file = makeShiftedDataset(session, "file", 0, "/s", {0, 50 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  const PJ::DatasetId stream = makeShiftedDataset(session, "stream", 0, "/live", {100 * kSecond, 200 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  session.setActiveStreamingDataset(stream);
+  session.recomputeRange();
+  engine.setCurrentTime(PJ::DisplaySeconds{150.0});
+
+  removeDatasetEverywhere(session, file);
+  session.setActiveStreamingDataset(0);
+  makeShiftedDataset(session, "next", 0, "/s", {300 * kSecond, 400 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 150.0) << "an added dataset does not move the playhead";
+}
+
+// A stopped stream still holds the playhead's seeding: removing the file seeded before it keeps the playhead.
+TEST(AppSessionTest, StoppedStreamKeepsThePlayheadSeeded) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::PlaybackEngine& engine = session.playbackEngine();
+
+  const PJ::DatasetId file = makeShiftedDataset(session, "file", 0, "/s", {0, 50 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  const PJ::DatasetId stream = makeShiftedDataset(session, "stream", 0, "/live", {100 * kSecond, 200 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  session.setActiveStreamingDataset(stream);
+  session.setActiveStreamingDataset(0);
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  engine.setCurrentTime(PJ::DisplaySeconds{200.0});
+
+  removeDatasetEverywhere(session, file);
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 200.0) << "not moved from the stream's tip to its start";
+}
+
 // Automatic marker runs follow demand: a generator on a demand-capable streaming
 // dataset stays stale while nothing displays that dataset, and runs as soon as a
 // display reference arrives, with no further ingest.
