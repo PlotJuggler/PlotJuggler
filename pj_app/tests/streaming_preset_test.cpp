@@ -607,8 +607,7 @@ TEST_F(StreamingPresetTest, StoppingTheFollowedStreamFollowsAnotherOneStillRunni
 TEST_F(StreamingPresetTest, StoppingTheFollowedStreamFollowsTheLastOneLaunched) {
   PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
   qputenv("PJ_LAYOUT_STREAM_DIALOG_CONFIG", R"({"topic":"x/data"})");
-  streams.onSourceChanged(QString::fromLatin1(kPluginId));
-  streams.onStartRequested();
+  streams.onStartRequested(QString::fromLatin1(kPluginId));
   ASSERT_TRUE(streams.hasPendingStart());
   const PJ::DatasetId y = startStream(streams, u"y"_s);
   ASSERT_NE(y, 0U);
