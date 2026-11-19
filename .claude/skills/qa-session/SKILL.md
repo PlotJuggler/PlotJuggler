@@ -212,6 +212,13 @@ When asked to do QA or to test with the QA agent, without a narrower charter:
 - **One PR per bug, test first:** a unit or GUI test that fails before the fix, and a script in
   `scripts/qa/regressions/` that asserts the user-visible result (`expect` / `absent` on `ui_plot`, `ui_tree` or a
   data tool) and fails on the build before the fix. When no tool can see the state, the PR says so.
+- **Screenshots in the PR** whenever the bug or the fix shows on screen (skip it, and say so, for a tool reply or a
+  data value): "before" is the QA agent's screenshot of the bug, "after" a `screenshot` on the fixed build replaying
+  the same steps. Point at the problem in each one with `scripts/qa/shots.py annotate`: a rectangle around it, an
+  arrow to it, a short label ("time column picked: b", "markers gone after undo"); crop to the area that matters.
+  Read the PNG first to get pixel coordinates, and read the result to check that nothing important is covered.
+  `scripts/qa/shots.py publish <fix-branch> "Before: ...=before.png" "After: ...=after.png"` puts them on the
+  `qa-screenshots` branch and prints the Markdown for the PR body (`gh` cannot upload images).
 - **Fix the root cause in the shared mechanism**, not where the symptom showed, and say in the PR which other paths
   the fix covers. Skip contrived inputs: they get a line in the report, not a PR.
 - **Host or plugin:** when either could hold the fix, count who each one reaches. A plugin fix reaches every
