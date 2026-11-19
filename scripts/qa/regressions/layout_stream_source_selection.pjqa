@@ -1,0 +1,8 @@
+# A layout's streaming source (left_panel_state streaming_source) shows in the combo, so Start must start that
+# source, not the one picked before the load. Needs the Dummy Streamer and UDP Server plugins next to the CSV loader.
+# app: -l scripts/qa/regressions/fixtures/udp_bound_buffer20.pj4.xml
+# needs: plugins
+until ui_tree {} comboStreaming "UDP Server"
+ui_click {"name":"buttonStreamingOptions","wait_ms":1500}
+ui_tree {}
+expect Dialog "UDP Server" (modal)

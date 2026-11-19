@@ -552,6 +552,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/curve_list_panel_test.cpp)
 
+    # A layout's restored streaming source and buffer reach StreamingSourceManager without touching QSettings.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/left_panel_streaming_test.cpp)
+
     # Dataset "Info" dialog: name/file rows plus a domain-neutral provenance
     # tree from the SourceRecord (descriptor JSON as generic key/value nodes,
     # 64-bit timestamps printed exactly); no record -> no provenance section.

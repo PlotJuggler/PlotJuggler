@@ -161,22 +161,26 @@ class StreamingSourceManager : public QObject {
 
   [[nodiscard]] bool hasPendingStart() const;
 
+  // The retention window in seconds: the QSettings buffer at construction, then whatever onBufferChanged sets.
+  [[nodiscard]] int retentionSeconds() const {
+    return retention_seconds_;
+  }
+
   // Closes the dialog of every start still at one, as a rejection: each then cleans up after itself (its session
   // destroyed, its dataset discarded). Call before anything that erases datasets, destroys sessions, or tears down
   // what listens to the catalog; stopAllAndWait and the destructor do it themselves.
   void cancelPendingStarts();
 
  public slots:
-  // Starts the source picked in the Stream combo. There is no Stop button: a session ends when its dataset is
-  // removed, an agent stops it, the app shuts down, or the plugin ends it.
-  void onStartRequested();
+  // Starts `plugin_id`, the source the Stream combo shows (startSession with no prefix); an empty one reports
+  // setupError. There is no Stop button: a session ends when its dataset is removed, an agent stops it, the app
+  // shuts down, or the plugin ends it.
+  void onStartRequested(const QString& plugin_id);
 
   // Pause redirects every session's writes into the secondary tail buffers, so the primary (what the views read)
   // stays frozen while the workers keep polling; ingest ticks carry live=false. Resume merges the tail into the
   // primary, catches the eager processors up, re-trims, then announces a live ingest.
   void onPauseToggled(bool paused);
-
-  void onSourceChanged(const QString& plugin_id);
 
   // The retention window in seconds; every session's next ingest tick applies it, and retentionWindowChanged
   // fires for each live session at once.
@@ -282,7 +286,6 @@ class StreamingSourceManager : public QObject {
   QWidget* dialog_parent_;
   ChromeMetricsProvider chrome_metrics_provider_;
 
-  QString selected_plugin_;
   int retention_seconds_ = 5;
   // GUI thread only (the worker reads it only inside its queued ingest tick), so not atomic.
   bool paused_ = false;

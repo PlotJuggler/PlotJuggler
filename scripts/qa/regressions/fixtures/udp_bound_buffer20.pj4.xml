@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="source" format="PlotJuggler" pj4_version="5">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="t1" tab_name="Stream">
+      <Container>
+        <DockSplitter count="1" orientation="-" sizes="1.0">
+          <DockArea id="a3" name="Udp">
+            <plot id="p3" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+              <range bottom="-1.039162" left="1795025948.120938" left_ns="1795025948120937472" right="1795025951.120669" right_ns="1795025951120668928" top="0.605636" x_basis="absolute"/>
+              <curve color="#9467bd" dataset_id="3" dataset_path="pj-stream://stream-2" dataset_source="[stream] UDP Server" field="udp_sig/a" markers_visible="true" topic="udp/data" visible="true"/>
+            </plot>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+  <data_processors/>
+  <previouslyLoaded_StreamingSources>
+    <streamInfo id="stream-2" source_name="UDP Server">
+      <plugin ID="UDP Server" manifest_id="udp-server"><![CDATA[{"_parser_config":"{\"array_policy\":\"clamp\",\"clamp_large_arrays\":true,\"discard_large_arrays\":false,\"label_keyed_arrays\":false,\"max_array_size\":500,\"timestamp_field_name\":\"timestamp\",\"use_embedded_timestamp\":false}","address":"127.0.0.1","default_encoding":"json","port":19870}]]></plugin>
+      <dataset display_offset_ns="0" timeline_order="1"/>
+    </streamInfo>
+  </previouslyLoaded_StreamingSources>
+  <right_panel_state splitter_sizes="1569,0" style="0" width="1"/>
+  <left_panel_state sources_tab="stream" streaming_buffer="20" streaming_source="UDP Server"/>
+  <curve_list_state custom_filter="" datasets_filter="" show_topics="true" show_values="false"/>
+  <chrome_state main_splitter_sizes="400,1135"/>
+  <source_timeline name_column_width="49" scroll_left_ns="1795025948107023068" scroll_top_px="0" snap="true" zoom="9.9999999999999995e-08"/>
+  <pinned_toolboxes/>
+</root>

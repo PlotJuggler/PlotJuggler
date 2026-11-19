@@ -1,0 +1,20 @@
+# A stream-bound layout's streaming buffer (left_panel_state streaming_buffer="20") applies to its streams, not the
+# 5 s default: a Dummy stream started after the load keeps more than 5 s. Needs the Dummy Streamer and UDP Server
+# plugins next to the CSV loader.
+# app: -l scripts/qa/regressions/fixtures/udp_bound_buffer20.pj4.xml
+# needs: plugins
+until ui_tree {} comboStreaming "UDP Server"
+# Context only: the spin box showed the layout's value even when the streams ignored it.
+ui_click {"name":"streamingSpinBox","double":true,"wait_ms":300}
+ui_tree {}
+expect "20 sec"
+ui_key {"keys":"Escape"}
+start_stream {"source":"Dummy Streamer"}
+until read_series {"paths":"dummy/sawtooth/value"} "duration_s"
+# Let the stream run about 15 s, then its duration must be 10..19.x s (a 5 s window would read 4.x or 5.x).
+ui_key {"keys":"Escape","wait_ms":5000}
+ui_key {"keys":"Escape","wait_ms":5000}
+ui_key {"keys":"Escape","wait_ms":5000}
+read_series {"paths":"dummy/sawtooth/value"}
+expect "duration_s":1
+absent "duration_s":1.
