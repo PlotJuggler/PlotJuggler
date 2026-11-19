@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -27,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "MainWindow.h"
@@ -310,13 +312,24 @@ TEST_F(LayoutDatasetChoiceTest, TwoCheckedDatasetsDuplicateTheTabsInTheSameColou
 }
 
 // Intended: the copies are there to compare the runs, so the checked datasets start at the same display time, as
-// the Source Timeline's "Align starts" would place them.
+// the Source Timeline's "Align starts" would place them, and each copy's plot shows its run there.
 TEST_F(LayoutDatasetChoiceTest, TwoCheckedDatasetsStartAtTheSameTime) {
   ASSERT_NE(startOf(run_a_), startOf(run_b_));
   answerNextQuestion({0, 1});
   load(genericLayout(/*with_transform=*/false), /*interactive=*/true);
   EXPECT_EQ(settles_, std::vector<bool>{true});
   EXPECT_DOUBLE_EQ(startOf(run_a_), startOf(run_b_));
+  for (const auto& [tab, dataset] : {std::pair{0, run_a_}, std::pair{1, run_b_}}) {
+    PJ::PlotWidget* plot = plotOfTab(tab);
+    ASSERT_NE(plot, nullptr) << tab;
+    const auto shows_its_run = [this, plot, dataset]() {
+      const QRectF view = plot->currentBoundingRect();
+      return view.left() <= startOf(dataset) && startOf(dataset) <= view.right();
+    };
+    EXPECT_TRUE(pj_app_test::pumpUntil(shows_its_run))
+        << "tab " << tab << " shows x " << plot->currentBoundingRect().left() << ".."
+        << plot->currentBoundingRect().right() << ", its run starts at " << startOf(dataset);
+  }
 }
 
 // Intended: a layout holding a transform shows one dataset at a time, and the dialog says why: the transform's id is

@@ -6698,9 +6698,15 @@ bool MainWindow::applyBrowserRestoredLayout(
 
   // kExact: an unresolved curve or scene fails and rolls back, never dropped silently. The duration log feeds
   // tests/wasm/presets.spec.js.
+  // Aligned before the restore builds and fits the plots, so each copy's view opens on its run's aligned data; a
+  // failed restore rolls back to the offsets from before.
+  const CapturedWorkspace rollback = captureWorkspace();
+  if (source_timeline_controller_ != nullptr) {
+    source_timeline_controller_->alignStartsOf(compared);
+  }
   QElapsedTimer restore_timer;
   restore_timer.start();
-  const RestoreResult restored = restoreWorkspaceState(doc, MissingCurvePolicy::kExact);
+  const RestoreResult restored = restoreWorkspaceState(doc, MissingCurvePolicy::kExact, &rollback);
   qInfo("PJ_WASM_LAYOUT_RESTORE_MS ms=%lld", static_cast<long long>(restore_timer.elapsed()));
   if (restored != RestoreResult::kApplied) {
     showBrowserLayoutWarning(
@@ -6715,9 +6721,6 @@ bool MainWindow::applyBrowserRestoredLayout(
       resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, QDir()), stream_tracks);
   static_cast<void>(applyLayoutTimelineOffsets(timeline));
   applyLayoutTimelineOrder(timeline);
-  if (source_timeline_controller_ != nullptr) {
-    source_timeline_controller_->alignStartsOf(compared);
-  }
   restoreBrowserChromeAndPanels(doc, browser_name);
   resetUndoHistory();
   return true;
@@ -6755,6 +6758,10 @@ void MainWindow::applyRestoredLayout(
   const LayoutTimelinePlan timeline_plan =
       resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, layout_dir), stream_tracks);
   static_cast<void>(applyLayoutTimelineOffsets(timeline_plan));
+  // Before the restore builds and fits the plots, so each copy's view opens on its run's aligned data.
+  if (source_timeline_controller_ != nullptr) {
+    source_timeline_controller_->alignStartsOf(compared);
+  }
   // The restore path shared with undo/redo. Processors are recreated before the curve rebind, so derived outputs
   // are in the catalog.
   QStringList issues;
@@ -6778,9 +6785,6 @@ void MainWindow::applyRestoredLayout(
   }
 
   restoreChromeAndPanels(doc, path, &timeline_plan);
-  if (source_timeline_controller_ != nullptr) {
-    source_timeline_controller_->alignStartsOf(compared);
-  }
   commitRestoredLayout(doc, policy);
   emit layoutRestoreSettled(true);
 }

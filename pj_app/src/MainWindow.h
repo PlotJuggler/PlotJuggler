@@ -879,7 +879,8 @@ class MainWindow : public QMainWindow {
   // The synchronous leg: applies a parsed layout to already-loaded data (the progressive leg is
   // beginProgressiveLayoutRestore). `stream_tracks`, the timeline tracks of the streams this load started or
   // bound, join the files' offsets and order; a layout with some applies though their datasets are still empty.
-  // `compared`: the datasets a multi-copy load duplicated the layout for; their starts are aligned before the commit.
+  // `compared`: the datasets a multi-copy load duplicated the layout for; their starts are aligned before the restore
+  // builds and fits the plots.
   void applyRestoredLayout(
       QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks,
       const std::vector<DatasetId>& compared = {});

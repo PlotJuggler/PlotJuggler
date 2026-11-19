@@ -365,10 +365,11 @@ decides, `layout_xml::pinLayoutToDataset(s)` rewrite the document, `MainWindow::
   colour its plot would give it (`plot_xml::fillMissingCurveColors`: the session's remembered colour for it, else the
   plot's next free palette colour). Reason: the copies exist to compare runs, so the same signal must look the same in
   each. Scene layers take no session-assigned colour, so their copies match already.
-- **The checked datasets start together.** After the copies apply, their starts are aligned as the Source Timeline's
-  "Align starts" does, over the checked datasets only (`SourceTimelineController::alignStartsOf`), before the
-  restore commits. Reason: the copies are there to compare runs, so each starts at the same display time. One checked
-  dataset keeps its offset.
+- **The checked datasets start together.** Their starts are aligned as the Source Timeline's "Align starts" does,
+  over the checked datasets only (`SourceTimelineController::alignStartsOf`), before the restore builds the plots:
+  a plot keeps its view when an offset changes (a Timeline drag must not re-zoom), so aligning after the plots fit
+  would leave each later run's copy showing its old window, empty. Reason: the copies are there to compare runs, so
+  each starts at the same display time. One checked dataset keeps its offset.
 - **Refused, not guessed, where a copy cannot work** (`layout_xml::duplicationBlockers`): a transform's id is also its
   script's class id and unique per plugin across datasets, so no second copy can exist; an on-demand recipe reads its
   inputs and upstream outputs by name. Such a layout lets one dataset be checked at a time, and the dialog names them.
@@ -700,6 +701,9 @@ Suites with their own executable and ctest entry, and why:
   input arrives later (a late import, a stream), while a curve plotting its output stays a pending intent waiting for
   it. The kept entries (`kept_derived_`) hold what a retry would need; nothing retries them yet.
 - In-band embedded assets are not routed to Scene3D docks on load.
+- The Source Timeline's "Align starts", "Align ends" and "Reset" keep every plot's view, as a drag does, so a plot
+  showing only a dataset they move is left on its old window, empty, until zoomed out (from the code, not
+  reproduced).
 - A layout naming several datasets is never asked about: when neither the saved paths nor startup's mapping bind its
   datasets, its references stay unresolved.
 - A layout holding a transform or an on-demand recipe shows one dataset at a time: duplicating a transform would need
