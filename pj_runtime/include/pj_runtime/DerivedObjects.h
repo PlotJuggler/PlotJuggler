@@ -6,6 +6,7 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QString>
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -36,6 +37,8 @@ struct DerivedDiagnostic {
 struct WantedFilter {
   SavedSeriesPath input;
   DataProcessorService::PersistedFilter persisted;
+  /// The <processor> element it was parsed from (null when not parsed from a document).
+  QDomElement source;
 };
 
 /// One <generator> entry of a snapshot, its dataset identity resolved against the
@@ -48,6 +51,8 @@ struct WantedGenerator {
   /// `recipe.dataset_id` is not set yet: the restore binds it to the one loaded dataset
   /// carrying every input, after its transforms exist, since an input may be one's output.
   bool bind_by_inputs = false;
+  /// The <generator> element it was parsed from.
+  QDomElement source;
 };
 
 /// One <on_demand> entry of a snapshot, its saved input dataset resolved into `Recipe::dataset`. A non-empty
@@ -56,6 +61,8 @@ struct WantedGenerator {
 struct WantedOnDemand {
   RecipeGraph::Recipe recipe;
   QString parse_error;
+  /// The <on_demand> element it was parsed from (null for a live recipe being saved).
+  QDomElement source;
 };
 
 /// What a <data_processors> block wants live. Parsing only queries the session, so a
@@ -72,18 +79,26 @@ struct DerivedSnapshot {
   /// Producers before readers (a reader names its upstream `<key>/<output>`, maybe qualified); the entries that failed
   /// to parse at the end.
   std::vector<WantedOnDemand> on_demand;
+  /// The <transform> element each entry of `transforms` was parsed from, by key.
+  std::map<std::string, QDomElement> transform_sources;
   /// Transform entries that failed to parse and were dropped: the restore reports
   /// them first and does not count as complete.
   std::vector<DerivedDiagnostic> diagnostics;
+  /// The <transform> elements of those entries.
+  std::vector<QDomElement> unparsed_transforms;
 };
 
 struct DerivedRestoreReport {
-  /// False when a filter or transform entry was not restored (it failed to parse or
+  /// False when a filter, transform or on-demand entry was not restored (it failed to parse or
   /// to install). A marker generator that failed is reported but does not count.
   bool restored_all = true;
   /// Every warning: the snapshot's parse warnings, then the apply failures in the
   /// order they happened.
   std::vector<DerivedDiagnostic> diagnostics;
+  /// The saved element of every entry that failed to parse or to install (generators included), so a caller can keep
+  /// exactly those. Elements of the document the snapshot was parsed from: valid while that document lives. A
+  /// generator binding dropped as a duplicate of an earlier one is not listed.
+  std::vector<QDomElement> skipped;
 };
 
 /// Layout persistence of the derived recipes (filters, transforms, marker generators,
@@ -163,7 +178,7 @@ class DerivedObjects {
   // and skipping the history-exempt entries when `skip_exempt`. An entry that fails to
   // parse is reported into `diagnostics` and dropped.
   [[nodiscard]] std::vector<DataProcessorService::TransformRecipe> parseWantedTransforms(
-      const QDomElement& element, bool skip_exempt, std::vector<DerivedDiagnostic>& diagnostics) const;
+      const QDomElement& element, bool skip_exempt, DerivedSnapshot& snapshot) const;
   // Parses every <processor> under `element`, resolving each input once so
   // `unchangedFilterOutputs` can match live filters; an unresolved input is not an
   // error yet.
@@ -178,11 +193,11 @@ class DerivedObjects {
   // name. A round creates only entries whose inputs exist, so a chain of N alternating links takes up to N rounds; the
   // loop stops when a round creates nothing. History has no authority over a live exempt transform
   // (`live_exempt_keys`), even when the snapshot carries its key. Each entry still not live at the end is reported
-  // once; returns whether every entry was restored.
+  // once, its element in `skipped`; returns whether every entry was restored.
   [[nodiscard]] bool repairDataProcessors(
-      std::vector<WantedFilter>& wanted_filters,
-      const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
-      const std::unordered_set<std::string>& live_exempt_keys, std::vector<DerivedDiagnostic>& diagnostics);
+      std::vector<WantedFilter>& wanted_filters, const DerivedSnapshot& snapshot,
+      const std::unordered_set<std::string>& live_exempt_keys, std::vector<DerivedDiagnostic>& diagnostics,
+      std::vector<QDomElement>& skipped);
 
   SessionManager& session_;
   CatalogModel& catalog_;

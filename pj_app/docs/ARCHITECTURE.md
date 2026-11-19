@@ -263,6 +263,32 @@ through the rewrite with `SavedFilepath::kOmit`.
 reported by `reportDerived` under source "Layout" (so `layout_issue_capture_` sees it), and the Custom Topics panel is
 re-derived after every restore.
 
+**A derived object that cannot be restored is skipped, like a missing curve.** `DerivedObjects::restore` reports each
+filter, transform, marker generator or on-demand recipe it could not restore (an input the loaded data lacks, a dataset
+path that is not loaded, a malformed entry) and installs the rest. `applyDataProcessors` turns that into a failed
+restore only under `MissingCurvePolicy::kExact` (undo/redo, the browser's all-or-nothing apply); under `kPrompt` and
+`kRetainAndDiagnose` (File → Load Layout, `--layout`, the progressive drain) the entries are skipped with their
+diagnostics and the layout applies. `kPrompt` lists them in the missing-curve prompt (`promptMissingCurves`), with the
+same Cancel; `kRetainAndDiagnose` shows one toast. A curve that plots a skipped output is then an unresolved curve, so
+it takes the missing-curve path of the same policy. Only the preflight refuses before anything mutates; the drain
+reports its refusal as `processor-restore-refused`.
+
+**A save never loses what the load skipped.** `DerivedRestoreReport::skipped` names the exact saved elements the
+restore skipped. Under `kRetainAndDiagnose` `applyDataProcessors` stages copies of exactly those, and the layout's commit
+point (`commitRestoredLayout`) makes them `kept_derived_`; `saveLayoutToPath` writes them back, as pending curves are
+kept and saved. Identity is never guessed from the file: one filter or rule bound to two runs, one of them not loaded,
+keeps the other binding. Each copy loses its session dataset ids; a qualifier only an id named (a stream bound at load)
+gets back its `pj-stream://` identity. Under `kPrompt` the prompt asked instead: its Continue drops them, and its title
+and button name the layout's data, not curves, once a derived object is listed.
+
+A kept entry is retired for good when a live recipe stands for it: same kind and name (a filter by its output, the
+other kinds by owner and id) and, for a filter or a generator, the same dataset (path, else source name). That check
+runs on every catalog addition and marker change (`retireReplacedKeptDerived`), so creating and deleting the recipe
+before a save does not bring the old entry back. A kept transform or on-demand recipe whose output a live one now writes
+is not saved: the next load would refuse it. Only layout files carry kept entries: an undo snapshot or a `kExact`
+rollback target would fail on the same missing input. The next layout load replaces them; removing every dataset, or
+trashing the last catalog row, drops them.
+
 **Restore order.** `applyWorkspace` parses once and restores: preflight (read-only, before anything mutates) ->
 per-source display offsets -> processors -> rebind every curve to a catalog key. Offsets come before processors so a
 generator that reads the display frame sees the settled offset. A layout restore replaces the persisted toolboxes
@@ -590,6 +616,9 @@ Suites with their own executable and ctest entry, and why:
   or scene views embedded in a toolbox panel as displayed.
 - Removing curves rebuilds the whole curve tree (`CurveListPanel::onCatalogItemsRemoved`); expansion and scroll are
   restored, the selection is not.
+- A derived object skipped at a `kRetainAndDiagnose` load (`--layout`, a cloud import) is not recreated when its
+  input arrives later (a late import, a stream), while a curve plotting its output stays a pending intent waiting for
+  it. The kept entries (`kept_derived_`) hold what a retry would need; nothing retries them yet.
 - In-band embedded assets are not routed to Scene3D docks on load.
 - Restoring a layout whose `<pinned_toolboxes>` names a plugin that is missing or fails to bind goes through
   `launchToolbox`'s error path, which opens a modal `MessageBox::warning` even in an unattended run (suspected from

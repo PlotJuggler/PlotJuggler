@@ -956,8 +956,8 @@ TEST_F(DesktopStreamLayoutTest, FileOnlyLayoutLeavesTheBufferAlone) {
   EXPECT_EQ(bufferSpinBox()->value(), 30);
 }
 
-// A progressive restore that aborts (here on a data processor whose input never arrives) applies none of the
-// layout's left panel state: the running stream keeps its window.
+// A progressive restore that aborts (here on a scene element that is not valid) applies none of the layout's left
+// panel state: the running stream keeps its window.
 TEST_F(DesktopStreamLayoutTest, AnAbortedRestoreLeavesTheBufferAlone) {
   PJ::StreamingSourceManager& streams = PresetTestPeer::streams(*window_);
   const int before = streams.retentionSeconds();
@@ -970,12 +970,16 @@ TEST_F(DesktopStreamLayoutTest, AnAbortedRestoreLeavesTheBufferAlone) {
           {u"data.mock"_s}),
       before + 40);
   layout.replace(
-      "</root>",
-      R"(<data_processors><processor input_topic="/missing_processor_input" input_field="value" )"
-      R"(input_dataset_source="missing-processor-source" processor_id="absolute" output_name="missing[Absolute]">)"
-      R"(<![CDATA[{}]]></processor></data_processors></root>)");
+      "</DockSplitter>",
+      R"(<DockArea id="bad-area" name="bad"><scene3d><layer object_type="not_a_type"/></scene3d></DockArea>)"
+      R"(</DockSplitter>)");
+  QStringList ids;
+  QObject::connect(
+      window_->diagnosticBridge(), &PJ::QtDiagnosticBridge::diagnosticReported, window_.get(),
+      [&ids](int, const QString&, const QString& id, const QString&) { ids.push_back(id); });
   QSignalSpy buffer_spy(&streams, &PJ::StreamingSourceManager::retentionWindowChanged);
   EXPECT_FALSE(openLayoutFile(layout));
+  EXPECT_TRUE(ids.contains(u"layout-plots-invalid"_s)) << ids.join(u", "_s).toStdString();
   EXPECT_EQ(streams.retentionSeconds(), before);
   EXPECT_EQ(bufferSpinBox()->value(), before);
   for (const QList<QVariant>& emitted : buffer_spy) {

@@ -393,7 +393,7 @@ QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
 }
 
 std::vector<DataProcessorService::TransformRecipe> DerivedObjects::parseWantedTransforms(
-    const QDomElement& element, bool skip_exempt, std::vector<DerivedDiagnostic>& diagnostics) const {
+    const QDomElement& element, bool skip_exempt, DerivedSnapshot& snapshot) const {
   std::vector<DataProcessorService::TransformRecipe> wanted_transforms;
   for (QDomElement transform = element.firstChildElement(u"transform"_s); !transform.isNull();
        transform = transform.nextSiblingElement(u"transform"_s)) {
@@ -471,11 +471,13 @@ std::vector<DataProcessorService::TransformRecipe> DerivedObjects::parseWantedTr
     }
     recipe.script = directCdataText(transform.firstChildElement(u"script"_s)).toStdString();
     if (!transform_parse_error.isEmpty()) {
-      diagnostics.push_back(
+      snapshot.diagnostics.push_back(
           {"transform-restore-failed",
            tr("Could not restore transform '%1': %2").arg(QString::fromStdString(recipe.key), transform_parse_error)});
+      snapshot.unparsed_transforms.push_back(transform);
       continue;
     }
+    snapshot.transform_sources[recipe.key] = transform;
     wanted_transforms.push_back(std::move(recipe));
   }
   orderTransformsByDependency(wanted_transforms);  // older layouts were written unordered
@@ -489,6 +491,7 @@ std::vector<WantedFilter> DerivedObjects::parseWantedFilters(const QDomElement& 
   for (QDomElement processor = element.firstChildElement(u"processor"_s); !processor.isNull();
        processor = processor.nextSiblingElement(u"processor"_s)) {
     WantedFilter entry;
+    entry.source = processor;
     entry.input = SavedSeriesPath{
         processor.attribute(u"input_topic"_s), processor.attribute(u"input_field"_s),
         static_cast<DatasetId>(processor.attribute(u"input_dataset_id"_s).toUInt()),
@@ -512,9 +515,10 @@ std::vector<WantedFilter> DerivedObjects::parseWantedFilters(const QDomElement& 
 }
 
 bool DerivedObjects::repairDataProcessors(
-    std::vector<WantedFilter>& wanted_filters,
-    const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms,
-    const std::unordered_set<std::string>& live_exempt_keys, std::vector<DerivedDiagnostic>& diagnostics) {
+    std::vector<WantedFilter>& wanted_filters, const DerivedSnapshot& snapshot,
+    const std::unordered_set<std::string>& live_exempt_keys, std::vector<DerivedDiagnostic>& diagnostics,
+    std::vector<QDomElement>& skipped) {
+  const std::vector<DataProcessorService::TransformRecipe>& wanted_transforms = snapshot.transforms;
   auto& service = session_.dataProcessorService();
   const auto is_live = [&service](const WantedFilter& wanted) {
     return wanted.persisted.input_topic_id != 0 &&
@@ -585,15 +589,17 @@ bool DerivedObjects::repairDataProcessors(
       }
     }
   }
-  const auto report = [&diagnostics](const auto& failures, const char* diagnostic_id) {
-    for (const auto& [key, reason] : failures) {
-      diagnostics.push_back({diagnostic_id, reason});
+  for (const auto& [index, reason] : filter_failures) {
+    diagnostics.push_back({"processor-restore-failed", reason});
+    skipped.push_back(wanted_filters[index].source);
+  }
+  for (const auto& [key, reason] : transform_failures) {
+    diagnostics.push_back({"transform-restore-failed", reason});
+    if (const auto source = snapshot.transform_sources.find(key); source != snapshot.transform_sources.end()) {
+      skipped.push_back(source->second);
     }
-    return failures.empty();
-  };
-  const bool filters_restored = report(filter_failures, "processor-restore-failed");
-  const bool transforms_restored = report(transform_failures, "transform-restore-failed");
-  return filters_restored && transforms_restored;
+  }
+  return filter_failures.empty() && transform_failures.empty();
 }
 
 std::vector<WantedGenerator> DerivedObjects::parseWantedGenerators(const QDomElement& element) const {
@@ -601,6 +607,7 @@ std::vector<WantedGenerator> DerivedObjects::parseWantedGenerators(const QDomEle
   for (QDomElement gen = element.firstChildElement(u"generator"_s); !gen.isNull();
        gen = gen.nextSiblingElement(u"generator"_s)) {
     WantedGenerator entry;
+    entry.source = gen;
     BatchEngine::GeneratorRecipe& recipe = entry.recipe;
     recipe.id = gen.attribute(u"id"_s).toStdString();
     recipe.history_exempt = gen.attribute(u"history_exempt"_s) == u"1"_s;
@@ -661,6 +668,7 @@ std::vector<WantedOnDemand> DerivedObjects::parseWantedOnDemand(const QDomElemen
   for (QDomElement node = element.firstChildElement(u"on_demand"_s); !node.isNull();
        node = node.nextSiblingElement(u"on_demand"_s)) {
     WantedOnDemand entry;
+    entry.source = node;
     RecipeGraph::Recipe& recipe = entry.recipe;
     QString& error = entry.parse_error;
     recipe.owner_plugin = node.attribute(u"owner_plugin"_s).toStdString();
@@ -760,8 +768,7 @@ DerivedSnapshot DerivedObjects::parse(const QDomElement& root, RestoreIntent int
   snapshot.intent = intent;
   const QDomElement element = root.firstChildElement(u"data_processors"_s);
   snapshot.filters = parseWantedFilters(element);
-  snapshot.transforms =
-      parseWantedTransforms(element, /*skip_exempt=*/intent == RestoreIntent::kHistory, snapshot.diagnostics);
+  snapshot.transforms = parseWantedTransforms(element, /*skip_exempt=*/intent == RestoreIntent::kHistory, snapshot);
   snapshot.generators = parseWantedGenerators(element);
   snapshot.on_demand = parseWantedOnDemand(element, /*skip_exempt=*/intent == RestoreIntent::kHistory);
   return snapshot;
@@ -858,6 +865,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   DerivedRestoreReport report;
   const bool parsed_all = snapshot.diagnostics.empty();
   report.diagnostics = std::move(snapshot.diagnostics);
+  report.skipped = snapshot.unparsed_transforms;
 
   // 1. What stays live, upstream to downstream. A kept filter or transform keeps its output TopicId, so curves bound to
   //    it (e.g. in a preserved history-exempt tab, which no history snapshot describes) survive an unrelated undo. A
@@ -946,7 +954,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
   //    time for a changed or new one, whose markers arrive later (markersPublished); an undo restores what the user
   //    saw, so it runs a changed rule to completion.
   const bool processors_restored =
-      repairDataProcessors(snapshot.filters, snapshot.transforms, live_exempt_keys, report.diagnostics);
+      repairDataProcessors(snapshot.filters, snapshot, live_exempt_keys, report.diagnostics, report.skipped);
   catalog_.rebuildIfChanged();
   const BatchEngine::CreateWait create_wait =
       history ? BatchEngine::CreateWait::kToCompletion : BatchEngine::CreateWait::kBounded;
@@ -976,15 +984,16 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
                "re-apply the rule");
       }
     }
-    // A generator that cannot be restored is reported and skipped but does NOT fail the restore: unlike a filter or
-    // transform it publishes only overlay decoration (no topic a curve, plot or scene binds to), failing would cost the
-    // user the whole workspace (applyWorkspace rolls back), and a rule whose input series is legitimately absent in the
-    // data the layout was reopened against is an ordinary outcome. Reported before the keep check: the id's other
-    // binding may be the one kept.
+    // A generator that cannot be restored is reported and skipped but does NOT clear `restored_all`: it publishes only
+    // overlay decoration (no topic a curve, plot or scene binds to), so even an exact restore (undo/redo), which fails
+    // on a filter, transform or on-demand recipe it cannot restore, applies without it; a rule whose input series is
+    // absent in the data the layout was reopened against is an ordinary outcome. Reported before the keep check: the
+    // id's other binding may be the one kept.
     if (!wanted.parse_error.isEmpty()) {
       report.diagnostics.push_back(
           {"generator-restore-failed", tr("Could not restore marker generator '%1': %2")
                                            .arg(QString::fromStdString(recipe.id), wanted.parse_error)});
+      report.skipped.push_back(wanted.source);
       continue;
     }
     if (keep_generators.count(recipe.id) != 0) {
@@ -1006,6 +1015,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
           {"generator-restore-failed",
            tr("Could not restore marker generator '%1': %2")
                .arg(QString::fromStdString(recipe.id), QString::fromStdString(restored.error()))});
+      report.skipped.push_back(wanted.source);
     } else {
       any_generator_restored = true;
       restored_bindings.emplace(binding_key, &recipe);
@@ -1023,6 +1033,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
     if (!wanted.parse_error.isEmpty()) {
       report.diagnostics.push_back(
           {"on-demand-restore-failed", tr("Could not restore on-demand recipe '%1': %2").arg(key, wanted.parse_error)});
+      report.skipped.push_back(wanted.source);
       on_demand_restored = false;
       continue;
     }
@@ -1035,6 +1046,7 @@ DerivedRestoreReport DerivedObjects::restore(DerivedSnapshot snapshot) {
       report.diagnostics.push_back(
           {"on-demand-restore-failed",
            tr("Could not restore on-demand recipe '%1': %2").arg(key, QString::fromStdString(installed.error()))});
+      report.skipped.push_back(wanted.source);
       on_demand_restored = false;
     }
   }

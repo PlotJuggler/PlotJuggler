@@ -1232,4 +1232,42 @@ TEST_F(LayoutDatasetPathsTest, PackageRootFollowsACopiedLayoutFolder) {
 }
 #endif  // PJ_WITH_SCENE3D
 
+// One filter applied to two runs, with only one run loaded: the binding on the missing run is kept and saved back,
+// with its dataset path made layout-relative like a live one, while the live binding saves as itself; undo snapshots
+// never carry the kept entry.
+TEST_F(LayoutDatasetPathsTest, FilterBindingOnAnUnloadedRunIsSavedBack) {
+  ASSERT_TRUE(folders.create());
+  const PJ::DatasetId loaded = addDataset("one.csv", folders.saved + u"/data/one/one.csv"_s);
+  ASSERT_NE(loaded, 0U);
+  app().catalogModel().rebuildFromDatastore();
+  const auto binding = [](const QString& source, const QString& path) {
+    return uR"(<processor input_topic="sensor" input_field="value" input_dataset_source="%1" input_dataset_path="%2" )"
+           uR"(processor_id="absolute" output_name="sensor[Absolute]"><![CDATA[{}]]></processor>)"_s.arg(source, path);
+  };
+  QDomDocument layout;
+  ASSERT_TRUE(
+      static_cast<bool>(layout.setContent(
+          uR"(<root binding="source" format="PlotJuggler" pj4_version="4"><tabbed_widget parent="main_window">)"
+          uR"(<Tab id="t1" containers="1"><Container><DockArea id="a1" name="A"><plot id="p1" mode="TimeSeries"/>)"
+          uR"(</DockArea></Container></Tab></tabbed_widget><data_processors>)"_s +
+          binding(u"one.csv"_s, u"data/one/one.csv"_s) + binding(u"two.csv"_s, u"data/two/two.csv"_s) +
+          u"</data_processors></root>"_s)));
+  const QString layout_path = folders.saved + u"/multi-run.pj4.xml"_s;
+  writeXml(layout_path, layout);
+
+  Peer::loadLayout(window, layout_path);
+  ASSERT_EQ(app().sessionManager().dataProcessorService().recipes().size(), 1U);
+  EXPECT_EQ(Peer::historySnapshot(window).count("<processor "), 1) << "undo snapshots carry only live recipes";
+
+  const QString saved_path = folders.saved + u"/resaved.pj4.xml"_s;
+  Peer::saveLayout(window, saved_path, /*include_data_source=*/true);
+  QStringList paths;
+  const QDomNodeList processors = readXml(saved_path).elementsByTagName(u"processor"_s);
+  for (int index = 0; index < processors.size(); ++index) {
+    paths.push_back(processors.at(index).toElement().attribute(u"input_dataset_path"_s));
+  }
+  paths.sort();
+  EXPECT_EQ(paths, (QStringList{u"data/one/one.csv"_s, u"data/two/two.csv"_s})) << paths.join(u", "_s).toStdString();
+}
+
 }  // namespace
