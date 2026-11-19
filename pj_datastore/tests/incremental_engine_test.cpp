@@ -2318,7 +2318,9 @@ TEST(IncrementalEngineTimeSliceTest, FailingStepEndsTheReplayWithAnError) {
   auto after = derived.materializeStep(*node, kStepBudget);
   ASSERT_TRUE(after.has_value());
   EXPECT_TRUE(*after);
-  EXPECT_LT(collectRows(engine, derived.outputTopics(*node)[0]).size(), 2500u);
+  // A step boundary can land exactly on the failing row on a slow machine: up to fail_after rows may be committed,
+  // never one past it.
+  EXPECT_LE(collectRows(engine, derived.outputTopics(*node)[0]).size(), 2500u);
 
   // The error stays with the node while its op is failed, and a successful replay clears it.
   appendLinearRows(engine, src, 1.0, 10, 3000);
