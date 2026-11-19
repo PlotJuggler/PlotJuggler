@@ -1465,6 +1465,53 @@ TEST(AppSessionTest, RefillDoesNotHoldTheExtentOfADatasetMergedAway) {
   refill.commit();
 }
 
+// Data replaced without the catalog ever emptying (a browser preset loads the next one's files, then removes the
+// previous ones): once no dataset the playhead was seeded on is left, the next seed snaps it to the new data's start
+// instead of clamping a stale time to the new range's edge.
+TEST(AppSessionTest, PlayheadSnapsToNewDataOnceItsSeedDatasetsAreGone) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::PlaybackEngine& engine = session.playbackEngine();
+
+  const PJ::DatasetId first = makeShiftedDataset(session, "first", 0, "/s", {100 * kSecond, 200 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  engine.setCurrentTime(PJ::DisplaySeconds{150.0});
+
+  makeShiftedDataset(session, "earlier", 0, "/s", {10 * kSecond, 20 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 150.0) << "a second dataset does not move the playhead";
+
+  removeDatasetEverywhere(session, first);
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.rangeMin().value, 10.0);
+  EXPECT_DOUBLE_EQ(engine.rangeMax().value, 20.0);
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 10.0) << "not clamped to the new data's end";
+}
+
+// A merge keeps the playhead's seeding: the anchor carries on for the datasets it consumed.
+TEST(AppSessionTest, MergeKeepsThePlayheadSeededOnTheAnchor) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+  PJ::PlaybackEngine& engine = session.playbackEngine();
+
+  const PJ::DatasetId seeded = makeShiftedDataset(session, "seeded", 0, "/s", {1 * kSecond, 10 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  engine.setCurrentTime(PJ::DisplaySeconds{5.0});
+  const PJ::DatasetId anchor = makeShiftedDataset(session, "anchor", 0, "/t", {0, 2 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_EQ(session.mergeDatasets({seeded, anchor}), anchor);
+
+  makeShiftedDataset(session, "later", 0, "/u", {20 * kSecond, 30 * kSecond});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+  EXPECT_DOUBLE_EQ(engine.currentTime().value, 5.0);
+}
+
 // Automatic marker runs follow demand: a generator on a demand-capable streaming
 // dataset stays stale while nothing displays that dataset, and runs as soon as a
 // display reference arrives, with no further ingest.
