@@ -24,6 +24,7 @@
 namespace PJ {
 
 class CustomWidgetDockWidget;
+class LogDockWidget;
 class TopicDemandTracker;
 
 // One staged display intent waiting for its topic to materialize: a plot curve (kCurve, from a layout restore or a
@@ -102,6 +103,9 @@ class PendingDisplayBinder : public QObject {
   // every bindingsChanged() and flush().
   void addPendingCustomWidgetWire(
       CustomWidgetDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset);
+
+  // The same for a Log panel's pending topics, re-checked on every topicsChanged() and flush().
+  void addPendingLogTopic(LogDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset);
 
   // Attempts the entries whose topics arrived; an empty set is the drain pass and tries all. Returns the intents
   // COMPLETED, not curves added: a topic that materializes with no numeric field fulfills its intent.

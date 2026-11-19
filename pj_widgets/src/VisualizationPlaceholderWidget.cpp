@@ -125,6 +125,7 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
       // Always shown; the shell enables it (setCustomWidgetsAvailable) according to the installed widget catalog.
       {":/resources/svg/custom_widget.svg", QT_TR_NOOP("Custom Widget"), "buttonVizCustomWidget",
        VisualizationKind::kCustomWidget},
+      {":/resources/svg/view_list.svg", QT_TR_NOOP("Log"), "buttonVizLog", VisualizationKind::kLog},
   };
   icon_buttons_.reserve(std::size(specs));
   for (const auto& spec : specs) {

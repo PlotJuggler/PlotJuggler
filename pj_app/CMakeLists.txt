@@ -642,6 +642,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_scene3d_drop_framing_test.cpp)
 
+    # The Log panel through the shell: the placeholder button, a drop on an empty area, the time format, layouts.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_log_panel_test.cpp)
+
     # The 2D scene panel's layer rows carry each layer's warning from the start.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/scene2d_config_panel_test.cpp)

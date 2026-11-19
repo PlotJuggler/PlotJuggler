@@ -101,6 +101,7 @@ class PlotWidget;
 class PreferencesDialog;
 class CustomWidgetController;
 class CustomWidgetDockWidget;
+class LogDockWidget;
 class StateTransitionsDockWidget;
 class PendingDisplayBinder;
 class SourceCacheStore;
@@ -150,6 +151,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowMarkerGeneratorTestPeer;
   friend class MainWindowMarkerStatusTestPeer;
   friend class MainWindowValuePrecisionTestPeer;
+  friend class MainWindowLogPanelTestPeer;
   friend class MainWindowLayoutDatasetPathsTestPeer;
   friend class MainWindowReloadButtonTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
@@ -704,6 +706,7 @@ class MainWindow : public QMainWindow {
   void forEachStateStrip(const std::function<void(StateTransitionsDockWidget*)>& operation);
   // Every mounted Custom Widget panel across all tabs.
   void forEachCustomWidgetDock(const std::function<void(CustomWidgetDockWidget*)>& operation);
+  void forEachLogPanel(const std::function<void(LogDockWidget*)>& operation);
 
   // On the catalog's cleared()/itemsRemoved(): every data widget prunes its dead curves or layers (an emptied
   // object dock returns to the placeholder).
@@ -1295,7 +1298,7 @@ class MainWindow : public QMainWindow {
   // recipe now writes.
   void appendKeptDerived(QDomDocument& doc);
 
-  // An empty, wired object dock of `kind` ("scene3d", "scene2d", "state_transitions", "CustomWidget"); null for
+  // An empty, wired object dock of `kind` ("scene3d", "scene2d", "state_transitions", "log", "CustomWidget"); null for
   // an unknown kind.
   IDataWidget* makeSceneDock(const QString& kind, QWidget* parent);
 

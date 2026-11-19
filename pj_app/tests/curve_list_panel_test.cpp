@@ -374,17 +374,17 @@ TEST(CurveListPanelTest, CameraInfoTopicRowCanBeDraggedToAPanel) {
   EXPECT_EQ(CurveTreeView::decodeCatalogKeys(payload.get()), QStringList{key});
 }
 
-// No built-in view displays a log, but a Custom Widget can read any object type: the row starts a drag and says where
-// it goes.
-TEST(CurveListPanelTest, LogTopicRowCanBeDraggedToACustomWidget) {
+// No built-in view displays a mesh asset, but a Custom Widget can read any object type: the row starts a drag and says
+// where it goes.
+TEST(CurveListPanelTest, MeshTopicRowCanBeDraggedToACustomWidget) {
   AppSession app_session;
   const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
   ASSERT_NE(dataset, 0U);
   auto topic = app_session.sessionManager().objectStore().registerTopic(
       ObjectTopicDescriptor{
           .dataset_id = dataset,
-          .topic_name = "/rosout",
-          .metadata_json = R"({"builtin_object_type":"kLog"})",
+          .topic_name = "/model",
+          .metadata_json = R"({"builtin_object_type":"kMesh3D"})",
       });
   ASSERT_TRUE(topic.has_value()) << topic.error();
   app_session.catalogModel().rebuildFromDatastore();
@@ -393,7 +393,7 @@ TEST(CurveListPanelTest, LogTopicRowCanBeDraggedToACustomWidget) {
   panel.setCatalog(&app_session.catalogModel());
   auto* tree = panel.findChild<CurveTreeView*>(u"treeView"_s);
   ASSERT_NE(tree, nullptr);
-  const QString key = keyOfTopic(app_session.catalogModel(), u"/rosout"_s);
+  const QString key = keyOfTopic(app_session.catalogModel(), u"/model"_s);
   QTreeWidgetItem* row = findRowByCatalogKey(tree->invisibleRootItem(), key);
   ASSERT_NE(row, nullptr);
 

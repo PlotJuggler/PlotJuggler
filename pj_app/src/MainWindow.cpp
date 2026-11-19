@@ -162,6 +162,7 @@
 #ifdef PJ_TARGET_WASM
 #include "pj_plotting/PlotRhiCanvas.h"
 #endif
+#include "pj_plotting/LogDockWidget.h"
 #include "pj_plotting/PlotMarkersItem.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PlotWidgetBase.h"
@@ -1022,7 +1023,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           media2d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
         } else
 #endif
-        {
+            if (auto* log = qobject_cast<LogDockWidget*>(qwidget)) {
+          if (!log->tryAcceptObjectTopic(seed->topic_id, seed->object_type, seed->title)) {
+            log->deleteLater();
+            showToast(tr("This topic cannot be displayed in a Log panel (type %1).")
+                          .arg(QString::fromUtf8(sdk::name(seed->object_type))));
+            return nullptr;
+          }
+          seedStreamingPlaybackFromDrop();
+        } else {
           // A new family in makeSceneDock needs a branch here.
           qWarning("MainWindow: makeSceneDock returned an unhandled object-widget kind");
           widget->widget()->deleteLater();
@@ -2014,6 +2023,16 @@ IDataWidget* MainWindow::makeSceneDock(const QString& kind, QWidget* parent) {
     topic_demand_controller_->registerStateTransitionsDock(widget);
     return widget;
   }
+  if (kind == "log"_L1) {
+    usageCounters().count(UsageFeature::kPanelLog);
+    auto* widget =
+        new LogDockWidget(&session_->sessionManager(), &session_->catalogModel(), &session_->playbackEngine(), parent);
+    widget->setTimeLabelFormat(time_label_format_);
+    connect(widget, &LogDockWidget::workspaceChanged, &scene_undo_debounce_, qOverload<>(&QTimer::start));
+    connect(widget, &LogDockWidget::topicsChanged, this, &MainWindow::schedulePendingDisplayBindingRebuild);
+    topic_demand_controller_->registerLogDock(widget);
+    return widget;
+  }
   return nullptr;
 }
 
@@ -2115,6 +2134,9 @@ void MainWindow::onObjectFamilyRequested(DockWidget* dock, VisualizationKind fam
     case VisualizationKind::kStateTransitions:
       kind = u"state_transitions"_s;
       break;
+    case VisualizationKind::kLog:
+      kind = u"log"_s;
+      break;
     case VisualizationKind::kCustomWidget:
       // Chosen in the picker menu first: building before the choice would leave an unbound panel behind.
       if (custom_widgets_ != nullptr) {
@@ -2163,6 +2185,10 @@ void MainWindow::onPlaceholderTopicDropped(
   if (auto* scene_dock = qobject_cast<SceneDockWidget*>(object_widget != nullptr ? object_widget->widget() : nullptr);
       scene_dock != nullptr) {
     topic_demand_controller_->handleSceneDockPlaceholderDrop(scene_dock, dataset_id, topic_name, object_type);
+  } else if (
+      auto* log = qobject_cast<LogDockWidget*>(object_widget != nullptr ? object_widget->widget() : nullptr);
+      log != nullptr && object_type == sdk::BuiltinObjectType::kLog) {
+    topic_demand_controller_->handleLogDockPlaceholderDrop(log, dataset_id, topic_name);
   }
 }
 
@@ -4350,6 +4376,7 @@ void MainWindow::applyTimeLabelFormat() {
   time_label_format_ =
       clockFormatFor(settings.value(kDateTimeDisplayKey, false).toBool(), settings.value(kClockUtcKey, false).toBool());
   forEachPlot([this](PlotWidget* plot) { plot->setTimeLabelFormat(time_label_format_); });
+  forEachLogPanel([this](LogDockWidget* log) { log->setTimeLabelFormat(time_label_format_); });
   ui_->timelineWidget->setTimeLabelFormat(time_label_format_);
   if (source_timeline_ != nullptr) {
     source_timeline_->setAbsoluteClockFormat(time_label_format_);
@@ -4555,6 +4582,17 @@ void MainWindow::forEachCustomWidgetDock(const std::function<void(CustomWidgetDo
     }
     if (auto* custom = qobject_cast<CustomWidgetDockWidget*>(dock->objectWidget()->widget())) {
       operation(custom);
+    }
+  });
+}
+
+void MainWindow::forEachLogPanel(const std::function<void(LogDockWidget*)>& operation) {
+  forEachDock([&operation](DockWidget* dock) {
+    if (dock->objectWidget() == nullptr) {
+      return;
+    }
+    if (auto* log = qobject_cast<LogDockWidget*>(dock->objectWidget()->widget())) {
+      operation(log);
     }
   });
 }
@@ -7019,6 +7057,11 @@ void MainWindow::collectPendingDisplayBindings(const QDomDocument& doc) {
       pending_binder_->addPendingCustomWidgetWire(custom, demand.topic_name, demand.preferred_dataset);
     }
   });
+  forEachLogPanel([this](LogDockWidget* log) {
+    for (const LogDockWidget::PendingDemand& demand : log->pendingDemands()) {
+      pending_binder_->addPendingLogTopic(log, demand.topic_name, demand.preferred_dataset);
+    }
+  });
 }
 
 void MainWindow::rebuildPendingDisplayBindings(const QDomDocument& doc) {
@@ -7054,6 +7097,10 @@ void MainWindow::schedulePendingDisplayBindingRebuild() {
     if (!any_intents) {
       forEachCustomWidgetDock(
           [&any_intents](CustomWidgetDockWidget* custom) { any_intents = any_intents || custom->hasPendingWires(); });
+    }
+    if (!any_intents) {
+      forEachLogPanel(
+          [&any_intents](LogDockWidget* log) { any_intents = any_intents || !log->pendingDemands().empty(); });
     }
     if (any_intents) {
       rebuildPendingDisplayBindings(xmlSaveState());

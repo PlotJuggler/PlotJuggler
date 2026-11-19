@@ -14,11 +14,10 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-TEST(VisualizationPlaceholderFamiliesTest, OffersFiveFamiliesInOrder) {
+TEST(VisualizationPlaceholderFamiliesTest, OffersSixFamiliesInOrder) {
   PJ::VisualizationPlaceholderWidget placeholder;
-  const QStringList expected{
-      u"buttonVizPlot"_s, u"buttonVizStateTransitions"_s, u"buttonVizScene2D"_s, u"buttonVizScene3D"_s,
-      u"buttonVizCustomWidget"_s};
+  const QStringList expected{u"buttonVizPlot"_s,    u"buttonVizStateTransitions"_s, u"buttonVizScene2D"_s,
+                             u"buttonVizScene3D"_s, u"buttonVizCustomWidget"_s,     u"buttonVizLog"_s};
   QStringList names;
   for (auto* button : placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly)) {
     names.push_back(button->objectName());
@@ -88,7 +87,7 @@ TEST(VisualizationPlaceholderFamiliesTest, IconsFillAGridThreeColumnsWide) {
   placeholder.resize(900, 400);
   QCoreApplication::processEvents();
   const auto buttons = placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly);
-  ASSERT_EQ(buttons.size(), 5);
+  ASSERT_EQ(buttons.size(), 6);
   std::set<int> columns;
   std::set<int> rows;
   for (const QToolButton* button : buttons) {
@@ -106,7 +105,7 @@ TEST(VisualizationPlaceholderFamiliesTest, IconGridShrinksToFitASmallDock) {
   // Resize events reach a widget only once it is shown.
   placeholder.show();
   const auto buttons = placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly);
-  ASSERT_EQ(buttons.size(), 5);
+  ASSERT_EQ(buttons.size(), 6);
   EXPECT_LE(placeholder.minimumSizeHint().width(), 180);
   EXPECT_LE(placeholder.minimumSizeHint().height(), 110);
   EXPECT_GE(placeholder.sizeHint().width(), 3 * 66) << "the preferred grid keeps full-size icons";

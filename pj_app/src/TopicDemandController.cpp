@@ -14,6 +14,7 @@
 #include "pj_custom_widgets/CustomWidgetDockWidget.h"
 #include "pj_datastore/engine.hpp"
 #include "pj_plotting/DatastoreCurveAdapter.h"
+#include "pj_plotting/LogDockWidget.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/PointSeriesXY.h"
 #include "pj_plotting/StateTransitionsDockWidget.h"
@@ -258,6 +259,31 @@ void TopicDemandController::syncCustomWidgetDock(CustomWidgetDockWidget* dock) {
   emit displayedSeriesChanged();
 }
 
+void TopicDemandController::registerLogDock(LogDockWidget* dock) {
+  if (dock == nullptr || log_dock_topics_.count(dock) > 0) {
+    return;
+  }
+  log_dock_topics_.emplace(dock, std::vector<std::pair<DatasetId, QString>>{});
+  connect(dock, &LogDockWidget::topicsChanged, this, [this, dock]() { syncLogDock(dock); });
+  connect(dock, &QObject::destroyed, this, [this, dock]() {
+    auto it = log_dock_topics_.find(dock);
+    if (it == log_dock_topics_.end()) {
+      return;
+    }
+    for (const auto& [dataset_id, topic_name] : it->second) {
+      tracker_.removeReference(dataset_id, topic_name);
+    }
+    log_dock_topics_.erase(it);
+    emit displayedSeriesChanged();
+  });
+  syncLogDock(dock);
+}
+
+void TopicDemandController::syncLogDock(LogDockWidget* dock) {
+  applyTopicDelta(dock->displayedTopics(), log_dock_topics_[dock]);
+  emit displayedSeriesChanged();
+}
+
 QSet<QString> TopicDemandController::displayedKeys(const QWidget* root) const {
   QSet<QString> keys;
   if (root == nullptr) {
@@ -334,6 +360,14 @@ QSet<QString> TopicDemandController::displayedKeys(const QWidget* root) const {
       }
     }
   }
+  for (const auto& [dock, topics] : log_dock_topics_) {
+    if (!include(dock)) {
+      continue;
+    }
+    for (const auto& [dataset, topic_id] : dock->displayedObjectTopics()) {
+      add_object_topic(dataset, topic_id);
+    }
+  }
   return keys;
 }
 
@@ -347,6 +381,15 @@ void TopicDemandController::handleSceneDockPlaceholderDrop(
   if (dock != nullptr && dock->deferTopicIntent(dataset_id, topic_name, object_type, topic_name)) {
     pending_binder_.addPendingSceneLayer(dock, topic_name, dataset_id);
   }
+}
+
+void TopicDemandController::handleLogDockPlaceholderDrop(
+    LogDockWidget* dock, DatasetId dataset_id, const QString& topic_name) {
+  if (dock == nullptr) {
+    return;
+  }
+  dock->addPendingTopic(dataset_id, topic_name);
+  pending_binder_.addPendingLogTopic(dock, topic_name, dataset_id);
 }
 
 void TopicDemandController::setPreviewTimeoutMsForTest(int timeout_ms) {

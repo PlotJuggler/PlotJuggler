@@ -201,6 +201,7 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
   labels["viz.3d"] = toolTipOf(placeholder, "buttonVizScene3D");
   labels["viz.state"] = toolTipOf(placeholder, "buttonVizStateTransitions");
   labels["viz.custom"] = toolTipOf(placeholder, "buttonVizCustomWidget");
+  labels["viz.log"] = toolTipOf(placeholder, "buttonVizLog");
 
   // Preferences pages (one nav row each) and the startup update check.
   PJ::PreferencesDialog prefs(Peer::theme(window), &window);
@@ -235,6 +236,7 @@ const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
       {"source_timeline", {"tabs.toggle_bottom", "timeline.align", "timeline.merge", "datasets.title"}},
       {"state_transitions", {"viz.state", "datasets.title"}},
       {"custom_widget", {"viz.custom", "datasets.title"}},
+      {"log_panel", {"viz.log", "datasets.title"}},
       {"plot_tabs", {"plot.split_h", "plot.split_v", "plot.fullscreen", "datasets.title"}},
       // This entry uses command-line flags or held keys, without widget labels.
       {"axis_wheel_zoom", {}},

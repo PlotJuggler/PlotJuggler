@@ -38,6 +38,9 @@ bool isImageFamilyObjectType(sdk::BuiltinObjectType type) {
 }
 
 QString sceneKindForObjectType(sdk::BuiltinObjectType type) {
+  if (type == sdk::BuiltinObjectType::kLog) {
+    return u"log"_s;
+  }
   if (isImageFamilyObjectType(type)) {
     return is2dSceneObjectType(type) ? u"scene2d"_s : QString{};
   }
@@ -58,12 +61,11 @@ bool isCustomWidgetObjectType(sdk::BuiltinObjectType type) {
   return type != sdk::BuiltinObjectType::kNone && !isPanelOnlyObjectType(type) && !isDroppableObjectType(type);
 }
 
-QString customWidgetObjectIcon(sdk::BuiltinObjectType type) {
-  if (!isCustomWidgetObjectType(type)) {
-    return {};
+QString objectTypeBadgeIcon(sdk::BuiltinObjectType type) {
+  if (type == sdk::BuiltinObjectType::kLog) {
+    return u":/resources/svg/view_list.svg"_s;
   }
-  return type == sdk::BuiltinObjectType::kLog ? QStringLiteral(":/resources/svg/view_list.svg")
-                                              : QStringLiteral(":/resources/svg/custom_widget.svg");
+  return isCustomWidgetObjectType(type) ? u":/resources/svg/custom_widget.svg"_s : QString{};
 }
 
 }  // namespace PJ

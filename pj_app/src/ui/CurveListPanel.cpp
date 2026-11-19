@@ -197,7 +197,7 @@ CurveTreeView::CurvePath treePathFromCatalogItem(
       .tooltip = object_undisplayable ? undisplayableObjectTooltip(object_type) : QString{},
       .is_image_topic = isImageFamilyObjectType(object_type),
       .is_3d_object_topic = is3dSceneObjectType(object_type),
-      .object_icon = customWidgetObjectIcon(object_type),
+      .object_icon = objectTypeBadgeIcon(object_type),
       .is_placeholder = advertised != nullptr,
       .is_unsubscribed = isTopicUnsubscribed(active_sets, item.dataset_id, item.topic_name),
   };
