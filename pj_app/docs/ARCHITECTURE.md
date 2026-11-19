@@ -55,8 +55,20 @@ Linux window manager keeps its own.
 
 Desktop startup takes repeatable `-d` / `--datafile <path>`, positional files and `-l` / `--layout <path>`.
 `MainWindow::loadAtStartup` waits for the terminal ticket of every explicit file before applying the layout. Explicit
-files override a source-bound layout's saved files (the generic-layout rewrite removes dataset qualifiers so curves bind
-to the new data); without them, `--layout` replays its saved sources and starts its recorded streams with no prompt.
+files override a source-bound layout's saved files: the layout applies as a generic layout, but each saved dataset it
+names is mapped to an explicit file when it can be, and its qualifiers keep their binding, pointed at that file, so a
+layout comparing two runs reopens with `-d run1 -d run2 -l layout`. `layout_xml::matchDatasetsToFiles` maps each file at
+most once: a saved path that is one of the files; then the only file still unclaimed with the saved file name (a
+path-less source label, with that label); then, per format (case-insensitive file suffix), the saved paths and files
+still left, in order, when that format's counts are equal. A path-less label never pairs by position: it has no format
+and may be a toolbox's own source. Dataset order is the layout's `<fileInfo>` list, then first appearance in the
+document; files keep command-line order. A dataset is its saved path, or its source label without one; `pj-upload://`
+and `pj-stream://` identities never map. Each mapped dataset is reported once (`Layout`/`dataset-mapped`: `Layout
+dataset "<label>" -> <file>` and how; a path-less label that follows its dataset's path adds no line); everything left
+unmapped is stripped and binds only where unique. A kept label the loader derived from the saved file name (the file
+name, or `<base>/<entry>` for a fan-out) follows the new name, since the identity resolver compares labels exactly.
+`removeDatasetQualifiersForGenericLayout` applies the mapping to every consumer, after `resolveDatasetSourcePaths`.
+Without explicit files, `--layout` replays its saved sources and starts its recorded streams with no prompt.
 Unattended startup (`--exit-after-layout`, `--screenshot`, the `offscreen`/`minimal` platforms; `isUnattendedRun` in
 `main.cpp`) loads with `DialogPolicy::kNever`. A failed or cancelled explicit file skips the layout and settles it
 false, so `--exit-after-layout` exits unsuccessfully. The final restore is deferred through a window-owned timer so it
@@ -249,7 +261,7 @@ families: `stampDatasetSourcePaths`, then `relativizeDatasetSourcePaths`) and, i
 URDF file and `file://` package roots (Scene3D's `relocateLayoutResources`). `loadLayoutFromPath` resolves them
 against the layout folder before any restore (`resolveDatasetSourcePaths`, Scene3D's `resolveLayoutResourceUrls`).
 Undo snapshots and in-memory captures stay absolute; browser layouts skip both steps; a generic layout has no dataset
-qualifier.
+qualifier, except those startup keeps for its explicit files ("Command-line startup").
 
 **`__pj_saved_filepath`** exists only in the config handed to a plugin's `loadConfig` on a layout replay of a native
 file (`rewriteReplayFilepaths` with `SavedFilepath::kRecord`) and never reaches host state: the rewrite drops any

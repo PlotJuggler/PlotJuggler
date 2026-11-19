@@ -786,7 +786,11 @@ class MainWindow : public QMainWindow {
     kInteractive,  ///< user-driven (menu / recent list): prompts allowed
     kAutomated,    ///< --layout CLI: auto-reload, never any dialog
   };
-  void loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity, bool use_current_data = false);
+  // `current_data_files` set: the layout applies to those already-loaded files (startup's explicit `-d` files) as a
+  // generic layout, keeping only the dataset qualifiers that name one of them; its saved sources are not replayed.
+  void loadLayoutFromPath(
+      const QString& path, LayoutLoadInteractivity interactivity,
+      const std::optional<QStringList>& current_data_files = std::nullopt);
   // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl (which is why they build on the
   // desktop too). Every terminal outcome goes through finishBrowserLayoutLoad, which logs
   // PJ_WASM_LAYOUT_LOAD_OK/FAILED.

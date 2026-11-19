@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<root binding="source" format="PlotJuggler" pj4_version="4">
+  <tabbed_widget id="" name="main" parent="main_window">
+    <Tab containers="1" id="compare-tab" tab_name="Compare">
+      <Container>
+        <DockSplitter count="2" orientation="-" sizes="0.50000000;0.50000000">
+          <DockArea id="compare-run1" name="Run 1">
+            <plot id="compare-plot-1" mode="TimeSeries" style="Lines" tracker_enabled="true">
+              <curve color="#1f77b4" dataset_path="run1/run.csv" dataset_source="run.csv" field="value" topic="run" visible="true"/>
+            </plot>
+          </DockArea>
+          <DockArea id="compare-run2" name="Run 2">
+            <plot id="compare-plot-2" mode="TimeSeries" style="Lines" tracker_enabled="true">
+              <curve color="#d62728" dataset_path="run2/run.csv" dataset_source="run.csv" field="value" topic="run" visible="true"/>
+            </plot>
+          </DockArea>
+        </DockSplitter>
+      </Container>
+    </Tab>
+    <currentTabIndex index="0"/>
+  </tabbed_widget>
+</root>

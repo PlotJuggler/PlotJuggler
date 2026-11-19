@@ -1,0 +1,9 @@
+# A layout comparing two runs of one recording reopens with `-d run1 -d run2 -l layout`: each curve keeps the dataset
+# its saved file names, although both files carry the same topic and field. Both are named run.csv, so the saved
+# full path picks the file. At t=1 run1 reads 2 and run2 reads 20.
+# app: -d scripts/qa/regressions/fixtures/compare_runs/run1/run.csv -d scripts/qa/regressions/fixtures/compare_runs/run2/run.csv -l scripts/qa/regressions/fixtures/compare_runs/compare.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Run 2"} "curves":[{
+playback {"action":"seek","time_s":1}
+until ui_plot {"title":"Run 1"} "tracker":["time : 1.000","2.000"]
+until ui_plot {"title":"Run 2"} "tracker":["time : 1.000","20.000"]

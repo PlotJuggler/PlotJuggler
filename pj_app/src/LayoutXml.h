@@ -235,11 +235,39 @@ using SeriesKeyResolver = std::function<std::optional<QString>(const SeriesPath&
 // cleared and its path returned (de-duplicated) for the caller to prompt about or strip.
 [[nodiscard]] QList<SeriesPath> rebindCurveKeys(QDomDocument& doc, const SeriesKeyResolver& resolve);
 
+// A saved dataset and the file startup's explicit `-d` files give it.
+struct DatasetFileMatch {
+  enum class Rule : std::uint8_t {
+    kPath,      ///< the saved path is that file
+    kName,      ///< the only unclaimed file with the saved file name (or the path-less label)
+    kPosition,  ///< the n-th dataset left over paired with the n-th file left over of the same format
+    kAlias,     ///< a path-less label of a dataset matched by its path: follows it, not a dataset of its own
+  };
+  QString identity;  ///< the saved path, or the source label of a qualifier without one
+  QString label;     ///< for messages: the saved source label, else the saved file name
+  QString file;
+  Rule rule = Rule::kPath;
+};
+
+// Maps the saved datasets of a layout to `files` (absolute, in command-line order), each file at most once:
+//  1. a saved path that canonically is one of the files;
+//  2. the only file still unclaimed with the saved file name (for a path-less label, the label);
+//  3. per format (case-insensitive suffix), the saved paths and files still left, paired in order when their counts
+//     are equal. A path-less label never pairs: it has no format and may name no file at all.
+// Datasets are ordered by `source_order` (the layout's <fileInfo> paths, resolved), then by first appearance in the
+// document. Opaque identities (pj-upload://, pj-stream://) never match. Run after resolveDatasetSourcePaths.
+[[nodiscard]] QList<DatasetFileMatch> matchDatasetsToFiles(
+    const QDomDocument& doc, const QStringList& files, const QStringList& source_order);
+
 // Makes a generic layout: removes every dataset qualifier attribute (id, source, path; all five prefixes) from every
 // element. What remains binds only when unique in the loaded data; every loader (plots, processors, scenes, Custom
 // Widget wires, State Transitions) implements that unique-only fallback. An on-demand <input> name keeps its
 // qualifier text: it is the alias its script reads.
-void removeDatasetQualifiersForGenericLayout(QDomDocument& doc);
+//
+// A qualifier whose identity is in `keep` keeps its binding: its path becomes the matched file, and a label the
+// loader derived from the saved file name follows the new name (the resolver compares labels exactly). Its id is
+// still removed.
+void removeDatasetQualifiersForGenericLayout(QDomDocument& doc, const QList<DatasetFileMatch>& keep = {});
 
 // DatasetId -> its FileLoader full source path; empty for a non-file or unknown dataset.
 using DatasetPathLookup = std::function<QString(std::uint32_t)>;

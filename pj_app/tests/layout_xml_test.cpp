@@ -9,6 +9,7 @@
 #include <QDomNodeList>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1957,6 +1958,176 @@ TEST(DatasetIdentityPasses, GenericLayoutKeepsAnOnDemandInputNameAndWhatItReads)
   EXPECT_EQ(input.attribute(u"topic"_s), u"cloud"_s);
   EXPECT_FALSE(input.hasAttribute(u"dataset_id"_s));
   EXPECT_FALSE(input.hasAttribute(u"dataset_source"_s));
+}
+
+// Startup's explicit files spare the qualifiers that name them. Ids are always stripped.
+class KeptFileQualifiers : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.isValid());
+    const QDir root(dir_.path());
+    ASSERT_TRUE(root.mkpath(u"a"_s) && root.mkpath(u"b"_s) && root.mkpath(u"d"_s) && root.mkpath(u"e"_s));
+    for (const QString& name :
+         {u"a/run.csv"_s, u"b/run.csv"_s, u"a/other.csv"_s, u"d/left.csv"_s, u"d/right.csv"_s, u"e/left.csv"_s,
+          u"e/right_new.csv"_s, u"e/gps_new.csv"_s, u"e/robot_new.mcap"_s}) {
+      QFile file(root.filePath(name));
+      ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    }
+    ASSERT_TRUE(QFile::link(root.filePath(u"b/run.csv"_s), root.filePath(u"link.csv"_s)));
+    a_run_ = QFileInfo(root.filePath(u"a/run.csv"_s)).canonicalFilePath();
+    b_run_ = QFileInfo(root.filePath(u"b/run.csv"_s)).canonicalFilePath();
+    other_ = QFileInfo(root.filePath(u"a/other.csv"_s)).canonicalFilePath();
+  }
+
+  // The <root>'s children after the rewrite, by their `id`.
+  QHash<QString, QDomElement> rewrite(const QString& children, const QStringList& keep, const QStringList& order = {}) {
+    doc_ = QDomDocument();
+    EXPECT_TRUE(doc_.setContent(u"<root>"_s + children + u"</root>"_s));
+    matches_ = PJ::layout_xml::matchDatasetsToFiles(doc_, keep, order);
+    PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc_, matches_);
+    QHash<QString, QDomElement> by_id;
+    for (QDomElement e = doc_.documentElement().firstChildElement(); !e.isNull(); e = e.nextSiblingElement()) {
+      by_id.insert(e.attribute(u"id"_s), e);
+    }
+    return by_id;
+  }
+
+  QString path(const QString& relative) const {
+    return QDir(dir_.path()).filePath(relative);
+  }
+
+  QTemporaryDir dir_;
+  QDomDocument doc_;
+  QList<PJ::layout_xml::DatasetFileMatch> matches_;
+  QString a_run_;
+  QString b_run_;
+  QString other_;
+};
+
+// The canonical file wins over a namesake, and the kept label becomes the explicit file's name: the saved one (a
+// symlink's name, a fan-out entry under the old base name) would fail the resolver's exact label check.
+TEST_F(KeptFileQualifiers, CanonicalMatchTakesTheExplicitFilesName) {
+  auto by_id = rewrite(
+      u"<input id=\"link\" dataset_id=\"3\" dataset_source=\"link.csv\" dataset_path=\"%1\"/>"
+      u"<input id=\"fanout\" dataset_source=\"link/imu\" dataset_path=\"%1\"/>"
+      u"<input id=\"plugin_label\" dataset_source=\"Robot A\" dataset_path=\"%1\"/>"_s.arg(path(u"link.csv"_s)),
+      {a_run_, b_run_});
+  EXPECT_EQ(by_id[u"link"_s].attribute(u"dataset_path"_s), b_run_);
+  EXPECT_EQ(by_id[u"link"_s].attribute(u"dataset_source"_s), u"run.csv"_s);
+  EXPECT_FALSE(by_id[u"link"_s].hasAttribute(u"dataset_id"_s));
+  EXPECT_EQ(by_id[u"fanout"_s].attribute(u"dataset_source"_s), u"run/imu"_s);
+  EXPECT_EQ(by_id[u"plugin_label"_s].attribute(u"dataset_source"_s), u"Robot A"_s) << "not derived from the file";
+}
+
+// The file-name fallback: only to an explicit file no saved path names canonically, and only when one file has the
+// name. A qualifier without a path matches by its label.
+TEST_F(KeptFileQualifiers, FileNameFallbackTakesOnlyAnUnclaimedFile) {
+  auto by_id = rewrite(
+      u"<curve id=\"gone\" dataset_source=\"other.csv\" dataset_path=\"/elsewhere/other.csv\"/>"
+      u"<curve id=\"two_namesakes\" dataset_source=\"run.csv\" dataset_path=\"/elsewhere/run.csv\"/>"
+      u"<input id=\"by_label\" dataset_source=\"other.csv\"/>"
+      u"<layer id=\"opaque\" dataset_source=\"other.csv\" dataset_path=\"pj-upload://1/other.csv\"/>"_s,
+      {a_run_, b_run_, other_});
+  EXPECT_EQ(by_id[u"gone"_s].attribute(u"dataset_path"_s), other_);
+  EXPECT_FALSE(by_id[u"two_namesakes"_s].hasAttribute(u"dataset_path"_s));
+  EXPECT_FALSE(by_id[u"two_namesakes"_s].hasAttribute(u"dataset_source"_s));
+  EXPECT_EQ(by_id[u"by_label"_s].attribute(u"dataset_path"_s), other_);
+  EXPECT_FALSE(by_id[u"opaque"_s].hasAttribute(u"dataset_path"_s));
+  EXPECT_FALSE(by_id[u"opaque"_s].hasAttribute(u"dataset_source"_s));
+
+  // d/left.csv and d/right.csv are still on disk; e/left.csv takes left by name whatever the order, and right pairs
+  // with the file left over.
+  by_id = rewrite(
+      u"<curve id=\"left\" dataset_source=\"left.csv\" dataset_path=\"%1\"/>"
+      u"<curve id=\"right\" dataset_source=\"right.csv\" dataset_path=\"%2\"/>"_s.arg(
+          path(u"d/left.csv"_s), path(u"d/right.csv"_s)),
+      {path(u"e/right_new.csv"_s), path(u"e/left.csv"_s)});
+  EXPECT_EQ(by_id[u"left"_s].attribute(u"dataset_path"_s), path(u"e/left.csv"_s));
+  EXPECT_EQ(by_id[u"right"_s].attribute(u"dataset_path"_s), path(u"e/right_new.csv"_s));
+
+  // a/run.csv is claimed by the qualifier that names it; a missing namesake does not take it too.
+  by_id = rewrite(
+      u"<curve id=\"run_a\" dataset_source=\"run.csv\" dataset_path=\"%1\"/>"
+      u"<curve id=\"gone\" dataset_source=\"run.csv\" dataset_path=\"/elsewhere/run.csv\"/>"_s.arg(a_run_),
+      {a_run_});
+  EXPECT_EQ(by_id[u"run_a"_s].attribute(u"dataset_path"_s), a_run_);
+  EXPECT_FALSE(by_id[u"gone"_s].hasAttribute(u"dataset_path"_s));
+}
+
+// What no path or name places pairs with the files left, in order, when the counts agree: the layout's <fileInfo>
+// order first, then first appearance. A path-less label that a saved path carries follows that path.
+TEST_F(KeptFileQualifiers, LeftoverDatasetsPairWithLeftoverFilesInOrder) {
+  const QString gone_a = path(u"gone/a.csv"_s);
+  const QString gone_b = path(u"gone/b.csv"_s);
+  const QString elements =
+      u"<curve id=\"a\" dataset_source=\"a.csv\" dataset_path=\"%1\"/>"
+      u"<curve id=\"b\" dataset_source=\"b.csv\" dataset_path=\"%2\"/>"
+      u"<generator id=\"a_label\" dataset_source=\"a.csv\"/>"_s.arg(gone_a, gone_b);
+
+  auto by_id = rewrite(elements, {other_, a_run_});
+  EXPECT_EQ(by_id[u"a"_s].attribute(u"dataset_path"_s), other_);
+  EXPECT_EQ(by_id[u"a"_s].attribute(u"dataset_source"_s), u"other.csv"_s);
+  EXPECT_EQ(by_id[u"b"_s].attribute(u"dataset_path"_s), a_run_);
+  EXPECT_EQ(by_id[u"a_label"_s].attribute(u"dataset_path"_s), other_);
+  EXPECT_EQ(by_id[u"a_label"_s].attribute(u"dataset_source"_s), u"other.csv"_s);
+  ASSERT_EQ(matches_.size(), 3);
+  EXPECT_EQ(matches_[0].label, u"a.csv"_s);
+  EXPECT_EQ(matches_[0].rule, PJ::layout_xml::DatasetFileMatch::Rule::kPosition);
+  EXPECT_EQ(matches_[2].rule, PJ::layout_xml::DatasetFileMatch::Rule::kAlias);
+
+  by_id = rewrite(elements, {other_, a_run_}, {gone_b, gone_a});
+  EXPECT_EQ(by_id[u"b"_s].attribute(u"dataset_path"_s), other_) << "<fileInfo> order wins";
+  EXPECT_EQ(by_id[u"a"_s].attribute(u"dataset_path"_s), a_run_);
+
+  by_id = rewrite(elements, {other_, a_run_, b_run_});
+  for (const QString& id : {u"a"_s, u"b"_s, u"a_label"_s}) {
+    EXPECT_FALSE(by_id[id].hasAttribute(u"dataset_path"_s)) << "three files for two datasets: " << id.toStdString();
+    EXPECT_FALSE(by_id[id].hasAttribute(u"dataset_source"_s));
+  }
+}
+
+// Positional pairing stays within one format: a recording and a CSV never trade places, and a format whose counts
+// differ is stripped while another still pairs.
+TEST_F(KeptFileQualifiers, PositionalPairingStaysWithinOneFormat) {
+  const QString saved =
+      u"<curve id=\"robot\" dataset_source=\"robot.mcap\" dataset_path=\"%1\"/>"
+      u"<curve id=\"gps\" dataset_source=\"gps.csv\" dataset_path=\"%2\"/>"_s.arg(
+          path(u"gone/robot.mcap"_s), path(u"gone/gps.csv"_s));
+  auto by_id = rewrite(saved, {path(u"e/gps_new.csv"_s), path(u"e/robot_new.mcap"_s)});
+  EXPECT_EQ(by_id[u"robot"_s].attribute(u"dataset_path"_s), path(u"e/robot_new.mcap"_s));
+  EXPECT_EQ(by_id[u"robot"_s].attribute(u"dataset_source"_s), u"robot_new.mcap"_s);
+  EXPECT_EQ(by_id[u"gps"_s].attribute(u"dataset_path"_s), path(u"e/gps_new.csv"_s));
+
+  by_id = rewrite(
+      saved + u"<curve id=\"imu\" dataset_source=\"imu.CSV\" dataset_path=\"%1\"/>"_s.arg(path(u"gone/imu.CSV"_s)),
+      {path(u"e/gps_new.csv"_s), path(u"e/robot_new.mcap"_s)});
+  EXPECT_EQ(by_id[u"robot"_s].attribute(u"dataset_path"_s), path(u"e/robot_new.mcap"_s));
+  EXPECT_FALSE(by_id[u"gps"_s].hasAttribute(u"dataset_path"_s)) << "two CSV datasets (any case), one CSV file";
+  EXPECT_FALSE(by_id[u"imu"_s].hasAttribute(u"dataset_path"_s));
+}
+
+// A label-only identity (a toolbox's own source) is matched by name only: it neither pairs nor counts.
+TEST_F(KeptFileQualifiers, LabelOnlyDatasetNeverPairsByPosition) {
+  const auto by_id = rewrite(
+      u"<curve id=\"a\" dataset_source=\"a.csv\" dataset_path=\"%1\"/>"
+      u"<curve id=\"b\" dataset_source=\"b.csv\" dataset_path=\"%2\"/>"
+      u"<generator id=\"toolbox\" dataset_source=\"Toolbox X\"/>"_s.arg(path(u"gone/a.csv"_s), path(u"gone/b.csv"_s)),
+      {other_, a_run_});
+  EXPECT_EQ(by_id[u"a"_s].attribute(u"dataset_path"_s), other_);
+  EXPECT_EQ(by_id[u"b"_s].attribute(u"dataset_path"_s), a_run_);
+  EXPECT_FALSE(by_id[u"toolbox"_s].hasAttribute(u"dataset_path"_s));
+  EXPECT_FALSE(by_id[u"toolbox"_s].hasAttribute(u"dataset_source"_s));
+  EXPECT_EQ(matches_.size(), 2);
+}
+
+// A file name with several dots: the plain label is the file name, the fan-out prefix its complete base name.
+TEST_F(KeptFileQualifiers, RelabelKeepsEveryDotOfTheFileName) {
+  const auto by_id = rewrite(
+      u"<input id=\"plain\" dataset_source=\"run.v2.csv\" dataset_path=\"%1\"/>"
+      u"<input id=\"fanout\" dataset_source=\"run.v2/imu\" dataset_path=\"%1\"/>"_s.arg(path(u"gone/run.v2.csv"_s)),
+      {other_});
+  EXPECT_EQ(by_id[u"plain"_s].attribute(u"dataset_source"_s), u"other.csv"_s);
+  EXPECT_EQ(by_id[u"fanout"_s].attribute(u"dataset_source"_s), u"other/imu"_s);
 }
 
 TEST(LayoutXmlTest, StreamingBlockShapeAndWriterValidation) {
