@@ -230,8 +230,9 @@ Calibrate the claim to what you actually checked:
   - `./scripts/worktree-rm.sh` and deleting a branch.
 - **A go-ahead names the action and comes after I have seen the diff.** One given for an earlier task does not
   carry over to the next.
-- **Exception, documentation only:** a change that touches nothing but `docs/`, module `docs/` and `CLAUDE.md` files
-  is committed and pushed straight to `main`, with no PR, once `pre-commit` passes on it.
+- **Exception, documentation only:** a change that touches nothing but documentation (`docs/`, module `docs/`,
+  `CLAUDE.md` files, `.claude/skills/` and `.claude/agents/`) is committed and pushed straight to `main` right away,
+  with no PR, once `pre-commit` passes on it.
 - **No go-ahead needed:** `git commit`, `git push` to your own branch (force-push included; `main` only for the
   documentation exception above), `git fetch`, new worktrees and branches, builds, `./test.sh`, read-only `git` and
   `gh` commands, re-running or dispatching CI for an existing branch, deleting build and scratch directories.
