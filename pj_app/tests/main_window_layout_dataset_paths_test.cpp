@@ -89,6 +89,11 @@ class MainWindowLayoutDatasetPathsTestPeer {
     window.loadLayoutFromPath(path, MainWindow::LayoutLoadInteractivity::kAutomated);
   }
 
+  /// A load the way startup applies a layout to its explicit `-d` files.
+  static void loadLayoutOnFiles(MainWindow& window, const QString& path, const QStringList& files) {
+    window.loadLayoutFromPath(path, MainWindow::LayoutLoadInteractivity::kAutomated, files);
+  }
+
   static void removeDatasetData(MainWindow& window, DatasetId dataset_id) {
     window.removeDatasetData(dataset_id);
   }
@@ -924,6 +929,41 @@ TEST_F(LayoutDatasetPathsTest, TransformInputResolvesByPathAmongSameNamedDataset
   ASSERT_EQ(restored.front().input_bindings.size(), 1U);
   EXPECT_EQ(restored.front().input_bindings.front().dataset_id, first)
       << "must follow the path data/two/run.csv, not the saved id";
+}
+
+// Startup keeps a transform input whose saved path is one of the explicit files. Its saved label is the file name it
+// was saved under (a symlink's here), and the resolver compares labels exactly: the kept qualifier must carry the
+// explicit file's name, or the input binds nowhere.
+TEST_F(LayoutDatasetPathsTest, StartupKeptTransformInputTakesTheExplicitFileName) {
+  ASSERT_TRUE(folders.create());
+  const QString one = folders.saved + u"/data/one/run.csv"_s;
+  const QString two = folders.saved + u"/data/two/run.csv"_s;
+  const QString link = folders.saved + u"/data/two/link.csv"_s;
+  for (const QString& path : {one, two}) {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+  }
+  ASSERT_TRUE(QFile::link(two, link));
+  const PJ::DatasetId first = addDataset("run.csv", one);
+  const PJ::DatasetId second = addDataset("run.csv", two);
+  ASSERT_NE(first, 0U);
+  ASSERT_NE(second, 0U);
+
+  QDomDocument doc = processorLayout(Processor::kTransform, 77, u"link.csv"_s);
+  firstElement(doc, u"transform"_s).firstChildElement(u"input"_s).setAttribute(u"dataset_path"_s, link);
+  QDomDocument tabs;
+  ASSERT_TRUE(tabs.setContent(
+      u"<tabbed_widget parent=\"main_window\"><Tab id=\"t1\" containers=\"1\"><Container>"
+      u"<DockArea id=\"a1\" name=\"View\"><plot id=\"plot1\" mode=\"TimeSeries\"/></DockArea>"
+      u"</Container></Tab></tabbed_widget>"_s));
+  doc.documentElement().appendChild(doc.importNode(tabs.documentElement(), true));
+  writeXml(folders.saved + u"/layout.pj4.xml"_s, doc);
+  Peer::loadLayoutOnFiles(window, folders.saved + u"/layout.pj4.xml"_s, {one, two});
+
+  const auto restored = transforms();
+  ASSERT_EQ(restored.size(), 1U);
+  ASSERT_EQ(restored.front().input_bindings.size(), 1U);
+  EXPECT_EQ(restored.front().input_bindings.front().dataset_id, second);
 }
 
 // A transform's output lives in its first input's dataset: removing the second input's dataset retires it there, and

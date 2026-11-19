@@ -11,6 +11,7 @@
 #include <QSet>
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
@@ -694,8 +695,8 @@ void forEachCustomWidgetInput(QDomDocument& doc, Fn&& fn) {
   });
 }
 
-// Iterative, so a deep layout cannot overflow the stack. Visitors see every widget family's elements: select by
-// exact tagName or touch only attributes you own.
+// Document order (matchDatasetsToFiles pairs by first appearance); iterative, so a deep layout cannot overflow the
+// stack. Visitors see every widget family's elements: select by exact tagName or touch only attributes you own.
 template <typename Fn>
 void forEachElement(QDomDocument& doc, Fn&& visit) {
   std::vector<QDomElement> pending;
@@ -704,7 +705,7 @@ void forEachElement(QDomDocument& doc, Fn&& visit) {
     QDomElement element = pending.back();
     pending.pop_back();
     visit(element);
-    for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    for (QDomElement child = element.lastChildElement(); !child.isNull(); child = child.previousSiblingElement()) {
       pending.push_back(child);
     }
   }
@@ -712,14 +713,167 @@ void forEachElement(QDomDocument& doc, Fn&& visit) {
 
 }  // namespace
 
-void removeDatasetQualifiersForGenericLayout(QDomDocument& doc) {
+namespace {
+
+// The one entry of `files` whose file name is `name`, or empty when none or several are.
+QString uniqueFileNamed(const QStringList& files, const QString& name) {
+  QString found;
+  for (const QString& file : files) {
+    if (QFileInfo(file).fileName() == name) {
+      if (!found.isEmpty()) {
+        return {};
+      }
+      found = file;
+    }
+  }
+  return found;
+}
+
+// A qualifier's identity: its saved path, else its source label; empty when it has neither or an opaque path.
+QString qualifierIdentity(const QDomElement& element, const DatasetIdentityAttributes& shape) {
+  const QString path = element.attribute(shape.path);
+  if (path.isEmpty()) {
+    return element.attribute(shape.source);
+  }
+  return isOpaqueSourceIdentity(path) ? QString() : path;
+}
+
+// The label the loader gives `kept`'s dataset, when `saved_source` is the one it gave `saved_file`: the file name, or
+// "<complete base name>/<entry>" for a fan-out. Any other label (a plugin's display name) is kept as saved.
+QString keptSourceLabel(const QString& saved_source, const QString& saved_file, const QString& kept) {
+  const QFileInfo saved(saved_file);
+  const QFileInfo now(kept);
+  if (saved_source == saved.fileName()) {
+    return now.fileName();
+  }
+  if (const QString prefix = saved.completeBaseName() + u'/'; saved_source.startsWith(prefix)) {
+    return now.completeBaseName() + u'/' + saved_source.mid(prefix.size());
+  }
+  return saved_source;
+}
+
+}  // namespace
+
+QList<DatasetFileMatch> matchDatasetsToFiles(
+    const QDomDocument& doc, const QStringList& files, const QStringList& source_order) {
+  // Distinct identities in first-appearance order, each with the first label seen for it.
+  QList<DatasetFileMatch> saved;
+  QDomDocument walk = doc;  // forEachElement takes a mutable handle; nothing is written
+  forEachElement(walk, [&saved](QDomElement& element) {
+    for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
+      const QString identity = qualifierIdentity(element, shape);
+      if (identity.isEmpty()) {
+        continue;
+      }
+      const QString source = element.attribute(shape.source);
+      const auto it = std::find_if(saved.begin(), saved.end(), [&](const auto& s) { return s.identity == identity; });
+      if (it == saved.end()) {
+        saved.push_back({.identity = identity, .label = source, .file = {}, .rule = DatasetFileMatch::Rule::kPath});
+      } else if (it->label.isEmpty()) {
+        it->label = source;
+      }
+    }
+  });
+  const auto order = [&source_order](const DatasetFileMatch& entry) {
+    const auto it = std::find_if(source_order.begin(), source_order.end(), [&entry](const QString& path) {
+      return QDir::cleanPath(path) == entry.identity;
+    });
+    return it == source_order.end() ? source_order.size() : std::distance(source_order.begin(), it);
+  };
+  std::stable_sort(saved.begin(), saved.end(), [&order](const auto& a, const auto& b) { return order(a) < order(b); });
+
+  const auto has_path = [](const DatasetFileMatch& entry) { return QFileInfo(entry.identity).isAbsolute(); };
+  // A path-less label that some saved path also carries names that path's dataset: it follows that path's match.
+  QList<DatasetFileMatch> aliases;
+  QList<DatasetFileMatch> datasets;
+  for (const DatasetFileMatch& entry : saved) {
+    const bool alias = !has_path(entry) && std::any_of(saved.begin(), saved.end(), [&](const DatasetFileMatch& other) {
+      return has_path(other) && other.label == entry.identity;
+    });
+    (alias ? aliases : datasets).push_back(entry);
+  }
+
+  QStringList unclaimed = files;
+  QList<DatasetFileMatch> matched;
+  const auto take = [&](DatasetFileMatch entry, const QString& file, DatasetFileMatch::Rule rule) {
+    entry.file = file;
+    entry.rule = rule;
+    if (entry.label.isEmpty()) {
+      entry.label = QFileInfo(entry.identity).fileName();
+    }
+    unclaimed.removeAll(file);
+    matched.push_back(std::move(entry));
+  };
+  QList<DatasetFileMatch> left;
+  for (const DatasetFileMatch& entry : datasets) {
+    const auto same =
+        std::find_if(files.begin(), files.end(), [&entry](const QString& f) { return isSamePath(f, entry.identity); });
+    if (same != files.end()) {
+      take(entry, *same, DatasetFileMatch::Rule::kPath);
+    } else {
+      left.push_back(entry);
+    }
+  }
+  QList<DatasetFileMatch> unmatched;
+  for (const DatasetFileMatch& entry : left) {
+    const QString name = has_path(entry) ? QFileInfo(entry.identity).fileName() : entry.identity;
+    const QString file = uniqueFileNamed(unclaimed, name);
+    if (!file.isEmpty()) {
+      take(entry, file, DatasetFileMatch::Rule::kName);
+    } else if (has_path(entry)) {
+      unmatched.push_back(entry);  // a label alone (a toolbox's source) has no format to pair by
+    }
+  }
+  // Pairs only within one format: a recording and a CSV trading places would leave every curve unresolved.
+  const auto format = [](const QString& path) { return QFileInfo(path).suffix().toLower(); };
+  QSet<QString> formats;
+  for (const DatasetFileMatch& entry : unmatched) {
+    formats.insert(format(entry.identity));
+  }
+  for (const QString& suffix : formats) {
+    QList<DatasetFileMatch> datasets_of;
+    std::copy_if(unmatched.begin(), unmatched.end(), std::back_inserter(datasets_of), [&](const auto& entry) {
+      return format(entry.identity) == suffix;
+    });
+    QStringList files_of;
+    std::copy_if(unclaimed.begin(), unclaimed.end(), std::back_inserter(files_of), [&](const QString& file) {
+      return format(file) == suffix;
+    });
+    if (datasets_of.size() == files_of.size()) {
+      for (qsizetype i = 0; i < datasets_of.size(); ++i) {
+        take(datasets_of[i], files_of[i], DatasetFileMatch::Rule::kPosition);
+      }
+    }
+  }
+  for (const DatasetFileMatch& alias : aliases) {
+    const auto target = std::find_if(matched.begin(), matched.end(), [&alias](const DatasetFileMatch& m) {
+      return QFileInfo(m.identity).isAbsolute() && m.label == alias.identity;
+    });
+    if (target != matched.end()) {
+      const QString file = target->file;
+      take(alias, file, DatasetFileMatch::Rule::kAlias);
+    }
+  }
+  return matched;
+}
+
+void removeDatasetQualifiersForGenericLayout(QDomDocument& doc, const QList<DatasetFileMatch>& keep) {
   // Keeping a scene's or Custom Widget's upload path would source-bind the layout and leak a page-lifetime browser
   // identity.
-  forEachElement(doc, [](QDomElement& element) {
+  forEachElement(doc, [&keep](QDomElement& element) {
     for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
       element.removeAttribute(shape.id);
-      element.removeAttribute(shape.source);
-      element.removeAttribute(shape.path);
+      const QString identity = qualifierIdentity(element, shape);
+      const auto match = std::find_if(keep.begin(), keep.end(), [&](const auto& m) { return m.identity == identity; });
+      if (identity.isEmpty() || match == keep.end()) {
+        element.removeAttribute(shape.source);
+        element.removeAttribute(shape.path);
+        continue;
+      }
+      if (const QString source = element.attribute(shape.source); !source.isEmpty()) {
+        element.setAttribute(shape.source, keptSourceLabel(source, identity, match->file));
+      }
+      element.setAttribute(shape.path, match->file);
     }
   });
 }

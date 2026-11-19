@@ -5073,7 +5073,8 @@ void MainWindow::onRebuildToolboxMenu() {
   }
 }
 
-void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity interactivity, bool use_current_data) {
+void MainWindow::loadLayoutFromPath(
+    const QString& path, LayoutLoadInteractivity interactivity, const std::optional<QStringList>& current_data_files) {
   snapshotStreamWindowAtLayoutOpen();
   const bool interactive = interactivity == LayoutLoadInteractivity::kInteractive;
   // Governs every failure surface of this load, entry failures included: an automated (--layout) run must never
@@ -5129,22 +5130,40 @@ void MainWindow::loadLayoutFromPath(const QString& path, LayoutLoadInteractivity
             .arg(version)
             .arg(layout_xml::kStreamingLayoutSchemaVersion));
   }
-  // `binding` records the save-time intent; use_current_data overrides it at load.
-  if (use_current_data) {
-    doc.documentElement().setAttribute(u"binding"_s, u"generic"_s);
-    layout_xml::removeDatasetQualifiersForGenericLayout(doc);
-  }
-  const QString binding = root.attribute(u"binding"_s, u"source"_s);
   const QDir layout_dir(QFileInfo(path).absoluteDir());
   // Qualifiers may be stored relative to the layout; every binder compares normalized absolute paths.
   layout_xml::resolveDatasetSourcePaths(doc, layout_dir);
+  const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
+  // `binding` records the save-time intent; current_data_files overrides it at load.
+  if (current_data_files.has_value()) {
+    doc.documentElement().setAttribute(u"binding"_s, u"generic"_s);
+    QStringList source_order;
+    for (const layout_xml::DataSourceRef& replay : replays) {
+      source_order.push_back(replay.resolved_path);
+    }
+    const QList<layout_xml::DatasetFileMatch> matches =
+        layout_xml::matchDatasetsToFiles(doc, *current_data_files, source_order);
+    for (const layout_xml::DatasetFileMatch& match : matches) {
+      using Rule = layout_xml::DatasetFileMatch::Rule;
+      if (match.rule == Rule::kAlias) {
+        continue;  // its dataset's own line covers it
+      }
+      const QString how = match.rule == Rule::kPath   ? tr("same file")
+                          : match.rule == Rule::kName ? tr("by name")
+                                                      : tr("positional");
+      emitDiagnostic(
+          DiagnosticLevel::kInfo, "Layout", "dataset-mapped",
+          tr("Layout dataset \"%1\" %2 %3 (%4)").arg(match.label, QString(QChar(0x2192)), match.file, how));
+    }
+    layout_xml::removeDatasetQualifiersForGenericLayout(doc, matches);
+  }
+  const QString binding = root.attribute(u"binding"_s, u"source"_s);
   // A layout may carry a numeric dataset id with a basename-like source; the id means nothing outside the session
   // that minted it. Stripped on read as on write; the source alone binds only when unique.
   layout_xml::removeUnvalidatedDatasetIds(doc);
   // A <range> without x_basis gets it explicitly before any widget restore, so PlotWidget::xmlLoadState never infers
   // it from the plot mode. No value changes.
   layout_xml::normalizePlotRangeBasis(doc);
-  const QList<layout_xml::DataSourceRef> replays = layout_xml::extractDataSource(doc, layout_dir);
   // A restore in flight is superseded only at this load's commit points (the do_reload branch and
   // applyRestoredLayout): a Cancel at the reload or trust prompt must leave it draining. Classification and
   // prepare() touch only state and the new document, so they need not wait.
@@ -6505,21 +6524,25 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
     bool failed = false;
     bool completed = false;
   };
+  QStringList absolute_files;
+  for (const QString& path : data_files) {
+    absolute_files.push_back(QFileInfo(path).absoluteFilePath());
+  }
   const auto batch = std::make_shared<StartupBatch>();
   auto* receiver = new QObject(this);
-  const auto finish = [this, batch, receiver, layout_path]() {
+  const auto finish = [this, batch, receiver, layout_path, absolute_files]() {
     if (batch->enqueuing || !batch->pending.isEmpty() || batch->completed) {
       return;
     }
     batch->completed = true;
     receiver->deleteLater();
     // A window-owned timer: shutdown flushes file terminals synchronously, into a dying window.
-    QTimer::singleShot(0, this, [this, batch, layout_path]() {
+    QTimer::singleShot(0, this, [this, batch, layout_path, absolute_files]() {
       if (!layout_path.isEmpty()) {
         if (batch->failed) {
           emit layoutRestoreSettled(false);
         } else {
-          loadLayoutFromPath(layout_path, LayoutLoadInteractivity::kAutomated, /*use_current_data=*/true);
+          loadLayoutFromPath(layout_path, LayoutLoadInteractivity::kAutomated, absolute_files);
         }
       }
     });
@@ -6532,11 +6555,11 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
           finish();
         }
       });
-  for (const QString& path : data_files) {
+  for (const QString& path : absolute_files) {
     LoadHints hints;
     hints.dialog_policy = interactive ? DialogPolicy::kInteractive : DialogPolicy::kNever;
-    const auto ticket = file_loader_->loadFileTicketed(
-        LoadInput::fromNativePath(QFileInfo(path).absoluteFilePath()), interactive ? this : nullptr, hints);
+    const auto ticket =
+        file_loader_->loadFileTicketed(LoadInput::fromNativePath(path), interactive ? this : nullptr, hints);
     if (ticket == 0) {
       batch->failed = true;
     } else {
