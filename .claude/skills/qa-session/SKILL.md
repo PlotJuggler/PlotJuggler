@@ -59,10 +59,12 @@ Pitfalls seen in practice:
   then `buttonSplitHorizontal`, `buttonSplitVertical` and `buttonFullscreen` appear in `ui_tree`.
 - Wheel zoom and pan reach the undo stack after a short debounce: give such a call `"wait_ms":400` before pressing
   undo, or the undo arrives first.
-- `ui_tree` lists dock areas in creation order, not screen order: check which plot is which by its title or a
-  screenshot. A name that every plot repeats (`qwtCanvas`, `buttonClose`) is refused while two plots show; scripts
+- `ui_tree` lists dock areas and tabs in creation order, not screen order: check which plot is which by its title,
+  and the order of the tabs on screen, with a screenshot. A name that every plot repeats (`qwtCanvas`, `buttonClose`) is refused while two plots show; scripts
   that need one use a single-plot layout.
 - Plots fall back to the raster canvas offscreen (no GPU): the GPU plot path is not exercised.
+- No tool reports marker rules or the marker regions on a plot: a bug there shows only in a screenshot, so it
+  cannot get a regression script. Say so in the fix PR.
 
 ## Browser build
 
@@ -192,9 +194,39 @@ When asked to do QA or to test with the QA agent, without a narrower charter:
    plugin folder for the desktop (`--plugin-dir`, e.g. pj-official-plugins' `build/all/Release/bin`).
 2. Start `qa-engineer` agents in one message: one per desktop charter (1-5), each with its own `PJQA_HOME`
    under the scratchpad, plus one with the browser charter (6). Give each the checkout path and, for the
-   browser one, the package path.
+   browser one, the package path. Pass `model:` explicitly:
+   - **A release pass** runs every charter twice, once on `opus` and once on `sonnet`. Over ten charters run on
+     both, the two models found mostly different bugs (opus 22, sonnet 16, 7 in common, 31 in all), and either
+     one alone would have missed the worst bug the other found. Sonnet's cost per charter was about the same as
+     opus', because it used more tokens and more tool calls.
+   - **A quick pass** runs `opus` only.
+   - Keep every app under `host-job --light` and start the instances a few seconds apart.
 3. Check every reported **Bug** yourself against the code and its replay before acting on it; drop artifacts.
-4. Report a table: charter, bugs, UX notes, tool limits. Fix each confirmed bug in its own PR, with a test that
-   fails before the fix.
-5. Each confirmed bug also leaves a script in `scripts/qa/regressions/` that asserts the user-visible result
-   (`expect` / `absent` on `ui_plot`, `ui_tree` or a data tool) and fails on the build before the fix.
+   Check it against current `origin/main` too (`git log origin/main -- <area>`): a pass runs on a fixed build,
+   and a bug may already be fixed on main.
+4. Report a table: charter, bugs, UX notes, tool limits.
+5. Fix each confirmed bug as below.
+
+## Fixing what a pass found
+
+- **One PR per bug, test first:** a unit or GUI test that fails before the fix, and a script in
+  `scripts/qa/regressions/` that asserts the user-visible result (`expect` / `absent` on `ui_plot`, `ui_tree` or a
+  data tool) and fails on the build before the fix. When no tool can see the state, the PR says so.
+- **Fix the root cause in the shared mechanism**, not where the symptom showed, and say in the PR which other paths
+  the fix covers. Skip contrived inputs: they get a line in the report, not a PR.
+- **Host or plugin:** when either could hold the fix, count who each one reaches. A plugin fix reaches every
+  PlotJuggler 4 user once the plugin is released; a host or SDK fix reaches only new app versions, and an SDK change
+  also needs an SDK release first.
+- **A plugin persists a choice by name or by the file it was made for, never by position.** A column index or a
+  selection saved for one file and pre-filled for the next picked the wrong data in three loaders at once.
+- **A plugin fix bumps that plugin's version and CHANGELOG in the same PR.** Otherwise the fix is merged but never
+  released. The release itself needs the user's go-ahead.
+- **Every fix PR gets an independent reviewer** (a fresh agent with the PR's goal and diff, `model: opus`), however
+  small the fix. In one pass the reviewer found a real defect in the first version of four fixes. Apply the fixes it
+  finds that matter, and add the review and anything not applied to the PR body.
+- **PR bodies:** write the body to a file with a quoted heredoc (`<<'EOF'`), then pass it with `--body-file`, or
+  with `gh api -X PATCH .../pulls/N -F body=@file` for an update. Backticks inside an unquoted heredoc or a
+  `-b` string run as shell commands.
+- **Merge one PR at a time.** After each merge, rebase the next PR onto the new `main` and wait for its CI, even if
+  it was green before. Two PRs that were each green broke `main`'s build together: one changed an API that the
+  other's new test called.
