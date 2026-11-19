@@ -167,7 +167,7 @@ test('occupancy updates and voxel textures stay bounded and seekable', async ({ 
   expect(errors).toEqual([]);
 });
 
-test('a desktop-saved pose trail replays and draws in the browser', async ({ page }) => {
+test('a desktop-saved pose trail replays and draws in the browser', { tag: '@smoke' }, async ({ page }) => {
   test.setTimeout(150000);
   const consoleMessages = [];
   const errors = [];

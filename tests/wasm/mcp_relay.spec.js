@@ -35,7 +35,7 @@ async function countAndMax(relay, path) {
   return { count: number('count'), max: number('max') };
 }
 
-test('reload_file downloads the relay file again and replaces the dataset in place', async ({ page }) => {
+test('reload_file downloads the relay file again and replaces the dataset in place', { tag: '@smoke' }, async ({ page }) => {
   const relay = await startMcpRelay();
   try {
     await bootLinkedApp(page, relay);

@@ -249,7 +249,7 @@ test('browser persistence survives refresh through a bounded allowlist and scrub
   expect(errors).toEqual([]);
 });
 
-test('browser layouts open transactionally and download with exact round-trip state', async ({ page, browserName }) => {
+test('browser layouts open transactionally and download with exact round-trip state', { tag: '@smoke' }, async ({ page, browserName }) => {
   test.setTimeout(150000);
   const errors = [];
   const consoleMessages = [];
