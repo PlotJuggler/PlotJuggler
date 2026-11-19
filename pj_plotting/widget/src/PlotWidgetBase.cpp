@@ -186,10 +186,11 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
 
   void resizeEvent(QResizeEvent* event) override {
     QwtPlot::resizeEvent(event);
-    // Window geometry is not a viewport gesture: XY plots still need their aspect ratio corrected, but that must not
-    // create history.
+    // Window geometry is not a viewport gesture and creates no history. The fit starts from the requested view, not
+    // the shown one: the fit only widens, so re-fitting the shown view would compound every transient size (a layout
+    // restored at startup) into a permanent zoom-out.
     if (parent->isXYPlot() && parent->keepRatioXY()) {
-      parent->applyRectKeepingRatio(canvasBoundingRect());
+      parent->applyRectKeepingRatio(requested_view.value_or(canvasBoundingRect()));
       replot();
     }
   }
@@ -215,6 +216,8 @@ class PlotWidgetBase::QwtPlotPimpl : public QwtPlot {
   PlotWidgetBase* parent = nullptr;
   std::list<CurveInfo> curve_list;
   std::optional<CurveStyle> overridden_curve_style;
+  // The view last asked of the axes, before the keep-ratio fit widened it to the canvas shape.
+  std::optional<QRectF> requested_view;
   CurveStyle default_curve_style = kLines;
   bool zoom_enabled = true;
 };
@@ -476,6 +479,7 @@ void PlotWidgetBase::resetZoom() {
 }
 
 void PlotWidgetBase::applyRectToAxes(const QRectF& rect) {
+  plot_->requested_view = rect;
   plot_->setAxisScale(QwtPlot::yLeft, std::min(rect.bottom(), rect.top()), std::max(rect.bottom(), rect.top()));
   plot_->setAxisScale(QwtPlot::xBottom, std::min(rect.left(), rect.right()), std::max(rect.left(), rect.right()));
   plot_->updateAxes();
@@ -659,6 +663,20 @@ QRectF PlotWidgetBase::currentBoundingRect() const {
   return plot_->canvasBoundingRect();
 }
 
+QRectF PlotWidgetBase::requestedView() const {
+  if (!isXYPlot() || !keep_aspect_ratio_ || !plot_->requested_view.has_value()) {
+    return currentBoundingRect();
+  }
+  // Same orientation as currentBoundingRect(): bottom() is the lower Y bound, top() the upper.
+  const QRectF normalized = plot_->requested_view->normalized();
+  QRectF view;
+  view.setLeft(normalized.left());
+  view.setRight(normalized.right());
+  view.setBottom(normalized.top());
+  view.setTop(normalized.bottom());
+  return view;
+}
+
 QRectF PlotWidgetBase::maxZoomRect() const noexcept {
   return max_zoom_rect_;
 }
@@ -668,9 +686,12 @@ bool PlotWidgetBase::keepRatioXY() const noexcept {
 }
 
 void PlotWidgetBase::setKeepRatioXY(bool active) {
+  const bool was_active = keep_aspect_ratio_;
   keep_aspect_ratio_ = active;
   plot_->zoomer->keepAspectRatio(isXYPlot() && active);
-  if (!isXYPlot()) {
+  // The shell re-applies the toggle after every layout load: reshaping again would re-anchor the requested view to the
+  // axes just fitted to a transient canvas size.
+  if (!isXYPlot() || active == was_active) {
     return;
   }
   // Reshape the current view; otherwise the toggle takes effect only on the next drag-zoom. OFF re-fits to the data
@@ -686,10 +707,21 @@ void PlotWidgetBase::setKeepRatioXY(bool active) {
 }
 
 void PlotWidgetBase::applyRectKeepingRatio(QRectF rect) {
-  if (isXYPlot() && keep_aspect_ratio_) {
-    plot_->zoomer->applyKeepAspectRatio(rect);
+  QRectF fitted = rect;
+  const bool keep_ratio = isXYPlot() && keep_aspect_ratio_;
+  if (keep_ratio) {
+    plot_->zoomer->applyKeepAspectRatio(fitted);
   }
-  applyRectToAxes(rect);
+  applyRectToAxes(fitted);
+  if (keep_ratio) {
+    // The new range's tick labels resize the axes and so the canvas the fit was measured on: lay out now and fit again
+    // to the settled canvas, or the shown ratio misses the canvas by a few pixels.
+    plot_->updateLayout();
+    fitted = rect;
+    plot_->zoomer->applyKeepAspectRatio(fitted);
+    applyRectToAxes(fitted);
+  }
+  plot_->requested_view = rect;
 }
 
 void PlotWidgetBase::setAcceptDrops(bool accept) {

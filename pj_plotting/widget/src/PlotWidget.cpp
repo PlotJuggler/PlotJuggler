@@ -770,7 +770,7 @@ QDomElement PlotWidget::xmlSaveState(QDomDocument& doc) const {
   // Skip <range> when the canvas has not computed a real viewport (a drop right before save): a degenerate rect would
   // restore as a zero-width window and hide everything. Without <range>, xmlLoadState falls back to zoomOut(), which
   // auto-fits.
-  const QRectF rect = currentBoundingRect();
+  const QRectF rect = requestedView();
   if (rect.left() != rect.right() && rect.top() != rect.bottom()) {
     QDomElement range_element = doc.createElement(u"range"_s);
     range_element.setAttribute(u"bottom"_s, QString::number(rect.bottom(), 'f', 6));

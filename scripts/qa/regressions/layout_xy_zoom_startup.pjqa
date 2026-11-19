@@ -1,0 +1,10 @@
+# An XY plot keeps its saved range when the layout loads at startup (-l): the range was applied while the window still
+# had its startup size, and the keep-ratio fit of the next resize widened the view about 3.4% per axis, so every
+# save-and-restart cycle zoomed the plot out. File > Load Layout in a running app was exact.
+# app: -d tests/wasm/fixtures/signals/data.csv -l scripts/qa/regressions/fixtures/xy_zoom.pj4.xml
+# needs: plugins
+until ui_plot {} circle
+ui_plot {}
+# X to two decimals: an axis relayout after the last plot resize can leave the keep-ratio fit up to 0.05% wide.
+expect "x":["-3.46
+expect "y":["-1.917","2.305"]

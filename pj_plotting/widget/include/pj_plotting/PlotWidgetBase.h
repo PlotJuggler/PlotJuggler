@@ -116,6 +116,10 @@ class PlotWidgetBase : public QWidget {
   void setSwapZoomPan(bool swapped);
 
   [[nodiscard]] QRectF currentBoundingRect() const;
+  // The view to persist: for an XY plot keeping its ratio, the range last asked for, before the fit widened one axis
+  // to the canvas shape (saving the widened axes would widen again at every load under another window shape);
+  // otherwise currentBoundingRect().
+  [[nodiscard]] QRectF requestedView() const;
   [[nodiscard]] QRectF maxZoomRect() const noexcept;
 
   [[nodiscard]] bool keepRatioXY() const noexcept;
@@ -200,7 +204,7 @@ class PlotWidgetBase : public QWidget {
 
   // Corrects `rect` to the canvas aspect ratio (XY with keepRatioXY) and applies it to the axes; the caller decides
   // whether to replot. Pass the rect explicitly: after a magnifier or panner change currentBoundingRect() is stale
-  // (they emit before they replot).
+  // (they emit before they replot). `rect` stays the requested view: a resize re-fits it, not the widened axes.
   void applyRectKeepingRatio(QRectF rect);
 
   // Applies a rect to the axes (min/max-safe, so it tolerates applyKeepAspectRatio's normalized rect); the caller

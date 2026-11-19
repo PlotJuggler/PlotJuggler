@@ -66,6 +66,10 @@ Derived series reach this module as ordinary datastore topics through the catalo
   an explicit `x_basis`; display-relative seconds would restore the wrong window under another display offset.
 - **`TabbedPlotWidget::forEachDocker` / `findDocker`** enumerate the docker tabs in one pass; an index loop over
   `dockerCount()` / `dockerAt()` is quadratic (each is a linear scan).
+- **The XY keep-ratio fit only widens an axis**, so it always starts from the requested view
+  (`PlotWidgetBase::applyRectKeepingRatio` keeps it), re-fitted on every plot resize and persisted through
+  `requestedView()`. Fitting or saving the axes as shown instead zooms out a little on each resize, and a layout
+  restored at startup or under another window shape comes back wider.
 - **`visibleXRangeChanged`** reports every move of the time axis; `rectChanged` drives the zoom link only.
 - **Object-dock drop hover** consults `IDataWidget::canAcceptObjectTopic` before accepting a catalog drag, so a view's
   payload-dependent refusal shows in the cursor. "Open Settings" / "Close Settings" in an object dock's context menu
