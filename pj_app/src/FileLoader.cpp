@@ -808,6 +808,13 @@ std::string captureSavedConfig(DataSourceHandle& handle, const QString& source_n
   return {};
 }
 
+// Why a load that ran to completion is still a failure: it produced no row or entry. `problem` is the last warning or
+// error the plugin reported (DataSourceRuntimeHost::lastReportedProblem), which usually says why.
+QString noDataReason(const QString& source_name, const std::string& problem) {
+  const QString reason = FileLoader::tr("Plugin '%1' loaded no data").arg(source_name);
+  return problem.empty() ? reason : reason + u": "_s + QString::fromStdString(problem);
+}
+
 // The preset with each layout side-file name (hints.side_file_paths) replaced by
 // its path; an empty path resolves the name beside the loaded data file. A config
 // that is not a JSON object is left for the filepath rewrite to judge.
@@ -1793,9 +1800,13 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         outcome = EntryOutcome::kDiscarded;
       } else if (cancel_action == 1) {
         iter_ingest.flushAll();
-        fanout_loaded_ids.push_back(iter_dataset_id);
-        capture_loader_metadata();
-        outcome = EntryOutcome::kKept;
+        if (session_.datasetHoldsData(iter_dataset_id)) {
+          fanout_loaded_ids.push_back(iter_dataset_id);
+          capture_loader_metadata();
+          outcome = EntryOutcome::kKept;
+        } else {
+          outcome = EntryOutcome::kDiscarded;  // the stop kept nothing
+        }
       } else if (!start_status) {
         report_entry_failed(
             idx, iter_display,
@@ -1803,8 +1814,13 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         outcome = EntryOutcome::kFailed;
       } else {
         iter_ingest.flushAll();
-        fanout_loaded_ids.push_back(iter_dataset_id);
-        capture_loader_metadata();
+        if (session_.datasetHoldsData(iter_dataset_id)) {
+          fanout_loaded_ids.push_back(iter_dataset_id);
+          capture_loader_metadata();
+        } else {
+          report_entry_failed(idx, iter_display, noDataReason(source_name, iter_ingest.lastReportedProblem()));
+          outcome = EntryOutcome::kFailed;
+        }
       }
 
       const IngestOutcome ingest_outcome =
@@ -2079,7 +2095,16 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
   // A user stop (either mode) reports kCancelled, even where fileLoaded or fileLoadFailed follows. Each arm
   // terminalizes the ticket before its fileLoaded/fileLoadFailed, so a re-entrant shutdown cannot resolve it again.
 
-  if (cancel == 2) {  // Discard
+  // Rows are invisible until the terminal flush, so whether the import produced anything is known only after it. A
+  // completed import that produced nothing fails; a stop-and-keep that kept nothing is a discard. Either way no empty
+  // dataset stays behind holding the file's label.
+  const bool ingest_ran = cancel != 2 && (ctx_->start_ok || cancel != 0);
+  if (ingest_ran) {
+    ctx_->ingest->flushAll();
+  }
+  const bool yielded_nothing = ingest_ran && !session_.datasetHoldsData(dataset_id);
+
+  if (cancel == 2 || (yielded_nothing && cancel == 1)) {  // Discard
     ingest_outcome = IngestOutcome::kCancelled;
     emitLoadFinished(ticket, LoadOutcome::kCancelled, path, 0);
     // As if this load never ran: nothing on a first load, the prior data on a reload.
@@ -2093,10 +2118,11 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
       qCWarning(lcFileLoader) << "[FileLoader] import discarded by user; the dataset keeps its pre-reload data";
       failReplacingLoad(dataset_id, path, tr("Import discarded"));
     }
-  } else if (!ctx_->start_ok && cancel == 0) {
+  } else if (yielded_nothing || (!ctx_->start_ok && cancel == 0)) {
     ingest_outcome = IngestOutcome::kFailed;
     emitLoadFinished(ticket, LoadOutcome::kFailed, path, 0);
-    const QString reason = tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
+    const QString reason = yielded_nothing ? noDataReason(source_name, ctx_->ingest->lastReportedProblem())
+                                           : tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
     logLoadFailure(path, reason);
     if (!replacing) {
       removeCreatedDataset(dataset_id);
@@ -2109,7 +2135,6 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
     if (cancel == 1) {
       qCInfo(lcFileLoader) << "[FileLoader] import cancelled by user; keeping the partial load";
     }
-    ctx_->ingest->flushAll();
     bool refill_ok = true;
     if (ctx_->refill_guard) {
       // Derived outputs were detached with the dataset: replay them while a failure can still roll back.

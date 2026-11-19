@@ -742,6 +742,22 @@ std::optional<std::pair<Timestamp, Timestamp>> SessionManager::datasetRawBounds(
   return std::pair{t_min, t_max};
 }
 
+bool SessionManager::datasetHoldsData(DatasetId dataset_id) const {
+  const DataReader reader = createReader();
+  const auto topics = reader.listTopics(dataset_id);
+  const bool has_rows = std::any_of(topics.begin(), topics.end(), [&reader](TopicId topic_id) {
+    const auto metadata = reader.getMetadata(topic_id);
+    return metadata.has_value() && metadata->total_row_count > 0;
+  });
+  if (has_rows) {
+    return true;
+  }
+  const auto object_topics = object_store_.listTopics(dataset_id);
+  return std::any_of(object_topics.begin(), object_topics.end(), [this](ObjectTopicId object_topic_id) {
+    return object_store_.entryCount(object_topic_id) > 0;
+  });
+}
+
 bool SessionManager::isStaticReferenceDataset(DatasetId dataset_id) const {
   for (const auto topic : object_store_.listTopics(dataset_id)) {
     if (object_store_.entryCount(topic) == 0) {

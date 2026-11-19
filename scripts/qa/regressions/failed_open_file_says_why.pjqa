@@ -1,0 +1,13 @@
+# A load that fails answers open_file with the loader's reason, not just the path, lists no dataset and keeps no
+# label: the same file name loaded next is the plain name, not "(2)". The fixture MCAP has a channel and no message,
+# which the MCAP plugin refuses itself; a plugin that succeeds with no data fails the same way (FileLoaderTest
+# "YieldsNoData" cases), since a desktop CI plugin with that shape does not exist.
+# needs: plugins
+refuse open_file {"path":"$CHECKOUT/scripts/qa/regressions/fixtures/no_messages/ros2_occupancy_real.mcap"}
+expect No channels could be bound
+get_status {}
+absent ros2_occupancy_real
+open_file {"path":"$CHECKOUT/tests/wasm/fixtures/ros2_occupancy_real.mcap"}
+expect "loaded":true
+until get_status {} "name":"ros2_occupancy_real.mcap"
+absent ros2_occupancy_real.mcap (2)

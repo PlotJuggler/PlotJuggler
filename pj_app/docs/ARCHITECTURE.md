@@ -95,6 +95,16 @@ fresh ones and erases the tombstoned one only after commit: erasing it first wou
 an all-failed fan-out. A whole-load stop (strip, shutdown, `cancelLoad`) ends every entry; a whole-load discard also
 drops entries that already completed.
 
+**A load that yields nothing fails.** A plugin can finish its import successfully with no row and no object entry
+(a CAN log without a decoding database, a file with a header only). After the terminal flush `FileLoader` asks
+`SessionManager::datasetHoldsData`; when it is false the load fails like a start failure (`kFailed`,
+`data-source-load-failed`, `fileLoadFailed`), with `DataSourceRuntimeHost::lastReportedProblem` (the plugin's last
+warning or error) in the reason. A first load erases its dataset, which frees its label, so the next load of the
+same file gets the plain name; a reload rolls back to the data it was replacing; a fan-out entry fails alone. A
+stop-and-keep that kept nothing is a discard. Every file entry point (open dialog, drop, `-d`, layout replay, MCP
+`open_file`) goes through this one check; streaming sources start empty and never reach it. Tests:
+`FileLoaderTest.*YieldsNoData*`.
+
 ### Load diagnostics
 
 `MainWindow` wires `FileLoader::setDiagnosticSink` to the bridge sink.

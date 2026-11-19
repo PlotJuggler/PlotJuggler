@@ -471,10 +471,18 @@ void McpServer::awaitLoad(
     quint64 ticket, quint64 job, Reply reply, std::function<json(quint32)> on_loaded, bool reload) {
   FileLoader& loader = window_.fileLoader();
   auto* receiver = new QObject(this);
+  // loadFinished carries the path, not the reason: fileLoadFailed says why, while this load is still current.
+  auto reason = std::make_shared<QString>();
+  connect(
+      &loader, &FileLoader::fileLoadFailed, receiver, [&loader, ticket, reason](const QString&, const QString& why) {
+        if (loader.currentLoadTicket() == ticket) {
+          *reason = why;
+        }
+      });
   connect(
       &loader, &FileLoader::loadFinished, receiver,
-      [receiver, ticket, reply, on_loaded, reload](
-          quint64 settled, LoadOutcome outcome, const QString& reason, DatasetId id, const QVector<DatasetId>&) {
+      [receiver, ticket, reply, on_loaded, reload, reason](
+          quint64 settled, LoadOutcome outcome, const QString& path, DatasetId id, const QVector<DatasetId>&) {
         if (settled != ticket) {
           return;
         }
@@ -486,7 +494,7 @@ void McpServer::awaitLoad(
         } else if (outcome == LoadOutcome::kCancelled) {
           reply(fail("the load was cancelled (job_kill, or the user closed the dialog or stopped the import)"));
         } else if (outcome != LoadOutcome::kLoaded) {
-          reply(fail("load failed: " + reason.toStdString()));
+          reply(fail("load failed: " + (reason->isEmpty() ? path : *reason).toStdString()));
         } else {
           reply(on_loaded(id));
         }

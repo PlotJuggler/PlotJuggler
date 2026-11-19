@@ -304,6 +304,14 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     if (!topic) {
       return fail(topic.error());
     }
+    // "empty" registers its topic, writes no row and still reports success.
+    if (suffix_ == "empty") {
+      runtimeHost().progressFinish();
+      state_ = PJ::DataSourceState::kStopped;
+      runtimeHost().notifyState(state_);
+      runtimeHost().requestStop(PJ::DataSourceState::kStopped, "import complete");
+      return PJ::okStatus();
+    }
     const auto append = [this, &topic](uint64_t index) -> PJ::Status {
       return writeHost().appendRecord(
           *topic, PJ::Timestamp{static_cast<int64_t>(index * 100)},
@@ -483,6 +491,7 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
     rows_ = object.value(u"rows"_s).toInt(3);
     park_ = object.value(u"park"_s).toBool(false);
     extra_rows_ = object.value(u"extra_rows"_s).toInt(0);
+    warning_ = object.value(u"warning"_s).toString().toStdString();
     return PJ::okStatus();
   }
 
@@ -499,6 +508,9 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
 
     if (auto status = runtimeHost().progressStart("reload-probe", static_cast<uint64_t>(rows_), true); !status) {
       return fail(status.error());
+    }
+    if (!warning_.empty()) {
+      runtimeHost().reportMessage(PJ::DataSourceMessageLevel::kWarning, warning_);
     }
     auto topic = writeHost().ensureTopic("reload_probe/value");
     if (!topic) {
@@ -573,7 +585,8 @@ class ReloadProbeSource final : public PJ::DataSourcePluginBase {
   double first_value_ = 10.0;
   int rows_ = 3;
   bool park_ = false;
-  int extra_rows_ = 0;  // rows of a second topic, "reload_probe/extra", at the same stamps
+  int extra_rows_ = 0;   // rows of a second topic, "reload_probe/extra", at the same stamps
+  std::string warning_;  // reported as a WARNING before any row
   PJ::DataSourceState state_ = PJ::DataSourceState::kIdle;
 };
 
@@ -4368,6 +4381,78 @@ TEST_F(FileLoaderTest, BrowserReplayRewritesWithoutRecordingTheReplacedPath) {
   EXPECT_EQ(received.value(u"filepath"_s).toString(), backing);
   EXPECT_EQ(received.value(u"delimiter"_s).toString(), u";"_s);
   EXPECT_FALSE(received.contains(u"__pj_saved_filepath"_s));
+}
+
+// A load that succeeds without a single row (a BLF file with no DBC decodes nothing) is a failed load: it reports the
+// failure with the plugin's own warning as the reason, and leaves no dataset behind to hold the file's label.
+TEST_F(FileLoaderTest, LoadThatYieldsNoDataFailsAndLeavesNoDatasetOrLabel) {
+  ASSERT_TRUE(installReloadProbe());
+  const QString path = makeMockFile(u"empty.reloadprobe"_s);
+  LoadFinishedRecorder terminals(*loader_);
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
+
+  QString reason;
+  EXPECT_FALSE(
+      pj_app_test::loadAndWait(
+          *loader_, path, reloadProbeHints(uR"({"rows":0,"warning":"nothing will be decoded"})"_s), nullptr, &reason));
+  pj_app_test::flushQueuedEvents(2);
+
+  EXPECT_TRUE(session().createReader().listDatasets().empty()) << "the empty load left a dataset behind";
+  EXPECT_TRUE(catalog().datasets().empty());
+  EXPECT_NE(reason.indexOf(u"no data"_s), -1) << reason.toStdString();
+  EXPECT_NE(reason.indexOf(u"nothing will be decoded"_s), -1) << "the plugin's reason: " << reason.toStdString();
+  ASSERT_EQ(terminals.events.size(), 1u);
+  EXPECT_EQ(terminals.events.front().outcome, PJ::LoadOutcome::kFailed);
+  EXPECT_EQ(terminals.events.front().dataset_id, 0u);
+  EXPECT_TRUE(pj_app_test::pumpUntil([&]() { return !capture.withId(u"data-source-load-failed"_s).empty(); }, 2000));
+  const auto failed = capture.withId(u"data-source-load-failed"_s);
+  ASSERT_EQ(failed.size(), 1u) << "the failure reaches the notifications";
+  EXPECT_EQ(failed[0].level, static_cast<int>(PJ::DiagnosticLevel::kError));
+  EXPECT_TRUE(failed[0].message.contains(u"nothing will be decoded"_s)) << failed[0].message.toStdString();
+
+  ASSERT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"rows":3})"_s)));
+  const auto datasets = session().createReader().listDatasets();
+  ASSERT_EQ(datasets.size(), 1u);
+  EXPECT_EQ(session().dataEngine().datasetLabel(datasets.front()), "empty.reloadprobe")
+      << "the empty load kept the file's label reserved";
+}
+
+// A reload that yields no data fails like any other reload failure: the dataset keeps the data it had.
+TEST_F(FileLoaderTest, ReloadThatYieldsNoDataKeepsThePriorData) {
+  ASSERT_TRUE(installReloadProbe());
+  const QString path = makeMockFile(u"refill.reloadprobe"_s);
+  ASSERT_TRUE(loadAndWait(path, reloadProbeHints(uR"({"rows":3})"_s)));
+  const auto before = session().createReader().listDatasets();
+  ASSERT_EQ(before.size(), 1u);
+
+  EXPECT_FALSE(loadAndWait(path, reloadProbeHints(uR"({"rows":0})"_s)));
+
+  EXPECT_EQ(session().createReader().listDatasets(), before);
+  EXPECT_EQ(singleTopicRowCount(before.front()), 3) << "the empty reload replaced the data it should have kept";
+}
+
+// A fan-out entry that yields no data fails alone; its siblings load.
+TEST_F(FileLoaderTest, FanoutEntryThatYieldsNoDataFailsAndLeavesNoDataset) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"partial.fanoutprobe"_s);
+  const PJ::LoadHints hints =
+      fanoutProbeHints(uR"({"__pj_fanout":["{\"display_suffix\":\"empty\"}","{\"display_suffix\":\"after\"}"]})"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
+
+  ASSERT_TRUE(loadAndWait(path, hints));
+  pj_app_test::flushQueuedEvents(2);
+
+  const auto datasets = session().createReader().listDatasets();
+  ASSERT_EQ(datasets.size(), 1u) << "the empty entry left a dataset behind";
+  const PJ::DatasetInfo* kept = session().dataEngine().getDataset(datasets.front());
+  ASSERT_NE(kept, nullptr);
+  EXPECT_EQ(kept->source_name, "partial/after");
+  const auto* began = ingest_lifecycle.beginForLabel(u"fanout-probe:empty"_s);
+  ASSERT_NE(began, nullptr);
+  const auto* ended = ingest_lifecycle.endFor(began->token);
+  ASSERT_NE(ended, nullptr);
+  EXPECT_EQ(ended->outcome, PJ::IngestOutcome::kFailed);
 }
 
 // A drop from a file manager can mix files with folders and links; only the

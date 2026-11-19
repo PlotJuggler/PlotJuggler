@@ -336,6 +336,11 @@ std::string DataSourceRuntimeHost::stopFailure() const {
   return stop_failure_;
 }
 
+std::string DataSourceRuntimeHost::lastReportedProblem() const {
+  std::lock_guard lock(stop_failure_mu_);
+  return last_reported_problem_;
+}
+
 std::string DataSourceRuntimeHost::lastError() const {
   if (auto failure = stopFailure(); !failure.empty()) {
     return failure;
@@ -423,7 +428,16 @@ void DataSourceRuntimeHost::cbReportMessage(
       qCInfo(lcIngest) << "[plugin]" << QString::fromUtf8(text.data(), static_cast<int>(text.size()));
       break;
   }
-  if (!forward || !self->diagnostic_sink_) {
+  if (!forward) {
+    return;
+  }
+  try {
+    std::lock_guard lock(self->stop_failure_mu_);
+    self->last_reported_problem_.assign(text);
+  } catch (...) {
+    // noexcept C-ABI slot: losing the text costs only a load-failure reason.
+  }
+  if (!self->diagnostic_sink_) {
     return;
   }
   const auto n = self->forwarded_messages_.fetch_add(1, std::memory_order_relaxed);
