@@ -95,7 +95,7 @@ input_outer_height:        20
 // ---- Surfaces ----
 banner:         #1C1C22
 backdrop:       #373743
-data_backdrop:  #5C5C70
+data_backdrop:  #212128
 input:          #535365
 separation:     #D2D2DA
 banner_input:   #25252D
@@ -1735,6 +1735,11 @@ QwtPlot {
 QWidget#qwtCanvas {
    background: ${data_backdrop};
    border: none;
+}
+
+/* A plot or scene dock's header bar reads as part of its data surface. */
+QWidget#DockToolbar {
+   background: ${data_backdrop};
 }
 
 QDialog#PlotWidgetEditor QListView::item:selected {
