@@ -85,7 +85,6 @@ LogView::LogView(QWidget* parent)
   ui_->emptyLabel->setForegroundRole(QPalette::PlaceholderText);
   ui_->topicsButton->setMenu(new QMenu(ui_->topicsButton));
   ui_->topicsButton->hide();
-  ui_->futureButton->setIconPath(QString::fromLatin1(kFutureShownIcon));
   ui_->copyButton->setIconPath(QStringLiteral(":/resources/svg/copy.svg"));
   ui_->copyButton->setEnabled(false);
   ui_->splitter->setStretchFactor(0, 1);
@@ -107,6 +106,7 @@ LogView::LogView(QWidget* parent)
   policy->setSectionWidth(LogTableModel::kTopic, 140);
   ui_->logView->setColumnHidden(LogTableModel::kTopic, true);
   refreshOptionalColumns();
+  setShowFuture(LogViewState{}.show_future);
   attachPillScrollbars(this);
 
   ui_->logView->installEventFilter(this);

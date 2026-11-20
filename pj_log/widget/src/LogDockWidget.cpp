@@ -351,7 +351,7 @@ bool LogDockWidget::xmlLoadState(const QDomElement& element) {
   state.source = element.attribute(u"source_filter"_s);
   state.category = element.attribute(u"category_filter"_s);
   state.text = element.attribute(u"text_filter"_s);
-  state.show_future = element.attribute(u"future_rows"_s) != u"hide"_s;
+  state.show_future = element.attribute(u"future_rows"_s) == u"grey"_s;
   for (QDomElement hidden = element.firstChildElement(kHiddenTopicTag); !hidden.isNull();
        hidden = hidden.nextSiblingElement(kHiddenTopicTag)) {
     state.hidden_topics.append(hidden.attribute(u"topic"_s));

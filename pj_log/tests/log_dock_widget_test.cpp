@@ -157,7 +157,7 @@ TEST_F(LogDockWidgetTest, XmlRoundTripKeepsTopicsFiltersAndUnresolvedTopics) {
   LogViewState state = dock->view()->state();
   state.levels = {false, true, true, true, true};
   state.text = u"motor"_s;
-  state.show_future = false;
+  state.show_future = true;
   dock->view()->applyState(state);
 
   QDomDocument doc;
@@ -195,6 +195,17 @@ TEST_F(LogDockWidgetTest, XmlRoundTripKeepsTopicsFiltersAndUnresolvedTopics) {
   }
   EXPECT_EQ(topics, 2);
   EXPECT_TRUE(kept_missing);
+}
+
+TEST_F(LogDockWidgetTest, FutureRowsAreHiddenUnlessTheLayoutShowsThem) {
+  auto dock = makeDock();
+  EXPECT_FALSE(dock->view()->state().show_future);
+  LogViewState shown = dock->view()->state();
+  shown.show_future = true;
+  dock->view()->applyState(shown);
+  QDomDocument doc;
+  ASSERT_TRUE(dock->xmlLoadState(doc.createElement(u"log"_s)));  // a layout without the choice
+  EXPECT_FALSE(dock->view()->state().show_future);
 }
 
 TEST_F(LogDockWidgetTest, APendingTopicBindsWhenItAppears) {

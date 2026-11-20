@@ -49,8 +49,8 @@ filtered row cost the same full repaint (the p95 and max columns). The relayout 
 23% of that case's samples), so the hide-mode tick grows the further playback is into a long log.
 
 What the code does: `LogTableModel` inserts and removes rows per tick in hide mode and only restyles in grey mode;
-grey is the default. Re-test after a change to `LogTableModel::updateRevealed` or `LogView::scrollToTracker`, on a
-real display, with the app stylesheet, or with logs past 1e5 entries.
+hide is the default, so a new panel pays the hide-mode cost. Re-test after a change to `LogTableModel::updateRevealed`
+or `LogView::scrollToTracker`, on a real display, with the app stylesheet, or with logs past 1e5 entries.
 
 ## Streaming: appends are cheap, late entries reload the topic every refresh
 

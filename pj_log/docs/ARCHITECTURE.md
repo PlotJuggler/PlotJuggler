@@ -51,8 +51,8 @@ seeks the playback. The shell sets the app-wide `TimeLabelFormat` on every panel
 ## Persistence
 
 The filters, enabled levels, hidden topics and future-rows choice are attributes and children of `<log>`, with one
-`<topic>` per topic carrying `dataset_id`, `dataset_source`, `dataset_path` and `topic`. Topics that do not resolve
-are written back verbatim and retried on catalog and source-path changes; `finishRestore` makes the last attempt.
+`<topic>` per topic carrying `dataset_id`, `dataset_source`, `dataset_path` and `topic`. Future rows are hidden unless `future_rows` says `grey`.
+Topics that do not resolve are written back verbatim and retried on catalog and source-path changes; `finishRestore` makes the last attempt.
 Advertised topics with no storage yet (a placeholder drop) wait as pending, and the shell holds their demand.
 
 ## Known gaps

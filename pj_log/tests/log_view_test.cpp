@@ -147,7 +147,7 @@ TEST_F(LogViewTest, PlayingFollowsTheTrackerAndBlocksScrolling) {
   fill(0, "/rosout", 500);
   view_.setPlaying(true);
   track(250.0);
-  ASSERT_EQ(model()->rowCount(), 500);
+  ASSERT_EQ(model()->rowCount(), 251);  // later rows hidden
   EXPECT_TRUE(rowVisible(250));
   EXPECT_FALSE(rowVisible(0));
   QScrollBar* bar = list()->verticalScrollBar();
@@ -170,12 +170,20 @@ TEST_F(LogViewTest, PlayingFollowsTheTrackerAndBlocksScrolling) {
   view_.setPlaying(false);
   EXPECT_TRUE(bar->isEnabled());
   const int paused = bar->value();
-  QApplication::sendEvent(list()->viewport(), &wheel);
+  // Up: the list ends at the tracker's row, so it can only scroll back.
+  QWheelEvent wheel_up(
+      centre, list()->viewport()->mapToGlobal(centre), QPoint(), QPoint(0, 360), Qt::NoButton, Qt::NoModifier,
+      Qt::NoScrollPhase, false);
+  QApplication::sendEvent(list()->viewport(), &wheel_up);
   QApplication::processEvents();
   EXPECT_NE(bar->value(), paused);
 }
 
 TEST_F(LogViewTest, PausedDoubleClickSeeksToTheRowAndKeepsTheView) {
+  // Greyed future rows: a seek back keeps every row, so the scroll position can stay.
+  LogViewState grey = view_.state();
+  grey.show_future = true;
+  view_.applyState(grey);
   fill(0, "/rosout", 500);
   track(300.0);
   QSignalSpy seeks(&view_, &LogView::seekRequested);
@@ -212,6 +220,15 @@ TEST_F(LogViewTest, PausedDoubleClickSeeksToTheRowAndKeepsTheView) {
 TEST_F(LogViewTest, FutureRowsGreyOrHidden) {
   fill(0, "/rosout", 100);
   track(49.5);
+  // Hidden by default; the eye shows them greyed.
+  auto* future = view_.findChild<QToolButton*>("futureButton");
+  EXPECT_FALSE(view_.state().show_future);
+  EXPECT_FALSE(future->isChecked());
+  EXPECT_EQ(model()->rowCount(), 50);
+  QSignalSpy edited(&view_, &LogView::stateEdited);
+  future->click();
+  EXPECT_EQ(edited.count(), 1);
+  EXPECT_TRUE(view_.state().show_future);
   EXPECT_EQ(model()->rowCount(), 100);
   const QColor grey = list()->palette().color(QPalette::PlaceholderText);
   EXPECT_EQ(model()->index(60, 5).data(Qt::ForegroundRole).value<QColor>(), grey);
@@ -223,9 +240,8 @@ TEST_F(LogViewTest, FutureRowsGreyOrHidden) {
   EXPECT_TRUE(model()->index(52, 0).data(Qt::BackgroundRole).isValid());
   EXPECT_FALSE(model()->index(49, 0).data(Qt::BackgroundRole).isValid());
 
-  QSignalSpy edited(&view_, &LogView::stateEdited);
-  view_.findChild<QToolButton*>("futureButton")->click();
-  EXPECT_EQ(edited.count(), 1);
+  future->click();
+  EXPECT_EQ(edited.count(), 2);
   EXPECT_FALSE(view_.state().show_future);
   EXPECT_EQ(model()->rowCount(), 53);
   track(80.0);

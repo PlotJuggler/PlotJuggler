@@ -43,7 +43,7 @@ struct LogViewState {
   /// Labels of the topics the user hid in the Topics menu.
   QStringList hidden_topics;
   /// Entries later than the tracker are shown greyed (true) or hidden.
-  bool show_future = true;
+  bool show_future = false;
 
   bool operator==(const LogViewState&) const = default;
 };
