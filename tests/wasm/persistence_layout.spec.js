@@ -690,6 +690,11 @@ test('a plot readback pending across a layout restore that replaces the plot kee
     await page.evaluate(() => window.pjWasmDismissLayoutDialogProbe());
     await page.waitForTimeout(600);
   }
+  // Which round lands in the window depends on the machine; a run where none did proves nothing about the race, so it
+  // says so in the report instead of passing silently.
+  if (!consoleMessages.some(message => message.includes('PJ_WASM_PLOT_READBACK_SKIPPED'))) {
+    test.info().annotations.push({ type: 'race-not-hit', description: 'no readback fell due inside a restore' });
+  }
 
   const restored = await requestPlotState(page, consoleMessages, stateMessages);
   expect(restored.titles).toEqual(original.titles);
@@ -703,6 +708,15 @@ test('a plot readback pending across a layout restore that replaces the plot kee
     () => consoleMessages.find(message => message.includes('PJ_WASM_LAYOUT_LOAD_OK name=after-race')) || '',
     { timeout: 15000 },
   ).toContain('after-race.pj4.xml');
+  // The window still renders: a fresh readback of the restored plot finds its curve's pixels.
+  const pixelLines = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_CURVE_PIXELS')).length;
+  await requestPlotState(
+    page, consoleMessages, consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STATE count=')).length,
+  );
+  await expect.poll(
+    () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_CURVE_PIXELS')).slice(pixelLines).at(-1) || '',
+    { timeout: 10000 },
+  ).toMatch(/readback-race\/temp:#[0-9a-f]{8}:[1-9]\d*/i);
   expect(consoleMessages.filter(message => message.includes('graphics device lost'))).toEqual([]);
   expect(consoleMessages.filter(message => message.includes('QRhiGles2: Context is lost'))).toEqual([]);
   expect(errors).toEqual([]);

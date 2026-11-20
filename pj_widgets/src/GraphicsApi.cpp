@@ -270,11 +270,12 @@ void grabPresentedFrame(QRhiWidget& widget, std::function<void(const QImage&)> d
       std::exchange(*pending, nullptr)(image);
     }
   };
-  // Queued: grab after frameSubmitted returns, never from inside the frame.
+  // Queued: grab after frameSubmitted returns, never from inside the frame. A widget hidden meanwhile (a layout restore
+  // detaching it) delivers no image: grabbing it broke the browser window's WebGL rendering (TECHNICAL_NOTES).
   QRhiWidget* target = &widget;
   *presented = QObject::connect(
-      target, &QRhiWidget::frameSubmitted, target, [target, deliver] { deliver(target->grabFramebuffer()); },
-      Qt::QueuedConnection);
+      target, &QRhiWidget::frameSubmitted, target,
+      [target, deliver] { deliver(target->isVisible() ? target->grabFramebuffer() : QImage()); }, Qt::QueuedConnection);
   QTimer::singleShot(2000, target, [target, pending, deliver] {
     if (*pending) {
       qCWarning(lcGraphics).nospace() << target->objectName()
