@@ -103,12 +103,14 @@ int HeaderResizePolicy::nextVisibleSection(int section) const {
   return -1;
 }
 
-int HeaderResizePolicy::fillSection() const {
-  if (fill_section_ >= 0 && fill_section_ < header_->count() && !header_->isSectionHidden(fill_section_)) {
+int HeaderResizePolicy::fillSection(int except) const {
+  // sectionSize() is 0 for a hidden section and for one being hidden, which Qt has zeroed but not yet flagged.
+  if (fill_section_ >= 0 && fill_section_ < header_->count() && fill_section_ != except &&
+      header_->sectionSize(fill_section_) > 0) {
     return fill_section_;
   }
   for (int i = 0; i < header_->count(); ++i) {
-    if (!header_->isSectionHidden(i)) {
+    if (i != except && header_->sectionSize(i) > 0) {
       return i;
     }
   }
@@ -116,8 +118,6 @@ int HeaderResizePolicy::fillSection() const {
 }
 
 int HeaderResizePolicy::visibleWidthExcept(int section) const {
-  // Not QHeaderView::length(): a hidden section keeps a stored size that
-  // length() still counts.
   int width = 0;
   for (int i = 0; i < header_->count(); ++i) {
     if (i != section && !header_->isSectionHidden(i)) {
@@ -174,6 +174,26 @@ void HeaderResizePolicy::enforceMinimumWidths() {
 
 void HeaderResizePolicy::onSectionResized(int section, int old_size, int new_size) {
   if (adjusting_ || header_->isSectionHidden(section)) {
+    return;
+  }
+  if (new_size == 0 || old_size == 0) {
+    // QHeaderView::setSectionHidden (Qt 5 through 6.12) resizes a section to 0 just before flagging it hidden, and
+    // from 0 to its stored width just after showing it. A caller sizing a visible section to 0 is read as a hide too.
+    // Neither is a drag: traded with the neighbour, the hidden section would keep its label floor as a gap and a shown
+    // last section would snap back to 0. The fill section absorbs both instead; a shown fill section takes its stored
+    // width back from the section that stood in for it, exact only when the viewport and the visible columns did not
+    // change while it was hidden.
+    if (new_size > 0) {
+      const int width = std::max(new_size, minimumWidthFor(section));
+      const int donor = fillSection(section);
+      adjusting_ = true;
+      header_->resizeSection(section, width);
+      if (donor >= 0) {
+        header_->resizeSection(donor, std::max(minimumWidthFor(donor), header_->sectionSize(donor) - width));
+      }
+      adjusting_ = false;
+    }
+    rebalance();
     return;
   }
   const int before = visibleWidthExcept(section) + old_size;
