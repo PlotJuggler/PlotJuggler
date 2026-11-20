@@ -313,8 +313,8 @@ struct LoadedDatasets {
 struct DatasetChoice {
   enum class Kind : std::uint8_t {
     kKeep,    ///< apply the layout as it is
-    kPin,     ///< pinLayoutToDataset(doc, datasets.front()): one dataset fits best
-    kAsk,     ///< `datasets` fit equally well: pinLayoutToDatasets(doc, those picked)
+    kPin,     ///< pinLayoutToDataset(doc, datasets.front(), loaded_topics): one dataset fits best
+    kAsk,     ///< `datasets` fit equally well: pinLayoutToDatasets(doc, those picked, loaded_topics)
     kUnbind,  ///< the layout names one dataset, it is not loaded, no topic is shared and a loaded dataset carries one
               ///< of its topics: removeDatasetQualifiersForGenericLayout(doc)
   };

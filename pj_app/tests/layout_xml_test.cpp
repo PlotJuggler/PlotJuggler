@@ -2501,9 +2501,8 @@ TEST(LayoutDatasetChoice, OnePinOverSomeTopicsLeavesTheOthersUnqualified) {
   EXPECT_FALSE(curves[1].hasAttribute(u"dataset_source"_s));
 }
 
-// A marker rule follows its inputs: pinned to the best-fitting dataset when an input key reads one of the topics that
-// dataset carries (sensor_raw/value reads no "sensor"), unqualified otherwise, so it binds by its inputs wherever they
-// are.
+// A marker rule follows its inputs: pinned to the best-fitting dataset when every input key reads a topic that dataset
+// carries (sensor_raw/value reads no "sensor"), unqualified otherwise, so it binds by its inputs wherever they are.
 TEST(LayoutDatasetChoice, OnePinTakesOnlyTheMarkerRulesReadingItsTopics) {
   QDomDocument doc = parseLayout(
       R"(<root><plot><curve topic="sensor" field="value"/></plot><data_processors>
@@ -2688,9 +2687,9 @@ TEST(PlanDatasetChoice, AnOnDemandRecipeReadsAndWritesByTopic) {
   EXPECT_EQ(choice.kind, Kind::kAsk);
 }
 
-// A marker rule's "<topic>/<field>" key reads the longest topic naming a prefix of it, of those the chosen datasets
-// carry: /odom/filtered/pose/x is /odom/filtered's, which only A carries, so that rule runs on A alone, while the rule
-// over /odom/pose/x runs on both.
+// A marker rule's "<topic>/<field>" key reads the longest topic naming a prefix of it, of those any loaded dataset
+// carries: /odom/filtered/pose/x is /odom/filtered's, which only A carries, so that rule runs on A alone, while the
+// rule over /odom/pose/x runs on both.
 TEST(LayoutDatasetChoice, AMarkerRuleKeyReadsItsLongestTopic) {
   QDomDocument doc = parseLayout(
       R"(<root><data_processors><generator id="filtered"><input name="/odom/filtered/pose/x"/></generator>

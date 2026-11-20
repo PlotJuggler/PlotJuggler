@@ -741,6 +741,10 @@ Suites with their own executable and ctest entry, and why:
   leaves its other topics unqualified, so its layers from another file stay pending: a scene shows one dataset. The
   fix belongs to the scene: `Scene3DDockWidget::representativeDatasetId` would also read robot-model and trail
   sources, or the scene would bind as one dataset.
+- A series key resolves to a topic by name alone (the longest loaded topic naming a prefix of it), while marker rules
+  bind by series (`CatalogModel::findScalarForMarkerKey`). When another loaded dataset has a topic literally named
+  `sensor/value` and the chosen ones carry topic `sensor` with field `value`, a rule over `sensor/value` is left
+  unpinned and finds several carriers. Deciding coverage per dataset with `findScalarForMarkerKey` would fix it.
 - A layout holding a transform or an on-demand recipe shows one dataset at a time: duplicating a transform would need
   a recipe instance id apart from its script's class id (`DataProcessorService::TransformRecipe::user_id` is both).
 - Restoring a layout whose `<pinned_toolboxes>` names a plugin that is missing or fails to bind goes through
