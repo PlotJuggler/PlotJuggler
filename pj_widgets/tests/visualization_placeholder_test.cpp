@@ -16,8 +16,8 @@ namespace {
 
 TEST(VisualizationPlaceholderFamiliesTest, OffersSixFamiliesInOrder) {
   PJ::VisualizationPlaceholderWidget placeholder;
-  const QStringList expected{u"buttonVizPlot"_s,    u"buttonVizStateTransitions"_s, u"buttonVizScene2D"_s,
-                             u"buttonVizScene3D"_s, u"buttonVizCustomWidget"_s,     u"buttonVizLog"_s};
+  const QStringList expected{u"buttonVizPlot"_s, u"buttonVizScene2D"_s,          u"buttonVizScene3D"_s,
+                             u"buttonVizLog"_s,  u"buttonVizStateTransitions"_s, u"buttonVizCustomWidget"_s};
   QStringList names;
   for (auto* button : placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly)) {
     names.push_back(button->objectName());

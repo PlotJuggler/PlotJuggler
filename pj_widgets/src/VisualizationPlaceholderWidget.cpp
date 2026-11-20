@@ -118,14 +118,14 @@ VisualizationPlaceholderWidget::VisualizationPlaceholderWidget(QWidget* parent) 
     VisualizationKind kind;
   } specs[] = {
       {":/resources/svg/line_axis.svg", QT_TR_NOOP("Plot"), "buttonVizPlot", VisualizationKind::kPlot},
-      {":/resources/svg/state_transitions.svg", QT_TR_NOOP("State Transitions"), "buttonVizStateTransitions",
-       VisualizationKind::kStateTransitions},
       {":/resources/svg/image.svg", QT_TR_NOOP("2D"), "buttonVizScene2D", VisualizationKind::kScene2D},
       {":/resources/svg/cube.svg", QT_TR_NOOP("3D"), "buttonVizScene3D", VisualizationKind::kScene3D},
+      {":/resources/svg/view_list.svg", QT_TR_NOOP("Log"), "buttonVizLog", VisualizationKind::kLog},
+      {":/resources/svg/state_transitions.svg", QT_TR_NOOP("State Transitions"), "buttonVizStateTransitions",
+       VisualizationKind::kStateTransitions},
       // Always shown; the shell enables it (setCustomWidgetsAvailable) according to the installed widget catalog.
       {":/resources/svg/custom_widget.svg", QT_TR_NOOP("Custom Widget"), "buttonVizCustomWidget",
        VisualizationKind::kCustomWidget},
-      {":/resources/svg/view_list.svg", QT_TR_NOOP("Log"), "buttonVizLog", VisualizationKind::kLog},
   };
   icon_buttons_.reserve(std::size(specs));
   for (const auto& spec : specs) {
