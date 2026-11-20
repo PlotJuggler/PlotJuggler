@@ -99,6 +99,41 @@ QByteArray curveLayout(const QStringList& curves) {
       .toUtf8();
 }
 
+constexpr char kSum[] = R"LUAU(-- pj-script: luau
+return { id="sum", name="Sum",
+  create = function(p) return { calculate = function(t, a, b) return a + b end } end }
+)LUAU";
+
+// A generic layout plotting `curves` (topics, field "value") and, around them in <data_processors>, `processors`.
+QByteArray processorLayout(const QStringList& curves, const QString& processors) {
+  QByteArray layout = curveLayout(curves);
+  layout.replace("</root>", (u"<data_processors>"_s + processors + u"</data_processors></root>"_s).toUtf8());
+  return layout;
+}
+
+// A transform writing "fused", the sum of sensor/value and gps/value.
+QString fuseTransform() {
+  return uR"(<transform owner_plugin="pluginA" id="sum" backend="luau" api_version="1">
+<input name="sensor/value" topic="sensor" field="value" column="0"/><input name="gps/value" topic="gps" field="value" column="0"/>
+<output name="fused"/><params><![CDATA[{}]]></params><script><![CDATA[)"_s +
+         QString::fromLatin1(kSum) + u"]]></script></transform>"_s;
+}
+
+// A marker rule "test/rule/marks" reading `keys`, one marker per sample of the first, published as "marks".
+QString markerRule(const QStringList& keys) {
+  QString inputs;
+  for (const QString& key : keys) {
+    inputs += u"<input name=\"%1\"/>"_s.arg(key);
+  }
+  return uR"(<generator all_datasets="0" id="test/rule/marks" language="luau">)"_s + inputs +
+         uR"(<output name="marks"/><script><![CDATA[local s = series(")"_s + keys.front() +
+         uR"(")
+if s ~= nil then
+  for i = 0, s:size() - 1 do createMarker(s:at(i).t) end
+end
+]]></script></generator>)"_s;
+}
+
 class LayoutDatasetChoiceTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -246,6 +281,11 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
   double startOf(PJ::DatasetId dataset) {
     const auto range = PresetTestPeer::session(*window_).sessionManager().datasetDisplayRange(dataset);
     return range.has_value() ? range->min.value : std::numeric_limits<double>::quiet_NaN();
+  }
+
+  // How many markers the rule markerRule() writes published on `dataset`, once a marker computation has finished.
+  std::size_t marksOn(PJ::DatasetId dataset) {
+    return pj_test::markerTimes(PresetTestPeer::session(*window_), dataset, "marks", "test/rule/marks").size();
   }
 
   QString diagnostic(const QString& id) {
@@ -526,6 +566,50 @@ TEST_F(LayoutDatasetChoiceTest, ALayoutForAMissingFileBindsWhereEachTopicIsUniqu
   ASSERT_EQ(bound.size(), 2) << bound.join(u' ').toStdString();
   EXPECT_TRUE(bound[0].startsWith(QString::number(a) + u':')) << bound[0].toStdString();
   EXPECT_TRUE(bound[1].startsWith(QString::number(b) + u':')) << bound[1].toStdString();
+}
+
+// Intended: a transform reads every input from one dataset; the one carrying all of them fits best and its inputs are
+// all pinned there, though only one of them is shared.
+TEST_F(LayoutDatasetChoiceTest, ATransformOverATopicOnlyTheBestFitCarriesRestoresThere) {
+  pj_test::addScalarTopic(PresetTestPeer::session(*window_), run_a_, "gps");
+  load(processorLayout({u"fused"_s}, fuseTransform()), /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(other_modals_, 0) << other_texts_.toStdString();
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  EXPECT_TRUE(diagnostic(u"transform-restore-failed"_s).isEmpty())
+      << diagnostic(u"transform-restore-failed"_s).toStdString();
+  expectAllBoundTo(0, run_a_, 1);
+}
+
+// Intended: a marker rule follows the best fit through a topic the layout plots nothing of: it reads sensor and
+// speed, both runs carry both, and the run carrying the plotted "extra" too is the one it marks.
+TEST_F(LayoutDatasetChoiceTest, AMarkerRuleFollowsTheBestFit) {
+  PJ::AppSession& app = PresetTestPeer::session(*window_);
+  pj_test::addScalarTopic(app, run_a_, "speed");
+  pj_test::addScalarTopic(app, run_a_, "extra");
+  pj_test::addScalarTopic(app, run_b_, "speed");
+  load(
+      processorLayout({u"sensor"_s, u"extra"_s}, markerRule({u"sensor/value"_s, u"speed/value"_s})),
+      /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  expectAllBoundTo(0, run_a_, 2);
+  EXPECT_TRUE(pj_app_test::pumpUntil([this] { return marksOn(run_a_) > 0; }));
+  EXPECT_EQ(marksOn(run_b_), 0U);
+}
+
+// Intended: comparing runs copies a marker rule once per chosen run, even one reading only a topic the layout plots
+// nothing of; each copy marks its own run.
+TEST_F(LayoutDatasetChoiceTest, ComparedRunsEachRunTheirMarkerRule) {
+  PJ::AppSession& app = PresetTestPeer::session(*window_);
+  pj_test::addScalarTopic(app, run_a_, "speed");
+  pj_test::addScalarTopic(app, run_b_, "speed");
+  answerNextQuestion({0, 1});
+  load(processorLayout({u"sensor"_s}, markerRule({u"speed/value"_s})), /*interactive=*/true);
+  EXPECT_EQ(asked_, 1);
+  EXPECT_EQ(tabNames(), (QStringList{u"Plots [run.csv]"_s, u"Plots [run.csv (2)]"_s}));
+  EXPECT_TRUE(pj_app_test::pumpUntil([this] { return marksOn(run_a_) > 0 && marksOn(run_b_) > 0; }))
+      << marksOn(run_a_) << " " << marksOn(run_b_);
 }
 
 }  // namespace
