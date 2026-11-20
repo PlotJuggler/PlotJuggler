@@ -35,7 +35,7 @@ FetchContent_Declare(assimp
 FetchContent_MakeAvailable(assimp)
 
 if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
-    # Match the native graph (Draco 1.5.7 + Cloudini 1.4.1). The common wasm
+    # Match the native graph (Draco 1.5.7 + Cloudini 1.5.0). The common wasm
     # dependency file has already provided the shared LZ4 and Zstd targets.
     set(DRACO_JS_GLUE OFF CACHE BOOL "" FORCE)
     set(DRACO_MESH_COMPRESSION OFF CACHE BOOL "" FORCE)
@@ -56,8 +56,8 @@ if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
         OVERRIDE_FIND_PACKAGE
         SYSTEM)
     FetchContent_Declare(cloudini
-        URL https://github.com/facontidavide/cloudini/archive/refs/tags/1.4.1.tar.gz
-        URL_HASH SHA256=0fb83aa71c665fc73fdaaf3eefb2f16282f554f3d326c626437467acb203f59b
+        URL https://github.com/facontidavide/cloudini/archive/refs/tags/1.5.0.tar.gz
+        URL_HASH SHA256=429034f5846151b043513d504da8dc113b6f0072856eb04120c2c1d291ebe59a
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SOURCE_SUBDIR _pj_source_only_no_cmakelists
         SYSTEM)

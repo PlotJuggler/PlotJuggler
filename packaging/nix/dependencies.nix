@@ -74,10 +74,10 @@ in
   # so recipes/ has no cloudini entry. Keep the version at conanfile.txt's.
   cloudini = stdenv.mkDerivation rec {
     pname = "pj4-cloudini";
-    version = "1.4.1";
+    version = "1.5.0";
     src = fetchurl {
       url = "https://github.com/facontidavide/cloudini/archive/refs/tags/${version}.tar.gz";
-      sha256 = "0fb83aa71c665fc73fdaaf3eefb2f16282f554f3d326c626437467acb203f59b";
+      sha256 = "429034f5846151b043513d504da8dc113b6f0072856eb04120c2c1d291ebe59a";
     };
     nativeBuildInputs = [
       cmake
