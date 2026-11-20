@@ -152,19 +152,16 @@ void LogDockWidget::loadTopic(Topic& topic, bool full) {
     topic.cursor = SequentialUID{};
   }
   std::vector<ResolvedObjectEntry> entries = objects.drainNewSince(topic.id, topic.cursor);
+  std::erase_if(entries, [](const ResolvedObjectEntry& entry) { return entry.fetch_failed; });
   // Arrival order; the view wants time order.
   std::ranges::stable_sort(entries, {}, &ResolvedObjectEntry::timestamp);
   const DisplayOffset offset = session_->displayOffset(topic.saved.dataset_id);
   std::vector<LogEntry> rows;
   rows.reserve(entries.size());
-  for (const ResolvedObjectEntry& entry : entries) {
-    if (entry.fetch_failed) {
-      continue;
-    }
-    const auto object = decodeStoredObject(*session_, topic.id, sdk::BuiltinObjectType::kLog, entry);
+  const auto add_row = [&rows, offset](const ResolvedObjectEntry& entry, Expected<sdk::BuiltinObject> object) {
     const sdk::Log* log = object ? object->get<sdk::Log>() : nullptr;
     if (log == nullptr) {
-      continue;  // an entry its parser rejects shows nothing
+      return;  // an entry its parser rejects shows nothing
     }
     rows.push_back(
         LogEntry{
@@ -175,7 +172,8 @@ void LogDockWidget::loadTopic(Topic& topic, bool full) {
             .category = log->category,
             .message = log->message,
         });
-  }
+  };
+  decodeStoredObjects(*session_, topic.id, sdk::BuiltinObjectType::kLog, entries, add_row);
   if (full) {
     view_->replaceEntries(topic.id.id, std::move(rows));
   } else {

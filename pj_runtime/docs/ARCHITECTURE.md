@@ -442,8 +442,8 @@ does not link it.
   `out_total`, saturated at `UINT32_MAX`), and stops delivering as soon as the sink returns false. The sink runs under
   the engine lock for scalar reads. `inputs_changed`, `config_changed` and `report_message` go to the `Callbacks`
   given at construction. Qt-free; one instance per panel, must outlive the `WidgetHandle` bound to it.
-- **`CanonicalObjectPayload`.** `decodeStoredObject(session, topic, type, entry)` decodes a stored object entry into
-  an `sdk::BuiltinObject`: through the topic's parser under its per-topic lock (`decodeObjectEntry`) when one is bound
+- **`CanonicalObjectPayload`.** `decodeStoredObjects(session, topic, type, entries, sink)` decodes stored object
+  entries into `sdk::BuiltinObject`s, taking the topic's parser binding once per call: through the topic's parser under its per-topic lock (`decodeObjectEntry`) when one is bound
   (the store holds the wire message, e.g. ROS CDR), else from the canonical bytes; a log's own stamp is moved by the
   entry's `payload_stamp_shift`, so a time-shifted merge keeps it on the dataset clock. The built-in Log panel reads
   logs through it. `canonicalObjectPayload(session, topic, type, entry)` gives the bytes a Widget plugin receives: with

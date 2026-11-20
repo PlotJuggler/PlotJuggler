@@ -19,13 +19,30 @@ bool shiftsStamp(sdk::BuiltinObjectType type, const ResolvedObjectEntry& entry) 
   return type == sdk::BuiltinObjectType::kLog && entry.payload_stamp_shift != 0;
 }
 
+Expected<sdk::BuiltinObject> decodeWith(
+    const SessionManager::ParserBinding& parser, sdk::BuiltinObjectType type, const ResolvedObjectEntry& entry) {
+  auto object = decodeObjectEntry(parser, type, entry.timestamp, entry.payload);
+  if (!object) {
+    return object;
+  }
+  // A time-shifted merge moves the entry, not the stamp inside its payload.
+  if (const sdk::Log* log = object->get<sdk::Log>();
+      shiftsStamp(type, entry) && log != nullptr && log->timestamp_ns != 0) {
+    sdk::Log shifted = *log;  // a parser may still share the decoded object
+    shifted.timestamp_ns = saturatingAdd(shifted.timestamp_ns, entry.payload_stamp_shift);
+    *object = sdk::BuiltinObject(std::move(shifted));
+  }
+  return object;
+}
+
 /// The canonical bytes of one stored object entry of `type` on `topic` (see canonicalObjectEncoder).
 Expected<sdk::PayloadView> canonicalObjectPayload(
     const SessionManager& session, ObjectTopicId topic, sdk::BuiltinObjectType type, const ResolvedObjectEntry& entry) {
-  if (!session.parserBindingForObjectTopic(topic) && !shiftsStamp(type, entry)) {
+  const SessionManager::ParserBinding parser = session.parserBindingForObjectTopic(topic);
+  if (!parser && !shiftsStamp(type, entry)) {
     return entry.payload;
   }
-  auto object = decodeStoredObject(session, topic, type, entry);
+  auto object = decodeWith(parser, type, entry);
   if (!object) {
     return unexpected(std::move(object).error());
   }
@@ -38,20 +55,14 @@ Expected<sdk::PayloadView> canonicalObjectPayload(
 
 }  // namespace
 
-Expected<sdk::BuiltinObject> decodeStoredObject(
-    const SessionManager& session, ObjectTopicId topic, sdk::BuiltinObjectType type, const ResolvedObjectEntry& entry) {
-  auto object = decodeObjectEntry(session.parserBindingForObjectTopic(topic), type, entry.timestamp, entry.payload);
-  if (!object) {
-    return object;
+void decodeStoredObjects(
+    const SessionManager& session, ObjectTopicId topic, sdk::BuiltinObjectType type,
+    std::span<const ResolvedObjectEntry> entries,
+    const std::function<void(const ResolvedObjectEntry& entry, Expected<sdk::BuiltinObject> object)>& sink) {
+  const SessionManager::ParserBinding parser = session.parserBindingForObjectTopic(topic);
+  for (const ResolvedObjectEntry& entry : entries) {
+    sink(entry, decodeWith(parser, type, entry));
   }
-  // A time-shifted merge moves the entry, not the stamp inside its payload.
-  if (const sdk::Log* log = object->get<sdk::Log>();
-      shiftsStamp(type, entry) && log != nullptr && log->timestamp_ns != 0) {
-    sdk::Log shifted = *log;  // a parser may still share the decoded object
-    shifted.timestamp_ns = saturatingAdd(shifted.timestamp_ns, entry.payload_stamp_shift);
-    *object = sdk::BuiltinObject(std::move(shifted));
-  }
-  return object;
 }
 
 ObjectPayloadEncoder canonicalObjectEncoder(const SessionManager& session) {

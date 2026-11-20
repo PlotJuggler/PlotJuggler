@@ -30,7 +30,7 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
 
 ## Data flow
 
-The dock reads each `kLog` topic from the session's ObjectStore and decodes it through `decodeStoredObject`
+The dock reads each `kLog` topic from the session's ObjectStore and decodes it through `decodeStoredObjects`
 (`pj_runtime/CanonicalObjectPayload.h`), which applies the entry's stamp shift. Rows carry display-axis seconds
 (`rawToDisplaySecondsAtOrAfter` of the entry's store stamp, so a seek to a row reveals it); the detail pane also shows
 the log's own stamp.

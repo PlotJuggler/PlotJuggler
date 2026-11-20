@@ -27,7 +27,7 @@ class SessionManager;
 /// The Log panel: a LogView over the log topics (`sdk::BuiltinObjectType::kLog`) dropped on it, merged by time, as the
 /// `IDataWidget` the dock system hosts. Kind string and XML payload tag: `log`.
 ///
-/// Data: each topic is read from the session's ObjectStore and decoded once per entry (`decodeStoredObject`). Entries
+/// Data: each topic is read from the session's ObjectStore and decoded once per entry (`decodeStoredObjects`). Entries
 /// landing on the session (dataPublished, ingestEnded, derivedEntriesPublished) bring an update at once, then at most
 /// one per kEntriesLandedInterval; an update appends what arrived after the topic's cursor, late entries included, and
 /// re-reads the topic only when an entry it may hold was removed or changed (`contentIdentity().removal`: a reload, a
