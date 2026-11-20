@@ -180,7 +180,7 @@ class LogFilterTest : public ::testing::Test {
       const std::string& category = {}) {
     LogRow r = row(time, seq_++, message, level);
     r.source = store_.intern(source);
-    r.category = store_.internCategory(category);
+    r.category = store_.intern(category);
     store_.insert(wire, {r});
   }
 
@@ -228,9 +228,11 @@ TEST_F(LogFilterTest, LevelsSourceTextTopic) {
 }
 
 TEST_F(LogFilterTest, Category) {
+  EXPECT_TRUE(store_.hasSources());
+  EXPECT_FALSE(store_.hasCategories());  // an empty category is none
   add(0, 7.0, LogLevel::kInfo, "/a", "joint limit", "motion");
   add(1, 8.0, LogLevel::kInfo, "/b", "link up", "net");
-  EXPECT_EQ(store_.categories().size(), 2u);  // the empty category of the others is not one
+  EXPECT_TRUE(store_.hasCategories());
 
   LogFilter category;
   category.category = "MOT";

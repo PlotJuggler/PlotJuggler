@@ -70,14 +70,15 @@ class LogStore {
 
   /// Id of @p text in the string pool, adding it when new. Id 0 is the empty string.
   uint32_t intern(std::string_view text);
-  /// As intern(), and records the string as a category.
-  uint32_t internCategory(std::string_view text);
   [[nodiscard]] const std::string& text(uint32_t id) const {
     return strings_[id];
   }
-  /// Non-empty categories seen so far, in first-seen order.
-  [[nodiscard]] const std::vector<uint32_t>& categories() const {
-    return categories_;
+  /// Whether a row the store holds has a source, a category.
+  [[nodiscard]] bool hasSources() const {
+    return rows_with_source_ > 0;
+  }
+  [[nodiscard]] bool hasCategories() const {
+    return rows_with_category_ > 0;
   }
 
   /// Add the rows of @p wire, in ascending (time, seq) order; they merge with the rows already held, earlier ones
@@ -107,6 +108,8 @@ class LogStore {
 
  private:
   void evictOverflow(StoreChange& change);
+  /// Counts @p row in (or, with @p sign -1, out of) the rows with a source and a category.
+  void tally(const LogRow& row, int sign);
 
   size_t capacity_;
   std::deque<LogRow> rows_;
@@ -120,8 +123,8 @@ class LogStore {
     }
   };
   std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>> string_ids_;
-  std::vector<bool> is_category_;
-  std::vector<uint32_t> categories_;
+  size_t rows_with_source_ = 0;
+  size_t rows_with_category_ = 0;
 };
 
 /// The spellings of a level: `key` in a saved layout, `label` on screen.

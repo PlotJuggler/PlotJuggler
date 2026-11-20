@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <tuple>
 #include <utility>
 
 #include "pj_widgets/HeaderResizePolicy.h"
@@ -84,7 +85,6 @@ LogView::LogView(QWidget* parent)
   ui_->emptyLabel->setForegroundRole(QPalette::PlaceholderText);
   ui_->topicsButton->setMenu(new QMenu(ui_->topicsButton));
   ui_->topicsButton->hide();
-  ui_->categoryEdit->hide();  // until an entry has a category
   ui_->futureButton->setIconPath(QString::fromLatin1(kFutureShownIcon));
   ui_->copyButton->setIconPath(QStringLiteral(":/resources/svg/copy.svg"));
   ui_->copyButton->setEnabled(false);
@@ -105,8 +105,8 @@ LogView::LogView(QWidget* parent)
   policy->setSectionWidth(LogTableModel::kSource, 140);
   policy->setSectionWidth(LogTableModel::kCategory, 110);
   policy->setSectionWidth(LogTableModel::kTopic, 140);
-  ui_->logView->setColumnHidden(LogTableModel::kCategory, true);
   ui_->logView->setColumnHidden(LogTableModel::kTopic, true);
+  refreshOptionalColumns();
   attachPillScrollbars(this);
 
   ui_->logView->installEventFilter(this);
@@ -166,7 +166,7 @@ std::vector<LogRow> LogView::toRows(uint32_t topic, std::vector<LogEntry> entrie
     row.seq = seq++;
     row.level = entry.level;
     row.source = store_.intern(entry.source);
-    row.category = store_.internCategory(entry.category);
+    row.category = store_.intern(entry.category);
     row.message = std::move(entry.message);
     log_view::stripTerminalEscapes(row.message);
     rows.push_back(std::move(row));
@@ -210,9 +210,7 @@ void LogView::followChange(
     detail_valid_ = false;
   }
   model_->applyStoreChange(change);
-  if (store_.categories().size() != categories_listed_) {
-    refreshCategories();
-  }
+  refreshOptionalColumns();
   model_->setTracker(tracker_);
   if (selected) {
     // A row the change left in place moves by the eviction alone; its rank among equal times may not hold.
@@ -366,12 +364,17 @@ void LogView::refreshTopics() {
   ui_->pages->setCurrentWidget(topics_.empty() ? ui_->emptyPage : ui_->contentPage);
 }
 
-void LogView::refreshCategories() {
-  categories_listed_ = store_.categories().size();
-  // Many logs have no category: the column and the filter appear once an entry has one (or a restored filter needs
-  // its field).
-  ui_->categoryEdit->setVisible(!store_.categories().empty() || !ui_->categoryEdit->text().isEmpty());
-  ui_->logView->setColumnHidden(LogTableModel::kCategory, store_.categories().empty());
+void LogView::refreshOptionalColumns() {
+  // Many logs have no category, some no source: a column shows while a row fills it, its filter field too (or while a
+  // restored filter needs the field).
+  const std::array<std::tuple<int, Search*, bool>, 2> columns = {{
+      {LogTableModel::kSource, ui_->sourceEdit, store_.hasSources()},
+      {LogTableModel::kCategory, ui_->categoryEdit, store_.hasCategories()},
+  }};
+  for (const auto& [column, edit, filled] : columns) {
+    edit->setVisible(filled || !edit->text().isEmpty());
+    ui_->logView->setColumnHidden(column, !filled);
+  }
 }
 
 void LogView::updateDetail() {
@@ -521,7 +524,7 @@ void LogView::applyState(const LogViewState& state) {
     const QSignalBlocker blocker(edit);
     edit->setText(*text);
   }
-  refreshCategories();  // a restored category filter keeps its field visible
+  refreshOptionalColumns();  // a restored filter keeps its field visible
   hidden_topics_ = state.hidden_topics;
   refreshTopics();
   setShowFuture(state.show_future);

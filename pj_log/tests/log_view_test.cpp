@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -80,6 +81,21 @@ class LogViewTest : public ::testing::Test {
   }
   [[nodiscard]] QString message(int row) const {
     return model()->index(row, 5).data().toString();
+  }
+  /// The visible sections end to end, Message filling the rest of the viewport: a hidden column leaves no gap.
+  void expectNoGap() const {
+    QApplication::processEvents();
+    const QHeaderView* header = list()->header();
+    int previous = -1;
+    for (int section = 0; section < 5; ++section) {
+      if (!header->isSectionHidden(section)) {
+        previous = section;
+      }
+    }
+    ASSERT_GE(previous, 0);
+    EXPECT_EQ(
+        header->sectionViewportPosition(5), header->sectionViewportPosition(previous) + header->sectionSize(previous));
+    EXPECT_EQ(header->length(), list()->viewport()->width());
   }
   [[nodiscard]] QString detail() const {
     return view_.findChild<QPlainTextEdit*>("detailText")->toPlainText();
@@ -322,6 +338,34 @@ TEST_F(LogViewTest, CategoryColumnAndFilterAppearWithTheFirstCategory) {
   ASSERT_EQ(model()->rowCount(), 1);
   list()->setCurrentIndex(model()->index(0, 0));
   EXPECT_TRUE(detail().contains("Category: net"));
+}
+
+TEST_F(LogViewTest, EmptySourceAndCategoryColumnsHideWithoutAGap) {
+  constexpr int kSource = 2;
+  constexpr int kCategory = 3;
+  view_.setTopicLabel(0, "/rosout");
+  const std::vector<LogEntry> bare = {entry(1.0, "a", LogLevel::kInfo, ""), entry(2.0, "b", LogLevel::kInfo, "")};
+  view_.replaceEntries(0, bare);
+  track(10.0);
+  EXPECT_TRUE(list()->isColumnHidden(kSource));
+  EXPECT_TRUE(list()->isColumnHidden(kCategory));
+  expectNoGap();
+
+  view_.appendEntries(0, {entry(3.0, "c", LogLevel::kInfo, "", "motion")});
+  EXPECT_TRUE(list()->isColumnHidden(kSource));
+  EXPECT_FALSE(list()->isColumnHidden(kCategory));
+  expectNoGap();
+  view_.replaceEntries(0, bare);  // the only categorized entry is gone
+  EXPECT_TRUE(list()->isColumnHidden(kCategory));
+  expectNoGap();
+
+  view_.setTopicLabel(1, "/other");
+  view_.replaceEntries(1, {entry(4.0, "d", LogLevel::kInfo, "/node")});
+  EXPECT_FALSE(list()->isColumnHidden(kSource));
+  expectNoGap();
+  view_.removeTopic(1);
+  EXPECT_TRUE(list()->isColumnHidden(kSource));
+  expectNoGap();
 }
 
 TEST_F(LogViewTest, TimeColumnAndDetailFollowTheHostFormat) {

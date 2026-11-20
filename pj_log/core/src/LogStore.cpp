@@ -54,7 +54,6 @@ void StoreChange::then(const StoreChange& next) {
 
 LogStore::LogStore(size_t capacity) : capacity_(capacity) {
   strings_.emplace_back();  // id 0 = ""
-  is_category_.push_back(false);
 }
 
 uint32_t LogStore::intern(std::string_view text) {
@@ -68,17 +67,12 @@ uint32_t LogStore::intern(std::string_view text) {
   const auto id = static_cast<uint32_t>(strings_.size());
   strings_.emplace_back(text);
   string_ids_.emplace(strings_.back(), id);
-  is_category_.push_back(false);
   return id;
 }
 
-uint32_t LogStore::internCategory(std::string_view text) {
-  const uint32_t id = intern(text);
-  if (id != 0 && !is_category_[id]) {
-    is_category_[id] = true;
-    categories_.push_back(id);
-  }
-  return id;
+void LogStore::tally(const LogRow& row, int sign) {
+  rows_with_source_ += row.source != 0 ? sign : 0;
+  rows_with_category_ += row.category != 0 ? sign : 0;
 }
 
 StoreChange LogStore::insert(uint32_t wire, std::vector<LogRow> rows) {
@@ -88,6 +82,7 @@ StoreChange LogStore::insert(uint32_t wire, std::vector<LogRow> rows) {
   }
   for (auto& row : rows) {
     row.wire = wire;
+    tally(row, 1);
   }
   const auto first = std::lower_bound(rows_.begin(), rows_.end(), rows.front(), before);
   const auto position = static_cast<size_t>(std::distance(rows_.begin(), first));
@@ -110,7 +105,14 @@ StoreChange LogStore::removeWire(uint32_t wire) {
   StoreChange change = StoreChange::none(rows_.size());
   const auto first = std::ranges::find(rows_, wire, &LogRow::wire);
   change.old_tail = static_cast<size_t>(std::distance(rows_.begin(), first));
-  rows_.erase(std::remove_if(first, rows_.end(), [wire](const LogRow& row) { return row.wire == wire; }), rows_.end());
+  const auto kept = std::remove_if(first, rows_.end(), [this, wire](const LogRow& row) {
+    if (row.wire != wire) {
+      return false;
+    }
+    tally(row, -1);
+    return true;
+  });
+  rows_.erase(kept, rows_.end());
   return change;
 }
 
@@ -144,6 +146,7 @@ std::optional<size_t> LogStore::indexOf(const RowKey& key) const {
 
 void LogStore::evictOverflow(StoreChange& change) {
   while (rows_.size() > capacity_) {
+    tally(rows_.front(), -1);
     rows_.pop_front();
     ++change.dropped_front;
   }

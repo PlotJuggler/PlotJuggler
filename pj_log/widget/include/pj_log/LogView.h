@@ -112,7 +112,7 @@ class LogView : public QWidget {
   [[nodiscard]] log_view::LogFilter currentFilter() const;
   void applyFilters();
   void refreshTopics();
-  void refreshCategories();
+  void refreshOptionalColumns();
   void updateDetail();
   void selectStoreRow(std::optional<size_t> store_index);
   [[nodiscard]] std::optional<size_t> selectedStoreRow() const;
@@ -131,7 +131,6 @@ class LogView : public QWidget {
   QStringList hidden_topics_;
   QTimer text_timer_;
   std::vector<uint32_t> applied_hidden_wires_;
-  size_t categories_listed_ = 0;
 
   /// The store row the detail pane shows (nullopt: none); valid while detail_valid_.
   bool detail_valid_ = false;

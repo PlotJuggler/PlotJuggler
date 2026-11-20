@@ -21,7 +21,8 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
 - **`LogTableModel`** shows the filtered rows; the last row at or before the tracker is tinted, later ones are greyed
   or hidden (`FutureRows`). Colours come from `FrameworkTokens`.
 - **`LogView`** is the list, the toolbar (level toggles, filters, Topics menu, future-rows choice) and the detail pane
-  with Copy. It is runtime-agnostic: the host hands it `LogEntry` rows, sets the tracker and the `TimeLabelFormat`,
+  with Copy. The Source and Category columns and their filter fields show while a row in the store fills them
+  (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. It is runtime-agnostic: the host hands it `LogEntry` rows, sets the tracker and the `TimeLabelFormat`,
   and answers `seekRequested`. It keeps the selection across every data call that leaves the selected row in the
   store.
 - **`LogDockWidget`** is the panel the dock system hosts (`IDataWidget`, kind and XML tag `log`).
