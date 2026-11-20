@@ -4,15 +4,16 @@
 
 #include <QDomDocument>
 #include <QDomElement>
-#include <QPointer>
 #include <QString>
 #include <QWidget>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <vector>
 
 #include "pj_base/types.hpp"
 #include "pj_runtime/IDataWidget.h"
+#include "pj_runtime/SavedSeriesPath.h"
 #include "pj_widgets/CoalescingTrigger.h"
 #include "pj_widgets/TimeFormat.h"
 
@@ -35,9 +36,9 @@ class SessionManager;
 ///
 /// Persistence: one `<topic>` child per topic with the scene-dock identity attributes (`dataset_id`,
 /// `dataset_source`, `dataset_path`, `topic`), so LayoutXml's dataset relocation applies, plus the filters, the
-/// enabled levels and the future-rows choice. A topic that does not resolve (its dataset is not loaded) is kept,
-/// re-serialized and retried whenever the catalog or a dataset's source path changes; `finishRestore` makes the last
-/// attempt.
+/// enabled levels and the future-rows choice. A topic keeps the identity it was added with, so one whose dataset left
+/// still names it. A topic that does not resolve (its dataset is not loaded) is kept, re-serialized and retried
+/// whenever the catalog or a dataset's source path changes; `finishRestore` makes the last attempt.
 class LogDockWidget : public QWidget, public IDataWidget {
   Q_OBJECT
  public:
@@ -52,6 +53,7 @@ class LogDockWidget : public QWidget, public IDataWidget {
     bool operator==(const PendingDemand&) const = default;
   };
 
+  /// @p session, @p catalog and @p playback are non-null and outlive the panel.
   LogDockWidget(SessionManager* session, CatalogModel* catalog, PlaybackEngine* playback, QWidget* parent = nullptr);
   ~LogDockWidget() override;
 
@@ -71,6 +73,10 @@ class LogDockWidget : public QWidget, public IDataWidget {
   void setTimeLabelFormat(TimeLabelFormat format);
   /// An advertised topic with no storage yet (a placeholder drop): kept as pending until it materializes.
   void addPendingTopic(DatasetId dataset_id, const QString& topic_name);
+  /// The user deleted a topic, or a whole dataset: shown or pending, it leaves the panel instead of waiting to return.
+  /// Called before the store drops it.
+  void discardTopic(DatasetId dataset_id, const QString& topic_name);
+  void discardDataset(DatasetId dataset_id);
 
   /// (dataset, topic name) of every topic shown, for demand tracking.
   [[nodiscard]] std::vector<std::pair<DatasetId, QString>> displayedTopics() const;
@@ -93,34 +99,34 @@ class LogDockWidget : public QWidget, public IDataWidget {
  private:
   struct Topic {
     ObjectTopicId id;
-    DatasetId dataset = 0;
-    QString name;
-    SequentialUID cursor;  ///< drainNewSince position: every entry up to it is in the view
+    SavedSeriesPath saved;  ///< its layout identity (no field), taken while its dataset is loaded
+    SequentialUID cursor;   ///< drainNewSince position: every entry up to it is in the view
     OrderedEntries::ContentIdentity identity;
   };
-  /// A saved-but-unresolved topic: the raw identity attributes, preserved verbatim across save/load.
-  struct PendingTopic {
-    qint64 dataset_id = 0;
-    QString dataset_source;
-    QString dataset_path;
-    QString topic;
-  };
 
-  /// Adds `topic_id` and reads its history; false when it is not a kLog topic or already shown.
+  [[nodiscard]] bool shows(ObjectTopicId topic_id) const;
+  [[nodiscard]] SavedSeriesPath savedIdentity(DatasetId dataset_id, const QString& topic_name) const;
+  /// The dataset @p saved binds to, as tryResolve() binds it.
+  [[nodiscard]] std::optional<DatasetId> resolveDataset(const SavedSeriesPath& saved) const;
+  /// Adds `topic_id` and reads its history; false when it is not a kLog topic or already shown. Emits nothing: the
+  /// caller emits topicsChanged.
   bool addTopic(ObjectTopicId topic_id);
   /// Brings one topic's rows up to date: appended entries, or everything when `full` or rewritten.
   void loadTopic(Topic& topic, bool full);
   /// Follows the store: drops topics that vanished (back to pending), loads new entries, everything on `reload_all_`.
   void refresh();
-  bool tryResolve(const PendingTopic& pending);
+  /// Binds @p pending, adding its topic; true when it resolves, to a topic shown already too.
+  bool tryResolve(const SavedSeriesPath& pending);
   void retryPending();
+  void discardIf(const std::function<bool(const SavedSeriesPath&)>& matches);
 
   SessionManager* session_ = nullptr;
-  QPointer<CatalogModel> catalog_;
-  QPointer<PlaybackEngine> playback_;
+  CatalogModel* catalog_ = nullptr;
+  PlaybackEngine* playback_ = nullptr;
   LogView* view_ = nullptr;
   std::vector<Topic> topics_;
-  std::vector<PendingTopic> pending_;
+  /// Saved but unresolved, written back verbatim.
+  std::vector<SavedSeriesPath> pending_;
   bool reload_all_ = false;
   CoalescingTrigger entries_landed_;
 };

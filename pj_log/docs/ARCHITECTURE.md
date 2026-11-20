@@ -39,8 +39,10 @@ Entries landing (`dataPublished`, `ingestEnded`, `derivedEntriesPublished`) brin
 per `kEntriesLandedIntervalMs`: each topic appends what `drainNewSince` returns after its cursor, late entries
 included (`LogStore::insert` merges them into place), or is re-read when an entry the panel may hold was removed or
 changed (`contentIdentity().removal`: a reload, a merge). A display-offset change re-reads every topic. The panel keeps
-the rows the store's retention evicted: its own `LogStore` capacity bounds it. A topic that leaves
-the store (removed, reparented by a merge) goes back to pending and binds again by identity.
+the rows the store's retention evicted: its own `LogStore` capacity bounds it. A topic that leaves the store (removed, reparented by a merge) goes back to pending and binds again by the identity it
+was added with (its dataset's id, source and path, kept from when the dataset was loaded). A topic or dataset the user
+deletes leaves the panel instead (`discardTopic` / `discardDataset`, called by the shell before the store drops it).
+A pending topic that resolves to a topic shown already counts as resolved.
 
 ## Tracker and seeking
 

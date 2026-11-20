@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <functional>
 
 #include "pj_base/builtin/log.hpp"
 #include "pj_log/LogView.h"
@@ -47,37 +48,38 @@ LogDockWidget::LogDockWidget(SessionManager* session, CatalogModel* catalog, Pla
   layout->addWidget(view_);
   connect(view_, &LogView::stateEdited, this, &LogDockWidget::workspaceChanged);
 
-  if (playback_ != nullptr) {
-    view_->setPlaying(playback_->isPlaying());
-    connect(playback_, &PlaybackEngine::playingChanged, view_, &LogView::setPlaying);
-    connect(view_, &LogView::seekRequested, playback_, [this](double time) {
-      playback_->setCurrentTime(displaySeconds(time));
-    });
-  }
-  if (catalog_ != nullptr) {
-    // A topic saved against a dataset that had not loaded yet binds the moment its items surface.
-    connect(catalog_, &CatalogModel::itemsAdded, this, &LogDockWidget::retryPending);
-    connect(catalog_, &CatalogModel::itemsChanged, this, &LogDockWidget::retryPending);
-    connect(catalog_, &CatalogModel::itemsRemoved, this, [this]() { entries_landed_.request(); });
-    connect(catalog_, &CatalogModel::cleared, this, [this]() { entries_landed_.request(); });
-  }
-  if (session_ != nullptr) {
-    const auto on_offset_changed = [this]() {
-      reload_all_ = true;
-      entries_landed_.request();
-    };
-    connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, on_offset_changed);
-    connect(session_, qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this, on_offset_changed);
-    // dataPublished covers every ingest publication, object-only ones included; a load's last entries land with its
-    // end, and derived objects announce themselves.
-    const auto on_entries_landed = [this]() { entries_landed_.request(); };
-    connect(session_, &SessionManager::dataPublished, this, on_entries_landed);
-    connect(session_, &SessionManager::ingestEnded, this, on_entries_landed);
-    connect(session_, &SessionManager::derivedEntriesPublished, this, on_entries_landed);
-    // A topic names its dataset by source path, which an asynchronous file load registers only at commit and which
-    // no catalog change reports.
-    connect(session_, &SessionManager::datasetSourcePathChanged, this, &LogDockWidget::retryPending);
-  }
+  view_->setPlaying(playback_->isPlaying());
+  connect(playback_, &PlaybackEngine::playingChanged, view_, &LogView::setPlaying);
+  connect(view_, &LogView::seekRequested, playback_, [this](double time) {
+    playback_->setCurrentTime(displaySeconds(time));
+  });
+  // A topic saved against a dataset that had not loaded yet binds the moment its items surface.
+  connect(catalog_, &CatalogModel::itemsAdded, this, &LogDockWidget::retryPending);
+  connect(catalog_, &CatalogModel::itemsChanged, this, &LogDockWidget::retryPending);
+  connect(catalog_, &CatalogModel::itemsRemoved, this, [this]() { entries_landed_.request(); });
+  connect(catalog_, &CatalogModel::cleared, this, [this]() { entries_landed_.request(); });
+  const auto on_offset_changed = [this]() {
+    reload_all_ = true;
+    entries_landed_.request();
+  };
+  connect(session_, qOverload<>(&SessionManager::displayOffsetChanged), this, on_offset_changed);
+  connect(session_, qOverload<DatasetId>(&SessionManager::displayOffsetChanged), this, on_offset_changed);
+  // dataPublished covers every ingest publication, object-only ones included; a load's last entries land with its
+  // end, and derived objects announce themselves.
+  const auto on_entries_landed = [this]() { entries_landed_.request(); };
+  connect(session_, &SessionManager::dataPublished, this, on_entries_landed);
+  connect(session_, &SessionManager::ingestEnded, this, on_entries_landed);
+  connect(session_, &SessionManager::derivedEntriesPublished, this, on_entries_landed);
+  // A topic names its dataset by source path, which an asynchronous file load registers only at commit and which
+  // no catalog change reports.
+  connect(session_, &SessionManager::datasetSourcePathChanged, this, [this](DatasetId dataset_id) {
+    for (Topic& topic : topics_) {
+      if (topic.saved.dataset_id == dataset_id) {
+        topic.saved = savedIdentity(dataset_id, topic.saved.topic);
+      }
+    }
+    retryPending();
+  });
 }
 
 LogDockWidget::~LogDockWidget() = default;
@@ -90,9 +92,12 @@ void LogDockWidget::setTimeLabelFormat(TimeLabelFormat format) {
   view_->setTimeLabelFormat(format);
 }
 
+bool LogDockWidget::shows(ObjectTopicId topic_id) const {
+  return std::ranges::any_of(topics_, [topic_id](const Topic& topic) { return topic.id == topic_id; });
+}
+
 bool LogDockWidget::canAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type) const {
-  return object_type == sdk::BuiltinObjectType::kLog &&
-         std::ranges::none_of(topics_, [topic_id](const Topic& topic) { return topic.id == topic_id; });
+  return object_type == sdk::BuiltinObjectType::kLog && !shows(topic_id);
 }
 
 bool LogDockWidget::tryAcceptObjectTopic(
@@ -100,29 +105,35 @@ bool LogDockWidget::tryAcceptObjectTopic(
   if (!canAcceptObjectTopic(topic_id, object_type) || !addTopic(topic_id)) {
     return false;
   }
+  emit topicsChanged();
   emit workspaceChanged();
   return true;
 }
 
+SavedSeriesPath LogDockWidget::savedIdentity(DatasetId dataset_id, const QString& topic_name) const {
+  return SavedSeriesPath{
+      .topic = topic_name,
+      .field = {},
+      .dataset_id = dataset_id,
+      .dataset_source = catalog_->datasetSourceName(dataset_id).value_or(QString()),
+      .dataset_path = catalog_->datasetSourcePath(dataset_id),
+  };
+}
+
 bool LogDockWidget::addTopic(ObjectTopicId topic_id) {
-  if (session_ == nullptr || std::ranges::any_of(topics_, [topic_id](const Topic& t) { return t.id == topic_id; })) {
-    return false;
-  }
   const ObjectStore& objects = session_->objectStore();
-  if (!isLogTopic(objects, topic_id)) {
+  if (shows(topic_id) || !isLogTopic(objects, topic_id)) {
     return false;
   }
   const ObjectTopicDescriptor descriptor = objects.descriptor(topic_id);
   Topic& topic = topics_.emplace_back(
       Topic{
           .id = topic_id,
-          .dataset = descriptor.dataset_id,
-          .name = QString::fromStdString(descriptor.topic_name),
+          .saved = savedIdentity(descriptor.dataset_id, QString::fromStdString(descriptor.topic_name)),
           .cursor = {},
           .identity = {}});
-  view_->setTopicLabel(topic_id.id, topic.name);
+  view_->setTopicLabel(topic_id.id, topic.saved.topic);
   loadTopic(topic, /*full=*/true);
-  emit topicsChanged();
   return true;
 }
 
@@ -143,7 +154,7 @@ void LogDockWidget::loadTopic(Topic& topic, bool full) {
   std::vector<ResolvedObjectEntry> entries = objects.drainNewSince(topic.id, topic.cursor);
   // Arrival order; the view wants time order.
   std::ranges::stable_sort(entries, {}, &ResolvedObjectEntry::timestamp);
-  const DisplayOffset offset = session_->displayOffset(topic.dataset);
+  const DisplayOffset offset = session_->displayOffset(topic.saved.dataset_id);
   std::vector<LogEntry> rows;
   rows.reserve(entries.size());
   for (const ResolvedObjectEntry& entry : entries) {
@@ -173,81 +184,92 @@ void LogDockWidget::loadTopic(Topic& topic, bool full) {
 }
 
 void LogDockWidget::refresh() {
-  if (session_ == nullptr) {
-    return;
-  }
   const bool full = std::exchange(reload_all_, false);
   const ObjectStore& objects = session_->objectStore();
   bool changed = false;
   for (auto it = topics_.begin(); it != topics_.end();) {
-    if (objects.isTopic(it->id, it->dataset, it->name.toStdString())) {
+    if (objects.isTopic(it->id, it->saved.dataset_id, it->saved.topic.toStdString())) {
       loadTopic(*it, full);
       ++it;
       continue;
     }
-    // Removed, reparented by a merge or reissued: wait for it by identity, as a restore does.
-    pending_.push_back(
-        PendingTopic{
-            .dataset_id = static_cast<qint64>(it->dataset),
-            .dataset_source =
-                catalog_ != nullptr ? catalog_->datasetSourceName(it->dataset).value_or(QString()) : QString(),
-            .dataset_path = catalog_ != nullptr ? catalog_->datasetSourcePath(it->dataset) : QString(),
-            .topic = it->name,
-        });
+    // Removed, reparented by a merge or reissued: wait for it by the identity it was shown with, as a restore does;
+    // its dataset may be gone already.
+    if (std::ranges::find(pending_, it->saved) == pending_.end()) {
+      pending_.push_back(it->saved);
+    }
+    view_->removeTopic(it->id.id);
+    it = topics_.erase(it);
+    changed = true;
+  }
+  if (changed) {
+    retryPending();
+    emit topicsChanged();
+  }
+}
+
+void LogDockWidget::addPendingTopic(DatasetId dataset_id, const QString& topic_name) {
+  SavedSeriesPath pending = savedIdentity(dataset_id, topic_name);
+  if (tryResolve(pending)) {
+    emit topicsChanged();
+  } else if (std::ranges::find(pending_, pending) == pending_.end()) {
+    pending_.push_back(std::move(pending));
+    emit topicsChanged();
+  }
+}
+
+void LogDockWidget::discardTopic(DatasetId dataset_id, const QString& topic_name) {
+  discardIf([dataset_id, &topic_name](const SavedSeriesPath& saved) {
+    return saved.dataset_id == dataset_id && saved.topic == topic_name;
+  });
+}
+
+void LogDockWidget::discardDataset(DatasetId dataset_id) {
+  discardIf([dataset_id](const SavedSeriesPath& saved) { return saved.dataset_id == dataset_id; });
+}
+
+void LogDockWidget::discardIf(const std::function<bool(const SavedSeriesPath&)>& matches) {
+  bool changed = std::erase_if(pending_, matches) > 0;
+  for (auto it = topics_.begin(); it != topics_.end();) {
+    if (!matches(it->saved)) {
+      ++it;
+      continue;
+    }
     view_->removeTopic(it->id.id);
     it = topics_.erase(it);
     changed = true;
   }
   if (changed) {
     emit topicsChanged();
-    retryPending();
   }
 }
 
-void LogDockWidget::addPendingTopic(DatasetId dataset_id, const QString& topic_name) {
-  const PendingTopic pending{
-      .dataset_id = static_cast<qint64>(dataset_id),
-      .dataset_source = catalog_ != nullptr ? catalog_->datasetSourceName(dataset_id).value_or(QString()) : QString(),
-      .dataset_path = catalog_ != nullptr ? catalog_->datasetSourcePath(dataset_id) : QString(),
-      .topic = topic_name,
-  };
-  if (!tryResolve(pending)) {
-    pending_.push_back(pending);
-    emit topicsChanged();
-  }
+std::optional<DatasetId> LogDockWidget::resolveDataset(const SavedSeriesPath& saved) const {
+  return session_->resolveObjectDatasetIdentity(saved.dataset_id, saved.dataset_source, saved.dataset_path, saved.topic)
+      .id;
 }
 
-bool LogDockWidget::tryResolve(const PendingTopic& pending) {
-  if (session_ == nullptr || pending.topic.isEmpty()) {
+bool LogDockWidget::tryResolve(const SavedSeriesPath& pending) {
+  if (pending.topic.isEmpty()) {
     return false;
   }
-  const ObjectStore& objects = session_->objectStore();
-  const std::string name = pending.topic.toStdString();
   std::optional<ObjectTopicId> topic_id;
   if (pending.dataset_id == 0 && pending.dataset_source.isEmpty() && pending.dataset_path.isEmpty()) {
     // No dataset qualifier: the one dataset holding a topic of that name.
-    for (const ObjectTopicId candidate : objects.listTopics()) {
-      if (objects.descriptor(candidate).topic_name == name) {
-        if (topic_id.has_value()) {
-          return false;  // ambiguous
-        }
-        topic_id = candidate;
-      }
+    const std::vector<CatalogItem> named = catalog_->objectTopicsNamed(pending.topic, {});
+    if (named.size() == 1) {
+      topic_id = asObjectTopic(named.front())->object_topic_id;
     }
-  } else {
-    const DatasetIdentityResolution dataset = session_->resolveObjectDatasetIdentity(
-        static_cast<DatasetId>(pending.dataset_id), pending.dataset_source, pending.dataset_path, pending.topic);
-    if (dataset.id) {
-      topic_id = objects.findTopic(*dataset.id, name);
-    }
+  } else if (const std::optional<DatasetId> dataset = resolveDataset(pending)) {
+    topic_id = session_->objectStore().findTopic(*dataset, pending.topic.toStdString());
   }
-  return topic_id.has_value() && addTopic(*topic_id);
+  // A topic shown already is resolved: waiting for it would hold its demand and save it twice.
+  return topic_id.has_value() && (shows(*topic_id) || addTopic(*topic_id));
 }
 
 void LogDockWidget::retryPending() {
-  const size_t before = pending_.size();
-  std::erase_if(pending_, [this](const PendingTopic& pending) { return tryResolve(pending); });
-  if (pending_.size() != before) {
+  // No signal while pending_ is being erased from: a slot reading it would see it half done.
+  if (std::erase_if(pending_, [this](const SavedSeriesPath& pending) { return tryResolve(pending); }) > 0) {
     emit topicsChanged();
   }
 }
@@ -259,7 +281,7 @@ void LogDockWidget::finishRestore() {
 std::vector<std::pair<DatasetId, QString>> LogDockWidget::displayedTopics() const {
   std::vector<std::pair<DatasetId, QString>> out;
   for (const Topic& topic : topics_) {
-    out.emplace_back(topic.dataset, topic.name);
+    out.emplace_back(topic.saved.dataset_id, topic.saved.topic);
   }
   return out;
 }
@@ -267,22 +289,16 @@ std::vector<std::pair<DatasetId, QString>> LogDockWidget::displayedTopics() cons
 std::vector<std::pair<DatasetId, ObjectTopicId>> LogDockWidget::displayedObjectTopics() const {
   std::vector<std::pair<DatasetId, ObjectTopicId>> out;
   for (const Topic& topic : topics_) {
-    out.emplace_back(topic.dataset, topic.id);
+    out.emplace_back(topic.saved.dataset_id, topic.id);
   }
   return out;
 }
 
 std::vector<LogDockWidget::PendingDemand> LogDockWidget::pendingDemands() const {
   std::vector<PendingDemand> out;
-  for (const PendingTopic& pending : pending_) {
-    PendingDemand demand{pending.topic, std::nullopt};
-    if (catalog_ != nullptr) {
-      const auto identity = catalog_->resolveDatasetIdentity(
-          static_cast<DatasetId>(pending.dataset_id), pending.dataset_source, pending.dataset_path);
-      if (!identity.ambiguous) {
-        demand.preferred_dataset = identity.id;
-      }
-    }
+  for (const SavedSeriesPath& pending : pending_) {
+    // The dataset tryResolve() would bind to, so the demand starts the source the topic will come from.
+    PendingDemand demand{pending.topic, resolveDataset(pending)};
     if (std::ranges::find(out, demand) == out.end()) {
       out.push_back(std::move(demand));
     }
@@ -292,7 +308,7 @@ std::vector<LogDockWidget::PendingDemand> LogDockWidget::pendingDemands() const 
 
 bool LogDockWidget::hasPendingTopic(const QString& topic_name) const {
   return std::ranges::any_of(
-      pending_, [&topic_name](const PendingTopic& pending) { return pending.topic == topic_name; });
+      pending_, [&topic_name](const SavedSeriesPath& pending) { return pending.topic == topic_name; });
 }
 
 QDomElement LogDockWidget::xmlSaveState(QDomDocument& doc) const {
@@ -310,24 +326,20 @@ QDomElement LogDockWidget::xmlSaveState(QDomDocument& doc) const {
   root.setAttribute(u"text_filter"_s, state.text);
   root.setAttribute(u"future_rows"_s, state.show_future ? u"grey"_s : u"hide"_s);
 
-  const auto append_topic = [&doc, &root](
-                                qint64 dataset_id, const QString& source, const QString& path, const QString& name) {
+  const auto append_topic = [&doc, &root](const SavedSeriesPath& saved) {
     QDomElement topic = doc.createElement(kTopicTag);
-    topic.setAttribute(u"dataset_id"_s, QString::number(dataset_id));
-    topic.setAttribute(u"dataset_source"_s, source);
-    topic.setAttribute(u"dataset_path"_s, path);
-    topic.setAttribute(u"topic"_s, name);
+    topic.setAttribute(u"dataset_id"_s, QString::number(saved.dataset_id));
+    topic.setAttribute(u"dataset_source"_s, saved.dataset_source);
+    topic.setAttribute(u"dataset_path"_s, saved.dataset_path);
+    topic.setAttribute(u"topic"_s, saved.topic);
     root.appendChild(topic);
   };
   for (const Topic& topic : topics_) {
-    append_topic(
-        static_cast<qint64>(topic.dataset),
-        catalog_ != nullptr ? catalog_->datasetSourceName(topic.dataset).value_or(QString()) : QString(),
-        catalog_ != nullptr ? catalog_->datasetSourcePath(topic.dataset) : QString(), topic.name);
+    append_topic(topic.saved);
   }
   // Unresolved topics ride along verbatim: a save without their dataset loaded must not forget them.
-  for (const PendingTopic& pending : pending_) {
-    append_topic(pending.dataset_id, pending.dataset_source, pending.dataset_path, pending.topic);
+  for (const SavedSeriesPath& pending : pending_) {
+    append_topic(pending);
   }
   for (const QString& hidden : state.hidden_topics) {
     QDomElement element = doc.createElement(kHiddenTopicTag);
@@ -365,13 +377,14 @@ bool LogDockWidget::xmlLoadState(const QDomElement& element) {
   pending_.clear();
   for (QDomElement child = element.firstChildElement(kTopicTag); !child.isNull();
        child = child.nextSiblingElement(kTopicTag)) {
-    const PendingTopic saved{
-        .dataset_id = child.attribute(u"dataset_id"_s).toLongLong(),
+    const SavedSeriesPath saved{
+        .topic = child.attribute(u"topic"_s),
+        .field = {},
+        .dataset_id = child.attribute(u"dataset_id"_s).toUInt(),
         .dataset_source = child.attribute(u"dataset_source"_s),
         .dataset_path = child.attribute(u"dataset_path"_s),
-        .topic = child.attribute(u"topic"_s),
     };
-    if (!tryResolve(saved)) {
+    if (!tryResolve(saved) && std::ranges::find(pending_, saved) == pending_.end()) {
       pending_.push_back(saved);
     }
   }

@@ -69,6 +69,17 @@ class LogDockWidgetTest : public ::testing::Test {
     return std::make_unique<LogDockWidget>(&session_, catalog_.get(), &playback_);
   }
 
+  [[nodiscard]] static int savedTopics(const LogDockWidget& dock) {
+    QDomDocument doc;
+    const QDomElement saved = dock.xmlSaveState(doc);
+    int count = 0;
+    for (QDomElement child = saved.firstChildElement(u"topic"_s); !child.isNull();
+         child = child.nextSiblingElement(u"topic"_s)) {
+      ++count;
+    }
+    return count;
+  }
+
   [[nodiscard]] static std::vector<std::string> messages(const LogDockWidget& dock) {
     std::vector<std::string> out;
     const auto& store = dock.view()->store();
@@ -218,6 +229,53 @@ TEST_F(LogDockWidgetTest, APendingTopicBindsWhenItAppears) {
   QApplication::processEvents();
   EXPECT_FALSE(dock->hasPendingTopic(u"/late"_s));
   EXPECT_EQ(messages(*dock), std::vector<std::string>{"late one"});
+}
+
+TEST_F(LogDockWidgetTest, APendingTopicThatIsAlreadyShownIsResolved) {
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  dock->addPendingTopic(dataset_id_, u"/rosout"_s);
+  EXPECT_FALSE(dock->hasPendingTopic(u"/rosout"_s));
+  EXPECT_EQ(savedTopics(*dock), 1);
+
+  dock->addPendingTopic(dataset_id_, u"/late"_s);
+  dock->addPendingTopic(dataset_id_, u"/late"_s);
+  EXPECT_EQ(dock->pendingDemands().size(), 1u);
+  const ObjectTopicId late = registerTopic("/late", kLogMetadata);
+  push(late, 1, "late one");
+  catalog_->rebuildFromDatastore();
+  QApplication::processEvents();
+  EXPECT_FALSE(dock->hasPendingTopic(u"/late"_s));
+  EXPECT_TRUE(dock->pendingDemands().empty());
+  EXPECT_EQ(savedTopics(*dock), 2);
+}
+
+TEST_F(LogDockWidgetTest, AVanishedTopicKeepsItsDatasetIdentityAndRebinds) {
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  session_.evictDatasetObjects(dataset_id_);
+  session_.removeDataset(dataset_id_);
+  catalog_->rebuildFromDatastore();
+  QTest::qWait(LogDockWidget::kEntriesLandedIntervalMs + 50);
+  ASSERT_TRUE(dock->hasPendingTopic(u"/rosout"_s));
+  QDomDocument doc;
+  const QDomElement topic = dock->xmlSaveState(doc).firstChildElement(u"topic"_s);
+  EXPECT_EQ(topic.attribute(u"dataset_source"_s), u"robot.mcap"_s);
+  EXPECT_EQ(topic.attribute(u"dataset_path"_s), u"/data/robot.mcap"_s);
+
+  // The same file loaded again: a new dataset id, the same source and path.
+  auto domain = session_.dataEngine().createTimeDomain("robot.mcap");
+  ASSERT_TRUE(domain.has_value());
+  auto dataset =
+      session_.dataEngine().createDataset(DatasetDescriptor{.source_name = "robot.mcap", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value());
+  dataset_id_ = *dataset;
+  session_.setDatasetSourcePath(dataset_id_, u"/data/robot.mcap"_s);
+  push(registerTopic("/rosout", kLogMetadata), 5, "reloaded");
+  catalog_->rebuildFromDatastore();
+  QApplication::processEvents();
+  EXPECT_FALSE(dock->hasPendingTopic(u"/rosout"_s));
+  EXPECT_EQ(messages(*dock), std::vector<std::string>{"reloaded"});
 }
 
 }  // namespace
