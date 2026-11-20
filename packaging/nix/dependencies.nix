@@ -50,6 +50,7 @@ in
       ninjaFlags = [
         "Luau.Common"
         "Luau.Ast"
+        "Luau.Bytecode"
         "Luau.Compiler"
         "Luau.VM"
         "Luau.CodeGen"
@@ -58,7 +59,7 @@ in
       installPhase = ''
         runHook preInstall
         mkdir -p "$out/lib/cmake/Luau" "$out/include"
-        for component in Common Ast Compiler VM CodeGen; do
+        for component in Common Ast Bytecode Compiler VM CodeGen; do
           cp "libLuau.$component.a" "$out/lib/"
           cp -r "../$component/include/." "$out/include/"
         done

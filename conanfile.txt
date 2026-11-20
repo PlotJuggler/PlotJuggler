@@ -18,13 +18,13 @@ nlohmann_json/3.12.0
 # Luau::VM / Luau::Compiler / Luau::CodeGen; find_package(Luau). (The retired
 # PUC-Lua/sol2 LuaProcessor's lua/5.4.7 dep was dropped in M9; the standalone
 # engine_shootout benchmarks pin their own lua/luajit via their own conanfiles.)
-luau/0.700
+luau/0.747
 # Header-only FFT for the marker-analysis bandPower primitive (pj_scripting).
 pocketfft/0.0.0.cci.20240801
 # Embedded CPython for the Python Data Processors backend (pj_scripting's
 # PythonEngine). pybind11 provides the embed target; cpython is pinned explicitly.
 cpython/3.12.7
-pybind11/2.13.6
+pybind11/3.1.0
 mcap/2.1.1
 zstd/1.5.5
 fast_float/8.2.10

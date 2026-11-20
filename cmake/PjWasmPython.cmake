@@ -104,10 +104,10 @@ target_link_libraries(cpython::embed INTERFACE
 set(PJ_WASM_PYTHON_STDLIB "${PJ_WASM_PYTHON_STAGE}/lib/python${_pj_cpython_nodot}.zip")
 set(PJ_WASM_PYTHON_NOTICES "${PJ_WASM_PYTHON_STAGE}/THIRD_PARTY_NOTICES.txt")
 
-# pybind11 2.13 (the desktop pin) predates CPython 3.14; 3.0 supports it. Headers only.
+# The desktop pin's release (conanfile.txt). Headers only.
 FetchContent_Declare(pj_wasm_pybind11
-    URL https://codeload.github.com/pybind/pybind11/tar.gz/refs/tags/v3.0.4
-    URL_HASH SHA256=74b6a2c2b4573a400cafb6ecbf60c98df300cd3d0041296b913d02b2cbbb2676
+    URL https://codeload.github.com/pybind/pybind11/tar.gz/refs/tags/v3.1.0
+    URL_HASH SHA256=ef712655692a2e9bf7bb7874c022564a45f91d847ddee987e720cd9e28849665
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_headers_only)
 FetchContent_MakeAvailable(pj_wasm_pybind11)

@@ -133,7 +133,7 @@ if(PJ_WASM_WITH_PROTOBUF)
     set(ABSL_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(protobuf
         GIT_REPOSITORY https://github.com/protocolbuffers/protobuf.git
-        GIT_TAG v33.5
+        GIT_TAG v36.2
         GIT_SHALLOW TRUE
         GIT_SUBMODULES_RECURSE TRUE
         OVERRIDE_FIND_PACKAGE
@@ -329,7 +329,7 @@ if(PJ_WASM_WITH_LUAU)
     set(LUAU_BUILD_WEB OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(Luau
         GIT_REPOSITORY https://github.com/luau-lang/luau.git
-        GIT_TAG 0.700
+        GIT_TAG 0.747
         GIT_SHALLOW TRUE
         OVERRIDE_FIND_PACKAGE
         SYSTEM)

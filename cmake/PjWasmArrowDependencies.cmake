@@ -23,11 +23,13 @@ FetchContent_MakeAvailable(arrow)
 # fetched here at those same pins too, for their notices and the source offer
 # (scripts/wasm_source_offer.mjs reads these declarations as written, so they
 # stay literal); the check below fails the configure if an Arrow bump moves one.
+# simdjson is the exception: it runs ahead of Arrow's pin (ARROW_SIMDJSON_BUILD_VERSION), and ARROW_SIMDJSON_URL
+# below makes Arrow build that newer copy.
 # Boost contributes headers only to Thrift: it is declared for the source offer
 # and never populated. RapidJSON is left out: only ARROW_JSON, off here, uses it.
 set(_pj_thrift_sha256 e0fa5839a4c5c1d631b0931cf2c554ebbfa4e2fee3a9fb3ffd4f82ce4396c6e4)
 set(_pj_snappy_sha256 90f74bc1fbf78a6c56b3c4a082a05103b3a56bb17bca1a27e052ea11723292dc)
-set(_pj_simdjson_sha256 b091107844fe928158c5c2265c20360fff312889ddf7ebc4528a0f0f8f2ff9cd)
+set(_pj_simdjson_sha256 499176afd4b32fbe6f65551ef573b880407280072e1c19e22df0b45da58cdf64)
 set(_pj_boost_sha256 f51707c27359a0df0cac1beada86de31bb5eed5e8285592dadec384df99c2984)
 FetchContent_Declare(arrow_thrift
     URL https://dlcdn.apache.org/thrift/0.24.0/thrift-0.24.0.tar.gz
@@ -40,7 +42,7 @@ FetchContent_Declare(arrow_snappy
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 FetchContent_Declare(arrow_simdjson
-    URL https://github.com/simdjson/simdjson/archive/refs/tags/v4.6.4.tar.gz
+    URL https://github.com/simdjson/simdjson/archive/refs/tags/v5.2.0.tar.gz
     URL_HASH SHA256=${_pj_simdjson_sha256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
@@ -50,7 +52,7 @@ FetchContent_Declare(arrow_boost
 FetchContent_MakeAvailable(arrow_thrift arrow_snappy arrow_simdjson)
 
 file(READ "${arrow_SOURCE_DIR}/cpp/thirdparty/versions.txt" _pj_arrow_versions)
-foreach(_pj_name IN ITEMS THRIFT SNAPPY SIMDJSON BOOST)
+foreach(_pj_name IN ITEMS THRIFT SNAPPY BOOST)
     string(TOLOWER "${_pj_name}" _pj_lower)
     if(NOT _pj_arrow_versions MATCHES "ARROW_${_pj_name}_BUILD_SHA256_CHECKSUM=${_pj_${_pj_lower}_sha256}")
         message(FATAL_ERROR "Arrow's bundled ${_pj_name} is no longer the one pinned in ${CMAKE_CURRENT_LIST_FILE}")

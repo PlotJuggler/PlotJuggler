@@ -38,7 +38,7 @@ class PjScriptingCoreConan(ConanFile):
         # *references* the Luau symbols, so consumers must link them at the
         # final link. They are therefore propagated (visible), even though they are
         # not in any public header.
-        self.requires("luau/0.700")
+        self.requires("luau/0.747")
         self.requires("pocketfft/0.0.0.cci.20240801")  # header-only: bandPower's FFT
 
     def layout(self):

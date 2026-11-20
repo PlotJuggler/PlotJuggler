@@ -47,7 +47,7 @@ requirements:
     - glm 1.0.*
     - nlohmann_json 3.12.*
     - python
-    - pybind11 2.13.*
+    - pybind11 3.1.*
     - zstd 1.5.*
     - lz4-c
     - fast_float 8.*
@@ -71,7 +71,7 @@ requirements:
     # OpenCV and VTK, which need the codecs and libraries it leaves out.
     - ffmpeg ${{ ffmpeg }}.* lgpl_*
     # PJ4's own packages (recipes/), from the plotjuggler channel.
-    - luau 0.700.*
+    - luau 0.747.*
     - libmcap 2.1.*
     # conda-forge builds 1.5 only against lz4-c 1.11, which the lz4_c 1.10 pin (variants.yaml) excludes; 1.4.1 has
     # builds for both, and both read the same V6 wire format.

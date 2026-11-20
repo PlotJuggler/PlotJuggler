@@ -44,7 +44,7 @@ benchmark = "1.9.*"
 libnanoarrow = "0.9.*"           # C library + IPC (conda-forge `nanoarrow` is the Python binding)
 nlohmann_json = "3.12.*"
 python = "3.12.*"                # embedded CPython for pj_scripting's PythonEngine
-pybind11 = "2.13.*"
+pybind11 = "3.1.*"
 zstd = "1.5.*"
 lz4-c = "*"                      # cloudini + mcap runtime
 fast_float = "8.*"
@@ -57,7 +57,7 @@ assimp = "*"                     # keep the same major as the assimp pin in cona
 cloudini = "1.5.*"               # shared libcloudini_lib; CMake package cloudini_lib
 
 # --- local channel (gaps vs conda-forge; see recipes/) ------------------------
-luau = "0.700.*"
+luau = "0.747.*"
 libmcap = "2.1.*"                # C++ header-only mcap (conda-forge `mcap` is the Python wrapper)
 
 # Linux-only deps. elfutils backs backward-cpp's `dw` stack-trace backend
