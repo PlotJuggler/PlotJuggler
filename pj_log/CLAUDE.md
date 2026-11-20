@@ -9,8 +9,9 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 ## Invariants
 
 - **Each stored entry is decoded once.** An update appends what landed after a topic's `drainNewSince` cursor and
-  re-reads a topic only when its `contentIdentity().rewrite` moved or the display offset changed. Reasoning, not
-  measured: re-reading every topic on each landing makes a progressive load quadratic in the log size.
+  re-reads a topic only when its `contentIdentity().rewrite` moved or the display offset changed. Re-reading every
+  topic on each landing makes a progressive load quadratic in the log size; a streamed reload of 50 000 entries
+  measured ten times an append ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md), "Streaming").
 - **Row times are display-axis seconds** (`rawToDisplaySecondsAtOrAfter` of the entry's store stamp); the log's own
   stamp is metadata for the detail pane only. Sorting, the tracker and seeks on the own stamp would put rows where a
   seek to them does not reveal them.
@@ -40,6 +41,18 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 with plain `LogEntry` data), `log_dock_widget_test.cpp` (the dock over a real session). The shell paths (placeholder
 button, drops, layouts) are in `pj_app/tests/main_window_log_panel_test.cpp`.
 
+Benchmark (`PJ_BUILD_DEMOS`, no ctest): `benchmarks/log_panel_benchmark.cpp` prints the panel's GUI-thread CPU under
+playback, streaming and one-off loads (one `LOG_BENCH` line per run, then a summary). Build and run it under
+`host-job`, offscreen:
+
+```bash
+host-job log-bench-build bash -c 'PJ_BUILD_JOBS=8 ./build.sh --target log_panel_benchmark'
+host-job --light log-bench env QT_QPA_PLATFORM=offscreen ./build/pj_log/benchmarks/log_panel_benchmark \
+    [--only playback|streaming|oneoff] [--stream-seconds 10]
+```
+
 ## Docs
 
 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): components, data flow, tracker and seeking, persistence, known gaps.
+[docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): measured CPU cost under playback (grey vs hidden future rows),
+streaming (appends vs reloads on late entries) and one-off loads.

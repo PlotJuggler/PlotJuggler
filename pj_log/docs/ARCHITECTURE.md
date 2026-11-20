@@ -54,4 +54,6 @@ Advertised topics with no storage yet (a placeholder drop) wait as pending, and 
 ## Known gaps
 
 - The panel keeps the rows a retention eviction removed from the store.
+- A reload (a late entry, a display-offset change) replaces a topic's rows with what the store still retains: the
+  rows retention evicted are lost then ([TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md), "Streaming").
 - Every row is held in memory up to `LogStore`'s capacity; the oldest are dropped beyond it.
