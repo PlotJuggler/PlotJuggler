@@ -12,9 +12,10 @@
 //
 // streaming: a producer thread pushes entries into the ObjectStore at a fixed rate, and a 50 ms GUI timer announces
 // them with notifyIngest(live) after setting the retention budget, as StreamingSourceManager's ingest tick does (5 s
-// window, its default, and 64 MiB); the tracker follows the newest stamp at 30 Hz. "late" stamps each entry up to
-// 50 ms in the past, so a topic is rewritten and the panel reloads it. A refresh sample is the CPU of the GUI event
-// in which the model took rows (the 250 ms trailing edge, or the notifyIngest of a leading one).
+// window, its default, and 64 MiB); the tracker follows the newest stamp at 30 Hz, future rows greyed. "late" stamps
+// each entry up to 50 ms in the past, so it lands before the newest row and the model rebuilds the rows after it. A
+// refresh sample is the CPU of the GUI event in which the model took rows (the 250 ms trailing edge, or the
+// notifyIngest of a leading one); a rebuild is a refresh in which the model also removed rows.
 //
 // oneoff: dropping a loaded 1e5-entry topic on a shown panel, and one filter change over 1e5 rows; each includes
 // 30 ms of event processing for the paint.
@@ -45,6 +46,7 @@
 #include "pj_datastore/engine.hpp"
 #include "pj_log/LogDockWidget.h"
 #include "pj_log/LogView.h"
+#include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -148,6 +150,7 @@ class LogGenerator {
 
 struct Fixture {
   SessionManager session;
+  CatalogModel catalog{&session};
   PlaybackEngine playback;
   DatasetId dataset = 0;
   std::vector<ObjectTopicId> topics;
@@ -175,7 +178,7 @@ struct Fixture {
 };
 
 std::unique_ptr<LogDockWidget> makeShownDock(Fixture& fixture) {
-  auto dock = std::make_unique<LogDockWidget>(&fixture.session, nullptr, &fixture.playback);
+  auto dock = std::make_unique<LogDockWidget>(&fixture.session, &fixture.catalog, &fixture.playback);
   dock->resize(1280, 720);
   dock->show();
   (void)pj_bench::waitUntil([&] { return dock->windowHandle() != nullptr && dock->windowHandle()->isExposed(); });
@@ -273,6 +276,7 @@ void runStreaming(TimedApplication& app, int rate, bool late, int seconds) {
   const ObjectTopicId topic = fixture.topics.front();
   auto dock = makeShownDock(fixture);
   (void)dock->tryAcceptObjectTopic(topic, sdk::BuiltinObjectType::kLog, {});
+  setView(*dock->view(), /*show_future=*/true, /*filter=*/false);
   dock->view()->setPlaying(true);
   spin(200);
 
@@ -284,11 +288,11 @@ void runStreaming(TimedApplication& app, int rate, bool late, int seconds) {
   QObject::connect(model, &QAbstractItemModel::rowsRemoved, &guard, [&] { touched = removed = true; });
   QObject::connect(model, &QAbstractItemModel::modelReset, &guard, [&] { touched = removed = true; });
   std::vector<double> refreshes;
-  int reloads = 0;
+  int rebuilds = 0;
   app.on_top_event = [&](double cpu_ms) {
     if (touched) {
       refreshes.push_back(cpu_ms);
-      reloads += removed ? 1 : 0;
+      rebuilds += removed ? 1 : 0;
       touched = removed = false;
     }
   };
@@ -359,14 +363,14 @@ void runStreaming(TimedApplication& app, int rate, bool late, int seconds) {
       QByteArray("scenario=streaming rate=") + QByteArray::number(rate) + " order=" + order +
           " seconds=" + QByteArray::number(seconds) + " pushed=" + QByteArray::number(qlonglong(pushed.load())) +
           " gui_cpu_pct=" + pj_bench::fmt(pct, 1) + " refreshes=" + QByteArray::number(refreshes.size()) +
-          " reloads=" + QByteArray::number(reloads) + " refresh_cpu_ms_median=" + pj_bench::fmt(s.median, 3) +
+          " rebuilds=" + QByteArray::number(rebuilds) + " refresh_cpu_ms_median=" + pj_bench::fmt(s.median, 3) +
           " refresh_cpu_ms_p95=" + pj_bench::fmt(s.p95, 3) + " refresh_cpu_ms_max=" + pj_bench::fmt(s.max, 3) +
           " shown=" + QByteArray::number(qulonglong(dock->view()->store().size())) + " store_retained=" +
           QByteArray::number(qulonglong(retained)) + " rss_mib=" + pj_bench::fmt(pj_bench::rssMib()),
       QByteArray("streaming ") + QByteArray::number(rate).leftJustified(6) + " msg/s " +
           QByteArray(order).leftJustified(8) + " | refresh ms med " + pj_bench::fmt(s.median, 2) + " p95 " +
           pj_bench::fmt(s.p95, 2) + " max " + pj_bench::fmt(s.max, 2) + " (" + QByteArray::number(refreshes.size()) +
-          ", " + QByteArray::number(reloads) + " reloads) | " + pj_bench::fmt(pct, 1) + " % core | shown " +
+          ", " + QByteArray::number(rebuilds) + " rebuilds) | " + pj_bench::fmt(pct, 1) + " % core | shown " +
           QByteArray::number(qulonglong(dock->view()->store().size())));
 }
 

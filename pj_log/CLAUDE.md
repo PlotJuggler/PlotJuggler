@@ -56,4 +56,4 @@ host-job --light log-bench env QT_QPA_PLATFORM=offscreen ./build/pj_log/benchmar
 
 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): components, data flow, tracker and seeking, persistence, known gaps.
 [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md): measured CPU cost under playback (grey vs hidden future rows),
-streaming (appends vs reloads on late entries) and one-off loads.
+streaming (late entries appended, against the re-read they replaced) and one-off loads.
