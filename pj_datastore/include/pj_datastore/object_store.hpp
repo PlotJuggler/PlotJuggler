@@ -219,7 +219,10 @@ class ObjectStore {
   /// Every entry with UID > `cursor`, in arrival order with payloads resolved; advances `cursor`. The only
   /// arrival-order read: for sinks that must see each entry once, late arrivals included (the TF buffer). Snapshots
   /// under one brief lock pass and resolves with no lock held. For the state at a time use rangeByTime() or
-  /// latestAt(); a UID is not a time bound.
+  /// latestAt(); a UID is not a time bound. A sink that keeps what it drained reads contentIdentity() before draining
+  /// (read after, a removal in between goes unseen) and rescans when its `removal` moved. A front eviction moves
+  /// neither `removal` nor any other signal a sink can rely on (a later insert may lower timeRange().first again), so a
+  /// sink that must drop what retention evicted checks its held entries with indexOf().
   std::vector<ResolvedObjectEntry> drainNewSince(ObjectTopicId id, SequentialUID& cursor) const;
 
   /// Largest UID among entries with timestamp <= t (invalid if none). Differs from latestAt(t)'s UID after an

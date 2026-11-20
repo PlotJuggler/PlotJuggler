@@ -2460,12 +2460,14 @@ TEST(ObjectStoreTest, IndexOfResolvesDuplicateStamps) {
 }
 
 // `content` moves on every change; `rewrite` only when a UID cursor and a timestamp floor could not tell the change
-// from an append plus a front eviction. Revisions are process-unique, so a topic id reused after a clear never repeats
-// one.
+// from an append plus a front eviction; `removal` only when an entry a UID-cursor reader may hold is gone or changed,
+// so a late insert, which drainNewSince() still delivers, leaves it. Revisions are process-unique, so a topic id
+// reused after a clear never repeats one.
 TEST(ObjectStoreTest, ContentIdentityMovesOnReplacementAndEviction) {
   ObjectStore store;
   const auto topic = registerTestTopic(store);
   EXPECT_EQ(store.contentIdentity(ObjectTopicId{999}), OrderedEntries::ContentIdentity{});
+  SequentialUID cursor;
   ASSERT_TRUE(store.pushOwned(topic, 100, {1}).has_value());
   const auto first = store.contentIdentity(topic);
 
@@ -2473,20 +2475,27 @@ TEST(ObjectStoreTest, ContentIdentityMovesOnReplacementAndEviction) {
   const auto appended = store.contentIdentity(topic);
   EXPECT_NE(appended.content, first.content);
   EXPECT_EQ(appended.rewrite, first.rewrite) << "an append rewrites nothing";
+  EXPECT_EQ(appended.removal, first.removal);
 
   ASSERT_TRUE(store.pushOwned(topic, 200, {3}).has_value());
   const auto equal_stamp = store.contentIdentity(topic);
   EXPECT_NE(equal_stamp.content, appended.content);
   EXPECT_EQ(equal_stamp.rewrite, appended.rewrite) << "an equal stamp lands after the newest entry: an append";
+  EXPECT_EQ(store.drainNewSince(topic, cursor).size(), 3u);
 
   ASSERT_TRUE(store.pushOwned(topic, 150, {4}).has_value());
   const auto late = store.contentIdentity(topic);
   EXPECT_NE(late.rewrite, equal_stamp.rewrite);
+  EXPECT_EQ(late.removal, equal_stamp.removal) << "a late insert removes nothing";
+  const auto drained = store.drainNewSince(topic, cursor);
+  ASSERT_EQ(drained.size(), 1u) << "the UID cursor delivers the late entry";
+  EXPECT_EQ(drained[0].timestamp, 150);
 
   store.evictBefore(topic, 120);
   const auto evicted = store.contentIdentity(topic);
   EXPECT_NE(evicted.content, late.content);
   EXPECT_EQ(evicted.rewrite, late.rewrite) << "a front eviction rewrites nothing";
+  EXPECT_EQ(evicted.removal, late.removal) << "a front eviction is pruned by the reader, not signalled";
 
   OwnedObjectWrite prune;
   prune.topic = topic;
@@ -2495,8 +2504,19 @@ TEST(ObjectStoreTest, ContentIdentityMovesOnReplacementAndEviction) {
   ASSERT_TRUE(store.pushOwnedBundle({prune}).has_value());
   const auto removed = store.contentIdentity(topic);
   EXPECT_NE(removed.rewrite, evicted.rewrite) << "a removal anywhere rewrites";
+  EXPECT_NE(removed.removal, evicted.removal);
   const auto unchanged = store.contentIdentity(topic);
   EXPECT_EQ(unchanged, removed) << "a read changes nothing";
+
+  OwnedObjectWrite replace;
+  replace.topic = topic;
+  replace.timestamp = 300;
+  replace.payload = {5};
+  replace.drop = [](Timestamp stamp, SequentialUID) { return stamp == 200; };
+  ASSERT_TRUE(store.pushOwnedBundle({replace}).has_value());
+  const auto replaced = store.contentIdentity(topic);
+  EXPECT_NE(replaced.rewrite, removed.rewrite);
+  EXPECT_NE(replaced.removal, removed.removal) << "a replacement removes";
 
   store.clear();
   const auto reused = registerTestTopic(store);
@@ -2505,6 +2525,7 @@ TEST(ObjectStoreTest, ContentIdentityMovesOnReplacementAndEviction) {
   const auto again = store.contentIdentity(reused);
   EXPECT_NE(again.content, first.content);
   EXPECT_NE(again.rewrite, first.rewrite);
+  EXPECT_NE(again.removal, first.removal);
 }
 
 // PJ_BENCH=1 prints what one bundle publication of three topics costs, each topic holding
