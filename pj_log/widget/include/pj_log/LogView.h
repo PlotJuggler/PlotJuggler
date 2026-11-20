@@ -17,6 +17,8 @@
 #include "pj_log/LogTableModel.h"
 #include "pj_widgets/TimeFormat.h"
 
+class QToolButton;
+
 namespace Ui {
 class LogView;
 }
@@ -113,6 +115,7 @@ class LogView : public QWidget {
   void applyFilters();
   void refreshTopics();
   void refreshOptionalColumns();
+  [[nodiscard]] std::array<QToolButton*, log_view::kToggleLevelCount> levelToggles() const;
   void updateDetail();
   void selectStoreRow(std::optional<size_t> store_index);
   [[nodiscard]] std::optional<size_t> selectedStoreRow() const;
@@ -130,7 +133,6 @@ class LogView : public QWidget {
   std::map<uint32_t, uint64_t> next_seq_;
   QStringList hidden_topics_;
   QTimer text_timer_;
-  std::vector<uint32_t> applied_hidden_wires_;
 
   /// The store row the detail pane shows (nullopt: none); valid while detail_valid_.
   bool detail_valid_ = false;

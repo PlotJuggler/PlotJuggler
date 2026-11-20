@@ -113,7 +113,7 @@ LogView::LogView(QWidget* parent)
   ui_->logView->viewport()->installEventFilter(this);
   ui_->logView->verticalScrollBar()->installEventFilter(this);
 
-  for (QToolButton* toggle : {ui_->levelDebug, ui_->levelInfo, ui_->levelWarn, ui_->levelError, ui_->levelFatal}) {
+  for (QToolButton* toggle : levelToggles()) {
     connect(toggle, &QToolButton::toggled, this, &LogView::applyFilters);
     connect(toggle, &QToolButton::clicked, this, &LogView::stateEdited);
   }
@@ -145,11 +145,18 @@ void LogView::setTopicLabel(uint32_t topic, const QString& label) {
   if (topics_.contains(topic) && topics_.at(topic) == label) {
     return;
   }
+  // A topic named, or renamed, from or to a label the user hid: its rows follow the label.
+  const bool was_hidden = topics_.contains(topic) && hidden_topics_.contains(topics_.at(topic));
   topics_[topic] = label;
   refreshTopics();
-  if (currentFilter().hidden_wires != applied_hidden_wires_) {
-    applyFilters();  // a returning topic the user hid: its rows stay hidden
+  if (was_hidden || hidden_topics_.contains(label)) {
+    applyFilters();
   }
+}
+
+std::array<QToolButton*, log_view::kToggleLevelCount> LogView::levelToggles() const {
+  // In log_view::kLevelNames order.
+  return {ui_->levelDebug, ui_->levelInfo, ui_->levelWarn, ui_->levelError, ui_->levelFatal};
 }
 
 std::vector<LogRow> LogView::toRows(uint32_t topic, std::vector<LogEntry> entries) {
@@ -305,7 +312,6 @@ void LogView::applyFilters() {
   text_timer_.stop();
   const std::optional<size_t> selected = selectedStoreRow();
   const log_view::LogFilter filter = currentFilter();
-  applied_hidden_wires_ = filter.hidden_wires;
   model_->setFilter(filter);
   selectStoreRow(selected);
   if (playing_) {
@@ -498,8 +504,7 @@ void LogView::onRowDoubleClicked(const QModelIndex& index) {
 
 LogViewState LogView::state() const {
   LogViewState state;
-  const std::array<QToolButton*, log_view::kToggleLevelCount> toggles = {
-      ui_->levelDebug, ui_->levelInfo, ui_->levelWarn, ui_->levelError, ui_->levelFatal};
+  const auto toggles = levelToggles();
   for (size_t i = 0; i < toggles.size(); ++i) {
     state.levels[i] = toggles[i]->isChecked();
   }
@@ -512,8 +517,7 @@ LogViewState LogView::state() const {
 }
 
 void LogView::applyState(const LogViewState& state) {
-  const std::array<QToolButton*, log_view::kToggleLevelCount> toggles = {
-      ui_->levelDebug, ui_->levelInfo, ui_->levelWarn, ui_->levelError, ui_->levelFatal};
+  const auto toggles = levelToggles();
   for (size_t i = 0; i < toggles.size(); ++i) {
     const QSignalBlocker blocker(toggles[i]);
     toggles[i]->setChecked(state.levels[i]);

@@ -46,9 +46,6 @@ class LogTableModel : public QAbstractTableModel {
   /// How the Time column prints a row's display seconds (formatTimeLabel, with the date on a wall-clock instant).
   void setTimeLabelFormat(TimeLabelFormat format, int decimals);
 
-  [[nodiscard]] FutureRows futureRows() const {
-    return future_rows_;
-  }
   /// Filtered rows with time <= tracker.
   [[nodiscard]] int revealedRows() const {
     return static_cast<int>(revealed_);

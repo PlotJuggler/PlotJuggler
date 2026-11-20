@@ -131,6 +131,11 @@ TEST_F(LogViewTest, EmptyStateAndTopicColumn) {
   EXPECT_EQ(model()->rowCount(), 0);  // /rosout is still hidden
   view_.removeTopic(0);
   EXPECT_EQ(pages->currentWidget()->objectName(), "emptyPage");
+  // A topic coming back under a label the user hid stays hidden.
+  fill(2, "/rosout", 3);
+  EXPECT_EQ(model()->rowCount(), 0);
+  view_.setTopicLabel(2, "/renamed");
+  EXPECT_EQ(model()->rowCount(), 3);
 }
 
 TEST_F(LogViewTest, NothingInThePanelTakesDrops) {
