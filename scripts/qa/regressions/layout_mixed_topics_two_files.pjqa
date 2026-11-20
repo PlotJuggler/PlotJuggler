@@ -1,0 +1,9 @@
+# Intended behaviour (pj_app ARCHITECTURE "One layout over several datasets"): a layout that names no dataset, whose
+# curves come from two loaded files with no topic in common (data/sine only in data.csv, run/value only in run.csv),
+# restores both curves unasked: only a topic several files carry is ambiguous, so nothing is chosen or pinned. The
+# browser's File > Save Layout writes such a layout for any session plotting two files.
+# app: -d tests/wasm/fixtures/signals/data.csv -d scripts/qa/regressions/fixtures/compare_runs/run1/run.csv -l scripts/qa/regressions/fixtures/compare_runs/mixed_topics.pj4.xml
+# needs: plugins
+until get_status {} "name":"run.csv"
+until ui_plot {"title":"Mixed"} "run/value"
+expect "data/sine"

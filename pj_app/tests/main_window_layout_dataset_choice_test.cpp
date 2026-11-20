@@ -492,4 +492,22 @@ TEST_F(LayoutDatasetChoiceTest, TheBestFittingDatasetTakesTheTopicsItShares) {
   expectAllBoundTo(0, run_b_, 2);
 }
 
+// Intended: a layout whose curves come from two files with no topic in common (what the browser's Save Layout writes
+// for such a session) is not asked about: no reference is ambiguous, and each binds to the file carrying its topic.
+TEST_F(LayoutDatasetChoiceTest, FilesWithNoTopicInCommonAreNotAsked) {
+  PJ::AppSession& app = PresetTestPeer::session(*window_);
+  const PJ::DatasetId data = pj_test::createDataset(app, "data.csv", /*own_time_domain=*/true);
+  pj_test::addScalarTopic(app, data, "data");
+  const PJ::DatasetId run = pj_test::createDataset(app, "other.csv", /*own_time_domain=*/true);
+  pj_test::addScalarTopic(app, run, "run");
+  load(curveLayout({u"data"_s, u"run"_s}), /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(other_modals_, 0) << other_texts_.toStdString();
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  const QStringList bound = curves(0);
+  ASSERT_EQ(bound.size(), 2) << bound.join(u' ').toStdString();
+  EXPECT_TRUE(bound[0].startsWith(QString::number(data) + u':')) << bound[0].toStdString();
+  EXPECT_TRUE(bound[1].startsWith(QString::number(run) + u':')) << bound[1].toStdString();
+}
+
 }  // namespace

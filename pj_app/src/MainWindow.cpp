@@ -5416,7 +5416,7 @@ void MainWindow::chooseLayoutDatasets(
             .arg(layout_name)
             .arg(choice.datasets.size())
             .arg(choice.datasets.front().label));
-    layout_xml::pinLayoutToDatasets(doc, {choice.datasets.front()});
+    layout_xml::pinLayoutToDatasets(doc, {choice.datasets.front()}, choice.topics);
     then({.doc = std::move(doc), .removed = {}, .compared = {}});
     return;
   }
@@ -5432,7 +5432,8 @@ void MainWindow::chooseLayoutDatasets(
   QPointer<MainWindow> self(this);
   LayoutDatasetDialog::ask(
       this, layout_name, labels, single_only,
-      [self, doc, pins = std::move(choice.datasets), then = std::move(then)](std::optional<QList<int>> chosen) mutable {
+      [self, doc, pins = std::move(choice.datasets), topics = std::move(choice.topics),
+       then = std::move(then)](std::optional<QList<int>> chosen) mutable {
         if (self.isNull()) {
           return;
         }
@@ -5456,7 +5457,7 @@ void MainWindow::chooseLayoutDatasets(
         }
         const CatalogModel& live_catalog = self->session_->catalogModel();
         const CurveColorRegistry& colors = self->session_->curveColorRegistry();
-        layout_xml::pinLayoutToDatasets(doc, picked, [&live_catalog, &colors](const QDomElement& curve) {
+        layout_xml::pinLayoutToDatasets(doc, picked, topics, [&live_catalog, &colors](const QDomElement& curve) {
           const std::optional<QString> key = live_catalog.resolveCurveKey(
               curve.attribute(u"dataset_id"_s).toUInt(), curve.attribute(u"dataset_source"_s),
               curve.attribute(u"dataset_path"_s), curve.attribute(u"topic"_s), curve.attribute(u"field"_s));
