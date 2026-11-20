@@ -1160,8 +1160,8 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   expect(initial.trackerEnabled).toBe(true);
   expect(initial.trackerParameter).toBe(1);
   expect(initialText.legendLayers).toBe(1);
-  // The playhead is seeded on the first sample, inside the view, so the tracker's value box shows beside the
-  // legend before any seek.
+  // The playhead is seeded on the first sample, on the view's left edge (the fit has no X margin and the edge counts
+  // as inside), so the tracker's value box shows beside the legend before any seek.
   expect(initialText.markerLabels).toBe(1);
   expect(initialText.alphaPixels).toBeGreaterThan(0);
   expect(initialText.vertices).toBe(12);

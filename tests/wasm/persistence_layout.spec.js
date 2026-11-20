@@ -416,8 +416,8 @@ test('browser layouts open transactionally and download with exact round-trip st
   expect(Number(elementAttribute(restoredDocument, 'right_panel_state', 'width'))).toBe(3);
   expect(elementAttribute(restoredDocument, 'right_panel_state', 'style')).toBe('1');
   expect(elementAttribute(restoredDocument, 'left_panel_state', 'sources_tab')).toBe('stream');
-  // A layout that records no stream neither applies nor saves a streaming buffer: the one customizeLayout wrote
-  // does not come back.
+  // A layout that records no stream does not save a streaming buffer, so the one customizeLayout wrote does not come
+  // back. That such a load does not apply it either is DesktopStreamLayoutTest.FileOnlyLayoutLeavesTheBufferAlone.
   expect(elementAttributes(restoredDocument, 'left_panel_state', 'streaming_buffer')).toEqual([]);
   expect(elementAttribute(restoredDocument, 'curve_list_state', 'show_topics')).toBe('false');
   expect(elementAttribute(restoredDocument, 'curve_list_state', 'show_values')).toBe('true');
