@@ -9009,7 +9009,16 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document, RestoreIntent 
     return false;
   }
 
+  // Rebuilding the docks deletes or hides the widget that held the keyboard focus, and Qt then gives focus to the
+  // next widget in the tab chain: in the browser a filter line edit, which takes Space from playback. Focus goes back
+  // to that widget if it is still shown, else to the window, where window shortcuts still reach.
+  const QPointer<QWidget> had_focus = focusWidget();
   const bool loaded = ui_->tabbedPlotWidget->xmlLoadState(main_tabbed_widget, intent);
+  if (had_focus != nullptr && had_focus->isVisible()) {
+    had_focus->setFocus(Qt::OtherFocusReason);
+  } else {
+    setFocus(Qt::OtherFocusReason);
+  }
   if (!loaded) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "layout-plots-invalid",

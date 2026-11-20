@@ -1,0 +1,17 @@
+# An undo rebuilds the plots: the plot that held the keyboard focus keeps it, so Space still reaches playback. Qt
+# would otherwise hand focus to the next widget in the tab chain (here the Load button, in the browser the Datasets
+# filter, which takes the Space). Periodic is the lower plot of the signals layout; the drag over it is a box zoom,
+# and its press focuses the plot.
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
+ui_drag {"name":"tabbedPlotWidget","from":[100,520],"to":[250,700],"wait_ms":600}
+ui_tree {}
+expect QwtPlotCanvas#qwtCanvas (focus)
+ui_key {"keys":"Ctrl+Z","wait_ms":700}
+until ui_plot {"title":"Periodic"} "x":["0.000","1000.000"]
+ui_tree {}
+expect QwtPlotCanvas#qwtCanvas (focus)
+absent "Load a data file" (focus)
+ui_key {"keys":"Space"}
+until get_status {} "playing":true

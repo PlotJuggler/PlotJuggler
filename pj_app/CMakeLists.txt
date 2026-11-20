@@ -706,6 +706,9 @@ if(PJ_BUILD_TESTS)
         tests/main_window_layout_import_policy_test.cpp)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_layout_apply_reason_test.cpp)
+    # Keyboard focus after a workspace rebuild deletes the focused plot.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_restore_focus_test.cpp)
     add_executable(main_window_layout_import_cancel_test tests/main_window_layout_import_cancel_test.cpp)
     target_include_directories(main_window_layout_import_cancel_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(main_window_layout_import_cancel_test PRIVATE pj_app_shell pj_resources GTest::gtest)

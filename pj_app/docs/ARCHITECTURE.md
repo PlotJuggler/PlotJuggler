@@ -38,7 +38,10 @@ Everything in the shell lives on the GUI thread. Two kinds of worker exist:
 ## Playback and panel access
 
 Space toggles Play/Pause through a non-repeating `QShortcut` on `TimelineWidget`; a text editor keeps Space through
-Qt's shortcut override. An object dock's context menu offers Open/Close Settings; `settingsPanelToggleRequested`
+Qt's shortcut override. A workspace restore (layout load, its rollback, undo/redo) rebuilds the docks, which deletes or
+hides the focused plot, and Qt would then focus the next widget in the tab chain, a filter in the browser:
+`MainWindow::xmlLoadState` gives focus back to the widget that held it if it is still shown, else to the main window.
+An object dock's context menu offers Open/Close Settings; `settingsPanelToggleRequested`
 travels through `PlotDocker` to `MainWindow`, which binds the settings page to that dock and toggles the right panel.
 
 ## Window frame
