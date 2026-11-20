@@ -15,8 +15,7 @@ unpublished plugin changes, or building against a not-yet-released SDK.
 ## The bundled set
 
 The compiled set is `RELEASE_FLAT_SOS` in `build_release_appimage.sh` plus the ROS 2 bundle. It matches
-`BUNDLE_IDS` in `build_appimage.sh` (keep the two in lockstep) except `log-widget`: the aggregate plugin build
-does not build Widget plugins, so only registry mode bundles it. `toolbox-assistant-agent` is Linux-only
+`BUNDLE_IDS` in `build_appimage.sh` (keep the two in lockstep). `toolbox-assistant-agent` is Linux-only
 (POSIX CLI backends).
 
 ## Two build flows, tied together

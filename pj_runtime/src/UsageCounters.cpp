@@ -113,6 +113,8 @@ std::string_view usageFeatureKey(UsageFeature feature) {
       return "panel.scene3d";
     case UsageFeature::kPanelScene2D:
       return "panel.scene2d";
+    case UsageFeature::kPanelLog:
+      return "panel.log";
   }
   return "unknown";
 }

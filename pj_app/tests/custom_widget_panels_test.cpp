@@ -259,17 +259,24 @@ TEST_F(CustomWidgetPagesTest, AnAmpersandInANameShowsLiterally) {
   EXPECT_EQ(menu.actions().first()->text(), u"Speed && Torque (from Speed && Co)"_s);
 }
 
-TEST(SceneObjectClassificationTest, OnlyTopicsACustomWidgetAloneShowsGetABadge) {
+TEST(SceneObjectClassificationTest, BadgesMarkLogsAndTopicsOnlyACustomWidgetShows) {
   for (int value = 0; value <= static_cast<int>(PJ::sdk::BuiltinObjectType::kPlotMarkers); ++value) {
     const auto type = static_cast<PJ::sdk::BuiltinObjectType>(value);
-    const QString icon = PJ::customWidgetObjectIcon(type);
-    EXPECT_EQ(icon.isEmpty(), !PJ::isCustomWidgetObjectType(type)) << value;
+    const QString icon = PJ::objectTypeBadgeIcon(type);
+    if (type == PJ::sdk::BuiltinObjectType::kLog) {
+      EXPECT_EQ(icon, u":/resources/svg/view_list.svg"_s);
+    } else if (PJ::isCustomWidgetObjectType(type)) {
+      EXPECT_EQ(icon, u":/resources/svg/custom_widget.svg"_s) << value;
+    } else {
+      EXPECT_TRUE(icon.isEmpty()) << value;
+    }
     if (!icon.isEmpty()) {
       EXPECT_TRUE(QFile::exists(icon)) << icon.toStdString();
     }
   }
-  EXPECT_EQ(PJ::customWidgetObjectIcon(PJ::sdk::BuiltinObjectType::kLog), u":/resources/svg/view_list.svg"_s);
-  EXPECT_TRUE(PJ::customWidgetObjectIcon(PJ::sdk::BuiltinObjectType::kPointCloud).isEmpty()) << "a 3D topic";
+  EXPECT_TRUE(PJ::isDroppableObjectType(PJ::sdk::BuiltinObjectType::kLog)) << "a Log panel shows it";
+  EXPECT_TRUE(PJ::objectTypeBadgeIcon(PJ::sdk::BuiltinObjectType::kNone).isEmpty());
+  EXPECT_TRUE(PJ::objectTypeBadgeIcon(PJ::sdk::BuiltinObjectType::kPointCloud).isEmpty()) << "a 3D topic";
 }
 
 TEST_F(CustomWidgetPagesTest, ConfigPagePaintsOneControlPerSettingType) {
@@ -670,17 +677,17 @@ TEST_F(CustomWidgetShellFlowTest, ThePanelsWidgetGetsThePlaybackServiceWithTheSh
   EXPECT_DOUBLE_EQ(*by_source, 4.0);
 }
 
-TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockSaysWhereItGoes) {
+TEST_F(CustomWidgetShellFlowTest, AMeshTopicDropWiresACustomWidgetAndAnEmptyDockSaysWhereItGoes) {
   PJ::AppSession& app = Peer::session(*window_);
   const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
   auto topic = app.sessionManager().objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{
-          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+          .dataset_id = dataset, .topic_name = "/model", .metadata_json = R"({"builtin_object_type":"kMesh3D"})"});
   ASSERT_TRUE(topic.has_value()) << topic.error();
   app.catalogModel().rebuildFromDatastore();
   QString key;
   for (const PJ::CatalogItem& item : app.catalogModel().items()) {
-    if (item.topic_name == u"/rosout"_s) {
+    if (item.topic_name == u"/model"_s) {
       key = item.key;
     }
   }
@@ -698,7 +705,7 @@ TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockS
   };
 
   ASSERT_TRUE(drop(dock_));
-  EXPECT_EQ(dock_->objectWidget(), nullptr) << "no built-in view takes a log";
+  EXPECT_EQ(dock_->objectWidget(), nullptr) << "no built-in view takes a mesh asset";
   EXPECT_TRUE(toasts().contains(u"This topic is shown by a Custom Widget. Create one in this panel first."_s))
       << toasts().join(u" | "_s).toStdString();
 
@@ -711,29 +718,29 @@ TEST_F(CustomWidgetShellFlowTest, ALogTopicDropWiresACustomWidgetAndAnEmptyDockS
 
   ASSERT_TRUE(drop(dock_));
   ASSERT_EQ(custom->bindings().size(), 1U);
-  EXPECT_EQ(custom->bindings()[0].label, "/rosout");
+  EXPECT_EQ(custom->bindings()[0].label, "/model");
   EXPECT_EQ(dock_->objectWidget()->widget(), custom) << "the panel took the topic in place";
 }
 
-TEST_F(CustomWidgetShellFlowTest, ALogDroppedWithAScalarOnACustomWidgetWiresBoth) {
+TEST_F(CustomWidgetShellFlowTest, AMeshDroppedWithAScalarOnACustomWidgetWiresBoth) {
   PJ::AppSession& app = Peer::session(*window_);
   const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
   auto topic = app.sessionManager().objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{
-          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+          .dataset_id = dataset, .topic_name = "/model", .metadata_json = R"({"builtin_object_type":"kMesh3D"})"});
   ASSERT_TRUE(topic.has_value()) << topic.error();
   ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
   app.catalogModel().rebuildFromDatastore();
-  QString log_key;
+  QString mesh_key;
   QString scalar_key;
   for (const PJ::CatalogItem& item : app.catalogModel().items()) {
-    if (item.topic_name == u"/rosout"_s) {
-      log_key = item.key;
+    if (item.topic_name == u"/model"_s) {
+      mesh_key = item.key;
     } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
       scalar_key = item.key;
     }
   }
-  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(mesh_key.isEmpty());
   ASSERT_FALSE(scalar_key.isEmpty());
 
   clickIcon("buttonVizCustomWidget");
@@ -747,67 +754,68 @@ TEST_F(CustomWidgetShellFlowTest, ALogDroppedWithAScalarOnACustomWidgetWiresBoth
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock_, "onCatalogItemsDropped", Qt::DirectConnection,
-          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
-  ASSERT_EQ(custom->bindings().size(), 2U) << "the scalar of a drop led by a log topic was not offered";
-  EXPECT_EQ(custom->bindings()[0].label, "/rosout");
+          Q_ARG(QStringList, (QStringList{mesh_key, scalar_key}))));
+  ASSERT_EQ(custom->bindings().size(), 2U) << "the scalar of a drop led by a mesh topic was not offered";
+  EXPECT_EQ(custom->bindings()[0].label, "/model");
   EXPECT_EQ(custom->bindings()[1].input, u"value"_s);
 }
 
-TEST_F(CustomWidgetShellFlowTest, ALogTopicDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
+TEST_F(CustomWidgetShellFlowTest, AMeshTopicDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
   PJ::AppSession& app = Peer::session(*window_);
   const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
   auto topic = app.sessionManager().objectStore().registerTopic(
       PJ::ObjectTopicDescriptor{
-          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+          .dataset_id = dataset, .topic_name = "/model", .metadata_json = R"({"builtin_object_type":"kMesh3D"})"});
   ASSERT_TRUE(topic.has_value()) << topic.error();
   ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
   app.catalogModel().rebuildFromDatastore();
-  QString log_key;
+  QString mesh_key;
   QString scalar_key;
   for (const PJ::CatalogItem& item : app.catalogModel().items()) {
-    if (item.topic_name == u"/rosout"_s) {
-      log_key = item.key;
+    if (item.topic_name == u"/model"_s) {
+      mesh_key = item.key;
     } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
       scalar_key = item.key;
     }
   }
-  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(mesh_key.isEmpty());
   ASSERT_FALSE(scalar_key.isEmpty());
 
   // The order a curve-list drag delivers: the object row sorts ahead of the scalar field.
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock_, "onCatalogItemsDropped", Qt::DirectConnection,
-          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
-  ASSERT_NE(dock_->plotWidget(), nullptr) << "the scalar of a drop that also carried a log was not plotted";
+          Q_ARG(QStringList, (QStringList{mesh_key, scalar_key}))));
+  ASSERT_NE(dock_->plotWidget(), nullptr) << "the scalar of a drop that also carried a mesh was not plotted";
   EXPECT_FALSE(dock_->plotWidget()->isEmpty());
 }
 
-TEST_F(CustomWidgetShellFlowTest, AnAdvertisedLogDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
+TEST_F(CustomWidgetShellFlowTest, AnAdvertisedMeshDroppedWithScalarsOnAnEmptyDockStillPlotsTheScalars) {
   PJ::AppSession& app = Peer::session(*window_);
   const PJ::DatasetId dataset = pj_test::createDataset(app, "live");
   ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/signal", 0, 10'000'000'000), 0U);
   app.catalogModel().rebuildFromDatastore();
-  // A streaming source's unsubscribed /rosout: a catalog row with no data yet.
+  // A streaming source's unsubscribed /model: a catalog row with no data yet.
   app.catalogModel().setAdvertisedTopics(
-      dataset, {PJ::AdvertisedTopic{u"/rosout"_s, PJ::sdk::BuiltinObjectType::kLog}});
-  QString log_key;
+      dataset, {PJ::AdvertisedTopic{u"/model"_s, PJ::sdk::BuiltinObjectType::kMesh3D}});
+  QString mesh_key;
   QString scalar_key;
   for (const PJ::CatalogItem& item : app.catalogModel().items()) {
-    if (item.topic_name == u"/rosout"_s) {
-      log_key = item.key;
+    if (item.topic_name == u"/model"_s) {
+      mesh_key = item.key;
     } else if (app.catalogModel().curveDescriptor(item.key).has_value()) {
       scalar_key = item.key;
     }
   }
-  ASSERT_FALSE(log_key.isEmpty());
+  ASSERT_FALSE(mesh_key.isEmpty());
   ASSERT_FALSE(scalar_key.isEmpty());
 
   ASSERT_TRUE(
       QMetaObject::invokeMethod(
           dock_, "onCatalogItemsDropped", Qt::DirectConnection,
-          Q_ARG(QStringList, (QStringList{log_key, scalar_key}))));
-  ASSERT_NE(dock_->plotWidget(), nullptr) << "the scalar of a drop that also carried an advertised log was not plotted";
+          Q_ARG(QStringList, (QStringList{mesh_key, scalar_key}))));
+  ASSERT_NE(dock_->plotWidget(), nullptr)
+      << "the scalar of a drop that also carried an advertised mesh was not plotted";
   EXPECT_FALSE(dock_->plotWidget()->isEmpty());
 }
 

@@ -131,8 +131,6 @@ BUNDLE_IDS=(
   candump-loader
   blf-loader
   mf4-loader
-  # Widget plugin, published for linux-x86_64 and windows-x86_64 only.
-  log-widget
   # LLM assistant (spawns the user's claude/codex CLI; POSIX-only backends,
   # so bundled on Linux only — deliberately absent from the Windows list).
   toolbox-assistant-agent

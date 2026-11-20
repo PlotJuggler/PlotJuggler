@@ -169,8 +169,6 @@ RELEASE_FLAT_SOS=(
   libcandump_source_plugin.so
   libblf_source_plugin.so
   libmf4_source_plugin.so
-  # log-widget is absent here: the aggregate plugin build skips Widget plugins
-  # (PJ_BUILD_WIDGETS), so only the registry mode (BUNDLE_IDS) bundles it.
   # Linux-only in the bundle (POSIX-only CLI backends); see BUNDLE_IDS.
   libtoolbox_assistant_agent_plugin.so
 )

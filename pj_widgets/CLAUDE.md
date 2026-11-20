@@ -78,7 +78,7 @@ Views and tables:
 | `Timeline.h` | Multi-track Source Timeline: `TimelineScene` (Qt-free math) + `Timeline` (view). Runtime-agnostic: the host (`SourceTimelineController` in `pj_app`) converts. |
 | `StateTransitionsView.h` | State Transitions strip: `StateTransitionsScene` (display-free math) + view; runtime-agnostic like `Timeline`. |
 | `TailFollowOverlay.h` | "Jump to the latest" HUD button for a tail-following scroll area. |
-| `VisualizationPlaceholderWidget.h`, `VisualizationKind.h` | Empty-dock placeholder with five clickable family icons (Plot, State Transitions, 2D, 3D, Custom Widget); `VisualizationKind` is the neutral vocabulary the app shell maps to concrete widget kinds. |
+| `VisualizationPlaceholderWidget.h`, `VisualizationKind.h` | Empty-dock placeholder with six clickable family icons (Plot, State Transitions, 2D, 3D, Custom Widget, Log) in a grid three columns wide; `VisualizationKind` is the neutral vocabulary the app shell maps to concrete widget kinds. |
 | `RasterStreamView.h`, `RasterFrame.h` | External renderer hosted over shared memory (`raster/ipc/`), and its frame decoder. `RasterStreamView` is not built for WebAssembly. |
 
 Helpers:

@@ -217,6 +217,7 @@ target_link_libraries(pj_app_shell PUBLIC
     pj_widgets
     pj_plotting
     pj_custom_widgets
+    pj_log
     pj_scripting
     pj_scene_common
     $<$<TARGET_EXISTS:pj_scene2d_widgets>:pj_scene2d_widgets>
@@ -641,6 +642,10 @@ if(PJ_BUILD_TESTS)
     # restored layout keeps its saved fixed frame and camera.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_scene3d_drop_framing_test.cpp)
+
+    # The Log panel through the shell: the placeholder button, a drop on an empty area, the time format, layouts.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_log_panel_test.cpp)
 
     # The 2D scene panel's layer rows carry each layer's warning from the start.
     list(APPEND PJ_APP_GUI_TEST_SOURCES

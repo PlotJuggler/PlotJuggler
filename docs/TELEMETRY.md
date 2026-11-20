@@ -94,6 +94,7 @@ nothing is sent and the days wait for the next launch.
 | `layout.save` | the user saved a layout file |
 | `recording.start` | a session recording started |
 | `panel.scene3d` / `panel.scene2d` | a Scene3D / Scene2D panel was created (also from a layout) |
+| `panel.log` | a Log panel was created (also from a layout) |
 
 **Never sent:** file names, paths, topic or series names, plugin configuration,
 timestamps finer than the day, the order of actions, or a private plugin's id

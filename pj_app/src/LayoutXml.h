@@ -263,8 +263,8 @@ struct DatasetFileMatch {
 
 // Makes a generic layout: removes every dataset qualifier attribute (id, source, path; all five prefixes) from every
 // element. What remains binds only when unique in the loaded data; every loader (plots, processors, scenes, Custom
-// Widget wires, State Transitions) implements that unique-only fallback. An on-demand <input> name keeps its
-// qualifier text: it is the alias its script reads.
+// Widget wires, State Transitions, Log panels) implements that unique-only fallback. An on-demand <input> name keeps
+// its qualifier text: it is the alias its script reads.
 //
 // A qualifier whose identity is in `keep` keeps its binding: its path becomes the matched file, and a label the
 // loader derived from the saved file name follows the new name (the resolver compares labels exactly). Its id is
@@ -361,9 +361,9 @@ void pinLayoutToDatasets(
 using DatasetPathLookup = std::function<QString(std::uint32_t)>;
 
 // Writes `*_dataset_path` next to every `*_dataset_id` of curves, processor and transform inputs, marker
-// <generator>s, <marker_scope> rows and Custom Widget inputs, overwriting an existing one. Scene docks and State
-// Transitions rows are not visited: they write the absolute path themselves. An id the lookup cannot place is left
-// as is.
+// <generator>s, <marker_scope> rows and Custom Widget inputs, overwriting an existing one. Scene docks, State
+// Transitions rows and Log panel topics are not visited: they write the absolute path themselves. An id the lookup
+// cannot place is left as is.
 void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup);
 
 // Strips every non-zero dataset id without a path qualifier, on the elements stampDatasetSourcePaths visits: such an

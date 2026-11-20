@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "pj_custom_widgets/CustomWidgetDockWidget.h"
+#include "pj_log/LogDockWidget.h"
 #include "pj_plotting/PlotXml.h"
 #include "pj_runtime/TopicDemandTracker.h"
 using namespace Qt::StringLiterals;
@@ -229,6 +230,21 @@ void PendingDisplayBinder::addPendingCustomWidgetWire(
   if (stageDockIntent(dock, topic_name, preferred_dataset, waits_for_topic) && !connected) {
     connect(
         dock, &CustomWidgetDockWidget::bindingsChanged, this, [this, dock]() { releaseCompletedDockIntents(dock); });
+  }
+}
+
+void PendingDisplayBinder::addPendingLogTopic(
+    LogDockWidget* dock, const QString& topic_name, std::optional<DatasetId> preferred_dataset) {
+  if (dock == nullptr || topic_name.isEmpty()) {
+    return;
+  }
+  const auto waits_for_topic = [dock, topic_name]() { return dock->hasPendingTopic(topic_name); };
+  if (!waits_for_topic()) {
+    return;
+  }
+  const bool connected = watched_targets_.contains(dock);
+  if (stageDockIntent(dock, topic_name, preferred_dataset, waits_for_topic) && !connected) {
+    connect(dock, &LogDockWidget::topicsChanged, this, [this, dock]() { releaseCompletedDockIntents(dock); });
   }
 }
 

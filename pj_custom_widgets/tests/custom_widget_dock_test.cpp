@@ -511,7 +511,7 @@ TEST_F(CustomWidgetDockTest, ASeekFromAWidgetsOwnCodeRunsNoOnUpdateInsideIt) {
   QCoreApplication::processEvents();
   const int base = g.updates;
 
-  // What a widget's own slot does (the log viewer seeks on a double-clicked row): no host call is on the stack.
+  // What a widget's own slot does (a seek on a double-clicked row): no host call is on the stack.
   ASSERT_TRUE(g.playback.seek(2.5).has_value());
   EXPECT_EQ(g.updates, base) << "an on_update ran inside the widget code that seeked";
   QCoreApplication::processEvents();

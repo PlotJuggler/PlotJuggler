@@ -5,6 +5,7 @@
 
 #include <QCoreApplication>
 #include <QToolButton>
+#include <set>
 #include <vector>
 
 #include "pj_widgets/SectionHeaderBand.h"
@@ -13,11 +14,10 @@ using namespace Qt::StringLiterals;
 
 namespace {
 
-TEST(VisualizationPlaceholderFamiliesTest, OffersFiveFamiliesInOrder) {
+TEST(VisualizationPlaceholderFamiliesTest, OffersSixFamiliesInOrder) {
   PJ::VisualizationPlaceholderWidget placeholder;
-  const QStringList expected{
-      u"buttonVizPlot"_s, u"buttonVizStateTransitions"_s, u"buttonVizScene2D"_s, u"buttonVizScene3D"_s,
-      u"buttonVizCustomWidget"_s};
+  const QStringList expected{u"buttonVizPlot"_s,    u"buttonVizStateTransitions"_s, u"buttonVizScene2D"_s,
+                             u"buttonVizScene3D"_s, u"buttonVizCustomWidget"_s,     u"buttonVizLog"_s};
   QStringList names;
   for (auto* button : placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly)) {
     names.push_back(button->objectName());
@@ -81,24 +81,47 @@ TEST(VisualizationPlaceholderFamiliesTest, CustomWidgetIconFollowsAvailability) 
   EXPECT_EQ(requested[1], PJ::VisualizationKind::kCustomWidget);
 }
 
-TEST(VisualizationPlaceholderFamiliesTest, IconRowShrinksToFitANarrowDock) {
+TEST(VisualizationPlaceholderFamiliesTest, IconsFillAGridThreeColumnsWide) {
+  PJ::VisualizationPlaceholderWidget placeholder;
+  placeholder.show();
+  placeholder.resize(900, 400);
+  QCoreApplication::processEvents();
+  const auto buttons = placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly);
+  ASSERT_EQ(buttons.size(), 6);
+  std::set<int> columns;
+  std::set<int> rows;
+  for (const QToolButton* button : buttons) {
+    columns.insert(button->x());
+    rows.insert(button->y());
+  }
+  EXPECT_EQ(columns.size(), 3U);
+  EXPECT_EQ(rows.size(), 2U);
+  const QRect first = buttons.front()->geometry();
+  EXPECT_NEAR(first.left(), placeholder.width() - buttons[2]->geometry().right(), 2) << "the grid is centred";
+}
+
+TEST(VisualizationPlaceholderFamiliesTest, IconGridShrinksToFitASmallDock) {
   PJ::VisualizationPlaceholderWidget placeholder;
   // Resize events reach a widget only once it is shown.
   placeholder.show();
   const auto buttons = placeholder.findChildren<QToolButton*>(Qt::FindDirectChildrenOnly);
-  ASSERT_EQ(buttons.size(), 5);
-  EXPECT_LE(placeholder.minimumSizeHint().width(), 300);
-  EXPECT_GE(placeholder.sizeHint().width(), 5 * 66) << "the preferred row keeps full-size icons";
+  ASSERT_EQ(buttons.size(), 6);
+  EXPECT_LE(placeholder.minimumSizeHint().width(), 180);
+  EXPECT_LE(placeholder.minimumSizeHint().height(), 110);
+  EXPECT_GE(placeholder.sizeHint().width(), 3 * 66) << "the preferred grid keeps full-size icons";
+  EXPECT_GE(placeholder.sizeHint().height(), 2 * 66);
 
-  placeholder.resize(300, 400);
-  QCoreApplication::processEvents();
-  for (const QToolButton* button : buttons) {
-    EXPECT_LT(button->width(), 66) << button->objectName().toStdString();
-    EXPECT_GE(button->width(), 44) << button->objectName().toStdString();
-    EXPECT_LT(button->iconSize().width(), 48) << button->objectName().toStdString();
+  for (const QSize size : {QSize(180, 400), QSize(900, 120)}) {
+    placeholder.resize(size);
+    QCoreApplication::processEvents();
+    for (const QToolButton* button : buttons) {
+      EXPECT_LT(button->width(), 66) << button->objectName().toStdString();
+      EXPECT_GE(button->width(), 44) << button->objectName().toStdString();
+      EXPECT_LT(button->iconSize().width(), 48) << button->objectName().toStdString();
+      EXPECT_LE(button->geometry().right(), placeholder.width()) << "no icon is cut off";
+      EXPECT_LE(button->geometry().bottom(), placeholder.height()) << "no icon is cut off";
+    }
   }
-  EXPECT_LT(buttons.back()->geometry().right(), placeholder.width()) << "the last icon is not cut off";
-  EXPECT_GE(buttons.front()->geometry().left(), 0);
 
   placeholder.resize(900, 400);
   QCoreApplication::processEvents();

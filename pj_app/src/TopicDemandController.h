@@ -28,6 +28,7 @@ namespace PJ {
 class DataEngine;
 class CustomWidgetDockWidget;
 class DataProcessorService;
+class LogDockWidget;
 class PendingDisplayBinder;
 class PlotWidget;
 class SceneDockWidget;
@@ -74,6 +75,9 @@ class TopicDemandController : public QObject {
   // wires read, diffed on every bindingsChanged() and released when the panel is destroyed.
   void registerCustomWidgetDock(CustomWidgetDockWidget* dock);
 
+  // Same for a Log panel: one reference per (dataset, topic) it shows, diffed on every topicsChanged().
+  void registerLogDock(LogDockWidget* dock);
+
   // An advertised SCALAR placeholder was dropped on `plot`: PendingDisplayBinder holds the demand reference until
   // the real topic materializes and the curve completes.
   void handlePlaceholderPlotDrop(PlotWidget* plot, DatasetId dataset_id, const QString& topic_name);
@@ -83,6 +87,10 @@ class TopicDemandController : public QObject {
   void handleSceneDockPlaceholderDrop(
       SceneDockWidget* dock, DatasetId dataset_id, const QString& topic_name, sdk::BuiltinObjectType object_type);
 
+  // An advertised log placeholder was dropped on a Log panel: the panel keeps the topic pending and binds it when it
+  // materializes, PendingDisplayBinder holds its demand reference meanwhile.
+  void handleLogDockPlaceholderDrop(LogDockWidget* dock, DatasetId dataset_id, const QString& topic_name);
+
   // A bounded, self-releasing subscription: holds a demand reference until one real sample promotes the placeholder
   // to per-field rows, or until the preview timeout, whichever comes first. Used by the automatic census and the
   // manual double-click peek. No-op when the dataset is not per-topic-pause-capable, the topic already has a real
@@ -91,8 +99,8 @@ class TopicDemandController : public QObject {
   void requestFieldPreview(DatasetId dataset_id, const QString& topic_name);
 
   /// Catalog keys of everything displayed by the registered widgets inside `root` (none when null): plot curves
-  /// (both sources of an XY curve), scene layers and config topics, state-transitions rows and
-  /// resolved Custom Widget wires. Pending items (placeholder drops, unresolved wires) are not included. Read from the
+  /// (both sources of an XY curve), scene layers and config topics, state-transitions rows, resolved Custom Widget
+  /// wires and Log panel topics. Pending items (placeholder drops, unresolved wires) are not included. Read from the
   /// widgets now, so it is only as fresh as the last displayedSeriesChanged().
   [[nodiscard]] QSet<QString> displayedKeys(const QWidget* root) const;
 
@@ -110,6 +118,7 @@ class TopicDemandController : public QObject {
   void reportVisibleStart(PlotWidget* plot, const std::vector<std::pair<DatasetId, QString>>& topics);
   void syncStateTransitionsDock(StateTransitionsDockWidget* dock);
   void syncCustomWidgetDock(CustomWidgetDockWidget* dock);
+  void syncLogDock(LogDockWidget* dock);
   // Multiset diff: two curves on one topic hold two references, so removing one curve releases exactly one.
   // Stores `current` into `previous`.
   void applyTopicDelta(
@@ -157,6 +166,7 @@ class TopicDemandController : public QObject {
   std::unordered_map<SceneDockWidget*, std::unordered_map<uint32_t, std::pair<DatasetId, QString>>> scene_layer_topics_;
   std::unordered_map<StateTransitionsDockWidget*, std::vector<std::pair<DatasetId, QString>>> state_dock_topics_;
   std::unordered_map<CustomWidgetDockWidget*, std::vector<std::pair<DatasetId, QString>>> custom_dock_topics_;
+  std::unordered_map<LogDockWidget*, std::vector<std::pair<DatasetId, QString>>> log_dock_topics_;
 
   // Same identity as a TopicDemandTracker reference.
   using PreviewId = std::pair<DatasetId, QString>;

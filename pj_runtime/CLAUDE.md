@@ -99,7 +99,7 @@ Plugin hosts and extensions:
 - `ServiceRegistration.h`: host-to-plugin service registration with logged rejection.
 - `WidgetRuntimeHost.h`, `WireTarget.h`, `WidgetValue.h`, `CanonicalObjectPayload.h`, `ActiveWidgetsMarker.h`: the
   Widget family: the per-panel `pj.widget_host.v1` host, where a wire reads from, the common fields of a widget value,
-  the canonical bytes a widget receives for an object entry, and the per-process record of live Custom Widget plugins
+  the decoded object and canonical bytes of a stored object entry (also read by the Log panel), and the per-process record of live Custom Widget plugins
   the startup crash review reads. A Widget plugin leaves the catalog only by a user disable, and its library is never
   unloaded ([docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Widget plugins").
 - `FeatureCatalogHost.h`, `ToolboxTags.h`: the optional `pj.feature_catalog.v1` service (desktop only; built from
