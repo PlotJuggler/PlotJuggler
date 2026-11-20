@@ -31,7 +31,7 @@ fast_float/8.2.10
 libarchive/3.8.7
 libjpeg-turbo/3.2.0
 libpng/1.6.58
-ffmpeg/9.0.1
+ffmpeg/9.0.2
 # Crash handler for pj_app: prints a symbolized stack trace (with source
 # file:line) to stderr on SIGSEGV/SIGABRT/etc. The default options select the
 # `dw` stack-details backend, which pulls elfutils transitively from Conan — so

@@ -12,7 +12,7 @@
 # streams; only its desktop tests demux containers).
 #
 # Both libraries configure outside this CMake tree, so the root -msimd128 does not reach them; each passes it itself.
-# Measured with Emscripten 5.0.5 on Node 22, 300 frames of 720p, 4 decoder threads: AV1 (dav1d) 1.27x and HEVC
+# Measured with FFmpeg 9.0, dav1d 1.5.4, Emscripten 5.0.5 on Node 22, 300 frames of 720p, 4 decoder threads: AV1 (dav1d) 1.27x and HEVC
 # 1.11x faster, H.264 and swscale unchanged, identical output, +88 KB Brotli. Re-measure on a toolchain or release bump.
 include_guard(GLOBAL)
 
@@ -29,8 +29,8 @@ find_program(PJ_WASM_PKG_CONFIG NAMES pkg-config pkgconf REQUIRED)
 
 # Same release and archive as recipes/ffmpeg/recipe.yaml.
 FetchContent_Declare(pj_wasm_ffmpeg
-    URL https://ffmpeg.org/releases/ffmpeg-9.0.1.tar.xz
-    URL_HASH SHA256=cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
+    URL https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+    URL_HASH SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 # Same release as conan.lock's dav1d, pinned to the tag's commit.
