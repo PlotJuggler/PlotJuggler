@@ -619,11 +619,13 @@ bool AppSession::focusPlaybackOnDatasets(const std::vector<DatasetId>& datasets)
   if (!t_min) {
     return false;
   }
-  // Snap the cursor only on the first focus or when it falls outside the new range. A progressive import re-focuses on
-  // every notify as it grows: the range must follow, but yanking a scrubbed cursor back to the import's start each tick
-  // would fight the user. The cursor is read before setRange, which clamps it into the range.
+  // Snap the cursor to the start on the first focus, or when a focus on new datasets finds it outside their range. A
+  // progressive import re-focuses on every notify as it grows, and between notifies the range is the union of all data:
+  // a cursor scrubbed past the import's tip is then only clamped, never yanked back to the start. The cursor is read
+  // before setRange, which clamps it into the range.
   const DisplaySeconds cursor = playback_engine_->currentTime();
-  if (seeded_datasets_.empty() || cursor < *t_min || cursor > *t_max) {
+  const bool refocus = std::ranges::all_of(bounded, [this](DatasetId id) { return seeded_datasets_.contains(id); });
+  if (seeded_datasets_.empty() || (!refocus && (cursor < *t_min || cursor > *t_max))) {
     playback_engine_->setRangeAndCurrentTime(DisplayRange{*t_min, *t_max}, *t_min);
     seeded_datasets_.clear();
   } else {
