@@ -562,6 +562,45 @@ TEST(AppSessionTest, FocusPlaybackSnapsRangeToTheGivenDatasets) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500'000.0e-9);
 }
 
+// A playhead past the import's end is outside the new range: it goes to the import's start, not to its end.
+TEST(AppSessionTest, FocusPlaybackStartsAnImportThatEndsBeforeThePlayhead) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto late = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "late.mcap"});
+  ASSERT_TRUE(late.has_value()) << late.error();
+  addScalarSamples(session, *late, "/imu/x", {2'000'000'000, 3'000'000'000});
+  ASSERT_TRUE(session.focusPlaybackOnDatasets({*late}));
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{2.5});
+
+  auto early = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "early.mcap"});
+  ASSERT_TRUE(early.has_value()) << early.error();
+  addScalarSamples(session, *early, "/odom/x", {500'000'000, 600'000'000});
+
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*early}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 0.6);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 0.5);
+}
+
+// A playhead inside the range a growing import re-focuses on stays where the user put it.
+TEST(AppSessionTest, FocusPlaybackKeepsAPlayheadInsideTheGrowingRange) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto growing = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "grow.mcap"});
+  ASSERT_TRUE(growing.has_value()) << growing.error();
+  addScalarSamples(session, *growing, "/imu/x", {1'000'000'000, 2'000'000'000});
+  ASSERT_TRUE(session.focusPlaybackOnDatasets({*growing}));
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{1.5});
+
+  addScalarSamples(session, *growing, "/imu/y", {1'000'000'000, 3'000'000'000});
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*growing}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 3.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 1.5);
+}
+
 // Latched/static objects (tf_static, stale markers) carry payload-embedded
 // stamps far OUTSIDE an import's window: scalar series alone bound the focused
 // range; objects define it only when the import has no scalar data at all.
