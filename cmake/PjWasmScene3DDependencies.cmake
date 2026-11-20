@@ -112,5 +112,9 @@ if(PJ_WASM_WITH_COMPRESSED_POINTCLOUDS)
     # Only ros_msg_utils.hpp exposes nanocdr and no consumer includes it, so
     # the rename stays private.
     target_compile_definitions(pj_wasm_cloudini PRIVATE nanocdr=pj_wasm_cloudini_nanocdr)
+    # Cloudini's block codecs are SSE4.1 intrinsics that Emscripten maps onto WASM SIMD (with the root -msimd128),
+    # as Cloudini's own wasm build does. PUBLIC: cloudini.hpp brings intrinsics.hpp, whose inline Vector4f/Vector4i
+    # change with __SSE__, into its consumers; a consumer built without it would give them a second definition.
+    target_compile_options(pj_wasm_cloudini PUBLIC -msse4.1)
     add_library(cloudini::cloudini ALIAS pj_wasm_cloudini)
 endif()
