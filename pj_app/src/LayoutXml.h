@@ -285,40 +285,43 @@ struct DatasetIdentity {
 // label, of another names that one.
 [[nodiscard]] QList<DatasetIdentity> datasetIdentities(const QDomDocument& doc);
 
-// Every topic the layout's elements read, under any qualifier shape, except the outputs of its own recipes (filters,
-// transforms, on-demand recipes, marker rules).
-[[nodiscard]] QSet<QString> referencedTopics(const QDomDocument& doc);
+// Every topic the layout's elements and dataset-bound marker rules read, under any qualifier shape, except the outputs
+// of its own recipes (filters, transforms, on-demand recipes, marker rules). A series key ("<topic>/<field>": a marker
+// rule's or on-demand recipe's input name) reads the longest of `loaded_topics` or the recipe outputs naming a prefix
+// of it; an on-demand name none names counts as it is, a rule key none names not at all.
+[[nodiscard]] QSet<QString> referencedTopics(const QDomDocument& doc, const QSet<QString>& loaded_topics);
 
 // A loaded dataset a layout is pinned to: `id`, `source` and `path` become the qualifier, `label` (the session's unique
-// dataset label) names the copy.
+// dataset label) names the copy, and `topics` are what a pin to it covers.
 struct DatasetPin {
   std::uint32_t id = 0;
   QString source;
   QString path;  ///< empty for a dataset with no file
   QString label;
+  QSet<QString> topics;  ///< every topic the dataset carries, as the catalog lists them
 };
 
 // What planDatasetChoice knows of the loaded data (the shell fills it from CatalogModel).
 struct LoadedDatasets {
   QList<DatasetPin> datasets;  ///< in load order
-  // Calls `visit(dataset id, topic name)` for every topic of every loaded dataset.
-  std::function<void(const std::function<void(std::uint32_t, const QString&)>& visit)> for_each_topic;
   // Whether `identity` names exactly one loaded dataset, as the curve binding resolves it.
   std::function<bool(const DatasetIdentity& identity)> names_one;
 };
 
-// How a load binds a layout that may fit several loaded datasets. The rules and their reasons: pj_app ARCHITECTURE
-// "One layout over several datasets".
+// How a load binds a layout that may fit several loaded datasets. A topic of the layout is shared when two or more
+// loaded datasets carry it. The rules and their reasons: pj_app ARCHITECTURE "One layout over several datasets".
 struct DatasetChoice {
   enum class Kind : std::uint8_t {
-    kKeep,  ///< apply the layout as it is
-    kPin,   ///< pinLayoutToDataset(doc, datasets.front(), topics): one dataset fits best
-    kAsk,   ///< `datasets` fit equally well: pinLayoutToDatasets on those picked
+    kKeep,    ///< apply the layout as it is
+    kPin,     ///< pinLayoutToDataset(doc, datasets.front(), loaded_topics): one dataset fits best
+    kAsk,     ///< `datasets` fit equally well: pinLayoutToDatasets(doc, those picked, loaded_topics)
+    kUnbind,  ///< the layout names one dataset, it is not loaded, no topic is shared and a loaded dataset carries one
+              ///< of its topics: removeDatasetQualifiersForGenericLayout(doc)
   };
   Kind kind = Kind::kKeep;
   QList<DatasetPin> datasets;
-  QSet<QString> topics;  ///< kPin: the layout's topics datasets.front() carries
-  QStringList blockers;  ///< kAsk: duplicationBlockers(doc)
+  QStringList blockers;         ///< kAsk: duplicationBlockers(doc)
+  QSet<QString> loaded_topics;  ///< every loaded dataset's topics, for the pin calls
 };
 
 // `saved`: the datasets the file named, when a load step (startup's explicit files) rewrote its qualifiers since;
@@ -331,22 +334,28 @@ struct DatasetChoice {
 // recipe (its script reads its inputs and upstream outputs by name). Empty when the layout can be duplicated.
 [[nodiscard]] QStringList duplicationBlockers(const QDomDocument& doc);
 
-// Pins each element that reads one of `topics`, each marker rule with an input from one of them, and each other element
-// that reads data without naming a topic (a marker scope, a recipe input), to `pin`; every other qualifier is removed,
-// so those references bind where their topic is unique.
-void pinLayoutToDataset(QDomDocument& doc, const DatasetPin& pin, const QSet<QString>& topics);
+// Pins to `pin` each element reading a topic `pin.topics` holds or, through chains of recipes, an output of a recipe
+// reading one; each marker rule all of whose input keys read one of those; and each other element that reads data
+// without naming a topic (a marker scope, a transform input saved without one). Series keys resolve as
+// referencedTopics(doc, loaded_topics) reads them. Every other qualifier is removed, so those references bind where
+// their topic is unique.
+void pinLayoutToDataset(QDomDocument& doc, const DatasetPin& pin, const QSet<QString>& loaded_topics);
 
 // The colour the session remembers for a <curve> that saved none, if any.
 using RememberedCurveColor = std::function<std::optional<QColor>(const QDomElement& curve)>;
 
-// Pins every element that reads data to `pins.front()`, replacing any qualifier it had and giving one to those
-// without (a generic layout). With several pins, each <Tab> becomes one copy per pin, side by side, named
-// "<tab> [<label>]", and each filter and dataset-bound marker rule one copy per pin, each copy pinned to its dataset
-// and keeping its output name or rule id (both are per dataset). The tab copies past the first are the user's
+// Pins the layout as pinLayoutToDataset(doc, pins.front(), loaded_topics) does, replacing any qualifier it had and
+// giving one to those without (a generic layout). With several pins, each <Tab> becomes one copy per pin, side by
+// side, named "<tab> [<label>]", each copy pinned as pinLayoutToDataset pins to its own pin, and each filter and
+// dataset-bound marker rule one copy per pin covering it, keeping its output name or rule id (both are per dataset):
+// one that `pins.front()` does not cover is pinned to the first pin covering it, one no pin covers stays single and
+// unqualified. The tab copies past the first are the user's
 // (plot_xml::prepareTabCopy) and take tab, area and plot ids new to the document. Before copying, a curve with no
 // saved colour gets the one its plot would give it (plot_xml::fillMissingCurveColors, `remembered` first), so every
 // copy shows it in the same colour. Several pins need duplicationBlockers(doc) to be empty.
-void pinLayoutToDatasets(QDomDocument& doc, const QList<DatasetPin>& pins, const RememberedCurveColor& remembered = {});
+void pinLayoutToDatasets(
+    QDomDocument& doc, const QList<DatasetPin>& pins, const QSet<QString>& loaded_topics,
+    const RememberedCurveColor& remembered = {});
 
 // DatasetId -> its FileLoader full source path; empty for a non-file or unknown dataset.
 using DatasetPathLookup = std::function<QString(std::uint32_t)>;

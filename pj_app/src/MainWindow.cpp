@@ -5380,16 +5380,21 @@ void MainWindow::chooseLayoutDatasets(
     const QString& layout_name, std::function<void(ChosenLayout)> then) {
   const CatalogModel& catalog = session_->catalogModel();
   layout_xml::LoadedDatasets loaded;
+  QHash<DatasetId, qsizetype> index_of;
   for (const auto& [id, label] : catalog.datasets()) {
+    index_of.insert(id, loaded.datasets.size());
     loaded.datasets.push_back(
         {.id = id,
          .source = catalog.datasetSourceName(id).value_or(label),
          .path = catalog.datasetSourcePath(id),
-         .label = catalog.datasetLabel(id).value_or(label)});
+         .label = catalog.datasetLabel(id).value_or(label),
+         .topics = {}});
   }
-  loaded.for_each_topic = [&catalog](const std::function<void(std::uint32_t, const QString&)>& visit) {
-    catalog.forEachItem([&visit](const CatalogItem& item) { visit(item.dataset_id, item.topic_name); });
-  };
+  catalog.forEachItem([&loaded, &index_of](const CatalogItem& item) {
+    if (const auto found = index_of.constFind(item.dataset_id); found != index_of.cend()) {
+      loaded.datasets[*found].topics.insert(item.topic_name);
+    }
+  });
   // A loaded file named under another label still names it: the curve binding falls back to the path alone. A path
   // shared by a fan-out file's entries names none of them, so those stay per entry.
   loaded.names_one = [&catalog](const layout_xml::DatasetIdentity& identity) {
@@ -5403,7 +5408,11 @@ void MainWindow::chooseLayoutDatasets(
       then({.doc = std::move(doc), .removed = {}, .compared = {}});
       return;
     case layout_xml::DatasetChoice::Kind::kPin:
-      layout_xml::pinLayoutToDataset(doc, choice.datasets.front(), choice.topics);
+      layout_xml::pinLayoutToDataset(doc, choice.datasets.front(), choice.loaded_topics);
+      then({.doc = std::move(doc), .removed = {}, .compared = {}});
+      return;
+    case layout_xml::DatasetChoice::Kind::kUnbind:
+      layout_xml::removeDatasetQualifiersForGenericLayout(doc);
       then({.doc = std::move(doc), .removed = {}, .compared = {}});
       return;
     case layout_xml::DatasetChoice::Kind::kAsk:
@@ -5416,7 +5425,7 @@ void MainWindow::chooseLayoutDatasets(
             .arg(layout_name)
             .arg(choice.datasets.size())
             .arg(choice.datasets.front().label));
-    layout_xml::pinLayoutToDatasets(doc, {choice.datasets.front()});
+    layout_xml::pinLayoutToDatasets(doc, {choice.datasets.front()}, choice.loaded_topics);
     then({.doc = std::move(doc), .removed = {}, .compared = {}});
     return;
   }
@@ -5432,7 +5441,8 @@ void MainWindow::chooseLayoutDatasets(
   QPointer<MainWindow> self(this);
   LayoutDatasetDialog::ask(
       this, layout_name, labels, single_only,
-      [self, doc, pins = std::move(choice.datasets), then = std::move(then)](std::optional<QList<int>> chosen) mutable {
+      [self, doc, pins = std::move(choice.datasets), loaded_topics = std::move(choice.loaded_topics),
+       then = std::move(then)](std::optional<QList<int>> chosen) mutable {
         if (self.isNull()) {
           return;
         }
@@ -5456,7 +5466,7 @@ void MainWindow::chooseLayoutDatasets(
         }
         const CatalogModel& live_catalog = self->session_->catalogModel();
         const CurveColorRegistry& colors = self->session_->curveColorRegistry();
-        layout_xml::pinLayoutToDatasets(doc, picked, [&live_catalog, &colors](const QDomElement& curve) {
+        layout_xml::pinLayoutToDatasets(doc, picked, loaded_topics, [&live_catalog, &colors](const QDomElement& curve) {
           const std::optional<QString> key = live_catalog.resolveCurveKey(
               curve.attribute(u"dataset_id"_s).toUInt(), curve.attribute(u"dataset_source"_s),
               curve.attribute(u"dataset_path"_s), curve.attribute(u"topic"_s), curve.attribute(u"field"_s));

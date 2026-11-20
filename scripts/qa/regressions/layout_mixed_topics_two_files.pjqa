@@ -1,0 +1,19 @@
+# Intended behaviour (pj_app ARCHITECTURE "One layout over several datasets"): a layout that names no dataset, whose
+# curves come from two loaded files with no topic in common (data/sine only in data.csv, run/value only in run.csv),
+# restores both curves unasked: only a topic several files carry is shared, so nothing is chosen or pinned. The
+# browser's File > Save Layout writes such a layout for any session plotting two files.
+# app: -d tests/wasm/fixtures/signals/data.csv -d scripts/qa/regressions/fixtures/compare_runs/run1/run.csv -l scripts/qa/regressions/fixtures/compare_runs/mixed_topics.pj4.xml
+# needs: plugins
+until get_status {} "name":"run.csv"
+until ui_plot {"title":"Mixed"} "run/value"
+expect "data/sine"
+# No Layout warning: a dataset chosen for it would read "Warning | Layout | Layout '…' fits 2 loaded datasets". Filtered
+# first, since the list shows only the rows in its viewport.
+ui_click {"name":"buttonNotifications","wait_ms":500}
+ui_click {"name":"searchBox","wait_ms":200}
+ui_type {"text":"Layout","wait_ms":500}
+ui_tree {}
+expect QLineEdit "Layout"
+expect | Info | Layout | Loaded layout
+absent | Warning | Layout |
+ui_key {"keys":"Escape"}
