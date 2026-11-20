@@ -10,6 +10,7 @@
 #include <QDomDocument>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QToolButton>
 #include <memory>
 #include <string>
@@ -25,7 +26,9 @@
 #include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/Time.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 
 using namespace Qt::StringLiterals;
@@ -45,6 +48,12 @@ class MainWindowLogPanelTestPeer {
   }
   static void applyTimeLabelFormat(MainWindow& window) {
     window.applyTimeLabelFormat();
+  }
+  static void trash(MainWindow& window, const QString& key) {
+    window.onCatalogTrashRequested(QStringList{key}, /*covers_all=*/false);
+  }
+  static void removeDataset(MainWindow& window, DatasetId dataset_id) {
+    window.removeDatasets({dataset_id});
   }
 };
 
@@ -129,14 +138,49 @@ TEST_F(MainWindowLogPanelTest, ALogTopicDroppedOnAnEmptyAreaOpensALogPanel) {
   EXPECT_EQ(log->view()->store().row(0).message, "message 1");
 }
 
+TEST_F(MainWindowLogPanelTest, ALogPanelDroppedOnAnEmptyAreaStartsAtThePlayhead) {
+  AppSession& app = Peer::session(*window_);
+  const DisplayOffset offset = app.sessionManager().displayOffset(dataset_);
+  const auto display = [offset](Timestamp raw) { return rawToDisplaySecondsAtOrAfter(raw, offset); };
+  app.playbackEngine().setRange(DisplayRange{display(0), display(3'000'000'000LL)});
+  app.playbackEngine().setCurrentTime(display(1'500'000'000LL));
+  ASSERT_DOUBLE_EQ(toAxisDouble(app.playbackEngine().currentTime()), toAxisDouble(display(1'500'000'000LL)));
+  ASSERT_TRUE(drop());
+  LogDockWidget* log = logOf(dock_);
+  ASSERT_NE(log, nullptr);
+  ASSERT_EQ(log->view()->store().size(), 2U);
+  EXPECT_EQ(log->view()->model()->revealedRows(), 1) << "the row at 1 s is at the playhead, the one at 2 s after it";
+}
+
+// Removed from the Datasets panel, a shown topic leaves the panel instead of waiting for its return.
+TEST_F(MainWindowLogPanelTest, RemovingAShownTopicLeavesNoPendingDemand) {
+  ASSERT_TRUE(drop());
+  LogDockWidget* log = logOf(dock_);
+  ASSERT_NE(log, nullptr);
+  Peer::trash(*window_, key_);
+  QTest::qWait(LogDockWidget::kEntriesLandedIntervalMs + 50);
+  EXPECT_TRUE(log->displayedTopics().empty());
+  EXPECT_FALSE(log->hasPendingTopic(u"/rosout"_s));
+  EXPECT_TRUE(log->pendingDemands().empty());
+}
+
+TEST_F(MainWindowLogPanelTest, RemovingTheDatasetOfAShownTopicLeavesNoPendingDemand) {
+  ASSERT_TRUE(drop());
+  LogDockWidget* log = logOf(dock_);
+  ASSERT_NE(log, nullptr);
+  Peer::removeDataset(*window_, dataset_);
+  QTest::qWait(LogDockWidget::kEntriesLandedIntervalMs + 50);
+  EXPECT_TRUE(log->displayedTopics().empty());
+  EXPECT_FALSE(log->hasPendingTopic(u"/rosout"_s));
+  EXPECT_TRUE(log->pendingDemands().empty());
+}
+
 TEST_F(MainWindowLogPanelTest, TheTimeColumnFollowsTheDateTimeToggle) {
   ASSERT_TRUE(drop());
   LogDockWidget* log = logOf(dock_);
   ASSERT_NE(log, nullptr);
-  const auto time_text = [log]() {
-    auto* model = log->view()->model();
-    return model->data(model->index(0, log_view::LogTableModel::kTime)).toString();
-  };
+  // The Time column's text of the first entry, which sits after the playhead (hidden) right after the drop.
+  const auto time_text = [log]() { return log->view()->model()->timeText(log->view()->store().row(0)); };
   const double seconds = log->view()->store().row(0).time;
   EXPECT_EQ(time_text(), formatTimeLabel(seconds, TimeLabelFormat::kSeconds, 3, true));
 

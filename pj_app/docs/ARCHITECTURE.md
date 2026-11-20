@@ -588,12 +588,15 @@ end-to-end runs registered from `pj_custom_widgets/tests/E2E.cmake`.
 
 `MainWindow::makeSceneDock` builds the `"log"` kind (`LogDockWidget` from `pj_log`, the `<log>` layout tag),
 counted as `panel.log`, given the app-wide time format and wired to the undo debounce,
-`TopicDemandController::registerLogDock` and the pending-binding rebuild. `sceneKindForObjectType` routes `kLog` to
-it, so a log topic dropped on an empty area opens a Log panel, and the placeholder's Log button
+`TopicDemandController::registerLogDock` and the pending-binding rebuild. `panelKindForObjectType` routes `kLog` to
+it, so a log topic dropped on an empty area opens a Log panel (the drop factory hands the topic over through
+`IDataWidget::tryAcceptObjectTopic` and seeds every new widget at the playhead), and the placeholder's Log button
 (`VisualizationKind::kLog`) creates an empty one. A log dropped on a mounted Log panel merges into it
 (`tryAcceptObjectTopic`). An advertised log placeholder dropped on a Log panel stays pending in it
 (`TopicDemandController::handleLogDockPlaceholderDrop`) while `PendingDisplayBinder::addPendingLogTopic` holds its
-demand; a restored layout's unresolved topics are collected the same way. `applyTimeLabelFormat` reaches every panel
+demand; a restored layout's unresolved topics are collected the same way. Deleting a topic or a dataset from the
+Datasets panel calls `discardTopic` / `discardDataset` first, next to the scene docks' `discardPendingRestoresFor*`,
+so the panel drops it instead of waiting for it. `applyTimeLabelFormat` reaches every panel
 through `forEachLogPanel`. The curve list badges a log row with the Log glyph (`objectTypeBadgeIcon`).
 
 ## Browser (WebAssembly) boundary

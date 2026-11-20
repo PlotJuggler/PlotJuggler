@@ -37,7 +37,7 @@ bool isImageFamilyObjectType(sdk::BuiltinObjectType type) {
          type == sdk::BuiltinObjectType::kDepthImage || type == sdk::BuiltinObjectType::kImageAnnotations;
 }
 
-QString sceneKindForObjectType(sdk::BuiltinObjectType type) {
+QString panelKindForObjectType(sdk::BuiltinObjectType type) {
   if (type == sdk::BuiltinObjectType::kLog) {
     return u"log"_s;
   }
@@ -54,7 +54,7 @@ QString sceneKindForObjectType(sdk::BuiltinObjectType type) {
 }
 
 bool isDroppableObjectType(sdk::BuiltinObjectType type) {
-  return !sceneKindForObjectType(type).isEmpty();
+  return !panelKindForObjectType(type).isEmpty();
 }
 
 bool isCustomWidgetObjectType(sdk::BuiltinObjectType type) {

@@ -963,7 +963,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         QString resolved_kind = kind;
         if (resolved_kind.isEmpty() && seed != nullptr) {
           // The same routing the curve list's drag veto uses (scene_object_classification.h).
-          resolved_kind = sceneKindForObjectType(seed->object_type);
+          resolved_kind = panelKindForObjectType(seed->object_type);
         }
         if (seed == nullptr) {
           // Restore, click-create and undo/redo: the playhead is seeded before PlotDocker's xmlLoadState(), so
@@ -1003,9 +1003,6 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           }
           // A 3D-only stream must seed playback here too (see header doc).
           seedStreamingPlaybackFromDrop();
-          // currentTimeChanged fires only on changes, so a new widget is seeded here.
-          scene3d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
-          scene3d->frameInitialContent();
         } else
 #endif
 #ifdef PJ_WITH_SCENE2D
@@ -1020,23 +1017,22 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
           }
           seedStreamingPlaybackFromDrop();
           media2d->setPointInspectorEnabled(show_points_);
-          media2d->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
         } else
 #endif
-            if (auto* log = qobject_cast<LogDockWidget*>(qwidget)) {
-          if (!log->tryAcceptObjectTopic(seed->topic_id, seed->object_type, seed->title)) {
-            log->deleteLater();
-            showToast(tr("This topic cannot be displayed in a Log panel (type %1).")
+        {
+          // Any other family takes the topic through IDataWidget.
+          if (!widget->tryAcceptObjectTopic(seed->topic_id, seed->object_type, seed->title)) {
+            widget->widget()->deleteLater();
+            showToast(tr("This object topic cannot be displayed (type %1).")
                           .arg(QString::fromUtf8(sdk::name(seed->object_type))));
             return nullptr;
           }
           seedStreamingPlaybackFromDrop();
-        } else {
-          // A new family in makeSceneDock needs a branch here.
-          qWarning("MainWindow: makeSceneDock returned an unhandled object-widget kind");
-          widget->widget()->deleteLater();
-          return nullptr;
         }
+        // currentTimeChanged fires only on changes, so a new widget is seeded here; a 3D view frames its first content
+        // at that time.
+        widget->onTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
+        frameDroppedScene3dContent(widget);
         return widget;
       });
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::tabAdded, this, &MainWindow::onPlotTabAdded);
@@ -3272,6 +3268,7 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
         forEachSceneDock([&item](SceneDockWidget* scene_dock) {
           scene_dock->discardPendingRestoresForTopic(item->dataset_id, item->topic_name);
         });
+        forEachLogPanel([&item](LogDockWidget* log) { log->discardTopic(item->dataset_id, item->topic_name); });
         if (const ObjectTopicPayload* obj = asObjectTopic(*item)) {
           trashed_objects.push_back(obj->object_topic_id);
         }
@@ -3299,6 +3296,7 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
 void MainWindow::removeDatasetData(DatasetId dataset_id) {
   forEachSceneDock(
       [dataset_id](SceneDockWidget* scene_dock) { scene_dock->discardPendingRestoresForDataset(dataset_id); });
+  forEachLogPanel([dataset_id](LogDockWidget* log) { log->discardDataset(dataset_id); });
   if (pending_binder_ != nullptr) {
     static_cast<void>(pending_binder_->flush({}));
   }

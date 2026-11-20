@@ -21,7 +21,7 @@ namespace PJ {
 // The drop-routing decision: "log" for a log, "scene2d", "scene3d", or empty when no built family accepts `type`.
 // Image-family types never fall back to 3D (a color image would be rejected there); a type both families claim
 // (kSceneEntities) goes to 3D.
-[[nodiscard]] QString sceneKindForObjectType(sdk::BuiltinObjectType type);
+[[nodiscard]] QString panelKindForObjectType(sdk::BuiltinObjectType type);
 
 // So the curve list never offers a drag that can only end in "cannot display".
 [[nodiscard]] bool isDroppableObjectType(sdk::BuiltinObjectType type);
