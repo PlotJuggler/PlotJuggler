@@ -562,6 +562,74 @@ TEST(AppSessionTest, FocusPlaybackSnapsRangeToTheGivenDatasets) {
   EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 500'000.0e-9);
 }
 
+// A playhead past the import's end is outside the new range: it goes to the import's start, not to its end.
+TEST(AppSessionTest, FocusPlaybackStartsAnImportThatEndsBeforeThePlayhead) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto late = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "late.mcap"});
+  ASSERT_TRUE(late.has_value()) << late.error();
+  addScalarSamples(session, *late, "/imu/x", {2'000'000'000, 3'000'000'000});
+  ASSERT_TRUE(session.focusPlaybackOnDatasets({*late}));
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{2.5});
+
+  auto early = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "early.mcap"});
+  ASSERT_TRUE(early.has_value()) << early.error();
+  addScalarSamples(session, *early, "/odom/x", {500'000'000, 600'000'000});
+
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*early}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 0.6);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 0.5);
+}
+
+// A playhead inside the range a growing import re-focuses on stays where the user put it.
+TEST(AppSessionTest, FocusPlaybackKeepsAPlayheadInsideTheGrowingRange) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto growing = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "grow.mcap"});
+  ASSERT_TRUE(growing.has_value()) << growing.error();
+  addScalarSamples(session, *growing, "/imu/x", {1'000'000'000, 2'000'000'000});
+  ASSERT_TRUE(session.focusPlaybackOnDatasets({*growing}));
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{1.5});
+
+  addScalarSamples(session, *growing, "/imu/y", {1'000'000'000, 3'000'000'000});
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*growing}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 3.0);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 1.5);
+}
+
+// Between two notifies of a growing import the range is the union of all data (recomputeRange), so the user can scrub
+// past the import's tip. The next focus clamps the playhead to the tip instead of yanking it back to the start.
+TEST(AppSessionTest, FocusPlaybackClampsAPlayheadScrubbedPastAGrowingImport) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::AppSession session(dir.path());
+
+  auto later = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "later.mcap"});
+  ASSERT_TRUE(later.has_value()) << later.error();
+  addScalarSamples(session, *later, "/imu/x", {5'000'000'000, 9'000'000'000});
+  session.catalogModel().rebuildFromDatastore();
+  ASSERT_TRUE(session.seedPlaybackFromSession());
+
+  auto growing = session.sessionManager().dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "grow.mcap"});
+  ASSERT_TRUE(growing.has_value()) << growing.error();
+  addScalarSamples(session, *growing, "/odom/x", {1'000'000'000, 2'000'000'000});
+  ASSERT_TRUE(session.focusPlaybackOnDatasets({*growing}));
+  ASSERT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 1.0);
+
+  session.catalogModel().rebuildFromDatastore();
+  session.recomputeRange();
+  session.playbackEngine().setCurrentTime(PJ::DisplaySeconds{2.5});
+
+  addScalarSamples(session, *growing, "/odom/y", {1'000'000'000, 2'200'000'000});
+  EXPECT_TRUE(session.focusPlaybackOnDatasets({*growing}));
+  EXPECT_DOUBLE_EQ(session.playbackEngine().rangeMax().value, 2.2);
+  EXPECT_DOUBLE_EQ(session.playbackEngine().currentTime().value, 2.2);
+}
+
 // Latched/static objects (tf_static, stale markers) carry payload-embedded
 // stamps far OUTSIDE an import's window: scalar series alone bound the focused
 // range; objects define it only when the import has no scalar data at all.

@@ -101,8 +101,10 @@ class AppSession : public QObject {
   // topic has data.
   bool seedPlaybackFromSession();
 
-  // FOCUSES playback on specific datasets (a toolbox bulk import, e.g. a cloud fetch): sets the range to THEIR bounds
-  // and snaps currentTime to their start. Unlike seedPlaybackFromSession it REPLACES the range, so a 10 s snippet shows
+  // FOCUSES playback on specific datasets (a toolbox bulk import, e.g. a cloud fetch): sets the range to THEIR bounds.
+  // currentTime goes to their start on the first focus and when datasets not yet focused find it outside that range;
+  // re-focusing the same growing import keeps it, clamped into the range. Unlike seedPlaybackFromSession it REPLACES
+  // the range, so a 10 s snippet shows
   // a 10 s timeline even when older datasets span hours. Scalar series bound the range; object topics count only when
   // the datasets have no scalar data (a 3D-only import), since latched/static objects (tf_static, stale markers) must
   // not stretch it. Returns false when no data was found (callers fall back to seedPlaybackFromSession).
@@ -197,7 +199,8 @@ class AppSession : public QObject {
   // session-owned plugin handles die before loaded plugin libraries unload.
   std::unique_ptr<ExtensionCatalogService> extension_catalog_;
 
-  // The datasets the playhead was seeded on (seedPlaybackFromSession); empty = not seeded. Never grown by an added
+  // The datasets the playhead was seeded on (seedPlaybackFromSession, or focusPlaybackOnDatasets, which adds the
+  // focused ones and replaces the set when it snaps); empty = not seeded. Never grown by an added
   // file dataset, so data replaced without the catalog emptying re-seeds; a merge's anchor inherits its consumed
   // datasets, and a followed stream joins (setActiveStreamingDataset).
   std::set<PJ::DatasetId> seeded_datasets_;
