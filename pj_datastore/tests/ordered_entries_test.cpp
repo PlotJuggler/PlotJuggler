@@ -528,7 +528,34 @@ TEST(OrderedEntriesTest, BulkEvictFrontMovesOnlyTheContentRevision) {
   oe.evictFront(2, removed);
   EXPECT_NE(oe.contentIdentity().content, before.content);
   EXPECT_EQ(oe.contentIdentity().rewrite, before.rewrite);
+  EXPECT_EQ(oe.contentIdentity().removal, before.removal);
   EXPECT_EQ(stamps(oe), (std::vector<Timestamp>{30}));
+}
+
+// A flush only adds entries, under fresh UIDs a cursor walks: it rewrites the time order but removes nothing. A shift
+// or a re-UID changes entries a reader already holds.
+TEST(OrderedEntriesTest, RemovalMovesWhenHeldEntriesChange) {
+  OrderedEntries oe;
+  oe.push(makeEntry(10));
+  oe.push(makeEntry(30));
+  OrderedEntries src;
+  src.push(makeEntry(20));
+  const auto before = oe.contentIdentity();
+  const auto src_before = src.contentIdentity();
+  oe.appendReuidFrom(src);
+  EXPECT_NE(oe.contentIdentity().rewrite, before.rewrite);
+  EXPECT_EQ(oe.contentIdentity().removal, before.removal);
+  EXPECT_NE(src.contentIdentity().removal, src_before.removal) << "the emptied source lost its entries";
+
+  auto previous = oe.contentIdentity();
+  ASSERT_TRUE(oe.shift(5));
+  EXPECT_NE(oe.contentIdentity().removal, previous.removal);
+  previous = oe.contentIdentity();
+  oe.reuidAll();
+  EXPECT_NE(oe.contentIdentity().removal, previous.removal);
+  previous = oe.contentIdentity();
+  oe.clear();
+  EXPECT_NE(oe.contentIdentity().removal, previous.removal);
 }
 
 }  // namespace

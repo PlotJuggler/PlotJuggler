@@ -14,14 +14,17 @@
 namespace PJ {
 
 OrderedEntries::OrderedEntries() {
-  changed(true);
+  changed(Change::kRemoval);
 }
 
-void OrderedEntries::changed(bool rewrite) noexcept {
+void OrderedEntries::changed(Change change) noexcept {
   static std::atomic<uint64_t> next{1};
   identity_.content = next.fetch_add(1, std::memory_order_relaxed);
-  if (rewrite) {
+  if (change != Change::kFollowable) {
     identity_.rewrite = identity_.content;
+  }
+  if (change == Change::kRemoval) {
+    identity_.removal = identity_.content;
   }
 }
 
@@ -137,7 +140,7 @@ OrderedEntries::PushOrder OrderedEntries::indexBack() {
   // uid_order_ holds positions as uint32_t.
   assert(entries_.size() < UINT32_MAX);
   if (entry_timestamps_.empty() || timestamp >= entry_timestamps_.back()) {
-    changed(false);  // lands after every entry, an equal stamp's too: a UID cursor finds it
+    changed(Change::kFollowable);  // lands after every entry, an equal stamp's too: a UID cursor finds it
     entry_timestamps_.push_back(timestamp);
     // The newest UID is also the UID-order tail. Only the tail is checked: checkInvariant() here would make debug
     // ingest O(n^2).
@@ -160,7 +163,7 @@ OrderedEntries::PushOrder OrderedEntries::indexBack() {
     }
   }
   uid_order_.push_back(static_cast<uint32_t>(idx));
-  changed(true);
+  changed(Change::kInsert);
 #ifndef NDEBUG
   checkInvariant();
 #endif
@@ -173,7 +176,7 @@ void OrderedEntries::evictFront(size_t count, std::vector<ObjectEntry>& removed)
     return;
   }
   reserveMore(removed, count);
-  changed(false);
+  changed(Change::kFollowable);
   const auto end = entries_.begin() + static_cast<std::ptrdiff_t>(count);
   std::move(entries_.begin(), end, std::back_inserter(removed));
   entries_.erase(entries_.begin(), end);
@@ -234,7 +237,7 @@ OrderedEntries::PushOrder OrderedEntries::removeAndPush(
 size_t OrderedEntries::compact(const Removal& plan, std::vector<ObjectEntry>& removed) {
   assert(plan.new_position.size() == entries_.size());
   assert(removed.capacity() - removed.size() >= plan.count);
-  changed(true);
+  changed(Change::kRemoval);
   // ponytail: survivors always shift toward the front, so a sliding window's front removal moves every entry.
   // Upgrade: erase a contiguous run with deque::erase, which moves the shorter side.
   auto entry = entries_.begin();
@@ -265,7 +268,7 @@ size_t OrderedEntries::compact(const Removal& plan, std::vector<ObjectEntry>& re
 }
 
 void OrderedEntries::clear() {
-  changed(true);
+  changed(Change::kRemoval);
   entries_.clear();
   entry_timestamps_.clear();
   uid_order_.clear();
@@ -275,7 +278,7 @@ bool OrderedEntries::shift(Timestamp delta) {
   if (delta == 0 || entries_.empty()) {
     return false;
   }
-  changed(true);
+  changed(Change::kRemoval);
   for (size_t i = 0; i < entries_.size(); ++i) {
     entries_[i].timestamp = saturatingAdd(entries_[i].timestamp, delta);
     entry_timestamps_[i] = entries_[i].timestamp;
@@ -286,7 +289,7 @@ bool OrderedEntries::shift(Timestamp delta) {
 }
 
 void OrderedEntries::reuidAll() {
-  changed(true);
+  changed(Change::kRemoval);
   for (ObjectEntry& entry : entries_) {
     entry.sequential_uid = SequentialUID::getNext();
   }
@@ -326,7 +329,7 @@ void OrderedEntries::appendReuidFrom(OrderedEntries& src) {
   // Rebuilt rather than re-UIDed: consumer cursors hold the existing UIDs, whose order an out-of-order insert may
   // have made non-identity.
   rebuildUidOrder();
-  changed(true);
+  changed(Change::kInsert);
   src.clear();
 }
 
@@ -363,14 +366,14 @@ void OrderedEntries::detachInto(std::deque<ObjectEntry>& entries_out, std::vecto
   entries_.clear();
   entry_timestamps_.clear();
   uid_order_.clear();
-  changed(true);
+  changed(Change::kRemoval);
 }
 
 void OrderedEntries::restoreRebuild(std::deque<ObjectEntry>&& entries_in, std::vector<Timestamp>&& stamps_in) {
   entries_ = std::move(entries_in);
   entry_timestamps_ = std::move(stamps_in);
   rebuildUidOrder();
-  changed(true);
+  changed(Change::kRemoval);
 }
 
 #ifndef NDEBUG

@@ -89,10 +89,14 @@ class OrderedEntries {
 
   /// Process-unique revisions, so a series rebuilt after a clear never repeats one. `content` moves on every change;
   /// `rewrite` on every change except an append at or after the newest stamp and a front eviction, the two a reader
-  /// can follow with a UID cursor and a timestamp floor without rescanning.
+  /// can follow with a UID cursor and a timestamp floor without rescanning. `removal` moves only when an entry a reader
+  /// may hold is gone or changed (removed, replaced, cleared, shifted, re-UIDed), never on an insert or a front
+  /// eviction: an arrival-order reader (drainNewSince()) that orders entries itself rescans when it moves.
+  /// A `removal` move implies a `rewrite` move.
   struct ContentIdentity {
     uint64_t content = 0;
     uint64_t rewrite = 0;
+    uint64_t removal = 0;
     bool operator==(const ContentIdentity&) const = default;
   };
 
@@ -214,8 +218,10 @@ class OrderedEntries {
   // Survivors close the gaps at the front, removed entries move into `removed` (which has room); the deque keeps
   // its size, moved-from slots at the back. Returns the survivor count.
   size_t compact(const Removal& plan, std::vector<ObjectEntry>& removed);
-  // Every mutator calls it after a change; `rewrite` as ContentIdentity defines it.
-  void changed(bool rewrite) noexcept;
+  // Which ContentIdentity revisions a change moves, each level including the ones before it.
+  enum class Change { kFollowable, kInsert, kRemoval };
+  // Every mutator calls it on a change.
+  void changed(Change change) noexcept;
 
 #ifndef NDEBUG
   void checkInvariant() const;

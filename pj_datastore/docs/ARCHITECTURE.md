@@ -241,7 +241,7 @@ it missed evicted entries or that the dataset was replaced.
 | A time window | `rangeByTime()`, then `at(uid)` per entry; a UID walk would skip an out-of-order entry |
 | A time-window cursor's high-water mark | `maxUidAtOrBefore()`, not `latestAt()`'s UID |
 | "Did anything arrive behind what I evaluated?" | `oldestArrivalAfter()` |
-| "Did the topic change?" | `contentIdentity()` |
+| "Did the topic change?" | `contentIdentity()`: `content` on any change; `rewrite` unless the change was an append or a front eviction (time-ordered caches rebuild); `removal` only when entries were removed, replaced, shifted or re-UIDed, not on any insert nor a front eviction (an arrival-order reader keeps its cursor; one that must drop evicted entries checks them with `indexOf()`) |
 
 **Payloads.** An owned payload is a shared buffer charged to the topic's memory budget. A lazy payload is a closure the
 store runs on read, returning bytes plus an anchor that keeps them alive; the producer anchors on whatever already owns
