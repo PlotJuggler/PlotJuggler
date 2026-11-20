@@ -940,8 +940,23 @@ std::optional<QString> readsThrough(const QDomElement& element, const DatasetIde
   return nameless ? std::optional<QString>(QString()) : std::nullopt;
 }
 
+// Whether a marker rule reads one of `topics`: its <input name> keys are "<topic>/<field>".
+bool ruleReadsAny(const QDomElement& rule, const QSet<QString>& topics) {
+  for (QDomElement input = rule.firstChildElement(u"input"_s); !input.isNull();
+       input = input.nextSiblingElement(u"input"_s)) {
+    const QString key = input.attribute(u"name"_s);
+    if (std::any_of(topics.begin(), topics.end(), [&key](const QString& topic) {
+          return key == topic || key.startsWith(topic + u'/');
+        })) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Replaces every qualifier under `root` by `pin`, and gives one to every element that reads data without one. With
-// `topics`, only the readers of those topics and the nameless readers are pinned; the others lose their qualifier.
+// `topics`, only the readers of those topics, the marker rules reading one of them and the other nameless readers are
+// pinned; the others lose their qualifier and bind by what they read.
 void pinQualifiers(const QDomElement& root, const DatasetPin& pin, const QSet<QString>* topics = nullptr) {
   forEachElementUnder(root, [&pin, topics](QDomElement& element) {
     for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
@@ -949,8 +964,15 @@ void pinQualifiers(const QDomElement& root, const DatasetPin& pin, const QSet<QS
       element.removeAttribute(shape.source);
       element.removeAttribute(shape.path);
       const std::optional<QString> topic = readsThrough(element, shape);
-      if (!topic.has_value() || (topics != nullptr && !topic->isEmpty() && !topics->contains(*topic))) {
+      if (!topic.has_value()) {
         continue;
+      }
+      if (topics != nullptr) {
+        const bool pinned = topic->isEmpty() ? element.tagName() != "generator"_L1 || ruleReadsAny(element, *topics)
+                                             : topics->contains(*topic);
+        if (!pinned) {
+          continue;
+        }
       }
       if (pin.id != 0) {
         element.setAttribute(shape.id, QString::number(pin.id));

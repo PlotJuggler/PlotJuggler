@@ -71,8 +71,9 @@ name, or `<base>/<entry>` for a fan-out) follows the new name, since the identit
 `removeDatasetQualifiersForGenericLayout` applies the mapping to every consumer, after `resolveDatasetSourcePaths`.
 Without explicit files, `--layout` replays its saved sources and starts its recorded streams with no prompt.
 A startup layout prompts only for which dataset(s) to show, and only when someone is at the display ("One layout over
-several datasets"); its other failures are diagnostics (`LayoutLoadInteractivity::kStartupAttended`). Unattended startup (`--exit-after-layout`, `--screenshot`, the
-`offscreen`/`minimal` platforms; `isUnattendedRun` in `main.cpp`) loads with `DialogPolicy::kNever`. A failed or
+several datasets"); its other failures are diagnostics (`LayoutLoadInteractivity::kStartupAttended`). Unattended
+startup (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the `offscreen`/`minimal` platforms;
+`isUnattendedRun` in `main.cpp`) loads with `DialogPolicy::kNever`. A failed or
 cancelled explicit file skips the layout and settles it false, so `--exit-after-layout` exits unsuccessfully. The final
 restore is deferred through a window-owned timer so it never runs during teardown. `--exit-after-layout` exit codes are
 a contract for harnesses (`LayoutExitWatch`): 0 applied, 1 load failed or cancelled, 2 timed out, 64 usage error. With
@@ -331,7 +332,8 @@ decides, `layout_xml::pinLayoutToDataset(s)` rewrite the document, `MainWindow::
 `LayoutDatasetDialog`, reports, and hands the result on.
 
 - **When it applies.** On the synchronous leg (nothing left to reload or start), when the file named at most one
-  dataset (`layout_xml::datasetIdentities`: a generic layout names none), that dataset is not loaded, and two or more
+  dataset (`layout_xml::datasetIdentities`: a generic layout names none), that dataset is not loaded (a loaded file
+  named under another label is loaded: the curve binding finds it by its path), and two or more
   loaded datasets carry the layout's topics. The layout's own outputs (filters, transforms, on-demand recipes, marker
   rules) do not count: a dataset holding them from an earlier load of the same layout fits it no better. A layout
   naming several datasets, a stream or an upload keeps its own bindings, and startup maps them to its explicit files
@@ -339,17 +341,19 @@ decides, `layout_xml::pinLayoutToDataset(s)` rewrite the document, `MainWindow::
   label, so each (path, label) pair is a dataset of its own.
 - **One dataset fitting best takes the topics it carries, unasked.** When one dataset carries more of the layout's
   topics than any other, it is the only one that can show the whole layout: every reference to a topic it carries,
-  and every nameless reader (marker rule or scope, recipe input), is pinned to it; a reference to a topic it lacks
-  keeps no qualifier and binds where that topic is unique.
+  every marker rule with an input from one of them, and every other nameless reader (marker scope, recipe input), is
+  pinned to it; any other reference keeps no qualifier and binds where its topic is unique, a marker rule by its
+  inputs.
 - **Several fitting equally are asked about, when the load can ask** (File → Load Layout, the recent list, the
   browser's Load Layout, a startup layout with someone at the display): one checkbox per candidate dataset, in load
   order, the first checked; Cancel settles the load false with nothing applied, like the reload prompt's Cancel.
-  Reason: only the user knows which run a generic layout is for. Candidates removed while the browser's
-  non-blocking question was open are reported, not taken for a Cancel.
+  Reason: only the user knows which run a generic layout is for. Checked candidates removed while the question was
+  open (the browser's does not block) are reported: the load goes on with the others, or fails when none is left,
+  never taken for a Cancel.
 - **A load that cannot ask takes the first loaded candidate and says so** (`layout-dataset-chosen`, a warning): an
-  unattended `--layout` (`--exit-after-layout`, `--screenshot`, the offscreen QA instance), and any other load
-  without a display to ask on. Reason: a harness, an agent or the QA instance cannot answer a dialog, and an unbound
-  workspace helps no one; the diagnostic keeps the choice visible.
+  unattended `--layout` (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the offscreen QA instance), and
+  any other load without a display to ask on. Reason: a harness, an agent or the QA instance cannot answer a dialog,
+  and an unbound workspace helps no one; the diagnostic keeps the choice visible.
 - **One checked: every reference names that dataset,** and the tabs keep their names. Plots, scenes, recipes, marker
   rules, marker scopes and Custom Widget wires are all rewritten in the document by the same qualifier walk, so no
   widget needs its own logic.

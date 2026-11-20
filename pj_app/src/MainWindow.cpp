@@ -5342,10 +5342,10 @@ void MainWindow::loadLayoutFromPath(
       std::move(doc), saved_identities, interactivity != LayoutLoadInteractivity::kAutomated,
       QFileInfo(path).fileName(),
       [this, path, restore_policy, tracks = std::move(streams.tracks)](ChosenLayout chosen) {
+        if (!chosen.removed.isEmpty()) {
+          reportLayoutRestoreIssue(restore_policy, "layout-datasets-removed", chosen.removed);
+        }
         if (!chosen.doc.has_value()) {
-          if (!chosen.failure.isEmpty()) {
-            reportLayoutRestoreIssue(restore_policy, "layout-datasets-removed", chosen.failure);
-          }
           emit layoutRestoreSettled(false);  // nothing was applied yet
           return;
         }
@@ -5368,18 +5368,21 @@ void MainWindow::chooseLayoutDatasets(
   loaded.for_each_topic = [&catalog](const std::function<void(std::uint32_t, const QString&)>& visit) {
     catalog.forEachItem([&visit](const CatalogItem& item) { visit(item.dataset_id, item.topic_name); });
   };
+  // A loaded file named under another label still names it: the curve binding falls back to the path alone. A path
+  // shared by a fan-out file's entries names none of them, so those stay per entry.
   loaded.names_one = [&catalog](const layout_xml::DatasetIdentity& identity) {
-    return catalog.resolveDatasetIdentity(0, identity.source, identity.path).id.has_value();
+    return catalog.resolveDatasetIdentity(0, identity.source, identity.path).id.has_value() ||
+           (!identity.path.isEmpty() && catalog.resolveDatasetIdentity(0, {}, identity.path).id.has_value());
   };
   // The rules and their reasons: ARCHITECTURE "One layout over several datasets".
   layout_xml::DatasetChoice choice = layout_xml::planDatasetChoice(doc, saved, loaded);
   switch (choice.kind) {
     case layout_xml::DatasetChoice::Kind::kKeep:
-      then({.doc = std::move(doc), .failure = {}, .compared = {}});
+      then({.doc = std::move(doc), .removed = {}, .compared = {}});
       return;
     case layout_xml::DatasetChoice::Kind::kPin:
       layout_xml::pinLayoutToDataset(doc, choice.datasets.front(), choice.topics);
-      then({.doc = std::move(doc), .failure = {}, .compared = {}});
+      then({.doc = std::move(doc), .removed = {}, .compared = {}});
       return;
     case layout_xml::DatasetChoice::Kind::kAsk:
       break;
@@ -5392,7 +5395,7 @@ void MainWindow::chooseLayoutDatasets(
             .arg(choice.datasets.size())
             .arg(choice.datasets.front().label));
     layout_xml::pinLayoutToDatasets(doc, {choice.datasets.front()});
-    then({.doc = std::move(doc), .failure = {}, .compared = {}});
+    then({.doc = std::move(doc), .removed = {}, .compared = {}});
     return;
   }
   const QString single_only =
@@ -5425,7 +5428,7 @@ void MainWindow::chooseLayoutDatasets(
         if (picked.isEmpty()) {
           then(
               {.doc = std::nullopt,
-               .failure = tr("The chosen datasets were removed while the question was open; nothing was loaded."),
+               .removed = tr("The chosen datasets were removed while the question was open; nothing was loaded."),
                .compared = {}});
           return;
         }
@@ -5438,13 +5441,18 @@ void MainWindow::chooseLayoutDatasets(
           const std::optional<QString> hex = key.has_value() ? colors.color(*key) : std::nullopt;
           return hex.has_value() ? std::optional<QColor>(QColor(*hex)) : std::nullopt;
         });
+        const QString removed =
+            picked.size() < chosen->size()
+                ? tr("Some of the chosen datasets were removed while the question was open; the layout shows the "
+                     "others.")
+                : QString();
         std::vector<DatasetId> compared;
         if (picked.size() > 1) {
           for (const layout_xml::DatasetPin& pin : std::as_const(picked)) {
             compared.push_back(pin.id);
           }
         }
-        then({.doc = std::move(doc), .failure = {}, .compared = std::move(compared)});
+        then({.doc = std::move(doc), .removed = removed, .compared = std::move(compared)});
       });
 }
 
@@ -5526,11 +5534,11 @@ void MainWindow::loadBrowserParsedLayout(QDomDocument doc, const QString& browse
   // The dataset question does not block in the browser, so its answer finishes the load, before or after this returns.
   chooseLayoutDatasets(
       std::move(doc), std::nullopt, /*can_prompt=*/true, browser_name, [this, browser_name](ChosenLayout chosen) {
+        if (!chosen.removed.isEmpty()) {
+          showBrowserLayoutWarning(this, tr("Load Layout"), chosen.removed);
+        }
         if (!chosen.doc.has_value()) {
-          if (!chosen.failure.isEmpty()) {
-            showBrowserLayoutWarning(this, tr("Load Layout"), chosen.failure);
-          }
-          finishBrowserLayoutLoad(browser_name, false, chosen.failure.isEmpty() ? u"cancelled"_s : u"removed"_s);
+          finishBrowserLayoutLoad(browser_name, false, chosen.removed.isEmpty() ? u"cancelled"_s : u"removed"_s);
           return;
         }
         const bool applied = applyBrowserRestoredLayout(std::move(*chosen.doc), browser_name, {}, chosen.compared);
@@ -6699,9 +6707,10 @@ bool MainWindow::applyBrowserRestoredLayout(
   // kExact: an unresolved curve or scene fails and rolls back, never dropped silently. The duration log feeds
   // tests/wasm/presets.spec.js.
   // Aligned before the restore builds and fits the plots, so each copy's view opens on its run's aligned data; a
-  // failed restore rolls back to the offsets from before.
+  // failed restore rolls back to the offsets from before, and one that refuses is not rolled back, so it aligns
+  // nothing.
   const CapturedWorkspace rollback = captureWorkspace();
-  if (source_timeline_controller_ != nullptr) {
+  if (source_timeline_controller_ != nullptr && !restoreRefuses(doc)) {
     source_timeline_controller_->alignStartsOf(compared);
   }
   QElapsedTimer restore_timer;
@@ -6757,10 +6766,13 @@ void MainWindow::applyRestoredLayout(
   const QDir layout_dir(QFileInfo(path).absoluteDir());
   const LayoutTimelinePlan timeline_plan =
       resolveLayoutTimelineTracks(layout_xml::extractDataSource(doc, layout_dir), stream_tracks);
-  static_cast<void>(applyLayoutTimelineOffsets(timeline_plan));
-  // Before the restore builds and fits the plots, so each copy's view opens on its run's aligned data.
-  if (source_timeline_controller_ != nullptr) {
-    source_timeline_controller_->alignStartsOf(compared);
+  // A restore that refuses (below, reported as a failure) is not rolled back, so the offsets stay put for it.
+  if (!restoreRefuses(doc)) {
+    static_cast<void>(applyLayoutTimelineOffsets(timeline_plan));
+    // Before the restore builds and fits the plots, so each copy's view opens on its run's aligned data.
+    if (source_timeline_controller_ != nullptr) {
+      source_timeline_controller_->alignStartsOf(compared);
+    }
   }
   // The restore path shared with undo/redo. Processors are recreated before the curve rebind, so derived outputs
   // are in the catalog.
@@ -8354,6 +8366,11 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceStateImpl(
     }
   }
   return result;
+}
+
+bool MainWindow::restoreRefuses(const QDomDocument& doc) const {
+  const DerivedObjects derived = derivedObjects();
+  return derived.refusal(derived.parse(doc.documentElement(), RestoreIntent::kReplace)).has_value();
 }
 
 MainWindow::RestoreResult MainWindow::restoreWorkspaceState(

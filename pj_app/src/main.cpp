@@ -277,14 +277,14 @@ int validatePlugins(const QString& plugin_dir, const QStringList& expected_specs
   return EXIT_SUCCESS;
 }
 
-// Nobody can answer a question at startup: --exit-after-layout, --screenshot, or a platform without a screen.
-// Such a run reports instead of asking.
+// Nobody can answer a question at startup: --exit-after-layout, --screenshot, --dump-diagnostics (the headless
+// acceptance flags), or a platform without a screen. Such a run reports instead of asking.
 bool isUnattendedRun(
     const QCommandLineParser& parser, const QCommandLineOption& exit_after_layout_option,
-    const QCommandLineOption& screenshot_option) {
+    const QCommandLineOption& screenshot_option, const QCommandLineOption& dump_diagnostics_option) {
   const QString platform = QGuiApplication::platformName();
-  return parser.isSet(exit_after_layout_option) || parser.isSet(screenshot_option) || platform == u"offscreen"_s ||
-         platform == u"minimal"_s;
+  return parser.isSet(exit_after_layout_option) || parser.isSet(screenshot_option) ||
+         parser.isSet(dump_diagnostics_option) || platform == u"offscreen"_s || platform == u"minimal"_s;
 }
 #endif
 }  // namespace
@@ -597,7 +597,7 @@ int main(int argc, char* argv[]) {
   }
 
 #ifndef PJ_TARGET_WASM
-  const bool attended = !isUnattendedRun(parser, exit_after_layout_option, screenshot_option);
+  const bool attended = !isUnattendedRun(parser, exit_after_layout_option, screenshot_option, dump_diagnostics_option);
   // Tests and headless runs must not repoint the agent plugin's launcher at a build tree.
   if (attended) {
     PJ::mcp::recordExecutable();

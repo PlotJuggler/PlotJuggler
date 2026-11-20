@@ -314,11 +314,15 @@ TEST_F(LayoutDatasetChoiceTest, TwoCheckedDatasetsDuplicateTheTabsInTheSameColou
 // Intended: the copies are there to compare the runs, so the checked datasets start at the same display time, as
 // the Source Timeline's "Align starts" would place them, and each copy's plot shows its run there.
 TEST_F(LayoutDatasetChoiceTest, TwoCheckedDatasetsStartAtTheSameTime) {
+  const PJ::DatasetId run_c = addRun("c", 2'000'000'100);
+  const double start_c = startOf(run_c);
   ASSERT_NE(startOf(run_a_), startOf(run_b_));
   answerNextQuestion({0, 1});
   load(genericLayout(/*with_transform=*/false), /*interactive=*/true);
+  EXPECT_EQ(offered_.size(), 3);
   EXPECT_EQ(settles_, std::vector<bool>{true});
   EXPECT_DOUBLE_EQ(startOf(run_a_), startOf(run_b_));
+  EXPECT_DOUBLE_EQ(startOf(run_c), start_c) << "an unchecked dataset is not moved";
   for (const auto& [tab, dataset] : {std::pair{0, run_a_}, std::pair{1, run_b_}}) {
     PJ::PlotWidget* plot = plotOfTab(tab);
     ASSERT_NE(plot, nullptr) << tab;
@@ -368,6 +372,18 @@ TEST_F(LayoutDatasetChoiceTest, ChosenDatasetsRemovedMeanwhileAreReported) {
   EXPECT_TRUE(other_texts_.contains(u"removed"_s)) << other_texts_.toStdString();
 }
 
+// Intended: a choice partly removed while the question was open shows the rest and says some are gone.
+TEST_F(LayoutDatasetChoiceTest, SomeChosenDatasetsRemovedMeanwhileAreReported) {
+  answerNextQuestion({0, 1});
+  before_answer_ = [this]() { PresetTestPeer::session(*window_).sessionManager().removeDataset(run_a_); };
+  load(genericLayout(/*with_transform=*/false), /*interactive=*/true);
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  EXPECT_EQ(other_modals_, 1);
+  EXPECT_TRUE(other_texts_.contains(u"removed"_s)) << other_texts_.toStdString();
+  EXPECT_EQ(tabNames(), (QStringList{u"Plots"_s}));
+  expectAllBoundTo(0, run_b_, 2);
+}
+
 // Intended: an automated load (an agent, the QA instance, --layout without a display) never asks: it takes the first
 // loaded dataset and one diagnostic names that choice.
 TEST_F(LayoutDatasetChoiceTest, AnAutomatedLoadTakesTheFirstDatasetAndSaysSo) {
@@ -405,7 +421,13 @@ TEST_F(LayoutDatasetChoiceTest, AnUnattendedStartupLayoutTakesTheFirstDataset) {
   window_->loadAtStartup({first, second}, layoutFile(curveLayout({u"mock/file_data"_s})), /*interactive=*/false);
   ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !settles_.empty(); }));
   EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(other_modals_, 0);
+  EXPECT_EQ(settles_, std::vector<bool>{true});
   EXPECT_FALSE(diagnostic(u"layout-dataset-chosen"_s).isEmpty());
+  const QStringList bound = curves(0);
+  ASSERT_EQ(bound.size(), 1);
+  EXPECT_EQ(
+      PresetTestPeer::fileLoader(*window_).sourcePathForDataset(bound.front().section(u':', 0, 0).toUInt()), first);
 }
 
 // Intended: a layout naming two datasets keeps its own bindings and is not asked about: here neither is loaded, so
@@ -415,6 +437,16 @@ TEST_F(LayoutDatasetChoiceTest, ALayoutNamingTwoDatasetsIsNotAsked) {
   load(curveLayout({u"sensor@x.csv@/nowhere/x.csv"_s, u"sensor@y.csv@/nowhere/y.csv"_s}), /*interactive=*/true);
   EXPECT_EQ(asked_, 0);
   EXPECT_EQ(other_modals_, 1) << "the missing-curve prompt";
+}
+
+// Intended: a layout naming a loaded file under a label it no longer has (renamed, or saved from a fan-out entry) still
+// names that file, so it keeps its binding, unasked, though another dataset carries the same topics.
+TEST_F(LayoutDatasetChoiceTest, ALayoutNamingALoadedFileUnderAnotherLabelKeepsIt) {
+  load(curveLayout({u"sensor@old.csv@"_s + data_.filePath(u"a/run.csv"_s)}), /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(other_modals_, 0);
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  expectAllBoundTo(0, run_a_, 1);
 }
 
 // Intended: the entries of one fan-out file share its path and differ by label; a layout naming each entry keeps

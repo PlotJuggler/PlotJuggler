@@ -886,8 +886,8 @@ class MainWindow : public QMainWindow {
       const std::vector<DatasetId>& compared = {});
   // What chooseLayoutDatasets hands on.
   struct ChosenLayout {
-    std::optional<QDomDocument> doc;  ///< nullopt: nothing to apply (cancelled, or `failure`)
-    QString failure;                  ///< why there is no doc, when it was not a Cancel
+    std::optional<QDomDocument> doc;  ///< nullopt: nothing to apply (cancelled, or every chosen dataset `removed`)
+    QString removed;                  ///< to report: chosen datasets were removed while the question was open
     std::vector<DatasetId> compared;  ///< the datasets a multi-copy load shows, for applyRestoredLayout
   };
   // Which loaded dataset(s) a layout aimed at one dataset shows (layout_xml::planDatasetChoice). `saved`: see there.
@@ -1006,6 +1006,9 @@ class MainWindow : public QMainWindow {
       const CapturedWorkspace& target, MissingCurvePolicy policy, TimelineRestoreMode timeline_mode,
       const CapturedWorkspace* rollback_to = nullptr, RestoreIntent intent = RestoreIntent::kReplace,
       QString* out_reason = nullptr);
+  // Whether restoreWorkspaceState(doc) refuses before changing anything (its read-only preflight). A refusal is not
+  // rolled back, so a caller that moves offsets before the restore asks first. Query-only.
+  [[nodiscard]] bool restoreRefuses(const QDomDocument& doc) const;
 
   [[nodiscard]] CapturedWorkspace captureWorkspace(SnapshotScope scope) const;
   // SnapshotScope::kFull.

@@ -313,9 +313,9 @@ wait returns.
 
 - **On by default.** An attended run opens public access at startup unless the user turned off the Preferences →
   Appearance switch "Let AI agents control PlotJuggler (MCP server)" (`MainWindow::kMcpServerKey`). An unattended
-  run (`--exit-after-layout`, `--screenshot`, the offscreen and minimal platforms, so every test) opens it only with
-  `--mcp`, so it never shows up as an instance an agent could pick. The switch shows whether public access is open
-  now; a plugin's endpoint does not count. OK applies the switch when it differs from the current state: it writes
+  run (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the offscreen and minimal platforms, so every
+  test) opens it only with `--mcp`, so it never shows up as an instance an agent could pick. The switch shows whether
+  public access is open now; a plugin's endpoint does not count. OK applies the switch when it differs from the current state: it writes
   the setting and either opens public access with a random token (discovery file written) or closes it (file
   removed; plugin tokens keep working). `--mcp` opens it for one run without touching the setting.
 - **Indicator.** A status-bar button names the public client that called last (for two minutes after its last

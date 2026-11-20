@@ -2445,13 +2445,31 @@ TEST(LayoutDatasetChoice, EveryCopyOfACurveHasTheSameColour) {
 // topic it lacks loses its qualifier and binds wherever that topic is unique.
 TEST(LayoutDatasetChoice, OnePinOverSomeTopicsLeavesTheOthersUnqualified) {
   QDomDocument doc = parseLayout(
-      R"(<root><plot><curve topic="sensor" field="value" dataset_source="old.csv"/><curve topic="speed" field="value"/>
-</plot><data_processors><generator id="rule"><input name="sensor/value"/></generator></data_processors></root>)");
+      R"(<root><plot><curve topic="sensor" field="value" dataset_source="old.csv"/>
+<curve topic="speed" field="value" dataset_source="old.csv"/></plot></root>)");
   PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {u"sensor"_s});
   const QList<QDomElement> curves = elementsNamed(doc, u"curve"_s);
   EXPECT_EQ(curves[0].attribute(u"dataset_path"_s), kRunB.path);
   EXPECT_FALSE(curves[1].hasAttribute(u"dataset_source"_s));
-  EXPECT_EQ(elementsNamed(doc, u"generator"_s).front().attribute(u"dataset_path"_s), kRunB.path);
+}
+
+// A marker rule follows its inputs: pinned to the best-fitting dataset when it reads one of the topics that dataset
+// takes, unqualified otherwise, so it binds by its inputs wherever they are.
+TEST(LayoutDatasetChoice, OnePinTakesOnlyTheMarkerRulesReadingItsTopics) {
+  QDomDocument doc = parseLayout(
+      R"(<root><plot><curve topic="sensor" field="value"/></plot><data_processors>
+<generator id="sensor_rule"><input name="sensor/value"/></generator>
+<generator id="battery_rule" dataset_source="old.csv"><input name="battery/voltage"/></generator>
+<generator id="sensor_prefix_rule"><input name="sensor_raw/value"/></generator>
+</data_processors></root>)");
+  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {u"sensor"_s});
+  const QList<QDomElement> rules = elementsNamed(doc, u"generator"_s);
+  ASSERT_EQ(rules.size(), 3);
+  EXPECT_EQ(rules[0].attribute(u"dataset_path"_s), kRunB.path);
+  for (const QDomElement& rule : {rules[1], rules[2]}) {
+    EXPECT_FALSE(rule.hasAttribute(u"dataset_source"_s)) << rule.attribute(u"id"_s).toStdString();
+    EXPECT_FALSE(rule.hasAttribute(u"dataset_path"_s)) << rule.attribute(u"id"_s).toStdString();
+  }
 }
 
 // ---------- planDatasetChoice ----------

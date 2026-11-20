@@ -62,6 +62,8 @@ Pitfalls seen in practice:
 - `ui_tree` lists dock areas and tabs in creation order, not screen order: check which plot is which by its title,
   and the order of the tabs on screen, with a screenshot. A name that every plot repeats (`qwtCanvas`, `buttonClose`) is refused while two plots show; scripts
   that need one use a single-plot layout.
+- Under `--xvfb` the app counts as attended: `-d a -d b -l <layout>` with both files carrying the layout's topics
+  opens the which-datasets question at startup; answer it with the UI tools. Offscreen it takes the first dataset.
 - Plots fall back to the raster canvas offscreen (no GPU): the GPU plot path is not exercised.
 - No tool reports marker rules or the marker regions on a plot: a bug there shows only in a screenshot, so it
   cannot get a regression script. Say so in the fix PR.

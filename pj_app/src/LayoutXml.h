@@ -303,7 +303,7 @@ struct LoadedDatasets {
   QList<DatasetPin> datasets;  ///< in load order
   // Calls `visit(dataset id, topic name)` for every topic of every loaded dataset.
   std::function<void(const std::function<void(std::uint32_t, const QString&)>& visit)> for_each_topic;
-  // Whether `identity` names exactly one loaded dataset.
+  // Whether `identity` names exactly one loaded dataset, as the curve binding resolves it.
   std::function<bool(const DatasetIdentity& identity)> names_one;
 };
 
@@ -331,9 +331,9 @@ struct DatasetChoice {
 // recipe (its script reads its inputs and upstream outputs by name). Empty when the layout can be duplicated.
 [[nodiscard]] QStringList duplicationBlockers(const QDomDocument& doc);
 
-// Pins each element that reads one of `topics`, and each that reads data without naming a topic (a marker rule or
-// scope, a recipe input), to `pin`; every other qualifier is removed, so those references bind where their topic is
-// unique.
+// Pins each element that reads one of `topics`, each marker rule with an input from one of them, and each other element
+// that reads data without naming a topic (a marker scope, a recipe input), to `pin`; every other qualifier is removed,
+// so those references bind where their topic is unique.
 void pinLayoutToDataset(QDomDocument& doc, const DatasetPin& pin, const QSet<QString>& topics);
 
 // The colour the session remembers for a <curve> that saved none, if any.
