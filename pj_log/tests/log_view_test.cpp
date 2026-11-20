@@ -389,6 +389,23 @@ TEST_F(LogViewTest, EmptySourceAndCategoryColumnsHideWithoutAGap) {
   expectNoGap();
 }
 
+TEST_F(LogViewTest, VisibleFilterFieldsShareTheRowEvenly) {
+  view_.setTopicLabel(0, "/rosout");
+  view_.replaceEntries(0, {entry(1.0, "a", LogLevel::kInfo, "/node", "motion")});
+  QApplication::processEvents();
+  const auto* source = view_.findChild<PJ::Search*>("sourceEdit");
+  const auto* category = view_.findChild<PJ::Search*>("categoryEdit");
+  const auto* message = view_.findChild<PJ::Search*>("filterEdit");
+  ASSERT_TRUE(source->isVisible() && category->isVisible());
+  EXPECT_NEAR(source->width(), message->width(), 1);
+  EXPECT_NEAR(category->width(), message->width(), 1);
+
+  view_.replaceEntries(0, {entry(1.0, "a", LogLevel::kInfo, "/node")});  // no category left: its field hides
+  QApplication::processEvents();
+  ASSERT_FALSE(category->isVisible());
+  EXPECT_NEAR(source->width(), message->width(), 1);
+}
+
 TEST_F(LogViewTest, TimeColumnAndDetailFollowTheHostFormat) {
   view_.setTopicLabel(0, "/rosout");
   view_.replaceEntries(0, {entry(1779215727.239, "instant")});

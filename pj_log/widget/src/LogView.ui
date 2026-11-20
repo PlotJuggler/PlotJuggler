@@ -41,7 +41,7 @@
           <number>0</number>
          </property>
        <item>
-        <layout class="QHBoxLayout" name="filterRow">
+        <layout class="QHBoxLayout" name="filterRow" stretch="0,0,0,0,0,1,1,1,0,0">
          <property name="spacing">
           <number>4</number>
          </property>
@@ -124,9 +124,6 @@
          </item>
          <item>
           <widget class="PJ::Search" name="sourceEdit">
-           <property name="maximumWidth">
-            <number>180</number>
-           </property>
            <property name="placeholder">
             <string>Filter sources...</string>
            </property>
@@ -134,9 +131,6 @@
          </item>
          <item>
           <widget class="PJ::Search" name="categoryEdit">
-           <property name="maximumWidth">
-            <number>160</number>
-           </property>
            <property name="placeholder">
             <string>Filter categories...</string>
            </property>
