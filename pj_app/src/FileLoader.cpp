@@ -834,6 +834,12 @@ std::string withSideFilePaths(const std::string& config, const LoadHints& hints,
   return detail::replaceConfigStringValues(config, replacements).value_or(config);
 }
 
+// A browser upload's identity (pj-upload://<session>/<id>/<name>) is internal; messages name the picked file.
+QString shownSourceName(const QString& identity) {
+  const QString name = BrowserFileStore::displayNameForIdentity(identity);
+  return name.isEmpty() ? identity : name;
+}
+
 }  // namespace
 
 // Under kLazyObjectsEagerScalars each object payload is read once at ingest for its scalar series (header stamp,
@@ -1638,7 +1644,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // One failed fan-out entry: logged, and reported once under "<identity> (<entry>)".
     const auto report_entry_failed = [&](std::size_t idx, const QString& iter_display, const QString& reason) {
       logLoadFailure(
-          u"%1 (%2)"_s.arg(source_identity, iter_display), reason,
+          u"%1 (%2)"_s.arg(shownSourceName(source_identity), iter_display), reason,
           u"[FileLoader] fanout[%1]: %2"_s.arg(idx).arg(reason));
     };
     // A failure before start(): the entry also joins failed_labels here. The start
@@ -2316,7 +2322,7 @@ void FileLoader::logLoadFailure(const QString& identity, const QString& reason, 
 #endif
   emitDiagnosticTo(
       diagnostic_sink_, DiagnosticLevel::kError, "File Loader", "data-source-load-failed",
-      tr("Could not load '%1': %2").arg(identity, reason).toStdString());
+      tr("Could not load '%1': %2").arg(shownSourceName(identity), reason).toStdString());
 }
 
 void FileLoader::reportLoadWarning(QWidget* parent, const QString& reason) {

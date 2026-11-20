@@ -4108,6 +4108,28 @@ TEST_F(FileLoaderTest, StartFailureReportsExactlyOneLoadFailed) {
   EXPECT_EQ(messages[0].message, u"fail.fanoutprobe: probe error"_s);
 }
 
+// A browser upload's identity (pj-upload://<session>/<id>/<name>) is internal: the failure names the picked file.
+TEST_F(FileLoaderTest, ABrowserUploadsLoadFailureNamesThePickedFile) {
+  DiagnosticCapture capture;
+  loader_->setDiagnosticSink(capture.bridge.sink());
+
+  PJ::LoadInput input{
+      .display_name = u"empty header.unhandledext"_s,
+      .backing_path = makeMockFile(u"staged.unhandledext"_s),
+      .source_identity = u"pj-upload://3f1c2b7e-8d4a-4c1e-9b2f-6a5d4e3c2b1a/2/empty%20header.unhandledext"_s,
+      .content_sha256 = {},
+      .lease = {},
+  };
+  EXPECT_FALSE(pj_app_test::loadAndWait(*loader_, std::move(input), loadHints()));
+  ASSERT_TRUE(pj_app_test::pumpUntil([&]() { return !capture.withId(u"data-source-load-failed"_s).empty(); }));
+
+  const auto failed = capture.withId(u"data-source-load-failed"_s);
+  ASSERT_EQ(failed.size(), 1u);
+  EXPECT_TRUE(failed[0].message.startsWith(u"Could not load 'empty header.unhandledext': "_s))
+      << failed[0].message.toStdString();
+  EXPECT_FALSE(failed[0].message.contains(u"pj-upload://"_s)) << failed[0].message.toStdString();
+}
+
 TEST_F(FileLoaderTest, UnhandledExtensionRejectionReportsExactlyOneLoadFailed) {
   DiagnosticCapture capture;
   loader_->setDiagnosticSink(capture.bridge.sink());
