@@ -8,6 +8,9 @@
 #include <gtest/gtest.h>
 
 #include <QAbstractItemModelTester>
+#include <QColor>
+#include <QPalette>
+#include <QWidget>
 #include <string>
 #include <vector>
 
@@ -337,6 +340,30 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<FutureRows>& param_info) {
       return param_info.param == FutureRows::kGrey ? std::string("Grey") : std::string("Hide");
     });
+
+// The severity colours the Level cell only; a row after the tracker is greyed whole.
+TEST(LogTableModelColours, SeverityColoursTheLevelCellOnly) {
+  QWidget palette_source;
+  LogStore store;
+  uint64_t seq = 0;
+  LogTableModel model(store, nullptr, &palette_source);
+  std::vector<LogRow> list;
+  list.push_back(row(1.0, seq++, "careful", LogLevel::kWarning));
+  list.push_back(row(2.0, seq++, "dead", LogLevel::kFatal));
+  list.push_back(row(3.0, seq++, "later", LogLevel::kError));
+  model.applyStoreChange(store.insert(0, std::move(list)));
+  model.setTracker(2.5);
+  const QColor grey = palette_source.palette().color(QPalette::PlaceholderText);
+  for (int column = 0; column < LogTableModel::kColumnCount; ++column) {
+    const bool level = column == LogTableModel::kLevel;
+    EXPECT_EQ(model.index(0, column).data(Qt::ForegroundRole).isValid(), level) << column;
+    EXPECT_EQ(model.index(1, column).data(Qt::ForegroundRole).isValid(), level) << column;
+    EXPECT_EQ(model.index(1, column).data(Qt::FontRole).isValid(), level) << column;
+    EXPECT_EQ(model.index(2, column).data(Qt::ForegroundRole).value<QColor>(), grey) << column;
+  }
+  EXPECT_TRUE(model.index(1, 0).data(Qt::BackgroundRole).isValid());  // the tracker's row, tinted whole
+  EXPECT_TRUE(model.index(1, LogTableModel::kMessage).data(Qt::BackgroundRole).isValid());
+}
 
 // The Time column prints what formatTimeLabel prints for the host's format: the playback readout's text.
 TEST(LogTableModelTime, TimeColumnFollowsTheHostFormat) {

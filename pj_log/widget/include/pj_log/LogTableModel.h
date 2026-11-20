@@ -18,7 +18,8 @@ namespace PJ::log_view {
 /// What to do with rows later than the tracker.
 enum class FutureRows { kGrey, kHide };
 
-/// Table model over the filtered rows of a LogStore; the last row at or before the tracker is tinted.
+/// Table model over the filtered rows of a LogStore; the last row at or before the tracker is tinted. A Warn, Error or
+/// Fatal level colours its Level cell only, so the other columns read in the normal text colour.
 class LogTableModel : public QAbstractTableModel {
   Q_OBJECT
 

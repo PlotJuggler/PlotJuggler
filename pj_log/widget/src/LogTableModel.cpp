@@ -93,6 +93,9 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
       if (static_cast<size_t>(index.row()) >= revealed_) {
         return palette_source_ ? palette_source_->palette().color(QPalette::PlaceholderText) : QColor(Qt::gray);
       }
+      if (index.column() != kLevel) {
+        return {};
+      }
       if (row.level == LogLevel::kWarning) {
         return theme::status(theme::Status::Warning, theme::appTheme());
       }
@@ -109,7 +112,7 @@ QVariant LogTableModel::data(const QModelIndex& index, int role) const {
       }
       return {};
     case Qt::FontRole:
-      if (row.level == LogLevel::kFatal && palette_source_) {
+      if (index.column() == kLevel && row.level == LogLevel::kFatal && palette_source_) {
         QFont font = palette_source_->font();
         font.setWeight(QFont::DemiBold);
         return font;

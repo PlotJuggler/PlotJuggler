@@ -19,7 +19,8 @@ LogView (+ LogView.ui) ── LogTableModel ── LogStore + CompiledFilter (co
 - **`CompiledFilter`** resolves a `LogFilter` (enabled levels, case-insensitive source/category/message substrings,
   hidden topics) against one store; `LogLevel::kUnknown` rows always pass the level test.
 - **`LogTableModel`** shows the filtered rows; the last row at or before the tracker is tinted, later ones are greyed
-  or hidden (`FutureRows`). Colours come from `FrameworkTokens`.
+  or hidden (`FutureRows`). A Warn, Error or Fatal level colours the Level cell only. Colours come from
+  `FrameworkTokens`.
 - **`LogView`** is the list, the toolbar (level toggles, filters, Topics menu, future-rows choice) and the detail pane
   with Copy. The Source and Category columns and their filter fields show while a row in the store fills them
   (`LogStore::hasSources` / `hasCategories`), the Topic column while several topics are shown. It is runtime-agnostic: the host hands it `LogEntry` rows, sets the tracker and the `TimeLabelFormat`,
