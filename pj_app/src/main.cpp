@@ -18,6 +18,7 @@
 #include <QScreen>
 #include <QSettings>
 #include <QSplashScreen>
+#include <QStringList>
 #include <QSurfaceFormat>
 #include <QThread>
 #include <QTimer>
@@ -47,6 +48,7 @@
 #include <memory>
 #include <string>
 
+#include "AppLanguage.h"
 #include "BrowserPersistence.h"
 #include "BundledFont.h"
 #include "DebugMode.h"
@@ -389,6 +391,21 @@ int main(int argc, char* argv[]) {
     app_font.setFamily(family);
     QApplication::setFont(app_font);
   }
+#ifdef PJ_TARGET_WASM
+  // Browsers need an explicit CJK fallback for both Chinese UI catalogs and user text.
+  if (QFontDatabase::addApplicationFont(u":/resources/fonts/NotoSansSC/NotoSansSC-Subset.otf"_s) < 0) {
+    qWarning("Failed to load bundled Noto Sans SC font");
+  }
+  if (QFontDatabase::addApplicationFont(u":/resources/fonts/NotoSansSymbols2/NotoSansSymbols2-Subset.ttf"_s) < 0) {
+    qWarning("Failed to load bundled Noto Sans Symbols 2 font");
+  }
+  QFont app_font = QApplication::font();
+  QStringList families = app_font.families();
+  families.append(u"Noto Sans SC"_s);
+  families.append(u"Noto Sans Symbols 2"_s);
+  app_font.setFamilies(families);
+  QApplication::setFont(app_font);
+#endif
 
   // Tags menus and palette-paints combo popups on Polish, where QSS specificity cannot reach.
   auto* tuner = new PJ::WidgetTuner(&app);
@@ -398,6 +415,11 @@ int main(int argc, char* argv[]) {
   parser.setApplicationDescription(u"PlotJuggler 4"_s);
   parser.addHelpOption();
   parser.addVersionOption();
+  const QCommandLineOption language_option(
+      u"language"_s,
+      QCoreApplication::translate("AppLanguage", "Interface language for this session (zh_CN, zh_TW or en_US)."),
+      u"language"_s);
+  parser.addOption(language_option);
   const QCommandLineOption test_data_option(
       u"test-data"_s, u"Populate the datastore with generated sin/cos samples and one image."_s);
   parser.addOption(test_data_option);
@@ -495,7 +517,24 @@ int main(int argc, char* argv[]) {
 #endif
   parser.process(app);
 
+  // The browser's settings boundary is already installed. Keep translators
+  // alive until every window is destroyed; a CLI override never changes the
+  // saved preference or the locale used to parse and format numeric data.
+  const QSettings language_settings;
+  if (parser.isSet(language_option) && parser.value(language_option) != "en_US"_L1 &&
+      PJ::AppLanguage::normalizedLanguage(parser.value(language_option)) == "en_US"_L1) {
+    qWarning(
+        "Unsupported --language '%s' (use zh_CN, zh_TW or en_US); using English",
+        qUtf8Printable(parser.value(language_option)));
+  }
+  const PJ::AppLanguage app_language(
+      app, parser.isSet(language_option) ? parser.value(language_option)
+                                         : PJ::AppLanguage::preferredLanguage(language_settings));
+
 #ifndef PJ_TARGET_WASM
+  // Qt-free plugins inherit only the canonical UI locale, before any DSO loads.
+  // English remains the fallback; neither data locale nor serialized keys change.
+  qputenv("PLOTJUGGLER_UI_LANGUAGE", app_language.language().toUtf8());
   if (parser.isSet(validate_plugins_option)) {
     return validatePlugins(parser.value(validate_plugins_option), parser.values(expect_plugin_option));
   }

@@ -270,10 +270,12 @@ struct RhiPassSetup {
   const char* part = nullptr;
 };
 
-/// Translates a pass's user-facing message in the view's context.
-inline QString tr(const char* text) {
-  return QCoreApplication::translate("pj::scene3d::SceneViewWidget", text);
-}
+/// Translates a pass's user-facing messages in the view's context (the view
+/// shows what its families report). A declared tr() lets lupdate see the
+/// context, which a free helper function would hide.
+struct SceneText {
+  Q_DECLARE_TR_FUNCTIONS(pj::scene3d::SceneViewWidget)
+};
 
 /// PJ::straightAlphaBlend() that adds nothing to destination alpha, for annotations (triads, TF lines), which the
 /// present pass's data/annotation split does not grade.

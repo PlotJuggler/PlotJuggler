@@ -76,6 +76,8 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
   `PresetController`, `WelcomePresetsDialog`: the WebAssembly boundary and presets.
 - `mcp/`: `McpProtocol`, `McpBridge.cpp` (`--mcp-bridge`), `McpServer` (+ `McpEndpointHost`), `McpServerTools.cpp`,
   `McpWidgetState.cpp` (`widget_state`, `set_widget_state`), `McpUiTools` (`--mcp-ui-tools`), `McpBrowserLink`.
+- `AppLanguage`: the interface-language translator, owned for the application's lifetime; English is the
+  fresh-profile and invalid-value fallback; `--language` is session-only and leaves numeric locale alone.
 - `Theme`, `WidgetTuner`, `DebugMode`/`DebugUi`, `Splashscreen`, `DiagnosticDump`, `BuiltinPlugins`,
   `scene_object_classification`, `SceneImageDecoder`, `SceneVideoFrameSource`, `KeySequence`, `RasterKeyMap`: app
   services and helpers.
@@ -101,4 +103,5 @@ exceptions are listed in ARCHITECTURE "Tests". `benchmarks/` holds the mixed-lay
   and packaging choices.
 - Cross-module: [derived objects](../docs/derived_objects/ARCHITECTURE.md),
   [recording](../docs/RECORDING_AND_CACHING.md), [MCP server](../docs/MCP_SERVER.md),
-  [browser presets](../docs/WASM_PRESETS.md), [browser deployment](../docs/WASM_DEPLOYMENT.md).
+  [browser presets](../docs/WASM_PRESETS.md), [localization](../docs/LOCALIZATION.md),
+  [browser deployment](../docs/WASM_DEPLOYMENT.md).

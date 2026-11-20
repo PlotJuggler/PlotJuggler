@@ -16,7 +16,8 @@ set(_PJ_QT_NOTICE_PACKAGES
     BundledPcre2 BundledZLIB
     QWasmIntegrationPlugin QGifPlugin QICOPlugin QJpegPlugin QTlsBackendCertOnlyPlugin
     Svg SvgWidgets QSvgPlugin QSvgIconPlugin
-    UiTools)
+    UiTools
+    Translations)
 
 # Writes `output` for this configuration; `python_notices` is CPython's (PjWasmPython.cmake), empty without Python.
 function(pj_wasm_write_notices output python_notices)
@@ -39,7 +40,7 @@ function(pj_wasm_write_notices output python_notices)
       "the toolchain and the commands that build this module (versions.env, .github/workflows/wasm-ci.yml), so it can\n"
       "be rebuilt against a modified copy of any of them.\n")
   _pj_qt_notices("${output}" "LGPL-3.0-only (the qwasm platform plugin: GPL-3.0-only; also offered commercially)"
-      "${_PJ_QT_NOTICE_PACKAGES}" qtbase qtsvg qttools)
+      "${_PJ_QT_NOTICE_PACKAGES}" qtbase qtsvg qttools qttranslations)
 
   # The Emscripten runtime: its own code, musl and LLVM's C++ runtime, and the sysroot zlib.
   _pj_notice_section("${output}" "Emscripten ${EMSCRIPTEN_VERSION} runtime" "MIT OR NCSA" "${emscripten}/LICENSE")
@@ -52,6 +53,8 @@ function(pj_wasm_write_notices output python_notices)
   endif()
 
   _pj_vendored_notices("${output}")
+  _pj_notice_section("${output}" "Noto Sans SC (browser CJK subset)" "OFL-1.1" "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSansSC/OFL.txt")
+  _pj_notice_section("${output}" "Noto Sans Symbols 2 (browser symbol subset)" "OFL-1.1" "${CMAKE_SOURCE_DIR}/resources/fonts/NotoSansSymbols2/OFL.txt")
 
   # Fetched: the name is the FetchContent name, the files are in its source tree.
   pj_wasm_notice("${output}" plotjuggler_sdk "PlotJuggler SDK (pj_base, pj_plugins)" "Apache-2.0" LICENSE LICENSE-APACHE)

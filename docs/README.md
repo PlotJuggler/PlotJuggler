@@ -28,6 +28,7 @@ documentation rules.
 | [`WASM_DEPLOYMENT.md`](./WASM_DEPLOYMENT.md) | The browser build: build and packaging, built-in plugins, notices and source offer, browser Python, the HTTP contract, browser-local state, presets, local serving and test fixtures. |
 | [`WASM_PRESETS.md`](./WASM_PRESETS.md) | Browser presets: the layout contract, streaming sources, authoring, `package_wasm.mjs --presets` and what it refuses, tests, hosting. |
 | [`WASM_HOSTING.md`](./WASM_HOSTING.md) | Serving the browser app from a robot over HTTPS with Caddy ([`wasm/Caddyfile`](./wasm/Caddyfile)), which also proxies the PlotJuggler Bridge at `/bridge`. |
+| [`LOCALIZATION.md`](./LOCALIZATION.md) | Interface translations: language selection, the embedded catalogs, keeping them current (a lagging catalog warns, never fails CI), lupdate-visible contexts, the browser CJK font, terminology. |
 
 ## Research
 
