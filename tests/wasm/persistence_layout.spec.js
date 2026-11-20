@@ -634,6 +634,94 @@ test('browser layouts open transactionally and download with exact round-trip st
   expect(errors).toEqual([]);
 });
 
+// The plot-state probe grabs its canvas 250 ms after the request. A layout open that replaces the plot inside that
+// window leaves the old canvas hidden until its deferred delete; grabbing it there made the window's WebGL backing store
+// report a lost device, and the renderer then crashed before the next layout open finished.
+test('a plot readback pending across a layout restore that replaces the plot keeps the window rendering', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = [];
+  const consoleMessages = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('crash', () => errors.push('renderer crashed'));
+  page.on('console', message => consoleMessages.push(message.text()));
+
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  const screen = await page.locator('#screen').boundingBox();
+  expect(screen).not.toBeNull();
+  const chooser = await openFileChooser(page, screen);
+  await chooser.setFiles({
+    name: 'readback-race.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('time,temp\n0,0\n1,10\n2,0\n'),
+  });
+  await page.waitForTimeout(1000);
+  await clickActiveDialogButton(page, screen, consoleMessages, 'ok');
+  await expect.poll(() => firstLoadOutcome(page), { timeout: 15000 }).toContain('readback-race/temp:3@');
+  { const icon = await placeholderIconCenter(page, screen, consoleMessages, 'plot');
+    await page.mouse.click(icon.x, icon.y); }
+  await page.waitForTimeout(1500);
+  await page.keyboard.press('F9');
+  await expect.poll(
+    () => consoleMessages.find(message => message.includes('PJ_WASM_PLOT_FRAME_OK')) || '',
+    { timeout: 15000 },
+  ).toContain('first_curve=readback-race/temp');
+  let stateMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STATE count=')).length;
+  const original = await requestPlotState(page, consoleMessages, stateMessages);
+  stateMessages += 1;
+  const canonicalLayout = await requestLayoutSnapshot(
+    page, consoleMessages, consoleMessages.filter(message => message.includes('PJ_WASM_LAYOUT_SNAPSHOT base64=')).length,
+  );
+  const replacingLayout = makeInvalidSceneLayout(canonicalLayout);
+
+  // The restore must be running when the readback falls due, so its delete is still pending when the readback runs.
+  // The restore's length varies with the machine's load: the rounds sweep where it starts against the 250 ms timer.
+  for (const delayMs of [80, 120, 160, 190, 210, 230, 250, 280]) {
+    const failures = consoleMessages.filter(message => message.includes('PJ_WASM_LAYOUT_LOAD_FAILED name=replaced-plot')).length;
+    const layoutChooser = await openLayoutChooser(page);
+    await requestPlotState(page, consoleMessages, stateMessages);
+    stateMessages += 1;
+    await page.waitForTimeout(delayMs);
+    await layoutChooser.setFiles({ name: 'replaced-plot.pj4.xml', mimeType: 'application/xml', buffer: replacingLayout });
+    await expect.poll(
+      () => consoleMessages.filter(message => message.includes('PJ_WASM_LAYOUT_LOAD_FAILED name=replaced-plot')).length,
+      { timeout: 15000 },
+    ).toBeGreaterThan(failures);
+    await page.evaluate(() => window.pjWasmDismissLayoutDialogProbe());
+    await page.waitForTimeout(600);
+  }
+  // Which round lands in the window depends on the machine; a run where none did proves nothing about the race, so it
+  // says so in the report instead of passing silently.
+  if (!consoleMessages.some(message => message.includes('PJ_WASM_PLOT_READBACK_SKIPPED'))) {
+    test.info().annotations.push({ type: 'race-not-hit', description: 'no readback fell due inside a restore' });
+  }
+
+  const restored = await requestPlotState(page, consoleMessages, stateMessages);
+  expect(restored.titles).toEqual(original.titles);
+  const validChooser = await openLayoutChooser(page);
+  await validChooser.setFiles({
+    name: 'after-race.pj4.xml',
+    mimeType: 'application/xml',
+    buffer: customizeLayout(canonicalLayout, 0.25, 1.25),
+  });
+  await expect.poll(
+    () => consoleMessages.find(message => message.includes('PJ_WASM_LAYOUT_LOAD_OK name=after-race')) || '',
+    { timeout: 15000 },
+  ).toContain('after-race.pj4.xml');
+  // The window still renders: a fresh readback of the restored plot finds its curve's pixels.
+  const pixelLines = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_CURVE_PIXELS')).length;
+  await requestPlotState(
+    page, consoleMessages, consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_STATE count=')).length,
+  );
+  await expect.poll(
+    () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_CURVE_PIXELS')).slice(pixelLines).at(-1) || '',
+    { timeout: 10000 },
+  ).toMatch(/readback-race\/temp:#[0-9a-f]{8}:[1-9]\d*/i);
+  expect(consoleMessages.filter(message => message.includes('graphics device lost'))).toEqual([]);
+  expect(consoleMessages.filter(message => message.includes('QRhiGles2: Context is lost'))).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test('source-bound browser layouts download logical references and replay after explicit reselection', async ({ page }) => {
   test.setTimeout(180000);
   const errors = [];
