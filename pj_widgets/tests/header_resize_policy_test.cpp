@@ -6,7 +6,10 @@
 #include <QApplication>
 #include <QFontMetrics>
 #include <QHeaderView>
+#include <QStandardItemModel>
+#include <QTableView>
 #include <QTableWidget>
+#include <QTreeView>
 #include <algorithm>
 
 #include "pj_widgets/HeaderResizePolicy.h"
@@ -299,6 +302,102 @@ TEST(HeaderResizePolicy, UserFillWidthStaysWithTheColumnTheUserSized) {
   f.policy->setFillSection(1);
 
   EXPECT_EQ(f.header->sectionSize(1), column1) << "a column the user never sized must not inherit that width";
+}
+
+// A log-style view: the fill column (Message) last, the hidden ones in the middle.
+struct HidingFixture {
+  static constexpr int kFill = 5;
+  static constexpr int kSeeded = 90;
+  QStandardItemModel model{3, 6};
+  QHeaderView* header = nullptr;
+  QAbstractItemView* view = nullptr;
+  HeaderResizePolicy* policy = nullptr;
+
+  template <typename View>
+  void setUp(View& v, QHeaderView* h) {
+    model.setHorizontalHeaderLabels({"Time", "Level", "Category", "Topic", "Source", "Message"});
+    v.setModel(&model);
+    v.resize(kTableWidth, kTableHeight);
+    v.show();
+    view = &v;
+    header = h;
+    policy = HeaderResizePolicy::install(header, kFill, kAbsoluteFloor);
+    for (int i = 0; i < kFill; ++i) {
+      policy->setSectionWidth(i, kSeeded);
+    }
+    QApplication::processEvents();
+  }
+
+  /// Visible sections tile the viewport: each starts where the previous ended, and together they span it exactly.
+  void expectNoGap() const {
+    int expected_position = 0;
+    for (int visual = 0; visual < header->count(); ++visual) {
+      const int logical = header->logicalIndex(visual);
+      if (header->isSectionHidden(logical)) {
+        continue;
+      }
+      EXPECT_EQ(header->sectionViewportPosition(logical), expected_position) << "gap before column " << logical;
+      expected_position += header->sectionSize(logical);
+    }
+    EXPECT_EQ(expected_position, view->viewport()->width());
+    EXPECT_EQ(header->length(), view->viewport()->width()) << "hidden sections still occupy layout width";
+  }
+};
+
+template <typename View>
+void checkHidingAndShowingLeavesNoGap(View& v, QHeaderView* h) {
+  HidingFixture f;
+  f.setUp(v, h);
+
+  f.header->setSectionHidden(2, true);
+  f.header->setSectionHidden(3, true);
+  QApplication::processEvents();
+  f.expectNoGap();
+
+  f.header->setSectionHidden(2, false);
+  QApplication::processEvents();
+  EXPECT_EQ(f.header->sectionSize(2), HidingFixture::kSeeded) << "a shown column should get back its width";
+  EXPECT_EQ(f.header->sectionSize(4), HidingFixture::kSeeded) << "only the fill column should give it room";
+  f.expectNoGap();
+}
+
+TEST(HeaderResizePolicy, HiddenColumnsLeaveNoGapInATreeView) {
+  QTreeView view;
+  checkHidingAndShowingLeavesNoGap(view, view.header());
+}
+
+TEST(HeaderResizePolicy, HiddenColumnsLeaveNoGapInATableView) {
+  QTableView view;
+  checkHidingAndShowingLeavesNoGap(view, view.horizontalHeader());
+}
+
+TEST(HeaderResizePolicy, HidingTheFillColumnHandsTheSlackOver) {
+  QTreeView view;
+  HidingFixture f;
+  f.setUp(view, view.header());
+
+  f.header->setSectionHidden(HidingFixture::kFill, true);
+  QApplication::processEvents();
+  f.expectNoGap();
+
+  f.header->setSectionHidden(HidingFixture::kFill, false);
+  QApplication::processEvents();
+  EXPECT_EQ(f.header->sectionSize(0), HidingFixture::kSeeded) << "the stand-in fill should give the width back";
+  f.expectNoGap();
+}
+
+TEST(HeaderResizePolicy, ShowingTheLastColumnGivesItItsWidth) {
+  QTreeView view;
+  HidingFixture f;
+  f.setUp(view, view.header());
+  f.policy->setFillSection(0);
+  f.header->setSectionHidden(HidingFixture::kFill, true);
+  QApplication::processEvents();
+
+  f.header->setSectionHidden(HidingFixture::kFill, false);
+  QApplication::processEvents();
+  EXPECT_GT(f.header->sectionSize(HidingFixture::kFill), 0);
+  f.expectNoGap();
 }
 
 }  // namespace

@@ -87,8 +87,8 @@ class HeaderResizePolicy : public QObject {
   /// The next visible section after @p section, or -1 when it is the last.
   [[nodiscard]] int nextVisibleSection(int section) const;
 
-  /// The first visible section, preferring fill_section_, or -1 when all are hidden.
-  [[nodiscard]] int fillSection() const;
+  /// The first visible section with a width other than @p except, preferring fill_section_; -1 when there is none.
+  [[nodiscard]] int fillSection(int except = -1) const;
 
   /// Summed width of every visible section except @p section.
   [[nodiscard]] int visibleWidthExcept(int section) const;
