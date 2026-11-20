@@ -934,6 +934,8 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
     for (TabEntry& entry : reusable_tabs) {
       stack_->removeWidget(entry.docker);
       entry.docker->deleteLater();
+      // Hidden now, not at the deferred delete: a rename editor inside it must not look shown to a focus restore.
+      entry.frame->hide();
       entry.frame->deleteLater();
     }
     reusable_tabs.clear();

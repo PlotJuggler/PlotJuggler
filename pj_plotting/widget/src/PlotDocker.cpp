@@ -13,6 +13,7 @@
 #include <QDomDocument>
 #include <QEvent>
 #include <QHash>
+#include <QPointer>
 #include <QSet>
 #include <QSplitter>
 #include <QStringList>
@@ -759,6 +760,15 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
   // them.
   exitFullscreen();
 
+  // Hiding the page that holds the keyboard focus makes Qt give it to the next widget in the window's tab chain, which
+  // may be a line edit that takes Space from the playback shortcut. The window holds it meanwhile; a widget the
+  // restore keeps gets it back below.
+  QPointer<QWidget> had_focus = window()->focusWidget();
+  if (had_focus != nullptr && isAncestorOf(had_focus)) {
+    window()->setFocus(Qt::OtherFocusReason);
+  } else {
+    had_focus = nullptr;
+  }
   const bool was_hidden = isHidden();
   if (!was_hidden) {
     hide();
@@ -806,6 +816,9 @@ bool PlotDocker::xmlLoadState(const QDomElement& tab_element) {
   ensureAtLeastOneWidget();
   if (!was_hidden) {
     show();
+  }
+  if (had_focus != nullptr && had_focus->isVisible()) {
+    had_focus->setFocus(Qt::OtherFocusReason);
   }
   return restored;
 }

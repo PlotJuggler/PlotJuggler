@@ -571,6 +571,28 @@ const RecipeGraph::Node* onDemandNodeOfCatalogKey(AppSession& session, const QSt
   return key.has_value() ? on_demand.graph().find(*key) : nullptr;
 }
 
+// Spans one workspace restore (apply, rollback, toolbox relaunch). Its steps hide or delete the widget holding the
+// keyboard focus, or switch the shown tab, and Qt then moves focus along the tab chain, possibly into a line edit
+// that takes Space from playback. On exit focus goes back to the widget that held it at the start if it is still
+// shown, else to the window, where the window shortcuts still reach.
+class RestoreFocusGuard {
+ public:
+  explicit RestoreFocusGuard(QWidget* window) : window_(window), had_focus_(window->focusWidget()) {}
+  ~RestoreFocusGuard() {
+    if (had_focus_ != nullptr && had_focus_->isVisible()) {
+      had_focus_->setFocus(Qt::OtherFocusReason);
+    } else {
+      window_->setFocus(Qt::OtherFocusReason);
+    }
+  }
+  RestoreFocusGuard(const RestoreFocusGuard&) = delete;
+  RestoreFocusGuard& operator=(const RestoreFocusGuard&) = delete;
+
+ private:
+  QWidget* window_;
+  QPointer<QWidget> had_focus_;
+};
+
 }  // namespace
 
 struct MainWindow::BrowserLayoutRuntime {
@@ -6850,6 +6872,7 @@ void MainWindow::beginProgressiveLayoutRestore(
   bool applied = false;
   {
     QScopedValueRollback guard(applying_state_, true);
+    const RestoreFocusGuard focus_guard(this);
     // Topics are still arriving: the previous graph goes now, nothing replays until the drain, when a missing input
     // means something.
     static_cast<void>(applyDataProcessors(DerivedSnapshot{}));
@@ -7204,6 +7227,8 @@ void MainWindow::onProgressiveLayoutDrained() {
 }
 
 void MainWindow::commitRestoredLayout(const QDomDocument& doc, MissingCurvePolicy policy) {
+  // A relaunched pinned toolbox becomes the shown tab, and Qt moves focus into its first field.
+  const RestoreFocusGuard focus_guard(this);
   kept_derived_ = std::exchange(staged_kept_derived_, QDomDocument());
   // A kept busy panel leaves the live pinned toolboxes in place; the baseline resets either way.
   static_cast<void>(restorePinnedToolboxes(doc.documentElement(), policy));
@@ -8320,8 +8345,8 @@ MainWindow::RestoreResult MainWindow::applyWorkspace(
   // currentTimeChanged fires only on a change: without this seed, restored scene docks render blank until the next
   // scrub.
   broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
-  // xmlLoadState rebuilds docks with focus suppressed, so no dockFocused fires: without this a scene-only layout
-  // would show curve options in the right panel.
+  // dockFocused fires during a rebuild only when a kept plot gets the keyboard focus back, not for new docks: without
+  // this a scene-only layout would show curve options in the right panel.
   onDockFocused(activeFocusedDock());
   return RestoreResult::kApplied;
 }
@@ -8339,6 +8364,7 @@ MainWindow::RestoreResult MainWindow::restoreWorkspaceStateImpl(
   }
 
   QScopedValueRollback applying_guard(applying_state_, true);
+  const RestoreFocusGuard focus_guard(this);
   const CapturedWorkspace previous =
       rollback_to != nullptr
           ? *rollback_to
@@ -9009,16 +9035,7 @@ bool MainWindow::xmlLoadState(const QDomDocument& state_document, RestoreIntent 
     return false;
   }
 
-  // Rebuilding the docks deletes or hides the widget that held the keyboard focus, and Qt then gives focus to the
-  // next widget in the tab chain: in the browser a filter line edit, which takes Space from playback. Focus goes back
-  // to that widget if it is still shown, else to the window, where window shortcuts still reach.
-  const QPointer<QWidget> had_focus = focusWidget();
   const bool loaded = ui_->tabbedPlotWidget->xmlLoadState(main_tabbed_widget, intent);
-  if (had_focus != nullptr && had_focus->isVisible()) {
-    had_focus->setFocus(Qt::OtherFocusReason);
-  } else {
-    setFocus(Qt::OtherFocusReason);
-  }
   if (!loaded) {
     emitDiagnostic(
         DiagnosticLevel::kWarning, "Layout", "layout-plots-invalid",
