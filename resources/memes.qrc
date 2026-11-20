@@ -52,5 +52,11 @@
     <file alias="memes/meme_45.jpg">memes/meme_45.jpg</file>
     <file alias="memes/meme_46.jpg">memes/meme_46.jpg</file>
     <file alias="memes/meme_47.jpg">memes/meme_47.jpg</file>
+    <!-- Empty-dock idle easter eggs, encrypted: scripts/pack_easter_eggs.py makes them and
+         VisualizationPlaceholderWidget enumerates :/resources/gif at runtime. Outside memes/, so never a splash. -->
+    <file>gif/capybara-scarf_A.gif.enc</file>
+    <file>gif/llama-coat_A.gif.enc</file>
+    <file>gif/newt-hat_A.gif.enc</file>
+    <file>gif/tweed-panzee_A.gif.enc</file>
   </qresource>
 </RCC>

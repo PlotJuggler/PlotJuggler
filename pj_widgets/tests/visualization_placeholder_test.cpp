@@ -3,7 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <QBuffer>
 #include <QCoreApplication>
+#include <QImageReader>
+#include <QLabel>
 #include <QToolButton>
 #include <set>
 #include <vector>
@@ -13,6 +16,77 @@
 using namespace Qt::StringLiterals;
 
 namespace {
+
+TEST(VisualizationPlaceholderEasterEggTest, CipherMatchesThePackScript) {
+  QByteArray plain;
+  for (int i = 0; i < 70; ++i) {
+    plain.push_back(static_cast<char>(i));
+  }
+  // scripts/pack_easter_eggs.py cipher(bytes(range(70)), b"test-key", "x_A.gif.enc")
+  const QByteArray expected = QByteArray::fromHex(
+      "0d58dc80112ee15215b5481d641a35f4cc334296878a4fc1af535b0b2285ceb44dfc0242650ae0b00c567c8487c2184a9013885d263b36d1"
+      "9725be9cf9a6d07029b1bfb7b1b5");
+  const QByteArray encrypted = PJ::easterEggCipher(plain, "test-key", u"x_A.gif.enc"_s);
+  EXPECT_EQ(encrypted, expected);
+  EXPECT_EQ(PJ::easterEggCipher(encrypted, "test-key", u"x_A.gif.enc"_s), plain);
+  EXPECT_NE(PJ::easterEggCipher(encrypted, "other-key", u"x_A.gif.enc"_s), plain);
+}
+
+TEST(VisualizationPlaceholderEasterEggTest, EveryPooledGifIsATransparentAnimated128Square) {
+  const QStringList pool = PJ::easterEggPool();
+  ASSERT_FALSE(pool.isEmpty());
+  if (PJ::loadEasterEgg(pool.front()).isEmpty()) {
+    GTEST_SKIP() << "built without PJ_EASTER_EGG_KEY: the pool cannot be decrypted, and the easter egg is off";
+  }
+  for (const QString& path : pool) {
+    QByteArray gif = PJ::loadEasterEgg(path);
+    QBuffer buffer(&gif);
+    QImageReader reader(&buffer);
+    EXPECT_TRUE(reader.canRead()) << path.toStdString();
+    EXPECT_EQ(reader.size(), QSize(128, 128)) << path.toStdString();
+    EXPECT_TRUE(reader.supportsAnimation()) << path.toStdString();
+    EXPECT_EQ(reader.read().pixelColor(0, 0).alpha(), 0) << path.toStdString();
+  }
+}
+
+TEST(VisualizationPlaceholderEasterEggTest, ACharacterOnlyEverShowsItsOwnVariants) {
+  EXPECT_EQ(PJ::easterEggCharacter(u":/resources/gif/llama-coat_A.gif.enc"_s), u"llama-coat"_s);
+  EXPECT_EQ(PJ::easterEggCharacter(u":/resources/gif/capybara-sipping.gif.enc"_s), u"capybara-sipping"_s);
+
+  const QStringList pool{u"a/llama-coat_A.gif"_s, u"a/llama-coat_B.gif"_s, u"a/newt-hat_A.gif"_s};
+  for (int i = 0; i < 50; ++i) {
+    EXPECT_EQ(PJ::easterEggCharacter(PJ::pickEasterEggGif(pool, u"llama-coat"_s)), u"llama-coat"_s);
+    EXPECT_EQ(PJ::pickEasterEggGif(pool, u"newt-hat"_s), u"a/newt-hat_A.gif"_s);
+    EXPECT_TRUE(pool.contains(PJ::pickEasterEggGif(pool, u"retired-character"_s)));
+  }
+  EXPECT_TRUE(PJ::pickEasterEggGif({}, u"llama-coat"_s).isEmpty());
+}
+
+TEST(VisualizationPlaceholderEasterEggTest, SitsBottomLeftOnlyWhileClearOfTheIcons) {
+  const QByteArray gif("GIF89a");  // placement only: the label shows whatever QMovie makes of it
+  PJ::VisualizationPlaceholderWidget placeholder;
+  EXPECT_FALSE(placeholder.showEasterEgg({}));
+  EXPECT_FALSE(placeholder.showEasterEgg(gif));  // hidden
+
+  placeholder.resize(300, 230);
+  placeholder.show();
+  EXPECT_FALSE(placeholder.showEasterEgg(gif));  // the 128 px GIF would cover the icon grid
+
+  placeholder.resize(700, 600);
+  ASSERT_TRUE(placeholder.showEasterEgg(gif));
+  auto* egg = placeholder.findChild<QLabel*>(u"placeholderEasterEgg"_s);
+  ASSERT_NE(egg, nullptr);
+  EXPECT_TRUE(egg->isVisible());
+  EXPECT_TRUE(egg->testAttribute(Qt::WA_TransparentForMouseEvents));
+  EXPECT_EQ(egg->size(), QSize(128, 128));
+  EXPECT_LT(egg->x(), 30);
+  EXPECT_EQ(egg->geometry().bottom() + egg->x(), placeholder.height() - 1);
+
+  placeholder.resize(700, 300);
+  EXPECT_EQ(egg->geometry().bottom() + egg->x(), placeholder.height() - 1);
+  placeholder.resize(300, 230);
+  EXPECT_FALSE(egg->isVisible());
+}
 
 TEST(VisualizationPlaceholderFamiliesTest, OffersSixFamiliesInOrder) {
   PJ::VisualizationPlaceholderWidget placeholder;

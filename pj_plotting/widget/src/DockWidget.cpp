@@ -136,7 +136,10 @@ DockWidget::DockWidget(
   }
 }
 
-DockWidget::~DockWidget() = default;
+DockWidget::~DockWidget() {
+  // A widget or a whole tab going away is layout activity for the idle easter egg.
+  noteLayoutActivity();
+}
 
 void DockWidget::setDataServices(SessionManager* session, CatalogModel* catalog) {
   session_ = session;

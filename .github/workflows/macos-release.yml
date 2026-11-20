@@ -194,6 +194,8 @@ jobs:
         shell: bash
         env:
           SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
+          # Release-only: the key that decrypts the empty-dock easter egg GIFs (pj_widgets). Absent on forks: no easter egg.
+          PJ_EASTER_EGG_KEY: ${{ secrets.PJ_EASTER_EGG_KEY }}
         run: |
           launcher_args=()
           if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then

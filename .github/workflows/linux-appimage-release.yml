@@ -267,6 +267,8 @@ jobs:
           PJ_BUILD_DEMOS: "OFF"
           PJ_BUILD_RASTER_HELPER: "ON"
           PJ_INSTALLATION: "appimage"
+          # Release-only: the key that decrypts the empty-dock easter egg GIFs (pj_widgets). Absent on forks: no easter egg.
+          PJ_EASTER_EGG_KEY: ${{ secrets.PJ_EASTER_EGG_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -425,6 +427,8 @@ jobs:
           # build tree; the .deb's own copy comes from the AppDir either way.
           PJ_BUILD_RASTER_HELPER: "ON"
           PJ_INSTALLATION: "deb"
+          # Release-only: the key that decrypts the empty-dock easter egg GIFs (pj_widgets). Absent on forks: no easter egg.
+          PJ_EASTER_EGG_KEY: ${{ secrets.PJ_EASTER_EGG_KEY }}
         shell: bash
         run: ./build.sh
 
