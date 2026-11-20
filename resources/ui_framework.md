@@ -31,7 +31,7 @@ read its color from the theme in use.
 | 2 | Backdrop | `#373743` | `#EBEBEB` |
 | 3 | Data Backdrop | `#212128` | `#FFFFFF` |
 | 4 | Input | `#535365` | `#F5F5F5` |
-| 5 | Separation | `#D2D2DA` | `#ADADAD` |
+| 5 | Separation | `#5A5A68` | `#ADADAD` |
 | 6 | Banner Input | `#25252D` | `#E0E0E0` |
 | 7 | Scroll Handle | `#007AF5` | `#47A3FF` |
 
@@ -97,7 +97,7 @@ filter searches.
 A line or gap that acts as a buffer or border between objects. Used mostly by the
 draggable Separator widget, which turns a purple color when grabbed.
 
-- **Dark:** `#D2D2DA`
+- **Dark:** `#5A5A68`
 - **Light:** `#ADADAD`
 
 ### 6. Banner Input

@@ -97,7 +97,7 @@ banner:         #1C1C22
 backdrop:       #373743
 data_backdrop:  #212128
 input:          #535365
-separation:     #D2D2DA
+separation:     #5A5A68
 banner_input:   #25252D
 scroll_handle:  #007AF5
 surface_transparent: transparent
