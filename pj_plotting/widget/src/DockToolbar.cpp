@@ -28,6 +28,8 @@ void setButtonIcon(QPushButton* button, const QIcon& icon) {
 
 DockToolbar::DockToolbar(ads::CDockWidget* parent) : QWidget(parent), parent_dock_(parent), ui_(new Ui::DockToolbar) {
   ui_->setupUi(this);
+  // A QWidget subclass without its own paintEvent paints a QSS background only with this attribute.
+  setAttribute(Qt::WA_StyledBackground, true);
 
   onStylesheetChanged(currentTheme());
 

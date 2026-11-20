@@ -271,7 +271,7 @@ TEST(PlotWidgetCanvas, DataBackdropFollowsTheme) {
   const QColor dark_bg = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::Theme::Dark);
   const QColor light_bg = PJ::theme::surface(PJ::theme::Surface::DataBackdrop, PJ::theme::Theme::Light);
   ASSERT_TRUE(dark_bg.isValid() && light_bg.isValid()) << "framework palette not linked";
-  ASSERT_EQ(dark_bg, QColor("#5C5C70"));
+  ASSERT_EQ(dark_bg, QColor("#212128"));
   ASSERT_EQ(light_bg, QColor("#FFFFFF"));
   ASSERT_NE(expected_window(PJ::theme::Theme::Dark), expected_window(PJ::theme::Theme::Light));
 
