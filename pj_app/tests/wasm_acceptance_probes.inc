@@ -46,6 +46,18 @@ PJ::MainWindow* wasmTestMainWindow() {
   return nullptr;
 }
 
+/// Whether a deferred readback may still grab `canvas`. A layout restore that replaced the plot meanwhile leaves the old
+/// canvas hidden until its deferred delete. Grabbing it there (Qt 6.12 WebAssembly, Chromium headless shell 1228) made
+/// the window's backing store report a lost WebGL device and reinitialize, and the renderer then often crashed
+/// (tests/wasm/persistence_layout.spec.js, "a plot readback pending across a layout restore").
+bool wasmReadbackCanvasShown(const QWidget& canvas) {
+  if (canvas.isVisible()) {
+    return true;
+  }
+  qInfo("PJ_WASM_PLOT_READBACK_SKIPPED canvas no longer shown");
+  return false;
+}
+
 }  // namespace
 
 /// Whether this build has the on-demand Python lane. Unlike the smoke probe it starts no Python work, so a spec can
@@ -1435,6 +1447,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_multi_plot_state() {
       const QColor canvas_color = canvas->palette().color(QPalette::Window);
       QTimer::singleShot(
           250, canvas, [canvas, current_sequence, index, plot_id, all_curve_colors, tracker_color, canvas_color]() {
+            if (!wasmReadbackCanvasShown(*canvas)) {
+              return;
+            }
             const QImage image = canvas->grabFramebuffer();
             QStringList counts;
             for (const auto& [title, color] : all_curve_colors) {
@@ -1772,6 +1787,9 @@ void PJ::MainWindow::installWasmPlotAcceptanceProbes() {
     auto* canvas = plot->findChild<PlotRhiCanvas*>();
     const QColor curve_color = added->curve->pen().color();
     QTimer::singleShot(500, canvas, [canvas, curve_color]() {
+      if (!wasmReadbackCanvasShown(*canvas)) {
+        return;
+      }
       const QImage image = canvas->grabFramebuffer();
       const WasmPixelBounds curve = findWasmExactColor(image, curve_color);
       qInfo(
@@ -1843,6 +1861,9 @@ void PJ::MainWindow::installWasmPlotAcceptanceProbes() {
         250, canvas,
         [canvas, curve_colors = std::move(curve_colors), tracker_color, grid_color, hover_fill_color, canvas_color,
          curve_style, line_width, current_sequence]() {
+          if (!wasmReadbackCanvasShown(*canvas)) {
+            return;
+          }
           const QImage image = canvas->grabFramebuffer();
           QStringList counts;
           WasmPixelBounds first_curve;

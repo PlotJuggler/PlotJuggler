@@ -63,6 +63,11 @@ canvas performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performa
 - **Qt/WASM switches a raster top-level to its RHI compositor when the first real plot is shown:** the whole window is
   repainted once, after that first frame was submitted, so the raster backing texture is initialized before later
   partial updates; the latch is per top-level window.
+- **Grabbing a canvas a layout restore replaced breaks the browser window's rendering** (2026-11-20, Qt 6.12
+  WebAssembly, Chromium headless shell 1228): the replaced canvas stays hidden until its deferred delete, and a
+  `grabFramebuffer()` there made the window's backing store report a lost WebGL device and reinitialize; the renderer
+  then often crashed. The browser readback probes skip a canvas no longer shown. `grabPresentedFrame` still grabs a
+  hidden widget directly; not tested in the browser. Re-test on a Qt or Chromium upgrade.
 - **Vulkan records the viewport as dynamic state of the bound pipeline,** so it must be set after every pipeline bind or
   nothing draws.
 - **The raster fallback deletes the failed canvas,** so it must not run while a context menu or modal dialog opened from
