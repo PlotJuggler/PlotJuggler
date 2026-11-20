@@ -67,6 +67,12 @@ test('Ctrl+Z and Space reach the app after a rectangle zoom on a plot', async ({
     return ['left', 'right', 'bottom', 'top'].every(side => Math.abs(view[side] - initial.view[side]) < 1e-6 * width);
   }, { timeout: 10000 }).toBe(true);
 
+  // The undo rebuilt the plots: Space must reach playback, not a filter that took the focus.
+  const afterUndo = (await state()).time;
+  await page.keyboard.press(' ');
+  await expect.poll(async () => (await state()).time, { timeout: 10000 }).toBeGreaterThan(afterUndo);
+  await page.keyboard.press(' ');
+
   // A plain click on the plot is not accepted either; Space must still toggle playback.
   const center = at(0.5, 0.5);
   await page.mouse.click(center.x, center.y);

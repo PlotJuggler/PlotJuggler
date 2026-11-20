@@ -171,6 +171,9 @@ class MainWindowLayoutImportTestPeer {
   static void undo(MainWindow& window) {
     window.onUndo();
   }
+  static void recordUndoState(MainWindow& window) {
+    window.onUndoableChange(/*force_new_state=*/true);
+  }
 
   // The takeover-fold and pinned-panel seams (the private surfaces ToolboxPanelFoldTest drives), so the binder
   // suite can prove a headless batch job never reaches them.
