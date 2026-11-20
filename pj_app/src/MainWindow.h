@@ -154,6 +154,7 @@ class MainWindow : public QMainWindow {
   friend class MainWindowLogPanelTestPeer;
   friend class MainWindowLayoutDatasetPathsTestPeer;
   friend class MainWindowReloadButtonTestPeer;
+  friend class MainWindowBatchLoadTestPeer;
   friend class MainWindowHistoryExemptTestPeer;
   friend class MainWindowCustomSeriesTestPeer;
   friend class MainWindowCustomTopicsTestPeer;
@@ -197,6 +198,11 @@ class MainWindow : public QMainWindow {
   // own sources without prompting). A failed or cancelled file aborts the layout and settles it false. Only an
   // attended (`interactive`) start may open dialogs: the files' own, and the layout's dataset question.
   void loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive);
+  // loadAtStartup's loads, once any batch question is answered. `load_batch`: null outside a batch. `compared`: the
+  // files checked in that question when a layout came with them, the answer to the layout's dataset question.
+  void loadStartupFiles(
+      const QStringList& absolute_files, const QString& layout_path, bool interactive,
+      const std::shared_ptr<LoadBatch>& load_batch, std::optional<QStringList> compared);
 
   // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
   // non-interactive run never shows the question.
@@ -1372,6 +1378,10 @@ class MainWindow : public QMainWindow {
   // The retention window, in seconds, of the streams running when the current layout open began; empty when none ran.
   // Only those streams are protected from a smaller layout buffer at the commit.
   std::optional<int> stream_window_at_layout_open_s_;
+  // Startup with several files and a layout: the absolute paths checked in BatchLoadDialog, asked before the files
+  // loaded. Set only while that layout applies: its chooseLayoutDatasets takes them as the answer instead of asking
+  // and clears them, and the layout's settle clears them when it never asked.
+  std::optional<QStringList> startup_compared_paths_;
   // Declared after streaming_manager_, so the runtime hosts holding its taps outlive it; closeEvent and
   // ~MainWindow still stop() it explicitly before any widget or host is gone. Created even where isSupported()
   // is false: only the UI affordances go away there.

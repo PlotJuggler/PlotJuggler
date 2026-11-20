@@ -182,9 +182,10 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
     answers_.push_back(std::move(rows));
   }
 
-  // A dataset question takes the next queued answer; every other modal box, and a question nobody queued an answer
-  // for, is rejected and counted in other_modals_, so a test never hangs on it. Answers are queued: a modal the
-  // answer opens runs a nested loop, and the polling timer never fires again inside its own slot.
+  // A dataset question takes the next queued answer, as does the batch question an attended startup with several files
+  // and a layout asks first (its file list answers the dataset question); every other modal box, and a question nobody
+  // queued an answer for, is rejected and counted in other_modals_, so a test never hangs on it. Answers are queued: a
+  // modal the answer opens runs a nested loop, and the polling timer never fires again inside its own slot.
   void answerModal() {
     auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget());
     if (modal == nullptr || modal->property("pjTestSeen").isValid()) {
@@ -192,6 +193,9 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
     }
     modal->setProperty("pjTestSeen", true);
     auto* list = modal->findChild<QListWidget*>(u"listDatasets"_s);
+    if (list == nullptr) {
+      list = modal->findChild<QListWidget*>(u"listFiles"_s);
+    }
     if (list == nullptr || answers_.empty()) {
       ++other_modals_;
       for (const QLabel* label : modal->findChildren<QLabel*>()) {
@@ -452,6 +456,24 @@ TEST_F(LayoutDatasetChoiceTest, AStartupLayoutAsksWhenSomeoneIsThere) {
   ASSERT_EQ(bound.size(), 1);
   EXPECT_EQ(
       PresetTestPeer::fileLoader(*window_).sourcePathForDataset(bound.front().section(u':', 0, 0).toUInt()), second);
+}
+
+// Intended: the files checked before a startup load answer only that startup's layout. When a file fails the layout is
+// not applied, and the next layout loaded by hand asks its own question.
+TEST_F(LayoutDatasetChoiceTest, AFailedStartupLeavesNoAnswerForTheNextLayout) {
+  const QString first = pj_app_test::makeMockFile(data_, u"first.mock"_s);
+  const QString second = pj_app_test::makeMockFile(data_, u"second.mock"_s);
+  const QString unreadable = pj_app_test::makeMockFile(data_, u"third.unsupported"_s);
+  answerNextQuestion({0, 1, 2});
+  window_->loadAtStartup({first, second, unreadable}, layoutFile(curveLayout({u"mock/file_data"_s})), true);
+  ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !settles_.empty(); }));
+  EXPECT_EQ(settles_, std::vector<bool>{false});
+  EXPECT_EQ(asked_, 1);
+
+  // Both loaded files carry the layout's topic, so this layout asks which to show.
+  answerNextQuestion({1});
+  load(curveLayout({u"mock/file_data"_s}), /*interactive=*/true);
+  EXPECT_EQ(asked_, 2) << "the startup's answer must not be taken for this layout's question";
 }
 
 TEST_F(LayoutDatasetChoiceTest, AnUnattendedStartupLayoutTakesTheFirstDataset) {

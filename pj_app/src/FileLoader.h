@@ -7,6 +7,7 @@
 #include <QMimeData>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -60,6 +61,21 @@ enum class DialogPolicy {
   kNever,
 };
 
+// How a batch (files picked or listed together, BatchLoadDialog) treats the loaders' configuration dialogs.
+enum class BatchDialogMode {
+  kShowAll,    // every file shows its dialog
+  kShowFirst,  // the first file of each loader shows it; the others load with the settings accepted there
+  kSkip,       // every file loads with its loader's last-used settings; a loader with none shows its dialog
+};
+
+// One batch's state, shared by the LoadHints of all its files. Loads run one at a time on the GUI thread, so a later
+// file sees what an earlier one recorded.
+struct LoadBatch {
+  BatchDialogMode mode = BatchDialogMode::kShowFirst;
+  QSet<QString> prompted;   // loaders whose dialog this batch has shown
+  QSet<QString> cancelled;  // loaders whose dialog was cancelled: their other files are cancelled too
+};
+
 // For callers that already know the plugin and its config (layout replay, Replace, agents).
 struct LoadHints {
   // The layout's manifest_id. Compared only against candidate manifest ids, tried before the name.
@@ -94,6 +110,8 @@ struct LoadHints {
   std::function<bool()> still_allowed{};
   // Told when this load's plugin dialog opens and when it is gone; closing it cancels the load.
   dialog_presenter::DialogWatch on_dialog{};
+  // Set for every file of a batch; null for a single load.
+  std::shared_ptr<LoadBatch> batch{};
 };
 
 // One accepted load request; 0 means none. Minted at enqueue, monotonic per loader.

@@ -4,9 +4,9 @@
     {
       "id": "open_data_file",
       "name": "Open data files",
-      "summary": "Load recorded data from a file. The formats that open depend on the data loader extensions installed (for example CSV, MCAP, ULog or Parquet). Each loaded file becomes its own dataset, and several can be loaded side by side. Files dragged onto the window from a file manager load the same way.",
+      "summary": "Load recorded data from a file. The formats that open depend on the data loader extensions installed (for example CSV, MCAP, ULog or Parquet). Each loaded file becomes its own dataset, and several can be loaded side by side. Files dragged onto the window from a file manager load the same way. Several files picked or dropped together ask once, before loading, whether each shows its loader's configuration dialog, only the first of each format does (the others reuse its settings), or none does (the last-used settings).",
       "entry_point": "File → Open Data File..., or Sources panel → File → Load a data file, or drag files onto the window",
-      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Open Data File...\"); pj_app/src/ui/LeftPanel.ui#Load a data file; pj_app/src/MainWindow.cpp#setAcceptDrops(true)",
+      "evidence": "pj_app/src/MainWindow.cpp#tr(\"Open Data File...\"); pj_app/src/ui/LeftPanel.ui#Load a data file; pj_app/src/MainWindow.cpp#setAcceptDrops(true); pj_app/src/ui/BatchLoadDialog.ui#Configuration dialogs:",
       "verified": "2026-10-21 in-app on release-4.1 e275111c: File → Open Data File... and the Sources panel File page with its load button"
     },
     {

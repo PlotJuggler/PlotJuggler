@@ -76,7 +76,8 @@ name, or `<base>/<entry>` for a fan-out) follows the new name, since the identit
 `removeDatasetQualifiersForGenericLayout` applies the mapping to every consumer, after `resolveDatasetSourcePaths`.
 Without explicit files, `--layout` replays its saved sources and starts its recorded streams with no prompt.
 A startup layout prompts only for which dataset(s) to show, and only when someone is at the display ("One layout over
-several datasets"); its other failures are diagnostics (`LayoutLoadInteractivity::kStartupAttended`). Unattended
+several datasets"); with two or more files that question is part of the batch question asked before they load ("Several
+files at once" under "File loading"); its other failures are diagnostics (`LayoutLoadInteractivity::kStartupAttended`). Unattended
 startup (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the `offscreen`/`minimal` platforms;
 `isUnattendedRun` in `main.cpp`) loads with `DialogPolicy::kNever`. A failed or
 cancelled explicit file skips the layout and settles it false, so `--exit-after-layout` exits unsuccessfully. The final
@@ -92,6 +93,19 @@ display name, backing path, reload identity and, in the browser, the storage lea
 deferred object fetches. `FanoutConfig` extracts a plugin config's `__pj_fanout` entries (one plugin instance and
 one `DatasetId` per entry). `FileLoader` does not depend on `MainWindow` (`setFilePicker` is the seam), so the loader
 suites compile it standalone.
+
+**Several files at once.** Files picked together, dropped together or listed on the command line (two or more, with
+someone at the display) ask one question before any loads (`BatchLoadDialog`): how the loaders' configuration dialogs
+behave for the batch, remembered across sessions (`BatchDialogMode`). *Show all* shows every file's dialog; *show
+first* shows it for the first file of each loader, and the others load with the settings accepted there; *skip* loads
+every file with its loader's last-used settings. Both reuse modes read the config the loader saves after an accepted
+dialog, so a loader with no saved config, or whose config fans one file out into several datasets (`__pj_fanout`),
+still shows its dialog. Cancelling a loader's dialog cancels that loader's other files in the batch; Cancel on the
+question loads nothing. The batch state (`LoadBatch`, in `LoadHints::batch`) is shared by the files' requests, which
+run one at a time on the GUI thread. With a layout on the command line the question also lists the files, all checked:
+each checked file gets its own copy of the layout's tabs, and that answers the layout's dataset question ("One layout
+over several datasets") instead of asking it after the load. The browser picker stages one file per pick, so it never
+forms a batch. Tests: `BatchLoadTest`.
 
 **Object ingest policy.** `FileLoader::applyDefaultIngestPolicies` loads object topics as
 `kLazyObjectsEagerScalars` by default: each payload is read once at ingest for its scalar fields (so header-bearing

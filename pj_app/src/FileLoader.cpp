@@ -49,6 +49,7 @@
 #include "DialogPresenter.h"
 #include "FanoutConfig.h"
 #include "FileSelectionService.h"
+#include "ui/BatchLoadDialog.h"
 #ifdef PJ_TARGET_WASM
 #include "BrowserPickedFile.h"
 #endif
@@ -998,9 +999,26 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
 }
 
 void FileLoader::loadFiles(const QStringList& paths, QWidget* dialog_parent) {
-  for (const QString& path : paths) {
-    loadFile(path, dialog_parent);
+  if (paths.size() < 2 || dialog_parent == nullptr) {
+    for (const QString& path : paths) {
+      loadFile(path, dialog_parent);
+    }
+    return;
   }
+  QPointer<FileLoader> self(this);
+  QPointer<QWidget> parent(dialog_parent);
+  BatchLoadDialog::ask(
+      dialog_parent, static_cast<int>(paths.size()), {},
+      [self, parent, paths](std::optional<BatchLoadDialog::Answer> answer) {
+        if (self.isNull() || parent.isNull() || !answer.has_value()) {
+          return;
+        }
+        LoadHints hints;
+        hints.batch = std::make_shared<LoadBatch>(LoadBatch{.mode = answer->mode, .prompted = {}, .cancelled = {}});
+        for (const QString& path : paths) {
+          self->loadFile(path, parent, hints);
+        }
+      });
 }
 
 QStringList FileLoader::droppedFilePaths(const QMimeData& mime) {
@@ -1386,12 +1404,29 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
                                               .arg(source_name, QString::fromStdString(status.error()));
       }
     }
+    // A batch: a loader whose dialog was cancelled cancels its other files; reuse means the last-used settings,
+    // which an earlier dialog of this batch saved before its import started. A loader with no saved settings, or
+    // whose settings fan one file out into several datasets, still shows its dialog.
+    bool batch_reuse = false;
+    if (!skip_dialog && hints.batch != nullptr) {
+      if (hints.batch->cancelled.contains(source_name)) {
+        erase_created_live_dataset();
+        rollback_tombstones();
+        emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
+        co_return;
+      }
+      const bool fans_out = saved_config.find("__pj_fanout") != std::string::npos;
+      batch_reuse = !saved_config.empty() && !fans_out &&
+                    (hints.batch->mode == BatchDialogMode::kSkip ||
+                     (hints.batch->mode == BatchDialogMode::kShowFirst && hints.batch->prompted.contains(source_name)));
+    }
     if (!skip_dialog) {
       config = buildLoadConfig(saved_config, input.backing_path);
       if (auto status = handle.loadConfig(config); !status) {
         (void)fail(tr("Plugin '%1': loadConfig failed: %2").arg(source_name, QString::fromStdString(status.error())));
         co_return;
       }
+      skip_dialog = batch_reuse;
     }
   }
 
@@ -1427,6 +1462,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
               }
             },
     });
+    if (hints.batch != nullptr) {
+      hints.batch->prompted.insert(source_name);
+    }
     auto dlg = co_await std::move(dialog_awaiter);
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
       (void)fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
@@ -1434,6 +1472,9 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       co_return;
     }
     if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
+      if (hints.batch != nullptr) {
+        hints.batch->cancelled.insert(source_name);
+      }
       // Test automation greps this marker on every platform.
       recordProbeOutcome(u"PJ_FILE_LOAD_REJECTED plugin="_s + source_name + u" identity="_s + source_identity);
       // A cancel terminal; fileLoaded/fileLoadFailed stay silent. Roll back first so the terminal sees it.
