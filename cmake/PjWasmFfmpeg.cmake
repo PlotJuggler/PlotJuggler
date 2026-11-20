@@ -10,6 +10,10 @@
 # acceleration (no native decode API exists), no assembly (it targets native
 # CPUs, not wasm), and no libavformat (the Scene2D core decodes elementary
 # streams; only its desktop tests demux containers).
+#
+# Both libraries configure outside this CMake tree, so the root -msimd128 does not reach them; each passes it itself.
+# Measured with Emscripten 5.0.5 on Node 22, 300 frames of 720p, 4 decoder threads: AV1 (dav1d) 1.27x and HEVC
+# 1.11x faster, H.264 and swscale unchanged, identical output, +88 KB Brotli. Re-measure on a toolchain or release bump.
 include_guard(GLOBAL)
 
 if(NOT EMSCRIPTEN OR NOT PJ_WASM_WITH_SCENE2D OR NOT PJ_WASM_WITH_VIDEO)
@@ -61,7 +65,7 @@ ar = '${_pj_wasm_emar}'
 ranlib = '${_pj_wasm_emranlib}'
 
 [built-in options]
-c_args = ['-pthread']
+c_args = ['-pthread', '-msimd128']
 c_link_args = ['-pthread']
 
 [host_machine]
@@ -112,7 +116,7 @@ ExternalProject_Add(pj_wasm_ffmpeg_build
         "--ranlib=${_pj_wasm_emranlib}" "--nm=${_pj_wasm_emnm}" "--pkg-config=${PJ_WASM_PKG_CONFIG}"
         --disable-asm --disable-inline-asm --disable-x86asm --disable-runtime-cpudetect
         --enable-pthreads --disable-w32threads --disable-os2threads
-        "--extra-cflags=-pthread -O3" "--extra-ldflags=-pthread"
+        "--extra-cflags=-pthread -O3 -msimd128" "--extra-ldflags=-pthread"
         # The LGPL-critical set shared with recipes/ffmpeg/build_ffmpeg.sh.
         --disable-gpl --disable-nonfree --disable-autodetect --disable-iconv
         --enable-static --disable-shared --disable-programs --disable-doc --disable-debug

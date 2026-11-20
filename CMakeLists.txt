@@ -82,7 +82,8 @@ if(EMSCRIPTEN)
     # WASM SIMD lets LLVM vectorize loops. One SIMD instruction anywhere already makes the whole module fail to load
     # without WASM SIMD (Safari before 16.4), so it costs no further browser support; packaging/web/loading.html.in
     # checks for it before the download. Not -msse*: that would switch every library's __SSE2__ code paths to
-    # emulated x86 intrinsics.
+    # emulated x86 intrinsics. Dependencies built by ExternalProject configure separately and get only the flags they
+    # pass themselves.
     add_compile_options(-msimd128)
     add_link_options(-msimd128)
 
