@@ -581,15 +581,15 @@ TEST_F(LayoutDatasetChoiceTest, ATransformOverATopicOnlyTheBestFitCarriesRestore
   expectAllBoundTo(0, run_a_, 1);
 }
 
-// Intended: a marker rule follows the best fit through a topic the layout plots nothing of: it reads sensor and
-// speed, both runs carry both, and the run carrying the plotted "extra" too is the one it marks.
+// Intended: a marker rule follows the best fit through a topic the layout plots nothing of: it reads speed, both runs
+// carry it, and the run carrying the plotted "extra" too is the one it marks.
 TEST_F(LayoutDatasetChoiceTest, AMarkerRuleFollowsTheBestFit) {
   PJ::AppSession& app = PresetTestPeer::session(*window_);
   pj_test::addScalarTopic(app, run_a_, "speed");
   pj_test::addScalarTopic(app, run_a_, "extra");
   pj_test::addScalarTopic(app, run_b_, "speed");
   load(
-      processorLayout({u"sensor"_s, u"extra"_s}, markerRule({u"sensor/value"_s, u"speed/value"_s})),
+      processorLayout({u"sensor"_s, u"extra"_s}, markerRule({u"speed/value"_s})),
       /*interactive=*/true);
   EXPECT_EQ(asked_, 0);
   EXPECT_EQ(settles_, std::vector<bool>{true});
@@ -610,6 +610,22 @@ TEST_F(LayoutDatasetChoiceTest, ComparedRunsEachRunTheirMarkerRule) {
   EXPECT_EQ(tabNames(), (QStringList{u"Plots [run.csv]"_s, u"Plots [run.csv (2)]"_s}));
   EXPECT_TRUE(pj_app_test::pumpUntil([this] { return marksOn(run_a_) > 0 && marksOn(run_b_) > 0; }))
       << marksOn(run_a_) << " " << marksOn(run_b_);
+}
+
+// Intended: a marker rule over a topic both files carry makes them fit equally, though each plotted topic is one
+// file's: the load asks, and the rule marks the run checked.
+TEST_F(LayoutDatasetChoiceTest, AMarkerRuleOverASharedTopicIsAskedAbout) {
+  PJ::AppSession& app = PresetTestPeer::session(*window_);
+  pj_test::addScalarTopic(app, run_a_, "data");
+  pj_test::addScalarTopic(app, run_b_, "run");
+  answerNextQuestion({0});
+  load(processorLayout({u"data"_s, u"run"_s}, markerRule({u"sensor/value"_s})), /*interactive=*/true);
+  EXPECT_EQ(asked_, 1);
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  EXPECT_TRUE(diagnostic(u"generator-restore-failed"_s).isEmpty())
+      << diagnostic(u"generator-restore-failed"_s).toStdString();
+  EXPECT_TRUE(pj_app_test::pumpUntil([this] { return marksOn(run_a_) > 0; }));
+  EXPECT_EQ(marksOn(run_b_), 0U);
 }
 
 }  // namespace

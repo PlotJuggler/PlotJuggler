@@ -344,8 +344,10 @@ result on.
   what they show. The entries of one fan-out file share its path and differ by label, so each (path, label) pair is a
   dataset of its own.
 - **Shared topics decide whether to choose.** A topic of the layout is shared when two or more loaded datasets carry
-  it. The layout's topics are what its plots, scenes, widgets, filters, transforms and on-demand recipes read; its own
-  outputs (filters, transforms, on-demand recipes as `<owner>/<id>/<output>`, marker rules) are not, so a dataset
+  it. The layout's topics are what its plots, scenes, widgets, filters, transforms, on-demand recipes and dataset-bound
+  marker rules read. A series key (`<topic>/<field>`: a marker rule's input, an on-demand input saved without a
+  `topic`) reads the longest topic naming a prefix of it, of those any loaded dataset carries or the layout's recipes
+  write. Its own outputs (filters, transforms, on-demand recipes as `<owner>/<id>/<output>`, marker rules) are not, so a dataset
   holding them from an earlier load of the same layout fits it no better.
 - **No shared topic: nothing is chosen.** A generic layout is applied as it is: each reference binds to the one dataset
   carrying its topic. Reason: a layout over curves from several files (the browser's Save Layout writes every layout
@@ -362,11 +364,11 @@ result on.
 - **A pin covers what its dataset carries.** Pinning to a dataset (the best fit, the one checked, or each checked one
   in its own copy) qualifies every reference to a topic that dataset carries (all of its catalog topics, not only the
   shared ones), every reference to an output of a recipe reading one of those (through chains of recipes: a pinned
-  recipe writes into its dataset), every marker rule with an input key reading one of those, and every other nameless
-  reader (marker scope, recipe input). A marker rule's `<topic>/<field>` key reads the longest topic naming a prefix
-  of it, of those the pinned datasets carry or the layout's recipes write. Any other reference keeps no qualifier and
+  recipe writes into its dataset), every marker rule all of whose key topics are among those, and every other
+  nameless reader (marker scope, a transform input saved without a topic). Any other reference keeps no qualifier and
   binds where its topic is unique, so a curve over a topic only another file carries still shows it. Reason: a
-  transform or marker rule reads every input from one dataset, so pinning only its shared inputs would split it.
+  transform or marker rule reads every input from one dataset, so pinning only its shared inputs would split it, and a
+  rule pinned to a dataset lacking one of its inputs would fail to restore.
 - **Several fitting equally (as many shared topics, and as many others) are asked about, when the load can ask**
   (File → Load Layout, the recent list, the browser's Load Layout, a startup layout with someone at the display): one
   checkbox per candidate dataset, in load order, the first checked; Cancel settles the load false with nothing applied,
@@ -382,8 +384,8 @@ result on.
   needs its own logic.
 - **Several checked: each tab is duplicated, one copy per dataset,** side by side, named `<tab> [<dataset label>]`,
   each copy pinned to its dataset. Reason: a Scene3D, Scene2D or Custom Widget view shows one dataset, so comparing
-  runs needs one copy of the view per run. Each filter and dataset-bound marker rule is copied once per checked
-  dataset it covers, pinned there, keeping its output name or rule id: both are per dataset (`BatchEngine` binds a rule
+  runs needs one copy of the view per run. Each filter and dataset-bound marker rule is copied once for each checked
+  dataset that covers it, pinned there, keeping its output name or rule id: both are per dataset (`BatchEngine` binds a rule
   by id and dataset). One no checked dataset covers stays single and unqualified.
 - **Copies never collide.** A tab copy is the user's (`plot_xml::prepareTabCopy`, shared with Duplicate Tab: no
   plugin ownership) and takes tab, area and plot ids no element of the document has, so a duplicated layout saved and
@@ -733,6 +735,8 @@ Suites with their own executable and ctest entry, and why:
   reproduced).
 - A layout naming several datasets is never asked about: when neither the saved paths nor startup's mapping bind its
   datasets, its references stay unresolved.
+- A shared topic no chosen dataset carries keeps no qualifier and stays ambiguous (two runs, each recorded as two
+  files, with one of each checked).
 - A scene whose topics are split across files, over a shared one (`/tf`), pins the shared topic to the best fit and
   leaves its other topics unqualified, so its layers from another file stay pending: a scene shows one dataset. The
   fix belongs to the scene: `Scene3DDockWidget::representativeDatasetId` would also read robot-model and trail

@@ -920,10 +920,22 @@ void removeDatasetQualifiersForGenericLayout(QDomDocument& doc, const QList<Data
 
 namespace {
 
+// The topic a series key ("<topic>/<field>", a marker rule's or on-demand recipe's input name) reads: the longest of
+// `known` (every loaded topic and every output of the layout's recipes) naming a prefix of it, empty when none does.
+QString keyTopic(const QString& key, const QSet<QString>& known) {
+  for (qsizetype end = key.size(); end > 0; end = key.lastIndexOf(u'/', end - 1)) {
+    if (QString candidate = key.left(end); known.contains(candidate)) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
 // What `element` reads through `shape`, so a pinned layout gives it that qualifier: the topic it names under the shape
 // (curves, wires, recipe inputs, filters, scene layers and payloads), empty for a nameless reader, nullopt when it
-// reads nothing through it. A local scene layer names no topic and stays local.
-std::optional<QString> readsThrough(const QDomElement& element, const DatasetIdentityAttributes& shape) {
+// reads nothing through it. A local scene layer names no topic and stays local. `known` resolves a series key.
+std::optional<QString> readsThrough(
+    const QDomElement& element, const DatasetIdentityAttributes& shape, const QSet<QString>& known) {
   for (const QString& attribute : {shape.topic, shape.topic_name}) {
     if (QString topic = element.attribute(attribute); !topic.isEmpty()) {
       return topic;
@@ -934,11 +946,12 @@ std::optional<QString> readsThrough(const QDomElement& element, const DatasetIde
   }
   const QString tag = element.tagName();
   const QString parent = element.parentNode().toElement().tagName();
-  // An on-demand <input name> is what its script reads: the topic (another node's "<owner>/<id>/<output>" included)
-  // unless `topic`, read above, records the one a qualified input read.
+  // An on-demand <input name> is what its script reads: a topic (another node's "<owner>/<id>/<output>" included) or
+  // a series key, unless `topic`, read above, records the topic a qualified input read.
   if (tag == "input"_L1 && parent == "on_demand"_L1) {
     if (QString name = element.attribute(u"name"_s); !name.isEmpty()) {
-      return name;
+      QString topic = keyTopic(name, known);
+      return topic.isEmpty() ? name : topic;
     }
   }
   const bool nameless = std::any_of(kNamelessReaders.begin(), kNamelessReaders.end(), [&](const NamelessReader& r) {
@@ -982,46 +995,40 @@ QSet<QString> producedTopics(const QDomDocument& doc) {
 }
 
 // What one pin covers, over one document: `pinned` holds the topics the pin's dataset carries and the outputs of the
-// recipes reading them; `known` (the topics of every pin applied with it, and every output of the layout's recipes)
-// resolves marker rule keys.
+// recipes reading them; `known` (every loaded topic and every output of the layout's recipes) resolves series keys.
 struct PinScope {
   QSet<QString> pinned;
   QSet<QString> known;
 };
 
-// The topic a marker rule's "<topic>/<field>" input key reads: the longest of `known` naming a prefix of it, empty
-// when none does.
-QString keyTopic(const QString& key, const QSet<QString>& known) {
-  for (qsizetype end = key.size(); end > 0; end = key.lastIndexOf(u'/', end - 1)) {
-    if (QString candidate = key.left(end); known.contains(candidate)) {
-      return candidate;
-    }
-  }
-  return {};
-}
-
-bool ruleReadsAny(const QDomElement& rule, const PinScope& scope) {
+// The topics a marker rule's input keys read; an empty one for a key `known` resolves to no topic.
+QSet<QString> ruleTopics(const QDomElement& rule, const QSet<QString>& known) {
+  QSet<QString> topics;
   for (QDomElement input = rule.firstChildElement(u"input"_s); !input.isNull();
        input = input.nextSiblingElement(u"input"_s)) {
-    if (const QString topic = keyTopic(input.attribute(u"name"_s), scope.known);
-        !topic.isEmpty() && scope.pinned.contains(topic)) {
-      return true;
-    }
+    topics.insert(keyTopic(input.attribute(u"name"_s), known));
   }
-  return false;
+  return topics;
 }
 
-// Whether `recipe` (filter, transform, on-demand recipe or marker rule) reads one of the pinned topics.
+// Whether a pin covers a marker rule: it reads every input from one dataset, so the pin must hold all its topics.
+bool ruleCovered(const QDomElement& rule, const PinScope& scope) {
+  const QSet<QString> topics = ruleTopics(rule, scope.known);
+  return !topics.isEmpty() && !topics.contains(QString()) && scope.pinned.contains(topics);
+}
+
+// Whether `recipe` reads what `scope` pins: a filter or transform or on-demand recipe one of its inputs, a marker rule
+// all of them.
 bool recipeReadsAny(const QDomElement& recipe, const PinScope& scope) {
   if (recipe.tagName() == "processor"_L1) {
     return scope.pinned.contains(recipe.attribute(u"input_topic"_s));
   }
   if (recipe.tagName() == "generator"_L1) {
-    return ruleReadsAny(recipe, scope);
+    return ruleCovered(recipe, scope);
   }
   for (QDomElement input = recipe.firstChildElement(u"input"_s); !input.isNull();
        input = input.nextSiblingElement(u"input"_s)) {
-    if (const std::optional<QString> topic = readsThrough(input, qualifier(Qualifier::kPlain));
+    if (const std::optional<QString> topic = readsThrough(input, qualifier(Qualifier::kPlain), scope.known);
         topic.has_value() && scope.pinned.contains(*topic)) {
       return true;
     }
@@ -1030,11 +1037,9 @@ bool recipeReadsAny(const QDomElement& recipe, const PinScope& scope) {
 }
 
 // What `pin` covers: the topics its dataset carries grown, through chains of recipes, by the outputs of every recipe
-// reading one of them, since a recipe pinned to a dataset writes there. `applied`: the topics of every pin applied
-// together, so a copy's rule key is read as the longest topic any of them names (/odom/filtered/pose/x is
-// /odom/filtered's when one of them carries it, not /odom's).
-PinScope scopeOf(const QDomDocument& doc, const DatasetPin& pin, const QSet<QString>& applied) {
-  PinScope scope{.pinned = pin.topics, .known = applied | producedTopics(doc)};
+// reading them, since a recipe pinned to a dataset writes there. `loaded_topics`: every loaded dataset's topics.
+PinScope scopeOf(const QDomDocument& doc, const DatasetPin& pin, const QSet<QString>& loaded_topics) {
+  PinScope scope{.pinned = pin.topics, .known = loaded_topics | producedTopics(doc)};
   for (qsizetype size = -1; size != scope.pinned.size();) {
     size = scope.pinned.size();
     forEachRecipe(doc, [&scope](const QDomElement& recipe) {
@@ -1048,19 +1053,19 @@ PinScope scopeOf(const QDomDocument& doc, const DatasetPin& pin, const QSet<QStr
   return scope;
 }
 
-// Removes every qualifier under `root`, then pins to `pin` the readers of a topic `scope` pins, the marker rules
-// reading one and the other nameless readers; the others bind by what they read.
+// Removes every qualifier under `root`, then pins to `pin` the readers of a topic `scope` pins, the marker rules it
+// covers and the other nameless readers; the others bind by what they read.
 void pinQualifiers(const QDomElement& root, const DatasetPin& pin, const PinScope& scope) {
   forEachElementUnder(root, [&pin, &scope](QDomElement& element) {
     for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
       element.removeAttribute(shape.id);
       element.removeAttribute(shape.source);
       element.removeAttribute(shape.path);
-      const std::optional<QString> topic = readsThrough(element, shape);
+      const std::optional<QString> topic = readsThrough(element, shape, scope.known);
       if (!topic.has_value()) {
         continue;
       }
-      const bool pinned = topic->isEmpty() ? element.tagName() != "generator"_L1 || ruleReadsAny(element, scope)
+      const bool pinned = topic->isEmpty() ? element.tagName() != "generator"_L1 || ruleCovered(element, scope)
                                            : scope.pinned.contains(*topic);
       if (!pinned) {
         continue;
@@ -1100,16 +1105,25 @@ QList<DatasetIdentity> datasetIdentities(const QDomDocument& doc) {
   return identities;
 }
 
-QSet<QString> referencedTopics(const QDomDocument& doc) {
+QSet<QString> referencedTopics(const QDomDocument& doc, const QSet<QString>& loaded_topics) {
+  const QSet<QString> produced = producedTopics(doc);
+  const QSet<QString> known = loaded_topics | produced;
   QSet<QString> topics;
-  forEachElement(doc, [&topics](const QDomElement& element) {
+  forEachElement(doc, [&topics, &known](const QDomElement& element) {
     for (const DatasetIdentityAttributes& shape : qualifierShapes()) {
-      if (const std::optional<QString> topic = readsThrough(element, shape); topic.has_value() && !topic->isEmpty()) {
+      if (const std::optional<QString> topic = readsThrough(element, shape, known);
+          topic.has_value() && !topic->isEmpty()) {
         topics.insert(*topic);
       }
     }
   });
-  return topics - producedTopics(doc);
+  forEachTagged(doc, u"generator"_s, [&topics, &known](const QDomElement& rule) {
+    if (rule.attribute(u"all_datasets"_s) != "1"_L1) {
+      topics |= ruleTopics(rule, known);
+    }
+  });
+  topics.remove(QString());
+  return topics - produced;
 }
 
 DatasetChoice planDatasetChoice(
@@ -1121,7 +1135,11 @@ DatasetChoice planDatasetChoice(
       std::any_of(named.begin(), named.end(), opaque) || (named.size() == 1 && loaded.names_one(named.front()))) {
     return {};
   }
-  const QSet<QString> topics = referencedTopics(doc);
+  QSet<QString> loaded_topics;
+  for (const DatasetPin& pin : loaded.datasets) {
+    loaded_topics |= pin.topics;
+  }
+  const QSet<QString> topics = referencedTopics(doc, loaded_topics);
   // A topic two or more datasets carry is shared: only those decide whether to choose.
   QSet<QString> seen;
   QSet<QString> shared;
@@ -1134,6 +1152,7 @@ DatasetChoice planDatasetChoice(
     // A layout made for a dataset that is not loaded binds like a generic one; with nothing loaded to bind to, its
     // qualifiers stay, so the missing-data prompt names its dataset.
     DatasetChoice keep;
+    keep.loaded_topics = std::move(loaded_topics);
     if (named.size() == 1 && !seen.isEmpty()) {
       keep.kind = DatasetChoice::Kind::kUnbind;
     }
@@ -1148,6 +1167,7 @@ DatasetChoice planDatasetChoice(
     most = std::max(most, fit(pin));
   }
   DatasetChoice choice;
+  choice.loaded_topics = std::move(loaded_topics);
   for (const DatasetPin& pin : loaded.datasets) {
     if (fit(pin) == most) {
       choice.datasets.push_back(pin);
@@ -1172,21 +1192,19 @@ QStringList duplicationBlockers(const QDomDocument& doc) {
   return blockers;
 }
 
-void pinLayoutToDataset(QDomDocument& doc, const DatasetPin& pin) {
-  pinQualifiers(doc.documentElement(), pin, scopeOf(doc, pin, pin.topics));
+void pinLayoutToDataset(QDomDocument& doc, const DatasetPin& pin, const QSet<QString>& loaded_topics) {
+  pinQualifiers(doc.documentElement(), pin, scopeOf(doc, pin, loaded_topics));
 }
 
-void pinLayoutToDatasets(QDomDocument& doc, const QList<DatasetPin>& pins, const RememberedCurveColor& remembered) {
+void pinLayoutToDatasets(
+    QDomDocument& doc, const QList<DatasetPin>& pins, const QSet<QString>& loaded_topics,
+    const RememberedCurveColor& remembered) {
   if (pins.isEmpty()) {
     return;
   }
-  QSet<QString> applied;
-  for (const DatasetPin& pin : pins) {
-    applied |= pin.topics;
-  }
   std::vector<PinScope> scopes;
   for (const DatasetPin& pin : pins) {
-    scopes.push_back(scopeOf(doc, pin, applied));
+    scopes.push_back(scopeOf(doc, pin, loaded_topics));
   }
   // What the first dataset covers names it; each further copy is cloned from it and pinned again.
   pinQualifiers(doc.documentElement(), pins.front(), scopes.front());
