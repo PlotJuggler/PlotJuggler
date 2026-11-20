@@ -73,7 +73,7 @@ requirements:
     # PJ4's own packages (recipes/), from the plotjuggler channel.
     - luau 0.700.*
     - libmcap 2.1.*
-    - cloudini 1.4.*
+    - cloudini 1.5.*
     - libnanoarrow >=0.9
     # PJ_SYSTEM_ADS: builds from 3 on carry the fork's "keep inactive tabs parented" patch (see the root CMakeLists).
     - qt6-advanced-docking-system[version='>=5.1.1', build_number='>=3']
