@@ -70,12 +70,15 @@ unmapped is stripped and binds only where unique. A kept label the loader derive
 name, or `<base>/<entry>` for a fan-out) follows the new name, since the identity resolver compares labels exactly.
 `removeDatasetQualifiersForGenericLayout` applies the mapping to every consumer, after `resolveDatasetSourcePaths`.
 Without explicit files, `--layout` replays its saved sources and starts its recorded streams with no prompt.
-Unattended startup (`--exit-after-layout`, `--screenshot`, the `offscreen`/`minimal` platforms; `isUnattendedRun` in
-`main.cpp`) loads with `DialogPolicy::kNever`. A failed or cancelled explicit file skips the layout and settles it
-false, so `--exit-after-layout` exits unsuccessfully. The final restore is deferred through a window-owned timer so it
-never runs during teardown. `--exit-after-layout` exit codes are a contract for harnesses (`LayoutExitWatch`): 0
-applied, 1 load failed or cancelled, 2 timed out, 64 usage error. With `--screenshot` too, whichever quit fires first
-wins, and only `--exit-after-layout`'s code says whether the layout applied. Tests: `MainWindowStartupTest`.
+A startup layout prompts only for which dataset(s) to show, and only when someone is at the display ("One layout over
+several datasets"); its other failures are diagnostics (`LayoutLoadInteractivity::kStartupAttended`). Unattended
+startup (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the `offscreen`/`minimal` platforms;
+`isUnattendedRun` in `main.cpp`) loads with `DialogPolicy::kNever`. A failed or
+cancelled explicit file skips the layout and settles it false, so `--exit-after-layout` exits unsuccessfully. The final
+restore is deferred through a window-owned timer so it never runs during teardown. `--exit-after-layout` exit codes are
+a contract for harnesses (`LayoutExitWatch`): 0 applied, 1 load failed or cancelled, 2 timed out, 64 usage error. With
+`--screenshot` too, whichever quit fires first wins, and only `--exit-after-layout`'s code says whether the layout
+applied. Tests: `MainWindowStartupTest`.
 
 ## File loading
 
@@ -319,6 +322,61 @@ per-source display offsets -> processors -> rebind every curve to a catalog key.
 generator that reads the display frame sees the settled offset. A layout restore replaces the persisted toolboxes
 (every tab and floating window, plus a takeover the layout names; any other takeover stays) synchronously before
 relaunching them, after asking once when one of them is busy.
+
+### One layout over several datasets
+
+A layout aimed at one dataset, applied while several loaded datasets carry its topics, would leave every reference
+ambiguous: plot curves unresolved, scene layers pending, an empty workspace. The binding is never left that way and
+never guessed silently. The rules below are intended behaviour, each with its reason. `layout_xml::planDatasetChoice`
+decides, `layout_xml::pinLayoutToDataset(s)` rewrite the document, `MainWindow::chooseLayoutDatasets` asks through
+`LayoutDatasetDialog`, reports, and hands the result on.
+
+- **When it applies.** On the synchronous leg (nothing left to reload or start), when the file named at most one
+  dataset (`layout_xml::datasetIdentities`: a generic layout names none), that dataset is not loaded (a loaded file
+  named under another label is loaded: the curve binding finds it by its path), and two or more
+  loaded datasets carry the layout's topics. The layout's own outputs (filters, transforms, on-demand recipes, marker
+  rules) do not count: a dataset holding them from an earlier load of the same layout fits it no better. A layout
+  naming several datasets, a stream or an upload keeps its own bindings, and startup maps them to its explicit files
+  ("Command-line startup"): those name what they show. The entries of one fan-out file share its path and differ by
+  label, so each (path, label) pair is a dataset of its own.
+- **One dataset fitting best takes the topics it carries, unasked.** When one dataset carries more of the layout's
+  topics than any other, it is the only one that can show the whole layout: every reference to a topic it carries,
+  every marker rule with an input from one of them, and every other nameless reader (marker scope, recipe input), is
+  pinned to it; any other reference keeps no qualifier and binds where its topic is unique, a marker rule by its
+  inputs.
+- **Several fitting equally are asked about, when the load can ask** (File → Load Layout, the recent list, the
+  browser's Load Layout, a startup layout with someone at the display): one checkbox per candidate dataset, in load
+  order, the first checked; Cancel settles the load false with nothing applied, like the reload prompt's Cancel.
+  Reason: only the user knows which run a generic layout is for. Checked candidates removed while the question was
+  open (the browser's does not block) are reported: the load goes on with the others, or fails when none is left,
+  never taken for a Cancel.
+- **A load that cannot ask takes the first loaded candidate and says so** (`layout-dataset-chosen`, a warning): an
+  unattended `--layout` (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the offscreen QA instance), and
+  any other load without a display to ask on. Reason: a harness, an agent or the QA instance cannot answer a dialog,
+  and an unbound workspace helps no one; the diagnostic keeps the choice visible.
+- **One checked: every reference names that dataset,** and the tabs keep their names. Plots, scenes, recipes, marker
+  rules, marker scopes and Custom Widget wires are all rewritten in the document by the same qualifier walk, so no
+  widget needs its own logic.
+- **Several checked: each tab is duplicated, one copy per dataset,** side by side, named `<tab> [<dataset label>]`,
+  each copy pinned to its dataset. Reason: a Scene3D, Scene2D or Custom Widget view shows one dataset, so comparing
+  runs needs one copy of the view per run. Each filter and dataset-bound marker rule is copied too, pinned to its
+  copy's dataset, keeping its output name or rule id: both are per dataset (`BatchEngine` binds a rule by id and
+  dataset).
+- **Copies never collide.** A tab copy is the user's (`plot_xml::prepareTabCopy`, shared with Duplicate Tab: no
+  plugin ownership) and takes tab, area and plot ids no element of the document has, so a duplicated layout saved and
+  loaded again duplicates cleanly. Ids are renamed, not dropped: the pending-curve binder finds a copy's plots by id.
+- **Every copy shows a curve in the same colour.** A saved colour is copied as is; a curve without one first gets the
+  colour its plot would give it (`plot_xml::fillMissingCurveColors`: the session's remembered colour for it, else the
+  plot's next free palette colour). Reason: the copies exist to compare runs, so the same signal must look the same in
+  each. Scene layers take no session-assigned colour, so their copies match already.
+- **The checked datasets start together.** Their starts are aligned as the Source Timeline's "Align starts" does,
+  over the checked datasets only (`SourceTimelineController::alignStartsOf`), before the restore builds the plots:
+  a plot keeps its view when an offset changes (a Timeline drag must not re-zoom), so aligning after the plots fit
+  would leave each later run's copy showing its old window, empty. Reason: the copies are there to compare runs, so
+  each starts at the same display time. One checked dataset keeps its offset.
+- **Refused, not guessed, where a copy cannot work** (`layout_xml::duplicationBlockers`): a transform's id is also its
+  script's class id and unique per plugin across datasets, so no second copy can exist; an on-demand recipe reads its
+  inputs and upstream outputs by name. Such a layout lets one dataset be checked at a time, and the dialog names them.
 
 ### Streaming sources in a layout file
 
@@ -647,6 +705,13 @@ Suites with their own executable and ctest entry, and why:
   input arrives later (a late import, a stream), while a curve plotting its output stays a pending intent waiting for
   it. The kept entries (`kept_derived_`) hold what a retry would need; nothing retries them yet.
 - In-band embedded assets are not routed to Scene3D docks on load.
+- The Source Timeline's "Align starts", "Align ends" and "Reset" keep every plot's view, as a drag does, so a plot
+  showing only a dataset they move is left on its old window, empty, until zoomed out (from the code, not
+  reproduced).
+- A layout naming several datasets is never asked about: when neither the saved paths nor startup's mapping bind its
+  datasets, its references stay unresolved.
+- A layout holding a transform or an on-demand recipe shows one dataset at a time: duplicating a transform would need
+  a recipe instance id apart from its script's class id (`DataProcessorService::TransformRecipe::user_id` is both).
 - Restoring a layout whose `<pinned_toolboxes>` names a plugin that is missing or fails to bind goes through
   `launchToolbox`'s error path, which opens a modal `MessageBox::warning` even in an unattended run (suspected from
   the code, not reproduced).

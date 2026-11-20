@@ -72,9 +72,10 @@ class TrailLayer : public Scene3DLayer {
 
   // Tri-state full restore from a <trail> payload: resolves and installs the SOURCE (tf frame, or pose topic via the
   // session's ambiguity-safe dataset identity ladder) and applies the style. kDeferred = the pose topic is not loaded
-  // yet (the dock re-queues the element); kInvalid = malformed.
+  // yet, or a generic topic name matches several datasets (the dock re-queues the element); kInvalid = malformed.
+  // `preferred_dataset` is the dataset the dock shows (uniqueObjectTopic's tie-break; 0 = none).
   enum class XmlLoadResult { kRestored, kDeferred, kInvalid };
-  [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element);
+  [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element, PJ::DatasetId preferred_dataset = 0);
 
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;

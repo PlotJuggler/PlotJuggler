@@ -364,7 +364,8 @@ jobs:
       - name: QA regression scripts
         # The bugs exploratory QA found, replayed through the MCP UI tools on an offscreen app
         # (scripts/qa/regressions). The fixtures load through released plugins: the CSV loader for the signals
-        # fixture, Dummy Streamer and UDP Server for the streaming scripts. A failed script keeps its instance's
+        # fixture, the MCAP loader and ROS parser for the scene fixtures, Dummy Streamer and UDP Server for the
+        # streaming scripts. A failed script keeps its instance's
         # home (app.log, screenshots) under TMPDIR, uploaded below.
         timeout-minutes: 10
         env:
@@ -372,6 +373,8 @@ jobs:
           CSV_LOADER_TAG: data_load_csv/v1.0.10
           DUMMY_STREAMER_TAG: data_stream_dummy/v1.0.1
           UDP_SERVER_TAG: data_stream_udp/v0.9.2
+          MCAP_LOADER_TAG: data_load_mcap/v1.3.1
+          ROS_PARSER_TAG: parser_ros/v1.4.2
           TMPDIR: ${{ runner.temp }}/pjqa
         run: |
           mkdir -p "${TMPDIR}"
@@ -382,6 +385,10 @@ jobs:
             -p 'dummy-streamer-*-linux-x86_64.zip' -D "${plugins}"
           gh release download "${UDP_SERVER_TAG}" -R PlotJuggler/pj-official-plugins \
             -p 'udp-server-*-linux-x86_64.zip' -D "${plugins}"
+          gh release download "${MCAP_LOADER_TAG}" -R PlotJuggler/pj-official-plugins \
+            -p 'mcap-loader-*-linux-x86_64.zip' -D "${plugins}"
+          gh release download "${ROS_PARSER_TAG}" -R PlotJuggler/pj-official-plugins \
+            -p 'ros-parser-*-linux-x86_64.zip' -D "${plugins}"
           # One archive per call: `unzip a.zip b.zip` reads b.zip as a member name of a.zip.
           for z in "${plugins}"/*.zip; do unzip -q "$z" -d "${plugins}"; done
           python3 scripts/qa/pjqa.py regress --plugin-dir "${plugins}"

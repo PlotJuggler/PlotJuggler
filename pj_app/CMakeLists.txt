@@ -115,6 +115,9 @@ add_library(pj_app_shell OBJECT
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
     src/ui/AboutDialog.ui
+    src/ui/LayoutDatasetDialog.cpp
+    src/ui/LayoutDatasetDialog.h
+    src/ui/LayoutDatasetDialog.ui
     src/ui/McpJobsDialog.cpp
     src/ui/McpJobsDialog.h
     src/ui/McpJobsDialog.ui
@@ -588,6 +591,12 @@ if(PJ_BUILD_TESTS)
     # layout-relative path in a source-bound layout, nothing in a generic one.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_layout_dataset_paths_test.cpp)
+
+    # A layout aimed at one dataset over several matching ones: asked, duplicated per dataset, or the first one.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_layout_dataset_choice_test.cpp)
+    set_source_files_properties(tests/main_window_layout_dataset_choice_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_FILE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:mock_file_source_plugin>")
 
     # The Custom Series list is derived from DataProcessorService, not accumulated
     # from plugin announcements — the paths that announce nothing are a layout

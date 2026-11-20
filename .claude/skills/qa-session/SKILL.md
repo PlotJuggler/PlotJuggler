@@ -62,6 +62,8 @@ Pitfalls seen in practice:
 - `ui_tree` lists dock areas and tabs in creation order, not screen order: check which plot is which by its title,
   and the order of the tabs on screen, with a screenshot. A name that every plot repeats (`qwtCanvas`, `buttonClose`) is refused while two plots show; scripts
   that need one use a single-plot layout.
+- Under `--xvfb` the app counts as attended: `-d a -d b -l <layout>` with both files carrying the layout's topics
+  opens the which-datasets question at startup; answer it with the UI tools. Offscreen it takes the first dataset.
 - Plots fall back to the raster canvas offscreen (no GPU): the GPU plot path is not exercised.
 - No tool reports marker rules or the marker regions on a plot: a bug there shows only in a screenshot, so it
   cannot get a regression script. Say so in the fix PR.
@@ -146,6 +148,11 @@ A `#` starts a comment only at the beginning of a line.
 Name widgets by objectName in scripts, never by ref (refs change between runs). Assert on what the user reads:
 `ui_tree` for widgets, `ui_plot` for a plot's ranges, curves and tracker value box, the data tools for data. A
 screenshot is evidence for a human, not an assertion.
+
+`ui_tree` clips a row to 80 characters, and a list shows only the rows in its viewport: filter before asserting
+`absent` on long or scrolled text. `expect` / `absent` match the text literally, quotes included: `until ui_tree {}
+"Scene3DDockWidget"` never matches `PJ::Scene3DDockWidget`. Check an `absent` once against a state that holds the
+text, or it may pass for the wrong reason.
 
 ## Regression scripts
 

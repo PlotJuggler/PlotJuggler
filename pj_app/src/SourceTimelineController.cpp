@@ -207,14 +207,33 @@ void SourceTimelineController::resetAll() {
   emit workspaceChangeCommitted();
 }
 
+void SourceTimelineController::alignStartsOf(const std::vector<DatasetId>& datasets) {
+  setAlignedOffsets(AlignMode::kStarts, datasets);
+}
+
 void SourceTimelineController::applyAlignment(AlignMode mode) {
+  std::vector<DatasetId> all;
+  all.reserve(tracks_.size());
+  for (const TimelineTrack& t : tracks_) {
+    all.push_back(static_cast<DatasetId>(t.id));
+  }
+  setAlignedOffsets(mode, all);
+  emit workspaceChangeCommitted();
+}
+
+void SourceTimelineController::setAlignedOffsets(AlignMode mode, const std::vector<DatasetId>& datasets) {
   // The widget keeps no offsets, so the controller computes them.
   TimelineScene scene;
   std::vector<TimelineSpanInput> spans;
   spans.reserve(tracks_.size());
   for (const TimelineTrack& t : tracks_) {
-    spans.push_back(
-        TimelineSpanInput{.id = t.id, .t_min_ns = t.t_min_ns, .t_max_ns = t.t_max_ns, .offset_ns = t.offset_ns});
+    if (std::find(datasets.begin(), datasets.end(), static_cast<DatasetId>(t.id)) != datasets.end()) {
+      spans.push_back(
+          TimelineSpanInput{.id = t.id, .t_min_ns = t.t_min_ns, .t_max_ns = t.t_max_ns, .offset_ns = t.offset_ns});
+    }
+  }
+  if (spans.empty()) {
+    return;
   }
   scene.setTracks(std::move(spans));
   std::vector<std::pair<TimelineSourceId, qint64>> offsets;
@@ -235,7 +254,6 @@ void SourceTimelineController::applyAlignment(AlignMode mode) {
   }
   scheduleRangeRecompute();
   widget_->fitToContents();  // no-op when auto-zoom is off
-  emit workspaceChangeCommitted();
 }
 
 void SourceTimelineController::scheduleRangeRecompute() {

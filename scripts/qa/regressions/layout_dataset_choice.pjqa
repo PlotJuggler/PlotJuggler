@@ -1,0 +1,27 @@
+# Intended behaviour (pj_app ARCHITECTURE "One layout over several datasets"): File > Load Layout of a layout that
+# names no dataset, while two loaded files carry its topic, asks which datasets it shows. Checking both duplicates
+# its tab, one copy per dataset named after it, each curve pinned to its copy's dataset. Both files are run.csv, so
+# the second is labelled "run.csv (2)". At t=1 run1 reads 2 and run2 reads 20.
+# app: -d scripts/qa/regressions/fixtures/compare_runs/run1/run.csv -d scripts/qa/regressions/fixtures/compare_runs/run2/run.csv
+# needs: plugins
+until get_status {} "run.csv (2)"
+# File menu, second entry: Load Layout...
+ui_click {"name":"menuBar","x":22,"y":15}
+ui_key {"keys":"Down,Down,Return","wait_ms":800}
+ui_click {"name":"fileNameEdit"}
+ui_type {"text":"$CHECKOUT/scripts/qa/regressions/fixtures/compare_runs/generic.pj4.xml\n","wait_ms":800}
+until ui_tree {} QListWidget#listDatasets
+expect row "run.csv" (checked
+expect row "run.csv (2)" (unchecked
+# Space toggles the current row; the first row is current, so Down moves to the second.
+ui_key {"keys":"Down,Space","wait_ms":300}
+ui_tree {}
+expect row "run.csv (2)" (checked
+ui_key {"keys":"Return","wait_ms":1000}
+until ui_tree {} "Run [run.csv (2)]"
+expect "Run [run.csv]"
+playback {"action":"seek","time_s":1}
+until ui_plot {"title":"Value"} "tracker":["time : 1.000","2.000"]
+# The second copy, the second tab (x about 120..235 on the tab bar), shows run2.
+ui_click {"name":"plotTabsInner","x":175,"y":15,"wait_ms":500}
+until ui_plot {"title":"Value"} "tracker":["time : 1.000","20.000"]

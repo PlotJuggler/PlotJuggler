@@ -7,6 +7,7 @@
 #include <limits>
 #include <string>
 
+#include "pj_runtime/CatalogModel.h"  // objectTypeFromMetadata
 #include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
@@ -53,6 +54,46 @@ QString secondsText(double seconds) {
 }
 
 }  // namespace
+
+std::vector<ObjectTopicId> objectTopicsMatching(
+    const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type) {
+  std::vector<ObjectTopicId> matching;
+  for (const ObjectTopicId candidate : store.listTopics()) {
+    const ObjectTopicDescriptor& descriptor = store.descriptor(candidate);
+    if (descriptor.topic_name == topic_name && objectTypeFromMetadata(descriptor.metadata_json) == object_type) {
+      matching.push_back(candidate);
+    }
+  }
+  return matching;
+}
+
+std::optional<ObjectTopicId> uniqueObjectTopic(
+    const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type,
+    DatasetId preferred_dataset) {
+  const std::vector<ObjectTopicId> matching = objectTopicsMatching(store, topic_name, object_type);
+  if (matching.size() == 1) {
+    return matching.front();
+  }
+  std::optional<ObjectTopicId> preferred_match;
+  for (const ObjectTopicId candidate : matching) {
+    if (preferred_dataset != 0 && store.descriptor(candidate).dataset_id == preferred_dataset) {
+      if (preferred_match.has_value()) {
+        return std::nullopt;
+      }
+      preferred_match = candidate;
+    }
+  }
+  return preferred_match;
+}
+
+std::optional<ObjectTopicId> resolveSavedObjectTopic(
+    const ObjectStore& store, std::string_view topic_name, sdk::BuiltinObjectType object_type, bool qualified,
+    std::optional<DatasetId> dataset, DatasetId preferred_dataset) {
+  if (!qualified) {
+    return uniqueObjectTopic(store, topic_name, object_type, preferred_dataset);
+  }
+  return dataset.has_value() ? store.findTopic(*dataset, topic_name) : std::nullopt;
+}
 
 DerivedTopicPresentation derivedTopicPresentation(SessionManager* session, ObjectTopicId topic_id) {
   if (session == nullptr) {

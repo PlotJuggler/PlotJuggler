@@ -125,7 +125,7 @@ bool TrailLayer::xmlLoadState(const QDomElement& element) {
   return loadStyle(element);
 }
 
-TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& element) {
+TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& element, PJ::DatasetId preferred_dataset) {
   if (element.isNull() || element.tagName() != "trail"_L1 || !detail::isLeafPayload(element)) {
     return XmlLoadResult::kInvalid;
   }
@@ -157,24 +157,11 @@ TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& elem
     }
     const QString source = element.attribute(u"source_dataset_source"_s);
     const QString path = element.attribute(u"source_dataset_path"_s);
-    std::optional<PJ::ObjectTopicId> restored_topic;
-    if (saved_dataset_id == 0 && source.isEmpty() && path.isEmpty()) {
-      const UniqueObjectTopicResolution generic = resolveUniqueObjectTopic(
-          ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kPosesInFrame);
-      if (generic.ambiguous) {
-        return XmlLoadResult::kInvalid;
-      }
-      restored_topic = generic.topic_id;
-    } else {
-      const PJ::DatasetIdentityResolution dataset =
-          ctx_.session->resolveDatasetIdentity(saved_dataset_id, source, path);
-      if (dataset.ambiguous) {
-        return XmlLoadResult::kInvalid;
-      }
-      if (dataset.id.has_value()) {
-        restored_topic = ctx_.session->objectStore().findTopic(*dataset.id, topic_name.toStdString());
-      }
-    }
+    const bool qualified = saved_dataset_id != 0 || !source.isEmpty() || !path.isEmpty();
+    const std::optional<PJ::ObjectTopicId> restored_topic = PJ::resolveSavedObjectTopic(
+        ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kPosesInFrame, qualified,
+        qualified ? ctx_.session->resolveDatasetIdentity(saved_dataset_id, source, path).id : std::nullopt,
+        preferred_dataset);
     if (!restored_topic.has_value()) {
       return XmlLoadResult::kDeferred;
     }

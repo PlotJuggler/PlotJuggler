@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QColor>
 #include <QDir>
 #include <QDomDocument>
 #include <QDomElement>
@@ -13,11 +14,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -2196,6 +2199,366 @@ TEST(LayoutXmlTest, StreamingBlockShapeAndWriterValidation) {
   EXPECT_FALSE(error.isEmpty());
   EXPECT_EQ(doc.elementsByTagName(u"previouslyLoaded_StreamingSources"_s).size(), 1);
   EXPECT_EQ(PJ::layout_xml::extractStreamingSources(doc, &error).size(), 1) << error.toStdString();
+}
+
+// ---------- One layout over several datasets ----------------------------
+// Intended behaviour (pj_app ARCHITECTURE "One layout over several datasets"): a layout aimed at one dataset is pinned
+// to the dataset(s) the user chose, and several choices duplicate its tabs, one copy per dataset, each copy pinned to
+// its own. A test failing here is a contract break, not a stale expectation.
+
+// A generic layout (no qualifier anywhere): a plot with a coloured and an uncoloured curve, an XY curve, a scene layer
+// and a local one, a Custom Widget wire, a filter over a transform output, a transform chain, a dataset-bound and an
+// all-datasets marker rule. Without transforms, "speed" is a raw topic.
+QDomDocument genericDerivedLayout(bool with_transforms = true) {
+  QDomDocument doc;
+  EXPECT_TRUE(
+      static_cast<bool>(doc.setContent(QByteArrayLiteral(
+          R"(<root pj4_version="4" binding="generic">
+<tabbed_widget id="" name="main" parent="main_window">
+ <Tab id="t1" tab_name="Plots" owner_plugin="tb" tab_id="x"><Container><DockSplitter count="1" orientation="-" sizes="1">
+  <DockArea id="a1" name="p"><plot id="p1" mode="TimeSeries">
+   <curve topic="sensor" field="value" color="#d62728"/>
+   <curve topic="speed" field="value"/>
+   <curve x_topic="sensor" x_field="value" y_topic="speed" y_field="value"/>
+   <marker_scope scope="global" visible="false"/>
+  </plot></DockArea></DockSplitter></Container></Tab>
+ <Tab id="t2" tab_name="Scene"><Container><DockSplitter count="2" orientation="-" sizes="0.5;0.5">
+  <DockArea id="a2" name="s"><scene3d><layer topic_name="/points" object_type="kPointCloud"/>
+   <layer local="true" dataset_id="0" topic_name=""/></scene3d></DockArea>
+  <DockArea id="a3" name="w"><CustomWidget plugin="gauge"><input name="value" slot="0" topic="speed" field="value"/>
+  </CustomWidget></DockArea></DockSplitter></Container></Tab>
+ <currentTabIndex index="1"/>
+</tabbed_widget>
+<data_processors>
+ <transform owner_plugin="tb" id="kmh"><input name="sensor" topic="sensor" field="value"/><output name="speed"/></transform>
+ <transform owner_plugin="tb" id="twice"><input name="speed" topic="speed" field="value"/><output name="speed2"/></transform>
+ <processor input_topic="speed" input_field="value" output_name="speed_abs" processor_id="absolute"/>
+ <generator id="tb/rule/sensor" all_datasets="0"><input name="sensor/value"/><output name="m"/></generator>
+ <generator id="tb/rule/all" all_datasets="1"><input name="sensor/value"/><output name="__all__"/></generator>
+</data_processors>
+</root>)"))));
+  for (QDomElement transform =
+           doc.documentElement().firstChildElement(u"data_processors"_s).firstChildElement(u"transform"_s);
+       !with_transforms && !transform.isNull();
+       transform = doc.documentElement().firstChildElement(u"data_processors"_s).firstChildElement(u"transform"_s)) {
+    transform.parentNode().removeChild(transform);
+  }
+  return doc;
+}
+
+const PJ::layout_xml::DatasetPin kRunA{
+    .id = 3, .source = u"run.csv"_s, .path = u"/d/a/run.csv"_s, .label = u"run.csv"_s};
+const PJ::layout_xml::DatasetPin kRunB{
+    .id = 4, .source = u"run.csv"_s, .path = u"/d/b/run.csv"_s, .label = u"run.csv (2)"_s};
+
+QList<QDomElement> elementsNamed(const QDomDocument& doc, const QString& tag) {
+  QList<QDomElement> found;
+  const QDomNodeList nodes = doc.elementsByTagName(tag);
+  for (int index = 0; index < nodes.size(); ++index) {
+    found.push_back(nodes.at(index).toElement());
+  }
+  return found;
+}
+
+using PJ::layout_xml::DatasetIdentity;
+
+TEST(LayoutDatasetChoice, IdentitiesCountAPathlessAliasOnce) {
+  const QDomDocument doc = parseLayout(
+      R"(<root><curve topic="a" dataset_source="run.csv" dataset_path="/d/run.csv"/>
+<layer topic_name="b" dataset_source="run.csv"/><curve topic="c" dataset_source="other.csv"/>
+<curve topic="d" dataset_path="/d/run.csv"/></root>)");
+  EXPECT_EQ(
+      PJ::layout_xml::datasetIdentities(doc),
+      (QList<DatasetIdentity>{{u"/d/run.csv"_s, u"run.csv"_s}, {QString(), u"other.csv"_s}}));
+  EXPECT_TRUE(PJ::layout_xml::datasetIdentities(genericDerivedLayout()).isEmpty());
+}
+
+// The entries of one fan-out file share its path: each label is a dataset of its own.
+TEST(LayoutDatasetChoice, IdentitiesKeepEachFanOutEntry) {
+  const QDomDocument doc = parseLayout(
+      R"(<root><curve topic="a" dataset_source="log/left" dataset_path="/d/log.mcap"/>
+<curve topic="a" dataset_source="log/right" dataset_path="/d/log.mcap"/></root>)");
+  EXPECT_EQ(
+      PJ::layout_xml::datasetIdentities(doc),
+      (QList<DatasetIdentity>{{u"/d/log.mcap"_s, u"log/left"_s}, {u"/d/log.mcap"_s, u"log/right"_s}}));
+}
+
+// The layout's own outputs are not topics it needs from the data: a dataset holding them from an earlier load fits no
+// better.
+TEST(LayoutDatasetChoice, ReferencedTopicsLeaveOutTheLayoutsOwnOutputs) {
+  EXPECT_EQ(PJ::layout_xml::referencedTopics(genericDerivedLayout()), (QSet<QString>{u"sensor"_s, u"/points"_s}));
+  EXPECT_EQ(
+      PJ::layout_xml::referencedTopics(genericDerivedLayout(/*with_transforms=*/false)),
+      (QSet<QString>{u"sensor"_s, u"speed"_s, u"/points"_s}));
+}
+
+// One dataset chosen: every element that reads data names it, the generic ones included; an all-datasets rule and a
+// local scene layer stay as they were.
+TEST(LayoutDatasetChoice, OnePinQualifiesEveryReader) {
+  QDomDocument doc = genericDerivedLayout();
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunB});
+  int pinned = 0;
+  for (const QString& tag : {u"curve"_s, u"layer"_s, u"input"_s, u"processor"_s, u"generator"_s, u"marker_scope"_s}) {
+    for (const QDomElement& element : elementsNamed(doc, tag)) {
+      const bool local = element.attribute(u"local"_s) == u"true"_s;
+      const bool all = element.attribute(u"all_datasets"_s) == u"1"_s;
+      const bool rule_input = element.parentNode().toElement().tagName() == u"generator"_s;
+      const QString prefix = tag == u"processor"_s                ? u"input_"_s
+                             : element.hasAttribute(u"x_topic"_s) ? u"x_"_s
+                                                                  : QString();
+      if (local || all || rule_input) {
+        EXPECT_FALSE(element.hasAttribute(prefix + u"dataset_path"_s)) << tag.toStdString();
+        continue;
+      }
+      EXPECT_EQ(element.attribute(prefix + u"dataset_path"_s), kRunB.path) << tag.toStdString();
+      EXPECT_EQ(element.attribute(prefix + u"dataset_source"_s), kRunB.source) << tag.toStdString();
+      EXPECT_EQ(element.attribute(prefix + u"dataset_id"_s), u"4"_s) << tag.toStdString();
+      ++pinned;
+    }
+  }
+  EXPECT_EQ(pinned, 10);
+  EXPECT_EQ(elementsNamed(doc, u"curve"_s)[2].attribute(u"y_dataset_path"_s), kRunB.path);
+  EXPECT_EQ(elementsNamed(doc, u"Tab"_s).size(), 2) << "one dataset: no copy";
+}
+
+// A layout already naming another dataset is moved to the chosen one, not kept.
+TEST(LayoutDatasetChoice, OnePinReplacesTheSavedDataset) {
+  QDomDocument doc;
+  ASSERT_TRUE(
+      static_cast<bool>(doc.setContent(QByteArrayLiteral(
+          R"(<root><plot><curve topic="a" dataset_id="9" dataset_source="old.csv" dataset_path="/old.csv"/></plot></root>)"))));
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA});
+  const QDomElement curve = elementsNamed(doc, u"curve"_s).front();
+  EXPECT_EQ(curve.attribute(u"dataset_path"_s), kRunA.path);
+  EXPECT_EQ(curve.attribute(u"dataset_id"_s), u"3"_s);
+}
+
+// Two datasets chosen: each tab is followed by its copy for the second dataset; names say which dataset each shows,
+// ids stay unique, the plugin's ownership stays with the first, and the current tab is the first copy of the saved one.
+TEST(LayoutDatasetChoice, TwoPinsDuplicateEachTabSideBySide) {
+  QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB});
+  const QList<QDomElement> tabs = elementsNamed(doc, u"Tab"_s);
+  ASSERT_EQ(tabs.size(), 4);
+  QStringList names;
+  QStringList ids;
+  for (const QDomElement& tab : tabs) {
+    names.push_back(tab.attribute(u"tab_name"_s));
+    ids.push_back(tab.attribute(u"id"_s));
+  }
+  EXPECT_EQ(
+      names,
+      (QStringList{u"Plots [run.csv]"_s, u"Plots [run.csv (2)]"_s, u"Scene [run.csv]"_s, u"Scene [run.csv (2)]"_s}));
+  EXPECT_EQ(ids, (QStringList{u"t1"_s, u"t1~2"_s, u"t2"_s, u"t2~2"_s}));
+  EXPECT_EQ(tabs[0].attribute(u"owner_plugin"_s), u"tb"_s);
+  EXPECT_FALSE(tabs[1].hasAttribute(u"owner_plugin"_s));
+  EXPECT_FALSE(tabs[1].hasAttribute(u"tab_id"_s));
+  EXPECT_EQ(tabs[1].elementsByTagName(u"plot"_s).at(0).toElement().attribute(u"id"_s), u"p1~2"_s);
+  EXPECT_EQ(tabs[3].elementsByTagName(u"DockArea"_s).at(1).toElement().attribute(u"id"_s), u"a3~2"_s);
+  EXPECT_EQ(elementsNamed(doc, u"currentTabIndex"_s).front().attribute(u"index"_s), u"2"_s);
+
+  for (int copy = 0; copy < 4; ++copy) {
+    const QString path = copy % 2 == 0 ? kRunA.path : kRunB.path;
+    QDomDocument tab_doc;
+    tab_doc.appendChild(tab_doc.importNode(tabs[copy], true));
+    for (const QString& tag : {u"layer"_s, u"input"_s}) {
+      for (const QDomElement& element : elementsNamed(tab_doc, tag)) {
+        if (element.attribute(u"local"_s) != u"true"_s) {
+          EXPECT_EQ(element.attribute(u"dataset_path"_s), path) << copy << tag.toStdString();
+        }
+      }
+    }
+  }
+}
+
+// Each filter and dataset-bound marker rule gets a copy per dataset, pinned to it. Every copy keeps the saved id or
+// output name, whatever the dataset label holds ('#' separates a marker owner): a marker rule binding and a filter
+// output are both unique per dataset. Topics keep their names in every copy.
+TEST(LayoutDatasetChoice, TwoPinsCopyEachDatasetBoundRecipe) {
+  QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
+  PJ::layout_xml::DatasetPin hashed = kRunB;
+  hashed.label = u"run#2.csv"_s;
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, hashed});
+  QStringList recipes;
+  for (QDomElement recipe = doc.documentElement().firstChildElement(u"data_processors"_s).firstChildElement();
+       !recipe.isNull(); recipe = recipe.nextSiblingElement()) {
+    const QString name =
+        recipe.tagName() == u"processor"_s ? recipe.attribute(u"output_name"_s) : recipe.attribute(u"id"_s);
+    recipes.push_back(name + u'@' + recipe.attribute(u"dataset_path"_s) + recipe.attribute(u"input_dataset_path"_s));
+  }
+  EXPECT_EQ(
+      recipes, (QStringList{
+                   u"speed_abs@/d/a/run.csv"_s, u"speed_abs@/d/b/run.csv"_s, u"tb/rule/sensor@/d/a/run.csv"_s,
+                   u"tb/rule/sensor@/d/b/run.csv"_s, u"tb/rule/all@"_s}));
+  const QList<QDomElement> tabs = elementsNamed(doc, u"Tab"_s);
+  QDomDocument tab_doc;
+  tab_doc.appendChild(tab_doc.importNode(tabs[1], true));
+  EXPECT_EQ(elementsNamed(tab_doc, u"curve"_s)[1].attribute(u"topic"_s), u"speed"_s);
+  QDomDocument wire_doc;
+  wire_doc.appendChild(wire_doc.importNode(tabs[3], true));
+  EXPECT_EQ(elementsNamed(wire_doc, u"input"_s).front().attribute(u"name"_s), u"value"_s) << "a wire's slot name";
+}
+
+// A duplicated layout saved generic and loaded again over two datasets duplicates again: every tab, area and plot id
+// stays unique in the document, or a restore would merge two copies into one.
+TEST(LayoutDatasetChoice, RepinningACopiedLayoutKeepsEveryIdUnique) {
+  QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB});
+  PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB});
+  ASSERT_EQ(elementsNamed(doc, u"Tab"_s).size(), 8);
+  for (const QString& tag : {u"Tab"_s, u"DockArea"_s, u"plot"_s}) {
+    QStringList ids;
+    for (const QDomElement& element : elementsNamed(doc, tag)) {
+      ids.push_back(element.attribute(u"id"_s));
+    }
+    EXPECT_EQ(QSet<QString>(ids.begin(), ids.end()).size(), ids.size()) << ids.join(u' ').toStdString();
+    EXPECT_FALSE(ids.contains(QString())) << tag.toStdString();
+  }
+}
+
+// The copies exist to compare runs: a curve shows the same colour in every copy, whether the layout saved one, the
+// session remembers one for it, or a palette colour was picked for it (from its position, the first its plot does not
+// already wear).
+TEST(LayoutDatasetChoice, EveryCopyOfACurveHasTheSameColour) {
+  QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, [](const QDomElement& curve) -> std::optional<QColor> {
+    if (curve.attribute(u"topic"_s) == u"speed"_s) {
+      return QColor(u"#9467bd"_s);
+    }
+    return std::nullopt;
+  });
+  const QList<QDomElement> plots = elementsNamed(doc, u"plot"_s);
+  ASSERT_EQ(plots.size(), 2);
+  QStringList colours[2];
+  for (int copy = 0; copy < 2; ++copy) {
+    for (QDomElement curve = plots[copy].firstChildElement(u"curve"_s); !curve.isNull();
+         curve = curve.nextSiblingElement(u"curve"_s)) {
+      colours[copy].push_back(curve.attribute(u"color"_s));
+    }
+  }
+  EXPECT_EQ(colours[0], (QStringList{u"#d62728"_s, u"#9467bd"_s, u"#1ac938"_s}));
+  EXPECT_EQ(colours[0], colours[1]);
+}
+
+// The best-fitting dataset takes the references to the topics it carries, and the nameless readers; a reference to a
+// topic it lacks loses its qualifier and binds wherever that topic is unique.
+TEST(LayoutDatasetChoice, OnePinOverSomeTopicsLeavesTheOthersUnqualified) {
+  QDomDocument doc = parseLayout(
+      R"(<root><plot><curve topic="sensor" field="value" dataset_source="old.csv"/>
+<curve topic="speed" field="value" dataset_source="old.csv"/></plot></root>)");
+  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {u"sensor"_s});
+  const QList<QDomElement> curves = elementsNamed(doc, u"curve"_s);
+  EXPECT_EQ(curves[0].attribute(u"dataset_path"_s), kRunB.path);
+  EXPECT_FALSE(curves[1].hasAttribute(u"dataset_source"_s));
+}
+
+// A marker rule follows its inputs: pinned to the best-fitting dataset when it reads one of the topics that dataset
+// takes, unqualified otherwise, so it binds by its inputs wherever they are.
+TEST(LayoutDatasetChoice, OnePinTakesOnlyTheMarkerRulesReadingItsTopics) {
+  QDomDocument doc = parseLayout(
+      R"(<root><plot><curve topic="sensor" field="value"/></plot><data_processors>
+<generator id="sensor_rule"><input name="sensor/value"/></generator>
+<generator id="battery_rule" dataset_source="old.csv"><input name="battery/voltage"/></generator>
+<generator id="sensor_prefix_rule"><input name="sensor_raw/value"/></generator>
+</data_processors></root>)");
+  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {u"sensor"_s});
+  const QList<QDomElement> rules = elementsNamed(doc, u"generator"_s);
+  ASSERT_EQ(rules.size(), 3);
+  EXPECT_EQ(rules[0].attribute(u"dataset_path"_s), kRunB.path);
+  for (const QDomElement& rule : {rules[1], rules[2]}) {
+    EXPECT_FALSE(rule.hasAttribute(u"dataset_source"_s)) << rule.attribute(u"id"_s).toStdString();
+    EXPECT_FALSE(rule.hasAttribute(u"dataset_path"_s)) << rule.attribute(u"id"_s).toStdString();
+  }
+}
+
+// ---------- planDatasetChoice ----------
+
+// Loaded datasets: each pin with the topics it carries.
+PJ::layout_xml::LoadedDatasets loadedWith(
+    const QList<std::pair<PJ::layout_xml::DatasetPin, QStringList>>& datasets,
+    std::function<bool(const DatasetIdentity&)> names_one = [](const DatasetIdentity&) { return false; }) {
+  PJ::layout_xml::LoadedDatasets loaded;
+  for (const auto& [pin, topics] : datasets) {
+    loaded.datasets.push_back(pin);
+  }
+  loaded.for_each_topic = [datasets](const std::function<void(std::uint32_t, const QString&)>& visit) {
+    for (const auto& [pin, topics] : datasets) {
+      for (const QString& topic : topics) {
+        visit(pin.id, topic);
+      }
+    }
+  };
+  loaded.names_one = std::move(names_one);
+  return loaded;
+}
+
+using Kind = PJ::layout_xml::DatasetChoice::Kind;
+
+TEST(PlanDatasetChoice, DatasetsFittingEquallyAreAskedAbout) {
+  const auto choice = PJ::layout_xml::planDatasetChoice(
+      genericDerivedLayout(), std::nullopt,
+      loadedWith({{kRunA, {u"sensor"_s, u"/points"_s}}, {kRunB, {u"sensor"_s, u"/points"_s, u"other"_s}}}));
+  EXPECT_EQ(choice.kind, Kind::kAsk);
+  ASSERT_EQ(choice.datasets.size(), 2);
+  EXPECT_EQ(choice.datasets[1].path, kRunB.path);
+  EXPECT_EQ(choice.blockers, (QStringList{u"tb/kmh"_s, u"tb/twice"_s}));
+}
+
+TEST(PlanDatasetChoice, TheBestFittingDatasetIsPinnedOverTheTopicsItCarries) {
+  const auto choice = PJ::layout_xml::planDatasetChoice(
+      genericDerivedLayout(), std::nullopt, loadedWith({{kRunA, {u"sensor"_s}}, {kRunB, {u"sensor"_s, u"/points"_s}}}));
+  EXPECT_EQ(choice.kind, Kind::kPin);
+  ASSERT_EQ(choice.datasets.size(), 1);
+  EXPECT_EQ(choice.datasets.front().path, kRunB.path);
+  EXPECT_EQ(choice.topics, (QSet<QString>{u"sensor"_s, u"/points"_s}));
+}
+
+TEST(PlanDatasetChoice, ADatasetHoldingTheLayoutsOutputsFitsNoBetter) {
+  const auto choice = PJ::layout_xml::planDatasetChoice(
+      genericDerivedLayout(), std::nullopt,
+      loadedWith(
+          {{kRunA, {u"sensor"_s, u"/points"_s, u"speed"_s, u"speed2"_s, u"speed_abs"_s}},
+           {kRunB, {u"sensor"_s, u"/points"_s}}}));
+  EXPECT_EQ(choice.kind, Kind::kAsk);
+}
+
+TEST(PlanDatasetChoice, KeepsWhatNeedsNoChoice) {
+  const auto plan = [](const QByteArray& xml, const std::optional<QList<DatasetIdentity>>& saved = std::nullopt,
+                       bool loaded_one = false) {
+    return PJ::layout_xml::planDatasetChoice(
+               parseLayout(xml), saved,
+               loadedWith(
+                   {{kRunA, {u"a"_s}}, {kRunB, {u"a"_s}}}, [loaded_one](const DatasetIdentity&) { return loaded_one; }))
+        .kind;
+  };
+  EXPECT_EQ(plan(R"(<root><curve topic="a"/></root>)"), Kind::kAsk);
+  EXPECT_EQ(plan(R"(<root><curve topic="z"/></root>)"), Kind::kKeep) << "no loaded dataset carries it";
+  EXPECT_EQ(plan(R"(<root><plot/></root>)"), Kind::kKeep) << "no topic";
+  EXPECT_EQ(plan(R"(<root><curve topic="a" dataset_path="/d/x.csv"/></root>)", std::nullopt, true), Kind::kKeep)
+      << "its dataset is loaded";
+  EXPECT_EQ(
+      plan(R"(<root><curve topic="a" dataset_source="log/left" dataset_path="/d/log.mcap"/>
+<curve topic="a" dataset_source="log/right" dataset_path="/d/log.mcap"/></root>)"),
+      Kind::kKeep)
+      << "two fan-out entries";
+  EXPECT_EQ(plan(R"(<root><curve topic="a" dataset_path="pj-stream://abc"/></root>)"), Kind::kKeep) << "a stream";
+  EXPECT_EQ(
+      plan(R"(<root><curve topic="a"/></root>)", QList<DatasetIdentity>{{u"/x"_s, {}}, {u"/y"_s, {}}}), Kind::kKeep)
+      << "the file named two datasets";
+}
+
+// Duplication is refused, never guessed, where a copy cannot work: a transform's id is its script's class id, so a
+// second copy under the same owner cannot exist, and an on-demand recipe reads its inputs by name.
+TEST(LayoutDatasetChoice, DuplicationBlockersNameWhatCannotBeCopied) {
+  EXPECT_EQ(PJ::layout_xml::duplicationBlockers(genericDerivedLayout()), (QStringList{u"tb/kmh"_s, u"tb/twice"_s}));
+  QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
+  EXPECT_TRUE(PJ::layout_xml::duplicationBlockers(doc).isEmpty());
+  QDomElement on_demand = doc.createElement(u"on_demand"_s);
+  on_demand.setAttribute(u"owner_plugin"_s, u"tb"_s);
+  on_demand.setAttribute(u"id"_s, u"crop"_s);
+  doc.documentElement().firstChildElement(u"data_processors"_s).appendChild(on_demand);
+  EXPECT_EQ(PJ::layout_xml::duplicationBlockers(doc), (QStringList{u"tb/crop"_s}));
 }
 
 }  // namespace

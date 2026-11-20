@@ -89,6 +89,12 @@ the layer's own `xmlSaveState` payload as its child. The dataset id alone is not
 source and path are saved too and `resolveObjectDataset` resolves the identity (the injected resolver, else the
 session's ambiguity-safe ladder; ambiguity resolves to nothing).
 
+An element saved without a dataset identity binds through `resolveSavedObjectTopic`: the one live topic with its name
+and object type (`uniqueObjectTopic`), else the one in the dataset the dock shows. None or several leave it pending,
+retried at `finishRestore()`, never failed: two loaded files that both carry `/tf` do not fail the layout. Which
+dataset a layout aimed at one shows is settled before the dock reads it (pj_app ARCHITECTURE "One layout over several
+datasets").
+
 `xmlLoadState` validates the child tags and each layer's `visible` and `order` first, so a malformed state is
 rejected before anything is cleared. A layer whose dataset or topic is not loaded yet is kept as detached XML in the dock's pending queue and
 retried by `retryPendingRestores`. A permanently rejected element (malformed dataset id, bad object type, type mismatch, rejected payload)

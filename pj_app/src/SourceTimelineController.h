@@ -40,6 +40,10 @@ class SourceTimelineController : public QObject {
   /// Paints `anchor`'s bar in the merged color. Call after a merge from either entry point.
   void markDatasetMerged(DatasetId anchor);
 
+  /// Aligns the displayed starts of `datasets` only to the earliest of them, as alignStarts() does for all. Part of the
+  /// caller's edit: it commits no workspace change.
+  void alignStartsOf(const std::vector<DatasetId>& datasets);
+
  signals:
   /// One complete user edit of offsets/order has finished.
   void workspaceChangeCommitted();
@@ -73,6 +77,7 @@ class SourceTimelineController : public QObject {
 
   enum class AlignMode : std::uint8_t { kStarts, kCenters, kEnds };
   void applyAlignment(AlignMode mode);
+  void setAlignedOffsets(AlignMode mode, const std::vector<DatasetId>& datasets);
 
   /// Coalesces the many offset writes of a drag into one playback-range recompute.
   void scheduleRangeRecompute();

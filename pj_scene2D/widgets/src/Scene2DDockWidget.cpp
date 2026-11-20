@@ -133,10 +133,9 @@ constexpr auto kDepthKind = "depth";
   return true;
 }
 
-// Resolves only genuinely unqualified (generic-layout) layer identities. A
-// non-zero id or a source name remains authoritative and is left to the shared
-// exact/source resolver used by undo and source-bound layouts.
-[[nodiscard]] bool resolveGenericLayerIdentities(QDomElement root, SessionManager* session) {
+// Validates generic-layout (unqualified) layers; the base restore binds them (uniqueObjectTopic), pending while their
+// topic is absent or ambiguous. A source-qualified layer stays source-bound.
+[[nodiscard]] bool validateGenericLayerIdentities(QDomElement root) {
   for (QDomElement layer = root.firstChildElement(u"layer"_s); !layer.isNull();
        layer = layer.nextSiblingElement(u"layer"_s)) {
     const QString dataset_id_key = u"dataset_id"_s;
@@ -146,50 +145,19 @@ constexpr auto kDepthKind = "depth";
     if (has_dataset_id && (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max())) {
       return false;
     }
-
-    const QString dataset_source = layer.attribute(u"dataset_source"_s);
-    const QString dataset_path = layer.attribute(u"dataset_path"_s);
-    if ((has_dataset_id && dataset_value != 0) || !dataset_source.isEmpty() || !dataset_path.isEmpty()) {
-      // A source-qualified layer with no numeric hint is still source-bound.
-      // Give the base parser its neutral id so it can perform the existing
-      // unique-source fallback without degrading to generic topic matching.
-      if (!has_dataset_id) {
-        layer.setAttribute(dataset_id_key, u"0"_s);
-      }
+    if ((has_dataset_id && dataset_value != 0) || !layer.attribute(u"dataset_source"_s).isEmpty() ||
+        !layer.attribute(u"dataset_path"_s).isEmpty()) {
       continue;
     }
-
-    if (session == nullptr) {
-      return false;
-    }
-    const QString topic_name = layer.attribute(u"topic_name"_s);
+    // A zero id or an empty qualifier names no dataset: dropped, so the base treats the layer as unqualified.
+    layer.removeAttribute(dataset_id_key);
+    layer.removeAttribute(u"dataset_source"_s);
+    layer.removeAttribute(u"dataset_path"_s);
     const auto saved_type = sdk::parseBuiltinObjectType(layer.attribute(u"object_type"_s).toStdString());
-    if (topic_name.isEmpty() || !saved_type.has_value() || !Scene2DDockWidget::handlesObjectType(*saved_type)) {
+    if (layer.attribute(u"topic_name"_s).isEmpty() || !saved_type.has_value() ||
+        !Scene2DDockWidget::handlesObjectType(*saved_type)) {
       return false;
     }
-
-    const std::string topic_name_utf8 = topic_name.toStdString();
-    std::optional<DatasetId> unique_dataset;
-    for (const ObjectTopicId candidate : session->objectStore().listTopics()) {
-      const ObjectTopicDescriptor descriptor = session->objectStore().descriptor(candidate);
-      if (descriptor.topic_name != topic_name_utf8 || objectTypeFromMetadata(descriptor.metadata_json) != *saved_type) {
-        continue;
-      }
-      if (unique_dataset.has_value()) {
-        return false;  // same compatible topic in multiple loaded datasets
-      }
-      unique_dataset = descriptor.dataset_id;
-    }
-    if (!unique_dataset.has_value()) {
-      return false;
-    }
-
-    const DatasetInfo* dataset = session->dataEngine().getDataset(*unique_dataset);
-    if (dataset == nullptr) {
-      return false;  // ObjectStore/DataEngine identity is not a loaded dataset
-    }
-    layer.setAttribute(dataset_id_key, QString::number(*unique_dataset));
-    layer.setAttribute(u"dataset_source"_s, QString::fromStdString(dataset->source_name));
   }
   return true;
 }
@@ -362,12 +330,12 @@ bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
     return false;  // reject before the base destructively replaces the layer stack
   }
 
-  // Both the base's order-attribute fill and the identity resolution rewrite the XML: work on a clone, not the
-  // caller's document.
+  // Both the base's order-attribute fill and the generic-identity normalization rewrite the XML: work on a clone,
+  // not the caller's document.
   QDomDocument restore_doc;
   QDomElement restore_element = restore_doc.importNode(element, /*deep=*/true).toElement();
   restore_doc.appendChild(restore_element);
-  if (!resolveGenericLayerIdentities(restore_element, sessionManager())) {
+  if (!validateGenericLayerIdentities(restore_element)) {
     return false;
   }
 
@@ -393,7 +361,7 @@ bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
 
   auto restore_guard = beginWorkspaceRestore();
   primeRestoreLayerKinds(restore_element);
-  const bool loaded = loadSavedState(restore_element, element);
+  const bool loaded = SceneDockWidget::xmlLoadState(restore_element);
   restore_image_layer_kinds_.clear();
   if (!loaded) {
     if (!rollback()) {
@@ -740,12 +708,26 @@ void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) 
     return;  // no saved kind: first-sample encoding dispatch decides
   }
 
+  const ImageLayerKind kind =
+      saved_kind == QString::fromLatin1(kDepthKind) ? ImageLayerKind::kDepth : ImageLayerKind::kImage;
+  const QString topic_name = layer_element.attribute(u"topic_name"_s);
+  const ObjectStore& store = sessionManager()->objectStore();
+  if (!hasDatasetIdentity(layer_element)) {
+    // Primed before the restore picks the dock's dataset, so every candidate the base restore could bind
+    // (uniqueObjectTopic) gets the kind; only the bound one reads it.
+    const auto saved_type = sdk::parseBuiltinObjectType(layer_element.attribute(u"object_type"_s).toStdString());
+    if (saved_type.has_value()) {
+      for (const ObjectTopicId candidate : objectTopicsMatching(store, topic_name.toStdString(), *saved_type)) {
+        restore_image_layer_kinds_.insert_or_assign(topicKey(candidate), kind);
+      }
+    }
+    return;
+  }
   bool dataset_ok = false;
-  const qulonglong dataset_value = layer_element.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
+  const qulonglong dataset_value = layer_element.attribute(u"dataset_id"_s, u"0"_s).toULongLong(&dataset_ok);
   if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
     return;
   }
-  const QString topic_name = layer_element.attribute(u"topic_name"_s);
   const auto dataset_id = sessionManager()
                               ->resolveObjectDatasetIdentity(
                                   static_cast<DatasetId>(dataset_value), layer_element.attribute(u"dataset_source"_s),
@@ -754,13 +736,10 @@ void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) 
   if (!dataset_id.has_value()) {
     return;
   }
-  const auto topic_id = sessionManager()->objectStore().findTopic(*dataset_id, topic_name.toStdString());
-  if (!topic_id.has_value()) {
-    return;
+  const auto topic_id = store.findTopic(*dataset_id, topic_name.toStdString());
+  if (topic_id.has_value()) {
+    restore_image_layer_kinds_.insert_or_assign(topicKey(*topic_id), kind);
   }
-  restore_image_layer_kinds_.insert_or_assign(
-      topicKey(*topic_id),
-      saved_kind == QString::fromLatin1(kDepthKind) ? ImageLayerKind::kDepth : ImageLayerKind::kImage);
 }
 
 bool Scene2DDockWidget::restoreOnePending(const QDomElement& element) {
