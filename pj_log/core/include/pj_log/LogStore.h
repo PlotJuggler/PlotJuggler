@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -81,8 +80,8 @@ class LogStore {
     return categories_;
   }
 
-  /// Add the rows of @p wire. They must be in ascending (time, seq) order and not earlier than the rows
-  /// the wire already holds.
+  /// Add the rows of @p wire, in ascending (time, seq) order; they merge with the rows already held, earlier ones
+  /// included. @p seq must keep growing per wire: it orders the wire's rows of equal time.
   StoreChange insert(uint32_t wire, std::vector<LogRow> rows);
   /// Drop every row of @p wire.
   StoreChange removeWire(uint32_t wire);
@@ -111,8 +110,6 @@ class LogStore {
 
   size_t capacity_;
   std::deque<LogRow> rows_;
-  /// Times of each wire's rows, ascending: the per-wire view of rows_.
-  std::map<uint32_t, std::deque<double>> wire_times_;
 
   std::vector<std::string> strings_;
   /// Hashes std::string and std::string_view alike, so a lookup does not build a std::string.

@@ -86,6 +86,21 @@ TEST(LogStore, RemoveWireKeepsTheOthers) {
   EXPECT_EQ(wireRows(store, 1), 2u);
 }
 
+TEST(LogStore, ALateRowLeavesWithItsWire) {
+  LogStore store;
+  store.insert(0, {row(5.0, 0), row(6.0, 1)});
+  store.insert(1, {row(3.0, 0)});
+  store.insert(0, {row(1.0, 2)});  // earlier than every row the wire holds
+  EXPECT_EQ(times(store), (std::vector<double>{1.0, 3.0, 5.0, 6.0}));
+  const auto change = store.replaceWire(0, {row(7.0, 0)});
+  EXPECT_EQ(change.old_tail, 0u);
+  EXPECT_EQ(times(store), (std::vector<double>{3.0, 7.0}));
+  store.insert(0, {row(2.0, 1)});
+  store.removeWire(0);
+  EXPECT_EQ(times(store), std::vector<double>{3.0});
+  EXPECT_EQ(wireRows(store, 0), 0u);
+}
+
 TEST(LogStore, CapacityDropsTheOldest) {
   LogStore store(5);
   store.insert(0, {row(1.0, 0), row(2.0, 1), row(3.0, 2)});

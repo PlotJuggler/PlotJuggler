@@ -86,10 +86,8 @@ StoreChange LogStore::insert(uint32_t wire, std::vector<LogRow> rows) {
   if (rows.empty()) {
     return change;
   }
-  auto& times = wire_times_[wire];
   for (auto& row : rows) {
     row.wire = wire;
-    times.push_back(row.time);
   }
   const auto first = std::lower_bound(rows_.begin(), rows_.end(), rows.front(), before);
   const auto position = static_cast<size_t>(std::distance(rows_.begin(), first));
@@ -110,20 +108,9 @@ StoreChange LogStore::insert(uint32_t wire, std::vector<LogRow> rows) {
 
 StoreChange LogStore::removeWire(uint32_t wire) {
   StoreChange change = StoreChange::none(rows_.size());
-  const auto times = wire_times_.find(wire);
-  if (times == wire_times_.end()) {
-    return change;
-  }
-  if (!times->second.empty()) {
-    LogRow probe;
-    probe.time = times->second.front();
-    probe.wire = wire;
-    const auto first = std::lower_bound(rows_.begin(), rows_.end(), probe, before);
-    change.old_tail = static_cast<size_t>(std::distance(rows_.begin(), first));
-    const auto kept = std::remove_if(first, rows_.end(), [wire](const LogRow& row) { return row.wire == wire; });
-    rows_.erase(kept, rows_.end());
-  }
-  wire_times_.erase(times);
+  const auto first = std::ranges::find(rows_, wire, &LogRow::wire);
+  change.old_tail = static_cast<size_t>(std::distance(rows_.begin(), first));
+  rows_.erase(std::remove_if(first, rows_.end(), [wire](const LogRow& row) { return row.wire == wire; }), rows_.end());
   return change;
 }
 
@@ -157,10 +144,6 @@ std::optional<size_t> LogStore::indexOf(const RowKey& key) const {
 
 void LogStore::evictOverflow(StoreChange& change) {
   while (rows_.size() > capacity_) {
-    auto times = wire_times_.find(rows_.front().wire);
-    if (times != wire_times_.end() && !times->second.empty()) {
-      times->second.pop_front();
-    }
     rows_.pop_front();
     ++change.dropped_front;
   }
