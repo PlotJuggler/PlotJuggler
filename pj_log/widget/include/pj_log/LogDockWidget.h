@@ -28,10 +28,10 @@ class SessionManager;
 ///
 /// Data: each topic is read from the session's ObjectStore and decoded once per entry (`decodeStoredObject`). Entries
 /// landing on the session (dataPublished, ingestEnded, derivedEntriesPublished) bring an update at once, then at most
-/// one per kEntriesLandedInterval; an update appends what arrived after the topic's cursor, and re-reads the topic
-/// only when its content was rewritten (a late insert, a reload, a merge). A front eviction by retention leaves the
-/// rows shown. A display-offset change re-reads every topic: a row's time is display-axis seconds
-/// (`rawToDisplaySecondsAtOrAfter`, so a seek to a row reveals it). GUI thread only.
+/// one per kEntriesLandedInterval; an update appends what arrived after the topic's cursor, late entries included, and
+/// re-reads the topic only when an entry it may hold was removed or changed (`contentIdentity().removal`: a reload, a
+/// merge). Rows the store's retention evicted stay. A display-offset change re-reads every topic: a row's time is
+/// display-axis seconds (`rawToDisplaySecondsAtOrAfter`, so a seek to a row reveals it). GUI thread only.
 ///
 /// Persistence: one `<topic>` child per topic with the scene-dock identity attributes (`dataset_id`,
 /// `dataset_source`, `dataset_path`, `topic`), so LayoutXml's dataset relocation applies, plus the filters, the

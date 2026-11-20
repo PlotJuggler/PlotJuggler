@@ -110,16 +110,20 @@ TEST_F(LogDockWidgetTest, AcceptsEachLogTopicOnceAndMergesThem) {
   EXPECT_EQ(dock->displayedTopics().size(), 2u);
 }
 
-TEST_F(LogDockWidgetTest, AppendsNewEntriesAndReloadsOnALateOne) {
+TEST_F(LogDockWidgetTest, AppendsNewAndLateEntriesInTimeOrder) {
   auto dock = makeDock();
   ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
   push(rosout_, 4, "rosout 4");
   landed();
   EXPECT_EQ(messages(*dock), (std::vector<std::string>{"rosout 1", "rosout 2", "rosout 3", "rosout 4"}));
-  // An entry older than the newest rewrites the topic: it lands in time order.
+  // Entries older than the newest land in time order, without re-reading the topic: the row the store evicted stays.
+  session_.objectStore().evictBefore(rosout_, 2 * kNs);
   push(rosout_, 0, "rosout 0");
+  push(rosout_, 3, "rosout 3 again");
   landed();
-  EXPECT_EQ(messages(*dock), (std::vector<std::string>{"rosout 0", "rosout 1", "rosout 2", "rosout 3", "rosout 4"}));
+  EXPECT_EQ(
+      messages(*dock),
+      (std::vector<std::string>{"rosout 0", "rosout 1", "rosout 2", "rosout 3", "rosout 3 again", "rosout 4"}));
 }
 
 TEST_F(LogDockWidgetTest, ADisplayOffsetChangeMovesTheRows) {

@@ -133,8 +133,9 @@ void LogDockWidget::loadTopic(Topic& topic, bool full) {
   if (!full && identity == topic.identity) {
     return;
   }
-  // Only an append at or after the newest stamp, or a front eviction, keeps `rewrite`: the cursor follows those.
-  full = full || identity.rewrite != topic.identity.rewrite;
+  // Inserts, late ones included, and front evictions keep `removal`: every entry they add lies after the cursor, and
+  // the rows the store evicted stay. A removed, replaced or shifted entry may be one the view holds.
+  full = full || identity.removal != topic.identity.removal;
   topic.identity = identity;
   if (full) {
     topic.cursor = SequentialUID{};

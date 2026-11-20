@@ -34,8 +34,10 @@ The dock reads each `kLog` topic from the session's ObjectStore and decodes it t
 the log's own stamp.
 
 Entries landing (`dataPublished`, `ingestEnded`, `derivedEntriesPublished`) bring an update at once, then at most one
-per `kEntriesLandedIntervalMs`: each topic appends what `drainNewSince` returns after its cursor, or is re-read when
-its content was rewritten (a late entry, a merge). A display-offset change re-reads every topic. A topic that leaves
+per `kEntriesLandedIntervalMs`: each topic appends what `drainNewSince` returns after its cursor, late entries
+included (`LogStore::insert` merges them into place), or is re-read when an entry the panel may hold was removed or
+changed (`contentIdentity().removal`: a reload, a merge). A display-offset change re-reads every topic. The panel keeps
+the rows the store's retention evicted: its own `LogStore` capacity bounds it. A topic that leaves
 the store (removed, reparented by a merge) goes back to pending and binds again by identity.
 
 ## Tracker and seeking
@@ -53,7 +55,6 @@ Advertised topics with no storage yet (a placeholder drop) wait as pending, and 
 
 ## Known gaps
 
-- The panel keeps the rows a retention eviction removed from the store.
-- A reload (a late entry, a display-offset change) replaces a topic's rows with what the store still retains: the
-  rows retention evicted are lost then ([TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md), "Streaming").
+- A re-read (a removal in the store, a display-offset change) replaces a topic's rows with what the store still
+  retains: the rows retention evicted are lost then.
 - Every row is held in memory up to `LogStore`'s capacity; the oldest are dropped beyond it.

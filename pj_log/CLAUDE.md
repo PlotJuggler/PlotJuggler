@@ -8,16 +8,17 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 
 ## Invariants
 
-- **Each stored entry is decoded once.** An update appends what landed after a topic's `drainNewSince` cursor and
-  re-reads a topic only when its `contentIdentity().rewrite` moved or the display offset changed. Re-reading every
-  topic on each landing makes a progressive load quadratic in the log size; a streamed reload of 50 000 entries
-  measured ten times an append ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md), "Streaming").
+- **Each stored entry is decoded once.** An update appends what landed after a topic's `drainNewSince` cursor, late
+  entries included, and re-reads a topic only when its `contentIdentity().removal` moved or the display offset
+  changed. Re-reading on each landing makes a progressive load quadratic in the log size; a streamed reload of 50 000
+  entries measured ten times an append ([docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md), "Streaming"). The
+  identity is read before the drain: read after, a removal in between goes unseen.
 - **Row times are display-axis seconds** (`rawToDisplaySecondsAtOrAfter` of the entry's store stamp); the log's own
   stamp is metadata for the detail pane only. Sorting, the tracker and seeks on the own stamp would put rows where a
   seek to them does not reveal them.
 - **`LogView` is runtime-agnostic:** it takes `LogEntry` rows keyed by a host-chosen topic id and never reaches the
-  session. An entry list is in ascending time and, for `appendEntries`, not earlier than what the topic holds; anything
-  else is a `replaceEntries`, or `LogStore`'s merge order breaks.
+  session. An entry list is in ascending time, or `LogStore`'s merge order breaks; `appendEntries` merges earlier
+  entries into place.
 - **Persisted names are a layout-file contract:** the `<log>` tag, its `<topic>` children with the scene-dock identity
   attributes (so `LayoutXml`'s dataset relocation applies) and the level keys in `log_view::kLevelNames`. Renaming one
   drops the setting from saved layouts.

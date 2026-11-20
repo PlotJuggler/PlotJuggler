@@ -53,8 +53,8 @@ struct LogViewState {
 /// decodes its data into LogEntry rows keyed by a topic id of its choosing, sets the tracker and the time format, and
 /// answers seekRequested().
 ///
-/// Data calls: an entry list is in ascending time and, for appendEntries(), not earlier than what the topic holds
-/// (anything else is a replaceEntries()). Topic ids order rows of equal time. The view keeps at most
+/// Data calls: an entry list is in ascending time; appendEntries() merges it with what the topic holds, earlier entries
+/// included, after the topic's rows of equal time. Topic ids order rows of equal time. The view keeps at most
 /// log_view::LogStore::kDefaultCapacity rows, dropping the oldest. A selected row keeps its selection across every data
 /// call that leaves it in the store.
 ///
