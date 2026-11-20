@@ -1160,11 +1160,11 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   expect(initial.trackerEnabled).toBe(true);
   expect(initial.trackerParameter).toBe(1);
   expect(initialText.legendLayers).toBe(1);
-  // Before the first seek the tracker's logical label is outside the imported
-  // range, so only the legend produces visible raster pixels.
-  expect(initialText.markerLabels).toBe(0);
+  // The playhead is seeded on the first sample, on the view's left edge (the fit has no X margin and the edge counts
+  // as inside), so the tracker's value box shows beside the legend before any seek.
+  expect(initialText.markerLabels).toBe(1);
   expect(initialText.alphaPixels).toBeGreaterThan(0);
-  expect(initialText.vertices).toBe(6);
+  expect(initialText.vertices).toBe(12);
   expect(initialText.atlas.width).toBeGreaterThan(0);
   expect(initialText.atlas.height).toBeGreaterThan(0);
   expect(initialText.rect.width).toBeGreaterThan(0);
@@ -1442,13 +1442,23 @@ test.describe('HiDPI QRhi text', () => {
     let stateMessages = 0;
     let textMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK')).length;
     let textPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_PIXELS')).length;
-    await page.evaluate(() => window.pjWasmShowLegendProbe());
+    // The seeded playhead is inside the view, so the value box shows from the start. The legend-only baseline
+    // cycles the tracker to line-only (value -> value+name -> line), in one task so a single frame renders it.
+    await page.evaluate(() => {
+      window.pjWasmShowLegendProbe();
+      window.pjWasmCycleTimeTrackerProbe();
+      window.pjWasmCycleTimeTrackerProbe();
+    });
     const state = await requestPlotState(page, consoleMessages, stateMessages);
     stateMessages += 1;
-    await requestPlotText(consoleMessages, textMessages);
+    expect(state.trackerParameter).toBe(0);
+    const legendOnlyText = await requestPlotText(consoleMessages, textMessages);
+    expect(legendOnlyText.legendLayers).toBe(1);
+    expect(legendOnlyText.markerLabels).toBe(0);
     textMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK')).length;
     const initialPixels = await requestPlotTextPixels(consoleMessages, textPixelMessages);
     textPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_PIXELS')).length;
+    await page.evaluate(() => window.pjWasmCycleTimeTrackerProbe());
     const canvas = {
       x: screen.x + state.canvas.x,
       y: screen.y + state.canvas.y,
@@ -1456,7 +1466,8 @@ test.describe('HiDPI QRhi text', () => {
       height: state.canvas.height,
     };
     await seekQtPlot(page, canvas, 0.25, 0.55);
-    await requestPlotState(page, consoleMessages, stateMessages);
+    const seeked = await requestPlotState(page, consoleMessages, stateMessages);
+    expect(seeked.trackerParameter).toBe(1);
     const text = await requestPlotText(consoleMessages, textMessages);
     const pixels = await requestPlotTextPixels(consoleMessages, textPixelMessages);
 
@@ -1835,8 +1846,17 @@ test('two split QRhi plots render distinct curves and synchronize playback track
   expect(twoPlotImage).toMatchSnapshot('wasm-rhi-two-plots.png', { maxDiffPixelRatio: 0.05 });
 
   // One global legend action must produce near-black legend pixels in each keyed framebuffer: per-canvas
-  // post-draw pixels, since two unqualified CPU-atlas logs could both come from one canvas.
-  expect(populated.plots.every(plot => plot.readback.textPixels === 0)).toBe(true);
+  // post-draw pixels, since two unqualified CPU-atlas logs could both come from one canvas. The seeded playhead is
+  // inside both views, so each tracker shows its value box: cycle the trackers to line-only (value -> value+name ->
+  // line) for a text-free baseline. The line is what the synchronization checks below read.
+  await page.evaluate(() => {
+    window.pjWasmCycleTimeTrackerProbe();
+    window.pjWasmCycleTimeTrackerProbe();
+  });
+  const lineOnly = await requestMultiPlotState(page, consoleMessages, multiMessages);
+  multiMessages += 1;
+  expect(lineOnly.plots).toHaveLength(2);
+  expect(lineOnly.plots.every(plot => plot.readback.textPixels === 0)).toBe(true);
   await page.evaluate(() => window.pjWasmShowLegendProbe());
   const withLegends = await requestMultiPlotState(page, consoleMessages, multiMessages);
   multiMessages += 1;
