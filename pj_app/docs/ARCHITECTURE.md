@@ -331,36 +331,48 @@ relaunching them, after asking once when one of them is busy.
 ### One layout over several datasets
 
 A layout aimed at one dataset, applied while several loaded datasets carry its topics, would leave each reference to
-such a topic ambiguous: plot curves unresolved, scene layers pending, an empty workspace. The binding is never left that
-way and never guessed silently. The rules below are intended behaviour, each with its reason.
-`layout_xml::planDatasetChoice` decides, `layout_xml::pinLayoutToDataset(s)` rewrite the document,
+such a topic ambiguous: plot curves unresolved, scene layers pending, an empty workspace. Such a binding is never
+guessed silently: it is asked about, or chosen by the rules below and reported. The rules are intended behaviour, each
+with its reason. `layout_xml::planDatasetChoice` decides, `layout_xml::pinLayoutToDataset(s)` rewrite the document,
 `MainWindow::chooseLayoutDatasets` asks through `LayoutDatasetDialog`, reports, and hands the result on.
 
 - **When it applies.** On the synchronous leg (nothing left to reload or start), when the file named at most one dataset
-  (`layout_xml::datasetIdentities`: a generic layout names none), that dataset is not loaded (a loaded file named under
-  another label is loaded: the curve binding finds it by its path), and at least one of the layout's topics is
-  **shared**: two or more loaded datasets carry it. Only a shared topic is ambiguous; a reference to a topic one dataset
-  alone carries binds there whatever is chosen, so it is never pinned or copied per dataset. Reason: a layout over
-  curves from several files (the browser's Save Layout writes every layout generic) names no dataset, and pinning it all
-  to one file would lose the others' curves. With no shared topic the layout is applied as it is. The layout's own
-  outputs (filters, transforms, on-demand recipes, marker rules) do not count: a dataset holding them from an earlier
-  load of the same layout fits it no better. A layout naming several datasets, a stream or an upload keeps its own
-  bindings, and startup maps them to its explicit files ("Command-line startup"): those name what they show. The entries
-  of one fan-out file share its path and differ by label, so each (path, label) pair is a dataset of its own.
-- **Pinning covers the shared topics only.** Whatever is chosen, a reference to a shared topic, a recipe reading one and
-  whatever reads that recipe's output (through chains of recipes), a marker rule with an input from one of them, and
-  every other nameless reader (marker scope, recipe input) are pinned; any other reference keeps no qualifier and binds
-  where its topic is unique, a marker rule by its inputs.
-- **One dataset fitting best takes the shared topics it carries, unasked.** A dataset fits best when it carries more of
-  the shared topics than any other, or as many and more of the layout's other topics: the shared topics decide first,
-  since only they are ambiguous; the others then say which file the layout was made for (a Scene3D over a `/costmap`
-  only one file carries reads that file's `/tf`, not another's). The shared topics it lacks keep no qualifier.
-- **Several fitting equally (as many shared topics, and as many others) are asked about, when the load can ask** (File →
-  Load Layout, the recent list, the browser's Load Layout, a startup layout with someone at the display): one checkbox
-  per candidate dataset, in load order, the first checked; Cancel settles the load false with nothing applied, like the
-  reload prompt's Cancel. Reason: only the user knows which run a generic layout is for. Checked candidates removed
-  while the question was open (the browser's does not block) are reported: the load goes on with the others, or fails
-  when none is left, never taken for a Cancel.
+  (`layout_xml::datasetIdentities`: a generic layout names none) and that dataset is not loaded (a loaded file named
+  under another label is loaded: the curve binding finds it by its path). A layout naming several datasets, a stream or
+  an upload keeps its own bindings, and startup maps them to its explicit files ("Command-line startup"): those name
+  what they show. The entries of one fan-out file share its path and differ by label, so each (path, label) pair is a
+  dataset of its own.
+- **Only an ambiguous topic is chosen for.** A topic is ambiguous when two or more loaded datasets carry it and a
+  reference to it would be pinned (next rule). A reference to a topic one dataset alone carries binds there whatever is
+  chosen. Reason: a layout over curves from several files (the browser's Save Layout writes every layout generic) names
+  no dataset, and pinning it all to one file would lose the others' curves. The layout's own outputs (filters,
+  transforms, on-demand recipes as `<owner>/<id>/<output>`, marker rules) are not its topics: a dataset holding them
+  from an earlier load of the same layout fits it no better.
+- **Nothing ambiguous: nothing is chosen.** A generic layout is applied as it is. A layout naming a dataset that is not
+  loaded loses its qualifiers (`layout_xml::removeDatasetQualifiersForGenericLayout`), so each reference binds where its
+  topic is unique; it keeps them when no loaded dataset carries any of its topics, so the missing-data prompt names its
+  dataset. Reason: a qualified curve never falls back to a unique topic (`CatalogModel::resolveCurveKey`), so the
+  qualifiers of a dataset that is not there would leave every curve unresolved.
+- **A scene or recipe binds as a whole.** A Scene3D or Scene2D shows one dataset and refuses another's topics; a
+  transform, on-demand recipe or marker rule reads every input from one dataset. Such a unit is pinned only when it
+  reads an ambiguous topic and nothing else the loaded data or the layout's recipes carry. Otherwise it keeps no
+  qualifier: a scene binds its shared topics to the dataset of its own unique ones (`uniqueObjectTopic` prefers the
+  view's dataset, and `SceneDockWidget::finishRestore` retries what was pending), a recipe binds in the one dataset
+  carrying all its inputs. A marker rule's `<topic>/<field>` keys read the longest loaded topic naming a prefix.
+- **Pinning covers the ambiguous topics.** A reference to one outside a unit, a filter reading one, whatever reads a
+  pinned recipe's output (through chains of recipes), every pinned unit and every marker scope are pinned; any other
+  reference keeps no qualifier.
+- **One dataset fitting best takes the ambiguous topics it carries, unasked.** A dataset fits best when it carries more
+  of the ambiguous topics than any other, or as many and more of the layout's other topics: the ambiguous topics decide
+  first; the others then say which file the layout was made for (a layout plotting `sensor`, which two files carry,
+  and `extra`, which one of them carries, was made for that one). The ambiguous topics it lacks keep no qualifier and
+  stay ambiguous, and so does a unit reading one.
+- **Several fitting equally (as many ambiguous topics, and as many others) are asked about, when the load can ask**
+  (File → Load Layout, the recent list, the browser's Load Layout, a startup layout with someone at the display): one
+  checkbox per candidate dataset, in load order, the first checked; Cancel settles the load false with nothing applied,
+  like the reload prompt's Cancel. Reason: only the user knows which run a generic layout is for. Checked candidates
+  removed while the question was open (the browser's does not block) are reported: the load goes on with the others,
+  or fails when none is left, never taken for a Cancel.
 - **A load that cannot ask takes the first loaded candidate and says so** (`layout-dataset-chosen`, a warning): an
   unattended `--layout` (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the offscreen QA instance), and
   any other load without a display to ask on. Reason: a harness, an agent or the QA instance cannot answer a dialog,
@@ -369,7 +381,7 @@ way and never guessed silently. The rules below are intended behaviour, each wit
   marker rules, marker scopes and Custom Widget wires are all rewritten in the document by the same qualifier walk, so
   no widget needs its own logic.
 - **Several checked: each tab is duplicated, one copy per dataset,** side by side, named `<tab> [<dataset label>]`, each
-  copy's pinned references naming its dataset; a reference to an unshared topic shows its one dataset in every copy.
+  copy's pinned references naming its dataset; an unpinned reference or unit shows the same data in every copy.
   Reason: a Scene3D, Scene2D or Custom Widget view shows one dataset, so comparing runs needs one copy of the view per
   run. Each pinned filter and dataset-bound marker rule is copied too, pinned to its copy's dataset, keeping its output
   name or rule id: both are per dataset (`BatchEngine` binds a rule by id and dataset). An unpinned one stays single.
@@ -721,6 +733,9 @@ Suites with their own executable and ctest entry, and why:
   reproduced).
 - A layout naming several datasets is never asked about: when neither the saved paths nor startup's mapping bind its
   datasets, its references stay unresolved.
+- A 3D view whose only topic of its own feeds a local robot model (`/robot_description`) gives an unqualified shared
+  `/tf` no dataset to prefer (`Scene3DDockWidget::representativeDatasetId` reads render layers and the bound TF
+  dataset), so that `/tf` stays pending when another loaded file carries one too.
 - A layout holding a transform or an on-demand recipe shows one dataset at a time: duplicating a transform would need
   a recipe instance id apart from its script's class id (`DataProcessorService::TransformRecipe::user_id` is both).
 - Restoring a layout whose `<pinned_toolboxes>` names a plugin that is missing or fails to bind goes through

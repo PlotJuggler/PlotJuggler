@@ -2251,6 +2251,29 @@ const PJ::layout_xml::DatasetPin kRunA{
 const PJ::layout_xml::DatasetPin kRunB{
     .id = 4, .source = u"run.csv"_s, .path = u"/d/b/run.csv"_s, .label = u"run.csv (2)"_s};
 
+using PJ::layout_xml::DatasetIdentity;
+
+// Loaded datasets: each pin with the topics it carries.
+PJ::layout_xml::LoadedDatasets loadedWith(
+    const QList<std::pair<PJ::layout_xml::DatasetPin, QStringList>>& datasets,
+    std::function<bool(const DatasetIdentity&)> names_one = [](const DatasetIdentity&) { return false; }) {
+  PJ::layout_xml::LoadedDatasets loaded;
+  for (const auto& [pin, topics] : datasets) {
+    loaded.datasets.push_back(pin);
+  }
+  loaded.for_each_topic = [datasets](const std::function<void(std::uint32_t, const QString&)>& visit) {
+    for (const auto& [pin, topics] : datasets) {
+      for (const QString& topic : topics) {
+        visit(pin.id, topic);
+      }
+    }
+  };
+  loaded.names_one = std::move(names_one);
+  return loaded;
+}
+
+using Kind = PJ::layout_xml::DatasetChoice::Kind;
+
 QList<QDomElement> elementsNamed(const QDomDocument& doc, const QString& tag) {
   QList<QDomElement> found;
   const QDomNodeList nodes = doc.elementsByTagName(tag);
@@ -2259,8 +2282,6 @@ QList<QDomElement> elementsNamed(const QDomDocument& doc, const QString& tag) {
   }
   return found;
 }
-
-using PJ::layout_xml::DatasetIdentity;
 
 TEST(LayoutDatasetChoice, IdentitiesCountAPathlessAliasOnce) {
   const QDomDocument doc = parseLayout(
@@ -2293,10 +2314,10 @@ TEST(LayoutDatasetChoice, ReferencedTopicsLeaveOutTheLayoutsOwnOutputs) {
 }
 
 // One dataset chosen: every element that reads data names it, the generic ones included; an all-datasets rule and a
-// local scene layer stay as they were.
+// local scene layer name none (the local layer's id sentinel is dropped: its restore reads `local` alone).
 TEST(LayoutDatasetChoice, OnePinQualifiesEveryReader) {
   QDomDocument doc = genericDerivedLayout();
-  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunB}, PJ::layout_xml::referencedTopics(doc));
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunB}, {.pinned = PJ::layout_xml::referencedTopics(doc)});
   int pinned = 0;
   for (const QString& tag : {u"curve"_s, u"layer"_s, u"input"_s, u"processor"_s, u"generator"_s, u"marker_scope"_s}) {
     for (const QDomElement& element : elementsNamed(doc, tag)) {
@@ -2327,7 +2348,7 @@ TEST(LayoutDatasetChoice, OnePinReplacesTheSavedDataset) {
   ASSERT_TRUE(
       static_cast<bool>(doc.setContent(QByteArrayLiteral(
           R"(<root><plot><curve topic="a" dataset_id="9" dataset_source="old.csv" dataset_path="/old.csv"/></plot></root>)"))));
-  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA}, PJ::layout_xml::referencedTopics(doc));
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA}, {.pinned = PJ::layout_xml::referencedTopics(doc)});
   const QDomElement curve = elementsNamed(doc, u"curve"_s).front();
   EXPECT_EQ(curve.attribute(u"dataset_path"_s), kRunA.path);
   EXPECT_EQ(curve.attribute(u"dataset_id"_s), u"3"_s);
@@ -2337,7 +2358,11 @@ TEST(LayoutDatasetChoice, OnePinReplacesTheSavedDataset) {
 // ids stay unique, the plugin's ownership stays with the first, and the current tab is the first copy of the saved one.
 TEST(LayoutDatasetChoice, TwoPinsDuplicateEachTabSideBySide) {
   QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
-  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, PJ::layout_xml::referencedTopics(doc));
+  const QStringList run_topics{u"sensor"_s, u"speed"_s, u"/points"_s};
+  const auto choice =
+      PJ::layout_xml::planDatasetChoice(doc, std::nullopt, loadedWith({{kRunA, run_topics}, {kRunB, run_topics}}));
+  ASSERT_EQ(choice.kind, Kind::kAsk);
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, choice.topics);
   const QList<QDomElement> tabs = elementsNamed(doc, u"Tab"_s);
   ASSERT_EQ(tabs.size(), 4);
   QStringList names;
@@ -2378,7 +2403,7 @@ TEST(LayoutDatasetChoice, TwoPinsCopyEachDatasetBoundRecipe) {
   QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
   PJ::layout_xml::DatasetPin hashed = kRunB;
   hashed.label = u"run#2.csv"_s;
-  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, hashed}, PJ::layout_xml::referencedTopics(doc));
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, hashed}, {.pinned = PJ::layout_xml::referencedTopics(doc)});
   QStringList recipes;
   for (QDomElement recipe = doc.documentElement().firstChildElement(u"data_processors"_s).firstChildElement();
        !recipe.isNull(); recipe = recipe.nextSiblingElement()) {
@@ -2403,9 +2428,9 @@ TEST(LayoutDatasetChoice, TwoPinsCopyEachDatasetBoundRecipe) {
 // stays unique in the document, or a restore would merge two copies into one.
 TEST(LayoutDatasetChoice, RepinningACopiedLayoutKeepsEveryIdUnique) {
   QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
-  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, PJ::layout_xml::referencedTopics(doc));
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, {.pinned = PJ::layout_xml::referencedTopics(doc)});
   PJ::layout_xml::removeDatasetQualifiersForGenericLayout(doc);
-  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, PJ::layout_xml::referencedTopics(doc));
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, {.pinned = PJ::layout_xml::referencedTopics(doc)});
   ASSERT_EQ(elementsNamed(doc, u"Tab"_s).size(), 8);
   for (const QString& tag : {u"Tab"_s, u"DockArea"_s, u"plot"_s}) {
     QStringList ids;
@@ -2423,7 +2448,7 @@ TEST(LayoutDatasetChoice, RepinningACopiedLayoutKeepsEveryIdUnique) {
 TEST(LayoutDatasetChoice, EveryCopyOfACurveHasTheSameColour) {
   QDomDocument doc = genericDerivedLayout(/*with_transforms=*/false);
   PJ::layout_xml::pinLayoutToDatasets(
-      doc, {kRunA, kRunB}, PJ::layout_xml::referencedTopics(doc),
+      doc, {kRunA, kRunB}, {.pinned = PJ::layout_xml::referencedTopics(doc)},
       [](const QDomElement& curve) -> std::optional<QColor> {
         if (curve.attribute(u"topic"_s) == u"speed"_s) {
           return QColor(u"#9467bd"_s);
@@ -2449,7 +2474,7 @@ TEST(LayoutDatasetChoice, OnePinOverSomeTopicsLeavesTheOthersUnqualified) {
   QDomDocument doc = parseLayout(
       R"(<root><plot><curve topic="sensor" field="value" dataset_source="old.csv"/>
 <curve topic="speed" field="value" dataset_source="old.csv"/></plot></root>)");
-  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {u"sensor"_s});
+  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {.pinned = {u"sensor"_s}});
   const QList<QDomElement> curves = elementsNamed(doc, u"curve"_s);
   EXPECT_EQ(curves[0].attribute(u"dataset_path"_s), kRunB.path);
   EXPECT_FALSE(curves[1].hasAttribute(u"dataset_source"_s));
@@ -2464,7 +2489,7 @@ TEST(LayoutDatasetChoice, OnePinTakesOnlyTheMarkerRulesReadingItsTopics) {
 <generator id="battery_rule" dataset_source="old.csv"><input name="battery/voltage"/></generator>
 <generator id="sensor_prefix_rule"><input name="sensor_raw/value"/></generator>
 </data_processors></root>)");
-  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {u"sensor"_s});
+  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {.pinned = {u"sensor"_s}});
   const QList<QDomElement> rules = elementsNamed(doc, u"generator"_s);
   ASSERT_EQ(rules.size(), 3);
   EXPECT_EQ(rules[0].attribute(u"dataset_path"_s), kRunB.path);
@@ -2475,27 +2500,6 @@ TEST(LayoutDatasetChoice, OnePinTakesOnlyTheMarkerRulesReadingItsTopics) {
 }
 
 // ---------- planDatasetChoice ----------
-
-// Loaded datasets: each pin with the topics it carries.
-PJ::layout_xml::LoadedDatasets loadedWith(
-    const QList<std::pair<PJ::layout_xml::DatasetPin, QStringList>>& datasets,
-    std::function<bool(const DatasetIdentity&)> names_one = [](const DatasetIdentity&) { return false; }) {
-  PJ::layout_xml::LoadedDatasets loaded;
-  for (const auto& [pin, topics] : datasets) {
-    loaded.datasets.push_back(pin);
-  }
-  loaded.for_each_topic = [datasets](const std::function<void(std::uint32_t, const QString&)>& visit) {
-    for (const auto& [pin, topics] : datasets) {
-      for (const QString& topic : topics) {
-        visit(pin.id, topic);
-      }
-    }
-  };
-  loaded.names_one = std::move(names_one);
-  return loaded;
-}
-
-using Kind = PJ::layout_xml::DatasetChoice::Kind;
 
 TEST(PlanDatasetChoice, DatasetsFittingEquallyAreAskedAbout) {
   const auto choice = PJ::layout_xml::planDatasetChoice(
@@ -2520,7 +2524,7 @@ TEST(PlanDatasetChoice, TheBestFitOverTheSharedTopicsIsPinnedOverThose) {
   EXPECT_EQ(choice.kind, Kind::kPin);
   ASSERT_EQ(choice.datasets.size(), 1);
   EXPECT_EQ(choice.datasets.front().path, kRunB.path);
-  EXPECT_EQ(choice.topics, (QSet<QString>{u"sensor"_s, u"/points"_s}));
+  EXPECT_EQ(choice.topics.pinned, (QSet<QString>{u"sensor"_s, u"/points"_s}));
 
   // The shared topics decide first: C's two topics of its own do not outweigh A's second shared topic.
   const auto shared_first = PJ::layout_xml::planDatasetChoice(
@@ -2540,7 +2544,14 @@ TEST(PlanDatasetChoice, TheOtherTopicsBreakATie) {
   EXPECT_EQ(choice.kind, Kind::kPin);
   ASSERT_EQ(choice.datasets.size(), 1);
   EXPECT_EQ(choice.datasets.front().path, kRunB.path);
-  EXPECT_EQ(choice.topics, (QSet<QString>{u"sensor"_s}));
+  EXPECT_EQ(choice.topics.pinned, (QSet<QString>{u"sensor"_s}));
+  QDomDocument doc = genericDerivedLayout();
+  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, choice.topics);
+  EXPECT_EQ(elementsNamed(doc, u"curve"_s).front().attribute(u"dataset_path"_s), kRunB.path);
+  const QDomElement points = elementsNamed(doc, u"layer"_s).front();
+  ASSERT_EQ(points.attribute(u"topic_name"_s), u"/points"_s);
+  EXPECT_FALSE(points.hasAttribute(u"dataset_source"_s));
+  EXPECT_FALSE(points.hasAttribute(u"dataset_path"_s));
 }
 
 // Two files with no topic in common leave nothing ambiguous: each reference binds to the one file carrying its topic.
@@ -2564,7 +2575,7 @@ TEST(LayoutDatasetChoice, TwoPinsTakeOnlyTheSharedTopics) {
   const auto choice = PJ::layout_xml::planDatasetChoice(
       doc, std::nullopt, loadedWith({{kRunA, {u"sensor"_s, u"a_only"_s}}, {kRunB, {u"sensor"_s, u"b_only"_s}}}));
   ASSERT_EQ(choice.kind, Kind::kAsk);
-  EXPECT_EQ(choice.topics, (QSet<QString>{u"sensor"_s}));
+  EXPECT_EQ(choice.topics.pinned, (QSet<QString>{u"sensor"_s}));
   PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, choice.topics);
   const QList<QDomElement> plots = elementsNamed(doc, u"plot"_s);
   ASSERT_EQ(plots.size(), 2);
@@ -2586,6 +2597,117 @@ TEST(LayoutDatasetChoice, TwoPinsTakeOnlyTheSharedTopics) {
     recipes.push_back(recipe.attribute(u"output_name"_s) + u'@' + recipe.attribute(u"input_dataset_path"_s));
   }
   EXPECT_EQ(recipes, (QStringList{u"sensor_abs@/d/a/run.csv"_s, u"sensor_abs@/d/b/run.csv"_s, u"a_abs@"_s}));
+}
+
+// A filter over a shared topic's filter output, a marker rule over that and a curve on it all follow the copy's
+// dataset: each step of the chain writes into the dataset its input came from.
+TEST(LayoutDatasetChoice, TwoPinsCarryAChainOfRecipes) {
+  QDomDocument doc = parseLayout(
+      R"(<root><tabbed_widget><Tab id="t1" tab_name="Plots"><plot id="p1"><curve topic="sensor" field="value"/>
+<curve topic="abs2" field="value"/></plot></Tab></tabbed_widget><data_processors>
+<processor input_topic="sensor" input_field="value" output_name="abs1" processor_id="absolute"/>
+<processor input_topic="abs1" input_field="value" output_name="abs2" processor_id="absolute"/>
+<generator id="tb/rule/abs2" all_datasets="0"><input name="abs2/value"/><output name="m"/></generator>
+</data_processors></root>)");
+  PJ::layout_xml::pinLayoutToDatasets(doc, {kRunA, kRunB}, {.pinned = {u"sensor"_s}});
+  QStringList recipes;
+  for (QDomElement recipe = doc.documentElement().firstChildElement(u"data_processors"_s).firstChildElement();
+       !recipe.isNull(); recipe = recipe.nextSiblingElement()) {
+    const QString name =
+        recipe.tagName() == u"processor"_s ? recipe.attribute(u"output_name"_s) : recipe.attribute(u"id"_s);
+    recipes.push_back(name + u'@' + recipe.attribute(u"dataset_path"_s) + recipe.attribute(u"input_dataset_path"_s));
+  }
+  EXPECT_EQ(
+      recipes, (QStringList{
+                   u"abs1@/d/a/run.csv"_s, u"abs1@/d/b/run.csv"_s, u"abs2@/d/a/run.csv"_s, u"abs2@/d/b/run.csv"_s,
+                   u"tb/rule/abs2@/d/a/run.csv"_s, u"tb/rule/abs2@/d/b/run.csv"_s}));
+  const QList<QDomElement> curves = elementsNamed(doc, u"curve"_s);
+  ASSERT_EQ(curves.size(), 4);
+  EXPECT_EQ(curves[1].attribute(u"dataset_path"_s), kRunA.path);
+  EXPECT_EQ(curves[3].attribute(u"dataset_path"_s), kRunB.path);
+}
+
+// A layout naming one dataset that is not loaded, whose topics no two loaded datasets share, loses its qualifiers:
+// each reference then binds to the one dataset carrying its topic, as a generic layout's does.
+TEST(PlanDatasetChoice, AMissingDatasetsLayoutIsUnboundWhenNothingIsAmbiguous) {
+  const QByteArray xml =
+      R"(<root><curve topic="a" dataset_source="x.mcap" dataset_path="/old/x.mcap"/>
+<curve topic="b" dataset_source="x.mcap" dataset_path="/old/x.mcap"/></root>)";
+  EXPECT_EQ(
+      PJ::layout_xml::planDatasetChoice(
+          parseLayout(xml), std::nullopt, loadedWith({{kRunA, {u"a"_s}}, {kRunB, {u"b"_s}}}))
+          .kind,
+      Kind::kUnbind);
+  EXPECT_EQ(
+      PJ::layout_xml::planDatasetChoice(parseLayout(xml), std::nullopt, loadedWith({{kRunA, {u"a"_s}}})).kind,
+      Kind::kUnbind)
+      << "one carrier";
+  EXPECT_EQ(
+      PJ::layout_xml::planDatasetChoice(parseLayout(xml), std::nullopt, loadedWith({{kRunA, {u"z"_s}}})).kind,
+      Kind::kKeep)
+      << "nothing loaded carries its topics: the missing-data prompt names its dataset";
+}
+
+// A scene shows one dataset: two 3D views, each over its own file's layer, share /tf by name only. Each view's /tf
+// follows its own layer, so nothing is ambiguous and nothing is asked.
+TEST(PlanDatasetChoice, ScenesOverTheirOwnFilesAreNotAsked) {
+  const auto choice = PJ::layout_xml::planDatasetChoice(
+      parseLayout(
+          R"(<root><scene3d><config_topic object_type="kFrameTransforms" topic_name="/tf"/>
+<layer object_type="kOccupancyGrid" topic_name="/costmap"/></scene3d>
+<scene3d><config_topic object_type="kFrameTransforms" topic_name="/tf"/>
+<layer object_type="kPointCloud" topic_name="/points"/></scene3d></root>)"),
+      std::nullopt, loadedWith({{kRunA, {u"/tf"_s, u"/points"_s}}, {kRunB, {u"/tf"_s, u"/costmap"_s}}}));
+  EXPECT_EQ(choice.kind, Kind::kKeep);
+}
+
+// A scene reading a topic one dataset alone carries binds there as a whole: its shared /tf is not pinned to the best
+// fit for the plots, which would leave the view refusing one of its own topics.
+TEST(LayoutDatasetChoice, AScenesOwnTopicKeepsItsSharedOnesWithIt) {
+  QDomDocument doc = parseLayout(
+      R"(<root><plot><curve topic="/odom" field="x"/><curve topic="/imu" field="x"/></plot>
+<scene3d><config_topic object_type="kFrameTransforms" topic_name="/tf"/>
+<layer object_type="kOccupancyGrid" topic_name="/costmap"/></scene3d></root>)");
+  const auto choice = PJ::layout_xml::planDatasetChoice(
+      doc, std::nullopt,
+      loadedWith(
+          {{kRunA, {u"/tf"_s, u"/odom"_s, u"/imu"_s}}, {kRunB, {u"/tf"_s, u"/costmap"_s}}, {kRunC, {u"/imu"_s}}}));
+  ASSERT_EQ(choice.kind, Kind::kPin);
+  EXPECT_EQ(choice.datasets.front().path, kRunA.path);
+  EXPECT_EQ(choice.topics.pinned, (QSet<QString>{u"/imu"_s}));
+  PJ::layout_xml::pinLayoutToDataset(doc, choice.datasets.front(), choice.topics);
+  for (const QString& tag : {u"config_topic"_s, u"layer"_s}) {
+    EXPECT_FALSE(elementsNamed(doc, tag).front().hasAttribute(u"dataset_source"_s)) << tag.toStdString();
+  }
+  const QList<QDomElement> curves = elementsNamed(doc, u"curve"_s);
+  EXPECT_FALSE(curves[0].hasAttribute(u"dataset_source"_s));
+  EXPECT_EQ(curves[1].attribute(u"dataset_path"_s), kRunA.path);
+}
+
+// An on-demand recipe's <input name> is the topic it reads, and its outputs are "<owner>/<id>/<output>": a dataset
+// holding the output from an earlier load fits no better, so the two datasets carrying /points are asked about.
+TEST(PlanDatasetChoice, AnOnDemandRecipeReadsAndWritesByTopic) {
+  const QDomDocument doc = parseLayout(
+      R"(<root><scene3d><layer object_type="kPointCloud" topic_name="/points"/>
+<layer object_type="kPointCloud" topic_name="tb/crop/cloud"/></scene3d><data_processors>
+<on_demand owner_plugin="tb" id="crop"><input name="/points"/><output name="cloud" type="point_cloud"/></on_demand>
+</data_processors></root>)");
+  EXPECT_EQ(PJ::layout_xml::referencedTopics(doc), (QSet<QString>{u"/points"_s}));
+  const auto choice = PJ::layout_xml::planDatasetChoice(
+      doc, std::nullopt, loadedWith({{kRunA, {u"/points"_s}}, {kRunB, {u"/points"_s, u"tb/crop/cloud"_s}}}));
+  EXPECT_EQ(choice.kind, Kind::kAsk);
+}
+
+// A marker rule's "<topic>/<field>" key reads the longest loaded topic naming a prefix of it: /odom/filtered/pose/x is
+// /odom/filtered's, which is not pinned, not /odom's.
+TEST(LayoutDatasetChoice, AMarkerRuleKeyReadsItsLongestTopic) {
+  QDomDocument doc = parseLayout(
+      R"(<root><data_processors><generator id="filtered"><input name="/odom/filtered/pose/x"/></generator>
+<generator id="raw"><input name="/odom/pose/x"/></generator></data_processors></root>)");
+  PJ::layout_xml::pinLayoutToDataset(doc, kRunB, {.pinned = {u"/odom"_s}, .loaded = {u"/odom"_s, u"/odom/filtered"_s}});
+  const QList<QDomElement> rules = elementsNamed(doc, u"generator"_s);
+  EXPECT_FALSE(rules[0].hasAttribute(u"dataset_source"_s));
+  EXPECT_EQ(rules[1].attribute(u"dataset_path"_s), kRunB.path);
 }
 
 TEST(PlanDatasetChoice, ADatasetHoldingTheLayoutsOutputsFitsNoBetter) {

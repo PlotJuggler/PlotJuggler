@@ -5406,6 +5406,10 @@ void MainWindow::chooseLayoutDatasets(
       layout_xml::pinLayoutToDataset(doc, choice.datasets.front(), choice.topics);
       then({.doc = std::move(doc), .removed = {}, .compared = {}});
       return;
+    case layout_xml::DatasetChoice::Kind::kUnbind:
+      layout_xml::removeDatasetQualifiersForGenericLayout(doc);
+      then({.doc = std::move(doc), .removed = {}, .compared = {}});
+      return;
     case layout_xml::DatasetChoice::Kind::kAsk:
       break;
   }

@@ -510,4 +510,22 @@ TEST_F(LayoutDatasetChoiceTest, FilesWithNoTopicInCommonAreNotAsked) {
   EXPECT_TRUE(bound[1].startsWith(QString::number(run) + u':')) << bound[1].toStdString();
 }
 
+// Intended: a layout made for a file that is not loaded, whose topics no two loaded files share, is not asked about
+// and binds each curve to the one file carrying its topic, as a generic layout would.
+TEST_F(LayoutDatasetChoiceTest, ALayoutForAMissingFileBindsWhereEachTopicIsUnique) {
+  PJ::AppSession& app = PresetTestPeer::session(*window_);
+  const PJ::DatasetId a = pj_test::createDataset(app, "a.csv", /*own_time_domain=*/true);
+  pj_test::addScalarTopic(app, a, "a");
+  const PJ::DatasetId b = pj_test::createDataset(app, "b.csv", /*own_time_domain=*/true);
+  pj_test::addScalarTopic(app, b, "b");
+  load(curveLayout({u"a@x.mcap@/nowhere/x.mcap"_s, u"b@x.mcap@/nowhere/x.mcap"_s}), /*interactive=*/true);
+  EXPECT_EQ(asked_, 0);
+  EXPECT_EQ(other_modals_, 0) << other_texts_.toStdString();
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  const QStringList bound = curves(0);
+  ASSERT_EQ(bound.size(), 2) << bound.join(u' ').toStdString();
+  EXPECT_TRUE(bound[0].startsWith(QString::number(a) + u':')) << bound[0].toStdString();
+  EXPECT_TRUE(bound[1].startsWith(QString::number(b) + u':')) << bound[1].toStdString();
+}
+
 }  // namespace
