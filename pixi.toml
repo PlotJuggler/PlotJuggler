@@ -54,7 +54,7 @@ libpng = "1.6.*"
 backward-cpp = "1.6.*"
 draco = "*"                      # conanfile.txt pins draco to what its assimp recipe requires; conda resolves its own
 assimp = "*"                     # keep the same major as the assimp pin in conanfile.txt
-cloudini = "1.4.*"               # shared libcloudini_lib; CMake package cloudini_lib
+cloudini = "1.5.*"               # shared libcloudini_lib; CMake package cloudini_lib
 
 # --- local channel (gaps vs conda-forge; see recipes/) ------------------------
 luau = "0.700.*"

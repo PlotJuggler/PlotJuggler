@@ -212,6 +212,10 @@
         new Response(response.body.pipeThrough(counter), { headers: { 'Content-Type': 'application/wasm' } }));
     }
 
+    // The module is built with WASM SIMD (-msimd128 in the root CMakeLists.txt): an engine without it rejects the
+    // whole module. The probe is a function returning a v128, valid only where WASM SIMD is.
+    const simdSupported = WebAssembly.validate(new Uint8Array(
+      [0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
     // The threaded runtime needs a secure, cross-origin isolated page; init reports why it cannot start.
     const isolationFailure = window.isSecureContext && window.crossOriginIsolated ? '' : (
       'PlotJuggler cannot start: this page '
@@ -438,7 +442,10 @@
       return isolationFailure;
     }
 
-    if (isolationFailure) {
+    if (!simdSupported) {
+      pageLoaded.then(() => fail('PlotJuggler cannot start in this browser: it does not support WebAssembly SIMD. '
+        + 'Open it in Chrome or Edge 91, Firefox 89, Safari 16.4 (iOS 16.4), or later.'));
+    } else if (isolationFailure) {
       Promise.all([isolationFailureMessage(), pageLoaded]).then(([message]) => fail(message));
     } else if (smallTouchScreen) {
       body.dataset.state = 'confirm';
