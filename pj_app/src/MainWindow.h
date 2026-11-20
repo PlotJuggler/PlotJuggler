@@ -196,13 +196,14 @@ class MainWindow : public QMainWindow {
 
   // Loads explicit files, then applies the optional layout against their data (with no files, the layout reloads its
   // own sources without prompting). A failed or cancelled file aborts the layout and settles it false. Only an
-  // attended (`interactive`) start may open dialogs: the files' own, and the layout's dataset question.
+  // attended (`interactive`) start may open dialogs: the batch question before two or more files load
+  // (BatchLoadDialog), the files' own, and the layout's dataset question.
   void loadAtStartup(const QStringList& data_files, const QString& layout_path, bool interactive);
   // loadAtStartup's loads, once any batch question is answered. `load_batch`: null outside a batch. `compared`: the
-  // files checked in that question when a layout came with them, the answer to the layout's dataset question.
+  // files checked in that question when a layout came with them (empty: the layout asks its own question).
   void loadStartupFiles(
       const QStringList& absolute_files, const QString& layout_path, bool interactive,
-      const std::shared_ptr<LoadBatch>& load_batch, std::optional<QStringList> compared);
+      const std::shared_ptr<LoadBatch>& load_batch, const QStringList& compared);
 
   // Startup step, before any layout restore: see CustomWidgetController::reviewUncleanShutdown. A
   // non-interactive run never shows the question.
@@ -796,9 +797,11 @@ class MainWindow : public QMainWindow {
   };
   // `current_data_files` set: the layout applies to those already-loaded files (startup's explicit `-d` files) as a
   // generic layout, keeping only the dataset qualifiers that name one of them; its saved sources are not replayed.
+  // `chosen_files`: the startup files chosen, before they loaded, to show this layout; they answer its dataset
+  // question instead of asking it (chooseLayoutDatasets).
   void loadLayoutFromPath(
       const QString& path, LayoutLoadInteractivity interactivity,
-      const std::optional<QStringList>& current_data_files = std::nullopt);
+      const std::optional<QStringList>& current_data_files = std::nullopt, const QStringList& chosen_files = {});
   // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl (which is why they build on the
   // desktop too). Every terminal outcome goes through finishBrowserLayoutLoad, which logs
   // PJ_WASM_LAYOUT_LOAD_OK/FAILED.
@@ -905,7 +908,7 @@ class MainWindow : public QMainWindow {
   // between.
   void chooseLayoutDatasets(
       QDomDocument doc, const std::optional<QList<layout_xml::DatasetIdentity>>& saved, bool can_prompt,
-      const QString& layout_name, std::function<void(ChosenLayout)> then);
+      const QString& layout_name, const QStringList& chosen_files, std::function<void(ChosenLayout)> then);
   // Starts each stream from its saved configuration, without its plugin's dialog, and adds it to `binding`.
   // Returns one "Stream '<id>': why" line per stream that did not start.
   [[nodiscard]] QStringList startLayoutStreams(
@@ -1378,10 +1381,6 @@ class MainWindow : public QMainWindow {
   // The retention window, in seconds, of the streams running when the current layout open began; empty when none ran.
   // Only those streams are protected from a smaller layout buffer at the commit.
   std::optional<int> stream_window_at_layout_open_s_;
-  // Startup with several files and a layout: the absolute paths checked in BatchLoadDialog, asked before the files
-  // loaded. Set only while that layout applies: its chooseLayoutDatasets takes them as the answer instead of asking
-  // and clears them, and the layout's settle clears them when it never asked.
-  std::optional<QStringList> startup_compared_paths_;
   // Declared after streaming_manager_, so the runtime hosts holding its taps outlive it; closeEvent and
   // ~MainWindow still stop() it explicitly before any widget or host is gone. Created even where isSupported()
   // is false: only the UI affordances go away there.

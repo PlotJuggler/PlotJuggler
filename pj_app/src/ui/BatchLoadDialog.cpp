@@ -4,6 +4,8 @@
 #include "ui/BatchLoadDialog.h"
 
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QFileInfo>
 #include <QLayout>
 #include <QListWidgetItem>
 #include <QPushButton>
@@ -20,14 +22,14 @@ constexpr auto kModeKey = "BatchLoad/dialog_mode";
 
 }  // namespace
 
-BatchLoadDialog::BatchLoadDialog(int file_count, const QStringList& layout_files, QWidget* parent)
+BatchLoadDialog::BatchLoadDialog(const QStringList& paths, bool ask_mode, bool list_files, QWidget* parent)
     : Dialog(parent), ui_(new Ui::BatchLoadDialog) {
   setDialogTitle(tr("Load Data"));
   auto* body = new QWidget;
   ui_->setupUi(body);
   contentLayout()->addWidget(body);
 
-  ui_->labelPrompt->setText(tr("Loading %1 files.").arg(file_count));
+  ui_->labelPrompt->setText(tr("Loading %1 files.").arg(paths.size()));
   // Segment order is BatchDialogMode's order.
   ui_->dialogMode->setOptions({tr("Show all"), tr("Show first"), tr("Skip")});
   const auto show_hint = [this](int index) {
@@ -40,21 +42,35 @@ BatchLoadDialog::BatchLoadDialog(int file_count, const QStringList& layout_files
   };
   connect(ui_->dialogMode, &DualOptionsWidget::selectionChanged, this, show_hint);
   const int saved = QSettings().value(kModeKey, static_cast<int>(BatchDialogMode::kShowFirst)).toInt();
-  ui_->dialogMode->setSelectedIndex(saved >= 0 && saved <= 2 ? saved : static_cast<int>(BatchDialogMode::kShowFirst));
+  const bool known = saved >= 0 && saved <= static_cast<int>(BatchDialogMode::kSkip);
+  ui_->dialogMode->setSelectedIndex(known ? saved : static_cast<int>(BatchDialogMode::kShowFirst));
   show_hint(ui_->dialogMode->selectedIndex());
+  ui_->labelDialogMode->setVisible(ask_mode);
+  ui_->dialogMode->setVisible(ask_mode);
+  ui_->labelDialogModeHint->setVisible(ask_mode);
+  if (!ask_mode) {
+    ui_->dialogMode->setSelectedIndex(static_cast<int>(BatchDialogMode::kShowAll));
+  }
 
-  const bool with_layout = !layout_files.isEmpty();
-  ui_->labelCompare->setVisible(with_layout);
-  ui_->listFiles->setVisible(with_layout);
-  for (const QString& name : layout_files) {
-    auto* item = new QListWidgetItem(name, ui_->listFiles);
-    item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-    item->setCheckState(Qt::Checked);
+  ui_->labelCompare->setVisible(list_files);
+  ui_->listFiles->setVisible(list_files);
+  if (list_files) {
+    QStringList names;
+    for (const QString& path : paths) {
+      names.push_back(QFileInfo(path).fileName());
+    }
+    for (qsizetype index = 0; index < paths.size(); ++index) {
+      // Same-named files (one run per folder) are told apart by their folder.
+      const QString label =
+          names.count(names[index]) > 1 ? QFileInfo(paths[index]).dir().dirName() + u'/' + names[index] : names[index];
+      auto* item = new QListWidgetItem(label, ui_->listFiles);
+      item->setData(Qt::UserRole, paths[index]);
+      item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+      item->setCheckState(Qt::Checked);
+    }
   }
   QPushButton* ok = ui_->buttonBox->button(QDialogButtonBox::Ok);
-  connect(ui_->listFiles, &QListWidget::itemChanged, this, [this, ok, with_layout]() {
-    ok->setEnabled(!with_layout || !answer().compared.isEmpty());
-  });
+  connect(ui_->listFiles, &QListWidget::itemChanged, this, [this, ok]() { ok->setEnabled(!checkedPaths().isEmpty()); });
   connect(ui_->buttonBox, &QDialogButtonBox::accepted, this, &QDialog::accept);
   connect(ui_->buttonBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
   ok->setFocus();
@@ -68,30 +84,39 @@ BatchLoadDialog::~BatchLoadDialog() {
   delete ui_;
 }
 
-BatchLoadDialog::Answer BatchLoadDialog::answer() const {
-  Answer result;
-  result.mode = static_cast<BatchDialogMode>(ui_->dialogMode->selectedIndex());
+BatchDialogMode BatchLoadDialog::mode() const {
+  return static_cast<BatchDialogMode>(ui_->dialogMode->selectedIndex());
+}
+
+QStringList BatchLoadDialog::checkedPaths() const {
+  QStringList paths;
   for (int row = 0; row < ui_->listFiles->count(); ++row) {
     if (ui_->listFiles->item(row)->checkState() == Qt::Checked) {
-      result.compared.push_back(row);
+      paths.push_back(ui_->listFiles->item(row)->data(Qt::UserRole).toString());
     }
   }
-  return result;
+  return paths;
 }
 
 void BatchLoadDialog::ask(
-    QWidget* parent, int file_count, const QStringList& layout_files,
+    QWidget* parent, const QStringList& paths, bool ask_mode, bool list_files,
     std::function<void(std::optional<Answer>)> on_done) {
-  auto* dialog = new BatchLoadDialog(file_count, layout_files, parent);
+  auto* dialog = new BatchLoadDialog(paths, ask_mode, list_files, parent);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
-  connect(dialog, &QDialog::finished, dialog, [dialog, on_done = std::move(on_done)](int result) {
+  connect(dialog, &QDialog::finished, dialog, [dialog, ask_mode, on_done = std::move(on_done)](int result) {
     if (result != QDialog::Accepted) {
       on_done(std::nullopt);
       return;
     }
-    const Answer answer = dialog->answer();
-    QSettings().setValue(kModeKey, static_cast<int>(answer.mode));
-    on_done(answer);
+    const BatchDialogMode mode = dialog->mode();
+    if (ask_mode) {
+      QSettings().setValue(kModeKey, static_cast<int>(mode));
+    }
+    on_done(
+        Answer{
+            .batch = std::make_shared<LoadBatch>(LoadBatch{.mode = mode, .prompted = {}, .cancelled = {}}),
+            .compared = dialog->checkedPaths(),
+        });
   });
 #ifdef PJ_TARGET_WASM
   dialog->open();

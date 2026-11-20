@@ -72,8 +72,8 @@ enum class BatchDialogMode {
 // file sees what an earlier one recorded.
 struct LoadBatch {
   BatchDialogMode mode = BatchDialogMode::kShowFirst;
-  QSet<QString> prompted;   // loaders whose dialog this batch has shown
-  QSet<QString> cancelled;  // loaders whose dialog was cancelled: their other files are cancelled too
+  QSet<QString> prompted;   // manifest ids of the loaders whose dialog this batch accepted (their settings saved)
+  QSet<QString> cancelled;  // manifest ids of the loaders whose dialog was cancelled: their other files are cancelled
 };
 
 // For callers that already know the plugin and its config (layout replay, Replace, agents).
@@ -138,8 +138,15 @@ class FileLoader : public QObject {
   // Multi-select; loads each chosen path. The directory persists in QSettings "FileLoader/lastDir".
   void openFromDialog(QWidget* dialog_parent);
 
-  // Each file reports its own failures; one bad file does not stop the rest.
+  // Each file reports its own failures; one bad file does not stop the rest. Two or more files go through the batch
+  // question (setBatchAsker) when it can change something (batchRepeatsADialog), and a loader whose dialog is then
+  // cancelled cancels its other files.
   void loadFiles(const QStringList& paths, QWidget* dialog_parent);
+
+  // True when a loader with a configuration dialog would get two or more of `paths`, each file's loader being the
+  // first match for its extension, as beginLoad picks it without a layout hint. Otherwise the batch question changes
+  // nothing.
+  [[nodiscard]] bool batchRepeatsADialog(const QStringList& paths) const;
 
   // The local regular files among a drag's URLs, in order.
   [[nodiscard]] static QStringList droppedFilePaths(const QMimeData& mime);
@@ -185,6 +192,14 @@ class FileLoader : public QObject {
       QWidget* parent, const QString& caption, const QString& dir, const QString& filter, bool multi)>;
   void setFilePicker(FilePicker picker) {
     file_picker_ = std::move(picker);
+  }
+
+  // Asked once when loadFiles gets two or more files: `done` receives the batch shared by their requests, or null to
+  // load none of them. The shell injects BatchLoadDialog. Unset: each file loads on its own.
+  using BatchAsker = std::function<void(
+      QWidget* parent, const QStringList& paths, std::function<void(std::shared_ptr<LoadBatch>)> done)>;
+  void setBatchAsker(BatchAsker asker) {
+    batch_asker_ = std::move(asker);
   }
 
   // Receives load failures and the plugin's messages; unset logs only. A load in flight keeps the sink it started with.
@@ -389,6 +404,7 @@ class FileLoader : public QObject {
   ExtensionCatalogService& extensions_;
   CatalogModel& catalog_;
   FilePicker file_picker_;
+  BatchAsker batch_asker_;
   DiagnosticSink diagnostic_sink_;
   std::shared_ptr<BrowserFileStore> browser_file_store_;
   QHash<QString, QString> browser_content_sha256_;

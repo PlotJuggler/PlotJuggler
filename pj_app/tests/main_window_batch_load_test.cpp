@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // Several files loaded together ask once, before loading, how the loaders' configuration dialogs behave for the
-// batch (BatchLoadDialog): show all, show the first of each format, or skip with the last-used settings.
+// batch (BatchLoadDialog): show all, show the first of each format, or skip with the last-used settings. Only when a
+// loader with a dialog gets two or more of the files.
 
 #include <gtest/gtest.h>
 
@@ -41,14 +42,17 @@ namespace {
 using Peer = PJ::MainWindowBatchLoadTestPeer;
 using PJ::BatchDialogMode;
 
-// The probe plugin has a configuration dialog and saves a config once it is accepted.
+// The probe plugin (.dlgprobe) has a configuration dialog and saves a config once it is accepted; the mock one (.mock)
+// has none.
 class BatchLoadTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(extensions_.isValid());
     ASSERT_TRUE(data_.isValid());
-    const QString plugin = QString::fromUtf8(PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH);
-    ASSERT_TRUE(QFile::copy(plugin, extensions_.filePath(QFileInfo(plugin).fileName())));
+    for (const QString& plugin :
+         {QString::fromUtf8(PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH), QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH)}) {
+      ASSERT_TRUE(QFile::copy(plugin, extensions_.filePath(QFileInfo(plugin).fileName())));
+    }
     window_ = std::make_unique<PJ::MainWindow>(extensions_.path());
     QObject::connect(
         &Peer::fileLoader(*window_), &PJ::FileLoader::loadFinished, window_.get(),
@@ -59,13 +63,16 @@ class BatchLoadTest : public ::testing::Test {
     timer->start();
   }
 
-  QStringList newFiles(int count) {
+  QStringList newFiles(int count, bool with_dialog = true) {
     QStringList paths;
     for (int index = 0; index < count; ++index) {
-      const QString path = data_.filePath(u"run%1_%2.dlgprobe"_s.arg(++file_serial_).arg(index));
-      QFile file(path);
-      EXPECT_TRUE(file.open(QIODevice::WriteOnly));
-      paths.push_back(path);
+      const QString name = u"run%1_%2"_s.arg(++file_serial_).arg(index);
+      paths.push_back(
+          with_dialog ? data_.filePath(name + u".dlgprobe"_s) : pj_app_test::makeMockFile(data_, name + u".mock"_s));
+      if (with_dialog) {
+        QFile file(paths.back());
+        EXPECT_TRUE(file.open(QIODevice::WriteOnly));
+      }
     }
     return paths;
   }
@@ -136,11 +143,27 @@ TEST_F(BatchLoadTest, OneFileAsksNoBatchQuestion) {
   EXPECT_EQ(count(PJ::LoadOutcome::kLoaded), 1);
 }
 
+TEST_F(BatchLoadTest, NoQuestionWhenNoDialogWouldRepeat) {
+  ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(3, /*with_dialog=*/false)));
+  EXPECT_EQ(batch_questions_, 0) << "no loader has a dialog";
+  QStringList mixed = newFiles(1);
+  mixed += newFiles(1, /*with_dialog=*/false);
+  ASSERT_NO_FATAL_FAILURE(loadBatch(mixed));
+  EXPECT_EQ(batch_questions_, 0) << "the one loader with a dialog gets one file";
+  EXPECT_EQ(plugin_dialogs_, 1);
+  EXPECT_EQ(count(PJ::LoadOutcome::kLoaded), 5);
+}
+
 TEST_F(BatchLoadTest, ShowFirstAsksOnlyTheFirstFileOfTheFormat) {
   ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(3)));
   EXPECT_EQ(batch_questions_, 1);
   EXPECT_EQ(plugin_dialogs_, 1);
   EXPECT_EQ(count(PJ::LoadOutcome::kLoaded), 3);
+
+  // Settings saved by the previous batch do not count: this batch's first file still asks.
+  ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(2)));
+  EXPECT_EQ(plugin_dialogs_, 2);
+  EXPECT_EQ(count(PJ::LoadOutcome::kLoaded), 5);
 }
 
 TEST_F(BatchLoadTest, ShowAllAsksEveryFile) {
@@ -172,8 +195,8 @@ TEST_F(BatchLoadTest, CancellingAFilesDialogCancelsTheRestOfItsFormat) {
 TEST_F(BatchLoadTest, CancellingTheBatchQuestionLoadsNothing) {
   batch_mode_.reset();
   ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(3)));
-  ASSERT_TRUE(pj_app_test::pumpUntil([this] { return batch_questions_ == 1; }));
-  pj_app_test::flushQueuedEvents();
+  EXPECT_EQ(batch_questions_, 1);
+  EXPECT_FALSE(Peer::fileLoader(*window_).isBusy()) << "a file was queued after Cancel";
   EXPECT_EQ(plugin_dialogs_, 0);
   EXPECT_TRUE(outcomes_.empty());
 }

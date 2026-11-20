@@ -49,7 +49,6 @@
 #include "DialogPresenter.h"
 #include "FanoutConfig.h"
 #include "FileSelectionService.h"
-#include "ui/BatchLoadDialog.h"
 #ifdef PJ_TARGET_WASM
 #include "BrowserPickedFile.h"
 #endif
@@ -999,7 +998,7 @@ void FileLoader::openFromDialog(QWidget* dialog_parent) {
 }
 
 void FileLoader::loadFiles(const QStringList& paths, QWidget* dialog_parent) {
-  if (paths.size() < 2 || dialog_parent == nullptr) {
+  if (paths.size() < 2 || dialog_parent == nullptr || !batch_asker_ || !batchRepeatsADialog(paths)) {
     for (const QString& path : paths) {
       loadFile(path, dialog_parent);
     }
@@ -1007,18 +1006,28 @@ void FileLoader::loadFiles(const QStringList& paths, QWidget* dialog_parent) {
   }
   QPointer<FileLoader> self(this);
   QPointer<QWidget> parent(dialog_parent);
-  BatchLoadDialog::ask(
-      dialog_parent, static_cast<int>(paths.size()), {},
-      [self, parent, paths](std::optional<BatchLoadDialog::Answer> answer) {
-        if (self.isNull() || parent.isNull() || !answer.has_value()) {
-          return;
-        }
-        LoadHints hints;
-        hints.batch = std::make_shared<LoadBatch>(LoadBatch{.mode = answer->mode, .prompted = {}, .cancelled = {}});
-        for (const QString& path : paths) {
-          self->loadFile(path, parent, hints);
-        }
-      });
+  batch_asker_(dialog_parent, paths, [self, parent, paths](std::shared_ptr<LoadBatch> batch) {
+    if (self.isNull() || parent.isNull() || batch == nullptr) {
+      return;
+    }
+    LoadHints hints;
+    hints.batch = std::move(batch);
+    for (const QString& path : paths) {
+      self->loadFile(path, parent, hints);
+    }
+  });
+}
+
+bool FileLoader::batchRepeatsADialog(const QStringList& paths) const {
+  QHash<QString, int> files_per_loader;
+  for (const QString& path : paths) {
+    const auto matches = extensions_.findSourcesForExtension(normalizeExtension(path));
+    if (!matches.empty() && (matches.front()->capabilities & PJ_DATA_SOURCE_CAPABILITY_HAS_DIALOG) != 0 &&
+        ++files_per_loader[QString::fromStdString(matches.front()->id)] > 1) {
+      return true;
+    }
+  }
+  return false;
 }
 
 QStringList FileLoader::droppedFilePaths(const QMimeData& mime) {
@@ -1218,6 +1227,13 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
   const QString source_name = QString::fromStdString(source->name);
   const QString source_manifest_id = QString::fromStdString(source->id);
+  // A batch: a loader whose dialog was cancelled cancels its other files, before anything is created for them.
+  if (hints.batch != nullptr && hints.batch->cancelled.contains(source_manifest_id)) {
+    erase_created_live_dataset();
+    rollback_tombstones();
+    emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
+    co_return;
+  }
 
   DataSourceHandle handle = source->library.createHandle();
   if (!handle.valid()) {
@@ -1404,21 +1420,18 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
                                               .arg(source_name, QString::fromStdString(status.error()));
       }
     }
-    // A batch: a loader whose dialog was cancelled cancels its other files; reuse means the last-used settings,
-    // which an earlier dialog of this batch saved before its import started. A loader with no saved settings, or
-    // whose settings fan one file out into several datasets, still shows its dialog.
+    // A batch reuses the last-used settings, which an earlier dialog of this batch saved before its import started. A
+    // loader with no saved settings, or whose settings are about that file's own contents (a fan-out into its
+    // datasets, a display name for its tree root), still shows its dialog.
     bool batch_reuse = false;
     if (!skip_dialog && hints.batch != nullptr) {
-      if (hints.batch->cancelled.contains(source_name)) {
-        erase_created_live_dataset();
-        rollback_tombstones();
-        emitLoadFinished(ticket, LoadOutcome::kCancelled, source_identity, 0);
-        co_return;
-      }
-      const bool fans_out = saved_config.find("__pj_fanout") != std::string::npos;
-      batch_reuse = !saved_config.empty() && !fans_out &&
-                    (hints.batch->mode == BatchDialogMode::kSkip ||
-                     (hints.batch->mode == BatchDialogMode::kShowFirst && hints.batch->prompted.contains(source_name)));
+      const std::vector<std::string> instances = detail::extractFanout(saved_config);
+      const bool fans_out = instances.size() != 1 || instances.front() != saved_config ||
+                            !detail::parseDisplayName(saved_config).isEmpty();
+      batch_reuse =
+          !saved_config.empty() && !fans_out &&
+          (hints.batch->mode == BatchDialogMode::kSkip ||
+           (hints.batch->mode == BatchDialogMode::kShowFirst && hints.batch->prompted.contains(source_manifest_id)));
     }
     if (!skip_dialog) {
       config = buildLoadConfig(saved_config, input.backing_path);
@@ -1462,9 +1475,6 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
               }
             },
     });
-    if (hints.batch != nullptr) {
-      hints.batch->prompted.insert(source_name);
-    }
     auto dlg = co_await std::move(dialog_awaiter);
     if (dlg.outcome == dialog_presenter::Outcome::kPluginContractViolation) {
       (void)fail(tr("Plugin contract violation: %1. Reinstall the plugin from the Marketplace.")
@@ -1473,7 +1483,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     }
     if (dlg.outcome == dialog_presenter::Outcome::kRejected) {
       if (hints.batch != nullptr) {
-        hints.batch->cancelled.insert(source_name);
+        hints.batch->cancelled.insert(source_manifest_id);
       }
       // Test automation greps this marker on every platform.
       recordProbeOutcome(u"PJ_FILE_LOAD_REJECTED plugin="_s + source_name + u" identity="_s + source_identity);
@@ -1521,6 +1531,10 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   // overwrite the user's last interactive choice.
   if (!skip_dialog) {
     persisted_settings.setValue(config_key, QString::fromStdString(config));
+    // Only now are there settings this batch accepted: a dialog that ended any other way leaves "show first" asking.
+    if (hints.batch != nullptr) {
+      hints.batch->prompted.insert(source_manifest_id);
+    }
     // The config may still name earlier picks (a DBC for another channel): add, never replace.
     // ponytail: every pick stays staged for the session; prune by what the
     // config still references if large dialog-picked files become common.
