@@ -43,6 +43,7 @@
 #include "pj_widgets/Fnv1a.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
+#include "urdf_package_resolver.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
@@ -746,8 +747,25 @@ void SceneEntitiesLayer::startModelLoad(
     load.phase = ModelLoad::Phase::kFailed;
     return;
   }
+  std::string location = primitive.url;
+  if (primitive.data.empty() && location.starts_with("package://")) {
+    ResolvedMesh resolved;
+    if (package_resolver_ != nullptr) {
+      package_resolver_->autoSeedSearchRoots(QString());
+      resolved = package_resolver_->resolveUri(location, /*urdf_dir=*/{}, /*source_is_url=*/false);
+    }
+    if (!resolved.resolved) {
+      load.error =
+          resolved.package.empty()
+              ? tr("cannot resolve the package:// reference")
+              : tr("package '%1' not found in the mesh search folders").arg(QString::fromStdString(resolved.package));
+      load.phase = ModelLoad::Phase::kFailed;
+      return;
+    }
+    location = std::move(resolved.path);
+  }
   if (primitive.data.empty()) {
-    const QUrl url(QString::fromStdString(primitive.url));
+    const QUrl url(QString::fromStdString(location));
     // Local sources (bare paths / file:// URLs) stay ungated: reading the
     // user's disk is not network egress. Fetched bytes are capped by UrlFetcher.
     const bool remote = PJ::isHttpUrl(url);
@@ -762,7 +780,8 @@ void SceneEntitiesLayer::startModelLoad(
   }
   // Resolved when the job gets a slot, so waiting jobs hold no copy of the bytes.
   load.job = model_queue_->enqueue(
-      [this, entity_id, model_index]() -> std::optional<MeshLoadQueue::Source> {
+      [this, entity_id, model_index,
+       location = QString::fromStdString(location)]() -> std::optional<MeshLoadQueue::Source> {
         const auto entity = model_state_.entities().find(entity_id);
         if (entity == model_state_.entities().end() || model_index >= entity->second.models.size()) {
           return std::nullopt;  // syncModelSources cancels a gone model's job; stay defensive
@@ -776,7 +795,7 @@ void SceneEntitiesLayer::startModelLoad(
               QByteArray(reinterpret_cast<const char*>(model.data.data()), static_cast<qsizetype>(model.data.size()));
         } else {
           source.kind = MeshLoadQueue::Source::Kind::kUrl;
-          source.location = QString::fromStdString(model.url);
+          source.location = location;
         }
         return source;
       },

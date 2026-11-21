@@ -300,6 +300,7 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
           -> std::unique_ptr<ISceneLayer> {
         prepareTransformBufferForTopic(topic_id);
         auto layer = std::make_unique<SceneEntitiesLayer>(topic_id, display_name, this);
+        layer->setPackageResolver(package_resolver_.get());
         wireScene3DLayer(layer.get());
         return layer;
       });
