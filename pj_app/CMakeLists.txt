@@ -115,6 +115,9 @@ add_library(pj_app_shell OBJECT
     src/ui/AboutDialog.cpp
     src/ui/AboutDialog.h
     src/ui/AboutDialog.ui
+    src/ui/BatchLoadDialog.cpp
+    src/ui/BatchLoadDialog.h
+    src/ui/BatchLoadDialog.ui
     src/ui/LayoutDatasetDialog.cpp
     src/ui/LayoutDatasetDialog.h
     src/ui/LayoutDatasetDialog.ui
@@ -500,6 +503,12 @@ if(PJ_BUILD_TESTS)
     set_source_files_properties(tests/main_window_reload_button_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:dialog_probe_source_plugin>")
 
+    # A batch of files asks once how the loaders' dialogs behave (show all / first / skip).
+    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_batch_load_test.cpp)
+    set_source_files_properties(tests/main_window_batch_load_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS
+        "PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:dialog_probe_source_plugin>\";PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\"")
+
     # Browser presets: a layout's streaming sources start from their saved
     # configuration inside the same all-or-nothing replay, and their views bind
     # as topics arrive (test stream plugin staged per case).
@@ -835,7 +844,7 @@ if(PJ_BUILD_TESTS)
     # Shutdown while suspended at the plugin dialog: the dialog is rejected before the plugin is destroyed.
     add_library(dialog_probe_source_plugin SHARED tests/dialog_probe_source.cpp)
     target_compile_features(dialog_probe_source_plugin PRIVATE cxx_std_20)
-    target_link_libraries(dialog_probe_source_plugin PRIVATE plotjuggler_sdk::plugin_sdk)
+    target_link_libraries(dialog_probe_source_plugin PRIVATE plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(dialog_probe_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
     endif()

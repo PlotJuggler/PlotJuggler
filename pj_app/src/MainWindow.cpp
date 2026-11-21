@@ -247,6 +247,7 @@
 #include "pj_widgets/ToastManager.h"
 #include "scene_object_classification.h"
 #include "ui/AboutDialog.h"
+#include "ui/BatchLoadDialog.h"
 #include "ui/CurveListPanel.h"
 #include "ui/DatasetInfoDialog.h"
 #include "ui/DiagnosticsDialog.h"
@@ -1580,6 +1581,13 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
         const QString path = FileDialog::getOpenFileName(dialog_parent, caption, dir, filter, metrics_source);
         return path.isEmpty() ? QStringList{} : QStringList{path};
       });
+  file_loader_->setBatchAsker([](QWidget* dialog_parent, const QStringList& paths, auto done) {
+    BatchLoadDialog::ask(
+        dialog_parent, paths, /*ask_mode=*/true, /*list_files=*/false,
+        [done = std::move(done)](std::optional<BatchLoadDialog::Answer> answer) {
+          done(answer.has_value() ? answer->batch : nullptr);
+        });
+  });
   // Reload/Replace only for file-backed datasets.
   ui_->curveListPanel->setDatasetSourcePathResolver(
       [this](DatasetId dataset_id) { return file_loader_->sourcePathForDataset(dataset_id); });
@@ -5127,7 +5135,8 @@ void MainWindow::onRebuildToolboxMenu() {
 }
 
 void MainWindow::loadLayoutFromPath(
-    const QString& path, LayoutLoadInteractivity interactivity, const std::optional<QStringList>& current_data_files) {
+    const QString& path, LayoutLoadInteractivity interactivity, const std::optional<QStringList>& current_data_files,
+    const QStringList& chosen_files) {
   snapshotStreamWindowAtLayoutOpen();
   const bool interactive = interactivity == LayoutLoadInteractivity::kInteractive;
   // Governs every failure surface of this load, entry failures included: an automated (--layout) run must never
@@ -5398,7 +5407,7 @@ void MainWindow::loadLayoutFromPath(
   }
   chooseLayoutDatasets(
       std::move(doc), saved_identities, interactivity != LayoutLoadInteractivity::kAutomated,
-      QFileInfo(path).fileName(),
+      QFileInfo(path).fileName(), chosen_files,
       [this, path, restore_policy, tracks = std::move(streams.tracks)](ChosenLayout chosen) {
         if (!chosen.removed.isEmpty()) {
           reportLayoutRestoreIssue(restore_policy, "layout-datasets-removed", chosen.removed);
@@ -5413,7 +5422,7 @@ void MainWindow::loadLayoutFromPath(
 
 void MainWindow::chooseLayoutDatasets(
     QDomDocument doc, const std::optional<QList<layout_xml::DatasetIdentity>>& saved, bool can_prompt,
-    const QString& layout_name, std::function<void(ChosenLayout)> then) {
+    const QString& layout_name, const QStringList& chosen_files, std::function<void(ChosenLayout)> then) {
   const CatalogModel& catalog = session_->catalogModel();
   layout_xml::LoadedDatasets loaded;
   QHash<DatasetId, qsizetype> index_of;
@@ -5475,53 +5484,71 @@ void MainWindow::chooseLayoutDatasets(
     labels.push_back(pin.label);
   }
   QPointer<MainWindow> self(this);
-  LayoutDatasetDialog::ask(
-      this, layout_name, labels, single_only,
-      [self, doc, pins = std::move(choice.datasets), loaded_topics = std::move(choice.loaded_topics),
-       then = std::move(then)](std::optional<QList<int>> chosen) mutable {
-        if (self.isNull()) {
-          return;
-        }
-        if (!chosen.has_value()) {
-          then({});
-          return;
-        }
-        QList<layout_xml::DatasetPin> picked;
-        for (const int index : std::as_const(*chosen)) {
-          // The browser's question does not block: a dataset may have been removed meanwhile.
-          if (self->session_->catalogModel().datasetLabel(pins[index].id).has_value()) {
-            picked.push_back(pins[index]);
-          }
-        }
-        if (picked.isEmpty()) {
-          then(
-              {.doc = std::nullopt,
-               .removed = tr("The chosen datasets were removed while the question was open; nothing was loaded."),
-               .compared = {}});
-          return;
-        }
-        const CatalogModel& live_catalog = self->session_->catalogModel();
-        const CurveColorRegistry& colors = self->session_->curveColorRegistry();
-        layout_xml::pinLayoutToDatasets(doc, picked, loaded_topics, [&live_catalog, &colors](const QDomElement& curve) {
-          const std::optional<QString> key = live_catalog.resolveCurveKey(
-              curve.attribute(u"dataset_id"_s).toUInt(), curve.attribute(u"dataset_source"_s),
-              curve.attribute(u"dataset_path"_s), curve.attribute(u"topic"_s), curve.attribute(u"field"_s));
-          const std::optional<QString> hex = key.has_value() ? colors.color(*key) : std::nullopt;
-          return hex.has_value() ? std::optional<QColor>(QColor(*hex)) : std::nullopt;
-        });
-        const QString removed =
-            picked.size() < chosen->size()
-                ? tr("Some of the chosen datasets were removed while the question was open; the layout shows the "
-                     "others.")
-                : QString();
-        std::vector<DatasetId> compared;
-        if (picked.size() > 1) {
-          for (const layout_xml::DatasetPin& pin : std::as_const(picked)) {
-            compared.push_back(pin.id);
-          }
-        }
-        then({.doc = std::move(doc), .removed = removed, .compared = std::move(compared)});
-      });
+  // Files chosen before they loaded answer the question: every candidate dataset from one of them (a fan-out file's
+  // entries share its path). When the layout cannot be copied and several were chosen, the question still asks, so
+  // it can say why only one can be shown.
+  QList<int> preanswered;
+  for (qsizetype index = 0; index < choice.datasets.size(); ++index) {
+    const QString& path = choice.datasets[index].path;
+    if (std::any_of(chosen_files.begin(), chosen_files.end(), [&path](const QString& chosen) {
+          return layout_xml::isSamePath(path, chosen);
+        })) {
+      preanswered.push_back(static_cast<int>(index));
+    }
+  }
+  if (!choice.blockers.isEmpty() && preanswered.size() > 1) {
+    preanswered.clear();
+  }
+  auto apply_choice = [self, doc, pins = std::move(choice.datasets), loaded_topics = std::move(choice.loaded_topics),
+                       then = std::move(then)](std::optional<QList<int>> chosen) mutable {
+    if (self.isNull()) {
+      return;
+    }
+    if (!chosen.has_value()) {
+      then({});
+      return;
+    }
+    QList<layout_xml::DatasetPin> picked;
+    for (const int index : std::as_const(*chosen)) {
+      // The browser's question does not block: a dataset may have been removed meanwhile.
+      if (self->session_->catalogModel().datasetLabel(pins[index].id).has_value()) {
+        picked.push_back(pins[index]);
+      }
+    }
+    if (picked.isEmpty()) {
+      then(
+          {.doc = std::nullopt,
+           .removed = tr("The chosen datasets were removed while the question was open; nothing was loaded."),
+           .compared = {}});
+      return;
+    }
+    const CatalogModel& live_catalog = self->session_->catalogModel();
+    const CurveColorRegistry& colors = self->session_->curveColorRegistry();
+    layout_xml::pinLayoutToDatasets(doc, picked, loaded_topics, [&live_catalog, &colors](const QDomElement& curve) {
+      const std::optional<QString> key = live_catalog.resolveCurveKey(
+          curve.attribute(u"dataset_id"_s).toUInt(), curve.attribute(u"dataset_source"_s),
+          curve.attribute(u"dataset_path"_s), curve.attribute(u"topic"_s), curve.attribute(u"field"_s));
+      const std::optional<QString> hex = key.has_value() ? colors.color(*key) : std::nullopt;
+      return hex.has_value() ? std::optional<QColor>(QColor(*hex)) : std::nullopt;
+    });
+    const QString removed =
+        picked.size() < chosen->size()
+            ? tr("Some of the chosen datasets were removed while the question was open; the layout shows the "
+                 "others.")
+            : QString();
+    std::vector<DatasetId> compared;
+    if (picked.size() > 1) {
+      for (const layout_xml::DatasetPin& pin : std::as_const(picked)) {
+        compared.push_back(pin.id);
+      }
+    }
+    then({.doc = std::move(doc), .removed = removed, .compared = std::move(compared)});
+  };
+  if (!preanswered.isEmpty()) {
+    apply_choice(preanswered);
+    return;
+  }
+  LayoutDatasetDialog::ask(this, layout_name, labels, single_only, std::move(apply_choice));
 }
 
 QStringList MainWindow::startLayoutStreams(
@@ -5601,7 +5628,7 @@ void MainWindow::loadBrowserParsedLayout(QDomDocument doc, const QString& browse
   }
   // The dataset question does not block in the browser, so its answer finishes the load, before or after this returns.
   chooseLayoutDatasets(
-      std::move(doc), std::nullopt, /*can_prompt=*/true, browser_name, [this, browser_name](ChosenLayout chosen) {
+      std::move(doc), std::nullopt, /*can_prompt=*/true, browser_name, {}, [this, browser_name](ChosenLayout chosen) {
         if (!chosen.removed.isEmpty()) {
           showBrowserLayoutWarning(this, tr("Load Layout"), chosen.removed);
         }
@@ -6694,6 +6721,46 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
     return;
   }
 
+  QStringList absolute_files;
+  for (const QString& path : data_files) {
+    absolute_files.push_back(QFileInfo(path).absoluteFilePath());
+  }
+  // The file list only for a layout naming at most one dataset: one naming several keeps its own bindings, mapped to
+  // the files ("Command-line startup"), and never asks which datasets to show.
+  bool list_files = false;
+  if (!layout_path.isEmpty()) {
+    QFile file(layout_path);
+    QDomDocument doc;
+    list_files =
+        file.open(QIODevice::ReadOnly) && doc.setContent(&file) && layout_xml::datasetIdentities(doc).size() <= 1;
+  }
+  const bool ask_mode = file_loader_->batchRepeatsADialog(absolute_files);
+  if (interactive && absolute_files.size() >= 2 && (ask_mode || list_files)) {
+    QPointer<MainWindow> self(this);
+    BatchLoadDialog::ask(
+        this, absolute_files, ask_mode, list_files,
+        [self, absolute_files, layout_path](std::optional<BatchLoadDialog::Answer> answer) {
+          if (self.isNull()) {
+            return;
+          }
+          if (!answer.has_value()) {
+            if (!layout_path.isEmpty()) {
+              emit self->layoutRestoreSettled(false);
+            }
+            return;
+          }
+          self->loadStartupFiles(absolute_files, layout_path, /*interactive=*/true, answer->batch, answer->compared);
+        });
+    return;
+  }
+  loadStartupFiles(absolute_files, layout_path, interactive, nullptr, {});
+}
+
+void MainWindow::loadStartupFiles(
+    const QStringList& absolute_files, const QString& layout_path, bool interactive,
+    const std::shared_ptr<LoadBatch>& load_batch, const QStringList& compared) {
+  const LayoutLoadInteractivity layout_interactivity =
+      interactive ? LayoutLoadInteractivity::kStartupAttended : LayoutLoadInteractivity::kAutomated;
   // By ticket: configuration dialogs can deliver other completions through nested loops.
   struct StartupBatch {
     QSet<LoadRequestId> pending;
@@ -6701,25 +6768,21 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
     bool failed = false;
     bool completed = false;
   };
-  QStringList absolute_files;
-  for (const QString& path : data_files) {
-    absolute_files.push_back(QFileInfo(path).absoluteFilePath());
-  }
   const auto batch = std::make_shared<StartupBatch>();
   auto* receiver = new QObject(this);
-  const auto finish = [this, batch, receiver, layout_path, absolute_files, layout_interactivity]() {
+  const auto finish = [this, batch, receiver, layout_path, absolute_files, layout_interactivity, compared]() {
     if (batch->enqueuing || !batch->pending.isEmpty() || batch->completed) {
       return;
     }
     batch->completed = true;
     receiver->deleteLater();
     // A window-owned timer: shutdown flushes file terminals synchronously, into a dying window.
-    QTimer::singleShot(0, this, [this, batch, layout_path, absolute_files, layout_interactivity]() {
+    QTimer::singleShot(0, this, [this, batch, layout_path, absolute_files, layout_interactivity, compared]() {
       if (!layout_path.isEmpty()) {
         if (batch->failed) {
           emit layoutRestoreSettled(false);
         } else {
-          loadLayoutFromPath(layout_path, layout_interactivity, absolute_files);
+          loadLayoutFromPath(layout_path, layout_interactivity, absolute_files, compared);
         }
       }
     });
@@ -6735,6 +6798,7 @@ void MainWindow::loadAtStartup(const QStringList& data_files, const QString& lay
   for (const QString& path : absolute_files) {
     LoadHints hints;
     hints.dialog_policy = interactive ? DialogPolicy::kInteractive : DialogPolicy::kNever;
+    hints.batch = load_batch;
     const auto ticket =
         file_loader_->loadFileTicketed(LoadInput::fromNativePath(path), interactive ? this : nullptr, hints);
     if (ticket == 0) {

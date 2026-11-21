@@ -27,16 +27,16 @@ LayoutDatasetDialog::LayoutDatasetDialog(
           .arg(layout_name));
   ui_->labelSingleOnly->setText(single_only_reason);
   ui_->labelSingleOnly->setVisible(!single_only_reason.isEmpty());
+  const bool single_only = !single_only_reason.isEmpty();
   for (qsizetype index = 0; index < labels.size(); ++index) {
     auto* item = new QListWidgetItem(labels[index], ui_->listDatasets);
     item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
-    item->setCheckState(index == 0 ? Qt::Checked : Qt::Unchecked);
+    item->setCheckState(index == 0 || !single_only ? Qt::Checked : Qt::Unchecked);
   }
   // Space toggles the current row, so the list works from the keyboard.
   ui_->listDatasets->setCurrentRow(0);
   ui_->listDatasets->setFocus();
   QPushButton* ok = ui_->buttonBox->button(QDialogButtonBox::Ok);
-  const bool single_only = !single_only_reason.isEmpty();
   connect(ui_->listDatasets, &QListWidget::itemChanged, this, [this, ok, single_only](QListWidgetItem* changed) {
     if (single_only && changed->checkState() == Qt::Checked) {
       const QSignalBlocker blocker(ui_->listDatasets);

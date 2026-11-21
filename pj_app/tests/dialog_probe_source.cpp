@@ -7,9 +7,13 @@
 // one onRejected) BEFORE the embedded dialog is destroyed, or a late reject reads a freed plugin ctx.
 // The ordering happens across the DSO boundary, so it is appended to the file named by PJ_DIALOG_PROBE_FILE:
 // onRejected() writes "rejected", the dialog destructor "destroyed". The test asserts exactly one "rejected"
-// preceding "destroyed". Claims ".dlgprobe".
+// preceding "destroyed"; it holds only dialog events, a test asserts it stays empty when no dialog runs. Each import
+// appends "<name>" to the file named by PJ_DIALOG_PROBE_IMPORT_FILE, <name> being the dialog's text field as the
+// config carries it ({"name": ...}), so a test can tell which settings a file loaded with; a config named "reject" is
+// refused. Claims ".dlgprobe".
 
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/platform.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -41,10 +45,10 @@ constexpr const char* kUiContent = R"(<?xml version="1.0" encoding="UTF-8"?>
 </ui>
 )";
 
-// Appends one line to the probe file named by PJ_DIALOG_PROBE_FILE, flushed so an abrupt teardown never loses
-// it. No-op when the env var is unset.
-void recordProbe(const char* line) {
-  const auto path = PJ::sdk::getEnv("PJ_DIALOG_PROBE_FILE");
+// Appends one line to the file named by `env_var`, flushed so an abrupt teardown never loses it. No-op when the env
+// var is unset.
+void recordProbe(const std::string& line, const char* env_var = "PJ_DIALOG_PROBE_FILE") {
+  const auto path = PJ::sdk::getEnv(env_var);
   if (!path.has_value() || path->empty()) {
     return;
   }
@@ -92,10 +96,17 @@ class DialogProbeDialog : public PJ::DialogPluginTyped {
     recordProbe("rejected");
   }
   std::string saveConfig() const override {
-    return "{}";
+    return nlohmann::json{{"name", name_}}.dump();
   }
-  bool loadConfig(std::string_view) override {
-    return true;
+  bool loadConfig(std::string_view json) override {
+    const auto config = nlohmann::json::parse(json, nullptr, false);
+    if (config.is_object() && config.contains("name") && config["name"].is_string()) {
+      name_ = config["name"].get<std::string>();
+    }
+    return name_ != "reject";
+  }
+  [[nodiscard]] const std::string& name() const {
+    return name_;
   }
 
  private:
@@ -124,6 +135,7 @@ class DialogProbeSource : public PJ::FileSourceBase {
     if (!status) {
       return PJ::unexpected(status.error());
     }
+    recordProbe(dialog_.name(), "PJ_DIALOG_PROBE_IMPORT_FILE");
     return PJ::okStatus();
   }
 

@@ -16,8 +16,8 @@ class LayoutDatasetDialog;
 
 namespace PJ {
 
-// Asks which loaded datasets a layout aimed at one dataset should show: one checkbox per candidate, the first checked.
-// A non-empty `single_only_reason` allows one checked dataset at a time and says why.
+// Asks which loaded datasets a layout aimed at one dataset should show: one checkbox per candidate, all checked. A
+// non-empty `single_only_reason` allows one checked dataset at a time (the first, initially) and says why.
 class LayoutDatasetDialog : public Dialog {
   Q_OBJECT
  public:
