@@ -560,10 +560,6 @@ jobs:
           xvfb-run -a npm --prefix tests/wasm run test:firefox --
           --grep-invert editors.spec.js --shard=${{ matrix.shard }}/2
 
-      - name: Editors suite (Firefox, non-blocking)
-        # Non-blocking until the time-sliced first Luau materialization is
-        # proven to hold the 100 ms main-thread heartbeat budget in Firefox
-        # on CI runners.
+      - name: Editors suite (Firefox)
         if: ${{ !cancelled() && matrix.shard == 1 }}
-        continue-on-error: true
         run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep editors.spec.js
