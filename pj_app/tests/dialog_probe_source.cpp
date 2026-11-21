@@ -7,8 +7,9 @@
 // one onRejected) BEFORE the embedded dialog is destroyed, or a late reject reads a freed plugin ctx.
 // The ordering happens across the DSO boundary, so it is appended to the file named by PJ_DIALOG_PROBE_FILE:
 // onRejected() writes "rejected", the dialog destructor "destroyed". The test asserts exactly one "rejected"
-// preceding "destroyed". An import writes "imported <name>", <name> being the dialog's text field as the config
-// carries it ({"name": ...}), so a test can tell which settings a file loaded with; a config named "reject" is
+// preceding "destroyed"; it holds only dialog events, a test asserts it stays empty when no dialog runs. Each import
+// appends "<name>" to the file named by PJ_DIALOG_PROBE_IMPORT_FILE, <name> being the dialog's text field as the
+// config carries it ({"name": ...}), so a test can tell which settings a file loaded with; a config named "reject" is
 // refused. Claims ".dlgprobe".
 
 #include <fstream>
@@ -44,10 +45,10 @@ constexpr const char* kUiContent = R"(<?xml version="1.0" encoding="UTF-8"?>
 </ui>
 )";
 
-// Appends one line to the probe file named by PJ_DIALOG_PROBE_FILE, flushed so an abrupt teardown never loses
-// it. No-op when the env var is unset.
-void recordProbe(const std::string& line) {
-  const auto path = PJ::sdk::getEnv("PJ_DIALOG_PROBE_FILE");
+// Appends one line to the file named by `env_var`, flushed so an abrupt teardown never loses it. No-op when the env
+// var is unset.
+void recordProbe(const std::string& line, const char* env_var = "PJ_DIALOG_PROBE_FILE") {
+  const auto path = PJ::sdk::getEnv(env_var);
   if (!path.has_value() || path->empty()) {
     return;
   }
@@ -134,7 +135,7 @@ class DialogProbeSource : public PJ::FileSourceBase {
     if (!status) {
       return PJ::unexpected(status.error());
     }
-    recordProbe("imported " + dialog_.name());
+    recordProbe(dialog_.name(), "PJ_DIALOG_PROBE_IMPORT_FILE");
     return PJ::okStatus();
   }
 

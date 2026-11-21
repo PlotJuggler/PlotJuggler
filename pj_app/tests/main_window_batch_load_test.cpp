@@ -45,13 +45,13 @@ using Peer = PJ::MainWindowBatchLoadTestPeer;
 using PJ::BatchDialogMode;
 
 // The probe plugin (.dlgprobe) has a configuration dialog and saves a config once it is accepted; its imports are
-// recorded with the settings they ran with ("imported <name>", in probe_log_). The mock one (.mock) has no dialog.
+// recorded with the settings they ran with (imports()). The mock one (.mock) has no dialog.
 class BatchLoadTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(extensions_.isValid());
     ASSERT_TRUE(data_.isValid());
-    qputenv("PJ_DIALOG_PROBE_FILE", data_.filePath(u"probe.log"_s).toUtf8());
+    qputenv("PJ_DIALOG_PROBE_IMPORT_FILE", data_.filePath(u"imports.log"_s).toUtf8());
     for (const QString& plugin :
          {QString::fromUtf8(PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH), QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH)}) {
       ASSERT_TRUE(QFile::copy(plugin, extensions_.filePath(QFileInfo(plugin).fileName())));
@@ -92,16 +92,12 @@ class BatchLoadTest : public ::testing::Test {
 
   // The settings each import ran with, in import order.
   [[nodiscard]] QStringList imports() const {
-    QFile file(data_.filePath(u"probe.log"_s));
-    QStringList names;
-    if (file.open(QIODevice::ReadOnly)) {
-      for (const QByteArray& line : file.readAll().split('\n')) {
-        if (line.startsWith("imported ")) {
-          names.push_back(QString::fromUtf8(line.mid(9)));
-        }
-      }
+    QFile file(data_.filePath(u"imports.log"_s));
+    // Text mode: the probe's std::ofstream writes \r\n line ends on Windows.
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+      return {};
     }
-    return names;
+    return QString::fromUtf8(file.readAll()).split(u'\n', Qt::SkipEmptyParts);
   }
 
   [[nodiscard]] int count(PJ::LoadOutcome outcome) const {
