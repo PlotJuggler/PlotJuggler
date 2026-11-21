@@ -351,7 +351,8 @@ pass; `PlotRhiCanvas` builds the same square dots as geometry). See
 Everything else (GLM, assimp, FFmpeg, the Lua runtime, ...) comes from Conan, including
 **backward-cpp** (`backward-cpp/1.6`): `pj_app` links `Backward::Backward` and installs a
 `backward::SignalHandling` crash handler in `main.cpp` for symbolized stack traces (the gtest
-runners in `cmake/PjTests.cmake` install the same handler on Linux and macOS). Its
+runners in `cmake/PjTests.cmake` install the same handler on Linux and macOS; neither does in
+the sanitizer lanes, whose own report it would replace). Its
 default `dw` backend pulls `elfutils` from Conan, so rich traces need no system `-dev`
 packages.
 

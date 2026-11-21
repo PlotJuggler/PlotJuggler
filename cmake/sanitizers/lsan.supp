@@ -31,3 +31,12 @@ leak:QOpenGLContext::QOpenGLContext
 # Observed: pj_widgets_tests Formats/AppSettingsTest.* (12 cases).
 # ours-by-design: per-thread QSettings, never destroyed.
 leak:appSettings
+
+# fontconfig 2.17.1 (Ubuntu 26.04's libfontconfig.so.1) keeps 320 bytes in 3
+# allocations that it makes while parsing its configuration (expat callbacks),
+# the first time Qt registers an application font. The library frames have no
+# symbols; the only named frame is Qt's QFontconfigDatabase::addApplicationFont,
+# so a font PJ4 itself leaks is still reported through its own direct stack.
+# Observed: pj_app_unit_tests.BundledFont.*, CustomWidgetE2E.* (the app at exit).
+# third-party: fontconfig config parse under QFontconfigDatabase.
+leak:QFontconfigDatabase::addApplicationFont
