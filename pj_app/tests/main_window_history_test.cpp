@@ -4,14 +4,12 @@
 #include <gtest/gtest.h>
 #include <qwt_plot_curve.h>
 
-#include <QAbstractButton>
 #include <QApplication>
 #include <QDomDocument>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QGuiApplication>
 #include <QKeyEvent>
-#include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPointer>
@@ -21,7 +19,6 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
-#include <QTimer>
 #include <QToolButton>
 #include <algorithm>
 #include <atomic>
@@ -72,6 +69,7 @@
 #include "pj_widgets/Timeline.h"
 #include "pj_widgets/VisualizationPlaceholderWidget.h"
 #include "support/gui_test_env.h"
+#include "support/modal_answerer.h"
 #ifdef PJ_WITH_SCENE3D
 #include "pj_scene3d_widgets/Scene3DDockWidget.h"
 #endif
@@ -785,32 +783,19 @@ TEST_F(MainWindowHistoryFixture, ProgressiveProcessorMissingAtDrainIsSkipped) {
       window.diagnosticBridge(), &PJ::QtDiagnosticBridge::diagnosticReported, &window,
       [&ids](int, const QString&, const QString& id, const QString&) { ids.push_back(id); });
   QString prompt;
-  QTimer answer;
-  answer.setInterval(10);
-  QObject::connect(&answer, &QTimer::timeout, &answer, [&answer, &prompt]() {
-    QWidget* modal = QApplication::activeModalWidget();
-    if (modal == nullptr) {
-      return;
-    }
-    if (const auto* body = modal->findChild<QLabel*>(u"pjMessageBoxBody"_s)) {
-      prompt = body->text();
-    }
-    for (auto* button : modal->findChildren<QAbstractButton*>(u"pjMessageBoxButton"_s)) {
-      if (button->text() == u"Continue without them"_s || button->text() == u"Remove from plots"_s) {
-        answer.stop();
-        answer.setProperty("clicked", button->text());
-        button->click();
-        return;
-      }
-    }
+  QString clicked;
+  const QStringList labels{u"Continue without them"_s, u"Remove from plots"_s};
+  pj_app_test::ModalAnswerer answer(10);
+  answer.next(pj_app_test::messageBoxWithButton(labels), [&](QWidget* box) {
+    prompt = pj_app_test::messageBoxBody(box);
+    clicked = pj_app_test::clickMessageBoxButton(box, labels);
   });
-  answer.start();
 
   PJ::MainWindowHistoryTestPeer::drainProgressiveRestore(window);
   QCoreApplication::processEvents();
   EXPECT_FALSE(PJ::MainWindowHistoryTestPeer::progressiveRestoreInFlight(window));
   EXPECT_TRUE(prompt.contains(u"/never_arrives"_s)) << prompt.toStdString();
-  EXPECT_EQ(answer.property("clicked").toString(), u"Continue without them"_s) << "no curve is missing";
+  EXPECT_EQ(clicked, u"Continue without them"_s) << "no curve is missing";
   const QByteArray live = PJ::MainWindowHistoryTestPeer::liveState(window);
   EXPECT_TRUE(live.contains("progressive-processor-skip-target")) << live.toStdString();
   EXPECT_TRUE(processors.recipes().empty());

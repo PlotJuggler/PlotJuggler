@@ -9,7 +9,6 @@
 #include <gtest/gtest.h>
 #include <qwt_plot_curve.h>
 
-#include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -43,6 +42,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
 #include "support/loader_test_support.h"
+#include "support/modal_answerer.h"
 #include "support/preset_test_support.h"
 
 using namespace Qt::StringLiterals;
@@ -151,10 +151,13 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
         [this](int, const QString&, const QString& id, const QString& message) {
           diagnostics_.push_back(id + u": "_s + message);
         });
-    auto* timer = new QTimer(window_.get());
-    timer->setInterval(20);
-    QObject::connect(timer, &QTimer::timeout, window_.get(), [this]() { answerModal(); });
-    timer->start();
+    answerer_ = std::make_unique<pj_app_test::ModalAnswerer>();
+    answerer_->every(
+        [this](QWidget* modal) { return !answers_.empty() && questionList(modal) != nullptr; },
+        [this](QWidget* modal) { answerQuestion(modal); });
+    answerer_->every(
+        [](QWidget* modal) { return qobject_cast<QDialog*>(modal) != nullptr; },
+        [this](QWidget* modal) { rejectOther(modal); });
     // Two runs recorded a second apart.
     run_a_ = addRun("a", 100);
     run_b_ = addRun("b", 1'000'000'100);
@@ -183,28 +186,16 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
     answers_.push_back(std::move(rows));
   }
 
-  // A dataset question takes the next queued answer, as does the batch question an attended startup with several files
-  // and a layout asks first (its file list answers the dataset question); every other modal box, and a question nobody
-  // queued an answer for, is rejected and counted in other_modals_, so a test never hangs on it. Answers are queued: a
-  // modal the answer opens runs a nested loop, and the polling timer never fires again inside its own slot.
-  void answerModal() {
-    auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-    if (modal == nullptr || modal->property("pjTestSeen").isValid()) {
-      return;
-    }
-    modal->setProperty("pjTestSeen", true);
+  // The dataset question's list, or the batch question's file list (an attended startup with several files and a
+  // layout asks that first, and its file list answers the dataset question).
+  static QListWidget* questionList(QWidget* modal) {
     auto* list = modal->findChild<QListWidget*>(u"listDatasets"_s);
-    if (list == nullptr) {
-      list = modal->findChild<QListWidget*>(u"listFiles"_s);
-    }
-    if (list == nullptr || answers_.empty()) {
-      ++other_modals_;
-      for (const QLabel* label : modal->findChildren<QLabel*>()) {
-        other_texts_ += label->text();
-      }
-      QMetaObject::invokeMethod(modal, &QDialog::reject, Qt::QueuedConnection);
-      return;
-    }
+    return list != nullptr ? list : modal->findChild<QListWidget*>(u"listFiles"_s);
+  }
+
+  // A question takes the next queued answer: those rows checked and OK, or Cancel when none.
+  void answerQuestion(QWidget* modal) {
+    QListWidget* list = questionList(modal);
     const std::vector<int> rows = answers_.front();
     answers_.pop_front();
     ++asked_;
@@ -216,7 +207,7 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
       offered_.push_back(list->item(row)->text());
     }
     if (rows.empty()) {
-      QMetaObject::invokeMethod(modal, &QDialog::reject, Qt::QueuedConnection);
+      QMetaObject::invokeMethod(qobject_cast<QDialog*>(modal), &QDialog::reject, Qt::QueuedConnection);
       return;
     }
     for (int row = 0; row < list->count(); ++row) {
@@ -230,6 +221,16 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
       }
       ok->click();
     });
+  }
+
+  // Every other modal box, and a question nobody queued an answer for, is rejected and counted, so a test never hangs
+  // on it.
+  void rejectOther(QWidget* modal) {
+    ++other_modals_;
+    for (const QLabel* label : modal->findChildren<QLabel*>()) {
+      other_texts_ += label->text();
+    }
+    QMetaObject::invokeMethod(qobject_cast<QDialog*>(modal), &QDialog::reject, Qt::QueuedConnection);
   }
 
   void load(const QByteArray& body, bool interactive) {
@@ -317,6 +318,8 @@ class LayoutDatasetChoiceTest : public ::testing::Test {
   PJ::DatasetId run_a_ = 0;
   PJ::DatasetId run_b_ = 0;
   std::unique_ptr<PJ::MainWindow> window_;
+  // After window_: destroyed first, so no tick reaches a dying window.
+  std::unique_ptr<pj_app_test::ModalAnswerer> answerer_;
 };
 
 // Intended: File > Load Layout asks; the one dataset checked is the one every reference names, and its time stays

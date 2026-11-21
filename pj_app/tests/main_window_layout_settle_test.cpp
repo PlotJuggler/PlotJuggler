@@ -15,20 +15,16 @@
 
 #include <gtest/gtest.h>
 
-#include <QApplication>
 #include <QDir>
 #include <QDomDocument>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QLabel>
 #include <QList>
-#include <QPushButton>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTimer>
 #include <QWidget>
 #include <algorithm>
 #include <memory>
@@ -41,6 +37,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "support/layout_import_gui_support.h"
 #include "support/loader_test_support.h"
+#include "support/modal_answerer.h"
 #include "ui/CurveListPanel.h"
 
 namespace {
@@ -231,28 +228,14 @@ QByteArray readFile(const QString& path) {
   return file.readAll();
 }
 
-// Clicks the first button whose label is in `labels` on the next message box, records its body text into `shown` and
-// the label clicked in the timer's "clicked" property.
-void answerNextMessageBox(QTimer& timer, const QStringList& labels, QString& shown) {
-  timer.setInterval(10);
-  QObject::connect(&timer, &QTimer::timeout, &timer, [&timer, labels, &shown]() {
-    QWidget* modal = QApplication::activeModalWidget();
-    if (modal == nullptr || modal->objectName() != QStringLiteral("pjMessageBox")) {
-      return;
-    }
-    if (const auto* body = modal->findChild<QLabel*>(QStringLiteral("pjMessageBoxBody"))) {
-      shown = body->text();
-    }
-    for (auto* button : modal->findChildren<QPushButton*>(QStringLiteral("pjMessageBoxButton"))) {
-      if (labels.contains(button->text())) {
-        timer.stop();
-        timer.setProperty("clicked", button->text());
-        button->click();
-        return;
-      }
-    }
+// Answers the next message box that has a button labelled one of `labels`: records its body into `shown` and clicks the
+// first of `labels` it has, recorded into `clicked`.
+void answerNextMessageBox(
+    pj_app_test::ModalAnswerer& answerer, const QStringList& labels, QString& shown, QString& clicked) {
+  answerer.next(pj_app_test::messageBoxWithButton(labels), [labels, &shown, &clicked](QWidget* box) {
+    shown = pj_app_test::messageBoxBody(box);
+    clicked = pj_app_test::clickMessageBoxButton(box, labels);
   });
-  timer.start();
 }
 
 // A layout loaded over data that lacks a derived object's input still applies: the plot restores, and each derived
@@ -388,8 +371,9 @@ TEST_F(MainWindowLayoutSettleTest, InteractiveLoadPromptsForTheSkippedDerivedObj
   QObject::connect(
       &window(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok) { settles.push_back(ok); });
   QString shown;
-  QTimer answer;
-  answerNextMessageBox(answer, {QStringLiteral("Cancel")}, shown);
+  QString clicked;
+  pj_app_test::ModalAnswerer answer(10);
+  answerNextMessageBox(answer, {QStringLiteral("Cancel")}, shown, clicked);
 
   Peer::loadLayout(window(), layout_path, /*interactive=*/true);
   flushQueuedEvents();
@@ -406,13 +390,15 @@ TEST_F(MainWindowLayoutSettleTest, InteractiveLoadPromptsForTheSkippedDerivedObj
 TEST_F(MainWindowLayoutSettleTest, AcceptingThePromptDropsTheSkippedDerivedObjects) {
   const QString layout_path = writeDerivedInputMissingLayout(appSession(), project_dir_->path());
   QString shown;
-  QTimer answer;
-  answerNextMessageBox(answer, {QStringLiteral("Continue without them"), QStringLiteral("Remove from plots")}, shown);
+  QString clicked;
+  pj_app_test::ModalAnswerer answer(10);
+  answerNextMessageBox(
+      answer, {QStringLiteral("Continue without them"), QStringLiteral("Remove from plots")}, shown, clicked);
 
   Peer::loadLayout(window(), layout_path, /*interactive=*/true);
   flushQueuedEvents();
 
-  EXPECT_EQ(answer.property("clicked").toString(), QStringLiteral("Continue without them"));
+  EXPECT_EQ(clicked, QStringLiteral("Continue without them"));
   EXPECT_FALSE(shown.contains(QStringLiteral("curve"))) << shown.toStdString();
   EXPECT_EQ(Peer::totalCurveCount(window()), 1);
   const QByteArray saved = savedLayout(window(), project_dir_->path());
@@ -567,21 +553,15 @@ TEST_F(MainWindowLayoutSettleTest, StreamsThatCannotStartAreNamedAndTheLayoutSti
 TEST_F(MainWindowLayoutSettleTest, WarningBoxShowsInterpolatedTextAsPlainText) {
   const QString path = project_dir_->filePath(QStringLiteral("<b>bold</b><a href=x>link</a>.pj4.xml"));
   QString shown;
-  QTimer dismiss;
-  dismiss.setInterval(10);
-  QObject::connect(&dismiss, &QTimer::timeout, &dismiss, [&shown]() {
-    QWidget* modal = QApplication::activeModalWidget();
-    if (modal == nullptr || modal->objectName() != QStringLiteral("pjMessageBox")) {
-      return;
-    }
-    if (const auto* body = modal->findChild<QLabel*>(QStringLiteral("pjMessageBoxBody"))) {
-      shown = body->text();
-    }
-    if (auto* ok = modal->findChild<QPushButton*>(QStringLiteral("pjMessageBoxButton"))) {
-      ok->click();
-    }
-  });
-  dismiss.start();
+  pj_app_test::ModalAnswerer dismiss(10);
+  dismiss.every(
+      [](QWidget* modal) { return pj_app_test::isMessageBox(modal); },
+      [&shown](QWidget* box) {
+        shown = pj_app_test::messageBoxBody(box);
+        if (const auto buttons = pj_app_test::messageBoxButtons(box); !buttons.isEmpty()) {
+          QMetaObject::invokeMethod(buttons.first(), &QAbstractButton::click, Qt::QueuedConnection);
+        }
+      });
 
   Peer::loadLayout(window(), path, /*interactive=*/true);
 

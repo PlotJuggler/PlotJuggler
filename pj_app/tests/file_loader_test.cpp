@@ -10,7 +10,6 @@
 
 #include <gtest/gtest.h>
 
-#include <QAbstractButton>
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -61,6 +60,7 @@
 #include "pj_widgets/MessageBox.h"
 #include "support/filepath_echo_source.h"
 #include "support/loader_test_support.h"
+#include "support/modal_answerer.h"
 using namespace Qt::StringLiterals;
 
 #ifndef PJ_MOCK_FILE_SOURCE_PLUGIN_PATH
@@ -3794,29 +3794,10 @@ TEST_F(MessageBoxMarshalTest, WorkerThreadMessageBoxIsMarshaledToGuiThread) {
 
   // The GUI thread opens the message box asynchronously while only the ingest worker waits. This timer clicks
   // Continue so askContinue returns true and the load proceeds without a nested GUI event loop.
-  QTimer dismiss;
-  dismiss.setInterval(20);
-  QObject::connect(&dismiss, &QTimer::timeout, [&]() {
-    QWidget* dlg = QApplication::activeModalWidget();
-    if (dlg == nullptr) {
-      for (QWidget* w : QApplication::topLevelWidgets()) {
-        if (w->isVisible() && w->isModal()) {
-          dlg = w;
-          break;
-        }
-      }
-    }
-    if (dlg == nullptr) {
-      return;
-    }
-    for (QAbstractButton* button : dlg->findChildren<QAbstractButton*>()) {
-      if (button->text() == u"Continue"_s) {
-        button->click();
-        return;
-      }
-    }
+  pj_app_test::ModalAnswerer dismiss;
+  dismiss.every(pj_app_test::messageBoxWithButton({u"Continue"_s}), [](QWidget* box) {
+    pj_app_test::clickMessageBoxButton(box, {u"Continue"_s});
   });
-  dismiss.start();
 
   QEventLoop loop;
   bool ok = false;
@@ -3881,25 +3862,12 @@ TEST_F(MessageBoxMarshalTest, GuiThreadLoadConfigReceivesClickedMessageBoxAnswer
     }
   };
 
-  QTimer dismiss;
-  dismiss.setInterval(5);
-  QObject::connect(&dismiss, &QTimer::timeout, [&]() {
-    for (QWidget* widget : QApplication::topLevelWidgets()) {
-      auto* message_box = qobject_cast<PJ::MessageBox*>(widget);
-      if (message_box == nullptr || !message_box->isVisible()) {
-        continue;
-      }
-      for (QAbstractButton* button : message_box->findChildren<QAbstractButton*>()) {
-        if (button->text() == u"Continue"_s) {
-          clicked_continue = true;
-          button->click();
-          maybe_finish();
-          return;
-        }
-      }
-    }
+  pj_app_test::ModalAnswerer dismiss(5);
+  dismiss.every(pj_app_test::messageBoxWithButton({u"Continue"_s}), [&](QWidget* box) {
+    clicked_continue = true;
+    pj_app_test::clickMessageBoxButton(box, {u"Continue"_s});
+    maybe_finish();
   });
-  dismiss.start();
 
   const auto on_loaded = QObject::connect(
       loader_.get(), &PJ::FileLoader::fileLoaded, &loop,

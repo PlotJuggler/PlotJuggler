@@ -8,11 +8,9 @@
 #include <gtest/gtest.h>
 
 #include <QApplication>
-#include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QTemporaryDir>
-#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidgetItem>
 #include <algorithm>
@@ -35,6 +33,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
 #include "pj_widgets/CurveTreeView.h"
+#include "support/modal_answerer.h"
 #include "ui/CurveListPanel.h"
 
 using namespace Qt::StringLiterals;
@@ -127,38 +126,28 @@ QTreeWidgetItem* findRowByKey(QTreeWidgetItem* item, const QString& key) {
   return nullptr;
 }
 
-// Presses the first button (the destructive "Delete") of every themed message box that opens while it lives, after
-// running `meanwhile` with the box still open: what a user changing the session behind a pending prompt does.
+// Presses button `button` (0 the destructive "Delete", 1 Cancel) of every themed message box that opens while it lives,
+// after running `meanwhile` with the box still open: what a user changing the session behind a pending prompt does.
 class MessageBoxAnswerer {
  public:
-  explicit MessageBoxAnswerer(std::function<void()> meanwhile = {}, int button = 0)
-      : meanwhile_(std::move(meanwhile)), button_(button) {
-    timer_.setInterval(5);
-    QObject::connect(&timer_, &QTimer::timeout, &timer_, [this]() {
-      QWidget* modal = QApplication::activeModalWidget();
-      if (modal == nullptr || modal == answered_box_ || modal->objectName() != u"pjMessageBox"_s) {
-        return;
-      }
-      const auto buttons = modal->findChildren<QPushButton*>(u"pjMessageBoxButton"_s);
-      if (buttons.size() <= button_) {
-        return;
-      }
-      answered_box_ = modal;
-      ++answered;
-      if (meanwhile_) {
-        meanwhile_();
-      }
-      QMetaObject::invokeMethod(buttons.at(button_), "click", Qt::QueuedConnection);
-    });
-    timer_.start();
+  explicit MessageBoxAnswerer(std::function<void()> meanwhile = {}, int button = 0) : answerer_(5) {
+    answerer_.every(
+        [button](QWidget* dialog) {
+          return pj_app_test::isMessageBox(dialog) && pj_app_test::messageBoxButtons(dialog).size() > button;
+        },
+        [this, button, meanwhile = std::move(meanwhile)](QWidget* box) {
+          ++answered;
+          if (meanwhile) {
+            meanwhile();
+          }
+          QMetaObject::invokeMethod(
+              pj_app_test::messageBoxButtons(box).at(button), &QAbstractButton::click, Qt::QueuedConnection);
+        });
   }
   int answered = 0;
 
  private:
-  std::function<void()> meanwhile_;
-  int button_ = 0;  ///< which button it presses: 0 the destructive one, 1 Cancel
-  QPointer<QWidget> answered_box_;
-  QTimer timer_;
+  pj_app_test::ModalAnswerer answerer_;
 };
 
 // One window with a dataset holding an (empty) cloud topic and a scalar topic, and the editor named.

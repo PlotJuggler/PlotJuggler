@@ -7,16 +7,13 @@
 
 #include <gtest/gtest.h>
 
-#include <QApplication>
 #include <QDir>
 #include <QDomDocument>
 #include <QFile>
 #include <QPointer>
-#include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-#include <QTimer>
 #include <algorithm>
 #include <cstddef>
 #include <memory>
@@ -34,6 +31,7 @@
 #include "support/gui_test_env.h"
 #include "support/layout_import_gui_support.h"
 #include "support/loader_test_support.h"
+#include "support/modal_answerer.h"
 
 using namespace Qt::StringLiterals;
 
@@ -331,21 +329,11 @@ TEST_F(UncleanShutdownTest, AnsweringDisableTurnsThePluginOffAndItsPanelsRestore
 
   // Answer the question the way a user would: click its "Disable" button once it is up.
   bool clicked = false;
-  QTimer answer;
-  QObject::connect(&answer, &QTimer::timeout, [&]() {
-    QWidget* modal = QApplication::activeModalWidget();
-    if (modal == nullptr || clicked) {
-      return;
-    }
-    for (QPushButton* button : modal->findChildren<QPushButton*>()) {
-      if (button->text() == u"Disable"_s) {
-        clicked = true;
-        button->click();
-        return;
-      }
-    }
+  pj_app_test::ModalAnswerer answer;
+  answer.next(pj_app_test::messageBoxWithButton({u"Disable"_s}), [&clicked](QWidget* box) {
+    clicked = true;
+    pj_app_test::clickMessageBoxButton(box, {u"Disable"_s});
   });
-  answer.start(20);
   window_->reviewUncleanShutdown(/*interactive=*/true);
   answer.stop();
   ASSERT_TRUE(clicked);

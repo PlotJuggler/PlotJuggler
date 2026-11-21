@@ -504,7 +504,7 @@ if(PJ_BUILD_TESTS)
         COMPILE_DEFINITIONS PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:dialog_probe_source_plugin>")
 
     # A batch of files asks once how the loaders' dialogs behave (show all / first / skip).
-    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_batch_load_test.cpp)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_batch_load_test.cpp tests/modal_answerer_test.cpp)
     set_source_files_properties(tests/main_window_batch_load_test.cpp PROPERTIES
         COMPILE_DEFINITIONS
         "PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:dialog_probe_source_plugin>\";PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\"")
