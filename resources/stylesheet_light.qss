@@ -272,6 +272,9 @@ gradient_brand_end:     #CC00CC
 // ---- Status (semantic warning/success/error/info/neutral; theme-agnostic hues) ----
 status_success:          #4CAF6E
 status_warning:          #E6A817
+// Status text on the backdrop (4.5:1 there): labels, error messages in fields and panels.
+status_warning_ink:      #8A5A00
+status_error_ink:        #B3261E
 status_warning_hovered:  #F0B820
 status_error:            #D32F2F
 status_info:             #148CD2
@@ -460,10 +463,10 @@ QLabel {
 /* Status text for plugin and app labels: set the dynamic property `pjStatus` to "warning" or "error" instead of a
    colour, so one value reads in both themes (a hex colour in a plugin .ui cannot). */
 QLabel[pjStatus="warning"] {
-    color: ${status_warning};
+    color: ${status_warning_ink};
 }
 QLabel[pjStatus="error"] {
-    color: ${status_error};
+    color: ${status_error_ink};
 }
 
 QLineEdit {
@@ -2207,7 +2210,7 @@ QFrame#extCard[selected="true"] {
 /* Preferences registry-URL editor: red text while the entered URL is invalid
    or unreachable (advisory edit-finish validation in PreferencesDialog). */
 QLineEdit#lineEditRegistryUrl[urlError="true"] {
-    color: ${status_error};
+    color: ${status_error_ink};
 }
 
 /* Card child labels — version readout, description — inherit the
@@ -2312,7 +2315,7 @@ QLabel#extTagChip {
 /* Marketplace status banner — sticky error state. */
 QLabel#marketplaceStatusError {
     /* Error STATUS ink, not the highlight interaction fill (near-invisible as text). */
-    color: ${status_error};
+    color: ${status_error_ink};
     font-weight: 600;
 }
 

@@ -254,6 +254,9 @@ gradient_brand_end:     #CC00CC
 // ---- Status (semantic warning/success/error/info/neutral; theme-agnostic hues) ----
 status_success:          #4CAF6E
 status_warning:          #E6A817
+// Status text on the backdrop (4.5:1 there): labels, error messages in fields and panels.
+status_warning_ink:      #E6A817
+status_error_ink:        #FF8A80
 status_warning_hovered:  #F0B820
 status_error:            #EF5350
 status_info:             #148CD2
@@ -447,10 +450,10 @@ QLabel {
 /* Status text for plugin and app labels: set the dynamic property `pjStatus` to "warning" or "error" instead of a
    colour, so one value reads in both themes (a hex colour in a plugin .ui cannot). */
 QLabel[pjStatus="warning"] {
-    color: ${status_warning};
+    color: ${status_warning_ink};
 }
 QLabel[pjStatus="error"] {
-    color: ${status_error};
+    color: ${status_error_ink};
 }
 
 QLineEdit {
@@ -475,7 +478,7 @@ QLineEdit {
 /* Inputs react like the canonical Search frame: accent border on hover, the
    stronger accent on focus (focus wins — later rule, equal specificity). */
 QLineEdit:hover {
-    border: 1px solid ${accent_checked_hovered};
+    border: 1px solid ${outline_interactive_hovered};
 }
 QLineEdit:focus {
     border: 1px solid ${outline_interactive_focused};
@@ -821,7 +824,7 @@ QMenu#PJMenu QPushButton[destructive="true"]:hover {
 --------------------------------------------------------------------------- */
 QAbstractSpinBox {
   background-color: ${input};
-  border: 1px solid ${separation};
+  border: 1px solid ${outline_edge_rest};
   color: ${on_input_default};
   padding-top: ${space_none}px;
   padding-bottom: ${space_none}px;
@@ -867,7 +870,7 @@ QAbstractSpinBox::down-arrow:hover {
 }
 
 QAbstractSpinBox:hover {
-  border: 1px solid ${separation};
+  border: 1px solid ${outline_interactive_hovered};
 }
 QAbstractSpinBox:focus {
   border: 1px solid ${outline_interactive_focused};
@@ -1028,7 +1031,7 @@ QPushButton#close_btn {
 QPushButton:disabled {
     color: ${on_backdrop_disabled};
 }
-QPushButton[flat="false"]:disabled {
+QPushButton[flat="false"]:disabled:!checked {
     background: ${neutral_disabled};
 }
 
@@ -1169,7 +1172,7 @@ QComboBox {
     color: ${on_input_default};
     background: ${input};
     selection-color: ${on_accent_checked};
-    border: 1px solid ${separation};
+    border: 1px solid ${outline_edge_rest};
     border-radius: ${radius_input}px;
     padding-top: ${space_none}px;
     padding-bottom: ${space_none}px;
@@ -1184,7 +1187,7 @@ QComboBox {
 }
 
 QComboBox:hover {
-    border: 1px solid ${separation};
+    border: 1px solid ${outline_interactive_hovered};
 }
 QComboBox:focus {
     border: 1px solid ${outline_interactive_focused};
@@ -1691,11 +1694,11 @@ QLineEdit#lineEditPrefix{
 }
 
 QLineEdit#lineEditPrefix:hover{
-  border: 1px solid ${accent_checked_hovered};
+  border: 1px solid ${outline_interactive_hovered};
 }
 
 QLineEdit#lineEditPrefix:focus{
-  border: 1px solid ${accent_checked};
+  border: 1px solid ${outline_interactive_focused};
 }
 
 QWidget#plottingArea{
@@ -1919,10 +1922,10 @@ PJ--Search[variant="standalone"] {
     background: ${input};
 }
 PJ--Search[pjHovered="true"] {
-    border: 1px solid ${accent_checked_hovered};
+    border: 1px solid ${outline_interactive_hovered};
 }
 PJ--Search[pjFocused="true"] {
-    border: 1px solid ${accent_checked};
+    border: 1px solid ${outline_interactive_focused};
 }
 /* The inner field is borderless in every state — the global QLineEdit:hover/
    :focus rule (higher specificity than a bare descendant selector) would
@@ -2205,7 +2208,7 @@ QFrame#extCard[selected="true"] {
 /* Preferences registry-URL editor: red text while the entered URL is invalid
    or unreachable (advisory edit-finish validation in PreferencesDialog). */
 QLineEdit#lineEditRegistryUrl[urlError="true"] {
-    color: ${status_error};
+    color: ${status_error_ink};
 }
 
 QFrame#extCard QLabel {
@@ -2306,7 +2309,7 @@ QLabel#extTagChip {
 
 QLabel#marketplaceStatusError {
     /* Error STATUS ink, not the highlight interaction fill (near-invisible as text). */
-    color: ${status_error};
+    color: ${status_error_ink};
     font-weight: 600;
 }
 

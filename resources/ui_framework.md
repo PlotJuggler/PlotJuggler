@@ -227,6 +227,14 @@ ring** (`outline_*_focused`) rather than being collapsed into hover. Focus is dr
 ring over the nominal fill, so `State::Focused` on the interaction grid resolves
 to Nominal.
 
+## Status Text
+
+Status text (a warning or an error a label reports) uses the `status_warning_ink` / `status_error_ink` tokens, which
+reach 4.5:1 on the backdrop in both themes; `status_*` without `_ink` are the brighter tones for icons and dots. A
+label opts in with the dynamic property `pjStatus` = `"warning"` or `"error"` (the `QLabel[pjStatus=...]` rules), so
+a plugin `.ui` names a role instead of a hex colour that cannot read in both themes. Setting the property after the
+label is shown needs `style()->unpolish(label)` and `polish(label)`: Qt evaluates attribute selectors at polish.
+
 ## Overlays and Selection
 
 **Overlays** are alpha-bearing (`overlay(kind)`): `Hover` / `Pressed` / `Selected`
@@ -268,7 +276,8 @@ materials) are data colors, not chrome, and are not part of this framework.
   a transient press.
 - The state ramp has no `Selected` (distinct from `Checked`), `Active/Current` (current tab, live playhead) or
   `ReadOnly` state.
-- Link, placeholder and caret ink are not themed: the toast's `<a href>` uses Qt's default `QPalette::Link`, and
-  fields set placeholder colors unthemed (reasoning from a review of the widgets, not re-checked).
+- Caret ink is not themed (reasoning from a review of the widgets, not re-checked). Link and placeholder ink are:
+  the `link` and `on_input_muted` tokens reach `QPalette::Link`/`PlaceholderText` through pj_app `Theme.cpp`, and the
+  `QLineEdit` rule sets `placeholder-text-color`.
 - The `chrome_*` palette keys (bar height, button size, icon size, spacing, border width) are not referenced by any
   stylesheet rule or by C++; chrome heights come from `ChromeMetrics` (`pj_widgets/CLAUDE.md`).
