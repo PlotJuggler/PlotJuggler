@@ -10,7 +10,6 @@
 
 #include <gtest/gtest.h>
 
-#include <QAbstractButton>
 #include <QApplication>
 #include <QByteArray>
 #include <QDialog>
@@ -18,7 +17,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
-#include <QLabel>
 #include <QList>
 #include <QSet>
 #include <QSettings>
@@ -51,6 +49,7 @@
 #include "pj_runtime/Time.h"
 #include "pj_widgets/IntScrubber.h"
 #include "support/loader_test_support.h"
+#include "support/modal_answerer.h"
 #include "support/preset_test_support.h"
 #include "support/route_server.h"
 
@@ -789,29 +788,23 @@ class DesktopStreamLayoutTest : public StreamingPresetTest {
     return settled.value_or(false);
   }
 
-  // Answers the next modal message box that has a button labelled `label` by clicking
-  // it, once `ready` (when given) holds, and records the box's text in `asked`.
+  // Answers the next message box that has a button labelled `label` by clicking it, once `ready` (when given) holds,
+  // and records the box's text in `asked`.
   void answerNextQuestion(const QString& label, QString* asked = nullptr, std::function<bool()> ready = {}) {
-    auto* timer = new QTimer(window_.get());
-    QObject::connect(timer, &QTimer::timeout, timer, [timer, label, asked, ready = std::move(ready)] {
-      QWidget* modal = QApplication::activeModalWidget();
-      if (modal == nullptr || (ready && !ready())) {
-        return;
-      }
-      for (QAbstractButton* button : modal->findChildren<QAbstractButton*>(u"pjMessageBoxButton"_s)) {
-        if (button->text() == label) {
-          if (const auto* body = modal->findChild<QLabel*>(u"pjMessageBoxBody"_s);
-              asked != nullptr && body != nullptr) {
-            *asked = body->text();
+    answerer_.next(
+        [label, ready = std::move(ready)](QWidget* modal) {
+          return pj_app_test::messageBoxButton(modal, label) != nullptr && (!ready || ready());
+        },
+        [label, asked](QWidget* box) {
+          if (asked != nullptr) {
+            *asked = pj_app_test::messageBoxBody(box);
           }
-          timer->deleteLater();
-          button->click();
-          return;
-        }
-      }
-    });
-    timer->start(10);
+          pj_app_test::clickMessageBoxButton(box, {label});
+        });
   }
+
+  // Declared in the derived fixture, so destroyed before the base's window_.
+  pj_app_test::ModalAnswerer answerer_{10};
 };
 
 TEST_F(DesktopStreamLayoutTest, CommandLineLayoutStartsItsStreamsWithoutAsking) {

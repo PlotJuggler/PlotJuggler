@@ -11,9 +11,13 @@
 #include <qwt_series_data.h>
 #include <qwt_text.h>
 
+#include <QApplication>
 #include <QColor>
 #include <QDomDocument>
 #include <QListWidget>
+#include <QPalette>
+#include <QPen>
+#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTest>
 #include <QToolButton>
@@ -27,6 +31,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_widgets/ColorContrast.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -122,6 +127,30 @@ TEST(PlotCurveVisibility, ColourChangeRecoloursTheTrackerRowAtOnce) {
   fixture.plot->onChangeCurveColor(fixture.toggled, red);
   EXPECT_TRUE(fixture.plot->trackerValueBoxText().contains(u"color=%1"_s.arg(red.name())))
       << fixture.plot->trackerValueBoxText().toStdString();
+}
+
+// The default blue and red curve colours are 3.3:1 and 3.2:1 on the dark backdrop: read as text they are lifted
+// to 4.5:1, while the curve and its marker keep the colour the user picked.
+TEST(PlotCurveVisibility, DarkThemeTrackerInkReadsOnTheBackdropAndTheCurveKeepsItsColour) {
+  QPalette dark = QApplication::palette();
+  dark.setColor(QPalette::Window, QColor("#373743"));  // theme::appTheme() reads the window lightness
+  QApplication::setPalette(dark);
+  QApplication::processEvents();
+
+  TrackerFixture fixture;
+  const QColor blue("#1F77B4");
+  fixture.plot->onChangeCurveColor(fixture.toggled, blue);
+
+  const QColor backdrop = fixture.plot->qwtPlot()->canvasBackground().color();
+  ASSERT_LT(PJ::contrastRatio(blue, backdrop), 4.5) << "the raw colour must be the failing case";
+  const QRegularExpression row(u"<font color=(#[0-9a-fA-F]{6})>[^<]*: %1</font>"_s.arg(
+      QRegularExpression::escape(fixture.title(fixture.toggled))));
+  const QRegularExpressionMatch match = row.match(fixture.plot->trackerValueBoxText());
+  ASSERT_TRUE(match.hasMatch()) << fixture.plot->trackerValueBoxText().toStdString();
+  const QColor ink(match.captured(1));
+  EXPECT_GE(PJ::contrastRatio(ink, backdrop), 4.5) << ink.name().toStdString();
+  EXPECT_NE(ink, blue);
+  EXPECT_EQ(fixture.plot->curveFromTitle(fixture.toggled)->curve->pen().color(), blue);
 }
 
 TEST(PlotCurveVisibility, SetCurveVisibleIsOneUndoStepAnnouncedOnceAndRepeatingItIsNone) {

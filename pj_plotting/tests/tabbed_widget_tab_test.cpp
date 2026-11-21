@@ -13,6 +13,7 @@
 #include <QDomDocument>
 #include <QFrame>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPen>
 #include <QPointer>
@@ -1017,6 +1018,25 @@ TEST(TabbedPlotReorder, WidgetAndHistoryExemptTabsAreNotDraggable) {
   EXPECT_EQ(tabbed.dockerAt(2), nullptr);
   EXPECT_GT(frames.at(2)->geometry().left(), frames.at(1)->geometry().left());
   EXPECT_EQ(undo_steps, 0);
+}
+
+// Double-clicking a tab opens its rename editor with the whole name selected, so typing replaces the name.
+TEST(TabbedWidgetTab, RenameEditorOpensWithTheNameSelectedSoTypingReplacesIt) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* docker = tabbed.dockerAt(0);
+  const QString before = docker->name();
+  const QList<QFrame*> frames = shownTabFrames(tabbed);
+  ASSERT_FALSE(frames.isEmpty());
+
+  QTest::mouseDClick(frames.first(), Qt::LeftButton, Qt::NoModifier, frames.first()->rect().center());
+  auto* edit = frames.first()->findChild<QLineEdit*>(u"plotTabRenameEdit"_s);
+  ASSERT_NE(edit, nullptr);
+  ASSERT_TRUE(edit->isVisible());
+  EXPECT_EQ(edit->selectedText(), before);
+
+  QTest::keyClicks(edit, u"Signals"_s);
+  QTest::keyClick(edit, Qt::Key_Return);
+  EXPECT_EQ(docker->name(), u"Signals"_s);
 }
 
 }  // namespace

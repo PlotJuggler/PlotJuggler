@@ -85,11 +85,12 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 `./test.sh -R '^pj_app_gui_tests\.'` (links `pj_app_shell` + `pj_resources`), `'^pj_app_unit_tests\.'` (Qt-only
 helpers), `'^pj_app_media_codec_tests\.'` (the two codecs; run from the source root). Each case registers as
 `<runner>.<Suite>.<Case>` and runs in its own process. The runner's shared GUI main
-(`cmake/test_mains/pj_test_main_gui.cpp`) owns the only `QApplication` and gives each process its own application
-name, so settings and data folders are never shared between tests. Suites with their own executable (QRhi display
-passes, layout import, loader suites, MCP bridge) and why: ARCHITECTURE "Tests". Test binaries that touch shell
-icons link `pj_resources`, an OBJECT library, because the shell makes no `Q_INIT_RESOURCE` calls. `tests/wasm_*probe*`
-are acceptance-build-only browser probes. `benchmarks/` holds the mixed-layout benchmark (`PJ_BUILD_DEMOS`).
+(`cmake/test_mains/pj_test_main_gui.cpp`) owns the only `QApplication` and gives each process its own application name,
+so settings and data folders are never shared between tests. Suites with their own executable (QRhi display passes,
+layout import, loader suites, MCP bridge) and why: ARCHITECTURE "Tests". Test binaries that touch shell icons link
+`pj_resources`, an OBJECT library, because the shell makes no `Q_INIT_RESOURCE` calls. `tests/wasm_*probe*` are
+acceptance-build-only browser probes. Tests answer modal dialogs through `tests/support/modal_answerer.h`; the
+exceptions are listed in ARCHITECTURE "Tests". `benchmarks/` holds the mixed-layout benchmark (`PJ_BUILD_DEMOS`).
 
 ## Docs
 

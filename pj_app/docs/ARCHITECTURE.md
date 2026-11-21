@@ -731,6 +731,15 @@ for the tracked video fixture). The first two use `pj_add_test_runner` with the 
 state from leaking between cases, so run them through ctest. `tests/support/gui_test_env.cpp` registers the runner's
 OpenGL-disable environment once; file-local environments check the selected suite before changing process-wide state.
 
+A test answers the modal dialogs a flow opens with `pj_app_test::ModalAnswerer` (`tests/support/modal_answerer.h`),
+never a timer that acts on whatever dialog is on top: each rule names the dialog it answers (a child, a button label),
+and a dialog no rule matches is left open and listed. A non-blocking box (a refused file's "Load failed") can sit on top
+until the next dialog opens over it, and a tick between the two found the box instead; the macOS runner hit that now and
+then. `PJ_TEST_MODAL_POLL_MS=1` makes every answerer tick each millisecond, which lands between two dialogs opening back
+to back almost every run: run a changed suite once that way. Two suites keep their own drivers: the live-only
+layout-import e2e suite steps through one dialog several times (`driveWhenModal`), and a toolbox fold case closes
+whatever dialog a failure would raise, so the case reports instead of hanging.
+
 Suites with their own executable and ctest entry, and why:
 
 - `rhi_dock_lifecycle_test`, `rhi_mixed_dock_test`: `QRhiWidget`s in ADS docks through float/redock, split, tab

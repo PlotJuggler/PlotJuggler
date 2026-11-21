@@ -232,7 +232,7 @@ void ToggleSwitch::paintEvent(QPaintEvent* /*event*/) {
   const QRect thumb = thumbRect();
   painter.setPen(
       QPen(theme::surface(PJ::theme::Surface::Separation, fw_theme), theme::stroke(theme::Stroke::Hairline, fw_theme)));
-  painter.setBrush(theme::interaction(theme::Variant::Neutral, theme::State::Nominal, fw_theme));
+  painter.setBrush(theme::toggleThumb(fw_theme));
   painter.drawEllipse(thumb);
 }
 

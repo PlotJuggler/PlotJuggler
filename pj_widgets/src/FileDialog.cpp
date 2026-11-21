@@ -15,6 +15,7 @@
 #include <QLayout>
 #include <QLineEdit>
 #include <QList>
+#include <QPointer>
 #include <QSettings>
 #include <QSize>
 #include <QString>
@@ -29,6 +30,7 @@
 #include <vector>
 
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/MessageBox.h"
 #include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
@@ -151,6 +153,34 @@ void applySvgIcon(QFileDialog* dialog, const char* object_name, const QString& s
   }
 }
 
+// A save picker that asks before replacing a file with PJ::MessageBox. QFileDialog's own question is a native
+// QMessageBox (system icon and chrome); DontConfirmOverwrite switches it off and accept() asks instead. A typed
+// directory, a new name and the other modes go straight to QFileDialog::accept().
+class ConfirmingFileDialog final : public QFileDialog {
+ public:
+  using QFileDialog::QFileDialog;
+
+  void accept() override {
+    const QStringList files = selectedFiles();
+    const QFileInfo target(files.value(0));
+    if (acceptMode() != AcceptSave || fileMode() != AnyFile || !target.exists() || target.isDir()) {
+      QFileDialog::accept();
+      return;
+    }
+    // The browser's answer arrives after this returns, so the dialog may be gone by then.
+    MessageBox::questionAsync(
+        this, FileDialog::tr("Replace file?"),
+        FileDialog::tr("%1 already exists. Do you want to replace it?").arg(target.fileName()),
+        {{FileDialog::tr("Replace"), MessageBox::kDestructiveRole},
+         {FileDialog::tr("Cancel"), MessageBox::kCancelRole}},
+        [self = QPointer<ConfirmingFileDialog>(this)](int choice, bool) {
+          if (self != nullptr && choice == 0) {
+            self->QFileDialog::accept();
+          }
+        });
+  }
+};
+
 }  // namespace
 
 FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
@@ -164,7 +194,7 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
   // The inner picker is a plain child widget: Qt::Widget strips the default Qt::Dialog window flags, so it does not try
   // to be a top-level window. DontUseNativeDialog forces the Qt-drawn widget tree, which our stylesheet targets. The
   // explicit start folder also keeps Qt from consulting its in-process last-visited folder.
-  inner_ = new QFileDialog(contentWidget(), QString(), QDir::homePath());
+  inner_ = new ConfirmingFileDialog(contentWidget(), QString(), QDir::homePath());
   if (qt_state.view_mode == u"Detail"_s) {
     inner_->setViewMode(QFileDialog::Detail);
   }
@@ -173,6 +203,7 @@ FileDialog::FileDialog(QWidget* parent) : Dialog(parent) {
     inner_->setSidebarUrls(answeringShortcuts(qt_state.shortcuts));
   }
   inner_->setOption(QFileDialog::DontUseNativeDialog);
+  inner_->setOption(QFileDialog::DontConfirmOverwrite);  // ConfirmingFileDialog::accept() asks
   inner_->setWindowFlags(Qt::Widget);
   inner_->setSizeGripEnabled(false);
 

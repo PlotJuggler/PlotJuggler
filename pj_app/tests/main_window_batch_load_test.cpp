@@ -7,7 +7,6 @@
 
 #include <gtest/gtest.h>
 
-#include <QApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -16,7 +15,6 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QTemporaryDir>
-#include <QTimer>
 #include <algorithm>
 #include <memory>
 #include <optional>
@@ -24,7 +22,9 @@
 #include "FileLoader.h"
 #include "MainWindow.h"
 #include "pj_widgets/DualOptionsWidget.h"
+#include "pj_widgets/MessageBox.h"
 #include "support/loader_test_support.h"
+#include "support/modal_answerer.h"
 
 using namespace Qt::StringLiterals;
 
@@ -60,10 +60,12 @@ class BatchLoadTest : public ::testing::Test {
     QObject::connect(
         &Peer::fileLoader(*window_), &PJ::FileLoader::loadFinished, window_.get(),
         [this](quint64, PJ::LoadOutcome outcome) { outcomes_.push_back(outcome); });
-    auto* timer = new QTimer(window_.get());
-    timer->setInterval(20);
-    QObject::connect(timer, &QTimer::timeout, window_.get(), [this]() { answerDialog(); });
-    timer->start();
+    answerer_ = std::make_unique<pj_app_test::ModalAnswerer>();
+    answerer_->every(pj_app_test::hasChild<PJ::DualOptionsWidget>(u"dialogMode"_s), [this](QWidget* dialog) {
+      answerBatchQuestion(dialog);
+    });
+    answerer_->every(
+        pj_app_test::hasChild<QLineEdit>(u"name_input"_s), [this](QWidget* dialog) { answerPluginDialog(dialog); });
   }
 
   QStringList newFiles(int count, bool with_dialog = true) {
@@ -104,47 +106,37 @@ class BatchLoadTest : public ::testing::Test {
     return static_cast<int>(std::count(outcomes_.begin(), outcomes_.end(), outcome));
   }
 
-  // The batch question takes batch_mode_ (Cancel when empty); a plugin dialog gets the next of dialog_names_ typed in
-  // (when any is left) and is accepted, or rejected when reject_plugin_dialogs_. Answers are queued: the dialog runs a
-  // nested loop, inside which this timer still fires.
-  void answerDialog() {
-    QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-    if (dialog == nullptr) {
-      for (QDialog* candidate : window_->findChildren<QDialog*>()) {
-        if (candidate->isVisible()) {
-          dialog = candidate;
-        }
-      }
-    }
-    if (dialog == nullptr || dialog->property("pjTestSeen").isValid()) {
+  // The batch question takes batch_mode_ (Cancel when empty).
+  void answerBatchQuestion(QWidget* dialog) {
+    ++batch_questions_;
+    if (!batch_mode_.has_value()) {
+      QMetaObject::invokeMethod(qobject_cast<QDialog*>(dialog), &QDialog::reject, Qt::QueuedConnection);
       return;
     }
-    dialog->setProperty("pjTestSeen", true);
-    if (auto* mode = dialog->findChild<PJ::DualOptionsWidget*>(u"dialogMode"_s); mode != nullptr) {
-      ++batch_questions_;
-      if (!batch_mode_.has_value()) {
-        QMetaObject::invokeMethod(dialog, &QDialog::reject, Qt::QueuedConnection);
-        return;
-      }
-      mode->setSelectedIndex(static_cast<int>(*batch_mode_));
-      QMetaObject::invokeMethod(dialog, &QDialog::accept, Qt::QueuedConnection);
-      return;
-    }
+    dialog->findChild<PJ::DualOptionsWidget*>(u"dialogMode"_s)->setSelectedIndex(static_cast<int>(*batch_mode_));
+    QMetaObject::invokeMethod(qobject_cast<QDialog*>(dialog), &QDialog::accept, Qt::QueuedConnection);
+  }
+
+  // The probe's dialog gets the next of dialog_names_ typed in (when any is left) and is accepted, or rejected when
+  // reject_plugin_dialogs_. Any other dialog, such as the "Load failed" box a refused file opens, is left open.
+  void answerPluginDialog(QWidget* dialog) {
     ++plugin_dialogs_;
     if (reject_plugin_dialogs_) {
-      QMetaObject::invokeMethod(dialog, &QDialog::reject, Qt::QueuedConnection);
+      QMetaObject::invokeMethod(qobject_cast<QDialog*>(dialog), &QDialog::reject, Qt::QueuedConnection);
       return;
     }
     if (!dialog_names_.isEmpty()) {
       dialog->findChild<QLineEdit*>(u"name_input"_s)->setText(dialog_names_.takeFirst());
     }
     QPushButton* ok = dialog->findChild<QDialogButtonBox*>(u"buttonBox"_s)->button(QDialogButtonBox::Ok);
-    QTimer::singleShot(0, ok, [ok]() { ok->click(); });
+    QMetaObject::invokeMethod(ok, &QPushButton::click, Qt::QueuedConnection);
   }
 
   QTemporaryDir extensions_;
   QTemporaryDir data_;
   std::unique_ptr<PJ::MainWindow> window_;
+  // After window_: destroyed first, so no tick reaches a dying window.
+  std::unique_ptr<pj_app_test::ModalAnswerer> answerer_;
   std::vector<PJ::LoadOutcome> outcomes_;
   std::optional<BatchDialogMode> batch_mode_ = BatchDialogMode::kShowFirst;
   bool reject_plugin_dialogs_ = false;
@@ -203,6 +195,9 @@ TEST_F(BatchLoadTest, AFirstDialogThatFailsLeavesShowFirstAsking) {
   EXPECT_EQ(plugin_dialogs_, 3) << "the failed dialog, then the next file's";
   EXPECT_EQ(count(PJ::LoadOutcome::kFailed), 1);
   EXPECT_EQ(imports(), (QStringList{u"stale"_s, u"fresh"_s, u"fresh"_s}));
+  const auto boxes = window_->findChildren<PJ::MessageBox*>();
+  EXPECT_EQ(std::count_if(boxes.begin(), boxes.end(), [](const PJ::MessageBox* box) { return box->isVisible(); }), 1)
+      << "the refused file's \"Load failed\" box, left open while the batch went on";
 }
 
 TEST_F(BatchLoadTest, ShowAllAsksEveryFile) {

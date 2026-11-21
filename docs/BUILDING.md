@@ -247,7 +247,11 @@ Per-module gtest runners are registered with `gtest_discover_tests` in
 [`cmake/PjTests.cmake`](../cmake/PjTests.cmake), one process per case, under ctest names
 `<runner>.<Suite>.<Case>`. `test.sh` forces `QT_QPA_PLATFORM=offscreen` because many
 widget tests create a `QApplication` without choosing a platform and would otherwise
-open windows.
+open windows. Every runner registered there also installs the backward-cpp crash handler
+(`cmake/test_mains/pj_test_crash_handler.cpp`), so a crashing case prints its symbolized
+stack under `--output-on-failure` instead of a bare `SegFault`; sanitizer lanes leave it
+out and keep the sanitizer's own report, and Windows leaves it out because gtest already
+reports a crash there as an SEH exception.
 
 **Build tree size and debug info.** `./build.sh --minimal` builds what the packaging
 pipeline compiles (app closure only, no tests, demos or debug info); `--no-tests`,
@@ -346,7 +350,8 @@ pass; `PlotRhiCanvas` builds the same square dots as geometry). See
 
 Everything else (GLM, assimp, FFmpeg, the Lua runtime, ...) comes from Conan, including
 **backward-cpp** (`backward-cpp/1.6`): `pj_app` links `Backward::Backward` and installs a
-`backward::SignalHandling` crash handler in `main.cpp` for symbolized stack traces. Its
+`backward::SignalHandling` crash handler in `main.cpp` for symbolized stack traces (the gtest
+runners in `cmake/PjTests.cmake` install the same handler on Linux and macOS). Its
 default `dw` backend pulls `elfutils` from Conan, so rich traces need no system `-dev`
 packages.
 

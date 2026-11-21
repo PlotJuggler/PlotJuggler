@@ -29,7 +29,6 @@
 class QLabel;
 class QResizeEvent;
 class QSettings;
-class QToolButton;
 class QWidget;
 
 namespace pj::scene3d {
@@ -43,6 +42,7 @@ class TrailLayer;
 namespace PJ {
 
 class ComboBox;
+class SvgButton;
 class TransformService;
 
 // Dock content for 3D scene topics, on every platform. Layer lifetime, ordering, visibility, tracker-time dispatch and
@@ -334,7 +334,7 @@ class Scene3DDockWidget : public SceneDockWidget {
   // Top-right overlay controls, children of `this` rather than the view (z-order): the camera-model selector and a Home
   // (reset-to-default-view) button, left of the orientation gizmo.
   ComboBox* camera_model_combo_ = nullptr;
-  QToolButton* home_button_ = nullptr;
+  SvgButton* home_button_ = nullptr;
   QLabel* rendering_warning_label_ = nullptr;
 
   /// Per-topic orphan/warning state (keyed by topicKey): recomputeOrphanStates() emits layerWarningChanged only when a

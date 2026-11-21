@@ -74,6 +74,7 @@
 
 #include "gtest/gtest.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/SvgUtil.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -141,6 +142,69 @@ TEST(PjUiLoader, RegistersBuildingBlocks) {
   EXPECT_NE(root->findChild<QLineEdit*>("apiKey"), nullptr);
   EXPECT_NE(root->findChild<QLineEdit*>("plainEdit"), nullptr);
   delete root;
+}
+
+// A plugin .ui that names a host SVG in a raw <iconset> gets the themed rendering: in the dark theme the authored
+// #3D3D3D ink would be near-invisible on the dark dialog.
+TEST(PjUiLoader, RetintsHostIconsets) {
+  qapp();
+  const QVariant saved_theme = PJ::appSettings().value(QString::fromLatin1(PJ::kThemeSettingsKey));
+  PJ::appSettings().setValue(QString::fromLatin1(PJ::kThemeSettingsKey), u"dark"_s);
+  const QByteArray ui = R"(<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Root</class>
+ <widget class="QWidget" name="Root">
+  <layout class="QVBoxLayout">
+   <item>
+    <widget class="QPushButton" name="saveButton">
+     <property name="icon">
+      <iconset>
+       <normaloff>:/resources/svg/save.svg</normaloff>:/resources/svg/save.svg</iconset>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+</ui>)";
+  QByteArray data(ui);
+  QBuffer buffer(&data);
+  buffer.open(QIODevice::ReadOnly);
+  PJ::PjUiLoader loader;
+  QWidget* root = loader.load(&buffer);
+  ASSERT_NE(root, nullptr);
+  auto* button = root->findChild<QPushButton*>("saveButton");
+  ASSERT_NE(button, nullptr);
+
+  // Every opaque pixel of the icon is in the theme's icon ink.
+  const auto expectInk = [button](PJ::theme::Theme theme) {
+    const QImage image = button->icon().pixmap(QSize(64, 64)).toImage();
+    const QRgb ink = PJ::theme::iconInk(theme).rgb();
+    int opaque = 0;
+    int inked = 0;
+    for (int y = 0; y < image.height(); ++y) {
+      for (int x = 0; x < image.width(); ++x) {
+        const QColor c = image.pixelColor(x, y);
+        if (c.alpha() == 255) {
+          ++opaque;
+          inked += c.rgb() == ink ? 1 : 0;
+        }
+      }
+    }
+    EXPECT_GT(opaque, 0);
+    EXPECT_EQ(inked, opaque);
+  };
+  expectInk(PJ::theme::Theme::Dark);
+
+  // A long-lived panel re-tints on a theme switch.
+  PJ::appSettings().setValue(QString::fromLatin1(PJ::kThemeSettingsKey), u"light"_s);
+  PJ::PjUiLoader::retintHostIcons(root);
+  expectInk(PJ::theme::Theme::Light);
+  delete root;
+  if (saved_theme.isValid()) {
+    PJ::appSettings().setValue(QString::fromLatin1(PJ::kThemeSettingsKey), saved_theme);
+  } else {
+    PJ::appSettings().remove(QString::fromLatin1(PJ::kThemeSettingsKey));
+  }
 }
 
 // Bounds and handle values are applied, and a time span turns on the floating duration labels.

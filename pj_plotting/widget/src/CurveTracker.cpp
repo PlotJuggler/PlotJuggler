@@ -20,11 +20,16 @@
 using namespace Qt::StringLiterals;
 
 #include "pj_widgets/AppSettings.h"
+#include "pj_widgets/ColorContrast.h"
 #include "pj_widgets/FrameworkTokens.h"
 
 namespace PJ {
 
 namespace {
+
+// Curve palettes are tuned to draw on the plot, not to be read as text: on the dark backdrop the default red and blue
+// fall under this ratio.
+constexpr double kMinTextContrast = 4.5;
 
 [[nodiscard]] std::optional<QPointF> referencePointAt(const QwtPlotCurve* curve, std::optional<QPointF> reference) {
   return reference.has_value() ? curvePointAt(curve, reference->x()) : std::nullopt;
@@ -127,8 +132,11 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     point_markers_.push_back(marker);
   }
 
+  // The value box is the canvas colour at partial alpha, so its text reads against the canvas colour itself.
+  const QColor canvas_color = plot_->canvasBackground().color();
+
   struct LineParts {
-    QColor color;
+    QColor color;  // text ink: the curve colour, lightened on the dark theme until it reads on the box
     QString value;
     QString delta;
     QString name;
@@ -172,7 +180,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
 
     const auto maybe_reference = referencePointAt(curve, reference_pos_);
     LineParts parts;
-    parts.color = color;
+    parts.color = fw_theme == theme::Theme::Dark ? inkWithContrast(color, canvas_color, kMinTextContrast) : color;
     parts.value = QString::number(point.y(), 'f', precision);
     parts.name = curve->title().text();
     if (maybe_reference.has_value()) {
@@ -222,9 +230,9 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
       }
     }
 
-    // Canvas colour with alpha: a white veil on the light theme, a dark one on dark,
-    // so the WindowText/curve-colour ink above always reads against it.
-    QColor background_color = plot_->canvasBackground().color();
+    // Canvas colour with alpha: a white veil on the light theme, a dark one on dark, so the WindowText ink above reads
+    // against it (and the curve-colour ink on the dark theme, lifted to kMinTextContrast).
+    QColor background_color = canvas_color;
     background_color.setAlpha(200);
     marker_text.setBackgroundBrush(background_color);
     marker_text.setBorderPen(QPen(Qt::NoPen));

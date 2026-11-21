@@ -1552,17 +1552,16 @@ static void applyToWidget(
 
   if (auto* pte = qobject_cast<QPlainTextEdit*>(w)) {
     if (auto code = view.codeContent(name)) {
-      // Code editors use a light-theme syntax highlighter (dark-on-white token colors), so the text area stays white
-      // whatever the app theme. The widget is tagged so the global stylesheet paints it white; set once, then
-      // re-polished so the attribute selector re-evaluates.
+      // Code editors sit on the data backdrop in both themes, the surface the theme's syntax inks are tuned for. The
+      // widget is tagged so the global stylesheet paints it; set once, then re-polished so the attribute selector
+      // re-evaluates.
       if (!pte->property("_pj_code_editor").toBool()) {
         pte->setProperty("_pj_code_editor", true);
         pte->style()->unpolish(pte);
         pte->style()->polish(pte);
       }
       // The editor's immediate container pane is tagged too, so the area around the editor (assist dropdowns, labels)
-      // shares the white code surface in the light theme. WA_StyledBackground lets the QSS background paint on a plain
-      // QWidget; the dark theme leaves the pane at its normal background.
+      // shares the code surface. WA_StyledBackground lets the QSS background paint on a plain QWidget.
       if (auto* pane = pte->parentWidget(); pane != nullptr && !pane->property("_pj_code_editor_pane").toBool()) {
         pane->setProperty("_pj_code_editor_pane", true);
         pane->setAttribute(Qt::WA_StyledBackground, true);

@@ -504,7 +504,7 @@ if(PJ_BUILD_TESTS)
         COMPILE_DEFINITIONS PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH="$<TARGET_FILE:dialog_probe_source_plugin>")
 
     # A batch of files asks once how the loaders' dialogs behave (show all / first / skip).
-    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_batch_load_test.cpp)
+    list(APPEND PJ_APP_GUI_TEST_SOURCES tests/main_window_batch_load_test.cpp tests/modal_answerer_test.cpp)
     set_source_files_properties(tests/main_window_batch_load_test.cpp PROPERTIES
         COMPILE_DEFINITIONS
         "PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:dialog_probe_source_plugin>\";PJ_MOCK_FILE_SOURCE_PLUGIN_PATH=\"$<TARGET_FILE:mock_file_source_plugin>\"")
@@ -670,6 +670,10 @@ if(PJ_BUILD_TESTS)
     # which ship hidden outside --debug-mode, so the button follows them.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/preferences_reset_button_test.cpp)
+
+    # A plugin folder that no longer exists stays listed, in a grey that reads in both themes.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/preferences_missing_folder_test.cpp)
 
     # The first GPU widget does not recreate the main window's native window.
     # Desktop only, like the hidden QRhiWidget that ensures it.
