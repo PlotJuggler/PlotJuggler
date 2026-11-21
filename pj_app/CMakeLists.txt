@@ -671,6 +671,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/preferences_reset_button_test.cpp)
 
+    # A plugin folder that no longer exists stays listed, in a grey that reads in both themes.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/preferences_missing_folder_test.cpp)
+
     # The first GPU widget does not recreate the main window's native window.
     # Desktop only, like the hidden QRhiWidget that ensures it.
     if(NOT EMSCRIPTEN)

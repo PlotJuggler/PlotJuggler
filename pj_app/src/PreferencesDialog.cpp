@@ -278,7 +278,7 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   if (main_window != nullptr) {
     auto paint_missing = [this](QListWidget* list) {
       const auto token_theme = theme::themeFor(theme_.currentTheme() == QLatin1String("light"));
-      const QBrush missing_brush(theme::interaction(theme::Variant::Highlight, theme::State::Nominal, token_theme));
+      const QBrush missing_brush(theme::onSurface(theme::Surface::DataBackdrop, theme::Emphasis::Muted, token_theme));
       for (int row = 0; row < list->count(); ++row) {
         QListWidgetItem* item = list->item(row);
         const bool missing = !QDir(item->text()).exists();
