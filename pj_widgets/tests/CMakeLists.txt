@@ -53,6 +53,7 @@ pj_add_test_runner(pj_widgets_tests
         header_divider_highlight_test.cpp
         header_resize_policy_test.cpp
         visualization_placeholder_test.cpp
+        icon_ink_test.cpp
     # Layout margins, spacing and the button wrap budget resolve from the framework palette (FrameworkTokens), so the
     # stylesheet resource is linked. app_settings_test reaches the plugin settings service (pj_runtime QSettingsBackend):
     # the library itself links no other PJ module.

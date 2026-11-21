@@ -67,6 +67,11 @@ applied by the SVG loaders) folds that ink, legacy black and white, and the oppo
 theme's icon ink, and gives a root `<svg>` without any `fill` one. An icon that must follow the theme is authored
 with `#3D3D3D`; `fill="currentColor"` would not be recolored.
 
+Disabled icons need no variant: `PJ::Style` paints the disabled state of every icon that has no `QIcon::Disabled`
+pixmap of its own in the `icon_ink_disabled` token. A plugin `.ui` `<iconset>` that names a host SVG
+(`:/resources/svg/...`) is re-rendered through `loadSvg` by the dialog host's `PjUiLoader`, so it follows the theme
+too.
+
 State variants are separate files for QSS `url()` references, which cannot be recolored at run time; their ink is
 fixed in the file:
 
@@ -80,8 +85,8 @@ fixed in the file:
 
 Some SVGs are not from Material Symbols and keep their own ink: `branch_*_light.svg` `#B8B8B8` and
 `branch_*_dark.svg` `#454545` (tree indicators), `close_windows_*`, `maximize` and `minimize` (strokes in the
-`#3D3D3D` / `#E0E0E0` family), `panel_*` and `play_arrow*` (`#3D3D3D`), and `plotjuggler.svg`, a multi-color logo that
-is not recolored.
+`#3D3D3D` / `#E0E0E0` family), `panel_*` and `play_arrow*` (`#3D3D3D`), and `plotjuggler.svg`, the logo, whose
+curves keep their brand colors while its axes are drawn in `#3D3D3D` and follow the theme ink.
 
 ## QSS authoring discipline
 

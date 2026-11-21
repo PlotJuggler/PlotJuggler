@@ -5,11 +5,8 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QIcon>
-#include <QPalette>
 #include <QPushButton>
 #include <QSignalBlocker>
-#include <QSize>
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -19,40 +16,10 @@
 #include "pj_scene2d_core/media_source.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/SvgButton.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
-
-namespace {
-QString qssColor(const QColor& color) {
-  if (!color.isValid()) {
-    return QStringLiteral("transparent");
-  }
-  return QStringLiteral("rgba(%1, %2, %3, %4)")
-      .arg(color.red())
-      .arg(color.green())
-      .arg(color.blue())
-      .arg(color.alpha());
-}
-
-PJ::theme::Theme widgetTheme(const QWidget* widget) {
-  (void)widget;
-  return PJ::theme::appTheme();
-}
-
-QString toggleButtonQss(PJ::theme::Theme active_theme) {
-  return QStringLiteral(
-             "QPushButton { border: none; border-radius: %1px; padding: %2px %3px; background-color: %4; }"
-             "QPushButton:hover { background-color: %5; }"
-             "QPushButton:checked { background-color: %6; }")
-      .arg(PJ::theme::radius(PJ::theme::Radius::Input, active_theme))
-      .arg(PJ::theme::space(PJ::theme::Space::Tight, active_theme))
-      .arg(PJ::theme::space(PJ::theme::Space::Comfortable, active_theme))
-      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Nominal, active_theme)))
-      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Hovered, active_theme)))
-      .arg(qssColor(PJ::theme::interaction(PJ::theme::Variant::Accent, PJ::theme::State::Checked, active_theme)));
-}
-}  // namespace
 
 DepthImageLayer::DepthImageLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name, QObject* parent)
@@ -80,14 +47,10 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   colormap->setCurrentIndex(colormap->findData(static_cast<int>(colormap_)));
   colormap_row_layout->addWidget(colormap, 1);
 
-  auto* invert_btn = new QPushButton(colormap_row);
+  auto* invert_btn = new PJ::SvgButton(u":/resources/svg/invert.svg"_s, PJ::SvgButton::Size::kDefault, colormap_row);
   invert_btn->setCheckable(true);
   invert_btn->setChecked(invert_);
-  invert_btn->setFocusPolicy(Qt::NoFocus);
-  invert_btn->setStyleSheet(toggleButtonQss(widgetTheme(widget)));
-  invert_btn->setIcon(QIcon(QStringLiteral(":/resources/svg/invert.svg")));
-  invert_btn->setIconSize(QSize(20, 20));
-  invert_btn->setFixedSize(24, 24);
+  invert_btn->setExtent(24, 20);
   invert_btn->setToolTip(tr("Invert colormap"));
   colormap_row_layout->addWidget(invert_btn, 0);
 
@@ -118,7 +81,7 @@ QWidget* DepthImageLayer::createConfigWidget(QWidget* parent) {
   connect(colormap, &QComboBox::currentIndexChanged, this, [this, colormap](int) {
     setColormap(static_cast<Colormap>(colormap->currentData().toInt()));
   });
-  connect(invert_btn, &QPushButton::toggled, this, [this](bool on) { setInvert(on); });
+  connect(invert_btn, &PJ::SvgButton::toggled, this, [this](bool on) { setInvert(on); });
   connect(near_spin, &PJ::DoubleScrubber::valueChanged, this, [this, far_spin](double value) {
     setRange(static_cast<float>(value), static_cast<float>(far_spin->value()));
   });

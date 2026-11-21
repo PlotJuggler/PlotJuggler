@@ -67,6 +67,7 @@ if(PJ_BUILD_TESTS)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     # mock_dialog.cpp and mock_panel_plugin.cpp both define the plugin entry point PJ_get_dialog_vtable, and each
     # engine test calls it expecting its own mock: they cannot share a binary.
+    # pj_resources: the loader test checks host icons (`:/resources/svg/...`) re-tinted after a .ui load.
     pj_add_test_runner(pj_dialog_host_tests MAIN gui WARNINGS
         SOURCES
             tests/dialog_engine_test.cpp
@@ -75,7 +76,7 @@ if(PJ_BUILD_TESTS)
             tests/combo_rules_test.cpp
             tests/chart_preview_widget_test.cpp
             tests/browser_save_target_test.cpp
-        LIBS pj_dialog_engine_qt plotjuggler_sdk::plugin_sdk Qt6::Test
+        LIBS pj_dialog_engine_qt plotjuggler_sdk::plugin_sdk Qt6::Test pj_resources
     )
     set_target_properties(pj_dialog_host_tests PROPERTIES AUTOMOC ON)
 

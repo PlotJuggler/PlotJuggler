@@ -79,6 +79,17 @@ class Style : public QProxyStyle {
     QProxyStyle::drawPrimitive(element, option, painter, widget);
   }
 
+  // The disabled look of every icon that has no QIcon::Disabled pixmap of its own (all loadSvg / renderSvgPixmap icons,
+  // plugin .ui iconsets, actions): Qt asks the application style for it, also under the app stylesheet. Fusion's greyed
+  // copy of a light-on-dark glyph stays nearly as bright as the enabled one, so the glyph is painted flat in the
+  // icon_ink_disabled token instead. A multi-colour icon becomes a one-ink silhouette too.
+  QPixmap generatedIconPixmap(QIcon::Mode mode, const QPixmap& pixmap, const QStyleOption* option) const override {
+    if (mode == QIcon::Disabled) {
+      return tintedPixmap(pixmap, theme::iconInkDisabled(theme::appTheme()));
+    }
+    return QProxyStyle::generatedIconPixmap(mode, pixmap, option);
+  }
+
   // Fallback only: the compact input height when no stylesheet is active (a unit test without the app QSS). In the
   // running app the QSS governs input height through the `input_outer_height` / `input_min_height` tokens in
   // resources/stylesheet_*.qss, once qApp->setStyleSheet() wraps this style in a QStyleSheetStyle, and this override is
