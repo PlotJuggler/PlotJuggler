@@ -463,9 +463,8 @@ jobs:
     # across two jobs instead.
     # Nightly and manual runs only: its single llvmpipe worker makes it the
     # costliest part of a PR run, and Chromium already gates the PR. A nightly failure
-    # emails whoever last edited the `schedule:` cron (GitHub's own scheduled-
-    # workflow notification); dispatch the workflow on a branch to run Firefox
-    # before merging a Firefox-sensitive change.
+    # opens a "Nightly failure" issue (nightly-failure.yml); dispatch the workflow on
+    # a branch to run Firefox before merging a Firefox-sensitive change.
     needs: wasm
     strategy:
       fail-fast: false
