@@ -7,6 +7,7 @@ pj_add_test_runner(pj_widgets_tests
     SOURCES
         curve_tree_view_test.cpp
         svg_button_test.cpp
+        dialog_theme_test.cpp
         file_dialog_test.cpp
         credentials_editor_test.cpp
         raster_frame_test.cpp

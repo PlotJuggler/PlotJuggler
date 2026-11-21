@@ -190,6 +190,14 @@ void Dialog::showEvent(QShowEvent* event) {
   }
 }
 
+void Dialog::changeEvent(QEvent* event) {
+  QDialog::changeEvent(event);
+  if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange ||
+      event->type() == QEvent::StyleChange) {
+    applyIcons();
+  }
+}
+
 void Dialog::applyIcons() {
   ui_->buttonClose->setIcon(loadSvg(":/resources/svg/close_windows_light.svg", currentTheme()));
 }
