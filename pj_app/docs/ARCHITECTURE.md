@@ -88,6 +88,9 @@ applied. Tests: `MainWindowStartupTest`.
 
 ## File loading
 
+A desktop drop sends `.urdf` files to `MainWindow::addDroppedRobotModels` (a robot model in the 3D view under the
+cursor, else the only 3D view, else a toast); every other dropped file is data for `FileLoader`.
+
 `FileLoader` runs file loads: one sequential queue, each load progressive on a worker. `LoadInput` carries the
 display name, backing path, reload identity and, in the browser, the storage lease that keeps an upload alive for
 deferred object fetches. `FanoutConfig` extracts a plugin config's `__pj_fanout` entries (one plugin instance and

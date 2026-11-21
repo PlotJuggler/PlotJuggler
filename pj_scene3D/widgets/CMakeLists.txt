@@ -386,6 +386,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   # Drives the dock headless through a mock FrameTransforms parser; needs a QApplication.
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/scene3d_dock_fixed_frame_test.cpp
+    tests/scene3d_dock_package_folders_test.cpp
   )
 
   # Builds real config widgets, so it needs a QApplication; links pj_resources so PJ::theme::space() resolves real QSS

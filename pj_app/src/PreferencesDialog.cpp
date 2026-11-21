@@ -52,6 +52,9 @@
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
+#ifdef PJ_WITH_SCENE3D
+#include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#endif
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -172,8 +175,10 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // It resets only those scrubbers.
   ui_->buttonResetDefaults->setVisible(isDebugMode());
 
-  // The Scene 3D asset-folder controls have no function yet.
+#if !defined(PJ_WITH_SCENE3D) || defined(PJ_TARGET_WASM)
+  // The browser grants no access to host folders, and a build without 3D views loads no robot models.
   ui_->pageScene3D->setEnabled(false);
+#endif
 
   // Ranges match MainWindow's k*Range clamps. Each tick previews live through MainWindow's setter; OK persists,
   // reject restores the snapshot.
@@ -286,10 +291,32 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
         item->setToolTip(missing ? tr("This folder does not exist.") : QString());
       }
     };
+    auto wire_folder_list = [this, paint_missing](
+                                QListWidget* list, SvgButton* add, SvgButton* remove, const QString& add_tooltip,
+                                const QString& dialog_title) {
+      paint_missing(list);
+      connect(&theme_, &Theme::themeChanged, this, [list, paint_missing](const QString&) { paint_missing(list); });
+      add->setIconPath(u":/resources/svg/add.svg"_s);
+      add->setExtent(26, 24);
+      remove->setIconPath(u":/resources/svg/trash.svg"_s);
+      remove->setExtent(26, 24);
+      add->setToolTip(add_tooltip);
+      remove->setToolTip(tr("Remove the selected folder"));
+      connect(add, &QToolButton::clicked, this, [this, list, paint_missing, dialog_title]() {
+        const QString dir = PJ::FileDialog::getExistingDirectory(this, dialog_title);
+        if (!dir.isEmpty() && list->findItems(dir, Qt::MatchExactly).isEmpty()) {
+          list->addItem(dir);
+          paint_missing(list);
+        }
+      });
+      connect(remove, &QToolButton::clicked, this, [list]() { qDeleteAll(list->selectedItems()); });
+    };
 
     ui_->listCustomPluginFolders->setDragDropMode(QAbstractItemView::InternalMove);
     ui_->listCustomPluginFolders->addItems(main_window->customPluginFolders());
-    paint_missing(ui_->listCustomPluginFolders);
+    wire_folder_list(
+        ui_->listCustomPluginFolders, ui_->buttonAddPluginFolder, ui_->buttonRemovePluginFolder,
+        tr("Add a plugin folder…"), tr("Add plugin folder"));
     // A drag-reorder drops the items' foreground brush.
     connect(ui_->listCustomPluginFolders->model(), &QAbstractItemModel::rowsMoved, this, [this, paint_missing]() {
       paint_missing(ui_->listCustomPluginFolders);
@@ -300,7 +327,6 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     ui_->listDefaultPluginFolders->setFocusPolicy(Qt::NoFocus);
     paint_missing(ui_->listDefaultPluginFolders);
     connect(&theme_, &Theme::themeChanged, this, [this, paint_missing](const QString&) {
-      paint_missing(ui_->listCustomPluginFolders);
       paint_missing(ui_->listDefaultPluginFolders);
     });
 
@@ -328,23 +354,12 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       onRegistryUrlEditingFinished();
     }
 
-    ui_->buttonAddPluginFolder->setIconPath(u":/resources/svg/add.svg"_s);
-    ui_->buttonAddPluginFolder->setExtent(26, 24);
-    ui_->buttonRemovePluginFolder->setIconPath(u":/resources/svg/trash.svg"_s);
-    ui_->buttonRemovePluginFolder->setExtent(26, 24);
-    ui_->buttonAddPluginFolder->setToolTip(tr("Add a plugin folder…"));
-    ui_->buttonRemovePluginFolder->setToolTip(tr("Remove the selected folder"));
-    connect(ui_->buttonAddPluginFolder, &QToolButton::clicked, this, [this, paint_missing]() {
-      const QString dir = PJ::FileDialog::getExistingDirectory(this, tr("Add plugin folder"));
-      if (!dir.isEmpty()) {
-        ui_->listCustomPluginFolders->addItem(dir);
-        paint_missing(ui_->listCustomPluginFolders);
-      }
-    });
-    connect(ui_->buttonRemovePluginFolder, &QToolButton::clicked, this, [this, paint_missing]() {
-      qDeleteAll(ui_->listCustomPluginFolders->selectedItems());
-      paint_missing(ui_->listCustomPluginFolders);
-    });
+#if defined(PJ_WITH_SCENE3D) && !defined(PJ_TARGET_WASM)
+    ui_->listAssetFolders->addItems(Scene3DDockWidget::packageSearchFolders(QSettings()));
+    wire_folder_list(
+        ui_->listAssetFolders, ui_->buttonAddAssetsFolder, ui_->buttonRemoveAssetFolder, tr("Add a folder…"),
+        tr("Add a folder with robot packages"));
+#endif
   }
 
   // Wired only where the page is reachable: an unreachable page's .ui defaults must never overwrite the stored
@@ -481,11 +496,20 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   connect(this, &QDialog::accepted, this, [this, main_window]() {
     if (main_window != nullptr) {
       main_window->persistChromeMetrics();
-      QStringList plugin_folders;
-      for (int row = 0; row < ui_->listCustomPluginFolders->count(); ++row) {
-        plugin_folders << ui_->listCustomPluginFolders->item(row)->text();
+      const auto items_of = [](const QListWidget* list) {
+        QStringList texts;
+        for (int row = 0; row < list->count(); ++row) {
+          texts << list->item(row)->text();
+        }
+        return texts;
+      };
+      main_window->setCustomPluginFolders(items_of(ui_->listCustomPluginFolders));
+#if defined(PJ_WITH_SCENE3D) && !defined(PJ_TARGET_WASM)
+      if (QSettings settings; items_of(ui_->listAssetFolders) != Scene3DDockWidget::packageSearchFolders(settings)) {
+        Scene3DDockWidget::setPackageSearchFolders(settings, items_of(ui_->listAssetFolders));
+        emit packageSearchFoldersChanged();
       }
-      main_window->setCustomPluginFolders(plugin_folders);
+#endif
 
       // The default (or a custom value equal to it) stores no override, so future defaults still apply. An
       // invalid custom URL is not stored; an unreachable one is.

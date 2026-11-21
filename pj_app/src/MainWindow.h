@@ -634,6 +634,8 @@ class MainWindow : public QMainWindow {
   // On OK: applyDerivedBatchPreferences, applyTimeLabelFormat, and a precision change re-seeds both tracker lines and
   // the Value column at the current times, the only places the text is formatted.
   void bindPlottingPreferences(PreferencesDialog& dialog);
+  // On a changed package search folder list, every 3D view retries its robots' unresolved meshes.
+  void bindScenePreferences(PreferencesDialog& dialog);
 
   // PlotWidget::setMarkerStatus on BatchEngine::runningChanged. "Computing" shows only after a rule has run for
   // kMarkerStatusShowDelay, so a quick run never flickers a note.
@@ -1202,6 +1204,8 @@ class MainWindow : public QMainWindow {
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dragMoveEvent(QDragMoveEvent* event) override;
   void dropEvent(QDropEvent* event) override;
+  // Dropped .urdf files become robot models in the 3D view under `pos` (window coordinates), or in the only 3D view.
+  void addDroppedRobotModels(const QStringList& urdf_paths, QPoint pos);
 
   // Custom frame only: a 1-px edge from the PJ::theme:: tokens, since QSS cannot reach a top-level widget. None
   // while maximized or fullscreen.

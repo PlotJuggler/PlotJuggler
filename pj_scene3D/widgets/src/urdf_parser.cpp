@@ -218,7 +218,11 @@ std::pair<std::optional<RobotModel>, std::string> parseUrdf(
     const std::string& filename, const UrdfParseLimits* limits, const QMap<QString, QUrl>& package_url_roots,
     bool remote_only) {
   if (looksLikeXacro(xml, filename)) {
-    return {std::nullopt, "Unsupported format: xacro — run `xacro input.xacro > output.urdf` and load the result."};
+    return {
+        std::nullopt,
+        "Unsupported format: xacro. Expand it with the arguments your launch file passes "
+        "(`xacro robot.urdf.xacro name:=value > robot.urdf`) and load the result, or record "
+        "/robot_description: it holds the expanded robot."};
   }
   if (xml.size() > kMaxUrdfBytes) {
     const double size_mib = static_cast<double>(xml.size()) / (1024.0 * 1024.0);

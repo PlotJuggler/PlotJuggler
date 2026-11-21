@@ -2861,6 +2861,7 @@ void MainWindow::onOpenMarketplace() {
       prefs.setChromeMetrics(chrome_metrics_);
       bindRecordingPreferences(prefs);
       bindPlottingPreferences(prefs);
+      bindScenePreferences(prefs);
       prefs.showPage(PreferencesDialog::kPluginsPage);
       prefs.exec();
     });
@@ -3415,12 +3416,14 @@ void MainWindow::onShowPreferencesDialog() {
   dlg->setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(*dlg);
   bindPlottingPreferences(*dlg);
+  bindScenePreferences(*dlg);
   dlg->open();
 #else
   PreferencesDialog dlg(*theme_, this);
   dlg.setChromeMetrics(chrome_metrics_);
   bindRecordingPreferences(dlg);
   bindPlottingPreferences(dlg);
+  bindScenePreferences(dlg);
   dlg.exec();
 #endif
 }
@@ -3559,6 +3562,18 @@ void MainWindow::bindPlottingPreferences(PreferencesDialog& dialog) {
     broadcastReferenceLine();
     broadcastTrackerTime(toAxisDouble(session_->playbackEngine().currentTime()));
   });
+}
+
+void MainWindow::bindScenePreferences([[maybe_unused]] PreferencesDialog& dialog) {
+#ifdef PJ_WITH_SCENE3D
+  connect(&dialog, &PreferencesDialog::packageSearchFoldersChanged, this, [this]() {
+    forEachSceneDock([](SceneDockWidget* scene) {
+      if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(scene)) {
+        scene3d->reloadPackageSearchFolders();
+      }
+    });
+  });
+#endif
 }
 
 void MainWindow::onShowAboutDialog() {
@@ -3784,8 +3799,52 @@ void MainWindow::dropEvent(QDropEvent* event) {
   }
   event->setDropAction(Qt::CopyAction);
   event->accept();
+#if defined(PJ_WITH_SCENE3D) && !defined(PJ_TARGET_WASM)
+  constexpr bool kDropsRobotModels = true;
+#else
+  constexpr bool kDropsRobotModels = false;
+#endif
+  QStringList data_paths;
+  QStringList urdf_paths;
+  for (const QString& path : paths) {
+    const bool urdf = kDropsRobotModels && QFileInfo(path).suffix().compare("urdf"_L1, Qt::CaseInsensitive) == 0;
+    (urdf ? urdf_paths : data_paths).append(path);
+  }
+  const QPoint pos = event->position().toPoint();
   // After the drop returns: the file manager waits inside the OS drag loop until then, and a load can open dialogs.
-  QTimer::singleShot(0, this, [this, paths] { file_loader_->loadFiles(paths, this); });
+  QTimer::singleShot(0, this, [this, data_paths, urdf_paths, pos] {
+    if (!urdf_paths.isEmpty()) {
+      addDroppedRobotModels(urdf_paths, pos);
+    }
+    if (!data_paths.isEmpty()) {
+      file_loader_->loadFiles(data_paths, this);
+    }
+  });
+}
+
+void MainWindow::addDroppedRobotModels([[maybe_unused]] const QStringList& urdf_paths, [[maybe_unused]] QPoint pos) {
+#ifdef PJ_WITH_SCENE3D
+  Scene3DDockWidget* target = nullptr;
+  for (QWidget* widget = childAt(pos); widget != nullptr && target == nullptr; widget = widget->parentWidget()) {
+    target = qobject_cast<Scene3DDockWidget*>(widget);
+  }
+  if (target == nullptr) {
+    std::vector<Scene3DDockWidget*> views;
+    forEachSceneDock([&views](SceneDockWidget* scene) {
+      if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(scene)) {
+        views.push_back(scene3d);
+      }
+    });
+    if (views.size() != 1) {
+      showToast(tr("Drop the URDF file onto a 3D view."));
+      return;
+    }
+    target = views.front();
+  }
+  for (const QString& path : urdf_paths) {
+    target->addRobotModelLayer(path);
+  }
+#endif
 }
 
 void MainWindow::paintEvent(QPaintEvent* event) {

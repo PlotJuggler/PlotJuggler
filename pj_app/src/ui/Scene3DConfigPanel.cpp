@@ -786,6 +786,13 @@ void Scene3DConfigPanel::onAddModelClicked() {
 #endif
         return;
       }
+      if (topics.size() == 1) {
+        const auto& only = topics.front();
+        if (bound_dock_->addTopic(only.topic_id, sdk::BuiltinObjectType::kRobotDescription, only.name)) {
+          addRobotRow(only.topic_id.id, only.name, only.name);
+        }
+        break;
+      }
 #ifdef PJ_TARGET_WASM
       QPointer<Scene3DConfigPanel> self(this);
       QPointer<Scene3DDockWidget> dock(bound_dock_);

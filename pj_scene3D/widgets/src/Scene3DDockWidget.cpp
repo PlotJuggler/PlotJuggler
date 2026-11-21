@@ -1060,6 +1060,24 @@ void Scene3DDockWidget::resetTransformBindingIfDatasetGone() {
   pushTransformBufferToLayers();
 }
 
+QStringList Scene3DDockWidget::packageSearchFolders(const QSettings& settings) {
+  return pj::scene3d::UrdfPackageResolver::globalSearchRoots(settings);
+}
+
+void Scene3DDockWidget::setPackageSearchFolders(QSettings& settings, const QStringList& folders) {
+  pj::scene3d::UrdfPackageResolver::setGlobalSearchRoots(settings, folders);
+}
+
+void Scene3DDockWidget::reloadPackageSearchFolders() {
+  package_resolver_->clearPackageIndexes();
+  for (const SceneLayerInfo& info : layers()) {
+    if (auto* robot = dynamic_cast<RobotModelLayer*>(layerFor(info.topic_id));
+        robot != nullptr && robot->unresolvedMeshCount() > 0) {
+      robot->retry();
+    }
+  }
+}
+
 void Scene3DDockWidget::pushTransformBufferToLayers() {
   for (const SceneLayerInfo& info : layers()) {
     ISceneLayer* layer = layerFor(info.topic_id);
