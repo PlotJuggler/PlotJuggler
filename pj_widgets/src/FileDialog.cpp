@@ -163,8 +163,7 @@ class ConfirmingFileDialog final : public QFileDialog {
   void accept() override {
     const QStringList files = selectedFiles();
     const QFileInfo target(files.value(0));
-    if (acceptMode() != AcceptSave || fileMode() != AnyFile || files.size() != 1 || !target.exists() ||
-        target.isDir()) {
+    if (acceptMode() != AcceptSave || fileMode() != AnyFile || !target.exists() || target.isDir()) {
       QFileDialog::accept();
       return;
     }
