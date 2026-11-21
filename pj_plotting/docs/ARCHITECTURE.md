@@ -167,6 +167,11 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
   (`PlotWidget::stampLiveCurveKeys`, as a clipboard copy does); without them every copied plot comes up empty.
   `addTab` announces the copy before it is filled, so `currentTabChanged` fires again once it is: listeners such as
   the shell's curve editor would otherwise keep rows built before the restored visibility and markers.
+- **Tab order.** The strip layout, `tabs_` and the saved `<Tab>` sequence share one order, and a restore rebuilds the
+  plot tabs in document order, then re-appends the widget and history-exempt pages after them. Dragging a plot tab
+  moves it past each neighbour whose midpoint the cursor crosses (a wide and a narrow tab do not swap back and forth
+  under a still cursor) and emits one `undoableChange` on release when the order changed. Widget tabs are not
+  draggable: a position given to them would not survive the next restore.
 - **Layout restore** parses and validates the whole structural tree before changing the live docker, restores splitter
   ratios as large relative weights (the docker is not laid out at its final size yet, so pixel scaling would distort the
   split), and emits no undo step for its intermediate states. It restores into the live plot page whose tab id
@@ -361,6 +366,5 @@ The performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performance
 - When the GPU canvas fails in the browser there is no raster fallback: the banner stays.
 - The raster fallback after a GPU failure waits for a popup or modal window but does not detect a `QDrag::exec` loop
   started from the canvas.
-- `TabbedPlotWidget.cpp` still defines `HorizontalScrollArea`, which the tab strip no longer uses.
 - A curve restored from a layout whose data has not arrived yet does not reserve its saved colour (it waits in
   `PendingDisplayBinder`, which the plot cannot see), so a curve added to that plot meanwhile can take the same colour.

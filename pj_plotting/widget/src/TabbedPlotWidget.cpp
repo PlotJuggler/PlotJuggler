@@ -9,7 +9,6 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -17,12 +16,9 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
-#include <QScrollArea>
-#include <QScrollBar>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QVBoxLayout>
-#include <QWheelEvent>
 #include <algorithm>
 #include <optional>
 #include <utility>
@@ -49,25 +45,6 @@ constexpr int kTabBarHeight = 23;
 constexpr int kTabBarButtonSize = 23;
 // Icon size: the title bar's 20-px glyph, so the strip buttons read at the same weight as the rest of the chrome.
 constexpr int kTabBarIconSize = 20;
-
-// QScrollArea variant that redirects vertical wheel input to the horizontal scrollbar, so an overflowing tab strip
-// wheel-scrolls as in Chrome or VSCode without a heavy horizontal scrollbar.
-class HorizontalScrollArea : public QScrollArea {
- public:
-  using QScrollArea::QScrollArea;
-
- protected:
-  void wheelEvent(QWheelEvent* event) override {
-    QScrollBar* hbar = horizontalScrollBar();
-    const int delta = event->angleDelta().y();
-    if (hbar != nullptr && delta != 0) {
-      hbar->setValue(hbar->value() - delta);
-      event->accept();
-      return;
-    }
-    QScrollArea::wheelEvent(event);
-  }
-};
 
 // ADS config flags are process-global and must be set before the first CDockManager is instantiated; call once, lazily.
 void applyAdsConfigOnce() {
