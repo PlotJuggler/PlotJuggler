@@ -966,6 +966,17 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   // redo keeps the page the user is on, a plot or a widget tab, if it survives the restore (a reused page keeps its
   // object).
   const QPointer<QWidget> shown = intent == RestoreIntent::kHistory ? stack_->currentWidget() : nullptr;
+  // A shown page the restore removes (undoing "Add tab" or "Duplicate tab") hands over to the tab beside it, the left
+  // one first, as closing it would: the saved index can name a tab the user left before the undone step.
+  QPointer<QWidget> beside;
+  if (const TabEntry* entry = shown != nullptr ? findEntry(shown.data()) : nullptr; entry != nullptr) {
+    const auto index = entry - tabs_.data();
+    if (index > 0) {
+      beside = contentOf(tabs_[index - 1]);
+    } else if (index + 1 < static_cast<std::ptrdiff_t>(tabs_.size())) {
+      beside = contentOf(tabs_[index + 1]);
+    }
+  }
 
   QVector<QDomElement> target_tabs;
   for (QDomElement tab = tabbed_area.firstChildElement(u"Tab"_s); !tab.isNull();
@@ -1061,7 +1072,11 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   // tabs).
   const int max_index = static_cast<int>(target_tabs.size()) - 1;
   const int current_index = std::clamp(requested_index, 0, std::max(0, max_index));
-  if (const TabEntry* kept = shown != nullptr ? findEntry(shown.data()) : nullptr; kept != nullptr) {
+  const TabEntry* kept = shown != nullptr ? findEntry(shown.data()) : nullptr;
+  if (kept == nullptr && beside != nullptr) {
+    kept = findEntry(beside.data());
+  }
+  if (kept != nullptr) {
     selectEntry(*kept);
   } else if (PlotDocker* docker = dockerAt(current_index)) {
     stack_->setCurrentWidget(docker);

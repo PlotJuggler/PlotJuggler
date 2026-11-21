@@ -471,7 +471,7 @@ TEST(TabbedWidgetTab, HistoryRestoreKeepsACurrentWidgetTab) {
   EXPECT_TRUE(panel_guard->isVisibleTo(&tabbed));
 }
 
-TEST(TabbedWidgetTab, HistoryRestoreThatRemovesTheCurrentTabSelectsTheSavedOne) {
+TEST(TabbedWidgetTab, HistoryRestoreThatRemovesTheCurrentTabSelectsTheTabBesideIt) {
   PJ::TabbedPlotWidget tabbed;
   PJ::PlotDocker* first = tabbed.addTab(u"one"_s);
   first->setStateId(u"tab-one"_s);
@@ -488,6 +488,28 @@ TEST(TabbedWidgetTab, HistoryRestoreThatRemovesTheCurrentTabSelectsTheSavedOne) 
   QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   ASSERT_NE(tabbed.currentTab(), nullptr);
   EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-two"_s);
+}
+
+// Undoing "Duplicate tab" goes back to the duplicated tab, not to the tab current when the snapshot was taken:
+// selecting a tab is not an undo step.
+TEST(TabbedPlotDuplicate, UndoReturnsToTheDuplicatedTab) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* first = tabbed.addTab(u"one"_s);
+  first->setStateId(u"tab-one"_s);
+  PJ::PlotDocker* second = tabbed.addTab(u"two"_s);
+  second->setStateId(u"tab-two"_s);
+  tabbed.focusTab(second);
+  QDomDocument doc;
+  const QDomElement saved = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);
+
+  tabbed.focusTab(first);
+  PJ::PlotDocker* copy = tabbed.duplicateTab(first);
+  ASSERT_NE(copy, nullptr);
+  ASSERT_EQ(tabbed.currentTab(), copy);
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kHistory));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_NE(tabbed.currentTab(), nullptr);
+  EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-one"_s);
 }
 
 TEST(TabbedWidgetTab, ClosingLastOrdinaryTabCreatesOneWhenExemptTabRemains) {
