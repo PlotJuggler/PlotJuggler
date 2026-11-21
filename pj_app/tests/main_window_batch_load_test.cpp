@@ -12,7 +12,9 @@
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QFileInfo>
+#include <QLineEdit>
 #include <QPushButton>
+#include <QSettings>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <algorithm>
@@ -42,13 +44,14 @@ namespace {
 using Peer = PJ::MainWindowBatchLoadTestPeer;
 using PJ::BatchDialogMode;
 
-// The probe plugin (.dlgprobe) has a configuration dialog and saves a config once it is accepted; the mock one (.mock)
-// has none.
+// The probe plugin (.dlgprobe) has a configuration dialog and saves a config once it is accepted; its imports are
+// recorded with the settings they ran with ("imported <name>", in probe_log_). The mock one (.mock) has no dialog.
 class BatchLoadTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ASSERT_TRUE(extensions_.isValid());
     ASSERT_TRUE(data_.isValid());
+    qputenv("PJ_DIALOG_PROBE_FILE", data_.filePath(u"probe.log"_s).toUtf8());
     for (const QString& plugin :
          {QString::fromUtf8(PJ_DIALOG_PROBE_SOURCE_PLUGIN_PATH), QString::fromUtf8(PJ_MOCK_FILE_SOURCE_PLUGIN_PATH)}) {
       ASSERT_TRUE(QFile::copy(plugin, extensions_.filePath(QFileInfo(plugin).fileName())));
@@ -87,12 +90,27 @@ class BatchLoadTest : public ::testing::Test {
     pj_app_test::flushQueuedEvents();
   }
 
+  // The settings each import ran with, in import order.
+  [[nodiscard]] QStringList imports() const {
+    QFile file(data_.filePath(u"probe.log"_s));
+    QStringList names;
+    if (file.open(QIODevice::ReadOnly)) {
+      for (const QByteArray& line : file.readAll().split('\n')) {
+        if (line.startsWith("imported ")) {
+          names.push_back(QString::fromUtf8(line.mid(9)));
+        }
+      }
+    }
+    return names;
+  }
+
   [[nodiscard]] int count(PJ::LoadOutcome outcome) const {
     return static_cast<int>(std::count(outcomes_.begin(), outcomes_.end(), outcome));
   }
 
-  // The batch question takes batch_mode_ (Cancel when empty); a plugin dialog is accepted, or rejected when
-  // reject_plugin_dialogs_. Answers are queued: the dialog runs a nested loop, inside which this timer still fires.
+  // The batch question takes batch_mode_ (Cancel when empty); a plugin dialog gets the next of dialog_names_ typed in
+  // (when any is left) and is accepted, or rejected when reject_plugin_dialogs_. Answers are queued: the dialog runs a
+  // nested loop, inside which this timer still fires.
   void answerDialog() {
     QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
     if (dialog == nullptr) {
@@ -121,6 +139,9 @@ class BatchLoadTest : public ::testing::Test {
       QMetaObject::invokeMethod(dialog, &QDialog::reject, Qt::QueuedConnection);
       return;
     }
+    if (!dialog_names_.isEmpty()) {
+      dialog->findChild<QLineEdit*>(u"name_input"_s)->setText(dialog_names_.takeFirst());
+    }
     QPushButton* ok = dialog->findChild<QDialogButtonBox*>(u"buttonBox"_s)->button(QDialogButtonBox::Ok);
     QTimer::singleShot(0, ok, [ok]() { ok->click(); });
   }
@@ -131,6 +152,7 @@ class BatchLoadTest : public ::testing::Test {
   std::vector<PJ::LoadOutcome> outcomes_;
   std::optional<BatchDialogMode> batch_mode_ = BatchDialogMode::kShowFirst;
   bool reject_plugin_dialogs_ = false;
+  QStringList dialog_names_;
   int batch_questions_ = 0;
   int plugin_dialogs_ = 0;
   int file_serial_ = 0;
@@ -164,6 +186,27 @@ TEST_F(BatchLoadTest, ShowFirstAsksOnlyTheFirstFileOfTheFormat) {
   ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(2)));
   EXPECT_EQ(plugin_dialogs_, 2);
   EXPECT_EQ(count(PJ::LoadOutcome::kLoaded), 5);
+}
+
+TEST_F(BatchLoadTest, ShowFirstLoadsEveryFileWithTheSettingsItsFirstDialogAccepted) {
+  dialog_names_ = {u"first"_s};
+  ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(3)));
+  EXPECT_EQ(plugin_dialogs_, 1);
+  EXPECT_EQ(imports(), (QStringList{u"first"_s, u"first"_s, u"first"_s}));
+}
+
+// A first dialog that does not end with saved settings (here the plugin refuses what was accepted) leaves "show
+// first" asking: the next file must not load with settings an earlier session saved.
+TEST_F(BatchLoadTest, AFirstDialogThatFailsLeavesShowFirstAsking) {
+  dialog_names_ = {u"stale"_s};
+  ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(1)));
+  ASSERT_EQ(imports(), QStringList{u"stale"_s});
+
+  dialog_names_ = {u"reject"_s, u"fresh"_s};
+  ASSERT_NO_FATAL_FAILURE(loadBatch(newFiles(3)));
+  EXPECT_EQ(plugin_dialogs_, 3) << "the failed dialog, then the next file's";
+  EXPECT_EQ(count(PJ::LoadOutcome::kFailed), 1);
+  EXPECT_EQ(imports(), (QStringList{u"stale"_s, u"fresh"_s, u"fresh"_s}));
 }
 
 TEST_F(BatchLoadTest, ShowAllAsksEveryFile) {

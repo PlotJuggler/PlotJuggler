@@ -473,6 +473,32 @@ TEST_F(LayoutDatasetChoiceTest, CancellingTheStartupQuestionLoadsNothingAndSettl
   EXPECT_EQ(PresetTestPeer::session(*window_).catalogModel().datasetIds().size(), datasets);
 }
 
+// Intended: a startup layout that cannot be copied (it holds a transform) shows one dataset, so with several files
+// checked its own question still asks, saying why, and shows the one chosen there.
+TEST_F(LayoutDatasetChoiceTest, AStartupLayoutThatCannotBeCopiedStillAsksWhichOne) {
+  const QString first = pj_app_test::makeMockFile(data_, u"first.mock"_s);
+  const QString second = pj_app_test::makeMockFile(data_, u"second.mock"_s);
+  const QString negate =
+      uR"(<transform owner_plugin="pluginA" id="negate" backend="luau" api_version="1">
+<input name="mock/file_data/value" topic="mock/file_data" field="value" column="0"/><output name="mock/negated"/>
+<params><![CDATA[{}]]></params><script><![CDATA[)"_s +
+      QString::fromLatin1(kNegate) + u"]]></script></transform>"_s;
+  answerNextQuestion({0, 1});
+  answerNextQuestion({1});
+  window_->loadAtStartup(
+      {first, second}, layoutFile(processorLayout({u"mock/file_data"_s}, negate)), /*interactive=*/true);
+  ASSERT_TRUE(pj_app_test::pumpUntil([this] { return !settles_.empty(); }));
+  EXPECT_EQ(settles_, std::vector<bool>{true});
+  EXPECT_EQ(asked_, 2) << "the startup question, then the layout's own";
+  EXPECT_TRUE(single_only_.contains(u"pluginA/negate"_s)) << single_only_.toStdString();
+  EXPECT_EQ(other_modals_, 0);
+  EXPECT_EQ(tabNames(), (QStringList{u"Plots"_s}));
+  const QStringList bound = curves(0);
+  ASSERT_FALSE(bound.isEmpty());
+  EXPECT_EQ(
+      PresetTestPeer::fileLoader(*window_).sourcePathForDataset(bound.front().section(u':', 0, 0).toUInt()), second);
+}
+
 // Intended: the files checked before a startup load answer only that startup's layout. When a file fails the layout is
 // not applied, and the next layout loaded by hand asks its own question.
 TEST_F(LayoutDatasetChoiceTest, AFailedStartupLeavesNoAnswerForTheNextLayout) {

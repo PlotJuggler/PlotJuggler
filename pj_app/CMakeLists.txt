@@ -844,7 +844,7 @@ if(PJ_BUILD_TESTS)
     # Shutdown while suspended at the plugin dialog: the dialog is rejected before the plugin is destroyed.
     add_library(dialog_probe_source_plugin SHARED tests/dialog_probe_source.cpp)
     target_compile_features(dialog_probe_source_plugin PRIVATE cxx_std_20)
-    target_link_libraries(dialog_probe_source_plugin PRIVATE plotjuggler_sdk::plugin_sdk)
+    target_link_libraries(dialog_probe_source_plugin PRIVATE plotjuggler_sdk::plugin_sdk nlohmann_json::nlohmann_json)
     if(DEFINED PJ_WARNING_FLAGS)
         target_compile_options(dialog_probe_source_plugin PRIVATE ${PJ_WARNING_FLAGS})
     endif()
