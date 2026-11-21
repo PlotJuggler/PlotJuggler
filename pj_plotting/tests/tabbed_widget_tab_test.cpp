@@ -512,6 +512,59 @@ TEST(TabbedPlotDuplicate, UndoReturnsToTheDuplicatedTab) {
   EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-one"_s);
 }
 
+// An undo that removes the tab the user is on passes over a widget tab beside it: the restore moves widget tabs to the
+// end of the strip.
+TEST(TabbedWidgetTab, HistoryRestorePassesOverAWidgetTab) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* plots = tabbed.addTab(u"plots"_s);
+  plots->setStateId(u"tab-plots"_s);
+  tabbed.addWidgetTab(u"toolbox"_s, new QWidget, [] {});
+  tabbed.focusTab(plots);
+  QDomDocument doc;
+  const QDomElement saved = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);
+
+  PJ::PlotDocker* added = tabbed.addTab(u"added"_s);
+  added->setStateId(u"tab-added"_s);
+  tabbed.focusTab(added);
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kHistory));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_NE(tabbed.currentTab(), nullptr) << "the undo landed on the widget tab";
+  EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-plots"_s);
+}
+
+// When the restore removes the tab the user is on and every plot page beside it, the snapshot's saved tab is shown.
+TEST(TabbedWidgetTab, HistoryRestoreFallsBackToTheSavedTab) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* first = tabbed.addTab(u"one"_s);
+  first->setStateId(u"tab-one"_s);
+  tabbed.focusTab(first);
+  QDomDocument doc;
+  const QDomElement saved = tabbed.xmlSaveState(doc, PJ::SnapshotScope::kHistory);
+
+  tabbed.addTab(u"two"_s)->setStateId(u"tab-two"_s);
+  PJ::PlotDocker* third = tabbed.addTab(u"three"_s);
+  third->setStateId(u"tab-three"_s);
+  tabbed.focusTab(third);
+  ASSERT_TRUE(tabbed.xmlLoadState(saved, PJ::RestoreIntent::kHistory));
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  ASSERT_NE(tabbed.currentTab(), nullptr);
+  EXPECT_EQ(tabbed.currentTab()->stateId(), u"tab-one"_s);
+}
+
+// Closing the current tab shows the tab to its right on the strip, also when a duplicate sits out of creation order.
+TEST(TabbedPlotDuplicate, ClosingACopyShowsTheTabToItsRight) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* first = tabbed.addTab(u"one"_s);
+  tabbed.addTab(u"two"_s);
+  tabbed.addTab(u"three"_s);
+  PJ::PlotDocker* copy = tabbed.duplicateTab(first);  // strip: one, copy, two, three
+  ASSERT_NE(copy, nullptr);
+  ASSERT_EQ(tabbed.currentTab(), copy);
+  tabbed.closeTab(copy);
+  ASSERT_NE(tabbed.currentTab(), nullptr);
+  EXPECT_EQ(tabbed.currentTab()->name(), u"two"_s);
+}
+
 TEST(TabbedWidgetTab, ClosingLastOrdinaryTabCreatesOneWhenExemptTabRemains) {
   PJ::TabbedPlotWidget tabbed;
   PJ::PlotDocker* ordinary = tabbed.dockerAt(0);

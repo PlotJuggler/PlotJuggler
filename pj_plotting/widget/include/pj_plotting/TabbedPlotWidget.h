@@ -7,6 +7,7 @@
 #include <QSizePolicy>
 #include <QString>
 #include <QWidget>
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -209,6 +210,10 @@ class TabbedPlotWidget : public QWidget {
   [[nodiscard]] int tabIndexOf(PlotTabFrame* frame) const;
   // A plot page undo snapshots rebuild (not a widget tab, not history-exempt), and those pages in strip order.
   static bool isHistoryDocker(const TabEntry& entry);
+  // The page to show when `entry`'s goes away: the nearest tab on the strip on side `first`, else on the other side;
+  // with `plot_pages_only`, the nearest history docker. nullptr when there is none.
+  enum class Side : std::uint8_t { kLeft, kRight };
+  [[nodiscard]] QWidget* neighbourOf(const TabEntry& entry, Side first, bool plot_pages_only) const;
   [[nodiscard]] std::vector<PlotDocker*> historyDockerOrder() const;
 
   QHBoxLayout* tabs_bar_layout_ = nullptr;
