@@ -122,9 +122,11 @@ void attachParentConsole() {
 
 // The crash handler: at static init it installs signal handlers that print a symbolized stack trace. Defined here
 // because the linker drops backward-cpp's own global from the static archive when nothing references it;
-// backward-cpp wants exactly one per program.
+// backward-cpp wants exactly one per program. Left out of the sanitizer lanes (pj_app/CMakeLists.txt says why).
 #ifndef PJ_TARGET_WASM
+#ifndef PJ_NO_CRASH_HANDLER
 backward::SignalHandling g_crash_handler;
+#endif
 
 // Boots the embedded Python backend the way a Data Processor does, inside the packaged binary: nothing else in a
 // release flow launches it, so a backend that cannot reach its own stdlib would ship undetected.

@@ -36,7 +36,7 @@ coverage of the embedded interpreter.
 
 ## Leak suppressions
 
-`lsan.supp` suppresses three leaks:
+`lsan.supp` suppresses four leaks:
 
 - The deliberate interpreter lifetime in `pj_scripting/src/python_sandbox.cpp`.
   `ensureInterpreter()` leaks its `py::scoped_interpreter` and
@@ -56,6 +56,10 @@ coverage of the embedded interpreter.
   thread only; `app_settings_test` runs each case on a fresh `std::thread`, which
   leaves one instance (about 2 KB with its Qt thread data) per case. Matched on
   `appSettings`.
+- fontconfig's configuration parse, the first time Qt registers an application
+  font: 320 bytes in 3 allocations with no fontconfig symbols (seen with
+  fontconfig 2.17.1). Matched on `QFontconfigDatabase::addApplicationFont`, the
+  only named frame in the stack.
 
 Stacks through prebuilt Qt are short under the default fast unwinder, because Qt
 is built without frame pointers. To find the frame an entry should match, rerun

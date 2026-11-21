@@ -277,6 +277,11 @@ target_link_libraries(pj_app PRIVATE
     pj_app_shell
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:pj_resources>
     $<$<NOT:$<BOOL:${EMSCRIPTEN}>>:Backward::Backward>)
+# Sanitizer lanes keep the sanitizer's own report. backward-cpp's handler would replace it, and when LeakSanitizer
+# aborts at exit the handler runs on the signal stack its own static destructor already freed.
+if(PJ_ENABLE_SANITIZERS OR PJ_ENABLE_TSAN OR PJ_ENABLE_MSAN)
+    target_compile_definitions(pj_app PRIVATE PJ_NO_CRASH_HANDLER)
+endif()
 
 # PluginCheckRunner::locateHelper looks for the admission helper next to the executable. An install puts both
 # in bin/; a build tree does not, so copy it next to the app (else only PATH finds it). Done from the consumer
