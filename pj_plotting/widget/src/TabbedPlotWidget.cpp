@@ -5,10 +5,10 @@
 
 #include <DockManager.h>
 
+#include <QApplication>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -16,12 +16,9 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
-#include <QScrollArea>
-#include <QScrollBar>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QVBoxLayout>
-#include <QWheelEvent>
 #include <algorithm>
 #include <optional>
 #include <utility>
@@ -49,25 +46,6 @@ constexpr int kTabBarButtonSize = 23;
 // Icon size: the title bar's 20-px glyph, so the strip buttons read at the same weight as the rest of the chrome.
 constexpr int kTabBarIconSize = 20;
 
-// QScrollArea variant that redirects vertical wheel input to the horizontal scrollbar, so an overflowing tab strip
-// wheel-scrolls as in Chrome or VSCode without a heavy horizontal scrollbar.
-class HorizontalScrollArea : public QScrollArea {
- public:
-  using QScrollArea::QScrollArea;
-
- protected:
-  void wheelEvent(QWheelEvent* event) override {
-    QScrollBar* hbar = horizontalScrollBar();
-    const int delta = event->angleDelta().y();
-    if (hbar != nullptr && delta != 0) {
-      hbar->setValue(hbar->value() - delta);
-      event->accept();
-      return;
-    }
-    QScrollArea::wheelEvent(event);
-  }
-};
-
 // ADS config flags are process-global and must be set before the first CDockManager is instantiated; call once, lazily.
 void applyAdsConfigOnce() {
   static bool done = false;
@@ -86,7 +64,8 @@ void applyAdsConfigOnce() {
 }  // namespace
 
 // Private widget for one tab in the strip: a name label and a close button. Double-clicking swaps the label for an
-// in-place QLineEdit; Enter commits the rename, Escape or focus loss reverts.
+// in-place QLineEdit; Enter commits the rename, Escape or focus loss reverts. A left-button drag past the platform drag
+// distance is reported through the drag signals; the strip does the reordering.
 class PlotTabFrame : public QFrame {
   Q_OBJECT
  public:
@@ -162,13 +141,45 @@ class PlotTabFrame : public QFrame {
   void clicked();
   void renameCommitted(const QString& new_name);
   void closeRequested();
+  void dragStarted();
+  void dragMoved(const QPoint& global_pos);
+  void dragFinished();
 
  protected:
   void mousePressEvent(QMouseEvent* event) override {
+    // A press during a drag means its release is gone (a right-click's context menu takes it): finish the drag here.
+    if (dragging_) {
+      dragging_ = false;
+      emit dragFinished();
+    }
     if (event->button() == Qt::LeftButton) {
+      press_pos_ = event->position().toPoint();
       emit clicked();
     }
     QFrame::mousePressEvent(event);
+  }
+
+  void mouseMoveEvent(QMouseEvent* event) override {
+    QFrame::mouseMoveEvent(event);
+    if ((event->buttons() & Qt::LeftButton) == 0 || edit_active_) {
+      return;
+    }
+    if (!dragging_ &&
+        (event->position().toPoint() - press_pos_).manhattanLength() >= QApplication::startDragDistance()) {
+      dragging_ = true;
+      emit dragStarted();
+    }
+    if (dragging_) {
+      emit dragMoved(event->globalPosition().toPoint());
+    }
+  }
+
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    if (event->button() == Qt::LeftButton && dragging_) {
+      dragging_ = false;
+      emit dragFinished();
+    }
+    QFrame::mouseReleaseEvent(event);
   }
 
   void mouseDoubleClickEvent(QMouseEvent* event) override {
@@ -227,6 +238,8 @@ class PlotTabFrame : public QFrame {
   QLineEdit* edit_;
   QPushButton* close_button_;
   bool edit_active_ = false;
+  bool dragging_ = false;
+  QPoint press_pos_;
 };
 
 TabbedPlotWidget::TabbedPlotWidget(QWidget* parent) : TabbedPlotWidget(u"main"_s, parent) {}
@@ -507,12 +520,7 @@ PlotDocker* TabbedPlotWidget::duplicateTab(PlotDocker* source) {
     closeTab(tabs_.back().frame, /*honor_veto=*/false);
     return nullptr;
   }
-  // addTab appended the copy: move it next to its source (the strip layout holds the tab frames at the same indexes as
-  // tabs_).
-  const int target_index = source_index + 1;
-  tabs_bar_layout_->removeWidget(tabs_.back().frame);
-  tabs_bar_layout_->insertWidget(target_index, tabs_.back().frame, 0, Qt::AlignVCenter);
-  std::rotate(tabs_.begin() + target_index, tabs_.end() - 1, tabs_.end());
+  moveTabFrame(static_cast<int>(tabs_.size()) - 1, source_index + 1);  // addTab appended the copy
   // addTab announced the copy before the restore filled it, so listeners bound to its plots saw no final state.
   emit currentTabChanged(copy);
   emit undoableChange();
@@ -606,6 +614,81 @@ void TabbedPlotWidget::onTabRenameRequested(PlotTabFrame* frame, const QString& 
 
 void TabbedPlotWidget::onTabCloseRequested(PlotTabFrame* frame) {
   closeTab(frame, /*honor_veto=*/true);
+}
+
+void TabbedPlotWidget::moveTabFrame(int from, int to) {
+  PlotTabFrame* frame = tabs_[from].frame;
+  tabs_bar_layout_->removeWidget(frame);
+  tabs_bar_layout_->insertWidget(to, frame, 0, Qt::AlignVCenter);
+  if (from < to) {
+    std::rotate(tabs_.begin() + from, tabs_.begin() + from + 1, tabs_.begin() + to + 1);
+  } else {
+    std::rotate(tabs_.begin() + to, tabs_.begin() + from, tabs_.begin() + from + 1);
+  }
+  // The next drag step compares against the neighbours' new geometry, not the pre-move one.
+  tabs_bar_layout_->activate();
+}
+
+int TabbedPlotWidget::tabIndexOf(PlotTabFrame* frame) const {
+  const auto it =
+      std::find_if(tabs_.begin(), tabs_.end(), [frame](const TabEntry& entry) { return entry.frame == frame; });
+  return it == tabs_.end() ? -1 : static_cast<int>(it - tabs_.begin());
+}
+
+bool TabbedPlotWidget::isHistoryDocker(const TabEntry& entry) {
+  return entry.docker != nullptr && entry.docker->isSerializable(SnapshotScope::kHistory);
+}
+
+std::vector<PlotDocker*> TabbedPlotWidget::historyDockerOrder() const {
+  std::vector<PlotDocker*> order;
+  for (const TabEntry& entry : tabs_) {
+    if (isHistoryDocker(entry)) {
+      order.push_back(entry.docker);
+    }
+  }
+  return order;
+}
+
+void TabbedPlotWidget::onTabDragStarted(PlotTabFrame* frame) {
+  const int index = tabIndexOf(frame);
+  // Only tabs an undo snapshot rebuilds move: a restore re-appends widget and history-exempt pages after them, so a
+  // position given to those would not survive the next undo.
+  drag_start_order_ = (index >= 0 && isHistoryDocker(tabs_[index])) ? historyDockerOrder() : std::vector<PlotDocker*>{};
+}
+
+void TabbedPlotWidget::onTabDragMoved(PlotTabFrame* frame, const QPoint& global_pos) {
+  const int from = tabIndexOf(frame);
+  if (drag_start_order_.empty() || from < 0 || !isHistoryDocker(tabs_[from])) {
+    return;
+  }
+  // The tab moves past a neighbour once the cursor crosses the neighbour's midpoint, so a wide and a narrow tab do not
+  // swap back and forth under a still cursor. Distances run along the strip's reading direction (index 0 is on the
+  // right in a right-to-left layout).
+  const int x = tabs_inner_->mapFromGlobal(global_pos).x();
+  const int direction = tabs_inner_->isRightToLeft() ? -1 : 1;
+  // Signed distance from tab `index`'s midpoint to the cursor, positive towards the strip's end.
+  const auto past = [&](int index) { return direction * (x - tabs_[index].frame->geometry().center().x()); };
+  const int last = static_cast<int>(tabs_.size()) - 1;
+  int to = from;
+  while (to > 0 && past(to - 1) < 0) {
+    --to;
+  }
+  while (to < last && past(to + 1) > 0) {
+    ++to;
+  }
+  if (to != from) {
+    moveTabFrame(from, to);
+  }
+}
+
+void TabbedPlotWidget::onTabDragFinished() {
+  // Compared as the undo snapshot's tab order, not an index: a tab another owner opens or closes during the drag shifts
+  // the indexes, and passing a widget or history-exempt tab is no change an undo would keep.
+  const bool moved = !drag_start_order_.empty() && historyDockerOrder() != drag_start_order_;
+  drag_start_order_.clear();
+  if (moved) {
+    emit undoableChange();  // one step per drag, however many neighbours it passed
+  }
 }
 
 void TabbedPlotWidget::onTabContextMenuRequested(PlotTabFrame* frame, const QPoint& pos) {
@@ -791,6 +874,9 @@ PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name) {
     onTabRenameRequested(frame, new_name);
   });
   connect(frame, &PlotTabFrame::closeRequested, this, [this, frame]() { onTabCloseRequested(frame); });
+  connect(frame, &PlotTabFrame::dragStarted, this, [this, frame]() { onTabDragStarted(frame); });
+  connect(frame, &PlotTabFrame::dragMoved, this, [this, frame](const QPoint& pos) { onTabDragMoved(frame, pos); });
+  connect(frame, &PlotTabFrame::dragFinished, this, &TabbedPlotWidget::onTabDragFinished);
   frame->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(frame, &QWidget::customContextMenuRequested, this, [this, frame](const QPoint& pos) {
     onTabContextMenuRequested(frame, pos);

@@ -185,7 +185,7 @@ Pick one per session, stay within it, stop after about 30 minutes or 150 tool ca
 1. **Load and look**: load the signals CSV through the Load button and its dialog; expand the tree; change the
    CSV dialog's options (time axis, delimiter) and reload.
 2. **Plots**: with the signals layout, zoom (box, wheel), pan, undo/redo each, link and unlink X, close and
-   reopen a plot area, add a tab, rename it, close it, undo.
+   reopen a plot area, add a tab, rename it, drag it to another position, close it, undo.
 3. **Playback**: play, pause (button and Space), loop, speed and step scrubbers, slider seeks; time offset and
    clock time buttons.
 4. **Dialogs**: every menu entry; Escape and Cancel on each dialog; Preferences: change, cancel, reopen.

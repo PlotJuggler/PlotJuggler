@@ -167,6 +167,13 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
   (`PlotWidget::stampLiveCurveKeys`, as a clipboard copy does); without them every copied plot comes up empty.
   `addTab` announces the copy before it is filled, so `currentTabChanged` fires again once it is: listeners such as
   the shell's curve editor would otherwise keep rows built before the restored visibility and markers.
+- **Tab order.** The strip layout, `tabs_` and the saved `<Tab>` sequence share one order. A restore rebuilds the
+  serialized plot tabs in document order, then re-appends the pages outside its scope: an undo or redo re-appends the
+  widget and history-exempt pages, a layout load only the widget pages. Dragging a plot tab moves it past each
+  neighbour whose midpoint the cursor crosses, along the layout direction (a wide and a narrow tab do not swap back and
+  forth under a still cursor). On release, or on a press that shows the release was lost, it emits one `undoableChange`
+  if the undo snapshot's tab order changed. Widget and history-exempt tabs cannot be dragged, since the next undo would
+  move them back; a plot tab dragged past one moves it only until then.
 - **Layout restore** parses and validates the whole structural tree before changing the live docker, restores splitter
   ratios as large relative weights (the docker is not laid out at its final size yet, so pixel scaling would distort the
   split), and emits no undo step for its intermediate states. It restores into the live plot page whose tab id
@@ -361,6 +368,5 @@ The performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performance
 - When the GPU canvas fails in the browser there is no raster fallback: the banner stays.
 - The raster fallback after a GPU failure waits for a popup or modal window but does not detect a `QDrag::exec` loop
   started from the canvas.
-- `TabbedPlotWidget.cpp` still defines `HorizontalScrollArea`, which the tab strip no longer uses.
 - A curve restored from a layout whose data has not arrived yet does not reserve its saved colour (it waits in
   `PendingDisplayBinder`, which the plot cannot see), so a curve added to that plot meanwhile can take the same colour.
