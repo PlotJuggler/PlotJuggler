@@ -127,7 +127,7 @@ Some chrome lives in C++ because Qt's default styling has internals QSS cannot r
   `objectName="PJMenu"` (so the `QMenu#PJMenu` rules apply) and clamps `QComboBox` popup palettes.
 - `PJ::Style` (`pj_widgets/include/pj_widgets/Style.h`): a `QProxyStyle` over Fusion that suppresses the platform's
   dialog-button icons (`SH_DialogButtonBox_ButtonsHaveIcons`) and mnemonic underlines (`SH_UnderlineShortcut`) and
-  draws the push-button keyboard-focus ring (so no `QPushButton` rule may declare `outline`); installed in
-  `pj_app/src/main.cpp`.
+  draws the push-button keyboard-focus ring (a `QPushButton` rule that declares `outline` replaces it: only the
+  `QMenu#PJMenu` rules do, which keeps the ring off menu items); installed in `pj_app/src/main.cpp`.
 
 A new widget category that needs runtime polish extends one of these helpers.
