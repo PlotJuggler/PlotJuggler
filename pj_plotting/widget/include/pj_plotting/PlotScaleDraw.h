@@ -27,6 +27,9 @@ class PlotTimeScaleDraw : public QwtScaleDraw {
  public:
   explicit PlotTimeScaleDraw(TimeLabelFormat format) : format_(format) {}
   [[nodiscard]] QwtText label(double value) const override;
+  [[nodiscard]] TimeLabelFormat format() const noexcept {
+    return format_;
+  }
 
  private:
   TimeLabelFormat format_;

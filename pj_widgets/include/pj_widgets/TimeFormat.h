@@ -9,8 +9,8 @@
 namespace PJ {
 
 /// How a time value (seconds on the shared display axis) is labeled. One value drives every time label of the app (plot
-/// X axis, playback readout, Source Timeline), so they never disagree. The clock formats print a value below
-/// kMinWallClockSeconds as an elapsed duration `H:mm:ss` (0:00:00 at the origin, no date, no zone).
+/// X axis and tracker, playback readout, Source Timeline), so they never disagree. The clock formats print a value
+/// below kMinWallClockSeconds as an elapsed duration `H:mm:ss` (0:00:00 at the origin, no date, no zone).
 enum class TimeLabelFormat : std::uint8_t {
   kSeconds,     ///< Plain decimal seconds, the value as-is.
   kLocalClock,  ///< Wall-clock time of day in the system time zone; the value is Unix epoch seconds.

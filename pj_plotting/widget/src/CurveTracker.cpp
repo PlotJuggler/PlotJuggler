@@ -19,6 +19,7 @@
 #include <map>
 using namespace Qt::StringLiterals;
 
+#include "pj_plotting/PlotScaleDraw.h"
 #include "pj_widgets/AppSettings.h"
 #include "pj_widgets/ColorContrast.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -30,6 +31,16 @@ namespace {
 // Curve palettes are tuned to draw on the plot, not to be read as text: on the dark backdrop the default red and blue
 // fall under this ratio.
 constexpr double kMinTextContrast = 4.5;
+
+// The time line reads like the X axis under it: plain seconds, or the clock format the date-time toggle installed there
+// (an XY plot keeps plain seconds).
+[[nodiscard]] QString trackerTimeText(const QwtPlot* plot, double seconds, int precision) {
+  const auto* draw = dynamic_cast<const PlotTimeScaleDraw*>(plot->axisScaleDraw(QwtPlot::xBottom));
+  if (draw != nullptr && isWallClock(draw->format())) {
+    return formatTimeLabel(seconds, draw->format(), precision);
+  }
+  return QString::number(seconds, 'f', precision);
+}
 
 [[nodiscard]] std::optional<QPointF> referencePointAt(const QwtPlotCurve* curve, std::optional<QPointF> reference) {
   return reference.has_value() ? curvePointAt(curve, reference->x()) : std::nullopt;
@@ -213,7 +224,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     time_delta = u" (Δ %1)"_s.arg(QString::number(tracker_position.x() - reference_pos_->x(), 'f', precision));
   }
   QString marker_html = u"<font color=%1>time : %2%3</font><br>"_s.arg(
-      text_color.name(), QString::number(tracker_position.x(), 'f', precision), time_delta);
+      text_color.name(), trackerTimeText(plot_, tracker_position.x(), precision), time_delta);
 
   if (valueBoxAllowed()) {
     int line_index = 0;
