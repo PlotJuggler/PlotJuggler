@@ -14,6 +14,7 @@
 #include <QFrame>
 #include <QLabel>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QPen>
 #include <QPointer>
 #include <QPushButton>
@@ -843,6 +844,76 @@ TEST(TabbedWidgetTab, FailedTabLoadKeepsTheReusedPageMetadata) {
   ASSERT_EQ(tabbed.dockerAt(0), page);
   EXPECT_EQ(page->name(), u"live"_s);
   EXPECT_TRUE(page->ownerPlugin().isEmpty());
+}
+
+// Sends a left-button drag of `frame` to the strip x position `to_x` (in the frame's parent coordinates).
+void dragTab(QFrame* frame, int to_x) {
+  QWidget* strip = frame->parentWidget();
+  const QPoint start = frame->rect().center();
+  const QPoint end = frame->mapFrom(strip, QPoint(to_x, frame->geometry().center().y()));
+  const auto send = [frame](QEvent::Type type, QPoint local, Qt::MouseButton button, Qt::MouseButtons buttons) {
+    QMouseEvent event(type, local, frame->mapToGlobal(local), button, buttons, Qt::NoModifier);
+    QApplication::sendEvent(frame, &event);
+  };
+  send(QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+  send(QEvent::MouseMove, (start + end) / 2, Qt::NoButton, Qt::LeftButton);
+  send(QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+  send(QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+}
+
+QStringList savedTabNames(const PJ::TabbedPlotWidget& tabbed) {
+  QDomDocument doc;
+  QStringList names;
+  const QDomElement area = tabbed.xmlSaveState(doc);
+  for (QDomElement tab = area.firstChildElement(u"Tab"_s); !tab.isNull(); tab = tab.nextSiblingElement(u"Tab"_s)) {
+    names.push_back(tab.attribute(u"tab_name"_s));
+  }
+  return names;
+}
+
+TEST(TabbedPlotReorder, DraggingATabMovesItAndSavesTheNewOrderAsOneUndoStep) {
+  PJ::TabbedPlotWidget tabbed;
+  tabbed.renameTab(tabbed.dockerAt(0), u"a"_s);
+  PJ::PlotDocker* b = tabbed.addTab(u"b"_s);
+  PJ::PlotDocker* c = tabbed.addTab(u"c"_s);
+  tabbed.resize(800, 400);
+  tabbed.show();
+  QCoreApplication::processEvents();
+  const QList<QFrame*> frames = tabbed.findChildren<QFrame*>(u"plotTabFrame"_s);
+  ASSERT_EQ(frames.size(), 3);
+  QFrame* frame_a = frames.at(0);
+  QFrame* frame_c = frames.at(2);
+  int undo_steps = 0;
+  QObject::connect(&tabbed, &PJ::TabbedPlotWidget::undoableChange, [&undo_steps]() { ++undo_steps; });
+
+  dragTab(frame_c, frame_a->geometry().left() + 2);
+
+  EXPECT_EQ(tabbed.dockerAt(0), c);
+  EXPECT_EQ(tabbed.dockerAt(2), b);
+  EXPECT_EQ(savedTabNames(tabbed), (QStringList{u"c"_s, u"a"_s, u"b"_s}));
+  EXPECT_LT(frame_c->geometry().left(), frame_a->geometry().left());
+  EXPECT_EQ(undo_steps, 1);
+
+  // A drag that crosses no neighbour's midpoint moves nothing and is no undo step.
+  dragTab(frame_c, frame_c->geometry().center().x() + 15);
+  EXPECT_EQ(undo_steps, 1);
+}
+
+TEST(TabbedPlotReorder, WidgetTabsAreNotDraggable) {
+  PJ::TabbedPlotWidget tabbed;
+  PJ::PlotDocker* plot = tabbed.dockerAt(0);
+  auto* content = new QLabel(u"pinned"_s);
+  tabbed.addWidgetTab(u"Toolbox"_s, content, {});
+  tabbed.resize(800, 400);
+  tabbed.show();
+  QCoreApplication::processEvents();
+  const QList<QFrame*> frames = tabbed.findChildren<QFrame*>(u"plotTabFrame"_s);
+  ASSERT_EQ(frames.size(), 2);
+
+  dragTab(frames.at(1), frames.at(0)->geometry().left() + 2);
+
+  EXPECT_EQ(tabbed.dockerAt(0), plot);
+  EXPECT_EQ(tabbed.dockerAt(1), nullptr);
 }
 
 }  // namespace
