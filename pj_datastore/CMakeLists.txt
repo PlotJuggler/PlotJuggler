@@ -80,6 +80,7 @@ target_link_libraries(pj_datastore
 
 if(PJ_BUILD_TESTS)
   set(PJ_DATASTORE_TESTS
+    tests/crash_handler_selftest.cpp
     tests/type_registry_test.cpp
     tests/buffer_test.cpp
     tests/column_buffer_test.cpp
