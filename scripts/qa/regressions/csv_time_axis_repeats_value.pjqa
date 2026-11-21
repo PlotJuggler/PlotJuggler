@@ -1,0 +1,13 @@
+# A time column that repeats a value loads: the signals CSV with `cosine` as the X axis (each value comes twice, and
+# the column is not monotonic) failed the whole load with "duplicate field id" and no dataset appeared. Needs the
+# CSV plugin at 1.0.11 or later.
+# app:
+# needs: plugins
+open_file {"path":"$CHECKOUT/tests/wasm/fixtures/signals/data.csv","config":{"time_mode":"column","time_column_name":"cosine","time_column_index":2,"detect_delimiter":true,"delimiter":",","use_custom_format":false,"custom_time_format":"","combined_date_index":-1,"combined_time_index":-1}}
+expect "loaded":true
+describe_topic {"topic":"data"}
+expect "data/time"
+absent "data/cosine"
+# Every row is kept: rows that share an X value become consecutive samples.
+read_series {"series":["data/time"]}
+expect "count":1001
