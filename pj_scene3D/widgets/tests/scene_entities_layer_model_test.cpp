@@ -7,8 +7,10 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
 #include <QHostAddress>
 #include <QSettings>
 #include <QTcpServer>
@@ -37,6 +39,7 @@
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene3d_widgets/layers/scene_entities_layer.h"
 #include "pj_tf/tf_buffer.h"
+#include "urdf_package_resolver.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -1009,6 +1012,65 @@ TEST(SceneEntitiesLayerModelTest, RemoteModelUrlIsFetchedByDefault) {
 }
 
 // A failed remote fetch reports the offending URL and the underlying error in the notice, not a bare count.
+// A ROS Marker's mesh_resource is usually package://pkg/rel: it resolves through the dock's package resolver, the same
+// chain robot models use, instead of being fetched as a URL.
+TEST(SceneEntitiesLayerModelTest, PackageUriModelResolvesThroughPackageResolver) {
+  isolateSettings();
+  QTemporaryDir root;
+  ASSERT_TRUE(root.isValid());
+  ASSERT_TRUE(QDir(root.path()).mkpath(u"my_robot_description/meshes"_s));
+  ASSERT_TRUE(
+      QFile::copy(
+          QString(PJ_SCENE3D_FIXTURES_DIR) + u"/meshes/cube.stl"_s,
+          root.filePath(u"my_robot_description/meshes/cube.stl"_s)));
+  pj::scene3d::UrdfPackageResolver resolver;
+  resolver.addSearchRoot(root.path());
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities({makeUrlEntity("part", 10, "package://my_robot_description/meshes/cube.stl", "")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  layer.setPackageResolver(&resolver);
+  ASSERT_TRUE(layer.attach(makeContext(session)));
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.modelMeshes().empty() && layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  EXPECT_EQ(layer.modelMeshes().size(), 1U) << layer.remoteFetchNotice().toStdString();
+  EXPECT_TRUE(layer.remoteFetchNotice().isEmpty()) << layer.remoteFetchNotice().toStdString();
+}
+
+TEST(SceneEntitiesLayerModelTest, UnresolvedPackageUriNamesThePackage) {
+  isolateSettings();
+  pj::scene3d::UrdfPackageResolver resolver;
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities({makeUrlEntity("part", 10, "package://pj_no_such_package/meshes/cube.stl", "")}));
+
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  layer.setPackageResolver(&resolver);
+  ASSERT_TRUE(layer.attach(makeContext(session)));
+
+  QElapsedTimer timer;
+  timer.start();
+  while (layer.remoteFetchNotice().isEmpty() && timer.elapsed() < 5000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+  }
+  const QString notice = layer.remoteFetchNotice();
+  EXPECT_TRUE(notice.contains("pj_no_such_package"_L1)) << notice.toStdString();
+  EXPECT_FALSE(notice.contains("unsupported URL scheme"_L1)) << notice.toStdString();
+}
+
 TEST(SceneEntitiesLayerModelTest, FailedRemoteFetchSurfacesUrlAndErrorInNotice) {
   isolateSettings();
   QSettings settings;

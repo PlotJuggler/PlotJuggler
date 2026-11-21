@@ -758,6 +758,11 @@ An `sdk::MeshMap` (navigation, cost and semantic meshes with named face and vert
 
 ## Asset resolution (`package://` without ROS)
 
+One resolver per dock serves its robot models and its SceneEntities models: a model primitive's `package://` URL (a
+ROS Marker's `mesh_resource`) takes the package chain below with no URDF anchor, and its other URLs keep the marker
+rules (local files load, `http(s)` behind the remote-fetch setting). An unresolved package names itself in the
+layer's notice.
+
 `UrdfPackageResolver` dispatches on the scheme: `file://` absolute; a bare path relative to the URDF (never enters
 the package chain); `http(s)://` only for URL-source layers; `package://pkg/rel` to the model's explicit root for
 `pkg` when it has one, else this chain, first hit wins:

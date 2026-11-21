@@ -31,6 +31,7 @@ class QWidget;
 namespace pj::scene3d {
 
 class MeshLoadQueue;
+class UrdfPackageResolver;
 
 // Concrete Scene3DLayer for one visualization_msgs/MarkerArray-equivalent topic (canonical sdk::SceneEntities,
 // kSceneEntities). Two primitive families:
@@ -38,13 +39,14 @@ class MeshLoadQueue;
 // - **Markers** (cube/sphere/cylinder/arrow/line/triangle): the latest batch at or before the tracker time
 //   (stateless), expanded into MarkerGeometry on a worker thread (latest wins, stale results dropped by generation),
 //   which the view reads through geometry().
-// - **Models** (ModelPrimitive, embedded glTF bytes or a file/http URL): all batches up to the tracker time are
-//   replayed into an id-keyed entity state (SceneEntitiesModelState: replace-by-id, deletions, lifetime expiry); the
-//   bytes load asynchronously through a MeshLoadQueue, a few at a time (fetch, then import off the GUI thread; one in
-//   the browser), each admitted against kSceneLimits' model budgets as it lands. Imported meshes are retained as
-//   MeshData and exposed as frame-local ModelDrawCalls through ModelRenderable (the view applies TF). DATA-SUPPLIED
-//   http(s) model URLs are gated by the QSettings bool "pj_scene3d/allow_remote_model_fetch" (default ON; false opts
-//   OUT); local file URLs / bare paths always load. Failures surface through remoteFetchNotice() and statusWarning().
+// - **Models** (ModelPrimitive, embedded glTF bytes or a file/http/package:// URL): all batches up to the tracker
+//   time are replayed into an id-keyed entity state (SceneEntitiesModelState: replace-by-id, deletions, lifetime
+//   expiry); the bytes load asynchronously through a MeshLoadQueue, a few at a time (fetch, then import off the GUI
+//   thread; one in the browser), each admitted against kSceneLimits' model budgets as it lands. Imported meshes are
+//   retained as MeshData and exposed as frame-local ModelDrawCalls through ModelRenderable (the view applies TF).
+//   DATA-SUPPLIED http(s) model URLs are gated by the QSettings bool "pj_scene3d/allow_remote_model_fetch" (default
+//   ON; false opts OUT); local file URLs / bare paths always load. Failures surface through remoteFetchNotice() and
+//   statusWarning().
 //
 // Known gap: the marker path shows only the latest batch, so markers from earlier batches with different entity ids
 // disappear while their models persist.
@@ -106,6 +108,11 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   void setColorOverrideEnabled(bool enabled);
   void setOverrideColor(QColor color);
   void setWireframe(bool enabled);
+  // Resolves package:// model URLs (a ROS Marker's mesh_resource); the dock's shared resolver, not owned. Without one a
+  // package:// model fails with a visible reason.
+  void setPackageResolver(UrdfPackageResolver* resolver) {
+    package_resolver_ = resolver;
+  }
 
   // Entities keep identity, frame, timing and models only (marker primitives are dropped).
   [[nodiscard]] const std::map<std::string, PJ::sdk::SceneEntity>& currentEntities() const {
@@ -289,6 +296,7 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
 
   // Owned so destroying the layer aborts in-flight fetches and drops pending completions.
   std::unique_ptr<MeshLoadQueue> model_queue_;
+  UrdfPackageResolver* package_resolver_ = nullptr;
   std::unordered_map<std::string, ModelLoad> model_loads_;
   std::unordered_map<std::string, std::uint64_t> model_mesh_bytes_;
   std::uint64_t model_retained_bytes_ = 0;
