@@ -91,7 +91,7 @@ TEST(FrameworkTokens, TextAndIconInkValues) {
   EXPECT_EQ(iconInk(Theme::Dark).name(QColor::HexRgb), QStringLiteral("#ffffff"));
   EXPECT_EQ(iconInk(Theme::Light).name(QColor::HexRgb), QStringLiteral("#333333"));
   EXPECT_EQ(iconInkDisabled(Theme::Dark).name(QColor::HexRgb), QStringLiteral("#8f8fa3"));
-  EXPECT_EQ(iconInkDisabled(Theme::Light).name(QColor::HexRgb), QStringLiteral("#a3a3a3"));
+  EXPECT_EQ(iconInkDisabled(Theme::Light).name(QColor::HexRgb), QStringLiteral("#808080"));
 }
 
 // End-to-end proof that the app's #3D3D3D chrome-ink icons actually fold onto the

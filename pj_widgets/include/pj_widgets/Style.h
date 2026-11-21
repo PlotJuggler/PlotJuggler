@@ -17,6 +17,7 @@
 namespace PJ {
 
 // QProxyStyle layered over Fusion that adjusts Qt defaults that clash with the app's chrome:
+//   - generatedIconPixmap: the disabled look of icons without a Disabled pixmap of their own (below).
 //   - SH_DialogButtonBox_ButtonsHaveIcons: stops the platform from stamping its theme glyphs onto Ok, Cancel,
 //     Save, Yes and No inside the QDialogButtonBoxes of plugin dialogs loaded through pj_dialog_host.
 //   - SH_UnderlineShortcut: turns off underlining the mnemonic letter ("&Save"), which bleeds through on menus

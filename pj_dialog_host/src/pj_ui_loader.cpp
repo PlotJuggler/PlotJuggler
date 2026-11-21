@@ -109,17 +109,36 @@ QWidget* PjUiLoader::load(QIODevice* device, QWidget* parent) {
   if (root == nullptr) {
     return nullptr;
   }
-  const QString theme = currentTheme();
   for (const auto& [name, path] : hostIconRefs(buffer.data())) {
+    // An unnamed widget would make findChild match any object.
+    if (name.isEmpty()) {
+      continue;
+    }
     QObject* target = root->objectName() == name ? root : root->findChild<QObject*>(name);
+    if (qobject_cast<QAbstractButton*>(target) != nullptr || qobject_cast<QAction*>(target) != nullptr) {
+      target->setProperty("_pj_host_icon", path);
+    }
+  }
+  retintHostIcons(root);
+  return root;
+}
+
+void PjUiLoader::retintHostIcons(QObject* root) {
+  const QString theme = currentTheme();
+  QList<QObject*> objects = root->findChildren<QObject*>();
+  objects.prepend(root);
+  for (QObject* object : objects) {
+    const QString path = object->property("_pj_host_icon").toString();
+    if (path.isEmpty()) {
+      continue;
+    }
     const QIcon icon(loadSvg(path, theme));
-    if (auto* button = qobject_cast<QAbstractButton*>(target)) {
+    if (auto* button = qobject_cast<QAbstractButton*>(object)) {
       button->setIcon(icon);
-    } else if (auto* action = qobject_cast<QAction*>(target)) {
+    } else if (auto* action = qobject_cast<QAction*>(object)) {
       action->setIcon(icon);
     }
   }
-  return root;
 }
 
 }  // namespace PJ

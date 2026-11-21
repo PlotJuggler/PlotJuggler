@@ -175,21 +175,30 @@ TEST(PjUiLoader, RetintsHostIconsets) {
   auto* button = root->findChild<QPushButton*>("saveButton");
   ASSERT_NE(button, nullptr);
 
-  const QImage image = button->icon().pixmap(QSize(64, 64)).toImage();
-  const QRgb ink = PJ::theme::iconInk(PJ::theme::Theme::Dark).rgb();
-  int opaque = 0;
-  int inked = 0;
-  for (int y = 0; y < image.height(); ++y) {
-    for (int x = 0; x < image.width(); ++x) {
-      const QColor c = image.pixelColor(x, y);
-      if (c.alpha() == 255) {
-        ++opaque;
-        inked += c.rgb() == ink ? 1 : 0;
+  // Every opaque pixel of the icon is in the theme's icon ink.
+  const auto expectInk = [button](PJ::theme::Theme theme) {
+    const QImage image = button->icon().pixmap(QSize(64, 64)).toImage();
+    const QRgb ink = PJ::theme::iconInk(theme).rgb();
+    int opaque = 0;
+    int inked = 0;
+    for (int y = 0; y < image.height(); ++y) {
+      for (int x = 0; x < image.width(); ++x) {
+        const QColor c = image.pixelColor(x, y);
+        if (c.alpha() == 255) {
+          ++opaque;
+          inked += c.rgb() == ink ? 1 : 0;
+        }
       }
     }
-  }
-  EXPECT_GT(opaque, 0);
-  EXPECT_EQ(inked, opaque);
+    EXPECT_GT(opaque, 0);
+    EXPECT_EQ(inked, opaque);
+  };
+  expectInk(PJ::theme::Theme::Dark);
+
+  // A long-lived panel re-tints on a theme switch.
+  PJ::appSettings().setValue(QString::fromLatin1(PJ::kThemeSettingsKey), u"light"_s);
+  PJ::PjUiLoader::retintHostIcons(root);
+  expectInk(PJ::theme::Theme::Light);
   delete root;
   if (saved_theme.isValid()) {
     PJ::appSettings().setValue(QString::fromLatin1(PJ::kThemeSettingsKey), saved_theme);

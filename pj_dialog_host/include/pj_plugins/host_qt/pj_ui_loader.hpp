@@ -19,8 +19,12 @@ class PjUiLoader : public QUiLoader {
   // Hides QUiLoader::load (not virtual): call it through a PjUiLoader. After the load, every button or action icon
   // the .ui names by a host resource path (`:/resources/svg/...`) is replaced by the loadSvg rendering for the active
   // theme, as host-built icons are: a raw <iconset> keeps the SVG's authoring ink, near-invisible in the dark theme.
-  // Applied once; a theme switch while the dialog is open keeps the earlier tint.
+  // Each re-rendered object keeps its path in the dynamic property `_pj_host_icon`, for retintHostIcons.
   QWidget* load(QIODevice* device, QWidget* parent = nullptr);
+
+  // Re-renders the icons load() themed under `root` for the active theme: a long-lived panel calls it on a theme
+  // switch.
+  static void retintHostIcons(QObject* root);
 };
 
 }  // namespace PJ

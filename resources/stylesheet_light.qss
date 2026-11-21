@@ -182,7 +182,7 @@ on_special_disabled:          #F0F0F0
 
 // ---- Icons ----
 icon_ink:       #333333
-icon_ink_disabled:       #A3A3A3
+icon_ink_disabled:       #808080
 // ---- Interaction grid: <variant>_<state> ----
 neutral_nominal:          #E0E0E0
 neutral_hovered:          #CCCCCC

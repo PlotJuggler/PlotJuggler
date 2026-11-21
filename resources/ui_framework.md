@@ -214,7 +214,7 @@ icons match the body-text ink; disabled icons drop to a muted mid-grey.
   - **Light:** `#333333`
 - **Disabled**
   - **Dark:** `#8F8FA3`
-  - **Light:** `#A3A3A3`
+  - **Light:** `#808080`
 
 ## Outline / Stroke + Focus
 
