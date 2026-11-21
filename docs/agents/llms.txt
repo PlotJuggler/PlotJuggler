@@ -1,0 +1,52 @@
+# PlotJuggler 4: guide for AI agents
+
+> PlotJuggler 4 is a desktop and browser application for time series and robotics data: it opens log files (MCAP,
+> ROS 2 bags, ULog, CSV, Parquet, CAN logs...) and live streams (ROS 2, MQTT, ZeroMQ, UDP, Foxglove and PlotJuggler
+> bridges), plots their fields, shows images and 3D scenes in step with one time cursor, and derives new series,
+> objects and markers with Luau or Python scripts. An agent drives it through PlotJuggler's MCP server (tools
+> `get_status`, `open_file`, `read_series`, `plot_tab`, ...; the `plotjuggler` skill of the `plotjuggler-agent`
+> plugin). These pages add what the tool descriptions do not carry: the concepts the tools assume, which plugin each
+> format needs, how to do each task in the UI with its exact labels (and whether an MCP tool does it), and the
+> scripting APIs the tools run. `about` gives each core feature's one-line UI entry point and the known limitations
+> (from `resources/feature_catalog.json`); these pages give the steps, gotchas and MCP routes behind them. They
+> describe the current development version; the MCP tools' own descriptions and `about` win where they differ.
+
+## When PlotJuggler is the wrong tool
+
+- Sending commands or publishing messages to a robot: PlotJuggler only receives and displays.
+- Editing or cleaning the recorded data in place: loaded data is read-only and files are never modified; derive a new
+  series instead, or edit the file with another tool.
+- Converting or repairing log files (rosbag `.db3` to MCAP, a broken MCAP index): use `ros2 bag convert` or the `mcap`
+  CLI, then open the result.
+- Statistics or machine learning beyond what a per-sample script or a marker rule expresses: `export_series` (desktop)
+  writes aligned CSV or `.npy` for numpy/pandas.
+- Fleet-scale batch screening of many logs without a GUI: the Marker Editor's `anomaly_runner` CLI runs the same rules
+  headless.
+- Long-term storage and search across many recordings: a recording server or database; PlotJuggler opens what it
+  serves (for example a Mosaico server through its toolbox).
+
+## Pages
+
+- [Concepts](concepts.md): datasets, topics, fields and series paths; display versus recording time; the Source
+  Timeline and offsets; layouts over several datasets; derived series, objects and markers; streaming; Record and
+  the cache.
+- [Formats](formats.md): file and stream types, the loader or streamer and the parser each needs, browser
+  availability.
+- [Scripting](scripting.md): built-in filters, the Luau filter class with its parameter schema, Python filters,
+  on-demand object scripts (`pj.scene`, `pj.cloud`, `pj.annotations`, `pj.voxels`, `pj.tf`, image ops), marker rules
+  (`when`, conditions, colour maps).
+- [UI: plots](ui_tasks/plots.md): adding curves, XY plots, tabs and splits, zoom and pan, curve styles, the tracker,
+  Apply Filter.
+- [UI: time and comparing runs](ui_tasks/time.md): playback, the time readout, clock time, the Source Timeline (drag,
+  Align, Reset, Merge), comparing two runs.
+- [UI: layouts, files, undo](ui_tasks/layouts.md): opening files, dataset actions, saving and loading layouts, one
+  layout over several datasets, undo, Preferences, Diagnostics.
+- [UI: transforms and Custom Topics](ui_tasks/transforms.md): Apply Filter, the Transform Editor, editing and
+  deleting custom topics, Quaternion to RPY, FFT, CSV/Parquet export.
+- [UI: markers](ui_tasks/markers.md): the Marker Editor, colour-map regions, marker visibility and refresh.
+- [UI: live data](ui_tasks/live_data.md): starting and stopping streams, forced streaming, pause, the buffer, Record,
+  the source cache.
+- [UI: 2D and 3D scenes](ui_tasks/scenes.md): images, video, depth, annotations, point clouds, TF, robot models.
+- [UI: other panels](ui_tasks/other_panels.md): Log, State Transitions, Custom Widgets.
+- [UI: plugins and Marketplace](ui_tasks/plugins.md): installing and managing extensions, toolboxes, the Assistant.
+- [UI: Mosaico](ui_tasks/mosaico.md): connecting to a Mosaico server and downloading sequences.
