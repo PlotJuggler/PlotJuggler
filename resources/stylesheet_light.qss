@@ -993,12 +993,12 @@ QGroupBox::indicator:unchecked:disabled {
 
 /* QPushButton -------------------------------------------------------------- */
 
+/* No `outline` here: PJ::Style draws the keyboard-focus ring, and a declared outline would replace it. */
 QPushButton
 {
     color: ${text};
     border-radius: ${radius_input}px;
     padding: ${space_comfortable}px;
-    outline: none;
 }
 
 QPushButton[flat="true"]
@@ -1101,6 +1101,18 @@ QToolButton#buttonFilterPlot:checked,
 QToolButton#buttonFilterScene2D:checked,
 QToolButton#buttonFilterScene3D:checked {
     background: transparent;
+}
+
+/* Scene3D camera Home button, an overlay on the scene: filled like the overlay combos beside it so it reads over
+   any scene content. */
+QToolButton#cameraHomeButton {
+    background: ${input};
+    border: 1px solid ${separation};
+    border-radius: ${radius_input}px;
+    padding: ${space_none}px;
+}
+QToolButton#cameraHomeButton:hover {
+    background: ${neutral_hovered};
 }
 
 QToolButton:disabled {
@@ -2397,8 +2409,8 @@ QPushButton[msgbox_role="cancel"]:hover {
 }
 
 QPushButton[msgbox_role="destructive"] {
-    background: ${neutral_nominal};
-    color: ${destructive_ink};
+    background: ${destructive_nominal};
+    color: ${on_destructive_nominal};
 }
 
 QPushButton[msgbox_role="destructive"]:hover {

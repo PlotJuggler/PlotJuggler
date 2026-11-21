@@ -19,6 +19,7 @@ pj_add_test_runner(pj_widgets_tests
         eliding_label_test.cpp
         toggle_switch_test.cpp
         color_picker_widget_test.cpp
+        style_focus_ring_test.cpp
         style_input_height_test.cpp
         marker_timeline_test.cpp
         progress_bar_test.cpp

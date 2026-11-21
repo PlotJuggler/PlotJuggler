@@ -225,7 +225,9 @@ Gridline} and states {Rest, Hovered, Focused, Checked, Disabled}. Rest reuses th
 old `border_default`, Hovered reuses `border_hover`, and **Focus is a distinct
 ring** (`outline_*_focused`) rather than being collapsed into hover. Focus is drawn as a
 ring over the nominal fill, so `State::Focused` on the interaction grid resolves
-to Nominal.
+to Nominal. Push buttons are the exception: `PJ::Style` draws their keyboard-focus
+ring inside the button in its label colour, because the blue ring has no contrast
+on the neutral grey fill (about 1.3:1 in dark), and only after keyboard navigation.
 
 ## Status Text
 
