@@ -744,7 +744,7 @@
          <item>
           <widget class="QLabel" name="labelAssetFoldersHint">
            <property name="text">
-            <string>Add your ROS workspace or any folder that holds robot packages: packages are found in its subfolders. The folders in $ROS_PACKAGE_PATH and $AMENT_PREFIX_PATH are searched too.</string>
+            <string>Add your ROS workspace or any folder that holds robot packages: packages are found in its subfolders. The folders in $ROS_PACKAGE_PATH and $AMENT_PREFIX_PATH, and /opt/ros/&lt;distro&gt;/share, are searched too.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>

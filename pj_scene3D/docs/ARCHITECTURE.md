@@ -761,18 +761,23 @@ the package chain); `http(s)://` only for URL-source layers; `package://pkg/rel`
 `pkg` when it has one, else this chain, first hit wins:
 
 0. Embedded assets from the source plugin (`setEmbeddedAssets`), exact name.
-1. The remembered per-source mapping (`QSettings` `pj_scene3d/urdf_per_source_packages`).
+1. A per-source mapping (`QSettings` `pj_scene3d/urdf_per_source_packages`, source path -> package -> directory).
+   The resolver only reads it; nothing in this version writes it.
 2. Ancestors of the URDF's directory whose basename is `pkg` and that contain `rel` (URL segments for URL sources).
-3. Search roots: `<root>/<pkg>` in the user's folders (`pj_scene3d/urdf_search_roots`), the URDF and source
-   directories, `$ROS_PACKAGE_PATH`, `$AMENT_PREFIX_PATH` and `$COLCON_PREFIX_PATH`; then the user's folders at
-   workspace depth (breadth-first, skipping hidden, `build` and `log` folders, never inside a folder with a
-   `package.xml`, indexed once per folder), so `~/ws` finds `~/ws/src/<repo>/<pkg>`. The URDF and source folders
-   stay one level deep: the source folder may be `$HOME`. Identity is the directory basename, no `package.xml`.
-4. Ask once on the layer's status ("Locate..."): the user picks a workspace or the package folder itself; the
-   package is stored per source, the chosen folder globally, and pending meshes retry.
+3. Search roots: `<root>/<pkg>` in the roots seeded for a load (the URDF and source directories,
+   `$ROS_PACKAGE_PATH`, `$AMENT_PREFIX_PATH` and `$COLCON_PREFIX_PATH`, then `/opt/ros/<distro>/share` newest distro
+   first, outside Windows, for an app started without a sourced environment); then the user's folders
+   (`pj_scene3d/urdf_search_roots`, read on every miss) at workspace depth: breadth-first, skipping hidden, `build` and
+   `log` folders, never inside a folder with a `package.xml`, the folder itself included, so `~/ws`, `~/ws/src` or the
+   package folder all work and colcon's `install/<pkg>/share/<pkg>` is found. Every directory with the name is a
+   candidate, accepted when it holds `rel`. Each folder's walk is cached per dock until `clearPackageIndexes()` (Retry,
+   Locate, a Preferences change). The seeded roots stay one level deep: the source folder may be `$HOME`.
+4. Ask once on the layer's status ("Locate..."): the user picks a workspace or a package folder; when it holds one of
+   the missing packages it is added to the user's folders, and the robot reloads.
 
 The user's folders are edited in Preferences (Scene 3D) through `Scene3DDockWidget::setPackageSearchFolders`;
-`reloadPackageSearchFolders()` then resets the dock's resolver and retries every robot with unresolved meshes.
+`reloadPackageSearchFolders()` then clears the dock's cached walks and retries every robot with unresolved meshes.
+Other docks see a folder that "Locate..." added on their next load or Retry.
 
 **Explicit package URL roots** (`setPackageUrlRoots`, persisted as `package_url_roots`) map a package to an http(s)
 or file directory URL: how a topic URDF reaches web-hosted meshes. A mapped package is authoritative: `rel` must stay

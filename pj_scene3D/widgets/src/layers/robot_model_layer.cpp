@@ -857,23 +857,15 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
     if (root.isEmpty()) {
       return;
     }
-    QStringList missing;
-    for (const QString& package : packages) {
-      const QString package_dir = UrdfPackageResolver::findPackageDir(root, package);
-      if (package_dir.isEmpty()) {
-        missing.push_back(package);
-      } else if (package_dir == QDir::cleanPath(root)) {
-        resolver_->rememberPackageRoot(package.toStdString(), package_dir);
-      } else {
-        resolver_->rememberPackageRoot(package.toStdString(), package_dir, root);
-      }
-    }
-    refresh_roots_list();
-    if (missing.size() == packages.size()) {
-      setStatus(tr("Package '%1' not found under '%2' - expected a folder named '%1'").arg(missing.first(), root));
+    resolver_->clearPackageIndexes();
+    if (std::ranges::none_of(
+            packages, [this, &root](const QString& p) { return resolver_->folderHasPackage(root, p); })) {
+      setStatus(tr("Package '%1' not found under '%2' - expected a folder named '%1'").arg(packages.first(), root));
       refresh_status();
       return;
     }
+    resolver_->addUserFolder(root);
+    refresh_roots_list();
     loadFromCurrentSource();
     refresh_status();
   });
@@ -1042,6 +1034,9 @@ void RobotModelLayer::setIgnoreColladaUpAxis(bool ignore) {
 }
 
 void RobotModelLayer::retry() {
+  if (resolver_ != nullptr) {
+    resolver_->clearPackageIndexes();
+  }
   loadFromCurrentSource();
 }
 

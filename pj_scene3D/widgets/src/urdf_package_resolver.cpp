@@ -124,11 +124,8 @@ void UrdfPackageResolver::addSearchRoot(const QString& root) {
   }
 }
 
-void UrdfPackageResolver::resetSearchRoots() {
-  search_roots_.clear();
-  global_roots_.clear();
+void UrdfPackageResolver::clearPackageIndexes() {
   package_indexes_.clear();
-  seeded_global_roots_ = false;
 }
 
 QStringList UrdfPackageResolver::globalSearchRoots(const QSettings& settings) {
@@ -146,17 +143,54 @@ void UrdfPackageResolver::setGlobalSearchRoots(QSettings& settings, const QStrin
   settings.setValue(QString::fromLatin1(kSearchRootsKey), cleaned);
 }
 
+void UrdfPackageResolver::addUserFolder(const QString& folder) {
+  if (settings_ != nullptr) {
+    setGlobalSearchRoots(*settings_, globalSearchRoots(*settings_) << folder);
+  }
+}
+
+bool UrdfPackageResolver::folderHasPackage(const QString& folder, const QString& pkg) {
+  return !pkg.isEmpty() && !packageIndex(QDir::cleanPath(folder)).value(pkg).isEmpty();
+}
+
+QStringList UrdfPackageResolver::rosDistroShareFolders(const QString& base) {
+  QStringList folders;
+  for (const QFileInfo& distro :
+       QDir(base).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed)) {
+    if (QFileInfo(distro.filePath() + "/share"_L1).isDir()) {
+      folders.append(distro.filePath() + "/share"_L1);
+    }
+  }
+  return folders;
+}
+
+QStringList UrdfPackageResolver::userFolders() const {
+  return settings_ != nullptr ? globalSearchRoots(*settings_) : QStringList{};
+}
+
+QStringList UrdfPackageResolver::searchRoots() const {
+  QStringList roots = userFolders();
+  for (const QString& root : search_roots_) {
+    if (!roots.contains(root)) {
+      roots.append(root);
+    }
+  }
+  return roots;
+}
+
 UrdfPackageResolver::PackageIndex UrdfPackageResolver::indexPackageDirs(const QString& root) {
-  PackageIndex index;
+  const QString start = QDir::cleanPath(root);
+  // A folder the user added may be the package itself.
+  PackageIndex index{{QFileInfo(start).fileName(), {start}}};
+  if (QFileInfo::exists(start + "/package.xml"_L1)) {
+    return index;
+  }
   // Breadth-first, so each name lists its shallowest directory first. A directory with a package.xml is a package:
   // its subfolders are its own content, not other packages.
-  QList<std::pair<QString, int>> queue{{QDir::cleanPath(root), 0}};
+  QList<std::pair<QString, int>> queue{{start, 0}};
   qsizetype visited = 0;
   for (qsizetype i = 0; i < queue.size() && visited < kPackageSearchMaxDirs; ++i) {
     const auto [dir, depth] = queue.at(i);
-    if (depth >= kPackageSearchDepth) {
-      continue;
-    }
     for (const QString& name : QDir(dir).entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
       if (skippedPackageSearchDir(name)) {
         continue;
@@ -164,9 +198,9 @@ UrdfPackageResolver::PackageIndex UrdfPackageResolver::indexPackageDirs(const QS
       if (++visited > kPackageSearchMaxDirs) {
         break;
       }
-      const QString path = dir + '/' + name;
+      const QString path = QDir(dir).filePath(name);
       index[name].append(path);
-      if (!QFileInfo::exists(path + "/package.xml"_L1)) {
+      if (depth + 1 < kPackageSearchDepth && !QFileInfo::exists(path + "/package.xml"_L1)) {
         queue.append({path, depth + 1});
       }
     }
@@ -182,28 +216,7 @@ const UrdfPackageResolver::PackageIndex& UrdfPackageResolver::packageIndex(const
   return *found;
 }
 
-QString UrdfPackageResolver::findPackageDir(const QString& root, const QString& pkg) {
-  if (root.isEmpty() || pkg.isEmpty()) {
-    return {};
-  }
-  const QString canonical = QDir::cleanPath(root);
-  if (QFileInfo(canonical).fileName() == pkg && QFileInfo(canonical).isDir()) {
-    return canonical;
-  }
-  return indexPackageDirs(canonical).value(pkg).value(0);
-}
-
 void UrdfPackageResolver::autoSeedSearchRoots(const QString& urdf_dir) {
-  if (!seeded_global_roots_ && settings_ != nullptr) {
-    for (const QString& g : globalSearchRoots(*settings_)) {
-      addSearchRoot(g);
-      if (!g.isEmpty() && !global_roots_.contains(QDir::cleanPath(g))) {
-        global_roots_.append(QDir::cleanPath(g));
-      }
-    }
-    seeded_global_roots_ = true;
-  }
-
   if (!urdf_dir.isEmpty()) {
     addSearchRoot(urdf_dir);
   }
@@ -226,6 +239,12 @@ void UrdfPackageResolver::autoSeedSearchRoots(const QString& urdf_dir) {
       addSearchRoot(p + "/share");
     }
   }
+#ifndef Q_OS_WIN
+  // An app started from a desktop icon has no sourced ROS environment; binary packages install here.
+  for (const QString& share : rosDistroShareFolders(u"/opt/ros"_s)) {
+    addSearchRoot(share);
+  }
+#endif
 }
 
 ResolvedMesh UrdfPackageResolver::resolveUri(
@@ -460,8 +479,8 @@ std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const s
     }
   }
   const QString qpkg = QString::fromStdString(pkg);
-  for (const QString& root : global_roots_) {
-    for (const QString& pkg_dir : packageIndex(root).value(qpkg)) {
+  for (const QString& root : userFolders()) {
+    for (const QString& pkg_dir : packageIndex(QDir::cleanPath(root)).value(qpkg)) {
       const QString candidate = joinPath(pkg_dir, rel);
       if (QFileInfo::exists(candidate)) {
         return candidate.toStdString();
@@ -469,38 +488,6 @@ std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const s
     }
   }
   return {};
-}
-
-void UrdfPackageResolver::rememberPackageRoot(
-    const std::string& pkg, const QString& root_dir, const QString& search_root) {
-  const QString qpkg = QString::fromStdString(pkg);
-  // `root_dir` is the resolved PACKAGE directory (the folder named <pkg> that
-  // contains `rel`). The two consumers need DIFFERENT levels:
-  //   - per-source map  -> stepRememberedMap does joinPath(root, rel)        -> store the package dir
-  //   - search roots  -> stepSearchRoots finds <pkg> under the root         -> store the PARENT or the chosen folder
-  // Storing the package dir in both would double-nest <pkg>/<pkg> in step 3 and silently break cross-dataset reuse.
-  const QString pkg_dir = QDir::cleanPath(root_dir);
-  const QString parent = search_root.isEmpty() ? QFileInfo(pkg_dir).absolutePath() : QDir::cleanPath(search_root);
-
-  addSearchRoot(parent);
-  if (!global_roots_.contains(parent)) {
-    global_roots_.append(parent);
-  }
-
-  if (settings_ != nullptr) {
-    QStringList global = globalSearchRoots(*settings_);
-    if (!global.contains(parent)) {
-      global.append(parent);
-      setGlobalSearchRoots(*settings_, global);
-    }
-    if (!source_path_.isEmpty()) {
-      QVariantMap top = settings_->value(QString::fromLatin1(kPerSourceKey)).toMap();
-      QVariantMap pkg_map = top.value(source_path_).toMap();
-      pkg_map.insert(qpkg, pkg_dir);
-      top.insert(source_path_, pkg_map);
-      settings_->setValue(QString::fromLatin1(kPerSourceKey), top);
-    }
-  }
 }
 
 }  // namespace pj::scene3d

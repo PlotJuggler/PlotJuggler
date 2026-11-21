@@ -3559,11 +3559,8 @@ void MainWindow::bindPlottingPreferences(PreferencesDialog& dialog) {
 void MainWindow::bindScenePreferences([[maybe_unused]] PreferencesDialog& dialog) {
 #ifdef PJ_WITH_SCENE3D
   connect(&dialog, &PreferencesDialog::packageSearchFoldersChanged, this, [this]() {
-    forEachDock([](DockWidget* dock) {
-      if (dock->objectWidget() == nullptr) {
-        return;
-      }
-      if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(dock->objectWidget()->widget())) {
+    forEachSceneDock([](SceneDockWidget* scene) {
+      if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(scene)) {
         scene3d->reloadPackageSearchFolders();
       }
     });
@@ -3794,14 +3791,17 @@ void MainWindow::dropEvent(QDropEvent* event) {
   }
   event->setDropAction(Qt::CopyAction);
   event->accept();
-  QStringList data_paths = paths;
-  QStringList urdf_paths;
 #if defined(PJ_WITH_SCENE3D) && !defined(PJ_TARGET_WASM)
-  data_paths.clear();
-  for (const QString& path : paths) {
-    (QFileInfo(path).suffix().compare("urdf"_L1, Qt::CaseInsensitive) == 0 ? urdf_paths : data_paths).append(path);
-  }
+  constexpr bool kDropsRobotModels = true;
+#else
+  constexpr bool kDropsRobotModels = false;
 #endif
+  QStringList data_paths;
+  QStringList urdf_paths;
+  for (const QString& path : paths) {
+    const bool urdf = kDropsRobotModels && QFileInfo(path).suffix().compare("urdf"_L1, Qt::CaseInsensitive) == 0;
+    (urdf ? urdf_paths : data_paths).append(path);
+  }
   const QPoint pos = event->position().toPoint();
   // After the drop returns: the file manager waits inside the OS drag loop until then, and a load can open dialogs.
   QTimer::singleShot(0, this, [this, data_paths, urdf_paths, pos] {
@@ -3822,11 +3822,9 @@ void MainWindow::addDroppedRobotModels([[maybe_unused]] const QStringList& urdf_
   }
   if (target == nullptr) {
     std::vector<Scene3DDockWidget*> views;
-    forEachDock([&views](DockWidget* dock) {
-      if (dock->objectWidget() != nullptr) {
-        if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(dock->objectWidget()->widget())) {
-          views.push_back(scene3d);
-        }
+    forEachSceneDock([&views](SceneDockWidget* scene) {
+      if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(scene)) {
+        views.push_back(scene3d);
       }
     });
     if (views.size() != 1) {

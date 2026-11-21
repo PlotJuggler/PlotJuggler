@@ -1069,7 +1069,7 @@ void Scene3DDockWidget::setPackageSearchFolders(QSettings& settings, const QStri
 }
 
 void Scene3DDockWidget::reloadPackageSearchFolders() {
-  package_resolver_->resetSearchRoots();
+  package_resolver_->clearPackageIndexes();
   for (const SceneLayerInfo& info : layers()) {
     if (auto* robot = dynamic_cast<RobotModelLayer*>(layerFor(info.topic_id));
         robot != nullptr && robot->unresolvedMeshCount() > 0) {

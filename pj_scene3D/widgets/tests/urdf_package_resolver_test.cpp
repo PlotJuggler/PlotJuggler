@@ -15,6 +15,7 @@
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QUrl>
+#include <QVariantMap>
 #include <string>
 
 using namespace Qt::StringLiterals;
@@ -117,12 +118,10 @@ TEST(UrdfResolver, Step1_RememberedPerSourceMapHit) {
   UrdfPackageResolver r;
   r.setSettings(s.get());
   r.setSourcePath("/data/run42.dat");
-  r.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
-
-  UrdfPackageResolver r2;
-  r2.setSettings(s.get());
-  r2.setSourcePath("/data/run42.dat");
-  const std::string p = r2.resolve("demo_description", "meshes/base.stl", "", false);
+  const QVariantMap packages{
+      {u"demo_description"_s, QString::fromStdString(fixtures() + "/search_root/demo_description")}};
+  s.get()->setValue(u"pj_scene3d/urdf_per_source_packages"_s, QVariantMap{{u"/data/run42.dat"_s, packages}});
+  const std::string p = r.resolve("demo_description", "meshes/base.stl", "", false);
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
 
@@ -201,32 +200,17 @@ TEST(UrdfResolver, AttachmentTakesPriorityOverSearchRoot) {
   EXPECT_EQ(f.readAll(), QByteArray("ATTACHED"));  // not the on-disk search-root file
 }
 
-TEST(UrdfResolver, RememberPersistsAndResolves) {
-  ScopedSettings s;
-  UrdfPackageResolver r;
-  r.setSettings(s.get());
-  r.setSourcePath("/data/x.dat");
-  EXPECT_TRUE(r.resolve("demo_description", "meshes/base.stl", "", false).empty());
-
-  r.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
-  const std::string p = r.resolve("demo_description", "meshes/base.stl", "", false);
-  EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
-}
-
-// rememberPackageRoot must enable cross-dataset (step 3) resolution: a FRESH resolver on a DIFFERENT source (so the
-// per-source map, step 1, misses) resolves via the persisted GLOBAL search root. The stored root must be the package
-// directory's parent, not the package directory itself (double nesting would make step 3 silently miss).
-TEST(UrdfResolver, RememberEnablesCrossDatasetSearchRoot) {
+// A folder added by "Locate..." serves every dataset, not only the one it was picked for.
+TEST(UrdfResolver, AddedUserFolderResolvesForEverySource) {
   ScopedSettings s;
   UrdfPackageResolver r1;
   r1.setSettings(s.get());
   r1.setSourcePath("/data/first.dat");
-  r1.rememberPackageRoot("demo_description", QString::fromStdString(fixtures() + "/search_root/demo_description"));
+  r1.addUserFolder(QString::fromStdString(fixtures() + "/search_root"));
 
   UrdfPackageResolver r2;
   r2.setSettings(s.get());
-  r2.setSourcePath("/data/second.dat");  // different source → step 1 cannot hit
-  r2.autoSeedSearchRoots("");            // loads the persisted global root (the PARENT dir)
+  r2.setSourcePath("/data/second.dat");
   const std::string p = r2.resolve("demo_description", "meshes/base.stl", "", false);
   EXPECT_EQ(p, fixtures() + "/search_root/demo_description/meshes/base.stl");
 }
@@ -463,6 +447,7 @@ TEST(UrdfResolver, UserFolderSkipsBuildOutputAndNestedPackages) {
   ASSERT_TRUE(ws.isValid());
   touch(ws.filePath(u"build/arm_description/meshes/link.stl"_s));
   touch(ws.filePath(u".cache/arm_description/meshes/link.stl"_s));
+  touch(ws.filePath(u"log/arm_description/meshes/link.stl"_s));
   touch(ws.filePath(u"src/outer_pkg/package.xml"_s));
   touch(ws.filePath(u"src/outer_pkg/arm_description/meshes/link.stl"_s));
   ScopedSettings s;
@@ -484,48 +469,98 @@ TEST(UrdfResolver, AutoSeededFoldersAreNotSearchedDeep) {
   EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
 }
 
-// Preferences edits the global list; a reset drops roots read before the edit and re-reads it.
-TEST(UrdfResolver, ResetSearchRootsRereadsTheGlobalList) {
+// Preferences edits the user's folders; the next miss reads the new list, no reset needed.
+TEST(UrdfResolver, UserFoldersAreReadOnEveryMiss) {
   QTemporaryDir ws;
   ASSERT_TRUE(ws.isValid());
   touch(ws.filePath(u"src/arm_description/meshes/link.stl"_s));
   ScopedSettings s;
   UrdfPackageResolver r;
   r.setSettings(s.get());
-  r.autoSeedSearchRoots("");
   EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
 
   UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {ws.path()});
-  r.resetSearchRoots();
-  r.autoSeedSearchRoots("");
   EXPECT_FALSE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
 
   UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {});
-  r.resetSearchRoots();
-  r.autoSeedSearchRoots("");
   EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
 }
 
-TEST(UrdfResolver, FindPackageDirAcceptsWorkspaceOrThePackageItself) {
+// colcon's isolated install puts the package under install/<pkg>/share/<pkg>; install/<pkg> itself holds no meshes.
+TEST(UrdfResolver, UserFolderFindsColconInstallLayout) {
   QTemporaryDir ws;
   ASSERT_TRUE(ws.isValid());
-  touch(ws.filePath(u"src/repo/arm_description/package.xml"_s));
-  const QString pkg_dir = ws.filePath(u"src/repo/arm_description"_s);
-  EXPECT_EQ(UrdfPackageResolver::findPackageDir(ws.path(), u"arm_description"_s), pkg_dir);
-  EXPECT_EQ(UrdfPackageResolver::findPackageDir(pkg_dir, u"arm_description"_s), pkg_dir);
-  EXPECT_TRUE(UrdfPackageResolver::findPackageDir(ws.path(), u"ghost_pkg"_s).isEmpty());
+  touch(ws.filePath(u"install/arm_description/share/arm_description/package.xml"_s));
+  touch(ws.filePath(u"install/arm_description/share/arm_description/meshes/link.stl"_s));
+  ScopedSettings s;
+  UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {ws.path()});
+  UrdfPackageResolver r;
+  r.setSettings(s.get());
+  EXPECT_EQ(
+      QString::fromStdString(r.resolve("arm_description", "meshes/link.stl", "", false)),
+      ws.filePath(u"install/arm_description/share/arm_description/meshes/link.stl"_s));
 }
 
-// Locate with a workspace folder remembers that folder, not the package's parent repo.
-TEST(UrdfResolver, RememberWithSearchRootStoresTheChosenFolder) {
+// A package folder added as itself resolves its own package, and is not searched inside for others.
+TEST(UrdfResolver, UserFolderMayBeThePackageItself) {
+  QTemporaryDir ws;
+  ASSERT_TRUE(ws.isValid());
+  const QString pkg_dir = ws.filePath(u"src/arm_description"_s);
+  touch(pkg_dir + u"/package.xml"_s);
+  touch(pkg_dir + u"/meshes/link.stl"_s);
+  touch(pkg_dir + u"/vendored_description/meshes/link.stl"_s);
+  ScopedSettings s;
+  UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {pkg_dir});
+  UrdfPackageResolver r;
+  r.setSettings(s.get());
+  EXPECT_EQ(
+      QString::fromStdString(r.resolve("arm_description", "meshes/link.stl", "", false)),
+      pkg_dir + u"/meshes/link.stl"_s);
+  EXPECT_TRUE(r.resolve("vendored_description", "meshes/link.stl", "", false).empty());
+  EXPECT_TRUE(r.folderHasPackage(pkg_dir, u"arm_description"_s));
+  EXPECT_TRUE(r.folderHasPackage(ws.path(), u"arm_description"_s));
+  EXPECT_FALSE(r.folderHasPackage(ws.path(), u"ghost_pkg"_s));
+}
+
+// The walk of a folder is cached; a package cloned into it later is found once the cache is cleared (Retry, Locate).
+TEST(UrdfResolver, ClearPackageIndexesFindsPackagesAddedSince) {
+  QTemporaryDir ws;
+  ASSERT_TRUE(ws.isValid());
+  ScopedSettings s;
+  UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {ws.path()});
+  UrdfPackageResolver r;
+  r.setSettings(s.get());
+  EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+
+  touch(ws.filePath(u"src/repo/arm_description/meshes/link.stl"_s));
+  EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+  r.clearPackageIndexes();
+  EXPECT_FALSE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+}
+
+// "Locate..." stores the folder the user chose, whatever its depth.
+TEST(UrdfResolver, AddUserFolderStoresTheChosenFolder) {
   QTemporaryDir ws;
   ASSERT_TRUE(ws.isValid());
   touch(ws.filePath(u"src/repo/arm_description/meshes/link.stl"_s));
   ScopedSettings s;
   UrdfPackageResolver r;
   r.setSettings(s.get());
-  r.rememberPackageRoot("arm_description", ws.filePath(u"src/repo/arm_description"_s), ws.path());
+  r.addUserFolder(ws.path());
+  r.addUserFolder(ws.path() + u"/"_s);
   EXPECT_EQ(UrdfPackageResolver::globalSearchRoots(*s.get()), QStringList{QDir::cleanPath(ws.path())});
+  EXPECT_FALSE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+}
+
+TEST(UrdfResolver, RosDistroShareFoldersListsInstalledDistrosNewestFirst) {
+  QTemporaryDir opt_ros;
+  ASSERT_TRUE(opt_ros.isValid());
+  ASSERT_TRUE(QDir().mkpath(opt_ros.filePath(u"humble/share"_s)));
+  ASSERT_TRUE(QDir().mkpath(opt_ros.filePath(u"jazzy/share"_s)));
+  ASSERT_TRUE(QDir().mkpath(opt_ros.filePath(u"not_a_distro"_s)));
+  EXPECT_EQ(
+      UrdfPackageResolver::rosDistroShareFolders(opt_ros.path()),
+      (QStringList{opt_ros.filePath(u"jazzy/share"_s), opt_ros.filePath(u"humble/share"_s)}));
 }
 
 }  // namespace
