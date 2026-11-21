@@ -732,7 +732,9 @@ An `sdk::MeshMap` (navigation, cost and semantic meshes with named face and vert
 
 - **Parser** (`widgets/src/urdf_parser.{h,cpp}`, `QDomDocument`): link visuals and collisions with box, cylinder,
   sphere and mesh geometry. Joints are parsed, but TF owns kinematics: link poses come from the live tree. xacro is
-  detected and rejected with an actionable error.
+  detected and rejected with an actionable error: expanding one needs the arguments its launch file passes (robot
+  variant, prefixes) and often other installed packages, while a recorded `/robot_description` already holds the
+  expanded robot.
 - **Fixed-joint bridges** (`core/robot_model_bridges.h`): each fixed joint becomes a static transform that
   `ensureStaticBridges()` re-asserts into the dataset buffer every tick, never overriding a frame the data
   publishes, idempotent, and self-healing after a reload clears the buffer. A dock with only local robots gets a

@@ -177,6 +177,8 @@ TEST(UrdfParser, XacroRejectedWithExplicitError) {
   auto [model, err] = parseUrdf(xml, &resolver, std::string(PJ_SCENE3D_FIXTURES_DIR), false);
   EXPECT_FALSE(model.has_value());
   EXPECT_NE(err.find("xacro"), std::string::npos) << err;
+  // A xacro usually needs its launch arguments; the recorded topic is the reliable alternative.
+  EXPECT_NE(err.find("/robot_description"), std::string::npos) << err;
 }
 
 TEST(UrdfParser, NonRobotRootRejected) {
