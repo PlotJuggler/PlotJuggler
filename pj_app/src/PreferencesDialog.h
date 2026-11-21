@@ -46,6 +46,8 @@ class PreferencesDialog : public Dialog {
   // Emitted on OK after a changed kPrecisionSettingsKey is written: readers format values only when their time
   // moves, so the receiver must re-seed them.
   void valuePrecisionChanged();
+  // Emitted on OK after a changed package search folder list is written (Scene3DDockWidget::setPackageSearchFolders).
+  void packageSearchFoldersChanged();
 
  private:
   // Syntax, then reachability (async GET; existence for file://; skipped while offline). Advisory only: a

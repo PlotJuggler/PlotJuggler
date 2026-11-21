@@ -10,6 +10,10 @@
 //                                                       1 the remembered per-source map (QSettings), 2 the ancestor
 //                                                       heuristic (filesystem or URL), 3 the search roots.
 //
+// Step 3 looks for <root>/<pkg> in every search root, then searches the user's folders (the global list in QSettings,
+// edited in Preferences and by "Locate...") at workspace depth: ~/ws or ~/ws/src finds ~/ws/src/<repo>/<pkg>. The
+// URDF and data folders stay one level deep, since the data folder may be $HOME.
+//
 // `package_url_roots` (package name -> absolute http(s)/file directory URL) is the calling MODEL's explicit mapping,
 // passed per call because the resolver is shared by every robot of a dock and keeps no per-model state. A mapped
 // package resolves only under its root, with no fallback; unmapped packages take the chain. A mapping never permits
@@ -24,6 +28,7 @@
 // Plain C++ class (not a QObject). QSettings is INJECTED via setSettings(); the resolver never `new QSettings`.
 
 #include <QByteArray>
+#include <QHash>
 #include <QMap>
 #include <QSettings>
 #include <QString>
@@ -80,6 +85,18 @@ class UrdfPackageResolver {
 
   void addSearchRoot(const QString& root);
 
+  // Drops every search root and the folder indexes; the next autoSeedSearchRoots() re-reads the global list. A
+  // remembered per-source mapping survives.
+  void resetSearchRoots();
+
+  // The user's folders (QSettings kSearchRootsKey), searched at workspace depth.
+  static QStringList globalSearchRoots(const QSettings& settings);
+  static void setGlobalSearchRoots(QSettings& settings, const QStringList& roots);
+
+  // The shallowest directory named `pkg` under `root` at workspace depth, or `root` itself when it is named `pkg`;
+  // "" when none.
+  static QString findPackageDir(const QString& root, const QString& pkg);
+
   const QStringList& searchRoots() const {
     return search_roots_;
   }
@@ -105,8 +122,9 @@ class UrdfPackageResolver {
       const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url,
       const QMap<QString, QUrl>& package_url_roots = {}, bool remote_only = false);
 
-  // The "Locate..." result: writes the per-source map AND appends to the global search roots.
-  void rememberPackageRoot(const std::string& pkg, const QString& root_dir);
+  // The "Locate..." result: writes the per-source map AND appends `search_root` (the folder the user chose; the
+  // package directory's parent when empty) to the global search roots.
+  void rememberPackageRoot(const std::string& pkg, const QString& root_dir, const QString& search_root = {});
 
  private:
   std::string stepEmbeddedAsset(const std::string& uri);
@@ -115,10 +133,18 @@ class UrdfPackageResolver {
       const std::string& pkg, const std::string& rel, const std::string& urdf_dir, bool source_is_url);
   std::string stepSearchRoots(const std::string& pkg, const std::string& rel);
 
+  // Directory basename -> every directory with that name, shallowest first.
+  using PackageIndex = QHash<QString, QStringList>;
+  static PackageIndex indexPackageDirs(const QString& root);
+  const PackageIndex& packageIndex(const QString& root);
+
   QSettings* settings_{nullptr};
   QMap<QString, QByteArray> embedded_assets_;
   QString source_path_;
   QStringList search_roots_;
+  // The subset of search_roots_ the user chose; only these are searched at workspace depth.
+  QStringList global_roots_;
+  QHash<QString, PackageIndex> package_indexes_;
   bool seeded_global_roots_{false};
   // Assets extracted to disk so a path can be returned; lives until exit or a setEmbeddedAssets() reset. Content is
   // immutable for the dir's lifetime, so stepEmbeddedAsset never rewrites an extracted file.

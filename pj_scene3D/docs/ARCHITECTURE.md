@@ -763,9 +763,16 @@ the package chain); `http(s)://` only for URL-source layers; `package://pkg/rel`
 0. Embedded assets from the source plugin (`setEmbeddedAssets`), exact name.
 1. The remembered per-source mapping (`QSettings` `pj_scene3d/urdf_per_source_packages`).
 2. Ancestors of the URDF's directory whose basename is `pkg` and that contain `rel` (URL segments for URL sources).
-3. Search roots seeded from the URDF and source directories, `$ROS_PACKAGE_PATH`, `$AMENT_PREFIX_PATH` and
-   `$COLCON_PREFIX_PATH`; identity is the directory basename, no `package.xml`.
-4. Ask once on the layer's status; the chosen root is stored per source and globally, and pending meshes retry.
+3. Search roots: `<root>/<pkg>` in the user's folders (`pj_scene3d/urdf_search_roots`), the URDF and source
+   directories, `$ROS_PACKAGE_PATH`, `$AMENT_PREFIX_PATH` and `$COLCON_PREFIX_PATH`; then the user's folders at
+   workspace depth (breadth-first, skipping hidden, `build` and `log` folders, never inside a folder with a
+   `package.xml`, indexed once per folder), so `~/ws` finds `~/ws/src/<repo>/<pkg>`. The URDF and source folders
+   stay one level deep: the source folder may be `$HOME`. Identity is the directory basename, no `package.xml`.
+4. Ask once on the layer's status ("Locate..."): the user picks a workspace or the package folder itself; the
+   package is stored per source, the chosen folder globally, and pending meshes retry.
+
+The user's folders are edited in Preferences (Scene 3D) through `Scene3DDockWidget::setPackageSearchFolders`;
+`reloadPackageSearchFolders()` then resets the dock's resolver and retries every robot with unresolved meshes.
 
 **Explicit package URL roots** (`setPackageUrlRoots`, persisted as `package_url_roots`) map a package to an http(s)
 or file directory URL: how a topic URDF reaches web-hosted meshes. A mapped package is authoritative: `rel` must stay
@@ -784,8 +791,8 @@ source, a local URL source or a `file://` root fails it), and every model gets `
 which the resolver refuses anything on this host even on the desktop; a layout loaded from anywhere else has the
 attribute removed.
 
-Failures are never silent: missing meshes show as magenta cubes with status counts, a wrong folder says which
-subdirectory was expected, and a URDF latch not yet received re-checks (throttled) with a permanent "Waiting for …"
+Failures are never silent: missing meshes show as magenta cubes with status counts, a wrong folder names the
+package folder it lacks, and a URDF latch not yet received re-checks (throttled) with a permanent "Waiting for …"
 status.
 
 ## Streaming and TF ingest
@@ -838,7 +845,8 @@ decodes, never the producing plugin. `attach()` accepts a topic with either (`ha
 `Scene3DConfigPanel` drives scene-wide state, persisted in `QSettings` `pj_scene3d/scene_controls/*` and applied to
 every dock it binds (each dock also saves it in its layout `<scene_controls>`): grid style, size, divisions and
 visibility (colours from the theme), TF triad size, opacity and visibility, mesh and collision opacity and
-visibility, and the Model/URDF row (File/Topic/URL source plus add). Robot layers are filtered out of the Topics list:
+visibility, and the Model/URDF row (File/Topic/URL source plus add; Topic adds the dataset's only robot
+description topic without asking). Robot layers are filtered out of the Topics list:
 each has a panel row, and clicking it binds the Settings host to the layer's config widget. The look knobs
 (tonemap, exposure, saturation, SSAO, EDL) have baked defaults and no app UI.
 

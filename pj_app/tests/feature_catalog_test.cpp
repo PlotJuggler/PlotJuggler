@@ -213,6 +213,7 @@ LiveLabels readLiveLabels(PJ::MainWindow& window) {
   labels["prefs.check_updates"] = textOf(prefs, "labelCheckUpdates");
   labels["prefs.clock_time_zone"] = textOf(prefs, "labelClockTimeZone");
   labels["prefs.mcp_server"] = textOf(prefs, "labelMcpServer");
+  labels["prefs.package_folders"] = textOf(prefs, "label_4");
   return live;
 }
 
@@ -231,6 +232,7 @@ const std::map<std::string, std::vector<std::string>>& labelsNamedBy() {
       {"custom_series", {"custom.title", "custom.add"}},
       {"viewer_2d", {"viz.2d", "datasets.title"}},
       {"scene_3d", {"viz.3d", "datasets.title"}},
+      {"robot_packages", {"viz.3d", "menu.file", "action.preferences", "prefs.package_folders"}},
       {"playback", {"playback.play", "playback.loop", "playback.rate", "playback.step"}},
       {"clock_time", {"playback.date_time", "menu.file", "action.preferences", "prefs.clock_time_zone"}},
       {"source_timeline", {"tabs.toggle_bottom", "timeline.align", "timeline.merge", "datasets.title"}},

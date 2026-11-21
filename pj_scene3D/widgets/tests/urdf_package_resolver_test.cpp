@@ -7,9 +7,12 @@
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QMap>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QUrl>
 #include <string>
@@ -429,6 +432,100 @@ TEST(UrdfResolver, RemoteOnlyRefusesLocalResources) {
   const ResolvedMesh mapped = resolver.resolveUri(local_package, urdf_dir, true, http_root, true);
   ASSERT_TRUE(mapped.resolved);
   EXPECT_EQ(mapped.path, "https://cdn.test/demo_description/meshes/base.stl");
+}
+
+void touch(const QString& path) {
+  ASSERT_TRUE(QDir().mkpath(QFileInfo(path).absolutePath()));
+  QFile file(path);
+  ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+}
+
+// A user-chosen folder is a workspace, not a package parent: ~/ws/src/<repo>/<pkg> must resolve from ~/ws.
+TEST(UrdfResolver, UserFolderFindsPackagesAtWorkspaceDepth) {
+  QTemporaryDir ws;
+  ASSERT_TRUE(ws.isValid());
+  touch(ws.filePath(u"src/robot_repo/arm_description/package.xml"_s));
+  touch(ws.filePath(u"src/robot_repo/arm_description/meshes/link.stl"_s));
+  ScopedSettings s;
+  UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {ws.path()});
+
+  UrdfPackageResolver r;
+  r.setSettings(s.get());
+  r.autoSeedSearchRoots("");
+  EXPECT_EQ(
+      QString::fromStdString(r.resolve("arm_description", "meshes/link.stl", "", false)),
+      ws.filePath(u"src/robot_repo/arm_description/meshes/link.stl"_s));
+}
+
+// colcon's build/ and log/ copies, hidden folders and a package's own subfolders are not searched.
+TEST(UrdfResolver, UserFolderSkipsBuildOutputAndNestedPackages) {
+  QTemporaryDir ws;
+  ASSERT_TRUE(ws.isValid());
+  touch(ws.filePath(u"build/arm_description/meshes/link.stl"_s));
+  touch(ws.filePath(u".cache/arm_description/meshes/link.stl"_s));
+  touch(ws.filePath(u"src/outer_pkg/package.xml"_s));
+  touch(ws.filePath(u"src/outer_pkg/arm_description/meshes/link.stl"_s));
+  ScopedSettings s;
+  UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {ws.path()});
+
+  UrdfPackageResolver r;
+  r.setSettings(s.get());
+  r.autoSeedSearchRoots("");
+  EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+}
+
+// The URDF's own folder is searched one level deep only: the data folder may be $HOME.
+TEST(UrdfResolver, AutoSeededFoldersAreNotSearchedDeep) {
+  QTemporaryDir data;
+  ASSERT_TRUE(data.isValid());
+  touch(data.filePath(u"deep/arm_description/meshes/link.stl"_s));
+  UrdfPackageResolver r;
+  r.autoSeedSearchRoots(data.path());
+  EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+}
+
+// Preferences edits the global list; a reset drops roots read before the edit and re-reads it.
+TEST(UrdfResolver, ResetSearchRootsRereadsTheGlobalList) {
+  QTemporaryDir ws;
+  ASSERT_TRUE(ws.isValid());
+  touch(ws.filePath(u"src/arm_description/meshes/link.stl"_s));
+  ScopedSettings s;
+  UrdfPackageResolver r;
+  r.setSettings(s.get());
+  r.autoSeedSearchRoots("");
+  EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+
+  UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {ws.path()});
+  r.resetSearchRoots();
+  r.autoSeedSearchRoots("");
+  EXPECT_FALSE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+
+  UrdfPackageResolver::setGlobalSearchRoots(*s.get(), {});
+  r.resetSearchRoots();
+  r.autoSeedSearchRoots("");
+  EXPECT_TRUE(r.resolve("arm_description", "meshes/link.stl", "", false).empty());
+}
+
+TEST(UrdfResolver, FindPackageDirAcceptsWorkspaceOrThePackageItself) {
+  QTemporaryDir ws;
+  ASSERT_TRUE(ws.isValid());
+  touch(ws.filePath(u"src/repo/arm_description/package.xml"_s));
+  const QString pkg_dir = ws.filePath(u"src/repo/arm_description"_s);
+  EXPECT_EQ(UrdfPackageResolver::findPackageDir(ws.path(), u"arm_description"_s), pkg_dir);
+  EXPECT_EQ(UrdfPackageResolver::findPackageDir(pkg_dir, u"arm_description"_s), pkg_dir);
+  EXPECT_TRUE(UrdfPackageResolver::findPackageDir(ws.path(), u"ghost_pkg"_s).isEmpty());
+}
+
+// Locate with a workspace folder remembers that folder, not the package's parent repo.
+TEST(UrdfResolver, RememberWithSearchRootStoresTheChosenFolder) {
+  QTemporaryDir ws;
+  ASSERT_TRUE(ws.isValid());
+  touch(ws.filePath(u"src/repo/arm_description/meshes/link.stl"_s));
+  ScopedSettings s;
+  UrdfPackageResolver r;
+  r.setSettings(s.get());
+  r.rememberPackageRoot("arm_description", ws.filePath(u"src/repo/arm_description"_s), ws.path());
+  EXPECT_EQ(UrdfPackageResolver::globalSearchRoots(*s.get()), QStringList{QDir::cleanPath(ws.path())});
 }
 
 }  // namespace

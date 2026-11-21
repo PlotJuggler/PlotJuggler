@@ -16,11 +16,13 @@
 #include <QDir>
 #include <QDomDocument>
 #include <QDomNodeList>
+#include <QDropEvent>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMimeData>
 #include <QPointer>
 #include <QSignalSpy>
 #include <QString>
@@ -100,6 +102,10 @@ class MainWindowLayoutDatasetPathsTestPeer {
 
   static void reloadDataset(MainWindow& window, DatasetId dataset_id) {
     window.onReloadDatasetRequested(dataset_id);
+  }
+
+  static void drop(MainWindow& window, QDropEvent* event) {
+    window.dropEvent(event);
   }
 
   [[nodiscard]] static FileLoader& fileLoader(MainWindow& window) {
@@ -1223,6 +1229,34 @@ TEST_F(LayoutDatasetPathsTest, BundledUrdfFollowsLayoutFolderSourceBound) {
 
 TEST_F(LayoutDatasetPathsTest, BundledUrdfFollowsLayoutFolderGeneric) {
   checkBundledUrdfFollowsLayout(false);
+}
+
+// A .urdf dragged from a file manager is a robot model, not a data file: it lands in the only 3D view.
+TEST_F(LayoutDatasetPathsTest, DroppedUrdfBecomesARobotInTheOnlyThreeDView) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString urdf = dir.filePath(u"arm.urdf"_s);
+  {
+    QFile out(urdf);
+    ASSERT_TRUE(out.open(QIODevice::WriteOnly));
+    out.write("<robot name=\"arm\"><link name=\"base_link\"/></robot>");
+  }
+  ASSERT_NE(addPathlessDataset("run.csv", kTopic), 0U);
+  ASSERT_NE(newObjectDock(u"scene3d"_s, PJ::VisualizationKind::kScene3D), nullptr);
+  auto* scene = widgetIn<PJ::Scene3DDockWidget>(u"scene3d"_s);
+  ASSERT_NE(scene, nullptr);
+
+  QMimeData mime;
+  mime.setUrls({QUrl::fromLocalFile(urdf)});
+  QDropEvent drop(QPointF(1, 1), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier);
+  Peer::drop(window, &drop);
+  const auto robots = [scene] {
+    const auto layers = scene->layers();
+    return std::count_if(layers.begin(), layers.end(), [](const PJ::SceneLayerInfo& info) {
+      return info.object_type == PJ::sdk::BuiltinObjectType::kRobotDescription;
+    });
+  };
+  EXPECT_TRUE(pj_app_test::pumpUntil([&] { return robots() == 1; }, 5'000));
 }
 
 // A package root beneath the layout is stored relative to it, so a re-saved layout's copy reads

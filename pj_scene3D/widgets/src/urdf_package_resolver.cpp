@@ -7,10 +7,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QList>
 #include <QRegularExpression>
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QVariantMap>
+#include <utility>
 
 #include "pj_runtime/HttpUrl.h"
 
@@ -22,6 +24,16 @@ namespace {
 constexpr char kPerSourceKey[] = "pj_scene3d/urdf_per_source_packages";
 constexpr char kSearchRootsKey[] = "pj_scene3d/urdf_search_roots";
 constexpr int kAncestorDepthCap = 10;
+// ~/ws/src/<group>/<repo>/<pkg> is depth 4 from ~/ws.
+constexpr int kPackageSearchDepth = 5;
+// ponytail: the index is built on the GUI thread on the first miss per folder; the cap keeps a folder like $HOME from
+// stalling it. Move the scan to a worker if real workspaces exceed the cap.
+constexpr qsizetype kPackageSearchMaxDirs = 20000;
+
+// colcon's build/ and log/ trees hold copies of the sources; hidden folders hold caches and VCS data.
+bool skippedPackageSearchDir(const QString& name) {
+  return name.startsWith('.') || name == "build"_L1 || name == "log"_L1;
+}
 
 QString joinPath(const QString& root, const std::string& rel) {
   QString r = root;
@@ -112,11 +124,82 @@ void UrdfPackageResolver::addSearchRoot(const QString& root) {
   }
 }
 
+void UrdfPackageResolver::resetSearchRoots() {
+  search_roots_.clear();
+  global_roots_.clear();
+  package_indexes_.clear();
+  seeded_global_roots_ = false;
+}
+
+QStringList UrdfPackageResolver::globalSearchRoots(const QSettings& settings) {
+  return settings.value(QString::fromLatin1(kSearchRootsKey)).toStringList();
+}
+
+void UrdfPackageResolver::setGlobalSearchRoots(QSettings& settings, const QStringList& roots) {
+  QStringList cleaned;
+  for (const QString& root : roots) {
+    const QString canonical = QDir::cleanPath(root);
+    if (!root.isEmpty() && !cleaned.contains(canonical)) {
+      cleaned.append(canonical);
+    }
+  }
+  settings.setValue(QString::fromLatin1(kSearchRootsKey), cleaned);
+}
+
+UrdfPackageResolver::PackageIndex UrdfPackageResolver::indexPackageDirs(const QString& root) {
+  PackageIndex index;
+  // Breadth-first, so each name lists its shallowest directory first. A directory with a package.xml is a package:
+  // its subfolders are its own content, not other packages.
+  QList<std::pair<QString, int>> queue{{QDir::cleanPath(root), 0}};
+  qsizetype visited = 0;
+  for (qsizetype i = 0; i < queue.size() && visited < kPackageSearchMaxDirs; ++i) {
+    const auto [dir, depth] = queue.at(i);
+    if (depth >= kPackageSearchDepth) {
+      continue;
+    }
+    for (const QString& name : QDir(dir).entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+      if (skippedPackageSearchDir(name)) {
+        continue;
+      }
+      if (++visited > kPackageSearchMaxDirs) {
+        break;
+      }
+      const QString path = dir + '/' + name;
+      index[name].append(path);
+      if (!QFileInfo::exists(path + "/package.xml"_L1)) {
+        queue.append({path, depth + 1});
+      }
+    }
+  }
+  return index;
+}
+
+const UrdfPackageResolver::PackageIndex& UrdfPackageResolver::packageIndex(const QString& root) {
+  auto found = package_indexes_.find(root);
+  if (found == package_indexes_.end()) {
+    found = package_indexes_.insert(root, indexPackageDirs(root));
+  }
+  return *found;
+}
+
+QString UrdfPackageResolver::findPackageDir(const QString& root, const QString& pkg) {
+  if (root.isEmpty() || pkg.isEmpty()) {
+    return {};
+  }
+  const QString canonical = QDir::cleanPath(root);
+  if (QFileInfo(canonical).fileName() == pkg && QFileInfo(canonical).isDir()) {
+    return canonical;
+  }
+  return indexPackageDirs(canonical).value(pkg).value(0);
+}
+
 void UrdfPackageResolver::autoSeedSearchRoots(const QString& urdf_dir) {
   if (!seeded_global_roots_ && settings_ != nullptr) {
-    const QStringList global = settings_->value(QString::fromLatin1(kSearchRootsKey)).toStringList();
-    for (const QString& g : global) {
+    for (const QString& g : globalSearchRoots(*settings_)) {
       addSearchRoot(g);
+      if (!g.isEmpty() && !global_roots_.contains(QDir::cleanPath(g))) {
+        global_roots_.append(QDir::cleanPath(g));
+      }
     }
     seeded_global_roots_ = true;
   }
@@ -376,26 +459,39 @@ std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const s
       }
     }
   }
+  const QString qpkg = QString::fromStdString(pkg);
+  for (const QString& root : global_roots_) {
+    for (const QString& pkg_dir : packageIndex(root).value(qpkg)) {
+      const QString candidate = joinPath(pkg_dir, rel);
+      if (QFileInfo::exists(candidate)) {
+        return candidate.toStdString();
+      }
+    }
+  }
   return {};
 }
 
-void UrdfPackageResolver::rememberPackageRoot(const std::string& pkg, const QString& root_dir) {
+void UrdfPackageResolver::rememberPackageRoot(
+    const std::string& pkg, const QString& root_dir, const QString& search_root) {
   const QString qpkg = QString::fromStdString(pkg);
   // `root_dir` is the resolved PACKAGE directory (the folder named <pkg> that
   // contains `rel`). The two consumers need DIFFERENT levels:
   //   - per-source map  -> stepRememberedMap does joinPath(root, rel)        -> store the package dir
-  //   - search roots  -> stepSearchRoots does joinPath(root, pkg) + rel    -> store the PARENT
+  //   - search roots  -> stepSearchRoots finds <pkg> under the root         -> store the PARENT or the chosen folder
   // Storing the package dir in both would double-nest <pkg>/<pkg> in step 3 and silently break cross-dataset reuse.
   const QString pkg_dir = QDir::cleanPath(root_dir);
-  const QString parent = QFileInfo(pkg_dir).absolutePath();
+  const QString parent = search_root.isEmpty() ? QFileInfo(pkg_dir).absolutePath() : QDir::cleanPath(search_root);
 
   addSearchRoot(parent);
+  if (!global_roots_.contains(parent)) {
+    global_roots_.append(parent);
+  }
 
   if (settings_ != nullptr) {
-    QStringList global = settings_->value(QString::fromLatin1(kSearchRootsKey)).toStringList();
+    QStringList global = globalSearchRoots(*settings_);
     if (!global.contains(parent)) {
       global.append(parent);
-      settings_->setValue(QString::fromLatin1(kSearchRootsKey), global);
+      setGlobalSearchRoots(*settings_, global);
     }
     if (!source_path_.isEmpty()) {
       QVariantMap top = settings_->value(QString::fromLatin1(kPerSourceKey)).toMap();

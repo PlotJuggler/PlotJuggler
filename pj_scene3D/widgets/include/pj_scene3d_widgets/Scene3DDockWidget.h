@@ -95,6 +95,12 @@ class Scene3DDockWidget : public SceneDockWidget {
   /// robot model resolves against the last-loaded file's directory, not necessarily its own dataset's.
   void setSourcePath(const QString& path);
 
+  /// The user's package search folders (Preferences, "Locate..."): every dock searches them at workspace depth.
+  static QStringList packageSearchFolders(const QSettings& settings);
+  static void setPackageSearchFolders(QSettings& settings, const QStringList& folders);
+  /// Re-reads the package search folders and reloads every robot model that has unresolved meshes.
+  void reloadPackageSearchFolders();
+
   bool tryAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& title) override;
   [[nodiscard]] bool canAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type) const override;
   [[nodiscard]] std::vector<SceneLayerInfo> configTopics() const override;

@@ -52,6 +52,9 @@
 #include "pj_widgets/SvgButton.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_PreferencesDialog.h"
+#ifdef PJ_WITH_SCENE3D
+#include "pj_scene3d_widgets/Scene3DDockWidget.h"
+#endif
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -172,8 +175,10 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
   // It resets only those scrubbers.
   ui_->buttonResetDefaults->setVisible(isDebugMode());
 
-  // The Scene 3D asset-folder controls have no function yet.
+#if !defined(PJ_WITH_SCENE3D) || defined(PJ_TARGET_WASM)
+  // The browser grants no access to host folders, and a build without 3D views loads no robot models.
   ui_->pageScene3D->setEnabled(false);
+#endif
 
   // Ranges match MainWindow's k*Range clamps. Each tick previews live through MainWindow's setter; OK persists,
   // reject restores the snapshot.
@@ -345,6 +350,30 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       qDeleteAll(ui_->listCustomPluginFolders->selectedItems());
       paint_missing(ui_->listCustomPluginFolders);
     });
+
+#if defined(PJ_WITH_SCENE3D) && !defined(PJ_TARGET_WASM)
+    ui_->listAssetFolders->addItems(Scene3DDockWidget::packageSearchFolders(QSettings()));
+    paint_missing(ui_->listAssetFolders);
+    connect(&theme_, &Theme::themeChanged, this, [this, paint_missing](const QString&) {
+      paint_missing(ui_->listAssetFolders);
+    });
+    ui_->buttonAddAssetsFolder->setIconPath(u":/resources/svg/add.svg"_s);
+    ui_->buttonAddAssetsFolder->setExtent(26, 24);
+    ui_->buttonRemoveAssetFolder->setIconPath(u":/resources/svg/trash.svg"_s);
+    ui_->buttonRemoveAssetFolder->setExtent(26, 24);
+    ui_->buttonAddAssetsFolder->setToolTip(tr("Add a folder…"));
+    ui_->buttonRemoveAssetFolder->setToolTip(tr("Remove the selected folder"));
+    connect(ui_->buttonAddAssetsFolder, &QToolButton::clicked, this, [this, paint_missing]() {
+      const QString dir = PJ::FileDialog::getExistingDirectory(this, tr("Add a folder with robot packages"));
+      if (!dir.isEmpty() && ui_->listAssetFolders->findItems(dir, Qt::MatchExactly).isEmpty()) {
+        ui_->listAssetFolders->addItem(dir);
+        paint_missing(ui_->listAssetFolders);
+      }
+    });
+    connect(ui_->buttonRemoveAssetFolder, &QToolButton::clicked, this, [this]() {
+      qDeleteAll(ui_->listAssetFolders->selectedItems());
+    });
+#endif
   }
 
   // Wired only where the page is reachable: an unreachable page's .ui defaults must never overwrite the stored
@@ -523,6 +552,16 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     if (precision_changed) {
       emit valuePrecisionChanged();
     }
+#if defined(PJ_WITH_SCENE3D) && !defined(PJ_TARGET_WASM)
+    QStringList asset_folders;
+    for (int row = 0; row < ui_->listAssetFolders->count(); ++row) {
+      asset_folders << ui_->listAssetFolders->item(row)->text();
+    }
+    if (asset_folders != Scene3DDockWidget::packageSearchFolders(settings)) {
+      Scene3DDockWidget::setPackageSearchFolders(settings, asset_folders);
+      emit packageSearchFoldersChanged();
+    }
+#endif
 #ifndef PJ_TARGET_WASM
     // Applies only when it differs from the current state: access opened with --mcp stays open, the stored
     // setting untouched, unless turned off here.

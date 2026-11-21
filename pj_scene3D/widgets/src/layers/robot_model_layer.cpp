@@ -853,23 +853,24 @@ QWidget* RobotModelLayer::createConfigWidget(QWidget* parent) {
       return;
     }
     const QString root = PJ::FileDialog::getExistingDirectory(
-        container, tr("Select the folder that contains your robot packages"), QString());
+        container, tr("Select your workspace or the folder that contains your robot packages"), QString());
     if (root.isEmpty()) {
       return;
     }
     QStringList missing;
     for (const QString& package : packages) {
-      const QString package_dir = QDir(root).filePath(package);
-      if (QFileInfo(package_dir).isDir()) {
+      const QString package_dir = UrdfPackageResolver::findPackageDir(root, package);
+      if (package_dir.isEmpty()) {
+        missing.push_back(package);
+      } else if (package_dir == QDir::cleanPath(root)) {
         resolver_->rememberPackageRoot(package.toStdString(), package_dir);
       } else {
-        missing.push_back(package);
+        resolver_->rememberPackageRoot(package.toStdString(), package_dir, root);
       }
     }
     refresh_roots_list();
     if (missing.size() == packages.size()) {
-      setStatus(
-          tr("Package '%1' not found under '%2' - expected a subdirectory named '%1'").arg(missing.first(), root));
+      setStatus(tr("Package '%1' not found under '%2' - expected a folder named '%1'").arg(missing.first(), root));
       refresh_status();
       return;
     }
