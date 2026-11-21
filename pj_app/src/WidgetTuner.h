@@ -10,6 +10,8 @@ namespace PJ {
 // gets objectName "PJMenu" for the QMenu#PJMenu rules; a QMessageBox loses its native frame; combo popups (the
 // view and Qt's private QComboBoxPrivateContainer) get the popup palette directly, because Fusion paints them
 // from palette(Window) / palette(Base) whatever the QSS says, and lose their frame and shadow.
+// On a theme switch (the new stylesheet's StyleChange) a label with a link re-parses its text, so the link takes the
+// new theme's colour.
 class WidgetTuner : public QObject {
   Q_OBJECT
  public:

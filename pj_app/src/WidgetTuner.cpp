@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QEvent>
 #include <QFrame>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMetaObject>
@@ -58,6 +59,18 @@ void applyPopupPalette(QWidget* w) {
 }  // namespace
 
 bool WidgetTuner::eventFilter(QObject* watched, QEvent* event) {
+  // A rich-text label fixes its links' colour from its palette when its text is parsed, so after a live theme switch a
+  // label already shown kept the old link colour (the light theme's dark blue on the dark dialog). Its palette is the
+  // one the stylesheet sets, new only once the new stylesheet has re-polished it (StyleChange), not at the
+  // application palette change before it. QLabel::setText ignores the same text, hence the clear.
+  if (event->type() == QEvent::StyleChange) {
+    if (auto* label = qobject_cast<QLabel*>(watched); label != nullptr && label->text().contains(u"<a "_s)) {
+      const QString text = label->text();
+      label->clear();
+      label->setText(text);
+    }
+    return QObject::eventFilter(watched, event);
+  }
   if (event->type() != QEvent::Polish) {
     return QObject::eventFilter(watched, event);
   }
