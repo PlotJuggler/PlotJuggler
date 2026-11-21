@@ -172,12 +172,8 @@ jobs:
         run: sed -i 's/platforms = \["linux-64"\]/platforms = ["win-64"]/' pixi.toml
 
       - name: Install sccache (Windows)
-        # Backed by the Actions cache (SCCACHE_GHA_ENABLED on the job). If installation
-        # flakes, the build falls back to an ephemeral local cache and remains
-        # correct.
+        # Backed by the Actions cache (SCCACHE_GHA_ENABLED on the job).
         if: runner.os == 'Windows'
-        id: setup_sccache
-        continue-on-error: true
         uses: mozilla-actions/sccache-action@v0.0.10
         with:
           version: "v0.16.0"
@@ -214,13 +210,11 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: pixi run ccache --show-stats
-        continue-on-error: true
 
       - name: Show compiler cache stats (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: pixi run sccache --show-stats
-        continue-on-error: true
 
       # Runs the Qt-free CORE test suite only. The widget/GL test
       # families (pj_scene3D/widgets, pj_scene2D/widgets, pj_widgets, plotting-GL)

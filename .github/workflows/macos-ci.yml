@@ -172,10 +172,7 @@ jobs:
           clang --version
 
       - name: Install sccache
-        # Same as windows-ci.yml: a speedup, never load-bearing, backed by the
-        # Actions cache (SCCACHE_GHA_ENABLED on the job).
-        id: setup_sccache
-        continue-on-error: true
+        # Backed by the Actions cache (SCCACHE_GHA_ENABLED on the job).
         uses: mozilla-actions/sccache-action@v0.0.10
         with:
           version: "v0.16.0"
@@ -286,15 +283,8 @@ jobs:
       - name: Build (QRhi)
         id: build
         shell: bash
-        env:
-          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
-          launcher_args=()
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
-            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
-          else
-            echo "::warning::sccache unavailable; building without a compiler cache"
-          fi
+          launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
           cmake -S . -B build -G Ninja \
             "-DCMAKE_TOOLCHAIN_FILE=${PWD}/build/conan_toolchain.cmake" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -304,7 +294,7 @@ jobs:
             -DPJ_BUILD_DEMOS=OFF
           # -k 0: one run lists every compile error.
           cmake --build build --parallel -- -k 0
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then sccache --show-stats; fi
+          sccache --show-stats
 
       - name: Test the QRhi renderer (Metal)
         if: always() && steps.build.outcome == 'success'
