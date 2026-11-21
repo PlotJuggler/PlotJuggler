@@ -85,8 +85,7 @@ void ChannelColoring::addConfigRows(
   auto* colormap_combo = new PJ::ComboBox(parent);
   colormap_combo->setObjectName(prefix + u"_colormap"_s);
   for (int idx = 0; idx < PJ::kColormapCount; ++idx) {
-    colormap_combo->addItem(
-        QObject::tr(PJ::colormapName(static_cast<PJ::Colormap>(idx))), idx);  // NOLINT(*-tr-non-literal)
+    colormap_combo->addItem(PJ::colormapDisplayName(static_cast<PJ::Colormap>(idx)), idx);
   }
   colormap_combo->setCurrentIndex(static_cast<int>(colormap_));
   form->addRow(QObject::tr("Colors:"), colormap_combo);

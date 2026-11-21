@@ -110,8 +110,9 @@ class FilterEditorPanel : public QWidget {
   /// Rebuilds the parameter form for `id`'s schema and drives it from a params JSON string (keys = parameter names):
   /// the data-only path to repopulate the editor from a remembered or clipboard config without a processor.
   void setWidgetsFromParams(const std::string& id, const std::string& params_json);
-  /// The parameter schema for a filter id (from the bundled Luau classes); empty for a parameterless or unknown id.
-  [[nodiscard]] const std::vector<scripting::ParamSpec>& schemaForId(const std::string& id) const;
+  /// The parameter schema for a filter id (from the bundled Luau classes) with localized labels; keys and values are
+  /// unchanged. Empty for a parameterless or unknown id.
+  [[nodiscard]] std::vector<scripting::ParamSpec> schemaForId(const std::string& id) const;
   void onCopy();        // serialize the visible filter (id + params JSON) to a process-global clipboard
   void onPaste();       // restore a copied filter into the panels
   void onApplyToAll();  // copy the visible filter into every source's remembered transform
@@ -126,7 +127,7 @@ class FilterEditorPanel : public QWidget {
   // the visible form (buildConfiguredProcessor), the same resolution applyToSelected uses, so a multi-source preview
   // matches Apply. nullptr for "No Transform".
   [[nodiscard]] std::unique_ptr<proc::DataProcessor> processorForSource(const QString& source_key) const;
-  // The human label for a filter id (its class name), for deriving output names.
+  // The canonical, untranslated class name used to derive persisted output names.
   [[nodiscard]] QString labelForId(const std::string& id) const;
   // Materializes a filtered output for every source with a configured transform (its own, or the visible one for a
   // plain multi-selection), then emits applied() with the (source -> output) replacements.

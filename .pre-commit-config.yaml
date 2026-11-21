@@ -30,6 +30,13 @@ repos:
   # Custom hooks
   - repo: local
     hooks:
+      - id: check-cjk-font-coverage
+        name: Check bundled font coverage of Chinese catalogs
+        entry: python scripts/make_cjk_font_subset.py --check
+        language: python
+        additional_dependencies: ['fonttools==4.61.1']
+        files: ^(pj_app/translations/.*\.ts|scripts/make_cjk_font_subset\.py|tests/test_cjk_font_coverage\.py)$
+        pass_filenames: false
       - id: check-forbidden-patterns
         name: Check for forbidden patterns (std::getenv, etc.)
         entry: scripts/pre-commit/check-forbidden-patterns.py

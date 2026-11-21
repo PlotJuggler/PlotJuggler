@@ -28,6 +28,8 @@ inline constexpr int kColormapCount = 4;
 /// order.
 [[nodiscard]] const char* colormapName(Colormap colormap) noexcept;
 
+/// Localized presentation only; never use as a serialized colormap token.
+[[nodiscard]] QString colormapDisplayName(Colormap colormap);
 /// Persisted layout-XML spelling ("turbo", "viridis", "plasma", "grayscale"): colormapName() lowercased, so renaming a
 /// label changes saved layouts too.
 [[nodiscard]] QString colormapToken(Colormap colormap);
