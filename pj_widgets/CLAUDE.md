@@ -89,6 +89,7 @@ Helpers:
 | `CoalescingTrigger.h` | Leading + trailing rate limiter; the one "cap the rate at the origin" primitive. Non-copyable. |
 | `ChromeMetrics.h` | Shared icon/layout metrics broadcast by `MainWindow`. |
 | `Hatch.h` | The one app-wide "no data" hatch, phased to a global grid so every caller is continuous. |
+| `ColorContrast.h` | `contrastRatio` (WCAG) and `inkWithContrast`: a user-picked colour lightened (dark background) or darkened (light) until it reads as text at a given ratio; header-only. |
 | `Colormap.h` | Scientific colormaps shared by the 2D and 3D views (CPU LUT, GLSL, persisted tokens). |
 | `StateColors.h` | Stable categorical colour per state string. |
 | `Fnv1a.h` | 64-bit FNV-1a, header-only and Qt-free; the INTERFACE target `pj_fnv1a` (`fnv1a/include/`, linked publicly by `pj_widgets`) so a module without widgets links the hash alone. |
