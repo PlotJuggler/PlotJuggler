@@ -91,6 +91,18 @@ inline bool isLightTheme(const QString& style_name) {
   return style_name.contains(QLatin1String("light"));
 }
 
+// A copy of `pixmap` with every visible pixel painted `ink`, keeping its alpha (and its devicePixelRatio): one ink for
+// a glyph whose role needs another ink than the theme's icon ink.
+inline QPixmap tintedPixmap(const QPixmap& pixmap, const QColor& ink) {
+  QPixmap out = pixmap;
+  if (!out.isNull()) {
+    QPainter painter(&out);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(QRectF(QPointF(), out.deviceIndependentSize()), ink);
+  }
+  return out;
+}
+
 // Loads an SVG from a resource path, recoloring monochrome content (#000000, #ffffff) for the requested theme. Cached
 // per (path, theme). GUI thread only: the cache maps are not locked.
 inline const QPixmap& loadSvg(const QString& filename, const QString& style_name = "light") {

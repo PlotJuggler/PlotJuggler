@@ -93,7 +93,7 @@ Helpers:
 | `StateColors.h` | Stable categorical colour per state string. |
 | `Fnv1a.h` | 64-bit FNV-1a, header-only and Qt-free; the INTERFACE target `pj_fnv1a` (`fnv1a/include/`, linked publicly by `pj_widgets`) so a module without widgets links the hash alone. |
 | `FrameworkTokens.h` | Typed reader over the semantic UI palette; holds no values. |
-| `Style.h`, `SvgUtil.h` | App `QProxyStyle`; SVG load/recolour helpers. |
+| `Style.h`, `SvgUtil.h` | App `QProxyStyle`, which also paints the disabled state of every icon without its own `QIcon::Disabled` pixmap in `icon_ink_disabled`; SVG load/recolour helpers and `tintedPixmap`. |
 | `GraphicsApi.h` | QRhi API policy plus the plumbing every `QRhiWidget` shares. |
 | `RhiTestHooks.h`, `RhiBlend.h` | GPU-widget test hooks (tests-only builds); straight-alpha blend (includes `<rhi/qrhi.h>`, so only QRhi renderers include it). |
 
