@@ -192,9 +192,6 @@
           <property name="dragDropMode">
            <enum>QAbstractItemView::DragDropMode::NoDragDrop</enum>
           </property>
-          <property name="alternatingRowColors">
-           <bool>true</bool>
-          </property>
           <property name="selectionMode">
            <enum>QAbstractItemView::SelectionMode::SingleSelection</enum>
           </property>
