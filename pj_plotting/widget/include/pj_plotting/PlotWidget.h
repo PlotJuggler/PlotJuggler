@@ -260,6 +260,8 @@ class PlotWidget : public PlotWidgetBase {
 
  protected:
   bool eventFilter(QObject* obj, QEvent* event) override;
+  // A theme switch redraws the tracker boxes: they take their ink and veil from the theme only when drawn.
+  void changeEvent(QEvent* event) override;
 
  private slots:
   // Copies this plot's XML state to the widget clipboard.

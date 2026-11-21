@@ -617,6 +617,13 @@ void PlotWidget::beforeCanvasReplot() {
   }
 }
 
+void PlotWidget::changeEvent(QEvent* event) {
+  PlotWidgetBase::changeEvent(event);  // re-derives the canvas colour first
+  if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::PaletteChange) {
+    redrawTrackers();
+  }
+}
+
 void PlotWidget::redrawTrackers() {
   if (isXYPlot()) {
     updateXYMarkers(last_tracker_time_sec_);
