@@ -795,7 +795,6 @@ QPushButton[destructive="true"]:hover,
 QMenu#PJMenu QPushButton[destructive="true"]:hover {
     background: ${destructive_hovered};
     border: none;
-    outline: none;
 }
 
 /* QAbstractSpinBox -------------------------------------------------------

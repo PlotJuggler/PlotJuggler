@@ -53,7 +53,9 @@ class Style : public QProxyStyle {
 
   // Keyboard focus on a push button. Under the app stylesheet Qt hands this the label's contents rect, so a ring there
   // cuts the label of a button that hugs its text: the ring follows the button's edge instead, a gap inside it so the
-  // fill frames it on both sides, in the label colour (the one ink with contrast on every button fill, flat or solid).
+  // fill frames it on both sides, in the label colour (the one ink with contrast on every resting fill, flat or solid).
+  // The colour is the polished rest-state palette: a `:hover` rule that swaps the label ink (the destructive hover)
+  // leaves the ring in the rest ink while the pointer is on the button.
   // Drawn only after keyboard navigation (State_KeyboardFocusChange), so a mouse click leaves no ring behind. Reached
   // only while the QSS rule for the button declares no `outline`: QStyleSheetStyle draws a declared outline itself.
   void drawPrimitive(
