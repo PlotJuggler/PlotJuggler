@@ -261,7 +261,8 @@ TEST_F(LogDockWidgetTest, AVanishedTopicKeepsItsDatasetIdentityAndRebinds) {
   QDomDocument doc;
   const QDomElement topic = dock->xmlSaveState(doc).firstChildElement(u"topic"_s);
   EXPECT_EQ(topic.attribute(u"dataset_source"_s), u"robot.mcap"_s);
-  EXPECT_EQ(topic.attribute(u"dataset_path"_s), u"/data/robot.mcap"_s);
+  // Normalized like every stored source path: Windows prefixes the current drive.
+  EXPECT_EQ(topic.attribute(u"dataset_path"_s), SessionManager::normalizedSourcePath(u"/data/robot.mcap"_s));
 
   // The same file loaded again: a new dataset id, the same source and path.
   auto domain = session_.dataEngine().createTimeDomain("robot.mcap");

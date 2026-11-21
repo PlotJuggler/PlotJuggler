@@ -941,6 +941,9 @@ TEST_F(LayoutDatasetPathsTest, TransformInputResolvesByPathAmongSameNamedDataset
 // was saved under (a symlink's here), and the resolver compares labels exactly: the kept qualifier must carry the
 // explicit file's name, or the input binds nowhere.
 TEST_F(LayoutDatasetPathsTest, StartupKeptTransformInputTakesTheExplicitFileName) {
+#ifdef Q_OS_WIN
+  GTEST_SKIP() << "QFile::link makes a shortcut, not a symlink, on Windows";
+#endif
   ASSERT_TRUE(folders.create());
   const QString one = folders.saved + u"/data/one/run.csv"_s;
   const QString two = folders.saved + u"/data/two/run.csv"_s;

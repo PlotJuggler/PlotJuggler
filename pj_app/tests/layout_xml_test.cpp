@@ -1976,7 +1976,6 @@ class KeptFileQualifiers : public ::testing::Test {
       QFile file(root.filePath(name));
       ASSERT_TRUE(file.open(QIODevice::WriteOnly));
     }
-    ASSERT_TRUE(QFile::link(root.filePath(u"b/run.csv"_s), root.filePath(u"link.csv"_s)));
     a_run_ = QFileInfo(root.filePath(u"a/run.csv"_s)).canonicalFilePath();
     b_run_ = QFileInfo(root.filePath(u"b/run.csv"_s)).canonicalFilePath();
     other_ = QFileInfo(root.filePath(u"a/other.csv"_s)).canonicalFilePath();
@@ -2010,6 +2009,10 @@ class KeptFileQualifiers : public ::testing::Test {
 // The canonical file wins over a namesake, and the kept label becomes the explicit file's name: the saved one (a
 // symlink's name, a fan-out entry under the old base name) would fail the resolver's exact label check.
 TEST_F(KeptFileQualifiers, CanonicalMatchTakesTheExplicitFilesName) {
+#ifdef Q_OS_WIN
+  GTEST_SKIP() << "QFile::link makes a shortcut, not a symlink, on Windows";
+#endif
+  ASSERT_TRUE(QFile::link(b_run_, path(u"link.csv"_s)));
   auto by_id = rewrite(
       u"<input id=\"link\" dataset_id=\"3\" dataset_source=\"link.csv\" dataset_path=\"%1\"/>"
       u"<input id=\"fanout\" dataset_source=\"link/imu\" dataset_path=\"%1\"/>"
