@@ -1487,6 +1487,7 @@ QTableView[flush="true"] {
 QTreeView,
 QListView {
    background: ${data_backdrop};
+   alternate-background-color: ${data_backdrop};
    color: ${on_data_backdrop_default};
    border-radius: ${radius_square}px;
    border: none;
