@@ -315,6 +315,9 @@ QColor onProgress(Theme t) {
 QColor sliderHandle(bool hovered, Theme t) {
   return resolve(hovered ? QStringLiteral("slider_handle_hovered") : QStringLiteral("slider_handle_nominal"), t);
 }
+QColor toggleThumb(Theme t) {
+  return resolve(QStringLiteral("toggle_thumb"), t);
+}
 QColor scrollHandleHovered(Theme t) {
   return resolve(QStringLiteral("scroll_handle_hovered"), t);
 }

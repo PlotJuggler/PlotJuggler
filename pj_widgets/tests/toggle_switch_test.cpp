@@ -87,3 +87,18 @@ TEST(ToggleSwitchTest, ClickTogglesWithoutLabel) {
 }
 
 }  // namespace
+
+namespace {
+
+// The off-state thumb sat on the off track in the same neutral fill, so an unchecked switch showed no thumb.
+TEST(ToggleSwitchTest, ThumbFillDiffersFromTheOffTrack) {
+  PJ::ToggleSwitch sw;
+  sw.resize(sw.sizeHint());
+  const QImage image = sw.grab().toImage();
+  const int mid_y = image.height() / 2;
+  const QColor thumb_centre = image.pixelColor(image.height() / 2, mid_y);  // the unchecked thumb sits at the left
+  const QColor track_right = image.pixelColor(image.width() - image.height() / 2, mid_y);
+  EXPECT_NE(thumb_centre.rgb(), track_right.rgb());
+}
+
+}  // namespace

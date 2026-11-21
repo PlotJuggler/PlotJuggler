@@ -276,6 +276,7 @@ TEST(FrameworkTokens, EveryExtendedFamilyTokenResolves) {
     EXPECT_TRUE(onProgress(t).isValid());
     EXPECT_TRUE(sliderHandle(false, t).isValid());
     EXPECT_TRUE(sliderHandle(true, t).isValid());
+    EXPECT_TRUE(toggleThumb(t).isValid());
     EXPECT_TRUE(scrollHandleHovered(t).isValid());
     EXPECT_TRUE(onOverlayHud(t).isValid());
     EXPECT_TRUE(onCodeEditor(t).isValid());

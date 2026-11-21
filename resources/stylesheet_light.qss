@@ -218,6 +218,8 @@ emphasis_disabled:         #333333
 
 // ---- Outline / stroke + focus (stroke ink; Separation stays the fill role) ----
 outline_default_rest:         #C0C0C0
+// Edges of text fields, tooltips and dialog cards.
+outline_edge_rest:            #ADADAD
 outline_default_hovered:      #62C5FF
 outline_default_focused:      #1177FF
 outline_default_checked:      #1177FF
@@ -306,6 +308,10 @@ slider_handle_nominal:  #999999
 slider_handle_hovered:  #99CCFF
 slider_handle_pressed:  #5CADFF
 slider_handle_disabled: #C7C7CC
+// Toggle-switch thumb: white reads on both the grey off track and the blue on track.
+toggle_thumb:           #FFFFFF
+// Link ink (QPalette::Link / LinkVisited, synced by pj_app Theme.cpp): 6.4:1 on the input surface.
+link:                   #0057B0
 scroll_handle_hovered:  #148CD2
 
 // ---- Cancel action (msgbox) ----
@@ -451,10 +457,19 @@ QLabel {
     background: transparent;
 }
 
+/* Status text for plugin and app labels: set the dynamic property `pjStatus` to "warning" or "error" instead of a
+   colour, so one value reads in both themes (a hex colour in a plugin .ui cannot). */
+QLabel[pjStatus="warning"] {
+    color: ${status_warning};
+}
+QLabel[pjStatus="error"] {
+    color: ${status_error};
+}
+
 QLineEdit {
     color: ${on_input_default};
     background: ${input};
-    border: 1px solid ${separation};
+    border: 1px solid ${outline_edge_rest};
     border-radius: ${radius_input}px;
     padding-top: ${space_none}px;
     padding-bottom: ${space_none}px;
@@ -722,10 +737,9 @@ QMenu#PJMenu::item:selected {
 }
 
 QMenu#PJMenu::item:checked {
-    /* status_info is a readable accent-blue INK in both themes; accent_nominal
-       is an interaction FILL (a pale background tone in light) and disappears
-       when used as text. */
-    color: ${status_info};
+    /* The link ink: readable on the menu in both themes (status_info is 3.2:1 here);
+       accent_nominal is an interaction FILL and disappears when used as text. */
+    color: ${link};
 }
 
 QMenu#PJMenu::item:disabled {

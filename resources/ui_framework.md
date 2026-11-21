@@ -223,7 +223,7 @@ outlines — distinct from `Surface::Separation`, which is a background *fill*.
 Accessor: `outline(role, state)` with roles {Default, Interactive, Divider,
 Gridline} and states {Rest, Hovered, Focused, Checked, Disabled}. Rest reuses the
 old `border_default`, Hovered reuses `border_hover`, and **Focus is a distinct
-ring** (`#1177FF`) rather than being collapsed into hover. Focus is drawn as a
+ring** (`outline_*_focused`) rather than being collapsed into hover. Focus is drawn as a
 ring over the nominal fill, so `State::Focused` on the interaction grid resolves
 to Nominal.
 

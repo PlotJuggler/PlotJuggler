@@ -38,16 +38,6 @@ theme: dark
 
 // ---- Scrollbar / slider tones -------------------------------------
 
-// ---- MessageBox per-theme overrides --------------------------------
-// destructive_text: ink colour for `msgbox_role=destructive` at rest.
-//   purple on the dark-theme marketplace_card_bg fails WCAG contrast
-//   (~2.5:1), so dark uses the lighter light_purple shade instead.
-// msgbox_cancel_bg: surface for `msgbox_role=cancel`. Has to stay
-//   darker than the dialog background AND darker than the neutral button
-//   in both themes, so the hierarchy "neutral > cancel" reads the same
-//   way in dark and light (in light, widget_background_disabled is
-//   *lighter* than the dialog bg — wrong direction).
-
 // ---- Chrome geometry (in pixels, no `px` suffix) -------------------
 // Mirror the light stylesheet exactly — chrome geometry is theme-
 // agnostic; only colors flip between themes.
@@ -110,13 +100,13 @@ on_banner_default:            #FFFFFF
 on_banner_muted:              #868689
 on_banner_disabled:           #777777
 on_backdrop_default:          #FFFFFF
-on_backdrop_muted:            #94949A
+on_backdrop_muted:            #A9A9B5
 on_backdrop_disabled:         #777777
 on_data_backdrop_default:     #FFFFFF
 on_data_backdrop_muted:       #A6A6B0
 on_data_backdrop_disabled:    #777777
 on_input_default:             #FFFFFF
-on_input_muted:               #A2A2AA
+on_input_muted:               #C8C8D0
 on_input_disabled:            #777777
 on_separation_default:        #111111
 on_separation_muted:          #727276
@@ -210,14 +200,16 @@ emphasis_disabled:         #25252D
 
 // ---- Outline / stroke + focus (stroke ink; Separation stays the fill role) ----
 outline_default_rest:         #B0B0BF
+// Edges of text fields, tooltips and dialog cards: 3:1 on the backdrop, dim enough that the focus ring stands out.
+outline_edge_rest:            #80808F
 outline_default_hovered:      #148CD2
-outline_default_focused:      #1177FF
+outline_default_focused:      #5AAAFF
 outline_default_checked:      #1177FF
 outline_default_disabled:     #747481
 
 outline_interactive_rest:     #B0B0BF
 outline_interactive_hovered:  #148CD2
-outline_interactive_focused:  #1177FF
+outline_interactive_focused:  #5AAAFF
 outline_interactive_checked:  #1177FF
 outline_interactive_disabled: #747481
 
@@ -263,7 +255,7 @@ gradient_brand_end:     #CC00CC
 status_success:          #4CAF6E
 status_warning:          #E6A817
 status_warning_hovered:  #F0B820
-status_error:            #D32F2F
+status_error:            #EF5350
 status_info:             #148CD2
 status_info_hovered:     #42A5F5
 status_neutral:          #607D8B
@@ -298,6 +290,10 @@ slider_handle_nominal:  #999999
 slider_handle_hovered:  #99CCFF
 slider_handle_pressed:  #4D9FE6
 slider_handle_disabled: #4D4D55
+// Toggle-switch thumb: white reads on both the grey off track and the blue on track.
+toggle_thumb:           #FFFFFF
+// Link ink (QPalette::Link / LinkVisited, synced by pj_app Theme.cpp): 5.3:1 on the backdrop.
+link:                   #64B5F6
 scroll_handle_hovered:  #148CD2
 
 // ---- Cancel action (msgbox) ----
@@ -415,6 +411,9 @@ QWidget:disabled{
   color: ${on_backdrop_disabled};
   background: ${surface_disabled};
 }
+QLabel:disabled{
+  background: transparent;
+}
 
 PlotWidget {
     background: ${surface_transparent};
@@ -445,10 +444,20 @@ QLabel {
     background: transparent;
 }
 
+/* Status text for plugin and app labels: set the dynamic property `pjStatus` to "warning" or "error" instead of a
+   colour, so one value reads in both themes (a hex colour in a plugin .ui cannot). */
+QLabel[pjStatus="warning"] {
+    color: ${status_warning};
+}
+QLabel[pjStatus="error"] {
+    color: ${status_error};
+}
+
 QLineEdit {
     color: ${on_input_default};
     background: ${input};
-    border: 1px solid ${separation};
+    border: 1px solid ${outline_edge_rest};
+    placeholder-text-color: ${on_input_muted};
     border-radius: ${radius_input}px;
     padding-top: ${space_none}px;
     padding-bottom: ${space_none}px;
@@ -469,11 +478,12 @@ QLineEdit:hover {
     border: 1px solid ${accent_checked_hovered};
 }
 QLineEdit:focus {
-    border: 1px solid ${accent_checked};
+    border: 1px solid ${outline_interactive_focused};
 }
 
 QLineEdit:disabled {
     color: ${on_input_disabled};
+    border-color: ${separation};
 }
 
 QTabWidget{
@@ -554,6 +564,8 @@ QTabWidget[framed="true"] QTabBar::tab {
 }
 QTabWidget[framed="true"] QTabBar::tab:selected {
     background: ${backdrop};
+    /* The fill alone differs from the dialog by 1.06:1: the accent top edge marks the active tab. */
+    border-top-color: ${accent_nominal};
 }
 QTabWidget[framed="true"] QTabBar::tab:!selected {
     background: transparent;
@@ -586,11 +598,18 @@ QPlainTextEdit {
 
 /* Code editors (Lua / Python) and their wrapping pane are tagged with the
    dynamic properties _pj_code_editor / _pj_code_editor_pane (see pj_dialog_host
-   widget binding). In dark theme they keep the normal background above — only
-   the light theme forces them white. */
+   widget binding). Both sit on the data backdrop, the surface the syntax inks
+   are tuned for (on the dialog backdrop keywords and comments drop below 4.5:1). */
+QPlainTextEdit[_pj_code_editor="true"] {
+   background: ${data_backdrop};
+   color: ${on_code_editor};
+}
+QWidget[_pj_code_editor_pane="true"] {
+   background: ${data_backdrop};
+}
 
 QToolTip {
-    border: 1px solid ${separation};
+    border: 1px solid ${outline_edge_rest};
     border-radius: ${radius_square}px;
     background-color: ${backdrop};
     color: ${text};
@@ -709,10 +728,9 @@ QMenu#PJMenu::item:selected {
 }
 
 QMenu#PJMenu::item:checked {
-    /* status_info is a readable accent-blue INK in both themes; accent_nominal
-       is an interaction FILL (a pale background tone in light) and disappears
-       when used as text. */
-    color: ${status_info};
+    /* The link ink: readable on the menu in both themes (status_info is 3.2:1 here);
+       accent_nominal is an interaction FILL and disappears when used as text. */
+    color: ${link};
 }
 
 QMenu#PJMenu::item:disabled {
@@ -764,7 +782,7 @@ QMenu#PJMenu QPushButton:checked {
    stylesheet only has to set the `destructive` property — no
    hardcoded colour duplicated per call-site. */
 QMenu#PJMenu QPushButton[destructive="true"] {
-    color: ${destructive_nominal};
+    color: ${destructive_ink};
 }
 
 /* QCheckBox embedded in PJMenu (e.g. "Show Values"): match the
@@ -848,9 +866,11 @@ QAbstractSpinBox::down-arrow:hover {
   width: 12px;
 }
 
-QAbstractSpinBox:hover,
-QAbstractSpinBox:focus {
+QAbstractSpinBox:hover {
   border: 1px solid ${separation};
+}
+QAbstractSpinBox:focus {
+  border: 1px solid ${outline_interactive_focused};
 }
 
 /* QRadioButton ----------------------------------------------------------- */
@@ -1008,6 +1028,9 @@ QPushButton#close_btn {
 QPushButton:disabled {
     color: ${on_backdrop_disabled};
 }
+QPushButton[flat="false"]:disabled {
+    background: ${neutral_disabled};
+}
 
 QPushButton::menu-indicator {
     subcontrol-origin: padding;
@@ -1160,9 +1183,11 @@ QComboBox {
     max-height: ${size_input_min_height}px;
 }
 
-QComboBox:hover,
-QComboBox:focus {
+QComboBox:hover {
     border: 1px solid ${separation};
+}
+QComboBox:focus {
+    border: 1px solid ${outline_interactive_focused};
 }
 
 QComboBox::drop-down {
@@ -2307,7 +2332,7 @@ QDialog#pjMessageBox {
 
 QFrame#pjMessageBoxCard {
     background: ${backdrop};
-    border: 1px solid ${separation};
+    border: 1px solid ${outline_edge_rest};
     border-radius: ${radius_dialog}px;
 }
 
@@ -2349,7 +2374,7 @@ QPushButton[msgbox_role="primary"]:hover {
 
 QPushButton[msgbox_role="neutral"] {
     background: ${neutral_nominal};
-    color: ${text};
+    color: ${on_neutral_nominal};
 }
 
 QPushButton[msgbox_role="neutral"]:hover {
@@ -2556,7 +2581,7 @@ PJ--IngestProgressWidget PJ--ProgressBar::chunk {
 /* Toast Notification ----------------------------------------------------- */
 
 PJ--ToastNotification {
-    background-color: ${backdrop};
+    background-color: ${surface_toast};
     border: 1px solid ${separation};
     border-radius: ${radius_card}px;
     min-width: 250px;
@@ -2575,7 +2600,7 @@ PJ--ToastNotification QLabel#toastIcon {
 PJ--ToastNotification QPushButton#toastCloseButton {
     background: transparent;
     border: none;
-    color: ${on_backdrop_disabled};
+    color: ${on_data_backdrop_muted};
     font-size: 14pt;
     font-weight: 600;
     padding: ${space_none}px;
