@@ -213,8 +213,8 @@ class PlotWidgetBase : public QWidget {
   void applyRectKeepingRatio(QRectF rect);
 
   // Applies a rect to the axes (min/max-safe, so it tolerates applyKeepAspectRatio's normalized rect); the caller
-  // decides whether to replot.
-  void applyRectToAxes(const QRectF& rect);
+  // decides whether to replot. A zero step lets the scale engine pick the major tick step.
+  void applyRectToAxes(const QRectF& rect, double x_step = 0.0, double y_step = 0.0);
 
  private:
   void refreshCanvasBackground();
