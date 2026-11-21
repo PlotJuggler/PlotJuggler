@@ -61,6 +61,8 @@ The namespace mirrors `pj_plugins`: this is its Qt-side companion. Each header's
 - `pj_ui_loader.hpp`: `PjUiLoader`, the `QUiLoader` that instantiates the host widgets plugin `.ui` files name
   (`RangeSlider`, `MarkerTimeline`, `DateRangePicker`, `CredentialsEditor`, `SectionHeaderBand`, `Search`,
   `ToggleSwitch`, `PJ::ComboBox`). A new plugin-usable `pj_widgets` control is registered in its `createWidget`.
+  Its `load` (hiding `QUiLoader::load`, so callers hold a `PjUiLoader`) swaps every `<iconset>` that names a host
+  SVG (`:/resources/svg/...`) for the themed `loadSvg` rendering, once at load.
 - `chart_preview_widget.hpp`: a light Qwt chart for toolbox previews. `widget_binding` builds it when the frame
   carries `chart_markers` or the panel has no session and catalog; otherwise `chart_series` renders with the full
   `PlotWidget`. Interaction is off until the `chart_zoom_enabled` key.

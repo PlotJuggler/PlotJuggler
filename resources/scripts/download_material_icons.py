@@ -210,7 +210,6 @@ ICON_MAPPING: dict[str, tuple[str, dict[str, str]]] = {
     "search_dark.svg":                     ("Search",                     {"fill_color": "#E0E0E0"}),
     "service_toolbox.svg":                 ("Service Toolbox",            {}),
     "settings_cog_light.svg":              ("Settings",                   {}),
-    "settings_cog_dark.svg":               ("Settings",                   {"fill_color": "#E0E0E0"}),
     "share_eta.svg":                       ("Share Eta",                  {}),
     "show_point.svg":                      ("Step Into",                  {}),
     "t0.svg":                              ("Start",                      {}),

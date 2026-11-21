@@ -207,7 +207,6 @@
     <file alias="search_light.svg">svg/search_light.svg</file>
     <file alias="service_toolbox.svg">svg/service_toolbox.svg</file>
     <file alias="state_transitions.svg">svg/state_transitions.svg</file>
-    <file alias="settings_cog_dark.svg">svg/settings_cog_dark.svg</file>
     <file alias="settings_cog_light.svg">svg/settings_cog_light.svg</file>
     <file alias="share_eta.svg">svg/share_eta.svg</file>
     <file alias="show_point.svg">svg/show_point.svg</file>

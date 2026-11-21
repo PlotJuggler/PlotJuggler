@@ -64,8 +64,8 @@ void applyAdsConfigOnce() {
 }  // namespace
 
 // Private widget for one tab in the strip: a name label and a close button. Double-clicking swaps the label for an
-// in-place QLineEdit; Enter commits the rename, Escape or focus loss reverts. A left-button drag past the platform drag
-// distance is reported through the drag signals; the strip does the reordering.
+// in-place QLineEdit with the name selected; Enter commits the rename, Escape or focus loss reverts. A left-button drag
+// past the platform drag distance is reported through the drag signals; the strip does the reordering.
 class PlotTabFrame : public QFrame {
   Q_OBJECT
  public:
@@ -134,7 +134,7 @@ class PlotTabFrame : public QFrame {
     label_->hide();
     edit_->show();
     edit_->setFocus(Qt::OtherFocusReason);
-    edit_->setCursorPosition(edit_->text().length());
+    edit_->selectAll();  // typing replaces the name instead of appending to it
   }
 
  signals:

@@ -20,7 +20,6 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollBar>
-#include <QSettings>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QStyleOptionViewItem>
@@ -47,6 +46,7 @@
 #include "pj_widgets/MessageBox.h"
 #include "pj_widgets/Scrollbar.h"
 #include "pj_widgets/Search.h"
+#include "pj_widgets/SvgUtil.h"
 #include "pj_widgets/ToggleSwitch.h"
 #include "ui_marketplace_window.h"
 using namespace Qt::StringLiterals;
@@ -251,13 +251,11 @@ void MarketplaceWindow::setupUi() {
       },
       Qt::QueuedConnection);
 
-  // The marketplace does not link pj_app_core, so it cannot recolor icons through LoadSvg: pick the themed variant
-  // from the resource bundle.
-  const bool dark_theme = QSettings().value(QStringLiteral("StyleSheet::theme"), QStringLiteral("light")).toString() !=
-                          QStringLiteral("light");
-  ui_->settings_btn_->setIcon(QIcon(
-      dark_theme ? QStringLiteral(":/resources/svg/settings_cog_dark.svg")
-                 : QStringLiteral(":/resources/svg/settings_cog_light.svg")));
+  // A solid button: the cog takes the button's own label ink (on Neutral), not the theme's icon ink, which in the dark
+  // theme is light on a light fill.
+  ui_->settings_btn_->setIcon(tintedPixmap(
+      loadSvg(u":/resources/svg/settings_cog_light.svg"_s, currentTheme()),
+      theme::onFill(theme::Variant::Neutral, theme::State::Nominal, theme::appTheme())));
   // On the toolbar surface, so the standalone tone.
   ui_->search_edit_->setVariant(Search::Variant::kStandalone);
 

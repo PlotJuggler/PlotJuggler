@@ -24,6 +24,9 @@ namespace PJ {
 // setDirectory() first gives it 2 s to answer off-thread and otherwise stays at the home folder with a notice. Only the
 // start folder is guarded; navigating into a dead location from inside the dialog still blocks (Qt's file system model
 // is synchronous).
+//
+// Replace confirmation: a save dialog asks before accepting an existing file with a PJ::MessageBox (Replace, Cancel),
+// not Qt's native QMessageBox, so every save picker shows the app's own question.
 class FileDialog : public Dialog {
   Q_OBJECT
  public:

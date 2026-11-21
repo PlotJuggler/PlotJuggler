@@ -208,6 +208,9 @@ QColor onProgress(Theme t);
 
 // Slider handle (nominal, hovered) and the scrollbar-handle hover tint.
 QColor sliderHandle(bool hovered, Theme t);
+
+// Toggle-switch thumb fill, over both the off and the on track.
+QColor toggleThumb(Theme t);
 QColor scrollHandleHovered(Theme t);
 
 // Foreground ink over the Overlay::Hud veil (HUD, tracker and hint text).

@@ -370,7 +370,7 @@ jobs:
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
-          CSV_LOADER_TAG: data_load_csv/v1.0.10
+          CSV_LOADER_TAG: data_load_csv/v1.0.11
           DUMMY_STREAMER_TAG: data_stream_dummy/v1.0.1
           UDP_SERVER_TAG: data_stream_udp/v0.9.2
           MCAP_LOADER_TAG: data_load_mcap/v1.3.1

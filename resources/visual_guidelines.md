@@ -67,6 +67,11 @@ applied by the SVG loaders) folds that ink, legacy black and white, and the oppo
 theme's icon ink, and gives a root `<svg>` without any `fill` one. An icon that must follow the theme is authored
 with `#3D3D3D`; `fill="currentColor"` would not be recolored.
 
+Disabled icons need no variant: `PJ::Style` paints the disabled state of every icon that has no `QIcon::Disabled`
+pixmap of its own in the `icon_ink_disabled` token. A plugin `.ui` `<iconset>` that names a host SVG
+(`:/resources/svg/...`) is re-rendered through `loadSvg` by the dialog host's `PjUiLoader`, so it follows the theme
+too.
+
 State variants are separate files for QSS `url()` references, which cannot be recolored at run time; their ink is
 fixed in the file:
 
@@ -80,8 +85,8 @@ fixed in the file:
 
 Some SVGs are not from Material Symbols and keep their own ink: `branch_*_light.svg` `#B8B8B8` and
 `branch_*_dark.svg` `#454545` (tree indicators), `close_windows_*`, `maximize` and `minimize` (strokes in the
-`#3D3D3D` / `#E0E0E0` family), `panel_*` and `play_arrow*` (`#3D3D3D`), and `plotjuggler.svg`, a multi-color logo that
-is not recolored.
+`#3D3D3D` / `#E0E0E0` family), `panel_*` and `play_arrow*` (`#3D3D3D`), and `plotjuggler.svg`, the logo, whose
+curves keep their brand colors while its axes are drawn in `#3D3D3D` and follow the theme ink.
 
 ## QSS authoring discipline
 
@@ -126,7 +131,8 @@ Some chrome lives in C++ because Qt's default styling has internals QSS cannot r
 - `pj_app/src/WidgetTuner`: an application-wide event filter that gives auto-generated context menus
   `objectName="PJMenu"` (so the `QMenu#PJMenu` rules apply) and clamps `QComboBox` popup palettes.
 - `PJ::Style` (`pj_widgets/include/pj_widgets/Style.h`): a `QProxyStyle` over Fusion that suppresses the platform's
-  dialog-button icons (`SH_DialogButtonBox_ButtonsHaveIcons`) and mnemonic underlines (`SH_UnderlineShortcut`);
-  installed in `pj_app/src/main.cpp`.
+  dialog-button icons (`SH_DialogButtonBox_ButtonsHaveIcons`) and mnemonic underlines (`SH_UnderlineShortcut`) and
+  draws the push-button keyboard-focus ring (a `QPushButton` rule that declares `outline` replaces it: only the
+  `QMenu#PJMenu` rules do, which keeps the ring off menu items); installed in `pj_app/src/main.cpp`.
 
 A new widget category that needs runtime polish extends one of these helpers.

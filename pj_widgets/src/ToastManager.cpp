@@ -98,9 +98,11 @@ void ToastManager::repositionToasts() {
     ToastNotification* toast = toasts_[i];
 
     // Sized from the hint, not setFixedWidth(): the stylesheet's min and max-width re-applies on polish and wins over
-    // C++ constraints, so a short message yields a narrower toast that must still hug the right margin.
+    // C++ constraints, so a short message yields a narrower toast that must still hug the right margin. Polished
+    // first: placed with its unpolished width, a toast the stylesheet then widens overflows the right margin.
+    toast->ensurePolished();
     toast->layout()->activate();
-    const int toast_width = qMin(toast->sizeHint().width(), max_width_);
+    const int toast_width = qBound(toast->minimumWidth(), toast->sizeHint().width(), max_width_);
     int toast_height = toast->heightForWidth(toast_width);
     if (toast_height < 0) {
       toast_height = toast->sizeHint().height();

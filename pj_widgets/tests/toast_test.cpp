@@ -134,6 +134,26 @@ TEST(ToastTest, ToastRemainsClickableInsideInputRegion) {
   EXPECT_EQ(host.childAt(close_button->mapTo(&host, close_button->rect().center())), close_button);
 }
 
+// The stylesheet's min-width reaches a toast only when it is polished, at its first show. A short message placed with
+// its unpolished width grew past the right margin once shown, and the window edge cut off its close button.
+TEST(ToastTest, AShortToastWidenedByTheStylesheetKeepsItsRightMargin) {
+  QWidget host;
+  host.setStyleSheet("PJ--ToastNotification { min-width: 250px; }");
+  host.resize(800, 600);
+  host.show();
+  PJ::ToastManager manager(&host);
+
+  manager.showToast("ok", QPixmap(), 0);
+  pumpEventLoopFor(500);  // past the 300 ms slide-in
+
+  auto* container = host.findChild<QWidget*>("toastManagerContainer");
+  ASSERT_NE(container, nullptr);
+  auto* toast = host.findChild<PJ::ToastNotification*>();
+  ASSERT_NE(toast, nullptr);
+  EXPECT_GE(toast->width(), 250);
+  EXPECT_EQ(toast->geometry().right() + 1, container->width() - PJ::theme::space(PJ::theme::Space::Section));
+}
+
 // While a toast slides in, the mask tracks its current geometry: the toast is clickable where it is now, and the final
 // rect it has not reached stays click-through. This is what the per-toast event filter provides over the one-shot mask
 // set in repositionToasts().

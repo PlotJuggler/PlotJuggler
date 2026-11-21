@@ -134,6 +134,13 @@ void syncApplicationPalette(const std::map<QString, QString>& tokens) {
   QPalette pal = QGuiApplication::palette();
   pal.setColor(QPalette::Window, window_color);
   pal.setColor(QPalette::WindowText, text_color);
+  for (const auto& [role, key] :
+       {std::pair{QPalette::PlaceholderText, "on_input_muted"}, std::pair{QPalette::Link, "link"},
+        std::pair{QPalette::LinkVisited, "link"}}) {
+    if (const auto it = tokens.find(QString::fromLatin1(key)); it != tokens.end()) {
+      pal.setColor(role, QColor(it->second));
+    }
+  }
   QGuiApplication::setPalette(pal);
 }
 

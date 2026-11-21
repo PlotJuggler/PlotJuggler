@@ -614,7 +614,9 @@ bool PanelEngine::eventFilter(QObject* watched, QEvent* event) {
       // chart colors stay stale after a theme switch.
       if (impl_->sub_panel != nullptr) {
         impl_->applyPanelData(impl_->sub_panel, view);
+        PjUiLoader::retintHostIcons(impl_->sub_panel);
       }
+      PjUiLoader::retintHostIcons(impl_->root);
     }
   }
   // A revealed panel may have skipped up to kHiddenTickDivisor-1 timer fires: catch up so no stale state shows.
