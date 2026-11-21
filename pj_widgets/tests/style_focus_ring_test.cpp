@@ -21,22 +21,26 @@ QImage paintFocusRect(const PJ::Style& style, const QPushButton& button, QStyle:
   opt.state = state;
   opt.rect = button.rect().adjusted(8, 8, -8, -8);  // the label's contents rect, as Qt passes it under a stylesheet
   QPalette palette = opt.palette;
-  palette.setColor(QPalette::ButtonText, Qt::red);
+  palette.setColor(QPalette::Button, QColor(0, 0, 200));
+  palette.setColor(QPalette::ButtonText, QColor(200, 0, 0));
   opt.palette = palette;
   QPainter painter(&image);
   style.drawPrimitive(QStyle::PE_FrameFocusRect, &opt, &painter, &button);
   return image;
 }
 
-TEST(StyleFocusRing, KeyboardFocusDrawsALabelColouredRingAtTheButtonEdge) {
+TEST(StyleFocusRing, KeyboardFocusDrawsTheButtonEdgeHalfwayFromFillToTextInk) {
   PJ::Style style(u"Fusion"_s);
   QPushButton button(u"Select All"_s);
   button.resize(80, 28);
 
   const QImage image = paintFocusRect(style, button, QStyle::State_HasFocus | QStyle::State_KeyboardFocusChange);
-  // The button's outermost pixels stay for its fill, then the ring, in the label colour.
-  EXPECT_EQ(image.pixelColor(0, 14).alpha(), 0);
-  EXPECT_EQ(image.pixelColor(3, 14), QColor(Qt::red));
+  // The ring is the button's own edge (its outermost pixels), the fill mixed half and half with the theme's text ink.
+  const QColor ink = PJ::theme::text(PJ::theme::appTheme());
+  const QColor ring(ink.red() / 2, ink.green() / 2, (200 + ink.blue()) / 2);
+  EXPECT_EQ(image.pixelColor(0, 14), ring);
+  EXPECT_EQ(image.pixelColor(1, 14), ring);
+  EXPECT_EQ(image.pixelColor(3, 14).alpha(), 0);
   // Inside the label's contents rect: untouched, so the ring never cuts the text.
   EXPECT_EQ(image.pixelColor(10, 14).alpha(), 0);
 }

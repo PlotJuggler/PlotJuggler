@@ -53,10 +53,11 @@ class Style : public QProxyStyle {
   }
 
   // Keyboard focus on a push button. Under the app stylesheet Qt hands this the label's contents rect, so a ring there
-  // cuts the label of a button that hugs its text: the ring follows the button's edge instead, a gap inside it so the
-  // fill frames it on both sides, in the label colour (the one ink with contrast on every resting fill, flat or solid).
-  // The colour is the polished rest-state palette: a `:hover` rule that swaps the label ink (the destructive hover)
-  // leaves the ring in the rest ink while the pointer is on the button.
+  // cuts the label of a button that hugs its text: the ring is the button's own edge instead (same corner radius), in
+  // the fill mixed half and half with the theme's text ink, so it moves away from the fill toward the ink that reads
+  // on the backdrop next to it (lighter in dark, darker in light). A flat button's fill is the backdrop behind it
+  // (`QPalette::Window`). The fill is the polished rest-state palette: a `:hover` rule that swaps the fill leaves the
+  // ring in the rest tint while the pointer is on the button.
   // Drawn only after keyboard navigation (State_KeyboardFocusChange), so a mouse click leaves no ring behind. Reached
   // only while the QSS rule for the button declares no `outline`: QStyleSheetStyle draws a declared outline itself.
   void drawPrimitive(
@@ -65,14 +66,21 @@ class Style : public QProxyStyle {
     if (element == PE_FrameFocusRect && qobject_cast<const QPushButton*>(widget) != nullptr) {
       if ((option->state & State_KeyboardFocusChange) != 0) {
         const qreal width = theme::stroke(theme::Stroke::Emphasis);
-        const qreal gap = theme::space(theme::Space::Tight);
         const qreal radius = theme::radius(theme::Radius::Input);
-        const qreal inset = gap + width / 2;
+        QColor fill = option->palette.color(QPalette::Button);
+        if (fill.alpha() == 0) {
+          fill = option->palette.color(QPalette::Window);
+        }
+        const QColor ink = theme::text(theme::appTheme());
+        const QColor ring(
+            (fill.red() + ink.red()) / 2, (fill.green() + ink.green()) / 2, (fill.blue() + ink.blue()) / 2);
+        const qreal inset = width / 2;
         painter->save();
         painter->setRenderHint(QPainter::Antialiasing);
-        painter->setPen(QPen(option->palette.color(QPalette::ButtonText), width));
+        painter->setPen(QPen(ring, width));
         painter->setBrush(Qt::NoBrush);
-        painter->drawRoundedRect(QRectF(widget->rect()).adjusted(inset, inset, -inset, -inset), radius, radius);
+        painter->drawRoundedRect(
+            QRectF(widget->rect()).adjusted(inset, inset, -inset, -inset), radius - inset, radius - inset);
         painter->restore();
       }
       return;
