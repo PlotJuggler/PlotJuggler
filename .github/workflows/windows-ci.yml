@@ -34,9 +34,8 @@ jobs:
     # and Conan package IDs instead of maintaining two Windows toolchain graphs.
     runs-on: windows-2022
     # Windows is a required shipped target (CLAUDE.md). The job blocks on its
-    # compile and its D3D11 display runners (the Windows gate of the QRhi
-    # renderer, pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes); its unit-suite step stays
-    # non-blocking while Windows runtime packaging is productionized.
+    # compile, its unit suite and its D3D11 display runners (the Windows gate of
+    # the QRhi renderer, pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes).
     # Backstop against hangs (a deadlocked build otherwise holds the runner for
     # GitHub's 6-hour default). A first run can still rebuild a missing Conan
     # closure from source before the cache save persists it, then compile the
@@ -373,8 +372,6 @@ jobs:
           done
 
       - name: Test
-        # Non-blocking (see the job comment above); the D3D11 step below is the gate.
-        continue-on-error: true
         shell: bash
         run: |
           # --timeout kills any single test after 2 min so a deadlocked test
