@@ -65,7 +65,7 @@ void applyAdsConfigOnce() {
 
 // Private widget for one tab in the strip: a name label and a close button. Double-clicking swaps the label for an
 // in-place QLineEdit; Enter commits the rename, Escape or focus loss reverts. A left-button drag past the platform drag
-// distance reports dragStarted, dragMoved per move and dragFinished on release; the strip does the reordering.
+// distance is reported through the drag signals; the strip does the reordering.
 class PlotTabFrame : public QFrame {
   Q_OBJECT
  public:
@@ -147,6 +147,11 @@ class PlotTabFrame : public QFrame {
 
  protected:
   void mousePressEvent(QMouseEvent* event) override {
+    // A press during a drag means its release is gone (a right-click's context menu takes it): finish the drag here.
+    if (dragging_) {
+      dragging_ = false;
+      emit dragFinished();
+    }
     if (event->button() == Qt::LeftButton) {
       press_pos_ = event->position().toPoint();
       emit clicked();
@@ -155,17 +160,18 @@ class PlotTabFrame : public QFrame {
   }
 
   void mouseMoveEvent(QMouseEvent* event) override {
-    if ((event->buttons() & Qt::LeftButton) != 0 && !edit_active_) {
-      if (!dragging_ &&
-          (event->position().toPoint() - press_pos_).manhattanLength() >= QApplication::startDragDistance()) {
-        dragging_ = true;
-        emit dragStarted();
-      }
-      if (dragging_) {
-        emit dragMoved(event->globalPosition().toPoint());
-      }
-    }
     QFrame::mouseMoveEvent(event);
+    if ((event->buttons() & Qt::LeftButton) == 0 || edit_active_) {
+      return;
+    }
+    if (!dragging_ &&
+        (event->position().toPoint() - press_pos_).manhattanLength() >= QApplication::startDragDistance()) {
+      dragging_ = true;
+      emit dragStarted();
+    }
+    if (dragging_) {
+      emit dragMoved(event->globalPosition().toPoint());
+    }
   }
 
   void mouseReleaseEvent(QMouseEvent* event) override {
@@ -629,30 +635,45 @@ int TabbedPlotWidget::tabIndexOf(PlotTabFrame* frame) const {
   return it == tabs_.end() ? -1 : static_cast<int>(it - tabs_.begin());
 }
 
+bool TabbedPlotWidget::isHistoryDocker(const TabEntry& entry) {
+  return entry.docker != nullptr && entry.docker->isSerializable(SnapshotScope::kHistory);
+}
+
+std::vector<PlotDocker*> TabbedPlotWidget::historyDockerOrder() const {
+  std::vector<PlotDocker*> order;
+  for (const TabEntry& entry : tabs_) {
+    if (isHistoryDocker(entry)) {
+      order.push_back(entry.docker);
+    }
+  }
+  return order;
+}
+
 void TabbedPlotWidget::onTabDragStarted(PlotTabFrame* frame) {
   const int index = tabIndexOf(frame);
-  // Widget tabs stay put: a restore (undo, layout load) re-appends them after the plot tabs anyway.
-  drag_origin_index_ = (index >= 0 && tabs_[index].docker != nullptr) ? index : -1;
-  drag_frame_ = drag_origin_index_ >= 0 ? frame : nullptr;
+  // Only tabs an undo snapshot rebuilds move: a restore re-appends widget and history-exempt pages after them, so a
+  // position given to those would not survive the next undo.
+  drag_start_order_ = (index >= 0 && isHistoryDocker(tabs_[index])) ? historyDockerOrder() : std::vector<PlotDocker*>{};
 }
 
 void TabbedPlotWidget::onTabDragMoved(PlotTabFrame* frame, const QPoint& global_pos) {
-  if (frame != drag_frame_) {
-    return;
-  }
   const int from = tabIndexOf(frame);
-  if (from < 0) {
+  if (drag_start_order_.empty() || from < 0 || !isHistoryDocker(tabs_[from])) {
     return;
   }
   // The tab moves past a neighbour once the cursor crosses the neighbour's midpoint, so a wide and a narrow tab do not
-  // swap back and forth under a still cursor.
+  // swap back and forth under a still cursor. Distances run along the strip's reading direction (index 0 is on the
+  // right in a right-to-left layout).
   const int x = tabs_inner_->mapFromGlobal(global_pos).x();
+  const int direction = tabs_inner_->isRightToLeft() ? -1 : 1;
+  // Signed distance from tab `index`'s midpoint to the cursor, positive towards the strip's end.
+  const auto past = [&](int index) { return direction * (x - tabs_[index].frame->geometry().center().x()); };
   const int last = static_cast<int>(tabs_.size()) - 1;
   int to = from;
-  while (to > 0 && x < tabs_[to - 1].frame->geometry().center().x()) {
+  while (to > 0 && past(to - 1) < 0) {
     --to;
   }
-  while (to < last && x > tabs_[to + 1].frame->geometry().center().x()) {
+  while (to < last && past(to + 1) > 0) {
     ++to;
   }
   if (to != from) {
@@ -660,13 +681,11 @@ void TabbedPlotWidget::onTabDragMoved(PlotTabFrame* frame, const QPoint& global_
   }
 }
 
-void TabbedPlotWidget::onTabDragFinished(PlotTabFrame* frame) {
-  if (frame != drag_frame_) {
-    return;
-  }
-  const bool moved = tabIndexOf(frame) != drag_origin_index_;
-  drag_frame_ = nullptr;
-  drag_origin_index_ = -1;
+void TabbedPlotWidget::onTabDragFinished() {
+  // Compared as the undo snapshot's tab order, not an index: a tab another owner opens or closes during the drag shifts
+  // the indexes, and passing a widget or history-exempt tab is no change an undo would keep.
+  const bool moved = !drag_start_order_.empty() && historyDockerOrder() != drag_start_order_;
+  drag_start_order_.clear();
   if (moved) {
     emit undoableChange();  // one step per drag, however many neighbours it passed
   }
@@ -857,7 +876,7 @@ PlotTabFrame* TabbedPlotWidget::createTabFrame(const QString& tab_name) {
   connect(frame, &PlotTabFrame::closeRequested, this, [this, frame]() { onTabCloseRequested(frame); });
   connect(frame, &PlotTabFrame::dragStarted, this, [this, frame]() { onTabDragStarted(frame); });
   connect(frame, &PlotTabFrame::dragMoved, this, [this, frame](const QPoint& pos) { onTabDragMoved(frame, pos); });
-  connect(frame, &PlotTabFrame::dragFinished, this, [this, frame]() { onTabDragFinished(frame); });
+  connect(frame, &PlotTabFrame::dragFinished, this, &TabbedPlotWidget::onTabDragFinished);
   frame->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(frame, &QWidget::customContextMenuRequested, this, [this, frame](const QPoint& pos) {
     onTabContextMenuRequested(frame, pos);

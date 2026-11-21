@@ -4,7 +4,6 @@
 
 #include <QDomDocument>
 #include <QDomElement>
-#include <QPointer>
 #include <QSizePolicy>
 #include <QString>
 #include <QWidget>
@@ -34,7 +33,8 @@ class SessionManager;
 
 // Custom tab strip + QStackedWidget. Each tab is a QFrame holding the tab name label and a close button; clicking it
 // shows its PlotDocker, double-clicking renames it, right-clicking a plot tab offers "Duplicate tab" (duplicateTab),
-// dragging a plot tab reorders the strip (one undoableChange per drag; saving writes the tabs in strip order).
+// dragging a plot tab reorders the strip (one undoableChange per drag that changes the plot tabs' order; saving writes
+// the tabs in strip order). Widget and history-exempt tabs cannot be dragged.
 // Besides PlotDocker tabs, a tab can host an arbitrary widget (addWidgetTab, which has the lifecycle contract).
 class TabbedPlotWidget : public QWidget {
   Q_OBJECT
@@ -167,7 +167,7 @@ class TabbedPlotWidget : public QWidget {
   void onTabContextMenuRequested(PlotTabFrame* frame, const QPoint& pos);
   void onTabDragStarted(PlotTabFrame* frame);
   void onTabDragMoved(PlotTabFrame* frame, const QPoint& global_pos);
-  void onTabDragFinished(PlotTabFrame* frame);
+  void onTabDragFinished();
 
  private:
   struct TabEntry {
@@ -207,6 +207,9 @@ class TabbedPlotWidget : public QWidget {
   // Moves tab `from` to index `to` in both tabs_ and the strip layout, which hold the tab frames at the same indexes.
   void moveTabFrame(int from, int to);
   [[nodiscard]] int tabIndexOf(PlotTabFrame* frame) const;
+  // A plot page undo snapshots rebuild (not a widget tab, not history-exempt), and those pages in strip order.
+  static bool isHistoryDocker(const TabEntry& entry);
+  [[nodiscard]] std::vector<PlotDocker*> historyDockerOrder() const;
 
   QHBoxLayout* tabs_bar_layout_ = nullptr;
   QStackedWidget* stack_ = nullptr;
@@ -230,9 +233,9 @@ class TabbedPlotWidget : public QWidget {
   // True while xmlLoadState / duplicateTab rebuild dockers: their undoableChange is not forwarded.
   bool restoring_state_ = false;
   std::vector<TabEntry> tabs_;
-  // The plot tab being dragged and its index at drag start; a frame deleted mid-drag (a restore) leaves no stale drag.
-  QPointer<PlotTabFrame> drag_frame_;
-  int drag_origin_index_ = -1;
+  // historyDockerOrder() when the running drag started; empty when no drag is under way or its tab may not move. The
+  // pointers are only compared, never dereferenced (a page can close mid-drag).
+  std::vector<PlotDocker*> drag_start_order_;
 };
 
 }  // namespace PJ
