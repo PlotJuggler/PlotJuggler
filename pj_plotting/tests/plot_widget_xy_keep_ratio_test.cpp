@@ -164,8 +164,9 @@ TEST(PlotWidgetXyKeepRatio, FitMatchesTheCanvasAcrossATickStepBoundary) {
     const QRectF before = plot.currentBoundingRect();
     const QRectF shown = before.normalized();
     const QSizeF area = canvas->contentsRect().size();
-    // One pixel of canvas width.
-    EXPECT_NEAR(shown.width() / shown.height(), area.width() / area.height(), 1.0 / area.height())
+    // Two pixels of canvas width: with the tick steps held, the end labels' overhang can still move the canvas by a
+    // pixel between fits (1.5 px seen on Windows), which has no fixed point either. Before the fix it missed by 23 px.
+    EXPECT_NEAR(shown.width() / shown.height(), area.width() / area.height(), 2.0 / area.height())
         << "the shown range does not have the canvas shape " << area.width() << "x" << area.height();
 
     resizeAndSettle(plot, 600, 600);
