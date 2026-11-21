@@ -42,6 +42,13 @@ code works is in [ARCHITECTURE.md](./ARCHITECTURE.md).
   zero-timer between two replay ticks is a clamped nested `setTimeout`, measured at about 5-6 ms after a busy tick, so
   with an 8 ms slice a tick cycle is about 13-14 ms and input and paint run in the gap. A 10 ms slice stalled
   Firefox's page timers for about 100 ms once per replay.
+- **Observed (Qt 6.12.0, browser):** a repeating zero-interval `QTimer` stops firing whenever no other timer is
+  running: `QEventDispatcherWasm::sendTimerEvents` re-arms the native `setTimeout` only when `activateTimers()` counted
+  a fired timer, and that count skips zero-interval timers. On GitHub's ubuntu-22.04 runners in Firefox the replay of a
+  30,000-row Luau transform stopped after about 7,000 rows (5 ticks), with the page's own timers still running, in 8 of
+  8 runs; on faster machines other timers kept waking it.
 - **What the code does:** `DataProcessorService::kMaterializationSliceBudget` is half a 60 Hz frame on every platform;
-  a new persistent transform replays one slice inside the create call and the rest from a zero-timer.
-- **Re-test** when the browser build moves Qt off the main thread, or a browser changes its nested-timer clamping.
+  a new persistent transform replays one slice inside the create call and the rest from a single-shot zero-timer that
+  each unfinished slice starts again (every `start()` registers the timer, which arms the native one).
+- **Re-test** when the browser build moves Qt off the main thread, or a browser changes its nested-timer clamping; the
+  single-shot form can go once `sendTimerEvents` re-arms after any activation (still unchanged on Qt's `dev` branch).

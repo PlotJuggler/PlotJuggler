@@ -1201,10 +1201,14 @@ void DataProcessorService::armMaterializationTimer() {
   }
   if (!materialize_timer_) {
     materialize_timer_ = std::make_unique<QTimer>();
+    // Single-shot, re-armed per slice: Qt 6.12.0's browser dispatcher re-arms its native timer after a pass only when
+    // a nonzero-interval timer fired (QEventDispatcherWasm::sendTimerEvents), so a repeating zero-interval timer
+    // stops whenever no other timer is running. Each start() registers the timer, which arms it.
+    materialize_timer_->setSingleShot(true);
     materialize_timer_->setInterval(0);
     QObject::connect(materialize_timer_.get(), &QTimer::timeout, materialize_timer_.get(), [this]() {
-      if (stepMaterialization()) {
-        materialize_timer_->stop();
+      if (!stepMaterialization()) {
+        materialize_timer_->start();
       }
     });
   }
