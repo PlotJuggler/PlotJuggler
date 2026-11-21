@@ -58,7 +58,7 @@
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/RenderingWarningLabel.h"
-#include "pj_widgets/SvgUtil.h"
+#include "pj_widgets/SvgButton.h"
 #include "urdf_package_resolver.h"
 using namespace Qt::StringLiterals;
 
@@ -361,18 +361,13 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
     }
   });
 
-  home_button_ = new QToolButton(this);
+  // Filled like the neighbouring combos by the theme stylesheet (QToolButton#cameraHomeButton), so it reads over any
+  // scene content; SvgButton re-tints the glyph on a theme switch.
+  home_button_ = new SvgButton(u":/resources/svg/recenter.svg"_s, SvgButton::Size::kDefault, this);
   home_button_->setObjectName(u"cameraHomeButton"_s);
+  home_button_->setAutoRaise(false);
   home_button_->setFocusPolicy(Qt::ClickFocus);
   home_button_->setToolTip(tr("Reset view to default"));
-  // Pinned to the light-theme ink: this overlay button is always light, and a theme-following ink would be near
-  // invisible in dark mode.
-  home_button_->setIcon(PJ::loadSvg(u":/resources/svg/recenter.svg"_s));
-  home_button_->setStyleSheet(
-      QStringLiteral(
-          "QToolButton { background-color: rgba(255, 255, 255, 200); border: 1px solid rgba(60, 60, 60, 180); "
-          "padding: %1px; border-radius: 3px; }")
-          .arg(PJ::theme::space(PJ::theme::Space::None)));
   home_button_->raise();
   connect(home_button_, &QToolButton::clicked, this, [this]() {
     if (view_ != nullptr) {
@@ -1372,10 +1367,10 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
 
   constexpr int kGap = 6;
   if (home_button_ != nullptr) {
-    const int hb = h;  // square, matching the fixed-frame combo height
-    home_button_->setGeometry(view_origin.x() + kMargin + w + kGap, view_origin.y() + kMargin, hb, hb);
+    const int hb = h;                               // square, matching the fixed-frame combo height
     const int home_icon_dim = std::max(hb - 2, 1);  // fill minus the 1px border, matching config-panel icons
-    home_button_->setIconSize(QSize(home_icon_dim, home_icon_dim));
+    home_button_->setExtent(hb, home_icon_dim);
+    home_button_->move(view_origin.x() + kMargin + w + kGap, view_origin.y() + kMargin);
     home_button_->raise();
   }
 
