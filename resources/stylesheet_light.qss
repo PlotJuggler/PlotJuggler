@@ -1852,7 +1852,7 @@ QFrame#plotTabFrame:hover {
 
 QLineEdit#plotTabRenameEdit {
     background: transparent;
-    border: none;
+    border: 1px solid ${text};
     padding: ${space_none}px;
     selection-background-color: ${overlay_selected};
     selection-color: ${text};
