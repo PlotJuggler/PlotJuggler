@@ -6,9 +6,13 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDir>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QLabel>
+#include <QMessageBox>
+#include <QPointer>
+#include <QPushButton>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTemporaryDir>
@@ -21,6 +25,7 @@
 #include <thread>
 
 #include "pj_widgets/FileDialog.h"
+#include "pj_widgets/MessageBox.h"
 using namespace Qt::StringLiterals;
 
 namespace {
@@ -100,6 +105,102 @@ TEST_F(FileDialogTest, GetSaveFileNameFillsInSelectedName) {
   const QFileInfo info(shown);
   EXPECT_EQ(info.dir().canonicalPath(), QDir(temp.path()).canonicalPath());
   EXPECT_EQ(info.fileName(), u"FT0017-AV.html"_s);
+}
+
+// Saving over an existing file asks through PJ::MessageBox, as every other confirmation does; QFileDialog's own
+// question is a native QMessageBox (system icon, small right-aligned buttons).
+struct ReplaceQuestion {
+  bool asked = false;   // a PJ::MessageBox came up
+  bool native = false;  // a QMessageBox came up instead
+  bool picker_open_after_answer = false;
+  QString body;        // the question's text
+  QString first_role;  // msgbox_role of the first button, the one that replaces
+};
+
+// Polls the modal loop for the replace question and answers it with button `answer` (0 Replace, 1 Cancel). A Cancel
+// leaves the picker open, so it is rejected afterwards to end the test's modal loop.
+void answerReplaceQuestion(
+    const std::shared_ptr<ReplaceQuestion>& question, int answer, const QPointer<QFileDialog>& picker,
+    int tries_left = 100) {
+  QWidget* active = QApplication::activeModalWidget();
+  if (auto* box = qobject_cast<PJ::MessageBox*>(active)) {
+    question->asked = true;
+    question->body = box->findChild<QLabel*>(u"pjMessageBoxBody"_s)->text();
+    const auto buttons = box->findChildren<QPushButton*>(u"pjMessageBoxButton"_s);
+    question->first_role = buttons.value(0)->property("msgbox_role").toString();
+    buttons.value(answer)->click();
+  } else if (qobject_cast<QMessageBox*>(active) != nullptr) {
+    question->native = true;
+    active->close();
+  } else if (tries_left > 0) {
+    QTimer::singleShot(10, [=] { answerReplaceQuestion(question, answer, picker, tries_left - 1); });
+    return;
+  }
+  if (answer != 0 || question->native) {
+    QTimer::singleShot(0, [question, picker] {
+      question->picker_open_after_answer = picker != nullptr && picker->isVisible();
+      if (picker != nullptr) {
+        picker->reject();
+      }
+    });
+  }
+}
+
+// Opens a modal save dialog in `dir`, types `name`, presses Save and answers a replace question with `answer`.
+QString saveAs(const QString& dir, const QString& name, int answer, const std::shared_ptr<ReplaceQuestion>& question) {
+  QTimer::singleShot(0, [=] {
+    QWidget* active = QApplication::activeModalWidget();
+    ASSERT_NE(active, nullptr);
+    auto* picker = active->findChild<QFileDialog*>();
+    ASSERT_NE(picker, nullptr);
+    picker->selectFile(QDir(dir).filePath(name));
+    QMetaObject::invokeMethod(picker, "accept", Qt::QueuedConnection);
+    answerReplaceQuestion(question, answer, picker);
+  });
+  return PJ::FileDialog::getSaveFileName(nullptr, u"Save"_s, dir, u"Text (*.txt)"_s, u"txt"_s);
+}
+
+class FileDialogReplaceTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    ASSERT_TRUE(temp_.isValid());
+    existing_ = QDir(temp_.path()).filePath(u"existing.txt"_s);
+    QFile file(existing_);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("old");
+  }
+
+  QTemporaryDir temp_;
+  QString existing_;
+};
+
+TEST_F(FileDialogReplaceTest, ReplacingAnExistingFileAsksWithAMessageBoxAndAcceptsOnReplace) {
+  const auto question = std::make_shared<ReplaceQuestion>();
+  const QString path = saveAs(temp_.path(), u"existing.txt"_s, /*answer=*/0, question);
+
+  EXPECT_FALSE(question->native);
+  ASSERT_TRUE(question->asked);
+  EXPECT_TRUE(question->body.contains(u"existing.txt"_s)) << question->body.toStdString();
+  EXPECT_EQ(question->first_role, u"destructive"_s);
+  EXPECT_EQ(QFileInfo(path).canonicalFilePath(), QFileInfo(existing_).canonicalFilePath());
+}
+
+TEST_F(FileDialogReplaceTest, CancellingTheQuestionKeepsThePickerOpenAndReturnsNothing) {
+  const auto question = std::make_shared<ReplaceQuestion>();
+  const QString path = saveAs(temp_.path(), u"existing.txt"_s, /*answer=*/1, question);
+
+  EXPECT_TRUE(question->asked);
+  EXPECT_TRUE(question->picker_open_after_answer);
+  EXPECT_TRUE(path.isEmpty());
+}
+
+TEST_F(FileDialogReplaceTest, ANewNameIsAcceptedWithoutAQuestion) {
+  const auto question = std::make_shared<ReplaceQuestion>();
+  const QString path = saveAs(temp_.path(), u"fresh.txt"_s, /*answer=*/0, question);
+
+  EXPECT_FALSE(question->asked);
+  EXPECT_FALSE(question->native);
+  EXPECT_EQ(QFileInfo(path).fileName(), u"fresh.txt"_s);
 }
 
 // Start-folder guard. Qt keeps its own file-dialog memory under QtProject; each case points file-based settings at a

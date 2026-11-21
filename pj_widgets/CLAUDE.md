@@ -36,7 +36,7 @@ Dialogs, chrome and feedback:
 |---|---|
 | `Dialog.h` + `Dialog.ui` | Frameless app-styled dialog chrome: title-bar actions, optional side drawer. Base of `FileDialog`, `ProgressDialog`. |
 | `SideDrawer.h` | `makeSideDrawerSplitter`: draggable side column. The same `settings_key` shares the remembered width across presentations (`Dialog::setSideWidget`, `pj_app` toolbox panels). |
-| `FileDialog.h` | `QFileDialog` in `Dialog` chrome; use the static helpers. A start folder that does not answer within 2 s (dead network share) falls back to home with a notice; Qt's shared `QtProject/FileDialog` memory is filtered the same way before construction. `setUseSystemDialog()` hands the helpers (except `getSaveFileNameWithOptions`) to the platform picker, on Windows and macOS only. |
+| `FileDialog.h` | `QFileDialog` in `Dialog` chrome; use the static helpers. A start folder that does not answer within 2 s (dead network share) falls back to home with a notice; Qt's shared `QtProject/FileDialog` memory is filtered the same way before construction. A save over an existing file asks with `MessageBox` (Replace, Cancel), not Qt's native `QMessageBox`: `DontConfirmOverwrite` is set and the inner dialog's `accept()` asks, through `questionAsync`. `setUseSystemDialog()` hands the helpers (except `getSaveFileNameWithOptions`) to the platform picker, on Windows and macOS only. |
 | `MessageBox.h` | Themed `QMessageBox` replacement. `question()` is desktop-only in practice: see Usage notes. |
 | `ProgressDialog.h` | Modal progress with domain-neutral Primary/Secondary stop actions; no close affordance. |
 | `ProgressBar.h` | App-styled `QProgressBar` (`PJ--ProgressBar` QSS class). `Q_OBJECT` is mandatory or the selector never matches. |
