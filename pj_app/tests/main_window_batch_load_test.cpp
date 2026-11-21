@@ -24,6 +24,7 @@
 #include "FileLoader.h"
 #include "MainWindow.h"
 #include "pj_widgets/DualOptionsWidget.h"
+#include "pj_widgets/MessageBox.h"
 #include "support/loader_test_support.h"
 
 using namespace Qt::StringLiterals;
@@ -130,13 +131,19 @@ class BatchLoadTest : public ::testing::Test {
       QMetaObject::invokeMethod(dialog, &QDialog::accept, Qt::QueuedConnection);
       return;
     }
+    auto* name_input = dialog->findChild<QLineEdit*>(u"name_input"_s);
+    if (name_input == nullptr) {
+      // Not the probe's dialog: the non-blocking "Load failed" box a refused file opens while the batch goes on. The
+      // next file's dialog opens over it, so a tick that lands between the two finds this box first.
+      return;
+    }
     ++plugin_dialogs_;
     if (reject_plugin_dialogs_) {
       QMetaObject::invokeMethod(dialog, &QDialog::reject, Qt::QueuedConnection);
       return;
     }
     if (!dialog_names_.isEmpty()) {
-      dialog->findChild<QLineEdit*>(u"name_input"_s)->setText(dialog_names_.takeFirst());
+      name_input->setText(dialog_names_.takeFirst());
     }
     QPushButton* ok = dialog->findChild<QDialogButtonBox*>(u"buttonBox"_s)->button(QDialogButtonBox::Ok);
     QTimer::singleShot(0, ok, [ok]() { ok->click(); });
@@ -203,6 +210,9 @@ TEST_F(BatchLoadTest, AFirstDialogThatFailsLeavesShowFirstAsking) {
   EXPECT_EQ(plugin_dialogs_, 3) << "the failed dialog, then the next file's";
   EXPECT_EQ(count(PJ::LoadOutcome::kFailed), 1);
   EXPECT_EQ(imports(), (QStringList{u"stale"_s, u"fresh"_s, u"fresh"_s}));
+  const auto boxes = window_->findChildren<PJ::MessageBox*>();
+  EXPECT_EQ(std::count_if(boxes.begin(), boxes.end(), [](const PJ::MessageBox* box) { return box->isVisible(); }), 1)
+      << "the refused file's \"Load failed\" box, left open while the batch went on";
 }
 
 TEST_F(BatchLoadTest, ShowAllAsksEveryFile) {
