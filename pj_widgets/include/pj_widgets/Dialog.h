@@ -82,6 +82,8 @@ class Dialog : public QDialog {
   // app-styled dialog scrolls with app-styled bars without per-dialog wiring. First show, not construction: subclasses
   // populate contentWidget() in their own constructor body, after Dialog's.
   void showEvent(QShowEvent* event) override;
+  // A live theme switch arrives as a palette or style change: the title-bar icons are re-tinted in the new ink.
+  void changeEvent(QEvent* event) override;
 
  private:
   void applyIcons();

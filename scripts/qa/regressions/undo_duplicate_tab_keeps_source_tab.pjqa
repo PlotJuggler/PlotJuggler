@@ -1,0 +1,21 @@
+# Undoing "Duplicate tab" removes the copy and leaves the user on the tab they duplicated, not on another tab.
+# Tab bar, left to right: Signals (x 0..80), "+" (x 80..111); after the click on "+": Signals, tab1 (x 80..144).
+# app: -d tests/wasm/fixtures/signals/data.csv -l tests/wasm/fixtures/signals/layout.pj4.xml
+# needs: plugins
+until ui_plot {"title":"Periodic"} "data/sine"
+# add tab1 (it becomes current), then go back to Signals
+ui_click {"name":"plotTabsInner","x":95,"y":15,"wait_ms":500}
+ui_tree {}
+expect QLabel "tab1"
+ui_click {"name":"plotTabsInner","x":25,"y":15,"wait_ms":500}
+until ui_plot {"title":"Periodic"} "data/sine"
+# context menu of Signals, first entry: Duplicate tab
+ui_click {"name":"plotTabsInner","x":25,"y":15,"button":"right"}
+ui_key {"keys":"Down"}
+ui_key {"keys":"Return","wait_ms":800}
+until ui_tree {} QLabel "Signals (copy)"
+ui_key {"keys":"Ctrl+Z","wait_ms":700}
+ui_tree {}
+absent QLabel "Signals (copy)"
+# the user is back on Signals: its plots are what is on screen (on the bug, tab1 is current and no plot is visible)
+until ui_plot {"title":"Periodic"} "data/sine"

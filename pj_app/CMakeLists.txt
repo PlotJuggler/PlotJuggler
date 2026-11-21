@@ -678,6 +678,8 @@ if(PJ_BUILD_TESTS)
 
     # A plugin folder that no longer exists stays listed, in a grey that reads in both themes.
     list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/item_view_rows_theme_test.cpp
+        tests/label_link_theme_test.cpp
         tests/preferences_missing_folder_test.cpp)
 
     # The first GPU widget does not recreate the main window's native window.

@@ -11,9 +11,12 @@
 #include <QTimeZone>
 #include <cmath>
 
+#include "pj_plotting/CurveTracker.h"
 #include "pj_plotting/PlotCurve.h"
 #include "pj_plotting/PlotScaleDraw.h"
 #include "pj_plotting/PlotWidgetBase.h"
+
+using namespace Qt::StringLiterals;
 
 namespace {
 
@@ -144,6 +147,24 @@ TEST_F(PlotScaleDrawTest, TimeLabelFormatSwapsOnlyTheTimeAxis) {
 
   plot.setTimeLabelFormat(PJ::TimeLabelFormat::kSeconds);
   EXPECT_NE(dynamic_cast<const PJ::PlotScaleDraw*>(x_draw()), nullptr);
+}
+
+// The tracker's time line reads like the X axis: clock time while the date-time toggle is on, seconds otherwise.
+TEST_F(PlotScaleDrawTest, TrackerTimeFollowsTheAxisFormat) {
+  TestPlot plot;
+  PJ::CurveTracker tracker(plot.qwtPlot(), Qt::red);
+  const double instant = 1700000000.5;  // 2023-11-14 22:13:20.5 UTC
+
+  tracker.setPosition(QPointF(instant, 0.0));
+  EXPECT_TRUE(tracker.valueBoxText().contains(u"time : 1700000000.5"_s)) << tracker.valueBoxText().toStdString();
+
+  plot.setTimeLabelFormat(PJ::TimeLabelFormat::kUtcClock);
+  tracker.redraw();
+  EXPECT_TRUE(tracker.valueBoxText().contains(u"time : 22:13:20.5"_s)) << tracker.valueBoxText().toStdString();
+
+  plot.setModeXY(true);
+  tracker.redraw();
+  EXPECT_TRUE(tracker.valueBoxText().contains(u"time : 1700000000.5"_s)) << "an XY plot keeps seconds";
 }
 
 // "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass

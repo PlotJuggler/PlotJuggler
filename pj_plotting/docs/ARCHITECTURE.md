@@ -184,7 +184,9 @@ three ways (concrete key, qualified miss clears the key, unqualified miss leaves
   must drop what a new one would not have: the page's focused dock (it points at a removed dock), armed undo debounces,
   a curve order that differs from the saved one (the plot then rebuilds its curves). A bound curve editor is refreshed
   on re-bind, since the restore changes colour and visibility without a curve-list signal. Selecting a tab is not an
-  undo step, so an undo or redo keeps the tab the user is on when it survives; a layout load selects the saved one.
+  undo step, so an undo or redo keeps the tab the user is on when it survives, and otherwise shows the nearest plot
+  page on its left on the strip, where the undone step started; a layout load selects the saved one. Closing the
+  current tab shows the tab to its right on the strip (else its left), not the next page in creation order.
 
 ## PlotRhiCanvas
 

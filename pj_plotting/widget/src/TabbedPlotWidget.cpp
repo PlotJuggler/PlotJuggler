@@ -20,6 +20,7 @@
 #include <QStyle>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <utility>
 
@@ -635,6 +636,19 @@ int TabbedPlotWidget::tabIndexOf(PlotTabFrame* frame) const {
   return it == tabs_.end() ? -1 : static_cast<int>(it - tabs_.begin());
 }
 
+QWidget* TabbedPlotWidget::neighbourOf(const TabEntry& entry, Side first, bool plot_pages_only) const {
+  const auto index = &entry - tabs_.data();
+  const auto count = static_cast<std::ptrdiff_t>(tabs_.size());
+  for (const int step : first == Side::kLeft ? std::array{-1, 1} : std::array{1, -1}) {
+    for (auto at = index + step; at >= 0 && at < count; at += step) {
+      if (!plot_pages_only || isHistoryDocker(tabs_[at])) {
+        return contentOf(tabs_[at]);
+      }
+    }
+  }
+  return nullptr;
+}
+
 bool TabbedPlotWidget::isHistoryDocker(const TabEntry& entry) {
   return entry.docker != nullptr && entry.docker->isSerializable(SnapshotScope::kHistory);
 }
@@ -758,9 +772,16 @@ void TabbedPlotWidget::closeTab(PlotTabFrame* frame, bool honor_veto) {
   if (it == tabs_.end()) {
     return;  // a reentrant close already removed it
   }
+  // The tab to the right on the strip takes over, else the one to the left. The stack holds pages in creation order, so
+  // left to itself it would show the page created next, wherever a duplicate or a moved tab put it on the strip.
+  const QPointer<QWidget> next =
+      stack_->currentWidget() == content ? neighbourOf(*it, Side::kRight, /*plot_pages_only=*/false) : nullptr;
   tabs_.erase(it);
 
   stack_->removeWidget(content);
+  if (next != nullptr) {
+    stack_->setCurrentWidget(next);
+  }
   tabs_bar_layout_->removeWidget(frame_widget);
   frame_widget->deleteLater();
   content->deleteLater();
@@ -966,6 +987,14 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   // redo keeps the page the user is on, a plot or a widget tab, if it survives the restore (a reused page keeps its
   // object).
   const QPointer<QWidget> shown = intent == RestoreIntent::kHistory ? stack_->currentWidget() : nullptr;
+  // A shown page the restore removes hands over to the nearest plot page on its left, where the undone step started:
+  // "Duplicate tab" puts the copy right of its source, "Add tab" appends. The saved index can name a tab the user left
+  // before that step (selecting a tab is not one). Widget and history-exempt pages are passed over: the restore moves
+  // them to the end of the strip.
+  QPointer<QWidget> beside;
+  if (const TabEntry* entry = shown != nullptr ? findEntry(shown.data()) : nullptr; entry != nullptr) {
+    beside = neighbourOf(*entry, Side::kLeft, /*plot_pages_only=*/true);
+  }
 
   QVector<QDomElement> target_tabs;
   for (QDomElement tab = tabbed_area.firstChildElement(u"Tab"_s); !tab.isNull();
@@ -1061,7 +1090,11 @@ bool TabbedPlotWidget::xmlLoadState(const QDomElement& tabbed_area, RestoreInten
   // tabs).
   const int max_index = static_cast<int>(target_tabs.size()) - 1;
   const int current_index = std::clamp(requested_index, 0, std::max(0, max_index));
-  if (const TabEntry* kept = shown != nullptr ? findEntry(shown.data()) : nullptr; kept != nullptr) {
+  const TabEntry* kept = shown != nullptr ? findEntry(shown.data()) : nullptr;
+  if (kept == nullptr && beside != nullptr) {
+    kept = findEntry(beside.data());
+  }
+  if (kept != nullptr) {
     selectEntry(*kept);
   } else if (PlotDocker* docker = dockerAt(current_index)) {
     stack_->setCurrentWidget(docker);

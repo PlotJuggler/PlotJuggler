@@ -153,6 +153,26 @@ TEST(PlotCurveVisibility, DarkThemeTrackerInkReadsOnTheBackdropAndTheCurveKeepsI
   EXPECT_EQ(fixture.plot->curveFromTitle(fixture.toggled)->curve->pen().color(), blue);
 }
 
+// A live theme switch redraws the tracker box in the new theme at once, not at the next cursor move.
+TEST(PlotCurveVisibility, ThemeSwitchRedrawsTheTrackerBox) {
+  TrackerFixture fixture;
+  const QColor blue("#1F77B4");
+  fixture.plot->onChangeCurveColor(fixture.toggled, blue);
+
+  QPalette dark = QApplication::palette();
+  dark.setColor(QPalette::Window, QColor("#373743"));
+  QApplication::setPalette(dark);
+  QApplication::processEvents();
+
+  const QColor backdrop = fixture.plot->qwtPlot()->canvasBackground().color();
+  ASSERT_LT(PJ::contrastRatio(blue, backdrop), 4.5) << "the canvas did not take the dark backdrop";
+  const QRegularExpression row(u"<font color=(#[0-9a-fA-F]{6})>[^<]*: %1</font>"_s.arg(
+      QRegularExpression::escape(fixture.title(fixture.toggled))));
+  const QRegularExpressionMatch match = row.match(fixture.plot->trackerValueBoxText());
+  ASSERT_TRUE(match.hasMatch()) << fixture.plot->trackerValueBoxText().toStdString();
+  EXPECT_GE(PJ::contrastRatio(QColor(match.captured(1)), backdrop), 4.5) << "the box kept the light theme's ink";
+}
+
 TEST(PlotCurveVisibility, SetCurveVisibleIsOneUndoStepAnnouncedOnceAndRepeatingItIsNone) {
   TrackerFixture fixture;
   QSignalSpy undo(fixture.plot.get(), &PJ::PlotWidget::undoableChange);
