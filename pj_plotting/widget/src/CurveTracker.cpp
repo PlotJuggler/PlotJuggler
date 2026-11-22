@@ -36,6 +36,9 @@ constexpr double kMinTextContrast = 4.5;
 // Top vertical speed of the value box, and the glide tick that finishes the move once positions stop arriving.
 constexpr double kLabelSpeedPxPerSec = 200.0;
 constexpr int kLabelTickMs = 16;
+// The glide timer waits this long after a position before ticking: longer than PlaybackEngine's tick (~33 ms), or it
+// would repaint between playback positions and multiply the plot's repaint rate.
+constexpr int kLabelIdleMs = 50;
 // A time line moving farther than this in one position is a seek (a click on the timeline), not playback: the box
 // follows it vertically at once.
 constexpr double kLabelSnapJumpPx = 20.0;
@@ -85,8 +88,8 @@ CurveTracker::CurveTracker(QwtPlot* plot, QColor color) : QObject(plot), plot_(p
   text_marker_ = new QwtPlotMarker();
   text_marker_->attach(plot_);
 
-  label_timer_.setInterval(kLabelTickMs);
   connect(&label_timer_, &QTimer::timeout, this, [this]() {
+    label_timer_.setInterval(kLabelTickMs);
     stepValueBox();
     emit valueBoxMoved();
   });
@@ -300,7 +303,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     // Restarted on every position, so during playback the owner's own repaint shows each step and the timer only
     // fires once positions stop.
     if (text_marker_->yValue() != label_target_y_) {
-      label_timer_.start();
+      label_timer_.start(kLabelIdleMs);
     }
   }
   label_shown_ = marker_visible;

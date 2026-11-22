@@ -183,14 +183,31 @@ TEST_F(PlotScaleDrawTest, TrackerValueBoxGlidesToTheValue) {
   curve->attach(plot.qwtPlot());
   PJ::CurveTracker tracker(plot.qwtPlot(), Qt::red);
   int moves = 0;
-  QObject::connect(&tracker, &PJ::CurveTracker::valueBoxMoved, [&moves]() { ++moves; });
+  int moves_during_playback = 0;
+  QElapsedTimer since_position;
+  since_position.start();
+  QObject::connect(&tracker, &PJ::CurveTracker::valueBoxMoved, [&]() {
+    ++moves;
+    // The glide timer must not repaint between positions that keep arriving at PlaybackEngine's ~33 ms tick.
+    if (since_position.elapsed() < 40) {
+      ++moves_during_playback;
+    }
+  });
 
   tracker.setPosition(QPointF(4.95, 0.0));
   EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 10.0);
 
-  // A playback-sized step (a few pixels) across the curve's jump glides.
-  tracker.setPosition(QPointF(5.15, 0.0));
-  EXPECT_LT(tracker.valueBoxY(), 50.0) << "jumped instead of gliding";
+  // Playback-sized steps (a few pixels) across the curve's jump glide.
+  for (int tick = 0; tick < 8; ++tick) {
+    tracker.setPosition(QPointF(5.15 + 0.005 * tick, 0.0));
+    since_position.restart();
+    while (since_position.elapsed() < 33) {
+      QApplication::processEvents(QEventLoop::WaitForMoreEvents, 5);
+    }
+  }
+  EXPECT_LT(tracker.valueBoxY(), 90.0) << "jumped instead of gliding";
+  EXPECT_GT(tracker.valueBoxY(), 10.0) << "positions did not advance the glide";
+  EXPECT_EQ(moves_during_playback, 0);
 
   QElapsedTimer clock;
   clock.start();
