@@ -16,7 +16,7 @@ rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRES
 |---|---|
 | `builtin_filters` | `v1/nissan_leaf/builtin_filters_layout.pj4.xml`, `builtin_filters_thumbnail.png` |
 | `anymal` | `v1/grand_tour_2/anymal_layout.pj4.xml`, `anymal_thumbnail.png` |
-| `pandaset` | `v1/pandaset/pandaset_layout.pj4.xml`, `pandaset_thumbnail.png` |
+| `pandaset` | `v1/pandaset/pandaset_layout_v3.pj4.xml`, `pandaset_thumbnail.png` |
 
 The layouts, the thumbnails and this file are PlotJuggler's own and fall under
 this repository's license (MPL-2.0); the thumbnails are PlotJuggler renders of
@@ -96,8 +96,8 @@ what it did.
 
 ## `pandaset` — self-driving car
 
-The layout loads `v1/pandaset/pandaset_092-094_20s.mcap` (161,812,017 bytes, SHA-256
-`c343cec075d685faed3ed45534fb14286726203d9e80242299348e1b289c75bf`, pinned by
+The layout loads `v1/pandaset/pandaset_092-094_20s_v3.mcap` (161,649,466 bytes, SHA-256
+`3579c1361ae5cd86c4f0abd2d684c2870dce2eea00cb9304ebc8352bbae24064`, pinned by
 the layout's `content_sha256`) from the asset host: 20 s of
 [PandaSet](https://pandaset.org), sequences 092 (frames 40-79), 093 and 094, which
 PandaSet recorded back to back on a suburban arterial in Silicon Valley (GPS about
@@ -119,15 +119,20 @@ It was converted from the PandaSet release as mirrored, unofficially, on
   the annotated cuboids projected into each image as outlines;
 - `/boxes`: the annotated cuboids as `foxglove.SceneUpdate` in `base_link`,
   coloured by class group (vehicles orange, pedestrians blue, cyclists green, other
-  grey), the ego car a magenta box;
-- `/tf` (map to base_link per sweep, the lidar, and each camera per frame);
+  grey), the ego car a magenta box, frame-locked to `base_link`;
+- `/tf`: `map` to `base_link` per sweep, and every sensor (the lidar and the six
+  cameras) as one fixed child of `base_link`. PandaSet gives each camera's pose in
+  the world per image and no mounting: the converter derives it from the camera's
+  pose relative to the car's pose interpolated to the image's timestamp (the
+  positions agree within 0.6 to 3.3 cm per camera over the recording);
 - `/ego` (JSON): speed from PandaSet's GPS velocity, heading and yaw rate from the
   lidar poses (within one sequence), and the GPS position; `/objects` (JSON): object
   counts per sweep, which step at the joins because each sequence was annotated on
   its own.
 
-`README.txt` beside it lists the same changes and gives the attribution and the
-citation. The layout shows the six cameras across the top with their box overlays;
+`README.txt` beside it gives the attribution and the citation and lists the changes
+made for the earlier recording there, `pandaset_092-094_20s.mcap`, which differ
+only in `/tf`. The layout shows the six cameras across the top with their box overlays;
 below them the yaw rate, the speed and an aerial (top-down orthographic) view
 coloured by intensity in a column, beside a large orbiting 3D view coloured by
 height; both 3D views draw the lidar and the boxes in `base_link`. Its MCAP Loader

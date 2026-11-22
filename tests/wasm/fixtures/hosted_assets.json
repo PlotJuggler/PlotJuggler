@@ -189,13 +189,13 @@
    "sha256": "d5f3ad3fed26654bafcd2676c98aab22a5ff17658c2b984ebd84e22d166b61a1",
    "bytes": 3597
   },
-  "v1/pandaset/pandaset_092-094_20s.mcap": {
-   "sha256": "c343cec075d685faed3ed45534fb14286726203d9e80242299348e1b289c75bf",
-   "bytes": 161812017
+  "v1/pandaset/pandaset_092-094_20s_v3.mcap": {
+   "sha256": "3579c1361ae5cd86c4f0abd2d684c2870dce2eea00cb9304ebc8352bbae24064",
+   "bytes": 161649466
   },
-  "v1/pandaset/pandaset_layout.pj4.xml": {
-   "sha256": "8dc2012d1c0681cc737294ffb93806600f78c482d6cff47399ba4b591b50d52d",
-   "bytes": 11541
+  "v1/pandaset/pandaset_layout_v3.pj4.xml": {
+   "sha256": "8954926d7b1d14e4f9ab018b485428cf60fbe72fa16b9ba8d2cbe81b93c28d0e",
+   "bytes": 11667
   },
   "v1/pandaset/pandaset_thumbnail.png": {
    "sha256": "2c81d35546cd96f1105686e7fa5c401c8b5c0cac8ad0563caff4cefd7f8b98d8",

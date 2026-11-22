@@ -18,7 +18,7 @@
       "id": "pandaset",
       "title": "Self-driving car",
       "description": "A car on a suburban road in Silicon Valley from PandaSet: its six cameras with 3D-box overlays, its lidar and the boxes in 3D, beside its yaw rate and speed.",
-      "layout": "https://assets.plotjuggler.io/v1/pandaset/pandaset_layout.pj4.xml",
+      "layout": "https://assets.plotjuggler.io/v1/pandaset/pandaset_layout_v3.pj4.xml",
       "thumbnail": "https://assets.plotjuggler.io/v1/pandaset/pandaset_thumbnail.png"
     }
   ]
