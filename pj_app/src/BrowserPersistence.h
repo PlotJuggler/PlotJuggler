@@ -49,7 +49,7 @@ class BrowserPersistence final : public QObject {
   bool rememberGenericLayout(const QString& browser_name, const QByteArray& xml, QString* error = nullptr);
   void clearRecentLayouts();
 
-  // Flushes allowed session preferences now; also runs on every aboutToBlock and at aboutToQuit.
+  // Flushes allowed session preferences now; also runs every kPreferenceSyncInterval and at aboutToQuit.
   void syncPreferences();
 
 #ifdef PJ_TARGET_WASM
