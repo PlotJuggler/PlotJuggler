@@ -15,11 +15,11 @@
       "thumbnail": "anymal/thumbnail.png"
     },
     {
-      "id": "city_drive",
+      "id": "waymo",
       "title": "Self-driving car",
-      "description": "A car driving through Toronto: its front camera and 128-beam lidar, beside its speed, yaw rate and accelerations.",
-      "layout": "city_drive/layout.pj4.xml",
-      "thumbnail": "city_drive/thumbnail.png"
+      "description": "A Waymo car driving through Phoenix: five cameras with lidar and 3D-box overlays, its five lidars and the boxes in 3D, beside its speed and acceleration.",
+      "layout": "waymo/layout.pj4.xml",
+      "thumbnail": "waymo/thumbnail.png"
     }
   ]
 }

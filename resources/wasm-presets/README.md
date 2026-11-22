@@ -13,12 +13,12 @@ for the repository. How to author one, the packaging rules and the hosting notes
 |---|---|
 | `builtin_filters/` | layout, thumbnail (recording hosted, see below) |
 | `anymal/` | layout, thumbnail (recording and robot models hosted, see below) |
-| `city_drive/` | layout, thumbnail (recording and car model hosted, see below) |
+| `waymo/` | layout, thumbnail (recording hosted, see below) |
 
 The layouts and this file are authored for this repository and fall
 under its license (MPL-2.0), and so do the thumbnails: PlotJuggler renders of
 the loaded samples (browser screenshots, downscaled to 384x216, 8-bit palette; the
-ANYmal and city-drive ones show only their 3D view, the built-in filters one its
+ANYmal and Waymo ones show only a 3D view, the built-in filters one its
 two plots).
 
 ## `builtin_filters/` — built-in filters
@@ -91,39 +91,57 @@ a converter outside this repository from the dataset's Zarr streams and a
 curated MCAP of the same mission; the topics, rates and processing above are
 what it did.
 
-## `city_drive/` — self-driving car
+## `waymo/` — self-driving car
 
-The layout loads `v1/boreas/boreas_city_drive.mcap` (261,292,684 bytes, SHA-256
-`db4e548caa266c5408c266bed953610e82676016ae7f48c890af5b53116db82b`, pinned by
-the layout's `content_sha256`) from the asset host: 30 s of the
-[Boreas Autonomous Driving Dataset](https://registry.opendata.aws/boreas),
-sequence `boreas-2021-07-27-14-43` (a sunny arterial road in Toronto), from Unix
-time 1627411555.976352 to 1627411585.976352. It holds the front camera (the
-dataset's rectified 2448x2048 PNGs as JPEG, quality 80, 10 Hz, with its
-projection as `camera_info`), every Velodyne Alpha Prime scan (~10 Hz, ~199k
-points; x, y, z and intensity, stored ring by ring and Cloudini-compressed at
-1 cm), and the post-processed Applanix solution as `/tf` (map to applanix,
-50 Hz), odometry (50 Hz, velocity in the vehicle frame), IMU (100 Hz) and fix
-(10 Hz); `/tf_static` carries the dataset's lidar and camera calibration.
-`README.txt` beside it describes each topic and the conversion, and gives the
-citation the dataset asks for. The layout's 3D view starts centred on the car's
-first position and follows it.
+The layout loads `v1/waymo/waymo_av_demo.mcap` (170,187,347 bytes, SHA-256
+`59c8cf1b6bae8226f9d5eb3f79103b6678666b463e5aa8b456f03b14683f1927`, pinned by
+the layout's `content_sha256`) from the asset host: 19.8 s of a
+[Waymo Open Dataset](https://waymo.com/open) perception segment, a car driving
+through Phoenix by day (the recording's `/stats` names `location_phx`), from Unix
+time 1507939794.765751 to 1507939814.569083. It starts from Foxglove's Waymo
+example recording (`example-016-av-waymo-ds.mcap`, 925 MB, Foxglove schemas over
+protobuf) and holds:
 
-The car itself is `v2/boreas_vehicle/` (1.3 MB) on the asset host: `vehicle.urdf`
-places a stand-in model at the recording's `applanix` frame (on the roof, about
-2.1 m above the road by the lidar's ground returns), 0.4 m forward of centred,
-where its hood edge meets the front camera image where the real hood ends; the
-dataset ships no model of its Lincoln MKZ. The
-mesh, `meshes/prius_hybrid.glb`, is Open Robotics' "Prius Hybrid" from
-[Gazebo Fuel](https://fuel.gazebosim.org/1.0/OpenRobotics/models/Prius%20Hybrid)
-(version 3, by Ian Chen) converted to binary glTF with its textures, scaled to
-the MKZ's 4.9 m in the URDF; `PROVENANCE.txt` gives the source hashes and the
-conversion.
+- the five lidars (`/LIDAR_TOP`, `_FRONT`, `_REAR`, `_SIDE_LEFT`, `_SIDE_RIGHT`,
+  10 Hz) at full resolution, about 144k points a scan from the top lidar and about
+  4k from each of the others, converted to `sensor_msgs/msg/PointCloud2` and
+  Cloudini-compressed (1 mm, intensity at 1, elongation removed); the demo's
+  downsampled copies are dropped;
+- the five cameras' downsampled JPEGs (480x320 front, 480x221 side, 10 Hz) and
+  their segmentation images (5 Hz), re-encoded at quality 80 where that is smaller,
+  with their `camera_info`;
+- each camera's `foxglove.ImageAnnotations` overlays: the lidar points projected
+  into it (`lidar`) and the 2D and 3D box outlines (`annotations_2d`,
+  `annotations_3d`), points rounded to 1/4 pixel and colours to 1/256;
+- the 3D boxes (`/markers/annotations/vehicles`, `pedestrians`, `signs`,
+  `foxglove.SceneUpdate`), `/tf`, and `/stats` (`diagnostic_msgs/msg/DiagnosticArray`:
+  speed, acceleration, wheel speed, and the segment's context). Its schema declares
+  each status's `name` before its `level`, unlike ROS's definition; `parser_ros`
+  1.4.2 and later read the fields in the schema's order, older ones fail every
+  `/stats` message, and the browser refuses a sample whose plotted curves have no data;
+- the car (`/marker/car`, an embedded binary glTF in a `foxglove.SceneUpdate`),
+  kept once with its 5 s lifetime cleared so it lasts the whole recording (the
+  demo republishes it every 5 s).
 
-Redistribution basis: the Boreas dataset is released under CC BY 4.0 (its
-[AWS Open Data registry entry](https://registry.opendata.aws/boreas)); the
-`README.txt` beside the recording gives the attribution and lists the changes
-made, as the license requires. The car model is released under CC0 1.0
-(`LICENSE` beside it). The recording was made with a converter outside
-this repository from the dataset's files; the topics, rates and processing
-above are what it did.
+`README.txt` beside it lists the same changes and gives the attribution. The layout
+shows the five cameras with their lidar and 3D-box overlays, the five segmentation
+images, an aerial (top-down orthographic) and an orbiting 3D view of the lidars,
+boxes and car, and the speed and acceleration from `/stats`. Both 3D views use
+`base_link` as their fixed frame: with `map` as the fixed frame and `base_link`
+followed, both came up empty on the desktop (not investigated). The aerial view's
+camera elevation stays below the top-down limit (pi/2 - 0.05): a layout with a
+larger one is rejected whole. The layout keeps the side panel at its 280 px minimum and gives the
+aerial view 27 % of the rest: a Scene3D view is at least 320 px wide, and in a narrower dock
+its right side is cut off, so in a 1280 px wide window the car sits about 30 px right of the
+visible centre.
+
+Redistribution basis: the Waymo Open Dataset is licensed by Waymo LLC under the
+[Waymo Dataset License Agreement for Non-Commercial Use](https://waymo.com/open/terms),
+which allows non-commercial use only and requires the attribution its section 1
+gives. `README.txt` beside the recording carries that attribution: "This
+recording was made using the Waymo Open Dataset, provided by Waymo LLC under the
+Waymo Dataset License Agreement for Non-Commercial Use, available at
+waymo.com/open/terms, and your access and use of such work are governed by the
+terms and conditions therein." The recording was made with a converter outside this
+repository from Foxglove's demo recording; the topics and processing above are what
+it did.
