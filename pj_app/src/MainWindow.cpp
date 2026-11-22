@@ -1188,7 +1188,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
 
   QSettings settings;
   // Read before buildGlobalToolbar() creates the buttons.
-  show_points_ = settings.value(u"MainWindow.buttonShowpoint"_s, true).toBool();
+  show_points_ = settings.value(u"MainWindow.buttonShowpoint"_s, false).toBool();
   activate_grid_ = settings.value(u"MainWindow.buttonActivateGrid"_s, false).toBool();
   dots_ = settings.value(u"MainWindow.buttonDots"_s, false).toBool();
   tracker_info_ = static_cast<CurveTracker::Parameter>(
@@ -1843,9 +1843,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // A lambda: a function-pointer connect rejects onUndoableChange's extra (defaulted) argument.
   connect(ui_->tabbedPlotWidget, &TabbedPlotWidget::undoableChange, this, [this] { onUndoableChange(); });
 
-  // "Align starts", off by default so the Source Timeline shows the datasets' natural offsets. Toggling it later
-  // rewrites every dataset's offset.
-  session_->sessionManager().setUseTimeOffset(QSettings().value(u"MainWindow.useTimeOffset"_s, false).toBool());
+  // "Align starts", on by default so the time axis starts at 0. Toggling it later rewrites every dataset's offset.
+  session_->sessionManager().setUseTimeOffset(QSettings().value(u"MainWindow.useTimeOffset"_s, true).toBool());
   ui_->timelineWidget->setUseTimeOffset(session_->sessionManager().useTimeOffset());
   connect(ui_->timelineWidget, &TimelineWidget::useTimeOffsetToggled, this, [this](bool checked) {
     QSettings().setValue(u"MainWindow.useTimeOffset"_s, checked);

@@ -1617,6 +1617,7 @@ test('mouse hover selects a curve point and renders its QRhi inspector', { tag: 
     width: state.canvas.width,
     height: state.canvas.height,
   };
+  await page.evaluate(() => window.pjWasmToggleShowPointProbe());  // "Show point in plot" starts off
   const sample = { x: 3, y: 30 };
   const samplePixel = {
     x: canvas.x + (((sample.x - state.view.left) / (state.view.right - state.view.left)) * canvas.width),
