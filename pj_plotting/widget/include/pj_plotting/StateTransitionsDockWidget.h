@@ -6,6 +6,7 @@
 #include <QDomElement>
 #include <QWidget>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "pj_plotting/StateTransitionsController.h"
@@ -42,6 +43,7 @@ class StateTransitionsDockWidget : public QWidget, public IDataWidget {
   bool tryAcceptSeriesKeys(const QStringList& catalog_keys) override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  [[nodiscard]] bool xmlValidateState(const QDomElement& element) const override;
 
   [[nodiscard]] StateTransitionsView* view() noexcept {
     return view_;
@@ -67,6 +69,17 @@ class StateTransitionsDockWidget : public QWidget, public IDataWidget {
     bool visible = true;
   };
 
+  /// A <state_transitions> element as xmlLoadState applies it.
+  struct ParsedState {
+    std::vector<PendingSeries> series;
+    std::optional<double> zoom_px_per_ns;  ///< unset when absent, unparsable or not positive: the zoom and pan stay
+    qint64 viewport_left_ns = 0;           ///< applied only with a zoom
+    int viewport_top_px = 0;
+  };
+  /// The one validator, shared by xmlLoadState and xmlValidateState: reads every attribute through readers that report
+  /// to an active XmlOptionsRecorder and refuses only another root tag. Pure: changes nothing.
+  [[nodiscard]] static bool parseState(const QDomElement& element, ParsedState& parsed);
+
   /// Resolves one saved identity and materializes its row (restoring the eye state); false when the catalog cannot
   /// resolve it (yet).
   bool tryResolveSeries(const PendingSeries& saved);
@@ -74,7 +87,7 @@ class StateTransitionsDockWidget : public QWidget, public IDataWidget {
   /// bind their rows.
   void retryPendingSeries();
   /// Restores the saved zoom, pan and vertical offset (zoom first, so the pan maps under it).
-  void applyViewChrome(const QDomElement& element);
+  void applyViewChrome(const ParsedState& parsed);
 
   StateTransitionsView* view_ = nullptr;
   std::unique_ptr<StateTransitionsController> controller_;

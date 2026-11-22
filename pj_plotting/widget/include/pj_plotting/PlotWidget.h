@@ -137,6 +137,8 @@ class PlotWidget : public PlotWidgetBase {
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
+  /// Parse-only check of a <plot> element, with IDataWidget::xmlValidateState's contract (pj_runtime/IDataWidget.h).
+  [[nodiscard]] bool xmlValidateState(const QDomElement& plot_element) const;
   /// Adds this session's opaque curve keys (and dataset paths) to `plot_element`, this plot's xmlSaveState output, so
   /// xmlLoadState binds its curves without the shell's stable-path rebind: a same-session copy (clipboard, duplicated
   /// tab).
@@ -417,6 +419,22 @@ class PlotWidget : public PlotWidgetBase {
   };
   std::optional<SavedViewport> saved_viewport_;
   std::vector<QDomDocument> pending_curve_intents_;
+
+  // The plot-level half of a <plot> element, as xmlLoadState applies it.
+  struct ParsedState {
+    QString id;
+    bool xy = false;
+    LineWidth line_width = LineWidth::kPoints10;
+    CurveStyle style = kLines;
+    bool tracker_enabled = true;
+    QString title;
+    std::optional<SavedViewport> viewport;
+    std::vector<QDomDocument> pending_curves;
+  };
+  // The one validator of a <plot> element, shared by xmlLoadState and xmlValidateState: reads every attribute the
+  // element and its children may carry through readers that report to an active XmlOptionsRecorder, and refuses
+  // exactly what xmlLoadState refuses (an invalid or duplicate pending curve). Pure: changes nothing.
+  [[nodiscard]] static bool parseState(const QDomElement& plot_element, ParsedState& parsed);
 
   // Marker scopes hidden on this plot (absent = visible). Independent of markerScopeRows() so a layout can restore
   // "hidden" before the producing rule has published the topic (pruneHiddenMarkerScopes, xmlLoadState).

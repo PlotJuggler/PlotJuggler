@@ -4,8 +4,11 @@
 #include "pj_plotting/StateTransitionsDockWidget.h"
 
 #include <QVBoxLayout>
+#include <limits>
 
+#include "ReportedXml.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/XmlStateOptions.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -95,27 +98,64 @@ QDomElement StateTransitionsDockWidget::xmlSaveState(QDomDocument& doc) const {
   return root;
 }
 
-bool StateTransitionsDockWidget::xmlLoadState(const QDomElement& element) {
+bool StateTransitionsDockWidget::parseState(const QDomElement& element, ParsedState& parsed) {
+  using plotting_detail::readReported;
   if (element.tagName() != kPayloadTag) {
+    XmlOptionsRecorder::noteRejection(element, {}, u"expected a <state_transitions> element"_s);
+    return false;
+  }
+  for (QDomElement series = element.firstChildElement(u"series"_s); !series.isNull();
+       series = series.nextSiblingElement(u"series"_s)) {
+    parsed.series.push_back(
+        PendingSeries{
+            .dataset_source = readXmlText(series, u"dataset_source"_s),
+            .dataset_path = readXmlText(series, u"dataset_path"_s),
+            .dataset_id = readReported(
+                              series, {.attribute = u"dataset_id"_s,
+                                       .type = u"int"_s,
+                                       .min = 0.0,
+                                       .max = static_cast<double>(std::numeric_limits<DatasetId>::max())})
+                              .toLongLong(),
+            .topic = readXmlText(series, u"topic"_s),
+            .field = readXmlText(series, u"field"_s),
+            .visible =
+                readReported(
+                    series,
+                    {.attribute = u"visible"_s, .type = u"bool"_s, .values = {u"1"_s, u"0"_s}, .fallback = u"1"_s}) !=
+                u"0"_s,
+        });
+  }
+  bool zoom_ok = false;
+  const double zoom =
+      readReported(element, {.attribute = u"zoom_px_per_ns"_s, .type = u"float"_s, .min = 0.0}).toDouble(&zoom_ok);
+  if (zoom_ok && zoom > 0.0) {
+    parsed.zoom_px_per_ns = zoom;
+  }
+  parsed.viewport_left_ns =
+      readReported(element, {.attribute = u"viewport_left_ns"_s, .type = u"int"_s, .fallback = u"0"_s}).toLongLong();
+  parsed.viewport_top_px =
+      readReported(element, {.attribute = u"viewport_top_px"_s, .type = u"int"_s, .fallback = u"0"_s}).toInt();
+  return true;
+}
+
+bool StateTransitionsDockWidget::xmlValidateState(const QDomElement& element) const {
+  ParsedState parsed;
+  return parseState(element, parsed);
+}
+
+bool StateTransitionsDockWidget::xmlLoadState(const QDomElement& element) {
+  ParsedState parsed;
+  if (!parseState(element, parsed)) {
     return false;
   }
   pending_series_.clear();
-  for (QDomElement series = element.firstChildElement(u"series"_s); !series.isNull();
-       series = series.nextSiblingElement(u"series"_s)) {
-    const PendingSeries saved{
-        .dataset_source = series.attribute(u"dataset_source"_s),
-        .dataset_path = series.attribute(u"dataset_path"_s),
-        .dataset_id = series.attribute(u"dataset_id"_s).toLongLong(),
-        .topic = series.attribute(u"topic"_s),
-        .field = series.attribute(u"field"_s),
-        .visible = series.attribute(u"visible"_s, u"1"_s) != u"0"_s,
-    };
+  for (const PendingSeries& saved : parsed.series) {
     if (!tryResolveSeries(saved)) {
       pending_series_.push_back(saved);
     }
   }
 
-  applyViewChrome(element);
+  applyViewChrome(parsed);
   return true;
 }
 
@@ -142,15 +182,13 @@ void StateTransitionsDockWidget::retryPendingSeries() {
   std::erase_if(pending_series_, [this](const PendingSeries& saved) { return tryResolveSeries(saved); });
 }
 
-void StateTransitionsDockWidget::applyViewChrome(const QDomElement& element) {
+void StateTransitionsDockWidget::applyViewChrome(const ParsedState& parsed) {
   // View chrome after the rows: zoom first so the pan maps under it.
-  bool zoom_ok = false;
-  const double zoom = element.attribute(u"zoom_px_per_ns"_s).toDouble(&zoom_ok);
-  if (zoom_ok && zoom > 0.0) {
-    view_->setZoom(zoom);
-    view_->setViewportLeftDisplayNs(element.attribute(u"viewport_left_ns"_s).toLongLong());
+  if (parsed.zoom_px_per_ns.has_value()) {
+    view_->setZoom(*parsed.zoom_px_per_ns);
+    view_->setViewportLeftDisplayNs(parsed.viewport_left_ns);
   }
-  view_->setViewportTopOffsetPx(element.attribute(u"viewport_top_px"_s).toInt());
+  view_->setViewportTopOffsetPx(parsed.viewport_top_px);
 }
 
 }  // namespace PJ
