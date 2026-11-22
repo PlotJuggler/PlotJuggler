@@ -81,10 +81,16 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   // reopens the dock's gate. Never coalesces across times (a lifetime can expire with no new entry).
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   // A finding's real stamp (its entry sits at kFindingTimestamp), so it stays where it was measured in a
-  // moving frame; nullopt otherwise: entities are placed at the cursor.
+  // moving frame; nullopt otherwise. It places a finding's models and the layer's scene bounds; the marker
+  // primitives are placed per group, by markerStamp().
   [[nodiscard]] std::optional<PJ::Timepoint> renderStamp() const override {
     return finding_stamp_;
   }
+  // What the view places group `index` of geometry() with (MarkerGeometry::frames). The stamp is the finding's when
+  // the layer shows one, else the entities' own on the dataset clock, so they stay where they were measured like a
+  // cloud; nullopt places the group at the cursor (unstamped or frame-locked entities, which move with their frame).
+  [[nodiscard]] std::optional<PJ::Timepoint> markerStamp(std::size_t index) const;
+  [[nodiscard]] PlacementHold* markerPlacementHold(std::size_t index) const;
   [[nodiscard]] PlacementHold* placementHoldFor(const std::string& frame) const override;
   void setVisible(bool visible) override;
 
@@ -275,6 +281,10 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   std::optional<std::int64_t> shown_store_ns_;
   // One placement hold per entity frame (placementHoldFor): a finding drawn in several frames.
   mutable std::map<std::string, PlacementHold, std::less<>> frame_holds_;
+  // One placement hold per group of geometry_ (markerPlacementHold), dropped with the geometry they placed.
+  mutable std::vector<PlacementHold> marker_holds_;
+  // payload_stamp_shift of the entry the marker batch came from: puts the entities' own stamps on the dataset clock.
+  PJ::Timestamp marker_stamp_shift_ = 0;
   PJ::SequentialUID last_marker_uid_;
   std::optional<PJ::Timepoint> requested_time_;
   bool visible_ = true;

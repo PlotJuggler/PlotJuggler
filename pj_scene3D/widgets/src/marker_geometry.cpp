@@ -76,12 +76,28 @@ struct Preflight {
   std::uint64_t triangle_batches = 0;
   std::uint64_t stream_bytes = 0;  ///< the batches' points, per-point colours and indices
   std::uint64_t frame_string_bytes = 0;
-  // Each distinct frame_id's index, numbered in order of first appearance, and
-  // the frame_ids in that order.
+  // Each distinct placement group's index (keyed by groupKey()), numbered in order of
+  // first appearance, and the groups' frame_ids and stamps in that order.
   std::unordered_map<std::string, std::uint32_t> frame_index;
   std::vector<std::string> frame_ids;
+  std::vector<PJ::Timestamp> frame_stamps;
   QString error;
 };
+
+// The stamp an entity is placed at: its own, or 0 (the cursor) when it has none or is frame-locked.
+PJ::Timestamp placementStamp(const PJ::sdk::SceneEntity& entity) {
+  return entity.frame_locked ? 0 : entity.timestamp_ns;
+}
+
+// Entities with the same key share one placement: the same frame and the same placement stamp.
+std::string groupKey(const PJ::sdk::SceneEntity& entity) {
+  std::string key = entity.frame_id;
+  if (const PJ::Timestamp stamp = placementStamp(entity); stamp != 0) {
+    key += '\0';
+    key += std::to_string(stamp);
+  }
+  return key;
+}
 
 std::uint64_t lineExpandedVertexCount(const PJ::sdk::LinePrimitive& line) {
   const std::uint64_t count = line.indices.empty() ? line.points.size() : line.indices.size();
@@ -100,14 +116,15 @@ Preflight preflight(const PJ::sdk::SceneEntities& scene) {
   Preflight output;
   auto& frames = output.frame_index;
   for (const PJ::sdk::SceneEntity& entity : scene.entities) {
-    const bool inserted = frames.try_emplace(entity.frame_id, static_cast<std::uint32_t>(frames.size())).second;
+    const bool inserted = frames.try_emplace(groupKey(entity), static_cast<std::uint32_t>(frames.size())).second;
     if (inserted) {
       output.frame_ids.push_back(entity.frame_id);
+      output.frame_stamps.push_back(placementStamp(entity));
       output.frame_string_bytes = saturatedAdd(output.frame_string_bytes, saturatedAdd(entity.frame_id.size(), 1U));
     }
     if (frames.size() > kSceneLimits.max_marker_frames_per_layer) {
       output.frames = frames.size();
-      output.error = QObject::tr("SceneEntities exceeds the limit of %1 distinct frames")
+      output.error = QObject::tr("SceneEntities exceeds the limit of %1 distinct frames and stamps")
                          .arg(kSceneLimits.max_marker_frames_per_layer);
       return output;
     }
@@ -247,6 +264,7 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
     }
     MarkerGeometry& geometry = result.geometry;
     geometry.frames = std::move(counts.frame_ids);
+    geometry.frame_stamps = std::move(counts.frame_stamps);
     geometry.frame_bounds.resize(geometry.frames.size());
     geometry.cubes.reserve(static_cast<std::size_t>(counts.cubes));
     geometry.spheres.reserve(static_cast<std::size_t>(counts.spheres));
@@ -257,7 +275,7 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
     geometry.triangles.reserve(static_cast<std::size_t>(counts.triangle_batches));
 
     for (const PJ::sdk::SceneEntity& entity : scene.entities) {
-      const std::uint32_t frame_index = counts.frame_index.find(entity.frame_id)->second;
+      const std::uint32_t frame_index = counts.frame_index.find(groupKey(entity))->second;
       MarkerBounds& bounds = geometry.frame_bounds[frame_index];
 
       for (const PJ::sdk::CubePrimitive& cube : entity.cubes) {

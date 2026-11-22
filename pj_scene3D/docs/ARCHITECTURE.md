@@ -14,7 +14,7 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
   grids, depth images back-projected into clouds, trails, grid maps and mesh maps with their updates. All of them
   render in the browser too. Paths, laser scans and a camera image/frustum view are not implemented.
 - **Placement over time.** A layer that draws one stamped object (point cloud, depth cloud, pose array and its
-  trail, voxel grid, grid map, a derived SceneEntities finding) is placed where its source frame was at the
+  trail, voxel grid, grid map, a derived SceneEntities finding), and each stamped SceneEntities entity, is placed where its source frame was at the
   object's own stamp, in the TF header clock, composed through the anchor, the nearest frame the fixed and the
   source frame share (`fixed <- anchor` at the cursor times `anchor <- source` at the stamp;
   `core/tf/object_placement.h::placeObject`). With the root as the fixed frame a scan stays where it was captured in
@@ -26,10 +26,12 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
   whose TF sample live retention has evicted keeps its last placement (`PlacementHold`). A cloud the cursor has left
   while its successor is still being prepared on a worker (a compressed decode, a depth back-projection) keeps the
   placement of the last cursor it was current at (`Scene3DLayer::noteDrawnObject`), so in a moving fixed frame it
-  does not jump by the frame's motion for the frames the worker takes. Every other layer
-  (occupancy grid, mesh map, SceneEntities, robot model) and the TF overlay are placed at the tracker time in the
-  entry clock. There is no per-layer toggle; Foxglove's `frame_locked` is not honoured. The per-consumer table is
-  in `docs/derived_objects/ARCHITECTURE.md` "TF".
+  does not jump by the frame's motion for the frames the worker takes. A SceneEntities entity
+  is placed at its own stamp unless it has none or sets `frame_locked`, which keeps it moving with its frame (the
+  marker geometry groups entities by frame and placement stamp, `MarkerGeometry::frame_stamps`); an entity's mesh
+  model is placed at the cursor. Every other layer (occupancy grid, mesh map, robot model) and the TF overlay are
+  placed at the tracker time in the entry clock. There is no per-layer toggle. The per-consumer table is in
+  `docs/derived_objects/ARCHITECTURE.md` "TF".
 - **Marker lifetime.** Layers persist until the producer re-emits on the same key. SceneEntities additionally
   honour `lifetime_ns` (0 = never), anchored on the store entry timestamp the entity was folded from, not on its
   embedded sensor stamp (see "SceneEntities lifetime and the decoded-batch cache"). An expired entity disappears;
@@ -914,7 +916,9 @@ each has a panel row, and clicking it binds the Settings host to the layer's con
 ## Known gaps
 
 - Paths, laser scans and a camera image/frustum view are not implemented; nor are heading/pose follow, saved views,
-  camera sync across docks, and Foxglove's per-entity `frame_locked`.
+  camera sync across docks.
+- A SceneEntities mesh model is placed at the cursor, not at its entity's stamp like the entity's primitives: with TF
+  faster than the entities, a model and a primitive of one entity drift apart in a world-fixed frame.
 - Movable URDF joints are not articulated from `JointState`; `axis`, `limit` and `mimic` are not parsed.
 - Embedded assets (resolver step 0) are inert in the app: no caller passes a source's asset map to
   `Scene3DDockWidget::setEmbeddedAssets`.

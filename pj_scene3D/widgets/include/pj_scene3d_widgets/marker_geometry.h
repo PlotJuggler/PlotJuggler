@@ -15,7 +15,10 @@ namespace pj::scene3d {
 
 // CPU marker geometry the QRhi renderer uploads for one SceneEntities batch.
 // Every primitive stays in its entity's frame: `model` is frame-local and
-// `frame_index` indexes `frames`, so the renderer applies TF once per frame.
+// `frame_index` indexes `frames`, the batch's placement groups, so the renderer
+// applies TF once per group. A group is a frame and the stamp its entities are
+// placed at (`frame_stamps`): two entities in one frame with different stamps
+// are two groups.
 
 struct MarkerInstanceSource {
   glm::dmat4 model{1.0};
@@ -57,6 +60,9 @@ struct MarkerBounds {
 
 struct MarkerGeometry {
   std::vector<std::string> frames;
+  // Parallel to `frames`: the entities' own stamp (as in the payload, before any merge shift), or 0 for entities
+  // placed at the cursor: unstamped ones, and frame-locked ones, which move with their frame.
+  std::vector<PJ::Timestamp> frame_stamps;
   std::vector<MarkerBounds> frame_bounds;
   std::vector<MarkerInstanceSource> cubes;
   std::vector<MarkerInstanceSource> spheres;

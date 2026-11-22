@@ -329,6 +329,21 @@ void SceneEntitiesLayer::setTrackerTime(PJ::Timepoint time) {
   ensureModelStateAt(time);
 }
 
+std::optional<PJ::Timepoint> SceneEntitiesLayer::markerStamp(std::size_t index) const {
+  if (finding_stamp_.has_value()) {
+    return finding_stamp_;
+  }
+  return index < geometry_.frame_stamps.size() ? objectStamp(geometry_.frame_stamps[index], marker_stamp_shift_)
+                                               : std::nullopt;
+}
+
+PlacementHold* SceneEntitiesLayer::markerPlacementHold(std::size_t index) const {
+  if (marker_holds_.size() <= index) {
+    marker_holds_.resize(index + 1);
+  }
+  return &marker_holds_[index];
+}
+
 PlacementHold* SceneEntitiesLayer::placementHoldFor(const std::string& frame) const {
   return &frame_holds_[frame];  // ponytail: one per frame ever drawn; prune when entity frames churn by the thousand
 }
@@ -408,6 +423,7 @@ SceneEntitiesLayer::MarkerPick SceneEntitiesLayer::selectMarkerBatch(
   }
   last_marker_uid_ = resolved->sequential_uid;
   shown_store_ns_ = resolved->timestamp;
+  marker_stamp_shift_ = resolved->payload_stamp_shift;
   finding_stamp_.reset();
   if (resolved->timestamp == PJ::kFindingTimestamp) {
     if (const auto stamp = PJ::derivedTopicPresentation(ctx_.session, topic_id_).finding_stamp) {
@@ -979,6 +995,7 @@ void SceneEntitiesLayer::onDecodeFinished(DecodeResult result) {
     setBatchWarning(std::move(result.built.error));
   } else {
     geometry_ = std::move(result.built.geometry);
+    marker_holds_.clear();
     ++geometry_revision_;
     setBatchWarning({});
   }
@@ -995,6 +1012,7 @@ void SceneEntitiesLayer::clearGeometry() {
     return;
   }
   geometry_ = {};
+  marker_holds_.clear();
   ++geometry_revision_;
 }
 

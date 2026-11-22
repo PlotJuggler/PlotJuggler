@@ -455,7 +455,8 @@ Every consumer and its clock:
 | 3D view: TF triads, connection lines, hover label, frame picking, follow camera, TF render key | Entry, at the cursor | They show where each frame is at the cursor. |
 | Point cloud, depth cloud, pose array and its trail, voxel grid, grid map | Header at the object's own stamp for `anchor <- source`; entry at the cursor for `fixed <- anchor` (a pose-trail point: at its own store timestamp); entry at the cursor as the fallback | An object sits where its frame was when it was measured, as in RViz. |
 | Occupancy grid, mesh map | Entry, at the cursor | What is drawn is a keyframe plus later patches, with no single stamp. |
-| Scene entities (markers and their models) | Entry, at the cursor; a finding at its result's real stamp, as a stamped object | `frame_locked` is not honoured ("Known gaps"). |
+| Scene entities (markers) | As a stamped object, each entity at its own stamp (a finding: at its result's real stamp); entry at the cursor for an unstamped or `frame_locked` entity | A detection stays where it was measured; a frame-locked entity moves with its frame. |
+| Scene-entity mesh models | Entry, at the cursor; a finding's at its result's real stamp | Not placed at the entity's own stamp ("Known gaps"). |
 | Robot model links | Entry, at the cursor | The links are TF frames. |
 | TF frame trail | Entry (`chainSampleTimes` and its lookups) | The trail is split at the cursor and its head meets the frame's triad. |
 | Camera scene bounds, layer render keys, point-cloud axis range | The layer's own placement, with its placement hold | They must match what is drawn. |
@@ -989,7 +990,8 @@ Each recipe lists the files, the tests and the pitfalls. Write the failing test 
   stamp, after checking a real bag.
 - TF edge storage is not chunked: a snapshot's copy-on-write copies a buffer's whole state ("Reference numbers"). Chunk
   it only if that copy is measured to matter.
-- Scene entities ignore their own stamps and `frame_locked`; they are placed at the cursor.
+- A scene entity's mesh model ignores the entity's own stamp and `frame_locked`: it is placed at the cursor, unlike
+  the entity's primitives.
 - Mixed-dataset dock restore: two loaded datasets with the same source and path are told apart only by a topic-name
   tiebreak, so the load order can still choose; a dock state naming one live dataset with two attribute sets reads as
   mixed; the robot-description selector and a pose trail's topic stay outside the one-dataset gate.
