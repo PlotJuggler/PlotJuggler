@@ -58,6 +58,10 @@ struct MarkerBounds {
   bool valid = false;
 };
 
+// Most groups one batch may place at its entities' own stamps: each costs one placement per rendered frame. A batch
+// with more distinct (frame, stamp) pairs is grouped by frame alone and placed at the cursor.
+inline constexpr std::uint32_t kMaxMarkerStampGroups = 256;
+
 struct MarkerGeometry {
   std::vector<std::string> frames;
   // Parallel to `frames`: the entities' own stamp (as in the payload, before any merge shift), or 0 for entities

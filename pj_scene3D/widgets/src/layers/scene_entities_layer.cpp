@@ -338,9 +338,6 @@ std::optional<PJ::Timepoint> SceneEntitiesLayer::markerStamp(std::size_t index) 
 }
 
 PlacementHold* SceneEntitiesLayer::markerPlacementHold(std::size_t index) const {
-  if (marker_holds_.size() <= index) {
-    marker_holds_.resize(index + 1);
-  }
   return &marker_holds_[index];
 }
 
@@ -995,7 +992,7 @@ void SceneEntitiesLayer::onDecodeFinished(DecodeResult result) {
     setBatchWarning(std::move(result.built.error));
   } else {
     geometry_ = std::move(result.built.geometry);
-    marker_holds_.clear();
+    marker_holds_.assign(geometry_.frames.size(), {});
     ++geometry_revision_;
     setBatchWarning({});
   }

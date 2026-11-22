@@ -60,8 +60,9 @@ struct SceneContributions {
   MeshMapLayer* mesh_map = nullptr;
 };
 
-// Folds a transform's 16 bit patterns (float or double) into an in-process key (FNV-1a style). The TF is a zero-order
-// hold, so keys change only when the pose moves: a 60 Hz playhead coalesces repaints down to the TF update rate.
+// Folds a transform's 16 bit patterns (float or double) into an in-process key (FNV-1a style). The key changes only
+// when the pose moves: with held TF lookups a 60 Hz playhead coalesces repaints down to the TF update rate, with
+// interpolated ones a moving frame repaints on every tick.
 template <typename T>
 [[nodiscard]] uint64_t foldTransformIntoKey(uint64_t key, const glm::mat<4, 4, T>& transform) {
   for (int col = 0; col < 4; ++col) {
@@ -176,16 +177,9 @@ class Scene3DLayer : public PJ::ISceneLayer {
   void onWarningChanged() override {
     emit statusWarningChanged();
   }
-  // For a layer that prepares its object on a worker, called whenever the drawn object or the cursor changes:
-  // `is_current` says whether the layer draws the object the cursor asks for, `cursor` is the cursor just resolved
-  // (omitted when only the drawn object changed). While the layer still draws the previous object, that one keeps the
-  // placement of the last cursor it was current at (PlacementHold::cursor).
-  void noteDrawnObject(bool is_current, std::optional<PJ::Timepoint> cursor = std::nullopt);
 
  private:
   std::unique_ptr<PlacementHold> placement_hold_;  // never null
-  std::optional<PJ::Timepoint> resolved_cursor_;   // the last cursor noteDrawnObject() was given
-  std::optional<PJ::Timepoint> drawn_current_at_;  // the last cursor the drawn object was current at
 };
 
 }  // namespace pj::scene3d

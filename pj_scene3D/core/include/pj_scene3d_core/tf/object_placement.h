@@ -43,10 +43,6 @@ struct PlacementHold {
   std::string source;
   TimePoint stamp{};
   Transform anchor_from_source;
-  // Set by a layer that still draws an object the cursor has left, because its successor is not drawable yet (it is
-  // decoding on a worker): the last cursor the drawn object was current at. placeObject() places it at that cursor,
-  // so it stays where it was drawn; placed at the new cursor it would jump by the fixed frame's motion until replaced.
-  std::optional<TimePoint> cursor;
 };
 
 // fixed<-source for an object stamped `object_stamp`, composed through the anchor: the
@@ -57,10 +53,7 @@ struct PlacementHold {
 //  - with the tree's root as the fixed frame this is the header-clock lookup at the
 //    stamp: a scan stays where it was captured in the world;
 //  - in a fixed frame on a moving body, an object measured on that body (a scan in
-//    the lidar frame seen from base_link) stays where it was measured on the body.
-//    Composed through the root instead, it slid back by the body's motion between
-//    its stamp and the cursor, in steps at the TF rate, and jumped forward at each
-//    new scan;
+//    the lidar frame seen from base_link) stays where it was measured on the body;
 //  - an object in a frame outside that body (a map-frame plan seen from base_link)
 //    stays put in the world and moves in the view as the body moves.
 //
@@ -71,20 +64,16 @@ struct PlacementHold {
 // kMaxStampPastTf past the newest one; such an object stays visible where the cursor
 // puts it. `hold` (nullable) keeps the last anchor<-source placed: when live TF has
 // since evicted the sample at that same stamp, it is reused instead of the fallback,
-// so a stopped scan does not jump. A hold with a `cursor` replaces the cursor by it.
-// Everything that places one layer (drawing, scene bounds, render keys) passes that
-// layer's hold, so they agree.
+// so a stopped scan does not jump. Everything that places one layer (drawing, scene
+// bounds, render keys) passes that layer's hold, so they agree.
 [[nodiscard]] inline std::optional<Transform> placeObject(
     const TransformBuffer& tf, const std::string& fixed, const std::string& source,
     std::optional<TimePoint> object_stamp, TimePoint cursor, PlacementHold* hold = nullptr) {
   using pj::tf::Clock;
   using pj::tf::LookupError;
-  if (hold != nullptr && hold->cursor.has_value()) {
-    cursor = *hold->cursor;
-  }
   // Without a shared frame the lookup at the cursor below fails the same way.
   if (std::optional<std::string> anchor; object_stamp.has_value() && (anchor = tf.commonAncestor(fixed, source))) {
-    if (const auto fixed_from_anchor = tf.tryLookupTransform(fixed, *anchor, cursor, Clock::kEntry, viewSampling())) {
+    if (const auto fixed_from_anchor = frameAtCursor(tf, fixed, *anchor, cursor)) {
       const auto anchor_from_source =
           tf.tryLookupTransform(*anchor, source, *object_stamp, Clock::kHeader, viewSampling());
       if (anchor_from_source) {
@@ -94,10 +83,7 @@ struct PlacementHold {
             newest.has_value() && *newest != TimePoint{} && *object_stamp > *newest + kMaxStampPastTf;
         if (!past_the_tf) {
           if (hold != nullptr) {
-            hold->anchor = *anchor;
-            hold->source = source;
-            hold->stamp = *object_stamp;
-            hold->anchor_from_source = *anchor_from_source;
+            *hold = PlacementHold{*anchor, source, *object_stamp, *anchor_from_source};
           }
           return *fixed_from_anchor * *anchor_from_source;
         }
@@ -108,7 +94,7 @@ struct PlacementHold {
       }
     }
   }
-  const auto at_cursor = tf.tryLookupTransform(fixed, source, cursor, Clock::kEntry, viewSampling());
+  const auto at_cursor = frameAtCursor(tf, fixed, source, cursor);
   return at_cursor ? std::optional<Transform>(*at_cursor) : std::nullopt;
 }
 

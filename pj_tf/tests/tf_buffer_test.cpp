@@ -381,17 +381,6 @@ TEST(TransformBufferTest, AreConnectedReportsReachability) {
   EXPECT_FALSE(buffer.areConnected("map", "ghost"));  // unknown frame
 }
 
-TEST(TransformBufferTest, RootOfWalksToTheTopmostAncestor) {
-  TransformBuffer buffer;
-  (void)buffer.setTransform(makeStamped("map", "odom", tp(10ns), makeTranslation(1.0)));
-  (void)buffer.setTransform(makeStamped("odom", "base", tp(10ns), makeTranslation(1.0)));
-
-  EXPECT_EQ(buffer.rootOf("base"), "map");
-  EXPECT_EQ(buffer.rootOf("odom"), "map");
-  EXPECT_EQ(buffer.rootOf("map"), "map");
-  EXPECT_EQ(buffer.rootOf("ghost"), "ghost") << "an unknown frame is its own root";
-}
-
 // x = 0 stamped 100 (logged 150), x = 10 stamped 200 (logged 250).
 TEST(TransformBufferSampling, InterpolatesBetweenTwoSamplesInEitherClock) {
   using pj::tf::Sampling;
@@ -443,6 +432,26 @@ TEST(TransformBufferSampling, ARepeatedValueIsHeldUntilItsLastRepeat) {
   EXPECT_EQ(x(350, Sampling::kInterpolate), 5.0);
   EXPECT_EQ(x(350, Sampling::kHold), 0.0);
   EXPECT_EQ(x(400, Sampling::kHold), 10.0);
+}
+
+// The sample stamped 300 is logged at 150, before the one stamped 200 (logged at 160): from entry time 150 on the
+// recording knew the 300 one, so both share the entry key 150 and an entry-clock lookup before it moves towards
+// x = 30, the value it reads from 150 on.
+TEST(TransformBufferSampling, EntryClockInterpolationAimsAtTheSampleKnownFromTheSharedKey) {
+  using pj::tf::Sampling;
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(100ns), makeTranslation(0.0)), tp(100ns)).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(300ns), makeTranslation(30.0)), tp(150ns)).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(200ns), makeTranslation(20.0)), tp(160ns)).has_value());
+  const auto x = [&](int64_t time) {
+    return buffer
+        .lookupTransform("map", "base", tp(std::chrono::nanoseconds(time)), Clock::kEntry, Sampling::kInterpolate)
+        .t.x;
+  };
+  EXPECT_EQ(x(125), 15.0) << "half way to the value read at 150, not to the one stamped 200";
+  EXPECT_EQ(x(150), 30.0);
+  EXPECT_EQ(buffer.lookupTransform("map", "base", tp(250ns), Clock::kHeader, Sampling::kInterpolate).t.x, 25.0)
+      << "the header clock still passes through the 200 sample";
 }
 
 TEST(TransformBufferTest, CommonAncestorIsTheNearestSharedFrame) {

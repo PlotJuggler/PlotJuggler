@@ -9,7 +9,6 @@
 #include <QImage>
 #include <QImageReader>
 #include <QLoggingCategory>
-#include <QScopeGuard>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <bit>
@@ -518,8 +517,6 @@ void DepthCloudLayer::renderAt(int64_t time_ns) {
   if (ctx_.session == nullptr) {
     return;
   }
-  // On every way out: a sample still being projected leaves the previous cloud drawn.
-  const auto note_drawn = qScopeGuard([this, time_ns] { noteDrawnObject(pushed_ == wanted_, PJ::fromRaw(time_ns)); });
   PJ::ObjectStore& store = ctx_.session->objectStore();
   // Sample-memo predicate shared by the metadata-first gate and the post-resolve re-check: the depth sample under the
   // calibration at the playhead is already drawn or (QRhi) being projected. The calibration half keeps a
@@ -738,7 +735,6 @@ void DepthCloudLayer::onBackprojectFinished(BackprojectResult result) {
     return;
   }
   pushed_ = result.key;
-  noteDrawnObject(/*is_current=*/true);
   if (!result.error.isEmpty()) {
     clearGeometry();
     setDataWarning(result.error);

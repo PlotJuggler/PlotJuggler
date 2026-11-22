@@ -281,7 +281,7 @@ class SceneEntitiesLayer : public Scene3DLayer, public ModelRenderable {
   std::optional<std::int64_t> shown_store_ns_;
   // One placement hold per entity frame (placementHoldFor): a finding drawn in several frames.
   mutable std::map<std::string, PlacementHold, std::less<>> frame_holds_;
-  // One placement hold per group of geometry_ (markerPlacementHold), dropped with the geometry they placed.
+  // One placement hold per group of geometry_ (markerPlacementHold), replaced with the geometry they placed.
   mutable std::vector<PlacementHold> marker_holds_;
   // payload_stamp_shift of the entry the marker batch came from: puts the entities' own stamps on the dataset clock.
   PJ::Timestamp marker_stamp_shift_ = 0;

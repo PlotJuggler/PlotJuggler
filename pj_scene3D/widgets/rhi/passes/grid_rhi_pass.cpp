@@ -169,7 +169,13 @@ void GridRhiPass::build(
   }
 
   ConnectionKey connection_key{
-      settings.connections_visible, tf, tf != nullptr ? tf->revision() : 0U, fixed_frame, time, render_origin};
+      settings.connections_visible,
+      tf,
+      tf != nullptr ? tf->revision() : 0U,
+      viewSampling(),
+      fixed_frame,
+      time,
+      render_origin};
   if (connection_key_ != connection_key) {
     connection_key_ = std::move(connection_key);
     connection_vertices_.clear();

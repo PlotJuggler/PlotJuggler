@@ -340,9 +340,6 @@ constexpr bool kCompressedPointClouds = true;
   return image != nullptr && pj::scene3d::isDepthEncoding(image->encoding);
 }
 
-}  // namespace
-
-namespace {
 const QString kInterpolateTransformsKey = QStringLiteral("Scene3D/interpolateTransforms");
 
 void applyInterpolateTransforms(bool interpolate) {

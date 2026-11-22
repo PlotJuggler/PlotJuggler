@@ -157,6 +157,27 @@ TEST(MarkerGeometryTest, GroupsEntitiesByFrameAndPlacementStamp) {
   EXPECT_EQ(groups, (std::vector<std::uint32_t>{0, 0, 1, 2, 2, 3}));
 }
 
+// A batch with more distinct stamps than the view can place per frame is grouped by frame alone and placed at the
+// cursor, as every batch was before entities used their stamps: it is still drawn.
+TEST(MarkerGeometryTest, TooManyDistinctStampsFallBackToOneGroupPerFrame) {
+  PJ::sdk::SceneEntities batch;
+  for (std::uint32_t index = 0; index < 2U * pj::scene3d::kMaxMarkerStampGroups; ++index) {
+    PJ::sdk::SceneEntity entity;
+    entity.frame_id = index % 2U == 0U ? "base" : "map";
+    entity.timestamp_ns = 1000 + index;
+    PJ::sdk::CubePrimitive cube;
+    cube.pose.orientation.w = 1.0;
+    cube.size = {1.0, 1.0, 1.0};
+    entity.cubes.push_back(cube);
+    batch.entities.push_back(std::move(entity));
+  }
+  const auto result = buildMarkerGeometry(batch);
+  ASSERT_TRUE(result.error.isEmpty()) << result.error.toStdString();
+  EXPECT_EQ(result.geometry.frames, (std::vector<std::string>{"base", "map"}));
+  EXPECT_EQ(result.geometry.frame_stamps, (std::vector<PJ::Timestamp>{0, 0}));
+  EXPECT_EQ(result.geometry.cubes.size(), 2U * pj::scene3d::kMaxMarkerStampGroups);
+}
+
 // Frames are numbered in order of first appearance, and every primitive points
 // at its entity's frame, with thousands of frames each repeated. The build time
 // is printed for the interning cost (not asserted: sanitizer and debug lanes run

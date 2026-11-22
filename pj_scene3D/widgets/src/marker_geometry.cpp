@@ -81,18 +81,21 @@ struct Preflight {
   std::unordered_map<std::string, std::uint32_t> frame_index;
   std::vector<std::string> frame_ids;
   std::vector<PJ::Timestamp> frame_stamps;
+  std::vector<std::uint32_t> entity_group;  ///< each entity's group index, in entity order
+  bool too_many_stamp_groups = false;
   QString error;
 };
 
-// The stamp an entity is placed at: its own, or 0 (the cursor) when it has none or is frame-locked.
-PJ::Timestamp placementStamp(const PJ::sdk::SceneEntity& entity) {
-  return entity.frame_locked ? 0 : entity.timestamp_ns;
+// The stamp an entity is placed at: its own, or 0 (the cursor) when it has none, is frame-locked, or the batch is
+// not grouped by stamp.
+PJ::Timestamp placementStamp(const PJ::sdk::SceneEntity& entity, bool by_stamp) {
+  return by_stamp && !entity.frame_locked ? entity.timestamp_ns : 0;
 }
 
 // Entities with the same key share one placement: the same frame and the same placement stamp.
-std::string groupKey(const PJ::sdk::SceneEntity& entity) {
+std::string groupKey(const PJ::sdk::SceneEntity& entity, bool by_stamp) {
   std::string key = entity.frame_id;
-  if (const PJ::Timestamp stamp = placementStamp(entity); stamp != 0) {
+  if (const PJ::Timestamp stamp = placementStamp(entity, by_stamp); stamp != 0) {
     key += '\0';
     key += std::to_string(stamp);
   }
@@ -112,19 +115,27 @@ std::uint64_t lineExpandedVertexCount(const PJ::sdk::LinePrimitive& line) {
   return 0U;
 }
 
-Preflight preflight(const PJ::sdk::SceneEntities& scene) {
+// `by_stamp` groups entities by frame and placement stamp, else by frame alone; `too_many_stamp_groups` is set, and
+// the count abandoned, once a by-stamp count passes kMaxMarkerStampGroups.
+Preflight preflight(const PJ::sdk::SceneEntities& scene, bool by_stamp) {
   Preflight output;
   auto& frames = output.frame_index;
   for (const PJ::sdk::SceneEntity& entity : scene.entities) {
-    const bool inserted = frames.try_emplace(groupKey(entity), static_cast<std::uint32_t>(frames.size())).second;
+    const auto [group, inserted] =
+        frames.try_emplace(groupKey(entity, by_stamp), static_cast<std::uint32_t>(frames.size()));
+    output.entity_group.push_back(group->second);
+    if (by_stamp && frames.size() > kMaxMarkerStampGroups) {
+      output.too_many_stamp_groups = true;
+      return output;
+    }
     if (inserted) {
       output.frame_ids.push_back(entity.frame_id);
-      output.frame_stamps.push_back(placementStamp(entity));
+      output.frame_stamps.push_back(placementStamp(entity, by_stamp));
       output.frame_string_bytes = saturatedAdd(output.frame_string_bytes, saturatedAdd(entity.frame_id.size(), 1U));
     }
     if (frames.size() > kSceneLimits.max_marker_frames_per_layer) {
       output.frames = frames.size();
-      output.error = QObject::tr("SceneEntities exceeds the limit of %1 distinct frames and stamps")
+      output.error = QObject::tr("SceneEntities exceeds the limit of %1 distinct frames")
                          .arg(kSceneLimits.max_marker_frames_per_layer);
       return output;
     }
@@ -257,7 +268,10 @@ void appendSolid(
 MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
   MarkerGeometryResult result;
   try {
-    Preflight counts = preflight(scene);
+    Preflight counts = preflight(scene, /*by_stamp=*/true);
+    if (counts.too_many_stamp_groups) {
+      counts = preflight(scene, /*by_stamp=*/false);
+    }
     if (!counts.error.isEmpty()) {
       result.error = counts.error;
       return result;
@@ -274,8 +288,9 @@ MarkerGeometryResult buildMarkerGeometry(const PJ::sdk::SceneEntities& scene) {
     geometry.lines.reserve(static_cast<std::size_t>(counts.line_batches));
     geometry.triangles.reserve(static_cast<std::size_t>(counts.triangle_batches));
 
-    for (const PJ::sdk::SceneEntity& entity : scene.entities) {
-      const std::uint32_t frame_index = counts.frame_index.find(groupKey(entity))->second;
+    for (std::size_t entity_index = 0; entity_index < scene.entities.size(); ++entity_index) {
+      const PJ::sdk::SceneEntity& entity = scene.entities[entity_index];
+      const std::uint32_t frame_index = counts.entity_group[entity_index];
       MarkerBounds& bounds = geometry.frame_bounds[frame_index];
 
       for (const PJ::sdk::CubePrimitive& cube : entity.cubes) {

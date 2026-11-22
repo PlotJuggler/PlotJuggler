@@ -84,10 +84,10 @@
     {
       "id": "scene_3d",
       "name": "3D scene",
-      "summary": "Show 3D data in step with the time cursor: coordinate frames (TF), point clouds, occupancy grids, robot models (URDF and meshes) and markers.",
+      "summary": "Show 3D data in step with the time cursor: coordinate frames (TF), point clouds, occupancy grids, robot models (URDF and meshes) and markers. Frames move smoothly between two transform samples; Preferences → Scene 3D → Interpolate transforms between samples turns that off.",
       "entry_point": "Empty plot area: click the 3D button (cube icon), then drag 3D topics from the Datasets panel onto it; right-click the scene and choose Open Settings for its settings",
-      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizScene3D; pj_scene3D/CLAUDE.md#occupancy grids; pj_plotting/widget/src/DockWidget.cpp#Open Settings",
-      "verified": "2026-10-21 in-app on release-4.1 e275111c: the button and its tooltip; the drag onto it not automated"
+      "evidence": "pj_widgets/src/VisualizationPlaceholderWidget.cpp#buttonVizScene3D; pj_scene3D/CLAUDE.md#occupancy grids; pj_plotting/widget/src/DockWidget.cpp#Open Settings; pj_app/src/PreferencesDialog.ui#Interpolate transforms between samples:",
+      "verified": "2026-10-21 in-app on release-4.1 e275111c: the button and its tooltip; the drag onto it not automated; the interpolation toggle 2026-11-22 against PreferencesDialog.ui, not checked in-app"
     },
     {
       "id": "robot_packages",

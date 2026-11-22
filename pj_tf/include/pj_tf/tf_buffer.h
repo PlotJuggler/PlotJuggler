@@ -231,10 +231,6 @@ class TransformBuffer {
   // time. Connectivity only, cheaper than latestCommonTime.
   [[nodiscard]] bool areConnected(const std::string& target, const std::string& source) const;
 
-  // The topmost ancestor of `frame`, or `frame` itself when it has no parent or is unknown; two connected frames
-  // share it. In a parent cycle, the last frame reached before the walk repeats.
-  [[nodiscard]] std::string rootOf(const std::string& frame) const;
-
   // The nearest frame both `a` and `b` descend from (either of them when one is the other's ancestor, `a` when they
   // are the same frame), or nullopt when they are not connected.
   [[nodiscard]] std::optional<std::string> commonAncestor(const std::string& a, const std::string& b) const;

@@ -169,6 +169,17 @@ All on Intel Iris Xe (RPL-P), Mesa 26, unless a row names another GPU.
   `endOffscreenFrame()` against 1000000 × 16. Owned arrays are padded past 64 KiB to a 64 KiB multiple
   (`PJ::padForUpload()`); unpadded ones upload as two copies (`PJ::uploadStaticBufferInPieces()`); model meshes
   upload into Immutable buffers, one copy each, so an awkward size still pays once. Re-test on a newer Mesa.
+- **Placement through the nearest shared frame.** Stamped objects were first composed through the root of the TF
+  tree (`fixed <- root` at the cursor times `root <- source` at the stamp). Seen with that rule on an 8 s PandaSet
+  sequence (Cloudini clouds at 10 Hz, fixed frame `base_link`, the car at 23-46 km/h, desktop, playback at 1x):
+  a cloud still on screen while its successor decoded on the worker was placed against the car's pose at the new
+  cursor, 0.63-0.77 m behind (one sweep of travel), on 158 of 372 rendered frames (software rendering under Xvfb;
+  on 10 of 18 sweeps in a 30 fps screen recording on an Iris Xe). With the car's pose resampled to 50 Hz, a scan
+  was seen to slide back between sweeps and jump forward at the next one (by eye, not measured). Composed through
+  the nearest frame the fixed and the source frame share, the placement of a scan in a frame on the car does not
+  depend on the cursor: on the same playback 0 of 386 rendered frames were displaced, 156 of which still drew the
+  previous sweep's cloud while the next one decoded. Re-test if placement goes back through a frame above the
+  shared one.
 - **First upload Immutable:** a 10M static cloud's DRM total dropped from 684 to 428 MiB on Vulkan, which frees an
   Immutable buffer's staging and keeps a Static one's.
 

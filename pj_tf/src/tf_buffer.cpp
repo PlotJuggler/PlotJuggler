@@ -195,8 +195,14 @@ std::optional<Transform> TransformSnapshot::sampleAt(
   }
   // key(held) <= time < key(*hi), so the span is positive.
   const auto from = EdgeHistory::key(held, clock);
-  const double fraction = std::chrono::duration<double>(time - from).count() /
-                          std::chrono::duration<double>(EdgeHistory::key(*hi, clock) - from).count();
+  const auto to = EdgeHistory::key(*hi, clock);
+  // Samples that arrived out of stamp order share one entry key, and a lookup at that key reads the last of them:
+  // that one is the value to move towards, or the pose would step when the key is reached.
+  while (std::next(hi) != history.samples.end() && EdgeHistory::key(*std::next(hi), clock) == to) {
+    ++hi;
+  }
+  const double fraction =
+      std::chrono::duration<double>(time - from).count() / std::chrono::duration<double>(to - from).count();
   return Transform{glm::mix(held.value.t, hi->value.t, fraction), glm::slerp(held.value.q, hi->value.q, fraction)};
 }
 
@@ -307,15 +313,7 @@ PJ::Expected<Transform, LookupError> TransformBuffer::tryLookupTransform(
 }
 
 bool TransformBuffer::areConnected(const std::string& target, const std::string& source) const {
-  if (target == source) {
-    return true;
-  }
-  std::shared_lock lock(parents_mutex_);
-  static thread_local std::vector<ChainHop> tgt_chain;
-  static thread_local std::vector<ChainHop> src_chain;
-  current_->chainToRoot(target, tgt_chain);
-  current_->chainToRoot(source, src_chain);
-  return TransformSnapshot::findCommonAncestor(src_chain, tgt_chain).found;
+  return commonAncestor(target, source).has_value();
 }
 
 std::optional<std::string> TransformBuffer::commonAncestor(const std::string& a, const std::string& b) const {
@@ -329,13 +327,6 @@ std::optional<std::string> TransformBuffer::commonAncestor(const std::string& a,
   current_->chainToRoot(b, b_chain);
   const TransformSnapshot::MeetPoint meet = TransformSnapshot::findCommonAncestor(a_chain, b_chain);
   return meet.found ? std::optional<std::string>(a_chain[meet.src_k].frame) : std::nullopt;
-}
-
-std::string TransformBuffer::rootOf(const std::string& frame) const {
-  std::shared_lock lock(parents_mutex_);
-  static thread_local std::vector<ChainHop> chain;
-  current_->chainToRoot(frame, chain);
-  return chain.back().frame;
 }
 
 std::optional<TimePoint> TransformBuffer::latestCommonTime(

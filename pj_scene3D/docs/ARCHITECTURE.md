@@ -19,16 +19,15 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
   source frame share (`fixed <- anchor` at the cursor times `anchor <- source` at the stamp;
   `core/tf/object_placement.h::placeObject`). With the root as the fixed frame a scan stays where it was captured in
   the world. With a fixed frame on a moving body, a map-frame object stays put in the world, and a scan measured on
-  that body stays where it was measured on the body: composed through the root it slid back by the body's motion
-  since its stamp, in steps at the TF rate, and jumped forward at each new scan (seen with a 10 Hz lidar under 50 Hz
-  odometry). An unstamped object, one stamped before the
+  that body stays where it was measured on the body (TECHNICAL_NOTES "Placement through the nearest shared frame").
+  An unstamped object, one stamped before the
   first TF on its chain or more than `kMaxStampPastTf` past the newest falls back to the cursor; a placed object
-  whose TF sample live retention has evicted keeps its last placement (`PlacementHold`). A cloud the cursor has left
-  while its successor is still being prepared on a worker (a compressed decode, a depth back-projection) keeps the
-  placement of the last cursor it was current at (`Scene3DLayer::noteDrawnObject`), so in a moving fixed frame it
-  does not jump by the frame's motion for the frames the worker takes. A SceneEntities entity
+  whose TF sample live retention has evicted keeps its last placement (`PlacementHold`). A cloud still drawn while
+  its successor is prepared on a worker (a compressed decode, a depth back-projection) is placed by the same rule,
+  at its own stamp: it stays where it was measured for the frames the worker takes. A SceneEntities entity
   is placed at its own stamp unless it has none or sets `frame_locked`, which keeps it moving with its frame (the
-  marker geometry groups entities by frame and placement stamp, `MarkerGeometry::frame_stamps`); an entity's mesh
+  marker geometry groups entities by frame and placement stamp, `MarkerGeometry::frame_stamps`; a batch with more
+  than `kMaxMarkerStampGroups` groups is grouped by frame alone and placed at the cursor); an entity's mesh
   model is placed at the cursor. Every other layer (occupancy grid, mesh map, robot model) and the TF overlay are
   placed at the tracker time in the entry clock. There is no per-layer toggle. The per-consumer table is in
   `docs/derived_objects/ARCHITECTURE.md` "TF".
@@ -79,7 +78,8 @@ dataset, owned by `pj_runtime`'s `TransformService` and shared (`shared_ptr`) by
   lines, follow camera, render keys) reads `viewSampling()` (`core/tf/view_sampling.h`), set by Preferences > Scene 3D
   > "Interpolate transforms between samples", on by default. Holding places an object stamped between two TF samples
   at the earlier pose, off by the frame's speed times the time since that sample, and moves frames in steps at the
-  TF rate; the frame trail samples at stored sample times and is the same either way.
+  TF rate. The frame trail always holds: its points sit at stored sample times, where a chain with one moving edge
+  reads the same either way, and a held point never changes after the live append wrote it.
 - An in-order sample equal to the edge's last is not stored, but its stamp still bounds `latestCommonTime` and
   eviction, so a fixed joint republished at 100 Hz resolves across the window as if every repeat were kept.
 - Thread-safe for concurrent ingest and render readers without external locking; a non-throwing lookup for the
@@ -917,6 +917,9 @@ each has a panel row, and clicking it binds the Settings host to the layer's con
 
 - Paths, laser scans and a camera image/frustum view are not implemented; nor are heading/pose follow, saved views,
   camera sync across docks.
+- An interpolating lookup blends any two consecutive samples of an edge, however far apart: a frame republished
+  rarely with a new value (a recalibrated mount) glides from one to the other over the whole gap. tf2 has no history
+  for a static transform and would step.
 - A SceneEntities mesh model is placed at the cursor, not at its entity's stamp like the entity's primitives: with TF
   faster than the entities, a model and a primitive of one entity drift apart in a world-fixed frame.
 - Movable URDF joints are not articulated from `JointState`; `axis`, `limit` and `mimic` are not parsed.
