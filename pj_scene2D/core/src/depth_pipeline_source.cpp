@@ -25,34 +25,34 @@ namespace PJ {
 
 namespace {
 
-[[nodiscard]] std::optional<float> read16UC1(const uint8_t* src) noexcept {
-  const auto mm = static_cast<uint16_t>(src[0]) | (static_cast<uint16_t>(src[1]) << 8);
-  if (mm == 0) {
-    return std::nullopt;
+// Wire samples to metres, an invalid sample to 0. One loop per encoding, branch-free: a reader called through a
+// pointer for every pixel cannot be vectorized.
+void metersFrom16UC1(const uint8_t* src, float* out, size_t count) noexcept {
+  for (size_t i = 0; i < count; ++i) {
+    const auto mm = static_cast<uint16_t>(src[2 * i] | (src[2 * i + 1] << 8));
+    out[i] = static_cast<float>(mm) * 0.001f;  // 0 mm, the no-data value, stays 0
   }
-  return static_cast<float>(mm) * 0.001f;
 }
 
-[[nodiscard]] std::optional<float> read32FC1(const uint8_t* src) noexcept {
-  float meters = 0.0f;
-  std::memcpy(&meters, src, sizeof(float));
-  if (!isValidDepth(meters)) {
-    return std::nullopt;
+void metersFrom32FC1(const uint8_t* src, float* out, size_t count) noexcept {
+  for (size_t i = 0; i < count; ++i) {
+    float meters = 0.0f;
+    std::memcpy(&meters, src + i * sizeof(float), sizeof(float));
+    out[i] = isValidDepth(meters) ? meters : 0.0f;
   }
-  return meters;
 }
 
 struct DepthFormat {
   size_t bytes_per_pixel = 0;
-  std::optional<float> (*read)(const uint8_t*) noexcept = nullptr;
+  void (*to_meters)(const uint8_t* src, float* out, size_t count) noexcept = nullptr;
 };
 
 [[nodiscard]] std::optional<DepthFormat> resolveDepthFormat(std::string_view encoding) noexcept {
   if (encoding == "16UC1") {
-    return DepthFormat{2, &read16UC1};
+    return DepthFormat{2, &metersFrom16UC1};
   }
   if (encoding == "32FC1") {
-    return DepthFormat{4, &read32FC1};
+    return DepthFormat{4, &metersFrom32FC1};
   }
   return std::nullopt;
 }
@@ -315,10 +315,7 @@ std::optional<DecodedFrame> DepthPipelineSource::decodeDepthImage(const sdk::Dep
 
   // Invalid samples become 0, which the shader draws transparent.
   auto pixels = std::make_shared<std::vector<uint8_t>>(pixel_count * sizeof(float), 0);
-  auto* out = reinterpret_cast<float*>(pixels->data());
-  for (size_t i = 0; i < pixel_count; ++i) {
-    out[i] = format->read(depth.data.data() + i * bytes_per_pixel).value_or(0.0f);
-  }
+  format->to_meters(depth.data.data(), reinterpret_cast<float*>(pixels->data()), pixel_count);
 
   DecodedFrame frame;
   frame.pixels = std::move(pixels);
