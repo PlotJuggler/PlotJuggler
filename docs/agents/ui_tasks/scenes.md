@@ -29,7 +29,8 @@ In the right panel: "Layers" (2D) or "Topics" (3D) lists one row per layer.
   "Apply these parameters to all topics of the same type" share one layer's settings.
 - **Status:** a row's tooltip shows a warning such as `Frame '<frame>' is not connected to fixed frame '<fixed>'`; a
   derived layer may read "computing…".
-- **MCP:** `scene_view` `"detach"` on the agent's view; settings are UI only.
+- **MCP:** `scene_view` `"detach"` on the agent's view. A layer's settings, in any scene dock, the user's too:
+  `widget_state` `get` (the dock's XML and the values each attribute accepts), then `set` with the edited element.
 
 ## 2D view: images, video, depth
 
@@ -62,7 +63,8 @@ on the ground plane), "Fly", "Top-down ortho".
   "Follow this frame".
 - **Trail of a frame's motion:** right-click a frame → "Create trail for '<frame>'", or "Transforms and RobotModel" →
   "Create Trail" ("TF frame whose motion trail to draw") and "Add a motion trail for the selected frame".
-- **MCP:** UI only for camera, fixed frame and trails. `evaluate` with `pj.tf.lookup` reads a transform as numbers
+- **MCP:** camera and fixed frame through `widget_state` (`fixed_frame`, `camera_model`, `camera_state` on the
+  `<scene3d>` element); trails from the UI. `evaluate` with `pj.tf.lookup` reads a transform as numbers
   ([scripting.md](../scripting.md), "On-demand object scripts").
 
 ## 3D view: scene settings
@@ -75,7 +77,7 @@ The right panel, above the layer list:
   "Frames opacity" with "Show/hide the TF frames", "Model/URDF" ("File", "Topic", "URL") with "Add a robot model from
   the selected source", one row per loaded model with "Remove this robot model", "Meshes opacity" ("Show/hide visual
   meshes"), "Collision opacity" ("Show/hide collision meshes"), "Create Trail".
-- **MCP:** UI only.
+- **MCP:** `widget_state` on the dock: the grid, frames and mesh settings are attributes of `<scene_controls>`.
 
 ## Add a robot model (URDF)
 
@@ -105,5 +107,5 @@ Per-layer settings, selected in the "Topics" list:
 - **Colour a cloud by a field:** "Color type:" → "Field: intensity" (or another field), a colormap in "Color config:",
   "Range:" auto or "Range Min:" / "Range Max:".
 - **MCP:** `create_derived_object` builds clouds, voxels and scene entities from scripts
-  ([scripting.md](../scripting.md)); layer settings are UI only. `evaluate` with cloud ops (`count`, `bounds`,
+  ([scripting.md](../scripting.md)); layer settings through `widget_state` on the dock. `evaluate` with cloud ops (`count`, `bounds`,
   `crop_box`, ...) answers questions about a cloud without drawing it.

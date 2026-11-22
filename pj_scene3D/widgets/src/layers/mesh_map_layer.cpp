@@ -110,28 +110,40 @@ QDomElement MeshMapLayer::xmlSaveState(QDomDocument& doc) const {
   return el;
 }
 
-bool MeshMapLayer::xmlLoadState(const QDomElement& element) {
+std::optional<MeshMapLayer::ParsedSettings> MeshMapLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "mesh_map"_L1 || !detail::isLeafPayload(element)) {
-    return false;
+    return std::nullopt;
   }
-  const auto coloring = ChannelColoring::parseXml(element);
-  bool lighting = true;
-  double opacity = 1.0;
-  bool links = true;
-  if (!coloring.has_value() || !detail::parseZeroOne(element, "lighting", true, lighting) ||
-      !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, opacity) ||
-      !detail::parseZeroOne(element, "links", true, links)) {
-    return false;
-  }
-  // The request is restored verbatim: a missing channel falls back at render time and is honoured again once a map
+  ParsedSettings settings;
+  // The request is kept verbatim: a missing channel falls back at render time and is honoured again once a map
   // carrying it arrives.
-  setColorBy(element.attribute(u"color_by"_s));
-  setColormap(coloring->colormap());
-  setAutoRange(coloring->autoRange());
-  setManualRange(coloring->manualRange().first, coloring->manualRange().second);
-  setLighting(lighting);
-  setOpacity(opacity);
-  setShowLinks(links);
+  settings.color_by = PJ::readXmlText(element, u"color_by"_s);
+  auto coloring = ChannelColoring::parseXml(element);
+  if (!coloring.has_value() || !detail::readZeroOne(element, u"lighting"_s, true, settings.lighting) ||
+      !PJ::readXmlDouble(element, u"opacity"_s, 1.0, 0.0, 1.0, settings.opacity) ||
+      !detail::readZeroOne(element, u"links"_s, true, settings.links)) {
+    return std::nullopt;
+  }
+  settings.coloring = *coloring;
+  return settings;
+}
+
+bool MeshMapLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
+}
+
+bool MeshMapLayer::xmlLoadState(const QDomElement& element) {
+  const std::optional<ParsedSettings> settings = parseSettings(element);
+  if (!settings.has_value()) {
+    return false;
+  }
+  setColorBy(settings->color_by);
+  setColormap(settings->coloring.colormap());
+  setAutoRange(settings->coloring.autoRange());
+  setManualRange(settings->coloring.manualRange().first, settings->coloring.manualRange().second);
+  setLighting(settings->lighting);
+  setOpacity(settings->opacity);
+  setShowLinks(settings->links);
   return true;
 }
 

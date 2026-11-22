@@ -69,11 +69,17 @@ void ChannelColoring::saveXml(QDomElement& element) const {
 std::optional<ChannelColoring> ChannelColoring::parseXml(const QDomElement& element) {
   int colormap = 0;
   ChannelColoring out;
-  if (!detail::parseBoundedInt(element, "colormap", 0, 0, PJ::kColormapCount - 1, colormap) ||
-      !detail::parseZeroOne(element, "auto_range", true, out.auto_range_) ||
-      !detail::parseFiniteDouble(element, "range_lo", 0.0, -kManualRangeLimit, kManualRangeLimit, out.manual_lo_) ||
-      !detail::parseFiniteDouble(element, "range_hi", 1.0, -kManualRangeLimit, kManualRangeLimit, out.manual_hi_) ||
-      out.manual_lo_ > out.manual_hi_) {
+  if (!PJ::readXmlInt(element, u"colormap"_s, 0, 0, PJ::kColormapCount - 1, colormap) ||
+      !detail::readZeroOne(element, u"auto_range"_s, true, out.auto_range_) ||
+      !PJ::readXmlDouble(element, u"range_lo"_s, 0.0, -kManualRangeLimit, kManualRangeLimit, out.manual_lo_) ||
+      !PJ::readXmlDouble(element, u"range_hi"_s, 1.0, -kManualRangeLimit, kManualRangeLimit, out.manual_hi_) ||
+      // A bound this large reads as open in the shared reader, so the float-range limit is checked here.
+      !detail::requireConstraint(
+          std::abs(out.manual_lo_) <= kManualRangeLimit, element, "range_lo", "expected a number in float range") ||
+      !detail::requireConstraint(
+          std::abs(out.manual_hi_) <= kManualRangeLimit, element, "range_hi", "expected a number in float range") ||
+      !detail::requireConstraint(
+          out.manual_lo_ <= out.manual_hi_, element, "range_hi", "range_hi must not be below range_lo")) {
     return std::nullopt;
   }
   out.colormap_ = static_cast<PJ::Colormap>(colormap);

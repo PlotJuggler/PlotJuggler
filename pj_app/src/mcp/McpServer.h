@@ -357,6 +357,8 @@ class McpServer : public QObject {
   void addFilter(const nlohmann::json& args, const Caller& caller, Reply reply);
   void removeScriptSeries(const nlohmann::json& args, const Caller& caller, Reply reply);
   void screenshot(const nlohmann::json& args, const Caller& caller, Reply reply);
+  // McpWidgetState.cpp
+  void widgetState(const nlohmann::json& args, const Caller& caller, Reply reply);
 
   MainWindow& window_;
 #ifndef PJ_TARGET_WASM

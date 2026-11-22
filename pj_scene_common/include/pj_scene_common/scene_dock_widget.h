@@ -58,6 +58,9 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
   /// Unresolved saved elements that block an exact restore; advertised-topic intents are durable workspace state
   /// and are excluded.
   [[nodiscard]] QStringList unresolvedBlockingPendingRestores() const;
+  [[nodiscard]] QStringList unresolvedRestores() const override {
+    return unresolvedBlockingPendingRestores();
+  }
   virtual void clearPendingRestores();
   void clearBlockingPendingRestores();
 

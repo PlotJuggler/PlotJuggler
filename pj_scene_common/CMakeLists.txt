@@ -3,10 +3,12 @@ find_package(Qt6 REQUIRED COMPONENTS Core Widgets Xml)
 add_library(pj_scene_common STATIC
   src/layer_factory.cpp
   src/layer_params.cpp
+  src/saved_layer_header.cpp
   src/scene_dock_widget.cpp
   src/scene_layer.cpp
   include/pj_scene_common/layer_factory.h
   include/pj_scene_common/layer_params.h
+  include/pj_scene_common/saved_layer_header.h
   include/pj_scene_common/scene_dock_widget.h
   include/pj_scene_common/scene_layer.h
 )

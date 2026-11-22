@@ -25,6 +25,7 @@ namespace PJ {
 
 class CompositeMediaSource;
 class MediaViewerWidget;
+struct MediaViewState;
 class Scene2DLayer;
 class SessionManager;
 
@@ -39,6 +40,9 @@ class Scene2DDockWidget : public SceneDockWidget {
   /// Saves/restores the base layer stack plus the 2D canvas zoom/pan viewport.
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  /// The checks xmlLoadState makes before it touches the dock: the root, the layer elements (identity attributes and
+  /// each payload) and the view. Parse-only.
+  [[nodiscard]] bool xmlValidateState(const QDomElement& element) const override;
 
   /// Stores a non-owning SessionManager pointer in the base and reconnects the
   /// live-sample follow connection. Replacing the session drops the old connection.
@@ -105,6 +109,9 @@ class Scene2DDockWidget : public SceneDockWidget {
 
  private:
   enum class ImageLayerKind { kImage, kDepth };
+
+  /// xmlValidateState's checks; the parsed view when they pass.
+  [[nodiscard]] std::optional<MediaViewState> validatedViewState(const QDomElement& element) const;
 
   /// Resolves saved layer identities that are already available and primes the
   /// encoding-aware factory with their explicit concrete kind.

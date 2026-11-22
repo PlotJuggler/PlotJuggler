@@ -55,7 +55,7 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
   `remove_derived_series`, `playback`, `plot_tab`, `scene_view`, `report_status`.
 - **App tools** (`McpServerTools.cpp`, public token only): `get_status`, `about`, `open_file`, `unload_file`,
   `reload_file`, `start_stream`, `stop_stream`, `export_series`, `add_script_series`, `remove_script_series`,
-  `add_filter`, `screenshot`.
+  `add_filter`, `screenshot`, `widget_state` (`McpWidgetState.cpp`, see [Widget state](#widget-state)).
 - **Job tools** (`McpServer`, served to every token): `jobs_list`, `job_wait`, `job_kill` (see [Jobs](#jobs)).
 - **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`.
 - **UI tools** (`McpUiTools.cpp`, public token only, and only in a run started with `--mcp-ui-tools`): `ui_tree`,
@@ -127,7 +127,8 @@ client name: `agent-` plus that name reduced to `[a-z0-9-]`, at most 32 characte
 plugin's id, and a plugin can never take an agent's: the plugin catalog refuses ids starting with `agent-`
 (`PJ::kAgentIdPrefix`). Two sessions of one client share a namespace. On first use the server registers the owner
 with `ExtensionCatalogService::registerAdHocOwner`, so its tabs' watermark and its rows read "AI agent (<owner>)".
-Agents draw only in their own tabs. Their derived series are history-exempt plugin transforms under Custom Topics,
+Agents draw only in their own tabs (`plot_tab`, `scene_view`); the one tool that reaches the user's docks is
+`widget_state`, public token only. Their derived series are history-exempt plugin transforms under Custom Topics,
 with an injective transform id (bytes other than `[A-Za-z0-9]` escaped).
 
 ## Jobs
@@ -482,6 +483,46 @@ Desktop only: the browser build has no command line to ask for them, so it does 
   `# app:` header says: the bugs QA found, kept as UI-level regressions next to their unit tests. How an agent explores with it, and what it reports: the `qa-session` skill
   (`.claude/skills/qa-session/`) and the `qa-engineer` agent (`.claude/agents/`).
 
+## Widget state
+
+`widget_state` reads and replaces a dock's settings as the XML element a layout saves for it
+(`DockWidget`'s `IDataWidget` state calls, forwarded to the plot or object widget it hosts), on any tab, the user's included. Docks are addressed by their
+layout state id (`DockWidget::stateId`), which `list` gives with tab, title and kind (the element's tag; `empty` for a
+dock with no state).
+
+- **Options come from the parsers.** Each widget's `xmlValidateState` is a parse-only check that reads every attribute
+  `xmlLoadState` reads through reporting readers (`pj_runtime/XmlStateOptions.h`: `readXmlEnum`, `readXmlBool`,
+  `readXmlInt`, `readXmlFloat`, `readXmlDouble`, `readXmlText`; a family's own raw read, such as a colour, reports with
+  `XmlOptionsRecorder::noteOption` and words its rejection with `xmlValueProblem`, so every reason reads alike). `get`
+  validates the dock's own saved state under an `XmlOptionsRecorder` and returns what it recorded: per element tag,
+  each attribute's type, tokens or bounds, and default. The list is the parser, so it cannot claim a value the parser
+  refuses. Each family's test asserts `xmlSelfDescriptionProblems` is empty for its saved states (every saved
+  attribute reported, every reported token accepted), so an attribute added to `xmlSaveState` without a reporting
+  reader fails there.
+- **Readers are strict for agents, tolerant for layouts.** A reader given `XmlBadValue::kTolerate` keeps what a
+  layout load always did with a bad value (the default) but still notes it as a rejection; `set` refuses any element
+  with a rejection. Without a recorder (`XmlOptionsRecorder::active()` false) the work done only to report is skipped,
+  so a layout load does not pay for it.
+- **`set` changes nothing unless the element is accepted.** The root tag must match the dock's. A plot keeps its own
+  `id` (it names the plot in pending bindings and saved layouts, so an element copied from another plot must not bring
+  that one's), and its curves are rebound from their series paths as a layout load does
+  (`layout_xml::normalizePlotRangeBasis`, `rebindCurveKeys`): an unresolved path refuses the call. `xmlValidateState`
+  runs under a recorder, whose first rejection is the error (`<pointcloud> size_pixels="50": expected a number in [1,
+  32]`); an attribute the recorder never saw (`unreportedXmlAttributes`) is refused as unknown, unless the widget
+  reports nothing at all (its state is opaque). Only then the load, `DockWidget::applyState` (as a paste:
+  `finishRestore()`, first-topic seeding of an empty object widget). If the load refuses, or leaves a topic waiting
+  that was not waiting before (`IDataWidget::unresolvedRestores`: a layer or Log topic that is not loaded would show
+  nothing), the saved previous state is loaded back.
+- **The element is the whole state, view included.** A scene's camera and a plot's axis range travel with it, so an
+  element from an older `get` puts them back where they were then (a followed frame moves the camera meanwhile); the
+  tool's description tells agents to `get` right before `set`.
+- **The user's history and panels.** `MainWindow::beginAgentDockChange` refuses a `set` while a layout load or an
+  undo restore is applying, and first records a user edit still waiting in the scene undo debounce as its own step;
+  `endAgentDockChange` records the change as one undo step, re-reads the settings panel when the dock is the focused
+  one (the 3D panel pushes every value it shows on its next edit, so a stale panel would undo the change) and shares
+  a time plot's new X range with the linked plots as a user zoom does. `list` and `get` run while the user has a
+  dialog open (`runsUnderUsersDialog`); `set` waits.
+
 ## The user comes first
 
 - While a modal dialog is open, only read-only tools run (and `screenshot` without `tab`); the rest are told to wait.
@@ -537,6 +578,11 @@ Desktop only: the browser build has no command line to ask for them, so it does 
     a modal dialog is answered while it is open, and `ui_key` Escape closes it. Both run again at
     `QT_SCALE_FACTOR=2` (`pj_app_gui_tests.dpr2.*`), where unscaled input would miss its widget.
   - `ARelayedCall…`, `ALinkForgotten…`, `OnlyALoopbackHttpRelay…`: the browser link against a fake relay.
+  - `WidgetStateReadsDescribesAndReplacesAUsersDock`: `widget_state` on a user's plot: listed, the options its parser
+    reports, a set that is one undo step, the plot's own id kept from a copied element, and refusals (bad value, other
+    root, missing series, unknown attribute) that change nothing. `WidgetStateRefusesATopicThatIsNotLoaded`: a Log
+    panel's set naming a topic that is not loaded is refused and the panel keeps its topic.
+    Each widget family tests its own `xmlValidateState` and option coverage.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
   test answers by hand (a cancellation forwarded while its call is in flight).
 - `plotjuggler-agent/tests/test_relay.py`: the relay against a fake page (routing, `open_file` serving, origins).
@@ -576,6 +622,11 @@ Desktop only: the browser build has no command line to ask for them, so it does 
 - A `create_derived_object` stopped during its first read-back answers `killed` although the object is installed,
   and the read-back's removal of an object whose script fails is skipped: `list_created` shows it and
   `remove_derived_series` removes it.
+
+- `widget_state` lists only what a parser checks. A value set from data (a point cloud's colour field, a frame name)
+  is reported as `text`: the agent learns the field names from `describe_topic`, not from `get`. A Custom Widget
+  plugin's state is opaque to the host and reports no options; its `set` is not validated before the plugin's own
+  `xmlLoadState`.
 
 ## Evidence
 

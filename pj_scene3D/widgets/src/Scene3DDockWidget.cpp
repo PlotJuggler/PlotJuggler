@@ -27,7 +27,6 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
-#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <numbers>
@@ -35,9 +34,11 @@
 #include <unordered_set>
 #include <utility>
 
+#include "layers/layer_xml_validation.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TransformService.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
@@ -54,6 +55,7 @@
 #include "pj_scene3d_widgets/resolve_object.h"
 #include "pj_scene3d_widgets/scene_state_xml.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_scene_common/saved_layer_header.h"
 #include "pj_tf/tf_buffer.h"
 #include "pj_widgets/ComboBox.h"
 #include "pj_widgets/FrameworkTokens.h"
@@ -122,6 +124,14 @@ QString cameraModelToString(int combo_index) {
   return u"orbit"_s;
 }
 
+QStringList cameraModelTokens() {
+  QStringList tokens;
+  for (const auto& entry : kCameraModelNames) {
+    tokens.push_back(QString::fromLatin1(entry.id));
+  }
+  return tokens;
+}
+
 // Combo index for a persisted name, or -1 (missing or unknown: keep the default).
 int cameraModelFromString(const QString& name) {
   for (const auto& entry : kCameraModelNames) {
@@ -141,6 +151,8 @@ struct ValidatedSceneControls : pj::scene3d::ValidatedSceneControls {
 
 struct ValidatedSceneState {
   bool explicit_fixed_frame = false;
+  QString fixed_frame;
+  QString follow_frame;
   int camera_model_index = -1;
   std::optional<ValidatedCameraState> camera_state;
   std::optional<ValidatedSceneControls> controls;
@@ -148,20 +160,32 @@ struct ValidatedSceneState {
 
 std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element) {
   ValidatedSceneState state;
-  const QString mode = element.attribute(u"fixed_frame_mode"_s, u"auto_root"_s);
-  if (mode != "auto_root"_L1 && mode != "explicit"_L1) {
+  if (PJ::XmlOptionsRecorder::active()) {
+    PJ::readXmlText(element, u"version"_s, u"1"_s);  // written for readers; never decides anything
+  }
+  QString mode;
+  if (!PJ::readXmlEnum(element, u"fixed_frame_mode"_s, {u"auto_root"_s, u"explicit"_s}, u"auto_root"_s, mode)) {
     return std::nullopt;
   }
   state.explicit_fixed_frame = mode == "explicit"_L1;
-  if (element.hasAttribute(u"camera_model"_s)) {
-    state.camera_model_index = cameraModelFromString(element.attribute(u"camera_model"_s));
-    if (state.camera_model_index < 0) {
-      return std::nullopt;
-    }
+  state.fixed_frame = PJ::readXmlText(element, u"fixed_frame"_s);
+  state.follow_frame = PJ::readXmlText(element, u"follow_frame"_s);
+  QString camera_model;
+  if (!PJ::readXmlEnum(element, u"camera_model"_s, cameraModelTokens(), {}, camera_model)) {
+    return std::nullopt;
   }
+  if (!camera_model.isEmpty()) {
+    state.camera_model_index = cameraModelFromString(camera_model);
+  }
+  PJ::XmlOptionsRecorder::noteOption(element, {.attribute = u"camera_state"_s, .type = u"json"_s});
   if (element.hasAttribute(u"camera_state"_s)) {
-    state.camera_state = validateCameraState(element.attribute(u"camera_state"_s));
+    std::string bad_field;
+    state.camera_state = validateCameraState(element.attribute(u"camera_state"_s), &bad_field);
     if (!state.camera_state.has_value()) {
+      PJ::XmlOptionsRecorder::noteRejection(
+          element, u"camera_state"_s,
+          bad_field.empty() ? u"expected a JSON object"_s
+                            : u"field \""_s + QString::fromStdString(bad_field) + u"\" is malformed or out of range"_s);
       return std::nullopt;
     }
   }
@@ -178,10 +202,13 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
       scene_controls = child.toElement();
       continue;
     }
+    PJ::XmlOptionsRecorder::noteRejection(
+        element, {}, u"unexpected child <"_s + tag + u">: expected <layer>, <config_topic> or one <scene_controls>"_s);
     return std::nullopt;
   }
   if (!scene_controls.isNull()) {
     if (!scene_controls.firstChildElement().isNull()) {
+      PJ::XmlOptionsRecorder::noteRejection(scene_controls, {}, u"takes no child elements"_s);
       return std::nullopt;
     }
     ValidatedSceneControls controls;
@@ -195,6 +222,82 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
     state.controls = controls;
   }
   return state;
+}
+
+QString objectTypeToken(sdk::BuiltinObjectType object_type) {
+  const auto name = sdk::name(object_type);
+  return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
+}
+
+// The restore path a saved <layer> takes. role="trail" and local="true" select one; any other value means "not that
+// path", tolerated and noted.
+struct LayerPath {
+  bool trail = false;
+  bool local = false;
+
+  // A trail or local layer is not backed by a store topic: its dataset_id and topic_name are never read.
+  [[nodiscard]] PJ::SavedTopicRef topicRef() const {
+    return trail || local ? PJ::SavedTopicRef::kUnused : PJ::SavedTopicRef::kRequired;
+  }
+};
+
+LayerPath readLayerPath(const QDomElement& layer_el) {
+  QString role;
+  LayerPath path;
+  static_cast<void>(PJ::readXmlEnum(layer_el, u"role"_s, {u"trail"_s}, {}, role, PJ::XmlBadValue::kTolerate));
+  static_cast<void>(PJ::readXmlBool(layer_el, u"local"_s, false, path.local, PJ::XmlBadValue::kTolerate));
+  path.trail = role == "trail"_L1;
+  return path;
+}
+
+// The parse-only half of Scene3DDockWidget::restoreLayerElement / restoreTrailElement: every refusal that needs no
+// data. `factory` is the dock's: its types and their payload validators.
+bool validateLayerElement(const QDomElement& layer_el, const PJ::LayerFactory& factory) {
+  const LayerPath path = readLayerPath(layer_el);
+  const std::optional<PJ::SavedLayerHeader> header = PJ::parseSavedLayerHeader(layer_el, path.topicRef(), factory);
+  if (!header.has_value()) {
+    return false;
+  }
+  const QDomElement payload = layer_el.firstChildElement();
+  if (path.trail) {
+    if (payload.isNull() || payload.tagName() != "trail"_L1 || !payload.nextSiblingElement().isNull()) {
+      PJ::XmlOptionsRecorder::noteRejection(layer_el, {}, u"a trail layer holds exactly one <trail> payload"_s);
+      return false;
+    }
+    return pj::scene3d::TrailLayer::validateXml(payload);
+  }
+  if (!header->object_type.has_value() || !factory.supports(*header->object_type)) {
+    PJ::XmlOptionsRecorder::noteRejection(layer_el, u"object_type"_s, u"not a 3D layer type"_s);
+    return false;
+  }
+  if (path.local && *header->object_type != sdk::BuiltinObjectType::kRobotDescription) {
+    PJ::XmlOptionsRecorder::noteRejection(layer_el, u"local"_s, u"only a kRobotDescription layer can be local"_s);
+    return false;
+  }
+  if (!payload.isNull() && !payload.nextSiblingElement().isNull()) {
+    PJ::XmlOptionsRecorder::noteRejection(layer_el, {}, u"a layer holds at most one payload element"_s);
+    return false;
+  }
+  return payload.isNull() || factory.validatePayload(*header->object_type, payload);
+}
+
+// The parse-only half of Scene3DDockWidget::restoreConfigTopicElement.
+bool validateConfigTopicElement(const QDomElement& config_el) {
+  const QString frame_transforms = objectTypeToken(sdk::BuiltinObjectType::kFrameTransforms);
+  QString object_type;
+  const bool type_ok = PJ::readXmlEnum(config_el, u"object_type"_s, {frame_transforms}, {}, object_type);
+  if (!PJ::parseSavedTopicHeader(config_el, PJ::SavedTopicRef::kRequired).has_value() || !type_ok) {
+    return false;
+  }
+  if (object_type.isEmpty()) {
+    PJ::XmlOptionsRecorder::noteRejection(config_el, u"object_type"_s, u"required: "_s + frame_transforms);
+    return false;
+  }
+  if (!config_el.firstChildElement().isNull()) {
+    PJ::XmlOptionsRecorder::noteRejection(config_el, {}, u"takes no child elements"_s);
+    return false;
+  }
+  return true;
 }
 
 [[nodiscard]] bool framesContain(const QList<FrameRow>& frames, const QString& name) {
@@ -252,9 +355,10 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
     wireScene3DLayer(layer.get());
     return layer;
   };
-  layerFactory().registerType(sdk::BuiltinObjectType::kPointCloud, pointcloud_factory);
+  layerFactory().registerType(sdk::BuiltinObjectType::kPointCloud, pointcloud_factory, &PointCloudLayer::validateXml);
   if (kCompressedPointClouds) {
-    layerFactory().registerType(sdk::BuiltinObjectType::kCompressedPointCloud, pointcloud_factory);
+    layerFactory().registerType(
+        sdk::BuiltinObjectType::kCompressedPointCloud, pointcloud_factory, &PointCloudLayer::validateXml);
   }
   // Depth images (sdk::Image with a depth encoding) become DepthClouds; addTopic() gates kImage topics. Intrinsics come
   // from the CameraInfo topic matching frame_id (DepthCloudLayer).
@@ -266,7 +370,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         auto layer = std::make_unique<DepthCloudLayer>(topic_id, display_name, object_type, this);
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &DepthCloudLayer::validateXml);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kRobotDescription,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -284,7 +389,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         }
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &RobotModelLayer::validateXml);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kOccupancyGrid,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -293,7 +399,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         auto layer = std::make_unique<OccupancyGridLayer>(topic_id, display_name, this);
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &OccupancyGridLayer::validateXml);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kSceneEntities,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -303,7 +410,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         layer->setPackageResolver(package_resolver_.get());
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &SceneEntitiesLayer::validateXml);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kPosesInFrame,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -312,7 +420,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         auto layer = std::make_unique<PosesInFrameLayer>(topic_id, display_name, this);
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &PosesInFrameLayer::validateXml);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kVoxelGrid,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -321,7 +430,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         auto layer = std::make_unique<VoxelGridLayer>(topic_id, display_name, this);
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &VoxelGridLayer::validateXml);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kGridMap,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -330,7 +440,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         auto layer = std::make_unique<GridMapLayer>(topic_id, display_name, this);
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &GridMapLayer::validateXml);
   layerFactory().registerType(
       sdk::BuiltinObjectType::kMeshMap,
       [this](ObjectTopicId topic_id, sdk::BuiltinObjectType /*object_type*/, const QString& display_name)
@@ -339,7 +450,8 @@ Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         auto layer = std::make_unique<MeshMapLayer>(topic_id, display_name, this);
         wireScene3DLayer(layer.get());
         return layer;
-      });
+      },
+      &MeshMapLayer::validateXml);
 
   frame_overlay_combo_ = new ComboBox(this);
   frame_overlay_combo_->setObjectName(u"scene3dFixedFrameCombo"_s);
@@ -1525,32 +1637,29 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   if (sessionManager() == nullptr) {
     return ElementRestoreResult::kDeferred;
   }
+  const LayerPath path = readLayerPath(layer_el);
+  const std::optional<SavedLayerHeader> header = parseSavedLayerHeader(layer_el, path.topicRef(), layerFactory());
+  // xmlLoadState fills an absent order before restoring, so only a hand-built element lacks one.
+  if (!header.has_value() || !header->order.has_value()) {
+    if (path.trail) {
+      qCWarning(lcScene3DDock) << "restoreTrailElement: malformed 'visible' or 'order' attribute";
+    }
+    return ElementRestoreResult::kInvalid;
+  }
   // Trails are not object-type layers (object_type is kNone): branch BEFORE the
   // acceptsObjectType gate, which would reject them.
-  if (layer_el.attribute(u"role"_s) == "trail"_L1) {
-    return restoreTrailElement(layer_el, deferred_topic_name);
+  if (path.trail) {
+    return restoreTrailElement(layer_el, *header, deferred_topic_name);
   }
-  const QString object_type_str = layer_el.attribute(u"object_type"_s);
-  const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-  if (!object_type_opt.has_value() || !acceptsObjectType(*object_type_opt)) {
+  if (!header->object_type.has_value() || !acceptsObjectType(*header->object_type)) {
     return ElementRestoreResult::kInvalid;
   }
-  const QString display_name = layer_el.attribute(u"display_name"_s);
-  const QString visible_text = layer_el.attribute(u"visible"_s, u"true"_s);
-  if (visible_text != "true"_L1 && visible_text != "false"_L1) {
-    return ElementRestoreResult::kInvalid;
-  }
-  const bool visible = visible_text == "true"_L1;
-  bool order_ok = false;
-  const int saved_order = layer_el.attribute(u"order"_s).toInt(&order_ok);
-  if (!order_ok || saved_order < 0) {
-    return ElementRestoreResult::kInvalid;
-  }
+  const sdk::BuiltinObjectType object_type = *header->object_type;
 
   ObjectTopicId topic_id;
-  const bool local_layer = layer_el.attribute(u"local"_s) == "true"_L1;
+  const bool local_layer = path.local;
   if (local_layer) {
-    if (*object_type_opt != sdk::BuiltinObjectType::kRobotDescription) {
+    if (object_type != sdk::BuiltinObjectType::kRobotDescription) {
       return ElementRestoreResult::kInvalid;
     }
     topic_id = allocateLocalLayerId();
@@ -1560,7 +1669,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   } else {
     std::optional<ObjectTopicId> topic_id_opt;
     const ElementRestoreResult resolved =
-        resolveSavedTopicRef(layer_el, deferred_topic_name, *object_type_opt, topic_id_opt);
+        resolveSavedTopicRef(layer_el, *header, deferred_topic_name, object_type, topic_id_opt);
     if (resolved != ElementRestoreResult::kRestored) {
       return resolved;
     }
@@ -1576,10 +1685,10 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
   }
   // A newly dropped advertised image has not passed the depth gate. Saved
   // layers already have, so only pending intents wait for and validate a sample.
-  if (layer_el.attribute(u"pending_intent"_s) == "true"_L1 && *object_type_opt == sdk::BuiltinObjectType::kImage) {
+  if (header->pending_intent && object_type == sdk::BuiltinObjectType::kImage) {
     if (!sessionManager()->objectStore().at(topic_id, static_cast<std::size_t>(0)).has_value()) {
       if (deferred_topic_name != nullptr) {
-        *deferred_topic_name = layer_el.attribute(u"topic_name"_s);
+        *deferred_topic_name = header->topic_name;
       }
       return ElementRestoreResult::kDeferred;
     }
@@ -1590,7 +1699,7 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
     }
   }
   const QString previous_title = windowTitle();
-  if (!addTopicImpl(topic_id, *object_type_opt, display_name, /*enforce_image_gate=*/false)) {
+  if (!addTopicImpl(topic_id, object_type, header->display_name, /*enforce_image_gate=*/false)) {
     if (local_layer) {
       local_layer_ids_.erase(topic_id.id);
     }
@@ -1623,35 +1732,28 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreLayerElement(
     setWindowTitle(previous_title);
     return ElementRestoreResult::kInvalid;
   }
-  if (!visible) {
+  if (!header->visible) {
     setLayerVisible(topic_id, false);
   }
-  restored_layer_orders_[topicKey(topic_id)] = saved_order;
+  restored_layer_orders_[topicKey(topic_id)] = *header->order;
   applyRestoredLayerOrder();
   return ElementRestoreResult::kRestored;
 }
 
 Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
-    const QDomElement& el, QString* deferred_topic_name, sdk::BuiltinObjectType expected_type,
-    std::optional<ObjectTopicId>& out_topic) {
+    const QDomElement& el, const SavedTopicHeader& ref, QString* deferred_topic_name,
+    sdk::BuiltinObjectType expected_type, std::optional<ObjectTopicId>& out_topic) {
   out_topic.reset();
-  const QString topic_name = el.attribute(u"topic_name"_s);
+  const QString& topic_name = ref.topic_name;
   if (topic_name.isEmpty()) {
     return ElementRestoreResult::kInvalid;
   }
-  const bool qualified = hasDatasetIdentity(el);
-  bool dataset_ok = false;
-  const qulonglong dataset_value = el.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
-  if (el.hasAttribute(u"dataset_id"_s) &&
-      (!dataset_ok || dataset_value == 0 || dataset_value > std::numeric_limits<uint32_t>::max())) {
-    return ElementRestoreResult::kInvalid;
-  }
-  const SavedElementDataset binding = qualified ? datasetForSavedElement(el) : SavedElementDataset{};
+  const SavedElementDataset binding = ref.qualified ? datasetForSavedElement(el) : SavedElementDataset{};
   if (binding.refused) {
     return ElementRestoreResult::kConsumed;
   }
   const std::optional<ObjectTopicId> topic_id_opt = resolveSavedObjectTopic(
-      sessionManager()->objectStore(), topic_name.toStdString(), expected_type, qualified, binding.dataset,
+      sessionManager()->objectStore(), topic_name.toStdString(), expected_type, ref.qualified, binding.dataset,
       representativeDatasetId());
   if (!topic_id_opt.has_value()) {
     if (deferred_topic_name != nullptr) {
@@ -1669,22 +1771,13 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::resolveSavedTopicRef(
 }
 
 Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreTrailElement(
-    const QDomElement& layer_el, QString* deferred_topic_name) {
+    const QDomElement& layer_el, const SavedLayerHeader& header, QString* deferred_topic_name) {
   // A corrupted layout drops the element with a reason in the log — kInvalid
   // itself only surfaces as the aggregate workspaceRestoreFailed() flag.
   const auto invalid = [](const char* reason) {
     qCWarning(lcScene3DDock) << "restoreTrailElement:" << reason;
     return ElementRestoreResult::kInvalid;
   };
-  const QString visible_text = layer_el.attribute(u"visible"_s, u"true"_s);
-  if (visible_text != "true"_L1 && visible_text != "false"_L1) {
-    return invalid("malformed 'visible' attribute");
-  }
-  bool order_ok = false;
-  const int saved_order = layer_el.attribute(u"order"_s).toInt(&order_ok);
-  if (!order_ok || saved_order < 0) {
-    return invalid("malformed 'order' attribute");
-  }
   const QDomElement payload = layer_el.firstChildElement();
   if (payload.isNull() || payload.tagName() != "trail"_L1 || !payload.nextSiblingElement().isNull()) {
     return invalid("expected a single <trail> payload");
@@ -1715,10 +1808,10 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreTrailElement(
     removeTopic(layer_id);
     return invalid("malformed <trail> payload");
   }
-  if (visible_text == "false"_L1) {
+  if (!header.visible) {
     setLayerVisible(layer_id, false);
   }
-  restored_layer_orders_[topicKey(layer_id)] = saved_order;
+  restored_layer_orders_[topicKey(layer_id)] = *header.order;
   applyRestoredLayerOrder();
   return ElementRestoreResult::kRestored;
 }
@@ -1734,16 +1827,19 @@ Scene3DDockWidget::ElementRestoreResult Scene3DDockWidget::restoreConfigTopicEle
   if (!object_type_opt.has_value() || *object_type_opt != sdk::BuiltinObjectType::kFrameTransforms) {
     return ElementRestoreResult::kInvalid;
   }
+  const std::optional<SavedTopicHeader> ref = parseSavedTopicHeader(config_el, SavedTopicRef::kRequired);
+  if (!ref.has_value()) {
+    return ElementRestoreResult::kInvalid;
+  }
   std::optional<ObjectTopicId> topic_id_opt;
-  const ElementRestoreResult resolved = resolveSavedTopicRef(config_el, nullptr, *object_type_opt, topic_id_opt);
+  const ElementRestoreResult resolved = resolveSavedTopicRef(config_el, *ref, nullptr, *object_type_opt, topic_id_opt);
   if (resolved != ElementRestoreResult::kRestored) {
     return resolved;
   }
   if (refuseForeignTopic(*topic_id_opt)) {
     return ElementRestoreResult::kConsumed;
   }
-  if (!addTopic(*topic_id_opt, *object_type_opt, config_el.attribute(u"topic_name"_s)) ||
-      !config_topics_.contains(topic_id_opt->id)) {
+  if (!addTopic(*topic_id_opt, *object_type_opt, ref->topic_name) || !config_topics_.contains(topic_id_opt->id)) {
     return ElementRestoreResult::kInvalid;
   }
   return ElementRestoreResult::kRestored;
@@ -1891,6 +1987,25 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
   return root;
 }
 
+bool Scene3DDockWidget::xmlValidateState(const QDomElement& element) const {
+  if (element.isNull() || element.tagName() != "scene3d"_L1) {
+    PJ::XmlOptionsRecorder::noteRejection(element, {}, u"expected <scene3d>"_s);
+    return false;
+  }
+  if (!validateSceneState(element).has_value()) {
+    return false;
+  }
+  for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    if (child.tagName() == "layer"_L1 && !validateLayerElement(child, layerFactory())) {
+      return false;
+    }
+    if (child.tagName() == "config_topic"_L1 && !validateConfigTopicElement(child)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "scene3d"_L1) {
     return false;
@@ -1916,7 +2031,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   }
   resetWorkspaceRestoreStatus();
   clearPendingRestores();
-  const QString saved_frame = element.attribute(u"fixed_frame"_s);
+  const QString& saved_frame = validated->fixed_frame;
   clearLayers();
   local_layer_ids_.clear();
   restored_layer_orders_.clear();
@@ -2020,7 +2135,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     }
     // Camera follow target (empty = off; older layouts lack the attribute). A target absent from the TF tree stays
     // inert until it appears (applyFollow holds on lookup failure).
-    setFollowFrame(element.attribute(u"follow_frame"_s));
+    setFollowFrame(validated->follow_frame);
     // Per-dock scene controls override the global seed applied at view creation (sceneViewReady ->
     // applySceneControlsTo); older layouts have no <scene_controls> and keep the seed, and a missing attribute keeps
     // the current value, so a partial element never zeroes a control. Field set mirrors

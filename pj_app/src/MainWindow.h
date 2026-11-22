@@ -390,6 +390,16 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] PluginPlotTabsController& pluginPlotTabs() const {
     return *plugin_plot_tabs_;
   }
+  // Every dock of every tab, tabs in order; the MCP widget_state tool reads and replaces their XML state.
+  void forEachTabDock(const std::function<void(PlotDocker*, DockWidget*)>& operation);
+  // Before the MCP widget_state tool replaces a dock's state: false while a layout load or an undo restore is applying
+  // (the change would get no undo step). A user edit still waiting in the scene undo debounce becomes its own step
+  // first, so undoing the agent's change does not revert it too.
+  [[nodiscard]] bool beginAgentDockChange();
+  // After it replaced `dock`'s state: one undo step; the settings panel re-read when `dock` is the focused one (the 3D
+  // panel pushes every value it shows on its next edit, so a stale one would undo the change); a time plot's X range
+  // shared with the linked plots, as a user zoom is.
+  void endAgentDockChange(DockWidget* dock);
 
   // The service assembly a toolbox plugin with id `owner` would get (data processors, object
   // reads, playback, its own plot and scene tabs) with no plugin loaded: an MCP agent's tools run

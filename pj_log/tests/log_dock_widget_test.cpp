@@ -5,8 +5,12 @@
 
 #include <QApplication>
 #include <QDomDocument>
+#include <QDomElement>
+#include <QList>
+#include <QSet>
 #include <QSignalSpy>
 #include <QTest>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,6 +24,7 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_runtime/XmlStateOptions.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -277,6 +282,61 @@ TEST_F(LogDockWidgetTest, AVanishedTopicKeepsItsDatasetIdentityAndRebinds) {
   QApplication::processEvents();
   EXPECT_FALSE(dock->hasPendingTopic(u"/rosout"_s));
   EXPECT_EQ(messages(*dock), std::vector<std::string>{"reloaded"});
+}
+
+TEST_F(LogDockWidgetTest, UnresolvedRestoresListThePendingTopicsOnly) {
+  auto dock = makeDock();
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"log"_s);
+  for (const QString& name : {u"/rosout"_s, u"/missing"_s}) {
+    QDomElement topic = doc.createElement(u"topic"_s);
+    topic.setAttribute(u"topic"_s, name);
+    state.appendChild(topic);
+  }
+  ASSERT_TRUE(dock->xmlLoadState(state));
+  EXPECT_EQ(dock->unresolvedRestores(), QStringList{u"/missing"_s});
+}
+
+TEST_F(LogDockWidgetTest, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  LogViewState state = dock->view()->state();
+  state.levels = {false, true, true, true, true};
+  state.source = u"/node"_s;
+  state.category = u"motors"_s;
+  state.text = u"stall"_s;
+  state.show_future = true;
+  state.hidden_topics = {u"/diagnostics_log"_s};
+  dock->view()->applyState(state);
+
+  QDomDocument doc;
+  const QDomElement saved = dock->xmlSaveState(doc);
+  ASSERT_FALSE(saved.firstChildElement(u"topic"_s).isNull());
+  ASSERT_FALSE(saved.firstChildElement(u"hidden_topic"_s).isNull());
+  EXPECT_EQ(
+      xmlSelfDescriptionProblems(
+          [&](const QDomElement& e) { return dock->xmlValidateState(e); }, saved,
+          {.check_bad_values = true,
+           .tolerates_bad = {u"log.levels"_s, u"log.future_rows"_s, u"topic.dataset_id"_s},
+           .load = [&](const QDomElement& e) { return dock->xmlLoadState(e); }}),
+      QStringList());
+
+  XmlOptionsRecorder recorder;
+  EXPECT_FALSE(dock->xmlValidateState(doc.createElement(u"plot"_s)));
+  EXPECT_EQ(recorder.firstRejection(), u"<plot>: expected a <log> element"_s);
+}
+
+TEST_F(LogDockWidgetTest, ValidationListsTheTopicOptionsOfAStateWithoutTopics) {
+  auto dock = makeDock();
+  QDomDocument doc;
+  XmlOptionsRecorder recorder;
+  ASSERT_TRUE(dock->xmlValidateState(dock->xmlSaveState(doc)));
+  QStringList reported;
+  for (const XmlOption& option : recorder.options()) {
+    reported.append(option.element + u'.' + option.attribute);
+  }
+  EXPECT_TRUE(reported.contains(u"topic.dataset_path"_s));
+  EXPECT_TRUE(reported.contains(u"hidden_topic.topic"_s));
 }
 
 }  // namespace

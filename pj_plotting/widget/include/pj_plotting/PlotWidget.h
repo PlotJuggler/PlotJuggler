@@ -5,6 +5,7 @@
 #include <qwt_axis_id.h>
 
 #include <QAction>
+#include <QColor>
 #include <QDomDocument>
 #include <QDomElement>
 #include <QMetaObject>
@@ -137,6 +138,8 @@ class PlotWidget : public PlotWidgetBase {
   void setStateId(QString id);
   [[nodiscard]] QDomElement xmlSaveState(QDomDocument& doc) const;
   bool xmlLoadState(const QDomElement& plot_element, bool autozoom = true);
+  /// Parse-only check of a <plot> element, with IDataWidget::xmlValidateState's contract (pj_runtime/IDataWidget.h).
+  [[nodiscard]] bool xmlValidateState(const QDomElement& plot_element) const;
   /// Adds this session's opaque curve keys (and dataset paths) to `plot_element`, this plot's xmlSaveState output, so
   /// xmlLoadState binds its curves without the shell's stable-path rebind: a same-session copy (clipboard, duplicated
   /// tab).
@@ -417,6 +420,40 @@ class PlotWidget : public PlotWidgetBase {
   };
   std::optional<SavedViewport> saved_viewport_;
   std::vector<QDomDocument> pending_curve_intents_;
+
+  // One <curve> as applyCurveElement binds it.
+  struct ParsedCurve {
+    QColor color;  // invalid: the plot picks one
+    bool visible = true;
+    bool markers_visible = true;
+    QString name;  // a time-series curve's session key; an XY curve's alias
+    QString curve_x;
+    QString curve_y;
+    bool has_xy_keys = false;  // both curve_x and curve_y present: the XY keys apply on an XY plot
+  };
+  // Reads every attribute a <curve> may carry. The series-path attributes, which LayoutXml::rebindCurveKeys (pj_app)
+  // turns into `name` / `curve_x` / `curve_y` before the load, are read only under an XmlOptionsRecorder, so a
+  // validator reports every attribute a saved curve carries.
+  [[nodiscard]] static ParsedCurve parseCurveElement(const QDomElement& curve);
+  CurveInfo* applyParsedCurve(const ParsedCurve& parsed, bool preserve_viewport);
+
+  // A <plot> element as xmlLoadState applies it.
+  struct ParsedState {
+    QString id;
+    bool xy = false;
+    LineWidth line_width = LineWidth::kPoints10;
+    CurveStyle style = kLines;
+    bool tracker_enabled = true;
+    QString title;
+    std::optional<SavedViewport> viewport;
+    std::vector<ParsedCurve> curves;  // every <curve>, pending ones included, in document order
+    std::vector<QDomDocument> pending_curves;
+  };
+  // The one validator of a <plot> element, shared by xmlLoadState and xmlValidateState: reads every attribute the
+  // element and its children may carry through readers that report to an active XmlOptionsRecorder, and refuses
+  // exactly what xmlLoadState refuses (an invalid or duplicate pending curve). It notes, without refusing, a `mode`
+  // that a non-pending curve's shape disagrees with. Pure: changes nothing.
+  [[nodiscard]] static bool parseState(const QDomElement& plot_element, ParsedState& parsed);
 
   // Marker scopes hidden on this plot (absent = visible). Independent of markerScopeRows() so a layout can restore
   // "hidden" before the producing rule has published the topic (pruneHiddenMarkerScopes, xmlLoadState).

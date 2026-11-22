@@ -72,12 +72,23 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   // Materializes this dock's plot if it has none (a new dock holds an empty placeholder); returns the existing plot
   // otherwise. The canonical placeholder-to-plot path, used by every drop that lands a curve on it.
   PlotWidget* ensurePlotWidget();
+  // Loads `element` as a user action does (a paste, an agent's set): xmlLoadState, then finishRestore (the data it
+  // names is loaded), and an empty click-created object widget it gives a layer or config topic fires
+  // firstObjectTopicAdded. False when nothing is hosted or the widget refused the element. Emits nothing else.
+  bool applyState(const QDomElement& element);
 
-  // IDataWidget
+  // IDataWidget: the state of the hosted plot or object widget. The placeholder has none: a null element, and
+  // validate and load refuse. xmlLoadState is the plain load a layout restore needs (the shell calls finishRestore
+  // once its whole load is done).
   QWidget* widget() override {
     return this;
   }
   void onTrackerTime(double time) override;
+  QDomElement xmlSaveState(QDomDocument& doc) const override;
+  [[nodiscard]] bool xmlValidateState(const QDomElement& element) const override;
+  bool xmlLoadState(const QDomElement& element) override;
+  void finishRestore() override;
+  [[nodiscard]] QStringList unresolvedRestores() const override;
 
  public slots:
   void onStylesheetChanged(QString theme);

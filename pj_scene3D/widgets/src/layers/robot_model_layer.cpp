@@ -357,53 +357,59 @@ std::optional<RobotModelLayer::ParsedSettings> RobotModelLayer::parseSettings(co
   if (element.isNull() || element.tagName() != "robot_model"_L1 || !detail::isLeafPayload(element)) {
     return std::nullopt;
   }
-  const QString source_type_text = element.attribute(u"source_type"_s, u"topic"_s);
-  if (source_type_text != "topic"_L1 && source_type_text != "file"_L1 && source_type_text != "url"_L1) {
-    return std::nullopt;
-  }
-  const QString display_mode_text = element.attribute(u"display_mode"_s, u"auto"_s);
-  if (display_mode_text != "auto"_L1 && display_mode_text != "visual"_L1 && display_mode_text != "collision"_L1) {
+  QString source_type_text;
+  QString display_mode_text;
+  if (!PJ::readXmlEnum(element, u"source_type"_s, {u"topic"_s, u"file"_s, u"url"_s}, u"topic"_s, source_type_text) ||
+      !PJ::readXmlEnum(
+          element, u"display_mode"_s, {u"auto"_s, u"visual"_s, u"collision"_s}, u"auto"_s, display_mode_text)) {
     return std::nullopt;
   }
   ParsedSettings settings;
   settings.source_type = sourceTypeFromString(source_type_text);
   settings.display_mode = displayModeFromString(display_mode_text);
-  if (!detail::parseTrueFalse(element, "visible", true, settings.visible) ||
-      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, settings.ignore_collada_up_axis) ||
-      !detail::parseTrueFalse(element, "remote_resources_only", false, settings.remote_resources_only)) {
+  // Read by xmlLoadStateResult itself (an absent source_value keeps the current one); reported here.
+  if (PJ::XmlOptionsRecorder::active()) {
+    PJ::readXmlText(element, u"source_value"_s);
+    PJ::readXmlText(element, u"frame_prefix"_s);
+  }
+  if (!PJ::readXmlBool(element, u"visible"_s, true, settings.visible) ||
+      !PJ::readXmlBool(element, u"ignore_collada_up_axis"_s, false, settings.ignore_collada_up_axis) ||
+      !PJ::readXmlBool(element, u"remote_resources_only"_s, false, settings.remote_resources_only) ||
+      !detail::parseColor(element, "color", {}, settings.color)) {
     return std::nullopt;
   }
-  if (element.hasAttribute(u"color"_s)) {
-    settings.color = QColor(element.attribute(u"color"_s));
-    if (!settings.color->isValid()) {
-      return std::nullopt;
-    }
+  settings.topic_name = PJ::readXmlText(element, u"source_topic_name"_s);
+  if (!PJ::readXmlInt(
+          element, u"source_dataset_id"_s, std::nullopt, 1, std::numeric_limits<PJ::DatasetId>::max(),
+          settings.dataset_id)) {
+    return std::nullopt;
   }
+  settings.dataset_source = PJ::readXmlText(element, u"source_dataset_source"_s);
+  settings.dataset_path = PJ::readXmlText(element, u"source_dataset_path"_s);
   const bool has_topic_name = element.hasAttribute(u"source_topic_name"_s);
   const bool has_dataset_id = element.hasAttribute(u"source_dataset_id"_s);
   const bool has_dataset_source = element.hasAttribute(u"source_dataset_source"_s);
   const bool has_dataset_path = element.hasAttribute(u"source_dataset_path"_s);
   const bool has_topic_identity = has_topic_name || has_dataset_id || has_dataset_source || has_dataset_path;
-  if ((settings.source_type != SourceType::kTopic && has_topic_identity) ||
-      (!has_topic_name && (has_dataset_id || has_dataset_source || has_dataset_path))) {
+  if (settings.source_type != SourceType::kTopic && has_topic_identity) {
+    PJ::XmlOptionsRecorder::noteRejection(
+        element, u"source_type"_s, u"only a topic source carries source_topic_name / source_dataset_*"_s);
     return std::nullopt;
   }
-  if (has_dataset_id) {
-    bool id_ok = false;
-    const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
-    if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
-      return std::nullopt;
-    }
-    settings.dataset_id = static_cast<PJ::DatasetId>(value);
+  if (!has_topic_name && (has_dataset_id || has_dataset_source || has_dataset_path)) {
+    PJ::XmlOptionsRecorder::noteRejection(
+        element, u"source_topic_name"_s, u"required when a source_dataset_* attribute is present"_s);
+    return std::nullopt;
   }
-  settings.topic_name = element.attribute(u"source_topic_name"_s);
   if (has_topic_name && settings.topic_name.isEmpty()) {
+    PJ::XmlOptionsRecorder::noteRejection(element, u"source_topic_name"_s, u"must not be empty"_s);
     return std::nullopt;
   }
-  settings.dataset_source = element.attribute(u"source_dataset_source"_s);
-  settings.dataset_path = element.attribute(u"source_dataset_path"_s);
+  PJ::XmlOptionsRecorder::noteOption(element, {.attribute = u"package_url_roots"_s, .type = u"json"_s});
   std::optional<QMap<QString, QUrl>> roots = parsePackageUrlRoots(element.attribute(u"package_url_roots"_s));
   if (!roots.has_value()) {
+    PJ::XmlOptionsRecorder::noteRejection(
+        element, u"package_url_roots"_s, u"expected a JSON object mapping package names to root URLs"_s);
     return std::nullopt;
   }
   settings.package_url_roots = std::move(*roots);

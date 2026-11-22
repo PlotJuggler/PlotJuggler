@@ -6,7 +6,11 @@
 #include <QStringList>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <cstdint>
 #include <functional>
+#include <limits>
+#include <optional>
+#include <utility>
 
 #include "pj_base/builtin/log.hpp"
 #include "pj_log/LogView.h"
@@ -15,6 +19,7 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_runtime/XmlStateOptions.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -31,6 +36,87 @@ bool isLogTopic(const ObjectStore& objects, ObjectTopicId topic_id) {
 
 LogLevel levelOf(sdk::Log::Level level) {
   return level <= sdk::Log::Level::kFatal ? static_cast<LogLevel>(level) : LogLevel::kUnknown;
+}
+
+struct ParsedLogState {
+  LogViewState view;
+  std::vector<SavedSeriesPath> topics;
+};
+
+// Tolerated: an empty or unparsable dataset_id reads as 0, an unqualified topic.
+SavedSeriesPath readTopic(const QDomElement& child) {
+  SavedSeriesPath saved;
+  saved.topic = readXmlText(child, u"topic"_s);
+  (void)readXmlInt<uint32_t>(
+      child, u"dataset_id"_s, 0, 0, std::numeric_limits<uint32_t>::max(), saved.dataset_id, XmlBadValue::kTolerate);
+  saved.dataset_source = readXmlText(child, u"dataset_source"_s);
+  saved.dataset_path = readXmlText(child, u"dataset_path"_s);
+  return saved;
+}
+
+const QStringList& levelKeys() {
+  static const QStringList keys = [] {
+    QStringList list;
+    for (size_t i = 0; i < log_view::kToggleLevelCount; ++i) {
+      list.append(QString::fromLatin1(log_view::kLevelNames[i].key));
+    }
+    return list;
+  }();
+  return keys;
+}
+
+// The one reader of a <log> payload, for xmlLoadState and xmlValidateState. Every attribute is read through a
+// reporting reader, and under a recorder the children's too when the payload has none of that tag, so a state without
+// topics still lists what a topic accepts. Tolerated, and noted as rejections: an unknown level key (ignored), a
+// future_rows other than "grey" (it hides) and an unparsable dataset_id (0).
+std::optional<ParsedLogState> parseLogState(const QDomElement& element) {
+  if (element.tagName() != kPayloadTag) {
+    XmlOptionsRecorder::noteRejection(element, {}, u"expected a <log> element"_s);
+    return std::nullopt;
+  }
+  ParsedLogState parsed;
+  LogViewState& state = parsed.view;
+
+  const QStringList& level_keys = levelKeys();
+  if (XmlOptionsRecorder::active()) {
+    XmlOptionsRecorder::noteOption(
+        element,
+        {.attribute = u"levels"_s, .type = u"text"_s, .values = level_keys, .fallback = level_keys.join(u',')});
+  }
+  if (element.hasAttribute(u"levels"_s)) {
+    const QStringList levels = element.attribute(u"levels"_s).split(u',', Qt::SkipEmptyParts);
+    for (size_t i = 0; i < log_view::kToggleLevelCount; ++i) {
+      state.levels[i] = levels.contains(level_keys[static_cast<qsizetype>(i)]);
+    }
+    const bool all_known =
+        std::ranges::all_of(levels, [&level_keys](const QString& key) { return level_keys.contains(key); });
+    if (!all_known) {
+      XmlOptionsRecorder::noteRejection(
+          element, u"levels"_s, u"expected a comma-separated list of "_s + level_keys.join(u", "_s));
+    }
+  }
+  state.source = readXmlText(element, u"source_filter"_s);
+  state.category = readXmlText(element, u"category_filter"_s);
+  state.text = readXmlText(element, u"text_filter"_s);
+  QString future_rows;
+  (void)readXmlEnum(element, u"future_rows"_s, {u"grey"_s, u"hide"_s}, u"hide"_s, future_rows, XmlBadValue::kTolerate);
+  state.show_future = future_rows == u"grey"_s;
+
+  for (QDomElement hidden = element.firstChildElement(kHiddenTopicTag); !hidden.isNull();
+       hidden = hidden.nextSiblingElement(kHiddenTopicTag)) {
+    state.hidden_topics.append(readXmlText(hidden, u"topic"_s));
+  }
+  for (QDomElement child = element.firstChildElement(kTopicTag); !child.isNull();
+       child = child.nextSiblingElement(kTopicTag)) {
+    parsed.topics.push_back(readTopic(child));
+  }
+
+  if (XmlOptionsRecorder::active()) {
+    QDomDocument schema;
+    readXmlText(schema.createElement(kHiddenTopicTag), u"topic"_s);
+    (void)readTopic(schema.createElement(kTopicTag));
+  }
+  return parsed;
 }
 
 }  // namespace
@@ -309,6 +395,14 @@ bool LogDockWidget::hasPendingTopic(const QString& topic_name) const {
       pending_, [&topic_name](const SavedSeriesPath& pending) { return pending.topic == topic_name; });
 }
 
+QStringList LogDockWidget::unresolvedRestores() const {
+  QStringList topics;
+  for (const SavedSeriesPath& pending : pending_) {
+    topics.append(pending.topic);
+  }
+  return topics;
+}
+
 QDomElement LogDockWidget::xmlSaveState(QDomDocument& doc) const {
   QDomElement root = doc.createElement(kPayloadTag);
   const LogViewState state = view_->state();
@@ -347,41 +441,23 @@ QDomElement LogDockWidget::xmlSaveState(QDomDocument& doc) const {
   return root;
 }
 
+bool LogDockWidget::xmlValidateState(const QDomElement& element) const {
+  return parseLogState(element).has_value();
+}
+
 bool LogDockWidget::xmlLoadState(const QDomElement& element) {
-  if (element.tagName() != kPayloadTag) {
+  const std::optional<ParsedLogState> parsed = parseLogState(element);
+  if (!parsed.has_value()) {
     return false;
   }
-  LogViewState state;
-  if (element.hasAttribute(u"levels"_s)) {
-    const QStringList levels = element.attribute(u"levels"_s).split(u',', Qt::SkipEmptyParts);
-    for (size_t i = 0; i < log_view::kToggleLevelCount; ++i) {
-      state.levels[i] = levels.contains(QString::fromLatin1(log_view::kLevelNames[i].key));
-    }
-  }
-  state.source = element.attribute(u"source_filter"_s);
-  state.category = element.attribute(u"category_filter"_s);
-  state.text = element.attribute(u"text_filter"_s);
-  state.show_future = element.attribute(u"future_rows"_s) == u"grey"_s;
-  for (QDomElement hidden = element.firstChildElement(kHiddenTopicTag); !hidden.isNull();
-       hidden = hidden.nextSiblingElement(kHiddenTopicTag)) {
-    state.hidden_topics.append(hidden.attribute(u"topic"_s));
-  }
-  view_->applyState(state);
+  view_->applyState(parsed->view);
 
   for (const Topic& topic : topics_) {
     view_->removeTopic(topic.id.id);
   }
   topics_.clear();
   pending_.clear();
-  for (QDomElement child = element.firstChildElement(kTopicTag); !child.isNull();
-       child = child.nextSiblingElement(kTopicTag)) {
-    const SavedSeriesPath saved{
-        .topic = child.attribute(u"topic"_s),
-        .field = {},
-        .dataset_id = child.attribute(u"dataset_id"_s).toUInt(),
-        .dataset_source = child.attribute(u"dataset_source"_s),
-        .dataset_path = child.attribute(u"dataset_path"_s),
-    };
+  for (const SavedSeriesPath& saved : parsed->topics) {
     if (!tryResolve(saved) && std::ranges::find(pending_, saved) == pending_.end()) {
       pending_.push_back(saved);
     }

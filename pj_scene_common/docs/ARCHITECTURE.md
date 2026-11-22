@@ -12,7 +12,11 @@ rendering state to itself.
   `renderKey()`, visibility, config UI, XML state. Plus `SceneWarningParts` (a row warning with one slot per
   writer, joined in enum order), `liveTopicTimeRange()` and `latestEntryRenderKey()` for single-topic layers, and
   `derivedTopicPresentation()`.
-- `LayerFactory` (`layer_factory.h`): a family's registry from object type to layer creator.
+- `LayerFactory` (`layer_factory.h`): a family's registry from object type to layer creator and payload validator
+  (the parse-only check of what that layer's `xmlLoadState` accepts), with `types()` listing what it registers.
+- `saved_layer_header.h`: `parseSavedLayerHeader` / `parseSavedTopicHeader`, the one reader of the attributes a
+  saved `<layer>` or `<config_topic>` carries for its topic, used by the restores and the families'
+  `xmlValidateState`.
 - `SceneDockWidget` (`scene_dock_widget.h`): the dock. It is an `IDataWidget` and `IObjectViewer`, so the shell
   drives it through `onTrackerTime`, `retryPendingRestores`, `finishRestore` and `revalidateObjects`.
 - `layer_params.h`: `serializeLayerParams()` and `applyLayerParams()` round-trip a layer's `xmlSaveState` through a
@@ -95,9 +99,19 @@ retried at `finishRestore()`, never failed: two loaded files that both carry `/t
 dataset a layout aimed at one shows is settled before the dock reads it (pj_app ARCHITECTURE "One layout over several
 datasets").
 
-`xmlLoadState` validates the child tags and each layer's `visible` and `order` first, so a malformed state is
-rejected before anything is cleared. A layer whose dataset or topic is not loaded yet is kept as detached XML in the dock's pending queue and
-retried by `retryPendingRestores`. A permanently rejected element (malformed dataset id, bad object type, type mismatch, rejected payload)
+Every reader of those attributes goes through `parseSavedLayerHeader` (`parseSavedTopicHeader` for a
+`<config_topic>`): the base restore, the 3D family's restores and both families' `xmlValidateState`, so the options
+the MCP `widget_state` tool lists are what the restores accept. Its `SavedTopicRef` says how the element names its
+topic: `kOptional` (the base: a generic layer binds by topic name, `dataset_id` 0 names no dataset), `kRequired` (3D
+topic layers and config topics: a topic name and a `dataset_id` of at least 1), `kUnused` (a layer the dock owns,
+such as a 3D local robot model or trail: a bad `dataset_id` is tolerated and noted, as the restore never reads it).
+`visible` and `order` are strict, `pending_intent` is tolerated (only `true` sets it), and `object_type` is reported
+as the factory's types but its rule is the family's. The payload child is checked by the type's
+`LayerFactory::validatePayload`; a type registered without a validator refuses every payload, and a layer whose
+payload carries no options registers `acceptPayloadWithoutOptions` instead.
+
+`xmlLoadState` parses each layer's header first, so a malformed state is rejected before anything is cleared. A layer whose dataset or topic is not loaded yet is kept as detached XML in the dock's pending queue and
+retried by `retryPendingRestores`. A permanently rejected element (bad object type, type mismatch, rejected payload)
 counts toward `workspaceRestoreFailed()`; a pending one does not. `workspaceChanged` reports committed persistent
 mutations and is suppressed while a restore replays (`beginWorkspaceRestore`). `unresolvedBlockingPendingRestores`
 separates saved state that blocks an exact restore from advertised-topic intents (`deferTopicIntent`, marked
@@ -135,9 +149,10 @@ a layer that skips a repeated time overrides it to drop that memo first. Design:
 
 ## Recipes
 
-- **New layer type in a family:** implement `ISceneLayer`, register a creator on `layerFactory()`, return the type
-  from `acceptsObjectType`, and override `renderKey` (`latestEntryRenderKey` for one topic) or the layer repaints
-  on every tick.
+- **New layer type in a family:** implement `ISceneLayer`, register a creator and the layer's payload validator (its
+  static parse-only check, built on the reporting readers of `pj_runtime/XmlStateOptions.h`) on `layerFactory()`,
+  return the type from `acceptsObjectType`, and override `renderKey` (`latestEntryRenderKey` for one topic) or the
+  layer repaints on every tick.
 - **New family:** subclass `SceneDockWidget`: `createSceneView`, `makeContext`, `acceptsObjectType`,
   `syncViewLayers`; call `clearLayers()` in the destructor; override `xmlTag`, `viewRenderKey`, `refreshView`,
   `representativeDatasetId` and the restore hooks as the view needs.

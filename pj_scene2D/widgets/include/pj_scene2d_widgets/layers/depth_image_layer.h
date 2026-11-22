@@ -5,6 +5,7 @@
 #include <QDomElement>
 #include <QWidget>
 #include <memory>
+#include <optional>
 
 #include "pj_scene2d_core/depth_pipeline_source.h"
 #include "pj_scene2d_widgets/layers/scene2d_layer.h"
@@ -24,6 +25,21 @@ class DepthImageLayer final : public Scene2DLayer {
 
   QWidget* createConfigWidget(QWidget* parent) override;
 
+  struct Options {
+    Colormap colormap = Colormap::kTurbo;
+    bool invert = false;
+    // Metres. Auto-fit sets it once from the current frame's percentiles.
+    float near_m = 0.0f;
+    float far_m = 4.0f;
+    // Restored from XML; there is no UI control.
+    float opacity = 1.0f;
+
+    friend bool operator==(const Options&, const Options&) = default;
+  };
+  /// The parse-only half of loadOptions(): the options `element` holds, `current` for an absent attribute; nullopt
+  /// rejects it. Reports through the active XmlOptionsRecorder.
+  [[nodiscard]] static std::optional<Options> parseOptions(const QDomElement& element, const Options& current);
+
  protected:
   [[nodiscard]] std::unique_ptr<MediaSource> createMediaSource(const SceneLayerContext& ctx) override;
   void onBeforeDetach() override;
@@ -37,13 +53,7 @@ class DepthImageLayer final : public Scene2DLayer {
   void setInvert(bool invert);
   void setRange(float near_m, float far_m);
 
-  Colormap colormap_ = Colormap::kTurbo;
-  bool invert_ = false;
-  // Metres. Auto-fit sets it once from the current frame's percentiles.
-  float near_m_ = 0.0f;
-  float far_m_ = 4.0f;
-  // Restored from XML; there is no UI control.
-  float opacity_ = 1.0f;
+  Options options_;
   DepthPipelineSource* depth_source_ = nullptr;
 };
 

@@ -50,6 +50,10 @@ struct MediaViewState {
   friend bool operator==(const MediaViewState&, const MediaViewState&) = default;
 };
 
+/// The zoom range MediaViewerWidget::isViewStateValid() accepts.
+inline constexpr float kMinViewZoom = 1.0f;
+inline constexpr float kMaxViewZoom = 20.0f;
+
 /// The QRhiWidget that draws a MediaSource's frames: render() polls takeFrame(). Pixel layers, overlays and the
 /// view transform are described in docs/ARCHITECTURE.md "Rendering".
 ///

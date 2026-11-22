@@ -833,19 +833,55 @@ void DockWidget::pasteObjectWidgetFromClipboard() {
   if (!widget_clipboard::parse(doc, objectWidgetClipboardTag())) {
     return;
   }
-  const QDomElement element = doc.documentElement();
-  const bool seeds_empty_click_created_widget =
-      object_widget_awaiting_first_topic_ &&
-      (!element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull());
-  if (object_widget_->xmlLoadState(element)) {
-    object_widget_->finishRestore();
-    if (seeds_empty_click_created_widget) {
-      object_widget_awaiting_first_topic_ = false;
-      emit firstObjectTopicAdded();
-    }
+  if (applyState(doc.documentElement())) {
     emit undoableChange();
     focusSelf();
   }
+}
+
+bool DockWidget::applyState(const QDomElement& element) {
+  const bool seeds_empty_click_created_widget =
+      object_widget_ != nullptr && object_widget_awaiting_first_topic_ && objectElementSeedsWidget(element);
+  if (!xmlLoadState(element)) {
+    return false;
+  }
+  finishRestore();
+  if (seeds_empty_click_created_widget) {
+    object_widget_awaiting_first_topic_ = false;
+    emit firstObjectTopicAdded();
+  }
+  return true;
+}
+
+QDomElement DockWidget::xmlSaveState(QDomDocument& doc) const {
+  if (plot_widget_ != nullptr) {
+    return plot_widget_->xmlSaveState(doc);
+  }
+  return object_widget_ != nullptr ? object_widget_->xmlSaveState(doc) : QDomElement();
+}
+
+bool DockWidget::xmlValidateState(const QDomElement& element) const {
+  if (plot_widget_ != nullptr) {
+    return plot_widget_->xmlValidateState(element);
+  }
+  return object_widget_ != nullptr && object_widget_->xmlValidateState(element);
+}
+
+bool DockWidget::xmlLoadState(const QDomElement& element) {
+  if (plot_widget_ != nullptr) {
+    return plot_widget_->xmlLoadState(element);
+  }
+  return object_widget_ != nullptr && object_widget_->xmlLoadState(element);
+}
+
+void DockWidget::finishRestore() {
+  if (object_widget_ != nullptr) {
+    object_widget_->finishRestore();
+  }
+}
+
+QStringList DockWidget::unresolvedRestores() const {
+  return object_widget_ != nullptr ? object_widget_->unresolvedRestores() : QStringList();
 }
 
 bool DockWidget::canPasteObjectWidgetFromClipboard() const {

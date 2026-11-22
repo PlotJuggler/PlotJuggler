@@ -5,6 +5,7 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 #include <functional>
 #include <optional>
@@ -67,7 +68,10 @@ class LogDockWidget : public QWidget, public IDataWidget {
   [[nodiscard]] bool canAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type) const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  [[nodiscard]] bool xmlValidateState(const QDomElement& element) const override;
   void finishRestore() override;
+  /// The topic names of the pending topics.
+  [[nodiscard]] QStringList unresolvedRestores() const override;
 
   /// The app-wide time format of the Time column (the playback readout's).
   void setTimeLabelFormat(TimeLabelFormat format);

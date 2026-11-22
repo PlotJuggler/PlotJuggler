@@ -176,6 +176,14 @@ QString colormapToken(Colormap colormap) {
   return QString::fromLatin1(colormapName(colormap)).toLower();
 }
 
+QStringList colormapTokens() {
+  QStringList tokens;
+  for (int id = 0; id < kColormapCount; ++id) {
+    tokens.push_back(colormapToken(static_cast<Colormap>(id)));
+  }
+  return tokens;
+}
+
 std::optional<Colormap> parseColormap(QStringView token) {
   for (int id = 0; id < kColormapCount; ++id) {
     const auto colormap = static_cast<Colormap>(id);

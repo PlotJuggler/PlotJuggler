@@ -35,8 +35,8 @@ constexpr auto kAgentToolInstructions =
     "one dataset). For numbers use read_series (statistics, min/max buckets, raw samples) and evaluate (a Luau "
     "computation over series or objects that leaves nothing behind) instead of decoding files yourself. "
     "create_derived_series, create_derived_object and create_markers install live results the user sees and "
-    "keeps in their layout. Draw only in your own tabs (plot_tab, scene_view); you cannot see or change the "
-    "user's. playback moves the shared time cursor. If a tool says the user has a dialog open, wait and try "
+    "keeps in their layout. plot_tab and scene_view draw only in your own tabs. playback moves the shared time cursor. "
+    "If a tool says the user has a dialog open, wait and try "
     "again. A long call (a file import, an export, an object evaluation, a question to the user) that outlasts "
     "its wait_s returns a job_id and carries on: job_wait for its result, job_kill to stop it, jobs_list for "
     "yours; meanwhile other calls work.";
@@ -47,14 +47,18 @@ constexpr auto kAgentToolInstructions =
 constexpr auto kAppToolInstructions =
     " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
     "format PlotJuggler reads (the relay hands the page the file), start_stream starts a live source. "
-    "add_script_series (Luau or Python) and add_filter install live derived series too. Take a screenshot to "
-    "check what the user sees.";
+    "add_script_series (Luau or Python) and add_filter install live derived series too. widget_state reads "
+    "and changes the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's "
+    "styles and ranges); its get lists the values each one accepts. Take a screenshot to check what the user "
+    "sees.";
 #else
 constexpr auto kAppToolInstructions =
     " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
     "format PlotJuggler reads, start_stream starts a live source. export_series gives aligned CSV for your own "
-    "tools; add_script_series (Luau or Python) and add_filter install live derived series too. Take a "
-    "screenshot to check what the user sees. Read about before explaining how to do something in the "
+    "tools; add_script_series (Luau or Python) and add_filter install live derived series too. widget_state "
+    "reads and changes the settings of any dock, the user's too (a scene's point size, colours, camera; a "
+    "plot's styles and ranges); its get lists the values each one accepts. Take a screenshot to check what the "
+    "user sees. Read about before explaining how to do something in the "
     "PlotJuggler UI.";
 #endif
 
@@ -97,7 +101,7 @@ bool isReadOnlyTool(const std::string& name) {
 
 bool runsUnderUsersDialog(const std::string& name, const json& args) {
   return isReadOnlyTool(name) || name == "job_kill" || (name == "screenshot" && !args.contains("tab")) ||
-         isUiTool(name);
+         (name == "widget_state" && args.value("action", "") != "set") || isUiTool(name);
 }
 
 bool isJobCapableTool(const std::string& name) {
@@ -261,6 +265,25 @@ json appToolEntries() {
           "PNG of the PlotJuggler window, including GPU-rendered plots and 3D views, and any dialog the user has "
           "open. tab: one of your plot_tab/scene_view tabs to bring to the front first.",
           schema({{"tab", str}, {"max_width", {{"type", "integer"}}}})),
+      tool(
+          "widget_state",
+          "Read or change the settings of any dock, the user's included: plots, 3D and 2D scenes, Log panels, state "
+          "strips. A dock's settings are the XML element a layout saves for it (a scene's camera, grid and each "
+          "layer's point size, colour mode, colormap, range...; a plot's curves, colours, styles and axis ranges).\n"
+          "action 'list': every dock (id, tab, title, kind). 'get' (dock): its element as `xml`, and `options`: per "
+          "element tag, each attribute the dock accepts with its type, allowed `values` or `min`/`max`, and "
+          "`default` (the value an absent attribute takes). 'set' (dock, xml): replaces the dock's state with your "
+          "element: get it right before, change attributes, send the whole element back with the same root tag; keep "
+          "what you do not change as get returned it (it holds the camera and the view: an older get moves them "
+          "back). A refused element leaves the dock as it was, and the error names the "
+          "attribute and what it accepts; an attribute not in options, or a series or topic that is not loaded, is "
+          "refused too. Each set is one undo step for the user. A dock whose kind lists no options (a plugin's "
+          "widget) still round-trips, unchecked.",
+          schema(
+              {{"action", {{"type", "string"}, {"enum", json::array({"list", "get", "set"})}}},
+               {"dock", {{"type", "string"}, {"description", "a dock id from list"}}},
+               {"xml", {{"type", "string"}, {"description", "set: the dock's whole element"}}}},
+              {"action"})),
   });
 }
 

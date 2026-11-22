@@ -140,6 +140,8 @@ TEST(McpJobs, StoppingAJobIsNotReadOnlyButRunsUnderTheUsersDialog) {
   EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("jobs_list", json::object()));
   EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("screenshot", json::object()));
   EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("screenshot", {{"tab", "mine"}}));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("widget_state", {{"action", "get"}}));
+  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("widget_state", {{"action", "set"}}));
   EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("open_file", json::object()));
 }
 

@@ -91,15 +91,12 @@ std::optional<OccupancyGridLayer::ParsedSettings> OccupancyGridLayer::parseSetti
     return std::nullopt;
   }
   ParsedSettings settings;
-  const QString scheme_text = element.attribute(u"color_scheme"_s, u"map"_s);
-  if (scheme_text == "map"_L1) {
-    settings.color_scheme = OccupancyColorScheme::kMap;
-  } else if (scheme_text == "costmap"_L1) {
-    settings.color_scheme = OccupancyColorScheme::kCostmap;
-  } else {
+  QString scheme_text;
+  if (!PJ::readXmlEnum(element, u"color_scheme"_s, {u"map"_s, u"costmap"_s}, u"map"_s, scheme_text)) {
     return std::nullopt;
   }
-  if (!detail::parseFiniteFloat(element, "opacity", 0.7f, 0.0f, 1.0f, settings.opacity)) {
+  settings.color_scheme = scheme_text == "costmap"_L1 ? OccupancyColorScheme::kCostmap : OccupancyColorScheme::kMap;
+  if (!PJ::readXmlFloat(element, u"opacity"_s, 0.7f, 0.0f, 1.0f, settings.opacity)) {
     return std::nullopt;
   }
   return settings;

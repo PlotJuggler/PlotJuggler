@@ -12,6 +12,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QDir>
+#include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
@@ -54,17 +55,21 @@
 #include "PluginPlotTabsController.h"
 #include "PreferencesDialog.h"
 #include "StreamingSourceManager.h"
+#include "dataset_test_helpers.h"
 #include "mcp/McpBrowserLink.h"
 #include "mcp/McpProtocol.h"
 #include "mcp/McpServer.h"
+#include "pj_base/builtin/log_codec.hpp"
 #include "pj_base/sdk/data_source_plugin_base.hpp"
 #include "pj_base/sdk/plugin_data_api.hpp"
 #include "pj_base/sdk/service_registry.hpp"
 #include "pj_base/sdk/service_traits.hpp"
+#include "pj_datastore/object_store.hpp"
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
+#include "pj_plotting/TabbedPlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
@@ -178,6 +183,18 @@ class McpTestPeer {
       McpServer& server, const QByteArray& token, QTcpSocket* socket, const std::string& name, const json& args,
       McpServer::Reply reply) {
     server.callTool(name, args, callerOf(server, token, socket), std::move(reply));
+  }
+  /// The first dock of the user's current tab, holding an (empty) plot.
+  [[nodiscard]] static DockWidget* userPlotDock(MainWindow& window) {
+    DockWidget* dock = window.findChild<TabbedPlotWidget*>(u"tabbedPlotWidget"_s)->currentTab()->plotAt(0);
+    dock->ensurePlotWidget();
+    return dock;
+  }
+  static void undo(MainWindow& window) {
+    window.onUndo();
+  }
+  [[nodiscard]] static std::size_t undoSize(const MainWindow& window) {
+    return window.undo_states_.size();
   }
 
  private:
@@ -447,6 +464,153 @@ TEST_F(McpServerTest, UnderTheUsersDialogOnlyReadsRun) {
   const auto [change_text, change_error] = result(*change);
   EXPECT_TRUE(change_error);
   EXPECT_NE(change_text.find("'Hold on' open"), std::string::npos) << change_text;
+}
+
+// widget_state on one of the user's docks: listed, read with the options its parser reports, a curve added by series
+// path, a set that is one undo step, and refusals (unknown token, other root, missing series) that change nothing.
+TEST_F(McpServerTest, WidgetStateReadsDescribesAndReplacesAUsersDock) {
+  ASSERT_NE(loadMock(), 0);
+  PJ::DockWidget* dock = PJ::McpTestPeer::userPlotDock(*window_);
+  const std::string id = dock->stateId().toStdString();
+
+  const auto [listed, list_failed] = result(call("widget_state", {{"action", "list"}}));
+  ASSERT_FALSE(list_failed) << listed;
+  const json docks = json::parse(listed, nullptr, false);
+  ASSERT_TRUE(docks.is_array()) << listed;
+  EXPECT_TRUE(std::any_of(docks.begin(), docks.end(), [&](const json& entry) {
+    return entry.value("id", "") == id && entry.value("kind", "") == "plot";
+  })) << listed;
+
+  const auto get = [&] {
+    const auto [text, failed] = result(call("widget_state", {{"action", "get"}, {"dock", id}}));
+    EXPECT_FALSE(failed) << text;
+    return json::parse(text, nullptr, false);
+  };
+  const auto set = [&](const QDomDocument& doc) {
+    return result(call("widget_state", {{"action", "set"}, {"dock", id}, {"xml", doc.toString().toStdString()}}));
+  };
+  const auto current = [&] {
+    QDomDocument doc;
+    EXPECT_TRUE(doc.setContent(QString::fromStdString(get().value("xml", ""))));
+    return doc;
+  };
+
+  const json before = get();
+  const json style = before["options"]["plot"]["style"];
+  ASSERT_EQ(style.value("type", ""), "enum") << before.dump();
+  EXPECT_NE(std::find(style["values"].begin(), style["values"].end(), "Dots"), style["values"].end());
+
+  // A curve named by its series path binds as in a layout load (an emptied plot would fall back to the chooser).
+  QDomDocument doc = current();
+  QDomElement curve = doc.createElement(u"curve"_s);
+  curve.setAttribute(u"topic"_s, u"mock/file_data"_s);
+  curve.setAttribute(u"field"_s, u"value"_s);
+  doc.documentElement().appendChild(curve);
+  const auto [added_text, added_failed] = set(doc);
+  ASSERT_FALSE(added_failed) << added_text;
+  ASSERT_EQ(dock->plotWidget()->curveList().size(), 1U);
+
+  doc = current();
+  const QString old_style = doc.documentElement().attribute(u"style"_s);
+  ASSERT_NE(old_style, u"Dots"_s);
+  const std::size_t undo_before = PJ::McpTestPeer::undoSize(*window_);
+  doc.documentElement().setAttribute(u"style"_s, u"Dots"_s);
+  const auto [set_text, set_failed] = set(doc);
+  ASSERT_FALSE(set_failed) << set_text;
+  EXPECT_EQ(current().documentElement().attribute(u"style"_s), u"Dots"_s);
+  EXPECT_EQ(PJ::McpTestPeer::undoSize(*window_), undo_before + 1);
+
+  // A layout load reads an unknown token as the default; an agent's set is refused instead.
+  doc.documentElement().setAttribute(u"style"_s, u"Blob"_s);
+  const auto [bad_text, bad_failed] = set(doc);
+  EXPECT_TRUE(bad_failed);
+  EXPECT_NE(bad_text.find("style=\"Blob\""), std::string::npos) << bad_text;
+  EXPECT_EQ(current().documentElement().attribute(u"style"_s), u"Dots"_s);
+
+  const auto [root_text, root_failed] =
+      result(call("widget_state", {{"action", "set"}, {"dock", id}, {"xml", "<scene3d/>"}}));
+  EXPECT_TRUE(root_failed);
+  EXPECT_NE(root_text.find("<plot>"), std::string::npos) << root_text;
+
+  doc = current();
+  QDomElement missing = doc.createElement(u"curve"_s);
+  missing.setAttribute(u"topic"_s, u"no/such"_s);
+  missing.setAttribute(u"field"_s, u"value"_s);
+  doc.documentElement().appendChild(missing);
+  const auto [missing_text, missing_failed] = set(doc);
+  EXPECT_TRUE(missing_failed);
+  EXPECT_NE(missing_text.find("no loaded series"), std::string::npos) << missing_text;
+  EXPECT_EQ(dock->plotWidget()->curveList().size(), 1U);
+
+  // An element copied from another plot keeps this plot's id: two plots with one id would share pending bindings.
+  doc = current();
+  const QString own_id = doc.documentElement().attribute(u"id"_s);
+  doc.documentElement().setAttribute(u"id"_s, u"another-plot"_s);
+  const auto [copied_text, copied_failed] = set(doc);
+  ASSERT_FALSE(copied_failed) << copied_text;
+  EXPECT_EQ(current().documentElement().attribute(u"id"_s), own_id);
+
+  // A misspelt attribute would be ignored by the parser: refused, named.
+  doc = current();
+  doc.documentElement().setAttribute(u"colour"_s, u"red"_s);
+  const auto [typo_text, typo_failed] = set(doc);
+  EXPECT_TRUE(typo_failed);
+  EXPECT_NE(typo_text.find("plot.colour"), std::string::npos) << typo_text;
+
+  // The copy changed nothing once its id was kept, so it added no undo step: one undo reverts the style.
+  PJ::McpTestPeer::undo(*window_);
+  EXPECT_EQ(current().documentElement().attribute(u"style"_s), old_style);
+
+  const auto [unknown_text, unknown_failed] = result(call("widget_state", {{"action", "get"}, {"dock", "nope"}}));
+  EXPECT_TRUE(unknown_failed) << unknown_text;
+}
+
+// An object dock goes through the same set: a Log panel's topic that is not loaded would leave the panel waiting, shown
+// nowhere, so the set is refused and the panel keeps the topic it shows.
+TEST_F(McpServerTest, WidgetStateRefusesATopicThatIsNotLoaded) {
+  PJ::AppSession& app = window_->appSession();
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "robot.mcap");
+  ASSERT_NE(dataset, 0U);
+  auto topic = app.sessionManager().objectStore().registerTopic(
+      PJ::ObjectTopicDescriptor{
+          .dataset_id = dataset, .topic_name = "/rosout", .metadata_json = R"({"builtin_object_type":"kLog"})"});
+  ASSERT_TRUE(topic.has_value()) << topic.error();
+  PJ::sdk::Log entry;
+  entry.message = "hello";
+  ASSERT_TRUE(
+      app.sessionManager().objectStore().pushOwned(*topic, 1'000'000'000LL, PJ::serializeLog(entry)).has_value());
+  app.catalogModel().rebuildFromDatastore();
+  QString key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/rosout"_s) {
+      key = item.key;
+    }
+  }
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::DockWidget* dock = window_->findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s)->currentTab()->plotAt(0);
+  auto* log_button = dock->findChild<QToolButton*>(u"buttonVizLog"_s);
+  ASSERT_NE(log_button, nullptr);
+  log_button->click();
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{key})));
+  const std::string id = dock->stateId().toStdString();
+
+  const auto [got, get_failed] = result(call("widget_state", {{"action", "get"}, {"dock", id}}));
+  ASSERT_FALSE(get_failed) << got;
+  const std::string xml = json::parse(got).value("xml", "");
+  ASSERT_NE(xml.find("/rosout"), std::string::npos) << xml;
+
+  std::string renamed = xml;
+  renamed.replace(renamed.find("/rosout"), std::string("/rosout").size(), "/no_such_log");
+  const auto [missing_text, missing_failed] =
+      result(call("widget_state", {{"action", "set"}, {"dock", id}, {"xml", renamed}}));
+  EXPECT_TRUE(missing_failed);
+  EXPECT_NE(missing_text.find("/no_such_log"), std::string::npos) << missing_text;
+  const auto [after, after_failed] = result(call("widget_state", {{"action", "get"}, {"dock", id}}));
+  ASSERT_FALSE(after_failed) << after;
+  EXPECT_EQ(json::parse(after).value("xml", ""), xml);
 }
 
 // ui_plot reads what the canvas shows, which ui_tree cannot (the canvas is painted): a replay script asserts on it.

@@ -79,10 +79,18 @@ Derived series reach this module as ordinary datastore topics through the catalo
   only what they handed out and a layout restore sets colours without them, so a plain counter repeats a restored
   colour; and a fixed slot on exhaustion paints every further curve the same colour, where the least-used rule spreads
   the repeats evenly. A colour the registry remembers for that curve is honoured as it is.
+- **`PlotWidget` and `StateTransitionsDockWidget` parse their XML once, in `parseState`**, which xmlLoadState and
+  xmlValidateState share, and every attribute xmlSaveState writes is read there through a reporting reader
+  (`pj_runtime/XmlStateOptions.h`, `widget/src/ReportedXml.h`): an attribute read any other way is missing from the
+  options the MCP `widget_state` tool serves. `widget_state_options_test` fails on an unreported saved attribute.
 - **`visibleXRangeChanged`** reports every move of the time axis; `rectChanged` drives the zoom link only.
 - **Object-dock drop hover** consults `IDataWidget::canAcceptObjectTopic` before accepting a catalog drag, so a view's
   payload-dependent refusal shows in the cursor. "Open Settings" / "Close Settings" in an object dock's context menu
   emits `settingsPanelToggleRequested` through `PlotDocker`; the host-supplied visibility query picks the label.
+- **A dock's state goes through `DockWidget`'s `IDataWidget` calls**, which forward to the plot or object widget it
+  hosts; a load a user action makes (a paste, an MCP `widget_state` set) goes through `DockWidget::applyState`, which
+  adds `finishRestore` and the first-topic seeding of an empty click-created object widget. A caller branching on plot
+  versus object itself skips that seeding, and streaming playback is not seeded.
 - **pj_plotting stays agnostic to scene families:** placeholder icons and drops go to the shell through
   `objectFamilyRequested` and the object-widget factory; the shell alone maps families to kinds.
 

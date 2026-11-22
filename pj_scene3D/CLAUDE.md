@@ -37,6 +37,13 @@ resource; the dock (`Scene3DDockWidget`, an `IDataWidget` on `pj_scene_common`'s
   by the first sample's `encoding`. Drop hover uses `canAcceptObjectTopic` and never creates a layer; an advertised
   image (no payload yet) is provisionally accepted and validated on its first sample. Intrinsics join a `CameraInfo`
   by `frame_id`, never by topic name.
+- **Saved state is self-describing:** every attribute an `xmlSaveState` in this family writes is read in
+  `Scene3DDockWidget::xmlValidateState` through a reporting reader (the `PJ::readXml*` readers of
+  `pj_runtime/XmlStateOptions.h`, `pj_scene_common`'s `parseSavedLayerHeader` for the `<layer>` / `<config_topic>`
+  header, or the family's `layer_xml_validation.h` and `scene_state_xml.h` built on them), the same readers the
+  loaders use, or the MCP `widget_state` tool lists stale or missing options. A layer type's payload check is the
+  validator registered with its creator on `layerFactory()`; `scene3d_dock_xml_options_test` fails on an
+  unreported attribute.
 - **The fixed-frame memory is a view preference** (`FixedFrameMemory`, owned by `pj_app`), not TF data: keep it out
   of `pj_runtime`.
 - **Context menu:** a right-click off a TF frame is left to the host `DockWidget`'s menu; on a frame the dock opens

@@ -4673,11 +4673,14 @@ void MainWindow::refreshCustomWidgetsAvailability() {
 }
 
 void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) {
+  forEachTabDock([&operation](PlotDocker*, DockWidget* dock) { operation(dock); });
+}
+
+void MainWindow::forEachTabDock(const std::function<void(PlotDocker*, DockWidget*)>& operation) {
   ui_->tabbedPlotWidget->forEachDocker([&operation](PlotDocker* docker) {
     for (int index = 0; index < docker->plotCount(); ++index) {
-      DockWidget* dock = docker->plotAt(index);
-      if (dock != nullptr) {
-        operation(dock);
+      if (DockWidget* dock = docker->plotAt(index); dock != nullptr) {
+        operation(docker, dock);
       }
     }
   });
@@ -8197,6 +8200,29 @@ void MainWindow::onUndoableChange(bool force_new_state) {
     return;
   }
   pushUndoState(force_new_state);
+}
+
+bool MainWindow::beginAgentDockChange() {
+  if (applying_state_ || progressive_layout_in_flight_) {
+    return false;
+  }
+  if (scene_undo_debounce_.isActive()) {
+    scene_undo_debounce_.stop();
+    onUndoableChange();
+  }
+  return true;
+}
+
+void MainWindow::endAgentDockChange(DockWidget* dock) {
+  if (PlotWidget* plot = dock->plotWidget(); plot != nullptr) {
+    onPlotZoomChanged(plot, plot->currentBoundingRect());
+  }
+  if (dock == activeFocusedDock()) {
+    onDockFocused(nullptr);  // the panels skip a re-bind to the dock they show
+    onDockFocused(dock);
+  }
+  scene_undo_debounce_.stop();  // the load's own workspaceChanged: recorded by the forced step
+  onUndoableChange(/*force_new_state=*/true);
 }
 
 QList<layout_xml::SeriesPath> MainWindow::rebindCurvesToLoadedDatasets(QDomDocument& doc) {
