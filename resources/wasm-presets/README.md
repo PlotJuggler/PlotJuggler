@@ -130,9 +130,8 @@ It was converted from the PandaSet release as mirrored, unofficially, on
   counts per sweep, which step at the joins because each sequence was annotated on
   its own.
 
-`README.txt` beside it gives the attribution and the citation and lists the changes
-made for the earlier recording there, `pandaset_092-094_20s.mcap`, which differ
-only in `/tf`. The layout shows the six cameras across the top with their box overlays;
+`README_v3.txt` beside it gives the attribution and the citation and lists the changes
+made. The layout shows the six cameras across the top with their box overlays;
 below them the yaw rate, the speed and an aerial (top-down orthographic) view
 coloured by intensity in a column, beside a large orbiting 3D view coloured by
 height; both 3D views draw the lidar and the boxes in `base_link`. Its MCAP Loader
@@ -145,7 +144,7 @@ not legible at that size.
 
 Redistribution basis: PandaSet (c) Scale AI, Inc. and Hesai Photonics Technology
 Co., Ltd, is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-with the PandaSet Dataset Terms; the `README.txt` beside the recording gives that
+with the PandaSet Dataset Terms; the `README_v3.txt` beside the recording gives that
 attribution, lists the changes made, as the licence requires, and states that the
 recording is not endorsed by Scale AI or Hesai. The recording was made with a
 converter outside this repository; the topics and processing above are what it did.
