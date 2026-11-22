@@ -383,7 +383,10 @@ submesh.
 Every material takes `model.frag`'s metallic-roughness path (normal, occlusion, emissive maps; key and camera-locked
 fill lights; an analytic ground-to-sky ambient, no HDRI). A URDF box, cylinder, sphere or placeholder draws with the
 link's colour alone (`use_material` false): their unit meshes carry a material and vertex colour that would apply
-it twice. `setShadowMap`/`clearShadowMap` rebuild every material binding atomically. The EDL mask pipelines are
+it twice. Alpha follows the material's glTF mode (other formats read as OPAQUE): OPAQUE and MASK write only the
+layer and mesh opacity, ignoring texture and vertex alpha (MASK first discards below the cutoff), since alpha left in
+the colour target shows the background through the mesh; BLEND draws in the translucent bucket.
+`setShadowMap`/`clearShadowMap` rebuild every material binding atomically. The EDL mask pipelines are
 derived from the colour pipelines' description (`ensureMeshMaskPipelines`).
 
 **Grid and TF lines (`GridRhiPass`).** The grid is built once per settings or theme change at the fixed-frame origin;

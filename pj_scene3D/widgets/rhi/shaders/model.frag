@@ -115,6 +115,12 @@ void main() {
     if (model_params.y > 0.5 && model_params.y < 1.5 && base_alpha < model_params.z) {
         discard;
     }
+    // Opaque and mask modes draw kept fragments fully opaque (glTF OPAQUE, MASK): texture or vertex alpha
+    // written to the target lets the composite show the background through the mesh. The tint keeps the
+    // layer opacity.
+    if (model_params.y < 1.5) {
+        base_alpha = model_tint.a;
+    }
 
     float metallic = clamp(model_pbr_factors.x, 0.0, 1.0);
     float roughness = model_pbr_factors.w > 0.5 ? 0.85 : model_pbr_factors.y;
