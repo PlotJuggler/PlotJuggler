@@ -4,12 +4,17 @@
 #include <gtest/gtest.h>
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
+#include <qwt_plot_marker.h>
+#include <qwt_scale_map.h>
+#include <qwt_text.h>
 
 #include <QApplication>
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QLocale>
 #include <QTimeZone>
+#include <QVector>
+#include <algorithm>
 #include <cmath>
 
 #include "pj_plotting/CurveTracker.h"
@@ -221,6 +226,44 @@ TEST_F(PlotScaleDrawTest, TrackerValueBoxGlidesToTheValue) {
   // A seek (a click far along the time axis) moves the box at once.
   tracker.setPosition(QPointF(1.0, 0.0));
   EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 10.0);
+}
+
+// The value box is centred on the sampled value: at a sample on the top or bottom edge of the view, half of it would
+// fall outside the canvas and be clipped.
+TEST_F(PlotScaleDrawTest, TrackerValueBoxStaysInsideTheCanvas) {
+  TestPlot plot;
+  plot.resize(600, 200);
+  plot.show();
+  QApplication::processEvents();
+  QwtPlot* qwt = plot.qwtPlot();
+  auto* curve = new QwtPlotCurve(u"speed"_s);
+  curve->setSamples(QVector<QPointF>{{0.0, 0.0}, {5.0, 10.0}, {10.0, 0.0}});
+  curve->attach(qwt);
+  qwt->setAxisScale(QwtPlot::xBottom, 0.0, 10.0);
+  qwt->setAxisScale(QwtPlot::yLeft, 0.0, 10.0);
+  qwt->replot();
+  const QwtScaleMap y_map = qwt->canvasMap(QwtPlot::yLeft);
+  const double canvas_top = std::min(y_map.p1(), y_map.p2());
+  const double canvas_bottom = std::max(y_map.p1(), y_map.p2());
+  ASSERT_GT(canvas_bottom - canvas_top, 100.0) << "the plot was not laid out";
+
+  PJ::CurveTracker tracker(qwt, Qt::red);
+  for (const double x : {5.0, 0.0}) {  // the sample on the top edge, then the one on the bottom edge
+    tracker.setPosition(QPointF(x, 0.0));
+    ASSERT_TRUE(tracker.valueBoxVisible());
+    const QwtPlotMarker* box = nullptr;
+    for (const QwtPlotItem* item : qwt->itemList(QwtPlotItem::Rtti_PlotMarker)) {
+      const auto* marker = dynamic_cast<const QwtPlotMarker*>(item);
+      if (marker != nullptr && !marker->label().isEmpty()) {
+        box = marker;
+      }
+    }
+    ASSERT_NE(box, nullptr);
+    const double centre = y_map.transform(box->yValue());
+    const double half_height = 0.5 * box->label().textSize().height();
+    EXPECT_GE(centre - half_height, canvas_top - 0.5) << "x=" << x;
+    EXPECT_LE(centre + half_height, canvas_bottom + 0.5) << "x=" << x;
+  }
 }
 
 // "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass
