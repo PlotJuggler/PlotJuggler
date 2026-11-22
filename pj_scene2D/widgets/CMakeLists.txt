@@ -76,6 +76,7 @@ set(PJ_SCENE2D_WIDGETS_SOURCES
   src/layers/image_layer.cpp
   src/layers/scene2d_layer.cpp
   src/layers/scene_decoder_layer.cpp
+  src/layers/xml_readers.h
   src/media_viewer_widget.cpp
   src/pixel_inspector.cpp
   src/scene2d_pipelines.cpp

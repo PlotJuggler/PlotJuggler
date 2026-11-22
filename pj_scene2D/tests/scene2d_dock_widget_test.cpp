@@ -8,6 +8,7 @@
 #include <QDomDocument>
 #include <QDomElement>
 #include <QElapsedTimer>
+#include <QList>
 #include <QMouseEvent>
 #include <QPointF>
 #include <QSet>
@@ -17,10 +18,12 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "pj_base/builtin/camera_info_codec.hpp"
@@ -30,6 +33,7 @@
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/Scene2DDockWidget.h"
 #include "pj_scene2d_widgets/layers/depth_image_layer.h"
@@ -1244,6 +1248,151 @@ TEST(Scene2DDockWidget, AnnotationsOfAnUnmarkedTopicAreShownWhateverImageTheyNam
   ASSERT_EQ(pixels->overlays.size(), 1u);
   EXPECT_EQ(pixels->overlays[0].annotations.size(), 1u);
   EXPECT_NE(warned, std::optional<bool>(true));
+}
+
+namespace {
+
+QList<QDomElement> elementsNamed(const QDomElement& root, const QString& tag) {
+  QList<QDomElement> found;
+  if (root.tagName() == tag) {
+    found.append(root);
+  }
+  const QDomNodeList descendants = root.elementsByTagName(tag);
+  for (int i = 0; i < descendants.size(); ++i) {
+    found.append(descendants.at(i).toElement());
+  }
+  return found;
+}
+
+// A copy of `root` with the option's attribute set to `value` on every element that carries it (object_type pairs with
+// layer_kind, so that one goes).
+QDomElement withAttribute(
+    QDomDocument& doc, const QDomElement& root, const PJ::XmlOption& option, const QString& value) {
+  QDomElement copy = doc.importNode(root, /*deep=*/true).toElement();
+  doc.appendChild(copy);
+  int substituted = 0;
+  for (QDomElement target : elementsNamed(copy, option.element)) {
+    if (!target.hasAttribute(option.attribute)) {
+      continue;
+    }
+    ++substituted;
+    if (option.attribute == u"object_type"_s) {
+      target.removeAttribute(u"layer_kind"_s);
+    }
+    target.setAttribute(option.attribute, value);
+  }
+  EXPECT_GT(substituted, 0) << "the saved state has no <" << qPrintable(option.element) << " "
+                            << qPrintable(option.attribute) << ">";
+  return copy;
+}
+
+// The widget's own saved state, validated: every saved attribute has a reporting reader, each enum token validates in
+// place of the saved value, and an unparsable value is refused naming the attribute, as xmlLoadState refuses it.
+// `accepts_bad` names the "element.attribute" pairs that read an unparsable value as a fallback instead: validation
+// accepts them as xmlLoadState does, yet still names the attribute in firstRejection().
+void expectValidationDescribes(
+    const QDomElement& saved, const std::function<bool(const QDomElement&)>& validate,
+    const std::function<bool(const QDomElement&)>& load, const QSet<QString>& accepts_bad) {
+  std::vector<PJ::XmlOption> options;
+  {
+    PJ::XmlOptionsRecorder recorder;
+    ASSERT_TRUE(validate(saved)) << qPrintable(recorder.firstRejection());
+    options = recorder.options();
+  }
+  EXPECT_EQ(PJ::unreportedXmlAttributes(saved, options), QStringList());
+
+  for (const PJ::XmlOption& option : options) {
+    const QString name = option.element + u'.' + option.attribute;
+    for (const QString& token : option.values) {
+      QDomDocument doc;
+      PJ::XmlOptionsRecorder recorder;
+      EXPECT_TRUE(validate(withAttribute(doc, saved, option, token)));
+      EXPECT_EQ(recorder.firstRejection(), QString()) << qPrintable(name + u'=' + token);
+    }
+    QDomDocument doc;
+    const QDomElement bad = withAttribute(doc, saved, option, u"~bad~"_s);
+    PJ::XmlOptionsRecorder recorder;
+    const bool accepted = validate(bad);
+    const bool free_text = option.type == u"text"_s;
+    EXPECT_EQ(accepted, free_text || accepts_bad.contains(name)) << qPrintable(name);
+    if (!free_text) {  // a text value that names nothing loads as a pending topic or a refused dataset
+      EXPECT_EQ(load(bad), accepted) << qPrintable(name);
+      EXPECT_TRUE(recorder.firstRejection().contains(option.attribute + u"=\"~bad~\""_s))
+          << qPrintable(name + u": " + recorder.firstRejection());
+    }
+  }
+}
+
+}  // namespace
+
+TEST(Scene2DDockWidget, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
+  PJ::SessionManager session;
+  const auto color = registerTopic(session, 1, "/camera/color/image");
+  const auto depth = registerTopic(session, 1, "/camera/depth/image");
+  const auto annotations = registerTopic(session, 1, "/camera/annotations");
+  ASSERT_TRUE(session.objectStore()
+                  .pushOwned(color, 100, makeImageBytes(2, 2, "rgb8", std::vector<uint8_t>(2 * 2 * 3, 0x20)))
+                  .has_value());
+  ASSERT_TRUE(session.objectStore()
+                  .pushOwned(depth, 100, makeImageBytes(2, 2, "16UC1", std::vector<uint8_t>(2 * 2 * 2, 0x10)))
+                  .has_value());
+  session.setDatasetSourcePath(1, u"/data/camera.mcap"_s);
+
+  PJ::Scene2DDockWidget dock;
+  dock.setSessionManager(&session);
+  ASSERT_TRUE(dock.addTopic(color, PJ::sdk::BuiltinObjectType::kImage, u"color"_s));
+  ASSERT_TRUE(dock.addTopic(depth, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s));
+  ASSERT_TRUE(dock.addTopic(annotations, PJ::sdk::BuiltinObjectType::kImageAnnotations, u"annotations"_s));
+  dock.setViewRotation(90);
+
+  QDomDocument doc;
+  const QDomElement saved = dock.xmlSaveState(doc);
+  saved.firstChildElement(u"layer"_s).setAttribute(u"pending_intent"_s, u"true"_s);
+  expectValidationDescribes(
+      saved, [&](const QDomElement& e) { return dock.xmlValidateState(e); },
+      [&](const QDomElement& e) { return dock.xmlLoadState(e); },
+      {u"layer.pending_intent"_s, u"scene2d_layer.colormap"_s});
+
+  PJ::XmlOptionsRecorder recorder;
+  EXPECT_FALSE(dock.xmlValidateState(doc.createElement(u"scene3d"_s)));
+  EXPECT_EQ(recorder.firstRejection(), u"<scene3d>: expected a <scene2d> element"_s);
+}
+
+TEST(DepthImageLayer, ToleratedValuesLoadAsBeforeYetValidationNamesThem) {
+  using Attributes = std::vector<std::pair<QString, QString>>;
+  const std::vector<std::pair<Attributes, QString>> cases = {
+      {{{u"colormap"_s, u"jet"_s}}, u"colormap"_s},                 // reads as turbo
+      {{{u"opacity"_s, u"3"_s}}, u"opacity"_s},                     // clamped to 1
+      {{{u"near_m"_s, u"5"_s}, {u"far_m"_s, u"1"_s}}, u"far_m"_s},  // swapped
+  };
+  for (const auto& [attributes, named] : cases) {
+    QDomDocument doc;
+    QDomElement payload = doc.createElement(u"scene2d_layer"_s);
+    for (const auto& [name, value] : attributes) {
+      payload.setAttribute(name, value);
+    }
+    PJ::DepthImageLayer layer(PJ::ObjectTopicId{1}, PJ::sdk::BuiltinObjectType::kImage, u"depth"_s);
+    EXPECT_TRUE(layer.xmlLoadState(payload)) << qPrintable(named);
+    PJ::XmlOptionsRecorder recorder;
+    EXPECT_TRUE(PJ::DepthImageLayer::parseOptions(payload, PJ::DepthImageLayer::Options{}).has_value());
+    EXPECT_TRUE(recorder.firstRejection().contains(u" "_s + named + u"="_s)) << qPrintable(recorder.firstRejection());
+  }
+}
+
+TEST(Scene2DDockWidget, ValidationListsLayerAndViewOptionsOfAnEmptyState) {
+  PJ::Scene2DDockWidget dock;
+  QDomDocument doc;
+  PJ::XmlOptionsRecorder recorder;
+  ASSERT_TRUE(dock.xmlValidateState(dock.xmlSaveState(doc)));
+  QStringList reported;
+  for (const PJ::XmlOption& option : recorder.options()) {
+    reported.append(option.element + u'.' + option.attribute);
+  }
+  for (const QString& expected :
+       {u"layer.topic_name"_s, u"layer.layer_kind"_s, u"scene2d_layer.rectify_enabled"_s, u"scene2d_layer.near_m"_s,
+        u"view.zoom"_s, u"view.rotation"_s}) {
+    EXPECT_TRUE(reported.contains(expected)) << qPrintable(expected);
+  }
 }
 
 int main(int argc, char** argv) {

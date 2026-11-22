@@ -121,16 +121,14 @@ MediaViewState MediaViewerWidget::viewState() const noexcept {
 }
 
 bool MediaViewerWidget::isViewStateValid(const MediaViewState& state) noexcept {
-  constexpr float kMinZoom = 1.0f;
-  constexpr float kMaxZoom = 20.0f;
   if (!std::isfinite(state.zoom) || !std::isfinite(state.pan_x) || !std::isfinite(state.pan_y) ||
-      state.zoom < kMinZoom || state.zoom > kMaxZoom) {
+      state.zoom < kMinViewZoom || state.zoom > kMaxViewZoom) {
     return false;
   }
   if (std::find(kViewRotations.begin(), kViewRotations.end(), state.rotation_deg) == kViewRotations.end()) {
     return false;
   }
-  return state.zoom != kMinZoom || (state.pan_x == 0.0f && state.pan_y == 0.0f);
+  return state.zoom != kMinViewZoom || (state.pan_x == 0.0f && state.pan_y == 0.0f);
 }
 
 bool MediaViewerWidget::setViewState(const MediaViewState& state) {

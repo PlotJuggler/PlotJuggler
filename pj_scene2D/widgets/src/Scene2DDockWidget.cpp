@@ -10,6 +10,7 @@
 #include <QPointer>
 #include <QSizePolicy>
 #include <QStackedWidget>
+#include <QStringList>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -17,6 +18,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,6 +26,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DerivedTopics.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene2d_core/borrowed_media_source.h"
 #include "pj_scene2d_core/composite_media_source.h"
 #include "pj_scene2d_core/image_resolve.h"
@@ -35,6 +38,7 @@
 #ifdef PJ_HAS_FFMPEG
 #include "pj_scene2d_widgets/layers/video_layer.h"
 #endif
+#include "layers/xml_readers.h"
 #include "pj_scene2d_widgets/media_viewer_widget.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/RenderingWarningLabel.h"
@@ -54,112 +58,49 @@ constexpr auto kLayerKind = "layer_kind";
 constexpr auto kImageKind = "image";
 constexpr auto kDepthKind = "depth";
 
+// The one reader of a <view>, for xmlLoadState and xmlValidateState. Without one (a layout written before viewport
+// persistence) every attribute takes its fallback, so the reporting readers still see an element.
 [[nodiscard]] std::optional<MediaViewState> parseViewState(const QDomElement& root) {
-  const QDomElement view = root.firstChildElement(QString::fromLatin1(kViewTag));
+  using namespace scene2d_xml;
+  QDomDocument absent;
+  QDomElement view = root.firstChildElement(QString::fromLatin1(kViewTag));
   if (view.isNull()) {
-    return MediaViewState{};  // layout written before viewport persistence
+    view = absent.createElement(QString::fromLatin1(kViewTag));
   }
 
   MediaViewState state;
-  const auto read = [&view](const char* name, float fallback, bool& valid) {
-    const QString key = QString::fromLatin1(name);
-    if (!view.hasAttribute(key)) {
-      return fallback;
-    }
-    bool ok = false;
-    const float value = view.attribute(key).toFloat(&ok);
-    valid = valid && ok;
-    return value;
-  };
-  bool valid = true;
-  state.zoom = read(kViewZoom, state.zoom, valid);
-  state.pan_x = read(kViewPanX, state.pan_x, valid);
-  state.pan_y = read(kViewPanY, state.pan_y, valid);
-  if (const QString rotation = view.attribute(QString::fromLatin1(kViewRotation)); !rotation.isEmpty()) {
-    bool ok = false;
-    state.rotation_deg = rotation.toInt(&ok);
-    valid = valid && ok;
+  bool valid = readFloat(view, QString::fromLatin1(kViewZoom), state.zoom, kMinViewZoom, kMaxViewZoom, state.zoom);
+  valid = readFloat(view, QString::fromLatin1(kViewPanX), state.pan_x, {}, {}, state.pan_x) && valid;
+  valid = readFloat(view, QString::fromLatin1(kViewPanY), state.pan_y, {}, {}, state.pan_y) && valid;
+
+  QStringList rotations;
+  for (const int degrees : kViewRotations) {
+    rotations.append(QString::number(degrees));
   }
-  if (!valid || !MediaViewerWidget::isViewStateValid(state)) {
+  const QString rotation_key = QString::fromLatin1(kViewRotation);
+  XmlOptionsRecorder::noteOption(
+      view, {.attribute = rotation_key,
+             .type = u"enum"_s,
+             .values = rotations,
+             .fallback = QString::number(state.rotation_deg)});
+  if (const QString rotation = view.attribute(rotation_key); !rotation.isEmpty()) {
+    bool ok = false;
+    const int degrees = rotation.toInt(&ok);
+    if (ok && std::ranges::find(kViewRotations, degrees) != kViewRotations.end()) {
+      state.rotation_deg = degrees;
+    } else {
+      XmlOptionsRecorder::noteRejection(view, rotation_key, u"expected one of "_s + rotations.join(u", "_s));
+      valid = false;
+    }
+  }
+  if (!valid) {
+    return std::nullopt;
+  }
+  if (!MediaViewerWidget::isViewStateValid(state)) {
+    XmlOptionsRecorder::noteRejection(view, {}, u"pan_x and pan_y must be 0 at zoom 1"_s);
     return std::nullopt;
   }
   return state;
-}
-
-[[nodiscard]] bool validateLayerPayloads(const QDomElement& root) {
-  for (QDomElement layer = root.firstChildElement(u"layer"_s); !layer.isNull();
-       layer = layer.nextSiblingElement(u"layer"_s)) {
-    const auto object_type = sdk::parseBuiltinObjectType(layer.attribute(u"object_type"_s).toStdString());
-    if (!object_type.has_value()) {
-      return false;
-    }
-    const QString kind = layer.attribute(QString::fromLatin1(kLayerKind));
-    if (!kind.isEmpty() && kind != QString::fromLatin1(kImageKind) && kind != QString::fromLatin1(kDepthKind)) {
-      return false;
-    }
-
-    const bool image_type = *object_type == sdk::BuiltinObjectType::kImage;
-    const bool depth_type = *object_type == sdk::BuiltinObjectType::kDepthImage;
-    if ((!kind.isEmpty() && !image_type && !depth_type) || (kind == QString::fromLatin1(kImageKind) && !image_type)) {
-      return false;
-    }
-
-    const QDomElement payload = layer.firstChildElement();
-    if (payload.isNull()) {
-      continue;
-    }
-    if (!payload.nextSiblingElement().isNull() || payload.tagName() != u"scene2d_layer"_s) {
-      return false;
-    }
-
-    // kImage XML without layer_kind: depth settings identify a depth layer, as first-sample dispatch would.
-    const bool has_depth_options = payload.hasAttribute(u"colormap"_s) || payload.hasAttribute(u"invert"_s) ||
-                                   payload.hasAttribute(u"near_m"_s) || payload.hasAttribute(u"far_m"_s) ||
-                                   payload.hasAttribute(u"opacity"_s);
-    const bool validate_as_depth =
-        depth_type || kind == QString::fromLatin1(kDepthKind) || (image_type && kind.isEmpty() && has_depth_options);
-    if (validate_as_depth) {
-      DepthImageLayer candidate(ObjectTopicId{}, *object_type, QString());
-      if (!candidate.xmlLoadState(payload)) {
-        return false;
-      }
-    } else if (image_type) {
-      ImageLayer candidate(ObjectTopicId{}, *object_type, QString());
-      if (!candidate.xmlLoadState(payload)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-// Validates generic-layout (unqualified) layers; the base restore binds them (uniqueObjectTopic), pending while their
-// topic is absent or ambiguous. A source-qualified layer stays source-bound.
-[[nodiscard]] bool validateGenericLayerIdentities(QDomElement root) {
-  for (QDomElement layer = root.firstChildElement(u"layer"_s); !layer.isNull();
-       layer = layer.nextSiblingElement(u"layer"_s)) {
-    const QString dataset_id_key = u"dataset_id"_s;
-    const bool has_dataset_id = layer.hasAttribute(dataset_id_key);
-    bool dataset_ok = false;
-    const qulonglong dataset_value = layer.attribute(dataset_id_key).toULongLong(&dataset_ok);
-    if (has_dataset_id && (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max())) {
-      return false;
-    }
-    if ((has_dataset_id && dataset_value != 0) || !layer.attribute(u"dataset_source"_s).isEmpty() ||
-        !layer.attribute(u"dataset_path"_s).isEmpty()) {
-      continue;
-    }
-    // A zero id or an empty qualifier names no dataset: dropped, so the base treats the layer as unqualified.
-    layer.removeAttribute(dataset_id_key);
-    layer.removeAttribute(u"dataset_source"_s);
-    layer.removeAttribute(u"dataset_path"_s);
-    const auto saved_type = sdk::parseBuiltinObjectType(layer.attribute(u"object_type"_s).toStdString());
-    if (layer.attribute(u"topic_name"_s).isEmpty() || !saved_type.has_value() ||
-        !Scene2DDockWidget::handlesObjectType(*saved_type)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 using LayerCreator = std::unique_ptr<ISceneLayer> (*)(
@@ -246,6 +187,138 @@ constexpr std::array<LayerRegistration, 4> kLayerRegistrations{{
   }
 };
 
+constexpr qlonglong kMaxDatasetId = std::numeric_limits<uint32_t>::max();
+
+[[nodiscard]] QStringList handledObjectTypeTokens() {
+  QStringList tokens;
+  for (const LayerRegistration& registration : kLayerRegistrations) {
+    const std::string_view name = sdk::name(registration.object_type);
+    tokens.append(QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size())));
+  }
+  return tokens;
+}
+
+// A non-zero id or a non-empty source or path; otherwise the layer is generic and binds by topic and type.
+[[nodiscard]] bool namesDataset(const QDomElement& layer) {
+  return layer.attribute(u"dataset_id"_s).toULongLong() != 0 || !layer.attribute(u"dataset_source"_s).isEmpty() ||
+         !layer.attribute(u"dataset_path"_s).isEmpty();
+}
+
+struct LayerAttributes {
+  std::optional<sdk::BuiltinObjectType> object_type;
+  QString kind;  ///< layer_kind; empty when absent
+  QString topic_name;
+  bool ok = true;  ///< false: an attribute the reporting readers refused
+};
+
+// Every attribute of a <layer>, the base dock's included (it saves them and restores them from the same element).
+// Reads only: the cross-attribute rules are validateLayer's, so an empty element reports without refusing.
+[[nodiscard]] LayerAttributes readLayerAttributes(const QDomElement& layer) {
+  using namespace scene2d_xml;
+  LayerAttributes attributes;
+  std::optional<qlonglong> ignored;  // dataset_id and order are consumed by the base restore, not here
+  attributes.ok = readInt(layer, u"dataset_id"_s, 0, kMaxDatasetId, ignored);
+  (void)readXmlText(layer, u"dataset_source"_s);
+  (void)readXmlText(layer, u"dataset_path"_s);
+  attributes.topic_name = readXmlText(layer, u"topic_name"_s);
+  (void)readXmlText(layer, u"display_name"_s);
+  bool visible = true;
+  attributes.ok = readBool(layer, u"visible"_s, true, visible) && attributes.ok;
+  attributes.ok = readInt(layer, u"order"_s, 0, std::numeric_limits<int>::max(), ignored) && attributes.ok;
+  XmlOptionsRecorder::noteOption(layer, {.attribute = u"pending_intent"_s, .type = u"bool"_s, .fallback = u"false"_s});
+  if (const QString intent = layer.attribute(u"pending_intent"_s);
+      !intent.isEmpty() && intent != u"true"_s && intent != u"false"_s) {
+    // Accepted, as always: only "true" marks a deferred intent.
+    XmlOptionsRecorder::noteRejection(layer, u"pending_intent"_s, u"expected true or false"_s);
+  }
+  XmlOptionsRecorder::noteOption(
+      layer, {.attribute = u"object_type"_s, .type = u"enum"_s, .values = handledObjectTypeTokens()});
+  attributes.object_type = sdk::parseBuiltinObjectType(layer.attribute(u"object_type"_s).toStdString());
+  XmlOptionsRecorder::noteOption(
+      layer, {.attribute = QString::fromLatin1(kLayerKind),
+              .type = u"enum"_s,
+              .values = {QString::fromLatin1(kImageKind), QString::fromLatin1(kDepthKind)}});
+  attributes.kind = layer.attribute(QString::fromLatin1(kLayerKind));
+  return attributes;
+}
+
+[[nodiscard]] bool validateLayer(const QDomElement& layer) {
+  const LayerAttributes attributes = readLayerAttributes(layer);
+  bool valid = attributes.ok;
+  const auto reject = [&layer, &valid](const QString& attribute, const QString& reason) {
+    XmlOptionsRecorder::noteRejection(layer, attribute, reason);
+    valid = false;
+  };
+  const QString kind_key = QString::fromLatin1(kLayerKind);
+  const QString image_kind = QString::fromLatin1(kImageKind);
+  const QString depth_kind = QString::fromLatin1(kDepthKind);
+
+  if (!attributes.object_type.has_value()) {
+    reject(u"object_type"_s, u"expected one of "_s + handledObjectTypeTokens().join(u", "_s));
+  }
+  const bool image_type = attributes.object_type == sdk::BuiltinObjectType::kImage;
+  const bool depth_type = attributes.object_type == sdk::BuiltinObjectType::kDepthImage;
+  const QString& kind = attributes.kind;
+  if (!kind.isEmpty() && kind != image_kind && kind != depth_kind) {
+    reject(kind_key, u"expected one of "_s + image_kind + u", "_s + depth_kind);
+  } else if ((!kind.isEmpty() && !image_type && !depth_type) || (kind == image_kind && !image_type)) {
+    reject(kind_key, u"does not fit the object_type"_s);
+  }
+
+  if (const QDomElement payload = layer.firstChildElement(); !payload.isNull()) {
+    if (!payload.nextSiblingElement().isNull() || payload.tagName() != u"scene2d_layer"_s) {
+      reject({}, u"expected a single <scene2d_layer> child"_s);
+    } else {
+      // kImage XML without layer_kind: depth settings identify a depth layer, as first-sample dispatch would.
+      const bool has_depth_options = payload.hasAttribute(u"colormap"_s) || payload.hasAttribute(u"invert"_s) ||
+                                     payload.hasAttribute(u"near_m"_s) || payload.hasAttribute(u"far_m"_s) ||
+                                     payload.hasAttribute(u"opacity"_s);
+      if (depth_type || kind == depth_kind || (image_type && kind.isEmpty() && has_depth_options)) {
+        valid = DepthImageLayer::parseOptions(payload, DepthImageLayer::Options{}).has_value() && valid;
+      } else if (image_type) {
+        valid = ImageLayer::parseOptions(payload, ImageLayer::kDefaultRectify).has_value() && valid;
+      }
+    }
+  }
+
+  const bool names_dataset = namesDataset(layer);
+  if (!names_dataset && attributes.topic_name.isEmpty()) {
+    reject(u"topic_name"_s, u"expected a topic name: the layer names no dataset"_s);
+  }
+  if (attributes.object_type.has_value() && !Scene2DDockWidget::handlesObjectType(*attributes.object_type)) {
+    // A layer that names its dataset is accepted whatever the type, and refused when it is restored.
+    if (names_dataset) {
+      XmlOptionsRecorder::noteRejection(
+          layer, u"object_type"_s, u"expected one of "_s + handledObjectTypeTokens().join(u", "_s));
+    } else {
+      reject(u"object_type"_s, u"expected one of "_s + handledObjectTypeTokens().join(u", "_s));
+    }
+  }
+  return valid;
+}
+
+// Reports what a layer and its payloads accept even when the state has none of them (a saved state holds only the
+// layers it shows).
+void reportLayerSchema() {
+  QDomDocument schema;
+  (void)readLayerAttributes(schema.createElement(u"layer"_s));
+  (void)ImageLayer::parseOptions(schema.createElement(u"scene2d_layer"_s), ImageLayer::kDefaultRectify);
+  (void)DepthImageLayer::parseOptions(schema.createElement(u"scene2d_layer"_s), DepthImageLayer::Options{});
+}
+
+// A zero id and empty qualifiers name no dataset: dropped from the (cloned) state, so the base treats the layer as
+// unqualified.
+void dropEmptyDatasetQualifiers(QDomElement root) {
+  for (QDomElement layer = root.firstChildElement(u"layer"_s); !layer.isNull();
+       layer = layer.nextSiblingElement(u"layer"_s)) {
+    if (!namesDataset(layer)) {
+      layer.removeAttribute(u"dataset_id"_s);
+      layer.removeAttribute(u"dataset_source"_s);
+      layer.removeAttribute(u"dataset_path"_s);
+    }
+  }
+}
+
 }  // namespace
 
 Scene2DDockWidget::Scene2DDockWidget(QWidget* parent) : SceneDockWidget(parent) {
@@ -311,33 +384,41 @@ QDomElement Scene2DDockWidget::xmlSaveState(QDomDocument& doc) const {
   return root;
 }
 
-bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
+bool Scene2DDockWidget::xmlValidateState(const QDomElement& element) const {
   if (element.isNull() || element.tagName() != xmlTag()) {
+    XmlOptionsRecorder::noteRejection(element, {}, u"expected a <"_s + xmlTag() + u"> element"_s);
     return false;
   }
-  if (!validateLayerPayloads(element)) {
-    return false;
-  }
+  (void)readXmlText(element, u"version"_s, u"1"_s);
+  bool valid = true;
   int view_elements = 0;
   for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
-    if (!acceptsStateChildTag(child.tagName()) ||
-        (child.tagName() == QString::fromLatin1(kViewTag) && ++view_elements > 1)) {
-      return false;
+    if (!acceptsStateChildTag(child.tagName())) {
+      XmlOptionsRecorder::noteRejection(child, {}, u"unexpected element"_s);
+      valid = false;
+    } else if (child.tagName() == QString::fromLatin1(kViewTag) && ++view_elements > 1) {
+      XmlOptionsRecorder::noteRejection(child, {}, u"expected at most one <view>"_s);
+      valid = false;
+    } else if (child.tagName() == u"layer"_s) {
+      valid = validateLayer(child) && valid;
     }
   }
-  const auto view_state = parseViewState(element);
-  if (!view_state.has_value()) {
+  reportLayerSchema();
+  return parseViewState(element).has_value() && valid;
+}
+
+bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
+  if (!xmlValidateState(element)) {
     return false;  // reject before the base destructively replaces the layer stack
   }
+  const MediaViewState view_state = *parseViewState(element);
 
-  // Both the base's order-attribute fill and the generic-identity normalization rewrite the XML: work on a clone,
-  // not the caller's document.
+  // The generic-identity normalization and the base's order-attribute fill rewrite the XML: work on a clone, not the
+  // caller's document.
   QDomDocument restore_doc;
   QDomElement restore_element = restore_doc.importNode(element, /*deep=*/true).toElement();
   restore_doc.appendChild(restore_element);
-  if (!validateGenericLayerIdentities(restore_element)) {
-    return false;
-  }
+  dropEmptyDatasetQualifiers(restore_element);
 
   // The base restore clears the layer stack before replay: this snapshot puts the widget back on a late failure.
   // A clipboard paste has no MainWindow-level transaction around it.
@@ -371,7 +452,7 @@ bool Scene2DDockWidget::xmlLoadState(const QDomElement& element) {
   }
 
   ensureSceneViewCreated();
-  if (viewer_ == nullptr || !viewer_->setViewState(*view_state)) {
+  if (viewer_ == nullptr || !viewer_->setViewState(view_state)) {
     if (!rollback()) {
       qWarning("Scene2DDockWidget: failed to roll back rejected view state");
     }
