@@ -15,7 +15,6 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
-#include "pj_runtime/IDataWidget.h"
 #include "pj_runtime/XmlStateOptions.h"
 
 namespace PJ {
@@ -27,36 +26,6 @@ namespace {
 
 json fail(const std::string& message) {
   return mcp::textResult(message, true);
-}
-
-QDomElement saveState(DockWidget& dock, QDomDocument& doc) {
-  if (PlotWidget* plot = dock.plotWidget(); plot != nullptr) {
-    return plot->xmlSaveState(doc);
-  }
-  if (IDataWidget* widget = dock.objectWidget(); widget != nullptr) {
-    return widget->xmlSaveState(doc);
-  }
-  return {};
-}
-
-bool validateState(DockWidget& dock, const QDomElement& element) {
-  if (PlotWidget* plot = dock.plotWidget(); plot != nullptr) {
-    return plot->xmlValidateState(element);
-  }
-  IDataWidget* widget = dock.objectWidget();
-  return widget != nullptr && widget->xmlValidateState(element);
-}
-
-bool loadState(DockWidget& dock, const QDomElement& element) {
-  if (PlotWidget* plot = dock.plotWidget(); plot != nullptr) {
-    return plot->xmlLoadState(element);
-  }
-  return dock.loadObjectWidgetState(element);
-}
-
-QStringList unresolvedRestores(DockWidget& dock) {
-  IDataWidget* widget = dock.objectWidget();
-  return widget != nullptr ? widget->unresolvedRestores() : QStringList();
 }
 
 std::string joined(const QStringList& names) {
@@ -96,7 +65,7 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
     json docks = json::array();
     window_.forEachTabDock([&docks](PlotDocker* tab, DockWidget* dock) {
       QDomDocument doc;
-      const QDomElement state = saveState(*dock, doc);
+      const QDomElement state = dock->xmlSaveState(doc);
       docks.push_back(
           {{"id", dock->stateId().toStdString()},
            {"tab", tab->name().toStdString()},
@@ -123,7 +92,7 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
   }
 
   QDomDocument current_doc;
-  QDomElement current = saveState(*dock, current_doc);
+  QDomElement current = dock->xmlSaveState(current_doc);
   if (current.isNull()) {
     reply(fail("this dock holds no state: drop a series or an object topic on it first"));
     return;
@@ -132,7 +101,7 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
 
   if (action == "get") {
     XmlOptionsRecorder recorder;
-    validateState(*dock, current);
+    static_cast<void>(dock->xmlValidateState(current));  // run for the options it reports
     reply(
         mcp::jsonResult(
             {{"dock", id.toStdString()},
@@ -174,7 +143,7 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
   {
     XmlOptionsRecorder recorder;
     // A rejection with a passing validation is a value a layout load would silently replace: refused here too.
-    if (!validateState(*dock, element) || !recorder.firstRejection().isEmpty()) {
+    if (!dock->xmlValidateState(element) || !recorder.firstRejection().isEmpty()) {
       const QString& why = recorder.firstRejection();
       reply(fail(
           "refused, nothing changed: " +
@@ -194,11 +163,11 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
     reply(fail("a layout or an undo step is being applied; try again"));
     return;
   }
-  const QStringList unresolved_before = unresolvedRestores(*dock);
-  const bool loaded = loadState(*dock, element);
+  const QStringList unresolved_before = dock->unresolvedRestores();
+  const bool loaded = dock->applyState(element);
   QStringList not_loaded;
   if (loaded) {
-    for (const QString& topic : unresolvedRestores(*dock)) {
+    for (const QString& topic : dock->unresolvedRestores()) {
       if (!unresolved_before.contains(topic)) {
         not_loaded.push_back(topic);
       }
@@ -206,7 +175,7 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
   }
   if (!loaded || !not_loaded.isEmpty()) {
     // A topic that is not loaded would leave its layer or row waiting, shown nowhere.
-    const bool restored = loadState(*dock, current);
+    const bool restored = dock->applyState(current);
     window_.endAgentDockChange(dock);
     std::string why = !loaded ? std::string("the dock refused the element while applying it")
                               : "no loaded topic " + joined(not_loaded);
@@ -216,7 +185,7 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
   }
   window_.endAgentDockChange(dock);
   QDomDocument applied_doc;
-  applied_doc.appendChild(saveState(*dock, applied_doc));
+  applied_doc.appendChild(dock->xmlSaveState(applied_doc));
   reply(mcp::jsonResult({{"dock", id.toStdString()}, {"xml", applied_doc.toString(2).toStdString()}}));
 }
 

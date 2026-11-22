@@ -486,7 +486,7 @@ Desktop only: the browser build has no command line to ask for them, so it does 
 ## Widget state
 
 `widget_state` reads and replaces a dock's settings as the XML element a layout saves for it
-(`IDataWidget::xmlSaveState`, `PlotWidget::xmlSaveState` for a plot), on any tab, the user's included. Docks are addressed by their
+(`DockWidget`'s `IDataWidget` state calls, forwarded to the plot or object widget it hosts), on any tab, the user's included. Docks are addressed by their
 layout state id (`DockWidget::stateId`), which `list` gives with tab, title and kind (the element's tag; `empty` for a
 dock with no state).
 
@@ -508,8 +508,8 @@ dock with no state).
   (`layout_xml::normalizePlotRangeBasis`, `rebindCurveKeys`): an unresolved path refuses the call. `xmlValidateState`
   runs under a recorder, whose first rejection is the error (`<pointcloud> size_pixels="50": expected a number in [1,
   32]`); an attribute the recorder never saw (`unreportedXmlAttributes`) is refused as unknown, unless the widget
-  reports nothing at all (its state is opaque). Only then the load, through `DockWidget::loadObjectWidgetState` for an
-  object widget (as a paste: `finishRestore()`, first-topic seeding). If the load refuses, or leaves a topic waiting
+  reports nothing at all (its state is opaque). Only then the load, `DockWidget::applyState` (as a paste:
+  `finishRestore()`, first-topic seeding of an empty object widget). If the load refuses, or leaves a topic waiting
   that was not waiting before (`IDataWidget::unresolvedRestores`: a layer or Log topic that is not loaded would show
   nothing), the saved previous state is loaded back.
 - **The element is the whole state, view included.** A scene's camera and a plot's axis range travel with it, so an

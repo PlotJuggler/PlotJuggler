@@ -107,18 +107,13 @@ QDomElement saveChildNodesState(QDomDocument& doc, QWidget* widget, const PlotDo
     if (dock_widget == nullptr) {
       continue;
     }
-    // Plot widgets emit <plot>; object widgets (Scene3DDockWidget, ...) emit whatever their xmlSaveState returns
-    // (<scene3d>, ...). A null QDomElement from an object widget means it persists no state yet: skip it rather than
-    // write an empty stub.
-    QDomElement payload;
-    if (auto* plot = dock_widget->plotWidget()) {
-      payload = plot->xmlSaveState(doc);
-    } else if (auto* obj = dock_widget->objectWidget()) {
-      payload = obj->xmlSaveState(doc);
-      if (payload.isNull()) {
+    // A plot emits <plot>, an object widget whatever its xmlSaveState returns (<scene3d>, ...). A null element from an
+    // object widget means it persists no state yet: skip it rather than write an empty stub.
+    QDomElement payload = dock_widget->xmlSaveState(doc);
+    if (payload.isNull()) {
+      if (dock_widget->objectWidget() != nullptr) {
         continue;
       }
-    } else {
       // The chooser is workspace state: omitting it makes undo of a visualization choice restore an empty plot instead
       // of the chooser.
       payload = doc.createElement(u"placeholder"_s);
@@ -388,7 +383,7 @@ bool restoreNode(
         return false;
       }
       widget->setObjectWidget(obj);
-      return obj->xmlLoadState(dock_element);
+      return widget->xmlLoadState(dock_element);
     }
 
     // Plot path.
@@ -398,7 +393,7 @@ bool restoreNode(
       widget->setPlotWidget(plot);
     }
     if (!dock_element.isNull()) {
-      return plot->xmlLoadState(dock_element);
+      return widget->xmlLoadState(dock_element);
     } else {
       plot->removeAllCurves();
     }
