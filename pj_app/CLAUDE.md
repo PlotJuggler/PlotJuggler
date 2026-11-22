@@ -75,7 +75,7 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 - `BrowserFileStore`, `FileSelectionService`, `BrowserPickedFile` (+ `browser_picked_file.js`), `BrowserPersistence`,
   `PresetController`, `WelcomePresetsDialog`: the WebAssembly boundary and presets.
 - `mcp/`: `McpProtocol`, `McpBridge.cpp` (`--mcp-bridge`), `McpServer` (+ `McpEndpointHost`), `McpServerTools.cpp`,
-  `McpUiTools` (`--mcp-ui-tools`), `McpBrowserLink`.
+  `McpWidgetState.cpp` (`widget_state`), `McpUiTools` (`--mcp-ui-tools`), `McpBrowserLink`.
 - `Theme`, `WidgetTuner`, `DebugMode`/`DebugUi`, `Splashscreen`, `DiagnosticDump`, `BuiltinPlugins`,
   `scene_object_classification`, `SceneImageDecoder`, `SceneVideoFrameSource`, `KeySequence`, `RasterKeyMap`: app
   services and helpers.

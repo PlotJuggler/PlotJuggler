@@ -4683,6 +4683,16 @@ void MainWindow::forEachDock(const std::function<void(DockWidget*)>& operation) 
   });
 }
 
+void MainWindow::forEachTabDock(const std::function<void(PlotDocker*, DockWidget*)>& operation) {
+  ui_->tabbedPlotWidget->forEachDocker([&operation](PlotDocker* docker) {
+    for (int index = 0; index < docker->plotCount(); ++index) {
+      if (DockWidget* dock = docker->plotAt(index); dock != nullptr) {
+        operation(docker, dock);
+      }
+    }
+  });
+}
+
 void MainWindow::forEachVisibleDock(const std::function<void(DockWidget*)>& operation) {
   // Per tab: a dock hidden by a maximized sibling is still visited. plotAt() returns each area's current dock, so a
   // dock tabbed behind another in one area would be skipped and never re-seeded; the docking allows only

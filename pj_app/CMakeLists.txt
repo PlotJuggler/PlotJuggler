@@ -155,7 +155,8 @@ target_sources(pj_app_shell PRIVATE
     src/mcp/McpProtocol.h
     src/mcp/McpServer.cpp
     src/mcp/McpServer.h
-    src/mcp/McpServerTools.cpp)
+    src/mcp/McpServerTools.cpp
+    src/mcp/McpWidgetState.cpp)
 if(NOT EMSCRIPTEN)
     # The UI tools are desktop only: only a command-line flag turns them on. Qt6::GuiPrivate:
     # <qpa/qwindowsysteminterface.h>, their real input path.

@@ -463,6 +463,7 @@ const std::unordered_map<std::string, McpServer::AppTool>& McpServer::appTools()
       {"add_filter", &McpServer::addFilter},
       {"remove_script_series", &McpServer::removeScriptSeries},
       {"screenshot", &McpServer::screenshot},
+      {"widget_state", &McpServer::widgetState},
   };
   return tools;
 }

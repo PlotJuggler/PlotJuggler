@@ -390,6 +390,12 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] PluginPlotTabsController& pluginPlotTabs() const {
     return *plugin_plot_tabs_;
   }
+  // Every dock of every tab, tabs in order; the MCP widget_state tool reads and replaces their XML state.
+  void forEachTabDock(const std::function<void(PlotDocker*, DockWidget*)>& operation);
+  // One undo step for a dock state the UI did not change (the MCP widget_state tool).
+  void recordAgentUndoStep() {
+    onUndoableChange(/*force_new_state=*/true);
+  }
 
   // The service assembly a toolbox plugin with id `owner` would get (data processors, object
   // reads, playback, its own plot and scene tabs) with no plugin loaded: an MCP agent's tools run

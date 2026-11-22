@@ -44,7 +44,8 @@ the panel picker (Plot, 2D, 3D, Log, State Transitions, Custom Widget).
 - **Close a dock:** "Close Plot Area" (`buttonClose`); the tab always keeps one dock.
 - **Move a dock:** drag its title bar.
 - **Close a tab:** its close button; closing the last plot tab opens a fresh one.
-- **MCP:** `plot_tab` creates, zooms and closes the agent's own tabs only; the user's tabs are out of reach.
+- **MCP:** `plot_tab` creates, zooms and closes the agent's own tabs only. `widget_state` reads and changes any dock's
+  settings, the user's too: a plot's curves, colours, style and ranges.
 
 ## Zoom and pan
 
@@ -79,7 +80,8 @@ top to bottom:
   toggle for this plot.
 - **Legend:** clicking a legend entry hides or shows that curve; Ctrl + wheel over the legend changes its font size.
 - **Remove every curve:** right-click the plot → "Remove ALL curves".
-- **MCP:** `plot_tab` `"add"`/`"remove"` on the agent's tab; styles, colours and visibility are UI only.
+- **MCP:** `plot_tab` `"add"`/`"remove"` on the agent's tab; `widget_state` changes the curves, colours and style of
+  any plot.
 - **Gotchas:** curves cannot be renamed in the list. Width and style apply to the whole plot; only colour is per curve.
 
 ## Global plot options (right toolbar)
@@ -133,7 +135,7 @@ Always visible on the right edge; each applies to all plots.
 
 - **UI:** right-click → "Copy", then right-click another plot (or an empty dock) → "Paste". The plot's curves and
   styles travel as XML on the system clipboard.
-- **MCP:** UI only.
+- **MCP:** `widget_state` `get` on one plot, then `set` of that element on another dock holding a plot.
 
 ## Export a plot
 
