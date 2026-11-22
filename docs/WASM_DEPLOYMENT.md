@@ -474,8 +474,9 @@ together.
 - **Malformed index** (bad JSON, an entry without `id` or `layout`, a duplicate
   id, a reference that is not http(s)): the same, plus one console warning,
   `PJ_PRESET_INDEX_INVALID url=… reason=…`.
-- **Deep link:** `?preset=<id>` opens that preset directly, the dialog showing
-  its progress. An id the index does not list, the `preset` key given twice, or
+- **Deep link:** `?preset=<id>` opens that preset directly: the dialog shows
+  only its progress and Cancel, never the list, which appears only if the load
+  fails or is cancelled. An id the index does not list, the `preset` key given twice, or
   a deep link on a page without a usable index reports an error and loads
   nothing. Other query keys are ignored.
 
