@@ -62,7 +62,7 @@ jobs:
     # 39 (warm medians), and its browser time bounds need a steady runner (GitHub's
     # took 925-2268 ms for the same sample restore). The nightly run, which nobody
     # waits on, stays on GitHub's free runners. Same choice for the browser jobs.
-    runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
+    runs-on: ${{ true && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     # Generous ceiling for a cold run (Qt + emsdk + ccache); warm runs take 20-30 minutes.
     timeout-minutes: 120
 
@@ -71,7 +71,7 @@ jobs:
         # GitHub-hosted Ubuntu runners (the nightly run) leave ~14 GB free, which the
         # Conan closure, Qt and the build tree can exceed ("No space left on
         # device"). Reclaim the preinstalled toolchains no job here uses.
-        if: github.event_name == 'schedule'
+        if: true
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
             /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
@@ -336,7 +336,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.wasm.result == 'success' &&
       !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
-    runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
+    runs-on: ${{ true && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     timeout-minutes: 60
     env:
       PJ_WASM_URL: http://127.0.0.1:6931/
@@ -473,7 +473,7 @@ jobs:
     # Explicit result check: the implicit success() also fails on the skipped
     # `changed` gate two levels up, which would skip this job on every manual run.
     if: ${{ !cancelled() && needs.wasm.result == 'success' && github.event_name != 'pull_request' }}
-    runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
+    runs-on: ${{ true && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     timeout-minutes: 60
     env:
       LIBGL_ALWAYS_SOFTWARE: '1'
