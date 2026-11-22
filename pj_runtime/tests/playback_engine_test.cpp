@@ -5,6 +5,7 @@
 
 #include <QMetaObject>
 #include <QSignalSpy>
+#include <QThread>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -194,6 +195,71 @@ TEST(PlaybackEngineTest, LoopingTickWithOverflowingStepStaysFinite) {
   EXPECT_TRUE(std::isfinite(next));
   EXPECT_GE(next, 0.0);
   EXPECT_LE(next, 10.0);
+}
+
+// The coarse cursor follows one playback tick in three, and catches up when playback pauses.
+TEST(PlaybackEngineTest, CoarseTimeFollowsEveryThirdPlaybackTick) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 1000.0));
+  QSignalSpy fine(&engine, &PJ::PlaybackEngine::currentTimeChanged);
+  QSignalSpy coarse(&engine, &PJ::PlaybackEngine::coarseTimeChanged);
+
+  engine.play();
+  for (int tick = 0; tick < 8; ++tick) {
+    QThread::msleep(2);  // a tick moves the cursor by the wall-clock time since the last one
+    QMetaObject::invokeMethod(&engine, "onTick", Qt::DirectConnection);
+  }
+  ASSERT_EQ(fine.size(), 8);
+  ASSERT_EQ(coarse.size(), 3);  // ticks 1, 4 and 7
+  EXPECT_DOUBLE_EQ(coarse.at(0).at(0).toDouble(), fine.at(0).at(0).toDouble());
+  EXPECT_DOUBLE_EQ(coarse.at(1).at(0).toDouble(), fine.at(3).at(0).toDouble());
+  EXPECT_DOUBLE_EQ(coarse.at(2).at(0).toDouble(), fine.at(6).at(0).toDouble());
+
+  engine.pause();
+  ASSERT_EQ(coarse.size(), 4);
+  EXPECT_DOUBLE_EQ(coarse.at(3).at(0).toDouble(), engine.currentTime().value);
+}
+
+TEST(PlaybackEngineTest, CoarseTimeFollowsEverySeek) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 1000.0));
+  QSignalSpy coarse(&engine, &PJ::PlaybackEngine::coarseTimeChanged);
+
+  engine.setCurrentTime(PJ::displaySeconds(5.0));
+  engine.setRangeAndCurrentTime(PJ::displayRange(0.0, 500.0), PJ::displaySeconds(7.0));
+  engine.setRange(PJ::displayRange(100.0, 500.0));  // clamps the cursor
+  ASSERT_EQ(coarse.size(), 3);
+  EXPECT_DOUBLE_EQ(coarse.at(2).at(0).toDouble(), 100.0);
+
+  // A seek during playback is not held back, and the tick after it is.
+  engine.play();
+  QThread::msleep(2);
+  QMetaObject::invokeMethod(&engine, "onTick", Qt::DirectConnection);
+  ASSERT_EQ(coarse.size(), 4);
+  engine.setCurrentTime(PJ::displaySeconds(300.0));
+  ASSERT_EQ(coarse.size(), 5);
+  EXPECT_DOUBLE_EQ(coarse.at(4).at(0).toDouble(), 300.0);
+  QThread::msleep(2);
+  QMetaObject::invokeMethod(&engine, "onTick", Qt::DirectConnection);
+  EXPECT_EQ(coarse.size(), 5);
+  engine.pause();
+  EXPECT_EQ(coarse.size(), 6);
+}
+
+// The cursor reaching the end of a range without loop stops playback: the coarse cursor shows the end.
+TEST(PlaybackEngineTest, CoarseTimeShowsTheEndWhenPlaybackRunsOut) {
+  PJ::PlaybackEngine engine;
+  engine.setRange(PJ::displayRange(0.0, 0.004));
+  QSignalSpy coarse(&engine, &PJ::PlaybackEngine::coarseTimeChanged);
+
+  engine.play();
+  for (int tick = 0; tick < 6 && engine.isPlaying(); ++tick) {
+    QThread::msleep(2);
+    QMetaObject::invokeMethod(&engine, "onTick", Qt::DirectConnection);
+  }
+  ASSERT_FALSE(engine.isPlaying());
+  ASSERT_FALSE(coarse.isEmpty());
+  EXPECT_DOUBLE_EQ(coarse.last().at(0).toDouble(), 0.004);
 }
 
 }  // namespace

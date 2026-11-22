@@ -94,7 +94,8 @@ SourceTimelineController::SourceTimelineController(Timeline* widget, AppSession*
     updateTrackOffsets();
     scheduleRangeRecompute();
   });
-  connect(&playback, &PlaybackEngine::currentTimeChanged, this, [this](double time) { widget_->setPlayhead(time); });
+  // The coarse cursor, as the playback slider: see TimelineWidget::onEngineTimeChanged.
+  connect(&playback, &PlaybackEngine::coarseTimeChanged, this, [this](double time) { widget_->setPlayhead(time); });
   connect(&playback, &PlaybackEngine::rangeChanged, this, [this](double min, double max) {
     // The only signal covering all data growth: object entries fire neither itemsAdded (after a topic's first) nor
     // samplesIngested. The frame offset goes first: a load moves the global reference, and a stale offset would

@@ -1306,7 +1306,7 @@ double Timeline::seekToSceneX(double scene_x) {
   }
   // Clamped to the data extent (union of the bars, or the playback range when empty), so an out-of-range drag emits a
   // sane value. The needle is a pure slave: playhead_ns_ is not moved here. The host writes this time to the
-  // PlaybackEngine, and its currentTimeChanged echo (setPlayhead, synchronous) is the one source that repositions the
+  // PlaybackEngine, and its coarseTimeChanged echo (setPlayhead, synchronous) is the one source that repositions the
   // needle, keeping it in lockstep with the playback handle (same source, same value) instead of holding a locally set
   // value the engine never adopted.
   const TimeSpan extent = scene_.sceneExtent();
