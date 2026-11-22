@@ -11,7 +11,7 @@ const {
 } = require('./support/app');
 const { count, latest } = require('./support/console');
 const { clickActiveDialogButton } = require('./support/dialogs');
-const { hostedAssetsMissing, startHostedAssetMirror } = require('./support/hosted_assets');
+const { HOSTED_MIRROR, hostedAssetsMissing, startHostedAssetMirror } = require('./support/hosted_assets');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { elementAttributes, setElementAttributeAt } = require('./support/layout_xml');
 const { loadOutcomes, loadOutcomeCount } = require('./support/load_outcomes');
@@ -752,14 +752,18 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
   }
 });
 
-// The deployed samples (resources/wasm-presets) in the acceptance package that carries them
-// (scripts/package_wasm.mjs --presets), served like production from presets/ beside the page. Every other
-// spec boots the plain package, so no welcome dialog sits over its window.
+// The deployed samples in the acceptance package that carries their index (scripts/package_wasm.mjs --presets
+// resources/wasm-presets), served like production from presets/ beside the page; their layouts and thumbnails
+// come from the asset host's mirror. Every other spec boots the plain package, so no welcome dialog sits over
+// its window.
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
-const SAMPLE_DIRECTORY = path.join(__dirname, '..', '..', 'resources', 'wasm-presets');
+const SAMPLE_INDEX = require('../../resources/wasm-presets/index.json');
 const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset'];
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
+// The asset-host path of sample `id`'s layout.
+const sampleLayout = id => SAMPLE_INDEX.presets.find(entry => entry.id === id).layout
+  .slice(`${HOSTED_ORIGIN}/`.length);
 // A small CSV preset the download and robot-hosting cases serve; not a deployed sample.
 const SIGNALS_FIXTURE = path.join(__dirname, 'fixtures', 'signals');
 
@@ -780,7 +784,7 @@ async function startSamples() {
   return {
     origin,
     mirror,
-    url: file => `${origin}/presets/${file}`,
+    layoutUrl: id => `${mirror.origin}/${sampleLayout(id)}`,
     close: async () => {
       await mirror.close();
       await new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve())));
@@ -820,7 +824,7 @@ async function pickSample(run, samples, id) {
     dialog = await presetsDialog(run.page, run.messages);
     return dialog.visible && Boolean(dialog.entries[id]?.enabled);
   }, { timeout: 15000 }).toBe(true);
-  const url = samples.url(`${id}/layout.pj4.xml`);
+  const url = samples.layoutUrl(id);
   const from = run.messages.length;
   await click(run, dialog.entries[id].open);
   await expect.poll(() => urlOutcome(run.messages, from, url), { timeout: 90000 }).not.toBe('');
@@ -1104,18 +1108,18 @@ test('a sample that fails releases what it staged and leaves the open sample as 
     const staged = await stagedFiles(run.page, run.messages);
 
     // The sample's layout and recording, as the mirror serves them.
-    const filtersLayout = fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'builtin_filters', 'layout.pj4.xml'), 'utf8')
+    const filtersLayout = fs.readFileSync(path.join(HOSTED_MIRROR, sampleLayout('builtin_filters')), 'utf8')
       .replaceAll(HOSTED_ORIGIN, samples.mirror.origin);
     const recordingUrl = elementAttributes(filtersLayout, 'fileInfo', 'filename')[0];
     for (const [url, body, reason] of [
       // Staged, then refused: these bytes are not the file the layout names.
       [recordingUrl, Buffer.from('not the recording'), 'fingerprint'],
       // Imported, then rolled back: the layout cannot apply.
-      [samples.url('builtin_filters/layout.pj4.xml'), filtersLayout.replace(
+      [samples.layoutUrl('builtin_filters'), filtersLayout.replace(
         /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/, '$1<scene3d><layer object_type="not_a_type"/></scene3d>$2'),
       'apply-after-source-load'],
     ]) {
-      // A page route wins over the context's mirror route; the recording is cross-origin.
+      // Both files are on the mirror, cross-origin.
       await run.page.route(url, route => route.fulfill({
         status: 200, body, headers: { 'Access-Control-Allow-Origin': '*' } }));
       const outcome = await pickSample(run, samples, 'builtin_filters');

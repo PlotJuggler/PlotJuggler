@@ -274,8 +274,8 @@ test('the robot Caddyfile repeats every deployable type and forwards to the stoc
   assert.match(caddyfile, /reverse_proxy \{\$PJ_BRIDGE_UPSTREAM:127\.0\.0\.1:9090\}/);
 });
 
-// A preset tree shaped like resources/wasm-presets: nested folders, data, a
-// model package with an extensionless license, and the index beside them. The
+// A preset tree with nested folders, data, a model package with an
+// extensionless license, and the index beside them. The
 // large files are over the size floor below which nothing is precompressed.
 const MCAP_MAGIC = Buffer.from([0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a]);
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

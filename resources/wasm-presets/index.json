@@ -4,22 +4,22 @@
       "id": "builtin_filters",
       "title": "Built-in filters",
       "description": "A car's gyro yaw rate from the SZE-JKK dataset: as recorded, through the built-in moving-average filter, and integrated into its heading.",
-      "layout": "builtin_filters/layout.pj4.xml",
-      "thumbnail": "builtin_filters/thumbnail.png"
+      "layout": "https://assets.plotjuggler.io/v1/nissan_leaf/builtin_filters_layout.pj4.xml",
+      "thumbnail": "https://assets.plotjuggler.io/v1/nissan_leaf/builtin_filters_thumbnail.png"
     },
     {
       "id": "anymal",
       "title": "ANYmal GrandTour",
       "description": "A legged robot walking a forest trail: its three cameras, the lidar scan around its model, beside its joints, IMU and speed.",
-      "layout": "anymal/layout.pj4.xml",
-      "thumbnail": "anymal/thumbnail.png"
+      "layout": "https://assets.plotjuggler.io/v1/grand_tour_2/anymal_layout.pj4.xml",
+      "thumbnail": "https://assets.plotjuggler.io/v1/grand_tour_2/anymal_thumbnail.png"
     },
     {
       "id": "pandaset",
       "title": "Self-driving car",
       "description": "A car on a suburban road in Silicon Valley from PandaSet: its six cameras with 3D-box overlays, its lidar and the boxes in 3D, beside its yaw rate and speed.",
-      "layout": "pandaset/layout.pj4.xml",
-      "thumbnail": "pandaset/thumbnail.png"
+      "layout": "https://assets.plotjuggler.io/v1/pandaset/pandaset_layout.pj4.xml",
+      "thumbnail": "https://assets.plotjuggler.io/v1/pandaset/pandaset_thumbnail.png"
     }
   ]
 }

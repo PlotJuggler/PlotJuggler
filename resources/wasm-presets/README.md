@@ -3,25 +3,28 @@
 The "try it with sample data" presets of the WebAssembly build. Packaging with
 `node scripts/package_wasm.mjs --presets resources/wasm-presets ...` deploys this
 directory verbatim under the page's `presets/`, where the welcome dialog finds
-`index.json`. Each sample is an ordinary source-saving layout with its data
-beside it, or on PlotJuggler's asset host (`https://assets.plotjuggler.io`, a
-Cloudflare R2 bucket whose `v1/` files never change) when the data is too large
-for the repository. How to author one, the packaging rules and the hosting notes are in
-[`docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
+`index.json`. The index is all the package carries: each sample's layout and
+thumbnail live on PlotJuggler's asset host (`https://assets.plotjuggler.io`, a
+Cloudflare R2 bucket whose `v1/` files never change) beside the recording they
+open, and `index.json` names them by absolute URL; a layout names its recording
+and robot models by absolute URL too. Changing a sample means uploading its
+layout or thumbnail under a new name, pointing `index.json` at it and listing it
+in `tests/wasm/fixtures/hosted_assets.json`. How to author one, the packaging
+rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
 
-| Sample | Files |
+| Sample | Layout and thumbnail on the asset host |
 |---|---|
-| `builtin_filters/` | layout, thumbnail (recording hosted, see below) |
-| `anymal/` | layout, thumbnail (recording and robot models hosted, see below) |
-| `pandaset/` | layout, thumbnail (recording hosted, see below) |
+| `builtin_filters` | `v1/nissan_leaf/builtin_filters_layout.pj4.xml`, `builtin_filters_thumbnail.png` |
+| `anymal` | `v1/grand_tour_2/anymal_layout.pj4.xml`, `anymal_thumbnail.png` |
+| `pandaset` | `v1/pandaset/pandaset_layout.pj4.xml`, `pandaset_thumbnail.png` |
 
-The layouts and this file are authored for this repository and fall
-under its license (MPL-2.0), and so do the thumbnails: PlotJuggler renders of
+The layouts, the thumbnails and this file are PlotJuggler's own and fall under
+this repository's license (MPL-2.0); the thumbnails are PlotJuggler renders of
 the loaded samples (browser screenshots, downscaled to 384x216, 8-bit palette; the
 ANYmal and PandaSet ones show only a 3D view, the built-in filters one its
 two plots).
 
-## `builtin_filters/` — built-in filters
+## `builtin_filters` — built-in filters
 
 Three plots of one signal: a car's gyro yaw rate (`/nissan/gps/duro/imu`,
 `angular_velocity/z`, about 99 Hz) as recorded, the same signal through the
@@ -50,7 +53,7 @@ status, vehicle speed and steering). It is re-compressed with zstd
 Redistribution basis: the dataset's authors provide it "for research and
 educational purposes" (© SZE-JKK).
 
-## `anymal/` — ANYmal GrandTour
+## `anymal` — ANYmal GrandTour
 
 The layout loads three hosted folders (each with its own license and provenance
 notes; `https://assets.plotjuggler.io/index.html` lists every file):
@@ -91,7 +94,7 @@ a converter outside this repository from the dataset's Zarr streams and a
 curated MCAP of the same mission; the topics, rates and processing above are
 what it did.
 
-## `pandaset/` — self-driving car
+## `pandaset` — self-driving car
 
 The layout loads `v1/pandaset/pandaset_092-094_20s.mcap` (161,812,017 bytes, SHA-256
 `c343cec075d685faed3ed45534fb14286726203d9e80242299348e1b289c75bf`, pinned by

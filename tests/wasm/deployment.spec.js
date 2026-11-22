@@ -101,7 +101,8 @@ test('deployed presets are revalidated and negotiated like the bundle, with ever
   const index = JSON.parse(await readFile(path.join(packageRoot, 'presets', 'index.json'), 'utf8'));
   expect(index.presets.length).toBeGreaterThan(0);
   for (const entry of index.presets) {
-    for (const reference of [entry.layout, entry.thumbnail].filter(Boolean)) {
+    // An absolute reference lives on another host (the samples' asset host), outside the package.
+    for (const reference of [entry.layout, entry.thumbnail].filter(ref => ref && !/^https?:\/\//.test(ref))) {
       expect(declared.has(`presets/${reference}`), reference).toBe(true);
     }
   }
@@ -116,7 +117,7 @@ test('deployed presets are revalidated and negotiated like the bundle, with ever
     expect(Object.keys(file.representations).sort(), file.path).toEqual(expected);
     await expectServedAsDeclared(baseUrl, file);
   }
-  expect(presets.some(file => file.representations.br), 'some sample is precompressed').toBe(true);
+  expect(presets.some(file => file.representations.br), 'some preset file is precompressed').toBe(true);
 });
 
 test('cold Chromium boot runs the threaded app from the content-addressed package', async ({ page }) => {

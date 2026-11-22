@@ -165,6 +165,22 @@
    "sha256": "9288ebb7caccdfe60bdeda3281bc198e2399f14cd58238c648a788ff1263bafe",
    "bytes": 72501497
   },
+  "v1/grand_tour_2/anymal_layout.pj4.xml": {
+   "sha256": "41933fd59a25144ee9ab3362d527d890056e9fa507959884f7513e408fedbe14",
+   "bytes": 10104
+  },
+  "v1/grand_tour_2/anymal_thumbnail.png": {
+   "sha256": "052979f5a799e046315fa2e83c3aab50a875ac646dc67713914b8d631496393e",
+   "bytes": 22169
+  },
+  "v1/nissan_leaf/builtin_filters_layout.pj4.xml": {
+   "sha256": "596cb417a24e831da3b1075abf1ef646477132f7e7e1fb3dc96b7fc60fcaef55",
+   "bytes": 4144
+  },
+  "v1/nissan_leaf/builtin_filters_thumbnail.png": {
+   "sha256": "d2b3f143359a0c48619833d95fabddaa5db1c521df84b73d744470d74f7c8add",
+   "bytes": 10866
+  },
   "v1/nissan_leaf/nissan_leaf_drive.mcap": {
    "sha256": "cd16c23dfc5566764376c55fb39fc7afd5666139341fe1491ec743e3e028f154",
    "bytes": 2532014
@@ -176,6 +192,14 @@
   "v1/pandaset/pandaset_092-094_20s.mcap": {
    "sha256": "c343cec075d685faed3ed45534fb14286726203d9e80242299348e1b289c75bf",
    "bytes": 161812017
+  },
+  "v1/pandaset/pandaset_layout.pj4.xml": {
+   "sha256": "8dc2012d1c0681cc737294ffb93806600f78c482d6cff47399ba4b591b50d52d",
+   "bytes": 11541
+  },
+  "v1/pandaset/pandaset_thumbnail.png": {
+   "sha256": "2c81d35546cd96f1105686e7fa5c401c8b5c0cac8ad0563caff4cefd7f8b98d8",
+   "bytes": 38846
   }
  }
 }

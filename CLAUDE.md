@@ -36,7 +36,7 @@ PJ4/
 ├── pj_custom_widgets/ # Custom Widget panel: a dock hosting a Widget plugin's Qt widget
 ├── pj_log/            # Log panel: log topics merged by time in a filterable list
 ├── pj_app/            # main window shell
-├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample presets
+├── resources/         # SVG icons + resources.qrc; wasm-presets/ browser sample index
 ├── raster/            # helper/ executable + ipc/ wire contract
 ├── scripts/           # setup, worktrees, pre-commit, windows/ entry points
 ├── packaging/         # Nix, conda, AppImage, Debian package, Windows installer, macOS dmg, hosted browser app
@@ -85,7 +85,8 @@ boundaries, ask before proceeding and suggest the closest fit.
   stays out of `pj_app` and the widget modules, except UI/editor code.
 - `resources/`: shared resources in `resources.qrc`, desktop-only splash memes in `memes.qrc`; module-local test and
   demo assets stay with their module. `resources/wasm-presets/` is not compiled in: it holds the browser sample
-  presets `scripts/package_wasm.mjs --presets` deploys ([docs/WASM_PRESETS.md](./docs/WASM_PRESETS.md)).
+  presets' index that `scripts/package_wasm.mjs --presets` deploys; their layouts, thumbnails and data live on the
+  asset host ([docs/WASM_PRESETS.md](./docs/WASM_PRESETS.md)).
 - `3rdparty/`: vendored source deps plus `retro/` (compliance artifacts installed next to `pj-raster-helper`).
   Conan and system deps do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper`; `ipc/` its header-only MPL-2.0 wire contract
