@@ -202,15 +202,22 @@ struct PanelEngine::Impl {
       return std::nullopt;
     }
     prev_raw = raw;
-    nlohmann::json new_data = nlohmann::json::parse(raw, nullptr, false);
-    if (new_data.is_discarded()) {
-      return std::nullopt;
+    WidgetDataView next_view(raw);
+    auto close_reason = next_view.requestClose();
+    // A payload that asks to close is not diffed or applied: the panel is being torn down, and its full parse, diff
+    // and apply would hold the thread in the tick that closes it. A declined close applies the state on the next
+    // tick, whose bytes differ and are diffed against the last applied payload.
+    nlohmann::json new_data;
+    if (!close_reason.has_value()) {
+      new_data = nlohmann::json::parse(raw, nullptr, false);
+      if (new_data.is_discarded()) {
+        return std::nullopt;
+      }
     }
-    prev_view = WidgetDataView(raw);
+    prev_view = std::move(next_view);
     // An alias: a nested applyAndDiff (during the modal sub-dialog below) reassigns prev_view, so `view` is not
     // read after that exec returns.
     const WidgetDataView& view = prev_view;
-    auto close_reason = view.requestClose();
     auto sub_dialog_ui = view.subDialogUi();
     auto sub_panel_ui = view.subPanelUi();
     const bool sub_panel_close = view.subPanelClose();
@@ -221,40 +228,42 @@ struct PanelEngine::Impl {
     const bool consumed_one_shot = close_reason.has_value() || sub_dialog_ui.has_value() || sub_panel_ui.has_value() ||
                                    sub_panel_close || new_data.contains("__request_accept");
 
-    new_data.erase("__request_close");
-    new_data.erase("__request_sub_dialog");
-    new_data.erase("__request_sub_panel");
-    new_data.erase("__request_sub_panel_close");
-    new_data.erase("__request_accept");
+    if (!close_reason.has_value()) {
+      new_data.erase("__request_close");
+      new_data.erase("__request_sub_dialog");
+      new_data.erase("__request_sub_panel");
+      new_data.erase("__request_sub_panel_close");
+      new_data.erase("__request_accept");
 
-    if (config.enable_diff) {
-      nlohmann::json diff = nlohmann::json::object();
-      for (const auto& [key, val] : new_data.items()) {
-        if (!prev_data.contains(key) || prev_data[key] != val) {
-          diff[key] = val;
+      if (config.enable_diff) {
+        nlohmann::json diff = nlohmann::json::object();
+        for (const auto& [key, val] : new_data.items()) {
+          if (!prev_data.contains(key) || prev_data[key] != val) {
+            diff[key] = val;
+          }
         }
-      }
-      if (!diff.empty()) {
-        WidgetDataView diff_view(diff.dump());
+        if (!diff.empty()) {
+          WidgetDataView diff_view(diff.dump());
+          if (root != nullptr) {
+            applyPanelData(root, diff_view);
+            ++stats.diff_apply_count;
+          }
+          // The sub-panel tracks the plugin's state too; names it does not own are skipped.
+          if (sub_panel != nullptr) {
+            applyPanelData(sub_panel, diff_view);
+          }
+        }
+      } else {
         if (root != nullptr) {
-          applyPanelData(root, diff_view);
+          applyPanelData(root, view);
           ++stats.diff_apply_count;
         }
-        // The sub-panel tracks the plugin's state too; names it does not own are skipped.
         if (sub_panel != nullptr) {
-          applyPanelData(sub_panel, diff_view);
+          applyPanelData(sub_panel, view);
         }
       }
-    } else {
-      if (root != nullptr) {
-        applyPanelData(root, view);
-        ++stats.diff_apply_count;
-      }
-      if (sub_panel != nullptr) {
-        applyPanelData(sub_panel, view);
-      }
+      prev_data = std::move(new_data);
     }
-    prev_data = std::move(new_data);
 
     // Close before open, so a same-tick close and reopen works; an open request is ignored while one is up.
     if (sub_panel_close) {

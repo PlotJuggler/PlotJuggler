@@ -71,7 +71,9 @@ test('foxglove bridge preset streams saved views', async ({ page }) => {
     // The browser offers both Foxglove subprotocols; the server has to pick one or the browser fails the handshake.
     await expect.poll(() => server.seen('connect').map(event => event.subprotocols), { timeout: 15000 })
       .toEqual([['foxglove.sdk.v1', 'foxglove.websocket.v1']]);
-    expect(server.seen('open').map(event => event.subprotocol)).toEqual(['foxglove.sdk.v1']);
+    // The server reports the open after the handshake, a separate event from the connect.
+    await expect.poll(() => server.seen('open').map(event => event.subprotocol), { timeout: 15000 })
+      .toEqual(['foxglove.sdk.v1']);
     // Each saved curve demands its topic, decoded by the JSON parser; the unused channel is never subscribed.
     const drawnTitles = async () => (await drawnPlots(page, messages)).map(plot => plot.titles);
     await expect.poll(drawnTitles, { timeout: 30000 }).toEqual([['robot/counter/value'], ['robot/sine/value']]);

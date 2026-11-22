@@ -70,7 +70,9 @@ Derived series reach this module as ordinary datastore topics through the catalo
 - **The XY keep-ratio fit only widens an axis**, so it always starts from the requested view
   (`PlotWidgetBase::applyRectKeepingRatio` keeps it), re-fitted on every plot resize and persisted through
   `requestedView()`. Fitting or saving the axes as shown instead zooms out a little on each resize, and a layout
-  restored at startup or under another window shape comes back wider.
+  restored at startup or under another window shape comes back wider. The fit also starts from the requested view's
+  tick labels and repeats until the canvas settles: the labels change the axis width, so near a tick-step boundary
+  the labels shown before would pick between two fits, or none would settle.
 - **A new curve takes a palette colour no curve of its plot uses yet; once every colour is in use it takes the
   least-used one, lowest index first** (`plot_xml::freePaletteIndex` in `PlotXml.h`, over the curves' pens, so
   restored and user-picked colours count). Both halves are intended: the session counter and `CurveColorRegistry` know

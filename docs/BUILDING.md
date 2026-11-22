@@ -314,6 +314,12 @@ Linux, Windows and macOS arm64 are shipped targets; the macOS `.dmg` comes from
 `-Wunused-lambda-capture` catch platform-conditional code GCC accepts, and macOS temp
 dirs sit behind the `/var -> /private/var` symlink, so tests must compare canonical paths.
 
+The nightly workflows (macOS CI, Pixi CI, Sanitizers, WASM CI with Firefox) run on the default branch when it moved
+since the previous night. A failed nightly opens a `Nightly failure: <workflow>` issue labelled `nightly-failure` and
+assigned to the maintainer, or comments on the one already open; the next nightly that runs green closes it
+([`nightly-failure.yml`](../.github/workflows/nightly-failure.yml)). Every test step gates its job: a test that
+cannot pass on a platform skips itself in the test, with the reason.
+
 Windows packaging: conda-forge ships no LGPL FFmpeg for win-64, so pixi-based Windows
 artifacts must use the local `recipes/ffmpeg` package (the Conan path builds its own
 LGPL-trimmed FFmpeg on all platforms). `windows-ci.yml` resolves the Qt and FFmpeg DLLs

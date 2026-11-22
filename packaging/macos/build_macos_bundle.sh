@@ -257,7 +257,14 @@ mkdir -p "${dmg_root}"
 mv "${APP}" "${dmg_root}/"
 ln -s /Applications "${dmg_root}/Applications"
 rm -f "${dmg}"
-hdiutil create -volname "PlotJuggler ${VERSION}" -srcfolder "${dmg_root}" -fs HFS+ -format UDZO -ov "${dmg}"
+# hdiutil create fails "Resource busy" now and then on GitHub's macOS runners while a background scanner holds the
+# fresh image (actions/runner-images#7522, macOS 15 arm64 image, 2026-11); it succeeds on retry.
+for attempt in 1 2 3 4 5; do
+  hdiutil create -volname "PlotJuggler ${VERSION}" -srcfolder "${dmg_root}" -fs HFS+ -format UDZO -ov "${dmg}" && break
+  [[ ${attempt} -lt 5 ]] || exit 1
+  echo "hdiutil create failed (attempt ${attempt}); retrying in $((attempt * 5)) s" >&2
+  sleep $((attempt * 5))
+done
 if [[ "${SIGN_IDENTITY}" != "-" ]]; then
   codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${dmg}"
 fi

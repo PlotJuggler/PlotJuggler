@@ -712,6 +712,10 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/main_window_history_exempt_test.cpp)
 
+    # MainWindow teardown order.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/main_window_teardown_test.cpp)
+
     # Layout-import batch restore, with isolated ctest processes:
     #   alive  — a materialize MISS import keeps the restore alive across the
     #            catalog-empty guard; curves bind at the batch-gated drain.

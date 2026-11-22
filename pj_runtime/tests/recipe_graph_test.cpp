@@ -125,12 +125,13 @@ TEST(RecipeGraphTest, PythonScriptIsCompiledOncePerRevision) {
   const RecipeGraph::Node* node = fx.graph.find(python.key());
   ASSERT_NE(node, nullptr);
   const uint64_t revision = node->revision;
-  const void* compiled = node->compiled.get();
+  // Held, not a raw address: once the edits below free it, a new compile can reuse the address (seen on Windows).
+  const auto compiled = node->compiled;
   ASSERT_NE(compiled, nullptr);
 
   ASSERT_TRUE(fx.graph.upsert(python).has_value());
   EXPECT_EQ(fx.graph.find(python.key())->revision, revision);
-  EXPECT_EQ(fx.graph.find(python.key())->compiled.get(), compiled) << "an identical upsert keeps the compiled script";
+  EXPECT_EQ(fx.graph.find(python.key())->compiled, compiled) << "an identical upsert keeps the compiled script";
 
   for (const char* refused : {"def evaluate(inputs, params:\n    return {}\n", "local inputs = ...\nreturn {}\n"}) {
     auto broken = python;
@@ -147,7 +148,7 @@ TEST(RecipeGraphTest, PythonScriptIsCompiledOncePerRevision) {
   edited.script = "def evaluate(inputs, params):\n    return {'x': 1}\n";
   ASSERT_TRUE(fx.graph.upsert(edited).has_value());
   EXPECT_GT(fx.graph.find(python.key())->revision, revision);
-  EXPECT_NE(fx.graph.find(python.key())->compiled.get(), compiled);
+  EXPECT_NE(fx.graph.find(python.key())->compiled, compiled);
 #ifdef PJ_PYTHON_TEST_PROBE
   EXPECT_EQ(test::pythonCompileEvents(), compiles) << "the graph compiles no Python";
 #endif

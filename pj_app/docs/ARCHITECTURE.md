@@ -28,7 +28,8 @@ Everything in the shell lives on the GUI thread. Two kinds of worker exist:
    be gone before the services and widgets they hold.
 4. The MCP server: no plugin is left to restart it, and its jobs point into toolbox services already torn down.
 5. A non-toolbox central panel still presented (marketplace, filter editor), then `PluginPlotTabsController` (it
-   holds the tab strip), then the tab widget.
+   holds the tab strip), then the tab widget, then the pending deferred deletes: content a dock replaced is parentless
+   and only deleted later, and a Scene2D image layer in it runs a decode thread over the session's object store.
 6. `CustomWidgetController::clearActiveWidgets()`, right after the Custom Widget docks die (see "Custom Widget
    panels").
 7. Timeline and curve list unbound from the engine and catalog; `FileLoader` disconnected from the window; then

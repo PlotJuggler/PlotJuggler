@@ -10,6 +10,7 @@
 #include <qwt_plot_grid.h>
 #include <qwt_plot_layout.h>
 #include <qwt_plot_marker.h>
+#include <qwt_scale_div.h>
 #include <qwt_scale_engine.h>
 #include <qwt_scale_map.h>
 #include <qwt_scale_widget.h>
@@ -471,10 +472,11 @@ void PlotWidgetBase::resetZoom() {
   replot();
 }
 
-void PlotWidgetBase::applyRectToAxes(const QRectF& rect) {
+void PlotWidgetBase::applyRectToAxes(const QRectF& rect, double x_step, double y_step) {
   plot_->requested_view = rect;
-  plot_->setAxisScale(QwtPlot::yLeft, std::min(rect.bottom(), rect.top()), std::max(rect.bottom(), rect.top()));
-  plot_->setAxisScale(QwtPlot::xBottom, std::min(rect.left(), rect.right()), std::max(rect.left(), rect.right()));
+  plot_->setAxisScale(QwtPlot::yLeft, std::min(rect.bottom(), rect.top()), std::max(rect.bottom(), rect.top()), y_step);
+  plot_->setAxisScale(
+      QwtPlot::xBottom, std::min(rect.left(), rect.right()), std::max(rect.left(), rect.right()), x_step);
   plot_->updateAxes();
 }
 
@@ -700,19 +702,39 @@ void PlotWidgetBase::setKeepRatioXY(bool active) {
 }
 
 void PlotWidgetBase::applyRectKeepingRatio(QRectF rect) {
-  QRectF fitted = rect;
-  const bool keep_ratio = isXYPlot() && keep_aspect_ratio_;
-  if (keep_ratio) {
-    plot_->zoomer->applyKeepAspectRatio(fitted);
-  }
-  applyRectToAxes(fitted);
-  if (keep_ratio) {
-    // The new range's tick labels resize the axes and so the canvas the fit was measured on: lay out now and fit again
-    // to the settled canvas, or the shown ratio misses the canvas by a few pixels.
+  applyRectToAxes(rect);
+  if (isXYPlot() && keep_aspect_ratio_) {
+    // The fitted range's tick labels resize the axes and so the canvas the fit was measured on: fit again until the
+    // canvas settles. Starting from the requested view's labels, not the ones shown, makes the result depend on `rect`
+    // and the widget size only: near a tick-step boundary two settled states can exist, and the last labels shown
+    // would pick between them, so a resize round trip could land on the other one.
     plot_->updateLayout();
-    fitted = rect;
-    plot_->zoomer->applyKeepAspectRatio(fitted);
-    applyRectToAxes(fitted);
+    const auto fit_to_canvas = [this, &rect](double x_step, double y_step) {
+      QRectF fitted = rect;
+      plot_->zoomer->applyKeepAspectRatio(fitted);
+      applyRectToAxes(fitted, x_step, y_step);
+      plot_->updateLayout();
+    };
+    const auto fit_until_settled = [this, &fit_to_canvas](double x_step, double y_step) {
+      constexpr int kMaxFitPasses = 4;
+      for (int pass = 0; pass < kMaxFitPasses; ++pass) {
+        const QSize canvas = plot_->canvas()->contentsRect().size();
+        fit_to_canvas(x_step, y_step);
+        if (plot_->canvas()->contentsRect().size() == canvas) {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (!fit_until_settled(0.0, 0.0)) {
+      // No fixed point: each fit's labels flip the range across the step boundary. Holding the tick steps of the
+      // labels now laid out keeps their width; only the end labels' overhang still moves the canvas, a pixel or two.
+      const auto major_step = [this](int axis) {
+        const QList<double> ticks = plot_->axisScaleDiv(axis).ticks(QwtScaleDiv::MajorTick);
+        return ticks.size() >= 2 ? ticks[1] - ticks[0] : 0.0;
+      };
+      fit_until_settled(major_step(QwtPlot::xBottom), major_step(QwtPlot::yLeft));
+    }
   }
   plot_->requested_view = rect;
 }

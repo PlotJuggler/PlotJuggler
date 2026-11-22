@@ -329,9 +329,14 @@ struct HidingFixture {
       policy->setSectionWidth(i, seeded);
     }
     QApplication::processEvents();
-    // expectNoGap() assumes the columns fit: past the viewport the policy overflows like a stock header.
-    ASSERT_LE(
-        (kFill * seeded) + expectedFloor(header, model.horizontalHeaderItem(kFill)->text()), v.viewport()->width());
+    // expectNoGap() assumes the columns fit: past the viewport the policy overflows like a stock header. A wider
+    // platform font (Windows) raises the seed past kTableWidth, so the view grows by the shortfall.
+    const int needed = (kFill * seeded) + expectedFloor(header, model.horizontalHeaderItem(kFill)->text());
+    if (const int shortfall = needed - v.viewport()->width(); shortfall > 0) {
+      v.resize(v.width() + shortfall, kTableHeight);
+      QApplication::processEvents();
+    }
+    ASSERT_LE(needed, v.viewport()->width());
   }
 
   /// Visible sections tile the viewport: each starts where the previous ended, and together they span it exactly.

@@ -200,12 +200,19 @@ async function requestTrackerReadback(consoleMessages, previousCount) {
   };
 }
 
-async function requestPlotText(consoleMessages, previousCount) {
-  await expect.poll(
-    () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK')).length,
-    { timeout: 10000 },
-  ).toBeGreaterThan(previousCount);
-  const message = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK')).at(-1) || '';
+// With `expected` ({ legendLayers, markerLabels }), waits for the newest message to show those counts: several
+// toolbar actions in one task can render more than one frame (the first action after the plot is set up renders
+// inside its own call, before the next action applies), so the first new message may show an intermediate state.
+async function requestPlotText(consoleMessages, previousCount, expected) {
+  const textMessages = () => consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK'));
+  await expect.poll(() => textMessages().length, { timeout: 10000 }).toBeGreaterThan(previousCount);
+  if (expected) {
+    await expect.poll(() => {
+      const counts = textMessages().at(-1).match(/legend_layers=(\d+) marker_labels=(\d+)/);
+      return counts && { legendLayers: Number(counts[1]), markerLabels: Number(counts[2]) };
+    }, { timeout: 10000 }).toEqual(expected);
+  }
+  const message = textMessages().at(-1) || '';
   const match = message.match(
     /legend_layers=(\d+) marker_labels=(\d+) alpha_pixels=(\d+) vertices=(\d+) atlas=(\d+)x(\d+) rect=([^,]+),([^,]+),([^x]+)x([^ ]+) raster_scale=([^,]+),([^ ]+)/,
   );
@@ -1443,7 +1450,7 @@ test.describe('HiDPI QRhi text', () => {
     let textMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK')).length;
     let textPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_PIXELS')).length;
     // The seeded playhead is inside the view, so the value box shows from the start. The legend-only baseline
-    // cycles the tracker to line-only (value -> value+name -> line), in one task so a single frame renders it.
+    // cycles the tracker to line-only (value -> value+name -> line).
     await page.evaluate(() => {
       window.pjWasmShowLegendProbe();
       window.pjWasmCycleTimeTrackerProbe();
@@ -1452,9 +1459,7 @@ test.describe('HiDPI QRhi text', () => {
     const state = await requestPlotState(page, consoleMessages, stateMessages);
     stateMessages += 1;
     expect(state.trackerParameter).toBe(0);
-    const legendOnlyText = await requestPlotText(consoleMessages, textMessages);
-    expect(legendOnlyText.legendLayers).toBe(1);
-    expect(legendOnlyText.markerLabels).toBe(0);
+    await requestPlotText(consoleMessages, textMessages, { legendLayers: 1, markerLabels: 0 });
     textMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_OK')).length;
     const initialPixels = await requestPlotTextPixels(consoleMessages, textPixelMessages);
     textPixelMessages = consoleMessages.filter(message => message.includes('PJ_WASM_PLOT_TEXT_PIXELS')).length;
@@ -1468,11 +1473,9 @@ test.describe('HiDPI QRhi text', () => {
     await seekQtPlot(page, canvas, 0.25, 0.55);
     const seeked = await requestPlotState(page, consoleMessages, stateMessages);
     expect(seeked.trackerParameter).toBe(1);
-    const text = await requestPlotText(consoleMessages, textMessages);
+    const text = await requestPlotText(consoleMessages, textMessages, { legendLayers: 1, markerLabels: 1 });
     const pixels = await requestPlotTextPixels(consoleMessages, textPixelMessages);
 
-    expect(text.legendLayers).toBe(1);
-    expect(text.markerLabels).toBe(1);
     expect(text.vertices).toBe(12);
     expect(pixels.pixels).toBeGreaterThan(initialPixels.pixels);
     expect(Math.abs((pixels.framebuffer.width / state.canvas.width) - 2)).toBeLessThan(0.05);

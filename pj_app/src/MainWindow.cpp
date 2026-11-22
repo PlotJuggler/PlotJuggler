@@ -2231,6 +2231,9 @@ MainWindow::~MainWindow() {
   // parser-owned records and a decode thread). ~ads::CDockManager deletes its docks in place.
   plugin_plot_tabs_.reset();  // its tab-strip reference must not outlive the strip
   delete ui_->tabbedPlotWidget;
+  // A dock's replaced content is parentless and deleted later, so the deletes above miss it; with no event loop
+  // left to run, delete it now. A Scene2D image layer's decode thread reads the object store session_ destroys.
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
   // Every Custom Widget dock died above, each removing its entry; clearing here also covers one
   // that never got the chance. Reaching this line is the clean exit the record is about.
   if (custom_widgets_ != nullptr) {

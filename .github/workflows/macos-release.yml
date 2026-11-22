@@ -96,8 +96,6 @@ jobs:
           clang --version
 
       - name: Install sccache
-        id: setup_sccache
-        continue-on-error: true
         uses: mozilla-actions/sccache-action@v0.0.10
         with:
           version: "v0.16.0"
@@ -193,14 +191,10 @@ jobs:
       - name: Build PlotJuggler 4 (app)
         shell: bash
         env:
-          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
           # Release-only: the key that decrypts the empty-dock easter egg GIFs (pj_widgets). Absent on forks: no easter egg.
           PJ_EASTER_EGG_KEY: ${{ secrets.PJ_EASTER_EGG_KEY }}
         run: |
-          launcher_args=()
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
-            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
-          fi
+          launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
           # PJ_BUILD_TESTS=OFF keeps the test-only fault injection out of the shipped binaries.
           cmake -S . -B build -G Ninja \
             "-DCMAKE_TOOLCHAIN_FILE=${PWD}/build/conan_toolchain.cmake" \
@@ -212,7 +206,7 @@ jobs:
             -DPJ_BUILD_DEMOS=OFF \
             "${launcher_args[@]}"
           cmake --build build --target pj_app --parallel
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then sccache --show-stats; fi
+          sccache --show-stats
 
       - name: Import the signing certificate
         if: env.PJ_SIGN == 'true'

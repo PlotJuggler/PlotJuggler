@@ -288,11 +288,8 @@ jobs:
       # ─────────────────────────── Compiler cache ───────────────────────────
 
       - name: Install sccache
-        # sccache is a compile-cache speedup, NOT load-bearing: the build is
-        # correct without it, just slower. v0.16 supports GitHub's current cache
-        # service; the action exports its short-lived runtime credentials.
-        id: setup_sccache
-        continue-on-error: true
+        # v0.16 supports GitHub's current cache service; the action exports its
+        # short-lived runtime credentials.
         uses: mozilla-actions/sccache-action@v0.0.10
         with:
           version: "v0.16.0"
@@ -338,20 +335,13 @@ jobs:
       - name: Build PlotJuggler 4 (app)
         shell: bash
         env:
-          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
           # Release-only: the key that decrypts the empty-dock easter egg GIFs (pj_widgets). Absent on forks: no easter egg.
           PJ_EASTER_EGG_KEY: ${{ secrets.PJ_EASTER_EGG_KEY }}
         run: |
           # Same debug format as windows-ci.yml (see its Build step), so the
           # two share sccache objects: no debug information in Release
           # objects. The installer ships no PDB. Requires CMP0141=NEW.
-          launcher_args=()
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
-            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache \
-                           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
-          else
-            echo "::warning::sccache unavailable; building without a compiler cache"
-          fi
+          launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
 
           cmake -S . -B build -G "Ninja Multi-Config" \
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
@@ -367,9 +357,7 @@ jobs:
           # definition) out of the shipped binaries.
           cmake --build build --config Release --target pj_app --parallel
 
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
-            sccache --show-stats
-          fi
+          sccache --show-stats
 
       - name: Build the installer
         # The recipe stages the app, downloads the curated published plugins from

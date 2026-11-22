@@ -6,6 +6,8 @@
 // re-fit the saved range, not the already-widened view, or the zoom creeps outward on every save and restart.
 
 #include <gtest/gtest.h>
+#include <qwt_plot.h>
+#include <qwt_plot_canvas.h>
 
 #include <QApplication>
 #include <QDomDocument>
@@ -129,6 +131,48 @@ TEST(PlotWidgetXyKeepRatio, ResizeRoundTripKeepsRange) {
   resizeAndSettle(plot, 900, 600);
 
   expectSameRect(plot.currentBoundingRect(), before);
+}
+
+// The fit widens one axis and so changes its tick labels, the axis width and the canvas it was measured on. A requested
+// view near a tick-step boundary alternates between two label widths (wider labels push the range past the boundary to
+// a coarser step, whose narrower labels bring it back), so the fit has no fixed point. Whatever the requested view, the
+// shown range has the canvas shape, and a resize round trip ends where it started.
+TEST(PlotWidgetXyKeepRatio, FitMatchesTheCanvasAcrossATickStepBoundary) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  const QString key_x = keyForTopic(catalog, addScalarTopic(session, *dataset, "/pos/x", {-1.0, 0.0, 1.0}));
+  const QString key_y = keyForTopic(catalog, addScalarTopic(session, *dataset, "/pos/y", {-1.0, 0.5, 1.0}));
+  ASSERT_FALSE(key_x.isEmpty());
+  ASSERT_FALSE(key_y.isEmpty());
+
+  PJ::PlotWidget plot(&session, &catalog);
+  plot.setModeXY(true);
+  plot.setKeepRatioXY(true);
+  ASSERT_NE(plot.addCurveXY(key_x, key_y, u"y vs x"_s), nullptr);
+  resizeAndSettle(plot, 900, 600);
+  plot.show();
+  QApplication::processEvents();
+  const auto* canvas = plot.findChild<QwtPlot*>()->canvas();
+
+  // Half-widths whose fitted Y half-height sweeps across 2, where the tick step goes from 0.5 to 1.
+  for (int step = 0; step <= 40; ++step) {
+    const double half_width = 2.9 + (0.01 * step);
+    SCOPED_TRACE(half_width);
+    plot.setZoomRectangle(QRectF(QPointF(-half_width, 2.0), QPointF(half_width, -2.0)), /*emit_signal=*/false);
+    const QRectF before = plot.currentBoundingRect();
+    const QRectF shown = before.normalized();
+    const QSizeF area = canvas->contentsRect().size();
+    // Two pixels of canvas width: with the tick steps held, the end labels' overhang can still move the canvas by a
+    // pixel between fits (1.5 px seen on Windows), which has no fixed point either. Before the fix it missed by 23 px.
+    EXPECT_NEAR(shown.width() / shown.height(), area.width() / area.height(), 2.0 / area.height())
+        << "the shown range does not have the canvas shape " << area.width() << "x" << area.height();
+
+    resizeAndSettle(plot, 600, 600);
+    resizeAndSettle(plot, 900, 600);
+    expectSameRect(plot.currentBoundingRect(), before);
+  }
 }
 
 // A layout stores the range the user asked for, not the axes widened to the canvas shape: a layout saved at one window

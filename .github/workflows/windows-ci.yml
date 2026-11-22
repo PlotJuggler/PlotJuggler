@@ -34,9 +34,8 @@ jobs:
     # and Conan package IDs instead of maintaining two Windows toolchain graphs.
     runs-on: windows-2022
     # Windows is a required shipped target (CLAUDE.md). The job blocks on its
-    # compile and its D3D11 display runners (the Windows gate of the QRhi
-    # renderer, pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes); its unit-suite step stays
-    # non-blocking while Windows runtime packaging is productionized.
+    # compile, its unit suite and its D3D11 display runners (the Windows gate of
+    # the QRhi renderer, pj_scene3D/docs/TECHNICAL_NOTES.md, CI lanes).
     # Backstop against hangs (a deadlocked build otherwise holds the runner for
     # GitHub's 6-hour default). A first run can still rebuild a missing Conan
     # closure from source before the cache save persists it, then compile the
@@ -224,13 +223,8 @@ jobs:
           key: qt-sdk-${{ steps.versions.outputs.qt_version }}-windows-msvc2022_64-v1
 
       - name: Install sccache
-        # sccache is a compile-cache speedup, NOT load-bearing: the build is
-        # correct without it, just slower. So this step must never fail the run.
         # The backend is the Actions cache (SCCACHE_GHA_ENABLED on the job),
         # shared with windows-release.yml and the Pixi win-64 leg.
-        # The outcome gate in Build keeps this optional if installation flakes.
-        id: setup_sccache
-        continue-on-error: true
         uses: mozilla-actions/sccache-action@v0.0.10
         with:
           version: "v0.16.0"
@@ -290,11 +284,6 @@ jobs:
 
       - name: Build
         shell: bash
-        env:
-          # "true" only if the install step actually succeeded; gates the
-          # compiler-launcher wiring below so a flaked sccache install degrades
-          # to an uncached (but correct) build instead of failing.
-          SCCACHE_AVAILABLE: ${{ steps.setup_sccache.outcome == 'success' }}
         run: |
           QT_DIR="$(pwd)/.qt/${PJ_QT_VERSION}/msvc2022_64"
           if [[ ! -d "$QT_DIR" ]]; then
@@ -324,14 +313,7 @@ jobs:
           # falls back to the legacy /Zi flag. We can't bump
           # cmake_minimum_required past 3.22 because Ubuntu 22.04 LTS ships
           # CMake 3.22.1, so the opt-in lives here in the CI invocation.
-          # Only route the compiler through sccache if its install succeeded.
-          launcher_args=()
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
-            launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache \
-                           -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
-          else
-            echo "::warning::sccache unavailable; building without a compiler cache"
-          fi
+          launcher_args=(-DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
 
           cmake -S . -B build -G "Ninja Multi-Config" \
             -DCMAKE_TOOLCHAIN_FILE="build/conan_toolchain.cmake" \
@@ -345,9 +327,7 @@ jobs:
 
           # Surface sccache stats before the post-action does, so they
           # appear in the Build step's log next to the compile output.
-          if [[ "$SCCACHE_AVAILABLE" == "true" ]]; then
-            sccache --show-stats
-          fi
+          sccache --show-stats
 
       - name: Put the runtime DLLs on PATH
         # Prepend Qt's and FFmpeg's bin/ dirs to PATH so the OS loader can resolve
@@ -373,8 +353,6 @@ jobs:
           done
 
       - name: Test
-        # Non-blocking (see the job comment above); the D3D11 step below is the gate.
-        continue-on-error: true
         shell: bash
         run: |
           # --timeout kills any single test after 2 min so a deadlocked test

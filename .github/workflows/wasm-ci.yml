@@ -463,9 +463,8 @@ jobs:
     # across two jobs instead.
     # Nightly and manual runs only: its single llvmpipe worker makes it the
     # costliest part of a PR run, and Chromium already gates the PR. A nightly failure
-    # emails whoever last edited the `schedule:` cron (GitHub's own scheduled-
-    # workflow notification); dispatch the workflow on a branch to run Firefox
-    # before merging a Firefox-sensitive change.
+    # opens a "Nightly failure" issue (nightly-failure.yml); dispatch the workflow on
+    # a branch to run Firefox before merging a Firefox-sensitive change.
     needs: wasm
     strategy:
       fail-fast: false
@@ -560,10 +559,6 @@ jobs:
           xvfb-run -a npm --prefix tests/wasm run test:firefox --
           --grep-invert editors.spec.js --shard=${{ matrix.shard }}/2
 
-      - name: Editors suite (Firefox, non-blocking)
-        # Non-blocking until the time-sliced first Luau materialization is
-        # proven to hold the 100 ms main-thread heartbeat budget in Firefox
-        # on CI runners.
+      - name: Editors suite (Firefox)
         if: ${{ !cancelled() && matrix.shard == 1 }}
-        continue-on-error: true
         run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep editors.spec.js

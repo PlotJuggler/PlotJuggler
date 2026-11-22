@@ -78,7 +78,6 @@ Then commit and push your own branch; **stop and ask** before any Gate 0 action 
   gh run view <run-id> --json jobs -q '.jobs[] | select(.conclusion=="failure") | "\(.databaseId) \(.name)"'
   gh api repos/PlotJuggler/PlotJuggler/actions/jobs/<job-id>/logs | tr -d '\r' | grep -n -E "error|FAILED|Error:" | head -40
   ```
-- **Windows CI's unit-suite `Test` step is `continue-on-error`** (the job blocks only on compile and the D3D11 runners), so a green run can hide a red `Test` step: read per-step status via `gh run view <id>`, never the run-level ✓.
 - Windows red at `conan install` with "Cannot load recipe / conanfile.py not found" after a cache HIT = **poisoned Conan cache**, not your code → invalidate the key that the `Compute Conan cache key` step of `windows-ci.yml` produces.
 
 ## Rationalization table
@@ -90,4 +89,3 @@ Then commit and push your own branch; **stop and ask** before any Gate 0 action 
 | "I'll fix the docs in a follow-up PR" | Same change or an explicit question; stale docs don't ship |
 | "Skip pre-commit, CI will catch it" | CI catching it costs a full round-trip; the hook costs seconds |
 | "The user said run to completion" | Run-to-completion stops **at** the Gate 0 actions, not through them |
-| "Windows CI is green" | Its `Test` step is non-blocking; green means nothing until you read the steps |

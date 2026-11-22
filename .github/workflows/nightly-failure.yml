@@ -1,0 +1,32 @@
+# A failed nightly opens (or comments on) a "Nightly failure: <workflow>" issue assigned to the maintainer, whom
+# GitHub then emails; the next nightly that runs green closes it. GitHub's own scheduled-run email only reaches
+# whoever last edited a workflow's cron. Logic: .github/scripts/nightly_failure_issue.sh.
+name: Nightly failure issue
+
+on:
+  workflow_run:
+    # The `name:` of every workflow with a `schedule:` trigger, except the monthly Conan lock refresh, which opens
+    # its own PR.
+    workflows: ["macOS CI", "Pixi CI", "Sanitizers", "WASM CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/scripts
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NIGHTLY_ASSIGNEE: facontidavide
+        run: bash .github/scripts/nightly_failure_issue.sh "${{ github.event.workflow_run.id }}" --apply
