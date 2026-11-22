@@ -758,7 +758,7 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_DIRECTORY = path.join(__dirname, '..', '..', 'resources', 'wasm-presets');
-const SAMPLE_IDS = ['builtin_filters', 'anymal', 'waymo'];
+const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset'];
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
 // A small CSV preset the download and robot-hosting cases serve; not a deployed sample.
 const SIGNALS_FIXTURE = path.join(__dirname, 'fixtures', 'signals');
@@ -918,24 +918,23 @@ async function expectAnymalViews(run) {
   await expectSceneMoves(run, 1, anymalReady);
 }
 
-// Both Waymo 3D views (aerial and orbit), in the car's base_link frame: the five lidars restored as
-// Cloudini-compressed clouds, the four scene-entity topics (vehicle, pedestrian and sign boxes, and the car),
-// and the car's embedded glTF model ready and drawn. The clouds are drawn only once the cursor has passed a
-// scan, so this does not count them.
-const waymoLoaded = (models, dock) => dock.fixed === 'base_link'
-  && dock.data.points.live === 5 && dock.data.points.compressed === 5
-  && models.markers.live === 4 && models.models.ready >= 1 && models.models.draws >= 1;
+// Both PandaSet 3D views (aerial and orbit), in the car's base_link frame: the Pandar64 lidar restored as a
+// Cloudini-compressed cloud and the annotated boxes as scene entities. The cloud is drawn only once the cursor
+// has passed a sweep, so this does not count it.
+const pandasetLoaded = (models, dock) => dock.fixed === 'base_link'
+  && dock.data.points.live === 1 && dock.data.points.compressed === 1 && models.markers.live === 1;
 
-// Every lidar and the boxes drawn as well.
-const waymoReady = (models, dock) => waymoLoaded(models, dock)
-  && dock.data.points.rendered === 5 && models.markers.rendered > 0 && models.markers.instances > 0;
+// The lidar and the boxes drawn as well.
+const pandasetReady = (models, dock) => pandasetLoaded(models, dock)
+  && dock.data.points.rendered === 1 && models.markers.rendered > 0 && models.markers.instances > 0;
 
-// The Waymo sample's plots, its five cameras (each with its 3D-box overlay), and its two 3D views moving.
-async function expectWaymoViews(run) {
-  await expectPlots(run, [['stats/Vehicle Dynamics/acceleration (m/s2)'], ['stats/Vehicle Dynamics/velocity (km/h)']]);
+// The PandaSet sample's yaw-rate and speed plots (from the /ego JSON), its six cameras (each with its
+// box overlay), and its two 3D views moving.
+async function expectPandasetViews(run) {
+  await expectPlots(run, [['ego/yaw_rate_dps'], ['ego/speed_kmh']]);
   const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
-  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual(Array(5).fill([2, true]));
-  await expectSceneMoves(run, 2, waymoReady);
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual(Array(6).fill([2, true]));
+  await expectSceneMoves(run, 2, pandasetReady);
 }
 
 // The Built-in filters sample: the raw gyro yaw rate, the same signal through the built-in
@@ -960,7 +959,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     const context = page.context();
     await page.close();
     for (const [id, expectViews] of [
-      ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['waymo', expectWaymoViews],
+      ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['pandaset', expectPandasetViews],
     ]) {
       const run = await bootSamples(context, errors, samples);
       let dialog;
@@ -1081,10 +1080,10 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
     { id: 'anymal', docks: 1, loaded: anymalLoaded, expectViews: expectAnymalViews });
 });
 
-test('waymo sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page, browserName }) => {
+test('pandaset sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page, browserName }) => {
   test.setTimeout(300000);
   await expectSampleStaysResponsive(page, browserName,
-    { id: 'waymo', docks: 2, loaded: waymoLoaded, expectViews: expectWaymoViews });
+    { id: 'pandaset', docks: 2, loaded: pandasetLoaded, expectViews: expectPandasetViews });
 });
 
 test('a sample that fails releases what it staged and leaves the open sample as it was', { tag: '@serial' }, async ({ page }) => {

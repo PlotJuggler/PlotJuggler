@@ -15,11 +15,11 @@
       "thumbnail": "anymal/thumbnail.png"
     },
     {
-      "id": "waymo",
+      "id": "pandaset",
       "title": "Self-driving car",
-      "description": "A Waymo car driving through Phoenix: five cameras with 3D-box overlays, its five lidars and the boxes in 3D, beside its speed and acceleration.",
-      "layout": "waymo/layout.pj4.xml",
-      "thumbnail": "waymo/thumbnail.png"
+      "description": "A car on a suburban road in Silicon Valley from PandaSet: its six cameras with 3D-box overlays, its lidar and the boxes in 3D, beside its yaw rate and speed.",
+      "layout": "pandaset/layout.pj4.xml",
+      "thumbnail": "pandaset/thumbnail.png"
     }
   ]
 }

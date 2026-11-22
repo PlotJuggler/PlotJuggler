@@ -262,12 +262,12 @@ fake bridge behind Caddy and `docs/wasm/Caddyfile` (see
 
 They open every sample into its views (the ANYmal robot with all its meshes, its
 compressed lidar scan, its three camera views and its joint, IMU and speed plots;
-the Waymo car's five cameras with their 3D-box overlays, its two 3D views with
-every lidar, the boxes and the car, and its speed and acceleration plots; the
+the PandaSet car's six cameras with their 3D-box overlays, its two 3D views with
+its lidar and the boxes, and its yaw-rate and speed plots; the
 built-in filters sample's raw and moving-average plots, its filter restored from
 the layout), check that seeking
 between two points inside the recording changes what each 3D view draws (a scene
-drawn once and then frozen fails), reopen ANYmal and the Waymo car after switching sample while
+drawn once and then frozen fails), reopen ANYmal and the PandaSet car after switching sample while
 bounding the page's longest main-thread task (Chromium; Firefox, which has no
 Long Tasks API, only logs its timings), and make loads fail after staging
 and after importing to check that the staged files are released and the open

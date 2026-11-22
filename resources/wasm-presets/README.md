@@ -13,12 +13,12 @@ for the repository. How to author one, the packaging rules and the hosting notes
 |---|---|
 | `builtin_filters/` | layout, thumbnail (recording hosted, see below) |
 | `anymal/` | layout, thumbnail (recording and robot models hosted, see below) |
-| `waymo/` | layout, thumbnail (recording hosted, see below) |
+| `pandaset/` | layout, thumbnail (recording hosted, see below) |
 
 The layouts and this file are authored for this repository and fall
 under its license (MPL-2.0), and so do the thumbnails: PlotJuggler renders of
 the loaded samples (browser screenshots, downscaled to 384x216, 8-bit palette; the
-ANYmal and Waymo ones show only a 3D view, the built-in filters one its
+ANYmal and PandaSet ones show only a 3D view, the built-in filters one its
 two plots).
 
 ## `builtin_filters/` — built-in filters
@@ -91,56 +91,53 @@ a converter outside this repository from the dataset's Zarr streams and a
 curated MCAP of the same mission; the topics, rates and processing above are
 what it did.
 
-## `waymo/` — self-driving car
+## `pandaset/` — self-driving car
 
-The layout loads `v1/waymo/waymo_av_demo.mcap` (170,187,347 bytes, SHA-256
-`59c8cf1b6bae8226f9d5eb3f79103b6678666b463e5aa8b456f03b14683f1927`, pinned by
-the layout's `content_sha256`) from the asset host: 19.8 s of a
-[Waymo Open Dataset](https://waymo.com/open) perception segment, a car driving
-through Phoenix by day (the recording's `/stats` names `location_phx`), from Unix
-time 1507939794.765751 to 1507939814.569083. It starts from Foxglove's Waymo
-example recording (`example-016-av-waymo-ds.mcap`, 925 MB, Foxglove schemas over
-protobuf) and holds:
+The layout loads `v1/pandaset/pandaset_092-094_20s.mcap` (161,812,017 bytes, SHA-256
+`c343cec075d685faed3ed45534fb14286726203d9e80242299348e1b289c75bf`, pinned by
+the layout's `content_sha256`) from the asset host: 20 s of
+[PandaSet](https://pandaset.org), sequences 092 (frames 40-79), 093 and 094, which
+PandaSet recorded back to back on a suburban arterial in Silicon Valley (GPS about
+37.372 N, 122.05 W), by day, at 60-70 km/h and braking to 27 km/h at the end; Unix
+time 1557593251.900 to 1557593271.900. The sequences join at 1557593256.000 and
+1557593264.000, with their original timestamps. Each sequence has its own world
+origin: `map` is 092's, and 093 and 094 are chained onto it by extrapolating the
+previous sequence's last lidar step, so `map` to `base_link` has no jump at a join.
+It was converted from the PandaSet release as mirrored, unofficially, on
+[Hugging Face](https://huggingface.co/datasets/georghess/pandaset), and holds:
 
-- the five lidars (`/LIDAR_TOP`, `_FRONT`, `_REAR`, `_SIDE_LEFT`, `_SIDE_RIGHT`,
-  10 Hz) at full resolution, about 144k points a scan from the top lidar and about
-  4k from each of the others, converted to `sensor_msgs/msg/PointCloud2` and
-  Cloudini-compressed (1 mm, intensity at 1, elongation removed); the demo's
-  downsampled copies are dropped;
-- the five cameras' downsampled JPEGs (480x320 front, 480x221 side, 10 Hz) and
-  their segmentation images (5 Hz), re-encoded at quality 80 where that is smaller,
-  with their `camera_info`;
-- each camera's `foxglove.ImageAnnotations` overlays: the lidar points projected
-  into it (`lidar`) and the 2D and 3D box outlines (`annotations_2d`,
-  `annotations_3d`), points rounded to 1/4 pixel and colours to 1/256;
-- the 3D boxes (`/markers/annotations/vehicles`, `pedestrians`, `signs`,
-  `foxglove.SceneUpdate`), `/tf`, and `/stats` (`diagnostic_msgs/msg/DiagnosticArray`:
-  speed, acceleration, wheel speed, and the segment's context). Its schema declares
-  each status's `name` before its `level`, unlike ROS's definition; `parser_ros`
-  1.4.2 and later read the fields in the schema's order, older ones fail every
-  `/stats` message, and the browser refuses a sample whose plotted curves have no data;
-- the car (`/marker/car`, an embedded binary glTF in a `foxglove.SceneUpdate`),
-  kept once with its 5 s lifetime cleared so it lasts the whole recording (the
-  demo republishes it every 5 s).
+- `/lidar/pandar64` (10 Hz): every Pandar64 point in the sensor frame, x, y, z,
+  intensity and `class_id` (the semantic class; 0 in 092 and 093, which have no
+  segmentation), Cloudini-compressed (x, y, z on a 2 mm grid, intensity at 1,
+  `class_id` lossless). The PandarGT lidar is not included;
+- the six cameras (`/camera/<name>/image`: front_left, front, front_right, right,
+  back, left; 10 Hz), downscaled from 1920x1080 to 800x450 and re-encoded as JPEG
+  (quality 75), with their `camera_info` for that size, and `/camera/<name>/boxes`,
+  the annotated cuboids projected into each image as outlines;
+- `/boxes`: the annotated cuboids as `foxglove.SceneUpdate` in `base_link`,
+  coloured by class group (vehicles orange, pedestrians blue, cyclists green, other
+  grey), the ego car a magenta box;
+- `/tf` (map to base_link per sweep, the lidar, and each camera per frame);
+- `/ego` (JSON): speed from PandaSet's GPS velocity, heading and yaw rate from the
+  lidar poses (within one sequence), and the GPS position; `/objects` (JSON): object
+  counts per sweep, which step at the joins because each sequence was annotated on
+  its own.
 
-`README.txt` beside it lists the same changes and gives the attribution. The layout
-shows the five cameras across the top with their 3D-box overlays, then the
-acceleration and speed from `/stats` and an aerial (top-down orthographic) view in a
-column beside a large orbiting 3D view, both views drawing the lidars, boxes and car.
-Its MCAP Loader selects only the topics those views show, so the segmentation
-images, the projected lidar points and the 2D boxes stay in the file but are not
-loaded. Both 3D views use `base_link` as their fixed frame: with `map` as the fixed
-frame and `base_link` followed, both came up empty on the desktop (not investigated).
-The aerial view's camera elevation stays below the top-down limit (pi/2 - 0.05): a
-layout with a larger one is rejected whole.
+`README.txt` beside it lists the same changes and gives the attribution and the
+citation. The layout shows the six cameras across the top with their box overlays;
+below them the yaw rate, the speed and an aerial (top-down orthographic) view
+coloured by intensity in a column, beside a large orbiting 3D view coloured by
+height; both 3D views draw the lidar and the boxes in `base_link`. Its MCAP Loader
+does not select `/objects`.
 
-Redistribution basis: the Waymo Open Dataset is licensed by Waymo LLC under the
-[Waymo Dataset License Agreement for Non-Commercial Use](https://waymo.com/open/terms),
-which allows non-commercial use only and requires the attribution its section 1
-gives. `README.txt` beside the recording carries that attribution: "This
-recording was made using the Waymo Open Dataset, provided by Waymo LLC under the
-Waymo Dataset License Agreement for Non-Commercial Use, available at
-waymo.com/open/terms, and your access and use of such work are governed by the
-terms and conditions therein." The recording was made with a converter outside this
-repository from Foxglove's demo recording; the topics and processing above are what
-it did.
+Privacy: the images are not anonymised. PandaSet does not blur faces or licence
+plates; in this recording the closest driver (sequence 094, front-right and right
+cameras, about 4 m) is recognisable at 800x450, and plates are 6 m or farther and
+not legible at that size.
+
+Redistribution basis: PandaSet (c) Scale AI, Inc. and Hesai Photonics Technology
+Co., Ltd, is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+with the PandaSet Dataset Terms; the `README.txt` beside the recording gives that
+attribution, lists the changes made, as the licence requires, and states that the
+recording is not endorsed by Scale AI or Hesai. The recording was made with a
+converter outside this repository; the topics and processing above are what it did.
