@@ -62,6 +62,7 @@ add_library(pj_runtime STATIC
     src/UsageReporter.cpp
     src/ViewportRuntimeHost.cpp
     src/WidgetRuntimeHost.cpp
+    src/XmlStateOptions.cpp
     src/CanonicalObjectPayload.cpp
     src/ActiveWidgetsMarker.cpp
     include/pj_runtime/AppSession.h
@@ -116,6 +117,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/UsageCounters.h
     include/pj_runtime/UsageReporter.h
     include/pj_runtime/ToolboxTags.h
+    include/pj_runtime/XmlStateOptions.h
     include/pj_runtime/UpdateVersion.h
     include/pj_runtime/ViewportRuntimeHost.h
     include/pj_runtime/WidgetRuntimeHost.h
@@ -217,6 +219,7 @@ if(PJ_BUILD_TESTS)
     # Discovery gives every case its own process while the static runtime
     # dependency closure is linked only once.
     set(PJ_RUNTIME_TEST_SOURCES
+        tests/xml_state_options_test.cpp
         tests/source_cache_store_test.cpp
         tests/object_ingest_tap_test.cpp
         tests/time_test.cpp
