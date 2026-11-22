@@ -1206,7 +1206,22 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
     expect(Math.abs((trackerCenter / readback.framebuffer.width) - ratio)).toBeLessThan(0.025);
   };
 
+  // A Shift-drag can move the tracker in steps small enough to read as playback, and then the value box glides to its
+  // value after the drag ends: wait until it has arrived before reading the plot.
+  const waitForValueBox = async () => {
+    await expect.poll(async () => {
+      const trackerReadbacks = countMessages(consoleMessages, 'PJ_WASM_PLOT_TRACKER');
+      const state = await requestPlotState(
+        page, consoleMessages, countMessages(consoleMessages, 'PJ_WASM_PLOT_STATE count='));
+      await requestTrackerReadback(consoleMessages, trackerReadbacks);
+      return state.valueBoxGliding;
+    }, { timeout: 10000 }).toBe(false);
+    stateMessages = countMessages(consoleMessages, 'PJ_WASM_PLOT_STATE count=');
+    trackerMessages = countMessages(consoleMessages, 'PJ_WASM_PLOT_TRACKER');
+  };
+
   await seekQtPlot(page, canvas, 0.25, 0.70);
+  await waitForValueBox();
   const forward = await requestPlotState(page, consoleMessages, stateMessages);
   stateMessages += 1;
   const forwardTracker = await requestTrackerReadback(consoleMessages, trackerMessages);
@@ -1217,6 +1232,7 @@ test('Shift-drag seeks playback and moves the QRhi tracker without changing the 
   assertTrackerAt(forwardTracker, 0.70);
 
   await seekQtPlot(page, canvas, 0.65, 0.40);
+  await waitForValueBox();
   const backward = await requestPlotState(page, consoleMessages, stateMessages);
   stateMessages += 1;
   const backwardTracker = await requestTrackerReadback(consoleMessages, trackerMessages);
@@ -1611,18 +1627,15 @@ test('mouse hover selects a curve point and renders its QRhi inspector', { tag: 
 
   const state = await requestPlotState(page, consoleMessages, 0);
   await page.waitForTimeout(350);
-  const canvas = {
-    x: screen.x + state.canvas.x,
-    y: screen.y + state.canvas.y,
-    width: state.canvas.width,
-    height: state.canvas.height,
-  };
   await page.evaluate(() => window.pjWasmToggleShowPointProbe());  // "Show point in plot" starts off
   const sample = { x: 3, y: 30 };
-  const samplePixel = {
-    x: canvas.x + (((sample.x - state.view.left) / (state.view.right - state.view.left)) * canvas.width),
-    y: canvas.y + (((state.view.top - sample.y) / (state.view.top - state.view.bottom)) * canvas.height),
-  };
+  const pixelOf = (plotState, point) => ({
+    x: screen.x + plotState.canvas.x
+      + (((point.x - plotState.view.left) / (plotState.view.right - plotState.view.left)) * plotState.canvas.width),
+    y: screen.y + plotState.canvas.y
+      + (((plotState.view.top - point.y) / (plotState.view.top - plotState.view.bottom)) * plotState.canvas.height),
+  });
+  let samplePixel = pixelOf(state, sample);
   await page.mouse.move(samplePixel.x, samplePixel.y);
   await page.waitForTimeout(150);
   let hovered;
@@ -1630,8 +1643,8 @@ test('mouse hover selects a curve point and renders its QRhi inspector', { tag: 
     hovered = await requestPlotHover(page, consoleMessages);
     return hovered.pixels.yellow > 0 && hovered.pixels.border > 0;
   }, { timeout: 10000 }).toBe(true);
-  const xTolerance = (2 * (state.view.right - state.view.left)) / canvas.width;
-  const yTolerance = (2 * (state.view.top - state.view.bottom)) / canvas.height;
+  const xTolerance = (2 * (state.view.right - state.view.left)) / state.canvas.width;
+  const yTolerance = (2 * (state.view.top - state.view.bottom)) / state.canvas.height;
   expect(hovered.enabled).toBe(true);
   expect(hovered.visible).toBe(true);
   expect(Math.abs(hovered.point.x - sample.x)).toBeLessThan(xTolerance);
@@ -1643,6 +1656,12 @@ test('mouse hover selects a curve point and renders its QRhi inspector', { tag: 
   expect(hovered.pixels.border).toBeGreaterThan(0);
   expect(hovered.pixels.bounds.maxX).toBeGreaterThan(hovered.pixels.bounds.minX);
   expect(hovered.pixels.bounds.maxY).toBeGreaterThan(hovered.pixels.bounds.minY);
+  // After the fit the canvas can sit a few pixels off its final place until the next full replot, which the hover's
+  // repaint makes: aim the crop from the geometry read after it.
+  samplePixel = pixelOf(
+    await requestPlotState(page, consoleMessages, countMessages(consoleMessages, 'PJ_WASM_PLOT_STATE count=')),
+    sample,
+  );
   await page.screenshot();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(
     () => requestAnimationFrame(resolve),

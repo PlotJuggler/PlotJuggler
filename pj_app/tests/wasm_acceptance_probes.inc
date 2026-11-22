@@ -1845,12 +1845,12 @@ void PJ::MainWindow::installWasmPlotAcceptanceProbes() {
     const quint64 current_sequence = ++sequence;
     qInfo(
         "PJ_WASM_PLOT_STATE count=%lld titles=%s canvas=%d,%d,%dx%d view=%.17g,%.17g,%.17g,%.17g "
-        "time=%.17g tracker_enabled=%d tracker_parameter=%d xy=%d style=%d width=%d sequence=%llu",
+        "time=%.17g tracker_enabled=%d tracker_parameter=%d xy=%d style=%d width=%d sequence=%llu value_box_gliding=%d",
         static_cast<long long>(titles.size()), qPrintable(titles.join(',')), canvas_position.x(), canvas_position.y(),
         canvas->width(), canvas->height(), view.left(), view.right(), view.bottom(), view.top(),
         toAxisDouble(session_->playbackEngine().currentTime()), plot->trackerEnabled() ? 1 : 0,
         static_cast<int>(plot->trackerParameter()), plot->isXYPlot() ? 1 : 0, curve_style, line_width,
-        static_cast<unsigned long long>(current_sequence));
+        static_cast<unsigned long long>(current_sequence), plot->trackerValueBoxGliding() ? 1 : 0);
     qInfo(
         "PJ_WASM_PLOT_HOVER sequence=%llu enabled=%d visible=%d point=%.17g,%.17g label=%s",
         static_cast<unsigned long long>(current_sequence),

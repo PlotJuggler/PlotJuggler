@@ -35,6 +35,7 @@ async function requestPlotState(page, consoleMessages, previousCount) {
     xy: match[14] === '1',
     style: Number(match[15]),
     width: Number(match[16]),
+    valueBoxGliding: / value_box_gliding=1\b/.test(message),
   };
 }
 

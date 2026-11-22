@@ -8,7 +8,9 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QPointF>
+#include <QPointer>
 #include <QTimer>
+#include <QWidget>
 #include <optional>
 #include <vector>
 
@@ -46,6 +48,10 @@ class CurveTracker : public QObject {
   // The value box's vertical anchor in plot coordinates, where it is drawn now (it glides toward the curves' mid value
   // at kLabelSpeedPxPerSec, so it can lag the last position).
   [[nodiscard]] double valueBoxY() const;
+  // Whether the value box is still moving toward its value (it keeps moving after positions stop arriving).
+  [[nodiscard]] bool valueBoxGliding() const noexcept {
+    return label_timer_.isActive();
+  }
 
  signals:
   // The value box moved by itself (a glide step with no new position): the owner repaints its overlays.
@@ -60,6 +66,9 @@ class CurveTracker : public QObject {
     setPosition(previous_tracker_point_);
   }
 
+ protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
  private:
   // The display parameter that permits a value box at all (kLineOnly never does).
   // Single home for the rule shared by setEnabled() and setPosition().
@@ -68,6 +77,8 @@ class CurveTracker : public QObject {
   }
   // Moves the value box toward label_target_y_ by the distance allowed since the last step; stops the glide on arrival.
   void stepValueBox();
+  // label_value_y_, moved just enough that a box `box_height_px` tall centred on it stays inside the canvas.
+  [[nodiscard]] double boxAnchorY(double box_height_px) const;
 
   QPointF previous_tracker_point_;
   std::optional<QPointF> reference_pos_;
@@ -80,7 +91,11 @@ class CurveTracker : public QObject {
   // Glide of the value box: a box that was hidden, or a seek (a large time jump), snaps to its target; otherwise it
   // moves at a capped pixel speed so playback over noisy curves does not make it jump every frame.
   double label_target_y_ = 0.0;
+  // The curves' mid value at the last position. label_target_y_ is derived from it in canvas pixels, so it is
+  // recomputed when the canvas resizes (a new dock is laid out small first).
+  double label_value_y_ = 0.0;
   bool label_shown_ = false;
+  QPointer<QWidget> watched_canvas_;  // the canvas this filters resizes of; PlotWidgetBase can replace it
   QTimer label_timer_;
   QElapsedTimer label_clock_;
 };

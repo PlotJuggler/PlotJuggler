@@ -9,6 +9,7 @@
 #include <qwt_symbol.h>
 #include <qwt_text.h>
 
+#include <QEvent>
 #include <QFontDatabase>
 #include <QPalette>
 #include <QPen>
@@ -140,6 +141,10 @@ void CurveTracker::setEnabled(bool enable) {
 void CurveTracker::setPosition(const QPointF& tracker_position) {
   if (plot_ == nullptr) {
     return;
+  }
+  if (watched_canvas_ != plot_->canvas() && plot_->canvas() != nullptr) {
+    watched_canvas_ = plot_->canvas();
+    watched_canvas_->installEventFilter(this);
   }
   const auto fw_theme = theme::appTheme();
 
@@ -278,18 +283,8 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   }
 
   if (visible_points > 0) {
-    label_target_y_ = 0.5 * (max_y + min_y);
-    // QwtPlotMarker centres the box on its value: near the top or bottom of the view, half of it would leave the
-    // canvas.
-    const QwtScaleMap y_map = plot_->canvasMap(QwtPlot::yLeft);
-    const double half_height_px = 0.5 * marker_text.textSize().height();
-    const double low_px = std::min(y_map.p1(), y_map.p2()) + half_height_px;
-    const double high_px = std::max(y_map.p1(), y_map.p2()) - half_height_px;
-    // Not on a canvas shorter than the box, which includes one not laid out yet, where invTransform() divides by zero.
-    if (const double target_px = y_map.transform(label_target_y_);
-        low_px < high_px && (target_px < low_px || target_px > high_px)) {
-      label_target_y_ = y_map.invTransform(std::clamp(target_px, low_px, high_px));
-    }
+    label_value_y_ = 0.5 * (max_y + min_y);
+    label_target_y_ = boxAnchorY(marker_text.textSize().height());
   }
 
   const double canvas_ratio = view_rect.width() / static_cast<double>(std::max(1, plot_->width()));
@@ -329,6 +324,31 @@ QString CurveTracker::valueBoxText() const {
 
 double CurveTracker::valueBoxY() const {
   return text_marker_->yValue();
+}
+
+double CurveTracker::boxAnchorY(double box_height_px) const {
+  // QwtPlotMarker centres the box on its value: near the top or bottom of the view, half of it would leave the canvas.
+  const QwtScaleMap y_map = plot_->canvasMap(QwtPlot::yLeft);
+  const double half_height_px = 0.5 * box_height_px;
+  const double low_px = std::min(y_map.p1(), y_map.p2()) + half_height_px;
+  const double high_px = std::max(y_map.p1(), y_map.p2()) - half_height_px;
+  // Not on a canvas shorter than the box, which includes one not laid out yet, where invTransform() divides by zero.
+  if (const double value_px = y_map.transform(label_value_y_);
+      low_px < high_px && (value_px < low_px || value_px > high_px)) {
+    return y_map.invTransform(std::clamp(value_px, low_px, high_px));
+  }
+  return label_value_y_;
+}
+
+bool CurveTracker::eventFilter(QObject* watched, QEvent* event) {
+  // The resize arrives after QwtPlot::updateLayout placed the scales, so canvasMap() is already the new one. Not a
+  // glide: the box was not moving, the canvas was.
+  if (event->type() == QEvent::Resize && watched == watched_canvas_ && label_shown_) {
+    label_timer_.stop();
+    label_target_y_ = boxAnchorY(text_marker_->label().textSize().height());
+    text_marker_->setYValue(label_target_y_);
+  }
+  return QObject::eventFilter(watched, event);
 }
 
 void CurveTracker::stepValueBox() {
