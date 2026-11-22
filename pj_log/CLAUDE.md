@@ -22,6 +22,9 @@ no other family, and no family depends on it; `pj_app` creates the panel (kind a
 - **Persisted names are a layout-file contract:** the `<log>` tag, its `<topic>` children with the scene-dock identity
   attributes (so `LayoutXml`'s dataset relocation applies) and the level keys in `log_view::kLevelNames`. Renaming one
   drops the setting from saved layouts.
+- **Every attribute `xmlSaveState` writes is read in `xmlValidateState` through a reporting reader** (`readXmlText`,
+  `XmlOptionsRecorder::noteOption`), the same parse `xmlLoadState` uses: one the validator never reads is missing from
+  the MCP `widget_state` options. `ValidationDescribesTheSavedStateAndAgreesWithLoad` fails on it.
 - **Unresolved topics are written back verbatim** and retried on catalog and source-path changes; dropping them
   loses the topic from the layout when its dataset is not loaded yet.
 - `core/` stays Qt-free: the store and the filter are unit-tested without an application.

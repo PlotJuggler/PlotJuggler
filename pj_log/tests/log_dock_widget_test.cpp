@@ -5,8 +5,12 @@
 
 #include <QApplication>
 #include <QDomDocument>
+#include <QDomElement>
+#include <QList>
+#include <QSet>
 #include <QSignalSpy>
 #include <QTest>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,6 +24,7 @@
 #include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_runtime/XmlStateOptions.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -277,6 +282,104 @@ TEST_F(LogDockWidgetTest, AVanishedTopicKeepsItsDatasetIdentityAndRebinds) {
   QApplication::processEvents();
   EXPECT_FALSE(dock->hasPendingTopic(u"/rosout"_s));
   EXPECT_EQ(messages(*dock), std::vector<std::string>{"reloaded"});
+}
+
+QList<QDomElement> elementsNamed(const QDomElement& root, const QString& tag) {
+  QList<QDomElement> found;
+  if (root.tagName() == tag) {
+    found.append(root);
+  }
+  const QDomNodeList descendants = root.elementsByTagName(tag);
+  for (int i = 0; i < descendants.size(); ++i) {
+    found.append(descendants.at(i).toElement());
+  }
+  return found;
+}
+
+// The widget's own saved state, validated: every saved attribute has a reporting reader, each enum token validates in
+// place of the saved value, and an unparsable value is refused naming the attribute, as xmlLoadState refuses it.
+// `accepts_bad` names the "element.attribute" pairs that read an unparsable value as a fallback instead: validation
+// accepts them as xmlLoadState does, yet still names the attribute in firstRejection().
+void expectValidationDescribes(
+    const QDomElement& saved, const std::function<bool(const QDomElement&)>& validate,
+    const std::function<bool(const QDomElement&)>& load, const QSet<QString>& accepts_bad) {
+  std::vector<XmlOption> options;
+  {
+    XmlOptionsRecorder recorder;
+    ASSERT_TRUE(validate(saved)) << qPrintable(recorder.firstRejection());
+    options = recorder.options();
+  }
+  EXPECT_EQ(unreportedXmlAttributes(saved, options), QStringList());
+
+  const auto substitute = [&](const XmlOption& option, const QString& value, QString& rejection) {
+    QDomDocument doc;
+    QDomElement copy = doc.importNode(saved, /*deep=*/true).toElement();
+    doc.appendChild(copy);
+    const QList<QDomElement> targets = elementsNamed(copy, option.element);
+    EXPECT_FALSE(targets.isEmpty()) << "the saved state has no <" << qPrintable(option.element) << ">";
+    for (QDomElement target : targets) {
+      target.setAttribute(option.attribute, value);
+    }
+    XmlOptionsRecorder recorder;
+    const bool accepted = validate(copy);
+    rejection = recorder.firstRejection();
+    EXPECT_EQ(load(copy), accepted) << qPrintable(option.attribute) << "=" << qPrintable(value);
+    return accepted;
+  };
+  for (const XmlOption& option : options) {
+    const QString name = option.element + u'.' + option.attribute;
+    QString rejection;
+    if (option.type == u"enum"_s) {
+      for (const QString& token : option.values) {
+        EXPECT_TRUE(substitute(option, token, rejection)) << qPrintable(name + u'=' + token);
+        EXPECT_EQ(rejection, QString()) << qPrintable(name + u'=' + token);
+      }
+    }
+    const bool free_text = option.type == u"text"_s && option.values.isEmpty();
+    EXPECT_EQ(substitute(option, u"~bad~"_s, rejection), free_text || accepts_bad.contains(name)) << qPrintable(name);
+    if (!free_text) {
+      EXPECT_TRUE(rejection.contains(option.attribute + u"=\"~bad~\""_s)) << qPrintable(name + u": " + rejection);
+    }
+  }
+}
+
+TEST_F(LogDockWidgetTest, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptObjectTopic(rosout_, sdk::BuiltinObjectType::kLog, {}));
+  LogViewState state = dock->view()->state();
+  state.levels = {false, true, true, true, true};
+  state.source = u"/node"_s;
+  state.category = u"motors"_s;
+  state.text = u"stall"_s;
+  state.show_future = true;
+  state.hidden_topics = {u"/diagnostics_log"_s};
+  dock->view()->applyState(state);
+
+  QDomDocument doc;
+  const QDomElement saved = dock->xmlSaveState(doc);
+  ASSERT_FALSE(saved.firstChildElement(u"topic"_s).isNull());
+  ASSERT_FALSE(saved.firstChildElement(u"hidden_topic"_s).isNull());
+  expectValidationDescribes(
+      saved, [&](const QDomElement& e) { return dock->xmlValidateState(e); },
+      [&](const QDomElement& e) { return dock->xmlLoadState(e); },
+      {u"log.levels"_s, u"log.future_rows"_s, u"topic.dataset_id"_s});
+
+  XmlOptionsRecorder recorder;
+  EXPECT_FALSE(dock->xmlValidateState(doc.createElement(u"plot"_s)));
+  EXPECT_EQ(recorder.firstRejection(), u"<plot>: expected a <log> element"_s);
+}
+
+TEST_F(LogDockWidgetTest, ValidationListsTheTopicOptionsOfAStateWithoutTopics) {
+  auto dock = makeDock();
+  QDomDocument doc;
+  XmlOptionsRecorder recorder;
+  ASSERT_TRUE(dock->xmlValidateState(dock->xmlSaveState(doc)));
+  QStringList reported;
+  for (const XmlOption& option : recorder.options()) {
+    reported.append(option.element + u'.' + option.attribute);
+  }
+  EXPECT_TRUE(reported.contains(u"topic.dataset_path"_s));
+  EXPECT_TRUE(reported.contains(u"hidden_topic.topic"_s));
 }
 
 }  // namespace

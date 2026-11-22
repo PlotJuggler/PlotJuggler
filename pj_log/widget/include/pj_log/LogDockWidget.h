@@ -67,6 +67,7 @@ class LogDockWidget : public QWidget, public IDataWidget {
   [[nodiscard]] bool canAcceptObjectTopic(ObjectTopicId topic_id, sdk::BuiltinObjectType object_type) const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  [[nodiscard]] bool xmlValidateState(const QDomElement& element) const override;
   void finishRestore() override;
 
   /// The app-wide time format of the Time column (the playback readout's).
