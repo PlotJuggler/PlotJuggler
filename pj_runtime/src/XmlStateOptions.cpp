@@ -5,11 +5,91 @@
 
 #include <QDomNamedNodeMap>
 #include <algorithm>
+#include <cmath>
 
 namespace PJ {
 
 namespace {
+
 thread_local XmlOptionsRecorder* t_active = nullptr;
+
+// A bound this large, or not finite, means "no bound on that side".
+constexpr double kOpenBound = 1.0e30;
+
+std::optional<double> effectiveBound(std::optional<double> bound) {
+  if (!bound.has_value() || !std::isfinite(*bound) || std::abs(*bound) >= kOpenBound) {
+    return std::nullopt;
+  }
+  return bound;
+}
+
+// 7 significant digits: what a float holds, and the decimal a bound written as a float literal came from.
+double floatPrecision(double value) {
+  return QString::number(value, 'g', 7).toDouble();
+}
+
+QString formatNumber(double value, bool integer) {
+  return integer ? QString::number(static_cast<qint64>(value)) : QString::number(value, 'g', 7);
+}
+
+QString rangeReason(bool integer, std::optional<double> min, std::optional<double> max) {
+  const QString what = integer ? QStringLiteral("an integer") : QStringLiteral("a number");
+  if (min.has_value() && max.has_value()) {
+    return u"expected " + what + u" in [" + formatNumber(*min, integer) + u", " + formatNumber(*max, integer) + u']';
+  }
+  if (min.has_value()) {
+    return u"expected " + what + u" >= " + formatNumber(*min, integer);
+  }
+  if (max.has_value()) {
+    return u"expected " + what + u" <= " + formatNumber(*max, integer);
+  }
+  return integer ? QStringLiteral("expected an integer") : QStringLiteral("expected a finite number");
+}
+
+bool sameOption(const XmlOption& a, const XmlOption& b) {
+  return a.element == b.element && a.attribute == b.attribute;
+}
+
+// The shared tail of the readers: reports `option`, then classifies the attribute. Returns the present text when it
+// is acceptable; nullopt when it is absent (`*bad` false) or not acceptable (`*bad` true, the rejection noted). In
+// tolerant mode an empty present value reads as absent, as the tolerant loaders always treated it.
+// `check` gives the problem with a present value, empty when there is none.
+template <typename Check>
+std::optional<QString> readChecked(
+    const QDomElement& element, XmlOption option, XmlBadValue bad_mode, bool* bad, const Check& check) {
+  *bad = false;
+  const QString attribute = option.attribute;
+  QString text = element.attribute(attribute);
+  const bool absent = !element.hasAttribute(attribute) || (bad_mode == XmlBadValue::kTolerate && text.isEmpty());
+  const QString problem = absent ? QString() : check(option, text);
+  XmlOptionsRecorder::noteOption(element, std::move(option));
+  if (absent) {
+    return std::nullopt;
+  }
+  if (!problem.isEmpty()) {
+    XmlOptionsRecorder::noteRejection(element, attribute, problem);
+    *bad = true;
+    return std::nullopt;
+  }
+  return text;
+}
+
+std::optional<QString> readChecked(const QDomElement& element, XmlOption option, XmlBadValue bad_mode, bool* bad) {
+  return readChecked(element, std::move(option), bad_mode, bad, xmlValueProblem);
+}
+
+// Applies the fallback for an absent or tolerated value; false only for a refused one.
+template <typename T>
+bool settle(bool bad, XmlBadValue bad_mode, const std::optional<T>& fallback, T& value) {
+  if (bad && bad_mode == XmlBadValue::kRefuse) {
+    return false;
+  }
+  if (fallback.has_value()) {
+    value = *fallback;
+  }
+  return true;
+}
+
 }  // namespace
 
 XmlOptionsRecorder::XmlOptionsRecorder() : previous_(t_active) {
@@ -23,7 +103,7 @@ XmlOptionsRecorder::~XmlOptionsRecorder() {
   }
   for (XmlOption& option : options_) {
     const auto known = std::find_if(previous_->options_.begin(), previous_->options_.end(), [&](const XmlOption& o) {
-      return o.element == option.element && o.attribute == option.attribute;
+      return sameOption(o, option);
     });
     if (known == previous_->options_.end()) {
       previous_->options_.push_back(std::move(option));
@@ -34,16 +114,19 @@ XmlOptionsRecorder::~XmlOptionsRecorder() {
   }
 }
 
+bool XmlOptionsRecorder::active() {
+  return t_active != nullptr;
+}
+
 void XmlOptionsRecorder::noteOption(const QDomElement& element, XmlOption option) {
   if (t_active == nullptr) {
     return;
   }
   option.element = element.tagName();
+  option.min = effectiveBound(option.min);
+  option.max = effectiveBound(option.max);
   auto& options = t_active->options_;
-  const bool known = std::any_of(options.begin(), options.end(), [&](const XmlOption& o) {
-    return o.element == option.element && o.attribute == option.attribute;
-  });
-  if (!known) {
+  if (std::none_of(options.begin(), options.end(), [&](const XmlOption& o) { return sameOption(o, option); })) {
     options.push_back(std::move(option));
   }
 }
@@ -59,22 +142,130 @@ void XmlOptionsRecorder::noteRejection(const QDomElement& element, const QString
   t_active->first_rejection_ = where + u": " + reason;
 }
 
+QString xmlValueProblem(const XmlOption& option, const QString& text) {
+  if (option.type == u"enum" || option.type == u"bool") {
+    if (option.values.isEmpty() || option.values.contains(text)) {
+      return {};
+    }
+    if (option.type == u"bool" && option.values.size() == 2) {
+      return u"expected " + option.values[0] + u" or " + option.values[1];
+    }
+    return u"expected one of " + option.values.join(u", ");
+  }
+  const bool integer = option.type == u"int";
+  if (!integer && option.type != u"float") {
+    return {};
+  }
+  const std::optional<double> min = effectiveBound(option.min);
+  const std::optional<double> max = effectiveBound(option.max);
+  bool ok = false;
+  const double value = integer ? static_cast<double>(text.toLongLong(&ok)) : text.toDouble(&ok);
+  if (!ok || !std::isfinite(value) || (min.has_value() && value < *min) || (max.has_value() && value > *max)) {
+    return rangeReason(integer, min, max);
+  }
+  return {};
+}
+
 bool readXmlEnum(
     const QDomElement& element, const QString& attribute, const QStringList& tokens, const QString& fallback,
-    QString& value) {
-  XmlOptionsRecorder::noteOption(
-      element, {.attribute = attribute, .type = QStringLiteral("enum"), .values = tokens, .fallback = fallback});
-  if (!element.hasAttribute(attribute)) {
-    value = fallback;
+    QString& value, XmlBadValue bad_mode) {
+  bool bad = false;
+  const std::optional<QString> text = readChecked(
+      element, {.attribute = attribute, .type = QStringLiteral("enum"), .values = tokens, .fallback = fallback},
+      bad_mode, &bad);
+  if (text.has_value()) {
+    value = *text;
     return true;
   }
-  const QString text = element.attribute(attribute);
-  if (!tokens.contains(text)) {
-    XmlOptionsRecorder::noteRejection(element, attribute, u"expected one of " + tokens.join(u", "));
-    return false;
+  return settle(bad, bad_mode, std::optional<QString>(fallback), value);
+}
+
+bool readXmlBool(
+    const QDomElement& element, const QString& attribute, std::optional<bool> fallback, bool& value,
+    XmlBadValue bad_mode, const QString& true_token, const QString& false_token) {
+  bool bad = false;
+  const QString reported_fallback = fallback.has_value() ? (*fallback ? true_token : false_token) : QString();
+  const std::optional<QString> text = readChecked(
+      element,
+      {.attribute = attribute,
+       .type = QStringLiteral("bool"),
+       .values = {true_token, false_token},
+       .fallback = reported_fallback},
+      bad_mode, &bad);
+  if (text.has_value()) {
+    value = *text == true_token;
+    return true;
   }
-  value = text;
-  return true;
+  return settle(bad, bad_mode, fallback, value);
+}
+
+bool readXmlInteger(
+    const QDomElement& element, const QString& attribute, std::optional<qint64> fallback, qint64 min, qint64 max,
+    qint64& value, XmlBadValue bad_mode) {
+  bool bad = false;
+  const std::optional<QString> text = readChecked(
+      element,
+      {.attribute = attribute,
+       .type = QStringLiteral("int"),
+       .min = static_cast<double>(min),
+       .max = static_cast<double>(max),
+       .fallback = fallback.has_value() && XmlOptionsRecorder::active() ? QString::number(*fallback) : QString()},
+      bad_mode, &bad);
+  if (text.has_value()) {
+    value = text->toLongLong();
+    return true;
+  }
+  return settle(bad, bad_mode, fallback, value);
+}
+
+bool readXmlDouble(
+    const QDomElement& element, const QString& attribute, std::optional<double> fallback, double min, double max,
+    double& value, XmlBadValue bad_mode) {
+  bool bad = false;
+  const std::optional<QString> text = readChecked(
+      element,
+      {.attribute = attribute,
+       .type = QStringLiteral("float"),
+       .min = min,
+       .max = max,
+       .fallback =
+           fallback.has_value() && XmlOptionsRecorder::active() ? QString::number(*fallback, 'g', 9) : QString()},
+      bad_mode, &bad);
+  if (text.has_value()) {
+    value = text->toDouble();
+    return true;
+  }
+  return settle(bad, bad_mode, fallback, value);
+}
+
+bool readXmlFloat(
+    const QDomElement& element, const QString& attribute, std::optional<float> fallback, float min, float max,
+    float& value, XmlBadValue bad_mode) {
+  // Parsed and compared as a float, as the attribute is stored: "0.001" meets a 0.001f bound, a value rounding onto a
+  // bound meets it, and one a float cannot hold (1e39, 1e-50) is refused by toFloat.
+  const auto check = [min, max](const XmlOption& option, const QString& text) -> QString {
+    bool ok = false;
+    const float parsed = text.toFloat(&ok);
+    if (ok && std::isfinite(parsed) && parsed >= min && parsed <= max) {
+      return {};
+    }
+    return rangeReason(false, effectiveBound(option.min), effectiveBound(option.max));
+  };
+  bool bad = false;
+  const std::optional<QString> text = readChecked(
+      element,
+      {.attribute = attribute,
+       .type = QStringLiteral("float"),
+       .min = floatPrecision(min),
+       .max = floatPrecision(max),
+       .fallback =
+           fallback.has_value() && XmlOptionsRecorder::active() ? QString::number(*fallback, 'g', 7) : QString()},
+      bad_mode, &bad, check);
+  if (text.has_value()) {
+    value = text->toFloat();
+    return true;
+  }
+  return settle(bad, bad_mode, fallback, value);
 }
 
 QString readXmlText(const QDomElement& element, const QString& attribute, const QString& fallback) {

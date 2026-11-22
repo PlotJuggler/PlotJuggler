@@ -5,7 +5,9 @@
 #include <QDomElement>
 #include <QString>
 #include <QStringList>
+#include <QtGlobal>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 namespace PJ {
@@ -16,9 +18,9 @@ namespace PJ {
 struct XmlOption {
   QString element = {};  ///< the tag the attribute sits on
   QString attribute = {};
-  QString type = {};        ///< "enum", "bool", "int", "float", "color", "text" or "json"
-  QStringList values = {};  ///< the accepted tokens of an "enum" (and of a "bool")
-  std::optional<double> min = std::nullopt;
+  QString type = {};                         ///< "enum", "bool", "int", "float", "color", "text" or "json"
+  QStringList values = {};                   ///< the accepted tokens of an "enum" (and of a "bool")
+  std::optional<double> min = std::nullopt;  ///< absent: unbounded
   std::optional<double> max = std::nullopt;
   QString fallback = {};  ///< the value an absent attribute takes; empty when the parser has none
 };
@@ -44,7 +46,11 @@ class XmlOptionsRecorder {
     return first_rejection_;
   }
 
-  /// Reports `option` (its `element` is filled from `element`) to the active recorder; a no-op without one.
+  /// True while a recorder is alive on this thread. Work done only to report (a schema probe, a parse whose result
+  /// is discarded) is skipped without one, so a layout load pays nothing for it.
+  [[nodiscard]] static bool active();
+  /// Reports `option` (its `element` is filled from `element`; a bound at or beyond ±1e30, or not finite, is
+  /// reported as absent) to the active recorder; a no-op without one.
   static void noteOption(const QDomElement& element, XmlOption option);
   /// Reports a value the parser refuses, or one a tolerant parser accepts but replaces with a default (an unknown
   /// token read as the default, an unparsable number read as 0), to the active recorder; a no-op without one. A
@@ -58,18 +64,69 @@ class XmlOptionsRecorder {
   QString first_rejection_;
 };
 
-/// Reads enum attribute `attribute` of `element`: one of `tokens`, `fallback` when absent. Reports the option to the
-/// active recorder, and a rejection when the value is not a token. False leaves `value` untouched.
+/// What a reader does with a present value it cannot accept. Both note it as a rejection.
+enum class XmlBadValue {
+  kRefuse,    ///< returns false, `value` untouched
+  kTolerate,  ///< returns true with `value` set to the fallback (untouched without one): a layout keeps loading
+};
+
+/// Why `text` is not a value `option` accepts, as a rejection reason ("expected one of a, b", "expected a number in
+/// [1, 32]"); empty when it is. Checks the tokens of an "enum" or "bool" and the parse and bounds of an "int" or
+/// "float"; other types are not checked here.
+[[nodiscard]] QString xmlValueProblem(const XmlOption& option, const QString& text);
+
+// The readers below report their option to the active recorder, take `fallback` for an absent attribute (an absent
+// attribute without one leaves `value` untouched) and note a bad present value as a rejection.
+
 [[nodiscard]] bool readXmlEnum(
     const QDomElement& element, const QString& attribute, const QStringList& tokens, const QString& fallback,
-    QString& value);
+    QString& value, XmlBadValue bad = XmlBadValue::kRefuse);
+
+/// A two-token boolean, reported as type "bool" with its tokens (`true_token` first).
+[[nodiscard]] bool readXmlBool(
+    const QDomElement& element, const QString& attribute, std::optional<bool> fallback, bool& value,
+    XmlBadValue bad = XmlBadValue::kRefuse, const QString& true_token = QStringLiteral("true"),
+    const QString& false_token = QStringLiteral("false"));
+
+[[nodiscard]] bool readXmlInteger(
+    const QDomElement& element, const QString& attribute, std::optional<qint64> fallback, qint64 min, qint64 max,
+    qint64& value, XmlBadValue bad = XmlBadValue::kRefuse);
+
+/// Any integer type; bounds and fallback in that type.
+template <typename Int>
+[[nodiscard]] bool readXmlInt(
+    const QDomElement& element, const QString& attribute, std::optional<std::type_identity_t<Int>> fallback,
+    std::type_identity_t<Int> min, std::type_identity_t<Int> max, Int& value, XmlBadValue bad = XmlBadValue::kRefuse) {
+  static_assert(std::is_integral_v<Int>);
+  auto wide = static_cast<qint64>(value);
+  const std::optional<qint64> wide_fallback =
+      fallback.has_value() ? std::optional<qint64>(static_cast<qint64>(*fallback)) : std::nullopt;
+  if (!readXmlInteger(
+          element, attribute, wide_fallback, static_cast<qint64>(min), static_cast<qint64>(max), wide, bad)) {
+    return false;
+  }
+  value = static_cast<Int>(wide);
+  return true;
+}
+
+/// A finite double in [min, max]; ±infinity (or a bound at ±1e30 and beyond) leaves that side open.
+[[nodiscard]] bool readXmlDouble(
+    const QDomElement& element, const QString& attribute, std::optional<double> fallback, double min, double max,
+    double& value, XmlBadValue bad = XmlBadValue::kRefuse);
+
+/// A finite float in [min, max], parsed and compared as a float; the bounds are reported at 7 significant digits, so
+/// a 0.001f bound reads 0.001.
+[[nodiscard]] bool readXmlFloat(
+    const QDomElement& element, const QString& attribute, std::optional<float> fallback, float min, float max,
+    float& value, XmlBadValue bad = XmlBadValue::kRefuse);
 
 /// Reads free-text attribute `attribute` of `element` (`fallback` when absent) and reports it as type "text".
-[[nodiscard]] QString readXmlText(const QDomElement& element, const QString& attribute, const QString& fallback = {});
+QString readXmlText(const QDomElement& element, const QString& attribute, const QString& fallback = {});
 
 /// `tag.attribute` for every attribute of `root` and its descendants that `options` does not report: what a widget
 /// saves but its validator never reads through a reporting reader. A widget's test asserts this is empty for its own
-/// saved state, so an attribute added to xmlSaveState without a reporting reader fails there.
+/// saved state, so an attribute added to xmlSaveState without a reporting reader fails there; widget_state refuses
+/// an element carrying one.
 [[nodiscard]] QStringList unreportedXmlAttributes(const QDomElement& root, const std::vector<XmlOption>& options);
 
 }  // namespace PJ

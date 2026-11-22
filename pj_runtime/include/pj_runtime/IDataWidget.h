@@ -87,6 +87,13 @@ class IDataWidget {
     return true;
   }
 
+  /// The saved elements a load kept aside because their data is not loaded (a scene layer's topic, a Log topic),
+  /// each named by its topic. The MCP widget_state tool refuses a `set` that adds to this list, since the change
+  /// would otherwise show nothing and report success. Default: none.
+  [[nodiscard]] virtual QStringList unresolvedRestores() const {
+    return {};
+  }
+
   /// Host call once the data a just-loaded `xmlLoadState` refers to is final: the shell
   /// after its whole load, or a dock after a paste/family switch into a session whose data
   /// is already loaded. A widget that defers saved elements until their data arrives
