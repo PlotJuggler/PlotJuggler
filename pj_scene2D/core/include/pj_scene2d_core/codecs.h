@@ -59,10 +59,14 @@ struct ImageHeader {
 /// pointers, row buffers, the library's state, and for a multi-scan JPEG the whole-image coefficient buffer.
 [[nodiscard]] size_t codecWorkspaceBound(const ImageHeader& header, ImageContainer container) noexcept;
 
-/// JPEG → RGB888 via turbojpeg.
+/// What a colour image without alpha decodes to: RGB888, or RGBA8888 with an opaque alpha. A frame the viewer uploads
+/// is decoded to RGBA: a 3-byte frame has no texture format and would be expanded on the GUI thread at every upload.
+enum class ColorOutput { kRgb, kRgba };
+
+/// JPEG via turbojpeg.
 class JpegCodec : public CodecStage {
  public:
-  JpegCodec();
+  explicit JpegCodec(ColorOutput output = ColorOutput::kRgb);
   ~JpegCodec() override;
   JpegCodec(const JpegCodec&) = delete;
   JpegCodec& operator=(const JpegCodec&) = delete;
@@ -73,13 +77,18 @@ class JpegCodec : public CodecStage {
 
  private:
   void* tj_ = nullptr;
+  ColorOutput output_;
 };
 
-/// PNG → RGB888 (8-bit) or RGBA8888 (with alpha) or Mono16 (16-bit grayscale).
+/// PNG → RGBA8888 (with alpha, or by ColorOutput::kRgba), RGB888 (8-bit without alpha) or Mono16 (16-bit grayscale).
 /// Preserves Mono16 for downstream stages (e.g. Mono16ToGrayscale).
 class PngCodec : public CodecStage {
  public:
+  explicit PngCodec(ColorOutput output = ColorOutput::kRgb) : output_(output) {}
   Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
+
+ private:
+  ColorOutput output_;
 };
 
 /// Mono16 → RGB888 grayscale, stretching the non-zero samples' [min, max]; zero is invalid and stays black.

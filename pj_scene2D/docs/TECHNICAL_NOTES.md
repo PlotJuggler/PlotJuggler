@@ -22,6 +22,15 @@ fps on the same file.
 **Why.** A cancel discards the forward-continuation state, so the next request re-seeks from the keyframe.
 **Re-test** when the decoder can resume after a cancel, or when the threshold changes.
 
+## RGB frames at upload
+
+**Measured (2026-11-22, i7-13700H, Iris Xe, Qt 6.12.0, `perf` during looping playback).** A JPEG decoded to RGB888
+was expanded to RGBA by a per-pixel loop in `MediaViewerWidget::uploadDecodedFrameToTexture`, on the GUI thread, at
+every upload: with three JPEG cameras that render-and-upload path was 0.9 % of a core of GUI-thread CPU.
+**What the code does.** The image worker decodes JPEG and PNG to RGBA (`ColorOutput::kRgba`), at no extra decode
+cost for JPEG; the same path then costs 0.3 % of a core.
+**Re-test.** If raw `rgb8` / `bgr8` cameras show up in a profile: they still take the loop.
+
 ## Repaint cadence
 
 **Observed.** `MediaViewerWidget` renders non-natively inside the dock hierarchy, so every repaint pays a

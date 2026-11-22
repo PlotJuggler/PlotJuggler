@@ -117,8 +117,8 @@ class ImagePipelineSource : public MediaSource {
   std::shared_ptr<void> parser_keepalive_;
   std::unique_ptr<CodecPipeline> pipeline_;
   bool canonical_image_codec_ = false;
-  JpegCodec jpeg_codec_;
-  PngCodec png_codec_;
+  JpegCodec jpeg_codec_{ColorOutput::kRgba};
+  PngCodec png_codec_{ColorOutput::kRgba};
   NormalizeMono16 normalize_mono16_;
   AutoImageCodec auto_image_codec_;
   /// The last delivered entry, worker-thread only; invalid = none (force_redecode resets to it).
