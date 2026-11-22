@@ -532,14 +532,11 @@ test('Transform Editor creates a large exact Luau series while the browser main 
   await page.keyboard.press('Control+A');
   await page.keyboard.type('toolbox-square');
 
-  // The Qt app and its Luau replay share the page's main thread. A page heartbeat must keep ticking from the
-  // OK click until the replay has materialized every row: no single slice of that work may hold the thread
-  // for 100 ms. The transform is announced after the first slice and the series then grows until complete.
-  await page.evaluate(() => {
-    const heartbeat = { started: performance.now(), ticks: [], timer: 0 };
-    heartbeat.timer = setInterval(() => heartbeat.ticks.push(performance.now()), 4);
-    globalThis.__pjWasmTransformHeartbeat = heartbeat;
-  });
+  // The Qt app and its Luau replay share the page's main thread. The transform is announced after the first slice,
+  // and from then a page heartbeat must keep ticking until the replay has materialized every row: no single slice
+  // may hold the thread for 100 ms. The heartbeat starts after the announcement because the OK click's own work
+  // (create, editor close, main-window repaint) is not the replay: in Firefox on the GPU-less CI runners its two
+  // back-to-back tasks took 140-150 ms. The slice bound itself is unit-tested (DataProcessorTimeSliceTest).
   const readyMessages = consoleMessages.filter(
     message => message.includes('PJ_WASM_TOOLBOX_TRANSFORM_READY plugin=toolbox-transform-editor'),
   ).length;
@@ -548,8 +545,13 @@ test('Transform Editor creates a large exact Luau series while the browser main 
     () => consoleMessages.filter(
       message => message.includes('PJ_WASM_TOOLBOX_TRANSFORM_READY plugin=toolbox-transform-editor'),
     ).length,
-    { timeout: 60000 },
+    { timeout: 60000, intervals: [10] },
   ).toBeGreaterThan(readyMessages);
+  await page.evaluate(() => {
+    const heartbeat = { started: performance.now(), ticks: [], timer: 0 };
+    heartbeat.timer = setInterval(() => heartbeat.ticks.push(performance.now()), 4);
+    globalThis.__pjWasmTransformHeartbeat = heartbeat;
+  });
   await expect.poll(
     async () => (await requestToolboxTransformResult(page, consoleMessages)).materializing,
     { timeout: 60000 },
