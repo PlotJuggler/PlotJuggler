@@ -262,9 +262,8 @@ fake bridge behind Caddy and `docs/wasm/Caddyfile` (see
 
 They open every sample into its views (the ANYmal robot with all its meshes, its
 compressed lidar scan, its three camera views and its joint, IMU and speed plots;
-the Waymo car's five cameras with their lidar and 3D-box overlays, its five
-segmentation images, its two 3D views with every lidar, the boxes and the car, and its speed and
-acceleration plots; the
+the Waymo car's five cameras with their 3D-box overlays, its two 3D views with
+every lidar, the boxes and the car, and its speed and acceleration plots; the
 built-in filters sample's raw and moving-average plots, its filter restored from
 the layout), check that seeking
 between two points inside the recording changes what each 3D view draws (a scene

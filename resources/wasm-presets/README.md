@@ -124,16 +124,15 @@ protobuf) and holds:
   demo republishes it every 5 s).
 
 `README.txt` beside it lists the same changes and gives the attribution. The layout
-shows the five cameras with their lidar and 3D-box overlays, the five segmentation
-images, an aerial (top-down orthographic) and an orbiting 3D view of the lidars,
-boxes and car, and the speed and acceleration from `/stats`. Both 3D views use
-`base_link` as their fixed frame: with `map` as the fixed frame and `base_link`
-followed, both came up empty on the desktop (not investigated). The aerial view's
-camera elevation stays below the top-down limit (pi/2 - 0.05): a layout with a
-larger one is rejected whole. The layout keeps the side panel at its 280 px minimum and gives the
-aerial view 27 % of the rest: a Scene3D view is at least 320 px wide, and in a narrower dock
-its right side is cut off, so in a 1280 px wide window the car sits about 30 px right of the
-visible centre.
+shows the five cameras across the top with their 3D-box overlays, then the
+acceleration and speed from `/stats` and an aerial (top-down orthographic) view in a
+column beside a large orbiting 3D view, both views drawing the lidars, boxes and car.
+Its MCAP Loader selects only the topics those views show, so the segmentation
+images, the projected lidar points and the 2D boxes stay in the file but are not
+loaded. Both 3D views use `base_link` as their fixed frame: with `map` as the fixed
+frame and `base_link` followed, both came up empty on the desktop (not investigated).
+The aerial view's camera elevation stays below the top-down limit (pi/2 - 0.05): a
+layout with a larger one is rejected whole.
 
 Redistribution basis: the Waymo Open Dataset is licensed by Waymo LLC under the
 [Waymo Dataset License Agreement for Non-Commercial Use](https://waymo.com/open/terms),

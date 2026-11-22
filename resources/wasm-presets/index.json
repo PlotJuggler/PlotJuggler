@@ -17,7 +17,7 @@
     {
       "id": "waymo",
       "title": "Self-driving car",
-      "description": "A Waymo car driving through Phoenix: five cameras with lidar and 3D-box overlays, its five lidars and the boxes in 3D, beside its speed and acceleration.",
+      "description": "A Waymo car driving through Phoenix: five cameras with 3D-box overlays, its five lidars and the boxes in 3D, beside its speed and acceleration.",
       "layout": "waymo/layout.pj4.xml",
       "thumbnail": "waymo/thumbnail.png"
     }

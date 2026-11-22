@@ -930,14 +930,11 @@ const waymoLoaded = (models, dock) => dock.fixed === 'base_link'
 const waymoReady = (models, dock) => waymoLoaded(models, dock)
   && dock.data.points.rendered === 5 && models.markers.rendered > 0 && models.markers.instances > 0;
 
-// The Waymo sample's plots, its five cameras (each with its lidar and 3D-box overlays) and five
-// segmentation images, and its two 3D views moving.
+// The Waymo sample's plots, its five cameras (each with its 3D-box overlay), and its two 3D views moving.
 async function expectWaymoViews(run) {
-  await expectPlots(run, [['stats/Vehicle Dynamics/velocity (km/h)'], ['stats/Vehicle Dynamics/acceleration (m/s2)']]);
+  await expectPlots(run, [['stats/Vehicle Dynamics/acceleration (m/s2)'], ['stats/Vehicle Dynamics/velocity (km/h)']]);
   const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
-  // Dock indices do not follow the layout's order.
-  expect(cameras.docks.map(dock => [dock.layers, dock.visible]).sort())
-    .toEqual([...Array(5).fill([1, true]), ...Array(5).fill([3, true])]);
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual(Array(5).fill([2, true]));
   await expectSceneMoves(run, 2, waymoReady);
 }
 
