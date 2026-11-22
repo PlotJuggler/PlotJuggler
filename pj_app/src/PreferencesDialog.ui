@@ -706,6 +706,46 @@
        <widget class="QWidget" name="pageScene3D">
         <layout class="QVBoxLayout" name="verticalLayout_2">
          <item>
+          <layout class="QHBoxLayout" name="interpolateTransformsRow">
+           <property name="spacing">
+            <number>16</number>
+           </property>
+           <item>
+            <widget class="QLabel" name="labelInterpolateTransforms">
+             <property name="toolTip">
+              <string>Between two transform samples, move frames smoothly instead of holding the earlier pose until the next one.</string>
+             </property>
+             <property name="text">
+              <string>Interpolate transforms between samples:</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="PJ::ToggleSwitch" name="interpolateTransformsToggle" native="true">
+             <property name="sizePolicy">
+              <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
+               <horstretch>0</horstretch>
+               <verstretch>0</verstretch>
+              </sizepolicy>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="interpolateTransformsSpacer">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>16</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <item>
           <layout class="QHBoxLayout" name="horizontalLayout_4">
            <property name="spacing">
             <number>2</number>

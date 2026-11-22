@@ -209,8 +209,9 @@ they share (which objects enter a script and at what stamp, the output binding, 
 - **The result's stamp** is the newest resolved input timestamp.
 - **The query clock** (`pj.tf.now` and the default lookup instant) enters a result's identity only when the run
   observed it.
-- **TF lookups are a zero-order hold** in the lookup's clock (entry or header, "The two clocks"): the newest sample
-  at or before `t`, with no interpolation.
+- **A script's TF lookups are a zero-order hold** in the lookup's clock (entry or header, "The two clocks"): the
+  newest sample at or before `t`, with no interpolation (`pj::tf::Sampling::kHold`, the lookup default). The 3D views
+  interpolate between two samples unless the user turns it off; a script's result never depends on that preference.
 
 ## The on-demand pipeline
 
@@ -407,7 +408,9 @@ Results are written into the `ObjectStore`, and each derived topic's window is a
   replacements, for a reader that extends a cached result. Revisions come from one process-wide counter, so a
   revision names one state across buffers (the script cache key). `setCacheWindow` bumps the revision when it evicts.
 - **Repeated samples are not stored.** A sample exactly equal to its predecessor, component by component, is skipped:
-  a tolerance would change the user's data. Each edge still records the newest stamp it received, so the latest
+  a tolerance would change the user's data. Once the value changes, the last repeat is stored too, so a run of
+  repeats keeps its first and last sample: an interpolating lookup holds the value over the run and starts moving
+  at its end. Each edge still records the newest stamp it received, so the latest
   sample, `latestCommonTime` and the eviction cutoff are unchanged; eviction keeps the newest sample at or before the
   cutoff, so a run of repeats longer than the window never loses its value.
 - **The fixed-frame memory** (a 3D-view preference) lives on the scene side (`FixedFrameMemory` in
@@ -432,14 +435,15 @@ on the dataset clock after a merge. Every lookup names its clock (`pj::tf::Clock
 - **Eviction** drops a sample only when neither clock's live window still needs it. `latestCommonTime` and
   `chainSampleTimes` take a clock too; `getLatestSample` reports the header stamp.
 - **Object placement** is one rule, `placeObject()` (`pj_scene3D/core/include/pj_scene3d_core/tf/object_placement.h`),
-  composed through the root of the tree that holds both frames: `fixed <- source = (fixed <- root, entry clock, at the
-  cursor) * (root <- source, header clock, at the object's stamp)`. The stamp is the object's own stamp plus its
-  entry's `payload_stamp_shift`. A stamped object stays where it was captured in the world even when the fixed frame
-  moves (a body frame such as `base_link`).
+  composed through the anchor, the nearest frame the fixed and the source frame share: `fixed <- source = (fixed <-
+  anchor, entry clock, at the cursor) * (anchor <- source, header clock, at the object's stamp)`. The stamp is the
+  object's own stamp plus its entry's `payload_stamp_shift`. An object in a world frame stays where it was captured
+  in the world even when the fixed frame moves (a body frame such as `base_link`); an object measured on that body
+  stays where it was measured on the body.
 - **Fallback to the cursor** (`fixed <- source` in the entry clock): an unstamped object (stamp 0), a stamp before the
   first TF sample on the chain, or a stamp more than `kMaxStampPastTf` past the newest header-clock sample on the
   chain (data stamped in wall time against TF in simulated time would otherwise freeze at one pose).
-- **Placement hold:** each layer keeps the last `root <- source` it placed its object with (`PlacementHold`). Live
+- **Placement hold:** each layer keeps the last `anchor <- source` it placed its object with (`PlacementHold`). Live
   retention can keep a stopped sensor's last object longer than the TF window keeps the transform at its stamp; the
   hold then keeps the object from jumping to the cursor. The view, the dock's scene bounds and the layer's render key
   all use the hold.
@@ -449,9 +453,10 @@ Every consumer and its clock:
 | Consumer | Clock | Why |
 |---|---|---|
 | 3D view: TF triads, connection lines, hover label, frame picking, follow camera, TF render key | Entry, at the cursor | They show where each frame is at the cursor. |
-| Point cloud, depth cloud, pose array and its trail, voxel grid, grid map | Header at the object's own stamp for `root <- source`; entry at the cursor for `fixed <- root` (a pose-trail point: at its own store timestamp); entry at the cursor as the fallback | An object sits where its frame was when it was measured, as in RViz. |
+| Point cloud, depth cloud, pose array and its trail, voxel grid, grid map | Header at the object's own stamp for `anchor <- source`; entry at the cursor for `fixed <- anchor` (a pose-trail point: at its own store timestamp); entry at the cursor as the fallback | An object sits where its frame was when it was measured, as in RViz. |
 | Occupancy grid, mesh map | Entry, at the cursor | What is drawn is a keyframe plus later patches, with no single stamp. |
-| Scene entities (markers and their models) | Entry, at the cursor; a finding at its result's real stamp, as a stamped object | `frame_locked` is not honoured ("Known gaps"). |
+| Scene entities (markers) | As a stamped object, each entity at its own stamp (a finding: at its result's real stamp); entry at the cursor for an unstamped or `frame_locked` entity | A detection stays where it was measured; a frame-locked entity moves with its frame. |
+| Scene-entity mesh models | Entry, at the cursor; a finding's at its result's real stamp | Not placed at the entity's own stamp ("Known gaps"). |
 | Robot model links | Entry, at the cursor | The links are TF frames. |
 | TF frame trail | Entry (`chainSampleTimes` and its lookups) | The trail is split at the cursor and its head meets the frame's triad. |
 | Camera scene bounds, layer render keys, point-cloud axis range | The layer's own placement, with its placement hold | They must match what is drawn. |
@@ -985,7 +990,8 @@ Each recipe lists the files, the tests and the pitfalls. Write the failing test 
   stamp, after checking a real bag.
 - TF edge storage is not chunked: a snapshot's copy-on-write copies a buffer's whole state ("Reference numbers"). Chunk
   it only if that copy is measured to matter.
-- Scene entities ignore their own stamps and `frame_locked`; they are placed at the cursor.
+- A scene entity's mesh model ignores the entity's own stamp and `frame_locked`: it is placed at the cursor, unlike
+  the entity's primitives.
 - Mixed-dataset dock restore: two loaded datasets with the same source and path are told apart only by a topic-name
   tiebreak, so the load order can still choose; a dock state naming one live dataset with two attribute sets reads as
   mixed; the robot-description selector and a pose trail's topic stay outside the one-dataset gate.

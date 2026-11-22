@@ -355,6 +355,8 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
     }
 
 #if defined(PJ_WITH_SCENE3D) && !defined(PJ_TARGET_WASM)
+    ui_->interpolateTransformsToggle->setChecked(
+        Scene3DDockWidget::interpolateTransforms(QSettings()), /*animate=*/false);
     ui_->listAssetFolders->addItems(Scene3DDockWidget::packageSearchFolders(QSettings()));
     wire_folder_list(
         ui_->listAssetFolders, ui_->buttonAddAssetsFolder, ui_->buttonRemoveAssetFolder, tr("Add a folder…"),
@@ -508,6 +510,11 @@ PreferencesDialog::PreferencesDialog(Theme& theme, QWidget* parent)
       if (QSettings settings; items_of(ui_->listAssetFolders) != Scene3DDockWidget::packageSearchFolders(settings)) {
         Scene3DDockWidget::setPackageSearchFolders(settings, items_of(ui_->listAssetFolders));
         emit packageSearchFoldersChanged();
+      }
+      if (QSettings settings;
+          ui_->interpolateTransformsToggle->isChecked() != Scene3DDockWidget::interpolateTransforms(settings)) {
+        Scene3DDockWidget::setInterpolateTransforms(settings, ui_->interpolateTransformsToggle->isChecked());
+        emit transformInterpolationChanged();
       }
 #endif
 

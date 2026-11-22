@@ -424,11 +424,10 @@ void MarkerRhiPass::admit(const PlaceFn& place) {
     Admitted prepared{.layer = layer, .first_frame = placements_.size(), .frame_count = geometry.frames.size()};
     AABB layer_bounds;
     for (std::size_t index = 0; index < geometry.frames.size(); ++index) {
-      // Cursor-placed (entry clock): entities carry their own stamps and frame_locked,
-      // which header-clock placement would have to honour per entity. A finding is
-      // placed at its stamp (renderStamp()), where it was measured.
+      // Each group at its entities' own stamp, where they were measured; a group of
+      // unstamped or frame-locked entities at the cursor (markerStamp()).
       const std::optional<Transform>& placed = placements_.emplace_back(
-          place(geometry.frames[index], layer->renderStamp(), layer->placementHoldFor(geometry.frames[index])));
+          place(geometry.frames[index], layer->markerStamp(index), layer->markerPlacementHold(index)));
       if (placed.has_value() && index < geometry.frame_bounds.size()) {
         layer_bounds = unionAABB(layer_bounds, transformedMarkerBounds(geometry.frame_bounds[index], *placed));
       }

@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 
+#include "pj_scene3d_core/tf/view_sampling.h"
 #include "pj_tf/tf_buffer.h"
 
 namespace pj::scene3d {
@@ -19,11 +20,11 @@ void buildTfConnectionSegments(
     if (!parent.has_value()) {
       continue;  // forest root: no edge to draw.
     }
-    const auto child_w = tf.tryLookupTransform(fixed_frame, frame, time, pj::tf::Clock::kEntry);
+    const auto child_w = frameAtCursor(tf, fixed_frame, frame, time);
     if (!child_w.has_value()) {
       continue;
     }
-    const auto parent_w = tf.tryLookupTransform(fixed_frame, *parent, time, pj::tf::Clock::kEntry);
+    const auto parent_w = frameAtCursor(tf, fixed_frame, *parent, time);
     if (!parent_w.has_value()) {
       continue;
     }

@@ -12,6 +12,7 @@
 #include "../rhi_scene_pass.h"
 #include "pj_base/time.hpp"
 #include "pj_scene3d_core/tf/tf_connections.h"
+#include "pj_scene3d_core/tf/view_sampling.h"
 #include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 
@@ -114,6 +115,7 @@ class GridRhiPass {
     bool visible = true;
     const TransformBuffer* tf = nullptr;
     std::uint64_t tf_revision = 0;
+    pj::tf::Sampling sampling = pj::tf::Sampling::kHold;
     std::string fixed_frame;
     PJ::Timepoint time{};
     glm::dvec3 render_origin{0.0};

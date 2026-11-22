@@ -131,6 +131,7 @@ float admittedCloudX(SceneViewWidget& view, FakeCloud& cloud, PJ::Timepoint curs
 // still holds the 100 ms one (x = 1), the header clock at the cloud's stamp the
 // 200 ms one (x = 2).
 TEST(SceneViewPlacement, StampedLayerAtItsStampAndTriadsAtTheCursor) {
+  setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   auto tf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
   feed(*tf, ms(100), ms(100), 1.0);
   feed(*tf, ms(200), ms(300), 2.0);
@@ -151,9 +152,31 @@ TEST(SceneViewPlacement, StampedLayerAtItsStampAndTriadsAtTheCursor) {
   EXPECT_EQ(std::find(triad_x.begin(), triad_x.end(), 2.0F), triad_x.end()) << "no triad at the header clock";
 }
 
-// A cloud in the moving fixed frame itself is placed like any other stamped object:
+// The "Interpolate transforms" preference changes with the cursor and the TF where they were (paused): the triads
+// are rebuilt with it, like the layers.
+TEST(SceneViewPlacement, TriadsFollowAChangeOfTheViewSampling) {
+  auto tf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  feed(*tf, ms(100), ms(100), 1.0);
+  feed(*tf, ms(200), ms(200), 2.0);
+  SceneViewWidget view;
+  view.setTransformBuffer(tf);
+  view.setFixedFrame("map");
+  view.setAxesVisible(true);
+  FakeCloud cloud("base", std::nullopt);
+  const auto triad_at = [&](float x) {
+    (void)admittedCloudX(view, cloud, ms(150));
+    const auto& triads = SceneViewTestAccess::tfTriads(view);
+    return std::any_of(triads.begin(), triads.end(), [x](const PoseTriadInstance& arm) { return arm.model[3].x == x; });
+  };
+  setViewSampling(pj::tf::Sampling::kHold);
+  ASSERT_TRUE(triad_at(1.0F));
+  setViewSampling(pj::tf::Sampling::kInterpolate);
+  EXPECT_TRUE(triad_at(1.5F)) << "the triads kept the sampling they were built with";
+}
+
+// A cloud in the moving fixed frame itself stays where it was measured in that frame:
 // captured at 100 ms (base at x = 1), seen at 250 ms from base at x = 2.
-TEST(SceneViewPlacement, StampedLayerInTheMovingFixedFrameStaysWhereItWasCaptured) {
+TEST(SceneViewPlacement, StampedLayerInTheMovingFixedFrameStaysOnIt) {
   auto tf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
   feed(*tf, ms(100), ms(100), 1.0);
   feed(*tf, ms(200), ms(200), 2.0);
@@ -162,7 +185,7 @@ TEST(SceneViewPlacement, StampedLayerInTheMovingFixedFrameStaysWhereItWasCapture
   view.setFixedFrame("base");
   FakeCloud cloud("base", ms(100));
 
-  EXPECT_FLOAT_EQ(admittedCloudX(view, cloud, ms(250)), -1.0F);
+  EXPECT_FLOAT_EQ(admittedCloudX(view, cloud, ms(250)), 0.0F);
 }
 
 // Live TF (a 10 s window) runs on to 12 s and evicts the sample at the cloud's 1 s

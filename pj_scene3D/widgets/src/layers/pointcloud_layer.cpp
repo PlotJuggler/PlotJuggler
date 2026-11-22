@@ -395,8 +395,8 @@ uint64_t PointCloudLayer::renderKey(PJ::Timepoint time) const {
   uint64_t key =
       0x9e3779b97f4a7c15ULL ^
       PJ::latestEntryRenderKey(ctx_.session != nullptr ? &ctx_.session->objectStore() : nullptr, topic_id_, time);
-  // Zero-order hold: constant between TF samples, so a 60 Hz playhead coalesces down to the TF rate. Folding the matrix
-  // also captures colour-by-axis recolouring, a pure function of it.
+  // Constant while the placement is, so a playhead moving faster than the pose coalesces. Folding the matrix also
+  // captures colour-by-axis recolouring, a pure function of it.
   return foldFrameTransformIntoKey(
       key, ctx_.tf_buffer.get(), fixed_frame_.toStdString(), source_frame_, geometry_stamp_, time, placementHold());
 }

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <glm/gtc/constants.hpp>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -380,15 +381,92 @@ TEST(TransformBufferTest, AreConnectedReportsReachability) {
   EXPECT_FALSE(buffer.areConnected("map", "ghost"));  // unknown frame
 }
 
-TEST(TransformBufferTest, RootOfWalksToTheTopmostAncestor) {
-  TransformBuffer buffer;
-  (void)buffer.setTransform(makeStamped("map", "odom", tp(10ns), makeTranslation(1.0)));
-  (void)buffer.setTransform(makeStamped("odom", "base", tp(10ns), makeTranslation(1.0)));
+// x = 0 stamped 100 (logged 150), x = 10 stamped 200 (logged 250).
+TEST(TransformBufferSampling, InterpolatesBetweenTwoSamplesInEitherClock) {
+  using pj::tf::Sampling;
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(100ns), makeTranslation(0.0)), tp(150ns)).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(200ns), makeTranslation(10.0)), tp(250ns)).has_value());
+  const auto x = [&](TimePoint time, Clock clock, Sampling sampling) {
+    const auto found = buffer.tryLookupTransform("map", "base", time, clock, sampling);
+    return found ? std::optional<double>(found->t.x) : std::nullopt;
+  };
+  EXPECT_EQ(x(tp(150ns), Clock::kHeader, Sampling::kHold), 0.0);
+  EXPECT_EQ(x(tp(150ns), Clock::kHeader, Sampling::kInterpolate), 5.0);
+  EXPECT_EQ(x(tp(175ns), Clock::kEntry, Sampling::kHold), 0.0);
+  EXPECT_EQ(x(tp(175ns), Clock::kEntry, Sampling::kInterpolate), 2.5);
+  EXPECT_EQ(x(tp(200ns), Clock::kHeader, Sampling::kInterpolate), 10.0) << "on a sample";
+  EXPECT_EQ(x(tp(900ns), Clock::kHeader, Sampling::kInterpolate), 10.0) << "past the last sample: held";
+  EXPECT_EQ(x(tp(99ns), Clock::kHeader, Sampling::kInterpolate), std::nullopt) << "before the first sample";
+  EXPECT_EQ(
+      x(tp(150ns), Clock::kHeader, Sampling::kHold),
+      buffer.tryLookupTransform("map", "base", tp(150ns), Clock::kHeader)->t.x)
+      << "holding is the default";
+}
 
-  EXPECT_EQ(buffer.rootOf("base"), "map");
-  EXPECT_EQ(buffer.rootOf("odom"), "map");
-  EXPECT_EQ(buffer.rootOf("map"), "map");
-  EXPECT_EQ(buffer.rootOf("ghost"), "ghost") << "an unknown frame is its own root";
+TEST(TransformBufferSampling, InterpolatesTheRotationAlongTheShortArc) {
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  const glm::dvec3 up{0.0, 0.0, 1.0};
+  (void)buffer.setTransform(makeStamped("map", "base", tp(100ns), Transform{{}, glm::angleAxis(0.0, up)}));
+  (void)buffer.setTransform(
+      makeStamped("map", "base", tp(200ns), Transform{{}, glm::angleAxis(glm::half_pi<double>(), up)}));
+  const auto mid = buffer.tryLookupTransform("map", "base", tp(150ns), Clock::kHeader, pj::tf::Sampling::kInterpolate);
+  ASSERT_TRUE(mid.has_value());
+  EXPECT_NEAR(glm::angle(mid->q), glm::quarter_pi<double>(), 1e-9);
+  EXPECT_NEAR(glm::length(mid->q), 1.0, 1e-12);
+}
+
+// A frame that stood still from 100 to 300 (repeats are not stored) and then moved: an interpolating lookup holds it
+// until its last repeat and only then moves it, and the holding lookup reads the same as without the repeats.
+TEST(TransformBufferSampling, ARepeatedValueIsHeldUntilItsLastRepeat) {
+  using pj::tf::Sampling;
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  for (const int64_t stamp : {100, 200, 300}) {
+    (void)buffer.setTransform(makeStamped("map", "base", tp(std::chrono::nanoseconds(stamp)), makeTranslation(0.0)));
+  }
+  (void)buffer.setTransform(makeStamped("map", "base", tp(400ns), makeTranslation(10.0)));
+  const auto x = [&](int64_t time, Sampling sampling) {
+    return buffer.lookupTransform("map", "base", tp(std::chrono::nanoseconds(time)), Clock::kHeader, sampling).t.x;
+  };
+  EXPECT_EQ(x(250, Sampling::kInterpolate), 0.0) << "drifted while it stood still";
+  EXPECT_EQ(x(350, Sampling::kInterpolate), 5.0);
+  EXPECT_EQ(x(350, Sampling::kHold), 0.0);
+  EXPECT_EQ(x(400, Sampling::kHold), 10.0);
+}
+
+// The sample stamped 300 is logged at 150, before the one stamped 200 (logged at 160): from entry time 150 on the
+// recording knew the 300 one, so both share the entry key 150 and an entry-clock lookup before it moves towards
+// x = 30, the value it reads from 150 on.
+TEST(TransformBufferSampling, EntryClockInterpolationAimsAtTheSampleKnownFromTheSharedKey) {
+  using pj::tf::Sampling;
+  TransformBuffer buffer(TransformBuffer::kKeepAll);
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(100ns), makeTranslation(0.0)), tp(100ns)).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(300ns), makeTranslation(30.0)), tp(150ns)).has_value());
+  ASSERT_TRUE(buffer.setTransform(makeStamped("map", "base", tp(200ns), makeTranslation(20.0)), tp(160ns)).has_value());
+  const auto x = [&](int64_t time) {
+    return buffer
+        .lookupTransform("map", "base", tp(std::chrono::nanoseconds(time)), Clock::kEntry, Sampling::kInterpolate)
+        .t.x;
+  };
+  EXPECT_EQ(x(125), 15.0) << "half way to the value read at 150, not to the one stamped 200";
+  EXPECT_EQ(x(150), 30.0);
+  EXPECT_EQ(buffer.lookupTransform("map", "base", tp(250ns), Clock::kHeader, Sampling::kInterpolate).t.x, 25.0)
+      << "the header clock still passes through the 200 sample";
+}
+
+TEST(TransformBufferTest, CommonAncestorIsTheNearestSharedFrame) {
+  TransformBuffer buffer;
+  (void)buffer.setTransform(makeStamped("map", "base", tp(10ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("base", "lidar", tp(10ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("base", "camera", tp(10ns), makeTranslation(1.0)));
+  (void)buffer.setTransform(makeStamped("world", "drone", tp(10ns), makeTranslation(1.0)));
+
+  EXPECT_EQ(buffer.commonAncestor("lidar", "camera"), "base");
+  EXPECT_EQ(buffer.commonAncestor("base", "lidar"), "base");
+  EXPECT_EQ(buffer.commonAncestor("lidar", "map"), "map");
+  EXPECT_EQ(buffer.commonAncestor("lidar", "lidar"), "lidar");
+  EXPECT_EQ(buffer.commonAncestor("lidar", "drone"), std::nullopt) << "separate forest";
+  EXPECT_EQ(buffer.commonAncestor("lidar", "ghost"), std::nullopt) << "unknown frame";
 }
 
 // setCacheWindow trims existing histories with the ingest eviction rule and keeps each edge's last sample.
@@ -592,7 +670,8 @@ TEST(TransformBufferDedup, ChangedValueAfterRepeatsIsStored) {
   (void)buffer.setTransform(makeStamped("world", "A", tp(30ns), value_b));
 
   EXPECT_GT(buffer.revision(), before_change);
-  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{10, 30}));
+  // The end of the run (20) is stored with the change: where an interpolating lookup starts moving.
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{10, 20, 30}));
   expectTranslation(buffer.lookupTransform("world", "A", tp(20ns), Clock::kHeader), 1.0);
   expectTranslation(buffer.lookupTransform("world", "A", tp(29ns), Clock::kHeader), 1.0);
   expectTranslation(buffer.lookupTransform("world", "A", tp(30ns), Clock::kHeader), 2.0);
@@ -673,7 +752,7 @@ TEST(TransformBufferDedup, EvictionCutoffFollowsNewestReceivedStamp) {
 }
 
 // A run of skipped repeats longer than the window keeps the value that holds across the cutoff: only the newest
-// sample at or before it.
+// sample at or before it. The run is stored as its first and, once the value changes, its last sample (19 s).
 TEST(TransformBufferDedup, RepeatsLongerThanTheWindowKeepTheSpanningValue) {
   TransformBuffer buffer(10s);
   const auto value_a = makeTranslation(1.0);
@@ -684,7 +763,7 @@ TEST(TransformBufferDedup, RepeatsLongerThanTheWindowKeepTheSpanningValue) {
   }
   (void)buffer.setTransform(makeStamped("world", "A", tp(20s), value_b));  // cutoff = 10s
 
-  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 20'000'000'000}));
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 19'000'000'000, 20'000'000'000}));
   for (const TimePoint stamp : {tp(5s), tp(10s), tp(15s), tp(19s)}) {
     const auto result = buffer.tryLookupTransform("world", "A", stamp, Clock::kHeader);
     ASSERT_TRUE(result.has_value()) << "query at " << stamp.time_since_epoch().count();
@@ -694,7 +773,7 @@ TEST(TransformBufferDedup, RepeatsLongerThanTheWindowKeepTheSpanningValue) {
 
   // The spanning sample goes the moment its successor is at or before the cutoff.
   (void)buffer.setTransform(makeStamped("world", "A", tp(25s), value_b));  // cutoff = 15s: kept
-  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 20'000'000'000}));
+  EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{0, 19'000'000'000, 20'000'000'000}));
   (void)buffer.setTransform(makeStamped("world", "A", tp(30s), value_b));  // cutoff = 20s: successor on it
   EXPECT_EQ(chainTimes(buffer, "world", "A"), (std::vector<int64_t>{20'000'000'000}));
   EXPECT_FALSE(buffer.tryLookupTransform("world", "A", tp(15s), Clock::kHeader).has_value());

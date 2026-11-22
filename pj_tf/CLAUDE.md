@@ -1,8 +1,8 @@
 # pj_tf
 
 The TF frame tree, namespace `pj::tf`: `Transform` (SE(3) pose), `StampedTransform`, `TransformBuffer` (the
-per-dataset forest of parent-child edges, zero-order-hold lookup, frame-hierarchy DFS) and `TransformSnapshot` (one
-immutable state of a buffer, what scripts read). A static Qt-free leaf: it links only `glm`,
+per-dataset forest of parent-child edges, lookups that hold or interpolate, frame-hierarchy DFS) and
+`TransformSnapshot` (one immutable state of a buffer, what scripts read). A static Qt-free leaf: it links only `glm`,
 `plotjuggler_sdk::base` and `nlohmann_json`, so keep Qt and the datastore out. Consumers: `pj_scene3d_core`
 (geometry, frame picking), `pj_scripting` (the snapshot a script reads) and `pj_runtime`'s `TransformService`
 (ownership, load and streaming ingest, Qt signals; see [pj_runtime/CLAUDE.md](../pj_runtime/CLAUDE.md)). How the

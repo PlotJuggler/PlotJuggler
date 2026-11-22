@@ -246,8 +246,9 @@ void ModelRhiPass::admit(const PlaceFn& place, const MeshShadingParams& shading,
       if (mesh == layer->modelMeshes().end() || mesh->second == nullptr || !mesh->second->ok || draw.frame_id.empty()) {
         continue;
       }
-      // Cursor-placed (entry clock): a robot model's links ARE TF frames, and
-      // scene-entity models follow the marker rule (a finding at its stamp).
+      // Cursor-placed (entry clock): a robot model's links ARE TF frames. A
+      // scene-entity model is too (a finding's at its stamp): unlike the entity's
+      // primitives it does not use the entity's own stamp.
       const Scene3DLayer& owner = layer->modelLayer();
       const auto placed = place(draw.frame_id, owner.renderStamp(), owner.placementHoldFor(draw.frame_id));
       if (!placed.has_value()) {

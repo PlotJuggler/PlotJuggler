@@ -36,6 +36,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_scene3d_core/tf/view_sampling.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_tf/tf_buffer.h"
@@ -199,6 +200,7 @@ TEST(PointCloudLayerRenderKey, SameStampReplacementChangesKey) {
 // the key must CHANGE when the fixed<-source transform changes (sensor moved) and stay STABLE when it does not, so a
 // moving cloud reopens the repaint gate while a static pose coalesces.
 TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
+  pj::scene3d::setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   g_primary_parser_calls.store(0);
   PJ::SessionManager session;
   PJ::ObjectStore& store = session.objectStore();

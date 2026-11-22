@@ -59,6 +59,16 @@ enum class Clock {
   kHeader,
 };
 
+// How a lookup reads an edge at a time between two of its samples. Before the first sample there is none either way;
+// at or past the last one, the last.
+enum class Sampling {
+  // The earlier sample (zero-order hold): what the recording held. The default, and what scripts read.
+  kHold,
+  // Between the two: translation linearly, rotation by slerp. A value repeated over a span is held over that span
+  // and interpolation starts at its last repeat.
+  kInterpolate,
+};
+
 // Case-insensitive (ASCII) less for frame names: display order only, frame identity stays case-sensitive. The one
 // definition of user-facing frame ordering; getFrameHierarchy()'s sibling sort and any dock-level merge sort call it.
 [[nodiscard]] bool frameNameLess(std::string_view a, std::string_view b) noexcept;
@@ -87,7 +97,8 @@ class TransformSnapshot {
  public:
   // Same contract as TransformBuffer::tryLookupTransform, on this state.
   [[nodiscard]] PJ::Expected<Transform, LookupError> tryLookupTransform(
-      const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const;
+      const std::string& target, const std::string& source, TimePoint stamp, Clock clock,
+      Sampling sampling = Sampling::kHold) const;
 
   [[nodiscard]] std::vector<std::string> getAllFrames() const;
 
@@ -167,7 +178,7 @@ class TransformSnapshot {
   std::unordered_map<std::string, ParentLink> parents_;
   uint64_t revision_;
 
-  static std::optional<Transform> sampleAt(const EdgeHistory& history, TimePoint time, Clock clock);
+  static std::optional<Transform> sampleAt(const EdgeHistory& history, TimePoint time, Clock clock, Sampling sampling);
   // Walk `frame` to its root into `out` (cleared first, so hot lookups reuse scratch storage). A repeated frame
   // stops the walk, so a cyclic tree fails the lookup instead of spinning.
   void chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const;
@@ -190,7 +201,8 @@ class TransformBuffer {
   ~TransformBuffer();
 
   // Insert or replace the edge for `tf.child_frame`; the rotation is normalized on write. A newer sample exactly
-  // equal (component-wise) to the edge's last stored one is not stored (zero-order hold makes it redundant), but
+  // equal (component-wise) to the edge's last stored one is not stored (zero-order hold makes it redundant; the
+  // last one of a run is stored once the value changes, where an interpolating lookup starts moving), but
   // the edge still records its stamp and entry time (see getLatestSample), which advance the eviction cutoffs, and
   // an earlier entry time counts for the stored sample in the entry clock. Such a repeat bumps revision() only if
   // that evicts something or moves the entry clock.
@@ -207,19 +219,21 @@ class TransformBuffer {
   // The SE(3) target<-source transform at `stamp` in `clock`; throws std::runtime_error when unavailable. Wrapper
   // over tryLookupTransform.
   [[nodiscard]] Transform lookupTransform(
-      const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const;
+      const std::string& target, const std::string& source, TimePoint stamp, Clock clock,
+      Sampling sampling = Sampling::kHold) const;
 
   // The transform at `stamp`, read in `clock`, or the LookupError reason.
   [[nodiscard]] PJ::Expected<Transform, LookupError> tryLookupTransform(
-      const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const;
+      const std::string& target, const std::string& source, TimePoint stamp, Clock clock,
+      Sampling sampling = Sampling::kHold) const;
 
   // True iff `target` and `source` share a common ancestor, i.e. a transform between them could be composed at some
   // time. Connectivity only, cheaper than latestCommonTime.
   [[nodiscard]] bool areConnected(const std::string& target, const std::string& source) const;
 
-  // The topmost ancestor of `frame`, or `frame` itself when it has no parent or is unknown; two connected frames
-  // share it. In a parent cycle, the last frame reached before the walk repeats.
-  [[nodiscard]] std::string rootOf(const std::string& frame) const;
+  // The nearest frame both `a` and `b` descend from (either of them when one is the other's ancestor, `a` when they
+  // are the same frame), or nullopt when they are not connected.
+  [[nodiscard]] std::optional<std::string> commonAncestor(const std::string& a, const std::string& b) const;
 
   // Newest time, in `clock`, at which every edge between the two frames has a sample (the newest stamp or entry
   // time each edge received; single-stamp edges hold for all time and impose no bound). nullopt if disconnected.

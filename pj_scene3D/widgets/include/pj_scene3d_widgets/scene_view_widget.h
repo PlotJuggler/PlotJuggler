@@ -507,6 +507,7 @@ class SceneViewWidget : public QRhiWidget {
   struct TfTriadKey {
     const TransformBuffer* tf = nullptr;
     uint64_t tf_revision = 0;
+    pj::tf::Sampling sampling = pj::tf::Sampling::kHold;
     PJ::Timepoint time{};
     std::string fixed_frame;
     glm::dvec3 render_origin{0.0};

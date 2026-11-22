@@ -60,8 +60,9 @@ struct SceneContributions {
   MeshMapLayer* mesh_map = nullptr;
 };
 
-// Folds a transform's 16 bit patterns (float or double) into an in-process key (FNV-1a style). The TF is a zero-order
-// hold, so keys change only when the pose moves: a 60 Hz playhead coalesces repaints down to the TF update rate.
+// Folds a transform's 16 bit patterns (float or double) into an in-process key (FNV-1a style). The key changes only
+// when the pose moves: with held TF lookups a 60 Hz playhead coalesces repaints down to the TF update rate, with
+// interpolated ones a moving frame repaints on every tick.
 template <typename T>
 [[nodiscard]] uint64_t foldTransformIntoKey(uint64_t key, const glm::mat<4, 4, T>& transform) {
   for (int col = 0; col < 4; ++col) {

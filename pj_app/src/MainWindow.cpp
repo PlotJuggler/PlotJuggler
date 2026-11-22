@@ -3575,6 +3575,13 @@ void MainWindow::bindScenePreferences([[maybe_unused]] PreferencesDialog& dialog
       }
     });
   });
+  connect(&dialog, &PreferencesDialog::transformInterpolationChanged, this, [this]() {
+    forEachSceneDock([](SceneDockWidget* scene) {
+      if (auto* scene3d = qobject_cast<Scene3DDockWidget*>(scene)) {
+        scene3d->redrawWithTransformSampling();
+      }
+    });
+  });
 #endif
 }
 

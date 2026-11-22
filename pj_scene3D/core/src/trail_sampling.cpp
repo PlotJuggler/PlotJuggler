@@ -49,6 +49,8 @@ TrailPolyline buildTfFrameTrail(
   const std::vector<std::size_t> kept = decimateEvenly(stamps.size(), max_points);
   trail.reserve(kept.size());
   for (const std::size_t index : kept) {
+    // Held, whatever the views' sampling: a point is then final once its sample time has passed, which the live
+    // append relies on (an interpolated point would change when a later sample of another edge arrives).
     const auto transform = tf.tryLookupTransform(fixed, frame, stamps[index], pj::tf::Clock::kEntry);
     if (!transform.has_value()) {
       continue;  // edge not yet published at this stamp -> gap (bridged by the strip)

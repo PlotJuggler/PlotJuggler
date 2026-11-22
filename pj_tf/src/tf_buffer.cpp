@@ -6,8 +6,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <deque>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -105,6 +108,13 @@ PJ::Expected<void, SetTransformError> TransformBuffer::setTransform(const Stampe
     if (!first_sample && samples.back().value == normalized) {
       changed = knownBy(samples, samples.size() - 1, entry_time);
     } else {
+      // The end of a run of skipped repeats is stored once the value changes: the same value in both clocks under
+      // zero-order hold, and the sample an interpolating lookup starts from (without it the frame would drift over
+      // the whole span it stood still).
+      if (!first_sample && history.newest_stamp > samples.back().stamp && history.newest_stamp < tf.stamp) {
+        samples.push_back({history.newest_stamp, kNotYetKnown, samples.back().value});
+        (void)knownBy(samples, samples.size() - 1, history.newest_entry);
+      }
       samples.push_back({tf.stamp, kNotYetKnown, normalized});
       (void)knownBy(samples, samples.size() - 1, entry_time);
     }
@@ -168,7 +178,8 @@ bool TransformBuffer::evictEdgeLocked(EdgeHistory& history) const {
   return evicted;
 }
 
-std::optional<Transform> TransformSnapshot::sampleAt(const EdgeHistory& history, TimePoint time, Clock clock) {
+std::optional<Transform> TransformSnapshot::sampleAt(
+    const EdgeHistory& history, TimePoint time, Clock clock, Sampling sampling) {
   if (history.samples.empty()) {
     return std::nullopt;
   }
@@ -178,7 +189,21 @@ std::optional<Transform> TransformSnapshot::sampleAt(const EdgeHistory& history,
   if (hi == history.samples.begin()) {
     return std::nullopt;
   }
-  return std::prev(hi)->value;
+  const EdgeHistory::Sample& held = *std::prev(hi);
+  if (sampling == Sampling::kHold || hi == history.samples.end()) {
+    return held.value;
+  }
+  // key(held) <= time < key(*hi), so the span is positive.
+  const auto from = EdgeHistory::key(held, clock);
+  const auto to = EdgeHistory::key(*hi, clock);
+  // Samples that arrived out of stamp order share one entry key, and a lookup at that key reads the last of them:
+  // that one is the value to move towards, or the pose would step when the key is reached.
+  while (std::next(hi) != history.samples.end() && EdgeHistory::key(*std::next(hi), clock) == to) {
+    ++hi;
+  }
+  const double fraction =
+      std::chrono::duration<double>(time - from).count() / std::chrono::duration<double>(to - from).count();
+  return Transform{glm::mix(held.value.t, hi->value.t, fraction), glm::slerp(held.value.q, hi->value.q, fraction)};
 }
 
 void TransformSnapshot::chainToRoot(const std::string& frame, std::vector<ChainHop>& out) const {
@@ -226,7 +251,7 @@ bool TransformSnapshot::isKnownFrame(const std::string& frame) const {
 }
 
 PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
-    const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
+    const std::string& target, const std::string& source, TimePoint stamp, Clock clock, Sampling sampling) const {
   if (target == source) {
     return Transform::identity();
   }
@@ -253,7 +278,7 @@ PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
   // Every hop below the common ancestor has a non-null link; only the root hop is null.
   Transform t_common_from_source = Transform::identity();
   for (std::size_t i = 0; i < meet.src_k; ++i) {
-    const auto sample = sampleAt(src_chain[i].link->history, stamp, clock);
+    const auto sample = sampleAt(src_chain[i].link->history, stamp, clock, sampling);
     if (!sample) {
       return PJ::unexpected(LookupError::kNoSampleAtTime);
     }
@@ -262,7 +287,7 @@ PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
 
   Transform t_common_from_target = Transform::identity();
   for (std::size_t i = 0; i < meet.tgt_k; ++i) {
-    const auto sample = sampleAt(tgt_chain[i].link->history, stamp, clock);
+    const auto sample = sampleAt(tgt_chain[i].link->history, stamp, clock, sampling);
     if (!sample) {
       return PJ::unexpected(LookupError::kNoSampleAtTime);
     }
@@ -273,8 +298,8 @@ PJ::Expected<Transform, LookupError> TransformSnapshot::tryLookupTransform(
 }
 
 Transform TransformBuffer::lookupTransform(
-    const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
-  auto result = tryLookupTransform(target, source, stamp, clock);
+    const std::string& target, const std::string& source, TimePoint stamp, Clock clock, Sampling sampling) const {
+  auto result = tryLookupTransform(target, source, stamp, clock, sampling);
   if (!result) {
     throw std::runtime_error("pj_scene3d: no transform from '" + source + "' to '" + target + "' at requested time");
   }
@@ -282,28 +307,26 @@ Transform TransformBuffer::lookupTransform(
 }
 
 PJ::Expected<Transform, LookupError> TransformBuffer::tryLookupTransform(
-    const std::string& target, const std::string& source, TimePoint stamp, Clock clock) const {
+    const std::string& target, const std::string& source, TimePoint stamp, Clock clock, Sampling sampling) const {
   std::shared_lock lock(parents_mutex_);
-  return current_->tryLookupTransform(target, source, stamp, clock);
+  return current_->tryLookupTransform(target, source, stamp, clock, sampling);
 }
 
 bool TransformBuffer::areConnected(const std::string& target, const std::string& source) const {
-  if (target == source) {
-    return true;
-  }
-  std::shared_lock lock(parents_mutex_);
-  static thread_local std::vector<ChainHop> tgt_chain;
-  static thread_local std::vector<ChainHop> src_chain;
-  current_->chainToRoot(target, tgt_chain);
-  current_->chainToRoot(source, src_chain);
-  return TransformSnapshot::findCommonAncestor(src_chain, tgt_chain).found;
+  return commonAncestor(target, source).has_value();
 }
 
-std::string TransformBuffer::rootOf(const std::string& frame) const {
+std::optional<std::string> TransformBuffer::commonAncestor(const std::string& a, const std::string& b) const {
+  if (a == b) {
+    return a;
+  }
   std::shared_lock lock(parents_mutex_);
-  static thread_local std::vector<ChainHop> chain;
-  current_->chainToRoot(frame, chain);
-  return chain.back().frame;
+  static thread_local std::vector<ChainHop> a_chain;
+  static thread_local std::vector<ChainHop> b_chain;
+  current_->chainToRoot(a, a_chain);
+  current_->chainToRoot(b, b_chain);
+  const TransformSnapshot::MeetPoint meet = TransformSnapshot::findCommonAncestor(a_chain, b_chain);
+  return meet.found ? std::optional<std::string>(a_chain[meet.src_k].frame) : std::nullopt;
 }
 
 std::optional<TimePoint> TransformBuffer::latestCommonTime(

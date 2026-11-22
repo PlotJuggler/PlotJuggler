@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "pj_base/time.hpp"
+#include "pj_scene3d_core/tf/view_sampling.h"
 #include "pj_tf/tf_buffer.h"
 #include "pj_tf/transform.h"
 
@@ -34,27 +35,34 @@ using pj::tf::TransformBuffer;
 // in wall time, TF in simulated time), and holding would pin the object to one pose.
 inline constexpr PJ::Duration kMaxStampPastTf = std::chrono::seconds(1);
 
-// The root<-source a stamped object was last placed with, kept by its layer
-// (placeObject()). Keyed by what fixes that transform: the root, the source frame
+// The anchor<-source a stamped object was last placed with, kept by its layer
+// (placeObject()). Keyed by what fixes that transform: the anchor, the source frame
 // and the object's stamp.
 struct PlacementHold {
-  std::string root;
+  std::string anchor;
   std::string source;
   TimePoint stamp{};
-  Transform root_from_source;
+  Transform anchor_from_source;
 };
 
-// fixed<-source for an object stamped `object_stamp`, composed through the root of
-// the frames' tree: fixed<-root at `cursor` in the entry clock, times root<-source at
-// the object's stamp in the header clock (where the frame was when the data was
-// measured, as RViz places it). A stamped object therefore stays where it was
-// captured in the world, also in a moving fixed frame; with the root as the fixed
-// frame this is the header-clock lookup at the stamp.
+// fixed<-source for an object stamped `object_stamp`, composed through the anchor: the
+// nearest frame the fixed and the source frame share (TransformBuffer::commonAncestor).
+// It is fixed<-anchor at `cursor` in the entry clock, times anchor<-source at the
+// object's stamp in the header clock (where the frame was when the data was measured).
+// The motion of the anchor itself never enters, so:
+//  - with the tree's root as the fixed frame this is the header-clock lookup at the
+//    stamp: a scan stays where it was captured in the world;
+//  - in a fixed frame on a moving body, an object measured on that body (a scan in
+//    the lidar frame seen from base_link) stays where it was measured on the body;
+//  - an object in a frame outside that body (a map-frame plan seen from base_link)
+//    stays put in the world and moves in the view as the body moves.
+//
+// Every lookup reads between two TF samples as the views do (viewSampling()).
 //
 // Falls back to fixed<-source at `cursor` in the entry clock for an unstamped object,
 // a stamp before the first TF sample on the chain, or a stamp more than
 // kMaxStampPastTf past the newest one; such an object stays visible where the cursor
-// puts it. `hold` (nullable) keeps the last root<-source placed: when live TF has
+// puts it. `hold` (nullable) keeps the last anchor<-source placed: when live TF has
 // since evicted the sample at that same stamp, it is reused instead of the fallback,
 // so a stopped scan does not jump. Everything that places one layer (drawing, scene
 // bounds, render keys) passes that layer's hold, so they agree.
@@ -63,33 +71,30 @@ struct PlacementHold {
     std::optional<TimePoint> object_stamp, TimePoint cursor, PlacementHold* hold = nullptr) {
   using pj::tf::Clock;
   using pj::tf::LookupError;
-  if (object_stamp.has_value()) {
-    std::string root = tf.rootOf(source);
-    const auto fixed_from_root = tf.tryLookupTransform(fixed, root, cursor, Clock::kEntry);
-    if (!fixed_from_root && fixed_from_root.error() != LookupError::kNoSampleAtTime) {
-      return std::nullopt;  // unknown or disconnected frames fail identically at the cursor
-    }
-    if (fixed_from_root) {
-      const auto root_from_source = tf.tryLookupTransform(root, source, *object_stamp, Clock::kHeader);
-      if (root_from_source) {
-        const auto newest = tf.latestCommonTime(root, source, Clock::kHeader);
+  // Without a shared frame the lookup at the cursor below fails the same way.
+  if (std::optional<std::string> anchor; object_stamp.has_value() && (anchor = tf.commonAncestor(fixed, source))) {
+    if (const auto fixed_from_anchor = frameAtCursor(tf, fixed, *anchor, cursor)) {
+      const auto anchor_from_source =
+          tf.tryLookupTransform(*anchor, source, *object_stamp, Clock::kHeader, viewSampling());
+      if (anchor_from_source) {
+        const auto newest = tf.latestCommonTime(*anchor, source, Clock::kHeader);
         // TimePoint{}: every edge on the chain is single-sample (static), which bounds nothing.
         const bool past_the_tf =
             newest.has_value() && *newest != TimePoint{} && *object_stamp > *newest + kMaxStampPastTf;
         if (!past_the_tf) {
           if (hold != nullptr) {
-            *hold = PlacementHold{std::move(root), source, *object_stamp, *root_from_source};
+            *hold = PlacementHold{*anchor, source, *object_stamp, *anchor_from_source};
           }
-          return *fixed_from_root * *root_from_source;
+          return *fixed_from_anchor * *anchor_from_source;
         }
       } else if (
-          hold != nullptr && root_from_source.error() == LookupError::kNoSampleAtTime && hold->stamp == *object_stamp &&
-          hold->source == source && hold->root == root) {
-        return *fixed_from_root * hold->root_from_source;
+          hold != nullptr && anchor_from_source.error() == LookupError::kNoSampleAtTime &&
+          hold->stamp == *object_stamp && hold->source == source && hold->anchor == *anchor) {
+        return *fixed_from_anchor * hold->anchor_from_source;
       }
     }
   }
-  const auto at_cursor = tf.tryLookupTransform(fixed, source, cursor, Clock::kEntry);
+  const auto at_cursor = frameAtCursor(tf, fixed, source, cursor);
   return at_cursor ? std::optional<Transform>(*at_cursor) : std::nullopt;
 }
 

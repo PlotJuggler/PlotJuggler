@@ -706,6 +706,36 @@ TEST(Scene3DDockDerivedTopics, FindingInAMovingFrameStaysWhereMeasured) {
   EXPECT_DOUBLE_EQ(placed->t.x, 1.0);
 }
 
+// A stamped entity in a moving frame stays where it was measured, like a cloud; a frame-locked one moves with its
+// frame. base_link is at x = 1 at the entities' 10 s stamp and at x = 5 at the 20 s cursor.
+TEST(Scene3DDockDerivedTopics, AStampedEntityStaysWhereMeasuredAndAFrameLockedOneFollowsItsFrame) {
+  Fixture fx;
+  const auto buffer = fx.tf.transformBuffer(fx.ds);
+  ASSERT_NE(buffer, nullptr);
+  for (const auto& [t, x] :
+       std::vector<std::pair<Timestamp, double>>{{5 * kSec, 0.0}, {10 * kSec, 1.0}, {20 * kSec, 5.0}}) {
+    const pj::tf::StampedTransform edge{
+        PJ::fromRaw(t), "map", "base_link", pj::tf::Transform{{x, 0.0, 0.0}, glm::dquat{1.0, 0.0, 0.0, 0.0}}};
+    ASSERT_TRUE(buffer->setTransform(edge).has_value());
+  }
+  const auto topic = registerCanonicalTopic(fx.store, fx.ds, "entities", PJ::sdk::BuiltinObjectType::kSceneEntities);
+  PJ::sdk::SceneEntity locked = sphereEntity("locked", 10 * kSec, "base_link");
+  locked.frame_locked = true;
+  pushEntities(fx.store, topic, 10 * kSec, {sphereEntity("stamped", 10 * kSec, "base_link"), locked});
+  auto* layer = fx.add<pj::scene3d::SceneEntitiesLayer>(topic, PJ::sdk::BuiltinObjectType::kSceneEntities);
+  ASSERT_NE(layer, nullptr);
+  fx.tick(20 * kSec);
+  ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return layer->geometry().frames.size() == 2; }));
+  const auto placed_x = [&](std::size_t group) {
+    const auto placed = pj::scene3d::placeObject(
+        *buffer, "map", layer->geometry().frames[group], layer->markerStamp(group), PJ::fromRaw(20 * kSec),
+        layer->markerPlacementHold(group));
+    return placed.has_value() ? std::optional<double>(placed->t.x) : std::nullopt;
+  };
+  EXPECT_EQ(placed_x(0), 1.0) << "the stamped entity moved with its frame";
+  EXPECT_EQ(placed_x(1), 5.0) << "the frame-locked entity stayed behind";
+}
+
 // A finding's "computed at" label is in display seconds: it follows a display-offset change.
 TEST(Scene3DDockDerivedTopics, AFindingsLabelFollowsTheDisplayOffset) {
   Fixture fx;
@@ -826,8 +856,8 @@ TEST(Scene3DDockInitialFraming, FitsImmediateAndDelayedContentOnlyOnce) {
 }
 
 // The fit frames where the content is drawn: a cloud measured at 5 s in a frame that moved 100 m by the 20 s cursor
-// is placed relative to the frame's pose at the cursor, and the camera frames that placement.
-TEST(Scene3DDockInitialFraming, FitsThePlacedBoundsOfAStampedCloud) {
+// stays where it was measured in that frame, which the fit made the fixed frame.
+TEST(Scene3DDockInitialFraming, FitsAStampedCloudWhereItIsInItsOwnMovingFrame) {
   Fixture fx;
   const auto buffer = fx.tf.transformBuffer(fx.ds);
   ASSERT_NE(buffer, nullptr);
@@ -850,7 +880,7 @@ TEST(Scene3DDockInitialFraming, FitsThePlacedBoundsOfAStampedCloud) {
   layer->renderAtForTest(20 * kSec);
   ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return !fx.dock.initialContentFramingPending(); }));
   EXPECT_EQ(fx.dock.currentFixedFrame(), u"lidar"_s);
-  EXPECT_NEAR(fx.dock.sceneView()->camera().state().focal.x, 5.0F, 0.01F) << "the placed bounds, not the source's";
+  EXPECT_NEAR(fx.dock.sceneView()->camera().state().focal.x, 105.0F, 0.01F) << "the cloud moved off its own frame";
 }
 
 // User camera input, or a restored camera, before the content arrives cancels the fit: the camera stays.

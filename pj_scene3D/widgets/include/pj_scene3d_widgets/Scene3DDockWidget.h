@@ -99,6 +99,14 @@ class Scene3DDockWidget : public SceneDockWidget {
   /// The user's package search folders (Preferences, "Locate..."): every dock searches them at workspace depth.
   static QStringList packageSearchFolders(const QSettings& settings);
   static void setPackageSearchFolders(QSettings& settings, const QStringList& folders);
+  /// The "Interpolate transforms" preference (default on): every 3D view reads a TF edge between two samples by
+  /// interpolation instead of holding the earlier one (pj::scene3d::viewSampling()). The setter applies it to the
+  /// process at once; redrawWithTransformSampling() then redraws an open dock with it.
+  static bool interpolateTransforms(const QSettings& settings);
+  static void setInterpolateTransforms(QSettings& settings, bool interpolate);
+  void redrawWithTransformSampling() {
+    refreshView();
+  }
   /// Re-reads the package search folders and reloads every robot model that has unresolved meshes.
   void reloadPackageSearchFolders();
 
