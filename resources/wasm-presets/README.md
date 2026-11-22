@@ -16,7 +16,7 @@ rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRES
 |---|---|
 | `builtin_filters` | `v1/nissan_leaf/builtin_filters_layout.pj4.xml`, `builtin_filters_thumbnail.png` |
 | `anymal` | `v1/grand_tour_2/anymal_layout.pj4.xml`, `anymal_thumbnail.png` |
-| `pandaset` | `v1/pandaset/pandaset_layout_v3.pj4.xml`, `pandaset_thumbnail.png` |
+| `pandaset` | `v1/pandaset/pandaset_layout_v4.pj4.xml`, `pandaset_thumbnail.png` |
 
 The layouts, the thumbnails and this file are PlotJuggler's own and fall under
 this repository's license (MPL-2.0); the thumbnails are PlotJuggler renders of
