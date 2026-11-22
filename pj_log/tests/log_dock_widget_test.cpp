@@ -284,6 +284,19 @@ TEST_F(LogDockWidgetTest, AVanishedTopicKeepsItsDatasetIdentityAndRebinds) {
   EXPECT_EQ(messages(*dock), std::vector<std::string>{"reloaded"});
 }
 
+TEST_F(LogDockWidgetTest, UnresolvedRestoresListThePendingTopicsOnly) {
+  auto dock = makeDock();
+  QDomDocument doc;
+  QDomElement state = doc.createElement(u"log"_s);
+  for (const QString& name : {u"/rosout"_s, u"/missing"_s}) {
+    QDomElement topic = doc.createElement(u"topic"_s);
+    topic.setAttribute(u"topic"_s, name);
+    state.appendChild(topic);
+  }
+  ASSERT_TRUE(dock->xmlLoadState(state));
+  EXPECT_EQ(dock->unresolvedRestores(), QStringList{u"/missing"_s});
+}
+
 QList<QDomElement> elementsNamed(const QDomElement& root, const QString& tag) {
   QList<QDomElement> found;
   if (root.tagName() == tag) {

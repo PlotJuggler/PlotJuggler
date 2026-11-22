@@ -22,12 +22,12 @@
 #include "pj_base/builtin/camera_info_codec.hpp"
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene2d_core/image_pipeline_source.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_scene2d_widgets/scene2d_pipelines.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/ToggleSwitch.h"
-#include "xml_readers.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -221,7 +221,7 @@ void ImageLayer::saveOptions(QDomElement& element) const {
 
 std::optional<bool> ImageLayer::parseOptions(const QDomElement& element, bool current) {
   bool rectify = current;
-  if (!scene2d_xml::readBool(element, u"rectify_enabled"_s, current, rectify)) {
+  if (!readXmlBool(element, u"rectify_enabled"_s, current, rectify)) {
     return std::nullopt;
   }
   return rectify;

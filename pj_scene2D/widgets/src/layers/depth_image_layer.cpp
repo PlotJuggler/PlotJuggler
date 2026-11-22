@@ -8,16 +8,17 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <algorithm>
+#include <limits>
 #include <memory>
 #include <optional>
 
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene2d_core/media_source.h"
 #include "pj_widgets/DoubleScrubber.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/SvgButton.h"
-#include "xml_readers.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -151,34 +152,42 @@ void DepthImageLayer::saveOptions(QDomElement& element) const {
 
 std::optional<DepthImageLayer::Options> DepthImageLayer::parseOptions(
     const QDomElement& element, const Options& current) {
-  using namespace scene2d_xml;
   Options parsed = current;
 
-  QStringList tokens;
-  for (int index = 0; index < kColormapCount; ++index) {
-    tokens.append(colormapToken(static_cast<Colormap>(index)));
-  }
-  XmlOptionsRecorder::noteOption(
-      element,
-      {.attribute = u"colormap"_s, .type = u"enum"_s, .values = tokens, .fallback = colormapToken(current.colormap)});
-  const std::optional<Colormap> colormap =
-      parseColormap(element.attribute(u"colormap"_s, colormapToken(current.colormap)));
-  if (!colormap.has_value() && !element.attribute(u"colormap"_s).isEmpty()) {
-    // Accepted, as always: an unknown token (e.g. "jet") reads as turbo.
-    XmlOptionsRecorder::noteRejection(element, u"colormap"_s, u"expected one of "_s + tokens.join(u", "_s));
-  }
-  parsed.colormap = colormap.value_or(Colormap::kTurbo);
+  // Tolerated: an absent colormap keeps the current one; an empty or unknown token (e.g. "jet") reads as turbo.
+  const QString colormap_key = u"colormap"_s;
+  QString colormap = colormapToken(element.hasAttribute(colormap_key) ? Colormap::kTurbo : current.colormap);
+  (void)readXmlEnum(element, colormap_key, colormapTokens(), colormap, colormap, XmlBadValue::kTolerate);
+  parsed.colormap = parseColormap(colormap).value_or(Colormap::kTurbo);
 
-  bool ok = readBool(element, u"invert"_s, current.invert, parsed.invert);
-  ok = readFloat(element, u"near_m"_s, current.near_m, {}, {}, parsed.near_m) && ok;
-  ok = readFloat(element, u"far_m"_s, current.far_m, {}, {}, parsed.far_m) && ok;
-  // A value outside [0, 1] is clamped, not refused.
-  ok = readFloat(element, u"opacity"_s, current.opacity, 0.0, 1.0, parsed.opacity, /*enforce_bounds=*/false) && ok;
+  constexpr float kLowest = std::numeric_limits<float>::lowest();
+  constexpr float kMax = std::numeric_limits<float>::max();
+  bool ok = readXmlBool(element, u"invert"_s, current.invert, parsed.invert);
+  ok = readXmlFloat(element, u"near_m"_s, current.near_m, kLowest, kMax, parsed.near_m) && ok;
+  ok = readXmlFloat(element, u"far_m"_s, current.far_m, kLowest, kMax, parsed.far_m) && ok;
+  const QString opacity_key = u"opacity"_s;
+  if (XmlOptionsRecorder::active()) {
+    // Reported with its [0, 1] bounds ahead of the unbounded read below: a finite value outside them is clamped, not
+    // refused.
+    const XmlOption opacity{
+        .attribute = opacity_key,
+        .type = u"float"_s,
+        .min = 0.0,
+        .max = 1.0,
+        .fallback = QString::number(current.opacity, 'g', 7)};
+    XmlOptionsRecorder::noteOption(element, opacity);
+    if (const QString problem =
+            element.hasAttribute(opacity_key) ? xmlValueProblem(opacity, element.attribute(opacity_key)) : QString();
+        !problem.isEmpty()) {
+      XmlOptionsRecorder::noteRejection(element, opacity_key, problem);
+    }
+  }
+  ok = readXmlFloat(element, opacity_key, current.opacity, kLowest, kMax, parsed.opacity) && ok;
   if (!ok) {
     return std::nullopt;
   }
   if (parsed.far_m < parsed.near_m) {
-    // Accepted, as always: the two swap.
+    // Tolerated: the two swap.
     XmlOptionsRecorder::noteRejection(element, u"far_m"_s, u"expected far_m >= near_m"_s);
     std::swap(parsed.near_m, parsed.far_m);
   }

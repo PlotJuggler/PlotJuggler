@@ -43,33 +43,31 @@ struct ParsedLogState {
   std::vector<SavedSeriesPath> topics;
 };
 
-// An unparsable dataset_id reads as 0, an unqualified topic: accepted, and noted as a rejection.
+// Tolerated: an empty or unparsable dataset_id reads as 0, an unqualified topic.
 SavedSeriesPath readTopic(const QDomElement& child) {
-  constexpr auto kMaxId = std::numeric_limits<uint32_t>::max();
-  XmlOptionsRecorder::noteOption(
-      child, {.attribute = u"dataset_id"_s,
-              .type = u"int"_s,
-              .min = 0.0,
-              .max = static_cast<double>(kMaxId),
-              .fallback = u"0"_s});
-  bool id_ok = false;
-  const uint32_t dataset_id = child.attribute(u"dataset_id"_s).toUInt(&id_ok);
-  if (!id_ok && !child.attribute(u"dataset_id"_s).isEmpty()) {
-    XmlOptionsRecorder::noteRejection(
-        child, u"dataset_id"_s, u"expected an integer in [0, "_s + QString::number(kMaxId) + u"]"_s);
-  }
-  return SavedSeriesPath{
-      .topic = readXmlText(child, u"topic"_s),
-      .field = {},
-      .dataset_id = dataset_id,
-      .dataset_source = readXmlText(child, u"dataset_source"_s),
-      .dataset_path = readXmlText(child, u"dataset_path"_s),
-  };
+  SavedSeriesPath saved;
+  saved.topic = readXmlText(child, u"topic"_s);
+  (void)readXmlInt<uint32_t>(
+      child, u"dataset_id"_s, 0, 0, std::numeric_limits<uint32_t>::max(), saved.dataset_id, XmlBadValue::kTolerate);
+  saved.dataset_source = readXmlText(child, u"dataset_source"_s);
+  saved.dataset_path = readXmlText(child, u"dataset_path"_s);
+  return saved;
+}
+
+const QStringList& levelKeys() {
+  static const QStringList keys = [] {
+    QStringList list;
+    for (size_t i = 0; i < log_view::kToggleLevelCount; ++i) {
+      list.append(QString::fromLatin1(log_view::kLevelNames[i].key));
+    }
+    return list;
+  }();
+  return keys;
 }
 
 // The one reader of a <log> payload, for xmlLoadState and xmlValidateState. Every attribute is read through a
-// reporting reader, the children's too when the payload has none of that tag, so a state without topics still lists
-// what a topic accepts. Three values are accepted and noted as rejections: an unknown level key (ignored), a
+// reporting reader, and under a recorder the children's too when the payload has none of that tag, so a state without
+// topics still lists what a topic accepts. Tolerated, and noted as rejections: an unknown level key (ignored), a
 // future_rows other than "grey" (it hides) and an unparsable dataset_id (0).
 std::optional<ParsedLogState> parseLogState(const QDomElement& element) {
   if (element.tagName() != kPayloadTag) {
@@ -79,12 +77,12 @@ std::optional<ParsedLogState> parseLogState(const QDomElement& element) {
   ParsedLogState parsed;
   LogViewState& state = parsed.view;
 
-  QStringList level_keys;
-  for (size_t i = 0; i < log_view::kToggleLevelCount; ++i) {
-    level_keys.append(QString::fromLatin1(log_view::kLevelNames[i].key));
+  const QStringList& level_keys = levelKeys();
+  if (XmlOptionsRecorder::active()) {
+    XmlOptionsRecorder::noteOption(
+        element,
+        {.attribute = u"levels"_s, .type = u"text"_s, .values = level_keys, .fallback = level_keys.join(u',')});
   }
-  XmlOptionsRecorder::noteOption(
-      element, {.attribute = u"levels"_s, .type = u"text"_s, .values = level_keys, .fallback = level_keys.join(u',')});
   if (element.hasAttribute(u"levels"_s)) {
     const QStringList levels = element.attribute(u"levels"_s).split(u',', Qt::SkipEmptyParts);
     for (size_t i = 0; i < log_view::kToggleLevelCount; ++i) {
@@ -100,14 +98,9 @@ std::optional<ParsedLogState> parseLogState(const QDomElement& element) {
   state.source = readXmlText(element, u"source_filter"_s);
   state.category = readXmlText(element, u"category_filter"_s);
   state.text = readXmlText(element, u"text_filter"_s);
-  XmlOptionsRecorder::noteOption(
-      element,
-      {.attribute = u"future_rows"_s, .type = u"enum"_s, .values = {u"grey"_s, u"hide"_s}, .fallback = u"hide"_s});
-  const QString future_rows = element.attribute(u"future_rows"_s);
+  QString future_rows;
+  (void)readXmlEnum(element, u"future_rows"_s, {u"grey"_s, u"hide"_s}, u"hide"_s, future_rows, XmlBadValue::kTolerate);
   state.show_future = future_rows == u"grey"_s;
-  if (!future_rows.isEmpty() && future_rows != u"grey"_s && future_rows != u"hide"_s) {
-    XmlOptionsRecorder::noteRejection(element, u"future_rows"_s, u"expected one of grey, hide"_s);
-  }
 
   for (QDomElement hidden = element.firstChildElement(kHiddenTopicTag); !hidden.isNull();
        hidden = hidden.nextSiblingElement(kHiddenTopicTag)) {
@@ -118,9 +111,11 @@ std::optional<ParsedLogState> parseLogState(const QDomElement& element) {
     parsed.topics.push_back(readTopic(child));
   }
 
-  QDomDocument schema;
-  (void)readXmlText(schema.createElement(kHiddenTopicTag), u"topic"_s);
-  (void)readTopic(schema.createElement(kTopicTag));
+  if (XmlOptionsRecorder::active()) {
+    QDomDocument schema;
+    readXmlText(schema.createElement(kHiddenTopicTag), u"topic"_s);
+    (void)readTopic(schema.createElement(kTopicTag));
+  }
   return parsed;
 }
 
@@ -398,6 +393,14 @@ std::vector<LogDockWidget::PendingDemand> LogDockWidget::pendingDemands() const 
 bool LogDockWidget::hasPendingTopic(const QString& topic_name) const {
   return std::ranges::any_of(
       pending_, [&topic_name](const SavedSeriesPath& pending) { return pending.topic == topic_name; });
+}
+
+QStringList LogDockWidget::unresolvedRestores() const {
+  QStringList topics;
+  for (const SavedSeriesPath& pending : pending_) {
+    topics.append(pending.topic);
+  }
+  return topics;
 }
 
 QDomElement LogDockWidget::xmlSaveState(QDomDocument& doc) const {
