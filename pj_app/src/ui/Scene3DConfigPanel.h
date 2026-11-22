@@ -35,8 +35,8 @@ inline constexpr char kScene3dSceneControlsGroup[] = "pj_scene3d/scene_controls"
 //
 // Robot-model rows are derived from dock state, not from the act of adding: every kRobotDescription layer on the
 // bound dock gets exactly one row, rebuilt on bind, dock switch and layout restore. Robot layers stay out of the
-// Topics list; clicking their row binds the Settings host to the layer's config widget (source combo, status,
-// Retry). The browser build picks files by content and uses nonmodal topic/URL prompts.
+// Topics list; clicking their row deselects the list and binds the Settings host to the layer's config widget (source
+// combo, status, Retry). The browser build picks files by content and uses nonmodal topic/URL prompts.
 class Scene3DConfigPanel : public QWidget {
   Q_OBJECT
  public:

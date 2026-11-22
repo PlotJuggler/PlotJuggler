@@ -930,7 +930,10 @@ void Scene3DConfigPanel::showRobotLayerConfig(uint32_t topic_id_value) {
   if (layer == nullptr) {
     return;
   }
-  // Last click wins on config_host_; the Topics list selection stays as it is.
+  // The robot's settings replace the topic's, so the topic is deselected: a click on a still-selected topic is not a
+  // selection change and would never bring its settings back. The deselection clears config_host_ (through
+  // onLayerSelectionChanged), so the robot's widget goes in after it.
+  layer_list_->setCurrentId(-1);
   config_host_->setConfigWidget(layer->createConfigWidget(config_host_));
 }
 
@@ -1134,19 +1137,14 @@ void Scene3DConfigPanel::onStylesheetChanged(QString theme) {
 
 void Scene3DConfigPanel::updateSelectedLayerPane() {
   config_host_->clear();
-  if (bound_dock_ == nullptr) {
-    return;
+  if (bound_dock_ != nullptr) {
+    if (const auto selected = selectedTopicId(); selected.has_value()) {
+      if (ISceneLayer* layer = bound_dock_->layerFor(*selected); layer != nullptr) {
+        config_host_->setConfigWidget(layer->createConfigWidget(config_host_));
+      }
+    }
   }
-  const auto selected = selectedTopicId();
-  if (!selected.has_value()) {
-    return;
-  }
-  ISceneLayer* layer = bound_dock_->layerFor(*selected);
-  if (layer == nullptr) {
-    return;
-  }
-  config_host_->setConfigWidget(layer->createConfigWidget(config_host_));
-  updateParamsToolbarState();
+  updateParamsToolbarState();  // also with nothing selected: the buttons act on the selected topic only
 }
 
 void Scene3DConfigPanel::onCopyParams() {
