@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QLocale>
 #include <QTimeZone>
 #include <cmath>
@@ -165,6 +166,61 @@ TEST_F(PlotScaleDrawTest, TrackerTimeFollowsTheAxisFormat) {
   plot.setModeXY(true);
   tracker.redraw();
   EXPECT_TRUE(tracker.valueBoxText().contains(u"time : 1700000000.5"_s)) << "an XY plot keeps seconds";
+}
+
+// The value box glides toward the curves' value at a capped speed instead of jumping with every sample, and keeps
+// moving after positions stop until it arrives; a box shown for the first time, or after a seek, snaps.
+TEST_F(PlotScaleDrawTest, TrackerValueBoxGlidesToTheValue) {
+  TestPlot plot;
+  plot.resize(400, 300);
+  plot.show();
+  plot.qwtPlot()->setAxisScale(QwtPlot::xBottom, 0.0, 10.0);
+  plot.qwtPlot()->setAxisScale(QwtPlot::yLeft, 0.0, 100.0);
+  plot.qwtPlot()->replot();
+  QApplication::processEvents();
+  auto* curve = new QwtPlotCurve(u"step"_s);
+  curve->setSamples(QVector<QPointF>{{0.0, 10.0}, {5.0, 10.0}, {5.1, 90.0}, {10.0, 90.0}});
+  curve->attach(plot.qwtPlot());
+  PJ::CurveTracker tracker(plot.qwtPlot(), Qt::red);
+  int moves = 0;
+  int moves_during_playback = 0;
+  QElapsedTimer since_position;
+  since_position.start();
+  QObject::connect(&tracker, &PJ::CurveTracker::valueBoxMoved, [&]() {
+    ++moves;
+    // The glide timer must not repaint between positions that keep arriving at PlaybackEngine's ~33 ms tick.
+    if (since_position.elapsed() < 40) {
+      ++moves_during_playback;
+    }
+  });
+
+  tracker.setPosition(QPointF(4.95, 0.0));
+  EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 10.0);
+
+  // Playback-sized steps (a few pixels) across the curve's jump glide.
+  for (int tick = 0; tick < 8; ++tick) {
+    tracker.setPosition(QPointF(5.15 + 0.005 * tick, 0.0));
+    since_position.restart();
+    while (since_position.elapsed() < 33) {
+      QApplication::processEvents(QEventLoop::WaitForMoreEvents, 5);
+    }
+  }
+  EXPECT_LT(tracker.valueBoxY(), 90.0) << "jumped instead of gliding";
+  EXPECT_GT(tracker.valueBoxY(), 10.0) << "positions did not advance the glide";
+  EXPECT_EQ(moves_during_playback, 0);
+
+  QElapsedTimer clock;
+  clock.start();
+  while (tracker.valueBoxY() != 90.0 && clock.elapsed() < 10000) {
+    QApplication::processEvents(QEventLoop::WaitForMoreEvents, 20);
+  }
+  EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 90.0);
+  EXPECT_GT(clock.elapsed(), 200) << "arrived faster than the speed cap allows";
+  EXPECT_GT(moves, 0);
+
+  // A seek (a click far along the time axis) moves the box at once.
+  tracker.setPosition(QPointF(1.0, 0.0));
+  EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 10.0);
 }
 
 // "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass

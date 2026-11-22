@@ -5,8 +5,10 @@
 #include <qwt_plot_marker.h>
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QPointF>
+#include <QTimer>
 #include <optional>
 #include <vector>
 
@@ -41,6 +43,13 @@ class CurveTracker : public QObject {
   }
   // The value box's HTML, one line per curve sampled at the last position (also kept while the box is hidden).
   [[nodiscard]] QString valueBoxText() const;
+  // The value box's vertical anchor in plot coordinates, where it is drawn now (it glides toward the curves' mid value
+  // at kLabelSpeedPxPerSec, so it can lag the last position).
+  [[nodiscard]] double valueBoxY() const;
+
+ signals:
+  // The value box moved by itself (a glide step with no new position): the owner repaints its overlays.
+  void valueBoxMoved();
 
  public slots:
   void setPosition(const QPointF& pos);
@@ -57,6 +66,8 @@ class CurveTracker : public QObject {
   [[nodiscard]] bool valueBoxAllowed() const noexcept {
     return parameter_ != kLineOnly;
   }
+  // Moves the value box toward label_target_y_ by the distance allowed since the last step; stops the glide on arrival.
+  void stepValueBox();
 
   QPointF previous_tracker_point_;
   std::optional<QPointF> reference_pos_;
@@ -66,6 +77,12 @@ class CurveTracker : public QObject {
   QwtPlot* plot_ = nullptr;
   Parameter parameter_ = kValue;
   bool visible_ = true;
+  // Glide of the value box: a box that was hidden, or a seek (a large time jump), snaps to its target; otherwise it
+  // moves at a capped pixel speed so playback over noisy curves does not make it jump every frame.
+  double label_target_y_ = 0.0;
+  bool label_shown_ = false;
+  QTimer label_timer_;
+  QElapsedTimer label_clock_;
 };
 
 }  // namespace PJ
