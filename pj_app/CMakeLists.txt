@@ -666,6 +666,12 @@ if(PJ_BUILD_TESTS)
     list(APPEND PJ_APP_GUI_TEST_SOURCES
         tests/scene2d_config_panel_test.cpp)
 
+    # The 3D scene panel's Settings area follows the last row clicked, a robot model row included.
+    if(TARGET pj_scene3d_widgets)
+        list(APPEND PJ_APP_GUI_TEST_SOURCES
+            tests/scene3d_config_panel_test.cpp)
+    endif()
+
     # Window frame: the system title bar by default, the frameless custom one
     # only when Preferences -> Appearance opts in (bar contents, the double-click
     # seam, MainWindow flags and the toggle's persistence).
