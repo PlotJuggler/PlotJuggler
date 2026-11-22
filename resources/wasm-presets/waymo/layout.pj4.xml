@@ -3,190 +3,147 @@
   <tabbed_widget id="" name="main" parent="main_window">
     <Tab containers="1" id="waymo-tab" tab_name="Waymo">
       <Container>
-        <DockSplitter count="3" orientation="|" sizes="0.10000000;0.27000000;0.63000000">
-          <DockSplitter count="2" orientation="-" sizes="0.50000000;0.50000000">
-            <DockArea id="waymo-p0" name="Speed (km/h)">
-              <plot id="waymo-plot-p0" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
-                <curve color="#1f77b4" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" field="Vehicle Dynamics/velocity (km/h)" markers_visible="false" topic="/stats" visible="true"/>
-              </plot>
-            </DockArea>
-            <DockArea id="waymo-p1" name="Acceleration (m/s²)">
-              <plot id="waymo-plot-p1" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
-                <curve color="#1ac938" dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" field="Vehicle Dynamics/acceleration (m/s2)" markers_visible="false" topic="/stats" visible="true"/>
-              </plot>
-            </DockArea>
-          </DockSplitter>
-          <DockArea id="waymo-aerial" name="Aerial View">
-            <scene3d camera_model="top_down_ortho" camera_state="{&quot;azimuth&quot;:0.0,&quot;elevation&quot;:1.5,&quot;focal&quot;:[0.0,0.0,0.0],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:30.0,&quot;perspective&quot;:false,&quot;radius&quot;:80.0}" fixed_frame="base_link" fixed_frame_mode="explicit" version="1">
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_TOP" object_type="kCompressedPointCloud" order="0" topic_name="/LIDAR_TOP" visible="true">
-                <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_FRONT" object_type="kCompressedPointCloud" order="1" topic_name="/LIDAR_FRONT" visible="true">
-                <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_REAR" object_type="kCompressedPointCloud" order="2" topic_name="/LIDAR_REAR" visible="true">
-                <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_LEFT" object_type="kCompressedPointCloud" order="3" topic_name="/LIDAR_SIDE_LEFT" visible="true">
-                <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_RIGHT" object_type="kCompressedPointCloud" order="4" topic_name="/LIDAR_SIDE_RIGHT" visible="true">
-                <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/vehicles" object_type="kSceneEntities" order="5" topic_name="/markers/annotations/vehicles" visible="true">
-                <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/pedestrians" object_type="kSceneEntities" order="6" topic_name="/markers/annotations/pedestrians" visible="true">
-                <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/signs" object_type="kSceneEntities" order="7" topic_name="/markers/annotations/signs" visible="true">
-                <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-              </layer>
-              <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/marker/car" object_type="kSceneEntities" order="8" topic_name="/marker/car" visible="true">
-                <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-              </layer>
-              <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" object_type="kFrameTransforms" topic_name="/tf"/>
-              <scene_controls axes_visible="false" collision_opacity="0.40000001" collisions_visible="false" gizmo_opacity="1" gizmo_size_m="0.5" grid_divisions="20" grid_extent_m="100" grid_style="0" grid_visible="false" mesh_opacity="1" meshes_visible="true" tf_parent_lines="false"/>
-            </scene3d>
-          </DockArea>
-          <DockSplitter count="3" orientation="-" sizes="0.20000000;0.20000000;0.60000000">
+        <DockSplitter count="1" orientation="-" sizes="1.00000000">
+          <DockSplitter count="2" orientation="-" sizes="0.24941725;0.75058275">
             <DockSplitter count="5" orientation="|" sizes="0.20000000;0.20000000;0.20000000;0.20000000;0.20000000">
               <DockArea id="waymo-c0" name="Side Left">
                 <scene2d version="1">
                   <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_LEFT/compressed_image_downsampled" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_SIDE_LEFT/compressed_image_downsampled" visible="true">
+                    <scene2d_layer rectify_enabled="true"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_LEFT/annotations_3d" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_SIDE_LEFT/annotations_3d" visible="true">
                     <scene2d_layer/>
                   </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_LEFT/lidar" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_SIDE_LEFT/lidar" visible="true">
-                    <scene2d_layer/>
-                  </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_LEFT/annotations_3d" object_type="kImageAnnotations" order="2" topic_name="/CAMERA_SIDE_LEFT/annotations_3d" visible="true">
-                    <scene2d_layer/>
-                  </layer>
+                  <view pan_x="0" pan_y="0" rotation="0" zoom="1"/>
                 </scene2d>
               </DockArea>
               <DockArea id="waymo-c1" name="Front Left">
                 <scene2d version="1">
                   <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_LEFT/compressed_image_downsampled" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_FRONT_LEFT/compressed_image_downsampled" visible="true">
+                    <scene2d_layer rectify_enabled="true"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_LEFT/annotations_3d" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_FRONT_LEFT/annotations_3d" visible="true">
                     <scene2d_layer/>
                   </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_LEFT/lidar" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_FRONT_LEFT/lidar" visible="true">
-                    <scene2d_layer/>
-                  </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_LEFT/annotations_3d" object_type="kImageAnnotations" order="2" topic_name="/CAMERA_FRONT_LEFT/annotations_3d" visible="true">
-                    <scene2d_layer/>
-                  </layer>
+                  <view pan_x="0" pan_y="0" rotation="0" zoom="1"/>
                 </scene2d>
               </DockArea>
               <DockArea id="waymo-c2" name="Front">
                 <scene2d version="1">
                   <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT/compressed_image_downsampled" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_FRONT/compressed_image_downsampled" visible="true">
+                    <scene2d_layer rectify_enabled="true"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT/annotations_3d" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_FRONT/annotations_3d" visible="true">
                     <scene2d_layer/>
                   </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT/lidar" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_FRONT/lidar" visible="true">
-                    <scene2d_layer/>
-                  </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT/annotations_3d" object_type="kImageAnnotations" order="2" topic_name="/CAMERA_FRONT/annotations_3d" visible="true">
-                    <scene2d_layer/>
-                  </layer>
+                  <view pan_x="0" pan_y="0" rotation="0" zoom="1"/>
                 </scene2d>
               </DockArea>
               <DockArea id="waymo-c3" name="Front Right">
                 <scene2d version="1">
                   <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_RIGHT/compressed_image_downsampled" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_FRONT_RIGHT/compressed_image_downsampled" visible="true">
+                    <scene2d_layer rectify_enabled="true"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_RIGHT/annotations_3d" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_FRONT_RIGHT/annotations_3d" visible="true">
                     <scene2d_layer/>
                   </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_RIGHT/lidar" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_FRONT_RIGHT/lidar" visible="true">
-                    <scene2d_layer/>
-                  </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_RIGHT/annotations_3d" object_type="kImageAnnotations" order="2" topic_name="/CAMERA_FRONT_RIGHT/annotations_3d" visible="true">
-                    <scene2d_layer/>
-                  </layer>
+                  <view pan_x="0" pan_y="0" rotation="0" zoom="1"/>
                 </scene2d>
               </DockArea>
               <DockArea id="waymo-c4" name="Side Right">
                 <scene2d version="1">
                   <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_RIGHT/compressed_image_downsampled" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_SIDE_RIGHT/compressed_image_downsampled" visible="true">
+                    <scene2d_layer rectify_enabled="true"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_RIGHT/annotations_3d" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_SIDE_RIGHT/annotations_3d" visible="true">
                     <scene2d_layer/>
                   </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_RIGHT/lidar" object_type="kImageAnnotations" order="1" topic_name="/CAMERA_SIDE_RIGHT/lidar" visible="true">
-                    <scene2d_layer/>
-                  </layer>
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_RIGHT/annotations_3d" object_type="kImageAnnotations" order="2" topic_name="/CAMERA_SIDE_RIGHT/annotations_3d" visible="true">
-                    <scene2d_layer/>
-                  </layer>
+                  <view pan_x="0" pan_y="0" rotation="0" zoom="1"/>
                 </scene2d>
               </DockArea>
             </DockSplitter>
-            <DockSplitter count="5" orientation="|" sizes="0.20000000;0.20000000;0.20000000;0.20000000;0.20000000">
-              <DockArea id="waymo-s0" name="Left Side Segmentation">
-                <scene2d version="1">
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_LEFT/segmentation" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_SIDE_LEFT/segmentation" visible="true">
-                    <scene2d_layer/>
+            <DockSplitter count="2" orientation="|" sizes="0.33125390;0.66874610">
+              <DockSplitter count="3" orientation="-" sizes="0.24922118;0.24922118;0.50155763">
+                <DockArea id="waymo-p1" name="Acceleration (m/s²)">
+                  <plot id="waymo-plot-p1" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+                    <range bottom="-3.345032" left="1507939794.865834" left_ns="1507939794865833984" right="1507939814.469092" right_ns="1507939814469091840" top="2.451172" x_basis="absolute"/>
+                    <curve dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" color="#1ac938" field="Vehicle Dynamics/acceleration (m/s2)" markers_visible="false" topic="/stats" visible="true"/>
+                  </plot>
+                </DockArea>
+                <DockArea id="waymo-p0" name="Speed (km/h)">
+                  <plot id="waymo-plot-p0" line_width="1.0" mode="TimeSeries" style="Lines" title="" tracker_enabled="true">
+                    <range bottom="15.437971" left="1507939794.865834" left_ns="1507939794865833984" right="1507939814.469092" right_ns="1507939814469091840" top="52.943182" x_basis="absolute"/>
+                    <curve dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" color="#1f77b4" field="Vehicle Dynamics/velocity (km/h)" markers_visible="false" topic="/stats" visible="true"/>
+                  </plot>
+                </DockArea>
+                <DockArea id="waymo-aerial" name="Aerial View">
+                  <scene3d camera_model="top_down_ortho" camera_state="{&quot;azimuth&quot;:-1.5249991416931152,&quot;elevation&quot;:1.5,&quot;focal&quot;:[0.0,0.0,0.0],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:30.0,&quot;perspective&quot;:false,&quot;radius&quot;:80.0}" fixed_frame="base_link" fixed_frame_mode="explicit" follow_frame="" version="1">
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_TOP" object_type="kCompressedPointCloud" order="0" topic_name="/LIDAR_TOP" visible="true">
+                      <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_FRONT" object_type="kCompressedPointCloud" order="1" topic_name="/LIDAR_FRONT" visible="true">
+                      <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_REAR" object_type="kCompressedPointCloud" order="2" topic_name="/LIDAR_REAR" visible="true">
+                      <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_LEFT" object_type="kCompressedPointCloud" order="3" topic_name="/LIDAR_SIDE_LEFT" visible="true">
+                      <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_RIGHT" object_type="kCompressedPointCloud" order="4" topic_name="/LIDAR_SIDE_RIGHT" visible="true">
+                      <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/vehicles" object_type="kSceneEntities" order="5" topic_name="/markers/annotations/vehicles" visible="true">
+                      <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/pedestrians" object_type="kSceneEntities" order="6" topic_name="/markers/annotations/pedestrians" visible="true">
+                      <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/signs" object_type="kSceneEntities" order="7" topic_name="/markers/annotations/signs" visible="true">
+                      <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                    </layer>
+                    <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/marker/car" object_type="kSceneEntities" order="8" topic_name="/marker/car" visible="true">
+                      <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                    </layer>
+                    <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" object_type="kFrameTransforms" topic_name="/tf"/>
+                    <scene_controls axes_visible="false" collision_opacity="0.40000001" collisions_visible="false" gizmo_opacity="1" gizmo_size_m="0.5" grid_divisions="20" grid_extent_m="100" grid_style="0" grid_visible="false" mesh_opacity="1" meshes_visible="true" tf_parent_lines="false"/>
+                  </scene3d>
+                </DockArea>
+              </DockSplitter>
+              <DockArea id="waymo-main" name="3D">
+                <scene3d camera_model="orbit" camera_state="{&quot;azimuth&quot;:-2.6599996089935303,&quot;elevation&quot;:0.5199996829032898,&quot;focal&quot;:[0.0,0.0,0.800000011920929],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:5.0,&quot;perspective&quot;:true,&quot;radius&quot;:18.0}" fixed_frame="base_link" fixed_frame_mode="explicit" follow_frame="" version="1">
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_TOP" object_type="kCompressedPointCloud" order="0" topic_name="/LIDAR_TOP" visible="true">
+                    <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
                   </layer>
-                </scene2d>
-              </DockArea>
-              <DockArea id="waymo-s1" name="Front Left Segmentation">
-                <scene2d version="1">
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_LEFT/segmentation" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_FRONT_LEFT/segmentation" visible="true">
-                    <scene2d_layer/>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_FRONT" object_type="kCompressedPointCloud" order="1" topic_name="/LIDAR_FRONT" visible="true">
+                    <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
                   </layer>
-                </scene2d>
-              </DockArea>
-              <DockArea id="waymo-s2" name="Front Segmentation">
-                <scene2d version="1">
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT/segmentation" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_FRONT/segmentation" visible="true">
-                    <scene2d_layer/>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_REAR" object_type="kCompressedPointCloud" order="2" topic_name="/LIDAR_REAR" visible="true">
+                    <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
                   </layer>
-                </scene2d>
-              </DockArea>
-              <DockArea id="waymo-s3" name="Front Right Segmentation">
-                <scene2d version="1">
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_FRONT_RIGHT/segmentation" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_FRONT_RIGHT/segmentation" visible="true">
-                    <scene2d_layer/>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_LEFT" object_type="kCompressedPointCloud" order="3" topic_name="/LIDAR_SIDE_LEFT" visible="true">
+                    <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
                   </layer>
-                </scene2d>
-              </DockArea>
-              <DockArea id="waymo-s4" name="Right Side Segmentation">
-                <scene2d version="1">
-                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/CAMERA_SIDE_RIGHT/segmentation" layer_kind="image" object_type="kImage" order="0" topic_name="/CAMERA_SIDE_RIGHT/segmentation" visible="true">
-                    <scene2d_layer/>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_RIGHT" object_type="kCompressedPointCloud" order="4" topic_name="/LIDAR_SIDE_RIGHT" visible="true">
+                    <pointcloud auto_range="false" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="5" range_min="-1" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
                   </layer>
-                </scene2d>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/vehicles" object_type="kSceneEntities" order="5" topic_name="/markers/annotations/vehicles" visible="true">
+                    <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/pedestrians" object_type="kSceneEntities" order="6" topic_name="/markers/annotations/pedestrians" visible="true">
+                    <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/signs" object_type="kSceneEntities" order="7" topic_name="/markers/annotations/signs" visible="true">
+                    <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                  </layer>
+                  <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/marker/car" object_type="kSceneEntities" order="8" topic_name="/marker/car" visible="true">
+                    <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
+                  </layer>
+                  <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" object_type="kFrameTransforms" topic_name="/tf"/>
+                  <scene_controls axes_visible="false" collision_opacity="0.40000001" collisions_visible="false" gizmo_opacity="1" gizmo_size_m="0.5" grid_divisions="20" grid_extent_m="100" grid_style="0" grid_visible="false" mesh_opacity="1" meshes_visible="true" tf_parent_lines="false"/>
+                </scene3d>
               </DockArea>
             </DockSplitter>
-            <DockArea id="waymo-main" name="3D">
-              <scene3d camera_model="orbit" camera_state="{&quot;azimuth&quot;:-2.52,&quot;elevation&quot;:0.4,&quot;focal&quot;:[0.0,0.0,0.8],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:5.0,&quot;perspective&quot;:true,&quot;radius&quot;:18.0}" fixed_frame="base_link" fixed_frame_mode="explicit" version="1">
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_TOP" object_type="kCompressedPointCloud" order="0" topic_name="/LIDAR_TOP" visible="true">
-                  <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_FRONT" object_type="kCompressedPointCloud" order="1" topic_name="/LIDAR_FRONT" visible="true">
-                  <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_REAR" object_type="kCompressedPointCloud" order="2" topic_name="/LIDAR_REAR" visible="true">
-                  <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_LEFT" object_type="kCompressedPointCloud" order="3" topic_name="/LIDAR_SIDE_LEFT" visible="true">
-                  <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/LIDAR_SIDE_RIGHT" object_type="kCompressedPointCloud" order="4" topic_name="/LIDAR_SIDE_RIGHT" visible="true">
-                  <pointcloud auto_range="true" color_choice_explicit="true" color_field="z" color_type="field" colormap="turbo" invert_lut="false" outside_range_opacity="1" outside_range_visible="true" range_max="3" range_min="-3" shape="point" size_meters="0.05" size_pixels="2" solid_color="#ffffff"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/vehicles" object_type="kSceneEntities" order="5" topic_name="/markers/annotations/vehicles" visible="true">
-                  <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/pedestrians" object_type="kSceneEntities" order="6" topic_name="/markers/annotations/pedestrians" visible="true">
-                  <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/markers/annotations/signs" object_type="kSceneEntities" order="7" topic_name="/markers/annotations/signs" visible="true">
-                  <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-                </layer>
-                <layer dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" display_name="/marker/car" object_type="kSceneEntities" order="8" topic_name="/marker/car" visible="true">
-                  <markers color_override="false" opacity="1" override_color="#ffffff" wireframe="false"/>
-                </layer>
-                <config_topic dataset_id="1" dataset_path="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" dataset_source="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" object_type="kFrameTransforms" topic_name="/tf"/>
-                <scene_controls axes_visible="false" collision_opacity="0.40000001" collisions_visible="false" gizmo_opacity="1" gizmo_size_m="0.5" grid_divisions="20" grid_extent_m="100" grid_style="0" grid_visible="false" mesh_opacity="1" meshes_visible="true" tf_parent_lines="false"/>
-              </scene3d>
-            </DockArea>
           </DockSplitter>
         </DockSplitter>
       </Container>
@@ -197,11 +154,11 @@
   <previouslyLoaded_Datafiles>
     <fileInfo content_sha256="59c8cf1b6bae8226f9d5eb3f79103b6678666b463e5aa8b456f03b14683f1927" display_offset_ns="0" filename="https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap" prefix="" timeline_order="0">
       <dataset display_offset_ns="0" source_index="0" source_name="waymo_av_demo.mcap" timeline_order="0"/>
-      <plugin ID="MCAP Loader" filepath_mode="source" manifest_id="mcap-loader"><![CDATA[{"clamp_large_arrays":true,"filepath":"https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap","max_array_size":500,"selected_topics":["/CAMERA_FRONT/annotations_3d","/CAMERA_FRONT/camera_info","/CAMERA_FRONT/compressed_image_downsampled","/CAMERA_FRONT/lidar","/CAMERA_FRONT/segmentation","/CAMERA_FRONT_LEFT/annotations_3d","/CAMERA_FRONT_LEFT/camera_info","/CAMERA_FRONT_LEFT/compressed_image_downsampled","/CAMERA_FRONT_LEFT/lidar","/CAMERA_FRONT_LEFT/segmentation","/CAMERA_FRONT_RIGHT/annotations_3d","/CAMERA_FRONT_RIGHT/camera_info","/CAMERA_FRONT_RIGHT/compressed_image_downsampled","/CAMERA_FRONT_RIGHT/lidar","/CAMERA_FRONT_RIGHT/segmentation","/CAMERA_SIDE_LEFT/annotations_3d","/CAMERA_SIDE_LEFT/camera_info","/CAMERA_SIDE_LEFT/compressed_image_downsampled","/CAMERA_SIDE_LEFT/lidar","/CAMERA_SIDE_LEFT/segmentation","/CAMERA_SIDE_RIGHT/annotations_3d","/CAMERA_SIDE_RIGHT/camera_info","/CAMERA_SIDE_RIGHT/compressed_image_downsampled","/CAMERA_SIDE_RIGHT/lidar","/CAMERA_SIDE_RIGHT/segmentation","/LIDAR_FRONT","/LIDAR_REAR","/LIDAR_SIDE_LEFT","/LIDAR_SIDE_RIGHT","/LIDAR_TOP","/marker/car","/markers/annotations/pedestrians","/markers/annotations/signs","/markers/annotations/vehicles","/stats","/tf"],"use_header_timestamp":false,"use_log_time":false}]]></plugin>
+      <plugin ID="MCAP Loader" filepath_mode="source" manifest_id="mcap-loader"><![CDATA[{"clamp_large_arrays": true, "filepath": "https://assets.plotjuggler.io/v1/waymo/waymo_av_demo.mcap", "max_array_size": 500, "selected_topics": ["/CAMERA_FRONT/annotations_3d", "/CAMERA_FRONT/compressed_image_downsampled", "/CAMERA_FRONT_LEFT/annotations_3d", "/CAMERA_FRONT_LEFT/compressed_image_downsampled", "/CAMERA_FRONT_RIGHT/annotations_3d", "/CAMERA_FRONT_RIGHT/compressed_image_downsampled", "/CAMERA_SIDE_LEFT/annotations_3d", "/CAMERA_SIDE_LEFT/compressed_image_downsampled", "/CAMERA_SIDE_RIGHT/annotations_3d", "/CAMERA_SIDE_RIGHT/compressed_image_downsampled", "/LIDAR_FRONT", "/LIDAR_REAR", "/LIDAR_SIDE_LEFT", "/LIDAR_SIDE_RIGHT", "/LIDAR_TOP", "/marker/car", "/markers/annotations/pedestrians", "/markers/annotations/signs", "/markers/annotations/vehicles", "/stats", "/tf"], "use_header_timestamp": false, "use_log_time": false}]]></plugin>
     </fileInfo>
   </previouslyLoaded_Datafiles>
   <right_panel_state splitter_sizes="1278,0" style="0" width="1"/>
   <left_panel_state sources_tab="file" streaming_buffer="5" streaming_source=""/>
   <curve_list_state custom_filter="" datasets_filter="" show_topics="true" show_values="false"/>
-  <chrome_state main_splitter_sizes="280,964"/>
+  <chrome_state main_splitter_sizes="280,1604"/>
 </root>
