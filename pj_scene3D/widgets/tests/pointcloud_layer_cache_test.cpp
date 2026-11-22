@@ -200,6 +200,7 @@ TEST(PointCloudLayerRenderKey, SameStampReplacementChangesKey) {
 // the key must CHANGE when the fixed<-source transform changes (sensor moved) and stay STABLE when it does not, so a
 // moving cloud reopens the repaint gate while a static pose coalesces.
 TEST(PointCloudLayerRenderKey, FoldsFixedFromSourceTransform) {
+  pj::scene3d::setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   g_primary_parser_calls.store(0);
   PJ::SessionManager session;
   PJ::ObjectStore& store = session.objectStore();
@@ -304,9 +305,9 @@ TEST(PointCloudLayerPlacement, EvictedTfSampleKeepsTheCloudWhereItWasCaptured) {
   EXPECT_EQ(layer.renderKey(PJ::fromRaw(12000 * kMillisecond)), captured);
 }
 
-// Playback in the lidar's own moving frame: the cursor reaches a compressed cloud that is still decoding, so the layer
-// keeps drawing the previous one. It stays where it was drawn, not one step of the frame's motion behind, where the
-// new cursor would place it for the frames the decode takes.
+// Playback seen from a frame that moves beside the lidar: the cursor reaches a compressed cloud that is still decoding,
+// so the layer keeps drawing the previous one. It stays where it was drawn, not one step of the viewer's motion away,
+// where the new cursor would place it for the frames the decode takes.
 TEST(PointCloudLayerPlacement, CloudLeftByTheCursorStaysPutWhileItsSuccessorDecodes) {
   g_mixed_parser_calls.store(0);
   PJ::SessionManager session;
@@ -320,39 +321,43 @@ TEST(PointCloudLayerPlacement, CloudLeftByTheCursorStaysPutWhileItsSuccessorDeco
                                           &emitMixedCloud);
                                     }));
   auto tf = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
-  for (const auto& [stamp, x] : {std::pair{100, 1.0}, std::pair{2000, 2.0}}) {
+  const auto feed = [&tf](const char* child, int64_t stamp, double x) {
     ASSERT_TRUE(tf->setTransform(
                       pj::tf::StampedTransform{
                           .stamp = PJ::fromRaw(stamp),
                           .parent_frame = "world",
-                          .child_frame = "lidar",
+                          .child_frame = child,
                           .transform = pj::tf::Transform(glm::dvec3{x, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
                     .has_value());
-  }
+  };
+  feed("lidar", 100, 1.0);
+  feed("lidar", 2000, 2.0);
+  feed("viewer", 100, 5.0);
+  feed("viewer", 2000, 6.0);
 
   pj::scene3d::Scene3DLayerContext ctx;
   ctx.session = &session;
   ctx.tf_buffer = tf;
   pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
   ASSERT_TRUE(layer.attach(ctx));
-  layer.setFixedFrame(u"lidar"_s);
+  layer.setFixedFrame(u"viewer"_s);
   // What the view draws the layer with at `cursor_ns` (SceneViewWidget::resolveFixedFromSource).
   const auto drawn_x = [&](int64_t cursor_ns) {
     const auto placed = pj::scene3d::placeObject(
-        *tf, "lidar", layer.renderFrameId(), layer.renderStamp(), PJ::fromRaw(cursor_ns), layer.placementHold());
+        *tf, "viewer", layer.renderFrameId(), layer.renderStamp(), PJ::fromRaw(cursor_ns), layer.placementHold());
     return placed.has_value() ? std::optional<double>(placed->t.x) : std::nullopt;
   };
   layer.renderAtForTest(100);
-  ASSERT_EQ(drawn_x(100), 0.0);
+  ASSERT_EQ(drawn_x(100), -4.0);
 
   layer.renderAtForTest(2000);
   ASSERT_TRUE(layer.decodeInFlightForTest());
   ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
-  EXPECT_EQ(drawn_x(2000), 0.0) << "the cloud still drawn moved with the cursor";
+  EXPECT_EQ(drawn_x(2000), -4.0) << "the cloud still drawn moved with the cursor";
 
   layer.renderAtForTest(100);  // the drawn cloud is the cursor's again: it follows the cursor
-  EXPECT_EQ(drawn_x(100), 0.0);
   EXPECT_FALSE(layer.placementHold()->cursor.has_value());
+  EXPECT_EQ(drawn_x(2000), -5.0) << "a current cloud stays in the world as the viewer moves";
 }
 
 // Stamp 0 is data, not a sentinel — attach renders it and refreshNow()

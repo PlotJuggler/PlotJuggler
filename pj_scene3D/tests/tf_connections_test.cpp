@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "pj_scene3d_core/tf/view_sampling.h"
 #include "pj_tf/tf_buffer.h"
 #include "pj_tf/transform.h"
 
@@ -45,6 +46,7 @@ const TfConnectionSegment* findByChild(const std::vector<TfConnectionSegment>& s
 // The lines join the triads at the cursor, in the entry clock. The 200 ns
 // sample (x = 2) is logged at 300 ns, so at 250 ns the line still ends at x = 1.
 TEST(TfConnectionsTest, SegmentsReadTheEntryClock) {
+  setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   TransformBuffer tf(TransformBuffer::kKeepAll);
   ASSERT_TRUE(tf.setTransform(stamped("world", "a", tp(100ns), translation(1, 0, 0)), tp(100ns)).has_value());
   ASSERT_TRUE(tf.setTransform(stamped("world", "a", tp(200ns), translation(2, 0, 0)), tp(300ns)).has_value());

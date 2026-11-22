@@ -826,8 +826,8 @@ TEST(Scene3DDockInitialFraming, FitsImmediateAndDelayedContentOnlyOnce) {
 }
 
 // The fit frames where the content is drawn: a cloud measured at 5 s in a frame that moved 100 m by the 20 s cursor
-// is placed relative to the frame's pose at the cursor, and the camera frames that placement.
-TEST(Scene3DDockInitialFraming, FitsThePlacedBoundsOfAStampedCloud) {
+// stays where it was measured in that frame, which the fit made the fixed frame.
+TEST(Scene3DDockInitialFraming, FitsAStampedCloudWhereItIsInItsOwnMovingFrame) {
   Fixture fx;
   const auto buffer = fx.tf.transformBuffer(fx.ds);
   ASSERT_NE(buffer, nullptr);
@@ -850,7 +850,7 @@ TEST(Scene3DDockInitialFraming, FitsThePlacedBoundsOfAStampedCloud) {
   layer->renderAtForTest(20 * kSec);
   ASSERT_TRUE(pj::scene3d::test::pumpUntil([&] { return !fx.dock.initialContentFramingPending(); }));
   EXPECT_EQ(fx.dock.currentFixedFrame(), u"lidar"_s);
-  EXPECT_NEAR(fx.dock.sceneView()->camera().state().focal.x, 5.0F, 0.01F) << "the placed bounds, not the source's";
+  EXPECT_NEAR(fx.dock.sceneView()->camera().state().focal.x, 105.0F, 0.01F) << "the cloud moved off its own frame";
 }
 
 // User camera input, or a restored camera, before the content arrives cancels the fit: the camera stays.

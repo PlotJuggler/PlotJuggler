@@ -1,8 +1,9 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 //
-// An object is placed at its own header stamp in the TF header clock; an unstamped object, or a stamp the header
-// clock cannot resolve, is placed at the cursor in the entry clock.
+// An object is placed at its own header stamp in the TF header clock up to the nearest frame it shares with the fixed
+// frame, and at the cursor from there; an unstamped object, or a stamp the header clock cannot resolve, is placed at
+// the cursor in the entry clock.
 #include "pj_scene3d_core/tf/object_placement.h"
 
 #include <gtest/gtest.h>
@@ -55,6 +56,7 @@ std::optional<double> placedX(
 }
 
 TEST(ObjectPlacement, PlacesAStampedObjectAtItsOwnHeaderStamp) {
+  setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   TransformBuffer tf(TransformBuffer::kKeepAll);
   feedLoggedLate(tf);
   // A cloud measured at 195 ms, shown at cursor 245 ms (when the 200 ms TF had arrived).
@@ -63,6 +65,7 @@ TEST(ObjectPlacement, PlacesAStampedObjectAtItsOwnHeaderStamp) {
 }
 
 TEST(ObjectPlacement, UnstampedObjectFollowsTheCursor) {
+  setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   TransformBuffer tf(TransformBuffer::kKeepAll);
   feedLoggedLate(tf);
   EXPECT_EQ(placedX(tf, std::nullopt, ms(245)), 2.0);
@@ -76,6 +79,19 @@ TEST(ObjectPlacement, FallsBackToTheCursorWhenTheStampPredatesTheTree) {
   EXPECT_EQ(placedX(tf, ms(50), ms(100)), std::nullopt) << "nothing resolves at either time";
 }
 
+// With interpolation (the views' default) a scan stamped between two TF samples is placed between their poses, not
+// at the earlier one: the body is at x = 10 at 1 s and 20 at 2 s, the lidar 1 m ahead of it.
+TEST(ObjectPlacement, InterpolatesBetweenTfSamplesAsTheViewsDo) {
+  TransformBuffer tf(TransformBuffer::kKeepAll);
+  feedMovingBody(tf);
+  setViewSampling(pj::tf::Sampling::kInterpolate);
+  EXPECT_EQ(placedX(tf, ms(1500), sec(3)), 16.0) << "at its own stamp";
+  EXPECT_EQ(placedX(tf, std::nullopt, ms(2500)), 26.0) << "at the cursor";
+  setViewSampling(pj::tf::Sampling::kHold);
+  EXPECT_EQ(placedX(tf, ms(1500), sec(3)), 11.0);
+  EXPECT_EQ(placedX(tf, std::nullopt, ms(2500)), 21.0);
+}
+
 // A body-fixed view: a map-frame object (a plan, a voxel map) stays put in the world,
 // so it moves in the view as the body moves.
 TEST(ObjectPlacement, BodyFixedViewKeepsAWorldFrameObjectInTheWorld) {
@@ -85,12 +101,14 @@ TEST(ObjectPlacement, BodyFixedViewKeepsAWorldFrameObjectInTheWorld) {
   EXPECT_EQ(placedX(tf, sec(1), sec(3), "base_link", "map"), -30.0) << "the map-frame object rode with the body";
 }
 
-// A scan stays where it was captured in the world, seen from where the body is at the cursor.
-TEST(ObjectPlacement, BodyFixedViewKeepsAScanWhereItWasCaptured) {
+// A body-fixed view: a scan measured on the body stays where it was measured on the body, whatever the body did in
+// the world since (base_link is the frame the scan and the view share, and nothing above it enters the placement).
+TEST(ObjectPlacement, BodyFixedViewKeepsAScanOnTheBody) {
   TransformBuffer tf(TransformBuffer::kKeepAll);
   feedMovingBody(tf);
   EXPECT_EQ(placedX(tf, sec(1), sec(1), "base_link", "lidar"), 1.0);
-  EXPECT_EQ(placedX(tf, sec(1), sec(3), "base_link", "lidar"), -19.0) << "captured at x = 11, the body is now at 30";
+  EXPECT_EQ(placedX(tf, sec(1), sec(3), "base_link", "lidar"), 1.0) << "the scan slid back as the body moved on";
+  EXPECT_EQ(placedX(tf, sec(1), sec(3), "lidar", "lidar"), 0.0);
 }
 
 // With the tree's root as the fixed frame, placement is the header-clock lookup at the stamp.
@@ -107,6 +125,7 @@ TEST(ObjectPlacement, RootFixedViewIsTheLookupAtTheStamp) {
 // time) follows the cursor instead of holding the last pose forever; a stamp a little
 // past it (live TF lags the data) still holds it.
 TEST(ObjectPlacement, StampFarPastTheTfFollowsTheCursor) {
+  setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   TransformBuffer tf(TransformBuffer::kKeepAll);
   feedLoggedLate(tf);
   EXPECT_EQ(placedX(tf, ms(200) + kMaxStampPastTf - 100ms, ms(150)), 2.0);
@@ -137,17 +156,17 @@ TEST(ObjectPlacement, HoldKeepsAPlacedObjectWhenItsTfSampleIsEvicted) {
   EXPECT_EQ(placedX(tf, ms(1500), sec(12), "map", "lidar", &hold), 12.0) << "another stamp does not reuse the hold";
 }
 
-// A layer still draws the scan of 1 s while the scan of 2 s is being prepared: with the hold's cursor at the last time
-// the drawn scan was current it stays 1 m ahead of base_link, instead of 9 m behind where the cursor at 2 s puts it.
+// A layer still draws the map-frame object of 1 s while the one of 2 s is being prepared: with the hold's cursor at
+// the last time the drawn object was current it stays 10 m behind base_link, instead of the 20 m of the cursor at 2 s.
 TEST(ObjectPlacement, HoldCursorKeepsAnObjectTheCursorLeftWhereItWasDrawn) {
   TransformBuffer tf(TransformBuffer::kKeepAll);
   feedMovingBody(tf);
   PlacementHold hold;
-  EXPECT_EQ(placedX(tf, sec(1), sec(1), "base_link", "lidar", &hold), 1.0);
+  EXPECT_EQ(placedX(tf, sec(1), sec(1), "base_link", "map", &hold), -10.0);
   hold.cursor = sec(1);
-  EXPECT_EQ(placedX(tf, sec(1), sec(2), "base_link", "lidar", &hold), 1.0);
+  EXPECT_EQ(placedX(tf, sec(1), sec(2), "base_link", "map", &hold), -10.0);
   hold.cursor.reset();
-  EXPECT_EQ(placedX(tf, sec(1), sec(2), "base_link", "lidar", &hold), -9.0);
+  EXPECT_EQ(placedX(tf, sec(1), sec(2), "base_link", "map", &hold), -20.0);
 }
 
 TEST(ObjectPlacement, ObjectStampFollowsTheMergeShift) {

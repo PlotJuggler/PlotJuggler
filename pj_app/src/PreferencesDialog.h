@@ -48,6 +48,9 @@ class PreferencesDialog : public Dialog {
   void valuePrecisionChanged();
   // Emitted on OK after a changed package search folder list is written (Scene3DDockWidget::setPackageSearchFolders).
   void packageSearchFoldersChanged();
+  // Emitted on OK after a changed "Interpolate transforms" choice is applied
+  // (Scene3DDockWidget::setInterpolateTransforms).
+  void transformInterpolationChanged();
 
  private:
   // Syntax, then reachability (async GET; existence for file://; skipped while offline). Advisory only: a

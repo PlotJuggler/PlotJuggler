@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "pj_scene3d_core/tf/view_sampling.h"
 #include "pj_tf/tf_buffer.h"
 
 namespace pj::scene3d {
@@ -129,6 +130,7 @@ TEST(BuildTfFrameTrail, SamplesTheEntryClock) {
 // A pose is placed like the pose layer places it: at its own header stamp (the
 // header clock), else at its store timestamp t (the entry clock).
 TEST(BuildPoseTopicTrail, PlacesEachPoseAtItsOwnHeaderStamp) {
+  setViewSampling(pj::tf::Sampling::kHold);  // reads between two TF samples: which one each clock holds
   TransformBuffer buffer(TransformBuffer::kKeepAll);
   ASSERT_TRUE(buffer.setTransform(stampedAt(10ns, "map", "odom", 100.0), tp(40ns)).has_value());
   ASSERT_TRUE(buffer.setTransform(stampedAt(20ns, "map", "odom", 200.0), tp(50ns)).has_value());

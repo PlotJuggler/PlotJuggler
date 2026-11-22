@@ -342,9 +342,18 @@ constexpr bool kCompressedPointClouds = true;
 
 }  // namespace
 
+namespace {
+const QString kInterpolateTransformsKey = QStringLiteral("Scene3D/interpolateTransforms");
+
+void applyInterpolateTransforms(bool interpolate) {
+  pj::scene3d::setViewSampling(interpolate ? pj::tf::Sampling::kInterpolate : pj::tf::Sampling::kHold);
+}
+}  // namespace
+
 Scene3DDockWidget::Scene3DDockWidget(QWidget* parent) : SceneDockWidget(parent) {
   setWindowTitle(tr("3D View"));
   package_resolver_ = std::make_unique<pj::scene3d::UrdfPackageResolver>();
+  applyInterpolateTransforms(interpolateTransforms(QSettings()));  // the first dock applies the stored preference
 
   // One layer renders raw and compressed clouds: PointCloudLayer detects a CompressedPointCloud per sample.
   auto pointcloud_factory = [this](
@@ -1175,6 +1184,15 @@ QStringList Scene3DDockWidget::packageSearchFolders(const QSettings& settings) {
 
 void Scene3DDockWidget::setPackageSearchFolders(QSettings& settings, const QStringList& folders) {
   pj::scene3d::UrdfPackageResolver::setGlobalSearchRoots(settings, folders);
+}
+
+bool Scene3DDockWidget::interpolateTransforms(const QSettings& settings) {
+  return settings.value(kInterpolateTransformsKey, true).toBool();
+}
+
+void Scene3DDockWidget::setInterpolateTransforms(QSettings& settings, bool interpolate) {
+  settings.setValue(kInterpolateTransformsKey, interpolate);
+  applyInterpolateTransforms(interpolate);
 }
 
 void Scene3DDockWidget::reloadPackageSearchFolders() {
