@@ -169,13 +169,13 @@
    "sha256": "cd16c23dfc5566764376c55fb39fc7afd5666139341fe1491ec743e3e028f154",
    "bytes": 2532014
   },
-  "v1/waymo/README.txt": {
-   "sha256": "5db88d68bef35c7457fa2e474245608cfe0032308fd57cb00d7abef4443b8216",
-   "bytes": 2436
+  "v1/pandaset/README.txt": {
+   "sha256": "d5f3ad3fed26654bafcd2676c98aab22a5ff17658c2b984ebd84e22d166b61a1",
+   "bytes": 3597
   },
-  "v1/waymo/waymo_av_demo.mcap": {
-   "sha256": "59c8cf1b6bae8226f9d5eb3f79103b6678666b463e5aa8b456f03b14683f1927",
-   "bytes": 170187347
+  "v1/pandaset/pandaset_092-094_20s.mcap": {
+   "sha256": "c343cec075d685faed3ed45534fb14286726203d9e80242299348e1b289c75bf",
+   "bytes": 161812017
   }
  }
 }
