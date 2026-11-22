@@ -3,25 +3,28 @@
 The "try it with sample data" presets of the WebAssembly build. Packaging with
 `node scripts/package_wasm.mjs --presets resources/wasm-presets ...` deploys this
 directory verbatim under the page's `presets/`, where the welcome dialog finds
-`index.json`. Each sample is an ordinary source-saving layout with its data
-beside it, or on PlotJuggler's asset host (`https://assets.plotjuggler.io`, a
-Cloudflare R2 bucket whose `v1/` files never change) when the data is too large
-for the repository. How to author one, the packaging rules and the hosting notes are in
-[`docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
+`index.json`. The index is all the package carries: each sample's layout and
+thumbnail live on PlotJuggler's asset host (`https://assets.plotjuggler.io`, a
+Cloudflare R2 bucket whose `v1/` files never change) beside the recording they
+open, and `index.json` names them by absolute URL; a layout names its recording
+and robot models by absolute URL too. Changing a sample means uploading its
+layout or thumbnail under a new name, pointing `index.json` at it and listing it
+in `tests/wasm/fixtures/hosted_assets.json`. How to author one, the packaging
+rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
 
-| Sample | Files |
+| Sample | Layout and thumbnail on the asset host |
 |---|---|
-| `builtin_filters/` | layout, thumbnail (recording hosted, see below) |
-| `anymal/` | layout, thumbnail (recording and robot models hosted, see below) |
-| `city_drive/` | layout, thumbnail (recording and car model hosted, see below) |
+| `builtin_filters` | `v1/nissan_leaf/builtin_filters_layout.pj4.xml`, `builtin_filters_thumbnail.png` |
+| `anymal` | `v1/grand_tour_2/anymal_layout.pj4.xml`, `anymal_thumbnail.png` |
+| `pandaset` | `v1/pandaset/pandaset_layout_v4.pj4.xml`, `pandaset_thumbnail.png` |
 
-The layouts and this file are authored for this repository and fall
-under its license (MPL-2.0), and so do the thumbnails: PlotJuggler renders of
+The layouts, the thumbnails and this file are PlotJuggler's own and fall under
+this repository's license (MPL-2.0); the thumbnails are PlotJuggler renders of
 the loaded samples (browser screenshots, downscaled to 384x216, 8-bit palette; the
-ANYmal and city-drive ones show only their 3D view, the built-in filters one its
+ANYmal and PandaSet ones show only a 3D view, the built-in filters one its
 two plots).
 
-## `builtin_filters/` — built-in filters
+## `builtin_filters` — built-in filters
 
 Three plots of one signal: a car's gyro yaw rate (`/nissan/gps/duro/imu`,
 `angular_velocity/z`, about 99 Hz) as recorded, the same signal through the
@@ -50,7 +53,7 @@ status, vehicle speed and steering). It is re-compressed with zstd
 Redistribution basis: the dataset's authors provide it "for research and
 educational purposes" (© SZE-JKK).
 
-## `anymal/` — ANYmal GrandTour
+## `anymal` — ANYmal GrandTour
 
 The layout loads three hosted folders (each with its own license and provenance
 notes; `https://assets.plotjuggler.io/index.html` lists every file):
@@ -91,39 +94,58 @@ a converter outside this repository from the dataset's Zarr streams and a
 curated MCAP of the same mission; the topics, rates and processing above are
 what it did.
 
-## `city_drive/` — self-driving car
+## `pandaset` — self-driving car
 
-The layout loads `v1/boreas/boreas_city_drive.mcap` (261,292,684 bytes, SHA-256
-`db4e548caa266c5408c266bed953610e82676016ae7f48c890af5b53116db82b`, pinned by
-the layout's `content_sha256`) from the asset host: 30 s of the
-[Boreas Autonomous Driving Dataset](https://registry.opendata.aws/boreas),
-sequence `boreas-2021-07-27-14-43` (a sunny arterial road in Toronto), from Unix
-time 1627411555.976352 to 1627411585.976352. It holds the front camera (the
-dataset's rectified 2448x2048 PNGs as JPEG, quality 80, 10 Hz, with its
-projection as `camera_info`), every Velodyne Alpha Prime scan (~10 Hz, ~199k
-points; x, y, z and intensity, stored ring by ring and Cloudini-compressed at
-1 cm), and the post-processed Applanix solution as `/tf` (map to applanix,
-50 Hz), odometry (50 Hz, velocity in the vehicle frame), IMU (100 Hz) and fix
-(10 Hz); `/tf_static` carries the dataset's lidar and camera calibration.
-`README.txt` beside it describes each topic and the conversion, and gives the
-citation the dataset asks for. The layout's 3D view starts centred on the car's
-first position and follows it.
+The layout loads `v1/pandaset/pandaset_092-094_20s_v3.mcap` (161,649,466 bytes, SHA-256
+`3579c1361ae5cd86c4f0abd2d684c2870dce2eea00cb9304ebc8352bbae24064`, pinned by
+the layout's `content_sha256`) from the asset host: 20 s of
+[PandaSet](https://pandaset.org), sequences 092 (frames 40-79), 093 and 094, which
+PandaSet recorded back to back on a suburban arterial in Silicon Valley (GPS about
+37.372 N, 122.05 W), by day, at 60-70 km/h and braking to 27 km/h at the end; Unix
+time 1557593251.900 to 1557593271.900. The sequences join at 1557593256.000 and
+1557593264.000, with their original timestamps. Each sequence has its own world
+origin: `map` is 092's, and 093 and 094 are chained onto it by extrapolating the
+previous sequence's last lidar step, so `map` to `base_link` has no jump at a join.
+It was converted from the PandaSet release as mirrored, unofficially, on
+[Hugging Face](https://huggingface.co/datasets/georghess/pandaset), and holds:
 
-The car itself is `v2/boreas_vehicle/` (1.3 MB) on the asset host: `vehicle.urdf`
-places a stand-in model at the recording's `applanix` frame (on the roof, about
-2.1 m above the road by the lidar's ground returns), 0.4 m forward of centred,
-where its hood edge meets the front camera image where the real hood ends; the
-dataset ships no model of its Lincoln MKZ. The
-mesh, `meshes/prius_hybrid.glb`, is Open Robotics' "Prius Hybrid" from
-[Gazebo Fuel](https://fuel.gazebosim.org/1.0/OpenRobotics/models/Prius%20Hybrid)
-(version 3, by Ian Chen) converted to binary glTF with its textures, scaled to
-the MKZ's 4.9 m in the URDF; `PROVENANCE.txt` gives the source hashes and the
-conversion.
+- `/lidar/pandar64` (10 Hz): every Pandar64 point in the sensor frame, x, y, z,
+  intensity and `class_id` (the semantic class; 0 in 092 and 093, which have no
+  segmentation), Cloudini-compressed (x, y, z on a 2 mm grid, intensity at 1,
+  `class_id` lossless). The PandarGT lidar is not included;
+- the six cameras (`/camera/<name>/image`: front_left, front, front_right, right,
+  back, left; 10 Hz), downscaled from 1920x1080 to 800x450 and re-encoded as JPEG
+  (quality 75), with their `camera_info` for that size, and `/camera/<name>/boxes`,
+  the annotated cuboids projected into each image as outlines;
+- `/boxes`: the annotated cuboids as `foxglove.SceneUpdate` in `base_link`,
+  coloured by class group (vehicles orange, pedestrians blue, cyclists green, other
+  grey), the ego car a magenta box, frame-locked to `base_link`;
+- `/tf`: `map` to `base_link` per sweep, and every sensor (the lidar and the six
+  cameras) as one fixed child of `base_link`. PandaSet gives each camera's pose in
+  the world per image and no mounting: the converter derives it from the camera's
+  pose relative to the car's pose interpolated to the image's timestamp (the
+  positions agree within 0.6 to 3.3 cm per camera over the recording);
+- `/ego` (JSON): speed from PandaSet's GPS velocity, heading and yaw rate from the
+  lidar poses (within one sequence), and the GPS position; `/objects` (JSON): object
+  counts per sweep, which step at the joins because each sequence was annotated on
+  its own.
 
-Redistribution basis: the Boreas dataset is released under CC BY 4.0 (its
-[AWS Open Data registry entry](https://registry.opendata.aws/boreas)); the
-`README.txt` beside the recording gives the attribution and lists the changes
-made, as the license requires. The car model is released under CC0 1.0
-(`LICENSE` beside it). The recording was made with a converter outside
-this repository from the dataset's files; the topics, rates and processing
-above are what it did.
+`README.txt` beside it gives the attribution and the citation and lists the changes
+made for the earlier recording there, `pandaset_092-094_20s.mcap`, which differ
+only in `/tf`. The layout shows the six cameras across the top with their box overlays;
+below them the yaw rate, the speed and an aerial (top-down orthographic) view
+coloured by intensity in a column, beside a large orbiting 3D view coloured by
+height; both 3D views draw the lidar and the boxes in `base_link`. Its MCAP Loader
+does not select `/objects`.
+
+Privacy: the images are not anonymised. PandaSet does not blur faces or licence
+plates; in this recording the closest driver (sequence 094, front-right and right
+cameras, about 4 m) is recognisable at 800x450, and plates are 6 m or farther and
+not legible at that size.
+
+Redistribution basis: PandaSet (c) Scale AI, Inc. and Hesai Photonics Technology
+Co., Ltd, is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+with the PandaSet Dataset Terms; the `README.txt` beside the recording gives that
+attribution, lists the changes made, as the licence requires, and states that the
+recording is not endorsed by Scale AI or Hesai. The recording was made with a
+converter outside this repository; the topics and processing above are what it did.

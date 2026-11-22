@@ -30,6 +30,11 @@ against the index URL:
               "layout": "waveforms/layout.pj4.xml", "thumbnail": "waveforms/thumbnail.png"}]}
 ```
 
+Either may also be an absolute `https://` URL on a host that sends CORS headers,
+and then the tree needs no folder for that preset. The repository's samples work
+this way: `resources/wasm-presets/` holds only `index.json` and its README, and
+each sample's layout and thumbnail sit on the asset host beside its recording.
+
 The layout is what **File → Save Layout with sources** writes
 (`<root binding="source">`), with each data file beneath the layout's folder:
 
@@ -82,7 +87,10 @@ serving meshes, needs CORS (`Access-Control-Allow-Origin`) on every file (see
 3. Add a thumbnail: a small PNG (the dialog shows 192x108; the samples use
    384x216, a few tens of KB), ideally a render of the loaded preset.
 4. Add the entry to `index.json`, package (below) and open it through the
-   reference server.
+   reference server. A sample of this repository goes to the asset host instead
+   of the tree: upload its layout and thumbnail under new names (a `v1/` file
+   never changes), point the entry at their URLs and list them in
+   `tests/wasm/fixtures/hosted_assets.json`.
 
 Every path segment must match `[A-Za-z0-9_-][A-Za-z0-9._-]*`, and every file
 must have a deployable type (extension in any case): `.xml`, `.json`, `.csv`,
@@ -241,7 +249,7 @@ policy and that the production build fetches `presets/index.json` at boot
 
 The acceptance specs boot a package without presets, so no welcome dialog sits
 over their window. The sample cases in `tests/wasm/presets.spec.js` serve a
-second acceptance package that carries the samples, `build-wasm-probe/deploy-presets`
+second acceptance package that carries the samples' index, `build-wasm-probe/deploy-presets`
 (override with `PJ_WASM_PRESETS_PACKAGE_DIR`):
 
 ```bash
@@ -262,18 +270,20 @@ fake bridge behind Caddy and `docs/wasm/Caddyfile` (see
 
 They open every sample into its views (the ANYmal robot with all its meshes, its
 compressed lidar scan, its three camera views and its joint, IMU and speed plots;
-the self-driving car's camera, lidar following the car and motion plots; the
+the PandaSet car's six cameras with their 3D-box overlays, its two 3D views with
+its lidar and the boxes, and its yaw-rate and speed plots; the
 built-in filters sample's raw and moving-average plots, its filter restored from
 the layout), check that seeking
-between two points inside the recording changes what the 3D view draws (a scene
-drawn once and then frozen fails), reopen ANYmal after switching sample while
+between two points inside the recording changes what each 3D view draws (a scene
+drawn once and then frozen fails), reopen ANYmal and the PandaSet car after switching sample while
 bounding the page's longest main-thread task (Chromium; Firefox, which has no
 Long Tasks API, only logs its timings), and make loads fail after staging
 and after importing to check that the staged files are released and the open
 sample is left as it was. The suites never reach the network, so the samples get
-their hosted recordings and models from a local mirror of
-`https://assets.plotjuggler.io`: `npm --prefix tests/wasm run fetch:assets` fills
-`build-wasm-assets/` (`PJ_WASM_ASSETS_MIRROR` moves it), checking every file
+their hosted layouts, thumbnails, recordings and models from a local mirror of
+`https://assets.plotjuggler.io`, which serves the index and each layout with the
+asset host's origin replaced by its own: `npm --prefix tests/wasm run fetch:assets`
+fills `build-wasm-assets/` (`PJ_WASM_ASSETS_MIRROR` moves it), checking every file
 against `tests/wasm/fixtures/hosted_assets.json`; a hosted file a sample adds
 goes into that manifest.
 
@@ -342,5 +352,5 @@ curl -fsSI "$BASE/presets/index.json" | grep -iE '^(cross-origin|cache-control|c
 curl -fsS "$BASE/presets/index.json" | node -e 'JSON.parse(require("fs").readFileSync(0))'
 ```
 
-Then open `$BASE/?preset=builtin_filters` in Chromium and Firefox: its two plots appear,
+Then open `$BASE/?preset=builtin_filters` in Chromium and Firefox: its three plots appear,
 and the browser console shows no errors.

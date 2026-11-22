@@ -11,7 +11,7 @@ const {
 } = require('./support/app');
 const { count, latest } = require('./support/console');
 const { clickActiveDialogButton } = require('./support/dialogs');
-const { hostedAssetsMissing, startHostedAssetMirror } = require('./support/hosted_assets');
+const { HOSTED_MIRROR, hostedAssetsMissing, startHostedAssetMirror } = require('./support/hosted_assets');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { elementAttributes, setElementAttributeAt } = require('./support/layout_xml');
 const { loadOutcomes, loadOutcomeCount } = require('./support/load_outcomes');
@@ -20,7 +20,7 @@ const { requestMultiPlotState } = require('./support/plot_probes');
 const { datasetCount, dismissDialogs, openPreset, startPresetServer } = require('./support/preset_server');
 const { requestScene2DState } = require('./support/scene2d');
 const { waitForScene3DModels } = require('./support/scene3d_acceptance');
-const { qtPointToCss } = require('./support/scene3d_foundation');
+const { qtPointToCss, requestScene3DFoundationState } = require('./support/scene3d_foundation');
 const { downloadSourceLayoutFromFileMenu } = require('./support/source_layout');
 
 // Same basename and the same columns: only where each file lives tells them apart.
@@ -752,14 +752,18 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
   }
 });
 
-// The deployed samples (resources/wasm-presets) in the acceptance package that carries them
-// (scripts/package_wasm.mjs --presets), served like production from presets/ beside the page. Every other
-// spec boots the plain package, so no welcome dialog sits over its window.
+// The deployed samples in the acceptance package that carries their index (scripts/package_wasm.mjs --presets
+// resources/wasm-presets), served like production from presets/ beside the page; their layouts and thumbnails
+// come from the asset host's mirror. Every other spec boots the plain package, so no welcome dialog sits over
+// its window.
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
-const SAMPLE_DIRECTORY = path.join(__dirname, '..', '..', 'resources', 'wasm-presets');
-const SAMPLE_IDS = ['builtin_filters', 'anymal', 'city_drive'];
+const SAMPLE_INDEX = require('../../resources/wasm-presets/index.json');
+const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset'];
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
+// The asset-host path of sample `id`'s layout.
+const sampleLayout = id => SAMPLE_INDEX.presets.find(entry => entry.id === id).layout
+  .slice(`${HOSTED_ORIGIN}/`.length);
 // A small CSV preset the download and robot-hosting cases serve; not a deployed sample.
 const SIGNALS_FIXTURE = path.join(__dirname, 'fixtures', 'signals');
 
@@ -780,7 +784,7 @@ async function startSamples() {
   return {
     origin,
     mirror,
-    url: file => `${origin}/presets/${file}`,
+    layoutUrl: id => `${mirror.origin}/${sampleLayout(id)}`,
     close: async () => {
       await mirror.close();
       await new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve())));
@@ -820,7 +824,7 @@ async function pickSample(run, samples, id) {
     dialog = await presetsDialog(run.page, run.messages);
     return dialog.visible && Boolean(dialog.entries[id]?.enabled);
   }, { timeout: 15000 }).toBe(true);
-  const url = samples.url(`${id}/layout.pj4.xml`);
+  const url = samples.layoutUrl(id);
   const from = run.messages.length;
   await click(run, dialog.entries[id].open);
   await expect.poll(() => urlOutcome(run.messages, from, url), { timeout: 90000 }).not.toBe('');
@@ -868,19 +872,31 @@ async function seek(run, state, ratio) {
   await run.page.mouse.up();
 }
 
-// The 3D view draws what `ready` describes, and moving between two instants
-// inside the recording changes what it draws. Neither is the first instant, which
-// may precede the first transform or a layer's first sample (a cloud draws nothing
-// before its first scan): a robot posed once and then frozen fails.
-async function expectSceneMoves(run, ready) {
-  const start = await waitForScene3DModels(run.page, run.messages, () => true);
+// Every one of the sample's `docks` 3D views draws what `ready` describes, and moving between two instants
+// inside the recording changes what each draws. Neither is the first instant, which may precede the first
+// transform or a layer's first sample (a cloud draws nothing before its first scan): a robot posed once and
+// then frozen fails.
+async function expectSceneMoves(run, docks, ready) {
+  const all = (state, also = () => true) => state.docks.length === docks
+    && state.docks.every(dock => ready(dock.models, dock, state) && also(dock));
+  const start = await waitForScenes(run, state => state.docks.length === docks);
   await seek(run, start, 0.25);
-  const first = await waitForScene3DModels(run.page, run.messages, (models, dock, state) =>
-    ready(models, dock, state) && state.slider.value > state.slider.min, 60000);
+  const first = await waitForScenes(run, state => all(state) && state.slider.value > state.slider.min, 60000);
+  const before = new Map(first.docks.map(dock => [dock.index, dock.readback.frameHash]));
   await seek(run, first, 0.75);
-  return waitForScene3DModels(run.page, run.messages, (models, dock, state) =>
-    ready(models, dock, state) && state.slider.value > first.slider.value
-      && dock.readback.frameHash !== first.docks[0].readback.frameHash);
+  return waitForScenes(run, state => state.slider.value > first.slider.value
+    && all(state, dock => dock.readback.frameHash !== before.get(dock.index)));
+}
+
+// Polls the Scene3D docks until `ready(state)` holds, and returns that state.
+async function waitForScenes(run, ready, timeout = 30000) {
+  let state;
+  await expect.poll(async () => {
+    state = await requestScene3DFoundationState(
+      run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE3D_FOUNDATION_SUMMARY'));
+    return ready(state);
+  }, { timeout }).toBe(true);
+  return state;
 }
 
 // The ANYmal and the GrandTour payload with every mesh fetched and the model pass drawing them:
@@ -903,27 +919,26 @@ async function expectAnymalViews(run) {
   ]);
   const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
   expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual([[1, true], [1, true], [1, true]]);
-  await expectSceneMoves(run, anymalReady);
+  await expectSceneMoves(run, 1, anymalReady);
 }
 
-// The car model (one mesh, from the asset host) drawn, and the lidar scan (Cloudini-compressed)
-// restored in the map frame and drawn. Only once the cursor has passed the first scan, a few tens
-// of milliseconds into the clip.
-const cityDriveReady = (models, dock) => models.robots.live === 1 && models.robots.placeholders === 0
-  && models.robots.draws > 0 && models.robots.status.length === 1 && /\b1\/1 meshes/.test(models.robots.status[0])
-  && dock.fixed === 'map' && dock.data.points.live === 1
-  && dock.data.points.compressed === 1 && dock.data.points.rendered > 0;
+// Both PandaSet 3D views (aerial and orbit), in the car's base_link frame: the Pandar64 lidar restored as a
+// Cloudini-compressed cloud and the annotated boxes as scene entities. The cloud is drawn only once the cursor
+// has passed a sweep, so this does not count it.
+const pandasetLoaded = (models, dock) => dock.fixed === 'base_link'
+  && dock.data.points.live === 1 && dock.data.points.compressed === 1 && models.markers.live === 1;
 
-// The City drive sample's plots, its front camera view, and the car and its lidar scan moving.
-async function expectCityDriveViews(run) {
-  await expectPlots(run, [
-    ['applanix/odom/twist/twist/linear/y'],
-    ['applanix/imu/angular_velocity/z'],
-    ['y', 'x'].map(axis => `applanix/imu/linear_acceleration/${axis}`),
-  ]);
+// The lidar and the boxes drawn as well.
+const pandasetReady = (models, dock) => pandasetLoaded(models, dock)
+  && dock.data.points.rendered === 1 && models.markers.rendered > 0 && models.markers.instances > 0;
+
+// The PandaSet sample's yaw-rate and speed plots (from the /ego JSON), its six cameras (each with its
+// box overlay), and its two 3D views moving.
+async function expectPandasetViews(run) {
+  await expectPlots(run, [['ego/yaw_rate_dps'], ['ego/speed_kmh']]);
   const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
-  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual([[1, true]]);
-  await expectSceneMoves(run, cityDriveReady);
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual(Array(6).fill([2, true]));
+  await expectSceneMoves(run, 2, pandasetReady);
 }
 
 // The Built-in filters sample: the raw gyro yaw rate, the same signal through the built-in
@@ -948,7 +963,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     const context = page.context();
     await page.close();
     for (const [id, expectViews] of [
-      ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['city_drive', expectCityDriveViews],
+      ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['pandaset', expectPandasetViews],
     ]) {
       const run = await bootSamples(context, errors, samples);
       let dialog;
@@ -973,9 +988,9 @@ test('every deployed sample opens into its own views', async ({ page }) => {
   }
 });
 
-// @serial: its main-thread time bound fails on a loaded runner (playwright.config.js).
-test('anymal sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page, browserName }) => {
-  test.setTimeout(300000);
+// Opens sample `id` until every one of its `docks` 3D views satisfies `loaded`, switches to the built-in
+// filters sample and reopens it, bounding the page's longest main-thread task through each open.
+async function expectSampleStaysResponsive(page, browserName, { id, docks, loaded, expectViews }) {
   const errors = [];
   const samples = await startSamples();
   try {
@@ -1019,40 +1034,60 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
         return { frameGap: watch.frameGap, task: watch.task };
       });
     };
-    const openAnymal = async (pass, staged) => {
+    const openSample = async (pass, staged) => {
       const from = run.messages.length;
+      const started = Date.now();
+      let opened = 0;
       const { frameGap, task } = await watchMainThread(async () => {
-        expect(await pickSample(run, samples, 'anymal'), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
-        await waitForScene3DModels(run.page, run.messages, anymalLoaded, 60000);
+        expect(await pickSample(run, samples, id), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+        opened = Date.now() - started;
+        await waitForScenes(run, state => state.docks.length === docks
+          && state.docks.every(dock => loaded(dock.models, dock)), 60000);
       });
+      const drawn = Date.now() - started;
       const restore = run.messages.slice(from).map(text => /PJ_WASM_LAYOUT_RESTORE_MS ms=(\d+)/.exec(text))
         .filter(Boolean).map(match => Number(match[1]));
       expect(restore.length, pass).toBeGreaterThan(0);
-      console.log(`anymal ${pass}: longest task ${task === null ? 'n/a' : Math.round(task)} ms, `
-        + `restore ${Math.max(...restore)} ms, longest frame gap ${Math.round(frameGap)} ms`);
+      const heap = await wasmHeap(run.page, run.messages);
+      console.log(`${id} ${pass}: longest task ${task === null ? 'n/a' : Math.round(task)} ms, `
+        + `restore ${Math.max(...restore)} ms, longest frame gap ${Math.round(frameGap)} ms, `
+        + `opened ${opened} ms, views drawn ${drawn} ms, wasm memory ${Math.round(heap.memory / 1048576)} MiB`);
       // Keyed on the browser, not on the API: a Chromium without Long Tasks fails here.
       expect(task === null, pass).toBe(browserName === 'firefox');
       if (task !== null) {
         expect(task, pass).toBeLessThan(MAX_MAIN_THREAD_TASK_MS);
       }
-      // The open ANYmal recording keeps its staged file for its lazy MCAP reader; a replaced sample releases
+      // The open recording keeps its staged file for its lazy MCAP reader; a replaced sample releases
       // its own.
       expect(await stagedFiles(run.page, run.messages), pass).toBe(staged);
     };
 
-    await openAnymal('load', 1);
-    // Switching to another sample brings its views and replaces the previous sample's; reopening ANYmal
-    // brings its robot back.
+    await openSample('load', 1);
+    // Switching to another sample brings its views and replaces the previous sample's; reopening the first
+    // brings its views back.
     expect(await pickSample(run, samples, 'builtin_filters')).toContain('PJ_WASM_LAYOUT_LOAD_OK');
     await expectFiltersViews(run);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
-    await openAnymal('reopen', 1);
+    await openSample('reopen', 1);
     expect(await datasetCount(run.page, run.messages)).toBe(1);
-    await expectAnymalViews(run);
+    await expectViews(run);
     expect(errors).toEqual([]);
   } finally {
     await samples.close();
   }
+}
+
+// @serial: their main-thread time bound fails on a loaded runner (playwright.config.js).
+test('anymal sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page, browserName }) => {
+  test.setTimeout(300000);
+  await expectSampleStaysResponsive(page, browserName,
+    { id: 'anymal', docks: 1, loaded: anymalLoaded, expectViews: expectAnymalViews });
+});
+
+test('pandaset sample stays responsive through load and reopen', { tag: '@serial' }, async ({ page, browserName }) => {
+  test.setTimeout(300000);
+  await expectSampleStaysResponsive(page, browserName,
+    { id: 'pandaset', docks: 2, loaded: pandasetLoaded, expectViews: expectPandasetViews });
 });
 
 test('a sample that fails releases what it staged and leaves the open sample as it was', { tag: '@serial' }, async ({ page }) => {
@@ -1073,18 +1108,18 @@ test('a sample that fails releases what it staged and leaves the open sample as 
     const staged = await stagedFiles(run.page, run.messages);
 
     // The sample's layout and recording, as the mirror serves them.
-    const filtersLayout = fs.readFileSync(path.join(SAMPLE_DIRECTORY, 'builtin_filters', 'layout.pj4.xml'), 'utf8')
+    const filtersLayout = fs.readFileSync(path.join(HOSTED_MIRROR, sampleLayout('builtin_filters')), 'utf8')
       .replaceAll(HOSTED_ORIGIN, samples.mirror.origin);
     const recordingUrl = elementAttributes(filtersLayout, 'fileInfo', 'filename')[0];
     for (const [url, body, reason] of [
       // Staged, then refused: these bytes are not the file the layout names.
       [recordingUrl, Buffer.from('not the recording'), 'fingerprint'],
       // Imported, then rolled back: the layout cannot apply.
-      [samples.url('builtin_filters/layout.pj4.xml'), filtersLayout.replace(
+      [samples.layoutUrl('builtin_filters'), filtersLayout.replace(
         /(<DockArea\b[^>]*>)[\s\S]*?(<\/DockArea>)/, '$1<scene3d><layer object_type="not_a_type"/></scene3d>$2'),
       'apply-after-source-load'],
     ]) {
-      // A page route wins over the context's mirror route; the recording is cross-origin.
+      // Both files are on the mirror, cross-origin.
       await run.page.route(url, route => route.fulfill({
         status: 200, body, headers: { 'Access-Control-Allow-Origin': '*' } }));
       const outcome = await pickSample(run, samples, 'builtin_filters');

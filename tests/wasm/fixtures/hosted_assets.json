@@ -129,14 +129,6 @@
    "sha256": "0f7c208ab53d595a70711034b9ebe4dd47a4536ed0ccb1cc08d732c3ecd7ce1a",
    "bytes": 55009
   },
-  "v1/boreas/README.txt": {
-   "sha256": "536f8962a2da7a3a22f416dc737269d11f7685052e9fd21017862e5efe9d0f5e",
-   "bytes": 2161
-  },
-  "v1/boreas/boreas_city_drive.mcap": {
-   "sha256": "db4e548caa266c5408c266bed953610e82676016ae7f48c890af5b53116db82b",
-   "bytes": 261292684
-  },
   "v1/box_model/LICENSE": {
    "sha256": "2799e3efebb1d4b4b829e9a0b7387e25c70a9f99a801d636cc1a297b9f01932e",
    "bytes": 1093
@@ -173,25 +165,41 @@
    "sha256": "9288ebb7caccdfe60bdeda3281bc198e2399f14cd58238c648a788ff1263bafe",
    "bytes": 72501497
   },
+  "v1/grand_tour_2/anymal_layout.pj4.xml": {
+   "sha256": "41933fd59a25144ee9ab3362d527d890056e9fa507959884f7513e408fedbe14",
+   "bytes": 10104
+  },
+  "v1/grand_tour_2/anymal_thumbnail.png": {
+   "sha256": "052979f5a799e046315fa2e83c3aab50a875ac646dc67713914b8d631496393e",
+   "bytes": 22169
+  },
+  "v1/nissan_leaf/builtin_filters_layout.pj4.xml": {
+   "sha256": "596cb417a24e831da3b1075abf1ef646477132f7e7e1fb3dc96b7fc60fcaef55",
+   "bytes": 4144
+  },
+  "v1/nissan_leaf/builtin_filters_thumbnail.png": {
+   "sha256": "d2b3f143359a0c48619833d95fabddaa5db1c521df84b73d744470d74f7c8add",
+   "bytes": 10866
+  },
   "v1/nissan_leaf/nissan_leaf_drive.mcap": {
    "sha256": "cd16c23dfc5566764376c55fb39fc7afd5666139341fe1491ec743e3e028f154",
    "bytes": 2532014
   },
-  "v2/boreas_vehicle/LICENSE": {
-   "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
-   "bytes": 7048
+  "v1/pandaset/README.txt": {
+   "sha256": "d5f3ad3fed26654bafcd2676c98aab22a5ff17658c2b984ebd84e22d166b61a1",
+   "bytes": 3597
   },
-  "v2/boreas_vehicle/PROVENANCE.txt": {
-   "sha256": "a7c023d1732b25384e5bfddd63eca11669953f27f8dce4d5f88a53c3e1e25463",
-   "bytes": 1475
+  "v1/pandaset/pandaset_092-094_20s_v3.mcap": {
+   "sha256": "3579c1361ae5cd86c4f0abd2d684c2870dce2eea00cb9304ebc8352bbae24064",
+   "bytes": 161649466
   },
-  "v2/boreas_vehicle/meshes/prius_hybrid.glb": {
-   "sha256": "abf38529f6f71203bf4a2c052f091da19473ff0c2c83bea39a0cb07ab8836387",
-   "bytes": 1278948
+  "v1/pandaset/pandaset_layout_v4.pj4.xml": {
+   "sha256": "6135eea2dde032ea5118ea90e51caf11181087ebbd7189e2d440fdb20117b80e",
+   "bytes": 11670
   },
-  "v2/boreas_vehicle/vehicle.urdf": {
-   "sha256": "6e56ca59aac7a7c82a81f0649190985250a32d0a542b5701f84afb705fba2df7",
-   "bytes": 847
+  "v1/pandaset/pandaset_thumbnail.png": {
+   "sha256": "2c81d35546cd96f1105686e7fa5c401c8b5c0cac8ad0563caff4cefd7f8b98d8",
+   "bytes": 38846
   }
  }
 }

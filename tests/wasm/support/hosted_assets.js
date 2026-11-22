@@ -23,12 +23,12 @@ function hostedAssetsMissing() {
 }
 
 // Serves the mirror on loopback, with the CORS header the host sends, and returns
-// { origin, route(context, samples_origin), close() }. route() rewrites the asset host to that
-// origin in every layout the context's pages download from `samples_origin` (the local sample
-// server: route.fetch() runs outside the browser's network containment, so it may reach nothing
-// else, nor follow a redirect), so the samples fetch their files from the mirror.
-// Rewriting the small layouts, not fulfilling the files themselves: Chromium does not deliver a
-// fulfilled body as large as a recording.
+// { origin, route(context, samples_origin), close() }. The mirror serves each hosted layout with the asset
+// host rewritten to its own origin, and route() does the same to the preset index the context's pages
+// download from `samples_origin` (the local sample server: route.fetch() runs outside the browser's network
+// containment, so it may reach nothing else, nor follow a redirect), so the samples fetch every file from
+// the mirror. Rewriting the small index and layouts, not fulfilling the files themselves: Chromium does not
+// deliver a fulfilled body as large as a recording.
 async function startHostedAssetMirror() {
   const { CONTENT_TYPES } = await import('../../../scripts/package_wasm.mjs');
   const contentTypes = new Map([...CONTENT_TYPES, ...HOSTED_CONTENT_TYPES]);
@@ -38,18 +38,23 @@ async function startHostedAssetMirror() {
       response.writeHead(404, { 'Access-Control-Allow-Origin': '*' }).end();
       return;
     }
-    response.writeHead(200, {
+    const headers = {
       'Access-Control-Allow-Origin': '*',
       'Content-Type': contentTypes.get(path.extname(file)) || contentTypes.get(''),
-      'Content-Length': MANIFEST.files[file].bytes,
-    });
+    };
+    if (file.endsWith('.pj4.xml')) {
+      const layout = fs.readFileSync(path.join(MIRROR, file), 'utf8').replaceAll(MANIFEST.origin, origin);
+      response.writeHead(200, headers).end(layout);
+      return;
+    }
+    response.writeHead(200, { ...headers, 'Content-Length': MANIFEST.files[file].bytes });
     fs.createReadStream(path.join(MIRROR, file)).pipe(response);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   return {
     origin,
-    route: (context, samplesOrigin) => context.route(`${samplesOrigin}/**/*.pj4.xml`, async (route) => {
+    route: (context, samplesOrigin) => context.route(`${samplesOrigin}/presets/index.json`, async (route) => {
       const response = await route.fetch({ maxRedirects: 0 });
       const body = (await response.text()).replaceAll(MANIFEST.origin, origin);
       return route.fulfill({ response, body });
@@ -87,4 +92,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { hostedAssetsMissing, startHostedAssetMirror };
+module.exports = { HOSTED_MIRROR: MIRROR, hostedAssetsMissing, startHostedAssetMirror };
