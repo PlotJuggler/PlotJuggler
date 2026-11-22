@@ -1022,10 +1022,22 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
     };
     const openAnymal = async (pass, staged) => {
       const from = run.messages.length;
+      const traceDir = process.env.PJ_WASM_TRACE_DIR;
+      if (traceDir) {
+        fs.mkdirSync(traceDir, { recursive: true });
+        await run.page.context().browser().startTracing(run.page, {
+          path: `${traceDir}/r${test.info().repeatEachIndex}-${pass}.json`,
+          categories: ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'toplevel', 'v8.execute',
+            'disabled-by-default-v8.cpu_profiler', 'gpu', 'blink', 'cc', 'viz'],
+        });
+      }
       const { frameGap, task } = await watchMainThread(async () => {
         expect(await pickSample(run, samples, 'anymal'), pass).toContain('PJ_WASM_LAYOUT_LOAD_OK');
         await waitForScene3DModels(run.page, run.messages, anymalLoaded, 60000);
       });
+      if (traceDir) {
+        await run.page.context().browser().stopTracing();
+      }
       const restore = run.messages.slice(from).map(text => /PJ_WASM_LAYOUT_RESTORE_MS ms=(\d+)/.exec(text))
         .filter(Boolean).map(match => Number(match[1]));
       expect(restore.length, pass).toBeGreaterThan(0);

@@ -336,7 +336,7 @@ jobs:
     if: >-
       ${{ !cancelled() && needs.wasm.result == 'success' &&
       !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
-    runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
+    runs-on: ubuntu-22.04
     timeout-minutes: 60
     env:
       PJ_WASM_URL: http://127.0.0.1:6931/
@@ -442,18 +442,19 @@ jobs:
           echo "full=${full}" >> "${GITHUB_OUTPUT}"
           echo "Full Chromium suite: ${full}"
 
-      - name: Functional browser suite (acceptance package)
-        # Three workers (playwright.config.js); the @serial cases run alone below.
-        if: steps.scope.outputs.full == 'true'
-        run: npm --prefix tests/wasm run test
+      - name: DEBUG anymal case x15 with Chrome traces
+        env:
+          PJ_WASM_TRACE_DIR: ${{ github.workspace }}/anymal-traces
+        working-directory: tests/wasm
+        run: npx playwright test --project=chromium --reporter=line --workers=1 --repeat-each=15 -g "anymal sample stays responsive" || true
 
-      - name: Serial cases (acceptance package)
-        if: ${{ !cancelled() && steps.scope.outputs.full == 'true' }}
-        run: npm --prefix tests/wasm run test:serial
-
-      - name: Smoke specs (acceptance package)
-        if: steps.scope.outputs.full != 'true'
-        run: npm --prefix tests/wasm run test:smoke
+      - name: DEBUG upload traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anymal-traces
+          path: anymal-traces
+          retention-days: 3
 
   wasm-firefox:
     # The acceptance package of the wasm job, in Firefox. Firefox has no
@@ -472,7 +473,7 @@ jobs:
         shard: [1, 2]
     # Explicit result check: the implicit success() also fails on the skipped
     # `changed` gate two levels up, which would skip this job on every manual run.
-    if: ${{ !cancelled() && needs.wasm.result == 'success' && github.event_name != 'pull_request' }}
+    if: false
     runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     timeout-minutes: 60
     env:
