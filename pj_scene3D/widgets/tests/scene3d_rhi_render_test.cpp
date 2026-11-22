@@ -958,7 +958,8 @@ TEST_F(Scene3dRhiRenderTest, ShadowMapReusedOnlyWhileItsInputsHold) {
 
 // A textured model whose texture marks one corner (top-left quadrant green, rest red), upright facing the camera
 // (image top = +Z, left = -X): the green quadrant must land top-left on every backend, a mirrored or Y-flipped
-// texture sample or upload moves it.
+// texture sample or upload moves it. The green texels carry alpha 0 under the DAE's opaque material: opaque mode
+// ignores texture alpha, so writing it to the target would show the background there instead.
 TEST_F(Scene3dRhiRenderTest, OrientationTextureMarkedCornerStaysTopLeft) {
   QTemporaryDir mesh_dir;
   ASSERT_TRUE(mesh_dir.isValid());
@@ -966,11 +967,11 @@ TEST_F(Scene3dRhiRenderTest, OrientationTextureMarkedCornerStaysTopLeft) {
   ASSERT_TRUE(dae.open(QIODevice::WriteOnly));
   ASSERT_GT(dae.write(kMarkedQuadDae), 0);
   dae.close();
-  QImage texture(64, 64, QImage::Format_RGB32);
+  QImage texture(64, 64, QImage::Format_ARGB32);
   texture.fill(QColor(255, 0, 0));
   for (int y = 0; y < 32; ++y) {
     for (int x = 0; x < 32; ++x) {
-      texture.setPixelColor(x, y, QColor(0, 255, 0));
+      texture.setPixelColor(x, y, QColor(0, 255, 0, 0));
     }
   }
   ASSERT_TRUE(texture.save(mesh_dir.filePath(u"marked.png"_s)));
