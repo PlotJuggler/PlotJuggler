@@ -178,6 +178,70 @@ TEST(WelcomePresetsDialogTest, ClosingWhileLoadingCancels) {
   EXPECT_EQ(cancel.size(), 2);
 }
 
+// A ?preset= link opens its preset with the load alone on screen (status, bar, Cancel): the picker never flashes
+// up while the visitor's chosen recording downloads. It comes back only when that load fails or is cancelled.
+TEST(WelcomePresetsDialogTest, DeepLinkShowsOnlyTheLoad) {
+  const PJ::PresetEntry first = presetEntry(u"first"_s);
+  const PJ::PresetEntry second = presetEntry(u"second"_s);
+  PJ::WelcomePresetsDialog dialog({first, second});
+  QSignalSpy selected(&dialog, &PJ::WelcomePresetsDialog::presetSelected);
+  auto* list = dialog.findChild<QWidget*>(u"scrollPresets"_s);
+  auto* intro = dialog.findChild<QWidget*>(u"labelIntro"_s);
+  auto* upload = dialog.findChild<QWidget*>(u"buttonUpload"_s);
+  auto* bar = dialog.findChild<QWidget*>(u"progressLoading"_s);
+  auto* cancel_button = dialog.findChild<QWidget*>(u"buttonCancel"_s);
+  ASSERT_NE(list, nullptr);
+  ASSERT_NE(intro, nullptr);
+  ASSERT_NE(upload, nullptr);
+  ASSERT_NE(bar, nullptr);
+  ASSERT_NE(cancel_button, nullptr);
+  const auto picker_shown = [&] { return !list->isHidden() && !intro->isHidden() && !upload->isHidden(); };
+
+  dialog.openDeepLink(u"nope"_s);  // not listed: the plain picker
+  dialog.show();
+  EXPECT_TRUE(picker_shown());
+  EXPECT_EQ(selected.size(), 0);
+  dialog.close();
+
+  PJ::WelcomePresetsDialog linked({first, second});
+  QSignalSpy linked_selected(&linked, &PJ::WelcomePresetsDialog::presetSelected);
+  auto* linked_list = linked.findChild<QWidget*>(u"scrollPresets"_s);
+  auto* linked_intro = linked.findChild<QWidget*>(u"labelIntro"_s);
+  auto* linked_upload = linked.findChild<QWidget*>(u"buttonUpload"_s);
+  auto* linked_bar = linked.findChild<QWidget*>(u"progressLoading"_s);
+  auto* linked_cancel = linked.findChild<QWidget*>(u"buttonCancel"_s);
+  linked.openDeepLink(second.id);
+  linked.show();
+  ASSERT_EQ(linked_selected.size(), 1);
+  EXPECT_EQ(linked_selected.front().at(0).toString(), second.id);
+  EXPECT_TRUE(linked_list->isHidden());
+  EXPECT_TRUE(linked_intro->isHidden());
+  EXPECT_TRUE(linked_upload->isHidden());
+  EXPECT_FALSE(linked_bar->isHidden());
+  EXPECT_FALSE(linked_cancel->isHidden());
+  EXPECT_LT(linked.height(), dialog.height());
+
+  // A failed load gives the picker back, with Retry.
+  linked.layoutLoadFinished(second.layout_url, false, u"download"_s);
+  EXPECT_FALSE(linked_list->isHidden());
+  EXPECT_FALSE(linked_intro->isHidden());
+  EXPECT_FALSE(linked_upload->isHidden());
+  EXPECT_FALSE(linked.findChild<QWidget*>(u"buttonRetry"_s)->isHidden());
+
+  // So does a cancelled one; a successful one just closes.
+  PJ::WelcomePresetsDialog cancelled({first, second});
+  cancelled.openDeepLink(first.id);
+  cancelled.show();
+  cancelled.layoutLoadFinished(first.layout_url, false, u"cancelled"_s);
+  EXPECT_FALSE(cancelled.findChild<QWidget*>(u"scrollPresets"_s)->isHidden());
+
+  PJ::WelcomePresetsDialog opened({first, second});
+  opened.openDeepLink(first.id);
+  opened.show();
+  opened.layoutLoadFinished(first.layout_url, true, {});
+  EXPECT_FALSE(opened.isVisible());
+}
+
 // While the picked preset's recording downloads, the bar shows how much of it has arrived; once it has, the bar
 // goes busy again while the app opens it. Progress for another URL is not this load's.
 TEST(WelcomePresetsDialogTest, DownloadProgressFillsTheBar) {

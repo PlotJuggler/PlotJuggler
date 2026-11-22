@@ -6760,12 +6760,13 @@ void MainWindow::startBrowserPresets(const QUrl& page_url) {
         if (mcp_relay_link_ != nullptr && deep_link.isEmpty() && deep_link_error.isEmpty()) {
           return;
         }
-        presets_dialog_->show();
+        // A deep link's load starts before the dialog first shows, so the list never flashes up.
         if (!deep_link_error.isEmpty()) {
           presets_dialog_->showError(deep_link_error);
         } else if (!deep_link.isEmpty()) {
-          presets_dialog_->selectPreset(deep_link);
+          presets_dialog_->openDeepLink(deep_link);
         }
+        presets_dialog_->show();
       });
   discovery->start(page_url);
 }

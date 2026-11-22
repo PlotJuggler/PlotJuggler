@@ -33,6 +33,7 @@ constexpr int kThumbnailAllocationLimitMb = 64;
 // The bar's resolution while a download's size is known: a tenth of a percent.
 constexpr int kProgressSteps = 1000;
 constexpr qint64 kBytesPerMb = 1'000'000;
+constexpr QSize kListSize{720, 460};
 
 }  // namespace
 
@@ -57,7 +58,7 @@ WelcomePresetsDialog::WelcomePresetsDialog(QList<PresetEntry> entries, QWidget* 
     close();
     emit uploadRequested();
   });
-  resize(720, 460);
+  resize(kListSize);
   updateControls();
   fetchThumbnails(0);
 }
@@ -79,6 +80,14 @@ void WelcomePresetsDialog::selectPreset(const QString& id) {
   emit presetSelected(id, selected->layout_url);
 }
 
+void WelcomePresetsDialog::openDeepLink(const QString& id) {
+  if (findPreset(entries_, id) == nullptr || !loading_id_.isEmpty()) {
+    return;
+  }
+  load_only_ = true;
+  selectPreset(id);
+}
+
 void WelcomePresetsDialog::showError(const QString& message) {
   retry_id_.clear();
   ui_->labelStatus->setText(message);
@@ -91,6 +100,7 @@ void WelcomePresetsDialog::layoutLoadFinished(const QUrl& url, bool ok, const QS
     return;
   }
   loading_id_.clear();
+  load_only_ = false;
   if (ok || reason == "cancelled"_L1) {
     ui_->labelStatus->clear();
   } else {
@@ -223,6 +233,13 @@ void WelcomePresetsDialog::updateControls() {
   ui_->buttonCancel->setVisible(loading);
   ui_->buttonRetry->setVisible(!retry_id_.isEmpty());
   ui_->labelStatus->setVisible(!ui_->labelStatus->text().isEmpty());
+  const bool list_was_hidden = ui_->scrollPresets->isHidden();
+  ui_->labelIntro->setHidden(load_only_);
+  ui_->scrollPresets->setHidden(load_only_);
+  ui_->buttonUpload->setHidden(load_only_);
+  if (load_only_ != list_was_hidden) {
+    resize(kListSize.width(), load_only_ ? minimumSizeHint().height() : kListSize.height());
+  }
 }
 
 }  // namespace PJ
