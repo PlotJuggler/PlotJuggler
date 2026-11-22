@@ -24,6 +24,18 @@ canvas performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performa
   suspended, then recomputes once: 0.83 s for the same undo.
 - **Re-test:** when `bounds` stops reading every sample, or `addCurve` gains another caller that adds curves in bulk.
 
+## Tracker value box text
+
+- **Measured (2026-11-22, i7-13700H, Iris Xe, Qt 6.12.0, `perf` during looping playback):** as a rich-text `QwtText`
+  the value box cost a `QTextDocument` layout for every size query and every draw: one in
+  `CurveTracker::setPosition` and three in the canvas's text-layer rebuild, per plot and playback tick. The two
+  together were 5.9% of a core of GUI-thread CPU for three plots holding nine curves, and 3.7% for three plots of one
+  curve each.
+- **What the code does:** the label is a `QwtText` of a format of its own (`widget/src/TrackerTextEngine.h`): rows of
+  one colour each, sized and drawn from font metrics. The same two layouts cost 1.8% and 1.6% of a core.
+- **Re-test:** if the value box needs more than one colour per row or a proportional layout: measure before going back
+  to rich text.
+
 ## Canvas vertex budgets
 
 - **Reasoning, not measured:** 1,000,000 vertices at 16 B (about 16 MB, plus at most three 4 B indices per vertex) is a

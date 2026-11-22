@@ -17,11 +17,11 @@
 #include <QListWidget>
 #include <QPalette>
 #include <QPen>
-#include <QRegularExpression>
 #include <QSignalSpy>
 #include <QTest>
 #include <QToolButton>
 #include <memory>
+#include <optional>
 #include <string_view>
 
 #include "pj_datastore/writer.hpp"
@@ -89,6 +89,15 @@ struct TrackerFixture {
   [[nodiscard]] bool boxNames(const QString& key) {
     return plot->trackerValueBoxText().contains(title(key));
   }
+  // The ink of the value box's row for `key`.
+  [[nodiscard]] std::optional<QColor> rowInk(const QString& key) {
+    for (const PJ::ValueBoxRow& row : plot->trackerValueBoxRows()) {
+      if (row.text.endsWith(u": "_s + title(key))) {
+        return row.ink;
+      }
+    }
+    return std::nullopt;
+  }
 
   PJ::SessionManager session;
   PJ::CatalogModel catalog;
@@ -122,11 +131,10 @@ TEST(PlotCurveVisibility, HidingACurveDropsItsTrackerRowAtOnce) {
 TEST(PlotCurveVisibility, ColourChangeRecoloursTheTrackerRowAtOnce) {
   TrackerFixture fixture;
   const QColor red(Qt::red);
-  ASSERT_FALSE(fixture.plot->trackerValueBoxText().contains(u"color=%1"_s.arg(red.name())));
+  ASSERT_NE(fixture.rowInk(fixture.toggled), red);
 
   fixture.plot->onChangeCurveColor(fixture.toggled, red);
-  EXPECT_TRUE(fixture.plot->trackerValueBoxText().contains(u"color=%1"_s.arg(red.name())))
-      << fixture.plot->trackerValueBoxText().toStdString();
+  EXPECT_EQ(fixture.rowInk(fixture.toggled), red) << fixture.plot->trackerValueBoxText().toStdString();
 }
 
 // The default blue and red curve colours are 3.3:1 and 3.2:1 on the dark backdrop: read as text they are lifted
@@ -143,11 +151,9 @@ TEST(PlotCurveVisibility, DarkThemeTrackerInkReadsOnTheBackdropAndTheCurveKeepsI
 
   const QColor backdrop = fixture.plot->qwtPlot()->canvasBackground().color();
   ASSERT_LT(PJ::contrastRatio(blue, backdrop), 4.5) << "the raw colour must be the failing case";
-  const QRegularExpression row(u"<font color=(#[0-9a-fA-F]{6})>[^<]*: %1</font>"_s.arg(
-      QRegularExpression::escape(fixture.title(fixture.toggled))));
-  const QRegularExpressionMatch match = row.match(fixture.plot->trackerValueBoxText());
-  ASSERT_TRUE(match.hasMatch()) << fixture.plot->trackerValueBoxText().toStdString();
-  const QColor ink(match.captured(1));
+  const std::optional<QColor> row_ink = fixture.rowInk(fixture.toggled);
+  ASSERT_TRUE(row_ink.has_value()) << fixture.plot->trackerValueBoxText().toStdString();
+  const QColor ink = *row_ink;
   EXPECT_GE(PJ::contrastRatio(ink, backdrop), 4.5) << ink.name().toStdString();
   EXPECT_NE(ink, blue);
   EXPECT_EQ(fixture.plot->curveFromTitle(fixture.toggled)->curve->pen().color(), blue);
@@ -166,11 +172,9 @@ TEST(PlotCurveVisibility, ThemeSwitchRedrawsTheTrackerBox) {
 
   const QColor backdrop = fixture.plot->qwtPlot()->canvasBackground().color();
   ASSERT_LT(PJ::contrastRatio(blue, backdrop), 4.5) << "the canvas did not take the dark backdrop";
-  const QRegularExpression row(u"<font color=(#[0-9a-fA-F]{6})>[^<]*: %1</font>"_s.arg(
-      QRegularExpression::escape(fixture.title(fixture.toggled))));
-  const QRegularExpressionMatch match = row.match(fixture.plot->trackerValueBoxText());
-  ASSERT_TRUE(match.hasMatch()) << fixture.plot->trackerValueBoxText().toStdString();
-  EXPECT_GE(PJ::contrastRatio(QColor(match.captured(1)), backdrop), 4.5) << "the box kept the light theme's ink";
+  const std::optional<QColor> row_ink = fixture.rowInk(fixture.toggled);
+  ASSERT_TRUE(row_ink.has_value()) << fixture.plot->trackerValueBoxText().toStdString();
+  EXPECT_GE(PJ::contrastRatio(*row_ink, backdrop), 4.5) << "the box kept the light theme's ink";
 }
 
 TEST(PlotCurveVisibility, SetCurveVisibleIsOneUndoStepAnnouncedOnceAndRepeatingItIsNone) {

@@ -21,6 +21,12 @@ namespace PJ {
 
 std::optional<QPointF> curvePointAt(const QwtPlotCurve* curve, double x);
 
+/// One row of the tracker's value box.
+struct ValueBoxRow {
+  QColor ink;
+  QString text;
+};
+
 class CurveTracker : public QObject {
   Q_OBJECT
  public:
@@ -43,7 +49,11 @@ class CurveTracker : public QObject {
   [[nodiscard]] bool valueBoxVisible() const noexcept {
     return text_marker_ != nullptr && text_marker_->isVisible();
   }
-  // The value box's HTML, one line per curve sampled at the last position (also kept while the box is hidden).
+  // The value box's rows: the time, then one per curve sampled at the last position (also kept while the box is
+  // hidden). valueBoxText() is their text, one line each.
+  [[nodiscard]] const std::vector<ValueBoxRow>& valueBoxRows() const noexcept {
+    return value_box_rows_;
+  }
   [[nodiscard]] QString valueBoxText() const;
   // The value box's vertical anchor in plot coordinates, where it is drawn now (it glides toward the curves' mid value
   // at kLabelSpeedPxPerSec, so it can lag the last position).
@@ -85,6 +95,7 @@ class CurveTracker : public QObject {
   std::vector<QwtPlotMarker*> point_markers_;
   QwtPlotMarker* line_marker_ = nullptr;
   QwtPlotMarker* text_marker_ = nullptr;
+  std::vector<ValueBoxRow> value_box_rows_;
   QwtPlot* plot_ = nullptr;
   Parameter parameter_ = kValue;
   bool visible_ = true;

@@ -21,6 +21,7 @@
 #include <map>
 using namespace Qt::StringLiterals;
 
+#include "TrackerTextEngine.h"
 #include "pj_plotting/PlotScaleDraw.h"
 #include "pj_widgets/AppSettings.h"
 #include "pj_widgets/ColorContrast.h"
@@ -62,12 +63,9 @@ constexpr double kLabelSnapJumpPx = 20.0;
 // tracker readout's content/visibility/colour whenever it changes, so we can
 // tell whether a vanished "time: ..." box is empty/hidden (logic) or fully
 // populated yet unpainted (a canvas text-rendering failure shared with the legend).
-void logTrackerText(const void* plot, bool visible, const QString& html, const QColor& text_color) {
-  if (!qEnvironmentVariableIsSet("PJ_PLOT_TEXT_DEBUG")) {
-    return;
-  }
+void logTrackerText(const void* plot, bool visible, const QString& text, const QColor& text_color) {
   const QString sig =
-      u"visible=%1 empty=%2 len=%3 text=%4"_s.arg(visible).arg(html.isEmpty()).arg(html.size()).arg(text_color.name());
+      u"visible=%1 empty=%2 len=%3 text=%4"_s.arg(visible).arg(text.isEmpty()).arg(text.size()).arg(text_color.name());
   static std::map<const void*, QString> last_sig;
   auto it = last_sig.find(plot);
   if (it != last_sig.end() && it->second == sig) {
@@ -234,12 +232,8 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
 
   for (auto& [unused, parts] : text_lines) {
     (void)unused;
-    while (parts.value.length() < values_char_count) {
-      parts.value.prepend(u"&nbsp;"_s);
-    }
-    while (parts.delta.length() < delta_char_count) {
-      parts.delta.prepend(u"&nbsp;"_s);
-    }
+    parts.value = parts.value.rightJustified(values_char_count);
+    parts.delta = parts.delta.rightJustified(delta_char_count);
   }
 
   QwtText marker_text;
@@ -248,23 +242,19 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   if (reference_pos_.has_value()) {
     time_delta = u" (Δ %1)"_s.arg(QString::number(tracker_position.x() - reference_pos_->x(), 'f', precision));
   }
-  QString marker_html = u"<font color=%1>time : %2%3</font><br>"_s.arg(
-      text_color.name(), trackerTimeText(plot_, tracker_position.x(), precision), time_delta);
+  value_box_rows_.clear();
+  value_box_rows_.push_back(
+      {.ink = text_color,
+       .text = u"time : %1%2"_s.arg(trackerTimeText(plot_, tracker_position.x(), precision), time_delta)});
 
   if (valueBoxAllowed()) {
-    int line_index = 0;
     for (auto it = text_lines.rbegin(); it != text_lines.rend(); ++it) {
       const LineParts& parts = it->second;
-      if (parameter_ == kValue) {
-        marker_html += u"<font color=%1>%2%3</font>"_s.arg(parts.color.name(), parts.value, parts.delta);
-      } else {
-        marker_html +=
-            u"<font color=%1>%2%3 : %4</font>"_s.arg(parts.color.name(), parts.value, parts.delta, parts.name);
-      }
-      if (++line_index < static_cast<int>(text_lines.size())) {
-        marker_html += u"<br>"_s;
-      }
+      const QString value = parts.value + parts.delta;
+      value_box_rows_.push_back(
+          {.ink = parts.color, .text = parameter_ == kValue ? value : u"%1 : %2"_s.arg(value, parts.name)});
     }
+    marker_text = valueBoxLabel(value_box_rows_);
 
     // Canvas colour with alpha: a white veil on the light theme, a dark one on dark, so the WindowText ink above reads
     // against it (and the curve-colour ink on the dark theme, lifted to kMinTextContrast).
@@ -272,7 +262,6 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     background_color.setAlpha(200);
     marker_text.setBackgroundBrush(background_color);
     marker_text.setBorderPen(QPen(Qt::NoPen));
-    marker_text.setText(marker_html);
     QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     font.setPointSize(9);
     marker_text.setFont(font);
@@ -314,12 +303,18 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   }
   label_shown_ = marker_visible;
   text_marker_->setVisible(marker_visible);
-  logTrackerText(plot_, marker_visible, marker_html, text_color);
+  if (qEnvironmentVariableIsSet("PJ_PLOT_TEXT_DEBUG")) {
+    logTrackerText(plot_, marker_visible, valueBoxText(), text_color);
+  }
   previous_tracker_point_ = tracker_position;
 }
 
 QString CurveTracker::valueBoxText() const {
-  return text_marker_ != nullptr ? text_marker_->label().text() : QString();
+  QStringList lines;
+  for (const ValueBoxRow& row : value_box_rows_) {
+    lines.push_back(row.text);
+  }
+  return lines.join(u'\n');
 }
 
 double CurveTracker::valueBoxY() const {
