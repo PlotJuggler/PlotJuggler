@@ -36,6 +36,9 @@ constexpr double kMinTextContrast = 4.5;
 // Top vertical speed of the value box, and the glide tick that finishes the move once positions stop arriving.
 constexpr double kLabelSpeedPxPerSec = 200.0;
 constexpr int kLabelTickMs = 16;
+// A time line moving farther than this in one position is a seek (a click on the timeline), not playback: the box
+// follows it vertically at once.
+constexpr double kLabelSnapJumpPx = 20.0;
 
 // The time line reads like the X axis under it: plain seconds, or the clock format the date-time toggle installed there
 // (an XY plot keeps plain seconds).
@@ -282,7 +285,10 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   }
 
   const bool marker_visible = visible_points > 0 && visible_ && valueBoxAllowed();
-  if (!marker_visible || !label_shown_) {
+  const QwtScaleMap x_map = plot_->canvasMap(QwtPlot::xBottom);
+  const bool seek =
+      std::abs(x_map.transform(tracker_position.x()) - x_map.transform(previous_tracker_point_.x())) > kLabelSnapJumpPx;
+  if (!marker_visible || !label_shown_ || seek) {
     label_timer_.stop();
     text_marker_->setYValue(label_target_y_);
   } else {

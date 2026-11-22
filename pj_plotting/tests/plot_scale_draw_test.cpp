@@ -169,7 +169,7 @@ TEST_F(PlotScaleDrawTest, TrackerTimeFollowsTheAxisFormat) {
 }
 
 // The value box glides toward the curves' value at a capped speed instead of jumping with every sample, and keeps
-// moving after positions stop until it arrives; a box shown for the first time snaps.
+// moving after positions stop until it arrives; a box shown for the first time, or after a seek, snaps.
 TEST_F(PlotScaleDrawTest, TrackerValueBoxGlidesToTheValue) {
   TestPlot plot;
   plot.resize(400, 300);
@@ -185,10 +185,11 @@ TEST_F(PlotScaleDrawTest, TrackerValueBoxGlidesToTheValue) {
   int moves = 0;
   QObject::connect(&tracker, &PJ::CurveTracker::valueBoxMoved, [&moves]() { ++moves; });
 
-  tracker.setPosition(QPointF(1.0, 0.0));
+  tracker.setPosition(QPointF(4.95, 0.0));
   EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 10.0);
 
-  tracker.setPosition(QPointF(9.0, 0.0));
+  // A playback-sized step (a few pixels) across the curve's jump glides.
+  tracker.setPosition(QPointF(5.15, 0.0));
   EXPECT_LT(tracker.valueBoxY(), 50.0) << "jumped instead of gliding";
 
   QElapsedTimer clock;
@@ -199,6 +200,10 @@ TEST_F(PlotScaleDrawTest, TrackerValueBoxGlidesToTheValue) {
   EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 90.0);
   EXPECT_GT(clock.elapsed(), 200) << "arrived faster than the speed cap allows";
   EXPECT_GT(moves, 0);
+
+  // A seek (a click far along the time axis) moves the box at once.
+  tracker.setPosition(QPointF(1.0, 0.0));
+  EXPECT_DOUBLE_EQ(tracker.valueBoxY(), 10.0);
 }
 
 // "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass

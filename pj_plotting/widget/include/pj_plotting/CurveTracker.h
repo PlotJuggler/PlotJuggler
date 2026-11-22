@@ -77,8 +77,8 @@ class CurveTracker : public QObject {
   QwtPlot* plot_ = nullptr;
   Parameter parameter_ = kValue;
   bool visible_ = true;
-  // Glide of the value box: a box that was hidden snaps to its target, a shown one moves at a capped pixel speed so
-  // playback over noisy curves does not make it jump every frame.
+  // Glide of the value box: a box that was hidden, or a seek (a large time jump), snaps to its target; otherwise it
+  // moves at a capped pixel speed so playback over noisy curves does not make it jump every frame.
   double label_target_y_ = 0.0;
   bool label_shown_ = false;
   QTimer label_timer_;
