@@ -372,3 +372,6 @@ The performance baseline is in `pj_scene3D/docs/TECHNICAL_NOTES.md` "Performance
   started from the canvas.
 - A curve restored from a layout whose data has not arrived yet does not reserve its saved colour (it waits in
   `PendingDisplayBinder`, which the plot cannot see), so a curve added to that plot meanwhile can take the same colour.
+- After the first fit of a new plot the canvas can stay a few pixels off its final place (observed in the browser: 4 px
+  at the top) until the next full `replot()`, such as a hover or a tracker update; anything reading the canvas
+  geometry before that reads the unsettled one.

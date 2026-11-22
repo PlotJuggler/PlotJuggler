@@ -677,6 +677,10 @@ bool PlotWidget::trackerValueBoxVisible() const noexcept {
   return tracker_ != nullptr && tracker_->valueBoxVisible();
 }
 
+bool PlotWidget::trackerValueBoxGliding() const noexcept {
+  return tracker_ != nullptr && tracker_->valueBoxGliding();
+}
+
 void PlotWidget::beforeCanvasReplot() {
   if (trackers_stale_) {
     trackers_stale_ = false;

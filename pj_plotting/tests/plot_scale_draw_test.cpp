@@ -266,6 +266,40 @@ TEST_F(PlotScaleDrawTest, TrackerValueBoxStaysInsideTheCanvas) {
   }
 }
 
+// A plot is laid out at a small size first (a new dock) and grows with no new tracker position and no change of view:
+// the box kept inside the small canvas must follow the canvas edge, not stay at the value the small canvas gave it.
+TEST_F(PlotScaleDrawTest, TrackerValueBoxFollowsACanvasResize) {
+  TestPlot plot;
+  plot.resize(600, 120);
+  plot.show();
+  QApplication::processEvents();
+  QwtPlot* qwt = plot.qwtPlot();
+  auto* curve = new QwtPlotCurve(u"speed"_s);
+  curve->setSamples(QVector<QPointF>{{0.0, 0.0}, {10.0, 10.0}});
+  curve->attach(qwt);
+  qwt->setAxisScale(QwtPlot::xBottom, 0.0, 10.0);
+  qwt->setAxisScale(QwtPlot::yLeft, 0.0, 10.0);
+  qwt->replot();
+  PJ::CurveTracker tracker(qwt, Qt::red);
+  tracker.setPosition(QPointF(0.0, 0.0));  // the sample on the bottom edge
+  ASSERT_TRUE(tracker.valueBoxVisible());
+
+  plot.resize(600, 500);
+  QApplication::processEvents();
+  const QwtScaleMap y_map = qwt->canvasMap(QwtPlot::yLeft);
+  const double canvas_bottom = std::max(y_map.p1(), y_map.p2());
+  const QwtPlotMarker* box = nullptr;
+  for (const QwtPlotItem* item : qwt->itemList(QwtPlotItem::Rtti_PlotMarker)) {
+    const auto* marker = dynamic_cast<const QwtPlotMarker*>(item);
+    if (marker != nullptr && !marker->label().isEmpty()) {
+      box = marker;
+    }
+  }
+  ASSERT_NE(box, nullptr);
+  const double box_bottom = y_map.transform(box->yValue()) + 0.5 * box->label().textSize().height();
+  EXPECT_NEAR(box_bottom, canvas_bottom, 1.0);
+}
+
 // "Lines and Dots" renders as plain Lines plus PlotCurve's batched dots pass
 // (stock Qwt has no such style, and no per-sample symbol stands in for it);
 // toggling back to Lines must disable the pass.

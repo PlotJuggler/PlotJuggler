@@ -120,6 +120,7 @@ class PlotWidget : public PlotWidgetBase {
   // Whether the playback tracker's floating value box is visible (always hidden in line-only mode).
   [[nodiscard]] bool trackerValueBoxVisible() const noexcept;
   [[nodiscard]] QString trackerValueBoxText() const;
+  [[nodiscard]] bool trackerValueBoxGliding() const noexcept;
   // Sets, or clears with nullopt, a blue reference line; while set, the red playback tracker shows values as deltas
   // from this X. No-op on XY plots.
   void setReferenceLine(std::optional<double> reference_x_sec);
