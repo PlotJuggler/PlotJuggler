@@ -769,6 +769,7 @@ QWidget* Scene3DDockWidget::createSceneView() {
   }
   connect(view_, &pj::scene3d::SceneViewWidget::framesChanged, this, &Scene3DDockWidget::onAvailableFrames);
   connect(view_, &SceneViewWidget::renderingWarningChanged, this, [this](const QString& warning) {
+    PJ::setRenderingWarningSubtle(rendering_warning_label_, view_->renderingWarningIsNotice());
     rendering_warning_label_->setText(warning);
     rendering_warning_label_->setVisible(!warning.isEmpty());
     layoutFrameOverlayCombo();
@@ -1412,8 +1413,13 @@ void Scene3DDockWidget::layoutFrameOverlayCombo() {
     camera_model_combo_->raise();
   }
   if (rendering_warning_label_->isVisible()) {
-    const int warning_w = std::max(120, view_->width() - 2 * kMargin);
-    const int warning_h = rendering_warning_label_->heightForWidth(warning_w);
+    // A notice is one line hugging its text in the bottom-left corner, clear of the axis gizmo; a warning wraps
+    // across the view.
+    const int available_w = std::max(120, view_->width() - 2 * kMargin);
+    const bool notice = view_->renderingWarningIsNotice();
+    const int warning_w = notice ? std::min(available_w, rendering_warning_label_->sizeHint().width()) : available_w;
+    const int warning_h =
+        notice ? rendering_warning_label_->sizeHint().height() : rendering_warning_label_->heightForWidth(warning_w);
     rendering_warning_label_->setGeometry(
         view_origin.x() + kMargin, view_origin.y() + view_->height() - kMargin - warning_h, warning_w, warning_h);
     rendering_warning_label_->raise();

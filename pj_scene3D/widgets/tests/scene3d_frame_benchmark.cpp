@@ -24,7 +24,8 @@
 //
 // QSG_RHI_PROFILE=1 adds gpu_ms (the view's GPU time per frame; the profiling slows the frame). PJ_S3D_BENCH_NO_HDR=1
 // forces the direct pass, PJ_S3D_BENCH_NO_SHADOWS=1 turns shadows off and PJ_S3D_BENCH_NO_SSAO=1 / _NO_EDL=1 those
-// stages: for attributing a GPU-bound frame, not for the budget checks.
+// stages: for attributing a GPU-bound frame, not for the budget checks. On a software rasterizer the test main keeps
+// the HDR chain; PJ_SCENE3D_SOFTWARE_HDR=0 measures what users get there (the single-sample direct pass).
 //
 // stages_ms (with PJ_RHI_TEST_HOOKS): per-frame medians of step (the case's own work before update()), sched (update()
 // to render()), targets (HDR chain), admit (layers' prepareForRender(): synchronous decode and pack, placement),

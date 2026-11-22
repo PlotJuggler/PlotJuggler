@@ -44,7 +44,7 @@ Dialogs, chrome and feedback:
 | `ToastManager.h`, `ToastNotification.h` | Bottom-right toasts over a host widget; forward the host's `resizeEvent` to `updatePosition()`. Message is rich text with external links. |
 | `OwnedMenu.h` | `showOwnedMenu`: the one way to show a context menu. Self-deleting, modal on desktop and non-blocking in the browser; act through signal handlers, never read results after the call. |
 | `RecentFilesMenu.h` | Persistent MRU menu; `enabledChanged` is not emitted by the constructor, seed it via `isEmpty()`. |
-| `RenderingWarningLabel.h` | Hidden themed warning label the 2D/3D docks show while their GPU view cannot render. |
+| `RenderingWarningLabel.h` | Hidden themed warning label the 2D/3D docks show while their GPU view cannot render; `setRenderingWarningSubtle()` turns it into a small muted notice for a reduced-quality mode. |
 | `AppSettings.h` | `appSettings()` / `appSetting()`: the per-thread default `QSettings` (a constructed one reads from memory, which matters in the browser, where constructing one costs 2-3 ms), and `valuePrecision()`, the app-wide value-text precision. Fix the format and path before the first call (the browser switches the default format at startup). |
 
 Inputs and small controls:
@@ -95,7 +95,7 @@ Helpers:
 | `Fnv1a.h` | 64-bit FNV-1a, header-only and Qt-free; the INTERFACE target `pj_fnv1a` (`fnv1a/include/`, linked publicly by `pj_widgets`) so a module without widgets links the hash alone. |
 | `FrameworkTokens.h` | Typed reader over the semantic UI palette; holds no values. |
 | `Style.h`, `SvgUtil.h` | App `QProxyStyle`, which also paints the disabled state of every icon without its own `QIcon::Disabled` pixmap in `icon_ink_disabled`; SVG load/recolour helpers and `tintedPixmap`. |
-| `GraphicsApi.h` | QRhi API policy plus the plumbing every `QRhiWidget` shares. |
+| `GraphicsApi.h` | QRhi API policy plus the plumbing every `QRhiWidget` shares, including `softwareRasterizerName()` (is this QRhi a CPU rasterizer). |
 | `RhiTestHooks.h`, `RhiBlend.h` | GPU-widget test hooks (tests-only builds); straight-alpha blend (includes `<rhi/qrhi.h>`, so only QRhi renderers include it). |
 
 ## Usage notes

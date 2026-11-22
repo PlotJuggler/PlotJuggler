@@ -65,6 +65,11 @@ int main(int argc, char** argv) {
   if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
   }
+  // Scene3D keeps its HDR chain on CI's software rasterizers (llvmpipe, lavapipe, WARP), the path GPU users run; a
+  // test of the software default sets it to 0.
+  if (!qEnvironmentVariableIsSet("PJ_SCENE3D_SOFTWARE_HDR")) {
+    qputenv("PJ_SCENE3D_SOFTWARE_HDR", "1");
+  }
   QStandardPaths::setTestModeEnabled(true);
   ::testing::InitGoogleTest(&argc, argv);
   // ctest discovery (--gtest_list_tests) only needs the case names: answer it

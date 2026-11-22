@@ -27,6 +27,9 @@ test('Scene3D quality passes activate and recover independently', async ({ page 
   }));
 
   const screen = await bootScene3D(page, messages);
+  // This spec is about the HDR chain, which a software rasterizer (the CI browsers' SwiftShader and llvmpipe) skips
+  // unless the views created from here on keep it.
+  await page.evaluate(() => globalThis.pjWasmScene3DFullQualityOnSoftwareProbe(true));
   await loadScene3DFixture(page, screen, messages, 'foxglove_scene_entities_real.mcap');
   // Sorted rows: /markers, /tf/a, /tf/b, /zz_too_many.
   await dropScene3DRows(page, screen, [232, 212]);

@@ -21,6 +21,7 @@
 #include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/GraphicsApi.h"
 #include "pj_widgets/RhiTestHooks.h"
 #include "rhi_scene_pass.h"
 #include "scene_view_widget_rhi_quality_p.h"
@@ -267,9 +268,13 @@ void SceneViewWidget::releaseEdlResources() {
 void SceneViewWidget::updateRenderingWarning() {
   // SSAO/EDL are probed only while the HDR chain runs, so their stored errors
   // go stale the moment HDR is down — suppress them until HDR is live again.
+  // The software-rendering notice is not a failure: it ranks below every failure, so one never hides behind it.
+  const QString& hdr_error = hdr_->state.capability_error;
+  const bool hdr_notice = !software_notice_.isEmpty() && hdr_error == software_notice_;
   const QString warning = render_failure_.failed()                   ? render_failure_.reason()
-                          : !hdr_->state.capability_error.isEmpty()  ? hdr_->state.capability_error
+                          : !hdr_error.isEmpty() && !hdr_notice      ? hdr_error
                           : !overlay_failure_.isEmpty()              ? overlay_failure_
+                          : hdr_notice                               ? hdr_error
                           : !hdr_->state.last_active                 ? QString{}
                           : !ssao_->state.capability_error.isEmpty() ? ssao_->state.capability_error
                                                                      : edl_->state.capability_error;
@@ -448,11 +453,19 @@ bool SceneViewWidget::rejectHdr(const QSize& size, QString reason) {
   hdr_->state.rejected_size = size;
   const bool changed = hdr_->state.capability_error != reason;
   hdr_->state.capability_error = std::move(reason);
-  if (changed) {
+  if (changed && hdr_->state.capability_error != software_notice_) {
     qWarning("SceneViewWidget QRhi HDR unavailable: %s", qPrintable(hdr_->state.capability_error));
   }
   updateRenderingWarning();
   return false;
+}
+
+QString SceneViewWidget::softwareRenderingNotice(QRhi& rhi) {
+  if (qEnvironmentVariableIntValue("PJ_SCENE3D_SOFTWARE_HDR") == 1) {
+    return {};
+  }
+  const QString rasterizer = PJ::softwareRasterizerName(rhi);
+  return rasterizer.isEmpty() ? QString{} : tr("Software rendering (%1): reduced 3D quality").arg(rasterizer);
 }
 
 QString SceneViewWidget::hdrUnsupportedReason(QRhi& rhi) {
@@ -485,6 +498,9 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
 
   if (hdr_->state.forced_off) {
     return fail(forcedOffReason("HDR"));
+  }
+  if (!software_notice_.isEmpty()) {
+    return fail(software_notice_);
   }
   if (QString unsupported = hdrUnsupportedReason(*owner); !unsupported.isEmpty()) {
     return fail(std::move(unsupported));

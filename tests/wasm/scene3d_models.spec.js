@@ -14,7 +14,7 @@ const {
   waitForScene3DModels: waitForModels,
 } = require('./support/scene3d_acceptance');
 
-test('SceneEntities submits procedural geometry and all five PBR maps', async ({ page }) => {
+test('SceneEntities submits procedural geometry and all five PBR maps', async ({ page, browserName }) => {
   test.setTimeout(90000);
   const messages = [];
   const errors = [];
@@ -51,6 +51,14 @@ test('SceneEntities submits procedural geometry and all five PBR maps', async ({
     metallicRoughness: 1, normal: 1, occlusion: 1, emissive: 1,
   });
   expect(active.docks[0].readback.rgbSum).toBeGreaterThan(0);
+  // Headless Chromium has no GPU (SwiftShader): the view must take the software path, whose first HDR-chain frame held
+  // the main thread for seconds. Firefox's renderer follows the runner, so its outcome is only logged.
+  const hdr = models.quality.hdr;
+  console.log(`PJ_WASM_SCENE3D_SOFTWARE browser=${browserName} hdr_active=${hdr.active} reason=${hdr.error}`);
+  if (browserName === 'chromium') {
+    expect(hdr.active).toBe(false);
+    expect(hdr.error).toMatch(/^Software rendering \(SwiftShader\)/);
+  }
 
   expect(messages.some(message => message.includes('PJ_WASM_SCENE3D_FOUNDATION_FAILED'))).toBe(false);
   expect(messages.some(message => message.includes('QRhiWidget: No QRhi'))).toBe(false);

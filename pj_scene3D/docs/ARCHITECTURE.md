@@ -96,7 +96,8 @@ the backend and adapter it got once per QRhi (`pj.graphics`, `PJ::noteRhiAdoptio
 
 The widget's sample count is chosen once per QRhi in `initialize()`: 1 when the GPU can run the HDR chain
 (`hdrUnsupportedReason()` empty; the scene is multisampled inside the chain), `kDirectSampleCount` (4) when it
-cannot and the direct pass draws into the output. A runtime HDR refusal on a capable GPU (size, byte budget, a
+cannot and the direct pass draws into the output, and 1 on a software rasterizer (see "Software rasterizers draw the
+direct pass"). A runtime HDR refusal on a capable GPU (size, byte budget, a
 missing variant) draws its direct pass at sample count 1 rather than rebuild every resource for a new target.
 
 ### Pass structure
@@ -229,6 +230,17 @@ The chain is retained per size and charged against a per-view and a per-QRhi cap
 `HdrResources` owns its charge and every release of its targets gives it back. HDR, SSAO and EDL each keep a
 failure latch keyed on the render size, so a resize or a new QRhi probes the stage again; warning priority is HDR,
 then SSAO, then EDL, and each drops to the next lower-quality path independently.
+
+**Software rasterizers draw the direct pass.** On adopting a QRhi the view asks `PJ::softwareRasterizerName()`
+(`pj_widgets/GraphicsApi.h`) whether it is a CPU rasterizer: llvmpipe, lavapipe, SwiftShader, WARP, Apple's software
+OpenGL. In the browser the name comes from WebGL's unmasked renderer where `GL_RENDERER` is masked (Chromium). On one,
+the view refuses the chain and draws the single-sample direct pass (no HDR, SSAO, EDL or output MSAA; shadows stay),
+with a notice as its rendering warning (`renderingWarningIsNotice()`). The notice ranks below every failure; the dock
+draws it as a small muted caption in the bottom-left corner (`PJ::setRenderingWarningSubtle()`), a failure as the
+warning banner. `PJ_SCENE3D_SOFTWARE_HDR=1` keeps the chain. The GUI test main sets it, so the goldens and every
+display test run the chain, the path GPU users run, on CI's software rasterizers; a test of the software default sets
+it to 0, and the browser specs set it through an acceptance probe. Evidence: [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md)
+"Software rasterizers draw the direct pass".
 
 **Resource owners and release order** (`scene_view_widget_rhi_quality_p.h`): `ShadowResources`, `HdrResources`
 (per QRhi: render-pass descriptors, samplers, present pipeline; per size: attachments, targets, present bindings),

@@ -212,7 +212,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
   pj_add_test_runner(scene3d_rhi_failure_test
     MAIN gui WARNINGS RHI_BACKENDS
     SOURCES tests/scene3d_rhi_failure_test.cpp
-    LIBS pj_scene3d_widgets pj_scene3d_widgets_testing pj_resources Qt6::OpenGLWidgets Qt6::Test
+    LIBS pj_scene3d_widgets pj_scene3d_widgets_testing pj_resources pj_bench_probes Qt6::OpenGLWidgets Qt6::Test
     TIMEOUT 60
   )
   foreach(_pj_rhi_runner scene3d_rhi_marker_cache_test scene3d_rhi_model_cache_test scene3d_rhi_platform_test)

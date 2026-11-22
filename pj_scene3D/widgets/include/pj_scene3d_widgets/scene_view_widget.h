@@ -225,6 +225,10 @@ class SceneViewWidget : public QRhiWidget {
   [[nodiscard]] const QString& renderingWarning() const {
     return rendering_warning_;
   }
+  // The warning is the software-rendering notice, a reduced-quality mode rather than a failure: shown subtly.
+  [[nodiscard]] bool renderingWarningIsNotice() const {
+    return !software_notice_.isEmpty() && rendering_warning_ == software_notice_;
+  }
   [[nodiscard]] const AABB& sceneBounds() const {
     return scene_bounds_;
   }
@@ -397,6 +401,10 @@ class SceneViewWidget : public QRhiWidget {
   void releaseShadowResources(bool restore_model_bindings);
   void discardShadowMap();
   bool ensureHdrResources(QRhi* owner, const QSize& size);
+  // Non-empty on a software rasterizer unless PJ_SCENE3D_SOFTWARE_HDR=1: the view then draws the single-sample direct
+  // pass and shows this notice (docs/TECHNICAL_NOTES.md "Software rasterizers draw the direct pass"). Needs `rhi`'s
+  // context current; read once per QRhi, in initialize().
+  [[nodiscard]] static QString softwareRenderingNotice(QRhi& rhi);
   // Why `rhi` can never run the HDR chain; empty when it can (the chain may still
   // be refused at runtime: size, budget, a missing pipeline variant).
   [[nodiscard]] static QString hdrUnsupportedReason(QRhi& rhi);
@@ -534,6 +542,7 @@ class SceneViewWidget : public QRhiWidget {
   // error is noted once instead of re-marked every frame.
   QString noted_shadow_failure_;
   QString rendering_warning_;
+  QString software_notice_;  // softwareRenderingNotice() of the adopted QRhi
   PJ::RhiFailureLatch render_failure_;
   QString overlay_failure_;
 

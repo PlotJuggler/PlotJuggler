@@ -770,11 +770,14 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* command_buffer) {
     resource_rhi_ = current_rhi;
     rhi_backend_name_ = QString::fromLatin1(current_rhi->backendName());
     max_3d_texture_size_ = max3dTextureSize(*current_rhi);
-    // The output multisamples only where the GPU cannot run the HDR chain (the direct pass draws the whole scene on
-    // it); over the chain's present it is single-sample, and the corner gizmo brings its own 4x target. Decided per
-    // QRhi, not per frame: a change rebuilds every resource, so a runtime HDR refusal (size, budget, a missing
-    // pipeline variant) draws its direct pass without MSAA.
-    if (const int samples = hdrUnsupportedReason(*current_rhi).isEmpty() ? 1 : kDirectSampleCount;
+    // The output multisamples only where a GPU cannot run the HDR chain (the direct pass draws the whole scene on
+    // it); over the chain's present it is single-sample, and the corner gizmo brings its own 4x target. A software
+    // rasterizer stays single-sample, MSAA being a large part of its frame (TECHNICAL_NOTES "Software rasterizers draw
+    // the direct pass"). Decided per QRhi, not per frame: a change rebuilds every resource, so a runtime HDR refusal
+    // (size, budget, a missing pipeline variant) draws its direct pass without MSAA.
+    software_notice_ = softwareRenderingNotice(*current_rhi);
+    if (const int samples =
+            software_notice_.isEmpty() && !hdrUnsupportedReason(*current_rhi).isEmpty() ? kDirectSampleCount : 1;
         sampleCount() != samples) {
       // QRhiWidget rebuilds its target and calls initialize() again: nothing is
       // built for this one (render() clears it).
