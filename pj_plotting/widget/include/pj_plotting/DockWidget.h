@@ -72,6 +72,10 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   // Materializes this dock's plot if it has none (a new dock holds an empty placeholder); returns the existing plot
   // otherwise. The canonical placeholder-to-plot path, used by every drop that lands a curve on it.
   PlotWidget* ensurePlotWidget();
+  // Loads `element` into the object widget as a paste does: finishRestore (the data it names is loaded), and an empty
+  // click-created widget it gives a layer or config topic fires firstObjectTopicAdded. False when there is no object
+  // widget or it refused the element. Emits nothing else.
+  bool loadObjectWidgetState(const QDomElement& element);
 
   // IDataWidget
   QWidget* widget() override {

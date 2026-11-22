@@ -65,16 +65,22 @@ QDomElement firstWithTag(const QDomElement& root, const QString& tag) {
   return root.tagName() == tag ? root : root.elementsByTagName(tag).at(0).toElement();
 }
 
-// `saved` validates, reports every attribute it carries, and validates with each reported token substituted.
+// `saved` validates without a noted rejection (widget_state refuses on one), reports every attribute it carries, and
+// does the same with each reported token substituted. A plot's `mode` is skipped: it must agree with its curves'
+// shape (ModeFlipOnAPopulatedPlotIsNoted).
 void expectSelfDescribing(const Validate& validate, const QDomElement& saved) {
   std::vector<PJ::XmlOption> options;
   {
     PJ::XmlOptionsRecorder recorder;
     ASSERT_TRUE(validate(saved)) << recorder.firstRejection().toStdString();
+    EXPECT_EQ(recorder.firstRejection(), QString()) << "widget_state refuses a state with any noted rejection";
     options = recorder.options();
   }
   EXPECT_EQ(PJ::unreportedXmlAttributes(saved, options), QStringList{});
   for (const PJ::XmlOption& option : options) {
+    if (option.element == u"plot"_s && option.attribute == u"mode"_s) {
+      continue;
+    }
     for (const QString& value : option.values) {
       QDomDocument doc;
       const QDomElement root = copyOf(doc, saved);
@@ -84,6 +90,8 @@ void expectSelfDescribing(const Validate& validate, const QDomElement& saved) {
       PJ::XmlOptionsRecorder recorder;
       EXPECT_TRUE(validate(root)) << option.element.toStdString() << "." << option.attribute.toStdString() << "="
                                   << value.toStdString() << ": " << recorder.firstRejection().toStdString();
+      EXPECT_EQ(recorder.firstRejection(), QString())
+          << option.element.toStdString() << "." << option.attribute.toStdString() << "=" << value.toStdString();
     }
   }
 }
@@ -156,6 +164,31 @@ TEST(WidgetStateOptions, UnknownTokensStayTolerated) {
     // Tolerated for a layout load, yet noted: widget_state refuses it.
     EXPECT_TRUE(recorder.firstRejection().startsWith(u'<' + tag + u"> "_s + attribute + u"=\"bogus\""_s))
         << recorder.firstRejection().toStdString();
+  }
+}
+
+// A layout load tolerates a mode its curves do not match; widget_state refuses it, since the plot it builds is broken
+// (time-series curves drawn as XY, or every XY curve dropped).
+TEST(WidgetStateOptions, ModeFlipOnAPopulatedPlotIsNoted) {
+  Session s;
+  PJ::PlotWidget plot(&s.session, &s.catalog);
+  const std::pair<QDomElement (*)(Session&, QDomDocument&), QString> cases[] = {
+      {savedTimeSeriesPlot, u"<plot> mode=\"XYPlot\": a time-series curve in an XYPlot"_s},
+      {savedXyPlot, u"<plot> mode=\"TimeSeries\": an XY curve in a TimeSeries plot"_s},
+  };
+  for (const auto& [save, rejection] : cases) {
+    QDomDocument doc;
+    QDomElement saved = save(s, doc);
+    const bool xy = saved.attribute(u"mode"_s) == u"XYPlot"_s;
+    {
+      PJ::XmlOptionsRecorder recorder;
+      EXPECT_TRUE(plot.xmlValidateState(saved));
+      EXPECT_EQ(recorder.firstRejection(), QString());
+    }
+    saved.setAttribute(u"mode"_s, xy ? u"TimeSeries"_s : u"XYPlot"_s);
+    PJ::XmlOptionsRecorder recorder;
+    EXPECT_TRUE(plot.xmlValidateState(saved));
+    EXPECT_EQ(recorder.firstRejection(), rejection);
   }
 }
 

@@ -162,15 +162,13 @@ struct SavedDatasetIdentity {
 };
 
 SavedDatasetIdentity readDatasetIdentity(const QDomElement& element, const QString& prefix = {}) {
-  return SavedDatasetIdentity{
-      .id = readReported(
-                element, {.attribute = prefix + "dataset_id"_L1,
-                          .type = u"int"_s,
-                          .min = 1.0,
-                          .max = static_cast<double>(std::numeric_limits<DatasetId>::max())})
-                .toUInt(),
+  SavedDatasetIdentity saved{
       .source = readXmlText(element, prefix + "dataset_source"_L1),
       .path = readXmlText(element, prefix + "dataset_path"_L1)};
+  static_cast<void>(readXmlInt<DatasetId>(
+      element, prefix + "dataset_id"_L1, std::nullopt, 1, std::numeric_limits<DatasetId>::max(), saved.id,
+      XmlBadValue::kTolerate));
+  return saved;
 }
 
 QString markerScopeName(MarkerScope scope) {
@@ -197,44 +195,33 @@ struct HiddenMarkerScope {
 };
 
 std::optional<HiddenMarkerScope> parseHiddenMarkerScope(const QDomElement& marker_scope_element) {
-  const QString visible = readReported(
-      marker_scope_element,
-      {.attribute = u"visible"_s, .type = u"bool"_s, .values = kTrueFalse, .fallback = u"true"_s});
-  const std::optional<MarkerScope> scope = markerScopeFromName(readReported(
-      marker_scope_element, {.attribute = plot_xml::kMarkerScopeAttribute,
-                             .type = u"enum"_s,
-                             .values = {plot_xml::kMarkerScopeDataset, plot_xml::kMarkerScopeAllDatasets}}));
+  bool visible = true;
+  static_cast<void>(readXmlBool(marker_scope_element, u"visible"_s, true, visible, XmlBadValue::kTolerate));
+  QString scope_name;
+  static_cast<void>(readXmlEnum(
+      marker_scope_element, plot_xml::kMarkerScopeAttribute,
+      {plot_xml::kMarkerScopeDataset, plot_xml::kMarkerScopeAllDatasets}, {}, scope_name, XmlBadValue::kTolerate));
+  const std::optional<MarkerScope> scope = markerScopeFromName(scope_name);
   const SavedDatasetIdentity saved = readDatasetIdentity(marker_scope_element);
-  if (visible != "false"_L1 || !scope.has_value() || saved.id == 0) {
+  if (visible || !scope.has_value() || saved.id == 0) {
     return std::nullopt;
   }
   return HiddenMarkerScope{.dataset = saved, .scope = *scope};
 }
 
-// One <curve> as applyCurveElement binds it. It also reads the series-path attributes, which LayoutXml::rebindCurveKeys
-// (pj_app) turns into `name` / `curve_x` / `curve_y` before the load, so a validator reports every attribute a saved
-// curve carries.
-struct ParsedCurve {
-  QColor color;  // invalid: the plot picks one
-  bool visible = true;
-  bool markers_visible = true;
-  QString name;  // a time-series curve's session key; an XY curve's alias
-  QString curve_x;
-  QString curve_y;
-  bool has_xy_keys = false;  // both curve_x and curve_y present: the XY keys apply on an XY plot
-};
+}  // namespace
 
-ParsedCurve parseCurveElement(const QDomElement& curve) {
-  for (const QString& prefix : {QString(), u"x_"_s, u"y_"_s}) {
-    (void)readXmlText(curve, prefix + "topic"_L1);
-    (void)readXmlText(curve, prefix + "field"_L1);
-    (void)readDatasetIdentity(curve, prefix);
+PlotWidget::ParsedCurve PlotWidget::parseCurveElement(const QDomElement& curve) {
+  if (XmlOptionsRecorder::active()) {
+    for (const QString& prefix : {QString(), u"x_"_s, u"y_"_s}) {
+      readXmlText(curve, prefix + "topic"_L1);
+      readXmlText(curve, prefix + "field"_L1);
+      readDatasetIdentity(curve, prefix);
+    }
+    bool pending = false;
+    static_cast<void>(readXmlBool(curve, plot_xml::kPendingIntentAttribute, false, pending, XmlBadValue::kTolerate));
   }
-  (void)readReported(
-      curve, {.attribute = plot_xml::kPendingIntentAttribute,
-              .type = u"bool"_s,
-              .values = kTrueFalse,
-              .fallback = u"false"_s});
+  // Raw: a layout load reads anything but "true" as false.
   const auto read_bool = [&curve](const QString& attribute) {
     return readReported(
                curve, {.attribute = attribute, .type = u"bool"_s, .values = kTrueFalse, .fallback = u"true"_s}) ==
@@ -250,8 +237,6 @@ ParsedCurve parseCurveElement(const QDomElement& curve) {
       .has_xy_keys = curve.hasAttribute(u"curve_x"_s) && curve.hasAttribute(u"curve_y"_s),
   };
 }
-
-}  // namespace
 
 PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* parent)
     : PlotWidgetBase(parent), session_(session), catalog_(catalog) {
@@ -998,17 +983,24 @@ bool PlotWidget::parseState(const QDomElement& plot_element, ParsedState& parsed
     return false;
   }
   parsed.id = readXmlText(plot_element, u"id"_s);
-  parsed.xy = readReported(
-                  plot_element, {.attribute = u"mode"_s,
-                                 .type = u"enum"_s,
-                                 .values = {u"TimeSeries"_s, u"XYPlot"_s},
-                                 .fallback = u"TimeSeries"_s}) == "XYPlot"_L1;
+  QString mode;
+  static_cast<void>(readXmlEnum(
+      plot_element, u"mode"_s, {u"TimeSeries"_s, u"XYPlot"_s}, u"TimeSeries"_s, mode, XmlBadValue::kTolerate));
+  parsed.xy = mode == "XYPlot"_L1;
 
   std::set<QString> pending_identities;
   for (QDomElement curve = plot_element.firstChildElement(u"curve"_s); !curve.isNull();
        curve = curve.nextSiblingElement(u"curve"_s)) {
-    (void)parseCurveElement(curve);
+    parsed.curves.push_back(parseCurveElement(curve));
     if (!plot_xml::isPendingIntent(curve)) {
+      // A layout load keeps a curve of the other shape, which the plot then draws wrong or drops.
+      const bool xy_curve = curve.hasAttribute(u"x_topic"_s) || curve.hasAttribute(u"y_topic"_s) ||
+                            curve.hasAttribute(u"curve_x"_s) || curve.hasAttribute(u"curve_y"_s);
+      if (xy_curve != parsed.xy) {
+        XmlOptionsRecorder::noteRejection(
+            plot_element, u"mode"_s,
+            parsed.xy ? u"a time-series curve in an XYPlot"_s : u"an XY curve in a TimeSeries plot"_s);
+      }
       continue;
     }
     const bool resolved = parsed.xy
@@ -1033,10 +1025,13 @@ bool PlotWidget::parseState(const QDomElement& plot_element, ParsedState& parsed
   // that stored the width per <curve> falls back to the first saved curve's pixel width. The per-curve legacy
   // attributes are read unreported: no saved state carries them, and advertising them would invite per-curve values
   // only the first curve's can set.
-  QStringList width_tokens;
-  for (int width = static_cast<int>(LineWidth::kPoints10); width <= static_cast<int>(LineWidth::kPoints30); ++width) {
-    width_tokens.push_back(lineWidthToString(static_cast<LineWidth>(width)));
-  }
+  static const QStringList width_tokens = [] {
+    QStringList tokens;
+    for (int width = static_cast<int>(LineWidth::kPoints10); width <= static_cast<int>(LineWidth::kPoints30); ++width) {
+      tokens.push_back(lineWidthToString(static_cast<LineWidth>(width)));
+    }
+    return tokens;
+  }();
   const QString width = readReported(
       plot_element, {.attribute = u"line_width"_s,
                      .type = u"enum"_s,
@@ -1051,14 +1046,18 @@ bool PlotWidget::parseState(const QDomElement& plot_element, ParsedState& parsed
   }
   // Style is plot-level and stored on the <plot>; a layout that stored it per <curve> falls back to the first saved
   // curve.
-  QStringList style_tokens;
-  for (int style = kLines; style <= kStepsInverted; ++style) {
-    style_tokens.push_back(curveStyleToString(static_cast<CurveStyle>(style)));
-  }
+  static const QStringList style_tokens = [] {
+    QStringList tokens;
+    for (int style = kLines; style <= kStepsInverted; ++style) {
+      tokens.push_back(curveStyleToString(static_cast<CurveStyle>(style)));
+    }
+    return tokens;
+  }();
   const QString legacy_style = first_curve.attribute(u"style"_s, curveStyleToString(kLines));
   QString style = readReported(
       plot_element, {.attribute = u"style"_s, .type = u"enum"_s, .values = style_tokens, .fallback = legacy_style});
   parsed.style = curveStyleFromString(style.isEmpty() ? legacy_style : style);
+  // Raw: a layout load reads anything but "true" as false.
   parsed.tracker_enabled =
       readReported(
           plot_element,
@@ -1067,6 +1066,7 @@ bool PlotWidget::parseState(const QDomElement& plot_element, ParsedState& parsed
   parsed.title = readXmlText(plot_element, u"title"_s);
 
   if (const QDomElement range = plot_element.firstChildElement(u"range"_s); !range.isNull()) {
+    // Raw: a layout load reads an unparsable edge as 0 and keeps a non-finite one.
     const auto edge = [&range](const QString& attribute) {
       return readReported(range, {.attribute = attribute, .type = u"float"_s, .fallback = u"0"_s}).toDouble();
     };
@@ -1077,11 +1077,11 @@ bool PlotWidget::parseState(const QDomElement& plot_element, ParsedState& parsed
     view.right = edge(u"right"_s);
     // x_basis is authoritative: "value" = XY data value, anything else (a v3 layout with no marker is annotated
     // "absolute" by normalizePlotRangeBasis on load) = absolute time. Never re-infer it from the plot mode.
-    view.x_is_absolute = readReported(
-                             range, {.attribute = plot_xml::kXBasisAttribute,
-                                     .type = u"enum"_s,
-                                     .values = {plot_xml::kXBasisAbsolute, plot_xml::kXBasisValue},
-                                     .fallback = plot_xml::kXBasisAbsolute}) != plot_xml::kXBasisValue;
+    QString x_basis;
+    static_cast<void>(readXmlEnum(
+        range, plot_xml::kXBasisAttribute, {plot_xml::kXBasisAbsolute, plot_xml::kXBasisValue},
+        plot_xml::kXBasisAbsolute, x_basis, XmlBadValue::kTolerate));
+    view.x_is_absolute = x_basis != plot_xml::kXBasisValue;
     // Prefer the integer-ns edges (schema v4+): they round-trip an epoch-scale value exactly, which the decimal
     // left/right of a v3 layout cannot. They are read on any plot; an XY plot's value axis ignores them.
     bool left_ok = false;
@@ -1095,9 +1095,12 @@ bool PlotWidget::parseState(const QDomElement& plot_element, ParsedState& parsed
     parsed.viewport = view;
   }
 
-  for (QDomElement marker_scope = plot_element.firstChildElement(u"marker_scope"_s); !marker_scope.isNull();
-       marker_scope = marker_scope.nextSiblingElement(u"marker_scope"_s)) {
-    (void)parseHiddenMarkerScope(marker_scope);
+  // Report-only: loadHiddenMarkerScopes parses them against the catalog.
+  if (XmlOptionsRecorder::active()) {
+    for (QDomElement marker_scope = plot_element.firstChildElement(u"marker_scope"_s); !marker_scope.isNull();
+         marker_scope = marker_scope.nextSiblingElement(u"marker_scope"_s)) {
+      parseHiddenMarkerScope(marker_scope);
+    }
   }
   return true;
 }
@@ -1131,9 +1134,7 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   }
 
   std::vector<QString> desired_order;
-  for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
-       curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
-    const ParsedCurve curve = parseCurveElement(curve_element);
+  for (const ParsedCurve& curve : parsed.curves) {
     desired_order.push_back(
         isXYPlot() && curve.has_xy_keys ? curveKey(curve.name, curve.curve_x, curve.curve_y) : curveKey(curve.name));
   }
@@ -1169,9 +1170,8 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
     for (const QString& title : remove_titles) {
       removeCurve(title);
     }
-    for (QDomElement curve_element = plot_element.firstChildElement(u"curve"_s); !curve_element.isNull();
-         curve_element = curve_element.nextSiblingElement(u"curve"_s)) {
-      applyCurveElement(curve_element);
+    for (const ParsedCurve& curve : parsed.curves) {
+      applyParsedCurve(curve, /*preserve_viewport=*/false);
     }
   }
   updateMaximumZoomArea();
@@ -1255,17 +1255,16 @@ void PlotWidget::applySavedViewportOrZoom(bool clear_after) {
 }
 
 PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_element, bool preserve_viewport) {
-  const ParsedCurve parsed = parseCurveElement(curve_element);
-  const QColor& color = parsed.color;
+  return applyParsedCurve(parseCurveElement(curve_element), preserve_viewport);
+}
+
+PlotWidget::CurveInfo* PlotWidget::applyParsedCurve(const ParsedCurve& parsed, bool preserve_viewport) {
   CurveInfo* loaded_curve = nullptr;
   if (isXYPlot() && parsed.has_xy_keys) {
-    const QString& x_name = parsed.curve_x;
-    const QString& y_name = parsed.curve_y;
-    const QString& source_name = parsed.name;
     for (CurveInfo& info : curveList()) {
       if (auto* xy_series = info.curve != nullptr ? dynamic_cast<PointSeriesXY*>(info.curve->data()) : nullptr) {
         if (curveKey(info.source_name, xy_series->xSource().name, xy_series->ySource().name) ==
-            curveKey(source_name, x_name, y_name)) {
+            curveKey(parsed.name, parsed.curve_x, parsed.curve_y)) {
           loaded_curve = &info;
           break;
         }
@@ -1274,22 +1273,22 @@ PlotWidget::CurveInfo* PlotWidget::applyCurveElement(const QDomElement& curve_el
     if (loaded_curve == nullptr) {
       // Restore the saved alias as the title; no dialog on load.
       const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
-      loaded_curve = addCurveXY(x_name, y_name, source_name, color.isValid() ? color : Qt::transparent);
+      loaded_curve = addCurveXY(
+          parsed.curve_x, parsed.curve_y, parsed.name, parsed.color.isValid() ? parsed.color : Qt::transparent);
     }
   } else {
-    const QString& curve_name = parsed.name;
-    loaded_curve = curveFromTitle(curve_name);
+    loaded_curve = curveFromTitle(parsed.name);
     if (loaded_curve == nullptr) {
       const QScopedValueRollback guard(loading_state_, loading_state_ || preserve_viewport);
-      loaded_curve = addCurve(curve_name, color.isValid() ? color : Qt::transparent);
+      loaded_curve = addCurve(parsed.name, parsed.color.isValid() ? parsed.color : Qt::transparent);
     }
   }
-  if (loaded_curve != nullptr && loaded_curve->curve != nullptr && color.isValid()) {
-    loaded_curve->curve->setPen(color, loaded_curve->curve->pen().widthF());
+  if (loaded_curve != nullptr && loaded_curve->curve != nullptr && parsed.color.isValid()) {
+    loaded_curve->curve->setPen(parsed.color, loaded_curve->curve->pen().widthF());
     // Seed the session colour memory so this curve keeps its saved colour when later dragged into another plot.
     // Time-series only, as in onChangeCurveColor.
     if (CurveColorRegistry* registry = colorRegistryOf(session_); registry != nullptr && !isXYPlot()) {
-      registry->setColor(loaded_curve->source_name, color.name());
+      registry->setColor(loaded_curve->source_name, parsed.color.name());
     }
   }
   // Style and width are plot-level (restored once in xmlLoadState); only colour and visibility are per curve.

@@ -833,19 +833,28 @@ void DockWidget::pasteObjectWidgetFromClipboard() {
   if (!widget_clipboard::parse(doc, objectWidgetClipboardTag())) {
     return;
   }
-  const QDomElement element = doc.documentElement();
-  const bool seeds_empty_click_created_widget =
-      object_widget_awaiting_first_topic_ &&
-      (!element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull());
-  if (object_widget_->xmlLoadState(element)) {
-    object_widget_->finishRestore();
-    if (seeds_empty_click_created_widget) {
-      object_widget_awaiting_first_topic_ = false;
-      emit firstObjectTopicAdded();
-    }
+  if (loadObjectWidgetState(doc.documentElement())) {
     emit undoableChange();
     focusSelf();
   }
+}
+
+bool DockWidget::loadObjectWidgetState(const QDomElement& element) {
+  if (object_widget_ == nullptr) {
+    return false;
+  }
+  const bool seeds_empty_click_created_widget =
+      object_widget_awaiting_first_topic_ &&
+      (!element.firstChildElement(u"layer"_s).isNull() || !element.firstChildElement(u"config_topic"_s).isNull());
+  if (!object_widget_->xmlLoadState(element)) {
+    return false;
+  }
+  object_widget_->finishRestore();
+  if (seeds_empty_click_created_widget) {
+    object_widget_awaiting_first_topic_ = false;
+    emit firstObjectTopicAdded();
+  }
+  return true;
 }
 
 bool DockWidget::canPasteObjectWidgetFromClipboard() const {

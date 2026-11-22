@@ -106,10 +106,11 @@ bool StateTransitionsDockWidget::parseState(const QDomElement& element, ParsedSt
   }
   for (QDomElement series = element.firstChildElement(u"series"_s); !series.isNull();
        series = series.nextSiblingElement(u"series"_s)) {
-    parsed.series.push_back(
+    PendingSeries& saved = parsed.series.emplace_back(
         PendingSeries{
             .dataset_source = readXmlText(series, u"dataset_source"_s),
             .dataset_path = readXmlText(series, u"dataset_path"_s),
+            // Raw: a layout load keeps an out-of-range id as written.
             .dataset_id = readReported(
                               series, {.attribute = u"dataset_id"_s,
                                        .type = u"int"_s,
@@ -118,23 +119,22 @@ bool StateTransitionsDockWidget::parseState(const QDomElement& element, ParsedSt
                               .toLongLong(),
             .topic = readXmlText(series, u"topic"_s),
             .field = readXmlText(series, u"field"_s),
-            .visible =
-                readReported(
-                    series,
-                    {.attribute = u"visible"_s, .type = u"bool"_s, .values = {u"1"_s, u"0"_s}, .fallback = u"1"_s}) !=
-                u"0"_s,
         });
+    static_cast<void>(readXmlBool(series, u"visible"_s, true, saved.visible, XmlBadValue::kTolerate, u"1"_s, u"0"_s));
   }
+  // Raw: a layout load applies a non-finite zoom, which the shared reader would replace.
   bool zoom_ok = false;
   const double zoom =
       readReported(element, {.attribute = u"zoom_px_per_ns"_s, .type = u"float"_s, .min = 0.0}).toDouble(&zoom_ok);
   if (zoom_ok && zoom > 0.0) {
     parsed.zoom_px_per_ns = zoom;
   }
-  parsed.viewport_left_ns =
-      readReported(element, {.attribute = u"viewport_left_ns"_s, .type = u"int"_s, .fallback = u"0"_s}).toLongLong();
-  parsed.viewport_top_px =
-      readReported(element, {.attribute = u"viewport_top_px"_s, .type = u"int"_s, .fallback = u"0"_s}).toInt();
+  static_cast<void>(readXmlInt<qint64>(
+      element, u"viewport_left_ns"_s, 0, std::numeric_limits<qint64>::min(), std::numeric_limits<qint64>::max(),
+      parsed.viewport_left_ns, XmlBadValue::kTolerate));
+  static_cast<void>(readXmlInt<int>(
+      element, u"viewport_top_px"_s, 0, std::numeric_limits<int>::min(), std::numeric_limits<int>::max(),
+      parsed.viewport_top_px, XmlBadValue::kTolerate));
   return true;
 }
 
@@ -148,6 +148,8 @@ bool StateTransitionsDockWidget::xmlLoadState(const QDomElement& element) {
   if (!parseState(element, parsed)) {
     return false;
   }
+  // The element replaces the strip: a row kept from before would make its series' addSeries fail as a duplicate.
+  controller_->removeAllSeries();
   pending_series_.clear();
   for (const PendingSeries& saved : parsed.series) {
     if (!tryResolveSeries(saved)) {
@@ -157,6 +159,14 @@ bool StateTransitionsDockWidget::xmlLoadState(const QDomElement& element) {
 
   applyViewChrome(parsed);
   return true;
+}
+
+QStringList StateTransitionsDockWidget::unresolvedRestores() const {
+  QStringList names;
+  for (const PendingSeries& pending : pending_series_) {
+    names.push_back(pending.field.isEmpty() ? pending.topic : pending.topic + u'/' + pending.field);
+  }
+  return names;
 }
 
 bool StateTransitionsDockWidget::tryResolveSeries(const PendingSeries& saved) {

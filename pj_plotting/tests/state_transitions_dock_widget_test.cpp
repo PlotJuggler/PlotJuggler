@@ -183,6 +183,52 @@ TEST_F(StateTransitionsDockWidgetTest, UnresolvedSeriesSurvivesSaveLoadCycles) {
   EXPECT_EQ(kept.attribute(u"topic"_s), u"/other/state"_s);
 }
 
+// widget_state `set` loads an edited copy of the strip's own saved state into the same dock.
+TEST_F(StateTransitionsDockWidgetTest, ReloadIntoTheSameDockReplacesItsRows) {
+  const auto saved_text = [](const StateTransitionsDockWidget& dock) {
+    QDomDocument doc;
+    doc.appendChild(dock.xmlSaveState(doc));
+    return doc.toString();
+  };
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptSeriesKeys({string_key_, estop_key_}));
+  const QString before = saved_text(*dock);
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(before));
+
+  ASSERT_TRUE(dock->xmlLoadState(doc.documentElement()));
+  EXPECT_EQ(saved_text(*dock), before);
+
+  QDomElement first = doc.documentElement().firstChildElement(u"series"_s);
+  first.setAttribute(u"visible"_s, u"0"_s);
+  ASSERT_TRUE(dock->xmlLoadState(doc.documentElement()));
+  auto entries = dock->controller()->seriesEntries();
+  ASSERT_EQ(entries.size(), 2U);
+  EXPECT_FALSE(entries[0].visible);
+  EXPECT_TRUE(entries[1].visible);
+
+  doc.documentElement().removeChild(first.nextSiblingElement(u"series"_s));
+  ASSERT_TRUE(dock->xmlLoadState(doc.documentElement()));
+  const auto series = dock->controller()->currentSeries();
+  ASSERT_EQ(series.size(), 1U);
+  EXPECT_EQ(series[0].topic_name, u"/robot/state"_s);
+  EXPECT_TRUE(dock->unresolvedRestores().isEmpty());
+}
+
+TEST_F(StateTransitionsDockWidgetTest, UnresolvedRestoresNamesEachPendingSeries) {
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(
+      u"<state_transitions><series dataset_id=\"999\" dataset_source=\"late.mcap\" topic=\"/late/state\" field=\"\"/>"
+      "<series dataset_id=\"999\" dataset_source=\"late.mcap\" topic=\"/late/mode\" field=\"value\"/>"
+      "</state_transitions>"_s));
+  auto dock = makeDock();
+  ASSERT_TRUE(dock->tryAcceptSeriesKeys({string_key_}));
+  EXPECT_TRUE(dock->unresolvedRestores().isEmpty());
+  ASSERT_TRUE(dock->xmlLoadState(doc.documentElement()));
+  EXPECT_EQ(dock->controller()->rowCount(), 0);
+  EXPECT_EQ(dock->unresolvedRestores(), (QStringList{u"/late/state"_s, u"/late/mode/value"_s}));
+}
+
 TEST_F(StateTransitionsDockWidgetTest, PendingSeriesResolvesWhenDatasetLoadsLater) {
   // Restore a layout whose dataset is NOT loaded: the row stays pending...
   auto dock = makeDock();

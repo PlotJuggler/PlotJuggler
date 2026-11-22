@@ -44,6 +44,8 @@ class StateTransitionsDockWidget : public QWidget, public IDataWidget {
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
   [[nodiscard]] bool xmlValidateState(const QDomElement& element) const override;
+  /// One `topic` (or `topic/field`) per saved series whose dataset is not loaded.
+  [[nodiscard]] QStringList unresolvedRestores() const override;
 
   [[nodiscard]] StateTransitionsView* view() noexcept {
     return view_;
