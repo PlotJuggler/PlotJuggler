@@ -30,6 +30,9 @@ Private links: `pj_plotting` (the full `PlotWidget` for embedded chart frames) a
 - Both engines skip a byte-identical widget-data re-read. One-shot requests (accept, sub-dialog, close) change the
   bytes, and `PanelEngine` clears its memo after consuming one: a plugin answering "" while idle would otherwise
   leave it on the old request, and an identical request later would be dropped as a repeat.
+- `PanelEngine` neither diffs nor applies a payload that requests its close: the panel is being torn down, and the
+  full-payload parse, diff and apply would hold the main thread in the tick that closes it. A declined close applies
+  that state on the next tick, which diffs against the last applied payload.
 - `PanelEngineConfig` grows by appending members only: callers use positional initializers.
 - Plugin widget data is applied by name to the tree the engine loaded (plus widgets recorded in `pjHoistedWidgets`).
   A sub-dialog or an injected parser dialog is a separate tree: its field states come from the declarative rules.

@@ -652,6 +652,41 @@ TEST_F(PanelEngineTest, DeclinedCloseKeepsTheSessionRunning) {
   delete panel;
 }
 
+// The payload that asks to close is not diffed or applied: the panel is being torn down, and a large payload's
+// parse, diff and apply then run for nothing in the tick that closes it. A declined close applies it on the next tick.
+TEST_F(PanelEngineTest, ClosingPayloadIsNotApplied) {
+  PJ::PanelEngine engine(
+      makeMockHandle(), {/*tick_interval_ms=*/10, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
+  bool keep_open = true;
+  int close_requests = 0;
+  engine.onCloseRequested([&](std::string /*reason*/) {
+    ++close_requests;
+    return !keep_open;
+  });
+
+  QWidget* panel = engine.openPanel();
+  ASSERT_NE(panel, nullptr);
+  panel->show();
+  pumpEventLoop(30);
+  auto* label = panel->findChild<QLabel*>("labelHello");
+  ASSERT_NE(label, nullptr);
+  const QString before = label->text();
+
+  mockPanelState().label = "Closing";
+  mockPanelState().close_on_next_tick = true;
+  mockPanelState().close_reason = "user_closed";
+  for (int i = 0; i < 500 && close_requests == 0; ++i) {
+    pumpEventLoop(1);
+  }
+  ASSERT_EQ(close_requests, 1);
+  EXPECT_EQ(label->text(), before) << "the closing payload was applied";
+
+  pumpEventLoop(50);
+  EXPECT_EQ(label->text().toStdString(), "Closing") << "a declined close never applied the payload";
+
+  delete panel;
+}
+
 TEST_F(PanelEngineTest, HiddenPanelStillTicksAtReducedRate) {
   PJ::PanelEngine engine(makeMockHandle(), {/*tick_interval_ms=*/5, /*enable_diff=*/true, /*catalog_key_resolver=*/{}});
   QWidget* panel = engine.openPanel();
