@@ -20,10 +20,16 @@
 #if QT_CONFIG(vulkan) && __has_include(<vulkan/vulkan.h>)
 #include <QtGui/private/qvulkandefaultinstance_p.h>
 #endif
+#include <array>
+#include <cstdlib>
 #include <memory>
 #include <utility>
 
 #include "pj_widgets/RhiTestHooks.h"
+
+#ifdef Q_OS_WASM
+#include <emscripten.h>
+#endif
 
 namespace PJ {
 namespace {
@@ -129,6 +135,61 @@ QRhiWidget::Api preferredGraphicsApi() {
   return api;
 }
 
+QString softwareRasterizerName(QByteArrayView renderer) {
+  // Needles as the drivers spell them: Mesa's llvmpipe/lavapipe/softpipe, Chromium's SwiftShader (also inside ANGLE's
+  // "ANGLE (Google, Vulkan ... (SwiftShader Device ...))"), D3D's WARP ("Microsoft Basic Render Driver"), macOS
+  // OpenGL without a GPU ("Apple Software Renderer").
+  struct Rasterizer {
+    QByteArrayView needle;
+    const char* name;
+  };
+  static constexpr std::array<Rasterizer, 6> kRasterizers{{
+      {"llvmpipe", "llvmpipe"},
+      {"lavapipe", "lavapipe"},
+      {"softpipe", "softpipe"},
+      {"swiftshader", "SwiftShader"},
+      {"microsoft basic render", "WARP"},
+      {"apple software renderer", "Apple Software Renderer"},
+  }};
+  const QByteArray lower = renderer.toByteArray().toLower();
+  for (const Rasterizer& rasterizer : kRasterizers) {
+    if (lower.contains(rasterizer.needle)) {
+      return QString::fromLatin1(rasterizer.name);
+    }
+  }
+  return {};
+}
+
+#ifdef Q_OS_WASM
+namespace {
+// clang-format off
+EM_JS(char*, pjUnmaskedWebGlRenderer, (), {
+  const gl = typeof GL !== 'undefined' && GL.currentContext ? GL.currentContext.GLctx : null;
+  const info = gl ? gl.getExtension('WEBGL_debug_renderer_info') : null;
+  const renderer = info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null;
+  return typeof renderer === 'string' ? stringToNewUTF8(renderer) : 0;
+});
+// clang-format on
+}  // namespace
+#endif
+
+QString softwareRasterizerName(QRhi& rhi) {
+  const QRhiDriverInfo driver = rhi.driverInfo();
+  QString name = softwareRasterizerName(driver.deviceName);
+#ifdef Q_OS_WASM
+  if (name.isEmpty() && rhi.backend() == QRhi::OpenGLES2) {
+    if (char* renderer = pjUnmaskedWebGlRenderer(); renderer != nullptr) {
+      name = softwareRasterizerName(QByteArrayView(renderer));
+      free(renderer);
+    }
+  }
+#endif
+  if (name.isEmpty() && driver.deviceType == QRhiDriverInfo::CpuDevice) {
+    name = QString::fromUtf8(driver.deviceName);
+  }
+  return name;
+}
+
 void logGraphicsBackend(QWidget& widget, QRhi* rhi) {
   // ponytail: keyed by address, so a new QRhi allocated where the widget's last one lived is not logged again; key on
   // something else if that ever matters.
@@ -138,7 +199,10 @@ void logGraphicsBackend(QWidget& widget, QRhi* rhi) {
     return;
   }
   widget.setProperty(kLoggedRhi, key);
-  qCInfo(lcGraphics).nospace() << widget.objectName() << ": " << rhi->backendName() << ", " << rhi->driverInfo();
+  const QString software = softwareRasterizerName(*rhi);
+  qCInfo(lcGraphics).nospace() << widget.objectName() << ": " << rhi->backendName() << ", " << rhi->driverInfo()
+                               << (software.isEmpty() ? QString{}
+                                                      : QStringLiteral(", software rasterizer ") + software);
 }
 
 void noteRhiAdoption(QRhiWidget& widget, const QRhi* held, QRhi* rhi) {

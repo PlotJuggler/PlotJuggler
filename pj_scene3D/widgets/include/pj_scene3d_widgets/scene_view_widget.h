@@ -86,6 +86,12 @@ class SceneViewWidget : public QRhiWidget {
   Q_OBJECT
 
  public:
+  // Whether a view keeps the HDR chain (HDR, SSAO, EDL) on a software rasterizer, where it otherwise draws the direct
+  // pass (hdrUnsupportedReason()). Off unless PJ_SCENE3D_SOFTWARE_HDR=1; the tests of the chain turn it on. Read when
+  // a view adopts a QRhi, so it applies to the views that initialize after it is set.
+  static void setFullQualityOnSoftwareRasterizer(bool keep);
+  [[nodiscard]] static bool fullQualityOnSoftwareRasterizer();
+
   using GridStyle = pj::scene3d::GridStyle;
   enum class CameraModel { kOrbit, kXyOrbit, kFly, kTopDownOrtho };
 
@@ -224,6 +230,10 @@ class SceneViewWidget : public QRhiWidget {
   // Why the view draws less than it should (a failed stage, family or overlay); empty when nothing is degraded.
   [[nodiscard]] const QString& renderingWarning() const {
     return rendering_warning_;
+  }
+  // The warning is the software-rendering notice, a reduced-quality mode rather than a failure: shown subtly.
+  [[nodiscard]] bool renderingWarningIsNotice() const {
+    return rendering_warning_is_notice_;
   }
   [[nodiscard]] const AABB& sceneBounds() const {
     return scene_bounds_;
@@ -398,7 +408,12 @@ class SceneViewWidget : public QRhiWidget {
   void discardShadowMap();
   bool ensureHdrResources(QRhi* owner, const QSize& size);
   // Why `rhi` can never run the HDR chain; empty when it can (the chain may still
-  // be refused at runtime: size, budget, a missing pipeline variant).
+  // be refused at runtime: size, budget, a missing pipeline variant). A software rasterizer is a reason unless
+  // fullQualityOnSoftwareRasterizer() holds: its first frame of the chain cost 1.7-3.3 s of the browser's main thread
+  // on CI's 4-core runners (docs/TECHNICAL_NOTES.md "Software rasterizers draw the direct pass").
+  // Non-empty on a software rasterizer unless fullQualityOnSoftwareRasterizer(): the reason the view draws the
+  // single-sample direct pass. Needs `rhi`'s context current (initialize() or render()).
+  [[nodiscard]] static QString softwareRenderingNotice(QRhi& rhi);
   [[nodiscard]] static QString hdrUnsupportedReason(QRhi& rhi);
   // The per-size HDR part, after SSAO's and EDL's targets that reference it.
   void releaseHdrTargetResources();
@@ -534,6 +549,8 @@ class SceneViewWidget : public QRhiWidget {
   // error is noted once instead of re-marked every frame.
   QString noted_shadow_failure_;
   QString rendering_warning_;
+  bool rendering_warning_is_notice_ = false;
+  QString software_notice_;  // softwareRenderingNotice() of the adopted QRhi
   PJ::RhiFailureLatch render_failure_;
   QString overlay_failure_;
 

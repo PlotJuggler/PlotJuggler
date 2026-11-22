@@ -38,6 +38,7 @@
 #include "../rhi/passes/marker_rhi_pass.h"
 #include "../rhi/scene_view_widget_rhi_quality_p.h"
 #include "pj_base/builtin/scene_entities_codec.hpp"
+#include "pj_bench_probes.h"
 #include "pj_widgets/GraphicsApi.h"
 #include "scene3d_render_test_support.h"
 #include "scene_view_test_access.h"
@@ -166,6 +167,8 @@ class Scene3dRhiFailureTest : public ::testing::Test {
  protected:
   void SetUp() override {
     PJ_SKIP_ON_HEADLESS_QPA();
+    // The HDR chain under test; CI's software rasterizers (llvmpipe, lavapipe) would draw the direct pass.
+    pj::scene3d::SceneViewWidget::setFullQualityOnSoftwareRasterizer(true);
   }
 };
 
@@ -294,6 +297,31 @@ TEST_F(Scene3dRhiFailureTest, FamiliesAndVariantsAreBuiltOnDemand) {
     EXPECT_EQ(direct.directs, direct.registered);
     EXPECT_EQ(direct.hdr_variants, 0);
   }
+}
+
+// A software rasterizer draws the single-sample direct pass and says why, as a notice: the HDR chain's first frame held
+// a GPU-less browser's main thread for seconds. The other cases keep the chain (SetUp); this one restores the default.
+TEST_F(Scene3dRhiFailureTest, SoftwareRasterizerDrawsTheDirectPass) {
+  SceneViewWidget::setFullQualityOnSoftwareRasterizer(false);
+  FailureScene scene;
+  SceneViewWidget* view = scene.view();
+  ASSERT_TRUE(scene.show());
+  const QImage frame = grab(*view);
+  if (frame.isNull() || view->rhiBackendName().isEmpty()) {
+    PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
+  }
+  QRhi* rhi = pj_bench::rhiOf(*view);
+  ASSERT_NE(rhi, nullptr);
+  const QString rasterizer = PJ::softwareRasterizerName(*rhi);
+  if (rasterizer.isEmpty()) {
+    GTEST_SKIP() << "a hardware device keeps the HDR chain: " << rhi->driverInfo().deviceName.toStdString();
+  }
+  EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
+  EXPECT_FALSE(uniform(frame)) << "the direct pass drew nothing";
+  EXPECT_TRUE(view->renderingWarning().startsWith(u"Software rendering (%1)"_s.arg(rasterizer)))
+      << view->renderingWarning().toStdString();
+  EXPECT_TRUE(view->renderingWarningIsNotice());
+  EXPECT_EQ(view->sampleCount(), 1) << "4x MSAA costs a CPU rasterizer 1.3-5x per frame";
 }
 
 // A base pipeline the HDR frames never needed (the grid's direct pipelines are

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include <QByteArray>
+#include <QByteArrayView>
 #include <QRhiWidget>
 #include <QString>
 #include <QStringView>
@@ -77,6 +78,17 @@ enum class GraphicsPlatform { Linux, Windows, MacOS, Wasm };
 /// `pj.graphics`) on the first call, which must precede every GPU widget (pj_app makes it right after constructing
 /// `QApplication`).
 [[nodiscard]] QRhiWidget::Api preferredGraphicsApi();
+
+/// The software rasterizer a renderer description names ("llvmpipe", "lavapipe", "softpipe", "SwiftShader", "WARP",
+/// "Apple Software Renderer"), or empty for a hardware device. Matched case-insensitively on the driver's own strings:
+/// GL_RENDERER, a Vulkan/D3D adapter name, WebGL's unmasked renderer.
+[[nodiscard]] QString softwareRasterizerName(QByteArrayView renderer);
+
+/// The software rasterizer `rhi` runs on, or empty on a hardware device: QRhiDriverInfo::CpuDevice where the backend
+/// reports it (Vulkan, Metal, D3D), else the renderer description. In the browser GL_RENDERER is masked ("WebKit
+/// WebGL"), so it reads WebGL's unmasked renderer (WEBGL_debug_renderer_info) from the current WebGL context: call it
+/// with `rhi`'s context current (a QRhiWidget's initialize() or render()).
+[[nodiscard]] QString softwareRasterizerName(QRhi& rhi);
 
 /// Logs (category `pj.graphics`) the backend and adapter `widget` actually got, once per QRhi: a software rasterizer or
 /// an unexpected fallback is otherwise invisible. The widget passes `rhi()` (protected) from its initialize(); see

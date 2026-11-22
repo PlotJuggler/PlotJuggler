@@ -276,6 +276,40 @@ Observed there, and excluded from that step only (Mesa and Metal run them):
 
 Re-test when the runner image's renderer changes.
 
+## Software rasterizers draw the direct pass
+
+A browser without a GPU (headless Chromium, and any machine where WebGL falls back to SwiftShader) held its main
+thread for seconds on the first Scene3D frame. Chromium traces of the ANYmal sample on GitHub-hosted `ubuntu-22.04`
+runners showed the long task as `LayerTreeHost::DoUpdateLayers` → `ReadPixels` → `CommandBufferHelper::Finish`: the
+compositor reads the WebGL canvas back and waits for SwiftShader (`ContextVk::finishImpl` in the GPU process) to
+draw the queued frame. The workspace restore itself is a separate, shorter task. The variance between runs followed
+CPU contention with the app's worker threads on the runner's 4 vCPUs.
+
+The HDR chain (4x RGBA16F MSAA target, depth replay, SSAO, EDL, present) is what makes that frame expensive on a CPU.
+`scene3d_frame_benchmark` on llvmpipe (Iris Xe host, Mesa 26, Xvfb, smoke sizes, 3 runs each):
+
+| Case | direct pass, 4x output MSAA | HDR chain (`PJ_SCENE3D_SOFTWARE_HDR=1`) |
+|---|---|---|
+| `cloud_static` frame | 12.3-16.9 ms | 22.7-28.4 ms |
+| `cubes_lines_orbit` frame | 14.8-17.0 ms | 24.9-27.5 ms |
+| `first_show`, budget sizes | 2351-2657 ms | 2622-3295 ms |
+
+An earlier run at budget sizes timed the first frame alone at 497 ms with the direct pass (1x) and 870 ms with the
+chain. The direct pass's own 4x output MSAA, measured the same way (mean frame, 3 runs each):
+
+| Case | 1x | 4x |
+|---|---|---|
+| `cloud_static` | 7.1-7.4 ms | 9.2-10.1 ms |
+| `cubes_lines_orbit` | 6.5-7.5 ms | 11.9-14.3 ms |
+| `markers_pan_follow` | 4.3-4.8 ms | 17.0-21.2 ms |
+| `robot_tf_animated` | 3.1-3.3 ms | 10.1-15.1 ms |
+
+So `hdrUnsupportedReason()` refuses the chain on a software rasterizer, the output stays single-sample, and the view
+shows a notice. Shadows stay on.
+
+Re-test when SwiftShader, llvmpipe or a browser's GPU-less compositing path changes, or when the chain gets cheaper;
+`PJ_SCENE3D_SOFTWARE_HDR=1` restores the chain for the comparison.
+
 ## CI lanes
 
 The workflows are the source of truth; these are the facts that are not obvious from them.

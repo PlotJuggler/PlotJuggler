@@ -21,6 +21,7 @@
 #include "pj_scene3d_widgets/grid_geometry.h"
 #include "pj_scene3d_widgets/scene_look_defaults.h"
 #include "pj_scene3d_widgets/scene_view_widget.h"
+#include "pj_widgets/GraphicsApi.h"
 #include "pj_widgets/RhiTestHooks.h"
 #include "rhi_scene_pass.h"
 #include "scene_view_widget_rhi_quality_p.h"
@@ -277,6 +278,7 @@ void SceneViewWidget::updateRenderingWarning() {
     return;
   }
   rendering_warning_ = warning;
+  rendering_warning_is_notice_ = !warning.isEmpty() && warning == software_notice_;
   emit renderingWarningChanged(rendering_warning_);
 }
 
@@ -455,7 +457,33 @@ bool SceneViewWidget::rejectHdr(const QSize& size, QString reason) {
   return false;
 }
 
+namespace {
+bool& fullQualityOnSoftware() {
+  static bool keep = qEnvironmentVariableIntValue("PJ_SCENE3D_SOFTWARE_HDR") == 1;
+  return keep;
+}
+}  // namespace
+
+void SceneViewWidget::setFullQualityOnSoftwareRasterizer(bool keep) {
+  fullQualityOnSoftware() = keep;
+}
+
+bool SceneViewWidget::fullQualityOnSoftwareRasterizer() {
+  return fullQualityOnSoftware();
+}
+
+QString SceneViewWidget::softwareRenderingNotice(QRhi& rhi) {
+  if (fullQualityOnSoftwareRasterizer()) {
+    return {};
+  }
+  const QString rasterizer = PJ::softwareRasterizerName(rhi);
+  return rasterizer.isEmpty() ? QString{} : tr("Software rendering (%1): reduced 3D quality").arg(rasterizer);
+}
+
 QString SceneViewWidget::hdrUnsupportedReason(QRhi& rhi) {
+  if (QString notice = softwareRenderingNotice(rhi); !notice.isEmpty()) {
+    return notice;
+  }
   if (!rhi.supportedSampleCounts().contains(kHdrSampleCount) ||
       !rhi.isFeatureSupported(QRhi::MultisampleRenderBuffer)) {
     return tr("This GPU does not support 4x multisample renderbuffers");

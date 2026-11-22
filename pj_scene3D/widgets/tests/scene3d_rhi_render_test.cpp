@@ -527,6 +527,8 @@ class Scene3dRhiRenderTest : public ::testing::Test {
  protected:
   void SetUp() override {
     PJ_SKIP_ON_HEADLESS_QPA();
+    // The HDR chain under test; CI's software rasterizers (llvmpipe, lavapipe) would draw the direct pass.
+    pj::scene3d::SceneViewWidget::setFullQualityOnSoftwareRasterizer(true);
   }
 };
 

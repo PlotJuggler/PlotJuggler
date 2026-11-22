@@ -48,6 +48,7 @@
 #include "pj_base/sdk/platform.hpp"
 #include "pj_bench_probes.h"
 #include "pj_scene3d_core/camera/camera.h"
+#include "pj_scene3d_widgets/scene_view_widget.h"
 #include "scene3d_render_test_support.h"
 
 using namespace Qt::StringLiterals;
@@ -75,6 +76,8 @@ void setWindowColour(const QColor& colour) {
 struct LightPalette : ::testing::Environment {
   void SetUp() override {
     setWindowColour(QColor(255, 255, 255));
+    // The goldens are of the HDR chain; CI's software rasterizers (llvmpipe, lavapipe) would draw the direct pass.
+    pj::scene3d::SceneViewWidget::setFullQualityOnSoftwareRasterizer(true);
   }
 };
 [[maybe_unused]] const auto* const kLightPalette = ::testing::AddGlobalTestEnvironment(new LightPalette);

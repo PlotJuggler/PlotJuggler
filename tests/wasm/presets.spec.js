@@ -983,12 +983,11 @@ test('anymal sample stays responsive through load and reopen', { tag: '@serial' 
     await page.close();
     const run = await bootSamples(context, errors, samples);
     // While `load` runs: the longest main-thread task, and the longest gap between painted frames. Only the
-    // task is bounded. The gap also holds the frame after it: headless Chromium has no GPU, so compositing
-    // reads the WebGL canvas back and waits for SwiftShader to rasterise the first Scene3D frame (HDR, MSAA,
-    // SSAO, EDL, shadows), 450-630 ms on top of the 600-990 ms workspace restore task. That wait is the test
-    // machine's software GL, not the app. Firefox has no Long Tasks API, so nothing is bounded there; its
-    // frame gap carries the same software GL wait and the app's own restore timing follows the runner (925
-    // to 2265 ms observed on GitHub-hosted runners), so both are only logged.
+    // task is bounded. Headless Chromium has no GPU: its compositor reads the WebGL canvas back and blocks the
+    // main thread until SwiftShader has drawn the first Scene3D frame, so that wait counts in the task. The
+    // view draws the direct pass on a software rasterizer, which keeps the wait small (pj_scene3D
+    // TECHNICAL_NOTES "Software rasterizers draw the direct pass"). Firefox has no Long Tasks API, so nothing is
+    // bounded there and its frame gap (925 to 2265 ms observed on GitHub-hosted runners) is only logged.
     const watchMainThread = async (load) => {
       await run.page.evaluate(() => {
         const watch = { last: performance.now(), frameGap: 0, task: null, running: true, observer: null };

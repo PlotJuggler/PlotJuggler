@@ -230,6 +230,17 @@ The chain is retained per size and charged against a per-view and a per-QRhi cap
 failure latch keyed on the render size, so a resize or a new QRhi probes the stage again; warning priority is HDR,
 then SSAO, then EDL, and each drops to the next lower-quality path independently.
 
+**Software rasterizers draw the direct pass.** `hdrUnsupportedReason()` refuses the chain on a QRhi that
+`PJ::softwareRasterizerName()` (`pj_widgets/GraphicsApi.h`) names: llvmpipe, lavapipe, SwiftShader, WARP, Apple's
+software OpenGL. The view then draws the single-sample direct pass (no HDR, SSAO, EDL or output MSAA; shadows stay)
+and its rendering warning says why. That warning is a notice (`renderingWarningIsNotice()`): the dock draws it as a
+small muted caption in the bottom-left corner (`PJ::setRenderingWarningSubtle()`), not the warning banner of a
+failure. In the browser the name comes from WebGL's unmasked renderer, since `GL_RENDERER` is masked there.
+`SceneViewWidget::setFullQualityOnSoftwareRasterizer(true)` (default: `PJ_SCENE3D_SOFTWARE_HDR=1`) keeps the chain for
+the views that adopt a QRhi afterwards. The QRhi display tests set it in their `SetUp`, so the goldens and stage tests
+still cover the chain on CI's software rasterizers; the browser's quality spec sets it through its acceptance probe.
+Evidence: [TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md) "Software rasterizers draw the direct pass".
+
 **Resource owners and release order** (`scene_view_widget_rhi_quality_p.h`): `ShadowResources`, `HdrResources`
 (per QRhi: render-pass descriptors, samplers, present pipeline; per size: attachments, targets, present bindings),
 `SsaoResources`, `EdlResources`. Each `release()` deletes what binds a resource before the resource (bindings,
