@@ -173,6 +173,22 @@
    "sha256": "052979f5a799e046315fa2e83c3aab50a875ac646dc67713914b8d631496393e",
    "bytes": 22169
   },
+  "v1/lilocbench/README.txt": {
+   "sha256": "1c8e607de25841e681cb3f315737e5cc94f807da814dc6779678e65eeea96bc1",
+   "bytes": 3361
+  },
+  "v1/lilocbench/lilocbench_layout.pj4.xml": {
+   "sha256": "487045af8857583bd1c4b9a8ebbf9af8245d2a20e6c29c729a8afe7c519af15e",
+   "bytes": 9577
+  },
+  "v1/lilocbench/lilocbench_office_300s.mcap": {
+   "sha256": "d0f338250526b2a6277fa6f290b023ee9d13a12bf368acc60e6e58c41ff80f5c",
+   "bytes": 118326193
+  },
+  "v1/lilocbench/lilocbench_thumbnail.png": {
+   "sha256": "eae4bd0c8c0ebf8353def977313e2f0ad0bad72abbf7753ec99afd8c496aaf7f",
+   "bytes": 28006
+  },
   "v1/nissan_leaf/builtin_filters_layout.pj4.xml": {
    "sha256": "596cb417a24e831da3b1075abf1ef646477132f7e7e1fb3dc96b7fc60fcaef55",
    "bytes": 4144

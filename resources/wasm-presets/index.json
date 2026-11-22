@@ -20,6 +20,13 @@
       "description": "A car on a suburban road in Silicon Valley from PandaSet: its six cameras with 3D-box overlays, its lidar and the boxes in 3D.",
       "layout": "https://assets.plotjuggler.io/v1/pandaset/pandaset_layout_v4.pj4.xml",
       "thumbnail": "https://assets.plotjuggler.io/v1/pandaset/pandaset_thumbnail.png"
+    },
+    {
+      "id": "lilocbench",
+      "title": "Office robot",
+      "description": "A wheeled robot driving room to room in an office, from LILocBench: its camera, depth cloud and laser scans on the floor map.",
+      "layout": "https://assets.plotjuggler.io/v1/lilocbench/lilocbench_layout.pj4.xml",
+      "thumbnail": "https://assets.plotjuggler.io/v1/lilocbench/lilocbench_thumbnail.png"
     }
   ]
 }

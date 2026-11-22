@@ -759,7 +759,7 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_INDEX = require('../../resources/wasm-presets/index.json');
-const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset'];
+const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset', 'lilocbench'];
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
 // The asset-host path of sample `id`'s layout.
 const sampleLayout = id => SAMPLE_INDEX.presets.find(entry => entry.id === id).layout
@@ -941,6 +941,29 @@ async function expectPandasetViews(run) {
   await expectSceneMoves(run, 2, pandasetReady);
 }
 
+// Both LILocBench 3D views (the top-down map and the orbit view), in the map frame: the office map as an
+// occupancy grid and the two laser scans as clouds.
+const lilocbenchLoaded = (models, dock) => dock.fixed === 'map'
+  && dock.data.points.live === 2 && dock.data.occupancy.live === 1;
+
+// The map and both scans drawn as well.
+const lilocbenchReady = (models, dock) => lilocbenchLoaded(models, dock)
+  && dock.data.points.rendered === 2 && dock.data.occupancy.cells > 0;
+
+// The LILocBench sample's two plots (the ground truth's correction of the odometry, and the XY path by
+// odometry against the ground truth), its front camera, the depth cloud of its orbit view, and its two 3D
+// views moving: both follow the robot.
+async function expectLilocbenchViews(run) {
+  await expectPlots(run, [
+    ['x', 'y'].map(axis => `tf/map/odom/translation/${axis}`), ['Wheel odometry', 'Ground truth'],
+  ]);
+  const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual([[1, true]]);
+  const moved = await expectSceneMoves(run, 2, lilocbenchReady);
+  expect(moved.docks.map(dock => dock.data.depth.live).sort()).toEqual([0, 1]);
+  expect(moved.docks.some(dock => dock.data.depth.vertices > 0)).toBe(true);
+}
+
 // The Built-in filters sample: the raw gyro yaw rate, the same signal through the built-in
 // moving_average, and its built-in integral (the heading change), restored from the layout's
 // <data_processors> and drawn.
@@ -964,6 +987,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     await page.close();
     for (const [id, expectViews] of [
       ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['pandaset', expectPandasetViews],
+      ['lilocbench', expectLilocbenchViews],
     ]) {
       const run = await bootSamples(context, errors, samples);
       let dialog;

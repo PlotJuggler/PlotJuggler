@@ -17,12 +17,13 @@ rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRES
 | `builtin_filters` | `v1/nissan_leaf/builtin_filters_layout.pj4.xml`, `builtin_filters_thumbnail.png` |
 | `anymal` | `v1/grand_tour_2/anymal_layout.pj4.xml`, `anymal_thumbnail.png` |
 | `pandaset` | `v1/pandaset/pandaset_layout_v4.pj4.xml`, `pandaset_thumbnail.png` |
+| `lilocbench` | `v1/lilocbench/lilocbench_layout.pj4.xml`, `lilocbench_thumbnail.png` |
 
 The layouts, the thumbnails and this file are PlotJuggler's own and fall under
 this repository's license (MPL-2.0); the thumbnails are PlotJuggler renders of
 the loaded samples (browser screenshots, downscaled to 384x216, 8-bit palette; the
 ANYmal and PandaSet ones show only a 3D view, the built-in filters one its
-two plots).
+two plots; the LILocBench one is a desktop render of its orbit view).
 
 ## `builtin_filters` — built-in filters
 
@@ -148,3 +149,52 @@ with the PandaSet Dataset Terms; the `README_v3.txt` beside the recording gives 
 attribution, lists the changes made, as the licence requires, and states that the
 recording is not endorsed by Scale AI or Hesai. The recording was made with a
 converter outside this repository; the topics and processing above are what it did.
+
+## `lilocbench` — office robot
+
+The layout loads `v1/lilocbench/lilocbench_office_300s.mcap` (118,326,193 bytes, SHA-256
+`d0f338250526b2a6277fa6f290b023ee9d13a12bf368acc60e6e58c41ff80f5c`, pinned by
+the layout's `content_sha256`) from the asset host: 300 s of
+[LILocBench](https://www.ipb.uni-bonn.de/html/projects/localization_benchmark/)
+(Photogrammetry & Robotics Lab, University of Bonn), the first 300 s of its
+"mapping" sequence, a Clearpath Dingo driving through the rooms of an office
+floor in December 2024; Unix time 1733375659.713 to 1733375959.644, with the
+original timestamps. It was converted from the sequence's camera-free bag, its
+image archive, its ground-truth file and the benchmark's office map, and holds:
+
+- `/scan_front`, `/scan_rear` (15 Hz) and `/odom` (14.5 Hz): both SICK laser
+  scans and the wheel odometry, unchanged;
+- `/camera/color/image` and `/camera/depth/image` (5 Hz): every third frame of
+  the front RealSense D455, downscaled from 640x480 to 320x240, the colour as JPEG
+  (quality 80), the depth as 16-bit PNG in millimetres, with their `camera_info`
+  for that size. The left and right cameras are not included;
+- `/ground_truth/pose` (20 Hz): the benchmark's ground-truth pose of `base_link`
+  (from ceiling markers), x, y and yaw;
+- `/tf`: `map` to `odom` computed from the ground truth and the odometry, so that
+  `map` to `base_link` is the ground truth, `odom` to `base_link`, and the laser
+  and camera frames. The localization shown is therefore the dataset's ground
+  truth, not an algorithm's estimate;
+- `/odom_in_map`: the wheel odometry expressed in `map` from the first pose, to
+  show its drift against the ground truth;
+- `/map`: the benchmark's occupancy map, cropped to the 31.6 m x 19.7 m it knows.
+
+`README.txt` beside it gives the attribution and the citation and lists the changes
+made. The layout shows the map from above (top-down orthographic) following the
+robot, with both scans; the front camera; an orbit view that follows the robot too,
+with the depth image as a cloud; the correction the ground truth applies to the
+odometry over time; and an XY plot of the path by odometry against the ground truth.
+Both follow cameras start on the robot's first position, because a follow camera
+tracks the frame's movement and does not jump to it.
+
+Privacy: one person, the robot's operator, is in view of the camera from 112.5 s to
+118.5 s. His face is blurred in those 32 images; he is also seen from the shoulders
+down from 65 s to 67 s. The frames were reviewed at one-second spacing for other
+people. Whiteboards and posters are visible but not legible at 320x240.
+
+Redistribution basis: the authors distribute LILocBench under the Creative Commons
+Attribution-NonCommercial-ShareAlike license (their page names no version), so this
+sample may be hosted only while its use is non-commercial, and the recording is
+shared under the same license; the `README.txt` beside it gives the attribution,
+lists the changes and states that it is not endorsed by the authors. The recording
+was made with a converter outside this repository; the topics and processing above
+are what it did.

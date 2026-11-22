@@ -271,7 +271,9 @@ fake bridge behind Caddy and `docs/wasm/Caddyfile` (see
 They open every sample into its views (the ANYmal robot with all its meshes, its
 compressed lidar scan, its three camera views and its joint, IMU and speed plots;
 the PandaSet car's six cameras with their 3D-box overlays, its two 3D views with
-its lidar and the boxes, and its yaw-rate and speed plots; the
+its lidar and the boxes, and its yaw-rate and speed plots; the LILocBench robot's
+front camera, its two 3D views with the office map, both laser scans and, in the
+orbit view, the depth cloud, and its two plots; the
 built-in filters sample's raw and moving-average plots, its filter restored from
 the layout), check that seeking
 between two points inside the recording changes what each 3D view draws (a scene
