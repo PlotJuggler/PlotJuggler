@@ -1219,3 +1219,33 @@ test('an exception thrown by a plugin fails its load with a reason and leaves th
   ).toContain('plugin=MCAP Loader');
   expect(errors).toEqual([]);
 });
+
+test('a preference the UI changes reaches durable storage without an explicit sync and survives refresh', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = [];
+  const consoleMessages = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  page.on('console', message => consoleMessages.push(message.text()));
+  // localStorage is page-side, so this reads no console line Firefox could lose.
+  const storedTracker = () => page.evaluate(() => {
+    const match = Object.values(localStorage).join('\n').match(/"MainWindow\.timeTrackerSetting":(\d+)/);
+    return match ? Number(match[1]) : null;
+  });
+
+  await page.goto(process.env.PJ_WASM_URL || 'http://127.0.0.1:6931/plotjuggler4.html');
+  await waitForQtApp(page, consoleMessages);
+  expect(await storedTracker()).toBeNull();
+
+  // The real toolbar button: MainWindow writes the default QSettings, nothing calls syncPreferences().
+  await page.evaluate(() => window.pjWasmCycleTimeTrackerProbe());
+  await expect.poll(storedTracker, { timeout: 10000 }).toBe(2);
+
+  const readyCount = consoleMessages.filter(message => message.includes('PJ_WASM_APP_READY')).length;
+  await page.reload();
+  await waitForQtApp(page, consoleMessages, readyCount);
+  expect(await storedTracker()).toBe(2);
+  // A second click proceeds from the restored value (kValueName -> kLineOnly), not from the default.
+  await page.evaluate(() => window.pjWasmCycleTimeTrackerProbe());
+  await expect.poll(storedTracker, { timeout: 10000 }).toBe(0);
+  expect(errors).toEqual([]);
+});
