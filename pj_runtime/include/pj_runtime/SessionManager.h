@@ -683,7 +683,7 @@ class SessionManager : public QObject {
   bool use_time_offset_ = false;
   // Per-dataset earliest-stamp pin for displayOffset(). Ingest only lowers it; replacement invalidates it.
   mutable std::unordered_map<DatasetId, Timestamp> dataset_min_cache_;
-  // Earliest raw stamp across all datasets, for globalTimeReference(); nullopt = not computed, 0 = no data.
+  // Earliest raw stamp across all datasets, for globalTimeReference(); nullopt = not computed or no data yet.
   // Independent of the toggle; reset on every commit and ingest.
   // The recompute trusts the per-dataset pins instead of rescanning, so every path that can raise a dataset's
   // earliest sample (removeDataset, evictObjectTopics, clearAllObjects, a refill's close, refreshDatasetTimeReference)
