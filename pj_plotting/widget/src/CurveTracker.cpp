@@ -279,6 +279,17 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
 
   if (visible_points > 0) {
     label_target_y_ = 0.5 * (max_y + min_y);
+    // QwtPlotMarker centres the box on its value: near the top or bottom of the view, half of it would leave the
+    // canvas.
+    const QwtScaleMap y_map = plot_->canvasMap(QwtPlot::yLeft);
+    const double half_height_px = 0.5 * marker_text.textSize().height();
+    const double low_px = std::min(y_map.p1(), y_map.p2()) + half_height_px;
+    const double high_px = std::max(y_map.p1(), y_map.p2()) - half_height_px;
+    // Not on a canvas shorter than the box, which includes one not laid out yet, where invTransform() divides by zero.
+    if (const double target_px = y_map.transform(label_target_y_);
+        low_px < high_px && (target_px < low_px || target_px > high_px)) {
+      label_target_y_ = y_map.invTransform(std::clamp(target_px, low_px, high_px));
+    }
   }
 
   const double canvas_ratio = view_rect.width() / static_cast<double>(std::max(1, plot_->width()));
