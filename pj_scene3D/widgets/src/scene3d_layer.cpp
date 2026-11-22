@@ -42,6 +42,18 @@ void Scene3DLayer::noteRenderFailure(QString warning) {
   renderWarningChanged();
 }
 
+void Scene3DLayer::noteDrawnObject(bool is_current, std::optional<PJ::Timepoint> cursor) {
+  if (cursor.has_value()) {
+    resolved_cursor_ = cursor;
+  }
+  if (is_current) {
+    drawn_current_at_ = resolved_cursor_;
+    placement_hold_->cursor.reset();
+  } else {
+    placement_hold_->cursor = drawn_current_at_;
+  }
+}
+
 void Scene3DLayer::noteRenderSuccess() {
   noteRenderFailure({});
 }

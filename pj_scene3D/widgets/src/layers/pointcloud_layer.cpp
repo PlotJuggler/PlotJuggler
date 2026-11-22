@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLoggingCategory>
+#include <QScopeGuard>
 #include <QSignalBlocker>
 #include <QStackedWidget>
 #include <QVBoxLayout>
@@ -1086,6 +1087,9 @@ void PointCloudLayer::renderAt(int64_t time_ns) {
   if (ctx_.session == nullptr) {
     return;
   }
+  // On every way out: a compressed sample still decoding leaves the previous cloud drawn.
+  const auto note_drawn =
+      qScopeGuard([this, time_ns] { noteDrawnObject(last_pushed_id_ == wanted_, PJ::fromRaw(time_ns)); });
   PJ::ObjectStore& store = ctx_.session->objectStore();
   // Metadata-first gate: identify the entry latestAt() would resolve (a pure binary search) and consult the sample
   // memos BEFORE touching payload bytes. Resolving first would re-fetch an evicted pool seed (file read plus
@@ -1213,6 +1217,7 @@ void PointCloudLayer::onDecodeFinished(DecodeResult result) {
     }
     if (is_current) {
       pushCloud(*result.cloud, result.id);
+      noteDrawnObject(/*is_current=*/true);
     }
     return;
   }

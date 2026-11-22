@@ -137,6 +137,19 @@ TEST(ObjectPlacement, HoldKeepsAPlacedObjectWhenItsTfSampleIsEvicted) {
   EXPECT_EQ(placedX(tf, ms(1500), sec(12), "map", "lidar", &hold), 12.0) << "another stamp does not reuse the hold";
 }
 
+// A layer still draws the scan of 1 s while the scan of 2 s is being prepared: with the hold's cursor at the last time
+// the drawn scan was current it stays 1 m ahead of base_link, instead of 9 m behind where the cursor at 2 s puts it.
+TEST(ObjectPlacement, HoldCursorKeepsAnObjectTheCursorLeftWhereItWasDrawn) {
+  TransformBuffer tf(TransformBuffer::kKeepAll);
+  feedMovingBody(tf);
+  PlacementHold hold;
+  EXPECT_EQ(placedX(tf, sec(1), sec(1), "base_link", "lidar", &hold), 1.0);
+  hold.cursor = sec(1);
+  EXPECT_EQ(placedX(tf, sec(1), sec(2), "base_link", "lidar", &hold), 1.0);
+  hold.cursor.reset();
+  EXPECT_EQ(placedX(tf, sec(1), sec(2), "base_link", "lidar", &hold), -9.0);
+}
+
 TEST(ObjectPlacement, ObjectStampFollowsTheMergeShift) {
   EXPECT_EQ(objectStamp(1'000, 0), TimePoint{std::chrono::nanoseconds(1'000)});
   EXPECT_EQ(objectStamp(1'000, 5'000), TimePoint{std::chrono::nanoseconds(6'000)});

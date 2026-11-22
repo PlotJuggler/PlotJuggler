@@ -42,6 +42,10 @@ struct PlacementHold {
   std::string source;
   TimePoint stamp{};
   Transform root_from_source;
+  // Set by a layer that still draws an object the cursor has left, because its successor is not drawable yet (it is
+  // decoding on a worker): the last cursor the drawn object was current at. placeObject() places it at that cursor,
+  // so it stays where it was drawn; placed at the new cursor it would jump by the fixed frame's motion until replaced.
+  std::optional<TimePoint> cursor;
 };
 
 // fixed<-source for an object stamped `object_stamp`, composed through the root of
@@ -56,13 +60,17 @@ struct PlacementHold {
 // kMaxStampPastTf past the newest one; such an object stays visible where the cursor
 // puts it. `hold` (nullable) keeps the last root<-source placed: when live TF has
 // since evicted the sample at that same stamp, it is reused instead of the fallback,
-// so a stopped scan does not jump. Everything that places one layer (drawing, scene
-// bounds, render keys) passes that layer's hold, so they agree.
+// so a stopped scan does not jump. A hold with a `cursor` replaces the cursor by it.
+// Everything that places one layer (drawing, scene bounds, render keys) passes that
+// layer's hold, so they agree.
 [[nodiscard]] inline std::optional<Transform> placeObject(
     const TransformBuffer& tf, const std::string& fixed, const std::string& source,
     std::optional<TimePoint> object_stamp, TimePoint cursor, PlacementHold* hold = nullptr) {
   using pj::tf::Clock;
   using pj::tf::LookupError;
+  if (hold != nullptr && hold->cursor.has_value()) {
+    cursor = *hold->cursor;
+  }
   if (object_stamp.has_value()) {
     std::string root = tf.rootOf(source);
     const auto fixed_from_root = tf.tryLookupTransform(fixed, root, cursor, Clock::kEntry);
@@ -78,7 +86,10 @@ struct PlacementHold {
             newest.has_value() && *newest != TimePoint{} && *object_stamp > *newest + kMaxStampPastTf;
         if (!past_the_tf) {
           if (hold != nullptr) {
-            *hold = PlacementHold{std::move(root), source, *object_stamp, *root_from_source};
+            hold->root = std::move(root);
+            hold->source = source;
+            hold->stamp = *object_stamp;
+            hold->root_from_source = *root_from_source;
           }
           return *fixed_from_root * *root_from_source;
         }

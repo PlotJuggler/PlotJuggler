@@ -19,7 +19,10 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
   cursor times `root <- source` at the stamp; `core/tf/object_placement.h::placeObject`). With a moving fixed frame
   a map-frame object stays put and a scan stays where it was captured. An unstamped object, one stamped before the
   first TF on its chain or more than `kMaxStampPastTf` past the newest falls back to the cursor; a placed object
-  whose TF sample live retention has evicted keeps its last placement (`PlacementHold`). Every other layer
+  whose TF sample live retention has evicted keeps its last placement (`PlacementHold`). A cloud the cursor has left
+  while its successor is still being prepared on a worker (a compressed decode, a depth back-projection) keeps the
+  placement of the last cursor it was current at (`Scene3DLayer::noteDrawnObject`), so in a moving fixed frame it
+  does not jump by the frame's motion for the frames the worker takes. Every other layer
   (occupancy grid, mesh map, SceneEntities, robot model) and the TF overlay are placed at the tracker time in the
   entry clock. There is no per-layer toggle; Foxglove's `frame_locked` is not honoured. The per-consumer table is
   in `docs/derived_objects/ARCHITECTURE.md` "TF".

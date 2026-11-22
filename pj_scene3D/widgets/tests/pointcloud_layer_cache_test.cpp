@@ -36,6 +36,7 @@
 #include "pj_plugins/sdk/message_parser_plugin_base.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/Time.h"
+#include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/layers/pointcloud_layer.h"
 #include "pj_scene3d_widgets/scene3d_layer.h"
 #include "pj_tf/tf_buffer.h"
@@ -301,6 +302,57 @@ TEST(PointCloudLayerPlacement, EvictedTfSampleKeepsTheCloudWhereItWasCaptured) {
 
   feed_until(2500, 12000);
   EXPECT_EQ(layer.renderKey(PJ::fromRaw(12000 * kMillisecond)), captured);
+}
+
+// Playback in the lidar's own moving frame: the cursor reaches a compressed cloud that is still decoding, so the layer
+// keeps drawing the previous one. It stays where it was drawn, not one step of the frame's motion behind, where the
+// new cursor would place it for the frames the decode takes.
+TEST(PointCloudLayerPlacement, CloudLeftByTheCursorStaysPutWhileItsSuccessorDecodes) {
+  g_mixed_parser_calls.store(0);
+  PJ::SessionManager session;
+  PJ::ObjectStore& store = session.objectStore();
+  const PJ::ObjectTopicId topic_id = registerCloudTopic(store, /*dataset_id=*/1);
+  ASSERT_TRUE(store.pushOwned(topic_id, 100, std::vector<uint8_t>{0x01}).has_value());   // raw
+  ASSERT_TRUE(store.pushOwned(topic_id, 2000, std::vector<uint8_t>{0x02}).has_value());  // compressed (bogus codec)
+  session.registerObjectTopicParser(topic_id, makeBoundHandle(kSchema, []() noexcept -> void* {
+                                      return new CountingObjectParser(
+                                          kSchema, PJ::sdk::BuiltinObjectType::kPointCloud, &g_mixed_parser_calls,
+                                          &emitMixedCloud);
+                                    }));
+  auto tf = std::make_shared<pj::tf::TransformBuffer>(pj::tf::TransformBuffer::kKeepAll);
+  for (const auto& [stamp, x] : {std::pair{100, 1.0}, std::pair{2000, 2.0}}) {
+    ASSERT_TRUE(tf->setTransform(
+                      pj::tf::StampedTransform{
+                          .stamp = PJ::fromRaw(stamp),
+                          .parent_frame = "world",
+                          .child_frame = "lidar",
+                          .transform = pj::tf::Transform(glm::dvec3{x, 0.0, 0.0}, glm::dquat{1, 0, 0, 0})})
+                    .has_value());
+  }
+
+  pj::scene3d::Scene3DLayerContext ctx;
+  ctx.session = &session;
+  ctx.tf_buffer = tf;
+  pj::scene3d::PointCloudLayer layer(topic_id, u"cloud"_s, PJ::sdk::BuiltinObjectType::kPointCloud);
+  ASSERT_TRUE(layer.attach(ctx));
+  layer.setFixedFrame(u"lidar"_s);
+  // What the view draws the layer with at `cursor_ns` (SceneViewWidget::resolveFixedFromSource).
+  const auto drawn_x = [&](int64_t cursor_ns) {
+    const auto placed = pj::scene3d::placeObject(
+        *tf, "lidar", layer.renderFrameId(), layer.renderStamp(), PJ::fromRaw(cursor_ns), layer.placementHold());
+    return placed.has_value() ? std::optional<double>(placed->t.x) : std::nullopt;
+  };
+  layer.renderAtForTest(100);
+  ASSERT_EQ(drawn_x(100), 0.0);
+
+  layer.renderAtForTest(2000);
+  ASSERT_TRUE(layer.decodeInFlightForTest());
+  ASSERT_EQ(layer.lastPushedStampForTest(), std::optional<int64_t>{100});
+  EXPECT_EQ(drawn_x(2000), 0.0) << "the cloud still drawn moved with the cursor";
+
+  layer.renderAtForTest(100);  // the drawn cloud is the cursor's again: it follows the cursor
+  EXPECT_EQ(drawn_x(100), 0.0);
+  EXPECT_FALSE(layer.placementHold()->cursor.has_value());
 }
 
 // Stamp 0 is data, not a sentinel — attach renders it and refreshNow()

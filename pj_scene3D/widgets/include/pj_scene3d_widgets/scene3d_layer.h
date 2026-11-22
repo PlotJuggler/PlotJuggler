@@ -176,9 +176,16 @@ class Scene3DLayer : public PJ::ISceneLayer {
   void onWarningChanged() override {
     emit statusWarningChanged();
   }
+  // For a layer that prepares its object on a worker, called whenever the drawn object or the cursor changes:
+  // `is_current` says whether the layer draws the object the cursor asks for, `cursor` is the cursor just resolved
+  // (omitted when only the drawn object changed). While the layer still draws the previous object, that one keeps the
+  // placement of the last cursor it was current at (PlacementHold::cursor).
+  void noteDrawnObject(bool is_current, std::optional<PJ::Timepoint> cursor = std::nullopt);
 
  private:
   std::unique_ptr<PlacementHold> placement_hold_;  // never null
+  std::optional<PJ::Timepoint> resolved_cursor_;   // the last cursor noteDrawnObject() was given
+  std::optional<PJ::Timepoint> drawn_current_at_;  // the last cursor the drawn object was current at
 };
 
 }  // namespace pj::scene3d
