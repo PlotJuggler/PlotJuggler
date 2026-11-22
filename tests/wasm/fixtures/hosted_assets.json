@@ -129,14 +129,6 @@
    "sha256": "0f7c208ab53d595a70711034b9ebe4dd47a4536ed0ccb1cc08d732c3ecd7ce1a",
    "bytes": 55009
   },
-  "v1/boreas/README.txt": {
-   "sha256": "536f8962a2da7a3a22f416dc737269d11f7685052e9fd21017862e5efe9d0f5e",
-   "bytes": 2161
-  },
-  "v1/boreas/boreas_city_drive.mcap": {
-   "sha256": "db4e548caa266c5408c266bed953610e82676016ae7f48c890af5b53116db82b",
-   "bytes": 261292684
-  },
   "v1/box_model/LICENSE": {
    "sha256": "2799e3efebb1d4b4b829e9a0b7387e25c70a9f99a801d636cc1a297b9f01932e",
    "bytes": 1093
@@ -177,21 +169,13 @@
    "sha256": "cd16c23dfc5566764376c55fb39fc7afd5666139341fe1491ec743e3e028f154",
    "bytes": 2532014
   },
-  "v2/boreas_vehicle/LICENSE": {
-   "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499",
-   "bytes": 7048
+  "v1/waymo/README.txt": {
+   "sha256": "5db88d68bef35c7457fa2e474245608cfe0032308fd57cb00d7abef4443b8216",
+   "bytes": 2436
   },
-  "v2/boreas_vehicle/PROVENANCE.txt": {
-   "sha256": "a7c023d1732b25384e5bfddd63eca11669953f27f8dce4d5f88a53c3e1e25463",
-   "bytes": 1475
-  },
-  "v2/boreas_vehicle/meshes/prius_hybrid.glb": {
-   "sha256": "abf38529f6f71203bf4a2c052f091da19473ff0c2c83bea39a0cb07ab8836387",
-   "bytes": 1278948
-  },
-  "v2/boreas_vehicle/vehicle.urdf": {
-   "sha256": "6e56ca59aac7a7c82a81f0649190985250a32d0a542b5701f84afb705fba2df7",
-   "bytes": 847
+  "v1/waymo/waymo_av_demo.mcap": {
+   "sha256": "59c8cf1b6bae8226f9d5eb3f79103b6678666b463e5aa8b456f03b14683f1927",
+   "bytes": 170187347
   }
  }
 }
