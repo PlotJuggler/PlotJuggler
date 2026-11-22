@@ -96,7 +96,7 @@ std::optional<OccupancyGridLayer::ParsedSettings> OccupancyGridLayer::parseSetti
     return std::nullopt;
   }
   settings.color_scheme = scheme_text == "costmap"_L1 ? OccupancyColorScheme::kCostmap : OccupancyColorScheme::kMap;
-  if (!detail::parseFiniteFloat(element, "opacity", 0.7f, 0.0f, 1.0f, settings.opacity)) {
+  if (!PJ::readXmlFloat(element, u"opacity"_s, 0.7f, 0.0f, 1.0f, settings.opacity)) {
     return std::nullopt;
   }
   return settings;

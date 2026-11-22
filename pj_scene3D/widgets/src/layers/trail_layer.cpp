@@ -125,35 +125,26 @@ bool TrailLayer::xmlLoadState(const QDomElement& element) {
   return loadStyle(element);
 }
 
-namespace {
-
-// The saved source attributes, reported alike whether they are judged (parseSource) or not (a pose layer's nested
-// trail, whose source is that layer's topic).
-void noteSourceOptions(const QDomElement& element) {
-  PJ::XmlOptionsRecorder::noteOption(
-      element, detail::xmlOption(u"source_kind"_s, u"enum"_s, {u"tf_frame"_s, u"pose_topic"_s}));
-  for (const QString& attribute :
-       {u"frame"_s, u"source_topic_name"_s, u"source_dataset_source"_s, u"source_dataset_path"_s}) {
-    PJ::XmlOptionsRecorder::noteOption(element, detail::xmlOption(attribute, u"text"_s));
+std::optional<TrailLayer::ParsedSource> TrailLayer::parseSource(const QDomElement& element, bool judge) {
+  // Every attribute is read before any is judged, so a saved element reports all of them.
+  ParsedSource source;
+  const bool kind_ok = PJ::readXmlEnum(
+      element, u"source_kind"_s, {u"tf_frame"_s, u"pose_topic"_s}, {}, source.kind,
+      judge ? PJ::XmlBadValue::kRefuse : PJ::XmlBadValue::kTolerate);
+  source.frame = PJ::readXmlText(element, u"frame"_s);
+  source.topic_name = PJ::readXmlText(element, u"source_topic_name"_s);
+  const bool dataset_ok = PJ::readXmlInt(
+      element, u"source_dataset_id"_s, std::nullopt, 1, std::numeric_limits<PJ::DatasetId>::max(), source.dataset_id);
+  source.dataset_source = PJ::readXmlText(element, u"source_dataset_source"_s);
+  source.dataset_path = PJ::readXmlText(element, u"source_dataset_path"_s);
+  if (!judge) {
+    return source;
   }
-  PJ::XmlOptionsRecorder::noteOption(
-      element,
-      detail::xmlOption(
-          u"source_dataset_id"_s, u"int"_s, {}, 1.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
-}
-
-}  // namespace
-
-std::optional<TrailLayer::ParsedSource> TrailLayer::parseSource(const QDomElement& element) {
-  noteSourceOptions(element);
-  ParsedSource source{
-      .kind = element.attribute(u"source_kind"_s),
-      .frame = element.attribute(u"frame"_s),
-      .topic_name = element.attribute(u"source_topic_name"_s),
-      .dataset_source = element.attribute(u"source_dataset_source"_s),
-      .dataset_path = element.attribute(u"source_dataset_path"_s)};
-  if (source.kind != "tf_frame"_L1 && source.kind != "pose_topic"_L1) {
-    PJ::XmlOptionsRecorder::noteRejection(element, u"source_kind"_s, u"expected tf_frame or pose_topic"_s);
+  if (!kind_ok) {
+    return std::nullopt;
+  }
+  if (source.kind.isEmpty()) {
+    PJ::XmlOptionsRecorder::noteRejection(element, u"source_kind"_s, u"required"_s);
     return std::nullopt;
   }
   if (source.kind == "tf_frame"_L1) {
@@ -167,14 +158,8 @@ std::optional<TrailLayer::ParsedSource> TrailLayer::parseSource(const QDomElemen
     PJ::XmlOptionsRecorder::noteRejection(element, u"source_topic_name"_s, u"a pose_topic trail needs a topic name"_s);
     return std::nullopt;
   }
-  if (element.hasAttribute(u"source_dataset_id"_s)) {
-    bool id_ok = false;
-    const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
-    if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
-      PJ::XmlOptionsRecorder::noteRejection(element, u"source_dataset_id"_s, u"expected a positive dataset id"_s);
-      return std::nullopt;
-    }
-    source.dataset_id = static_cast<PJ::DatasetId>(value);
+  if (!dataset_ok) {
+    return std::nullopt;
   }
   return source;
 }
@@ -184,20 +169,14 @@ bool TrailLayer::validateXml(const QDomElement& element) {
     return false;
   }
   // Both halves always run, so a saved element reports every attribute it carries.
-  const bool source_ok = parseSource(element).has_value();
+  const bool source_ok = parseSource(element, /*judge=*/true).has_value();
   return parseStyle(element).has_value() && source_ok;
 }
 
 bool TrailLayer::validateStyleXml(const QDomElement& element) {
-  noteSourceOptions(element);
   // xmlLoadState ignores the source, so a malformed one is only noted: a strict caller refuses it, a layout load not.
-  detail::noteTolerantToken(element, u"source_kind"_s, u"enum"_s, {u"tf_frame"_s, u"pose_topic"_s});
-  if (element.hasAttribute(u"source_dataset_id"_s)) {
-    bool id_ok = false;
-    const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
-    if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
-      PJ::XmlOptionsRecorder::noteRejection(element, u"source_dataset_id"_s, u"expected a positive dataset id"_s);
-    }
+  if (PJ::XmlOptionsRecorder::active()) {
+    static_cast<void>(parseSource(element, /*judge=*/false));
   }
   return parseStyle(element).has_value();
 }
@@ -210,7 +189,7 @@ TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& elem
   if (element.attribute(u"source_kind"_s) == "pose_topic"_L1 && ctx_.session == nullptr) {
     return XmlLoadResult::kDeferred;
   }
-  const std::optional<ParsedSource> saved = parseSource(element);
+  const std::optional<ParsedSource> saved = parseSource(element, /*judge=*/true);
   if (!saved.has_value()) {
     return XmlLoadResult::kInvalid;
   }
@@ -257,9 +236,9 @@ std::optional<TrailLayer::ParsedStyle> TrailLayer::parseStyle(const QDomElement&
   std::optional<QColor> future = QColor(u"#9ecae1"_s);
   if (!detail::parseColor(element, "past_color", u"#1f77b4"_s, past) ||
       !detail::parseColor(element, "future_color", u"#9ecae1"_s, future) ||
-      !detail::parseFiniteFloat(element, "thickness", 4.0F, 1.0F, 8.0F, style.thickness) ||
-      !detail::parseZeroOne(element, "past_visible", true, style.past_visible) ||
-      !detail::parseZeroOne(element, "future_visible", true, style.future_visible)) {
+      !PJ::readXmlFloat(element, u"thickness"_s, 4.0F, 1.0F, 8.0F, style.thickness) ||
+      !detail::readZeroOne(element, u"past_visible"_s, true, style.past_visible) ||
+      !detail::readZeroOne(element, u"future_visible"_s, true, style.future_visible)) {
     return std::nullopt;
   }
   style.past_color = *past;

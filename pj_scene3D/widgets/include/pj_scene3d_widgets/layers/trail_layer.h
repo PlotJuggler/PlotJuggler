@@ -190,7 +190,8 @@ class TrailLayer : public Scene3DLayer {
     QString dataset_source;
     QString dataset_path;
   };
-  [[nodiscard]] static std::optional<ParsedSource> parseSource(const QDomElement& element);
+  // `judge` false only reports the source attributes: a bad value is noted, nothing is refused.
+  [[nodiscard]] static std::optional<ParsedSource> parseSource(const QDomElement& element, bool judge);
   bool loadStyle(const QDomElement& element);
   void adoptPolyline(TrailPolyline polyline);
   void appendTail(TrailPolyline tail);

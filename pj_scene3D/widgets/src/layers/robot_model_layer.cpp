@@ -368,19 +368,22 @@ std::optional<RobotModelLayer::ParsedSettings> RobotModelLayer::parseSettings(co
   settings.source_type = sourceTypeFromString(source_type_text);
   settings.display_mode = displayModeFromString(display_mode_text);
   // Read by xmlLoadStateResult itself (an absent source_value keeps the current one); reported here.
-  static_cast<void>(PJ::readXmlText(element, u"source_value"_s));
-  static_cast<void>(PJ::readXmlText(element, u"frame_prefix"_s));
-  if (!detail::parseTrueFalse(element, "visible", true, settings.visible) ||
-      !detail::parseTrueFalse(element, "ignore_collada_up_axis", false, settings.ignore_collada_up_axis) ||
-      !detail::parseTrueFalse(element, "remote_resources_only", false, settings.remote_resources_only) ||
+  if (PJ::XmlOptionsRecorder::active()) {
+    PJ::readXmlText(element, u"source_value"_s);
+    PJ::readXmlText(element, u"frame_prefix"_s);
+  }
+  if (!PJ::readXmlBool(element, u"visible"_s, true, settings.visible) ||
+      !PJ::readXmlBool(element, u"ignore_collada_up_axis"_s, false, settings.ignore_collada_up_axis) ||
+      !PJ::readXmlBool(element, u"remote_resources_only"_s, false, settings.remote_resources_only) ||
       !detail::parseColor(element, "color", {}, settings.color)) {
     return std::nullopt;
   }
   settings.topic_name = PJ::readXmlText(element, u"source_topic_name"_s);
-  PJ::XmlOptionsRecorder::noteOption(
-      element,
-      detail::xmlOption(
-          u"source_dataset_id"_s, u"int"_s, {}, 1.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
+  if (!PJ::readXmlInt(
+          element, u"source_dataset_id"_s, std::nullopt, 1, std::numeric_limits<PJ::DatasetId>::max(),
+          settings.dataset_id)) {
+    return std::nullopt;
+  }
   settings.dataset_source = PJ::readXmlText(element, u"source_dataset_source"_s);
   settings.dataset_path = PJ::readXmlText(element, u"source_dataset_path"_s);
   const bool has_topic_name = element.hasAttribute(u"source_topic_name"_s);
@@ -398,20 +401,11 @@ std::optional<RobotModelLayer::ParsedSettings> RobotModelLayer::parseSettings(co
         element, u"source_topic_name"_s, u"required when a source_dataset_* attribute is present"_s);
     return std::nullopt;
   }
-  if (has_dataset_id) {
-    bool id_ok = false;
-    const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
-    if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
-      PJ::XmlOptionsRecorder::noteRejection(element, u"source_dataset_id"_s, u"expected a positive dataset id"_s);
-      return std::nullopt;
-    }
-    settings.dataset_id = static_cast<PJ::DatasetId>(value);
-  }
   if (has_topic_name && settings.topic_name.isEmpty()) {
     PJ::XmlOptionsRecorder::noteRejection(element, u"source_topic_name"_s, u"must not be empty"_s);
     return std::nullopt;
   }
-  PJ::XmlOptionsRecorder::noteOption(element, detail::xmlOption(u"package_url_roots"_s, u"json"_s));
+  PJ::XmlOptionsRecorder::noteOption(element, {.attribute = u"package_url_roots"_s, .type = u"json"_s});
   std::optional<QMap<QString, QUrl>> roots = parsePackageUrlRoots(element.attribute(u"package_url_roots"_s));
   if (!roots.has_value()) {
     PJ::XmlOptionsRecorder::noteRejection(

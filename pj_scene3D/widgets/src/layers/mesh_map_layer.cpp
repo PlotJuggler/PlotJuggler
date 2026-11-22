@@ -119,9 +119,9 @@ std::optional<MeshMapLayer::ParsedSettings> MeshMapLayer::parseSettings(const QD
   // carrying it arrives.
   settings.color_by = PJ::readXmlText(element, u"color_by"_s);
   auto coloring = ChannelColoring::parseXml(element);
-  if (!coloring.has_value() || !detail::parseZeroOne(element, "lighting", true, settings.lighting) ||
-      !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, settings.opacity) ||
-      !detail::parseZeroOne(element, "links", true, settings.links)) {
+  if (!coloring.has_value() || !detail::readZeroOne(element, u"lighting"_s, true, settings.lighting) ||
+      !PJ::readXmlDouble(element, u"opacity"_s, 1.0, 0.0, 1.0, settings.opacity) ||
+      !detail::readZeroOne(element, u"links"_s, true, settings.links)) {
     return std::nullopt;
   }
   settings.coloring = *coloring;

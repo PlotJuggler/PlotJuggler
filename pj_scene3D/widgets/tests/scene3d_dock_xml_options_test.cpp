@@ -14,6 +14,7 @@
 #include <QString>
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -226,7 +227,7 @@ TEST_F(Scene3DDockXmlOptionsTest, EveryReportedTokenValidates) {
 TEST_F(Scene3DDockXmlOptionsTest, EveryReportedBoundIsEnforcedNamingTheAttribute) {
   int checked = 0;
   for (const PJ::XmlOption& option : savedOptions()) {
-    if ((option.type != u"int"_s && option.type != u"float"_s) || !option.max.has_value() || *option.max >= 1.0e30) {
+    if ((option.type != u"int"_s && option.type != u"float"_s) || !option.max.has_value()) {
       continue;
     }
     const double span = option.min.has_value() ? *option.max - *option.min : 1.0;
@@ -252,6 +253,38 @@ TEST_F(Scene3DDockXmlOptionsTest, EveryReportedBoundIsEnforcedNamingTheAttribute
     ++checked;
   }
   EXPECT_GT(checked, 20);
+}
+
+TEST_F(Scene3DDockXmlOptionsTest, TopicLayerDatasetIdIsPositive) {
+  const std::vector<PJ::XmlOption> options = savedOptions();
+  const auto dataset_id = std::find_if(options.begin(), options.end(), [](const PJ::XmlOption& option) {
+    return option.element == u"layer"_s && option.attribute == u"dataset_id"_s;
+  });
+  ASSERT_NE(dataset_id, options.end());
+  EXPECT_EQ(dataset_id->min, std::optional<double>(1.0)) << "the first saved <layer> is a topic layer";
+
+  const QDomElement topic_layer = saved_.firstChildElement(u"layer"_s);
+  ASSERT_FALSE(topic_layer.hasAttribute(u"local"_s));
+  ASSERT_FALSE(topic_layer.hasAttribute(u"role"_s));
+  QString why;
+  EXPECT_FALSE(acceptsWith(topic_layer, u"dataset_id"_s, u"0"_s, &why));
+  EXPECT_TRUE(why.contains(u" dataset_id=\"0\""_s)) << why.toStdString();
+}
+
+TEST_F(Scene3DDockXmlOptionsTest, FloatAtItsBoundAsQtWritesItValidates) {
+  // QDomElement::setAttribute writes a float with 8 significant digits and a double with 17, so a float saved at a
+  // bound like 0.01f reads back just below the decimal 0.01.
+  const QDomElement poses = saved_.elementsByTagName(u"poses_in_frame"_s).item(0).toElement();
+  const QDomElement controls = saved_.firstChildElement(u"scene_controls"_s);
+  ASSERT_FALSE(poses.isNull());
+  ASSERT_FALSE(controls.isNull());
+  QDomDocument scratch;
+  QDomElement written = scratch.createElement(u"w"_s);
+  written.setAttribute(u"double"_s, static_cast<double>(0.01f));
+  written.setAttribute(u"float"_s, 0.01f);
+  QString why;
+  EXPECT_TRUE(acceptsWith(poses, u"gizmo_size"_s, written.attribute(u"double"_s), &why)) << why.toStdString();
+  EXPECT_TRUE(acceptsWith(controls, u"grid_extent_m"_s, written.attribute(u"float"_s), &why)) << why.toStdString();
 }
 
 }  // namespace

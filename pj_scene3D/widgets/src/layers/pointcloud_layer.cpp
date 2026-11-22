@@ -243,14 +243,14 @@ std::optional<PointCloudLayer::Settings> PointCloudLayer::parseSettings(const QD
   } else if (shape_str == "cube"_L1) {
     settings.shape = PointShape::kCube;
   }
-  if (!detail::parseFiniteFloat(element, "size_meters", 0.01f, 0.001f, 10.0f, settings.size_meters) ||
-      !detail::parseFiniteFloat(element, "size_pixels", 2.0f, 1.0f, 32.0f, settings.size_pixels) ||
-      !detail::parseFiniteFloat(element, "outside_range_opacity", 1.0f, 0.0f, 1.0f, settings.outside_range_opacity) ||
-      !detail::parseFiniteFloat(
-          element, "range_min", 0.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
+  if (!PJ::readXmlFloat(element, u"size_meters"_s, 0.01f, 0.001f, 10.0f, settings.size_meters) ||
+      !PJ::readXmlFloat(element, u"size_pixels"_s, 2.0f, 1.0f, 32.0f, settings.size_pixels) ||
+      !PJ::readXmlFloat(element, u"outside_range_opacity"_s, 1.0f, 0.0f, 1.0f, settings.outside_range_opacity) ||
+      !PJ::readXmlFloat(
+          element, u"range_min"_s, 0.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
           settings.range_min) ||
-      !detail::parseFiniteFloat(
-          element, "range_max", 1.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
+      !PJ::readXmlFloat(
+          element, u"range_max"_s, 1.0f, std::numeric_limits<float>::lowest(), std::numeric_limits<float>::max(),
           settings.range_max) ||
       !detail::requireConstraint(
           settings.range_min <= settings.range_max, element, "range_max", "range_max must not be below range_min")) {
@@ -262,7 +262,7 @@ std::optional<PointCloudLayer::Settings> PointCloudLayer::parseSettings(const QD
     return std::nullopt;
   }
   bool restored_explicit = color_type_str != "auto"_L1;
-  if (!detail::parseTrueFalse(element, "color_choice_explicit", restored_explicit, restored_explicit) ||
+  if (!PJ::readXmlBool(element, u"color_choice_explicit"_s, restored_explicit, restored_explicit) ||
       !detail::requireConstraint(
           (color_type_str == "auto"_L1) != restored_explicit, element, "color_choice_explicit",
           "must be false exactly when color_type is auto")) {
@@ -275,9 +275,9 @@ std::optional<PointCloudLayer::Settings> PointCloudLayer::parseSettings(const QD
     settings.color_type = PointColorType::kRgb;
   }
   if (!detail::parseColormapToken(element, "colormap", settings.colormap) ||
-      !detail::parseTrueFalse(element, "auto_range", true, settings.auto_range) ||
-      !detail::parseTrueFalse(element, "invert_lut", false, settings.invert_lut) ||
-      !detail::parseTrueFalse(element, "outside_range_visible", true, settings.outside_range_visible) ||
+      !PJ::readXmlBool(element, u"auto_range"_s, true, settings.auto_range) ||
+      !PJ::readXmlBool(element, u"invert_lut"_s, false, settings.invert_lut) ||
+      !PJ::readXmlBool(element, u"outside_range_visible"_s, true, settings.outside_range_visible) ||
       !detail::parseColor(element, "solid_color", {}, settings.solid_color)) {
     return std::nullopt;
   }

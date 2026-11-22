@@ -101,15 +101,15 @@ std::optional<VoxelGridLayer::ParsedSettings> VoxelGridLayer::parseSettings(cons
   constexpr double kMax = std::numeric_limits<double>::max();
   int mode = 1;
   int colormap = 0;
-  if (!detail::parseBoundedInt(element, "draw_mode", 1, 0, 3, mode) ||
-      !detail::parseFiniteDouble(element, "threshold", 0.0, kLowest, kMax, settings.threshold) ||
-      !detail::parseZeroOne(element, "auto_range", true, settings.auto_range) ||
-      !detail::parseFiniteDouble(element, "range_lo", 0.0, kLowest, kMax, settings.range_lo) ||
-      !detail::parseFiniteDouble(element, "range_hi", 1.0, kLowest, kMax, settings.range_hi) ||
+  if (!PJ::readXmlInt(element, u"draw_mode"_s, 1, 0, 3, mode) ||
+      !PJ::readXmlDouble(element, u"threshold"_s, 0.0, kLowest, kMax, settings.threshold) ||
+      !detail::readZeroOne(element, u"auto_range"_s, true, settings.auto_range) ||
+      !PJ::readXmlDouble(element, u"range_lo"_s, 0.0, kLowest, kMax, settings.range_lo) ||
+      !PJ::readXmlDouble(element, u"range_hi"_s, 1.0, kLowest, kMax, settings.range_hi) ||
       !detail::requireConstraint(
           settings.range_lo <= settings.range_hi, element, "range_hi", "range_hi must not be below range_lo") ||
-      !detail::parseBoundedInt(element, "colormap", 0, 0, PJ::kColormapCount - 1, colormap) ||
-      !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, settings.opacity)) {
+      !PJ::readXmlInt(element, u"colormap"_s, 0, 0, PJ::kColormapCount - 1, colormap) ||
+      !PJ::readXmlDouble(element, u"opacity"_s, 1.0, 0.0, 1.0, settings.opacity)) {
     return std::nullopt;
   }
   settings.draw_mode = static_cast<VoxelDrawMode>(mode);

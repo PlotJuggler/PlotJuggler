@@ -120,10 +120,10 @@ std::optional<PosesInFrameLayer::ParsedSettings> PosesInFrameLayer::parseSetting
     return std::nullopt;
   }
   ParsedSettings settings;
-  if (!detail::parseFiniteFloat(element, "gizmo_size", 0.15f, 0.01f, 100.0f, settings.gizmo_size) ||
-      !detail::parseFiniteFloat(element, "gizmo_opacity", 1.0f, 0.0f, 1.0f, settings.gizmo_opacity) ||
-      !detail::parseZeroOne(element, "x_arrow_only", false, settings.x_arrow_only) ||
-      !detail::parseZeroOne(element, "override_color", false, settings.override_color_enabled) ||
+  if (!PJ::readXmlFloat(element, u"gizmo_size"_s, 0.15f, 0.01f, 100.0f, settings.gizmo_size) ||
+      !PJ::readXmlFloat(element, u"gizmo_opacity"_s, 1.0f, 0.0f, 1.0f, settings.gizmo_opacity) ||
+      !detail::readZeroOne(element, u"x_arrow_only"_s, false, settings.x_arrow_only) ||
+      !detail::readZeroOne(element, u"override_color"_s, false, settings.override_color_enabled) ||
       !detail::parseColor(element, "override_color_value", {}, settings.override_color)) {
     return std::nullopt;
   }

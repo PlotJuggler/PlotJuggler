@@ -86,7 +86,6 @@ using pj::scene3d::SceneViewWidget;
 using pj::scene3d::validateCameraState;
 using pj::scene3d::ValidatedCameraState;
 using pj::scene3d::VoxelGridLayer;
-using pj::scene3d::detail::xmlOption;
 using pj::tf::FrameRow;
 
 // The trail a layer is (standalone) or owns (a pose layer's), else nullptr; trail-wide fan-outs such as the TF-buffer
@@ -161,7 +160,9 @@ struct ValidatedSceneState {
 
 std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element) {
   ValidatedSceneState state;
-  static_cast<void>(PJ::readXmlText(element, u"version"_s, u"1"_s));  // written for readers; never decides anything
+  if (PJ::XmlOptionsRecorder::active()) {
+    PJ::readXmlText(element, u"version"_s, u"1"_s);  // written for readers; never decides anything
+  }
   QString mode;
   if (!PJ::readXmlEnum(element, u"fixed_frame_mode"_s, {u"auto_root"_s, u"explicit"_s}, u"auto_root"_s, mode)) {
     return std::nullopt;
@@ -176,7 +177,7 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
   if (!camera_model.isEmpty()) {
     state.camera_model_index = cameraModelFromString(camera_model);
   }
-  PJ::XmlOptionsRecorder::noteOption(element, xmlOption(u"camera_state"_s, u"json"_s));
+  PJ::XmlOptionsRecorder::noteOption(element, {.attribute = u"camera_state"_s, .type = u"json"_s});
   if (element.hasAttribute(u"camera_state"_s)) {
     std::string bad_field;
     state.camera_state = validateCameraState(element.attribute(u"camera_state"_s), &bad_field);
@@ -261,11 +262,13 @@ QString objectTypeToken(sdk::BuiltinObjectType object_type) {
 // unconditionally; `required` adds the checks it refuses without looking at the data.
 bool validateSavedTopicRef(const QDomElement& element, bool required) {
   const QString topic_name = PJ::readXmlText(element, u"topic_name"_s);
-  PJ::XmlOptionsRecorder::noteOption(
-      element,
-      xmlOption(u"dataset_id"_s, u"int"_s, {}, 0.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
-  static_cast<void>(PJ::readXmlText(element, u"dataset_source"_s));
-  static_cast<void>(PJ::readXmlText(element, u"dataset_path"_s));
+  // A local layer saves dataset_id 0; a required ref resolves through a real dataset, never 0. The first <layer>
+  // read decides the bound reported for the tag.
+  DatasetId dataset_id = 0;
+  const bool dataset_ok = PJ::readXmlInt(
+      element, u"dataset_id"_s, std::nullopt, required ? 1 : 0, std::numeric_limits<DatasetId>::max(), dataset_id);
+  PJ::readXmlText(element, u"dataset_source"_s);
+  PJ::readXmlText(element, u"dataset_path"_s);
   if (!required) {
     return true;
   }
@@ -273,21 +276,14 @@ bool validateSavedTopicRef(const QDomElement& element, bool required) {
     PJ::XmlOptionsRecorder::noteRejection(element, u"topic_name"_s, u"required"_s);
     return false;
   }
-  if (element.hasAttribute(u"dataset_id"_s)) {
-    bool dataset_ok = false;
-    const qulonglong dataset_value = element.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
-    if (!dataset_ok || dataset_value == 0 || dataset_value > std::numeric_limits<uint32_t>::max()) {
-      PJ::XmlOptionsRecorder::noteRejection(element, u"dataset_id"_s, u"expected a positive dataset id"_s);
-      return false;
-    }
-  }
-  return true;
+  return dataset_ok;
 }
 
 // pending_intent marks a runtime intent the base dock wrote (SceneDockWidget::deferTopicIntent); only "true" means
 // anything to the loader.
 void notePendingIntent(const QDomElement& element) {
-  pj::scene3d::detail::noteTolerantToken(element, u"pending_intent"_s, u"bool"_s, {u"true"_s, u"false"_s}, u"false"_s);
+  bool pending = false;
+  static_cast<void>(PJ::readXmlBool(element, u"pending_intent"_s, false, pending, PJ::XmlBadValue::kTolerate));
 }
 
 // The parse-only half of Scene3DDockWidget::restoreLayerElement / restoreTrailElement: every refusal that needs no
@@ -297,18 +293,20 @@ bool validateLayerElement(const QDomElement& layer_el, const QList<sdk::BuiltinO
   for (const sdk::BuiltinObjectType type : layer_types) {
     type_tokens.push_back(objectTypeToken(type));
   }
-  PJ::XmlOptionsRecorder::noteOption(layer_el, xmlOption(u"object_type"_s, u"enum"_s, type_tokens));
+  PJ::XmlOptionsRecorder::noteOption(
+      layer_el, {.attribute = u"object_type"_s, .type = u"enum"_s, .values = type_tokens});
   // role="trail" and local="true" select a restore path; any other value means "not that path".
-  pj::scene3d::detail::noteTolerantToken(layer_el, u"role"_s, u"enum"_s, {u"trail"_s});
-  pj::scene3d::detail::noteTolerantToken(layer_el, u"local"_s, u"bool"_s, {u"true"_s, u"false"_s}, u"false"_s);
+  QString role;
+  bool local_layer = false;
+  static_cast<void>(PJ::readXmlEnum(layer_el, u"role"_s, {u"trail"_s}, {}, role, PJ::XmlBadValue::kTolerate));
+  static_cast<void>(PJ::readXmlBool(layer_el, u"local"_s, false, local_layer, PJ::XmlBadValue::kTolerate));
   notePendingIntent(layer_el);
-  static_cast<void>(PJ::readXmlText(layer_el, u"display_name"_s));
-  const bool trail = layer_el.attribute(u"role"_s) == "trail"_L1;
-  const bool local_layer = layer_el.attribute(u"local"_s) == "true"_L1;
+  PJ::readXmlText(layer_el, u"display_name"_s);
+  const bool trail = role == "trail"_L1;
   bool visible = true;
   int order = 0;
-  if (!pj::scene3d::detail::parseTrueFalse(layer_el, "visible", true, visible) ||
-      !pj::scene3d::detail::parseBoundedInt(layer_el, "order", 0, 0, std::numeric_limits<int>::max(), order) ||
+  if (!PJ::readXmlBool(layer_el, u"visible"_s, true, visible) ||
+      !PJ::readXmlInt(layer_el, u"order"_s, 0, 0, std::numeric_limits<int>::max(), order) ||
       !validateSavedTopicRef(layer_el, !trail && !local_layer)) {
     return false;
   }

@@ -243,9 +243,9 @@ std::optional<DepthCloudLayer::Settings> DepthCloudLayer::parseSettings(const QD
   }
   Settings settings;
   if (!detail::parseColormapToken(element, "colormap", settings.colormap) ||
-      !detail::parseFiniteFloat(element, "point_size_px", 2.0f, 1.0f, 32.0f, settings.point_size_px) ||
-      !detail::parseFiniteFloat(element, "min_depth", 0.0f, 0.0f, 1000.0f, settings.min_depth_m) ||
-      !detail::parseFiniteFloat(element, "max_depth", 0.0f, 0.0f, 1000.0f, settings.max_depth_m) ||
+      !PJ::readXmlFloat(element, u"point_size_px"_s, 2.0f, 1.0f, 32.0f, settings.point_size_px) ||
+      !PJ::readXmlFloat(element, u"min_depth"_s, 0.0f, 0.0f, 1000.0f, settings.min_depth_m) ||
+      !PJ::readXmlFloat(element, u"max_depth"_s, 0.0f, 0.0f, 1000.0f, settings.max_depth_m) ||
       !detail::requireConstraint(
           settings.max_depth_m <= 0.0f || settings.min_depth_m <= settings.max_depth_m, element, "max_depth",
           "max_depth must be 0 (no limit) or not below min_depth")) {

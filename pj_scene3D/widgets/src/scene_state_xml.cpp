@@ -11,7 +11,6 @@
 #include <string>
 #include <tuple>
 
-#include "layers/layer_xml_validation.h"
 #include "pj_runtime/XmlStateOptions.h"
 
 using namespace Qt::StringLiterals;
@@ -47,59 +46,37 @@ bool readJsonFloat(
   }
 }
 
-}  // namespace
-
-bool readXmlBool(const QDomElement& element, const QString& key, std::optional<bool>& output) {
-  PJ::XmlOptionsRecorder::noteOption(element, detail::xmlOption(key, u"bool"_s, {u"true"_s, u"false"_s}));
-  if (!element.hasAttribute(key)) {
-    return true;
-  }
-  const QString value = element.attribute(key);
-  if (value != "true"_L1 && value != "false"_L1) {
-    PJ::XmlOptionsRecorder::noteRejection(element, key, u"expected true or false"_s);
+// `read` is a PJ reader with no fallback: an absent attribute leaves `output` untouched.
+template <typename T, typename Read>
+bool readOptional(const QDomElement& element, const QString& key, std::optional<T>& output, Read read) {
+  T value{};
+  if (!read(value)) {
     return false;
   }
-  output = value == "true"_L1;
+  if (element.hasAttribute(key)) {
+    output = value;
+  }
   return true;
 }
 
+}  // namespace
+
+bool readXmlBool(const QDomElement& element, const QString& key, std::optional<bool>& output) {
+  return readOptional(
+      element, key, output, [&](bool& value) { return PJ::readXmlBool(element, key, std::nullopt, value); });
+}
+
 bool readXmlInt(const QDomElement& element, const QString& key, int minimum, int maximum, std::optional<int>& output) {
-  PJ::XmlOptionsRecorder::noteOption(
-      element, detail::xmlOption(key, u"int"_s, {}, static_cast<double>(minimum), static_cast<double>(maximum)));
-  if (!element.hasAttribute(key)) {
-    return true;
-  }
-  bool ok = false;
-  const int value = element.attribute(key).toInt(&ok);
-  if (!ok || value < minimum || value > maximum) {
-    PJ::XmlOptionsRecorder::noteRejection(
-        element, key,
-        u"expected a number in ["_s + QString::number(minimum) + u", "_s + QString::number(maximum) + u']');
-    return false;
-  }
-  output = value;
-  return true;
+  return readOptional(element, key, output, [&](int& value) {
+    return PJ::readXmlInt(element, key, std::nullopt, minimum, maximum, value);
+  });
 }
 
 bool readXmlFloat(
     const QDomElement& element, const QString& key, float minimum, float maximum, std::optional<float>& output) {
-  PJ::XmlOptionsRecorder::noteOption(
-      element, detail::xmlOption(key, u"float"_s, {}, static_cast<double>(minimum), static_cast<double>(maximum)));
-  if (!element.hasAttribute(key)) {
-    return true;
-  }
-  bool ok = false;
-  const double value = element.attribute(key).toDouble(&ok);
-  const auto converted = static_cast<float>(value);
-  if (!ok || !std::isfinite(value) || value < minimum || value > maximum || !std::isfinite(converted)) {
-    PJ::XmlOptionsRecorder::noteRejection(
-        element, key,
-        u"expected a number in ["_s + QString::number(minimum, 'g', 6) + u", "_s + QString::number(maximum, 'g', 6) +
-            u']');
-    return false;
-  }
-  output = converted;
-  return true;
+  return readOptional(element, key, output, [&](float& value) {
+    return PJ::readXmlFloat(element, key, std::nullopt, minimum, maximum, value);
+  });
 }
 
 std::optional<ValidatedCameraState> validateCameraState(const QString& encoded, std::string* bad_field) {

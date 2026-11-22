@@ -106,8 +106,8 @@ std::optional<GridMapLayer::ParsedSettings> GridMapLayer::parseSettings(const QD
   settings.elevation_field = PJ::readXmlText(element, u"elevation_field"_s);
   settings.color_field = PJ::readXmlText(element, u"color_field"_s);
   auto coloring = ChannelColoring::parseXml(element);
-  if (!coloring.has_value() || !detail::parseZeroOne(element, "lighting", true, settings.lighting) ||
-      !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, settings.opacity)) {
+  if (!coloring.has_value() || !detail::readZeroOne(element, u"lighting"_s, true, settings.lighting) ||
+      !PJ::readXmlDouble(element, u"opacity"_s, 1.0, 0.0, 1.0, settings.opacity)) {
     return std::nullopt;
   }
   settings.coloring = *coloring;
