@@ -3,9 +3,7 @@
 
 #include "pj_widgets/RenderingWarningLabel.h"
 
-#include <QGuiApplication>
 #include <QLabel>
-#include <QPalette>
 
 #include "pj_widgets/FrameworkTokens.h"
 
@@ -21,31 +19,19 @@ QLabel* createRenderingWarningLabel(QWidget* parent, const QString& object_name)
 }
 
 void setRenderingWarningSubtle(QLabel* label, bool subtle) {
-  const auto theme = theme::themeFor(QGuiApplication::palette().color(QPalette::Window).lightness() >= 128);
-  const auto css_color = [](const QColor& color) {
-    return QStringLiteral("rgba(%1, %2, %3, %4)")
-        .arg(color.red())
-        .arg(color.green())
-        .arg(color.blue())
-        .arg(color.alpha());
-  };
+  const theme::Theme theme = theme::appTheme();
   label->setWordWrap(!subtle);
   label->setAlignment(subtle ? Qt::AlignLeft | Qt::AlignVCenter : Qt::AlignCenter);
-  if (subtle) {
-    label->setStyleSheet(
-        QStringLiteral("QLabel { color: %1; background: %2; border-radius: %3px; padding: %4px; font-size: %5pt; }")
-            .arg(css_color(theme::onOverlayHud(theme)), css_color(theme::overlay(theme::Overlay::Hud, theme)))
-            .arg(theme::radius(theme::Radius::Input, theme))
-            .arg(theme::space(theme::Space::Snug, theme))
-            .arg(theme::type(theme::TextRole::Caption, theme).size));
-    return;
-  }
-  label->setStyleSheet(QStringLiteral("QLabel { color: %1; background: %2; border-radius: %3px; padding: %4px; }")
-                           .arg(
-                               theme::onStatus(theme::Status::Warning, theme).name(),
-                               theme::status(theme::Status::Warning, theme).name())
+  const QColor ink = subtle ? theme::onOverlayHud(theme) : theme::onStatus(theme::Status::Warning, theme);
+  const QColor fill =
+      subtle ? theme::overlay(theme::Overlay::Hud, theme) : theme::status(theme::Status::Warning, theme);
+  const QString font_size =
+      subtle ? QStringLiteral("font-size: %1pt;").arg(theme::type(theme::TextRole::Caption, theme).size) : QString{};
+  label->setStyleSheet(QStringLiteral("QLabel { color: %1; background: %2; border-radius: %3px; padding: %4px; %5 }")
+                           .arg(ink.name(QColor::HexArgb), fill.name(QColor::HexArgb))
                            .arg(theme::radius(theme::Radius::Input, theme))
-                           .arg(theme::space(theme::Space::Comfortable, theme)));
+                           .arg(theme::space(subtle ? theme::Space::Snug : theme::Space::Comfortable, theme))
+                           .arg(font_size));
 }
 
 }  // namespace PJ

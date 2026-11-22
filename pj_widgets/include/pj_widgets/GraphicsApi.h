@@ -85,9 +85,9 @@ enum class GraphicsPlatform { Linux, Windows, MacOS, Wasm };
 [[nodiscard]] QString softwareRasterizerName(QByteArrayView renderer);
 
 /// The software rasterizer `rhi` runs on, or empty on a hardware device: QRhiDriverInfo::CpuDevice where the backend
-/// reports it (Vulkan, Metal, D3D), else the renderer description. In the browser GL_RENDERER is masked ("WebKit
-/// WebGL"), so it reads WebGL's unmasked renderer (WEBGL_debug_renderer_info) from the current WebGL context: call it
-/// with `rhi`'s context current (a QRhiWidget's initialize() or render()).
+/// reports it (Vulkan, Metal, D3D), else the renderer description. Where a browser masks GL_RENDERER ("WebKit WebGL")
+/// it reads WebGL's unmasked renderer (WEBGL_debug_renderer_info) once per page, from the current WebGL context: the
+/// first call needs `rhi`'s context current (a QRhiWidget's initialize() or render()).
 [[nodiscard]] QString softwareRasterizerName(QRhi& rhi);
 
 /// Logs (category `pj.graphics`) the backend and adapter `widget` actually got, once per QRhi: a software rasterizer or

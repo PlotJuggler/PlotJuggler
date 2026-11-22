@@ -162,6 +162,7 @@ QString softwareRasterizerName(QByteArrayView renderer) {
 
 #ifdef Q_OS_WASM
 namespace {
+EM_JS_DEPS(pj_widgets_webgl_renderer, "$stringToNewUTF8");
 // clang-format off
 EM_JS(char*, pjUnmaskedWebGlRenderer, (), {
   const gl = typeof GL !== 'undefined' && GL.currentContext ? GL.currentContext.GLctx : null;
@@ -177,11 +178,16 @@ QString softwareRasterizerName(QRhi& rhi) {
   const QRhiDriverInfo driver = rhi.driverInfo();
   QString name = softwareRasterizerName(driver.deviceName);
 #ifdef Q_OS_WASM
-  if (name.isEmpty() && rhi.backend() == QRhi::OpenGLES2) {
-    if (char* renderer = pjUnmaskedWebGlRenderer(); renderer != nullptr) {
-      name = softwareRasterizerName(QByteArrayView(renderer));
+  // Only where the browser masks GL_RENDERER (Chromium): Firefox reports it unmasked and logs a deprecation warning
+  // for WEBGL_debug_renderer_info. Read once per page: the renderer does not change under it.
+  if (name.isEmpty() && rhi.backend() == QRhi::OpenGLES2 && driver.deviceName.contains("WebKit WebGL")) {
+    static const QByteArray unmasked = [] {
+      char* renderer = pjUnmaskedWebGlRenderer();
+      QByteArray copy(renderer);
       free(renderer);
-    }
+      return copy;
+    }();
+    name = softwareRasterizerName(unmasked);
   }
 #endif
   if (name.isEmpty() && driver.deviceType == QRhiDriverInfo::CpuDevice) {

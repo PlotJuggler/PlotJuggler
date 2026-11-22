@@ -167,8 +167,6 @@ class Scene3dRhiFailureTest : public ::testing::Test {
  protected:
   void SetUp() override {
     PJ_SKIP_ON_HEADLESS_QPA();
-    // The HDR chain under test; CI's software rasterizers (llvmpipe, lavapipe) would draw the direct pass.
-    pj::scene3d::SceneViewWidget::setFullQualityOnSoftwareRasterizer(true);
   }
 };
 
@@ -299,10 +297,34 @@ TEST_F(Scene3dRhiFailureTest, FamiliesAndVariantsAreBuiltOnDemand) {
   }
 }
 
+// The software default for one case: the GUI test main keeps the HDR chain on CI's software rasterizers.
+class SoftwareDefault {
+ public:
+  SoftwareDefault() {
+    qputenv("PJ_SCENE3D_SOFTWARE_HDR", "0");
+  }
+  ~SoftwareDefault() {
+    qputenv("PJ_SCENE3D_SOFTWARE_HDR", "1");
+  }
+  SoftwareDefault(const SoftwareDefault&) = delete;
+  SoftwareDefault& operator=(const SoftwareDefault&) = delete;
+};
+
+// Whether `view` runs on a CPU rasterizer, judged without PJ::softwareRasterizerName() so a regression there fails
+// the cases below instead of skipping them: CI's lanes are llvmpipe (OpenGL), lavapipe and WARP (CpuDevice).
+bool onCpuRasterizer(const SceneViewWidget& view) {
+  const QRhi* rhi = pj_bench::rhiOf(view);
+  if (rhi == nullptr) {
+    return false;
+  }
+  const QRhiDriverInfo driver = rhi->driverInfo();
+  return driver.deviceType == QRhiDriverInfo::CpuDevice || driver.deviceName.toLower().contains("llvmpipe");
+}
+
 // A software rasterizer draws the single-sample direct pass and says why, as a notice: the HDR chain's first frame held
-// a GPU-less browser's main thread for seconds. The other cases keep the chain (SetUp); this one restores the default.
+// a GPU-less browser's main thread for seconds.
 TEST_F(Scene3dRhiFailureTest, SoftwareRasterizerDrawsTheDirectPass) {
-  SceneViewWidget::setFullQualityOnSoftwareRasterizer(false);
+  SoftwareDefault software_default;
   FailureScene scene;
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
@@ -310,18 +332,40 @@ TEST_F(Scene3dRhiFailureTest, SoftwareRasterizerDrawsTheDirectPass) {
   if (frame.isNull() || view->rhiBackendName().isEmpty()) {
     PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
   }
-  QRhi* rhi = pj_bench::rhiOf(*view);
-  ASSERT_NE(rhi, nullptr);
-  const QString rasterizer = PJ::softwareRasterizerName(*rhi);
-  if (rasterizer.isEmpty()) {
-    GTEST_SKIP() << "a hardware device keeps the HDR chain: " << rhi->driverInfo().deviceName.toStdString();
+  if (!onCpuRasterizer(*view)) {
+    GTEST_SKIP() << "a hardware device keeps the HDR chain";
   }
+  const QString rasterizer = PJ::softwareRasterizerName(*pj_bench::rhiOf(*view));
+  ASSERT_FALSE(rasterizer.isEmpty()) << "a CPU rasterizer went undetected";
   EXPECT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
   EXPECT_FALSE(uniform(frame)) << "the direct pass drew nothing";
   EXPECT_TRUE(view->renderingWarning().startsWith(u"Software rendering (%1)"_s.arg(rasterizer)))
       << view->renderingWarning().toStdString();
   EXPECT_TRUE(view->renderingWarningIsNotice());
-  EXPECT_EQ(view->sampleCount(), 1) << "4x MSAA costs a CPU rasterizer 1.3-5x per frame";
+  EXPECT_EQ(view->sampleCount(), 1);
+}
+
+// The notice ranks below every failure: an overlay failure on a software rasterizer still shows as the warning.
+TEST_F(Scene3dRhiFailureTest, FailureOutranksTheSoftwareNotice) {
+  SoftwareDefault software_default;
+  PipelineFault fault("/overlay.frag.qsb");
+  FailureScene scene;
+  SceneViewWidget* view = scene.view();
+  view->setShowPerfHud(true);
+  ASSERT_TRUE(scene.show());
+  if (grab(*view).isNull()) {
+    PJ_SKIP_WITHOUT_GPU("no QRhi frame presented");
+  }
+  if (!onCpuRasterizer(*view)) {
+    GTEST_SKIP() << "a hardware device shows no software notice";
+  }
+  EXPECT_TRUE(view->renderingWarning().contains(u"overlays"_s)) << view->renderingWarning().toStdString();
+  EXPECT_FALSE(view->renderingWarningIsNotice());
+
+  fault.clear();
+  scene.resize();
+  ASSERT_TRUE(scene.renderUntil([&] { return !SceneViewTestAccess::lastOverlayRects(*view)[0].isNull(); }));
+  EXPECT_TRUE(view->renderingWarningIsNotice()) << view->renderingWarning().toStdString();
 }
 
 // A base pipeline the HDR frames never needed (the grid's direct pipelines are

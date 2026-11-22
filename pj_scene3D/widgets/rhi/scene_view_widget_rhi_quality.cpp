@@ -268,9 +268,13 @@ void SceneViewWidget::releaseEdlResources() {
 void SceneViewWidget::updateRenderingWarning() {
   // SSAO/EDL are probed only while the HDR chain runs, so their stored errors
   // go stale the moment HDR is down — suppress them until HDR is live again.
+  // The software-rendering notice is not a failure: it ranks below every failure, so one never hides behind it.
+  const QString& hdr_error = hdr_->state.capability_error;
+  const bool hdr_notice = !software_notice_.isEmpty() && hdr_error == software_notice_;
   const QString warning = render_failure_.failed()                   ? render_failure_.reason()
-                          : !hdr_->state.capability_error.isEmpty()  ? hdr_->state.capability_error
+                          : !hdr_error.isEmpty() && !hdr_notice      ? hdr_error
                           : !overlay_failure_.isEmpty()              ? overlay_failure_
+                          : hdr_notice                               ? hdr_error
                           : !hdr_->state.last_active                 ? QString{}
                           : !ssao_->state.capability_error.isEmpty() ? ssao_->state.capability_error
                                                                      : edl_->state.capability_error;
@@ -278,7 +282,6 @@ void SceneViewWidget::updateRenderingWarning() {
     return;
   }
   rendering_warning_ = warning;
-  rendering_warning_is_notice_ = !warning.isEmpty() && warning == software_notice_;
   emit renderingWarningChanged(rendering_warning_);
 }
 
@@ -450,30 +453,15 @@ bool SceneViewWidget::rejectHdr(const QSize& size, QString reason) {
   hdr_->state.rejected_size = size;
   const bool changed = hdr_->state.capability_error != reason;
   hdr_->state.capability_error = std::move(reason);
-  if (changed) {
+  if (changed && hdr_->state.capability_error != software_notice_) {
     qWarning("SceneViewWidget QRhi HDR unavailable: %s", qPrintable(hdr_->state.capability_error));
   }
   updateRenderingWarning();
   return false;
 }
 
-namespace {
-bool& fullQualityOnSoftware() {
-  static bool keep = qEnvironmentVariableIntValue("PJ_SCENE3D_SOFTWARE_HDR") == 1;
-  return keep;
-}
-}  // namespace
-
-void SceneViewWidget::setFullQualityOnSoftwareRasterizer(bool keep) {
-  fullQualityOnSoftware() = keep;
-}
-
-bool SceneViewWidget::fullQualityOnSoftwareRasterizer() {
-  return fullQualityOnSoftware();
-}
-
 QString SceneViewWidget::softwareRenderingNotice(QRhi& rhi) {
-  if (fullQualityOnSoftwareRasterizer()) {
+  if (qEnvironmentVariableIntValue("PJ_SCENE3D_SOFTWARE_HDR") == 1) {
     return {};
   }
   const QString rasterizer = PJ::softwareRasterizerName(rhi);
@@ -481,9 +469,6 @@ QString SceneViewWidget::softwareRenderingNotice(QRhi& rhi) {
 }
 
 QString SceneViewWidget::hdrUnsupportedReason(QRhi& rhi) {
-  if (QString notice = softwareRenderingNotice(rhi); !notice.isEmpty()) {
-    return notice;
-  }
   if (!rhi.supportedSampleCounts().contains(kHdrSampleCount) ||
       !rhi.isFeatureSupported(QRhi::MultisampleRenderBuffer)) {
     return tr("This GPU does not support 4x multisample renderbuffers");
@@ -513,6 +498,9 @@ bool SceneViewWidget::ensureHdrResources(QRhi* owner, const QSize& size) {
 
   if (hdr_->state.forced_off) {
     return fail(forcedOffReason("HDR"));
+  }
+  if (!software_notice_.isEmpty()) {
+    return fail(software_notice_);
   }
   if (QString unsupported = hdrUnsupportedReason(*owner); !unsupported.isEmpty()) {
     return fail(std::move(unsupported));

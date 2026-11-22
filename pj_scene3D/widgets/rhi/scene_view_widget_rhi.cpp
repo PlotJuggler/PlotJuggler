@@ -772,10 +772,9 @@ void SceneViewWidget::initialize(QRhiCommandBuffer* command_buffer) {
     max_3d_texture_size_ = max3dTextureSize(*current_rhi);
     // The output multisamples only where a GPU cannot run the HDR chain (the direct pass draws the whole scene on
     // it); over the chain's present it is single-sample, and the corner gizmo brings its own 4x target. A software
-    // rasterizer stays single-sample: 4x cost it 1.3-5x per frame (TECHNICAL_NOTES "Software rasterizers draw the
-    // direct pass"). Decided per QRhi, not per frame: a change rebuilds every resource, so a runtime HDR refusal
-    // (size, budget, a missing pipeline variant) draws its direct pass without MSAA. Read here, with the context
-    // current: the browser's renderer name needs it.
+    // rasterizer stays single-sample, MSAA being a large part of its frame (TECHNICAL_NOTES "Software rasterizers draw
+    // the direct pass"). Decided per QRhi, not per frame: a change rebuilds every resource, so a runtime HDR refusal
+    // (size, budget, a missing pipeline variant) draws its direct pass without MSAA.
     software_notice_ = softwareRenderingNotice(*current_rhi);
     if (const int samples =
             software_notice_.isEmpty() && !hdrUnsupportedReason(*current_rhi).isEmpty() ? kDirectSampleCount : 1;

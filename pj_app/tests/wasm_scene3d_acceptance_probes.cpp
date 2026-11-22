@@ -464,9 +464,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_force_scene3d_fallback(int mod
   setScene3dFallback(mode, enabled != 0);
 }
 
-// Applies to the Scene3D views created afterwards (SceneViewWidget::setFullQualityOnSoftwareRasterizer).
+// PJ_SCENE3D_SOFTWARE_HDR for the Scene3D views created afterwards: the page cannot see the host's environment.
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_scene3d_full_quality_on_software(int enabled) {
-  pj::scene3d::SceneViewWidget::setFullQualityOnSoftwareRasterizer(enabled != 0);
+  qputenv("PJ_SCENE3D_SOFTWARE_HDR", enabled != 0 ? "1" : "0");
 }
 
 // clang-format off
