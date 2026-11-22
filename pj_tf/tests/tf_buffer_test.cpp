@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <glm/gtc/constants.hpp>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -418,10 +419,11 @@ TEST(TransformBufferSampling, InterpolatesTheRotationAlongTheShortArc) {
   TransformBuffer buffer(TransformBuffer::kKeepAll);
   const glm::dvec3 up{0.0, 0.0, 1.0};
   (void)buffer.setTransform(makeStamped("map", "base", tp(100ns), Transform{{}, glm::angleAxis(0.0, up)}));
-  (void)buffer.setTransform(makeStamped("map", "base", tp(200ns), Transform{{}, glm::angleAxis(M_PI / 2.0, up)}));
+  (void)buffer.setTransform(
+      makeStamped("map", "base", tp(200ns), Transform{{}, glm::angleAxis(glm::half_pi<double>(), up)}));
   const auto mid = buffer.tryLookupTransform("map", "base", tp(150ns), Clock::kHeader, pj::tf::Sampling::kInterpolate);
   ASSERT_TRUE(mid.has_value());
-  EXPECT_NEAR(glm::angle(mid->q), M_PI / 4.0, 1e-9);
+  EXPECT_NEAR(glm::angle(mid->q), glm::quarter_pi<double>(), 1e-9);
   EXPECT_NEAR(glm::length(mid->q), 1.0, 1e-12);
 }
 
