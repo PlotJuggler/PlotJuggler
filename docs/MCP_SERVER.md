@@ -491,23 +491,36 @@ layout state id (`DockWidget::stateId`), which `list` gives with tab, title and 
 dock with no state).
 
 - **Options come from the parsers.** Each widget's `xmlValidateState` is a parse-only check that reads every attribute
-  `xmlLoadState` reads through reporting readers (`pj_runtime/XmlStateOptions.h`: `readXmlEnum`, `readXmlText` and the
-  families' own numeric and boolean readers, which call `XmlOptionsRecorder::noteOption` / `noteRejection`). `get`
+  `xmlLoadState` reads through reporting readers (`pj_runtime/XmlStateOptions.h`: `readXmlEnum`, `readXmlBool`,
+  `readXmlInt`, `readXmlFloat`, `readXmlDouble`, `readXmlText`; a family's own raw read, such as a colour, reports with
+  `XmlOptionsRecorder::noteOption` and words its rejection with `xmlValueProblem`, so every reason reads alike). `get`
   validates the dock's own saved state under an `XmlOptionsRecorder` and returns what it recorded: per element tag,
   each attribute's type, tokens or bounds, and default. The list is the parser, so it cannot claim a value the parser
   refuses. Each family's test asserts `unreportedXmlAttributes` is empty for its saved states, so an attribute added
   to `xmlSaveState` without a reporting reader fails there.
-- **`set` changes nothing unless the element is accepted.** The root tag must match the dock's; a plot's curves are
-  rebound from their series paths as a layout load does (`layout_xml::normalizePlotRangeBasis`, `rebindCurveKeys`),
-  and an unresolved path refuses the call; `xmlValidateState` runs under a recorder, whose first rejection is the
-  error (`<pointcloud> size_pixels="50": expected a number in [1, 32]`). Only then `xmlLoadState`; if it still refuses,
-  the saved previous state is loaded back. An object widget then gets `finishRestore()`, since the data its state
-  names is loaded.
+- **Readers are strict for agents, tolerant for layouts.** A reader given `XmlBadValue::kTolerate` keeps what a
+  layout load always did with a bad value (the default) but still notes it as a rejection; `set` refuses any element
+  with a rejection. Without a recorder (`XmlOptionsRecorder::active()` false) the work done only to report is skipped,
+  so a layout load does not pay for it.
+- **`set` changes nothing unless the element is accepted.** The root tag must match the dock's. A plot keeps its own
+  `id` (it names the plot in pending bindings and saved layouts, so an element copied from another plot must not bring
+  that one's), and its curves are rebound from their series paths as a layout load does
+  (`layout_xml::normalizePlotRangeBasis`, `rebindCurveKeys`): an unresolved path refuses the call. `xmlValidateState`
+  runs under a recorder, whose first rejection is the error (`<pointcloud> size_pixels="50": expected a number in [1,
+  32]`); an attribute the recorder never saw (`unreportedXmlAttributes`) is refused as unknown, unless the widget
+  reports nothing at all (its state is opaque). Only then the load, through `DockWidget::loadObjectWidgetState` for an
+  object widget (as a paste: `finishRestore()`, first-topic seeding). If the load refuses, or leaves a topic waiting
+  that was not waiting before (`IDataWidget::unresolvedRestores`: a layer or Log topic that is not loaded would show
+  nothing), the saved previous state is loaded back.
 - **The element is the whole state, view included.** A scene's camera and a plot's axis range travel with it, so an
   element from an older `get` puts them back where they were then (a followed frame moves the camera meanwhile); the
   tool's description tells agents to `get` right before `set`.
-- **The user's history.** An accepted `set` is one undo step (`MainWindow::recordAgentUndoStep`). `list` and `get`
-  run while the user has a dialog open (`runsUnderUsersDialog`); `set` waits.
+- **The user's history and panels.** `MainWindow::beginAgentDockChange` refuses a `set` while a layout load or an
+  undo restore is applying, and first records a user edit still waiting in the scene undo debounce as its own step;
+  `endAgentDockChange` records the change as one undo step, re-reads the settings panel when the dock is the focused
+  one (the 3D panel pushes every value it shows on its next edit, so a stale panel would undo the change) and shares
+  a time plot's new X range with the linked plots as a user zoom does. `list` and `get` run while the user has a
+  dialog open (`runsUnderUsersDialog`); `set` waits.
 
 ## The user comes first
 
@@ -565,7 +578,9 @@ dock with no state).
     `QT_SCALE_FACTOR=2` (`pj_app_gui_tests.dpr2.*`), where unscaled input would miss its widget.
   - `ARelayedCall…`, `ALinkForgotten…`, `OnlyALoopbackHttpRelay…`: the browser link against a fake relay.
   - `WidgetStateReadsDescribesAndReplacesAUsersDock`: `widget_state` on a user's plot: listed, the options its parser
-    reports, a set that is one undo step, and refusals (bad value, other root, missing series) that change nothing.
+    reports, a set that is one undo step, the plot's own id kept from a copied element, and refusals (bad value, other
+    root, missing series, unknown attribute) that change nothing. `WidgetStateRefusesATopicThatIsNotLoaded`: a Log
+    panel's set naming a topic that is not loaded is refused and the panel keeps its topic.
     Each widget family tests its own `xmlValidateState` and option coverage.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
   test answers by hand (a cancellation forwarded while its call is in flight).

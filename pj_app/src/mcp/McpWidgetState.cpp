@@ -4,7 +4,6 @@
 // The widget_state app tool: a dock's XML state (what a layout saves for it) read, described and replaced.
 
 #include <QDomDocument>
-#include <cmath>
 #include <string>
 
 #include "LayoutXml.h"
@@ -22,12 +21,9 @@
 namespace PJ {
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
+using namespace Qt::StringLiterals;
 
 namespace {
-
-json ok(const json& payload) {
-  return mcp::jsonResult(payload);
-}
 
 json fail(const std::string& message) {
   return mcp::textResult(message, true);
@@ -55,23 +51,16 @@ bool loadState(DockWidget& dock, const QDomElement& element) {
   if (PlotWidget* plot = dock.plotWidget(); plot != nullptr) {
     return plot->xmlLoadState(element);
   }
+  return dock.loadObjectWidgetState(element);
+}
+
+QStringList unresolvedRestores(DockWidget& dock) {
   IDataWidget* widget = dock.objectWidget();
-  if (widget == nullptr || !widget->xmlLoadState(element)) {
-    return false;
-  }
-  widget->finishRestore();  // the data its state names is already loaded
-  return true;
+  return widget != nullptr ? widget->unresolvedRestores() : QStringList();
 }
 
-// A float parser's open bound (lowest()/max()) says "any finite value"; printing 3.4e38 would only mislead.
-bool isOpenBound(double bound) {
-  return std::abs(bound) >= 1.0e30;
-}
-
-// Bounds of float attributes arrive widened from float (0.001f is 0.0010000000474974513); 7 significant digits is
-// what the attribute can hold.
-double floatPrecision(double value) {
-  return QString::number(value, 'g', 7).toDouble();
+std::string joined(const QStringList& names) {
+  return names.join(u", ").toStdString();
 }
 
 json optionsJson(const std::vector<XmlOption>& options) {
@@ -85,11 +74,11 @@ json optionsJson(const std::vector<XmlOption>& options) {
       }
       entry["values"] = std::move(values);
     }
-    if (option.min.has_value() && !isOpenBound(*option.min)) {
-      entry["min"] = floatPrecision(*option.min);
+    if (option.min.has_value()) {
+      entry["min"] = *option.min;
     }
-    if (option.max.has_value() && !isOpenBound(*option.max)) {
-      entry["max"] = floatPrecision(*option.max);
+    if (option.max.has_value()) {
+      entry["max"] = *option.max;
     }
     if (!option.fallback.isEmpty()) {
       entry["default"] = option.fallback.toStdString();
@@ -114,7 +103,7 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
            {"title", dock->name().toStdString()},
            {"kind", state.isNull() ? std::string("empty") : state.tagName().toStdString()}});
     });
-    reply(ok(docks));
+    reply(mcp::jsonResult(docks));
     return;
   }
   if (action != "get" && action != "set") {
@@ -145,9 +134,10 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
     XmlOptionsRecorder recorder;
     validateState(*dock, current);
     reply(
-        ok({{"dock", id.toStdString()},
-            {"xml", current_doc.toString(2).toStdString()},
-            {"options", optionsJson(recorder.options())}}));
+        mcp::jsonResult(
+            {{"dock", id.toStdString()},
+             {"xml", current_doc.toString(2).toStdString()},
+             {"options", optionsJson(recorder.options())}}));
     return;
   }
 
@@ -164,17 +154,19 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
     return;
   }
   if (dock->plotWidget() != nullptr) {
+    // The id names this plot in pending bindings and saved layouts; an element copied from another plot keeps this one.
+    element.setAttribute(u"id"_s, current.attribute(u"id"_s));
     // A plot's curves are saved by series path; the session key they bind to is resolved here, as a layout load does.
     layout_xml::normalizePlotRangeBasis(doc);
     const CatalogModel& catalog = window_.appSession().catalogModel();
     const QList<layout_xml::SeriesPath> missing = layout_xml::rebindCurveKeys(
         doc, [&catalog](const layout_xml::SeriesPath& path) { return catalog.resolveCurveKey(path); });
     if (!missing.isEmpty()) {
-      std::string names;
+      QStringList names;
       for (const layout_xml::SeriesPath& path : missing) {
-        names += (names.empty() ? "" : ", ") + path.display().toStdString();
+        names.push_back(path.display());
       }
-      reply(fail("no loaded series for " + names + "; nothing changed"));
+      reply(fail("no loaded series for " + joined(names) + "; nothing changed"));
       return;
     }
     dock->plotWidget()->stampLiveCurveKeys(current);  // the rollback binds what is shown now
@@ -189,21 +181,43 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
           (why.isEmpty() ? std::string("the element does not validate (get lists the options)") : why.toStdString())));
       return;
     }
-  }
-  if (!loadState(*dock, element)) {
-    const bool restored = loadState(*dock, current);
-    reply(fail(
-        restored ? "the dock refused the element while applying it; it is back as it was"
-                 : "the dock refused the element and could not restore its previous state; undo restores it"));
-    if (!restored) {
-      window_.recordAgentUndoStep();
+    // A misspelt attribute would otherwise be ignored and reported as applied. A widget that reports nothing keeps
+    // its state opaque and is not checked.
+    const QStringList unknown =
+        recorder.options().empty() ? QStringList() : unreportedXmlAttributes(element, recorder.options());
+    if (!unknown.isEmpty()) {
+      reply(fail("refused, nothing changed: unknown attribute " + joined(unknown) + " (get lists the options)"));
+      return;
     }
+  }
+  if (!window_.beginAgentDockChange()) {
+    reply(fail("a layout or an undo step is being applied; try again"));
     return;
   }
-  window_.recordAgentUndoStep();
+  const QStringList unresolved_before = unresolvedRestores(*dock);
+  const bool loaded = loadState(*dock, element);
+  QStringList not_loaded;
+  if (loaded) {
+    for (const QString& topic : unresolvedRestores(*dock)) {
+      if (!unresolved_before.contains(topic)) {
+        not_loaded.push_back(topic);
+      }
+    }
+  }
+  if (!loaded || !not_loaded.isEmpty()) {
+    // A topic that is not loaded would leave its layer or row waiting, shown nowhere.
+    const bool restored = loadState(*dock, current);
+    window_.endAgentDockChange(dock);
+    std::string why = !loaded ? std::string("the dock refused the element while applying it")
+                              : "no loaded topic " + joined(not_loaded);
+    reply(fail(
+        why + (restored ? "; it is back as it was" : "; it could not restore its previous state, undo restores it")));
+    return;
+  }
+  window_.endAgentDockChange(dock);
   QDomDocument applied_doc;
   applied_doc.appendChild(saveState(*dock, applied_doc));
-  reply(ok({{"dock", id.toStdString()}, {"xml", applied_doc.toString(2).toStdString()}}));
+  reply(mcp::jsonResult({{"dock", id.toStdString()}, {"xml", applied_doc.toString(2).toStdString()}}));
 }
 
 }  // namespace PJ

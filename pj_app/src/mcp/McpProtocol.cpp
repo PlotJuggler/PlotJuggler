@@ -276,8 +276,9 @@ json appToolEntries() {
           "element: get it right before, change attributes, send the whole element back with the same root tag; keep "
           "what you do not change as get returned it (it holds the camera and the view: an older get moves them "
           "back). A refused element leaves the dock as it was, and the error names the "
-          "attribute and what it accepts. Each set is one undo step for the user. A dock whose kind lists no options "
-          "(a plugin's widget) still round-trips, unchecked.",
+          "attribute and what it accepts; an attribute not in options, or a series or topic that is not loaded, is "
+          "refused too. Each set is one undo step for the user. A dock whose kind lists no options (a plugin's "
+          "widget) still round-trips, unchecked.",
           schema(
               {{"action", {{"type", "string"}, {"enum", json::array({"list", "get", "set"})}}},
                {"dock", {{"type", "string"}, {"description", "a dock id from list"}}},
