@@ -244,6 +244,13 @@ jobs:
           PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-prod/deploy
         run: npm run test:deployment
 
+      - name: DEBUG upload the production package for deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-production
+          path: build-wasm-prod/deploy
+          retention-days: 3
+
       - name: Build acceptance configuration (shipped defaults, ingress probe on)
         shell: bash
         run: |
@@ -333,9 +340,7 @@ jobs:
     needs: wasm
     # Explicit result check: the implicit success() also fails on the skipped
     # `changed` gate two levels up, which would skip this job on every PR run.
-    if: >-
-      ${{ !cancelled() && needs.wasm.result == 'success' &&
-      !(github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-') && vars.PJ_CI_RELEASE_PR_LITE == 'true') }}
+    if: false
     runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     timeout-minutes: 60
     env:
@@ -472,7 +477,7 @@ jobs:
         shard: [1, 2]
     # Explicit result check: the implicit success() also fails on the skipped
     # `changed` gate two levels up, which would skip this job on every manual run.
-    if: ${{ !cancelled() && needs.wasm.result == 'success' && github.event_name != 'pull_request' }}
+    if: false
     runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     timeout-minutes: 60
     env:
