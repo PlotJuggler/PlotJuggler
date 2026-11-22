@@ -455,6 +455,16 @@ jobs:
         if: steps.scope.outputs.full != 'true'
         run: npm --prefix tests/wasm run test:smoke
 
+      - name: Upload failure output
+        # Playwright's per-test output: a failed snapshot's actual, expected and diff images.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-chromium-failures
+          path: tests/wasm/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
   wasm-firefox:
     # The acceptance package of the wasm job, in Firefox. Firefox has no
     # SwiftShader: WebGL comes from Mesa's llvmpipe on the GPU-less runner,
