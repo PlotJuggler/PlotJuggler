@@ -707,7 +707,12 @@ Timestamp SessionManager::globalTimeReference() const {
         found = true;
       }
     }
-    global_min_cache_ = found ? global_min : 0;
+    if (!found) {
+      // Not memoized: plugin-thread ingest writes a stream's first rows before its notifyIngest resets the memo, and a
+      // remembered "no data" would show those rows at their absolute time until then.
+      return 0;
+    }
+    global_min_cache_ = global_min;
   }
   return *global_min_cache_;
 }

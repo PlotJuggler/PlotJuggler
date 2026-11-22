@@ -774,6 +774,31 @@ TEST(SessionManagerTimeOffsetTest, RefreshDatasetTimeReferenceReframesAfterDirec
   EXPECT_EQ(global_changes.count(), 1) << "no spurious reframe when the origin did not move";
 }
 
+// A stream's first rows land in the DataEngine on the plugin thread, before the GUI thread's notifyIngest. An origin
+// asked for while the session was still empty must not be remembered as "no data": a reader in between would see the
+// stream at its absolute time while its dataset already holds data.
+TEST(SessionManagerTimeOffsetTest, FirstRowsBeforeTheirIngestNoticeSetTheOrigin) {
+  PJ::SessionManager session;
+  session.setUseTimeOffset(true);
+  auto domain = session.dataEngine().createTimeDomain("stream");
+  ASSERT_TRUE(domain.has_value()) << domain.error();
+  auto dataset =
+      session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "stream", .time_domain_id = *domain});
+  ASSERT_TRUE(dataset.has_value()) << dataset.error();
+  ASSERT_EQ(session.globalTimeReference(), 0);
+
+  PJ::DataWriter writer = session.dataEngine().createWriter();
+  auto handle = writer.registerScalarSeries(*dataset, "/live", PJ::NumericType::kFloat64);
+  ASSERT_TRUE(handle.has_value()) << handle.error();
+  writer.appendScalar(*handle, 2'000'000'000LL, 1.0);
+  ASSERT_FALSE(session.dataEngine().commitChunks(writer.flushAll()).empty());  // no notifyIngest yet
+
+  EXPECT_EQ(session.globalTimeReference(), 2'000'000'000LL);
+  const auto range = session.datasetDisplayRange(*dataset);
+  ASSERT_TRUE(range.has_value());
+  EXPECT_DOUBLE_EQ(range->max.value, 0.0);
+}
+
 // Removal: a dataset with committed data removed via SessionManager::removeDataset must reframe when it was the
 // origin owner (FileLoader routes its discard/error cleanups through it, not dataEngine().removeDataset).
 TEST(SessionManagerTimeOffsetTest, RemoveDatasetReframesWhenItOwnedTheOrigin) {
