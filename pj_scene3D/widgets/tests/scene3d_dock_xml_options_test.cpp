@@ -170,9 +170,14 @@ TEST_F(Scene3DDockXmlOptionsTest, SavedStateValidatesAndReportsEveryAttribute) {
   }
   EXPECT_EQ(saved_.elementsByTagName(u"trail"_s).size(), 3) << "two standalone trails and the pose-owned one";
 
-  const std::vector<PJ::XmlOption> options = savedOptions();
-  EXPECT_EQ(PJ::unreportedXmlAttributes(saved_, options), QStringList{})
-      << "a saved attribute is not read through a reporting reader in xmlValidateState";
+  // Tokens that pick a restore path or must agree with another attribute: substituting one alone is refused by design.
+  const PJ::XmlSelfDescriptionRules rules{
+      .skip_tokens = {
+          u"layer.object_type"_s, u"layer.role"_s, u"layer.local"_s, u"trail.source_kind"_s, u"pointcloud.color_type"_s,
+          u"pointcloud.color_choice_explicit"_s}};
+  EXPECT_EQ(
+      PJ::xmlSelfDescriptionProblems([this](const QDomElement& e) { return dock_.xmlValidateState(e); }, saved_, rules),
+      QStringList{});
 }
 
 TEST_F(Scene3DDockXmlOptionsTest, LayerWaitingForItsTopicIsNotAFailure) {
@@ -194,34 +199,6 @@ TEST_F(Scene3DDockXmlOptionsTest, ToleratedBadTokenStaysValidButIsNoted) {
   PJ::XmlOptionsRecorder recorder;
   EXPECT_TRUE(dock_.xmlValidateState(saved_));
   EXPECT_TRUE(recorder.firstRejection().contains(u" role=\"trial\""_s)) << recorder.firstRejection().toStdString();
-}
-
-TEST_F(Scene3DDockXmlOptionsTest, EveryReportedTokenValidates) {
-  // Tokens that pick a restore path or must agree with another attribute: substituting one alone is refused by design.
-  const QStringList structural = {u"layer.object_type"_s,     u"layer.role"_s,
-                                  u"layer.local"_s,           u"trail.source_kind"_s,
-                                  u"pointcloud.color_type"_s, u"pointcloud.color_choice_explicit"_s};
-  int checked = 0;
-  for (const PJ::XmlOption& option : savedOptions()) {
-    if (option.values.isEmpty() || structural.contains(option.element + u'.' + option.attribute)) {
-      continue;
-    }
-    const std::vector<QDomElement> targets = elementsWith(saved_, option.element, option.attribute);
-    QDomElement target =
-        targets.empty() ? saved_.elementsByTagName(option.element).item(0).toElement() : targets.front();
-    if (target.isNull() && option.element == saved_.tagName()) {
-      target = saved_;
-    }
-    ASSERT_FALSE(target.isNull()) << option.element.toStdString();
-    for (const QString& value : option.values) {
-      QString why;
-      EXPECT_TRUE(acceptsWith(target, option.attribute, value, &why))
-          << option.element.toStdString() << '.' << option.attribute.toStdString() << '=' << value.toStdString() << ": "
-          << why.toStdString();
-      ++checked;
-    }
-  }
-  EXPECT_GT(checked, 30);
 }
 
 TEST_F(Scene3DDockXmlOptionsTest, EveryReportedBoundIsEnforcedNamingTheAttribute) {

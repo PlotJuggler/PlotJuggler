@@ -87,7 +87,8 @@ Session, catalog and time:
 - `QSettingsBackend.h`, `XmlCdata.h`: `sdk::SettingsBackend` over `QSettings`; CDATA helpers shared with `pj_app`'s
   layout code.
 - `XmlStateOptions.h`: the reporting XML readers behind `IDataWidget::xmlValidateState`; an `XmlOptionsRecorder`
-  collects the options and the first refused value they report (the MCP `widget_state` tool serves them).
+  collects the options and the first refused value they report (the MCP `widget_state` tool serves them);
+  `xmlSelfDescriptionProblems` is the one check every widget family's test runs on its own saved state.
 
 Plugin hosts and extensions:
 - `DataSourceRuntimeHost.h`: runs `DataSource` plugins: DSO keepalive, advertised-topic classification, idempotent

@@ -496,8 +496,9 @@ dock with no state).
   `XmlOptionsRecorder::noteOption` and words its rejection with `xmlValueProblem`, so every reason reads alike). `get`
   validates the dock's own saved state under an `XmlOptionsRecorder` and returns what it recorded: per element tag,
   each attribute's type, tokens or bounds, and default. The list is the parser, so it cannot claim a value the parser
-  refuses. Each family's test asserts `unreportedXmlAttributes` is empty for its saved states, so an attribute added
-  to `xmlSaveState` without a reporting reader fails there.
+  refuses. Each family's test asserts `xmlSelfDescriptionProblems` is empty for its saved states (every saved
+  attribute reported, every reported token accepted), so an attribute added to `xmlSaveState` without a reporting
+  reader fails there.
 - **Readers are strict for agents, tolerant for layouts.** A reader given `XmlBadValue::kTolerate` keeps what a
   layout load always did with a bad value (the default) but still notes it as a rejection; `set` refuses any element
   with a rejection. Without a recorder (`XmlOptionsRecorder::active()` false) the work done only to report is skipped,

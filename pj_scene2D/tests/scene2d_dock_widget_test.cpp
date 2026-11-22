@@ -1250,81 +1250,6 @@ TEST(Scene2DDockWidget, AnnotationsOfAnUnmarkedTopicAreShownWhateverImageTheyNam
   EXPECT_NE(warned, std::optional<bool>(true));
 }
 
-namespace {
-
-QList<QDomElement> elementsNamed(const QDomElement& root, const QString& tag) {
-  QList<QDomElement> found;
-  if (root.tagName() == tag) {
-    found.append(root);
-  }
-  const QDomNodeList descendants = root.elementsByTagName(tag);
-  for (int i = 0; i < descendants.size(); ++i) {
-    found.append(descendants.at(i).toElement());
-  }
-  return found;
-}
-
-// A copy of `root` with the option's attribute set to `value` on every element that carries it (object_type pairs with
-// layer_kind, so that one goes).
-QDomElement withAttribute(
-    QDomDocument& doc, const QDomElement& root, const PJ::XmlOption& option, const QString& value) {
-  QDomElement copy = doc.importNode(root, /*deep=*/true).toElement();
-  doc.appendChild(copy);
-  int substituted = 0;
-  for (QDomElement target : elementsNamed(copy, option.element)) {
-    if (!target.hasAttribute(option.attribute)) {
-      continue;
-    }
-    ++substituted;
-    if (option.attribute == u"object_type"_s) {
-      target.removeAttribute(u"layer_kind"_s);
-    }
-    target.setAttribute(option.attribute, value);
-  }
-  EXPECT_GT(substituted, 0) << "the saved state has no <" << qPrintable(option.element) << " "
-                            << qPrintable(option.attribute) << ">";
-  return copy;
-}
-
-// The widget's own saved state, validated: every saved attribute has a reporting reader, each enum token validates in
-// place of the saved value, and an unparsable value is refused naming the attribute, as xmlLoadState refuses it.
-// `accepts_bad` names the "element.attribute" pairs that read an unparsable value as a fallback instead: validation
-// accepts them as xmlLoadState does, yet still names the attribute in firstRejection().
-void expectValidationDescribes(
-    const QDomElement& saved, const std::function<bool(const QDomElement&)>& validate,
-    const std::function<bool(const QDomElement&)>& load, const QSet<QString>& accepts_bad) {
-  std::vector<PJ::XmlOption> options;
-  {
-    PJ::XmlOptionsRecorder recorder;
-    ASSERT_TRUE(validate(saved)) << qPrintable(recorder.firstRejection());
-    options = recorder.options();
-  }
-  EXPECT_EQ(PJ::unreportedXmlAttributes(saved, options), QStringList());
-
-  for (const PJ::XmlOption& option : options) {
-    const QString name = option.element + u'.' + option.attribute;
-    for (const QString& token : option.values) {
-      QDomDocument doc;
-      PJ::XmlOptionsRecorder recorder;
-      EXPECT_TRUE(validate(withAttribute(doc, saved, option, token)));
-      EXPECT_EQ(recorder.firstRejection(), QString()) << qPrintable(name + u'=' + token);
-    }
-    QDomDocument doc;
-    const QDomElement bad = withAttribute(doc, saved, option, u"~bad~"_s);
-    PJ::XmlOptionsRecorder recorder;
-    const bool accepted = validate(bad);
-    const bool free_text = option.type == u"text"_s;
-    EXPECT_EQ(accepted, free_text || accepts_bad.contains(name)) << qPrintable(name);
-    if (!free_text) {  // a text value that names nothing loads as a pending topic or a refused dataset
-      EXPECT_EQ(load(bad), accepted) << qPrintable(name);
-      EXPECT_TRUE(recorder.firstRejection().contains(option.attribute + u"=\"~bad~\""_s))
-          << qPrintable(name + u": " + recorder.firstRejection());
-    }
-  }
-}
-
-}  // namespace
-
 TEST(Scene2DDockWidget, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
   PJ::SessionManager session;
   const auto color = registerTopic(session, 1, "/camera/color/image");
@@ -1348,10 +1273,15 @@ TEST(Scene2DDockWidget, ValidationDescribesTheSavedStateAndAgreesWithLoad) {
   QDomDocument doc;
   const QDomElement saved = dock.xmlSaveState(doc);
   saved.firstChildElement(u"layer"_s).setAttribute(u"pending_intent"_s, u"true"_s);
-  expectValidationDescribes(
-      saved, [&](const QDomElement& e) { return dock.xmlValidateState(e); },
-      [&](const QDomElement& e) { return dock.xmlLoadState(e); },
-      {u"layer.pending_intent"_s, u"scene2d_layer.colormap"_s});
+  // object_type pairs with layer_kind, so a token substituted alone is refused by design.
+  EXPECT_EQ(
+      PJ::xmlSelfDescriptionProblems(
+          [&](const QDomElement& e) { return dock.xmlValidateState(e); }, saved,
+          {.skip_tokens = {u"layer.object_type"_s},
+           .check_bad_values = true,
+           .tolerates_bad = {u"layer.pending_intent"_s, u"scene2d_layer.colormap"_s},
+           .load = [&](const QDomElement& e) { return dock.xmlLoadState(e); }}),
+      QStringList());
 
   PJ::XmlOptionsRecorder recorder;
   EXPECT_FALSE(dock.xmlValidateState(doc.createElement(u"scene3d"_s)));

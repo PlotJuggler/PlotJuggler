@@ -200,3 +200,20 @@ TEST(XmlStateOptions, ValueProblemChecksTokensAndNumbers) {
   EXPECT_EQ(PJ::xmlValueProblem({.type = u"float"_s}, u"nan"_s), u"expected a finite number"_s);
   EXPECT_TRUE(PJ::xmlValueProblem({.type = u"color"_s}, u"whatever"_s).isEmpty());
 }
+
+TEST(XmlStateOptions, SelfDescriptionNamesAnUnreportedAttributeAndARefusedToken) {
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(u"<e shape=\"dot\" extra=\"1\"/>"_s));
+  // Reports the tokens "dot" and "cross" but refuses "cross", and never reads `extra`.
+  const auto validate = [](const QDomElement& e) {
+    QString shape;
+    return PJ::readXmlEnum(e, u"shape"_s, {u"dot"_s, u"cross"_s}, u"dot"_s, shape) && shape == u"dot"_s;
+  };
+  const QStringList problems = PJ::xmlSelfDescriptionProblems(validate, doc.documentElement());
+  ASSERT_EQ(problems.size(), 2) << problems.join(u'\n').toStdString();
+  EXPECT_EQ(problems[0], u"e.extra: saved but not reported"_s);
+  EXPECT_TRUE(problems[1].startsWith(u"e.shape=cross: its own token is refused"_s));
+  EXPECT_EQ(
+      PJ::xmlSelfDescriptionProblems(validate, doc.documentElement(), {.skip_tokens = {u"e.shape"_s}}),
+      QStringList{u"e.extra: saved but not reported"_s});
+}

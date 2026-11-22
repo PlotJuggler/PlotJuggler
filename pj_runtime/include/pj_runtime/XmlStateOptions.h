@@ -6,6 +6,7 @@
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
+#include <functional>
 #include <optional>
 #include <type_traits>
 #include <vector>
@@ -128,5 +129,26 @@ QString readXmlText(const QDomElement& element, const QString& attribute, const 
 /// saved state, so an attribute added to xmlSaveState without a reporting reader fails there; widget_state refuses
 /// an element carrying one.
 [[nodiscard]] QStringList unreportedXmlAttributes(const QDomElement& root, const std::vector<XmlOption>& options);
+
+/// What `xmlSelfDescriptionProblems` checks beyond the always-on part.
+struct XmlSelfDescriptionRules {
+  /// "element.attribute" pairs whose tokens are not substituted alone: they pick a restore path or must agree with
+  /// another attribute, so one alone is refused by design.
+  QStringList skip_tokens = {};
+  /// Also substitute an unparsable value into every reported attribute except free text: it must be refused naming
+  /// the attribute, unless the pair is in `tolerates_bad`, where it must validate yet still be noted.
+  bool check_bad_values = false;
+  QStringList tolerates_bad = {};
+  /// With `check_bad_values`: the load, which must accept each unparsable copy exactly when validation does.
+  std::function<bool(const QDomElement&)> load = {};
+};
+
+/// The ways a widget's own saved state `saved` falls short of self-describing, one line each; empty when it is.
+/// `validate` (the widget's xmlValidateState) must accept `saved` with no noted rejection and report every attribute it
+/// carries (`unreportedXmlAttributes`), and accept, again with none noted, each reported token substituted on every
+/// element of that tag that carries the attribute. A widget family's test asserts the result is empty.
+[[nodiscard]] QStringList xmlSelfDescriptionProblems(
+    const std::function<bool(const QDomElement&)>& validate, const QDomElement& saved,
+    const XmlSelfDescriptionRules& rules = {});
 
 }  // namespace PJ

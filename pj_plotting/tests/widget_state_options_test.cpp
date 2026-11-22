@@ -65,37 +65,6 @@ QDomElement firstWithTag(const QDomElement& root, const QString& tag) {
   return root.tagName() == tag ? root : root.elementsByTagName(tag).at(0).toElement();
 }
 
-// `saved` validates without a noted rejection (widget_state refuses on one), reports every attribute it carries, and
-// does the same with each reported token substituted. A plot's `mode` is skipped: it must agree with its curves'
-// shape (ModeFlipOnAPopulatedPlotIsNoted).
-void expectSelfDescribing(const Validate& validate, const QDomElement& saved) {
-  std::vector<PJ::XmlOption> options;
-  {
-    PJ::XmlOptionsRecorder recorder;
-    ASSERT_TRUE(validate(saved)) << recorder.firstRejection().toStdString();
-    EXPECT_EQ(recorder.firstRejection(), QString()) << "widget_state refuses a state with any noted rejection";
-    options = recorder.options();
-  }
-  EXPECT_EQ(PJ::unreportedXmlAttributes(saved, options), QStringList{});
-  for (const PJ::XmlOption& option : options) {
-    if (option.element == u"plot"_s && option.attribute == u"mode"_s) {
-      continue;
-    }
-    for (const QString& value : option.values) {
-      QDomDocument doc;
-      const QDomElement root = copyOf(doc, saved);
-      QDomElement target = firstWithTag(root, option.element);
-      ASSERT_FALSE(target.isNull()) << option.element.toStdString();
-      target.setAttribute(option.attribute, value);
-      PJ::XmlOptionsRecorder recorder;
-      EXPECT_TRUE(validate(root)) << option.element.toStdString() << "." << option.attribute.toStdString() << "="
-                                  << value.toStdString() << ": " << recorder.firstRejection().toStdString();
-      EXPECT_EQ(recorder.firstRejection(), QString())
-          << option.element.toStdString() << "." << option.attribute.toStdString() << "=" << value.toStdString();
-    }
-  }
-}
-
 QDomElement savedTimeSeriesPlot(Session& s, QDomDocument& doc) {
   PJ::PlotWidget plot(&s.session, &s.catalog);
   EXPECT_NE(plot.addCurve(s.key_a), nullptr);
@@ -126,7 +95,8 @@ TEST(WidgetStateOptions, SavedPlotsAreSelfDescribing) {
     const QDomElement saved = save(s, doc);
     ASSERT_FALSE(saved.firstChildElement(u"range"_s).isNull());
     ASSERT_FALSE(saved.firstChildElement(u"curve"_s).isNull());
-    expectSelfDescribing(validate, saved);
+    // A plot's mode must agree with its curves' shape (ModeFlipOnAPopulatedPlotIsNoted).
+    EXPECT_EQ(PJ::xmlSelfDescriptionProblems(validate, saved, {.skip_tokens = {u"plot.mode"_s}}), QStringList{});
   }
 }
 
@@ -143,7 +113,9 @@ TEST(WidgetStateOptions, SavedStateStripIsSelfDescribing) {
   QDomDocument doc;
   const QDomElement saved = strip.xmlSaveState(doc);
   ASSERT_FALSE(saved.firstChildElement(u"series"_s).isNull());
-  expectSelfDescribing([&strip](const QDomElement& e) { return strip.xmlValidateState(e); }, saved);
+  EXPECT_EQ(
+      PJ::xmlSelfDescriptionProblems([&strip](const QDomElement& e) { return strip.xmlValidateState(e); }, saved),
+      QStringList{});
 }
 
 // xmlLoadState maps an unknown token to its fallback; the validator keeps that tolerance and notes the value.

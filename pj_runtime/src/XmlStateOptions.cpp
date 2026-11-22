@@ -3,9 +3,13 @@
 
 #include "pj_runtime/XmlStateOptions.h"
 
+#include <QDomDocument>
 #include <QDomNamedNodeMap>
+#include <QDomNodeList>
 #include <algorithm>
 #include <cmath>
+
+using namespace Qt::StringLiterals;
 
 namespace PJ {
 
@@ -294,6 +298,86 @@ QStringList unreportedXmlAttributes(const QDomElement& root, const std::vector<X
   };
   visit(visit, root);
   return missing;
+}
+
+namespace {
+
+// A copy of `saved` with `attribute` set to `value` on every `tag` element carrying it, in `doc`; null when none does.
+QDomElement substituted(
+    QDomDocument& doc, const QDomElement& saved, const QString& tag, const QString& attribute, const QString& value) {
+  QDomElement copy = doc.importNode(saved, /*deep=*/true).toElement();
+  doc.appendChild(copy);
+  QList<QDomElement> targets;
+  if (copy.tagName() == tag) {
+    targets.append(copy);
+  }
+  const QDomNodeList descendants = copy.elementsByTagName(tag);
+  for (int index = 0; index < descendants.size(); ++index) {
+    targets.append(descendants.at(index).toElement());
+  }
+  bool any = false;
+  for (QDomElement& target : targets) {
+    if (target.hasAttribute(attribute)) {
+      target.setAttribute(attribute, value);
+      any = true;
+    }
+  }
+  return any ? copy : QDomElement();
+}
+
+}  // namespace
+
+QStringList xmlSelfDescriptionProblems(
+    const std::function<bool(const QDomElement&)>& validate, const QDomElement& saved,
+    const XmlSelfDescriptionRules& rules) {
+  QStringList problems;
+  std::vector<XmlOption> options;
+  {
+    XmlOptionsRecorder recorder;
+    if (!validate(saved) || !recorder.firstRejection().isEmpty()) {
+      return {u"the saved state is refused: "_s + recorder.firstRejection()};
+    }
+    options = recorder.options();
+  }
+  for (const QString& entry : unreportedXmlAttributes(saved, options)) {
+    problems.push_back(entry + u": saved but not reported"_s);
+  }
+  for (const XmlOption& option : options) {
+    const QString name = option.element + u'.' + option.attribute;
+    if (!rules.skip_tokens.contains(name)) {
+      for (const QString& token : option.values) {
+        QDomDocument doc;
+        const QDomElement copy = substituted(doc, saved, option.element, option.attribute, token);
+        if (copy.isNull()) {
+          continue;  // reported by a reader the saved state does not exercise on this tag
+        }
+        XmlOptionsRecorder recorder;
+        if (!validate(copy) || !recorder.firstRejection().isEmpty()) {
+          problems.push_back(name + u'=' + token + u": its own token is refused: "_s + recorder.firstRejection());
+        }
+      }
+    }
+    if (!rules.check_bad_values || (option.type == u"text"_s && option.values.isEmpty())) {
+      continue;
+    }
+    QDomDocument doc;
+    const QDomElement bad = substituted(doc, saved, option.element, option.attribute, u"~bad~"_s);
+    if (bad.isNull()) {
+      continue;
+    }
+    XmlOptionsRecorder recorder;
+    const bool accepted = validate(bad);
+    if (accepted != rules.tolerates_bad.contains(name)) {
+      problems.push_back(name + (accepted ? u"=~bad~ is accepted"_s : u"=~bad~ is refused, not tolerated"_s));
+    }
+    if (!recorder.firstRejection().contains(option.attribute + u"=\"~bad~\""_s)) {
+      problems.push_back(name + u"=~bad~ is not named: "_s + recorder.firstRejection());
+    }
+    if (rules.load && rules.load(bad) != accepted) {
+      problems.push_back(name + u"=~bad~: load and validation disagree"_s);
+    }
+  }
+  return problems;
 }
 
 }  // namespace PJ
