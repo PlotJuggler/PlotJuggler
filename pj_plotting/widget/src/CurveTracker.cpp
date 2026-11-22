@@ -15,6 +15,7 @@
 #include <QSize>
 #include <QString>
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <map>
 using namespace Qt::StringLiterals;
@@ -31,6 +32,10 @@ namespace {
 // Curve palettes are tuned to draw on the plot, not to be read as text: on the dark backdrop the default red and blue
 // fall under this ratio.
 constexpr double kMinTextContrast = 4.5;
+
+// Top vertical speed of the value box, and the glide tick that finishes the move once positions stop arriving.
+constexpr double kLabelSpeedPxPerSec = 200.0;
+constexpr int kLabelTickMs = 16;
 
 // The time line reads like the X axis under it: plain seconds, or the clock format the date-time toggle installed there
 // (an XY plot keeps plain seconds).
@@ -76,6 +81,12 @@ CurveTracker::CurveTracker(QwtPlot* plot, QColor color) : QObject(plot), plot_(p
 
   text_marker_ = new QwtPlotMarker();
   text_marker_->attach(plot_);
+
+  label_timer_.setInterval(kLabelTickMs);
+  connect(&label_timer_, &QTimer::timeout, this, [this]() {
+    stepValueBox();
+    emit valueBoxMoved();
+  });
 }
 
 CurveTracker::~CurveTracker() {
@@ -104,6 +115,9 @@ void CurveTracker::setParameter(Parameter parameter) {
 
 void CurveTracker::setEnabled(bool enable) {
   visible_ = enable;
+  if (!enable) {
+    label_shown_ = false;
+  }
   line_marker_->setVisible(enable);
   // Gate the box on the parameter here rather than force it visible — that is
   // what stopped a re-enabled line-only tracker (when a curve is added, or on
@@ -258,7 +272,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   }
 
   if (visible_points > 0) {
-    text_marker_->setYValue(0.5 * (max_y + min_y));
+    label_target_y_ = 0.5 * (max_y + min_y);
   }
 
   const double canvas_ratio = view_rect.width() / static_cast<double>(std::max(1, plot_->width()));
@@ -268,6 +282,22 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
   }
 
   const bool marker_visible = visible_points > 0 && visible_ && valueBoxAllowed();
+  if (!marker_visible || !label_shown_) {
+    label_timer_.stop();
+    text_marker_->setYValue(label_target_y_);
+  } else {
+    if (label_timer_.isActive()) {
+      stepValueBox();
+    } else {
+      label_clock_.start();
+    }
+    // Restarted on every position, so during playback the owner's own repaint shows each step and the timer only
+    // fires once positions stop.
+    if (text_marker_->yValue() != label_target_y_) {
+      label_timer_.start();
+    }
+  }
+  label_shown_ = marker_visible;
   text_marker_->setVisible(marker_visible);
   logTrackerText(plot_, marker_visible, marker_html, text_color);
   previous_tracker_point_ = tracker_position;
@@ -275,6 +305,25 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
 
 QString CurveTracker::valueBoxText() const {
   return text_marker_ != nullptr ? text_marker_->label().text() : QString();
+}
+
+double CurveTracker::valueBoxY() const {
+  return text_marker_->yValue();
+}
+
+void CurveTracker::stepValueBox() {
+  const double dt_sec = static_cast<double>(label_clock_.restart()) * 1e-3;
+  const QwtScaleMap map = plot_->canvasMap(QwtPlot::yLeft);
+  const double current_px = map.transform(text_marker_->yValue());
+  const double target_px = map.transform(label_target_y_);
+  const double max_step_px = kLabelSpeedPxPerSec * dt_sec;
+  // A canvas not laid out yet has a zero pixel span, where invTransform() divides by zero.
+  if (std::abs(map.pDist()) < 1.0 || std::abs(target_px - current_px) <= max_step_px) {
+    text_marker_->setYValue(label_target_y_);
+    label_timer_.stop();
+    return;
+  }
+  text_marker_->setYValue(map.invTransform(current_px + std::copysign(max_step_px, target_px - current_px)));
 }
 
 void CurveTracker::setReferencePosition(std::optional<QPointF> reference_pos) {

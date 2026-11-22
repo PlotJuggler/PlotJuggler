@@ -185,6 +185,7 @@ PlotWidget::PlotWidget(SessionManager* session, CatalogModel* catalog, QWidget* 
       new CurveTracker(qwtPlot(), theme::interaction(theme::Variant::Accent, theme::State::Checked, fw_theme));
   reference_tracker_->setParameter(CurveTracker::kLineOnly);
   reference_tracker_->setEnabled(false);
+  connect(tracker_, &CurveTracker::valueBoxMoved, this, &PlotWidgetBase::replotOverlays);
 
   // Marker overlay: draws the findings (regions, events, value bands, labels) read from the session ObjectStore
   // (serialized PlotMarkers topics) for the series on this plot plus each dataset's Dataset and Global marker scopes.
