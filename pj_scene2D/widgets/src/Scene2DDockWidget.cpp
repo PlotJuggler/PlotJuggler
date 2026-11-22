@@ -18,7 +18,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -39,6 +38,7 @@
 #include "pj_scene2d_widgets/layers/video_layer.h"
 #endif
 #include "pj_scene2d_widgets/media_viewer_widget.h"
+#include "pj_scene_common/saved_layer_header.h"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/RenderingWarningLabel.h"
 #include "pj_widgets/SvgUtil.h"
@@ -121,6 +121,7 @@ using LayerCreator = std::unique_ptr<ISceneLayer> (*)(
 struct LayerRegistration {
   sdk::BuiltinObjectType object_type;
   LayerCreator creator;
+  bool (*validator)(const QDomElement& payload);
 };
 
 std::unique_ptr<ISceneLayer> createImageLayer(
@@ -138,6 +139,23 @@ std::unique_ptr<ISceneLayer> createVideoLayer(
 std::unique_ptr<ISceneLayer> createDepthImageLayer(
     ObjectTopicId topic_id, sdk::BuiltinObjectType object_type, const QString& display_name) {
   return std::make_unique<DepthImageLayer>(topic_id, object_type, display_name);
+}
+
+[[nodiscard]] bool validateDepthImagePayload(const QDomElement& payload) {
+  return DepthImageLayer::parseOptions(payload, DepthImageLayer::Options{}).has_value();
+}
+
+// The layer the kImage creator builds for a restore: its <layer>'s layer_kind (primeRestoreLayerKind) or, without
+// one, depth settings in the payload identify a depth layer, as first-sample dispatch would.
+[[nodiscard]] bool validateImagePayload(const QDomElement& payload) {
+  const QString kind = payload.parentNode().toElement().attribute(QString::fromLatin1(kLayerKind));
+  const bool has_depth_options = payload.hasAttribute(u"colormap"_s) || payload.hasAttribute(u"invert"_s) ||
+                                 payload.hasAttribute(u"near_m"_s) || payload.hasAttribute(u"far_m"_s) ||
+                                 payload.hasAttribute(u"opacity"_s);
+  if (kind == QString::fromLatin1(kDepthKind) || (kind.isEmpty() && has_depth_options)) {
+    return validateDepthImagePayload(payload);
+  }
+  return ImageLayer::parseOptions(payload, ImageLayer::kDefaultRectify).has_value();
 }
 
 // Full-frame pixel sources: a dock shows at most one, beneath the overlays.
@@ -189,36 +207,23 @@ constexpr std::array<LayerRegistration, 5> kLayerRegistrations {
 #else
 constexpr std::array<LayerRegistration, 4> kLayerRegistrations{{
 #endif
-    {sdk::BuiltinObjectType::kImage, &createImageLayer},
+    {sdk::BuiltinObjectType::kImage, &createImageLayer, &validateImagePayload},
 #ifdef PJ_HAS_FFMPEG
-        {sdk::BuiltinObjectType::kVideoFrame, &createVideoLayer},
+        {sdk::BuiltinObjectType::kVideoFrame, &createVideoLayer, &LayerFactory::acceptPayloadWithoutOptions},
 #endif
-        {sdk::BuiltinObjectType::kDepthImage, &createDepthImageLayer},
-        {sdk::BuiltinObjectType::kImageAnnotations, &createImageAnnotationsLayer},
-        {sdk::BuiltinObjectType::kSceneEntities, &createSceneEntitiesLayer},
+        {sdk::BuiltinObjectType::kDepthImage, &createDepthImageLayer, &validateDepthImagePayload},
+        {sdk::BuiltinObjectType::kImageAnnotations, &createImageAnnotationsLayer,
+         &LayerFactory::acceptPayloadWithoutOptions},
+        {sdk::BuiltinObjectType::kSceneEntities, &createSceneEntitiesLayer, &LayerFactory::acceptPayloadWithoutOptions},
   }
 };
 
-constexpr qlonglong kMaxDatasetId = std::numeric_limits<uint32_t>::max();
-
-// The layer_kind and object_type a <layer> accepts; object_type lists only the types the dock handles.
+// The layer_kind a <layer> accepts.
 const XmlOption& layerKindOption() {
   static const XmlOption option{
       .attribute = QString::fromLatin1(kLayerKind),
       .type = u"enum"_s,
       .values = {QString::fromLatin1(kImageKind), QString::fromLatin1(kDepthKind)}};
-  return option;
-}
-
-const XmlOption& objectTypeOption() {
-  static const XmlOption option = [] {
-    XmlOption handled{.attribute = u"object_type"_s, .type = u"enum"_s};
-    for (const LayerRegistration& registration : kLayerRegistrations) {
-      const std::string_view name = sdk::name(registration.object_type);
-      handled.values.append(QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size())));
-    }
-    return handled;
-  }();
   return option;
 }
 
@@ -228,41 +233,15 @@ const XmlOption& objectTypeOption() {
          !layer.attribute(u"dataset_path"_s).isEmpty();
 }
 
-struct LayerAttributes {
-  std::optional<sdk::BuiltinObjectType> object_type;
-  QString kind;  ///< layer_kind; empty when absent
-  QString topic_name;
-  bool ok = true;  ///< false: an attribute the reporting readers refused
-};
-
-// Every attribute of a <layer>, the base dock's included (it saves them and restores them from the same element).
-// Reads only: the cross-attribute rules are validateLayer's, so an empty element reports without refusing.
-[[nodiscard]] LayerAttributes readLayerAttributes(const QDomElement& layer) {
-  LayerAttributes attributes;
-  qint64 dataset_id = 0;
-  attributes.ok = readXmlInt<qint64>(layer, u"dataset_id"_s, std::nullopt, 0, kMaxDatasetId, dataset_id);
-  readXmlText(layer, u"dataset_source"_s);
-  readXmlText(layer, u"dataset_path"_s);
-  attributes.topic_name = readXmlText(layer, u"topic_name"_s);
-  readXmlText(layer, u"display_name"_s);
-  bool visible = true;
-  attributes.ok = readXmlBool(layer, u"visible"_s, true, visible) && attributes.ok;
-  int order = 0;
-  attributes.ok =
-      readXmlInt<int>(layer, u"order"_s, std::nullopt, 0, std::numeric_limits<int>::max(), order) && attributes.ok;
-  // Tolerated: the base restore marks a deferred intent only for "true".
-  bool pending_intent = false;
-  (void)readXmlBool(layer, u"pending_intent"_s, false, pending_intent, XmlBadValue::kTolerate);
-  XmlOptionsRecorder::noteOption(layer, objectTypeOption());
-  attributes.object_type = sdk::parseBuiltinObjectType(layer.attribute(u"object_type"_s).toStdString());
+// The header is the base dock's (it saves it and restores it from the same element); layer_kind and the payload are
+// this family's.
+[[nodiscard]] bool validateLayer(const QDomElement& layer, const LayerFactory& factory) {
   XmlOptionsRecorder::noteOption(layer, layerKindOption());
-  attributes.kind = layer.attribute(layerKindOption().attribute);
-  return attributes;
-}
-
-[[nodiscard]] bool validateLayer(const QDomElement& layer) {
-  const LayerAttributes attributes = readLayerAttributes(layer);
-  bool valid = attributes.ok;
+  const std::optional<SavedLayerHeader> header = parseSavedLayerHeader(layer, SavedTopicRef::kOptional, factory);
+  if (!header.has_value()) {
+    return false;
+  }
+  bool valid = true;
   const auto reject = [&layer, &valid](const QString& attribute, const QString& reason) {
     XmlOptionsRecorder::noteRejection(layer, attribute, reason);
     valid = false;
@@ -270,18 +249,18 @@ struct LayerAttributes {
   const QString image_kind = QString::fromLatin1(kImageKind);
   const QString depth_kind = QString::fromLatin1(kDepthKind);
   const bool names_dataset = namesDataset(layer);
+  const std::optional<sdk::BuiltinObjectType>& object_type = header->object_type;
+  const bool handled = object_type.has_value() && factory.supports(*object_type);
 
   // An unparsable type is refused; a parsable one the dock does not handle is refused only for a generic layer: one
   // that names its dataset is accepted, and refused when it is restored.
-  const QString& object_type_key = objectTypeOption().attribute;
-  if (const QString problem = xmlValueProblem(objectTypeOption(), layer.attribute(object_type_key));
-      !problem.isEmpty()) {
-    XmlOptionsRecorder::noteRejection(layer, object_type_key, problem);
-    valid = valid && attributes.object_type.has_value() && names_dataset;
+  if (!handled) {
+    XmlOptionsRecorder::noteRejection(layer, u"object_type"_s, u"not a 2D layer type"_s);
+    valid = object_type.has_value() && names_dataset;
   }
-  const bool image_type = attributes.object_type == sdk::BuiltinObjectType::kImage;
-  const bool depth_type = attributes.object_type == sdk::BuiltinObjectType::kDepthImage;
-  const QString& kind = attributes.kind;
+  const bool image_type = object_type == sdk::BuiltinObjectType::kImage;
+  const bool depth_type = object_type == sdk::BuiltinObjectType::kDepthImage;
+  const QString kind = layer.attribute(layerKindOption().attribute);
   if (!kind.isEmpty() && kind != image_kind && kind != depth_kind) {
     reject(layerKindOption().attribute, xmlValueProblem(layerKindOption(), kind));
   } else if ((!kind.isEmpty() && !image_type && !depth_type) || (kind == image_kind && !image_type)) {
@@ -291,35 +270,31 @@ struct LayerAttributes {
   if (const QDomElement payload = layer.firstChildElement(); !payload.isNull()) {
     if (!payload.nextSiblingElement().isNull() || payload.tagName() != u"scene2d_layer"_s) {
       reject({}, u"expected a single <scene2d_layer> child"_s);
-    } else {
-      // kImage XML without layer_kind: depth settings identify a depth layer, as first-sample dispatch would.
-      const bool has_depth_options = payload.hasAttribute(u"colormap"_s) || payload.hasAttribute(u"invert"_s) ||
-                                     payload.hasAttribute(u"near_m"_s) || payload.hasAttribute(u"far_m"_s) ||
-                                     payload.hasAttribute(u"opacity"_s);
-      if (depth_type || kind == depth_kind || (image_type && kind.isEmpty() && has_depth_options)) {
-        valid = DepthImageLayer::parseOptions(payload, DepthImageLayer::Options{}).has_value() && valid;
-      } else if (image_type) {
-        valid = ImageLayer::parseOptions(payload, ImageLayer::kDefaultRectify).has_value() && valid;
-      }
+    } else if (handled) {
+      valid = factory.validatePayload(*object_type, payload) && valid;
     }
   }
 
-  if (!names_dataset && attributes.topic_name.isEmpty()) {
+  if (!names_dataset && header->topic_name.isEmpty()) {
     reject(u"topic_name"_s, u"expected a topic name: the layer names no dataset"_s);
   }
   return valid;
 }
 
-// Reports what a layer and its payloads accept even when the state has none of them (a saved state holds only the
-// layers it shows). Only under a recorder: it parses nothing a load uses.
-void reportLayerSchema() {
+// Reports what a layer and each registered payload accept even when the state has none of them (a saved state holds
+// only the layers it shows). Only under a recorder: it parses nothing a load uses.
+void reportLayerSchema(const LayerFactory& factory) {
   if (!XmlOptionsRecorder::active()) {
     return;
   }
   QDomDocument schema;
-  (void)readLayerAttributes(schema.createElement(u"layer"_s));
-  (void)ImageLayer::parseOptions(schema.createElement(u"scene2d_layer"_s), ImageLayer::kDefaultRectify);
-  (void)DepthImageLayer::parseOptions(schema.createElement(u"scene2d_layer"_s), DepthImageLayer::Options{});
+  QDomElement layer = schema.createElement(u"layer"_s);
+  XmlOptionsRecorder::noteOption(layer, layerKindOption());
+  (void)parseSavedLayerHeader(layer, SavedTopicRef::kOptional, factory);
+  const QDomElement payload = layer.appendChild(schema.createElement(u"scene2d_layer"_s)).toElement();
+  for (const sdk::BuiltinObjectType type : factory.types()) {
+    (void)factory.validatePayload(type, payload);
+  }
 }
 
 // A zero id and empty qualifiers name no dataset: dropped from the (cloned) state, so the base treats the layer as
@@ -344,7 +319,7 @@ Scene2DDockWidget::Scene2DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
     if (registration.object_type == sdk::BuiltinObjectType::kImage) {
       continue;  // kImage is registered below with an encoding-aware dispatcher.
     }
-    layerFactory().registerType(registration.object_type, registration.creator);
+    layerFactory().registerType(registration.object_type, registration.creator, registration.validator);
   }
   // kImage covers BOTH color and depth (they share the type). Route depth-encoded
   // images to the colormap DepthImageLayer and everything else to ImageLayer, by
@@ -361,7 +336,8 @@ Scene2DDockWidget::Scene2DDockWidget(QWidget* parent) : SceneDockWidget(parent) 
         return firstSampleIsDepthEncoded(sessionManager(), topic_id)
                    ? createDepthImageLayer(topic_id, object_type, display_name)
                    : createImageLayer(topic_id, object_type, display_name);
-      });
+      },
+      &validateImagePayload);
 }
 
 Scene2DDockWidget::~Scene2DDockWidget() {
@@ -420,10 +396,10 @@ std::optional<MediaViewState> Scene2DDockWidget::validatedViewState(const QDomEl
       XmlOptionsRecorder::noteRejection(child, {}, u"expected at most one <view>"_s);
       valid = false;
     } else if (child.tagName() == u"layer"_s) {
-      valid = validateLayer(child) && valid;
+      valid = validateLayer(child, layerFactory()) && valid;
     }
   }
-  reportLayerSchema();
+  reportLayerSchema(layerFactory());
   std::optional<MediaViewState> view_state = parseViewState(element);
   return valid ? view_state : std::nullopt;
 }
@@ -812,33 +788,31 @@ void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) 
 
   const ImageLayerKind kind =
       saved_kind == QString::fromLatin1(kDepthKind) ? ImageLayerKind::kDepth : ImageLayerKind::kImage;
-  const QString topic_name = layer_element.attribute(u"topic_name"_s);
+  const std::optional<SavedLayerHeader> header =
+      parseSavedLayerHeader(layer_element, SavedTopicRef::kOptional, layerFactory());
+  if (!header.has_value()) {
+    return;  // the base restore refuses it
+  }
+  const std::string topic_name = header->topic_name.toStdString();
   const ObjectStore& store = sessionManager()->objectStore();
-  if (!hasDatasetIdentity(layer_element)) {
+  if (!header->qualified) {
     // Primed before the restore picks the dock's dataset, so every candidate the base restore could bind
     // (uniqueObjectTopic) gets the kind; only the bound one reads it.
-    const auto saved_type = sdk::parseBuiltinObjectType(layer_element.attribute(u"object_type"_s).toStdString());
-    if (saved_type.has_value()) {
-      for (const ObjectTopicId candidate : objectTopicsMatching(store, topic_name.toStdString(), *saved_type)) {
+    if (header->object_type.has_value()) {
+      for (const ObjectTopicId candidate : objectTopicsMatching(store, topic_name, *header->object_type)) {
         restore_image_layer_kinds_.insert_or_assign(topicKey(candidate), kind);
       }
     }
     return;
   }
-  bool dataset_ok = false;
-  const qulonglong dataset_value = layer_element.attribute(u"dataset_id"_s, u"0"_s).toULongLong(&dataset_ok);
-  if (!dataset_ok || dataset_value > std::numeric_limits<uint32_t>::max()) {
-    return;
-  }
   const auto dataset_id = sessionManager()
                               ->resolveObjectDatasetIdentity(
-                                  static_cast<DatasetId>(dataset_value), layer_element.attribute(u"dataset_source"_s),
-                                  layer_element.attribute(u"dataset_path"_s), topic_name)
+                                  header->dataset_id, header->dataset_source, header->dataset_path, header->topic_name)
                               .id;
   if (!dataset_id.has_value()) {
     return;
   }
-  const auto topic_id = store.findTopic(*dataset_id, topic_name.toStdString());
+  const auto topic_id = store.findTopic(*dataset_id, topic_name);
   if (topic_id.has_value()) {
     restore_image_layer_kinds_.insert_or_assign(topicKey(*topic_id), kind);
   }
@@ -847,9 +821,10 @@ void Scene2DDockWidget::primeRestoreLayerKind(const QDomElement& layer_element) 
 bool Scene2DDockWidget::restoreOnePending(const QDomElement& element) {
   // A deferred drop (advertised topic, no data yet) gets tryAcceptObjectTopic's
   // one-background policy; saved layout layers keep appending.
-  const auto object_type = sdk::parseBuiltinObjectType(element.attribute(u"object_type"_s).toStdString());
-  const bool dropped_background =
-      element.attribute(u"pending_intent"_s) == u"true"_s && object_type.has_value() && isBackgroundType(*object_type);
+  const std::optional<SavedLayerHeader> header =
+      parseSavedLayerHeader(element, SavedTopicRef::kOptional, layerFactory());
+  const bool dropped_background = header.has_value() && header->pending_intent && header->object_type.has_value() &&
+                                  isBackgroundType(*header->object_type);
   const std::vector<ObjectTopicId> previous_backgrounds =
       dropped_background ? backgroundTopics() : std::vector<ObjectTopicId>{};
 

@@ -21,6 +21,7 @@
 
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_scene_common/saved_layer_header.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -313,53 +314,43 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
     return false;
   }
 
-  if (!savedDatasetOf(layer_el).has_value()) {
+  const std::optional<SavedLayerHeader> header =
+      parseSavedLayerHeader(layer_el, SavedTopicRef::kOptional, layerFactory());
+  if (!header.has_value() || !header->object_type.has_value()) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  const QString topic_name = layer_el.attribute(u"topic_name"_s);
-  const QString object_type_str = layer_el.attribute(u"object_type"_s);
-  const QString display_name = layer_el.attribute(u"display_name"_s);
-  const bool visible = layer_el.attribute(u"visible"_s, u"true"_s) == "true"_L1;
-
-  const auto object_type_opt = sdk::parseBuiltinObjectType(object_type_str.toStdString());
-  if (!object_type_opt.has_value()) {
-    markWorkspaceRestoreFailed();
-    return true;
-  }
-  const bool qualified = hasDatasetIdentity(layer_el);
-  const SavedElementDataset binding = qualified ? datasetForSavedElement(layer_el) : SavedElementDataset{};
+  const sdk::BuiltinObjectType object_type = *header->object_type;
+  const SavedElementDataset binding = header->qualified ? datasetForSavedElement(layer_el) : SavedElementDataset{};
   if (binding.refused) {
     return true;
   }
   const std::optional<ObjectTopicId> topic_id_opt = resolveSavedObjectTopic(
-      session_->objectStore(), topic_name.toStdString(), *object_type_opt, qualified, binding.dataset,
+      session_->objectStore(), header->topic_name.toStdString(), object_type, header->qualified, binding.dataset,
       representativeDatasetId());
   if (!topic_id_opt.has_value()) {
     return false;
   }
   const ObjectTopicDescriptor& descriptor = session_->objectStore().descriptor(*topic_id_opt);
   const sdk::BuiltinObjectType live_type = objectTypeFromMetadata(descriptor.metadata_json);
-  if (live_type != sdk::BuiltinObjectType::kNone && live_type != *object_type_opt) {
+  if (live_type != sdk::BuiltinObjectType::kNone && live_type != object_type) {
     markWorkspaceRestoreFailed();
     return true;
   }
   if (refuseForeignTopic(*topic_id_opt)) {
     return true;
   }
-  if (addLayer(*topic_id_opt, *object_type_opt, display_name) != AddOutcome::kLayerAdded) {
+  if (addLayer(*topic_id_opt, object_type, header->display_name) != AddOutcome::kLayerAdded) {
     markWorkspaceRestoreFailed();
     return true;
   }
-  bool order_ok = false;
-  const int saved_order = layer_el.attribute(u"order"_s).toInt(&order_ok);
-  if (order_ok && saved_order >= 0) {
+  if (header->order.has_value()) {
     const int64_t key = topicKey(*topic_id_opt);
     const auto current = std::find(draw_order_.begin(), draw_order_.end(), key);
     if (current != draw_order_.end()) {
       draw_order_.erase(current);
       const auto insertion =
-          draw_order_.begin() + std::min<std::size_t>(static_cast<std::size_t>(saved_order), draw_order_.size());
+          draw_order_.begin() + std::min<std::size_t>(static_cast<std::size_t>(*header->order), draw_order_.size());
       draw_order_.insert(insertion, key);
     }
   }
@@ -371,7 +362,7 @@ bool SceneDockWidget::restoreLayerElement(const QDomElement& layer_el) {
       return true;
     }
   }
-  if (!visible) {
+  if (!header->visible) {
     setLayerVisible(*topic_id_opt, false);
   }
   return true;
@@ -715,18 +706,9 @@ bool SceneDockWidget::xmlLoadState(const QDomElement& element) {
     if (!acceptsStateChildTag(child.tagName())) {
       return false;
     }
-    if (child.tagName() == "layer"_L1) {
-      const QString visible = child.attribute(u"visible"_s, u"true"_s);
-      if (visible != "true"_L1 && visible != "false"_L1) {
-        return false;
-      }
-      if (child.hasAttribute(u"order"_s)) {
-        bool order_ok = false;
-        const int order = child.attribute(u"order"_s).toInt(&order_ok);
-        if (!order_ok || order < 0) {
-          return false;
-        }
-      }
+    if (child.tagName() == "layer"_L1 &&
+        !parseSavedLayerHeader(child, SavedTopicRef::kOptional, layerFactory()).has_value()) {
+      return false;
     }
   }
   auto restoring_guard = beginWorkspaceRestore();

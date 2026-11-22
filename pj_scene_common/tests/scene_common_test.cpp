@@ -31,8 +31,10 @@
 #include "pj_runtime/IDataWidget.h"
 #include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene_common/layer_factory.h"
 #include "pj_scene_common/layer_params.h"
+#include "pj_scene_common/saved_layer_header.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
 using namespace Qt::StringLiterals;
@@ -289,6 +291,154 @@ TEST(LayerFactoryTest, RegisterSupportsCreateAndUnsupportedReturnsNull) {
   EXPECT_EQ(layer->info().topic_id, topic(7));
   EXPECT_EQ(layer->info().display_name, u"cloud"_s);
   EXPECT_EQ(factory.create(topic(8), PJ::sdk::BuiltinObjectType::kImage, u"image"_s), nullptr);
+}
+
+TEST(LayerFactoryTest, ValidatePayloadRunsTheRegisteredValidatorAndTypesAreListed) {
+  using BT = PJ::sdk::BuiltinObjectType;
+  const auto creator = [](PJ::ObjectTopicId topic_id, BT object_type, const QString& display_name) {
+    return std::make_unique<FakeLayer>(topic_id, object_type, display_name);
+  };
+  PJ::LayerFactory factory;
+  int calls = 0;
+  factory.registerType(BT::kPointCloud, creator, [&calls](const QDomElement& payload) {
+    ++calls;
+    return payload.attribute(u"ok"_s) == u"yes"_s;
+  });
+  factory.registerType(BT::kImage, creator, &PJ::LayerFactory::acceptPayloadWithoutOptions);
+  factory.registerType(BT::kOccupancyGrid, creator);
+  std::vector<BT> registered{BT::kPointCloud, BT::kImage, BT::kOccupancyGrid};
+  std::sort(registered.begin(), registered.end());
+  EXPECT_EQ(factory.types(), registered);
+
+  QDomDocument doc;
+  QDomElement payload = doc.createElement(u"payload"_s);
+  payload.setAttribute(u"ok"_s, u"yes"_s);
+  EXPECT_TRUE(factory.validatePayload(BT::kPointCloud, payload));
+  payload.setAttribute(u"ok"_s, u"no"_s);
+  EXPECT_FALSE(factory.validatePayload(BT::kPointCloud, payload));
+  EXPECT_EQ(calls, 2);
+  EXPECT_TRUE(factory.validatePayload(BT::kImage, payload));
+
+  for (const BT refused : {BT::kOccupancyGrid, BT::kVoxelGrid}) {  // registered without a validator; unregistered
+    PJ::XmlOptionsRecorder recorder;
+    EXPECT_FALSE(factory.validatePayload(refused, payload));
+    EXPECT_EQ(recorder.firstRejection(), u"<payload>: no layer reads this payload"_s);
+  }
+}
+
+TEST(SavedLayerHeaderTest, ReportsEveryAttributeAndParsesThem) {
+  using BT = PJ::sdk::BuiltinObjectType;
+  PJ::LayerFactory factory;
+  factory.registerType(BT::kPointCloud, {}, &PJ::LayerFactory::acceptPayloadWithoutOptions);
+  factory.registerType(BT::kImage, {}, &PJ::LayerFactory::acceptPayloadWithoutOptions);
+  QDomDocument doc;
+  QDomElement layer = doc.createElement(u"layer"_s);
+  layer.setAttribute(u"dataset_id"_s, u"3"_s);
+  layer.setAttribute(u"dataset_source"_s, u"a.mcap"_s);
+  layer.setAttribute(u"dataset_path"_s, u"/data/a.mcap"_s);
+  layer.setAttribute(u"topic_name"_s, u"/cloud"_s);
+  layer.setAttribute(u"object_type"_s, u"kPointCloud"_s);
+  layer.setAttribute(u"display_name"_s, u"Cloud"_s);
+  layer.setAttribute(u"visible"_s, u"false"_s);
+  layer.setAttribute(u"order"_s, u"2"_s);
+  layer.setAttribute(u"pending_intent"_s, u"true"_s);
+
+  PJ::XmlOptionsRecorder recorder;
+  const std::optional<PJ::SavedLayerHeader> header =
+      PJ::parseSavedLayerHeader(layer, PJ::SavedTopicRef::kOptional, factory);
+  ASSERT_TRUE(header.has_value()) << qPrintable(recorder.firstRejection());
+  EXPECT_EQ(recorder.firstRejection(), QString());
+  EXPECT_EQ(PJ::unreportedXmlAttributes(layer, recorder.options()), QStringList());
+  EXPECT_EQ(header->dataset_id, 3U);
+  EXPECT_EQ(header->dataset_source, u"a.mcap"_s);
+  EXPECT_EQ(header->dataset_path, u"/data/a.mcap"_s);
+  EXPECT_TRUE(header->qualified);
+  EXPECT_TRUE(header->pending_intent);
+  EXPECT_EQ(header->topic_name, u"/cloud"_s);
+  EXPECT_EQ(header->object_type, BT::kPointCloud);
+  EXPECT_EQ(header->display_name, u"Cloud"_s);
+  EXPECT_FALSE(header->visible);
+  EXPECT_EQ(header->order, std::optional<int>(2));
+
+  const auto object_type = std::find_if(recorder.options().begin(), recorder.options().end(), [](const auto& option) {
+    return option.attribute == u"object_type"_s;
+  });
+  ASSERT_NE(object_type, recorder.options().end());
+  QStringList tokens;
+  for (const BT type : factory.types()) {
+    const auto name = PJ::sdk::name(type);
+    tokens.append(QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size())));
+  }
+  EXPECT_EQ(object_type->values, tokens);
+  EXPECT_EQ(tokens.size(), 2);
+
+  const QDomElement bare = doc.createElement(u"layer"_s);
+  const auto defaults = PJ::parseSavedLayerHeader(bare, PJ::SavedTopicRef::kOptional, factory);
+  ASSERT_TRUE(defaults.has_value());
+  EXPECT_FALSE(defaults->qualified);
+  EXPECT_TRUE(defaults->visible);
+  EXPECT_FALSE(defaults->order.has_value());
+  EXPECT_FALSE(defaults->object_type.has_value()) << "the type is the caller's rule, never refused here";
+}
+
+TEST(SavedLayerHeaderTest, StrictAttributesRefuseAndToleratedOnesAreNoted) {
+  PJ::LayerFactory factory;
+  struct Case {
+    const char* attribute;
+    const char* value;
+    PJ::SavedTopicRef ref;
+    bool accepted;
+  };
+  for (const Case& c : {
+           Case{"visible", "maybe", PJ::SavedTopicRef::kOptional, false},
+           Case{"order", "-1", PJ::SavedTopicRef::kOptional, false},
+           Case{"order", "x", PJ::SavedTopicRef::kOptional, false},
+           Case{"dataset_id", "abc", PJ::SavedTopicRef::kOptional, false},
+           Case{"dataset_id", "4294967296", PJ::SavedTopicRef::kOptional, false},
+           Case{"dataset_id", "abc", PJ::SavedTopicRef::kUnused, true},
+           Case{"pending_intent", "yes", PJ::SavedTopicRef::kOptional, true},
+       }) {
+    QDomDocument doc;
+    QDomElement layer = doc.createElement(u"layer"_s);
+    layer.setAttribute(u"topic_name"_s, u"/t"_s);
+    layer.setAttribute(QString::fromLatin1(c.attribute), QString::fromLatin1(c.value));
+    PJ::XmlOptionsRecorder recorder;
+    const auto header = PJ::parseSavedLayerHeader(layer, c.ref, factory);
+    EXPECT_EQ(header.has_value(), c.accepted) << c.attribute << '=' << c.value;
+    EXPECT_TRUE(recorder.firstRejection().contains(QString::fromLatin1(c.attribute) + u"=\""_s))
+        << c.attribute << ": " << qPrintable(recorder.firstRejection());
+    if (header.has_value()) {
+      EXPECT_FALSE(header->pending_intent);
+      EXPECT_EQ(header->dataset_id, 0U);
+    }
+  }
+}
+
+TEST(SavedLayerHeaderTest, RequiredRefNeedsATopicAndAPositiveDatasetId) {
+  QDomDocument doc;
+  QDomElement ref = doc.createElement(u"config_topic"_s);
+  ref.setAttribute(u"topic_name"_s, u"/tf"_s);
+  ref.setAttribute(u"dataset_id"_s, u"0"_s);
+  {
+    PJ::XmlOptionsRecorder recorder;
+    EXPECT_FALSE(PJ::parseSavedTopicHeader(ref, PJ::SavedTopicRef::kRequired).has_value());
+    EXPECT_EQ(recorder.firstRejection(), u"<config_topic> dataset_id=\"0\": expected an integer in [1, 4294967295]"_s);
+    const auto dataset_id = std::find_if(recorder.options().begin(), recorder.options().end(), [](const auto& option) {
+      return option.attribute == u"dataset_id"_s;
+    });
+    ASSERT_NE(dataset_id, recorder.options().end());
+    EXPECT_EQ(dataset_id->min, std::optional<double>(1.0));
+  }
+  EXPECT_TRUE(PJ::parseSavedTopicHeader(ref, PJ::SavedTopicRef::kOptional).has_value()) << "0 names no dataset";
+
+  ref.removeAttribute(u"dataset_id"_s);
+  EXPECT_TRUE(PJ::parseSavedTopicHeader(ref, PJ::SavedTopicRef::kRequired).has_value()) << "bound by topic alone";
+
+  ref.setAttribute(u"topic_name"_s, QString());
+  PJ::XmlOptionsRecorder recorder;
+  EXPECT_FALSE(PJ::parseSavedTopicHeader(ref, PJ::SavedTopicRef::kRequired).has_value());
+  EXPECT_EQ(recorder.firstRejection(), u"<config_topic> topic_name=\"\": required"_s);
+  EXPECT_TRUE(PJ::parseSavedTopicHeader(ref, PJ::SavedTopicRef::kOptional).has_value());
 }
 
 TEST(SceneDockWidgetTest, AddTopicEmitsLayerAddedAndReportsDrawOrder) {

@@ -22,6 +22,7 @@
 #include "pj_datastore/object_store.hpp"
 #include "pj_scene3d_widgets/layers/trail_layer.h"  // TrailSource: a slot argument, so moc needs it complete
 #include "pj_scene3d_widgets/scene3d_layer.h"
+#include "pj_scene_common/saved_layer_header.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_scene_common/scene_layer.h"
 #include "pj_tf/tf_buffer.h"
@@ -237,14 +238,15 @@ class Scene3DDockWidget : public SceneDockWidget {
       const QDomElement& layer_el, QString* deferred_topic_name = nullptr);
   // role="trail" branch of restoreLayerElement: hosts an unconfigured TrailLayer and delegates the restore (source
   // resolution included) to TrailLayer::xmlLoadStateResult, honoring its tri-state result.
-  [[nodiscard]] ElementRestoreResult restoreTrailElement(const QDomElement& layer_el, QString* deferred_topic_name);
+  [[nodiscard]] ElementRestoreResult restoreTrailElement(
+      const QDomElement& layer_el, const SavedLayerHeader& header, QString* deferred_topic_name);
   ObjectTopicId addTrailLayerImpl(ObjectTopicId topic_id, std::unique_ptr<pj::scene3d::TrailLayer> layer);
-  // Saved-topic resolution shared by restoreLayerElement and restoreConfigTopicElement: reads topic_name/dataset_*
-  // attributes off `el` and yields kRestored (live topic id), kDeferred (with the topic name for the pending queue),
-  // kConsumed (the element's dataset lost the restore's dataset choice) or kInvalid.
+  // Saved-topic resolution shared by restoreLayerElement and restoreConfigTopicElement: binds `ref` (parsed from `el`
+  // with SavedTopicRef::kRequired) and yields kRestored (live topic id), kDeferred (with the topic name for the
+  // pending queue), kConsumed (the element's dataset lost the restore's dataset choice) or kInvalid.
   [[nodiscard]] ElementRestoreResult resolveSavedTopicRef(
-      const QDomElement& el, QString* deferred_topic_name, sdk::BuiltinObjectType expected_type,
-      std::optional<ObjectTopicId>& out_topic);
+      const QDomElement& el, const SavedTopicHeader& ref, QString* deferred_topic_name,
+      sdk::BuiltinObjectType expected_type, std::optional<ObjectTopicId>& out_topic);
   [[nodiscard]] ElementRestoreResult restoreConfigTopicElement(const QDomElement& config_el);
   void applyRestoredLayerOrder();
   // Per-element restore hook of the base's pending-retry loop: <config_topic> -> restoreConfigTopicElement, else a

@@ -23,8 +23,10 @@ measured evidence: [docs/TECHNICAL_NOTES.md](./docs/TECHNICAL_NOTES.md); schemas
 - **No draw references a resource whose `create()` failed** (D3D11 crashes in `beginPass`).
 - **Every `QRhiWidget` is constructed parentless, then inserted**, or a raster window never switches to QRhi.
 - **Every attribute a dock or layer saves is read in `xmlValidateState` through a reporting reader** (`readXml*` in
-  `pj_runtime/XmlStateOptions.h`), the same parse `xmlLoadState` uses: one the validator never reads is missing from
-  the MCP `widget_state` options. `ValidationDescribesTheSavedStateAndAgreesWithLoad` fails on it.
+  `pj_runtime/XmlStateOptions.h`; the `<layer>` header through `pj_scene_common`'s `parseSavedLayerHeader`; a
+  payload through the validator registered with its type on `layerFactory()`), the same parse `xmlLoadState` uses:
+  one the validator never reads is missing from the MCP `widget_state` options.
+  `ValidationDescribesTheSavedStateAndAgreesWithLoad` fails on it.
 - **Editing a shader means re-baking its `.qsb`** with the pinned `qsb` (`widgets/shaders/bake.sh`) and committing
   both, or the WASM configure hash check fails.
 

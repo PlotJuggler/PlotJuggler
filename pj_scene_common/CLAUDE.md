@@ -25,6 +25,9 @@ families. Links `pj_runtime` and `pj_datastore`. How it works: [docs/ARCHITECTUR
 - Pending (deferred) restore elements are detached XML until the object resolver can bind them. Restore code that
   writes view state synchronously calls `ensureSceneViewCreated()` first, or the write finds no view.
 - `workspaceChanged` goes through `notifyWorkspaceChanged()`, which is silent while a restore replays.
+- Every restore and every `xmlValidateState` reads a saved `<layer>` / `<config_topic>` header through
+  `parseSavedLayerHeader` / `parseSavedTopicHeader`, and checks a payload with its type's `LayerFactory` validator:
+  a second reader drifts from the first, and the MCP `widget_state` tool then lists or accepts what a load refuses.
 - Attributes named `dataset_id` / `source_dataset_id` anywhere in a deferred payload are dataset references, and
   family payloads follow that: `discardPendingRestoresFor*` match exactly those.
 
@@ -34,7 +37,9 @@ families. Links `pj_runtime` and `pj_datastore`. How it works: [docs/ARCHITECTUR
   `latestEntryRenderKey` / `kNoSampleRenderKey`, `derivedTopicPresentation`, `topicKey`, `resolveSavedObjectTopic` /
   `uniqueObjectTopic` / `objectTopicsMatching` (bind a saved reference; ambiguous stays pending).
 - `scene_dock_widget.h`: `SceneDockWidget`, the dock base a family subclasses.
-- `layer_factory.h`: `LayerFactory`, a family's object-type to layer registry.
+- `layer_factory.h`: `LayerFactory`, a family's object-type registry: layer creator and payload validator.
+- `saved_layer_header.h`: `parseSavedLayerHeader` / `parseSavedTopicHeader`, the one reporting reader of a saved
+  `<layer>` / `<config_topic>` header (`SavedTopicRef` sets the topic rule).
 - `layer_params.h`: `serializeLayerParams` / `applyLayerParams`, copy and paste of a layer's settings as XML.
 
 ## Tests
