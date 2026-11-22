@@ -35,9 +35,11 @@
 #include <unordered_set>
 #include <utility>
 
+#include "layers/layer_xml_validation.h"
 #include "pj_base/builtin/builtin_object.hpp"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TransformService.h"
+#include "pj_runtime/XmlStateOptions.h"
 #include "pj_scene3d_core/tf/object_placement.h"
 #include "pj_scene3d_widgets/FixedFrameMemory.h"
 #include "pj_scene3d_widgets/layers/depth_cloud_layer.h"
@@ -84,6 +86,7 @@ using pj::scene3d::SceneViewWidget;
 using pj::scene3d::validateCameraState;
 using pj::scene3d::ValidatedCameraState;
 using pj::scene3d::VoxelGridLayer;
+using pj::scene3d::detail::xmlOption;
 using pj::tf::FrameRow;
 
 // The trail a layer is (standalone) or owns (a pose layer's), else nullptr; trail-wide fan-outs such as the TF-buffer
@@ -122,6 +125,14 @@ QString cameraModelToString(int combo_index) {
   return u"orbit"_s;
 }
 
+QStringList cameraModelTokens() {
+  QStringList tokens;
+  for (const auto& entry : kCameraModelNames) {
+    tokens.push_back(QString::fromLatin1(entry.id));
+  }
+  return tokens;
+}
+
 // Combo index for a persisted name, or -1 (missing or unknown: keep the default).
 int cameraModelFromString(const QString& name) {
   for (const auto& entry : kCameraModelNames) {
@@ -141,6 +152,8 @@ struct ValidatedSceneControls : pj::scene3d::ValidatedSceneControls {
 
 struct ValidatedSceneState {
   bool explicit_fixed_frame = false;
+  QString fixed_frame;
+  QString follow_frame;
   int camera_model_index = -1;
   std::optional<ValidatedCameraState> camera_state;
   std::optional<ValidatedSceneControls> controls;
@@ -148,20 +161,30 @@ struct ValidatedSceneState {
 
 std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element) {
   ValidatedSceneState state;
-  const QString mode = element.attribute(u"fixed_frame_mode"_s, u"auto_root"_s);
-  if (mode != "auto_root"_L1 && mode != "explicit"_L1) {
+  static_cast<void>(PJ::readXmlText(element, u"version"_s, u"1"_s));  // written for readers; never decides anything
+  QString mode;
+  if (!PJ::readXmlEnum(element, u"fixed_frame_mode"_s, {u"auto_root"_s, u"explicit"_s}, u"auto_root"_s, mode)) {
     return std::nullopt;
   }
   state.explicit_fixed_frame = mode == "explicit"_L1;
-  if (element.hasAttribute(u"camera_model"_s)) {
-    state.camera_model_index = cameraModelFromString(element.attribute(u"camera_model"_s));
-    if (state.camera_model_index < 0) {
-      return std::nullopt;
-    }
+  state.fixed_frame = PJ::readXmlText(element, u"fixed_frame"_s);
+  state.follow_frame = PJ::readXmlText(element, u"follow_frame"_s);
+  QString camera_model;
+  if (!PJ::readXmlEnum(element, u"camera_model"_s, cameraModelTokens(), {}, camera_model)) {
+    return std::nullopt;
   }
+  if (!camera_model.isEmpty()) {
+    state.camera_model_index = cameraModelFromString(camera_model);
+  }
+  PJ::XmlOptionsRecorder::noteOption(element, xmlOption(u"camera_state"_s, u"json"_s));
   if (element.hasAttribute(u"camera_state"_s)) {
-    state.camera_state = validateCameraState(element.attribute(u"camera_state"_s));
+    std::string bad_field;
+    state.camera_state = validateCameraState(element.attribute(u"camera_state"_s), &bad_field);
     if (!state.camera_state.has_value()) {
+      PJ::XmlOptionsRecorder::noteRejection(
+          element, u"camera_state"_s,
+          bad_field.empty() ? u"expected a JSON object"_s
+                            : u"field \""_s + QString::fromStdString(bad_field) + u"\" is malformed or out of range"_s);
       return std::nullopt;
     }
   }
@@ -178,10 +201,13 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
       scene_controls = child.toElement();
       continue;
     }
+    PJ::XmlOptionsRecorder::noteRejection(
+        element, {}, u"unexpected child <"_s + tag + u">: expected <layer>, <config_topic> or one <scene_controls>"_s);
     return std::nullopt;
   }
   if (!scene_controls.isNull()) {
     if (!scene_controls.firstChildElement().isNull()) {
+      PJ::XmlOptionsRecorder::noteRejection(scene_controls, {}, u"takes no child elements"_s);
       return std::nullopt;
     }
     ValidatedSceneControls controls;
@@ -195,6 +221,139 @@ std::optional<ValidatedSceneState> validateSceneState(const QDomElement& element
     state.controls = controls;
   }
   return state;
+}
+
+// The payload check of the layer class each object type's creator in the constructor builds: what that layer's
+// xmlLoadState accepts. A type registered there needs its case here, or its saved layers fail validation.
+bool validateLayerPayload(sdk::BuiltinObjectType object_type, const QDomElement& payload) {
+  switch (object_type) {
+    case sdk::BuiltinObjectType::kPointCloud:
+    case sdk::BuiltinObjectType::kCompressedPointCloud:
+      return PointCloudLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kImage:
+      return DepthCloudLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kRobotDescription:
+      return RobotModelLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kOccupancyGrid:
+      return OccupancyGridLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kSceneEntities:
+      return SceneEntitiesLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kPosesInFrame:
+      return PosesInFrameLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kVoxelGrid:
+      return VoxelGridLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kGridMap:
+      return GridMapLayer::validateXml(payload);
+    case sdk::BuiltinObjectType::kMeshMap:
+      return MeshMapLayer::validateXml(payload);
+    default:
+      PJ::XmlOptionsRecorder::noteRejection(payload, {}, u"no layer reads this payload"_s);
+      return false;
+  }
+}
+
+QString objectTypeToken(sdk::BuiltinObjectType object_type) {
+  const auto name = sdk::name(object_type);
+  return QString::fromLatin1(name.data(), static_cast<qsizetype>(name.size()));
+}
+
+// The saved-topic identity resolveSavedTopicRef reads (topic_name and the dataset_* trio), read and reported
+// unconditionally; `required` adds the checks it refuses without looking at the data.
+bool validateSavedTopicRef(const QDomElement& element, bool required) {
+  const QString topic_name = PJ::readXmlText(element, u"topic_name"_s);
+  PJ::XmlOptionsRecorder::noteOption(
+      element,
+      xmlOption(u"dataset_id"_s, u"int"_s, {}, 0.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
+  static_cast<void>(PJ::readXmlText(element, u"dataset_source"_s));
+  static_cast<void>(PJ::readXmlText(element, u"dataset_path"_s));
+  if (!required) {
+    return true;
+  }
+  if (topic_name.isEmpty()) {
+    PJ::XmlOptionsRecorder::noteRejection(element, u"topic_name"_s, u"required"_s);
+    return false;
+  }
+  if (element.hasAttribute(u"dataset_id"_s)) {
+    bool dataset_ok = false;
+    const qulonglong dataset_value = element.attribute(u"dataset_id"_s).toULongLong(&dataset_ok);
+    if (!dataset_ok || dataset_value == 0 || dataset_value > std::numeric_limits<uint32_t>::max()) {
+      PJ::XmlOptionsRecorder::noteRejection(element, u"dataset_id"_s, u"expected a positive dataset id"_s);
+      return false;
+    }
+  }
+  return true;
+}
+
+// pending_intent marks a runtime intent the base dock wrote (SceneDockWidget::deferTopicIntent); only "true" means
+// anything to the loader.
+void notePendingIntent(const QDomElement& element) {
+  pj::scene3d::detail::noteTolerantToken(element, u"pending_intent"_s, u"bool"_s, {u"true"_s, u"false"_s}, u"false"_s);
+}
+
+// The parse-only half of Scene3DDockWidget::restoreLayerElement / restoreTrailElement: every refusal that needs no
+// data. `layer_types` are the object types the dock's factory supports.
+bool validateLayerElement(const QDomElement& layer_el, const QList<sdk::BuiltinObjectType>& layer_types) {
+  QStringList type_tokens;
+  for (const sdk::BuiltinObjectType type : layer_types) {
+    type_tokens.push_back(objectTypeToken(type));
+  }
+  PJ::XmlOptionsRecorder::noteOption(layer_el, xmlOption(u"object_type"_s, u"enum"_s, type_tokens));
+  // role="trail" and local="true" select a restore path; any other value means "not that path".
+  pj::scene3d::detail::noteTolerantToken(layer_el, u"role"_s, u"enum"_s, {u"trail"_s});
+  pj::scene3d::detail::noteTolerantToken(layer_el, u"local"_s, u"bool"_s, {u"true"_s, u"false"_s}, u"false"_s);
+  notePendingIntent(layer_el);
+  static_cast<void>(PJ::readXmlText(layer_el, u"display_name"_s));
+  const bool trail = layer_el.attribute(u"role"_s) == "trail"_L1;
+  const bool local_layer = layer_el.attribute(u"local"_s) == "true"_L1;
+  bool visible = true;
+  int order = 0;
+  if (!pj::scene3d::detail::parseTrueFalse(layer_el, "visible", true, visible) ||
+      !pj::scene3d::detail::parseBoundedInt(layer_el, "order", 0, 0, std::numeric_limits<int>::max(), order) ||
+      !validateSavedTopicRef(layer_el, !trail && !local_layer)) {
+    return false;
+  }
+  const QDomElement payload = layer_el.firstChildElement();
+  if (trail) {
+    if (payload.isNull() || payload.tagName() != "trail"_L1 || !payload.nextSiblingElement().isNull()) {
+      PJ::XmlOptionsRecorder::noteRejection(layer_el, {}, u"a trail layer holds exactly one <trail> payload"_s);
+      return false;
+    }
+    return pj::scene3d::TrailLayer::validateXml(payload);
+  }
+  const auto object_type = sdk::parseBuiltinObjectType(layer_el.attribute(u"object_type"_s).toStdString());
+  if (!object_type.has_value() || !layer_types.contains(*object_type)) {
+    PJ::XmlOptionsRecorder::noteRejection(layer_el, u"object_type"_s, u"not a 3D layer type"_s);
+    return false;
+  }
+  if (local_layer && *object_type != sdk::BuiltinObjectType::kRobotDescription) {
+    PJ::XmlOptionsRecorder::noteRejection(layer_el, u"local"_s, u"only a kRobotDescription layer can be local"_s);
+    return false;
+  }
+  if (!payload.isNull() && !payload.nextSiblingElement().isNull()) {
+    PJ::XmlOptionsRecorder::noteRejection(layer_el, {}, u"a layer holds at most one payload element"_s);
+    return false;
+  }
+  return payload.isNull() || validateLayerPayload(*object_type, payload);
+}
+
+// The parse-only half of Scene3DDockWidget::restoreConfigTopicElement.
+bool validateConfigTopicElement(const QDomElement& config_el) {
+  const QString frame_transforms = objectTypeToken(sdk::BuiltinObjectType::kFrameTransforms);
+  QString object_type;
+  notePendingIntent(config_el);
+  if (!PJ::readXmlEnum(config_el, u"object_type"_s, {frame_transforms}, {}, object_type) ||
+      !validateSavedTopicRef(config_el, true)) {
+    return false;
+  }
+  if (object_type.isEmpty()) {
+    PJ::XmlOptionsRecorder::noteRejection(config_el, u"object_type"_s, u"required: "_s + frame_transforms);
+    return false;
+  }
+  if (!config_el.firstChildElement().isNull()) {
+    PJ::XmlOptionsRecorder::noteRejection(config_el, {}, u"takes no child elements"_s);
+    return false;
+  }
+  return true;
 }
 
 [[nodiscard]] bool framesContain(const QList<FrameRow>& frames, const QString& name) {
@@ -1891,6 +2050,32 @@ QDomElement Scene3DDockWidget::xmlSaveState(QDomDocument& doc) const {
   return root;
 }
 
+bool Scene3DDockWidget::xmlValidateState(const QDomElement& element) const {
+  if (element.isNull() || element.tagName() != "scene3d"_L1) {
+    PJ::XmlOptionsRecorder::noteRejection(element, {}, u"expected <scene3d>"_s);
+    return false;
+  }
+  if (!validateSceneState(element).has_value()) {
+    return false;
+  }
+  QList<sdk::BuiltinObjectType> layer_types;
+  for (uint16_t raw = 0; raw <= static_cast<uint16_t>(sdk::BuiltinObjectType::kMeshMapUpdate); ++raw) {
+    const auto type = static_cast<sdk::BuiltinObjectType>(raw);
+    if (type != sdk::BuiltinObjectType::kNone && acceptsObjectType(type)) {
+      layer_types.push_back(type);
+    }
+  }
+  for (QDomElement child = element.firstChildElement(); !child.isNull(); child = child.nextSiblingElement()) {
+    if (child.tagName() == "layer"_L1 && !validateLayerElement(child, layer_types)) {
+      return false;
+    }
+    if (child.tagName() == "config_topic"_L1 && !validateConfigTopicElement(child)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "scene3d"_L1) {
     return false;
@@ -1916,7 +2101,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
   }
   resetWorkspaceRestoreStatus();
   clearPendingRestores();
-  const QString saved_frame = element.attribute(u"fixed_frame"_s);
+  const QString& saved_frame = validated->fixed_frame;
   clearLayers();
   local_layer_ids_.clear();
   restored_layer_orders_.clear();
@@ -2020,7 +2205,7 @@ bool Scene3DDockWidget::xmlLoadState(const QDomElement& element) {
     }
     // Camera follow target (empty = off; older layouts lack the attribute). A target absent from the TF tree stays
     // inert until it appears (applyFollow holds on lookup failure).
-    setFollowFrame(element.attribute(u"follow_frame"_s));
+    setFollowFrame(validated->follow_frame);
     // Per-dock scene controls override the global seed applied at view creation (sceneViewReady ->
     // applySceneControlsTo); older layouts have no <scene_controls> and keep the seed, and a missing attribute keeps
     // the current value, so a partial element never zeroes a control. Field set mirrors

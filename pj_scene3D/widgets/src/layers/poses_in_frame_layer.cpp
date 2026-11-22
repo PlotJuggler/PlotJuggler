@@ -123,15 +123,13 @@ std::optional<PosesInFrameLayer::ParsedSettings> PosesInFrameLayer::parseSetting
   if (!detail::parseFiniteFloat(element, "gizmo_size", 0.15f, 0.01f, 100.0f, settings.gizmo_size) ||
       !detail::parseFiniteFloat(element, "gizmo_opacity", 1.0f, 0.0f, 1.0f, settings.gizmo_opacity) ||
       !detail::parseZeroOne(element, "x_arrow_only", false, settings.x_arrow_only) ||
-      !detail::parseZeroOne(element, "override_color", false, settings.override_color_enabled)) {
+      !detail::parseZeroOne(element, "override_color", false, settings.override_color_enabled) ||
+      !detail::parseColor(element, "override_color_value", {}, settings.override_color)) {
     return std::nullopt;
   }
-  if (element.hasAttribute(u"override_color_value"_s)) {
-    const QColor color(element.attribute(u"override_color_value"_s));
-    if (!color.isValid()) {
-      return std::nullopt;
-    }
-    settings.override_color = color;
+  if (const QDomElement trail_el = element.firstChildElement(u"trail"_s);
+      !trail_el.isNull() && !TrailLayer::validateStyleXml(trail_el)) {
+    return std::nullopt;
   }
   return settings;
 }

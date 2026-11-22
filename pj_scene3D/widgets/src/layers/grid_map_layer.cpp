@@ -96,26 +96,40 @@ QDomElement GridMapLayer::xmlSaveState(QDomDocument& doc) const {
   return el;
 }
 
-bool GridMapLayer::xmlLoadState(const QDomElement& element) {
+std::optional<GridMapLayer::ParsedSettings> GridMapLayer::parseSettings(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "grid_map"_L1 || !detail::isLeafPayload(element)) {
+    return std::nullopt;
+  }
+  ParsedSettings settings;
+  // Requests are kept verbatim: a missing field falls back at render time and the request is honoured again once a
+  // sample carrying it arrives.
+  settings.elevation_field = PJ::readXmlText(element, u"elevation_field"_s);
+  settings.color_field = PJ::readXmlText(element, u"color_field"_s);
+  auto coloring = ChannelColoring::parseXml(element);
+  if (!coloring.has_value() || !detail::parseZeroOne(element, "lighting", true, settings.lighting) ||
+      !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, settings.opacity)) {
+    return std::nullopt;
+  }
+  settings.coloring = *coloring;
+  return settings;
+}
+
+bool GridMapLayer::validateXml(const QDomElement& element) {
+  return parseSettings(element).has_value();
+}
+
+bool GridMapLayer::xmlLoadState(const QDomElement& element) {
+  const std::optional<ParsedSettings> settings = parseSettings(element);
+  if (!settings.has_value()) {
     return false;
   }
-  const auto coloring = ChannelColoring::parseXml(element);
-  bool lighting = true;
-  double opacity = 1.0;
-  if (!coloring.has_value() || !detail::parseZeroOne(element, "lighting", true, lighting) ||
-      !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, opacity)) {
-    return false;
-  }
-  // Requests are restored verbatim: a missing field falls back at render time and
-  // the request is honoured again once a sample carrying it arrives.
-  setElevationField(element.attribute(u"elevation_field"_s));
-  setColorField(element.attribute(u"color_field"_s));
-  setColormap(coloring->colormap());
-  setAutoRange(coloring->autoRange());
-  setManualRange(coloring->manualRange().first, coloring->manualRange().second);
-  setLighting(lighting);
-  setOpacity(opacity);
+  setElevationField(settings->elevation_field);
+  setColorField(settings->color_field);
+  setColormap(settings->coloring.colormap());
+  setAutoRange(settings->coloring.autoRange());
+  setManualRange(settings->coloring.manualRange().first, settings->coloring.manualRange().second);
+  setLighting(settings->lighting);
+  setOpacity(settings->opacity);
   pushDisplayParamsToPass();
   return true;
 }

@@ -50,6 +50,8 @@ class GridMapLayer : public Scene3DLayer {
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  // Parse-only check of what xmlLoadState accepts, reporting to an active PJ::XmlOptionsRecorder.
+  [[nodiscard]] static bool validateXml(const QDomElement& element);
 
   bool attach(const PJ::SceneLayerContext& ctx) override;
   void detach() override;
@@ -145,6 +147,14 @@ class GridMapLayer : public Scene3DLayer {
   void fieldsChanged();
 
  private:
+  struct ParsedSettings {
+    QString elevation_field;
+    QString color_field;
+    ChannelColoring coloring;
+    bool lighting = true;
+    double opacity = 1.0;
+  };
+  [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
   bool bootstrap();
   // Fetches the sample at time_ns, packs the selected fields and stages the upload; a cheap no-op when the same sample
   // + selectors are already staged (the scrub path).

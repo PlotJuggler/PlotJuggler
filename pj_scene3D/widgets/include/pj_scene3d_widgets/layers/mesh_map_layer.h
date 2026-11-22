@@ -49,6 +49,8 @@ class MeshMapLayer : public Scene3DLayer {
   [[nodiscard]] uint64_t renderKey(PJ::Timepoint time) const override;
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  // Parse-only check of what xmlLoadState accepts, reporting to an active PJ::XmlOptionsRecorder.
+  [[nodiscard]] static bool validateXml(const QDomElement& element);
 
   bool attach(const PJ::SceneLayerContext& ctx) override;
   void detach() override;
@@ -131,6 +133,14 @@ class MeshMapLayer : public Scene3DLayer {
   void colorSourcesChanged();
 
  private:
+  struct ParsedSettings {
+    QString color_by;
+    bool links = true;
+    ChannelColoring coloring;
+    bool lighting = true;
+    double opacity = 1.0;
+  };
+  [[nodiscard]] static std::optional<ParsedSettings> parseSettings(const QDomElement& element);
   bool bootstrap();
   // Brings the mesh to `time_ns` and stages the upload: a cheap no-op when the map and updates at that time are already
   // staged or that map was refused; re-stages only when the geometry or the colours changed.

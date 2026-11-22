@@ -108,6 +108,10 @@ class Scene3DDockWidget : public SceneDockWidget {
 
   QDomElement xmlSaveState(QDomDocument& doc) const override;
   bool xmlLoadState(const QDomElement& element) override;
+  /// Parse-only: refuses what xmlLoadState refuses without looking at the data (a layer whose topic is not loaded is
+  /// not a failure), plus a malformed payload of such a deferred layer, which xmlLoadState would only refuse once the
+  /// topic arrives.
+  [[nodiscard]] bool xmlValidateState(const QDomElement& element) const override;
 
   enum class FixedFrameMode { kAutoRoot, kExplicit };
 

@@ -213,14 +213,9 @@ std::optional<SceneEntitiesLayer::ParsedSettings> SceneEntitiesLayer::parseSetti
   ParsedSettings settings;
   if (!detail::parseFiniteFloat(element, "opacity", 1.0F, 0.0F, 1.0F, settings.opacity) ||
       !detail::parseTrueFalse(element, "color_override", false, settings.color_override) ||
-      !detail::parseTrueFalse(element, "wireframe", false, settings.wireframe)) {
+      !detail::parseTrueFalse(element, "wireframe", false, settings.wireframe) ||
+      !detail::parseColor(element, "override_color", {}, settings.override_color)) {
     return std::nullopt;
-  }
-  if (element.hasAttribute(u"override_color"_s)) {
-    settings.override_color = QColor(element.attribute(u"override_color"_s));
-    if (!settings.override_color->isValid()) {
-      return std::nullopt;
-    }
   }
   return settings;
 }

@@ -6,12 +6,14 @@
 #include <QString>
 #include <glm/vec3.hpp>
 #include <optional>
+#include <string>
 
 namespace pj::scene3d {
 
 // Range-checked readers for persisted scene-dock XML state (Scene3DDockWidget's layout grammar). All three follow one
 // contract: a MISSING attribute is valid (returns true, output untouched: absence means "keep the default"), a
-// present-but-malformed or out-of-range value is a validation failure (returns false, output untouched).
+// present-but-malformed or out-of-range value is a validation failure (returns false, output untouched). Each reports
+// the attribute, and a refusal, to an active PJ::XmlOptionsRecorder.
 bool readXmlBool(const QDomElement& element, const QString& key, std::optional<bool>& output);
 bool readXmlInt(const QDomElement& element, const QString& key, int minimum, int maximum, std::optional<int>& output);
 bool readXmlFloat(
@@ -33,7 +35,9 @@ struct ValidatedCameraState {
 // Parses and range-checks the camera_state attribute (a JSON object). Returns
 // nullopt on malformed JSON, a non-object payload, or any out-of-range field —
 // callers treat that as "reject the whole element", never as partial state.
-std::optional<ValidatedCameraState> validateCameraState(const QString& encoded);
+// On nullopt, `bad_field` (when given) names the refused key, empty when the
+// payload is not a JSON object.
+std::optional<ValidatedCameraState> validateCameraState(const QString& encoded, std::string* bad_field = nullptr);
 
 // Accepted ranges for the persisted <scene_controls> float attributes. One
 // definition for both platforms: a layout saved by either backend must restore

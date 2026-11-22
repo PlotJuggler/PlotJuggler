@@ -397,6 +397,7 @@ if(PJ_BUILD_TESTS AND NOT EMSCRIPTEN)
 
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS
     tests/scene3d_layer_xml_validation_test.cpp
+    tests/scene3d_dock_xml_options_test.cpp
   )
 
   list(APPEND PJ_SCENE3D_WIDGET_PLAIN_TESTS

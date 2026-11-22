@@ -73,7 +73,8 @@ std::optional<ChannelColoring> ChannelColoring::parseXml(const QDomElement& elem
       !detail::parseZeroOne(element, "auto_range", true, out.auto_range_) ||
       !detail::parseFiniteDouble(element, "range_lo", 0.0, -kManualRangeLimit, kManualRangeLimit, out.manual_lo_) ||
       !detail::parseFiniteDouble(element, "range_hi", 1.0, -kManualRangeLimit, kManualRangeLimit, out.manual_hi_) ||
-      out.manual_lo_ > out.manual_hi_) {
+      !detail::requireConstraint(
+          out.manual_lo_ <= out.manual_hi_, element, "range_hi", "range_hi must not be below range_lo")) {
     return std::nullopt;
   }
   out.colormap_ = static_cast<PJ::Colormap>(colormap);

@@ -96,7 +96,7 @@ std::optional<VoxelGridLayer::ParsedSettings> VoxelGridLayer::parseSettings(cons
     return std::nullopt;
   }
   ParsedSettings settings;
-  settings.field = element.attribute(u"field"_s).toStdString();
+  settings.field = PJ::readXmlText(element, u"field"_s).toStdString();
   constexpr double kLowest = std::numeric_limits<double>::lowest();
   constexpr double kMax = std::numeric_limits<double>::max();
   int mode = 1;
@@ -106,7 +106,8 @@ std::optional<VoxelGridLayer::ParsedSettings> VoxelGridLayer::parseSettings(cons
       !detail::parseZeroOne(element, "auto_range", true, settings.auto_range) ||
       !detail::parseFiniteDouble(element, "range_lo", 0.0, kLowest, kMax, settings.range_lo) ||
       !detail::parseFiniteDouble(element, "range_hi", 1.0, kLowest, kMax, settings.range_hi) ||
-      settings.range_lo > settings.range_hi ||
+      !detail::requireConstraint(
+          settings.range_lo <= settings.range_hi, element, "range_hi", "range_hi must not be below range_lo") ||
       !detail::parseBoundedInt(element, "colormap", 0, 0, PJ::kColormapCount - 1, colormap) ||
       !detail::parseFiniteDouble(element, "opacity", 1.0, 0.0, 1.0, settings.opacity)) {
     return std::nullopt;

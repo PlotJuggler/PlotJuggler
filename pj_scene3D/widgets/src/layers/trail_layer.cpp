@@ -125,42 +125,107 @@ bool TrailLayer::xmlLoadState(const QDomElement& element) {
   return loadStyle(element);
 }
 
+namespace {
+
+// The saved source attributes, reported alike whether they are judged (parseSource) or not (a pose layer's nested
+// trail, whose source is that layer's topic).
+void noteSourceOptions(const QDomElement& element) {
+  PJ::XmlOptionsRecorder::noteOption(
+      element, detail::xmlOption(u"source_kind"_s, u"enum"_s, {u"tf_frame"_s, u"pose_topic"_s}));
+  for (const QString& attribute :
+       {u"frame"_s, u"source_topic_name"_s, u"source_dataset_source"_s, u"source_dataset_path"_s}) {
+    PJ::XmlOptionsRecorder::noteOption(element, detail::xmlOption(attribute, u"text"_s));
+  }
+  PJ::XmlOptionsRecorder::noteOption(
+      element,
+      detail::xmlOption(
+          u"source_dataset_id"_s, u"int"_s, {}, 1.0, static_cast<double>(std::numeric_limits<uint32_t>::max())));
+}
+
+}  // namespace
+
+std::optional<TrailLayer::ParsedSource> TrailLayer::parseSource(const QDomElement& element) {
+  noteSourceOptions(element);
+  ParsedSource source{
+      .kind = element.attribute(u"source_kind"_s),
+      .frame = element.attribute(u"frame"_s),
+      .topic_name = element.attribute(u"source_topic_name"_s),
+      .dataset_source = element.attribute(u"source_dataset_source"_s),
+      .dataset_path = element.attribute(u"source_dataset_path"_s)};
+  if (source.kind != "tf_frame"_L1 && source.kind != "pose_topic"_L1) {
+    PJ::XmlOptionsRecorder::noteRejection(element, u"source_kind"_s, u"expected tf_frame or pose_topic"_s);
+    return std::nullopt;
+  }
+  if (source.kind == "tf_frame"_L1) {
+    if (source.frame.isEmpty()) {
+      PJ::XmlOptionsRecorder::noteRejection(element, u"frame"_s, u"a tf_frame trail needs a frame name"_s);
+      return std::nullopt;
+    }
+    return source;
+  }
+  if (source.topic_name.isEmpty()) {
+    PJ::XmlOptionsRecorder::noteRejection(element, u"source_topic_name"_s, u"a pose_topic trail needs a topic name"_s);
+    return std::nullopt;
+  }
+  if (element.hasAttribute(u"source_dataset_id"_s)) {
+    bool id_ok = false;
+    const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
+    if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
+      PJ::XmlOptionsRecorder::noteRejection(element, u"source_dataset_id"_s, u"expected a positive dataset id"_s);
+      return std::nullopt;
+    }
+    source.dataset_id = static_cast<PJ::DatasetId>(value);
+  }
+  return source;
+}
+
+bool TrailLayer::validateXml(const QDomElement& element) {
+  if (element.isNull() || element.tagName() != "trail"_L1 || !detail::isLeafPayload(element)) {
+    return false;
+  }
+  // Both halves always run, so a saved element reports every attribute it carries.
+  const bool source_ok = parseSource(element).has_value();
+  return parseStyle(element).has_value() && source_ok;
+}
+
+bool TrailLayer::validateStyleXml(const QDomElement& element) {
+  noteSourceOptions(element);
+  // xmlLoadState ignores the source, so a malformed one is only noted: a strict caller refuses it, a layout load not.
+  detail::noteTolerantToken(element, u"source_kind"_s, u"enum"_s, {u"tf_frame"_s, u"pose_topic"_s});
+  if (element.hasAttribute(u"source_dataset_id"_s)) {
+    bool id_ok = false;
+    const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
+    if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
+      PJ::XmlOptionsRecorder::noteRejection(element, u"source_dataset_id"_s, u"expected a positive dataset id"_s);
+    }
+  }
+  return parseStyle(element).has_value();
+}
+
 TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& element, PJ::DatasetId preferred_dataset) {
   if (element.isNull() || element.tagName() != "trail"_L1 || !detail::isLeafPayload(element)) {
     return XmlLoadResult::kInvalid;
   }
+  // A pose source needs the session's resolution ladder: without one, defer before judging the rest.
+  if (element.attribute(u"source_kind"_s) == "pose_topic"_L1 && ctx_.session == nullptr) {
+    return XmlLoadResult::kDeferred;
+  }
+  const std::optional<ParsedSource> saved = parseSource(element);
+  if (!saved.has_value()) {
+    return XmlLoadResult::kInvalid;
+  }
   TrailSource restored_source;
-  const QString kind = element.attribute(u"source_kind"_s);
-  if (kind == "tf_frame"_L1) {
-    const QString frame = element.attribute(u"frame"_s);
-    if (frame.isEmpty()) {
-      return XmlLoadResult::kInvalid;
-    }
+  if (saved->kind == "tf_frame"_L1) {
     // Restored unconditionally: a frame absent from the current data behaves like an orphan until it appears.
-    restored_source = TrailSource::tfFrame(frame);
-  } else if (kind == "pose_topic"_L1) {
-    if (ctx_.session == nullptr) {
-      return XmlLoadResult::kDeferred;
-    }
-    const QString topic_name = element.attribute(u"source_topic_name"_s);
-    if (topic_name.isEmpty()) {
-      return XmlLoadResult::kInvalid;
-    }
-    PJ::DatasetId saved_dataset_id = 0;
-    if (element.hasAttribute(u"source_dataset_id"_s)) {
-      bool id_ok = false;
-      const qulonglong value = element.attribute(u"source_dataset_id"_s).toULongLong(&id_ok);
-      if (!id_ok || value == 0 || value > std::numeric_limits<uint32_t>::max()) {
-        return XmlLoadResult::kInvalid;
-      }
-      saved_dataset_id = static_cast<PJ::DatasetId>(value);
-    }
-    const QString source = element.attribute(u"source_dataset_source"_s);
-    const QString path = element.attribute(u"source_dataset_path"_s);
-    const bool qualified = saved_dataset_id != 0 || !source.isEmpty() || !path.isEmpty();
+    restored_source = TrailSource::tfFrame(saved->frame);
+  } else {
+    const bool qualified = saved->dataset_id != 0 || !saved->dataset_source.isEmpty() || !saved->dataset_path.isEmpty();
     const std::optional<PJ::ObjectTopicId> restored_topic = PJ::resolveSavedObjectTopic(
-        ctx_.session->objectStore(), topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kPosesInFrame, qualified,
-        qualified ? ctx_.session->resolveDatasetIdentity(saved_dataset_id, source, path).id : std::nullopt,
+        ctx_.session->objectStore(), saved->topic_name.toStdString(), PJ::sdk::BuiltinObjectType::kPosesInFrame,
+        qualified,
+        qualified
+            ? ctx_.session->resolveDatasetIdentity(saved->dataset_id, saved->dataset_source, saved->dataset_path).id
+            : std::nullopt,
         preferred_dataset);
     if (!restored_topic.has_value()) {
       return XmlLoadResult::kDeferred;
@@ -171,8 +236,6 @@ TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& elem
       return XmlLoadResult::kInvalid;
     }
     restored_source = TrailSource::poseTopic(*restored_topic);
-  } else {
-    return XmlLoadResult::kInvalid;
   }
   if (!loadStyle(element)) {
     return XmlLoadResult::kInvalid;
@@ -185,28 +248,35 @@ TrailLayer::XmlLoadResult TrailLayer::xmlLoadStateResult(const QDomElement& elem
   return XmlLoadResult::kRestored;
 }
 
-bool TrailLayer::loadStyle(const QDomElement& element) {
+std::optional<TrailLayer::ParsedStyle> TrailLayer::parseStyle(const QDomElement& element) {
   if (element.isNull() || element.tagName() != "trail"_L1 || !detail::isLeafPayload(element)) {
+    return std::nullopt;
+  }
+  ParsedStyle style;
+  std::optional<QColor> past = QColor(u"#1f77b4"_s);
+  std::optional<QColor> future = QColor(u"#9ecae1"_s);
+  if (!detail::parseColor(element, "past_color", u"#1f77b4"_s, past) ||
+      !detail::parseColor(element, "future_color", u"#9ecae1"_s, future) ||
+      !detail::parseFiniteFloat(element, "thickness", 4.0F, 1.0F, 8.0F, style.thickness) ||
+      !detail::parseZeroOne(element, "past_visible", true, style.past_visible) ||
+      !detail::parseZeroOne(element, "future_visible", true, style.future_visible)) {
+    return std::nullopt;
+  }
+  style.past_color = *past;
+  style.future_color = *future;
+  return style;
+}
+
+bool TrailLayer::loadStyle(const QDomElement& element) {
+  const std::optional<ParsedStyle> style = parseStyle(element);
+  if (!style.has_value()) {
     return false;
   }
-  const QColor past(element.attribute(u"past_color"_s, u"#1f77b4"_s));
-  const QColor future(element.attribute(u"future_color"_s, u"#9ecae1"_s));
-  if (!past.isValid() || !future.isValid()) {
-    return false;
-  }
-  float restored_thickness = 4.0F;
-  bool restored_past_visible = true;
-  bool restored_future_visible = true;
-  if (!detail::parseFiniteFloat(element, "thickness", 4.0F, 1.0F, 8.0F, restored_thickness) ||
-      !detail::parseZeroOne(element, "past_visible", true, restored_past_visible) ||
-      !detail::parseZeroOne(element, "future_visible", true, restored_future_visible)) {
-    return false;
-  }
-  setPastColor(past);
-  setFutureColor(future);
-  setThickness(restored_thickness);
-  setPastVisible(restored_past_visible);
-  setFutureVisible(restored_future_visible);
+  setPastColor(style->past_color);
+  setFutureColor(style->future_color);
+  setThickness(style->thickness);
+  setPastVisible(style->past_visible);
+  setFutureVisible(style->future_visible);
   return true;
 }
 

@@ -76,6 +76,11 @@ class TrailLayer : public Scene3DLayer {
   // `preferred_dataset` is the dataset the dock shows (uniqueObjectTopic's tie-break; 0 = none).
   enum class XmlLoadResult { kRestored, kDeferred, kInvalid };
   [[nodiscard]] XmlLoadResult xmlLoadStateResult(const QDomElement& element, PJ::DatasetId preferred_dataset = 0);
+  // Parse-only checks reporting to an active PJ::XmlOptionsRecorder: validateXml is what xmlLoadStateResult refuses
+  // as kInvalid before any data lookup (source and style); validateStyleXml is what xmlLoadState accepts, the check of
+  // a pose layer's nested <trail>, whose saved source attributes it reports without judging them.
+  [[nodiscard]] static bool validateXml(const QDomElement& element);
+  [[nodiscard]] static bool validateStyleXml(const QDomElement& element);
 
   [[nodiscard]] PJ::SceneLayerInfo info() const override;
   [[nodiscard]] PJ::Range<PJ::Timepoint> timeRange() const override;
@@ -169,6 +174,23 @@ class TrailLayer : public Scene3DLayer {
 #endif
 
  private:
+  struct ParsedStyle {
+    QColor past_color;
+    QColor future_color;
+    float thickness = 4.0F;
+    bool past_visible = true;
+    bool future_visible = true;
+  };
+  [[nodiscard]] static std::optional<ParsedStyle> parseStyle(const QDomElement& element);
+  struct ParsedSource {
+    QString kind;  // "tf_frame" or "pose_topic"
+    QString frame;
+    QString topic_name;
+    PJ::DatasetId dataset_id = 0;  // 0: not saved
+    QString dataset_source;
+    QString dataset_path;
+  };
+  [[nodiscard]] static std::optional<ParsedSource> parseSource(const QDomElement& element);
   bool loadStyle(const QDomElement& element);
   void adoptPolyline(TrailPolyline polyline);
   void appendTail(TrailPolyline tail);
