@@ -3,7 +3,6 @@
 
 #include "BrowserPersistence.h"
 
-#include <QAbstractEventDispatcher>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -17,7 +16,9 @@
 #include <QSet>
 #include <QSettings>
 #include <QStringList>
+#include <QTimer>
 #include <array>
+#include <chrono>
 #include <utility>
 
 #include "LoadInput.h"
@@ -55,6 +56,8 @@ constexpr qsizetype kMaxLayoutBytes = 256 * 1024;
 constexpr qsizetype kMaxTotalLayoutBytes = 1024 * 1024;
 constexpr qsizetype kMaxGeometryBytes = 4 * 1024;
 constexpr qsizetype kMaxIdentifierLength = 256;
+// Upper bound on how long a preference change stays page-lifetime only; a reload sooner loses it.
+[[maybe_unused]] constexpr std::chrono::milliseconds kPreferenceSyncInterval{1000};
 
 enum class ValueKind {
   kBool,
@@ -428,9 +431,11 @@ BrowserPersistence::BrowserPersistence(QObject* parent) : QObject(parent), impl_
         << "Browser preference storage is unavailable; continuing with page-lifetime settings";
   }
 
-  if (QAbstractEventDispatcher* dispatcher = QAbstractEventDispatcher::instance()) {
-    connect(dispatcher, &QAbstractEventDispatcher::aboutToBlock, this, &BrowserPersistence::syncPreferences);
-  }
+  // A poll, because nothing else fires in time: Qt 6.12's WASM event dispatcher never emits aboutToBlock, and a
+  // closed or reloaded tab never runs aboutToQuit (pj_app TECHNICAL_NOTES "Browser preferences flush on a timer").
+  auto* sync_timer = new QTimer(this);
+  connect(sync_timer, &QTimer::timeout, this, &BrowserPersistence::syncPreferences);
+  sync_timer->start(kPreferenceSyncInterval);
   connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, &BrowserPersistence::syncPreferences);
 #ifdef PJ_WASM_ENABLE_INGRESS_PROBE
   pj_wasm_install_persistence_test_probes();

@@ -3,6 +3,18 @@
 Measurements and incidents behind choices in [ARCHITECTURE.md](./ARCHITECTURE.md) and the code. Each entry says what was
 observed, under which conditions, what the code does about it and when to measure again.
 
+## Browser preferences flush on a timer
+
+- **Observed:** with `syncPreferences()` connected only to `QAbstractEventDispatcher::aboutToBlock` and
+  `aboutToQuit`, no preference changed in the UI ever reached `localStorage`, so every one was lost on reload. Qt
+  6.12.0 `wasm_multithread`: `QEventDispatcherWasm` emits `awake` but never `aboutToBlock` (its object file references
+  no `aboutToBlock`), the WASM platform plugin installs no `pagehide`/`visibilitychange` listener, and a closed or
+  reloaded tab never runs `aboutToQuit`. Chromium, the time-tracker button, 5 s idle.
+- **What the code does:** `BrowserPersistence` polls `syncPreferences()` every `kPreferenceSyncInterval`; a poll with
+  no change returns before touching durable storage. A reload within one interval of a change still loses it.
+- **Re-test:** when Qt's WASM dispatcher emits `aboutToBlock` or the platform plugin reports page hide; an event-driven
+  flush could then replace the poll.
+
 ## Reparenting a toolbox panel re-polishes it
 
 - **Observed:** moving a toolbox panel between presentations by reparenting it cost about 180 ms per move in the
