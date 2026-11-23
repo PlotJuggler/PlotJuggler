@@ -57,8 +57,8 @@ class MainWindowCustomTopicsTestPeer {
     window.refreshCustomTopicsPanel();
   }
   // These windows load no plugin, so the tests name the toolbox that would declare `custom_topics_editor`.
-  static void setCustomTopicsEditorId(MainWindow& window, const QString& plugin_id) {
-    window.session_->extensionCatalog().setCustomTopicsEditorIdForTest(plugin_id);
+  static void setCustomTopicsEditorId(MainWindow& window, const QString& plugin_id, bool views = false) {
+    window.session_->extensionCatalog().setCustomTopicsEditorIdForTest(plugin_id, views);
     window.syncCustomTopicsEditor();
   }
   [[nodiscard]] static int customTopicsSyncs(const MainWindow& window) {
@@ -262,6 +262,22 @@ TEST(MainWindowCustomTopicsTest, EditIsEnabledOnlyForEditorRows) {
   EXPECT_EQ(fx.edit->toolTip(), u"Created by assistant; read-only"_s);
   fx.select("toolbox-transform-editor/crop/cropped");
   EXPECT_TRUE(fx.edit->isEnabled());
+}
+
+// An editor that declares `custom_topics_viewer` opens other owners' rows as a view: the pencil is enabled on them,
+// and says so; Delete stays theirs.
+TEST(MainWindowCustomTopicsTest, AViewingEditorOffersThePencilOnOtherOwnersRows) {
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  ASSERT_TRUE(fx.install(cropRecipe("assistant", "crop")));
+  MainWindowCustomTopicsTestPeer::setCustomTopicsEditorId(fx.window, QString::fromLatin1(kEditor), /*views=*/true);
+
+  fx.select("assistant/crop/cropped");
+  EXPECT_TRUE(fx.edit->isEnabled());
+  EXPECT_EQ(fx.edit->toolTip(), u"View the formula (created by assistant; read-only)"_s);
+
+  MainWindowCustomTopicsTestPeer::setCustomTopicsEditorId(fx.window, QString::fromLatin1(kEditor), /*views=*/false);
+  EXPECT_FALSE(fx.edit->isEnabled());
 }
 
 // The delete handler refuses another plugin's recipe on its own (the panel disables the action, but nothing

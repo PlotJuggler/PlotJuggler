@@ -1098,28 +1098,53 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       launchToolbox(editor);
     }
   });
-  // Opens the editor on the recipe's params_json. The panel shows the pencil only on the editor's own rows; the owner
-  // is checked again here.
+  // Opens the editor on the recipe: its own on the params_json it stored, another owner's (when the editor declares
+  // `custom_topics_viewer`) on a `view` of it, which the editor shows read-only. The panel enables the pencil only on
+  // those rows; the owner is checked again here.
   connect(ui_->curveListPanel, &CurveListPanel::editCustomTopicRequested, this, [this](const QString& catalog_key) {
     const ExtensionCatalogService& extensions = session_->extensionCatalog();
-    QString initial_config;
+    std::string owner;
+    std::string params_json;
+    // The `view` config, the host's contract with a `custom_topics_viewer` editor: the recipe as it runs.
+    nlohmann::json view;
     if (const RecipeGraph::Node* node = onDemandNodeOfCatalogKey(*session_, catalog_key)) {
-      if (!extensions.isCustomTopicsEditor(QString::fromStdString(node->recipe.owner_plugin))) {
-        return;
+      const RecipeGraph::Recipe& recipe = node->recipe;
+      owner = recipe.owner_plugin;
+      params_json = recipe.params_json;
+      nlohmann::json outputs = nlohmann::json::array();
+      for (const scripting::OutputSpec& output : recipe.outputs) {
+        outputs.push_back(output.name);
       }
-      initial_config = QString::fromStdString(node->recipe.params_json);
+      view = {{"name", recipe.user_id},  {"kind", "on_demand"},     {"language", recipe.language},
+              {"script", recipe.script}, {"inputs", recipe.inputs}, {"outputs", std::move(outputs)}};
     } else {
       const std::optional<CurveDescriptor> output =
           session_->catalogModel().curveDescriptor(catalog_key, SeriesCapability::kAny);
       const auto transform = output.has_value()
                                  ? session_->sessionManager().dataProcessorService().transformOwning(output->topic_id)
                                  : std::nullopt;
-      if (!transform.has_value() || !extensions.isCustomTopicsEditor(QString::fromStdString(transform->owner_plugin))) {
+      if (!transform.has_value()) {
         return;
       }
-      initial_config = QString::fromStdString(transform->params_json);
+      owner = transform->owner_plugin;
+      params_json = transform->params_json;
+      view = {{"name", transform->user_id},  {"kind", "transform"},         {"language", transform->backend},
+              {"script", transform->script}, {"inputs", transform->inputs}, {"outputs", transform->outputs}};
     }
-    launchToolbox(extensions.customTopicsEditorId(), initial_config);
+    const QString owner_id = QString::fromStdString(owner);
+    if (extensions.isCustomTopicsEditor(owner_id)) {
+      launchToolbox(extensions.customTopicsEditorId(), QString::fromStdString(params_json));
+      return;
+    }
+    if (extensions.customTopicsEditorId().isEmpty() || !extensions.customTopicsEditorViews()) {
+      return;
+    }
+    view["owner"] = owner.empty() ? std::string{} : extensions.toolboxDisplayName(owner_id).toStdString();
+    view["params"] = params_json;
+    // `replace`: a script is binary-safe, and a strict dump throws on bytes that are not UTF-8.
+    const std::string config =
+        nlohmann::json{{"view", view}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+    launchToolbox(extensions.customTopicsEditorId(), QString::fromStdString(config));
   });
   connect(ui_->curveListPanel, &CurveListPanel::deleteCustomTopicsRequested, this, &MainWindow::deleteCustomTopics);
   // A series replay is a stoppable bar on its Custom Topics rows.
@@ -7967,6 +7992,7 @@ void MainWindow::scheduleCustomTopicsSync() {
 
 void MainWindow::syncCustomTopicsEditor() {
   ui_->curveListPanel->setEditorPluginId(session_->extensionCatalog().customTopicsEditorId());
+  ui_->curveListPanel->setEditorViewsOthers(session_->extensionCatalog().customTopicsEditorViews());
 }
 
 void MainWindow::reportDeleteRefusal(const CustomTopicDeleteRefusal& refusal) {
