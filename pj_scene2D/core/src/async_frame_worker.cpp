@@ -49,17 +49,17 @@ void AsyncFrameWorker::stop() {
   if (!worker_.joinable()) {
     return;
   }
-  bool started = false;
   {
     std::lock_guard lock(start_gate_->mutex);
-    started = start_gate_->started;
-    start_gate_->abandoned = !started;
+    if (!start_gate_->started) {
+      // Detach while holding the gate, so the thread cannot be exiting: glibc 2.42 and older fault on a detach that
+      // races the thread's exit (TECHNICAL_NOTES "Decode threads in the WASM pthread pool").
+      start_gate_->abandoned = true;
+      worker_.detach();
+      return;
+    }
   }
-  if (started) {
-    worker_.join();
-  } else {
-    worker_.detach();
-  }
+  worker_.join();
 }
 
 void AsyncFrameWorker::requestDecode(Timestamp ts_ns) {

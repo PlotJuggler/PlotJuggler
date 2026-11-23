@@ -89,7 +89,8 @@ class AsyncFrameWorker {
   /// Idempotent; also run by the destructor. Afterwards no DecodeFn runs or will start. Declare the worker LAST in
   /// the owning source, so its stop joins before any member the DecodeFn touches is destroyed. A thread that has not
   /// begun running is detached, not joined: under WebAssembly a thread created with the pthread pool exhausted starts
-  /// only once the main thread yields, so the join would wait forever.
+  /// only once the main thread yields, so the join would wait forever. The detach runs under the start gate, which
+  /// the thread must pass before it can exit.
   void stop();
 
   /// Latest-wins; equal consecutive targets are deduplicated.
