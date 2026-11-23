@@ -14,7 +14,7 @@ namespace {
 // every consumer at once, capped at the origin rather than throttled per widget. Playback speed is unaffected: onTick
 // derives the cursor from elapsed wall-clock, not tick count.
 constexpr int kTickIntervalMs = 33;    // ~30 Hz
-constexpr int kCoarseTickDivisor = 3;  // coarseTimeChanged at ~10 Hz while playing
+constexpr int kCoarseTickDivisor = 2;  // coarseTimeChanged at ~15 Hz while playing
 
 bool isFinite(DisplayRange range) {
   return std::isfinite(range.min.value) && std::isfinite(range.max.value);
@@ -170,9 +170,8 @@ void PlaybackEngine::pause() {
   }
   playing_ = false;
   timer_.stop();
-  if (coarse_stale_) {
-    coarse_stale_ = false;
-    emit coarseTimeChanged(current_time_);
+  if (ticks_since_coarse_ > 0 && ticks_since_coarse_ < kCoarseTickDivisor) {
+    emit coarseTimeChanged(current_time_);  // the last ticks went out as currentTimeChanged only
   }
   emit playingChanged(playing_);
 }
@@ -205,11 +204,9 @@ void PlaybackEngine::onTick() {
 void PlaybackEngine::notifyTimeChanged(bool playback_tick) {
   emit currentTimeChanged(current_time_);
   if (playback_tick && playing_ && ++ticks_since_coarse_ < kCoarseTickDivisor) {
-    coarse_stale_ = true;
     return;
   }
   ticks_since_coarse_ = 0;
-  coarse_stale_ = false;
   emit coarseTimeChanged(current_time_);
 }
 

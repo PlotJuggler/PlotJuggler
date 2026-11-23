@@ -82,8 +82,8 @@ class PlaybackEngine : public QObject {
 
  signals:
   void currentTimeChanged(double t);
-  /// The cursor for controls that only show where playback is (a slider handle, a time readout, a needle): one
-  /// playback tick in three, every other change of the cursor as it happens, and the final time when playback pauses.
+  /// The cursor for controls that only show where playback is (a slider handle, a time readout, a needle): every
+  /// second playback tick, every other change of the cursor as it happens, and the final time when playback pauses.
   /// Such a control repainting on every tick makes Qt repaint the window's backing store under every GPU view updated
   /// in the same frame (pj_app/docs/TECHNICAL_NOTES.md, "Raster repaints during playback").
   void coarseTimeChanged(double t);
@@ -109,8 +109,7 @@ class PlaybackEngine : public QObject {
   double rate_ = 1.0;
   double step_ = 0.0;
   bool playing_ = false;
-  int ticks_since_coarse_ = 0;
-  bool coarse_stale_ = false;  // currentTimeChanged went out without coarseTimeChanged
+  int ticks_since_coarse_ = 0;  // playback ticks sent as currentTimeChanged only since the last coarseTimeChanged
   bool looping_ = false;
   bool hold_at_range_max_ = false;
 

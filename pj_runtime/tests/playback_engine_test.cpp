@@ -197,8 +197,8 @@ TEST(PlaybackEngineTest, LoopingTickWithOverflowingStepStaysFinite) {
   EXPECT_LE(next, 10.0);
 }
 
-// The coarse cursor follows one playback tick in three, and catches up when playback pauses.
-TEST(PlaybackEngineTest, CoarseTimeFollowsEveryThirdPlaybackTick) {
+// The coarse cursor follows every second playback tick, and catches up when playback pauses.
+TEST(PlaybackEngineTest, CoarseTimeFollowsEverySecondPlaybackTick) {
   PJ::PlaybackEngine engine;
   engine.setRange(PJ::displayRange(0.0, 1000.0));
   QSignalSpy fine(&engine, &PJ::PlaybackEngine::currentTimeChanged);
@@ -210,14 +210,14 @@ TEST(PlaybackEngineTest, CoarseTimeFollowsEveryThirdPlaybackTick) {
     QMetaObject::invokeMethod(&engine, "onTick", Qt::DirectConnection);
   }
   ASSERT_EQ(fine.size(), 8);
-  ASSERT_EQ(coarse.size(), 3);  // ticks 1, 4 and 7
-  EXPECT_DOUBLE_EQ(coarse.at(0).at(0).toDouble(), fine.at(0).at(0).toDouble());
-  EXPECT_DOUBLE_EQ(coarse.at(1).at(0).toDouble(), fine.at(3).at(0).toDouble());
-  EXPECT_DOUBLE_EQ(coarse.at(2).at(0).toDouble(), fine.at(6).at(0).toDouble());
+  ASSERT_EQ(coarse.size(), 4);  // ticks 1, 3, 5 and 7
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_DOUBLE_EQ(coarse.at(i).at(0).toDouble(), fine.at(2 * i).at(0).toDouble()) << i;
+  }
 
   engine.pause();
-  ASSERT_EQ(coarse.size(), 4);
-  EXPECT_DOUBLE_EQ(coarse.at(3).at(0).toDouble(), engine.currentTime().value);
+  ASSERT_EQ(coarse.size(), 5);
+  EXPECT_DOUBLE_EQ(coarse.at(4).at(0).toDouble(), engine.currentTime().value);
 }
 
 TEST(PlaybackEngineTest, CoarseTimeFollowsEverySeek) {

@@ -74,7 +74,7 @@ class TimelineWidget : public QWidget {
   // position is always committed, with no backlog.
   void flushPendingSeek();
 
-  // Not throttled: the Source Timeline needle follows the same signal, and both must move in lockstep.
+  // Fed by PlaybackEngine::coarseTimeChanged, as the Source Timeline needle: both must move in lockstep.
   void applyEngineTime(double t);
 
   // Empty ranges are skipped; a step larger than the range reaches its endpoint.
