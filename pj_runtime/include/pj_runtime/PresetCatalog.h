@@ -7,7 +7,7 @@
  * @brief The static `presets/index.json` a deployment publishes next to the app.
  *
  * A preset is an ordinary layout file; the index only names them. The shape is
- * `{"presets": [{"id", "title", "description"?, "layout", "thumbnail"?}]}`, with
+ * `{"presets": [{"id", "title", "description"?, "layout", "thumbnail"?, "listed"?}]}`, with
  * `layout` and `thumbnail` resolved against the index URL. There is no version
  * field: unknown keys are ignored, so the format grows by adding keys.
  */
@@ -35,13 +35,14 @@ struct PresetEntry {
   QString description;
   QUrl layout_url;
   QUrl thumbnail_url;
+  bool listed = true;  ///< `"listed": false` keeps it out of the presets dialog; its ?preset= link still opens it.
 };
 
 /// Parses an index document. Returns the entries in file order (an empty `presets` array is an
 /// empty list, not an error). Any malformed input (bad JSON, an entry that is not an object,
 /// an empty or non-string id, a duplicate id, a missing `layout`, a reference that is not an
-/// http(s) URL once resolved) returns an empty list and describes the first problem in `*error`;
-/// `error` may be null and is cleared on success.
+/// http(s) URL once resolved, a `listed` that is not a boolean) returns an empty list and describes the first problem
+/// in `*error`; `error` may be null and is cleared on success.
 QList<PresetEntry> parsePresetCatalog(const QByteArray& json, const QUrl& index_url, QString* error);
 
 /// The entry of `entries` with `id`, or null. Points into `entries`.

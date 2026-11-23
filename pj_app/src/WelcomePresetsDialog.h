@@ -40,12 +40,12 @@ class WelcomePresetsDialog : public Dialog {
   ~WelcomePresetsDialog() override;
 
   /// Selects `id` as a click on its entry would: emits presetSelected and shows the load. Ignored
-  /// for an id the dialog does not list, or while a load is shown.
+  /// for an id the index does not have, or while a load is shown.
   void selectPreset(const QString& id);
 
   /// Opens `id` as a ?preset= link does: selectPreset() with only the load on screen (status, bar, Cancel), so the
   /// list never shows while the linked recording downloads. A failed or cancelled load gives the list back. Ignored,
-  /// leaving the list, for an id the dialog does not list.
+  /// leaving the list, for an id the index does not have. An entry the index marks unlisted opens like any other.
   void openDeepLink(const QString& id);
 
   /// Shows `message` as an error with no Retry (a deep link that cannot be honoured).
@@ -89,8 +89,9 @@ class WelcomePresetsDialog : public Dialog {
   void updateControls();
 
   Ui::WelcomePresetsDialog* ui_;
-  QList<PresetEntry> entries_;
-  std::vector<EntryWidgets> entry_widgets_;  ///< In `entries_` order.
+  QList<PresetEntry> entries_;               ///< Every entry: what selectPreset() and openDeepLink() look up.
+  QList<PresetEntry> listed_;                ///< The entries with a card, in index order.
+  std::vector<EntryWidgets> entry_widgets_;  ///< In `listed_` order.
   PresetController thumbnails_;
   QString loading_id_;      ///< The preset whose load is shown; empty when idle.
   QString retry_id_;        ///< The preset Retry repeats; empty when Retry is hidden.

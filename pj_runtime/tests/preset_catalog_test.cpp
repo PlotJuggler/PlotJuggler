@@ -65,6 +65,18 @@ TEST(PresetCatalogTest, TitleDefaultsToId) {
   EXPECT_EQ(entries[0].title, u"fr3"_s);
 }
 
+TEST(PresetCatalogTest, ListedDefaultsToTrue) {
+  QString error;
+  const QList<PJ::PresetEntry> entries = parse(
+      R"({"presets": [{"id": "a", "layout": "a.xml"}, {"id": "b", "layout": "b.xml", "listed": false},
+                      {"id": "c", "layout": "c.xml", "listed": true}]})",
+      &error);
+  ASSERT_EQ(entries.size(), 3) << error.toStdString();
+  EXPECT_TRUE(entries[0].listed);
+  EXPECT_FALSE(entries[1].listed);
+  EXPECT_TRUE(entries[2].listed);
+}
+
 TEST(PresetCatalogTest, MalformedIndexIsAnError) {
   const char* const malformed[] = {
       "",                                                               // empty document
@@ -81,6 +93,7 @@ TEST(PresetCatalogTest, MalformedIndexIsAnError) {
       R"({"presets": [{"id": "a", "layout": "l.xml", "title": 1}]})",   // title is not a string
       R"({"presets": [{"id": "a", "layout": "file:///etc/passwd"}]})",  // not an http(s) URL
       R"({"presets": [{"id": "a", "layout": "l.xml", "thumbnail": "data:image/png;base64,AA=="}]})",
+      R"({"presets": [{"id": "a", "layout": "l.xml", "listed": "no"}]})",  // listed is not a boolean
   };
   for (const char* const json : malformed) {
     QString error;

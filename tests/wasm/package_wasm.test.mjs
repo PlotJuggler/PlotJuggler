@@ -461,6 +461,7 @@ test('a preset index must list only deployed files', async t => {
     ['a numeric layout', { 'index.json': index([{ ...fr3, layout: 7 }]) }, /#1 has a field that is not a string/],
     ['a boolean thumbnail', { 'index.json': index([{ ...fr3, thumbnail: true }]) },
       /#1 has a field that is not a string/],
+    ['a string listed', { 'index.json': index([{ ...fr3, listed: 'no' }]) }, /#1 has a listed that is not true or false/],
     ['an entry that is not an object', { 'index.json': index([fr3, 'nav']) }, /#2 is not an object/],
     ['a null entry', { 'index.json': index([null]) }, /#1 is not an object/],
   ];

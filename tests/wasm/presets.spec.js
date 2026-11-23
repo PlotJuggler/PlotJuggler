@@ -760,6 +760,9 @@ const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_INDEX = require('../../resources/wasm-presets/index.json');
 const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset', 'lilocbench'];
+// The samples the index marks "listed": false: no card in the dialog, opened only by their ?preset= link.
+const LINK_ONLY_SAMPLE_IDS = ['lilocbench'];
+const LISTED_SAMPLE_IDS = SAMPLE_IDS.filter(id => !LINK_ONLY_SAMPLE_IDS.includes(id));
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
 // The asset-host path of sample `id`'s layout.
 const sampleLayout = id => SAMPLE_INDEX.presets.find(entry => entry.id === id).layout
@@ -795,7 +798,7 @@ async function startSamples() {
 // Contexts already sending the samples' hosted files to the mirror (a test boots several pages in one).
 const ROUTED_CONTEXTS = new WeakSet();
 
-async function bootSamples(context, errors, samples) {
+async function bootSamples(context, errors, samples, query = '') {
   if (!ROUTED_CONTEXTS.has(context)) {
     ROUTED_CONTEXTS.add(context);
     await samples.mirror.route(context, samples.origin);
@@ -804,7 +807,7 @@ async function bootSamples(context, errors, samples) {
   page.on('filechooser', () => {});
   const messages = [];
   observeRuntimeTarget(page, messages, [], errors);
-  await page.goto(`${samples.origin}/`);
+  await page.goto(`${samples.origin}/${query}`);
   await waitForQtApp(page, messages);
   await expect.poll(() => count(messages, 'PJ_WASM_PRESETS_DISCOVERED'), { timeout: 30000 }).toBe(1);
   expect(latest(messages, 'PJ_WASM_PRESETS_DISCOVERED')).toContain(`count=${SAMPLE_IDS.length}`);
@@ -989,16 +992,23 @@ test('every deployed sample opens into its own views', async ({ page }) => {
       ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['pandaset', expectPandasetViews],
       ['lilocbench', expectLilocbenchViews],
     ]) {
-      const run = await bootSamples(context, errors, samples);
-      let dialog;
-      await expect.poll(async () => {
-        dialog = await presetsDialog(run.page, run.messages);
-        return dialog.visible && Object.values(dialog.entries).every(entry => entry.thumbnail !== 'loading');
-      }, { timeout: 30000 }).toBe(true);
-      expect(Object.keys(dialog.entries)).toEqual(SAMPLE_IDS);
-      expect(Object.values(dialog.entries).map(entry => entry.thumbnail), id).toEqual(SAMPLE_IDS.map(() => 'image'));
-
-      expect(await pickSample(run, samples, id), id).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      const linkOnly = LINK_ONLY_SAMPLE_IDS.includes(id);
+      const run = await bootSamples(context, errors, samples, linkOnly ? `?preset=${id}` : '');
+      if (linkOnly) {
+        const url = samples.layoutUrl(id);
+        await expect.poll(() => urlOutcome(run.messages, 0, url), { timeout: 90000 }).not.toBe('');
+        expect(urlOutcome(run.messages, 0, url), id).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      } else {
+        let dialog;
+        await expect.poll(async () => {
+          dialog = await presetsDialog(run.page, run.messages);
+          return dialog.visible && Object.values(dialog.entries).every(entry => entry.thumbnail !== 'loading');
+        }, { timeout: 30000 }).toBe(true);
+        expect(Object.keys(dialog.entries)).toEqual(LISTED_SAMPLE_IDS);
+        expect(Object.values(dialog.entries).map(entry => entry.thumbnail), id)
+          .toEqual(LISTED_SAMPLE_IDS.map(() => 'image'));
+        expect(await pickSample(run, samples, id), id).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      }
       await expect.poll(async () => (await presetsDialog(run.page, run.messages)).visible, { timeout: 10000 })
         .toBe(false);
       await expectViews(run);

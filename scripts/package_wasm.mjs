@@ -262,6 +262,9 @@ async function validatePresetIndex(presetsRoot, files) {
     if (fields.some(field => entry[field] !== undefined && entry[field] !== null && typeof entry[field] !== 'string')) {
       throw new Error(`${label} has a field that is not a string`);
     }
+    if (entry.listed !== undefined && entry.listed !== null && typeof entry.listed !== 'boolean') {
+      throw new Error(`${label} has a listed that is not true or false`);
+    }
     if (!entry.id) {
       throw new Error(`${label} has no id`);
     }

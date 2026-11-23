@@ -26,7 +26,8 @@
       "title": "Office robot",
       "description": "A wheeled robot driving room to room in an office, from LILocBench: its camera, depth cloud and laser scans on the floor map.",
       "layout": "https://assets.plotjuggler.io/v1/lilocbench/lilocbench_layout.pj4.xml",
-      "thumbnail": "https://assets.plotjuggler.io/v1/lilocbench/lilocbench_thumbnail.png"
+      "thumbnail": "https://assets.plotjuggler.io/v1/lilocbench/lilocbench_thumbnail.png",
+      "listed": false
     }
   ]
 }
