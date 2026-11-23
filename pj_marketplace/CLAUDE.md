@@ -57,6 +57,10 @@ lookup. `PJ_MARKETPLACE_TESTING` exposes test hooks on `ExtensionManager`. The r
 library directory first on the loader path (a Widget plugin links Qt: docs/TECHNICAL_NOTES.md "Qt libraries for the
 admission helper"). `extension_manager_check_plugin_management` is a network-dependent harness outside CTest.
 
+A test's store root is a `PJ::test::StoreTempDir` (`cmake/test_mains/pj_test_store_dir.h`), never a bare
+`QTemporaryDir`: the store keeps its siblings (`.artifacts`, `.extraction`, `.profiles`, `.state`, `.install_stage`,
+the lease file) beside the root, and beside a temp dir's own path they leak into TMPDIR.
+
 ## Docs
 
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): components, registry and compatibility, install and update, removal

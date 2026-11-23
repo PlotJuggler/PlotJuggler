@@ -30,6 +30,7 @@
 #include "pj_plugins/host/plugin_catalog.hpp"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/UsageCounters.h"
+#include "pj_test_store_dir.h"
 #include "plugin_test_utils.h"
 
 namespace PJ {
@@ -87,7 +88,7 @@ class ExtensionCatalogSeedTest : public ::testing::Test {
   }
 
   QTemporaryDir bundled_;
-  QTemporaryDir marketplace_;
+  test::StoreTempDir marketplace_;
   QTemporaryDir override_;
 };
 

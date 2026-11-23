@@ -182,6 +182,10 @@ like the code). Whole module:
   delayed `FakeRun`, a raw-points parser, store readers); `tests/on_demand_session_test_utils.h` drives a real
   `AppSession`; `OnDemandService::setRunForTest` swaps the run in `session_manager_test`. `NodeSchedulerBench` runs the
   real Luau run with `PJ_BENCH=1`.
+- **Store roots**: a test's extension store root (`ExtensionCatalogService::Paths`, `ExtensionManager`) is a
+  `PJ::test::StoreTempDir` (`cmake/test_mains/pj_test_store_dir.h`; `HermeticCatalog` has one), never a bare
+  `QTemporaryDir`: the store's `.artifacts`/`.extraction`/`.profiles` siblings would land in TMPDIR, where nothing
+  removes them.
 - **Recording fixtures**: `tests/recording_test_utils.h` (the `pj.recording` lookup and the `IsolatedQtSettings`
   sandbox) and `tests/runtime_host_test_fixture.h` (a real `DataSourceRuntimeHost` over the hermetic catalog and the
   mock object parser). `tests/recording_pipeline_test.cpp` (desktop) runs real hosts → `RecordTap` → `Recorder` →

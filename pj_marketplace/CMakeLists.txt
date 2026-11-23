@@ -242,6 +242,8 @@ if(TARGET mock_data_source_plugin AND TARGET mock_file_source_plugin
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tests
   )
   target_compile_options(extension_manager_test PRIVATE ${PJ_WARNING_FLAGS})
+  # pj_test_store_dir.h: the temp dir every test store root lives in.
+  target_include_directories(extension_manager_test PRIVATE "${PJ_TEST_MAINS_DIR}")
   # Admission starts pj-plugin-check, which the runner locates next to the running binary: place the freshly built
   # helper beside the test, or installs fail with execve ENOENT.
   add_dependencies(extension_manager_test pj-plugin-check)

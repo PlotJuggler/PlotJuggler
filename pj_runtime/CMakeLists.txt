@@ -599,7 +599,8 @@ if(PJ_BUILD_TESTS)
             PJ_RUNTIME_WIDGET_OTHER_COMPILER_PLUGIN_PATH="$<TARGET_FILE:runtime_widget_other_compiler_plugin>"
     )
     # pj_bench_stats.h: the Qt-free thread clock and statistics of the engine
-    # freeze bench (pj_bench_probes would pull Qt Widgets into this core runner).
+    # freeze bench (pj_bench_probes would pull Qt Widgets into this core runner);
+    # pj_test_store_dir.h: the temp dir every test store root lives in.
     target_include_directories(pj_runtime_tests PRIVATE "${PJ_TEST_MAINS_DIR}")
     if(TARGET pj_scripting_python_test_probe)
       target_link_libraries(pj_runtime_tests PRIVATE pj_scripting_python_test_probe)
