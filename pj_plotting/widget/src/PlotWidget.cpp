@@ -12,11 +12,11 @@
 #include <qwt_symbol.h>
 #include <qwt_text.h>
 
+#include <QApplication>
 #include <QDataStream>
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
-#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QHelpEvent>
 #include <QIODevice>
@@ -802,7 +802,7 @@ void PlotWidget::showPointValues(QPoint paint_point) {
     QColor background = qwtPlot()->canvasBackground().color();
     background.setAlpha(200);
     label.setBackgroundBrush(background);
-    QFont font = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    QFont font = QApplication::font();
     font.setPointSize(9);
     label.setFont(font);
     label.setRenderFlags(Qt::AlignLeft);

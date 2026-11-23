@@ -7,12 +7,13 @@
 #include <QDataStream>
 #include <QDateTime>
 #include <QDrag>
+
+#include "pj_widgets/NumberPadding.h"
 #ifdef PJ_TARGET_WASM
 #include <QDragEnterEvent>
 #include <QDragLeaveEvent>
 #include <QDropEvent>
 #endif
-#include <QFontDatabase>
 #include <QHeaderView>
 #include <QHelpEvent>
 #include <QIcon>
@@ -124,15 +125,9 @@ void setItemName(QTreeWidgetItem* item, const QString& name) {
   item->setData(kNameColumn, kSortKeyRole, name.toCaseFolded());
 }
 
-// The Value column renders monospace and right-aligned, so the space-padded, fixed-precision numbers
-// (formatScalarForColumn) keep their decimal points in one place from row to row. Applied to every curve leaf at
-// creation. Keeps `base_font`'s size and weight (the tree's font) and only swaps to a monospace family: a raw FixedFont
-// renders noticeably larger than the Name column.
-void styleValueCell(QTreeWidgetItem* item, const QFont& base_font) {
-  QFont mono = base_font;
-  mono.setFamily(QFontDatabase::systemFont(QFontDatabase::FixedFont).family());
-  mono.setStyleHint(QFont::Monospace);
-  item->setFont(kValueColumn, mono);
+// The Value column is right-aligned in the tree's own font: formatScalarForColumn pads with digit-wide spaces
+// (NumberPadding.h), so the decimal points stay in one place from row to row. Applied to every curve leaf at creation.
+void styleValueCell(QTreeWidgetItem* item) {
   item->setTextAlignment(kValueColumn, Qt::AlignRight | Qt::AlignVCenter);
 }
 
@@ -593,7 +588,7 @@ void CurveTreeView::addCurve(const QString& name, SortMode sort_mode) {
   }
   auto* item = new CurveTreeItem(parent);
   setItemName(item, leaf_name);
-  styleValueCell(item, font());
+  styleValueCell(item);
   item->setData(kNameColumn, Qt::UserRole, name);
   item->setData(kNameColumn, kSearchRole, name);
   item->setFlags(item->flags() | Qt::ItemIsDragEnabled | Qt::ItemIsSelectable);
@@ -678,7 +673,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
       }
       item = new CurveTreeItem(parent);
       setItemName(item, leaf_name);
-      styleValueCell(item, font());
+      styleValueCell(item);
       item->setData(kNameColumn, Qt::UserRole, path.key);
       item->setData(kNameColumn, kCatalogItemRole, path.key);
       applyLeafSelectability(item, path.draggable);
@@ -702,7 +697,7 @@ void CurveTreeView::addCatalogItem(const CurvePath& path, SortMode sort_mode) {
     }
     item = new CurveTreeItem(parent);
     setItemName(item, leaf_name);
-    styleValueCell(item, font());
+    styleValueCell(item);
     item->setData(kNameColumn, Qt::UserRole, path.key);
     item->setData(kNameColumn, kCatalogItemRole, path.key);
     applyLeafSelectability(item, path.draggable);
@@ -2527,18 +2522,18 @@ QString formatScalarForColumn(double value, int precision) {
     return u"-"_s;
   }
   // Fixed precision keeps a constant fractional width; trailing zeros (and a bare trailing '.' once all decimals are
-  // blanked) are then overwritten with spaces. The one appended space and a right-aligned monospace cell line up every
-  // decimal point across rows (1.2 gives "1.2   ", 5 gives "5     ").
+  // blanked) are then overwritten with spaces of their own width. With the one appended space, a right-aligned cell
+  // lines up every decimal point across rows.
   QString text = QString::number(value, 'f', precision);
   const int dot = text.indexOf(QLatin1Char('.'));
   if (dot >= 0) {
     int idx = text.size() - 1;
     while (idx > dot && text[idx] == QLatin1Char('0')) {
-      text[idx] = QLatin1Char(' ');
+      text[idx] = kFigureSpace;
       --idx;
     }
     if (idx == dot) {
-      text[idx] = QLatin1Char(' ');
+      text[idx] = kPunctuationSpace;
     }
   }
   return text + QLatin1Char(' ');

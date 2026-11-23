@@ -3,6 +3,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QFontInfo>
+#include <QFontMetricsF>
 #include <QImage>
 #include <QPainter>
 
@@ -45,4 +46,25 @@ TEST(BundledFont, EveryEmphasisRendersTheRealSixHundredFace) {
   const QImage demi_bold = render(family, QFont::DemiBold);
   EXPECT_EQ(render(family, QFont::Bold), demi_bold);
   EXPECT_NE(render(family, QFont::Normal), demi_bold);
+}
+
+// Numbers are kept in columns in this font by padding with spaces as wide as a digit and as a period
+// (pj_widgets/NumberPadding.h): a font update that breaks either width misaligns the curve list's Value column, the
+// tracker's value box and the pixel inspector.
+TEST(BundledFont, DigitsAndTheirSpacesShareAnAdvance) {
+  const QString family = PJ::registerBundledFont(QStringLiteral(PJ_BUNDLED_FONT_DIR));
+  ASSERT_FALSE(family.isEmpty());
+  for (const int weight : {QFont::Normal, QFont::Bold}) {
+    QFont font(family, 24);
+    font.setWeight(QFont::Weight(weight));
+    const QFontMetricsF metrics(font);
+    const qreal digit = metrics.horizontalAdvance(QLatin1Char('0'));
+    for (const QChar other : QStringLiteral("123456789")) {
+      EXPECT_DOUBLE_EQ(metrics.horizontalAdvance(other), digit)
+          << weight << " digit " << static_cast<int>(other.unicode());
+    }
+    // kFigureSpace and kPunctuationSpace: this runner links no pj_widgets.
+    EXPECT_DOUBLE_EQ(metrics.horizontalAdvance(QChar(0x2007)), digit) << weight;
+    EXPECT_DOUBLE_EQ(metrics.horizontalAdvance(QChar(0x2008)), metrics.horizontalAdvance(QLatin1Char('.'))) << weight;
+  }
 }
