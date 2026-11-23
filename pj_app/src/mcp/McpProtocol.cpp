@@ -49,7 +49,7 @@ constexpr auto kAppToolInstructions =
     "format PlotJuggler reads (the relay hands the page the file), start_stream starts a live source. "
     "add_script_series (Luau or Python) and add_filter install live derived series too. widget_state reads "
     "the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
-    "ranges), and set_widget_state changes them; its get lists the values each one accepts. Take a screenshot to "
+    "ranges) with the values each one accepts, and set_widget_state changes them. Take a screenshot to "
     "check what the user sees.";
 #else
 constexpr auto kAppToolInstructions =
@@ -57,7 +57,7 @@ constexpr auto kAppToolInstructions =
     "format PlotJuggler reads, start_stream starts a live source. export_series gives aligned CSV for your own "
     "tools; add_script_series (Luau or Python) and add_filter install live derived series too. widget_state "
     "reads the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
-    "ranges), and set_widget_state changes them; its get lists the values each one accepts. Take a screenshot to "
+    "ranges) with the values each one accepts, and set_widget_state changes them. Take a screenshot to "
     "check what the user sees. Read about before explaining how to do something in the "
     "PlotJuggler UI.";
 #endif
@@ -176,12 +176,17 @@ bool runsUnderUsersDialog(const std::string& name) {
 
 namespace {
 
-bool isSecretKey(std::string key) {
-  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return std::tolower(c); });
-  static constexpr std::string_view kWords[] = {"password", "passwd", "secret",      "token",
-                                                "api_key",  "apikey", "private_key", "credential"};
-  return std::any_of(std::begin(kWords), std::end(kWords), [&key](std::string_view word) {
-    return key.find(word) != std::string::npos;
+bool isSecretKey(const std::string& key) {
+  std::string folded;
+  for (const unsigned char c : key) {
+    if (c != '_' && c != '-') {
+      folded.push_back(static_cast<char>(std::tolower(c)));
+    }
+  }
+  static constexpr std::string_view kWords[] = {"password", "passwd",     "secret",    "token",
+                                                "apikey",   "privatekey", "credential"};
+  return std::any_of(std::begin(kWords), std::end(kWords), [&folded](std::string_view word) {
+    return folded.find(word) != std::string::npos;
   });
 }
 
@@ -199,23 +204,46 @@ void redactIn(json& value, bool secret) {
   }
 }
 
-std::string restoreIn(json& given, const json* saved, const std::string& path) {
+/// `value` without the keys naming a secret, at any depth.
+json withoutSecrets(const json& value) {
+  if (value.is_object()) {
+    json out = json::object();
+    for (auto it = value.begin(); it != value.end(); ++it) {
+      if (!isSecretKey(it.key())) {
+        out[it.key()] = withoutSecrets(it.value());
+      }
+    }
+    return out;
+  }
+  if (value.is_array()) {
+    json out = json::array();
+    for (const json& item : value) {
+      out.push_back(withoutSecrets(item));
+    }
+    return out;
+  }
+  return value;
+}
+
+/// Fills each kRedacted in `given` from `saved` at the same key path; the first path with no saved string, or "".
+std::string restoreIn(json& given, const json* saved, const std::string& path, bool& found) {
   if (given.is_object()) {
     for (auto it = given.begin(); it != given.end(); ++it) {
       const json* next =
           saved != nullptr && saved->is_object() && saved->contains(it.key()) ? &(*saved)[it.key()] : nullptr;
-      if (std::string error = restoreIn(it.value(), next, path + "/" + it.key()); !error.empty()) {
+      if (std::string error = restoreIn(it.value(), next, path + "/" + it.key(), found); !error.empty()) {
         return error;
       }
     }
   } else if (given.is_array()) {
     for (std::size_t i = 0; i < given.size(); ++i) {
       const json* next = saved != nullptr && saved->is_array() && i < saved->size() ? &(*saved)[i] : nullptr;
-      if (std::string error = restoreIn(given[i], next, path + "/" + std::to_string(i)); !error.empty()) {
+      if (std::string error = restoreIn(given[i], next, path + "/" + std::to_string(i), found); !error.empty()) {
         return error;
       }
     }
   } else if (given.is_string() && given.get_ref<const std::string&>() == kRedacted) {
+    found = true;
     if (saved == nullptr || !saved->is_string()) {
       return path.empty() ? std::string("/") : path;
     }
@@ -232,7 +260,31 @@ json redactSecrets(json config) {
 }
 
 std::string restoreSecrets(json& given, const json& saved) {
-  return restoreIn(given, &saved, "");
+  json filled = given;
+  bool found = false;
+  if (const std::string missing = restoreIn(filled, &saved, "", found); !missing.empty()) {
+    return "no saved value for " + missing + " to replace \"" + kRedacted + "\" with; pass the value itself";
+  }
+  if (!found) {
+    return {};
+  }
+  // A saved secret goes only to what it was saved for: the same document, its secrets aside. Anything else (another
+  // host, server or ICE entry) would carry it somewhere the user never sent it.
+  const json changes = json::diff(withoutSecrets(saved), withoutSecrets(given));
+  if (!changes.empty()) {
+    std::set<std::string> paths;
+    for (const json& change : changes) {
+      const std::string path = change.value("path", "");
+      paths.insert(path.empty() ? std::string("/") : path);
+    }
+    std::string named;
+    for (const std::string& path : paths) {
+      named += (named.empty() ? "" : ", ") + path;
+    }
+    return "this changes " + named + " while keeping a saved secret: pass the secret itself, or use ask_user=true";
+  }
+  given = std::move(filled);
+  return {};
 }
 
 bool isJobCapableTool(const std::string& name) {
@@ -269,8 +321,13 @@ namespace {
 
 #ifdef PJ_TARGET_WASM
 #define PJ_MCP_ABOUT_SOURCES ""
+// A page's file has no saved configuration an agent's call can match, so no secret to keep.
+#define PJ_MCP_OPEN_FILE_SECRETS "; pass a secret itself, never \"<redacted>\"."
 #else
 #define PJ_MCP_ABOUT_SOURCES "; about says what each one is"
+#define PJ_MCP_OPEN_FILE_SECRETS                                                                               \
+  "; a \"<redacted>\" passed back in config keeps the value this file was loaded with, only when the rest of " \
+  "config is that one unchanged (else pass the secret itself)."
 #endif
 
 /// The tools/list entries of the app's own tools (McpServerTools.cpp).
@@ -311,8 +368,7 @@ json appToolEntries() {
           "Load a data file (MCAP, CSV, ULog, Parquet...). Returns when the import has finished, or after wait_s "
           "with a job_id while a large file still loads: its topics are readable as they arrive, job_wait returns "
           "the outcome and job_kill stops the import. By default the loader's own defaults apply (e.g. every "
-          "topic). Returns the config the loader used, its secrets as \"<redacted>\"; a \"<redacted>\" passed "
-          "back in config keeps the value this file was loaded with.",
+          "topic). Returns the config the loader used, its secrets as \"<redacted>\"" PJ_MCP_OPEN_FILE_SECRETS,
           schema(
               {{"path", {{"type", "string"}, {"description", "absolute path"}}},
                {"ask_user",
@@ -339,7 +395,8 @@ json appToolEntries() {
           "runs, with the job_id of the job that lives as long as the stream: job_kill (or stop_stream) stops it, "
           "job_wait returns when it ends. Topics appear as the source advertises them. Configs come back with "
           "their secrets as \"<redacted>\"; a \"<redacted>\" passed back in config keeps the value the user "
-          "confirmed in the dialog.",
+          "confirmed in the dialog, only when the rest of config is that confirmed config unchanged (else pass the "
+          "secret itself, or ask_user=true).",
           schema(
               {{"source", {{"type", "string"}, {"description", "stream source name, from stream_sources"}}},
                {"ask_user", described(ask_user, "open the source's dialog so the user sets it up")},
@@ -412,7 +469,8 @@ json appToolEntries() {
           "field to plot.",
           schema(
               {{"input", {{"type", "string"}, {"description", "series path, as read_series takes it"}}},
-               {"filter", described(str, "built-in filter id")},
+               {"filter",
+                described(str, "built-in filter id; an unknown one is refused with the list of available filters")},
                {"params",
                 {{"type", "object"}, {"description", "filter parameters; the ones left out take their defaults"}}},
                {"name", described(str, "output series name (default <input>[<filter>])")}},
@@ -440,8 +498,7 @@ json appToolEntries() {
           "set_widget_state changes them.\n"
           "action 'list': every dock (id, tab, title, kind). 'get' (dock): its element as `xml`, and `options`: per "
           "element tag, each attribute the dock accepts with its type, allowed `values` or `min`/`max`, and "
-          "`default` (the value an absent attribute takes). A dock whose kind lists no options (a plugin's widget) "
-          "takes any element, unchecked.",
+          "`default` (the value an absent attribute takes); empty for a plugin's widget.",
           schema(
               {{"action",
                 {{"type", "string"},
@@ -455,8 +512,9 @@ json appToolEntries() {
           "attributes, send the whole element back with the same root tag; keep what you do not change as get "
           "returned it (it holds the camera and the view: an older get moves them back). A refused element leaves "
           "the dock as it was, and the error names the attribute and what it accepts; an attribute not in "
-          "options, or a series or topic that is not loaded, is refused too. Each call is one undo step for the "
-          "user. Returns the dock's element as applied.",
+          "options, or a series or topic that is not loaded, is refused too; a dock whose get lists no options (a "
+          "plugin's widget) takes any element, unchecked. Each call is one undo step for the user. Returns the "
+          "dock's element as applied.",
           schema(
               {{"dock", {{"type", "string"}, {"description", "a dock id from widget_state list"}}},
                {"xml", {{"type", "string"}, {"description", "the dock's whole element"}}}},
@@ -467,6 +525,7 @@ json appToolEntries() {
 }  // namespace
 
 #undef PJ_MCP_ABOUT_SOURCES
+#undef PJ_MCP_OPEN_FILE_SECRETS
 
 namespace {
 
@@ -673,6 +732,24 @@ json toolList(ToolSet set) {
     tools.push_back(std::move(entry));
   }
   return tools;
+}
+
+json bridgeToolEntries() {
+  return json::array({
+      toolEntry(
+          "list_instances",
+          "PlotJuggler windows running with MCP on this computer: id, loaded datasets, whether it has the user's "
+          "focus and whether this session is using it. Only needed when several run.",
+          schema(json::object())),
+      toolEntry(
+          "select_instance", "Use the PlotJuggler instance with this id (from list_instances) for every later call.",
+          schema({{"id", {{"type", "integer"}, {"description", "an instance id from list_instances"}}}}, {"id"})),
+      toolEntry(
+          "launch",
+          "Start a new PlotJuggler window with MCP on (when none runs, or the user wants a separate one) and use "
+          "it. Returns once it is ready for other tools.",
+          schema(json::object())),
+  });
 }
 
 const agent_tools::ToolRegistry& agentTools() {

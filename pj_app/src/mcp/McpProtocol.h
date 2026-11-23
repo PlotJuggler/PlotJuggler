@@ -98,6 +98,9 @@ inline constexpr int kMaxUiTypedChars = 1000;
 /// uiToolsEnabled(). Static, so the bridge can list tools while no PlotJuggler runs.
 [[nodiscard]] nlohmann::json toolList(ToolSet set);
 
+/// The tools the stdio bridge answers itself (list_instances, select_instance, launch).
+[[nodiscard]] nlohmann::json bridgeToolEntries();
+
 /// pj_runtime's `agent_tools`: one instance for listing and calls.
 [[nodiscard]] const agent_tools::ToolRegistry& agentTools();
 
@@ -114,13 +117,14 @@ inline constexpr int kMaxUiTypedChars = 1000;
 inline constexpr char kRedacted[] = "<redacted>";
 
 /// `config` with every non-empty string under a key naming a secret (password, passwd, secret,
-/// token, api_key, apikey, private_key, credential; any case, anywhere in the key) replaced by
-/// kRedacted, at any depth; every string inside an object or array under such a key too.
+/// token, apikey, privatekey, credential, anywhere in the key, ignoring case, '_' and '-') replaced
+/// by kRedacted, at any depth; every string inside an object or array under such a key too.
 [[nodiscard]] nlohmann::json redactSecrets(nlohmann::json config);
 
-/// Replaces each kRedacted string in `given` with the string at the same key path in `saved`.
-/// Returns "" when every one was filled, else an error naming the first key path `saved` has no
-/// string at (`given` is then partly filled: do not use it).
+/// Replaces each kRedacted string in `given` with the string at the same key path in `saved`, only
+/// when `given` without its secret keys equals `saved` without them: a saved secret never goes to a
+/// changed host, server or entry. Returns "" when filled (or when `given` holds no kRedacted), else
+/// the reason, naming the key paths, with `given` unchanged.
 [[nodiscard]] std::string restoreSecrets(nlohmann::json& given, const nlohmann::json& saved);
 
 /// The most characters (UTF-8 bytes, never fewer than a client's UTF-16 count) the instructions may

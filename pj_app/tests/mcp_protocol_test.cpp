@@ -232,16 +232,56 @@ TEST(McpSecrets, ConfigsAreRedactedAndTheSentinelRestoresTheSavedValue) {
   EXPECT_EQ(redacted.dump().find("hunter2"), std::string::npos);
 
   json given = redacted;
-  given["host"] = "other.local";
-  EXPECT_EQ(PJ::mcp::restoreSecrets(given, config), "");
+  EXPECT_EQ(PJ::mcp::restoreSecrets(given, config), "") << "the unchanged configuration keeps its secrets";
   EXPECT_EQ(given["Password"], "hunter2");
   EXPECT_EQ(given["auth"]["bearer_token"], "abc");
   EXPECT_EQ(given["servers"][0]["api_key"], "k1");
-  EXPECT_EQ(given["host"], "other.local");
+  EXPECT_EQ(given["credentials"], config["credentials"]);
+
+  json new_secret = redacted;
+  new_secret["auth"]["bearer_token"] = "mine";
+  EXPECT_EQ(PJ::mcp::restoreSecrets(new_secret, config), "") << "a secret the agent passes itself is not a change";
+  EXPECT_EQ(new_secret["auth"]["bearer_token"], "mine");
+  EXPECT_EQ(new_secret["Password"], "hunter2");
+
+  // A saved secret goes only where it was saved: another host would receive it.
+  json other_host = redacted;
+  other_host["host"] = "attacker.example";
+  const std::string moved = PJ::mcp::restoreSecrets(other_host, config);
+  EXPECT_NE(moved.find("changes /host while keeping a saved secret"), std::string::npos) << moved;
+  EXPECT_EQ(other_host.dump().find("hunter2"), std::string::npos);
+
+  json other_server = redacted;
+  other_server["servers"][1]["name"] = "c";
+  const std::string element = PJ::mcp::restoreSecrets(other_server, config);
+  EXPECT_NE(element.find("/servers/1/name"), std::string::npos) << element;
+  EXPECT_EQ(other_server.dump().find("k1"), std::string::npos);
+
+  json added = redacted;
+  added["url"] = "ws://attacker.example";
+  EXPECT_NE(PJ::mcp::restoreSecrets(added, config).find("/url"), std::string::npos);
+
+  json plain = {{"host", "attacker.example"}, {"Password", "theirs"}};
+  EXPECT_EQ(PJ::mcp::restoreSecrets(plain, config), "") << "no sentinel, nothing saved is used";
+  EXPECT_EQ(plain["Password"], "theirs");
 
   json unknown = {{"mqtt", {{"password", kRedacted}}}};
-  EXPECT_EQ(PJ::mcp::restoreSecrets(unknown, json::object()), "/mqtt/password");
-  EXPECT_EQ(PJ::mcp::restoreSecrets(unknown, {{"mqtt", {{"password", 3}}}}), "/mqtt/password");
+  EXPECT_NE(
+      PJ::mcp::restoreSecrets(unknown, json::object()).find("no saved value for /mqtt/password"), std::string::npos);
+  EXPECT_NE(
+      PJ::mcp::restoreSecrets(unknown, {{"mqtt", {{"password", 3}}}}).find("no saved value for /mqtt/password"),
+      std::string::npos);
+}
+
+// Secret keys are recognised however a plugin spells them: case, '_' and '-' do not matter.
+TEST(McpSecrets, SecretKeysMatchWhateverTheirCaseAndSeparators) {
+  const json config = {{"privateKey", "a"}, {"api-key", "b"}, {"X-API-Key", "c"}, {"private-key", "d"},
+                       {"PASS_WORD", "e"},  {"keyring", "f"}, {"tokens", "g"}};
+  const json redacted = PJ::mcp::redactSecrets(config);
+  for (const char* key : {"privateKey", "api-key", "X-API-Key", "private-key", "PASS_WORD", "tokens"}) {
+    EXPECT_EQ(redacted[key], PJ::mcp::kRedacted) << key;
+  }
+  EXPECT_EQ(redacted["keyring"], "f");
 }
 
 // Every tool the server and the bridge list carries a title and all four hints from one table, which the server's own
@@ -254,8 +294,9 @@ TEST(McpAnnotations, EveryListedToolHasATitleAndAllFourHints) {
   for (const json& tool : tools) {
     names.insert(tool.value("name", ""));
   }
-  for (const char* bridge : {"list_instances", "select_instance", "launch"}) {
-    names.insert(bridge);
+  for (const json& tool : PJ::mcp::bridgeToolEntries()) {
+    names.insert(tool.value("name", ""));
+    tools.push_back(tool);
   }
   for (const json& tool : PJ::mcp::toolList(PJ::mcp::ToolSet::kAgentOnly)) {
     names.insert(tool.value("name", ""));
