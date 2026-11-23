@@ -21,7 +21,7 @@ constexpr QChar kRowSeparator = u'\n';
 
 template <typename Visit>
 void forEachRow(const QString& text, Visit&& visit) {
-  for (const QStringView row : QStringView(text).split(kRowSeparator)) {
+  for (const QStringView row : QStringView(text).tokenize(kRowSeparator)) {
     if (row.size() >= kInkChars) {
       visit(row.first(kInkChars), row.sliced(kInkChars));
     }
@@ -64,7 +64,8 @@ class TrackerTextEngine final : public QwtTextEngine {
     const double row_height = rowHeight(metrics);
     double y = rect.top();
     if ((flags & (Qt::AlignBottom | Qt::AlignVCenter)) != 0) {
-      const double slack = rect.height() - textSize(painter->font(), flags, text).height();
+      const double rows = static_cast<double>(text.count(kRowSeparator) + 1);
+      const double slack = rect.height() - std::ceil(rows * row_height);
       y += (flags & Qt::AlignBottom) != 0 ? slack : slack / 2.0;
     }
     painter->save();

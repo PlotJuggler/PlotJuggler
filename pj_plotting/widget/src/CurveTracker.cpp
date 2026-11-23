@@ -266,6 +266,7 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     font.setPointSize(9);
     marker_text.setFont(font);
     marker_text.setRenderFlags(parameter_ == kValue ? Qt::AlignCenter : Qt::AlignLeft);
+    (void)marker_text.textSize();  // measured before the copy, so the marker's label inherits the cached size
     text_marker_->setLabel(marker_text);
     text_marker_->setLabelAlignment(Qt::AlignRight);
     text_marker_->setXValue(tracker_position.x() + view_rect.width() * 0.02);

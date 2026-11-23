@@ -10,8 +10,8 @@
 
 namespace PJ {
 
-/// The tracker's value box as a QwtText: rows of one colour each, laid out with font metrics alone. As rich text
-/// every size query and every draw built and laid out a QTextDocument, several per plot and playback tick.
+/// The tracker's value box as a QwtText: rows of one colour each, laid out with font metrics alone, because the box
+/// is measured and drawn several times per plot and playback tick (docs/TECHNICAL_NOTES.md, "Tracker value box text").
 [[nodiscard]] QwtText valueBoxLabel(const std::vector<ValueBoxRow>& rows);
 
 }  // namespace PJ
