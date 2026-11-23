@@ -46,9 +46,11 @@ recomputes from the start.
   after `reset()`.
 - **Failure is sticky.** A script runtime error fails the node (`failed()`) and suppresses its output; it never
   corrupts a stateful accumulator. `reset()` rebuilds the instance (a fresh VM is the only guaranteed-clean reset).
-- **Output kind.** `output` is `"double"`, `"int64"` or `"same"` (mirror: the input column's kind). Luau filters are
-  numeric-scalar only: a string input is coerced to 0.0 (`proc::detail::toDouble`), not rejected. int64 output clamps
-  and a non-finite result becomes 0.
+- **Output kind.** `output` is `"double"`, `"int64"`, `"same"` (mirror: the input column's kind) or `"string"` (a
+  text column). The engine instance knows its class's kind: a text class fills `FilterInstance::Result::text` /
+  `MimoResult::texts` and refuses a number, a numeric class refuses a string that is not a number, both naming
+  `output = "string"` in the error. Inputs are numbers only: a string input is coerced to 0.0
+  (`proc::detail::toDouble`), not rejected. int64 output clamps and a non-finite result becomes 0.
 - **Luau sandbox** (`luau_sandbox_state.h`, limits in `BudgetLimits`). Filters run in-process on the GUI thread, so
   each VM is hardened: `luaL_sandbox` freezes the shared stdlib read-only after `os`, `coroutine`, `debug`, `setfenv`
   and `getfenv` are dropped (`setfenv` would let a script swap its environment back onto the frozen stdlib), then
@@ -141,3 +143,5 @@ application must do the same.
   read-only module copy shares with its module (for example `statistics.NormalDist`) reaches later runs.
 - Python filters run on the caller's thread with the GIL held, once per row, bounded only by `python_call_millis`.
 - `LuaSisoTransform` and `LuaMimoTransform` each carry their own copy of the double-to-integer conversions.
+- A string input reaches a filter as 0.0: `FilterInstance::calculate` / `calculateMimo` take doubles. Upgrade: pass
+  the input `VarValue` through the seam and push a Luau string / Python `str`.

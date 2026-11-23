@@ -19,12 +19,14 @@ namespace PJ::scripting {
 /// protected call.
 class FilterInstance {
  public:
-  /// One per-sample result: `suppress` emits nothing (e.g. a derivative's first sample); otherwise `value` is emitted
-  /// at the input time, or at `out_time` when the script returned an explicit timestamp.
+  /// One per-sample result: `suppress` emits nothing (e.g. a derivative's first sample); otherwise `value` (`text` for
+  /// a class whose `output` is "string") is emitted at the input time, or at `out_time` when the script returned an
+  /// explicit timestamp.
   struct Result {
     bool suppress = false;
     double value = 0.0;
     std::optional<double> out_time;  ///< present iff the script returned (t, v)
+    std::string text;
   };
 
   virtual ~FilterInstance() = default;
@@ -34,18 +36,20 @@ class FilterInstance {
   /// reported through `failed()` / `error()`.
   [[nodiscard]] virtual Result calculate(double t, double v) = 0;
 
-  /// One MIMO step result: `suppress`, or `values`, one per declared output topic in order. There is no explicit
-  /// out_time form: the outputs share the joined input timestamp.
+  /// One MIMO step result: `suppress`, or one value per declared output topic in order, in `values` or, for a class
+  /// whose `output` is "string", in `texts`. There is no explicit out_time form: the outputs share the joined input
+  /// timestamp.
   struct MimoResult {
     bool suppress = false;
     std::vector<double> values;
+    std::vector<std::string> texts;
   };
 
   /// MIMO step (N inputs -> M outputs). `inputs[0]` is the primary value, the rest the secondary inputs the engine
   /// joined to this sample; `t` as in `calculate`. A class implements either this or the SISO `calculate`; the default
   /// suppresses.
   [[nodiscard]] virtual MimoResult calculateMimo(double /*t*/, PJ::Span<const double> /*inputs*/) {
-    return MimoResult{true, {}};
+    return MimoResult{true, {}, {}};
   }
 
   /// Clears per-instance state (optional in the script). The host rebuilds the instance instead of calling it.

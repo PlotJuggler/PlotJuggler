@@ -34,6 +34,7 @@ struct RecordingDpHost {
   bool check_unchecked = false;
   std::string check_message = "not checked: busy";
   bool fail_create = false;
+  std::string create_error = "create rejected";  // what a failing create_data_processor says
   // Simulate a host that has not heard of any create_data_processor flag bit
   // besides EPHEMERAL (i.e. an older host, pre-HISTORY_EXEMPT): any other bit
   // is refused with an error message containing "reserved" -- the substring
@@ -210,7 +211,7 @@ struct RecordingDpHost {
       self->last_outputs.push_back(toStr(outputs[i]));
     }
     if (self->fail_create) {
-      PJ::sdk::fillError(err, 1, "test", "create rejected");
+      PJ::sdk::fillError(err, 1, "test", self->create_error);
       return false;
     }
     if (self->reject_unknown_flags && (flags & ~static_cast<uint32_t>(PJ_DATA_PROCESSOR_FLAG_EPHEMERAL)) != 0) {

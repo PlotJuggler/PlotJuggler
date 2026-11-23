@@ -55,6 +55,8 @@ LuaMimoTransform::LuaMimoTransform(
     out_mode_ = OutputMode::kInt64;
   } else if (klass_.output_kind == "same" || klass_.output_kind == "mirror") {
     out_mode_ = OutputMode::kMirror;
+  } else if (klass_.textOutput()) {
+    out_mode_ = OutputMode::kString;
   } else {
     out_mode_ = OutputMode::kDouble;
   }
@@ -121,6 +123,8 @@ std::vector<PJ::StorageKind> LuaMimoTransform::outputKinds(PJ::Span<const PJ::St
       }
       return std::vector<PJ::StorageKind>(num_outputs_, mirrored);
     }
+    case OutputMode::kString:
+      return std::vector<PJ::StorageKind>(num_outputs_, PJ::StorageKind::kString);
     case OutputMode::kDouble:
     default:
       return std::vector<PJ::StorageKind>(num_outputs_, PJ::StorageKind::kFloat64);
@@ -155,7 +159,7 @@ bool LuaMimoTransform::calculate(
     input_doubles.push_back(proc::detail::toDouble(v));
   }
 
-  const FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, input_doubles);
+  FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, input_doubles);
   if (instance_->failed()) {
     error_ = instance_->error();
     return false;
@@ -163,10 +167,17 @@ bool LuaMimoTransform::calculate(
   if (r.suppress) {
     return false;
   }
-  if (r.values.size() != num_outputs_) {
-    error_ = "filter returned " + std::to_string(r.values.size()) + " value(s) but " + std::to_string(num_outputs_) +
+  const std::size_t returned = out_mode_ == OutputMode::kString ? r.texts.size() : r.values.size();
+  if (returned != num_outputs_) {
+    error_ = "filter returned " + std::to_string(returned) + " value(s) but " + std::to_string(num_outputs_) +
              " output(s) are declared";
     return false;
+  }
+  if (out_mode_ == OutputMode::kString) {
+    for (std::size_t k = 0; k < num_outputs_; ++k) {
+      output[k] = PJ::VarValue{std::move(r.texts[k])};
+    }
+    return true;
   }
 
   // `output` is pre-sized to num_outputs_ by the engine; in mirror mode every output follows input 0.

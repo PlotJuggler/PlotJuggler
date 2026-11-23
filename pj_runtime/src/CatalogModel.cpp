@@ -56,6 +56,8 @@ struct QStringHash {
       return isPlottablePrimitive(field.logical_type);
     case SeriesCapability::kDiscrete:
       return isDiscreteField(field);
+    case SeriesCapability::kAny:
+      return true;
   }
   return false;
 }

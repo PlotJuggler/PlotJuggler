@@ -63,6 +63,11 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
 - **UI tools** (`McpUiTools.cpp`, public token only, and only in a run started with `--mcp-ui-tools`): `ui_tree`,
   `ui_click`, `ui_drag`, `ui_wheel`, `ui_key`, `ui_type`, `ui_plot`. See [UI tools](#ui-tools-qa).
 
+Derived series hold numbers unless asked for text: `create_derived_series` takes `output_type: "string"`, and an
+`add_script_series` script declares `output = "string"` on its class. The tools that read numbers (`read_series`,
+`export_series`, a script series' inputs) refuse a string series with the reason (`agent_tools::textSeriesError`); the
+user sees one in a State Transitions panel.
+
 `ToolSet::kFull` serves the agent, app and job tools. `ToolSet::kAgentOnly` is used for plugin tokens: `tools/list`
 and the `initialize` instructions leave the app tools out, and calling one gets the unknown-tool error.
 Every tool's title and MCP hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) come from one

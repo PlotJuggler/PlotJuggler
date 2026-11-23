@@ -172,6 +172,9 @@ Expected<std::vector<Column>> readColumns(
     if (!view) {
       return unexpected("read failed for '" + want + "': " + view.error());
     }
+    if (view->type() == PrimitiveType::kString) {
+      return unexpected(agent_tools::textSeriesError(want));
+    }
     const auto stamps = view->timestamps();
     std::size_t begin = 0;
     std::size_t end = stamps.size();

@@ -183,7 +183,9 @@ between.
 `IncrementalEngine` runs a graph of transforms over engine topics and writes their outputs as engine topics. A SISO
 node maps one single-column input to one output; a MIMO node maps N single-column inputs to M outputs and fires only
 where every input has a sample at exactly the same timestamp. Nodes run in topological order; a cycle is refused when
-the node is added.
+the node is added. Each output column takes the kind its operator reports when the node is added (`outputKind(s)`),
+numbers or text (`kString`); a value of the other family is coerced (a string into a number column writes 0, a number
+into a text column leaves the cell empty).
 
 - **Sequential contract.** A transform sees its input in ascending timestamp order, its state carries across chunks,
   and only `reset()` clears it. Anything that would break the order (late input, input lost to retention, a failed
@@ -211,8 +213,9 @@ the node is added.
   replace, recompute or failure ends the replay. A SISO node over time-ordered input resumes mid-chunk and produces the
   same output as an uninterrupted replay; MIMO nodes and overlapping input finish in one step. Whole-series snapshot
   reads wait for an unfinished replay through the engine's complete-read barrier, which `pj_runtime` installs.
-- **Replacing and reloading.** A node's operator can be swapped in place, keeping its topology and output topic ids;
-  the downstream graph is replayed and the old operator restored on failure. The input bindings can be saved, checked
+- **Replacing and reloading.** A node's operator can be swapped in place, keeping its topology, output topic ids and
+  output kinds; the downstream graph is replayed and the old operator restored on failure. An operator whose output
+  switches between text and numbers is refused, since the coercion would lose every value. The input bindings can be saved, checked
   against the reloaded schemas and restored, so a reload keeps node and output ids.
 
 ## ObjectStore

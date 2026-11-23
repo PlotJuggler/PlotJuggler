@@ -1068,6 +1068,41 @@ TEST_F(McpServerTest, InputsThatShareNoTimestampsAreRefused) {
   })) << text;
 }
 
+// A script declaring output = "string" makes a text series: listed with its field like any series, and refused by
+// the tools that read numbers, with the reason.
+TEST_F(McpServerTest, ATextSeriesIsListedAndRefusedByTheNumberReaders) {
+  ASSERT_NE(loadMock(), 0);
+  const auto [added, add_error] = result(call(
+      "add_script_series",
+      {{"name", "state"},
+       {"inputs", {"mock/file_data/value"}},
+       {"script",
+        "return { name = \"state\", output = \"string\", create = function(params) return { calculate = "
+        "function(t, v) return v > 0 and \"up\" or \"down\" end } end }"}}));
+  ASSERT_FALSE(add_error) << added;
+  const json topics = json::parse(added, nullptr, false).value("topics", json::object());
+  ASSERT_FALSE(topics.empty() || topics.begin()->empty()) << added;
+  const std::string path = topics.begin().key() + "/" + topics.begin()->front().get<std::string>();
+
+  const auto [read, read_error] = result(call("read_series", {{"paths", {path}}}));
+  EXPECT_TRUE(read_error);
+  EXPECT_NE(read.find("holds text"), std::string::npos) << read;
+  const auto [exported, export_error] = result(call("export_series", {{"paths", {path}}}));
+  EXPECT_TRUE(export_error);
+  EXPECT_NE(exported.find("holds text"), std::string::npos) << exported;
+
+  const auto [created, create_error] = result(call(
+      "create_derived_series", {{"name", "sign"},
+                                {"inputs", {"mock/file_data/value"}},
+                                {"expression", "value > 0 and 'up' or 'down'"},
+                                {"output_type", "string"}}));
+  ASSERT_FALSE(create_error) << created;
+  const std::string series = json::parse(created, nullptr, false).value("series", "");
+  const auto [sign, sign_error] = result(call("read_series", {{"paths", {series}}}));
+  EXPECT_TRUE(sign_error);
+  EXPECT_NE(sign.find("holds text"), std::string::npos) << sign;
+}
+
 TEST_F(McpServerTest, AWronglyTypedArgumentIsAToolError) {
   const auto [text, error] = result(
       call("open_file", {{"path", pj_app_test::makeMockFile(data_, "b.mock").toStdString()}, {"ask_user", "yes"}}));

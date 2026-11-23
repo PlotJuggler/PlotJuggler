@@ -13,6 +13,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "pj_scripting/script_engine.h"
 
@@ -51,6 +52,67 @@ TEST(PythonEngine, CalculateComputesValueTimesTwo) {
   EXPECT_FALSE(r.suppress);
   EXPECT_DOUBLE_EQ(r.value, 42.0);
   EXPECT_FALSE((*inst)->failed());
+}
+
+// A class declaring `output = "string"` returns text, one str per output; a number there is a mistake.
+TEST(PythonEngine, StringClassReturnsText) {
+  constexpr const char* kLabel = R"PY(# pj-script: python
+class T:
+    id = "state"
+    name = "State"
+    output = "string"
+    @staticmethod
+    def create(params):
+        return T()
+    def calculate(self, time, value, *args):
+        if value < 0:
+            return 3
+        if args:
+            return ("a", "b")
+        return (time + 1.0, "walking") if value > 1 else "standing"
+)PY";
+  auto engine = makePythonEngine();
+  auto classes = engine->inspectModule(kLabel, "test");
+  ASSERT_TRUE(classes.has_value()) << (classes.has_value() ? "" : classes.error());
+  EXPECT_EQ((*classes)[0].output_kind, "string");
+  auto inst = engine->createInstance((*classes)[0], "{}");
+  ASSERT_TRUE(inst.has_value()) << (inst.has_value() ? "" : inst.error());
+  auto r = (*inst)->calculate(0.0, 1.0);
+  EXPECT_FALSE(r.suppress);
+  EXPECT_EQ(r.text, "standing");
+  auto timed = (*inst)->calculate(2.0, 5.0);
+  ASSERT_TRUE(timed.out_time.has_value());
+  EXPECT_DOUBLE_EQ(*timed.out_time, 3.0);
+  EXPECT_EQ(timed.text, "walking");
+  const double inputs[] = {1.0, 2.0};
+  auto mimo = (*inst)->calculateMimo(0.0, PJ::Span<const double>(inputs, 2));
+  EXPECT_FALSE(mimo.suppress);
+  EXPECT_EQ(mimo.texts, (std::vector<std::string>{"a", "b"}));
+
+  EXPECT_TRUE((*inst)->calculate(0.0, -1.0).suppress);
+  EXPECT_TRUE((*inst)->failed());
+  EXPECT_NE((*inst)->error().find("the class declares"), std::string::npos) << (*inst)->error();
+}
+
+// Text from a numeric class fails, and the error names the declaration that would make it valid.
+TEST(PythonEngine, NumericClassReturningTextNamesTheStringOutput) {
+  constexpr const char* kText = R"PY(# pj-script: python
+class T:
+    id = "t"
+    name = "T"
+    @staticmethod
+    def create(params):
+        return T()
+    def calculate(self, time, value, *args):
+        return "walking"
+)PY";
+  auto engine = makePythonEngine();
+  auto classes = engine->inspectModule(kText, "test");
+  ASSERT_TRUE(classes.has_value());
+  auto inst = engine->createInstance((*classes)[0], "{}");
+  ASSERT_TRUE(inst.has_value());
+  EXPECT_TRUE((*inst)->calculate(0.0, 1.0).suppress);
+  EXPECT_NE((*inst)->error().find("declare output = \"string\" to return text"), std::string::npos) << (*inst)->error();
 }
 
 TEST(PythonEngine, SyntaxErrorIsReported) {

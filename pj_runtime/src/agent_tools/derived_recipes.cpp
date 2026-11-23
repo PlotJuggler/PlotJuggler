@@ -284,7 +284,9 @@ SeriesLookup resolveSeriesPath(
       if (full == bare) {
         if (!exact) {
           exact =
-              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
+              ResolvedSeries{fields[idx].handle,  std::string(topic_name),
+                             qualified(ti, full), full,
+                             dataset_of(ti),      PJ::sdk::fromAbiType(fields[idx].type) == PJ::PrimitiveType::kString};
         } else {
           exact_ambiguous = true;
         }
@@ -299,7 +301,9 @@ SeriesLookup resolveSeriesPath(
         }
         if (!fuzzy) {
           fuzzy =
-              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
+              ResolvedSeries{fields[idx].handle,  std::string(topic_name),
+                             qualified(ti, full), full,
+                             dataset_of(ti),      PJ::sdk::fromAbiType(fields[idx].type) == PJ::PrimitiveType::kString};
         } else {
           out.ambiguous = true;
         }
@@ -532,7 +536,7 @@ std::string buildResolvedOnDemandChunk(const std::string& body, const ResolvedEv
 // (MULTRET), so a body returning M values feeds M output topics.
 std::string buildTransformScript(
     const std::string& raw_id, const std::string& raw_name, const std::string& global_code, const std::string& body,
-    std::size_t num_extra) {
+    std::size_t num_extra, bool text_output) {
   const std::string id = luaStringEscape(raw_id);
   const std::string name = luaStringEscape(raw_name);
   std::string params = "time, value";
@@ -547,7 +551,8 @@ std::string buildTransformScript(
   src += body + "\n";
   src += "  end\n";
   src += "end\n";
-  src += "local T = { id = \"" + id + "\", name = \"" + name + "\", output = \"double\" }\n";
+  src += "local T = { id = \"" + id + "\", name = \"" + name + "\", output = \"" + (text_output ? "string" : "double") +
+         "\" }\n";
   src += "T.__index = T\n";
   src += "function T.create(_) return setmetatable({ fn = _pj_make() }, T) end\n";
   src += "function T:calculate(t, v, ...) return self.fn(t, v, ...) end\n";

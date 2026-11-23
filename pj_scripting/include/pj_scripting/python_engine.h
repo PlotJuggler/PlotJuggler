@@ -19,7 +19,7 @@ namespace PJ::scripting {
 ///     class T:
 ///         id = "my_filter"
 ///         name = "My Filter"
-///         output = "double"            # "double" | "int64" | "same"
+///         output = "double"            # "double" | "int64" | "same" | "string"
 ///         @staticmethod
 ///         def create(params):          # params: dict from params_json
 ///             return T()

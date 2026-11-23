@@ -88,4 +88,7 @@ struct ToolContext {
 [[nodiscard]] std::vector<double> seriesValuesAsDoubles(
     const PJ::sdk::MaterializedSeriesView& series, std::size_t begin, std::size_t end);
 
+// Why a tool that reads numbers refuses the string series at `path`.
+[[nodiscard]] std::string textSeriesError(const std::string& path);
+
 }  // namespace PJ::agent_tools

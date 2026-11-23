@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <variant>
+#include <vector>
 
 #include "pj_datastore/processor_detail.hpp"  // proc::detail::toDouble
 #include "pj_scripting/script_engine.h"
@@ -151,4 +153,33 @@ TEST(LuaSisoTransform, MirrorUint64DoesNotClampUpperHalf) {
   ASSERT_TRUE(std::holds_alternative<std::uint64_t>(out->value()));
   EXPECT_GT(
       std::get<std::uint64_t>(out->value()), static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+}
+
+// `output = "string"` makes a text column: the label is the sample value, nil still skips the sample.
+TEST(LuaSisoTransform, StringOutputEmitsTextSamples) {
+  constexpr const char* kState = R"LUAU(
+    return { id="state", name="State", output="string",
+      create = function(p) return { calculate = function(t, v)
+        if v == 0 then return nil end
+        return v > 0 and "walking" or "falling"
+      end } end }
+  )LUAU";
+  auto engine = makeLuauEngine();
+  auto classes = engine->inspectModule(kState, "test");
+  ASSERT_TRUE(classes.has_value()) << classes.error();
+  LuaSisoTransform xf(engine, classes->front(), "{}");
+  const PJ::StorageKind in = PJ::StorageKind::kFloat64;
+  EXPECT_EQ(
+      xf.outputKinds(PJ::Span<const PJ::StorageKind>(&in, 1)),
+      (std::vector<PJ::StorageKind>{PJ::StorageKind::kString}));
+
+  auto walking = xf.calculateNextPoint(Sample::scalar(0, PJ::VarValue{1.0}));
+  ASSERT_TRUE(walking.has_value());
+  ASSERT_TRUE(std::holds_alternative<std::string>(walking->value()));
+  EXPECT_EQ(std::get<std::string>(walking->value()), "walking");
+  auto falling = xf.calculateNextPoint(Sample::scalar(1'000'000'000LL, PJ::VarValue{-1.0}));
+  ASSERT_TRUE(falling.has_value());
+  EXPECT_EQ(std::get<std::string>(falling->value()), "falling");
+  EXPECT_FALSE(xf.calculateNextPoint(Sample::scalar(2'000'000'000LL, PJ::VarValue{0.0})).has_value());
+  EXPECT_FALSE(xf.failed());
 }

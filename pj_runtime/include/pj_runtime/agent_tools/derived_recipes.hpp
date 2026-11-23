@@ -34,10 +34,10 @@ namespace PJ::agent_tools {
 [[nodiscard]] std::string buildOnDemandChunk(const std::string& body);
 
 // The per-sample Luau transform chunk (a filter class T); `id` and `name` are escaped for the
-// string literals they land in.
+// string literals they land in. `text_output` declares output = "string": the body returns text.
 [[nodiscard]] std::string buildTransformScript(
     const std::string& id, const std::string& name, const std::string& global_code, const std::string& body,
-    std::size_t num_extra);
+    std::size_t num_extra, bool text_output = false);
 
 // Cap on how many near misses an error names (the text is fed back to a model and re-sent on
 // every later round trip, so an unbounded list would be paid for repeatedly).
@@ -90,6 +90,7 @@ struct ResolvedSeries {
   std::string host_path;
   // Name of the dataset this resolved to (the snapshot's), empty when only one dataset is loaded.
   std::string dataset;
+  bool is_text = false;  ///< a string column: the number readers refuse it
 };
 
 // Outcome of a path lookup. When nothing resolves, `candidates` carries the near misses.

@@ -40,7 +40,7 @@ A class table:
 | `name` | no (⇒ `id`) | human type name shown in the filter list |
 | `description` | no | catalogue / tooltip |
 | `version` | no | semver string |
-| `output` | no (⇒ `"double"`) | `"double"` \| `"int64"` \| `"same"` (`"mirror"` is an alias): the stored column kind; `"same"` keeps the input column's kind |
+| `output` | no (⇒ `"double"`) | `"double"` \| `"int64"` \| `"same"` (`"mirror"` is an alias) \| `"string"`: the stored column kind; `"same"` keeps the input column's kind; `"string"` stores text ("Text outputs") |
 | `parameters` | no (⇒ none) | the schema array below |
 | `create` | yes | `function(params) -> instance` factory |
 
@@ -132,6 +132,17 @@ A runtime error raised in `calculate`, a result that is not a number, a
 nothing is emitted from then on) rather than silently corrupting a stateful
 accumulator.
 
+### Text outputs
+
+A class with `output = "string"` returns text where the others return numbers: a string, `(t_out, string)`,
+or `nil`, and in MIMO one string per output. The output is a string series (a state label per sample, such as
+`"walking"` or `"falling"`): the State Transitions panel and the curve list's value column show it, plots do not.
+A number from a text class fails the node, and so does a string from a numeric class (the error names
+`output = "string"`); in Luau a numeric string such as `"5"` from a numeric class is still read as a number
+(Python needs a number). Editing a
+transform in place cannot switch it between text and numbers (its output column keeps its kind): remove it and
+create it again.
+
 Each filter runs in its own sandboxed VM with a memory cap and an instruction
 budget (`BudgetLimits`, `sandbox.h`). `os`, `coroutine`, `debug`, `setfenv` and
 `getfenv` are not available, and the standard library is read-only; top-level
@@ -179,8 +190,8 @@ including these within-range limits, is golden-tested by `builtin_golden_test`):
 
 - **Mirror builtins** (`none`, `absolute`, `outlier_removal`) preserve an int64/uint64
   column kind, but a value above **2^53** loses its low bits through the double seam.
-  Within ±2^53 they are exact (tested); strings are never fed to a filter (series are
-  numeric), so the string-mirror case does not arise in practice.
+  Within ±2^53 they are exact (tested). Over a text series a mirror builtin gets a text
+  column, but its double result cannot be stored there: the cells stay empty.
 - **`time_since_previous`** emits the gap in seconds as a double `(t − prev_t)`; its
   resolution is the double's at the session-relative magnitude (see above).
 - **Explicit-timestamp filters** (`scale` time offset, `moving_average` with a
@@ -246,7 +257,7 @@ A class may instead be **MIMO**: it reads **N** inputs and emits **M** outputs.
   matched to the primary's sample) is the engine node's concern, **not** the
   script's. (Exact-timestamp join and nearest-sample-to-primary are two different
   engine nodes; the script is agnostic to which one drives it.)
-- **Returns M numbers** (a Luau multi-return): `return out0, out1, …, outM-1`. They
+- **Returns M numbers** (M strings for a text class) as a Luau multi-return: `return out0, out1, …, outM-1`. They
   map **positionally** to the M output topics declared at install time. Returning
   `nil` (or nothing) as the first result **suppresses** the row (nothing emitted).
   A non-number fails the node; a result count other than M produces no row and
@@ -276,7 +287,7 @@ class T:
     name = "My Filter"      # optional, defaults to id
     description = ""        # optional
     version = ""            # optional
-    output = "double"       # optional: "double" (default) | "int64" | "same"
+    output = "double"       # optional: "double" (default) | "int64" | "same" | "string"
 
     @staticmethod
     def create(params):     # params: a dict decoded from the params JSON ({} when empty)
@@ -295,6 +306,7 @@ class T:
   runtime error fails the node (sticky).
 - **MIMO.** The secondary inputs arrive in `*args`, and `calculate` returns a tuple or list
   of M numbers (a bare number is one output; `None` suppresses).
+- **Text.** With `output = "string"`, every value is a `str` instead ("Text outputs").
 - **No parameter schema.** The engine reads only `id`, `name`, `description`, `version` and
   `output` from the class, so a Python filter gets no generated `ParameterForm`; `create`
   receives the params JSON as a dict.

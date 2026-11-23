@@ -118,8 +118,13 @@ std::string attrString(const py::object& obj, const char* name, const std::strin
 class PythonFilterInstance final : public FilterInstance {
  public:
   PythonFilterInstance(
-      py::dict ns, py::object instance, std::shared_ptr<native::MemoryBudget> memory, std::uint64_t call_millis)
-      : ns_(std::move(ns)), instance_(std::move(instance)), memory_(std::move(memory)), call_millis_(call_millis) {}
+      py::dict ns, py::object instance, std::shared_ptr<native::MemoryBudget> memory, std::uint64_t call_millis,
+      bool text_output)
+      : ns_(std::move(ns)),
+        instance_(std::move(instance)),
+        memory_(std::move(memory)),
+        call_millis_(call_millis),
+        text_output_(text_output) {}
 
   // Dropping the instance and the namespace runs the script's finalizers: under the scope, like any script call.
   ~PythonFilterInstance() override {
@@ -133,11 +138,11 @@ class PythonFilterInstance final : public FilterInstance {
   PythonFilterInstance& operator=(const PythonFilterInstance&) = delete;
 
   Result calculate(double t, double v) override {
-    return guarded("calculate()", Result{true, 0.0, std::nullopt}, [&]() { return runCalculate(t, v); });
+    return guarded("calculate()", Result{true, 0.0, std::nullopt, {}}, [&]() { return runCalculate(t, v); });
   }
 
   MimoResult calculateMimo(double t, PJ::Span<const double> inputs) override {
-    return guarded("calculate()", MimoResult{true, {}}, [&]() { return runCalculateMimo(t, inputs); });
+    return guarded("calculate()", MimoResult{true, {}, {}}, [&]() { return runCalculateMimo(t, inputs); });
   }
 
   void reset() override {
@@ -180,32 +185,61 @@ class PythonFilterInstance final : public FilterInstance {
     return failed_ ? on_fail : out;
   }
 
+  /// One returned value of the kind the class declares: a str for a text class (a number is refused, so a forgotten
+  /// label is not stored as "3"), else a value pybind11 casts to double. False when it is not.
+  bool readValue(const py::handle& item, double& value, std::string& text) const {
+    if (text_output_) {
+      if (!py::isinstance<py::str>(item)) {
+        return false;
+      }
+      text = item.cast<std::string>();
+      return true;
+    }
+    if (py::isinstance<py::str>(item)) {
+      return false;
+    }
+    value = item.cast<double>();
+    return true;
+  }
+
+  [[nodiscard]] const char* wrongKindMessage() const {
+    return text_output_ ? "calculate() must return a str per output (the class declares output = \"string\")"
+                        : "calculate() must return a number per output (declare output = \"string\" to return text)";
+  }
+
   /// The script calls proper, run by guarded(). A Python error fails the instance.
   Result runCalculate(double t, double v) {
     try {
       py::object r = instance_.attr("calculate")(t, v);
       if (r.is_none()) {
-        return Result{true, 0.0, std::nullopt};
+        return Result{true, 0.0, std::nullopt, {}};
       }
       // A 2-sequence is (out_time, value); a scalar is emitted at the input time, as in Luau.
+      Result out{false, 0.0, std::nullopt, {}};
+      py::object value = r;
       if (py::isinstance<py::tuple>(r) || py::isinstance<py::list>(r)) {
         auto seq = r.cast<py::sequence>();
         if (seq.size() == 2) {
-          return Result{false, seq[1].cast<double>(), seq[0].cast<double>()};
+          out.out_time = seq[0].cast<double>();
+          value = seq[1];
+        } else if (seq.size() == 1) {
+          value = seq[0];
+        } else {
+          fail("calculate() returned a sequence of unexpected length (want 1 or 2)");
+          return Result{true, 0.0, std::nullopt, {}};
         }
-        if (seq.size() == 1) {
-          return Result{false, seq[0].cast<double>(), std::nullopt};
-        }
-        fail("calculate() returned a sequence of unexpected length (want 1 or 2)");
-        return Result{true, 0.0, std::nullopt};
       }
-      return Result{false, r.cast<double>(), std::nullopt};
+      if (!readValue(value, out.value, out.text)) {
+        fail(wrongKindMessage());
+        return Result{true, 0.0, std::nullopt, {}};
+      }
+      return out;
     } catch (const py::error_already_set& e) {
       fail(e.what());
-      return Result{true, 0.0, std::nullopt};
+      return Result{true, 0.0, std::nullopt, {}};
     } catch (const std::exception& e) {
       fail(e.what());
-      return Result{true, 0.0, std::nullopt};
+      return Result{true, 0.0, std::nullopt, {}};
     }
   }
 
@@ -218,24 +252,42 @@ class PythonFilterInstance final : public FilterInstance {
       const double primary = inputs.empty() ? 0.0 : inputs[0];
       py::object r = instance_.attr("calculate")(t, primary, *py::tuple(args));
       if (r.is_none()) {
-        return MimoResult{true, {}};
+        return MimoResult{true, {}, {}};
       }
       MimoResult out;
       out.suppress = false;
+      const auto take = [&](const py::handle& item) {
+        double value = 0.0;
+        std::string text;
+        if (!readValue(item, value, text)) {
+          return false;
+        }
+        if (text_output_) {
+          out.texts.push_back(std::move(text));
+        } else {
+          out.values.push_back(value);
+        }
+        return true;
+      };
+      bool ok = true;
       if (py::isinstance<py::tuple>(r) || py::isinstance<py::list>(r)) {
         for (auto item : r.cast<py::sequence>()) {
-          out.values.push_back(py::reinterpret_borrow<py::object>(item).cast<double>());
+          ok = ok && take(item);
         }
       } else {
-        out.values.push_back(r.cast<double>());
+        ok = take(r);
+      }
+      if (!ok) {
+        fail(wrongKindMessage());
+        return MimoResult{true, {}, {}};
       }
       return out;
     } catch (const py::error_already_set& e) {
       fail(e.what());
-      return MimoResult{true, {}};
+      return MimoResult{true, {}, {}};
     } catch (const std::exception& e) {
       fail(e.what());
-      return MimoResult{true, {}};
+      return MimoResult{true, {}, {}};
     }
   }
 
@@ -248,6 +300,7 @@ class PythonFilterInstance final : public FilterInstance {
   py::object instance_;
   std::shared_ptr<native::MemoryBudget> memory_;  // this instance's live bytes, across calls
   std::uint64_t call_millis_;
+  bool text_output_;  ///< the class declares output = "string"
   bool failed_ = false;
   std::string error_;
 };
@@ -291,7 +344,7 @@ class PythonEngine final : public ScriptEngine {
     }
     auto memory = std::make_shared<native::MemoryBudget>(limits_.mem_bytes);  // the instance's, for its whole life
     ScriptCallScope scope(memory, limits_.python_watchdog_millis, detail::Profile::kCompatible);
-    Expected<std::unique_ptr<FilterInstance>> out = create(*code, params_json, memory);
+    Expected<std::unique_ptr<FilterInstance>> out = create(*code, params_json, memory, klass.textOutput());
     const bool timed_out = scope.timedOut();
     if (scope.overBudget()) {
       return PJ::unexpected(memoryMessage(*memory));
@@ -334,7 +387,8 @@ class PythonEngine final : public ScriptEngine {
   }
 
   Expected<std::unique_ptr<FilterInstance>> create(
-      const py::object& code, const std::string& params_json, std::shared_ptr<native::MemoryBudget> memory) const {
+      const py::object& code, const std::string& params_json, std::shared_ptr<native::MemoryBudget> memory,
+      bool text_output) const {
     try {
       py::dict nsd = makeFilterNamespace();
       detail::ClearedOnExit cleared(nsd);
@@ -358,7 +412,7 @@ class PythonEngine final : public ScriptEngine {
       }
       cleared.release();
       return std::unique_ptr<FilterInstance>(std::make_unique<PythonFilterInstance>(
-          std::move(nsd), std::move(instance), std::move(memory), limits_.python_call_millis));
+          std::move(nsd), std::move(instance), std::move(memory), limits_.python_call_millis, text_output));
     } catch (const std::exception& e) {
       return PJ::unexpected(std::string("Python error: ") + detail::pythonErrorText(e));
     }

@@ -1579,6 +1579,15 @@ PJ::Status IncrementalEngine::recomputeBatchLocked(PJ::NodeId node_id) {
 // Replacement and input bindings
 // ---------------------------------------------------------------------------
 
+namespace {
+// A replacement keeps the output columns and coerces into them, which loses every value across text and numbers.
+bool textChanged(StorageKind before, StorageKind after) {
+  return (before == StorageKind::kString) != (after == StorageKind::kString);
+}
+constexpr const char* kTextSwitchError =
+    "the output type changed between text and numbers: remove the series and create it again";
+}  // namespace
+
 PJ::Status IncrementalEngine::replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op) {
   if (!op) {
     return PJ::unexpected("replace_siso_transform: null transform op");
@@ -1591,6 +1600,9 @@ PJ::Status IncrementalEngine::replaceSisoTransform(PJ::NodeId node_id, std::uniq
   DerivedNode& node = it.value();
   if (node.is_mimo) {
     return PJ::unexpected(fmt::format("replace_siso_transform: node {} is not a SISO node", node_id));
+  }
+  if (const StorageKind kind = op->outputKind(node.siso_input_kind); textChanged(node.siso_output_kind, kind)) {
+    return PJ::unexpected(kTextSwitchError);
   }
 
   std::unique_ptr<ISISOTransform> old_op = std::exchange(node.siso_op, std::move(op));
@@ -1610,6 +1622,12 @@ PJ::Status IncrementalEngine::replaceMimoTransform(PJ::NodeId node_id, std::uniq
   DerivedNode& node = it.value();
   if (!node.is_mimo) {
     return PJ::unexpected(fmt::format("replace_mimo_transform: node {} is not a MIMO node", node_id));
+  }
+  const std::vector<StorageKind> kinds = op->outputKinds(PJ::Span<const StorageKind>(node.mimo_input_kinds));
+  for (std::size_t k = 0; k < kinds.size() && k < node.mimo_output_kinds.size(); ++k) {
+    if (textChanged(node.mimo_output_kinds[k], kinds[k])) {
+      return PJ::unexpected(kTextSwitchError);
+    }
   }
 
   std::unique_ptr<IMIMOTransform> old_op = std::exchange(node.mimo_op, std::move(op));

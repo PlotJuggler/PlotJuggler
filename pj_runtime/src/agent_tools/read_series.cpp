@@ -52,6 +52,12 @@ std::vector<double> seriesValuesAsDoubles(
   return out;
 }
 
+std::string textSeriesError(const std::string& path) {
+  return "series '" + path +
+         "' holds text (a string series, such as state labels): the tools read numbers only; the user sees its "
+         "values in a State Transitions panel";
+}
+
 }  // namespace PJ::agent_tools
 
 namespace PJ::agent_tools::detail {
@@ -869,6 +875,10 @@ std::optional<PJ::sdk::FieldHandle> resolveInto(
   r.path = lookup.resolved->path;
   r.topic = lookup.resolved->topic;
   r.dataset = lookup.resolved->dataset;
+  if (lookup.resolved->is_text) {
+    r.error = textSeriesError(r.path);
+    return std::nullopt;
+  }
   return lookup.resolved->handle;
 }
 
