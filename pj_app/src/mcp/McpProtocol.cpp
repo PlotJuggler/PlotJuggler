@@ -447,7 +447,9 @@ json appToolEntries() {
           "function(t, v) ... return y end } end } (the id is set for you). t is seconds, v the input; keep state "
           "in the instance (integrators, bias removal). Several inputs are joined on equal timestamps (fields of "
           "one message always are; inputs that share none are refused): calculate(t, v, v1, v2, ...). Several "
-          "outputs: pass `outputs` [names] and return that many numbers; they become topics <name>/<output>. "
+          "outputs: pass `outputs` [names] and return that many numbers; they become topics <name>/<output>. Text "
+          "(state labels such as \"walking\"): declare output=\"string\" on the class (Luau table field or Python "
+          "class attribute) and return strings; the user sees them in a State Transitions panel. "
           "Listed under Custom Topics, saved in layouts, untouched by the user's undo; the same name replaces "
           "it. Returns each output topic with its fields.",
           schema(

@@ -178,8 +178,7 @@ ToolRegistry::ToolRegistry() {
        "'expression' for a stateless formula (e.g. 'value * 2'); for stateful transforms like a "
        "derivative, use 'global' (runs once, persistent locals) + 'body' (statements ending in "
        "return; return nothing to suppress a sample). For Python or a script class: add_script_series; a "
-       "built-in filter: add_filter (where listed). Saved in layouts. Undo protection is "
-       "verified when supported; failure is reported.",
+       "built-in filter: add_filter (where listed). Saved in layouts. Reports whether undo protection held.",
        {{"type", "object"},
         {"properties",
          {{"name", {{"type", "string"}, {"description", "name of the new series"}}},
@@ -189,13 +188,13 @@ ToolRegistry::ToolRegistry() {
             {"items", {{"type", "string"}}},
             {"description",
              "OPTIONAL — several series from ONE node (default: just 'name'). The body then returns one value per "
-             "output, in order: outputs ['roll','pitch','yaw'] with a body ending 'return r, p, y'. Prefer this over "
-             "three nodes recomputing the same intermediate."}}},
+             "output, in order: outputs ['roll','pitch','yaw'] with a body ending 'return r, p, y'."}}},
           {"expression", {{"type", "string"}, {"description", "stateless Luau expression over value/v1../time"}}},
           {"body",
            {{"type", "string"}, {"description", "full Luau statements ending in return (overrides expression)"}}},
           {"global",
-           {{"type", "string"}, {"description", "Luau run once per instance; locals persist across samples"}}}}},
+           {{"type", "string"}, {"description", "Luau run once per instance; locals persist across samples"}}},
+          {"output_type", {{"type", "string"}, {"description", "'string': text labels (State Transitions)"}}}}},
         {"required", json::array({"name", "inputs"})}},
        &createDerivedSeries});
 

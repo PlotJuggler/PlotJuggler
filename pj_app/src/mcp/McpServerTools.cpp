@@ -187,6 +187,9 @@ Expected<std::vector<Column>> readColumns(
           "series '" + want + "' has more than " + std::to_string(kMaxExportRows) +
           " samples in the window: narrow t0/t1");
     }
+    if (view->type() == PrimitiveType::kString) {
+      return unexpected(agent_tools::textSeriesError(want));
+    }
     column.values = agent_tools::seriesValuesAsDoubles(*view, begin, end);
     if (column.values.size() != end - begin) {
       return unexpected("series '" + want + "' is not numeric");

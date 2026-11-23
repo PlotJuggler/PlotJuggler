@@ -1197,6 +1197,38 @@ TEST(ToolRegistry, CreateDerivedSeriesFromExpression) {
   EXPECT_NE(dp.last_script.find("return (value * 2)"), std::string::npos);
 }
 
+// output_type "string" makes a text series (a state label per sample); anything else but "number" is refused.
+TEST(ToolRegistry, CreateDerivedSeriesWithTextOutput) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  auto ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series",
+      {{"name", "state"},
+       {"inputs", json::array({"/imu/x"})},
+       {"expression", "value > 0 and 'up' or 'down'"},
+       {"output_type", "string"}},
+      ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_NE(dp.last_script.find("output = \"string\""), std::string::npos) << dp.last_script;
+  EXPECT_NE(dp.last_validate_script.find("output = \"string\""), std::string::npos);
+
+  auto number = reg.execute(
+      "create_derived_series", {{"name", "x2"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value * 2"}}, ctx);
+  ASSERT_TRUE(number.ok) << number.content;
+  EXPECT_NE(dp.last_script.find("output = \"double\""), std::string::npos);
+
+  const int creates = dp.create_calls;
+  auto bad = reg.execute(
+      "create_derived_series",
+      {{"name", "bad"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value"}, {"output_type", "text"}}, ctx);
+  EXPECT_FALSE(bad.ok);
+  EXPECT_NE(bad.content.find("output_type"), std::string::npos) << bad.content;
+  EXPECT_EQ(dp.create_calls, creates);
+}
+
 TEST(ToolRegistry, CreateDerivedSeriesStatefulBody) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;
