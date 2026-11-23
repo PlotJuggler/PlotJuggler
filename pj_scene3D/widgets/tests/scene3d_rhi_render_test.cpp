@@ -1758,6 +1758,28 @@ TEST_F(Scene3dRhiRenderTest, TfFrameTriadDrawsAtFrameOrigin) {
   EXPECT_GT(mask.count_in(QRect(int(x_tip.x()) - 4, int(x_tip.y()) - 4, 9, 9)), 0) << "+X arm tip not drawn";
 }
 
+// The direct pass draws into the view's own output, which Qt composites by its alpha: the pose and TF triads, drawn
+// with the annotation blend that clears HDR-target alpha, must still leave it opaque, or they show the window behind.
+TEST_F(Scene3dRhiRenderTest, DirectPassTriadsLeaveTheOutputOpaque) {
+  RhiScene scene;
+  scene.addTf("sensor", {2.0F, 0.0F, 1.0F});
+  const glm::vec3 pose_origin{-1.5F, 0.0F, 1.0F};
+  scene.addPose(pose_origin, 1.0F);
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGizmoSize(1.0F);
+  view->setAxesVisible(true);
+  SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, true);
+  GRAB_OR_SKIP(direct, view, "direct_triads");
+  ASSERT_FALSE(SceneViewTestAccess::stage(*view, SceneViewTestAccess::Stage::kHdr).last_active);
+  ASSERT_EQ(SceneViewTestAccess::posePass(*view).lastArmCount(), 3);
+  // grabFramebuffer() returns the texture's own alpha (RGBA8888); the presented-frame grab above has none.
+  const QImage output = view->grabFramebuffer().convertToFormat(QImage::Format_ARGB32);
+  ASSERT_FALSE(output.isNull());
+  const int translucent = countPixels(output, [](QRgb c) { return qAlpha(c) < 255; });
+  EXPECT_EQ(translucent, 0) << "the direct pass left see-through pixels in the view's output";
+}
+
 // Magenta pixels (red and blue well above green) are the TF parent-connection lines (look::kTfConnectionColor,
 // outside the tonemap); nothing else in a scene without grid, axes or visible layers qualifies.
 int magentaPixels(const QImage& image) {

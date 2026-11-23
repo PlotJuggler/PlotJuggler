@@ -100,7 +100,13 @@ bool ScenePipelineRegistry::createDirects() {
     if (pipeline->direct != nullptr || pipeline->failed) {
       continue;
     }
-    pipeline->direct = createPipeline(rhi_, pipeline->desc, direct_, direct_samples_);
+    // The direct target is the view's output, which Qt composites by its alpha: no draw writes it, so it keeps the
+    // clear's opaque backdrop. Alpha is the HDR target's data/annotation mask only; the annotation blend clears it.
+    PipelineDesc desc = pipeline->desc;
+    if (desc.blend.has_value()) {
+      desc.blend->colorWrite = QRhiGraphicsPipeline::R | QRhiGraphicsPipeline::G | QRhiGraphicsPipeline::B;
+    }
+    pipeline->direct = createPipeline(rhi_, desc, direct_, direct_samples_);
     if (pipeline->direct == nullptr && pipeline->optional) {
       pipeline->failed = true;
     } else if (pipeline->direct == nullptr) {

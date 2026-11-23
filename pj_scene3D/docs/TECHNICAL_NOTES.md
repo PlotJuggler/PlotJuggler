@@ -321,6 +321,14 @@ shows a notice. Shadows stay on.
 Re-test when SwiftShader, llvmpipe or a browser's GPU-less compositing path changes, or when the chain gets cheaper;
 `PJ_SCENE3D_SOFTWARE_HDR=1` restores the chain for the comparison.
 
+On a desktop with llvmpipe (Xvfb, Mesa 26, Qt 6.12.0) the direct pass then drew the TF and pose triads in the
+backdrop colour: the annotation blend cleared the output's alpha and the composited window showed through (in the
+MCP screenshot, which paints each view's `grabFramebuffer()` image over the window). The display tests missed it:
+`grabPresentedFrame()` delivered `Format_RGB32` there, while `grabFramebuffer()` called directly returned
+`Format_RGBA8888` with the alpha. So the direct pipelines write no alpha (ARCHITECTURE "Pipeline registry"), and an
+alpha check reads `grabFramebuffer()` (`DirectPassTriadsLeaveTheOutputOpaque`). Re-test the grab formats on a Qt
+upgrade.
+
 ## CI lanes
 
 The workflows are the source of truth; these are the facts that are not obvious from them.

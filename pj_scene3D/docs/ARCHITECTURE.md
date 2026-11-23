@@ -200,8 +200,10 @@ dock therefore still blends over it. `SceneViewTestAccess::lastSubmittedLayerIds
 `ScenePipelineRegistry` owns every scene pipeline (each family's, the grid's, the TF triads'). A family registers a
 complete `PipelineDesc` with `add(desc, part)` and keeps the handle; the registry builds each variant from the one
 description through `createPipeline()`: **direct** for the widget's target, **HDR colour** and **depth replay** for
-the chain's targets. A state set in the description reaches every variant. `resolve(handle, pass)` returns the
-variant a `ScenePass` binds.
+the chain's targets. A state set in the description reaches every variant, except that the direct variant writes no
+alpha: its target is the view's output, which Qt composites by its alpha, so it keeps the clear's opaque backdrop
+(an annotation's alpha write would let the window show through it). `resolve(handle, pass)` returns the variant a
+`ScenePass` binds.
 
 **Nothing is built at registration.** An HDR variant is created the first time a frame binds it; direct variants
 only for a frame without the HDR chain, all before its first pass (`createDirects()`). A part that draws nothing
@@ -274,7 +276,8 @@ direct fallback writes display-referred colour without a grade.
 
 **HDR alpha is a tonemap-bypass marker, not coverage.** Data draws write it with the coverage-union blend
 (`PJ::straightAlphaBlend`); annotations (TF triads and lines) add nothing (`annotationAlphaBlend`), so they present
-flat and vivid, and the background keeps the exact theme colour.
+flat and vivid, and the background keeps the exact theme colour. The direct pass has no marker: its pipelines leave
+alpha opaque (see "Pipeline registry").
 
 **Depth resolve or replay.** Where QRhi reports `ResolveDepthStencil` and multisample textures (desktop OpenGL from
 4.3, Vulkan, Metal) the HDR pass resolves its depth and the coverage pass is only a clear. Elsewhere (D3D11, WebGL2,
