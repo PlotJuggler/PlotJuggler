@@ -476,6 +476,59 @@ TEST(IncrementalEngineFieldSelectTest, ReplaceSisoTransform_RejectsBadNode) {
   EXPECT_FALSE(derived.replaceSisoTransform(9999u, std::make_unique<IdentityTransform>()).has_value());
 }
 
+// Labels each sample "low" / "high": a text output column.
+class LabelTransform : public ISISOTransform {
+ public:
+  [[nodiscard]] StorageKind outputKind(StorageKind /*input_kind*/) const override {
+    return StorageKind::kString;
+  }
+  bool calculate(PJ::Timestamp time, const VarValue& input, PJ::Timestamp& out_time, VarValue& out_value) override {
+    out_time = time;
+    out_value = std::get<double>(input) < 102.0 ? std::string("low") : std::string("high");
+    return true;
+  }
+};
+
+TEST(IncrementalEngineFieldSelectTest, StringOutputWritesTextColumn) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 4);  // y = 100..103
+
+  auto node = derived.addSisoTransform(tid, "label", ds, std::make_unique<LabelTransform>(), 1);
+  ASSERT_TRUE(node.has_value()) << node.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  const PJ::TopicId out = derived.outputTopics(*node)[0];
+
+  std::vector<std::string> labels;
+  const TopicStorage* storage = engine.getTopicStorage(out);
+  ASSERT_NE(storage, nullptr);
+  auto cursor = rangeQuery(storage->sealedChunks(), 0, std::numeric_limits<PJ::Timestamp>::max());
+  cursor.forEach([&](const SampleRow& row) { labels.emplace_back(row.chunk->readString(0, row.row_index)); });
+  EXPECT_EQ(labels, (std::vector<std::string>{"low", "low", "high", "high"}));
+}
+
+// The output column keeps its kind across a replacement, so text in a number column would read as 0 and numbers in a
+// text column would vanish: switching between the two is refused and the old op keeps running.
+TEST(IncrementalEngineFieldSelectTest, ReplaceSisoTransform_RefusesSwitchBetweenTextAndNumbers) {
+  DataEngine engine;
+  IncrementalEngine derived(engine);
+  PJ::DatasetId ds = makeDataset(engine);
+  PJ::TopicId tid = make_three_column_topic(engine, ds, 3);
+
+  auto number = derived.addSisoTransform(tid, "y", ds, std::make_unique<IdentityTransform>(), 1);
+  ASSERT_TRUE(number.has_value()) << number.error();
+  ASSERT_TRUE(derived.scheduleAll().has_value());
+  const auto to_text = derived.replaceSisoTransform(*number, std::make_unique<LabelTransform>());
+  ASSERT_FALSE(to_text.has_value());
+  EXPECT_NE(to_text.error().find("text"), std::string::npos) << to_text.error();
+  EXPECT_EQ(collectValues(engine, derived.outputTopics(*number)[0]), (std::vector<double>{100.0, 101.0, 102.0}));
+
+  auto text = derived.addSisoTransform(tid, "label", ds, std::make_unique<LabelTransform>(), 1);
+  ASSERT_TRUE(text.has_value()) << text.error();
+  EXPECT_FALSE(derived.replaceSisoTransform(*text, std::make_unique<IdentityTransform>()).has_value());
+}
+
 TEST(IncrementalEngineTest, TopologicalOrder_SingleNode) {
   DataEngine engine;
   IncrementalEngine derived(engine);

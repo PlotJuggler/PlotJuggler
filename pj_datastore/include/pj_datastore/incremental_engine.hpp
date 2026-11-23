@@ -181,7 +181,8 @@ class IncrementalEngine {
   PJ::Status recomputeBatch(PJ::Span<const PJ::NodeId> root_node_ids);
 
   /// Swaps the op in place (same node and output ids) and replays the node and its downstream; on failure the old op
-  /// and outputs come back. The output kind stays; the new op's values are coerced to it.
+  /// and outputs come back. The output kind stays; the new op's values are coerced to it, and an op whose kind
+  /// switches between text and numbers is refused (the coercion would lose every value).
   [[nodiscard]] PJ::Status replaceSisoTransform(PJ::NodeId node_id, std::unique_ptr<ISISOTransform> op);
 
   /// As replaceSisoTransform().
