@@ -89,6 +89,7 @@ class DockWidget : public ads::CDockWidget, public IDataWidget {
   bool xmlLoadState(const QDomElement& element) override;
   void finishRestore() override;
   [[nodiscard]] QStringList unresolvedRestores() const override;
+  [[nodiscard]] QString takeRefusalReason() override;
 
  public slots:
   void onStylesheetChanged(QString theme);

@@ -133,7 +133,7 @@ class SceneDockWidget : public QWidget, public IDataWidget, public IObjectViewer
 
   /// The reason of the latest foreign-dataset refusal, cleared by the read. Unlike topicRefused it is never
   /// coalesced, so a caller adding topics one at a time reads each refusal's own reason.
-  [[nodiscard]] QString takeRefusalReason() {
+  [[nodiscard]] QString takeRefusalReason() override {
     return std::exchange(last_refusal_reason_, {});
   }
 

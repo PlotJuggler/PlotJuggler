@@ -164,7 +164,12 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
     return;
   }
   const QStringList unresolved_before = dock->unresolvedRestores();
+  (void)dock->takeRefusalReason();
   const bool loaded = dock->applyState(element);
+  QString refusal = dock->takeRefusalReason();
+  if (refusal.endsWith(u'.')) {
+    refusal.chop(1);  // the reason is a sentence; the reply goes on after it
+  }
   QStringList not_loaded;
   if (loaded) {
     for (const QString& topic : dock->unresolvedRestores()) {
@@ -173,12 +178,16 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
       }
     }
   }
-  if (!loaded || !not_loaded.isEmpty()) {
+  if (!loaded || !not_loaded.isEmpty() || !refusal.isEmpty()) {
     // A topic that is not loaded would leave its layer or row waiting, shown nowhere.
     const bool restored = dock->applyState(current);
     window_.endAgentDockChange(dock);
-    std::string why = !loaded ? std::string("the dock refused the element while applying it")
-                              : "no loaded topic " + joined(not_loaded);
+    std::string why = "no loaded topic " + joined(not_loaded);
+    if (!loaded) {
+      why = "the dock refused the element while applying it";
+    } else if (!refusal.isEmpty()) {
+      why = refusal.toStdString();
+    }
     reply(fail(
         why + (restored ? "; it is back as it was" : "; it could not restore its previous state, undo restores it")));
     return;

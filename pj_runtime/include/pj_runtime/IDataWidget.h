@@ -94,6 +94,13 @@ class IDataWidget {
     return {};
   }
 
+  /// Why this widget dropped an element it was given (a scene refuses a layer of another dataset than the one it
+  /// shows), cleared by the read; empty when it dropped none. The MCP widget_state tool refuses a `set` that leaves a
+  /// reason, since the user hears of the drop only through a toast. Default: none.
+  [[nodiscard]] virtual QString takeRefusalReason() {
+    return {};
+  }
+
   /// Host call once the data a just-loaded `xmlLoadState` refers to is final: the shell
   /// after its whole load, or a dock after a paste/family switch into a session whose data
   /// is already loaded. A widget that defers saved elements until their data arrives

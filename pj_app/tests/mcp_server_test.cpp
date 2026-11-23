@@ -565,6 +565,19 @@ TEST_F(McpServerTest, WidgetStateReadsDescribesAndReplacesAUsersDock) {
   EXPECT_TRUE(unknown_failed) << unknown_text;
 }
 
+namespace {
+
+QString keyForTopicName(const PJ::CatalogModel& catalog, const QString& topic_name) {
+  for (const PJ::CatalogItem& item : catalog.items()) {
+    if (item.topic_name == topic_name) {
+      return item.key;
+    }
+  }
+  return {};
+}
+
+}  // namespace
+
 // An object dock goes through the same set: a Log panel's topic that is not loaded would leave the panel waiting, shown
 // nowhere, so the set is refused and the panel keeps the topic it shows.
 TEST_F(McpServerTest, WidgetStateRefusesATopicThatIsNotLoaded) {
@@ -580,12 +593,7 @@ TEST_F(McpServerTest, WidgetStateRefusesATopicThatIsNotLoaded) {
   ASSERT_TRUE(
       app.sessionManager().objectStore().pushOwned(*topic, 1'000'000'000LL, PJ::serializeLog(entry)).has_value());
   app.catalogModel().rebuildFromDatastore();
-  QString key;
-  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
-    if (item.topic_name == u"/rosout"_s) {
-      key = item.key;
-    }
-  }
+  const QString key = keyForTopicName(app.catalogModel(), u"/rosout"_s);
   ASSERT_FALSE(key.isEmpty());
 
   PJ::DockWidget* dock = window_->findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s)->currentTab()->plotAt(0);
@@ -608,6 +616,63 @@ TEST_F(McpServerTest, WidgetStateRefusesATopicThatIsNotLoaded) {
       result(call("widget_state", {{"action", "set"}, {"dock", id}, {"xml", renamed}}));
   EXPECT_TRUE(missing_failed);
   EXPECT_NE(missing_text.find("/no_such_log"), std::string::npos) << missing_text;
+  const auto [after, after_failed] = result(call("widget_state", {{"action", "get"}, {"dock", id}}));
+  ASSERT_FALSE(after_failed) << after;
+  EXPECT_EQ(json::parse(after).value("xml", ""), xml);
+}
+
+// A scene shows one dataset and drops a layer of another, saying so only in a toast: the set is refused with the dock's
+// reason, and the scene keeps the layers it shows.
+TEST_F(McpServerTest, WidgetStateRefusesALayerOfAnotherDataset) {
+  PJ::AppSession& app = window_->appSession();
+  auto add_cloud = [&app](const char* dataset_name, const char* topic_name) {
+    const PJ::DatasetId dataset = pj_test::createDataset(app, dataset_name);
+    EXPECT_NE(dataset, 0U);
+    EXPECT_TRUE(app.sessionManager()
+                    .objectStore()
+                    .registerTopic(
+                        PJ::ObjectTopicDescriptor{
+                            .dataset_id = dataset,
+                            .topic_name = topic_name,
+                            .metadata_json = R"({"builtin_object_type":"kPointCloud"})"})
+                    .has_value());
+    return dataset;
+  };
+  add_cloud("run-a.mcap", "/a_cloud");
+  const PJ::DatasetId second = add_cloud("run-b.mcap", "/b_cloud");
+  app.catalogModel().rebuildFromDatastore();
+  const QString key = keyForTopicName(app.catalogModel(), u"/a_cloud"_s);
+  ASSERT_FALSE(key.isEmpty());
+
+  PJ::DockWidget* dock = window_->findChild<PJ::TabbedPlotWidget*>(u"tabbedPlotWidget"_s)->currentTab()->plotAt(0);
+  auto* scene_button = dock->findChild<QToolButton*>(u"buttonVizScene3D"_s);
+  ASSERT_NE(scene_button, nullptr);
+  scene_button->click();
+  ASSERT_TRUE(
+      QMetaObject::invokeMethod(
+          dock, "onCatalogItemsDropped", Qt::DirectConnection, Q_ARG(QStringList, QStringList{key})));
+  const std::string id = dock->stateId().toStdString();
+
+  const auto [got, get_failed] = result(call("widget_state", {{"action", "get"}, {"dock", id}}));
+  ASSERT_FALSE(get_failed) << got;
+  const std::string xml = json::parse(got).value("xml", "");
+  QDomDocument doc;
+  ASSERT_TRUE(doc.setContent(QString::fromStdString(xml)));
+  const QDomElement shown = doc.documentElement().firstChildElement(u"layer"_s);
+  ASSERT_EQ(shown.attribute(u"topic_name"_s), u"/a_cloud"_s) << xml;
+  QDomElement foreign = shown.cloneNode().toElement();
+  foreign.setAttribute(u"topic_name"_s, u"/b_cloud"_s);
+  foreign.setAttribute(u"display_name"_s, u"/b_cloud"_s);
+  foreign.setAttribute(u"dataset_id"_s, QString::number(second));
+  foreign.removeAttribute(u"dataset_path"_s);
+  foreign.setAttribute(u"dataset_source"_s, u"run-b.mcap"_s);
+  foreign.setAttribute(u"order"_s, u"1"_s);
+  doc.documentElement().appendChild(foreign);
+
+  const auto [refused_text, refused] =
+      result(call("widget_state", {{"action", "set"}, {"dock", id}, {"xml", doc.toString().toStdString()}}));
+  EXPECT_TRUE(refused) << refused_text;
+  EXPECT_NE(refused_text.find("cannot be added"), std::string::npos) << refused_text;
   const auto [after, after_failed] = result(call("widget_state", {{"action", "get"}, {"dock", id}}));
   ASSERT_FALSE(after_failed) << after;
   EXPECT_EQ(json::parse(after).value("xml", ""), xml);

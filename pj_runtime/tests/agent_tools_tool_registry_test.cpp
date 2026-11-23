@@ -1283,8 +1283,25 @@ TEST(ToolRegistry, CreateMarkersBuildsThresholdRule) {
   ASSERT_TRUE(r.ok) << r.content;
   EXPECT_EQ(
       dp.last_script,
-      "when(\"/imu/x\", between(2.5, math.huge)):verticalLine({label=\"exceeds 2.5\", "
+      "when(\"/imu/x\", between(2.5, math.huge)):verticalLine({label=\"at or above 2.5\", "
       "severity=\"warning\", every=true})\n");
+}
+
+// The template's default label says what the comparison marks: a "<" rule marks values below the threshold.
+TEST(ToolRegistry, CreateMarkersDefaultLabelFollowsTheComparison) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  auto ctx = makeCtx(store, &dp);
+  for (const auto& [comparison, label] : std::vector<std::pair<std::string, std::string>>{
+           {">", "exceeds 2.5"}, {">=", "at or above 2.5"}, {"<", "below 2.5"}, {"<=", "at or below 2.5"}}) {
+    auto r = reg.execute("create_markers", {{"series", "/imu/x"}, {"comparison", comparison}, {"threshold", 2.5}}, ctx);
+    ASSERT_TRUE(r.ok) << r.content;
+    EXPECT_NE(dp.last_script.find("label=\"" + label + "\""), std::string::npos)
+        << comparison << ": " << dp.last_script;
+    EXPECT_EQ(json::parse(r.content).value("rule", ""), label) << comparison;
+  }
 }
 
 TEST(ToolRegistry, CreateMarkersRawRulePassesThroughVerbatim) {
