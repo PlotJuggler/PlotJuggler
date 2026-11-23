@@ -187,12 +187,25 @@ struct BoxSpan {
   double right = 0.0;
   double line = 0.0;
 };
+// The plot is sized so that its canvas is `canvas_per_box` times as wide as the box: the box's font is the system's
+// fixed-pitch one, so the box and the axes differ in width between platforms.
 std::vector<BoxSpan> boxSpansAcrossTheCanvas(
-    TrackerFixture& fixture, int plot_width, double* canvas_left, double* canvas_right) {
-  fixture.plot->resize(plot_width, 240);
+    TrackerFixture& fixture, double canvas_per_box, double* canvas_left, double* canvas_right) {
+  fixture.plot->resize(520, 240);
   fixture.plot->show();
   QApplication::processEvents();
   QwtPlot* qwt = fixture.plot->qwtPlot();
+  double box_width = 0.0;
+  for (const QwtPlotItem* item : qwt->itemList(QwtPlotItem::Rtti_PlotMarker)) {
+    const auto* marker = static_cast<const QwtPlotMarker*>(item);
+    if (!marker->label().isEmpty()) {
+      box_width = marker->label().textSize().width();
+    }
+  }
+  EXPECT_GT(box_width, 0.0);
+  const double axes_width = qwt->width() - std::abs(qwt->canvasMap(QwtPlot::xBottom).pDist());
+  fixture.plot->resize(static_cast<int>(canvas_per_box * box_width + axes_width), 240);
+  QApplication::processEvents();
   const QwtScaleMap x_map = qwt->canvasMap(QwtPlot::xBottom);
   *canvas_left = std::min(x_map.p1(), x_map.p2());
   *canvas_right = std::max(x_map.p1(), x_map.p2());
@@ -222,8 +235,8 @@ TEST(PlotCurveVisibility, ValueBoxStaysInsideTheCanvasAndClearOfTheLine) {
   TrackerFixture fixture;
   double canvas_left = 0.0;
   double canvas_right = 0.0;
-  const std::vector<BoxSpan> spans = boxSpansAcrossTheCanvas(fixture, 520, &canvas_left, &canvas_right);
-  ASSERT_GT(spans.size(), 300u);
+  const std::vector<BoxSpan> spans = boxSpansAcrossTheCanvas(fixture, 2.6, &canvas_left, &canvas_right);
+  ASSERT_GT(spans.size(), 100u);
   constexpr double kSlack = 1.0;  // pixel rounding
   for (const BoxSpan& box : spans) {
     ASSERT_LT(2.0 * (box.right - box.left), canvas_right - canvas_left) << "the box must fit on one side of the line";
@@ -240,7 +253,7 @@ TEST(PlotCurveVisibility, ValueBoxWiderThanTheCanvasKeepsItsLeftEdgeInside) {
   TrackerFixture fixture;
   double canvas_left = 0.0;
   double canvas_right = 0.0;
-  const std::vector<BoxSpan> spans = boxSpansAcrossTheCanvas(fixture, 200, &canvas_left, &canvas_right);
+  const std::vector<BoxSpan> spans = boxSpansAcrossTheCanvas(fixture, 0.7, &canvas_left, &canvas_right);
   ASSERT_FALSE(spans.empty());
   ASSERT_GT(spans.front().right - spans.front().left, canvas_right - canvas_left) << "the box must not fit";
   for (const BoxSpan& box : spans) {
