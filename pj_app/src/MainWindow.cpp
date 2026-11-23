@@ -7925,21 +7925,11 @@ void MainWindow::refreshCustomTopicsPanel() {
     custom_topic_transform_rows_.clear();
     // Not filtered by owner: a restored transform's plugin may not be loaded (the layout carries the script).
     const auto transforms = session_->sessionManager().dataProcessorService().transformRecipes();
-    if (!transforms.empty()) {
-      // First key wins for a repeated topic name, as a plotted curve resolves it.
-      QHash<QString, QString> key_by_topic;
-      for (const auto& item : catalog.items()) {
-        if (!key_by_topic.contains(item.topic_name)) {
-          key_by_topic.insert(item.topic_name, item.key);
-        }
-      }
-      for (const auto& recipe : transforms) {
-        for (const auto& output_name : recipe.outputs) {
-          if (const auto found = key_by_topic.constFind(QString::fromStdString(output_name));
-              found != key_by_topic.constEnd()) {
-            custom_topic_transform_rows_.push_back(
-                {.key = found.value(), .owner = QString::fromStdString(recipe.owner_plugin)});
-          }
+    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset.
+    for (const auto& recipe : transforms) {
+      for (const TopicId output : recipe.output_topic_ids) {
+        if (const std::optional<QString> key = catalog.scalarColumnKey(recipe.dataset_id, output, 0)) {
+          custom_topic_transform_rows_.push_back({.key = *key, .owner = QString::fromStdString(recipe.owner_plugin)});
         }
       }
     }
