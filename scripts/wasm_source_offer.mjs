@@ -253,7 +253,8 @@ pj_app/src/wasm/qt612_rhi_flush_override.cpp in the PlotJuggler 4 archive above.
 ${gitPins}
 The libraries are named with their licences in THIRD_PARTY_NOTICES.txt. The Emscripten
 runtime linked into the module (musl, libc++, compiler-rt, the zlib port) comes with the Emscripten SDK ${emscripten}
-pinned in versions.env, whose source is public at https://github.com/emscripten-core/emscripten; it is not copied here.
+pinned in versions.env, whose source is public at https://github.com/emscripten-core/emscripten/tree/${emscripten}; its
+zlib port builds zlib 1.3.1, https://github.com/madler/zlib/releases/tag/v1.3.1. Neither is copied here.
 
 Relinking against a modified library
 ------------------------------------

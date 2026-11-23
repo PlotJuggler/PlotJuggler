@@ -31,8 +31,9 @@ set(_pj_thrift_sha256 e0fa5839a4c5c1d631b0931cf2c554ebbfa4e2fee3a9fb3ffd4f82ce43
 set(_pj_snappy_sha256 90f74bc1fbf78a6c56b3c4a082a05103b3a56bb17bca1a27e052ea11723292dc)
 set(_pj_simdjson_sha256 499176afd4b32fbe6f65551ef573b880407280072e1c19e22df0b45da58cdf64)
 set(_pj_boost_sha256 f51707c27359a0df0cac1beada86de31bb5eed5e8285592dadec384df99c2984)
+set(_pj_uriparser_sha256 dd2e4843f43de6f5aedf430e530f1e2d159eba8ca4d64c2787af1c20f707a9e4)
 FetchContent_Declare(arrow_thrift
-    URL https://dlcdn.apache.org/thrift/0.24.0/thrift-0.24.0.tar.gz
+    URL https://archive.apache.org/dist/thrift/0.24.0/thrift-0.24.0.tar.gz
     URL_HASH SHA256=${_pj_thrift_sha256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
@@ -46,13 +47,18 @@ FetchContent_Declare(arrow_simdjson
     URL_HASH SHA256=${_pj_simdjson_sha256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     SOURCE_SUBDIR _pj_source_only_no_cmakelists)
+FetchContent_Declare(arrow_uriparser
+    URL https://github.com/uriparser/uriparser/releases/download/uriparser-1.0.2/uriparser-1.0.2.tar.bz2
+    URL_HASH SHA256=${_pj_uriparser_sha256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR _pj_source_only_no_cmakelists)
 FetchContent_Declare(arrow_boost
     URL https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.gz
     URL_HASH SHA256=${_pj_boost_sha256})
-FetchContent_MakeAvailable(arrow_thrift arrow_snappy arrow_simdjson)
+FetchContent_MakeAvailable(arrow_thrift arrow_snappy arrow_simdjson arrow_uriparser)
 
 file(READ "${arrow_SOURCE_DIR}/cpp/thirdparty/versions.txt" _pj_arrow_versions)
-foreach(_pj_name IN ITEMS THRIFT SNAPPY BOOST)
+foreach(_pj_name IN ITEMS THRIFT SNAPPY BOOST URIPARSER)
     string(TOLOWER "${_pj_name}" _pj_lower)
     if(NOT _pj_arrow_versions MATCHES "ARROW_${_pj_name}_BUILD_SHA256_CHECKSUM=${_pj_${_pj_lower}_sha256}")
         message(FATAL_ERROR "Arrow's bundled ${_pj_name} is no longer the one pinned in ${CMAKE_CURRENT_LIST_FILE}")
@@ -86,13 +92,14 @@ ExternalProject_Add(pj_wasm_arrow_ep
     INSTALL_DIR "${_pj_arrow_prefix}"
     DEPENDS libzstd_static lz4_static
     CMAKE_GENERATOR Ninja
-    # Arrow's bundled Thrift, Snappy and simdjson come from the copies fetched
+    # Arrow's bundled Thrift, Snappy, simdjson and uriparser come from the copies fetched
     # above (a directory URL is copied, not downloaded) instead of a second
     # download. Boost is still Arrow's own: nothing here populates it.
     CMAKE_COMMAND ${CMAKE_COMMAND} -E env
         ARROW_THRIFT_URL=${arrow_thrift_SOURCE_DIR}
         ARROW_SNAPPY_URL=${arrow_snappy_SOURCE_DIR}
         ARROW_SIMDJSON_URL=${arrow_simdjson_SOURCE_DIR}
+        ARROW_URIPARSER_URL=${arrow_uriparser_SOURCE_DIR}
         ${CMAKE_COMMAND}
     CMAKE_ARGS
         -DCMAKE_TOOLCHAIN_FILE:FILEPATH=${_pj_arrow_toolchain}

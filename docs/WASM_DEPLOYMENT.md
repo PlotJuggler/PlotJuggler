@@ -188,11 +188,12 @@ precompressed variants automatically.
 ### Third-party notices
 
 `plotjuggler4.wasm` links every library statically. `cmake/PjWasmNotices.cmake`
-writes `THIRD_PARTY_NOTICES.txt` beside `plotjuggler4.js` at configure time: one
+(on the helpers of `cmake/PjNotices.cmake`, which also writes the desktop
+notices: [packaging/README.md](../packaging/README.md#licences)) writes `THIRD_PARTY_NOTICES.txt` beside `plotjuggler4.js` at configure time: one
 section per library with its SPDX licence expression and its licence text,
 copied from its source (Qt's modules, plugins and bundled third-party code from
 the kit's SBOM, `sbom/*.spdx.json`, followed by the text of every standard
-licence they name, one file each in `cmake/wasm_notices/<SPDX id>.txt`; the
+licence they name, one file each in `cmake/notices/<SPDX id>.txt`; the
 configure fails, naming the id, when one is missing), and CPython's notices when
 Python is on.
 `package_wasm.mjs` refuses a build without the file. `npm run test:package`
@@ -201,9 +202,10 @@ WASM build has no `pj_wasm_notice()` entry. What that test cannot see is kept
 by hand in the same file: a Qt module or plugin added to the link
 (`_PJ_QT_NOTICE_PACKAGES`), a vendored directory or font, third-party code
 bundled inside a dependency (assimp's `contrib/`, the plugins' `contrib/`,
-rosx_introspection's `contrib/`), and the Emscripten runtime. The About dialog's
-"Third-party licences" link (browser build only) opens `THIRD_PARTY_NOTICES.txt`
-by that relative name, so the package serves a copy at the deployment root
+rosx_introspection's `contrib/`), and the Emscripten runtime. In the browser build the About
+dialog states the bundle's GPL-3.0 licence, and its "Third-party licences" and
+"Source code" links open `THIRD_PARTY_NOTICES.txt` and `sources/SOURCE-OFFER.txt`
+by those relative names, so the package serves a copy at the deployment root
 (`no-cache`), beside the immutable one in the bundle directory;
 `tests/wasm/package_wasm.test.mjs` fails if the link and the package disagree.
 
