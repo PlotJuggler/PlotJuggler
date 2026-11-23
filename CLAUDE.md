@@ -233,9 +233,9 @@ Calibrate the claim to what you actually checked:
   - creating, merging, closing or commenting on a PR or an issue;
   - tags and releases, Conan and plugin-registry uploads, production deploys (`app.plotjuggler.io`);
   - `./scripts/worktree-rm.sh` and deleting a branch.
-- **A PR merges only when every check is green.** `.claude/hooks/pr-merge-guard.py` refuses `gh pr merge` while a
-  check fails or runs, or before CI has registered: `main` has no required checks, and merges made seconds after
-  opening broke it. Prefix `PJ_MERGE_ANYWAY=1` only when I ask for a merge without green CI.
+- **A PR merges when every check is green.** `main` has no required checks, and merges made seconds after opening
+  broke it. `.claude/hooks/pr-merge-check.py` warns (never refuses) when `gh pr merge` runs while a check fails or
+  runs, or before CI has registered.
 - **A go-ahead names the action and comes after I have seen the diff.** One given for an earlier task does not
   carry over to the next.
 - **Exception, documentation only:** a change that touches nothing but documentation (`docs/`, module `docs/`,

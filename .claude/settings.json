@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pr-merge-guard.py\"",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pr-merge-check.py\"",
             "timeout": 90
           }
         ]

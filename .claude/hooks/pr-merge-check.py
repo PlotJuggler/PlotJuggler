@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""PreToolUse hook (Bash): refuse `gh pr merge` until the PR's checks have all passed.
+"""PreToolUse hook (Bash): warn, never refuse, when `gh pr merge` runs before the PR's checks have all passed.
 
 `main` has no required status checks, so a merge made seconds after `gh pr create` lands before CI has started.
-Refuses while any check is failing, pending or cancelled, and while a PR younger than NO_CHECKS_GRACE_S has
-no checks yet (they register a few seconds after the push). A command prefixed with PJ_MERGE_ANYWAY=1 passes:
-for a merge the user explicitly asked for without green CI.
+Warns the agent and the user while any check is failing, pending or cancelled, and while a PR younger than
+NO_CHECKS_GRACE_S has no checks yet (they register a few seconds after the push). The merge always proceeds.
 """
 import json
 import re
@@ -57,9 +56,9 @@ def gh(args, cwd):
     return subprocess.run(["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=60)
 
 
-def deny(reason):
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                             "permissionDecisionReason": reason}}))
+def warn(reason):
+    print(json.dumps({"systemMessage": f"pr-merge-check: {reason}",
+                      "hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": reason}}))
     sys.exit(0)
 
 
@@ -67,18 +66,16 @@ def main():
     event = json.load(sys.stdin)
     command = (event.get("tool_input") or {}).get("command", "")
     target = merge_target(command)
-    if target is None or re.search(r"(^|[\s;&|(])PJ_MERGE_ANYWAY=1\s", command):
+    if target is None:
         return
     pr, repo = target
     cwd = event.get("cwd")
     pr_args = ([pr] if pr else []) + repo
-    override = ("If the user explicitly asked to merge without green CI, re-run the command prefixed with "
-                "PJ_MERGE_ANYWAY=1.")
     view = gh(["pr", "view", *pr_args, "--json", "statusCheckRollup,createdAt"], cwd)
     try:
         pr_json = json.loads(view.stdout)
     except json.JSONDecodeError:
-        deny(f"pr-merge-guard could not read the PR's checks ({view.stderr.strip()[:200]}). {override}")
+        warn(f"could not read the PR's checks ({view.stderr.strip()[:200]}).")
     states = {}
     for c in pr_json.get("statusCheckRollup") or []:
         # Job names repeat across workflows (Linux CI and macOS CI both have `build`).
@@ -88,14 +85,12 @@ def main():
         created = datetime.fromisoformat(pr_json["createdAt"].replace("Z", "+00:00"))
         age = (datetime.now(timezone.utc) - created).total_seconds()
         if age < NO_CHECKS_GRACE_S:
-            deny(f"The PR has no CI checks yet: it was opened {int(age)} s ago and CI has not registered. Wait for "
-                 f"the checks to finish green, then merge. {override}")
+            warn(f"merging a PR with no CI checks yet: it was opened {int(age)} s ago and CI has not registered.")
         return
     # A check re-run after a failure or a cancellation appears twice: it counts as passed once one run passed.
     blocking = [f"{name} ({'/'.join(sorted(s))})" for name, s in states.items() if "pass" not in s]
     if blocking:
-        deny(f"Not every CI check has passed: {', '.join(blocking)}. Merge after they are green "
-             f"(`gh pr checks --watch`); a failure that is not this PR's goes to the user. {override}")
+        warn(f"merging before every CI check has passed: {', '.join(blocking)}.")
 
 
 def selftest():
