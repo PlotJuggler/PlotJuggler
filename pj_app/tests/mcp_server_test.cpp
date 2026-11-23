@@ -73,6 +73,7 @@
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
+#include "pj_runtime/EnginePool.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_runtime/PluginRuntimeCatalog.h"
 #include "pj_runtime/SessionManager.h"
@@ -562,7 +563,7 @@ TEST_F(McpServerTest, WidgetStateReadsDescribesAndReplacesAUsersDock) {
 
   const auto [unknown_text, unknown_failed] = result(call("widget_state", {{"action", "get"}, {"dock", "nope"}}));
   EXPECT_TRUE(unknown_failed) << unknown_text;
-  // widget_state only reads; its former set names the tool that changes a dock.
+  // widget_state only reads; asked to set, it names the tool that changes a dock.
   const auto [old_set, old_set_failed] =
       result(call("widget_state", {{"action", "set"}, {"dock", id}, {"xml", doc.toString().toStdString()}}));
   EXPECT_TRUE(old_set_failed);
@@ -1135,8 +1136,7 @@ TEST_F(McpServerTest, TheInstructionsListEveryTopicOrNoneAndStayUnderTheCap) {
     ASSERT_FALSE(open_error) << opened;
     const std::string text = rpcAs(token_, initialize).body["result"].value("instructions", "");
     EXPECT_LE(text.size(), PJ::mcp::kMaxInstructionsChars) << text;
-    (text.find("Topics are not listed here (too many): use list_topics.") == std::string::npos ? listed : unlisted) =
-        text;
+    (text.find("Topics are not listed here: use list_topics.") == std::string::npos ? listed : unlisted) = text;
   }
   ASSERT_FALSE(listed.empty());
   ASSERT_FALSE(unlisted.empty()) << "80 datasets still fit: " << listed.size() << " characters";
@@ -1151,6 +1151,21 @@ TEST_F(McpServerTest, TheInstructionsListEveryTopicOrNoneAndStayUnderTheCap) {
   }
   EXPECT_NE(unlisted.find(", 1 topics, 1 numeric fields"), std::string::npos) << unlisted;
   EXPECT_LT(unlisted.find("use list_topics"), unlisted.find("\n- ")) << "the note comes before the list";
+}
+
+// A name may hold the line and paragraph separators a JSON dump leaves raw (U+2028, U+2029, U+0085), which a reader
+// takes as a line break: they are escaped, so a name stays on its line.
+TEST_F(McpServerTest, TheInstructionsEscapeLineSeparatorsInNames) {
+  const QString name = u"line\u2028para\u2029next\u0085end.mock"_s;
+  const auto [opened, open_error] =
+      result(call("open_file", {{"path", pj_app_test::makeMockFile(data_, name).toStdString()}}));
+  ASSERT_FALSE(open_error) << opened;
+  const json initialize = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", json::object()}};
+  const std::string text = rpcAs(token_, initialize).body["result"].value("instructions", "");
+  EXPECT_NE(text.find("\"line\\u2028para\\u2029next\\u0085end.mock\""), std::string::npos) << text;
+  for (const char* raw : {"\u2028", "\u2029", "\u0085"}) {
+    EXPECT_EQ(text.find(raw), std::string::npos) << text;
+  }
 }
 
 TEST_F(McpServerTest, ExportQuotesHeadersAndRefusesTooManyRows) {
@@ -1430,6 +1445,46 @@ TEST_F(McpServerTest, ANamedExportNeedsItsExtensionAndOverwriteToReplaceAFile) {
   EXPECT_TRUE(check.readAll().startsWith("\x93NUMPY"));
 }
 
+// A file that appears at the path while the export runs is kept too: the check repeats just before the file is put in
+// place. The worker threads are held busy so the export waits in line while the file appears.
+TEST_F(McpServerTest, ANamedExportKeepsAFileThatAppearedWhileItRan) {
+  ASSERT_NE(loadMock(), 0);
+  QTemporaryDir out;
+  ASSERT_TRUE(out.isValid());
+  const QString destination = out.filePath(u"late.csv"_s);
+  PJ::EnginePool& pool = window_->appSession().sessionManager().enginePool();
+  auto release = std::make_shared<std::atomic<bool>>(false);
+  for (int i = 0; i < pool.sharedLaneThreads(); ++i) {
+    static_cast<void>(pool.submit(
+        {.compute =
+             [release](const PJ::EnginePool::CancelToken&) {
+               while (!release->load()) {
+                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
+               }
+             },
+         .publish = [](const PJ::EnginePool::Outcome&) {}}));
+  }
+  const json started = json::parse(
+      result(call(
+                 "export_series",
+                 {{"paths", {"mock/file_data/value"}}, {"path", destination.toStdString()}, {"wait_s", 0}}))
+          .first,
+      nullptr, false);
+  {
+    QFile appeared(destination);
+    EXPECT_TRUE(appeared.open(QIODevice::WriteOnly));
+    appeared.write("the user's file");
+  }
+  release->store(true);
+  ASSERT_TRUE(started.contains("job_id")) << started.dump();
+  const auto [text, error] = result(call("job_wait", {{"job_id", started["job_id"]}, {"timeout_s", 60}}));
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("overwrite"), std::string::npos) << text;
+  QFile kept(destination);
+  ASSERT_TRUE(kept.open(QIODevice::ReadOnly));
+  EXPECT_EQ(kept.readAll(), "the user's file");
+}
+
 // A plugin configuration reaches an agent with its secrets as the sentinel, at any depth. Passed back, the sentinel
 // keeps the value this file was loaded with; with none saved at that key path the call is refused, naming it.
 TEST_F(McpServerTest, ConfigSecretsReadAsTheSentinelAndPassedBackKeepTheSavedValue) {
@@ -1450,15 +1505,21 @@ TEST_F(McpServerTest, ConfigSecretsReadAsTheSentinelAndPassedBackKeepTheSavedVal
   }
   ASSERT_EQ(template_config["mqtt"]["password"], PJ::mcp::kRedacted) << status;
 
-  template_config["note"] = "second";
+  const auto& sources = window_->appSession().sessionManager().loadedSources();
+  const std::size_t first = sources.size();
+  json changed = template_config;
+  changed["note"] = "second";
+  const auto [moved, moved_error] = result(call("open_file", {{"path", path.toStdString()}, {"config", changed}}));
+  EXPECT_TRUE(moved_error) << "a changed configuration took the saved password: " << moved;
+  EXPECT_NE(moved.find("changes /note while keeping a saved secret"), std::string::npos) << moved;
+  EXPECT_EQ(sources.size(), first);
+
   const auto [again, again_error] =
       result(call("open_file", {{"path", path.toStdString()}, {"config", template_config}}));
   ASSERT_FALSE(again_error) << again;
-  const auto& sources = window_->appSession().sessionManager().loadedSources();
-  EXPECT_TRUE(std::any_of(sources.begin(), sources.end(), [](const PJ::SessionManager::LoadedSource& source) {
-    const json used = json::parse(source.plugin_config_json.toStdString(), nullptr, false);
-    return used.value("note", "") == "second" && used["mqtt"].value("password", "") == "s3cret";
-  })) << "the sentinel did not restore the saved password";
+  ASSERT_EQ(sources.size(), first) << "the same file loads in place of the first";
+  const json used = json::parse(sources.back().plugin_config_json.toStdString(), nullptr, false);
+  EXPECT_EQ(used["mqtt"].value("password", ""), "s3cret") << "the sentinel did not restore the saved password";
 
   const std::size_t loaded = sources.size();
   const auto [refused, refused_error] = result(call(
@@ -1469,8 +1530,8 @@ TEST_F(McpServerTest, ConfigSecretsReadAsTheSentinelAndPassedBackKeepTheSavedVal
   EXPECT_EQ(window_->appSession().sessionManager().loadedSources().size(), loaded) << "a refused call loaded a file";
 }
 
-// screenshot only reads: an agent's tab comes forward with plot_tab (or scene_view) focus, and the old argument
-// says so.
+// screenshot only reads: an agent's tab comes forward with plot_tab (or scene_view) focus, and a screenshot given a
+// tab says so.
 TEST_F(McpServerTest, ScreenshotTakesNoTabAndPlotTabFocusBringsOneForward) {
   ASSERT_FALSE(result(call("plot_tab", {{"action", "create"}, {"tab", "mine"}})).second);
   const auto [refused, refused_error] = result(call("screenshot", {{"tab", "mine"}}));
@@ -1511,6 +1572,9 @@ TEST_F(McpServerTest, AboutQueryKeepsTheEntriesThatMentionIt) {
   for (const json& entry : some["core"]) {
     EXPECT_NE(QString::fromStdString(entry.dump()).toLower().indexOf(u"csv"_s), -1) << entry.dump();
   }
+  // The text of an entry, not the names of its fields: every entry has an entry_point.
+  const json keys = json::parse(result(call("about", {{"query", "entry_point"}})).first);
+  EXPECT_TRUE(keys["core"].empty()) << keys["core"].dump();
 }
 
 // An agent's removal never takes the user's work with it: with a series of the user's built on each of the agent's,
@@ -2213,19 +2277,27 @@ TEST_F(McpStreamAndDialogJobTest, AStreamIsAJobThatJobKillStops) {
 }
 
 // A stream's configuration reaches the agent without its secrets; one passed back as the sentinel takes the value the
-// user confirmed in the source's dialog, and one with no confirmed value is refused before anything starts.
+// user confirmed in the source's dialog only for that same configuration, and one with no confirmed value is refused
+// before anything starts.
 TEST_F(McpStreamAndDialogJobTest, AStreamConfigsSecretsAreRedactedAndTheSentinelKeepsTheConfirmedOne) {
   const QString key = u"PluginConfig/Mock Layout Stream"_s;
   QSettings().setValue(key, u"{\"topic\":\"live\",\"auth\":{\"bearer_token\":\"t0ken\"}}"_s);
-  const auto [text, error] = result(call(
+  const auto [moved, moved_error] = result(call(
       "start_stream", {{"source", "Mock Layout Stream"},
                        {"config", {{"topic", "agent"}, {"auth", {{"bearer_token", "<redacted>"}}}}}}));
+  EXPECT_TRUE(moved_error) << "the confirmed token went to a changed configuration: " << moved;
+  EXPECT_NE(moved.find("changes /topic while keeping a saved secret"), std::string::npos) << moved;
+  EXPECT_TRUE(window_->streamingSources().layoutSources().empty()) << "a refused call started a stream";
+
+  const auto [text, error] = result(call(
+      "start_stream",
+      {{"source", "Mock Layout Stream"}, {"config", {{"topic", "live"}, {"auth", {{"bearer_token", "<redacted>"}}}}}}));
   QSettings().remove(key);
   ASSERT_FALSE(error) << text;
   EXPECT_EQ(text.find("t0ken"), std::string::npos) << text;
   const json started = json::parse(text);
   EXPECT_EQ(started["config"]["auth"]["bearer_token"], PJ::mcp::kRedacted) << text;
-  EXPECT_EQ(started["config"]["topic"], "agent");
+  EXPECT_EQ(started["config"]["topic"], "live");
   const QString stream_id = window_->streamingSources().layoutSourceId(started["dataset_id"].get<PJ::DatasetId>());
   bool restored = false;
   for (const auto& live : window_->streamingSources().layoutSources()) {
@@ -3221,6 +3293,25 @@ TEST_F(McpEndpointTest, APluginTokenServesTheAgentToolsOnly) {
   const Answer init =
       rpcAs(plugin.token, {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", json::object()}});
   EXPECT_EQ(init.body["result"].value("instructions", "").find("get_status"), std::string::npos);
+}
+
+// Past the budget the instructions name the tool that lists the datasets, the one the caller's token has.
+TEST_F(McpEndpointTest, TooManyDatasetsPointsEachTokenToItsOwnStatusTool) {
+  const Plugin plugin = launch(u"toolbox-mcp-a"_s);
+  ASSERT_FALSE(plugin.token.empty());
+  openPublic();
+  const json initialize = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"}, {"params", json::object()}};
+  const std::string tail(110, 'x');  // cut at the name cap, within a Windows path
+  std::string public_text;
+  std::string plugin_text;
+  for (int i = 0; i < 80 && plugin_text.find("datasets: ") == std::string::npos; ++i) {
+    const QString name = QStringLiteral("%1_%2.mock").arg(i, 2, 10, QChar(u'0')).arg(QString::fromStdString(tail));
+    ASSERT_FALSE(result(call("open_file", {{"path", pj_app_test::makeMockFile(data_, name).toStdString()}})).second);
+    public_text = rpcAs(token_, initialize).body["result"].value("instructions", "");
+    plugin_text = rpcAs(plugin.token, initialize).body["result"].value("instructions", "");
+  }
+  EXPECT_NE(plugin_text.find("datasets: report_status lists them."), std::string::npos) << plugin_text;
+  EXPECT_NE(public_text.find("datasets: get_status lists them."), std::string::npos) << public_text;
 }
 
 TEST_F(McpEndpointTest, APluginEndpointIsNotAdvertisedAndOutlivesPublicAccess) {

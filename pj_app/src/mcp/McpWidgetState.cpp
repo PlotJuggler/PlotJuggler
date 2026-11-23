@@ -143,7 +143,8 @@ void McpServer::setWidgetState(const json& args, const Caller&, Reply reply) {
   }
   QDomElement element = doc.documentElement();
   if (element.tagName() != current.tagName()) {
-    reply(fail("the root element must stay <" + current.tagName().toStdString() + ">, as get returned it"));
+    reply(
+        fail("the root element must stay <" + current.tagName().toStdString() + ">, as widget_state get returned it"));
     return;
   }
   if (dock->plotWidget() != nullptr) {
@@ -171,7 +172,8 @@ void McpServer::setWidgetState(const json& args, const Caller&, Reply reply) {
       const QString& why = recorder.firstRejection();
       reply(fail(
           "refused, nothing changed: " +
-          (why.isEmpty() ? std::string("the element does not validate (get lists the options)") : why.toStdString())));
+          (why.isEmpty() ? std::string("the element does not validate (widget_state get lists the options)")
+                         : why.toStdString())));
       return;
     }
     // A misspelt attribute would otherwise be ignored and reported as applied. A widget that reports nothing keeps
@@ -179,7 +181,8 @@ void McpServer::setWidgetState(const json& args, const Caller&, Reply reply) {
     const QStringList unknown =
         recorder.options().empty() ? QStringList() : unreportedXmlAttributes(element, recorder.options());
     if (!unknown.isEmpty()) {
-      reply(fail("refused, nothing changed: unknown attribute " + joined(unknown) + " (get lists the options)"));
+      reply(fail(
+          "refused, nothing changed: unknown attribute " + joined(unknown) + " (widget_state get lists the options)"));
       return;
     }
   }

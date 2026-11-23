@@ -621,7 +621,17 @@ std::string McpServer::loadedSummary(const Caller& caller, std::size_t budget) {
       cut = true;
       kept_whole = false;
     }
-    return mcp::dumpJson(json(name)) + (cut ? "..." : "");
+    // A JSON dump leaves U+2028, U+2029 and U+0085 raw, and a reader may break the line there.
+    std::string out = mcp::dumpJson(json(name));
+    for (const auto& [raw, escaped] :
+         {std::pair{std::string_view("\xE2\x80\xA8"), std::string_view("\\u2028")},
+          std::pair{std::string_view("\xE2\x80\xA9"), std::string_view("\\u2029")},
+          std::pair{std::string_view("\xC2\x85"), std::string_view("\\u0085")}}) {
+      for (std::size_t at = out.find(raw); at != std::string::npos; at = out.find(raw, at + escaped.size())) {
+        out.replace(at, raw.size(), escaped);
+      }
+    }
+    return out + (cut ? "..." : "");
   };
 
   const SessionManager& manager = window_.appSession().sessionManager();
@@ -686,11 +696,12 @@ std::string McpServer::loadedSummary(const Caller& caller, std::size_t budget) {
   if (whole && out.size() + listed.size() <= budget) {
     return out + listed;
   }
-  out += "\nTopics are not listed here (too many): use list_topics.";
+  out += "\nTopics are not listed here: use list_topics.";
   if (out.size() + headers.size() <= budget) {
     return out + headers;
   }
-  out += "\n" + std::to_string(catalog->dataSources().size()) + " datasets: get_status lists them.";
+  out += "\n" + std::to_string(catalog->dataSources().size()) +
+         " datasets: " + (isPublic(caller) ? "get_status" : "report_status") + " lists them.";
   return out.size() <= budget ? out : std::string();
 }
 

@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -85,12 +86,11 @@ json configForAgent(const QString& config) {
 }
 
 /// The `config` an agent passed, with each mcp::kRedacted filled from `saved` (the configuration the call would
-/// otherwise use) at the same key path, as JSON text; nullopt with `error` set when `saved` holds no value there.
+/// otherwise use) by mcp::restoreSecrets, as JSON text; nullopt with `error` set when it refuses.
 std::optional<QString> configFromAgent(const json& given, const QString& saved, std::string& error) {
   json config = given;
-  if (const std::string missing = mcp::restoreSecrets(config, parseOrNull(saved)); !missing.empty()) {
-    error =
-        "config: no saved value for " + missing + " to replace \"" + mcp::kRedacted + "\" with; pass the value itself";
+  if (const std::string why = mcp::restoreSecrets(config, parseOrNull(saved)); !why.empty()) {
+    error = "config: " + why;
     return std::nullopt;
   }
   return QString::fromStdString(config.dump());
@@ -260,6 +260,8 @@ struct ExportRun {
   int64_t t1_ns = 0;
   /// "" for a new temporary file.
   QString requested_path;
+  /// A file at requested_path may be replaced; without it one that appears while the export runs is kept too.
+  bool overwrite = false;
 
   /// Rows the file will hold (0 until the grid is built) and rows written so far; read from the GUI thread.
   std::atomic<std::size_t> rows{0};
@@ -451,6 +453,9 @@ void writeExport(ExportRun& run, const EnginePool::CancelToken& stop) {
     temporary.setAutoRemove(false);
     temporary.close();
     run.path = temporary.fileName();
+  } else if (!run.overwrite && QFileInfo::exists(run.requested_path)) {
+    run.error = "a file appeared at path while exporting: pass overwrite: true to replace it";
+    return;  // the QSaveFile discards what it wrote
   } else if (named.commit()) {
     run.path = run.requested_path;
   } else {
@@ -604,9 +609,14 @@ void McpServer::about(const json& args, const Caller&, Reply reply) {
   json document = json::parse(features->document(), nullptr, false);
   const std::string query = QString::fromStdString(args.value("query", "")).toLower().toStdString();
   if (!query.empty() && document.is_object()) {
-    // Every array in the document is a list of catalog entries or plugin rows: keep those whose text mentions it.
-    const auto mentions = [&query](const json& row) {
-      return QString::fromStdString(mcp::dumpJson(row)).toLower().toStdString().find(query) != std::string::npos;
+    // Every array in the document is a list of catalog entries or plugin rows: keep those whose text (a string
+    // value, at any depth; not a field name) mentions it.
+    const std::function<bool(const json&)> mentions = [&query, &mentions](const json& value) {
+      if (value.is_string()) {
+        return QString::fromStdString(value.get<std::string>()).toLower().toStdString().find(query) !=
+               std::string::npos;
+      }
+      return (value.is_object() || value.is_array()) && std::any_of(value.begin(), value.end(), mentions);
     };
     for (auto& [key, value] : document.items()) {
       if (value.is_array()) {
@@ -928,6 +938,7 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
   auto run = std::make_shared<ExportRun>();
   run->npy = format == "npy";
   run->requested_path = qs(args, "path");
+  run->overwrite = args.value("overwrite", false);
   if (!run->requested_path.isEmpty()) {
     const QFileInfo info(run->requested_path);
     if (!info.isAbsolute()) {
@@ -939,7 +950,7 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
       reply(fail("path must end in ." + format + " for format " + format));
       return;
     }
-    if (info.exists() && (info.isDir() || !args.value("overwrite", false))) {
+    if (info.exists() && (info.isDir() || !run->overwrite)) {
       reply(fail(info.isDir() ? "path is a folder" : "a file is already at path: pass overwrite: true to replace it"));
       return;
     }
