@@ -759,9 +759,9 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_INDEX = require('../../resources/wasm-presets/index.json');
-const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset', 'lilocbench', 'uzhfpv'];
+const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset', 'lilocbench', 'uzhfpv', 'microduck'];
 // The samples the index marks "listed": false: no card in the dialog, opened only by their ?preset= link.
-const LINK_ONLY_SAMPLE_IDS = ['lilocbench', 'uzhfpv'];
+const LINK_ONLY_SAMPLE_IDS = ['lilocbench', 'uzhfpv', 'microduck'];
 const LISTED_SAMPLE_IDS = SAMPLE_IDS.filter(id => !LINK_ONLY_SAMPLE_IDS.includes(id));
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
 // The asset-host path of sample `id`'s layout.
@@ -985,6 +985,26 @@ async function expectUzhfpvViews(run) {
   await expectSceneMoves(run, 1, uzhfpvReady);
 }
 
+// The Microduck robot from its recorded URDF, with every mesh fetched from the package root the layout maps.
+const microduckReady = models => models.robots.live === 1 && models.robots.placeholders === 0
+  && models.robots.draws > 0 && /\b(\d+)\/\1 meshes/.test(models.robots.status[0]);
+
+// The Microduck sample's two derived series restored from the layout's <data_processors> (the numeric tilt and the
+// text state the State Transitions strip shows), its three plots, its two video cameras, and its robot walking in 3D.
+async function expectMicroduckViews(run) {
+  await expectPlots(run, [
+    ['tilt_deg/value'], ['state/base_pos_z'], ['state/joint_vel_3', 'state/joint_vel_12'],
+  ]);
+  const from = run.messages.length;
+  await run.page.evaluate(() => window.pjWasmReportToolboxTransformResultProbe());
+  const outputs = () => run.messages.slice(from).map(message => message.match(/TOOLBOX_TRANSFORM key_b64=.* outputs_b64=(\S+)/))
+    .filter(Boolean).map(match => Buffer.from(match[1], 'base64').toString()).sort();
+  await expect.poll(outputs).toEqual(['robot_state', 'tilt_deg']);
+  const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual([[1, true], [1, true]]);
+  await expectSceneMoves(run, 1, microduckReady);
+}
+
 // The Built-in filters sample: the raw gyro yaw rate, the same signal through the built-in
 // moving_average, and its built-in integral (the heading change), restored from the layout's
 // <data_processors> and drawn.
@@ -1008,7 +1028,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     await page.close();
     for (const [id, expectViews] of [
       ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['pandaset', expectPandasetViews],
-      ['lilocbench', expectLilocbenchViews], ['uzhfpv', expectUzhfpvViews],
+      ['lilocbench', expectLilocbenchViews], ['uzhfpv', expectUzhfpvViews], ['microduck', expectMicroduckViews],
     ]) {
       const linkOnly = LINK_ONLY_SAMPLE_IDS.includes(id);
       const run = await bootSamples(context, errors, samples, linkOnly ? `?preset=${id}` : '');

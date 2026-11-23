@@ -19,12 +19,14 @@ rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRES
 | `pandaset` | `v1/pandaset/pandaset_layout_v4.pj4.xml`, `pandaset_thumbnail.png` |
 | `lilocbench` | `v1/lilocbench/lilocbench_layout.pj4.xml`, `lilocbench_thumbnail.png` |
 | `uzhfpv` | `v1/uzhfpv/uzhfpv_layout.pj4.xml`, `uzhfpv_thumbnail.png` |
+| `microduck` | `v1/microduck/microduck_layout.pj4.xml`, `microduck_thumbnail.png` |
 
 The layouts, the thumbnails and this file are PlotJuggler's own and fall under
 this repository's license (MPL-2.0); the thumbnails are PlotJuggler renders of
 the loaded samples (browser screenshots, downscaled to 384x216, 8-bit palette; the
 ANYmal and PandaSet ones show only a 3D view, the built-in filters one its
-two plots; the LILocBench one is a desktop render of its orbit view).
+two plots; the LILocBench one is a desktop render of its orbit view; the Microduck one
+shows its 3D view, its cameras and its state strip).
 
 ## `builtin_filters` — built-in filters
 
@@ -240,3 +242,42 @@ research)", [fpv.ifi.uzh.ch/datasets](https://fpv.ifi.uzh.ch/datasets/)); the re
 under the same licence, and the `README.txt` beside it gives the attribution, lists the changes made and
 states that it is not endorsed by the University of Zurich. The recording was made with a converter outside this
 repository; the topics and processing above are what it did.
+
+## `microduck` — walking biped
+
+The layout loads two hosted folders:
+
+- `v1/microduck/microduck_walk.mcap` (6,282,516 bytes, SHA-256
+  `2beaf3dfef8fb58971468814d4c500b63a4519ed54a74a77b2994584cf377141`, pinned by the layout's
+  `content_sha256`): PlotJuggler's own recording of a simulated
+  [Microduck](https://pollen-robotics.com/microduck/), the 25 cm open-source biped by Pollen Robotics
+  ([microduck_rl](https://github.com/pollen-robotics/microduck_rl)), 37.6 s cut from a longer session (62.0 s to
+  99.6 s of it, timestamps unchanged), licensed
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) with the layout. The robot stands, walks, kicks, falls at about 93.5 s and gets back up. It
+  holds `/state` (49 Hz, JSON: the base pose and velocity, the commanded velocity, the active `policy` and the
+  position, velocity, control target and action of 14 joints), `/tf` (781 Hz, every link), `/robot_description`
+  (the URDF, which names its meshes `package://microduck_description/...`) and two H.264 cameras,
+  `/camera/head` and `/camera/external` (30 Hz, `foxglove.CompressedVideo`, renders of the simulation; each
+  stream's frames before its first keyframe in the cut, under 1 s, do not decode). `README.txt` beside it
+  describes the topics and gives the credit.
+- `v1/microduck_description/` (21.6 MB): the 38 STL meshes the URDF references, unmodified from
+  [adityakamath/microduck_description](https://github.com/adityakamath/microduck_description) at commit
+  `4d378791e561`, which takes them from microduck_rl. `package_url_roots` on the layout's robot model maps the
+  package to this folder.
+
+The layout shows the robot in 3D following its base, both cameras, plots of the body tilt, the base height and
+the two knee speeds (`joint_vel_3` left, `joint_vel_12` right), and a State Transitions strip over `robot_state`, a
+derived series with text output (`output = "string"`, `pj_scripting/docs/FILTER_CLASS.md`). Both derived series
+are Luau transforms in the layout's `<data_processors>`, owned by the Transform Editor so a visitor can open and
+edit them: `tilt_deg` is the angle between the body's up axis and the vertical, from the base quaternion;
+`robot_state` keeps a posture (up, falling, on the ground, getting up) from that tilt and the base height
+(falling past 20°, on the ground past 60° with the base under 0.09 m, up again under 10°) and, while up, says
+"walking" when a knee turned faster than 1 rad/s in the last 0.5 s, "standing" otherwise. Over the recording it
+reads standing 56 %, walking 39 %, on the ground 3.7 %, getting up 1.3 % and falling 0.3 %; the kicks count as
+walking.
+
+Redistribution basis: the recording is PlotJuggler's own. The meshes are © Pollen Robotics under
+[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) (microduck_rl's `LICENSE-MODELS.md`;
+microduck_description's Apache-2.0 covers only its URDF, xacro and launch files): they are shared unmodified under
+the same licence, for non-commercial use, with `LICENSE-MODELS.md`, microduck_description's `LICENSE` and a
+`PROVENANCE.txt` giving the attribution and the source commits beside them.
