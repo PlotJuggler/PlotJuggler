@@ -512,7 +512,8 @@ dock with no state).
   reports nothing at all (its state is opaque). Only then the load, `DockWidget::applyState` (as a paste:
   `finishRestore()`, first-topic seeding of an empty object widget). If the load refuses, or leaves a topic waiting
   that was not waiting before (`IDataWidget::unresolvedRestores`: a layer or Log topic that is not loaded would show
-  nothing), the saved previous state is loaded back.
+  nothing), or drops an element (`IDataWidget::takeRefusalReason`: a scene refuses a layer of another dataset than the
+  one it shows), the saved previous state is loaded back and the reply names the reason.
 - **The element is the whole state, view included.** A scene's camera and a plot's axis range travel with it, so an
   element from an older `get` puts them back where they were then (a followed frame moves the camera meanwhile); the
   tool's description tells agents to `get` right before `set`.
@@ -582,6 +583,8 @@ dock with no state).
     reports, a set that is one undo step, the plot's own id kept from a copied element, and refusals (bad value, other
     root, missing series, unknown attribute) that change nothing. `WidgetStateRefusesATopicThatIsNotLoaded`: a Log
     panel's set naming a topic that is not loaded is refused and the panel keeps its topic.
+    `WidgetStateRefusesALayerOfAnotherDataset`: a 3D view's set adding another dataset's layer is refused with the
+    view's reason and the view keeps its layers.
     Each widget family tests its own `xmlValidateState` and option coverage.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
   test answers by hand (a cancellation forwarded while its call is in flight).

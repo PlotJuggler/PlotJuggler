@@ -1091,7 +1091,6 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
   // sensitive — a comma decimal separator breaks the generated Luau — and
   // truncates to 6 decimals, corrupting small thresholds).
   const std::string threshold_lit = json(threshold).dump();
-  const std::string label = luaStringEscape(args.value("label", "exceeds " + threshold_lit));
   const std::string style = args.value("style", std::string("region"));
   if (style != "region" && style != "line") {
     return ToolResult::failure(
@@ -1102,13 +1101,18 @@ ToolResult createMarkers(const json& args, ToolContext& ctx) {
   // The rule an agent would write itself, so a later raw rule can follow it. Built-in conditions only: a condition
   // function costs a call per sample and halves the longest series the fuel budget scans.
   std::string condition = "between(-math.huge, " + threshold_lit + ")";
+  std::string relation = "at or below";
   if (comparison == ">") {
     condition = "above(" + threshold_lit + ")";
+    relation = "exceeds";
   } else if (comparison == "<") {
     condition = "below(" + threshold_lit + ")";
+    relation = "below";
   } else if (comparison == ">=") {
     condition = "between(" + threshold_lit + ", math.huge)";
+    relation = "at or above";
   }
+  const std::string label = luaStringEscape(args.value("label", relation + " " + threshold_lit));
   std::string rule = "when(\"" + luaStringEscape(series) + "\", " + condition + ")";
   if (style == "region") {
     rule += ":backgroundColor(nil, {label=\"" + label + "\", severity=\"warning\"})\n";

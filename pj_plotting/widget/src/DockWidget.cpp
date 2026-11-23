@@ -884,6 +884,10 @@ QStringList DockWidget::unresolvedRestores() const {
   return object_widget_ != nullptr ? object_widget_->unresolvedRestores() : QStringList();
 }
 
+QString DockWidget::takeRefusalReason() {
+  return object_widget_ != nullptr ? object_widget_->takeRefusalReason() : QString();
+}
+
 bool DockWidget::canPasteObjectWidgetFromClipboard() const {
   QDomDocument doc;
   return widget_clipboard::parse(doc, objectWidgetClipboardTag());
