@@ -173,6 +173,20 @@ as Linux CI does:
 ./test.sh --display -L qrhi
 ```
 
+To run only the cases a change can reach, `scripts/affected_tests.py` maps the files
+changed since the merge base with `origin/main` (or the paths given) to the CMake
+targets that own them, follows every target depending on those, and prints the
+ctest regex of their cases; its reasoning, the files no target owns and the QRhi
+runners that need `--display` go to stderr. It reads the build tree's CMake File
+API reply (the first run enables it with one reconfigure) and `ctest
+--show-only=json-v1`, so a sanitizer lane passes `--build-dir build/asan`. It does
+not see plugins a test loads at run time without depending on them, nor the SDK and
+plugin repositories; the full `./test.sh` stays the gate before a push.
+
+```bash
+./test.sh -R "$(scripts/affected_tests.py)"
+```
+
 No test picks a real display on its own: a display pass runs only where
 `QT_QPA_PLATFORM` names a real QPA, as `--display` and the CI lanes do. On macOS
 and Windows `--display` uses the desktop (`cocoa`, `windows`), which has no virtual

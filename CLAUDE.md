@@ -150,6 +150,7 @@ Conan or `.qt/`): [packaging/nix/README.md](./packaging/nix/README.md).
 ./scripts/install_qt6.sh             # one-time: pinned Qt into ./.qt/ (and git submodule update --init --recursive)
 ./build.sh                           # Conan + CMake + build into build/, incremental on re-run
 ./test.sh -R '^pj_runtime_tests\.'   # headless ctest; extra args go to ctest
+./test.sh -R "$(scripts/affected_tests.py)"   # after each edit: only the cases your diff can reach
 ./run.sh                             # launch through run.sh, not the bare binary
 ./build.sh --sanitize tsan           # lanes none|asan|tsan|msan, then ./test.sh --sanitize tsan (docs/SANITIZERS.md)
 ```
