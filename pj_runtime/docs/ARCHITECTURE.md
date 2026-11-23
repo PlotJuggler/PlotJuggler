@@ -330,7 +330,8 @@ does not link it.
   (core-plugin uninstall lock) in default sessions only. Lookups return raw pointers
   valid until the next `reload()`, GUI thread only. Browser/static builds skip the
   marketplace and register a `StaticPluginSet`. The Custom Topics editor is the toolbox
-  whose manifest `capabilities` lists `custom_topics_editor`; `toolboxBadge` /
+  whose manifest `capabilities` lists `custom_topics_editor` (`customTopicsEditorViews` when it also lists
+  `custom_topics_viewer`, `kCustomTopicsViewerCapability`); `toolboxBadge` /
   `toolboxDisplayName` name an owner on rows and owned-tab watermarks, from its toolbox
   or, for an owner with no plugin (an MCP agent), from `registerAdHocOwner`.
   `PluginRuntimeCatalog` refuses plugin ids starting with `kAgentIdPrefix` (`agent-`),

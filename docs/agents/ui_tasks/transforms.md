@@ -48,8 +48,11 @@ Derived series and objects the user makes in the UI. The script languages: [scri
 ## Edit or delete a custom topic
 
 - **Edit:** select one row → pencil (`buttonEditCustom`, "Edit the selected custom topic") reopens the Transform
-  Editor on it; the main button reads "Modify". Rows made by an agent or another plugin read "Read-only" or
-  "Created by ...; read-only".
+  Editor on it; the main button reads "Modify".
+- **View:** on a row made by an agent or another plugin the pencil reads "View the formula (created by ...;
+  read-only)" and opens the Transform Editor read-only: its script (an agent's whole generated script), inputs and
+  params, "Read-only: created by ..." on the status line, no Create/Modify button and no preview. With an editor that
+  cannot show a view, those rows read "Read-only" or "Created by ...; read-only".
 - **Delete:** select rows → "⋮" (`buttonCustomMenu`, "Custom topics options") → "Delete". Disabled when a selected row
   is read-only. When other derived topics read it, "Delete derived topic?" lists them; they stay and report a missing
   input. Ctrl+Z undoes a delete.

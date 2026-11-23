@@ -550,6 +550,12 @@ glyph and tooltip.
   `refreshCustomTopicsPanel` per event-loop turn, which rebuilds the on-demand rows and reuses the transform rows of
   the last sync until the catalog changes.
 - **Editing.** "+", the pencil and Delete belong to the toolbox whose manifest declares `custom_topics_editor`.
+  The pencil opens the editor on its own recipe's `params_json`. When the editor also declares `custom_topics_viewer`
+  (`ExtensionCatalogService::customTopicsEditorViews`, `CurveListPanel::setEditorViewsOthers`), the pencil stays
+  enabled on rows another owner made (an MCP agent, another plugin, none) and opens the editor on
+  `{"view": {owner, name, kind, language, script, inputs, outputs, params}}`: the recipe as it runs, which the editor
+  shows read-only. An editor without the tag is never handed one, since it would load it as an editable form. Delete
+  stays the owner's.
   `deleteCustomTopics` asks `pj_runtime`'s `CustomTopicsPolicy.h` who may delete what, and asks again once a prompt is
   answered (the session may have changed under the prompt); the shell only words the refusals and runs the prompts.
 - **Series.** One row per number column (`id/output`), deleted with its recipe. `SeriesProgressController` (wired by
@@ -793,6 +799,9 @@ Suites with their own executable and ctest entry, and why:
   leaves its other topics unqualified, so its layers from another file stay pending: a scene shows one dataset. The
   fix belongs to the scene: `Scene3DDockWidget::representativeDatasetId` would also read robot-model and trail
   sources, or the scene would bind as one dataset.
+- Marker rules have no view: a rule another owner made (an MCP agent's `create_markers`) is drawn and listed in the
+  plot's marker status, but no UI shows its script. The Marker Editor's `loadConfig` (`code`, `source`) would show it;
+  nothing opens it on a rule.
 - A series key resolves to a topic by name alone (the longest loaded topic naming a prefix of it), while marker rules
   bind by series (`CatalogModel::findScalarForMarkerKey`). When another loaded dataset has a topic literally named
   `sensor/value` and the chosen ones carry topic `sensor` with field `value`, a rule over `sensor/value` is left
