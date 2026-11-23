@@ -21,6 +21,39 @@ The Windows installer writes to `-OutDir` (the current directory by default).
 `packaging/deb/publish_apt.sh` pushes a built `.deb` to the apt repository that
 users add to `sources.list`; see [Distribution](deb/README.md#distribution).
 
+## Licences
+
+Every desktop package ships PlotJuggler's `LICENSE` and the `THIRD_PARTY_NOTICES.txt`
+that `cmake/PjNotices.cmake` writes into `build/pj_app/` at configure time; the
+About box shows the same file, embedded in the executable. It holds, for each
+third-party component, its licence and its copyright and licence text:
+
+- Qt: the SBOM packages of the modules and plugins the packages deploy
+  (`_PJ_QT_DESKTOP_NOTICE_PACKAGES`), and the texts of the licences they name;
+  ICU, which Linux kits ship without an SBOM licence, from `cmake/notices/icu4c-73.txt`;
+- the vendored code under `3rdparty/` and `resources/`, and Qwt;
+- every Conan package, with the `licenses/` folder the package carries plus
+  `cmake/notices/conan/<name>.txt` when it exists. Packages CMakeDeps writes no
+  file for (compiled into a shared Conan library, such as CPython's OpenSSL and
+  FFmpeg's dav1d, or header-only inside assimp) are listed in
+  `_PJ_CONAN_HIDDEN_NOTICES` with a committed text. On Linux the configure fails
+  when a package of `conan.lock` has neither, so a new dependency needs its text.
+
+Its header states how the LGPL components can be replaced or relinked and
+carries the written source offer.
+
+| Package | Where |
+| --- | --- |
+| AppImage | `usr/share/doc/plotjuggler4/`, with the distribution libraries' `share/doc/<package>/copyright` and their versions in `DISTRIBUTION-PACKAGES.txt` |
+| Debian | `/opt/plotjuggler4/share/doc/` (the AppImage's), and `/usr/share/doc/plotjuggler4/copyright` |
+| Windows installer and portable ZIP | `licenses/`, with the MPL-2.0 and LGPL-3.0 texts the installer pages show |
+| macOS | `PlotJuggler.app/Contents/Resources/` |
+
+The browser build has its own notices and source offer
+([docs/WASM_DEPLOYMENT.md](../docs/WASM_DEPLOYMENT.md#third-party-notices)).
+Known gap: the bundled plugins' release ZIPs (pj-official-plugins) carry no licence or notice files yet, so
+nothing ships for the libraries they link statically.
+
 ## Render check
 
 `smoke/render_check.sh <app> [args...]` proves a QRhi build draws, not just

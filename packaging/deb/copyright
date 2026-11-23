@@ -21,25 +21,34 @@ This package bundles its own copies of Qt 6 and other third-party libraries
 under /opt/plotjuggler4/lib so that it runs independently of the Qt version
 installed on the system.
 
-Copyright and license texts for the bundled system libraries (harvested from
-the distribution packages they were deployed from at build time) are shipped
-under /opt/plotjuggler4/share/doc/<package>/.
+/opt/plotjuggler4/share/doc/plotjuggler4/THIRD_PARTY_NOTICES.txt names every
+third-party component built into PlotJuggler or shipped with it (Qt and the
+code Qt contains, ICU, FFmpeg, the Conan dependency set and the libraries
+compiled into those, the Qt Advanced Docking System, Qwt), with its licence and
+its copyright and licence text, the GNU GPL and LGPL texts among them; the
+About box shows the same file. The copyright files of the bundled distribution
+libraries are under /opt/plotjuggler4/share/doc/<package>/, and
+DISTRIBUTION-PACKAGES.txt beside THIRD_PARTY_NOTICES.txt records each one's
+exact version.
 
-Qt 6 is used under the GNU Lesser General Public License, version 3
-(/usr/share/common-licenses/LGPL-3); FFmpeg is built with an LGPL-only feature
-set and used under the LGPL, version 2.1 or later
-(/usr/share/common-licenses/LGPL-2.1). Their license texts are not duplicated
-inside /opt. The remaining bundled libraries come from the project's pinned
-Conan dependency set (assimp, draco, luau, cpython, and others) under their
-respective permissive or LGPL licenses.
+LGPL components. Qt 6 (LGPL-3) and FFmpeg (built LGPL-only, LGPL-2.1 or later)
+are shared libraries under /opt/plotjuggler4/lib: replace them with compatible
+builds of your own to run PlotJuggler with a modified version. The Qt Advanced
+Docking System is PlotJuggler's fork, modified (LGPL-2.1 or later,
+https://github.com/PlotJuggler/Qt-Advanced-Docking-System, at the commit the
+3rdparty/Qt-Advanced-Docking submodule pins); it, Qwt (LGPL-2.1 with the Qwt
+exception), elfutils' libdw (LGPL-3 or later) and libxcrypt (LGPL-2.1 or later,
+in the embedded Python) are linked statically. PlotJuggler's complete source at
+the release tag, with the pinned dependencies (versions.env, conanfile.txt,
+conan.lock) and the build commands (build.sh, docs/BUILDING.md), lets you
+rebuild it against a modified copy of any of them.
 
-Corresponding sources for the LGPL components: the exact versions and build
-configuration are pinned in the PlotJuggler 4 repository (versions.env,
-conanfile.txt, conan.lock, recipes/), from which each component's unmodified
-upstream source release can be retrieved; the sources are also available on
-written request via https://github.com/PlotJuggler/PlotJuggler/issues. The bundled Qt
-and FFmpeg shared libraries under /opt/plotjuggler4/lib can be replaced with
-user-built compatible versions, satisfying the LGPL relinking requirement.
+Corresponding sources: each component's source at the exact version shipped
+is available from the locations THIRD_PARTY_NOTICES.txt and the PlotJuggler 4
+repository name, and on written request via
+https://github.com/PlotJuggler/PlotJuggler/issues, for three years after the
+release, at no more than the cost of physically performing the distribution.
+The request also covers the distribution packages in DISTRIBUTION-PACKAGES.txt.
 
 Bundled plugins under /opt/plotjuggler4/lib/plotjuggler/plugins are published
 separately by the PlotJuggler project and carry their own license metadata in

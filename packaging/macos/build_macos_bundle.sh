@@ -104,6 +104,9 @@ for size in 16 32 128; do
 done
 iconutil -c icns "${iconset}" -o "${CONTENTS}/Resources/plotjuggler.icns"
 
+# Licences: PlotJuggler's and the third-party notices the build wrote (cmake/PjNotices.cmake).
+install -m 644 "${ROOT}/LICENSE" "${BUILD}/pj_app/THIRD_PARTY_NOTICES.txt" "${CONTENTS}/Resources/"
+
 # PYTHONHOME layout: <home>/lib/python3.X. pj_scripting/CMakeLists.txt records
 # the Conan cpython prefix the build linked.
 py_prefix="$(head -n1 "${BUILD}/pj_python_home.txt" 2>/dev/null || true)"

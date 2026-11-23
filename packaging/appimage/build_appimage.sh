@@ -466,6 +466,28 @@ fi
 install -Dm644 "${ROOT}/resources/svg/plotjuggler.svg" \
   "${APPDIR}/usr/share/icons/hicolor/scalable/apps/plotjuggler4.svg"
 
+# Licences. PlotJuggler's own and the third-party notices the build wrote (cmake/PjNotices.cmake) go to
+# share/doc/plotjuggler4; linuxdeploy has put the copyright files of the distribution libraries it bundled in
+# share/doc/<package>. It looks a library up in dpkg by the path it resolved, which on merged-/usr systems
+# (Ubuntu 22.04: /lib -> usr/lib) misses the packages dpkg lists under /lib, so those are added here.
+# DISTRIBUTION-PACKAGES.txt records each one's exact version: the written source offer covers them.
+DOC_DIR="${APPDIR}/usr/share/doc/plotjuggler4"
+install -Dm644 "${ROOT}/LICENSE" "${DOC_DIR}/LICENSE"
+install -Dm644 "${BUILD}/pj_app/THIRD_PARTY_NOTICES.txt" "${DOC_DIR}/THIRD_PARTY_NOTICES.txt"
+if command -v dpkg-query >/dev/null; then
+  for lib in "${APPDIR}"/usr/lib/*.so*; do
+    [[ -L "${lib}" ]] && continue
+    pkg="$(dpkg -S "*/$(basename "${lib}")" 2>/dev/null | head -n1 | cut -d: -f1)" || true
+    [[ -n "${pkg}" && -f "/usr/share/doc/${pkg}/copyright" && ! -f "${APPDIR}/usr/share/doc/${pkg}/copyright" ]] || continue
+    install -Dm644 "/usr/share/doc/${pkg}/copyright" "${APPDIR}/usr/share/doc/${pkg}/copyright"
+  done
+  for dir in "${APPDIR}"/usr/share/doc/*/; do
+    pkg="$(basename "${dir}")"
+    [[ "${pkg}" == plotjuggler4 ]] && continue
+    dpkg-query -W -f='${binary:Package} ${Version}\n' "${pkg}" 2>/dev/null || echo "${pkg} (version not recorded)"
+  done > "${DOC_DIR}/DISTRIBUTION-PACKAGES.txt"
+fi
+
 case "${PLUGINS_MODE}" in
   local)    collect_plugins_local ;;
   registry) collect_plugins_registry ;;

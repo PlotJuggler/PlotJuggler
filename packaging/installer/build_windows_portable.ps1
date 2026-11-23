@@ -19,14 +19,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $payload "bin/PlotJuggler4.exe") -Pa
 }
 $payload = (Resolve-Path -LiteralPath $payload).ProviderPath
 
-# IFW carries these in package metadata; the ZIP needs its own copies.
-$licenses = Join-Path $payload "licenses"
-New-Item -ItemType Directory -Force -Path $licenses | Out-Null
-foreach ($name in @("license_mpl.txt", "license_lgpl.txt")) {
-  Copy-Item -LiteralPath (Join-Path $PSScriptRoot "packages/io.plotjuggler.application/meta/$name") `
-    -Destination $licenses -Force
-}
-
 $zip = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutFile)
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $zip) | Out-Null
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }

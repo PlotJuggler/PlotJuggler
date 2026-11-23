@@ -10,8 +10,8 @@ class AboutDialog;
 
 namespace PJ {
 
-// The About box. The browser build adds a "Third-party licences" link to THIRD_PARTY_NOTICES.txt, which
-// scripts/package_wasm.mjs serves at the deployment root; the relative href resolves against the page URL.
+// The About box. Its "Third-party licences" link shows THIRD_PARTY_NOTICES.txt: embedded in the desktop executable,
+// served at the deployment root of the browser build, which also links its source offer.
 class AboutDialog : public Dialog {
   Q_OBJECT
  public:

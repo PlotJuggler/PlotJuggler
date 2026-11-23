@@ -46,7 +46,9 @@ jammy container the release build runs in.
                                 plotjuggler/plugins/<id>/ (bundled extensions)
 /opt/plotjuggler4/plugins/      Qt platform + imageformat plugins
 /opt/plotjuggler4/translations/ Qt translations
-/opt/plotjuggler4/share/doc/    licenses of the bundled libraries
+/opt/plotjuggler4/share/doc/    plotjuggler4/: LICENSE, THIRD_PARTY_NOTICES.txt,
+                                DISTRIBUTION-PACKAGES.txt; <package>/copyright of
+                                the bundled distribution libraries
 /usr/bin/plotjuggler4           launcher (packaging/deb/plotjuggler4.wrapper.in)
 /usr/share/applications/        desktop entry
 /usr/share/icons/hicolor/…      icons (256px PNG + scalable SVG)

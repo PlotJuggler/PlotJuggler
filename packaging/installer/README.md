@@ -20,7 +20,7 @@ installing anything; see [Portable ZIP](#portable-zip).
 packaging/installer/
 ├── config.xml                                     # installer identity — version tokenised as __PJ_VERSION__
 ├── build_windows_installer.ps1                    # staging + binarycreator orchestrator (run on Windows)
-├── build_windows_portable.ps1                     # ZIP of the staged payload + licence files
+├── build_windows_portable.ps1                     # ZIP of the staged payload
 └── packages/
     └── io.plotjuggler.application/
         └── meta/
@@ -28,7 +28,7 @@ packaging/installer/
             ├── installscript.qs                   # shortcuts, per-user install, custom target-dir page
             ├── targetwidget.ui                    # the target-dir wizard page
             ├── license_mpl.txt                    # MPL-2.0 (PlotJuggler)
-            └── license_lgpl.txt                   # LGPL (Qt)
+            └── license_lgpl.txt                   # LGPL-3.0 (Qt), verbatim
 ```
 
 The **source tree is templated** (`__PJ_VERSION__` / `__PJ_RELEASE_DATE__`
@@ -149,8 +149,9 @@ $stage = Join-Path $env:TEMP "pj4-package-stage"
     -StageDir $stage -OutFile ".\PlotJuggler4-Windows-x64-portable.zip"
 ```
 
-The ZIP contains `bin/`, `lib/plotjuggler/plugins/`, and copies of the MPL and
-LGPL licence texts under `licenses/`. Qt, MSVC, FFmpeg, Python (including its
+The ZIP contains `bin/`, `lib/plotjuggler/plugins/` and `licenses/`: the MPL and
+LGPL texts and `THIRD_PARTY_NOTICES.txt`, which the installer installs too
+([Licences](../README.md#licences)). Qt, MSVC, FFmpeg, Python (including its
 standard library), the plugin-check helper and bundled extensions all come
 from the installer's validated staging tree. Installer metadata and its
 maintenance tool are not part of the archive.
