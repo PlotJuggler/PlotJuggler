@@ -28,6 +28,14 @@
       "layout": "https://assets.plotjuggler.io/v1/lilocbench/lilocbench_layout.pj4.xml",
       "thumbnail": "https://assets.plotjuggler.io/v1/lilocbench/lilocbench_thumbnail.png",
       "listed": false
+    },
+    {
+      "id": "uzhfpv",
+      "title": "Racing drone",
+      "description": "A racing quadrotor flying laps through the gates of an indoor track at up to 42 km/h, from UZH-FPV: its fisheye and event cameras and its racing line in 3D.",
+      "layout": "https://assets.plotjuggler.io/v1/uzhfpv/uzhfpv_layout.pj4.xml",
+      "thumbnail": "https://assets.plotjuggler.io/v1/uzhfpv/uzhfpv_thumbnail.png",
+      "listed": false
     }
   ]
 }

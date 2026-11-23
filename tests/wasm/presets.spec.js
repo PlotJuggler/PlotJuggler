@@ -759,9 +759,9 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_INDEX = require('../../resources/wasm-presets/index.json');
-const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset', 'lilocbench'];
+const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset', 'lilocbench', 'uzhfpv'];
 // The samples the index marks "listed": false: no card in the dialog, opened only by their ?preset= link.
-const LINK_ONLY_SAMPLE_IDS = ['lilocbench'];
+const LINK_ONLY_SAMPLE_IDS = ['lilocbench', 'uzhfpv'];
 const LISTED_SAMPLE_IDS = SAMPLE_IDS.filter(id => !LINK_ONLY_SAMPLE_IDS.includes(id));
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
 // The asset-host path of sample `id`'s layout.
@@ -967,6 +967,24 @@ async function expectLilocbenchViews(run) {
   expect(moved.docks.some(dock => dock.data.depth.vertices > 0)).toBe(true);
 }
 
+// The UZH-FPV 3D view, in the world frame: the drone's frame and its trail over the whole flight.
+const uzhfpvReady = (models, dock) => dock.fixed === 'world'
+  && dock.data.trails.rendered === 1 && dock.data.trails.vertices > 0;
+
+// The UZH-FPV sample's four plots (the track from above, the gyroscope, the accelerometer and the speed), its
+// fisheye and event cameras, and its 3D view moving with the drone.
+async function expectUzhfpvViews(run) {
+  await expectPlots(run, [
+    ['Ground truth'],
+    ['x', 'y', 'z'].map(axis => `snappy_imu/angular_velocity/${axis}`),
+    ['x', 'y', 'z'].map(axis => `snappy_imu/linear_acceleration/${axis}`),
+    ['groundtruth/speed_kmh/data'],
+  ]);
+  const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual([[1, true], [1, true]]);
+  await expectSceneMoves(run, 1, uzhfpvReady);
+}
+
 // The Built-in filters sample: the raw gyro yaw rate, the same signal through the built-in
 // moving_average, and its built-in integral (the heading change), restored from the layout's
 // <data_processors> and drawn.
@@ -990,7 +1008,7 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     await page.close();
     for (const [id, expectViews] of [
       ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['pandaset', expectPandasetViews],
-      ['lilocbench', expectLilocbenchViews],
+      ['lilocbench', expectLilocbenchViews], ['uzhfpv', expectUzhfpvViews],
     ]) {
       const linkOnly = LINK_ONLY_SAMPLE_IDS.includes(id);
       const run = await bootSamples(context, errors, samples, linkOnly ? `?preset=${id}` : '');
