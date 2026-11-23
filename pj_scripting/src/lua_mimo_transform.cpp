@@ -55,7 +55,7 @@ LuaMimoTransform::LuaMimoTransform(
     out_mode_ = OutputMode::kInt64;
   } else if (klass_.output_kind == "same" || klass_.output_kind == "mirror") {
     out_mode_ = OutputMode::kMirror;
-  } else if (klass_.output_kind == "string") {
+  } else if (klass_.textOutput()) {
     out_mode_ = OutputMode::kString;
   } else {
     out_mode_ = OutputMode::kDouble;
@@ -159,7 +159,7 @@ bool LuaMimoTransform::calculate(
     input_doubles.push_back(proc::detail::toDouble(v));
   }
 
-  const FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, input_doubles);
+  FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, input_doubles);
   if (instance_->failed()) {
     error_ = instance_->error();
     return false;
@@ -175,7 +175,7 @@ bool LuaMimoTransform::calculate(
   }
   if (out_mode_ == OutputMode::kString) {
     for (std::size_t k = 0; k < num_outputs_; ++k) {
-      output[k] = PJ::VarValue{r.texts[k]};
+      output[k] = PJ::VarValue{std::move(r.texts[k])};
     }
     return true;
   }

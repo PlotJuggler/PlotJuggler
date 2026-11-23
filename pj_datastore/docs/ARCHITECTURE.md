@@ -185,7 +185,7 @@ node maps one single-column input to one output; a MIMO node maps N single-colum
 where every input has a sample at exactly the same timestamp. Nodes run in topological order; a cycle is refused when
 the node is added. Each output column takes the kind its operator reports when the node is added (`outputKind(s)`),
 numbers or text (`kString`); a value of the other family is coerced (a string into a number column writes 0, a number
-into a text column writes nothing).
+into a text column leaves the cell empty).
 
 - **Sequential contract.** A transform sees its input in ascending timestamp order, its state carries across chunks,
   and only `reset()` clears it. Anything that would break the order (late input, input lost to retention, a failed

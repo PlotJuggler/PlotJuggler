@@ -431,6 +431,11 @@ class LuauInstance final : public FilterInstance {
       r.suppress = true;
       return r;
     }
+    if (text_output_) {
+      r.texts.reserve(static_cast<std::size_t>(nres));
+    } else {
+      r.values.reserve(static_cast<std::size_t>(nres));
+    }
     for (int i = 0; i < nres; ++i) {
       double value = 0.0;
       std::string text;
@@ -699,7 +704,7 @@ class LuauEngine final : public ScriptEngine {
     // closes L.
     auto instance = std::unique_ptr<FilterInstance>(new LuauInstance(
         L, calc_ref, reset_ref, self_ref, calc_self, reset_self, std::move(budget), limits_.call_fuel,
-        klass.output_kind == "string"));
+        klass.textOutput()));
     keep = true;
     return instance;
   }

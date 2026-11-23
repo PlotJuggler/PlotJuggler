@@ -284,7 +284,9 @@ SeriesLookup resolveSeriesPath(
       if (full == bare) {
         if (!exact) {
           exact =
-              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
+              ResolvedSeries{fields[idx].handle,  std::string(topic_name),
+                             qualified(ti, full), full,
+                             dataset_of(ti),      PJ::sdk::fromAbiType(fields[idx].type) == PJ::PrimitiveType::kString};
         } else {
           exact_ambiguous = true;
         }
@@ -299,7 +301,9 @@ SeriesLookup resolveSeriesPath(
         }
         if (!fuzzy) {
           fuzzy =
-              ResolvedSeries{fields[idx].handle, std::string(topic_name), qualified(ti, full), full, dataset_of(ti)};
+              ResolvedSeries{fields[idx].handle,  std::string(topic_name),
+                             qualified(ti, full), full,
+                             dataset_of(ti),      PJ::sdk::fromAbiType(fields[idx].type) == PJ::PrimitiveType::kString};
         } else {
           out.ambiguous = true;
         }

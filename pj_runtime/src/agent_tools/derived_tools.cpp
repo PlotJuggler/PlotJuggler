@@ -698,7 +698,10 @@ ToolResult createDerivedSeries(const json& args, ToolContext& ctx) {
       },
       undo_protection_unavailable);
   if (!status) {
-    return ToolResult::failure("create failed: " + status.error());
+    // The engine names the class field `output = "string"`; this tool sets it through output_type.
+    const bool returned_text = !text_output && status.error().find("output = \"string\"") != std::string::npos;
+    return ToolResult::failure(
+        "create failed: " + status.error() + (returned_text ? " (pass output_type \"string\" for text)" : ""));
   }
   if (ctx.notify_data_changed) {
     ctx.notify_data_changed();

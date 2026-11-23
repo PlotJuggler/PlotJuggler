@@ -90,6 +90,7 @@ struct ResolvedSeries {
   std::string host_path;
   // Name of the dataset this resolved to (the snapshot's), empty when only one dataset is loaded.
   std::string dataset;
+  bool is_text = false;  ///< a string column: the number readers refuse it
 };
 
 // Outcome of a path lookup. When nothing resolves, `candidates` carries the near misses.

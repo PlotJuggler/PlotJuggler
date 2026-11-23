@@ -875,15 +875,11 @@ std::optional<PJ::sdk::FieldHandle> resolveInto(
   r.path = lookup.resolved->path;
   r.topic = lookup.resolved->topic;
   r.dataset = lookup.resolved->dataset;
-  const PJ::sdk::FieldHandle handle = lookup.resolved->handle;
-  for (const PJ_field_info_t& info : catalog.fields()) {
-    if (info.handle.topic.id == handle.topic.id && info.handle.id == handle.id &&
-        PJ::sdk::fromAbiType(info.type) == PJ::PrimitiveType::kString) {
-      r.error = textSeriesError(r.path);
-      return std::nullopt;
-    }
+  if (lookup.resolved->is_text) {
+    r.error = textSeriesError(r.path);
+    return std::nullopt;
   }
-  return handle;
+  return lookup.resolved->handle;
 }
 
 }  // namespace

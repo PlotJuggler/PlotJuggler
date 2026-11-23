@@ -172,6 +172,9 @@ Expected<std::vector<Column>> readColumns(
     if (!view) {
       return unexpected("read failed for '" + want + "': " + view.error());
     }
+    if (view->type() == PrimitiveType::kString) {
+      return unexpected(agent_tools::textSeriesError(want));
+    }
     const auto stamps = view->timestamps();
     std::size_t begin = 0;
     std::size_t end = stamps.size();
@@ -186,9 +189,6 @@ Expected<std::vector<Column>> readColumns(
       return unexpected(
           "series '" + want + "' has more than " + std::to_string(kMaxExportRows) +
           " samples in the window: narrow t0/t1");
-    }
-    if (view->type() == PrimitiveType::kString) {
-      return unexpected(agent_tools::textSeriesError(want));
     }
     column.values = agent_tools::seriesValuesAsDoubles(*view, begin, end);
     if (column.values.size() != end - begin) {

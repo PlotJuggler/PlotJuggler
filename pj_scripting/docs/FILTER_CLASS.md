@@ -138,7 +138,8 @@ A class with `output = "string"` returns text where the others return numbers: a
 or `nil`, and in MIMO one string per output. The output is a string series (a state label per sample, such as
 `"walking"` or `"falling"`): the State Transitions panel and the curve list's value column show it, plots do not.
 A number from a text class fails the node, and so does a string from a numeric class (the error names
-`output = "string"`); a numeric string such as `"5"` from a numeric class is still read as a number. Editing a
+`output = "string"`); in Luau a numeric string such as `"5"` from a numeric class is still read as a number
+(Python needs a number). Editing a
 transform in place cannot switch it between text and numbers (its output column keeps its kind): remove it and
 create it again.
 
@@ -189,8 +190,8 @@ including these within-range limits, is golden-tested by `builtin_golden_test`):
 
 - **Mirror builtins** (`none`, `absolute`, `outlier_removal`) preserve an int64/uint64
   column kind, but a value above **2^53** loses its low bits through the double seam.
-  Within ±2^53 they are exact (tested); strings are never fed to a filter (series are
-  numeric), so the string-mirror case does not arise in practice.
+  Within ±2^53 they are exact (tested). Over a text series a mirror builtin gets a text
+  column, but its double result cannot be stored there: the cells stay empty.
 - **`time_since_previous`** emits the gap in seconds as a double `(t − prev_t)`; its
   resolution is the double's at the session-relative magnitude (see above).
 - **Explicit-timestamp filters** (`scale` time offset, `moving_average` with a

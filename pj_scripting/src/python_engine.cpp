@@ -185,8 +185,8 @@ class PythonFilterInstance final : public FilterInstance {
     return failed_ ? on_fail : out;
   }
 
-  /// One returned value of the kind the class declares into `out`: a str for a text class (a number is refused, so a
-  /// forgotten label is not stored as "3"), else anything float() accepts. False when it is not.
+  /// One returned value of the kind the class declares: a str for a text class (a number is refused, so a forgotten
+  /// label is not stored as "3"), else a value pybind11 casts to double. False when it is not.
   bool readValue(const py::handle& item, double& value, std::string& text) const {
     if (text_output_) {
       if (!py::isinstance<py::str>(item)) {
@@ -344,7 +344,7 @@ class PythonEngine final : public ScriptEngine {
     }
     auto memory = std::make_shared<native::MemoryBudget>(limits_.mem_bytes);  // the instance's, for its whole life
     ScriptCallScope scope(memory, limits_.python_watchdog_millis, detail::Profile::kCompatible);
-    Expected<std::unique_ptr<FilterInstance>> out = create(*code, params_json, memory, klass.output_kind == "string");
+    Expected<std::unique_ptr<FilterInstance>> out = create(*code, params_json, memory, klass.textOutput());
     const bool timed_out = scope.timedOut();
     if (scope.overBudget()) {
       return PJ::unexpected(memoryMessage(*memory));

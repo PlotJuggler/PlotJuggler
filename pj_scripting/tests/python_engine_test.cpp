@@ -91,7 +91,7 @@ class T:
 
   EXPECT_TRUE((*inst)->calculate(0.0, -1.0).suppress);
   EXPECT_TRUE((*inst)->failed());
-  EXPECT_NE((*inst)->error().find("output = \"string\""), std::string::npos) << (*inst)->error();
+  EXPECT_NE((*inst)->error().find("the class declares"), std::string::npos) << (*inst)->error();
 }
 
 // Text from a numeric class fails, and the error names the declaration that would make it valid.
@@ -112,7 +112,7 @@ class T:
   auto inst = engine->createInstance((*classes)[0], "{}");
   ASSERT_TRUE(inst.has_value());
   EXPECT_TRUE((*inst)->calculate(0.0, 1.0).suppress);
-  EXPECT_NE((*inst)->error().find("output = \"string\""), std::string::npos) << (*inst)->error();
+  EXPECT_NE((*inst)->error().find("declare output = \"string\" to return text"), std::string::npos) << (*inst)->error();
 }
 
 TEST(PythonEngine, SyntaxErrorIsReported) {

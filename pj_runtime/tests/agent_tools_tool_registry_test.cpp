@@ -1229,6 +1229,23 @@ TEST(ToolRegistry, CreateDerivedSeriesWithTextOutput) {
   EXPECT_EQ(dp.create_calls, creates);
 }
 
+// The engine's advice names the class field; an agent sets it through output_type, so the failure says that.
+TEST(ToolRegistry, CreateDerivedSeriesReturningTextNamesOutputType) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  RecordingDpHost dp;
+  dp.fail_create = true;
+  dp.create_error =
+      "calculate must return a number, (time, value), or nil (declare output = \"string\" to return text)";
+  auto ctx = makeCtx(store, &dp);
+  auto r = reg.execute(
+      "create_derived_series",
+      {{"name", "state"}, {"inputs", json::array({"/imu/x"})}, {"expression", "value > 0 and 'up' or 'down'"}}, ctx);
+  ASSERT_FALSE(r.ok);
+  EXPECT_NE(r.content.find("output_type"), std::string::npos) << r.content;
+}
+
 TEST(ToolRegistry, CreateDerivedSeriesStatefulBody) {
   ToolRegistry reg;
   PJ::testing::ToolboxTestStore store;

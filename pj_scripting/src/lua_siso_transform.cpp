@@ -51,7 +51,7 @@ LuaSisoTransform::LuaSisoTransform(std::shared_ptr<ScriptEngine> engine, FilterC
     out_mode_ = OutputMode::kInt64;
   } else if (klass_.output_kind == "same" || klass_.output_kind == "mirror") {
     out_mode_ = OutputMode::kMirror;
-  } else if (klass_.output_kind == "string") {
+  } else if (klass_.textOutput()) {
     out_mode_ = OutputMode::kString;
   } else {
     out_mode_ = OutputMode::kDouble;
@@ -140,7 +140,7 @@ std::optional<proc::Sample> LuaSisoTransform::calculateNextPoint(const proc::Sam
   const double t_sec = static_cast<double>(in.raw_ts_ns - session_start_ns_) * 1e-9;
   const double v = proc::detail::toDouble(in.value());
 
-  const FilterInstance::Result r = instance_->calculate(t_sec, v);
+  FilterInstance::Result r = instance_->calculate(t_sec, v);
   if (instance_->failed()) {
     error_ = instance_->error();
     return std::nullopt;
@@ -167,7 +167,7 @@ std::optional<proc::Sample> LuaSisoTransform::calculateNextPoint(const proc::Sam
     out_ns = session_start_ns_ + rel;
   }
   if (out_mode_ == OutputMode::kString) {
-    return proc::Sample::scalar(out_ns, PJ::VarValue{r.text});
+    return proc::Sample::scalar(out_ns, PJ::VarValue{std::move(r.text)});
   }
   return proc::Sample::scalar(out_ns, makeOutputValue(r.value, in.value()));
 }

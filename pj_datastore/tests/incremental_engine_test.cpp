@@ -526,7 +526,9 @@ TEST(IncrementalEngineFieldSelectTest, ReplaceSisoTransform_RefusesSwitchBetween
 
   auto text = derived.addSisoTransform(tid, "label", ds, std::make_unique<LabelTransform>(), 1);
   ASSERT_TRUE(text.has_value()) << text.error();
-  EXPECT_FALSE(derived.replaceSisoTransform(*text, std::make_unique<IdentityTransform>()).has_value());
+  const auto to_number = derived.replaceSisoTransform(*text, std::make_unique<IdentityTransform>());
+  ASSERT_FALSE(to_number.has_value());
+  EXPECT_NE(to_number.error().find("text"), std::string::npos) << to_number.error();
 }
 
 TEST(IncrementalEngineTest, TopologicalOrder_SingleNode) {

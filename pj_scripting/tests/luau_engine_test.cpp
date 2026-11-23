@@ -284,7 +284,7 @@ TEST(LuauEngine, StringClassReturnsText) {
   ASSERT_TRUE(num.has_value());
   EXPECT_TRUE((*num)->calculate(0.0, 1.0).suppress);
   EXPECT_TRUE((*num)->failed());
-  EXPECT_NE((*num)->error().find("string"), std::string::npos) << (*num)->error();
+  EXPECT_NE((*num)->error().find("the class declares"), std::string::npos) << (*num)->error();
 }
 
 // Text from a numeric class fails, and the error names the declaration that would make it valid.
@@ -299,13 +299,30 @@ TEST(LuauEngine, NumericClassReturningTextNamesTheStringOutput) {
   auto siso = engine->createInstance(classes->front(), "{}");
   ASSERT_TRUE(siso.has_value());
   EXPECT_TRUE((*siso)->calculate(0.0, 1.0).suppress);
-  EXPECT_NE((*siso)->error().find(R"(output = "string")"), std::string::npos) << (*siso)->error();
+  EXPECT_NE((*siso)->error().find("declare output = \"string\" to return text"), std::string::npos) << (*siso)->error();
 
   auto mimo = engine->createInstance(classes->front(), "{}");
   ASSERT_TRUE(mimo.has_value());
   const double inputs[] = {1.0, 2.0};
   EXPECT_TRUE((*mimo)->calculateMimo(0.0, PJ::Span<const double>(inputs, 2)).suppress);
-  EXPECT_NE((*mimo)->error().find(R"(output = "string")"), std::string::npos) << (*mimo)->error();
+  EXPECT_NE((*mimo)->error().find("declare output = \"string\" to return text"), std::string::npos) << (*mimo)->error();
+}
+
+// A numeric string from a numeric class is still a number, not text.
+TEST(LuauEngine, NumericClassReturningANumericStringReadsANumber) {
+  constexpr const char* kFive = R"LUAU(
+    return { id="five", name="F",
+      create = function(p) return { calculate = function(t, v) return "5" end } end }
+  )LUAU";
+  auto engine = makeLuauEngine();
+  auto classes = engine->inspectModule(kFive, "test");
+  ASSERT_TRUE(classes.has_value()) << (classes.has_value() ? "" : classes.error());
+  auto inst = engine->createInstance(classes->front(), "{}");
+  ASSERT_TRUE(inst.has_value()) << (inst.has_value() ? "" : inst.error());
+  const auto r = (*inst)->calculate(0.0, 1.0);
+  EXPECT_FALSE((*inst)->failed()) << (*inst)->error();
+  EXPECT_FALSE(r.suppress);
+  EXPECT_DOUBLE_EQ(r.value, 5.0);
 }
 
 TEST(LuauEngine, RuntimeErrorFailsInstanceStickily) {
