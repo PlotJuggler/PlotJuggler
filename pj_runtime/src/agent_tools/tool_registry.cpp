@@ -20,6 +20,14 @@ using detail::createDerivedSeries;
 using detail::createMarkers;
 using detail::describeTopic;
 using detail::evaluateSeries;
+using detail::kDefaultBudgetEvaluations;
+using detail::kDefaultBudgetMs;
+using detail::kDefaultMaxPoints;
+using detail::kDefaultTopicLimit;
+using detail::kDefaultWaitForTimeoutS;
+using detail::kMaxPoints;
+using detail::kMaxTopicLimit;
+using detail::kMaxWaitForTimeoutS;
 using detail::listCreated;
 using detail::listTopics;
 using detail::playbackTool;
@@ -52,8 +60,8 @@ ToolRegistry::ToolRegistry() {
           {"limit",
            {{"type", "integer"},
             {"minimum", 1},
-            {"maximum", 500},
-            {"default", 100},
+            {"maximum", kMaxTopicLimit},
+            {"default", kDefaultTopicLimit},
             {"description", "max topics to return"}}}}}},
        &listTopics});
 
@@ -92,8 +100,8 @@ ToolRegistry::ToolRegistry() {
           {"max_points",
            {{"type", "integer"},
             {"minimum", 1},
-            {"maximum", 500},
-            {"default", 200},
+            {"maximum", kMaxPoints},
+            {"default", kDefaultMaxPoints},
             {"description", "bucket count for mode=buckets"}}},
           {"t_start_s", {{"type", "number"}, {"description", "display-axis window start (optional)"}}},
           {"t_end_s", {{"type", "number"}, {"description", "display-axis window end (optional)"}}}}},
@@ -116,8 +124,8 @@ ToolRegistry::ToolRegistry() {
           {"timeout_s",
            {{"type", "number"},
             {"minimum", 0},
-            {"maximum", 3600},
-            {"default", 60},
+            {"maximum", kMaxWaitForTimeoutS},
+            {"default", kDefaultWaitForTimeoutS},
             {"description", "seconds to wait for it"}}}}},
         {"required", json::array({"series", "comparison", "threshold"})}},
        &waitForTool});
@@ -143,16 +151,22 @@ ToolRegistry::ToolRegistry() {
           {"body",
            {{"type", "string"}, {"description", "scalar: return ...; object: reads inputs[..], returns table"}}},
           {"global", {{"type", "string"}, {"description", "scalar only"}}},
-          {"buckets", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}, {"description", "scalar only"}}},
+          {"buckets", {{"type", "integer"}, {"minimum", 1}, {"maximum", kMaxPoints}, {"description", "scalar only"}}},
           {"outputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "object only, required"}}},
           {"at_s", {{"type", "number"}, {"description", "object: instant, display seconds"}}},
           {"window",
            {{"type", "object"},
-            {"properties", {{"start_s", {{"type", "number"}}}, {"end_s", {{"type", "number"}}}}},
+            {"properties",
+             {{"start_s", {{"type", "number"}, {"description", "span start, display seconds"}}},
+              {"end_s", {{"type", "number"}, {"description", "span end, display seconds"}}}}},
             {"description", "object: span, display seconds"}}},
-          {"budget_ms", {{"type", "integer"}, {"minimum", 1}, {"default", 1000}, {"description", "object only"}}},
+          {"budget_ms",
+           {{"type", "integer"}, {"minimum", 1}, {"default", kDefaultBudgetMs}, {"description", "object only"}}},
           {"budget_evaluations",
-           {{"type", "integer"}, {"minimum", 1}, {"default", 50}, {"description", "object only"}}},
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"default", kDefaultBudgetEvaluations},
+            {"description", "object only"}}},
           {"debug", {{"type", "boolean"}, {"description", "object: also report raw nanoseconds"}}}}},
         {"required", json::array({"inputs"})}},
        &evaluateSeries});
@@ -210,7 +224,7 @@ ToolRegistry::ToolRegistry() {
       {"create_markers",
        "Create plot markers from a Luau rule you write (preferred), or from a simple threshold "
        "template. There is ONE marker set of yours: calling this again REPLACES it (use "
-       "remove_markers to clear it). Saved in layouts; undo protection failures are reported.\n"
+       "remove_markers to clear it). Saved in layouts.\n"
        "RAW FORM: 'inputs' (series the rule reads) + 'rule' (a Luau script, run once over the "
        "full series) + optional 'output' (series path the markers attach to; default = first "
        "input; \"__global__\" renders on every plot, only for events meaningful against ANY "
@@ -231,8 +245,7 @@ ToolRegistry::ToolRegistry() {
        "bandPower(s, f_lo_hz, f_hi_hz); GetSeriesNames().\n"
        "opts: label, description, category, color (\"#RRGGBB\"|Qt name), severity "
        "(\"info\"|\"warning\"|\"error\"|\"critical\"), status.\n"
-       "TEMPLATE FORM (writes a when() rule): 'series' + 'comparison' (>, <, >=, <=) + 'threshold' + "
-       "optional 'label', 'style' (\"region\" default | \"line\": per matching sample).",
+       "TEMPLATE FORM (writes a when() rule): 'series', 'comparison', 'threshold', optional 'label' and 'style'.",
        {{"type", "object"},
         {"properties",
          {{"rule", {{"type", "string"}, {"description", "raw Luau marker script (raw form)"}}},
@@ -240,11 +253,7 @@ ToolRegistry::ToolRegistry() {
            {{"type", "array"},
             {"items", {{"type", "string"}}},
             {"description", "topic/field paths the rule reads (raw form)"}}},
-          {"output",
-           {{"type", "string"},
-            {"description",
-             "series path the marker set renders on, or \"__global__\" (raw form, "
-             "optional; default = first input)"}}},
+          {"output", {{"type", "string"}, {"description", "raw form: where the markers render, as above"}}},
           {"series", {{"type", "string"}, {"description", "topic/field path (template form)"}}},
           {"comparison",
            {{"type", "string"},
@@ -255,7 +264,7 @@ ToolRegistry::ToolRegistry() {
            {{"type", "string"},
             {"enum", json::array({"region", "line"})},
             {"default", "region"},
-            {"description", "template form"}}},
+            {"description", "template form; line: a mark per matching sample"}}},
           {"label", {{"type", "string"}, {"description", "marker label (optional)"}}}}}},
        &createMarkers});
 
@@ -268,14 +277,15 @@ ToolRegistry::ToolRegistry() {
   add(
       {"list_created",
        "List what YOU created, by the id remove_derived_series takes: derived series and objects, "
-       "add_script_series and add_filter series (non-alphanumeric bytes of the name as _xx), and "
+       "add_script_series and add_filter series, where listed (non-alphanumeric bytes of the name as _xx), and "
        "\"assistant_markers\" (your markers).",
        empty_obj, &listCreated});
 
   add(
       {"remove_derived_series",
        "Delete one thing you created, by its list_created id (a derived series or object with its outputs, a "
-       "script or filter series, your markers), never loaded data. Refused while someone else's series is "
+       "add_script_series or add_filter series where listed, your markers), never loaded data. Refused while someone "
+       "else's series is "
        "built on it.",
        {{"type", "object"},
         {"properties", {{"name", {{"type", "string"}, {"description", "an id from list_created"}}}}},

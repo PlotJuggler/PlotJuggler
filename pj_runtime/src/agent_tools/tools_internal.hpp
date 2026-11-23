@@ -91,6 +91,16 @@ json withCoarsenedBuckets(
 }
 inline constexpr const char* kComparisonError = "'comparison' must be one of >, <, >=, <=";
 
+// The bounds and defaults the executors apply, which tool_registry.cpp's schemas advertise.
+inline constexpr int kDefaultTopicLimit = 100;  // list_topics limit
+inline constexpr int kMaxTopicLimit = 500;
+inline constexpr int kDefaultMaxPoints = 200;  // read_series max_points
+inline constexpr int kMaxPoints = 500;         // read_series max_points, evaluate buckets
+inline constexpr double kDefaultWaitForTimeoutS = 60.0;
+inline constexpr double kMaxWaitForTimeoutS = 3600.0;
+inline constexpr std::int64_t kDefaultBudgetMs = 1000;  // evaluate budget_ms
+inline constexpr std::int64_t kDefaultBudgetEvaluations = 50;
+
 // Tool executors (registered by tool_registry.cpp): each a pure function of (args, host views) reporting every failure
 // as data (ok=false); none throws on its own, and ToolRegistry::execute catches a throwing JSON getter on
 // model-supplied arguments.

@@ -1053,7 +1053,8 @@ ToolResult readSeriesTool(const json& args, ToolContext& ctx) {
           " paths per call — they share one response cap. Batch 'stats' first, then ask for buckets on "
           "the series worth the shape.");
     }
-    const std::size_t max_points = static_cast<std::size_t>(std::clamp(args.value("max_points", 200), 1, 500));
+    const std::size_t max_points =
+        static_cast<std::size_t>(std::clamp(args.value("max_points", kDefaultMaxPoints), 1, kMaxPoints));
     // A lone path keeps full single-series resolution; the batch envelope (and its shared, smaller cap) applies only to
     // more than one series.
     if (tasks.size() == 1) {
@@ -1266,11 +1267,9 @@ ToolResult waitForTool(const json& args, ToolContext& ctx) {
     return ToolResult::failure("'threshold' must be a number");
   }
   watch->threshold = threshold->get<double>();
-  constexpr double kDefaultTimeoutS = 60.0;
-  constexpr double kMaxTimeoutS = 3600.0;
   const auto timeout = args.find("timeout_s");
-  const double asked = timeout != args.end() && timeout->is_number() ? timeout->get<double>() : kDefaultTimeoutS;
-  watch->timeout_s = std::isfinite(asked) ? std::clamp(asked, 0.0, kMaxTimeoutS) : kDefaultTimeoutS;
+  const double asked = timeout != args.end() && timeout->is_number() ? timeout->get<double>() : kDefaultWaitForTimeoutS;
+  watch->timeout_s = std::isfinite(asked) ? std::clamp(asked, 0.0, kMaxWaitForTimeoutS) : kDefaultWaitForTimeoutS;
 
   auto catalog = ctx.host.catalogSnapshot();
   if (!catalog) {

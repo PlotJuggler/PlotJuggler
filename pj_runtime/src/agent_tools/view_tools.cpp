@@ -424,7 +424,7 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
   // Clamped, not just defaulted: this response is re-sent on every remaining round trip of the turn, so an unbounded
   // list would be paid for repeatedly (read_series bounds its payload the same way). The truncation note below tells
   // the model how to narrow the search.
-  const int limit = std::clamp(args.value("limit", 100), 1, 500);
+  const int limit = std::clamp(args.value("limit", kDefaultTopicLimit), 1, kMaxTopicLimit);
 
   // Scoping to one dataset is what makes this usable with several loaded: the
   // same topic names repeat across runs, so a name filter alone returns both.
