@@ -577,10 +577,10 @@ class CurveTreeView : public QTreeWidget {
   QSet<QString> pending_expand_paths_;
 };
 
-// Formats a scalar for the curve-list "Value" column: fixed `precision` decimals, then trailing zeros (and a bare
-// trailing '.') overwritten with spaces, with one space appended, so a right-aligned monospace column keeps every
-// decimal point in the same place (1.2 gives "1.2   ", 5 gives "5     ", -0.001 gives "-0.001 "). Non-finite values
-// (NaN, inf) render as "-".
+// Formats a scalar for the curve-list "Value" column: fixed `precision` decimals, then trailing zeros overwritten with
+// kFigureSpace and a bare trailing '.' with kPunctuationSpace (NumberPadding.h), with one space appended, so a
+// right-aligned column in the app font keeps every decimal point in the same place. Non-finite values (NaN, inf)
+// render as "-".
 [[nodiscard]] QString formatScalarForColumn(double value, int precision);
 
 }  // namespace PJ

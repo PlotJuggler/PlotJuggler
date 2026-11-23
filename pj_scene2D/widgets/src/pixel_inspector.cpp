@@ -17,6 +17,7 @@
 #include "pj_scene2d_core/video_color.h"
 #include "pj_widgets/Colormap.h"
 #include "pj_widgets/FrameworkTokens.h"
+#include "pj_widgets/NumberPadding.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -33,6 +34,14 @@ constexpr int kMinInfoHeight = 140;
 constexpr int kRgbBytesPerPixel = 3;
 constexpr int kRgbaBytesPerPixel = 4;
 constexpr int kLineHeight = 20;
+
+// The app's own font: the RGB values are padded with digit-wide spaces (NumberPadding.h), so they keep their columns
+// without a fixed-pitch font.
+[[nodiscard]] QFont inspectorFont() {
+  QFont font = QApplication::font();
+  font.setPointSize(kFontSize);
+  return font;
+}
 constexpr int kDepthBytesPerPixel = 4;
 
 [[nodiscard]] uint8_t clampToByte(float value) {
@@ -295,7 +304,7 @@ void PixelInspector::updateDepth(
   image_y_ = image_y;
 
   // Sized to the wider line: a fixed width clips "— (no data)".
-  const QFontMetrics fm{QFont(u"monospace"_s, kFontSize)};
+  const QFontMetrics fm{inspectorFont()};
   const QString position_line = u"Position: %1, %2"_s.arg(image_x_).arg(image_y_);
   const int text_w = std::max(fm.horizontalAdvance(position_line), fm.horizontalAdvance(depthValueText()));
   const int content_w = std::max(text_w, kSwatchSize) + kPadding * 2;
@@ -378,17 +387,16 @@ void PixelInspector::paintRgb(QPainter& painter) {
   const auto center = cropPixel(half, half);
   int info_x = grid_x + zoom_area + kPadding;
   int info_y = grid_y;
-  QFont mono(u"monospace"_s, kFontSize);
-  painter.setFont(mono);
+  painter.setFont(inspectorFont());
   painter.setPen(PJ::theme::onOverlayHud(fw_theme));
 
   painter.drawText(info_x, info_y + kLineHeight, u"Position: %1, %2"_s.arg(image_x_).arg(image_y_));
   info_y += kLineHeight + 8;
   painter.drawText(
       info_x, info_y + kLineHeight,
-      u"RGB: %1, %2, %3"_s.arg(static_cast<int>(center.r), 3)
-          .arg(static_cast<int>(center.g), 3)
-          .arg(static_cast<int>(center.b), 3));
+      u"RGB: %1, %2, %3"_s.arg(static_cast<int>(center.r), 3, 10, PJ::kFigureSpace)
+          .arg(static_cast<int>(center.g), 3, 10, PJ::kFigureSpace)
+          .arg(static_cast<int>(center.b), 3, 10, PJ::kFigureSpace));
   info_y += kLineHeight + 4;
 
   const QString hex = u"#%1%2%3"_s.arg(static_cast<int>(center.r), 2, 16, QChar('0'))
@@ -407,11 +415,9 @@ void PixelInspector::paintDepth(QPainter& painter) {
   const auto fw_theme = PJ::theme::appTheme();
   int x = kPadding;
   int y = kPadding;
-  QFont mono(u"monospace"_s, kFontSize);
-  painter.setFont(mono);
+  painter.setFont(inspectorFont());
   painter.setPen(PJ::theme::onOverlayHud(fw_theme));
 
-  // Labels padded so the values line up under each other in the monospace font.
   painter.drawText(x, y + kLineHeight, u"Position: %1, %2"_s.arg(image_x_).arg(image_y_));
   y += kLineHeight + 8;
   painter.drawText(x, y + kLineHeight, depthValueText());
@@ -426,11 +432,10 @@ void PixelInspector::paintDepth(QPainter& painter) {
 }
 
 QString PixelInspector::depthValueText() const {
-  // "Depth:" padded to the width of "Position: " so values align in the monospace font.
   if (depth_m_.has_value()) {
-    return u"Depth:    %1 m"_s.arg(*depth_m_, 0, 'f', 3);
+    return u"Depth: %1 m"_s.arg(*depth_m_, 0, 'f', 3);
   }
-  return u"Depth:    — (no data)"_s;
+  return u"Depth: — (no data)"_s;
 }
 
 InspectorRgb PixelInspector::cropPixel(int x, int y) const {

@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "pj_widgets/CurveTreeView.h"
+#include "pj_widgets/NumberPadding.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -713,11 +714,11 @@ TEST(CurveTreeViewTest, PullOnNotDraggableObjectTopicEmitsNoticeOnce) {
   EXPECT_EQ(attempt_reasons, QStringList{u"Camera calibration topic"_s});
 }
 
-// The "Value" column keeps decimal points vertically aligned in a monospace right-aligned cell: fixed precision, then
-// trailing zeros (and a bare trailing dot) blanked with spaces.
+// The "Value" column keeps decimal points vertically aligned in a right-aligned cell: fixed precision, then trailing
+// zeros blanked with digit-wide spaces and a bare trailing dot with a dot-wide one.
 TEST(CurveTreeViewTest, FormatScalarForColumnTrimsTrailingZerosToAlignDecimals) {
-  EXPECT_EQ(PJ::formatScalarForColumn(1.2, 3), u"1.2"_s + QString(3, QChar(' ')));
-  EXPECT_EQ(PJ::formatScalarForColumn(5.0, 3), u"5"_s + QString(5, QChar(' ')));
+  EXPECT_EQ(PJ::formatScalarForColumn(1.2, 3), u"1.2"_s + QString(2, PJ::kFigureSpace) + u' ');
+  EXPECT_EQ(PJ::formatScalarForColumn(5.0, 3), u"5"_s + PJ::kPunctuationSpace + QString(3, PJ::kFigureSpace) + u' ');
   EXPECT_EQ(PJ::formatScalarForColumn(-0.001, 3), u"-0.001 "_s);
   EXPECT_EQ(PJ::formatScalarForColumn(123.456, 3), u"123.456 "_s);
 }
