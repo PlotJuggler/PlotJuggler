@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -25,26 +26,28 @@ namespace PJ {
 
 namespace {
 
-// Wire samples to metres, an invalid sample to 0. One loop per encoding, branch-free: a reader called through a
-// pointer for every pixel cannot be vectorized.
-void metersFrom16UC1(const uint8_t* src, float* out, size_t count) noexcept {
+// Wire samples to metres, an invalid sample to 0. One loop per encoding, branch-free and over pointers that do not
+// alias, so the compiler vectorizes it: a reader called through a pointer for every pixel cannot be.
+void metersFrom16UC1(const uint8_t* __restrict src, float* __restrict out, size_t count) noexcept {
   for (size_t i = 0; i < count; ++i) {
     const auto mm = static_cast<uint16_t>(src[2 * i] | (src[2 * i + 1] << 8));
     out[i] = static_cast<float>(mm) * 0.001f;  // 0 mm, the no-data value, stays 0
   }
 }
 
-void metersFrom32FC1(const uint8_t* src, float* out, size_t count) noexcept {
+void metersFrom32FC1(const uint8_t* __restrict src, float* __restrict out, size_t count) noexcept {
   for (size_t i = 0; i < count; ++i) {
     float meters = 0.0f;
     std::memcpy(&meters, src + i * sizeof(float), sizeof(float));
-    out[i] = isValidDepth(meters) ? meters : 0.0f;
+    // isValidDepth() without its short-circuit, which stops the vectorizer: NaN fails both comparisons.
+    const bool valid = (meters > 0.0f) & (meters < std::numeric_limits<float>::infinity());
+    out[i] = valid ? meters : 0.0f;
   }
 }
 
 struct DepthFormat {
   size_t bytes_per_pixel = 0;
-  void (*to_meters)(const uint8_t* src, float* out, size_t count) noexcept = nullptr;
+  void (*to_meters)(const uint8_t* __restrict src, float* __restrict out, size_t count) noexcept = nullptr;
 };
 
 [[nodiscard]] std::optional<DepthFormat> resolveDepthFormat(std::string_view encoding) noexcept {

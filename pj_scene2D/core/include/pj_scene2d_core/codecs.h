@@ -109,6 +109,7 @@ class NormalizeMono16 : public CodecStage {
 /// JPEG/PNG byte decoder cascade. The output may still be Mono16.
 class ImageDecodeCascade : public CodecStage {
  public:
+  explicit ImageDecodeCascade(ColorOutput output = ColorOutput::kRgb) : jpeg_(output), png_(output) {}
   Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
 
  private:
@@ -119,6 +120,7 @@ class ImageDecodeCascade : public CodecStage {
 /// JPEG/PNG auto-dispatch followed by Mono16 normalization when needed.
 class AutoImageCodec : public CodecStage {
  public:
+  explicit AutoImageCodec(ColorOutput output = ColorOutput::kRgb) : decode_(output) {}
   Expected<DecodedFrame> decode(const DecodedFrame& input) const override;
 
  private:

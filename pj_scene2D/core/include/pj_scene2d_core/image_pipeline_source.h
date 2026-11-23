@@ -120,7 +120,7 @@ class ImagePipelineSource : public MediaSource {
   JpegCodec jpeg_codec_{ColorOutput::kRgba};
   PngCodec png_codec_{ColorOutput::kRgba};
   NormalizeMono16 normalize_mono16_;
-  AutoImageCodec auto_image_codec_;
+  AutoImageCodec auto_image_codec_{ColorOutput::kRgba};
   /// The last delivered entry, worker-thread only; invalid = none (force_redecode resets to it).
   SequentialUID last_entry_uid_;
   /// The last delivered entry's store stamp, worker-thread only: a seek before it with nothing there clears.
