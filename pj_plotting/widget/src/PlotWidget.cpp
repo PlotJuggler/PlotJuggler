@@ -707,6 +707,10 @@ void PlotWidget::redrawTrackers() {
   }
 }
 
+std::vector<ValueBoxRow> PlotWidget::trackerValueBoxRows() const {
+  return tracker_ != nullptr ? tracker_->valueBoxRows() : std::vector<ValueBoxRow>{};
+}
+
 QString PlotWidget::trackerValueBoxText() const {
   return tracker_ != nullptr ? tracker_->valueBoxText() : QString();
 }

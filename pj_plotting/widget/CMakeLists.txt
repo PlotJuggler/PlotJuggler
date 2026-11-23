@@ -12,6 +12,7 @@ add_library(pj_plotting STATIC
     src/FilterEditorPanel.ui
     src/ParameterForm.cpp
     src/CurveTracker.cpp
+    src/TrackerTextEngine.cpp
     src/DockToolbar.cpp
     src/DockToolbar.ui
     src/DockWidget.cpp

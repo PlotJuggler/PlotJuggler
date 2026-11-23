@@ -71,7 +71,10 @@ std::optional<DecodedFrame> rectifyFrame(const DecodedFrame& src, const Undistor
       const int x0 = static_cast<int>(x0f);
       const int y0 = static_cast<int>(y0f);
       if (x0 < 0 || y0 < 0 || x0 + 1 >= sw || y0 + 1 >= sh) {
-        continue;  // out of bounds -> leave black (buffer is zero-filled).
+        if (ch == 4) {
+          op[static_cast<size_t>(v) * out_stride + static_cast<size_t>(u) * 4 + 3] = 255;
+        }
+        continue;  // out of bounds -> opaque black (the buffer is zero-filled; a 4-byte frame's alpha is not)
       }
 
       const float ax = fx - x0f;
@@ -136,6 +139,9 @@ bool rectifyFrameFast(const DecodedFrame& src, const UndistortMapFast& fast, Dec
     if (p0 < 0) {
       for (int c = 0; c < ch; ++c) {
         dst[c] = 0;  // out of bounds -> black (write explicitly; the buffer is reused).
+      }
+      if (ch == 4) {
+        dst[3] = 255;  // opaque: alpha 0 would show the layer beneath through the border
       }
       continue;
     }

@@ -15,7 +15,7 @@
 
 namespace PJ {
 
-JpegCodec::JpegCodec() : tj_(tjInitDecompress()) {}
+JpegCodec::JpegCodec(ColorOutput output) : tj_(tjInitDecompress()), output_(output) {}
 
 JpegCodec::~JpegCodec() {
   if (tj_ != nullptr) {
@@ -46,10 +46,13 @@ Expected<DecodedFrame> JpegCodec::decode(const DecodedFrame& input) const {
     return unexpected("JPEG image dimensions exceed limit: " + std::to_string(width) + "x" + std::to_string(height));
   }
 
-  auto pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(width) * static_cast<size_t>(height) * 3);
+  const bool rgba = output_ == ColorOutput::kRgba;
+  const int channels = rgba ? 4 : 3;
+  auto pixels = std::make_shared<std::vector<uint8_t>>(
+      static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(channels));
   if (tjDecompress2(
-          static_cast<tjhandle>(tj_), const_cast<uint8_t*>(data), size, pixels->data(), width, width * 3, height,
-          TJPF_RGB, TJFLAG_FASTUPSAMPLE | TJFLAG_FASTDCT) != 0) {
+          static_cast<tjhandle>(tj_), const_cast<uint8_t*>(data), size, pixels->data(), width, width * channels, height,
+          rgba ? TJPF_RGBA : TJPF_RGB, TJFLAG_FASTUPSAMPLE | TJFLAG_FASTDCT) != 0) {
     return unexpected(std::string("JPEG decode failed: ") + tjGetErrorStr());
   }
 
@@ -57,7 +60,7 @@ Expected<DecodedFrame> JpegCodec::decode(const DecodedFrame& input) const {
   frame.pixels = std::move(pixels);
   frame.width = width;
   frame.height = height;
-  frame.format = PixelFormat::kRGB888;
+  frame.format = rgba ? PixelFormat::kRGBA8888 : PixelFormat::kRGB888;
   return frame;
 }
 
@@ -159,6 +162,10 @@ Expected<DecodedFrame> PngCodec::decode(const DecodedFrame& input) const {
     }
     if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
       png_set_gray_to_rgb(png);
+    }
+    const bool own_alpha = (color_type & PNG_COLOR_MASK_ALPHA) != 0 || png_get_valid(png, info, PNG_INFO_tRNS) != 0;
+    if (output_ == ColorOutput::kRgba && !own_alpha) {
+      png_set_add_alpha(png, 0xFF, PNG_FILLER_AFTER);
     }
     png_read_update_info(png, info);
   }

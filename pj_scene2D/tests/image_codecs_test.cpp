@@ -56,6 +56,25 @@ TEST(ImageCodecTest, DecodeValidJpeg) {
   EXPECT_LT((*result->pixels)[1], 50);
 }
 
+// The RGBA output is the RGB one with an opaque alpha: the viewer uploads it as it is.
+TEST(ImageCodecTest, DecodeJpegToRgbaMatchesRgb) {
+  const auto jpeg = createTestJpeg(64, 48);
+  const auto rgb = JpegCodec{}.decode(compressedFrame(jpeg));
+  const auto rgba = JpegCodec{ColorOutput::kRgba}.decode(compressedFrame(jpeg));
+  ASSERT_TRUE(rgb.has_value()) << rgb.error();
+  ASSERT_TRUE(rgba.has_value()) << rgba.error();
+  EXPECT_EQ(rgba->format, PixelFormat::kRGBA8888);
+  EXPECT_EQ(rgba->width, 64);
+  EXPECT_EQ(rgba->height, 48);
+  ASSERT_EQ(rgba->pixels->size(), 64u * 48u * 4u);
+  for (size_t pixel = 0; pixel < 64u * 48u; ++pixel) {
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 0], (*rgb->pixels)[pixel * 3 + 0]) << pixel;
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 1], (*rgb->pixels)[pixel * 3 + 1]) << pixel;
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 2], (*rgb->pixels)[pixel * 3 + 2]) << pixel;
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 3], 255) << pixel;
+  }
+}
+
 TEST(ImageCodecTest, DecodeEmptyInputFails) {
   JpegCodec decoder;
   auto result = decoder.decode({});
@@ -70,6 +89,35 @@ TEST(ImageCodecTest, DecodeCorruptInputFails) {
 }
 
 // --- PNG tests ---
+
+// An opaque PNG gains an opaque alpha; one with its own alpha keeps it; 16-bit grayscale stays Mono16.
+TEST(ImageCodecTest, DecodePngToRgba) {
+  const PngCodec rgb_decoder;
+  const PngCodec rgba_decoder{ColorOutput::kRgba};
+
+  const auto opaque = PJ::test::makeRgbPng(32, 24, false);
+  const auto rgb = rgb_decoder.decode(compressedFrame(opaque));
+  const auto rgba = rgba_decoder.decode(compressedFrame(opaque));
+  ASSERT_TRUE(rgb.has_value()) << rgb.error();
+  ASSERT_TRUE(rgba.has_value()) << rgba.error();
+  ASSERT_EQ(rgb->format, PixelFormat::kRGB888);
+  ASSERT_EQ(rgba->format, PixelFormat::kRGBA8888);
+  ASSERT_EQ(rgba->pixels->size(), 32u * 24u * 4u);
+  for (size_t pixel = 0; pixel < 32u * 24u; ++pixel) {
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 0], (*rgb->pixels)[pixel * 3 + 0]) << pixel;
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 1], (*rgb->pixels)[pixel * 3 + 1]) << pixel;
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 2], (*rgb->pixels)[pixel * 3 + 2]) << pixel;
+    ASSERT_EQ((*rgba->pixels)[pixel * 4 + 3], 255) << pixel;
+  }
+
+  const auto translucent = PJ::test::makeRgbPng(32, 24, true);
+  const auto kept = rgba_decoder.decode(compressedFrame(translucent));
+  const auto reference = rgb_decoder.decode(compressedFrame(translucent));
+  ASSERT_TRUE(kept.has_value()) << kept.error();
+  ASSERT_TRUE(reference.has_value()) << reference.error();
+  EXPECT_EQ(kept->format, PixelFormat::kRGBA8888);
+  EXPECT_EQ(*kept->pixels, *reference->pixels);
+}
 
 TEST(ImageCodecTest, DecodePngRgb) {
   PngCodec decoder;

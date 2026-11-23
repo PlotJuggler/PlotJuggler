@@ -77,6 +77,27 @@ observed, under which conditions, what the code does about it and when to measur
 - **Re-test:** on every Qt bump (the file refuses to build on another Qt version); drop the backported part from
   6.12.1 and the rest once Qt carries an equivalent fix.
 
+## Raster repaints during playback
+
+- **Observed:** on Qt 6.12.0 (Linux, OpenGL, Iris Xe, a 1920x1080 window), a widget drawn into the window's backing
+  store that repaints in the same frame as `QRhiWidget`s makes `QWidgetRepaintManager` repaint the backing store
+  under every one of those views (their parents' backgrounds and whatever overlaps them) and makes
+  `QPlatformBackingStore::rhiFlush` copy the whole window image and upload it again. With the playback slider and the
+  time readout repainting on every 30 Hz tick, moving them to one tick in three removed 19% to 27% of the GUI thread's
+  CPU in three layouts of plots, cameras and 3D views, and 50% in one of six cameras and a 3D view (`perf`, looping
+  playback; the slider and the readout were the only backing-store widgets marked dirty). A frame in which only `QRhiWidget`s update skips all of
+  it.
+- **What the code does:** the slider, the readout and the Source Timeline needle follow
+  `PlaybackEngine::coarseTimeChanged`, every second tick (about 15 Hz) while playing; a seek or a step still reaches
+  them at once. One tick in three measured the same within noise, so the smoother handle was kept.
+- **Known gap:** backing-store views that follow every tick while visible bring the cost back: a State Transitions
+  dock, a Log panel revealing rows, a Custom Widget on a changing signal, and the curve list's Values column (its
+  own 10 Hz timer, out of phase with the coarse tick). A live stream moves the cursor with every ingest, which is not
+  a playback tick, so the three controls follow the ingest rate there.
+- **Re-test:** when another backing-store widget starts to follow the playback tick (count the paint events per
+  widget during playback: only `QRhiWidget`s should repaint between two coarse ticks), and on a Qt bump that changes
+  `QWidgetRepaintManager::paintAndFlush` or `QBackingStoreDefaultCompositor::toTexture`.
+
 ## Exported static-archive symbols on Linux
 
 - **Observed:** with Conan's static libpng exported from the executable, the dynamic linker interposed it ahead of

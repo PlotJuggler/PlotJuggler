@@ -400,7 +400,7 @@ class Timeline : public QWidget {
 
   /// Seeks the playhead from a viewport scene-x: clamps the requested time to the data extent and emits playheadSeeked.
   /// The needle is a pure slave: it does not move itself here. The host writes the time to the PlaybackEngine and the
-  /// currentTimeChanged echo (setPlayhead) is the one source that repositions it, keeping it in lockstep with the
+  /// coarseTimeChanged echo (setPlayhead) is the one source that repositions it, keeping it in lockstep with the
   /// playback handle. Returns the clamped display-seconds it emitted (for the test seam).
   double seekToSceneX(double scene_x);
   /// Moves the reference line to a scene-x and emits referenceLineMoved (drag path).

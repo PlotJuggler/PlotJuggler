@@ -243,7 +243,9 @@ parentless and then inserted (TECHNICAL_NOTES "QRhiWidget in a raster window"). 
 
 1. **Image** (`yuv_to_rgb`): the base layer. The `pixelFormat` uniform selects YUV420P (three R8), NV12 (R8 + RG8;
    a backend without RG8 gets a CPU deinterleave), RGBA, Mono8 (R8), BGRA (swizzled) or depth (R32F plus the LUT
-   in `u_tex`). RGB888, BGR888 and Mono16 are converted to RGBA on the CPU. The YUV matrix comes per frame from
+   in `u_tex`). RGB888, BGR888 and Mono16 are converted to RGBA on the CPU, on the GUI thread at upload; that is
+   why `ImagePipelineSource` has its worker decode JPEG and PNG straight to RGBA (`ColorOutput::kRgba`), leaving
+   the conversion to raw `rgb8` / `bgr8` images. The YUV matrix comes per frame from
    `buildYuvMatrix(space, range)` (`video_color.h`), one affine 4x4, so the shader is the same for every
    combination. Chroma sampling follows 4:2:0 siting at odd sizes (TECHNICAL_NOTES "Chroma siting at odd sizes").
 2. **Composite**: further `pixel_layers`, alpha-blended (SrcAlpha / OneMinusSrcAlpha), one draw each.

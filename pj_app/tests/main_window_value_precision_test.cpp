@@ -64,7 +64,8 @@ TEST(MainWindowValuePrecisionTest, OkInPreferencesRedrawsTheTrackerWithTheNewPre
   ASSERT_NE(plot->addCurve(app.catalogModel().curves().front().name), nullptr);
   plot->zoomOut(false);
   plot->setTrackerPosition(plot->maxZoomRect().center().x());
-  ASSERT_TRUE(plot->trackerValueBoxText().contains(u">1.235</font>"_s)) << plot->trackerValueBoxText().toStdString();
+  ASSERT_TRUE(plot->trackerValueBoxRows().back().text.trimmed() == u"1.235"_s)
+      << plot->trackerValueBoxText().toStdString();
 
   QTimer::singleShot(0, &window, [&window] {
     auto* dialog = window.findChild<PJ::PreferencesDialog*>();
@@ -74,7 +75,8 @@ TEST(MainWindowValuePrecisionTest, OkInPreferencesRedrawsTheTrackerWithTheNewPre
   });
   QMetaObject::invokeMethod(&window, "onShowPreferencesDialog");
 
-  EXPECT_TRUE(QTest::qWaitFor([plot] { return plot->trackerValueBoxText().contains(u">1.23457</font>"_s); }, 2000))
+  EXPECT_TRUE(
+      QTest::qWaitFor([plot] { return plot->trackerValueBoxRows().back().text.trimmed() == u"1.23457"_s; }, 2000))
       << plot->trackerValueBoxText().toStdString();
   QSettings().remove(QString::fromLatin1(PJ::kPrecisionSettingsKey));
 }

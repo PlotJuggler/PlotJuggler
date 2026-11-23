@@ -200,6 +200,33 @@ TEST(ImageRectifierTest, OutOfBoundsSamplesRenderBlack) {
   EXPECT_EQ((*out->pixels)[2], 0);
 }
 
+// A 4-byte frame's out-of-bounds pixels are opaque black, like the GPU path's: alpha 0 would show the layer beneath
+// through the border.
+TEST(ImageRectifierTest, OutOfBoundsSamplesOfAnRgbaFrameAreOpaqueBlack) {
+  DecodedFrame src = makeRgbFrame(8, 6, 255, 255, 255);
+  src.format = PixelFormat::kRGBA8888;
+  src.pixels = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(8) * 6 * 4, 255);
+  UndistortMap m = identityMap(8, 6);
+  m.src_width = 8;  // the fast table refuses a frame of another size
+  m.src_height = 6;
+  m.src_x[0] = -100.0F;
+  m.src_y[0] = -100.0F;
+
+  const auto out = rectifyFrame(src, m);
+  ASSERT_TRUE(out.has_value());
+  EXPECT_EQ((*out->pixels)[0], 0);
+  EXPECT_EQ((*out->pixels)[1], 0);
+  EXPECT_EQ((*out->pixels)[2], 0);
+  EXPECT_EQ((*out->pixels)[3], 255);
+
+  DecodedFrame fast_out;
+  ASSERT_TRUE(rectifyFrameFast(src, buildFastRectifyMap(m), fast_out));
+  EXPECT_EQ((*fast_out.pixels)[0], 0);
+  EXPECT_EQ((*fast_out.pixels)[1], 0);
+  EXPECT_EQ((*fast_out.pixels)[2], 0);
+  EXPECT_EQ((*fast_out.pixels)[3], 255);
+}
+
 TEST(ImageRectifierTest, UnsupportedFormatReturnsNullopt) {
   DecodedFrame src = makeRgbFrame(8, 6, 1, 2, 3);
   src.format = PixelFormat::kYUV420P;  // planar: not handled by the resampler

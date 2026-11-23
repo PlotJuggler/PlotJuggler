@@ -1992,7 +1992,7 @@ TEST(PlotTrackerRefresh, ZoomingBackOverTheTrackerShowsItsValueBox) {
   EXPECT_TRUE(plot.trackerValueBoxVisible());
   // The value at the tracker's time (the ramp is 0 at its first sample), not one from the previous window's edge: Qwt
   // announces the new axis scale before it hands the curves their new window.
-  EXPECT_TRUE(plot.trackerValueBoxText().contains(u">0.000</font>"_s)) << plot.trackerValueBoxText().toStdString();
+  EXPECT_TRUE(plot.trackerValueBoxText().endsWith(u"\n0.000"_s)) << plot.trackerValueBoxText().toStdString();
 
   // And the reverse: zooming away from the tracker hides the box it showed.
   plot.setZoomRectangle(second_half, false);

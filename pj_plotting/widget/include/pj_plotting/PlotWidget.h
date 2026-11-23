@@ -119,6 +119,8 @@ class PlotWidget : public PlotWidgetBase {
   [[nodiscard]] CurveTracker::Parameter trackerParameter() const noexcept;
   // Whether the playback tracker's floating value box is visible (always hidden in line-only mode).
   [[nodiscard]] bool trackerValueBoxVisible() const noexcept;
+  // The value box's rows (CurveTracker::valueBoxRows), and their text, one line each.
+  [[nodiscard]] std::vector<ValueBoxRow> trackerValueBoxRows() const;
   [[nodiscard]] QString trackerValueBoxText() const;
   [[nodiscard]] bool trackerValueBoxGliding() const noexcept;
   // Sets, or clears with nullopt, a blue reference line; while set, the red playback tracker shows values as deltas

@@ -13,7 +13,8 @@ namespace {
 // curve-list Value column is capped at 10 Hz); halving the tick halves the downstream replot/decode/composite work for
 // every consumer at once, capped at the origin rather than throttled per widget. Playback speed is unaffected: onTick
 // derives the cursor from elapsed wall-clock, not tick count.
-constexpr int kTickIntervalMs = 33;  // ~30 Hz
+constexpr int kTickIntervalMs = 33;    // ~30 Hz
+constexpr int kCoarseTickDivisor = 2;  // coarseTimeChanged at ~15 Hz while playing
 
 bool isFinite(DisplayRange range) {
   return std::isfinite(range.min.value) && std::isfinite(range.max.value);
@@ -36,7 +37,7 @@ void PlaybackEngine::setRange(DisplayRange range) {
   const double clamped = clampedTime(current_time_);
   if (clamped != current_time_) {
     current_time_ = clamped;
-    emit currentTimeChanged(current_time_);
+    notifyTimeChanged(/*playback_tick=*/false);
   }
 }
 
@@ -60,7 +61,7 @@ void PlaybackEngine::setRangeAndCurrentTime(DisplayRange range, DisplaySeconds t
     emit rangeChanged(range_min_, range_max_);
   }
   if (time_changed) {
-    emit currentTimeChanged(current_time_);
+    notifyTimeChanged(/*playback_tick=*/false);
   }
 }
 
@@ -87,7 +88,7 @@ void PlaybackEngine::setCurrentTime(DisplaySeconds t) {
     return;
   }
   current_time_ = clamped;
-  emit currentTimeChanged(current_time_);
+  notifyTimeChanged(/*playback_tick=*/false);
 }
 
 void PlaybackEngine::setPlaybackRate(double rate) {
@@ -154,9 +155,10 @@ void PlaybackEngine::play() {
   // (streaming) and when looping (which wraps on its own).
   if (!hold_at_range_max_ && !looping_ && range_max_ > range_min_ && current_time_ >= range_max_) {
     current_time_ = range_min_;
-    emit currentTimeChanged(current_time_);
+    notifyTimeChanged(/*playback_tick=*/false);
   }
   playing_ = true;
+  ticks_since_coarse_ = kCoarseTickDivisor;  // the first tick is a coarse one
   elapsed_.restart();
   timer_.start();
   emit playingChanged(playing_);
@@ -168,6 +170,9 @@ void PlaybackEngine::pause() {
   }
   playing_ = false;
   timer_.stop();
+  if (ticks_since_coarse_ > 0 && ticks_since_coarse_ < kCoarseTickDivisor) {
+    emit coarseTimeChanged(current_time_);  // the last ticks went out as currentTimeChanged only
+  }
   emit playingChanged(playing_);
 }
 
@@ -192,8 +197,17 @@ void PlaybackEngine::onTick() {
 
   if (next != current_time_) {
     current_time_ = next;
-    emit currentTimeChanged(current_time_);
+    notifyTimeChanged(/*playback_tick=*/true);
   }
+}
+
+void PlaybackEngine::notifyTimeChanged(bool playback_tick) {
+  emit currentTimeChanged(current_time_);
+  if (playback_tick && playing_ && ++ticks_since_coarse_ < kCoarseTickDivisor) {
+    return;
+  }
+  ticks_since_coarse_ = 0;
+  emit coarseTimeChanged(current_time_);
 }
 
 double PlaybackEngine::clampedTime(double t) const {

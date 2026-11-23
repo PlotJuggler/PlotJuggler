@@ -76,7 +76,7 @@ void TimelineWidget::setPlaybackEngine(PlaybackEngine* engine) {
   if (!engine_) {
     return;
   }
-  connect(engine_, &PlaybackEngine::currentTimeChanged, this, &TimelineWidget::onEngineTimeChanged);
+  connect(engine_, &PlaybackEngine::coarseTimeChanged, this, &TimelineWidget::onEngineTimeChanged);
   connect(engine_, &PlaybackEngine::rangeChanged, this, &TimelineWidget::onEngineRangeChanged);
   connect(engine_, &PlaybackEngine::playingChanged, this, &TimelineWidget::onEnginePlayingChanged);
   connect(engine_, &PlaybackEngine::playbackRateChanged, this, &TimelineWidget::onEngineRateChanged);
@@ -152,9 +152,8 @@ bool TimelineWidget::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void TimelineWidget::onEngineTimeChanged(double t) {
-  // No throttle: the Source Timeline needle follows currentTimeChanged directly, so throttling here makes the handle
-  // lag it by up to one window. The repaint is cheap; the expensive per-cursor work is coalesced on MainWindow's
-  // tracker-broadcast path.
+  // The coarse cursor, as the Source Timeline needle: the handle and the needle move together, and neither repaints
+  // on every playback tick (docs/TECHNICAL_NOTES.md, "Raster repaints during playback").
   applyEngineTime(t);
 }
 
