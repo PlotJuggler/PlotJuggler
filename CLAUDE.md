@@ -174,9 +174,10 @@ Conan or `.qt/`): [packaging/nix/README.md](./packaging/nix/README.md).
 - **Portability:** Linux, Windows and macOS (arm64) are shipped targets. No Linux-only APIs or POSIX-specific paths
   in module code; gate platform code behind CMake / `#ifdef` ([pitfalls](./docs/BUILDING.md#portability)).
 - **Third-party:** vendored deps live in `3rdparty/`, never taken from Conan or the system (only distribution builds
-  opt out, with `PJ_SYSTEM_*`); everything else comes from Conan. Qwt is fetched as a pinned release and not
-  patched: PJ-specific Qwt behavior lives in `pj_plotting` / `pj_dialog_host`
-  ([details](./docs/BUILDING.md#third-party-dependencies)).
+  opt out, with `PJ_SYSTEM_*`); everything else comes from Conan. Every package ships `THIRD_PARTY_NOTICES.txt`
+  (`cmake/PjNotices.cmake`, [Licences](./packaging/README.md#licences)): a new dependency needs its licence there.
+  Qwt is fetched as a pinned release and not patched: PJ-specific Qwt behavior lives in `pj_plotting` /
+  `pj_dialog_host` ([details](./docs/BUILDING.md#third-party-dependencies)).
 - **Browser build** ([docs/WASM_DEPLOYMENT.md](./docs/WASM_DEPLOYMENT.md)): browser policy (file picking, bounded
   loading) stays on `PJ_TARGET_WASM`; the Assimp, point-cloud-codec and CPython graphs enter only through
   `PJ_WASM_WITH_SCENE2D` / `_SCENE3D` / `_PYTHON`. Shader packs are committed `.qsb` files, re-baked with the
