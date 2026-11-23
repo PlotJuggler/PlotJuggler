@@ -1596,6 +1596,7 @@ TEST(CatalogModelTest, WholeNumberFloatIsDiscreteUntilAFractionalValue) {
   EXPECT_TRUE(catalog.curveDescriptor(key_by_field[u"mode"_s], PJ::SeriesCapability::kDiscrete).has_value());
   EXPECT_TRUE(catalog.curveDescriptor(key_by_field[u"mode"_s], PJ::SeriesCapability::kPlottable).has_value());
   EXPECT_FALSE(catalog.curveDescriptor(key_by_field[u"speed"_s], PJ::SeriesCapability::kDiscrete).has_value());
+  EXPECT_TRUE(catalog.curveDescriptor(key_by_field[u"speed"_s], PJ::SeriesCapability::kAny).has_value());
 
   QSignalSpy capability_changed(&catalog, &PJ::CatalogModel::itemsChanged);
   commit_rows({{2.5, 2.0}}, 2'000'000'000);

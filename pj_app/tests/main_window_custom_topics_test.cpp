@@ -316,6 +316,26 @@ TEST(MainWindowCustomTopicsTest, DeleteOfAnotherPluginsTransformIsRefused) {
   EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty()) << "the editor's own goes";
 }
 
+// A text series is not plottable, but its Custom Topics row resolves to its transform like any other: Delete removes
+// it.
+TEST(MainWindowCustomTopicsTest, DeleteOfATextSeriesRemovesItsTransform) {
+  constexpr const char* kLabel = R"LUAU(-- pj-script: luau
+return { id="label", name="Label", output="string",
+  create = function(p) return { calculate = function(t, v) return v > 0 and "up" or "down" end } end }
+)LUAU";
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "label", {"sensor/value"}, {"sensor/state"}, kLabel, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  const QString key = fx.keyOf("sensor/state");
+  ASSERT_FALSE(key.isEmpty());
+
+  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, key);
+  EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty()) << "the text series' transform goes";
+}
+
 // Deleting the editor's transform never cascades into another plugin's: a reader owned elsewhere refuses the
 // delete up front, by name, and nothing is removed.
 TEST(MainWindowCustomTopicsTest, DeleteCascadingIntoAnotherPluginsTransformIsRefused) {

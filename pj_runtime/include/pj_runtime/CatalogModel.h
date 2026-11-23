@@ -108,6 +108,7 @@ struct ScalarFieldPayload {
 enum class SeriesCapability : uint8_t {
   kPlottable,  // numeric curves a plot can draw (floats, integers, bool)
   kDiscrete,   // state series the strip can display (strings, integers, bool, whole-number floats)
+  kAny,        // every scalar field: identity lookups (which topic a row is), never what a view can draw
 };
 
 struct ObjectTopicPayload {

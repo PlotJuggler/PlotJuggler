@@ -1109,7 +1109,8 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       }
       initial_config = QString::fromStdString(node->recipe.params_json);
     } else {
-      const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+      const std::optional<CurveDescriptor> output =
+          session_->catalogModel().curveDescriptor(catalog_key, SeriesCapability::kAny);
       const auto transform = output.has_value()
                                  ? session_->sessionManager().dataProcessorService().transformOwning(output->topic_id)
                                  : std::nullopt;
@@ -3265,7 +3266,7 @@ void MainWindow::onCatalogTrashRequested(QStringList keys, bool covers_all) {
   }
   std::vector<TopicId> removed_topics;
   for (const QString& key : keys) {
-    if (const auto d = catalog.curveDescriptor(key)) {
+    if (const auto d = catalog.curveDescriptor(key, SeriesCapability::kAny)) {
       removed_topics.push_back(d->topic_id);
     }
   }
@@ -8091,7 +8092,8 @@ bool MainWindow::mayDeleteTransformWriting(TopicId output_topic) {
 }
 
 void MainWindow::deleteTransformOutput(const QString& catalog_key) {
-  const std::optional<CurveDescriptor> output = session_->catalogModel().curveDescriptor(catalog_key);
+  const std::optional<CurveDescriptor> output =
+      session_->catalogModel().curveDescriptor(catalog_key, SeriesCapability::kAny);
   if (!output.has_value()) {
     syncCustomTopicsPanel();  // the row outlived its catalog item: clearing it is all there is to do
     return;
