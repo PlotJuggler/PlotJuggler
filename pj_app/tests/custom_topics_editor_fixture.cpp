@@ -1,11 +1,12 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// Test-only Toolbox plugin standing in for the Transform Editor: its manifest declares `custom_topics_editor`, so
-// the host makes it the Custom Topics editor, and its panel previews `/cloud` in an embedded 3D scene view (the
-// `scenePreview` frame's `scene_view` document). The `droppedItems` label is a drop target showing the names and
-// data sources of the last drop, one per line, so a test can read what the plugin received. Consumed by
-// main_window_editor_integration_test.
+// Test-only Toolbox plugin standing in for the Transform Editor: its manifest declares `custom_topics_editor` and
+// `custom_topics_viewer`, so the host makes it the Custom Topics editor and opens other owners' recipes in it as a
+// view, and its panel previews `/cloud` in an embedded 3D scene view (the `scenePreview` frame's `scene_view`
+// document). The `droppedItems` label is a drop target showing the names and data sources of the last drop, one per
+// line, so a test can read what the plugin received; the `loadedConfig` label shows the config the host launched it
+// with, which `saveConfig` returns unchanged. Consumed by main_window_editor_integration_test.
 
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -30,6 +31,7 @@ constexpr const char* kUiContent = R"(<?xml version="1.0" encoding="UTF-8"?>
      <property name="text"><string>drop here</string></property>
     </widget>
    </item>
+   <item><widget class="QLabel" name="loadedConfig"/></item>
   </layout>
  </widget>
 </ui>
@@ -52,7 +54,11 @@ class EditorFixtureDialog : public PJ::DialogPluginTyped {
     if (!dropped_.empty()) {
       data.setText("droppedItems", dropped_);
     }
+    data.setText("loadedConfig", config_);
     return data.toJson();
+  }
+  void setConfig(std::string_view config) {
+    config_ = config;
   }
   bool onDroppedItems(std::string_view /*widget_name*/, const std::vector<DroppedItem>& items) override {
     dropped_.clear();
@@ -64,6 +70,7 @@ class EditorFixtureDialog : public PJ::DialogPluginTyped {
 
  private:
   std::string dropped_;
+  std::string config_;
 };
 
 class EditorFixtureToolbox : public PJ::ToolboxPluginBase {
@@ -74,13 +81,23 @@ class EditorFixtureToolbox : public PJ::ToolboxPluginBase {
   PJ_borrowed_dialog_t getDialog() override {
     return PJ::borrowDialog(dialog_);
   }
+  PJ::Status loadConfig(std::string_view config_json) override {
+    config_ = config_json;
+    dialog_.setConfig(config_json);
+    return PJ::okStatus();
+  }
+  // Echoes the launch config, as an editor that keeps the recipe it was opened on would.
+  std::string saveConfig() const override {
+    return config_.empty() ? "{}" : config_;
+  }
 
  private:
   EditorFixtureDialog dialog_;
+  std::string config_;
 };
 
 PJ_TOOLBOX_PLUGIN(
     EditorFixtureToolbox, R"({"id":"custom-topics-editor-fixture","name":"Editor Fixture","version":"1.0.0",)"
-                          R"("capabilities":["custom_topics_editor"]})")
+                          R"("capabilities":["custom_topics_editor","custom_topics_viewer"]})")
 
 PJ_DIALOG_PLUGIN(EditorFixtureDialog, kDialogManifestJson)

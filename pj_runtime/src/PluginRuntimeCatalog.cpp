@@ -543,6 +543,7 @@ bool PluginRuntimeCatalog::registerStaticToolbox(
       [this](const std::string& id) { return claimStaticId(id, "Toolbox"); },
       [this](RuntimeToolboxPlugin& loaded, const PluginDescriptor& descriptor) {
         loaded.custom_topics_editor = descriptor.hasCapability(kCustomTopicsEditorCapability);
+        loaded.custom_topics_viewer = descriptor.hasCapability(kCustomTopicsViewerCapability);
         loaded.badge = descriptor.badge;
         const auto capabilities = probeCapabilities(loaded.library);
         if (!capabilities) {
@@ -715,6 +716,7 @@ bool PluginRuntimeCatalog::loadAndRegisterToolbox(const PluginDescriptor& descri
   loaded.name = descriptor.name;
   loaded.version = descriptor.version;
   loaded.custom_topics_editor = descriptor.hasCapability(kCustomTopicsEditorCapability);
+  loaded.custom_topics_viewer = descriptor.hasCapability(kCustomTopicsViewerCapability);
   loaded.badge = descriptor.badge;
 
   const auto capabilities = probeCapabilities(loaded.library);

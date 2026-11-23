@@ -52,9 +52,14 @@ class CurveListPanel : public QWidget {
 
   /// The plugin id of the Custom Topics editor (the toolbox whose manifest declares
   /// `custom_topics_editor`): the one owner whose rows the edit (pencil) and delete
-  /// actions accept, and whose launch the "+" stands for. Empty (the default) when no
-  /// loaded toolbox declares it: "+" is hidden and every owned row is read-only.
+  /// actions accept, and whose launch the "+" stands for. Another owner's rows open in it
+  /// only as a view (setEditorViewsOthers). Empty (the default) when no loaded toolbox
+  /// declares it: "+" is hidden, every owned row is read-only and the pencil opens nothing.
   void setEditorPluginId(const QString& plugin_id);
+  /// The editor also opens rows it does not own as a read-only view (its manifest declares
+  /// `custom_topics_viewer`): the pencil stays enabled on those rows and reads "View the formula"; Delete does not
+  /// follow. Default false.
+  void setEditorViewsOthers(bool views);
 
   /// Who created a Custom Topics row, as the panel shows it: the display `name`
   /// (tooltips) and the short `badge` painted after another plugin's rows.
@@ -158,7 +163,7 @@ class CurveListPanel : public QWidget {
   // Delete the selected Custom Topics rows, by catalog key (several may be one recipe's).
   // Emitted only for rows the panel lets the user delete; the handler checks the owner again.
   void deleteCustomTopicsRequested(QStringList keys);
-  // Edit the selected custom topic (pencil button): `key` is its catalog key.
+  // Edit, or view read-only, the selected custom topic (pencil button): `key` is its catalog key.
   void editCustomTopicRequested(QString key);
   // `covers_all`: the selection (an empty one means all) targets every known curve; MainWindow decides whether to
   // prompt.
@@ -247,7 +252,8 @@ class CurveListPanel : public QWidget {
   // What setCustomTopics last received, by catalog key; excluded from the Datasets tree.
   QHash<QString, CustomTopicRow> custom_rows_;
   OwnerResolver owner_resolver_;
-  QString editor_plugin_id_;  ///< see setEditorPluginId
+  QString editor_plugin_id_;          ///< see setEditorPluginId
+  bool editor_views_others_ = false;  ///< see setEditorViewsOthers
   DisplayTimeResolver display_time_resolver_;
   struct CustomObjectRow {
     QString tree_path;

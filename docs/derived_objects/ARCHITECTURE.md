@@ -803,14 +803,18 @@ the contract's state keys, remove, validate, check, and the evaluations over the
 - **Dialog scene views:** one `scene_view` key holding the kind and the topics, gated by
   `PJ_DIALOG_HOST_EMBEDS_SCENE_VIEWS`, which a panel announces exactly when it has an `EmbeddedViewHost`
   (`detail::announceHostInfo`). A topic the host cannot attach is reported to the plugin ("Scene integration").
-- **Manifest keys:** `badge`, and `custom_topics_editor` as a tag in the existing `capabilities` array (read without
-  loading the plugin). A row's badge and a plugin tab's watermark are the owner's `badge`, else its name
-  (`ExtensionCatalogService::toolboxBadge`).
+- **Manifest keys:** `badge`, and `custom_topics_editor` and `custom_topics_viewer` as tags in the existing
+  `capabilities` array (read without loading the plugin). A row's badge and a plugin tab's watermark are the owner's
+  `badge`, else its name (`ExtensionCatalogService::toolboxBadge`).
 - **The Custom Topics editor:** the toolbox whose manifest lists `custom_topics_editor`
   (`ExtensionCatalogService::customTopicsEditorId`; of several, the one in use stays selected, else the first scanned,
   with a warning). The panel's "+" launches it with no initial config; the pencil with the row's recipe
   `params_json`, so the editor stores there what it needs to reopen a recipe. A row is editable only when its recipe's
-  `owner_plugin` is the editor's id.
+  `owner_plugin` is the editor's id. An editor that also lists `custom_topics_viewer` gets the pencil on every other
+  row too, launched with `{"view": {...}}`: the owner's display name, the name its row shows (a transform's output
+  topic, an on-demand recipe's id), kind (`transform` or `on_demand`), language, script, inputs, outputs and
+  `params_json` (a string). It shows the view read-only and creates nothing from it; the recipe stays its owner's, and
+  a pinned editor showing a view is not written into a layout.
 - **Metadata keys:** `pj_snapshot`; `pj_derived`, an open value set (the key means "produced by a host data
   processor", the value names the kind); the marker keys of "Life cycle of recipes and results".
 - **Capability detection,** in the DATA PROCESSORS section of the SDK's `pj_base/plugin_data_api.h`, by three rules,

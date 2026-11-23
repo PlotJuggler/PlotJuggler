@@ -851,6 +851,32 @@ TEST(ExtensionCatalogToolboxLabels, CustomTopicsEditorIsTheCapabilitiesTag) {
     EXPECT_EQ(catalog.service.customTopicsEditorId(), u"my-editor");
     EXPECT_TRUE(catalog.service.isCustomTopicsEditor(u"my-editor"_s));
     EXPECT_FALSE(catalog.service.isCustomTopicsEditor(u"plain"_s));
+    EXPECT_FALSE(catalog.service.customTopicsEditorViews()) << "an editor without the tag edits only its own rows";
+  }
+}
+
+// `custom_topics_viewer` next to `custom_topics_editor`: the editor also opens other owners' recipes as a read-only
+// view. Alone, without the editor tag, it makes no toolbox the editor.
+TEST(ExtensionCatalogToolboxLabels, CustomTopicsViewerIsTheEditorsSecondTag) {
+  static const PJ_toolbox_vtable_t kViewerOnly = pj_mock::makeMockToolboxVtable(
+      R"({"id":"viewer-only","name":"Viewer","version":"1.0.0","capabilities":["custom_topics_viewer"]})");
+  static const PJ_toolbox_vtable_t kEditor = pj_mock::makeMockToolboxVtable(
+      R"({"id":"my-editor","name":"Editor","version":"1.0.0",)"
+      R"("capabilities":["custom_topics_editor","custom_topics_viewer"]})");
+  {
+    StaticPluginSet static_plugins;
+    static_plugins.toolboxes.emplace_back(&kViewerOnly);
+    PJ::test::HermeticCatalog catalog(std::move(static_plugins));
+    EXPECT_TRUE(catalog.service.customTopicsEditorId().isEmpty());
+    EXPECT_FALSE(catalog.service.customTopicsEditorViews());
+  }
+  {
+    StaticPluginSet static_plugins;
+    static_plugins.toolboxes.emplace_back(&kViewerOnly);
+    static_plugins.toolboxes.emplace_back(&kEditor);
+    PJ::test::HermeticCatalog catalog(std::move(static_plugins));
+    EXPECT_EQ(catalog.service.customTopicsEditorId(), u"my-editor");
+    EXPECT_TRUE(catalog.service.customTopicsEditorViews());
   }
 }
 

@@ -143,9 +143,16 @@ class ExtensionCatalogService : public QObject {
   [[nodiscard]] const QString& customTopicsEditorId() const noexcept {
     return custom_topics_editor_id_;
   }
+  // The Custom Topics editor also declares `custom_topics_viewer`: it opens a recipe another owner made as a
+  // read-only view, so the panel offers the pencil on those rows too. False when there is no editor. Resolved with
+  // customTopicsEditorId.
+  [[nodiscard]] bool customTopicsEditorViews() const noexcept {
+    return custom_topics_editor_views_;
+  }
   // Test seam: names the editor of a catalog that loaded no plugin declaring it.
-  void setCustomTopicsEditorIdForTest(const QString& plugin_id) {
+  void setCustomTopicsEditorIdForTest(const QString& plugin_id, bool views = false) {
     custom_topics_editor_id_ = plugin_id;
+    custom_topics_editor_views_ = views;
   }
   // The one ownership predicate: `owner` is the Custom Topics editor. False for everyone when none is declared.
   // The static form serves a holder of the id that has no catalog at hand (the Custom Topics panel).
@@ -225,6 +232,7 @@ class ExtensionCatalogService : public QObject {
   // wherever the toolbox list changes.
   void resolveCustomTopicsEditor();
   QString custom_topics_editor_id_;
+  bool custom_topics_editor_views_ = false;
 
   // Statically linked or seeded-bundled: kBundled; an authoritative folder: kFolderDrop; else kMarketplace.
   [[nodiscard]] ParserClaimProvenance provenanceForParser(const LoadedMessageParser& parser) const;

@@ -153,7 +153,10 @@ plugin's id, and a plugin can never take an agent's: the plugin catalog refuses 
 with `ExtensionCatalogService::registerAdHocOwner`, so its tabs' watermark and its rows read "AI agent (<owner>)".
 Agents draw only in their own tabs (`plot_tab`, `scene_view`); the one tool that changes the user's docks is
 `set_widget_state`, public token only. Their derived series are history-exempt plugin transforms under Custom Topics,
-with an injective transform id (bytes other than `[A-Za-z0-9]` escaped).
+with an injective transform id (bytes other than `[A-Za-z0-9]` escaped); their derived objects
+(`create_derived_object`) are history-exempt on-demand recipes owned by the agent, in the same panel. The user can
+open either kind in the Transform Editor read-only (the pencil's view, see "Custom Topics panel" in
+`pj_app/docs/ARCHITECTURE.md`), but not edit or delete it. Marker rules have no such view.
 
 ## Jobs
 

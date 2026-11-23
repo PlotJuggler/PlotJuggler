@@ -368,7 +368,8 @@ CurveListPanel::CurveListPanel(QWidget* parent) : QWidget(parent), ui_(new Ui::C
   });
 
   connect(ui_->buttonEditCustom, &QToolButton::clicked, this, [this]() {
-    // Enabled only for one selected row the editor owns (updateCustomEditButton).
+    // Enabled for one selected row the editor owns, or any one row when the editor shows views
+    // (updateCustomEditButton).
     if (const QStringList keys = selectedCustomRowKeys(); keys.size() == 1) {
       emit editCustomTopicRequested(keys.front());
     }
@@ -965,6 +966,11 @@ void CurveListPanel::setEditorPluginId(const QString& plugin_id) {
   refillCustomView();  // which rows are read-only, so which carry a badge
 }
 
+void CurveListPanel::setEditorViewsOthers(bool views) {
+  editor_views_others_ = views;
+  updateCustomEditButton();
+}
+
 QStringList CurveListPanel::customTopicNames() const {
   QStringList names;
   if (catalog_ == nullptr) {
@@ -1166,10 +1172,15 @@ void CurveListPanel::updateCustomEditButton() {
   bool edit_enabled = false;
   QString edit_tooltip = tr("Edit the selected custom topic");
   if (keys.size() == 1) {
-    if (isReadOnlyCustomRow(keys.front())) {
-      edit_tooltip = read_only_tooltip(keys.front());
-    } else {
+    if (!isReadOnlyCustomRow(keys.front())) {
       edit_enabled = true;
+    } else if (editor_views_others_ && !editor_plugin_id_.isEmpty()) {
+      edit_enabled = true;
+      const QString owner = custom_rows_.value(keys.front()).owner;
+      edit_tooltip = owner.isEmpty() ? tr("View the formula (read-only)")
+                                     : tr("View the formula (created by %1; read-only)").arg(ownerInfo(owner).name);
+    } else {
+      edit_tooltip = read_only_tooltip(keys.front());
     }
   }
   ui_->buttonEditCustom->setEnabled(edit_enabled);

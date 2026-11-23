@@ -65,6 +65,10 @@ struct RuntimeMessageParserPlugin {
   std::filesystem::file_time_type loaded_mtime;
 };
 
+/// Manifest `capabilities` tag of a Custom Topics editor that shows other owners' recipes read-only. The tag gates the
+/// launch: the host opens the editor on a view only when it is declared, and never saves a view into a layout.
+inline constexpr std::string_view kCustomTopicsViewerCapability = "custom_topics_viewer";
+
 struct RuntimeToolboxPlugin {
   ToolboxLibrary library;
   std::string path;
@@ -74,6 +78,9 @@ struct RuntimeToolboxPlugin {
   std::string badge;  ///< the manifest's optional short label for what it creates; empty when undeclared
   /// The manifest lists `custom_topics_editor` in its `capabilities` tags: the editor of the host's Custom Topics.
   bool custom_topics_editor = false;
+  /// The manifest lists `kCustomTopicsViewerCapability`: as the editor, it also opens a recipe it does not own as a
+  /// read-only view (the `view` config, see ExtensionCatalogService::customTopicsEditorViews).
+  bool custom_topics_viewer = false;
   uint64_t capabilities = 0;
   std::filesystem::file_time_type loaded_mtime;
 };

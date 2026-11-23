@@ -766,6 +766,8 @@ void ExtensionCatalogService::resolveCustomTopicsEditor() {
   }
   const QString winner = pickCustomTopicsEditor(custom_topics_editor_id_, declarers);
   custom_topics_editor_id_ = winner;
+  const LoadedToolbox* editor = winner.isEmpty() ? nullptr : findToolbox(winner);
+  custom_topics_editor_views_ = editor != nullptr && editor->custom_topics_viewer;
   QStringList ignored = declarers;
   ignored.removeOne(winner);
   if (!ignored.isEmpty()) {

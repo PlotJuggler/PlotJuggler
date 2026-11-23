@@ -834,6 +834,52 @@ TEST(CurveListPanelTest, ReadOnlyRowsDisableEditAndDelete) {
   EXPECT_FALSE(remove->isEnabled()) << "a mixed selection cannot be deleted";
 }
 
+// An editor that shows other owners' recipes read-only turns the pencil into "view" on their rows; Delete stays off.
+TEST(CurveListPanelTest, ReadOnlyRowsOpenAViewWhenTheEditorShowsOne) {
+  AppSession app_session;
+  const DatasetId dataset = pj_test::createDataset(app_session, "drive.mcap");
+  ASSERT_NE(dataset, 0U);
+  registerClouds(app_session, dataset, {"assistant/a/out", "legacy/out"});
+  CurveListPanel panel;
+  panel.setEditorPluginId(QString::fromLatin1(kEditor));
+  panel.setEditorViewsOthers(true);
+  panel.setCatalog(&app_session.catalogModel());
+  panel.setOwnerResolver([](const QString& id) {
+    return CurveListPanel::OwnerInfo{id == u"assistant"_s ? u"Assistant Agent"_s : id, {}};
+  });
+  auto* custom = panel.findChild<CurveTreeView*>(u"customView"_s);
+  auto* edit = panel.findChild<QToolButton*>(u"buttonEditCustom"_s);
+  QPushButton* remove = deleteButtonOf(panel);
+  ASSERT_NE(custom, nullptr);
+  ASSERT_NE(edit, nullptr);
+  ASSERT_NE(remove, nullptr);
+  const QString external = keyOfTopic(app_session.catalogModel(), u"assistant/a/out"_s);
+  const QString orphan = keyOfTopic(app_session.catalogModel(), u"legacy/out"_s);
+  panel.setCustomTopics({
+      {.key = external, .owner = u"assistant"_s, .name = u"a"_s},
+      {.key = orphan, .name = u"out"_s},
+  });
+  QStringList requested;
+  QObject::connect(&panel, &CurveListPanel::editCustomTopicRequested, [&](const QString& key) { requested << key; });
+
+  custom->clearSelection();
+  findRowByCatalogKey(custom->invisibleRootItem(), external)->setSelected(true);
+  EXPECT_TRUE(edit->isEnabled());
+  EXPECT_EQ(edit->toolTip(), u"View the formula (created by Assistant Agent; read-only)"_s);
+  EXPECT_FALSE(remove->isEnabled());
+  EXPECT_EQ(remove->toolTip(), u"Created by Assistant Agent; read-only"_s);
+  edit->click();
+  EXPECT_EQ(requested, QStringList{external});
+
+  custom->clearSelection();
+  findRowByCatalogKey(custom->invisibleRootItem(), orphan)->setSelected(true);
+  EXPECT_TRUE(edit->isEnabled());
+  EXPECT_EQ(edit->toolTip(), u"View the formula (read-only)"_s);
+
+  panel.setEditorViewsOthers(false);
+  EXPECT_FALSE(edit->isEnabled()) << "an editor that cannot show a view leaves the row closed";
+}
+
 // A row no plugin owns (a recipe restored without an owner) is no editor's: read-only, like another plugin's.
 TEST(CurveListPanelTest, RowsWithNoOwnerAreReadOnly) {
   AppSession app_session;
