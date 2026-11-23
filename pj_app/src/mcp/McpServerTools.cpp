@@ -78,6 +78,24 @@ json parseOrNull(const QString& config) {
   return config.isEmpty() ? json() : json::parse(config.toStdString(), nullptr, false);
 }
 
+/// A plugin configuration as an agent may read it: its secrets (an MQTT password, a bearer token) as mcp::kRedacted.
+/// Every configuration a tool returns goes through here.
+json configForAgent(const QString& config) {
+  return mcp::redactSecrets(parseOrNull(config));
+}
+
+/// The `config` an agent passed, with each mcp::kRedacted filled from `saved` (the configuration the call would
+/// otherwise use) at the same key path, as JSON text; nullopt with `error` set when `saved` holds no value there.
+std::optional<QString> configFromAgent(const json& given, const QString& saved, std::string& error) {
+  json config = given;
+  if (const std::string missing = mcp::restoreSecrets(config, parseOrNull(saved)); !missing.empty()) {
+    error =
+        "config: no saved value for " + missing + " to replace \"" + mcp::kRedacted + "\" with; pass the value itself";
+    return std::nullopt;
+  }
+  return QString::fromStdString(config.dump());
+}
+
 /// A string array argument; nullopt when absent or not a non-empty array of strings.
 std::optional<std::vector<std::string>> strings(const json& args, const char* key) {
   const auto it = args.find(key);
@@ -464,7 +482,22 @@ const std::unordered_map<std::string, McpServer::AppTool>& McpServer::appTools()
       {"remove_script_series", &McpServer::removeScriptSeries},
       {"screenshot", &McpServer::screenshot},
       {"widget_state", &McpServer::widgetState},
+      {"set_widget_state", &McpServer::setWidgetState},
   };
+  return tools;
+}
+
+json McpServer::toolList(mcp::ToolSet set) const {
+  json tools = mcp::toolList(set);
+  std::vector<std::string> filters;
+  for (const auto& [id, name] : window_.appSession().sessionManager().dataProcessorService().availableFilters()) {
+    filters.push_back(id);
+  }
+  for (json& tool : tools) {
+    if (tool.value("name", "") == "add_filter" && !filters.empty()) {
+      tool["inputSchema"]["properties"]["filter"]["enum"] = filters;
+    }
+  }
   return tools;
 }
 
@@ -525,13 +558,13 @@ void McpServer::getStatus(const json&, const Caller& caller, Reply reply) {
     }
     if (const auto source = loadedConfig(manager, path)) {
       entry["loader"] = source->plugin_id.toStdString();
-      entry["config"] = parseOrNull(source->plugin_config_json);
+      entry["config"] = configForAgent(source->plugin_config_json);
     }
     if (const QString stream_id = streams.layoutSourceId(id); !stream_id.isEmpty()) {
       for (const auto& live : streams.layoutSources()) {
         if (live.id == stream_id) {
           entry["stream"] = live.plugin_id.toStdString();
-          entry["config"] = parseOrNull(live.plugin_config_json);
+          entry["config"] = configForAgent(live.plugin_config_json);
         }
       }
     }
@@ -559,12 +592,31 @@ void McpServer::getStatus(const json&, const Caller& caller, Reply reply) {
           {"user_dialog", modal != nullptr ? json(shownTitle(*modal)) : json()}}));
 }
 
-void McpServer::about(const json&, const Caller&, Reply reply) {
+void McpServer::about(const json& args, const Caller&, Reply reply) {
 #ifdef PJ_TARGET_WASM
   reply(fail("no feature catalog"));
 #else
   FeatureCatalogHost* features = window_.featureCatalog();
-  reply(features != nullptr ? ok(json::parse(features->document(), nullptr, false)) : fail("no feature catalog"));
+  if (features == nullptr) {
+    reply(fail("no feature catalog"));
+    return;
+  }
+  json document = json::parse(features->document(), nullptr, false);
+  const std::string query = QString::fromStdString(args.value("query", "")).toLower().toStdString();
+  if (!query.empty() && document.is_object()) {
+    // Every array in the document is a list of catalog entries or plugin rows: keep those whose text mentions it.
+    const auto mentions = [&query](const json& row) {
+      return QString::fromStdString(mcp::dumpJson(row)).toLower().toStdString().find(query) != std::string::npos;
+    };
+    for (auto& [key, value] : document.items()) {
+      if (value.is_array()) {
+        json kept = json::array();
+        std::copy_if(value.begin(), value.end(), std::back_inserter(kept), mentions);
+        value = std::move(kept);
+      }
+    }
+  }
+  reply(ok(document));
 #endif
 }
 
@@ -578,7 +630,18 @@ void McpServer::openFile(const json& args, const Caller& caller, Reply reply) {
     hints.dialog_title_prefix = agentDialogTitlePrefix();
     hints.on_dialog = dialogWatch(caller.job);
   } else if (const auto config = args.find("config"); config != args.end() && config->is_object()) {
-    hints.preset_config_json = QString::fromStdString(config->dump());
+    // A secret read back as kRedacted keeps the value this file was loaded with.
+    const SessionManager& manager = window_.appSession().sessionManager();
+    const std::optional<SessionManager::LoadedSource> saved =
+        loadedConfig(manager, QFileInfo(qs(args, "path")).absoluteFilePath());
+    std::string error;
+    const std::optional<QString> filled =
+        configFromAgent(*config, saved ? saved->plugin_config_json : QString(), error);
+    if (!filled) {
+      reply(fail(error));
+      return;
+    }
+    hints.preset_config_json = *filled;
   }
 #ifdef PJ_TARGET_WASM
   // The page cannot read the agent's disk: the relay serves the file the agent named and passes its
@@ -663,7 +726,7 @@ void McpServer::startLoad(
         const SessionManager& manager = window_.appSession().sessionManager();
         json result = {{"loaded", true}, {"dataset_id", id}};
         if (const auto source = loadedConfig(manager, manager.datasetSourcePath(id))) {
-          result["config"] = parseOrNull(source->plugin_config_json);
+          result["config"] = configForAgent(source->plugin_config_json);
         }
         return ok(result);
       },
@@ -777,11 +840,20 @@ void McpServer::startStream(const json& args, const Caller& caller, Reply reply)
         });
     return;
   }
-  // No dialog: the agent's config, else what the user last confirmed in this source's dialog.
+  // No dialog: the agent's config, else what the user last confirmed in this source's dialog, which also fills each
+  // secret the agent passed back as kRedacted.
   const auto given = args.find("config");
-  const QString config = given != args.end() && given->is_object()
-                             ? QString::fromStdString(given->dump())
-                             : QSettings().value(u"PluginConfig/"_s + source).toString();
+  const QString confirmed = QSettings().value(u"PluginConfig/"_s + source).toString();
+  QString config = confirmed;
+  if (given != args.end() && given->is_object()) {
+    std::string error;
+    const std::optional<QString> filled = configFromAgent(*given, confirmed, error);
+    if (!filled) {
+      reply(fail(error));
+      return;
+    }
+    config = *filled;
+  }
   layout_xml::StreamingSourceRef ref;
   ref.id = u"stream"_s;
   ref.plugin_id = source;
@@ -792,7 +864,7 @@ void McpServer::startStream(const json& args, const Caller& caller, Reply reply)
     reply(fail(error.toStdString()));
     return;
   }
-  started(id, {{"config", parseOrNull(config)}});
+  started(id, {{"config", configForAgent(config)}});
 }
 
 void McpServer::followStream(quint64 job, DatasetId id) {
@@ -856,9 +928,21 @@ void McpServer::exportSeries(const json& args, const Caller& caller, Reply reply
   auto run = std::make_shared<ExportRun>();
   run->npy = format == "npy";
   run->requested_path = qs(args, "path");
-  if (!run->requested_path.isEmpty() && !QFileInfo(run->requested_path).isAbsolute()) {
-    reply(fail("path must be absolute"));
-    return;
+  if (!run->requested_path.isEmpty()) {
+    const QFileInfo info(run->requested_path);
+    if (!info.isAbsolute()) {
+      reply(fail("path must be absolute"));
+      return;
+    }
+    // The extension names the format, so an agent cannot write over a file of another kind by mistake.
+    if (info.suffix().compare(QString::fromStdString(format), Qt::CaseInsensitive) != 0) {
+      reply(fail("path must end in ." + format + " for format " + format));
+      return;
+    }
+    if (info.exists() && (info.isDir() || !args.value("overwrite", false))) {
+      reply(fail(info.isDir() ? "path is a folder" : "a file is already at path: pass overwrite: true to replace it"));
+      return;
+    }
   }
   const double t0 = args.value("t0", -std::numeric_limits<double>::infinity());
   const double t1 = args.value("t1", std::numeric_limits<double>::infinity());
@@ -1063,14 +1147,14 @@ void McpServer::removeScriptSeries(const json& args, const Caller& caller, Reply
   reply(removed.has_value() ? ok("ok") : fail(removed.error()));
 }
 
-void McpServer::screenshot(const json& args, const Caller& caller, Reply reply) {
+void McpServer::screenshot(const json& args, const Caller&, Reply reply) {
   if (args.contains("tab")) {
-    if (const Status focused = window_.pluginPlotTabs().focusTab(caller.owner, qs(args, "tab")); !focused) {
-      reply(fail(focused.error()));
-      return;
-    }
+    reply(fail(
+        "screenshot takes no tab: bring your tab forward first with plot_tab {\"action\": \"focus\"} or scene_view "
+        "{\"action\": \"focus\"}, then take the screenshot"));
+    return;
   }
-  grabScreenshot(args.value("max_width", 1600), [reply](const QByteArray& png) {
+  grabScreenshot(args.value("max_width", mcp::kDefaultScreenshotWidth), [reply](const QByteArray& png) {
     reply(
         {{"content",
           json::array({{{"type", "image"}, {"mimeType", "image/png"}, {"data", png.toBase64().toStdString()}}})}});

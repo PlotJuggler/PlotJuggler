@@ -10,9 +10,11 @@
 #include <QHash>
 #include <QLoggingCategory>
 #include <QString>
+#include <cstddef>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "pj_runtime/agent_tools/tool_registry.hpp"
 
@@ -38,10 +40,30 @@ inline constexpr char kNoServicesError[] = "PlotJuggler could not build the serv
 
 [[nodiscard]] nlohmann::json schema(nlohmann::json properties, nlohmann::json required = nlohmann::json::array());
 
-/// One tools/list entry with the MCP annotations every tool here carries (readOnlyHint from
-/// `read_only`; nothing reaches outside the user's machine).
+/// The MCP annotations of one tool. One table holds them for every tool the server and the bridge
+/// list; the server's own gates (isReadOnlyTool, runsUnderUsersDialog) read it too.
+struct ToolHints {
+  const char* title;
+  bool read_only;
+  /// The call can remove or overwrite state that existed before it, the user's or the agent's own (a
+  /// same-name replace included).
+  bool destructive;
+  /// Repeating the same call has no further effect.
+  bool idempotent;
+  /// The call reaches outside the user's machine (a network broker or peer).
+  bool open_world;
+};
+
+/// The hints of `name`; nullptr for a name no tool has.
+[[nodiscard]] const ToolHints* toolHints(std::string_view name);
+
+/// Longest tool name: Claude prefixes a plugin's tools with `mcp__plugin_plotjuggler_plotjuggler__`
+/// (37 characters) and refuses a full name over 64.
+inline constexpr std::size_t kMaxToolNameChars = 27;
+
+/// One tools/list entry with `name`'s title and annotations from toolHints.
 [[nodiscard]] nlohmann::json toolEntry(
-    const std::string& name, const std::string& description, nlohmann::json input_schema, bool read_only);
+    const std::string& name, const std::string& description, nlohmann::json input_schema);
 
 /// An MCP CallToolResult holding one text block.
 [[nodiscard]] nlohmann::json textResult(const std::string& text, bool is_error = false);
@@ -79,13 +101,36 @@ inline constexpr int kMaxUiTypedChars = 1000;
 /// pj_runtime's `agent_tools`: one instance for listing and calls.
 [[nodiscard]] const agent_tools::ToolRegistry& agentTools();
 
-/// Tools that never change the session. `screenshot` is not one (its `tab` focuses a tab).
+/// Tools that never change the session (toolHints' read_only).
 [[nodiscard]] bool isReadOnlyTool(const std::string& name);
 
-/// Whether a call of `name` with `args` may run while the user has a modal dialog open: the
-/// read-only tools, `screenshot` when it focuses no tab, `job_kill`, which changes state but only
-/// stops the agent's own work, and the UI tools, which act as the user.
-[[nodiscard]] bool runsUnderUsersDialog(const std::string& name, const nlohmann::json& args);
+/// Whether a call of `name` may run while the user has a modal dialog open: the read-only tools,
+/// `job_kill`, which changes state but only stops the agent's own work, and the UI tools, which act
+/// as the user.
+[[nodiscard]] bool runsUnderUsersDialog(const std::string& name);
+
+/// What a plugin configuration returned to an agent holds in place of each secret, and what an
+/// agent passes back to keep the saved one.
+inline constexpr char kRedacted[] = "<redacted>";
+
+/// `config` with every non-empty string under a key naming a secret (password, passwd, secret,
+/// token, api_key, apikey, private_key, credential; any case, anywhere in the key) replaced by
+/// kRedacted, at any depth; every string inside an object or array under such a key too.
+[[nodiscard]] nlohmann::json redactSecrets(nlohmann::json config);
+
+/// Replaces each kRedacted string in `given` with the string at the same key path in `saved`.
+/// Returns "" when every one was filled, else an error naming the first key path `saved` has no
+/// string at (`given` is then partly filled: do not use it).
+[[nodiscard]] std::string restoreSecrets(nlohmann::json& given, const nlohmann::json& saved);
+
+/// The most characters (UTF-8 bytes, never fewer than a client's UTF-16 count) the instructions may
+/// hold, the static text and McpServer's loaded summary together. Not a protocol constant: Claude
+/// Code's default cap on MCP server instructions is 4,096 characters (CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
+/// changes it) and text past it never reaches the model; this keeps a margin under that default.
+inline constexpr std::size_t kMaxInstructionsChars = 3900;
+
+/// screenshot's max_width when the call names none.
+inline constexpr int kDefaultScreenshotWidth = 1600;
 
 /// How long a job-capable call holds its reply before it becomes a background job (its `wait_s`
 /// argument, clamped), and how long job_wait waits (`timeout_s`). Kept under the bridge's per-call

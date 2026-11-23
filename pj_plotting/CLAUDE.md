@@ -88,7 +88,7 @@ Derived series reach this module as ordinary datastore topics through the catalo
   payload-dependent refusal shows in the cursor. "Open Settings" / "Close Settings" in an object dock's context menu
   emits `settingsPanelToggleRequested` through `PlotDocker`; the host-supplied visibility query picks the label.
 - **A dock's state goes through `DockWidget`'s `IDataWidget` calls**, which forward to the plot or object widget it
-  hosts; a load a user action makes (a paste, an MCP `widget_state` set) goes through `DockWidget::applyState`, which
+  hosts; a load a user action makes (a paste, an MCP `set_widget_state`) goes through `DockWidget::applyState`, which
   adds `finishRestore` and the first-topic seeding of an empty click-created object widget. A caller branching on plot
   versus object itself skips that seeding, and streaming playback is not seeded.
 - **pj_plotting stays agnostic to scene families:** placeholder icons and drops go to the shell through

@@ -225,15 +225,15 @@ json bridgeTools() {
           "list_instances",
           "PlotJuggler windows running with MCP on this computer: id, loaded datasets, whether it has the user's "
           "focus and whether this session is using it. Only needed when several run.",
-          schema(json::object()), true),
+          schema(json::object())),
       toolEntry(
           "select_instance", "Use the PlotJuggler instance with this id (from list_instances) for every later call.",
-          schema({{"id", {{"type", "integer"}}}}, {"id"}), false),
+          schema({{"id", {{"type", "integer"}, {"description", "an instance id from list_instances"}}}}, {"id"})),
       toolEntry(
           "launch",
           "Start a new PlotJuggler window with MCP on (when none runs, or the user wants a separate one) and use "
           "it. Returns once it is ready for other tools.",
-          schema(json::object()), false),
+          schema(json::object())),
   });
 }
 

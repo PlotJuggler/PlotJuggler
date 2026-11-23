@@ -6,6 +6,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <set>
+#include <string>
+
 #include "mcp/McpProtocol.h"
 
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
@@ -136,13 +140,12 @@ TEST(McpJobs, WaitSecondsIsClampedAndOnlyLongToolsTakeIt) {
 
 TEST(McpJobs, StoppingAJobIsNotReadOnlyButRunsUnderTheUsersDialog) {
   EXPECT_FALSE(PJ::mcp::isReadOnlyTool("job_kill"));
-  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("job_kill", json::object()));
-  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("jobs_list", json::object()));
-  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("screenshot", json::object()));
-  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("screenshot", {{"tab", "mine"}}));
-  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("widget_state", {{"action", "get"}}));
-  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("widget_state", {{"action", "set"}}));
-  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("open_file", json::object()));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("job_kill"));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("jobs_list"));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("screenshot"));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("widget_state"));
+  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("set_widget_state"));
+  EXPECT_FALSE(PJ::mcp::runsUnderUsersDialog("open_file"));
 }
 
 TEST(McpUiTools, ListedOnlyWhenTheRunAskedAndAlwaysAllowedUnderTheUsersDialog) {
@@ -156,7 +159,7 @@ TEST(McpUiTools, ListedOnlyWhenTheRunAskedAndAlwaysAllowedUnderTheUsersDialog) {
   EXPECT_FALSE(listed(ToolSet::kAgentOnly));
   PJ::mcp::setUiToolsEnabled(false);
 
-  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("ui_click", json::object()));
+  EXPECT_TRUE(PJ::mcp::runsUnderUsersDialog("ui_click"));
   EXPECT_TRUE(PJ::mcp::isReadOnlyTool("ui_tree"));
   EXPECT_FALSE(PJ::mcp::isReadOnlyTool("ui_click"));
   EXPECT_FALSE(PJ::mcp::isUiTool("ui_other"));
@@ -201,4 +204,102 @@ TEST(McpLifecycle, BothEras) {
   ASSERT_TRUE(discover);
   EXPECT_EQ((*discover)["supportedVersions"][0], "2026-07-28");
   EXPECT_FALSE(PJ::mcp::lifecycleResult("tools/list", json::object(), PJ::mcp::ToolSet::kFull));
+}
+
+// What an agent reads back of a plugin's configuration: no secret, at any depth; a secret passed back as the sentinel
+// takes the saved value at the same key path, and one with no saved value there is named.
+TEST(McpSecrets, ConfigsAreRedactedAndTheSentinelRestoresTheSavedValue) {
+  using PJ::mcp::kRedacted;
+  const json config = {
+      {"host", "broker.local"},
+      {"Password", "hunter2"},
+      {"empty_password", ""},
+      {"auth", {{"bearer_token", "abc"}, {"user", "me"}}},
+      {"servers", json::array({{{"api_key", "k1"}}, {{"name", "b"}}})},
+      {"credentials", {{"user", "me"}, {"list", json::array({"x"})}}},
+      {"port", 1883}};
+  const json redacted = PJ::mcp::redactSecrets(config);
+  EXPECT_EQ(redacted["host"], "broker.local");
+  EXPECT_EQ(redacted["Password"], kRedacted);
+  EXPECT_EQ(redacted["empty_password"], "") << "an empty secret says there is none";
+  EXPECT_EQ(redacted["auth"]["bearer_token"], kRedacted);
+  EXPECT_EQ(redacted["auth"]["user"], "me");
+  EXPECT_EQ(redacted["servers"][0]["api_key"], kRedacted);
+  EXPECT_EQ(redacted["servers"][1]["name"], "b");
+  EXPECT_EQ(redacted["credentials"]["user"], kRedacted) << "everything under a secret key";
+  EXPECT_EQ(redacted["credentials"]["list"][0], kRedacted);
+  EXPECT_EQ(redacted["port"], 1883);
+  EXPECT_EQ(redacted.dump().find("hunter2"), std::string::npos);
+
+  json given = redacted;
+  given["host"] = "other.local";
+  EXPECT_EQ(PJ::mcp::restoreSecrets(given, config), "");
+  EXPECT_EQ(given["Password"], "hunter2");
+  EXPECT_EQ(given["auth"]["bearer_token"], "abc");
+  EXPECT_EQ(given["servers"][0]["api_key"], "k1");
+  EXPECT_EQ(given["host"], "other.local");
+
+  json unknown = {{"mqtt", {{"password", kRedacted}}}};
+  EXPECT_EQ(PJ::mcp::restoreSecrets(unknown, json::object()), "/mqtt/password");
+  EXPECT_EQ(PJ::mcp::restoreSecrets(unknown, {{"mqtt", {{"password", 3}}}}), "/mqtt/password");
+}
+
+// Every tool the server and the bridge list carries a title and all four hints from one table, which the server's own
+// read-only gate reads too, and a name short enough for a client's namespaced tool name.
+TEST(McpAnnotations, EveryListedToolHasATitleAndAllFourHints) {
+  PJ::mcp::setUiToolsEnabled(true);
+  json tools = PJ::mcp::toolList(PJ::mcp::ToolSet::kFull);
+  PJ::mcp::setUiToolsEnabled(false);
+  std::set<std::string> names;
+  for (const json& tool : tools) {
+    names.insert(tool.value("name", ""));
+  }
+  for (const char* bridge : {"list_instances", "select_instance", "launch"}) {
+    names.insert(bridge);
+  }
+  for (const json& tool : PJ::mcp::toolList(PJ::mcp::ToolSet::kAgentOnly)) {
+    names.insert(tool.value("name", ""));
+  }
+  EXPECT_TRUE(names.contains("set_widget_state"));
+  for (const std::string& name : names) {
+    const json entry = PJ::mcp::toolEntry(name, "", PJ::mcp::schema(json::object()));
+    EXPECT_LE(name.size(), PJ::mcp::kMaxToolNameChars) << name;
+    ASSERT_TRUE(entry.contains("annotations")) << name << " is missing from the annotation table";
+    const json& hints = entry["annotations"];
+    EXPECT_FALSE(hints.value("title", "").empty()) << name;
+    EXPECT_EQ(entry.value("title", ""), hints.value("title", "")) << name;
+    for (const char* hint : {"readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"}) {
+      EXPECT_TRUE(hints.contains(hint) && hints[hint].is_boolean()) << name << " " << hint;
+    }
+    EXPECT_EQ(hints.value("readOnlyHint", false), PJ::mcp::isReadOnlyTool(name)) << name;
+    if (hints.value("readOnlyHint", false)) {
+      EXPECT_FALSE(hints.value("destructiveHint", true)) << name;
+    }
+  }
+  for (const json& tool : tools) {
+    const json properties = tool["inputSchema"].value("properties", json::object());
+    for (const auto& [param, property] : properties.items()) {
+      EXPECT_FALSE(property.value("description", "").empty()) << tool.value("name", "") << "." << param;
+    }
+  }
+  const auto hints = [](const char* name) { return *PJ::mcp::toolHints(name); };
+  EXPECT_TRUE(hints("start_stream").open_world) << "it connects to brokers and peers";
+  EXPECT_FALSE(hints("open_file").open_world);
+  EXPECT_TRUE(hints("export_series").destructive) << "overwrite replaces a file";
+  EXPECT_TRUE(hints("set_widget_state").destructive);
+  EXPECT_TRUE(hints("add_script_series").destructive) << "the same name replaces it";
+  EXPECT_FALSE(hints("create_derived_series").destructive) << "a taken name is refused";
+  EXPECT_TRUE(hints("screenshot").read_only);
+  EXPECT_TRUE(hints("widget_state").read_only);
+  EXPECT_TRUE(hints("unload_file").idempotent);
+  EXPECT_EQ(PJ::mcp::toolHints("no_such_tool"), nullptr);
+}
+
+TEST(McpAnnotations, ReportStatusIsOnlyForPluginTokens) {
+  const auto listed = [](PJ::mcp::ToolSet set) {
+    const json tools = PJ::mcp::toolList(set);
+    return std::any_of(tools.begin(), tools.end(), [](const json& tool) { return tool["name"] == "report_status"; });
+  };
+  EXPECT_FALSE(listed(PJ::mcp::ToolSet::kFull)) << "get_status and the instructions cover it";
+  EXPECT_TRUE(listed(PJ::mcp::ToolSet::kAgentOnly));
 }
