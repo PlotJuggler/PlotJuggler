@@ -424,7 +424,7 @@ ToolResult listTopics(const json& args, ToolContext& ctx) {
   // Clamped, not just defaulted: this response is re-sent on every remaining round trip of the turn, so an unbounded
   // list would be paid for repeatedly (read_series bounds its payload the same way). The truncation note below tells
   // the model how to narrow the search.
-  const int limit = std::clamp(args.value("limit", 100), 1, 500);
+  const int limit = std::clamp(args.value("limit", kDefaultTopicLimit), 1, kMaxTopicLimit);
 
   // Scoping to one dataset is what makes this usable with several loaded: the
   // same topic names repeat across runs, so a name filter alone returns both.
@@ -551,7 +551,8 @@ ToolResult playbackTool(const json& args, ToolContext& ctx) {
 ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   const std::string action = args.value("action", std::string());
   if (action.empty()) {
-    return ToolResult::failure("plot_tab requires 'action': one of 'create', 'add', 'remove', 'zoom', 'close', 'list'");
+    return ToolResult::failure(
+        "plot_tab requires 'action': one of 'create', 'add', 'remove', 'zoom', 'focus', 'close', 'list'");
   }
   if (!ctx.plot_tabs.valid()) {
     return ToolResult::failure(kNoPlotTabs);
@@ -589,6 +590,12 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
         "). Only tabs you created can be changed; the user's tabs are not yours to touch.");
   }
 
+  if (action == "focus") {
+    if (auto status = ctx.plot_tabs.focusTab(tab); !status) {
+      return ToolResult::failure(status.error() + " (yours: " + ownedTabList(ctx) + ")");
+    }
+    return ToolResult::success(json({{"focused", tab}}).dump());
+  }
   if (action == "close") {
     if (auto status = ctx.plot_tabs.close(tab); !status) {
       return ToolResult::failure(status.error() + " (yours: " + ownedTabList(ctx) + ")");
@@ -638,7 +645,7 @@ ToolResult plotTabTool(const json& args, ToolContext& ctx) {
   }
 
   if (action != "add" && action != "remove") {
-    return ToolResult::failure("unknown plot_tab action '" + action + "'; use create/add/remove/zoom/close/list");
+    return ToolResult::failure("unknown plot_tab action '" + action + "'; use create/add/remove/zoom/focus/close/list");
   }
   const std::vector<std::string> paths = requestedPaths(args, {"curves"});
   if (paths.empty()) {

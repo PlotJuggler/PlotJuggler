@@ -114,7 +114,7 @@ using plotting_detail::readReported;
 
 const QStringList kTrueFalse{u"true"_s, u"false"_s};
 
-// Refusals report to the active XmlOptionsRecorder, so a refused widget_state `set` names the attribute.
+// Refusals report to the active XmlOptionsRecorder, so a refused set_widget_state names the attribute.
 bool isPendingCurveIntentValid(const QDomElement& curve, bool xy_plot) {
   if (curve.tagName() != "curve"_L1 || !plot_xml::isPendingIntent(curve)) {
     XmlOptionsRecorder::noteRejection(curve, plot_xml::kPendingIntentAttribute, u"not a pending <curve>"_s);

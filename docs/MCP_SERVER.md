@@ -52,29 +52,48 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
 
 - **Agent tools** (`pj_agent_tools`, served to every token): `list_topics`, `describe_topic`, `read_series`, `wait_for`,
   `evaluate`, `create_derived_series`, `create_derived_object`, `create_markers`, `remove_markers`, `list_created`,
-  `remove_derived_series`, `playback`, `plot_tab`, `scene_view`, `report_status`.
+  `remove_derived_series`, `playback`, `plot_tab`, `scene_view`, `report_status`. `report_status` is listed to plugin
+  tokens only: on the full set `get_status` names the datasets and the instructions count their topics.
 - **App tools** (`McpServerTools.cpp`, public token only): `get_status`, `about`, `open_file`, `unload_file`,
   `reload_file`, `start_stream`, `stop_stream`, `export_series`, `add_script_series`, `remove_script_series`,
-  `add_filter`, `screenshot`, `widget_state` (`McpWidgetState.cpp`, see [Widget state](#widget-state)).
+  `add_filter`, `screenshot`, `widget_state` and `set_widget_state` (`McpWidgetState.cpp`, see
+  [Widget state](#widget-state)).
 - **Job tools** (`McpServer`, served to every token): `jobs_list`, `job_wait`, `job_kill` (see [Jobs](#jobs)).
-- **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`.
+- **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`, `launch`.
 - **UI tools** (`McpUiTools.cpp`, public token only, and only in a run started with `--mcp-ui-tools`): `ui_tree`,
   `ui_click`, `ui_drag`, `ui_wheel`, `ui_key`, `ui_type`, `ui_plot`. See [UI tools](#ui-tools-qa).
 
 `ToolSet::kFull` serves the agent, app and job tools. `ToolSet::kAgentOnly` is used for plugin tokens: `tools/list`
 and the `initialize` instructions leave the app tools out, and calling one gets the unknown-tool error.
-`isReadOnlyTool` names the tools that may run while a modal dialog is open; `job_kill` runs there too, though it is
-not read-only (it stops only the agent's own work).
+Every tool's title and MCP hints (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) come from one
+table, `mcp::toolHints`, which also covers the bridge's and the UI tools; `toolEntry` writes them into each
+`tools/list` entry and `isReadOnlyTool` reads the same table, so the two cannot drift. A tool is destructive when a
+call can remove or overwrite state that existed before it, the user's or the agent's own (a same-name replace
+included); only `start_stream` reaches outside the machine. `isReadOnlyTool` names the tools that may run while a
+modal dialog is open; `job_kill` runs there too, though it is not read-only (it stops only the agent's own work).
+Reads and changes are separate tools (`widget_state` / `set_widget_state`; `screenshot` only reads, and `plot_tab` or
+`scene_view` `focus` brings an agent's tab forward), so a client can approve each by its name alone. Tool names stay
+within `mcp::kMaxToolNameChars`: Claude prefixes a plugin's tools with `mcp__plugin_plotjuggler_plotjuggler__` and
+refuses names over 64 characters. `McpServer::toolList` fills `add_filter`'s `filter` enum from the session's
+`FilterCatalogue` (`DataProcessorService::availableFilters`); the bridge's own list, served when no instance answers,
+has none.
 
 The instructions (`initialize` and `server/discover` both carry them) end with what the caller's token finds loaded
-(`McpServer::loadedSummary`): each dataset by its name (the tools' `dataset:` qualifier) with its display time
-range, its topics and their numeric fields (`isSignalField`, as `read_series` counts them), read from one catalog
-snapshot and capped at 60 topics, 40 fields each and about 6 kB. Names are kept to one line, since they reach the
-agent's system prompt. Claude
-Code puts the instructions in its system prompt, so an agent goes straight to the tool that answers instead of spending
-a turn on each discovery call ("Evidence"). It is a picture of when the session connected; `list_topics` and
-`get_status` show later loads. The bridge asks the current instance for its instructions on both calls, and keeps its
-own when no instance answers: Claude Code 2.1 sends only `server/discover`.
+(`McpServer::loadedSummary`), read from one catalog snapshot: each dataset by its name (the tools' `dataset:`
+qualifier) with its display time range and its counts of topics and numeric fields (`isSignalField`, as `read_series`
+counts them), then each topic with its numeric fields. The static text and the summary together stay within
+`mcp::kMaxInstructionsChars`, a contract: the summary's budget is what the static text leaves of it. The topics are
+listed all or not at all, since a list cut short reads as everything that is loaded: when they do not all fit, or a
+topic or field name is longer than the per-name cap, the summary says "Topics are not listed here: use list_topics."
+and lists the datasets alone (and when even those do not fit, only how many there are, naming `get_status`, or
+`report_status` for a plugin token). The note and the path example come before any list. Names come from files and
+from live streams (anyone publishing on a subscribed broker picks them), so each is quoted as a JSON string, kept on
+one line (control characters become spaces; U+2028, U+2029 and U+0085, which a JSON dump leaves raw, are escaped), and
+a line says they are data, not instructions. Claude Code puts the instructions in its system prompt, so an agent goes straight to the tool that
+answers instead of spending a turn on each discovery call ("Evidence"). It is a picture of when the session
+connected; `list_topics` and `get_status` show later loads. The bridge asks the current instance for its
+instructions on both calls, and keeps its own when no instance answers: Claude Code 2.1 sends only
+`server/discover`.
 
 The agent tools run against a `ToolContext` built from a service registry. That is the same set of SDK host views a
 toolbox plugin gets (`ToolboxHostView`, `PlotTabsHostView`, `DataProcessorHostView`, `PlaybackHostView`, ...). The
@@ -127,8 +146,8 @@ client name: `agent-` plus that name reduced to `[a-z0-9-]`, at most 32 characte
 plugin's id, and a plugin can never take an agent's: the plugin catalog refuses ids starting with `agent-`
 (`PJ::kAgentIdPrefix`). Two sessions of one client share a namespace. On first use the server registers the owner
 with `ExtensionCatalogService::registerAdHocOwner`, so its tabs' watermark and its rows read "AI agent (<owner>)".
-Agents draw only in their own tabs (`plot_tab`, `scene_view`); the one tool that reaches the user's docks is
-`widget_state`, public token only. Their derived series are history-exempt plugin transforms under Custom Topics,
+Agents draw only in their own tabs (`plot_tab`, `scene_view`); the one tool that changes the user's docks is
+`set_widget_state`, public token only. Their derived series are history-exempt plugin transforms under Custom Topics,
 with an injective transform id (bytes other than `[A-Za-z0-9]` escaped).
 
 ## Jobs
@@ -485,7 +504,7 @@ Desktop only: the browser build has no command line to ask for them, so it does 
 
 ## Widget state
 
-`widget_state` reads and replaces a dock's settings as the XML element a layout saves for it
+`widget_state` reads and `set_widget_state` replaces a dock's settings as the XML element a layout saves for it
 (`DockWidget`'s `IDataWidget` state calls, forwarded to the plot or object widget it hosts), on any tab, the user's included. Docks are addressed by their
 layout state id (`DockWidget::stateId`), which `list` gives with tab, title and kind (the element's tag; `empty` for a
 dock with no state).
@@ -500,10 +519,10 @@ dock with no state).
   attribute reported, every reported token accepted), so an attribute added to `xmlSaveState` without a reporting
   reader fails there.
 - **Readers are strict for agents, tolerant for layouts.** A reader given `XmlBadValue::kTolerate` keeps what a
-  layout load always did with a bad value (the default) but still notes it as a rejection; `set` refuses any element
-  with a rejection. Without a recorder (`XmlOptionsRecorder::active()` false) the work done only to report is skipped,
+  layout load always did with a bad value (the default) but still notes it as a rejection; `set_widget_state`
+  refuses any element with a rejection. Without a recorder (`XmlOptionsRecorder::active()` false) the work done only to report is skipped,
   so a layout load does not pay for it.
-- **`set` changes nothing unless the element is accepted.** The root tag must match the dock's. A plot keeps its own
+- **`set_widget_state` changes nothing unless the element is accepted.** The root tag must match the dock's. A plot keeps its own
   `id` (it names the plot in pending bindings and saved layouts, so an element copied from another plot must not bring
   that one's), and its curves are rebound from their series paths as a layout load does
   (`layout_xml::normalizePlotRangeBasis`, `rebindCurveKeys`): an unresolved path refuses the call. `xmlValidateState`
@@ -516,17 +535,20 @@ dock with no state).
   one it shows), the saved previous state is loaded back and the reply names the reason.
 - **The element is the whole state, view included.** A scene's camera and a plot's axis range travel with it, so an
   element from an older `get` puts them back where they were then (a followed frame moves the camera meanwhile); the
-  tool's description tells agents to `get` right before `set`.
-- **The user's history and panels.** `MainWindow::beginAgentDockChange` refuses a `set` while a layout load or an
+  tool's description tells agents to `get` right before `set_widget_state`.
+- **The user's history and panels.** `MainWindow::beginAgentDockChange` refuses a change while a layout load or an
   undo restore is applying, and first records a user edit still waiting in the scene undo debounce as its own step;
   `endAgentDockChange` records the change as one undo step, re-reads the settings panel when the dock is the focused
   one (the 3D panel pushes every value it shows on its next edit, so a stale panel would undo the change) and shares
-  a time plot's new X range with the linked plots as a user zoom does. `list` and `get` run while the user has a
-  dialog open (`runsUnderUsersDialog`); `set` waits.
+  a time plot's new X range with the linked plots as a user zoom does. `widget_state` runs while the user has a
+  dialog open (`runsUnderUsersDialog`); `set_widget_state` waits. `widget_state` with action `set` is a tool error
+  naming `set_widget_state`.
 
 ## The user comes first
 
-- While a modal dialog is open, only read-only tools run (and `screenshot` without `tab`); the rest are told to wait.
+- While a modal dialog is open, only read-only tools run (`screenshot` and `widget_state` among them); the rest are
+  told to wait. `screenshot` takes no `tab`: a call that passes one is a tool error naming `plot_tab` / `scene_view`
+  `focus`.
   The UI tools are the exception: they are the user, in a run that asked for them.
 - `unload_file` with dependent derived series waits for the user's answer to the prompt (the `cancelled` hook of
   `confirmAndRemoveDependentTransforms`), as a job: past `wait_s` the agent gets its job id.
@@ -548,8 +570,26 @@ dock with no state).
     gets a JSON-RPC error.
   - Size caps: 16 KiB of headers and a 1 MiB body (also the bridge's stdin line cap).
   - At most 16 sockets; an incomplete request is closed after 10 s.
-- **`export_series`** by default writes a new owner-only, randomly named file (`QTemporaryFile`). It refuses more
-  than 10 million rows and reports a failed write, flush or close.
+- **`export_series`** by default writes a new owner-only, randomly named file (`QTemporaryFile`). A named `path`
+  must end in its format's extension (`.csv`, `.npy`, any case), and a file already there is refused unless the call
+  passes `overwrite: true`, at the call and again just before the new file is put in place (one may appear while the
+  export runs); it is replaced only once the new one is complete (`QSaveFile`). It refuses more than 10
+  million rows and reports a failed write, flush or close.
+- **Plugin configurations** reach an agent only through `mcp::redactSecrets` (`get_status`, the `open_file` and
+  `start_stream` results, and the job summaries `jobs_list` and the Jobs dialog show): every non-empty string under a
+  key that names a secret (password, passwd, secret, token, apikey, privatekey, credential, anywhere in the key,
+  ignoring case, `_` and `-`), and everything under such a key, reads as `mcp::kRedacted`. An MQTT source saves its
+  `password` and a WebRTC source its `bearer_token` and ICE `credential`s in the configuration. Passed back, the
+  sentinel keeps the saved value at the same key path (`mcp::restoreSecrets`) only when the configuration, its
+  secret keys aside, is the saved one unchanged: a changed broker address, server URL or ICE entry would carry the
+  saved secret where the user never sent it, so such a call is refused, naming the key paths that differ (pass the
+  secret itself, or `ask_user`). The rule is generic: it compares the whole document and knows no plugin's keys. The
+  saved configuration is, for a stream, the one the user last confirmed in the source's dialog (what `start_stream`
+  uses without `config`); for a file, the one the same file was loaded with (in the browser a page's file never
+  matches, so a sentinel there is refused). With no saved value at a sentinel's path the call is refused, naming it.
+  `ui_tree` reads a password field as its mask.
+- **Names from files are data.** The instructions quote every dataset, topic and field name as a JSON string and say
+  they are data, not instructions (see [Tool sets](#tool-sets)).
 - **Logging.** No token is ever logged, and server logging goes to the `pj.mcp` category.
 - **Trust boundary.** It is the same user. The bridge is a convenience, not a security layer. With public access on
   by default, any process of that user can read the discovery file and drive the window; the Preferences switch
@@ -580,12 +620,18 @@ dock with no state).
     `QT_SCALE_FACTOR=2` (`pj_app_gui_tests.dpr2.*`), where unscaled input would miss its widget.
   - `ARelayedCall…`, `ALinkForgotten…`, `OnlyALoopbackHttpRelay…`: the browser link against a fake relay.
   - `WidgetStateReadsDescribesAndReplacesAUsersDock`: `widget_state` on a user's plot: listed, the options its parser
-    reports, a set that is one undo step, the plot's own id kept from a copied element, and refusals (bad value, other
-    root, missing series, unknown attribute) that change nothing. `WidgetStateRefusesATopicThatIsNotLoaded`: a Log
-    panel's set naming a topic that is not loaded is refused and the panel keeps its topic.
-    `WidgetStateRefusesALayerOfAnotherDataset`: a 3D view's set adding another dataset's layer is refused with the
+    reports, a `set_widget_state` that is one undo step, the plot's own id kept from a copied element, refusals (bad
+    value, other root, missing series, unknown attribute) that change nothing, and the old `set` action refused.
+    `WidgetStateRefusesATopicThatIsNotLoaded`: a Log panel's `set_widget_state` naming a topic that is not loaded is
+    refused and the panel keeps its topic. `WidgetStateRefusesALayerOfAnotherDataset`: a 3D view's `set_widget_state` adding another dataset's layer is refused with the
     view's reason and the view keeps its layers.
     Each widget family tests its own `xmlValidateState` and option coverage.
+  - `TheInstructionsListEveryTopicOrNoneAndStayUnderTheCap`, `InitializeSaysWhatIsLoaded`: the summary's
+    all-or-nothing rule, quoting and cap. `ConfigSecretsReadAsTheSentinel…`, `AStreamConfigsSecretsAreRedacted…`:
+    redaction and the sentinel (refused for a changed configuration), for a file and a stream.
+    `ANamedExportNeedsItsExtension…`, `ANamedExportKeepsAFileThatAppearedWhileItRan`: the export guard.
+- `pj_app/tests/mcp_protocol_test.cpp` (runner `pj_app_unit_tests`): the HTTP and JSON-RPC gates, `redactSecrets` and
+  `restoreSecrets`, and `McpAnnotations`: every listed tool has a title, the four hints and described parameters.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
   test answers by hand (a cancellation forwarded while its call is in flight).
 - `plotjuggler-agent/tests/test_relay.py`: the relay against a fake page (routing, `open_file` serving, origins).
@@ -628,14 +674,20 @@ dock with no state).
 
 - `widget_state` lists only what a parser checks. A value set from data (a point cloud's colour field, a frame name)
   is reported as `text`: the agent learns the field names from `describe_topic`, not from `get`. A Custom Widget
-  plugin's state is opaque to the host and reports no options; its `set` is not validated before the plugin's own
+  plugin's state is opaque to the host and reports no options; its `set_widget_state` is not validated before the plugin's own
   `xmlLoadState`.
 
 ## Evidence
 
 - **The loaded summary in the instructions:** with it, Claude Code agents used half the turns and 26-32% less time on
   lookup tasks than with discovery calls alone (Claude Code, which puts the instructions in its system prompt; task
-  set and dates not recorded). Re-test if the summary's caps change or a client stops reading the instructions.
+  set and dates not recorded). That was measured with the earlier summary (up to 60 topics, 40 fields each, about
+  6 kB, unquoted names, cut where the caps fell); the all-or-nothing summary under `mcp::kMaxInstructionsChars` was
+  not measured again. Re-test with a catalog that fits and one that does not.
+- **Claude Code's instructions cap:** Claude Code cuts MCP server instructions at 4,096 characters by default (its
+  changelog: raised from 2,048; `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` changes it), and text past the cap never
+  reaches the model. It is a client limit, not an MCP constant: `mcp::kMaxInstructionsChars` keeps a margin under
+  it. Re-check when Claude Code changes its default.
 - **`npy` export:** `numpy.load` reads it about 30-100x faster than `numpy.loadtxt` reads the CSV (sizes not
   recorded).
 - **Hand-written HTTP:** QtHttpServer is GPL-3-only, which the MPL-2.0 desktop app does not link.

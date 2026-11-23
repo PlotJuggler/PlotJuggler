@@ -219,24 +219,6 @@ std::string logHead(const QString& path) {
   return file.open(QIODevice::ReadOnly) ? file.read(1200).toStdString() : std::string();
 }
 
-json bridgeTools() {
-  return json::array({
-      toolEntry(
-          "list_instances",
-          "PlotJuggler windows running with MCP on this computer: id, loaded datasets, whether it has the user's "
-          "focus and whether this session is using it. Only needed when several run.",
-          schema(json::object()), true),
-      toolEntry(
-          "select_instance", "Use the PlotJuggler instance with this id (from list_instances) for every later call.",
-          schema({{"id", {{"type", "integer"}}}}, {"id"}), false),
-      toolEntry(
-          "launch",
-          "Start a new PlotJuggler window with MCP on (when none runs, or the user wants a separate one) and use "
-          "it. Returns once it is ready for other tools.",
-          schema(json::object()), false),
-  });
-}
-
 class Bridge {
  public:
   /// Every client request may name the client (initialize, or a 2026 request's _meta).
@@ -265,7 +247,7 @@ class Bridge {
     if (!tools.is_array()) {
       tools = toolList(ToolSet::kFull);  // nothing answers: this binary's own list
     }
-    for (json& tool : bridgeTools()) {
+    for (json& tool : bridgeToolEntries()) {
       tools.push_back(std::move(tool));
     }
     return {{"tools", tools}};

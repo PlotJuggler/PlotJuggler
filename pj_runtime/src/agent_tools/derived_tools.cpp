@@ -356,11 +356,12 @@ ToolResult submitAndPoll(
 // The budget asked for: a positive value (at least 1), with a default when the call gives none. No upper
 // bound here: the host owns that policy and clamps what it grants.
 std::uint64_t requestedBudgetMs(const json& args) {
-  return static_cast<std::uint64_t>(std::max<std::int64_t>(args.value("budget_ms", std::int64_t{1000}), 1));
+  return static_cast<std::uint64_t>(std::max<std::int64_t>(args.value("budget_ms", kDefaultBudgetMs), 1));
 }
 
 std::uint64_t requestedBudgetEvaluations(const json& args) {
-  return static_cast<std::uint64_t>(std::max<std::int64_t>(args.value("budget_evaluations", std::int64_t{50}), 1));
+  return static_cast<std::uint64_t>(
+      std::max<std::int64_t>(args.value("budget_evaluations", kDefaultBudgetEvaluations), 1));
 }
 
 // The host's error text for an installed node whose recipe is in the "error" state, or nullopt when the
@@ -861,9 +862,9 @@ ToolResult evaluateSeries(const json& args, ToolContext& ctx) {
 
   if (args.contains("buckets")) {
     if (!args["buckets"].is_number_integer()) {
-      return ToolResult::failure("'buckets' must be an integer between 1 and 500");
+      return ToolResult::failure("'buckets' must be an integer between 1 and " + std::to_string(kMaxPoints));
     }
-    const std::size_t max_points = static_cast<std::size_t>(std::clamp(args["buckets"].get<int>(), 1, 500));
+    const std::size_t max_points = static_cast<std::size_t>(std::clamp(args["buckets"].get<int>(), 1, kMaxPoints));
     result = withCoarsenedBuckets(std::move(result), r.ts, r.vals, max_points);
   }
   return ToolResult::success(result.dump());

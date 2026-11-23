@@ -2507,6 +2507,9 @@ TEST(ToolRegistry, DefaultsToASingleOutputNamedAfterTheSeries) {
 // attach/detach/focus); a new tool earns its place only with a request shape no
 // existing tool's arguments fit (evaluate, create_derived_object, scene_view's
 // separate ownership scope).
+//
+// Every parameter also carries a description and, where the executor clamps or defaults it, its bounds and default
+// (EveryParameterHasADescription): about 0.5 kB of the ceiling, paid so a model reads a limit instead of guessing it.
 TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   ToolRegistry reg;
   const std::size_t chars = reg.toMcpToolsList().dump().size();
@@ -2514,7 +2517,7 @@ TEST(ToolRegistry, ToolSchemaStaysWithinItsBudget) {
   for (const auto& t : reg.tools()) {
     std::cerr << "  " << t.name << ": " << t.description.size() << "\n";
   }
-  EXPECT_LT(chars, 14200u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
+  EXPECT_LT(chars, 14700u) << "the tool surface outgrew its budget — trim descriptions before adding capability";
 }
 
 // --- playback / viewport tools ----------------------------------------------
@@ -2743,9 +2746,39 @@ TEST(ToolRegistry, PlotTabRefusesATabItDoesNotOwn) {
   // left unbound here), so it fails on the missing service rather than ever
   // reaching the fake -- still "every one fails" as required.
   EXPECT_FALSE(reg.execute("plot_tab", {{"action", "zoom"}, {"tab", "user-1"}}, ctx).ok);
+  EXPECT_FALSE(reg.execute("plot_tab", {{"action", "focus"}, {"tab", "user-1"}}, ctx).ok);
   EXPECT_FALSE(reg.execute("plot_tab", {{"action", "close"}, {"tab", "user-1"}}, ctx).ok);
 
   EXPECT_EQ(tabs.foreign_mutations, 0);
+  EXPECT_EQ(tabs.focused, "");
+}
+
+// focus brings the agent's own tab forward (a screenshot then shows it).
+TEST(ToolRegistry, PlotTabFocusBringsItsOwnTabForward) {
+  ToolRegistry reg;
+  PJ::testing::ToolboxTestStore store;
+  populate(store);
+  FakePlotTabsHost tabs;
+  auto ctx = makeCtx(store, nullptr);
+  ctx.plot_tabs = tabs.view();
+  ASSERT_TRUE(reg.execute("plot_tab", {{"action", "create"}, {"tab", "mine"}}, ctx).ok);
+
+  const auto r = reg.execute("plot_tab", {{"action", "focus"}, {"tab", "mine"}}, ctx);
+  ASSERT_TRUE(r.ok) << r.content;
+  EXPECT_EQ(json::parse(r.content)["focused"], "mine");
+  EXPECT_EQ(tabs.focused, "mine");
+  EXPECT_FALSE(reg.execute("plot_tab", {{"action", "focus"}}, ctx).ok) << "focus needs a tab";
+}
+
+// Every parameter of every agent tool says what it is: a model reads the schema, not the code.
+TEST(ToolRegistry, EveryParameterHasADescription) {
+  ToolRegistry reg;
+  for (const auto& tool : reg.tools()) {
+    const json properties = tool.input_schema.value("properties", json::object());
+    for (const auto& [name, property] : properties.items()) {
+      EXPECT_FALSE(property.value("description", "").empty()) << tool.name << "." << name;
+    }
+  }
 }
 
 // The structural version of the property above: loop over every registered

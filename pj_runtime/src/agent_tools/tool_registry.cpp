@@ -20,6 +20,14 @@ using detail::createDerivedSeries;
 using detail::createMarkers;
 using detail::describeTopic;
 using detail::evaluateSeries;
+using detail::kDefaultBudgetEvaluations;
+using detail::kDefaultBudgetMs;
+using detail::kDefaultMaxPoints;
+using detail::kDefaultTopicLimit;
+using detail::kDefaultWaitForTimeoutS;
+using detail::kMaxPoints;
+using detail::kMaxTopicLimit;
+using detail::kMaxWaitForTimeoutS;
 using detail::listCreated;
 using detail::listTopics;
 using detail::playbackTool;
@@ -41,23 +49,26 @@ ToolRegistry::ToolRegistry() {
 
   add(
       {"list_topics",
-       "Search the loaded topics by substring. If the conversation already lists the loaded topics, "
-       "use that and call this only for what the listing does not show (it was truncated, or the "
-       "data changed); otherwise call it to find what is loaded. Optional 'filter' and 'limit'.",
+       "Search the loaded topics by substring: for what the conversation does not already list (none listed, "
+       "or loaded since).",
        {{"type", "object"},
         {"properties",
          {{"filter", {{"type", "string"}, {"description", "case-sensitive substring to match topic names"}}},
           {"dataset",
            {{"type", "string"},
             {"description", "only topics from this dataset (substring); useful when several are loaded"}}},
-          {"limit", {{"type", "integer"}, {"description", "max topics to return (default 100, capped at 500)"}}}}}},
+          {"limit",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", kMaxTopicLimit},
+            {"default", kDefaultTopicLimit},
+            {"description", "max topics to return"}}}}}},
        &listTopics});
 
   add(
       {"describe_topic",
-       "List the fields of one topic, with types and full paths. Not needed for a topic whose "
-       "fields the conversation already lists — do not use it to confirm a path you can already "
-       "see.",
+       "List the fields of one topic, with types and full paths. Not needed for a topic whose fields the "
+       "conversation already lists.",
        {{"type", "object"},
         {"properties",
          {{"topic", {{"type", "string"}, {"description", "exact topic name; \"dataset:topic\" picks one dataset"}}}}},
@@ -81,8 +92,17 @@ ToolRegistry::ToolRegistry() {
            {{"type", "array"},
             {"items", {{"type", "string"}}},
             {"description", "topic/field paths; a bare string is accepted for a single series"}}},
-          {"mode", {{"type", "string"}, {"enum", json::array({"stats", "buckets", "raw"})}}},
-          {"max_points", {{"type", "integer"}, {"description", "bucket count for mode=buckets (<=500)"}}},
+          {"mode",
+           {{"type", "string"},
+            {"enum", json::array({"stats", "buckets", "raw"})},
+            {"default", "stats"},
+            {"description", "what to read, as above"}}},
+          {"max_points",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", kMaxPoints},
+            {"default", kDefaultMaxPoints},
+            {"description", "bucket count for mode=buckets"}}},
           {"t_start_s", {{"type", "number"}, {"description", "display-axis window start (optional)"}}},
           {"t_end_s", {{"type", "number"}, {"description", "display-axis window end (optional)"}}}}},
         {"required", json::array({"paths"})}},
@@ -96,9 +116,17 @@ ToolRegistry::ToolRegistry() {
        {{"type", "object"},
         {"properties",
          {{"series", {{"type", "string"}, {"description", "one topic/field path"}}},
-          {"comparison", {{"type", "string"}, {"enum", json::array({">", "<", ">=", "<="})}}},
-          {"threshold", {{"type", "number"}}},
-          {"timeout_s", {{"type", "number"}, {"description", "default 60, at most 3600"}}}}},
+          {"comparison",
+           {{"type", "string"},
+            {"enum", json::array({">", "<", ">=", "<="})},
+            {"description", "sample <comparison> threshold"}}},
+          {"threshold", {{"type", "number"}, {"description", "the value to compare each new sample with"}}},
+          {"timeout_s",
+           {{"type", "number"},
+            {"minimum", 0},
+            {"maximum", kMaxWaitForTimeoutS},
+            {"default", kDefaultWaitForTimeoutS},
+            {"description", "seconds to wait for it"}}}}},
         {"required", json::array({"series", "comparison", "threshold"})}},
        &waitForTool});
 
@@ -115,20 +143,30 @@ ToolRegistry::ToolRegistry() {
        "create_derived_object.",
        {{"type", "object"},
         {"properties",
-         {{"inputs", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+         {{"inputs",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "topic/field paths (scalar) or object-topic paths (object)"}}},
           {"expression", {{"type", "string"}, {"description", "scalar only"}}},
           {"body",
            {{"type", "string"}, {"description", "scalar: return ...; object: reads inputs[..], returns table"}}},
           {"global", {{"type", "string"}, {"description", "scalar only"}}},
-          {"buckets", {{"type", "integer"}, {"description", "scalar only; 1-500"}}},
+          {"buckets", {{"type", "integer"}, {"minimum", 1}, {"maximum", kMaxPoints}, {"description", "scalar only"}}},
           {"outputs", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "object only, required"}}},
           {"at_s", {{"type", "number"}, {"description", "object: instant, display seconds"}}},
           {"window",
            {{"type", "object"},
-            {"properties", {{"start_s", {{"type", "number"}}}, {"end_s", {{"type", "number"}}}}},
+            {"properties",
+             {{"start_s", {{"type", "number"}, {"description", "span start, display seconds"}}},
+              {"end_s", {{"type", "number"}, {"description", "span end, display seconds"}}}}},
             {"description", "object: span, display seconds"}}},
-          {"budget_ms", {{"type", "integer"}, {"description", "object; default 1000 (the host may clamp)"}}},
-          {"budget_evaluations", {{"type", "integer"}, {"description", "object; default 50 (the host may clamp)"}}},
+          {"budget_ms",
+           {{"type", "integer"}, {"minimum", 1}, {"default", kDefaultBudgetMs}, {"description", "object only"}}},
+          {"budget_evaluations",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"default", kDefaultBudgetEvaluations},
+            {"description", "object only"}}},
           {"debug", {{"type", "boolean"}, {"description", "object: also report raw nanoseconds"}}}}},
         {"required", json::array({"inputs"})}},
        &evaluateSeries});
@@ -139,7 +177,8 @@ ToolRegistry::ToolRegistry() {
        "'value' (first input), 'v1'..'vN' (further inputs, in order), and 'time' (seconds). Use "
        "'expression' for a stateless formula (e.g. 'value * 2'); for stateful transforms like a "
        "derivative, use 'global' (runs once, persistent locals) + 'body' (statements ending in "
-       "return; return nothing to suppress a sample). Saved in layouts. Undo protection is "
+       "return; return nothing to suppress a sample). For Python or a script class: add_script_series; a "
+       "built-in filter: add_filter (where listed). Saved in layouts. Undo protection is "
        "verified when supported; failure is reported.",
        {{"type", "object"},
         {"properties",
@@ -185,7 +224,7 @@ ToolRegistry::ToolRegistry() {
       {"create_markers",
        "Create plot markers from a Luau rule you write (preferred), or from a simple threshold "
        "template. There is ONE marker set of yours: calling this again REPLACES it (use "
-       "remove_markers to clear it). Saved in layouts; undo protection failures are reported.\n"
+       "remove_markers to clear it). Saved in layouts.\n"
        "RAW FORM: 'inputs' (series the rule reads) + 'rule' (a Luau script, run once over the "
        "full series) + optional 'output' (series path the markers attach to; default = first "
        "input; \"__global__\" renders on every plot, only for events meaningful against ANY "
@@ -206,8 +245,7 @@ ToolRegistry::ToolRegistry() {
        "bandPower(s, f_lo_hz, f_hi_hz); GetSeriesNames().\n"
        "opts: label, description, category, color (\"#RRGGBB\"|Qt name), severity "
        "(\"info\"|\"warning\"|\"error\"|\"critical\"), status.\n"
-       "TEMPLATE FORM (writes a when() rule): 'series' + 'comparison' (>, <, >=, <=) + 'threshold' + "
-       "optional 'label', 'style' (\"region\" default | \"line\": per matching sample).",
+       "TEMPLATE FORM (writes a when() rule): 'series', 'comparison', 'threshold', optional 'label' and 'style'.",
        {{"type", "object"},
         {"properties",
          {{"rule", {{"type", "string"}, {"description", "raw Luau marker script (raw form)"}}},
@@ -215,55 +253,65 @@ ToolRegistry::ToolRegistry() {
            {{"type", "array"},
             {"items", {{"type", "string"}}},
             {"description", "topic/field paths the rule reads (raw form)"}}},
-          {"output",
-           {{"type", "string"},
-            {"description",
-             "series path the marker set renders on, or \"__global__\" (raw form, "
-             "optional; default = first input)"}}},
+          {"output", {{"type", "string"}, {"description", "raw form: where the markers render, as above"}}},
           {"series", {{"type", "string"}, {"description", "topic/field path (template form)"}}},
-          {"comparison", {{"type", "string"}, {"enum", json::array({">", "<", ">=", "<="})}}},
-          {"threshold", {{"type", "number"}}},
-          {"style", {{"type", "string"}, {"enum", json::array({"region", "line"})}}},
+          {"comparison",
+           {{"type", "string"},
+            {"enum", json::array({">", "<", ">=", "<="})},
+            {"description", "series <comparison> threshold (template form)"}}},
+          {"threshold", {{"type", "number"}, {"description", "template form"}}},
+          {"style",
+           {{"type", "string"},
+            {"enum", json::array({"region", "line"})},
+            {"default", "region"},
+            {"description", "template form; line: a mark per matching sample"}}},
           {"label", {{"type", "string"}, {"description", "marker label (optional)"}}}}}},
        &createMarkers});
 
   add(
       {"remove_markers",
-       "Remove your marker set from all plots. Only affects markers you created; cannot delete "
-       "user data.",
+       "Remove your one marker set (create_markers), every marker of it, from all plots. Nothing else: not "
+       "the user's markers, not your series.",
        empty_obj, &removeMarkers});
 
   add(
       {"list_created",
-       "List the derived series and marker sets YOU have created in this session. Use it "
-       "to find the name to remove. A name that is already taken is refused by create_derived_series "
-       "itself, so there is no need to call this first.",
+       "List what YOU created, by the id remove_derived_series takes: derived series and objects, "
+       "add_script_series and add_filter series, where listed (non-alphanumeric bytes of the name as _xx), and "
+       "\"assistant_markers\" (your markers).",
        empty_obj, &listCreated});
 
   add(
       {"remove_derived_series",
-       "Delete a derived series or object you created, by its name. Only your own creations — "
-       "loaded data cannot be touched. Use it to withdraw a series or object that turned out wrong "
-       "instead of leaving it in the user's panel. Refused while someone else's series is built on it.",
+       "Delete one thing you created, by its list_created id (a derived series or object with its outputs, a "
+       "add_script_series or add_filter series where listed, your markers), never loaded data. Refused while someone "
+       "else's series is "
+       "built on it.",
        {{"type", "object"},
-        {"properties", {{"name", {{"type", "string"}, {"description", "name given at creation"}}}}},
+        {"properties", {{"name", {{"type", "string"}, {"description", "an id from list_created"}}}}},
         {"required", json::array({"name"})}},
        &removeDerivedSeries});
 
   add(
       {"playback",
        "Drive the transport: the time cursor, shared by every plot. action: 'state' (read it), "
-       "'play', 'pause', 'seek' (to 'time_s'), 'rate' (to 'rate'; 1.0 = real time, clamped to [" +
-           json(kMinPlaybackRate).dump() + ", " + json(kMaxPlaybackRate).dump() +
-           "]). Every call returns the whole state - playing, current_time_s, range "
-           "{min_s, max_s}, rate - so a clamped seek shows where the cursor actually landed. Times are "
-           "DISPLAY-AXIS SECONDS, the numbers on the plot X axes: a feature found in read_series "
-           "buckets sits at stats.t_start_display_s + bucket.t.",
+       "'play', 'pause', 'seek' (to 'time_s'), 'rate' (to 'rate'; 1.0 = real time). Every call returns the whole state "
+       "- playing, current_time_s, range "
+       "{min_s, max_s}, rate - so a clamped seek shows where the cursor actually landed. Times are "
+       "DISPLAY-AXIS SECONDS, the numbers on the plot X axes: a feature found in read_series "
+       "buckets sits at stats.t_start_display_s + bucket.t.",
        {{"type", "object"},
         {"properties",
-         {{"action", {{"type", "string"}, {"enum", json::array({"state", "play", "pause", "seek", "rate"})}}},
+         {{"action",
+           {{"type", "string"},
+            {"enum", json::array({"state", "play", "pause", "seek", "rate"})},
+            {"description", "see above"}}},
           {"time_s", {{"type", "number"}, {"description", "target time, display-axis seconds (seek)"}}},
-          {"rate", {{"type", "number"}, {"description", "speed multiplier, > 0 (rate)"}}}}},
+          {"rate",
+           {{"type", "number"},
+            {"minimum", kMinPlaybackRate},
+            {"maximum", kMaxPlaybackRate},
+            {"description", "speed multiplier (rate)"}}}}},
         {"required", json::array({"action"})}},
        &playbackTool});
 
@@ -271,28 +319,31 @@ ToolRegistry::ToolRegistry() {
       {"plot_tab",
        "Compose plot tabs of your own. A tab you create is marked with your ownership badge and is the only "
        "place you may draw: the user's tabs are not yours to fill, zoom or close, and they do not go away "
-       "when you close yours. Supporting hosts save your tabs with the layout and exclude them from "
-       "undo/redo; older hosts may keep them only for the session.\n"
+       "when you close yours. Your tabs are saved with the layout and stay out of the user's undo/redo.\n"
        "action: 'create' (optional 'tab' name and 'title') | 'add'/'remove' ('curves', topic/field "
-       "paths) | 'zoom' ('start_s'..'end_s' display-axis seconds; omit both to fit) | 'close' | "
-       "'list'. Every action answers with the tab as the host holds it, so a curve that did not "
+       "paths) | 'zoom' ('start_s'..'end_s' display-axis seconds; omit both to fit) | 'focus' (bring it "
+       "forward, e.g. before a screenshot) | 'close' | 'list'. Every action answers with the tab as the host holds it, "
+       "so a curve that did not "
        "land shows as missing instead of being reported as drawn. A series you made with "
        "create_derived_series is addressable here as 'name/value'.",
        {{"type", "object"},
         {"properties",
-         {{"action", {{"type", "string"}, {"enum", json::array({"create", "add", "remove", "zoom", "close", "list"})}}},
+         {{"action",
+           {{"type", "string"},
+            {"enum", json::array({"create", "add", "remove", "zoom", "focus", "close", "list"})},
+            {"description", "see above"}}},
           {"tab", {{"type", "string"}, {"description", "your name for the tab"}}},
           {"title", {{"type", "string"}, {"description", "tab title shown to the user (create)"}}},
           {"curves", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "topic/field paths"}}},
-          {"start_s", {{"type", "number"}}},
-          {"end_s", {{"type", "number"}}}}},
+          {"start_s", {{"type", "number"}, {"description", "zoom start, display-axis seconds"}}},
+          {"end_s", {{"type", "number"}, {"description", "zoom end, display-axis seconds"}}}}},
         {"required", json::array({"action"})}},
        &plotTabTool});
 
   add(
       {"scene_view",
-       "Open 3D/2D scene views of your own (the scene tabs of pj.plot_tabs.v1), the counterpart of plot_tab: same "
-       "watermark and ownership, the user's scene docks unreachable.\n"
+       "Open 3D/2D scene views of your own, the counterpart of plot_tab: same watermark and ownership, the "
+       "user's scene docks unreachable.\n"
        "action: 'create' (optional 'view', 'kind' \"3d\"|\"2d\" default \"3d\", 'title') | "
        "'attach'/'detach' ('topics', object-topic paths) | 'focus' | 'close' | 'list'. Every action "
        "reads back what the view actually holds, so a topic that did not land shows as missing "
@@ -300,7 +351,9 @@ ToolRegistry::ToolRegistry() {
        {{"type", "object"},
         {"properties",
          {{"action",
-           {{"type", "string"}, {"enum", json::array({"create", "attach", "detach", "focus", "close", "list"})}}},
+           {{"type", "string"},
+            {"enum", json::array({"create", "attach", "detach", "focus", "close", "list"})},
+            {"description", "see above"}}},
           {"view", {{"type", "string"}, {"description", "your name for the view"}}},
           {"kind", {{"type", "string"}, {"enum", json::array({"3d", "2d"})}, {"description", "create only"}}},
           {"title", {{"type", "string"}, {"description", "view title shown to the user (create)"}}},

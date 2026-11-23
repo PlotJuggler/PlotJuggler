@@ -242,10 +242,14 @@ class McpServer : public QObject {
   /// The public owner's agentContext, or the plugin session's services. nullopt once the token is
   /// revoked or the services could not be built.
   [[nodiscard]] std::optional<agent_tools::ToolContext> contextFor(const Caller& caller);
-  /// What `caller` would find loaded (datasets with their display time ranges, topics, numeric
-  /// fields), for the initialize and server/discover instructions; empty when nothing is loaded.
-  /// Capped, since a client repeats it in every request.
-  [[nodiscard]] std::string loadedSummary(const Caller& caller);
+  /// What `caller` would find loaded, for the initialize and server/discover instructions, in at
+  /// most `budget` bytes; empty when nothing is loaded or nothing fits. Every dataset with its
+  /// display time range and counts, then every topic with its numeric fields only when all of them
+  /// fit whole (a partial list would read as complete). Names come from files and streams, so each
+  /// is quoted as a JSON string and said to be data.
+  [[nodiscard]] std::string loadedSummary(const Caller& caller, std::size_t budget);
+  /// mcp::toolList(set), with add_filter's filter enumerated from the session's filter catalogue.
+  [[nodiscard]] nlohmann::json toolList(mcp::ToolSet set) const;
   /// One tick: first serviceWaiters, then one resume of every continuation queued before this
   /// round. Each continuation is taken out of its job while it runs, so a revocation it causes (a
   /// session torn down) still drops the other jobs before their services die. A mutating tool waits
@@ -359,6 +363,7 @@ class McpServer : public QObject {
   void screenshot(const nlohmann::json& args, const Caller& caller, Reply reply);
   // McpWidgetState.cpp
   void widgetState(const nlohmann::json& args, const Caller& caller, Reply reply);
+  void setWidgetState(const nlohmann::json& args, const Caller& caller, Reply reply);
 
   MainWindow& window_;
 #ifndef PJ_TARGET_WASM

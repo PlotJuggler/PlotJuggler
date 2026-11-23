@@ -183,7 +183,7 @@ TEST_F(StateTransitionsDockWidgetTest, UnresolvedSeriesSurvivesSaveLoadCycles) {
   EXPECT_EQ(kept.attribute(u"topic"_s), u"/other/state"_s);
 }
 
-// widget_state `set` loads an edited copy of the strip's own saved state into the same dock.
+// set_widget_state loads an edited copy of the strip's own saved state into the same dock.
 TEST_F(StateTransitionsDockWidgetTest, ReloadIntoTheSameDockReplacesItsRows) {
   const auto saved_text = [](const StateTransitionsDockWidget& dock) {
     QDomDocument doc;

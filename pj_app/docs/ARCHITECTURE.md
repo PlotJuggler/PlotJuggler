@@ -715,7 +715,7 @@ discovery, the user-first rules, security, tests) is [`../../docs/MCP_SERVER.md`
 
 Here: `McpProtocol` (shared vocabulary, QtCore only), `McpBridge.cpp` (desktop), `McpServer` (with `McpEndpointHost`,
 desktop), `McpBrowserLink`, `McpServerTools.cpp` (app tools over `MainWindow`'s public "agent control" block),
-`McpWidgetState.cpp` (`widget_state`, over the same block), `McpUiTools` (`--mcp-ui-tools`), `ui/McpJobsDialog`. The agent tools come from `pj_runtime`'s `pj_agent_tools`. The
+`McpWidgetState.cpp` (`widget_state`, `set_widget_state`, over the same block), `McpUiTools` (`--mcp-ui-tools`), `ui/McpJobsDialog`. The agent tools come from `pj_runtime`'s `pj_agent_tools`. The
 shell's part of the teardown order: `~ToolboxPanelSession` resets `mcp_endpoint` after `handle` and before every
 service, and `~MainWindow` destroys the server right after `teardownAllToolboxes`.
 

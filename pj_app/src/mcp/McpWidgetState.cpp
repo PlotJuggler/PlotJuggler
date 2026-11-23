@@ -1,7 +1,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// The widget_state app tool: a dock's XML state (what a layout saves for it) read, described and replaced.
+// The widget_state and set_widget_state app tools: a dock's XML state (what a layout saves for it) read, described and
+// replaced.
 
 #include <QDomDocument>
 #include <string>
@@ -57,6 +58,28 @@ json optionsJson(const std::vector<XmlOption>& options) {
   return out;
 }
 
+/// The dock `args` names and its current state element, appended to `doc`; nullptr with `error` set when there is none.
+DockWidget* stateOf(MainWindow& window, const json& args, QDomDocument& doc, QDomElement& current, std::string& error) {
+  const QString id = QString::fromStdString(args.value("dock", ""));
+  DockWidget* dock = nullptr;
+  window.forEachTabDock([&](PlotDocker*, DockWidget* candidate) {
+    if (dock == nullptr && candidate->stateId() == id) {
+      dock = candidate;
+    }
+  });
+  if (dock == nullptr) {
+    error = "no dock '" + id.toStdString() + "': widget_state list gives the ids";
+    return nullptr;
+  }
+  current = dock->xmlSaveState(doc);
+  if (current.isNull()) {
+    error = "this dock holds no state: drop a series or an object topic on it first";
+    return nullptr;
+  }
+  doc.appendChild(current);
+  return dock;
+}
+
 }  // namespace
 
 void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
@@ -75,40 +98,41 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
     reply(mcp::jsonResult(docks));
     return;
   }
-  if (action != "get" && action != "set") {
-    reply(fail("action must be list, get or set"));
+  if (action == "set") {
+    reply(fail("widget_state only reads: change a dock's settings with set_widget_state {dock, xml}"));
     return;
   }
-  const QString id = QString::fromStdString(args.value("dock", ""));
-  DockWidget* dock = nullptr;
-  window_.forEachTabDock([&](PlotDocker*, DockWidget* candidate) {
-    if (dock == nullptr && candidate->stateId() == id) {
-      dock = candidate;
-    }
-  });
-  if (dock == nullptr) {
-    reply(fail("no dock '" + id.toStdString() + "': list gives the ids"));
+  if (action != "get") {
+    reply(fail("action must be list or get"));
     return;
   }
-
   QDomDocument current_doc;
-  QDomElement current = dock->xmlSaveState(current_doc);
-  if (current.isNull()) {
-    reply(fail("this dock holds no state: drop a series or an object topic on it first"));
+  QDomElement current;
+  std::string error;
+  DockWidget* dock = stateOf(window_, args, current_doc, current, error);
+  if (dock == nullptr) {
+    reply(fail(error));
     return;
   }
-  current_doc.appendChild(current);
+  XmlOptionsRecorder recorder;
+  static_cast<void>(dock->xmlValidateState(current));  // run for the options it reports
+  reply(
+      mcp::jsonResult(
+          {{"dock", dock->stateId().toStdString()},
+           {"xml", current_doc.toString(2).toStdString()},
+           {"options", optionsJson(recorder.options())}}));
+}
 
-  if (action == "get") {
-    XmlOptionsRecorder recorder;
-    static_cast<void>(dock->xmlValidateState(current));  // run for the options it reports
-    reply(
-        mcp::jsonResult(
-            {{"dock", id.toStdString()},
-             {"xml", current_doc.toString(2).toStdString()},
-             {"options", optionsJson(recorder.options())}}));
+void McpServer::setWidgetState(const json& args, const Caller&, Reply reply) {
+  QDomDocument current_doc;
+  QDomElement current;
+  std::string error;
+  DockWidget* dock = stateOf(window_, args, current_doc, current, error);
+  if (dock == nullptr) {
+    reply(fail(error));
     return;
   }
+  const QString id = dock->stateId();
 
   QDomDocument doc;
   const QDomDocument::ParseResult parsed = doc.setContent(QString::fromStdString(args.value("xml", "")));
@@ -119,7 +143,8 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
   }
   QDomElement element = doc.documentElement();
   if (element.tagName() != current.tagName()) {
-    reply(fail("the root element must stay <" + current.tagName().toStdString() + ">, as get returned it"));
+    reply(
+        fail("the root element must stay <" + current.tagName().toStdString() + ">, as widget_state get returned it"));
     return;
   }
   if (dock->plotWidget() != nullptr) {
@@ -147,7 +172,8 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
       const QString& why = recorder.firstRejection();
       reply(fail(
           "refused, nothing changed: " +
-          (why.isEmpty() ? std::string("the element does not validate (get lists the options)") : why.toStdString())));
+          (why.isEmpty() ? std::string("the element does not validate (widget_state get lists the options)")
+                         : why.toStdString())));
       return;
     }
     // A misspelt attribute would otherwise be ignored and reported as applied. A widget that reports nothing keeps
@@ -155,7 +181,8 @@ void McpServer::widgetState(const json& args, const Caller&, Reply reply) {
     const QStringList unknown =
         recorder.options().empty() ? QStringList() : unreportedXmlAttributes(element, recorder.options());
     if (!unknown.isEmpty()) {
-      reply(fail("refused, nothing changed: unknown attribute " + joined(unknown) + " (get lists the options)"));
+      reply(fail(
+          "refused, nothing changed: unknown attribute " + joined(unknown) + " (widget_state get lists the options)"));
       return;
     }
   }

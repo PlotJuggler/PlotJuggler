@@ -124,7 +124,7 @@ QString shownText(QWidget* w) {
     return label->text();
   }
   if (auto* edit = qobject_cast<QLineEdit*>(w)) {
-    return edit->text();
+    return edit->displayText();  // a password field reads as its mask, as the user sees it
   }
   if (auto* spin = qobject_cast<QAbstractSpinBox*>(w)) {
     return spin->text();

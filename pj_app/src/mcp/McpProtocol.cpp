@@ -48,17 +48,17 @@ constexpr auto kAppToolInstructions =
     " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
     "format PlotJuggler reads (the relay hands the page the file), start_stream starts a live source. "
     "add_script_series (Luau or Python) and add_filter install live derived series too. widget_state reads "
-    "and changes the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's "
-    "styles and ranges); its get lists the values each one accepts. Take a screenshot to check what the user "
-    "sees.";
+    "the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
+    "ranges) with the values each one accepts, and set_widget_state changes them. Take a screenshot to "
+    "check what the user sees.";
 #else
 constexpr auto kAppToolInstructions =
     " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
     "format PlotJuggler reads, start_stream starts a live source. export_series gives aligned CSV for your own "
     "tools; add_script_series (Luau or Python) and add_filter install live derived series too. widget_state "
-    "reads and changes the settings of any dock, the user's too (a scene's point size, colours, camera; a "
-    "plot's styles and ranges); its get lists the values each one accepts. Take a screenshot to check what the "
-    "user sees. Read about before explaining how to do something in the "
+    "reads the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
+    "ranges) with the values each one accepts, and set_widget_state changes them. Take a screenshot to "
+    "check what the user sees. Read about before explaining how to do something in the "
     "PlotJuggler UI.";
 #endif
 
@@ -68,12 +68,85 @@ json schema(json properties, json required) {
   return {{"type", "object"}, {"properties", std::move(properties)}, {"required", std::move(required)}};
 }
 
-json toolEntry(const std::string& name, const std::string& description, json input_schema, bool read_only) {
-  return {
-      {"name", name},
-      {"description", description},
-      {"inputSchema", std::move(input_schema)},
-      {"annotations", {{"readOnlyHint", read_only}, {"openWorldHint", false}}}};
+const ToolHints* toolHints(std::string_view name) {
+  struct Row {
+    std::string_view name;
+    ToolHints hints;
+  };
+  // {title, read_only, destructive, idempotent, open_world}. A read-only tool is never destructive
+  // and always idempotent. destructive: the call can remove or overwrite state that existed before
+  // it (the user's or the agent's own, a same-name replace included); additive and navigation calls
+  // are not.
+  static constexpr Row kRows[] = {
+      // Agent tools (pj_agent_tools).
+      {"list_topics", {"List topics", true, false, true, false}},
+      {"describe_topic", {"Describe a topic", true, false, true, false}},
+      {"read_series", {"Read series", true, false, true, false}},
+      {"wait_for", {"Wait for a live value", true, false, true, false}},
+      {"evaluate", {"Evaluate a computation", true, false, true, false}},
+      {"create_derived_series", {"Create a derived series", false, false, true, false}},
+      {"create_derived_object", {"Create a derived object", false, false, true, false}},
+      {"create_markers", {"Create markers", false, true, true, false}},
+      {"remove_markers", {"Remove your markers", false, true, true, false}},
+      {"list_created", {"List what you created", true, false, true, false}},
+      {"remove_derived_series", {"Remove a derived series", false, true, true, false}},
+      {"playback", {"Playback", false, false, true, false}},
+      {"plot_tab", {"Your plot tabs", false, true, false, false}},
+      {"scene_view", {"Your scene views", false, true, false, false}},
+      {"report_status", {"Loaded data counts", true, false, true, false}},
+      // App tools (McpServerTools.cpp, McpWidgetState.cpp).
+      {"get_status", {"PlotJuggler status", true, false, true, false}},
+      {"about", {"About PlotJuggler", true, false, true, false}},
+      {"open_file", {"Open a file", false, false, false, false}},
+      {"unload_file", {"Unload a dataset", false, true, true, false}},
+      {"reload_file", {"Reload a dataset", false, true, false, false}},
+      {"start_stream", {"Start a live stream", false, false, false, true}},
+      {"stop_stream", {"Stop a live stream", false, true, true, false}},
+      {"export_series", {"Export series to a file", false, true, false, false}},
+      {"add_script_series", {"Add a script series", false, true, true, false}},
+      {"add_filter", {"Add a filtered series", false, true, true, false}},
+      {"remove_script_series", {"Remove a script series", false, true, true, false}},
+      {"screenshot", {"Screenshot", true, false, true, false}},
+      {"widget_state", {"Read dock settings", true, false, true, false}},
+      // Each call is a new undo step of the user's.
+      {"set_widget_state", {"Change dock settings", false, true, false, false}},
+      // Job tools (McpServer).
+      {"jobs_list", {"List your jobs", true, false, true, false}},
+      {"job_wait", {"Wait for a job", true, false, true, false}},
+      {"job_kill", {"Stop a job", false, true, true, false}},
+      // UI tools (McpUiTools): they act as the user, who can do anything.
+      {"ui_tree", {"Read the UI", true, false, true, false}},
+      {"ui_click", {"Click", false, true, false, false}},
+      {"ui_drag", {"Drag", false, true, false, false}},
+      {"ui_wheel", {"Mouse wheel", false, true, false, false}},
+      {"ui_key", {"Press keys", false, true, false, false}},
+      {"ui_type", {"Type text", false, true, false, false}},
+      {"ui_plot", {"Read the plots", true, false, true, false}},
+      // Bridge tools (McpBridge.cpp).
+      {"list_instances", {"List PlotJuggler windows", true, false, true, false}},
+      {"select_instance", {"Select a PlotJuggler window", false, false, true, false}},
+      {"launch", {"Launch PlotJuggler", false, false, false, false}},
+  };
+  for (const Row& row : kRows) {
+    if (row.name == name) {
+      return &row.hints;
+    }
+  }
+  return nullptr;
+}
+
+json toolEntry(const std::string& name, const std::string& description, json input_schema) {
+  json entry = {{"name", name}, {"description", description}, {"inputSchema", std::move(input_schema)}};
+  if (const ToolHints* hints = toolHints(name)) {
+    entry["title"] = hints->title;
+    entry["annotations"] = {
+        {"title", hints->title},
+        {"readOnlyHint", hints->read_only},
+        {"destructiveHint", hints->destructive},
+        {"idempotentHint", hints->idempotent},
+        {"openWorldHint", hints->open_world}};
+  }
+  return entry;
 }
 
 json textResult(const std::string& text, bool is_error) {
@@ -93,15 +166,125 @@ json jsonResult(const json& payload) {
 }
 
 bool isReadOnlyTool(const std::string& name) {
-  static const std::set<std::string> read_only = {
-      "get_status", "about",        "list_instances", "list_topics", "describe_topic", "read_series", "evaluate",
-      "wait_for",   "list_created", "report_status",  "jobs_list",   "job_wait",       "ui_tree",     "ui_plot"};
-  return read_only.contains(name);
+  const ToolHints* hints = toolHints(name);
+  return hints != nullptr && hints->read_only;
 }
 
-bool runsUnderUsersDialog(const std::string& name, const json& args) {
-  return isReadOnlyTool(name) || name == "job_kill" || (name == "screenshot" && !args.contains("tab")) ||
-         (name == "widget_state" && args.value("action", "") != "set") || isUiTool(name);
+bool runsUnderUsersDialog(const std::string& name) {
+  return isReadOnlyTool(name) || name == "job_kill" || isUiTool(name);
+}
+
+namespace {
+
+bool isSecretKey(const std::string& key) {
+  std::string folded;
+  for (const unsigned char c : key) {
+    if (c != '_' && c != '-') {
+      folded.push_back(static_cast<char>(std::tolower(c)));
+    }
+  }
+  static constexpr std::string_view kWords[] = {"password", "passwd",     "secret",    "token",
+                                                "apikey",   "privatekey", "credential"};
+  return std::any_of(std::begin(kWords), std::end(kWords), [&folded](std::string_view word) {
+    return folded.find(word) != std::string::npos;
+  });
+}
+
+void redactIn(json& value, bool secret) {
+  if (value.is_object()) {
+    for (auto it = value.begin(); it != value.end(); ++it) {
+      redactIn(it.value(), secret || isSecretKey(it.key()));
+    }
+  } else if (value.is_array()) {
+    for (json& item : value) {
+      redactIn(item, secret);
+    }
+  } else if (secret && value.is_string() && !value.get_ref<const std::string&>().empty()) {
+    value = kRedacted;
+  }
+}
+
+/// `value` without the keys naming a secret, at any depth.
+json withoutSecrets(const json& value) {
+  if (value.is_object()) {
+    json out = json::object();
+    for (auto it = value.begin(); it != value.end(); ++it) {
+      if (!isSecretKey(it.key())) {
+        out[it.key()] = withoutSecrets(it.value());
+      }
+    }
+    return out;
+  }
+  if (value.is_array()) {
+    json out = json::array();
+    for (const json& item : value) {
+      out.push_back(withoutSecrets(item));
+    }
+    return out;
+  }
+  return value;
+}
+
+/// Fills each kRedacted in `given` from `saved` at the same key path; the first path with no saved string, or "".
+std::string restoreIn(json& given, const json* saved, const std::string& path, bool& found) {
+  if (given.is_object()) {
+    for (auto it = given.begin(); it != given.end(); ++it) {
+      const json* next =
+          saved != nullptr && saved->is_object() && saved->contains(it.key()) ? &(*saved)[it.key()] : nullptr;
+      if (std::string error = restoreIn(it.value(), next, path + "/" + it.key(), found); !error.empty()) {
+        return error;
+      }
+    }
+  } else if (given.is_array()) {
+    for (std::size_t i = 0; i < given.size(); ++i) {
+      const json* next = saved != nullptr && saved->is_array() && i < saved->size() ? &(*saved)[i] : nullptr;
+      if (std::string error = restoreIn(given[i], next, path + "/" + std::to_string(i), found); !error.empty()) {
+        return error;
+      }
+    }
+  } else if (given.is_string() && given.get_ref<const std::string&>() == kRedacted) {
+    found = true;
+    if (saved == nullptr || !saved->is_string()) {
+      return path.empty() ? std::string("/") : path;
+    }
+    given = *saved;
+  }
+  return {};
+}
+
+}  // namespace
+
+json redactSecrets(json config) {
+  redactIn(config, false);
+  return config;
+}
+
+std::string restoreSecrets(json& given, const json& saved) {
+  json filled = given;
+  bool found = false;
+  if (const std::string missing = restoreIn(filled, &saved, "", found); !missing.empty()) {
+    return "no saved value for " + missing + " to replace \"" + kRedacted + "\" with; pass the value itself";
+  }
+  if (!found) {
+    return {};
+  }
+  // A saved secret goes only to what it was saved for: the same document, its secrets aside. Anything else (another
+  // host, server or ICE entry) would carry it somewhere the user never sent it.
+  const json changes = json::diff(withoutSecrets(saved), withoutSecrets(given));
+  if (!changes.empty()) {
+    std::set<std::string> paths;
+    for (const json& change : changes) {
+      const std::string path = change.value("path", "");
+      paths.insert(path.empty() ? std::string("/") : path);
+    }
+    std::string named;
+    for (const std::string& path : paths) {
+      named += (named.empty() ? "" : ", ") + path;
+    }
+    return "this changes " + named + " while keeping a saved secret: pass the secret itself, or use ask_user=true";
+  }
+  given = std::move(filled);
+  return {};
 }
 
 bool isJobCapableTool(const std::string& name) {
@@ -138,94 +321,126 @@ namespace {
 
 #ifdef PJ_TARGET_WASM
 #define PJ_MCP_ABOUT_SOURCES ""
+// A page's file has no saved configuration an agent's call can match, so no secret to keep.
+#define PJ_MCP_OPEN_FILE_SECRETS "; pass a secret itself, never \"<redacted>\"."
 #else
 #define PJ_MCP_ABOUT_SOURCES "; about says what each one is"
+#define PJ_MCP_OPEN_FILE_SECRETS                                                                               \
+  "; a \"<redacted>\" passed back in config keeps the value this file was loaded with, only when the rest of " \
+  "config is that one unchanged (else pass the secret itself)."
 #endif
 
 /// The tools/list entries of the app's own tools (McpServerTools.cpp).
 json appToolEntries() {
-  const auto tool = [](const char* name, const char* desc, json input) {
-    return toolEntry(name, desc, std::move(input), isReadOnlyTool(name));
-  };
   const json str = {{"type", "string"}};
   const json paths = {
       {"type", "array"},
       {"items", str},
       {"description", "series paths as read_series takes them: topic/field, a unique suffix, or dataset:topic/field"}};
   const json dataset = {{"type", {"string", "integer"}}, {"description", "dataset id, name or path (get_status)"}};
+  const json ask_user = {{"type", "boolean"}, {"default", false}};
+  const auto described = [](json property, const char* description) {
+    property["description"] = description;
+    return property;
+  };
   return json::array({
-      tool(
+      toolEntry(
           "get_status",
           "Start here. Loaded datasets (id, name, path, loader config; live streams carry stream), the stream "
           "sources start_stream can start, time range, current time, your agent id and tabs, whether "
-          "PlotJuggler has the user's focus and any dialog the user has open.",
+          "PlotJuggler has the user's focus and any dialog the user has open. A config's secrets (passwords, "
+          "tokens) read as \"<redacted>\".",
           schema(json::object())),
 #ifndef PJ_TARGET_WASM
-      tool(
+      toolEntry(
           "about",
           "What this PlotJuggler can do: built-in features with where to find them in the UI, known limitations, "
           "and the plugins that are loaded, installed or installable. Read it before telling the user how to do "
-          "something in PlotJuggler.",
-          schema(json::object())),
+          "something in PlotJuggler. query keeps only the entries and plugins that mention it.",
+          schema(
+              {{"query",
+                {{"type", "string"},
+                 {"description",
+                  "case-insensitive text to look for (e.g. \"csv\", \"zoom\"); without it, everything"}}}})),
 #endif
-      tool(
+      toolEntry(
           "open_file",
           "Load a data file (MCAP, CSV, ULog, Parquet...). Returns when the import has finished, or after wait_s "
           "with a job_id while a large file still loads: its topics are readable as they arrive, job_wait returns "
           "the outcome and job_kill stops the import. By default the loader's own defaults apply (e.g. every "
-          "topic). ask_user=true opens PlotJuggler's loader dialog so the user picks topics/options. config: "
-          "loader settings JSON (get_status shows the config each loaded dataset used, as a template).",
+          "topic). Returns the config the loader used, its secrets as \"<redacted>\"" PJ_MCP_OPEN_FILE_SECRETS,
           schema(
               {{"path", {{"type", "string"}, {"description", "absolute path"}}},
-               {"ask_user", {{"type", "boolean"}}},
-               {"config", {{"type", "object"}}}},
+               {"ask_user",
+                described(ask_user, "open PlotJuggler's loader dialog so the user picks topics and options")},
+               {"config",
+                {{"type", "object"},
+                 {"description",
+                  "loader settings JSON; get_status shows the config each loaded dataset used, as a template"}}}},
               {"path"})),
-      tool(
+      toolEntry(
           "unload_file",
           "Remove a loaded dataset and its data. If derived series depend on it, the user is asked to confirm in "
           "PlotJuggler and the call returns their answer (or a job_id after wait_s while they decide; job_kill "
           "withdraws the question).",
           schema({{"dataset", dataset}}, {"dataset"})),
-      tool(
+      toolEntry(
           "reload_file", "Reload a dataset from its file with the same loader settings (e.g. after it changed).",
           schema({{"dataset", dataset}}, {"dataset"})),
-      tool(
+      toolEntry(
           "start_stream",
           "Start a live streaming source (get_status lists stream_sources" PJ_MCP_ABOUT_SOURCES "). By "
-          "default it uses the settings the user last confirmed in that source's dialog; config passes your own "
-          "(get_status shows a live stream's config, as a template); ask_user=true opens the source's dialog so "
-          "the user sets it up. Returns dataset_id once the stream runs, with the job_id of the job that lives "
-          "as long as the stream: job_kill (or stop_stream) stops it, job_wait returns when it ends. Topics "
-          "appear as the source advertises them.",
+          "default it uses the settings the user last confirmed in that source's dialog; config passes your own; "
+          "ask_user=true opens the source's dialog so the user sets it up. Returns dataset_id once the stream "
+          "runs, with the job_id of the job that lives as long as the stream: job_kill (or stop_stream) stops it, "
+          "job_wait returns when it ends. Topics appear as the source advertises them. Configs come back with "
+          "their secrets as \"<redacted>\"; a \"<redacted>\" passed back in config keeps the value the user "
+          "confirmed in the dialog, only when the rest of config is that confirmed config unchanged (else pass the "
+          "secret itself, or ask_user=true).",
           schema(
               {{"source", {{"type", "string"}, {"description", "stream source name, from stream_sources"}}},
-               {"ask_user", {{"type", "boolean"}}},
-               {"config", {{"type", "object"}}}},
+               {"ask_user", described(ask_user, "open the source's dialog so the user sets it up")},
+               {"config",
+                {{"type", "object"},
+                 {"description", "source settings JSON; get_status shows a live stream's config, as a template"}}}},
               {"source"})),
-      tool(
+      toolEntry(
           "stop_stream", "Stop a live stream; its data stays loaded. dataset: a live stream from get_status.",
           schema({{"dataset", dataset}}, {"dataset"})),
 #ifndef PJ_TARGET_WASM
-      tool(
+      toolEntry(
           "export_series",
           "Write several series to ONE time-aligned file for your own analysis (numpy/pandas): fits, "
           "correlations, lags across signals. Works for every format PlotJuggler opened, so prefer it to "
           "decoding files yourself. Rows at every sample time of any series, or on a uniform rate_hz grid; "
           "values sample-and-hold; time in display seconds (as playback). Returns the path. format \"npy\" "
           "writes a numpy structured array that numpy.load reads in well under a second, where numpy.loadtxt "
-          "takes seconds per million rows of CSV: use it beyond ~100k rows.",
+          "takes seconds per million rows of CSV: use it beyond ~100k rows. A named path keeps a file already "
+          "there unless overwrite is true.",
           schema(
               {{"paths", paths},
-               {"path", {{"type", "string"}, {"description", "absolute .csv or .npy path (default: a temp file)"}}},
-               {"format", {{"type", "string"}, {"enum", {"csv", "npy"}}, {"description", "csv (default) or npy"}}},
-               {"rate_hz", {{"type", "number"}}},
-               {"t0", {{"type", "number"}}},
-               {"t1", {{"type", "number"}}}},
+               {"path",
+                {{"type", "string"},
+                 {"description", "absolute path ending in .csv or .npy, as format (default: a new temp file)"}}},
+               {"overwrite",
+                {{"type", "boolean"}, {"default", false}, {"description", "replace a file already at path"}}},
+               {"format",
+                {{"type", "string"}, {"enum", {"csv", "npy"}}, {"default", "csv"}, {"description", "file format"}}},
+               {"rate_hz",
+                {{"type", "number"},
+                 {"minimum", 0},
+                 {"default", 0},
+                 {"description", "rows on a uniform grid at this rate; 0: a row at every sample time of any series"}}},
+               {"t0",
+                {{"type", "number"}, {"description", "window start, display seconds (default: the first sample)"}}},
+               {"t1", {{"type", "number"}, {"description", "window end, display seconds (default: the last sample)"}}}},
               {"paths"})),
 #endif
-      tool(
+      toolEntry(
           "add_script_series",
-          "Create your own derived series with a Luau or Python script. Python: first line '# pj-script: python', "
+          "Create your own derived series with a Luau or Python script: for Python, or a script class that keeps "
+          "state in its instance (create_derived_series takes a formula or a short Luau body; add_filter a "
+          "built-in filter). Python: first line '# pj-script: python', "
           "one top-level class T (its id is set for you), @staticmethod create(params) returning T(), and "
           "calculate(self, time, value, *more_inputs); imports limited to math, cmath, statistics. A Luau script "
           "returns a class: return { name=\"X\", create = function(params) local s = {}; return { calculate = "
@@ -236,60 +451,81 @@ json appToolEntries() {
           "Listed under Custom Topics, saved in layouts, untouched by the user's undo; the same name replaces "
           "it. Returns each output topic with its fields.",
           schema(
-              {{"name", str},
+              {{"name", described(str, "series name; your series of this name is replaced")},
                {"inputs", paths},
-               {"outputs", {{"type", "array"}, {"items", str}}},
-               {"script", str},
-               {"params", {{"type", "object"}}}},
+               {"outputs",
+                {{"type", "array"},
+                 {"items", str},
+                 {"description", "output names, one number each from calculate (default: one output, `name`)"}}},
+               {"script", described(str, "Luau or Python source, as above")},
+               {"params", {{"type", "object"}, {"description", "passed to create(params)"}}}},
               {"name", "inputs", "script"})),
-      tool(
+      toolEntry(
           "add_filter",
-          "Create a derived series by applying a built-in filter (integral, derivative, absolute, scale, "
-          "moving_average, moving_rms, moving_variance, outlier_removal, binary_filter, samples_counter, "
-          "time_since_previous) to one series; params override the filter's defaults. Output name defaults to "
-          "<input>[filter]. Like add_script_series: listed under Custom Topics, removable with "
-          "remove_script_series, outside the user's undo. Returns the output topic and field to plot.",
+          "Create a derived series by applying one of PlotJuggler's built-in filters to one series; params "
+          "override the filter's defaults (for a formula of your own use create_derived_series; for Python or a "
+          "class with state, add_script_series). Like add_script_series: listed under Custom Topics, removable with "
+          "remove_script_series, outside the user's undo, the same name replaces it. Returns the output topic and "
+          "field to plot.",
           schema(
               {{"input", {{"type", "string"}, {"description", "series path, as read_series takes it"}}},
-               {"filter", str},
-               {"params", {{"type", "object"}}},
-               {"name", str}},
+               {"filter",
+                described(str, "built-in filter id; an unknown one is refused with the list of available filters")},
+               {"params",
+                {{"type", "object"}, {"description", "filter parameters; the ones left out take their defaults"}}},
+               {"name", described(str, "output series name (default <input>[<filter>])")}},
               {"input", "filter"})),
-      tool(
+      toolEntry(
           "remove_script_series",
-          "Delete a series made with add_script_series or add_filter. Refused while someone else's series (the "
-          "user's, a plugin's) is built on it, since that would be deleted too.",
-          schema({{"name", str}}, {"name"})),
-      tool(
+          "Delete one of your series made with add_script_series or add_filter, all its outputs included, by the "
+          "name it was created with. Refused while someone else's series (the user's, a plugin's) is built on it, "
+          "since that would be deleted too.",
+          schema({{"name", described(str, "the name given to add_script_series or add_filter")}}, {"name"})),
+      toolEntry(
           "screenshot",
-          "PNG of the PlotJuggler window, including GPU-rendered plots and 3D views, and any dialog the user has "
-          "open. tab: one of your plot_tab/scene_view tabs to bring to the front first.",
-          schema({{"tab", str}, {"max_width", {{"type", "integer"}}}})),
-      tool(
+          "PNG of the PlotJuggler window as the user sees it, including GPU-rendered plots and 3D views, and any "
+          "dialog the user has open. To show one of your tabs, focus it first with plot_tab or scene_view.",
+          schema(
+              {{"max_width",
+                {{"type", "integer"},
+                 {"default", kDefaultScreenshotWidth},
+                 {"description", "scale down to at most this many pixels wide; 0: full size"}}}})),
+      toolEntry(
           "widget_state",
-          "Read or change the settings of any dock, the user's included: plots, 3D and 2D scenes, Log panels, state "
+          "Read the settings of any dock, the user's included: plots, 3D and 2D scenes, Log panels, state "
           "strips. A dock's settings are the XML element a layout saves for it (a scene's camera, grid and each "
-          "layer's point size, colour mode, colormap, range...; a plot's curves, colours, styles and axis ranges).\n"
+          "layer's point size, colour mode, colormap, range...; a plot's curves, colours, styles and axis ranges); "
+          "set_widget_state changes them.\n"
           "action 'list': every dock (id, tab, title, kind). 'get' (dock): its element as `xml`, and `options`: per "
           "element tag, each attribute the dock accepts with its type, allowed `values` or `min`/`max`, and "
-          "`default` (the value an absent attribute takes). 'set' (dock, xml): replaces the dock's state with your "
-          "element: get it right before, change attributes, send the whole element back with the same root tag; keep "
-          "what you do not change as get returned it (it holds the camera and the view: an older get moves them "
-          "back). A refused element leaves the dock as it was, and the error names the "
-          "attribute and what it accepts; an attribute not in options, or a series or topic that is not loaded, is "
-          "refused too. Each set is one undo step for the user. A dock whose kind lists no options (a plugin's "
-          "widget) still round-trips, unchecked.",
+          "`default` (the value an absent attribute takes); empty for a plugin's widget.",
           schema(
-              {{"action", {{"type", "string"}, {"enum", json::array({"list", "get", "set"})}}},
-               {"dock", {{"type", "string"}, {"description", "a dock id from list"}}},
-               {"xml", {{"type", "string"}, {"description", "set: the dock's whole element"}}}},
+              {{"action",
+                {{"type", "string"},
+                 {"enum", json::array({"list", "get"})},
+                 {"description", "list: every dock; get: one dock's settings and options"}}},
+               {"dock", {{"type", "string"}, {"description", "get: a dock id from list"}}}},
               {"action"})),
+      toolEntry(
+          "set_widget_state",
+          "Replace a dock's settings (widget_state reads them) with your XML element: get it right before, change "
+          "attributes, send the whole element back with the same root tag; keep what you do not change as get "
+          "returned it (it holds the camera and the view: an older get moves them back). A refused element leaves "
+          "the dock as it was, and the error names the attribute and what it accepts; an attribute not in "
+          "options, or a series or topic that is not loaded, is refused too; a dock whose get lists no options (a "
+          "plugin's widget) takes any element, unchecked. Each call is one undo step for the user. Returns the "
+          "dock's element as applied.",
+          schema(
+              {{"dock", {{"type", "string"}, {"description", "a dock id from widget_state list"}}},
+               {"xml", {{"type", "string"}, {"description", "the dock's whole element"}}}},
+              {"dock", "xml"})),
   });
 }
 
 }  // namespace
 
 #undef PJ_MCP_ABOUT_SOURCES
+#undef PJ_MCP_OPEN_FILE_SECRETS
 
 namespace {
 
@@ -298,17 +534,27 @@ bool g_ui_tools_enabled = false;
 /// The tools/list entries of the UI tools (McpUiTools).
 json uiToolEntries() {
   const auto tool = [](const char* name, const std::string& desc, json input) {
-    return toolEntry(name, desc, std::move(input), isReadOnlyTool(name));
+    return toolEntry(name, desc, std::move(input));
   };
   const json target = {
       {"ref", {{"type", "string"}, {"description", "a ref from ui_tree, e.g. w12"}}},
       {"name", {{"type", "string"}, {"description", "or the objectName of exactly one visible widget"}}}};
   const json wait = {
       {"type", "integer"},
-      {"description", "ms to let the app handle the input before answering (default " +
-                          std::to_string(kDefaultUiSettleMs) + ", at most " + std::to_string(kMaxUiSettleMs) + ")"}};
+      {"minimum", 0},
+      {"maximum", kMaxUiSettleMs},
+      {"default", kDefaultUiSettleMs},
+      {"description", "ms to let the app handle the input before answering"}};
   const json point = {{"type", "array"}, {"items", {{"type", "number"}}}, {"minItems", 2}, {"maxItems", 2}};
+  const json button = {
+      {"type", "string"}, {"enum", {"left", "right", "middle"}}, {"default", "left"}, {"description", "mouse button"}};
+  const json x = {{"type", "number"}, {"description", "x in the target's pixels (default: its center)"}};
+  const json y = {{"type", "number"}, {"description", "y in the target's pixels (default: its center)"}};
   const json mods = {{"type", "string"}, {"description", "held modifiers, e.g. Ctrl+Shift"}};
+  const auto described = [](json property, const char* description) {
+    property["description"] = description;
+    return property;
+  };
   const auto with = [&](json properties) {
     properties.update(target);
     properties["wait_ms"] = wait;
@@ -330,10 +576,10 @@ json uiToolEntries() {
           "center or at x,y inside it. Returns what the press landed on. Open menus by clicking the menu bar "
           "item, then the item in the popup ui_tree lists.",
           schema(with(
-              {{"button", {{"type", "string"}, {"enum", {"left", "right", "middle"}}}},
-               {"double", {{"type", "boolean"}}},
-               {"x", {{"type", "number"}}},
-               {"y", {{"type", "number"}}},
+              {{"button", button},
+               {"double", {{"type", "boolean"}, {"default", false}, {"description", "a double click"}}},
+               {"x", x},
+               {"y", y},
                {"modifiers", mods}}))),
       tool(
           "ui_drag",
@@ -341,42 +587,41 @@ json uiToolEntries() {
           "of `to_ref`, and release: zoom rectangles, panning, splitters, sliders. Drag-and-drop between widgets "
           "runs the platform's drag loop and may not complete.",
           schema(with(
-              {{"from", point},
-               {"to", point},
-               {"to_ref", {{"type", "string"}}},
-               {"button", {{"type", "string"}, {"enum", {"left", "right", "middle"}}}},
+              {{"from", described(point, "[x, y] to press at, in the target's pixels (default: its center)")},
+               {"to", described(point, "[x, y] to release at, in the target's pixels")},
+               {"to_ref", {{"type", "string"}, {"description", "or a ref from ui_tree to release at the center of"}}},
+               {"button", button},
                {"modifiers", mods}}))),
       tool(
           "ui_wheel", "Turn the mouse wheel over the target (at its center or x,y): notches > 0 scrolls up / zooms in.",
           schema(with(
-              {{"notches", {{"type", "integer"}}},
-               {"x", {{"type", "number"}}},
-               {"y", {{"type", "number"}}},
+              {{"notches", {{"type", "integer"}, {"description", "wheel notches; > 0 scrolls up"}}},
+               {"x", x},
+               {"y", y},
                {"modifiers", mods}}))),
       tool(
           "ui_key",
           "Press keys, as a key sequence (\"Ctrl+Z\", \"Return\", \"Escape\", \"Ctrl+S, Ctrl+Q\"), into the "
           "target after focusing it, or into whatever has focus. Window shortcuts fire only in the active "
           "window: the target's is activated first.",
-          schema(with({{"keys", {{"type", "string"}}}}), {"keys"})),
+          schema(with({{"keys", {{"type", "string"}, {"description", "a key sequence, e.g. Ctrl+Z"}}}}), {"keys"})),
       tool(
           "ui_type",
           "Type text key by key into the target after focusing it, or into whatever has focus. \\n presses "
           "Return; text after a Return that closes the window goes nowhere, so send it in a second call. At most " +
               std::to_string(kMaxUiTypedChars) + " characters per call.",
-          schema(with({{"text", {{"type", "string"}}}}), {"text"})),
+          schema(
+              with(
+                  {{"text",
+                    {{"type", "string"}, {"maxLength", kMaxUiTypedChars}, {"description", "the text to type"}}}}),
+              {"text"})),
       tool(
           "ui_plot",
           "Read what the visible plots show (for QA asserts): per plot its title, X and Y ranges (3 decimals), "
           "curves with their visibility, and the tracker value box rows as the user reads them (empty when "
           "hidden). `title` selects one plot.",
-          schema({{"title", {{"type", "string"}}}})),
+          schema({{"title", {{"type", "string"}, {"description", "only the plot with this title"}}}})),
   });
-}
-
-/// `seconds` as the whole number a tool description quotes.
-std::string whole(double seconds) {
-  return std::to_string(static_cast<int>(seconds));
 }
 
 /// The job tools, which every token serves (McpServer's job table).
@@ -387,22 +632,34 @@ json jobToolEntries() {
           "jobs_list",
           "Your calls still running in the background, and those that ended in the last minutes: job_id, tool, "
           "summary, state (running, waiting_for_user, completed, failed, killed), elapsed_s, progress.",
-          schema(json::object()), true),
+          schema(json::object())),
       toolEntry(
           "job_wait",
           "Wait for a background job: returns its result once it ends (again on every call, until it expires "
-          "minutes later), or its job_id, state and progress if it is still running after timeout_s (default " +
-              whole(kDefaultWaitS) + ", at most " + whole(kMaxJobWaitS) + "; 0 only looks).",
-          schema({{"job_id", job_id}, {"timeout_s", {{"type", "number"}}}}, {"job_id"}), true),
+          "minutes later), or its job_id, state and progress if it is still running after timeout_s.",
+          schema(
+              {{"job_id", job_id},
+               {"timeout_s",
+                {{"type", "number"},
+                 {"minimum", 0},
+                 {"maximum", kMaxJobWaitS},
+                 {"default", kDefaultWaitS},
+                 {"description", "seconds to wait; 0 only looks"}}}},
+              {"job_id"})),
       toolEntry(
           "job_kill",
-          "Stop a background job: an evaluation stops computing, a file import stops (keep_partial, default true, "
-          "keeps the rows loaded so far; false removes them; a stopped reload always restores the data it was "
-          "replacing), a stream stops (its data stays), an export writes "
+          "Stop a background job: an evaluation stops computing, a file import stops (a stopped reload always "
+          "restores the data it was replacing), a stream stops (its data stays), an export writes "
           "nothing, and a dialog the job opened for the user closes. Returns its final state: killed, or "
           "completed/failed if it ended first; when the stop takes longer to act, its state with stopping=true "
           "(job_wait then returns when it has ended).",
-          schema({{"job_id", job_id}, {"keep_partial", {{"type", "boolean"}}}}, {"job_id"}), false),
+          schema(
+              {{"job_id", job_id},
+               {"keep_partial",
+                {{"type", "boolean"},
+                 {"default", true},
+                 {"description", "a stopped file import keeps the rows loaded so far; false removes them"}}}},
+              {"job_id"})),
   });
 }
 
@@ -414,10 +671,12 @@ void addWaitS(json& entry) {
   }
   input["properties"]["wait_s"] = {
       {"type", "number"},
+      {"minimum", 0},
+      {"maximum", kMaxWaitS},
+      {"default", kDefaultWaitS},
       {"description",
-       "seconds to wait for the result (default " + whole(kDefaultWaitS) + ", at most " + whole(kMaxWaitS) +
-           "). A call still running then returns {job_id, state, progress} and carries on in the background: "
-           "job_wait gets its result, job_kill stops it. 0 returns the job_id at once."}};
+       "seconds to wait for the result. A call still running then returns {job_id, state, progress} and carries "
+       "on in the background: job_wait gets its result, job_kill stops it. 0 returns the job_id at once."}};
 }
 
 }  // namespace
@@ -457,8 +716,12 @@ json toolList(ToolSet set) {
   }
   for (const json& entry : agentTools().toMcpToolsList()) {
     const std::string name = entry.value("name", "");
-    tools.push_back(
-        toolEntry(name, entry.value("description", ""), entry.value("inputSchema", json()), isReadOnlyTool(name)));
+    // get_status names the datasets and the instructions count their topics: report_status serves plugin
+    // tokens, which have neither.
+    if (set == ToolSet::kFull && name == "report_status") {
+      continue;
+    }
+    tools.push_back(toolEntry(name, entry.value("description", ""), entry.value("inputSchema", json())));
   }
   for (json& entry : tools) {
     if (isJobCapableTool(entry.value("name", ""))) {
@@ -469,6 +732,24 @@ json toolList(ToolSet set) {
     tools.push_back(std::move(entry));
   }
   return tools;
+}
+
+json bridgeToolEntries() {
+  return json::array({
+      toolEntry(
+          "list_instances",
+          "PlotJuggler windows running with MCP on this computer: id, loaded datasets, whether it has the user's "
+          "focus and whether this session is using it. Only needed when several run.",
+          schema(json::object())),
+      toolEntry(
+          "select_instance", "Use the PlotJuggler instance with this id (from list_instances) for every later call.",
+          schema({{"id", {{"type", "integer"}, {"description", "an instance id from list_instances"}}}}, {"id"})),
+      toolEntry(
+          "launch",
+          "Start a new PlotJuggler window with MCP on (when none runs, or the user wants a separate one) and use "
+          "it. Returns once it is ready for other tools.",
+          schema(json::object())),
+  });
 }
 
 const agent_tools::ToolRegistry& agentTools() {
