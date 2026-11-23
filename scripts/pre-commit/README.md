@@ -1,6 +1,6 @@
 # Pre-commit scripts
 
-The local C/C++ hooks of `.pre-commit-config.yaml`. Each prints the offending line and exits 1 on a violation, 0
+The local hooks of `.pre-commit-config.yaml`. Each prints the offending line and exits 1 on a violation, 0
 when clean.
 
 ## `check-forbidden-patterns.py`
@@ -21,6 +21,12 @@ applies to, `code_only` (ignore comments and string literals, for words that als
 Fails on a raw `QDialog`, `QMessageBox`, `QFileDialog` or `QInputDialog` (OS window decorations); use `PJ::Dialog`,
 `PJ::MessageBox` or `PJ::FileDialog` from `pj_widgets`. Exempt: `pj_widgets/` (the wrappers), `tests/` and `demos/`
 directories, `*_test.*` files, and a line carrying `NOLINT(pj-canonical-chrome)` (a reviewed exception).
+
+## `check-feature-catalog.py`
+
+Every `path#token` citation in `resources/feature_catalog.json` must name a file that still contains the token: the
+same rule as `FeatureCatalogResourceTest`, but run on every commit, because the catalog also cites `.md` files and
+docs-only commits reach `main` without a build. Fix by updating the citation, or by restoring the cited text.
 
 ## Running
 

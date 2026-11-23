@@ -38,6 +38,12 @@ repos:
         entry: scripts/pre-commit/check-canonical-chrome.py
         language: python
         types_or: [c++, c]
+      - id: check-feature-catalog
+        name: Feature catalog citations still appear in the cited files
+        entry: scripts/pre-commit/check-feature-catalog.py
+        language: python
+        always_run: true
+        pass_filenames: false
 
   # CPP hooks
   - repo: https://github.com/pre-commit/mirrors-clang-format
