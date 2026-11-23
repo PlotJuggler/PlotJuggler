@@ -1179,7 +1179,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // the panel prunes on itemsRemoved.
   connect(
       &session_->sessionManager(), &SessionManager::onDemandRecipeInstalled, this, &MainWindow::syncCustomTopicsPanel);
-  // A transform row is matched to the catalog by name, so the refresh reuses the matches until the catalog changes.
+  // The transform rows are rebuilt from transformRecipes() only when the catalog changes (or a sync asks).
   const auto transform_rows_stale = [this]() { custom_topic_transform_rows_stale_ = true; };
   connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, transform_rows_stale);
   connect(&session_->catalogModel(), &CatalogModel::itemsRemoved, this, transform_rows_stale);
@@ -7925,8 +7925,12 @@ void MainWindow::refreshCustomTopicsPanel() {
     custom_topic_transform_rows_.clear();
     // Not filtered by owner: a restored transform's plugin may not be loaded (the layout carries the script).
     const auto transforms = session_->sessionManager().dataProcessorService().transformRecipes();
-    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset.
+    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset. A
+    // grouped output ("t:a,b", one topic with a column per field) has no row, so the whole topic stays in Datasets.
     for (const auto& recipe : transforms) {
+      if (DataProcessorService::materializedTopicNames(recipe) != recipe.outputs) {
+        continue;
+      }
       for (const TopicId output : recipe.output_topic_ids) {
         if (const std::optional<QString> key = catalog.scalarColumnKey(recipe.dataset_id, output, 0)) {
           custom_topic_transform_rows_.push_back({.key = *key, .owner = QString::fromStdString(recipe.owner_plugin)});
