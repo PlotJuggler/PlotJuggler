@@ -45,6 +45,7 @@
 #include "pj_marketplace/extension.hpp"
 #include "pj_marketplace/loaded_profile.hpp"
 #include "pj_marketplace/platform_utils.hpp"
+#include "pj_test_store_dir.h"
 using namespace Qt::StringLiterals;
 
 namespace PJ {
@@ -405,14 +406,9 @@ class ExtensionManagerTest : public ::testing::Test {
   void TearDown() override {
     delete mgr_;
     delete downloader_;
-    // The staging area sits NEXT TO ext_dir_, so QTemporaryDir does not remove it: a test that abandons an in-flight
-    // install orphans a transaction there, as a crashed session would.
-    QDir(transactionStageDirFor(ext_dir_.path())).removeRecursively();
   }
 
-  // Under the canonical temp root: the manager keeps canonical store paths, and
-  // the macOS temp dir sits behind a symlink (/var -> /private/var).
-  QTemporaryDir ext_dir_{QDir(QDir::tempPath()).canonicalPath() + u"/pj_ext_XXXXXX"_s};
+  test::StoreTempDir ext_dir_;
   QTemporaryDir pending_dir_;
   LocalHttpServer server_;
   DownloadManager* downloader_ = nullptr;
@@ -975,7 +971,7 @@ TEST_F(ExtensionManagerTest, UninstallUnknownExtensionEmitsError) {
 TEST_F(ExtensionManagerTest, UpdateStagesNewVersionUntilRestart) {
   cleanBackups("mock-data-source");
 
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -1023,7 +1019,7 @@ TEST_F(ExtensionManagerTest, UpdateStagesNewVersionUntilRestart) {
 TEST_F(ExtensionManagerTest, UpdatePromotionBacksUpOldVersion) {
   cleanBackups("mock-data-source");
 
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -1066,7 +1062,7 @@ TEST_F(ExtensionManagerTest, UpdatePromotionBacksUpOldVersion) {
 TEST_F(ExtensionManagerTest, UpdatePromotionPreservesDisabledState) {
   cleanBackups("mock-data-source");
 
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::backupDir()).absoluteFilePath("../test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -1108,7 +1104,7 @@ TEST_F(ExtensionManagerTest, UpdatePromotionPreservesDisabledState) {
 TEST_F(ExtensionManagerTest, FailedUpdateStagingLeavesLiveInstallUntouched) {
   cleanBackups("mock-data-source");
 
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -1152,7 +1148,7 @@ TEST_F(ExtensionManagerTest, FailedUpdateStagingLeavesLiveInstallUntouched) {
 TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingInstall) {
   cleanBackups("mock-data-source");
 
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -1198,7 +1194,7 @@ TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingInstall) {
 TEST_F(ExtensionManagerTest, UpdateRejectsAlreadyPendingUninstall) {
   cleanBackups("mock-data-source");
 
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -1479,7 +1475,7 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsIncompatibleEmbeddedRequ
 TEST_F(ExtensionManagerTest, ConstructionReflectsStagedUpdateInOnePass) {
   cleanBackups("mock-data-source");
   // Same filesystem as backupDir(): promoting backs up v1 via QDir::rename(), which cannot cross filesystems.
-  QTemporaryDir ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(ext_dir.isValid());
   QTemporaryDir pend_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(pend_dir.isValid());
@@ -1517,7 +1513,7 @@ TEST_F(ExtensionManagerTest, ConstructionPromotesStagedBatchDespitePinnedSibling
   cleanBackups("pinning-data-source");
 
   // Same filesystem as backupDir() so promotion's backup renames are moves.
-  QTemporaryDir ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(ext_dir.isValid());
   QTemporaryDir pend_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(pend_dir.isValid());
@@ -1655,7 +1651,7 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsEmptyStagingDirectory) {
 // first: otherwise the update would overwrite it with no recovery path.
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsBacksUpExistingExtensionBeforePromotion) {
   // ext_dir + pending_dir on the same filesystem as backupDir(), so all the QDir::rename moves are atomic.
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -1737,7 +1733,7 @@ TEST_F(ExtensionManagerTest, ApplyPendingInstallsRejectsEmbeddedIdMismatch) {
 TEST_F(ExtensionManagerTest, ApplyPendingInstallsKeepsExistingInstallWhenStagedUpdateFailsValidation) {
   // Promotion backs the live install up into backupDir() by directory rename, so ext/pending must share its filesystem.
   cleanBackups("mock-data-source");
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -2499,7 +2495,7 @@ TEST_F(ExtensionManagerTest, StagedLocalReplacementIsPromotedOnNextLaunch) {
   ASSERT_TRUE(src.isValid());
   // Same filesystem as backupDir(): promoting over the existing v1 backs it up
   // via QDir::rename(), which cannot cross filesystems (e.g. a tmpfs /tmp).
-  QTemporaryDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
+  test::StoreTempDir local_ext_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_ext_XXXXXX"));
   ASSERT_TRUE(local_ext_dir.isValid());
   QTemporaryDir local_pending_dir(QDir(PlatformUtils::configDir()).absoluteFilePath("test_pending_XXXXXX"));
   ASSERT_TRUE(local_pending_dir.isValid());
@@ -3691,7 +3687,7 @@ TEST_F(ExtensionManagerTest, LockReleasedOnDestructionRestoresWriteMode) {
 // runs as a child of this binary (see holdStoreLockFlag() in main).
 TEST_F(ExtensionManagerTest, SecondProcessCannotMutateStore) {
   // A store of its own, so the child's lease covers nothing else in the suite.
-  QTemporaryDir store;
+  test::StoreTempDir store;
   ASSERT_TRUE(store.isValid());
   const QString ready_file = QDir(store.path()).absoluteFilePath(u"holder.ready"_s);
   const QString stop_file = ready_file + u".stop"_s;

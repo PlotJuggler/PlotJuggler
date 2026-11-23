@@ -8,10 +8,10 @@
 // an explicit plugin dir would otherwise scan — and seed into — the real user
 // profile.
 
-#include <QTemporaryDir>
 #include <utility>
 
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_test_store_dir.h"
 
 namespace PJ::test {
 
@@ -26,7 +26,7 @@ struct HermeticCatalog {
             ExtensionCatalogService::Paths{QString(), sandbox.path(), sandbox.path() + "/no_bundled"}, std::move(sink),
             std::move(static_plugins), nullptr) {}
 
-  QTemporaryDir sandbox;  ///< marketplace root; the bundled path under it does not exist, so seeding is a no-op
+  StoreTempDir sandbox;  ///< marketplace root; the bundled path under it does not exist, so seeding is a no-op
   ExtensionCatalogService service;
 };
 
