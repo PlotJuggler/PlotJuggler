@@ -277,14 +277,19 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     label_target_y_ = boxAnchorY(marker_text.textSize().height());
   }
 
-  const double canvas_ratio = view_rect.width() / static_cast<double>(std::max(1, plot_->width()));
-  const double text_width = marker_text.textSize().width() * canvas_ratio;
+  // The box's width in plot units, through the map the canvas draws with: the plot widget is wider than the canvas
+  // by its axes, and a width taken over it places the box past the canvas edge or over the line. A right-aligned
+  // label starts `spacing` pixels after its position (QwtPlotMarker::drawLabel), so the gap is part of the width.
+  const QwtScaleMap x_map = plot_->canvasMap(QwtPlot::xBottom);
+  const double units_per_pixel = x_map.pDist() != 0.0 ? std::abs(x_map.sDist() / x_map.pDist()) : 0.0;
+  const double text_width = (marker_text.textSize().width() + text_marker_->spacing() + 1.0) * units_per_pixel;
   if ((text_marker_->boundingRect().right() + text_width) > view_rect.right()) {
-    text_marker_->setXValue(tracker_position.x() - view_rect.width() * 0.02 - text_width);
+    // Left of the line. A box wider than the room there starts at the canvas's left edge, so it keeps its first
+    // column and loses the end of its rows.
+    text_marker_->setXValue(std::max(view_rect.left(), tracker_position.x() - view_rect.width() * 0.02 - text_width));
   }
 
   const bool marker_visible = visible_points > 0 && visible_ && valueBoxAllowed();
-  const QwtScaleMap x_map = plot_->canvasMap(QwtPlot::xBottom);
   const bool seek =
       std::abs(x_map.transform(tracker_position.x()) - x_map.transform(previous_tracker_point_.x())) > kLabelSnapJumpPx;
   if (!marker_visible || !label_shown_ || seek) {

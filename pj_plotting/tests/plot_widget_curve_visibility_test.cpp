@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 #include <qwt_plot.h>
 #include <qwt_plot_curve.h>
+#include <qwt_plot_marker.h>
+#include <qwt_scale_map.h>
 #include <qwt_series_data.h>
 #include <qwt_text.h>
 
@@ -20,9 +22,11 @@
 #include <QSignalSpy>
 #include <QTest>
 #include <QToolButton>
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 #include "pj_datastore/writer.hpp"
 #include "pj_plotting/CurveEditor.h"
@@ -175,6 +179,73 @@ TEST(PlotCurveVisibility, ThemeSwitchRedrawsTheTrackerBox) {
   const std::optional<QColor> row_ink = fixture.rowInk(fixture.toggled);
   ASSERT_TRUE(row_ink.has_value()) << fixture.plot->trackerValueBoxText().toStdString();
   EXPECT_GE(PJ::contrastRatio(*row_ink, backdrop), 4.5) << "the box kept the light theme's ink";
+}
+
+// Where the tracker's value box is drawn, in canvas pixels, with the tracker line at each pixel column in turn.
+struct BoxSpan {
+  double left = 0.0;
+  double right = 0.0;
+  double line = 0.0;
+};
+std::vector<BoxSpan> boxSpansAcrossTheCanvas(
+    TrackerFixture& fixture, int plot_width, double* canvas_left, double* canvas_right) {
+  fixture.plot->resize(plot_width, 240);
+  fixture.plot->show();
+  QApplication::processEvents();
+  QwtPlot* qwt = fixture.plot->qwtPlot();
+  const QwtScaleMap x_map = qwt->canvasMap(QwtPlot::xBottom);
+  *canvas_left = std::min(x_map.p1(), x_map.p2());
+  *canvas_right = std::max(x_map.p1(), x_map.p2());
+  EXPECT_LT(*canvas_right - *canvas_left, 0.95 * qwt->width()) << "the axes must take part of the plot's width";
+
+  std::vector<BoxSpan> spans;
+  for (double pixel = *canvas_left + 2.0; pixel < *canvas_right - 2.0; pixel += 1.0) {
+    const double time = x_map.invTransform(pixel);
+    fixture.plot->setTrackerPosition(time);
+    EXPECT_TRUE(fixture.plot->trackerValueBoxVisible()) << pixel;
+    for (const QwtPlotItem* item : qwt->itemList(QwtPlotItem::Rtti_PlotMarker)) {
+      const auto* marker = static_cast<const QwtPlotMarker*>(item);
+      if (!marker->label().isEmpty()) {
+        // QwtPlotMarker::drawLabel starts a right-aligned label half a pixel plus `spacing` after its position.
+        const double left = x_map.transform(marker->xValue()) + marker->spacing() + 0.5;
+        spans.push_back({.left = left, .right = left + marker->label().textSize().width(), .line = pixel});
+      }
+    }
+  }
+  return spans;
+}
+
+// The value box stays inside the canvas and clear of the tracker line wherever the line is: the box's width is
+// converted to plot units over the canvas. Over the whole plot widget, which also holds the axes, it came out too
+// small, so near the right edge the box overflowed the canvas or covered the line.
+TEST(PlotCurveVisibility, ValueBoxStaysInsideTheCanvasAndClearOfTheLine) {
+  TrackerFixture fixture;
+  double canvas_left = 0.0;
+  double canvas_right = 0.0;
+  const std::vector<BoxSpan> spans = boxSpansAcrossTheCanvas(fixture, 520, &canvas_left, &canvas_right);
+  ASSERT_GT(spans.size(), 300u);
+  constexpr double kSlack = 1.0;  // pixel rounding
+  for (const BoxSpan& box : spans) {
+    ASSERT_LT(2.0 * (box.right - box.left), canvas_right - canvas_left) << "the box must fit on one side of the line";
+    EXPECT_GE(box.left, canvas_left - kSlack) << "line at " << box.line;
+    EXPECT_LE(box.right, canvas_right + kSlack) << "line at " << box.line;
+    EXPECT_TRUE(box.left >= box.line - kSlack || box.right <= box.line + kSlack)
+        << "box " << box.left << ".." << box.right << " covers the line at " << box.line;
+  }
+}
+
+// A box wider than the canvas cannot fit on either side: it keeps its first column (the time and the values) inside
+// the canvas and loses the end of its rows.
+TEST(PlotCurveVisibility, ValueBoxWiderThanTheCanvasKeepsItsLeftEdgeInside) {
+  TrackerFixture fixture;
+  double canvas_left = 0.0;
+  double canvas_right = 0.0;
+  const std::vector<BoxSpan> spans = boxSpansAcrossTheCanvas(fixture, 200, &canvas_left, &canvas_right);
+  ASSERT_FALSE(spans.empty());
+  ASSERT_GT(spans.front().right - spans.front().left, canvas_right - canvas_left) << "the box must not fit";
+  for (const BoxSpan& box : spans) {
+    EXPECT_GE(box.left, canvas_left - 1.0) << "line at " << box.line;
+  }
 }
 
 TEST(PlotCurveVisibility, SetCurveVisibleIsOneUndoStepAnnouncedOnceAndRepeatingItIsNone) {
