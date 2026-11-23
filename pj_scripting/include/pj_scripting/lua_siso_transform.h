@@ -54,8 +54,8 @@ class LuaSisoTransform : public proc::DataProcessor {
  private:
   void rebuildInstance();  ///< create a fresh instance from klass_ + params_json_
 
-  /// How the script's double output maps to a column kind (the class's `output`): double, int64, or the input's kind.
-  enum class OutputMode { kDouble, kInt64, kMirror };
+  /// How the script's output maps to a column kind (the class's `output`): double, int64, the input's kind, or text.
+  enum class OutputMode { kDouble, kInt64, kMirror, kString };
   OutputMode out_mode_ = OutputMode::kDouble;
 
   /// Integer outputs clamp to the type's range and a non-finite value becomes 0; mirror keeps the input's kind.

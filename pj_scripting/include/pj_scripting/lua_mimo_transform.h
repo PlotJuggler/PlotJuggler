@@ -49,8 +49,8 @@ class LuaMimoTransform : public PJ::IMIMOTransform {
  private:
   void rebuildInstance();  ///< create a fresh instance from klass_ + params_json_
 
-  /// How the double outputs map to a column kind: one mode for all M outputs, the class's single `output`.
-  enum class OutputMode { kDouble, kInt64, kMirror };
+  /// How the outputs map to a column kind: one mode for all M outputs, the class's single `output`.
+  enum class OutputMode { kDouble, kInt64, kMirror, kString };
   [[nodiscard]] PJ::VarValue makeOutputValue(double computed, const PJ::VarValue& mirror_input) const;
 
   std::shared_ptr<ScriptEngine> engine_;

@@ -3,6 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <string>
+#include <vector>
+
 #include "pj_scripting/script_engine.h"
 
 using namespace PJ::scripting;
@@ -229,6 +232,80 @@ TEST(LuauEngine, CalculateReturnShapes) {
   auto sp = engine->createInstance(classes->front(), R"({"mode":"suppress"})");
   ASSERT_TRUE(sp.has_value());
   EXPECT_TRUE((*sp)->calculate(3.0, 7.0).suppress);
+}
+
+// A class declaring `output = "string"` returns text: a label, (time, label), or nil.
+TEST(LuauEngine, StringClassReturnsText) {
+  constexpr const char* kLabel = R"LUAU(
+    return { id="state", name="State", output="string",
+      parameters = { { name="mode", type="string", default="value" } },
+      create = function(p)
+        return { calculate = function(t, v, ...)
+          if p.mode == "suppress" then return nil
+          elseif p.mode == "timeval" then return t + 1.0, "late"
+          elseif p.mode == "number" then return 3
+          elseif p.mode == "mimo" then return "a", "b"
+          else return v > 0 and "walking" or "standing" end
+        end }
+      end }
+  )LUAU";
+  auto engine = makeLuauEngine();
+  auto classes = engine->inspectModule(kLabel, "test");
+  ASSERT_TRUE(classes.has_value()) << classes.error();
+  EXPECT_EQ(classes->front().output_kind, "string");
+
+  auto val = engine->createInstance(classes->front(), R"({"mode":"value"})");
+  ASSERT_TRUE(val.has_value());
+  auto rv = (*val)->calculate(0.0, 1.0);
+  EXPECT_FALSE(rv.suppress);
+  EXPECT_EQ(rv.text, "walking");
+  EXPECT_EQ((*val)->calculate(0.0, -1.0).text, "standing");
+
+  auto tv = engine->createInstance(classes->front(), R"({"mode":"timeval"})");
+  ASSERT_TRUE(tv.has_value());
+  auto rt = (*tv)->calculate(2.0, 0.0);
+  ASSERT_TRUE(rt.out_time.has_value());
+  EXPECT_DOUBLE_EQ(*rt.out_time, 3.0);
+  EXPECT_EQ(rt.text, "late");
+
+  auto sp = engine->createInstance(classes->front(), R"({"mode":"suppress"})");
+  ASSERT_TRUE(sp.has_value());
+  EXPECT_TRUE((*sp)->calculate(0.0, 1.0).suppress);
+
+  auto mimo = engine->createInstance(classes->front(), R"({"mode":"mimo"})");
+  ASSERT_TRUE(mimo.has_value());
+  const double inputs[] = {1.0, 2.0};
+  auto rm = (*mimo)->calculateMimo(0.0, PJ::Span<const double>(inputs, 2));
+  EXPECT_FALSE(rm.suppress);
+  EXPECT_EQ(rm.texts, (std::vector<std::string>{"a", "b"}));
+
+  // A number where text is declared is a mistake, not a label.
+  auto num = engine->createInstance(classes->front(), R"({"mode":"number"})");
+  ASSERT_TRUE(num.has_value());
+  EXPECT_TRUE((*num)->calculate(0.0, 1.0).suppress);
+  EXPECT_TRUE((*num)->failed());
+  EXPECT_NE((*num)->error().find("string"), std::string::npos) << (*num)->error();
+}
+
+// Text from a numeric class fails, and the error names the declaration that would make it valid.
+TEST(LuauEngine, NumericClassReturningTextNamesTheStringOutput) {
+  constexpr const char* kText = R"LUAU(
+    return { id="t", name="T",
+      create = function(p) return { calculate = function(t, ...) return "walking" end } end }
+  )LUAU";
+  auto engine = makeLuauEngine();
+  auto classes = engine->inspectModule(kText, "test");
+  ASSERT_TRUE(classes.has_value());
+  auto siso = engine->createInstance(classes->front(), "{}");
+  ASSERT_TRUE(siso.has_value());
+  EXPECT_TRUE((*siso)->calculate(0.0, 1.0).suppress);
+  EXPECT_NE((*siso)->error().find(R"(output = "string")"), std::string::npos) << (*siso)->error();
+
+  auto mimo = engine->createInstance(classes->front(), "{}");
+  ASSERT_TRUE(mimo.has_value());
+  const double inputs[] = {1.0, 2.0};
+  EXPECT_TRUE((*mimo)->calculateMimo(0.0, PJ::Span<const double>(inputs, 2)).suppress);
+  EXPECT_NE((*mimo)->error().find(R"(output = "string")"), std::string::npos) << (*mimo)->error();
 }
 
 TEST(LuauEngine, RuntimeErrorFailsInstanceStickily) {

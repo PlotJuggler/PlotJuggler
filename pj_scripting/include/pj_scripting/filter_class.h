@@ -52,7 +52,7 @@ struct FilterClass {
   std::string name;  ///< human type name
   std::string description;
   std::string version;
-  std::string output_kind = "double";  ///< "double" | "int64" | "same"
+  std::string output_kind = "double";  ///< "double" | "int64" | "same" | "string"
   std::vector<ParamSpec> parameters;
   std::string source;  ///< full module text the class was parsed from
   std::string origin;  ///< provenance label (e.g. "bundled")

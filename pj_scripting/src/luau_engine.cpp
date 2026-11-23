@@ -305,7 +305,7 @@ class LuauInstance final : public FilterInstance {
  public:
   LuauInstance(
       lua_State* L, int calc_ref, int reset_ref, int self_ref, bool calc_self, bool reset_self,
-      std::unique_ptr<BudgetState> budget, std::uint64_t call_fuel)
+      std::unique_ptr<BudgetState> budget, std::uint64_t call_fuel, bool text_output)
       : L_(L),
         calc_ref_(calc_ref),
         reset_ref_(reset_ref),
@@ -313,7 +313,8 @@ class LuauInstance final : public FilterInstance {
         calc_self_(calc_self),
         reset_self_(reset_self),
         budget_(std::move(budget)),
-        call_fuel_(call_fuel) {}
+        call_fuel_(call_fuel),
+        text_output_(text_output) {}
 
   ~LuauInstance() override {
     if (L_ != nullptr) {
@@ -363,22 +364,24 @@ class LuauInstance final : public FilterInstance {
       r.suppress = true;
       return r;
     }
+    // The two-result form is (number time, value): (n, nil) and a value of the wrong kind are errors.
+    const int value_idx = nres >= 2 ? base + 2 : base + 1;
     if (nres >= 2) {
-      // The two-result form is (number time, number value): (n, nil) and (n, "x") are errors.
-      if (lua_isnumber(L_, base + 1) && lua_isnumber(L_, base + 2)) {
-        r.out_time = lua_tonumber(L_, base + 1);
-        r.value = lua_tonumber(L_, base + 2);
-      } else {
+      if (!lua_isnumber(L_, base + 1)) {
         lua_settop(L_, base);
-        fail("calculate (time, value) form must return two numbers");
+        fail("calculate (time, value) form must return a number time");
         r.suppress = true;
         return r;
       }
-    } else if (lua_isnumber(L_, base + 1)) {
-      r.value = lua_tonumber(L_, base + 1);
-    } else {
+      r.out_time = lua_tonumber(L_, base + 1);
+    }
+    if (!readValue(value_idx, r.value, r.text)) {
       lua_settop(L_, base);
-      fail("calculate must return a number, (time, value), or nil");
+      fail(
+          text_output_ ? "calculate must return a string, (time, string), or nil (the class declares output = "
+                         "\"string\")"
+                       : "calculate must return a number, (time, value), or nil (declare output = \"string\" to "
+                         "return text)");
       r.suppress = true;
       return r;
     }
@@ -428,16 +431,24 @@ class LuauInstance final : public FilterInstance {
       r.suppress = true;
       return r;
     }
-    r.values.reserve(static_cast<std::size_t>(nres));
     for (int i = 0; i < nres; ++i) {
-      if (!lua_isnumber(L_, base + 1 + i)) {
+      double value = 0.0;
+      std::string text;
+      if (!readValue(base + 1 + i, value, text)) {
         lua_settop(L_, base);
-        fail("calculate must return a number per output");
+        fail(
+            text_output_ ? "calculate must return a string per output (the class declares output = \"string\")"
+                         : "calculate must return a number per output (declare output = \"string\" to return text)");
         r.suppress = true;
         r.values.clear();
+        r.texts.clear();
         return r;
       }
-      r.values.push_back(lua_tonumber(L_, base + 1 + i));
+      if (text_output_) {
+        r.texts.push_back(std::move(text));
+      } else {
+        r.values.push_back(value);
+      }
     }
     lua_settop(L_, base);
     return r;
@@ -473,6 +484,25 @@ class LuauInstance final : public FilterInstance {
   }
 
  private:
+  /// One returned value at `idx` of the kind the class declares: a string for a text class (a number is refused, so a
+  /// forgotten label is not stored as "3"), else a number or a numeric string.
+  bool readValue(int idx, double& value, std::string& text) const {
+    if (text_output_) {
+      if (lua_type(L_, idx) != LUA_TSTRING) {
+        return false;
+      }
+      std::size_t len = 0;
+      const char* data = lua_tolstring(L_, idx, &len);
+      text.assign(data, len);
+      return true;
+    }
+    if (!lua_isnumber(L_, idx)) {
+      return false;
+    }
+    value = lua_tonumber(L_, idx);
+    return true;
+  }
+
   void fail(std::string msg) {
     failed_ = true;
     if (error_.empty()) {
@@ -488,6 +518,7 @@ class LuauInstance final : public FilterInstance {
   bool reset_self_ = false;
   std::unique_ptr<BudgetState> budget_;  // outlives L_: the destructor body closes the state first
   std::uint64_t call_fuel_ = 0;
+  bool text_output_ = false;  ///< the class declares output = "string"
   bool failed_ = false;
   std::string error_;
 };
@@ -667,7 +698,8 @@ class LuauEngine final : public ScriptEngine {
     // Construct the owning instance first and disarm the Closer after: if the allocation throws the Closer still
     // closes L.
     auto instance = std::unique_ptr<FilterInstance>(new LuauInstance(
-        L, calc_ref, reset_ref, self_ref, calc_self, reset_self, std::move(budget), limits_.call_fuel));
+        L, calc_ref, reset_ref, self_ref, calc_self, reset_self, std::move(budget), limits_.call_fuel,
+        klass.output_kind == "string"));
     keep = true;
     return instance;
   }

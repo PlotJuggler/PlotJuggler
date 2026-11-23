@@ -93,6 +93,27 @@ constexpr const char* kScale = R"LUAU(return { {
   end
 } })LUAU";
 
+// Classifies each sample into a state label: a text output (`output = "string"`), one input or several.
+constexpr const char* kState = R"LUAU(-- pj-script: luau
+return { id="state", name="State", output="string",
+  create = function(p) return { calculate = function(t, v, ...)
+    if select("#", ...) > 0 then return v > 1.5 and "fast" or "slow", "seen" end
+    return v < 0 and "falling" or "walking"
+  end } end }
+)LUAU";
+
+std::vector<std::string> readStrings(DataEngine& engine, TopicId tid, std::size_t col) {
+  std::vector<std::string> out;
+  const auto lock = engine.lockEngine();
+  const TopicStorage* storage = engine.getTopicStorage(tid);
+  if (!storage) {
+    return out;
+  }
+  auto cursor = rangeQuery(storage->sealedChunks(), 0, std::numeric_limits<Timestamp>::max());
+  cursor.forEach([&](const SampleRow& row) { out.emplace_back(row.chunk->readString(col, row.row_index)); });
+  return out;
+}
+
 // Read one column of a topic as doubles (readValues above is column-0 only).
 std::vector<double> readColumn(DataEngine& engine, TopicId tid, std::size_t col) {
   std::vector<double> out;
@@ -1870,6 +1891,67 @@ TEST(DataProcessorTransformTest, WholeTopicInputSkipsAColumnALoadLost) {
   const auto whole = fx.service.upsertTransform("pluginA", "negate", {"data"}, {"neg_data"}, kNegate, "{}");
   ASSERT_TRUE(whole.has_value()) << whole.error();
   EXPECT_EQ(readValues(fx.engine, whole->output_topic_ids.front()), (std::vector<double>{-7.0, -7.0}));
+}
+
+// A transform declaring `output = "string"` writes a text column, which the catalog lists as a string series.
+TEST(DataProcessorTransformTest, StringOutputMaterializesATextColumn) {
+  Fixture fx;
+  fx.seed("speed", {-1.0, 2.0, -3.0});
+
+  const auto rec = fx.service.upsertTransform("pluginA", "state", {"speed"}, {"state"}, kState, "{}");
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const TopicId out = rec->output_topic_ids.front();
+  EXPECT_EQ(readStrings(fx.engine, out, 0), (std::vector<std::string>{"falling", "walking", "falling"}));
+  {
+    const auto lock = fx.engine.lockEngine();
+    const TopicStorage* st = fx.engine.getTopicStorage(out);
+    ASSERT_NE(st, nullptr);
+    const PJ::TypeTreeNode* root = fx.engine.typeRegistry().lookup(st->descriptor().schema_id);
+    ASSERT_NE(root, nullptr);
+    std::vector<std::optional<PrimitiveType>> leaves{root->primitive_type};
+    for (const auto& child : root->children) {
+      leaves.push_back(child->primitive_type);
+    }
+    EXPECT_NE(std::find(leaves.begin(), leaves.end(), PrimitiveType::kString), leaves.end());
+  }
+
+  // A layout restore carries the script, and with it the declared output type.
+  const DataProcessorService::TransformRecipe snapshot = fx.service.transformRecipes().front();
+  fx.service.clearAllTransforms();
+  const auto restored = fx.service.restoreTransform(snapshot);
+  ASSERT_TRUE(restored.has_value()) << restored.error();
+  EXPECT_EQ(
+      readStrings(fx.engine, restored->output_topic_ids.front(), 0),
+      (std::vector<std::string>{"falling", "walking", "falling"}));
+}
+
+TEST(DataProcessorTransformTest, StringOutputsOfAMimoTransform) {
+  Fixture two;
+  two.seedMultiColumn("pose", {"a", "b"}, {{1.0, 2.0}, {5.0, 6.0}});
+  const auto pair =
+      two.service.upsertTransform("pluginA", "state", {"pose/a", "pose/b"}, {"rate:pace,note"}, kState, "{}");
+  ASSERT_TRUE(pair.has_value()) << pair.error();
+  const TopicId out = pair->output_topic_ids.front();
+  EXPECT_EQ(readStrings(two.engine, out, 0), (std::vector<std::string>{"slow", "fast"}));
+  EXPECT_EQ(readStrings(two.engine, out, 1), (std::vector<std::string>{"seen", "seen"}));
+}
+
+// Editing a transform in place keeps its output columns, so an edit that switches between text and numbers is
+// refused and the running transform keeps its values.
+TEST(DataProcessorTransformTest, EditSwitchingBetweenTextAndNumbersIsRefused) {
+  Fixture fx;
+  fx.seed("speed", {-1.0, 2.0});
+  const auto first = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegate, "{}");
+  ASSERT_TRUE(first.has_value()) << first.error();
+
+  constexpr const char* kNegateAsText = R"LUAU(-- pj-script: luau
+return { id="negate", name="Negate", output="string",
+  create = function(p) return { calculate = function(t, v) return tostring(-v) end } end }
+)LUAU";
+  const auto edited = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"out"}, kNegateAsText, "{}");
+  ASSERT_FALSE(edited.has_value());
+  EXPECT_NE(edited.error().find("text"), std::string::npos) << edited.error();
+  EXPECT_EQ(readValues(fx.engine, first->output_topic_ids.front()), (std::vector<double>{1.0, -2.0}));
 }
 
 }  // namespace

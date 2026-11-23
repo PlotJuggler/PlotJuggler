@@ -51,6 +51,8 @@ LuaSisoTransform::LuaSisoTransform(std::shared_ptr<ScriptEngine> engine, FilterC
     out_mode_ = OutputMode::kInt64;
   } else if (klass_.output_kind == "same" || klass_.output_kind == "mirror") {
     out_mode_ = OutputMode::kMirror;
+  } else if (klass_.output_kind == "string") {
+    out_mode_ = OutputMode::kString;
   } else {
     out_mode_ = OutputMode::kDouble;
   }
@@ -164,6 +166,9 @@ std::optional<proc::Sample> LuaSisoTransform::calculateNextPoint(const proc::Sam
     }
     out_ns = session_start_ns_ + rel;
   }
+  if (out_mode_ == OutputMode::kString) {
+    return proc::Sample::scalar(out_ns, PJ::VarValue{r.text});
+  }
   return proc::Sample::scalar(out_ns, makeOutputValue(r.value, in.value()));
 }
 
@@ -173,6 +178,8 @@ std::vector<PJ::StorageKind> LuaSisoTransform::outputKinds(PJ::Span<const PJ::St
       return {PJ::StorageKind::kInt64};
     case OutputMode::kMirror:
       return proc::detail::mirrorInputKind(in);
+    case OutputMode::kString:
+      return {PJ::StorageKind::kString};
     case OutputMode::kDouble:
     default:
       return {PJ::StorageKind::kFloat64};
