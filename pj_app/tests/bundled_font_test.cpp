@@ -6,6 +6,7 @@
 #include <QFontMetricsF>
 #include <QImage>
 #include <QPainter>
+#include <QRawFont>
 
 #include "BundledFont.h"
 
@@ -57,6 +58,13 @@ TEST(BundledFont, DigitsAndTheirSpacesShareAnAdvance) {
   for (const int weight : {QFont::Normal, QFont::Bold}) {
     QFont font(family, 24);
     font.setWeight(QFont::Weight(weight));
+    // The font's own advances and glyphs: hinting rounds a small difference away at one size and shows it at
+    // another, and font merging would measure another family's space.
+    font.setHintingPreference(QFont::PreferNoHinting);
+    font.setStyleStrategy(QFont::NoFontMerging);
+    const QRawFont raw = QRawFont::fromFont(font);
+    ASSERT_TRUE(raw.supportsCharacter(QChar(0x2007))) << weight;
+    ASSERT_TRUE(raw.supportsCharacter(QChar(0x2008))) << weight;
     const QFontMetricsF metrics(font);
     const qreal digit = metrics.horizontalAdvance(QLatin1Char('0'));
     for (const QChar other : QStringLiteral("123456789")) {

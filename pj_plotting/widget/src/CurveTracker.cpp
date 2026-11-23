@@ -242,14 +242,14 @@ void CurveTracker::setPosition(const QPointF& tracker_position) {
     std::vector<ValueBoxRow> label_rows = value_box_rows_;
     for (auto it = text_lines.rbegin(); it != text_lines.rend(); ++it) {
       const LineParts& parts = it->second;
-      const QString tail =
-          parameter_ == kValue ? QString() : u" : "_s + QString(parts.name).replace(kValueBoxCellSeparator, u' ');
+      const QString tail = parameter_ == kValue ? QString() : u" : "_s + parts.name;
       value_box_rows_.push_back({.ink = parts.color, .text = parts.value + parts.delta + tail});
       QString cells = parts.value + kValueBoxCellSeparator;
       if (reference_pos_.has_value()) {
         cells += parts.delta + kValueBoxCellSeparator;
       }
-      label_rows.push_back({.ink = parts.color, .text = cells + tail});
+      // A separator inside a curve's name would open another column.
+      label_rows.push_back({.ink = parts.color, .text = cells + QString(tail).replace(kValueBoxCellSeparator, u' ')});
     }
     marker_text = valueBoxLabel(label_rows);
 

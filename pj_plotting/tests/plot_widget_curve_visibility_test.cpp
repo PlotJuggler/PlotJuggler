@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QColor>
 #include <QDomDocument>
+#include <QFontMetricsF>
 #include <QListWidget>
 #include <QPalette>
 #include <QPen>
@@ -23,6 +24,7 @@
 #include <QTest>
 #include <QToolButton>
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -41,7 +43,8 @@ using namespace Qt::StringLiterals;
 namespace {
 
 // Samples 0..10 s, one per second, so a tracker sits inside the plotted range.
-PJ::TopicId addRampTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name) {
+PJ::TopicId addRampTopic(
+    PJ::SessionManager& session, PJ::DatasetId dataset_id, std::string_view topic_name, double scale = 1.0) {
   PJ::DataWriter writer = session.dataEngine().createWriter();
   auto handle = writer.registerScalarSeries(dataset_id, topic_name, PJ::NumericType::kFloat64);
   EXPECT_TRUE(handle.has_value()) << (handle.has_value() ? "" : handle.error());
@@ -49,7 +52,7 @@ PJ::TopicId addRampTopic(PJ::SessionManager& session, PJ::DatasetId dataset_id, 
     return 0;
   }
   for (int k = 0; k <= 10; ++k) {
-    writer.appendScalar(*handle, static_cast<PJ::Timestamp>(k) * 1'000'000'000, static_cast<double>(k));
+    writer.appendScalar(*handle, static_cast<PJ::Timestamp>(k) * 1'000'000'000, scale * static_cast<double>(k));
   }
   EXPECT_FALSE(session.commitChunks(writer.flushAll()).empty());
   return handle->topic_id;
@@ -187,8 +190,8 @@ struct BoxSpan {
   double right = 0.0;
   double line = 0.0;
 };
-// The plot is sized so that its canvas is `canvas_per_box` times as wide as the box: the box's font is the system's
-// fixed-pitch one, so the box and the axes differ in width between platforms.
+// The plot is sized so that its canvas is `canvas_per_box` times as wide as the box: the test runs with each
+// platform's default font, so the box and the axes differ in width between platforms.
 std::vector<BoxSpan> boxSpansAcrossTheCanvas(
     TrackerFixture& fixture, double canvas_per_box, double* canvas_left, double* canvas_right) {
   fixture.plot->resize(520, 240);
@@ -245,6 +248,48 @@ TEST(PlotCurveVisibility, ValueBoxStaysInsideTheCanvasAndClearOfTheLine) {
     EXPECT_TRUE(box.left >= box.line - kSlack || box.right <= box.line + kSlack)
         << "box " << box.left << ".." << box.right << " covers the line at " << box.line;
   }
+}
+
+// The box's values are one right-aligned column and the names follow it: the box is as wide as the widest value plus
+// the longest name, which no single row is when they sit on different rows.
+TEST(PlotCurveVisibility, ValueBoxAlignsItsValuesInAColumn) {
+  PJ::SessionManager session;
+  PJ::CatalogModel catalog(&session);
+  auto dataset = session.dataEngine().createDataset(PJ::DatasetDescriptor{.source_name = "drive.mcap"});
+  ASSERT_TRUE(dataset.has_value());
+  const QString wide_value = keyForTopic(catalog, addRampTopic(session, *dataset, "/a", -100000.0));
+  const QString long_name = keyForTopic(catalog, addRampTopic(session, *dataset, "/a_much_longer_curve_name"));
+  VisibilityPlot plot(&session, &catalog);
+  plot.setTrackerParameter(PJ::CurveTracker::kValueName);
+  ASSERT_NE(plot.addCurve(wide_value), nullptr);
+  ASSERT_NE(plot.addCurve(long_name), nullptr);
+  plot.zoomOut(false);
+  plot.setTrackerPosition(5.0);
+
+  const QwtPlotMarker* box = nullptr;
+  for (const QwtPlotItem* item : plot.qwtPlot()->itemList(QwtPlotItem::Rtti_PlotMarker)) {
+    const auto* marker = static_cast<const QwtPlotMarker*>(item);
+    if (!marker->label().isEmpty()) {
+      box = marker;
+    }
+  }
+  ASSERT_NE(box, nullptr);
+  const std::vector<PJ::ValueBoxRow> rows = plot.trackerValueBoxRows();
+  ASSERT_EQ(rows.size(), 3u);  // the time, then one row per curve
+
+  const QFontMetricsF metrics(box->label().font());
+  double widest_value = 0.0;
+  double widest_name = 0.0;
+  double widest_row = metrics.horizontalAdvance(rows[0].text);
+  for (size_t row = 1; row < rows.size(); ++row) {
+    const qsizetype split = rows[row].text.indexOf(u" : "_s);
+    ASSERT_GT(split, 0) << rows[row].text.toStdString();
+    widest_value = std::max(widest_value, metrics.horizontalAdvance(rows[row].text.left(split)));
+    widest_name = std::max(widest_name, metrics.horizontalAdvance(rows[row].text.mid(split)));
+    widest_row = std::max(widest_row, metrics.horizontalAdvance(rows[row].text));
+  }
+  ASSERT_GT(widest_value + widest_name, widest_row + 1.0) << "the widest value and the longest name share a row";
+  EXPECT_DOUBLE_EQ(box->label().textSize().width(), std::ceil(widest_value + widest_name));
 }
 
 // A box wider than the canvas cannot fit on either side: it keeps its first column (the time and the values) inside
