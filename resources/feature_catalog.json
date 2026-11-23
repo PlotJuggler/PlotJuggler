@@ -68,10 +68,10 @@
     {
       "id": "custom_series",
       "name": "Custom Topics",
-      "summary": "Create new series and 2D/3D objects computed from existing series and object topics, with a Luau or Python function, in the Transform Editor. Custom topics are listed in their own panel and can be edited or deleted there. Built-in filters can also be applied to the curves of a plot from that plot's right-click menu (Apply Filter...).",
+      "summary": "Create new series and 2D/3D objects computed from existing series and object topics, with a Luau or Python function, in the Transform Editor. Custom topics are listed in their own panel and can be edited or deleted there; a formula made by an AI agent or another plugin can be opened read-only from the pencil (View the formula) when the Transform Editor supports it. Built-in filters can also be applied to the curves of a plot from that plot's right-click menu (Apply Filter...).",
       "entry_point": "Custom Topics panel → + (Add custom topic)",
-      "evidence": "pj_app/src/ui/CurveListPanel.ui#Add custom topic; pj_app/src/MainWindow.cpp#editCustomTopicRequested; pj_plotting/widget/src/PlotWidget.cpp#tr(\"Apply Filter...\")",
-      "verified": "2026-10-26 against main's CurveListPanel.ui (the panel and its + were renamed from Custom Series); not re-checked in-app"
+      "evidence": "pj_app/src/ui/CurveListPanel.ui#Add custom topic; pj_app/src/MainWindow.cpp#editCustomTopicRequested; pj_app/src/ui/CurveListPanel.cpp#View the formula (read-only); pj_plotting/widget/src/PlotWidget.cpp#tr(\"Apply Filter...\")",
+      "verified": "2026-10-26 against main's CurveListPanel.ui (the panel and its + were renamed from Custom Series); not re-checked in-app; the read-only view of another owner's formula 2026-11-23 against CurveListPanel.cpp and the editor integration test, not checked in-app"
     },
     {
       "id": "viewer_2d",

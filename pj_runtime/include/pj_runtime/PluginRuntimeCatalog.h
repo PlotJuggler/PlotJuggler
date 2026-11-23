@@ -65,8 +65,8 @@ struct RuntimeMessageParserPlugin {
   std::filesystem::file_time_type loaded_mtime;
 };
 
-/// Manifest `capabilities` tag of a Custom Topics editor that shows other owners' recipes read-only. A host-side tag
-/// (a host ignores tags it does not know), so an editor that lacks it is never handed a view it would make editable.
+/// Manifest `capabilities` tag of a Custom Topics editor that shows other owners' recipes read-only. The tag gates the
+/// launch: the host opens the editor on a view only when it is declared, and never saves a view into a layout.
 inline constexpr std::string_view kCustomTopicsViewerCapability = "custom_topics_viewer";
 
 struct RuntimeToolboxPlugin {

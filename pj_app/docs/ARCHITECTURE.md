@@ -550,12 +550,14 @@ glyph and tooltip.
   `refreshCustomTopicsPanel` per event-loop turn, which rebuilds the on-demand rows and reuses the transform rows of
   the last sync until the catalog changes.
 - **Editing.** "+", the pencil and Delete belong to the toolbox whose manifest declares `custom_topics_editor`.
-  The pencil opens the editor on its own recipe's `params_json`. When the editor also declares `custom_topics_viewer`
-  (`ExtensionCatalogService::customTopicsEditorViews`, `CurveListPanel::setEditorViewsOthers`), the pencil stays
-  enabled on rows another owner made (an MCP agent, another plugin, none) and opens the editor on
-  `{"view": {owner, name, kind, language, script, inputs, outputs, params}}`: the recipe as it runs, which the editor
-  shows read-only. An editor without the tag is never handed one, since it would load it as an editable form. Delete
-  stays the owner's.
+  The pencil opens the editor on its own recipe's `params_json`. The `custom_topics_viewer` tag in that manifest
+  (`ExtensionCatalogService::customTopicsEditorViews`, `CurveListPanel::setEditorViewsOthers`) gates the view: with it,
+  the pencil stays enabled on rows another owner made (an MCP agent, another plugin, none) and opens the editor on
+  `{"view": {owner, name, kind, language, script, inputs, outputs, params}}`, the recipe as it runs, which the editor
+  shows read-only; `name` is what the row shows (a transform's output topic, an on-demand recipe's id). Without the
+  tag the pencil stays disabled on those rows and the handler launches nothing. A view is not workspace state:
+  `savePinnedToolboxes` skips a toolbox whose saved config is a JSON object with a top-level `view`, so a layout never
+  holds a snapshot of a recipe its owner can change. Delete stays the owner's.
   `deleteCustomTopics` asks `pj_runtime`'s `CustomTopicsPolicy.h` who may delete what, and asks again once a prompt is
   answered (the session may have changed under the prompt); the shell only words the refusals and runs the prompts.
 - **Series.** One row per number column (`id/output`), deleted with its recipe. `SeriesProgressController` (wired by
@@ -802,6 +804,10 @@ Suites with their own executable and ctest entry, and why:
 - Marker rules have no view: a rule another owner made (an MCP agent's `create_markers`) is drawn and listed in the
   plot's marker status, but no UI shows its script. The Marker Editor's `loadConfig` (`code`, `source`) would show it;
   nothing opens it on a rule.
+- The view of another owner's recipe is a snapshot taken at launch: a recipe changed or removed while the editor shows
+  it is not reflected. It omits an on-demand recipe's `pinned_t` and query time, and its outputs' types.
+- Opening a view replaces a live editor instance, an unsaved draft in it included, without asking, as the pencil and
+  "+" already do.
 - A series key resolves to a topic by name alone (the longest loaded topic naming a prefix of it), while marker rules
   bind by series (`CatalogModel::findScalarForMarkerKey`). When another loaded dataset has a topic literally named
   `sensor/value` and the chosen ones carry topic `sensor` with field `value`, a rule over `sensor/value` is left

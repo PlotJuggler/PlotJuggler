@@ -52,8 +52,9 @@ class CurveListPanel : public QWidget {
 
   /// The plugin id of the Custom Topics editor (the toolbox whose manifest declares
   /// `custom_topics_editor`): the one owner whose rows the edit (pencil) and delete
-  /// actions accept, and whose launch the "+" stands for. Empty (the default) when no
-  /// loaded toolbox declares it: "+" is hidden and every owned row is read-only.
+  /// actions accept, and whose launch the "+" stands for. Another owner's rows open in it
+  /// only as a view (setEditorViewsOthers). Empty (the default) when no loaded toolbox
+  /// declares it: "+" is hidden, every owned row is read-only and the pencil opens nothing.
   void setEditorPluginId(const QString& plugin_id);
   /// The editor also opens rows it does not own as a read-only view (its manifest declares
   /// `custom_topics_viewer`): the pencil stays enabled on those rows and reads "View the formula"; Delete does not
