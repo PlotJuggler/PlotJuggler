@@ -85,6 +85,19 @@ inline void armFuel(BudgetState* b, std::uint64_t fuel) {
   b->fuel = static_cast<std::int64_t>(fuel > kCap ? kCap : fuel);
 }
 
+// Adds `count * each` fuel to a running budget, saturating at the int64 maximum: the open setup budget already sits
+// there.
+inline void addFuel(BudgetState* b, std::uint64_t count, std::uint64_t each) {
+  constexpr std::int64_t kCap = std::numeric_limits<std::int64_t>::max();
+  const std::uint64_t room =
+      b->fuel < 0 ? static_cast<std::uint64_t>(kCap) : static_cast<std::uint64_t>(kCap - b->fuel);
+  if (each != 0 && count > room / each) {
+    b->fuel = kCap;
+    return;
+  }
+  b->fuel += static_cast<std::int64_t>(count * each);
+}
+
 // Creates a state whose curated stdlib is frozen read-only (luaL_sandbox): os/coroutine/debug/setfenv/getfenv
 // dropped, the memory cap and the watchdog installed, the cap left OPEN (trusted setup). Untrusted code never runs on
 // it directly, only on a thread with globals of its own (luaL_sandboxthread). `budget` must outlive the state.

@@ -74,9 +74,10 @@ allocation-cap overhead) are in `docs/derived_objects/ARCHITECTURE.md` "Referenc
 
 ## Marker rule fuel
 
-- **Observed:** a marker rule's fuel (`BudgetLimits::setup_fuel`, default 20M) is spent at every Luau call and loop
-  back-edge, so the longest series a rule can scan depends on its per-sample calls. Largest series under the default
-  budget (one series, values switching every 1000 samples), and the time at that size:
+- **Observed:** a marker rule's fuel is spent at every Luau call and loop back-edge, so the longest series a rule can
+  scan depends on its per-sample calls. Largest series under the fixed fuel alone (`BudgetLimits::setup_fuel`,
+  default 20M, with `series_sample_fuel` at 0; one series, values switching every 1000 samples), and the time at that
+  size:
 
   | Rule | Samples | Time |
   |---|---|---|
@@ -89,10 +90,17 @@ allocation-cap overhead) are in `docs/derived_objects/ARCHITECTURE.md` "Referenc
   per sample, about 80% of a scan's time), tests built-in conditions and indexes value tables inline in one loop,
   calls the action only where the result changes, and compares opts tables field by field without a loop. A version
   that called a closure per sample for the condition and another for the action reached 2.2M to 3.3M samples.
-- **Conditions:** desktop x86_64, `-O2`, Luau as pinned in `conanfile.txt`, measured with a scratch program over
-  `pj_scripting_core`. Re-test if the fuel accounting or the Luau pin changes, or if long recordings hit "script
-  exceeded its instruction budget" in a `when` rule; a native scan loop would lift the limit to the condition
-  function's own cost.
+- **Per-sample cost:** a scan spends 2.0 fuel units per sample with a built-in condition or a hand-written `s:at(i)`
+  loop, and 4.0 with a condition function such as the Marker Editor's Spike (`math.abs` inside it costs nothing:
+  Luau runs it as a fastcall). Measured by bisecting `setup_fuel` over 200k samples.
+- **What the code does about it:** each series a rule opens adds `BudgetLimits::series_sample_fuel` per sample, once
+  per series (`l_series`), sized at twice a condition function's cost. The Spike rule over 5M samples then runs in
+  ~0.5 s, and `local s = series("v") while true do end` over the same series still ends with the budget error in
+  ~0.2 s.
+- **Conditions:** desktop x86_64, `-O2`, Luau as pinned in `conanfile.txt`, measured with a scratch program and a
+  scratch test over `pj_scripting_core`. Re-test if the fuel accounting or the Luau pin changes, or if a rule over
+  long recordings hits "script exceeded its instruction budget"; a native scan loop would lift the limit to the
+  condition function's own cost.
 
 ## Native point-cloud operations
 

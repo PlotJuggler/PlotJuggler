@@ -17,6 +17,10 @@ struct BudgetLimits {
   /// the script is aborted with an error a script `pcall` can catch, which is why the host also checks the sticky trip.
   std::uint64_t call_fuel = 5'000'000;    ///< a single calculate()
   std::uint64_t setup_fuel = 20'000'000;  ///< module evaluation + create(); luau_compile is bounded by kMaxSourceBytes
+  /// Marker rules: fuel added per sample of each distinct series a rule opens, once per series, on top of
+  /// `setup_fuel`, so a rule's budget grows with the data it scans and a runaway still ends. Sized from the measured
+  /// per-sample cost of a scan (TECHNICAL_NOTES "Marker rule fuel").
+  std::uint64_t series_sample_fuel = 8;
 
   /// Peak live bytes of one Luau VM; past it the allocator fails and Luau raises an out-of-memory error.
   std::size_t mem_bytes = 64ull << 20;

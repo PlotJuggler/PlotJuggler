@@ -444,17 +444,28 @@ TEST(MarkerEngine, WhenChangesIgnoresNaNRuns) {
   EXPECT_EQ(markers[1].t_start, static_cast<PJ::Timestamp>(3 * kSec));
 }
 
-// The rules create_markers' template form writes run. A built-in condition costs what a hand-written loop does (the
-// loop and the sample read per sample), where a condition function trips the same budget; each mark costs a few calls
-// more, so the per-sample line style runs under the default budget.
-TEST(MarkerEngine, ThresholdTemplateRulesRunWithinALoopsFuel) {
+namespace {
+
+SeriesView stepSeries(int samples) {
   SeriesView sv;
-  for (int i = 0; i < 1000; ++i) {
+  for (int i = 0; i < samples; ++i) {
     sv.timestamps.push_back(i * 1e6);
     sv.values.push_back(i % 100 < 50 ? 0.0 : 5.0);
   }
+  return sv;
+}
+
+}  // namespace
+
+// The rules create_markers' template form writes run. A built-in condition costs what a hand-written loop does (the
+// loop and the sample read per sample), where a condition function trips the same budget; each mark costs a few calls
+// more, so the per-sample line style runs under the default budget. The per-sample share is off: the fixed fuel alone
+// separates the two costs.
+TEST(MarkerEngine, ThresholdTemplateRulesRunWithinALoopsFuel) {
+  const SeriesView sv = stepSeries(1000);
   PJ::scripting::BudgetLimits limits;
   limits.setup_fuel = 3000;
+  limits.series_sample_fuel = 0;
   const char* rules[] = {
       R"(when("v", above(2.5)):backgroundColor(nil, {label="exceeds 2.5", severity="warning"}))",
       R"(when("v", between(2.5, math.huge)):backgroundColor(nil, {label="exceeds 2.5", severity="warning"}))",
@@ -475,6 +486,43 @@ TEST(MarkerEngine, ThresholdTemplateRulesRunWithinALoopsFuel) {
   EXPECT_TRUE(runMarkerScript(
                   R"(when("v", function(v) return v >= 2.5 end):backgroundColor())", oneSeries("v", sv), &err, limits)
                   .empty());
+  EXPECT_NE(err.find("instruction budget"), std::string::npos) << err;
+}
+
+// A series a rule opens adds fuel per sample, so a condition function (the Spike, Flatline and Rate of change
+// built-ins) scans a series longer than the fixed fuel alone covers.
+TEST(MarkerEngine, ASeriesARuleOpensAddsFuelForItsSamples) {
+  const SeriesView sv = stepSeries(1000);
+  PJ::scripting::BudgetLimits limits;
+  limits.setup_fuel = 3000;
+  const char* spike = R"(local function jump(v, t, prev) return prev ~= nil and math.abs(v - prev) > 2.5 end
+when("v", jump):event({label="spike", every=true}))";
+  std::string err;
+  EXPECT_EQ(runMarkerScript(spike, oneSeries("v", sv), &err, limits).size(), 19u);
+  EXPECT_TRUE(err.empty()) << err;
+
+  limits.series_sample_fuel = 0;
+  EXPECT_TRUE(runMarkerScript(spike, oneSeries("v", sv), &err, limits).empty());
+  EXPECT_NE(err.find("instruction budget"), std::string::npos) << err;
+}
+
+// Only a series' first open adds fuel: a loop that reopens it still runs out.
+TEST(MarkerEngine, ReopeningASeriesAddsNoFuel) {
+  const SeriesView sv = stepSeries(1000);
+  PJ::scripting::BudgetLimits limits;
+  limits.setup_fuel = 3000;
+  std::string err;
+  EXPECT_TRUE(runMarkerScript(R"(while true do series("v") end)", oneSeries("v", sv), &err, limits).empty());
+  EXPECT_NE(err.find("instruction budget"), std::string::npos) << err;
+}
+
+// The added fuel is finite: a runaway loop after opening a series still ends with the budget error.
+TEST(MarkerEngine, ARunawayAfterOpeningASeriesStillEnds) {
+  const SeriesView sv = stepSeries(1000);
+  PJ::scripting::BudgetLimits limits;
+  limits.setup_fuel = 3000;
+  std::string err;
+  EXPECT_TRUE(runMarkerScript(R"(local s = series("v") while true do end)", oneSeries("v", sv), &err, limits).empty());
   EXPECT_NE(err.find("instruction budget"), std::string::npos) << err;
 }
 

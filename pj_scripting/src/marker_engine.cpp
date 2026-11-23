@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #include "lua.h"
@@ -128,6 +129,8 @@ using namespace detail;
 struct RunContext {
   const SeriesProvider* provider = nullptr;
   BudgetState* budget = nullptr;
+  std::uint64_t series_sample_fuel = 0;
+  std::unordered_set<const SeriesView*> funded_series;  // each series adds its fuel once
   std::vector<PJ::sdk::PlotMarker> emitted;
   std::size_t max_output_bytes = 0;
   std::size_t output_bytes = 0;
@@ -270,6 +273,11 @@ int l_series(lua_State* L) {
   if (sv == nullptr) {
     lua_pushnil(L);
     return 1;
+  }
+  // Only a series' first open adds its fuel: reopening one in a loop must not refill the budget, or a runaway never
+  // ends.
+  if (ctx->funded_series.insert(sv).second) {
+    addFuel(ctx->budget, sv->size(), ctx->series_sample_fuel);
   }
   lua_newtable(L);
   lua_pushlightuserdata(L, const_cast<SeriesView*>(sv));
@@ -859,6 +867,7 @@ std::vector<PJ::sdk::PlotMarker> runMarkerScript(
   RunContext ctx;
   ctx.provider = &provider;
   ctx.max_output_bytes = max_output_bytes;
+  ctx.series_sample_fuel = limits.series_sample_fuel;
 
   BudgetState budget;
   budget.max_bytes = std::numeric_limits<std::size_t>::max();  // open during trusted setup

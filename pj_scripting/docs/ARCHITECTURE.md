@@ -74,7 +74,8 @@ The rule helpers (`when`, its conditions `above` ... `changes` and its actions `
 `luaL_sandbox`, so they freeze with the other globals. The prelude chunk receives two natives as arguments, so rules
 never see them: a one-call region emitter that leaves the rule's own `startMarker` region open, and a `t, v` sample
 read without `s:at`'s per-sample table, which was most of a scan's time. Every Luau call and loop iteration costs the
-rule's fuel (`BudgetLimits::setup_fuel`), so a built-in condition is data (a kind and its limits) tested inline in the
+rule's fuel (`BudgetLimits::setup_fuel`, plus `series_sample_fuel` per sample of each series the rule opens, once per
+series), so a built-in condition is data (a kind and its limits) tested inline in the
 one scan loop, and the action's callback runs only where the result changes (TECHNICAL_NOTES "Marker rule fuel"). Color names are a copy of Qt's table
 (`src/marker_color_names.inc`), since `pj_scripting_core` cannot link Qt; `pj_plotting`'s `MarkerColorNames.MatchQt`
 fails when the pinned Qt's table drifts from it. To regenerate it, print `QColor::colorNames()` with their RGBA,
