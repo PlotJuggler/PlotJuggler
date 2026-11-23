@@ -84,11 +84,12 @@ qualifier) with its display time range and its counts of topics and numeric fiel
 counts them), then each topic with its numeric fields. The static text and the summary together stay within
 `mcp::kMaxInstructionsChars`, a contract: the summary's budget is what the static text leaves of it. The topics are
 listed all or not at all, since a list cut short reads as everything that is loaded: when they do not all fit, or a
-topic or field name is longer than the per-name cap, the summary says "Topics are not listed here (too many): use
-list_topics." and lists the datasets alone (and when even those do not fit, only how many there are). The note and
-the path example come before any list. Names come from files and from live streams (anyone publishing on a
-subscribed broker picks them), so each is quoted as a JSON string, kept on one line, and a line says they are data,
-not instructions. Claude Code puts the instructions in its system prompt, so an agent goes straight to the tool that
+topic or field name is longer than the per-name cap, the summary says "Topics are not listed here: use list_topics."
+and lists the datasets alone (and when even those do not fit, only how many there are, naming `get_status`, or
+`report_status` for a plugin token). The note and the path example come before any list. Names come from files and
+from live streams (anyone publishing on a subscribed broker picks them), so each is quoted as a JSON string, kept on
+one line (control characters become spaces; U+2028, U+2029 and U+0085, which a JSON dump leaves raw, are escaped), and
+a line says they are data, not instructions. Claude Code puts the instructions in its system prompt, so an agent goes straight to the tool that
 answers instead of spending a turn on each discovery call ("Evidence"). It is a picture of when the session
 connected; `list_topics` and `get_status` show later loads. The bridge asks the current instance for its
 instructions on both calls, and keeps its own when no instance answers: Claude Code 2.1 sends only
@@ -540,8 +541,8 @@ dock with no state).
   `endAgentDockChange` records the change as one undo step, re-reads the settings panel when the dock is the focused
   one (the 3D panel pushes every value it shows on its next edit, so a stale panel would undo the change) and shares
   a time plot's new X range with the linked plots as a user zoom does. `widget_state` runs while the user has a
-  dialog open (`runsUnderUsersDialog`); `set_widget_state` waits. `widget_state` with the old action `set` is a tool
-  error naming `set_widget_state`.
+  dialog open (`runsUnderUsersDialog`); `set_widget_state` waits. `widget_state` with action `set` is a tool error
+  naming `set_widget_state`.
 
 ## The user comes first
 
@@ -571,16 +572,22 @@ dock with no state).
   - At most 16 sockets; an incomplete request is closed after 10 s.
 - **`export_series`** by default writes a new owner-only, randomly named file (`QTemporaryFile`). A named `path`
   must end in its format's extension (`.csv`, `.npy`, any case), and a file already there is refused unless the call
-  passes `overwrite: true`; it is replaced only once the new one is complete (`QSaveFile`). It refuses more than 10
+  passes `overwrite: true`, at the call and again just before the new file is put in place (one may appear while the
+  export runs); it is replaced only once the new one is complete (`QSaveFile`). It refuses more than 10
   million rows and reports a failed write, flush or close.
 - **Plugin configurations** reach an agent only through `mcp::redactSecrets` (`get_status`, the `open_file` and
   `start_stream` results, and the job summaries `jobs_list` and the Jobs dialog show): every non-empty string under a
-  key that names a secret (password, passwd, secret, token, api_key, apikey, private_key, credential, in any case),
-  and everything under such a key, reads as `mcp::kRedacted`. An MQTT source saves its `password` and a WebRTC
-  source its `bearer_token` in the configuration. Passed back, the sentinel keeps the saved value at the same key
-  path (`mcp::restoreSecrets`): for a stream, the configuration the user last confirmed in the source's dialog (what
-  `start_stream` uses without `config`); for a file, the one the same file was loaded with. With no saved value there
-  the call is refused, naming the key path. `ui_tree` reads a password field as its mask.
+  key that names a secret (password, passwd, secret, token, apikey, privatekey, credential, anywhere in the key,
+  ignoring case, `_` and `-`), and everything under such a key, reads as `mcp::kRedacted`. An MQTT source saves its
+  `password` and a WebRTC source its `bearer_token` and ICE `credential`s in the configuration. Passed back, the
+  sentinel keeps the saved value at the same key path (`mcp::restoreSecrets`) only when the configuration, its
+  secret keys aside, is the saved one unchanged: a changed broker address, server URL or ICE entry would carry the
+  saved secret where the user never sent it, so such a call is refused, naming the key paths that differ (pass the
+  secret itself, or `ask_user`). The rule is generic: it compares the whole document and knows no plugin's keys. The
+  saved configuration is, for a stream, the one the user last confirmed in the source's dialog (what `start_stream`
+  uses without `config`); for a file, the one the same file was loaded with (in the browser a page's file never
+  matches, so a sentinel there is refused). With no saved value at a sentinel's path the call is refused, naming it.
+  `ui_tree` reads a password field as its mask.
 - **Names from files are data.** The instructions quote every dataset, topic and field name as a JSON string and say
   they are data, not instructions (see [Tool sets](#tool-sets)).
 - **Logging.** No token is ever logged, and server logging goes to the `pj.mcp` category.
@@ -621,7 +628,8 @@ dock with no state).
     Each widget family tests its own `xmlValidateState` and option coverage.
   - `TheInstructionsListEveryTopicOrNoneAndStayUnderTheCap`, `InitializeSaysWhatIsLoaded`: the summary's
     all-or-nothing rule, quoting and cap. `ConfigSecretsReadAsTheSentinel…`, `AStreamConfigsSecretsAreRedacted…`:
-    redaction and the sentinel, for a file and a stream. `ANamedExportNeedsItsExtension…`: the export guard.
+    redaction and the sentinel (refused for a changed configuration), for a file and a stream.
+    `ANamedExportNeedsItsExtension…`, `ANamedExportKeepsAFileThatAppearedWhileItRan`: the export guard.
 - `pj_app/tests/mcp_protocol_test.cpp` (runner `pj_app_unit_tests`): the HTTP and JSON-RPC gates, `redactSecrets` and
   `restoreSecrets`, and `McpAnnotations`: every listed tool has a title, the four hints and described parameters.
 - `pj_app/tests/mcp_bridge_test.cpp`: the bridge over stdio against the built app, and against a fake instance the
