@@ -26,6 +26,7 @@
 #include <QWidget>
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "FileLoader.h"
@@ -34,6 +35,7 @@
 #include "pj_plotting/PlotWidget.h"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
+#include "pj_runtime/PlaybackEngine.h"
 #include "pj_runtime/PresetCatalog.h"
 #include "support/loader_test_support.h"
 #include "support/preset_test_support.h"
@@ -274,6 +276,48 @@ TEST_F(RemotePresetReplayTest, NextPresetReplacesThePreviousPresetsData) {
   EXPECT_EQ(second_sources.front(), user_source);
   EXPECT_FALSE(second_sources.contains(first_sources.back()));
   EXPECT_EQ(PresetTestPeer::curveCount(*window_), 2);
+}
+
+// The next preset's layout restores with the playhead at the start of the data, not where the previous preset left
+// it: a scene view driven to a late time folds every marker message up to it. A preset that fails gives the playhead
+// back.
+TEST_F(RemotePresetReplayTest, NextPresetRestoresAtTheStartOfTheData) {
+  server_.route(u"/first/layout.pj4.xml"_s, presetLayout({{u"first.mock"_s, {}}}));
+  server_.route(u"/first/first.mock"_s, "first bytes");
+  server_.route(u"/second/layout.pj4.xml"_s, presetLayout({{u"second.mock"_s, {}}}));
+  server_.route(u"/second/second.mock"_s, "second bytes");
+  server_.route(
+      u"/broken/layout.pj4.xml"_s,
+      presetLayout({{u"broken.mock"_s, {}}}, uR"(<curve topic="mock/file_data" field="absent"/>)"_s));
+  server_.route(u"/broken/broken.mock"_s, "broken bytes");
+  ASSERT_EQ(loadPreset(u"/first/layout.pj4.xml"_s), u"ok"_s);
+  PJ::PlaybackEngine& engine = PresetTestPeer::session(*window_).playbackEngine();
+  ASSERT_LT(engine.rangeMin(), engine.rangeMax());
+  engine.setCurrentTime(engine.rangeMax());
+
+  // The restore logs its duration right after the workspace applies, before the previous preset's data goes.
+  static std::optional<PJ::DisplaySeconds> time_at_restore;
+  static PJ::PlaybackEngine* restore_engine = nullptr;
+  time_at_restore.reset();
+  restore_engine = &engine;
+  const QtMessageHandler previous_handler =
+      qInstallMessageHandler([](QtMsgType, const QMessageLogContext&, const QString& message) {
+        if (message.startsWith(u"PJ_WASM_LAYOUT_RESTORE_MS"_s)) {
+          time_at_restore = restore_engine->currentTime();
+        }
+      });
+  const QString outcome = loadPreset(u"/second/layout.pj4.xml"_s);
+  const PJ::DisplaySeconds range_min_at_end = engine.rangeMin();
+  qInstallMessageHandler(previous_handler);
+  ASSERT_EQ(outcome, u"ok"_s);
+  ASSERT_TRUE(time_at_restore.has_value());
+  EXPECT_EQ(time_at_restore->value, range_min_at_end.value);
+
+  const PJ::DisplaySeconds before_broken = engine.rangeMax();
+  engine.setCurrentTime(before_broken);
+  EXPECT_EQ(loadPreset(u"/broken/layout.pj4.xml"_s), u"apply-after-source-load"_s);
+  closeDialogs();
+  EXPECT_EQ(engine.currentTime().value, before_broken.value);
 }
 
 // A preset dataset that a merge folded the user's data into holds the user's data too, even

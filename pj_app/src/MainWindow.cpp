@@ -661,8 +661,8 @@ struct MainWindow::BrowserLayoutRuntime {
     std::vector<ReplayStream> streams;
     // The streams this replay started so far: its rollback stops and removes them.
     std::vector<DatasetId> stream_datasets;
-    // Captured just before the first stream starts; empty while none has.
-    std::optional<Transport> transport_before_streams;
+    // Captured before the first stream starts or a preset moves the playhead, for the rollback; empty otherwise.
+    std::optional<Transport> transport_before_apply;
     // Every file this replay stages, in staging order: each source's data file (files[i] is sources[i]'s), then
     // every side file. selection_index walks it; a downloaded layout's source_urls follow it.
     QList<ReplayFile> files = {};
@@ -5770,7 +5770,7 @@ void MainWindow::beginBrowserSourceReplay(
           .receiver = std::make_unique<QObject>(),
           .streams = std::move(streams),
           .stream_datasets = {},
-          .transport_before_streams = std::nullopt,
+          .transport_before_apply = std::nullopt,
       });
 
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
@@ -6495,9 +6495,10 @@ void MainWindow::applyBrowserReplay(QDomDocument apply_doc, const QString& apply
 
 QString MainWindow::startReplayStreamsAndApply(QDomDocument apply_doc, const QString& apply_failure) {
   BrowserLayoutRuntime::Replay& replay = *browser_layout_runtime_->replay;
-  if (!replay.streams.empty()) {
-    const PlaybackEngine& engine = session_->playbackEngine();
-    replay.transport_before_streams = BrowserLayoutRuntime::Transport{
+  const bool preset = !browser_layout_runtime_->loading_url.isEmpty();
+  PlaybackEngine& engine = session_->playbackEngine();
+  if (!replay.streams.empty() || preset) {
+    replay.transport_before_apply = BrowserLayoutRuntime::Transport{
         .followed_stream = active_streaming_dataset_id_,
         .seeded = streaming_playback_seeded_,
         .playing = engine.isPlaying(),
@@ -6518,6 +6519,11 @@ QString MainWindow::startReplayStreamsAndApply(QDomDocument apply_doc, const QSt
   }
   // Stream-bound items bind to the fresh sessions' DatasetIds and wait for their topics.
   layout_xml::bindStreamQualifiers(apply_doc, streams.dataset_for_identity);
+  // The previous preset's data goes only after this layout applies, and the restore drives every new view to the
+  // playhead: left where the previous preset had it, a scene view folds its marker history up to that time.
+  if (preset && active_streaming_dataset_id_ == 0) {
+    engine.setCurrentTime(engine.rangeMin());
+  }
   return applyBrowserRestoredLayout(std::move(apply_doc), replay.layout_name, streams.tracks) ? QString{}
                                                                                               : apply_failure;
 }
@@ -6591,7 +6597,7 @@ void MainWindow::rollbackBrowserReplayImports() {
         DiagnosticLevel::kWarning, "Layout", "browser-source-rollback-failed",
         tr("The failed source replay was removed, but the previous workspace could not be restored exactly."));
   }
-  const std::optional<BrowserLayoutRuntime::Transport> transport = replay.transport_before_streams;
+  const std::optional<BrowserLayoutRuntime::Transport> transport = replay.transport_before_apply;
   PlaybackEngine& engine = session_->playbackEngine();
   // Removing the replay's streams handed live-follow to another stream, or ended it; follow the previous stream
   // again first, so the range below is its window.
