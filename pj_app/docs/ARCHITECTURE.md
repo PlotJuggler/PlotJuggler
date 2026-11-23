@@ -687,7 +687,9 @@ anchors robot resources at the layout URL. In WASM a redirect leaves the final U
 relies on a redirect to another directory resolves its files against the wrong base. Every call ends in exactly one
 `layoutUrlLoadFinished(url, ok, reason)`; each source download reports throttled `layoutUrlLoadProgress(url,
 received, total)` ending at received == total. A success replaces only what the previous successful preset load
-brought (`BrowserLayoutRuntime::preset_data`).
+brought (`BrowserLayoutRuntime::preset_data`), after its layout applies. Unless a stream is followed, the playhead
+moves to the start of the range before the layout applies, and a rollback puts it back: left where the previous
+preset had it, every restored scene view would fold its marker history up to that time.
 
 A preset may record streaming sources (`<previouslyLoaded_StreamingSources>`, `pj4_version="5"`, `pj-stream://<id>`
 qualifiers). Its configuration is a template: `${deployment.ws_origin}` expands from the page URL through
