@@ -265,6 +265,18 @@ if (-not (Test-Path $helperExe)) {
 Copy-Item $helperExe (Join-Path $stageBin "pj-plugin-check.exe")
 Info "staged bin\pj-plugin-check.exe"
 
+# Licences, installed with the app and carried by the portable ZIP: PlotJuggler's MPL-2.0, the LGPL-3.0 the installer
+# pages show, and the third-party notices the build wrote (cmake/PjNotices.cmake), with every other licence text.
+$stageLicenses = Join-Path $stageData "licenses"
+New-Item -ItemType Directory -Force -Path $stageLicenses | Out-Null
+$notices = Join-Path $BuildDir "pj_app\THIRD_PARTY_NOTICES.txt"
+if (-not (Test-Path $notices)) { Die "$notices not found. Configure PJ4 first; the packages must ship it." }
+Copy-Item $notices $stageLicenses
+foreach ($name in @("license_mpl.txt", "license_lgpl.txt")) {
+  Copy-Item (Join-Path $pkgSrc "meta\$name") $stageLicenses
+}
+Info "staged licenses\"
+
 # --- download published plugins from pj-plugin-registry ---------------------------
 # Plugin release ZIPs are the same marketplace artifacts the Linux AppImage bundles.
 # They carry the plugin DLL + embedded-manifest sidecar and statically link their
