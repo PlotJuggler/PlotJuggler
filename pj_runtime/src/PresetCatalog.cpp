@@ -102,6 +102,11 @@ QList<PresetEntry> parsePresetCatalog(const QByteArray& json, const QUrl& index_
     if (!thumbnail.isEmpty() && !resolveReference(index_url, thumbnail, &entry.thumbnail_url)) {
       return fail(tr("preset \"%1\" has no usable http(s) thumbnail").arg(entry.id));
     }
+    const QJsonValue listed = object.value(u"listed"_s);
+    if (!listed.isUndefined() && !listed.isNull() && !listed.isBool()) {
+      return fail(tr("preset \"%1\" has a \"listed\" that is not true or false").arg(entry.id));
+    }
+    entry.listed = listed.toBool(true);
     entries.append(std::move(entry));
   }
   return entries;

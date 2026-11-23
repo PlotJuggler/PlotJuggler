@@ -759,7 +759,10 @@ test('keeping a recording drops the longest-kept ones past the cache budget', as
 const SAMPLES_PACKAGE = path.resolve(
   process.env.PJ_WASM_PRESETS_PACKAGE_DIR || path.join(__dirname, '..', '..', 'build-wasm-probe', 'deploy-presets'));
 const SAMPLE_INDEX = require('../../resources/wasm-presets/index.json');
-const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset'];
+const SAMPLE_IDS = ['builtin_filters', 'anymal', 'pandaset', 'lilocbench'];
+// The samples the index marks "listed": false: no card in the dialog, opened only by their ?preset= link.
+const LINK_ONLY_SAMPLE_IDS = ['lilocbench'];
+const LISTED_SAMPLE_IDS = SAMPLE_IDS.filter(id => !LINK_ONLY_SAMPLE_IDS.includes(id));
 const HOSTED_ORIGIN = require('./fixtures/hosted_assets.json').origin;
 // The asset-host path of sample `id`'s layout.
 const sampleLayout = id => SAMPLE_INDEX.presets.find(entry => entry.id === id).layout
@@ -795,7 +798,7 @@ async function startSamples() {
 // Contexts already sending the samples' hosted files to the mirror (a test boots several pages in one).
 const ROUTED_CONTEXTS = new WeakSet();
 
-async function bootSamples(context, errors, samples) {
+async function bootSamples(context, errors, samples, query = '') {
   if (!ROUTED_CONTEXTS.has(context)) {
     ROUTED_CONTEXTS.add(context);
     await samples.mirror.route(context, samples.origin);
@@ -804,7 +807,7 @@ async function bootSamples(context, errors, samples) {
   page.on('filechooser', () => {});
   const messages = [];
   observeRuntimeTarget(page, messages, [], errors);
-  await page.goto(`${samples.origin}/`);
+  await page.goto(`${samples.origin}/${query}`);
   await waitForQtApp(page, messages);
   await expect.poll(() => count(messages, 'PJ_WASM_PRESETS_DISCOVERED'), { timeout: 30000 }).toBe(1);
   expect(latest(messages, 'PJ_WASM_PRESETS_DISCOVERED')).toContain(`count=${SAMPLE_IDS.length}`);
@@ -941,6 +944,29 @@ async function expectPandasetViews(run) {
   await expectSceneMoves(run, 2, pandasetReady);
 }
 
+// Both LILocBench 3D views (the top-down map and the orbit view), in the map frame: the office map as an
+// occupancy grid and the two laser scans as clouds.
+const lilocbenchLoaded = (models, dock) => dock.fixed === 'map'
+  && dock.data.points.live === 2 && dock.data.occupancy.live === 1;
+
+// The map and both scans drawn as well.
+const lilocbenchReady = (models, dock) => lilocbenchLoaded(models, dock)
+  && dock.data.points.rendered === 2 && dock.data.occupancy.cells > 0;
+
+// The LILocBench sample's two plots (the ground truth's correction of the odometry, and the XY path by
+// odometry against the ground truth), its front camera, the depth cloud of its orbit view, and its two 3D
+// views moving: both follow the robot.
+async function expectLilocbenchViews(run) {
+  await expectPlots(run, [
+    ['x', 'y'].map(axis => `tf/map/odom/translation/${axis}`), ['Wheel odometry', 'Ground truth'],
+  ]);
+  const cameras = await requestScene2DState(run.page, run.messages, count(run.messages, 'PJ_WASM_SCENE2D_SUMMARY'));
+  expect(cameras.docks.map(dock => [dock.layers, dock.visible])).toEqual([[1, true]]);
+  const moved = await expectSceneMoves(run, 2, lilocbenchReady);
+  expect(moved.docks.map(dock => dock.data.depth.live).sort()).toEqual([0, 1]);
+  expect(moved.docks.some(dock => dock.data.depth.vertices > 0)).toBe(true);
+}
+
 // The Built-in filters sample: the raw gyro yaw rate, the same signal through the built-in
 // moving_average, and its built-in integral (the heading change), restored from the layout's
 // <data_processors> and drawn.
@@ -964,17 +990,25 @@ test('every deployed sample opens into its own views', async ({ page }) => {
     await page.close();
     for (const [id, expectViews] of [
       ['builtin_filters', expectFiltersViews], ['anymal', expectAnymalViews], ['pandaset', expectPandasetViews],
+      ['lilocbench', expectLilocbenchViews],
     ]) {
-      const run = await bootSamples(context, errors, samples);
-      let dialog;
-      await expect.poll(async () => {
-        dialog = await presetsDialog(run.page, run.messages);
-        return dialog.visible && Object.values(dialog.entries).every(entry => entry.thumbnail !== 'loading');
-      }, { timeout: 30000 }).toBe(true);
-      expect(Object.keys(dialog.entries)).toEqual(SAMPLE_IDS);
-      expect(Object.values(dialog.entries).map(entry => entry.thumbnail), id).toEqual(SAMPLE_IDS.map(() => 'image'));
-
-      expect(await pickSample(run, samples, id), id).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      const linkOnly = LINK_ONLY_SAMPLE_IDS.includes(id);
+      const run = await bootSamples(context, errors, samples, linkOnly ? `?preset=${id}` : '');
+      if (linkOnly) {
+        const url = samples.layoutUrl(id);
+        await expect.poll(() => urlOutcome(run.messages, 0, url), { timeout: 90000 }).not.toBe('');
+        expect(urlOutcome(run.messages, 0, url), id).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      } else {
+        let dialog;
+        await expect.poll(async () => {
+          dialog = await presetsDialog(run.page, run.messages);
+          return dialog.visible && Object.values(dialog.entries).every(entry => entry.thumbnail !== 'loading');
+        }, { timeout: 30000 }).toBe(true);
+        expect(Object.keys(dialog.entries)).toEqual(LISTED_SAMPLE_IDS);
+        expect(Object.values(dialog.entries).map(entry => entry.thumbnail), id)
+          .toEqual(LISTED_SAMPLE_IDS.map(() => 'image'));
+        expect(await pickSample(run, samples, id), id).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+      }
       await expect.poll(async () => (await presetsDialog(run.page, run.messages)).visible, { timeout: 10000 })
         .toBe(false);
       await expectViews(run);

@@ -480,10 +480,13 @@ together.
   a deep link on a page without a usable index reports an error and loads
   nothing. Other query keys are ignored.
 
-The repository ships three samples, listed by `resources/wasm-presets/index.json`
+The repository ships four samples, listed by `resources/wasm-presets/index.json`
 and deployed with `--presets` (a car's gyro through a built-in filter; an ANYmal
 walking a forest trail; a car from PandaSet with its six cameras, lidar and 3D
-boxes). Their layouts, thumbnails, recordings and models load from
+boxes; an office robot from LILocBench with its camera, depth cloud and laser
+scans on the floor map). The welcome dialog lists the first three; the office
+robot is unlisted and opens from its link, `?preset=lilocbench`, which the
+website's examples page uses. Their layouts, thumbnails, recordings and models load from
 `https://assets.plotjuggler.io`. Preset files are served `no-cache`. How to author a preset,
 what the packager refuses, and the hosting limits are in
 [`WASM_PRESETS.md`](./WASM_PRESETS.md).

@@ -329,6 +329,24 @@ TEST(WelcomePresetsDialogTest, CardsShareOneHeightAndAlignment) {
   }
 }
 
+// An entry the index marks unlisted has no card, but its ?preset= link opens it.
+TEST(WelcomePresetsDialogTest, UnlistedPresetOpensOnlyByItsLink) {
+  const PJ::PresetEntry shown = presetEntry(u"shown"_s);
+  PJ::PresetEntry linked = presetEntry(u"linked"_s);
+  linked.listed = false;
+  PJ::WelcomePresetsDialog dialog({shown, linked});
+  QSignalSpy selected(&dialog, &PJ::WelcomePresetsDialog::presetSelected);
+
+  EXPECT_EQ(dialog.findChildren<QFrame*>(u"presetCard"_s).size(), 1);
+  EXPECT_NE(entryWidget<QPushButton>(dialog, u"buttonOpenPreset"_s, shown.id), nullptr);
+  EXPECT_EQ(entryWidget<QPushButton>(dialog, u"buttonOpenPreset"_s, linked.id), nullptr);
+
+  dialog.openDeepLink(linked.id);
+  ASSERT_EQ(selected.size(), 1);
+  EXPECT_EQ(selected.front().at(0).toString(), linked.id);
+  EXPECT_EQ(selected.front().at(1).toUrl(), linked.layout_url);
+}
+
 TEST(WelcomePresetsDialogTest, BrokenThumbnailKeepsThePlaceholder) {
   LocalHttpServer image;
   image.setResponse("200 OK", pngBytes());

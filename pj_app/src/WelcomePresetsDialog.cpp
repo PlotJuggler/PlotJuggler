@@ -44,9 +44,14 @@ WelcomePresetsDialog::WelcomePresetsDialog(QList<PresetEntry> entries, QWidget* 
   ui_->setupUi(body);
   contentLayout()->addWidget(body);
 
-  entry_widgets_.reserve(entries_.size());
-  for (int index = 0; index < entries_.size(); ++index) {
-    addEntryCard(entries_[index], index);
+  for (const PresetEntry& entry : entries_) {
+    if (entry.listed) {
+      listed_.append(entry);
+    }
+  }
+  entry_widgets_.reserve(static_cast<std::size_t>(listed_.size()));
+  for (int index = 0; index < listed_.size(); ++index) {
+    addEntryCard(listed_[index], index);
   }
   ui_->gridPresets->setRowStretch(ui_->gridPresets->rowCount(), 1);  // cards pack at the top
   connect(ui_->buttonCancel, &QPushButton::clicked, this, &WelcomePresetsDialog::cancelRequested);
@@ -190,14 +195,14 @@ void WelcomePresetsDialog::addEntryCard(const PresetEntry& preset, int index) {
 
 void WelcomePresetsDialog::fetchThumbnails(int index) {
   // One at a time: a new download() cancels the one in flight.
-  while (index < entries_.size() && entries_[index].thumbnail_url.isEmpty()) {
+  while (index < listed_.size() && listed_[index].thumbnail_url.isEmpty()) {
     ++index;
   }
-  if (index >= entries_.size()) {
+  if (index >= listed_.size()) {
     return;
   }
   thumbnails_.download(
-      entries_[index].thumbnail_url, [this, index](const QByteArray& bytes, const QUrl&, const QString&) {
+      listed_[index].thumbnail_url, [this, index](const QByteArray& bytes, const QUrl&, const QString&) {
         setThumbnail(index, bytes);  // empty on failure
         fetchThumbnails(index + 1);
       });

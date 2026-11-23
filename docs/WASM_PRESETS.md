@@ -35,6 +35,10 @@ and then the tree needs no folder for that preset. The repository's samples work
 this way: `resources/wasm-presets/` holds only `index.json` and its README, and
 each sample's layout and thumbnail sit on the asset host beside its recording.
 
+An entry with `"listed": false` gets no card in the presets dialog but still
+opens from its `?preset=<id>` link: a sample a web page links to without growing
+the dialog. A build that predates the key ignores it and lists the entry.
+
 The layout is what **File → Save Layout with sources** writes
 (`<root binding="source">`), with each data file beneath the layout's folder:
 
@@ -224,7 +228,8 @@ The packager refuses, before writing anything:
 - an **unusable `index.json`** — missing, malformed, without a `presets` array,
   with an entry the browser rejects (which empties the whole welcome list: an
   entry that is not an object, a missing, empty or repeated `id`, no `layout`, or
-  an `id`/`title`/`description`/`layout`/`thumbnail` that is not a string), or
+  an `id`/`title`/`description`/`layout`/`thumbnail` that is not a string, or a
+  `listed` that is not a boolean), or
   naming a relative `layout`/`thumbnail` the tree does not deploy (absolute
   http(s) references pass: they live elsewhere);
 - **symbolic links** — they can point outside the tree, to a relative `..` or
@@ -271,7 +276,9 @@ fake bridge behind Caddy and `docs/wasm/Caddyfile` (see
 They open every sample into its views (the ANYmal robot with all its meshes, its
 compressed lidar scan, its three camera views and its joint, IMU and speed plots;
 the PandaSet car's six cameras with their 3D-box overlays, its two 3D views with
-its lidar and the boxes, and its yaw-rate and speed plots; the
+its lidar and the boxes, and its yaw-rate and speed plots; the LILocBench robot's
+front camera, its two 3D views with the office map, both laser scans and, in the
+orbit view, the depth cloud, and its two plots; the
 built-in filters sample's raw and moving-average plots, its filter restored from
 the layout), check that seeking
 between two points inside the recording changes what each 3D view draws (a scene
