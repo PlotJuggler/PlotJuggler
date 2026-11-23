@@ -907,7 +907,10 @@ TEST_F(Scene3dRhiPointTest, RegistryBuildsVariantsFromTheWholeDescription) {
   lines = registry.add(desc, "test pipelines");
   ASSERT_TRUE(registry.createDirects());
   EXPECT_EQ(registry.counts(), (Counts{1, 1, 0}));
-  expect_state(registry.resolve(lines, ScenePass::kDirect), desc.blend->colorWrite);
+  // The direct target is the view's output: its alpha stays the clear's opaque backdrop.
+  expect_state(
+      registry.resolve(lines, ScenePass::kDirect),
+      QRhiGraphicsPipeline::R | QRhiGraphicsPipeline::G | QRhiGraphicsPipeline::B);
   const pj::scene3d::ScenePipeline* optional = registry.add(desc, "test pipelines", /*optional=*/true);
   EXPECT_EQ(registry.resolve(optional, ScenePass::kDirect), nullptr) << "an optional pipeline was created at once";
   {
