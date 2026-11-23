@@ -216,6 +216,22 @@
   "v1/pandaset/pandaset_thumbnail.png": {
    "sha256": "2c81d35546cd96f1105686e7fa5c401c8b5c0cac8ad0563caff4cefd7f8b98d8",
    "bytes": 38846
+  },
+  "v1/uzhfpv/README.txt": {
+   "sha256": "5276cd354318f13ef4cf16e111a0959eaebfa5b51e8080a5923e9461c1bcf8b6",
+   "bytes": 4015
+  },
+  "v1/uzhfpv/uzhfpv_indoor_forward_6.mcap": {
+   "sha256": "27501952fe2fd0b7de53b904ae94dc56ea1fa6f2fd19db46456933742a621740",
+   "bytes": 37381188
+  },
+  "v1/uzhfpv/uzhfpv_layout.pj4.xml": {
+   "sha256": "74a08de09751a24ef81e27cbd4dd596cabb46547fb136d8f03350be861125364",
+   "bytes": 7256
+  },
+  "v1/uzhfpv/uzhfpv_thumbnail.png": {
+   "sha256": "0242764bdc6045716e85d7c374e0fc93c4f56d2d004e416b2a9d0d07963fcfdb",
+   "bytes": 22521
   }
  }
 }

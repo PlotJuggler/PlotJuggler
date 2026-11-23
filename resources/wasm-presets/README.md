@@ -18,6 +18,7 @@ rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRES
 | `anymal` | `v1/grand_tour_2/anymal_layout.pj4.xml`, `anymal_thumbnail.png` |
 | `pandaset` | `v1/pandaset/pandaset_layout_v4.pj4.xml`, `pandaset_thumbnail.png` |
 | `lilocbench` | `v1/lilocbench/lilocbench_layout.pj4.xml`, `lilocbench_thumbnail.png` |
+| `uzhfpv` | `v1/uzhfpv/uzhfpv_layout.pj4.xml`, `uzhfpv_thumbnail.png` |
 
 The layouts, the thumbnails and this file are PlotJuggler's own and fall under
 this repository's license (MPL-2.0); the thumbnails are PlotJuggler renders of
@@ -198,3 +199,44 @@ shared under the same license; the `README.txt` beside it gives the attribution,
 lists the changes and states that it is not endorsed by the authors. The recording
 was made with a converter outside this repository; the topics and processing above
 are what it did.
+
+## `uzhfpv` — racing drone
+
+The layout loads `v1/uzhfpv/uzhfpv_indoor_forward_6.mcap` (37,381,188 bytes, SHA-256
+`27501952fe2fd0b7de53b904ae94dc56ea1fa6f2fd19db46456933742a621740`, pinned by
+the layout's `content_sha256`) from the asset host: 29.1 s of sequence `indoor_forward_6` of the
+[UZH-FPV Drone Racing Dataset](https://fpv.ifi.uzh.ch/) (Robotics and Perception Group, University of
+Zurich): a racing quadrotor flies about five laps of a gated track in a hangar, at up to
+42 km/h; Unix time 1540821388.575 (0.5 s before take-off) to 1540821417.681 (the end of the ground truth).
+It was converted from the dataset's text exports (`indoor_forward_6_snapdragon_with_gt.zip`,
+`indoor_forward_6_davis_with_gt.zip`) and the Snapdragon calibration (`indoor_forward_calib_snapdragon.zip`),
+and holds:
+
+- `/snappy_cam/stereo_l/image` (27 Hz): the Snapdragon's left fisheye camera, 640x480 greyscale, re-encoded as
+  JPEG (quality 80), with `camera_info` from the calibration (equidistant model). The right camera is not
+  included;
+- `/dvs/events_image` (at each fisheye frame): the DAVIS 346 event camera drawn as the events of the 10 ms before
+  the frame, ON red and OFF blue on black (PNG). The DAVIS clock is moved onto the Snapdragon's by the offset
+  between the dataset's two ground-truth files (35.0 ms). The raw event stream, the DAVIS image frames and its IMU
+  are not included;
+- `/snappy_imu` (500 Hz): the Snapdragon IMU;
+- `/groundtruth/pose` (100 Hz, every fifth sample of the dataset's 500 Hz ground truth) and `/tf` (`world` to
+  `body`, the Snapdragon IMU), with `/tf_static` `body` to `cam_left` from the calibration;
+- `/groundtruth/speed_kmh`: the ground-truth speed in km/h, from central differences of the 500 Hz positions
+  over a 50 ms moving average.
+
+Timestamps are the dataset's own; the calibration's camera-to-IMU time shift (-16.7 ms) is not applied.
+`README.txt` beside it gives the attribution and the citations and lists the changes made. The layout shows
+the fisheye and the event camera above a 3D view in `world` with the drone's frame and its trail over the whole
+flight, beside the track seen from above (an XY plot of the ground-truth position), the speed, the gyroscope and
+the accelerometer.
+
+Privacy: the images are not anonymised. People stand at the far edge of the hangar in some frames; at 640x480
+their faces are a few pixels and not recognisable.
+
+Redistribution basis: the UZH-FPV Drone Racing Dataset is released under
+[CC BY-NC-SA 3.0](http://creativecommons.org/licenses/by-nc-sa/3.0/) ("free for non-commercial use (including
+research)", [fpv.ifi.uzh.ch/datasets](https://fpv.ifi.uzh.ch/datasets/)); the recording is an adaptation shared
+under the same licence, and the `README.txt` beside it gives the attribution, lists the changes made and
+states that it is not endorsed by the University of Zurich. The recording was made with a converter outside this
+repository; the topics and processing above are what it did.
