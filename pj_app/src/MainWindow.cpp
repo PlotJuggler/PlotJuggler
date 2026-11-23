@@ -573,6 +573,17 @@ const RecipeGraph::Node* onDemandNodeOfCatalogKey(AppSession& session, const QSt
   return key.has_value() ? on_demand.graph().find(*key) : nullptr;
 }
 
+// The top-level key of the config that opens the Custom Topics editor on another owner's recipe, read-only.
+constexpr const char* kCustomTopicsViewKey = "view";
+
+// An editor that saves the config it was opened with saves a view. A layout must not hold one: it is a snapshot of a
+// recipe its owner can change or remove, and a load would hand it to the editor stale, even to a build that does not
+// show views.
+bool isCustomTopicsView(const QString& saved_config) {
+  const nlohmann::json config = nlohmann::json::parse(saved_config.toStdString(), nullptr, /*allow_exceptions=*/false);
+  return config.is_object() && config.contains(kCustomTopicsViewKey);
+}
+
 // Spans one workspace restore (apply, rollback, toolbox relaunch). Its steps hide or delete the widget holding the
 // keyboard focus, or switch the shown tab, and Qt then moves focus along the tab chain, possibly into a line edit
 // that takes Space from playback. On exit focus goes back to the widget that held it at the start if it is still
@@ -1128,8 +1139,15 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
       }
       owner = transform->owner_plugin;
       params_json = transform->params_json;
-      view = {{"name", transform->user_id},  {"kind", "transform"},         {"language", transform->backend},
-              {"script", transform->script}, {"inputs", transform->inputs}, {"outputs", transform->outputs}};
+      // The row's name, not `user_id`: an agent's transform id is its series name with the bytes outside
+      // [A-Za-z0-9] escaped.
+      view = {
+          {"name", output->topic_name.toStdString()},
+          {"kind", "transform"},
+          {"language", transform->backend},
+          {"script", transform->script},
+          {"inputs", transform->inputs},
+          {"outputs", transform->outputs}};
     }
     const QString owner_id = QString::fromStdString(owner);
     if (extensions.isCustomTopicsEditor(owner_id)) {
@@ -1143,7 +1161,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
     view["params"] = params_json;
     // `replace`: a script is binary-safe, and a strict dump throws on bytes that are not UTF-8.
     const std::string config =
-        nlohmann::json{{"view", view}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+        nlohmann::json{{kCustomTopicsViewKey, view}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     launchToolbox(extensions.customTopicsEditorId(), QString::fromStdString(config));
   });
   connect(ui_->curveListPanel, &CurveListPanel::deleteCustomTopicsRequested, this, &MainWindow::deleteCustomTopics);
@@ -10782,12 +10800,16 @@ void MainWindow::teardownAllToolboxes() {
 QDomElement MainWindow::savePinnedToolboxes(QDomDocument& doc) const {
   QDomElement root = doc.createElement(u"pinned_toolboxes"_s);
   const auto append_toolbox = [&doc, &root](const QString& plugin_id, const ToolboxPresenter& toolbox) {
+    const QString config = toolbox.saveConfig();
+    if (isCustomTopicsView(config)) {
+      return;
+    }
     QDomElement element = doc.createElement(u"toolbox"_s);
     element.setAttribute(u"plugin_id"_s, plugin_id);
     if (const QString tab_name = toolbox.title(); !tab_name.isEmpty()) {
       element.setAttribute(u"tab_name"_s, tab_name);
     }
-    if (const QString config = toolbox.saveConfig(); !config.isEmpty()) {
+    if (!config.isEmpty()) {
       // A plain text node would entity-escape on each round trip.
       appendJsonAsCdata(doc, element, config);
     }

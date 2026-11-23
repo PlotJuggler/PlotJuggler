@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QDomDocument>
 #include <QDropEvent>
 #include <QFile>
 #include <QFileInfo>
@@ -17,6 +18,7 @@
 #include <QTemporaryDir>
 #include <QToolButton>
 #include <QTreeWidgetItemIterator>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 
@@ -30,6 +32,7 @@
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/OnDemandService.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_scene_common/scene_dock_widget.h"
 #include "pj_widgets/CurveTreeView.h"
@@ -50,6 +53,18 @@ class MainWindowEditorIntegrationTestPeer {
   }
   static void syncCustomTopicsPanel(MainWindow& window) {
     window.syncCustomTopicsPanel();
+  }
+  [[nodiscard]] static bool isLaunched(const MainWindow& window, const QString& plugin_id) {
+    return window.findToolbox(plugin_id) != nullptr;
+  }
+  // The user pins the launched panel as a tab, which is what puts it in a saved layout.
+  static void pin(MainWindow& window, const QString& plugin_id) {
+    window.withToolbox(plugin_id, [](ToolboxPresenter& live) { live.moveToTab(/*transient=*/false); });
+  }
+  [[nodiscard]] static QString savedPinnedToolboxesXml(const MainWindow& window) {
+    QDomDocument doc;
+    doc.appendChild(window.savePinnedToolboxes(doc));
+    return doc.toString();
   }
 };
 
@@ -180,9 +195,10 @@ TEST(MainWindowEditorIntegrationTest, DropOnThePanelDeliversNamesAndDataSources)
   EXPECT_EQ(target->text().toStdString(), expected.toStdString());
 }
 
-// A self-contained Luau transform class; its id is the transform's user id.
+// A self-contained Luau transform class; its id is the transform's user id, escaped the way an MCP agent's series
+// "speed/neg" is.
 constexpr const char* kNegate = R"LUAU(-- pj-script: luau
-return { id="neg", name="Negate", output="same",
+return { id="speed_2fneg", name="Negate", output="same",
   create = function(p) return { calculate = function(t, v) return -v end } end }
 )LUAU";
 
@@ -224,41 +240,103 @@ std::optional<std::string> pencilConfig(PJ::MainWindow& window, const QString& t
   return loaded->text().toStdString();
 }
 
+constexpr const char* kEditorId = "custom-topics-editor-fixture";
+
+// The recipe of an agent's on-demand object: a point cloud cropped from /cloud.
+PJ::RecipeGraph::Recipe agentCropRecipe() {
+  PJ::RecipeGraph::Recipe recipe;
+  recipe.owner_plugin = "agent-test";
+  recipe.user_id = "crop";
+  recipe.script = "local inputs = ... return { cropped = inputs.cloud }";
+  recipe.params_json = R"({"radius":3})";
+  recipe.inputs = {"/cloud"};
+  recipe.outputs = {
+      {"cropped", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud},
+      {"rest", PJ::scripting::OutputType::kObject, PJ::sdk::BuiltinObjectType::kPointCloud}};
+  return recipe;
+}
+
+// A window with the fixture editor, a dataset holding `/speed`, and an agent's transform over it.
+struct AgentTransformWindow {
+  QTemporaryDir extensions_dir;
+  std::unique_ptr<PJ::MainWindow> window;
+
+  [[nodiscard]] bool setUp() {
+    stageEditorFixture(extensions_dir);
+    if (::testing::Test::HasFatalFailure()) {
+      return false;
+    }
+    window = std::make_unique<PJ::MainWindow>(extensions_dir.path());
+    PJ::AppSession& app = Peer::session(*window);
+    app.extensionCatalog().registerAdHocOwner(u"agent-test"_s, u"AI agent (agent-test)"_s);
+    const PJ::DatasetId dataset = pj_test::createDataset(app, "drive", true);
+    if (dataset == 0U || pj_test::addScalarTopic(app, dataset, "/speed", 1'000, 2'000) == 0U) {
+      return false;
+    }
+    if (!app.sessionManager().dataProcessorService().upsertTransform(
+            "agent-test", "speed_2fneg", {"/speed/value"}, {"/speed/neg"}, kNegate, R"({"k":2})")) {
+      return false;
+    }
+    app.catalogModel().rebuildFromDatastore();
+    Peer::syncCustomTopicsPanel(*window);
+    return true;
+  }
+};
+
 // The pencil on the editor's own row hands it the recipe's params_json; on a row an AI agent made, an editor that
 // declares `custom_topics_viewer` gets a view of the recipe instead (script, inputs, outputs, params, the owner's
-// name), which it shows read-only. The agent's transform is not touched.
-TEST(MainWindowEditorIntegrationTest, PencilOpensTheEditorOnAViewOfAnotherOwnersRecipe) {
-  QTemporaryDir extensions_dir;
-  stageEditorFixture(extensions_dir);
-  ASSERT_FALSE(HasFatalFailure());
-  PJ::MainWindow window(extensions_dir.path());
-  PJ::AppSession& app = Peer::session(window);
-  ASSERT_TRUE(app.extensionCatalog().customTopicsEditorViews()) << "the fixture declares custom_topics_viewer";
-  app.extensionCatalog().registerAdHocOwner(u"agent-test"_s, u"AI agent (agent-test)"_s);
+// name), which it shows read-only. The view's name is the one the row shows (the output topic), not the transform's
+// escaped id.
+TEST(MainWindowEditorIntegrationTest, PencilOpensTheEditorOnAViewOfAnotherOwnersTransform) {
+  AgentTransformWindow fx;
+  ASSERT_TRUE(fx.setUp());
+  ASSERT_TRUE(Peer::session(*fx.window).extensionCatalog().customTopicsEditorViews())
+      << "the fixture declares custom_topics_viewer";
 
-  const PJ::DatasetId dataset = pj_test::createDataset(app, "drive", true);
-  ASSERT_NE(dataset, 0U);
-  ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/speed", 1'000, 2'000), 0U);
-  PJ::DataProcessorService& transforms = app.sessionManager().dataProcessorService();
-  ASSERT_TRUE(transforms.upsertTransform("agent-test", "neg", {"/speed/value"}, {"/speed/neg"}, kNegate, R"({"k":2})"));
-  app.catalogModel().rebuildFromDatastore();
-  Peer::syncCustomTopicsPanel(window);
-
-  const std::optional<std::string> config = pencilConfig(window, u"/speed/neg"_s);
+  const std::optional<std::string> config = pencilConfig(*fx.window, u"/speed/neg"_s);
   ASSERT_TRUE(config.has_value()) << "the pencil is enabled on the agent's row and launches the editor";
   const auto parsed = nlohmann::json::parse(*config, nullptr, false);
   ASSERT_TRUE(parsed.is_object()) << *config;
   ASSERT_TRUE(parsed.contains("view")) << *config;
   const nlohmann::json& view = parsed["view"];
   EXPECT_EQ(view["owner"], "AI agent (agent-test)");
-  EXPECT_EQ(view["name"], "neg");
+  EXPECT_EQ(view["name"], "/speed/neg");
   EXPECT_EQ(view["kind"], "transform");
   EXPECT_EQ(view["language"], "luau");
   EXPECT_EQ(view["script"], kNegate);
   EXPECT_EQ(view["inputs"], nlohmann::json::array({"/speed/value"}));
   EXPECT_EQ(view["outputs"], nlohmann::json::array({"/speed/neg"}));
   EXPECT_EQ(view["params"], R"({"k":2})");
-  EXPECT_EQ(transforms.transformIdsForPlugin("agent-test").size(), 1U);
+}
+
+// An agent's on-demand object opens the same way: kind "on_demand", the recipe's language, and its outputs by name.
+TEST(MainWindowEditorIntegrationTest, PencilOpensTheEditorOnAViewOfAnotherOwnersOnDemandRecipe) {
+  QTemporaryDir extensions_dir;
+  stageEditorFixture(extensions_dir);
+  ASSERT_FALSE(HasFatalFailure());
+  PJ::MainWindow window(extensions_dir.path());
+  PJ::AppSession& app = Peer::session(window);
+  app.extensionCatalog().registerAdHocOwner(u"agent-test"_s, u"AI agent (agent-test)"_s);
+  const PJ::DatasetId dataset = pj_test::createDataset(app, "drive", true);
+  ASSERT_NE(dataset, 0U);
+  ASSERT_TRUE(registerCloud(app, dataset).has_value());
+  app.catalogModel().rebuildFromDatastore();
+  const PJ::RecipeGraph::Recipe recipe = agentCropRecipe();
+  ASSERT_TRUE(app.sessionManager().onDemandService().install(recipe).has_value());
+
+  const std::optional<std::string> config = pencilConfig(window, u"agent-test/crop/cropped"_s);
+  ASSERT_TRUE(config.has_value()) << "the pencil is enabled on the agent's row and launches the editor";
+  const auto parsed = nlohmann::json::parse(*config, nullptr, false);
+  ASSERT_TRUE(parsed.is_object() && parsed.contains("view")) << *config;
+  const nlohmann::json& view = parsed["view"];
+  EXPECT_EQ(view["owner"], "AI agent (agent-test)");
+  EXPECT_EQ(view["name"], "crop");
+  EXPECT_EQ(view["kind"], "on_demand");
+  EXPECT_EQ(view["language"], "luau");
+  EXPECT_EQ(view["script"], recipe.script);
+  EXPECT_EQ(view["inputs"], nlohmann::json::array({"/cloud"}));
+  EXPECT_EQ(view["outputs"], nlohmann::json::array({"cropped", "rest"}));
+  EXPECT_EQ(view["params"], recipe.params_json);
 }
 
 TEST(MainWindowEditorIntegrationTest, PencilOnTheEditorsOwnRowPassesItsParams) {
@@ -272,13 +350,59 @@ TEST(MainWindowEditorIntegrationTest, PencilOnTheEditorsOwnRowPassesItsParams) {
   ASSERT_NE(dataset, 0U);
   ASSERT_NE(pj_test::addScalarTopic(app, dataset, "/speed", 1'000, 2'000), 0U);
   ASSERT_TRUE(app.sessionManager().dataProcessorService().upsertTransform(
-      "custom-topics-editor-fixture", "neg", {"/speed/value"}, {"/speed/neg"}, kNegate, R"({"output_name":"neg"})"));
+      kEditorId, "speed_2fneg", {"/speed/value"}, {"/speed/neg"}, kNegate, R"({"output_name":"neg"})"));
   app.catalogModel().rebuildFromDatastore();
   Peer::syncCustomTopicsPanel(window);
 
   const std::optional<std::string> config = pencilConfig(window, u"/speed/neg"_s);
   ASSERT_TRUE(config.has_value());
   EXPECT_EQ(*config, R"({"output_name":"neg"})");
+
+  // The editor's own recipe is workspace state: a pinned panel on it is written into the layout.
+  Peer::pin(window, QString::fromLatin1(kEditorId));
+  EXPECT_TRUE(Peer::savedPinnedToolboxesXml(window).contains(u"output_name"_s));
+}
+
+// A view is a snapshot of a recipe another owner can change or remove, so a pinned editor showing one saves nothing
+// into the layout: a later load would hand the editor a stale recipe.
+TEST(MainWindowEditorIntegrationTest, APinnedViewIsNotSavedIntoTheLayout) {
+  AgentTransformWindow fx;
+  ASSERT_TRUE(fx.setUp());
+  ASSERT_TRUE(pencilConfig(*fx.window, u"/speed/neg"_s).has_value());
+  Peer::pin(*fx.window, QString::fromLatin1(kEditorId));
+  ASSERT_TRUE(Peer::isLaunched(*fx.window, QString::fromLatin1(kEditorId)));
+
+  const QString saved = Peer::savedPinnedToolboxesXml(*fx.window);
+  EXPECT_FALSE(saved.contains(u"<toolbox"_s)) << saved.toStdString();
+  EXPECT_FALSE(saved.contains(u"\"view\""_s)) << saved.toStdString();
+}
+
+// The panel enables the pencil on another owner's row only for an editor that shows views, and the handler decides
+// again: an editor without the tag is never launched on a row it does not own.
+TEST(MainWindowEditorIntegrationTest, TheHandlerRefusesAViewWhenTheEditorLacksTheTag) {
+  AgentTransformWindow fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::AppSession& app = Peer::session(*fx.window);
+  auto* panel = fx.window->findChild<PJ::CurveListPanel*>(u"curveListPanel"_s);
+  ASSERT_NE(panel, nullptr);
+  QString key;
+  for (const PJ::CatalogItem& item : app.catalogModel().items()) {
+    if (item.topic_name == u"/speed/neg"_s) {
+      key = item.key;
+    }
+  }
+  ASSERT_FALSE(key.isEmpty());
+  const QString editor = QString::fromLatin1(kEditorId);
+
+  app.extensionCatalog().setCustomTopicsEditorIdForTest(editor, /*views=*/false);
+  emit panel->editCustomTopicRequested(key);
+  PJ::test::pumpFor(100);
+  EXPECT_FALSE(Peer::isLaunched(*fx.window, editor));
+
+  app.extensionCatalog().setCustomTopicsEditorIdForTest(editor, /*views=*/true);
+  emit panel->editCustomTopicRequested(key);
+  PJ::test::pumpUntil([&] { return Peer::isLaunched(*fx.window, editor); });
+  EXPECT_TRUE(Peer::isLaunched(*fx.window, editor)) << "the same request launches the editor once it shows views";
 }
 
 }  // namespace

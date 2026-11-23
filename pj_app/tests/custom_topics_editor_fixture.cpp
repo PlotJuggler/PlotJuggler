@@ -6,7 +6,7 @@
 // view, and its panel previews `/cloud` in an embedded 3D scene view (the `scenePreview` frame's `scene_view`
 // document). The `droppedItems` label is a drop target showing the names and data sources of the last drop, one per
 // line, so a test can read what the plugin received; the `loadedConfig` label shows the config the host launched it
-// with. Consumed by main_window_editor_integration_test.
+// with, which `saveConfig` returns unchanged. Consumed by main_window_editor_integration_test.
 
 #include <pj_base/sdk/toolbox_plugin_base.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
@@ -82,12 +82,18 @@ class EditorFixtureToolbox : public PJ::ToolboxPluginBase {
     return PJ::borrowDialog(dialog_);
   }
   PJ::Status loadConfig(std::string_view config_json) override {
+    config_ = config_json;
     dialog_.setConfig(config_json);
     return PJ::okStatus();
+  }
+  // Echoes the launch config, as an editor that keeps the recipe it was opened on would.
+  std::string saveConfig() const override {
+    return config_.empty() ? "{}" : config_;
   }
 
  private:
   EditorFixtureDialog dialog_;
+  std::string config_;
 };
 
 PJ_TOOLBOX_PLUGIN(
