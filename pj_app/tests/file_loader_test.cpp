@@ -2160,10 +2160,9 @@ TEST_F(FileLoaderTest, FanoutEntriesKeepTheServiceRegistryForThePluginsLifetime)
   const QString path = makeMockFile(u"services_fanout.fanoutprobe"_s);
   releaseFanoutProbeProgressStep(1);  // every entry's start() looks its services up at once
 
-  ASSERT_TRUE(loadAndWait(
-      path,
-      fanoutProbeHints(
-          uR"({"display_suffix":"services","__pj_fanout":["{\"display_suffix\":\"services\"}","{\"display_suffix\":\"services\"}"]})"_s)));
+  const PJ::LoadHints hints = fanoutProbeHints(
+      uR"({"display_suffix":"services","__pj_fanout":["{\"display_suffix\":\"services\"}","{\"display_suffix\":\"services\"}"]})"_s);
+  ASSERT_TRUE(loadAndWait(path, hints));
   pj_app_test::flushQueuedEvents(2);
 
   const std::vector<std::string> lookups = fanoutProbeServiceLookups();
