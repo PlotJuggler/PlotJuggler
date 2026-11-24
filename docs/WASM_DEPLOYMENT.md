@@ -194,6 +194,22 @@ the file configures isolation and cache policy on hosts that
 support the Netlify/Cloudflare Pages format; it does not make a host select
 precompressed variants automatically.
 
+#### The plugins pin
+
+The pin is a fixed commit (archive URL plus `URL_HASH`), so a package is reproducible and
+the source offer names the exact plugin sources. `.github/workflows/wasm-plugins-pin.yml`
+bumps it daily to the head of `pj-official-plugins` `main`: it runs
+`scripts/bump_wasm_plugins.sh`, which resolves the ref to a full commit sha, downloads the
+codeload archive of that sha twice and requires equal hashes, then rewrites the two pin
+lines. A bump goes into one pull request from `bot/wasm-plugins-pin`, listing the plugin
+commits it brings; the workflow dispatches WASM CI on that branch (a push made with
+`GITHUB_TOKEN` starts no workflow); there is no auto-merge, the PR is merged once it is green.
+
+Bump now with `gh workflow run wasm-plugins-pin.yml` (`-f ref=<branch, tag or full sha>`), or
+locally with `scripts/bump_wasm_plugins.sh <ref>` (default `main`), which edits
+`cmake/PjWasmDependencies.cmake` in place. To build against a plugins checkout without
+touching the pin, configure with `-DFETCHCONTENT_SOURCE_DIR_PJ_OFFICIAL_PLUGINS=<path>`.
+
 ### Third-party notices
 
 `plotjuggler4.wasm` links every library statically. `cmake/PjWasmNotices.cmake`

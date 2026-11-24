@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: MPL-2.0
+# Keeps the browser build's pj-official-plugins pin (cmake/PjWasmDependencies.cmake) current:
+# scripts/bump_wasm_plugins.sh moves it to the plugins' main head, and the change goes into ONE
+# pull request from the fixed branch bot/wasm-plugins-pin, rewritten on every run that moves the pin.
+# The pin itself stays fixed in the tree (URL_HASH, the GPL source offer, reproducible packages);
+# only the bump is automated. No auto-merge: the PR merges once WASM CI is green.
+#
+# Pushes and pull requests made with GITHUB_TOKEN start no other workflow, so WASM CI is dispatched
+# on the branch. The change is wasm-only (PjWasmDependencies.cmake is included only by the browser
+# build), so the native CI lanes have nothing to check and are not dispatched.
+#
+# Needs the repo setting "Allow GitHub Actions to create and approve pull requests"
+# (Settings -> Actions -> General) for the PR step.
+name: WASM plugins pin
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: pj-official-plugins branch, tag or full commit sha to pin
+        default: main
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: wasm-plugins-pin
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: bot/wasm-plugins-pin
+      PLUGINS_REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+
+      - name: Bump the pin
+        id: bump
+        run: |
+          set -euo pipefail
+          out="$(scripts/bump_wasm_plugins.sh "${PLUGINS_REF}")"
+          echo "${out}"
+          if git diff --quiet -- cmake/PjWasmDependencies.cmake; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            read -r old new <<<"${out}"
+            { echo "changed=true"; echo "old=${old}"; echo "new=${new}"; } >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Open or update the pull request
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          OLD: ${{ steps.bump.outputs.old }}
+          NEW: ${{ steps.bump.outputs.new }}
+        run: |
+          set -euo pipefail
+          title="build(wasm): official plugins at ${NEW:0:10}"
+          pr="$(gh pr list --head "${BRANCH}" --state open --json number --jq '.[0].number // empty')"
+
+          # The open PR already carries exactly this change: leave the branch (and its CI run) alone.
+          git fetch --quiet --depth=1 origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" || true
+          if [ -n "${pr}" ] && git diff --quiet "origin/${BRANCH}" -- cmake/PjWasmDependencies.cmake 2>/dev/null; then
+            echo "PR #${pr} already pins ${NEW}"
+            exit 0
+          fi
+
+          git switch -C "${BRANCH}"
+          git add cmake/PjWasmDependencies.cmake
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit --quiet -m "${title}" -m "pj-official-plugins ${OLD} -> ${NEW}"
+          git push --force origin "${BRANCH}"
+
+          {
+            echo "The browser build's \`pj-official-plugins\` pin moves from \`${OLD}\` to \`${NEW}\`."
+            echo
+            echo "Plugin commits in between:"
+            echo
+            echo '~~~text'
+            gh api "repos/PlotJuggler/pj-official-plugins/compare/${OLD}...${NEW}" \
+              --jq '.commits[] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"' ||
+              echo "(the commit list could not be fetched)"
+            echo '~~~'
+            echo
+            echo "This PR is opened and kept up to date by the \`wasm-plugins-pin\` workflow, which dispatches WASM CI on its branch; it merges when that CI is green."
+          } > "${RUNNER_TEMP}/body.md"
+
+          if [ -n "${pr}" ]; then
+            gh pr edit "${pr}" --title "${title}" --body-file "${RUNNER_TEMP}/body.md"
+          else
+            gh pr create --base main --head "${BRANCH}" --title "${title}" --body-file "${RUNNER_TEMP}/body.md"
+          fi
+          gh workflow run "WASM CI" --ref "${BRANCH}"
