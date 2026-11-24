@@ -1382,10 +1382,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
   applyDefaultIngestPolicies(ingest_session.policyResolver());
 
-  const auto plugin_settings = [&source_id](ServiceRegistryBuilder& registry) {
-    return registerPluginSettings(registry, source_id);
-  };
-  if (auto status = ingest_session.bind(handle, plugin_settings); !status) {
+  if (auto status = ingest_session.bind(handle, QSettingsBackend::forPlugin(source_id)); !status) {
     (void)fail(tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error())));
     co_return;
   }
@@ -1773,7 +1770,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       }
       applyDefaultIngestPolicies(iter_ingest.policyResolver());
 
-      if (auto status = iter_ingest.bind(iter_handle, plugin_settings); !status) {
+      if (auto status = iter_ingest.bind(iter_handle, QSettingsBackend::forPlugin(source_id)); !status) {
         entry_failed(idx, iter_display, tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error())));
         continue;
       }

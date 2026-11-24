@@ -21,15 +21,11 @@ class BrowserPersistenceTestPeer {
  public:
   using Status = BrowserPersistence::EnvelopeStatus;
 
-  static Status decodeStatus(const QVariant& stored) {
-    return BrowserPersistence::decodePreferences(stored).status;
+  static auto decodePreferences(const QVariant& stored) {
+    return BrowserPersistence::decodePreferences(stored);
   }
 
-  static QHash<QString, QVariant> decodeValues(const QVariant& stored) {
-    return BrowserPersistence::decodePreferences(stored).values;
-  }
-
-  static BrowserPersistence::DecodedPluginSettings decodePluginSettings(const QVariant& stored) {
+  static auto decodePluginSettings(const QVariant& stored) {
     return BrowserPersistence::decodePluginSettings(stored);
   }
 
@@ -43,13 +39,16 @@ namespace {
 TEST(BrowserPersistencePolicy, PreferenceEnvelopeDistinguishesAbsentValidAndRejectedStorage) {
   using Status = BrowserPersistenceTestPeer::Status;
 
-  EXPECT_EQ(BrowserPersistenceTestPeer::decodeStatus(QVariant{}), Status::kAbsent);
-  EXPECT_EQ(BrowserPersistenceTestPeer::decodeStatus(QByteArray(R"({"version":1,"values":{}})")), Status::kValid);
+  EXPECT_EQ(BrowserPersistenceTestPeer::decodePreferences(QVariant{}).status, Status::kAbsent);
+  EXPECT_EQ(
+      BrowserPersistenceTestPeer::decodePreferences(QByteArray(R"({"version":1,"values":{}})")).status, Status::kValid);
 
-  EXPECT_EQ(BrowserPersistenceTestPeer::decodeStatus(u"wrong QVariant type"_s), Status::kRejected);
-  EXPECT_EQ(BrowserPersistenceTestPeer::decodeStatus(QByteArray("not JSON")), Status::kRejected);
-  EXPECT_EQ(BrowserPersistenceTestPeer::decodeStatus(QByteArray(R"({"version":2,"values":{}})")), Status::kRejected);
-  EXPECT_EQ(BrowserPersistenceTestPeer::decodeStatus(QByteArray(64 * 1024 + 1, 'x')), Status::kRejected);
+  EXPECT_EQ(BrowserPersistenceTestPeer::decodePreferences(u"wrong QVariant type"_s).status, Status::kRejected);
+  EXPECT_EQ(BrowserPersistenceTestPeer::decodePreferences(QByteArray("not JSON")).status, Status::kRejected);
+  EXPECT_EQ(
+      BrowserPersistenceTestPeer::decodePreferences(QByteArray(R"({"version":2,"values":{}})")).status,
+      Status::kRejected);
+  EXPECT_EQ(BrowserPersistenceTestPeer::decodePreferences(QByteArray(64 * 1024 + 1, 'x')).status, Status::kRejected);
 }
 
 TEST(BrowserPersistencePolicy, PreferenceEnvelopeRestoresOnlySanitizedValues) {
@@ -60,7 +59,7 @@ TEST(BrowserPersistencePolicy, PreferenceEnvelopeRestoresOnlySanitizedValues) {
     "FileLoader/lastDir":"/private/path"
   }})";
 
-  const QHash<QString, QVariant> values = BrowserPersistenceTestPeer::decodeValues(stored);
+  const QHash<QString, QVariant> values = BrowserPersistenceTestPeer::decodePreferences(stored).values;
   EXPECT_EQ(values.size(), 2);
   EXPECT_EQ(values.value(u"StyleSheet::theme"_s), QVariant(u"dark"_s));
   EXPECT_EQ(values.value(u"MainWindow.buttonDots"_s), QVariant(true));
@@ -165,6 +164,10 @@ TEST(BrowserPersistencePolicy, OnlyPluginKeysUnderDurableAreKept) {
            u"durable/url"_s,
            u"PluginSettings/some-bridge/durable/a/pj_uploads/b"_s,
            u"PluginSettings/some-bridge/durable/line\nbreak"_s,
+           u"PluginSettings/some-bridge/durable/api_token"_s,
+           u"PluginSettings/some-bridge/durable/password"_s,
+           u"PluginSettings/some-bridge/durable/Server-Secret/url"_s,
+           u"PluginSettings/some-bridge/durable/"_s + QChar(0xD800),
        }) {
     EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, url).has_value()) << key.toStdString();
   }
@@ -187,6 +190,11 @@ TEST(BrowserPersistencePolicy, DurablePluginValuesAreBoundedStringsWithoutCreden
            QVariant(u"line\nbreak"_s),
            QVariant(u"ws://user:secret@robot.local:9871"_s),
            QVariant(u"https://token@example.com/feed"_s),
+           QVariant(u" ws://user:secret@robot.local:9871"_s),
+           QVariant(u"//user:secret@robot.local:9871"_s),
+           QVariant(u"{\"url\":\"ws://user:secret@robot.local:9871\"}"_s),
+           QVariant(u"ws:\\\\user:secret@robot.local:9871"_s),
+           QVariant(u"ws://robot"_s + QChar(0xD800)),
        }) {
     EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, value).has_value())
         << value.toString().left(40).toStdString();
@@ -259,6 +267,7 @@ TEST(BrowserPersistencePolicy, StoredPluginSettingsAreRecheckedOnRestore) {
   EXPECT_EQ(restored.values, (QHash<QString, QString>{{u"PluginSettings/bridge/durable/url"_s, u"ws://robot:9871"_s}}));
 
   EXPECT_EQ(BrowserPersistenceTestPeer::decodePluginSettings(QVariant{}).status, Status::kAbsent);
+  EXPECT_TRUE(BrowserPersistenceTestPeer::encodePluginSettings({}).isEmpty());
   for (const QVariant& rejected : {
            QVariant(u"not bytes"_s),
            QVariant(QByteArray("not JSON")),

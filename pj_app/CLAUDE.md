@@ -25,8 +25,8 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 - Load progress is wired only through `wireIngestProgress()`; a hand-made copy drifts from what the tests exercise.
   The row's X/bin goes straight to `SessionManager::requestCancel(token, keep_partial)`; the producer honours the
   flag, the shell never prompts.
-- Every DataSource plugin (file load, fan-out entry, stream) is bound through `DataSourceRuntimeHost::bind` with
-  `registerPluginSettings(manifest id)` as its extra services, and its owner declares that host before the handle:
+- Every DataSource plugin (file load, fan-out entry, stream) is bound with
+  `bind(handle, QSettingsBackend::forPlugin(manifest id))`, and its owner declares that host before the handle:
   the plugin reaches the host's registry and services, its settings store included, up to its destructor, so a host
   destroyed first is a use-after-free. Both toolbox owners take their store from `makeToolboxSettings`
   (`ToolboxHostWiring.h`). Who gets which store: `pj_runtime` ARCHITECTURE "Plugin settings".

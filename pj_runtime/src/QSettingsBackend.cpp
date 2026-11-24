@@ -10,10 +10,7 @@
 #include <array>
 #include <stdexcept>
 
-#include "pj_base/sdk/service_traits.hpp"
-#include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/PluginSettingsKeys.h"
-#include "pj_runtime/ServiceRegistration.h"
 
 namespace PJ {
 
@@ -23,17 +20,36 @@ QString toKey(std::string_view key) {
   return QString::fromUtf8(key.data(), static_cast<qsizetype>(key.size()));
 }
 
+// Persisted name: set in a plugin's group once its root keys were copied in. A plugin never reads, writes or removes
+// it (scopedKey), so it cannot collide with a plugin key; renaming it copies every plugin's root keys again.
+constexpr QLatin1StringView kRootKeysCopiedMarker{"__pj_root_keys_copied__"};
+
 // The app's own root groups whose names are lowercase; every other app key starts with a capital letter.
 constexpr std::array<QLatin1StringView, 2> kAppLowercaseGroups{
     QLatin1StringView("ui"), QLatin1StringView("pj_scene3d")};
 
 bool isLowercaseName(QStringView name) {
   for (const QChar c : name) {
-    if (!(c.isDigit() || c == u'_' || (c >= u'a' && c <= u'z'))) {
+    if (!(c.isDigit() || c == u'_' || c == u'-' || (c >= u'a' && c <= u'z'))) {
       return false;
     }
   }
   return !name.isEmpty();
+}
+
+// pj_runtime ARCHITECTURE "Plugin settings", "Root keys": the root key `key` may belong to the plugin whose id, with
+// '_' read as '-', is `id_words` between '-' delimiters.
+bool mayOwnRootKey(const QString& key, const QString& id_words) {
+  qsizetype end = 0;
+  while (end < key.size() && key[end] != u'/' && key[end] != u'.') {
+    ++end;
+  }
+  const QStringView segment = QStringView(key).left(end);
+  if (!isLowercaseName(segment) ||
+      std::find(kAppLowercaseGroups.begin(), kAppLowercaseGroups.end(), segment) != kAppLowercaseGroups.end()) {
+    return false;
+  }
+  return id_words.contains(u'-' + segment.toString().replace(u'_', u'-') + u'-');
 }
 
 }  // namespace
@@ -48,68 +64,72 @@ std::unique_ptr<QSettingsBackend> QSettingsBackend::forPlugin(std::string_view p
   }
   auto backend =
       ini_path.isEmpty() ? std::make_unique<QSettingsBackend>() : std::make_unique<QSettingsBackend>(ini_path);
-  backend->settings_.beginGroup(pluginSettingsGroup(plugin_id));
-  backend->plugin_id_ = toKey(plugin_id);
+  backend->prefix_ = pluginSettingsGroup(plugin_id) + u'/';
+  backend->copyRootKeysOnce(u'-' + toKey(plugin_id).replace(u'_', u'-') + u'-');
   return backend;
 }
 
-bool QSettingsBackend::isLegacyKey(const QString& key) const {
-  if (plugin_id_.isEmpty()) {
-    return false;
+void QSettingsBackend::copyRootKeysOnce(const QString& id_words) {
+  const QString marker = prefix_ + kRootKeysCopiedMarker;
+  if (settings_.contains(marker)) {
+    return;
   }
-  qsizetype end = 0;
-  while (end < key.size() && key[end] != u'/' && key[end] != u'.') {
-    ++end;
+  for (const QString& key : settings_.allKeys()) {
+    if (mayOwnRootKey(key, id_words) && !settings_.contains(prefix_ + key)) {
+      settings_.setValue(prefix_ + key, settings_.value(key));
+    }
   }
-  const QStringView segment = QStringView(key).left(end);
-  if (segment == QLatin1StringView("source_presentation")) {
-    return true;
+  settings_.setValue(marker, true);
+}
+
+std::optional<QString> QSettingsBackend::scopedKey(std::string_view key) const {
+  if (prefix_.isEmpty()) {
+    return toKey(key);
   }
-  if (!isLowercaseName(segment) ||
-      std::find(kAppLowercaseGroups.begin(), kAppLowercaseGroups.end(), segment) != kAppLowercaseGroups.end()) {
-    return false;
+  // QSettings drops empty segments itself; normalizing first is what lets the marker check see the stored key.
+  const QString normalized = toKey(key).split(u'/', Qt::SkipEmptyParts).join(u'/');
+  if (normalized.isEmpty()) {
+    throw std::invalid_argument("pj.settings.v1: the key is empty");
   }
-  const QString words = u'-' + plugin_id_ + u'-';
-  return words.contains(u'-' + segment.toString().replace(u'_', u'-') + u'-');
+  if (normalized == kRootKeysCopiedMarker) {
+    return std::nullopt;
+  }
+  return prefix_ + normalized;
 }
 
 void QSettingsBackend::checkThread() const {
   if (QThread::currentThread() != settings_.thread()) {
-    throw std::runtime_error("pj.settings.v1 is available on the main thread only");
+    throw std::runtime_error("pj.settings.v1 is available only on the thread that created it");
   }
 }
 
-void QSettingsBackend::store(const QString& key, const QVariant& value) {
-  settings_.setValue(key, value);
-  settings_.sync();
-  if (settings_.status() != QSettings::NoError) {
-    throw std::runtime_error("the setting could not be stored");
-  }
-}
-
-std::optional<QVariant> QSettingsBackend::value(const QString& key) {
+void QSettingsBackend::store(std::string_view key, const QVariant& value) {
   checkThread();
-  if (settings_.contains(key)) {
-    return settings_.value(key);
+  const std::optional<QString> scoped = scopedKey(key);
+  if (!scoped.has_value()) {
+    throw std::invalid_argument("pj.settings.v1: the key is reserved");
   }
-  if (!isLegacyKey(key)) {
+  if (!settings_.isWritable()) {
+    throw std::runtime_error("the settings file is not writable");
+  }
+  settings_.setValue(*scoped, value);
+}
+
+std::optional<QVariant> QSettingsBackend::value(std::string_view key) {
+  checkThread();
+  const std::optional<QString> scoped = scopedKey(key);
+  if (!scoped.has_value()) {
     return std::nullopt;
   }
-  const QString group = settings_.group();
-  settings_.endGroup();
-  std::optional<QVariant> legacy;
-  if (settings_.contains(key)) {
-    legacy = settings_.value(key);
+  QVariant stored = settings_.value(*scoped);
+  if (!stored.isValid()) {
+    return std::nullopt;
   }
-  settings_.beginGroup(group);
-  if (legacy.has_value()) {
-    settings_.setValue(key, *legacy);
-  }
-  return legacy;
+  return stored;
 }
 
 std::optional<std::string> QSettingsBackend::getString(std::string_view key) {
-  const std::optional<QVariant> stored = value(toKey(key));
+  const std::optional<QVariant> stored = value(key);
   if (!stored.has_value()) {
     return std::nullopt;
   }
@@ -117,12 +137,11 @@ std::optional<std::string> QSettingsBackend::getString(std::string_view key) {
 }
 
 void QSettingsBackend::setString(std::string_view key, std::string_view value) {
-  checkThread();
-  store(toKey(key), QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())));
+  store(key, toKey(value));
 }
 
 std::optional<std::vector<std::string>> QSettingsBackend::getStringList(std::string_view key) {
-  const std::optional<QVariant> stored = value(toKey(key));
+  const std::optional<QVariant> stored = value(key);
   if (!stored.has_value()) {
     return std::nullopt;
   }
@@ -136,45 +155,23 @@ std::optional<std::vector<std::string>> QSettingsBackend::getStringList(std::str
 }
 
 void QSettingsBackend::setStringList(std::string_view key, const std::vector<std::string>& values) {
-  checkThread();
   QStringList list;
   list.reserve(static_cast<qsizetype>(values.size()));
   for (const std::string& value : values) {
     list.append(QString::fromStdString(value));
   }
-  store(toKey(key), list);
+  store(key, list);
 }
 
 bool QSettingsBackend::contains(std::string_view key) {
-  return value(toKey(key)).has_value();
+  return value(key).has_value();
 }
 
 void QSettingsBackend::remove(std::string_view key) {
   checkThread();
-  const QString qkey = toKey(key);
-  settings_.remove(qkey);
-  // Else the next read would bring the legacy copy back.
-  if (isLegacyKey(qkey)) {
-    const QString group = settings_.group();
-    settings_.endGroup();
-    settings_.remove(qkey);
-    settings_.beginGroup(group);
+  if (const std::optional<QString> scoped = scopedKey(key)) {
+    settings_.remove(*scoped);
   }
-}
-
-std::shared_ptr<void> registerPluginSettings(ServiceRegistryBuilder& registry, std::string_view plugin_id) {
-  struct Store {
-    explicit Store(std::unique_ptr<QSettingsBackend> scoped) : backend(std::move(scoped)), host(*backend) {}
-    std::unique_ptr<QSettingsBackend> backend;
-    sdk::SettingsStoreHost host;  // after backend: it refers to it
-  };
-  auto backend = QSettingsBackend::forPlugin(plugin_id);
-  if (backend == nullptr) {
-    return nullptr;
-  }
-  auto store = std::make_shared<Store>(std::move(backend));
-  registerOptionalService<sdk::SettingsStoreService>(registry, store->host.view());
-  return store;
 }
 
 }  // namespace PJ

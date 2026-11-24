@@ -2,9 +2,8 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A StreamingSourceManager over a real AppSession with the test stream (mock_layout_stream_plugin.cpp) staged per
-// case, its settings in a directory of the case's own and its probe lines in a file of the case's own. The including
-// test defines PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH.
+// A StreamingSourceManager over a real AppSession with the test stream (mock_layout_stream_plugin.cpp); settings
+// and probe lines per case. The including test defines PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH.
 
 #include <gtest/gtest.h>
 

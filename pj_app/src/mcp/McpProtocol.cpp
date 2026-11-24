@@ -13,6 +13,8 @@
 #include <map>
 #include <set>
 
+#include "SecretKeys.h"
+
 using json = nlohmann::json;  // NOLINT(readability-identifier-naming)
 using namespace Qt::StringLiterals;
 
@@ -179,20 +181,6 @@ bool runsUnderUsersDialog(const std::string& name) {
 }
 
 namespace {
-
-bool isSecretKey(const std::string& key) {
-  std::string folded;
-  for (const unsigned char c : key) {
-    if (c != '_' && c != '-') {
-      folded.push_back(static_cast<char>(std::tolower(c)));
-    }
-  }
-  static constexpr std::string_view kWords[] = {"password", "passwd",     "secret",    "token",
-                                                "apikey",   "privatekey", "credential"};
-  return std::any_of(std::begin(kWords), std::end(kWords), [&folded](std::string_view word) {
-    return folded.find(word) != std::string::npos;
-  });
-}
 
 void redactIn(json& value, bool secret) {
   if (value.is_object()) {

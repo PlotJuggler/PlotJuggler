@@ -256,10 +256,10 @@ does not link it.
 
 ### DataSourceRuntimeHost
 
-- **Binding.** `bind()` registers the host's services, then the owner's (its `ServiceRegistrar`: every `pj_app` owner
-  passes the plugin's settings store), in a registry the host owns, and keeps what the owner's services point into
-  as long as that registry. An owner that keeps the host alive past the plugin handle therefore keeps every service
-  the plugin can reach alive up to its destructor.
+- **Binding.** `bind()` registers the host's services, plus `pj.settings.v1` over the settings backend the owner
+  passes (every `pj_app` owner passes `QSettingsBackend::forPlugin(manifest id)`), in a registry the host owns; the
+  host keeps the backend as long as that registry. An owner that keeps the host alive past the plugin handle
+  therefore keeps every service the plugin can reach, its settings store included, alive up to its destructor.
 - **DSO keepalive.** A `shared_ptr<void>` from `DataSourceHandle::libraryOwner()` is
   threaded into every lazy payload anchor and fetch closure, deferring `dlclose` until the
   last one drops, so a decode worker never calls plugin code in an unmapped library.
@@ -326,35 +326,36 @@ does not link it.
 The optional settings store (SDK `SettingsStoreService` / `SettingsView`; host side `sdk::SettingsStoreHost` over
 `QSettingsBackend`), persisted in the app's QSettings. The one model for every plugin that gets it:
 
-- **Who gets which store.** Every plugin gets `QSettingsBackend::forPlugin(manifest id)`: toolboxes, interactive
-  and headless, through `pj_app`'s `makeToolboxSettings`; every DataSource plugin (file load, fan-out entry, stream)
-  through `registerPluginSettings`, the extra services its owner passes to `DataSourceRuntimeHost::bind`. A plugin
-  with no manifest id gets no store (a toolbox: one that lives as long as the instance).
+- **Who gets which store.** Toolboxes and DataSource plugins get `QSettingsBackend::forPlugin(manifest id)`:
+  toolboxes, interactive and headless, through `pj_app`'s `makeToolboxSettings`; every DataSource plugin (file load,
+  fan-out entry, stream) through `DataSourceRuntimeHost::bind` ("Binding" above). A toolbox with no manifest id and an
+  MCP agent's stand-in toolbox (`kAgentIdPrefix`) get a store that lives as long as the instance; a DataSource plugin
+  with no manifest id gets none. Widget and parser plugins get no store.
 - **Scoping.** Every key of a store lives under `PluginSettings/<percent-encoded manifest id>/`
   (`PluginSettingsKeys.h`): two plugins never collide and none reaches the app's own settings. Scoping keeps
-  plugins from colliding by accident; it is no boundary against a hostile plugin, which runs in-process.
-- **Read-through migration.** Plugin keys written before stores were scoped sit at the settings root. On a miss the
-  store reads the root key of the same name when the plugin may own it, copies it into its own group and returns it;
-  the root copy stays, except that `remove()` removes it too (otherwise the next read brings it back). The plugin
-  may own a root key whose first segment (up to the first `/` or `.`) is lowercase and, with `_` read as `-`, whole
-  words of its id (`mcap_cloud/…` for `mcap-cloud`), other than the app's lowercase groups (`ui`, `pj_scene3d`), plus
-  every `source_presentation/…` key (the SDK's source-presentation records). Capitalised groups (`PluginConfig/`,
-  `DialogGeometry/`, `PluginSettings/`, `BrowserPersistence/`, the app's preferences) are never read through.
+  plugins from colliding by accident; it is no boundary against a hostile plugin, which runs in-process. An empty
+  key (after QSettings drops empty `/` segments) throws.
+- **Root keys.** The first `forPlugin` of a plugin copies into its group every settings-root key it may own that its
+  group does not hold yet, then sets the reserved key `__pj_root_keys_copied__` in the group, so the copy happens
+  once; the root itself is never written or removed. The plugin may own a root key whose first segment (up to the
+  first `/` or `.`) is lowercase (`a-z`, digits, `_`, `-`) and, with `_` read as `-` on both sides, whole words of
+  its id (`mcap_cloud/…` for `mcap-cloud` and `mcap_cloud`), other than the app's lowercase groups (`ui`,
+  `pj_scene3d`). Capitalised groups (`PluginConfig/`, `DialogGeometry/`, `PluginSettings/`, `BrowserPersistence/`,
+  the app's preferences) are never copied. The reserved key is invisible to the plugin: reads and `contains` report
+  it absent, a write throws, a remove does nothing.
 - **Threads and failures.** Every call is GUI-thread, as the SDK states: `QSettingsBackend` throws off the thread
-  that created it, and a write throws when QSettings reports it could not store it; `SettingsStoreHost` turns both
-  into a failed `PJ_error_t`, so the plugin sees a failed `Status` and nothing is stored. A file loader's
-  `loadConfig`, dialog and destructor run on the GUI thread; its import (`start()`) runs on a worker, where every
-  call fails, as from a stream's poll thread.
-- **Lifetime.** The store outlives the plugin handle, so a plugin may write from its destructor:
-  `DataSourceRuntimeHost::bind` keeps it with the registry, a toolbox owner declares it before the handle.
+  that created it. A write first checks `QSettings::isWritable()` and throws, storing nothing, when the file cannot
+  be written; otherwise it sets the value and QSettings writes the file later (from the event loop, or when the
+  store is destroyed), so a write that fails at that point is not reported. A malformed line in the file does not
+  fail later writes. `SettingsStoreHost` turns every throw into a failed `PJ_error_t`, so the plugin sees a failed
+  `Status`. A file loader's `loadConfig`, dialog and destructor run on the GUI thread; its import (`start()`) runs
+  on a worker, where every call fails, as from a stream's poll thread.
 - **Kept across a browser reload: `durable/`.** On the desktop every key persists. In the browser every settings
   value lives as long as the page, except a key the plugin names `durable/<name>`, which `BrowserPersistence`
   mirrors into local storage on its periodic flush and restores before any plugin host starts, when it passes
-  `BrowserPersistence::sanitizeDurablePluginSetting` (a bounded string naming no upload, holding no control
-  character and no URL user info) and fits the per-plugin, plugin-count and envelope caps there. Local storage is
-  clear text that outlives the page: a plugin marks durable only what is safe there (a URL cleaned of credentials,
-  never a token). The desktop already remembered a plugin's dialog configuration through the host's `PluginConfig/`
-  JSON; `durable/` is what lets a plugin's own key survive a browser reload.
+  `BrowserPersistence::sanitizeDurablePluginSetting` and fits the caps there. Local storage is clear text that
+  outlives the page, so a plugin marks durable only what is safe there (a URL cleaned of credentials, never a
+  token); what never enters it: `pj_app` ARCHITECTURE "Persistence".
 
 ### Extension catalog and parser routing
 
@@ -908,8 +909,8 @@ of the module: its files keep their own SPDX and copyright lines.
 - A same-provider parser retype of a streaming topic to another builtin object type keeps the topic's original
   object metadata until the stream restarts.
 - The bundled-plugin trust tier rests on id, version and DSO signature; there are no authenticated install receipts.
-- Plugin settings: a store's root-key read-through also reads a key of another plugin whose id shares the words
-  (`foo/…` for both `foo-a` and `foo-b`), and any plugin reads every `source_presentation/…` record through.
+- Plugin settings: the one-time root-key copy also copies a key of another plugin whose id shares the words (`foo/…`
+  for both `foo-a` and `foo-b`); a root key written after the copy never reaches the plugin.
 - Plugin settings on Windows live in the registry, whose key names are case-insensitive: two manifest ids that differ
   only in case share one store.
 - Browser plugin settings: two tabs of the app share one local-storage envelope, the last flush wins; a build older

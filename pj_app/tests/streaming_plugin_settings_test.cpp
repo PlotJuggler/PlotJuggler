@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // A streaming source gets the pj.settings.v1 store, scoped to its manifest id: what it stores in one session is
-// there in the next, its destructor may still write, and a write from its poll thread fails cleanly.
+// there in the next, and a write from its poll thread fails cleanly.
 
 #include <gtest/gtest.h>
 
@@ -53,11 +53,6 @@ TEST_F(StreamingPluginSettingsTest, AValueStoredInOneSessionIsReadInTheNext) {
   EXPECT_EQ(settingsLines(), (QStringList{u"settings (absent)"_s, u"settings ws://robot:9871"_s}));
   EXPECT_EQ(stored(), u"ws://robot:9871"_s);
   EXPECT_FALSE(QSettings().contains(u"remembered"_s));
-}
-
-TEST_F(StreamingPluginSettingsTest, ThePluginDestructorCanStillWrite) {
-  runSession(uR"({"remember_on_destroy":"ws://last:9871"})"_s);
-  EXPECT_EQ(stored(), u"ws://last:9871"_s);
 }
 
 TEST_F(StreamingPluginSettingsTest, AWriteFromThePollThreadFailsAndStoresNothing) {

@@ -15,6 +15,7 @@
 #include <QLoggingCategory>
 #include <QMap>
 #include <QMetaType>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
 #include <QStringList>
@@ -26,10 +27,13 @@
 #include <utility>
 
 #include "LoadInput.h"
+#include "SecretKeys.h"
 #include "pj_runtime/PluginSettingsKeys.h"
 
 #if defined(PJ_TARGET_WASM) && defined(PJ_WASM_ENABLE_INGRESS_PROBE)
 #include <emscripten/emscripten.h>
+
+#include "pj_runtime/QSettingsBackend.h"
 #endif
 
 using namespace Qt::StringLiterals;
@@ -193,6 +197,19 @@ bool hasControlCharacter(const QString& value) {
   return std::any_of(value.cbegin(), value.cend(), isControlCharacter);
 }
 
+// A control character or a lone surrogate (which no UTF-8 encoding round-trips).
+bool hasUnsafeCharacter(const QString& value) {
+  return hasControlCharacter(value) || !QStringView(value).isValidUtf16();
+}
+
+// URL user info, whether the text is one URL (padded or not) or holds one anywhere, '\' read as '/'.
+bool carriesUrlUserInfo(const QString& text) {
+  static const QRegularExpression kAuthorityWithUserInfo(uR"(//[^/?#\s]*@)"_s);
+  QString slashed = text;
+  slashed.replace(u'\\', u'/');
+  return !QUrl(text.trimmed()).userInfo().isEmpty() || slashed.contains(kAuthorityWithUserInfo);
+}
+
 // The three durable envelopes share one shape, a QByteArray holding {"version": <n>, "<field>": <payload>}, because
 // the WebLocalStorageFormat codec loses scalar QVariant types.
 struct Envelope {
@@ -218,7 +235,11 @@ Envelope decodeEnvelope(
   return {.status = Status::kValid, .payload = payload};
 }
 
-[[maybe_unused]] QByteArray encodeEnvelope(int version, QLatin1StringView field, const QJsonValue& payload) {
+// Empty for an empty payload: writeOrRemove then removes the key.
+QByteArray encodeEnvelope(int version, QLatin1StringView field, const QJsonValue& payload) {
+  if ((payload.isObject() && payload.toObject().isEmpty()) || (payload.isArray() && payload.toArray().isEmpty())) {
+    return {};
+  }
   return QJsonDocument(QJsonObject{{u"version"_s, version}, {field, payload}}).toJson(QJsonDocument::Compact);
 }
 
@@ -402,7 +423,7 @@ BrowserPersistence* g_instance = nullptr;
 
 }  // namespace
 
-BrowserPersistence::DecodedPreferences BrowserPersistence::decodePreferences(const QVariant& stored) {
+BrowserPersistence::Decoded<QHash<QString, QVariant>> BrowserPersistence::decodePreferences(const QVariant& stored) {
   const Envelope envelope =
       decodeEnvelope(stored, kPreferencesVersion, "values"_L1, QJsonValue::Object, kMaxPreferencesBytes);
   if (envelope.status != EnvelopeStatus::kValid) {
@@ -444,7 +465,7 @@ BrowserPersistence::BrowserPersistence(QObject* parent) : QObject(parent), impl_
   // deleted, path-bearing and plugin-owned keys included. A rejected envelope (malformed, oversized or another
   // version) is left exactly as stored and imports nothing; the next change of its contents replaces it.
   const QVariant stored_preferences = impl_->durable->value(QLatin1String(kPreferencesKey));
-  DecodedPreferences decoded_preferences = decodePreferences(stored_preferences);
+  Decoded<QHash<QString, QVariant>> decoded_preferences = decodePreferences(stored_preferences);
   QHash<QString, QVariant> restored_preferences = std::move(decoded_preferences.values);
   if (decoded_preferences.status == EnvelopeStatus::kRejected) {
     qCWarning(lcBrowserPersistence) << "Browser preferences could not be decoded; leaving the stored envelope intact";
@@ -463,9 +484,7 @@ BrowserPersistence::BrowserPersistence(QObject* parent) : QObject(parent), impl_
     impl_->durable->remove(key);
   }
   if (decoded_preferences.status != EnvelopeStatus::kRejected) {
-    writeOrRemove(
-        *impl_->durable, kPreferencesKey,
-        restored_preferences.isEmpty() ? QByteArray{} : encodePreferences(restored_preferences), kMaxPreferencesBytes);
+    writeOrRemove(*impl_->durable, kPreferencesKey, encodePreferences(restored_preferences), kMaxPreferencesBytes);
   }
 
   const Envelope recipes = decodeEnvelope(
@@ -476,18 +495,19 @@ BrowserPersistence::BrowserPersistence(QObject* parent) : QObject(parent), impl_
         << "Recent browser layouts could not be decoded; leaving the stored envelope intact";
   } else {
     impl_->recipes = decodeRecipes(recipes.payload.toArray());
-    writeOrRemove(
-        *impl_->durable, kRecentLayoutsKey, impl_->recipes.isEmpty() ? QByteArray{} : encodeRecipes(impl_->recipes),
-        kMaxRecentLayoutsBytes);
+    writeOrRemove(*impl_->durable, kRecentLayoutsKey, encodeRecipes(impl_->recipes), kMaxRecentLayoutsBytes);
   }
 
-  DecodedPluginSettings decoded_plugin_settings =
+  Decoded<QHash<QString, QString>> decoded_plugin_settings =
       decodePluginSettings(impl_->durable->value(QLatin1String(kPluginSettingsKey)));
+  QHash<QString, QString> restored_plugin_settings = std::move(decoded_plugin_settings.values);
   if (decoded_plugin_settings.status == EnvelopeStatus::kRejected) {
     qCWarning(lcBrowserPersistence)
         << "Browser plugin settings could not be decoded; leaving the stored envelope intact";
+  } else {
+    writeOrRemove(
+        *impl_->durable, kPluginSettingsKey, encodePluginSettings(restored_plugin_settings), kMaxPluginSettingsBytes);
   }
-  QHash<QString, QString> restored_plugin_settings = std::move(decoded_plugin_settings.values);
 
   QSettings session;
   session.setFallbacksEnabled(false);
@@ -642,15 +662,15 @@ std::optional<BrowserPersistence::DurablePluginSetting> BrowserPersistence::sani
   const QStringList segments = key.split(u'/');
   if (key.size() > kMaxIdentifierLength || segments.size() < 4 || segments[0] != kPluginSettingsRoot ||
       segments[2] != kDurablePluginSettingsGroup || segments.contains(QString()) || namesAnUpload(key) ||
-      hasControlCharacter(key)) {
+      hasUnsafeCharacter(key) || isSecretKey(segments.mid(3).join(u'/').toStdString())) {
     return std::nullopt;
   }
   if (value.metaType().id() != QMetaType::QString) {
     return std::nullopt;
   }
   const QString text = value.toString();
-  if (text.size() > kMaxDurablePluginValueLength || namesAnUpload(text) || hasControlCharacter(text) ||
-      !QUrl(text).userInfo().isEmpty()) {
+  if (text.size() > kMaxDurablePluginValueLength || namesAnUpload(text) || hasUnsafeCharacter(text) ||
+      carriesUrlUserInfo(text)) {
     return std::nullopt;
   }
   return DurablePluginSetting{.plugin_id = segments[1], .value = text};
@@ -659,13 +679,8 @@ std::optional<BrowserPersistence::DurablePluginSetting> BrowserPersistence::sani
 QHash<QString, QString> BrowserPersistence::durablePluginSettings(QSettings& settings) {
   QMap<QString, QVariant> candidates;
   settings.beginGroup(kPluginSettingsRoot);
-  for (const QString& plugin : settings.childGroups()) {
-    const QString durable_group = plugin + u'/' + kDurablePluginSettingsGroup;
-    settings.beginGroup(durable_group);
-    for (const QString& name : settings.allKeys()) {
-      candidates.insert(QString(kPluginSettingsRoot) + u'/' + durable_group + u'/' + name, settings.value(name));
-    }
-    settings.endGroup();
+  for (const QString& key : settings.allKeys()) {
+    candidates.insert(QString(kPluginSettingsRoot) + u'/' + key, settings.value(key));
   }
   settings.endGroup();
   return keepDurablePluginSettings(candidates);
@@ -679,7 +694,7 @@ QByteArray BrowserPersistence::encodePluginSettings(const QHash<QString, QString
   return encodeEnvelope(kPluginSettingsVersion, "values"_L1, values);
 }
 
-BrowserPersistence::DecodedPluginSettings BrowserPersistence::decodePluginSettings(const QVariant& stored) {
+BrowserPersistence::Decoded<QHash<QString, QString>> BrowserPersistence::decodePluginSettings(const QVariant& stored) {
   const Envelope envelope =
       decodeEnvelope(stored, kPluginSettingsVersion, "values"_L1, QJsonValue::Object, kMaxPluginSettingsBytes);
   if (envelope.status != EnvelopeStatus::kValid) {
@@ -774,14 +789,10 @@ void BrowserPersistence::syncPreferences() {
   impl_->last_preferences = current;
   impl_->last_plugin_settings = plugin_settings;
   if (preferences_changed) {
-    writeOrRemove(
-        *impl_->durable, kPreferencesKey, current.isEmpty() ? QByteArray{} : encodePreferences(current),
-        kMaxPreferencesBytes);
+    writeOrRemove(*impl_->durable, kPreferencesKey, encodePreferences(current), kMaxPreferencesBytes);
   }
   if (plugin_settings_changed) {
-    writeOrRemove(
-        *impl_->durable, kPluginSettingsKey,
-        plugin_settings.isEmpty() ? QByteArray{} : encodePluginSettings(plugin_settings), kMaxPluginSettingsBytes);
+    writeOrRemove(*impl_->durable, kPluginSettingsKey, encodePluginSettings(plugin_settings), kMaxPluginSettingsBytes);
   }
   impl_->durable->sync();
   if (impl_->durable->status() != QSettings::NoError) {
@@ -826,8 +837,12 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_seed_browser_persistence() {
   session.setValue(u"FileLoader/lastDir"_s, u"/pj_uploads/dead-token"_s);
   session.setValue(u"PluginConfig/secret-source"_s, u"{\"token\":\"secret-token\"}"_s);
   session.setValue(u"File/recent"_s, QStringList{u"/home/user/private.csv"_s});
-  session.setValue(probePluginKey(u"durable/url"_s), u"ws://robot.local:9871"_s);
-  session.setValue(probePluginKey(u"token"_s), u"plugin-secret-token"_s);
+  {
+    // Through the plugin's own store, so a browser run exercises its writes on MEMFS.
+    auto store = QSettingsBackend::forPlugin("probe-plugin");
+    store->setString("durable/url", "ws://robot.local:9871");
+    store->setString("token", "plugin-secret-token");
+  }
   persistence->syncPreferences();
 
   // Keys as the NativeFormat backend leaves them; they survive this page so the next construction must scrub them.

@@ -205,10 +205,6 @@ paused. Those buffers can hold rows of a stream that already ended (they merge a
 for a topic with no destination: whoever erases a dataset also drops its secondary copy
 (`StreamingSourceManager::removeSecondaryDataset`).
 
-Each session binds the plugin with its runtime host's services plus its `pj.settings.v1` store, as every DataSource
-plugin is (`pj_runtime` ARCHITECTURE "Plugin settings"), so a source can remember what its dialog was given across
-sessions and restarts.
-
 **Followed stream.** While streaming, the timeline follows one stream's live edge (`MainWindow` scopes it with
 `AppSession::setActiveStreamingDataset`). Each launch hands live-follow to the stream just launched. When the followed
 stream stops, the last-launched stream still running that already has data takes over; launch order, not `DatasetId`
@@ -689,7 +685,7 @@ the pick) and the `content_sha256` checks of `persistence_layout.spec.js` (the J
 
 Native builds keep plain `QSettings`. WASM redirects ordinary `QSettings` callers to page-lifetime MEMFS and lets
 `BrowserPersistence` alone write `WebLocalStorageFormat`: three versioned JSON envelopes (one encode/decode pair,
-each with a size cap applied on write and on read) holding the typed preference allowlist, a few bounded, source-free
+each size-capped) holding the typed preference allowlist, a few bounded, source-free
 generic layout recipes, and the plugin settings a plugin marked durable (`pj_runtime` ARCHITECTURE "Plugin
 settings"), each re-checked on restore. File paths, upload identities, the host's `PluginConfig/` JSON of each
 plugin, credentials, source-bound layouts, stream records and every other plugin setting never enter durable storage.

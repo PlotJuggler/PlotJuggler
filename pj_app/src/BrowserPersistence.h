@@ -19,8 +19,7 @@ namespace PJ {
 // The only writer of durable browser storage. On WASM the default QSettings backend is redirected to
 // page-lifetime MEMFS; this bridge alone owns WebLocalStorageFormat and mirrors three bounded envelopes into it: a
 // schema-validated preference allowlist, source-free layout recipes and the plugin settings a plugin marked durable.
-// Paths, upload identities, the host's PluginConfig/ JSON, credentials and every other plugin setting stay
-// page-lifetime. Native builds never construct it.
+// What never enters it: pj_app ARCHITECTURE "Persistence". Native builds never construct it.
 class BrowserPersistence final : public QObject {
   friend class BrowserPersistenceTestPeer;
 
@@ -58,9 +57,10 @@ class BrowserPersistence final : public QObject {
     QString plugin_id;
     QString value;
   };
-  // Kept when `key` has the durable layout and names no upload nor holds a control character, and `value` is a string
-  // within kMaxDurablePluginValueLength that names no upload, holds no control character and is no URL with user
-  // info. The plugin keeps credentials out of what it marks durable; this is a backstop.
+  // Kept when `key` has the durable layout, a name after "durable/" that reads like no credential (isSecretKey) and
+  // names no upload, and `value` is a string within kMaxDurablePluginValueLength that names no upload and carries no
+  // URL user info anywhere; neither holds a control character or a lone surrogate. The plugin keeps credentials out
+  // of what it marks durable; this is a backstop.
   [[nodiscard]] static std::optional<DurablePluginSetting> sanitizeDurablePluginSetting(
       const QString& key, const QVariant& value);
   // The plugin settings of `settings` kept across a reload; reads only the durable groups.
@@ -89,19 +89,15 @@ class BrowserPersistence final : public QObject {
   };
 
  private:
-  struct DecodedPreferences {
+  template <class Values>
+  struct Decoded {
     EnvelopeStatus status = EnvelopeStatus::kAbsent;
-    QHash<QString, QVariant> values;
+    Values values;
   };
 
-  struct DecodedPluginSettings {
-    EnvelopeStatus status = EnvelopeStatus::kAbsent;
-    QHash<QString, QString> values;
-  };
-
-  [[nodiscard]] static DecodedPreferences decodePreferences(const QVariant& stored);
+  [[nodiscard]] static Decoded<QHash<QString, QVariant>> decodePreferences(const QVariant& stored);
   // Re-checks every entry as durablePluginSettings does.
-  [[nodiscard]] static DecodedPluginSettings decodePluginSettings(const QVariant& stored);
+  [[nodiscard]] static Decoded<QHash<QString, QString>> decodePluginSettings(const QVariant& stored);
   [[nodiscard]] static QByteArray encodePluginSettings(const QHash<QString, QString>& settings);
 
   struct Impl;

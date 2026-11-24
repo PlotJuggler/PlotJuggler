@@ -33,6 +33,7 @@
 
 #include "FileLoader.h"
 #include "HeadlessDescriptorProviderSession.h"
+#include "ToolboxHostWiring.h"
 #include "dataset_test_helpers.h"
 #include "pj_base/descriptor_import_protocol.h"
 #include "pj_base/diagnostic_sink.hpp"
@@ -835,6 +836,17 @@ TEST_F(HeadlessDescriptorProviderSessionTest, HandleDestroyedExactlyOnceAndAfter
           << "every job/worker event must precede the plugin instance's destruction";
     }
   }
+}
+
+// An MCP agent's stand-in toolbox (MainWindow::buildAgentSession) keeps nothing past its session.
+TEST(ToolboxSettingsTest, AnAgentStandInPersistsNothingAToolboxDoes) {
+  const auto agent = PJ::makeToolboxSettings("agent-claude");
+  agent->setString("k", "v");
+  EXPECT_EQ(agent->getString("k"), "v");
+  EXPECT_FALSE(QSettings().contains(PJ::pluginSettingsGroup("agent-claude") + u"/k"_s));
+
+  PJ::makeToolboxSettings("some-toolbox")->setString("k", "v");
+  EXPECT_TRUE(QSettings().contains(PJ::pluginSettingsGroup("some-toolbox") + u"/k"_s));
 }
 
 }  // namespace

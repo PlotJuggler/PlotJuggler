@@ -420,10 +420,7 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
         });
       };
 
-  const auto plugin_settings = [&source](ServiceRegistryBuilder& registry) {
-    return registerPluginSettings(registry, source.id);
-  };
-  if (auto status = session->runtime_host->bind(session->handle, plugin_settings); !status) {
+  if (auto status = session->runtime_host->bind(session->handle, QSettingsBackend::forPlugin(source.id)); !status) {
     error = tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error()));
     session.reset();
     discardDataset(dataset_id);

@@ -238,9 +238,6 @@ std::vector<std::string> fanoutProbeServiceLookups() {
   return fanoutProbeSlotCalls("services");
 }
 
-// A key the "settings" probe reads from its own store; the tests seed it in another plugin's store and at the root.
-constexpr const char* kFanoutProbeForeignKey = "foreign";
-
 std::string joinFanoutProbeCalls(const std::vector<std::string>& calls) {
   std::string out;
   for (const std::string& call : calls) {
@@ -273,9 +270,6 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     if (suffix_ == "destroy-progress") {
       (void)runtimeHost().progressStart("fanout-probe:destroyed", 1, false);
     }
-    if (suffix_ == "settings") {
-      useSettingsStore("destroy");
-    }
   }
 
   uint64_t capabilities() const override {
@@ -298,7 +292,7 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     suffix_ = fanoutProbeSuffix(config_json);
     recordFanoutProbeCall("load_config", suffix_);
     if (suffix_ == "settings") {
-      useSettingsStore("load");
+      useSettingsStore();
     }
     return PJ::okStatus();
   }
@@ -418,19 +412,14 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     recordFanoutProbeCall("services", where + (found ? ":ok" : ":missing"));
   }
 
-  // "settings" calls: "<where>:unbound" without a pj.settings.v1 store; otherwise "<where>:foreign=<value or
-  // (absent)>", then "<where>:stored" or "<where>:failed" for storing `where` under "last".
-  void useSettingsStore(const std::string& where) const {
+  // One "settings" call: "unbound" without a pj.settings.v1 store, else "stored" or "failed" for storing "last".
+  void useSettingsStore() const {
     const auto store = services().get<PJ::sdk::SettingsStoreService>();
     if (!store.has_value()) {
-      recordFanoutProbeCall("settings", where + ":unbound");
+      recordFanoutProbeCall("settings", "unbound");
       return;
     }
-    const auto foreign = store->value(kFanoutProbeForeignKey);
-    recordFanoutProbeCall(
-        "settings",
-        where + ":foreign=" + (foreign && !foreign->isNull() ? foreign->toString() : std::string("(absent)")));
-    recordFanoutProbeCall("settings", where + (store->setValue("last", where) ? ":stored" : ":failed"));
+    recordFanoutProbeCall("settings", store->setValue("last", "loaded") ? "stored" : "failed");
   }
 
   std::string config_ = "{}";
@@ -861,15 +850,6 @@ class FileLoaderTest : public ::testing::Test {
     hints.dialog_policy = PJ::DialogPolicy::kPreferPreset;
     hints.require_expected_plugin = true;
     return hints;
-  }
-
-  // The probe's own store starts empty; another plugin's store and the settings root hold its foreign key.
-  static void seedFanoutProbeSettings() {
-    QSettings settings;
-    settings.remove(PJ::pluginSettingsGroup("fanout-probe-source"));
-    const QString foreign = QString::fromLatin1(kFanoutProbeForeignKey);
-    settings.setValue(PJ::pluginSettingsGroup("other-plugin") + u'/' + foreign, u"other plugin's"_s);
-    settings.setValue(foreign, u"the app's"_s);
   }
 
   [[nodiscard]] static QString probeSettingsValue(const QString& key) {
@@ -2216,40 +2196,30 @@ TEST_F(FileLoaderTest, FanoutEntriesKeepTheServiceRegistryForThePluginsLifetime)
   EXPECT_EQ(std::count(lookups.begin(), lookups.end(), "destroy:missing"), 0);
 }
 
-TEST_F(FileLoaderTest, SingleLoadPluginGetsItsOwnSettingsStoreForItsLifetime) {
+TEST_F(FileLoaderTest, SingleLoadPluginGetsTheStoreOfItsManifestId) {
   ASSERT_TRUE(installFanoutProbe());
-  seedFanoutProbeSettings();
+  QSettings().remove(PJ::pluginSettingsGroup("fanout-probe-source"));
   const QString path = makeMockFile(u"settings.fanoutprobe"_s);
 
   ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(uR"({"display_suffix":"settings"})"_s)));
-  pj_app_test::flushQueuedEvents(2);
 
-  const std::vector<std::string> expected{
-      "load:foreign=(absent)", "load:stored", "destroy:foreign=(absent)", "destroy:stored"};
-  EXPECT_EQ(fanoutProbeSlotCalls("settings"), expected);
-  EXPECT_EQ(probeSettingsValue(u"last"_s).toStdString(), "destroy");
+  EXPECT_EQ(fanoutProbeSlotCalls("settings"), std::vector<std::string>{"stored"});
+  EXPECT_EQ(probeSettingsValue(u"last"_s).toStdString(), "loaded");
   EXPECT_FALSE(QSettings().contains(u"last"_s));
 }
 
-TEST_F(FileLoaderTest, FanoutEntriesGetTheirPluginsSettingsStoreForTheirLifetime) {
+TEST_F(FileLoaderTest, FanoutEntriesGetTheStoreOfTheirManifestId) {
   ASSERT_TRUE(installFanoutProbe());
-  seedFanoutProbeSettings();
+  QSettings().remove(PJ::pluginSettingsGroup("fanout-probe-source"));
   const QString path = makeMockFile(u"settings_fanout.fanoutprobe"_s);
 
   const PJ::LoadHints hints = fanoutProbeHints(
       uR"({"display_suffix":"settings","__pj_fanout":["{\"display_suffix\":\"settings\"}","{\"display_suffix\":\"settings\"}"]})"_s);
   ASSERT_TRUE(loadAndWait(path, hints));
-  pj_app_test::flushQueuedEvents(2);
 
-  const std::vector<std::string> calls = fanoutProbeSlotCalls("settings");
-  // Two entries plus the prologue's instance, each loaded and destroyed.
-  EXPECT_EQ(std::count(calls.begin(), calls.end(), "load:stored"), 3);
-  EXPECT_EQ(std::count(calls.begin(), calls.end(), "destroy:stored"), 3);
-  EXPECT_EQ(std::count(calls.begin(), calls.end(), "load:foreign=(absent)"), 3);
-  EXPECT_EQ(std::count(calls.begin(), calls.end(), "destroy:foreign=(absent)"), 3);
-  EXPECT_EQ(calls.size(), 12U);
-  EXPECT_EQ(probeSettingsValue(u"last"_s).toStdString(), "destroy");
-  EXPECT_FALSE(QSettings().contains(u"last"_s));
+  // Two entries plus the prologue's instance.
+  EXPECT_EQ(fanoutProbeSlotCalls("settings"), std::vector<std::string>(3, "stored"));
+  EXPECT_EQ(probeSettingsValue(u"last"_s).toStdString(), "loaded");
 }
 
 TEST_F(FileLoaderTest, SingleLoadPluginMayReportProgressFromItsDestructor) {

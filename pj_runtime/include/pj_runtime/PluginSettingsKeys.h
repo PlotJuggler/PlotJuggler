@@ -4,7 +4,6 @@
 
 // Header-only and Qt-only so pj_app's test runner without pj_runtime (BrowserPersistence) shares the key layout.
 
-#include <QByteArray>
 #include <QLatin1StringView>
 #include <QString>
 #include <QUrl>
@@ -21,8 +20,8 @@ inline constexpr QLatin1StringView kDurablePluginSettingsGroup{"durable"};
 
 // Percent-encoding leaves no '/' in the id, so one plugin's group can never nest inside another's.
 [[nodiscard]] inline QString pluginSettingsGroup(std::string_view plugin_id) {
-  const QByteArray id(plugin_id.data(), static_cast<qsizetype>(plugin_id.size()));
-  return QString(kPluginSettingsRoot) + u'/' + QString::fromLatin1(QUrl::toPercentEncoding(QString::fromUtf8(id)));
+  const QString id = QString::fromUtf8(plugin_id.data(), static_cast<qsizetype>(plugin_id.size()));
+  return QString(kPluginSettingsRoot) + u'/' + QString::fromLatin1(QUrl::toPercentEncoding(id));
 }
 
 }  // namespace PJ
