@@ -570,7 +570,7 @@ TEST(RobotModelLayerTest, FormatOtherThanUrdfIsRejectedWithStatus) {
   EXPECT_TRUE(layer.statusText().contains("Format 'sdf' is not supported"_L1));
 }
 
-TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering) {
+TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedAndNotDrawn) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id, unresolvedMeshParserVtable());
@@ -583,6 +583,8 @@ TEST(RobotModelLayerTest, UnresolvedPackageMeshIsCountedForPlaceholderRendering)
   ASSERT_NE(layer.robotModel(), nullptr);
   EXPECT_EQ(layer.totalMeshCount(), 1);
   EXPECT_EQ(layer.unresolvedMeshCount(), 1);
+  EXPECT_EQ(layer.missingMeshCount(), 1);
+  EXPECT_TRUE(layer.modelDrawCalls().empty()) << "nothing in the unresolved mesh's place";
   EXPECT_TRUE(layer.statusText().contains("packages unresolved"_L1));
 }
 
@@ -614,9 +616,8 @@ TEST(RobotModelLayerTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
   EXPECT_GT(repaints, 0) << "finished mesh load did not request a repaint (only render() would have consumed it)";
 }
 
-// A mesh still loading draws nothing: the magenta placeholder means unresolved or failed, and a large model loading
-// one mesh after another would otherwise fill the view with unit cubes. The mesh draws once it arrives.
-TEST(RobotModelLayerTest, AMeshStillLoadingDrawsNoPlaceholder) {
+// A mesh still loading draws nothing, and the status counts it as not loaded yet; it draws once it arrives.
+TEST(RobotModelLayerTest, AMeshStillLoadingDrawsOnceItArrives) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);
   registerParser(session, topic_id, resolvedMeshParserVtable());
@@ -628,9 +629,8 @@ TEST(RobotModelLayerTest, AMeshStillLoadingDrawsNoPlaceholder) {
   ASSERT_EQ(layer.unresolvedMeshCount(), 0) << "fixture mesh must resolve";
   ASSERT_EQ(layer.loadedMeshCount(), 0) << "the load is asynchronous";
   EXPECT_TRUE(layer.statusText().contains("0/1 meshes"_L1)) << layer.statusText().toStdString();
-  for (const auto& call : layer.modelDrawCalls()) {
-    EXPECT_NE(call.mesh_key, "robot:placeholder") << "a loading mesh drew the failure placeholder";
-  }
+  EXPECT_TRUE(layer.modelDrawCalls().empty()) << "a loading mesh drew something in its place";
+  EXPECT_EQ(layer.missingMeshCount(), 0) << "loading is not missing";
 
   QElapsedTimer timer;
   timer.start();
@@ -640,7 +640,7 @@ TEST(RobotModelLayerTest, AMeshStillLoadingDrawsNoPlaceholder) {
   ASSERT_EQ(layer.loadedMeshCount(), 1);
   ASSERT_EQ(layer.modelDrawCalls().size(), 1U);
   EXPECT_TRUE(layer.statusText().contains("1/1 meshes"_L1)) << layer.statusText().toStdString();
-  EXPECT_NE(layer.modelDrawCalls().front().mesh_key, "robot:placeholder");
+  EXPECT_TRUE(layer.modelDrawCalls().front().mesh_key.ends_with(".stl")) << layer.modelDrawCalls().front().mesh_key;
 }
 
 // The "Ignore COLLADA up_axis" toggle must reload the model (the flip is baked into the loaded MeshData, so a bare
@@ -1341,8 +1341,8 @@ TEST(RobotModelLayerTest, TopicUrdfUsesExplicitUrlRoots) {
   EXPECT_EQ(restored.unresolvedMeshCount(), 1);
 }
 
-// A mesh the asset host does not have fails alone: the other mesh and the primitive still draw, the missing one is the
-// magenta placeholder, and the status names the failure. Nothing waits for it.
+// A mesh the asset host does not have fails alone: the other mesh and the primitive still draw, nothing takes the
+// missing one's place, and the status names the failure. Nothing waits for it.
 TEST(RobotModelLayerTest, AMissingMeshFailsAloneAndTheRestOfTheModelDraws) {
   const pj::scene3d::test::FileHttpServer assets(
       {{u"/assets/pj_url_pkg/meshes/cube.stl"_s, pj::scene3d::test::readFixtureBytes("cube.stl")}});
@@ -1383,10 +1383,11 @@ TEST(RobotModelLayerTest, AMissingMeshFailsAloneAndTheRestOfTheModelDraws) {
   for (const auto& call : layer.modelDrawCalls()) {
     keys.push_back(call.mesh_key);
   }
-  ASSERT_EQ(keys.size(), 3U) << "the mesh, the placeholder in the missing one's place, and the box";
-  EXPECT_EQ(std::count(keys.begin(), keys.end(), std::string("robot:placeholder")), 1);
+  ASSERT_EQ(keys.size(), 2U) << "the mesh and the box, nothing for the missing one";
   EXPECT_EQ(
       std::count_if(keys.begin(), keys.end(), [](const std::string& key) { return key.ends_with("cube.stl"); }), 1);
+  EXPECT_EQ(layer.missingMeshCount(), 1);
+  EXPECT_TRUE(layer.statusText().contains("1 mesh load(s) failed (not drawn)"_L1)) << layer.statusText().toStdString();
 }
 
 // A robot restored from a web-hosted layout keeps the network-only policy for its URDF's own mesh

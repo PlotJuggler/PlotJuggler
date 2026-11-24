@@ -113,7 +113,7 @@ async function requestScene3DFoundationState(page, consoleMessages, previousCoun
       },
       robots: {
         live: robots[0], meshes: robots[1], draws: robots[2],
-        visual: robots[3], collision: robots[4], placeholders: robots[5],
+        visual: robots[3], collision: robots[4], missing: robots[5],
         bridges: robots[6], sourceType: robots[7], displayMode: robots[8],
         revision: robots[9], source: decodeURIComponent(fields.source),
         status: decodeURIComponent(fields.status).split('|').filter(Boolean),

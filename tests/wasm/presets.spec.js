@@ -904,7 +904,7 @@ async function waitForScenes(run, ready, timeout = 30000) {
 
 // The ANYmal and the GrandTour payload with every mesh fetched and the model pass drawing them:
 // unlike the scan, they do not depend on where the cursor is.
-const anymalLoaded = models => models.robots.live === 2 && models.robots.placeholders === 0
+const anymalLoaded = models => models.robots.live === 2 && models.robots.missing === 0
   && models.robots.draws > 0 && models.robots.status.length === 2
   && models.robots.status.every(status => /\b(\d+)\/\1 meshes/.test(status))
   && models.models.rendered > 0 && models.models.draws >= models.robots.draws;
@@ -986,7 +986,7 @@ async function expectUzhfpvViews(run) {
 }
 
 // The Microduck robot from its recorded URDF, with every mesh fetched from the package root the layout maps.
-const microduckReady = models => models.robots.live === 1 && models.robots.placeholders === 0
+const microduckReady = models => models.robots.live === 1 && models.robots.missing === 0
   && models.robots.draws > 0 && /\b(\d+)\/\1 meshes/.test(models.robots.status[0]);
 
 // The Microduck sample's two derived series restored from the layout's <data_processors> (the numeric tilt and the

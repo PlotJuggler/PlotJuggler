@@ -212,7 +212,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
       quint64 robot_draws = 0;
       quint64 robot_visuals = 0;
       quint64 robot_collisions = 0;
-      quint64 robot_placeholders = 0;
+      quint64 robot_missing = 0;
       quint64 robot_bridges = 0;
       int robot_source_type = -1;
       int robot_display_mode = -1;
@@ -290,8 +290,8 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           for (const auto& draw : robot->modelDrawCalls()) {
             robot_visuals += draw.group == pj::scene3d::ModelDrawGroup::kVisual ? 1U : 0U;
             robot_collisions += draw.group == pj::scene3d::ModelDrawGroup::kCollision ? 1U : 0U;
-            robot_placeholders += draw.mesh_key == "robot:placeholder" ? 1U : 0U;
           }
+          robot_missing += static_cast<quint64>(robot->missingMeshCount());
           robot_bridges += robot->fixedJointBridgeCount();
           if (robot_source_type < 0) {
             robot_source_type = static_cast<int>(robot->sourceType());
@@ -384,7 +384,7 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_wasm_test_report_scene3d_foundation() {
           view != nullptr ? SceneViewTestAccess::modelPass(*view).lastTriangleCount() : 0, model_maps[0], model_maps[1],
           model_maps[2], model_maps[3], model_maps[4], robot_layers, static_cast<unsigned long long>(robot_meshes),
           static_cast<unsigned long long>(robot_draws), static_cast<unsigned long long>(robot_visuals),
-          static_cast<unsigned long long>(robot_collisions), static_cast<unsigned long long>(robot_placeholders),
+          static_cast<unsigned long long>(robot_collisions), static_cast<unsigned long long>(robot_missing),
           static_cast<unsigned long long>(robot_bridges), robot_source_type, robot_display_mode,
           static_cast<unsigned long long>(robot_revision), QUrl::toPercentEncoding(robot_source).constData(),
           QUrl::toPercentEncoding(robot_statuses.join(u'|')).constData(),
