@@ -38,6 +38,13 @@ Private links: `pj_plotting` (the full `PlotWidget` for embedded chart frames) a
   A sub-dialog or an injected parser dialog is a separate tree: its field states come from the declarative rules.
 - A table row is identified by its `kPluginRowRole` tag, not its view position or text: with `sortingEnabled` the user
   re-orders the view, and every index the plugin sends or receives is translated through the tag.
+- A table row the plugin both disables (`disabled_rows`) and selects is locked: its items stay disabled, so Qt keeps
+  every user gesture off it and `selectionChanged` carries only rows the user can change (locked rows are the
+  plugin's own), and they carry `kLockedRowRole` (`widget_binding.hpp`). `LockedRowDelegate`
+  (`src/locked_row_delegate.hpp`), the base of every host table delegate, paints a tagged item selected and enabled,
+  so the QSS `::item:selected` accent applies; a new table delegate derives from it or locked rows paint grey. A
+  disabled row the plugin does not select keeps the disabled look. The MCP `ui_tree` reports a tagged row as
+  selected. A delivery missing `disabled_rows` or the selection keeps that aspect's current state.
 - A table column never mixes typed (`TypedTableItem`) and plain cells: the comparison is then not a strict weak
   ordering and `std::stable_sort` is undefined. Code that writes cells keeps each column homogeneous.
 - The `.ui` contracts name no plugin widget: behaviour comes from properties and protocol keys.

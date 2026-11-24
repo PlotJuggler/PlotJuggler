@@ -24,6 +24,7 @@
 #include <QRectF>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QTableWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -72,6 +73,7 @@
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
+#include "pj_plugins/host_qt/widget_binding.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
@@ -868,6 +870,27 @@ TEST_F(McpServerTest, UiToolsFindAWidgetInAnOpenPopupByName) {
   EXPECT_TRUE(twins_error) << twins;
   EXPECT_NE(twins.find("2 visible widgets"), std::string::npos) << twins;
   menu.hide();
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
+// A plugin dialog's locked row (both disabled and selected by the plugin) is disabled, so Qt never selects it; ui_tree
+// still reports it selected, as it is painted.
+TEST_F(McpServerTest, UiTreeReportsALockedRowAsSelected) {
+  PJ::mcp::setUiToolsEnabled(true);
+  QTableWidget table(2, 1);
+  table.setItem(0, 0, new QTableWidgetItem(QStringLiteral("freeRow")));
+  auto* locked = new QTableWidgetItem(QStringLiteral("lockedRow"));
+  locked->setFlags(locked->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+  locked->setData(PJ::kLockedRowRole, true);
+  table.setItem(1, 0, locked);
+  table.resize(300, 200);
+  table.show();
+  ASSERT_TRUE(pumpUntil([&] { return table.isVisible(); }));
+
+  const auto [tree, tree_error] = result(call("ui_tree", json::object()));
+  ASSERT_FALSE(tree_error) << tree;
+  EXPECT_NE(tree.find("row \"lockedRow\" (selected)"), std::string::npos) << tree;
+  EXPECT_NE(tree.find("row \"freeRow\"\n"), std::string::npos) << tree;
   PJ::mcp::setUiToolsEnabled(false);
 }
 

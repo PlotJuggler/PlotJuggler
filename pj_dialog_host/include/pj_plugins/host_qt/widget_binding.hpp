@@ -23,6 +23,12 @@ inline constexpr const char* kHoistedWidgetsProperty = "pjHoistedWidgets";
 /// (widget_adapters); the binder routes plain-text updates to it as Markdown.
 inline constexpr const char* kMarkdownProperty = "pjMarkdown";
 
+/// Item-data role (bool) on every item of a locked table row: a row the plugin both disables (`disabled_rows`) and
+/// selects. The item stays disabled, so no user gesture reaches it and `selectionChanged` never carries it, and the
+/// host delegates paint it as selected. A reader reporting selection state (the MCP ui_tree) counts a tagged row as
+/// selected. Travels with the item when the user sorts.
+inline constexpr int kLockedRowRole = Qt::UserRole + 2;
+
 /// Receives the widget's objectName and the event JSON.
 using WidgetEventCallback = std::function<void(const std::string& widget_name, const std::string& event_json)>;
 

@@ -76,6 +76,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -91,6 +92,7 @@
 #include <vector>
 
 #include "chart_placeholder_overlay.hpp"
+#include "locked_row_delegate.hpp"
 #include "lua_syntax_highlighter.hpp"
 #include "pj_widgets/FrameworkTokens.h"
 #include "pj_widgets/TailFollowOverlay.h"
@@ -542,7 +544,10 @@ void setItemEnabled(ItemT* item, bool enabled) {
   Qt::ItemFlags flags = item->flags();
   flags.setFlag(Qt::ItemIsEnabled, enabled);
   flags.setFlag(Qt::ItemIsSelectable, enabled);
-  item->setFlags(flags);
+  // setFlags signals a change even when nothing changed, and every delivery carrying disabled rows comes here.
+  if (flags != item->flags()) {
+    item->setFlags(flags);
+  }
 }
 
 // Swallows user selection gestures (mouse press, release, double-click) on the view it filters, so only code can drive
@@ -651,14 +656,14 @@ QPixmap rowTrashPixmap(const QColor& ink, int extent, qreal dpr) {
 // Paints a trash icon on the last column of each delegated row and turns a click on it into an itemDeleteRequested(row)
 // event. Active only when the view carries a true "pj_deletable" dynamic property (set from WidgetData), so it is
 // harmless on other views; clicks off the icon fall through to selection and double-click.
-class ListRowDeleteDelegate : public QStyledItemDelegate {
+class ListRowDeleteDelegate : public LockedRowDelegate {
  public:
   static constexpr int kIconExtent = 16;
   static constexpr int kIconMargin = 6;
   static constexpr int kRowVPadding = 6;  // matches QPushButton's QSS padding
 
   ListRowDeleteDelegate(QObject* parent, std::function<void(int)> on_delete)
-      : QStyledItemDelegate(parent), on_delete_(std::move(on_delete)) {}
+      : LockedRowDelegate(parent), on_delete_(std::move(on_delete)) {}
 
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     if (!deletable() || !isLastColumn(index)) {
@@ -852,6 +857,73 @@ static std::optional<std::string> tableRowKeyText(const QTableWidget* tw, int ro
 // resolve to their own plugin index. Tables whose rows never came from a delivery (declared in a .ui) have no tags and
 // keep raw indices through the identity fallback.
 // ---------------------------------------------------------------------------
+
+// View rows whose key text (tableRowKeyText) is one of `keys`.
+static std::set<int> rowsKeyedBy(const QTableWidget* tw, const std::vector<std::string>& keys) {
+  const std::set<std::string> wanted(keys.begin(), keys.end());
+  std::set<int> rows;
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    if (auto key = tableRowKeyText(tw, r); key && wanted.count(*key) > 0) {
+      rows.insert(r);
+    }
+  }
+  return rows;
+}
+
+static std::set<int> toViewRows(const std::vector<int>& plugin_rows, const std::vector<int>& plugin_to_view) {
+  std::set<int> rows;
+  for (int r : plugin_rows) {
+    if (r >= 0 && static_cast<std::size_t>(r) < plugin_to_view.size()) {
+      rows.insert(plugin_to_view[static_cast<std::size_t>(r)]);
+    }
+  }
+  return rows;
+}
+
+// Set on a table once a delivery disabled one of its rows; tables without it skip the per-row lock pass.
+constexpr const char* kHasDisabledRowsProperty = "_pj_has_disabled_rows";
+
+// Greys out the rows the plugin disables and tags with kLockedRowRole those it also selects (`want`, view rows). An
+// aspect the delivery leaves out keeps the table's current state: without disabled_rows the disabled rows are the ones
+// already disabled, without a selection a lock stays as tagged. Returns the locked view rows.
+static std::set<int> applyRowLocks(
+    QTableWidget* tw, const std::optional<std::vector<int>>& disabled_rows, const std::optional<std::set<int>>& want,
+    const std::vector<int>& plugin_to_view) {
+  if (disabled_rows && !disabled_rows->empty()) {
+    tw->setProperty(kHasDisabledRowsProperty, true);
+  }
+  if (!tw->property(kHasDisabledRowsProperty).toBool() || (!disabled_rows && !want)) {
+    return {};
+  }
+  const std::set<int> disabled = disabled_rows ? toViewRows(*disabled_rows, plugin_to_view) : std::set<int>{};
+  std::set<int> locked;
+  for (int r = 0; r < tw->rowCount(); ++r) {
+    bool row_disabled = disabled.count(r) > 0;
+    bool row_locked = false;
+    for (int c = 0; c < tw->columnCount(); ++c) {
+      if (const QTableWidgetItem* item = tw->item(r, c)) {
+        if (!disabled_rows) {
+          row_disabled = !item->flags().testFlag(Qt::ItemIsEnabled);
+        }
+        row_locked = row_disabled && (want ? want->count(r) > 0 : item->data(kLockedRowRole).toBool());
+        break;
+      }
+    }
+    if (row_locked) {
+      locked.insert(r);
+    }
+    for (int c = 0; c < tw->columnCount(); ++c) {
+      if (auto* item = tw->item(r, c)) {
+        setItemEnabled(item, !row_disabled);
+        // setData signals a change even for an equal value on a fresh item, so an unset role stays unset.
+        if (item->data(kLockedRowRole).toBool() != row_locked) {
+          item->setData(kLockedRowRole, row_locked);
+        }
+      }
+    }
+  }
+  return locked;
+}
 
 // Records the key column of this delivery. `radio_col` is the column rendered as radio widgets (or -1): it carries no
 // item text, so the key column is the first other one. Consumed by tableRowKeyText, which needs it before the radio
@@ -1925,17 +1997,6 @@ static void applyToWidget(
         tw->setRowHidden(r, !visible.contains(view_to_plugin[static_cast<std::size_t>(r)]));
       }
     }
-    if (disabled_rows) {
-      std::set<int> disabled(disabled_rows->begin(), disabled_rows->end());
-      for (int r = 0; r < tw->rowCount(); ++r) {
-        const bool enabled = disabled.count(view_to_plugin[static_cast<std::size_t>(r)]) == 0;
-        for (int c = 0; c < tw->columnCount(); ++c) {
-          if (auto* item = tw->item(r, c)) {
-            setItemEnabled(item, enabled);
-          }
-        }
-      }
-    }
     // Cell tooltips arrive as (plugin row, col, text): the row is translated to the current view order and the tooltip
     // set on the item. A delivery carrying cell_tooltips states the complete set, so every item tooltip is cleared
     // first, or a dropped tooltip would linger on a stale cell after an in-place row rewrite.
@@ -1957,53 +2018,33 @@ static void applyToWidget(
         }
       }
     }
-    if (selected_rows) {
+    // The rows the plugin selects, in view order: selected_items (text-keyed through tableRowKeyText, the key the
+    // selection-changed emit uses, so sort-agnostic and fine with a leading radio column) wins over selected_rows.
+    std::optional<std::set<int>> want;
+    if (const auto keys = view.selectedItems(name)) {
+      want = rowsKeyedBy(tw, *keys);
+    } else if (selected_rows) {
+      want = toViewRows(*selected_rows, plugin_to_view);
+    }
+    const std::set<int> locked = applyRowLocks(tw, disabled_rows, want, plugin_to_view);
+    if (want) {
       // Re-applying the selection with selectRow() scrolls the view to the last selected row, so the table would jump
       // on every re-render that follows a user selection change (the common case, where the selection is already what
       // we want). It is skipped when it already matches; otherwise the scroll position is preserved, so a programmatic
-      // update (deselect-all, filter) does not yank the viewport either. Both sides of the comparison are in plugin row
-      // space, so a match is recognized under a user-sorted view.
-      std::set<int> want(selected_rows->begin(), selected_rows->end());
-      std::set<int> have;
-      for (const QModelIndex& idx : tw->selectionModel()->selectedRows()) {
-        have.insert(view_to_plugin[static_cast<std::size_t>(idx.row())]);
-      }
-      if (want != have) {
-        QScrollBar* vbar = tw->verticalScrollBar();
-        const int scroll = vbar != nullptr ? vbar->value() : 0;
-        tw->clearSelection();
-        for (int r : *selected_rows) {
-          if (r >= 0 && static_cast<std::size_t>(r) < plugin_to_view.size()) {
-            tw->selectRow(plugin_to_view[static_cast<std::size_t>(r)]);
-          }
-        }
-        if (vbar != nullptr) {
-          vbar->setValue(scroll);
-        }
-      }
-    }
-    if (auto v = view.selectedItems(name)) {
-      // Text-keyed selection restore (setSelectedItems): rows are matched by tableRowKeyText, the key the
-      // selection-changed emit uses, so the restore is sort-agnostic (row indices desync under sortingEnabled) and
-      // works with a leading radio or widget column. Applied second, so it wins over selected_rows if a plugin sends
-      // both. Same skip-if-unchanged and scroll preservation as the index path.
-      std::set<std::string> want_texts(v->begin(), v->end());
-      std::vector<int> want_rows;
-      for (int r = 0; r < tw->rowCount(); ++r) {
-        if (auto key = tableRowKeyText(tw, r); key && want_texts.count(*key) > 0) {
-          want_rows.push_back(r);
-        }
-      }
-      std::set<int> want(want_rows.begin(), want_rows.end());
+      // update (deselect-all, filter) does not yank the viewport either. Locked rows are disabled, so Qt never lists
+      // them as selected: they leave the comparison.
+      std::set<int> free_want;
+      std::set_difference(
+          want->begin(), want->end(), locked.begin(), locked.end(), std::inserter(free_want, free_want.end()));
       std::set<int> have;
       for (const QModelIndex& idx : tw->selectionModel()->selectedRows()) {
         have.insert(idx.row());
       }
-      if (want != have) {
+      if (free_want != have) {
         QScrollBar* vbar = tw->verticalScrollBar();
         const int scroll = vbar != nullptr ? vbar->value() : 0;
         tw->clearSelection();
-        for (int r : want_rows) {
+        for (int r : free_want) {
           tw->selectRow(r);
         }
         if (vbar != nullptr) {

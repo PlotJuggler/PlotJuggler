@@ -46,6 +46,7 @@
 #include "mcp/McpProtocol.h"
 #include "pj_plotting/DockWidget.h"
 #include "pj_plotting/PlotWidget.h"
+#include "pj_plugins/host_qt/widget_binding.hpp"
 
 using json = nlohmann::json;
 using namespace Qt::StringLiterals;
@@ -480,7 +481,9 @@ void UiDriver::dumpItems(QWidget* w, int depth, std::string& out, int& lines) {
       ++level;
     }
     std::vector<std::string> flags;
-    if (view->selectionModel() != nullptr && view->selectionModel()->isSelected(row)) {
+    // A plugin dialog's locked row (PJ::kLockedRowRole) is disabled, so Qt never selects it, but it is selected.
+    if ((view->selectionModel() != nullptr && view->selectionModel()->isSelected(row)) ||
+        row.data(PJ::kLockedRowRole).toBool()) {
       flags.emplace_back("selected");
     }
     if (const QVariant check = row.data(Qt::CheckStateRole); check.isValid()) {

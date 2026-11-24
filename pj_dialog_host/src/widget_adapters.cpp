@@ -37,6 +37,7 @@
 #include <QVariant>
 #include <algorithm>
 
+#include "locked_row_delegate.hpp"
 #include "pj_plugins/host_qt/widget_binding.hpp"
 #include "pj_widgets/FrameworkTokens.h"
 
@@ -580,9 +581,9 @@ constexpr const char* kInteriorGridAppliedProperty = "pjInteriorGridApplied";  /
 // it: Qt drops per-::item left and right borders and tints every column edge in the selection color. The divider
 // color comes from styleHint SH_Table_GridLineColor, as QTableView picks it, so it follows the QSS `gridline-color`
 // token and the active theme.
-class InteriorGridDelegate : public QStyledItemDelegate {
+class InteriorGridDelegate : public LockedRowDelegate {
  public:
-  using QStyledItemDelegate::QStyledItemDelegate;
+  using LockedRowDelegate::LockedRowDelegate;
 
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     QStyledItemDelegate::paint(painter, option, index);
