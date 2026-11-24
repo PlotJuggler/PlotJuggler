@@ -109,6 +109,10 @@ class GridRhiPass {
     float g = 0.0F;
     float b = 0.0F;
     float a = 1.0F;
+    // A line vertex's segment partner, for grid.vert's clip behind the eye; a cell vertex repeats its position.
+    float other_x = 0.0F;
+    float other_y = 0.0F;
+    float other_z = 0.0F;
   };
 
   struct ConnectionKey {
@@ -123,8 +127,9 @@ class GridRhiPass {
     bool operator==(const ConnectionKey&) const = default;
   };
 
-  static QRhiVertexInputLayout vertexLayout();
-  static void appendVertex(std::vector<Vertex>& out, const glm::dvec3& point, const glm::vec4& color);
+  static QRhiVertexInputLayout vertexLayout(bool lines);
+  static void appendVertex(std::vector<Vertex>& out, const glm::vec3& point, const glm::vec4& color);
+  static void appendSegment(std::vector<Vertex>& out, const glm::vec3& a, const glm::vec3& b, const glm::vec4& color);
 
   RhiPassSetup setup_;  // view-owned uniforms; the shadow receiver is built later against it
   QRhiShaderResourceBindings* shader_resources_ = nullptr;

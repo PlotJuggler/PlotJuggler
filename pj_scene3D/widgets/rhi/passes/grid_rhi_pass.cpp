@@ -27,13 +27,17 @@ glm::vec4 opaque(const glm::dvec3& color) {
 
 }  // namespace
 
-QRhiVertexInputLayout GridRhiPass::vertexLayout() {
+QRhiVertexInputLayout GridRhiPass::vertexLayout(bool lines) {
   QRhiVertexInputLayout layout;
   layout.setBindings({QRhiVertexInputBinding(sizeof(Vertex))});
-  layout.setAttributes({
+  QList<QRhiVertexInputAttribute> attributes{
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(Vertex, x)),
       QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4, offsetof(Vertex, r)),
-  });
+  };
+  if (lines) {
+    attributes.append(QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float3, offsetof(Vertex, other_x)));
+  }
+  layout.setAttributes(attributes.cbegin(), attributes.cend());
   return layout;
 }
 
@@ -67,7 +71,7 @@ bool GridRhiPass::initialize(const RhiPassSetup& setup) {
       {
           .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
           .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.frag.qsb")),
-          .input_layout = vertexLayout(),
+          .input_layout = vertexLayout(/*lines=*/false),
           .bindings = shader_resources_,
       },
       setup.part);
@@ -75,7 +79,7 @@ bool GridRhiPass::initialize(const RhiPassSetup& setup) {
       .topology = QRhiGraphicsPipeline::Lines,
       .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid.vert.qsb")),
       .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/scene.frag.qsb")),
-      .input_layout = vertexLayout(),
+      .input_layout = vertexLayout(/*lines=*/true),
       .bindings = shader_resources_,
   };
   line_pipeline_ = setup.pipelines->add(desc, setup.part);
@@ -108,7 +112,7 @@ bool GridRhiPass::createShadowReceiver(
       {
           .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell.vert.qsb")),
           .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/grid_cell_shadow.frag.qsb")),
-          .input_layout = vertexLayout(),
+          .input_layout = vertexLayout(/*lines=*/false),
           .bindings = shadow_shader_resources_,
       },
       setup_.part, /*optional=*/true);
@@ -126,11 +130,14 @@ void GridRhiPass::releaseShadowReceiver(ScenePipelineRegistry& registry) {
   shadow_shader_resources_ = nullptr;
 }
 
-void GridRhiPass::appendVertex(std::vector<Vertex>& out, const glm::dvec3& point, const glm::vec4& color) {
-  out.push_back(
-      Vertex{
-          static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(point.z), color.r, color.g,
-          color.b, color.a});
+void GridRhiPass::appendVertex(std::vector<Vertex>& out, const glm::vec3& point, const glm::vec4& color) {
+  out.push_back(Vertex{point.x, point.y, point.z, color.r, color.g, color.b, color.a, point.x, point.y, point.z});
+}
+
+void GridRhiPass::appendSegment(
+    std::vector<Vertex>& out, const glm::vec3& a, const glm::vec3& b, const glm::vec4& color) {
+  out.push_back(Vertex{a.x, a.y, a.z, color.r, color.g, color.b, color.a, b.x, b.y, b.z});
+  out.push_back(Vertex{b.x, b.y, b.z, color.r, color.g, color.b, color.a, a.x, a.y, a.z});
 }
 
 void GridRhiPass::build(
@@ -154,13 +161,14 @@ void GridRhiPass::build(
       const glm::vec4 tone_a = opaque(settings.colors.tone_a);
       const glm::vec4 tone_b = opaque(settings.colors.tone_b);
       for (const GridVertex& vertex : buildCheckerboardCells(settings.extent_m, settings.divisions)) {
-        appendVertex(grid_vertices_, glm::dvec3(vertex.pos), vertex.parity < 0.5F ? tone_a : tone_b);
+        appendVertex(grid_vertices_, vertex.pos, vertex.parity < 0.5F ? tone_a : tone_b);
       }
       grid_cell_vertex_count_ = static_cast<quint32>(grid_vertices_.size());
     } else if (settings.grid_visible) {
       const glm::vec4 line = opaque(settings.colors.line);
-      for (const GridVertex& vertex : buildGridLines(settings.extent_m, settings.divisions)) {
-        appendVertex(grid_vertices_, glm::dvec3(vertex.pos), line);
+      const std::vector<GridVertex> lines = buildGridLines(settings.extent_m, settings.divisions);
+      for (std::size_t index = 0; index + 1 < lines.size(); index += 2) {
+        appendSegment(grid_vertices_, lines[index].pos, lines[index + 1].pos, line);
       }
       grid_line_vertex_count_ = static_cast<quint32>(grid_vertices_.size());
     }
@@ -183,8 +191,7 @@ void GridRhiPass::build(
       buildTfConnectionSegments(*tf, fixed_frame, time, segments_, render_origin);
       const glm::vec4 color(look::kTfConnectionColor, 1.0F);
       for (const TfConnectionSegment& segment : segments_) {
-        appendVertex(connection_vertices_, glm::dvec3(segment.child), color);
-        appendVertex(connection_vertices_, glm::dvec3(segment.parent), color);
+        appendSegment(connection_vertices_, segment.child, segment.parent, color);
       }
     }
     connection_upload_pending_ = true;

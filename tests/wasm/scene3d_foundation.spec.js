@@ -33,8 +33,8 @@ async function selectNextComboItem(page, screen, state, control) {
   await page.waitForTimeout(200);
 }
 
-test('Scene3D TF/grid renders, responds to input, and replays a generic layout', async ({ page }) => {
-  test.setTimeout(120000);
+// Loads the TF fixture and drops /tf on the plot area, which opens a Scene3D view.
+async function openTfScene(page) {
   const errors = [];
   const consoleMessages = [];
   await page.addInitScript(() => { delete window.showOpenFilePicker; });
@@ -65,10 +65,15 @@ test('Scene3D TF/grid renders, responds to input, and replays a generic layout',
     { x: screen.x + 95, y: screen.y + 232 },
     { x: screen.x + 820, y: screen.y + 390 },
   );
-
   const reportCount = () => consoleMessages.filter(
     message => message.includes('PJ_WASM_SCENE3D_FOUNDATION_SUMMARY'),
   ).length;
+  return { errors, consoleMessages, screen, reportCount };
+}
+
+test('Scene3D TF/grid renders, responds to input, and replays a generic layout', async ({ page }) => {
+  test.setTimeout(120000);
+  const { errors, consoleMessages, screen, reportCount } = await openTfScene(page);
   let initial;
   await expect.poll(async () => {
     initial = await requestScene3DFoundationState(page, consoleMessages, reportCount());
@@ -151,5 +156,120 @@ test('Scene3D TF/grid renders, responds to input, and replays a generic layout',
 
   expect(consoleMessages.some(message => message.includes('PJ_WASM_SCENE3D_FOUNDATION_FAILED'))).toBe(false);
   expect(consoleMessages.some(message => message.includes('QRhiWidget: No QRhi'))).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+// Replaces `name`'s value on the first <tag> element of a saved layout.
+function setXmlAttribute(xml, tag, name, value) {
+  const element = new RegExp(`<${tag}\\b[^>]*>`);
+  const match = xml.match(element);
+  expect(match, `no <${tag}> in the saved layout`).not.toBeNull();
+  const attribute = new RegExp(`\\s${name}=("[^"]*"|'[^']*')`);
+  const updated = attribute.test(match[0])
+    ? match[0].replace(attribute, ` ${name}='${value}'`)
+    : match[0].replace(new RegExp(`^<${tag}`), `<${tag} ${name}='${value}'`);
+  return xml.replace(match[0], updated);
+}
+
+// Per row of the band below the horizon, the number of short runs of pixels that differ from the view's
+// background: the grid lines that run toward the camera cross each row as short runs, the lines across the
+// view fill a row with one long run.
+async function steepLineCrossingsPerRow(page, png) {
+  return page.evaluate(async (base64) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${base64}`;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext('2d');
+    context.drawImage(image, 0, 0);
+    const { data, width, height } = context.getImageData(0, 0, image.width, image.height);
+    const histogram = new Map();
+    for (let index = 0; index < data.length; index += 4) {
+      const key = (data[index] << 16) | (data[index + 1] << 8) | data[index + 2];
+      histogram.set(key, (histogram.get(key) || 0) + 1);
+    }
+    const background = [...histogram.entries()].reduce((best, entry) => (entry[1] > best[1] ? entry : best))[0];
+    const differs = (x, y) => {
+      const index = 4 * ((y * width) + x);
+      return Math.max(
+        Math.abs(data[index] - ((background >> 16) & 255)),
+        Math.abs(data[index + 1] - ((background >> 8) & 255)),
+        Math.abs(data[index + 2] - (background & 255)),
+      ) > 24;
+    };
+    const left = Math.round(width * 0.02);
+    const right = Math.round(width * 0.98);
+    const counts = [];
+    for (let y = Math.round(height * 0.55); y < Math.round(height * 0.85); ++y) {
+      let runs = 0;
+      let run = 0;
+      for (let x = left; x <= right; ++x) {
+        if (x < right && differs(x, y)) {
+          ++run;
+        } else {
+          if (run > 0 && run < (right - left) / 4) {
+            ++runs;
+          }
+          run = 0;
+        }
+      }
+      counts.push(runs);
+    }
+    return counts;
+  }, png.toString('base64'));
+}
+
+// A grid line with one end behind the eye must still draw its visible part. Chromium's software WebGL
+// (SwiftShader) dropped such lines whole, so a camera inside a line grid drew only the lines across the view.
+test('Scene3D line grid draws the lines that run under the camera', async ({ page }) => {
+  test.setTimeout(120000);
+  const { errors, consoleMessages, screen, reportCount } = await openTfScene(page);
+  await expect.poll(async () => {
+    const state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
+    return state.docks[0]?.resolved >= 1;
+  }, { timeout: 15000 }).toBe(true);
+
+  // Looking along -x from (0.94, 0, 0.34): the lines along x pass under the camera and behind it.
+  let xml = (await downloadLayoutFromFileMenu(page, screen, consoleMessages)).bytes.toString('utf8');
+  xml = setXmlAttribute(xml, 'scene3d', 'camera_model', 'orbit');
+  xml = setXmlAttribute(
+    xml, 'scene3d', 'camera_state',
+    JSON.stringify({ focal: [0, 0, 0], radius: 1, azimuth: 0, elevation: 0.35, perspective: true }),
+  );
+  xml = setXmlAttribute(xml, 'scene_controls', 'grid_style', '0');
+  xml = setXmlAttribute(xml, 'scene_controls', 'grid_extent_m', '4');
+  xml = setXmlAttribute(xml, 'scene_controls', 'grid_divisions', '40');
+  const layoutChooser = await openLayoutChooser(page);
+  await layoutChooser.setFiles({
+    name: 'scene3d-grid-under-camera.pj4.xml',
+    mimeType: 'application/xml',
+    buffer: Buffer.from(xml, 'utf8'),
+  });
+  await expect.poll(
+    () => consoleMessages.find(
+      message => message.includes('PJ_WASM_LAYOUT_LOAD_OK name=scene3d-grid-under-camera'),
+    ) || '',
+    { timeout: 15000 },
+  ).toContain('scene3d-grid-under-camera.pj4.xml');
+
+  let state;
+  await expect.poll(async () => {
+    state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
+    const dock = state.docks[0];
+    return Math.abs((dock?.camera.radius ?? 0) - 1) < 1e-3 && dock.vertices.lines >= 164;
+  }, { timeout: 15000 }).toBe(true);
+  const { view } = state.docks[0];
+  const topLeft = qtPointToCss(screen, state, { x: view.x, y: view.y });
+  const bottomRight = qtPointToCss(screen, state, { x: view.x + view.width, y: view.y + view.height });
+  const png = await page.screenshot({
+    clip: { x: topLeft.x, y: topLeft.y, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y },
+  });
+  await test.info().attach('grid-under-camera', { body: png, contentType: 'image/png' });
+
+  const counts = await steepLineCrossingsPerRow(page, png);
+  const median = [...counts].sort((a, b) => a - b)[Math.floor(counts.length / 2)];
+  expect(median, `short runs per row: ${counts.join(',')}`).toBeGreaterThanOrEqual(4);
   expect(errors).toEqual([]);
 });

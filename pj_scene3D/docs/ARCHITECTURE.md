@@ -424,7 +424,9 @@ the shaders add the origin offset, so pan, follow and playback upload nothing, a
 cannot z-fight the fill; an odd division count's half-cell phase travels in the offset's w. Every grid SRB declares
 binding 3 for both stages because QRhi requires the connection lines' SRB layout to match. The TF connection lines
 are arbitrary doubles, so they stay camera-relative in a Dynamic buffer keyed on the TF revision, fixed frame, time
-and render origin.
+and render origin. Each line vertex carries its segment's other end, and `grid.vert` moves an end behind the eye to
+just in front of it, so SwiftShader still draws the line (TECHNICAL_NOTES "SwiftShader drops lines that cross behind
+the eye").
 
 **Poses and TF triads (`PoseRhiPass`).** One unit-arrow mesh, one instanced draw per layer. Pose instances are
 frame-local in a Static buffer, re-uploaded on `geometryRevision()`; the fixed-from-source TF is a uniform, so camera
@@ -953,3 +955,6 @@ each has a panel row, and clicking it binds the Settings host to the layer's con
 - A `UrlFetcher` request aborts only with its fetcher, so unwanted fetches retire the fetcher and its connections.
 - `drawsFor` is a linear search per slot (O(L²) in the layer count).
 - Pipeline-cache persistence is not reachable through `QRhiWidget`, and packs are not precompiled.
+- Under SwiftShader, a marker line, marker edge or model or mesh-map wireframe segment with one end behind the eye is
+  not drawn: those pipelines are indexed or instanced, so a vertex has no single partner for the grid's clip
+  (TECHNICAL_NOTES "SwiftShader drops lines that cross behind the eye").
