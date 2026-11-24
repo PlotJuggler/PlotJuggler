@@ -83,7 +83,8 @@ startup (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the `offsc
 `isUnattendedRun` in `main.cpp`) loads with `DialogPolicy::kNever`. A failed or
 cancelled explicit file skips the layout and settles it false, so `--exit-after-layout` exits unsuccessfully. The final
 restore is deferred through a window-owned timer so it never runs during teardown. `--exit-after-layout` exit codes are
-a contract for harnesses (`LayoutExitWatch`, which hears only the settle of the startup load): 0 applied, 1 load
+a contract for harnesses (`LayoutExitWatch`, which hears only the settle of the first load started after it is built: the startup load,
+unless another load starts while the startup data files are still loading): 0 applied, 1 load
 failed, cancelled or superseded by another load, 2 timed out, 64 usage error. With
 `--screenshot` too, whichever quit fires first wins, and only `--exit-after-layout`'s code says whether the layout
 applied. Tests: `MainWindowStartupTest`.

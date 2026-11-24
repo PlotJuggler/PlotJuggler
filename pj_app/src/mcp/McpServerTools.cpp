@@ -1360,7 +1360,8 @@ void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) 
             reply(fail(error.toStdString()));
             return;
           }
-          // Relative Scene3D resources resolve where the layout came from, after any redirect.
+          // Relative Scene3D resources resolve where the layout came from, after any redirect (desktop; the browser's
+          // fetch reports the URL asked for).
           self->confirmLayoutLoad(std::move(*doc), name, {}, final_url, caller, reply);
         });
     if (Job* job = liveJob(caller.job)) {

@@ -589,8 +589,8 @@ dock with no state).
   and, for a file only, gives the folder relative paths and Scene3D resources resolve against and the recent-layout
   entry (the cleaned absolute path). Text and a URL have no folder: a relative data path in them is reported
   (`relative-path-unresolved`) and binds nothing. A URL anchors the layout's relative Scene3D resources (robot models
-  and their package roots) where the download ended, after any redirect, while messages name the URL asked for; in
-  text a relative one fails the load. In the browser `path` is refused (pass the file's text).
+  and their package roots) where the download ended, after any redirect on the desktop (the browser's fetch reports the URL asked for), while
+  messages name the URL asked for; in text a relative one fails the load. In the browser `path` is refused (pass the file's text).
 - **One load at a time.** The diagnostics a reply quotes do not say which load reported them, so `load_layout` is
   refused as busy while an agent's load runs (from its checks to its reply) or `MainWindow::layoutLoadInFlight` (a
   progressive restore waiting for its data, a browser pick or URL load). The check is repeated when a download ends,
@@ -602,7 +602,8 @@ dock with no state).
   supersedes an agent's progressive restore (as it would their own) at its commit point: on the desktop before a
   reload enqueues or the sync apply; in the browser before a source-bound layout's imports start or the apply. The
   superseded restore settles false with a "Layout" diagnostic (`layout-superseded`), so the agent hears its layout was
-  not loaded, and the user's load settles on its own.
+  not loaded, and the user's load settles on its own. A superseded restore is not rolled back: if the user's load
+  then fails, the workspace keeps what the agent's restore had applied.
 - **The user's consent.** Unlike every other tool, a load replaces the user's tabs and derived series. When
   `MainWindow::layoutLoadWouldDiscardWork` says the workspace holds anything (a dock holding a plot or a widget, a
   derived series, object or marker rule, an open toolbox, undo history), the user is asked first ("Replace" /

@@ -3888,7 +3888,7 @@ TEST_F(McpHeldLayoutTest, ALoadStartedUnderAnotherLoadsQuestionKeepsTheIdsApart)
 
 // A stop that reaches the job while the user's Replace is on its way wins: the answer finds the job stopping and loads
 // nothing, the job ends killed, and the stop is answered at once.
-TEST_F(McpHeldLayoutTest, AStopQueuedBeforeTheUsersReplaceWins) {
+TEST_F(McpHeldLayoutTest, AStopReachingTheJobBeforeTheReplaceIsHandledWins) {
   const std::string held = heldLayout();
   PJ::McpTestPeer::addUndoStep(*window_);  // work the user is asked about
   std::optional<json> kill_reply;
