@@ -58,6 +58,7 @@ MeshLoadQueue::Source urlSource(const QString& url) {
   source.kind = MeshLoadQueue::Source::Kind::kUrl;
   source.location = url;
   source.format_hint = u"glb"_s;
+  source.allow_remote_fetch = true;
   return source;
 }
 
@@ -246,6 +247,73 @@ TEST(MeshLoadQueueTest, FailedFetchIsReportedAsAFetchFailure) {
   EXPECT_TRUE(outcome->fetch_failed);
   EXPECT_FALSE(outcome->mesh.ok);
   EXPECT_FALSE(outcome->mesh.error.isEmpty());
+  EXPECT_EQ(queue.runningCount(), 0U);
+}
+
+// A local mesh's absolute http(s) texture ref is a network request: a job that does not allow remote fetching
+// leaves it unresolved (no connection reaches the host) and still delivers the mesh; one that allows it fetches it.
+namespace {
+std::optional<MeshLoadQueue::Outcome> loadLocalQuad(const QString& texture_url, bool allow_remote_fetch) {
+  QTemporaryDir dir;
+  EXPECT_TRUE(dir.isValid());
+  QObject context;
+  MeshLoadQueue queue(&context);
+  MeshLoadQueue::Source source = fileUrlSource(pj::scene3d::test::writeQuadReferencing(dir, texture_url), u"dae"_s);
+  source.allow_remote_fetch = allow_remote_fetch;
+  std::optional<MeshLoadQueue::Outcome> outcome;
+  queue.enqueue(
+      source.kind, [source]() { return std::optional(source); },
+      [&outcome](MeshLoadQueue::Outcome settled) { outcome = std::move(settled); });
+  queue.pump();
+  EXPECT_TRUE(pumpUntil([&] { return outcome.has_value(); }, std::chrono::seconds(5)));
+  return outcome;
+}
+}  // namespace
+
+TEST(MeshLoadQueueTest, LocalMeshSkipsRemoteTextureWhenRemoteFetchIsOff) {
+  QTcpServer server;
+  int connections = 0;
+  const QString texture_url = silentServerUrl(server, u"red_4x4.png"_s);
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&connections]() { ++connections; });
+  const std::optional<MeshLoadQueue::Outcome> outcome = loadLocalQuad(texture_url, /*allow_remote_fetch=*/false);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  pumpUntil([&] { return connections > 0; }, std::chrono::milliseconds(300));
+  EXPECT_EQ(connections, 0) << "a local mesh reached a remote host with remote fetch off";
+  ASSERT_FALSE(outcome->mesh.submeshes.empty());
+  EXPECT_TRUE(outcome->mesh.submeshes.front().material->base_color.empty());
+}
+
+TEST(MeshLoadQueueTest, LocalMeshFetchesRemoteTextureWhenRemoteFetchIsOn) {
+  const FileHttpServer server({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  const std::optional<MeshLoadQueue::Outcome> outcome =
+      loadLocalQuad(server.url(u"/tex/red_4x4.png"_s), /*allow_remote_fetch=*/true);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_EQ(server.paths().count(u"/tex/red_4x4.png"_s), 1);
+  ASSERT_FALSE(outcome->mesh.submeshes.empty());
+  EXPECT_FALSE(outcome->mesh.submeshes.front().material->base_color.bytes.empty());
+}
+
+// A job that does not allow remote fetching never requests an http(s) mesh: it settles as a fetch failure.
+TEST(MeshLoadQueueTest, RemoteMeshFailsWithoutRequestWhenRemoteFetchIsOff) {
+  QTcpServer server;
+  int connections = 0;
+  MeshLoadQueue::Source source = urlSource(silentServerUrl(server, u"a.glb"_s));
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&connections]() { ++connections; });
+  source.allow_remote_fetch = false;
+  QObject context;
+  MeshLoadQueue queue(&context);
+  std::optional<MeshLoadQueue::Outcome> outcome;
+  queue.enqueue(
+      source.kind, [source]() { return std::optional(source); },
+      [&outcome](MeshLoadQueue::Outcome settled) { outcome = std::move(settled); });
+  queue.pump();
+  ASSERT_TRUE(pumpUntil([&] { return outcome.has_value(); }, std::chrono::seconds(5)));
+  EXPECT_TRUE(outcome->fetch_failed);
+  EXPECT_FALSE(outcome->mesh.ok);
+  pumpUntil([&] { return connections > 0; }, std::chrono::milliseconds(300));
+  EXPECT_EQ(connections, 0);
   EXPECT_EQ(queue.runningCount(), 0U);
 }
 

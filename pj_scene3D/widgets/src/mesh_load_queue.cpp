@@ -218,8 +218,10 @@ UrlFetcher& MeshLoadQueue::fetcher() {
 }
 
 void MeshLoadQueue::startFetch(JobId id) {
+  const Source& source = running_.at(id).source;
   fetcher().fetch(
-      QUrl(running_.at(id).source.location), [this, id](FetchResult result) { onFetched(id, std::move(result)); });
+      QUrl(source.location), [this, id](FetchResult result) { onFetched(id, std::move(result)); },
+      source.allow_remote_fetch);
 }
 
 void MeshLoadQueue::onFetched(JobId id, FetchResult result) {
@@ -314,9 +316,10 @@ bool MeshLoadQueue::startTextureFetches(JobId id, MeshData& mesh) {
   job.materials = std::move(materials);
   job.textures_pending = urls.size();
   for (const std::string& url : urls) {
-    fetcher().fetch(QUrl(QString::fromStdString(url)), [this, id, url](FetchResult result) {
-      onTextureFetched(id, url, std::move(result));
-    });
+    fetcher().fetch(
+        QUrl(QString::fromStdString(url)),
+        [this, id, url](FetchResult result) { onTextureFetched(id, url, std::move(result)); },
+        job.source.allow_remote_fetch);
   }
   return true;
 }

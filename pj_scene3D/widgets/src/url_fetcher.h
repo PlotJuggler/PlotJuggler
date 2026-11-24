@@ -39,7 +39,7 @@ struct FetchResult {
 //    number of redirects, no https->http downgrade; in the browser, the browser's own hop limit). There is no host
 //    allowlist; the egress bound is the scheme/redirect/size/timeout envelope, which a redirect cannot escalate
 //    beyond. WHETHER a data-supplied URL is fetched at all is the caller's policy (SceneEntitiesLayer's remote-fetch
-//    gate).
+//    gate, carried to every request of a mesh job as MeshLoadQueue::Source::allow_remote_fetch).
 //  - Native http(s) GETs are disk-cached (QNetworkDiskCache, set up in the constructor): a fresh entry is served
 //    without the network, and a previously fetched entry is served from cache when the origin is unreachable, so a
 //    model fetched in a prior session renders offline. Local-file reads bypass the cache. The directory is
@@ -58,8 +58,9 @@ class UrlFetcher : public QObject {
 
   explicit UrlFetcher(QObject* parent = nullptr);
 
-  // `on_done` is invoked exactly once, via the event loop, unless the fetcher is destroyed first (then never).
-  void fetch(const QUrl& url, std::function<void(FetchResult)> on_done);
+  // `on_done` is invoked exactly once, via the event loop, unless the fetcher is destroyed first (then never). Without
+  // `allow_network`, an http(s) URL fails without a request.
+  void fetch(const QUrl& url, std::function<void(FetchResult)> on_done, bool allow_network = true);
 
  private:
   // Queues `result` to `on_done` through the event loop (the never-synchronous delivery guarantee for the local-file /

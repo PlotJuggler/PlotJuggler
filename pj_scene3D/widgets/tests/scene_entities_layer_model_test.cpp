@@ -896,6 +896,52 @@ TEST(SceneEntitiesLayerModelTest, LocalFileModelUrlLoadsWithoutOptIn) {
       << "local file URL tripped the remote gate: " << layer.remoteFetchNotice().toStdString();
 }
 
+// The remote-fetch setting covers every request a model makes, not only its URL: a LOCAL model whose mesh references
+// an absolute http(s) texture loads untextured with the setting off, with no connection to the texture's host and no
+// notice (an unfetched texture reports nothing), and fetches the texture with the setting on.
+namespace {
+std::size_t loadLocalQuadModel(bool allow_remote_fetch, const QString& texture_url) {
+  isolateSettings();
+  QSettings settings;
+  settings.setValue(u"pj_scene3d/allow_remote_model_fetch"_s, allow_remote_fetch);
+  settings.sync();
+  QTemporaryDir dir;
+  EXPECT_TRUE(dir.isValid());
+  const QString path = writeQuadReferencing(dir, texture_url);
+
+  PJ::SessionManager session;
+  const PJ::ObjectTopicId topic_id = registerTopic(session);
+  registerParser(session, topic_id);
+  pushSceneEntities(
+      session, topic_id, 10,
+      batchWithEntities(
+          {makeUrlEntity("local", 10, QUrl::fromLocalFile(path).toString().toStdString(), "model/vnd.collada+xml")}));
+  pj::scene3d::SceneEntitiesLayer layer(topic_id, u"/scene_entities"_s);
+  EXPECT_TRUE(layer.attach(makeContext(session)));
+  pumpUntil(
+      [&] { return !layer.modelMeshes().empty() || !layer.remoteFetchNotice().isEmpty(); }, std::chrono::seconds(5));
+  EXPECT_TRUE(layer.remoteFetchNotice().isEmpty()) << layer.remoteFetchNotice().toStdString();
+  return layer.modelMeshes().size();
+}
+}  // namespace
+
+TEST(SceneEntitiesLayerModelTest, LocalModelSkipsRemoteTextureWithoutOptIn) {
+  QTcpServer server;
+  int connections = 0;
+  const QString texture_url = silentServerUrl(server, u"red_4x4.png"_s);
+  QObject::connect(&server, &QTcpServer::newConnection, &server, [&connections]() { ++connections; });
+  EXPECT_EQ(loadLocalQuadModel(/*allow_remote_fetch=*/false, texture_url), 1U);
+  pumpUntil([&] { return connections > 0; }, std::chrono::milliseconds(300));
+  EXPECT_EQ(connections, 0) << "a local model reached a remote host with remote fetch off";
+}
+
+TEST(SceneEntitiesLayerModelTest, LocalModelFetchesRemoteTextureWithOptIn) {
+  const FileHttpServer server({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  EXPECT_EQ(loadLocalQuadModel(/*allow_remote_fetch=*/true, server.url(u"/tex/red_4x4.png"_s)), 1U);
+  EXPECT_EQ(server.paths().count(u"/tex/red_4x4.png"_s), 1);
+  QSettings().setValue(u"pj_scene3d/allow_remote_model_fetch"_s, false);  // quiet default for siblings
+}
+
 // A local-file fetch's completion is queued at fetch() time. Superseding its model aborts the fetcher, and destroying
 // the layer before the event loop runs must take that queued completion with it (the callback captures the layer).
 // The steps run without pumping events in between; an application event filter then reports any delivery that still

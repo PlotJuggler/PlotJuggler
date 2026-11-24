@@ -89,7 +89,7 @@ void UrlFetcher::deliverLater(std::function<void(FetchResult)> on_done, FetchRes
   QTimer::singleShot(0, this, [on_done = std::move(on_done), result = std::move(result)]() { on_done(result); });
 }
 
-void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done) {
+void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done, bool allow_network) {
   // Local sources never touch the network (see localFilePath() for the drive-letter case): read straight from disk,
   // still delivered asynchronously.
   if (const std::optional<QString> local = localFilePath(url)) {
@@ -99,6 +99,12 @@ void UrlFetcher::fetch(const QUrl& url, std::function<void(FetchResult)> on_done
   if (!PJ::isHttpUrl(url)) {
     FetchResult result;
     result.error = tr("unsupported URL scheme '%1'").arg(url.scheme());
+    deliverLater(std::move(on_done), std::move(result));
+    return;
+  }
+  if (!allow_network) {
+    FetchResult result;
+    result.error = tr("remote fetch is disabled");
     deliverLater(std::move(on_done), std::move(result));
     return;
   }

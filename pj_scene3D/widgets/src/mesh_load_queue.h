@@ -32,8 +32,9 @@ struct FetchResult;
 // use the load slots beyond the import ones: a kPath or kBytes job leaves the queue only for a free import slot. Jobs
 // leave the queue in enqueue order (one at its head waiting for an import slot holds back those behind it), and fetched
 // jobs import in enqueue order. What to load, whether to load at all (remote-fetch permission, source-size caps) and
-// whether a result fits the layer's byte budget stay with the layer; the queue runs the jobs it is handed and delivers
-// the results still wanted.
+// whether a result fits the layer's byte budget stay with the layer; the queue runs the jobs it is handed, applies
+// each job's Source::allow_remote_fetch to every request it makes (mesh and textures) and delivers the results still
+// wanted.
 //
 // Invariants:
 //  - Source bytes not yet imported are held only by fetched kUrl jobs waiting for an import slot, so by at most
@@ -68,6 +69,9 @@ class MeshLoadQueue {
     QByteArray bytes;  // kBytes: handed in; kUrl: the fetched body while waiting for an import slot
     QString format_hint;
     std::optional<bool> flip_override;
+    // False: the job makes no network request. An http(s) `location` settles as a fetch failure, and the mesh's
+    // http(s) texture refs stay unresolved, as a texture that fails to fetch does. The layer's remote-fetch policy.
+    bool allow_remote_fetch = false;
   };
 
   struct Outcome {

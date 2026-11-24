@@ -144,6 +144,16 @@ inline QByteArray readFixtureBytes(const char* name) {
   return file.readAll();
 }
 
+// The textured_quad fixture written to `dir` with its texture ref replaced by `texture_ref`; returns the file's path.
+inline QString writeQuadReferencing(const QTemporaryDir& dir, const QString& texture_ref) {
+  QByteArray dae = readFixtureBytes("textured_quad.dae");
+  dae.replace("red_4x4.png", texture_ref.toUtf8());
+  const QString path = dir.filePath(QStringLiteral("quad.dae"));
+  QFile file(path);
+  EXPECT_TRUE(file.open(QIODevice::WriteOnly) && file.write(dae) == dae.size());
+  return path;
+}
+
 // Serves `files` over HTTP on localhost by request path (404 for any other) and
 // records every requested path.
 class FileHttpServer {

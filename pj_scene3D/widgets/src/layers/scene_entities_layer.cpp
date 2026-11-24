@@ -772,14 +772,14 @@ void SceneEntitiesLayer::startModelLoad(
     }
     location = std::move(resolved.path);
   }
+  // Decided once per (key, signature) through startModelLoad's identity early-return: a setting change takes effect on
+  // the next source change. It covers every request of the job: a local model's http(s) texture refs too.
+  const bool remote_allowed = remoteModelFetchAllowed();
   if (primitive.data.empty()) {
     const QUrl url(QString::fromStdString(location));
     // Local sources (bare paths / file:// URLs) stay ungated: reading the
     // user's disk is not network egress. Fetched bytes are capped by UrlFetcher.
-    const bool remote = PJ::isHttpUrl(url);
-    // Decided once per (key, signature) through startModelLoad's identity early-return: a setting change takes
-    // effect on the next source change.
-    if (remote && !remoteModelFetchAllowed()) {
+    if (PJ::isHttpUrl(url) && !remote_allowed) {
       load.phase = ModelLoad::Phase::kBlocked;
       qCWarning(lcSceneEntitiesLayer) << "blocked remote model fetch for" << url.toString()
                                       << "- enable pj_scene3d/allow_remote_model_fetch to allow";
@@ -789,7 +789,7 @@ void SceneEntitiesLayer::startModelLoad(
   // Resolved when the job gets a slot (embedded bytes: an import slot), so queued jobs hold no copy of the bytes.
   load.job = model_queue_->enqueue(
       primitive.data.empty() ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kBytes,
-      [this, entity_id, model_index,
+      [this, entity_id, model_index, remote_allowed,
        location = QString::fromStdString(location)]() -> std::optional<MeshLoadQueue::Source> {
         const auto entity = model_state_.entities().find(entity_id);
         if (entity == model_state_.entities().end() || model_index >= entity->second.models.size()) {
@@ -798,6 +798,7 @@ void SceneEntitiesLayer::startModelLoad(
         const PJ::sdk::ModelPrimitive& model = entity->second.models[model_index];
         MeshLoadQueue::Source source;
         source.format_hint = hintFromMediaType(model.media_type, model.url);
+        source.allow_remote_fetch = remote_allowed;
         if (!model.data.empty()) {
           source.kind = MeshLoadQueue::Source::Kind::kBytes;
           source.bytes =

@@ -1276,6 +1276,8 @@ void RobotModelLayer::queueMeshLoads() {
     source.location = QString::fromStdString(mesh->resolved_path);
     const QUrl url(source.location);
     source.kind = PJ::isHttpUrl(url) ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kPath;
+    // The resolver yields an http(s) mesh only for a URL source or a web-hosted layout's robot, which the user chose.
+    source.allow_remote_fetch = true;
     source.format_hint = formatHint(source.location);
     // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent).
     const bool collada = source.format_hint == "dae"_L1 || source.format_hint == "collada"_L1;

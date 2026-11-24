@@ -786,7 +786,8 @@ An `sdk::MeshMap` (navigation, cost and semantic meshes with named face and vert
   its folder when the URDF lies beneath it (`layout_resources.h`), so a URDF and its meshes move with the layout.
 - **Mesh loading** is async and bounded: each layer's `MeshLoadQueue` overlaps downloads and bounds assimp imports
   (`mesh_load_queue.h`), each completion repainting; the GUI thread never blocks. The layer keeps the policy (what to
-  load, the remote-fetch gate and size caps, the `kSceneLimits` retained-byte budgets checked on landing). A source
+  load, the remote-fetch gate and size caps, the `kSceneLimits` retained-byte budgets checked on landing); a job's
+  `Source` carries the gate, and the queue applies it to every request the job makes, its textures included. A source
   switch, a replaced model or a dataset replacement cancels its jobs and a cancelled job never reaches the layer; a
   cancelled import keeps its slot until its worker finishes, so rapid replacement never exceeds the bound. Unwanted
   fetches are aborted by retiring the queue's `UrlFetcher`, which stays a child of the layer until deleted later, so
@@ -804,8 +805,9 @@ An `sdk::MeshMap` (navigation, cost and semantic meshes with named face and vert
 
 One resolver per dock serves its robot models and its SceneEntities models: a model primitive's `package://` URL (a
 ROS Marker's `mesh_resource`) takes the package chain below with no URDF anchor, and its other URLs keep the marker
-rules (local files load, `http(s)` behind the remote-fetch setting). An unresolved package names itself in the
-layer's notice.
+rules (local files load, `http(s)` behind the remote-fetch setting). The setting covers every request a model
+makes: with it off, a local model's `http(s)` texture refs are not fetched either, and the model loads without them,
+as with a texture that fails to fetch. An unresolved package names itself in the layer's notice.
 
 `UrdfPackageResolver` dispatches on the scheme: `file://` absolute; a bare path relative to the URDF (never enters
 the package chain); `http(s)://` only for URL-source layers; `package://pkg/rel` to the model's explicit root for
