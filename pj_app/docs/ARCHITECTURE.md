@@ -83,7 +83,9 @@ startup (`--exit-after-layout`, `--screenshot`, `--dump-diagnostics`, the `offsc
 `isUnattendedRun` in `main.cpp`) loads with `DialogPolicy::kNever`. A failed or
 cancelled explicit file skips the layout and settles it false, so `--exit-after-layout` exits unsuccessfully. The final
 restore is deferred through a window-owned timer so it never runs during teardown. `--exit-after-layout` exit codes are
-a contract for harnesses (`LayoutExitWatch`): 0 applied, 1 load failed or cancelled, 2 timed out, 64 usage error. With
+a contract for harnesses (`LayoutExitWatch`, which hears only the settle of the first load started after it is built: the startup load,
+unless another load starts while the startup data files are still loading): 0 applied, 1 load
+failed, cancelled or superseded by another load, 2 timed out, 64 usage error. With
 `--screenshot` too, whichever quit fires first wins, and only `--exit-after-layout`'s code says whether the layout
 applied. Tests: `MainWindowStartupTest`.
 
@@ -304,10 +306,14 @@ the global reference, and the loader subtracts it.
 **Relative paths.** A file save stores paths relative to the layout folder when the target is at or under it
 (`relocatableSubpath`): `<fileInfo>` filenames, every `*_dataset_path` qualifier of a source-bound layout (all widget
 families: `stampDatasetSourcePaths`, then `relativizeDatasetSourcePaths`) and, in both bindings, a `<robot_model>`'s
-URDF file and `file://` package roots (Scene3D's `relocateLayoutResources`). `loadLayoutFromPath` resolves them
-against the layout folder before any restore (`resolveDatasetSourcePaths`, Scene3D's `resolveLayoutResourceUrls`).
-Undo snapshots and in-memory captures stay absolute; browser layouts skip both steps; a generic layout has no dataset
-qualifier, except those startup keeps for its explicit files ("Command-line startup").
+URDF file and `file://` package roots (Scene3D's `relocateLayoutResources`). `loadLayoutDocument` resolves them
+against the folder of its `LayoutOrigin` before any restore (`resolveDatasetSourcePaths`, Scene3D's
+`resolveLayoutResourceUrls`). A document with no file (an MCP agent's text or URL) has no folder: a relative path in
+it is reported as `relative-path-unresolved` and binds nothing. A URL's layout anchors its robot models at the URL
+(`LayoutOrigin::url`); in text a relative one fails the load. A save
+with no file (`layoutFileBytes` with an empty path) writes them all absolute. Undo snapshots and in-memory captures
+stay absolute; browser layouts skip both steps; a generic layout has no dataset qualifier, except those startup keeps
+for its explicit files ("Command-line startup").
 
 **`__pj_saved_filepath`** exists only in the config handed to a plugin's `loadConfig` on a layout replay of a native
 file (`rewriteReplayFilepaths` with `SavedFilepath::kRecord`) and never reaches host state: the rewrite drops any
@@ -333,7 +339,7 @@ reports its refusal as `processor-restore-refused`.
 
 **A save never loses what the load skipped.** `DerivedRestoreReport::skipped` names the exact saved elements the
 restore skipped. Under `kRetainAndDiagnose` `applyDataProcessors` stages copies of exactly those, and the layout's commit
-point (`commitRestoredLayout`) makes them `kept_derived_`; `saveLayoutToPath` writes them back, as pending curves are
+point (`commitRestoredLayout`) makes them `kept_derived_`; `layoutFileBytes` writes them back, as pending curves are
 kept and saved. Identity is never guessed from the file: one filter or rule bound to two runs, one of them not loaded,
 keeps the other binding. Each copy loses its session dataset ids; a qualifier only an id named (a stream bound at load)
 gets back its `pj-stream://` identity. Under `kPrompt` the prompt asked instead: its Continue drops them, and its title

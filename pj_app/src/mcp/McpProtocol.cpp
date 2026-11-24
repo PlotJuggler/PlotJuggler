@@ -49,17 +49,17 @@ constexpr auto kAppToolInstructions =
     "format PlotJuggler reads (the relay hands the page the file), start_stream starts a live source. "
     "add_script_series (Luau or Python) and add_filter install live derived series too. widget_state reads "
     "the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
-    "ranges) with the values each one accepts, and set_widget_state changes them. Take a screenshot to "
-    "check what the user sees.";
+    "ranges) with the values each one accepts, and set_widget_state changes them. save_layout and load_layout "
+    "read and replace the whole workspace as layout XML. Take a screenshot to check what the user sees.";
 #else
 constexpr auto kAppToolInstructions =
     " Start with get_status (it also shows whether the user's dialog is still open); open_file loads any "
     "format PlotJuggler reads, start_stream starts a live source. export_series gives aligned CSV for your own "
     "tools; add_script_series (Luau or Python) and add_filter install live derived series too. widget_state "
     "reads the settings of any dock, the user's too (a scene's point size, colours, camera; a plot's styles and "
-    "ranges) with the values each one accepts, and set_widget_state changes them. Take a screenshot to "
-    "check what the user sees. Read about before explaining how to do something in the "
-    "PlotJuggler UI.";
+    "ranges) with the values each one accepts, and set_widget_state changes them. save_layout and load_layout "
+    "read and replace the whole workspace as layout XML. Take a screenshot to check what the user sees. Read "
+    "about before explaining how to do something in the PlotJuggler UI.";
 #endif
 
 }  // namespace
@@ -108,6 +108,10 @@ const ToolHints* toolHints(std::string_view name) {
       {"remove_script_series", {"Remove a script series", false, true, true, false}},
       {"screenshot", {"Screenshot", true, false, true, false}},
       {"widget_state", {"Read dock settings", true, false, true, false}},
+      // Not read-only: it can write (and overwrite) a file.
+      {"save_layout", {"Save the layout", false, true, true, false}},
+      // It may fetch a URL and start the layout's streams.
+      {"load_layout", {"Load a layout", false, true, false, true}},
       // Each call is a new undo step of the user's.
       {"set_widget_state", {"Change dock settings", false, true, false, false}},
       // Job tools (McpServer).
@@ -204,6 +208,21 @@ void redactIn(json& value, bool secret) {
   }
 }
 
+bool redactedIn(const json& value, bool secret) {
+  if (value.is_object()) {
+    for (auto it = value.begin(); it != value.end(); ++it) {
+      if (redactedIn(it.value(), secret || isSecretKey(it.key()))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (value.is_array()) {
+    return std::any_of(value.begin(), value.end(), [secret](const json& item) { return redactedIn(item, secret); });
+  }
+  return secret && value.is_string() && value.get_ref<const std::string&>() == kRedacted;
+}
+
 /// `value` without the keys naming a secret, at any depth.
 json withoutSecrets(const json& value) {
   if (value.is_object()) {
@@ -259,6 +278,10 @@ json redactSecrets(json config) {
   return config;
 }
 
+bool holdsRedactedSecret(const json& config) {
+  return redactedIn(config, false);
+}
+
 std::string restoreSecrets(json& given, const json& saved) {
   json filled = given;
   bool found = false;
@@ -290,7 +313,7 @@ std::string restoreSecrets(json& given, const json& saved) {
 bool isJobCapableTool(const std::string& name) {
   static const std::set<std::string> job_capable = {"evaluate",     "create_derived_object", "wait_for",
                                                     "open_file",    "reload_file",           "unload_file",
-                                                    "start_stream", "export_series"};
+                                                    "start_stream", "export_series",         "load_layout"};
   return job_capable.contains(name);
 }
 
@@ -320,10 +343,16 @@ double waitSeconds(const json& args, const char* key, double max) {
 namespace {
 
 #ifdef PJ_TARGET_WASM
+#define PJ_MCP_SAVE_LAYOUT_PATH ". path is refused: the page cannot write your disk, so save the returned xml yourself"
+#define PJ_MCP_LOAD_LAYOUT_PATH "; the page cannot read your disk: pass the file's text as xml"
+#define PJ_MCP_LOAD_LAYOUT_REDACTED "put the real values in"
 #define PJ_MCP_ABOUT_SOURCES ""
 // A page's file has no saved configuration an agent's call can match, so no secret to keep.
 #define PJ_MCP_OPEN_FILE_SECRETS "; pass a secret itself, never \"<redacted>\"."
 #else
+#define PJ_MCP_SAVE_LAYOUT_PATH ""
+#define PJ_MCP_LOAD_LAYOUT_PATH ""
+#define PJ_MCP_LOAD_LAYOUT_REDACTED "load the file save_layout wrote with path, or put the real values in"
 #define PJ_MCP_ABOUT_SOURCES "; about says what each one is"
 #define PJ_MCP_OPEN_FILE_SECRETS                                                                               \
   "; a \"<redacted>\" passed back in config keeps the value this file was loaded with, only when the rest of " \
@@ -525,11 +554,51 @@ json appToolEntries() {
               {{"dock", {{"type", "string"}, {"description", "a dock id from widget_state list"}}},
                {"xml", {{"type", "string"}, {"description", "the dock's whole element"}}}},
               {"dock", "xml"})),
+      toolEntry(
+          "save_layout",
+          "The whole workspace as layout XML, as File > Save Layout writes it: every tab (the user's and yours), "
+          "plots, scenes, derived series and markers. Without path it returns xml: generic unless bind_sources, "
+          "which records the loaded files and streams with absolute paths; every setting's secrets (a plugin's, a "
+          "widget's, a derived series' parameters) read as \"<redacted>\"" PJ_MCP_SAVE_LAYOUT_PATH ".",
+          schema(
+              {{"path",
+                described(
+                    str,
+                    "absolute path ending in .xml (.pj4.xml added when it has no extension) to write the menu's file "
+                    "to, bound to its sources unless bind_sources is false, secrets kept; returns path and bytes, "
+                    "not the text")},
+               {"overwrite",
+                {{"type", "boolean"}, {"default", false}, {"description", "replace a layout file already at path"}}},
+               {"bind_sources",
+                {{"type", "boolean"},
+                 {"description",
+                  "record the loaded files and running streams so the layout reloads them (default: true with "
+                  "path, as the menu; false for text); false: curves bind by topic and field to whatever is "
+                  "loaded"}}}})),
+      toolEntry(
+          "load_layout",
+          "Replace the whole workspace (the user's tabs too) with a layout, as File > Load Layout does: pass xml "
+          "(the text), path (a layout file)" PJ_MCP_LOAD_LAYOUT_PATH
+          " or url (http/https; only the layout is downloaded). Data paths in text or from a url must be absolute; "
+          "a relative one is reported, never guessed. The files and streams it names load when not loaded "
+          "already, without asking. If the workspace holds anything (a plot, a derived series, an open toolbox, "
+          "undo history), the user is asked to confirm first (a job_id after wait_s while they decide; job_kill "
+          "withdraws the question or stops the download, but a layout already applying completes). Refused while "
+          "another layout load runs, and for a secret still reading \"<redacted>\" (" PJ_MCP_LOAD_LAYOUT_REDACTED
+          "). Your tabs and series in it come back as yours. Returns loaded and the app's warnings (missing data, a "
+          "relative path, a newer format), or its error.",
+          schema(
+              {{"xml", described(str, "the layout's whole text")},
+               {"path", described(str, "absolute path of a layout file")},
+               {"url", described(str, "http(s) URL of a layout")}})),
   });
 }
 
 }  // namespace
 
+#undef PJ_MCP_SAVE_LAYOUT_PATH
+#undef PJ_MCP_LOAD_LAYOUT_PATH
+#undef PJ_MCP_LOAD_LAYOUT_REDACTED
 #undef PJ_MCP_ABOUT_SOURCES
 #undef PJ_MCP_OPEN_FILE_SECRETS
 

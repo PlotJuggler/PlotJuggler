@@ -616,6 +616,25 @@ int main(int argc, char* argv[]) {
 
   // Before any layout restore.
   window.reviewUncleanShutdown(/*interactive=*/attended);
+
+  // Composes with --screenshot: whichever quit fires first wins, and only this flag's exit code says whether the
+  // restore committed. Built before the startup load is scheduled: it watches the next load the window starts.
+  if (parser.isSet(exit_after_layout_option)) {
+    const int timeout_s = exit_after_layout_timeout_s;
+    new PJ::LayoutExitWatch(
+        window, std::chrono::seconds(timeout_s),
+        [timeout_s](int code) {
+          if (code == PJ::LayoutExitWatch::kExitCodeSuccess) {
+            std::printf("[exit-after-layout] layout restore settled: success\n");
+          } else if (code == PJ::LayoutExitWatch::kExitCodeLoadFailed) {
+            std::fprintf(stderr, "[exit-after-layout] layout load FAILED\n");
+          } else {
+            std::fprintf(stderr, "[exit-after-layout] TIMED OUT after %d s without settlement\n", timeout_s);
+          }
+          QCoreApplication::exit(code);
+        },
+        &window);
+  }
 #endif
 
   // Deferred: the progressive layout restore needs a running event loop.
@@ -643,27 +662,6 @@ int main(int argc, char* argv[]) {
     window.connectMcpRelay(QUrl(relay));
   }
   QTimer::singleShot(0, &window, [&window, page_url]() { window.startBrowserPresets(page_url); });
-#endif
-
-#ifndef PJ_TARGET_WASM
-  // Composes with --screenshot: whichever quit fires first wins, and only this flag's exit code says whether the
-  // restore committed.
-  if (parser.isSet(exit_after_layout_option)) {
-    const int timeout_s = exit_after_layout_timeout_s;
-    new PJ::LayoutExitWatch(
-        window, std::chrono::seconds(timeout_s),
-        [timeout_s](int code) {
-          if (code == PJ::LayoutExitWatch::kExitCodeSuccess) {
-            std::printf("[exit-after-layout] layout restore settled: success\n");
-          } else if (code == PJ::LayoutExitWatch::kExitCodeLoadFailed) {
-            std::fprintf(stderr, "[exit-after-layout] layout load FAILED\n");
-          } else {
-            std::fprintf(stderr, "[exit-after-layout] TIMED OUT after %d s without settlement\n", timeout_s);
-          }
-          QCoreApplication::exit(code);
-        },
-        &window);
-  }
 #endif
 
   // Desktop only: a browser tab is a page view, not an installed user, and cannot self-update. Nor can the

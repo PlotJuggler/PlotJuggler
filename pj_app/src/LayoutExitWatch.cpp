@@ -16,9 +16,13 @@ LayoutExitWatch::LayoutExitWatch(
     : QObject(parent), report_exit_code_(std::move(report_exit_code)) {
   timeout_timer_.setSingleShot(true);
   connect(&timeout_timer_, &QTimer::timeout, this, [this]() { decide(kExitCodeTimeout); });
-  connect(&window, &MainWindow::layoutRestoreSettled, this, [this](bool success) {
-    decide(success ? kExitCodeSuccess : kExitCodeLoadFailed);
-  });
+  connect(
+      &window, &MainWindow::layoutRestoreSettled, this,
+      [this, load = window.nextLayoutLoad()](bool success, quint64 settled) {
+        if (settled == load) {
+          decide(success ? kExitCodeSuccess : kExitCodeLoadFailed);
+        }
+      });
   const auto clamped_ms = std::min<std::chrono::milliseconds::rep>(timeout.count(), std::numeric_limits<int>::max());
   timeout_timer_.start(static_cast<int>(clamped_ms));
 }

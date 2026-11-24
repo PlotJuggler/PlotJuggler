@@ -266,6 +266,13 @@ bool isSourceBoundLayout(const QDomDocument& doc) {
          (!root.firstChildElement(kStreamingSourcesTag).isNull() || !extractDataSource(doc, QDir()).isEmpty());
 }
 
+QString parseFailureMessage(const QString& name, const QDomDocument::ParseResult& result) {
+  return QCoreApplication::translate("LayoutXml", "'%1' is not a valid PJ4 layout: %2 (line %3, col %4)")
+      .arg(name, result.errorMessage)
+      .arg(result.errorLine)
+      .arg(result.errorColumn);
+}
+
 QString ensureLayoutExtension(const QString& path) {
   if (path.isEmpty() || !QFileInfo(path).suffix().isEmpty()) {
     return path;
@@ -334,7 +341,7 @@ std::optional<LogicalSideFiles> logicalBrowserSideFiles(
   return result;
 }
 
-QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir) {
+QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const std::optional<QDir>& layout_dir) {
   QList<DataSourceRef> sources;
   const QDomElement root = doc.documentElement();
   // A missing or non-numeric pj4_version reads as 0, so an unversioned document takes the pre-v4 offset basis.
@@ -356,7 +363,9 @@ QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layo
       info.resolved_path = filename;
     } else {
       const QFileInfo qfi(filename);
-      info.resolved_path = qfi.isAbsolute() ? qfi.absoluteFilePath() : layout_dir.absoluteFilePath(filename);
+      info.resolved_path = qfi.isAbsolute()         ? qfi.absoluteFilePath()
+                           : layout_dir.has_value() ? layout_dir->absoluteFilePath(filename)
+                                                    : QString();
     }
     info.prefix = file_info.attribute(u"prefix"_s);
     readContentSha256(file_info, info.content_sha256, info.content_sha256_malformed);
@@ -1356,13 +1365,23 @@ void removeUnvalidatedDatasetIds(QDomDocument& doc) {
       doc, [](QDomElement& input) { stripUnvalidatedIdentityPair(input, qualifier(Qualifier::kPlain)); });
 }
 
-void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir) {
-  remapDatasetSourcePaths(doc, [&layout_dir](const QString& saved_path) {
+QStringList resolveDatasetSourcePaths(QDomDocument& doc, const std::optional<QDir>& layout_dir) {
+  QStringList unresolved;
+  remapDatasetSourcePaths(doc, [&layout_dir, &unresolved](const QString& saved_path) {
     if (isOpaqueSourceIdentity(saved_path)) {
       return saved_path;
     }
-    return QDir::cleanPath(QFileInfo(saved_path).isAbsolute() ? saved_path : layout_dir.absoluteFilePath(saved_path));
+    if (QFileInfo(saved_path).isAbsolute()) {
+      return QDir::cleanPath(saved_path);
+    }
+    if (!layout_dir.has_value()) {
+      unresolved.push_back(saved_path);
+      return saved_path;
+    }
+    return QDir::cleanPath(layout_dir->absoluteFilePath(saved_path));
   });
+  unresolved.removeDuplicates();
+  return unresolved;
 }
 
 void remapDatasetSourcePaths(QDomDocument& doc, const DatasetPathRemapper& remap) {

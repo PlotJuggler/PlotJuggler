@@ -3,6 +3,7 @@
 
 #include "DialogPresenter.h"
 
+#include <QDialog>
 #include <QLoggingCategory>
 #include <QPointer>
 #include <QString>
@@ -218,6 +219,29 @@ DialogCancelFn showDataSourceDialogAsync(const DataSourceRequest& req, DataSourc
     req.on_dialog(cancel);
   }
   return cancel;
+}
+
+void questionAsync(
+    QWidget* parent, const QString& title, const QString& text, std::vector<MessageBox::ButtonSpec> buttons,
+    std::function<void(int choice)> answered, const DialogWatch& on_dialog) {
+  MessageBox::questionAsync(
+      parent, title, text, std::move(buttons),
+      [answered = std::move(answered), on_dialog](int choice, bool) {
+        if (on_dialog) {
+          on_dialog({});
+        }
+        answered(choice);
+      },
+      /*show_dont_show_again=*/false,
+      [on_dialog](QDialog& prompt) {
+        if (on_dialog) {
+          on_dialog([prompt = QPointer<QDialog>(&prompt)] {
+            if (prompt != nullptr) {
+              prompt->reject();
+            }
+          });
+        }
+      });
 }
 
 }  // namespace PJ::dialog_presenter

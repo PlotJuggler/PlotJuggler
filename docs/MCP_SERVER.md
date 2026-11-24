@@ -57,7 +57,7 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
 - **App tools** (`McpServerTools.cpp`, public token only): `get_status`, `about`, `open_file`, `unload_file`,
   `reload_file`, `start_stream`, `stop_stream`, `export_series`, `add_script_series`, `remove_script_series`,
   `add_filter`, `screenshot`, `widget_state` and `set_widget_state` (`McpWidgetState.cpp`, see
-  [Widget state](#widget-state)).
+  [Widget state](#widget-state)), `save_layout` and `load_layout` (see [Layouts](#layouts)).
 - **Job tools** (`McpServer`, served to every token): `jobs_list`, `job_wait`, `job_kill` (see [Jobs](#jobs)).
 - **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`, `launch`.
 - **UI tools** (`McpUiTools.cpp`, public token only, and only in a run started with `--mcp-ui-tools`): `ui_tree`,
@@ -163,7 +163,7 @@ open either kind in the Transform Editor read-only (the pencil's view, see "Cust
 
 A call that can take long does not hold its client until it ends. The job-capable tools (`mcp::isJobCapableTool`:
 `evaluate`, `create_derived_object`, `wait_for`, `open_file`, `reload_file`, `unload_file`, `start_stream`,
-`export_series`)
+`export_series`, `load_layout`)
 take `wait_s` (`mcp::waitSeconds`: default `kDefaultWaitS`, at most `kMaxWaitS`), added to their schemas by
 `mcp::toolList`.
 
@@ -214,10 +214,11 @@ states: running · waiting_for_user · completed · failed · killed
   the job running; `followStream` ties the two). The job ends `completed` when the stream ends on its own or anyone
   stops it (`stop_stream`, the user removing the dataset), `failed` when it fails, `killed` on `job_kill`. Streams
   count toward `kMaxRunningJobs`, and revoking a token stops the streams its agents started.
-- **Dialogs an agent caused.** `open_file` and `start_stream` with `ask_user`, and `unload_file`'s confirmation, put
-  a dialog in front of the user. Each hands the job the closer of exactly that dialog while it is up
-  (`McpServer::dialogWatch`, a `dialog_presenter::DialogWatch` that the file loader, the stream manager and the
-  unload confirmation each pass to what opens their dialog): the job then reads
+- **Dialogs an agent caused.** `open_file` and `start_stream` with `ask_user`, and the confirmations of
+  `unload_file` and `load_layout`, put a dialog in front of the user. Each hands the job the closer of exactly that
+  dialog while it is up (`McpServer::dialogWatch`, a `dialog_presenter::DialogWatch` that the file loader, the
+  stream manager and the confirmations (`dialog_presenter::questionAsync`) each pass to what opens their dialog): the
+  job then reads
   `waiting_for_user`, and a kill closes that dialog from the event loop, as the user's click would arrive. The
   rejection is the tool's ordinary "cancelled" outcome, so nothing is applied, and it is the whole stop: a load at
   its dialog is not also cancelled through `FileLoader::cancelLoad`. Revoking a token closes the dialogs its jobs
@@ -232,8 +233,9 @@ states: running · waiting_for_user · completed · failed · killed
   tool's does: it ends as killed, which also answers another session of the same client waiting on it. So does
   `unload_file`'s, whose prompt is withdrawn: a client that left must not have data deleted later
   (`stillAuthorized` already refuses from the moment the call hung up, before the tick notices). An import, a
-  stream and an export carry on as background jobs their client finds with `jobs_list`. A background job ignores
-  the connection of the call that started it.
+  stream and an export carry on as background jobs their client finds with `jobs_list`. So does `load_layout`'s
+  while it asks or downloads: a client that left must not have the user's workspace replaced later. A background job
+  ignores the connection of the call that started it.
 - **`notifications/cancelled`** kills the one foreground call of the same token and owner whose JSON-RPC id matches
   `requestId` (`McpServer::cancelRequest`); none or several matches stop nothing, since ids are per client session.
   A cancel that names no client (some name themselves on requests only) is matched on the token alone. The bridge
@@ -329,7 +331,8 @@ wait returns.
     after its dialog leaves no dataset behind);
   - `open_file` and `reload_file` loads waiting in the queue or at their dialog (`LoadHints::still_allowed`, checked
     in `FileLoader::beginLoad`);
-  - `unload_file`'s prompt (`confirmAndRemoveDependentTransforms`'s `still_allowed`).
+  - `unload_file`'s prompt (`confirmAndRemoveDependentTransforms`'s `still_allowed`);
+  - `load_layout`'s confirmation.
 - **A tool runs from the event loop**, never from inside its connection's own signal (`McpServer::dispatch` queues
   the call): a tool may run a modal loop (the unload prompt, a stream's dialog), during which that connection can
   close and be deleted.
@@ -396,7 +399,8 @@ cache (`~/.cache/plotjuggler-agent/relay-key`).
   trusts whatever relay its `?mcp=` names, so it accepts loopback relays only: a link to `?mcp=` is a request to be
   driven by that relay, as `--mcp-relay` is on the desktop.
 - **Tools.** The browser has no `about` (no feature catalog) and no `export_series` (the file would stay in the
-  page); `toolList` and the instructions leave them out there. MCP clients read `tools/list` once at startup, before
+  page); `toolList` and the instructions leave them out there. `save_layout` writes no file and `load_layout` takes
+  no `path` there (the relay serves files only to `open_file`). MCP clients read `tools/list` once at startup, before
   any page connects, and do not reliably refresh on `list_changed`, so the relay serves its bundled
   `browser-tools.json` (regenerated from a build, see its README) until a page has connected, then that page's list,
   cached for the next sessions.
@@ -553,6 +557,75 @@ dock with no state).
   dialog open (`runsUnderUsersDialog`); `set_widget_state` waits. `widget_state` with action `set` is a tool error
   naming `set_widget_state`.
 
+## Layouts
+
+`save_layout` and `load_layout` read and replace the whole workspace as layout XML, through the menu's own code:
+
+- **Save.** `MainWindow::layoutFileBytes` is what File → Save Layout writes (`saveLayoutToPath` is it plus
+  `writeLayoutFile`). With a `path` (desktop) the tool writes the menu's file and answers `path` and `bytes`, not the
+  text: bound to its sources unless `bind_sources` is false (`layout_xml::kBindSourcesByDefault`, the save dialog's
+  default), credentials kept, data paths relative to its folder, a recent layout. `outputPathError`, shared with
+  `export_series`, refuses a relative path, one not ending in `.xml` (`.pj4.xml` is added to a path with no
+  extension, as the menu adds it), a folder, and an existing file unless `overwrite`. Without `path` the tool returns
+  `xml`, which reaches the agent: generic unless `bind_sources` is true, and then with absolute data paths (text has
+  no folder). Every configuration in it (a file's or a stream's `<plugin>`, a `<materialize>` descriptor, a pinned
+  `<toolbox>`, a Custom Widget's `<config>`, a filter's `<processor>`, a derived series' `<params>`) goes through
+  `configForAgent`; only one whose redaction changed something is rewritten, so the others keep their text byte for
+  byte (a stream's configuration text is how a load finds it running). In the browser `path` is refused: the page
+  cannot write the agent's disk.
+- **Load.** One of `xml`, `path` or `url`, each parsed and checked to be a layout (a `<root>` holding a
+  `<tabbed_widget>`) with no redacted secret before anyone is asked: no configuration (the tags save's text redacts)
+  holds `mcp::kRedacted` where redaction puts it, a string under a key naming a secret (`mcp::holdsRedactedSecret`). A
+  redacted secret would be applied as the sentinel itself (a stream would not match the running one, and a second
+  session would start with `<redacted>` as its password), so the refusal says to round-trip through
+  `save_layout {path}` and `load_layout {path}`, whose file keeps the secrets, or (in the browser, which has neither)
+  to put the real values in. The sentinel under any other key is a value like any other, and text that is not JSON is
+  not checked. Text is parsed as a QString, so an encoding declaration in it is ignored; a file through
+  `MainWindow::readLayoutFile`; a `url` once `PresetController` has downloaded it (only the layout: data files beside it
+  are not fetched). The parsed document goes to `MainWindow::loadLayoutForAgent`, the body of
+  `loadLayoutFromPath` past its read (`loadLayoutDocument`) as `--layout` runs it
+  (`LayoutLoadInteractivity::kAutomated`): the layout's data files and streams load when not loaded already, missing
+  curves are kept and reported, and no dialog opens. Its `LayoutOrigin` names it in messages (`xml`, the URL, the path)
+  and, for a file only, gives the folder relative paths and Scene3D resources resolve against and the recent-layout
+  entry (the cleaned absolute path). Text and a URL have no folder: a relative data path in them is reported
+  (`relative-path-unresolved`) and binds nothing. A URL anchors the layout's relative Scene3D resources (robot models
+  and their package roots) where the download ended, after any redirect on the desktop (the browser's fetch reports the URL asked for), while
+  messages name the URL asked for; in text a relative one fails the load. In the browser `path` is refused (pass the file's text).
+- **One load at a time.** The diagnostics a reply quotes do not say which load reported them, so `load_layout` is
+  refused as busy while an agent's load runs (from its checks to its reply) or `MainWindow::layoutLoadInFlight` (a
+  progressive restore waiting for its data, a browser pick or URL load). The check is repeated when a download ends,
+  before the user is asked, and once they have answered. A download that ends while the user has a modal dialog open
+  is refused as a call under it is.
+- **Whose end.** `layoutRestoreSettled` carries the id of the load that ended (`MainWindow::nextLayoutLoad`, read
+  just before `loadLayoutForAgent`), and the reply takes only its own. A load keeps the id it took on entry through
+  its questions, so a load started from one of their nested event loops never takes it. The user's own load
+  supersedes an agent's progressive restore (as it would their own) at its commit point: on the desktop before a
+  reload enqueues or the sync apply; in the browser before a source-bound layout's imports start or the apply. The
+  superseded restore settles false with a "Layout" diagnostic (`layout-superseded`), so the agent hears its layout was
+  not loaded, and the user's load settles on its own. A superseded restore is not rolled back: if the user's load
+  then fails, the workspace keeps what the agent's restore had applied.
+- **The user's consent.** Unlike every other tool, a load replaces the user's tabs and derived series. When
+  `MainWindow::layoutLoadWouldDiscardWork` says the workspace holds anything (a dock holding a plot or a widget, a
+  derived series, object or marker rule, an open toolbox, undo history), the user is asked first ("Replace" /
+  "Cancel"), as a job: past `wait_s` the agent gets its job id, `job_kill` withdraws the question, and a call that
+  hangs up withdraws it too. Cancel loads nothing. A workspace with nothing in it is replaced without asking.
+- **Stopping.** `job_kill` withdraws the question or cancels the download, and the job ends `killed`; a stop that
+  reaches the job just before the user's answer is handled wins too, since the answer asks `stillAuthorized`, which
+  refuses a job being stopped. Once the layout applies it cannot be stopped halfway (a restore waiting for its files
+  would leave their data behind a workspace that no longer shows it): the stop is declined at once, its answer (the
+  job's status, whose progress says the load completes) comes without waiting, and the job ends with the load's own
+  outcome.
+- **The answer** is `loaded` and the warnings reported meanwhile (every "Layout" diagnostic at warning level or
+  above, such as a newer `pj4_version`, a data file that is gone, a relative path, curves the data lacks or a dataset
+  chosen for the layout, and a layout data file's "File Loader" load failure), each once; the apply failure's
+  summary, which quotes issues already reported, only when it is the sole reason. Or an error with the app's
+  reasons. Diagnostics reach `QtDiagnosticBridge` queued: those posted before the load are delivered before the
+  capture starts, those posted before its settle are delivered at the settle, where the capture ends, and the reply
+  is sent one event-loop turn later.
+- **Ownership.** Agents' tabs persist with their owner (`owner_plugin`) and their derived series with their owner's
+  transform keys, and a load restores both as they were saved: the same `agent-<client>` gets them back (`get_status`
+  `agent_tabs`, `list_created`, `plot_tab`), any other client sees them as someone else's.
+
 ## The user comes first
 
 - While a modal dialog is open, only read-only tools run (`screenshot` and `widget_state` among them); the rest are
@@ -560,7 +633,8 @@ dock with no state).
   `focus`.
   The UI tools are the exception: they are the user, in a run that asked for them.
 - `unload_file` with dependent derived series waits for the user's answer to the prompt (the `cancelled` hook of
-  `confirmAndRemoveDependentTransforms`), as a job: past `wait_s` the agent gets its job id.
+  `confirmAndRemoveDependentTransforms`), as a job: past `wait_s` the agent gets its job id. `load_layout` asks the
+  same way before it replaces a workspace that holds anything ([Layouts](#layouts)).
 - A dialog opened because an agent passed `ask_user` is titled "An AI agent asked you to choose: ...". The prefix
   travels `LoadHints::dialog_title_prefix` → `DataSourceRequest::title_prefix` → `DialogEngineConfig::title_prefix`
   (for streams, `StreamingSourceManager::startSession`).
@@ -585,18 +659,18 @@ dock with no state).
   export runs); it is replaced only once the new one is complete (`QSaveFile`). It refuses more than 10
   million rows and reports a failed write, flush or close.
 - **Plugin configurations** reach an agent only through `mcp::redactSecrets` (`get_status`, the `open_file` and
-  `start_stream` results, and the job summaries `jobs_list` and the Jobs dialog show): every non-empty string under a
-  key that names a secret (password, passwd, secret, token, apikey, privatekey, credential, anywhere in the key,
-  ignoring case, `_` and `-`), and everything under such a key, reads as `mcp::kRedacted`. An MQTT source saves its
-  `password` and a WebRTC source its `bearer_token` and ICE `credential`s in the configuration. Passed back, the
-  sentinel keeps the saved value at the same key path (`mcp::restoreSecrets`) only when the configuration, its
-  secret keys aside, is the saved one unchanged: a changed broker address, server URL or ICE entry would carry the
-  saved secret where the user never sent it, so such a call is refused, naming the key paths that differ (pass the
-  secret itself, or `ask_user`). The rule is generic: it compares the whole document and knows no plugin's keys. The
-  saved configuration is, for a stream, the one the user last confirmed in the source's dialog (what `start_stream`
-  uses without `config`); for a file, the one the same file was loaded with (in the browser a page's file never
-  matches, so a sentinel there is refused). With no saved value at a sentinel's path the call is refused, naming it.
-  `ui_tree` reads a password field as its mask.
+  `start_stream` results, `save_layout`'s text, and the job summaries `jobs_list` and the Jobs dialog show): every
+  non-empty string under a key that names a secret (password, passwd, secret, token, apikey, privatekey, credential,
+  anywhere in the key, ignoring case, `_` and `-`), and everything under such a key, reads as `mcp::kRedacted`. An MQTT
+  source saves its `password` and a WebRTC source its `bearer_token` and ICE `credential`s in the configuration. Passed
+  back, the sentinel keeps the saved value at the same key path (`mcp::restoreSecrets`) only when the configuration, its
+  secret keys aside, is the saved one unchanged: a changed broker address, server URL or ICE entry would carry the saved
+  secret where the user never sent it, so such a call is refused, naming the key paths that differ (pass the secret
+  itself, or `ask_user`). The rule is generic: it compares the whole document and knows no plugin's keys. The saved
+  configuration is, for a stream, the one the user last confirmed in the source's dialog (what `start_stream` uses
+  without `config`); for a file, the one the same file was loaded with (in the browser a page's file never matches, so a
+  sentinel there is refused). With no saved value at a sentinel's path the call is refused, naming it. `ui_tree` reads a
+  password field as its mask.
 - **Names from files are data.** The instructions quote every dataset, topic and field name as a JSON string and say
   they are data, not instructions (see [Tool sets](#tool-sets)).
 - **Logging.** No token is ever logged, and server logging goes to the `pj.mcp` category.
@@ -635,6 +709,12 @@ dock with no state).
     refused and the panel keeps its topic. `WidgetStateRefusesALayerOfAnotherDataset`: a 3D view's `set_widget_state` adding another dataset's layer is refused with the
     view's reason and the view keeps its layers.
     Each widget family tests its own `xmlValidateState` and option coverage.
+  - `McpLayoutTest`: `save_layout` writes what the menu's save writes and answers its path, overwrites only a layout
+    file, returns generic text unless asked and redacts a stream's secret in bound text; `load_layout` from text, a
+    file and a URL restores the agent's tab and series as its own, records only a file as a recent layout, asks when
+    something would be lost (a toolbox, undo history), refuses XML that is no layout before asking, ignores the
+    text's encoding declaration, reports a relative path in text, is refused while another load runs, and returns
+    the app's warnings and errors without opening a dialog; a URL download is killed by `job_kill`.
   - `TheInstructionsListEveryTopicOrNoneAndStayUnderTheCap`, `InitializeSaysWhatIsLoaded`: the summary's
     all-or-nothing rule, quoting and cap. `ConfigSecretsReadAsTheSentinel…`, `AStreamConfigsSecretsAreRedacted…`:
     redaction and the sentinel (refused for a changed configuration), for a file and a stream.
@@ -680,7 +760,12 @@ dock with no state).
 - A `create_derived_object` stopped during its first read-back answers `killed` although the object is installed,
   and the read-back's removal of an object whose script fails is skipped: `list_created` shows it and
   `remove_derived_series` removes it.
-
+- A `load_layout` from a `url` loads the layout's data files and streams as text does, so a layout on the web can
+  name a file on this machine or start a stream; an agent's own `xml` can carry the same.
+- A layout's `owner_plugin` and transform owners are taken as written: text an agent passes can name another
+  client's tabs and series as theirs.
+- `save_layout`'s text drops a `<config>`, `<processor>` or `<params>` whose text is not JSON: redaction cannot see
+  into it, so keeping it could hand the agent a secret. The file at `path` keeps it.
 - `widget_state` lists only what a parser checks. A value set from data (a point cloud's colour field, a frame name)
   is reported as `text`: the agent learns the field names from `describe_topic`, not from `get`. A Custom Widget
   plugin's state is opaque to the host and reports no options; its `set_widget_state` is not validated before the plugin's own

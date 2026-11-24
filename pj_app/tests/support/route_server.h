@@ -2,9 +2,10 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
-// A loopback HTTP server for the preset tests: fixed bodies by path, 404
-// otherwise. A held path answers only on release(), which lets a test act
-// while that download is in flight. GUI thread only.
+// A loopback HTTP server for the preset tests: fixed bodies by path, a 302 to
+// another path for a redirected one, 404 otherwise. A held path answers only
+// on release(), which lets a test act while that download is in flight. GUI
+// thread only.
 
 #include <QByteArray>
 #include <QHash>
@@ -53,6 +54,10 @@ class RouteServer {
   void route(const QString& path, const QByteArray& body) {
     routes_.insert(path, body);
   }
+  // `from` answers 302 Found, sending the client to `to` on this server.
+  void redirect(const QString& from, const QString& to) {
+    redirects_.insert(from, to);
+  }
   void hold(const QString& path) {
     held_.insert(path);
   }
@@ -71,6 +76,14 @@ class RouteServer {
 
  private:
   void answer(QTcpSocket* socket, const QString& path) const {
+    if (const auto moved = redirects_.constFind(path); moved != redirects_.cend()) {
+      socket->write(
+          "HTTP/1.1 302 Found\r\nLocation: " + url(moved.value()).toEncoded() +
+          "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+      socket->flush();
+      socket->disconnectFromHost();
+      return;
+    }
     const auto route = routes_.constFind(path);
     const QByteArray body = route != routes_.cend() ? route.value() : QByteArray("missing");
     const QByteArray status = route != routes_.cend() ? "200 OK" : "404 Not Found";
@@ -84,6 +97,7 @@ class RouteServer {
   QTcpServer server_;
   QHash<QTcpSocket*, QByteArray> pending_;
   QHash<QString, QByteArray> routes_;
+  QHash<QString, QString> redirects_;
   QSet<QString> held_;
   QList<std::pair<QPointer<QTcpSocket>, QString>> parked_;
 };

@@ -105,6 +105,34 @@ TEST_F(MainWindowLayoutExitTest, CommittedRestoreDecidesSuccess) {
   EXPECT_EQ(codes.front(), PJ::LayoutExitWatch::kExitCodeSuccess);
 }
 
+// The watch hears only the load it was built before: another load's settle (here one that fails to open while the
+// watched restore still waits for its data, and so supersedes nothing) decides nothing.
+TEST_F(MainWindowLayoutExitTest, AnotherLoadsSettleDecidesNothing) {
+  const QString source_path = project_dir_->filePath(QStringLiteral("data/watched.mcap"));
+  const QString layout_path = project_dir_->filePath(QStringLiteral("watched.pj4.xml"));
+  ASSERT_TRUE(
+      fake::writeImportLayout(
+          layout_path, QStringLiteral("/watched"), source_path,
+          fake::makeDescriptor(QStringLiteral("trusted"), source_path, QStringLiteral("block"))));
+
+  std::vector<int> codes;
+  PJ::LayoutExitWatch watch(window(), std::chrono::milliseconds(10'000), [&codes](int code) { codes.push_back(code); });
+  Peer::loadLayout(window(), layout_path, /*interactive=*/false);
+  ASSERT_TRUE(Peer::progressiveInFlight(window()));
+  Peer::loadLayout(window(), project_dir_->filePath(QStringLiteral("other-missing.pj4.xml")), /*interactive=*/false);
+  EXPECT_TRUE(codes.empty()) << "another load's failure decided the exit code";
+  ASSERT_TRUE(Peer::progressiveInFlight(window())) << "the failed open superseded the watched restore";
+
+  const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "watched.mcap", /*own_time_domain=*/true);
+  ASSERT_NE(dataset, 0u);
+  ASSERT_NE(pj_test::addScalarTopic(appSession(), dataset, "/watched", 1'000, 2'000), 0u);
+  appSession().catalogModel().rebuildFromDatastore();
+  ASSERT_NE(fake::g_instance, nullptr);
+  fake::g_instance->releaseStart();
+  ASSERT_TRUE(pumpUntil([&codes]() { return !codes.empty(); }));
+  EXPECT_EQ(codes, std::vector<int>{PJ::LayoutExitWatch::kExitCodeSuccess});
+}
+
 // A never-settling restore (parked import job) decides kExitCodeTimeout after the deadline; the batch is still active
 // then, and left for the suite teardown to hard-cancel.
 TEST_F(MainWindowLayoutExitTest, NeverSettlingRestoreDecidesTimeoutWhileTheBatchIsStillActive) {

@@ -16,6 +16,7 @@
 #include "pj_plugins/dialog_protocol.h"
 #include "pj_runtime/ExtensionCatalogService.h"
 #include "pj_widgets/ChromeMetrics.h"
+#include "pj_widgets/MessageBox.h"
 
 QT_BEGIN_NAMESPACE
 class QWidget;
@@ -75,6 +76,12 @@ using DataSourceCompletion = std::function<void(DataSourceResult)>;
 // returned functor closes the dialog synchronously: one on_rejected to the plugin, then the completion with
 // kRejected. Call it while the plugin context is alive (shutdown).
 [[nodiscard]] DialogCancelFn showDataSourceDialogAsync(const DataSourceRequest& req, DataSourceCompletion completion);
+
+// MessageBox::questionAsync whose prompt `on_dialog` can withdraw (as the user's Cancel): told the prompt's closer when
+// it opens and an empty functor once it is answered, before `answered` runs with the chosen button's index.
+void questionAsync(
+    QWidget* parent, const QString& title, const QString& text, std::vector<MessageBox::ButtonSpec> buttons,
+    std::function<void(int choice)> answered, const DialogWatch& on_dialog);
 
 }  // namespace dialog_presenter
 

@@ -166,6 +166,31 @@ TEST_F(MainWindowLayoutSettleTest, FailedOpenSettlesFalseAndTheDumpCarriesTheFai
   EXPECT_TRUE(saw_open_failed) << "the dump written on the failure path must carry layout-open-failed";
 }
 
+// A folder opens as no file does (a locked file on Windows too): its failure is layout-open-failed, never a parse
+// failure, though the folder itself is readable.
+TEST_F(MainWindowLayoutSettleTest, AFolderFailsToOpenNotToParse) {
+  const QString dump_path = project_dir_->filePath(QStringLiteral("folder-diag.json"));
+  PJ::DiagnosticDump dump(dump_path);
+  dump.attachTo(window().diagnosticBridge());
+  const QString folder = project_dir_->filePath(QStringLiteral("folder.pj4.xml"));
+  ASSERT_TRUE(QDir().mkpath(folder));
+
+  QObject scope;
+  std::vector<bool> settles;
+  QObject::connect(
+      &window(), &PJ::MainWindow::layoutRestoreSettled, &scope, [&settles](bool ok) { settles.push_back(ok); });
+  Peer::loadLayout(window(), folder, /*interactive=*/false);
+  ASSERT_EQ(settles, std::vector<bool>{false});
+
+  ASSERT_TRUE(dump.write());
+  QStringList ids;
+  for (const auto& value : readDumpEnvelope(dump_path).value(QStringLiteral("records")).toArray()) {
+    ids << value.toObject().value(QStringLiteral("id")).toString();
+  }
+  EXPECT_TRUE(ids.contains(QStringLiteral("layout-open-failed"))) << ids.join(u", ").toStdString();
+  EXPECT_FALSE(ids.contains(QStringLiteral("layout-parse-failed"))) << ids.join(u", ").toStdString();
+}
+
 // A plain layout (no batch, no pending loads) settles true on the sync leg, exactly once, with no batch constructed.
 TEST_F(MainWindowLayoutSettleTest, PlainLayoutSettlesTrueOnTheSyncApplyLeg) {
   const PJ::DatasetId dataset = pj_test::createDataset(appSession(), "plain.mcap", /*own_time_domain=*/true);

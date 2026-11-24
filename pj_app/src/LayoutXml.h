@@ -32,6 +32,13 @@ inline constexpr char kLayoutExtension[] = ".pj4.xml";
 // dialog's defaultSuffix against platform dialog quirks.
 [[nodiscard]] QString ensureLayoutExtension(const QString& path);
 
+// Whether a desktop layout file records its data sources when nobody says otherwise: the Save Layout dialog's
+// "Bind to this data source" starts checked.
+inline constexpr bool kBindSourcesByDefault = true;
+
+// "'<name>' is not a valid PJ4 layout: <why> (line, col)": how every layout load reports XML that does not parse.
+[[nodiscard]] QString parseFailureMessage(const QString& name, const QDomDocument::ParseResult& result);
+
 // True when serialized browser-layout bytes still hold a page-lifetime upload identity or its MEMFS path; every
 // browser layout download refuses such bytes (they name nothing outside this page).
 [[nodiscard]] bool containsEphemeralBrowserPath(const QByteArray& serialized);
@@ -135,8 +142,9 @@ struct DataSourceRef {
          !ref.materialize_descriptor_json.isEmpty();
 }
 
-// One DataSourceRef per <fileInfo> with a filename, in document order; relative paths anchor at `layout_dir`.
-[[nodiscard]] QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const QDir& layout_dir);
+// One DataSourceRef per <fileInfo> with a filename, in document order; relative paths anchor at `layout_dir`. With no
+// `layout_dir` (layout text with no file) a relative path resolves to nothing: its `resolved_path` is empty.
+[[nodiscard]] QList<DataSourceRef> extractDataSource(const QDomDocument& doc, const std::optional<QDir>& layout_dir);
 
 // A downloaded layout's <fileInfo filename> (raw serialized_path) resolved against `layout_url`. A relative
 // filename is a path, not URL syntax ('#', '?', '%' are part of the name); an absolute http(s) URL is kept. Empty
@@ -372,8 +380,9 @@ void stampDatasetSourcePaths(QDomDocument& doc, const DatasetPathLookup& lookup)
 void removeUnvalidatedDatasetIds(QDomDocument& doc);
 
 // Anchors relative `*_dataset_path` qualifiers at the layout directory (so a source-bound layout moves with its
-// data); absolute ones are only cleaned. Run before any restore reads them.
-void resolveDatasetSourcePaths(QDomDocument& doc, const QDir& layout_dir);
+// data); absolute ones are only cleaned. Run before any restore reads them. With no `layout_dir` the relative ones
+// stay as they are, binding to nothing, and are returned.
+QStringList resolveDatasetSourcePaths(QDomDocument& doc, const std::optional<QDir>& layout_dir);
 
 // Rewrites every non-empty dataset_path, x_dataset_path, y_dataset_path, input_dataset_path and
 // source_dataset_path through `remap`. No filesystem access.

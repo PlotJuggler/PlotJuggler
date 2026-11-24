@@ -126,6 +126,9 @@ class DerivedObjects {
   /// `history_exempt="1"` so it round-trips through a layout file; `kHistory` omits
   /// those entries outright (see `SnapshotScope`).
   [[nodiscard]] QDomElement save(QDomDocument& doc, SnapshotScope scope) const;
+  /// Whether any recipe lives (a filter, transform, marker generator or on-demand node, previews included), without
+  /// serializing them.
+  [[nodiscard]] bool hasAny() const;
 
   /// Parses the <data_processors> child of `root` (a missing one wants nothing) for a
   /// restore with `intent`. Under `kHistory` it skips entries flagged

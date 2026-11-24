@@ -184,6 +184,12 @@ void orderOnDemandByDependency(std::vector<WantedOnDemand>& entries) {
 
 DerivedObjects::DerivedObjects(SessionManager& session, CatalogModel& catalog) : session_(session), catalog_(catalog) {}
 
+bool DerivedObjects::hasAny() const {
+  const DataProcessorService& processors = session_.dataProcessorService();
+  return session_.batchEngine().persistentBindingCount() != 0 || !session_.onDemandService().graph().empty() ||
+         !processors.recipes().empty() || !processors.transformRecipes().empty();
+}
+
 QDomElement DerivedObjects::save(QDomDocument& doc, SnapshotScope scope) const {
   QDomElement element = doc.createElement(u"data_processors"_s);
   for (const auto& recipe : session_.dataProcessorService().recipes()) {

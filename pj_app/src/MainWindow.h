@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QDomDocument>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QHash>
 #include <QList>
 #include <QMainWindow>
@@ -401,6 +402,44 @@ class MainWindow : public QMainWindow {
   // shared with the linked plots, as a user zoom is.
   void endAgentDockChange(DockWidget* dock);
 
+  // The bytes File → Save Layout writes to `path`: data paths relative to its folder when beneath it, or all absolute
+  // when `path` is empty. In the browser, the generic or source-bound download, `path` unused. nullopt with `error`
+  // when the layout cannot be saved (a stream's record, a browser source that has no URL).
+  [[nodiscard]] std::optional<QByteArray> layoutFileBytes(
+      const QString& path, bool include_data_source, QString& error);
+  // Writes `bytes` to `path` in place of what was there only once they are all written, and records it as a recent
+  // layout. Empty on success, else why not.
+  [[nodiscard]] QString writeLayoutFile(const QString& path, const QByteArray& bytes);
+  // Where a parsed layout came from. `name` is what messages call it (a path, a URL, "xml"). `file_path`, empty for
+  // text with no file, is the folder its relative paths and Scene3D resources resolve against and the recent-layout
+  // entry; with none, no recent entry is made and each relative data path is reported unresolved. `url`, the address
+  // a layout was downloaded from, anchors its relative Scene3D resources when there is no file.
+  struct LayoutOrigin {
+    QString name;
+    QString file_path;
+    QUrl url;
+    [[nodiscard]] std::optional<QDir> folder() const {
+      return file_path.isEmpty() ? std::nullopt : std::optional<QDir>(QFileInfo(file_path).absoluteDir());
+    }
+  };
+  // The layout file at `path`, parsed; nullopt with `error` when it cannot be read or does not parse, and then in
+  // `failure_id` the diagnostic id of the step that failed (layout-open-failed, layout-parse-failed).
+  [[nodiscard]] static std::optional<QDomDocument> readLayoutFile(
+      const QString& path, QString& error, const char** failure_id = nullptr);
+  // Loads `doc` as `--layout` loads a file: its data files and streams load without asking, no dialog opens, missing
+  // curves are kept, and what goes wrong is reported as "Layout" diagnostics; it ends in layoutRestoreSettled, with
+  // the id nextLayoutLoad() gave just before the call.
+  void loadLayoutForAgent(QDomDocument doc, const LayoutOrigin& origin);
+  // The id layoutRestoreSettled will carry for the next layout load started.
+  [[nodiscard]] quint64 nextLayoutLoad() const {
+    return layout_loads_ + 1;
+  }
+  // A layout load has not settled yet: a progressive restore waiting for its data, or a browser pick or URL load.
+  [[nodiscard]] bool layoutLoadInFlight() const;
+  // Whether loading a layout would discard something: a dock that holds a plot, scene or panel, a derived series,
+  // object or marker rule, an open toolbox, or undo history.
+  [[nodiscard]] bool layoutLoadWouldDiscardWork();
+
   // The service assembly a toolbox plugin with id `owner` would get (data processors, object
   // reads, playback, its own plot and scene tabs) with no plugin loaded: an MCP agent's tools run
   // against it. Null after reporting the failure to the diagnostics. The caller must release it
@@ -446,11 +485,12 @@ class MainWindow : public QMainWindow {
   // After qApp's stylesheet is applied.
   void stylesheetChanged(QString theme);
 
-  // Exactly once per loadLayoutFromPath that reaches a terminal outcome (--exit-after-layout observes it).
-  // `success` only when the layout committed, which for a progressive restore is after every restore waiter
-  // cleared and the import batch finished, so quitting here never tears down an active batch. False on an
-  // open/parse/apply failure, a user cancel or a cancelled batch. A superseded restore never settles.
-  void layoutRestoreSettled(bool success);
+  // Exactly once per layout load (loadLayoutFromPath, loadLayoutForAgent) that reaches a terminal outcome
+  // (--exit-after-layout observes it); `load` names which (nextLayoutLoad). `success` only when the layout
+  // committed, which for a progressive restore is after every restore waiter cleared and the import batch
+  // finished, so quitting here never tears down an active batch. False on an open/parse/apply failure, a user
+  // cancel, a cancelled batch, or a progressive restore another load superseded.
+  void layoutRestoreSettled(bool success, quint64 load);
 
   // The terminal of one loadLayoutFromUrl: `reason` is empty on success, else the token its
   // PJ_WASM_LAYOUT_LOAD_FAILED line names (busy, download, size, fingerprint, …) or "cancelled". A busy refusal
@@ -814,6 +854,10 @@ class MainWindow : public QMainWindow {
   void loadLayoutFromPath(
       const QString& path, LayoutLoadInteractivity interactivity,
       const std::optional<QStringList>& current_data_files = std::nullopt, const QStringList& chosen_files = {});
+  // loadLayoutFromPath past reading and parsing the file. Every terminal outcome emits layoutRestoreSettled once.
+  void loadLayoutDocument(
+      QDomDocument doc, const LayoutOrigin& origin, LayoutLoadInteractivity interactivity,
+      const std::optional<QStringList>& current_data_files = std::nullopt, const QStringList& chosen_files = {});
   // Byte-level layout loads: browser uploads and recipes, and loadLayoutFromUrl (which is why they build on the
   // desktop too). Every terminal outcome goes through finishBrowserLayoutLoad, which logs
   // PJ_WASM_LAYOUT_LOAD_OK/FAILED.
@@ -904,10 +948,10 @@ class MainWindow : public QMainWindow {
   // beginProgressiveLayoutRestore). `stream_tracks`, the timeline tracks of the streams this load started or
   // bound, join the files' offsets and order; a layout with some applies though their datasets are still empty.
   // `compared`: the datasets a multi-copy load duplicated the layout for; their starts are aligned before the restore
-  // builds and fits the plots.
+  // builds and fits the plots. `load` is the id it settles with.
   void applyRestoredLayout(
-      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks,
-      const std::vector<DatasetId>& compared = {});
+      QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks,
+      quint64 load, const std::vector<DatasetId>& compared = {});
   // What chooseLayoutDatasets hands on.
   struct ChosenLayout {
     std::optional<QDomDocument> doc;  ///< nullopt: nothing to apply (cancelled, or every chosen dataset `removed`)
@@ -926,9 +970,11 @@ class MainWindow : public QMainWindow {
   [[nodiscard]] QStringList startLayoutStreams(
       const QList<layout_xml::StreamingSourceRef>& streams, LayoutStreamBinding& binding);
   // `policy` comes from the load's interactivity and is captured for the drain, never inferred from whether a
-  // batch exists.
+  // batch exists. `load` is the id of the load it continues, which it settles with: never the latest one, which a
+  // load started from a nested event loop (a question of this load's) may have taken since.
   void beginProgressiveLayoutRestore(
-      QDomDocument doc, const QString& path, MissingCurvePolicy policy, const LayoutTimelinePlan& stream_tracks = {});
+      QDomDocument doc, const LayoutOrigin& origin, MissingCurvePolicy policy, quint64 load,
+      const LayoutTimelinePlan& stream_tracks = {});
   void cancelProgressiveLayoutRestore();
   [[nodiscard]] bool rollbackProgressiveWorkspace();
   [[nodiscard]] bool abortProgressiveRestore();
@@ -979,8 +1025,9 @@ class MainWindow : public QMainWindow {
   // A still-running batch takes a hard shutdown (children cancelled and joined, no rollback). Outside a restore
   // it also ends the retention channel a kRetainAndDiagnose drain left (pending_items_added_conn_).
   void resetLayoutImportBatch();
-  // Tears down an in-flight progressive restore and retires the batch. Every new layout load and closeEvent go
-  // through it: a load that stays synchronous never reaches beginProgressiveLayoutRestore to clean up the old one.
+  // Tears down an in-flight progressive restore, which then settles false, and retires the batch. Every new layout
+  // load goes through it: a load that stays synchronous never reaches beginProgressiveLayoutRestore to clean up the
+  // old one.
   void supersedeActiveRestore();
   // Applies the timeline state a progressive restore stashed, once the reloaded datasets' paths are registered.
   // Runs before the processor replay (an all_datasets marker generator must see the settled offset) and before
@@ -1000,7 +1047,7 @@ class MainWindow : public QMainWindow {
   // After a preset load succeeded: records what it brought and removes only what the preset before it brought.
   void replacePreviousPresetData();
   void restoreChromeAndPanels(
-      const QDomDocument& doc, const QString& path, const LayoutTimelinePlan* resolved_timeline = nullptr);
+      const QDomDocument& doc, const LayoutOrigin& origin, const LayoutTimelinePlan* resolved_timeline = nullptr);
   void saveLayoutToPath(const QString& path, bool include_data_source);
   void recordRecentLayout(const QString& path);
   [[nodiscard]] QStringList recentLayouts() const;
@@ -1072,9 +1119,9 @@ class MainWindow : public QMainWindow {
   // The active batch's failed sources as "path: why" lines (empty without a batch).
   [[nodiscard]] QStringList layoutImportFailureLines() const;
 
-  // <previouslyLoaded_Datafiles>: paths relative to `layout_dir` when at or beneath it, absolute otherwise. A null
-  // element when no source is recorded.
-  [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const;
+  // <previouslyLoaded_Datafiles>: paths relative to `layout_dir` when at or beneath it, absolute otherwise or with no
+  // `layout_dir`. A null element when no source is recorded.
+  [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const std::optional<QDir>& layout_dir) const;
 
   // The per-<fileInfo> Source Timeline state, applied in two passes over one resolution. DatasetIds are
   // re-minted each session, so resolveLayoutTimelineTracks matches each entry to a live dataset by source path
@@ -1431,7 +1478,7 @@ class MainWindow : public QMainWindow {
   // While non-null, every "Layout" diagnostic is also appended here, so a failed restore can say why.
   QStringList* layout_issue_capture_ = nullptr;
   // The <data_processors> entries the last unattended layout load (kRetainAndDiagnose) skipped, saved back by
-  // saveLayoutToPath so a save never loses what the load skipped (as pending curves are kept); an interactive load
+  // layoutFileBytes so a save never loses what the load skipped (as pending curves are kept); an interactive load
   // asked instead, and its Continue drops them. Layout files only: an undo snapshot or a kExact rollback target
   // carrying them would fail on the same missing input. Replaced by the next layout load, emptied with the catalog.
   QDomDocument kept_derived_;
@@ -1510,6 +1557,9 @@ class MainWindow : public QMainWindow {
   QElapsedTimer undo_timer_;
   bool applying_state_ = false;
   bool progressive_layout_in_flight_ = false;
+  // Layout loads started (the last one's id), and the id of the load the progressive restore in flight belongs to.
+  quint64 layout_loads_ = 0;
+  quint64 progressive_load_ = 0;
   // The binder's itemsAdded retry channel. Torn down with the restore, except after a kRetainAndDiagnose drain,
   // which leaves it up so retained intents bind when their data arrives, until the next restore or
   // resetLayoutImportBatch.
