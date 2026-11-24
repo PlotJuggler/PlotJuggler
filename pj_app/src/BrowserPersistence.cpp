@@ -12,16 +12,19 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLoggingCategory>
+#include <QMap>
 #include <QMetaType>
 #include <QSet>
 #include <QSettings>
 #include <QStringList>
 #include <QTimer>
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <utility>
 
 #include "LoadInput.h"
+#include "pj_runtime/PluginSettingsKeys.h"
 
 #if defined(PJ_TARGET_WASM) && defined(PJ_WASM_ENABLE_INGRESS_PROBE)
 #include <emscripten/emscripten.h>
@@ -49,8 +52,12 @@ EM_JS(void, pj_wasm_install_persistence_test_probes, (), {
 [[maybe_unused]] constexpr auto kSessionSettingsRoot = "/tmp/plotjuggler4-settings";
 [[maybe_unused]] constexpr auto kPreferencesKey = "BrowserPersistence/preferences_v1";
 [[maybe_unused]] constexpr auto kRecentLayoutsKey = "BrowserPersistence/recent_generic_layouts_v1";
+[[maybe_unused]] constexpr auto kPluginSettingsKey = "BrowserPersistence/plugin_settings_v1";
 constexpr int kPreferencesVersion = 1;
 constexpr int kRecentLayoutsVersion = 1;
+constexpr int kPluginSettingsVersion = 1;
+// Above every plugin's capped values together; a larger stored envelope is not imported.
+constexpr qsizetype kMaxPluginSettingsBytes = 1024 * 1024;
 constexpr int kMaxRecentLayouts = 5;
 constexpr qsizetype kMaxLayoutBytes = 256 * 1024;
 constexpr qsizetype kMaxTotalLayoutBytes = 1024 * 1024;
@@ -168,18 +175,48 @@ bool exactInt(const QVariant& value, int minimum, int maximum, int& result) {
   return true;
 }
 
+// An upload identity or a MEMFS staging path: meaningless on the next load.
+bool namesAnUpload(const QString& value) {
+  return value.contains(QLatin1StringView(kBrowserUploadScheme), Qt::CaseInsensitive) ||
+         value.contains(u"/pj_uploads"_s);
+}
+
+bool hasControlCharacter(const QString& value) {
+  return std::any_of(value.cbegin(), value.cend(), [](QChar character) {
+    return character.unicode() < 0x20 || character == QChar(0x7f);
+  });
+}
+
 bool safeShortIdentifier(const QString& value) {
-  if (value.size() > kMaxIdentifierLength || value.contains(u'/') || value.contains(u'\\') ||
-      value.contains(QLatin1StringView(kBrowserUploadScheme), Qt::CaseInsensitive) ||
-      value.contains(u"/pj_uploads"_s)) {
-    return false;
-  }
-  for (const QChar character : value) {
-    if (character.unicode() < 0x20 || character == QChar(0x7f)) {
-      return false;
+  return value.size() <= kMaxIdentifierLength && !value.contains(u'/') && !value.contains(u'\\') &&
+         !namesAnUpload(value) && !hasControlCharacter(value);
+}
+
+// The candidates sanitizeDurablePluginSetting keeps, at most kMaxDurablePluginKeysPerPlugin per plugin in key order.
+QHash<QString, QString> keepDurablePluginSettings(const QMap<QString, QVariant>& candidates) {
+  QHash<QString, QString> kept;
+  QHash<QString, int> per_plugin;
+  for (auto it = candidates.cbegin(); it != candidates.cend(); ++it) {
+    const std::optional<QString> value = BrowserPersistence::sanitizeDurablePluginSetting(it.key(), it.value());
+    if (!value.has_value()) {
+      continue;
+    }
+    int& count = per_plugin[it.key().section(u'/', 1, 1)];
+    if (count < BrowserPersistence::kMaxDurablePluginKeysPerPlugin) {
+      ++count;
+      kept.insert(it.key(), *value);
     }
   }
-  return true;
+  return kept;
+}
+
+[[maybe_unused]] QByteArray encodePluginSettings(const QHash<QString, QString>& settings) {
+  QJsonObject values;
+  for (auto it = settings.cbegin(); it != settings.cend(); ++it) {
+    values.insert(it.key(), it.value());
+  }
+  return QJsonDocument(QJsonObject{{u"version"_s, kPluginSettingsVersion}, {u"values"_s, values}})
+      .toJson(QJsonDocument::Compact);
 }
 
 QString recipeDisplayName(const QString& browser_name) {
@@ -357,6 +394,7 @@ struct BrowserPersistence::Impl {
 #ifdef PJ_TARGET_WASM
   std::unique_ptr<QSettings> durable;
   QHash<QString, QVariant> last_preferences;
+  QHash<QString, QString> last_plugin_settings;
 #endif
   QList<LayoutRecipe> recipes;
 };
@@ -391,7 +429,8 @@ BrowserPersistence::BrowserPersistence(QObject* parent) : QObject(parent), impl_
     qCWarning(lcBrowserPersistence) << "Browser preferences could not be decoded; leaving the stored envelope intact";
   }
   for (const QString& key : impl_->durable->allKeys()) {
-    if (key == QLatin1String(kPreferencesKey) || key == QLatin1String(kRecentLayoutsKey)) {
+    if (key == QLatin1String(kPreferencesKey) || key == QLatin1String(kRecentLayoutsKey) ||
+        key == QLatin1String(kPluginSettingsKey)) {
       continue;
     }
     if (!restored_preferences.contains(key)) {
@@ -421,12 +460,20 @@ BrowserPersistence::BrowserPersistence(QObject* parent) : QObject(parent), impl_
     impl_->durable->setValue(QLatin1String(kRecentLayoutsKey), encodeRecipes(impl_->recipes));
   }
 
+  // An unreadable plugin-settings envelope imports nothing and stays until a durable plugin setting changes.
+  QHash<QString, QString> restored_plugin_settings =
+      decodePluginSettings(impl_->durable->value(QLatin1String(kPluginSettingsKey)));
+
   QSettings session;
   session.setFallbacksEnabled(false);
   for (auto it = restored_preferences.cbegin(); it != restored_preferences.cend(); ++it) {
     session.setValue(it.key(), it.value());
   }
+  for (auto it = restored_plugin_settings.cbegin(); it != restored_plugin_settings.cend(); ++it) {
+    session.setValue(it.key(), it.value());
+  }
   impl_->last_preferences = std::move(restored_preferences);
+  impl_->last_plugin_settings = std::move(restored_plugin_settings);
   session.sync();
   impl_->durable->sync();
   if (impl_->durable->status() != QSettings::NoError) {
@@ -566,6 +613,53 @@ bool BrowserPersistence::isSafeGenericLayoutRecipe(const QByteArray& xml) {
   return true;
 }
 
+std::optional<QString> BrowserPersistence::sanitizeDurablePluginSetting(const QString& key, const QVariant& value) {
+  // "<kPluginSettingsRoot>/<plugin>/<kDurablePluginSettingsGroup>/<name>", no segment empty.
+  const QStringList segments = key.split(u'/');
+  if (key.size() > kMaxIdentifierLength || segments.size() < 4 || segments[0] != kPluginSettingsRoot ||
+      segments[2] != kDurablePluginSettingsGroup || segments.contains(QString())) {
+    return std::nullopt;
+  }
+  if (value.metaType().id() != QMetaType::QString) {
+    return std::nullopt;
+  }
+  const QString text = value.toString();
+  if (text.size() > kMaxDurablePluginValueLength || namesAnUpload(text) || hasControlCharacter(text)) {
+    return std::nullopt;
+  }
+  return text;
+}
+
+QHash<QString, QString> BrowserPersistence::durablePluginSettings(QSettings& settings) {
+  QMap<QString, QVariant> candidates;
+  settings.beginGroup(kPluginSettingsRoot);
+  for (const QString& key : settings.allKeys()) {
+    candidates.insert(QString(kPluginSettingsRoot) + u'/' + key, settings.value(key));
+  }
+  settings.endGroup();
+  return keepDurablePluginSettings(candidates);
+}
+
+QHash<QString, QString> BrowserPersistence::decodePluginSettings(const QVariant& stored) {
+  if (stored.metaType().id() != QMetaType::QByteArray || stored.toByteArray().size() > kMaxPluginSettingsBytes) {
+    return {};
+  }
+  const QJsonDocument document = QJsonDocument::fromJson(stored.toByteArray());
+  const QJsonObject root = document.object();
+  if (!document.isObject() || root.value(u"version"_s).toInt(-1) != kPluginSettingsVersion ||
+      !root.value(u"values"_s).isObject()) {
+    return {};
+  }
+  QMap<QString, QVariant> candidates;
+  const QJsonObject values = root.value(u"values"_s).toObject();
+  for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+    if (it.value().isString()) {
+      candidates.insert(it.key(), it.value().toString());
+    }
+  }
+  return keepDurablePluginSettings(candidates);
+}
+
 QList<BrowserPersistence::LayoutRecipe> BrowserPersistence::recentLayouts() const {
   return impl_->recipes;
 }
@@ -640,16 +734,29 @@ void BrowserPersistence::syncPreferences() {
       current.insert(key, *sanitized);
     }
   }
-  if (current == impl_->last_preferences) {
+  QHash<QString, QString> plugin_settings = durablePluginSettings(session);
+  const bool preferences_changed = current != impl_->last_preferences;
+  const bool plugin_settings_changed = plugin_settings != impl_->last_plugin_settings;
+  if (!preferences_changed && !plugin_settings_changed) {
     return;
   }
-  if (current.isEmpty()) {
-    impl_->durable->remove(QLatin1String(kPreferencesKey));
-  } else {
-    impl_->durable->setValue(QLatin1String(kPreferencesKey), encodePreferences(current));
+  if (preferences_changed) {
+    if (current.isEmpty()) {
+      impl_->durable->remove(QLatin1String(kPreferencesKey));
+    } else {
+      impl_->durable->setValue(QLatin1String(kPreferencesKey), encodePreferences(current));
+    }
+  }
+  if (plugin_settings_changed) {
+    if (plugin_settings.isEmpty()) {
+      impl_->durable->remove(QLatin1String(kPluginSettingsKey));
+    } else {
+      impl_->durable->setValue(QLatin1String(kPluginSettingsKey), encodePluginSettings(plugin_settings));
+    }
   }
   impl_->durable->sync();
   impl_->last_preferences = std::move(current);
+  impl_->last_plugin_settings = std::move(plugin_settings);
   if (impl_->durable->status() != QSettings::NoError) {
     qCWarning(lcBrowserPersistence)
         << "Could not synchronize browser preferences; page-lifetime settings remain available";

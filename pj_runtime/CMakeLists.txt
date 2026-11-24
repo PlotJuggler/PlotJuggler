@@ -98,6 +98,7 @@ add_library(pj_runtime STATIC
     include/pj_runtime/PlaybackRate.h
     include/pj_runtime/ParserRoutingService.h
     include/pj_runtime/PlotTabsRuntimeHost.h
+    include/pj_runtime/PluginSettingsKeys.h
     include/pj_runtime/QSettingsBackend.h
     include/pj_runtime/RecipeGraph.h
     include/pj_runtime/RecordTap.h

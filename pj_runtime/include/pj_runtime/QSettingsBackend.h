@@ -4,6 +4,7 @@
 
 #include <QSettings>
 #include <QString>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,6 +24,12 @@ class QSettingsBackend : public sdk::SettingsBackend {
   QSettingsBackend();
   // Explicit INI file — for headless hosts and tests.
   explicit QSettingsBackend(const QString& ini_path);
+
+  // The store of one plugin: every key lives under pluginSettingsGroup(plugin_id) (PluginSettingsKeys.h), so a plugin
+  // reads and writes neither another plugin's keys nor the app's own settings. Empty `ini_path`: the app
+  // configuration.
+  [[nodiscard]] static std::unique_ptr<QSettingsBackend> forPlugin(
+      std::string_view plugin_id, const QString& ini_path = {});
 
   std::optional<std::string> getString(std::string_view key) override;
   void setString(std::string_view key, std::string_view value) override;

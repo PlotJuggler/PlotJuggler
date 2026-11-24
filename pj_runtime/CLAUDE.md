@@ -84,8 +84,10 @@ Session, catalog and time:
 - `PresetCatalog.h`: a deployment's browser `presets/index.json` and the download caps of its files.
 - `SourceConfigVariables.h`: `${deployment.ws_origin}` (the page's WebSocket origin) in a saved streaming-source
   configuration; any other `${deployment.*}` name is an error.
-- `QSettingsBackend.h`, `XmlCdata.h`: `sdk::SettingsBackend` over `QSettings`; CDATA helpers shared with `pj_app`'s
-  layout code.
+- `QSettingsBackend.h`, `PluginSettingsKeys.h`, `XmlCdata.h`: `sdk::SettingsBackend` over `QSettings` (`forPlugin`
+  scopes one plugin's `pj.settings.v1` store); the persisted key layout of plugin stores and their browser `durable/`
+  opt-in (header-only, Qt-only, shared with `pj_app`'s `BrowserPersistence`); CDATA helpers shared with `pj_app`'s
+  layout code. Who gets which store: [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) "Plugin settings".
 - `XmlStateOptions.h`: the reporting XML readers behind `IDataWidget::xmlValidateState`; an `XmlOptionsRecorder`
   collects the options and the first refused value they report (the MCP `widget_state` tool serves them);
   `xmlSelfDescriptionProblems` is the one check every widget family's test runs on its own saved state.

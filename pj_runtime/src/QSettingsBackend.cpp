@@ -6,6 +6,8 @@
 #include <QStringList>
 #include <QVariant>
 
+#include "pj_runtime/PluginSettingsKeys.h"
+
 namespace PJ {
 
 namespace {
@@ -17,6 +19,13 @@ QString toKey(std::string_view key) {
 QSettingsBackend::QSettingsBackend() = default;
 
 QSettingsBackend::QSettingsBackend(const QString& ini_path) : settings_(ini_path, QSettings::IniFormat) {}
+
+std::unique_ptr<QSettingsBackend> QSettingsBackend::forPlugin(std::string_view plugin_id, const QString& ini_path) {
+  auto backend =
+      ini_path.isEmpty() ? std::make_unique<QSettingsBackend>() : std::make_unique<QSettingsBackend>(ini_path);
+  backend->settings_.beginGroup(pluginSettingsGroup(plugin_id));
+  return backend;
+}
 
 std::optional<std::string> QSettingsBackend::getString(std::string_view key) {
   const QString qkey = toKey(key);

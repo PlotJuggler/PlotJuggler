@@ -5,7 +5,10 @@
 
 #include <QByteArray>
 #include <QDomDocument>
+#include <QSettings>
 #include <QString>
+#include <QStringList>
+#include <QTemporaryDir>
 #include <QVariant>
 
 #include "BrowserPersistence.h"
@@ -36,6 +39,10 @@ class BrowserPersistenceTestPeer {
 
   static QHash<QString, QVariant> decodeValues(const QVariant& stored) {
     return BrowserPersistence::decodePreferences(stored).values;
+  }
+
+  static QHash<QString, QString> decodePluginSettings(const QVariant& stored) {
+    return BrowserPersistence::decodePluginSettings(stored);
   }
 };
 
@@ -140,6 +147,93 @@ TEST(BrowserPersistencePolicy, RejectsWrongTypesRangesAndPathShapedIdentifiers) 
       BrowserPersistence::sanitizePreference(u"Preferences::dialog_geometry"_s, QByteArray(4096, 'x')).has_value());
   EXPECT_FALSE(
       BrowserPersistence::sanitizePreference(u"Preferences::dialog_geometry"_s, QByteArray(4097, 'x')).has_value());
+}
+
+TEST(BrowserPersistencePolicy, OnlyPluginKeysUnderDurableAreKept) {
+  const QString url = u"ws://robot.local:9871"_s;
+  EXPECT_EQ(BrowserPersistence::sanitizeDurablePluginSetting(u"PluginSettings/some-bridge/durable/url"_s, url), url);
+  EXPECT_EQ(
+      BrowserPersistence::sanitizeDurablePluginSetting(u"PluginSettings/some-bridge/durable/history/0"_s, url), url);
+
+  for (const QString& key : {
+           u"PluginSettings/some-bridge/url"_s,
+           u"PluginSettings/some-bridge/durable"_s,
+           u"PluginSettings/some-bridge/durable/"_s,
+           u"PluginSettings//durable/url"_s,
+           u"PluginSettings/some-bridge/nested/durable/url"_s,
+           u"PluginConfig/some-bridge/durable/url"_s,
+           u"durable/url"_s,
+           u"StyleSheet::theme"_s,
+       }) {
+    EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, url).has_value()) << key.toStdString();
+  }
+}
+
+TEST(BrowserPersistencePolicy, DurablePluginValuesAreBoundedStrings) {
+  const QString key = u"PluginSettings/some-bridge/durable/url"_s;
+  const qsizetype cap = BrowserPersistence::kMaxDurablePluginValueLength;
+  EXPECT_TRUE(BrowserPersistence::sanitizeDurablePluginSetting(key, QString(cap, u'x')).has_value());
+  EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, QString(cap + 1, u'x')).has_value());
+  EXPECT_TRUE(BrowserPersistence::sanitizeDurablePluginSetting(key, QString()).has_value());
+
+  EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, QStringList{u"a"_s, u"b"_s}).has_value());
+  EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, 42).has_value());
+  EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, QVariant{}).has_value());
+  EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, u"pj-upload://dead"_s).has_value());
+  EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, u"/pj_uploads/dead/run.mcap"_s).has_value());
+  EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, u"line\nbreak"_s).has_value());
+}
+
+TEST(BrowserPersistencePolicy, CollectsDurablePluginSettingsAndDropsTheRest) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  QSettings settings(dir.filePath(u"session.ini"_s), QSettings::IniFormat);
+  settings.setValue(u"PluginSettings/bridge/durable/url"_s, u"ws://robot:9871"_s);
+  settings.setValue(u"PluginSettings/bridge/token"_s, u"secret"_s);
+  settings.setValue(u"PluginSettings/other/durable/url"_s, u"ws://other:8765"_s);
+  settings.setValue(
+      u"PluginSettings/other/durable/blob"_s, QString(BrowserPersistence::kMaxDurablePluginValueLength + 1, u'x'));
+  settings.setValue(u"PluginConfig/bridge"_s, u"{\"url\":\"ws://robot:9871\"}"_s);
+  settings.setValue(u"StyleSheet::theme"_s, u"dark"_s);
+  // One plugin past the per-plugin cap keeps the first keys in key order.
+  for (int index = 0; index <= BrowserPersistence::kMaxDurablePluginKeysPerPlugin; ++index) {
+    settings.setValue(u"PluginSettings/chatty/durable/k%1"_s.arg(index), u"v"_s);
+  }
+
+  const QHash<QString, QString> kept = BrowserPersistence::durablePluginSettings(settings);
+  EXPECT_EQ(kept.value(u"PluginSettings/bridge/durable/url"_s), u"ws://robot:9871"_s);
+  EXPECT_EQ(kept.value(u"PluginSettings/other/durable/url"_s), u"ws://other:8765"_s);
+  EXPECT_FALSE(kept.contains(u"PluginSettings/bridge/token"_s));
+  EXPECT_FALSE(kept.contains(u"PluginSettings/other/durable/blob"_s));
+  EXPECT_FALSE(kept.contains(u"PluginConfig/bridge"_s));
+  EXPECT_FALSE(kept.contains(u"StyleSheet::theme"_s));
+  qsizetype chatty = 0;
+  for (auto it = kept.cbegin(); it != kept.cend(); ++it) {
+    chatty += it.key().startsWith(u"PluginSettings/chatty/"_s) ? 1 : 0;
+  }
+  EXPECT_EQ(chatty, BrowserPersistence::kMaxDurablePluginKeysPerPlugin);
+  EXPECT_FALSE(
+      kept.contains(u"PluginSettings/chatty/durable/k%1"_s.arg(BrowserPersistence::kMaxDurablePluginKeysPerPlugin)));
+  EXPECT_EQ(kept.size(), 2 + BrowserPersistence::kMaxDurablePluginKeysPerPlugin);
+}
+
+TEST(BrowserPersistencePolicy, StoredPluginSettingsAreRecheckedOnRestore) {
+  const QByteArray stored = R"({"version":1,"values":{
+    "PluginSettings/bridge/durable/url":"ws://robot:9871",
+    "PluginSettings/bridge/token":"secret",
+    "PluginSettings/bridge/durable/count":3,
+    "StyleSheet::theme":"dark"
+  }})";
+  const QHash<QString, QString> restored = BrowserPersistenceTestPeer::decodePluginSettings(stored);
+  EXPECT_EQ(restored, (QHash<QString, QString>{{u"PluginSettings/bridge/durable/url"_s, u"ws://robot:9871"_s}}));
+
+  EXPECT_TRUE(BrowserPersistenceTestPeer::decodePluginSettings(QVariant{}).isEmpty());
+  EXPECT_TRUE(BrowserPersistenceTestPeer::decodePluginSettings(u"not bytes"_s).isEmpty());
+  EXPECT_TRUE(BrowserPersistenceTestPeer::decodePluginSettings(QByteArray("not JSON")).isEmpty());
+  EXPECT_TRUE(
+      BrowserPersistenceTestPeer::decodePluginSettings(
+          QByteArray(R"({"version":2,"values":{"PluginSettings/bridge/durable/url":"ws://robot:9871"}})"))
+          .isEmpty());
 }
 
 TEST(BrowserPersistencePolicy, AcceptsOnlyBoundedSourceFreeLayoutRecipes) {

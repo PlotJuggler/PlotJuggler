@@ -550,6 +550,12 @@ if(PJ_BUILD_TESTS)
     set_source_files_properties(tests/streaming_plugin_lifetime_test.cpp PROPERTIES
         COMPILE_DEFINITIONS PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH="$<TARGET_FILE:mock_layout_stream_plugin>")
 
+    # A stream source's pj.settings.v1 store persists across sessions, scoped to its plugin.
+    list(APPEND PJ_APP_GUI_TEST_SOURCES
+        tests/streaming_plugin_settings_test.cpp)
+    set_source_files_properties(tests/streaming_plugin_settings_test.cpp PROPERTIES
+        COMPILE_DEFINITIONS PJ_MOCK_LAYOUT_STREAM_PLUGIN_PATH="$<TARGET_FILE:mock_layout_stream_plugin>")
+
     # Browser presets: the welcome dialog's selection, upload, cancel/retry and
     # thumbnail fallback (built on the desktop too; only its wiring is browser-only).
     list(APPEND PJ_APP_GUI_TEST_SOURCES

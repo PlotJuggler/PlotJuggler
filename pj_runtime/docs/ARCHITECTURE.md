@@ -317,6 +317,32 @@ does not link it.
   the `sourceCacheIdentityDigest` and the artifact path, so the shell can attach the
   dataset's `SourceRecord` and register the artifact as its backing file.
 
+### Plugin settings (`pj.settings.v1`)
+
+The optional settings store (SDK `SettingsStoreService` / `SettingsView`; host side `sdk::SettingsStoreHost` over
+`QSettingsBackend`). All calls are GUI-thread, as the SDK states; values persist in `PlotJuggler4.conf` on the
+desktop.
+
+- **Who gets it.** Toolboxes (`ToolboxRuntimeHost`, interactive and headless) over `QSettingsBackend()`: the app
+  configuration's root, so a toolbox prefixes its own keys and could read or overwrite another's. Streaming sources
+  (`pj_app`'s `StreamingSourceManager::createSession`) over `QSettingsBackend::forPlugin(manifest id)`: every key
+  lives under `PluginSettings/<percent-encoded manifest id>/` (`PluginSettingsKeys.h`), so two plugins never
+  collide and none reaches the app's own settings; a source without a manifest id gets no store. File loaders get
+  none: their handle moves into the import worker's context (one per fan-out entry) and `importData` runs on that
+  worker, where a GUI-thread store would be called off-thread.
+- **Lifetime.** The backend and its `SettingsStoreHost` outlive the plugin handle (the plugin may write from its
+  destructor): `StreamingSession` declares both before `handle`, `ToolboxPanelSession` resets `settings` last. A
+  plugin may look the service up after `bind()` (the SDK bases keep the registry), so both owners also keep the
+  registry they bound with alive as long as the handle.
+- **Kept across a browser reload: `durable/`.** In the browser every settings value lives as long as the page,
+  except a streaming source's key named `durable/<name>` (`PluginSettings/<id>/durable/<name>` in the settings)
+  holding a string of at most `BrowserPersistence::kMaxDurablePluginValueLength` characters that is no upload
+  identity, at most `BrowserPersistence::kMaxDurablePluginKeysPerPlugin` per plugin (the first in key order).
+  `BrowserPersistence` mirrors exactly those into local storage on its periodic flush and restores them before any
+  plugin host starts; a list, a longer value or any other key stays page-lifetime. Local storage is clear text that
+  outlives the page: a plugin writes under `durable/` only what is safe there (a URL cleaned of credentials, never a
+  token). On the desktop `durable/` is an ordinary key.
+
 ### Extension catalog and parser routing
 
 - **`ExtensionCatalogService`** scans `--plugin-dir` (authoritative) → custom Preferences
@@ -869,6 +895,8 @@ of the module: its files keep their own SPDX and copyright lines.
 - A same-provider parser retype of a streaming topic to another builtin object type keeps the topic's original
   object metadata until the stream restarts.
 - The bundled-plugin trust tier rests on id, version and DSO signature; there are no authenticated install receipts.
+- Toolbox settings stores are unscoped (the app configuration's root), unlike streaming sources': two toolboxes using
+  the same key collide, and a toolbox can read the app's own settings. Scoping them would move their stored keys.
 - `ActiveWidgetsMarker`: a crashed run's record whose pid was reused by a live process is hidden until that process
   ends.
 - `wait_for` sees only samples newer than its cursor: a late sample with an older stamp, or one retention drops between

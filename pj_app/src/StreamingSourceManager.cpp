@@ -22,6 +22,7 @@
 #include "DialogPresenter.h"
 #include "pj_base/data_source_protocol.h"
 #include "pj_base/dataset.hpp"
+#include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/span.hpp"
 #include "pj_datastore/engine.hpp"
 #include "pj_datastore/object_store.hpp"
@@ -29,10 +30,13 @@
 #include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/data_source_library.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/QSettingsBackend.h"
+#include "pj_runtime/ServiceRegistration.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TopicDemandTracker.h"
 #include "pj_runtime/TsanAnnotations.h"
@@ -74,6 +78,13 @@ struct StreamingSourceManager::StreamingSession {
   DatasetId dataset_id = 0;
   /// Before `handle`: see DataSourceRuntimeHost::bind.
   std::unique_ptr<DataSourceRuntimeHost> runtime_host;
+  /// The plugin's pj.settings.v1 store; null without a manifest id. Declared before `handle`, so destroyed after it:
+  /// the plugin may write settings from its destructor, and settings_host refers to settings.
+  std::unique_ptr<QSettingsBackend> settings;
+  std::unique_ptr<sdk::SettingsStoreHost> settings_host;
+  /// The registry bind() received. DataSourcePluginBase keeps it for services() lookups after bind (from a dialog,
+  /// say), so it lives as long as the plugin: declared before `handle`.
+  std::unique_ptr<ServiceRegistryBuilder> registry;
   DataSourceHandle handle;
   /// handle.capabilities(), read once after start(): it is a plugin call, and the ABI gives the mask no way to change
   /// once the source runs, so every later gate (per-topic pause, recordability) reads this copy.
@@ -419,8 +430,21 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
         });
       };
 
-  if (auto status = session->runtime_host->bind(session->handle); !status) {
-    error = tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error()));
+  session->registry = std::make_unique<ServiceRegistryBuilder>();
+  ServiceRegistryBuilder& registry = *session->registry;
+  if (auto status = session->runtime_host->registerServices(registry); !status) {
+    error = tr("Plugin '%1': service registration failed: %2").arg(source_name, QString::fromStdString(status.error()));
+    session.reset();
+    discardDataset(dataset_id);
+    return nullptr;
+  }
+  if (!source.id.empty()) {
+    session->settings = QSettingsBackend::forPlugin(source.id);
+    session->settings_host = std::make_unique<sdk::SettingsStoreHost>(*session->settings);
+    registerOptionalService<sdk::SettingsStoreService>(registry, session->settings_host->view());
+  }
+  if (auto status = session->handle.bind(registry.view()); !status) {
+    error = tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error()));
     session.reset();
     discardDataset(dataset_id);
     return nullptr;

@@ -44,6 +44,18 @@ class BrowserPersistence final : public QObject {
   [[nodiscard]] static std::optional<QVariant> sanitizePreference(const QString& key, const QVariant& value);
   [[nodiscard]] static bool isSafeGenericLayoutRecipe(const QByteArray& xml);
 
+  // The opt-in for plugin settings (PluginSettingsKeys.h): a pj.settings.v1 key a plugin writes as
+  // "durable/<name>" is stored as "PluginSettings/<plugin>/durable/<name>" and kept across a reload when its value is
+  // a string of at most kMaxDurablePluginValueLength characters with no upload identity or control character; at most
+  // kMaxDurablePluginKeysPerPlugin such keys per plugin (the first in key order). Every other plugin key lives as
+  // long as the page. The plugin keeps credentials out of what it marks durable; the host stores what it is given.
+  static constexpr qsizetype kMaxDurablePluginValueLength = 2048;
+  static constexpr int kMaxDurablePluginKeysPerPlugin = 8;
+  // The value to keep for `key`, else nullopt.
+  [[nodiscard]] static std::optional<QString> sanitizeDurablePluginSetting(const QString& key, const QVariant& value);
+  // Every plugin setting of `settings` that is kept across a reload, with its value.
+  [[nodiscard]] static QHash<QString, QString> durablePluginSettings(QSettings& settings);
+
   [[nodiscard]] QList<LayoutRecipe> recentLayouts() const;
   [[nodiscard]] std::optional<LayoutRecipe> recentLayout(const QString& id) const;
   bool rememberGenericLayout(const QString& browser_name, const QByteArray& xml, QString* error = nullptr);
@@ -72,6 +84,8 @@ class BrowserPersistence final : public QObject {
   };
 
   [[nodiscard]] static DecodedPreferences decodePreferences(const QVariant& stored);
+  // The durable plugin settings of a stored envelope, re-checked as durablePluginSettings checks them.
+  [[nodiscard]] static QHash<QString, QString> decodePluginSettings(const QVariant& stored);
 
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -15,6 +15,9 @@
 //   "fail_start":true start() fails
 //   "probe_services":true  start() and the destructor append "services <where>:ok|missing" (a services() lookup);
 //                     the destructor also reads the runtime host
+//   "remember":"<text>"  loadConfig() appends "settings <stored value>" to the probe (the value of its
+//                     pj.settings.v1 key "remembered": "(unbound)" without the service, "(absent)" without
+//                     the key), then stores <text> there unless it is empty
 // Each loadConfig/start/stop appends one line ("load <config>", "start",
 // "stop") to the file PJ_LAYOUT_STREAM_PROBE_FILE names, when set.
 // An interactive start is steered through the environment, read at call time:
@@ -27,6 +30,7 @@
 #include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/sdk/plugin_data_api.hpp>
 #include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
@@ -136,6 +140,7 @@ class MockLayoutStream : public PJ::StreamSourceBase {
   }
 
   PJ::Status loadConfig(std::string_view config_json) override {
+    rememberInSettings(config_json);
     recordProbe("load " + std::string(config_json));
     if (config_json.find("\"reject\":true") != std::string_view::npos) {
       return PJ::unexpected("mock_layout_stream: configuration refused");
@@ -197,6 +202,23 @@ class MockLayoutStream : public PJ::StreamSourceBase {
   void recordServicesLookup(const std::string& where) const {
     const bool found = services().get<PJ::sdk::SourceWriteHostService>().has_value();
     recordProbe("services " + where + (found ? ":ok" : ":missing"));
+  }
+
+  void rememberInSettings(std::string_view config_json) {
+    if (valueAfter(config_json, "remember").empty()) {
+      return;
+    }
+    const auto settings = services().get<PJ::sdk::SettingsStoreService>();
+    if (!settings.has_value()) {
+      recordProbe("settings (unbound)");
+      return;
+    }
+    const auto stored = settings->value("remembered");
+    recordProbe("settings " + (stored && !stored->isNull() ? stored->toString() : std::string("(absent)")));
+    const std::string remember = stringValue(config_json, "remember", "");
+    if (!remember.empty()) {
+      (void)settings->setValue("remembered", std::string_view(remember));
+    }
   }
 
   MockLayoutStreamDialog dialog_;
