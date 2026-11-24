@@ -789,9 +789,6 @@ void FilterEditorPanel::applyToSelected() {
       // Existing filter output: re-edit its recipe in place (re-runs on its input).
       std::shared_ptr<proc::DataProcessor> shared = std::move(processor);
       if (const auto updated = service.updateFilter(recipe->node_id, shared); updated.has_value()) {
-        // The output's data changed under existing adapters: notify so plots drop their cache and repaint (a bare
-        // replot keeps the stale samples).
-        session_->notifyIngest({recipe->output_topic_id});
         updated_in_place = true;
       } else {
         failures << tr("update %1: %2").arg(display_name, QString::fromStdString(updated.error()));

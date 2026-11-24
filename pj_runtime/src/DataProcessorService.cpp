@@ -602,7 +602,7 @@ Status DataProcessorService::updateFilter(NodeId node_id, std::shared_ptr<proc::
       break;
     }
   }
-  announceChangedOutputs(outputsWithDependents(node_id));
+  announceRewrittenOutputs(outputsWithDependents(node_id));
   return PJ::okStatus();
 }
 
@@ -1190,7 +1190,7 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
     recipe.node_id = old.node_id;
     recipe.output_topic_ids = old.output_topic_ids;
     existing->second = recipe;
-    announceChangedOutputs(outputsWithDependents(recipe.node_id));
+    announceRewrittenOutputs(outputsWithDependents(recipe.node_id));
     return recipe;
   }
   // 7. Install the eager node and run it over the committed input(s).
@@ -1363,6 +1363,13 @@ void DataProcessorService::announceGrownOutputs() {
   if (session_ != nullptr && !grown.isEmpty()) {
     session_->notifyIngest(std::move(grown), /*live=*/false);
   }
+}
+
+void DataProcessorService::announceRewrittenOutputs(const std::vector<TopicId>& outputs) const {
+  if (session_ != nullptr && !outputs.empty()) {
+    session_->notifyIngest(QVector<TopicId>(outputs.begin(), outputs.end()), /*live=*/false);
+  }
+  announceChangedOutputs(outputs);
 }
 
 void DataProcessorService::announceChangedOutputs(const std::vector<TopicId>& outputs) const {

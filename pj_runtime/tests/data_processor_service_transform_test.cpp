@@ -321,6 +321,79 @@ TEST(DataProcessorTransformTest, UpsertReplacesExistingNode) {
   EXPECT_EQ(readValues(fx.engine, second->output_topic_ids.front()), (std::vector<double>{10.0, 20.0}));
 }
 
+// An in-place edit rewrites rows under the same TopicIds, so no new topic reaches the catalog: plots drop their
+// cached samples only on samplesIngested.
+struct IngestRecorder {
+  explicit IngestRecorder(SessionManager& session)
+      : connection(
+            QObject::connect(
+                &session, &SessionManager::samplesIngested, [this](const QVector<TopicId>& ids, bool live) {
+                  EXPECT_FALSE(live);
+                  announced.insert(ids.begin(), ids.end());
+                })) {}
+  ~IngestRecorder() {
+    QObject::disconnect(connection);
+  }
+  IngestRecorder(const IngestRecorder&) = delete;
+  IngestRecorder& operator=(const IngestRecorder&) = delete;
+
+  [[nodiscard]] bool saw(TopicId id) const {
+    return announced.count(id) != 0;
+  }
+
+  std::unordered_set<TopicId> announced;
+  QMetaObject::Connection connection;
+};
+
+TEST(DataProcessorTransformTest, InPlaceEditAnnouncesRewrittenOutputs) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto first = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"speed/out"}, kNegate, "{}");
+  ASSERT_TRUE(first.has_value()) << first.error();
+
+  const IngestRecorder ingested(fx.session);
+  const auto second = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"speed/out"}, kTimes10, "{}");
+  ASSERT_TRUE(second.has_value()) << second.error();
+
+  EXPECT_TRUE(ingested.saw(first->output_topic_ids.front()));
+}
+
+TEST(DataProcessorTransformTest, InPlaceEditAnnouncesChainedOutputs) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  const auto parent = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kNegate, "{}");
+  ASSERT_TRUE(parent.has_value()) << parent.error();
+  const auto child = fx.service.upsertTransform("pluginB", "negate", {"mid"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(child.has_value()) << child.error();
+
+  const IngestRecorder ingested(fx.session);
+  const auto replaced = fx.service.upsertTransform("pluginA", "negate", {"speed"}, {"mid"}, kTimes10, "{}");
+  ASSERT_TRUE(replaced.has_value()) << replaced.error();
+
+  EXPECT_TRUE(ingested.saw(parent->output_topic_ids.front()));
+  EXPECT_TRUE(ingested.saw(child->output_topic_ids.front()));
+}
+
+TEST(DataProcessorTransformTest, FilterUpdateAnnouncesRewrittenOutputs) {
+  Fixture fx;
+  fx.seed("speed", {1.0, 2.0});
+  auto catalogue = std::make_shared<scripting::FilterCatalogue>(scripting::makeLuauEngine());
+  ASSERT_TRUE(catalogue->addBundledSource(kScale, "test").has_value());
+  fx.service.setFilterCatalogue(catalogue);
+  const auto filtered = fx.service.applyFilter(fx.input, fx.ds, "scale", "filtered");
+  ASSERT_TRUE(filtered.has_value()) << filtered.error();
+  const auto child = fx.service.upsertTransform("pluginB", "negate", {"filtered"}, {"final"}, kNegate, "{}");
+  ASSERT_TRUE(child.has_value()) << child.error();
+  auto processor = catalogue->makeProcessor("scale", "{}");
+  ASSERT_TRUE(processor.has_value()) << processor.error();
+
+  const IngestRecorder ingested(fx.session);
+  ASSERT_TRUE(fx.service.updateFilter(filtered->node_id, std::move(processor).value()).has_value());
+
+  EXPECT_TRUE(ingested.saw(filtered->output_topic_id));
+  EXPECT_TRUE(ingested.saw(child->output_topic_ids.front()));
+}
+
 TEST(DataProcessorTransformTest, ExistingKeyCannotChangePersistentLifetime) {
   Fixture fx;
   fx.seed("speed", {1.0, 2.0});

@@ -173,8 +173,9 @@ class DataProcessorService {
   /// nullptr when `output_topic_id` is no filter output.
   [[nodiscard]] const FilterRecipe* filterConfig(TopicId output_topic_id) const;
 
-  /// Replaces a live filter's processor in place (same node and output topic) and recomputes, so the plotted curve
-  /// updates without re-binding. A failure keeps the old processor; its error names a text input as applyFilter's.
+  /// Replaces a live filter's processor in place (same node and output topic), recomputes, and announces the output
+  /// and its chained processors' outputs through `SessionManager::notifyIngest`, so the plotted curves update without
+  /// re-binding. A failure keeps the old processor; its error names a text input as applyFilter's.
   [[nodiscard]] Status updateFilter(NodeId node_id, std::shared_ptr<proc::DataProcessor> processor);
 
   /// Advances every live filter over the newly committed input and returns the filter outputs to re-notify. Call it
@@ -218,8 +219,9 @@ class DataProcessorService {
   /// A new persistent key replays the input history time-sliced: only the first `kMaterializationSliceBudget` slice
   /// runs in the call (so a script failing on its first rows is still rejected), the rest from a zero-timer
   /// (`stepMaterialization`). Recipe and output exist on return and the output grows in time order to what a
-  /// synchronous replay gives. Previews and in-place replacements replay synchronously. A text input reaches the
-  /// script as a string. Only the transform's own failing run refuses it, its error followed by
+  /// synchronous replay gives. Previews and in-place replacements replay synchronously; an in-place replacement
+  /// announces its outputs and its chained processors' outputs through `SessionManager::notifyIngest`. A text input
+  /// reaches the script as a string. Only the transform's own failing run refuses it, its error followed by
   /// "; <topic>/<field> is text" for each text input.
   [[nodiscard]] Expected<TransformRecipe> upsertTransform(
       std::string_view plugin_id, std::string_view id, std::vector<std::string> inputs,
@@ -366,6 +368,9 @@ class DataProcessorService {
       NodeId node, std::vector<NodeId>* dependents = nullptr) const;
   void announceGrownOutputs();
   void announceChangedOutputs(const std::vector<TopicId>& outputs) const;
+  /// An in-place edit rewrites rows under the same TopicIds: without the ingest announcement plot adapters keep
+  /// serving their cached samples.
+  void announceRewrittenOutputs(const std::vector<TopicId>& outputs) const;
   /// A persistent recipe may not read a preview's output: the preview's removal would cascade into it.
   [[nodiscard]] bool readsAPreview(const std::vector<TopicId>& inputs) const;
   /// Reports transforms newly failed and forgets recovered or removed ones; called around every scheduling pass.
