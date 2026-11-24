@@ -42,9 +42,9 @@ struct FetchResult;
 //  - A cancelled job never reaches its `done`. A cancelled running import keeps its slots until its worker finishes
 //    (the worker cannot be stopped), so replacing sources never runs more than the bounds at once. A cancelled job
 //    waiting for an import slot drops its bytes and frees its slot at once.
-//  - A cancelled fetch keeps its slot while another running fetch is still wanted; once none is (checked on cancel()
-//    and on every pump()), the fetcher is retired: its requests abort and their slots free at once. cancelAll()
-//    retires it whenever a request is in flight, fetch() ones included.
+//  - A cancelled fetch keeps its slot while another running fetch is still wanted or a fetch() is pending; once neither
+//    holds (checked on cancel(), on every pump() and when a fetch() lands), the fetcher is retired: its requests abort
+//    and their slots free at once. cancelAll() retires it whenever a request is in flight, fetch() ones included.
 //  - `done` runs on the GUI thread through the event loop, except when an import cannot even be started: that failure
 //    is delivered from inside pump(). The queue pumps itself after every landed fetch, finished import and settled job.
 //  - A kUrl job also fetches the external textures its mesh left unresolved (TextureSource::unresolved_ref, resolved
@@ -83,10 +83,10 @@ class MeshLoadQueue {
   MeshLoadQueue(const MeshLoadQueue&) = delete;
   MeshLoadQueue& operator=(const MeshLoadQueue&) = delete;
 
-  // Queues one job; it starts on a later pump(). `kind` is the kind `resolve` will return: it decides which slots the
-  // job waits for. `resolve` runs when the job gets a slot and returns its source (late, so queued jobs hold no bytes);
-  // nullopt drops the job without `done`. `done` runs once with the outcome unless the job is cancelled or the queue
-  // destroyed first.
+  // Queues one job; it starts on a later pump(). `kind` is the kind `resolve` must return (asserted): it decides which
+  // slots the job waits for. `resolve` runs when the job gets a slot and returns its source (late, so queued jobs hold
+  // no bytes); nullopt drops the job without `done`. `done` runs once with the outcome unless the job is cancelled or
+  // the queue destroyed first.
   JobId enqueue(Source::Kind kind, std::function<std::optional<Source>()> resolve, std::function<void(Outcome)> done);
   // Fetches `url` through the jobs' fetcher, outside the bound and without an import: a model's description then shares
   // the connections and cache its meshes use. `done` runs once through the event loop unless cancelAll(), the queue's

@@ -201,7 +201,7 @@ TEST(MeshLoadQueueTest, CancelledQueuedAndRunningJobsNeverDeliver) {
   }
   queue.pump();
   for (const MeshLoadQueue::JobId id : ids) {
-    queue.cancel(id);  // the running ones and the one still queued
+    queue.cancel(id);  // the maxConcurrentMeshImports() running imports and the jobs still queued
   }
   EXPECT_TRUE(pumpUntil([&] { return queue.runningCount() == 0; }, std::chrono::seconds(10)));
   EXPECT_TRUE(log.empty()) << log.front();
@@ -267,7 +267,6 @@ TEST(MeshLoadQueueTest, UnwantedFetchesAreAbortedTogether) {
   queue.cancel(first);
   EXPECT_EQ(queue.runningCount(), 2U) << "a wanted fetch was aborted with the unwanted one";
   queue.cancel(second);
-  queue.pump();
   EXPECT_EQ(queue.runningCount(), 0U) << "unwanted fetches kept their slots";
 
   // The retired fetcher lives on as a child of the context until its deferred
@@ -294,7 +293,7 @@ TEST(MeshLoadQueueTest, CancelAllAbortsAPlainFetch) {
 }
 
 // A pending fetch() keeps the fetcher when its last wanted job fetch is
-// cancelled, and delivers.
+// cancelled, and delivers; once it lands, the cancelled fetch frees its slot.
 TEST(MeshLoadQueueTest, PendingPlainFetchKeepsTheFetcher) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
@@ -313,6 +312,7 @@ TEST(MeshLoadQueueTest, PendingPlainFetchKeepsTheFetcher) {
   ASSERT_TRUE(pumpUntil([&] { return fetched.has_value(); }, std::chrono::seconds(5)));
   EXPECT_TRUE(fetched->ok) << fetched->error.toStdString();
   EXPECT_FALSE(fetched->bytes.isEmpty());
+  EXPECT_EQ(queue.runningCount(), 0U) << "the cancelled fetch kept its slot after the fetch() landed";
   EXPECT_TRUE(log.empty());
 }
 
@@ -365,6 +365,16 @@ TEST(MeshLoadQueueTest, UrlFetchesOverlapUpToTheLoadBound) {
     return connections == 3;
   })) << "requests in flight at once: "
       << connections;
+  pumpUntil(
+      [&] {
+        while (server.hasPendingConnections()) {
+          server.nextPendingConnection();
+          ++connections;
+        }
+        return false;
+      },
+      std::chrono::milliseconds(200));
+  EXPECT_EQ(connections, 3) << "more requests than the load bound";
   EXPECT_EQ(queue.importsRunning(), 0U);
   queue.cancelAll();
   EXPECT_EQ(queue.runningCount(), 0U);
@@ -401,22 +411,26 @@ TEST(MeshLoadQueueTest, ImportsStayWithinTheirBoundWhileFetchesOverlap) {
   EXPECT_EQ(log, wanted);
 }
 
-// cancelAll() while one mesh imports and the others wait for the import slot:
-// the waiting ones free their slots at once, the import keeps its slot until its
+// cancelAll() while one mesh imports, others wait for the import slot and one
+// downloads: the waiting and downloading ones free their slots at once, the import keeps its slot until its
 // worker finishes, none of them delivers, and later jobs load.
 TEST(MeshLoadQueueTest, CancelAllWhileJobsWaitForTheImportSlotNeverDelivers) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   constexpr int kMeshes = 5;
   const std::vector<QString> paths = cubeCopies(dir, kMeshes + 2);
+  QTcpServer silent;
   QObject context;
-  MeshLoadQueue queue(&context, /*max_loads=*/kMeshes, /*max_imports=*/1);
+  MeshLoadQueue queue(&context, /*max_loads=*/kMeshes + 1, /*max_imports=*/1);
   std::vector<std::string> log;
+  enqueue(queue, urlSource(silentServerUrl(silent, u"slow.glb"_s)), log);
   for (int index = 0; index < kMeshes; ++index) {
     enqueue(queue, fileUrlSource(paths[index], u"stl"_s), log);
   }
   queue.pump();
   ASSERT_TRUE(pumpUntil([&] { return queue.waitingCount() >= 2; }));
+  ASSERT_EQ(queue.runningCount(), queue.importsRunning() + queue.waitingCount() + 1)
+      << "the network fetch is in flight";
   queue.cancelAll();
   EXPECT_EQ(queue.waitingCount(), 0U);
   EXPECT_EQ(queue.runningCount(), queue.importsRunning()) << "only a running import keeps its slot";
@@ -484,6 +498,37 @@ TEST(MeshLoadQueueTest, CancelledWaitingJobFreesItsSlotAtOnce) {
       fileUrlSource(paths[1], u"stl"_s).location.toStdString() + ":ok",
   };
   EXPECT_EQ(log, wanted);
+}
+
+// Jobs leave the queue in enqueue order across kinds: a URL job behind bytes jobs
+// waiting for the import slot does not start its download ahead of them.
+TEST(MeshLoadQueueTest, UrlJobBehindBytesJobsWaitsItsTurn) {
+  QTcpServer silent;
+  QObject context;
+  MeshLoadQueue queue(&context, /*max_loads=*/6, /*max_imports=*/1);
+  std::vector<std::string> log;
+  MeshLoadQueue::Source bytes;
+  bytes.kind = MeshLoadQueue::Source::Kind::kBytes;
+  bytes.bytes = readFixtureBytes("cube.stl");
+  bytes.format_hint = u"stl"_s;
+  bytes.location = u"A"_s;
+  enqueue(queue, bytes, log);
+  bytes.location = u"B"_s;
+  enqueue(queue, bytes, log);
+  enqueue(queue, urlSource(silentServerUrl(silent, u"c.glb"_s)), log);
+  queue.pump();
+  EXPECT_EQ(queue.runningCount(), 1U);
+  bool connected_early = false;
+  ASSERT_TRUE(pumpUntil(
+      [&] {
+        connected_early = connected_early || (log.empty() && silent.hasPendingConnections());
+        return !log.empty();
+      },
+      std::chrono::seconds(10)));
+  EXPECT_FALSE(connected_early) << "the URL job started before the bytes job ahead of it settled";
+  EXPECT_EQ(log.front(), "A:ok");
+  EXPECT_TRUE(pumpUntil([&] { return silent.hasPendingConnections(); }));
+  queue.cancelAll();
 }
 
 // A job fetching its textures holds a load slot, not the import slot: the jobs

@@ -121,6 +121,7 @@ void MeshLoadQueue::fetch(const QUrl& url, std::function<void(FetchResult)> done
       return;  // delivered by a retired fetcher before its deferred delete
     }
     --pending_fetches_;
+    abortObsoleteFetches();
     done(std::move(result));
   });
 }
@@ -180,6 +181,7 @@ void MeshLoadQueue::pump() {
     if (!source.has_value()) {
       continue;
     }
+    Q_ASSERT(source->kind == next.kind);
     const bool fetch = source->kind == Source::Kind::kUrl;
     running_.emplace(
         next.id, Running{

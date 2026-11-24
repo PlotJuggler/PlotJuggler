@@ -34,7 +34,7 @@ namespace pj::scene3d {
 // downloads of remote meshes overlap while imports keep their own bound (the
 // bounds and what they hold: MeshLoadQueue). Six is a browser's per-host HTTP/1.1
 // connection limit (HTTP/2 multiplexes); it stays at least
-// maxConcurrentMeshImports(), at most 4, which MeshLoadQueue asserts.
+// maxConcurrentMeshImports() (itself at most 4); MeshLoadQueue asserts it.
 [[nodiscard]] inline std::size_t maxConcurrentMeshLoads() {
   constexpr std::size_t kHttp1ConnectionsPerHost = 6;
   return kHttp1ConnectionsPerHost;
