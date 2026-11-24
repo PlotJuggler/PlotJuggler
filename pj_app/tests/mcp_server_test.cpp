@@ -385,6 +385,11 @@ class McpServerTest : public ::testing::Test {
     return {content.empty() ? std::string() : content[0].value("text", ""), r.value("isError", false)};
   }
 
+  /// `name` in the data folder as a saved layout writes it: canonical (macOS's temp folder is a /private symlink).
+  std::string dataPath(const QString& name) const {
+    return QDir(QFileInfo(data_.path()).canonicalFilePath()).filePath(name).toStdString();
+  }
+
   /// Loads one mock file (samples at 100, 200, 300 ns); returns the dataset id.
   int loadMock() {
     const auto [text, error] =
@@ -1743,7 +1748,7 @@ TEST_F(McpLayoutTest, SaveLayoutReturnsWhatTheMenusSaveWrites) {
   PJ::McpTestPeer::saveLayoutAsTheMenuDoes(*window_, menu_path, true);
   const std::string expected = readAll(menu_path);
   ASSERT_FALSE(expected.empty());
-  const std::string mock_path = data_.filePath(u"a.mock"_s).toStdString();
+  const std::string mock_path = dataPath(u"a.mock"_s);
   EXPECT_NE(expected.find("filename=\"a.mock\""), std::string::npos) << "relative to the layout's folder";
 
   const std::string agent_path = data_.filePath(u"agent"_s).toStdString();
@@ -2052,8 +2057,8 @@ TEST_F(McpLayoutTest, LoadLayoutIgnoresTheTextsEncodingDeclaration) {
 TEST_F(McpLayoutTest, LoadLayoutReturnsTheAppsWarningsAndErrors) {
   ASSERT_NE(loadMock(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
-  const std::string mock_path = data_.filePath(u"a.mock"_s).toStdString();
-  std::string missing = replaced(layoutText(), mock_path, data_.filePath(u"gone.mock"_s).toStdString());
+  const std::string mock_path = dataPath(u"a.mock"_s);
+  std::string missing = replaced(layoutText(), mock_path, dataPath(u"gone.mock"_s));
   const std::size_t version = missing.find("pj4_version=\"");
   ASSERT_NE(version, std::string::npos);
   missing.replace(version, std::string("pj4_version=\"").size(), "pj4_version=\"99");
@@ -2077,7 +2082,7 @@ TEST_F(McpLayoutTest, LoadLayoutReturnsTheAppsWarningsAndErrors) {
   }
   bool replaced_bogus = false;
   const auto [unloadable, unloadable_error] = result(call(
-      "load_layout", {{"xml", replaced(missing, data_.filePath(u"gone.mock"_s).toStdString(), bogus.toStdString())}},
+      "load_layout", {{"xml", replaced(missing, dataPath(u"gone.mock"_s), bogus.toStdString())}},
       clicker(u"Replace"_s, replaced_bogus)));
   EXPECT_NE(unloadable.find("Could not load '"), std::string::npos) << unloadable;
   EXPECT_NE(unloadable.find("data.pjbogus"), std::string::npos) << unloadable;
@@ -2097,7 +2102,7 @@ TEST_F(McpLayoutTest, LoadLayoutReturnsTheAppsWarningsAndErrors) {
 TEST_F(McpLayoutTest, LoadLayoutReportsARelativePathInText) {
   ASSERT_NE(loadMock(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
-  const std::string relative = replaced(layoutText(), data_.filePath(u"a.mock"_s).toStdString(), "a.mock");
+  const std::string relative = replaced(layoutText(), dataPath(u"a.mock"_s), "a.mock");
   freshWindow();
   const QString cwd = QDir::currentPath();
   ASSERT_TRUE(QDir::setCurrent(data_.path()));  // where a.mock would be found
@@ -2264,8 +2269,7 @@ TEST_F(McpLayoutTest, ARedirectedLayoutAnchorsItsSceneResourcesWhereItWasFound) 
 TEST_F(McpLayoutTest, LoadLayoutFromAUrlReturnsWarningsAndItsDownloadCanBeKilled) {
   ASSERT_NE(loadMock(), 0);
   ASSERT_NO_FATAL_FAILURE(plot());
-  std::string missing =
-      replaced(layoutText(), data_.filePath(u"a.mock"_s).toStdString(), data_.filePath(u"gone.mock"_s).toStdString());
+  std::string missing = replaced(layoutText(), dataPath(u"a.mock"_s), dataPath(u"gone.mock"_s));
   pj_app_test::RouteServer http;
   http.route(u"/layout.pj4.xml"_s, QByteArray::fromStdString(missing));
 
