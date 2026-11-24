@@ -87,9 +87,11 @@ test('a topic robot_description fetches package meshes through the layout roots'
     }));
     expect(loaded).toContain('PJ_WASM_LAYOUT_LOAD_OK');
     // One mesh lands; the missing one (404) and the CORS-denied one fail:
-    // they draw nothing and the status names them.
+    // they draw nothing and the status names them. Downloads overlap, so the
+    // failures can be reported before the landed mesh draws.
     const state = await waitForModels(page, messages, models =>
-      models.robots.live === 1 && models.robots.status.join(' ').includes('2 mesh load(s) failed'));
+      models.robots.live === 1 && models.robots.draws === 1 &&
+      models.robots.status.join(' ').includes('2 mesh load(s) failed'));
     expect(state.docks[0].models.robots).toMatchObject({
       sourceType: 0, draws: 1, visual: 1, missing: 2, meshes: 4, bridges: 2,
     });
