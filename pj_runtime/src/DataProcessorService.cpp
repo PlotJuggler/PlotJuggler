@@ -577,6 +577,8 @@ Status DataProcessorService::updateFilter(NodeId node_id, std::shared_ptr<proc::
   if (Status replaced =
           derived_->replaceSisoTransform(node_id, std::make_unique<proc::ProcessorSisoAdapter>(processor));
       !replaced.has_value()) {
+    // The engine reverted and replayed, rewriting the outputs (old chunks freed).
+    announceRewrittenOutputs(outputsWithDependents(node_id));
     std::vector<std::string> input_names;
     const auto recipe = std::find_if(
         recipes_.begin(), recipes_.end(), [node_id](const auto& entry) { return entry.second.node_id == node_id; });
@@ -1185,6 +1187,8 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
                                     old.node_id, std::make_unique<proc::ProcessorSisoAdapter>(std::move(siso_op)))
                               : derived_->replaceMimoTransform(old.node_id, std::move(mimo_op));
     if (!replaced.has_value()) {
+      // The engine reverted and replayed, rewriting the outputs (old chunks freed).
+      announceRewrittenOutputs(outputsWithDependents(old.node_id));
       return PJ::unexpected(nodeFailure(*derived_, old.node_id, replaced.error(), bindingNames(recipe.input_bindings)));
     }
     recipe.node_id = old.node_id;

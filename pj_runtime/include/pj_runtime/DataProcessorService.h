@@ -175,7 +175,8 @@ class DataProcessorService {
 
   /// Replaces a live filter's processor in place (same node and output topic), recomputes, and announces the output
   /// and its chained processors' outputs through `SessionManager::notifyIngest`, so the plotted curves update without
-  /// re-binding. A failure keeps the old processor; its error names a text input as applyFilter's.
+  /// re-binding. A failure keeps the old processor, announces the same outputs (the revert rewrites them), and its
+  /// error names a text input as applyFilter's.
   [[nodiscard]] Status updateFilter(NodeId node_id, std::shared_ptr<proc::DataProcessor> processor);
 
   /// Advances every live filter over the newly committed input and returns the filter outputs to re-notify. Call it
@@ -219,9 +220,9 @@ class DataProcessorService {
   /// A new persistent key replays the input history time-sliced: only the first `kMaterializationSliceBudget` slice
   /// runs in the call (so a script failing on its first rows is still rejected), the rest from a zero-timer
   /// (`stepMaterialization`). Recipe and output exist on return and the output grows in time order to what a
-  /// synchronous replay gives. Previews and in-place replacements replay synchronously; an in-place replacement
-  /// announces its outputs and its chained processors' outputs through `SessionManager::notifyIngest`. A text input
-  /// reaches the script as a string. Only the transform's own failing run refuses it, its error followed by
+  /// synchronous replay gives. Previews and in-place replacements replay synchronously; an in-place replacement, failed
+  /// or not, announces its outputs and its chained processors' outputs through `SessionManager::notifyIngest`. A text
+  /// input reaches the script as a string. Only the transform's own failing run refuses it, its error followed by
   /// "; <topic>/<field> is text" for each text input.
   [[nodiscard]] Expected<TransformRecipe> upsertTransform(
       std::string_view plugin_id, std::string_view id, std::vector<std::string> inputs,
@@ -368,8 +369,9 @@ class DataProcessorService {
       NodeId node, std::vector<NodeId>* dependents = nullptr) const;
   void announceGrownOutputs();
   void announceChangedOutputs(const std::vector<TopicId>& outputs) const;
-  /// An in-place edit rewrites rows under the same TopicIds: without the ingest announcement plot adapters keep
-  /// serving their cached samples.
+  /// Announces through `SessionManager::notifyIngest` (non-live), then fires the outputs-changed sink. An in-place
+  /// edit rewrites rows under the same TopicIds, a failed one too (revert and replay): without the ingest
+  /// announcement plot adapters keep serving their cached samples, which may point at freed chunks.
   void announceRewrittenOutputs(const std::vector<TopicId>& outputs) const;
   /// A persistent recipe may not read a preview's output: the preview's removal would cascade into it.
   [[nodiscard]] bool readsAPreview(const std::vector<TopicId>& inputs) const;
@@ -421,7 +423,7 @@ class DataProcessorService {
   [[nodiscard]] bool outputNameInUse(const std::string& name, const std::string& except_key) const;
 
   DataEngine& engine_;
-  SessionManager* session_ = nullptr;  ///< the identity resolver; null only in engine-level tests
+  SessionManager* session_ = nullptr;  ///< identity resolver and ingest announcer; null only in engine-level tests
   std::unique_ptr<IncrementalEngine> derived_;
   std::unordered_map<TopicId, FilterRecipe> recipes_;                   ///< by output topic
   std::unordered_map<std::string, TransformRecipe> transform_recipes_;  ///< "<plugin>/<id>" -> live transform

@@ -308,8 +308,8 @@ TEST(FilterEditorPanelTest, ReopenOnFilterOutputLabelsInputAndRemovesOnNoTransfo
 }
 
 // An EDIT-mode Update changes the output topic's data under existing curve adapters (same key): without a data-changed
-// notification the plot keeps its cached samples until a zoom, so Apply must fire samplesIngested for the output topic
-// so plots drop their cache and re-read.
+// notification the plot keeps its cached samples until a zoom, so the in-place update announces the output topic
+// through samplesIngested and plots drop their cache and re-read.
 TEST(FilterEditorPanelTest, EditModeUpdateNotifiesOutputTopicForRepaint) {
   PJ::SessionManager session;
   PJ::CatalogModel catalog(&session);
