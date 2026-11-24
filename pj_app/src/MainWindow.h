@@ -1632,6 +1632,7 @@ class MainWindow : public QMainWindow {
   struct TransformTopicRow {
     QString key;
     QString owner;
+    QString name;  ///< `topic/field` for a column of a multi-column output; empty keeps the topic path
   };
   std::vector<TransformTopicRow> custom_topic_transform_rows_;
   /// The catalog changed, or a sync asked for it, since custom_topic_transform_rows_ were built.

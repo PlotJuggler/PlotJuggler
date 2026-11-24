@@ -582,6 +582,7 @@ TEST(RobotModelLayerTest, AMeshStillLoadingDrawsNoPlaceholder) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_EQ(layer.unresolvedMeshCount(), 0) << "fixture mesh must resolve";
   ASSERT_EQ(layer.loadedMeshCount(), 0) << "the load is asynchronous";
+  EXPECT_TRUE(layer.statusText().contains("0/1 meshes"_L1)) << layer.statusText().toStdString();
   for (const auto& call : layer.modelDrawCalls()) {
     EXPECT_NE(call.mesh_key, "robot:placeholder") << "a loading mesh drew the failure placeholder";
   }
@@ -593,6 +594,7 @@ TEST(RobotModelLayerTest, AMeshStillLoadingDrawsNoPlaceholder) {
   }
   ASSERT_EQ(layer.loadedMeshCount(), 1);
   ASSERT_EQ(layer.modelDrawCalls().size(), 1U);
+  EXPECT_TRUE(layer.statusText().contains("1/1 meshes"_L1)) << layer.statusText().toStdString();
   EXPECT_NE(layer.modelDrawCalls().front().mesh_key, "robot:placeholder");
 }
 

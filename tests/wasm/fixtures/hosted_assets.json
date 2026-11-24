@@ -190,12 +190,12 @@
    "bytes": 28006
   },
   "v1/microduck/README.txt": {
-   "sha256": "b62cb3d6055e618b66ccd69298c16c4430514a6c38dfa5dd8d6610d0f983d058",
-   "bytes": 1879
+   "sha256": "b61fa615bba26fa04125812de3e79eec8a1a0dae5ee181d03b41bdc6516a40f1",
+   "bytes": 1849
   },
   "v1/microduck/microduck_layout.pj4.xml": {
-   "sha256": "3f0d987615c5efb91eeaf5daa519c318496f0cef0921b7b262f55cbf9dd7a232",
-   "bytes": 9624
+   "sha256": "c2023c5ca0b8c7ae022ebc6a698097cf58bf2796e5e5e3b0e57f00863ba86d1b",
+   "bytes": 11785
   },
   "v1/microduck/microduck_thumbnail.png": {
    "sha256": "265b163190530ccc989713045a4ed14fa808ef177e4d70947af90b6039892d97",
@@ -214,8 +214,8 @@
    "bytes": 1148
   },
   "v1/microduck_description/PROVENANCE.txt": {
-   "sha256": "46a597cbb9c2da00eaa5b3192e36c37668c93f45586894db9663644a24409611",
-   "bytes": 1265
+   "sha256": "1ababd5112748206a0d82f20145e7f38456abdf84c7f21c9e3fcabe0ca097c97",
+   "bytes": 1331
   },
   "v1/microduck_description/meshes/ankle_left.stl": {
    "sha256": "98f14ba6e6cd138740aa822a615aaa0db34527d499c40b2379aacd13427a1379",

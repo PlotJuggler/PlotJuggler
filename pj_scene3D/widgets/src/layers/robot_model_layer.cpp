@@ -1384,7 +1384,7 @@ void RobotModelLayer::updateStatus() {
                   .arg(total_mesh_count_)
                   .arg(unresolvedPackagesList().size());
   } else {
-    status += tr("  •  %1/%1 meshes").arg(total_mesh_count_);
+    status += tr("  •  %1/%2 meshes").arg(loaded_mesh_count_).arg(total_mesh_count_);  // loaded of total
   }
   status += unresolvedIssueClause();
   QString warning;

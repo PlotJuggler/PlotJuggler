@@ -7925,23 +7925,33 @@ void MainWindow::refreshCustomTopicsPanel() {
     custom_topic_transform_rows_.clear();
     // Not filtered by owner: a restored transform's plugin may not be loaded (the layout carries the script).
     const auto transforms = session_->sessionManager().dataProcessorService().transformRecipes();
-    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset. An
-    // output topic with several columns (a grouped "t:a,b") has no row: a row is one column, and the rest of the topic
-    // would stay in Datasets.
+    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset. One
+    // row per column, so a grouped output ("t:a,b", a column per field) moves whole, each column named `t/field`.
     for (const auto& recipe : transforms) {
+      const QString owner = QString::fromStdString(recipe.owner_plugin);
       for (const TopicId output : recipe.output_topic_ids) {
-        if (catalog.scalarColumnKey(recipe.dataset_id, output, 1).has_value()) {
-          continue;
-        }
-        if (const std::optional<QString> key = catalog.scalarColumnKey(recipe.dataset_id, output, 0)) {
-          custom_topic_transform_rows_.push_back({.key = *key, .owner = QString::fromStdString(recipe.owner_plugin)});
+        const bool several = catalog.scalarColumnKey(recipe.dataset_id, output, 1).has_value();
+        for (std::size_t column = 0;; ++column) {
+          const std::optional<QString> key = catalog.scalarColumnKey(recipe.dataset_id, output, column);
+          if (!key) {
+            break;
+          }
+          QString name;
+          if (several) {
+            if (const std::optional<CatalogItem> item = catalog.itemDescriptor(*key)) {
+              if (const auto* field = std::get_if<ScalarFieldPayload>(&item->payload)) {
+                name = item->topic_name + u'/' + field->field_name;
+              }
+            }
+          }
+          custom_topic_transform_rows_.push_back({.key = *key, .owner = owner, .name = std::move(name)});
         }
       }
     }
   }
   std::vector<CurveListPanel::CustomTopicRow> rows;
   for (const TransformTopicRow& transform_row : custom_topic_transform_rows_) {
-    rows.push_back({.key = transform_row.key, .owner = transform_row.owner});
+    rows.push_back({.key = transform_row.key, .owner = transform_row.owner, .name = transform_row.name});
   }
   // Persistent on-demand recipes; a preview is never a row. One row per object output, named by the recipe id, or
   // `id/output` when it has several.

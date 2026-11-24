@@ -87,8 +87,9 @@ class CurveListPanel : public QWidget {
     QString key = {};    ///< catalog key of the derived topic or transform output
     QString owner = {};  ///< plugin id of the recipe's creator; empty for a recipe no plugin owns
     /// The flat label of an on-demand row: an object output's is the recipe id, or `recipe/output`, a series
-    /// column's is `recipe/output`. Empty labels an object row with its topic name; a scalar row without one is a
-    /// transform output, which keeps its topic path.
+    /// column's is `recipe/output`; a column of a multi-column transform output's is `topic/field`. Empty labels an
+    /// object row with its topic name; a scalar row without one is a one-column transform output, which keeps its
+    /// topic path.
     QString name = {};
     std::optional<Timestamp> pinned_t = {};  ///< a finding's pin, raw dataset time
     /// The on-demand node's state, painted as the row glyph; nullopt for a transform output.

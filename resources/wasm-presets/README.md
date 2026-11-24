@@ -253,7 +253,7 @@ The layout loads two hosted folders:
   [Microduck](https://pollen-robotics.com/microduck/), the 25 cm open-source biped by Pollen Robotics
   ([microduck_rl](https://github.com/pollen-robotics/microduck_rl)), 37.6 s cut from a longer session (62.0 s to
   99.6 s of it, timestamps unchanged), licensed
-  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) with the layout. The robot stands, walks, kicks, falls at about 93.5 s and gets back up. It
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The robot stands, walks, kicks, falls at about 93.5 s and gets back up. It
   holds `/state` (49 Hz, JSON: the base pose and velocity, the commanded velocity, the active `policy` and the
   position, velocity, control target and action of 14 joints), `/tf` (781 Hz, every link), `/robot_description`
   (the URDF, which names its meshes `package://microduck_description/...`) and two H.264 cameras,

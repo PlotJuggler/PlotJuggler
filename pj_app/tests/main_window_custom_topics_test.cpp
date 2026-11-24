@@ -46,6 +46,9 @@ class MainWindowCustomTopicsTestPeer {
     return *window.session_;
   }
   // What the panel's Delete runs.
+  static void deleteCustomTopics(MainWindow& window, const QStringList& catalog_keys) {
+    window.deleteCustomTopics(catalog_keys);
+  }
   static void deleteCustomTopic(MainWindow& window, const QString& catalog_key) {
     window.deleteCustomTopic(catalog_key);
   }
@@ -383,9 +386,9 @@ TEST(MainWindowCustomTopicsTest, ATransformRowIsItsOutputNotATopicOfTheSameName)
   EXPECT_EQ(findRowByKey(fx.tree->invisibleRootItem(), output_key), nullptr);
 }
 
-// A grouped output ("t:a,b", one topic with a column per field) stays whole in the Datasets tree: no column of it
-// moves to Custom Topics on its own.
-TEST(MainWindowCustomTopicsTest, AGroupedTransformOutputStaysWholeInOneTree) {
+// A grouped output ("t:a,b", one topic with a column per field) moves to Custom Topics whole: every column is listed
+// there and none stays under Datasets.
+TEST(MainWindowCustomTopicsTest, AGroupedTransformOutputMovesWholeToCustomTopics) {
   constexpr const char* kSplit = R"LUAU(-- pj-script: luau
 return { id="split", name="Split",
   create = function(p) return { calculate = function(t, v) return v, -v end } end }
@@ -406,8 +409,17 @@ return { id="split", name="Split",
   }
   ASSERT_EQ(keys.size(), 2) << "one topic, a column per field";
   for (const QString& key : keys) {
+    const QTreeWidgetItem* row = findRowByKey(fx.custom->invisibleRootItem(), key);
+    ASSERT_NE(row, nullptr) << key.toStdString();
+    EXPECT_EQ(findRowByKey(fx.tree->invisibleRootItem(), key), nullptr) << key.toStdString();
+    EXPECT_TRUE(row->text(0) == u"pair/a"_s || row->text(0) == u"pair/b"_s) << row->text(0).toStdString();
+  }
+
+  // Deleting its rows together removes the transform once; the rows after the first find it gone.
+  MainWindowCustomTopicsTestPeer::deleteCustomTopics(fx.window, keys);
+  EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty());
+  for (const QString& key : keys) {
     EXPECT_EQ(findRowByKey(fx.custom->invisibleRootItem(), key), nullptr) << key.toStdString();
-    EXPECT_NE(findRowByKey(fx.tree->invisibleRootItem(), key), nullptr) << key.toStdString();
   }
 }
 
