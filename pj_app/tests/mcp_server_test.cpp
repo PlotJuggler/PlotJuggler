@@ -18,6 +18,7 @@
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QPointer>
 #include <QPushButton>
@@ -30,6 +31,8 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
+#include <QVBoxLayout>
 #include <QWidgetAction>
 #include <QtEndian>
 #include <algorithm>
@@ -901,6 +904,33 @@ TEST_F(McpServerTest, UiTreeReportsALockedRowAsSelected) {
   EXPECT_NE(tree.find("row \"lockedRow\" (selected)"), std::string::npos) << tree;
   for (const char* row : {"row \"stringRow\"\n", "row \"enabledRow\"\n", "row \"releasedRow\"\n"}) {
     EXPECT_NE(tree.find(row), std::string::npos) << row << tree;
+  }
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
+// The locked-row reading is a plugin-table contract: a list or tree item carrying bool true at the role is not one.
+TEST_F(McpServerTest, UiTreeIgnoresTheLockedRoleOutsideATable) {
+  PJ::mcp::setUiToolsEnabled(true);
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* list = new QListWidget(&root);
+  auto* list_item = new QListWidgetItem(QStringLiteral("lockedListItem"), list);
+  list_item->setFlags(list_item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+  list_item->setData(PJ::kLockedRowRole, true);
+  auto* tree = new QTreeWidget(&root);
+  auto* tree_item = new QTreeWidgetItem(tree, QStringList{QStringLiteral("lockedTreeItem")});
+  tree_item->setFlags(tree_item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+  tree_item->setData(0, PJ::kLockedRowRole, true);
+  layout->addWidget(list);
+  layout->addWidget(tree);
+  root.resize(400, 400);
+  root.show();
+  ASSERT_TRUE(pumpUntil([&] { return root.isVisible(); }));
+
+  const auto [dump, dump_error] = result(call("ui_tree", json::object()));
+  ASSERT_FALSE(dump_error) << dump;
+  for (const char* row : {"row \"lockedListItem\"\n", "row \"lockedTreeItem\"\n"}) {
+    EXPECT_NE(dump.find(row), std::string::npos) << row << dump;
   }
   PJ::mcp::setUiToolsEnabled(false);
 }

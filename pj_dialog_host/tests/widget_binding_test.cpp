@@ -3379,12 +3379,16 @@ QTableWidget* lockedTable(QWidget& root) {
 }
 
 bool rowLocked(const QTableWidget* tw, int row) {
+  bool any = false;
   for (int c = 0; c < tw->columnCount(); ++c) {
-    if (!tw->item(row, c)->data(PJ::kLockedRowRole).toBool()) {
-      return false;
+    if (const QTableWidgetItem* item = tw->item(row, c)) {
+      if (!item->data(PJ::kLockedRowRole).toBool()) {
+        return false;
+      }
+      any = true;
     }
   }
-  return true;
+  return any;
 }
 
 bool rowEnabled(const QTableWidget* tw, int row) {
@@ -3411,9 +3415,9 @@ std::vector<std::set<std::string>> reportedSelections() {
   return out;
 }
 
-QColor cellBackground(QTableWidget* tw, int row) {
+QColor cellBackground(QTableWidget* tw, int row, int col = 1) {
   const QImage shot = tw->grab().toImage();
-  const QRect cell = tw->visualItemRect(tw->item(row, 1));
+  const QRect cell = tw->visualRect(tw->model()->index(row, col));
   return shot.pixelColor(tw->viewport()->mapTo(tw, QPoint(cell.right() - 3, cell.center().y())));
 }
 
@@ -3485,6 +3489,9 @@ TEST(WidgetBindingLockedRows, LockedRowPaintsSelectedAndClicksChangeNothing) {
     EXPECT_EQ(cellBackground(tw, 3), QColor(palette.at(u"data_backdrop"_s))) << theme.toStdString();
   }
   root.setStyleSheet(QString());
+  // A cell without an item (a radio column, a ragged row) paints with its row.
+  delete tw->takeItem(1, 1);
+  EXPECT_EQ(cellBackground(tw, 1, 1), cellBackground(tw, 0, 1)) << "itemless cell of a locked row";
 
   for (const Qt::KeyboardModifiers mods :
        {Qt::KeyboardModifiers(Qt::NoModifier), Qt::KeyboardModifiers(Qt::ControlModifier)}) {
@@ -3664,8 +3671,7 @@ TEST(WidgetBindingLockedRows, SortedTableKeepsTheLockOnItsRow) {
 }
 
 // A lock the plugin releases in a delivery without a selection keeps the plugin's selection: the row is enabled and
-// selected. A row the plugin disables without locking drops any stored selection, so it does not come back selected
-// when it is enabled again.
+// selected.
 TEST(WidgetBindingLockedRows, ReleasedLockWithoutSelectionKeepsTheRowSelected) {
   qapp();
   recorder()->clear();
@@ -3681,7 +3687,9 @@ TEST(WidgetBindingLockedRows, ReleasedLockWithoutSelectionKeepsTheRowSelected) {
   EXPECT_TRUE(reportedSelections().empty());
 }
 
-TEST(WidgetBindingLockedRows, DisablingAnUnlockedRowDropsItsStoredSelection) {
+// Disabling a row without a selection keeps the user's stored selection: re-enabled, the row comes back selected and
+// the next event carries it.
+TEST(WidgetBindingLockedRows, DisablingAnUnlockedRowKeepsItsStoredSelection) {
   qapp();
   recorder()->clear();
   QWidget root;
@@ -3692,10 +3700,107 @@ TEST(WidgetBindingLockedRows, DisablingAnUnlockedRowDropsItsStoredSelection) {
   nlohmann::json d;
   d["tbl"]["disabled_rows"] = {1, 2, 3};
   PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
+  EXPECT_EQ(selectedViewRows(tw), (std::set<int>{0}));
   d["tbl"]["disabled_rows"] = {1, 2};
   PJ::applyWidgetData(&root, PJ::WidgetDataView(d.dump()));
   EXPECT_TRUE(rowEnabled(tw, 3));
-  EXPECT_FALSE(tw->item(3, 0)->isSelected());
+  EXPECT_TRUE(tw->item(3, 0)->isSelected());
+  recorder()->clear();
+  tw->selectionModel()->select(tw->model()->index(0, 0), QItemSelectionModel::Deselect | QItemSelectionModel::Rows);
+  ASSERT_FALSE(reportedSelections().empty());
+  EXPECT_EQ(reportedSelections().back(), (std::set<std::string>{"b"}));
+}
+
+// A delivery echoing the user's selection while a drag or Shift range is in progress leaves that range open: the next
+// step of the gesture replaces it instead of adding to a frozen copy.
+TEST(WidgetBindingLockedRows, EchoedDeliveryKeepsTheInProgressRange) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = lockedTable(root);
+
+  tw->selectionModel()->select(
+      QItemSelection(tw->model()->index(0, 0), tw->model()->index(3, 1)),
+      QItemSelectionModel::Select | QItemSelectionModel::Rows);
+  ASSERT_EQ(selectedViewRows(tw), (std::set<int>{0, 3}));
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(lockedTableJson({"a", "tf", "b"})));
+  tw->selectionModel()->select(
+      tw->model()->index(0, 0), QItemSelectionModel::Select | QItemSelectionModel::Current | QItemSelectionModel::Rows);
+  EXPECT_EQ(selectedViewRows(tw), (std::set<int>{0}));
+}
+
+// The lock belongs to the row's key text (the column tableRowKeyText reads): a streamed count or rate in another column
+// keeps it.
+TEST(WidgetBindingLockedRows, NonKeyCellUpdateKeepsTheLock) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = lockedTable(root);
+
+  PJ::WidgetData tick;
+  tick.setTableRows("tbl", std::vector<std::vector<std::string>>{{"a", "x"}, {"tf", "7"}, {"empty", "x"}, {"b", "x"}});
+  tick.setDisabledRows("tbl", {1, 2});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(tick.toJson()));
+  ASSERT_EQ(tw->item(1, 1)->text(), u"7"_s);
+  EXPECT_TRUE(rowLocked(tw, 1));
+}
+
+// A row with no item at all has nothing to disable: selected by the plugin, it stays selected.
+TEST(WidgetBindingLockedRows, ItemlessRowIsNeverLocked) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = new QTableWidget(&root);
+  tw->setObjectName("tbl");
+  PJ::WidgetData wd;
+  wd.setTableHeaders("tbl", {"Topic"});
+  wd.setTableRows("tbl", std::vector<std::vector<std::string>>{{"a"}, {}});
+  wd.setDisabledRows("tbl", {1});
+  wd.setSelectedRows("tbl", {1});
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(wd.toJson()));
+  ASSERT_EQ(tw->item(1, 0), nullptr);
+  EXPECT_EQ(selectedViewRows(tw), (std::set<int>{1}));
+}
+
+// A delivery carrying only a selection leaves every item's enabled flag alone.
+TEST(WidgetBindingLockedRows, SelectionOnlyDeliveryLeavesEnabledFlags) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = lockedTable(root);
+  tw->item(0, 1)->setFlags(tw->item(0, 1)->flags() & ~Qt::ItemIsEnabled);
+
+  nlohmann::json sel;
+  sel["tbl"]["selected_items"] = {"a", "tf"};
+  PJ::applyWidgetData(&root, PJ::WidgetDataView(sel.dump()));
+  EXPECT_FALSE(tw->item(0, 1)->flags().testFlag(Qt::ItemIsEnabled));
+  EXPECT_TRUE(rowLocked(tw, 1));
+}
+
+// Arrow keys step over a locked row and Space toggles only free rows: the keyboard never reaches the lock.
+TEST(WidgetBindingLockedRows, KeyboardNeverReachesALockedRow) {
+  qapp();
+  recorder()->clear();
+  QWidget root;
+  auto* tw = lockedTable(root);
+  tw->setCurrentCell(0, 0, QItemSelectionModel::NoUpdate);
+
+  QTest::keyClick(tw, Qt::Key_Down);
+  EXPECT_EQ(tw->currentRow(), 3) << "the locked and disabled rows are skipped";
+  QTest::keyClick(tw, Qt::Key_Space);
+  QTest::keyClick(tw, Qt::Key_Up);
+  EXPECT_EQ(tw->currentRow(), 0);
+  QTest::keyClick(tw, Qt::Key_Space);
+  tw->selectionModel()->setCurrentIndex(tw->model()->index(1, 0), QItemSelectionModel::NoUpdate);
+  QTest::keyClick(tw, Qt::Key_Space);
+  EXPECT_TRUE(rowLocked(tw, 1));
+  EXPECT_FALSE(rowEnabled(tw, 1));
+  for (const int row : selectedViewRows(tw)) {
+    EXPECT_TRUE(row == 0 || row == 3) << row;
+  }
+  for (const auto& topics : reportedSelections()) {
+    EXPECT_EQ(topics.count("tf") + topics.count("empty"), 0u);
+  }
 }
 
 // A rows rewrite clears the tag of every row whose content changed: a lock belongs to the topic, not the position.

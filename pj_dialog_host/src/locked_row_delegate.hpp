@@ -11,7 +11,8 @@ namespace PJ {
 
 // Base of every host delegate on a plugin table: paints an item tagged kLockedRowRole as selected and enabled (while
 // the view is enabled), so the QSS `::item:selected` accent applies to it. The item itself stays disabled, which keeps
-// clicks, keyboard and selection off it.
+// clicks, keyboard and selection off it. A cell without an item (a radio column, a ragged row) takes the tag of its
+// row's first item, or the locked row would paint with a hole.
 class LockedRowDelegate : public QStyledItemDelegate {
  public:
   using QStyledItemDelegate::QStyledItemDelegate;
@@ -19,7 +20,11 @@ class LockedRowDelegate : public QStyledItemDelegate {
  protected:
   void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
     QStyledItemDelegate::initStyleOption(option, index);
-    if (!index.data(kLockedRowRole).toBool()) {
+    QVariant locked = index.data(kLockedRowRole);
+    for (int c = 0; !locked.isValid() && c < index.model()->columnCount(index.parent()); ++c) {
+      locked = index.siblingAtColumn(c).data(kLockedRowRole);
+    }
+    if (!locked.toBool()) {
       return;
     }
     option->state |= QStyle::State_Selected;
