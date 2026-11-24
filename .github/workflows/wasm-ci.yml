@@ -23,7 +23,9 @@
 # package as a release: stamped with the tag's version and the
 # PJ_EASTER_EGG_KEY secret, with its GPL-3.0 source offer (sources/), and the
 # wasm-release job attaches it to the tag's GitHub Release as
-# PlotJuggler4-web-bundle.zip once the Chromium suite passes. The name carries
+# PlotJuggler4-web-bundle.zip once the Chromium suite passes. A manual run
+# builds the same archive as the wasm-release artifact, without the Release
+# upload, like the other release workflows. The name carries
 # no version, so releases/latest/download/PlotJuggler4-web-bundle.zip is a
 # stable link. The hosted app (app.plotjuggler.io) is still deployed by hand
 # (packaging/web/README.md).
@@ -200,9 +202,11 @@ jobs:
       - name: Build production package (shipped defaults, probes off)
         shell: bash
         env:
-          # Tags only: the release version, and the key that decrypts the empty-dock easter egg GIFs (pj_widgets).
+          # Release archives only (tags and manual runs): the tag's version, and the key that decrypts the empty-dock
+          # easter egg GIFs (pj_widgets). Empty values leave versions.env's version and no key.
           PJ_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          PJ_EASTER_EGG_KEY: ${{ github.ref_type == 'tag' && secrets.PJ_EASTER_EGG_KEY || '' }}
+          PJ_EASTER_EGG_KEY: >-
+            ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && secrets.PJ_EASTER_EGG_KEY || '' }}
         run: |
           set -euo pipefail
           source .emsdk/emsdk_env.sh >/dev/null
@@ -262,7 +266,7 @@ jobs:
         # After the deployment contract, so the archive is the package that passed it. Like every desktop package
         # (packaging/README.md, "Licences"), it carries PlotJuggler's LICENSE beside the build's
         # THIRD_PARTY_NOTICES.txt, and the source offer goes in sources/, where those notices point.
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -274,7 +278,7 @@ jobs:
           (cd build-wasm-prod/deploy && zip -qr ../PlotJuggler4-web-bundle.zip .)
 
       - name: Upload release archive
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: wasm-release
