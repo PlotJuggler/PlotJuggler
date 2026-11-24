@@ -17,9 +17,10 @@ class QSettings;
 namespace PJ {
 
 // The only writer of durable browser storage. On WASM the default QSettings backend is redirected to
-// page-lifetime MEMFS, so paths, plugin configs, credentials and extension settings never become durable; this
-// bridge alone owns WebLocalStorageFormat and mirrors a schema-validated preference allowlist plus source-free
-// layout recipes. Native builds never construct it.
+// page-lifetime MEMFS; this bridge alone owns WebLocalStorageFormat and mirrors three bounded envelopes into it: a
+// schema-validated preference allowlist, source-free layout recipes and the plugin settings a plugin marked durable.
+// Paths, upload identities, the host's PluginConfig/ JSON, credentials and every other plugin setting stay
+// page-lifetime. Native builds never construct it.
 class BrowserPersistence final : public QObject {
   friend class BrowserPersistenceTestPeer;
 
@@ -44,16 +45,25 @@ class BrowserPersistence final : public QObject {
   [[nodiscard]] static std::optional<QVariant> sanitizePreference(const QString& key, const QVariant& value);
   [[nodiscard]] static bool isSafeGenericLayoutRecipe(const QByteArray& xml);
 
-  // The opt-in for plugin settings (PluginSettingsKeys.h): a pj.settings.v1 key a plugin writes as
-  // "durable/<name>" is stored as "PluginSettings/<plugin>/durable/<name>" and kept across a reload when its value is
-  // a string of at most kMaxDurablePluginValueLength characters with no upload identity or control character; at most
-  // kMaxDurablePluginKeysPerPlugin such keys per plugin (the first in key order). Every other plugin key lives as
-  // long as the page. The plugin keeps credentials out of what it marks durable; the host stores what it is given.
+  // The plugin-settings opt-in (pj_runtime ARCHITECTURE "Plugin settings"): the key "durable/<name>" of plugin <id>
+  // is "PluginSettings/<id>/durable/<name>" in the settings, kept across a reload when sanitizeDurablePluginSetting
+  // accepts it and within these caps, taken in key order. The envelope cap holds on write and on read alike, so a
+  // write never produces an envelope the next load rejects.
   static constexpr qsizetype kMaxDurablePluginValueLength = 2048;
   static constexpr int kMaxDurablePluginKeysPerPlugin = 8;
-  // The value to keep for `key`, else nullopt.
-  [[nodiscard]] static std::optional<QString> sanitizeDurablePluginSetting(const QString& key, const QVariant& value);
-  // Every plugin setting of `settings` that is kept across a reload, with its value.
+  static constexpr int kMaxDurablePluginIds = 32;
+  static constexpr qsizetype kMaxPluginSettingsBytes = 256 * 1024;
+
+  struct DurablePluginSetting {
+    QString plugin_id;
+    QString value;
+  };
+  // Kept when `key` has the durable layout and names no upload nor holds a control character, and `value` is a string
+  // within kMaxDurablePluginValueLength that names no upload, holds no control character and is no URL with user
+  // info. The plugin keeps credentials out of what it marks durable; this is a backstop.
+  [[nodiscard]] static std::optional<DurablePluginSetting> sanitizeDurablePluginSetting(
+      const QString& key, const QVariant& value);
+  // The plugin settings of `settings` kept across a reload; reads only the durable groups.
   [[nodiscard]] static QHash<QString, QString> durablePluginSettings(QSettings& settings);
 
   [[nodiscard]] QList<LayoutRecipe> recentLayouts() const;
@@ -71,21 +81,28 @@ class BrowserPersistence final : public QObject {
   [[nodiscard]] qsizetype durableKeyCountForTest() const;
 #endif
 
- private:
-  enum class PreferenceDecodeStatus {
+  // How a stored envelope read: absent, valid, or rejected (malformed, oversized or another version).
+  enum class EnvelopeStatus {
     kAbsent,
     kValid,
     kRejected,
   };
 
+ private:
   struct DecodedPreferences {
-    PreferenceDecodeStatus status = PreferenceDecodeStatus::kAbsent;
+    EnvelopeStatus status = EnvelopeStatus::kAbsent;
     QHash<QString, QVariant> values;
   };
 
+  struct DecodedPluginSettings {
+    EnvelopeStatus status = EnvelopeStatus::kAbsent;
+    QHash<QString, QString> values;
+  };
+
   [[nodiscard]] static DecodedPreferences decodePreferences(const QVariant& stored);
-  // The durable plugin settings of a stored envelope, re-checked as durablePluginSettings checks them.
-  [[nodiscard]] static QHash<QString, QString> decodePluginSettings(const QVariant& stored);
+  // Re-checks every entry as durablePluginSettings does.
+  [[nodiscard]] static DecodedPluginSettings decodePluginSettings(const QVariant& stored);
+  [[nodiscard]] static QByteArray encodePluginSettings(const QHash<QString, QString>& settings);
 
   struct Impl;
   std::unique_ptr<Impl> impl_;

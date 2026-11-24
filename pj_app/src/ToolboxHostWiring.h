@@ -13,9 +13,11 @@
 #include <utility>
 
 #include "pj_base/diagnostic_sink.hpp"
+#include "pj_base/sdk/settings_store_host.hpp"
 #include "pj_base/toolbox_protocol.h"
 #include "pj_plugins/host/message_parser_library.hpp"
 #include "pj_runtime/DiagnosticEmit.h"
+#include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
 #ifndef __EMSCRIPTEN__
@@ -23,6 +25,15 @@
 #endif
 
 namespace PJ {
+
+// The pj.settings.v1 backend of toolbox `id`: its own store (QSettingsBackend::forPlugin), or a store that lives as
+// long as the instance when the toolbox has no id.
+[[nodiscard]] inline std::unique_ptr<sdk::SettingsBackend> makeToolboxSettings(const std::string& id) {
+  if (auto store = QSettingsBackend::forPlugin(id)) {
+    return store;
+  }
+  return std::make_unique<sdk::InMemorySettingsBackend>();
+}
 
 // Unknown levels map to kInfo.
 [[nodiscard]] inline DiagnosticLevel toolboxDiagnosticLevel(PJ_toolbox_message_level_t level) {

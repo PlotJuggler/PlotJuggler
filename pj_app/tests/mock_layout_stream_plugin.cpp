@@ -16,8 +16,11 @@
 //   "probe_services":true  start() and the destructor append "services <where>:ok|missing" (a services() lookup);
 //                     the destructor also reads the runtime host
 //   "remember":"<text>"  loadConfig() appends "settings <stored value>" to the probe (the value of its
-//                     pj.settings.v1 key "remembered": "(unbound)" without the service, "(absent)" without
-//                     the key), then stores <text> there unless it is empty
+//                     pj.settings.v1 key "remembered", "(absent)" without it), then stores <text> there unless
+//                     it is empty
+//   "remember_on_poll":"<text>"  the first poll stores <text> under "remembered" from the poll thread and appends
+//                     "poll settings stored" or "poll settings failed"
+//   "remember_on_destroy":"<text>"  the plugin's destructor stores <text> under "remembered"
 // Each loadConfig/start/stop appends one line ("load <config>", "start",
 // "stop") to the file PJ_LAYOUT_STREAM_PROBE_FILE names, when set.
 // An interactive start is steered through the environment, read at call time:
@@ -122,6 +125,11 @@ class MockLayoutStream : public PJ::StreamSourceBase {
       recordServicesLookup("destroy");
       (void)runtimeHost().isStopRequested();
     }
+    if (!remember_on_destroy_.empty()) {
+      if (const auto settings = services().get<PJ::sdk::SettingsStoreService>()) {
+        (void)settings->setValue("remembered", std::string_view(remember_on_destroy_));
+      }
+    }
   }
 
   PJ_borrowed_dialog_t getDialog() override {
@@ -162,10 +170,18 @@ class MockLayoutStream : public PJ::StreamSourceBase {
     gate_file_ = stringValue(config_, "gate_file", "");
     end_file_ = stringValue(config_, "end_file", "");
     late_file_ = stringValue(config_, "late_file", "");
+    remember_on_poll_ = stringValue(config_, "remember_on_poll", "");
+    remember_on_destroy_ = stringValue(config_, "remember_on_destroy", "");
     return PJ::okStatus();
   }
 
   PJ::Status onPoll() override {
+    if (!remember_on_poll_.empty()) {
+      const auto settings = services().get<PJ::sdk::SettingsStoreService>();
+      const bool stored = settings.has_value() && settings->setValue("remembered", std::string_view(remember_on_poll_));
+      recordProbe(stored ? "poll settings stored" : "poll settings failed");
+      remember_on_poll_.clear();
+    }
     if (!end_file_.empty() && std::ifstream(end_file_).good()) {
       runtimeHost().requestStop(PJ::DataSourceState::kStopped, "end of stream");
       return PJ::okStatus();
@@ -210,7 +226,6 @@ class MockLayoutStream : public PJ::StreamSourceBase {
     }
     const auto settings = services().get<PJ::sdk::SettingsStoreService>();
     if (!settings.has_value()) {
-      recordProbe("settings (unbound)");
       return;
     }
     const auto stored = settings->value("remembered");
@@ -228,6 +243,8 @@ class MockLayoutStream : public PJ::StreamSourceBase {
   std::string gate_file_;
   std::string end_file_;
   std::string late_file_;
+  std::string remember_on_poll_;
+  std::string remember_on_destroy_;
   bool late_sent_ = false;
   int polls_ = 0;
   std::optional<PJ::sdk::TopicHandle> topic_;

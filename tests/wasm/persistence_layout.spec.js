@@ -136,7 +136,7 @@ async function requestBrowserPersistenceState(page, consoleMessages, previousCou
   ).toBeGreaterThan(previousCount);
   const message = consoleMessages.filter(message => message.includes('PJ_WASM_PERSISTENCE_STATE')).at(-1) || '';
   const match = message.match(
-    /theme=(\S+) theme_present=(\d+) precision=(\d+) precision_present=(\d+) unsafe_path=(\d+) unsafe_plugin=(\d+) unsafe_recent=(\d+) recipes=(\d+) durable_keys=(\d+)/,
+    /theme=(\S+) theme_present=(\d+) precision=(\d+) precision_present=(\d+) unsafe_path=(\d+) unsafe_plugin=(\d+) unsafe_recent=(\d+) recipes=(\d+) durable_keys=(\d+) plugin_url=(\S+) plugin_token_present=(\d+)/,
   );
   expect(match, `unparseable browser persistence state: ${message}`).not.toBeNull();
   return {
@@ -149,6 +149,8 @@ async function requestBrowserPersistenceState(page, consoleMessages, previousCou
     unsafeRecent: Number(match[7]),
     recipes: Number(match[8]),
     durableKeys: Number(match[9]),
+    pluginUrl: match[10],
+    pluginTokenPresent: Number(match[11]),
   };
 }
 
@@ -179,6 +181,8 @@ async function clickRecentMenuAction(page, consoleMessages, expectedLabel) {
   await page.mouse.click(Number(action[1]), Number(action[2]));
 }
 
+// The probe also stores two settings of a plugin: "durable/url", which it marked for keeping across a reload, and
+// "token", which it did not.
 test('browser persistence survives refresh through a bounded allowlist and scrubs legacy leaks', async ({ page }) => {
   test.setTimeout(180000);
   const errors = [];
@@ -217,6 +221,8 @@ test('browser persistence survives refresh through a bounded allowlist and scrub
     unsafePlugin: 0,
     unsafeRecent: 0,
     recipes: 5,
+    pluginUrl: 'ws://robot.local:9871',
+    pluginTokenPresent: 0,
   });
   const durableStorage = await page.evaluate(() => Object.entries(localStorage).flat().join('\n'));
   expect(durableStorage).not.toContain('pj-upload://');
@@ -225,6 +231,7 @@ test('browser persistence survives refresh through a bounded allowlist and scrub
   expect(durableStorage).not.toContain('/home/user/private.csv');
   expect(durableStorage).not.toContain('PluginConfig');
   expect(durableStorage).not.toContain('File/recent');
+  expect(durableStorage).toContain('ws://robot.local:9871');
 
   await page.evaluate(() => window.pjWasmClearPersistenceProbe());
   await expect.poll(
@@ -245,6 +252,8 @@ test('browser persistence survives refresh through a bounded allowlist and scrub
     unsafePlugin: 0,
     unsafeRecent: 0,
     recipes: 0,
+    pluginUrl: '(absent)',
+    pluginTokenPresent: 0,
   });
   expect(errors).toEqual([]);
 });

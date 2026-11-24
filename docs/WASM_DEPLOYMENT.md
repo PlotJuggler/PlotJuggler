@@ -420,14 +420,14 @@ bounded by the tab's memory; it must stay unchanged on disk while it is open
 [`pj_app/docs/ARCHITECTURE.md`](../pj_app/docs/ARCHITECTURE.md#browser-webassembly-boundary)). Ordinary
 `QSettings` callers are likewise redirected to page-lifetime storage. The only
 durable browser state is the typed preference allowlist, a bounded list of
-source-free generic layout recipes, and the `pj.settings.v1` keys a streaming
-source writes as `durable/<name>` (bounded strings, such as the last URL its
-dialog was given, cleaned of credentials), all owned by `BrowserPersistence`
-(the plugin contract: [`pj_runtime/docs/ARCHITECTURE.md`](../pj_runtime/docs/ARCHITECTURE.md),
+source-free generic layout recipes, and the plugin settings a plugin marks
+`durable/` (bounded strings, such as the last URL its dialog was given, which
+the plugin must keep free of credentials), all owned by `BrowserPersistence`
+(the contract: [`pj_runtime/docs/ARCHITECTURE.md`](../pj_runtime/docs/ARCHITECTURE.md),
 "Plugin settings"). Source-bound layouts are downloaded with logical references
 and require explicit file reselection when replayed. Paths, upload identities,
-plugin configuration, credentials and every other plugin setting are
-intentionally excluded from browser-local persistence.
+the host's per-plugin configuration JSON, credentials and every other plugin
+setting are intentionally excluded from browser-local persistence.
 
 A source's plugin may also read files picked in its own dialog (a CAN
 dictionary, say). "Save Layout with Sources" saves each such *side file* like

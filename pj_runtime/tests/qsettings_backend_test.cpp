@@ -3,9 +3,14 @@
 
 #include <gtest/gtest.h>
 
+#include <QFile>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
+#include <exception>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "pj_runtime/PluginSettingsKeys.h"
@@ -83,7 +88,7 @@ TEST(QSettingsBackend, PersistsAcrossInstancesOnSameFile) {
   EXPECT_EQ((*history)[0], "grpc+tls://a:1");
 }
 
-TEST(QSettingsBackend, PluginStoresDoNotCollide) {
+TEST(QSettingsBackend, PluginStoresDoNotCollideAndPersist) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   const QString path = dir.filePath("settings.ini");
@@ -92,12 +97,10 @@ TEST(QSettingsBackend, PluginStoresDoNotCollide) {
     auto second = PJ::QSettingsBackend::forPlugin("second-plugin", path);
     first->setString("url", "ws://first");
     second->setString("url", "ws://second");
-    EXPECT_EQ(first->getString("url"), "ws://first");
-    EXPECT_EQ(second->getString("url"), "ws://second");
     second->remove("url");
     EXPECT_EQ(first->getString("url"), "ws://first");
   }
-  // Each store is a group of its own in the shared file, never the app's root keys.
+  EXPECT_EQ(PJ::QSettingsBackend::forPlugin("first-plugin", path)->getString("url"), "ws://first");
   QSettings file(path, QSettings::IniFormat);
   EXPECT_EQ(file.value(PJ::pluginSettingsGroup("first-plugin") + u"/url"_s).toString(), u"ws://first"_s);
   EXPECT_FALSE(file.contains(u"url"_s));
@@ -111,16 +114,95 @@ TEST(QSettingsBackend, PluginIdCannotReachIntoAnotherPluginsStore) {
   auto nested = PJ::QSettingsBackend::forPlugin("a/b", path);
   outer->setString("b/key", "outer");
   EXPECT_FALSE(nested->contains("key"));
-  nested->setString("key", "nested");
-  EXPECT_EQ(outer->getString("b/key"), "outer");
 }
 
-TEST(QSettingsBackend, PluginStorePersistsAcrossInstances) {
+TEST(QSettingsBackend, NoPluginIdNoStore) {
+  EXPECT_EQ(PJ::QSettingsBackend::forPlugin(""), nullptr);
+}
+
+// Plugin keys written before stores were scoped sit at the root of the app settings. A store reads its own through
+// and keeps a copy; removing one removes the root copy too, or the next read would bring it back.
+TEST(QSettingsBackend, AStoreReadsItsLegacyRootKeysThrough) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   const QString path = dir.filePath("settings.ini");
-  PJ::QSettingsBackend::forPlugin("bridge", path)->setString("durable/url", "ws://robot:9871");
-  EXPECT_EQ(PJ::QSettingsBackend::forPlugin("bridge", path)->getString("durable/url"), "ws://robot:9871");
+  {
+    QSettings root(path, QSettings::IniFormat);
+    root.setValue(u"assistant.backend"_s, u"codex"_s);
+    root.setValue(u"assistant.conv.transcript"_s, u"old"_s);
+    root.setValue(u"mcap_cloud/server_history"_s, QStringList{u"a"_s, u"b"_s});
+    root.setValue(u"source_presentation/v1/YQ/display_name"_s, u"Run 1"_s);
+  }
+  auto assistant = PJ::QSettingsBackend::forPlugin("toolbox-assistant-agent", path);
+  EXPECT_EQ(assistant->getString("assistant.backend"), "codex");
+  EXPECT_EQ(
+      PJ::QSettingsBackend::forPlugin("mcap-cloud", path)->getStringList("mcap_cloud/server_history"),
+      (std::vector<std::string>{"a", "b"}));
+  EXPECT_EQ(
+      PJ::QSettingsBackend::forPlugin("toolbox-mosaico", path)->getString("source_presentation/v1/YQ/display_name"),
+      "Run 1");
+  EXPECT_TRUE(assistant->contains("assistant.conv.transcript"));
+  assistant->remove("assistant.conv.transcript");
+  EXPECT_FALSE(assistant->contains("assistant.conv.transcript"));
+
+  QSettings file(path, QSettings::IniFormat);
+  EXPECT_EQ(
+      file.value(PJ::pluginSettingsGroup("toolbox-assistant-agent") + u"/assistant.backend"_s).toString(), u"codex"_s);
+  EXPECT_EQ(file.value(u"assistant.backend"_s).toString(), u"codex"_s);
+  EXPECT_FALSE(file.contains(u"assistant.conv.transcript"_s));
+}
+
+TEST(QSettingsBackend, TheAppsAndOtherPluginsKeysAreNotReadThrough) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath("settings.ini");
+  const QStringList foreign{
+      u"StyleSheet::theme"_s,          u"MainWindow.streamingSource"_s, u"ui/icon_size"_s,
+      u"pj_scene3d/urdf_browse_dir"_s, u"PluginConfig/agent"_s,         u"DialogGeometry/agent"_s,
+      u"PluginSettings/other/agent"_s, u"BrowserPersistence/agent"_s,   u"mosaico/metadata_query"_s,
+  };
+  {
+    QSettings root(path, QSettings::IniFormat);
+    for (const QString& key : foreign) {
+      root.setValue(key, u"x"_s);
+    }
+  }
+  // An id that names the app's lowercase groups still reaches none of them.
+  for (const char* id : {"toolbox-assistant-agent", "ui-pj-scene3d"}) {
+    auto store = PJ::QSettingsBackend::forPlugin(id, path);
+    for (const QString& key : foreign) {
+      EXPECT_FALSE(store->contains(key.toStdString())) << id << " " << key.toStdString();
+      EXPECT_FALSE(store->getString(key.toStdString()).has_value()) << id << " " << key.toStdString();
+    }
+  }
+}
+
+// pj.settings.v1 is GUI-thread only: a call from another thread fails instead of racing the QSettings.
+TEST(QSettingsBackend, RefusesCallsOffItsThread) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  auto store = PJ::QSettingsBackend::forPlugin("bridge", dir.filePath("settings.ini"));
+  bool threw = false;
+  std::thread([&] {
+    try {
+      store->setString("durable/url", "ws://robot:9871");
+    } catch (const std::exception&) {
+      threw = true;
+    }
+  }).join();
+  EXPECT_TRUE(threw);
+  EXPECT_FALSE(store->contains("durable/url"));
+}
+
+TEST(QSettingsBackend, AWriteThatCannotBeStoredFails) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  QFile blocker(dir.filePath("not-a-dir"));
+  ASSERT_TRUE(blocker.open(QIODevice::WriteOnly));
+  blocker.close();
+  auto store = PJ::QSettingsBackend::forPlugin("bridge", dir.filePath("not-a-dir/settings.ini"));
+  EXPECT_THROW(store->setString("durable/url", "ws://robot:9871"), std::exception);
+  EXPECT_THROW(store->setStringList("history", {"a"}), std::exception);
 }
 
 }  // namespace

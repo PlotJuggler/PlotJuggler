@@ -205,9 +205,8 @@ paused. Those buffers can hold rows of a stream that already ended (they merge a
 for a topic with no destination: whoever erases a dataset also drops its secondary copy
 (`StreamingSourceManager::removeSecondaryDataset`).
 
-Each session binds the plugin with its runtime host's services plus `pj.settings.v1`, a store scoped to the plugin's
-manifest id (`pj_runtime` ARCHITECTURE "Plugin settings"), so a source can remember what its dialog was given across
-sessions and restarts.
+Each session binds the plugin with its runtime host's services plus `pj.settings.v1` (`pj_runtime` ARCHITECTURE
+"Plugin settings"), so a source can remember what its dialog was given across sessions and restarts.
 
 **Followed stream.** While streaming, the timeline follows one stream's live edge (`MainWindow` scopes it with
 `AppSession::setActiveStreamingDataset`). Each launch hands live-follow to the stream just launched. When the followed
@@ -688,12 +687,13 @@ the pick) and the `content_sha256` checks of `persistence_layout.spec.js` (the J
 ### Persistence
 
 Native builds keep plain `QSettings`. WASM redirects ordinary `QSettings` callers to page-lifetime MEMFS and lets
-`BrowserPersistence` alone write `WebLocalStorageFormat`: its typed preference allowlist, a few bounded, source-free
-generic layout recipes, and the plugin settings a plugin wrote under its own `durable/` keys, re-checked on restore
-(bounded strings, no upload identity, capped per plugin; the contract is in `pj_runtime` ARCHITECTURE "Plugin
-settings"). File paths, upload identities, plugin configuration, credentials, source-bound layouts, stream records and
-every other plugin setting never enter durable storage. An unreadable stored envelope is left intact (a newer build may read it) and
-none of its values are imported. Allowlisted values written to the page-lifetime settings reach durable storage on
+`BrowserPersistence` alone write `WebLocalStorageFormat`: three versioned JSON envelopes (one encode/decode pair,
+each with a size cap applied on write and on read) holding the typed preference allowlist, a few bounded, source-free
+generic layout recipes, and the plugin settings a plugin marked durable (`pj_runtime` ARCHITECTURE "Plugin
+settings"), each re-checked on restore. File paths, upload identities, the host's `PluginConfig/` JSON of each
+plugin, credentials, source-bound layouts, stream records and every other plugin setting never enter durable storage.
+A rejected stored envelope (malformed, oversized or another version) is left intact with a warning and none of its
+values are imported. Allowlisted values written to the page-lifetime settings reach durable storage on
 `BrowserPersistence`'s periodic flush ([why a poll](./TECHNICAL_NOTES.md#browser-preferences-flush-on-a-timer)).
 `main()` constructs `BrowserPersistence` after the application identity and before the splash, `Theme`, `WidgetTuner`,
 `MainWindow` or any plugin host, so every settings consumer sees the redirect; native builds never construct it.
@@ -799,6 +799,8 @@ Suites with their own executable and ctest entry, and why:
 - A stream started after Record is pressed is not recorded (taps attach at capture start).
 - Streaming sources do not report through the load diagnostic sink.
 - A stream's layout record stores the plugin's configuration verbatim, credentials included.
+- A `StreamingSession` destroys its runtime host before the plugin handle, so a source's destructor may call into
+  services that are gone; only its `pj.settings.v1` store is guaranteed to outlive it.
 - The curve list does not mark pending items (an advertised placeholder before its first sample, an unresolved wire)
   or scene views embedded in a toolbox panel as displayed.
 - Removing curves rebuilds the whole curve tree (`CurveListPanel::onCatalogItemsRemoved`); expansion and scroll are

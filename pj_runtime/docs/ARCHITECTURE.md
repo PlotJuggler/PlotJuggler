@@ -291,9 +291,9 @@ does not link it.
 ### ToolboxRuntimeHost
 
 - Assembles `ToolboxHostService`, `ToolboxRuntimeHostService` and `SettingsStoreService`
-  (persisted through `QSettingsBackend` into `PlotJuggler4.conf`; `/`-separated keys map
-  to groups). App concerns are injected as `Callbacks`; the `[thread-safe]` callbacks
-  marshal onto the constructing (GUI) thread.
+  over the backend its owner passes in (the plugin's own store: "Plugin settings"). App
+  concerns are injected as `Callbacks`; the `[thread-safe]` callbacks marshal onto the
+  constructing (GUI) thread.
 - **Delegated parser ingest** (with `ParserIngestDeps`): `create_parser_ingest` /
   `release_parser_ingest` give a toolbox-created dataset the standard
   `DataSourceRuntimeHost` surface (one per dataset; release = flush and destroy,
@@ -320,28 +320,37 @@ does not link it.
 ### Plugin settings (`pj.settings.v1`)
 
 The optional settings store (SDK `SettingsStoreService` / `SettingsView`; host side `sdk::SettingsStoreHost` over
-`QSettingsBackend`). All calls are GUI-thread, as the SDK states; values persist in `PlotJuggler4.conf` on the
-desktop.
+`QSettingsBackend`), persisted in the app's QSettings. The one model for every plugin that gets it:
 
-- **Who gets it.** Toolboxes (`ToolboxRuntimeHost`, interactive and headless) over `QSettingsBackend()`: the app
-  configuration's root, so a toolbox prefixes its own keys and could read or overwrite another's. Streaming sources
-  (`pj_app`'s `StreamingSourceManager::createSession`) over `QSettingsBackend::forPlugin(manifest id)`: every key
-  lives under `PluginSettings/<percent-encoded manifest id>/` (`PluginSettingsKeys.h`), so two plugins never
-  collide and none reaches the app's own settings; a source without a manifest id gets no store. File loaders get
-  none: their handle moves into the import worker's context (one per fan-out entry) and `importData` runs on that
-  worker, where a GUI-thread store would be called off-thread.
-- **Lifetime.** The backend and its `SettingsStoreHost` outlive the plugin handle (the plugin may write from its
-  destructor): `StreamingSession` declares both before `handle`, `ToolboxPanelSession` resets `settings` last. A
-  plugin may look the service up after `bind()` (the SDK bases keep the registry), so both owners also keep the
-  registry they bound with alive as long as the handle.
-- **Kept across a browser reload: `durable/`.** In the browser every settings value lives as long as the page,
-  except a streaming source's key named `durable/<name>` (`PluginSettings/<id>/durable/<name>` in the settings)
-  holding a string of at most `BrowserPersistence::kMaxDurablePluginValueLength` characters that is no upload
-  identity, at most `BrowserPersistence::kMaxDurablePluginKeysPerPlugin` per plugin (the first in key order).
-  `BrowserPersistence` mirrors exactly those into local storage on its periodic flush and restores them before any
-  plugin host starts; a list, a longer value or any other key stays page-lifetime. Local storage is clear text that
-  outlives the page: a plugin writes under `durable/` only what is safe there (a URL cleaned of credentials, never a
-  token). On the desktop `durable/` is an ordinary key.
+- **Who gets which store.** Toolboxes, interactive and headless (`pj_app`'s `makeToolboxSettings`, used by both
+  toolbox owners), and streaming sources (`StreamingSourceManager::createSession`) get
+  `QSettingsBackend::forPlugin(manifest id)`. File loaders get none: their handle moves into the import worker's
+  context and `importData` runs on that worker, where a GUI-thread store would be called off-thread. A plugin with
+  no manifest id gets no store (a toolbox: one that lives as long as the instance).
+- **Scoping.** Every key of a store lives under `PluginSettings/<percent-encoded manifest id>/`
+  (`PluginSettingsKeys.h`): two plugins never collide and none reaches the app's own settings. Scoping keeps
+  plugins from colliding by accident; it is no boundary against a hostile plugin, which runs in-process.
+- **Read-through migration.** Plugin keys written before stores were scoped sit at the settings root. On a miss the
+  store reads the root key of the same name when the plugin may own it, copies it into its own group and returns it;
+  the root copy stays, except that `remove()` removes it too (otherwise the next read brings it back). The plugin
+  may own a root key whose first segment (up to the first `/` or `.`) is lowercase and, with `_` read as `-`, whole
+  words of its id (`mcap_cloud/…` for `mcap-cloud`), other than the app's lowercase groups (`ui`, `pj_scene3d`), plus
+  every `source_presentation/…` key (the SDK's source-presentation records). Capitalised groups (`PluginConfig/`,
+  `DialogGeometry/`, `PluginSettings/`, `BrowserPersistence/`, the app's preferences) are never read through.
+- **Threads and failures.** Every call is GUI-thread, as the SDK states: `QSettingsBackend` throws off the thread
+  that created it, and a write throws when QSettings reports it could not store it; `SettingsStoreHost` turns both
+  into a failed `PJ_error_t`, so the plugin sees a failed `Status` and nothing is stored.
+- **Lifetime.** The backend and its `SettingsStoreHost` outlive the plugin handle, so a plugin may write from its
+  destructor; a plugin may look the service up after `bind()` (the SDK bases keep the registry), so its owner keeps
+  the registry it bound with alive as long as the handle.
+- **Kept across a browser reload: `durable/`.** On the desktop every key persists. In the browser every settings
+  value lives as long as the page, except a key the plugin names `durable/<name>`, which `BrowserPersistence`
+  mirrors into local storage on its periodic flush and restores before any plugin host starts, when it passes
+  `BrowserPersistence::sanitizeDurablePluginSetting` (a bounded string naming no upload, holding no control
+  character and no URL user info) and fits the per-plugin, plugin-count and envelope caps there. Local storage is
+  clear text that outlives the page: a plugin marks durable only what is safe there (a URL cleaned of credentials,
+  never a token). The desktop already remembered a plugin's dialog configuration through the host's `PluginConfig/`
+  JSON; `durable/` is what lets a plugin's own key survive a browser reload.
 
 ### Extension catalog and parser routing
 
@@ -895,8 +904,12 @@ of the module: its files keep their own SPDX and copyright lines.
 - A same-provider parser retype of a streaming topic to another builtin object type keeps the topic's original
   object metadata until the stream restarts.
 - The bundled-plugin trust tier rests on id, version and DSO signature; there are no authenticated install receipts.
-- Toolbox settings stores are unscoped (the app configuration's root), unlike streaming sources': two toolboxes using
-  the same key collide, and a toolbox can read the app's own settings. Scoping them would move their stored keys.
+- Plugin settings: a store's root-key read-through also reads a key of another plugin whose id shares the words
+  (`foo/…` for both `foo-a` and `foo-b`), and any plugin reads every `source_presentation/…` record through.
+- Plugin settings on Windows live in the registry, whose key names are case-insensitive: two manifest ids that differ
+  only in case share one store.
+- Browser plugin settings: two tabs of the app share one local-storage envelope, the last flush wins; a build older
+  than the `durable/` envelope removes it on its first load (it deletes every key it does not know).
 - `ActiveWidgetsMarker`: a crashed run's record whose pid was reused by a live process is hidden until that process
   ends.
 - `wait_for` sees only samples newer than its cursor: a late sample with an older stamp, or one retention drops between

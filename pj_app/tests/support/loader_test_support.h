@@ -20,6 +20,7 @@
 #include <QObject>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <functional>
@@ -41,6 +42,15 @@ inline void flushQueuedEvents(int passes = 3) {
     QTimer::singleShot(0, &loop, &QEventLoop::quit);
     loop.exec();
   }
+}
+
+// Every line of a probe file, in order; empty when it does not exist.
+[[nodiscard]] inline QStringList probeLines(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    return {};
+  }
+  return QString::fromUtf8(file.readAll()).split(u'\n', Qt::SkipEmptyParts);
 }
 
 // Pump the GUI loop until `done` returns true. Bounded so a regression fails

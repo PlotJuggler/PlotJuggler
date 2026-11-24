@@ -21,7 +21,6 @@
 #include "pj_runtime/DerivedRuntimeHosts.h"
 #include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/ExtensionCatalogService.h"
-#include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/ToolboxRuntimeHost.h"
 
@@ -55,7 +54,7 @@ Expected<HeadlessDescriptorProviderSession::Ptr> HeadlessDescriptorProviderSessi
 
   // The services MainWindow::launchToolbox binds, all registered before bind() (the ServiceRegistryBuilder
   // contract).
-  session->settings_ = std::make_unique<QSettingsBackend>();
+  session->settings_ = makeToolboxSettings(it->id);
   session->builder_ = std::make_unique<ServiceRegistryBuilder>();
 
   ToolboxRuntimeHost::Callbacks callbacks;

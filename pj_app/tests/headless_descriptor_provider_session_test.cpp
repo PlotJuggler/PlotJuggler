@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QSettings>
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
@@ -26,6 +27,7 @@
 #include <mutex>
 #include <semaphore>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -42,6 +44,7 @@
 #include "pj_runtime/BatchEngine.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/PluginSettingsKeys.h"
 #include "pj_runtime/SessionManager.h"
 #include "support/fake_import_provider.h"
 #include "support/loader_test_support.h"
@@ -85,6 +88,7 @@ std::atomic<int> g_destroyed{0};
 std::atomic<bool> g_promotion_service_found{false};
 // The pj.data_processors.v1 service the bound instance resolved (captured at bind, GUI thread).
 PJ_service_t g_data_processors_service{};
+PJ_service_t g_settings_service{};
 
 // Promotion-blocking instrumentation: `g_worker_promotes` switches the fake worker into a provider that calls
 // promote_to_file_source through the REGISTERED service and then blocks its terminal on the promotion's
@@ -293,6 +297,11 @@ bool fakeBind(void* ctx, PJ_service_registry_t registry, PJ_error_t* out_error) 
           registry.ctx, sv(PJ::sdk::DataProcessorsHostService::kName), 1, &data_processors, &error)) {
     g_data_processors_service = data_processors;
   }
+  PJ_service_t settings{};
+  if (registry.vtable != nullptr &&
+      registry.vtable->get_service(registry.ctx, sv(PJ::sdk::SettingsStoreService::kName), 1, &settings, &error)) {
+    g_settings_service = settings;
+  }
   g_events.add("plugin.bind");
   return true;
 }
@@ -376,6 +385,7 @@ class HeadlessDescriptorProviderSessionTest : public ::testing::Test {
     g_worker_promotes.store(false);
     g_promotion_service = PJ_service_t{};
     g_data_processors_service = PJ_service_t{};
+    g_settings_service = PJ_service_t{};
     g_promotion_accepted.store(false);
     g_promotion_result_ok.store(true);
     g_instance = nullptr;
@@ -541,6 +551,23 @@ TEST_F(HeadlessDescriptorProviderSessionTest, CreationResolvesBindsAndRegistersP
 
   session->reset();
   EXPECT_EQ(g_destroyed.load(), 1);
+}
+
+// A provider's settings are its own store, as an interactive toolbox's are: scoped to its manifest id.
+TEST_F(HeadlessDescriptorProviderSessionTest, ProviderSettingsAreScopedToItsId) {
+  auto session = makeSession(kProviderId);
+  ASSERT_TRUE(session.has_value()) << session.error();
+  ASSERT_NE(g_settings_service.vtable, nullptr) << "the bound instance must be able to resolve pj.settings.v1";
+  const PJ::sdk::SettingsView settings(
+      PJ_settings_store_t{
+          g_settings_service.ctx, static_cast<const PJ_settings_store_vtable_t*>(g_settings_service.vtable)});
+  ASSERT_TRUE(settings.setValue("server", std::string_view("https://example.com")));
+
+  const QSettings app;
+  EXPECT_EQ(
+      app.value(PJ::pluginSettingsGroup(kProviderId) + QStringLiteral("/server")).toString(),
+      QStringLiteral("https://example.com"));
+  EXPECT_FALSE(app.contains(QStringLiteral("server")));
 }
 
 // The provider sees the derived surface an interactive toolbox sees: the one pj.data_processors.v1 service creates a

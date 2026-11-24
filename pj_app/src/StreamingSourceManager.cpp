@@ -84,7 +84,7 @@ struct StreamingSourceManager::StreamingSession {
   std::unique_ptr<sdk::SettingsStoreHost> settings_host;
   /// The registry bind() received. DataSourcePluginBase keeps it for services() lookups after bind (from a dialog,
   /// say), so it lives as long as the plugin: declared before `handle`.
-  std::unique_ptr<ServiceRegistryBuilder> registry;
+  ServiceRegistryBuilder registry;
   DataSourceHandle handle;
   /// handle.capabilities(), read once after start(): it is a plugin call, and the ABI gives the mask no way to change
   /// once the source runs, so every later gate (per-topic pause, recordability) reads this copy.
@@ -430,16 +430,15 @@ std::unique_ptr<StreamingSourceManager::StreamingSession> StreamingSourceManager
         });
       };
 
-  session->registry = std::make_unique<ServiceRegistryBuilder>();
-  ServiceRegistryBuilder& registry = *session->registry;
+  ServiceRegistryBuilder& registry = session->registry;
   if (auto status = session->runtime_host->registerServices(registry); !status) {
     error = tr("Plugin '%1': service registration failed: %2").arg(source_name, QString::fromStdString(status.error()));
     session.reset();
     discardDataset(dataset_id);
     return nullptr;
   }
-  if (!source.id.empty()) {
-    session->settings = QSettingsBackend::forPlugin(source.id);
+  session->settings = QSettingsBackend::forPlugin(source.id);
+  if (session->settings != nullptr) {
     session->settings_host = std::make_unique<sdk::SettingsStoreHost>(*session->settings);
     registerOptionalService<sdk::SettingsStoreService>(registry, session->settings_host->view());
   }
