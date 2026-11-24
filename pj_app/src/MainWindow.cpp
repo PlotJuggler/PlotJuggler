@@ -8109,7 +8109,7 @@ void MainWindow::deleteOnDemandRecipe(const std::string& key) {
     // not through a plugin's pj.data_processors.v1, pushes no snapshot.
     const bool history_exempt = on_demand.graph().find(key)->recipe.history_exempt;
     if (!history_exempt) {
-      hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+      refreshUndoBaselineForRemoval();
     }
     // The announcement relists the catalog, which drops the rows and any view bound to the topics.
     if (!on_demand.remove(key).empty()) {
@@ -8162,16 +8162,24 @@ void MainWindow::deleteTransformOutput(const QString& catalog_key) {
   if (!mayDeleteTransformWriting(output_topic)) {
     return;
   }
-  // One undo step for the delete and its dependents: the baseline is refreshed before the confirmation, which removes
-  // the dependents.
-  const auto owning = session_->sessionManager().dataProcessorService().transformOwning(output_topic);
+  DataProcessorService& processors = session_->sessionManager().dataProcessorService();
+  const auto owning = processors.transformOwning(output_topic);
   const bool history_exempt = owning.has_value() && owning->history_exempt;
-  if (!history_exempt) {
-    hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+  // The baseline is refreshed once the delete is accepted, before anything is removed: the cascade removes the
+  // dependents before `proceed`, so a later baseline would lack them and the undo could not bring them back. With no
+  // dependents there is no prompt and `proceed` runs at once.
+  const bool prompts = !processors.dependentProcessorOutputs({output_topic}).empty();
+  if (!history_exempt && !prompts) {
+    refreshUndoBaselineForRemoval();
   }
+  const auto record = [this, history_exempt]() {
+    if (!history_exempt) {
+      onUndoableChange(/*force_new_state=*/true);
+    }
+  };
   confirmAndRemoveDependentTransforms(
       {output_topic},
-      [this, output_topic, history_exempt]() {
+      [this, output_topic, record]() {
         // Looked up again: the confirmation may have removed transforms.
         DataProcessorService& live = session_->sessionManager().dataProcessorService();
         const auto transform = live.transformOwning(output_topic);
@@ -8181,13 +8189,21 @@ void MainWindow::deleteTransformOutput(const QString& catalog_key) {
           // itemsRemoved fires synchronously and drops the row.
           session_->catalogModel().rebuildFromDatastore();
         }
-        // Recorded even when this removal fails: the confirmation may already have removed the dependents.
-        if (!history_exempt) {
-          onUndoableChange(/*force_new_state=*/true);
-        }
+        record();  // even when this removal fails: the confirmation removed the dependents
       },
       // The editor may have been unloaded, or a foreign reader added, while the prompt was open.
-      [this, output_topic]() { return mayDeleteTransformWriting(output_topic); });
+      [this, output_topic, history_exempt]() {
+        if (!mayDeleteTransformWriting(output_topic)) {
+          return false;
+        }
+        if (!history_exempt) {
+          refreshUndoBaselineForRemoval();
+        }
+        return true;
+      },
+      // A failed cascade may have removed some dependents. After a plain cancel the snapshot is identical, and an
+      // identical snapshot pushes nothing.
+      record);
 }
 
 void MainWindow::recordRecentLayout(const QString& path) {
@@ -9397,6 +9413,21 @@ void MainWindow::hydrateCurrentUndoState(bool refresh_data_universe) {
   }
   undo_timer_.invalidate();
   updateUndoRedoActions();
+}
+
+void MainWindow::refreshUndoBaselineForRemoval() {
+  if (applying_state_ || progressive_layout_in_flight_) {
+    return;
+  }
+  if (scene_undo_debounce_.isActive()) {
+    scene_undo_debounce_.stop();
+    onUndoableChange();
+  }
+  if (plugin_history_step_.isActive()) {
+    plugin_history_step_.stop();
+    onUndoableChange(/*force_new_state=*/true);
+  }
+  hydrateCurrentUndoState(/*refresh_data_universe=*/false);
 }
 
 void MainWindow::updateUndoRedoActions() {
