@@ -301,6 +301,44 @@ class PackageUrlRobotDescriptionParser final : public PJ::MessageParserPluginBas
   }
 };
 
+// A topic URDF whose second package mesh the asset host does not have, beside a mesh it has and a primitive.
+constexpr const char* kPartialPackageUrdf = R"(
+<robot name="partial">
+  <link name="base_link">
+    <visual><geometry><mesh filename="package://pj_url_pkg/meshes/cube.stl"/></geometry></visual>
+  </link>
+  <link name="arm">
+    <visual><geometry><mesh filename="package://pj_url_pkg/meshes/missing.stl"/></geometry></visual>
+  </link>
+  <link name="tool">
+    <visual><geometry><box size="0.1 0.1 0.1"/></geometry></visual>
+  </link>
+  <joint name="a" type="fixed"><parent link="base_link"/><child link="arm"/></joint>
+  <joint name="b" type="fixed"><parent link="arm"/><child link="tool"/></joint>
+</robot>
+)";
+
+class PartialPackageRobotDescriptionParser final : public PJ::MessageParserPluginBase {
+ public:
+  PartialPackageRobotDescriptionParser() {
+    PJ::sdk::SchemaHandler handler;
+    handler.object_type = PJ::sdk::BuiltinObjectType::kRobotDescription;
+    handler.parse_object = [](PJ::Timestamp ts,
+                              PJ::sdk::PayloadView /*payload*/) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+      return PJ::sdk::ObjectRecord{
+          .ts = std::nullopt,
+          .object = PJ::sdk::BuiltinObject{PJ::sdk::RobotDescription{
+              .timestamp_ns = ts,
+              .topic = "/robot_description",
+              .format = "urdf",
+              .text = kPartialPackageUrdf,
+          }},
+      };
+    };
+    registerSchemaHandler("robot_description", std::move(handler));
+  }
+};
+
 // Rebind-test parse counters: vtableWithCreate() needs a non-capturing create function, so the counting parsers reach
 // them via file scope.
 std::atomic<int> g_first_urdf_parser_calls{0};
@@ -417,6 +455,13 @@ const PJ_message_parser_vtable_t* colladaMeshParserVtable() {
   static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
       []() noexcept -> void* { return new CountingColladaUrdfParser(); },
       R"({"id":"robot-collada-mesh-test","name":"Robot Collada Mesh Test","version":"1.0.0","encoding":"test"})");
+  return vt;
+}
+
+const PJ_message_parser_vtable_t* partialPackageParserVtable() {
+  static const PJ_message_parser_vtable_t* vt = PJ::MessageParserPluginBase::vtableWithCreate(
+      []() noexcept -> void* { return new PartialPackageRobotDescriptionParser(); },
+      R"({"id":"robot-partial-package-test","name":"Robot Partial Package Test","version":"1.0.0","encoding":"test"})");
   return vt;
 }
 
@@ -1294,6 +1339,54 @@ TEST(RobotModelLayerTest, TopicUrdfUsesExplicitUrlRoots) {
   ASSERT_TRUE(restored.xmlLoadState(saved));
   ASSERT_NE(restored.robotModel(), nullptr);
   EXPECT_EQ(restored.unresolvedMeshCount(), 1);
+}
+
+// A mesh the asset host does not have fails alone: the other mesh and the primitive still draw, the missing one is the
+// magenta placeholder, and the status names the failure. Nothing waits for it.
+TEST(RobotModelLayerTest, AMissingMeshFailsAloneAndTheRestOfTheModelDraws) {
+  const pj::scene3d::test::FileHttpServer assets(
+      {{u"/assets/pj_url_pkg/meshes/cube.stl"_s, pj::scene3d::test::readFixtureBytes("cube.stl")}});
+  PJ::SessionManager session;
+  const PJ::DatasetId dataset_id = createDataset(session, "partial.mcap");
+  const PJ::ObjectTopicId topic_id = registerTopicForDataset(session, dataset_id);
+  registerParser(session, topic_id, partialPackageParserVtable());
+  pushWireBytes(session, topic_id);
+  const auto ctx = makeContext(session);
+  pj::scene3d::UrdfPackageResolver shared;
+
+  QDomDocument doc;
+  QDomElement robot = doc.createElement(u"robot_model"_s);
+  robot.setAttribute(u"source_type"_s, u"topic"_s);
+  robot.setAttribute(u"source_value"_s, u"/robot_description"_s);
+  robot.setAttribute(u"source_topic_name"_s, u"/robot_description"_s);
+  robot.setAttribute(
+      u"package_url_roots"_s,
+      pj::scene3d::serializePackageUrlRoots({{u"pj_url_pkg"_s, QUrl(assets.url(u"/assets/pj_url_pkg/"_s))}}));
+  robot.setAttribute(u"remote_resources_only"_s, u"true"_s);
+
+  pj::scene3d::RobotModelLayer layer(topic_id, u"/robot_description"_s);
+  layer.setPackageResolver(&shared);
+  ASSERT_TRUE(layer.attach(ctx));
+  ASSERT_TRUE(layer.xmlLoadState(robot));
+  ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
+  ASSERT_EQ(layer.totalMeshCount(), 2);
+  ASSERT_EQ(layer.unresolvedMeshCount(), 0);
+  ASSERT_TRUE(
+      pj::scene3d::test::pumpUntil(
+          [&layer]() { return layer.meshImportsOutstandingForTest() == 0 && layer.statusText().contains("failed"_L1); },
+          std::chrono::seconds(10)))
+      << layer.statusText().toStdString();
+
+  EXPECT_EQ(layer.loadedMeshCount(), 1);
+  EXPECT_TRUE(layer.statusText().contains("1/2 meshes"_L1)) << layer.statusText().toStdString();
+  std::vector<std::string> keys;
+  for (const auto& call : layer.modelDrawCalls()) {
+    keys.push_back(call.mesh_key);
+  }
+  ASSERT_EQ(keys.size(), 3U) << "the mesh, the placeholder in the missing one's place, and the box";
+  EXPECT_EQ(std::count(keys.begin(), keys.end(), std::string("robot:placeholder")), 1);
+  EXPECT_EQ(
+      std::count_if(keys.begin(), keys.end(), [](const std::string& key) { return key.ends_with("cube.stl"); }), 1);
 }
 
 // A robot restored from a web-hosted layout keeps the network-only policy for its URDF's own mesh
