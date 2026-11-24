@@ -306,6 +306,16 @@ PJ::Status DataEngine::setFieldMetadata(TopicId topic_id, FieldId field_id, std:
   return PJ::okStatus();
 }
 
+PJ::Status DataEngine::setTopicMetadata(TopicId topic_id, std::string metadata_json) {
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
+  auto topic_it = impl_->topics.find(topic_id);
+  if (topic_it == impl_->topics.end()) {
+    return PJ::unexpected(fmt::format("setTopicMetadata: topic {} not found", topic_id));
+  }
+  topic_it.value()->setTopicMetadata(std::move(metadata_json));
+  return PJ::okStatus();
+}
+
 TopicStorage* DataEngine::getTopicStorage(TopicId id) {
   auto it = impl_->topics.find(id);
   if (it == impl_->topics.end()) {
@@ -705,6 +715,7 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     primary_storage->setColumnDescriptors(std::move(staged_storage->column_descriptors_));
     primary_storage->retired_columns_ = std::move(staged_storage->retired_columns_);  // ids of the staged layout
     primary_storage->field_metadata_ = std::move(staged_storage->field_metadata_);    // keyed by the same ids
+    primary_storage->topic_metadata_ = std::move(staged_storage->topic_metadata_);
     adoptChunksFrom(*primary_storage, *staged_storage);
   }
 

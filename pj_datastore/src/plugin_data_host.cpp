@@ -1004,6 +1004,27 @@ struct WriteCore {
     return true;
   }
 
+  // Same as setFieldMetadata(), for the topic's own document.
+  [[nodiscard]] bool setTopicMetadata(TopicHandle topic, std::string_view metadata_json) {
+    const PJ::Expected<bool> has_keys = checkFieldMetadata(metadata_json);
+    if (!has_keys.has_value()) {
+      setError(has_keys.error());
+      return false;
+    }
+    const std::string stored = *has_keys ? std::string(metadata_json) : std::string();
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
+    auto status = engine.setTopicMetadata(topic.id, stored);
+    if (!status.has_value()) {
+      setError(status.error());
+      return false;
+    }
+    if (secondary_engine != nullptr) {
+      (void)secondary_engine->setTopicMetadata(topic.id, stored);
+    }
+    last_error.clear();
+    return true;
+  }
+
   // With `out_column_type` null (the C-ABI register path) a type mismatch with an existing column is an error;
   // otherwise (appendRecord()'s lazy path) the existing column and its type come back, and the caller converts the
   // value.
@@ -1761,6 +1782,19 @@ bool sourceSetFieldMetadata(
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
     auto [core, engine_locks] = pinCore(*impl);
     if (!core->setFieldMetadata(field, toStringView(metadata_json))) {
+      propagateError(out_error, core->lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+bool sourceSetTopicMetadata(
+    void* ctx, TopicHandle topic, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
+    auto [core, engine_locks] = pinCore(*impl);
+    if (!core->setTopicMetadata(topic, toStringView(metadata_json))) {
       propagateError(out_error, core->lastError());
       return false;
     }
@@ -2567,6 +2601,7 @@ const PJ_source_write_host_vtable_t kSourceWriteVTable = {
     sourceEnsureTopic,          sourceEnsureField,
     sourceAppendRecord,         sourceAppendBoundRecord,
     sourceAppendArrowStream,    sourceSetFieldMetadata,
+    sourceSetTopicMetadata,
 };
 
 const PJ_parser_write_host_vtable_t kParserWriteVTable = {

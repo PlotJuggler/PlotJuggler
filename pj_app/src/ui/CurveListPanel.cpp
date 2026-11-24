@@ -452,6 +452,12 @@ QString CurveListPanel::rowTooltip(const QString& catalog_key, const QString& tr
       lines << tr("<span style=\"font-weight:600\">Type:</span> %1").arg(stats->schema_name.toHtmlEscaped());
     }
     lines << tr("<span style=\"font-weight:600\">Messages:</span> %1").arg(formatCount(*stats));
+    // Plugin-supplied text, untrusted: escaped, with line breaks kept. "description" is the canonical metadata key.
+    if (const QString description = catalog_->topicMetadata(item.key).value(u"description"_s).toString();
+        !description.isEmpty()) {
+      lines << tr("<span style=\"font-weight:600\">Description:</span> %1")
+                   .arg(description.toHtmlEscaped().replace(u'\n', u"<br>"_s));
+    }
   };
 
   if (!catalog_key.isEmpty()) {

@@ -542,6 +542,10 @@ std::string_view TopicStorage::fieldMetadata(FieldId field_id) const noexcept {
   return it != field_metadata_.end() ? std::string_view(it->second) : std::string_view();
 }
 
+void TopicStorage::setTopicMetadata(std::string metadata_json) {
+  topic_metadata_ = std::move(metadata_json);
+}
+
 void TopicStorage::setArrayExpansionCount(const std::string& field_path, uint32_t count) {
   array_expansion_counts_[field_path] = count;
 }

@@ -279,6 +279,11 @@ class CatalogModel : public QObject {
   // built still shows. Takes the engine lock: hover rate only.
   [[nodiscard]] QJsonObject fieldMetadata(const QString& key) const;
 
+  // The metadata object a source attached to the scalar topic `key` belongs to; empty for any other key (object
+  // topics keep theirs in ObjectTopicPayload::metadata_json), a topic without one, an unparsable text or no session.
+  // Same read-at-call-time and locking contract as fieldMetadata().
+  [[nodiscard]] QJsonObject topicMetadata(const QString& key) const;
+
   std::vector<CurveDescriptor> curves() const;
   // The descriptor for `key` when its field satisfies `capability`. kPlottable is the plot gate (strings have no
   // curve descriptor); the strip passes kDiscrete.

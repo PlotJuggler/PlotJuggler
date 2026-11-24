@@ -42,6 +42,11 @@ struct FieldMetadataTest : ::testing::Test {
     return std::string(engine.getTopicStorage(topic.id)->fieldMetadata(f.id));
   }
 
+  std::string topicMetadata(sdk::TopicHandle t) {
+    const auto lock = engine.lockEngine();
+    return std::string(engine.getTopicStorage(t.id)->topicMetadata());
+  }
+
   // {"k":{"k":...{"k":1}...}} with `depth` objects.
   static std::string nested(int depth) {
     std::string json;
@@ -168,6 +173,67 @@ TEST_F(FieldMetadataTest, SurvivesClearingTheDatasetChunks) {
     engine.getTopicStorage(topic.id)->clearChunks();
   }
   EXPECT_EQ(metadata(ax), json);
+}
+
+// --- topic metadata: same document rules, stored on the topic ----------------
+
+TEST_F(FieldMetadataTest, TopicMetadataStoresTheDocumentAsSent) {
+  ASSERT_TRUE(writer->supportsTopicMetadata());
+  const auto other = *writer->ensureTopic("gps");
+  const std::string json = sdk::FieldMetadataBuilder().description("Inertial unit").string("frame", "base").build();
+
+  ASSERT_TRUE(writer->setTopicMetadata(topic, json).has_value());
+
+  EXPECT_EQ(topicMetadata(topic), json);
+  EXPECT_TRUE(topicMetadata(other).empty());
+}
+
+TEST_F(FieldMetadataTest, TopicMetadataIsIndependentOfFieldMetadata) {
+  const auto ax = field("ax");
+  ASSERT_TRUE(writer->setFieldMetadata(ax, R"({"description":"field"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"topic"})").has_value());
+
+  EXPECT_EQ(metadata(ax), R"({"description":"field"})");
+  EXPECT_EQ(topicMetadata(topic), R"({"description":"topic"})");
+}
+
+TEST_F(FieldMetadataTest, TopicMetadataReplacesAndClears) {
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"first","unit":"m"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"second"})").has_value());
+  EXPECT_EQ(topicMetadata(topic), R"({"description":"second"})");
+
+  ASSERT_TRUE(writer->setTopicMetadata(topic, "").has_value());
+  EXPECT_TRUE(topicMetadata(topic).empty());
+
+  ASSERT_TRUE(writer->setTopicMetadata(topic, R"({"description":"x"})").has_value());
+  ASSERT_TRUE(writer->setTopicMetadata(topic, "{}").has_value());
+  EXPECT_TRUE(topicMetadata(topic).empty());
+}
+
+TEST_F(FieldMetadataTest, TopicMetadataRejectsBadDocumentsAndKeepsThePrevious) {
+  const std::string kept = R"({"description":"kept"})";
+  ASSERT_TRUE(writer->setTopicMetadata(topic, kept).has_value());
+
+  EXPECT_FALSE(writer->setTopicMetadata(topic, "not json").has_value());
+  EXPECT_FALSE(writer->setTopicMetadata(topic, R"(["description"])").has_value());
+  EXPECT_FALSE(writer->setTopicMetadata(topic, nested(32)).has_value());
+  EXPECT_FALSE(writer->setTopicMetadata(topic, std::string(2 * 1024 * 1024, ' ')).has_value());
+
+  EXPECT_EQ(topicMetadata(topic), kept);
+}
+
+TEST_F(FieldMetadataTest, UnknownTopicIsRejected) {
+  EXPECT_FALSE(writer->setTopicMetadata(sdk::TopicHandle{.id = 9999}, "{}").has_value());
+}
+
+TEST_F(FieldMetadataTest, TopicMetadataSurvivesClearingTheTopicChunks) {
+  const std::string json = sdk::FieldMetadataBuilder().description("kept").build();
+  ASSERT_TRUE(writer->setTopicMetadata(topic, json).has_value());
+  {
+    const auto lock = engine.lockEngine();
+    engine.getTopicStorage(topic.id)->clearChunks();
+  }
+  EXPECT_EQ(topicMetadata(topic), json);
 }
 
 }  // namespace

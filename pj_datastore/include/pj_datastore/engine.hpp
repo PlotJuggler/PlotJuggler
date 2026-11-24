@@ -118,6 +118,10 @@ class DataEngine {
   /// Locks. Fails for an unknown topic or a field id the topic does not have. Does not validate the text.
   [[nodiscard]] PJ::Status setFieldMetadata(PJ::TopicId topic_id, PJ::FieldId field_id, std::string metadata_json);
 
+  /// Sets (an empty text clears) the metadata JSON of an existing topic; see TopicStorage::setTopicMetadata(). Locks.
+  /// Fails for an unknown topic. Does not validate the text.
+  [[nodiscard]] PJ::Status setTopicMetadata(PJ::TopicId topic_id, std::string metadata_json);
+
   /// Does not lock: hold lockEngine() for as long as the pointer is used. nullptr if missing.
   [[nodiscard]] TopicStorage* getTopicStorage(PJ::TopicId id);
 

@@ -678,6 +678,33 @@ QJsonObject CatalogModel::fieldMetadata(const QString& key) const {
   return QJsonDocument::fromJson(metadata_json).object();
 }
 
+QJsonObject CatalogModel::topicMetadata(const QString& key) const {
+  if (impl_->session == nullptr) {
+    return {};
+  }
+  const auto it = impl_->items.find(key);
+  if (it == impl_->items.end()) {
+    return {};
+  }
+  const ScalarFieldPayload* scalar = asScalarField(it->second);
+  if (scalar == nullptr) {
+    return {};
+  }
+  const DataEngine& engine = impl_->session->dataEngine();
+  // Copied under the lock, parsed after it: the view dies with the next write.
+  QByteArray metadata_json;
+  {
+    const auto lock = engine.lockEngine();
+    const TopicStorage* storage = engine.getTopicStorage(scalar->topic_id);
+    if (storage == nullptr) {
+      return {};
+    }
+    const std::string_view view = storage->topicMetadata();
+    metadata_json = QByteArray(view.data(), static_cast<qsizetype>(view.size()));
+  }
+  return QJsonDocument::fromJson(metadata_json).object();
+}
+
 bool CatalogModel::isScalarKey(const QString& key) const {
   const auto it = impl_->items.find(key);
   if (it == impl_->items.end()) {

@@ -191,6 +191,11 @@ between.
     alone. `replaceDatasetFrom()` carries it over with the staged layout, and the write core sets it on the live and
     the staging engine alike.
   - `CatalogModel::fieldMetadata()` parses it at hover time; the curve list tooltip shows its `description` key.
+  - A topic takes the same kind of document (`set_topic_metadata`, same bounds and replace-or-clear rules).
+    `TopicStorage` keeps it as one string on the topic, untouched by clearing and detaching; `replaceDatasetFrom()`
+    carries it over and the write core sets it on the live and the staging engine alike. `CatalogModel::topicMetadata()`
+    reads it for a scalar topic and the topic tooltip shows its `description` key. `mergeDatasets()` does not carry a
+    source-only topic's document across.
 - **Merge.** `DataEngine::mergeDatasets()` and `ObjectStore::mergeDatasets()` fold source datasets into an anchor, each
   shifted by a raw delta the caller supplies; `pj_runtime` computes the deltas and owns the type-conflict policy.
   Scalar topics unite by name and columns by field path; the anchor keeps its ids and column indices, a conflicting

@@ -130,6 +130,15 @@ class TopicStorage {
   /// Empty when the column has none; valid until the next setFieldMetadata().
   [[nodiscard]] std::string_view fieldMetadata(FieldId field_id) const noexcept;
 
+  /// Plugin-supplied JSON metadata of the topic itself, kept as sent (validation is the caller's); empty text clears
+  /// it. Untouched by clearChunks(): it describes the topic, not its rows.
+  void setTopicMetadata(std::string metadata_json);
+
+  /// Empty when the topic has none; valid until the next setTopicMetadata().
+  [[nodiscard]] std::string_view topicMetadata() const noexcept {
+    return topic_metadata_;
+  }
+
   [[nodiscard]] bool isColumnRetired(FieldId field_id) const noexcept {
     return retired_columns_.count(field_id) != 0;
   }
@@ -258,6 +267,8 @@ class TopicStorage {
   std::unordered_map<std::string, uint32_t> array_expansion_counts_;
   // JSON text per field id, set by the plugin; ids are dense positions, so the key survives clear and reload.
   std::unordered_map<FieldId, std::string> field_metadata_;
+  // JSON text of the topic, set by the plugin.
+  std::string topic_metadata_;
 };
 
 }  // namespace PJ
