@@ -25,6 +25,10 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 - Load progress is wired only through `wireIngestProgress()`; a hand-made copy drifts from what the tests exercise.
   The row's X/bin goes straight to `SessionManager::requestCancel(token, keep_partial)`; the producer honours the
   flag, the shell never prompts.
+- A file load binds its plugin only through `FileLoader.cpp`'s `BoundSource`, which declares the ingest host and the
+  service registry it bound the plugin with before the plugin `handle`, so both are destroyed after it: the SDK's
+  `DataSourcePluginBase::services()` looks up that registry after `bind()`, and the plugin keeps views into the host's
+  services up to its destructor.
 - Recording is a runtime capability: Record affordances follow `RecordingService::isSupported()`, never a build flag.
   A stream ending mid-capture finalizes only its own file (`RecordingService::onSourceEnded`); stopping the capture
   there would cut every other source's file short.

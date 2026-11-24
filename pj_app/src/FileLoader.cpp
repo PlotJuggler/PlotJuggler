@@ -866,10 +866,36 @@ void FileLoader::applyDefaultIngestPolicies(PJ::sdk::ObjectIngestPolicyResolver&
 #endif
 }
 
-// A single-instance load's plugin handle and ingest host, kept alive from the GUI prologue through the worker run.
+namespace {
+
+// A loader plugin instance and the host services it is bound to. After bind() the SDK's DataSourcePluginBase keeps the
+// registry (its services() lookups) and views into the ingest host's services, up to its destructor: `handle` is
+// declared last, so the plugin is destroyed before the registry and the host it reaches through them.
+struct BoundSource {
+  explicit BoundSource(DataSourceHandle plugin) : handle(std::move(plugin)) {}
+
+  // Registers the ingest host's services in a registry owned here and binds the plugin to it. Requires `ingest`.
+  [[nodiscard]] Status bind() {
+    registry = std::make_unique<ServiceRegistryBuilder>();
+    if (auto status = ingest->registerServices(*registry); !status) {
+      return unexpected("service registration failed: " + status.error());
+    }
+    if (auto status = handle.bind(registry->view()); !status) {
+      return unexpected("bind failed: " + status.error());
+    }
+    return okStatus();
+  }
+
+  std::unique_ptr<DataSourceRuntimeHost> ingest;
+  std::unique_ptr<ServiceRegistryBuilder> registry;  // heap: the plugin holds its address
+  DataSourceHandle handle;
+};
+
+}  // namespace
+
+// A single-instance load's bound plugin, kept alive from the GUI prologue through the worker run.
 struct FileLoader::LoadContext {
-  LoadContext(DataSourceHandle bound_handle, std::unique_ptr<DataSourceRuntimeHost> bound_ingest)
-      : handle(std::move(bound_handle)), ingest(std::move(bound_ingest)) {}
+  explicit LoadContext(BoundSource bound_source) : bound(std::move(bound_source)) {}
 
   QString path;
   QPointer<QWidget> dialog_parent;
@@ -886,8 +912,7 @@ struct FileLoader::LoadContext {
   std::optional<RefillGuard> refill_guard;
   int file_index = 1;
   int file_total = 1;
-  DataSourceHandle handle;
-  std::unique_ptr<DataSourceRuntimeHost> ingest;
+  BoundSource bound;
   // Files picked in the plugin's dialog (a DBC, say): the worker's import reads
   // their browser-staged copies after this prologue's frame is gone.
   std::vector<std::shared_ptr<void>> dialog_selected_files;
@@ -1235,7 +1260,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     co_return;
   }
 
-  DataSourceHandle handle = source->library.createHandle();
+  BoundSource bound(source->library.createHandle());
+  DataSourceHandle& handle = bound.handle;
   if (!handle.valid()) {
     (void)fail(tr("Plugin '%1': createHandle failed.").arg(source_name));
     co_return;
@@ -1352,11 +1378,11 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
         session_.registerObjectTopicParser(id, std::move(parser));
       };
   // Heap-owned: a single-instance load moves it into ctx_ for the worker; the reference below stays valid.
-  auto ingest_session_ptr = std::make_unique<DataSourceRuntimeHost>(
+  bound.ingest = std::make_unique<DataSourceRuntimeHost>(
       engine, extensions_, dataset_id, source_handle, session_.objectStore(), source_id,
       std::move(object_parser_registrar), nullptr, nullptr, combineKeepalive(handle.libraryOwner(), input.lease),
       session_.ingestTapsShared());
-  DataSourceRuntimeHost& ingest_session = *ingest_session_ptr;
+  DataSourceRuntimeHost& ingest_session = *bound.ingest;
   ingest_session.setDiagnosticSink(diagnostic_sink_, source_plugin_name, display_name_utf8);
   DataSourceRuntimeHost::MessageBoxHandler message_box_handler;
   if (dialog_parent != nullptr) {
@@ -1365,15 +1391,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
   applyDefaultIngestPolicies(ingest_session.policyResolver());
 
-  ServiceRegistryBuilder registry;
-  if (auto status = ingest_session.registerServices(registry); !status) {
-    (void)fail(
-        tr("Plugin '%1': service registration failed: %2").arg(source_name, QString::fromStdString(status.error())));
-    co_return;
-  }
-
-  if (auto status = handle.bind(registry.view()); !status) {
-    (void)fail(tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
+  if (auto status = bound.bind(); !status) {
+    (void)fail(tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error())));
     co_return;
   }
 
@@ -1584,7 +1603,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       catalog_.setDatasetDisplayName(dataset_id, plugin_name);
     }
 
-    ctx_ = std::make_unique<LoadContext>(std::move(handle), std::move(ingest_session_ptr));
+    ctx_ = std::make_unique<LoadContext>(std::move(bound));
     ctx_->dialog_selected_files = std::move(dialog_selected_files);
     ctx_->path = source_identity;
     ctx_->dialog_parent = request.dialog_parent;
@@ -1614,7 +1633,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
     // on_progress_* run on the worker: they touch only ctx_ (which the GUI leaves alone until the join) and
     // cancel_mode_, and queue every GUI access.
     const std::uint64_t generation = load_generation_;
-    DataSourceRuntimeHost& host = *ctx_->ingest;
+    DataSourceRuntimeHost& host = *ctx_->bound.ingest;
     host.on_progress_start = [this, generation](std::string_view label, uint64_t total, bool cancellable) {
       ctx_->progress_total = total;
       const QString title = QString::fromUtf8(label.data(), static_cast<int>(label.size()));
@@ -1648,7 +1667,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       if (ctx_->flush_clock.elapsed() < flush_throttle_ms_) {
         return true;
       }
-      ctx_->ingest->flushPending();
+      ctx_->bound.ingest->flushPending();
       ctx_->flush_clock.restart();
       const DatasetId notify_dataset = ctx_->dataset_id;
       const uint64_t max = ctx_->progress_total;
@@ -1733,37 +1752,28 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       const PJ_data_source_handle_t iter_source_handle{static_cast<uint32_t>(iter_dataset_id)};
 
       // From the snapshot, never `source`: see the catalog note above.
-      DataSourceHandle iter_handle(source_vtable, source_library_owner);
+      BoundSource iter_bound(DataSourceHandle(source_vtable, source_library_owner));
+      DataSourceHandle& iter_handle = iter_bound.handle;
       if (!iter_handle.valid()) {
         entry_failed(idx, iter_display, tr("Plugin '%1': createHandle failed.").arg(source_name));
         continue;
       }
 
-      DataSourceRuntimeHost iter_ingest(
+      iter_bound.ingest = std::make_unique<DataSourceRuntimeHost>(
           engine, extensions_, iter_dataset_id, iter_source_handle, session_.objectStore(), source_id,
           [this](ObjectTopicId id, std::unique_ptr<MessageParserHandle> parser) {
             session_.registerObjectTopicParser(id, std::move(parser));
           },
           nullptr, nullptr, combineKeepalive(iter_handle.libraryOwner(), input.lease), session_.ingestTapsShared());
+      DataSourceRuntimeHost& iter_ingest = *iter_bound.ingest;
       iter_ingest.setDiagnosticSink(diagnostic_sink_, source_plugin_name, iter_display.toStdString());
       if (message_box_handler) {
         iter_ingest.setMessageBoxHandler(message_box_handler);
       }
       applyDefaultIngestPolicies(iter_ingest.policyResolver());
 
-      ServiceRegistryBuilder iter_registry;
-      if (auto status = iter_ingest.registerServices(iter_registry); !status) {
-        entry_failed(
-            idx, iter_display,
-            tr("Plugin '%1': service registration failed: %2")
-                .arg(source_name, QString::fromStdString(status.error())));
-        continue;
-      }
-
-      if (auto status = iter_handle.bind(iter_registry.view()); !status) {
-        entry_failed(
-            idx, iter_display,
-            tr("Plugin '%1': bind failed: %2").arg(source_name, QString::fromStdString(status.error())));
+      if (auto status = iter_bound.bind(); !status) {
+        entry_failed(idx, iter_display, tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error())));
         continue;
       }
       if (auto status = iter_handle.loadConfig(cfg_i); !status) {
@@ -1974,8 +1984,8 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       };
   if (fanouts.size() == 1) {
     session_.setDatasetSourcePath(dataset_id, source_identity);
-    if (ctx_ != nullptr && ctx_->ingest != nullptr) {
-      if (auto staged = ctx_->ingest->stagedLoaderMetadata(); staged.has_value()) {
+    if (ctx_ != nullptr && ctx_->bound.ingest != nullptr) {
+      if (auto staged = ctx_->bound.ingest->stagedLoaderMetadata(); staged.has_value()) {
         publish_loader_metadata(dataset_id, QString::fromStdString(*staged));
       }
     }
@@ -2127,8 +2137,8 @@ void FileLoader::finishPrologue() {
 
 void FileLoader::runIngestOnWorker(std::uint64_t generation) {
   // Worker thread. The GUI leaves ctx_ alone until onWorkerFinished.
-  ctx_->ingest->forgetReportedProblem();  // a loadConfig or dialog warning is not why the import found nothing
-  auto status = ctx_->handle.start();
+  ctx_->bound.ingest->forgetReportedProblem();  // a loadConfig or dialog warning is not why the import found nothing
+  auto status = ctx_->bound.handle.start();
   ctx_->start_ok = static_cast<bool>(status);
   if (!status) {
     ctx_->start_error = QString::fromStdString(status.error());
@@ -2167,7 +2177,7 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
   // dataset stays behind holding the file's label.
   const bool ingest_ran = cancel != 2 && (ctx_->start_ok || cancel != 0);
   if (ingest_ran) {
-    ctx_->ingest->flushAll();
+    ctx_->bound.ingest->flushAll();
   }
   const bool yielded_nothing = ingest_ran && !session_.datasetHoldsData(dataset_id);
 
@@ -2187,7 +2197,7 @@ void FileLoader::onWorkerFinished(std::uint64_t generation) {
     }
   } else if (yielded_nothing || (!ctx_->start_ok && cancel == 0)) {
     ingest_outcome = IngestOutcome::kFailed;
-    const QString reason = yielded_nothing ? noDataReason(source_name, *ctx_->ingest)
+    const QString reason = yielded_nothing ? noDataReason(source_name, *ctx_->bound.ingest)
                                            : tr("Plugin '%1': start failed: %2").arg(source_name, ctx_->start_error);
     emitLoadFinished(ticket, LoadOutcome::kFailed, path, 0, {}, reason);
     logLoadFailure(path, reason);
@@ -2314,11 +2324,11 @@ void FileLoader::finishLoadOnGui(bool fully_loaded) {
     catalog_.setDatasetDisplayName(dataset_id, ctx_->commit_display_name);
   }
 
-  std::string captured_config = captureSavedConfig(ctx_->handle, ctx_->source_name);
+  std::string captured_config = captureSavedConfig(ctx_->bound.handle, ctx_->source_name);
   session_.setDatasetSourcePath(dataset_id, ctx_->path);
   // RefillGuard::commit cleared a replaced dataset's document: no staged document leaves it with none.
-  if (ctx_->ingest != nullptr) {
-    if (auto staged = ctx_->ingest->stagedLoaderMetadata(); staged.has_value()) {
+  if (ctx_->bound.ingest != nullptr) {
+    if (auto staged = ctx_->bound.ingest->stagedLoaderMetadata(); staged.has_value()) {
       if (auto status =
               session_.setDatasetMetadata(dataset_id, QString::fromStdString(*staged), ctx_->source_manifest_id);
           !status) {
@@ -2427,9 +2437,9 @@ void FileLoader::cancelCurrent(bool keep_partial) {
     }
     return;
   }
-  if (ctx_->ingest) {
+  if (ctx_->bound.ingest) {
     // Flag only: writing a reason would race the worker's last_error_.
-    ctx_->ingest->requestStop();
+    ctx_->bound.ingest->requestStop();
   }
 }
 
@@ -2556,8 +2566,8 @@ void FileLoader::joinForShutdown() {
     (*active_plugin_message_dialog_)->reject();
     active_plugin_message_dialog_->clear();
   }
-  if (ctx_ != nullptr && ctx_->ingest) {
-    ctx_->ingest->requestStop();
+  if (ctx_ != nullptr && ctx_->bound.ingest) {
+    ctx_->bound.ingest->requestStop();
   }
   if (worker_) {
     worker_->wait();
