@@ -38,6 +38,20 @@ Private links: `pj_plotting` (the full `PlotWidget` for embedded chart frames) a
   A sub-dialog or an injected parser dialog is a separate tree: its field states come from the declarative rules.
 - A table row is identified by its `kPluginRowRole` tag, not its view position or text: with `sortingEnabled` the user
   re-orders the view, and every index the plugin sends or receives is translated through the tag.
+- A table row the plugin both disables (`disabled_rows`) and selects is locked: its items stay disabled, so clicks,
+  keyboard and selection never reach it and `selectionChanged` carries only rows the user can change (locked rows are
+  the plugin's own), and they carry `kLockedRowRole` (`widget_binding.hpp`). A deletable table's trash icon on a
+  locked row still reaches the plugin. `LockedRowDelegate` (`src/locked_row_delegate.hpp`), the base of every host
+  table delegate, paints a tagged item selected and enabled, so the QSS `::item:selected` accent applies; a new table
+  delegate derives from it or locked rows paint grey; an itemless cell paints with its row's first tagged item. A
+  disabled row the plugin does not select keeps the disabled look and any selection stored for it (Qt hides it until
+  the row is enabled). A row without any item is never locked. The lock pass issues no `select()` unless a lock is
+  released: one without `Current` would finalize the user's in-progress drag or Shift range (deliveries run inside
+  `selectionChanged`). The MCP `ui_tree` reports a tagged disabled row as selected.
+- A lock comes only from the plugin's `disabled_rows` and selection. A delivery missing one of them keeps that aspect's
+  current state (a lock released by `disabled_rows` alone leaves its row selected, and only a delivery carrying
+  `disabled_rows` touches enabled flags); an explicit `disabled_rows`, even empty, enables every row it does not name;
+  a rows rewrite that changes a row's key text (`tableRowKeyText`) clears its lock, other cells keep it.
 - A table column never mixes typed (`TypedTableItem`) and plain cells: the comparison is then not a strict weak
   ordering and `std::stable_sort` is undefined. Code that writes cells keeps each column homogeneous.
 - The `.ui` contracts name no plugin widget: behaviour comes from properties and protocol keys.

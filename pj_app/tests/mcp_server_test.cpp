@@ -18,17 +18,21 @@
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QPointer>
 #include <QPushButton>
 #include <QRectF>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QTableWidget>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
+#include <QVBoxLayout>
 #include <QWidgetAction>
 #include <QtEndian>
 #include <algorithm>
@@ -72,6 +76,7 @@
 #include "pj_plotting/PlotDocker.h"
 #include "pj_plotting/PlotWidget.h"
 #include "pj_plotting/TabbedPlotWidget.h"
+#include "pj_plugins/host_qt/widget_binding.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
@@ -868,6 +873,65 @@ TEST_F(McpServerTest, UiToolsFindAWidgetInAnOpenPopupByName) {
   EXPECT_TRUE(twins_error) << twins;
   EXPECT_NE(twins.find("2 visible widgets"), std::string::npos) << twins;
   menu.hide();
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
+// A plugin dialog's locked row (both disabled and selected by the plugin) is disabled, so Qt never selects it; ui_tree
+// still reports it selected, as it is painted. Only a disabled row with a real bool true at the role counts: another
+// view's data at that role (a string, an enabled row) does not.
+TEST_F(McpServerTest, UiTreeReportsALockedRowAsSelected) {
+  PJ::mcp::setUiToolsEnabled(true);
+  QTableWidget table(4, 2);
+  const auto add_row = [&table](int row, const QString& text, const QVariant& role, bool enabled) {
+    // Column 0 is itemless, as a radio column is: the role is read from the first cell holding an item.
+    auto* item = new QTableWidgetItem(text);
+    if (!enabled) {
+      item->setFlags(item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+    }
+    item->setData(PJ::kLockedRowRole, role);
+    table.setItem(row, 1, item);
+  };
+  add_row(0, QStringLiteral("lockedRow"), true, false);
+  add_row(1, QStringLiteral("stringRow"), QStringLiteral("topic"), false);
+  add_row(2, QStringLiteral("enabledRow"), true, true);
+  add_row(3, QStringLiteral("releasedRow"), false, false);
+  table.resize(400, 300);
+  table.show();
+  ASSERT_TRUE(pumpUntil([&] { return table.isVisible(); }));
+
+  const auto [tree, tree_error] = result(call("ui_tree", json::object()));
+  ASSERT_FALSE(tree_error) << tree;
+  EXPECT_NE(tree.find("row \"lockedRow\" (selected)"), std::string::npos) << tree;
+  for (const char* row : {"row \"stringRow\"\n", "row \"enabledRow\"\n", "row \"releasedRow\"\n"}) {
+    EXPECT_NE(tree.find(row), std::string::npos) << row << tree;
+  }
+  PJ::mcp::setUiToolsEnabled(false);
+}
+
+// The locked-row reading is a plugin-table contract: a list or tree item carrying bool true at the role is not one.
+TEST_F(McpServerTest, UiTreeIgnoresTheLockedRoleOutsideATable) {
+  PJ::mcp::setUiToolsEnabled(true);
+  QWidget root;
+  auto* layout = new QVBoxLayout(&root);
+  auto* list = new QListWidget(&root);
+  auto* list_item = new QListWidgetItem(QStringLiteral("lockedListItem"), list);
+  list_item->setFlags(list_item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+  list_item->setData(PJ::kLockedRowRole, true);
+  auto* tree = new QTreeWidget(&root);
+  auto* tree_item = new QTreeWidgetItem(tree, QStringList{QStringLiteral("lockedTreeItem")});
+  tree_item->setFlags(tree_item->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+  tree_item->setData(0, PJ::kLockedRowRole, true);
+  layout->addWidget(list);
+  layout->addWidget(tree);
+  root.resize(400, 400);
+  root.show();
+  ASSERT_TRUE(pumpUntil([&] { return root.isVisible(); }));
+
+  const auto [dump, dump_error] = result(call("ui_tree", json::object()));
+  ASSERT_FALSE(dump_error) << dump;
+  for (const char* row : {"row \"lockedListItem\"\n", "row \"lockedTreeItem\"\n"}) {
+    EXPECT_NE(dump.find(row), std::string::npos) << row << dump;
+  }
   PJ::mcp::setUiToolsEnabled(false);
 }
 
