@@ -407,6 +407,41 @@ void PlotWidgetBase::removeCurve(const QString& title) {
   emit curveListChanged();
 }
 
+bool PlotWidgetBase::reorderCurves(const QStringList& source_names) {
+  std::list<CurveInfo>& curves = plot_->curve_list;
+  auto next = curves.begin();
+  bool changed = false;
+  for (const QString& name : source_names) {
+    if (name.isEmpty()) {
+      continue;  // a slot whose curve has not bound
+    }
+    const auto it =
+        std::find_if(next, curves.end(), [&name](const CurveInfo& info) { return info.source_name == name; });
+    if (it == curves.end()) {
+      continue;
+    }
+    if (it == next) {
+      ++next;
+    } else {
+      curves.splice(next, curves, it);  // list nodes stay put: CurveInfo pointers held elsewhere remain valid
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return false;
+  }
+  for (const CurveInfo& info : curves) {
+    info.curve->detach();
+    info.marker->detach();
+  }
+  for (const CurveInfo& info : curves) {
+    info.curve->attach(qwtPlot());
+    info.marker->attach(qwtPlot());
+  }
+  emit curveListChanged();
+  return true;
+}
+
 void PlotWidgetBase::setCurveVisible(const QString& curve_name, bool visible) {
   CurveInfo* info = curveFromTitle(curve_name);
   if (info == nullptr || info->curve == nullptr) {

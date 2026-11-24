@@ -96,6 +96,12 @@ class PlotWidget : public PlotWidgetBase {
   /// while a late curve materializes (pending completion).
   CurveInfo* addCurveFromPending(const QString& name, bool preserve_viewport);
 
+  /// PlotWidgetBase::reorderCurves for a layout restore whose curves bound late (adding appends): no undo step, no
+  /// colour, zoom or bounds change; replots when the order changed. The first curve picks
+  /// representativeDisplayOffset(), so call it before applySavedViewportOrZoom: after it, the saved window has already
+  /// converted through the wrong dataset's offset.
+  bool restoreCurveOrder(const QStringList& source_names);
+
   // Replaces the curve plotting `source_key` with one plotting `output_key`, which inherits its color and place: the
   // Filter Editor's "filtered series replaces the input". If `source_key` is absent, `output_key` is simply added.
   // No-op if data services are unset or `output_key` is not in the catalog.
@@ -380,8 +386,8 @@ class PlotWidget : public PlotWidgetBase {
   double last_tracker_time_sec_ = 0.0;
   bool show_points_ = true;
   bool loading_state_ = false;
-  // True while xmlLoadState swaps the curve set: the curveListChanged handler leaves the max zoom area to the single
-  // recompute that follows.
+  // True while xmlLoadState swaps the curve set or restoreCurveOrder reorders it: the curveListChanged handler leaves
+  // the max zoom area alone, the caller recomputing it (xmlLoadState) or the bounds being unchanged (a reorder).
   bool restoring_curves_ = false;
   // An axis scale or the curve list changed since the trackers last sampled the curves.
   bool trackers_stale_ = false;

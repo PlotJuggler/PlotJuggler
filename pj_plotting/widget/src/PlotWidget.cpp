@@ -397,6 +397,17 @@ PlotWidget::CurveInfo* PlotWidget::addCurveFromPending(const QString& name, bool
   return addCurve(name);
 }
 
+bool PlotWidget::restoreCurveOrder(const QStringList& source_names) {
+  // A restore is not a user edit (no undo step), and the same curves keep the same bounds (no recompute).
+  const QScopedValueRollback loading(loading_state_, true);
+  const QScopedValueRollback restoring(restoring_curves_, true);
+  if (!reorderCurves(source_names)) {
+    return false;
+  }
+  replot();  // legend and draw order, when no viewport change follows
+  return true;
+}
+
 void PlotWidget::autoZoomPlotVertically() {
   // Skip during layout restore (the saved range wins), with nothing to fit, and for XY plots (their X axis is data, not
   // the shared time axis).
@@ -1189,7 +1200,7 @@ bool PlotWidget::xmlLoadState(const QDomElement& plot_element, bool autozoom) {
   // Stash the layout-saved viewport (raw, before the offset conversion) and frame to it through the shared helper.
   // During a progressive restore the catalog is still empty here, so the absolute -> display conversion is wrong until
   // the dataset binds; the progressive path re-applies the stash per curve bind and at drain (applySavedViewportOrZoom,
-  // PendingCurveBinder). A blocking load resolves correctly on this first call, the offset being known.
+  // PendingDisplayBinder::flush). A blocking load resolves correctly on this first call, the offset being known.
   saved_viewport_ = autozoom ? parsed.viewport : std::nullopt;
   applySavedViewportOrZoom(/*clear_after=*/false);
   replot();

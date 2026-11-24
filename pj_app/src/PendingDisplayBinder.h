@@ -11,7 +11,9 @@
 #include <QPointer>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -58,6 +60,10 @@ struct PendingDisplayEntry {
   /// Captured at staging: true, a restored or populated plot keeps its viewport when the late curve lands; false, a
   /// fresh empty plot auto-fits its first data (re-checked against the plot's live state at completion).
   bool preserve_viewport_on_completion = false;
+  /// collect() only: the plot's saved curve order as source names, shared by its entries (a slot stays empty until
+  /// its curve binds), and this entry's slot. A curve binding late appends; this puts it back in its saved place.
+  std::shared_ptr<QStringList> saved_order;
+  qsizetype saved_slot = 0;
 
   [[nodiscard]] bool isXY() const {
     return kind == Kind::kCurve && !x_path.topic.isEmpty();

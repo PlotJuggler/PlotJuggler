@@ -8,6 +8,7 @@
 #include <QPointF>
 #include <QPointer>
 #include <QRectF>
+#include <QStringList>
 #include <QWidget>
 #include <functional>
 #include <list>
@@ -59,6 +60,10 @@ class PlotWidgetBase : public QWidget {
       const QString& name, QwtSeriesData<QPointF>* series, QColor color = Qt::transparent,
       const QString& display_name = {});
   virtual void removeCurve(const QString& title);
+  // Moves the curves `source_names` names to the front, in that order; the others follow in their current order and
+  // names not plotted are skipped. The curves and their markers are re-attached in the new order, since Qwt draws and
+  // lists the legend in attach order. Emits curveListChanged once, only when the order changed, and does not replot.
+  bool reorderCurves(const QStringList& source_names);
   // Shows or hides the curve `curve_name` names (source_name or title, as curveFromTitle) and replots. The one path of
   // every visibility change, the legend click included: PlotWidget extends it with what depends on the visible set
   // (trackers, undo, curve editor).
