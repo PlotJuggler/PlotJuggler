@@ -2,6 +2,7 @@
 // Copyright 2026 Davide Faconti
 // SPDX-License-Identifier: MPL-2.0
 
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -272,6 +273,11 @@ class CatalogModel : public QObject {
 
   // nullopt for an unknown key, an advertised placeholder or no session. Takes the engine/store locks: hover rate only.
   [[nodiscard]] std::optional<TopicStats> topicStats(const QString& key) const;
+
+  // The metadata object a source attached to a scalar field; empty for any other key, a field without one, a stored
+  // text that no longer parses or no session. Read from the store at call time, so metadata set after the catalog was
+  // built still shows. Takes the engine lock: hover rate only.
+  [[nodiscard]] QJsonObject fieldMetadata(const QString& key) const;
 
   std::vector<CurveDescriptor> curves() const;
   // The descriptor for `key` when its field satisfies `capability`. kPlottable is the plot gate (strings have no

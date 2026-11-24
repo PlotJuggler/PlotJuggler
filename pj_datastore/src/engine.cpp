@@ -292,6 +292,20 @@ Expected<FieldId> DataEngine::createTopicField(
   return next_id;
 }
 
+PJ::Status DataEngine::setFieldMetadata(TopicId topic_id, FieldId field_id, std::string metadata_json) {
+  std::unique_lock<std::recursive_mutex> lock(impl_->mutex_);
+  auto topic_it = impl_->topics.find(topic_id);
+  if (topic_it == impl_->topics.end()) {
+    return PJ::unexpected(fmt::format("setFieldMetadata: topic {} not found", topic_id));
+  }
+  TopicStorage& storage = *topic_it.value();
+  if (field_id >= storage.columnDescriptors().size()) {
+    return PJ::unexpected(fmt::format("setFieldMetadata: topic {} has no field {}", topic_id, field_id));
+  }
+  storage.setFieldMetadata(field_id, std::move(metadata_json));
+  return PJ::okStatus();
+}
+
 TopicStorage* DataEngine::getTopicStorage(TopicId id) {
   auto it = impl_->topics.find(id);
   if (it == impl_->topics.end()) {
@@ -690,6 +704,7 @@ Expected<DatasetReplaceResult> DataEngine::replaceDatasetFrom(
     primary_storage->clearChunks();
     primary_storage->setColumnDescriptors(std::move(staged_storage->column_descriptors_));
     primary_storage->retired_columns_ = std::move(staged_storage->retired_columns_);  // ids of the staged layout
+    primary_storage->field_metadata_ = std::move(staged_storage->field_metadata_);    // keyed by the same ids
     adoptChunksFrom(*primary_storage, *staged_storage);
   }
 

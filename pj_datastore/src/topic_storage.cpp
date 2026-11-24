@@ -529,6 +529,19 @@ uint32_t TopicStorage::arrayExpansionCount(const std::string& field_path) const 
   return it != array_expansion_counts_.end() ? it->second : 0;
 }
 
+void TopicStorage::setFieldMetadata(FieldId field_id, std::string metadata_json) {
+  if (metadata_json.empty()) {
+    field_metadata_.erase(field_id);
+    return;
+  }
+  field_metadata_[field_id] = std::move(metadata_json);
+}
+
+std::string_view TopicStorage::fieldMetadata(FieldId field_id) const noexcept {
+  const auto it = field_metadata_.find(field_id);
+  return it != field_metadata_.end() ? std::string_view(it->second) : std::string_view();
+}
+
 void TopicStorage::setArrayExpansionCount(const std::string& field_path, uint32_t count) {
   array_expansion_counts_[field_path] = count;
 }

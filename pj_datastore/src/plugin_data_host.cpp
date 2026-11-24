@@ -646,6 +646,116 @@ Status scanSeriesValues(
   return lockEnginePair(live, staging);
 }
 
+// Refuses an oversized, too deep or non-object field-metadata document while it parses, before any tree is built.
+// Depth and node limits mirror SessionManager::validateDatasetMetadata (pj_runtime, Qt-based): keep them in step.
+// kMaxBytes is lower: the document only feeds a tooltip, but is stored for every field.
+class FieldMetadataBounds final : public nlohmann::json::json_sax_t {
+ public:
+  static constexpr std::size_t kMaxBytes = 64 * 1024;
+  static constexpr int kMaxDepth = 32;
+  static constexpr int kMaxNodes = 16384;
+
+  bool null() override {
+    return value(false);
+  }
+  bool boolean(bool) override {
+    return value(false);
+  }
+  bool number_integer(nlohmann::json::number_integer_t) override {
+    return value(false);
+  }
+  bool number_unsigned(nlohmann::json::number_unsigned_t) override {
+    return value(false);
+  }
+  bool number_float(nlohmann::json::number_float_t, const nlohmann::json::string_t&) override {
+    return value(false);
+  }
+  bool string(nlohmann::json::string_t&) override {
+    return value(false);
+  }
+  bool binary(nlohmann::json::binary_t&) override {
+    return value(false);
+  }
+  bool start_object(std::size_t) override {
+    if (!value(true)) {
+      return false;
+    }
+    ++open_;
+    return true;
+  }
+  bool key(nlohmann::json::string_t&) override {
+    if (open_ == 1) {
+      ++root_keys_;
+    }
+    return true;
+  }
+  bool end_object() override {
+    --open_;
+    return true;
+  }
+  bool start_array(std::size_t) override {
+    if (!value(false)) {
+      return false;
+    }
+    ++open_;
+    return true;
+  }
+  bool end_array() override {
+    --open_;
+    return true;
+  }
+  bool parse_error(std::size_t, const std::string&, const nlohmann::detail::exception&) override {
+    return false;
+  }
+
+  // Valid after a successful parse: whether the root object has a key.
+  [[nodiscard]] bool hasKeys() const noexcept {
+    return root_keys_ > 0;
+  }
+  [[nodiscard]] const std::string& reason() const noexcept {
+    return reason_;
+  }
+
+ private:
+  // Depth is open containers plus one (root = 1).
+  bool value(bool is_object) {
+    if (nodes_ == 0 && !is_object) {
+      reason_ = "field metadata is not a JSON object";
+      return false;
+    }
+    if (++nodes_ > kMaxNodes) {
+      reason_ = fmt::format("field metadata exceeds {} values", kMaxNodes);
+      return false;
+    }
+    if (open_ + 1 > kMaxDepth) {
+      reason_ = fmt::format("field metadata nesting exceeds depth {}", kMaxDepth);
+      return false;
+    }
+    return true;
+  }
+
+  int nodes_ = 0;
+  int open_ = 0;
+  int root_keys_ = 0;
+  std::string reason_;
+};
+
+// True if the text is kept as sent; false if it clears the metadata (empty text or an object with no key).
+[[nodiscard]] PJ::Expected<bool> checkFieldMetadata(std::string_view text) {
+  if (text.empty()) {
+    return false;
+  }
+  if (text.size() > FieldMetadataBounds::kMaxBytes) {
+    return PJ::unexpected(
+        fmt::format("field metadata is {} bytes; the limit is {}", text.size(), FieldMetadataBounds::kMaxBytes));
+  }
+  FieldMetadataBounds bounds;
+  if (!nlohmann::json::sax_parse(text.begin(), text.end(), &bounds)) {
+    return PJ::unexpected(bounds.reason().empty() ? std::string("field metadata is not valid JSON") : bounds.reason());
+  }
+  return bounds.hasKeys();
+}
+
 struct WriteCore {
   explicit WriteCore(DataEngine& data_engine) : engine(data_engine), writer(data_engine.createWriter()) {}
 
@@ -869,6 +979,28 @@ struct WriteCore {
     field_types[key] = column->desc.logical_type;
     field_cache[{.topic_id = topic.id, .field_name = column->desc.field_path}] =
         FieldHandle{.topic = topic, .id = field_id};
+    return true;
+  }
+
+  // Sets the metadata on the live engine and the staging mirror, so it survives the pause/resume swap. The field must
+  // exist on the live engine; on the mirror a missing field is not an error (it is created lazily).
+  [[nodiscard]] bool setFieldMetadata(FieldHandle field, std::string_view metadata_json) {
+    const PJ::Expected<bool> has_keys = checkFieldMetadata(metadata_json);
+    if (!has_keys.has_value()) {
+      setError(has_keys.error());
+      return false;
+    }
+    const std::string stored = *has_keys ? std::string(metadata_json) : std::string();
+    auto engine_locks = lockWriteEngines(engine, secondary_engine);
+    auto status = engine.setFieldMetadata(field.topic.id, field.id, stored);
+    if (!status.has_value()) {
+      setError(status.error());
+      return false;
+    }
+    if (secondary_engine != nullptr) {
+      (void)secondary_engine->setFieldMetadata(field.topic.id, field.id, stored);
+    }
+    last_error.clear();
     return true;
   }
 
@@ -1616,6 +1748,19 @@ bool sourceEnsureField(
     auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
     auto [core, engine_locks] = pinCore(*impl);
     if (!core->ensureField(topic, toStringView(field_name), type, out_field)) {
+      propagateError(out_error, core->lastError());
+      return false;
+    }
+    return true;
+  });
+}
+
+bool sourceSetFieldMetadata(
+    void* ctx, FieldHandle field, PJ_string_view_t metadata_json, PJ_error_t* out_error) noexcept {
+  return guardHostCallback(out_error, [&] {
+    auto* impl = static_cast<DatastoreSourceWriteHostState*>(ctx);
+    auto [core, engine_locks] = pinCore(*impl);
+    if (!core->setFieldMetadata(field, toStringView(metadata_json))) {
       propagateError(out_error, core->lastError());
       return false;
     }
@@ -2421,7 +2566,7 @@ const PJ_source_write_host_vtable_t kSourceWriteVTable = {
     PJ_PLUGIN_DATA_API_VERSION, sizeof(PJ_source_write_host_vtable_t),
     sourceEnsureTopic,          sourceEnsureField,
     sourceAppendRecord,         sourceAppendBoundRecord,
-    sourceAppendArrowStream,
+    sourceAppendArrowStream,    sourceSetFieldMetadata,
 };
 
 const PJ_parser_write_host_vtable_t kParserWriteVTable = {

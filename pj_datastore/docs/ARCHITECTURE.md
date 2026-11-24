@@ -184,6 +184,13 @@ between.
   retired topic does. Clearing, detaching and merging keep the retired set and a reattach restores it, so the column
   stays hidden through later refills; only a committed chunk with a value in the column un-retires it. A file whose
   column is entirely null is therefore hidden after a reload, though a fresh load lists it.
+- **Field metadata.** A source attaches a JSON object to a field (`set_field_metadata`); each call replaces the whole
+  document, and empty text or `{}` clears it. The write core checks it against `FieldMetadataBounds` and stores the
+  text verbatim, so unknown keys survive.
+  - `TopicStorage` keeps it per field id, apart from `ColumnDescriptor`, so clearing, detaching and reloading leave it
+    alone. `replaceDatasetFrom()` carries it over with the staged layout, and the write core sets it on the live and
+    the staging engine alike.
+  - `CatalogModel::fieldMetadata()` parses it at hover time; the curve list tooltip shows its `description` key.
 - **Merge.** `DataEngine::mergeDatasets()` and `ObjectStore::mergeDatasets()` fold source datasets into an anchor, each
   shifted by a raw delta the caller supplies; `pj_runtime` computes the deltas and owns the type-conflict policy.
   Scalar topics unite by name and columns by field path; the anchor keeps its ids and column indices, a conflicting
