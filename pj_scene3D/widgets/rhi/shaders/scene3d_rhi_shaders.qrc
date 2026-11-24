@@ -2,6 +2,7 @@
   <qresource prefix="/scene3d_rhi">
     <file>scene.vert.qsb</file>
     <file>scene.frag.qsb</file>
+    <file>scene_line.vert.qsb</file>
     <file>grid.vert.qsb</file>
     <file>point.vert.qsb</file>
     <file>point.frag.qsb</file>
@@ -36,6 +37,7 @@
     <file>gridmap.vert.qsb</file>
     <file>gridmap.frag.qsb</file>
     <file>meshmap.vert.qsb</file>
+    <file>meshmap_line.vert.qsb</file>
     <file>meshmap.frag.qsb</file>
     <file>trail.vert.qsb</file>
     <file>trail.frag.qsb</file>

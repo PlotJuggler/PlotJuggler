@@ -27,6 +27,9 @@ done
 "${QSB}" "${TARGETS[@]}" -DPJ_FLIP_Y -o "${OUT}/present_flip_y.vert.qsb" present.vert
 # The filled-cell grid as the shadow receiver.
 "${QSB}" "${TARGETS[@]}" -DPJ_GRID_SHADOW -o "${OUT}/grid_cell_shadow.frag.qsb" grid_cell.frag
+# Line variants whose vertices carry their segment's other end (line_clip.glslinc).
+"${QSB}" "${TARGETS[@]}" -DPJ_LINE_PARTNER -o "${OUT}/scene_line.vert.qsb" scene.vert
+"${QSB}" "${TARGETS[@]}" -DPJ_LINE_PARTNER -o "${OUT}/meshmap_line.vert.qsb" meshmap.vert
 # Point-list variant of the point shaders (gl_PointSize), for backends with
 # QRhi::VertexShaderPointSize.
 "${QSB}" "${TARGETS[@]}" -DPJ_POINT_TOPOLOGY -o "${OUT}/point_list.vert.qsb" point.vert

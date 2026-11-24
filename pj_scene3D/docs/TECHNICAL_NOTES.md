@@ -343,17 +343,24 @@ cut to start in front of the camera drew 2090. Turning off ANGLE's line emulatio
 the loss, so the drop is in SwiftShader itself (unverified reasoning: it builds a line's quad from the endpoints'
 projected positions, which a negative w mirrors).
 
-What the code does: `grid.vert` receives each vertex's segment partner and moves a vertex whose w is below
-`kMinClipW` along the segment to w = `kMinClipW`. That is behind every perspective near plane (`adaptiveNearFar`'s
-floor), so the rasterizer's own near clip yields the same visible segment. In the probe page the move drew 2096 pixels
-under SwiftShader and changed none on the GPU. The w is set after the interpolation: at |w| near 4700 a float32 step
-is about 5e-4, above `kMinClipW`, and the mix left w at exactly 0 on a 10 km grid of 200 divisions seen from an orbit
-radius of 60 (endpoints near w = -4600 and +4800), which draws nothing. It covers the grid lines and the TF connection
-lines; the other line pipelines still lose such segments (ARCHITECTURE "Known gaps"). Regression test:
-`scene3d_foundation.spec.js`.
+What the code does: every non-indexed line pipeline gives each vertex its segment's other end, and
+`line_clip.glslinc`'s `clipBehindEye` moves a vertex whose w is below `kMinClipW` along the segment to w =
+`kMinClipW`. That is behind every perspective near plane (`adaptiveNearFar`'s floor), so the rasterizer's own near
+clip yields the same visible segment. In the probe page the move drew 2096 pixels under SwiftShader and changed none
+on the GPU. The w is set after the interpolation: at |w| near 4700 a float32 step is about 5e-4, above `kMinClipW`,
+and the mix left w at exactly 0 on a 10 km grid of 200 divisions seen from an orbit radius of 60 (endpoints near
+w = -4600 and +4800), which draws nothing. Users: `grid.vert` (grid lines, TF connection lines) and the
+`PJ_LINE_PARTNER` variants of `scene.vert` (`scene_line.vert.qsb`: marker stream lines and wireframe triangle edges)
+and `meshmap.vert` (`meshmap_line.vert.qsb`: the mesh-map link segments). Triangle and point pipelines keep their
+partner-free vertices; the indexed and instanced line pipelines still lose such segments (ARCHITECTURE "Known gaps").
+The cost: a marker line vertex is 40 bytes instead of 28 (`StreamLineVertex`), so a view that fills
+`max_marker_stream_vertices_per_view` with lines holds 40 MB instead of 28 MB in the browser and 800 MB instead of
+560 MB on the desktop, GPU buffer and kept CPU expansion each; a mesh-map link vertex adds 12 bytes. Regression tests:
+`scene3d_foundation.spec.js`, the line grid and marker lines tests (the marker test drew no line under the camera
+before the move).
 
-Re-test on a Chromium (SwiftShader) update by running that spec's line grid test with the move taken out of
-`grid.vert`; if the lines draw, the partner attribute can go.
+Re-test on a Chromium (SwiftShader) update by running those tests with the move taken out of `clipBehindEye`; if the
+lines draw, the partner attributes can go.
 
 ## CI lanes
 

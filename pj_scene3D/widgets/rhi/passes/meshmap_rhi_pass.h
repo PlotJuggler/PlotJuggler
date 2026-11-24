@@ -77,6 +77,8 @@ class MeshMapRhiPass {
     quint32 link_positions_capacity = 0;
     QRhiBuffer* link_colors = nullptr;
     quint32 link_colors_capacity = 0;
+    QRhiBuffer* link_partners = nullptr;  ///< each link vertex's segment partner, for the clip behind the eye
+    quint32 link_partners_capacity = 0;
     QRhiBuffer* surface_uniforms = nullptr;
     QRhiBuffer* line_uniforms = nullptr;
     QRhiShaderResourceBindings* surface_bindings = nullptr;

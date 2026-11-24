@@ -5,6 +5,7 @@
 
 #include <array>
 #include <limits>
+#include <vector>
 
 #include "lit_surface_uniforms.h"
 #include "pj_scene3d_core/pose_math.h"
@@ -39,21 +40,27 @@ bool drawable(const MeshMapUpload& mesh) {
   return !mesh.positions.empty() && mesh.positions.size() % 9 == 0;
 }
 
-QRhiVertexInputLayout inputLayout() {
-  // binding 0: position, 1: channel value, 2: RGBA8 colour. A draw that does not
-  // read the value or the colour binds another buffer of at least 4 bytes per
-  // vertex there; the shader ignores it in that mode.
+QRhiVertexInputLayout inputLayout(bool lines) {
+  // binding 0: position, 1: channel value, 2: RGBA8 colour, and for the links 3: the segment's other end. A draw that
+  // does not read the value or the colour binds another buffer of at least 4 bytes per vertex there; the shader
+  // ignores it in that mode.
   QRhiVertexInputLayout layout;
-  layout.setBindings({
+  QList<QRhiVertexInputBinding> bindings{
       QRhiVertexInputBinding(3 * sizeof(float)),
       QRhiVertexInputBinding(sizeof(float)),
       QRhiVertexInputBinding(sizeof(std::uint32_t)),
-  });
-  layout.setAttributes({
+  };
+  QList<QRhiVertexInputAttribute> attributes{
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
       QRhiVertexInputAttribute(1, 1, QRhiVertexInputAttribute::Float, 0),
       QRhiVertexInputAttribute(2, 2, QRhiVertexInputAttribute::UNormByte4, 0),
-  });
+  };
+  if (lines) {
+    bindings.append(QRhiVertexInputBinding(3 * sizeof(float)));
+    attributes.append(QRhiVertexInputAttribute(3, 3, QRhiVertexInputAttribute::Float3, 0));
+  }
+  layout.setBindings(bindings.cbegin(), bindings.cend());
+  layout.setAttributes(attributes.cbegin(), attributes.cend());
   return layout;
 }
 
@@ -93,13 +100,15 @@ bool MeshMapRhiPass::initialize(const RhiPassSetup& setup) {
   PipelineDesc desc{
       .vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/meshmap.vert.qsb")),
       .fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/meshmap.frag.qsb")),
-      .input_layout = inputLayout(),
+      .input_layout = inputLayout(false),
       .bindings = layout_shader_resources_,
   };
   opaque_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.depth_write = false;  // depth test only
   translucent_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.topology = QRhiGraphicsPipeline::Lines;
+  desc.vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/meshmap_line.vert.qsb"));
+  desc.input_layout = inputLayout(true);
   translucent_line_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.depth_write = true;
   line_pipeline_ = setup.pipelines->add(desc, setup.part);
@@ -169,7 +178,8 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
   const std::size_t link_color_bytes = mesh.link_colors.size() * sizeof(std::uint32_t);
   if (geometry && (!ensureBuffer(rhi, gpu.positions, gpu.positions_capacity, mesh.positions.size() * sizeof(float)) ||
                    !ensureBuffer(rhi, gpu.link_positions, gpu.link_positions_capacity, link_position_bytes) ||
-                   !ensureBuffer(rhi, gpu.link_colors, gpu.link_colors_capacity, link_color_bytes))) {
+                   !ensureBuffer(rhi, gpu.link_colors, gpu.link_colors_capacity, link_color_bytes) ||
+                   !ensureBuffer(rhi, gpu.link_partners, gpu.link_partners_capacity, link_position_bytes))) {
     layer->noteRenderFailure(tr("Could not allocate the mesh-map vertex buffers"));
     releaseLayerGpu(gpu);
     return false;
@@ -184,6 +194,12 @@ bool MeshMapRhiPass::upload(QRhiResourceUpdateBatch* updates, QRhi* rhi, MeshMap
     recordUpload(updates, gpu.positions, mesh.positions.data(), mesh.positions.size() * sizeof(float));
     recordUpload(updates, gpu.link_positions, mesh.link_positions.data(), link_position_bytes);
     recordUpload(updates, gpu.link_colors, mesh.link_colors.data(), link_color_bytes);
+    // link_positions with the two ends of each link swapped; recordUpload copies it into the batch.
+    std::vector<float> partners(mesh.link_positions.size());
+    for (std::size_t index = 0; index < partners.size(); ++index) {
+      partners[index] = mesh.link_positions[index - (index % 6) + ((index % 6) + 3) % 6];
+    }
+    recordUpload(updates, gpu.link_partners, partners.data(), link_position_bytes);
     gpu.surface_vertices = static_cast<quint32>(mesh.positions.size() / 3);
     gpu.link_vertices = static_cast<quint32>(mesh.link_positions.size() / 3);
     gpu.uploaded_geometry = mesh.geometry_revision;
@@ -271,10 +287,11 @@ bool MeshMapRhiPass::submit(
   command_buffer->setViewport(viewport);
   if (draw.lines) {
     command_buffer->setShaderResources(gpu.line_bindings);
-    const std::array<QRhiCommandBuffer::VertexInput, 3> inputs{{
+    const std::array<QRhiCommandBuffer::VertexInput, 4> inputs{{
         {gpu.link_positions, 0},
         {gpu.link_colors, 0},  // value slot: ignored by the line mode
         {gpu.link_colors, 0},
+        {gpu.link_partners, 0},
     }};
     command_buffer->setVertexInput(0, static_cast<int>(inputs.size()), inputs.data());
   } else {
@@ -324,6 +341,7 @@ void MeshMapRhiPass::releaseLayerGpu(LayerGpu& gpu) {
   delete gpu.attributes;
   delete gpu.link_positions;
   delete gpu.link_colors;
+  delete gpu.link_partners;
   gpu = {};
 }
 

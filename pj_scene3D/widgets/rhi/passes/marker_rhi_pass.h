@@ -192,7 +192,7 @@ class MarkerRhiPass {
     float unused0 = 0.0F;
     float unused1 = 0.0F;
   };
-  /// One stream vertex (scene.vert layout): camera-relative position + colour.
+  /// One stream triangle vertex (scene.vert layout): camera-relative position + colour.
   struct StreamVertex {
     float x = 0.0F;
     float y = 0.0F;
@@ -201,6 +201,14 @@ class MarkerRhiPass {
     float g = 0.0F;
     float b = 0.0F;
     float a = 1.0F;
+  };
+  /// One stream line vertex (scene_line.vert layout): a StreamVertex, then its segment's other end for the clip
+  /// behind the eye (line_clip.glslinc).
+  struct StreamLineVertex {
+    StreamVertex vertex;
+    float other_x = 0.0F;
+    float other_y = 0.0F;
+    float other_z = 0.0F;
   };
 
  private:
@@ -233,7 +241,7 @@ class MarkerRhiPass {
     /// subtracted and the result narrowed to float; parallel to `instances` in
     /// an expansion kept for origin-only updates, else empty.
     std::vector<glm::dvec3> instance_world;
-    UploadArray<StreamVertex> lines;
+    UploadArray<StreamLineVertex> lines;
     UploadArray<StreamVertex> triangles;
     std::vector<glm::vec3> placed_points;  ///< scratch: one stream batch's points, camera-relative
     std::vector<Draw> draws;               ///< buffer unset: offsets index the vectors above

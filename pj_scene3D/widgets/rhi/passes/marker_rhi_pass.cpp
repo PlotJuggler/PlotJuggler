@@ -37,11 +37,12 @@ static_assert(sizeof(MarkerRhiPass::Instance) == 96U);
 static_assert(offsetof(MarkerRhiPass::Instance, r) == 64U);
 static_assert(offsetof(MarkerRhiPass::Instance, bottom_scale) == 80U);
 static_assert(sizeof(MarkerRhiPass::StreamVertex) == 7U * sizeof(float));
+static_assert(sizeof(MarkerRhiPass::StreamLineVertex) == 10U * sizeof(float));
 // Every per-view budget fills one quint32-sized buffer.
 constexpr bool fitsBuffers(const SceneLimits& limits) {
   constexpr std::uint64_t kMaxBytes = std::numeric_limits<quint32>::max();
   return limits.max_marker_instances_per_view * sizeof(MarkerRhiPass::Instance) <= kMaxBytes &&
-         limits.max_marker_stream_vertices_per_view * sizeof(MarkerRhiPass::StreamVertex) <= kMaxBytes;
+         limits.max_marker_stream_vertices_per_view * sizeof(MarkerRhiPass::StreamLineVertex) <= kMaxBytes;
 }
 static_assert(fitsBuffers(kBrowserSceneLimits));
 static_assert(fitsBuffers(kDesktopSceneLimits));
@@ -298,9 +299,19 @@ bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
       QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(StreamVertex, x)),
       QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4, offsetof(StreamVertex, r)),
   });
+  QRhiVertexInputLayout stream_line_layout;
+  stream_line_layout.setBindings({QRhiVertexInputBinding(sizeof(StreamLineVertex))});
+  stream_line_layout.setAttributes({
+      QRhiVertexInputAttribute(
+          0, 0, QRhiVertexInputAttribute::Float3, offsetof(StreamLineVertex, vertex) + offsetof(StreamVertex, x)),
+      QRhiVertexInputAttribute(
+          0, 1, QRhiVertexInputAttribute::Float4, offsetof(StreamLineVertex, vertex) + offsetof(StreamVertex, r)),
+      QRhiVertexInputAttribute(0, 2, QRhiVertexInputAttribute::Float3, offsetof(StreamLineVertex, other_x)),
+  });
   const QShader marker_vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/marker.vert.qsb"));
   const QShader marker_fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/marker.frag.qsb"));
   const QShader stream_vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/scene.vert.qsb"));
+  const QShader stream_line_vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/scene_line.vert.qsb"));
   const QShader stream_fragment = loadRhiShader(QStringLiteral(":/scene3d_rhi/scene.frag.qsb"));
   const QShader edge_vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/marker_edge.vert.qsb"));
   const auto instanced = [&](QRhiGraphicsPipeline::Topology topology, QRhiGraphicsPipeline::CullMode cull,
@@ -317,11 +328,12 @@ bool MarkerRhiPass::initialize(const RhiPassSetup& setup) {
     };
   };
   const auto stream = [&](QRhiGraphicsPipeline::Topology topology) {
+    const bool lines = topology == QRhiGraphicsPipeline::Lines;
     return PipelineDesc{
         .topology = topology,
-        .vertex = stream_vertex,
+        .vertex = lines ? stream_line_vertex : stream_vertex,
         .fragment = stream_fragment,
-        .input_layout = stream_layout,
+        .input_layout = lines ? stream_line_layout : stream_layout,
         .bindings = data_bindings_,
     };
   };
@@ -558,13 +570,17 @@ quint32 MarkerRhiPass::expandStreams(const MarkerGeometry& geometry, const Layer
   }
   out.lines.resizeForOverwrite(line_total);
   out.triangles.resizeForOverwrite(triangle_total);
-  StreamVertex* lines = out.lines.data();
+  StreamLineVertex* lines = out.lines.data();
   StreamVertex* triangles = out.triangles.data();
+  const auto segment = [&lines](const StreamVertex& a, const StreamVertex& b) {
+    *lines++ = StreamLineVertex{a, b.x, b.y, b.z};
+    *lines++ = StreamLineVertex{b, a.x, a.y, a.z};
+  };
   for (const MarkerStreamBatch& batch : geometry.lines) {
     if (place(batch)) {
       const glm::vec4 uniform = applyColor(batch.color, content.override_color, content.opacity);
-      for (const std::uint32_t point : batch.indices) {
-        *lines++ = vertex(batch, uniform, point);
+      for (std::size_t index = 0; index + 1U < batch.indices.size(); index += 2U) {
+        segment(vertex(batch, uniform, batch.indices[index]), vertex(batch, uniform, batch.indices[index + 1U]));
       }
     }
   }
@@ -578,9 +594,9 @@ quint32 MarkerRhiPass::expandStreams(const MarkerGeometry& geometry, const Layer
         const StreamVertex a = vertex(batch, uniform, batch.indices[index]);
         const StreamVertex b = vertex(batch, uniform, batch.indices[index + 1U]);
         const StreamVertex c = vertex(batch, uniform, batch.indices[index + 2U]);
-        for (const StreamVertex& edge_vertex : {a, b, b, c, c, a}) {
-          *lines++ = edge_vertex;
-        }
+        segment(a, b);
+        segment(b, c);
+        segment(c, a);
       }
     } else {
       for (const std::uint32_t point : batch.indices) {
@@ -868,7 +884,8 @@ bool MarkerRhiPass::submit(
     command_buffer->setGraphicsPipeline(pipeline);
     command_buffer->setViewport(viewport);
     command_buffer->setShaderResources(annotation_bindings_);
-    const QRhiCommandBuffer::VertexInput input(draw.buffer, draw.offset * static_cast<quint32>(sizeof(StreamVertex)));
+    const std::size_t stride = draw.kind == Kind::kStreamLines ? sizeof(StreamLineVertex) : sizeof(StreamVertex);
+    const QRhiCommandBuffer::VertexInput input(draw.buffer, draw.offset * static_cast<quint32>(stride));
     command_buffer->setVertexInput(0, 1, &input);
     command_buffer->draw(draw.count);
     return true;

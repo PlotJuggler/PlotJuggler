@@ -211,6 +211,44 @@ async function gridLineRuns(page, png) {
   }, png.toString('base64'));
 }
 
+// The layout of the open dock with the orbit camera looking along -x from (0.94, 0, 0.34) and the scene_controls
+// attributes in `controls`: a 4 m line grid centred on the origin then has its lines along x pass under the camera and
+// behind it.
+async function uploadCameraOverLinesLayout(page, screen, consoleMessages, name, controls) {
+  let xml = (await downloadLayoutFromFileMenu(page, screen, consoleMessages)).bytes.toString('utf8');
+  const setAttribute = (tag, attribute, value) => {
+    xml = setElementAttribute(xml, tag, attribute, value);
+    expect(elementAttribute(xml, tag, attribute)).toBe(value.replaceAll('"', '&quot;'));
+  };
+  setAttribute('scene3d', 'camera_model', 'orbit');
+  setAttribute(
+    'scene3d', 'camera_state',
+    JSON.stringify({ focal: [0, 0, 0], radius: 1, azimuth: 0, elevation: 0.35, perspective: true }),
+  );
+  for (const [attribute, value] of Object.entries(controls)) {
+    setAttribute('scene_controls', attribute, value);
+  }
+  await uploadLayout(page, consoleMessages, name, Buffer.from(xml, 'utf8'));
+}
+
+// Screenshots the dock's view and checks both line directions of a 40-division, 4 m grid seen from the camera of
+// uploadCameraOverLinesLayout().
+async function expectLinesUnderCamera(page, screen, state, attachment) {
+  const { view } = state.docks[0];
+  const topLeft = qtPointToCss(screen, state, { x: view.x, y: view.y });
+  const bottomRight = qtPointToCss(screen, state, { x: view.x + view.width, y: view.y + view.height });
+  const png = await page.screenshot({
+    clip: { x: topLeft.x, y: topLeft.y, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y },
+  });
+  await test.info().attach(attachment, { body: png, contentType: 'image/png' });
+
+  const { short, across } = await gridLineRuns(page, png);
+  const median = [...short].sort((a, b) => a - b)[Math.floor(short.length / 2)];
+  expect(median, `short runs per row: ${short.join(',')}`).toBeGreaterThanOrEqual(4);
+  // The lines across the view (about 26 of them are in the 30-90% band) draw whatever happens to the others.
+  expect(across, 'rows with a line across the view').toBeGreaterThanOrEqual(8);
+}
+
 // A grid line with one end behind the eye must still draw its visible part. Chromium's software WebGL
 // (SwiftShader) dropped such lines whole, so a camera inside a line grid drew only the lines across the view.
 test('Scene3D line grid draws the lines that run under the camera', async ({ page }) => {
@@ -227,22 +265,10 @@ test('Scene3D line grid draws the lines that run under the camera', async ({ pag
     return state.docks[0]?.resolved >= 1;
   }, { timeout: 15000 }).toBe(true);
 
-  // Looking along -x from (0.94, 0, 0.34): the lines along x pass under the camera and behind it.
   const divisions = 40;
-  let xml = (await downloadLayoutFromFileMenu(page, screen, consoleMessages)).bytes.toString('utf8');
-  const setAttribute = (tag, attribute, value) => {
-    xml = setElementAttribute(xml, tag, attribute, value);
-    expect(elementAttribute(xml, tag, attribute)).toBe(value.replaceAll('"', '&quot;'));
-  };
-  setAttribute('scene3d', 'camera_model', 'orbit');
-  setAttribute(
-    'scene3d', 'camera_state',
-    JSON.stringify({ focal: [0, 0, 0], radius: 1, azimuth: 0, elevation: 0.35, perspective: true }),
-  );
-  setAttribute('scene_controls', 'grid_style', '0');
-  setAttribute('scene_controls', 'grid_extent_m', '4');
-  setAttribute('scene_controls', 'grid_divisions', String(divisions));
-  await uploadLayout(page, consoleMessages, 'scene3d-grid-under-camera.pj4.xml', Buffer.from(xml, 'utf8'));
+  await uploadCameraOverLinesLayout(page, screen, consoleMessages, 'scene3d-grid-under-camera.pj4.xml', {
+    grid_style: '0', grid_extent_m: '4', grid_divisions: String(divisions),
+  });
 
   // The grid's line vertices: (divisions + 1) lines per axis, 2 axes, 2 vertices per line, plus the TF connections'.
   const gridLineVertices = 2 * 2 * (divisions + 1);
@@ -252,18 +278,39 @@ test('Scene3D line grid draws the lines that run under the camera', async ({ pag
     const dock = state.docks[0];
     return Math.abs((dock?.camera.radius ?? 0) - 1) < 1e-3 && dock.vertices.lines >= gridLineVertices;
   }, { timeout: 15000 }).toBe(true);
-  const { view } = state.docks[0];
-  const topLeft = qtPointToCss(screen, state, { x: view.x, y: view.y });
-  const bottomRight = qtPointToCss(screen, state, { x: view.x + view.width, y: view.y + view.height });
-  const png = await page.screenshot({
-    clip: { x: topLeft.x, y: topLeft.y, width: bottomRight.x - topLeft.x, height: bottomRight.y - topLeft.y },
-  });
-  await test.info().attach('grid-under-camera', { body: png, contentType: 'image/png' });
+  await expectLinesUnderCamera(page, screen, state, 'grid-under-camera');
+  expect(errors).toEqual([]);
+});
 
-  const { short, across } = await gridLineRuns(page, png);
-  const median = [...short].sort((a, b) => a - b)[Math.floor(short.length / 2)];
-  expect(median, `short runs per row: ${short.join(',')}`).toBeGreaterThanOrEqual(4);
-  // The lines across the view (about 26 of them are in the 30-90% band) draw whatever happens to the others.
-  expect(across, 'rows with a line across the view').toBeGreaterThanOrEqual(8);
+// The same lines as SceneEntities line markers (a LINE_LIST and a LINE_STRIP, generate_foxglove_marker_lines.py),
+// with the grid and the TF drawing hidden: the marker stream lines must draw the part in front of the camera too.
+test('Scene3D marker lines draw the lines that run under the camera', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = [];
+  const consoleMessages = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  const screen = await bootScene3D(page, consoleMessages);
+  await loadScene3DFixture(page, screen, consoleMessages, 'foxglove_marker_lines_real.mcap');
+  // Sorted rows: /markers, /tf.
+  await dropScene3DRows(page, screen, [232, 212]);
+  const reportCount = () => count(consoleMessages, 'PJ_WASM_SCENE3D_FOUNDATION_SUMMARY');
+  // 61 LINE_LIST segments and a 42-point LINE_STRIP (41 segments), two vertices per segment.
+  const markerLineVertices = 2 * (61 + 41);
+  await expect.poll(async () => {
+    const state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
+    const markers = state.docks[0]?.models.markers;
+    return { rendered: markers?.rendered, lineVertices: markers?.families.lineVertices };
+  }, { timeout: 15000 }).toEqual({ rendered: 1, lineVertices: markerLineVertices });
+
+  await uploadCameraOverLinesLayout(page, screen, consoleMessages, 'scene3d-marker-lines-under-camera.pj4.xml', {
+    grid_visible: 'false', axes_visible: 'false', tf_parent_lines: 'false',
+  });
+  let state;
+  await expect.poll(async () => {
+    state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
+    const dock = state.docks[0];
+    return Math.abs((dock?.camera.radius ?? 0) - 1) < 1e-3 && dock.models.markers.rendered === 1;
+  }, { timeout: 15000 }).toBe(true);
+  await expectLinesUnderCamera(page, screen, state, 'marker-lines-under-camera');
   expect(errors).toEqual([]);
 });

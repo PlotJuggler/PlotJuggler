@@ -394,7 +394,9 @@ the pixel reference of `scene3d_rhi_marker_cache_test`.
 
 The cube fill is depth-biased away from the camera so its edge overlay, at exact depth, wins; edges with a
 camera-facing adjacent face draw darker than self-occluded ones. Wireframe draws triangle edges as line lists on
-every backend (WebGL2 has no `NonFillPolygonMode`); back-facing edges show.
+every backend (WebGL2 has no `NonFillPolygonMode`); back-facing edges show. Stream lines and wireframe edges are
+written as segment pairs whose vertices (`StreamLineVertex`) carry the other end for the clip behind the eye of
+`scene_line.vert.qsb`; stream triangles keep the smaller `StreamVertex`.
 
 **Models (`ModelRhiPass`).** Per-layer GPU meshes, up to five material textures per submesh (budgeted before decode;
 a map longer than the backend limit or `max_model_texture_dimension` decodes scaled down), one material SRB per
@@ -425,8 +427,8 @@ cannot z-fight the fill; an odd division count's half-cell phase travels in the 
 binding 3 for both stages because QRhi requires the connection lines' SRB layout to match. The TF connection lines
 are arbitrary doubles, so they stay camera-relative in a Dynamic buffer keyed on the TF revision, fixed frame, time
 and render origin. Each line vertex carries its segment's other end, and `grid.vert` moves an end behind the eye
-along the segment to `kMinClipW`, so SwiftShader still draws the line (TECHNICAL_NOTES "SwiftShader drops lines that
-cross behind the eye"). Filled cells carry no partner.
+along the segment to `kMinClipW` (`line_clip.glslinc`), so SwiftShader still draws the line (TECHNICAL_NOTES
+"SwiftShader drops lines that cross behind the eye"). Filled cells carry no partner.
 
 **Poses and TF triads (`PoseRhiPass`).** One unit-arrow mesh, one instanced draw per layer. Pose instances are
 frame-local in a Static buffer, re-uploaded on `geometryRevision()`; the fixed-from-source TF is a uniform, so camera
@@ -447,8 +449,9 @@ conventions").
 `gl_VertexIndex`; two-sided lighting uses a geometric normal-faces-eye test, because a backend's clip-space
 correction can flip `gl_FrontFacing`'s winding.
 
-**Mesh maps (`MeshMapRhiPass`).** Per layer static buffers (positions, one 4-byte attribute, link positions and
-colours) and opaque/translucent triangle and line pipelines. A frame allocates every buffer it writes before
+**Mesh maps (`MeshMapRhiPass`).** Per layer static buffers (positions, one 4-byte attribute, link positions,
+colours and partners: each link vertex's other end, for the clip behind the eye of `meshmap_line.vert.qsb`) and
+opaque/translucent triangle and line pipelines. A frame allocates every buffer it writes before
 recording any upload; the row warning clears only after an upload succeeded.
 
 **Trails (`TrailRhiPass`).** One Static ribbon buffer per trail owner, re-uploaded on a rebuild or a render-origin
@@ -955,8 +958,6 @@ each has a panel row, and clicking it binds the Settings host to the layer's con
 - A `UrlFetcher` request aborts only with its fetcher, so unwanted fetches retire the fetcher and its connections.
 - `drawsFor` is a linear search per slot (O(L²) in the layer count).
 - Pipeline-cache persistence is not reachable through `QRhiWidget`, and packs are not precompiled.
-- Under SwiftShader, a line with one end behind the eye is not drawn by any line pipeline but the grid's and the TF
-  connections'. The marker stream lines (`stream(Lines)` in `marker_rhi_pass.cpp`) and the mesh-map wireframe
-  (`meshmap_rhi_pass.cpp`) are non-indexed and could take the same partner attribute; the model wireframe (indexed)
-  and the instanced marker line and edge pipelines cannot, a vertex there having no single partner (TECHNICAL_NOTES
-  "SwiftShader drops lines that cross behind the eye").
+- Under SwiftShader, a line with one end behind the eye is not drawn by the model wireframe (indexed) or the
+  instanced marker line and cube-edge pipelines: a vertex there has no single segment partner to clip against
+  (TECHNICAL_NOTES "SwiftShader drops lines that cross behind the eye").
