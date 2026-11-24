@@ -128,8 +128,9 @@ TEST(Scene3DFollow, FollowRenderKeyTracksTargetPose) {
   EXPECT_NE(key_t100, key_t200) << "must change as the followed frame moves";
 }
 
-// Changing the fixed frame while following re-seeds (no jump): the followed origin is cached in the OLD fixed frame, so
-// without a re-seed the next tick would shift the camera by a bogus cross-basis delta.
+// Changing the fixed frame while following re-seeds in the new frame at the current time (no jump): the followed origin
+// is cached in the OLD fixed frame, so without a re-seed the next tick would shift the camera by a bogus cross-basis
+// delta. The re-seed happens at the change, so the robot's real motion on the next tick is still followed.
 TEST(Scene3DFollow, FixedFrameChangeWhileFollowingDoesNotJump) {
   auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
   setEdge(*buf, "world", "alt", 100, {10.0, 0.0, 0.0});  // alt offset from world (static)
@@ -145,13 +146,44 @@ TEST(Scene3DFollow, FixedFrameChangeWhileFollowingDoesNotJump) {
   view.setTrackerTime(at(200));  // robot at (1,0,0) → pivot shifted
   const glm::vec3 focal_before = view.camera().state().focal;
 
-  // robot's origin in `alt` (-8,0,0) is wildly different from in `world` (2,0,0):
-  // the first tick after the basis change must NOT apply that difference.
+  // robot's origin in `alt` is (-9,0,0) at t=200 and (-8,0,0) at t=300, against (1,0,0) in `world` at t=200: the
+  // first tick after the basis change must apply only the real +1 motion, not the -9 cross-basis difference.
   view.setFixedFrame("alt");
   view.setTrackerTime(at(300));
 
   const glm::vec3 focal_after = view.camera().state().focal;
-  EXPECT_NEAR(focal_after.x, focal_before.x, 1e-4f) << "fixed-frame change must re-seed, not jump";
+  EXPECT_NEAR(focal_after.x - focal_before.x, 1.0f, 1e-4f) << "fixed-frame change must re-seed, not jump";
+  EXPECT_NEAR(focal_after.y, focal_before.y, 1e-4f);
+  EXPECT_NEAR(focal_after.z, focal_before.z, 1e-4f);
+}
+
+// Re-applying a dock's state (a layout load or MCP set_widget_state on the live view) clears the buffer and the fixed
+// frame, then sets them back with the same follow target, at an unchanged tracker time. The follow must stay seeded
+// across that, so the next tracker move is followed instead of only re-seeding.
+TEST(Scene3DFollow, ReapplyingSameStateKeepsFollowing) {
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "world", "robot", 100, {0.0, 0.0, 0.0});
+  setEdge(*buf, "world", "robot", 200, {1.0, 0.0, 0.0});
+
+  SceneViewWidget view;
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("world");
+  view.setFollowFrame("robot");
+  view.setTrackerTime(at(100));  // seed
+  const glm::vec3 focal_before = view.camera().state().focal;
+
+  // The view calls of Scene3DDockWidget::xmlLoadState: resetDatasetBindingForRestore, the TF rebind, the saved fixed
+  // frame and follow target.
+  view.setTransformBuffer(nullptr);
+  view.setFixedFrame({});
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("world");
+  view.setFollowFrame("robot");
+
+  view.setTrackerTime(at(200));  // robot at (1,0,0) → pivot shifts +1 in x
+
+  const glm::vec3 focal_after = view.camera().state().focal;
+  EXPECT_NEAR(focal_after.x - focal_before.x, 1.0f, 1e-4f) << "the move after a state re-apply must be followed";
   EXPECT_NEAR(focal_after.y, focal_before.y, 1e-4f);
   EXPECT_NEAR(focal_after.z, focal_before.z, 1e-4f);
 }

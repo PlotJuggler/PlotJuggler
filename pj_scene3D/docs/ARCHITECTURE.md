@@ -41,8 +41,9 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
   same dataset (`FixedFrameMemory`, consumed by `Scene3DDockWidget::resolveAutoFixedFrame`), else a
   `map`/`world`/`odom` heuristic; that default stays in auto mode, so it self-heals if the frame disappears.
 - **Follow** is position-only: the camera anchor tracks the followed origin per tracker tick, orbit and zoom stay
-  user-controlled, enabling never jumps, and a recenter button snaps onto the frame. Heading and pose follow are not
-  implemented.
+  user-controlled, enabling it or changing the fixed frame never jumps (the followed origin is re-seeded in the new
+  frame at the current time, so the next move is still followed, also after a state re-apply), and a recenter button
+  snaps onto the frame. Heading and pose follow are not implemented.
 - **Camera gestures** (RViz orbit, ROS Z-up): left-drag rotates, middle-drag or shift+left-drag pans, the wheel
   zooms toward the cursor, right-drag zooms about the focal, Home resets the model's default view (it does not fit
   the scene). Models: Orbit, XYOrbit, Fly (WASD), top-down ortho.

@@ -401,6 +401,7 @@ void SceneViewWidget::setFixedFrame(const std::string& frame) {
   }
   fixed_frame_ = frame;
   follow_seeded_ = false;
+  applyFollow();
   invalidateContent();  // the dock owns and persists the fixed frame, and reports its changes
 }
 
