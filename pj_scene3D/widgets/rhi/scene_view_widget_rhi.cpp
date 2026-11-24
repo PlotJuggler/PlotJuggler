@@ -333,6 +333,7 @@ void SceneViewWidget::setTransformBuffer(std::shared_ptr<TransformBuffer> tf) {
     return;
   }
   tf_ = std::move(tf);
+  reseedFollow();
   // A new buffer can reuse the old one's address and revision: rebuild the TF geometry.
   tf_triad_key_.reset();
   grid_pass_->invalidate();
@@ -386,9 +387,10 @@ void SceneViewWidget::setLayers(const std::vector<Scene3DLayer*>& ordered_layers
 }
 
 void SceneViewWidget::setTrackerTime(PJ::Timepoint time) {
-  if (render_time_ == time) {
+  if (has_tracker_time_ && render_time_ == time) {
     return;
   }
+  has_tracker_time_ = true;
   render_time_ = time;
   refreshAvailableFrames();
   applyFollow();
@@ -400,7 +402,7 @@ void SceneViewWidget::setFixedFrame(const std::string& frame) {
     return;
   }
   fixed_frame_ = frame;
-  follow_seeded_ = false;
+  reseedFollow();
   invalidateContent();  // the dock owns and persists the fixed frame, and reports its changes
 }
 
@@ -409,8 +411,7 @@ void SceneViewWidget::setFollowFrame(const std::string& frame) {
     return;
   }
   follow_frame_ = frame;
-  follow_seeded_ = false;
-  applyFollow();
+  reseedFollow();
   invalidateContent();
 }
 
@@ -425,7 +426,7 @@ std::optional<Transform> SceneViewWidget::followTransform(PJ::Timepoint time) co
 
 void SceneViewWidget::applyFollow() {
   const std::string fixed = effectiveFixedFrame();
-  if (follow_frame_.empty() || tf_ == nullptr || fixed.empty()) {
+  if (follow_frame_.empty() || tf_ == nullptr || fixed.empty() || !has_tracker_time_) {
     return;
   }
   const auto transform = frameAtCursor(*tf_, fixed, follow_frame_, render_time_);
@@ -443,6 +444,13 @@ void SceneViewWidget::applyFollow() {
   if (delta != glm::dvec3(0.0)) {
     camera_->followShift(glm::vec3(delta));
   }
+}
+
+// The reset comes first: applyFollow() returns without touching the seed when it cannot resolve (no follow frame, TF,
+// fixed frame or tracker time yet), so the reset is what drops a baseline taken in the old frame, buffer or target.
+void SceneViewWidget::reseedFollow() {
+  follow_seeded_ = false;
+  applyFollow();
 }
 
 void SceneViewWidget::recenterOnFollowFrame() {

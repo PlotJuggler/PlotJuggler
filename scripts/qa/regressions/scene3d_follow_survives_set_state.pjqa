@@ -1,0 +1,18 @@
+# A 3D view following base_link keeps following after set_widget_state re-applies its own state. The re-apply clears
+# the view's TF buffer and fixed frame and sets them back at an unchanged tracker time; the follow camera must stay
+# seeded across it, or the next seek only re-seeds and the camera lags the robot by that move for good (pj_scene3D
+# ARCHITECTURE "Behaviour contracts", Follow). The data file is a committed browser fixture.
+# app: -d tests/wasm/fixtures/ros2_tf_grid_real.mcap -l scripts/qa/regressions/fixtures/scene3d_follow.pj4.xml
+# needs: plugins
+until get_status {} "ros2_tf_grid_real.mcap"
+until widget_state {"action":"list"} "follow-area"
+playback {"action":"seek","time_s":2}
+# The seek has reached the view: the camera followed base_link from the start to t=2.
+until widget_state {"action":"get","dock":"follow-area"} focal&quot;:[1.487
+# The fixture's state; an absent camera_state keeps the camera.
+set_widget_state {"dock":"follow-area","xml":"<scene3d fixed_frame=\"map\" fixed_frame_mode=\"explicit\" follow_frame=\"base_link\"><config_topic object_type=\"kFrameTransforms\" topic_name=\"/tf\"/></scene3d>"}
+expect focal&quot;:[1.487
+# base_link moves by about (+0.73, +0.28) from t=2 to t=3: a followed camera moves with it. A lost follow seed
+# leaves the focal at 1.487 for good.
+playback {"action":"seek","time_s":3}
+until widget_state {"action":"get","dock":"follow-area"} focal&quot;:[2.2

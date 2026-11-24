@@ -395,6 +395,7 @@ class SceneViewWidget : public QRhiWidget {
   template <typename Visitor>
   void forEachFamily(Visitor&& visitor) const;
   void applyFollow();
+  void reseedFollow();
   [[nodiscard]] std::string effectiveFixedFrame() const;
   void buildTfTriads(const glm::dvec3& render_origin, const std::string& fixed_frame);
   bool ensureShadowResources(QRhi* owner);
@@ -430,6 +431,8 @@ class SceneViewWidget : public QRhiWidget {
   // The cursor, in the entry clock (Clock::kEntry); a layer's object is placed at its own stamp instead
   // (resolveFixedFromSource()).
   PJ::Timepoint render_time_{};
+  // render_time_ is the epoch until the first setTrackerTime(); follow never seeds before it.
+  bool has_tracker_time_ = false;
   std::string fixed_frame_;
   std::string follow_frame_;
   glm::dvec3 follow_previous_origin_{0.0};
