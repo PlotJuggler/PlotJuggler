@@ -59,6 +59,12 @@ A public deployment also publishes the source offer
 ([licence and source offer](#licence-of-the-browser-bundle-and-the-source-offer)):
 `node scripts/wasm_source_offer.mjs --links --output build-wasm/deploy/sources`.
 
+A version tag builds this package in WASM CI too, stamped with the tag's version and with its source offer, and
+the `wasm-release` job attaches it to the tag's GitHub Release as `PlotJuggler4-web-bundle.zip` once the Chromium
+suite has passed. The name carries no version, so `releases/latest/download/PlotJuggler4-web-bundle.zip` stays a
+stable link. Unzipped, it deploys to any host that meets the [Required HTTP contract](#required-http-contract);
+`app.plotjuggler.io` is published by hand ([packaging/web/README.md](../packaging/web/README.md)).
+
 `--presets` is optional: it deploys a preset tree (the repository's samples
 here) under `presets/`; see [Presets](#presets). The `app.plotjuggler.io`
 package is built without it ([`packaging/web/README.md`](../packaging/web/README.md)).

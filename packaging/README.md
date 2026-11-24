@@ -48,8 +48,9 @@ carries the written source offer.
 | Debian | `/opt/plotjuggler4/share/doc/` (the AppImage's), and `/usr/share/doc/plotjuggler4/copyright` |
 | Windows installer and portable ZIP | `licenses/`, with the MPL-2.0 and LGPL-3.0 texts the installer pages show |
 | macOS | `PlotJuggler.app/Contents/Resources/` |
+| Browser bundle (`PlotJuggler4-web-bundle.zip`) | the root, with the browser build's own notices and its source offer in `sources/` |
 
-The browser build has its own notices and source offer
+The browser build writes its own notices (`cmake/PjWasmNotices.cmake`) and source offer
 ([docs/WASM_DEPLOYMENT.md](../docs/WASM_DEPLOYMENT.md#third-party-notices)).
 Known gap: the bundled plugins' release ZIPs (pj-official-plugins) carry no licence or notice files yet, so
 nothing ships for the libraries they link statically.
