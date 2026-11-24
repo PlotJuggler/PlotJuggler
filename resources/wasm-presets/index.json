@@ -36,6 +36,14 @@
       "layout": "https://assets.plotjuggler.io/v1/uzhfpv/uzhfpv_layout.pj4.xml",
       "thumbnail": "https://assets.plotjuggler.io/v1/uzhfpv/uzhfpv_thumbnail.png",
       "listed": false
+    },
+    {
+      "id": "microduck",
+      "title": "Walking biped",
+      "description": "Microduck, Pollen Robotics' small biped, walking, kicking and falling: its model in 3D, its two cameras, and a formula that names what it is doing.",
+      "layout": "https://assets.plotjuggler.io/v1/microduck/microduck_layout_v2.pj4.xml",
+      "thumbnail": "https://assets.plotjuggler.io/v1/microduck/microduck_thumbnail_v2.png",
+      "listed": false
     }
   ]
 }

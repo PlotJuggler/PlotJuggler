@@ -53,7 +53,7 @@ struct GeomSphere {
 // <mesh filename="..." scale="x y z"/>. `filename` is the verbatim reference as
 // written in the URDF (package://, file://, http(s)://, or bare relative). The
 // resolver turns this into a loadable path; `resolved_path` is filled in once a
-// resolution attempt has run ("" + resolved=false ⇒ unresolved ⇒ placeholder).
+// resolution attempt has run ("" + resolved=false ⇒ unresolved, not drawn).
 struct GeomMesh {
   std::string filename;  // verbatim reference string from the URDF
   glm::dvec3 scale{1.0, 1.0, 1.0};

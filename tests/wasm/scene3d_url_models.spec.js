@@ -86,12 +86,12 @@ test('a topic robot_description fetches package meshes through the layout roots'
       }),
     }));
     expect(loaded).toContain('PJ_WASM_LAYOUT_LOAD_OK');
-    // One mesh lands; the missing one (404) and the CORS-denied one fail
-    // visibly as placeholders.
+    // One mesh lands; the missing one (404) and the CORS-denied one fail:
+    // they draw nothing and the status names them.
     const state = await waitForModels(page, messages, models =>
       models.robots.live === 1 && models.robots.status.join(' ').includes('2 mesh load(s) failed'));
     expect(state.docks[0].models.robots).toMatchObject({
-      sourceType: 0, draws: 3, visual: 3, placeholders: 2, meshes: 5, bridges: 2,
+      sourceType: 0, draws: 1, visual: 1, missing: 2, meshes: 4, bridges: 2,
     });
     expect(assets.requests).toEqual(expect.arrayContaining([
       'GET /allowed/pj_fixture_description/meshes/cube.stl',
@@ -140,8 +140,8 @@ test('a URL robot anchors relative meshes and roots at its URL, and a replaced f
     }));
     expect(replaced).toContain('PJ_WASM_LAYOUT_LOAD_OK');
     const state = await waitForModels(page, messages, models =>
-      models.robots.live === 1 && models.robots.draws === 2 && models.robots.placeholders === 0);
-    expect(state.docks[0].models.robots).toMatchObject({ sourceType: 2, source, meshes: 6, visual: 2, bridges: 1 });
+      models.robots.live === 1 && models.robots.draws === 2 && models.robots.missing === 0);
+    expect(state.docks[0].models.robots).toMatchObject({ sourceType: 2, source, meshes: 5, visual: 2, bridges: 1 });
     expect(assets.requests).toEqual(expect.arrayContaining([
       'GET /robots/v2/meshes/cube.stl',
       'GET /robots/assets/pj_fixture_description/meshes/cube.stl',
@@ -150,7 +150,7 @@ test('a URL robot anchors relative meshes and roots at its URL, and a replaced f
     assets.release();
     await page.waitForTimeout(1500);
     const settled = await waitForModels(page, messages, models => models.robots.live === 1);
-    expect(settled.docks[0].models.robots).toMatchObject({ source, draws: 2, placeholders: 0 });
+    expect(settled.docks[0].models.robots).toMatchObject({ source, draws: 2, missing: 0 });
     expect(errors).toEqual([]);
   } finally {
     await assets.close();
@@ -158,8 +158,8 @@ test('a URL robot anchors relative meshes and roots at its URL, and a replaced f
 });
 
 // A fetched mesh leaves no copy in the wasm heap: its bytes are dropped once
-// parsed. This one does not parse (zeros, not an STL), so the robot keeps a
-// placeholder and nothing it built muddies the figure. The bound sits at half a
+// parsed. This one does not parse (zeros, not an STL), so its load fails and
+// nothing it built muddies the figure. The bound sits at half a
 // copy of the mesh, clear of the ~6 MiB that replacing the layout itself leaves.
 test('a URL robot mesh leaves no copy in the wasm heap', async ({ page }) => {
   test.setTimeout(120000);
@@ -181,7 +181,7 @@ test('a URL robot mesh leaves no copy in the wasm heap', async ({ page }) => {
       package_url_roots: JSON.stringify({ pj_fixture_description: '../assets/pj_fixture_description/' }),
     }));
     expect(loaded).toContain('PJ_WASM_LAYOUT_LOAD_OK');
-    await waitForModels(page, messages, models => models.robots.live === 1 && models.robots.placeholders === 1);
+    await waitForModels(page, messages, models => models.robots.live === 1 && models.robots.missing === 1);
     expect(assets.requests).toContain('GET /robots/v2/meshes/cube.stl');
 
     const after = await wasmHeap(page, messages);

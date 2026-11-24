@@ -88,10 +88,10 @@ test('a local URDF renders from browser-granted bytes and replays without claimi
     buffer: fixture('browser_robot.urdf'),
   });
   const local = await waitForModels(page, messages, models =>
-    models.robots.live === 1 && models.robots.sourceType === 1 && models.robots.draws === 3 &&
-    models.models.draws === 3);
+    models.robots.live === 1 && models.robots.sourceType === 1 && models.robots.draws === 2 &&
+    models.models.draws === 2);
   expect(local.docks[0].models.robots).toMatchObject({
-    meshes: 4, visual: 3, collision: 0, placeholders: 1, bridges: 2,
+    meshes: 3, visual: 2, collision: 0, missing: 1, bridges: 2,
     source: 'browser_robot.urdf',
   });
   expect(local.docks[0].models.robots.status.join(' '))

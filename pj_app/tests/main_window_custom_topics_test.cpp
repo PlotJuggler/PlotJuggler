@@ -46,6 +46,9 @@ class MainWindowCustomTopicsTestPeer {
     return *window.session_;
   }
   // What the panel's Delete runs.
+  static void deleteCustomTopics(MainWindow& window, const QStringList& catalog_keys) {
+    window.deleteCustomTopics(catalog_keys);
+  }
   static void deleteCustomTopic(MainWindow& window, const QString& catalog_key) {
     window.deleteCustomTopic(catalog_key);
   }
@@ -354,7 +357,7 @@ return { id="label", name="Label", output="string",
 
 // A transform's row is its own output topic, found by topic id. A create refuses an output name already in use, but
 // a topic of that name can arrive later in another dataset (a stream, a reload); in an earlier dataset a name lookup
-// finds it first. It is neither listed nor deleted in the output's place.
+// finds it first. That topic stays in the Datasets tree.
 TEST(MainWindowCustomTopicsTest, ATransformRowIsItsOutputNotATopicOfTheSameName) {
   CustomTopicsFixture fx;
   ASSERT_TRUE(fx.setUp());
@@ -379,10 +382,45 @@ TEST(MainWindowCustomTopicsTest, ATransformRowIsItsOutputNotATopicOfTheSameName)
   ASSERT_FALSE(output_key.isEmpty()) << "the transform writes into its input's dataset";
   EXPECT_NE(findRowByKey(fx.custom->invisibleRootItem(), output_key), nullptr) << "the transform's output is listed";
   EXPECT_EQ(findRowByKey(fx.custom->invisibleRootItem(), loaded_key), nullptr) << "the loaded topic is not";
+  EXPECT_NE(findRowByKey(fx.tree->invisibleRootItem(), loaded_key), nullptr) << "it stays under Datasets";
+  EXPECT_EQ(findRowByKey(fx.tree->invisibleRootItem(), output_key), nullptr);
+}
 
-  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, output_key);
+// A grouped output ("t:a,b", one topic with a column per field) moves to Custom Topics whole: every column is listed
+// there and none stays under Datasets.
+TEST(MainWindowCustomTopicsTest, AGroupedTransformOutputMovesWholeToCustomTopics) {
+  constexpr const char* kSplit = R"LUAU(-- pj-script: luau
+return { id="split", name="Split",
+  create = function(p) return { calculate = function(t, v) return v, -v end } end }
+)LUAU";
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  const auto created = transforms.upsertTransform(kEditor, "split", {"sensor/value"}, {"pair:a,b"}, kSplit, "{}");
+  ASSERT_TRUE(created.has_value()) << created.error();
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+
+  QStringList keys;
+  for (const PJ::CatalogItem& item : fx.app().catalogModel().items()) {
+    if (item.topic_name == u"pair"_s) {
+      keys << item.key;
+    }
+  }
+  ASSERT_EQ(keys.size(), 2) << "one topic, a column per field";
+  for (const QString& key : keys) {
+    const QTreeWidgetItem* row = findRowByKey(fx.custom->invisibleRootItem(), key);
+    ASSERT_NE(row, nullptr) << key.toStdString();
+    EXPECT_EQ(findRowByKey(fx.tree->invisibleRootItem(), key), nullptr) << key.toStdString();
+    EXPECT_TRUE(row->text(0) == u"pair/a"_s || row->text(0) == u"pair/b"_s) << row->text(0).toStdString();
+  }
+
+  // Deleting its rows together removes the transform once; the rows after the first are skipped.
+  MainWindowCustomTopicsTestPeer::deleteCustomTopics(fx.window, keys);
   EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty());
-  EXPECT_TRUE(fx.app().catalogModel().itemDescriptor(loaded_key).has_value()) << "the loaded topic stays";
+  for (const QString& key : keys) {
+    EXPECT_EQ(findRowByKey(fx.custom->invisibleRootItem(), key), nullptr) << key.toStdString();
+  }
 }
 
 // Deleting the editor's transform never cascades into another plugin's: a reader owned elsewhere refuses the
@@ -497,6 +535,35 @@ TEST(MainWindowCustomTopicsTest, TransformDeleteRechecksTheOwnerBeforeRemovingDe
   QApplication::processEvents();
   EXPECT_EQ(answerer.answered, 1);
   EXPECT_EQ(transforms.transformIdsForPlugin(kEditor).size(), 2U) << "neither the transform nor its dependent goes";
+}
+
+// Deleting every column of a grouped output asks once: the columns are one transform, and a cancelled prompt does not
+// come back for the next column.
+TEST(MainWindowCustomTopicsTest, DeletingAGroupedOutputsColumnsAsksOnce) {
+  constexpr const char* kSplit = R"LUAU(-- pj-script: luau
+return { id="split", name="Split",
+  create = function(p) return { calculate = function(t, v) return v, -v end } end }
+)LUAU";
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "split", {"sensor/value"}, {"pair:a,b"}, kSplit, "{}"));
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg2", {"pair/a"}, {"chain"}, kNegate2, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  QStringList keys;
+  for (const PJ::CatalogItem& item : fx.app().catalogModel().items()) {
+    if (item.topic_name == u"pair"_s) {
+      keys << item.key;
+    }
+  }
+  ASSERT_EQ(keys.size(), 2);
+
+  const MessageBoxAnswerer cancel({}, /*button=*/1);
+  MainWindowCustomTopicsTestPeer::deleteCustomTopics(fx.window, keys);
+  QApplication::processEvents();
+  EXPECT_EQ(cancel.answered, 1) << "one prompt for the one transform";
+  EXPECT_EQ(transforms.transformIdsForPlugin(kEditor).size(), 2U) << "cancelled: nothing goes";
 }
 
 // A delete never strands a history-exempt reader: the delete is an undo step, and its redo would be refused

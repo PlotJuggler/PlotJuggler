@@ -161,6 +161,10 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   [[nodiscard]] int loadedMeshCount() const {
     return loaded_mesh_count_;
   }
+  /// Mesh references that draw nothing for good: unresolved, or their load failed (a loading one is not counted).
+  [[nodiscard]] int missingMeshCount() const {
+    return unresolved_mesh_count_ + failed_mesh_count_;
+  }
   [[nodiscard]] std::size_t fixedJointBridgeCount() const {
     return static_bridges_.size();
   }
@@ -324,6 +328,7 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   int total_mesh_count_{0};
   int unresolved_mesh_count_{0};
   int loaded_mesh_count_{0};
+  int failed_mesh_count_{0};
 
   std::unique_ptr<UrdfPackageResolver> owned_resolver_;
   UrdfPackageResolver* resolver_{nullptr};

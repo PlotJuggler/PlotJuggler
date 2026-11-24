@@ -1179,7 +1179,7 @@ MainWindow::MainWindow(QString extensions_dir, QWidget* parent)
   // the panel prunes on itemsRemoved.
   connect(
       &session_->sessionManager(), &SessionManager::onDemandRecipeInstalled, this, &MainWindow::syncCustomTopicsPanel);
-  // A transform row is matched to the catalog by name, so the refresh reuses the matches until the catalog changes.
+  // The transform rows are rebuilt from transformRecipes() only when the catalog changes (or a sync asks).
   const auto transform_rows_stale = [this]() { custom_topic_transform_rows_stale_ = true; };
   connect(&session_->catalogModel(), &CatalogModel::itemsAdded, this, transform_rows_stale);
   connect(&session_->catalogModel(), &CatalogModel::itemsRemoved, this, transform_rows_stale);
@@ -7925,18 +7925,33 @@ void MainWindow::refreshCustomTopicsPanel() {
     custom_topic_transform_rows_.clear();
     // Not filtered by owner: a restored transform's plugin may not be loaded (the layout carries the script).
     const auto transforms = session_->sessionManager().dataProcessorService().transformRecipes();
-    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset.
+    // By the output's topic id, never its name: a topic of the same name can arrive later in another dataset. One
+    // row per column, so a grouped output ("t:a,b", a column per field) moves whole, each column named `t/field`.
     for (const auto& recipe : transforms) {
+      const QString owner = QString::fromStdString(recipe.owner_plugin);
       for (const TopicId output : recipe.output_topic_ids) {
-        if (const std::optional<QString> key = catalog.scalarColumnKey(recipe.dataset_id, output, 0)) {
-          custom_topic_transform_rows_.push_back({.key = *key, .owner = QString::fromStdString(recipe.owner_plugin)});
+        const bool several = catalog.scalarColumnKey(recipe.dataset_id, output, 1).has_value();
+        for (std::size_t column = 0;; ++column) {
+          const std::optional<QString> key = catalog.scalarColumnKey(recipe.dataset_id, output, column);
+          if (!key) {
+            break;
+          }
+          QString name;
+          if (several) {
+            if (const std::optional<CatalogItem> item = catalog.itemDescriptor(*key)) {
+              if (const auto* field = std::get_if<ScalarFieldPayload>(&item->payload)) {
+                name = item->topic_name + u'/' + field->field_name;
+              }
+            }
+          }
+          custom_topic_transform_rows_.push_back({.key = *key, .owner = owner, .name = std::move(name)});
         }
       }
     }
   }
   std::vector<CurveListPanel::CustomTopicRow> rows;
   for (const TransformTopicRow& transform_row : custom_topic_transform_rows_) {
-    rows.push_back({.key = transform_row.key, .owner = transform_row.owner});
+    rows.push_back({.key = transform_row.key, .owner = transform_row.owner, .name = transform_row.name});
   }
   // Persistent on-demand recipes; a preview is never a row. One row per object output, named by the recipe id, or
   // `id/output` when it has several.
@@ -8043,15 +8058,26 @@ void MainWindow::deleteCustomTopics(const QStringList& catalog_keys) {
   // Resolved first: a delete relists the catalog, and a cancelled prompt must not come back for the recipe's next
   // row.
   std::vector<std::string> recipes;
+  std::vector<std::string> transforms;  // one row per transform: its columns and outputs are one delete
   QStringList outputs;
+  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
   for (const QString& catalog_key : catalog_keys) {
     if (const RecipeGraph::Node* node = onDemandNodeOfCatalogKey(*session_, catalog_key)) {
       if (std::find(recipes.begin(), recipes.end(), node->recipe.key()) == recipes.end()) {
         recipes.push_back(node->recipe.key());
       }
-    } else {
-      outputs.push_back(catalog_key);
+      continue;
     }
+    const std::optional<CurveDescriptor> curve =
+        session_->catalogModel().curveDescriptor(catalog_key, SeriesCapability::kAny);
+    const auto transform = curve.has_value() ? processors.transformOwning(curve->topic_id) : std::nullopt;
+    if (transform.has_value()) {
+      if (std::find(transforms.begin(), transforms.end(), transform->key) != transforms.end()) {
+        continue;
+      }
+      transforms.push_back(transform->key);
+    }
+    outputs.push_back(catalog_key);
   }
   for (const std::string& key : recipes) {
     deleteOnDemandRecipe(key);

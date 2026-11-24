@@ -68,7 +68,6 @@ namespace {
 Q_LOGGING_CATEGORY(lcRobotModelLayer, "pj.scene3d.layer.robot_model")
 
 constexpr auto kLatchRetryInterval = std::chrono::milliseconds(500);
-const glm::vec4 kPlaceholderColor{1.0f, 0.0f, 1.0f, 1.0f};
 
 constexpr UrdfParseLimits kUrdfLimits{
     .max_links = kSceneLimits.max_urdf_links,
@@ -186,7 +185,6 @@ QString formatHint(const QString& source) {
 constexpr std::string_view kBoxKey = "robot:primitive:box";
 constexpr std::string_view kCylinderKey = "robot:primitive:cylinder";
 constexpr std::string_view kSphereKey = "robot:primitive:sphere";
-constexpr std::string_view kPlaceholderKey = "robot:placeholder";
 
 std::shared_ptr<const Material> solidMaterial(const glm::vec4& color) {
   Material material;
@@ -567,10 +565,9 @@ void RobotModelLayer::rebuildDrawCalls() {
       ModelDrawCall call;
       call.frame_id = prefix + link.name;
       call.group = collision ? ModelDrawGroup::kCollision : ModelDrawGroup::kVisual;
-      // Primitives and the placeholder carry the call's colour alone (their unit meshes' material and vertex colours
-      // would apply it a second time); only a mesh without an explicit URDF colour shows its own materials.
+      // Primitives carry the call's colour alone (their unit meshes' material and vertex colours would apply it a
+      // second time); only a mesh without an explicit URDF colour shows its own materials.
       call.use_material = false;
-      call.mesh_key = std::string(kPlaceholderKey);
       bool explicit_color = true;
       if (geom.has_color) {
         call.override_color = geom.color;
@@ -592,12 +589,12 @@ void RobotModelLayer::rebuildDrawCalls() {
         scale = glm::dvec3(sphere->radius);
       } else if (const auto* mesh = std::get_if<GeomMesh>(&geom.shape); mesh != nullptr) {
         scale = mesh->scale;
-        if (mesh->resolved && meshReady(mesh->resolved_path)) {
-          call.mesh_key = mesh->resolved_path;
-          call.use_material = !explicit_color;
-        } else {
-          call.override_color = kPlaceholderColor;
+        if (!mesh->resolved || !meshReady(mesh->resolved_path)) {
+          return;  // loading, unresolved or failed: nothing in its place (admitMesh rebuilds when one lands); the
+                   // status counts what is missing
         }
+        call.mesh_key = mesh->resolved_path;
+        call.use_material = !explicit_color;
       }
       call.model = glm::scale(originToMat4(geom.origin_xyz, geom.origin_rpy), scale);
       model_draw_calls_.push_back(std::move(call));
@@ -1068,6 +1065,7 @@ void RobotModelLayer::resetModelState() {
   total_mesh_count_ = 0;
   unresolved_mesh_count_ = 0;
   loaded_mesh_count_ = 0;
+  failed_mesh_count_ = 0;
   mesh_bytes_.clear();
   mesh_retained_bytes_ = 0;
   latch_pending_ = false;
@@ -1249,7 +1247,6 @@ bool RobotModelLayer::applyRobotDescription(
   retain(kBoxKey, makeCube({0.7F, 0.7F, 0.7F, 1.0F}));
   retain(kCylinderKey, makeCylinder());
   retain(kSphereKey, makeSphere());
-  retain(kPlaceholderKey, makeCube(kPlaceholderColor));
   base_status_ = tr("URDF: %1").arg(label);
   queueMeshLoads();
   rebuildDrawCalls();
@@ -1337,6 +1334,7 @@ void RobotModelLayer::updateMeshCounters() {
   total_mesh_count_ = 0;
   unresolved_mesh_count_ = 0;
   loaded_mesh_count_ = 0;
+  failed_mesh_count_ = 0;
   if (!model_.has_value()) {
     return;
   }
@@ -1351,6 +1349,8 @@ void RobotModelLayer::updateMeshCounters() {
       ++unresolved_mesh_count_;
     } else if (meshReady(mesh->resolved_path)) {
       ++loaded_mesh_count_;
+    } else if (mesh_errors_.contains(mesh->resolved_path)) {
+      ++failed_mesh_count_;
     }
   };
   for (const RobotLink& link : model_->links) {
@@ -1364,11 +1364,22 @@ void RobotModelLayer::updateMeshCounters() {
 }
 
 QString RobotModelLayer::loadFailureClause() const {
-  if (mesh_errors_.empty()) {
+  if (failed_mesh_count_ == 0) {
     return {};
   }
-  return tr(
-      "  •  %n mesh load(s) failed (shown as magenta placeholders)", nullptr, static_cast<int>(mesh_errors_.size()));
+  // Per mesh reference, like the loaded/total count beside it (links sharing a file each count); then the files.
+  QStringList files;
+  for (const auto& [key, error] : mesh_errors_) {
+    // A URL's query or fragment can carry a token: only the file name is shown.
+    const QString path =
+        QDir::fromNativeSeparators(QString::fromStdString(key)).section(u'?', 0, 0).section(u'#', 0, 0);
+    files.push_back(path.section(u'/', -1));
+  }
+  files.sort();
+  constexpr qsizetype kNamedFiles = 3;
+  const QString named =
+      files.size() > kNamedFiles ? files.first(kNamedFiles).join(u", "_s) + u", …"_s : files.join(u", "_s);
+  return tr("  •  %n mesh load(s) failed (not drawn): %1", nullptr, failed_mesh_count_).arg(named);
 }
 
 void RobotModelLayer::updateStatus() {
@@ -1378,11 +1389,11 @@ void RobotModelLayer::updateStatus() {
   QString status = base_status_;
   if (unresolved_mesh_count_ > 0) {
     status += tr("  •  %1/%2 meshes  •  %3 packages unresolved")
-                  .arg(total_mesh_count_ - unresolved_mesh_count_)
+                  .arg(loaded_mesh_count_)
                   .arg(total_mesh_count_)
                   .arg(unresolvedPackagesList().size());
   } else {
-    status += tr("  •  %1/%1 meshes").arg(total_mesh_count_);
+    status += tr("  •  %1/%2 meshes").arg(loaded_mesh_count_).arg(total_mesh_count_);  // loaded of total
   }
   status += unresolvedIssueClause();
   QString warning;
@@ -1392,8 +1403,8 @@ void RobotModelLayer::updateStatus() {
     warning = source_type_ == SourceType::kUrl
                   ? tr("  •  %n mesh reference(s) unresolved; URL/package paths must be CORS-accessible", nullptr,
                        unresolved_mesh_count_)
-                  : tr("  •  %n mesh reference(s) unavailable in the browser sandbox (shown as magenta placeholders)",
-                       nullptr, unresolved_mesh_count_);
+                  : tr("  •  %n mesh reference(s) unavailable in the browser sandbox (not drawn)", nullptr,
+                       unresolved_mesh_count_);
   }
 #endif
   warning += loadFailureClause();

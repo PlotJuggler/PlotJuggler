@@ -541,7 +541,8 @@ shared by the banner and the floating title bar are in `ToolboxChrome.h`.
 
 ## Custom Topics panel
 
-`CurveListPanel`'s bottom tree lists what the session derived: transform outputs and one row per object output of a
+`CurveListPanel`'s bottom tree lists what the session derived: transform outputs (found by output topic id, one row per column, so a grouped
+`"t:a,b"` output moves whole, its columns named `t/a`, `t/b`) and one row per object output of a
 persistent on-demand recipe, named by the recipe, badged by an owner other than the editor, with its node's state as
 glyph and tooltip.
 

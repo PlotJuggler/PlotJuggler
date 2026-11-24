@@ -280,6 +280,8 @@ its lidar and the boxes, and its yaw-rate and speed plots; the LILocBench robot'
 front camera, its two 3D views with the office map, both laser scans and, in the
 orbit view, the depth cloud, and its two plots; the UZH-FPV racing drone's
 fisheye and event cameras, its 3D view with the drone's trail, and its four plots;
+the Microduck biped with all its meshes, its two video cameras, its tilt plot and
+its two derived series (a number and a text state) restored from the layout;
 the built-in filters sample's raw and moving-average plots, its filter restored from
 the layout), check that seeking
 between two points inside the recording changes what each 3D view draws (a scene

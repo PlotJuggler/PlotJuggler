@@ -189,6 +189,186 @@
    "sha256": "eae4bd0c8c0ebf8353def977313e2f0ad0bad72abbf7753ec99afd8c496aaf7f",
    "bytes": 28006
   },
+  "v1/microduck/README_v2.txt": {
+   "sha256": "afea17376d3dd415fc612cd03c7cbe035ac0e69f9488a449932691fa3dabbcab",
+   "bytes": 2470
+  },
+  "v1/microduck/microduck_layout_v2.pj4.xml": {
+   "sha256": "c40cc9d8a11a004eb4ab43190db128103d4265c0789c21c77536cca4b7034c93",
+   "bytes": 12936
+  },
+  "v1/microduck/microduck_thumbnail_v2.png": {
+   "sha256": "9ad465062d1556f00ed1515953d1b64bc3f84dbc86dbc8803d86ad82e7a234e9",
+   "bytes": 17812
+  },
+  "v1/microduck/microduck_walk_v2.mcap": {
+   "sha256": "a3d614d42a77dea9f14744f6d66983b8588127def1f0de9e4c661c9273837c1e",
+   "bytes": 6676989
+  },
+  "v1/microduck_description/LICENSE": {
+   "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+   "bytes": 11358
+  },
+  "v1/microduck_description/LICENSE-MODELS.md": {
+   "sha256": "51526767ce31785f88f318ede4870f4b0d466267c79ce6fb9009c682f798da30",
+   "bytes": 1148
+  },
+  "v1/microduck_description/PROVENANCE.txt": {
+   "sha256": "1ababd5112748206a0d82f20145e7f38456abdf84c7f21c9e3fcabe0ca097c97",
+   "bytes": 1331
+  },
+  "v1/microduck_description/meshes/ankle_left.stl": {
+   "sha256": "98f14ba6e6cd138740aa822a615aaa0db34527d499c40b2379aacd13427a1379",
+   "bytes": 248984
+  },
+  "v1/microduck_description/meshes/ankle_right.stl": {
+   "sha256": "836032fdeaa4b1f47f75cb24fa4ad9ebdb09acec158a0d787b3890c6dc4d4c6e",
+   "bytes": 248884
+  },
+  "v1/microduck_description/meshes/banana_pcb_locker.stl": {
+   "sha256": "a176364f824248b5156b37f2fd5c6b8bdfb24cd08be7ed6b3faa10b4db14a9cb",
+   "bytes": 69484
+  },
+  "v1/microduck_description/meshes/bearing_roll.stl": {
+   "sha256": "2b30cbdb110c5cca7092a9b2658c9e899e294bf2df71635828858e1d1a20abfe",
+   "bytes": 121084
+  },
+  "v1/microduck_description/meshes/bottom_head_shell.stl": {
+   "sha256": "3ce9532854a712c93e00e0fd2bbc2ce6b1c45f9418fd29d6e82f6ad8af8fc1af",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/elec_rpi_robot_hat_pcb.stl": {
+   "sha256": "45b904bcb378161d274d313cd067d3967305db0bf22c0955530145e18cdd2cd8",
+   "bytes": 942884
+  },
+  "v1/microduck_description/meshes/face_part.stl": {
+   "sha256": "30eaa56fc38129ba16e2b4e247ac419b0ae9e5b0fe9e748697f4838d338b952e",
+   "bytes": 570684
+  },
+  "v1/microduck_description/meshes/foot_left.stl": {
+   "sha256": "5de2622a7b894e0fc9988dc6cff6579ee1dc818ffaddd0319f49cf5d5bd05587",
+   "bytes": 996184
+  },
+  "v1/microduck_description/meshes/foot_right.stl": {
+   "sha256": "8ffa894b29578edc78f5e982a7d89a8f5e4fa1dc27232b88c22a8a0a74cfbaa7",
+   "bytes": 995784
+  },
+  "v1/microduck_description/meshes/hip_l.stl": {
+   "sha256": "02bc777ce76a31b3d5c415188f8268b989f4eca57bc440a2900825ac459dec38",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/jaw.stl": {
+   "sha256": "65c300349113d3c6cd4a2cc587f76f7228115565a854492e42358ba8df71796a",
+   "bytes": 495984
+  },
+  "v1/microduck_description/meshes/jaw_soft.stl": {
+   "sha256": "61a426890f748713d45a9c0844149bcb0340d326f75295dcf7de2a4d768cbc85",
+   "bytes": 336384
+  },
+  "v1/microduck_description/meshes/left_shell.stl": {
+   "sha256": "efc16f55a4c32d21d74bf834faba27346788f154e29b40850cbcc69fda2f2396",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/leg.stl": {
+   "sha256": "b57d55ec2504dfb90b07bfc781dbf9b4bb6560becaf1dddbadd6a3914fdc423f",
+   "bytes": 738884
+  },
+  "v1/microduck_description/meshes/lens.stl": {
+   "sha256": "1549b2dad784d1a4c505c1ca62bffce6ca4e9b22c9273b37d6cda1c8bf2ca127",
+   "bytes": 93684
+  },
+  "v1/microduck_description/meshes/m12_lens_holder.stl": {
+   "sha256": "7a9989bbe776ddd7a268013e63cdf0efc2fdae245ad2754a6b18d6bfbe21c2ed",
+   "bytes": 549684
+  },
+  "v1/microduck_description/meshes/motor_support.stl": {
+   "sha256": "5a741ee0dc71b349b8d6def4bffb826c4b9304c47cf0f00ffd1a3140b9205220",
+   "bytes": 180884
+  },
+  "v1/microduck_description/meshes/neck.stl": {
+   "sha256": "ee5d4cbc51f64c43cd9c15f82709be93b5bd3f080013726d1d39c329c85050b9",
+   "bytes": 73484
+  },
+  "v1/microduck_description/meshes/neck_pitch.stl": {
+   "sha256": "b9aed695e03da3819d244ecc66f1ad2d3c5c435f759403bb9e0f3b9ca2876453",
+   "bytes": 356084
+  },
+  "v1/microduck_description/meshes/noenoeil.stl": {
+   "sha256": "f5492d8291da053bb4cb3f6680f90507648c4cfe1ef59f92b7d8f53e980d279b",
+   "bytes": 49284
+  },
+  "v1/microduck_description/meshes/np_f970.stl": {
+   "sha256": "979ca81251d4ec5862b6c987b46095aa07d0534ca1ec15f3cf438bbf7189deda",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/pcb__raspberry_pi_zero_2_w.stl": {
+   "sha256": "0608b3cc7d15e479ae3a275c03096df44322ed06a8dbfc59fe790c46b3690753",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/power_support.stl": {
+   "sha256": "cb43ba9351f51559f49ffc89679478288cfe6e9682b31898397406165b520cbe",
+   "bytes": 641684
+  },
+  "v1/microduck_description/meshes/right_shell.stl": {
+   "sha256": "484779f2bbe856f212d96a152550bb6834fd3c69603da315b6f70d1a3766d120",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/seeed_bearing__configuration__22x16x4.stl": {
+   "sha256": "154412afeab1875acfc8bbd437f193f02c86cdd6a556395db10bb7126c545c6e",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/seeed_bearing__configuration_default.stl": {
+   "sha256": "4d0d4c174a167e5f783b52b212a14a5bbd8a3180988c744c299c330a6b3de448",
+   "bytes": 1048584
+  },
+  "v1/microduck_description/meshes/soft_mouth_top.stl": {
+   "sha256": "16f662c82bd3e24f0e64ee22b6b549b9a2a76f6de7b7477b9f89f5861f3e91a1",
+   "bytes": 393584
+  },
+  "v1/microduck_description/meshes/sole_left.stl": {
+   "sha256": "db35f3b231c075fe1f9cb5449e7a698fb8ea97362daf8432be3e9700c2067574",
+   "bytes": 789484
+  },
+  "v1/microduck_description/meshes/sole_right.stl": {
+   "sha256": "a4f5c114aae7137d559cacfb71d77c981588850335de5a09a14f95a4192a218f",
+   "bytes": 794484
+  },
+  "v1/microduck_description/meshes/speaker.stl": {
+   "sha256": "694064a99dbecd48aea6122232ff1051b085e59ccbd4c53d8c32640105b4e826",
+   "bytes": 684
+  },
+  "v1/microduck_description/meshes/top_head_shell.stl": {
+   "sha256": "bc64288c0d54e13ec907256c2b99535937d370af1410de498905ec3cf8d7c3df",
+   "bytes": 806084
+  },
+  "v1/microduck_description/meshes/trunk_base.stl": {
+   "sha256": "fabfecefb73fbdc027e0fc8fc482a3857b86682a8dac0ca2ed88ae3011c01659",
+   "bytes": 184984
+  },
+  "v1/microduck_description/meshes/upper_leg_left.stl": {
+   "sha256": "b84e46d681cb971029e421c252de85e2f31e8858abee610dc26cd18037ef0224",
+   "bytes": 612584
+  },
+  "v1/microduck_description/meshes/upper_leg_right.stl": {
+   "sha256": "d6ed49dc77a539c65b9db1251f16b1e037f5ccf4334607e487dd624f9e12f59e",
+   "bytes": 612584
+  },
+  "v1/microduck_description/meshes/upper_leg_rigidity_plate.stl": {
+   "sha256": "41a4f826b5badfb75a1c0a6d26527c49761de88597d67c25ad731df2cdab7995",
+   "bytes": 180084
+  },
+  "v1/microduck_description/meshes/xl330.stl": {
+   "sha256": "c9f6bf7dd9d8b307a4174b40ff12517b3ea470e5535319a5b7dcce4ba52cdfe1",
+   "bytes": 206384
+  },
+  "v1/microduck_description/meshes/yaw2roll.stl": {
+   "sha256": "56ce1110e43c2279c6580f79a2a8c9e3f91b3bf5cdf8cf00b1caa3cab127a6a7",
+   "bytes": 620284
+  },
+  "v1/microduck_description/meshes/yaw_roll_motion.stl": {
+   "sha256": "41149f07f2fb4f2c62b589b3e43c17bedbc57e17d2de5d4e22c4f4e4d3e73dc7",
+   "bytes": 290784
+  },
   "v1/nissan_leaf/builtin_filters_layout.pj4.xml": {
    "sha256": "596cb417a24e831da3b1075abf1ef646477132f7e7e1fb3dc96b7fc60fcaef55",
    "bytes": 4144
