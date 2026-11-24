@@ -85,7 +85,7 @@ class GridRhiPass {
 
   /// Grid lines (line style only) plus connection lines.
   [[nodiscard]] int lastLineVertexCount() const {
-    return static_cast<int>(grid_lines_.size() + connection_vertices_.size());
+    return static_cast<int>(2U * (grid_lines_.size() + connection_lines_.size()));
   }
   [[nodiscard]] int lastTriangleVertexCount() const {
     return static_cast<int>(grid_cells_.size());
@@ -101,18 +101,6 @@ class GridRhiPass {
 #endif
 
  private:
-  // A filled-cell vertex (grid_cell.vert).
-  struct CellVertex {
-    float x, y, z;
-    float r, g, b, a;
-  };
-  // A line vertex (grid.vert): its position, then the segment's other end for the clip behind the eye.
-  struct LineVertex {
-    float x, y, z;
-    float r, g, b, a;
-    float other_x, other_y, other_z;
-  };
-
   struct ConnectionKey {
     bool visible = true;
     const TransformBuffer* tf = nullptr;
@@ -125,10 +113,8 @@ class GridRhiPass {
     bool operator==(const ConnectionKey&) const = default;
   };
 
-  static QRhiVertexInputLayout cellLayout();
-  static QRhiVertexInputLayout lineLayout();
   static void appendSegment(
-      std::vector<LineVertex>& out, const glm::vec3& a, const glm::vec3& b, const glm::vec4& color);
+      std::vector<LineSegment>& out, const glm::vec3& a, const glm::vec3& b, const glm::vec4& color);
 
   RhiPassSetup setup_;  // view-owned uniforms; the shadow receiver is built later against it
   QRhiShaderResourceBindings* shader_resources_ = nullptr;
@@ -159,9 +145,9 @@ class GridRhiPass {
   std::uint64_t grid_build_count_ = 0;
   std::uint64_t connection_build_count_ = 0;
 
-  std::vector<CellVertex> grid_cells_;
-  std::vector<LineVertex> grid_lines_;
-  std::vector<LineVertex> connection_vertices_;
+  std::vector<ColorVertex> grid_cells_;
+  std::vector<LineSegment> grid_lines_;
+  std::vector<LineSegment> connection_lines_;
   std::vector<TfConnectionSegment> segments_;
 };
 

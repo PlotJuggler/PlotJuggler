@@ -10,7 +10,9 @@ const { clickActiveDialogButton } = require('./support/dialogs');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
 const { elementAttribute, setElementAttribute } = require('./support/layout_xml');
 const { openFileChooser, openLayoutChooser } = require('./support/pickers');
-const { bootScene3D, dropScene3DRows, loadScene3DFixture } = require('./support/scene3d_acceptance');
+const {
+  bootScene3D, dropScene3DRows, loadScene3DFixture, waitForScene3DModels,
+} = require('./support/scene3d_acceptance');
 const { qtPointToCss, requestScene3DFoundationState } = require('./support/scene3d_foundation');
 
 async function dragTimeline(page, screen, state, fromRatio, toRatio) {
@@ -293,24 +295,17 @@ test('Scene3D marker lines draw the lines that run under the camera', async ({ p
   await loadScene3DFixture(page, screen, consoleMessages, 'foxglove_marker_lines_real.mcap');
   // Sorted rows: /markers, /tf.
   await dropScene3DRows(page, screen, [232, 212]);
-  const reportCount = () => count(consoleMessages, 'PJ_WASM_SCENE3D_FOUNDATION_SUMMARY');
   // 61 LINE_LIST segments and a 42-point LINE_STRIP (41 segments), two vertices per segment.
   const markerLineVertices = 2 * (61 + 41);
-  await expect.poll(async () => {
-    const state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
-    const markers = state.docks[0]?.models.markers;
-    return { rendered: markers?.rendered, lineVertices: markers?.families.lineVertices };
-  }, { timeout: 15000 }).toEqual({ rendered: 1, lineVertices: markerLineVertices });
+  await waitForScene3DModels(page, consoleMessages, models =>
+    models.markers.rendered === 1 && models.markers.families.lineVertices === markerLineVertices, 15000);
 
   await uploadCameraOverLinesLayout(page, screen, consoleMessages, 'scene3d-marker-lines-under-camera.pj4.xml', {
     grid_visible: 'false', axes_visible: 'false', tf_parent_lines: 'false',
   });
-  let state;
-  await expect.poll(async () => {
-    state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
-    const dock = state.docks[0];
-    return Math.abs((dock?.camera.radius ?? 0) - 1) < 1e-3 && dock.models.markers.rendered === 1;
-  }, { timeout: 15000 }).toBe(true);
+  // No grid or TF line left (dock.vertices.lines counts them): every line pixel is a marker's.
+  const state = await waitForScene3DModels(page, consoleMessages, (models, dock) =>
+    Math.abs(dock.camera.radius - 1) < 1e-3 && models.markers.rendered === 1 && dock.vertices.lines === 0, 15000);
   await expectLinesUnderCamera(page, screen, state, 'marker-lines-under-camera');
   expect(errors).toEqual([]);
 });

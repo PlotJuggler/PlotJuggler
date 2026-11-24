@@ -818,6 +818,7 @@ RhiPassSetup SceneViewWidget::passSetup(QRhi* rhi) const {
       .view_uniforms = uniform_buffer_,
       .geometry = shared_geometry_.get(),
       .pipelines = pipelines_.get(),
+      .line_segments = !PJ::softwareRasterizerName(*rhi).isEmpty(),
   };
 }
 

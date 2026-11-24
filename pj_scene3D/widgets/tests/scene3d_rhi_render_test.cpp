@@ -1833,6 +1833,54 @@ TEST_F(Scene3dRhiRenderTest, MagentaLinesAppearOnlyWhenVisible) {
   EXPECT_EQ(magentaPixels(reparented_hidden), 0) << "the lines ignore visibility after the reparent";
 }
 
+// A two-colour line marker from behind the eye to in front of it keeps its colour gradient: it draws like the same
+// line cut to start just in front of the eye, with that point's interpolated colour (the analytic expectation). A
+// software rasterizer draws it through the clip behind the eye (line_clip.glslinc), which must blend the moved end's
+// colour with the same fraction it moves the end.
+TEST_F(Scene3dRhiRenderTest, MarkerLineBehindTheEyeKeepsItsColourGradient) {
+  RhiScene scene;
+  // Eye at (0.94, 0, 0.34) looking along -x (the camera below): the line runs under the camera and behind it.
+  const glm::dvec3 behind(3.0, 0.0, 0.0);
+  const glm::dvec3 ahead(-3.0, 0.0, 0.0);
+  const double cut = (behind.x - 0.85) / (behind.x - ahead.x);  // in front of the eye, below the view's bottom edge
+  const auto entity = [&](const char* id, double from, PJ::sdk::ColorRGBA from_color) {
+    PJ::sdk::SceneEntity line_entity;
+    line_entity.frame_id = kFrame;
+    line_entity.id = id;
+    PJ::sdk::LinePrimitive line;
+    line.type = PJ::sdk::LineType::kLineList;
+    const glm::dvec3 start = behind + from * (ahead - behind);
+    line.points = {{start.x, start.y, start.z}, {ahead.x, ahead.y, ahead.z}};
+    line.colors = {from_color, {0, 0, 255, 255}};
+    line_entity.lines.push_back(line);
+    return line_entity;
+  };
+  const auto blue = static_cast<std::uint8_t>(std::lround(255.0 * cut));
+  const PJ::ObjectTopicId full = scene.addEntities({entity("full", 0.0, {255, 0, 0, 255})}, "/full");
+  const PJ::ObjectTopicId part =
+      scene.addEntities({entity("part", cut, {static_cast<std::uint8_t>(255 - blue), 0, blue, 255})}, "/part");
+  scene.frame();
+  SceneViewWidget* view = scene.view();
+  view->setGridVisible(false);
+  pj::scene3d::CameraState state;
+  state.radius = 1.0F;
+  state.azimuth = 0.0F;
+  state.elevation = 0.35F;
+  view->camera().adoptState(state);
+
+  scene.dock()->setLayerVisible(part, false);
+  GRAB_OR_SKIP(full_line, view, "line_from_behind_the_eye");
+  scene.dock()->setLayerVisible(full, false);
+  GRAB_OR_SKIP(neither, view, "no_line");
+  scene.dock()->setLayerVisible(part, true);
+  GRAB_OR_SKIP(part_line, view, "line_from_in_front");
+
+  const DiffMask drawn = diffMask(part_line, neither, 12);
+  ASSERT_GT(drawn.count, 100) << "the reference line did not draw";
+  EXPECT_GT(diffMask(full_line, neither, 12).count, drawn.count * 9 / 10) << "the line from behind the eye is missing";
+  EXPECT_LE(diffMask(full_line, part_line, 12).count, 5) << "the line's colours differ from the reference";
+}
+
 // The occupancy texture catches up with every change staged while the layer was not drawn: a patch lands while the
 // grid is unplaceable (unknown fixed frame), another after it is placed again, then a full refresh (a backward
 // seek) followed by a patch. Each state is compared against the same state uploaded from scratch (a hidden layer

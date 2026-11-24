@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -251,6 +252,42 @@ AABB transformedBounds(const AABB& source, const Transform& fixed_from_source, c
 AABB transformedBounds(const AABB& source, const glm::dmat4& fixed_from_source, const glm::dvec3& origin) {
   return placedCorners(
       source, origin, [&](const glm::dvec3& point) { return glm::dvec3(fixed_from_source * glm::dvec4(point, 1.0)); });
+}
+
+static_assert(sizeof(LineSegment) == 14U * sizeof(float));
+
+QRhiVertexInputLayout colorVertexLayout() {
+  QRhiVertexInputLayout layout;
+  layout.setBindings({QRhiVertexInputBinding(sizeof(ColorVertex))});
+  layout.setAttributes({
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, offsetof(ColorVertex, x)),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float4, offsetof(ColorVertex, r)),
+  });
+  return layout;
+}
+
+QRhiVertexInputLayout lineSegmentLayout() {
+  QRhiVertexInputLayout layout;
+  layout.setBindings({QRhiVertexInputBinding(sizeof(LineSegment), QRhiVertexInputBinding::PerInstance)});
+  layout.setAttributes({
+      QRhiVertexInputAttribute(
+          0, 0, QRhiVertexInputAttribute::Float3, offsetof(LineSegment, a) + offsetof(ColorVertex, x)),
+      QRhiVertexInputAttribute(
+          0, 1, QRhiVertexInputAttribute::Float4, offsetof(LineSegment, a) + offsetof(ColorVertex, r)),
+      QRhiVertexInputAttribute(
+          0, 2, QRhiVertexInputAttribute::Float3, offsetof(LineSegment, b) + offsetof(ColorVertex, x)),
+      QRhiVertexInputAttribute(
+          0, 3, QRhiVertexInputAttribute::Float4, offsetof(LineSegment, b) + offsetof(ColorVertex, r)),
+  });
+  return layout;
+}
+
+void drawLines(QRhiCommandBuffer& command_buffer, quint32 vertices, bool segments) {
+  if (segments) {
+    command_buffer.draw(2, vertices / 2U);
+  } else {
+    command_buffer.draw(vertices);
+  }
 }
 
 bool ensureStaticVertexBuffer(
