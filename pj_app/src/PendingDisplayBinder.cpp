@@ -498,8 +498,11 @@ int PendingDisplayBinder::flush(const QSet<QString>& topics) {
   }
 
   for (PlotWidget* plot : touched) {
-    // Before the viewport: the saved window converts through the first curve's display offset.
-    if (const std::shared_ptr<QStringList> order = saved_orders.value(plot)) {
+    // Before the viewport: the saved window converts through the first curve's display offset. Only while the window
+    // is stashed: once the drain or the synchronous restore applied it for good, the order is the user's, and a curve
+    // binding later appends (a reorder then would move the window off the frame it was applied in).
+    if (const std::shared_ptr<QStringList> order = saved_orders.value(plot);
+        order != nullptr && plot->hasSavedViewport()) {
       plot->restoreCurveOrder(*order);
     }
     // A marker scope saved against a dataset absent at restore follows the (possibly reminted) dataset its curves

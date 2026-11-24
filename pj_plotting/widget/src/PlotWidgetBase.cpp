@@ -412,6 +412,9 @@ bool PlotWidgetBase::reorderCurves(const QStringList& source_names) {
   auto next = curves.begin();
   bool changed = false;
   for (const QString& name : source_names) {
+    if (name.isEmpty()) {
+      continue;  // a slot whose curve has not bound
+    }
     const auto it =
         std::find_if(next, curves.end(), [&name](const CurveInfo& info) { return info.source_name == name; });
     if (it == curves.end()) {

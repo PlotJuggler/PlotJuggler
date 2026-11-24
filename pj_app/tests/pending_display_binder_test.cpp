@@ -12,6 +12,8 @@
 #include <QHash>
 #include <QPen>
 #include <QSet>
+#include <QSignalSpy>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QtGlobal>
 #include <algorithm>
@@ -100,6 +102,37 @@ void rebindAgainstCatalog(QDomDocument& doc, PJ::CatalogModel& catalog) {
       doc, [&catalog](const SeriesPath& path) { return catalog.resolveCurveKey(path); });
   (void)unresolved;
 }
+
+// A saved absolute time window, both as seconds and as the authoritative ns edges.
+void addRange(QDomDocument& doc, QDomElement& plot, PJ::Timestamp left_ns, PJ::Timestamp right_ns) {
+  QDomElement range = doc.createElement(u"range"_s);
+  range.setAttribute(u"bottom"_s, u"0"_s);
+  range.setAttribute(u"top"_s, u"3"_s);
+  range.setAttribute(u"left"_s, QString::number(static_cast<double>(left_ns) / 1e9, 'f', 6));
+  range.setAttribute(u"right"_s, QString::number(static_cast<double>(right_ns) / 1e9, 'f', 6));
+  range.setAttribute(u"left_ns"_s, QString::number(left_ns));
+  range.setAttribute(u"right_ns"_s, QString::number(right_ns));
+  range.setAttribute(u"x_basis"_s, u"absolute"_s);
+  plot.appendChild(range);
+}
+
+std::vector<std::string> curveOrder(const PJ::PlotWidget& plot) {
+  std::vector<std::string> order;
+  for (const PJ::PlotWidget::CurveInfo& info : plot.curveList()) {
+    order.push_back(info.source_name.toStdString());
+  }
+  return order;
+}
+
+std::string keyOf(PJ::CatalogModel& catalog, const SeriesPath& path) {
+  return catalog.resolveCurveKey(path).value_or(QString()).toStdString();
+}
+
+// Exposes the Qwt plot: its attach order is the draw and legend order.
+struct InspectablePlot : PJ::PlotWidget {
+  using PJ::PlotWidget::PlotWidget;
+  using PJ::PlotWidgetBase::qwtPlot;
+};
 
 QHash<QString, PJ::PlotWidget*> indexByStateId(PJ::PlotWidget& plot) {
   QHash<QString, PJ::PlotWidget*> plots;
@@ -390,6 +423,7 @@ TEST(PendingDisplayBinderTest, CurvesBindingOutOfOrderKeepTheSavedOrderAndWindow
   QTemporaryDir extensions_dir;
   ASSERT_TRUE(extensions_dir.isValid());
   PJ::AppSession app_session(extensions_dir.path());
+  PJ::CatalogModel& catalog = app_session.catalogModel();
   constexpr PJ::Timestamp kSecond = 1'000'000'000;
   const PJ::DatasetId dataset_a = createDataset(app_session, "a.mcap", /*own_time_domain=*/true);
   const PJ::DatasetId dataset_b = createDataset(app_session, "b.csv", /*own_time_domain=*/true);
@@ -400,30 +434,17 @@ TEST(PendingDisplayBinderTest, CurvesBindingOutOfOrderKeepTheSavedOrderAndWindow
 
   const SeriesPath first{u"/first"_s, u"value"_s, dataset_a, u"a.mcap"_s};
   const SeriesPath second{u"/second"_s, u"value"_s, dataset_b, u"b.csv"_s};
-  // Exposes the Qwt plot: its attach order is the draw and legend order.
-  struct InspectablePlot : PJ::PlotWidget {
-    using PJ::PlotWidget::PlotWidget;
-    using PJ::PlotWidgetBase::qwtPlot;
-  };
   QDomDocument doc;
-  InspectablePlot plot(&app_session.sessionManager(), &app_session.catalogModel());
+  InspectablePlot plot(&app_session.sessionManager(), &catalog);
   QDomElement plot_element = addPlot(doc, plot.stateId(), u"TimeSeries"_s);
-  QDomElement range = doc.createElement(u"range"_s);
-  range.setAttribute(u"bottom"_s, u"0"_s);
-  range.setAttribute(u"top"_s, u"3"_s);
-  range.setAttribute(u"left"_s, u"110"_s);
-  range.setAttribute(u"right"_s, u"190"_s);
-  range.setAttribute(u"left_ns"_s, QString::number(110 * kSecond));
-  range.setAttribute(u"right_ns"_s, QString::number(190 * kSecond));
-  range.setAttribute(u"x_basis"_s, u"absolute"_s);
-  plot_element.appendChild(range);
+  addRange(doc, plot_element, 110 * kSecond, 190 * kSecond);
   addTimeSeriesCurve(doc, plot_element, first);
   addTimeSeriesCurve(doc, plot_element, second);
-  rebindAgainstCatalog(doc, app_session.catalogModel());
+  rebindAgainstCatalog(doc, catalog);
 
   ASSERT_TRUE(plot.xmlLoadState(plot_element));
   ASSERT_TRUE(plot.curveList().empty());
-  PJ::PendingDisplayBinder binder(app_session.catalogModel());
+  PJ::PendingDisplayBinder binder(catalog);
   binder.collect(doc, indexByStateId(plot));
   ASSERT_EQ(binder.size(), 2);
 
@@ -432,24 +453,121 @@ TEST(PendingDisplayBinderTest, CurvesBindingOutOfOrderKeepTheSavedOrderAndWindow
   ASSERT_NE(addScalarTopic(app_session, dataset_a, "/first", 100 * kSecond, 300 * kSecond), 0U);
   ASSERT_EQ(binder.flush(QSet<QString>{first.topic}), 1);
 
-  const auto first_key = app_session.catalogModel().resolveCurveKey(first);
-  const auto second_key = app_session.catalogModel().resolveCurveKey(second);
-  ASSERT_TRUE(first_key.has_value());
-  ASSERT_TRUE(second_key.has_value());
-  std::vector<std::string> order;
-  for (const PJ::PlotWidget::CurveInfo& info : plot.curveList()) {
-    order.push_back(info.source_name.toStdString());
-  }
-  EXPECT_EQ(order, (std::vector<std::string>{first_key->toStdString(), second_key->toStdString()}));
+  const std::string first_key = keyOf(catalog, first);
+  const std::string second_key = keyOf(catalog, second);
+  ASSERT_FALSE(first_key.empty());
+  ASSERT_FALSE(second_key.empty());
+  EXPECT_EQ(curveOrder(plot), (std::vector<std::string>{first_key, second_key}));
   const QwtPlotItemList attached = plot.qwtPlot()->itemList(QwtPlotItem::Rtti_PlotCurve);
   ASSERT_EQ(attached.size(), 2);
   EXPECT_EQ(attached.front(), plot.curveList().front().curve);
   EXPECT_EQ(attached.back(), plot.curveList().back().curve);
+  // flush reordered before re-applying the window: the saved window, in /first's display frame, before any drain.
+  EXPECT_NEAR(plot.currentBoundingRect().left(), 10.0, 1e-6);
+  EXPECT_NEAR(plot.currentBoundingRect().right(), 90.0, 1e-6);
 
-  // The drain pass: the saved window, in /first's display frame.
   plot.applySavedViewportOrZoom(/*clear_after=*/true);
   EXPECT_NEAR(plot.currentBoundingRect().left(), 10.0, 1e-6);
   EXPECT_NEAR(plot.currentBoundingRect().right(), 90.0, 1e-6);
+
+  // A restore is not a user edit: one curveListChanged when the order changes, none when it does not, never an undo
+  // step.
+  QSignalSpy list_changed(&plot, &PJ::PlotWidgetBase::curveListChanged);
+  QSignalSpy undoable(&plot, &PJ::PlotWidget::undoableChange);
+  EXPECT_FALSE(plot.restoreCurveOrder({QString::fromStdString(first_key), QString::fromStdString(second_key)}));
+  EXPECT_EQ(list_changed.count(), 0);
+  EXPECT_TRUE(plot.restoreCurveOrder({QString::fromStdString(second_key), QString::fromStdString(first_key)}));
+  EXPECT_EQ(list_changed.count(), 1);
+  EXPECT_EQ(undoable.count(), 0);
+  EXPECT_EQ(curveOrder(plot), (std::vector<std::string>{second_key, first_key}));
+}
+
+// The first saved curve binds only after the restore settled (a retained intent): it appends, so the plot keeps the
+// dataset its window was applied in, and a save writes back the window it loaded.
+TEST(PendingDisplayBinderTest, FirstCurveBindingAfterTheRestoreSettledKeepsTheAppliedWindow) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::AppSession app_session(extensions_dir.path());
+  PJ::CatalogModel& catalog = app_session.catalogModel();
+  constexpr PJ::Timestamp kSecond = 1'000'000'000;
+  const PJ::DatasetId dataset_a = createDataset(app_session, "a.mcap", /*own_time_domain=*/true);
+  const PJ::DatasetId dataset_b = createDataset(app_session, "b.csv", /*own_time_domain=*/true);
+  app_session.sessionManager().setDisplayOffset(dataset_a, PJ::DisplayOffset{PJ::Duration{100 * kSecond}});
+
+  const SeriesPath first{u"/first"_s, u"value"_s, dataset_a, u"a.mcap"_s};
+  const SeriesPath second{u"/second"_s, u"value"_s, dataset_b, u"b.csv"_s};
+  QDomDocument doc;
+  PJ::PlotWidget plot(&app_session.sessionManager(), &catalog);
+  QDomElement plot_element = addPlot(doc, plot.stateId(), u"TimeSeries"_s);
+  addRange(doc, plot_element, 110 * kSecond, 190 * kSecond);
+  addTimeSeriesCurve(doc, plot_element, first);
+  addTimeSeriesCurve(doc, plot_element, second);
+  rebindAgainstCatalog(doc, catalog);
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  PJ::PendingDisplayBinder binder(catalog);
+  binder.collect(doc, indexByStateId(plot));
+  ASSERT_EQ(binder.size(), 2);
+
+  ASSERT_NE(addScalarTopic(app_session, dataset_b, "/second", 0, 200 * kSecond), 0U);
+  ASSERT_EQ(binder.flush(QSet<QString>{second.topic}), 1);
+  // The drain: the window is applied for good through /second's offset (0).
+  plot.applySavedViewportOrZoom(/*clear_after=*/true);
+  const QRectF applied = plot.currentBoundingRect();
+  EXPECT_NEAR(applied.left(), 110.0, 1e-6);
+
+  ASSERT_NE(addScalarTopic(app_session, dataset_a, "/first", 100 * kSecond, 300 * kSecond), 0U);
+  ASSERT_EQ(binder.flush(QSet<QString>{first.topic}), 1);
+
+  EXPECT_EQ(curveOrder(plot), (std::vector<std::string>{keyOf(catalog, second), keyOf(catalog, first)}));
+  EXPECT_EQ(plot.currentBoundingRect(), applied);
+  QDomDocument saved;
+  const QDomElement range = plot.xmlSaveState(saved).firstChildElement(u"range"_s);
+  ASSERT_FALSE(range.isNull());
+  EXPECT_EQ(range.attribute(u"left_ns"_s).toLongLong(), 110 * kSecond);
+  EXPECT_EQ(range.attribute(u"right_ns"_s).toLongLong(), 190 * kSecond);
+}
+
+// After the restore settled the curve list is the user's: a retained curve binding later appends instead of putting
+// back the order captured at load.
+TEST(PendingDisplayBinderTest, RetainedCurveBindingAfterAUserReorderKeepsTheUserOrder) {
+  QTemporaryDir extensions_dir;
+  ASSERT_TRUE(extensions_dir.isValid());
+  PJ::AppSession app_session(extensions_dir.path());
+  PJ::CatalogModel& catalog = app_session.catalogModel();
+  constexpr PJ::Timestamp kSecond = 1'000'000'000;
+  const PJ::DatasetId dataset_id = createDataset(app_session, "d.csv", /*own_time_domain=*/true);
+  const SeriesPath a{u"/a"_s, u"value"_s, dataset_id, u"d.csv"_s};
+  const SeriesPath b{u"/b"_s, u"value"_s, dataset_id, u"d.csv"_s};
+  const SeriesPath c{u"/c"_s, u"value"_s, dataset_id, u"d.csv"_s};
+  QDomDocument doc;
+  PJ::PlotWidget plot(&app_session.sessionManager(), &catalog);
+  QDomElement plot_element = addPlot(doc, plot.stateId(), u"TimeSeries"_s);
+  addRange(doc, plot_element, 0, 10 * kSecond);
+  for (const SeriesPath& path : {a, b, c}) {
+    addTimeSeriesCurve(doc, plot_element, path);
+  }
+  rebindAgainstCatalog(doc, catalog);
+  ASSERT_TRUE(plot.xmlLoadState(plot_element));
+  PJ::PendingDisplayBinder binder(catalog);
+  binder.collect(doc, indexByStateId(plot));
+  ASSERT_EQ(binder.size(), 3);
+
+  ASSERT_NE(addScalarTopic(app_session, dataset_id, "/b", 0, 10 * kSecond), 0U);
+  ASSERT_NE(addScalarTopic(app_session, dataset_id, "/c", 0, 10 * kSecond), 0U);
+  ASSERT_EQ(binder.flush(QSet<QString>{b.topic, c.topic}), 2);
+  plot.applySavedViewportOrZoom(/*clear_after=*/true);
+  const std::string key_b = keyOf(catalog, b);
+  const std::string key_c = keyOf(catalog, c);
+  ASSERT_EQ(curveOrder(plot), (std::vector<std::string>{key_b, key_c}));
+
+  // The user removes /b and drops it back: it is now last.
+  plot.removeCurve(QString::fromStdString(key_b));
+  ASSERT_NE(plot.addCurve(QString::fromStdString(key_b)), nullptr);
+  ASSERT_EQ(curveOrder(plot), (std::vector<std::string>{key_c, key_b}));
+
+  ASSERT_NE(addScalarTopic(app_session, dataset_id, "/a", 0, 10 * kSecond), 0U);
+  ASSERT_EQ(binder.flush(QSet<QString>{a.topic}), 1);
+  EXPECT_EQ(curveOrder(plot), (std::vector<std::string>{key_c, key_b, keyOf(catalog, a)}));
 }
 
 // Progressive restore: a hidden marker scope saved under a dataset id that is reminted on reload follows the dataset

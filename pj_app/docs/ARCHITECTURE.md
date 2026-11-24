@@ -247,8 +247,11 @@ written, then the marker recompute and the ingest announcement run. A stateful p
 before retention evicts it, or its output skips rows. See the derived-objects architecture, "Streaming".
 
 `TopicDemandController` is thin glue from displayed widgets to `TopicDemandTracker`; `PendingDisplayBinder` stages a
-curve or scene layer until its topic materializes. A layout curve that binds late takes its saved place in its plot,
-not the end, whatever order its datasets load in: the plot frames its saved window by its first curve's dataset. On
+curve or scene layer until its topic materializes. `PendingDisplayBinder::collect` records each plot's saved curve
+order, and `flush` puts a late curve back in its saved place (`PlotWidget::restoreCurveOrder`) before re-applying the
+saved viewport. That holds only while the plot still holds its saved window: once the drain or the synchronous restore
+applied it for good, a curve binding later appends. Two curve kinds do not take their saved place: an empty-field
+placeholder intent (one curve per field) and an XY curve whose `<curve>` has no `name` (only hand-written layouts). On
 the first real demand for a previewed topic, `TopicDemandController` invalidates the matching XY and time-series caches
 of registered plots before evicting the preview history, with no paint or event-loop turn in between: bounds
 calculation inside `curveListChanged` may have filled them already.
