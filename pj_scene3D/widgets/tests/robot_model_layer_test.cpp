@@ -301,7 +301,8 @@ class PackageUrlRobotDescriptionParser final : public PJ::MessageParserPluginBas
   }
 };
 
-// A topic URDF whose second package mesh the asset host does not have, beside a mesh it has and a primitive.
+// A topic URDF whose second package mesh, used by two links, the asset host does not have, beside a mesh it has and a
+// primitive.
 constexpr const char* kPartialPackageUrdf = R"(
 <robot name="partial">
   <link name="base_link">
@@ -313,8 +314,12 @@ constexpr const char* kPartialPackageUrdf = R"(
   <link name="tool">
     <visual><geometry><box size="0.1 0.1 0.1"/></geometry></visual>
   </link>
+  <link name="arm_mirror">
+    <visual><geometry><mesh filename="package://pj_url_pkg/meshes/missing.stl"/></geometry></visual>
+  </link>
   <joint name="a" type="fixed"><parent link="base_link"/><child link="arm"/></joint>
   <joint name="b" type="fixed"><parent link="arm"/><child link="tool"/></joint>
+  <joint name="c" type="fixed"><parent link="base_link"/><child link="arm_mirror"/></joint>
 </robot>
 )";
 
@@ -1369,16 +1374,16 @@ TEST(RobotModelLayerTest, AMissingMeshFailsAloneAndTheRestOfTheModelDraws) {
   ASSERT_TRUE(layer.attach(ctx));
   ASSERT_TRUE(layer.xmlLoadState(robot));
   ASSERT_NE(layer.robotModel(), nullptr) << layer.statusText().toStdString();
-  ASSERT_EQ(layer.totalMeshCount(), 2);
+  ASSERT_EQ(layer.totalMeshCount(), 3);
   ASSERT_EQ(layer.unresolvedMeshCount(), 0);
   ASSERT_TRUE(
       pj::scene3d::test::pumpUntil(
-          [&layer]() { return layer.meshImportsOutstandingForTest() == 0 && layer.statusText().contains("failed"_L1); },
+          [&layer]() { return layer.loadedMeshCount() + layer.missingMeshCount() == layer.totalMeshCount(); },
           std::chrono::seconds(10)))
       << layer.statusText().toStdString();
 
   EXPECT_EQ(layer.loadedMeshCount(), 1);
-  EXPECT_TRUE(layer.statusText().contains("1/2 meshes"_L1)) << layer.statusText().toStdString();
+  EXPECT_TRUE(layer.statusText().contains("1/3 meshes"_L1)) << layer.statusText().toStdString();
   std::vector<std::string> keys;
   for (const auto& call : layer.modelDrawCalls()) {
     keys.push_back(call.mesh_key);
@@ -1386,8 +1391,9 @@ TEST(RobotModelLayerTest, AMissingMeshFailsAloneAndTheRestOfTheModelDraws) {
   ASSERT_EQ(keys.size(), 2U) << "the mesh and the box, nothing for the missing one";
   EXPECT_EQ(
       std::count_if(keys.begin(), keys.end(), [](const std::string& key) { return key.ends_with("cube.stl"); }), 1);
-  EXPECT_EQ(layer.missingMeshCount(), 1);
-  EXPECT_TRUE(layer.statusText().contains("1 mesh load(s) failed (not drawn)"_L1)) << layer.statusText().toStdString();
+  EXPECT_EQ(layer.missingMeshCount(), 2) << "per reference: the shared missing file counts for both links";
+  EXPECT_TRUE(layer.statusText().contains("2 mesh load(s) failed (not drawn): missing.stl"_L1))
+      << layer.statusText().toStdString();
 }
 
 // A robot restored from a web-hosted layout keeps the network-only policy for its URDF's own mesh

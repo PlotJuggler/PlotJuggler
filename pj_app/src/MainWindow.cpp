@@ -8058,15 +8058,26 @@ void MainWindow::deleteCustomTopics(const QStringList& catalog_keys) {
   // Resolved first: a delete relists the catalog, and a cancelled prompt must not come back for the recipe's next
   // row.
   std::vector<std::string> recipes;
+  std::vector<std::string> transforms;  // one row per transform: its columns and outputs are one delete
   QStringList outputs;
+  const DataProcessorService& processors = session_->sessionManager().dataProcessorService();
   for (const QString& catalog_key : catalog_keys) {
     if (const RecipeGraph::Node* node = onDemandNodeOfCatalogKey(*session_, catalog_key)) {
       if (std::find(recipes.begin(), recipes.end(), node->recipe.key()) == recipes.end()) {
         recipes.push_back(node->recipe.key());
       }
-    } else {
-      outputs.push_back(catalog_key);
+      continue;
     }
+    const std::optional<CurveDescriptor> curve =
+        session_->catalogModel().curveDescriptor(catalog_key, SeriesCapability::kAny);
+    const auto transform = curve.has_value() ? processors.transformOwning(curve->topic_id) : std::nullopt;
+    if (transform.has_value()) {
+      if (std::find(transforms.begin(), transforms.end(), transform->key) != transforms.end()) {
+        continue;
+      }
+      transforms.push_back(transform->key);
+    }
+    outputs.push_back(catalog_key);
   }
   for (const std::string& key : recipes) {
     deleteOnDemandRecipe(key);

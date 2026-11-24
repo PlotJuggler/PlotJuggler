@@ -190,11 +190,11 @@
    "bytes": 28006
   },
   "v1/microduck/README.txt": {
-   "sha256": "b61fa615bba26fa04125812de3e79eec8a1a0dae5ee181d03b41bdc6516a40f1",
-   "bytes": 1849
+   "sha256": "56676935d2386f19631bae4e0438e605ebe5941855904b24797e3440d89cc392",
+   "bytes": 1968
   },
   "v1/microduck/microduck_layout.pj4.xml": {
-   "sha256": "c2023c5ca0b8c7ae022ebc6a698097cf58bf2796e5e5e3b0e57f00863ba86d1b",
+   "sha256": "6007e7b2b84b361c735863059c0dd53d772996e61a882d85ad04e889d5e850db",
    "bytes": 11785
   },
   "v1/microduck/microduck_thumbnail.png": {

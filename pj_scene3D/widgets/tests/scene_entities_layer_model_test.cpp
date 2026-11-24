@@ -730,7 +730,7 @@ TEST(SceneEntitiesLayerModelTest, AttachSeedsFirstSampleAtTimestampZero) {
 
 // A finished async ModelPrimitive mesh load must itself request the repaint that consumes it (QFutureWatcher ->
 // pollMeshLoads): the app paints strictly on demand, so a result drained only inside render() would leave the
-// placeholder cube until the user scrubbed. Only the event loop is pumped after attach() kicks the load.
+// mesh undrawn until the user scrubbed. Only the event loop is pumped after attach() kicks the load.
 TEST(SceneEntitiesLayerModelTest, MeshLoadCompletionRequestsRepaintWithoutRender) {
   PJ::SessionManager session;
   const PJ::ObjectTopicId topic_id = registerTopic(session);

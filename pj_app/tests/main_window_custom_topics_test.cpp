@@ -537,6 +537,35 @@ TEST(MainWindowCustomTopicsTest, TransformDeleteRechecksTheOwnerBeforeRemovingDe
   EXPECT_EQ(transforms.transformIdsForPlugin(kEditor).size(), 2U) << "neither the transform nor its dependent goes";
 }
 
+// Deleting every column of a grouped output asks once: the columns are one transform, and a cancelled prompt does not
+// come back for the next column.
+TEST(MainWindowCustomTopicsTest, DeletingAGroupedOutputsColumnsAsksOnce) {
+  constexpr const char* kSplit = R"LUAU(-- pj-script: luau
+return { id="split", name="Split",
+  create = function(p) return { calculate = function(t, v) return v, -v end } end }
+)LUAU";
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "split", {"sensor/value"}, {"pair:a,b"}, kSplit, "{}"));
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg2", {"pair/a"}, {"chain"}, kNegate2, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  QStringList keys;
+  for (const PJ::CatalogItem& item : fx.app().catalogModel().items()) {
+    if (item.topic_name == u"pair"_s) {
+      keys << item.key;
+    }
+  }
+  ASSERT_EQ(keys.size(), 2);
+
+  const MessageBoxAnswerer cancel({}, /*button=*/1);
+  MainWindowCustomTopicsTestPeer::deleteCustomTopics(fx.window, keys);
+  QApplication::processEvents();
+  EXPECT_EQ(cancel.answered, 1) << "one prompt for the one transform";
+  EXPECT_EQ(transforms.transformIdsForPlugin(kEditor).size(), 2U) << "cancelled: nothing goes";
+}
+
 // A delete never strands a history-exempt reader: the delete is an undo step, and its redo would be refused
 // for the reader it strands. Refused up front, naming the reader, and nothing is removed.
 TEST(MainWindowCustomTopicsTest, DeleteReadByAHistoryExemptRecipeIsRefused) {

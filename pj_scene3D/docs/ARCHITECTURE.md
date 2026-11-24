@@ -410,7 +410,7 @@ submesh.
   Instance buffers stay Dynamic: animated models rewrite them every TF tick.
 
 Every material takes `model.frag`'s metallic-roughness path (normal, occlusion, emissive maps; key and camera-locked
-fill lights; an analytic ground-to-sky ambient, no HDRI). A URDF box, cylinder, sphere or placeholder draws with the
+fill lights; an analytic ground-to-sky ambient, no HDRI). A URDF box, cylinder or sphere draws with the
 link's colour alone (`use_material` false): their unit meshes carry a material and vertex colour that would apply
 it twice. Alpha follows the material's glTF mode (other formats read as OPAQUE): OPAQUE and MASK write only the
 layer and mesh opacity, ignoring texture and vertex alpha (MASK first discards below the cutoff), since alpha left in
@@ -784,7 +784,9 @@ An `sdk::MeshMap` (navigation, cost and semantic meshes with named face and vert
   completions never outlive the layer. assimp covers STL, DAE, OBJ and glTF; `MeshData` carries UV0, tangents and a
   glTF metallic-roughness `Material` per submesh; embedded glTF images are kept as encoded bytes keyed by content
   hash; a map that fails or is over budget leaves its slot empty, never the mesh.
-- **Rendering:** unit primitives scaled by the model matrix; a mesh that is loading, unresolved or failed draws nothing (the rest of the robot draws), and the status counts loaded of total meshes and names the failures.
+- **Rendering:** unit primitives scaled by the model matrix; a mesh that is loading, unresolved or failed draws
+  nothing (the rest of the robot draws), and the status counts loaded of total mesh references and names the files
+  that failed.
   Collision geometry without a material gets an orange tint, translucent below full opacity.
 - **Time contract:** `timeRange()` returns the inverted sentinel `{Timepoint::max(), Timepoint::min()}`, so a static
   decoration neither widens the timeline nor clamps the playhead; the dock skips inverted ranges.

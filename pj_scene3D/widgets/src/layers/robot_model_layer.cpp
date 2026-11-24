@@ -596,9 +596,6 @@ void RobotModelLayer::rebuildDrawCalls() {
         call.mesh_key = mesh->resolved_path;
         call.use_material = !explicit_color;
       }
-      if (call.mesh_key.empty()) {
-        return;
-      }
       call.model = glm::scale(originToMat4(geom.origin_xyz, geom.origin_rpy), scale);
       model_draw_calls_.push_back(std::move(call));
     };
@@ -1367,10 +1364,20 @@ void RobotModelLayer::updateMeshCounters() {
 }
 
 QString RobotModelLayer::loadFailureClause() const {
-  if (mesh_errors_.empty()) {
+  if (failed_mesh_count_ == 0) {
     return {};
   }
-  return tr("  •  %n mesh load(s) failed (not drawn)", nullptr, static_cast<int>(mesh_errors_.size()));
+  // Per mesh reference, like the loaded/total count beside it (links sharing a file each count); then the files.
+  QStringList files;
+  for (const auto& [key, error] : mesh_errors_) {
+    const QString path = QString::fromStdString(key);
+    files.push_back(path.mid(path.lastIndexOf(u'/') + 1));
+  }
+  files.sort();
+  constexpr qsizetype kNamedFiles = 3;
+  const QString named =
+      files.size() > kNamedFiles ? files.first(kNamedFiles).join(u", "_s) + u", …"_s : files.join(u", "_s);
+  return tr("  •  %n mesh load(s) failed (not drawn): %1", nullptr, failed_mesh_count_).arg(named);
 }
 
 void RobotModelLayer::updateStatus() {
@@ -1380,7 +1387,7 @@ void RobotModelLayer::updateStatus() {
   QString status = base_status_;
   if (unresolved_mesh_count_ > 0) {
     status += tr("  •  %1/%2 meshes  •  %3 packages unresolved")
-                  .arg(total_mesh_count_ - unresolved_mesh_count_)
+                  .arg(loaded_mesh_count_)
                   .arg(total_mesh_count_)
                   .arg(unresolvedPackagesList().size());
   } else {
