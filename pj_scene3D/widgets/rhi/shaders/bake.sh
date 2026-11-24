@@ -27,6 +27,10 @@ done
 "${QSB}" "${TARGETS[@]}" -DPJ_FLIP_Y -o "${OUT}/present_flip_y.vert.qsb" present.vert
 # The filled-cell grid as the shadow receiver.
 "${QSB}" "${TARGETS[@]}" -DPJ_GRID_SHADOW -o "${OUT}/grid_cell_shadow.frag.qsb" grid_cell.frag
+# The line pipelines of a software rasterizer: one instance per segment, clipped behind the eye (line_clip.glslinc).
+for source in scene grid meshmap; do
+  "${QSB}" "${TARGETS[@]}" -DPJ_LINE_SEGMENT -o "${OUT}/${source}_segment.vert.qsb" "${source}.vert"
+done
 # Point-list variant of the point shaders (gl_PointSize), for backends with
 # QRhi::VertexShaderPointSize.
 "${QSB}" "${TARGETS[@]}" -DPJ_POINT_TOPOLOGY -o "${OUT}/point_list.vert.qsb" point.vert

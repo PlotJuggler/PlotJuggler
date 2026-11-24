@@ -53,6 +53,10 @@ using pj::scene3d::test::grab;
 using pj::scene3d::test::PipelineFault;
 
 constexpr QSize kViewSize{320, 240};
+// Fails the grid line pipelines on every rasterizer: their vertex shader differs on a software one
+// (grid_segment.vert), the cell pipelines exist only for the filled style, and no failure scene has the markers that
+// share this shader.
+constexpr char kGridLineShader[] = "/scene.frag.qsb";
 
 class ClearWidget : public QRhiWidget {
  public:
@@ -171,7 +175,7 @@ class Scene3dRhiFailureTest : public ::testing::Test {
 };
 
 TEST_F(Scene3dRhiFailureTest, BasePipelineFailureClearsWarnsAndRecovers) {
-  PipelineFault fault("/grid.vert.qsb");
+  PipelineFault fault(kGridLineShader);
   FailureScene scene;
   SceneViewWidget* view = scene.view();
   ClearWidget* sibling = scene.addSibling();
@@ -385,7 +389,7 @@ TEST_F(Scene3dRhiFailureTest, BaseTemplateFailsOnTheFirstDirectFrame) {
   }
   ASSERT_FALSE(uniform(hdr));
 
-  PipelineFault fault("/grid.vert.qsb");
+  PipelineFault fault(kGridLineShader);
   const auto& t = SceneViewTestAccess::stageTimes(*view);
   const std::uint64_t withheld = t.frames_withheld;
   SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, true);
@@ -419,7 +423,7 @@ TEST_F(Scene3dRhiFailureTest, WithheldFrameKeepsThePickCamera) {
   }
   const glm::mat4 shown = SceneViewTestAccess::lastViewProjection(*view);
 
-  PipelineFault fault("/grid.vert.qsb");
+  PipelineFault fault(kGridLineShader);
   const auto& t = SceneViewTestAccess::stageTimes(*view);
   const std::uint64_t withheld = t.frames_withheld;
   // A rotation, not a pan: the stored matrix is relative to the render origin,
@@ -632,7 +636,7 @@ class BackendLogCounter {
 // it, but the backend is logged once per QRhi.
 TEST_F(Scene3dRhiFailureTest, RetriesLogTheBackendOncePerQRhi) {
   BackendLogCounter log;
-  PipelineFault fault("/grid.vert.qsb");
+  PipelineFault fault(kGridLineShader);
   FailureScene scene;
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
@@ -654,7 +658,7 @@ TEST_F(Scene3dRhiFailureTest, RetriesLogTheBackendOncePerQRhi) {
 // After a recovery the fault returns and the view moves to another top-level
 // (a new QRhi): it fails there once more, and recovers there once the fault is gone.
 TEST_F(Scene3dRhiFailureTest, FailureAfterRecoveryRecoversInANewWindow) {
-  PipelineFault fault("/grid.vert.qsb");
+  PipelineFault fault(kGridLineShader);
   FailureScene scene;
   SceneViewWidget* view = scene.view();
   ASSERT_TRUE(scene.show());
@@ -668,7 +672,7 @@ TEST_F(Scene3dRhiFailureTest, FailureAfterRecoveryRecoversInANewWindow) {
   ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().isEmpty(); }))
       << view->renderingWarning().toStdString();
 
-  PipelineFault again("/grid.vert.qsb");
+  PipelineFault again(kGridLineShader);
   QWidget other;
   auto* layout = new QVBoxLayout(&other);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -746,7 +750,7 @@ TEST_F(Scene3dRhiFailureTest, MissingHdrPipelineVariantFallsBackToDirect) {
   // From now on the grid's HDR variants cannot be created; its direct pipelines,
   // created by the direct frames above, stand. The HDR frame that lost its grid
   // variant is not presented (the last frame stays); the next one draws directly.
-  PipelineFault fault("/scene.frag.qsb");
+  PipelineFault fault(kGridLineShader);
   const std::uint64_t withheld = SceneViewTestAccess::stageTimes(*view).frames_withheld;
   SceneViewTestAccess::forceStageFallback(*view, SceneViewTestAccess::Stage::kHdr, false);
   ASSERT_TRUE(scene.renderUntil([&] { return view->renderingWarning().contains(u"HDR variant"_s); }))

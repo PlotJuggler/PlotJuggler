@@ -394,7 +394,10 @@ the pixel reference of `scene3d_rhi_marker_cache_test`.
 
 The cube fill is depth-biased away from the camera so its edge overlay, at exact depth, wins; edges with a
 camera-facing adjacent face draw darker than self-occluded ones. Wireframe draws triangle edges as line lists on
-every backend (WebGL2 has no `NonFillPolygonMode`); back-facing edges show.
+every backend (WebGL2 has no `NonFillPolygonMode`); back-facing edges show. Stream lines and wireframe edges are
+written as whole segments, two consecutive `ColorVertex`es each, so a software rasterizer can draw them one instance
+per segment for the clip behind the eye (`RhiPassSetup::line_segments`, TECHNICAL_NOTES "SwiftShader drops lines that
+cross behind the eye").
 
 **Models (`ModelRhiPass`).** Per-layer GPU meshes, up to five material textures per submesh (budgeted before decode;
 a map longer than the backend limit or `max_model_texture_dimension` decodes scaled down), one material SRB per
@@ -424,9 +427,9 @@ the shaders add the origin offset, so pan, follow and playback upload nothing, a
 cannot z-fight the fill; an odd division count's half-cell phase travels in the offset's w. Every grid SRB declares
 binding 3 for both stages because QRhi requires the connection lines' SRB layout to match. The TF connection lines
 are arbitrary doubles, so they stay camera-relative in a Dynamic buffer keyed on the TF revision, fixed frame, time
-and render origin. Each line vertex carries its segment's other end, and `grid.vert` moves an end behind the eye
-along the segment to `kMinClipW`, so SwiftShader still draws the line (TECHNICAL_NOTES "SwiftShader drops lines that
-cross behind the eye"). Filled cells carry no partner.
+and render origin. Grid and connection lines are `LineSegment`s; a software rasterizer draws them one instance per
+segment through `grid_segment.vert.qsb`, which clips an end behind the eye (TECHNICAL_NOTES "SwiftShader drops lines
+that cross behind the eye").
 
 **Poses and TF triads (`PoseRhiPass`).** One unit-arrow mesh, one instanced draw per layer. Pose instances are
 frame-local in a Static buffer, re-uploaded on `geometryRevision()`; the fixed-from-source TF is a uniform, so camera
@@ -447,8 +450,10 @@ conventions").
 `gl_VertexIndex`; two-sided lighting uses a geometric normal-faces-eye test, because a backend's clip-space
 correction can flip `gl_FrontFacing`'s winding.
 
-**Mesh maps (`MeshMapRhiPass`).** Per layer static buffers (positions, one 4-byte attribute, link positions and
-colours) and opaque/translucent triangle and line pipelines. A frame allocates every buffer it writes before
+**Mesh maps (`MeshMapRhiPass`).** Per layer static buffers (positions, one 4-byte attribute, link positions,
+colours; a software rasterizer binds the link buffers per instance, one segment each, for the clip behind the eye
+of `meshmap_segment.vert.qsb`) and
+opaque/translucent triangle and line pipelines. A frame allocates every buffer it writes before
 recording any upload; the row warning clears only after an upload succeeded.
 
 **Trails (`TrailRhiPass`).** One Static ribbon buffer per trail owner, re-uploaded on a rebuild or a render-origin
@@ -509,7 +514,8 @@ dock combines it with the frame-orphan state per row (`updateLayerWarning`).
 ### Shader packs and conventions
 
 `rhi/shaders/bake.sh` bakes every pack for GLSL ES 300, GLSL 330 and 440, HLSL 5.0, MSL 1.2 and SPIR-V. Variants are
-separate bakes (`-DPJ_FLIP_Y` for the fullscreen triangle on D3D/Metal, `-DPJ_GRID_SHADOW`, `-DPJ_POINT_TOPOLOGY`).
+separate bakes (`-DPJ_FLIP_Y` for the fullscreen triangle on D3D/Metal, `-DPJ_GRID_SHADOW`, `-DPJ_POINT_TOPOLOGY`,
+`-DPJ_LINE_SEGMENT` for the software rasterizer's `*_segment.vert.qsb`).
 The WASM configure re-runs the script with the host `qsb` and fails on any byte difference or a pack without a
 source. Shaders never remap clip conventions: the matrices carry them (`rhi_conventions.h`: `clipToTextureMatrix()`,
 `textureVSign()`, `fullscreenNeedsYFlip()`). Every pack's varyings are contiguous from location 0 (TECHNICAL_NOTES
@@ -955,8 +961,6 @@ each has a panel row, and clicking it binds the Settings host to the layer's con
 - A `UrlFetcher` request aborts only with its fetcher, so unwanted fetches retire the fetcher and its connections.
 - `drawsFor` is a linear search per slot (O(L²) in the layer count).
 - Pipeline-cache persistence is not reachable through `QRhiWidget`, and packs are not precompiled.
-- Under SwiftShader, a line with one end behind the eye is not drawn by any line pipeline but the grid's and the TF
-  connections'. The marker stream lines (`stream(Lines)` in `marker_rhi_pass.cpp`) and the mesh-map wireframe
-  (`meshmap_rhi_pass.cpp`) are non-indexed and could take the same partner attribute; the model wireframe (indexed)
-  and the instanced marker line and edge pipelines cannot, a vertex there having no single partner (TECHNICAL_NOTES
-  "SwiftShader drops lines that cross behind the eye").
+- Under SwiftShader, a line with one end behind the eye is not drawn by the model wireframe (indexed) or the
+  instanced marker line and cube-edge pipelines: only the non-indexed line lists draw one instance per segment
+  (TECHNICAL_NOTES "SwiftShader drops lines that cross behind the eye").

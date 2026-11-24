@@ -64,7 +64,8 @@ resource; the dock (`Scene3DDockWidget`, an `IDataWidget` on `pj_scene_common`'s
   `passes/`, shaders and committed `.qsb` packs in `shaders/`; the shared cube GLSL in `widgets/shaders/cube/`.
 - `widgets/testing/`: `SceneViewTestAccess`, the only way tests, benchmarks and browser probes read the view's
   internals.
-- `demos/` (`PJ_BUILD_DEMOS`): point-cloud conversion and topology benchmarks. `wasm_probe/`: an opt-in browser
+- `demos/` (`PJ_BUILD_DEMOS`): point-cloud conversion and topology benchmarks, the line clip's GPU cost
+  (`line_clip_rhi_benchmark`). `wasm_probe/`: an opt-in browser
   capability probe, not product code.
 - `THIRDPARTY.md`: licences of derived GLSL; a derived shader snippet names its source in a header comment.
 

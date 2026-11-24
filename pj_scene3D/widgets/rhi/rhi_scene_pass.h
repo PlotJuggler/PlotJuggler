@@ -227,6 +227,30 @@ inline glm::mat4 relativeModel(glm::dmat4 model, const glm::dvec3& origin) {
   return glm::mat4(model);
 }
 
+/// One vertex of a colour-per-vertex line or triangle stream (scene.vert): position, RGBA.
+struct ColorVertex {
+  float x = 0.0F;
+  float y = 0.0F;
+  float z = 0.0F;
+  float r = 0.0F;
+  float g = 0.0F;
+  float b = 0.0F;
+  float a = 1.0F;
+};
+/// One GL_LINES segment: two consecutive ColorVertex records, so a line buffer is a plain vertex list as well.
+struct LineSegment {
+  ColorVertex a;
+  ColorVertex b;
+};
+/// The per-vertex input layout of a ColorVertex buffer (scene.vert): location 0 the position, 1 the colour.
+[[nodiscard]] QRhiVertexInputLayout colorVertexLayout();
+/// The per-instance input layout of a LineSegment buffer (the *_segment.vert variants): locations 0-3 are a's position
+/// and colour, then b's.
+[[nodiscard]] QRhiVertexInputLayout lineSegmentLayout();
+/// Draws `vertices` line vertices (consecutive pairs) from the bound buffers: as a vertex list, or with `segments`
+/// (RhiPassSetup::line_segments) as one two-vertex instance per pair.
+void drawLines(QRhiCommandBuffer& command_buffer, quint32 vertices, bool segments);
+
 /// Sizes `buffer` (a `type` vertex buffer, Static or Immutable, filled by uploadStaticBuffer()) for `required_bytes`
 /// with the point pass's rule: reallocates to max(required_bytes, minimum_capacity) to grow, to give back a buffer
 /// more than twice max(required_bytes, minimum_capacity / 2), and when its type differs; otherwise keeps it. A
@@ -268,6 +292,10 @@ struct RhiPassSetup {
   /// widget's render target.
   ScenePipelineRegistry* pipelines = nullptr;
   const char* part = nullptr;
+  /// On a software rasterizer (PJ::softwareRasterizerName()): every non-indexed line pipeline draws one instance per
+  /// segment with a *_segment.vert shader, whose vertices read both ends for the clip behind the eye
+  /// (line_clip.glslinc). GPUs draw the same buffers as vertex lists, without the clip.
+  bool line_segments = false;
 };
 
 /// Translates a pass's user-facing message in the view's context.

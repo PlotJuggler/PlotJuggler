@@ -20,3 +20,13 @@ if(TARGET pj_scene3d_widgets)
   target_include_directories(pointcloud_rhi_benchmark PRIVATE ../widgets)
   target_link_libraries(pointcloud_rhi_benchmark PRIVATE pj_scene3d_widgets pj_bench_probes)
 endif()
+
+# GPU cost of the line clip behind the eye: a line buffer drawn as a vertex list vs one instance per segment. Its
+# numbers are in pj_scene3D/docs/TECHNICAL_NOTES.md "SwiftShader drops lines that cross behind the eye".
+if(TARGET pj_scene3d_widgets)
+  add_executable(line_clip_rhi_benchmark line_clip_rhi_benchmark.cpp)
+  target_compile_features(line_clip_rhi_benchmark PRIVATE cxx_std_20)
+  target_compile_options(line_clip_rhi_benchmark PRIVATE ${PJ_WARNING_FLAGS})
+  target_include_directories(line_clip_rhi_benchmark PRIVATE ../widgets)
+  target_link_libraries(line_clip_rhi_benchmark PRIVATE pj_scene3d_widgets pj_bench_probes)
+endif()

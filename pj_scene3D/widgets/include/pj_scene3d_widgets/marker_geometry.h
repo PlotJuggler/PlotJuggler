@@ -39,7 +39,7 @@ struct MarkerInstanceSource {
 struct MarkerStreamBatch {
   glm::dmat4 model{1.0};
   std::vector<glm::dvec3> points;
-  std::vector<std::uint32_t> indices;
+  std::vector<std::uint32_t> indices;  ///< into `points`: segment pairs (a line batch) or triangles
   std::vector<PJ::sdk::ColorRGBA> colors;
   glm::vec4 color{1.0F};
   std::uint32_t frame_index = 0;

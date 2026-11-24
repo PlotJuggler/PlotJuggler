@@ -104,6 +104,7 @@ class MeshMapRhiPass {
   const ScenePipeline* translucent_pipeline_ = nullptr;       // depth test only
   const ScenePipeline* line_pipeline_ = nullptr;              // link segments
   const ScenePipeline* translucent_line_pipeline_ = nullptr;  // link segments, depth test only
+  bool line_segments_ = false;                                // RhiPassSetup::line_segments of initialize()
 
   std::vector<MeshMapLayer*> layers_;
   std::unordered_map<MeshMapLayer*, LayerGpu> layer_gpu_;

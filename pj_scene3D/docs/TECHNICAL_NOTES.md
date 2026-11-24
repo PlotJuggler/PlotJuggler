@@ -224,8 +224,9 @@ All on Intel Iris Xe (RPL-P), Mesa 26, unless a row names another GPU.
 ## Limits and budgets
 
 `core/scene_limits.h` holds one `SceneLimits` per platform (`kDesktopSceneLimits`, `kBrowserSceneLimits`),
-statically checked against the renderer's `quint32` sizes and `int` counters. The largest single buffers at the
-desktop limits: 100 M points × 16 B = 1.6 GB, 20 M marker vertices × 28 B = 560 MB.
+statically checked against the renderer's `quint32` sizes and `int` counters. The largest single buffers are a cloud
+of `max_points_per_cloud` points at 16 B each and a view's `max_marker_stream_vertices_per_view` marker vertices at
+28 B each (`ColorVertex`); a software rasterizer draws the same buffers.
 
 The HDR chain costs 4 × (RGBA16F 8 + depth) + RGBA16F 8 + RGBA8 4 + depth per render pixel: 64 B with D32F, 84 B with
 OpenGL's D32FS8 resolve. 3840x2160 is 506 MiB (664 MiB on OpenGL), so the desktop's 1 GiB per view fits one 5K view
@@ -343,17 +344,47 @@ cut to start in front of the camera drew 2090. Turning off ANGLE's line emulatio
 the loss, so the drop is in SwiftShader itself (unverified reasoning: it builds a line's quad from the endpoints'
 projected positions, which a negative w mirrors).
 
-What the code does: `grid.vert` receives each vertex's segment partner and moves a vertex whose w is below
-`kMinClipW` along the segment to w = `kMinClipW`. That is behind every perspective near plane (`adaptiveNearFar`'s
-floor), so the rasterizer's own near clip yields the same visible segment. In the probe page the move drew 2096 pixels
-under SwiftShader and changed none on the GPU. The w is set after the interpolation: at |w| near 4700 a float32 step
-is about 5e-4, above `kMinClipW`, and the mix left w at exactly 0 on a 10 km grid of 200 divisions seen from an orbit
-radius of 60 (endpoints near w = -4600 and +4800), which draws nothing. It covers the grid lines and the TF connection
-lines; the other line pipelines still lose such segments (ARCHITECTURE "Known gaps"). Regression test:
-`scene3d_foundation.spec.js`.
+What the code does: on a software rasterizer (`RhiPassSetup::line_segments`, set from `softwareRasterizerName()`), the
+marker stream lines and wireframe triangle edges, the line grid with the TF connection lines, and the mesh-map links
+draw one instance per segment
+from their unchanged vertex buffers (`lineSegmentLayout()`, `drawLines()`, the `PJ_LINE_SEGMENT` variants
+`*_segment.vert.qsb`), so each vertex sees its segment's other end. `line_clip.glslinc`'s `clipBehindEye` moves a
+vertex whose w is below `kMinClipW` along the segment to w = `kMinClipW`, and the shader mixes the vertex's colour
+toward the other end's by the same fraction. That point is behind every perspective near plane (`adaptiveNearFar`'s
+floor) and clip space is linear along the segment, so the rasterizer's own near clip yields the same visible segment
+with the same perspective-correct colour. The w is set after the mix: at |w| near 4700 a float32 step is about 5e-4,
+above `kMinClipW`, and the mix left w at exactly 0 on a 10 km grid of 200 divisions seen from an orbit radius of 60
+(endpoints near w = -4600 and +4800), which draws nothing. A GPU draws the vertex lists through the shaders' plain
+variants, unchanged. Triangle and point pipelines are not affected; the indexed and the instanced line pipelines
+still lose such segments (ARCHITECTURE "Known gaps"). Regression tests:
+`MarkerLineBehindTheEyeKeepsItsColourGradient` (the Linux llvmpipe/lavapipe and Windows WARP lanes take the segment path, macOS's Metal device the vertex lists;
+`SoftwareRasterizerDrawsTheDirectPass` fails if a CPU rasterizer goes undetected; it
+failed with 466 differing pixels while the shader kept the moved end's own colour) and `scene3d_foundation.spec.js`'s
+line grid and marker lines tests (the marker test drew no line under the camera before the clip).
 
-Re-test on a Chromium (SwiftShader) update by running that spec's line grid test with the move taken out of
-`grid.vert`; if the lines draw, the partner attribute can go.
+Why only a software rasterizer: every candidate that clips on a GPU too costs GPU time there.
+`line_clip_rhi_benchmark` (Iris Xe, Mesa 26.0.3, GL, 1920x1080 into 4x RGBA16F + D32F, static buffers, random
+two-colour segments in a 100 m square; 9 rounds × 30 frames each after warm-up, rotating candidates; GPU ms median of
+every frame, the rounds' medians within a few % of it):
+
+| Case | vertex list (GPU path) | instance per segment | partner, 56 B + colour mix | partner, 40 B, no mix |
+|---|---|---|---|---|
+| 10 M marker vertices, eye among the lines | 24.0 | 26.9 (+12%) | 29.7 (+24%) | 25.9 (+8%) |
+| 10 M marker vertices, whole field in view | 21.2 | 23.4 (+11%) | 24.2 (+14%) | 21.7 (+2%) |
+| 20 M marker vertices, whole field in view | 35.2 | 40.8 (+16%) | 42.6 (+21%) | 35.9 (+2%) |
+| 10 M mesh-map link vertices, eye among the lines | 23.7 | 24.7 (+4%) | 27.6 (+17%) | — |
+| 10 M mesh-map link vertices, whole field in view | 21.1 | 21.6 (+2%) | 22.8 (+8%) | — |
+
+At 1 M vertices and below the four were within 1% (noise). A partner vertex also grows every buffer (marker 28 →
+40/56 B, links 16 → 32 B a vertex) and its CPU expansion (10 M marker vertices: 46 → 58/69 ms; 10 M links: +46 ms to
+build the partners); one instance per segment reads the GPU path's buffers. The 40 B variant draws wrong colours on
+the GPU as well (the moved end keeps its own), in 276 k of 1.9 M drawn pixels at 10 M vertices. An earlier run of the
+same matrix measured the same ordering with every time about twice as long (the iGPU's clock state). Unverified
+reasoning: the cost follows the bytes each vertex invocation fetches (two ends instead of one).
+
+Re-test the drop on a Chromium (SwiftShader) update by running those tests with the move taken out of
+`clipBehindEye`; if the lines draw, the segment variants can go. Re-run `line_clip_rhi_benchmark` on a discrete GPU or
+another driver before clipping on GPUs as well.
 
 ## CI lanes
 

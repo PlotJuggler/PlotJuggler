@@ -1,0 +1,20 @@
+// Copyright 2026 Davide Faconti
+// SPDX-License-Identifier: MPL-2.0
+// The clip position of one end of a GL_LINES segment whose other end is at `other_clip`, and in `moved` how far along
+// the segment it moved (0 when it stays): mix the end's attributes toward the other end's by `moved`. Chromium's
+// SwiftShader drops a whole line with one end behind the eye (w < 0) instead of clipping it (TECHNICAL_NOTES "SwiftShader
+// drops lines that cross behind the eye"): such an end moves along the segment to w = kMinClipW, behind every
+// perspective near plane (camera_math adaptiveNearFar's floor), so the rasterizer's own near clip leaves the visible
+// segment and its interpolated attributes unchanged. Clip space is linear along the segment.
+
+const float kMinClipW = 1e-4;
+
+vec4 clipBehindEye(vec4 clip, vec4 other_clip, out float moved) {
+    moved = 0.0;
+    if (clip.w < kMinClipW && other_clip.w > kMinClipW) {
+        moved = (kMinClipW - clip.w) / (other_clip.w - clip.w);
+        clip = mix(clip, other_clip, moved);
+        clip.w = kMinClipW;  // float rounding of the mix leaves w off it, and exactly 0 on a large grid
+    }
+    return clip;
+}

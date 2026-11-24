@@ -57,6 +57,23 @@ QRhiVertexInputLayout inputLayout() {
   return layout;
 }
 
+// The links on a software rasterizer (meshmap_segment.vert): one instance per link, read straight from the link
+// buffers, whose consecutive vertex pairs are the links. Binding 0: both ends' positions; 1: both ends' RGBA8 colours.
+QRhiVertexInputLayout segmentLayout() {
+  QRhiVertexInputLayout layout;
+  layout.setBindings({
+      QRhiVertexInputBinding(6 * sizeof(float), QRhiVertexInputBinding::PerInstance),
+      QRhiVertexInputBinding(2 * sizeof(std::uint32_t), QRhiVertexInputBinding::PerInstance),
+  });
+  layout.setAttributes({
+      QRhiVertexInputAttribute(0, 0, QRhiVertexInputAttribute::Float3, 0),
+      QRhiVertexInputAttribute(0, 1, QRhiVertexInputAttribute::Float3, 3 * sizeof(float)),
+      QRhiVertexInputAttribute(1, 2, QRhiVertexInputAttribute::UNormByte4, 0),
+      QRhiVertexInputAttribute(1, 3, QRhiVertexInputAttribute::UNormByte4, sizeof(std::uint32_t)),
+  });
+  return layout;
+}
+
 bool ensureBuffer(QRhi* rhi, QRhiBuffer*& buffer, quint32& capacity, std::size_t bytes) {
   return bytes <= std::numeric_limits<quint32>::max() &&
          ensureStaticVertexBuffer(rhi, buffer, capacity, static_cast<quint32>(bytes), kMinimumBufferBytes);
@@ -100,6 +117,11 @@ bool MeshMapRhiPass::initialize(const RhiPassSetup& setup) {
   desc.depth_write = false;  // depth test only
   translucent_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.topology = QRhiGraphicsPipeline::Lines;
+  line_segments_ = setup.line_segments;
+  if (line_segments_) {
+    desc.vertex = loadRhiShader(QStringLiteral(":/scene3d_rhi/meshmap_segment.vert.qsb"));
+    desc.input_layout = segmentLayout();
+  }
   translucent_line_pipeline_ = setup.pipelines->add(desc, setup.part);
   desc.depth_write = true;
   line_pipeline_ = setup.pipelines->add(desc, setup.part);
@@ -271,25 +293,27 @@ bool MeshMapRhiPass::submit(
   command_buffer->setViewport(viewport);
   if (draw.lines) {
     command_buffer->setShaderResources(gpu.line_bindings);
+    // The segment layout's binding 1 is the colours; the vertex list's is the value slot, which the line mode ignores.
     const std::array<QRhiCommandBuffer::VertexInput, 3> inputs{{
         {gpu.link_positions, 0},
-        {gpu.link_colors, 0},  // value slot: ignored by the line mode
+        {gpu.link_colors, 0},
         {gpu.link_colors, 0},
     }};
-    command_buffer->setVertexInput(0, static_cast<int>(inputs.size()), inputs.data());
-  } else {
-    command_buffer->setShaderResources(gpu.surface_bindings);
-    // Solid mode reads neither attribute: bind the positions (12 bytes per vertex,
-    // so always long enough) rather than a colour buffer left from an earlier,
-    // possibly smaller mesh.
-    QRhiBuffer* attributes = gpu.attributes_in_use ? gpu.attributes : gpu.positions;
-    const std::array<QRhiCommandBuffer::VertexInput, 3> inputs{{
-        {gpu.positions, 0},
-        {attributes, 0},
-        {attributes, 0},
-    }};
-    command_buffer->setVertexInput(0, static_cast<int>(inputs.size()), inputs.data());
+    command_buffer->setVertexInput(0, line_segments_ ? 2 : 3, inputs.data());
+    drawLines(*command_buffer, draw.vertex_count, line_segments_);
+    return true;
   }
+  command_buffer->setShaderResources(gpu.surface_bindings);
+  // Solid mode reads neither attribute: bind the positions (12 bytes per vertex,
+  // so always long enough) rather than a colour buffer left from an earlier,
+  // possibly smaller mesh.
+  QRhiBuffer* attributes = gpu.attributes_in_use ? gpu.attributes : gpu.positions;
+  const std::array<QRhiCommandBuffer::VertexInput, 3> inputs{{
+      {gpu.positions, 0},
+      {attributes, 0},
+      {attributes, 0},
+  }};
+  command_buffer->setVertexInput(0, static_cast<int>(inputs.size()), inputs.data());
   command_buffer->draw(draw.vertex_count);
   return true;
 }
