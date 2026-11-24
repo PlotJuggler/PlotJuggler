@@ -1262,6 +1262,25 @@ void McpServer::jobKill(const json& args, const Caller& caller, Reply reply) {
   addWaiter(*job, Waiter::Kind::kKill, caller, std::move(reply), kKillWaitS);
   updateTick();
   killJob(id, keep_partial);
+  // A stop its work declined (its kill hook cleared `killing`) is answered now with the status, whose progress says
+  // why, instead of waiting kKillWaitS for a stop that never comes.
+  if (Job* declined = liveJob(id); declined != nullptr && !declined->killing) {
+    const json status = mcp::jsonResult(jobStatus(*declined));
+    std::vector<Reply> due;
+    std::erase_if(declined->waiters, [&due](Waiter& waiter) {
+      if (waiter.kind != Waiter::Kind::kKill) {
+        return false;
+      }
+      if (waiter.connection != nullptr) {
+        due.push_back(std::move(waiter.reply));
+      }
+      return true;
+    });
+    updateTick();
+    for (Reply& answer : due) {
+      answer(status);
+    }
+  }
 }
 
 void McpServer::grabScreenshot(int max_width, std::function<void(const QByteArray&)> done) {

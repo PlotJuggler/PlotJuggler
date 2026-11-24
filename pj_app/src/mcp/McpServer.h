@@ -365,12 +365,16 @@ class McpServer : public QObject {
   void screenshot(const nlohmann::json& args, const Caller& caller, Reply reply);
   void saveLayout(const nlohmann::json& args, const Caller& caller, Reply reply);
   void loadLayout(const nlohmann::json& args, const Caller& caller, Reply reply);
-  /// load_layout once its layout parsed: asks the user first when the workspace holds anything, then loads it as
-  /// MainWindow::loadLayoutForAgent with that origin (`file_path` empty for text). `reply` runs exactly once.
+  /// load_layout once its layout parsed: refused while the user has a dialog open or a layout load is in flight,
+  /// else asks the user first when the workspace holds anything, then loads it as MainWindow::loadLayoutForAgent with
+  /// that origin (`file_path` empty for text, `url` empty unless downloaded). `reply` runs exactly once.
   void confirmLayoutLoad(
-      QDomDocument doc, const QString& name, const QString& file_path, const Caller& caller, Reply reply);
-  /// Replies when the load settles, with the warnings reported meanwhile. From here job `job` cannot be stopped.
-  void startLayoutLoad(QDomDocument doc, const QString& name, const QString& file_path, quint64 job, Reply reply);
+      QDomDocument doc, const QString& name, const QString& file_path, const QUrl& url, const Caller& caller,
+      Reply reply);
+  /// Replies when this load settles (only its own layoutRestoreSettled), with the warnings reported meanwhile. From
+  /// here job `job` cannot be stopped.
+  void startLayoutLoad(
+      QDomDocument doc, const QString& name, const QString& file_path, const QUrl& url, quint64 job, Reply reply);
   // McpWidgetState.cpp
   void widgetState(const nlohmann::json& args, const Caller& caller, Reply reply);
   void setWidgetState(const nlohmann::json& args, const Caller& caller, Reply reply);

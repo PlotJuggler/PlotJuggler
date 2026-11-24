@@ -537,8 +537,8 @@ json appToolEntries() {
           "save_layout",
           "The whole workspace as layout XML, as File > Save Layout writes it: every tab (the user's and yours), "
           "plots, scenes, derived series and markers. Without path it returns xml: generic unless bind_sources, "
-          "which records the loaded files and streams with absolute paths and every plugin setting's secrets as "
-          "\"<redacted>\"" PJ_MCP_SAVE_LAYOUT_PATH ".",
+          "which records the loaded files and streams with absolute paths; every setting's secrets (a plugin's, a "
+          "widget's, a derived series' parameters) read as \"<redacted>\"" PJ_MCP_SAVE_LAYOUT_PATH ".",
           schema(
               {{"path",
                 described(
@@ -563,7 +563,9 @@ json appToolEntries() {
           "already, without asking. If the workspace holds anything (a plot, a derived series, an open toolbox, "
           "undo history), the user is asked to confirm first (a job_id after wait_s while they decide; job_kill "
           "withdraws the question or stops the download, but a layout already applying completes). Refused while "
-          "another layout load runs. Your tabs and series in it come back as yours. Returns loaded and the app's "
+          "another layout load runs, and for text still holding \"<redacted>\" (load the file save_layout wrote "
+          "with path, or put the real values in). Your tabs and series in it come back as yours. Returns loaded "
+          "and the app's "
           "warnings (missing data, a relative path, a newer format), or its error.",
           schema(
               {{"xml", described(str, "the layout's whole text")},

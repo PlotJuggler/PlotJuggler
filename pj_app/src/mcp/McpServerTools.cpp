@@ -129,12 +129,30 @@ std::string outputPathError(const QString& path, const QString& suffix, bool ove
 
 constexpr auto kLayoutBusy = "busy: another layout is loading; call again once it has finished";
 
-/// Why `doc`, which parsed, is not a PJ4 layout; empty when it is one.
+/// The layout elements whose direct text is a JSON configuration an agent reads only through configForAgent: a file's
+/// or a stream's <plugin>, a <materialize> descriptor, a pinned <toolbox>, a Custom Widget's <config>, a filter's
+/// <processor> parameters and a derived series' <params>.
+const std::array<QString, 6> kLayoutConfigTags = {u"plugin"_s, u"materialize"_s, u"toolbox"_s,
+                                                  u"config"_s, u"processor"_s,   u"params"_s};
+
+/// Why `doc`, which parsed, cannot be loaded for an agent; empty when it can: not a PJ4 layout, or a configuration
+/// still holding a secret save_layout's text redacted, which would otherwise be applied as the sentinel itself.
 QString notALayout(const QDomDocument& doc, const QString& name) {
   const QDomElement root = doc.documentElement();
-  return root.tagName() == "root"_L1 && !root.firstChildElement(u"tabbed_widget"_s).isNull()
-             ? QString()
-             : u"'%1' is not a PJ4 layout: its root element must be <root>, holding a <tabbed_widget>"_s.arg(name);
+  if (root.tagName() != "root"_L1 || root.firstChildElement(u"tabbed_widget"_s).isNull()) {
+    return u"'%1' is not a PJ4 layout: its root element must be <root>, holding a <tabbed_widget>"_s.arg(name);
+  }
+  for (const QString& tag : kLayoutConfigTags) {
+    const QDomNodeList elements = doc.elementsByTagName(tag);
+    for (int index = 0; index < elements.size(); ++index) {
+      if (directCdataText(elements.at(index).toElement()).contains(QLatin1StringView(mcp::kRedacted))) {
+        return u"'%1' holds secrets that save_layout's text redacted (%2): save_layout {path} writes a file that "
+               u"keeps them, for load_layout {path}; or put the real values in place of %2"_s.arg(
+                   name, QString::fromLatin1(mcp::kRedacted));
+      }
+    }
+  }
+  return {};
 }
 
 /// `text` as a layout document: bytes honour their encoding declaration, a QString is already decoded. nullopt with
@@ -150,19 +168,25 @@ std::optional<QDomDocument> parseLayout(const Text& text, const QString& name, Q
   return error.isEmpty() ? std::optional<QDomDocument>(doc) : std::nullopt;
 }
 
-/// Layout text as an agent may read it: every plugin configuration in it (a file's or a stream's <plugin>, a
-/// <materialize> descriptor, a pinned <toolbox>) through configForAgent. One that is not JSON is left out whole.
+/// Layout text as an agent may read it: every configuration in it (kLayoutConfigTags) through configForAgent. Only one
+/// redaction changed is rewritten, so the rest keep their text byte for byte (a stream's is how a load finds it
+/// running). One that is not JSON is left out whole.
 QByteArray layoutForAgent(const QByteArray& bytes) {
   QDomDocument doc;
   if (!doc.setContent(bytes)) {
     return {};
   }
-  for (const QString& tag : {u"plugin"_s, u"materialize"_s, u"toolbox"_s}) {
+  for (const QString& tag : kLayoutConfigTags) {
     const QDomNodeList elements = doc.elementsByTagName(tag);
     for (int index = 0; index < elements.size(); ++index) {
       QDomElement element = elements.at(index).toElement();
       const QString config = directCdataText(element);
       if (config.trimmed().isEmpty()) {
+        continue;
+      }
+      const json parsed = parseOrNull(config);
+      const json redacted = mcp::redactSecrets(parsed);
+      if (!parsed.is_discarded() && redacted == parsed) {
         continue;
       }
       for (QDomNode child = element.firstChild(); !child.isNull();) {
@@ -172,8 +196,7 @@ QByteArray layoutForAgent(const QByteArray& bytes) {
         }
         child = next;
       }
-      const json redacted = configForAgent(config);
-      if (!redacted.is_null()) {
+      if (!parsed.is_discarded()) {
         appendJsonAsCdata(doc, element, QString::fromStdString(redacted.dump()));
       }
     }
@@ -1294,7 +1317,7 @@ void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) 
     reply(fail("pass exactly one of xml, path and url"));
     return;
   }
-  // One load at a time: a load's end (layoutRestoreSettled) does not say whose load it was.
+  // One load at a time: the diagnostics a load's reply quotes do not say which load reported them.
   if (layout_load_busy_ || window_.layoutLoadInFlight()) {
     reply(fail(kLayoutBusy));
     return;
@@ -1329,7 +1352,7 @@ void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) 
             reply(fail(error.toStdString()));
             return;
           }
-          self->confirmLayoutLoad(std::move(*doc), name, {}, caller, reply);
+          self->confirmLayoutLoad(std::move(*doc), name, {}, url, caller, reply);
         });
     if (Job* job = liveJob(caller.job)) {
       job->kill = [self = QPointer<McpServer>(this), reply](bool) {
@@ -1373,22 +1396,34 @@ void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) 
     return;
   }
   layout_load_busy_ = true;
-  confirmLayoutLoad(std::move(*doc), name, file_path, caller, std::move(reply));
+  confirmLayoutLoad(std::move(*doc), name, file_path, {}, caller, std::move(reply));
 }
 
 void McpServer::confirmLayoutLoad(
-    QDomDocument doc, const QString& name, const QString& file_path, const Caller& caller, Reply reply) {
-  auto begin = [self = QPointer<McpServer>(this), doc, name, file_path, job = caller.job, reply]() mutable {
+    QDomDocument doc, const QString& name, const QString& file_path, const QUrl& url, const Caller& caller,
+    Reply reply) {
+  // A download ends from the event loop, maybe under a dialog of the user's, maybe one a load of theirs has open.
+  if (const QWidget* modal = QApplication::activeModalWidget(); modal != nullptr) {
+    layout_load_busy_ = false;
+    reply(userDialogOpen(*modal));
+    return;
+  }
+  if (window_.layoutLoadInFlight()) {
+    layout_load_busy_ = false;
+    reply(fail(kLayoutBusy));
+    return;
+  }
+  auto begin = [self = QPointer<McpServer>(this), doc, name, file_path, url, job = caller.job, reply]() mutable {
     if (self == nullptr) {
       return;
     }
-    // Rechecked: the user may have started a load while deciding, or the download ran.
+    // Rechecked: the user may have started a load while deciding.
     if (self->window_.layoutLoadInFlight()) {
       self->layout_load_busy_ = false;
       reply(fail(kLayoutBusy));
       return;
     }
-    self->startLayoutLoad(std::move(doc), name, file_path, job, std::move(reply));
+    self->startLayoutLoad(std::move(doc), name, file_path, url, job, std::move(reply));
   };
   if (!window_.layoutLoadWouldDiscardWork()) {
     begin();
@@ -1413,7 +1448,7 @@ void McpServer::confirmLayoutLoad(
 }
 
 void McpServer::startLayoutLoad(
-    QDomDocument doc, const QString& name, const QString& file_path, quint64 job, Reply reply) {
+    QDomDocument doc, const QString& name, const QString& file_path, const QUrl& url, quint64 job, Reply reply) {
   if (Job* running = liveJob(job)) {
     // A restore cannot be stopped halfway without leaving data of a layout the workspace no longer shows: it
     // completes, and the stop says so instead of claiming a kill.
@@ -1431,6 +1466,7 @@ void McpServer::startLayoutLoad(
   // Diagnostics reach the bridge queued: those posted before this load are delivered now, before the capture.
   QCoreApplication::sendPostedEvents(bridge, QEvent::MetaCall);
   auto* receiver = new QObject(this);
+  const quint64 load = window_.nextLayoutLoad();
   struct Reported {
     QStringList lines;
     QSet<QString> seen;
@@ -1440,7 +1476,8 @@ void McpServer::startLayoutLoad(
   connect(
       bridge, &QtDiagnosticBridge::diagnosticReported, receiver,
       [reported](int level, const QString& source, const QString& id, const QString& message) {
-        const bool layout = source == "Layout"_L1 && level >= static_cast<int>(DiagnosticLevel::kWarning);
+        const bool layout = source == "Layout"_L1 &&
+                            (level >= static_cast<int>(DiagnosticLevel::kWarning) || id == "layout-superseded"_L1);
         if (!layout && !(source == "File Loader"_L1 && id == "data-source-load-failed"_L1)) {
           return;
         }
@@ -1454,9 +1491,16 @@ void McpServer::startLayoutLoad(
       });
   connect(
       &window_, &MainWindow::layoutRestoreSettled, receiver,
-      [this, receiver, reported, reply](bool loaded) {
-        // This load's diagnostics, queued to the bridge, arrive before a call queued now. `receiver` is this
-        // server's child, so the call is dropped with the server.
+      [this, receiver, reported, reply, load, bridge](bool loaded, quint64 settled) {
+        if (settled != load) {
+          return;  // another load's: the user's, or a startup layout's
+        }
+        // This load's diagnostics, queued to the bridge, are delivered now; any later one is another load's.
+        QCoreApplication::sendPostedEvents(bridge, QEvent::MetaCall);
+        QObject::disconnect(bridge, nullptr, receiver, nullptr);
+        QObject::disconnect(&window_, nullptr, receiver, nullptr);
+        // Replied from the event loop, never from inside the window's load. `receiver` is this server's child, so
+        // the call is dropped with the server.
         QTimer::singleShot(0, receiver, [this, receiver, reported, reply, loaded] {
           receiver->deleteLater();
           layout_load_busy_ = false;
@@ -1474,9 +1518,9 @@ void McpServer::startLayoutLoad(
           }
           reply(fail(("layout not loaded\n" + lines.join(u'\n')).trimmed().toStdString()));
         });
-      },
-      Qt::SingleShotConnection);
-  window_.loadLayoutForAgent(std::move(doc), MainWindow::LayoutOrigin{.name = name, .file_path = file_path});
+      });
+  window_.loadLayoutForAgent(
+      std::move(doc), MainWindow::LayoutOrigin{.name = name, .file_path = file_path, .url = url});
 }
 
 }  // namespace PJ

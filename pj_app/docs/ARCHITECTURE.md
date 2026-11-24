@@ -307,7 +307,8 @@ families: `stampDatasetSourcePaths`, then `relativizeDatasetSourcePaths`) and, i
 URDF file and `file://` package roots (Scene3D's `relocateLayoutResources`). `loadLayoutDocument` resolves them
 against the folder of its `LayoutOrigin` before any restore (`resolveDatasetSourcePaths`, Scene3D's
 `resolveLayoutResourceUrls`). A document with no file (an MCP agent's text or URL) has no folder: a relative path in
-it is reported as `relative-path-unresolved` and binds nothing, and a relative robot model fails the load. A save
+it is reported as `relative-path-unresolved` and binds nothing. A URL's layout anchors its robot models at the URL
+(`LayoutOrigin::url`); in text a relative one fails the load. A save
 with no file (`layoutFileBytes` with an empty path) writes them all absolute. Undo snapshots and in-memory captures
 stay absolute; browser layouts skip both steps; a generic layout has no dataset qualifier, except those startup keeps
 for its explicit files ("Command-line startup").
