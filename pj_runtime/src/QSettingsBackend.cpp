@@ -21,7 +21,8 @@ QString toKey(std::string_view key) {
 }
 
 // Persisted name: set in a plugin's group once its root keys were copied in. A plugin never reads, writes or removes
-// it (scopedKey), so it cannot collide with a plugin key; renaming it copies every plugin's root keys again.
+// it in any case (scopedKey; Windows registry and INI keys are case-insensitive), so it cannot collide with a plugin
+// key; renaming it copies every plugin's root keys again.
 constexpr QLatin1StringView kRootKeysCopiedMarker{"__pj_root_keys_copied__"};
 
 // The app's own root groups whose names are lowercase; every other app key starts with a capital letter.
@@ -64,6 +65,8 @@ std::unique_ptr<QSettingsBackend> QSettingsBackend::forPlugin(std::string_view p
   }
   auto backend =
       ini_path.isEmpty() ? std::make_unique<QSettingsBackend>() : std::make_unique<QSettingsBackend>(ini_path);
+  // Its own QSettings instance: the org-wide and system-scope files stay out of the copy scan and the reads.
+  backend->settings_.setFallbacksEnabled(false);
   backend->prefix_ = pluginSettingsGroup(plugin_id) + u'/';
   backend->copyRootKeysOnce(u'-' + toKey(plugin_id).replace(u'_', u'-') + u'-');
   return backend;
@@ -83,15 +86,16 @@ void QSettingsBackend::copyRootKeysOnce(const QString& id_words) {
 }
 
 std::optional<QString> QSettingsBackend::scopedKey(std::string_view key) const {
-  if (prefix_.isEmpty()) {
-    return toKey(key);
-  }
-  // QSettings drops empty segments itself; normalizing first is what lets the marker check see the stored key.
+  // QSettings drops empty segments itself; normalizing first is what lets the checks see the stored key (an empty
+  // key would make QSettings::remove clear the whole file).
   const QString normalized = toKey(key).split(u'/', Qt::SkipEmptyParts).join(u'/');
   if (normalized.isEmpty()) {
     throw std::invalid_argument("pj.settings.v1: the key is empty");
   }
-  if (normalized == kRootKeysCopiedMarker) {
+  if (prefix_.isEmpty()) {
+    return normalized;
+  }
+  if (normalized.compare(kRootKeysCopiedMarker, Qt::CaseInsensitive) == 0) {
     return std::nullopt;
   }
   return prefix_ + normalized;
@@ -103,29 +107,36 @@ void QSettingsBackend::checkThread() const {
   }
 }
 
+// isWritable() is costly (on macOS it writes a probe key and synchronizes every preferences domain), so it is asked
+// once, on the first write.
+void QSettingsBackend::checkWritable() {
+  if (!writable_.has_value()) {
+    writable_ = settings_.isWritable();
+  }
+  if (!*writable_) {
+    throw std::runtime_error("the settings file is not writable");
+  }
+}
+
 void QSettingsBackend::store(std::string_view key, const QVariant& value) {
   checkThread();
   const std::optional<QString> scoped = scopedKey(key);
   if (!scoped.has_value()) {
     throw std::invalid_argument("pj.settings.v1: the key is reserved");
   }
-  if (!settings_.isWritable()) {
-    throw std::runtime_error("the settings file is not writable");
-  }
+  checkWritable();
   settings_.setValue(*scoped, value);
 }
 
+// Presence is contains(): Qt's INI writer stores an empty list as @Invalid(), which reads back as an invalid
+// QVariant, so the value alone cannot tell an empty list from an absent key.
 std::optional<QVariant> QSettingsBackend::value(std::string_view key) {
   checkThread();
   const std::optional<QString> scoped = scopedKey(key);
-  if (!scoped.has_value()) {
+  if (!scoped.has_value() || !settings_.contains(*scoped)) {
     return std::nullopt;
   }
-  QVariant stored = settings_.value(*scoped);
-  if (!stored.isValid()) {
-    return std::nullopt;
-  }
-  return stored;
+  return settings_.value(*scoped);
 }
 
 std::optional<std::string> QSettingsBackend::getString(std::string_view key) {
@@ -164,14 +175,19 @@ void QSettingsBackend::setStringList(std::string_view key, const std::vector<std
 }
 
 bool QSettingsBackend::contains(std::string_view key) {
-  return value(key).has_value();
+  checkThread();
+  const std::optional<QString> scoped = scopedKey(key);
+  return scoped.has_value() && settings_.contains(*scoped);
 }
 
 void QSettingsBackend::remove(std::string_view key) {
   checkThread();
-  if (const std::optional<QString> scoped = scopedKey(key)) {
-    settings_.remove(*scoped);
+  const std::optional<QString> scoped = scopedKey(key);
+  if (!scoped.has_value()) {
+    return;
   }
+  checkWritable();
+  settings_.remove(*scoped);
 }
 
 }  // namespace PJ

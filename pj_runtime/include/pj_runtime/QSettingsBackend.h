@@ -44,11 +44,13 @@ class QSettingsBackend : public sdk::SettingsBackend {
   // The stored key; nullopt for the store's own marker, which no plugin key reaches.
   [[nodiscard]] std::optional<QString> scopedKey(std::string_view key) const;
   void checkThread() const;
+  void checkWritable();
   void store(std::string_view key, const QVariant& value);
   [[nodiscard]] std::optional<QVariant> value(std::string_view key);
 
   QSettings settings_;
   QString prefix_;  // "<plugin group>/"; empty when unscoped
+  std::optional<bool> writable_;
 };
 
 }  // namespace PJ

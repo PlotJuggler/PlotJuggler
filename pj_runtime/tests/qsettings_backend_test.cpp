@@ -16,6 +16,11 @@
 
 #include "pj_runtime/PluginSettingsKeys.h"
 #include "pj_runtime/QSettingsBackend.h"
+#include "recording_test_utils.h"
+
+#ifndef Q_OS_WIN
+#include <unistd.h>  // geteuid: root ignores the file permissions the unwritable-file tests rely on
+#endif
 
 using namespace Qt::StringLiterals;
 
@@ -254,8 +259,19 @@ TEST(QSettingsBackend, RefusesCallsOffItsThread) {
   EXPECT_EQ(store->getString("kept"), "yes");
 }
 
+bool runsAsRoot() {
+#ifndef Q_OS_WIN
+  return geteuid() == 0;
+#else
+  return false;
+#endif
+}
+
 // A write QSettings cannot store throws and changes nothing the store reads back.
 TEST(QSettingsBackend, AWriteThatCannotBeStoredFails) {
+  if (runsAsRoot()) {
+    GTEST_SKIP() << "running as root: file permissions cannot make the settings file unwritable";
+  }
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   const QString path = dir.filePath("settings.ini");
@@ -286,6 +302,94 @@ TEST(QSettingsBackend, AMalformedLineDoesNotFailLaterWrites) {
     EXPECT_EQ(store->getString("url"), "ws://robot:9871");
   }
   EXPECT_EQ(PJ::QSettingsBackend::forPlugin("bridge", path)->getString("url"), "ws://robot:9871");
+}
+
+// A remove QSettings cannot store throws and leaves the key in place.
+TEST(QSettingsBackend, ARemoveThatCannotBeStoredFails) {
+  if (runsAsRoot()) {
+    GTEST_SKIP() << "running as root: file permissions cannot make the settings file unwritable";
+  }
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath("settings.ini");
+  { PJ::QSettingsBackend::forPlugin("bridge", path)->setString("url", "ws://old"); }
+  ASSERT_TRUE(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::ReadUser));
+
+  auto store = PJ::QSettingsBackend::forPlugin("bridge", path);
+  EXPECT_THROW(store->remove("url"), std::exception);
+  EXPECT_EQ(store->getString("url"), "ws://old");
+  ASSERT_TRUE(QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+}
+
+// Qt's INI writer stores an empty list as @Invalid(): the key is present and its value is empty.
+TEST(QSettingsBackend, AnEmptyListIsPresentAfterARestart) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath("settings.ini");
+  {
+    QFile file(path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("[PluginSettings]\nbridge\\h=@Invalid()\n");
+  }
+  {
+    auto store = PJ::QSettingsBackend::forPlugin("bridge", path);
+    EXPECT_TRUE(store->contains("h"));
+    EXPECT_EQ(store->getStringList("h"), std::vector<std::string>{});
+    EXPECT_EQ(store->getString("h"), "");
+    store->setStringList("cleared", {});
+  }
+  auto store = PJ::QSettingsBackend::forPlugin("bridge", path);
+  EXPECT_TRUE(store->contains("cleared"));
+  EXPECT_EQ(store->getStringList("cleared"), std::vector<std::string>{});
+}
+
+// A plugin's store sees only the app's own settings file: no system-scope or organization-wide fallback.
+TEST(QSettingsBackend, AStoreReadsAndCopiesNoFallbackFile) {
+  const PJ::test::IsolatedQtSettings isolated(u"PJSettingsTestOrg"_s, u"PJSettingsTestApp"_s);
+  ASSERT_TRUE(isolated.isValid());
+  QTemporaryDir system_dir;
+  ASSERT_TRUE(system_dir.isValid());
+  QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, system_dir.path());
+  for (const QString& file :
+       {system_dir.filePath(u"PJSettingsTestOrg/PJSettingsTestApp.ini"_s),
+        system_dir.filePath(u"PJSettingsTestOrg.ini"_s)}) {
+    QSettings system(file, QSettings::IniFormat);
+    system.setValue(u"bridge/url"_s, u"ws://system"_s);
+    system.setValue(PJ::pluginSettingsGroup("bridge") + u"/leak"_s, u"system"_s);
+  }
+  ASSERT_EQ(QSettings().value(u"bridge/url"_s).toString(), u"ws://system"_s) << "the fallback is not in effect";
+
+  auto store = PJ::QSettingsBackend::forPlugin("bridge");
+  EXPECT_FALSE(store->contains("bridge/url"));
+  EXPECT_FALSE(store->contains("leak"));
+}
+
+// The reserved key matches in any case: Windows registry and INI keys are case-insensitive.
+TEST(QSettingsBackend, TheReservedKeyIsReservedInAnyCase) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = dir.filePath("settings.ini");
+  auto store = PJ::QSettingsBackend::forPlugin("bridge", path);
+  for (const std::string key : {"__PJ_ROOT_KEYS_COPIED__", "__Pj_Root_Keys_Copied__"}) {
+    EXPECT_FALSE(store->contains(key)) << key;
+    EXPECT_THROW(store->setString(key, "x"), std::exception) << key;
+    store->remove(key);
+  }
+  QSettings file(path, QSettings::IniFormat);
+  file.beginGroup(PJ::pluginSettingsGroup("bridge"));
+  EXPECT_EQ(file.allKeys().size(), 1);
+}
+
+// An unscoped backend refuses an empty key too: QSettings::remove("") would clear the whole file.
+TEST(QSettingsBackend, AnUnscopedBackendRefusesAnEmptyKey) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  PJ::QSettingsBackend backend(dir.filePath("settings.ini"));
+  backend.setString("kept", "yes");
+  EXPECT_THROW(backend.remove(""), std::exception);
+  EXPECT_THROW(backend.remove("/"), std::exception);
+  EXPECT_THROW(backend.setString("", "x"), std::exception);
+  EXPECT_EQ(backend.getString("kept"), "yes");
 }
 
 }  // namespace

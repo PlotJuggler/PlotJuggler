@@ -412,14 +412,16 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     recordFanoutProbeCall("services", where + (found ? ":ok" : ":missing"));
   }
 
-  // One "settings" call: "unbound" without a pj.settings.v1 store, else "stored" or "failed" for storing "last".
+  // One "settings" call: "unbound" without a pj.settings.v1 store, else "stored" or "failed" for storing
+  // "loaded_<n>", n counting this process's earlier "settings" calls, so every instance writes its own key.
   void useSettingsStore() const {
     const auto store = services().get<PJ::sdk::SettingsStoreService>();
     if (!store.has_value()) {
       recordFanoutProbeCall("settings", "unbound");
       return;
     }
-    recordFanoutProbeCall("settings", store->setValue("last", "loaded") ? "stored" : "failed");
+    const std::string key = "loaded_" + std::to_string(fanoutProbeSlotCalls("settings").size());
+    recordFanoutProbeCall("settings", store->setValue(key, "yes") ? "stored" : "failed");
   }
 
   std::string config_ = "{}";
@@ -2204,8 +2206,8 @@ TEST_F(FileLoaderTest, SingleLoadPluginGetsTheStoreOfItsManifestId) {
   ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(uR"({"display_suffix":"settings"})"_s)));
 
   EXPECT_EQ(fanoutProbeSlotCalls("settings"), std::vector<std::string>{"stored"});
-  EXPECT_EQ(probeSettingsValue(u"last"_s).toStdString(), "loaded");
-  EXPECT_FALSE(QSettings().contains(u"last"_s));
+  EXPECT_EQ(probeSettingsValue(u"loaded_0"_s), u"yes"_s);
+  EXPECT_FALSE(QSettings().contains(u"loaded_0"_s));
 }
 
 TEST_F(FileLoaderTest, FanoutEntriesGetTheStoreOfTheirManifestId) {
@@ -2217,9 +2219,11 @@ TEST_F(FileLoaderTest, FanoutEntriesGetTheStoreOfTheirManifestId) {
       uR"({"display_suffix":"settings","__pj_fanout":["{\"display_suffix\":\"settings\"}","{\"display_suffix\":\"settings\"}"]})"_s);
   ASSERT_TRUE(loadAndWait(path, hints));
 
-  // Two entries plus the prologue's instance.
+  // Two entries plus the prologue's instance, each in the manifest id's persisted store.
   EXPECT_EQ(fanoutProbeSlotCalls("settings"), std::vector<std::string>(3, "stored"));
-  EXPECT_EQ(probeSettingsValue(u"last"_s).toStdString(), "loaded");
+  for (const QString& key : {u"loaded_0"_s, u"loaded_1"_s, u"loaded_2"_s}) {
+    EXPECT_EQ(probeSettingsValue(key), u"yes"_s) << key.toStdString();
+  }
 }
 
 TEST_F(FileLoaderTest, SingleLoadPluginMayReportProgressFromItsDestructor) {

@@ -178,7 +178,20 @@ TEST(BrowserPersistencePolicy, DurablePluginValuesAreBoundedStringsWithoutCreden
   const qsizetype cap = BrowserPersistence::kMaxDurablePluginValueLength;
   EXPECT_EQ(kept(key, QString(cap, u'x')).size(), cap);
   EXPECT_TRUE(BrowserPersistence::sanitizeDurablePluginSetting(key, QString()).has_value());
-  EXPECT_EQ(kept(key, u"wss://robot.local:9871/bridge?x=1"_s), u"wss://robot.local:9871/bridge?x=1"_s);
+  // An @ with no password before it is kept: keeping other secrets out of durable/ keys is the plugin's job.
+  for (const QString& value : {
+           u"wss://robot.local:9871/bridge?x=1"_s,
+           u"https://token@example.com/feed"_s,
+           u"ssh://git@host/r"_s,
+           u"docker://ubuntu@sha256:0123abcd"_s,
+           u"https://h//@scope/pkg"_s,
+           u"someone@example.com"_s,
+           u"mailto:someone@example.com"_s,
+           u"https://h/p@v"_s,
+           u"{\"server\":\"ws://robot:9871\",\"owner\":\"someone@example.com\"}"_s,
+       }) {
+    EXPECT_EQ(kept(key, value), value) << value.toStdString();
+  }
 
   for (const QVariant& value : {
            QVariant(QString(cap + 1, u'x')),
@@ -189,11 +202,13 @@ TEST(BrowserPersistencePolicy, DurablePluginValuesAreBoundedStringsWithoutCreden
            QVariant(u"/pj_uploads/dead/run.mcap"_s),
            QVariant(u"line\nbreak"_s),
            QVariant(u"ws://user:secret@robot.local:9871"_s),
-           QVariant(u"https://token@example.com/feed"_s),
            QVariant(u" ws://user:secret@robot.local:9871"_s),
            QVariant(u"//user:secret@robot.local:9871"_s),
+           QVariant(u"user:secret@robot.local:9871"_s),
            QVariant(u"{\"url\":\"ws://user:secret@robot.local:9871\"}"_s),
            QVariant(u"ws:\\\\user:secret@robot.local:9871"_s),
+           QVariant(u"wss:user:secret@robot.local"_s),
+           QVariant(u"https:/user:secret@robot.local"_s),
            QVariant(u"ws://robot"_s + QChar(0xD800)),
        }) {
     EXPECT_FALSE(BrowserPersistence::sanitizeDurablePluginSetting(key, value).has_value())

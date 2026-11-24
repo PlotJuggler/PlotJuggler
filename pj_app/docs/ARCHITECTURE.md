@@ -688,7 +688,9 @@ Native builds keep plain `QSettings`. WASM redirects ordinary `QSettings` caller
 each size-capped) holding the typed preference allowlist, a few bounded, source-free
 generic layout recipes, and the plugin settings a plugin marked durable (`pj_runtime` ARCHITECTURE "Plugin
 settings"), each re-checked on restore. File paths, upload identities, the host's `PluginConfig/` JSON of each
-plugin, credentials, source-bound layouts, stream records and every other plugin setting never enter durable storage.
+plugin, source-bound layouts, stream records and every plugin setting outside `durable/` never enter durable storage.
+In a `durable/` setting the backstop refuses a URL password and a secret-like key name (`isSecretKey`); keeping other
+secrets out of its `durable/` keys is the plugin's job.
 A rejected stored envelope (malformed, oversized or another version) is left intact with a warning and none of its
 values are imported. Allowlisted values written to the page-lifetime settings reach durable storage on
 `BrowserPersistence`'s periodic flush ([why a poll](./TECHNICAL_NOTES.md#browser-preferences-flush-on-a-timer)).

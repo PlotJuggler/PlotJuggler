@@ -20,7 +20,6 @@
 #include <QSettings>
 #include <QStringList>
 #include <QTimer>
-#include <QUrl>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -202,12 +201,15 @@ bool hasUnsafeCharacter(const QString& value) {
   return hasControlCharacter(value) || !QStringView(value).isValidUtf16();
 }
 
-// URL user info, whether the text is one URL (padded or not) or holds one anywhere, '\' read as '/'.
-bool carriesUrlUserInfo(const QString& text) {
-  static const QRegularExpression kAuthorityWithUserInfo(uR"(//[^/?#\s]*@)"_s);
-  QString slashed = text;
+// A "user:password@" anywhere in the text, at its start or after '/' or ':', '\\' read as '/'. An '@' with no
+// password before it (ssh://git@host, docker://image@sha256:..., an email, mailto:) is no password.
+bool carriesUrlPassword(const QString& text) {
+  static const QRegularExpression kUserAndPassword(
+      uR"re((?:^|[/:])(?!mailto:)[^/?#@:\s"',{}\[\]<>]+:[^/?#@:\s"',{}\[\]<>]+@)re"_s,
+      QRegularExpression::CaseInsensitiveOption);
+  QString slashed = text.trimmed();
   slashed.replace(u'\\', u'/');
-  return !QUrl(text.trimmed()).userInfo().isEmpty() || slashed.contains(kAuthorityWithUserInfo);
+  return slashed.contains(kUserAndPassword);
 }
 
 // The three durable envelopes share one shape, a QByteArray holding {"version": <n>, "<field>": <payload>}, because
@@ -670,7 +672,7 @@ std::optional<BrowserPersistence::DurablePluginSetting> BrowserPersistence::sani
   }
   const QString text = value.toString();
   if (text.size() > kMaxDurablePluginValueLength || namesAnUpload(text) || hasUnsafeCharacter(text) ||
-      carriesUrlUserInfo(text)) {
+      carriesUrlPassword(text)) {
     return std::nullopt;
   }
   return DurablePluginSetting{.plugin_id = segments[1], .value = text};

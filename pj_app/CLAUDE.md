@@ -44,8 +44,8 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
   `docs/layout-import-architecture.md` of the `pj-mcap-server` repository; read it before changing them.
 - Only `BrowserPersistence` writes durable browser storage, and only its preference allowlist, bounded source-free
   layout recipes and the bounded string plugin settings a plugin put under its own `durable/` keys. File paths,
-  upload identities, the host's `PluginConfig/` JSON, credentials, source-bound layouts, stream records and every
-  other plugin setting never enter it: it outlives the page in clear text, where paths and upload identities mean
+  upload identities, the host's `PluginConfig/` JSON, URL passwords, secret-like plugin keys, source-bound layouts,
+  stream records and every other plugin setting never enter it: it outlives the page in clear text, where paths and upload identities mean
   nothing on the next load and credentials would be exposed. Each envelope's size cap holds on write and on read, or
   a write could produce an envelope the next load rejects; a rejected stored envelope is left intact and not imported.
 - A Preferences nav row's position is its stack page index: adding or hiding a row without its page shows the wrong

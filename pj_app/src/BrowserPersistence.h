@@ -59,7 +59,7 @@ class BrowserPersistence final : public QObject {
   };
   // Kept when `key` has the durable layout, a name after "durable/" that reads like no credential (isSecretKey) and
   // names no upload, and `value` is a string within kMaxDurablePluginValueLength that names no upload and carries no
-  // URL user info anywhere; neither holds a control character or a lone surrogate. The plugin keeps credentials out
+  // URL password anywhere; neither holds a control character or a lone surrogate. The plugin keeps credentials out
   // of what it marks durable; this is a backstop.
   [[nodiscard]] static std::optional<DurablePluginSetting> sanitizeDurablePluginSetting(
       const QString& key, const QVariant& value);
