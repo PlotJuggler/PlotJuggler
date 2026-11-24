@@ -8162,18 +8162,29 @@ void MainWindow::deleteTransformOutput(const QString& catalog_key) {
   if (!mayDeleteTransformWriting(output_topic)) {
     return;
   }
+  // One undo step for the delete and its dependents: the baseline is refreshed before the confirmation, which removes
+  // the dependents.
+  const auto owning = session_->sessionManager().dataProcessorService().transformOwning(output_topic);
+  const bool history_exempt = owning.has_value() && owning->history_exempt;
+  if (!history_exempt) {
+    hydrateCurrentUndoState(/*refresh_data_universe=*/false);
+  }
   confirmAndRemoveDependentTransforms(
       {output_topic},
-      [this, output_topic]() {
+      [this, output_topic, history_exempt]() {
         // Looked up again: the confirmation may have removed transforms.
         DataProcessorService& live = session_->sessionManager().dataProcessorService();
         const auto transform = live.transformOwning(output_topic);
         if (!transform.has_value() || !live.removeTransform(transform->key).has_value()) {
           syncCustomTopicsPanel();
-          return;
+        } else {
+          // itemsRemoved fires synchronously and drops the row.
+          session_->catalogModel().rebuildFromDatastore();
         }
-        // itemsRemoved fires synchronously and drops the row.
-        session_->catalogModel().rebuildFromDatastore();
+        // Recorded even when this removal fails: the confirmation may already have removed the dependents.
+        if (!history_exempt) {
+          onUndoableChange(/*force_new_state=*/true);
+        }
       },
       // The editor may have been unloaded, or a foreign reader added, while the prompt was open.
       [this, output_topic]() { return mayDeleteTransformWriting(output_topic); });
