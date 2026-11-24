@@ -19,6 +19,7 @@
 #include "pj_base/sdk/service_traits.hpp"
 #include "pj_base/sdk/source/record_envelope.hpp"
 #include "pj_datastore/engine.hpp"
+#include "pj_plugins/host/data_source_handle.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
 #include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/DiagnosticEmit.h"
@@ -274,6 +275,20 @@ Status DataSourceRuntimeHost::registerServices(ServiceRegistryBuilder& registry)
   registerOptionalService<sdk::SourceObjectWriteHostService>(registry, source_object_write_host_.raw());
   if (auto status = registerRequiredService<sdk::DataSourceRuntimeHostService>(registry, hostHandle()); !status) {
     return status;
+  }
+  return {};
+}
+
+Status DataSourceRuntimeHost::bind(DataSourceHandle& handle) {
+  if (registry_ != nullptr) {
+    return unexpected(std::string("bind failed: this host already bound a plugin"));
+  }
+  registry_ = std::make_unique<ServiceRegistryBuilder>();
+  if (auto status = registerServices(*registry_); !status) {
+    return unexpected("service registration failed: " + status.error());
+  }
+  if (auto status = handle.bind(registry_->view()); !status) {
+    return unexpected("bind failed: " + status.error());
   }
   return {};
 }

@@ -25,6 +25,9 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
 - Load progress is wired only through `wireIngestProgress()`; a hand-made copy drifts from what the tests exercise.
   The row's X/bin goes straight to `SessionManager::requestCancel(token, keep_partial)`; the producer honours the
   flag, the shell never prompts.
+- Every DataSource plugin (file load, fan-out entry, stream) is bound through `DataSourceRuntimeHost::bind`, and its
+  owner declares that host before the handle: the plugin reaches the host's registry and services up to its
+  destructor, so a host destroyed first is a use-after-free.
 - Recording is a runtime capability: Record affordances follow `RecordingService::isSupported()`, never a build flag.
   A stream ending mid-capture finalizes only its own file (`RecordingService::onSourceEnded`); stopping the capture
   there would cut every other source's file short.
