@@ -17,12 +17,19 @@ STATS_HOST = "stats.plotjuggler.io"
 binding = "SITE"
 bucket_name = "plotjuggler-web"
 
+# The asset host's bucket (assets.plotjuggler.io): the samples' index, presets/index.json, served at
+# /presets/index.json (README.md, "Sample index").
+[[r2_buckets]]
+binding = "ASSET_HOST"
+bucket_name = "plotjuggler-assets"
+
 # The telemetry Worker (PlotJuggler/pj-telemetry): its dashboard and the /telemetry ingest.
 [[services]]
 binding = "TELEMETRY"
 service = "plotjuggler"
 
-# A preview on workers.dev: the same bucket and telemetry Worker, no custom domain.
+# A preview on workers.dev: the same buckets (so the production sample index) and telemetry Worker, no
+# custom domain.
 [env.preview]
 name = "plotjuggler-app-preview"
 workers_dev = true
@@ -34,6 +41,10 @@ STATS_HOST = "stats.invalid"
 [[env.preview.r2_buckets]]
 binding = "SITE"
 bucket_name = "plotjuggler-web"
+
+[[env.preview.r2_buckets]]
+binding = "ASSET_HOST"
+bucket_name = "plotjuggler-assets"
 
 [[env.preview.services]]
 binding = "TELEMETRY"

@@ -24,7 +24,7 @@ import {
   gzip,
 } from 'node:zlib';
 
-import { CACHE_CONTROL, ISOLATION_HEADERS } from './wasm_http_contract.mjs';
+import { CACHE_CONTROL, ISOLATION_HEADERS, JSON_CONTENT_TYPE } from './wasm_http_contract.mjs';
 import { readVersion, representation, sha256 } from './wasm_manifest.mjs';
 
 const brotliCompressAsync = promisify(brotliCompress);
@@ -50,7 +50,7 @@ const NOTICES = 'THIRD_PARTY_NOTICES.txt';
 export const CONTENT_TYPES = new Map([
   ['.html', 'text/html; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
-  ['.json', 'application/json; charset=utf-8'],
+  ['.json', JSON_CONTENT_TYPE],
   ['.svg', 'image/svg+xml'],
   ['.txt', 'text/plain; charset=utf-8'],
   ['.wasm', 'application/wasm'],
@@ -238,9 +238,7 @@ async function presetFiles(presetsRoot, prefix = '') {
 }
 
 // Refuses a preset tree whose index.json the browser could not use: absent,
-// malformed, without a presets array, with an entry the browser's catalog parser
-// refuses (which drops every entry), or naming a relative layout or thumbnail
-// the tree does not deploy. Absolute http(s) references live elsewhere and pass.
+// malformed, or failing validatePresetCatalog against the tree's `files`.
 async function validatePresetIndex(presetsRoot, files) {
   let index;
   try {
@@ -248,6 +246,16 @@ async function validatePresetIndex(presetsRoot, files) {
   } catch (error) {
     throw new Error(`The preset tree needs a readable JSON index.json: ${error.message}`, { cause: error });
   }
+  validatePresetCatalog(index, files);
+}
+
+// Refuses a parsed preset index the browser could not use: without a presets
+// array, with an entry the browser's catalog parser refuses (which drops every
+// entry), or naming a relative layout or thumbnail that is not one of `files`
+// (the paths deployed beside it, under presets/). Absolute http(s) references
+// live elsewhere and pass, and so does an empty thumbnail, which means none.
+// packaging/web/upload_preset_index.mjs applies it with no files beside it.
+export function validatePresetCatalog(index, files) {
   if (!Array.isArray(index?.presets)) {
     throw new Error('The preset index.json has no presets array');
   }
@@ -279,7 +287,7 @@ async function validatePresetIndex(presetsRoot, files) {
   const deployed = new Set(files);
   const base = new URL('https://presets.invalid/presets/index.json');
   for (const entry of index.presets) {
-    for (const reference of [entry?.layout, entry?.thumbnail].filter(value => value != null)) {
+    for (const reference of [entry?.layout, entry?.thumbnail].filter(value => value != null && value !== '')) {
       const target = typeof reference === 'string' && URL.canParse(reference, base)
         ? new URL(reference, base) : undefined;
       if (target && target.origin !== base.origin && ['http:', 'https:'].includes(target.protocol)) {
@@ -288,7 +296,8 @@ async function validatePresetIndex(presetsRoot, files) {
       const relative = target?.origin === base.origin && target.pathname.startsWith('/presets/')
         ? decodeURIComponent(target.pathname.slice('/presets/'.length)) : undefined;
       if (!deployed.has(relative)) {
-        throw new Error(`The preset index.json names a file the tree does not deploy: ${JSON.stringify(reference)}`);
+        throw new Error(
+          `The preset index.json names a file that is not deployed beside it: ${JSON.stringify(reference)}`);
       }
     }
   }

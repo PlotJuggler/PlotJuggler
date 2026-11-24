@@ -9,18 +9,17 @@
 // manifest declares, the manifest and sources/ to the R2 bucket under releases/<manifest hash>/,
 // then deploys the Worker with that prefix as RELEASE. Switching releases is the Worker deploy,
 // so a page never mixes two releases; earlier releases stay in the bucket for a rollback (deploy
-// again with an older package). Runs the pinned wrangler through npx, logged in to the account.
+// again with an older package). A real run first checks that the sample index is in the asset bucket,
+// which the Worker serves it from (README.md, "Sample index"). Runs the pinned wrangler (wrangler.mjs).
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
+import { PRESET_INDEX_PATH } from '../../scripts/wasm_http_contract.mjs';
 import { sha256 } from '../../scripts/wasm_manifest.mjs';
+import { ASSET_BUCKET, wrangler } from './wrangler.mjs';
 
 const BUCKET = 'plotjuggler-web';
-const WRANGLER = 'wrangler@4.118.0';
-const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 function parseArguments(argv) {
   const options = { env: 'preview', dryRun: false };
@@ -49,14 +48,6 @@ function walk(directory, prefix = '') {
   });
 }
 
-function wrangler(args, dryRun) {
-  if (dryRun) {
-    console.log(`wrangler ${args.join(' ')}`);
-    return;
-  }
-  execFileSync('npx', ['--yes', WRANGLER, ...args], { cwd: HERE, stdio: ['ignore', 'inherit', 'inherit'] });
-}
-
 const options = parseArguments(process.argv.slice(2));
 const root = path.resolve(options.package);
 const manifestBytes = readFileSync(path.join(root, 'manifest.json'));
@@ -78,6 +69,16 @@ if (existsSync(offer)) {
   }
 } else if (options.env === 'production') {
   throw new Error(`${root}/sources/SOURCE-OFFER.txt is missing: the GPL-3.0 bundle needs its source offer`);
+}
+
+// The Worker answers /presets/index.json from this object whatever the release holds: without it the
+// deployed app starts with no samples.
+try {
+  wrangler(['r2', 'object', 'get', `${ASSET_BUCKET}/${PRESET_INDEX_PATH}`, '--remote', '--pipe'],
+    options.dryRun, 'ignore');
+} catch (error) {
+  throw new Error(`${ASSET_BUCKET}/${PRESET_INDEX_PATH} cannot be read: upload the sample index first with `
+    + 'node packaging/web/upload_preset_index.mjs', { cause: error });
 }
 
 console.log(`release ${release}: ${files.size} files`);

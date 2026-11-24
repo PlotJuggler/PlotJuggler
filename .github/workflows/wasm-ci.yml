@@ -6,9 +6,9 @@
 #
 #   1. Production — the shipped defaults (Scene2D/Scene3D and browser Python
 #      ON), probes OFF: the app must configure, build, package deterministically
-#      with the sample presets (resources/wasm-presets), stay within its
-#      download budget, and pass the deployment contract + cold threaded
-#      Chromium boot.
+#      as app.plotjuggler.io publishes it (no presets: its Worker serves the
+#      samples' index, packaging/web), stay within its download budget, and pass
+#      the deployment contract + cold threaded Chromium boot.
 #   2. Acceptance — the same defaults with the ingress probe ON: the retained
 #      QRhi capability probe and functional browser suite (with python.spec.js
 #      and python_layout.spec.js) run against the same source graph used by the
@@ -16,7 +16,8 @@
 #      workers) and Firefox (wasm-firefox, two shards of one worker; nightly
 #      and manual runs only), which run in parallel on this job's package.
 #      It is packaged twice: without presets (deploy/, every spec) and with the
-#      samples (deploy-presets/, which presets.spec.js serves itself).
+#      samples (deploy-presets/, which presets.spec.js serves itself and whose
+#      deployed files the deployment contract checks).
 #
 # The deterministic release archive and performance budgets remain part of
 # the release tranche.
@@ -212,9 +213,9 @@ jobs:
         run: |
           set -euo pipefail
           npm --prefix tests/wasm run test:package
-          node scripts/package_wasm.mjs --presets resources/wasm-presets \
+          node scripts/package_wasm.mjs \
             --source build-wasm-prod/pj_app --output build-wasm-prod/deploy
-          node scripts/package_wasm.mjs --presets resources/wasm-presets \
+          node scripts/package_wasm.mjs \
             --source build-wasm-prod/pj_app --output build-wasm-prod/deploy-b
           diff -qr build-wasm-prod/deploy build-wasm-prod/deploy-b
 
@@ -305,6 +306,14 @@ jobs:
             --source build-wasm-probe/pj_app --output build-wasm-probe/deploy
           node scripts/package_wasm.mjs --presets resources/wasm-presets \
             --source build-wasm-probe/pj_app --output build-wasm-probe/deploy-presets
+
+      - name: Deployed samples' contract (acceptance package with presets)
+        # The production package carries no presets (app.plotjuggler.io serves its index from the
+        # Worker), so its deployment run skips their file checks; this package has them.
+        working-directory: tests/wasm
+        env:
+          PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-probe/deploy-presets
+        run: npm run test:deployment -- --grep 'deployed presets'
 
       - name: Upload acceptance package for the browser jobs
         uses: actions/upload-artifact@v4

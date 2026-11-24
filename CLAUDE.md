@@ -85,8 +85,9 @@ boundaries, ask before proceeding and suggest the closest fit.
   stays out of `pj_app` and the widget modules, except UI/editor code.
 - `resources/`: shared resources in `resources.qrc`, desktop-only splash memes in `memes.qrc`; module-local test and
   demo assets stay with their module. `resources/wasm-presets/` is not compiled in: it holds the browser sample
-  presets' index that `scripts/package_wasm.mjs --presets` deploys; their layouts, thumbnails and data live on the
-  asset host ([docs/WASM_PRESETS.md](./docs/WASM_PRESETS.md)).
+  presets' index that `scripts/package_wasm.mjs --presets` deploys and app.plotjuggler.io serves from an upload
+  ([packaging/web](./packaging/web/README.md#sample-index)); their layouts, thumbnails and data live on the asset
+  host ([docs/WASM_PRESETS.md](./docs/WASM_PRESETS.md)).
 - `3rdparty/`: vendored source deps plus `retro/` (compliance artifacts installed next to `pj-raster-helper`).
   Conan and system deps do not belong here.
 - `raster/`: `helper/` is the standalone GPL-2.0 `pj-raster-helper`; `ipc/` its header-only MPL-2.0 wire contract

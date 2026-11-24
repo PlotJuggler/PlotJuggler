@@ -34,6 +34,9 @@ Either may also be an absolute `https://` URL on a host that sends CORS headers,
 and then the tree needs no folder for that preset. The repository's samples work
 this way: `resources/wasm-presets/` holds only `index.json` and its README, and
 each sample's layout and thumbnail sit on the asset host beside its recording.
+`app.plotjuggler.io` does not package that index but serves an uploaded copy, so
+listing a sample there needs no deploy
+([`packaging/web/README.md`](../packaging/web/README.md#sample-index)).
 
 An entry with `"listed": false` gets no card in the presets dialog but still
 opens from its `?preset=<id>` link: a sample a web page links to without growing
@@ -94,7 +97,8 @@ serving meshes, needs CORS (`Access-Control-Allow-Origin`) on every file (see
    reference server. A sample of this repository goes to the asset host instead
    of the tree: upload its layout and thumbnail under new names (a `v1/` file
    never changes), point the entry at their URLs and list them in
-   `tests/wasm/fixtures/hosted_assets.json`.
+   `tests/wasm/fixtures/hosted_assets.json`. `app.plotjuggler.io` shows it once the
+   index is uploaded ([`packaging/web/README.md`](../packaging/web/README.md#sample-index)).
 
 Every path segment must match `[A-Za-z0-9_-][A-Za-z0-9._-]*`, and every file
 must have a deployable type (extension in any case): `.xml`, `.json`, `.csv`,
@@ -231,7 +235,7 @@ The packager refuses, before writing anything:
   an `id`/`title`/`description`/`layout`/`thumbnail` that is not a string, or a
   `listed` that is not a boolean), or
   naming a relative `layout`/`thumbnail` the tree does not deploy (absolute
-  http(s) references pass: they live elsewhere);
+  http(s) references pass: they live elsewhere; an empty thumbnail is none);
 - **symbolic links** — they can point outside the tree, to a relative `..` or
   an absolute target, so they are refused rather than followed;
 - **names outside the segment rule** — dotfiles and dot folders (`.git`,
@@ -247,10 +251,9 @@ declares, so a preset needs no server change.
 ## Testing
 
 `tests/wasm/package_wasm.test.mjs` covers the tree declaration, the refusals and
-determinism (`npm --prefix tests/wasm run test:package`). The production
-deployment contract checks every deployed preset file's bytes, MIME and cache
-policy and that the production build fetches `presets/index.json` at boot
-(`test:deployment` on a package built with `--presets`).
+determinism (`npm --prefix tests/wasm run test:package`, which also runs the
+tests of `packaging/web`). What the deployment contract checks of a package's
+presets is in [`WASM_DEPLOYMENT.md`](./WASM_DEPLOYMENT.md#local-serving-and-release-verification).
 
 The acceptance specs boot a package without presets, so no welcome dialog sits
 over their window. The sample cases in `tests/wasm/presets.spec.js` serve a
@@ -312,7 +315,8 @@ The package is a static site with the response contract of
 require-corp`, `Cross-Origin-Resource-Policy: same-origin`, `nosniff`, the
 manifest's MIME types and cache classes, and ideally the precompressed `.br` /
 `.gz` representations chosen by `Accept-Encoding`. PlotJuggler's own deployment,
-`app.plotjuggler.io`, is a Cloudflare Worker serving the package from R2
+`app.plotjuggler.io`, is a Cloudflare Worker serving the package from R2 and
+the samples' index from the asset host's bucket
 ([`packaging/web/README.md`](../packaging/web/README.md)). A robot serving the app
 beside its bridge uses the Caddy recipe in [`WASM_HOSTING.md`](./WASM_HOSTING.md).
 

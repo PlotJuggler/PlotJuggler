@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 
-import { CONTENT_TYPES, packageWasm } from '../../scripts/package_wasm.mjs';
+import { CONTENT_TYPES, packageWasm, validatePresetCatalog } from '../../scripts/package_wasm.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -483,6 +483,17 @@ test('a preset index must list only deployed files', async t => {
   });
   const manifest = await packageWasm({ source, output: path.join(root, 'deploy-remote'), version: 'test', presets });
   assert.ok(manifest.files.some(file => file.path === 'presets/index.json'));
+});
+
+test('a catalog with no file beside it: absolute references, an empty thumbnail, errors that name no tree', () => {
+  const entry = { id: 'a', title: 'A', layout: 'https://assets.example/a.pj4.xml' };
+  // An empty thumbnail is none, as null is.
+  for (const thumbnail of [undefined, null, '', 'https://assets.example/a.png']) {
+    validatePresetCatalog({ presets: [{ ...entry, thumbnail }] }, []);
+  }
+  assert.throws(() => validatePresetCatalog({ presets: [{ ...entry, layout: 'a.xml' }] }, []),
+    error => /"a\.xml"/.test(error.message) && !/tree/.test(error.message));
+  assert.throws(() => validatePresetCatalog({ presets: {} }, []), /presets array/);
 });
 
 test('packaging remains deterministic', async t => {

@@ -1,16 +1,21 @@
 # Browser sample presets
 
-The "try it with sample data" presets of the WebAssembly build. Packaging with
-`node scripts/package_wasm.mjs --presets resources/wasm-presets ...` deploys this
-directory verbatim under the page's `presets/`, where the welcome dialog finds
-`index.json`. The index is all the package carries: each sample's layout and
+The "try it with sample data" presets of the WebAssembly build. The welcome
+dialog finds them in `presets/index.json` beside the page. Each sample's layout and
 thumbnail live on PlotJuggler's asset host (`https://assets.plotjuggler.io`, a
 Cloudflare R2 bucket whose `v1/` files never change) beside the recording they
 open, and `index.json` names them by absolute URL; a layout names its recording
-and robot models by absolute URL too. Changing a sample means uploading its
-layout or thumbnail under a new name, pointing `index.json` at it and listing it
-in `tests/wasm/fixtures/hosted_assets.json`. How to author one, the packaging
-rules and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
+and robot models by absolute URL too.
+
+`index.json` here is the source of the index `app.plotjuggler.io` serves: change
+it, then upload it
+([`packaging/web/README.md`](../../packaging/web/README.md#sample-index)). The
+tests and self-hosted packages read this file, and
+`node scripts/package_wasm.mjs --presets resources/wasm-presets ...` deploys this
+directory verbatim under the page's `presets/`. Adding or changing a sample: upload
+its layout or thumbnail under a new name, point `index.json` at it and list it in
+`tests/wasm/fixtures/hosted_assets.json`. How to author one, the packaging rules
+and the hosting notes are in [`docs/WASM_PRESETS.md`](../../docs/WASM_PRESETS.md).
 
 | Sample | Layout and thumbnail on the asset host |
 |---|---|

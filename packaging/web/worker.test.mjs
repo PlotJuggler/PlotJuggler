@@ -41,8 +41,10 @@ function environment() {
     'sources/SOURCE-OFFER.txt': 'offer',
   }).map(([key, value]) => [`${RELEASE}/${key}`, new TextEncoder().encode(value)]));
   const forwarded = [];
+  const assetHost = new Map([['presets/index.json', new TextEncoder().encode('{"presets":[]}')]]);
   return {
     forwarded,
+    assetHost,
     env: {
       RELEASE,
       STATS_HOST: 'stats.example.test',
@@ -50,6 +52,12 @@ function environment() {
         async get(key) {
           const bytes = objects.get(key);
           return bytes ? { body: new Blob([bytes]).stream(), size: bytes.length, text: async () => new TextDecoder().decode(bytes) } : null;
+        },
+      },
+      ASSET_HOST: {
+        async get(key) {
+          const bytes = assetHost.get(key);
+          return bytes ? { body: new Blob([bytes]).stream(), size: bytes.length, httpEtag: '"r2-etag"' } : null;
         },
       },
       TELEMETRY: {
@@ -82,6 +90,10 @@ function assertIsolated(response) {
     assert.equal(response.headers.get(name), value, name);
   }
 }
+
+test('the module exports only the handler: workerd takes every named export for an entrypoint', async () => {
+  assert.deepEqual(Object.keys(await import('./worker.mjs')), ['default']);
+});
 
 test('the root serves the entrypoint, isolated and revalidated', async () => {
   const { env } = environment();
@@ -125,13 +137,65 @@ test('a release without its manifest is a 500 that keeps the isolation headers',
 test('a matching If-None-Match gets 304 and HEAD gets no body', async () => {
   const { env } = environment();
   const etag = `"sha256-${'a'.repeat(64)}"`;
-  const notModified = await get(env, '/presets/index.json', { headers: { 'If-None-Match': etag } });
+  const notModified = await get(env, '/index.html', { headers: { 'If-None-Match': etag } });
   assert.equal(notModified.status, 304);
   assertIsolated(notModified);
-  const head = await get(env, '/presets/index.json', { method: 'HEAD' });
+  const head = await get(env, '/index.html', { method: 'HEAD' });
   assert.equal(head.status, 200);
   assert.equal(head.headers.get('etag'), etag);
   assert.equal(await head.text(), '');
+});
+
+test("the samples' index comes from the asset host's bucket, not the release that carries one", async () => {
+  const { env } = environment();
+  const response = await get(env, '/presets/index.json', { headers: { 'Accept-Encoding': 'gzip, br' } });
+  assert.equal(response.status, 200);
+  assertIsolated(response);
+  assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(response.headers.get('cache-control'), 'no-cache');
+  assert.equal(response.headers.get('etag'), '"r2-etag"');
+  assert.equal(response.headers.get('content-encoding'), null);
+  assert.equal(await response.text(), '{"presets":[]}');
+  // Answered without the release: a release whose manifest is gone still lists the samples.
+  assert.equal((await get({ ...env, RELEASE: 'releases/missing' }, '/presets/index.json')).status, 200);
+});
+
+test("the samples' index revalidates by its ETag and answers HEAD without a body", async () => {
+  const { env } = environment();
+  const notModified = await get(env, '/presets/index.json', { headers: { 'If-None-Match': '"other", "r2-etag"' } });
+  assert.equal(notModified.status, 304);
+  assert.equal(notModified.headers.get('etag'), '"r2-etag"');
+  assertIsolated(notModified);
+  assert.equal(await notModified.text(), '');
+  assert.equal((await get(env, '/presets/index.json', { headers: { 'If-None-Match': '"old"' } })).status, 200);
+  const head = await get(env, '/presets/index.json', { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal(head.headers.get('content-length'), String('{"presets":[]}'.length));
+  assert.equal(head.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(await head.text(), '');
+});
+
+test("a missing samples' index is a clean 404, which the app takes as no samples", async () => {
+  const { env, assetHost } = environment();
+  assetHost.clear();
+  for (const method of ['GET', 'HEAD']) {
+    const response = await get(env, '/presets/index.json', { method });
+    assert.equal(response.status, 404, method);
+    assertIsolated(response);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  }
+});
+
+test("an asset host that fails is a 503 that is not cached, never an unhandled error", async () => {
+  const { env } = environment();
+  const failing = { ...env, ASSET_HOST: { async get() { throw new Error('R2 is down'); } } };
+  for (const method of ['GET', 'HEAD']) {
+    const response = await get(failing, '/presets/index.json', { method });
+    assert.equal(response.status, 503, method);
+    assertIsolated(response);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  }
+  assert.equal((await get(failing, '/index.html')).status, 200);
 });
 
 test('paths outside the manifest are 404, other methods 405, both isolated', async () => {
