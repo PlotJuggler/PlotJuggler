@@ -95,6 +95,13 @@ constexpr const char* kUnresolvedMeshUrdf = R"(
 </robot>
 )";
 
+// file:///D:/... on Windows; "file://" + a drive path would make the drive letter the URL's host.
+std::string fixtureMeshUrl(const char* name) {
+  return QUrl::fromLocalFile(QStringLiteral(PJ_SCENE3D_FIXTURES_DIR "/meshes/") + QString::fromLatin1(name))
+      .toString()
+      .toStdString();
+}
+
 // A URDF whose single visual mesh resolves immediately (file:// fixture path), so attach() kicks an async MeshLoader
 // load.
 const std::string& resolvedMeshUrdf() {
@@ -102,8 +109,8 @@ const std::string& resolvedMeshUrdf() {
 <robot name="resolved_mesh_robot">
   <link name="base_link">
     <visual>
-      <geometry><mesh filename="file://)") +
-                                  PJ_SCENE3D_FIXTURES_DIR + R"(/meshes/cube.stl"/></geometry>
+      <geometry><mesh filename=")") +
+                                  fixtureMeshUrl("cube.stl") + R"("/></geometry>
     </visual>
   </link>
 </robot>
@@ -118,8 +125,8 @@ const std::string& resolvedColladaMeshUrdf() {
 <robot name="collada_mesh_robot">
   <link name="base_link">
     <visual>
-      <geometry><mesh filename="file://)") +
-                                  PJ_SCENE3D_FIXTURES_DIR + R"(/meshes/cube.dae"/></geometry>
+      <geometry><mesh filename=")") +
+                                  fixtureMeshUrl("cube.dae") + R"("/></geometry>
     </visual>
   </link>
 </robot>
