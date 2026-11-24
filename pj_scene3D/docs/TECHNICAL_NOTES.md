@@ -343,15 +343,17 @@ cut to start in front of the camera drew 2090. Turning off ANGLE's line emulatio
 the loss, so the drop is in SwiftShader itself (unverified reasoning: it builds a line's quad from the endpoints'
 projected positions, which a negative w mirrors).
 
-What the code does: `grid.vert` receives each vertex's segment partner and moves a vertex whose w is below 1e-4 along
-the segment to w = 1e-4. That is behind every perspective near plane (`adaptiveNearFar` floors it at 1e-3), so the
-rasterizer's own near clip yields the same visible segment. In the probe page the move drew 2096 pixels under
-SwiftShader and changed none on the GPU. It covers the grid lines and the TF connection lines; the other line
-pipelines still lose such segments (ARCHITECTURE "Known gaps"). Regression test: `scene3d_foundation.spec.js`, "Scene3D
-line grid draws the lines that run under the camera".
+What the code does: `grid.vert` receives each vertex's segment partner and moves a vertex whose w is below
+`kMinClipW` along the segment to w = `kMinClipW`. That is behind every perspective near plane (`adaptiveNearFar`'s
+floor), so the rasterizer's own near clip yields the same visible segment. In the probe page the move drew 2096 pixels
+under SwiftShader and changed none on the GPU. The w is set after the interpolation: at |w| near 4700 a float32 step
+is about 5e-4, above `kMinClipW`, and the mix left w at exactly 0 on a 10 km grid of 200 divisions seen from an orbit
+radius of 60 (endpoints near w = -4600 and +4800), which draws nothing. It covers the grid lines and the TF connection
+lines; the other line pipelines still lose such segments (ARCHITECTURE "Known gaps"). Regression test:
+`scene3d_foundation.spec.js`.
 
-Re-test on a Chromium (SwiftShader) update by running that spec with the move taken out of `grid.vert`; if the lines
-draw, the partner attribute can go.
+Re-test on a Chromium (SwiftShader) update by running that spec's line grid test with the move taken out of
+`grid.vert`; if the lines draw, the partner attribute can go.
 
 ## CI lanes
 

@@ -5,9 +5,12 @@ const path = require('path');
 
 const { waitForQtApp } = require('./support/app');
 const { dragQtCanvas } = require('./support/canvas');
+const { count, layoutOutcome } = require('./support/console');
 const { clickActiveDialogButton } = require('./support/dialogs');
 const { downloadLayoutFromFileMenu } = require('./support/layout_actions');
+const { elementAttribute, setElementAttribute } = require('./support/layout_xml');
 const { openFileChooser, openLayoutChooser } = require('./support/pickers');
+const { bootScene3D, dropScene3DRows, loadScene3DFixture } = require('./support/scene3d_acceptance');
 const { qtPointToCss, requestScene3DFoundationState } = require('./support/scene3d_foundation');
 
 async function dragTimeline(page, screen, state, fromRatio, toRatio) {
@@ -22,6 +25,14 @@ async function dragTimeline(page, screen, state, fromRatio, toRatio) {
   await page.waitForTimeout(300);
 }
 
+// Loads a layout file; fails as soon as the app reports PJ_WASM_LAYOUT_LOAD_FAILED.
+async function uploadLayout(page, messages, name, bytes) {
+  const chooser = await openLayoutChooser(page);
+  await chooser.setFiles({ name, mimeType: 'application/xml', buffer: bytes });
+  await expect.poll(() => layoutOutcome(messages, name), { timeout: 15000 }).not.toBe('');
+  expect(layoutOutcome(messages, name)).toContain('PJ_WASM_LAYOUT_LOAD_OK');
+}
+
 async function selectNextComboItem(page, screen, state, control) {
   const center = qtPointToCss(screen, state, {
     x: control.x + (control.width / 2),
@@ -33,8 +44,8 @@ async function selectNextComboItem(page, screen, state, control) {
   await page.waitForTimeout(200);
 }
 
-// Loads the TF fixture and drops /tf on the plot area, which opens a Scene3D view.
-async function openTfScene(page) {
+test('Scene3D TF/grid renders, responds to input, and replays a generic layout', async ({ page }) => {
+  test.setTimeout(120000);
   const errors = [];
   const consoleMessages = [];
   await page.addInitScript(() => { delete window.showOpenFilePicker; });
@@ -65,15 +76,10 @@ async function openTfScene(page) {
     { x: screen.x + 95, y: screen.y + 232 },
     { x: screen.x + 820, y: screen.y + 390 },
   );
+
   const reportCount = () => consoleMessages.filter(
     message => message.includes('PJ_WASM_SCENE3D_FOUNDATION_SUMMARY'),
   ).length;
-  return { errors, consoleMessages, screen, reportCount };
-}
-
-test('Scene3D TF/grid renders, responds to input, and replays a generic layout', async ({ page }) => {
-  test.setTimeout(120000);
-  const { errors, consoleMessages, screen, reportCount } = await openTfScene(page);
   let initial;
   await expect.poll(async () => {
     initial = await requestScene3DFoundationState(page, consoleMessages, reportCount());
@@ -134,18 +140,7 @@ test('Scene3D TF/grid renders, responds to input, and replays a generic layout',
   // browser dataset identity.
   await selectNextComboItem(page, screen, configured, configured.docks[0].controls.fixed);
   await selectNextComboItem(page, screen, configured, configured.docks[0].controls.camera);
-  const layoutChooser = await openLayoutChooser(page);
-  await layoutChooser.setFiles({
-    name: 'scene3d-foundation.pj4.xml',
-    mimeType: 'application/xml',
-    buffer: downloaded.bytes,
-  });
-  await expect.poll(
-    () => consoleMessages.find(
-      message => message.includes('PJ_WASM_LAYOUT_LOAD_OK name=scene3d-foundation'),
-    ) || '',
-    { timeout: 15000 },
-  ).toContain('scene3d-foundation.pj4.xml');
+  await uploadLayout(page, consoleMessages, 'scene3d-foundation.pj4.xml', downloaded.bytes);
   const restored = await requestScene3DFoundationState(page, consoleMessages, reportCount());
   expect(restored.docks).toHaveLength(1);
   expect(restored.docks[0].identity).not.toBe(configured.docks[0].identity);
@@ -159,22 +154,10 @@ test('Scene3D TF/grid renders, responds to input, and replays a generic layout',
   expect(errors).toEqual([]);
 });
 
-// Replaces `name`'s value on the first <tag> element of a saved layout.
-function setXmlAttribute(xml, tag, name, value) {
-  const element = new RegExp(`<${tag}\\b[^>]*>`);
-  const match = xml.match(element);
-  expect(match, `no <${tag}> in the saved layout`).not.toBeNull();
-  const attribute = new RegExp(`\\s${name}=("[^"]*"|'[^']*')`);
-  const updated = attribute.test(match[0])
-    ? match[0].replace(attribute, ` ${name}='${value}'`)
-    : match[0].replace(new RegExp(`^<${tag}`), `<${tag} ${name}='${value}'`);
-  return xml.replace(match[0], updated);
-}
-
-// Per row of the band below the horizon, the number of short runs of pixels that differ from the view's
-// background: the grid lines that run toward the camera cross each row as short runs, the lines across the
-// view fill a row with one long run.
-async function steepLineCrossingsPerRow(page, png) {
+// Per row between 30% and 90% of the view's height: the grid lines that run toward the camera cross a row as
+// short runs of pixels that differ from the background, the lines across the view fill it with one long run.
+// Returns the short-run count of each row in the 55-85% band, and how many rows have a long run.
+async function gridLineRuns(page, png) {
   return page.evaluate(async (base64) => {
     const image = new Image();
     image.src = `data:image/png;base64,${base64}`;
@@ -187,37 +170,44 @@ async function steepLineCrossingsPerRow(page, png) {
     const { data, width, height } = context.getImageData(0, 0, image.width, image.height);
     const histogram = new Map();
     for (let index = 0; index < data.length; index += 4) {
-      const key = (data[index] << 16) | (data[index + 1] << 8) | data[index + 2];
+      const key = `${data[index]},${data[index + 1]},${data[index + 2]}`;
       histogram.set(key, (histogram.get(key) || 0) + 1);
     }
-    const background = [...histogram.entries()].reduce((best, entry) => (entry[1] > best[1] ? entry : best))[0];
-    const differs = (x, y) => {
-      const index = 4 * ((y * width) + x);
-      return Math.max(
-        Math.abs(data[index] - ((background >> 16) & 255)),
-        Math.abs(data[index + 1] - ((background >> 8) & 255)),
-        Math.abs(data[index + 2] - (background & 255)),
-      ) > 24;
-    };
+    const background = [...histogram.entries()].reduce((best, entry) => (entry[1] > best[1] ? entry : best))[0]
+      .split(',').map(Number);
+    const differs = (x, y) => background.some(
+      (value, channel) => Math.abs(data[(4 * ((y * width) + x)) + channel] - value) > 24,
+    );
     const left = Math.round(width * 0.02);
     const right = Math.round(width * 0.98);
-    const counts = [];
-    for (let y = Math.round(height * 0.55); y < Math.round(height * 0.85); ++y) {
-      let runs = 0;
+    const span = right - left;
+    const rowRuns = (y) => {
+      const runs = [];
       let run = 0;
       for (let x = left; x <= right; ++x) {
         if (x < right && differs(x, y)) {
           ++run;
         } else {
-          if (run > 0 && run < (right - left) / 4) {
-            ++runs;
+          if (run > 0) {
+            runs.push(run);
           }
           run = 0;
         }
       }
-      counts.push(runs);
+      return runs;
+    };
+    const short = [];
+    let across = 0;
+    for (let y = Math.round(height * 0.3); y < Math.round(height * 0.9); ++y) {
+      const runs = rowRuns(y);
+      if (runs.some(run => run >= span * 0.75)) {
+        ++across;
+      }
+      if (y >= Math.round(height * 0.55) && y < Math.round(height * 0.85)) {
+        short.push(runs.filter(run => run < span / 4).length);
+      }
     }
-    return counts;
+    return { short, across };
   }, png.toString('base64'));
 }
 
@@ -225,40 +215,42 @@ async function steepLineCrossingsPerRow(page, png) {
 // (SwiftShader) dropped such lines whole, so a camera inside a line grid drew only the lines across the view.
 test('Scene3D line grid draws the lines that run under the camera', async ({ page }) => {
   test.setTimeout(120000);
-  const { errors, consoleMessages, screen, reportCount } = await openTfScene(page);
+  const errors = [];
+  const consoleMessages = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  const screen = await bootScene3D(page, consoleMessages);
+  await loadScene3DFixture(page, screen, consoleMessages, 'ros2_tf_grid_real.mcap');
+  await dropScene3DRows(page, screen, [232]);
+  const reportCount = () => count(consoleMessages, 'PJ_WASM_SCENE3D_FOUNDATION_SUMMARY');
   await expect.poll(async () => {
     const state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
     return state.docks[0]?.resolved >= 1;
   }, { timeout: 15000 }).toBe(true);
 
   // Looking along -x from (0.94, 0, 0.34): the lines along x pass under the camera and behind it.
+  const divisions = 40;
   let xml = (await downloadLayoutFromFileMenu(page, screen, consoleMessages)).bytes.toString('utf8');
-  xml = setXmlAttribute(xml, 'scene3d', 'camera_model', 'orbit');
-  xml = setXmlAttribute(
-    xml, 'scene3d', 'camera_state',
+  const setAttribute = (tag, attribute, value) => {
+    xml = setElementAttribute(xml, tag, attribute, value);
+    expect(elementAttribute(xml, tag, attribute)).toBe(value.replaceAll('"', '&quot;'));
+  };
+  setAttribute('scene3d', 'camera_model', 'orbit');
+  setAttribute(
+    'scene3d', 'camera_state',
     JSON.stringify({ focal: [0, 0, 0], radius: 1, azimuth: 0, elevation: 0.35, perspective: true }),
   );
-  xml = setXmlAttribute(xml, 'scene_controls', 'grid_style', '0');
-  xml = setXmlAttribute(xml, 'scene_controls', 'grid_extent_m', '4');
-  xml = setXmlAttribute(xml, 'scene_controls', 'grid_divisions', '40');
-  const layoutChooser = await openLayoutChooser(page);
-  await layoutChooser.setFiles({
-    name: 'scene3d-grid-under-camera.pj4.xml',
-    mimeType: 'application/xml',
-    buffer: Buffer.from(xml, 'utf8'),
-  });
-  await expect.poll(
-    () => consoleMessages.find(
-      message => message.includes('PJ_WASM_LAYOUT_LOAD_OK name=scene3d-grid-under-camera'),
-    ) || '',
-    { timeout: 15000 },
-  ).toContain('scene3d-grid-under-camera.pj4.xml');
+  setAttribute('scene_controls', 'grid_style', '0');
+  setAttribute('scene_controls', 'grid_extent_m', '4');
+  setAttribute('scene_controls', 'grid_divisions', String(divisions));
+  await uploadLayout(page, consoleMessages, 'scene3d-grid-under-camera.pj4.xml', Buffer.from(xml, 'utf8'));
 
+  // The grid's line vertices: (divisions + 1) lines per axis, 2 axes, 2 vertices per line, plus the TF connections'.
+  const gridLineVertices = 2 * 2 * (divisions + 1);
   let state;
   await expect.poll(async () => {
     state = await requestScene3DFoundationState(page, consoleMessages, reportCount());
     const dock = state.docks[0];
-    return Math.abs((dock?.camera.radius ?? 0) - 1) < 1e-3 && dock.vertices.lines >= 164;
+    return Math.abs((dock?.camera.radius ?? 0) - 1) < 1e-3 && dock.vertices.lines >= gridLineVertices;
   }, { timeout: 15000 }).toBe(true);
   const { view } = state.docks[0];
   const topLeft = qtPointToCss(screen, state, { x: view.x, y: view.y });
@@ -268,8 +260,10 @@ test('Scene3D line grid draws the lines that run under the camera', async ({ pag
   });
   await test.info().attach('grid-under-camera', { body: png, contentType: 'image/png' });
 
-  const counts = await steepLineCrossingsPerRow(page, png);
-  const median = [...counts].sort((a, b) => a - b)[Math.floor(counts.length / 2)];
-  expect(median, `short runs per row: ${counts.join(',')}`).toBeGreaterThanOrEqual(4);
+  const { short, across } = await gridLineRuns(page, png);
+  const median = [...short].sort((a, b) => a - b)[Math.floor(short.length / 2)];
+  expect(median, `short runs per row: ${short.join(',')}`).toBeGreaterThanOrEqual(4);
+  // The lines across the view (about 26 of them are in the 30-90% band) draw whatever happens to the others.
+  expect(across, 'rows with a line across the view').toBeGreaterThanOrEqual(8);
   expect(errors).toEqual([]);
 });

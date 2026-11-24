@@ -17,13 +17,14 @@ function elementAttributes(layout, tag, attribute) {
     .map(match => match[1]);
 }
 
-// The start tag with `attribute` set, added when absent.
+// The start tag with `attribute` set (`value` escaped for a double-quoted attribute), added when absent.
 function withAttribute(element, attribute, value) {
+  const escaped = String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
   const existing = new RegExp(`\\b${attribute}="[^"]*"`);
   if (existing.test(element)) {
-    return element.replace(existing, `${attribute}="${value}"`);
+    return element.replace(existing, `${attribute}="${escaped}"`);
   }
-  return element.replace(/\s*\/?>(?=$)/, ending => ` ${attribute}="${value}"${ending}`);
+  return element.replace(/\s*\/?>(?=$)/, ending => ` ${attribute}="${escaped}"${ending}`);
 }
 
 function setElementAttribute(xml, tag, attribute, value) {
