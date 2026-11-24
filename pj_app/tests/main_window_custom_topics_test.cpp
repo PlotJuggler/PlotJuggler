@@ -24,6 +24,7 @@
 #include "MainWindow.h"
 #include "dataset_test_helpers.h"
 #include "pj_base/sdk/platform.hpp"
+#include "pj_datastore/incremental_engine.hpp"
 #include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
@@ -79,6 +80,27 @@ class MainWindowCustomTopicsTestPeer {
   [[nodiscard]] static std::size_t undoSize(const MainWindow& window) {
     return window.undo_states_.size();
   }
+  static void redo(MainWindow& window) {
+    window.onRedo();
+  }
+  [[nodiscard]] static std::size_t redoSize(const MainWindow& window) {
+    return window.redo_states_.size();
+  }
+  // The forced step a plugin's create records.
+  static void pushUndoStep(MainWindow& window) {
+    window.onUndoableChange(/*force_new_state=*/true);
+  }
+  // A scene dock's change, its step still pending on the debounce.
+  static void startSceneUndoDebounce(MainWindow& window) {
+    window.scene_undo_debounce_.start();
+  }
+  // What the debounce's timeout runs.
+  static void fireSceneUndoDebounce(MainWindow& window) {
+    if (window.scene_undo_debounce_.isActive()) {
+      window.scene_undo_debounce_.stop();
+      window.onUndoableChange();
+    }
+  }
 };
 
 }  // namespace PJ
@@ -101,6 +123,15 @@ return { id="neg", name="Negate", output="same",
 constexpr const char* kNegate2 = R"LUAU(-- pj-script: luau
 return { id="neg2", name="Negate", output="same",
   create = function(p) return { calculate = function(t, v) return -v end } end }
+)LUAU";
+constexpr const char* kNegate3 = R"LUAU(-- pj-script: luau
+return { id="neg3", name="Negate", output="same",
+  create = function(p) return { calculate = function(t, v) return -v end } end }
+)LUAU";
+// "neg" edited: another script for the same transform.
+constexpr const char* kTriple = R"LUAU(-- pj-script: luau
+return { id="neg", name="Negate", output="same",
+  create = function(p) return { calculate = function(t, v) return -3 * v end } end }
 )LUAU";
 
 PJ::scripting::OutputSpec cloudOutput(std::string name = "cropped") {
@@ -612,6 +643,177 @@ TEST(MainWindowCustomTopicsTest, ADeleteKeepsItsUndoAcrossTheNextFileLoad) {
   EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before + 1) << "the load keeps the history";
   MainWindowCustomTopicsTestPeer::undo(fx.window);
   EXPECT_NE(fx.service().graph().find(mine.key()), nullptr) << "the undo brings the recipe back";
+}
+
+// A transform delete is its own undo step: the undo brings back the transform as it was just before, not as it was
+// before the edit that preceded the delete. The edit pushed no step, so the delete must refresh the baseline itself.
+TEST(MainWindowCustomTopicsTest, ATransformDeleteIsItsOwnUndoStep) {
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kNegate, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  MainWindowCustomTopicsTestPeer::completeFileLoad(fx.window, u"/tmp/run.mcap"_s);
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kTriple, "{}"));
+  const std::size_t before = MainWindowCustomTopicsTestPeer::undoSize(fx.window);
+
+  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, fx.keyOf("sensor/mine"));
+  ASSERT_TRUE(transforms.transformIdsForPlugin(kEditor).empty());
+  EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before + 1) << "the delete is an undo step";
+
+  MainWindowCustomTopicsTestPeer::undo(fx.window);
+  const std::vector<PJ::DataProcessorService::TransformRecipe> live = transforms.transformRecipes();
+  ASSERT_EQ(live.size(), 1U) << "the undo brings the transform back";
+  EXPECT_EQ(live.front().script, kTriple) << "as edited, not as loaded";
+
+  MainWindowCustomTopicsTestPeer::redo(fx.window);
+  EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty()) << "the redo deletes it again";
+}
+
+// A change still pending on the scene debounce is its own step, recorded before the delete's: refreshing the baseline
+// alone would fold it into the step before.
+TEST(MainWindowCustomTopicsTest, ATransformDeleteRecordsAPendingDebouncedStepFirst) {
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kNegate, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  MainWindowCustomTopicsTestPeer::completeFileLoad(fx.window, u"/tmp/run.mcap"_s);
+  const std::size_t before = MainWindowCustomTopicsTestPeer::undoSize(fx.window);
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kTriple, "{}"));
+  MainWindowCustomTopicsTestPeer::startSceneUndoDebounce(fx.window);
+
+  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, fx.keyOf("sensor/mine"));
+  ASSERT_TRUE(transforms.transformIdsForPlugin(kEditor).empty());
+  EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before + 2) << "the pending step, then the delete";
+
+  MainWindowCustomTopicsTestPeer::undo(fx.window);
+  std::vector<PJ::DataProcessorService::TransformRecipe> live = transforms.transformRecipes();
+  ASSERT_EQ(live.size(), 1U);
+  EXPECT_EQ(live.front().script, kTriple) << "the delete undone";
+  MainWindowCustomTopicsTestPeer::undo(fx.window);
+  live = transforms.transformRecipes();
+  ASSERT_EQ(live.size(), 1U);
+  EXPECT_EQ(live.front().script, kNegate) << "the pending change undone on its own";
+}
+
+// A delete that takes a dependent transform with it is one undo step, and its undo brings both back as they were
+// just before: the unrecorded edit is in the baseline, refreshed before the cascade removes anything.
+TEST(MainWindowCustomTopicsTest, ATransformDeleteAndItsCascadeAreOneUndoStep) {
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kNegate, "{}"));
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg2", {"sensor/mine"}, {"sensor/chain"}, kNegate2, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  MainWindowCustomTopicsTestPeer::completeFileLoad(fx.window, u"/tmp/run.mcap"_s);
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kTriple, "{}"));
+  const std::size_t before = MainWindowCustomTopicsTestPeer::undoSize(fx.window);
+
+  const MessageBoxAnswerer answerer;
+  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, fx.keyOf("sensor/mine"));
+  QApplication::processEvents();
+  ASSERT_EQ(answerer.answered, 1);
+  ASSERT_TRUE(transforms.transformIdsForPlugin(kEditor).empty());
+  EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before + 1) << "one undo step";
+
+  MainWindowCustomTopicsTestPeer::undo(fx.window);
+  const std::vector<PJ::DataProcessorService::TransformRecipe> live = transforms.transformRecipes();
+  ASSERT_EQ(live.size(), 2U) << "the undo brings both back";
+  const auto neg = std::find_if(
+      live.begin(), live.end(), [](const auto& recipe) { return recipe.key == std::string(kEditor) + "/neg"; });
+  ASSERT_NE(neg, live.end());
+  EXPECT_EQ(neg->script, kTriple) << "as edited";
+
+  MainWindowCustomTopicsTestPeer::redo(fx.window);
+  EXPECT_TRUE(transforms.transformIdsForPlugin(kEditor).empty()) << "the redo deletes both again";
+}
+
+// A cancelled delete records nothing and keeps the redo.
+TEST(MainWindowCustomTopicsTest, ACancelledTransformDeleteRecordsNothing) {
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kNegate, "{}"));
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg2", {"sensor/mine"}, {"sensor/chain"}, kNegate2, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  MainWindowCustomTopicsTestPeer::completeFileLoad(fx.window, u"/tmp/run.mcap"_s);
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kTriple, "{}"));
+  MainWindowCustomTopicsTestPeer::pushUndoStep(fx.window);
+  MainWindowCustomTopicsTestPeer::undo(fx.window);
+  const std::size_t before = MainWindowCustomTopicsTestPeer::undoSize(fx.window);
+  ASSERT_EQ(MainWindowCustomTopicsTestPeer::redoSize(fx.window), 1U);
+
+  const MessageBoxAnswerer cancel({}, /*button=*/1);
+  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, fx.keyOf("sensor/mine"));
+  QApplication::processEvents();
+  ASSERT_EQ(cancel.answered, 1);
+  EXPECT_EQ(transforms.transformIdsForPlugin(kEditor).size(), 2U);
+  EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before);
+  EXPECT_EQ(MainWindowCustomTopicsTestPeer::redoSize(fx.window), 1U);
+}
+
+// A cancelled delete leaves a change pending on the scene debounce its own step, not folded into the step before.
+TEST(MainWindowCustomTopicsTest, ACancelledTransformDeleteKeepsAPendingStepItsOwn) {
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kNegate, "{}"));
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg2", {"sensor/mine"}, {"sensor/chain"}, kNegate2, "{}"));
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  MainWindowCustomTopicsTestPeer::completeFileLoad(fx.window, u"/tmp/run.mcap"_s);
+  const std::size_t before = MainWindowCustomTopicsTestPeer::undoSize(fx.window);
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kTriple, "{}"));
+  MainWindowCustomTopicsTestPeer::startSceneUndoDebounce(fx.window);
+
+  const MessageBoxAnswerer cancel({}, /*button=*/1);
+  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, fx.keyOf("sensor/mine"));
+  QApplication::processEvents();
+  ASSERT_EQ(cancel.answered, 1);
+  MainWindowCustomTopicsTestPeer::fireSceneUndoDebounce(fx.window);
+  EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before + 1) << "the pending change is a step";
+
+  MainWindowCustomTopicsTestPeer::undo(fx.window);
+  const std::vector<PJ::DataProcessorService::TransformRecipe> live = transforms.transformRecipes();
+  const auto neg = std::find_if(
+      live.begin(), live.end(), [](const auto& recipe) { return recipe.key == std::string(kEditor) + "/neg"; });
+  ASSERT_NE(neg, live.end());
+  EXPECT_EQ(neg->script, kNegate) << "undone on its own";
+}
+
+// A cascade that fails part-way has already removed some dependents: that is still an undo step, so the next undo
+// brings them back instead of jumping past them.
+TEST(MainWindowCustomTopicsTest, ATransformDeleteWhoseCascadeFailsIsStillAnUndoStep) {
+  CustomTopicsFixture fx;
+  ASSERT_TRUE(fx.setUp());
+  PJ::DataProcessorService& transforms = fx.app().sessionManager().dataProcessorService();
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg", {"sensor/value"}, {"sensor/mine"}, kNegate, "{}"));
+  ASSERT_TRUE(transforms.upsertTransform(kEditor, "neg2", {"sensor/mine"}, {"sensor/chain"}, kNegate2, "{}"));
+  const auto leaf = transforms.upsertTransform(kEditor, "neg3", {"sensor/chain"}, {"sensor/leaf"}, kNegate3, "{}");
+  ASSERT_TRUE(leaf.has_value());
+  fx.app().catalogModel().rebuildFromDatastore();
+  MainWindowCustomTopicsTestPeer::syncCustomTopicsPanel(fx.window);
+  MainWindowCustomTopicsTestPeer::completeFileLoad(fx.window, u"/tmp/run.mcap"_s);
+  const std::size_t before = MainWindowCustomTopicsTestPeer::undoSize(fx.window);
+  // The leaf's node already gone from the engine: its removal fails, after which the cascade still removes "neg2".
+  ASSERT_TRUE(transforms.incrementalEngine().removeNode(leaf->node_id).has_value());
+
+  const MessageBoxAnswerer answerer;
+  MainWindowCustomTopicsTestPeer::deleteCustomTopic(fx.window, fx.keyOf("sensor/mine"));
+  QApplication::processEvents();
+  ASSERT_EQ(answerer.answered, 1);
+  const std::vector<std::string> left = transforms.transformIdsForPlugin(kEditor);
+  ASSERT_EQ(std::count(left.begin(), left.end(), "neg2"), 0) << "the cascade removed a dependent before failing";
+  EXPECT_EQ(MainWindowCustomTopicsTestPeer::undoSize(fx.window), before + 1) << "recorded despite the failure";
+
+  MainWindowCustomTopicsTestPeer::undo(fx.window);
+  const std::vector<std::string> restored = transforms.transformIdsForPlugin(kEditor);
+  EXPECT_EQ(std::count(restored.begin(), restored.end(), "neg2"), 1) << "the undo brings the dependent back";
 }
 
 // The scheduled refresh (a node state, an offset) rebuilds the on-demand rows only. The transform rows come from

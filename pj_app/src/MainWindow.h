@@ -1194,7 +1194,7 @@ class MainWindow : public QMainWindow {
   void deleteCustomTopics(const QStringList& catalog_keys);
   // Confirms when other recipes read it (they stay, missing their input). A non-exempt removal is one undo step.
   void deleteOnDemandRecipe(const std::string& key);
-  // With its dependents, after confirming.
+  // With its dependents, after confirming. A non-exempt delete is one undo step, cascade included.
   void deleteTransformOutput(const QString& catalog_key);
   // transformDeleteRefusal; a refusal is reported before returning false.
   [[nodiscard]] bool mayDeleteTransformWriting(TopicId output_topic);
@@ -1226,6 +1226,9 @@ class MainWindow : public QMainWindow {
 
   // Replaces the history tip after data growth or navigation, without adding an undo step.
   void hydrateCurrentUndoState(bool refresh_data_universe = true);
+  // The baseline of a removal the host records as one forced step. A pending debounced step is recorded first: the
+  // refresh alone would fold it into the previous step, leaving it impossible to undo on its own.
+  void refreshUndoBaselineForRemoval();
   void restoreHistoryState(const CapturedWorkspace& target, bool undo);
   void reconcileHistoryWithDataUniverse();
 
