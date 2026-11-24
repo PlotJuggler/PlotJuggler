@@ -149,6 +149,7 @@ TEST(Scene3DFollow, FixedFrameChangeWhileFollowingDoesNotJump) {
   // robot's origin in `alt` is (-9,0,0) at t=200 and (-8,0,0) at t=300, against (1,0,0) in `world` at t=200: the
   // first tick after the basis change must apply only the real +1 motion, not the -9 cross-basis difference.
   view.setFixedFrame("alt");
+  EXPECT_EQ(view.camera().state().focal, focal_before) << "the fixed-frame change itself must not move the camera";
   view.setTrackerTime(at(300));
 
   const glm::vec3 focal_after = view.camera().state().focal;
@@ -157,9 +158,9 @@ TEST(Scene3DFollow, FixedFrameChangeWhileFollowingDoesNotJump) {
   EXPECT_NEAR(focal_after.z, focal_before.z, 1e-4f);
 }
 
-// Re-applying a dock's state (a layout load or MCP set_widget_state on the live view) clears the buffer and the fixed
-// frame, then sets them back with the same follow target, at an unchanged tracker time. The follow must stay seeded
-// across that, so the next tracker move is followed instead of only re-seeding.
+// A re-apply of a live dock's state (MCP set_widget_state) clears the TF buffer and the fixed frame, then sets them
+// back with the same follow target, at an unchanged tracker time. The follow must stay seeded across that, so the next
+// tracker move is followed instead of only re-seeding.
 TEST(Scene3DFollow, ReapplyingSameStateKeepsFollowing) {
   auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
   setEdge(*buf, "world", "robot", 100, {0.0, 0.0, 0.0});
@@ -172,13 +173,13 @@ TEST(Scene3DFollow, ReapplyingSameStateKeepsFollowing) {
   view.setTrackerTime(at(100));  // seed
   const glm::vec3 focal_before = view.camera().state().focal;
 
-  // The view calls of Scene3DDockWidget::xmlLoadState: resetDatasetBindingForRestore, the TF rebind, the saved fixed
-  // frame and follow target.
+  // Clear the TF buffer and the fixed frame, then set them back with the same follow target.
   view.setTransformBuffer(nullptr);
   view.setFixedFrame({});
   view.setTransformBuffer(buf);
   view.setFixedFrame("world");
   view.setFollowFrame("robot");
+  EXPECT_EQ(view.camera().state().focal, focal_before) << "the re-apply itself must not move the camera";
 
   view.setTrackerTime(at(200));  // robot at (1,0,0) → pivot shifts +1 in x
 
@@ -186,6 +187,54 @@ TEST(Scene3DFollow, ReapplyingSameStateKeepsFollowing) {
   EXPECT_NEAR(focal_after.x - focal_before.x, 1.0f, 1e-4f) << "the move after a state re-apply must be followed";
   EXPECT_NEAR(focal_after.y, focal_before.y, 1e-4f);
   EXPECT_NEAR(focal_after.z, focal_before.z, 1e-4f);
+}
+
+// Swapping the TF buffer while following (a reload, or a topic from another dataset) seeds in the new buffer: the
+// followed origin in the old buffer is no baseline for the new one.
+TEST(Scene3DFollow, TransformBufferSwapWhileFollowingDoesNotJump) {
+  auto buf_a = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf_a, "world", "robot", 100, {0.0, 0.0, 0.0});
+  auto buf_b = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf_b, "world", "robot", 100, {5.0, 0.0, 0.0});
+  setEdge(*buf_b, "world", "robot", 200, {6.0, 0.0, 0.0});
+
+  SceneViewWidget view;
+  view.setTransformBuffer(buf_a);
+  view.setFixedFrame("world");
+  view.setFollowFrame("robot");
+  view.setTrackerTime(at(100));  // seed at (0,0,0) in buffer A
+  const glm::vec3 focal_before = view.camera().state().focal;
+
+  view.setTransformBuffer(buf_b);
+  EXPECT_EQ(view.camera().state().focal, focal_before) << "the swap itself must not move the camera";
+  view.setTrackerTime(at(200));  // robot at (6,0,0) in B, (5,0,0) at the swap: only the +1 is followed
+
+  const glm::vec3 focal_after = view.camera().state().focal;
+  EXPECT_NEAR(focal_after.x - focal_before.x, 1.0f, 1e-4f) << "a buffer swap must re-seed, not jump by 5";
+  EXPECT_NEAR(focal_after.y, focal_before.y, 1e-4f);
+  EXPECT_NEAR(focal_after.z, focal_before.z, 1e-4f);
+}
+
+// A new view's time is the epoch until the first tracker time arrives, which may be long after the follow target, the
+// TF and the fixed frame are set (a layout restored before its data). A seed at the epoch would shift the restored
+// camera by the followed frame's motion since then on the first tick, so the first tick only seeds.
+TEST(Scene3DFollow, NoSeedBeforeFirstTrackerTime) {
+  using namespace std::chrono_literals;
+  auto buf = std::make_shared<TransformBuffer>(TransformBuffer::kKeepAll);
+  setEdge(*buf, "world", "robot", 0, {0.0, 0.0, 0.0});
+  setEdge(*buf, "world", "robot", std::chrono::nanoseconds(3s).count(), {3.0, 0.0, 0.0});
+
+  SceneViewWidget view;
+  view.setFollowFrame("robot");
+  view.setTransformBuffer(buf);
+  view.setFixedFrame("world");
+  pj::scene3d::CameraState restored = view.camera().state();
+  restored.focal = {7.0f, 8.0f, 9.0f};
+  view.camera().adoptState(restored);
+
+  view.setTrackerTime(at(std::chrono::nanoseconds(3s).count()));
+
+  EXPECT_EQ(view.camera().state().focal, restored.focal) << "the first tracker time must seed, not shift by 3";
 }
 
 // A tick where the followed frame is unresolvable (before its first sample) holds the camera; once it appears the next

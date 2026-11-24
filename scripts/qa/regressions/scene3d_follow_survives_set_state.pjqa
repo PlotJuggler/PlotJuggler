@@ -5,12 +5,14 @@
 # app: -d tests/wasm/fixtures/ros2_tf_grid_real.mcap -l scripts/qa/regressions/fixtures/scene3d_follow.pj4.xml
 # needs: plugins
 until get_status {} "ros2_tf_grid_real.mcap"
-until widget_state {"action":"list"} "q5-follow"
+until widget_state {"action":"list"} "follow-area"
 playback {"action":"seek","time_s":2}
-set_widget_state {"dock": "q5-follow", "xml": "<scene3d camera_model=\"orbit\" camera_state=\"{&quot;azimuth&quot;:0.0,&quot;elevation&quot;:0.5235987901687622,&quot;focal&quot;:[2.4872273206710815,0.5593181848526001,0.25],&quot;fov_y&quot;:0.7853981852531433,&quot;ortho_scale&quot;:5.0,&quot;perspective&quot;:true,&quot;radius&quot;:5.0}\" fixed_frame=\"map\" fixed_frame_mode=\"explicit\" follow_frame=\"base_link\" version=\"1\">\n  <layer dataset_id=\"1\" dataset_source=\"ros2_tf_grid_real.mcap\" display_name=\"/local_costmap/costmap\" object_type=\"kOccupancyGrid\" order=\"0\" topic_name=\"/local_costmap/costmap\" visible=\"true\">\n    <occupancy_grid color_scheme=\"map\" opacity=\"0.69999998807907104\"/>\n  </layer>\n  <config_topic dataset_id=\"1\" dataset_source=\"ros2_tf_grid_real.mcap\" object_type=\"kFrameTransforms\" topic_name=\"/tf\"/>\n  <scene_controls axes_visible=\"true\" collision_opacity=\"0.40000001\" collisions_visible=\"true\" gizmo_opacity=\"1\" gizmo_size_m=\"0.15000001\" grid_divisions=\"10\" grid_extent_m=\"10\" grid_style=\"0\" grid_visible=\"true\" mesh_opacity=\"1\" meshes_visible=\"true\" tf_parent_lines=\"true\"/>\n</scene3d>\n"}
-widget_state {"action":"get","dock":"q5-follow"}
-expect focal&quot;:[2.487
-# base_link moves by about (+0.74, +0.28) from t=2 to t=3: a followed camera moves with it. A lost follow seed
-# leaves the focal at 2.487 for good.
+# The seek has reached the view: the camera followed base_link from the start to t=2.
+until widget_state {"action":"get","dock":"follow-area"} focal&quot;:[1.487
+# The fixture's state; an absent camera_state keeps the camera.
+set_widget_state {"dock":"follow-area","xml":"<scene3d fixed_frame=\"map\" fixed_frame_mode=\"explicit\" follow_frame=\"base_link\"><config_topic object_type=\"kFrameTransforms\" topic_name=\"/tf\"/></scene3d>"}
+expect focal&quot;:[1.487
+# base_link moves by about (+0.73, +0.28) from t=2 to t=3: a followed camera moves with it. A lost follow seed
+# leaves the focal at 1.487 for good.
 playback {"action":"seek","time_s":3}
-until widget_state {"action":"get","dock":"q5-follow"} focal&quot;:[3.2
+until widget_state {"action":"get","dock":"follow-area"} focal&quot;:[2.2

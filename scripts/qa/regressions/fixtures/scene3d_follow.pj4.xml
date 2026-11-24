@@ -1,13 +1,12 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <root binding="generic" format="PlotJuggler" pj4_version="4">
   <tabbed_widget id="" name="main" parent="main_window">
-    <Tab containers="1" id="u-f1" tab_name="Scene">
+    <Tab containers="1" id="follow-tab" tab_name="Scene">
       <Container>
         <DockSplitter count="1" orientation="-" sizes="1.00000000">
-          <DockArea id="q5-follow" name="...">
-            <scene3d camera_model="orbit" version="1" fixed_frame="map" fixed_frame_mode="explicit" follow_frame="base_link">
+          <DockArea id="follow-area" name="...">
+            <scene3d fixed_frame="map" fixed_frame_mode="explicit" follow_frame="base_link">
               <config_topic object_type="kFrameTransforms" topic_name="/tf"/>
-              <layer display_name="/local_costmap/costmap" object_type="kOccupancyGrid" order="0" topic_name="/local_costmap/costmap" visible="true"/>
             </scene3d>
           </DockArea>
         </DockSplitter>

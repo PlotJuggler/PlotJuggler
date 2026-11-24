@@ -41,9 +41,8 @@ The user is a roboticist scrubbing recorded or live data, with 3D docks next to 
   same dataset (`FixedFrameMemory`, consumed by `Scene3DDockWidget::resolveAutoFixedFrame`), else a
   `map`/`world`/`odom` heuristic; that default stays in auto mode, so it self-heals if the frame disappears.
 - **Follow** is position-only: the camera anchor tracks the followed origin per tracker tick, orbit and zoom stay
-  user-controlled, enabling it or changing the fixed frame never jumps (the followed origin is re-seeded in the new
-  frame at the current time, so the next move is still followed, also after a state re-apply), and a recenter button
-  snaps onto the frame. Heading and pose follow are not implemented.
+  user-controlled, enabling it, changing the fixed frame or re-applying the dock's state never jumps and the next
+  move is still followed, and a recenter button snaps onto the frame. Heading and pose follow are not implemented.
 - **Camera gestures** (RViz orbit, ROS Z-up): left-drag rotates, middle-drag or shift+left-drag pans, the wheel
   zooms toward the cursor, right-drag zooms about the focal, Home resets the model's default view (it does not fit
   the scene). Models: Orbit, XYOrbit, Fly (WASD), top-down ortho.
@@ -577,8 +576,9 @@ headless.
   ray the same way. A degenerate ray falls back to centre zoom; Fly dollies.
 - **Follow:** `ICamera::followShift(world_delta)` moves the anchor without touching angles or zoom (Orbit and
   top-down the focal, Fly the eye, XYOrbit drops z). `SceneViewWidget::applyFollow` shifts by the followed origin's
-  delta per tracker tick; the first tick after enabling, a fixed-frame change or a lookup gap only seeds the
-  baseline. `followRenderKey(time)` feeds the dock's view key, so a moving target repaints with the triads hidden.
+  delta per tracker tick. Enabling follow, changing the fixed frame or swapping the TF buffer seeds the baseline at
+  the current time; before the view's first tracker time nothing seeds, so that tick only seeds, and after a lookup
+  gap the first tick that resolves seeds it. `followRenderKey(time)` feeds the dock's view key, so a moving target repaints with the triads hidden.
 - **Camera-relative rendering.** At UTM scale float32 keeps decimetres, so each frame picks a render origin (the
   focal, in double), builds the view with `viewMatrixRelativeTo(origin)` (bit-exact `viewMatrix()` at origin 0) and
   subtracts the origin in double before every float cast. Camera state and scene bounds stay absolute.
