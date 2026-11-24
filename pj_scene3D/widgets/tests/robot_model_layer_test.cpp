@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "mesh_import.h"  // maxConcurrentMeshLoads
+#include "mesh_import.h"  // maxConcurrentMeshImports
 #include "mock_parser_support.h"
 #include "pj_base/time.hpp"
 #include "pj_plugins/host/message_parser_handle.hpp"
@@ -1247,12 +1247,12 @@ TEST(RobotModelLayerTest, DrawsKeepLinkLocalGeometryAndApplyTfOnce) {
 
 // A source switch while mesh imports run must not stack imports: superseded
 // imports keep their slots until their workers finish, so the imports still
-// running never exceed maxConcurrentMeshLoads(); their results are dropped and
+// running never exceed maxConcurrentMeshImports(); their results are dropped and
 // the new source's meshes all load.
 TEST(RobotModelLayerTest, SourceSwitchKeepsSupersededImportsWithinTheBound) {
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
-  const std::size_t limit = pj::scene3d::maxConcurrentMeshLoads();
+  const std::size_t limit = pj::scene3d::maxConcurrentMeshImports();
   const int mesh_count = static_cast<int>(limit) + 2;  // more than one wave
   const std::vector<QString> paths = pj::scene3d::test::cubeCopies(dir, mesh_count);
   QString links;

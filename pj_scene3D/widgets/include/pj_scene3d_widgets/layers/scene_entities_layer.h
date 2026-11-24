@@ -41,8 +41,8 @@ class UrdfPackageResolver;
 //   which the view reads through geometry().
 // - **Models** (ModelPrimitive, embedded glTF bytes or a file/http/package:// URL): all batches up to the tracker
 //   time are replayed into an id-keyed entity state (SceneEntitiesModelState: replace-by-id, deletions, lifetime
-//   expiry); the bytes load asynchronously through a MeshLoadQueue, a few at a time (fetch, then import off the GUI
-//   thread; one in the browser), each admitted against kSceneLimits' model budgets as it lands. Imported meshes are
+//   expiry); the bytes load asynchronously through a MeshLoadQueue (fetch, then import off the GUI thread; bounds
+//   in mesh_load_queue.h), each admitted against kSceneLimits' model budgets as it lands. Imported meshes are
 //   retained as MeshData and exposed as frame-local ModelDrawCalls through ModelRenderable (the view applies TF).
 //   DATA-SUPPLIED http(s) model URLs are gated by the QSettings bool "pj_scene3d/allow_remote_model_fetch" (default
 //   ON; false opts OUT); local file URLs / bare paths always load. Failures surface through remoteFetchNotice() and

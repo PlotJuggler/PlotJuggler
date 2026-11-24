@@ -1283,7 +1283,7 @@ void RobotModelLayer::queueMeshLoads() {
       source.flip_override = false;
     }
     mesh_queue_->enqueue(
-        [source]() { return std::optional(source); },
+        source.kind, [source]() { return std::optional(source); },
         [this, key = mesh->resolved_path](MeshLoadQueue::Outcome outcome) { admitMesh(key, std::move(outcome.mesh)); });
   };
   for (const RobotLink& link : model_->links) {
