@@ -752,7 +752,8 @@ void SceneEntitiesLayer::startModelLoad(
     ResolvedMesh resolved;
     if (package_resolver_ != nullptr) {
       package_resolver_->autoSeedSearchRoots(QString());
-      resolved = package_resolver_->resolveUri(location, /*urdf_dir=*/{}, /*source_is_url=*/false);
+      resolved = package_resolver_->resolveUri(
+          location, /*urdf_dir=*/{}, /*source_is_url=*/false, /*package_url_roots=*/{}, /*remote_only=*/false);
     }
     if (!resolved.resolved) {
       load.error =

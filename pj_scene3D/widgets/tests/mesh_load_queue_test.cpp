@@ -338,6 +338,41 @@ TEST(MeshLoadQueueTest, OwnOriginsStayReachableWhenRemoteFetchIsOff) {
   EXPECT_TRUE(third_party.paths().isEmpty()) << "a texture on another origin was requested";
 }
 
+// A request admitted only by its job's own origin never follows a redirect to another origin; with the remote-fetch
+// setting on, the same redirect is followed.
+TEST(MeshLoadQueueTest, OwnOriginRequestNeverFollowsARedirectElsewhere) {
+  const FileHttpServer elsewhere({{u"/quad.dae"_s, readFixtureBytes("textured_quad.dae")}});
+  const FileHttpServer own({}, {{u"/meshes/quad.dae"_s, elsewhere.url(u"/quad.dae"_s)}});
+  MeshLoadQueue::Source source = quadSource(own.url(u"/meshes/quad.dae"_s));
+  source.allow_remote_fetch = false;
+  source.allowed_origins = {QUrl(own.url(u"/"_s))};
+  const std::optional<MeshLoadQueue::Outcome> refused = settle(source);
+  ASSERT_TRUE(refused.has_value());
+  EXPECT_TRUE(refused->fetch_failed);
+  EXPECT_EQ(own.paths().size(), 1);
+  EXPECT_TRUE(elsewhere.paths().isEmpty()) << elsewhere.paths().join(u',').toStdString();
+  source.allow_remote_fetch = true;
+  const std::optional<MeshLoadQueue::Outcome> followed = settle(source);
+  ASSERT_TRUE(followed.has_value());
+  EXPECT_TRUE(followed->mesh.ok) << followed->mesh.error.toStdString();
+  EXPECT_EQ(elsewhere.paths().count(u"/quad.dae"_s), 1);
+}
+
+// A protocol-relative texture ref ("//host/t.png") of a fetched mesh is an http(s) request under the policy, not a
+// network share path.
+TEST(MeshLoadQueueTest, ProtocolRelativeTextureRefIsFetched) {
+  FileHttpServer server({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  QByteArray dae = readFixtureBytes("textured_quad.dae");
+  const QUrl texture(server.url(u"/tex/red_4x4.png"_s));
+  dae.replace("red_4x4.png", (u"//"_s + texture.authority() + texture.path()).toUtf8());
+  server.serve(u"/meshes/quad.dae"_s, dae);
+  const std::optional<MeshLoadQueue::Outcome> outcome = loadQuadFrom(server);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_EQ(server.paths().count(u"/tex/red_4x4.png"_s), 1);
+  EXPECT_FALSE(baseColor(*outcome).bytes.empty());
+}
+
 // A cancelled fetch keeps its slot while another fetch on the shared fetcher is
 // still wanted; once none is, the fetcher is retired and every slot frees.
 TEST(MeshLoadQueueTest, UnwantedFetchesAreAbortedTogether) {

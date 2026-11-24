@@ -26,6 +26,13 @@ struct FetchResult {
   QUrl final_url;
 };
 
+// Whether UrlFetcher::fetch() requests an http(s) URL, and which redirects it follows.
+enum class RemoteFetch : quint8 {
+  kRefused,    // fails without a request
+  kOwnOrigin,  // follows only redirects within the URL's own scheme, host and port (in the browser, none)
+  kAnyOrigin,  // follows PJ::RedirectScope::kAnyOrigin redirects
+};
+
 // Asynchronous byte fetcher with a hard size cap and bounded redirects.
 //
 // Contract (all of it load-bearing):
@@ -33,13 +40,12 @@ struct FetchResult {
 //  - The callback is ALWAYS delivered asynchronously through the event loop, even for local files and immediate errors
 //    (deferred via a queued single-shot), so a caller never re-enters its own stack from fetch().
 //  - Local sources (file:// URLs on this host and scheme-less bare paths) are read with QFile inside the fetcher; only
-//    http(s) URLs (PJ::isHttpUrl) reach the network; a network share path (file://host/..., "//host/...") or any other
-//    scheme fails with "unsupported URL scheme". WASM checks the MEMFS
-//    file size against kMaxFetchBytes before allocating its QByteArray.
-//  - Network requests go through pj_runtime's PJ::fetchBytesWithLimit (HttpGet.h: an inactivity timeout and a bounded
-//    number of redirects, no https->http downgrade; in the browser, the browser's own hop limit). There is no host
-//    allowlist; the egress bound is the scheme/redirect/size/timeout envelope, which a redirect cannot escalate
-//    beyond. WHETHER an http(s) URL is fetched at all is the caller's policy, passed with each fetch().
+//    http(s) URLs (PJ::isHttpUrl) reach the network. A network share (local_path.h) fails with "network share
+//    refused", any other scheme with "unsupported URL scheme". WASM checks the MEMFS file size against
+//    kMaxFetchBytes before allocating its QByteArray.
+//  - Network requests go through pj_runtime's PJ::fetchBytesWithLimit (HttpGet.h: an inactivity timeout, a bounded
+//    size). Whether an http(s) URL is requested, and whether a redirect may leave its origin, is the caller's
+//    RemoteFetch, passed with each fetch(); the fetcher keeps no host list of its own.
 //  - Native http(s) GETs are disk-cached (QNetworkDiskCache, set up in the constructor): a fresh entry is served
 //    without the network, and a previously fetched entry is served from cache when the origin is unreachable, so a
 //    model fetched in a prior session renders offline. Local-file reads bypass the cache. The directory is
@@ -58,9 +64,8 @@ class UrlFetcher : public QObject {
 
   explicit UrlFetcher(QObject* parent = nullptr);
 
-  // `on_done` is invoked exactly once, via the event loop, unless the fetcher is destroyed first (then never). Without
-  // `allow_remote_fetch`, an http(s) URL fails without a request.
-  void fetch(const QUrl& url, std::function<void(FetchResult)> on_done, bool allow_remote_fetch);
+  // `on_done` is invoked exactly once, via the event loop, unless the fetcher is destroyed first (then never).
+  void fetch(const QUrl& url, std::function<void(FetchResult)> on_done, RemoteFetch remote);
 
  private:
   // Queues `result` to `on_done` through the event loop (the never-synchronous delivery guarantee for the local-file /

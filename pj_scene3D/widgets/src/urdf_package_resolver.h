@@ -111,7 +111,7 @@ class UrdfPackageResolver {
   // search roots). Embedded assets and network references still resolve.
   ResolvedMesh resolveUri(
       const std::string& uri, const std::string& urdf_dir, bool source_is_url,
-      const QMap<QString, QUrl>& package_url_roots = {}, bool remote_only = false);
+      const QMap<QString, QUrl>& package_url_roots, bool remote_only);
 
   // The package:// chain (an explicit root, else steps 0..3). On the desktop an http(s) root counts only for a URL
   // source or with `remote_only`; for any other model it is skipped and the package takes steps 0..3. Returns "" on a

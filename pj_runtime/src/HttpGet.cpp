@@ -108,7 +108,8 @@ QNetworkReply* httpGetWithLimit(
 
 CancelFetch fetchBytesWithLimit(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds timeout, QObject* context,
-    std::function<void(FetchedBytes)> done, QNetworkAccessManager* network, FetchProgress progress) {
+    std::function<void(FetchedBytes)> done, RedirectScope redirects, QNetworkAccessManager* network,
+    FetchProgress progress) {
   auto cancelled = std::make_shared<bool>(false);
   auto deliver = [cancelled, done = std::move(done)](FetchedBytes fetched) {
     if (!*cancelled) {
@@ -126,7 +127,7 @@ CancelFetch fetchBytesWithLimit(
   Q_UNUSED(network);
   Q_UNUSED(progress);
   const quint32 id = browserFetchToBytes(
-      url, max_bytes, timeout, context,
+      url, max_bytes, timeout, context, redirects,
       [url, deliver = std::move(deliver)](QByteArray bytes, QString error, bool limit_exceeded) {
         deliver({std::move(bytes), url, std::move(error), limit_exceeded});
       });
@@ -139,7 +140,10 @@ CancelFetch fetchBytesWithLimit(
     network = new QNetworkAccessManager(context);
   }
   QNetworkRequest request(url);
-  request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+  request.setAttribute(
+      QNetworkRequest::RedirectPolicyAttribute, redirects == RedirectScope::kSameOrigin
+                                                    ? QNetworkRequest::SameOriginRedirectPolicy
+                                                    : QNetworkRequest::NoLessSafeRedirectPolicy);
   request.setMaximumRedirectsAllowed(kMaxRedirects);
   const QPointer<QNetworkReply> reply = httpGetWithLimit(
       *network, request, max_bytes, timeout, context,

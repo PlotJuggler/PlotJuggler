@@ -831,7 +831,9 @@ of the module: its files keep their own SPDX and copyright lines.
   also on error, abort or timeout; the reply is `deleteLater`'d after it, so never retain
   it. Used by `UpdateChecker`, `TelemetryPing`, `UsageReporter` and `pj_app`'s registry-URL probe.
 - `fetchBytesWithLimit`: the size-capped GET of an untrusted body, on desktop over
-  `httpGetWithLimit` and in the browser over `BrowserFetch.h`; returns a `CancelFetch`.
+  `httpGetWithLimit` and in the browser over `BrowserFetch.h`; returns a `CancelFetch`. Each
+  caller states a `RedirectScope`: `kSameOrigin` keeps a desktop redirect on the requested
+  origin and fails any redirect in the browser.
   Used by `pj_app`'s `PresetController` and Scene3D's `UrlFetcher`.
 - `BrowserFetch.h` (browser only): downloads that bypass Qt's network backend
   ([TECHNICAL_NOTES.md](./TECHNICAL_NOTES.md) "Qt's browser network backend keeps every response body").

@@ -863,10 +863,43 @@ TEST(RobotModelLayerTest, UrlRobotReachesOtherOriginsOnlyWithRemoteFetch) {
       pj::scene3d::test::pumpUntil(
           [&third_party]() { return !third_party.paths().isEmpty(); }, std::chrono::milliseconds(300));
       EXPECT_TRUE(third_party.paths().isEmpty()) << third_party.paths().join(u',').toStdString();
+      EXPECT_TRUE(layer.statusText().contains("allow_remote_model_fetch"_L1)) << layer.statusText().toStdString();
     }
   }
   EXPECT_EQ(third_party.paths().size(), 2) << third_party.paths().join(u',').toStdString();
   pj::scene3d::test::setRemoteModelFetch(false);
+}
+
+// The URL the user entered is a chosen origin as much as the one that served the URDF after a redirect: with remote
+// fetch off, meshes on both load.
+TEST(RobotModelLayerTest, EnteredAndServedUrlOriginsAreBothChosen) {
+  using pj::scene3d::test::FileHttpServer;
+  using pj::scene3d::test::readFixtureBytes;
+  FileHttpServer served({{u"/robot/served.stl"_s, readFixtureBytes("cube.stl")}});
+  const FileHttpServer entered(
+      {{u"/meshes/entered.stl"_s, readFixtureBytes("cube.stl")}},
+      {{u"/robot.urdf"_s, served.url(u"/robot/robot.urdf"_s)}});
+  served.serve(
+      u"/robot/robot.urdf"_s,
+      uR"(<robot name="r"><link name="base_link">
+<visual><geometry><mesh filename="served.stl"/></geometry></visual>
+<visual><geometry><mesh filename="%1"/></geometry></visual>
+</link></robot>)"_s.arg(entered.url(u"/meshes/entered.stl"_s))
+          .toUtf8());
+  pj::scene3d::test::setRemoteModelFetch(false);
+  pj::scene3d::UrdfPackageResolver resolver;
+  pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, u"robot"_s);
+  layer.setPackageResolver(&resolver);
+  layer.setSourceUrl(entered.url(u"/robot.urdf"_s));
+  ASSERT_TRUE(
+      pj::scene3d::test::pumpUntil(
+          [&layer]() {
+            return layer.robotModel() != nullptr && layer.totalMeshCount() == 2 &&
+                   layer.loadedMeshCount() + layer.missingMeshCount() == layer.totalMeshCount();
+          },
+          std::chrono::seconds(10)))
+      << layer.statusText().toStdString();
+  EXPECT_EQ(layer.loadedMeshCount(), 2) << layer.statusText().toStdString();
 }
 
 // A kTopic robot layer must persist enough identity (dataset + topic name) that xmlLoadState re-resolves the same

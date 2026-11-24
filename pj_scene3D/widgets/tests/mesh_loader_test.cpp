@@ -230,9 +230,13 @@ TEST(MeshLoaderTest, ColladaFromMemoryNeverResolvesAbsoluteTextureRefToLocalFile
   }
 }
 
-// A texture ref naming a network share ("//host/share/..."; SMB on Windows) is never opened. Linux reads "//tmp/x" as
-// "/tmp/x", so an existing file proves the ref is refused, not merely missing.
+// A texture ref naming a network share ("//host/share/..."; SMB on Windows) is never opened. POSIX reads "//tmp/x" as
+// "/tmp/x", so an existing file proves the ref is refused, not merely missing. Windows has no such spelling that
+// stays off the network; the predicate itself is tested on every platform (LocalPathTest).
 TEST(MeshLoaderTest, NetworkShareTextureRefIsNeverOpened) {
+#ifdef Q_OS_WIN
+  GTEST_SKIP() << "no share spelling of a local file that stays off the network";
+#endif
   QTemporaryDir dir;
   ASSERT_TRUE(dir.isValid());
   ASSERT_TRUE(QFile::copy(fixturePath("red_4x4.png"), dir.filePath(u"red_4x4.png"_s)));
@@ -243,6 +247,27 @@ TEST(MeshLoaderTest, NetworkShareTextureRefIsNeverOpened) {
   ASSERT_FALSE(mesh.submeshes.empty());
   EXPECT_TRUE(mesh.submeshes.front().material->base_color.empty())
       << mesh.submeshes.front().material->base_color.path.toStdString();
+}
+
+// A model that itself lies on a network share (the user chose it: a layout or package root there) still opens the
+// files beside it. POSIX reads "//tmp/x" as "/tmp/x", so a local folder stands in for the share.
+TEST(MeshLoaderTest, ModelOnANetworkShareReadsItsSiblingFiles) {
+#ifdef Q_OS_WIN
+  GTEST_SKIP() << "no share spelling of a local file that stays off the network";
+#endif
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const auto write = [&dir](const QString& name, const QByteArray& bytes) {
+    QFile file(dir.filePath(name));
+    EXPECT_TRUE(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size());
+  };
+  write(u"red.mtl"_s, "newmtl red\nKd 1 0 0\n");
+  write(u"triangle.obj"_s, "mtllib red.mtl\nusemtl red\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n");
+  MeshLoader loader;
+  const MeshData mesh = loader.load(u"/"_s + dir.filePath(u"triangle.obj"_s)).result();
+  ASSERT_TRUE(mesh.ok) << mesh.error.toStdString();
+  ASSERT_FALSE(mesh.submeshes.empty());
+  EXPECT_FLOAT_EQ(mesh.submeshes.front().material->base_color_factor.g, 0.0F) << "the sibling mtllib was not read";
 }
 
 // An in-memory model has no folder of its own: a glTF buffer uri naming a file on this host (an existing one here) is

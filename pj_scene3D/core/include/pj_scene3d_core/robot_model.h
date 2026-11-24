@@ -32,6 +32,7 @@ enum class MeshResolveIssue : std::uint8_t {
   kNoAnchor,           // bare relative ref but no urdf_dir to anchor it
   kUnresolvedPackage,  // package:// chain exhausted (unknown package)
   kMissingFile,        // an absolute/anchored path that does not exist on disk
+  kNetworkShare,       // a ref naming a network share (file://host/..., //host/...), refused
 };
 
 // <box size="x y z"/>

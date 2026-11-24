@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "pj_scene3d_widgets/mesh_data.h"
+#include "url_fetcher.h"
 
 class QObject;
 
@@ -76,8 +77,9 @@ class MeshLoadQueue {
     std::optional<bool> flip_override;
     // The remote-fetch policy, applied to every http(s) request of the job (the mesh at an http(s) `location` and
     // each texture it fetches): with `allow_remote_fetch` off, only a URL on one of `allowed_origins` (scheme, host
-    // and port; the source the user chose) is requested. A refused mesh settles as a fetch failure; a refused texture
-    // leaves its slot empty, as a texture that fails to fetch does.
+    // and port; the source the user chose) is requested, and a redirect off that URL's origin fails it
+    // (RemoteFetch::kOwnOrigin). A refused mesh settles as a fetch failure; a refused texture leaves its slot empty, as
+    // a texture that fails to fetch does.
     bool allow_remote_fetch = false;
     std::vector<QUrl> allowed_origins;
   };
@@ -172,5 +174,9 @@ class MeshLoadQueue {
   std::unordered_map<JobId, Running> running_;
   JobId next_id_ = 1;
 };
+
+// How `source`'s job may request `url`: anything with the remote-fetch setting on, else only its own origins, and
+// then without leaving the origin through a redirect.
+[[nodiscard]] RemoteFetch remoteFetchFor(const MeshLoadQueue::Source& source, const QUrl& url);
 
 }  // namespace pj::scene3d

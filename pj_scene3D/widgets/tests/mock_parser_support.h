@@ -179,17 +179,25 @@ inline QString writeQuadReferencing(const QTemporaryDir& dir, const QString& tex
   return path;
 }
 
-// Serves `files` over HTTP on localhost by request path (404 for any other) and
-// records every requested path.
+// Serves `files` over HTTP on localhost by request path, answers a path in `redirects` with a 302 to its absolute
+// URL, 404 for any other, and records every requested path.
 class FileHttpServer {
  public:
-  explicit FileHttpServer(QHash<QString, QByteArray> files) : files_(std::move(files)) {
+  explicit FileHttpServer(QHash<QString, QByteArray> files, QHash<QString, QString> redirects = {})
+      : files_(std::move(files)), redirects_(std::move(redirects)) {
     EXPECT_TRUE(server_.listen(QHostAddress::LocalHost, 0));
     QObject::connect(&server_, &QTcpServer::newConnection, &server_, [this]() {
       QTcpSocket* socket = server_.nextPendingConnection();
       QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket]() {
         const QString path = QString::fromLatin1(socket->readAll().split(' ').value(1));
         paths_.push_back(path);
+        if (const auto target = redirects_.constFind(path); target != redirects_.cend()) {
+          socket->write(
+              "HTTP/1.1 302 Found\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\nLocation: " +
+              target->toUtf8() + "\r\n\r\n");
+          socket->disconnectFromHost();
+          return;
+        }
         const auto file = files_.constFind(path);
         const bool found = file != files_.cend();
         const QByteArray body = found ? *file : QByteArray();
@@ -204,12 +212,17 @@ class FileHttpServer {
   [[nodiscard]] QString url(const QString& path) const {
     return QStringLiteral("http://127.0.0.1:%1%2").arg(server_.serverPort()).arg(path);
   }
+  // For a body that names this server's own port.
+  void serve(const QString& path, QByteArray bytes) {
+    files_.insert(path, std::move(bytes));
+  }
   [[nodiscard]] const QStringList& paths() const {
     return paths_;
   }
 
  private:
   QHash<QString, QByteArray> files_;
+  QHash<QString, QString> redirects_;
   QTcpServer server_;
   QStringList paths_;
 };

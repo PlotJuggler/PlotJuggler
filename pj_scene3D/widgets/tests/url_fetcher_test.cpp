@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 
+#include "local_path.h"
 #include "mock_parser_support.h"
 
 using namespace Qt::StringLiterals;
@@ -68,7 +69,7 @@ TEST(UrlFetcherTest, LocalFileUrlDeliversBytesAsynchronously) {
         called = true;
         result = std::move(fetched);
       },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
   // The contract: the callback is NEVER invoked synchronously from fetch() (a caller kicks a fetch from its load path).
   EXPECT_FALSE(called) << "callback ran before fetch() returned";
 
@@ -93,7 +94,7 @@ TEST(UrlFetcherTest, SchemelessBarePathReadsLocalFile) {
         called = true;
         result = std::move(fetched);
       },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_TRUE(result.ok) << result.error.toStdString();
   EXPECT_EQ(result.bytes, payload);
@@ -109,7 +110,7 @@ TEST(UrlFetcherTest, MissingLocalFileFailsWithError) {
         called = true;
         result = std::move(fetched);
       },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);
   EXPECT_FALSE(result.error.isEmpty());
@@ -125,7 +126,7 @@ TEST(UrlFetcherTest, UnsupportedSchemeFailsAsynchronously) {
         called = true;
         result = std::move(fetched);
       },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
   EXPECT_FALSE(called) << "even immediate errors must be delivered through the event loop";
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);
@@ -148,10 +149,10 @@ TEST(UrlFetcherTest, NetworkSharePathsAreNeverRead) {
     std::optional<pj::scene3d::FetchResult> result;
     fetcher.fetch(
         url, [&result](pj::scene3d::FetchResult fetched) { result = std::move(fetched); },
-        /*allow_remote_fetch=*/true);
+        pj::scene3d::RemoteFetch::kAnyOrigin);
     ASSERT_TRUE(pumpUntil([&result]() { return result.has_value(); }, 5000));
     EXPECT_FALSE(result->ok);
-    EXPECT_TRUE(result->error.contains("unsupported URL scheme"_L1)) << result->error.toStdString();
+    EXPECT_TRUE(result->error.contains("network share refused"_L1)) << result->error.toStdString();
   }
   pj::scene3d::UrlFetcher fetcher;
   std::optional<pj::scene3d::FetchResult> local;
@@ -159,9 +160,32 @@ TEST(UrlFetcherTest, NetworkSharePathsAreNeverRead) {
   localhost.setHost(u"localhost"_s);
   fetcher.fetch(
       localhost, [&local](pj::scene3d::FetchResult fetched) { local = std::move(fetched); },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
   ASSERT_TRUE(pumpUntil([&local]() { return local.has_value(); }, 5000));
   EXPECT_TRUE(local->ok) << "file://localhost/ names this host: " << local->error.toStdString();
+}
+
+// The share predicate on every platform's spellings. A Windows long path to a drive ("\\?\C:\...") is local; one to
+// a UNC share ("\\?\UNC\host\...") is not. On macOS the automounter serves "/net/<host>/..." from that host.
+TEST(LocalPathTest, NetworkSharePredicate) {
+  using pj::scene3d::isNetworkSharePath;
+  for (const bool macos : {false, true}) {
+    SCOPED_TRACE(macos ? "macOS" : "other");
+    for (const QString& share :
+         {u"//host/share/m.dae"_s, u"\\\\host\\share\\m.dae"_s, u"/\\host/share"_s, u"\\\\?\\UNC\\host\\share\\m.dae"_s,
+          u"//?/UNC/host/share/m.dae"_s}) {
+      EXPECT_TRUE(isNetworkSharePath(share, macos)) << share.toStdString();
+    }
+    for (const QString& local :
+         {u"/home/user/m.dae"_s, u"C:/models/m.dae"_s, u"C:\\models\\m.dae"_s, u"\\\\?\\C:\\models\\m.dae"_s,
+          u"//?/C:/models/m.dae"_s, u"relative/m.dae"_s, u"/network/m.dae"_s, u""_s}) {
+      EXPECT_FALSE(isNetworkSharePath(local, macos)) << local.toStdString();
+    }
+    for (const QString& automount : {u"/net/host/share/m.dae"_s, u"/net/./host/m.dae"_s, u"/tmp/../net/host/m"_s}) {
+      EXPECT_EQ(isNetworkSharePath(automount, macos), macos) << automount.toStdString();
+    }
+    EXPECT_FALSE(isNetworkSharePath(u"/net"_s, macos));
+  }
 }
 
 // On Windows an absolute path like "C:/dir/file.bin" becomes a QUrl whose scheme() is the single-letter drive ("c"),
@@ -177,7 +201,7 @@ TEST(UrlFetcherTest, WindowsDriveLetterPathTreatedAsLocalFile) {
         called = true;
         result = std::move(fetched);
       },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);  // the file does not exist on the test host
   EXPECT_FALSE(result.error.contains("unsupported URL scheme"_L1))
@@ -192,7 +216,7 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
   bool called = false;
   const QUrl url(pj::scene3d::test::silentServerUrl(server, u"never"_s));
-  fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; }, /*allow_remote_fetch=*/true);
+  fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; }, pj::scene3d::RemoteFetch::kAnyOrigin);
 
   pumpUntil([&server]() { return server.hasPendingConnections(); }, 2000);
   fetcher.reset();
@@ -209,7 +233,7 @@ TEST(UrlFetcherTest, DestructionCancelsInFlightRequestsWhileTheFetcherIsWhole) {
   bool called = false;
   fetcher->fetch(
       QUrl(pj::scene3d::test::silentServerUrl(server, u"never"_s)),
-      [&called](pj::scene3d::FetchResult) { called = true; }, /*allow_remote_fetch=*/true);
+      [&called](pj::scene3d::FetchResult) { called = true; }, pj::scene3d::RemoteFetch::kAnyOrigin);
   ASSERT_TRUE(pumpUntil([&server]() { return server.hasPendingConnections(); }, 2000));
   const QList<QNetworkReply*> replies = fetcher->findChildren<QNetworkReply*>();
   ASSERT_EQ(replies.size(), 1);
@@ -257,7 +281,7 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
         called = true;
         result = std::move(fetched);
       },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
 
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 10000)) << "capped fetch never completed";
   EXPECT_FALSE(result.ok);
@@ -309,7 +333,7 @@ pj::scene3d::FetchResult fetchSync(pj::scene3d::UrlFetcher& fetcher, const QUrl&
         result = std::move(r);
         done = true;
       },
-      /*allow_remote_fetch=*/true);
+      pj::scene3d::RemoteFetch::kAnyOrigin);
   EXPECT_TRUE(pumpUntil([&done]() { return done; }, 5000));
   return result;
 }

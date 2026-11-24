@@ -50,13 +50,6 @@ bool sameOrigin(const QUrl& a, const QUrl& b) {
          a.host().compare(b.host(), Qt::CaseInsensitive) == 0 && port(a) == port(b);
 }
 
-// Whether `source`'s job may request `url`: anything with the remote-fetch setting on, else only its own origins.
-bool mayRequest(const MeshLoadQueue::Source& source, const QUrl& url) {
-  return source.allow_remote_fetch || std::any_of(
-                                          source.allowed_origins.cbegin(), source.allowed_origins.cend(),
-                                          [&url](const QUrl& origin) { return sameOrigin(origin, url); });
-}
-
 bool hasUnresolvedRef(const Material& material) {
   const auto textures = material.textureSlots();
   return std::any_of(textures.cbegin(), textures.cend(), [](const TextureSource* texture) {
@@ -112,6 +105,16 @@ void attachFetchedTextures(
 
 }  // namespace
 
+RemoteFetch remoteFetchFor(const MeshLoadQueue::Source& source, const QUrl& url) {
+  if (source.allow_remote_fetch) {
+    return RemoteFetch::kAnyOrigin;
+  }
+  const bool own_origin = std::any_of(
+      source.allowed_origins.cbegin(), source.allowed_origins.cend(),
+      [&url](const QUrl& origin) { return sameOrigin(origin, url); });
+  return own_origin ? RemoteFetch::kOwnOrigin : RemoteFetch::kRefused;
+}
+
 bool remoteModelFetchAllowed() {
   return QSettings().value(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true).toBool();
 }
@@ -146,7 +149,7 @@ void MeshLoadQueue::fetch(const QUrl& url, bool allow_remote_fetch, std::functio
         abortObsoleteFetches();
         done(std::move(result));
       },
-      allow_remote_fetch);
+      allow_remote_fetch ? RemoteFetch::kAnyOrigin : RemoteFetch::kRefused);
 }
 
 void MeshLoadQueue::cancel(JobId id) {
@@ -243,7 +246,8 @@ UrlFetcher& MeshLoadQueue::fetcher() {
 void MeshLoadQueue::startFetch(JobId id) {
   const Source& source = running_.at(id).source;
   const QUrl url(source.location);
-  fetcher().fetch(url, [this, id](FetchResult result) { onFetched(id, std::move(result)); }, mayRequest(source, url));
+  fetcher().fetch(
+      url, [this, id](FetchResult result) { onFetched(id, std::move(result)); }, remoteFetchFor(source, url));
 }
 
 void MeshLoadQueue::onFetched(JobId id, FetchResult result) {
@@ -341,7 +345,7 @@ bool MeshLoadQueue::startTextureFetches(JobId id, MeshData& mesh) {
     const QUrl request(QString::fromStdString(url));
     fetcher().fetch(
         request, [this, id, url](FetchResult result) { onTextureFetched(id, url, std::move(result)); },
-        mayRequest(job.source, request));
+        remoteFetchFor(job.source, request));
   }
   return true;
 }

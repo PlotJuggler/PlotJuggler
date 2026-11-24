@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "mesh_loader.h"
 
+#include <assimp/DefaultIOSystem.h>
 #include <assimp/GltfMaterial.h>
 #include <assimp/material.h>
 #include <assimp/postprocess.h>
@@ -49,6 +50,42 @@ class NoFilesIOSystem final : public Assimp::IOSystem {
   void Close(Assimp::IOStream* stream) override {
     delete stream;
   }
+};
+
+// The file system of a file import: the default one, except that it opens a network share path (local_path.h) only
+// inside the folder of a model that is itself on a share (the user chose that share; content names any other).
+// (DefaultIOSystem is final in assimp 6.0.5, so this one wraps it.)
+class ShareRefusingIOSystem final : public Assimp::IOSystem {
+ public:
+  explicit ShareRefusingIOSystem(const QString& model_path) {
+    if (isNetworkSharePath(model_path)) {
+      model_folder_ = QDir::cleanPath(QFileInfo(model_path).absolutePath()) + u'/';
+    }
+  }
+  bool Exists(const char* file) const override {
+    return allowed(file) && files_.Exists(file);
+  }
+  char getOsSeparator() const override {
+    return files_.getOsSeparator();
+  }
+  Assimp::IOStream* Open(const char* file, const char* mode) override {
+    return allowed(file) ? files_.Open(file, mode) : nullptr;
+  }
+  void Close(Assimp::IOStream* stream) override {
+    files_.Close(stream);
+  }
+  bool ComparePaths(const char* one, const char* second) const override {
+    return files_.ComparePaths(one, second);
+  }
+
+ private:
+  // QDir::cleanPath folds a leading "//" into "/" off Windows, so the share test reads the path as given.
+  [[nodiscard]] bool allowed(const char* file) const {
+    const QString path = QDir::fromNativeSeparators(QString::fromUtf8(file));
+    return !isNetworkSharePath(path) || (!model_folder_.isEmpty() && QDir::cleanPath(path).startsWith(model_folder_));
+  }
+  QString model_folder_;
+  mutable Assimp::DefaultIOSystem files_;
 };
 
 // Post-process flags shared by both entry points. GenSmoothNormals only adds normals to meshes that arrive WITHOUT any
@@ -122,13 +159,13 @@ TextureSource resolveTexture(
   }
 
   const QString ref = QDir::fromNativeSeparators(raw);
-  if (isNetworkSharePath(ref)) {
-    return {};
-  }
   if (base_dir.isEmpty()) {
     TextureSource source;
     source.unresolved_ref = ref;
     return source;
+  }
+  if (isNetworkSharePath(ref)) {
+    return {};
   }
   const auto resolve = [&base_dir](const QString& path) -> QString {
     const QFileInfo info(QDir::cleanPath(QDir(base_dir).absoluteFilePath(path)));
@@ -445,6 +482,7 @@ MeshData MeshLoader::importFromFile(const QString& path, bool flip_to_z_up) {
       return out;
     }
     Assimp::Importer importer;
+    importer.SetIOHandler(new ShareRefusingIOSystem(path));  // owned by the importer
     const aiScene* scene = importer.ReadFile(path.toStdString(), kPostProcessFlags);
     if (scene == nullptr) {
       MeshData out;

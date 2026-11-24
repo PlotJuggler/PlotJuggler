@@ -808,10 +808,16 @@ rules (local files load, `http(s)` behind the remote-fetch setting). An unresolv
 layer's notice.
 
 **Remote fetch and network shares.** With `pj_scene3d/allow_remote_model_fetch` off, a model's job requests an
-`http(s)` URL (its mesh or a texture its mesh names) only on an origin its user chose: a robot's URL source or
-package roots; a SceneEntities model has none. A refused mesh fails like a missing one, a refused texture leaves its
-slot empty. Whatever the setting, a path naming a network share (`file://host/...`, `//host/...`, `\\host\...`;
-`local_path.h`) is never opened from model content, and an in-memory import opens no file at all.
+`http(s)` URL (its mesh or a texture its mesh names) only on an origin its user chose: a robot's URL source (the URL
+entered and the one that served it) or package roots; a SceneEntities model has none. Such a request follows a
+redirect only within the requested URL's origin on the desktop and none in the browser (`RemoteFetch::kOwnOrigin`).
+A refused robot mesh fails with a status clause naming the setting, a refused texture leaves its slot empty. With the
+setting on, redirects follow `PJ::RedirectScope::kAnyOrigin`. Whatever the setting, a path that model content names
+on a network share (`file://host/...`, `//host/...`, `\\host\...`, `\\?\UNC\...`, and on macOS `/net/<host>/...`;
+`local_path.h`) is never opened: a URDF ref resolves with "network share refused", a texture ref stays empty, and
+assimp's file system for a file import refuses it outside the folder of a model that is itself on a share. A share
+the user chose is read: a layout or package root there, and the files beside a model on it. An in-memory import opens
+no file at all.
 
 `UrdfPackageResolver` dispatches on the scheme: `file://` absolute; a bare path relative to the URDF (never enters
 the package chain); `http(s)://` only for URL-source layers; `package://pkg/rel` to the model's explicit root for

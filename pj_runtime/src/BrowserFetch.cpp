@@ -31,6 +31,7 @@ enum class FetchStatus : int {
   kWriteFailed = 5,
   kInsecureRedirect = 6,
   kHashFailed = 7,
+  kRedirectRefused = 8,
 };
 
 constexpr int kSha256Bytes = 32;
@@ -99,12 +100,14 @@ void complete(quint32 id, BrowserFetchResult result) {
 // an exception maps to its FetchStatus. A body-less answer (a 204 may come without one) is an empty file. A response
 // the loading page prefetched (globalThis.pjPrefetch, url -> {response, abort()}) is taken once instead of fetching:
 // the abort reaches it, and a failed prefetch falls back to fetching. Otherwise a non-empty `cache_key` reads the
-// body kept under it in the 'pj-recordings-v1' cache when there is one; any cache error counts as none. The macro
+// body kept under it in the 'pj-recordings-v1' cache when there is one; any cache error counts as none. With
+// `follow_redirects` 0 the fetch follows no redirect (a redirect answer is kRedirectRefused) and takes no prefetched
+// response, whose redirects it could not check. The macro
 // joins the body into one line: every statement ends in a semicolon.
 // clang-format off
 EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const char* path_utf8, double max_bytes,
                                      int idle_timeout_ms, int hash, int report_progress,
-                                     const char* cache_key_utf8), {
+                                     const char* cache_key_utf8, int follow_redirects), {
   const kOk = 0;
   const kNetwork = 1;
   const kHttpError = 2;
@@ -113,6 +116,7 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
   const kWriteFailed = 5;
   const kInsecureRedirect = 6;
   const kHashFailed = 7;
+  const kRedirectRefused = 8;
   const url = UTF8ToString(url_utf8);
   const path = UTF8ToString(path_utf8);
   const cacheKey = UTF8ToString(cache_key_utf8);
@@ -135,12 +139,13 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
     let stream = null;
     try {
       arm();
-      const prefetched = globalThis.pjPrefetch ? globalThis.pjPrefetch.get(url) : undefined;
+      const prefetched = follow_redirects && globalThis.pjPrefetch ? globalThis.pjPrefetch.get(url) : undefined;
+      const init = { signal: controller.signal, redirect: follow_redirects ? 'follow' : 'manual' };
       let response;
       if (prefetched) {
         globalThis.pjPrefetch.delete(url);
         controller.signal.addEventListener('abort', () => prefetched.abort());
-        response = await prefetched.response.catch(() => fetch(url, { signal: controller.signal }));
+        response = await prefetched.response.catch(() => fetch(url, init));
       } else {
         if (cacheKey && typeof caches !== 'undefined') {
           try {
@@ -150,10 +155,14 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
         }
         fromCache = Boolean(response);
         if (!fromCache) {
-          response = await fetch(url, { signal: controller.signal });
+          response = await fetch(url, init);
         }
       }
       httpStatus = response.status;
+      if (response.type === 'opaqueredirect') {
+        status = kRedirectRefused;
+        return;
+      }
       if (!response.ok) {
         status = kHttpError;
         return;
@@ -328,7 +337,8 @@ EM_JS(void, pj_browser_fetch_abort, (unsigned id), {
 // browserFetchToFile(), hashing the body only when `hash` is set.
 quint32 startFetch(
     const QUrl& url, const QString& path, qint64 max_bytes, std::chrono::milliseconds idle_timeout, bool hash,
-    std::function<void(BrowserFetchResult)> done, FetchProgress progress = {}, const QString& pinned_sha256 = {}) {
+    RedirectScope redirects, std::function<void(BrowserFetchResult)> done, FetchProgress progress = {},
+    const QString& pinned_sha256 = {}) {
   const quint32 id = addTransfer(std::move(done), max_bytes, idle_timeout);
   const bool report_progress = static_cast<bool>(progress);
   transfers()[id].progress = std::move(progress);
@@ -349,7 +359,7 @@ quint32 startFetch(
   pj_browser_fetch_start(
       id, url.toString(QUrl::FullyEncoded).toUtf8().constData(), path.toUtf8().constData(),
       static_cast<double>(max_bytes), static_cast<int>(idle_timeout.count()), hash ? 1 : 0, report_progress ? 1 : 0,
-      transfer.cache_key.toUtf8().constData());
+      transfer.cache_key.toUtf8().constData(), redirects == RedirectScope::kAnyOrigin ? 1 : 0);
   return id;
 }
 
@@ -360,12 +370,13 @@ quint32 browserFetchToFile(
     std::function<void(BrowserFetchResult)> done, FetchProgress progress, const QString& pinned_sha256) {
   Q_ASSERT(emscripten_is_main_browser_thread());
   return startFetch(
-      url, path, max_bytes, idle_timeout, /*hash=*/true, std::move(done), std::move(progress), pinned_sha256);
+      url, path, max_bytes, idle_timeout, /*hash=*/true, RedirectScope::kAnyOrigin, std::move(done),
+      std::move(progress), pinned_sha256);
 }
 
 quint32 browserFetchToBytes(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds idle_timeout, const QObject* context,
-    std::function<void(QByteArray bytes, QString error, bool limit_exceeded)> done) {
+    RedirectScope redirects, std::function<void(QByteArray bytes, QString error, bool limit_exceeded)> done) {
   Q_ASSERT(emscripten_is_main_browser_thread());
   // The body lands in a scratch file, removed with the last copy of the completion below.
   auto scratch = std::make_shared<QTemporaryFile>();
@@ -385,7 +396,7 @@ quint32 browserFetchToBytes(
   };
   quint32 id = 0;
   if (scratch->open()) {
-    id = startFetch(url, scratch->fileName(), max_bytes, idle_timeout, /*hash=*/false, std::move(deliver));
+    id = startFetch(url, scratch->fileName(), max_bytes, idle_timeout, /*hash=*/false, redirects, std::move(deliver));
   } else {
     id = addTransfer(std::move(deliver), max_bytes, idle_timeout);
     complete(id, {.error = u"could not create a download file: %1"_s.arg(scratch->errorString())});
@@ -464,6 +475,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(
       break;
     case PJ::FetchStatus::kInsecureRedirect:
       result.error = u"an https download was redirected to http"_s;
+      break;
+    case PJ::FetchStatus::kRedirectRefused:
+      result.error = u"the server redirected a download that may not follow redirects"_s;
       break;
     case PJ::FetchStatus::kHashFailed:
       result.error = u"the download could not be verified: this browser cannot compute its SHA-256"_s;

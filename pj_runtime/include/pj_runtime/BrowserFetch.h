@@ -65,11 +65,13 @@ quint32 browserFetchToFile(
 /**
  * browserFetchToFile() for a caller that wants the body in memory (a small file): it goes through a scratch MEMFS
  * file, removed once `done` has read it, so it is never held twice. `done(bytes, error, limit_exceeded)` follows
- * browserFetchToFile()'s rules, and is dropped, the transfer cancelled, when `context` is destroyed first.
+ * browserFetchToFile()'s rules, and is dropped, the transfer cancelled, when `context` is destroyed first. With
+ * RedirectScope::kSameOrigin no redirect is followed (fetch `redirect: "manual"`): one fails the transfer, and no
+ * prefetched response stands in for the fetch.
  */
 quint32 browserFetchToBytes(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds idle_timeout, const QObject* context,
-    std::function<void(QByteArray bytes, QString error, bool limit_exceeded)> done);
+    RedirectScope redirects, std::function<void(QByteArray bytes, QString error, bool limit_exceeded)> done);
 
 /// Aborts the transfer `id`; its `done` never runs. A finished or unknown id is ignored.
 void cancelBrowserFetch(quint32 id);

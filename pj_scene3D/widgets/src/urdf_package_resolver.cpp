@@ -73,9 +73,8 @@ bool allowsNetworkRoot(bool source_is_url, bool remote_only) {
 #endif
 }
 
-// `rel` under the directory `root` names: a URL, a local path for a file root,
-// or "" when the root is unusable (a file root without `local_files`) or `rel`
-// climbs out of it.
+// `rel` under the directory `root` names: a URL, a local path for a file root (on a network share too: the user chose
+// the root), or "" when the root is unusable (a file root without `local_files`) or `rel` climbs out of it.
 std::string resolveUnderRoot(const QUrl& root, const std::string& rel, bool local_files) {
   const bool local = root.isLocalFile();
   if (local ? !local_files : !PJ::isHttpUrl(root)) {
@@ -104,7 +103,7 @@ std::string resolveUnderRoot(const QUrl& root, const std::string& rel, bool loca
   if (!QDir::cleanPath(target.path(QUrl::FullyDecoded)).startsWith(directory.path(QUrl::FullyDecoded))) {
     return {};
   }
-  return (local ? localFileOf(target) : target.toString(QUrl::FullyEncoded)).toStdString();
+  return (local ? filePathOf(target) : target.toString(QUrl::FullyEncoded)).toStdString();
 }
 }  // namespace
 
@@ -264,8 +263,13 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
       return out;
     }
     // Absolute local path: skip the package chain. localFileOf percent-decodes (%20 -> space), which a raw mid(7)
-    // slice would not, and refuses another host's share.
-    const QString path = localFileOf(QUrl(quri));
+    // slice would not.
+    const QUrl url(quri);
+    if (namesNetworkShare(url)) {
+      out.issue = MeshResolveIssue::kNetworkShare;
+      return out;
+    }
+    const QString path = localFileOf(url);
     if (path.isEmpty()) {
       out.issue = MeshResolveIssue::kMissingFile;
       return out;
@@ -313,7 +317,9 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
   // urdf_dir would mangle it (xacro $(find) expansion and MoveIt emit absolute mesh paths). Same existence-check policy
   // as the package steps, so a missing file surfaces in the status instead of resolving to a dead path.
   if (QDir::isAbsolutePath(quri)) {
-    if (local_files && !isNetworkSharePath(quri) && QFileInfo::exists(quri)) {
+    if (local_files && isNetworkSharePath(quri)) {
+      out.issue = MeshResolveIssue::kNetworkShare;
+    } else if (local_files && QFileInfo::exists(quri)) {
       out.resolved = true;
       out.path = uri;
     } else {
