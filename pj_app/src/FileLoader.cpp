@@ -69,6 +69,7 @@
 #include "pj_runtime/DataSourceRuntimeHost.h"
 #include "pj_runtime/DiagnosticEmit.h"
 #include "pj_runtime/ExtensionCatalogService.h"
+#include "pj_runtime/QSettingsBackend.h"
 #include "pj_runtime/SessionManager.h"
 #include "pj_runtime/TsanAnnotations.h"
 #include "pj_runtime/parse_locked.h"
@@ -1381,7 +1382,10 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
   }
   applyDefaultIngestPolicies(ingest_session.policyResolver());
 
-  if (auto status = ingest_session.bind(handle); !status) {
+  const auto plugin_settings = [&source_id](ServiceRegistryBuilder& registry) {
+    return registerPluginSettings(registry, source_id);
+  };
+  if (auto status = ingest_session.bind(handle, plugin_settings); !status) {
     (void)fail(tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error())));
     co_return;
   }
@@ -1769,7 +1773,7 @@ FileLoader::BeginLoadTask FileLoader::beginLoad(LoadRequest request) {
       }
       applyDefaultIngestPolicies(iter_ingest.policyResolver());
 
-      if (auto status = iter_ingest.bind(iter_handle); !status) {
+      if (auto status = iter_ingest.bind(iter_handle, plugin_settings); !status) {
         entry_failed(idx, iter_display, tr("Plugin '%1': %2").arg(source_name, QString::fromStdString(status.error())));
         continue;
       }

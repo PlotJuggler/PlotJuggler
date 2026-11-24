@@ -256,6 +256,10 @@ does not link it.
 
 ### DataSourceRuntimeHost
 
+- **Binding.** `bind()` registers the host's services, then the owner's (its `ServiceRegistrar`: every `pj_app` owner
+  passes the plugin's settings store), in a registry the host owns, and keeps what the owner's services point into
+  as long as that registry. An owner that keeps the host alive past the plugin handle therefore keeps every service
+  the plugin can reach alive up to its destructor.
 - **DSO keepalive.** A `shared_ptr<void>` from `DataSourceHandle::libraryOwner()` is
   threaded into every lazy payload anchor and fetch closure, deferring `dlclose` until the
   last one drops, so a decode worker never calls plugin code in an unmapped library.
@@ -322,11 +326,10 @@ does not link it.
 The optional settings store (SDK `SettingsStoreService` / `SettingsView`; host side `sdk::SettingsStoreHost` over
 `QSettingsBackend`), persisted in the app's QSettings. The one model for every plugin that gets it:
 
-- **Who gets which store.** Toolboxes, interactive and headless (`pj_app`'s `makeToolboxSettings`, used by both
-  toolbox owners), and streaming sources (`StreamingSourceManager::createSession`) get
-  `QSettingsBackend::forPlugin(manifest id)`. File loaders get none: their handle moves into the import worker's
-  context and `importData` runs on that worker, where a GUI-thread store would be called off-thread. A plugin with
-  no manifest id gets no store (a toolbox: one that lives as long as the instance).
+- **Who gets which store.** Every plugin gets `QSettingsBackend::forPlugin(manifest id)`: toolboxes, interactive
+  and headless, through `pj_app`'s `makeToolboxSettings`; every DataSource plugin (file load, fan-out entry, stream)
+  through `registerPluginSettings`, the extra services its owner passes to `DataSourceRuntimeHost::bind`. A plugin
+  with no manifest id gets no store (a toolbox: one that lives as long as the instance).
 - **Scoping.** Every key of a store lives under `PluginSettings/<percent-encoded manifest id>/`
   (`PluginSettingsKeys.h`): two plugins never collide and none reaches the app's own settings. Scoping keeps
   plugins from colliding by accident; it is no boundary against a hostile plugin, which runs in-process.
@@ -339,10 +342,11 @@ The optional settings store (SDK `SettingsStoreService` / `SettingsView`; host s
   `DialogGeometry/`, `PluginSettings/`, `BrowserPersistence/`, the app's preferences) are never read through.
 - **Threads and failures.** Every call is GUI-thread, as the SDK states: `QSettingsBackend` throws off the thread
   that created it, and a write throws when QSettings reports it could not store it; `SettingsStoreHost` turns both
-  into a failed `PJ_error_t`, so the plugin sees a failed `Status` and nothing is stored.
-- **Lifetime.** The backend and its `SettingsStoreHost` outlive the plugin handle, so a plugin may write from its
-  destructor; a plugin may look the service up after `bind()` (the SDK bases keep the registry), so its owner keeps
-  the registry it bound with alive as long as the handle.
+  into a failed `PJ_error_t`, so the plugin sees a failed `Status` and nothing is stored. A file loader's
+  `loadConfig`, dialog and destructor run on the GUI thread; its import (`start()`) runs on a worker, where every
+  call fails, as from a stream's poll thread.
+- **Lifetime.** The store outlives the plugin handle, so a plugin may write from its destructor:
+  `DataSourceRuntimeHost::bind` keeps it with the registry, a toolbox owner declares it before the handle.
 - **Kept across a browser reload: `durable/`.** On the desktop every key persists. In the browser every settings
   value lives as long as the page, except a key the plugin names `durable/<name>`, which `BrowserPersistence`
   mirrors into local storage on its periodic flush and restores before any plugin host starts, when it passes

@@ -145,11 +145,15 @@ class DataSourceRuntimeHost {
   // bind the plugin then) and the optional object-write service (a rejection only warns).
   [[nodiscard]] Status registerServices(ServiceRegistryBuilder& registry);
 
-  // Registers these services in a registry this host owns and binds `handle` to it; once per host. The SDK's
-  // DataSourcePluginBase keeps that registry (services()) and views into these services after bind(), up to its
-  // destructor, so this host must outlive `handle`: an owner declares the host before the handle. Errors read
-  // "service registration failed: ..." or "bind failed: ...".
-  [[nodiscard]] Status bind(DataSourceHandle& handle);
+  // Registers the owner's own services in bind()'s registry. It returns what owns the objects those services point
+  // into; the host keeps that as long as the registry.
+  using ServiceRegistrar = std::function<std::shared_ptr<void>(ServiceRegistryBuilder&)>;
+
+  // Registers these services, then `extra_services`' (when set), in a registry this host owns and binds `handle` to
+  // it; once per host. The SDK's DataSourcePluginBase keeps that registry (services()) and views into its services
+  // after bind(), up to its destructor, so this host must outlive `handle`: an owner declares the host before the
+  // handle. Errors read "service registration failed: ..." or "bind failed: ...".
+  [[nodiscard]] Status bind(DataSourceHandle& handle, const ServiceRegistrar& extra_services = {});
 
   // This host across the C ABI outside registerServices() (ToolboxRuntimeHost's parser-ingest slots). Valid while
   // this object lives.
@@ -341,6 +345,7 @@ class DataSourceRuntimeHost {
   DatasetId dataset_id_;
   DatastoreSourceWriteHost source_write_host_;
   DatastoreSourceObjectWriteHost source_object_write_host_;
+  std::shared_ptr<void> extra_services_;  // bind()'s registrar result; before registry_, so it outlives the views
   std::unique_ptr<ServiceRegistryBuilder> registry_;  // bind()'s; heap, as the plugin holds its address
   // Shared by the lazy closures: some sources wrap readers whose deferred fetch is not safe concurrently.
   std::shared_ptr<std::mutex> lazy_fetch_mutex_;

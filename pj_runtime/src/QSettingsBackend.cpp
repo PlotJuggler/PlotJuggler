@@ -10,7 +10,10 @@
 #include <array>
 #include <stdexcept>
 
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/PluginSettingsKeys.h"
+#include "pj_runtime/ServiceRegistration.h"
 
 namespace PJ {
 
@@ -157,6 +160,21 @@ void QSettingsBackend::remove(std::string_view key) {
     settings_.remove(qkey);
     settings_.beginGroup(group);
   }
+}
+
+std::shared_ptr<void> registerPluginSettings(ServiceRegistryBuilder& registry, std::string_view plugin_id) {
+  struct Store {
+    explicit Store(std::unique_ptr<QSettingsBackend> scoped) : backend(std::move(scoped)), host(*backend) {}
+    std::unique_ptr<QSettingsBackend> backend;
+    sdk::SettingsStoreHost host;  // after backend: it refers to it
+  };
+  auto backend = QSettingsBackend::forPlugin(plugin_id);
+  if (backend == nullptr) {
+    return nullptr;
+  }
+  auto store = std::make_shared<Store>(std::move(backend));
+  registerOptionalService<sdk::SettingsStoreService>(registry, store->host.view());
+  return store;
 }
 
 }  // namespace PJ

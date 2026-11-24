@@ -15,6 +15,8 @@
 
 namespace PJ {
 
+class ServiceRegistryBuilder;
+
 // Host-side SettingsBackend backed by QSettings, providing the "pj.settings.v1" service (see sdk::SettingsStoreHost).
 // Persists to the app's QSettings (the org/app name set on QApplication) or to an explicit INI file for headless hosts
 // and tests. Keys use '/', which QSettings maps to nested groups; scalars are stored as strings, lists as a native
@@ -53,5 +55,11 @@ class QSettingsBackend : public sdk::SettingsBackend {
   QSettings settings_;
   QString plugin_id_;  // empty when unscoped: no read-through
 };
+
+// Registers plugin `plugin_id`'s store (QSettingsBackend::forPlugin) as pj.settings.v1 in `registry` and returns its
+// owner, which must outlive the plugin bound with `registry` (a DataSourceRuntimeHost::bind registrar keeps it so).
+// An empty id registers nothing and returns nullptr.
+[[nodiscard]] std::shared_ptr<void> registerPluginSettings(
+    ServiceRegistryBuilder& registry, std::string_view plugin_id);
 
 }  // namespace PJ

@@ -279,13 +279,16 @@ Status DataSourceRuntimeHost::registerServices(ServiceRegistryBuilder& registry)
   return {};
 }
 
-Status DataSourceRuntimeHost::bind(DataSourceHandle& handle) {
+Status DataSourceRuntimeHost::bind(DataSourceHandle& handle, const ServiceRegistrar& extra_services) {
   if (registry_ != nullptr) {
     return unexpected(std::string("bind failed: this host already bound a plugin"));
   }
   registry_ = std::make_unique<ServiceRegistryBuilder>();
   if (auto status = registerServices(*registry_); !status) {
     return unexpected("service registration failed: " + status.error());
+  }
+  if (extra_services) {
+    extra_services_ = extra_services(*registry_);
   }
   if (auto status = handle.bind(registry_->view()); !status) {
     return unexpected("bind failed: " + status.error());

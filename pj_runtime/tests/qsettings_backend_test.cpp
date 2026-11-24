@@ -13,12 +13,26 @@
 #include <thread>
 #include <vector>
 
+#include "pj_base/sdk/service_registry.hpp"
+#include "pj_base/sdk/service_traits.hpp"
+#include "pj_plugins/host/service_registry_builder.hpp"
 #include "pj_runtime/PluginSettingsKeys.h"
 #include "pj_runtime/QSettingsBackend.h"
 
 using namespace Qt::StringLiterals;
 
 namespace {
+
+TEST(QSettingsBackend, RegisterPluginSettingsGivesAStoreOnlyToAPluginWithAnId) {
+  PJ::ServiceRegistryBuilder unnamed;
+  EXPECT_EQ(PJ::registerPluginSettings(unnamed, ""), nullptr);
+  EXPECT_FALSE(PJ::sdk::ServiceRegistry(unnamed.view()).get<PJ::sdk::SettingsStoreService>().has_value());
+
+  PJ::ServiceRegistryBuilder named;
+  const auto store = PJ::registerPluginSettings(named, "some-plugin");
+  EXPECT_NE(store, nullptr);
+  EXPECT_TRUE(PJ::sdk::ServiceRegistry(named.view()).get<PJ::sdk::SettingsStoreService>().has_value());
+}
 
 TEST(QSettingsBackend, AbsentKeyReportsNulloptAndNotContained) {
   QTemporaryDir dir;
