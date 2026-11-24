@@ -357,7 +357,8 @@ above `kMinClipW`, and the mix left w at exactly 0 on a 10 km grid of 200 divisi
 (endpoints near w = -4600 and +4800), which draws nothing. A GPU draws the vertex lists through the shaders' plain
 variants, unchanged. Triangle and point pipelines are not affected; the indexed and the instanced line pipelines
 still lose such segments (ARCHITECTURE "Known gaps"). Regression tests:
-`MarkerLineBehindTheEyeKeepsItsColourGradient` (llvmpipe takes the segment path, so every CI native lane runs it; it
+`MarkerLineBehindTheEyeKeepsItsColourGradient` (the Linux llvmpipe/lavapipe and Windows WARP lanes take the segment path, macOS's Metal device the vertex lists;
+`SoftwareRasterizerDrawsTheDirectPass` fails if a CPU rasterizer goes undetected; it
 failed with 466 differing pixels while the shader kept the moved end's own colour) and `scene3d_foundation.spec.js`'s
 line grid and marker lines tests (the marker test drew no line under the camera before the clip).
 
