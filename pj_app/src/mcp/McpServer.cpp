@@ -123,10 +123,11 @@ bool answersBeforeItEnds(const std::string& tool) {
 }
 
 /// Whether a job of `tool` dies with the call that started it: an agent tool's does (nothing would
-/// read its evaluation), and so does a question whose answer would delete data for a client that
-/// left; other app work (an import, a stream, an export) carries on for its client to find.
+/// read its evaluation), and so does a question whose answer would delete data or replace the
+/// workspace for a client that left; other app work (an import, a stream, an export) carries on for
+/// its client to find.
 bool diesWithItsCall(const std::string& tool) {
-  return mcp::agentTools().find(tool) != nullptr || tool == "unload_file";
+  return mcp::agentTools().find(tool) != nullptr || tool == "unload_file" || tool == "load_layout";
 }
 
 }  // namespace

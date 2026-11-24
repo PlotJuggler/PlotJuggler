@@ -194,6 +194,13 @@ class McpTestPeer {
   static void undo(MainWindow& window) {
     window.onUndo();
   }
+  /// File → Save Layout's write, past its dialog.
+  static void saveLayoutAsTheMenuDoes(MainWindow& window, const QString& path, bool bind_sources) {
+    window.saveLayoutToPath(path, bind_sources);
+  }
+  [[nodiscard]] static QStringList recentLayouts(const MainWindow& window) {
+    return window.recentLayouts();
+  }
   [[nodiscard]] static std::size_t undoSize(const MainWindow& window) {
     return window.undo_states_.size();
   }
@@ -1637,6 +1644,179 @@ TEST_F(McpServerTest, ScreenshotTakesNoTabAndPlotTabFocusBringsOneForward) {
   EXPECT_NE(refused.find("focus"), std::string::npos) << refused;
   const auto [focused, focus_error] = result(call("plot_tab", {{"action", "focus"}, {"tab", "mine"}}));
   EXPECT_FALSE(focus_error) << focused;
+}
+
+/// The agent's tab "mine" with the mock's value plotted.
+void plotMine(const std::function<Answer(const std::string&, const json&)>& call) {
+  for (const json& args :
+       {json{{"action", "create"}, {"tab", "mine"}},
+        json{{"action", "add"}, {"tab", "mine"}, {"curves", {"mock/file_data/value"}}}}) {
+    const Answer answer = call("plot_tab", args);
+    const json& r = answer.body.value("result", json::object());
+    ASSERT_FALSE(r.value("isError", false)) << answer.body.dump();
+  }
+}
+
+std::string readAll(const QString& path) {
+  QFile file(path);
+  return file.open(QIODevice::ReadOnly) ? file.readAll().toStdString() : std::string();
+}
+
+class McpLayoutTest : public McpServerTest {
+ protected:
+  void plot() {
+    plotMine([this](const std::string& tool, const json& args) { return call(tool, args); });
+  }
+  /// save_layout's text, with no path.
+  std::string layoutText(bool bind_sources = true) {
+    const auto [text, error] = result(call("save_layout", {{"bind_sources", bind_sources}}));
+    EXPECT_FALSE(error) << text;
+    return json::parse(text, nullptr, false).value("xml", "");
+  }
+  /// Every visible message box, by its title.
+  static QStringList boxTexts() {
+    QStringList texts;
+    for (PJ::MessageBox* box : visible<PJ::MessageBox>()) {
+      texts.push_back(box->windowTitle());
+    }
+    return texts;
+  }
+};
+
+// save_layout writes and returns exactly what File → Save Layout writes; as text alone its paths stay absolute; a
+// file already at path is kept unless overwrite.
+TEST_F(McpLayoutTest, SaveLayoutReturnsWhatTheMenusSaveWrites) {
+  ASSERT_NE(loadMock(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  const QString menu_path = data_.filePath(u"menu.pj4.xml"_s);
+  PJ::McpTestPeer::saveLayoutAsTheMenuDoes(*window_, menu_path, true);
+  const std::string expected = readAll(menu_path);
+  ASSERT_FALSE(expected.empty());
+  const std::string mock_path = data_.filePath(u"a.mock"_s).toStdString();
+  EXPECT_NE(expected.find("filename=\"a.mock\""), std::string::npos) << "relative to the layout's folder";
+
+  const std::string agent_path = data_.filePath(u"agent"_s).toStdString();
+  const auto [text, error] = result(call("save_layout", {{"path", agent_path}}));
+  ASSERT_FALSE(error) << text;
+  const json saved = json::parse(text, nullptr, false);
+  EXPECT_EQ(saved.value("path", ""), agent_path + ".pj4.xml") << "the extension is added, as the menu adds it";
+  EXPECT_EQ(saved.value("xml", ""), expected);
+  EXPECT_EQ(readAll(QString::fromStdString(agent_path + ".pj4.xml")), expected);
+
+  const auto [kept, kept_error] = result(call("save_layout", {{"path", agent_path + ".pj4.xml"}}));
+  EXPECT_TRUE(kept_error) << kept;
+  EXPECT_NE(kept.find("overwrite"), std::string::npos) << kept;
+  EXPECT_FALSE(result(call("save_layout", {{"path", agent_path + ".pj4.xml"}, {"overwrite", true}})).second);
+  EXPECT_TRUE(result(call("save_layout", {{"path", "relative.pj4.xml"}})).second);
+
+  const std::string bound = layoutText();
+  EXPECT_NE(bound.find("filename=\"" + mock_path + "\""), std::string::npos) << bound;
+  EXPECT_NE(bound.find("previouslyLoaded_Datafiles"), std::string::npos) << bound;
+  const std::string generic = layoutText(/*bind_sources=*/false);
+  EXPECT_EQ(generic.find("previouslyLoaded_Datafiles"), std::string::npos) << generic;
+  EXPECT_NE(generic.find("binding=\"generic\""), std::string::npos) << generic;
+}
+
+// load_layout from text and from a file restores the agent's tab, its curve and its derived series, still the agent's
+// (get_status, list_created); saving again gives the same layout. A workspace with nothing in it is replaced without
+// asking; one with work in it only after the user agrees. Layout text never becomes a recent layout.
+TEST_F(McpLayoutTest, LoadLayoutFromTextOrFileRestoresTheAgentsWorkAndSavesTheSame) {
+  window_->show();  // a hidden window's splitters do not keep the sizes a layout gives them
+  ASSERT_NE(loadWithDependentSeries(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  const std::string saved = layoutText();
+  ASSERT_FALSE(saved.empty());
+  const QStringList recent_before = PJ::McpTestPeer::recentLayouts(*window_);
+
+  ASSERT_FALSE(result(call("plot_tab", {{"action", "close"}, {"tab", "mine"}})).second);
+  ASSERT_FALSE(result(call("remove_derived_series", {{"name", "doubled"}})).second);
+  ASSERT_EQ(layoutText().find("doubled"), std::string::npos);
+
+  bool asked = false;
+  const auto [text, error] = result(call("load_layout", {{"xml", saved}}, clicker(u"Replace"_s, asked)));
+  ASSERT_FALSE(error) << text;
+  EXPECT_FALSE(asked) << "nothing would have been lost";
+  EXPECT_TRUE(json::parse(text, nullptr, false).value("loaded", false)) << text;
+  const json status = json::parse(result(call("get_status", json::object())).first, nullptr, false);
+  EXPECT_EQ(status["agent_tabs"], json::array({"mine"})) << status.dump();
+  const json created = json::parse(result(call("list_created", json::object())).first, nullptr, false);
+  EXPECT_NE(created.dump().find("doubled"), std::string::npos) << created.dump();
+  EXPECT_FALSE(result(call("plot_tab", {{"action", "focus"}, {"tab", "mine"}})).second);
+  EXPECT_EQ(layoutText(), saved);
+  EXPECT_EQ(PJ::McpTestPeer::recentLayouts(*window_), recent_before);
+
+  const QString path = data_.filePath(u"saved.pj4.xml"_s);
+  ASSERT_FALSE(result(call("save_layout", {{"path", path.toStdString()}})).second);
+  bool replaced = false;
+  const auto [from_file, file_error] =
+      result(call("load_layout", {{"path", path.toStdString()}}, clicker(u"Replace"_s, replaced)));
+  ASSERT_FALSE(file_error) << from_file;
+  EXPECT_TRUE(replaced) << "the user's workspace had work in it";
+  EXPECT_EQ(layoutText(), saved);
+}
+
+// The user's Cancel leaves everything as it was, and the agent hears that the user said no.
+TEST_F(McpLayoutTest, LoadLayoutTheUserRefusesChangesNothing) {
+  ASSERT_NE(loadMock(), 0);
+  const std::string other = layoutText();
+  ASSERT_NO_FATAL_FAILURE(plot());
+  const std::string before = layoutText();
+  bool cancelled = false;
+  const auto [text, error] = result(call("load_layout", {{"xml", other}}, clicker(u"Cancel"_s, cancelled)));
+  EXPECT_TRUE(cancelled);
+  EXPECT_TRUE(error) << text;
+  EXPECT_NE(text.find("user"), std::string::npos) << text;
+  EXPECT_EQ(layoutText(), before);
+}
+
+// Text that is no layout is refused with the parser's reason before the user is asked, and changes nothing.
+TEST_F(McpLayoutTest, LoadLayoutOfInvalidXmlFailsAndChangesNothing) {
+  ASSERT_NE(loadMock(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  const std::string before = layoutText();
+  bool asked = false;
+  const auto [text, error] =
+      result(call("load_layout", {{"xml", "<root><tabbed_widget>"}}, clicker(u"Cancel"_s, asked)));
+  EXPECT_TRUE(error) << text;
+  EXPECT_FALSE(asked);
+  EXPECT_NE(text.find("not a valid PJ4 layout"), std::string::npos) << text;
+  EXPECT_EQ(layoutText(), before);
+  EXPECT_TRUE(result(call("load_layout", json::object())).second);
+  EXPECT_TRUE(result(call("load_layout", {{"xml", before}, {"path", "/x.pj4.xml"}})).second);
+  EXPECT_TRUE(result(call("load_layout", {{"path", data_.filePath(u"none.pj4.xml"_s).toStdString()}})).second);
+}
+
+// What the app reports while loading reaches the agent as text: a newer pj4_version and a data file that is gone load
+// with warnings; a layout whose data cannot come back fails with the app's reason. No dialog opens for any of it.
+TEST_F(McpLayoutTest, LoadLayoutReturnsTheAppsWarningsAndErrors) {
+  ASSERT_NE(loadMock(), 0);
+  ASSERT_NO_FATAL_FAILURE(plot());
+  std::string saved = layoutText();
+  const std::string mock_path = data_.filePath(u"a.mock"_s).toStdString();
+  std::string missing = saved;
+  for (std::size_t at = missing.find(mock_path); at != std::string::npos; at = missing.find(mock_path)) {
+    missing.replace(at, mock_path.size(), data_.filePath(u"gone.mock"_s).toStdString());
+  }
+  const std::size_t version = missing.find("pj4_version=\"");
+  ASSERT_NE(version, std::string::npos);
+  missing.replace(version, std::string("pj4_version=\"").size(), "pj4_version=\"99");
+
+  bool replaced = false;
+  const auto [text, error] = result(call("load_layout", {{"xml", missing}}, clicker(u"Replace"_s, replaced)));
+  ASSERT_FALSE(error) << text;
+  const std::string warnings = json::parse(text, nullptr, false)["warnings"].dump();
+  EXPECT_NE(warnings.find("newer PJ4"), std::string::npos) << text;
+  EXPECT_NE(warnings.find("does not exist on disk"), std::string::npos) << text;
+  EXPECT_TRUE(boxTexts().isEmpty()) << boxTexts().join(u" | ").toStdString();
+
+  const auto datasets = window_->appSession().catalogModel().datasets();
+  ASSERT_EQ(datasets.size(), 1U);
+  window_->removeDatasets({datasets.front().first});
+  bool again = false;
+  const auto [failed, failed_error] = result(call("load_layout", {{"xml", missing}}, clicker(u"Replace"_s, again)));
+  EXPECT_TRUE(failed_error) << failed;
+  EXPECT_NE(failed.find("could not be restored"), std::string::npos) << failed;
+  EXPECT_TRUE(boxTexts().isEmpty()) << boxTexts().join(u" | ").toStdString();
 }
 
 // list_created names the agent's script series too, and remove_derived_series removes one by that id.

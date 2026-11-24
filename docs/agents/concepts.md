@@ -114,6 +114,7 @@ lives in that tab. Details: [formats.md](./formats.md).
 
 ## Agents' own views
 
-An agent draws only in tabs and scene views it creates (`plot_tab`, `scene_view`), marked with its badge. It cannot see
-or change the user's tabs. The user can duplicate an agent's tab to get a copy that is theirs. PlotJuggler can do only
+An agent draws only in tabs and scene views it creates (`plot_tab`, `scene_view`), marked with its badge. It changes
+the user's docks only through `set_widget_state` (one dock's settings, one undo step) and `load_layout`, which
+replaces the whole workspace after the user agrees to it. The user can duplicate an agent's tab to get a copy that is theirs. PlotJuggler can do only
 receiving and displaying: it cannot publish messages or command a robot.

@@ -401,6 +401,22 @@ class MainWindow : public QMainWindow {
   // shared with the linked plots, as a user zoom is.
   void endAgentDockChange(DockWidget* dock);
 
+  // The bytes File → Save Layout writes to `path`: data paths relative to its folder when beneath it, or all absolute
+  // when `path` is empty. In the browser, the generic or source-bound download, `path` unused. nullopt with `error`
+  // when the layout cannot be saved (a stream's record, a browser source that has no URL).
+  [[nodiscard]] std::optional<QByteArray> layoutFileBytes(
+      const QString& path, bool include_data_source, QString& error);
+  // Writes `bytes` to `path` in place of what was there only once they are all written, and records it as a recent
+  // layout. Empty on success, else why not.
+  [[nodiscard]] QString writeLayoutFile(const QString& path, const QByteArray& bytes);
+  // Loads the layout file at `path` as `--layout` does: its data files and streams load without asking, no dialog
+  // opens, and what goes wrong is reported as "Layout" diagnostics; it ends in layoutRestoreSettled. `remember` false
+  // keeps it off the recent layouts (an agent's layout text, written to a temporary file).
+  void loadLayoutForAgent(const QString& path, bool remember);
+  // Whether loading a layout would discard something: a dock that holds a plot, scene or panel, or a derived series,
+  // object or marker rule.
+  [[nodiscard]] bool layoutLoadWouldDiscardWork();
+
   // The service assembly a toolbox plugin with id `owner` would get (data processors, object
   // reads, playback, its own plot and scene tabs) with no plugin loaded: an MCP agent's tools run
   // against it. Null after reporting the failure to the diagnostics. The caller must release it
@@ -1072,9 +1088,9 @@ class MainWindow : public QMainWindow {
   // The active batch's failed sources as "path: why" lines (empty without a batch).
   [[nodiscard]] QStringList layoutImportFailureLines() const;
 
-  // <previouslyLoaded_Datafiles>: paths relative to `layout_dir` when at or beneath it, absolute otherwise. A null
-  // element when no source is recorded.
-  [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const;
+  // <previouslyLoaded_Datafiles>: paths relative to `layout_dir` when at or beneath it, absolute otherwise or with no
+  // `layout_dir`. A null element when no source is recorded.
+  [[nodiscard]] QDomElement appendDataSourceElement(QDomDocument& doc, const std::optional<QDir>& layout_dir) const;
 
   // The per-<fileInfo> Source Timeline state, applied in two passes over one resolution. DatasetIds are
   // re-minted each session, so resolveLayoutTimelineTracks matches each entry to a live dataset by source path
@@ -1430,8 +1446,10 @@ class MainWindow : public QMainWindow {
   bool plugin_failure_toast_shown_ = false;
   // While non-null, every "Layout" diagnostic is also appended here, so a failed restore can say why.
   QStringList* layout_issue_capture_ = nullptr;
+  // False while loadLayoutForAgent loads a file that is no layout the user could reopen.
+  bool record_recent_layout_ = true;
   // The <data_processors> entries the last unattended layout load (kRetainAndDiagnose) skipped, saved back by
-  // saveLayoutToPath so a save never loses what the load skipped (as pending curves are kept); an interactive load
+  // layoutFileBytes so a save never loses what the load skipped (as pending curves are kept); an interactive load
   // asked instead, and its Continue drops them. Layout files only: an undo snapshot or a kExact rollback target
   // carrying them would fail on the same missing input. Replaced by the next layout load, emptied with the catalog.
   QDomDocument kept_derived_;

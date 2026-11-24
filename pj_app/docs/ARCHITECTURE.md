@@ -333,7 +333,7 @@ reports its refusal as `processor-restore-refused`.
 
 **A save never loses what the load skipped.** `DerivedRestoreReport::skipped` names the exact saved elements the
 restore skipped. Under `kRetainAndDiagnose` `applyDataProcessors` stages copies of exactly those, and the layout's commit
-point (`commitRestoredLayout`) makes them `kept_derived_`; `saveLayoutToPath` writes them back, as pending curves are
+point (`commitRestoredLayout`) makes them `kept_derived_`; `layoutFileBytes` writes them back, as pending curves are
 kept and saved. Identity is never guessed from the file: one filter or rule bound to two runs, one of them not loaded,
 keeps the other binding. Each copy loses its session dataset ids; a qualifier only an id named (a stream bound at load)
 gets back its `pj-stream://` identity. Under `kPrompt` the prompt asked instead: its Continue drops them, and its title

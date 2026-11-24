@@ -361,6 +361,11 @@ class McpServer : public QObject {
   void addFilter(const nlohmann::json& args, const Caller& caller, Reply reply);
   void removeScriptSeries(const nlohmann::json& args, const Caller& caller, Reply reply);
   void screenshot(const nlohmann::json& args, const Caller& caller, Reply reply);
+  void saveLayout(const nlohmann::json& args, const Caller& caller, Reply reply);
+  void loadLayout(const nlohmann::json& args, const Caller& caller, Reply reply);
+  /// load_layout's load once nothing stops it: the file at `path` (`remember`: as a recent layout), or else `url`.
+  /// Replies when the load settles, with the "Layout" warnings the app reported meanwhile.
+  void startLayoutLoad(const QString& path, bool remember, const QUrl& url, Reply reply);
   // McpWidgetState.cpp
   void widgetState(const nlohmann::json& args, const Caller& caller, Reply reply);
   void setWidgetState(const nlohmann::json& args, const Caller& caller, Reply reply);

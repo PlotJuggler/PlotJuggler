@@ -32,7 +32,7 @@ to `pj_widgets`; business logic and data services go to `pj_runtime`. How the su
   restored before the offsets reads an unsettled display frame; a preflight after any mutation can no longer refuse
   cleanly. `syncCustomTopicsPanel` runs after every restore.
 - The `<data_processors>` entries a layout load skipped (`kept_derived_`, exactly the elements
-  `DerivedRestoreReport::skipped` names) are written back only by `saveLayoutToPath`; in `xmlSaveState` they would
+  `DerivedRestoreReport::skipped` names) are written back only by `layoutFileBytes`; in `xmlSaveState` they would
   reach undo snapshots and `kExact` rollback targets, which then fail on the same missing input.
 - Layout import (`LayoutImportBatch`, `HeadlessDescriptorProviderSession`, `SourcePromotionHost`, the
   rewrite-then-classify load path, the growing-import binder) implements host-side invariants defined in

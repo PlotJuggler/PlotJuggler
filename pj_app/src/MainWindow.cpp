@@ -5535,6 +5535,22 @@ void MainWindow::loadLayoutFromPath(
       });
 }
 
+void MainWindow::loadLayoutForAgent(const QString& path, bool remember) {
+  // Both restore legs reach restoreChromeAndPanels before an automated load returns, so the flag covers them.
+  const QScopedValueRollback record(record_recent_layout_, remember);
+  loadLayoutFromPath(path, LayoutLoadInteractivity::kAutomated);
+}
+
+bool MainWindow::layoutLoadWouldDiscardWork() {
+  bool docks = false;
+  forEachTabDock([&docks](PlotDocker*, DockWidget* dock) {
+    QDomDocument doc;
+    docks = docks || !dock->xmlSaveState(doc).isNull();
+  });
+  QDomDocument doc;
+  return docks || derivedObjects().save(doc, SnapshotScope::kFull).hasChildNodes();
+}
+
 void MainWindow::chooseLayoutDatasets(
     QDomDocument doc, const std::optional<QList<layout_xml::DatasetIdentity>>& saved, bool can_prompt,
     const QString& layout_name, const QStringList& chosen_files, std::function<void(ChosenLayout)> then) {
@@ -7080,7 +7096,9 @@ void MainWindow::restoreChromeAndPanels(
 
   // Pinned toolbox tabs are restored at each leg's commit point, not here: the progressive leg runs this while it
   // can still roll back, and a cancelled restore would lose the user's live toolboxes.
-  recordRecentLayout(path);
+  if (record_recent_layout_) {
+    recordRecentLayout(path);
+  }
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "loaded", tr("Loaded layout: %1").arg(QFileInfo(path).fileName()));
 }
 
@@ -7756,11 +7774,41 @@ void MainWindow::appendKeptDerived(QDomDocument& doc) {
 }
 
 void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source) {
+  QString error;
+  const std::optional<QByteArray> bytes = layoutFileBytes(path, include_data_source, error);
+  if (bytes.has_value()) {
+    error = writeLayoutFile(path, *bytes);
+  }
+  if (!error.isEmpty()) {
+    MessageBox::warning(this, tr("Save Layout"), error);
+  }
+}
+
+std::optional<QByteArray> MainWindow::layoutFileBytes(const QString& path, bool include_data_source, QString& error) {
+#ifdef PJ_TARGET_WASM
+  // As File → Save Layout and Save Layout with Sources download them: a page has no folder to be relative to.
+  static_cast<void>(path);
+  if (include_data_source) {
+    const std::optional<QDomDocument> doc = browserSourceLayoutDocument(error);
+    return doc.has_value() ? std::optional<QByteArray>(doc->toByteArray(2)) : std::nullopt;
+  }
+  QByteArray bytes = browserGenericLayoutDocument().toByteArray(2);
+  if (layout_xml::containsEphemeralBrowserPath(bytes)) {
+    error = tr("The layout still contains an ephemeral browser path and was not downloaded.");
+    return std::nullopt;
+  }
+  return bytes;
+#else
   QDomDocument doc = xmlSaveState();
   // Before the binding rewrites below, so a kept entry is qualified or relativized like a live one.
   appendKeptDerived(doc);
   doc.documentElement().setAttribute(u"binding"_s, include_data_source ? u"source"_s : u"generic"_s);
-  const QDir layout_dir(QFileInfo(path).absoluteDir());
+  // Text with no file has no folder for its paths to be relative to.
+  const std::optional<QDir> layout_dir =
+      path.isEmpty() ? std::nullopt : std::optional<QDir>(QFileInfo(path).absoluteDir());
+  const std::function<QString(const QString&)> relocate = [&layout_dir](const QString& absolute_path) {
+    return layout_dir.has_value() ? relocatableSubpath(absolute_path, *layout_dir) : absolute_path;
+  };
   if (include_data_source) {
     QDomElement ds = appendDataSourceElement(doc, layout_dir);
     if (!ds.isNull()) {
@@ -7774,8 +7822,7 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
       }
       return QFileInfo(source_path).absoluteFilePath();
     });
-    layout_xml::relativizeDatasetSourcePaths(
-        doc, [&layout_dir](const QString& absolute_path) { return relocatableSubpath(absolute_path, layout_dir); });
+    layout_xml::relativizeDatasetSourcePaths(doc, relocate);
     // A live stream is named by its record (pj-stream://<id>), with the configuration its session started from.
     QHash<std::uint32_t, QString> stream_identity_for_dataset;
     const QList<layout_xml::StreamingSourceRef> stream_records = liveStreamRecords(stream_identity_for_dataset);
@@ -7784,9 +7831,8 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
     // capture the layout.
     layout_xml::removeUnvalidatedDatasetIds(doc);
     if (QString stream_error; !layout_xml::writeStreamingSources(doc, stream_records, &stream_error)) {
-      MessageBox::warning(
-          this, tr("Save Layout"), tr("The layout's streaming sources cannot be saved: %1").arg(stream_error));
-      return;
+      error = tr("The layout's streaming sources cannot be saved: %1").arg(stream_error);
+      return std::nullopt;
     }
   } else {
     // Undo and source-bound documents keep the exact qualifiers; a generic file binds topic+field paths, when
@@ -7795,8 +7841,7 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   }
 #ifdef PJ_WITH_SCENE3D
   // In both bindings; the live layer and undo snapshots keep the absolute path.
-  pj::scene3d::relocateLayoutResources(
-      doc, [&layout_dir](const QString& absolute_path) { return relocatableSubpath(absolute_path, layout_dir); });
+  pj::scene3d::relocateLayoutResources(doc, relocate);
 #endif
   // UI state, saved in both bindings.
   doc.documentElement().appendChild(saveRightPanelState(doc));
@@ -7808,26 +7853,27 @@ void MainWindow::saveLayoutToPath(const QString& path, bool include_data_source)
   doc.documentElement().appendChild(saveSourceTimelineViewState(doc));
   // Layout file only: undo snapshots exclude pinned toolbox tabs (TabbedPlotWidget::xmlSaveState).
   doc.documentElement().appendChild(savePinnedToolboxes(doc));
+  return doc.toByteArray(2);
+#endif
+}
+
+QString MainWindow::writeLayoutFile(const QString& path, const QByteArray& bytes) {
   // A partial write (disk full, broken NFS) leaves the previous layout untouched.
   QSaveFile file(path);
   if (!file.open(QIODevice::WriteOnly)) {
-    MessageBox::warning(this, tr("Save Layout"), tr("Cannot open '%1' for writing.").arg(path));
-    return;
+    return tr("Cannot open '%1' for writing.").arg(path);
   }
-  const QByteArray bytes = doc.toByteArray(2);
   if (file.write(bytes) != bytes.size()) {
     const QString err = file.errorString();
     file.cancelWriting();
-    MessageBox::warning(this, tr("Save Layout"), tr("Failed to write layout to '%1': %2").arg(path, err));
-    return;
+    return tr("Failed to write layout to '%1': %2").arg(path, err);
   }
   if (!file.commit()) {
-    MessageBox::warning(
-        this, tr("Save Layout"), tr("Failed to finalize layout '%1': %2").arg(path, file.errorString()));
-    return;
+    return tr("Failed to finalize layout '%1': %2").arg(path, file.errorString());
   }
   recordRecentLayout(path);
   emitDiagnostic(DiagnosticLevel::kInfo, "Layout", "saved", tr("Saved layout: %1").arg(QFileInfo(path).fileName()));
+  return {};
 }
 
 bool MainWindow::restoreDataProcessors(
@@ -8740,7 +8786,7 @@ void MainWindow::restoreHistoryState(const CapturedWorkspace& target, bool undo)
   updateUndoRedoActions();
 }
 
-QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& layout_dir) const {
+QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const std::optional<QDir>& layout_dir) const {
   const auto& sources = session_->sessionManager().loadedSources();
   if (sources.empty() || session_->catalogModel().isEmpty()) {
     return QDomElement();
@@ -8773,7 +8819,7 @@ QDomElement MainWindow::appendDataSourceElement(QDomDocument& doc, const QDir& l
     QDomElement file_info = doc.createElement(u"fileInfo"_s);
 
     const QString abs = QFileInfo(src.path).absoluteFilePath();
-    file_info.setAttribute(u"filename"_s, relocatableSubpath(abs, layout_dir));
+    file_info.setAttribute(u"filename"_s, layout_dir.has_value() ? relocatableSubpath(abs, *layout_dir) : abs);
     file_info.setAttribute(u"prefix"_s, src.prefix);
 
     // The offset is sourceDisplayOffset(), without the global reference (schema v4). The first child is mirrored

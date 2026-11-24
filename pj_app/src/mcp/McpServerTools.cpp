@@ -6,12 +6,15 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QDir>
+#include <QDomDocument>
+#include <QFile>
 #include <QFileInfo>
 #include <QLocale>
 #include <QPointer>
 #include <QSaveFile>
 #include <QSettings>
 #include <QTemporaryFile>
+#include <QTimer>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -27,11 +30,13 @@
 #include <memory>
 
 #include "FileLoader.h"
+#include "LayoutXml.h"
 #include "LoadInput.h"
 #include "MainWindow.h"
 #include "PluginPlotTabsController.h"
 #include "StreamingSourceManager.h"
 #include "mcp/McpServer.h"
+#include "pj_marketplace/qt_diagnostic_bridge.hpp"
 #include "pj_runtime/AppSession.h"
 #include "pj_runtime/CatalogModel.h"
 #include "pj_runtime/DataProcessorService.h"
@@ -44,6 +49,7 @@
 #include "pj_runtime/Time.h"
 #include "pj_runtime/agent_tools/derived_recipes.hpp"
 #include "pj_scripting/filter_catalogue.h"
+#include "pj_widgets/MessageBox.h"
 #ifdef PJ_TARGET_WASM
 #include "mcp/McpBrowserLink.h"
 #include "pj_runtime/BrowserFetch.h"
@@ -493,6 +499,8 @@ const std::unordered_map<std::string, McpServer::AppTool>& McpServer::appTools()
       {"add_filter", &McpServer::addFilter},
       {"remove_script_series", &McpServer::removeScriptSeries},
       {"screenshot", &McpServer::screenshot},
+      {"save_layout", &McpServer::saveLayout},
+      {"load_layout", &McpServer::loadLayout},
       {"widget_state", &McpServer::widgetState},
       {"set_widget_state", &McpServer::setWidgetState},
   };
@@ -1177,6 +1185,191 @@ void McpServer::screenshot(const json& args, const Caller&, Reply reply) {
         {{"content",
           json::array({{{"type", "image"}, {"mimeType", "image/png"}, {"data", png.toBase64().toStdString()}}})}});
   });
+}
+
+void McpServer::saveLayout(const json& args, const Caller&, Reply reply) {
+  QString path = qs(args, "path");
+#ifdef PJ_TARGET_WASM
+  if (!path.isEmpty()) {
+    reply(fail("in the browser save_layout writes no file (the page cannot reach your disk): save the xml yourself"));
+    return;
+  }
+#else
+  if (!path.isEmpty()) {
+    if (!QFileInfo(path).isAbsolute()) {
+      reply(fail("path must be absolute"));
+      return;
+    }
+    path = layout_xml::ensureLayoutExtension(path);
+    if (!args.value("overwrite", false) && QFileInfo::exists(path)) {
+      reply(fail("a file is already at " + path.toStdString() + ": pass overwrite: true to replace it"));
+      return;
+    }
+  }
+#endif
+  QString error;
+  const std::optional<QByteArray> bytes =
+      window_.layoutFileBytes(path, args.value("bind_sources", mcp::kBindSourcesByDefault), error);
+  if (!bytes.has_value()) {
+    reply(fail(error.toStdString()));
+    return;
+  }
+  json result = {{"xml", bytes->toStdString()}};
+  if (!path.isEmpty()) {
+    if (const QString write_error = window_.writeLayoutFile(path, *bytes); !write_error.isEmpty()) {
+      reply(fail(write_error.toStdString()));
+      return;
+    }
+    result["path"] = path.toStdString();
+  }
+  reply(ok(result));
+}
+
+void McpServer::loadLayout(const json& args, const Caller& caller, Reply reply) {
+  const QString xml = qs(args, "xml");
+  const QString path = qs(args, "path");
+  const QUrl url(qs(args, "url"));
+  if (int(!xml.isEmpty()) + int(!path.isEmpty()) + int(!url.isEmpty()) != 1) {
+    reply(fail("pass exactly one of xml, path and url"));
+    return;
+  }
+  QByteArray bytes = xml.toUtf8();
+  if (!path.isEmpty()) {
+#ifdef PJ_TARGET_WASM
+    reply(fail("in the browser the page cannot read your disk: pass the layout file's text as xml"));
+    return;
+#else
+    QFile file(path);
+    if (!QFileInfo(path).isAbsolute() || !file.open(QIODevice::ReadOnly)) {
+      reply(fail("path must be the absolute path of a readable layout file"));
+      return;
+    }
+    bytes = file.readAll();
+#endif
+  }
+  if (!url.isEmpty() && url.scheme() != "http"_L1 && url.scheme() != "https"_L1) {
+    reply(fail("url must be http or https"));
+    return;
+  }
+  // Checked before the user is asked: a layout that cannot load is no reason to interrupt them.
+  if (url.isEmpty()) {
+    QDomDocument doc;
+    if (const QDomDocument::ParseResult parsed = doc.setContent(bytes); !parsed) {
+      reply(fail(
+          (path.isEmpty() ? u"xml"_s : u"'%1'"_s.arg(path)).toStdString() +
+          " is not a valid PJ4 layout: " + parsed.errorMessage.toStdString() + " (line " +
+          std::to_string(parsed.errorLine) + ", col " + std::to_string(parsed.errorColumn) + ")"));
+      return;
+    }
+  }
+  const auto begin = [self = QPointer<McpServer>(this), bytes, path, url, reply] {
+    if (self == nullptr) {
+      return;
+    }
+    if (!url.isEmpty() || !path.isEmpty()) {
+      self->startLayoutLoad(path, /*remember=*/true, url, reply);
+      return;
+    }
+    // Read before loadLayoutForAgent returns, so the file can go with this scope.
+    QTemporaryFile file(QDir::temp().filePath(u"pj-agent-layout-XXXXXX.pj4.xml"_s));
+    if (!file.open() || file.write(bytes) != bytes.size() || !file.flush()) {
+      reply(fail("cannot write the layout to a temporary file: " + file.errorString().toStdString()));
+      return;
+    }
+    self->startLayoutLoad(file.fileName(), /*remember=*/false, {}, reply);
+  };
+  if (!window_.layoutLoadWouldDiscardWork()) {
+    begin();
+    return;
+  }
+  const dialog_presenter::DialogWatch on_dialog = dialogWatch(caller.job);
+  MessageBox::questionAsync(
+      &window_, tr("Load Layout"),
+      tr("An AI agent wants to load a layout. It replaces your tabs, plots, scenes and derived series."),
+      {{tr("Replace"), MessageBox::kDestructiveRole}, {tr("Cancel"), MessageBox::kCancelRole}},
+      [begin, reply, on_dialog, still_allowed = stillAuthorized(caller)](int choice, bool) {
+        if (on_dialog) {
+          on_dialog({});
+        }
+        if (choice != 0 || !still_allowed()) {
+          reply(fail("not loaded: the user kept their workspace, or the question was withdrawn"));
+          return;
+        }
+        begin();
+      },
+      /*show_dont_show_again=*/false,
+      [on_dialog](QDialog& prompt) {
+        if (on_dialog) {
+          on_dialog([prompt = QPointer<QDialog>(&prompt)] {
+            if (prompt != nullptr) {
+              prompt->reject();
+            }
+          });
+        }
+      });
+}
+
+void McpServer::startLayoutLoad(const QString& path, bool remember, const QUrl& url, Reply reply) {
+  auto* receiver = new QObject(this);
+  auto warnings = std::make_shared<QStringList>();
+  connect(
+      window_.diagnosticBridge(), &QtDiagnosticBridge::diagnosticReported, receiver,
+      [warnings](int level, const QString& source, const QString&, const QString& message) {
+        if (source == "Layout"_L1 && level >= static_cast<int>(DiagnosticLevel::kWarning)) {
+          warnings->push_back(message);
+        }
+      });
+  auto settled = std::make_shared<bool>(false);
+  const auto settle = [receiver, warnings, settled, reply, path, remember, url](bool loaded, const QString& reason) {
+    if (std::exchange(*settled, true)) {
+      return;
+    }
+    // Diagnostics reach the bridge queued: this load's arrive before a call queued now.
+    QTimer::singleShot(0, receiver, [receiver, warnings, reply, path, remember, url, loaded, reason] {
+      receiver->deleteLater();
+      json lines = json::array();
+      for (QString line : std::as_const(*warnings)) {
+        // A failure's summary quotes the issues it collected, which were reported on their own too.
+        if (std::any_of(warnings->begin(), warnings->end(), [&line](const QString& other) {
+              return other != line && other.contains(line);
+            })) {
+          continue;
+        }
+        if (!remember) {  // the agent's text, in a temporary file it never named
+          line.replace(path, u"xml"_s).replace(QFileInfo(path).fileName(), u"xml"_s);
+        }
+        lines.push_back(line.toStdString());
+      }
+      if (loaded) {
+        reply(ok({{"loaded", true}, {"warnings", lines}}));
+        return;
+      }
+      std::string why = "layout not loaded";
+      if (!reason.isEmpty()) {
+        why += " (" + reason.toStdString() + ")";
+      }
+      for (const json& line : lines) {
+        why += "\n" + line.get<std::string>();
+      }
+      if (!url.isEmpty()) {
+        why += "\nPlotJuggler shows the user why in a message box.";
+      }
+      reply(fail(why));
+    });
+  };
+  if (url.isEmpty()) {
+    connect(&window_, &MainWindow::layoutRestoreSettled, receiver, [settle](bool loaded) { settle(loaded, {}); });
+    window_.loadLayoutForAgent(path, remember);
+  } else {
+    connect(
+        &window_, &MainWindow::layoutUrlLoadFinished, receiver,
+        [settle, url](const QUrl& finished, bool loaded, const QString& reason) {
+          if (finished == url) {
+            settle(loaded, reason);
+          }
+        });
+    window_.loadLayoutFromUrl(url);
+  }
 }
 
 }  // namespace PJ

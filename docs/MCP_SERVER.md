@@ -57,7 +57,7 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
 - **App tools** (`McpServerTools.cpp`, public token only): `get_status`, `about`, `open_file`, `unload_file`,
   `reload_file`, `start_stream`, `stop_stream`, `export_series`, `add_script_series`, `remove_script_series`,
   `add_filter`, `screenshot`, `widget_state` and `set_widget_state` (`McpWidgetState.cpp`, see
-  [Widget state](#widget-state)).
+  [Widget state](#widget-state)), `save_layout` and `load_layout` (see [Layouts](#layouts)).
 - **Job tools** (`McpServer`, served to every token): `jobs_list`, `job_wait`, `job_kill` (see [Jobs](#jobs)).
 - **Bridge tools** (answered by the bridge itself): `list_instances`, `select_instance`, `launch`.
 - **UI tools** (`McpUiTools.cpp`, public token only, and only in a run started with `--mcp-ui-tools`): `ui_tree`,
@@ -163,7 +163,7 @@ open either kind in the Transform Editor read-only (the pencil's view, see "Cust
 
 A call that can take long does not hold its client until it ends. The job-capable tools (`mcp::isJobCapableTool`:
 `evaluate`, `create_derived_object`, `wait_for`, `open_file`, `reload_file`, `unload_file`, `start_stream`,
-`export_series`)
+`export_series`, `load_layout`)
 take `wait_s` (`mcp::waitSeconds`: default `kDefaultWaitS`, at most `kMaxWaitS`), added to their schemas by
 `mcp::toolList`.
 
@@ -214,8 +214,8 @@ states: running · waiting_for_user · completed · failed · killed
   the job running; `followStream` ties the two). The job ends `completed` when the stream ends on its own or anyone
   stops it (`stop_stream`, the user removing the dataset), `failed` when it fails, `killed` on `job_kill`. Streams
   count toward `kMaxRunningJobs`, and revoking a token stops the streams its agents started.
-- **Dialogs an agent caused.** `open_file` and `start_stream` with `ask_user`, and `unload_file`'s confirmation, put
-  a dialog in front of the user. Each hands the job the closer of exactly that dialog while it is up
+- **Dialogs an agent caused.** `open_file` and `start_stream` with `ask_user`, and the confirmations of
+  `unload_file` and `load_layout`, put a dialog in front of the user. Each hands the job the closer of exactly that dialog while it is up
   (`McpServer::dialogWatch`, a `dialog_presenter::DialogWatch` that the file loader, the stream manager and the
   unload confirmation each pass to what opens their dialog): the job then reads
   `waiting_for_user`, and a kill closes that dialog from the event loop, as the user's click would arrive. The
@@ -232,7 +232,8 @@ states: running · waiting_for_user · completed · failed · killed
   tool's does: it ends as killed, which also answers another session of the same client waiting on it. So does
   `unload_file`'s, whose prompt is withdrawn: a client that left must not have data deleted later
   (`stillAuthorized` already refuses from the moment the call hung up, before the tick notices). An import, a
-  stream and an export carry on as background jobs their client finds with `jobs_list`. A background job ignores
+  stream and an export carry on as background jobs their client finds with `jobs_list`. So does `load_layout`'s,
+  whose question is withdrawn: a client that left must not have the user's workspace replaced later. A background job ignores
   the connection of the call that started it.
 - **`notifications/cancelled`** kills the one foreground call of the same token and owner whose JSON-RPC id matches
   `requestId` (`McpServer::cancelRequest`); none or several matches stop nothing, since ids are per client session.
@@ -329,7 +330,8 @@ wait returns.
     after its dialog leaves no dataset behind);
   - `open_file` and `reload_file` loads waiting in the queue or at their dialog (`LoadHints::still_allowed`, checked
     in `FileLoader::beginLoad`);
-  - `unload_file`'s prompt (`confirmAndRemoveDependentTransforms`'s `still_allowed`).
+  - `unload_file`'s prompt (`confirmAndRemoveDependentTransforms`'s `still_allowed`);
+  - `load_layout`'s confirmation.
 - **A tool runs from the event loop**, never from inside its connection's own signal (`McpServer::dispatch` queues
   the call): a tool may run a modal loop (the unload prompt, a stream's dialog), during which that connection can
   close and be deleted.
@@ -396,7 +398,8 @@ cache (`~/.cache/plotjuggler-agent/relay-key`).
   trusts whatever relay its `?mcp=` names, so it accepts loopback relays only: a link to `?mcp=` is a request to be
   driven by that relay, as `--mcp-relay` is on the desktop.
 - **Tools.** The browser has no `about` (no feature catalog) and no `export_series` (the file would stay in the
-  page); `toolList` and the instructions leave them out there. MCP clients read `tools/list` once at startup, before
+  page); `save_layout` writes no file and `load_layout` takes no `path` there (the relay serves files only to
+  `open_file`); `toolList` and the instructions leave them out there. MCP clients read `tools/list` once at startup, before
   any page connects, and do not reliably refresh on `list_changed`, so the relay serves its bundled
   `browser-tools.json` (regenerated from a build, see its README) until a page has connected, then that page's list,
   cached for the next sessions.
@@ -553,6 +556,38 @@ dock with no state).
   dialog open (`runsUnderUsersDialog`); `set_widget_state` waits. `widget_state` with action `set` is a tool error
   naming `set_widget_state`.
 
+## Layouts
+
+`save_layout` and `load_layout` read and replace the whole workspace as layout XML, through the menu's own code:
+
+- **Save.** `MainWindow::layoutFileBytes` is what File → Save Layout writes (`saveLayoutToPath` is it plus
+  `writeLayoutFile`), so the tool returns the same bytes. `bind_sources` is the save dialog's "Bind to this data
+  source" (`mcp::kBindSourcesByDefault`, the menu's default). With a `path` (extension added as the menu adds it, an
+  existing file kept unless `overwrite`) the file is written through `writeLayoutFile`, data paths relative to its
+  folder, and becomes a recent layout; without one the data paths stay absolute, since text has no folder. In the
+  browser it is the generic or the source-bound download, and `path` is refused: the page cannot write the agent's
+  disk.
+- **Load.** One of `xml`, `path` or `url`. Text and file go through `MainWindow::loadLayoutForAgent`, which is
+  `loadLayoutFromPath` as `--layout` runs it (`LayoutLoadInteractivity::kAutomated`): the layout's data files and
+  streams load when not loaded already, missing curves are kept and reported, and no dialog opens. The text is written
+  to a temporary file first, which is kept off the recent layouts (and named `xml` in the messages); its relative paths
+  would resolve against that file's folder, so they must be absolute, as a save without `path` writes them. `url`
+  is `loadLayoutFromUrl`, the browser presets' load (data files download beside it); its failures also show the user
+  a message box. In the browser `path` is refused (pass the file's text). XML that does not parse is refused before
+  anyone is asked.
+- **The user's consent.** Unlike every other tool, a load replaces the user's tabs and derived series. When
+  `MainWindow::layoutLoadWouldDiscardWork` says the workspace holds anything (a dock with state, a derived series,
+  object or marker rule), the user is asked first ("Replace" / "Cancel"), as a job: past `wait_s` the agent gets its
+  job id, `job_kill` withdraws the question, and a call that hangs up withdraws it too. Cancel loads nothing. A
+  workspace with nothing in it is replaced without asking.
+- **The answer** is `loaded` and the warnings the app reported meanwhile (every "Layout" diagnostic at warning level or
+  above: a newer `pj4_version`, a data file that is gone, curves the data lacks, a dataset chosen for the layout), or
+  an error with the app's own reason. The diagnostics reach `QtDiagnosticBridge` queued, so the reply is sent one
+  event-loop turn after `layoutRestoreSettled` (or `layoutUrlLoadFinished`).
+- **Ownership.** Agents' tabs persist with their owner (`owner_plugin`) and their derived series with their owner's
+  transform keys, and a load restores both as they were saved: the same `agent-<client>` gets them back (`get_status`
+  `agent_tabs`, `list_created`, `plot_tab`), any other client sees them as someone else's.
+
 ## The user comes first
 
 - While a modal dialog is open, only read-only tools run (`screenshot` and `widget_state` among them); the rest are
@@ -560,7 +595,8 @@ dock with no state).
   `focus`.
   The UI tools are the exception: they are the user, in a run that asked for them.
 - `unload_file` with dependent derived series waits for the user's answer to the prompt (the `cancelled` hook of
-  `confirmAndRemoveDependentTransforms`), as a job: past `wait_s` the agent gets its job id.
+  `confirmAndRemoveDependentTransforms`), as a job: past `wait_s` the agent gets its job id. `load_layout` asks the
+  same way before it replaces a workspace that holds anything ([Layouts](#layouts)).
 - A dialog opened because an agent passed `ask_user` is titled "An AI agent asked you to choose: ...". The prefix
   travels `LoadHints::dialog_title_prefix` → `DataSourceRequest::title_prefix` → `DialogEngineConfig::title_prefix`
   (for streams, `StreamingSourceManager::startSession`).
@@ -635,6 +671,10 @@ dock with no state).
     refused and the panel keeps its topic. `WidgetStateRefusesALayerOfAnotherDataset`: a 3D view's `set_widget_state` adding another dataset's layer is refused with the
     view's reason and the view keeps its layers.
     Each widget family tests its own `xmlValidateState` and option coverage.
+  - `McpLayoutTest`: `save_layout` returns and writes what the menu's save writes, the overwrite guard, absolute
+    paths in text; `load_layout` from text and from a file restores the agent's tab and series as its own and saves
+    back the same layout, asks only when something would be lost, changes nothing when the user cancels or the XML
+    does not parse, and returns the app's warnings and errors without opening a dialog.
   - `TheInstructionsListEveryTopicOrNoneAndStayUnderTheCap`, `InitializeSaysWhatIsLoaded`: the summary's
     all-or-nothing rule, quoting and cap. `ConfigSecretsReadAsTheSentinel…`, `AStreamConfigsSecretsAreRedacted…`:
     redaction and the sentinel (refused for a changed configuration), for a file and a stream.
@@ -680,6 +720,11 @@ dock with no state).
 - A `create_derived_object` stopped during its first read-back answers `killed` although the object is installed,
   and the read-back's removal of an object whose script fails is skipped: `list_created` shows it and
   `remove_derived_series` removes it.
+
+- `load_layout` waits for the next `layoutRestoreSettled`: when the user starts another layout load before an
+  agent's progressive one settles, the agent gets that load's outcome.
+- `load_layout` of a `url` reports the app's reason as a token (`download`, `parse`, ...), with the full text only in
+  the message box the user sees.
 
 - `widget_state` lists only what a parser checks. A value set from data (a point cloud's colour field, a frame name)
   is reported as `text`: the agent learns the field names from `describe_topic`, not from `get`. A Custom Widget
