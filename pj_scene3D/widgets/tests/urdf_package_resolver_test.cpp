@@ -56,6 +56,28 @@ TEST(UrdfResolver, FileSchemeStrippedToAbsolutePath) {
   EXPECT_FALSE(m.is_url);
 }
 
+// A ref naming a network share (SMB on Windows) never resolves: a file:// URL with a host other than localhost, an
+// absolute "//host/..." path, or a file root on a host. Linux reads "//tmp/x" as "/tmp/x", so the absolute ref names
+// an existing file and is refused, not merely missing.
+TEST(UrdfResolver, NetworkShareRefsNeverResolve) {
+  QTemporaryFile existing;
+  ASSERT_TRUE(existing.open());
+  existing.close();
+  UrdfPackageResolver r;
+  for (const QString& ref : {u"file://203.0.113.9/share/m.stl"_s, u"/"_s + existing.fileName()}) {
+    SCOPED_TRACE(ref.toStdString());
+    const ResolvedMesh m = r.resolveUri(ref.toStdString(), "/some/dir", /*source_is_url=*/false);
+    EXPECT_FALSE(m.resolved) << m.path;
+    EXPECT_EQ(m.issue, MeshResolveIssue::kMissingFile);
+  }
+  const QMap<QString, QUrl> share_root{{u"pkg"_s, QUrl(u"file://203.0.113.9/share/pkg/"_s)}};
+  const ResolvedMesh rooted = r.resolveUri("package://pkg/m.stl", "", /*source_is_url=*/false, share_root);
+  EXPECT_FALSE(rooted.resolved) << rooted.path;
+  const ResolvedMesh localhost = r.resolveUri("file://localhost/abs/m.stl", "/some/dir", /*source_is_url=*/false);
+  EXPECT_TRUE(localhost.resolved);
+  EXPECT_EQ(localhost.path, "/abs/m.stl");
+}
+
 TEST(UrdfResolver, BarePathJoinsUrdfDirAndSkipsPackageSearch) {
   UrdfPackageResolver r;
   r.addSearchRoot(QString::fromStdString(fixtures() + "/search_root"));

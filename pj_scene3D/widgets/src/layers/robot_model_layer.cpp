@@ -1147,7 +1147,7 @@ bool RobotModelLayer::loadFromCurrentSource() {
   // the mesh queue, so the model's meshes reuse this fetch's connections; the
   // layer-owned queue's destruction is the primary lifetime guard.
   QPointer<RobotModelLayer> guard(this);
-  mesh_queue_->fetch(url, [this, guard, generation, url_text](const FetchResult& fetched) {
+  mesh_queue_->fetch(url, /*allow_remote_fetch=*/true, [this, guard, generation, url_text](const FetchResult& fetched) {
     if (guard.isNull() || generation != load_generation_) {
       return;  // layer destroyed, or a newer load superseded this fetch
     }
@@ -1224,8 +1224,13 @@ bool RobotModelLayer::applyRobotDescription(
     resolver_->autoSeedSearchRoots(urdf_dir);
   }
   QMap<QString, QUrl> roots = package_url_roots_;
+  std::vector<QUrl> allowed_origins;
+  if (source_is_url) {
+    allowed_origins.push_back(roots_base);
+  }
   for (QUrl& root : roots) {
     root = roots_base.resolved(root);  // absolute roots come back unchanged
+    allowed_origins.push_back(root);
   }
   auto parsed = parseUrdf(
       xml, resolver_, urdf_dir.toStdString(), source_is_url, label.toStdString(), &kUrdfLimits, roots,
@@ -1248,7 +1253,7 @@ bool RobotModelLayer::applyRobotDescription(
   retain(kCylinderKey, makeCylinder());
   retain(kSphereKey, makeSphere());
   base_status_ = tr("URDF: %1").arg(label);
-  queueMeshLoads();
+  queueMeshLoads(std::move(allowed_origins));
   rebuildDrawCalls();
   updateMeshCounters();
   updateStatus();
@@ -1261,12 +1266,13 @@ bool RobotModelLayer::applyRobotDescription(
   return true;
 }
 
-void RobotModelLayer::queueMeshLoads() {
+void RobotModelLayer::queueMeshLoads(std::vector<QUrl> allowed_origins) {
   if (!model_.has_value()) {
     return;
   }
+  const bool allow_remote_fetch = remoteModelFetchAllowed();
   std::unordered_set<std::string> queued;
-  const auto inspect = [this, &queued](const LinkGeom& geometry) {
+  const auto inspect = [this, &queued, allow_remote_fetch, &allowed_origins](const LinkGeom& geometry) {
     const auto* mesh = std::get_if<GeomMesh>(&geometry.shape);
     if (mesh == nullptr || !mesh->resolved || mesh->resolved_path.empty() ||
         !queued.insert(mesh->resolved_path).second) {
@@ -1276,8 +1282,8 @@ void RobotModelLayer::queueMeshLoads() {
     source.location = QString::fromStdString(mesh->resolved_path);
     const QUrl url(source.location);
     source.kind = PJ::isHttpUrl(url) ? MeshLoadQueue::Source::Kind::kUrl : MeshLoadQueue::Source::Kind::kPath;
-    // The resolver yields an http(s) mesh only for a URL source or a web-hosted layout's robot, which the user chose.
-    source.allow_remote_fetch = true;
+    source.allow_remote_fetch = allow_remote_fetch;
+    source.allowed_origins = allowed_origins;
     source.format_hint = formatHint(source.location);
     // COLLADA flip override is scoped to .dae/.collada (the checkbox's intent).
     const bool collada = source.format_hint == "dae"_L1 || source.format_hint == "collada"_L1;

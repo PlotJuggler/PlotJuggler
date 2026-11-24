@@ -26,6 +26,7 @@
 #include <QUrl>
 #include <functional>
 #include <memory>
+#include <optional>
 
 #include "mock_parser_support.h"
 
@@ -61,10 +62,13 @@ TEST(UrlFetcherTest, LocalFileUrlDeliversBytesAsynchronously) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
   pj::scene3d::FetchResult result;
-  fetcher.fetch(QUrl::fromLocalFile(path), [&called, &result](pj::scene3d::FetchResult fetched) {
-    called = true;
-    result = std::move(fetched);
-  });
+  fetcher.fetch(
+      QUrl::fromLocalFile(path),
+      [&called, &result](pj::scene3d::FetchResult fetched) {
+        called = true;
+        result = std::move(fetched);
+      },
+      /*allow_remote_fetch=*/true);
   // The contract: the callback is NEVER invoked synchronously from fetch() (a caller kicks a fetch from its load path).
   EXPECT_FALSE(called) << "callback ran before fetch() returned";
 
@@ -83,10 +87,13 @@ TEST(UrlFetcherTest, SchemelessBarePathReadsLocalFile) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
   pj::scene3d::FetchResult result;
-  fetcher.fetch(QUrl(path), [&called, &result](pj::scene3d::FetchResult fetched) {
-    called = true;
-    result = std::move(fetched);
-  });
+  fetcher.fetch(
+      QUrl(path),
+      [&called, &result](pj::scene3d::FetchResult fetched) {
+        called = true;
+        result = std::move(fetched);
+      },
+      /*allow_remote_fetch=*/true);
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_TRUE(result.ok) << result.error.toStdString();
   EXPECT_EQ(result.bytes, payload);
@@ -101,7 +108,8 @@ TEST(UrlFetcherTest, MissingLocalFileFailsWithError) {
       [&called, &result](pj::scene3d::FetchResult fetched) {
         called = true;
         result = std::move(fetched);
-      });
+      },
+      /*allow_remote_fetch=*/true);
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);
   EXPECT_FALSE(result.error.isEmpty());
@@ -111,14 +119,49 @@ TEST(UrlFetcherTest, UnsupportedSchemeFailsAsynchronously) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
   pj::scene3d::FetchResult result;
-  fetcher.fetch(QUrl(u"ftp://example.invalid/mesh.stl"_s), [&called, &result](pj::scene3d::FetchResult fetched) {
-    called = true;
-    result = std::move(fetched);
-  });
+  fetcher.fetch(
+      QUrl(u"ftp://example.invalid/mesh.stl"_s),
+      [&called, &result](pj::scene3d::FetchResult fetched) {
+        called = true;
+        result = std::move(fetched);
+      },
+      /*allow_remote_fetch=*/true);
   EXPECT_FALSE(called) << "even immediate errors must be delivered through the event loop";
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);
   EXPECT_TRUE(result.error.contains("unsupported URL scheme"_L1)) << result.error.toStdString();
+}
+
+// A file:// URL naming a host other than localhost, or a scheme-less "//host/..." path, names a network share (SMB on
+// Windows), never a local file. POSIX reads "//tmp/x" as "/tmp/x", so there an existing file proves no read happens.
+TEST(UrlFetcherTest, NetworkSharePathsAreNeverRead) {
+  QTemporaryDir dir;
+  ASSERT_TRUE(dir.isValid());
+  const QString path = writeTempFile(dir, "share.bin", "share bytes");
+  QList<QUrl> shares{QUrl(u"file://203.0.113.9/share/m.dae"_s)};
+#ifndef Q_OS_WIN
+  shares << QUrl::fromLocalFile(u"/"_s + path) << QUrl(u"/"_s + path);
+#endif
+  for (const QUrl& url : shares) {
+    SCOPED_TRACE(url.toString().toStdString());
+    pj::scene3d::UrlFetcher fetcher;
+    std::optional<pj::scene3d::FetchResult> result;
+    fetcher.fetch(
+        url, [&result](pj::scene3d::FetchResult fetched) { result = std::move(fetched); },
+        /*allow_remote_fetch=*/true);
+    ASSERT_TRUE(pumpUntil([&result]() { return result.has_value(); }, 5000));
+    EXPECT_FALSE(result->ok);
+    EXPECT_TRUE(result->error.contains("unsupported URL scheme"_L1)) << result->error.toStdString();
+  }
+  pj::scene3d::UrlFetcher fetcher;
+  std::optional<pj::scene3d::FetchResult> local;
+  QUrl localhost = QUrl::fromLocalFile(path);
+  localhost.setHost(u"localhost"_s);
+  fetcher.fetch(
+      localhost, [&local](pj::scene3d::FetchResult fetched) { local = std::move(fetched); },
+      /*allow_remote_fetch=*/true);
+  ASSERT_TRUE(pumpUntil([&local]() { return local.has_value(); }, 5000));
+  EXPECT_TRUE(local->ok) << "file://localhost/ names this host: " << local->error.toStdString();
 }
 
 // On Windows an absolute path like "C:/dir/file.bin" becomes a QUrl whose scheme() is the single-letter drive ("c"),
@@ -128,10 +171,13 @@ TEST(UrlFetcherTest, WindowsDriveLetterPathTreatedAsLocalFile) {
   pj::scene3d::UrlFetcher fetcher;
   bool called = false;
   pj::scene3d::FetchResult result;
-  fetcher.fetch(QUrl(u"C:/no/such/url_fetcher_test/drive.bin"_s), [&called, &result](pj::scene3d::FetchResult fetched) {
-    called = true;
-    result = std::move(fetched);
-  });
+  fetcher.fetch(
+      QUrl(u"C:/no/such/url_fetcher_test/drive.bin"_s),
+      [&called, &result](pj::scene3d::FetchResult fetched) {
+        called = true;
+        result = std::move(fetched);
+      },
+      /*allow_remote_fetch=*/true);
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 5000));
   EXPECT_FALSE(result.ok);  // the file does not exist on the test host
   EXPECT_FALSE(result.error.contains("unsupported URL scheme"_L1))
@@ -146,7 +192,7 @@ TEST(UrlFetcherTest, DestructionDropsInFlightCallback) {
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
   bool called = false;
   const QUrl url(pj::scene3d::test::silentServerUrl(server, u"never"_s));
-  fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; });
+  fetcher->fetch(url, [&called](pj::scene3d::FetchResult) { called = true; }, /*allow_remote_fetch=*/true);
 
   pumpUntil([&server]() { return server.hasPendingConnections(); }, 2000);
   fetcher.reset();
@@ -161,9 +207,9 @@ TEST(UrlFetcherTest, DestructionCancelsInFlightRequestsWhileTheFetcherIsWhole) {
   QTcpServer server;
   auto fetcher = std::make_unique<pj::scene3d::UrlFetcher>();
   bool called = false;
-  fetcher->fetch(QUrl(pj::scene3d::test::silentServerUrl(server, u"never"_s)), [&called](pj::scene3d::FetchResult) {
-    called = true;
-  });
+  fetcher->fetch(
+      QUrl(pj::scene3d::test::silentServerUrl(server, u"never"_s)),
+      [&called](pj::scene3d::FetchResult) { called = true; }, /*allow_remote_fetch=*/true);
   ASSERT_TRUE(pumpUntil([&server]() { return server.hasPendingConnections(); }, 2000));
   const QList<QNetworkReply*> replies = fetcher->findChildren<QNetworkReply*>();
   ASSERT_EQ(replies.size(), 1);
@@ -205,10 +251,13 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
   bool called = false;
   pj::scene3d::FetchResult result;
   const QUrl url(u"http://127.0.0.1:%1/huge"_s.arg(server.serverPort()));
-  fetcher.fetch(url, [&called, &result](pj::scene3d::FetchResult fetched) {
-    called = true;
-    result = std::move(fetched);
-  });
+  fetcher.fetch(
+      url,
+      [&called, &result](pj::scene3d::FetchResult fetched) {
+        called = true;
+        result = std::move(fetched);
+      },
+      /*allow_remote_fetch=*/true);
 
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 10000)) << "capped fetch never completed";
   EXPECT_FALSE(result.ok);
@@ -254,10 +303,13 @@ struct CountingHttpServer {
 pj::scene3d::FetchResult fetchSync(pj::scene3d::UrlFetcher& fetcher, const QUrl& url) {
   pj::scene3d::FetchResult result;
   bool done = false;
-  fetcher.fetch(url, [&result, &done](pj::scene3d::FetchResult r) {
-    result = std::move(r);
-    done = true;
-  });
+  fetcher.fetch(
+      url,
+      [&result, &done](pj::scene3d::FetchResult r) {
+        result = std::move(r);
+        done = true;
+      },
+      /*allow_remote_fetch=*/true);
   EXPECT_TRUE(pumpUntil([&done]() { return done; }, 5000));
   return result;
 }

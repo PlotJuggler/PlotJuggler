@@ -806,6 +806,69 @@ TEST(RobotModelLayerTest, UrlSourceLoadsAsynchronouslyFromFileUrl) {
   EXPECT_FALSE(layer.statusText().contains("Fetching"_L1));
 }
 
+// The remote-fetch setting gates what a robot's content names on other origins, never the robot the user chose: with
+// it off, a URL robot still loads its own meshes and their same-origin textures, while a mesh or a texture on another
+// origin is never requested (that mesh fails, that texture stays empty); with it on, everything loads.
+TEST(RobotModelLayerTest, UrlRobotReachesOtherOriginsOnlyWithRemoteFetch) {
+  using pj::scene3d::test::FileHttpServer;
+  using pj::scene3d::test::readFixtureBytes;
+  const FileHttpServer third_party({
+      {u"/red_4x4.png"_s, readFixtureBytes("red_4x4.png")},
+      {u"/other.stl"_s, readFixtureBytes("cube.stl")},
+  });
+  QByteArray foreign_quad = readFixtureBytes("textured_quad.dae");
+  foreign_quad.replace("red_4x4.png", third_party.url(u"/red_4x4.png"_s).toUtf8());
+  const QString urdf =
+      uR"(<robot name="r"><link name="base_link">
+<visual><geometry><mesh filename="same_origin.dae"/></geometry></visual>
+<visual><geometry><mesh filename="foreign.dae"/></geometry></visual>
+<visual><geometry><mesh filename="%1"/></geometry></visual>
+</link></robot>)"_s.arg(third_party.url(u"/other.stl"_s));
+  const FileHttpServer own({
+      {u"/robot/robot.urdf"_s, urdf.toUtf8()},
+      {u"/robot/same_origin.dae"_s, readFixtureBytes("textured_quad.dae")},
+      {u"/robot/foreign.dae"_s, foreign_quad},
+      {u"/robot/red_4x4.png"_s, readFixtureBytes("red_4x4.png")},
+  });
+  for (const bool allowed : {false, true}) {
+    SCOPED_TRACE(allowed ? "remote fetch on" : "remote fetch off");
+    pj::scene3d::test::setRemoteModelFetch(allowed);
+    pj::scene3d::UrdfPackageResolver resolver;
+    pj::scene3d::RobotModelLayer layer(PJ::ObjectTopicId{.id = 1}, u"robot"_s);
+    layer.setPackageResolver(&resolver);
+    layer.setSourceUrl(own.url(u"/robot/robot.urdf"_s));
+    ASSERT_TRUE(
+        pj::scene3d::test::pumpUntil(
+            [&layer]() {
+              return layer.robotModel() != nullptr && layer.totalMeshCount() == 3 &&
+                     layer.loadedMeshCount() + layer.missingMeshCount() == layer.totalMeshCount();
+            },
+            std::chrono::seconds(10)))
+        << layer.statusText().toStdString();
+    const auto baseColor = [&layer](const QString& url) -> const pj::scene3d::TextureSource* {
+      const auto mesh = layer.modelMeshes().find(url.toStdString());
+      return mesh == layer.modelMeshes().end() || mesh->second->submeshes.empty()
+                 ? nullptr
+                 : &mesh->second->submeshes.front().material->base_color;
+    };
+    const pj::scene3d::TextureSource* same_origin = baseColor(own.url(u"/robot/same_origin.dae"_s));
+    ASSERT_NE(same_origin, nullptr);
+    EXPECT_FALSE(same_origin->bytes.empty()) << "a same-origin texture was not fetched";
+    const pj::scene3d::TextureSource* foreign = baseColor(own.url(u"/robot/foreign.dae"_s));
+    ASSERT_NE(foreign, nullptr);
+    EXPECT_EQ(foreign->bytes.empty(), !allowed);
+    EXPECT_EQ(layer.loadedMeshCount(), allowed ? 3 : 2);
+    EXPECT_EQ(layer.missingMeshCount(), allowed ? 0 : 1);
+    if (!allowed) {
+      pj::scene3d::test::pumpUntil(
+          [&third_party]() { return !third_party.paths().isEmpty(); }, std::chrono::milliseconds(300));
+      EXPECT_TRUE(third_party.paths().isEmpty()) << third_party.paths().join(u',').toStdString();
+    }
+  }
+  EXPECT_EQ(third_party.paths().size(), 2) << third_party.paths().join(u',').toStdString();
+  pj::scene3d::test::setRemoteModelFetch(false);
+}
+
 // A kTopic robot layer must persist enough identity (dataset + topic name) that xmlLoadState re-resolves the same
 // topic and re-decodes its model, also on a fresh layer wired to a different default topic id.
 TEST(RobotModelLayerTest, TopicSourceIdentitySurvivesSaveLoadRoundTrip) {

@@ -14,6 +14,7 @@
 #include <QVariantMap>
 #include <utility>
 
+#include "local_path.h"
 #include "pj_runtime/HttpUrl.h"
 
 using namespace Qt::StringLiterals;
@@ -58,9 +59,10 @@ bool allowsLocalFiles(bool remote_only) {
 #endif
 }
 
-// Whether a package's network root may be fetched. The desktop honors one only where the model
-// already reaches the network, a URL URDF or a web-hosted layout's robot, so a layout file cannot
-// send a topic or file URDF's meshes there; the browser reaches meshes no other way.
+// Whether a package's network root may be fetched. A root is the user's chosen source, so it is
+// honored whatever the remote-fetch setting. The desktop honors one only where the model already
+// reaches the network, a URL URDF or a web-hosted layout's robot, so a layout file cannot send a
+// topic or file URDF's meshes there; the browser reaches meshes no other way.
 bool allowsNetworkRoot(bool source_is_url, bool remote_only) {
 #ifdef PJ_TARGET_WASM
   (void)source_is_url;
@@ -102,7 +104,7 @@ std::string resolveUnderRoot(const QUrl& root, const std::string& rel, bool loca
   if (!QDir::cleanPath(target.path(QUrl::FullyDecoded)).startsWith(directory.path(QUrl::FullyDecoded))) {
     return {};
   }
-  return (local ? target.toLocalFile() : target.toString(QUrl::FullyEncoded)).toStdString();
+  return (local ? localFileOf(target) : target.toString(QUrl::FullyEncoded)).toStdString();
 }
 }  // namespace
 
@@ -261,10 +263,15 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
       out.issue = MeshResolveIssue::kMissingFile;
       return out;
     }
-    // Absolute local path: skip the package chain. QUrl::toLocalFile percent-decodes (%20 -> space) and strips an
-    // optional localhost authority, which a raw mid(7) slice would mangle.
+    // Absolute local path: skip the package chain. localFileOf percent-decodes (%20 -> space), which a raw mid(7)
+    // slice would not, and refuses another host's share.
+    const QString path = localFileOf(QUrl(quri));
+    if (path.isEmpty()) {
+      out.issue = MeshResolveIssue::kMissingFile;
+      return out;
+    }
     out.resolved = true;
-    out.path = QUrl(quri).toLocalFile().toStdString();
+    out.path = path.toStdString();
     return out;
   }
 
@@ -306,7 +313,7 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
   // urdf_dir would mangle it (xacro $(find) expansion and MoveIt emit absolute mesh paths). Same existence-check policy
   // as the package steps, so a missing file surfaces in the status instead of resolving to a dead path.
   if (QDir::isAbsolutePath(quri)) {
-    if (local_files && QFileInfo::exists(quri)) {
+    if (local_files && !isNetworkSharePath(quri) && QFileInfo::exists(quri)) {
       out.resolved = true;
       out.path = uri;
     } else {

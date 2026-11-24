@@ -5,6 +5,7 @@
 #include <QBuffer>
 #include <QImageReader>
 #include <QObject>
+#include <QSettings>
 #include <QUrl>
 #include <algorithm>
 #include <cstdint>
@@ -39,6 +40,21 @@ QUrl textureUrl(const QUrl& mesh_url, const QString& ref) {
   }
   const QUrl url = mesh_url.resolved(QUrl(ref));
   return PJ::isHttpUrl(url) ? url : QUrl{};
+}
+
+bool sameOrigin(const QUrl& a, const QUrl& b) {
+  const auto port = [](const QUrl& url) {
+    return url.port(url.scheme().compare(QLatin1StringView("https"), Qt::CaseInsensitive) == 0 ? 443 : 80);
+  };
+  return a.scheme().compare(b.scheme(), Qt::CaseInsensitive) == 0 &&
+         a.host().compare(b.host(), Qt::CaseInsensitive) == 0 && port(a) == port(b);
+}
+
+// Whether `source`'s job may request `url`: anything with the remote-fetch setting on, else only its own origins.
+bool mayRequest(const MeshLoadQueue::Source& source, const QUrl& url) {
+  return source.allow_remote_fetch || std::any_of(
+                                          source.allowed_origins.cbegin(), source.allowed_origins.cend(),
+                                          [&url](const QUrl& origin) { return sameOrigin(origin, url); });
 }
 
 bool hasUnresolvedRef(const Material& material) {
@@ -96,6 +112,10 @@ void attachFetchedTextures(
 
 }  // namespace
 
+bool remoteModelFetchAllowed() {
+  return QSettings().value(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), true).toBool();
+}
+
 MeshLoadQueue::MeshLoadQueue(QObject* context)
     : MeshLoadQueue(context, maxConcurrentMeshLoads(), maxConcurrentMeshImports()) {}
 
@@ -113,17 +133,20 @@ MeshLoadQueue::JobId MeshLoadQueue::enqueue(
   return id;
 }
 
-void MeshLoadQueue::fetch(const QUrl& url, std::function<void(FetchResult)> done) {
+void MeshLoadQueue::fetch(const QUrl& url, bool allow_remote_fetch, std::function<void(FetchResult)> done) {
   UrlFetcher* current = &fetcher();
   ++pending_fetches_;
-  current->fetch(url, [this, current, done = std::move(done)](FetchResult result) {
-    if (fetcher_.get() != current) {
-      return;  // delivered by a retired fetcher before its deferred delete
-    }
-    --pending_fetches_;
-    abortObsoleteFetches();
-    done(std::move(result));
-  });
+  current->fetch(
+      url,
+      [this, current, done = std::move(done)](FetchResult result) {
+        if (fetcher_.get() != current) {
+          return;  // delivered by a retired fetcher before its deferred delete
+        }
+        --pending_fetches_;
+        abortObsoleteFetches();
+        done(std::move(result));
+      },
+      allow_remote_fetch);
 }
 
 void MeshLoadQueue::cancel(JobId id) {
@@ -219,9 +242,8 @@ UrlFetcher& MeshLoadQueue::fetcher() {
 
 void MeshLoadQueue::startFetch(JobId id) {
   const Source& source = running_.at(id).source;
-  fetcher().fetch(
-      QUrl(source.location), [this, id](FetchResult result) { onFetched(id, std::move(result)); },
-      source.allow_remote_fetch);
+  const QUrl url(source.location);
+  fetcher().fetch(url, [this, id](FetchResult result) { onFetched(id, std::move(result)); }, mayRequest(source, url));
 }
 
 void MeshLoadQueue::onFetched(JobId id, FetchResult result) {
@@ -316,10 +338,10 @@ bool MeshLoadQueue::startTextureFetches(JobId id, MeshData& mesh) {
   job.materials = std::move(materials);
   job.textures_pending = urls.size();
   for (const std::string& url : urls) {
+    const QUrl request(QString::fromStdString(url));
     fetcher().fetch(
-        QUrl(QString::fromStdString(url)),
-        [this, id, url](FetchResult result) { onTextureFetched(id, url, std::move(result)); },
-        job.source.allow_remote_fetch);
+        request, [this, id, url](FetchResult result) { onTextureFetched(id, url, std::move(result)); },
+        mayRequest(job.source, request));
   }
   return true;
 }

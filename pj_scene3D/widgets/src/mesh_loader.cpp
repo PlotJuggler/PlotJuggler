@@ -11,6 +11,8 @@
 #include <QFileInfo>
 #include <QtConcurrent/QtConcurrentRun>
 #include <array>
+#include <assimp/IOStream.hpp>
+#include <assimp/IOSystem.hpp>
 #include <assimp/Importer.hpp>
 #include <cstdint>
 #include <cstdio>
@@ -22,12 +24,32 @@
 #include <utility>
 #include <vector>
 
+#include "local_path.h"
 #include "pj_scene3d_core/model_budget.h"
 #include "pj_widgets/Fnv1a.h"
 using namespace Qt::StringLiterals;
 
 namespace pj::scene3d {
 namespace {
+
+// assimp opens the files a model names (a glTF buffer uri, an OBJ mtllib) through the importer's IOSystem. An
+// in-memory model has no folder of its own, so it opens none: assimp's MemoryIOSystem (6.0.5, MemoryIOWrapper.h) serves
+// the model's own buffer before it asks this one, which refuses every other path, local or a network share.
+class NoFilesIOSystem final : public Assimp::IOSystem {
+ public:
+  bool Exists(const char* /*file*/) const override {
+    return false;
+  }
+  char getOsSeparator() const override {
+    return '/';
+  }
+  Assimp::IOStream* Open(const char* /*file*/, const char* /*mode*/) override {
+    return nullptr;
+  }
+  void Close(Assimp::IOStream* stream) override {
+    delete stream;
+  }
+};
 
 // Post-process flags shared by both entry points. GenSmoothNormals only adds normals to meshes that arrive WITHOUT any
 // (assimp leaves existing ones, e.g. STL/OBJ, untouched); ImproveCacheLocality reorders indices for the post-T&L
@@ -100,6 +122,9 @@ TextureSource resolveTexture(
   }
 
   const QString ref = QDir::fromNativeSeparators(raw);
+  if (isNetworkSharePath(ref)) {
+    return {};
+  }
   if (base_dir.isEmpty()) {
     TextureSource source;
     source.unresolved_ref = ref;
@@ -451,6 +476,7 @@ MeshData MeshLoader::importFromMemory(const QByteArray& bytes, const QString& fo
       return out;
     }
     Assimp::Importer importer;
+    importer.SetIOHandler(new NoFilesIOSystem());  // owned by the importer
     const std::string hint = format_hint.toStdString();
     const aiScene* scene = importer.ReadFileFromMemory(
         bytes.constData(), static_cast<std::size_t>(bytes.size()), kPostProcessFlags,

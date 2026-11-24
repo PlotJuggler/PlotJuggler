@@ -61,9 +61,11 @@ class UrdfPackageResolver;
 // plus the link-local <origin> x scale; the view applies TF(fixed <- link), exactly once. URDF fixed joints the data
 // never publishes are bridged into the TF buffer (ensureStaticBridges).
 // Meshes load through a MeshLoadQueue (bounds in mesh_load_queue.h): URL meshes are fetched, then imported off
-// the GUI thread, and each result is admitted against kSceneLimits' retained-byte budgets as it lands. A source switch
-// cancels every queued and running load, so no stale completion lands; a superseded import keeps its concurrency slot
-// until its worker finishes.
+// the GUI thread, and each result is admitted against kSceneLimits' retained-byte budgets as it lands. The remote-fetch
+// setting (remoteModelFetchAllowed()) gates their requests, with the robot's URL source and package roots as the
+// origins its user chose.
+// A source switch cancels every queued and running load, so no stale completion lands; a superseded import keeps its
+// concurrency slot until its worker finishes.
 // Parser lifetime (kTopic): parsers are NOT cached; every decode resolves a fresh ParserBinding through ctx_.session (a
 // cached pointer dangles after a dataset reload).
 // Bounds-less on purpose: it adds nothing to the camera's scene fit (a robot moved by joints would pull the camera
@@ -275,7 +277,9 @@ class RobotModelLayer : public Scene3DLayer, public ModelRenderable {
   bool applyRobotDescription(
       const QString& text, const QString& format, const QString& label, const QString& urdf_dir, bool source_is_url,
       const QUrl& roots_base = {});
-  void queueMeshLoads();
+  // `allowed_origins`: the origins the user chose for this model (its URL source, its package roots), which its meshes
+  // and textures reach whatever the remote-fetch setting.
+  void queueMeshLoads(std::vector<QUrl> allowed_origins);
   void admitMesh(const std::string& key, MeshData mesh);
   void onMeshLoadSettled();
   [[nodiscard]] bool meshReady(const std::string& key) const;

@@ -16,6 +16,7 @@
 #include <QHash>
 #include <QHostAddress>
 #include <QObject>
+#include <QSettings>
 #include <QString>
 #include <QStringList>
 #include <QTcpServer>
@@ -26,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -135,6 +137,29 @@ inline std::vector<QString> cubeCopies(const QTemporaryDir& dir, int count) {
     paths.push_back(path);
   }
   return paths;
+}
+
+// Points the default-constructed QSettings (read by the layers' remote-fetch gate) at a throwaway INI file, so tests
+// neither read nor pollute the developer's settings.
+inline void isolateSettings() {
+  static QTemporaryDir settings_dir;
+  ASSERT_TRUE(settings_dir.isValid());
+  QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings_dir.path());
+  QSettings::setDefaultFormat(QSettings::IniFormat);
+  QCoreApplication::setOrganizationName(QStringLiteral("pj_scene3d_tests"));
+  QCoreApplication::setApplicationName(QStringLiteral("pj_scene3d_fixture_tests"));
+}
+
+// Sets pj_scene3d/allow_remote_model_fetch in isolated settings; nullopt leaves the built-in default.
+inline void setRemoteModelFetch(std::optional<bool> allowed) {
+  isolateSettings();
+  QSettings settings;
+  if (allowed.has_value()) {
+    settings.setValue(QStringLiteral("pj_scene3d/allow_remote_model_fetch"), *allowed);
+  } else {
+    settings.remove(QStringLiteral("pj_scene3d/allow_remote_model_fetch"));
+  }
+  settings.sync();
 }
 
 // The bytes of tests/fixtures/meshes/`name`; a missing fixture fails the test.
