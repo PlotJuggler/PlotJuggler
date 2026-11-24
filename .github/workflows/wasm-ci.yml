@@ -19,12 +19,23 @@
 #      samples (deploy-presets/, which presets.spec.js serves itself and whose
 #      deployed files the deployment contract checks).
 #
-# The deterministic release archive and performance budgets remain part of
-# the release tranche.
+# A version tag (e.g. `4.2.0`, no leading 'v') also builds the production
+# package as a release: stamped with the tag's version and the
+# PJ_EASTER_EGG_KEY secret, with its GPL-3.0 source offer (sources/), and the
+# wasm-release job attaches it to the tag's GitHub Release as
+# PlotJuggler4-web-bundle.zip once the Chromium suite passes. The name carries
+# no version, so releases/latest/download/PlotJuggler4-web-bundle.zip reaches
+# the latest release's copy once that job has finished. A manual run on a
+# branch builds the same archive as the wasm-release artifact, without the
+# Release upload, like the other release workflows. The hosted app
+# (app.plotjuggler.io) is still deployed by hand (packaging/web/README.md).
 name: WASM CI
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
   # Wasm breakage is invisible to the standard PR checks (native CI stays green
   # when shared code calls a native-only API, and behaviour changes only the
   # browser specs pin go unnoticed). Every PR builds the browser app and runs the
@@ -66,6 +77,10 @@ jobs:
     runs-on: ${{ github.event_name == 'schedule' && 'ubuntu-22.04' || 'depot-ubuntu-22.04-4' }}
     # Generous ceiling for a cold run (Qt + emsdk + ccache); warm runs take 20-30 minutes.
     timeout-minutes: 120
+    env:
+      # Tags only: CMake stamps the binary with it and package_wasm.mjs the manifest and loading page. Empty means
+      # versions.env's.
+      PJ_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
 
     steps:
       - name: Free up runner disk space
@@ -108,7 +123,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ccache ninja-build python3-pip make pkg-config
+          sudo apt-get install -y --no-install-recommends ccache ninja-build python3-pip make pkg-config zip
           # Scene2D video cross-compiles dav1d, whose build system is meson.
           python3 -m pip install --user meson
           # Runtime libraries for the desktop host Qt tools (qsb bakes the QRhi
@@ -190,6 +205,11 @@ jobs:
 
       - name: Build production package (shipped defaults, probes off)
         shell: bash
+        env:
+          # Release archives only (tags and manual runs): the key that decrypts the empty-dock easter egg GIFs
+          # (pj_widgets). Empty means no key.
+          PJ_EASTER_EGG_KEY: >-
+            ${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && secrets.PJ_EASTER_EGG_KEY || '' }}
         run: |
           set -euo pipefail
           source .emsdk/emsdk_env.sh >/dev/null
@@ -244,6 +264,38 @@ jobs:
         env:
           PJ_WASM_PACKAGE_DIR: ${{ github.workspace }}/build-wasm-prod/deploy
         run: npm run test:deployment
+
+      - name: Release archive of the production package
+        # After the deployment contract, so the archive is the package that passed it. Like every desktop package
+        # (packaging/README.md, "Licences"), it carries PlotJuggler's LICENSE beside the build's
+        # THIRD_PARTY_NOTICES.txt, and the source offer goes in sources/, where those notices point.
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/wasm_source_offer.mjs --links --output build-wasm-prod/deploy/sources
+          cp LICENSE build-wasm-prod/deploy/LICENSE
+          for f in LICENSE THIRD_PARTY_NOTICES.txt sources/SOURCE-OFFER.txt; do
+            test -s "build-wasm-prod/deploy/${f}" || { echo "::error::the web bundle has no ${f}"; exit 1; }
+          done
+          # The bundle fetches each easter egg GIF by name from the asset host (pj_app/src/main.cpp): one missing or
+          # stale there never shows.
+          for f in resources/gif/*.gif.enc; do
+            url="https://assets.plotjuggler.io/v1/gif/$(basename "${f}")"
+            remote=$(curl -fsSL "${url}" | sha256sum | cut -d' ' -f1) || remote=missing
+            [ "${remote}" = "$(sha256sum "${f}" | cut -d' ' -f1)" ] || { echo "::error::${url} does not serve ${f}"; exit 1; }
+          done
+          (cd build-wasm-prod/deploy && zip -qr ../PlotJuggler4-web-bundle.zip .)
+
+      - name: Upload release archive
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-release
+          path: build-wasm-prod/PlotJuggler4-web-bundle.zip
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Build acceptance configuration (shipped defaults, ingress probe on)
         shell: bash
@@ -581,3 +633,29 @@ jobs:
       - name: Editors suite (Firefox)
         if: ${{ !cancelled() && matrix.shard == 1 }}
         run: xvfb-run -a npm --prefix tests/wasm run test:firefox -- --grep editors.spec.js
+
+  wasm-release:
+    # Gated on the Chromium suite, like deb-release on its smoke job: the archive reaches the Release only once the
+    # acceptance build of the same revision has passed in a browser.
+    needs: [wasm, wasm-chromium]
+    if: >-
+      ${{ !cancelled() && github.ref_type == 'tag' &&
+      needs.wasm.result == 'success' && needs.wasm-chromium.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write  # softprops/action-gh-release needs write to create/update the Release
+    steps:
+      - name: Download the release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-release
+          path: pkg
+
+      - name: Attach the browser app to the GitHub Release
+        # No generate_release_notes: linux-appimage-release.yml writes this tag's notes, and regenerating would
+        # rewrite the release body.
+        uses: softprops/action-gh-release@v3
+        with:
+          files: pkg/PlotJuggler4-web-bundle.zip
+          fail_on_unmatched_files: true

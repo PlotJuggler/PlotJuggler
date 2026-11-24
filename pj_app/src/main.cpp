@@ -71,6 +71,10 @@
 #include "pj_scripting/python_engine.h"
 #endif
 #include "pj_scripting/python_object_script.h"
+#ifdef PJ_TARGET_WASM
+#include "pj_runtime/HttpGet.h"
+#include "pj_widgets/VisualizationPlaceholderWidget.h"
+#endif
 #include "pj_widgets/GraphicsApi.h"
 #ifdef PJ_WITH_SCENE3D
 #include "pj_scene3d_widgets/scene_view_widget.h"
@@ -379,6 +383,16 @@ int main(int argc, char* argv[]) {
   Q_UNUSED(browser_persistence);
   // Before a validate's bounded wait on the Python helper: see prestartPythonHelper().
   PJ::scripting::prestartPythonHelper();
+  // Before the first placeholder arms the idle GIF: without it the browser pool is empty. The files are immutable
+  // under the asset host's v1/ prefix, which sends CORS headers.
+  PJ::setEasterEggFetch([](const QString& name, QObject* context, std::function<void(const QByteArray&)> done) {
+    constexpr qint64 kMaxBytes = 2 * 1024 * 1024;
+    PJ::fetchBytesWithLimit(
+        QUrl(u"https://assets.plotjuggler.io/v1/gif/"_s + name), kMaxBytes, std::chrono::seconds(30), context,
+        [done = std::move(done)](PJ::FetchedBytes fetched) {
+          done(fetched.error.isEmpty() ? fetched.bytes : QByteArray());
+        });
+  });
 #endif
 
   // Before any window is built, so every widget and plugin dialog inherits it; the QSS styles only font-size,

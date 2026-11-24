@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 #include <QWidget>
+#include <functional>
 #include <vector>
 
 #include "pj_widgets/VisualizationKind.h"
@@ -126,15 +127,25 @@ void noteLayoutActivity();
 // An easter egg GIF's character: its base name (up to the first '.') before the last '_' ("llama-coat" for
 // "llama-coat_A.gif.enc"), or the whole base name when it has no '_'.
 [[nodiscard]] QString easterEggCharacter(const QString& gif_path);
-// A random GIF of `pool` among the variants of `character`; any GIF of `pool` when none matches (the user's first
-// easter egg, or a character no longer shipped). Empty only when `pool` is.
-// The encrypted easter egg files (resources, desktop only), and one decrypted: empty when the file is missing or this
-// build has no key or the wrong one.
+// The encrypted easter egg files: resource paths on the desktop; in the browser, file names for the fetch hook
+// (setEasterEggFetch), and none until it is set.
 [[nodiscard]] QStringList easterEggPool();
+// A pool entry decrypted: from the resources (loadEasterEgg), or its fetched bytes. Empty when the file is missing or
+// this build has no key or the wrong one.
 [[nodiscard]] QByteArray loadEasterEgg(const QString& path);
+[[nodiscard]] QByteArray decryptEasterEgg(const QByteArray& encrypted, const QString& path);
+#ifdef PJ_TARGET_WASM
+// The browser build carries no easter egg files: the host fetches pool entry `name` and calls `done` with its bytes
+// (empty on failure) on `context`'s thread, or never once `context` is destroyed.
+using EasterEggFetch =
+    std::function<void(const QString& name, QObject* context, std::function<void(const QByteArray&)> done)>;
+void setEasterEggFetch(EasterEggFetch fetch);
+#endif
 // Encrypts or decrypts (the same XOR) an easter egg file: a SHA-256 counter keystream over `key` and the file `name`.
 // scripts/pack_easter_eggs.py implements the same cipher; the two must stay byte-identical.
 [[nodiscard]] QByteArray easterEggCipher(QByteArray data, const QByteArray& key, const QString& name);
+// A random GIF of `pool` among the variants of `character`; any GIF of `pool` when none matches (the user's first
+// easter egg, or a character no longer shipped). Empty only when `pool` is.
 [[nodiscard]] QString pickEasterEggGif(const QStringList& pool, const QString& character);
 
 }  // namespace PJ

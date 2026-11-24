@@ -6,7 +6,8 @@
 Each raw GIF (128x128, looping, on a white background, named <character>_<variant>.gif) has its background
 flood-filled to transparent from the corners, is re-encoded on one shared 64-colour palette, and is encrypted with the
 key in PJ_EASTER_EGG_KEY: the GitHub secret the release builds compile in. Needs ImageMagick. List each new file in
-resources/memes.qrc.
+resources/memes.qrc, and upload it to the asset host's v1/gif/, where the browser build fetches it by name (WASM CI's
+release archive step checks every file there). The host serves them as immutable: new bytes need a new name.
 
 usage: PJ_EASTER_EGG_KEY=<key> scripts/pack_easter_eggs.py RAW.gif [RAW.gif ...]
 """
@@ -83,7 +84,8 @@ def main() -> int:
             gif = make_transparent(raw, pathlib.Path(tmp))
         name = raw.stem + ".gif.enc"
         (OUT_DIR / name).write_bytes(cipher(gif, key, name))
-        print(f"{raw.name} -> resources/gif/{name} ({len(gif)} bytes); qrc: <file>gif/{name}</file>")
+        print(f"{raw.name} -> resources/gif/{name} ({len(gif)} bytes); qrc: <file>gif/{name}</file>; "
+          f"upload: plotjuggler-assets/v1/gif/{name}")
     return 0
 
 

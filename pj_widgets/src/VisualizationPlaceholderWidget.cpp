@@ -108,9 +108,20 @@ bool dropCatalogItems(QDropEvent* event, VisualizationPlaceholderWidget* target)
 #endif
 constexpr char kEasterEggKey[] = PJ_EASTER_EGG_KEY;
 
-// The easter egg pool: every encrypted 128x128 looping GIF in this resource folder (memes.qrc, so desktop only),
-// listed at run time; scripts/pack_easter_eggs.py makes them.
+// The easter egg pool: every encrypted 128x128 looping GIF scripts/pack_easter_eggs.py makes. The desktop lists this
+// resource folder (memes.qrc) at run time. The browser leaves memes.qrc out: pj_widgets/CMakeLists.txt compiles in
+// the folder's file names (comma-separated), and the host fetches the one it shows (setEasterEggFetch).
+#ifdef PJ_TARGET_WASM
+#ifndef PJ_EASTER_EGG_NAMES
+#define PJ_EASTER_EGG_NAMES ""
+#endif
+EasterEggFetch& easterEggFetch() {
+  static EasterEggFetch fetch;
+  return fetch;
+}
+#else
 constexpr auto kEasterEggDir = ":/resources/gif";
+#endif
 constexpr int kEasterEggSide = 128;
 // Persisted (ISO date string): the first day the easter egg may show (again). Missing means first run, which sets it.
 constexpr auto kEasterEggNextKey = "EasterEgg/next_date";
@@ -168,12 +179,36 @@ class IdleEasterEgg : public QObject {
     connect(&idle_, &QTimer::timeout, this, &IdleEasterEgg::onIdle);
   }
 
-  // No placeholder with room: wait for the next layout activity. A GIF that does not decrypt (a wrong key) ends it.
   void onIdle() {
-    const QString character = appSettings().value(QString::fromLatin1(kEasterEggCharacterKey)).toString();
-    const QString path = pickEasterEggGif(easterEggPool(), character);
-    const QByteArray gif = loadEasterEgg(path);
-    if (gif.isEmpty()) {
+    if (!gif_.isEmpty()) {
+      show();
+      return;
+    }
+    if (fetching_) {
+      return;
+    }
+    path_ =
+        pickEasterEggGif(easterEggPool(), appSettings().value(QString::fromLatin1(kEasterEggCharacterKey)).toString());
+#ifdef PJ_TARGET_WASM
+    fetching_ = true;
+    easterEggFetch()(path_, this, [this](const QByteArray& encrypted) {
+      fetching_ = false;
+      gif_ = decryptEasterEgg(encrypted, path_);
+      // Layout activity during the download restarted the countdown: its timeout shows the GIF.
+      if (!idle_.isActive()) {
+        show();
+      }
+    });
+#else
+    gif_ = loadEasterEgg(path_);
+    show();
+#endif
+  }
+
+  // No placeholder with room: wait for the next layout activity. A GIF that does not decrypt (a wrong key, a failed
+  // download) ends it for this process.
+  void show() {
+    if (gif_.isEmpty()) {
       deleteLater();
       return;
     }
@@ -185,8 +220,8 @@ class IdleEasterEgg : public QObject {
     }
     while (!candidates.empty()) {
       const auto pick = QRandomGenerator::global()->bounded(static_cast<qsizetype>(candidates.size()));
-      if (candidates[pick]->showEasterEgg(gif)) {
-        appSettings().setValue(QString::fromLatin1(kEasterEggCharacterKey), easterEggCharacter(path));
+      if (candidates[pick]->showEasterEgg(gif_)) {
+        appSettings().setValue(QString::fromLatin1(kEasterEggCharacterKey), easterEggCharacter(path_));
         const int days = QRandomGenerator::global()->bounded(kMinCooldownDays, kMaxCooldownDays + 1);
         appSettings().setValue(
             QString::fromLatin1(kEasterEggNextKey), QDate::currentDate().addDays(days).toString(Qt::ISODate));
@@ -199,6 +234,9 @@ class IdleEasterEgg : public QObject {
 
   static inline QPointer<IdleEasterEgg> instance_;
   QTimer idle_;
+  QString path_;
+  QByteArray gif_;
+  bool fetching_ = false;
 };
 
 }  // namespace
@@ -502,22 +540,39 @@ QString easterEggCharacter(const QString& gif_path) {
 }
 
 QStringList easterEggPool() {
+#ifdef PJ_TARGET_WASM
+  if (!easterEggFetch()) {
+    return {};
+  }
+  return QString::fromLatin1(PJ_EASTER_EGG_NAMES).split(u',', Qt::SkipEmptyParts);
+#else
   const QDir dir(QString::fromLatin1(kEasterEggDir));
   QStringList paths;
   for (const QString& name : dir.entryList({u"*.gif.enc"_s}, QDir::Files)) {
     paths.push_back(dir.filePath(name));
   }
   return paths;
+#endif
 }
 
 QByteArray loadEasterEgg(const QString& path) {
   QFile file(path);
-  if (sizeof(kEasterEggKey) <= 1 || !file.open(QIODevice::ReadOnly)) {
+  return file.open(QIODevice::ReadOnly) ? decryptEasterEgg(file.readAll(), path) : QByteArray();
+}
+
+QByteArray decryptEasterEgg(const QByteArray& encrypted, const QString& path) {
+  if (sizeof(kEasterEggKey) <= 1 || encrypted.isEmpty()) {
     return {};
   }
-  QByteArray gif = easterEggCipher(file.readAll(), QByteArray(kEasterEggKey), QFileInfo(path).fileName());
+  QByteArray gif = easterEggCipher(encrypted, QByteArray(kEasterEggKey), QFileInfo(path).fileName());
   return gif.startsWith("GIF8") ? gif : QByteArray();
 }
+
+#ifdef PJ_TARGET_WASM
+void setEasterEggFetch(EasterEggFetch fetch) {
+  easterEggFetch() = std::move(fetch);
+}
+#endif
 
 QByteArray easterEggCipher(QByteArray data, const QByteArray& key, const QString& name) {
   const QByteArray salt = key + name.toUtf8();

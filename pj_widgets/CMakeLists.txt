@@ -111,11 +111,20 @@ add_library(pj_widgets STATIC
 )
 
 # The easter egg GIFs are committed encrypted. Release CI passes the key (the PJ_EASTER_EGG_KEY GitHub secret) through
-# the environment at configure time; without it the easter egg is off. Set on one source file so a key change
-# recompiles only it.
+# the environment at configure time; without it the easter egg is off. The production browser build is configured
+# locally, so the key must be in that shell's environment too. Set on one source file so a key change recompiles
+# only it.
 if(NOT "$ENV{PJ_EASTER_EGG_KEY}" STREQUAL "")
-    set_source_files_properties(src/VisualizationPlaceholderWidget.cpp PROPERTIES
+    set_property(SOURCE src/VisualizationPlaceholderWidget.cpp APPEND PROPERTY
         COMPILE_DEFINITIONS "PJ_EASTER_EGG_KEY=\"$ENV{PJ_EASTER_EGG_KEY}\"")
+endif()
+# The browser bundle leaves the GIFs out and fetches the one it shows from the asset host by file name.
+if(EMSCRIPTEN)
+    file(GLOB _pj_easter_eggs CONFIGURE_DEPENDS RELATIVE "${CMAKE_SOURCE_DIR}/resources/gif"
+        "${CMAKE_SOURCE_DIR}/resources/gif/*.gif.enc")
+    list(JOIN _pj_easter_eggs "," _pj_easter_egg_names)
+    set_property(SOURCE src/VisualizationPlaceholderWidget.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS "PJ_EASTER_EGG_NAMES=\"${_pj_easter_egg_names}\"")
 endif()
 
 # The retro helper uses QProcess, QLocalSocket, and QSharedMemory, none of which
