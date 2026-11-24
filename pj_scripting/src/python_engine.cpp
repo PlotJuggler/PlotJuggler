@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "pj_scripting/sandbox.h"
+#include "python_object_binder.h"
 #include "python_sandbox.h"
 
 namespace py = pybind11;
@@ -211,13 +212,9 @@ class PythonFilterInstance final : public FilterInstance {
   /// A float, or a str for text; bytes that are not UTF-8 decode with U+FFFD rather than failing the instance.
   static py::object toPython(const InputValue& v) {
     if (const auto* text = std::get_if<std::string_view>(&v)) {
-      PyObject* str = PyUnicode_DecodeUTF8(text->data(), static_cast<Py_ssize_t>(text->size()), "replace");
-      if (str == nullptr) {
-        throw py::error_already_set();
-      }
-      return py::reinterpret_steal<py::object>(str);
+      return detail::checked(PyUnicode_DecodeUTF8(text->data(), static_cast<Py_ssize_t>(text->size()), "replace"));
     }
-    return py::float_(std::get<double>(v));
+    return detail::checked(PyFloat_FromDouble(std::get<double>(v)));
   }
 
   /// The script calls proper, run by guarded(). A Python error fails the instance.

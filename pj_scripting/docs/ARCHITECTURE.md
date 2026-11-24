@@ -46,13 +46,14 @@ recomputes from the start.
   after `reset()`.
 - **Failure is sticky.** A script runtime error fails the node (`failed()`) and suppresses its output; it never
   corrupts a stateful accumulator. `reset()` rebuilds the instance (a fresh VM is the only guaranteed-clean reset).
-- **Output kind.** `output` is `"double"`, `"int64"`, `"same"` (mirror: the input column's kind) or `"string"` (a
-  text column). The engine instance knows its class's kind: a text class fills `FilterInstance::Result::text` /
-  `MimoResult::texts` and refuses a number, a numeric class refuses a string that is not a number, both naming
-  `output = "string"` in the error. int64 output clamps and a non-finite result becomes 0.
+- **Output kind.** `output` is `"double"`, `"int64"`, `"same"` (mirror: the input column's kind; float64 for text) or
+  `"string"` (a text column). The engine instance knows its class's kind: a text class fills
+  `FilterInstance::Result::text` / `MimoResult::texts` and refuses a number, a numeric class refuses a string that is
+  not a number, both naming `output = "string"` in the error. int64 output clamps and a non-finite result becomes 0.
 - **Input kind.** The seam passes each input as a `FilterInstance::InputValue`: a number (int64 and uint64 widen to a
-  double) or a view of the text (`proc::detail::numberOrText`). Luau gets a string, Python a `str`; arithmetic on text
-  is the engine's own runtime error, reported through the sticky failure. `DataProcessorService` adds the input's name
+  double) or a view of the text (`proc::detail::numberOrText`). Luau gets a string, Python a `str`. In Luau, text that
+  is not a number fails arithmetic (Luau reads number-like text as a number), the engine's own runtime error reported
+  through the sticky failure; a Python `str` keeps its own semantics. `DataProcessorService` adds the input's name
   to the error when the failing node reads a text column.
 - **Luau sandbox** (`luau_sandbox_state.h`, limits in `BudgetLimits`). Filters run in-process on the GUI thread, so
   each VM is hardened: `luaL_sandbox` freezes the shared stdlib read-only after `os`, `coroutine`, `debug`, `setfenv`

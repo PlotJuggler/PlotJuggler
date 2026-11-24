@@ -40,8 +40,9 @@ plot's Apply Filter... panel under their names.
 | `time_since_previous` | Time Since Previous | none | seconds since the previous sample; first sample dropped |
 
 Windows count samples, not seconds: on a 1 kHz IMU a `window` of 100 is 0.1 s. The filters that read the value need
-numbers and refuse a text series, naming it; `samples_counter` and `time_since_previous` read only the timestamps and
-accept one. Source: `resources/filters/builtin_filters.luau`.
+numbers: text that is not a number fails arithmetic (Luau reads number-like text as a number), naming the series;
+`samples_counter` and `time_since_previous` read only the timestamps and accept one. Source:
+`resources/filters/builtin_filters.luau`.
 
 ## Filters: the Luau class
 
@@ -76,7 +77,7 @@ return Lowpass
 ```
 
 - **Class fields:** `id` (required), `name`, `description`, `version`, `output` (`"double"` default, `"int64"`, or
-  `"same"` to keep the input's column kind), `parameters`, `create` (required).
+  `"same"` to keep the input's column kind, double for text), `parameters`, `create` (required).
 - **Parameters:** an array of `{name, type, default, label, tooltip, min, max, step, decimals, unit, values,
   visible_when}`. Types: `number`, `integer`, `boolean`, `enum` (`values = { {value=, label=}, ... }`), `string`,
   `text`. The Transform Editor and the Apply Filter... panel generate a form from it. `visible_when = { param = "x",
@@ -147,8 +148,10 @@ body:   if value == "falling" and prev ~= "falling" then falls = falls + 1 end
         return falls
 ```
 
-In Python `value` is a `str`: `return 1 if value == "falling" else 0`. Arithmetic on a text value (`value * 2`) fails
-the series with the engine's error, such as `attempt to perform arithmetic (mul) on string and number`.
+In Python `value` is a `str`: `return 1 if value == "falling" else 0`. Compare text, do not compute with it. In Luau,
+text that is not a number fails arithmetic and the series with the engine's error (`attempt to perform arithmetic
+(mul) on string and number`), while number-like text (`"1"`) reads as a number; in Python a `str` keeps its own
+semantics (`value * 2` repeats it, `value + 1` raises).
 
 ## Filters: Python
 

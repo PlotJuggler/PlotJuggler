@@ -46,7 +46,6 @@
 #endif
 #include <memory>
 #include <string>
-#include <variant>
 
 #include "BrowserPersistence.h"
 #include "BundledFont.h"
@@ -152,7 +151,7 @@ class T:
     return EXIT_FAILURE;
   }
   const auto out = (*processor)->calculateNextPoint(PJ::proc::Sample::scalar(0, PJ::VarValue{144.0}));
-  if (!out.has_value() || !std::holds_alternative<double>(out->value()) || std::get<double>(out->value()) != 12.0) {
+  if (!out.has_value() || out->value() != PJ::VarValue{12.0}) {
     std::fprintf(stderr, "[selftest-python] FAILED: sqrt(144) did not yield 12\n");
     return EXIT_FAILURE;
   }

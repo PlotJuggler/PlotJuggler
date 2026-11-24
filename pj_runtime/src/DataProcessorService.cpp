@@ -43,27 +43,34 @@ namespace {
 std::vector<std::string> inputFieldPaths(const DataEngine& engine, const TopicStorage& storage);
 std::string normalizedFieldPath(std::string path);
 
-/// "<topic>/<field>" of each input column of `node` (reading `topics`, in order) that holds text, for an error that
-/// names it.
-std::vector<std::string> textInputNames(
-    DataEngine& engine, const IncrementalEngine& derived, NodeId node, const std::vector<TopicId>& topics) {
-  std::vector<std::string> names;
-  const auto binding = derived.inputBindingState(node);
-  if (!binding.has_value()) {
-    return names;
+/// "<topic>/<field>", or "<topic>" when the field path is empty.
+std::string inputName(std::string topic, const std::string& field_path) {
+  return field_path.empty() ? topic : topic + "/" + field_path;
+}
+
+/// `error`, a failure of `node`, with "; <input> is text" appended for each input of `node` that holds text;
+/// `input_names[i]` names input i. Empty when `error` is.
+std::string nodeFailure(
+    const IncrementalEngine& derived, NodeId node, std::string error, const std::vector<std::string>& input_names) {
+  if (error.empty()) {
+    return error;
   }
-  const auto engine_lock = engine.lockEngine();
-  for (std::size_t i = 0; i < binding->kinds.size() && i < topics.size() && i < binding->columns.size(); ++i) {
-    const TopicStorage* storage = engine.getTopicStorage(topics[i]);
-    if (binding->kinds[i] != StorageKind::kString || storage == nullptr) {
-      continue;
+  if (const auto binding = derived.inputBindingState(node); binding.has_value()) {
+    for (std::size_t i = 0; i < binding->kinds.size() && i < input_names.size(); ++i) {
+      if (binding->kinds[i] == StorageKind::kString) {
+        error += "; " + input_names[i] + " is text";
+      }
     }
-    std::string name = storage->descriptor().name;
-    const std::vector<std::string> paths = inputFieldPaths(engine, *storage);
-    if (binding->columns[i] < paths.size() && !paths[binding->columns[i]].empty()) {
-      name += "/" + paths[binding->columns[i]];
-    }
-    names.push_back(std::move(name));
+  }
+  return error;
+}
+
+/// The "<topic>/<field>" name of each input binding.
+std::vector<std::string> bindingNames(const std::vector<DataProcessorService::TransformInputBinding>& bindings) {
+  std::vector<std::string> names;
+  names.reserve(bindings.size());
+  for (const auto& binding : bindings) {
+    names.push_back(inputName(binding.topic_name, binding.field_path));
   }
   return names;
 }
@@ -131,14 +138,26 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
     return PJ::unexpected(node.error());
   }
 
-  // Eager run over the already-committed input (file path: a single full pass).
+  std::string input_field_path;
+  std::string input_name;
+  {
+    const auto engine_lock = engine_.lockEngine();
+    if (const TopicStorage* input = engine_.getTopicStorage(input_topic_id)) {
+      const std::vector<std::string> paths = inputFieldPaths(engine_, *input);
+      if (input_column_index < paths.size()) {
+        input_field_path = paths[input_column_index];
+      }
+      input_name = inputName(input->descriptor().name, input_field_path);
+    }
+  }
+
+  // Eager run over the already-committed input (file path: a single full pass). The pass runs every dirty node, so a
+  // failure may be another node's: only the new node's own error refuses it.
   derived_->onSourceCommitted(std::vector<TopicId>{input_topic_id});
   if (Status scheduled = derived_->scheduleAll(); !scheduled.has_value()) {
-    // A catalogue filter that fails over text needs numbers (the timestamp-only ones accept text and do not fail).
-    std::string error = scheduled.error();
-    if (const auto text = textInputNames(engine_, *derived_, *node, {input_topic_id}); !text.empty()) {
-      error = text.front() + " is text; " + shared->bracketLabel() + " needs numbers (" + error + ")";
-    }
+    reportTransformFailures();
+  }
+  if (std::string error = nodeFailure(*derived_, *node, derived_->nodeError(*node), {input_name}); !error.empty()) {
     // Roll back the just-registered node + output topic. Leaving them reserves the output
     // name forever (no recipe is stored yet, so clearAllFilters can't reach it). Capture the
     // outputs BEFORE removeNode — afterwards outputTopics(*node) returns {}.
@@ -162,15 +181,7 @@ Expected<DataProcessorService::FilterHandle> DataProcessorService::applyFilter(
   recipe.output_topic_id = outputs.front();
   recipe.input_topic_id = input_topic_id;
   recipe.input_column_index = input_column_index;
-  {
-    const auto engine_lock = engine_.lockEngine();
-    if (const TopicStorage* input = engine_.getTopicStorage(input_topic_id)) {
-      const std::vector<std::string> paths = inputFieldPaths(engine_, *input);
-      if (input_column_index < paths.size()) {
-        recipe.input_field_path = paths[input_column_index];
-      }
-    }
-  }
+  recipe.input_field_path = std::move(input_field_path);
   recipe.dataset_id = dataset_id;
   recipe.processor_id = shared->id();
   recipe.output_name = output_name;
@@ -566,7 +577,16 @@ Status DataProcessorService::updateFilter(NodeId node_id, std::shared_ptr<proc::
   if (Status replaced =
           derived_->replaceSisoTransform(node_id, std::make_unique<proc::ProcessorSisoAdapter>(processor));
       !replaced.has_value()) {
-    return replaced;
+    std::vector<std::string> input_names;
+    const auto recipe = std::find_if(
+        recipes_.begin(), recipes_.end(), [node_id](const auto& entry) { return entry.second.node_id == node_id; });
+    if (recipe != recipes_.end()) {
+      const auto engine_lock = engine_.lockEngine();
+      if (const TopicStorage* input = engine_.getTopicStorage(recipe->second.input_topic_id)) {
+        input_names.push_back(inputName(input->descriptor().name, recipe->second.input_field_path));
+      }
+    }
+    return PJ::unexpected(nodeFailure(*derived_, node_id, replaced.error(), input_names));
   }
   for (auto& [out_tid, recipe] : recipes_) {
     if (recipe.node_id == node_id) {
@@ -1165,7 +1185,7 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
                                     old.node_id, std::make_unique<proc::ProcessorSisoAdapter>(std::move(siso_op)))
                               : derived_->replaceMimoTransform(old.node_id, std::move(mimo_op));
     if (!replaced.has_value()) {
-      return PJ::unexpected(replaced.error());
+      return PJ::unexpected(nodeFailure(*derived_, old.node_id, replaced.error(), bindingNames(recipe.input_bindings)));
     }
     recipe.node_id = old.node_id;
     recipe.output_topic_ids = old.output_topic_ids;
@@ -1201,10 +1221,12 @@ Expected<DataProcessorService::TransformRecipe> DataProcessorService::installTra
     materialized = derived_->scheduleAll();
   }
   if (!materialized.has_value()) {
-    std::string error = materialized.error();
-    for (const std::string& text : textInputNames(engine_, *derived_, *node, input_topic_ids)) {
-      error += "; " + text + " is text";
-    }
+    reportTransformFailures();
+  }
+  // The pass runs every dirty node, so a failure may be another node's: only the new node's own error refuses it.
+  if (std::string error =
+          nodeFailure(*derived_, *node, derived_->nodeError(*node), bindingNames(recipe.input_bindings));
+      !error.empty()) {
     // Roll back the half-installed node + its output topic (capture outputs first).
     const std::vector<TopicId> outs = derived_->outputTopics(*node);
     (void)derived_->removeNode(*node);

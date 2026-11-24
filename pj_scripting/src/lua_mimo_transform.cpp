@@ -153,13 +153,12 @@ bool LuaMimoTransform::calculate(
   }
   const double t_sec = static_cast<double>(time - session_start_ns_) * 1e-9;
 
-  std::vector<FilterInstance::InputValue> script_inputs;
-  script_inputs.reserve(inputs.size());
+  script_inputs_.clear();
   for (const PJ::VarValue& v : inputs) {
-    script_inputs.push_back(proc::detail::numberOrText(v));
+    script_inputs_.push_back(proc::detail::numberOrText(v));
   }
 
-  FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, script_inputs);
+  FilterInstance::MimoResult r = instance_->calculateMimo(t_sec, script_inputs_);
   if (instance_->failed()) {
     error_ = instance_->error();
     return false;

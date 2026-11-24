@@ -12,7 +12,7 @@ class PjScriptingCoreConan(ConanFile):
     package and is built only in-tree by the app."""
 
     name = "pj_scripting_core"
-    version = "0.3.0"
+    version = "0.4.0"
     license = "MPL-2.0"
     settings = "os", "compiler", "build_type", "arch"
     generators = "CMakeDeps", "CMakeToolchain"

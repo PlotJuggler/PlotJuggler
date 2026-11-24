@@ -142,9 +142,11 @@ using RawWindow = std::function<std::pair<int64_t, int64_t>(DatasetId)>;
 /// Resolves and reads `paths` the way read_series does (suffixes, "dataset:topic/field", the
 /// near-miss candidates in the error); a path resolving to a series already read is skipped. With
 /// `window`, only the samples inside it are kept, plus the one before it (its value holds at
-/// the window's start), and a context with `read_window` decodes only those.
+/// the window's start), and a context with `read_window` decodes only those. A text series is refused, unless
+/// `stamps_only` reads the timestamps alone (every `values` stays empty).
 Expected<std::vector<Column>> readColumns(
-    const agent_tools::ToolContext& context, const std::vector<std::string>& paths, const RawWindow& window = {}) {
+    const agent_tools::ToolContext& context, const std::vector<std::string>& paths, const RawWindow& window = {},
+    bool stamps_only = false) {
   const sdk::ToolboxHostView& host = context.host;
   auto catalog = host.catalogSnapshot();
   if (!catalog) {
@@ -172,7 +174,7 @@ Expected<std::vector<Column>> readColumns(
     if (!view) {
       return unexpected("read failed for '" + want + "': " + view.error());
     }
-    if (view->type() == PrimitiveType::kString) {
+    if (view->type() == PrimitiveType::kString && !stamps_only) {
       return unexpected(agent_tools::textSeriesError(want));
     }
     const auto stamps = view->timestamps();
@@ -190,9 +192,11 @@ Expected<std::vector<Column>> readColumns(
           "series '" + want + "' has more than " + std::to_string(kMaxExportRows) +
           " samples in the window: narrow t0/t1");
     }
-    column.values = agent_tools::seriesValuesAsDoubles(*view, begin, end);
-    if (column.values.size() != end - begin) {
-      return unexpected("series '" + want + "' is not numeric");
+    if (!stamps_only) {
+      column.values = agent_tools::seriesValuesAsDoubles(*view, begin, end);
+      if (column.values.size() != end - begin) {
+        return unexpected("series '" + want + "' is not numeric");
+      }
     }
     column.stamps.assign(
         stamps.begin() + static_cast<std::ptrdiff_t>(begin), stamps.begin() + static_cast<std::ptrdiff_t>(end));
@@ -1052,7 +1056,7 @@ void McpServer::addScriptSeries(const json& args, const Caller& caller, Reply re
     reply(fail(mcp::kNoServicesError));
     return;
   }
-  auto columns = readColumns(*context, *inputs);
+  auto columns = readColumns(*context, *inputs, {}, /*stamps_only=*/true);
   if (!columns) {
     reply(fail(columns.error()));
     return;

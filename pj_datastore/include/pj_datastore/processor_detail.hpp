@@ -13,20 +13,23 @@
 
 namespace PJ::proc::detail {
 
-/// Output kind of a processor that preserves its input kind; kFloat64 when no input kind is declared (a topic
-/// registered before any data).
+/// Output kind of a processor that preserves its input kind. kFloat64 when no input kind is declared (a topic
+/// registered before any data) or the input is text: a mirror class computes a number from text that reads as one,
+/// which a text column would drop.
 inline std::vector<PJ::StorageKind> mirrorInputKind(PJ::Span<const PJ::StorageKind> in) {
-  if (in.empty()) {
+  if (in.empty() || in[0] == PJ::StorageKind::kString) {
     return {PJ::StorageKind::kFloat64};
   }
   return {in[0]};
 }
 
-/// A sample value as a script sees it: int64 and uint64 widen to double, a string stays text (a view into `v`, valid
-/// while `v` lives).
-inline std::variant<double, std::string_view> numberOrText(const PJ::VarValue& v) {
+/// A sample value as a script sees it: a number, or a view of the text.
+using NumberOrText = std::variant<double, std::string_view>;
+
+/// int64 and uint64 widen to double, a string stays text (a view into `v`, valid while `v` lives).
+inline NumberOrText numberOrText(const PJ::VarValue& v) {
   return std::visit(
-      [](auto&& arg) -> std::variant<double, std::string_view> {
+      [](auto&& arg) -> NumberOrText {
         using T = std::decay_t<decltype(arg)>;
         if constexpr (std::is_same_v<T, std::string>) {
           return std::string_view(arg);

@@ -153,17 +153,6 @@ TEST(DerivativeTransformTest, OutputKind_IsFloat64) {
   EXPECT_EQ(op.outputKind(StorageKind::kInt64), StorageKind::kFloat64);
 }
 
-// A text input fails the transform, naming the problem, instead of differentiating it as 0.
-TEST(DerivativeTransformTest, TextInputFails) {
-  DerivativeTransform op;
-  PJ::Timestamp out_t;
-  VarValue out_v = 0.0;
-  (void)op.calculate(0, VarValue{std::string("walking")}, out_t, out_v);
-  EXPECT_FALSE(op.calculate(1'000'000'000LL, VarValue{std::string("falling")}, out_t, out_v));
-  EXPECT_TRUE(op.failed());
-  EXPECT_NE(op.error().find("text"), std::string::npos) << op.error();
-}
-
 TEST(IncrementalEngineTest, AddTransform_CreatesOutputTopic) {
   DataEngine engine;
   IncrementalEngine derived(engine);

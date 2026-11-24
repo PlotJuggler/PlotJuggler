@@ -40,7 +40,7 @@ A class table:
 | `name` | no (⇒ `id`) | human type name shown in the filter list |
 | `description` | no | catalogue / tooltip |
 | `version` | no | semver string |
-| `output` | no (⇒ `"double"`) | `"double"` \| `"int64"` \| `"same"` (`"mirror"` is an alias) \| `"string"`: the stored column kind; `"same"` keeps the input column's kind; `"string"` stores text ("Text outputs") |
+| `output` | no (⇒ `"double"`) | `"double"` \| `"int64"` \| `"same"` (`"mirror"` is an alias) \| `"string"`: the stored column kind; `"same"` keeps the input column's kind (a text input gives `"double"`); `"string"` stores text ("Text outputs") |
 | `parameters` | no (⇒ none) | the schema array below |
 | `create` | yes | `function(params) -> instance` factory |
 
@@ -165,9 +165,10 @@ globals are the VM's own and persist for the instance.
   after an hour and stays within 1 ns up to about 97 days.
 - Consequence for authors: `t` differences (`dt`) are accurate to that resolution.
 - Text inputs: a text column (`kString`) reaches the filter as a Luau string or a Python `str`, so `v == "walking"`
-  works. Arithmetic or an ordered comparison with a number on it is a runtime error, which fails the filter: a filter
-  that needs numbers fails over text instead of reading it as 0. The bundled filters that read the value need numbers;
-  `samples_counter` and `time_since_previous` look only at the time and accept text.
+  works. In Luau, text that is not a number fails arithmetic (Luau reads number-like text such as `"1"` as a number),
+  and an ordered comparison of text with a number fails too: the runtime error fails the filter instead of reading the
+  text as 0. A Python `str` keeps its own semantics (`v * 2` repeats it). The bundled filters that read the value need
+  numbers; `samples_counter` and `time_since_previous` look only at the time and accept text.
 
 ---
 
@@ -194,8 +195,7 @@ including these within-range limits, is golden-tested by `builtin_golden_test`):
 
 - **Mirror builtins** (`none`, `absolute`, `outlier_removal`) preserve an int64/uint64
   column kind, but a value above **2^53** loses its low bits through the double seam.
-  Within ±2^53 they are exact (tested). Over a text series a mirror builtin fails, like
-  every builtin that reads the value.
+  Within ±2^53 they are exact (tested).
 - **`time_since_previous`** emits the gap in seconds as a double `(t − prev_t)`; its
   resolution is the double's at the session-relative magnitude (see above).
 - **Explicit-timestamp filters** (`scale` time offset, `moving_average` with a
@@ -269,7 +269,7 @@ A class may instead be **MIMO**: it reads **N** inputs and emits **M** outputs.
 - The SISO two-number `(t_out, value)` explicit-timestamp form is **SISO-only**. In
   MIMO every return is an output value; the M outputs share the joined input timestamp.
 - The class's single `output` kind applies to **all** M outputs (`"same"` mirrors
-  input 0's kind).
+  input 0's kind, float64 for text).
 
 Host side: a MIMO class is installed as a `LuaMimoTransform` (a `PJ::IMIMOTransform`),
 the multi-input sibling of `LuaSisoTransform`. Time contract, sandbox/watchdog and
