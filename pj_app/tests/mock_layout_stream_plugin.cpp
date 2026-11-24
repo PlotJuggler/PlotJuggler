@@ -13,6 +13,8 @@
 //                         kStampBase, before every other sample (a late arrival)
 //   "reject":true     loadConfig() refuses the configuration
 //   "fail_start":true start() fails
+//   "probe_services":true  start() and the destructor append "services <where>:ok|missing" (a services() lookup);
+//                     the destructor also reads the runtime host
 // Each loadConfig/start/stop appends one line ("load <config>", "start",
 // "stop") to the file PJ_LAYOUT_STREAM_PROBE_FILE names, when set.
 // An interactive start is steered through the environment, read at call time:
@@ -25,6 +27,7 @@
 #include <optional>
 #include <pj_base/sdk/data_source_patterns.hpp>
 #include <pj_base/sdk/platform.hpp>
+#include <pj_base/sdk/service_traits.hpp>
 #include <pj_plugins/sdk/dialog_plugin_typed.hpp>
 #include <pj_plugins/sdk/widget_data.hpp>
 #include <string>
@@ -110,6 +113,13 @@ class MockLayoutStreamDialog : public PJ::DialogPluginTyped {
 
 class MockLayoutStream : public PJ::StreamSourceBase {
  public:
+  ~MockLayoutStream() override {
+    if (probesServices()) {
+      recordServicesLookup("destroy");
+      (void)runtimeHost().isStopRequested();
+    }
+  }
+
   PJ_borrowed_dialog_t getDialog() override {
     if (PJ::sdk::getEnv("PJ_LAYOUT_STREAM_NULL_DIALOG").has_value()) {
       return PJ_borrowed_dialog_t{nullptr, nullptr};
@@ -136,6 +146,9 @@ class MockLayoutStream : public PJ::StreamSourceBase {
 
   PJ::Status onStart() override {
     recordProbe("start");
+    if (probesServices()) {
+      recordServicesLookup("start");
+    }
     if (config_.find("\"fail_start\":true") != std::string::npos) {
       return PJ::unexpected("mock_layout_stream: configured start failure");
     }
@@ -177,6 +190,15 @@ class MockLayoutStream : public PJ::StreamSourceBase {
   }
 
  private:
+  [[nodiscard]] bool probesServices() const {
+    return config_.find("\"probe_services\":true") != std::string::npos;
+  }
+
+  void recordServicesLookup(const std::string& where) const {
+    const bool found = services().get<PJ::sdk::SourceWriteHostService>().has_value();
+    recordProbe("services " + where + (found ? ":ok" : ":missing"));
+  }
+
   MockLayoutStreamDialog dialog_;
   std::string config_ = "{}";
   std::string topic_name_;

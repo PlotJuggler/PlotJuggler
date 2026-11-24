@@ -28,6 +28,7 @@
 namespace PJ {
 
 class DataEngine;
+class DataSourceHandle;
 class DatastoreParserWriteHost;
 class ExtensionCatalogService;
 class MessageParserHandle;
@@ -38,8 +39,8 @@ struct LazyFetchTopicContext;
 // The host side of the DataSource SDK for one ingest pass: the source's own write host, the runtime-host vtable, and
 // the parser bindings created when the source delegates decoding to a MessageParser plugin.
 //
-// One per ingest: register its services into the builder that binds the DataSource handle, run the plugin, then
-// flushAll() so the rows become reader-visible. Not a QObject: usable headless and in tests.
+// One per ingest: bind() the DataSource handle, run the plugin, then flushAll() so the rows become reader-visible. Not
+// a QObject: usable headless and in tests.
 class DataSourceRuntimeHost {
  public:
   using ObjectTopicParserRegistrar = std::function<void(ObjectTopicId, std::unique_ptr<MessageParserHandle>)>;
@@ -143,6 +144,12 @@ class DataSourceRuntimeHost {
   // Registers SourceWriteHostService and DataSourceRuntimeHostService (required: a rejection fails the Status; do not
   // bind the plugin then) and the optional object-write service (a rejection only warns).
   [[nodiscard]] Status registerServices(ServiceRegistryBuilder& registry);
+
+  // Registers these services in a registry this host owns and binds `handle` to it; once per host. The SDK's
+  // DataSourcePluginBase keeps that registry (services()) and views into these services after bind(), up to its
+  // destructor, so this host must outlive `handle`: an owner declares the host before the handle. Errors read
+  // "service registration failed: ..." or "bind failed: ...".
+  [[nodiscard]] Status bind(DataSourceHandle& handle);
 
   // This host across the C ABI outside registerServices() (ToolboxRuntimeHost's parser-ingest slots). Valid while
   // this object lives.
@@ -272,8 +279,8 @@ class DataSourceRuntimeHost {
   // before the first push.
   bool rejectAttachment(PJ_error_t* out_error, const std::string& message) noexcept;
 
-  // Destruction order: the parser may flush through `write_host` when destroyed, so it is declared after it (destroyed
-  // first). The registry builder only hands out fat pointers at bind time.
+  // Destruction order: the parser may flush through `write_host` when destroyed and keeps the registry bind() received,
+  // so it is declared after both (destroyed first).
   struct ParserBinding {
     // The ensure request's identity. A demand-driven plugin re-requests its binding on every re-subscribe; an identical
     // signature gets the existing binding, since a second createTopic would duplicate every field in the catalog. Any
@@ -334,6 +341,7 @@ class DataSourceRuntimeHost {
   DatasetId dataset_id_;
   DatastoreSourceWriteHost source_write_host_;
   DatastoreSourceObjectWriteHost source_object_write_host_;
+  std::unique_ptr<ServiceRegistryBuilder> registry_;  // bind()'s; heap, as the plugin holds its address
   // Shared by the lazy closures: some sources wrap readers whose deferred fetch is not safe concurrently.
   std::shared_ptr<std::mutex> lazy_fetch_mutex_;
   // Keeps the plugin DSO mapped while any lazy payload anchor of this host lives: an anchor's release function is

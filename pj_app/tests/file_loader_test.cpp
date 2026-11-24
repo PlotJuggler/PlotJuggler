@@ -219,14 +219,14 @@ std::vector<std::string> fanoutProbeControlCallsOffMain() {
   return out;
 }
 
-// "<slot>:<ok|missing>" per services() lookup the probe made, in call order.
+// "<where>:<ok|missing>" per services() lookup the probe made, in call order.
 std::vector<std::string> fanoutProbeServiceLookups() {
   FanoutProbeState& state = fanoutProbeState();
   const std::lock_guard lock(state.mutex);
   std::vector<std::string> out;
   for (const FanoutProbeCall& call : state.calls) {
-    if (call.slot.starts_with("services_")) {
-      out.push_back(call.slot.substr(std::string_view("services_").size()) + ':' + call.suffix);
+    if (call.slot == "services") {
+      out.push_back(call.suffix);
     }
   }
   return out;
@@ -259,6 +259,10 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
     recordFanoutProbeCall("destroy", suffix_);
     if (suffix_ == "services") {
       recordServicesLookup("destroy");
+      (void)runtimeHost().isStopRequested();
+    }
+    if (suffix_ == "destroy-progress") {
+      (void)runtimeHost().progressStart("fanout-probe:destroyed", 1, false);
     }
   }
 
@@ -305,8 +309,8 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
       }
     }
 
-    // "services" looks a host service up again once the test has seen the import begin, so after the host's load
-    // prologue returned; the destructor looks it up once more.
+    // "services" looks a host service up once the test has seen the import begin, and again from the destructor, which
+    // also reads through the runtime host. "destroy-progress" starts a progress report from its destructor.
     if (suffix_ == "services") {
       if (!waitForFanoutProbeProgressStep(1)) {
         return fail("timed out waiting for the services rendezvous");
@@ -394,10 +398,9 @@ class FanoutProbeSource final : public PJ::DataSourcePluginBase {
   }
 
  private:
-  // services() reads the registry bind() received, which the host must keep alive for the plugin's whole life.
-  void recordServicesLookup(const std::string& slot) const {
+  void recordServicesLookup(const std::string& where) const {
     const bool found = services().get<PJ::sdk::SourceWriteHostService>().has_value();
-    recordFanoutProbeCall("services_" + slot, found ? "ok" : "missing");
+    recordFanoutProbeCall("services", where + (found ? ":ok" : ":missing"));
   }
 
   std::string config_ = "{}";
@@ -2134,8 +2137,6 @@ TEST_F(FileLoaderTest, ProgressiveFlushNotifiesStableTopicAndRefreshesRangeEachT
   EXPECT_FALSE(session().hasActiveIngests());
 }
 
-// The SDK's DataSourcePluginBase keeps the registry bind() received and services() reads it after bind(): from the
-// import worker once the load prologue has returned, and from the plugin's destructor.
 TEST_F(FileLoaderTest, SingleLoadKeepsTheServiceRegistryForThePluginsLifetime) {
   ASSERT_TRUE(installFanoutProbe());
   const QString path = makeMockFile(u"services.fanoutprobe"_s);
@@ -2159,15 +2160,30 @@ TEST_F(FileLoaderTest, FanoutEntriesKeepTheServiceRegistryForThePluginsLifetime)
   const QString path = makeMockFile(u"services_fanout.fanoutprobe"_s);
   releaseFanoutProbeProgressStep(1);  // every entry's start() looks its services up at once
 
-  // The top-level suffix makes the prologue's instance, bound but never started, look its services up when destroyed.
   ASSERT_TRUE(loadAndWait(
       path,
       fanoutProbeHints(
           uR"({"display_suffix":"services","__pj_fanout":["{\"display_suffix\":\"services\"}","{\"display_suffix\":\"services\"}"]})"_s)));
   pj_app_test::flushQueuedEvents(2);
 
-  const std::vector<std::string> expected{"start:ok", "destroy:ok", "start:ok", "destroy:ok", "destroy:ok"};
-  EXPECT_EQ(fanoutProbeServiceLookups(), expected);
+  const std::vector<std::string> lookups = fanoutProbeServiceLookups();
+  // Two started entries, plus the prologue's instance, bound but never started.
+  EXPECT_EQ(std::count(lookups.begin(), lookups.end(), "start:ok"), 2);
+  EXPECT_EQ(std::count(lookups.begin(), lookups.end(), "destroy:ok"), 3);
+  EXPECT_EQ(std::count(lookups.begin(), lookups.end(), "start:missing"), 0);
+  EXPECT_EQ(std::count(lookups.begin(), lookups.end(), "destroy:missing"), 0);
+}
+
+TEST_F(FileLoaderTest, SingleLoadPluginMayReportProgressFromItsDestructor) {
+  ASSERT_TRUE(installFanoutProbe());
+  const QString path = makeMockFile(u"destroy_progress.fanoutprobe"_s);
+  IngestLifecycleRecorder ingest_lifecycle(session());
+
+  ASSERT_TRUE(loadAndWait(path, fanoutProbeHints(uR"({"display_suffix":"destroy-progress"})"_s)));
+  pj_app_test::flushQueuedEvents(2);
+
+  EXPECT_EQ(ingest_lifecycle.beginForLabel(u"fanout-probe:destroyed"_s), nullptr);
+  EXPECT_FALSE(session().hasActiveIngests());
 }
 
 TEST_F(FileLoaderTest, FailedFirstLoadErasesAbandonedLiveDatasetBeforePreferReuseReload) {
