@@ -44,6 +44,7 @@ ready.
 | 02:00 | Pixi CI | The conda-forge build on Linux and Windows |
 | 03:00 | Sanitizers | The whole suite under ASan, TSan and MSan |
 | 04:00 | WASM CI | The full Chromium suite and the Firefox suite, on GitHub-hosted runners |
+| 05:17 | WASM plugins pin | Nothing: it opens the PR that bumps the browser build's official plugins pin, and runs even when `main` has not moved ([WASM_DEPLOYMENT](./WASM_DEPLOYMENT.md#built-in-plugins)) |
 
 A failed nightly opens (or comments on) a `Nightly failure: <workflow>` issue; the next green run closes it.
 

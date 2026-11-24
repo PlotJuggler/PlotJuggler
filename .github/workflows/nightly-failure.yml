@@ -7,7 +7,7 @@ on:
   workflow_run:
     # The `name:` of every workflow with a `schedule:` trigger, except the monthly Conan lock refresh, which opens
     # its own PR.
-    workflows: ["macOS CI", "Pixi CI", "Sanitizers", "WASM CI"]
+    workflows: ["macOS CI", "Pixi CI", "Sanitizers", "WASM CI", "WASM plugins pin"]
     types: [completed]
     branches: [main]
 

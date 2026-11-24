@@ -315,8 +315,9 @@ Linux, Windows and macOS arm64 are shipped targets; the macOS `.dmg` comes from
 dirs sit behind the `/var -> /private/var` symlink, so tests must compare canonical paths.
 
 The nightly workflows (macOS CI, Pixi CI, Sanitizers, WASM CI with Firefox) run on the default branch when it moved
-since the previous night. A failed nightly opens a `Nightly failure: <workflow>` issue labelled `nightly-failure` and
-assigned to the maintainer, or comments on the one already open; the next nightly that runs green closes it
+since the previous night; the daily WASM plugins pin workflow instead proposes the browser build's plugins pin. A failed
+nightly opens a `Nightly failure: <workflow>` issue labelled `nightly-failure` and assigned to the maintainer, or
+comments on the one already open; the next nightly that runs green closes it
 ([`nightly-failure.yml`](../.github/workflows/nightly-failure.yml)). Every test step gates its job: a test that
 cannot pass on a platform skips itself in the test, with the reason.
 

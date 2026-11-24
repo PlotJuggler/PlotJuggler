@@ -122,6 +122,19 @@ plugin is described in the "WebAssembly build" section of the
 a `wasm.cmake` in its directory there, one line in `PJ_WASM_OFFICIAL_PLUGIN_DIRS`
 here, and a pin that contains it.
 
+The pin is moved by `.github/workflows/wasm-plugins-pin.yml`, daily at 05:17 UTC, one pull
+request at a time. `scripts/bump_wasm_plugins.sh` resolves the head of `pj-official-plugins`
+`main` to a full commit sha, takes the sha-256 of its codeload archive and rewrites the two pin
+lines; the PR from `bot/wasm-plugins-pin` lists the plugin commits it brings. A head that is
+not ahead of the pin is never proposed, and while a PR from that branch is open the workflow
+does nothing. A PR made with `GITHUB_TOKEN` gets no checks, so the workflow dispatches WASM CI
+on the branch and links the run in a PR comment: that run must be green before the PR is
+merged by hand. Closing the PR without merging lets the next run open one for the plugins head
+of that day. `gh workflow run wasm-plugins-pin.yml -f ref=<branch, tag or full sha>` pins
+another ref (the PR body says when it is not ahead of the pin); `scripts/bump_wasm_plugins.sh
+[<ref>]` edits the pin in a local tree. To build against a plugins checkout without changing
+the pin, configure with `-DFETCHCONTENT_SOURCE_DIR_PJ_OFFICIAL_PLUGINS=<path>`.
+
 The packaging command refuses missing, invalid, or single-threaded build
 outputs. To prevent a mistyped `--output` from deleting unrelated data, it
 only replaces an absent directory, an empty directory, or a prior package with
@@ -193,22 +206,6 @@ file's path, size, and hash are covered separately as deployment configuration;
 the file configures isolation and cache policy on hosts that
 support the Netlify/Cloudflare Pages format; it does not make a host select
 precompressed variants automatically.
-
-#### The plugins pin
-
-The pin is a fixed commit (archive URL plus `URL_HASH`), so a package is reproducible and
-the source offer names the exact plugin sources. `.github/workflows/wasm-plugins-pin.yml`
-bumps it daily to the head of `pj-official-plugins` `main`: it runs
-`scripts/bump_wasm_plugins.sh`, which resolves the ref to a full commit sha, downloads the
-codeload archive of that sha twice and requires equal hashes, then rewrites the two pin
-lines. A bump goes into one pull request from `bot/wasm-plugins-pin`, listing the plugin
-commits it brings; the workflow dispatches WASM CI on that branch (a push made with
-`GITHUB_TOKEN` starts no workflow); there is no auto-merge, the PR is merged once it is green.
-
-Bump now with `gh workflow run wasm-plugins-pin.yml` (`-f ref=<branch, tag or full sha>`), or
-locally with `scripts/bump_wasm_plugins.sh <ref>` (default `main`), which edits
-`cmake/PjWasmDependencies.cmake` in place. To build against a plugins checkout without
-touching the pin, configure with `-DFETCHCONTENT_SOURCE_DIR_PJ_OFFICIAL_PLUGINS=<path>`.
 
 ### Third-party notices
 
