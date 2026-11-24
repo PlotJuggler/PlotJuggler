@@ -1165,6 +1165,45 @@ TEST(GoldenTimeSincePrevious, ResetReSuppressesFirstSample) {
   EXPECT_DOUBLE_EQ(std::get<double>(delta->value()), 2.0);  // 2e9 ns gap == 2 seconds
 }
 
+// ------------------------------- text input --------------------------------
+// The filters that read the value need numbers: over a text column each fails with the script's own error instead of
+// reading the text as 0.
+TEST(GoldenTextInput, NumericFiltersFailOverText) {
+  for (const char* id :
+       {"none", "absolute", "scale", "derivative", "integral", "moving_average", "moving_rms", "moving_variance",
+        "outlier_removal", "binary_filter"}) {
+    auto t = makeLuau(id, "{}");
+    ASSERT_FALSE(t->failed()) << id << ": " << t->error();
+    bool emitted = false;
+    for (std::int64_t i = 0; i < 5 && !t->failed(); ++i) {
+      emitted =
+          t->calculateNextPoint(Sample::scalar(i * kOneSecondNs, PJ::VarValue{std::string("walking")})).has_value() ||
+          emitted;
+    }
+    EXPECT_TRUE(t->failed()) << id << " read text without failing";
+    EXPECT_FALSE(t->error().empty()) << id;
+    EXPECT_FALSE(emitted) << id << " emitted a value computed from text";
+  }
+}
+
+// The filters that only look at the timestamps work over text.
+TEST(GoldenTextInput, TimestampFiltersWorkOverText) {
+  auto gap = makeLuau("time_since_previous", "{}");
+  auto count = makeLuau("samples_counter", "{}");
+  for (std::int64_t i = 0; i < 3; ++i) {
+    const Sample s = Sample::scalar(i * kOneSecondNs, PJ::VarValue{std::string("walking")});
+    const auto g = gap->calculateNextPoint(s);
+    const auto c = count->calculateNextPoint(s);
+    ASSERT_TRUE(c.has_value()) << count->error();
+    if (i > 0) {
+      ASSERT_TRUE(g.has_value()) << gap->error();
+      EXPECT_DOUBLE_EQ(std::get<double>(g->value()), 1.0);
+    }
+  }
+  EXPECT_FALSE(gap->failed()) << gap->error();
+  EXPECT_FALSE(count->failed()) << count->error();
+}
+
 // Malformed params JSON leaves the filter at its declared defaults (createInstance seeds every default and applies
 // overrides only when the JSON parses to an object): a `scale` built from non-JSON passes values through unchanged.
 TEST(GoldenParamsJson, MalformedJsonKeepsDefaults) {

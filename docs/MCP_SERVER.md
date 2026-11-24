@@ -65,8 +65,9 @@ The tool set depends on which token a request carries (`mcp::ToolSet`):
 
 Derived series hold numbers unless asked for text: `create_derived_series` takes `output_type: "string"`, and an
 `add_script_series` script declares `output = "string"` on its class. The tools that read numbers (`read_series`,
-`export_series`, a script series' inputs) refuse a string series with the reason (`agent_tools::textSeriesError`); the
-user sees one in a State Transitions panel.
+`export_series`) refuse a string series with the reason (`agent_tools::textSeriesError`); the user sees one in a State
+Transitions panel. A formula, script series or filter takes one as an input: the script receives each value as a
+string, and the join check reads only its timestamps.
 
 `ToolSet::kFull` serves the agent, app and job tools. `ToolSet::kAgentOnly` is used for plugin tokens: `tools/list`
 and the `initialize` instructions leave the app tools out, and calling one gets the unknown-tool error.

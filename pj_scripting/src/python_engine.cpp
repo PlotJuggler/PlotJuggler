@@ -19,9 +19,11 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "pj_scripting/sandbox.h"
+#include "python_object_binder.h"
 #include "python_sandbox.h"
 
 namespace py = pybind11;
@@ -137,11 +139,11 @@ class PythonFilterInstance final : public FilterInstance {
   PythonFilterInstance(const PythonFilterInstance&) = delete;
   PythonFilterInstance& operator=(const PythonFilterInstance&) = delete;
 
-  Result calculate(double t, double v) override {
+  Result calculate(double t, const InputValue& v) override {
     return guarded("calculate()", Result{true, 0.0, std::nullopt, {}}, [&]() { return runCalculate(t, v); });
   }
 
-  MimoResult calculateMimo(double t, PJ::Span<const double> inputs) override {
+  MimoResult calculateMimo(double t, PJ::Span<const InputValue> inputs) override {
     return guarded("calculate()", MimoResult{true, {}, {}}, [&]() { return runCalculateMimo(t, inputs); });
   }
 
@@ -207,10 +209,18 @@ class PythonFilterInstance final : public FilterInstance {
                         : "calculate() must return a number per output (declare output = \"string\" to return text)";
   }
 
+  /// A float, or a str for text; bytes that are not UTF-8 decode with U+FFFD rather than failing the instance.
+  static py::object toPython(const InputValue& v) {
+    if (const auto* text = std::get_if<std::string_view>(&v)) {
+      return detail::checked(PyUnicode_DecodeUTF8(text->data(), static_cast<Py_ssize_t>(text->size()), "replace"));
+    }
+    return detail::checked(PyFloat_FromDouble(std::get<double>(v)));
+  }
+
   /// The script calls proper, run by guarded(). A Python error fails the instance.
-  Result runCalculate(double t, double v) {
+  Result runCalculate(double t, const InputValue& v) {
     try {
-      py::object r = instance_.attr("calculate")(t, v);
+      py::object r = instance_.attr("calculate")(t, toPython(v));
       if (r.is_none()) {
         return Result{true, 0.0, std::nullopt, {}};
       }
@@ -243,13 +253,13 @@ class PythonFilterInstance final : public FilterInstance {
     }
   }
 
-  MimoResult runCalculateMimo(double t, PJ::Span<const double> inputs) {
+  MimoResult runCalculateMimo(double t, PJ::Span<const InputValue> inputs) {
     try {
       py::list args;
       for (std::size_t i = 1; i < inputs.size(); ++i) {
-        args.append(inputs[i]);
+        args.append(toPython(inputs[i]));
       }
-      const double primary = inputs.empty() ? 0.0 : inputs[0];
+      const py::object primary = toPython(inputs.empty() ? InputValue{0.0} : inputs[0]);
       py::object r = instance_.attr("calculate")(t, primary, *py::tuple(args));
       if (r.is_none()) {
         return MimoResult{true, {}, {}};

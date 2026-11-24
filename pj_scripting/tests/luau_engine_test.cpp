@@ -274,8 +274,8 @@ TEST(LuauEngine, StringClassReturnsText) {
 
   auto mimo = engine->createInstance(classes->front(), R"({"mode":"mimo"})");
   ASSERT_TRUE(mimo.has_value());
-  const double inputs[] = {1.0, 2.0};
-  auto rm = (*mimo)->calculateMimo(0.0, PJ::Span<const double>(inputs, 2));
+  const FilterInstance::InputValue inputs[] = {1.0, 2.0};
+  auto rm = (*mimo)->calculateMimo(0.0, PJ::Span<const FilterInstance::InputValue>(inputs, 2));
   EXPECT_FALSE(rm.suppress);
   EXPECT_EQ(rm.texts, (std::vector<std::string>{"a", "b"}));
 
@@ -303,8 +303,8 @@ TEST(LuauEngine, NumericClassReturningTextNamesTheStringOutput) {
 
   auto mimo = engine->createInstance(classes->front(), "{}");
   ASSERT_TRUE(mimo.has_value());
-  const double inputs[] = {1.0, 2.0};
-  EXPECT_TRUE((*mimo)->calculateMimo(0.0, PJ::Span<const double>(inputs, 2)).suppress);
+  const FilterInstance::InputValue inputs[] = {1.0, 2.0};
+  EXPECT_TRUE((*mimo)->calculateMimo(0.0, PJ::Span<const FilterInstance::InputValue>(inputs, 2)).suppress);
   EXPECT_NE((*mimo)->error().find("declare output = \"string\" to return text"), std::string::npos) << (*mimo)->error();
 }
 

@@ -60,6 +60,9 @@ class LuaMimoTransform : public PJ::IMIMOTransform {
   OutputMode out_mode_ = OutputMode::kDouble;
   std::unique_ptr<FilterInstance> instance_;
   std::string error_;
+  /// calculate()'s inputs as the script sees them, reused across samples; its text views point into that call's
+  /// inputs only.
+  std::vector<FilterInstance::InputValue> script_inputs_;
 
   bool has_session_start_ = false;
   PJ::Timestamp session_start_ns_ = 0;

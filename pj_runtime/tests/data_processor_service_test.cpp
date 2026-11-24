@@ -340,6 +340,145 @@ return { { id="boom", name="Boom",
   EXPECT_FALSE(result.has_value());  // the script error is surfaced, not swallowed
 }
 
+// A filter that reads the value (derivative) and one that only counts samples, which accepts text.
+constexpr const char* kTextFiltersSrc = R"LUAU(
+return { { id="derivative", name="Derivative",
+  create = function(p)
+    local has_prev, pt, pv = false, 0.0, 0.0
+    return { calculate = function(t, v)
+      if not has_prev then has_prev, pt, pv = true, t, v; return nil end
+      local d = (v - pv) / (t - pt); pt, pv = t, v; return d
+    end } end },
+  { id="count", name="Count",
+  create = function(p)
+    local n = 0
+    return { calculate = function(t, v) n = n + 1; return n end } end } }
+)LUAU";
+
+// A catalogue filter that needs numbers is refused over a text column with its own error, naming the input, instead of
+// differentiating the text as 0.
+TEST(DataProcessorServiceTest, NumericFilterOverTextIsRefusedNamingTheInput) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kTextFiltersSrc));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+
+  DataWriter writer = engine.createWriter();
+  const TopicId src =
+      *writer.registerTopic(ds, TopicDescriptor{.name = "robot_state", .schema_id = 0, .dataset_id = ds});
+  ASSERT_TRUE(writer.ensureColumn(src, "data", PrimitiveType::kString).has_value());
+  const std::vector<std::string_view> states{"walking", "falling", "walking"};
+  for (std::size_t i = 0; i < states.size(); ++i) {
+    ASSERT_TRUE(writer.beginRow(src, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());
+    writer.set<std::string_view>(src, 0, states[i]);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  }
+  engine.commitChunks(writer.flushAll());
+
+  const auto result = service.applyFilter(src, ds, "derivative", "robot_state[Derivative]");
+  ASSERT_FALSE(result.has_value()) << "a derivative of text must not materialize";
+  EXPECT_NE(result.error().find("arithmetic"), std::string::npos) << result.error();
+  EXPECT_NE(result.error().find("; robot_state/data is text"), std::string::npos) << result.error();
+  EXPECT_TRUE(service.recipes().empty());
+}
+
+// A transform failing on its own later input keeps that failure to itself: a filter applied next to it, whose pass
+// runs the transform again, installs and does not report the transform's error.
+TEST(DataProcessorServiceTest, AnotherTransformsFailureIsNotTheNewFilters) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kTextFiltersSrc));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  const TopicId src =
+      *writer.registerTopic(ds, TopicDescriptor{.name = "robot_state", .schema_id = 0, .dataset_id = ds});
+  ASSERT_TRUE(writer.ensureColumn(src, "data", PrimitiveType::kString).has_value());
+  const auto commit = [&](Timestamp t, std::string_view state) {
+    ASSERT_TRUE(writer.beginRow(src, t).has_value());
+    writer.set<std::string_view>(src, 0, state);
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+    engine.commitChunks(writer.flushAll());
+  };
+  commit(0, "walking");
+  constexpr const char* kFailsWhenFalling = R"LUAU(-- pj-script: luau
+return { id="t", name="T",
+  create = function(p) return { calculate = function(t, v) if v == "falling" then return v * 2 end return 1 end } end }
+)LUAU";
+  const auto transform =
+      service.upsertTransform("pluginA", "t", {"robot_state/data"}, {"t_out"}, kFailsWhenFalling, "{}");
+  ASSERT_TRUE(transform.has_value()) << transform.error();
+  commit(1'000'000'000LL, "falling");
+  (void)service.advanceOnCommit({src});
+  const std::string transform_error = service.incrementalEngine().nodeError(transform->node_id);
+  ASSERT_NE(transform_error.find("arithmetic"), std::string::npos) << transform_error;
+  commit(2'000'000'000LL, "walking");  // not scheduled yet: the filter's pass runs the failed transform again
+
+  const auto counted = service.applyFilter(src, ds, "count", "robot_state[Count]");
+  ASSERT_TRUE(counted.has_value()) << counted.error();
+  EXPECT_EQ(readValues(engine, counted->output_topic_id), (std::vector<double>{1.0, 2.0, 3.0}));
+  EXPECT_EQ(service.incrementalEngine().nodeError(transform->node_id), transform_error);
+}
+
+// Replacing a filter over text with one that needs numbers is refused naming the text input.
+TEST(DataProcessorServiceTest, UpdatingAFilterOverTextToANumericOneNamesTheInput) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  auto cat = catalogueFromSource(kTextFiltersSrc);
+  service.setFilterCatalogue(cat);
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  const TopicId src =
+      *writer.registerTopic(ds, TopicDescriptor{.name = "robot_state", .schema_id = 0, .dataset_id = ds});
+  ASSERT_TRUE(writer.ensureColumn(src, "data", PrimitiveType::kString).has_value());
+  for (std::size_t i = 0; i < 3; ++i) {
+    ASSERT_TRUE(writer.beginRow(src, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());
+    writer.set<std::string_view>(src, 0, i == 1 ? "falling" : "walking");
+    ASSERT_TRUE(writer.finishRow(src).has_value());
+  }
+  engine.commitChunks(writer.flushAll());
+  const auto counted = service.applyFilter(src, ds, "count", "robot_state[Count]");
+  ASSERT_TRUE(counted.has_value()) << counted.error();
+
+  auto derivative = cat->makeProcessor("derivative", "{}");
+  ASSERT_TRUE(derivative.has_value()) << derivative.error();
+  const Status updated = service.updateFilter(counted->node_id, std::move(derivative).value());
+  ASSERT_FALSE(updated.has_value());
+  EXPECT_NE(updated.error().find("arithmetic"), std::string::npos) << updated.error();
+  EXPECT_NE(updated.error().find("; robot_state/data is text"), std::string::npos) << updated.error();
+  EXPECT_EQ(readValues(engine, counted->output_topic_id), (std::vector<double>{1.0, 2.0, 3.0}));
+}
+
+// A mirror filter (output = "same") over text writes numbers: Luau reads number-like text ("-1") as a number, so the
+// output is a number column; text that is not a number fails the filter.
+TEST(DataProcessorServiceTest, MirrorFilterOverTextWritesNumbers) {
+  DataEngine engine;
+  DataProcessorService service(engine);
+  service.setFilterCatalogue(catalogueFromSource(kAbsoluteSrc));
+  const DatasetId ds = *engine.createDataset(DatasetDescriptor{.source_name = "t", .time_domain_id = 0});
+  DataWriter writer = engine.createWriter();
+  const auto textTopic = [&](const char* name, const std::vector<std::string_view>& rows) {
+    const TopicId topic = *writer.registerTopic(ds, TopicDescriptor{.name = name, .schema_id = 0, .dataset_id = ds});
+    EXPECT_TRUE(writer.ensureColumn(topic, "data", PrimitiveType::kString).has_value());
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      EXPECT_TRUE(writer.beginRow(topic, static_cast<Timestamp>(i) * 1'000'000'000LL).has_value());
+      writer.set<std::string_view>(topic, 0, rows[i]);
+      EXPECT_TRUE(writer.finishRow(topic).has_value());
+    }
+    return topic;
+  };
+  const TopicId level = textTopic("level", {"-1", "2"});
+  const TopicId state = textTopic("robot_state", {"walking"});
+  engine.commitChunks(writer.flushAll());
+
+  const auto absolute = service.applyFilter(level, ds, "absolute", "level[Absolute]");
+  ASSERT_TRUE(absolute.has_value()) << absolute.error();
+  EXPECT_EQ(readValues(engine, absolute->output_topic_id), (std::vector<double>{1.0, 2.0}));
+
+  const auto refused = service.applyFilter(state, ds, "absolute", "robot_state[Absolute]");
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_NE(refused.error().find("; robot_state/data is text"), std::string::npos) << refused.error();
+}
+
 TEST(DataProcessorServiceTest, ReloadRecomputesFilterOutput) {
   // After a dataset reload swaps the input chunks wholesale, the filter's output must
   // be RESET + REPLAYED over the new input, not left stale (or appended).

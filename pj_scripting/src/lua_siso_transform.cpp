@@ -10,7 +10,7 @@
 #include <utility>
 #include <variant>
 
-#include "pj_datastore/processor_detail.hpp"  // proc::detail::toDouble / mirrorInputKind
+#include "pj_datastore/processor_detail.hpp"  // proc::detail::numberOrText / mirrorInputKind
 
 namespace PJ::scripting {
 namespace {
@@ -138,9 +138,7 @@ std::optional<proc::Sample> LuaSisoTransform::calculateNextPoint(const proc::Sam
     has_session_start_ = true;
   }
   const double t_sec = static_cast<double>(in.raw_ts_ns - session_start_ns_) * 1e-9;
-  const double v = proc::detail::toDouble(in.value());
-
-  FilterInstance::Result r = instance_->calculate(t_sec, v);
+  FilterInstance::Result r = instance_->calculate(t_sec, proc::detail::numberOrText(in.value()));
   if (instance_->failed()) {
     error_ = instance_->error();
     return std::nullopt;

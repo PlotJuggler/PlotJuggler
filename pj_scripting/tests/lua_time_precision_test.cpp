@@ -7,8 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <variant>
 
-#include "pj_datastore/processor_detail.hpp"
 #include "pj_scripting/lua_siso_transform.h"
 #include "pj_scripting/script_engine.h"
 
@@ -48,7 +48,7 @@ TEST(LuaTimePrecision, RebasedDerivativeIsExactAtNanosecondScale) {
   auto out = xf.calculateNextPoint(Sample::scalar(kEpochNs + 100, PJ::VarValue{1.0}));
   ASSERT_TRUE(out.has_value());
   // dt = 100 ns = 1e-7 s, so d = 1 / 1e-7 = 1e7, exactly (rebasing keeps it).
-  EXPECT_NEAR(PJ::proc::detail::toDouble(out->value()), 1e7, 1.0);
+  EXPECT_NEAR(std::get<double>(out->value()), 1e7, 1.0);
 }
 
 TEST(LuaTimePrecision, NaiveAbsoluteEpochInDoubleCollapses100nsDt) {

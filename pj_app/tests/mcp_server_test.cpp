@@ -1103,6 +1103,68 @@ TEST_F(McpServerTest, ATextSeriesIsListedAndRefusedByTheNumberReaders) {
   EXPECT_NE(sign.find("holds text"), std::string::npos) << sign;
 }
 
+// add_script_series and add_filter take a text input: a script compares it, a timestamp-only filter counts it.
+TEST_F(McpServerTest, AScriptSeriesAndAFilterTakeATextInput) {
+  ASSERT_NE(loadMock(), 0);  // values 10, 20, 30
+  const auto [added, add_error] = result(call(
+      "add_script_series", {{"name", "state"},
+                            {"inputs", {"mock/file_data/value"}},
+                            {"script",
+                             "return { output = \"string\", create = function(params) return { calculate = "
+                             "function(t, v) return v > 15 and \"up\" or \"down\" end } end }"}}));
+  ASSERT_FALSE(add_error) << added;
+  const json topics = json::parse(added, nullptr, false).value("topics", json::object());
+  ASSERT_FALSE(topics.empty() || topics.begin()->empty()) << added;
+  const std::string state = topics.begin().key() + "/" + topics.begin()->front().get<std::string>();
+
+  const auto [compared, compare_error] = result(call(
+      "add_script_series",
+      {{"name", "is_up"},
+       {"inputs", {state}},
+       {"script",
+        "return { create = function() return { calculate = function(t, v) return v == \"up\" and 1 or 0 end } "
+        "end }"}}));
+  ASSERT_FALSE(compare_error) << compared;
+  const json compared_topics = json::parse(compared, nullptr, false).value("topics", json::object());
+  ASSERT_FALSE(compared_topics.empty() || compared_topics.begin()->empty()) << compared;
+  const std::string is_up = compared_topics.begin().key() + "/" + compared_topics.begin()->front().get<std::string>();
+  const auto [read, read_error] = result(call("read_series", {{"paths", {is_up}}}));
+  ASSERT_FALSE(read_error) << read;
+  const json stats = json::parse(read, nullptr, false).value("stats", json::object());
+  EXPECT_EQ(stats.value("count", 0), 3) << read;
+  EXPECT_EQ(stats.value("min", -1.0), 0.0) << read;
+  EXPECT_EQ(stats.value("max", -1.0), 1.0) << read;
+
+  const auto [counted, count_error] = result(call("add_filter", {{"input", state}, {"filter", "samples_counter"}}));
+  EXPECT_FALSE(count_error) << counted;
+}
+
+// create_derived_series refuses inputs that share no timestamps when one of them is text, as for two numbers.
+TEST_F(McpServerTest, ATextInputSharingNoTimestampsIsRefused) {
+  ASSERT_NE(loadMock(), 0);  // samples at 100..300 ns; the stream's start at 1 s
+  const auto [added, add_error] = result(call(
+      "add_script_series", {{"name", "state"},
+                            {"inputs", {"mock/file_data/value"}},
+                            {"script",
+                             "return { output = \"string\", create = function(params) return { calculate = "
+                             "function(t, v) return v > 15 and \"up\" or \"down\" end } end }"}}));
+  ASSERT_FALSE(add_error) << added;
+  const json topics = json::parse(added, nullptr, false).value("topics", json::object());
+  ASSERT_FALSE(topics.empty() || topics.begin()->empty()) << added;
+  const std::string state = topics.begin().key() + "/" + topics.begin()->front().get<std::string>();
+  const auto [started, start_error] =
+      result(call("start_stream", {{"source", "Mock Layout Stream"}, {"config", {{"topic", "live"}}}}));
+  ASSERT_FALSE(start_error) << started;
+  std::string text;
+  EXPECT_TRUE(pumpUntil([&] {
+    const auto [answer, error] = result(call(
+        "create_derived_series",
+        {{"name", "mix"}, {"inputs", {state, "live/value"}}, {"expression", "value == 'up' and v1 or 0"}}));
+    text = answer;
+    return error && answer.find("share no timestamps") != std::string::npos;
+  })) << text;
+}
+
 TEST_F(McpServerTest, AWronglyTypedArgumentIsAToolError) {
   const auto [text, error] = result(
       call("open_file", {{"path", pj_app_test::makeMockFile(data_, "b.mock").toStdString()}, {"ask_user", "yes"}}));

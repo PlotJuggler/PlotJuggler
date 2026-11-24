@@ -10,9 +10,11 @@
 #include <cstdint>
 #include <cstdlib>  // std::free
 #include <cstring>
+#include <exception>
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "lua.h"
@@ -324,7 +326,7 @@ class LuauInstance final : public FilterInstance {
   LuauInstance(const LuauInstance&) = delete;
   LuauInstance& operator=(const LuauInstance&) = delete;
 
-  Result calculate(double t, double v) override {
+  Result calculate(double t, const InputValue& v) override {
     Result r;
     if (failed_ || calc_ref_ == LUA_NOREF) {
       r.suppress = true;
@@ -343,8 +345,12 @@ class LuauInstance final : public FilterInstance {
       lua_getref(L_, self_ref_);  // `self` goes before the arguments
       ++nargs;
     }
-    lua_pushnumber(L_, t);
-    lua_pushnumber(L_, v);
+    if (!pushArguments(t, PJ::Span<const InputValue>(&v, 1))) {
+      lua_settop(L_, base);
+      fail("calculate: out of memory passing the input");
+      r.suppress = true;
+      return r;
+    }
     armFuel(budget_.get(), call_fuel_);
     if (lua_pcall(L_, nargs, LUA_MULTRET, 0) != 0) {
       fail(lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "calculate error");
@@ -389,7 +395,7 @@ class LuauInstance final : public FilterInstance {
     return r;
   }
 
-  MimoResult calculateMimo(double t, PJ::Span<const double> inputs) override {
+  MimoResult calculateMimo(double t, PJ::Span<const InputValue> inputs) override {
     MimoResult r;
     if (failed_ || calc_ref_ == LUA_NOREF) {
       r.suppress = true;
@@ -408,9 +414,11 @@ class LuauInstance final : public FilterInstance {
       lua_getref(L_, self_ref_);  // `self` goes before the arguments
       ++nargs;
     }
-    lua_pushnumber(L_, t);
-    for (const double in_value : inputs) {
-      lua_pushnumber(L_, in_value);
+    if (!pushArguments(t, inputs)) {
+      lua_settop(L_, base);
+      fail("calculate: out of memory passing the inputs");
+      r.suppress = true;
+      return r;
     }
     armFuel(budget_.get(), call_fuel_);
     if (lua_pcall(L_, nargs, LUA_MULTRET, 0) != 0) {
@@ -505,6 +513,28 @@ class LuauInstance final : public FilterInstance {
       return false;
     }
     value = lua_tonumber(L_, idx);
+    return true;
+  }
+
+  /// Pushes `t` and the inputs, text as a Luau string, growing the stack first (a release Luau does not check a push
+  /// against it). False when the VM is out of memory: the push runs outside a protected call, where Luau reports it by
+  /// throwing.
+  bool pushArguments(double t, PJ::Span<const InputValue> inputs) {
+    try {
+      if (lua_checkstack(L_, static_cast<int>(inputs.size()) + 1) == 0) {
+        return false;
+      }
+      lua_pushnumber(L_, t);
+      for (const InputValue& v : inputs) {
+        if (const auto* text = std::get_if<std::string_view>(&v)) {
+          lua_pushlstring(L_, text->data(), text->size());
+        } else {
+          lua_pushnumber(L_, std::get<double>(v));
+        }
+      }
+    } catch (const std::exception&) {
+      return false;
+    }
     return true;
   }
 

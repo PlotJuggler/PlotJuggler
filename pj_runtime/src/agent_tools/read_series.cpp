@@ -763,15 +763,16 @@ JoinForecast forecastJoin(
     if (!view) {
       return out;
     }
-    std::vector<std::int64_t> ts;
-    std::vector<double> vals;
-    if (!readSeriesDoubles(*view, ts, vals)) {
-      return out;  // a non-numeric input fails later, on its own terms
+    // Timestamps only: a text input joins like a number.
+    const auto stamps = view->timestamps();
+    if (stamps.empty()) {
+      return out;
     }
-    const SeriesStats stats = computeStats(ts, vals);
+    std::vector<std::int64_t> ts(stamps.begin(), stamps.end());
+    const double duration_s = static_cast<double>(ts.back() - ts.front()) * 1e-9;
+    const double rate_hz = duration_s > 0.0 ? static_cast<double>(ts.size() - 1) / duration_s : 0.0;
     std::ostringstream rate;
-    rate << inputs[i] << " (" << std::fixed << std::setprecision(1) << stats.rate_hz << " Hz, " << ts.size()
-         << " samples)";
+    rate << inputs[i] << " (" << std::fixed << std::setprecision(1) << rate_hz << " Hz, " << ts.size() << " samples)";
     out.rates.push_back(rate.str());
     out.smallest = (i == 0) ? ts.size() : std::min(out.smallest, ts.size());
 

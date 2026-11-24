@@ -5,6 +5,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <variant>
 #include <vector>
 
 #include "pj_base/expected.hpp"
@@ -29,12 +31,16 @@ class FilterInstance {
     std::string text;
   };
 
+  /// One input value: a number (an integer input widened to double) or text, which reaches Luau as a string and
+  /// Python as a `str`. The text view is valid for the call only.
+  using InputValue = std::variant<double, std::string_view>;
+
   virtual ~FilterInstance() = default;
 
   /// Per-sample step. `t` is seconds since the first sample this instance's node processed (the host subtracts that
-  /// origin on the int64 spine before the double cast), `v` the sample value. Throws nothing: a script error is
-  /// reported through `failed()` / `error()`.
-  [[nodiscard]] virtual Result calculate(double t, double v) = 0;
+  /// origin on the int64 spine before the double cast), `v` the sample value. Throws nothing: a script error, such as
+  /// arithmetic on text, is reported through `failed()` / `error()`.
+  [[nodiscard]] virtual Result calculate(double t, const InputValue& v) = 0;
 
   /// One MIMO step result: `suppress`, or one value per declared output topic in order, in `values` or, for a class
   /// whose `output` is "string", in `texts`. There is no explicit out_time form: the outputs share the joined input
@@ -48,7 +54,7 @@ class FilterInstance {
   /// MIMO step (N inputs -> M outputs). `inputs[0]` is the primary value, the rest the secondary inputs the engine
   /// joined to this sample; `t` as in `calculate`. A class implements either this or the SISO `calculate`; the default
   /// suppresses.
-  [[nodiscard]] virtual MimoResult calculateMimo(double /*t*/, PJ::Span<const double> /*inputs*/) {
+  [[nodiscard]] virtual MimoResult calculateMimo(double /*t*/, PJ::Span<const InputValue> /*inputs*/) {
     return MimoResult{true, {}, {}};
   }
 
