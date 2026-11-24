@@ -373,6 +373,23 @@ TEST(MeshLoadQueueTest, ProtocolRelativeTextureRefIsFetched) {
   EXPECT_FALSE(baseColor(*outcome).bytes.empty());
 }
 
+// With the setting off, a protocol-relative texture ref to another origin is requested like any other: never.
+TEST(MeshLoadQueueTest, ProtocolRelativeTextureRefToAnotherOriginIsNotFetchedWhenRemoteFetchIsOff) {
+  const FileHttpServer other({{u"/tex/red_4x4.png"_s, readFixtureBytes("red_4x4.png")}});
+  QByteArray dae = readFixtureBytes("textured_quad.dae");
+  const QUrl texture(other.url(u"/tex/red_4x4.png"_s));
+  dae.replace("red_4x4.png", (u"//"_s + texture.authority() + texture.path()).toUtf8());
+  const FileHttpServer own({{u"/meshes/quad.dae"_s, dae}});
+  MeshLoadQueue::Source source = quadSource(own.url(u"/meshes/quad.dae"_s));
+  source.allow_remote_fetch = false;
+  source.allowed_origins = {QUrl(own.url(u"/"_s))};
+  const std::optional<MeshLoadQueue::Outcome> outcome = settle(source);
+  ASSERT_TRUE(outcome.has_value());
+  ASSERT_TRUE(outcome->mesh.ok) << outcome->mesh.error.toStdString();
+  EXPECT_TRUE(other.paths().isEmpty()) << other.paths().join(u',').toStdString();
+  EXPECT_TRUE(baseColor(*outcome).empty());
+}
+
 // A cancelled fetch keeps its slot while another fetch on the shared fetcher is
 // still wanted; once none is, the fetcher is retired and every slot frees.
 TEST(MeshLoadQueueTest, UnwantedFetchesAreAbortedTogether) {

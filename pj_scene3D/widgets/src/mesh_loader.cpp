@@ -52,24 +52,19 @@ class NoFilesIOSystem final : public Assimp::IOSystem {
   }
 };
 
-// The file system of a file import: the default one, except that it opens a network share path (local_path.h) only
-// inside the folder of a model that is itself on a share (the user chose that share; content names any other).
+// The file system of a file import: the default one, minus the files importMayOpen() refuses (local_path.h).
 // (DefaultIOSystem is final in assimp 6.0.5, so this one wraps it.)
 class ShareRefusingIOSystem final : public Assimp::IOSystem {
  public:
-  explicit ShareRefusingIOSystem(const QString& model_path) {
-    if (isNetworkSharePath(model_path)) {
-      model_folder_ = QDir::cleanPath(QFileInfo(model_path).absolutePath()) + u'/';
-    }
-  }
+  explicit ShareRefusingIOSystem(QString model_path) : model_path_(std::move(model_path)) {}
   bool Exists(const char* file) const override {
-    return allowed(file) && files_.Exists(file);
+    return importMayOpen(model_path_, QString::fromUtf8(file)) && files_.Exists(file);
   }
   char getOsSeparator() const override {
     return files_.getOsSeparator();
   }
   Assimp::IOStream* Open(const char* file, const char* mode) override {
-    return allowed(file) ? files_.Open(file, mode) : nullptr;
+    return importMayOpen(model_path_, QString::fromUtf8(file)) ? files_.Open(file, mode) : nullptr;
   }
   void Close(Assimp::IOStream* stream) override {
     files_.Close(stream);
@@ -79,12 +74,7 @@ class ShareRefusingIOSystem final : public Assimp::IOSystem {
   }
 
  private:
-  // QDir::cleanPath folds a leading "//" into "/" off Windows, so the share test reads the path as given.
-  [[nodiscard]] bool allowed(const char* file) const {
-    const QString path = QDir::fromNativeSeparators(QString::fromUtf8(file));
-    return !isNetworkSharePath(path) || (!model_folder_.isEmpty() && QDir::cleanPath(path).startsWith(model_folder_));
-  }
-  QString model_folder_;
+  QString model_path_;
   mutable Assimp::DefaultIOSystem files_;
 };
 
@@ -164,11 +154,12 @@ TextureSource resolveTexture(
     source.unresolved_ref = ref;
     return source;
   }
-  if (isNetworkSharePath(ref)) {
-    return {};
-  }
   const auto resolve = [&base_dir](const QString& path) -> QString {
-    const QFileInfo info(QDir::cleanPath(QDir(base_dir).absoluteFilePath(path)));
+    const QString candidate = joinContentPath(base_dir, path);
+    if (candidate.isEmpty()) {
+      return {};
+    }
+    const QFileInfo info(candidate);
     return info.isFile() ? info.absoluteFilePath() : QString{};
   };
 

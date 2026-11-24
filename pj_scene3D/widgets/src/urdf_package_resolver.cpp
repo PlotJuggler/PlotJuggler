@@ -48,6 +48,16 @@ QString joinPath(const QString& root, const std::string& rel) {
   return r + '/' + tail;
 }
 
+// joinPath() for a local `root` (local_path.h joinContentPath: cleaned, empty when `rel` climbs onto a share). The
+// "./" keeps a `rel` that reads as absolute ("C:/x") under `root`, as joinPath() does.
+QString joinLocalPath(const QString& root, const std::string& rel) {
+  QString tail = QString::fromStdString(rel);
+  while (tail.startsWith('/')) {
+    tail.remove(0, 1);
+  }
+  return joinContentPath(root, u"./"_s + tail);
+}
+
 // Whether references may reach host files: never in the browser, which grants no
 // host-file access, nor for a web-hosted layout's robot on the desktop.
 bool allowsLocalFiles(bool remote_only) {
@@ -339,8 +349,13 @@ ResolvedMesh UrdfPackageResolver::resolveUri(
     out.issue = MeshResolveIssue::kMissingFile;
     return out;
   }
+  const QString path = url_base ? joinPath(base, uri) : joinLocalPath(base, uri);
+  if (path.isEmpty()) {
+    out.issue = MeshResolveIssue::kNetworkShare;
+    return out;
+  }
   out.resolved = true;
-  out.path = joinPath(base, uri).toStdString();
+  out.path = path.toStdString();
   out.is_url = url_base;
   return out;
 }
@@ -424,8 +439,8 @@ std::string UrdfPackageResolver::stepRememberedMap(const std::string& pkg, const
   if (root.isEmpty()) {
     return {};
   }
-  const QString candidate = joinPath(root, rel);
-  if (QFileInfo::exists(candidate)) {
+  const QString candidate = joinLocalPath(root, rel);
+  if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
     return candidate.toStdString();
   }
   return {};
@@ -466,8 +481,8 @@ std::string UrdfPackageResolver::stepAncestor(
   QDir dir(QString::fromStdString(urdf_dir));
   for (int depth = 0; depth <= kAncestorDepthCap; ++depth) {
     if (dir.dirName() == qpkg) {
-      const QString candidate = joinPath(dir.absolutePath(), rel);
-      if (QFileInfo::exists(candidate)) {
+      const QString candidate = joinLocalPath(dir.absolutePath(), rel);
+      if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
         return candidate.toStdString();
       }
     }
@@ -480,13 +495,13 @@ std::string UrdfPackageResolver::stepAncestor(
 
 std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const std::string& rel) {
   for (const QString& root : search_roots_) {
-    const QString pkg_dir = joinPath(root, pkg);
+    const QString pkg_dir = joinLocalPath(root, pkg);
     // Package identity = directory basename only (no package.xml check). Accept only when the mesh file itself exists
     // (mirrors stepAncestor): a package-dir stub missing the mesh must miss (""), not yield a path the loader silently
     // fails to open.
-    if (QFileInfo(pkg_dir).isDir()) {
-      const QString candidate = joinPath(pkg_dir, rel);
-      if (QFileInfo::exists(candidate)) {
+    if (!pkg_dir.isEmpty() && QFileInfo(pkg_dir).isDir()) {
+      const QString candidate = joinLocalPath(pkg_dir, rel);
+      if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
         return candidate.toStdString();
       }
     }
@@ -494,8 +509,8 @@ std::string UrdfPackageResolver::stepSearchRoots(const std::string& pkg, const s
   const QString qpkg = QString::fromStdString(pkg);
   for (const QString& root : userFolders()) {
     for (const QString& pkg_dir : packageIndex(QDir::cleanPath(root)).value(qpkg)) {
-      const QString candidate = joinPath(pkg_dir, rel);
-      if (QFileInfo::exists(candidate)) {
+      const QString candidate = joinLocalPath(pkg_dir, rel);
+      if (!candidate.isEmpty() && QFileInfo::exists(candidate)) {
         return candidate.toStdString();
       }
     }

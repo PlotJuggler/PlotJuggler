@@ -150,8 +150,7 @@ struct DataSourceRef {
 // filename is a path, not URL syntax ('#', '?', '%' are part of the name); an absolute http(s) URL is kept. Empty
 // URL, reason in `*error` (may be null), for an empty filename, a local machine path (absolute POSIX, drive
 // letter, UNC, any backslash), another scheme, a directory, or a non-http(s) `layout_url`: a web layout never
-// reaches local files. A WASM fetch reports the requested URL even after a redirect, so a layout behind a redirect
-// to another directory resolves against the requested one.
+// reaches local files.
 [[nodiscard]] QUrl resolveFileSourceUrl(const QString& filename, const QUrl& layout_url, QString* error);
 
 // The pj4_version of a layout carrying <previouslyLoaded_StreamingSources>, and the newest version this build

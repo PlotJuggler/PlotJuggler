@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QTemporaryFile>
 #include <QTimer>
+#include <cstdlib>
 #include <memory>
 #include <unordered_map>
 #include <utility>
@@ -104,6 +105,7 @@ void complete(quint32 id, BrowserFetchResult result) {
 // `follow_redirects` 0 the fetch follows no redirect (a redirect answer is kRedirectRefused) and takes no prefetched
 // response, whose redirects it could not check. The macro
 // joins the body into one line: every statement ends in a semicolon.
+EM_JS_DEPS(pj_browser_fetch_start, "$stringToNewUTF8");
 // clang-format off
 EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const char* path_utf8, double max_bytes,
                                      int idle_timeout_ms, int hash, int report_progress,
@@ -130,6 +132,7 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
   let received = 0;
   let timedOut = false;
   let fromCache = false;
+  let servedUrl = '';
   let timer = 0;
   const arm = () => {
     clearTimeout(timer);
@@ -159,6 +162,7 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
         }
       }
       httpStatus = response.status;
+      servedUrl = response.url || '';
       if (response.type === 'opaqueredirect') {
         status = kRedirectRefused;
         return;
@@ -243,7 +247,8 @@ EM_JS(void, pj_browser_fetch_start, (unsigned id, const char* url_utf8, const ch
         }
       }
       Module.pjBrowserFetches.delete(id);
-      Module._pj_browser_fetch_done(id, status, received, httpStatus, fromCache ? 1 : 0);
+      Module._pj_browser_fetch_done(
+          id, status, received, httpStatus, fromCache ? 1 : 0, servedUrl ? stringToNewUTF8(servedUrl) : 0);
     }
   })();
 });
@@ -376,7 +381,8 @@ quint32 browserFetchToFile(
 
 quint32 browserFetchToBytes(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds idle_timeout, const QObject* context,
-    RedirectScope redirects, std::function<void(QByteArray bytes, QString error, bool limit_exceeded)> done) {
+    RedirectScope redirects,
+    std::function<void(QByteArray bytes, QString error, bool limit_exceeded, QUrl final_url)> done) {
   Q_ASSERT(emscripten_is_main_browser_thread());
   // The body lands in a scratch file, removed with the last copy of the completion below.
   auto scratch = std::make_shared<QTemporaryFile>();
@@ -384,15 +390,15 @@ quint32 browserFetchToBytes(
   auto deliver = [scratch, context_watch, done = std::move(done)](const BrowserFetchResult& result) {
     QObject::disconnect(*context_watch);
     if (!result.error.isEmpty()) {
-      done({}, result.error, result.limit_exceeded);
+      done({}, result.error, result.limit_exceeded, result.final_url);
       return;
     }
     scratch->close();  // reopened: the page wrote through its own handle
     if (!scratch->open()) {
-      done({}, u"could not read the download: %1"_s.arg(scratch->errorString()), false);
+      done({}, u"could not read the download: %1"_s.arg(scratch->errorString()), false, result.final_url);
       return;
     }
-    done(scratch->readAll(), QString(), false);
+    done(scratch->readAll(), QString(), false, result.final_url);
   };
   quint32 id = 0;
   if (scratch->open()) {
@@ -437,15 +443,18 @@ extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_progress(quint32 id, doubl
 }
 
 /// The page's fetch for transfer `id` ended with `status` (a FetchStatus) after writing `bytes`, read from the kept
-/// copy when `from_cache` is set. A download that matches its pin is kept, a kept copy that does not is dropped.
+/// copy when `from_cache` is set, served from `served_url` (the response's URL after redirects; null when unknown,
+/// else a malloc'd string this frees). A download that matches its pin is kept, a kept copy that does not is dropped.
 extern "C" EMSCRIPTEN_KEEPALIVE void pj_browser_fetch_done(
-    quint32 id, int status, double bytes, int http_status, int from_cache) {
+    quint32 id, int status, double bytes, int http_status, int from_cache, char* served_url) {
+  const QUrl final_url = served_url != nullptr ? QUrl(QString::fromUtf8(served_url)) : QUrl();
+  free(served_url);
   const auto found = PJ::transfers().find(id);
   if (found == PJ::transfers().end()) {
     return;
   }
   const PJ::Transfer& transfer = found->second;
-  PJ::BrowserFetchResult result{.size = static_cast<qint64>(bytes)};
+  PJ::BrowserFetchResult result{.size = static_cast<qint64>(bytes), .final_url = final_url};
   switch (static_cast<PJ::FetchStatus>(status)) {
     case PJ::FetchStatus::kOk:
       if (transfer.hash) {

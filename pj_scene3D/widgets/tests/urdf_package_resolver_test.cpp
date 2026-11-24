@@ -419,13 +419,15 @@ TEST(UrdfResolver, RemoteOnlyRefusesLocalResources) {
   const std::string local_mesh = fixtures() + "/search_root/demo_description/meshes/base.stl";
   const std::string local_package = "package://demo_description/meshes/base.stl";
   const std::string urdf_dir = "https://host.test/presets/robot/";
+  // fromLocalFile: "file://" + "C:/..." would name host "C".
+  const std::string local_mesh_url = QUrl::fromLocalFile(QString::fromStdString(local_mesh)).toString().toStdString();
 
   // Without the policy, the same references reach the local files.
-  EXPECT_TRUE(resolver.resolveUri("file://" + local_mesh, urdf_dir, true, {}, false).resolved);
+  EXPECT_TRUE(resolver.resolveUri(local_mesh_url, urdf_dir, true, {}, false).resolved);
   EXPECT_TRUE(resolver.resolveUri(local_mesh, urdf_dir, true, {}, false).resolved);
   EXPECT_TRUE(resolver.resolveUri(local_package, urdf_dir, true, {}, false).resolved);
 
-  for (const std::string& uri : {"file://" + local_mesh, local_mesh, local_package}) {
+  for (const std::string& uri : {local_mesh_url, local_mesh, local_package}) {
     const ResolvedMesh blocked = resolver.resolveUri(uri, urdf_dir, true, {}, /*remote_only=*/true);
     EXPECT_FALSE(blocked.resolved) << uri << " -> " << blocked.path;
   }

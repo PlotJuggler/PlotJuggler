@@ -180,11 +180,15 @@ inline QString writeQuadReferencing(const QTemporaryDir& dir, const QString& tex
 }
 
 // Serves `files` over HTTP on localhost by request path, answers a path in `redirects` with a 302 to its absolute
-// URL, 404 for any other, and records every requested path.
+// URL (with a short body and `redirect_cache_control`), 404 for any other, and records every requested path.
 class FileHttpServer {
  public:
-  explicit FileHttpServer(QHash<QString, QByteArray> files, QHash<QString, QString> redirects = {})
-      : files_(std::move(files)), redirects_(std::move(redirects)) {
+  explicit FileHttpServer(
+      QHash<QString, QByteArray> files, QHash<QString, QString> redirects = {},
+      QByteArray redirect_cache_control = "no-store")
+      : files_(std::move(files)),
+        redirects_(std::move(redirects)),
+        redirect_cache_control_(std::move(redirect_cache_control)) {
     EXPECT_TRUE(server_.listen(QHostAddress::LocalHost, 0));
     QObject::connect(&server_, &QTcpServer::newConnection, &server_, [this]() {
       QTcpSocket* socket = server_.nextPendingConnection();
@@ -193,8 +197,8 @@ class FileHttpServer {
         paths_.push_back(path);
         if (const auto target = redirects_.constFind(path); target != redirects_.cend()) {
           socket->write(
-              "HTTP/1.1 302 Found\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\nLocation: " +
-              target->toUtf8() + "\r\n\r\n");
+              "HTTP/1.1 302 Found\r\nConnection: close\r\nCache-Control: " + redirect_cache_control_ +
+              "\r\nContent-Length: 5\r\nLocation: " + target->toUtf8() + "\r\n\r\nmoved");
           socket->disconnectFromHost();
           return;
         }
@@ -223,6 +227,7 @@ class FileHttpServer {
  private:
   QHash<QString, QByteArray> files_;
   QHash<QString, QString> redirects_;
+  QByteArray redirect_cache_control_;
   QTcpServer server_;
   QStringList paths_;
 };

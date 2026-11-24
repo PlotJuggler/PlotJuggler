@@ -6,6 +6,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -15,6 +16,7 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QUrl>
 #include <array>
 #include <cmath>
 #include <glm/glm.hpp>
@@ -215,7 +217,7 @@ TEST(MeshLoaderTest, ColladaFromMemoryKeepsTheUnresolvedTextureReference) {
 TEST(MeshLoaderTest, ColladaFromMemoryNeverResolvesAbsoluteTextureRefToLocalFile) {
   const QString absolute_texture = fixturePath("red_4x4.png");
   ASSERT_TRUE(QFileInfo(absolute_texture).isFile());
-  for (const QString& ref : {absolute_texture, u"file://"_s + absolute_texture}) {
+  for (const QString& ref : {absolute_texture, QUrl::fromLocalFile(absolute_texture).toString()}) {
     SCOPED_TRACE(ref.toStdString());
     QByteArray bytes = readFixtureBytes("textured_quad.dae");
     bytes.replace("red_4x4.png", ref.toUtf8());

@@ -810,13 +810,15 @@ layer's notice.
 **Remote fetch and network shares.** With `pj_scene3d/allow_remote_model_fetch` off, a model's job requests an
 `http(s)` URL (its mesh or a texture its mesh names) only on an origin its user chose: a robot's URL source (the URL
 entered and the one that served it) or package roots; a SceneEntities model has none. Such a request follows a
-redirect only within the requested URL's origin on the desktop and none in the browser (`RemoteFetch::kOwnOrigin`).
-A refused robot mesh fails with a status clause naming the setting, a refused texture leaves its slot empty. With the
-setting on, redirects follow `PJ::RedirectScope::kAnyOrigin`. Whatever the setting, a path that model content names
-on a network share (`file://host/...`, `//host/...`, `\\host\...`, `\\?\UNC\...`, and on macOS `/net/<host>/...`;
+redirect only within the requested URL's origin on the desktop, checked per hop for a redirect the disk cache serves
+too, and none in the browser (`RemoteFetch::kOwnOrigin`). A refused robot mesh fails with a status clause naming the
+setting, a refused texture leaves its slot empty. With the setting on, redirects follow `PJ::RedirectScope::kAnyOrigin`.
+Whatever the setting, a path that model content names on a network share (`file://host/...`, `//host/...`,
+`\\host\...`, `\\?\UNC\...`, `\??\...`, a long drive path with a `..` segment, and on macOS `/net/<host>/...`;
 `local_path.h`) is never opened: a URDF ref resolves with "network share refused", a texture ref stays empty, and
-assimp's file system for a file import refuses it outside the folder of a model that is itself on a share. A share
-the user chose is read: a layout or package root there, and the files beside a model on it. An in-memory import opens
+assimp's file system for a file import refuses it outside the folder of a model that is itself on a share. Content
+text joined onto a folder goes through `joinContentPath`, which checks the cleaned path that is opened. A share the
+user chose is read: a layout or package root there, and the files beside a model on it. An in-memory import opens
 no file at all.
 
 `UrdfPackageResolver` dispatches on the scheme: `file://` absolute; a bare path relative to the URDF (never enters
@@ -949,6 +951,12 @@ each has a panel row, and clicking it binds the Settings host to the layer's con
 - A SceneEntities mesh model is placed at the cursor, not at its entity's stamp like the entity's primitives: with TF
   faster than the entities, a model and a primitive of one entity drift apart in a world-fixed frame.
 - Movable URDF joints are not articulated from `JointState`; `axis`, `limit` and `mimic` are not parsed.
+- A share the user chose but that is reached through `UrlFetcher` is refused: a robot URL source `file://nas/r.urdf`,
+  a SceneEntities `package://` model under a search root on a share.
+- With remote fetch off, a redirect to another origin the user chose, or an http to https upgrade, is refused (fails
+  closed).
+- `ShareRefusingIOSystem` (file imports) forwards `ComparePaths`, `CreateDirectory`, `ChangeDirectory` and
+  `DeleteFile` unfiltered; no enabled importer uses them.
 - Embedded assets (resolver step 0) are inert in the app: no caller passes a source's asset map to
   `Scene3DDockWidget::setEmbeddedAssets`.
 - Copy/paste and "Apply to family" of a pose layer also turn its trail on or off on the target (a synchronous

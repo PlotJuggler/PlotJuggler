@@ -6796,8 +6796,7 @@ void MainWindow::loadLayoutFromUrl(const QUrl& url) {
       finishBrowserLayoutLoad(name, false, u"download"_s);
       return;
     }
-    // Relative references resolve against where the layout was fetched from.
-    // The browser reports the requested URL here even after a redirect.
+    // Relative references resolve against where the layout was served from, after any redirect.
     loadLayoutFromBytes(bytes, name, final_url);
   });
 }

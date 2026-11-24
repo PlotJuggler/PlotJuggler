@@ -21,8 +21,7 @@ struct FetchResult {
   bool ok{false};
   QByteArray bytes;
   QString error;
-  // Where a network fetch was served from after redirects (in the browser, the
-  // requested URL: it follows redirects out of sight); empty for a local source.
+  // Where a network fetch was served from after redirects; empty for a local source.
   QUrl final_url;
 };
 

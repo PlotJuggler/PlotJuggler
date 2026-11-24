@@ -458,9 +458,8 @@ desktop the same rewrite points each `filename` at that name in the loaded
 data file's folder. `<sideFile>` is optional.
 
 A layout opened by URL (a preset) replays its `<fileInfo>` sources without a
-picker instead. Each `filename` resolves against the layout's URL — the browser
-reports the requested URL even after a redirect, so a preset must not rely on a
-redirect to another directory — and only http(s) references are fetched: a local
+picker instead. Each `filename` resolves against the URL the layout was served
+from, after any redirect, and only http(s) references are fetched: a local
 path or another scheme, like a local robot model reference, fails the load.
 Sources download one at a time, straight into their staged files (never through
 the WebAssembly heap), must match their recorded `content_sha256`, and may stage

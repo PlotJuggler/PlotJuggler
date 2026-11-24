@@ -30,6 +30,7 @@ struct BrowserFetchResult {
   QString sha256;               ///< Lowercase hex SHA-256 of those bytes; empty on failure.
   QString error;                ///< Empty on success.
   bool limit_exceeded = false;  ///< The body was larger than `max_bytes`; `error` words it in MiB.
+  QUrl final_url;               ///< The URL the response came from after redirects; empty when the page had none.
 };
 
 /**
@@ -65,13 +66,14 @@ quint32 browserFetchToFile(
 /**
  * browserFetchToFile() for a caller that wants the body in memory (a small file): it goes through a scratch MEMFS
  * file, removed once `done` has read it, so it is never held twice. `done(bytes, error, limit_exceeded)` follows
- * browserFetchToFile()'s rules, and is dropped, the transfer cancelled, when `context` is destroyed first. With
- * RedirectScope::kSameOrigin no redirect is followed (fetch `redirect: "manual"`): one fails the transfer, and no
- * prefetched response stands in for the fetch.
+ * browserFetchToFile()'s rules (`final_url` as in BrowserFetchResult), and is dropped, the transfer cancelled, when
+ * `context` is destroyed first. With RedirectScope::kSameOrigin no redirect is followed (fetch `redirect: "manual"`):
+ * one fails the transfer, and no prefetched response stands in for the fetch.
  */
 quint32 browserFetchToBytes(
     const QUrl& url, qint64 max_bytes, std::chrono::milliseconds idle_timeout, const QObject* context,
-    RedirectScope redirects, std::function<void(QByteArray bytes, QString error, bool limit_exceeded)> done);
+    RedirectScope redirects,
+    std::function<void(QByteArray bytes, QString error, bool limit_exceeded, QUrl final_url)> done);
 
 /// Aborts the transfer `id`; its `done` never runs. A finished or unknown id is ignored.
 void cancelBrowserFetch(quint32 id);

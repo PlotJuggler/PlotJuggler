@@ -68,8 +68,8 @@ QNetworkReply* httpGetWithLimit(
 /// How a fetchBytesWithLimit() transfer ended.
 struct FetchedBytes {
   QByteArray bytes;  ///< The body; empty on failure.
-  /// Where the body was served from after redirects. The browser follows redirects out of sight, so there it is
-  /// the requested URL.
+  /// Where the body was served from after redirects (in the browser, the URL the page's fetch reports; the requested
+  /// one when it reports none).
   QUrl final_url;
   QString error;                ///< Empty on success.
   bool limit_exceeded = false;  ///< The body was larger than `max_bytes`; `error` is downloadLimitMessage().

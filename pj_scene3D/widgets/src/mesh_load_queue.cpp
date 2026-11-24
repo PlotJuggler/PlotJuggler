@@ -42,14 +42,6 @@ QUrl textureUrl(const QUrl& mesh_url, const QString& ref) {
   return PJ::isHttpUrl(url) ? url : QUrl{};
 }
 
-bool sameOrigin(const QUrl& a, const QUrl& b) {
-  const auto port = [](const QUrl& url) {
-    return url.port(url.scheme().compare(QLatin1StringView("https"), Qt::CaseInsensitive) == 0 ? 443 : 80);
-  };
-  return a.scheme().compare(b.scheme(), Qt::CaseInsensitive) == 0 &&
-         a.host().compare(b.host(), Qt::CaseInsensitive) == 0 && port(a) == port(b);
-}
-
 bool hasUnresolvedRef(const Material& material) {
   const auto textures = material.textureSlots();
   return std::any_of(textures.cbegin(), textures.cend(), [](const TextureSource* texture) {
@@ -111,7 +103,7 @@ RemoteFetch remoteFetchFor(const MeshLoadQueue::Source& source, const QUrl& url)
   }
   const bool own_origin = std::any_of(
       source.allowed_origins.cbegin(), source.allowed_origins.cend(),
-      [&url](const QUrl& origin) { return sameOrigin(origin, url); });
+      [&url](const QUrl& origin) { return PJ::isSameOrigin(origin, url); });
   return own_origin ? RemoteFetch::kOwnOrigin : RemoteFetch::kRefused;
 }
 

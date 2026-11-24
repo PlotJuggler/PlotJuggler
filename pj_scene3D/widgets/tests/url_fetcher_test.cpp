@@ -173,7 +173,9 @@ TEST(LocalPathTest, NetworkSharePredicate) {
     SCOPED_TRACE(macos ? "macOS" : "other");
     for (const QString& share :
          {u"//host/share/m.dae"_s, u"\\\\host\\share\\m.dae"_s, u"/\\host/share"_s, u"\\\\?\\UNC\\host\\share\\m.dae"_s,
-          u"//?/UNC/host/share/m.dae"_s}) {
+          u"//?/UNC/host/share/m.dae"_s, u"\\\\?\\C:\\..\\UNC\\host\\share\\t.png"_s,
+          u"//?/C:/../UNC/host/share/t.png"_s, u"//?/C:/models/../../UNC/host/t.png"_s,
+          u"\\??\\UNC\\host\\share\\t.png"_s, u"/?\?/UNC/host/share/t.png"_s, u"\\??\\C:\\t.png"_s}) {
       EXPECT_TRUE(isNetworkSharePath(share, macos)) << share.toStdString();
     }
     for (const QString& local :
@@ -181,11 +183,53 @@ TEST(LocalPathTest, NetworkSharePredicate) {
           u"//?/C:/models/m.dae"_s, u"relative/m.dae"_s, u"/network/m.dae"_s, u""_s}) {
       EXPECT_FALSE(isNetworkSharePath(local, macos)) << local.toStdString();
     }
-    for (const QString& automount : {u"/net/host/share/m.dae"_s, u"/net/./host/m.dae"_s, u"/tmp/../net/host/m"_s}) {
+    for (const QString& automount :
+         {u"/net/host/share/m.dae"_s, u"/net/./host/m.dae"_s, u"/tmp/../net/host/m"_s, u"/NET/host/m"_s}) {
       EXPECT_EQ(isNetworkSharePath(automount, macos), macos) << automount.toStdString();
     }
     EXPECT_FALSE(isNetworkSharePath(u"/net"_s, macos));
   }
+}
+
+// What a file import opens for its model's content (MeshLoader's IOSystem). The decision is tested here rather than
+// through assimp: assimp retries a refused path with its separators collapsed, which on POSIX turns the "//tmp/x"
+// stand-in for a share into a plain local path.
+TEST(LocalPathTest, ImportOpensNoShareOutsideAChosenSharesFolder) {
+  using pj::scene3d::importMayOpen;
+  for (const bool macos : {false, true}) {
+    SCOPED_TRACE(macos ? "macOS" : "other");
+    EXPECT_TRUE(importMayOpen(u"/home/u/m.obj"_s, u"/home/u/../x.mtl"_s, macos));
+    EXPECT_FALSE(importMayOpen(u"/home/u/m.obj"_s, u"//host/s/x.mtl"_s, macos));
+    EXPECT_FALSE(importMayOpen(u"C:/u/m.obj"_s, u"\\\\host\\s\\x.mtl"_s, macos));
+    EXPECT_TRUE(importMayOpen(u"//host/s/a/m.obj"_s, u"//host/s/a/x.mtl"_s, macos));
+    EXPECT_TRUE(importMayOpen(u"\\\\host\\s\\a\\m.obj"_s, u"\\\\host\\s\\a\\tex\\t.png"_s, macos));
+    EXPECT_FALSE(importMayOpen(u"//host/s/a/m.obj"_s, u"//host/s/a/../b/x.mtl"_s, macos));
+    EXPECT_FALSE(importMayOpen(u"//host/s/a/m.obj"_s, u"//other/s/a/x.mtl"_s, macos));
+    EXPECT_EQ(importMayOpen(u"/Users/u/m.obj"_s, u"/net/host/a/t.png"_s, macos), !macos);
+    EXPECT_TRUE(importMayOpen(u"/net/host/a/m.obj"_s, u"/net/host/a/t.png"_s, macos));
+    EXPECT_EQ(importMayOpen(u"/net/host/a/m.obj"_s, u"/net/host/b/t.png"_s, macos), !macos);
+  }
+}
+
+// What a model's text joined onto its folder opens: never a share the folder is not on.
+TEST(LocalPathTest, JoinContentPathNeverLandsOnAShare) {
+  using pj::scene3d::joinContentPath;
+  for (const bool macos : {false, true}) {
+    SCOPED_TRACE(macos ? "macOS" : "other");
+    for (const QString& share : {u"//host/share/t.png"_s, u"//?/C:/../UNC/host/t.png"_s, u"/?\?/UNC/host/t.png"_s}) {
+      EXPECT_TRUE(joinContentPath(u"/ws/robot"_s, share, macos).isEmpty()) << share.toStdString();
+    }
+#ifndef Q_OS_WIN  // a POSIX folder: Windows would make it absolute on the current drive
+    EXPECT_EQ(joinContentPath(u"/ws/robot"_s, u"meshes/../t.png"_s, macos), u"/ws/robot/t.png"_s);
+    EXPECT_EQ(joinContentPath(u"/ws/robot"_s, u"/abs/t.png"_s, macos), u"/abs/t.png"_s);
+    EXPECT_EQ(joinContentPath(u"/ws/robot"_s, u"../../net/host/t.png"_s, macos).isEmpty(), macos);
+    EXPECT_EQ(joinContentPath(u"/ws/robot"_s, u"../../NET/host/t.png"_s, macos).isEmpty(), macos);
+#endif
+  }
+#ifndef Q_OS_WIN
+  // A folder the user chose on a share keeps its own relative files.
+  EXPECT_EQ(joinContentPath(u"/net/host/robot"_s, u"t.png"_s, true), u"/net/host/robot/t.png"_s);
+#endif
 }
 
 // On Windows an absolute path like "C:/dir/file.bin" becomes a QUrl whose scheme() is the single-letter drive ("c"),
@@ -286,6 +330,36 @@ TEST(UrlFetcherTest, ResponseBeyondSizeCapIsAborted) {
   ASSERT_TRUE(pumpUntil([&called]() { return called; }, 10000)) << "capped fetch never completed";
   EXPECT_FALSE(result.ok);
   EXPECT_TRUE(result.error.contains("limit"_L1)) << result.error.toStdString();
+}
+
+// A redirect the disk cache serves is held to the request's RemoteFetch as one the network answers: a kOwnOrigin
+// fetch never reaches the other origin the cached redirect names.
+TEST(UrlFetcherTest, CachedRedirectStaysOnTheRequestedOrigin) {
+  using pj::scene3d::test::FileHttpServer;
+  QTemporaryDir cache_dir;
+  ASSERT_TRUE(cache_dir.isValid());
+  const QByteArray previous_cache_dir = qgetenv("PJ_MODEL_CACHE_DIR");
+  qputenv("PJ_MODEL_CACHE_DIR", cache_dir.path().toUtf8());
+  const FileHttpServer elsewhere({{u"/m.bin"_s, QByteArray("payload")}});
+  const FileHttpServer own({}, {{u"/m.bin"_s, elsewhere.url(u"/m.bin"_s)}}, "max-age=3600");
+  pj::scene3d::UrlFetcher fetcher;
+  const auto fetch = [&fetcher, &own](pj::scene3d::RemoteFetch remote) {
+    std::optional<pj::scene3d::FetchResult> result;
+    fetcher.fetch(
+        QUrl(own.url(u"/m.bin"_s)), [&result](pj::scene3d::FetchResult fetched) { result = std::move(fetched); },
+        remote);
+    EXPECT_TRUE(pumpUntil([&result]() { return result.has_value(); }, 10000));
+    return result.value_or(pj::scene3d::FetchResult{});
+  };
+  const pj::scene3d::FetchResult followed = fetch(pj::scene3d::RemoteFetch::kAnyOrigin);
+  EXPECT_TRUE(followed.ok) << followed.error.toStdString();
+  EXPECT_EQ(followed.bytes, "payload");
+  const pj::scene3d::FetchResult refused = fetch(pj::scene3d::RemoteFetch::kOwnOrigin);
+  EXPECT_FALSE(refused.ok);
+  EXPECT_TRUE(refused.error.contains("another origin"_L1)) << refused.error.toStdString();
+  EXPECT_EQ(own.paths().size(), 1) << "the second fetch did not take the cached redirect";
+  EXPECT_EQ(elsewhere.paths().size(), 1) << elsewhere.paths().join(u',').toStdString();
+  qputenv("PJ_MODEL_CACHE_DIR", previous_cache_dir);
 }
 
 namespace {
